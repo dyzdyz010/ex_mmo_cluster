@@ -17,7 +17,7 @@ defmodule GateServer.TcpConnection do
   end
 
   def init(socket) do
-    Logger.debug("New client connected: #{socket}")
+    Logger.debug("New client connected.")
     {:ok, %{socket: socket}}
   end
 

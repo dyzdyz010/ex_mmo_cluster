@@ -1,4 +1,6 @@
 defmodule GateServer.TcpAcceptor do
+  @behaviour GenServer
+
   require Logger
 
   def child_spec(opts) do
@@ -11,11 +13,24 @@ defmodule GateServer.TcpAcceptor do
     }
   end
 
-  def start_link(_opts) do
-    Task.start_link(__MODULE__, :accept, [8888])
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, [], opts)
   end
 
-  def accept(port) do
+  def init(_opts) do
+    {:ok, %{}, 0}
+  end
+
+  def handle_info(:timeout, state) do
+    GenServer.cast(__MODULE__, :accept)
+    {:noreply, state}
+  end
+
+  def handle_cast(:accept, _state) do
+    accept(8888)
+  end
+
+  defp accept(port) do
     {:ok, socket} = :gen_tcp.listen(port, [:binary, active: true, reuseaddr: true])
 
     Logger.debug("Accepting connections on port #{port}")
@@ -24,6 +39,7 @@ defmodule GateServer.TcpAcceptor do
 
   defp loop_acceptor(socket) do
     {:ok, client} = :gen_tcp.accept(socket)
+
     {:ok, pid} =
       DynamicSupervisor.start_child(
         GateServer.TcpConnectionSup,
