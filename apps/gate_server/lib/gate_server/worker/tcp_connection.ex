@@ -2,6 +2,9 @@ defmodule GateServer.TcpConnection do
   @behaviour GenServer
   require Logger
 
+  @topic {:gate, __MODULE__}
+  @scope :connection
+
   def child_spec(opts) do
     %{
       id: __MODULE__,
@@ -17,6 +20,8 @@ defmodule GateServer.TcpConnection do
   end
 
   def init(socket) do
+    :pg.start_link(@scope)
+    :pg.join(@scope, @topic, self())
     Logger.debug("New client connected.")
     {:ok, %{socket: socket}}
   end
