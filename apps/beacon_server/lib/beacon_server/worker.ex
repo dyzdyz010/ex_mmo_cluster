@@ -7,6 +7,7 @@ defmodule BeaconServer.Worker do
 
   @impl true
   def init(_init_arg) do
+    :net_kernel.monitor_nodes(true)
     {:ok,
      %{
        resources: [],
@@ -19,7 +20,7 @@ defmodule BeaconServer.Worker do
   Register node with resource.
   """
   def handle_call(
-        {:register, {node, resource, requirement}},
+        {:register, {node, module, resource, requirement}},
         _from,
         state = %{resources: resources, requirements: requirements}
       ) do
@@ -36,8 +37,15 @@ defmodule BeaconServer.Worker do
      end,
      %{
        state
-       | resources: [[node: node, name: resource] | resources],
-         requirements: [[node: node, name: requirement] | requirements]
+       | resources: [[node: node, module: module, name: resource] | resources],
+         requirements: [[node: node, module: module, name: requirement] | requirements]
      }}
+  end
+
+  @impl true
+  def handle_info({:nodeup, node}, state) do
+    IO.inspect(node, label: "Node connected: ")
+
+    {:noreply, state}
   end
 end

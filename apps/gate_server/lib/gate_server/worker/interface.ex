@@ -11,7 +11,7 @@ defmodule GateServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{}, 0}
+    {:ok, %{game_server_manager: []}, 0}
   end
 
   @impl true
@@ -21,17 +21,29 @@ defmodule GateServer.Interface do
   end
 
   def handle_info({:join, beacon}, state) do
-    case Node.ping(beacon) do
-      :pong -> register()
-      _ -> :timer.send_after(1000, {:join, beacon})
+    game_server_manager_list = case Node.ping(beacon) do
+      :pong ->
+        register()
+      _ ->
+        :timer.send_after(1000, {:join, beacon})
+        []
     end
 
-    {:noreply, state}
+    {:noreply, %{state | game_server_manager: game_server_manager_list}}
   end
 
   defp register() do
     IO.inspect(Node.list())
-    offer = GenServer.call({BeaconServer.Worker, @beacon}, {:register, {node(), @resource, @requirement}})
-    IO.inspect(offer)
+
+    offer =
+      GenServer.call(
+        {BeaconServer.Worker, @beacon},
+        {:register, {node(), __MODULE__, @resource, @requirement}}
+      )
+
+    case offer do
+      {:ok, game_server_manager_list} -> game_server_manager_list
+      nil -> []
+    end
   end
 end
