@@ -1,9 +1,9 @@
-defmodule ServiceDiscovery.MixProject do
+defmodule GameServer.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :service_discovery,
+      app: :game_server,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -18,7 +18,8 @@ defmodule ServiceDiscovery.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {GameServer.Application, []}
     ]
   end
 

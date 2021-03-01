@@ -20,7 +20,7 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-service_discovery-*.tar
+game_server-*.tar
 
 
 # Temporary files for e.g. tests
