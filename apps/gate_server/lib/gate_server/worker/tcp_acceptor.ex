@@ -3,6 +3,8 @@ defmodule GateServer.TcpAcceptor do
 
   require Logger
 
+  @port 8888
+
   def child_spec(opts) do
     %{
       id: __MODULE__,
@@ -27,7 +29,7 @@ defmodule GateServer.TcpAcceptor do
   end
 
   def handle_cast(:accept, _state) do
-    accept(8888)
+    accept(@port)
   end
 
   defp accept(port) do

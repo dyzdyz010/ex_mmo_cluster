@@ -10,6 +10,7 @@ defmodule GameServerManager.Application do
     children = [
       # Starts a worker by calling: GameServerManager.Worker.start_link(arg)
       # {GameServerManager.Worker, arg}
+      {GameServerManager.InterfaceSup, name: GameServerManager.InterfaceSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
