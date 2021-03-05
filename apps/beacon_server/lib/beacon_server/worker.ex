@@ -10,6 +10,7 @@ defmodule BeaconServer.Worker do
     :net_kernel.monitor_nodes(true)
     {:ok,
      %{
+       nodes: %{},
        resources: [],
        requirements: []
      }}
@@ -22,7 +23,7 @@ defmodule BeaconServer.Worker do
   def handle_call(
         {:register, {node, module, resource, requirement}},
         _from,
-        state = %{resources: resources, requirements: requirements}
+        state = %{nodes: nodes, resources: resources, requirements: requirements}
       ) do
     IO.inspect("Register: #{node} | #{resource} | #{requirement}")
     offer =
@@ -37,15 +38,39 @@ defmodule BeaconServer.Worker do
      end,
      %{
        state
-       | resources: [[node: node, module: module, name: resource] | resources],
-         requirements: [[node: node, module: module, name: requirement] | requirements]
+       | nodes: add_node(node, nodes),
+         resources: add_resource(node, module, resource, resources),
+         requirements: add_requirement(node, module, requirement, requirements)
      }}
   end
+
+  # ========== Node monitoring ==========
 
   @impl true
   def handle_info({:nodeup, node}, state) do
     IO.inspect(node, label: "Node connected: ")
 
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:nodedown, node}, state) do
+    IO.inspect(node, label: "Node disconnected: ")
+
+    {:noreply, state}
+  end
+
+  # -------------------------------------
+
+  defp add_node(node, node_list) do
+    %{node_list | node => :online}
+  end
+
+  defp add_resource(node, module, resource, resource_list) do
+    [[node: node, module: module, name: resource] | resource_list]
+  end
+
+  defp add_requirement(node, module, requirement, requirement_list) do
+    [[node: node, module: module, name: requirement] | requirement_list]
   end
 end
