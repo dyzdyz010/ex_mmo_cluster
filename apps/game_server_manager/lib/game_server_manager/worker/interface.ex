@@ -29,13 +29,6 @@ defmodule GameServerManager.Interface do
   def handle_info({:join, beacon}, state) do
     true = Node.connect(beacon)
     send(self(), :register)
-    #   :pong ->
-    #     register()
-    #   _ ->
-    #     Logger.warning("Beacon #{@beacon} not reachable, retrying in 1s.")
-    #     :timer.send_after(500, {:join, beacon})
-    #     []
-    # end
 
     {:noreply, state}
   end
