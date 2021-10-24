@@ -32,4 +32,11 @@ defmodule GateServer.TcpConnection do
     :gen_tcp.send(socket, result)
     {:noreply, state}
   end
+
+  def handle_info({:tcp_closed, _conn}, state) do
+    Logger.error("Socket #{inspect(state.socket, pretty: true)} closed unexpectly.")
+    DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
+
+    {:stop, :normal, state}
+  end
 end
