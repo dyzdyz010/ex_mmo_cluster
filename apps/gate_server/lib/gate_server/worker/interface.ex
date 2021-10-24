@@ -5,7 +5,7 @@ defmodule GateServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :gate_server
-  @requirement :game_server_manager
+  @requirement [:game_server_manager]
 
   # 重试间隔：s
   @retry_rate 1
@@ -35,10 +35,22 @@ defmodule GateServer.Interface do
 
   @impl true
   def handle_info(:register, state) do
+    :ok = GenServer.call(
+      {BeaconServer.Worker, @beacon},
+      {:register, {node(), __MODULE__, @resource, @requirement}}
+    )
+
+    send(self(), :get_requirements)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:get_requirements, state) do
     offer =
       GenServer.call(
         {BeaconServer.Worker, @beacon},
-        {:register, {node(), __MODULE__, @resource, @requirement}}
+        {:get_requirements, node()}
       )
 
     IO.inspect(offer)
@@ -50,7 +62,7 @@ defmodule GateServer.Interface do
 
       nil ->
         Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")
-        :timer.send_after(@retry_rate * 1000, :register)
+        :timer.send_after(@retry_rate * 1000, :get_requirements)
         {:noreply, state}
     end
   end
