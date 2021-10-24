@@ -28,7 +28,7 @@ defmodule GateServer.TcpConnection do
 
   def handle_info({:tcp, socket, data}, state) do
     Logger.debug(data)
-    result = "You'v typed: #{data}"
+    result = "You've typed: #{data}"
     :gen_tcp.send(socket, result)
     {:noreply, state}
   end

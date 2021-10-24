@@ -8,7 +8,7 @@ defmodule GateServer.Interface do
   @requirement [:game_server_manager]
 
   # 重试间隔：s
-  @retry_rate 1
+  @retry_rate 5
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
