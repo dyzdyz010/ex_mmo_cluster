@@ -23,11 +23,12 @@ defmodule GateServer.TcpConnection do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected.")
-    {:ok, %{socket: socket}}
+    {:ok, %{socket: socket, status: :waiting_auth}}
   end
 
   def handle_info({:tcp, socket, data}, state) do
     Logger.debug(data)
+    Logger.debug("#{inspect(GateServer.Parse.parse(data, state), pretty: true)}")
     result = "You've typed: #{data}"
     :gen_tcp.send(socket, result)
     {:noreply, state}

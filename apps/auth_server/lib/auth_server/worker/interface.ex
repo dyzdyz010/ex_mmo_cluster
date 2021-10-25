@@ -1,11 +1,11 @@
-defmodule GateServer.Interface do
+defmodule AuthServer.Interface do
   use GenServer
 
   require Logger
 
   @beacon :"beacon1@127.0.0.1"
-  @resource :gate_server
-  @requirement [:auth_server]
+  @resource :auth_server
+  @requirement [:game_server_manager]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +16,7 @@ defmodule GateServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{auth_server: [], server_state: :waiting_requirements}, 0}
+    {:ok, %{game_server_manager: [], server_state: :waiting_requirements}, 0}
   end
 
   @impl true
@@ -56,19 +56,14 @@ defmodule GateServer.Interface do
     IO.inspect(offer)
 
     case offer do
-      {:ok, auth_server} ->
+      {:ok, game_server_manager_list} ->
         Logger.debug("Requirements accuired, server ready.")
-        {:noreply, %{state | auth_server: auth_server, server_state: :ready}}
+        {:noreply, %{state | game_server_manager: game_server_manager_list, server_state: :ready}}
 
       nil ->
         Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")
-        :timer.send_after(@retry_rate * 1000, :get_requirements)
+        # :timer.send_after(@retry_rate * 1000, :get_requirements)
         {:noreply, state}
     end
-  end
-
-  @impl true
-  def handle_call(:auth_server, _from, state) do
-    {:reply, state.auth_server, state}
   end
 end

@@ -10,6 +10,8 @@ defmodule AuthServer.Application do
     children = [
       # Starts a worker by calling: AuthServer.Worker.start_link(arg)
       # {AuthServer.Worker, arg}
+      {AuthServer.AuthWorker, name: AuthServer.AuthWorker},
+      {AuthServer.InterfaceSup, name: AuthServer.InterfaceSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
