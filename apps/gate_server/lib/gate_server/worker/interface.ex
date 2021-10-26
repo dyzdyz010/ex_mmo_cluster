@@ -68,7 +68,7 @@ defmodule GateServer.Interface do
   end
 
   @impl true
-  def handle_call(:auth_server, _from, state) do
-    {:reply, state.auth_server, state}
+  def handle_call(:auth_server, _from, state) when length(state.auth_server)>0 do
+    {:reply, List.first(state.auth_server), state}
   end
 end

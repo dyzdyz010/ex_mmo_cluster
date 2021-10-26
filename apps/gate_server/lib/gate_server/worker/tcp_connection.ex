@@ -23,14 +23,17 @@ defmodule GateServer.TcpConnection do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected.")
-    {:ok, %{socket: socket, status: :waiting_auth}}
+    {:ok, %{socket: socket, agent: nil, status: :waiting_auth}}
   end
 
-  def handle_info({:tcp, socket, data}, state) do
+  def handle_info({:tcp, _socket, data}, state) do
     Logger.debug(data)
-    Logger.debug("#{inspect(GateServer.Parse.parse(data, state), pretty: true)}")
-    result = "You've typed: #{data}"
-    :gen_tcp.send(socket, result)
+    msg = GateServer.Message.parse(data, state)
+    GateServer.Message.handle(msg, state, self())
+
+    Logger.debug("#{inspect(msg, pretty: true)}")
+    # result = "You've typed: #{data}"
+    # :gen_tcp.send(socket, result)
     {:noreply, state}
   end
 
@@ -39,5 +42,11 @@ defmodule GateServer.TcpConnection do
     DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
 
     {:stop, :normal, state}
+  end
+
+  def handle_cast({:send, data}, state) do
+    :gen_tcp.send(state.socket, data)
+
+    {:noreply, state}
   end
 end

@@ -1,0 +1,9 @@
+syntax = "proto3";
+import "proto/Credentials.proto";
+
+message Packet {
+    int32 id = 1;
+    oneof payload {
+        Credentials credentials = 2;
+    }
+}
