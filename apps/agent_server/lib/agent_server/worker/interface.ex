@@ -5,7 +5,7 @@ defmodule AgentServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :agent_server
-  @requirement [:agnet_server_manager]
+  @requirement [:agnet_server_manager, :dao_server_manager]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +16,7 @@ defmodule AgentServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{auth_server: [], server_state: :waiting_requirements}, 0}
+    {:ok, %{server_state: :waiting_requirements}, 0}
   end
 
   @impl true
@@ -56,9 +56,9 @@ defmodule AgentServer.Interface do
     IO.inspect(offer)
 
     case offer do
-      {:ok, auth_server} ->
+      {:ok, dao_server_manager} ->
         Logger.debug("Requirements accuired, server ready.")
-        {:noreply, %{state | auth_server: auth_server, server_state: :ready}}
+        {:noreply, %{state | dao_server_manager: dao_server_manager, server_state: :ready}}
 
       nil ->
         Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")

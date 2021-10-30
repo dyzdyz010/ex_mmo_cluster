@@ -12,26 +12,11 @@ defmodule AuthServer.AuthWorker do
     }
   end
 
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, [], opts)
+  def start_link(args, opts \\ []) do
+    GenServer.start_link(__MODULE__, args, opts)
   end
 
-  def init(_opts) do
+  def init(_args) do
     {:ok, %{}}
-  end
-
-  def handle_info({:tcp, socket, data}, state) do
-    Logger.debug(data)
-    result = "You'v typed: #{data}"
-    :gen_tcp.send(socket, result)
-    {:noreply, state}
-  end
-
-  def handle_call({:login, credentials}, _from, state) do
-    if credentials.username == "dyz" and credentials.password == "duyizhuo" do
-      {:reply, {:ok, "some agent"}, state}
-    else
-      {:reply, {:error, :mismatch}, state}
-    end
   end
 end

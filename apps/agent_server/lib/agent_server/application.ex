@@ -10,6 +10,8 @@ defmodule AgentServer.Application do
     children = [
       # Starts a worker by calling: AgentServer.Worker.start_link(arg)
       # {AgentServer.Worker, arg}
+      {AgentServer.InterfaceSup, name: AgentServer.InterfaceSup},
+      {AgentServer.AgentSup, name: AgentServer.AgentSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
