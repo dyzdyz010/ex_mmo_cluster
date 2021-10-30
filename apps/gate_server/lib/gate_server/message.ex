@@ -22,6 +22,9 @@ defmodule GateServer.Message do
       {:ok,state}
     end
   end
+  def handle(%Packet{payload: _}, _state, connection) do
+    GenServer.cast(connection, {:send, "ok"})
+  end
 
   defp parse_test(data) do
     IO.inspect(data)

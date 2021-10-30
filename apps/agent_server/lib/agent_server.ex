@@ -1,6 +1,6 @@
-defmodule GameServerManager do
+defmodule AgentServer do
   @moduledoc """
-  Documentation for `GameServerManager`.
+  Documentation for `AgentServer`.
   """
 
   @doc """
@@ -8,7 +8,7 @@ defmodule GameServerManager do
 
   ## Examples
 
-      iex> GameServerManager.hello()
+      iex> AgentServer.hello()
       :world
 
   """

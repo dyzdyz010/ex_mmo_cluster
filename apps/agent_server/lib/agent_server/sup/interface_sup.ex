@@ -1,4 +1,4 @@
-defmodule GameServerManager.InterfaceSup do
+defmodule AgentServer.InterfaceSup do
   use Supervisor
 
   def start_link(opts \\ []) do
@@ -7,7 +7,7 @@ defmodule GameServerManager.InterfaceSup do
 
   def init(_init_arg) do
     children = [
-      {GameServerManager.Interface, name: GameServerManager.Interface}
+      {AgentServer.Interface, name: AgentServer.Interface}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
