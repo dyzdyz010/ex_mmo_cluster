@@ -5,7 +5,7 @@ defmodule AuthServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :auth_server
-  @requirement [:game_server_manager]
+  @requirement [:agent_manager]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +16,7 @@ defmodule AuthServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{game_server_manager: [], server_state: :waiting_requirements}, 0}
+    {:ok, %{agent_manager: [], server_state: :waiting_requirements}, 0}
   end
 
   @impl true

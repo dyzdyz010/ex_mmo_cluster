@@ -19,4 +19,9 @@ defmodule AuthServer.AuthWorker do
   def init(_args) do
     {:ok, %{}}
   end
+
+  def handle_call({:login, credential}, _from, state) do
+    Logger.debug("User login: #{credential.username}, #{credential.password}")
+    {:reply, {:ok, nil}, state}
+  end
 end
