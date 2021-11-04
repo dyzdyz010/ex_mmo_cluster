@@ -5,7 +5,7 @@ defmodule AgentServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :agent_server
-  @requirement [:agent_manager, :dao_manager]
+  @requirement [:agent_manager, :data_contact]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +16,7 @@ defmodule AgentServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{agent_manager: nil, dao_manager: nil, server_state: :waiting_requirements}, 0}
+    {:ok, %{agent_manager: nil, data_service: nil, server_state: :waiting_requirements}, 0}
   end
 
   @impl true
