@@ -41,7 +41,7 @@ defmodule DataContact.NodeManager do
 
   @impl true
   def handle_call(:db_list, _from, state) do
-    {:reply, state.store_nodes ++ state.service_nodes, state}
+    {:reply, Map.keys(state.service_nodes) ++ Map.keys(state.store_nodes), state}
   end
 
   @impl true
@@ -59,7 +59,7 @@ defmodule DataContact.NodeManager do
   end
 
   @impl true
-  def handle_info({:nodedown, node}, state = %{nodes: node_list}) do
+  def handle_info({:nodedown, node}, state) do
     Logger.critical("Node disconnected: #{node}")
 
     new_state = case Map.get(state.service_nodes, node) do

@@ -10,6 +10,8 @@ defmodule DataService.Application do
     children = [
       # Starts a worker by calling: DataService.Worker.start_link(arg)
       # {DataService.Worker, arg}
+      {DataService.InterfaceSup, name: DataService.InterfaceSup},
+      {DataService.WorkerSup, name: DataService.WorkerSup},
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

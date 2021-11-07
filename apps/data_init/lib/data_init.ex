@@ -6,7 +6,8 @@ defmodule DataInit do
   require Logger
 
   def initialize(contact, role) do
-    db_list = :rpc.call(contact, DataContact.Interface, :db_list, [])
+    # db_list = :rpc.call(contact, DataContact.Interface, :db_list, [])
+    db_list = GenServer.call({DataContact.NodeManager, contact}, :db_list)
 
     case db_list do
       [] ->
@@ -19,8 +20,11 @@ defmodule DataInit do
 
   def create_database(_store_list, role) do
     Logger.info("Creating database...")
-    :mnesia.create_schema([node()])
-    :mnesia.start()
+    Memento.stop()
+    Memento.Schema.create([node()])
+    Memento.start()
+    # :mnesia.create_schema([node()])
+    # :mnesia.start()
     create_tables(role)
   end
 
@@ -33,7 +37,7 @@ defmodule DataInit do
 
     Enum.map(TableDef.user_table_list(), fn t ->
       :mnesia.add_table_copy(
-        t.name,
+        t,
         node(),
         case role do
           :service -> :ram_copies
@@ -51,14 +55,20 @@ defmodule DataInit do
     Enum.map(
       table_defs,
       fn t ->
-        :mnesia.create_table(t.name, [
-          {:attributes, t.attributes},
-          case role do
-            :service -> {:ram_copies, [node()]}
-            :store -> {:disc_only_copies, [node()]}
-          end
-        ])
+        case role do
+          :service -> Memento.Table.create(t, ram_copies: [node()])
+          :store -> Memento.Table.create(t, disc_only_copies: [node()])
+        end
+        # :mnesia.create_table(t, [
+        #   {:attributes, t.attributes},
+        #   case role do
+        #     :service -> {:ram_copies, [node()]}
+        #     :store -> {:disc_only_copies, [node()]}
+        #   end
+        # ])
       end
     )
+    |> IO.inspect()
+    # Memento.Table.create(DataInit.TableDef.User.Account)
   end
 end

@@ -26,3 +26,5 @@ erl_crash.dump
 
 # VSCode configuration
 /.vscode
+
+.mnesia

@@ -36,7 +36,7 @@ defmodule BeaconServer.Worker do
        | nodes: add_node(node, nodes),
          resources: add_resource(node, module, resource, resources),
          requirements:
-           if requirements != [] do
+           if requirement != [] do
              add_requirement(node, module, requirement, requirements)
            else
              requirements
