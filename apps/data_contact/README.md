@@ -1,5 +1,12 @@
 # DataContact
 
+Mnesia cluster beacon node. Every Mnesia node should connect to this node before providing services to other nodes.
+
+## Functionalities
+
+1. Beacon to all Mnesia nodes, monitoring.
+2. Select `data_service` node for request node, with load-balancing.
+
 **TODO: Add description**
 
 ## Installation
