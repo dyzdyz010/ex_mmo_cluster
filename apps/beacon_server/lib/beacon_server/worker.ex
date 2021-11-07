@@ -35,7 +35,12 @@ defmodule BeaconServer.Worker do
        state
        | nodes: add_node(node, nodes),
          resources: add_resource(node, module, resource, resources),
-         requirements: add_requirement(node, module, requirement, requirements)
+         requirements:
+           if requirements != [] do
+             add_requirement(node, module, requirement, requirements)
+           else
+             requirements
+           end
      }}
   end
 
@@ -99,7 +104,7 @@ defmodule BeaconServer.Worker do
   end
 
   defp find_requirements(_, []) do
-    nil
+    []
   end
 
   defp find_requirements(node, [r | requirements]) do
@@ -109,7 +114,13 @@ defmodule BeaconServer.Worker do
     end
   end
 
+  defp find_resources([], _) do
+    []
+  end
+
   defp find_resources(requirement, resources) do
+    IO.inspect(requirement)
+
     for req <- requirement.name, res <- resources, req == res.name do
       res
     end
