@@ -33,7 +33,7 @@ defmodule DataInit do
   def copy_database(store_list, role) do
     Memento.start()
     {:ok, _} = Memento.add_nodes(store_list)
-    :ok = Memento.Table.set_storage_type(:schema, node(), :disc_copies)
+    Memento.Table.set_storage_type(:schema, node(), :disc_copies)
 
     copy_tables(role)
   end

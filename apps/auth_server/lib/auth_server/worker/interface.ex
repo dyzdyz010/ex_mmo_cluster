@@ -5,7 +5,7 @@ defmodule AuthServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :auth_server
-  @requirement [:agent_manager]
+  @requirement [:agent_manager, :data_contact]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +16,7 @@ defmodule AuthServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{agent_manager: [], server_state: :waiting_requirements}, 0}
+    {:ok, %{agent_manager: nil, server_state: :waiting_requirements}, 0}
   end
 
   @impl true
@@ -56,9 +56,9 @@ defmodule AuthServer.Interface do
     IO.inspect(offer)
 
     case offer do
-      {:ok, game_server_manager_list} ->
+      {:ok, [agent_manager | _]} ->
         Logger.debug("Requirements accuired, server ready.")
-        {:noreply, %{state | game_server_manager: game_server_manager_list, server_state: :ready}}
+        {:noreply, %{state | agent_manager: agent_manager.node, server_state: :ready}}
 
       nil ->
         Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")
