@@ -5,6 +5,7 @@ defmodule DataInit do
   alias DataInit.TableDef
   require Logger
 
+  @spec initialize(node(), atom()) :: list()
   def initialize(contact, role) do
     # db_list = :rpc.call(contact, DataContact.Interface, :db_list, [])
     db_list = GenServer.call({DataContact.NodeManager, contact}, :db_list)
@@ -18,39 +19,29 @@ defmodule DataInit do
     end
   end
 
+  @spec create_database([node()], atom()) :: list()
   def create_database(_store_list, role) do
     Logger.info("Creating database...")
     Memento.stop()
     Memento.Schema.create([node()])
     Memento.start()
-    # :mnesia.create_schema([node()])
-    # :mnesia.start()
+
     create_tables(role)
   end
 
+  @spec copy_database([node()], atom()) :: list()
   def copy_database(store_list, role) do
-    :mnesia.start()
-    result1 = :mnesia.change_config(:extra_db_nodes, store_list)
-    IO.inspect(result1)
-    result2 = :mnesia.change_table_copy_type(:schema, node(), :disc_copies)
-    IO.inspect(result2)
+    Memento.start()
+    {:ok, _} = Memento.add_nodes(store_list)
+    :ok = Memento.Table.set_storage_type(:schema, node(), :disc_copies)
 
-    Enum.map(TableDef.user_table_list(), fn t ->
-      :mnesia.add_table_copy(
-        t,
-        node(),
-        case role do
-          :service -> :ram_copies
-          :store -> :disc_only_copies
-        end
-      )
-    end)
+    copy_tables(role)
   end
 
-  def create_tables(role) do
-    Logger.info("Creating tables...")
+  defp create_tables(role) do
+    Logger.info("Creating tables...", ansi_color: :yellow)
     table_defs = TableDef.tables()
-    IO.inspect(table_defs)
+    Logger.info("Tables to be created: #{inspect(table_defs, pretty: true)}")
 
     Enum.map(
       table_defs,
@@ -59,16 +50,23 @@ defmodule DataInit do
           :service -> Memento.Table.create(t, ram_copies: [node()])
           :store -> Memento.Table.create(t, disc_only_copies: [node()])
         end
-        # :mnesia.create_table(t, [
-        #   {:attributes, t.attributes},
-        #   case role do
-        #     :service -> {:ram_copies, [node()]}
-        #     :store -> {:disc_only_copies, [node()]}
-        #   end
-        # ])
       end
     )
-    |> IO.inspect()
-    # Memento.Table.create(DataInit.TableDef.User.Account)
+  end
+
+  defp copy_tables(role) do
+    Logger.info("Copying tables...", ansi_color: :yellow)
+    table_defs = TableDef.tables()
+    Logger.info("Tables to be copied: #{inspect(table_defs, pretty: true)}")
+
+    Enum.map(
+      table_defs,
+      fn t ->
+        case role do
+          :service -> Memento.Table.create_copy(t, node(), :ram_copies)
+          :store -> Memento.Table.create_copy(t, node(), :disc_only_copies)
+        end
+      end
+    )
   end
 end
