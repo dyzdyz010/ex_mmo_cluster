@@ -10,7 +10,7 @@ defmodule WorldServer.Application do
     children = [
       # Starts a worker by calling: WorldServer.Worker.start_link(arg)
       # {WorldServer.Worker, arg}
-      {WorldServer.WorldServerSup, name: WorldServer.WorldServerSup},
+      {WorldServer.WorldSup, name: WorldServer.WorldSup},
       {WorldServer.InterfaceSup, name: WorldServer.InterfaceSup}
     ]
 
