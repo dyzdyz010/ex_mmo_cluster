@@ -24,24 +24,13 @@ defmodule BeaconServer.Worker do
   Register node with resource and requirement.
   """
   def handle_call(
-        {:register, {node, module, resource, requirement}},
+        {:register, credentials},
         _from,
-        state = %{nodes: nodes, resources: resources, requirements: requirements}
+        state
       ) do
-    Logger.debug("Register: #{node} | #{resource} | #{inspect(requirement)}")
+    new_state = register(credentials, state)
 
-    {:reply, :ok,
-     %{
-       state
-       | nodes: add_node(node, nodes),
-         resources: add_resource(node, module, resource, resources),
-         requirements:
-           if requirement != [] do
-             add_requirement(node, module, requirement, requirements)
-           else
-             requirements
-           end
-     }}
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -79,6 +68,27 @@ defmodule BeaconServer.Worker do
   end
 
   # -------------------------------------
+
+  @spec register({node(), module(), atom(), [atom()]}, %{}) :: {:ok, %{}}
+  defp register(
+         {node, module, resource, requirement},
+         state = %{nodes: nodes, resources: resources, requirements: requirements}
+       ) do
+    Logger.debug("Register: #{node} | #{resource} | #{inspect(requirement)}")
+
+    {:ok,
+     %{
+       state
+       | nodes: add_node(node, nodes),
+         resources: add_resource(node, module, resource, resources),
+         requirements:
+           if requirement != [] do
+             add_requirement(node, module, requirement, requirements)
+           else
+             requirements
+           end
+     }}
+  end
 
   defp add_node(node, node_list) do
     Logger.debug("Add node: #{node}")
