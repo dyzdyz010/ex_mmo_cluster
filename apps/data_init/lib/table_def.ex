@@ -2,9 +2,9 @@ defmodule DataInit.TableDef do
   defmodule User.Account do
     use Memento.Table,
       attributes: [:id, :username, :password, :character_list, :email, :phone],
-      index: [:email, :username]
-      # type: :ordered_set
-      # autoincrement: true
+      index: [:email, :username],
+      type: :ordered_set,
+      autoincrement: true
   end
 
   defmodule User.Character do
