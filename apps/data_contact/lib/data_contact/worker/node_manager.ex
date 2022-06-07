@@ -2,8 +2,9 @@ defmodule DataContact.NodeManager do
   @moduledoc """
   Mnesia node manager.
 
-  ## state format:
+  ## `state` format:
 
+  ```
   %{
     service_nodes: %{
       node1@host: :online,
@@ -14,6 +15,7 @@ defmodule DataContact.NodeManager do
       node4@host: :offline
     }
   }
+  ```
   """
 
   use GenServer
@@ -42,6 +44,12 @@ defmodule DataContact.NodeManager do
   @impl true
   def handle_call(:db_list, _from, state) do
     {:reply, Map.keys(state.service_nodes) ++ Map.keys(state.store_nodes), state}
+  end
+
+  @impl true
+  def handle_call(:get_node, _from, state) do
+    free_node = select_free_node(state.service_nodes)
+    {:reply, free_node, state}
   end
 
   @impl true
@@ -78,5 +86,12 @@ defmodule DataContact.NodeManager do
 
   defp add_node(state = %{store_nodes: store_nodes}, node, :store) do
     %{state | store_nodes: Map.put(store_nodes, node, :online)}
+  end
+
+  # Select a service node with lowest pressure.
+  @spec select_free_node(map()) :: atom()
+  defp select_free_node(service_nodes) do
+    [n, _] = for x <- service_nodes, do: x
+    n
   end
 end

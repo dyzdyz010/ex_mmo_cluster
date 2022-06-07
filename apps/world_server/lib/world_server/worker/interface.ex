@@ -5,7 +5,7 @@ defmodule WorldServer.Interface do
 
   @beacon :"beacon1@127.0.0.1"
   @resource :world_server
-  @requirement [:scene_server]
+  @requirement [:scene_server, :data_service]
 
   # 重试间隔：s
   @retry_rate 5
