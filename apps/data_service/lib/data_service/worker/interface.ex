@@ -28,7 +28,9 @@ defmodule DataService.Interface do
   @impl true
   def handle_info({:join, beacon}, state) do
     case Node.connect(beacon) do
-      true -> send(self(), :register)
+      true ->
+        send(self(), :register)
+
       false ->
         Logger.emergency("Beacon node not up, exiting...")
         Application.stop(:data_service)
@@ -39,10 +41,11 @@ defmodule DataService.Interface do
 
   @impl true
   def handle_info(:register, state) do
-    :ok = GenServer.call(
-      {BeaconServer.Worker, @beacon},
-      {:register, {node(), __MODULE__, @resource, @requirement}}
-    )
+    :ok =
+      GenServer.call(
+        {BeaconServer.Worker, @beacon},
+        {:register, {node(), __MODULE__, @resource, @requirement}}
+      )
 
     send(self(), :get_requirements)
 
@@ -61,8 +64,14 @@ defmodule DataService.Interface do
 
     case offer do
       {:ok, [data_contact | _]} ->
-      DataInit.initialize(data_contact.node, :service)
-        :ok = GenServer.call({DataContact.NodeManager, data_contact.node}, {:register, node(), :service})
+        DataInit.initialize(data_contact.node, :service)
+
+        :ok =
+          GenServer.call(
+            {DataContact.NodeManager, data_contact.node},
+            {:register, node(), :service}
+          )
+
         Logger.debug("Requirements accuired, server ready.")
         {:noreply, %{state | data_contact: data_contact.node, server_state: :ready}}
 
