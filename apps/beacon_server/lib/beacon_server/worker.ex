@@ -69,7 +69,7 @@ defmodule BeaconServer.Worker do
 
   # -------------------------------------
 
-  @spec register({node(), module(), atom(), [atom()]}, %{}) :: {:ok, %{}}
+  @spec register({node(), module(), atom(), [atom()]}, map()) :: {:ok, map()}
   defp register(
          {node, module, resource, requirement},
          state = %{nodes: nodes, resources: resources, requirements: requirements}
