@@ -54,13 +54,14 @@ defmodule DataService.Interface do
 
   @impl true
   def handle_info(:get_requirements, state) do
+
     offer =
       GenServer.call(
         {BeaconServer.Worker, @beacon},
         {:get_requirements, node()}
       )
 
-    IO.inspect(offer)
+    # IO.inspect(offer)
 
     case offer do
       {:ok, [data_contact | _]} ->

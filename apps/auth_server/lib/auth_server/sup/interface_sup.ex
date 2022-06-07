@@ -1,6 +1,5 @@
 defmodule AuthServer.InterfaceSup do
   use Supervisor
-
   def start_link(opts \\ []) do
     Supervisor.start_link(__MODULE__, [], opts)
   end

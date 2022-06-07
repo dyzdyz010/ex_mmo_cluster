@@ -43,7 +43,8 @@ defmodule DataContact.NodeManager do
 
   @impl true
   def handle_call(:db_list, _from, state) do
-    {:reply, Map.keys(state.service_nodes) ++ Map.keys(state.store_nodes), state}
+    result = Map.keys(:maps.filter(fn _, v -> v == :online end, state.service_nodes)) ++ Map.keys(:maps.filter(fn _, v -> v == :online end, state.store_nodes))
+    {:reply, result, state}
   end
 
   @impl true

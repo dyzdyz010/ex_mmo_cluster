@@ -1,7 +1,7 @@
 defmodule DataInit.TableDef do
   defmodule User.Account do
     use Memento.Table,
-      attributes: [:id, :username, :password, :character_list, :email, :phone],
+      attributes: [:id, :username, :password, :email, :phone],
       index: [:email, :username],
       type: :ordered_set,
       autoincrement: true
@@ -9,7 +9,7 @@ defmodule DataInit.TableDef do
 
   defmodule User.Character do
     use Memento.Table,
-      attributes: [:id, :name, :title, :base_attrs, :battle_attrs, :position, :hp, :sp, :mp],
+      attributes: [:id, :account, :name, :title, :base_attrs, :battle_attrs, :position, :hp, :sp, :mp],
       index: [:name],
       type: :ordered_set,
       autoincrement: true

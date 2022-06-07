@@ -28,7 +28,8 @@ defmodule BeaconServer.Worker do
         _from,
         state
       ) do
-    new_state = register(credentials, state)
+    IO.inspect(state)
+    {:ok, new_state} = register(credentials, state)
 
     {:reply, :ok, new_state}
   end
