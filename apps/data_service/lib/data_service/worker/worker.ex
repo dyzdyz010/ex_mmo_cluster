@@ -32,10 +32,9 @@ defmodule DataService.Worker do
     uid = DataService.UidGenerator.generate()
     Logger.debug("UID: #{inspect(uid)}")
 
-    case DataService.DbOps.UserAccount.is_duplicate_email(email) ||
-           DataService.DbOps.UserAccount.is_duplicate_username(username) do
-      true ->
-        {:err, :duplicate}
+    case DataService.DbOps.UserAccount.check_duplicate(username, email, phone) do
+      {:duplicate, duplicate_list} ->
+        {:err, {:duplicate, duplicate_list}}
 
       _ ->
         Memento.transaction!(fn ->
