@@ -11,7 +11,8 @@ defmodule DataService.Application do
       # Starts a worker by calling: DataService.Worker.start_link(arg)
       # {DataService.Worker, arg}
       {DataService.InterfaceSup, name: DataService.InterfaceSup},
-      {DataService.DispatcherSup, name: DataService.DispatcherSup}
+      {DataService.DispatcherSup, name: DataService.DispatcherSup},
+      {DataService.UidGenerator, name: DataService.UidGenerator}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

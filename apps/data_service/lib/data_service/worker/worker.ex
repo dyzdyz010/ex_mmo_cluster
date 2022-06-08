@@ -2,7 +2,9 @@ defmodule DataService.Worker do
   use GenServer
   require Logger
 
-  def start_link( opts \\ []) do
+  alias DataInit.TableDef, as: Tables
+
+  def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
 
@@ -23,11 +25,28 @@ defmodule DataService.Worker do
   @impl true
   def handle_call({:register_account, username, password, email, phone}, _from, state) do
     acc = register_account(username, password, email, phone)
-    Logger.debug("Account created: #{acc}")
     {:reply, acc, state}
   end
 
   defp register_account(username, password, email, phone) do
-    Memento.Query.write(%DataInit.TableDef.User.Account{username: username, password: password, email: email, phone: phone})
+    uid = DataService.UidGenerator.generate()
+    Logger.debug("UID: #{inspect(uid)}")
+
+    case DataService.DbOps.UserAccount.is_duplicate_email(email) ||
+           DataService.DbOps.UserAccount.is_duplicate_username(username) do
+      true ->
+        {:err, :duplicate}
+
+      _ ->
+        Memento.transaction!(fn ->
+          Memento.Query.write(%Tables.User.Account{
+            id: uid,
+            username: username,
+            password: password,
+            email: email,
+            phone: phone
+          })
+        end)
+    end
   end
 end

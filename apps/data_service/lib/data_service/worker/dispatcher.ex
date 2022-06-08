@@ -29,4 +29,9 @@ defmodule DataService.Dispatcher do
     end)
     {:reply, acc, state}
   end
+
+  def regtest() do
+    acc = GenServer.call(__MODULE__, {:register_account, "dyz", "duyizhuo", "dyzdyz010@sina.com", "13848584989"})
+    Logger.debug("Account created: #{inspect(acc.id)}")
+  end
 end
