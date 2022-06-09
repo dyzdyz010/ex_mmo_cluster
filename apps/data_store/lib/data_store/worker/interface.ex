@@ -28,10 +28,12 @@ defmodule DataStore.Interface do
   @impl true
   def handle_info(:establish_links, state) do
     Logger.info("===Starting data_store node initialization===", ansi_color: :blue)
+
     join_beacon()
     register_beacon()
     new_state = get_requirements(state)
     join_data_contact(new_state)
+    setup_database(new_state)
 
     Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
     {:noreply, %{new_state | server_state: :ready}}
@@ -39,6 +41,7 @@ defmodule DataStore.Interface do
 
   defp join_beacon() do
     Logger.info("Joining beacon...")
+
     if !Node.connect(@beacon) do
       Logger.emergency("Beacon node not up, exiting...")
       Application.stop(:data_store)
@@ -52,7 +55,7 @@ defmodule DataStore.Interface do
 
     result =
       GenServer.call(
-        {BeaconServer.Worker, @beacon},
+        {BeaconServer.Beacon, @beacon},
         {:register, {node(), __MODULE__, @resource, @requirement}}
       )
 
@@ -69,7 +72,7 @@ defmodule DataStore.Interface do
 
     offer =
       GenServer.call(
-        {BeaconServer.Worker, @beacon},
+        {BeaconServer.Beacon, @beacon},
         {:get_requirements, node()}
       )
 
@@ -77,10 +80,16 @@ defmodule DataStore.Interface do
 
     case offer do
       {:ok, [data_contact | _]} ->
-        Logger.info("Got data_contact node from beacon: #{inspect(data_contact.node)}.", ansi_color: :blue)
+        Logger.info("Got data_contact node from beacon: #{inspect(data_contact.node)}.",
+          ansi_color: :blue
+        )
+
         # DataInit.initialize(data_contact.node, :store)
 
-        Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon complete.", ansi_color: :green)
+        Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon complete.",
+          ansi_color: :green
+        )
+
         %{state | data_contact: data_contact.node}
 
       nil ->
@@ -107,81 +116,7 @@ defmodule DataStore.Interface do
     Logger.info("Joining data_contact complete.", ansi_color: :green)
   end
 
-  @impl true
-  def handle_info(:join_beacon, state) do
-    Logger.info("Joining beacon...")
-    if !Node.connect(@beacon) do
-      Logger.emergency("Beacon node not up, exiting...")
-      Application.stop(:data_store)
-    end
-
-    Logger.info("Joining beacon complete.", ansi_color: :green)
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(:register_beacon, state) do
-    Logger.info("Registering to beacon...")
-
-    result =
-      GenServer.call(
-        {BeaconServer.Worker, @beacon},
-        {:register, {node(), __MODULE__, @resource, @requirement}}
-      )
-
-    if result != :ok do
-      Logger.emergency("Register to beacon node failed: #{inspect(result)}\nExiting...")
-      Application.stop(:data_store)
-    end
-
-    Logger.info("Registering to beacon complete", ansi_color: :green)
-
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(:get_requirements, state) do
-    Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon...")
-
-    offer =
-      GenServer.call(
-        {BeaconServer.Worker, @beacon},
-        {:get_requirements, node()}
-      )
-
-    # IO.inspect(offer)
-
-    case offer do
-      {:ok, [data_contact | _]} ->
-        # DataInit.initialize(data_contact.node, :store)
-
-        Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon complete.", ansi_color: :green)
-        {:noreply, %{state | data_contact: data_contact.node}}
-
-      nil ->
-        Logger.warn("Not meeting requirements, retrying in #{@retry_rate}s.")
-        :timer.send_after(@retry_rate * 1000, :get_requirements)
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_info(:join_data_contact, state = %{data_contact: data_contact}) do
-    Logger.info("Joining data_contact...")
-
-    result =
-      GenServer.call(
-        {DataContact.NodeManager, data_contact},
-        {:register, node(), :store}
-      )
-
-    if result != :ok do
-      Logger.emergency("Join data_contact node failed: \n #{inspect(result)}\nExiting...")
-      Application.stop(:data_store)
-    end
-
-    Logger.info("Joining data_contact complete.", ansi_color: :green)
-
-    {:noreply, state}
+  defp setup_database(%{data_contact: data_contact}) do
+    DataInit.initialize(data_contact, :store)
   end
 end
