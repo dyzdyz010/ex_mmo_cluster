@@ -1,5 +1,3 @@
---cookie mmo
-
 ## Customize flags given to the VM: https://erlang.org/doc/man/erl.html
 ## -mode/-name/-sname/-setcookie are configured via env vars, do not set them here
 

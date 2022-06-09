@@ -10,6 +10,7 @@ defmodule DataStore.Application do
     children = [
       # Starts a worker by calling: DataStore.Worker.start_link(arg)
       # {DataStore.Worker, arg}
+      {DataStore.InterfaceSup, name: DataStore.InterfaceSup},
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
