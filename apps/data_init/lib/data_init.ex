@@ -8,20 +8,28 @@ defmodule DataInit do
   @spec initialize(node(), atom()) :: list()
   def initialize(contact, role) do
     # db_list = :rpc.call(contact, DataContact.Interface, :db_list, [])
-    db_list = GenServer.call({DataContact.NodeManager, contact}, :db_list)
+    data_store_list = GenServer.call({DataContact.NodeManager, contact}, :db_list)
 
-    case db_list do
+    case data_store_list do
       [] ->
-        create_database(db_list, role)
+        case role do
+          :service ->
+            {:err,
+             {:no_data_store,
+              "There's no data_store node running, start it before data_service node."}}
+
+          :store ->
+            create_database(data_store_list, :store)
+        end
 
       _ ->
-        copy_database(db_list, role)
+        copy_database(data_store_list, role)
     end
   end
 
   @spec create_database([node()], atom()) :: list()
   def create_database(_store_list, role) do
-    Logger.info("Creating database...")
+    Logger.info("Creating database...", ansi_color: :yellow)
     Memento.stop()
     Memento.Schema.create([node()])
     Memento.start()
