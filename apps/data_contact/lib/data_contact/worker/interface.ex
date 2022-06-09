@@ -33,7 +33,7 @@ defmodule DataContact.Interface do
   @impl true
   def handle_info(:register, state) do
     :ok = GenServer.call(
-      {BeaconServer.Worker, @beacon},
+      {BeaconServer.Beacon, @beacon},
       {:register, {node(), __MODULE__, @resource, @requirement}}
     )
 

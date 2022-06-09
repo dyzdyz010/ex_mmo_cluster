@@ -1,4 +1,35 @@
 defmodule BeaconServer.Beacon do
+  @moduledoc """
+  Beacon server for the whole cluster.
+
+  It accepts all other nodes' connection and monitors them.
+
+  ## `state` format:
+
+  ```
+  %{
+    nodes: %{
+      "node1@host": :online,
+      "node2@host": :offline
+    },
+    requirements: [
+      %{
+        module: Module.Interface,
+        name: [:requirement_name],
+        node: :"node@host"
+      }
+    ],
+    resources: [
+      %{
+        module: Module.Interface,
+        name: [:resoutce_name],
+        node: :"node@host"
+      }
+    ]
+  }
+  ```
+  """
+
   use GenServer
 
   require Logger
@@ -20,16 +51,17 @@ defmodule BeaconServer.Beacon do
   end
 
   @impl true
-  @doc """
-  Register node with resource and requirement.
-  """
+  # Register node with resource and requirement.
   def handle_call(
         {:register, credentials},
         _from,
         state
       ) do
-    IO.inspect(state)
+    Logger.info("New register from #{inspect(credentials, pretty: true)}.")
+
     {:ok, new_state} = register(credentials, state)
+
+    Logger.info("Register #{inspect(credentials, pretty: true)} complete.", ansi_color: :green)
 
     {:reply, :ok, new_state}
   end
