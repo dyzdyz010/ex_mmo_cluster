@@ -1,4 +1,4 @@
-defmodule BeaconServer.Worker do
+defmodule BeaconServer.Beacon do
   use GenServer
 
   require Logger

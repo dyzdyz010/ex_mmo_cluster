@@ -9,7 +9,7 @@ defmodule BeaconServer.Application do
   def start(_type, _args) do
     children = [
       # Starts a worker by calling: BeaconServer.Worker.start_link(arg)
-      {BeaconServer.Worker, name: BeaconServer.Worker}
+      {BeaconServer.Beacon, name: BeaconServer.Beacon}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
