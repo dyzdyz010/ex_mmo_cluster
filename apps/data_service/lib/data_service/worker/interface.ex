@@ -43,7 +43,7 @@ defmodule DataService.Interface do
   def handle_info(:register, state) do
     :ok =
       GenServer.call(
-        {BeaconServer.Worker, @beacon},
+        {BeaconServer.Beacon, @beacon},
         {:register, {node(), __MODULE__, @resource, @requirement}}
       )
 
@@ -57,7 +57,7 @@ defmodule DataService.Interface do
 
     offer =
       GenServer.call(
-        {BeaconServer.Worker, @beacon},
+        {BeaconServer.Beacon, @beacon},
         {:get_requirements, node()}
       )
 
