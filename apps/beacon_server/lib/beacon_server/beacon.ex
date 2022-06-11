@@ -22,7 +22,7 @@ defmodule BeaconServer.Beacon do
     resources: [
       %{
         module: Module.Interface,
-        name: [:resoutce_name],
+        name: :resoutce_name,
         node: :"node@host"
       }
     ]
@@ -72,15 +72,18 @@ defmodule BeaconServer.Beacon do
         _from,
         state = %{nodes: _, resources: resources, requirements: requirements}
       ) do
-    Logger.debug("#{inspect(state, pretty: true)}")
+    Logger.debug("Getting requirements for #{inspect(node)}")
 
-    req = find_requirements(node, requirements)
-    offer = find_resources(req, resources)
+    # req = find_requirements(node, requirements)
+    # offer = find_resources(req, resources)
+    offer = get_requirements(node, requirements, resources)
 
     {:reply,
      case length(offer) do
        0 -> nil
-       _ -> {:ok, offer}
+       _ ->
+        Logger.info("Requirements retrieved: #{inspect(offer, pretty: true)}", ansi_color: :green)
+        {:ok, offer}
      end, state}
   end
 
@@ -105,14 +108,14 @@ defmodule BeaconServer.Beacon do
   @spec register({node(), module(), atom(), [atom()]}, map()) :: {:ok, map()}
   defp register(
          {node, module, resource, requirement},
-         state = %{nodes: nodes, resources: resources, requirements: requirements}
+         state = %{nodes: connected_nodes, resources: resources, requirements: requirements}
        ) do
     Logger.debug("Register: #{node} | #{resource} | #{inspect(requirement)}")
 
     {:ok,
      %{
        state
-       | nodes: add_node(node, nodes),
+       | nodes: add_node(node, connected_nodes),
          resources: add_resource(node, module, resource, resources),
          requirements:
            if requirement != [] do
@@ -121,6 +124,13 @@ defmodule BeaconServer.Beacon do
              requirements
            end
      }}
+  end
+
+  @spec get_requirements(node(), list(map()), list(map())) :: list(map())
+  defp get_requirements(node, requirements, resources) do
+    req = find_requirements(node, requirements)
+    offer = find_resources(req, resources)
+    offer
   end
 
   defp add_node(node, node_list) do
@@ -161,8 +171,9 @@ defmodule BeaconServer.Beacon do
     []
   end
 
+  @spec find_resources(list(map()), list(map())) :: list(map())
   defp find_resources(requirement, resources) do
-    IO.inspect(requirement)
+    # IO.inspect(requirement)
 
     for req <- requirement.name, res <- resources, req == res.name do
       res
