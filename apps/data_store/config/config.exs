@@ -3,6 +3,9 @@ import Config
 import_config("../../../config/config.exs")
 
 config :mnesia,
-  dir: :code.priv_dir(:data_store) ++ '/.mnesia/#{Mix.env}/#{node()}'
+  dir: 'priv/.mnesia/#{Mix.env}/#{node()}'
+
+config :data_store,
+  store_role: :slave
 
 import_config "#{Mix.env}.exs"
