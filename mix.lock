@@ -1,5 +1,4 @@
 %{
-  "erlport": {:hex, :erlport, "0.10.1", "c96ffa51bbcab0298232fcdfe8c3e110f1598011de71ae6b9082b80c9e2e476a", [:rebar3], [], "hexpm", "34931e8cb62a131d1bc8a2bd04d4007c73c03e4f10e22ee4a218e7172227a918"},
   "google_protos": {:hex, :google_protos, "0.1.0", "c6b9e12092d17571b093d4156d004494ca143b65dbbcbfc3ffff463ea03467c0", [:mix], [{:protobuf, "~> 0.5", [hex: :protobuf, repo: "hexpm", optional: false]}], "hexpm", "ff5564525f89d2638a4cfa9fb4d31e9ee9d9d7cb937b3e8a95f558440c039e1b"},
   "memento": {:hex, :memento, "0.3.2", "38cfc8ff9bcb1adff7cbd0f3b78a762636b86dff764729d1c82d0464c539bdd0", [:mix], [], "hexpm", "25cf691a98a0cb70262f4a7543c04bab24648cb2041d937eb64154a8d6f8012b"},
   "poolboy": {:hex, :poolboy, "1.5.2", "392b007a1693a64540cead79830443abf5762f5d30cf50bc95cb2c1aaafa006b", [:rebar3], [], "hexpm", "dad79704ce5440f3d5a3681c8590b9dc25d1a561e8f5a9c995281012860901e3"},
