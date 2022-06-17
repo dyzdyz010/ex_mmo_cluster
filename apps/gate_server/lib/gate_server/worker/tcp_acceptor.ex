@@ -1,4 +1,8 @@
 defmodule GateServer.TcpAcceptor do
+  @moduledoc """
+  Listen to port and accept connections.
+  """
+
   @behaviour GenServer
 
   require Logger
