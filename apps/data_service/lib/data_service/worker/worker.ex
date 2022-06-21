@@ -37,15 +37,23 @@ defmodule DataService.Worker do
         {:err, {:duplicate, duplicate_list}}
 
       _ ->
+        {:ok, hashed_password, salt} = hash_password(password)
         Memento.transaction!(fn ->
           Memento.Query.write(%Tables.User.Account{
             id: uid,
             username: username,
-            password: password,
+            password: hashed_password,
+            salt: salt,
             email: email,
             phone: phone
           })
         end)
     end
+  end
+
+  defp hash_password(password) do
+    salt = Bcrypt.Base.gen_salt()
+    hashed_password = Bcrypt.Base.hash_password(password, salt)
+    {:ok, hashed_password, salt}
   end
 end

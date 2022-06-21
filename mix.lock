@@ -1,4 +1,7 @@
 %{
+  "bcrypt_elixir": {:hex, :bcrypt_elixir, "3.0.0", "851d16b901b6c94a0ceadd3470f2b58d9899007bf04a42e0e4b399e2dd6ab307", [:make, :mix], [{:comeonin, "~> 5.3", [hex: :comeonin, repo: "hexpm", optional: false]}, {:elixir_make, "~> 0.6", [hex: :elixir_make, repo: "hexpm", optional: false]}], "hexpm", "fe251accb51f1aa17d67009cb125bddf81fb056cacad71bfad7827a44652f4ee"},
+  "comeonin": {:hex, :comeonin, "5.3.3", "2c564dac95a35650e9b6acfe6d2952083d8a08e4a89b93a481acb552b325892e", [:mix], [], "hexpm", "3e38c9c2cb080828116597ca8807bb482618a315bfafd98c90bc22a821cc84df"},
+  "elixir_make": {:hex, :elixir_make, "0.6.3", "bc07d53221216838d79e03a8019d0839786703129599e9619f4ab74c8c096eac", [:mix], [], "hexpm", "f5cbd651c5678bcaabdbb7857658ee106b12509cd976c2c2fca99688e1daf716"},
   "erlport": {:hex, :erlport, "0.10.1", "c96ffa51bbcab0298232fcdfe8c3e110f1598011de71ae6b9082b80c9e2e476a", [:rebar3], [], "hexpm", "34931e8cb62a131d1bc8a2bd04d4007c73c03e4f10e22ee4a218e7172227a918"},
   "google_protos": {:hex, :google_protos, "0.1.0", "c6b9e12092d17571b093d4156d004494ca143b65dbbcbfc3ffff463ea03467c0", [:mix], [{:protobuf, "~> 0.5", [hex: :protobuf, repo: "hexpm", optional: false]}], "hexpm", "ff5564525f89d2638a4cfa9fb4d31e9ee9d9d7cb937b3e8a95f558440c039e1b"},
   "memento": {:hex, :memento, "0.3.2", "38cfc8ff9bcb1adff7cbd0f3b78a762636b86dff764729d1c82d0464c539bdd0", [:mix], [], "hexpm", "25cf691a98a0cb70262f4a7543c04bab24648cb2041d937eb64154a8d6f8012b"},
