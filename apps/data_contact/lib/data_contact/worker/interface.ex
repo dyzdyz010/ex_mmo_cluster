@@ -13,6 +13,7 @@ defmodule DataContact.Interface do
 
   @impl true
   def init(_init_arg) do
+    :erlang.monitor_node(@beacon, true)
     {:ok, %{server_state: :waiting_node}, 0}
   end
 
