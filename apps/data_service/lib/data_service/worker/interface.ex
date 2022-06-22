@@ -65,7 +65,8 @@ defmodule DataService.Interface do
 
     case offer do
       {:ok, [data_contact | _]} ->
-        DataInit.initialize(data_contact.node, :service)
+        # DataInit.initialize(data_contact.node, :service)
+        DataInit.copy_database(data_contact.node, :service)
 
         :ok =
           GenServer.call(

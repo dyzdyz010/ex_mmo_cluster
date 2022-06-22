@@ -9,6 +9,13 @@ defmodule GateServer.Message do
     end
   end
 
+  @spec dispatch_msg(any) :: :ok
+  def dispatch_msg(payload) do
+    Logger.info("dispatch_msg: #{inspect(payload, pretty: true)}")
+
+    :ok
+  end
+
   def handle(%Packet{payload: {:credentials, credential}}, state, connection) do
     auth_server = GenServer.call(GateServer.Interface, :auth_server)
     case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, credential}) do
