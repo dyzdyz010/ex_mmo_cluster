@@ -19,7 +19,7 @@ defmodule GateServer.TcpConnection do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected.")
-    {:ok, %{socket: socket, agent: nil, status: :waiting_auth}}
+    {:ok, %{socket: socket, agent: nil, token: nil, status: :waiting_auth}}
   end
 
   def handle_info({:tcp, _socket, data}, state) do

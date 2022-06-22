@@ -9,10 +9,17 @@ defmodule GateServer.Message do
     end
   end
 
-  @spec dispatch_msg(any) :: :ok
+  @doc """
+  Dispatch proto message to handler.
+  """
+  @spec dispatch_msg(%Packet{}) :: :ok
   def dispatch_msg(payload) do
     Logger.info("dispatch_msg: #{inspect(payload, pretty: true)}")
-
+    case payload.type do
+      :auth ->
+        handle_auth(payload)
+      end
+    end
     :ok
   end
 
