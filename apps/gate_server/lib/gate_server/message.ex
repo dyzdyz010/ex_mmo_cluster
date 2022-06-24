@@ -1,26 +1,13 @@
 defmodule GateServer.Message do
   require Logger
 
-  def parse(raw, state) do
-    data = String.trim(raw)
-    case state.status do
-      :waiting_auth -> parse_auth(data)
-      :test -> parse_test(data)
-    end
-  end
-
   @doc """
-  Dispatch proto message to handler.
+  Parse incoming tcp message from protobuf to elixir terms.
   """
-  @spec dispatch_msg(%Packet{}) :: :ok
-  def dispatch_msg(payload) do
-    Logger.info("dispatch_msg: #{inspect(payload, pretty: true)}")
-    case payload.type do
-      :auth ->
-        handle_auth(payload)
-      end
-    end
-    :ok
+  @spec parse_proto(binary) :: any
+  def parse_proto(data) do
+    a = Packet.decode(data)
+    {:ok, a}
   end
 
   def handle(%Packet{payload: {:credentials, credential}}, state, connection) do
@@ -38,18 +25,5 @@ defmodule GateServer.Message do
   end
   def handle(%Packet{payload: _}, _state, connection) do
     GenServer.cast(connection, {:send, "ok"})
-  end
-
-  defp parse_test(data) do
-    IO.inspect(data)
-    plist = String.split(data, ";")
-    username = plist |> Enum.at(0) |> String.split("=") |> Enum.at(1)
-    password = plist |> Enum.at(1) |> String.split("=") |> Enum.at(1)
-
-    %{username: username, password: password}
-  end
-
-  defp parse_auth(data) do
-    Packet.decode(data)
   end
 end

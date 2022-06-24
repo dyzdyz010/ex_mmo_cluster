@@ -35,10 +35,11 @@ defmodule GateServer.Interface do
 
   @impl true
   def handle_info(:register, state) do
-    :ok = GenServer.call(
-      {BeaconServer.Worker, @beacon},
-      {:register, {node(), __MODULE__, @resource, @requirement}}
-    )
+    :ok =
+      GenServer.call(
+        {BeaconServer.Beacon, @beacon},
+        {:register, {node(), __MODULE__, @resource, @requirement}}
+      )
 
     send(self(), :get_requirements)
 
@@ -49,7 +50,7 @@ defmodule GateServer.Interface do
   def handle_info(:get_requirements, state) do
     offer =
       GenServer.call(
-        {BeaconServer.Worker, @beacon},
+        {BeaconServer.Beacon, @beacon},
         {:get_requirements, node()}
       )
 
@@ -62,13 +63,13 @@ defmodule GateServer.Interface do
 
       nil ->
         Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")
-        :timer.send_after(@retry_rate * 1000, :get_requirements)
+        # :timer.send_after(@retry_rate * 1000, :get_requirements)
         {:noreply, state}
     end
   end
 
   @impl true
-  def handle_call(:auth_server, _from, state) when length(state.auth_server)>0 do
+  def handle_call(:auth_server, _from, state) when length(state.auth_server) > 0 do
     {:reply, List.first(state.auth_server), state}
   end
 end

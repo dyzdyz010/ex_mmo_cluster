@@ -1,11 +1,11 @@
 syntax = "proto3";
-import "Credentials.proto";
+import "AuthRequest.proto";
 import "Ping.proto";
 
 message Packet {
     int32 id = 1;
     oneof payload {
         Ping ping = 2;
-        Credentials credentials = 3;
+        AuthRequest credentials = 3;
     }
 }

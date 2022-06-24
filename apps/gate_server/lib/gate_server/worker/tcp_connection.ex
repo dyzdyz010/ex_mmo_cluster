@@ -15,6 +15,7 @@ defmodule GateServer.TcpConnection do
     GenServer.start_link(__MODULE__, socket, opts)
   end
 
+  @impl true
   def init(socket) do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
@@ -22,14 +23,15 @@ defmodule GateServer.TcpConnection do
     {:ok, %{socket: socket, agent: nil, token: nil, status: :waiting_auth}}
   end
 
-  def handle_info({:tcp, _socket, data}, state) do
+  @impl true
+  def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     Logger.debug(data)
-    msg = GateServer.Message.parse(data, state)
-    GateServer.Message.handle(msg, state, self())
+    # msg = GateServer.Message.parse_proto(data)
+    # result = GateServer.Message.handle(msg, state, self())
 
-    Logger.debug("#{inspect(msg, pretty: true)}")
+    # Logger.debug("#{inspect(msg, pretty: true)}")
     # result = "You've typed: #{data}"
-    # :gen_tcp.send(socket, result)
+    :ok = :gen_tcp.send(socket, data)
     {:noreply, state}
   end
 
@@ -40,9 +42,26 @@ defmodule GateServer.TcpConnection do
     {:stop, :normal, state}
   end
 
-  def handle_cast({:send, data}, state) do
-    :gen_tcp.send(state.socket, data)
+  @impl true
+  def handle_info({:tcp_error, _conn, err}, state) do
+    Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
+    DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
 
-    {:noreply, state}
+    {:stop, :normal, state}
+  end
+
+  @doc """
+  Verify client token from auth_server
+  """
+  @spec verify_token(any()) :: any
+  def verify_token(token) do
+    auth_server = GenServer.call(GateServer.Interface, :auth_server)
+    case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:verify_token, token}) do
+      {:ok, agent} ->
+        {:ok, %{agent: agent}}
+      {:error, :mismatch} ->
+        {:error, :mismatch}
+      _ -> {:error, :server_error}
+    end
   end
 end

@@ -7,7 +7,7 @@ defmodule GateServer.TcpAcceptor do
 
   require Logger
 
-  @port 8888
+  @port 9000
 
   def child_spec(opts) do
     %{
