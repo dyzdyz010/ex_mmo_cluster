@@ -6,5 +6,5 @@ defmodule Packet do
 
   field :id, 1, type: :int32
   field :ping, 2, type: Ping, oneof: 0
-  field :credentials, 3, type: AuthRequest, oneof: 0
+  field :authrequest, 3, type: AuthRequest, oneof: 0
 end

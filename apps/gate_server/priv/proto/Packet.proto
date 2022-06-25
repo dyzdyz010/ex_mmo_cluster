@@ -6,6 +6,6 @@ message Packet {
     int32 id = 1;
     oneof payload {
         Ping ping = 2;
-        AuthRequest credentials = 3;
+        AuthRequest authrequest = 3;
     }
 }

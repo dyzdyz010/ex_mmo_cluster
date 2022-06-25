@@ -10,9 +10,9 @@ defmodule GateServer.Message do
     {:ok, a}
   end
 
-  def handle(%Packet{payload: {:credentials, credential}}, state, connection) do
+  def handle(%Packet{payload: {:authrequest, authrequest}}, state, connection) do
     auth_server = GenServer.call(GateServer.Interface, :auth_server)
-    case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, credential}) do
+    case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, authrequest}) do
       {:ok, agent} ->
         GenServer.cast(connection, {:send, "ok"})
         {:ok, %{state | agent: agent}}
