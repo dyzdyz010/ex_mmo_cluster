@@ -8,8 +8,37 @@ defmodule DataInit.TableDef do
 
   defmodule User.Character do
     use Memento.Table,
-      attributes: [:id, :account, :name, :title, :base_attrs, :battle_attrs, :position, :hp, :sp, :mp],
+      attributes: [
+        :id,
+        :account,
+        :name,
+        :title,
+        :base_attrs,
+        :battle_attrs,
+        :position,
+        :hp,
+        :sp,
+        :mp
+      ],
       index: [:name],
+      type: :set
+  end
+
+  defmodule User.Session do
+    use Memento.Table,
+      attributes: [
+        :id,
+        :account_id,
+        :character_id,
+        :code_id,
+        :ip,
+        :port,
+        :connected_at,
+        :closed_at,
+        :created_at,
+        :updated_at
+      ],
+      index: [:account, :character],
       type: :set
   end
 
