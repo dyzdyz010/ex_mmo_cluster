@@ -15,7 +15,8 @@ defmodule BeaconServer.MixProject do
       releases: [
         beacon_server: [
           include_executables_for: [:unix],
-          applications: [runtime_tools: :permanent, logger: :permanent]
+          applications: [runtime_tools: :permanent, logger: :permanent, observer: :permanent, wx: :permanent],
+          steps: [:assemble, :tar]
         ]
       ]
     ]
