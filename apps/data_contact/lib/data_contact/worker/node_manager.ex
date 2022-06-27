@@ -49,8 +49,14 @@ defmodule DataContact.NodeManager do
 
   @impl true
   def handle_call(:get_node, _from, state) do
+    Logger.debug("Nodes: #{inspect(state, pretty: true)}")
     free_node = select_free_node(state.service_nodes)
-    {:reply, free_node, state}
+    case free_node do
+      nil ->
+        {:reply, {:err, nil}, state}
+      _ ->
+        {:reply, {:ok, free_node}, state}
+    end
   end
 
   @impl true
@@ -92,7 +98,14 @@ defmodule DataContact.NodeManager do
   # Select a service node with lowest pressure.
   @spec select_free_node(map()) :: atom()
   defp select_free_node(service_nodes) do
-    [n, _] = for x <- service_nodes, do: x
-    n
+    Logger.debug("current service nodes: #{inspect(service_nodes)}")
+    if service_nodes == %{} do
+      nil
+    else
+      Map.keys(Map.filter(service_nodes, fn {_, v} -> v == :online end))
+      |> Enum.min()
+    end
+    # [n, _] = for x <- service_nodes, do: x
+    # n
   end
 end

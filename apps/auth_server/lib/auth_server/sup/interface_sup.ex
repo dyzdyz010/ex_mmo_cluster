@@ -7,7 +7,7 @@ defmodule AuthServer.InterfaceSup do
 
   def init(_init_arg) do
     children = [
-      {GateServer.Interface, name: GateServer.Interface}
+      {AuthServer.Interface, name: AuthServer.Interface}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
