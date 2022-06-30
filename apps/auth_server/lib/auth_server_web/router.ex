@@ -20,6 +20,12 @@ defmodule AuthServerWeb.Router do
     get "/", PageController, :index
   end
 
+  scope "/ingame", AuthServerWeb do
+    pipe_through :browser
+
+    get "/login", IngameController, :login
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", AuthServerWeb do
   #   pipe_through :api
