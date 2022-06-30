@@ -10,6 +10,15 @@ defmodule AuthServerWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  pipeline :ingame_browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, {AuthServerWeb.LayoutView, :ingame}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
   pipeline :api do
     plug :accepts, ["json"]
   end
@@ -21,7 +30,7 @@ defmodule AuthServerWeb.Router do
   end
 
   scope "/ingame", AuthServerWeb do
-    pipe_through :browser
+    pipe_through :ingame_browser
 
     get "/login", IngameController, :login
   end
