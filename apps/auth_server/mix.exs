@@ -52,6 +52,7 @@ defmodule AuthServer.MixProject do
       {:plug_cowboy, "~> 2.5"},
       {:tailwind, "~> 0.1", runtime: Mix.env() == :dev},
       {:bcrypt_elixir, "~> 3.0"},
+      {:tzdata, "~> 1.1"},
       {:data_init, in_umbrella: true}
     ]
   end

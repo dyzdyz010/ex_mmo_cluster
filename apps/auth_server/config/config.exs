@@ -7,6 +7,9 @@
 # General application configuration
 import Config
 
+# Timezone configuration
+config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
+
 # Configures the endpoint
 config :auth_server, AuthServerWeb.Endpoint,
   url: [host: "localhost"],

@@ -16,8 +16,6 @@ defmodule Cluster.MixProject do
   #
   # Run "mix help deps" for examples and options.
   defp deps do
-    [
-      {:tz, "~> 0.20.1"}
-    ]
+    []
   end
 end
