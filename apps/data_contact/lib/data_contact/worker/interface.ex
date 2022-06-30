@@ -19,25 +19,46 @@ defmodule DataContact.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), {:join, @beacon})
+    send(self(), :establish_links)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:join, beacon}, state) do
-    true = Node.connect(beacon)
-    send(self(), :register)
+  def handle_info(:establish_links, state) do
+    Logger.info("===Starting data_store node initialization===", ansi_color: :blue)
 
-    {:noreply, state}
+    join_beacon()
+    register_beacon()
+
+    Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
+    {:noreply, %{state | server_state: :ready}}
   end
 
-  @impl true
-  def handle_info(:register, state) do
-    :ok = GenServer.call(
-      {BeaconServer.Beacon, @beacon},
-      {:register, {node(), __MODULE__, @resource, @requirement}}
-    )
+  defp join_beacon() do
+    Logger.info("Joining beacon...")
 
-    {:noreply, state}
+    if !Node.connect(@beacon) do
+      Logger.emergency("Beacon node not up, exiting...")
+      Application.stop(:data_store)
+    end
+
+    Logger.info("Joining beacon complete.", ansi_color: :green)
+  end
+
+  defp register_beacon() do
+    Logger.info("Registering to beacon...")
+
+    result =
+      GenServer.call(
+        {BeaconServer.Beacon, @beacon},
+        {:register, {node(), __MODULE__, @resource, @requirement}}
+      )
+
+    if result != :ok do
+      Logger.emergency("Register to beacon node failed: #{inspect(result)}\nExiting...")
+      Application.stop(:data_store)
+    end
+
+    Logger.info("Registering to beacon complete", ansi_color: :green)
   end
 end
