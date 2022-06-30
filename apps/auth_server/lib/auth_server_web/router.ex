@@ -33,6 +33,8 @@ defmodule AuthServerWeb.Router do
     pipe_through :ingame_browser
 
     get "/login", IngameController, :login
+    post "/login_post", IngameController, :login_post
+    get "/login_success", IngameController, :login_success
   end
 
   # Other scopes may use custom stacks.

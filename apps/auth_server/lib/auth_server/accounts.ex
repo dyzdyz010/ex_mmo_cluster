@@ -10,4 +10,10 @@ defmodule AuthServer.Accounts do
     }
     {:ok, account}
   end
+
+  def find_by_username(username) do
+    account = Tables.User.Account.find_by(username: username)
+
+    {:ok, account}
+  end
 end

@@ -24,12 +24,11 @@ defmodule DataInit.TableDef do
       type: :set
   end
 
-  defmodule User.Session do
+  defmodule User.AccountSession do
     use Memento.Table,
       attributes: [
         :id,
         :account_id,
-        :character_id,
         :code_id,
         :ip,
         :port,
