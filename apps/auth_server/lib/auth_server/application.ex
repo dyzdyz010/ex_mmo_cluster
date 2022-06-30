@@ -15,7 +15,7 @@ defmodule AuthServer.Application do
       # Start the Endpoint (http/https)
       AuthServerWeb.Endpoint,
       # Start a worker by calling: AuthServer.Worker.start_link(arg)
-      {AuthServer.InterfaceSup, name: AuthServer.InterfaceSup}
+      # {AuthServer.InterfaceSup, name: AuthServer.InterfaceSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
