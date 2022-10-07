@@ -21,7 +21,7 @@ defmodule GateServer.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), {:join, @beacon})
+    # send(self(), {:join, @beacon})
     {:noreply, state}
   end
 

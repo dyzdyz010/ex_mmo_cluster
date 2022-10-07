@@ -6,8 +6,7 @@ defmodule GateServer.Message do
   """
   @spec parse_proto(binary) :: any
   def parse_proto(data) do
-    a = Packet.decode(data)
-    {:ok, a}
+    Protox.decode(data, Packet)
   end
 
   def handle(%Packet{payload: {:authrequest, authrequest}}, state, connection) do

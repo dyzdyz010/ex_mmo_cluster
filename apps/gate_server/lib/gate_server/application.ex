@@ -10,9 +10,9 @@ defmodule GateServer.Application do
     children = [
       # Starts a worker by calling: GateServer.Worker.start_link(arg)
       # {GateServer.Worker, arg}
+      {GateServer.InterfaceSup, name: GateServer.InterfaceSup},
       {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup},
       {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
-      {GateServer.InterfaceSup, name: GateServer.InterfaceSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

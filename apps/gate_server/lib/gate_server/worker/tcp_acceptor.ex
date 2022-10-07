@@ -7,7 +7,7 @@ defmodule GateServer.TcpAcceptor do
 
   require Logger
 
-  @port 9000
+  @port 29000
 
   def child_spec(opts) do
     %{
@@ -28,15 +28,15 @@ defmodule GateServer.TcpAcceptor do
   end
 
   def handle_info(:timeout, state) do
-    GenServer.cast(__MODULE__, :accept)
+    GenServer.cast(__MODULE__, :listen)
     {:noreply, state}
   end
 
-  def handle_cast(:accept, _state) do
-    accept(@port)
+  def handle_cast(:listen, _state) do
+    listen(@port)
   end
 
-  defp accept(port) do
+  defp listen(port) do
     {:ok, socket} = :gen_tcp.listen(port, [:binary, packet: 0, active: true, reuseaddr: true])
 
     Logger.debug("Accepting connections on port #{port}")

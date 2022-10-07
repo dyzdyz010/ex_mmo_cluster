@@ -24,17 +24,26 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
+  def handle_call({:send_data, data}, _from, %{socket: socket} = state) do
+    result = send_data(data, socket)
+
+    {:reply, result, state}
+  end
+
+  @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     Logger.debug(data)
-    # msg = GateServer.Message.parse_proto(data)
+    msg = GateServer.Message.parse_proto(data)
     # result = GateServer.Message.handle(msg, state, self())
 
-    # Logger.debug("#{inspect(msg, pretty: true)}")
-    # result = "You've typed: #{data}"
-    :ok = :gen_tcp.send(socket, data)
+    Logger.debug("#{inspect(msg, pretty: true)}")
+    result = "You've typed: #{data}"
+    # :ok = :gen_tcp.send(socket, data)
+    send_data(result, socket)
     {:noreply, state}
   end
 
+  @impl true
   def handle_info({:tcp_closed, _conn}, state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed unexpectly.")
     DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
@@ -63,5 +72,13 @@ defmodule GateServer.TcpConnection do
         {:error, :mismatch}
       _ -> {:error, :server_error}
     end
+  end
+
+  defp send_data(data, socket) do
+    :gen_tcp.send(socket, data)
+  end
+
+  defp recv_data(data) do
+
   end
 end
