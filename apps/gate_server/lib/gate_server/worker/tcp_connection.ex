@@ -24,10 +24,10 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_call({:send_data, data}, _from, %{socket: socket} = state) do
-    result = send_data(data, socket)
+  def handle_cast({:send_data, data}, %{socket: socket} = state) do
+    send_data(data, socket)
 
-    {:reply, result, state}
+    {:noreply, state}
   end
 
   @impl true

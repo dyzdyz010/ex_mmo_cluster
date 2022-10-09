@@ -1,10 +1,15 @@
 defmodule GateServer.Message do
   require Logger
 
+  def msg_recv(msg, connection, state) do
+    {:ok, packet} = parse_proto(msg)
+    handle(packet, state, connection)
+  end
+
   @doc """
   Parse incoming tcp message from protobuf to elixir terms.
   """
-  @spec parse_proto(binary) :: any
+  @spec parse_proto(binary) :: {:ok, struct} | {:error, any}
   def parse_proto(data) do
     Protox.decode(data, Packet)
   end
