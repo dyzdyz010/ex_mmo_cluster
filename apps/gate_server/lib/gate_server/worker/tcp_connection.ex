@@ -11,6 +11,8 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  # Public APIs
+
   def start_link(socket, opts \\ []) do
     GenServer.start_link(__MODULE__, socket, opts)
   end
@@ -33,13 +35,14 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     Logger.debug(data)
-    msg = GateServer.Message.parse_proto(data)
+    {:ok, msg} = GateServer.Message.decode(data)
     # result = GateServer.Message.handle(msg, state, self())
-
-    Logger.debug("#{inspect(msg, pretty: true)}")
-    result = "You've typed: #{data}"
+    # result = "You've typed: #{data}"
     # :ok = :gen_tcp.send(socket, data)
-    send_data(result, socket)
+    hb = %Heartbeat{timestamp: "200"}
+    packet = %Packet{id: 1, payload: {:heartbeat, hb}}
+    {:ok, senddata} = GateServer.Message.encode(packet)
+    send_data(senddata, socket)
     {:noreply, state}
   end
 
@@ -76,9 +79,5 @@ defmodule GateServer.TcpConnection do
 
   defp send_data(data, socket) do
     :gen_tcp.send(socket, data)
-  end
-
-  defp recv_data(data) do
-
   end
 end
