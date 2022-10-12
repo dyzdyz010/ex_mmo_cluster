@@ -22,7 +22,7 @@ defmodule GateServer.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), :establish_links)
+    # send(self(), :establish_links)
     {:noreply, state}
   end
 
