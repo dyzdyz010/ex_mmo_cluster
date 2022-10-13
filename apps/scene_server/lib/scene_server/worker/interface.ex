@@ -22,7 +22,8 @@ defmodule SceneServer.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), :establish_links)
+    Logger.debug("Interface process created.")
+    # send(self(), :establish_links)
     {:noreply, state}
   end
 

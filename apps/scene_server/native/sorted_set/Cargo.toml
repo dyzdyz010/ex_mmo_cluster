@@ -1,0 +1,15 @@
+[package]
+name = "sorted_set"
+version = "0.1.0"
+authors = []
+edition = "2018"
+
+[lib]
+name = "sorted_set"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+jemalloc-info = "0.5"
+jemallocator = { version = "0.5.0", features = ["disable_initial_exec_tls", "stats"] }
+rustler = "0.26.0"

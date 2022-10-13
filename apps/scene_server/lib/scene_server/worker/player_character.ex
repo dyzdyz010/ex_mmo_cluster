@@ -9,8 +9,8 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def init(socket) do
-    :pg.start_link(@scope)
-    :pg.join(@scope, @topic, self())
+    # :pg.start_link(@scope)
+    # :pg.join(@scope, @topic, self())
     Logger.debug("New client connected.")
     {:ok, %{socket: socket, agent: nil, token: nil, status: :waiting_auth}}
   end

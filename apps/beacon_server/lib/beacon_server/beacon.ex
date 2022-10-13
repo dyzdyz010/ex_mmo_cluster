@@ -8,6 +8,15 @@ defmodule BeaconServer.Beacon do
 
   ```
   %{
+    nodes: [
+      %{
+        node: :"node1@host",
+        status: :online,
+        resource: :gate_server
+      }
+    ]
+  }
+  %{
     nodes: %{
       "node1@host": :online,
       "node2@host": :offline

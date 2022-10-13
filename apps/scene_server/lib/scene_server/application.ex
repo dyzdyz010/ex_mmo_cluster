@@ -10,6 +10,8 @@ defmodule SceneServer.Application do
     children = [
       # Starts a worker by calling: SceneServer.Worker.start_link(arg)
       # {SceneServer.Worker, arg}
+      {SceneServer.InterfaceSup, name: SceneServer.InterfaceSup},
+      {SceneServer.AoiSup, name: SceneServer.AoiSup},
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
