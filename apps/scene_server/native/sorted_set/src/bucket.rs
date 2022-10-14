@@ -1,8 +1,10 @@
+use std::{ptr, cmp::Ordering};
+
 use rustler::NifStruct;
 
 use crate::{item::Item, AddResult};
 
-#[derive(NifStruct, Clone)]
+#[derive(NifStruct, Clone, Debug)]
 #[module = "Bucket"]
 pub struct Bucket {
     pub data: Vec<Item>,
@@ -17,50 +19,94 @@ impl Bucket {
         match self.data.binary_search_by_key(&item.cid, |ele| ele.cid) {
             Ok(idx) => AddResult::Duplicate(idx),
             Err(_) => {
-                let insert_idx = self.binary_insert_position_search(&item);
+                let insert_idx = self.binary_search(&item);
                 self.data.insert(insert_idx, item);
                 AddResult::Added(insert_idx)
             }
         }
     }
 
-    fn binary_insert_position_search(&mut self, item: &Item) -> usize {
+    pub fn split(&mut self) -> Bucket {
+        let curr_len = self.data.len();
+        let at = curr_len / 2;
+
+        let other_len = self.data.len() - at;
+        let mut other = Vec::with_capacity(curr_len);
+
+        // Unsafely `set_len` and copy items to `other`.
+        unsafe {
+            self.data.set_len(at);
+            other.set_len(other_len);
+
+            ptr::copy_nonoverlapping(self.data.as_ptr().add(at), other.as_mut_ptr(), other.len());
+        }
+
+        Bucket { data: other }
+    }
+
+    fn binary_search(&mut self, item: &Item) -> usize {
         if self.len() == 0 || item < self.data.first().unwrap() {
-            println!("最头部");
+            // println!("最头部");
             return 0;
         }
 
         if item > self.data.last().unwrap() {
-            println!("最尾部");
+            // println!("最尾部");
             return self.len();
         }
 
-        let mut comp_vec: Vec<Item> = self.data.clone();
+        let comp_vec: &Vec<Item> = &self.data;
+        let mut idx_start: usize = 0;
+        let mut idx_end: usize = self.len() - 1;
         let mut idx: usize = 0;
-        while comp_vec.len() > 0 {
-            println!("当前idx: {}", idx);
-            if item < comp_vec.first().unwrap() {
+        while idx_end >= idx_start {
+            if item < &comp_vec[idx_start] {
                 return idx+1;
             }
 
-            if item > comp_vec.last().unwrap() {
+            if item > &comp_vec[idx_end] {
                 return idx;
             }
 
-            idx = comp_vec.len() / 2;
+            idx = (idx_end - idx_start + 1) / 2;
+            // println!("当前idx: {}, idx_start: {}, idx_end: {}.", idx, idx_start, idx_end);
             let ele = &comp_vec[idx];
             match item.cmp(&ele) {
                 std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => {
-                    let remainder = comp_vec.splice(idx + 1..comp_vec.len(), []).collect();
-                    comp_vec = remainder
+                    idx_start = idx+1;
+                    // let remainder = comp_vec.splice(idx + 1..comp_vec.len(), []).collect();
+                    // comp_vec = remainder
                 },
                 std::cmp::Ordering::Less => {
-                    let remainder = comp_vec.splice(0..idx, []).collect();
-                    comp_vec = remainder
+                    idx_end = idx-1;
+                    // let remainder = comp_vec.splice(0..idx, []).collect();
+                    // comp_vec = remainder
                 }
             }
         }
 
-        return idx;
+        return idx+1;
+    }
+
+    
+
+    pub fn item_compare(&self, item: &Item) -> Ordering {
+        let first_item = match self.data.first() {
+            Some(f) => f,
+            None => return Ordering::Equal,
+        };
+
+        let last_item = match self.data.last() {
+            Some(l) => l,
+            None => return Ordering::Equal,
+        };
+
+        if item < first_item {
+            Ordering::Greater
+        } else if last_item < item {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
     }
 }
