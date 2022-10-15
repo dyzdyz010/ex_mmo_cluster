@@ -13,3 +13,4 @@ crate-type = ["cdylib"]
 jemalloc-info = "0.5"
 jemallocator = { version = "0.5.0", features = ["disable_initial_exec_tls", "stats"] }
 rustler = "0.26.0"
+rayon = "1.5.3"

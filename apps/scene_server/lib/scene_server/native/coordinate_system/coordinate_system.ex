@@ -31,10 +31,16 @@ defmodule SceneServer.Native.CoordinateSystem do
   def new_system(_set_capacity, _bucket_capacity), do: error()
 
   @spec add_item_to_system(Types.coordinate_system(), integer(), {number(), number(), number()}) :: {atom(), any()}
-  def add_item_to_system(_sorted_set, _cid, _coord), do: error()
+  def add_item_to_system(_system, _cid, _coord), do: error()
+
+  @spec remove_item_from_system(Types.coordinate_system(), Types.item()) :: {{integer(), integer(), integer()}, atom()}
+  def remove_item_from_system(_system, _item), do: error()
+
+  @spec update_item_from_system(Types.coordinate_system(), Types.item(), tuple()) :: {{integer(), integer(), integer()}, atom()}
+  def update_item_from_system(_system, _item, _new_position), do: error()
 
   @spec get_system_raw(Types.coordinate_system()) :: {atom(), Types.sorted_set()} | {atom(), any()}
-  def get_system_raw(_sorted_set), do: error()
+  def get_system_raw(_system), do: error()
 
   defp error, do: :erlang.nif_error(:nif_not_loaded)
 end

@@ -32,7 +32,7 @@ defmodule SceneServer.Aoi do
     # {:ok, set} = SceneServer.Native.CoordinateSystem.new_set(10000, 4)
     # Logger.debug("Set ref: #{inspect(set, pretty: true)}")
 
-    {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 4)
+    {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 5)
     Logger.debug("Set ref: #{inspect(system, pretty: true)}")
 
     # # item = SceneServer.Native.CoordinateSystem.add(1, 2)
@@ -62,12 +62,12 @@ defmodule SceneServer.Aoi do
     SceneServer.Native.CoordinateSystem.add_item_to_system(system, 5, {35.0, 77.0, 9.0})
     SceneServer.Native.CoordinateSystem.add_item_to_system(system, 6, {11.0, 1.0, 8.0})
     SceneServer.Native.CoordinateSystem.add_item_to_system(system, 7, {6.0, 90.0, 65.0})
-    SceneServer.Native.CoordinateSystem.add_item_to_system(system, 5, {67.0, 75.0, 1.0})
-    SceneServer.Native.CoordinateSystem.add_item_to_system(system, 6, {99.0, 55.0, 23.0})
-    SceneServer.Native.CoordinateSystem.add_item_to_system(system, 7, {80.0, 32.0, 44.0})
+    SceneServer.Native.CoordinateSystem.add_item_to_system(system, 8, {67.0, 75.0, 1.0})
+    SceneServer.Native.CoordinateSystem.add_item_to_system(system, 9, {99.0, 55.0, 23.0})
+    {:ok, item} = SceneServer.Native.CoordinateSystem.add_item_to_system(system, 10, {80.0, 32.0, 44.0})
 
     # # bk2 = SceneServer.Native.CoordinateSystem.get_bucket_raw(bucket)
-    # # Logger.debug("Bucket raw: #{inspect(bk2, pretty: true)}")
+    Logger.debug("Add item result: #{inspect(item, pretty: true)}")
 
     # SceneServer.Native.CoordinateSystem.add_item_to_bucket(bucket, 6, {1.0, 2.0, 8.0})
     # SceneServer.Native.CoordinateSystem.add_item_to_bucket(bucket, 7, {1.0, 2.0, 6.0})
@@ -79,8 +79,14 @@ defmodule SceneServer.Aoi do
     # s1 = SceneServer.Native.CoordinateSystem.get_set_raw(set)
     # Logger.debug("Bucket raw: #{inspect(s1, pretty: true)}")
 
+    # cs = SceneServer.Native.CoordinateSystem.get_system_raw(system)
+    # Logger.debug("System raw: #{inspect(cs, pretty: true)}")
+
+    result = SceneServer.Native.CoordinateSystem.update_item_from_system(system, item, {59.0, 10.0, 87.0})
+    Logger.debug("Update item result: #{inspect(result, pretty: true)}")
+
     cs = SceneServer.Native.CoordinateSystem.get_system_raw(system)
-    Logger.debug("Bucket raw: #{inspect(cs, pretty: true)}")
+    Logger.debug("System raw: #{inspect(cs, pretty: true)}")
     # TODO: Create CoordinateSystem
 
     {nil, nil, nil}

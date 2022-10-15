@@ -2,7 +2,10 @@ use std::cmp::min;
 
 use rustler::NifStruct;
 
-use crate::{bucket::Bucket, configuration::Configuration, item::Item, FindResult, SetRemoveResult, SetAddResult};
+use crate::{
+    bucket::Bucket, configuration::Configuration, item::Item, FindResult, SetAddResult,
+    SetRemoveResult,
+};
 
 #[derive(Debug, NifStruct, Clone)]
 #[module = "SortedSet"]
@@ -29,7 +32,9 @@ impl SortedSet {
 
     pub fn new(configuration: Configuration) -> SortedSet {
         let mut result = SortedSet::empty(configuration);
-        result.buckets.push(Bucket { data: Vec::with_capacity(result.configuration.bucket_capacity) });
+        result.buckets.push(Bucket {
+            data: Vec::with_capacity(result.configuration.bucket_capacity + 1),
+        });
 
         result
     }
@@ -77,7 +82,7 @@ impl SortedSet {
                 let effective_idx = self.effective_index(bucket_idx, idx);
                 let bucket_len = self.buckets[bucket_idx].len();
 
-                if bucket_len >= self.configuration.bucket_capacity {
+                if bucket_len >= self.configuration.bucket_capacity + 1 {
                     let new_bucket = self.buckets[bucket_idx].split();
                     // println!("分裂！");
                     self.buckets.insert(bucket_idx + 1, new_bucket);
@@ -121,7 +126,10 @@ impl SortedSet {
 
                 SetRemoveResult::Removed(idx)
             }
-            FindResult::NotFound => SetRemoveResult::NotFound,
+            FindResult::NotFound => {
+                // println!("元素未找到");
+                SetRemoveResult::NotFound
+            }
         }
     }
 }
