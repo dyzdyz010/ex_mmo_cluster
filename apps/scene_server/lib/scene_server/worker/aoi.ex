@@ -29,8 +29,12 @@ defmodule SceneServer.Aoi do
   defp create_lists() do
     # {:ok, item} = SceneServer.Native.SortedSet.new_item(123, self(), {1.0, 2.0, 3.0})
     # {:ok, bucket} = SceneServer.Native.SortedSet.new_bucket()
-    {:ok, set} = SceneServer.Native.SortedSet.new_set(10000, 4)
-    Logger.debug("Set ref: #{inspect(set, pretty: true)}")
+    # {:ok, set} = SceneServer.Native.SortedSet.new_set(10000, 4)
+    # Logger.debug("Set ref: #{inspect(set, pretty: true)}")
+
+    {:ok, system} = SceneServer.Native.SortedSet.new_system(10000, 4)
+    Logger.debug("Set ref: #{inspect(system, pretty: true)}")
+
     # # item = SceneServer.Native.SortedSet.add(1, 2)
     # Logger.debug("Bucket ref: #{inspect(bucket, pretty: true)}")
     # bk1 = SceneServer.Native.SortedSet.get_bucket_raw(bucket)
@@ -43,13 +47,24 @@ defmodule SceneServer.Aoi do
     # SceneServer.Native.SortedSet.add_item_to_bucket(bucket, 4, {1.0, 2.0, 9.0})
     # # Logger.debug("Bucket add item result: #{inspect(result, pretty: true)}")
 
-    SceneServer.Native.SortedSet.add_item_to_set(set, 1, {1.0, 2.0, 7.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 2, {1.0, 2.0, 3.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 3, {1.0, 2.0, 5.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 4, {1.0, 2.0, 11.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 5, {1.0, 2.0, 9.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 6, {1.0, 2.0, 8.0})
-    SceneServer.Native.SortedSet.add_item_to_set(set, 7, {1.0, 2.0, 6.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 1, {1.0, 2.0, 7.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 2, {1.0, 2.0, 3.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 3, {1.0, 2.0, 5.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 4, {1.0, 2.0, 11.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 5, {1.0, 2.0, 9.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 6, {1.0, 2.0, 8.0})
+    # SceneServer.Native.SortedSet.add_item_to_set(set, 7, {1.0, 2.0, 6.0})
+
+    SceneServer.Native.SortedSet.add_item_to_system(system, 1, {50.0, 15.0, 7.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 2, {79.0, 41.0, 3.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 3, {66.0, 33.0, 5.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 4, {32.0, 99.0, 11.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 5, {35.0, 77.0, 9.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 6, {11.0, 1.0, 8.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 7, {6.0, 90.0, 65.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 5, {67.0, 75.0, 1.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 6, {99.0, 55.0, 23.0})
+    SceneServer.Native.SortedSet.add_item_to_system(system, 7, {80.0, 32.0, 44.0})
 
     # # bk2 = SceneServer.Native.SortedSet.get_bucket_raw(bucket)
     # # Logger.debug("Bucket raw: #{inspect(bk2, pretty: true)}")
@@ -57,10 +72,15 @@ defmodule SceneServer.Aoi do
     # SceneServer.Native.SortedSet.add_item_to_bucket(bucket, 6, {1.0, 2.0, 8.0})
     # SceneServer.Native.SortedSet.add_item_to_bucket(bucket, 7, {1.0, 2.0, 6.0})
     # SceneServer.Native.SortedSet.add_item_to_bucket(bucket, 8, {1.0, 2.0, 2.0})
+
     # bk3 = SceneServer.Native.SortedSet.get_bucket_raw(bucket)
     # Logger.debug("Bucket raw: #{inspect(bk3, pretty: true)}")
-    ss = SceneServer.Native.SortedSet.get_set_raw(set)
-    Logger.debug("Bucket raw: #{inspect(ss, pretty: true)}")
+
+    # s1 = SceneServer.Native.SortedSet.get_set_raw(set)
+    # Logger.debug("Bucket raw: #{inspect(s1, pretty: true)}")
+
+    cs = SceneServer.Native.SortedSet.get_system_raw(system)
+    Logger.debug("Bucket raw: #{inspect(cs, pretty: true)}")
     # TODO: Create SortedSet
 
     {nil, nil, nil}

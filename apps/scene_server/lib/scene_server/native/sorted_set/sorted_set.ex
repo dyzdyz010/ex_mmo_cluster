@@ -27,5 +27,14 @@ defmodule SceneServer.Native.SortedSet do
   @spec get_set_raw(Types.sorted_set()) :: {atom(), Types.sorted_set()} | {atom(), any()}
   def get_set_raw(_sorted_set), do: error()
 
+  @spec new_system(integer(), integer()) :: {atom(), Types.coordinate_system()}
+  def new_system(_set_capacity, _bucket_capacity), do: error()
+
+  @spec add_item_to_system(Types.coordinate_system(), integer(), {number(), number(), number()}) :: {atom(), any()}
+  def add_item_to_system(_sorted_set, _cid, _coord), do: error()
+
+  @spec get_system_raw(Types.coordinate_system()) :: {atom(), Types.sorted_set()} | {atom(), any()}
+  def get_system_raw(_sorted_set), do: error()
+
   defp error, do: :erlang.nif_error(:nif_not_loaded)
 end

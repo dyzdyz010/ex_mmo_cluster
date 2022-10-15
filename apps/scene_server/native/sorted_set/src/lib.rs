@@ -1,8 +1,9 @@
-use std::sync::Mutex;
+use std::{sync::Mutex, ops::Add};
 
 use bucket::Bucket;
+use coordinate_system::CoordinateSystem;
 use jemallocator::Jemalloc;
-use rustler::{Atom, Env, ResourceArc, Term};
+use rustler::{Atom, Env, ResourceArc, Term, NifTuple};
 
 use item::{CoordTuple, Item, OrderAxis};
 use sorted_set::SortedSet;
@@ -24,6 +25,9 @@ pub type BucketArc = ResourceArc<BucketResource>;
 pub struct SortedSetResource(Mutex<SortedSet>);
 pub type SortedSetArc = ResourceArc<SortedSetResource>;
 
+pub struct CoordinateSystemResource(Mutex<CoordinateSystem>);
+pub type CoordinateSystemArc = ResourceArc<CoordinateSystemResource>;
+
 #[derive(Debug, PartialEq)]
 pub enum FindResult {
     Found {
@@ -36,12 +40,24 @@ pub enum FindResult {
 
 #[derive(Debug, PartialEq)]
 pub enum AddResult {
+    Added(usize, usize, usize),
+    Error((SetAddResult, SetAddResult, SetAddResult)),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum RemoveResult {
+    Removed(usize, usize, usize),
+    Error((SetRemoveResult, SetRemoveResult, SetRemoveResult)),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SetAddResult {
     Added(usize),
     Duplicate(usize),
 }
 
 #[derive(Debug, PartialEq)]
-pub enum RemoveResult {
+pub enum SetRemoveResult {
     Removed(usize),
     NotFound,
 }
@@ -76,6 +92,7 @@ fn load(env: Env, _info: Term) -> bool {
     rustler::resource!(ItemResource, env);
     rustler::resource!(BucketResource, env);
     rustler::resource!(SortedSetResource, env);
+    rustler::resource!(CoordinateSystemResource, env);
     true
 }
 
@@ -89,7 +106,10 @@ rustler::init!(
         get_bucket_raw,
         new_set,
         add_item_to_set,
-        get_set_raw
+        get_set_raw,
+        new_system,
+        add_item_to_system,
+        get_system_raw,
     ],
     load = load
 );
@@ -190,10 +210,58 @@ fn add_item_to_set(
 
 #[rustler::nif]
 fn get_set_raw(ssref: ResourceArc<SortedSetResource>) -> Result<SortedSet, Atom> {
+    // OwnedEnv::send_and_clear(&mut self, recipient, closure)
     let ss = match ssref.0.try_lock() {
         Err(_) => return Err(atoms::lock_fail()),
         Ok(guard) => guard,
     };
 
     Ok(ss.clone())
+}
+
+#[rustler::nif]
+fn new_system(set_capacity: usize, bucket_capacity: usize) -> (Atom, CoordinateSystemArc) {
+    let initial_set_capacity: usize = (set_capacity / bucket_capacity) + 1;
+
+    let configuration = Configuration {
+        bucket_capacity: bucket_capacity,
+        set_capacity: initial_set_capacity,
+    };
+
+    let resource = ResourceArc::new(CoordinateSystemResource(Mutex::new(CoordinateSystem::new(configuration))));
+
+    (atoms::ok(), resource)
+}
+
+#[rustler::nif]
+fn add_item_to_system(
+    csref: ResourceArc<CoordinateSystemResource>,
+    cid: i64,
+    coord: CoordTuple,
+) -> Result<Atom, Atom> {
+    let resource: &CoordinateSystemResource = &*csref;
+    // data.
+    let mut cs = match resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+    let it = Item::new_item(cid, coord, OrderAxis::Z);
+    
+    cs.add(&it);
+
+    // println!("Nif call.");
+
+    Ok(atoms::ok())
+}
+
+#[rustler::nif]
+fn get_system_raw(csref: ResourceArc<CoordinateSystemResource>) -> Result<CoordinateSystem, Atom> {
+    let resource = &*csref;
+    // OwnedEnv::send_and_clear(&mut self, recipient, closure)
+    let cs = match resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    Ok(cs.clone())
 }

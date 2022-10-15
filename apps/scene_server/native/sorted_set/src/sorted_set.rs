@@ -2,7 +2,7 @@ use std::cmp::min;
 
 use rustler::NifStruct;
 
-use crate::{bucket::Bucket, configuration::Configuration, AddResult, item::Item, FindResult, RemoveResult};
+use crate::{bucket::Bucket, configuration::Configuration, item::Item, FindResult, SetRemoveResult, SetAddResult};
 
 #[derive(Debug, NifStruct, Clone)]
 #[module = "SortedSet"]
@@ -60,37 +60,40 @@ impl SortedSet {
 
     #[inline]
     fn effective_index(&self, bucket: usize, index: usize) -> usize {
-        let mut result = index;
         let buckets = &self.buckets[0..bucket];
-        result = buckets.into_iter().fold(0, |a, b| a + b.len()) + index;
+        let result = buckets.into_iter().fold(0, |a, b| a + b.len()) + index;
 
         result
     }
 
-    pub fn add(&mut self, item: Item) -> AddResult {
+    pub fn add(&mut self, item: Item) -> SetAddResult {
+        // println!("插入元素。");
         let bucket_idx = self.find_bucket_index(&item);
+        // println!("Bucket索引：{}", bucket_idx);
 
         match self.buckets[bucket_idx].add(item) {
-            AddResult::Added(idx) => {
+            SetAddResult::Added(idx) => {
+                // println!("插入成功。");
                 let effective_idx = self.effective_index(bucket_idx, idx);
                 let bucket_len = self.buckets[bucket_idx].len();
 
                 if bucket_len >= self.configuration.bucket_capacity {
                     let new_bucket = self.buckets[bucket_idx].split();
+                    // println!("分裂！");
                     self.buckets.insert(bucket_idx + 1, new_bucket);
                 }
 
                 self.size += 1;
 
-                AddResult::Added(effective_idx)
+                SetAddResult::Added(effective_idx)
             }
-            AddResult::Duplicate(idx) => {
-                AddResult::Duplicate(self.effective_index(bucket_idx, idx))
+            SetAddResult::Duplicate(idx) => {
+                SetAddResult::Duplicate(self.effective_index(bucket_idx, idx))
             }
         }
     }
 
-    pub fn remove(&mut self, item: &Item) -> RemoveResult {
+    pub fn remove(&mut self, item: &Item) -> SetRemoveResult {
         match self.find_index(item) {
             FindResult::Found {
                 bucket_idx,
@@ -116,9 +119,15 @@ impl SortedSet {
 
                 self.size -= 1;
 
-                RemoveResult::Removed(idx)
+                SetRemoveResult::Removed(idx)
             }
-            FindResult::NotFound => RemoveResult::NotFound,
+            FindResult::NotFound => SetRemoveResult::NotFound,
         }
+    }
+}
+
+impl Default for SortedSet {
+    fn default() -> Self {
+        Self::new(Configuration::default())
     }
 }

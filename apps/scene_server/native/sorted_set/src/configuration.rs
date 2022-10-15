@@ -1,6 +1,6 @@
 use rustler::NifStruct;
 
-#[derive(Debug, NifStruct, Clone)]
+#[derive(Debug, NifStruct, Clone, Copy)]
 #[module = "Configuration"]
 pub struct Configuration {
     /// Internally we maintain buckets to reduce the cost of inserts. This configures

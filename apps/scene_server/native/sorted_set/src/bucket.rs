@@ -2,7 +2,7 @@ use std::{ptr, cmp::Ordering};
 
 use rustler::NifStruct;
 
-use crate::{item::Item, AddResult};
+use crate::{item::Item, AddResult, SetAddResult};
 
 #[derive(NifStruct, Clone, Debug)]
 #[module = "Bucket"]
@@ -15,13 +15,15 @@ impl Bucket {
         self.data.len()
     }
 
-    pub fn add(&mut self, item: Item) -> AddResult {
+    pub fn add(&mut self, item: Item) -> SetAddResult {
         match self.data.binary_search_by_key(&item.cid, |ele| ele.cid) {
-            Ok(idx) => AddResult::Duplicate(idx),
+            Ok(idx) => SetAddResult::Duplicate(idx),
             Err(_) => {
+                // println!("无重复元素，可以插入。");
                 let insert_idx = self.binary_search(&item);
+                // println!("无重复元素，可以插入。");
                 self.data.insert(insert_idx, item);
-                AddResult::Added(insert_idx)
+                SetAddResult::Added(insert_idx)
             }
         }
     }
@@ -68,7 +70,7 @@ impl Bucket {
                 return idx;
             }
 
-            idx = (idx_end - idx_start + 1) / 2;
+            idx = (idx_end - idx_start + 1) / 2 + idx_start;
             // println!("当前idx: {}, idx_start: {}, idx_end: {}.", idx, idx_start, idx_end);
             let ele = &comp_vec[idx];
             match item.cmp(&ele) {

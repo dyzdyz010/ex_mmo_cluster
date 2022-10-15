@@ -20,8 +20,8 @@ pub struct CoordTuple {
 #[module = "Item"]
 pub struct Item {
     pub cid: i64,
-    coord: CoordTuple,
-    order_type: OrderAxis,
+    pub coord: CoordTuple,
+    pub order_type: OrderAxis,
 }
 
 impl Item {

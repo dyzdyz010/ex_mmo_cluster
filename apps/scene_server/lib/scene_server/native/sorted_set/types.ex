@@ -4,4 +4,6 @@ defmodule SceneServer.Native.SortedSet.Types do
   @type item :: reference()
 
   @type bucket :: reference()
+
+  @type coordinate_system :: reference()
 end
