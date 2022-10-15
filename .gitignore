@@ -28,3 +28,5 @@ erl_crash.dump
 /.vscode
 
 .mnesia
+
+apps/scene_server/priv/native/libsorted_set.so
