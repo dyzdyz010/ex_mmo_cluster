@@ -11,9 +11,9 @@ pub enum OrderAxis {
 
 #[derive(NifTuple, Clone, Debug)]
 pub struct CoordTuple {
-    x: f64,
-    y: f64,
-    z: f64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 #[derive(NifStruct, Clone, Debug)]
@@ -70,8 +70,67 @@ impl Ord for Item {
     }
 }
 
-// impl ResourceTypeProvider for ItemResource {
-//     fn get_type() -> &'static rustler::resource::ResourceType<Self> {
+#[cfg(test)]
+mod tests {
+    use crate::item::{CoordTuple, OrderAxis};
 
-//     }
-// }
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn test_item_compare_when_equal() {
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 4.0}, OrderAxis::X);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 5.0}, OrderAxis::X);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Equal);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::Y);
+        let item2 = Item::new_item(1, CoordTuple{x: 4.0, y: 2.0, z: 5.0}, OrderAxis::Y);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Equal);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 5.0}, OrderAxis::Z);
+        let item2 = Item::new_item(1, CoordTuple{x: 3.0, y: 4.0, z: 5.0}, OrderAxis::Z);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_item_compare_when_less_than() {
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 4.0}, OrderAxis::X);
+        let item2 = Item::new_item(1, CoordTuple{x: 2.0, y: 2.0, z: 4.0}, OrderAxis::X);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Less);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::Y);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 3.0}, OrderAxis::Y);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Less);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 4.0}, OrderAxis::Z);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 5.0}, OrderAxis::Z);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Less);
+    }
+
+    #[test]
+    fn test_item_compare_when_greater_than() {
+
+        let item1 = Item::new_item(1, CoordTuple{x: 2.0, y: 2.0, z: 4.0}, OrderAxis::X);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 4.0}, OrderAxis::X);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Greater);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 3.0}, OrderAxis::Y);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::Y);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Greater);
+
+        let item1 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 5.0}, OrderAxis::Z);
+        let item2 = Item::new_item(1, CoordTuple{x: 1.0, y: 3.0, z: 4.0}, OrderAxis::Z);
+
+        assert_eq!(item1.cmp(&item2), Ordering::Greater);
+    }
+}

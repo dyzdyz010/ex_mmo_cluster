@@ -2,7 +2,7 @@ use std::{ptr, cmp::Ordering};
 
 use rustler::NifStruct;
 
-use crate::{item::Item, AddResult, SetAddResult};
+use crate::{item::Item, SetAddResult};
 
 #[derive(NifStruct, Clone, Debug)]
 #[module = "Bucket"]
@@ -110,5 +110,174 @@ impl Bucket {
         } else {
             Ordering::Equal
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::item::{CoordTuple, OrderAxis};
+
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn test_item_compare_empty_bucket() {
+        let bucket = Bucket { data: Vec::new() };
+
+        let item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_item_compare_when_less_than_first_item() {
+        let mut bucket = Bucket { data: Vec::new() };
+        let first_item = Item::new_item(1, CoordTuple{x: 10.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        assert_eq!(bucket.add(first_item), SetAddResult::Added(0));
+
+        let item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_item_compare_when_equal_to_first_item() {
+        let mut bucket = Bucket { data: Vec::new() };
+        let first_item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = first_item.clone();
+
+        assert_eq!(bucket.add(first_item), SetAddResult::Added(0));
+        assert_eq!(bucket.item_compare(&item), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_item_compare_when_greater_than_last_item() {
+        let mut bucket = Bucket { data: Vec::new() };
+
+        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
+        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
+        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+
+        let item = Item::new_item(4, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Less);
+    }
+
+    #[test]
+    fn test_item_compare_when_equal_to_last_item() {
+        let mut bucket = Bucket { data: Vec::new() };
+
+        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
+        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
+        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+
+        let item = Item::new_item(4, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_item_between_first_and_last_duplicate() {
+        let mut bucket = Bucket { data: Vec::new() };
+
+        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
+        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
+        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+
+        let item = Item::new_item(4, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_item_between_first_and_last_unique() {
+        let mut bucket = Bucket { data: Vec::new() };
+
+        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
+        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
+        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+
+        let item = Item::new_item(4, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X);
+
+        assert_eq!(bucket.item_compare(&item), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_split_bucket_with_no_items() {
+        let mut bucket = Bucket { data: vec![] };
+
+        assert_eq!(bucket.data.len(), 0);
+        assert_eq!(bucket.data.capacity(), 0);
+
+        let other = bucket.split();
+
+        assert_eq!(bucket.data.len(), 0);
+        assert_eq!(bucket.data.capacity(), 0);
+
+        assert_eq!(other.data.len(), 0);
+        assert_eq!(other.data.capacity(), 0);
+    }
+
+    #[test]
+    fn test_split_bucket_with_odd_number_of_items() {
+        let mut bucket = Bucket {
+            data: vec![
+                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(5, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(6, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(7, CoordTuple{x: 7.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(8, CoordTuple{x: 8.0, y: 2.0, z: 3.0}, OrderAxis::X),
+            ],
+        };
+
+        // There were 9 items placed in the bucket, it should have length & capacity of 9
+        assert_eq!(bucket.data.len(), 9);
+        assert_eq!(bucket.data.capacity(), 9);
+
+        let other = bucket.split();
+
+        // Initial bucket should retain the same capacity but with half the length.
+        assert_eq!(bucket.data.len(), 4);
+        assert_eq!(bucket.data.capacity(), 9);
+
+        // Other bucket should have the same capacity as the initial bucket and half the length.
+        assert_eq!(other.data.len(), 5);
+        assert_eq!(other.data.capacity(), 9);
+    }
+
+    #[test]
+    fn test_split_bucket_with_even_number_of_items() {
+        let mut bucket = Bucket {
+            data: vec![
+                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(5, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(6, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(7, CoordTuple{x: 7.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(8, CoordTuple{x: 8.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(9, CoordTuple{x: 9.0, y: 2.0, z: 3.0}, OrderAxis::X),
+            ],
+        };
+
+        // There were 10 items placed in the bucket, it should have length & capacity of 10
+        assert_eq!(bucket.data.len(), 10);
+        assert_eq!(bucket.data.capacity(), 10);
+
+        let other = bucket.split();
+
+        // Initial bucket should retain the same capacity but with half the length.
+        assert_eq!(bucket.data.len(), 5);
+        assert_eq!(bucket.data.capacity(), 10);
+
+        // Other bucket should have the same capacity as the initial bucket and half the length.
+        assert_eq!(other.data.len(), 5);
+        assert_eq!(other.data.capacity(), 10);
     }
 }
