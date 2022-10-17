@@ -1,0 +1,3 @@
+[submodule "apps/gate_server/priv/proto"]
+	path = apps/gate_server/priv/proto
+	url = https://github.com/dyzdyz010/mmo_protos.git

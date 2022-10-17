@@ -1,6 +1,0 @@
-syntax = "proto3";
-
-message AuthRequest {
-  string username = 1;
-  string code = 3;
-}
