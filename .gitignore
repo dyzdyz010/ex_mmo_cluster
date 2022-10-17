@@ -29,4 +29,4 @@ erl_crash.dump
 
 .mnesia
 
-apps/scene_server/priv/native/libsorted_set.so
+apps/scene_server/priv/native/libcoordinate_system.so
