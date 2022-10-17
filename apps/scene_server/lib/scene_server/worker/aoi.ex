@@ -14,14 +14,14 @@ defmodule SceneServer.Aoi do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{x: nil, y: nil, z: nil}, 0}
+    {:ok, %{coordinate_system: nil}, 0}
   end
 
   @impl true
   def handle_info(:timeout, state) do
     Logger.debug("Aoi process created.")
-    {xlist, ylist, zlist} = create_lists()
-    {:noreply, %{state | x: xlist, y: ylist, z: zlist}}
+    # {xlist, ylist, zlist} = create_lists()
+    {:noreply, %{state | coordinate_system: nil}}
   end
 
   # Internal functions
@@ -89,6 +89,6 @@ defmodule SceneServer.Aoi do
     Logger.debug("System raw: #{inspect(cs, pretty: true)}")
     # TODO: Create CoordinateSystem
 
-    {nil, nil, nil}
+    nil
   end
 end

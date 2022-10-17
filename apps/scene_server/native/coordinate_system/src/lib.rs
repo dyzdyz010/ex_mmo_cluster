@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use bucket::Bucket;
 use coordinate_system::CoordinateSystem;
 use jemallocator::Jemalloc;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::{Atom, Env, ResourceArc, Term};
 
 use item::{CoordTuple, Item, OrderAxis};
@@ -117,6 +118,7 @@ rustler::init!(
         add_item_to_system,
         remove_item_from_system,
         update_item_from_system,
+        get_items_within_distance_from_system,
         get_system_raw,
     ],
     load = load
@@ -314,6 +316,30 @@ fn update_item_from_system(
         UpdateResult::Updated(idxx, idxy, idxz) => Ok((idxx, idxy, idxz)),
         UpdateResult::Error => Err(atoms::not_found()),
     }
+}
+
+#[rustler::nif]
+fn get_items_within_distance_from_system(
+    csref: ResourceArc<CoordinateSystemResource>,
+    itemref: ResourceArc<ItemResource>,
+    distance: f64,
+) -> Result<Vec<i64>, Atom> {
+    let sys_resource: &CoordinateSystemResource = &*csref;
+    let item_resource: &ItemResource = &*itemref;
+
+    let cs = match sys_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    let item = match item_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    let items = cs.items_within_distance_for_item(&item, distance);
+
+    Ok(items.par_iter().map(|it| it.cid).collect())
 }
 
 #[rustler::nif]

@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering};
 
 use rustler::{NifStruct, NifTuple, NifUnitEnum};
 
@@ -45,6 +45,11 @@ impl Item {
 
     pub fn update_coord(&mut self, coord: CoordTuple) {
         self.coord = coord;
+    }
+
+    #[inline(always)]
+    pub fn distance(&self, other: &Item) -> f64 {
+        f64::sqrt((self.coord.x - other.coord.x).powi(2) + (self.coord.y - other.coord.y).powi(2) + (self.coord.z - other.coord.z).powi(2))
     }
 }
 
@@ -283,5 +288,29 @@ mod tests {
         );
 
         assert_eq!(item1.cmp(&item2), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_item_distance() {
+        let item1 = Item::new_item(
+            1,
+            CoordTuple {
+                x: 1.0,
+                y: 3.0,
+                z: 5.0,
+            },
+            OrderAxis::X,
+        );
+        let item2 = Item::new_item(
+            1,
+            CoordTuple {
+                x: 2.0,
+                y: 3.0,
+                z: 5.0,
+            },
+            OrderAxis::X,
+        );
+
+        assert_eq!(item1.distance(&item2), 1.0);
     }
 }

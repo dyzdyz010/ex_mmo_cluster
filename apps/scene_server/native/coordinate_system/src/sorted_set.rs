@@ -1,5 +1,6 @@
 use std::cmp::min;
 
+use rayon::{prelude::{IntoParallelRefIterator, IndexedParallelIterator, ParallelIterator}};
 use rustler::NifStruct;
 
 use crate::{
@@ -15,7 +16,7 @@ pub struct SortedSet {
     size: usize,
 }
 
-impl SortedSet {
+impl<'a> SortedSet {
     pub fn empty(configuration: Configuration) -> SortedSet {
         if configuration.bucket_capacity < 1 {
             panic!("SortedSet max_bucket_size must be greater than 0");
@@ -131,6 +132,47 @@ impl SortedSet {
                 SetRemoveResult::NotFound
             }
         }
+    }
+
+    pub fn items_within_distance_for_item(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
+        let mut items: Vec::<&Item> = vec![];
+        let within_buckets: Vec<usize> = self.buckets.par_iter().enumerate().filter_map(|(idx, buck)| 
+            match buck.data.len() {
+                0 => return None,
+                _ => {
+                    match item.distance(buck.data.first().unwrap()) <= distance && item.distance(buck.data.last().unwrap()) <= distance {
+                        true => return Some(idx),
+                        false => return None
+                    }
+                }
+            }
+        ).collect();
+
+        let mut lefthalf: Vec::<&Item> = vec![];
+        let mut righthalf: Vec::<&Item> = vec![];
+
+        if within_buckets.len() > 0 {
+            if within_buckets.first().unwrap() >= &1 {
+                lefthalf = self.buckets[within_buckets.first().unwrap() - 1].items_within_distance_for_item(item, distance);
+            }
+            if within_buckets.last().unwrap() <= &(self.buckets.len()-2) {
+                righthalf = self.buckets[within_buckets.last().unwrap() - 1].items_within_distance_for_item(item, distance);
+            }
+        }
+
+        let mut within_items: Vec<&Item> = self.buckets.par_iter().enumerate().filter_map(|(idx, buck)|
+            if within_buckets.contains(&idx) {
+                return Some(&buck.data);
+            } else {
+                return None;
+            }
+        ).flatten().collect();
+
+        items.append(&mut lefthalf);
+        items.append(&mut within_items);
+        items.append(&mut righthalf);
+
+        return items;
     }
 }
 

@@ -35,14 +35,14 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     Logger.debug(data)
-    {:ok, _msg} = GateServer.Message.decode(data)
+    # {:ok, _msg} = GateServer.Message.decode(data)
     # result = GateServer.Message.handle(msg, state, self())
-    # result = "You've typed: #{data}"
-    # :ok = :gen_tcp.send(socket, data)
-    hb = %Heartbeat{timestamp: "200"}
-    packet = %Packet{id: 1, payload: {:heartbeat, hb}}
-    {:ok, senddata} = GateServer.Message.encode(packet)
-    send_data(senddata, socket)
+    result = "You've typed: #{data}"
+    :ok = :gen_tcp.send(socket, result)
+    # hb = %Heartbeat{timestamp: "200"}
+    # packet = %Packet{id: 1, payload: {:heartbeat, hb}}
+    # {:ok, senddata} = GateServer.Message.encode(packet)
+    # send_data(senddata, socket)
     {:noreply, state}
   end
 

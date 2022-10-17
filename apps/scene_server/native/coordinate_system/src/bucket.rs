@@ -1,5 +1,6 @@
 use std::{ptr, cmp::Ordering};
 
+use rayon::{prelude::{IntoParallelRefIterator, ParallelIterator}};
 use rustler::NifStruct;
 
 use crate::{item::Item, SetAddResult};
@@ -90,8 +91,6 @@ impl Bucket {
         return idx+1;
     }
 
-    
-
     pub fn item_compare(&self, item: &Item) -> Ordering {
         let first_item = match self.data.first() {
             Some(f) => f,
@@ -110,6 +109,15 @@ impl Bucket {
         } else {
             Ordering::Equal
         }
+    }
+
+    pub fn items_within_distance_for_item(&self, item: &Item, distance: f64) -> Vec<&Item> {
+        let items: Vec<&Item> = self.data.par_iter().filter(|it| {
+            println!("距离：{}", item.distance(it));
+            item.distance(it) <= distance && item.distance(it) != 0.0
+        }).collect();
+
+        items
     }
 }
 
@@ -279,5 +287,25 @@ mod tests {
         // Other bucket should have the same capacity as the initial bucket and half the length.
         assert_eq!(other.data.len(), 5);
         assert_eq!(other.data.capacity(), 10);
+    }
+
+    #[test]
+    fn test_items_within_distance_from_item() {
+        let bucket = Bucket {
+            data: vec![
+                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
+            ],
+        };
+
+        let item = &bucket.data[2];
+        let items = bucket.items_within_distance_for_item(item, 1.0);
+        assert_eq!(items.len(), 2);
+
+        let items = bucket.items_within_distance_for_item(item, 2.0);
+        assert_eq!(items.len(), 4);
     }
 }

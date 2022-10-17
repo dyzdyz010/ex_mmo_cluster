@@ -85,15 +85,22 @@ defmodule BeaconServer.Beacon do
 
     # req = find_requirements(node, requirements)
     # offer = find_resources(req, resources)
-    offer = get_requirements(node, requirements, resources)
+    # offer = get_requirements(node, requirements, resources)
 
-    {:reply,
-     case length(offer) do
-       0 -> nil
-       _ ->
-        Logger.info("Requirements retrieved: #{inspect(offer, pretty: true)}", ansi_color: :green)
-        {:ok, offer}
-     end, state}
+    offer =
+      case get_requirements(node, requirements, resources) do
+        {:ok, result} ->
+          Logger.info("Requirements retrieved: #{inspect(result, pretty: true)}",
+            ansi_color: :green
+          )
+
+          {:ok, result}
+
+        {:err, nil} ->
+          {:err, nil}
+      end
+
+    {:reply, offer, state}
   end
 
   # ========== Node monitoring ==========
@@ -135,11 +142,20 @@ defmodule BeaconServer.Beacon do
      }}
   end
 
-  @spec get_requirements(node(), list(map()), list(map())) :: list(map())
+  @spec get_requirements(node(), list(map()), list(map())) :: {:ok, list(map())} | {:err, nil}
   defp get_requirements(node, requirements, resources) do
     req = find_requirements(node, requirements)
-    offer = find_resources(req, resources)
-    offer
+
+    case req do
+      [] ->
+        {:ok, []}
+
+      _ ->
+        case find_resources(req, resources) do
+          [] -> {:err, nil}
+          offer -> {:ok, offer}
+        end
+    end
   end
 
   defp add_node(node, node_list) do
@@ -171,7 +187,7 @@ defmodule BeaconServer.Beacon do
 
   defp find_requirements(node, [r | requirements]) do
     case node == r.node do
-      true -> r
+      true -> r.name
       false -> find_requirements(node, requirements)
     end
   end
