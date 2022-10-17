@@ -3,6 +3,7 @@ defmodule GateServer.Proto.ProtoDef do
     "./priv/proto/Packet.proto",
     "./priv/proto/Heartbeat.proto",
     "./priv/proto/AuthRequest.proto",
+    "./priv/proto/Movement.proto",
     "./priv/proto/ServerResponse.proto",
   ]
 end

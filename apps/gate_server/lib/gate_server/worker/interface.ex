@@ -6,7 +6,7 @@ defmodule GateServer.Interface do
   @beacon :"beacon1@127.0.0.1"
   @resource :gate_server
   # @requirement [:auth_server]
-  @requirement []
+  @requirement [:scene_server]
 
   # 重试间隔：s
   @retry_rate 5
@@ -78,10 +78,10 @@ defmodule GateServer.Interface do
     IO.inspect(offer)
 
     case offer do
-      {:ok, []} ->
-        # Logger.info("Got data_contact node from beacon: #{inspect(data_contact.node)}.",
-        #   ansi_color: :blue
-        # )
+      {:ok, offer} ->
+        Logger.info("Offer: #{inspect(offer)}.",
+          ansi_color: :blue
+        )
 
         # DataInit.initialize(data_contact.node, :store)
 

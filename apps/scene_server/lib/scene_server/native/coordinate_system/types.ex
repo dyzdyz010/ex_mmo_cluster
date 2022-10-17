@@ -1,4 +1,4 @@
-defmodule SceneServer.Native.SortedSet.Types do
+defmodule SceneServer.Native.CoordinateSystem.Types do
   @type sorted_set :: reference()
 
   @type item :: reference()

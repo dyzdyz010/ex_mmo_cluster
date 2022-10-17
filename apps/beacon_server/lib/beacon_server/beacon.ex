@@ -145,7 +145,7 @@ defmodule BeaconServer.Beacon do
   @spec get_requirements(node(), list(map()), list(map())) :: {:ok, list(map())} | {:err, nil}
   defp get_requirements(node, requirements, resources) do
     req = find_requirements(node, requirements)
-
+    Logger.debug("Find requirements: #{inspect(req, pretty: true)}")
     case req do
       [] ->
         {:ok, []}
@@ -198,9 +198,9 @@ defmodule BeaconServer.Beacon do
 
   @spec find_resources(list(map()), list(map())) :: list(map())
   defp find_resources(requirement, resources) do
-    # IO.inspect(requirement)
+    Logger.debug("Find resources with requirement: #{inspect(requirement, pretty: true)}")
 
-    for req <- requirement.name, res <- resources, req == res.name do
+    for req <- requirement, res <- resources, req == res.name do
       res
     end
   end

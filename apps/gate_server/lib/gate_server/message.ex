@@ -26,20 +26,24 @@ defmodule GateServer.Message do
     end
   end
 
-  def dispatch(%Packet{payload: {:authrequest, authrequest}}, state, connection) do
-    auth_server = GenServer.call(GateServer.Interface, :auth_server)
-    case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, authrequest}) do
-      {:ok, agent} ->
-        GenServer.cast(connection, {:send, "ok"})
-        {:ok, %{state | agent: agent}}
-      {:error, :mismatch} ->
-        GenServer.cast(connection, {:send, "mismatch"})
-        {:ok,state}
-      _ -> GenServer.cast(connection, {:send, "server error"})
-      {:ok,state}
-    end
+  def dispatch(%Packet{payload: {:movement, movement}}, state, _connection) do
+    # auth_server = GenServer.call(GateServer.Interface, :auth_server)
+    # case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, authrequest}) do
+    #   {:ok, agent} ->
+    #     GenServer.cast(connection, {:send, "ok"})
+    #     {:ok, %{state | agent: agent}}
+    #   {:error, :mismatch} ->
+    #     GenServer.cast(connection, {:send, "mismatch"})
+    #     {:ok,state}
+    #   _ -> GenServer.cast(connection, {:send, "server error"})
+    #   {:ok,state}
+    # end
+
+    Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
+
+    {:ok, state}
   end
-  def handle(%Packet{payload: _}, _state, connection) do
-    GenServer.cast(connection, {:send, "ok"})
-  end
+  # def handle(%Packet{payload: _}, _state, connection) do
+  #   GenServer.cast(connection, {:send, "ok"})
+  # end
 end
