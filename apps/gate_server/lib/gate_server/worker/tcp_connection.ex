@@ -5,7 +5,7 @@ defmodule GateServer.TcpConnection do
   Responsible for message delivering/decrypting/encrypting.
   """
 
-  use GenServer
+  use GenServer, restart: :temporary
   require Logger
 
   @topic {:gate, __MODULE__}
@@ -21,8 +21,8 @@ defmodule GateServer.TcpConnection do
   def init(socket) do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
-    Logger.debug("New client connected.")
-    {:ok, %{socket: socket, agent: nil, token: nil, status: :waiting_auth}}
+    Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
+    {:ok, %{socket: socket, cid: -1, agent: nil, scene: nil, token: nil, status: :waiting_auth}}
   end
 
   @impl true
@@ -33,31 +33,35 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
-    # Logger.debug(data)
+  def handle_info({:tcp, _socket, data}, state) do
     {:ok, msg} = GateServer.Message.decode(data)
-    GateServer.Message.dispatch(msg, state, self())
+    {:ok, new_state} = GateServer.Message.dispatch(msg, state, self())
+
+    # Logger.debug(data)
     # result = "You've typed: #{data}"
     # :ok = :gen_tcp.send(socket, result)
     # hb = %Heartbeat{timestamp: "200"}
     # packet = %Packet{id: 1, payload: {:heartbeat, hb}}
     # {:ok, senddata} = GateServer.Message.encode(packet)
     # send_data(senddata, socket)
-    {:noreply, state}
+
+    {:noreply, new_state}
   end
 
   @impl true
-  def handle_info({:tcp_closed, _conn}, state) do
+  def handle_info({:tcp_closed, _conn}, %{scene: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed unexpectly.")
-    DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
+    Logger.error("TCP连接关闭。")
+    {:ok, _} = GenServer.call(spid, :exit)
 
     {:stop, :normal, state}
   end
 
   @impl true
-  def handle_info({:tcp_error, _conn, err}, state) do
+  def handle_info({:tcp_error, _conn, err}, %{scene: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
-    DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, self())
+    Logger.error("TCP连接错误。")
+    {:ok, _} = GenServer.call(spid, :exit)
 
     {:stop, :normal, state}
   end
@@ -77,7 +81,10 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  defp send_data(data, socket) do
-    :gen_tcp.send(socket, data)
+  defp send_data(packet, socket) do
+    {:ok, packet_data} = GateServer.Message.encode(packet)
+    # Logger.debug("数据：#{inspect(packet_data, pretty: true)}")
+    result = :gen_tcp.send(socket, packet_data)
+    Logger.debug("TCP 发送数据结果：#{inspect(result, pretty: true)}, socket: #{inspect(socket, pretty: true)}")
   end
 end

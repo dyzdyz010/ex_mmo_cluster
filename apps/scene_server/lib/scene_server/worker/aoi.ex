@@ -3,13 +3,22 @@ defmodule SceneServer.Aoi do
 
   require Logger
 
+  alias SceneServer.Native.CoordinateSystem
+
   # APIs
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end
 
-  def add_player({:player, _player}) do
+  @spec add_player(number(), {float(), float(), float()}) :: {:ok, CoordinateSystem.Types.item()} | {:err, any()}
+  def add_player(cid, position) do
+    GenServer.call(__MODULE__, {:add_player, cid, position})
+  end
+
+  @spec remove_player(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
+  def remove_player(aoi_item) do
+    GenServer.call(__MODULE__, {:remove_player, aoi_item})
   end
 
   @impl true
@@ -22,6 +31,22 @@ defmodule SceneServer.Aoi do
     Logger.debug("Aoi process created.")
     system = create_system()
     {:noreply, %{state | coordinate_system: system}}
+  end
+
+  @impl true
+  def handle_call({:add_player, cid, {x, y, z}}, _from, %{coordinate_system: system} = state) do
+    Logger.debug("Adding player to CoordinateSystem: #{inspect(cid, pretty: true)}")
+    result = CoordinateSystem.add_item_to_system(system, cid, {x, y, z})
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:remove_player, aoi_item}, _from, %{coordinate_system: system} = state) do
+    Logger.debug("Removing player from CoordinateSystem: #{inspect(aoi_item, pretty: true)}")
+    result = CoordinateSystem.remove_item_from_system(system, aoi_item)
+
+    {:reply, result, state}
   end
 
   # Internal functions

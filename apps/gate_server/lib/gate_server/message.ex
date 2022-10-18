@@ -10,7 +10,9 @@ defmodule GateServer.Message do
       {:ok, packet} ->
         Logger.debug("Decoded packet: #{inspect(packet, pretty: true)}")
         {:ok, packet}
-      err -> err
+
+      err ->
+        err
     end
   end
 
@@ -20,6 +22,7 @@ defmodule GateServer.Message do
   @spec encode(struct) :: {:ok, iodata} | {:error, any}
   def encode(packet) do
     Logger.debug("Packet to encode: #{inspect(packet, pretty: true)}")
+
     case Protox.encode(packet) do
       {:ok, data} -> {:ok, data}
       err -> err
@@ -43,7 +46,26 @@ defmodule GateServer.Message do
 
     {:ok, state}
   end
-  # def handle(%Packet{payload: _}, _state, connection) do
-  #   GenServer.cast(connection, {:send, "ok"})
-  # end
+
+  def dispatch(%Packet{id: id, payload: {:enter_scene, enter}}, state, connection) do
+    {result, new_state} =
+      case GenServer.call(
+             {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
+             {:add_player, enter.cid, connection}
+           ) do
+        {:ok, ppid} ->
+          result = %Response.Result{packet_id: id, status_code: :ok, payload: %{}}
+          {result, %{state | scene: ppid, cid: enter.cid}}
+
+        _ ->
+          result = %Response.Result{packet_id: id, status_code: :ok, payload: %{}}
+          {result, state}
+      end
+
+    packet = %Packet{id: id, payload: {:result, result}}
+
+    GenServer.cast(connection, {:send_data, packet})
+
+    {:ok, new_state}
+  end
 end

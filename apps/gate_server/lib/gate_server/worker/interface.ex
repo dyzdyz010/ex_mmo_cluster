@@ -6,7 +6,7 @@ defmodule GateServer.Interface do
   @beacon :"beacon1@127.0.0.1"
   @resource :gate_server
   # @requirement [:auth_server]
-  @requirement [:scene_server]
+  @requirement []
 
   # 重试间隔：s
   @retry_rate 5
