@@ -50,8 +50,7 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_info({:tcp_closed, _conn}, %{scene: spid} = state) do
-    Logger.error("Socket #{inspect(state.socket, pretty: true)} closed unexpectly.")
-    Logger.error("TCP连接关闭。")
+    Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
     {:ok, _} = GenServer.call(spid, :exit)
 
     {:stop, :normal, state}
@@ -60,7 +59,6 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp_error, _conn, err}, %{scene: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
-    Logger.error("TCP连接错误。")
     {:ok, _} = GenServer.call(spid, :exit)
 
     {:stop, :normal, state}
