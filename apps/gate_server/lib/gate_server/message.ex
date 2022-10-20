@@ -62,7 +62,7 @@ defmodule GateServer.Message do
           {result, state}
       end
 
-    packet = %Packet{id: id, payload: {:result, result}}
+    packet = %Packet{id: id, timestamp: :os.system_time(:millisecond), payload: {:result, result}}
 
     GenServer.cast(connection, {:send_data, packet})
 

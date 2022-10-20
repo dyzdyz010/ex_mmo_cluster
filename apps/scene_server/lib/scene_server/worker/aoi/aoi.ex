@@ -35,7 +35,7 @@ defmodule SceneServer.Aoi do
 
   @impl true
   def handle_call({:add_player, cid, {x, y, z}}, _from, %{coordinate_system: system} = state) do
-    Logger.debug("Adding player to CoordinateSystem: #{inspect(cid, pretty: true)}")
+    # Logger.debug("Adding player to CoordinateSystem: #{inspect(cid, pretty: true)}")
     result = CoordinateSystem.add_item_to_system(system, cid, {x, y, z})
 
     {:reply, result, state}

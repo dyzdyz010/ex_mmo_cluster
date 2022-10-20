@@ -63,5 +63,6 @@ Benchee.run(
     "get_aoi_items" => get_aoi_items,
   },
   inputs: %{}
-    |> make_inputs.()
+    |> make_inputs.(),
+  parallel: 8
 )
