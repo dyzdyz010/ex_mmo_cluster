@@ -4,7 +4,7 @@ use rayon::{prelude::{IntoParallelRefIterator, IndexedParallelIterator, Parallel
 use rustler::NifStruct;
 
 use crate::{
-    bucket::Bucket, configuration::Configuration, item::Item, FindResult, SetAddResult,
+    bucket::Bucket, configuration::Configuration, item::{Item, CoordTuple}, FindResult, SetAddResult,
     SetRemoveResult,
 };
 
@@ -132,6 +132,20 @@ impl<'a> SortedSet {
                 SetRemoveResult::NotFound
             }
         }
+    }
+
+    pub fn update_with_coordinate(&mut self, item: &Item, new_coord: CoordTuple) -> bool {
+        let new_item: Item = Item { cid: item.cid, coord: new_coord, order_type: item.order_type };
+        let old_idx = self.find_bucket_index(item);
+        let new_idx = self.find_bucket_index(item);
+        if old_idx == new_idx {
+            self.buckets[old_idx].item_update(item, &new_item);
+        } else {
+
+        }
+
+
+        return true;
     }
 
     pub fn items_within_distance_for_item(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {

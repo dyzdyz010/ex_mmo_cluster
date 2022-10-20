@@ -1,6 +1,6 @@
-use std::{ptr, cmp::Ordering};
+use std::{cmp::Ordering, ptr};
 
-use rayon::{prelude::{IntoParallelRefIterator, ParallelIterator}};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::NifStruct;
 
 use crate::{item::Item, SetAddResult};
@@ -64,7 +64,7 @@ impl Bucket {
         let mut idx: usize = 0;
         while idx_end >= idx_start {
             if item < &comp_vec[idx_start] {
-                return idx+1;
+                return idx + 1;
             }
 
             if item > &comp_vec[idx_end] {
@@ -76,19 +76,19 @@ impl Bucket {
             let ele = &comp_vec[idx];
             match item.cmp(&ele) {
                 std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => {
-                    idx_start = idx+1;
+                    idx_start = idx + 1;
                     // let remainder = comp_vec.splice(idx + 1..comp_vec.len(), []).collect();
                     // comp_vec = remainder
-                },
+                }
                 std::cmp::Ordering::Less => {
-                    idx_end = idx-1;
+                    idx_end = idx - 1;
                     // let remainder = comp_vec.splice(0..idx, []).collect();
                     // comp_vec = remainder
                 }
             }
         }
 
-        return idx+1;
+        return idx + 1;
     }
 
     pub fn item_compare(&self, item: &Item) -> Ordering {
@@ -111,11 +111,49 @@ impl Bucket {
         }
     }
 
+    pub fn item_update(&mut self, old_item: &Item, new_item: &Item) -> bool {
+        let idx1 = self.data.binary_search(old_item).unwrap();
+        let idx2 = self.binary_search(new_item);
+        match idx1.cmp(&idx2) {
+            Ordering::Equal => {
+                self.data[idx1].coord = new_item.coord;
+                return true;
+            }
+            Ordering::Less => unsafe {
+                ptr::copy(
+                    self.data.as_ptr().add(idx1 + 1),
+                    self.data.as_mut_ptr().add(idx1),
+                    idx2 - 1 - idx1,
+                );
+                self.data[idx2] = new_item.clone();
+            },
+            Ordering::Greater => unsafe {
+                ptr::copy(
+                    self.data.as_ptr().add(idx1 - 1),
+                    self.data.as_mut_ptr().add(idx1),
+                    idx1 - idx2,
+                );
+                self.data[idx1] = new_item.clone();
+            },
+        }
+        if idx1 == idx2 {
+            return true;
+        } else if idx1 < idx2 {
+        } else {
+        }
+
+        return true;
+    }
+
     pub fn items_within_distance_for_item(&self, item: &Item, distance: f64) -> Vec<&Item> {
-        let items: Vec<&Item> = self.data.par_iter().filter(|it| {
-            println!("距离：{}", item.distance(it));
-            item.distance(it) <= distance && item.distance(it) != 0.0
-        }).collect();
+        let items: Vec<&Item> = self
+            .data
+            .par_iter()
+            .filter(|it| {
+                println!("距离：{}", item.distance(it));
+                item.distance(it) <= distance && item.distance(it) != 0.0
+            })
+            .collect();
 
         items
     }
@@ -132,7 +170,15 @@ mod tests {
     fn test_item_compare_empty_bucket() {
         let bucket = Bucket { data: Vec::new() };
 
-        let item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            1,
+            CoordTuple {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Equal);
     }
@@ -140,10 +186,26 @@ mod tests {
     #[test]
     fn test_item_compare_when_less_than_first_item() {
         let mut bucket = Bucket { data: Vec::new() };
-        let first_item = Item::new_item(1, CoordTuple{x: 10.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let first_item = Item::new_item(
+            1,
+            CoordTuple {
+                x: 10.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
         assert_eq!(bucket.add(first_item), SetAddResult::Added(0));
 
-        let item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            2,
+            CoordTuple {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Greater);
     }
@@ -151,7 +213,15 @@ mod tests {
     #[test]
     fn test_item_compare_when_equal_to_first_item() {
         let mut bucket = Bucket { data: Vec::new() };
-        let first_item = Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let first_item = Item::new_item(
+            1,
+            CoordTuple {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
         let item = first_item.clone();
 
         assert_eq!(bucket.add(first_item), SetAddResult::Added(0));
@@ -162,11 +232,52 @@ mod tests {
     fn test_item_compare_when_greater_than_last_item() {
         let mut bucket = Bucket { data: Vec::new() };
 
-        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
-        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
-        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+        assert_eq!(
+            bucket.add(Item::new_item(
+                1,
+                CoordTuple {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(0)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                2,
+                CoordTuple {
+                    x: 2.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(1)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                3,
+                CoordTuple {
+                    x: 3.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(2)
+        );
 
-        let item = Item::new_item(4, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            4,
+            CoordTuple {
+                x: 5.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Less);
     }
@@ -175,11 +286,52 @@ mod tests {
     fn test_item_compare_when_equal_to_last_item() {
         let mut bucket = Bucket { data: Vec::new() };
 
-        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
-        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
-        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+        assert_eq!(
+            bucket.add(Item::new_item(
+                1,
+                CoordTuple {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(0)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                2,
+                CoordTuple {
+                    x: 2.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(1)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                3,
+                CoordTuple {
+                    x: 3.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(2)
+        );
 
-        let item = Item::new_item(4, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            4,
+            CoordTuple {
+                x: 3.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Equal);
     }
@@ -188,11 +340,52 @@ mod tests {
     fn test_item_between_first_and_last_duplicate() {
         let mut bucket = Bucket { data: Vec::new() };
 
-        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
-        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
-        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+        assert_eq!(
+            bucket.add(Item::new_item(
+                1,
+                CoordTuple {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(0)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                2,
+                CoordTuple {
+                    x: 2.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(1)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                3,
+                CoordTuple {
+                    x: 3.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(2)
+        );
 
-        let item = Item::new_item(4, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            4,
+            CoordTuple {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Equal);
     }
@@ -201,11 +394,52 @@ mod tests {
     fn test_item_between_first_and_last_unique() {
         let mut bucket = Bucket { data: Vec::new() };
 
-        assert_eq!(bucket.add(Item::new_item(1, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(0));
-        assert_eq!(bucket.add(Item::new_item(2, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(1));
-        assert_eq!(bucket.add(Item::new_item(3, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X)), SetAddResult::Added(2));
+        assert_eq!(
+            bucket.add(Item::new_item(
+                1,
+                CoordTuple {
+                    x: 2.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(0)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                2,
+                CoordTuple {
+                    x: 4.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(1)
+        );
+        assert_eq!(
+            bucket.add(Item::new_item(
+                3,
+                CoordTuple {
+                    x: 6.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                OrderAxis::X
+            )),
+            SetAddResult::Added(2)
+        );
 
-        let item = Item::new_item(4, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X);
+        let item = Item::new_item(
+            4,
+            CoordTuple {
+                x: 3.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            OrderAxis::X,
+        );
 
         assert_eq!(bucket.item_compare(&item), Ordering::Equal);
     }
@@ -230,15 +464,87 @@ mod tests {
     fn test_split_bucket_with_odd_number_of_items() {
         let mut bucket = Bucket {
             data: vec![
-                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(5, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(6, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(7, CoordTuple{x: 7.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(8, CoordTuple{x: 8.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(
+                    0,
+                    CoordTuple {
+                        x: 0.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    1,
+                    CoordTuple {
+                        x: 1.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    2,
+                    CoordTuple {
+                        x: 2.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    3,
+                    CoordTuple {
+                        x: 3.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    4,
+                    CoordTuple {
+                        x: 4.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    5,
+                    CoordTuple {
+                        x: 5.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    6,
+                    CoordTuple {
+                        x: 6.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    7,
+                    CoordTuple {
+                        x: 7.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    8,
+                    CoordTuple {
+                        x: 8.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
             ],
         };
 
@@ -261,16 +567,96 @@ mod tests {
     fn test_split_bucket_with_even_number_of_items() {
         let mut bucket = Bucket {
             data: vec![
-                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(5, CoordTuple{x: 5.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(6, CoordTuple{x: 6.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(7, CoordTuple{x: 7.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(8, CoordTuple{x: 8.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(9, CoordTuple{x: 9.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(
+                    0,
+                    CoordTuple {
+                        x: 0.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    1,
+                    CoordTuple {
+                        x: 1.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    2,
+                    CoordTuple {
+                        x: 2.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    3,
+                    CoordTuple {
+                        x: 3.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    4,
+                    CoordTuple {
+                        x: 4.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    5,
+                    CoordTuple {
+                        x: 5.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    6,
+                    CoordTuple {
+                        x: 6.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    7,
+                    CoordTuple {
+                        x: 7.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    8,
+                    CoordTuple {
+                        x: 8.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    9,
+                    CoordTuple {
+                        x: 9.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
             ],
         };
 
@@ -293,11 +679,51 @@ mod tests {
     fn test_items_within_distance_from_item() {
         let bucket = Bucket {
             data: vec![
-                Item::new_item(0, CoordTuple{x: 0.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(1, CoordTuple{x: 1.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(2, CoordTuple{x: 2.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(3, CoordTuple{x: 3.0, y: 2.0, z: 3.0}, OrderAxis::X),
-                Item::new_item(4, CoordTuple{x: 4.0, y: 2.0, z: 3.0}, OrderAxis::X),
+                Item::new_item(
+                    0,
+                    CoordTuple {
+                        x: 0.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    1,
+                    CoordTuple {
+                        x: 1.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    2,
+                    CoordTuple {
+                        x: 2.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    3,
+                    CoordTuple {
+                        x: 3.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
+                Item::new_item(
+                    4,
+                    CoordTuple {
+                        x: 4.0,
+                        y: 2.0,
+                        z: 3.0,
+                    },
+                    OrderAxis::X,
+                ),
             ],
         };
 

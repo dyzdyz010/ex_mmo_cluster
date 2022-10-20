@@ -2,7 +2,7 @@ use std::{cmp::Ordering};
 
 use rustler::{NifStruct, NifTuple, NifUnitEnum};
 
-#[derive(NifUnitEnum, Clone, Debug)]
+#[derive(NifUnitEnum, Clone, Debug, Copy)]
 pub enum OrderAxis {
     X,
     Y,
@@ -19,12 +19,17 @@ impl OrderAxis {
     }
 }
 
-#[derive(NifTuple, Clone, Debug)]
+#[derive(NifTuple, Clone, Debug, Copy)]
 pub struct CoordTuple {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
+
+// pub struct SetItem<'a> {
+//     pub data: &'a Item,
+//     pub order_type: OrderAxis,
+// }
 
 #[derive(NifStruct, Clone, Debug)]
 #[module = "Item"]
@@ -53,22 +58,50 @@ impl Item {
     }
 }
 
+// impl PartialEq for SetItem<'_> {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.data.eq(other.data)
+//     }
+// }
+
+// impl PartialOrd for SetItem<'_> {
+//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+//         if self.data.eq(other.data) {
+//             return Some(Ordering::Equal);
+//         }
+//         let result = match self.order_type {
+//             OrderAxis::X => self.data.coord.x.partial_cmp(&other.data.coord.x),
+//             OrderAxis::Y => self.data.coord.y.partial_cmp(&other.data.coord.y),
+//             OrderAxis::Z => self.data.coord.z.partial_cmp(&other.data.coord.z),
+//         };
+
+//         match result {
+//             Some(Ordering::Equal) => Some(Ordering::Greater),
+//             other => other
+//         }
+//     }
+// }
+
 impl PartialEq for Item {
     fn eq(&self, other: &Self) -> bool {
-        match self.order_type {
-            OrderAxis::X => self.coord.x.eq(&other.coord.x),
-            OrderAxis::Y => self.coord.y.eq(&other.coord.y),
-            OrderAxis::Z => self.coord.z.eq(&other.coord.z),
-        }
+        self.cid.eq(&other.cid)
     }
 }
 
 impl PartialOrd for Item {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.order_type {
+        if self.cid == other.cid {
+            return Some(Ordering::Equal);
+        }
+        let result = match self.order_type {
             OrderAxis::X => self.coord.x.partial_cmp(&other.coord.x),
             OrderAxis::Y => self.coord.y.partial_cmp(&other.coord.y),
             OrderAxis::Z => self.coord.z.partial_cmp(&other.coord.z),
+        };
+
+        match result {
+            Some(Ordering::Equal) => Some(Ordering::Greater),
+            other => other
         }
     }
 }
@@ -77,11 +110,7 @@ impl Eq for Item {}
 
 impl Ord for Item {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.order_type {
-            OrderAxis::X => self.coord.x.partial_cmp(&other.coord.x).unwrap(),
-            OrderAxis::Y => self.coord.y.partial_cmp(&other.coord.y).unwrap(),
-            OrderAxis::Z => self.coord.z.partial_cmp(&other.coord.z).unwrap(),
-        }
+        self.partial_cmp(&other).unwrap()
     }
 }
 
@@ -170,7 +199,7 @@ mod tests {
             OrderAxis::X,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 2.0,
                 y: 2.0,
@@ -191,7 +220,7 @@ mod tests {
             OrderAxis::Y,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 1.0,
                 y: 3.0,
@@ -212,7 +241,7 @@ mod tests {
             OrderAxis::Z,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 1.0,
                 y: 3.0,
@@ -236,7 +265,7 @@ mod tests {
             OrderAxis::X,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 1.0,
                 y: 2.0,
@@ -257,7 +286,7 @@ mod tests {
             OrderAxis::Y,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 1.0,
                 y: 2.0,
@@ -278,7 +307,7 @@ mod tests {
             OrderAxis::Z,
         );
         let item2 = Item::new_item(
-            1,
+            2,
             CoordTuple {
                 x: 1.0,
                 y: 3.0,
