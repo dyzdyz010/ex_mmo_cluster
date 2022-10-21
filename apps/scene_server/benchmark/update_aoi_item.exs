@@ -1,5 +1,5 @@
 make_inputs = fn input ->
-  {:ok, system1} = SceneServer.Native.CoordinateSystem.new_system(1000, 100)
+  {:ok, system1} = SceneServer.Native.CoordinateSystem.new_system(100_000, 50)
   cid = 0
   xpos = 50000.0
   ypos = 50000.0
@@ -14,7 +14,7 @@ make_inputs = fn input ->
     SceneServer.Native.CoordinateSystem.add_item_to_system(system1, cid, {xpos, ypos, zpos})
   end
 
-  {:ok, system2} = SceneServer.Native.CoordinateSystem.new_system(100, 100)
+  {:ok, system2} = SceneServer.Native.CoordinateSystem.new_system(10_000, 50)
   cid = 0
   xpos = 5000.0
   ypos = 5000.0
@@ -29,7 +29,7 @@ make_inputs = fn input ->
     SceneServer.Native.CoordinateSystem.add_item_to_system(system2, cid, {xpos, ypos, zpos})
   end
 
-  {:ok, system3} = SceneServer.Native.CoordinateSystem.new_system(100, 50)
+  {:ok, system3} = SceneServer.Native.CoordinateSystem.new_system(5_000, 50)
   cid = 0
   xpos = 2500.0
   ypos = 2500.0
@@ -74,7 +74,7 @@ end
 
 Benchee.run(
   %{
-    # "update_item" => update_item,
+    "update_item" => update_item,
     "update_item_new" => update_item_new,
   },
   inputs: %{}

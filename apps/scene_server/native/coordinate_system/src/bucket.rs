@@ -3,7 +3,7 @@ use std::{cmp::Ordering, ptr};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::NifStruct;
 
-use crate::{item::Item, SetAddResult, SetRemoveResult};
+use crate::{item::Item, SetAddResult};
 
 #[derive(NifStruct, Clone, Debug)]
 #[module = "Bucket"]
@@ -17,27 +17,26 @@ impl Bucket {
     }
 
     pub fn add(&mut self, item: Item) -> SetAddResult {
-        match self.data.binary_search_by_key(&item.cid, |ele| ele.cid) {
+        match self.data.binary_search(&item) {
             Ok(idx) => SetAddResult::Duplicate(idx),
-            Err(_) => {
-                // println!("无重复元素，可以插入。");
-                let insert_idx = self.binary_search(&item);
-                // println!("无重复元素，可以插入。");
-                self.data.insert(insert_idx, item);
-                SetAddResult::Added(insert_idx)
+            Err(idx) => {
+                println!("待插入位置：{}", idx);
+
+                self.data.insert(idx, item);
+                SetAddResult::Added(idx)
             }
         }
     }
 
-    pub fn remove(&mut self, item: Item) -> SetRemoveResult {
-        match self.data.binary_search(&item) {
-            Ok(idx) => {
-                self.data.remove(idx);
-                SetRemoveResult::Removed(idx)
-            }
-            Err(_) => SetRemoveResult::NotFound,
-        }
-    }
+    // pub fn remove(&mut self, item: Item) -> SetRemoveResult {
+    //     match self.data.binary_search(&item) {
+    //         Ok(idx) => {
+    //             self.data.remove(idx);
+    //             SetRemoveResult::Removed(idx)
+    //         }
+    //         Err(_) => SetRemoveResult::NotFound,
+    //     }
+    // }
 
     pub fn split(&mut self) -> Bucket {
         let curr_len = self.data.len();
@@ -57,49 +56,49 @@ impl Bucket {
         Bucket { data: other }
     }
 
-    fn binary_search(&mut self, item: &Item) -> usize {
-        if self.len() == 0 || item < self.data.first().unwrap() {
-            // println!("最头部");
-            return 0;
-        }
+    // fn binary_search_insertion_index(&mut self, item: &Item) -> usize {
+    //     if self.len() == 0 || item < self.data.first().unwrap() {
+    //         // println!("最头部");
+    //         return 0;
+    //     }
 
-        if item > self.data.last().unwrap() {
-            // println!("最尾部");
-            return self.len();
-        }
+    //     if item > self.data.last().unwrap() {
+    //         // println!("最尾部");
+    //         return self.len();
+    //     }
 
-        let comp_vec: &Vec<Item> = &self.data;
-        let mut idx_start: usize = 0;
-        let mut idx_end: usize = self.len() - 1;
-        let mut idx: usize = 0;
-        while idx_end >= idx_start {
-            if item < &comp_vec[idx_start] {
-                return idx + 1;
-            }
+    //     let comp_vec: &Vec<Item> = &self.data;
+    //     let mut idx_start: usize = 0;
+    //     let mut idx_end: usize = self.len() - 1;
+    //     let mut idx: usize = 0;
+    //     while idx_end >= idx_start {
+    //         if item < &comp_vec[idx_start] {
+    //             return idx + 1;
+    //         }
 
-            if item > &comp_vec[idx_end] {
-                return idx;
-            }
+    //         if item > &comp_vec[idx_end] {
+    //             return idx;
+    //         }
 
-            idx = (idx_end - idx_start + 1) / 2 + idx_start;
-            // println!("当前idx: {}, idx_start: {}, idx_end: {}.", idx, idx_start, idx_end);
-            let ele = &comp_vec[idx];
-            match item.cmp(&ele) {
-                std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => {
-                    idx_start = idx + 1;
-                    // let remainder = comp_vec.splice(idx + 1..comp_vec.len(), []).collect();
-                    // comp_vec = remainder
-                }
-                std::cmp::Ordering::Less => {
-                    idx_end = idx - 1;
-                    // let remainder = comp_vec.splice(0..idx, []).collect();
-                    // comp_vec = remainder
-                }
-            }
-        }
+    //         idx = (idx_end - idx_start + 1) / 2 + idx_start;
+    //         // println!("当前idx: {}, idx_start: {}, idx_end: {}.", idx, idx_start, idx_end);
+    //         let ele = &comp_vec[idx];
+    //         match item.cmp(&ele) {
+    //             std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => {
+    //                 idx_start = idx + 1;
+    //                 // let remainder = comp_vec.splice(idx + 1..comp_vec.len(), []).collect();
+    //                 // comp_vec = remainder
+    //             }
+    //             std::cmp::Ordering::Less => {
+    //                 idx_end = idx - 1;
+    //                 // let remainder = comp_vec.splice(0..idx, []).collect();
+    //                 // comp_vec = remainder
+    //             }
+    //         }
+    //     }
 
-        return idx + 1;
-    }
+    //     return idx + 1;
+    // }
 
     pub fn item_compare(&self, item: &Item) -> Ordering {
         let first_item = match self.data.first() {
@@ -123,48 +122,48 @@ impl Bucket {
         }
     }
 
-    pub fn item_update(&mut self, old_item: &Item, new_item: &Item) -> bool {
-        let idx1 = match self.data.binary_search(old_item) {
-            Ok(oidx) => oidx,
-            Err(eidx) => eidx,
-        };
-        let idx2 = self.binary_search(new_item);
+    // pub fn item_update(&mut self, old_item: &Item, new_item: &Item) -> bool {
+    //     let idx1 = match self.data.binary_search(old_item) {
+    //         Ok(oidx) => oidx,
+    //         Err(eidx) => eidx,
+    //     };
+    //     let idx2 = self.data.binary_search(new_item).unwrap_err();
 
-        if idx1 == idx2 {
-            return true;
-        } else if idx1 < idx2 {
-            if idx2 - idx1 == 1 {
-                self.data[idx1].coord = new_item.coord;
-                return true;
-            }
-            unsafe {
-                ptr::copy(
-                    self.data.as_ptr().add(idx1 + 1),
-                    self.data.as_mut_ptr().add(idx1),
-                    idx2 - 1 - idx1,
-                );
-                self.data[idx2 - 1] = new_item.clone();
-            }
-        } else {
-            unsafe {
-                ptr::copy(
-                    self.data.as_ptr().add(idx1 - 1),
-                    self.data.as_mut_ptr().add(idx1),
-                    idx1 - idx2,
-                );
-                self.data[idx1] = new_item.clone();
-            }
-        }
+    //     if idx1 == idx2 {
+    //         return true;
+    //     } else if idx1 < idx2 {
+    //         if idx2 - idx1 == 1 {
+    //             self.data[idx1].coord = new_item.coord;
+    //             return true;
+    //         }
+    //         unsafe {
+    //             ptr::copy(
+    //                 self.data.as_ptr().add(idx1 + 1),
+    //                 self.data.as_mut_ptr().add(idx1),
+    //                 idx2 - 1 - idx1,
+    //             );
+    //             self.data[idx2 - 1] = new_item.clone();
+    //         }
+    //     } else {
+    //         unsafe {
+    //             ptr::copy(
+    //                 self.data.as_ptr().add(idx1 - 1),
+    //                 self.data.as_mut_ptr().add(idx1),
+    //                 idx1 - idx2,
+    //             );
+    //             self.data[idx1 - 1] = new_item.clone();
+    //         }
+    //     }
 
-        return true;
-    }
+    //     return true;
+    // }
 
     pub fn items_within_distance_for_item(&self, item: &Item, distance: f64) -> Vec<&Item> {
         let items: Vec<&Item> = self
             .data
             .par_iter()
             .filter(|it| {
-                println!("距离：{}", item.distance(it));
+                // println!("距离：{}", item.distance(it));
                 item.distance(it) <= distance && item.distance(it) != 0.0
             })
             .collect();
@@ -366,18 +365,28 @@ mod tests {
             )),
             SetAddResult::Added(0)
         );
-        assert_eq!(
-            bucket.add(Item::new_item(
-                2,
-                CoordTuple {
-                    x: 2.0,
-                    y: 2.0,
-                    z: 3.0
-                },
-                OrderAxis::X
-            )),
-            SetAddResult::Added(1)
-        );
+        bucket.add(Item::new_item(
+            2,
+            CoordTuple {
+                x: 2.0,
+                y: 2.0,
+                z: 3.0
+            },
+            OrderAxis::X
+        ));
+        println!("Bucket: {:#?}", bucket);
+        // assert_eq!(
+        //     bucket.add(Item::new_item(
+        //         2,
+        //         CoordTuple {
+        //             x: 2.0,
+        //             y: 2.0,
+        //             z: 3.0
+        //         },
+        //         OrderAxis::X
+        //     )),
+        //     SetAddResult::Added(1)
+        // );
         assert_eq!(
             bucket.add(Item::new_item(
                 3,

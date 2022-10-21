@@ -6,7 +6,7 @@ use rustler::NifStruct;
 use crate::{
     bucket::Bucket,
     configuration::Configuration,
-    item::{CoordTuple, Item},
+    item::Item,
     FindResult, SetAddResult, SetRemoveResult,
 };
 
@@ -139,34 +139,34 @@ impl<'a> SortedSet {
         }
     }
 
-    pub fn update_with_coordinate(
-        &mut self,
-        item: &Item,
-        new_coord: CoordTuple,
-    ) -> Result<Item, i32> {
-        let new_item: Item = Item {
-            cid: item.cid,
-            coord: new_coord,
-            order_type: item.order_type,
-        };
-        let old_idx = self.find_bucket_index(item);
-        let new_idx = self.find_bucket_index(&new_item);
-        if old_idx == new_idx {
-            if self.buckets[old_idx].item_update(item, &new_item) {
-                // println!("New Item: {:#?} \n 更新后结果：{:#?}", new_item, self);
-                return Ok(new_item);
-            } else {
-                return Err(0);
-            }
-        } else {
-            let remove_result = self.buckets[old_idx].remove(item.clone());
-            let add_result = self.buckets[new_idx].add(new_item);
-            match (remove_result, add_result) {
-                (SetRemoveResult::Removed(_), SetAddResult::Added(_)) => return Ok(new_item),
-                (_, _) => return Err(0),
-            }
-        }
-    }
+    // pub fn update_with_coordinate(
+    //     &mut self,
+    //     item: &Item,
+    //     new_coord: CoordTuple,
+    // ) -> Result<Item, i32> {
+    //     let mut new_item: Item = Item {
+    //         cid: -1,
+    //         coord: new_coord,
+    //         order_type: item.order_type,
+    //     };
+    //     let old_idx = self.find_bucket_index(item);
+    //     let new_idx = self.find_bucket_index(&new_item);
+    //     if old_idx == new_idx {
+    //         if self.buckets[old_idx].item_update(item, &new_item) {
+    //             // println!("New Item: {:#?} \n 更新后结果：{:#?}", new_item, self);
+    //             return Ok(new_item);
+    //         } else {
+    //             return Err(0);
+    //         }
+    //     } else {
+    //         let remove_result = self.buckets[old_idx].remove(item.clone());
+    //         let add_result = self.buckets[new_idx].add(new_item);
+    //         match (remove_result, add_result) {
+    //             (SetRemoveResult::Removed(_), SetAddResult::Added(_)) => return Ok(new_item),
+    //             (_, _) => return Err(0),
+    //         }
+    //     }
+    // }
 
     pub fn items_within_distance_for_item(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
         let mut items: Vec<&Item> = vec![];
@@ -311,106 +311,106 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_update_item() {
-        let mut set = get_set();
+    // #[test]
+    // fn test_update_item() {
+    //     let mut set = get_set();
 
-        let item = Item {
-            cid: 1,
-            coord: CoordTuple {
-                x: 3.0,
-                y: 3.0,
-                z: 3.0,
-            },
-            order_type: OrderAxis::X,
-        };
+    //     let item = Item {
+    //         cid: 1,
+    //         coord: CoordTuple {
+    //             x: 3.0,
+    //             y: 3.0,
+    //             z: 3.0,
+    //         },
+    //         order_type: OrderAxis::X,
+    //     };
 
-        println!("原始Set: {:#?}", set);
+    //     println!("原始Set: {:#?}", set);
 
-        let result = set
-            .update_with_coordinate(
-                &item,
-                CoordTuple {
-                    x: 4.0,
-                    y: 4.0,
-                    z: 4.0,
-                },
-            )
-            .unwrap();
+    //     let result = set
+    //         .update_with_coordinate(
+    //             &item,
+    //             CoordTuple {
+    //                 x: 4.0,
+    //                 y: 4.0,
+    //                 z: 4.0,
+    //             },
+    //         )
+    //         .unwrap();
 
-        assert_eq!(result.coord.x, 4.0);
+    //     assert_eq!(result.coord.x, 4.0);
 
-        let bucket_idx = set.find_bucket_index(&item);
-        assert_eq!(bucket_idx, 0);
+    //     let bucket_idx = set.find_bucket_index(&item);
+    //     assert_eq!(bucket_idx, 0);
 
-        let result = set.find_index(&item);
+    //     let result = set.find_index(&item);
 
-        assert_eq!(
-            result,
-            FindResult::Found {
-                bucket_idx: bucket_idx,
-                inner_idx: 1,
-                idx: 1
-            }
-        );
+    //     assert_eq!(
+    //         result,
+    //         FindResult::Found {
+    //             bucket_idx: bucket_idx,
+    //             inner_idx: 1,
+    //             idx: 1
+    //         }
+    //     );
 
-        let result = set
-            .update_with_coordinate(
-                &item,
-                CoordTuple {
-                    x: 6.0,
-                    y: 6.0,
-                    z: 6.0,
-                },
-            )
-            .unwrap();
-        assert_eq!(result.coord.x, 6.0);
+    //     let result = set
+    //         .update_with_coordinate(
+    //             &item,
+    //             CoordTuple {
+    //                 x: 6.0,
+    //                 y: 6.0,
+    //                 z: 6.0,
+    //             },
+    //         )
+    //         .unwrap();
+    //     assert_eq!(result.coord.x, 6.0);
 
-        let bucket_idx = set.find_bucket_index(&item);
-        assert_eq!(bucket_idx, 1);
+    //     let bucket_idx = set.find_bucket_index(&item);
+    //     assert_eq!(bucket_idx, 1);
 
-        let result = set.find_index(&item);
+    //     let result = set.find_index(&item);
 
-        assert_eq!(
-            result,
-            FindResult::Found {
-                bucket_idx: bucket_idx,
-                inner_idx: 1,
-                idx: 2
-            }
-        );
+    //     assert_eq!(
+    //         result,
+    //         FindResult::Found {
+    //             bucket_idx: bucket_idx,
+    //             inner_idx: 1,
+    //             idx: 2
+    //         }
+    //     );
 
-        let item = set
-            .update_with_coordinate(
-                &item,
-                CoordTuple {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-            )
-            .unwrap();
-        println!("向后更新Set: {:#?}", set);
-        assert_eq!(item.coord.x, 0.0);
+    //     let item = set
+    //         .update_with_coordinate(
+    //             &item,
+    //             CoordTuple {
+    //                 x: 0.0,
+    //                 y: 0.0,
+    //                 z: 0.0,
+    //             },
+    //         )
+    //         .unwrap();
+    //     println!("向后更新Set: {:#?}", set);
+    //     assert_eq!(item.coord.x, 0.0);
 
-        // let li = [1, 3, 5];
-        // let result = li.binary_search(&-1);
-        // assert_eq!(result, Err(0));
+    //     // let li = [1, 3, 5];
+    //     // let result = li.binary_search(&-1);
+    //     // assert_eq!(result, Err(0));
 
-        let bucket_idx = set.find_bucket_index(&item);
-        assert_eq!(bucket_idx, 0);
+    //     let bucket_idx = set.find_bucket_index(&item);
+    //     assert_eq!(bucket_idx, 0);
 
-        println!("{}", set.buckets[0].len());
+    //     println!("{}", set.buckets[0].len());
 
-        let result = set.find_index(&item);
+    //     let result = set.find_index(&item);
 
-        assert_eq!(
-            result,
-            FindResult::Found {
-                bucket_idx: bucket_idx,
-                inner_idx: 0,
-                idx: 0
-            }
-        );
-    }
+    //     assert_eq!(
+    //         result,
+    //         FindResult::Found {
+    //             bucket_idx: bucket_idx,
+    //             inner_idx: 0,
+    //             idx: 0
+    //         }
+    //     );
+    // }
 }
