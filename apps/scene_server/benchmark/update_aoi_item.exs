@@ -61,9 +61,21 @@ update_item = fn {system, item, size} ->
   SceneServer.Native.CoordinateSystem.update_item_from_system(system, item, {xpos, ypos, zpos})
 end
 
+update_item_new = fn {system, item, size} ->
+  # IO.inspect("Inputs: ")
+  # IO.inspect(item, pretty: true)
+  # system = inputs[:system]
+  # item = inputs[:item]
+  xpos = Enum.random(0..size) / size
+  ypos = Enum.random(0..size) / size
+  zpos = Enum.random(0..size) / size
+  SceneServer.Native.CoordinateSystem.update_item_from_system_new(system, item, {xpos, ypos, zpos})
+end
+
 Benchee.run(
   %{
-    "update_item" => update_item,
+    # "update_item" => update_item,
+    "update_item_new" => update_item_new,
   },
   inputs: %{}
     |> make_inputs.()

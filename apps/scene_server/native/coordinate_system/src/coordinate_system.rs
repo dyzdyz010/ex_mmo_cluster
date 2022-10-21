@@ -100,6 +100,24 @@ impl CoordinateSystem {
         }
     }
 
+    pub fn update_new(&mut self, item: &mut Item, new_position: CoordTuple) -> UpdateResult {
+        let mut jobs: Vec<Result<Item, i32>> = Vec::with_capacity(3);
+        self.axes.par_iter_mut().enumerate().map(|(idx, ss)| {
+            return ss.update_with_coordinate(&Item {
+                cid: item.cid,
+                coord: item.coord.clone(),
+                order_type: OrderAxis::axis_by_index(idx),
+            }, new_position);
+        }).collect_into_vec(&mut jobs);
+
+        let result = match(jobs[0], jobs[1], jobs[2]) {
+            (Ok(_), Ok(_), Ok(_)) => UpdateResult::Updated(0, 0, 0),
+            (_, _, _) => UpdateResult::Error
+        };
+
+        result
+    }
+
     pub fn items_within_distance_for_item<'a>(&'a self, item: &Item, distance: f64) -> Vec<&Item> {
         let mut items: Vec<&Item> = self.axes.par_iter().map(|set|
             set.items_within_distance_for_item(item, distance)

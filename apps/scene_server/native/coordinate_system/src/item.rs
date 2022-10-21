@@ -31,7 +31,7 @@ pub struct CoordTuple {
 //     pub order_type: OrderAxis,
 // }
 
-#[derive(NifStruct, Clone, Debug)]
+#[derive(NifStruct, Clone, Debug, Copy)]
 #[module = "Item"]
 pub struct Item {
     pub cid: i64,

@@ -3,7 +3,7 @@ use std::{cmp::Ordering, ptr};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::NifStruct;
 
-use crate::{item::Item, SetAddResult};
+use crate::{item::Item, SetAddResult, SetRemoveResult};
 
 #[derive(NifStruct, Clone, Debug)]
 #[module = "Bucket"]
@@ -26,6 +26,16 @@ impl Bucket {
                 self.data.insert(insert_idx, item);
                 SetAddResult::Added(insert_idx)
             }
+        }
+    }
+
+    pub fn remove(&mut self, item: Item) -> SetRemoveResult {
+        match self.data.binary_search(&item) {
+            Ok(idx) => {
+                self.data.remove(idx);
+                SetRemoveResult::Removed(idx)
+            }
+            Err(_) => SetRemoveResult::NotFound,
         }
     }
 
@@ -103,8 +113,10 @@ impl Bucket {
         };
 
         if item < first_item {
+            // println!("Bucket 大");
             Ordering::Greater
         } else if last_item < item {
+            // println!("Bucket 小");
             Ordering::Less
         } else {
             Ordering::Equal
@@ -112,34 +124,36 @@ impl Bucket {
     }
 
     pub fn item_update(&mut self, old_item: &Item, new_item: &Item) -> bool {
-        let idx1 = self.data.binary_search(old_item).unwrap();
+        let idx1 = match self.data.binary_search(old_item) {
+            Ok(oidx) => oidx,
+            Err(eidx) => eidx,
+        };
         let idx2 = self.binary_search(new_item);
-        match idx1.cmp(&idx2) {
-            Ordering::Equal => {
+
+        if idx1 == idx2 {
+            return true;
+        } else if idx1 < idx2 {
+            if idx2 - idx1 == 1 {
                 self.data[idx1].coord = new_item.coord;
                 return true;
             }
-            Ordering::Less => unsafe {
+            unsafe {
                 ptr::copy(
                     self.data.as_ptr().add(idx1 + 1),
                     self.data.as_mut_ptr().add(idx1),
                     idx2 - 1 - idx1,
                 );
-                self.data[idx2] = new_item.clone();
-            },
-            Ordering::Greater => unsafe {
+                self.data[idx2 - 1] = new_item.clone();
+            }
+        } else {
+            unsafe {
                 ptr::copy(
                     self.data.as_ptr().add(idx1 - 1),
                     self.data.as_mut_ptr().add(idx1),
                     idx1 - idx2,
                 );
                 self.data[idx1] = new_item.clone();
-            },
-        }
-        if idx1 == idx2 {
-            return true;
-        } else if idx1 < idx2 {
-        } else {
+            }
         }
 
         return true;

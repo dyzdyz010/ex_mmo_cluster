@@ -118,6 +118,7 @@ rustler::init!(
         add_item_to_system,
         remove_item_from_system,
         update_item_from_system,
+        update_item_from_system_new,
         get_items_within_distance_from_system,
         get_system_raw,
     ],
@@ -313,6 +314,31 @@ fn update_item_from_system(
     };
 
     match cs.update(&mut item, new_position) {
+        UpdateResult::Updated(idxx, idxy, idxz) => Ok((idxx, idxy, idxz)),
+        UpdateResult::Error => Err(atoms::not_found()),
+    }
+}
+
+#[rustler::nif]
+fn update_item_from_system_new(
+    csref: ResourceArc<CoordinateSystemResource>,
+    itemref: ResourceArc<ItemResource>,
+    new_position: CoordTuple,
+) -> Result<(usize, usize, usize), Atom> {
+    let sys_resource: &CoordinateSystemResource = &*csref;
+    let item_resource: &ItemResource = &*itemref;
+
+    let mut cs = match sys_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    let mut item = match item_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    match cs.update_new(&mut item, new_position) {
         UpdateResult::Updated(idxx, idxy, idxz) => Ok((idxx, idxy, idxz)),
         UpdateResult::Error => Err(atoms::not_found()),
     }
