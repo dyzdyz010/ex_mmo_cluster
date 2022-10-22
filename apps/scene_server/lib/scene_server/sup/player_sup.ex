@@ -1,4 +1,4 @@
-defmodule SceneServer.PlayerManagerSup do
+defmodule SceneServer.PlayerSup do
   use Supervisor
 
   def start_link(opts \\ []) do

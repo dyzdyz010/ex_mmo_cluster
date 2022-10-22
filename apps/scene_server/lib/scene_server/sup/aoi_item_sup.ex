@@ -1,4 +1,4 @@
-defmodule SceneServer.AoiItemsSup do
+defmodule SceneServer.AoiItemSup do
   use DynamicSupervisor
 
   def start_link(opts) do

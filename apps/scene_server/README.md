@@ -1,21 +1,44 @@
 # SceneServer
 
-**TODO: Add description**
+Scene server for the game.
 
-## Installation
+## Features
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `scene_server` to your list of dependencies in `mix.exs`:
++ Player character management
++ Movement syncing
++ AOI management
 
-```elixir
-def deps do
-  [
-    {:scene_server, "~> 0.1.0"}
-  ]
-end
+## Run in Debug
+
+```bash
+iex --name <name> --cookie <cookie> -S mix
 ```
 
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/scene_server>.
 
+## The Supervision Tree
+
+```mermaid
+flowchart TD
+
+A[SceneServer] --> B[InterfaceSup]
+A --> C[PlayerSup]
+A --> D[AoiSup]
+B --> E[Interface]
+
+subgraph Player
+C --> F[PlayerManager]
+C --> G[PlayerCharacterSup]
+G -- 1:N --> J[PlayerCharacter]
+end
+
+subgraph AOI
+D --> H[AoiManager]
+D --> I[AoiItemSup]
+I -- 1:N --> K[AoiItem]
+end
+
+J -.-> K
+```

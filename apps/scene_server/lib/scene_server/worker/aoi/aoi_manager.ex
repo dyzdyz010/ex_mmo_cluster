@@ -1,4 +1,4 @@
-defmodule SceneServer.Aoi do
+defmodule SceneServer.AoiManager do
   use GenServer
 
   require Logger
@@ -42,7 +42,7 @@ defmodule SceneServer.Aoi do
       ) do
     {:ok, apid} =
       DynamicSupervisor.start_child(
-        SceneServer.PlayerCharacterSup,
+        SceneServer.AoiItemSup,
         {SceneServer.Aoi.AoiItem, {cid, location, cpid, system}}
       )
 

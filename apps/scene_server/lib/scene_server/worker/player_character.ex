@@ -3,7 +3,7 @@ defmodule SceneServer.PlayerCharacter do
 
   require Logger
 
-  alias SceneServer.Aoi
+  alias SceneServer.AoiManager
 
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
@@ -30,7 +30,7 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
-    {:ok, _} = Aoi.remove_aoi_item(aoi_item)
+    {:ok, _} = AoiManager.remove_aoi_item(aoi_item)
     Logger.debug("AOI item removed.")
     {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
     Logger.debug("Player index removed.")
@@ -38,7 +38,7 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp enter_scene(cid, position) do
-    {:ok, aoi_ref} = Aoi.add_aoi_item(cid, position, self())
+    {:ok, aoi_ref} = AoiManager.add_aoi_item(cid, position, self())
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}
