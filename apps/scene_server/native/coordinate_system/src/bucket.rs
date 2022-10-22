@@ -20,7 +20,7 @@ impl Bucket {
         match self.data.binary_search(&item) {
             Ok(idx) => SetAddResult::Duplicate(idx),
             Err(idx) => {
-                println!("待插入位置：{}", idx);
+                // println!("待插入位置：{}", idx);
 
                 self.data.insert(idx, item);
                 SetAddResult::Added(idx)

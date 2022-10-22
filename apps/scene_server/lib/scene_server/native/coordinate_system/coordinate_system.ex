@@ -30,7 +30,7 @@ defmodule SceneServer.Native.CoordinateSystem do
   @spec new_system(integer(), integer()) :: {atom(), Types.coordinate_system()}
   def new_system(_set_capacity, _bucket_capacity), do: error()
 
-  @spec add_item_to_system(Types.coordinate_system(), integer(), {number(), number(), number()}) :: {atom(), any()}
+  @spec add_item_to_system(Types.coordinate_system(), integer(), {number(), number(), number()}) :: {:ok, Types.item()} | {:err, atom()}
   def add_item_to_system(_system, _cid, _coord), do: error()
 
   @spec remove_item_from_system(Types.coordinate_system(), Types.item()) :: {:ok, {integer(), integer(), integer()}} | {:err, atom()}

@@ -17,6 +17,7 @@ defmodule SceneServer.AoiSup do
   def init(_init_arg) do
     children = [
       {SceneServer.Aoi, name: SceneServer.Aoi},
+      {SceneServer.AoiItemsSup, name: SceneServer.AoiItemsSup},
       # :poolboy.child_spec(:aoi_worker, poolboy_config())
     ]
 
