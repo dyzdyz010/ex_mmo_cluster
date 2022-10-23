@@ -169,55 +169,71 @@ impl<'a> SortedSet {
     // }
 
     pub fn items_within_distance_for_item(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
-        let mut items: Vec<&Item> = vec![];
-        let within_buckets: Vec<usize> = self
-            .buckets
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, buck)| match buck.data.len() {
-                0 => return None,
-                _ => {
-                    match item.distance(buck.data.first().unwrap()) <= distance
-                        && item.distance(buck.data.last().unwrap()) <= distance
-                    {
-                        true => return Some(idx),
-                        false => return None,
-                    }
-                }
-            })
-            .collect();
-
-        let mut lefthalf: Vec<&Item> = vec![];
-        let mut righthalf: Vec<&Item> = vec![];
-
-        if within_buckets.len() > 0 {
-            if within_buckets.first().unwrap() >= &1 {
-                lefthalf = self.buckets[within_buckets.first().unwrap() - 1]
-                    .items_within_distance_for_item(item, distance);
+        let items: Vec<&Item> = self.buckets.par_iter().filter_map(|buck| {
+            if buck.data.len() == 0 {
+                return None;
+            } else if buck.data.first().unwrap().distance(item) > distance && buck.data.last().unwrap().distance(item) > distance {
+                return None;
+            } else {
+                let result: Vec<&Item> = buck.data.par_iter().filter(|&it| {
+                    item.distance(it) <= distance
+                }).collect();
+                return Some(result);
             }
-            if within_buckets.last().unwrap() <= &(self.buckets.len() - 2) {
-                righthalf = self.buckets[within_buckets.last().unwrap() - 1]
-                    .items_within_distance_for_item(item, distance);
-            }
-        }
+        }).flat_map(|x| x.to_vec()).collect::<Vec<&Item>>();
 
-        let mut within_items: Vec<&Item> = self
-            .buckets
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, buck)| {
-                if within_buckets.contains(&idx) {
-                    return Some(&buck.data);
-                } else {
-                    return None;
-                }
-            })
-            .flatten()
-            .collect();
+        // let within_buckets: Vec<usize> = self
+        //     .buckets
+        //     .par_iter()
+        //     .enumerate()
+        //     .filter_map(|(idx, buck)| match buck.data.len() {
+        //         0 => return None,
+        //         _ => {
+        //             match item.distance(buck.data.first().unwrap()) <= distance
+        //                 && item.distance(buck.data.last().unwrap()) <= distance
+        //             {
+        //                 true => return Some(idx),
+        //                 false => return None,
+        //             }
+        //         }
+        //     })
+        //     .collect();
 
-        items.append(&mut lefthalf);
-        items.append(&mut within_items);
-        items.append(&mut righthalf);
+        // let () = match self.find_index(item) {
+        //     FindResult::Found { bucket_idx, inner_idx, idx } => (bucket_idx, inner_idx)
+        // };
+            
+        // let mut lefthalf: Vec<&Item> = vec![];
+        // let mut righthalf: Vec<&Item> = vec![];
+
+        // if within_buckets.len() > 0 {
+        //     if within_buckets.first().unwrap() >= &1 {
+        //         lefthalf = self.buckets[within_buckets.first().unwrap() - 1]
+        //             .items_within_distance_for_item(item, distance);
+        //     }
+        //     if within_buckets.last().unwrap() <= &(self.buckets.len() - 2) {
+        //         righthalf = self.buckets[within_buckets.last().unwrap() - 1]
+        //             .items_within_distance_for_item(item, distance);
+        //     }
+        // }
+
+        // let mut within_items: Vec<&Item> = self
+        //     .buckets
+        //     .par_iter()
+        //     .enumerate()
+        //     .filter_map(|(idx, buck)| {
+        //         if within_buckets.contains(&idx) {
+        //             return Some(&buck.data);
+        //         } else {
+        //             return None;
+        //         }
+        //     })
+        //     .flatten()
+        //     .collect();
+
+        // items.append(&mut lefthalf);
+        // items.append(&mut within_items);
+        // items.append(&mut righthalf);
 
         return items;
     }
@@ -275,6 +291,15 @@ mod tests {
                 x: 7.0,
                 y: 7.0,
                 z: 7.0,
+            },
+            order_type: OrderAxis::X,
+        });
+        set.add(Item {
+            cid: 4,
+            coord: CoordTuple {
+                x: 9.0,
+                y: 9.0,
+                z: 9.0,
             },
             order_type: OrderAxis::X,
         });
@@ -413,4 +438,21 @@ mod tests {
     //         }
     //     );
     // }
+
+    #[test]
+    fn test_items_within_distance() {
+        let set = get_set();
+        let item = Item {
+            cid: 2,
+            coord: CoordTuple {
+                x: 5.0,
+                y: 5.0,
+                z: 5.0,
+            },
+            order_type: OrderAxis::X,
+        };
+        let aoi_items = set.items_within_distance_for_item(&item, 4.0);
+        println!("{:#?}", aoi_items);
+        assert_eq!(aoi_items.len(), 3);
+    }
 }
