@@ -1,5 +1,5 @@
 defmodule SceneServer.Aoi.AoiItem do
-  use GenServer
+  use GenServer, restart: :temporary
 
   require Logger
 
@@ -13,7 +13,6 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   def init({cid, location, cpid, system}) do
-    {:ok, item_ref} = add_item(cid, location, system)
     timer = make_timer()
 
     {:ok,
@@ -21,17 +20,19 @@ defmodule SceneServer.Aoi.AoiItem do
        cid: cid,
        character_pid: cpid,
        system_ref: system,
-       item_ref: item_ref,
+       item_ref: nil,
        subscribers: [],
        interest_radius: 500,
        timer: timer
-     }}
+     }, {:continue, {:load, location}}}
   end
 
-  defp add_item(cid, location, system) do
-    {:ok, item_ref} = CoordinateSystem.add_item_to_system(system, cid, location)
+  @impl true
+  def handle_continue({:load, location}, %{cid: cid, system_ref: system} = state) do
+    {:ok, item_ref} = add_item(cid, location, system)
+    Logger.debug("Item added to the system.")
 
-    {:ok, item_ref}
+    {:noreply, %{state | item_ref: item_ref}}
   end
 
   @impl true
@@ -46,7 +47,7 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   def handle_info(:tick, state) do
-    Logger.debug("AOI tick.")
+    Logger.debug("AOI tick. #{inspect(self(), pretty: true)}")
     {:noreply, %{state | timer: make_timer()}}
   end
 
@@ -59,6 +60,12 @@ defmodule SceneServer.Aoi.AoiItem do
     Process.cancel_timer(timer)
     Logger.debug("Timer stopped.")
     Logger.warn("Process exited. Reason: #{inspect(reason, pretty: true)}")
+  end
+
+  defp add_item(cid, location, system) do
+    {:ok, item_ref} = CoordinateSystem.add_item_to_system(system, cid, location)
+
+    {:ok, item_ref}
   end
 
   defp make_timer() do

@@ -68,4 +68,8 @@ defmodule GateServer.Message do
 
     {:ok, new_state}
   end
+
+  def dispatch(%Packet{id: id, timestamp: timestamp, payload: {:time_sync, _}}, state, connection) do
+
+  end
 end

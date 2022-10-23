@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::NifStruct;
 
 use crate::{
@@ -451,6 +451,8 @@ mod tests {
             },
             order_type: OrderAxis::X,
         };
+        
+        println!("{:#?}", set);
         let aoi_items = set.items_within_distance_for_item(&item, 4.0);
         println!("{:#?}", aoi_items);
         assert_eq!(aoi_items.len(), 3);

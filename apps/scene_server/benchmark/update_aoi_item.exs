@@ -75,7 +75,7 @@ end
 Benchee.run(
   %{
     "update_item" => update_item,
-    "update_item_new" => update_item_new,
+    # "update_item_new" => update_item_new,
   },
   inputs: %{}
     |> make_inputs.()

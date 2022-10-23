@@ -1,6 +1,6 @@
 # GateServer
 
-**TODO: Add description**
+Gate server for the MMO game.
 
 ## Installation
 
@@ -19,3 +19,18 @@ Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_do
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at [https://hexdocs.pm/gate_server](https://hexdocs.pm/gate_server).
 
+## Supervision Tree
+
+```mermaid
+flowchart TD
+
+A[GateServer] --> B[InterfaceSup]
+A --> C[TcpAcceptor]
+A --> D[TcpConnectionSup]
+
+B --> E[Interface]
+C --> F[TcpAcceptor]
+D -- 1:N --> G[TcpConnection]
+
+G .- 1:1 .-> H([SceneServer.PlayerCharacter])
+```

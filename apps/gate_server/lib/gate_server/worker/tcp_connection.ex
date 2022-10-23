@@ -51,7 +51,7 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp_closed, _conn}, %{scene: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
-    {:ok, _} = GenServer.call(spid, :exit)
+    GenServer.call(spid, :exit)
 
     {:stop, :normal, state}
   end
