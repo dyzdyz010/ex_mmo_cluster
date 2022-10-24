@@ -18,8 +18,8 @@ defmodule SceneServer.AoiManager do
   end
 
   @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
-  def remove_aoi_item(aoi_item) do
-    GenServer.call(__MODULE__, {:remove_aoi_item, aoi_item})
+  def remove_aoi_item(cid) do
+    GenServer.call(__MODULE__, {:remove_aoi_item, cid})
   end
 
   @impl true

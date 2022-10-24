@@ -1,5 +1,5 @@
 defmodule SceneServer.Aoi.AoiItem do
-  use GenServer, restart: :temporary
+  use GenServer, restart: :transient
 
   require Logger
 
@@ -36,6 +36,13 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
+  def handle_cast({:movement, location, _velocity}, %{system_ref: system, item_ref: item} = state) do
+    {:ok, _} = CoordinateSystem.update_item_from_system(system, item, location)
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_call(:exit, _from, state) do
     {:stop, :normal, {:ok, ""}, state}
   end
@@ -46,20 +53,23 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  def handle_info(:tick, state) do
-    Logger.debug("AOI tick. #{inspect(self(), pretty: true)}")
+  def handle_info(:tick, %{system_ref: _system, item_ref: item} = state) do
+    item_raw = CoordinateSystem.get_item_raw(item)
+    Logger.debug("AOI tick. #{inspect(item_raw, pretty: true)}", ansi_color: :yellow)
     {:noreply, %{state | timer: make_timer()}}
+    # {:noreply, state}
   end
 
   @impl true
   def terminate(reason, %{cid: cid, system_ref: system, item_ref: item, timer: timer}) do
     {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
-    Logger.debug("AOI item removed.")
-    {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
-    Logger.debug("Player index removed.")
-    Process.cancel_timer(timer)
+    Logger.debug("AOI system item removed.")
+    {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
+    Logger.debug("Aoi index removed.")
+    result = Process.cancel_timer(timer)
+    Logger.debug("Time cancelation result: #{inspect(result, pretty: true)}")
     Logger.debug("Timer stopped.")
-    Logger.warn("Process exited. Reason: #{inspect(reason, pretty: true)}")
+    Logger.warn("AoiItem process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}", ansi_color: :green)
   end
 
   defp add_item(cid, location, system) do

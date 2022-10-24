@@ -52,13 +52,14 @@ defmodule SceneServer.PlayerCharacter do
           %{state | old_timestamp: new_timestamp}
 
         _ ->
-          Logger.debug("CS延迟: #{(new_timestamp - old_timestamp) / 2}")
+          Logger.debug("CS延迟: #{div(new_timestamp - old_timestamp, 2)}")
 
           new_delay =
             if old_delay != 0 do
-              ((new_timestamp - old_timestamp) / 2 + old_delay) / 2
+              div(div(new_timestamp - old_timestamp, 2), 2)
+              # ((new_timestamp - old_timestamp) / 2 + old_delay) / 2
             else
-              (new_timestamp - old_timestamp) / 2
+              div(new_timestamp - old_timestamp, 2)
             end
 
           %{state | old_timestamp: nil, net_delay: new_delay}
@@ -68,12 +69,23 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
+  def handle_call(
+        {:movement, location, velocity},
+        _from,
+        %{aoi_ref: aoi} = state
+      ) do
+
+    GenServer.cast(aoi, {:movement, location, velocity})
+    {:reply, {:ok, ""}, state}
+  end
+
+  @impl true
   def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
-    {:ok, _} = AoiManager.remove_aoi_item(aoi_item)
+    {:ok, _} = GenServer.call(aoi_item, :exit)
     Logger.debug("AOI item removed.")
     {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
     Logger.debug("Player index removed.")
-    Logger.warn("Process exited. Reason: #{inspect(reason, pretty: true)}")
+    Logger.warn("PlayerCharacter process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}", ansi_color: :green)
   end
 
   defp enter_scene(cid, position) do

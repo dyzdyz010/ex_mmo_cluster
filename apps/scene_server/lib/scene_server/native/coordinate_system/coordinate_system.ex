@@ -36,7 +36,7 @@ defmodule SceneServer.Native.CoordinateSystem do
   @spec remove_item_from_system(Types.coordinate_system(), Types.item()) :: {:ok, {integer(), integer(), integer()}} | {:err, atom()}
   def remove_item_from_system(_system, _item), do: error()
 
-  @spec update_item_from_system(Types.coordinate_system(), Types.item(), tuple()) :: {{integer(), integer(), integer()}, atom()}
+  @spec update_item_from_system(Types.coordinate_system(), Types.item(), tuple()) :: {:ok, {integer(), integer(), integer()}} | {:err, atom()}
   def update_item_from_system(_system, _item, _new_position), do: error()
 
   @spec update_item_from_system_new(Types.coordinate_system(), Types.item(), tuple()) :: {{integer(), integer(), integer()}, atom()}

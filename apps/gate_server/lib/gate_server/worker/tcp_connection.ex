@@ -22,7 +22,7 @@ defmodule GateServer.TcpConnection do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
-    {:ok, %{socket: socket, cid: -1, agent: nil, scene: nil, token: nil, status: :waiting_auth}}
+    {:ok, %{socket: socket, cid: -1, agent: nil, scene_ref: nil, token: nil, status: :waiting_auth}}
   end
 
   @impl true
@@ -49,7 +49,7 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_info({:tcp_closed, _conn}, %{scene: spid} = state) do
+  def handle_info({:tcp_closed, _conn}, %{scene_ref: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
     GenServer.call(spid, :exit)
 
@@ -57,7 +57,7 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_info({:tcp_error, _conn, err}, %{scene: spid} = state) do
+  def handle_info({:tcp_error, _conn, err}, %{scene_ref: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
     {:ok, _} = GenServer.call(spid, :exit)
 
