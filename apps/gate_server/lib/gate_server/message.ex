@@ -29,7 +29,11 @@ defmodule GateServer.Message do
     end
   end
 
-  def dispatch(%Packet{id: id, payload: {:movement, movement}}, %{scene_ref: spid} = state, connection) do
+  def dispatch(
+        %Packet{id: id, payload: {:movement, movement}},
+        %{scene_ref: spid} = state,
+        connection
+      ) do
     # auth_server = GenServer.call(GateServer.Interface, :auth_server)
     # case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:login, authrequest}) do
     #   {:ok, agent} ->
@@ -41,12 +45,19 @@ defmodule GateServer.Message do
     #   _ -> GenServer.cast(connection, {:send, "server error"})
     #   {:ok,state}
     # end
-    %Movement{position: %Vector{x: px, y: py, z: pz}, velocity: %Vector{x: vx, y: vy, z: vz}} = movement
+    %Movement{position: %Vector{x: px, y: py, z: pz}, velocity: %Vector{x: vx, y: vy, z: vz}} =
+      movement
+
     {:ok, _} = GenServer.call(spid, {:movement, {px, py, pz}, {vx, vy, vz}})
 
     Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
 
-    packet = %Packet{id: id, timestamp: :os.system_time(:millisecond), payload: {:result, %Response.Result{packet_id: id, status_code: :ok, payload: %{}}}}
+    packet = %Packet{
+      id: id,
+      timestamp: :os.system_time(:millisecond),
+      payload: {:result, %Response.Result{packet_id: id, status_code: :ok, payload: %{}}}
+    }
+
     GenServer.cast(connection, {:send_data, packet})
 
     {:ok, state}
@@ -74,11 +85,17 @@ defmodule GateServer.Message do
     {:ok, new_state}
   end
 
-  def dispatch(%Packet{id: id, timestamp: timestamp, payload: {:time_sync, _}}, %{scene_ref: spid} = state, connection) do
-    {:ok, new_timestamp} = GenServer.call(spid, {:time_sync, timestamp})
+  def dispatch(
+        %Packet{id: id, payload: {:time_sync, _}},
+        %{scene_ref: spid} = state,
+        connection
+      ) do
+    {:ok, new_timestamp} = GenServer.call(spid, :time_sync)
 
-    packet = %Packet{id: id, timestamp: new_timestamp, payload: {:time_sync, %TimeSync{}}}
-    GenServer.cast(connection, {:send_data, packet})
+    if new_timestamp != :end do
+      packet = %Packet{id: id, timestamp: new_timestamp, payload: {:time_sync, %TimeSync{}}}
+      GenServer.cast(connection, {:send_data, packet})
+    end
 
     {:ok, state}
   end
