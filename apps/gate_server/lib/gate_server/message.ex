@@ -30,7 +30,7 @@ defmodule GateServer.Message do
   end
 
   def dispatch(
-        %Packet{id: id, payload: {:movement, movement}},
+        %Packet{id: id, payload: {:entity_action, %Entity.EntityAction{action: {:movement, movement}}}},
         %{scene_ref: spid} = state,
         connection
       ) do
@@ -45,8 +45,11 @@ defmodule GateServer.Message do
     #   _ -> GenServer.cast(connection, {:send, "server error"})
     #   {:ok,state}
     # end
-    %Movement{position: %Vector{x: px, y: py, z: pz}, velocity: %Vector{x: vx, y: vy, z: vz}} =
-      movement
+    %Entity.Movement{
+      location: %Entity.Vector{x: px, y: py, z: pz},
+      velocity: %Entity.Vector{x: vx, y: vy, z: vz},
+      acceleration: _
+    } = movement
 
     {:ok, _} = GenServer.call(spid, {:movement, {px, py, pz}, {vx, vy, vz}})
 
@@ -58,6 +61,7 @@ defmodule GateServer.Message do
       payload: {:result, %Response.Result{packet_id: id, status_code: :ok, payload: %{}}}
     }
 
+    Process.sleep(200)
     GenServer.cast(connection, {:send_data, packet})
 
     {:ok, state}
