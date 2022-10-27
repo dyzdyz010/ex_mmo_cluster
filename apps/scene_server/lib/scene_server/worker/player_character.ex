@@ -10,7 +10,7 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def init({cid, pid}) do
+  def init({cid, pid, client_timestamp}) do
     # :pg.start_link(@scope)
     # :pg.join(@scope, @topic, self())
     Logger.debug("New player created.")
@@ -24,12 +24,18 @@ defmodule SceneServer.PlayerCharacter do
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0
-     }, 0}
+     }, {:continue, {:load, client_timestamp}}}
   end
 
   @impl true
-  def handle_info(:timeout, %{cid: cid} = state) do
-    {:ok, aoi_ref} = enter_scene(cid, {1000.0, 1000.0, 1000.0})
+  def handle_continue({:load, client_timestamp}, %{cid: cid} = state) do
+    pmin = 400
+    pmax = 3000
+    x = Enum.random(pmin..pmax) * 1.0
+    y = Enum.random(pmin..pmax) * 1.0
+    z = Enum.random(pmin..pmax) * 1.0
+    location = {x, y, z}
+    {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location)
     {:noreply, %{state | aoi_ref: aoi_ref}}
   end
 
@@ -72,11 +78,11 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def handle_call(
-        {:movement, location, velocity},
+        {:movement, client_timestamp, location, velocity, acceleration},
         _from,
         %{aoi_ref: aoi} = state
       ) do
-    GenServer.cast(aoi, {:movement, location, velocity})
+    GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
     {:reply, {:ok, ""}, state}
   end
 
@@ -93,8 +99,8 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
-  defp enter_scene(cid, position) do
-    {:ok, aoi_ref} = AoiManager.add_aoi_item(cid, position, self())
+  defp enter_scene(cid, client_timestamp, location) do
+    {:ok, aoi_ref} = AoiManager.add_aoi_item(cid, client_timestamp, location, self())
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}

@@ -48,5 +48,8 @@ defmodule SceneServer.Native.CoordinateSystem do
   @spec get_system_raw(Types.coordinate_system()) :: {atom(), Types.sorted_set()} | {atom(), any()}
   def get_system_raw(_system), do: error()
 
+  @spec calculate_coordinate(integer(), integer(), Types.vector(), Types.vector()) :: Types.vector()
+  def calculate_coordinate(_old_timestamp, _new_timestamp, _location, _velocity), do: error()
+
   defp error, do: :erlang.nif_error(:nif_not_loaded)
 end

@@ -173,7 +173,7 @@ impl Bucket {
 
 #[cfg(test)]
 mod tests {
-    use crate::item::{CoordTuple, OrderAxis};
+    use crate::types::{Vector, OrderAxis};
 
     use super::*;
     use std::cmp::Ordering;
@@ -184,7 +184,7 @@ mod tests {
 
         let item = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -200,7 +200,7 @@ mod tests {
         let mut bucket = Bucket { data: Vec::new() };
         let first_item = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 10.0,
                 y: 2.0,
                 z: 3.0,
@@ -211,7 +211,7 @@ mod tests {
 
         let item = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -227,7 +227,7 @@ mod tests {
         let mut bucket = Bucket { data: Vec::new() };
         let first_item = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 1,
-                CoordTuple {
+                Vector {
                     x: 1.0,
                     y: 2.0,
                     z: 3.0
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 2,
-                CoordTuple {
+                Vector {
                     x: 2.0,
                     y: 2.0,
                     z: 3.0
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 3,
-                CoordTuple {
+                Vector {
                     x: 3.0,
                     y: 2.0,
                     z: 3.0
@@ -283,7 +283,7 @@ mod tests {
 
         let item = Item::new_item(
             4,
-            CoordTuple {
+            Vector {
                 x: 5.0,
                 y: 2.0,
                 z: 3.0,
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 1,
-                CoordTuple {
+                Vector {
                     x: 1.0,
                     y: 2.0,
                     z: 3.0
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 2,
-                CoordTuple {
+                Vector {
                     x: 2.0,
                     y: 2.0,
                     z: 3.0
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 3,
-                CoordTuple {
+                Vector {
                     x: 3.0,
                     y: 2.0,
                     z: 3.0
@@ -337,7 +337,7 @@ mod tests {
 
         let item = Item::new_item(
             4,
-            CoordTuple {
+            Vector {
                 x: 3.0,
                 y: 2.0,
                 z: 3.0,
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 1,
-                CoordTuple {
+                Vector {
                     x: 1.0,
                     y: 2.0,
                     z: 3.0
@@ -366,7 +366,7 @@ mod tests {
         );
         bucket.add(Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 2.0,
                 y: 2.0,
                 z: 3.0
@@ -377,7 +377,7 @@ mod tests {
         // assert_eq!(
         //     bucket.add(Item::new_item(
         //         2,
-        //         CoordTuple {
+        //         Vector {
         //             x: 2.0,
         //             y: 2.0,
         //             z: 3.0
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 3,
-                CoordTuple {
+                Vector {
                     x: 3.0,
                     y: 2.0,
                     z: 3.0
@@ -401,7 +401,7 @@ mod tests {
 
         let item = Item::new_item(
             4,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 1,
-                CoordTuple {
+                Vector {
                     x: 2.0,
                     y: 2.0,
                     z: 3.0
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 2,
-                CoordTuple {
+                Vector {
                     x: 4.0,
                     y: 2.0,
                     z: 3.0
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(
             bucket.add(Item::new_item(
                 3,
-                CoordTuple {
+                Vector {
                     x: 6.0,
                     y: 2.0,
                     z: 3.0
@@ -455,7 +455,7 @@ mod tests {
 
         let item = Item::new_item(
             4,
-            CoordTuple {
+            Vector {
                 x: 3.0,
                 y: 2.0,
                 z: 3.0,
@@ -488,7 +488,7 @@ mod tests {
             data: vec![
                 Item::new_item(
                     0,
-                    CoordTuple {
+                    Vector {
                         x: 0.0,
                         y: 2.0,
                         z: 3.0,
@@ -497,7 +497,7 @@ mod tests {
                 ),
                 Item::new_item(
                     1,
-                    CoordTuple {
+                    Vector {
                         x: 1.0,
                         y: 2.0,
                         z: 3.0,
@@ -506,7 +506,7 @@ mod tests {
                 ),
                 Item::new_item(
                     2,
-                    CoordTuple {
+                    Vector {
                         x: 2.0,
                         y: 2.0,
                         z: 3.0,
@@ -515,7 +515,7 @@ mod tests {
                 ),
                 Item::new_item(
                     3,
-                    CoordTuple {
+                    Vector {
                         x: 3.0,
                         y: 2.0,
                         z: 3.0,
@@ -524,7 +524,7 @@ mod tests {
                 ),
                 Item::new_item(
                     4,
-                    CoordTuple {
+                    Vector {
                         x: 4.0,
                         y: 2.0,
                         z: 3.0,
@@ -533,7 +533,7 @@ mod tests {
                 ),
                 Item::new_item(
                     5,
-                    CoordTuple {
+                    Vector {
                         x: 5.0,
                         y: 2.0,
                         z: 3.0,
@@ -542,7 +542,7 @@ mod tests {
                 ),
                 Item::new_item(
                     6,
-                    CoordTuple {
+                    Vector {
                         x: 6.0,
                         y: 2.0,
                         z: 3.0,
@@ -551,7 +551,7 @@ mod tests {
                 ),
                 Item::new_item(
                     7,
-                    CoordTuple {
+                    Vector {
                         x: 7.0,
                         y: 2.0,
                         z: 3.0,
@@ -560,7 +560,7 @@ mod tests {
                 ),
                 Item::new_item(
                     8,
-                    CoordTuple {
+                    Vector {
                         x: 8.0,
                         y: 2.0,
                         z: 3.0,
@@ -591,7 +591,7 @@ mod tests {
             data: vec![
                 Item::new_item(
                     0,
-                    CoordTuple {
+                    Vector {
                         x: 0.0,
                         y: 2.0,
                         z: 3.0,
@@ -600,7 +600,7 @@ mod tests {
                 ),
                 Item::new_item(
                     1,
-                    CoordTuple {
+                    Vector {
                         x: 1.0,
                         y: 2.0,
                         z: 3.0,
@@ -609,7 +609,7 @@ mod tests {
                 ),
                 Item::new_item(
                     2,
-                    CoordTuple {
+                    Vector {
                         x: 2.0,
                         y: 2.0,
                         z: 3.0,
@@ -618,7 +618,7 @@ mod tests {
                 ),
                 Item::new_item(
                     3,
-                    CoordTuple {
+                    Vector {
                         x: 3.0,
                         y: 2.0,
                         z: 3.0,
@@ -627,7 +627,7 @@ mod tests {
                 ),
                 Item::new_item(
                     4,
-                    CoordTuple {
+                    Vector {
                         x: 4.0,
                         y: 2.0,
                         z: 3.0,
@@ -636,7 +636,7 @@ mod tests {
                 ),
                 Item::new_item(
                     5,
-                    CoordTuple {
+                    Vector {
                         x: 5.0,
                         y: 2.0,
                         z: 3.0,
@@ -645,7 +645,7 @@ mod tests {
                 ),
                 Item::new_item(
                     6,
-                    CoordTuple {
+                    Vector {
                         x: 6.0,
                         y: 2.0,
                         z: 3.0,
@@ -654,7 +654,7 @@ mod tests {
                 ),
                 Item::new_item(
                     7,
-                    CoordTuple {
+                    Vector {
                         x: 7.0,
                         y: 2.0,
                         z: 3.0,
@@ -663,7 +663,7 @@ mod tests {
                 ),
                 Item::new_item(
                     8,
-                    CoordTuple {
+                    Vector {
                         x: 8.0,
                         y: 2.0,
                         z: 3.0,
@@ -672,7 +672,7 @@ mod tests {
                 ),
                 Item::new_item(
                     9,
-                    CoordTuple {
+                    Vector {
                         x: 9.0,
                         y: 2.0,
                         z: 3.0,
@@ -703,7 +703,7 @@ mod tests {
     //         data: vec![
     //             Item::new_item(
     //                 0,
-    //                 CoordTuple {
+    //                 Vector {
     //                     x: 0.0,
     //                     y: 2.0,
     //                     z: 3.0,
@@ -712,7 +712,7 @@ mod tests {
     //             ),
     //             Item::new_item(
     //                 1,
-    //                 CoordTuple {
+    //                 Vector {
     //                     x: 1.0,
     //                     y: 2.0,
     //                     z: 3.0,
@@ -721,7 +721,7 @@ mod tests {
     //             ),
     //             Item::new_item(
     //                 2,
-    //                 CoordTuple {
+    //                 Vector {
     //                     x: 2.0,
     //                     y: 2.0,
     //                     z: 3.0,
@@ -730,7 +730,7 @@ mod tests {
     //             ),
     //             Item::new_item(
     //                 3,
-    //                 CoordTuple {
+    //                 Vector {
     //                     x: 3.0,
     //                     y: 2.0,
     //                     z: 3.0,
@@ -739,7 +739,7 @@ mod tests {
     //             ),
     //             Item::new_item(
     //                 4,
-    //                 CoordTuple {
+    //                 Vector {
     //                     x: 4.0,
     //                     y: 2.0,
     //                     z: 3.0,

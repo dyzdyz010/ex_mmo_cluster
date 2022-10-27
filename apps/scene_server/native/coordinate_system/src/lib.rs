@@ -6,16 +6,19 @@ use jemallocator::Jemalloc;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::{Atom, Env, ResourceArc, Term};
 
-use item::{CoordTuple, Item, OrderAxis};
+use item::{Item};
 use sorted_set::SortedSet;
+use types::Vector;
 
-use crate::configuration::Configuration;
+use crate::{configuration::Configuration, types::OrderAxis};
 
 mod bucket;
 mod configuration;
 mod coordinate_system;
 mod item;
 mod sorted_set;
+mod calc;
+mod types;
 
 pub struct ItemResource(Mutex<Item>);
 pub type ItemArc = ResourceArc<ItemResource>;
@@ -121,12 +124,13 @@ rustler::init!(
         // update_item_from_system_new,
         get_items_within_distance_from_system,
         get_system_raw,
+        calculate_coordinate,
     ],
     load = load
 );
 
 #[rustler::nif]
-fn new_item(cid: i64, coord: CoordTuple) -> (Atom, ItemArc) {
+fn new_item(cid: i64, coord: Vector) -> (Atom, ItemArc) {
     let new_item: ItemArc = ResourceArc::new(ItemResource(Mutex::new(Item::new_item(
         cid,
         coord,
@@ -136,7 +140,7 @@ fn new_item(cid: i64, coord: CoordTuple) -> (Atom, ItemArc) {
 }
 
 #[rustler::nif]
-fn update_item_coord(itref: ResourceArc<ItemResource>, coord: CoordTuple) -> Result<Atom, Atom> {
+fn update_item_coord(itref: ResourceArc<ItemResource>, coord: Vector) -> Result<Atom, Atom> {
     let mut it = match itref.0.try_lock() {
         Err(_) => return Err(atoms::lock_fail()),
         Ok(guard) => guard,
@@ -167,7 +171,7 @@ fn new_bucket() -> (Atom, BucketArc) {
 fn add_item_to_bucket(
     bkref: ResourceArc<BucketResource>,
     cid: i64,
-    coord: CoordTuple,
+    coord: Vector,
 ) -> Result<Atom, Atom> {
     let mut bk = match bkref.0.try_lock() {
         Err(_) => return Err(atoms::lock_fail()),
@@ -207,7 +211,7 @@ fn new_set(set_capacity: usize, bucket_capacity: usize) -> (Atom, SortedSetArc) 
 fn add_item_to_set(
     ssref: ResourceArc<SortedSetResource>,
     cid: i64,
-    coord: CoordTuple,
+    coord: Vector,
 ) -> Result<Atom, Atom> {
     let mut ss = match ssref.0.try_lock() {
         Err(_) => return Err(atoms::lock_fail()),
@@ -250,7 +254,7 @@ fn new_system(set_capacity: usize, bucket_capacity: usize) -> (Atom, CoordinateS
 fn add_item_to_system(
     csref: ResourceArc<CoordinateSystemResource>,
     cid: i64,
-    coord: CoordTuple,
+    coord: Vector,
 ) -> Result<ItemArc, Atom> {
     let resource: &CoordinateSystemResource = &*csref;
     // data.
@@ -298,7 +302,7 @@ fn remove_item_from_system(
 fn update_item_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
     itemref: ResourceArc<ItemResource>,
-    new_position: CoordTuple,
+    new_position: Vector,
 ) -> Result<(usize, usize, usize), Atom> {
     let sys_resource: &CoordinateSystemResource = &*csref;
     let item_resource: &ItemResource = &*itemref;
@@ -323,7 +327,7 @@ fn update_item_from_system(
 // fn update_item_from_system_new(
 //     csref: ResourceArc<CoordinateSystemResource>,
 //     itemref: ResourceArc<ItemResource>,
-//     new_position: CoordTuple,
+//     new_position: Vector,
 // ) -> Result<(usize, usize, usize), Atom> {
 //     let sys_resource: &CoordinateSystemResource = &*csref;
 //     let item_resource: &ItemResource = &*itemref;
@@ -378,4 +382,12 @@ fn get_system_raw(csref: ResourceArc<CoordinateSystemResource>) -> Result<Coordi
     };
 
     Ok(cs.clone())
+}
+
+
+#[rustler::nif]
+fn calculate_coordinate(old_timestamp: i64, new_timestamp: i64, location: Vector, velocity: Vector) -> Vector {
+    let new_coord = calc::calculate_coordinate(old_timestamp, new_timestamp, location, velocity);
+
+    return new_coord;
 }

@@ -29,8 +29,15 @@ defmodule GateServer.Message do
     end
   end
 
+  @doc """
+  Dispatch proto message.
+  """
   def dispatch(
-        %Packet{id: id, payload: {:entity_action, %Entity.EntityAction{action: {:movement, movement}}}},
+        %Packet{
+          id: id,
+          timestamp: timestamp,
+          payload: {:entity_action, %Entity.EntityAction{action: {:movement, movement}}}
+        },
         %{scene_ref: spid} = state,
         connection
       ) do
@@ -46,19 +53,19 @@ defmodule GateServer.Message do
     #   {:ok,state}
     # end
     %Entity.Movement{
-      location: %Entity.Vector{x: px, y: py, z: pz},
+      location: %Entity.Vector{x: lx, y: ly, z: lz},
       velocity: %Entity.Vector{x: vx, y: vy, z: vz},
-      acceleration: _
+      acceleration: %Entity.Vector{x: ax, y: ay, z: az}
     } = movement
 
-    {:ok, _} = GenServer.call(spid, {:movement, {px, py, pz}, {vx, vy, vz}})
+    {:ok, _} = GenServer.call(spid, {:movement, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}})
 
     Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
 
     packet = %Packet{
       id: id,
       timestamp: :os.system_time(:millisecond),
-      payload: {:result, %Response.Result{packet_id: id, status_code: :ok, payload: %{}}}
+      payload: {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}}
     }
 
     Process.sleep(200)
@@ -67,18 +74,18 @@ defmodule GateServer.Message do
     {:ok, state}
   end
 
-  def dispatch(%Packet{id: id, payload: {:enter_scene, enter}}, state, connection) do
+  def dispatch(%Packet{id: id, timestamp: timestamp, payload: {:enter_scene, enter}}, state, connection) do
     {result, new_state} =
       case GenServer.call(
              {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
-             {:add_player, enter.cid, connection}
+             {:add_player, enter.cid, connection, timestamp}
            ) do
         {:ok, ppid} ->
-          result = %Response.Result{packet_id: id, status_code: :ok, payload: %{}}
+          result = %Reply.Result{packet_id: id, status_code: :ok, payload: nil}
           {result, %{state | scene_ref: ppid, cid: enter.cid}}
 
         _ ->
-          result = %Response.Result{packet_id: id, status_code: :ok, payload: %{}}
+          result = %Reply.Result{packet_id: id, status_code: :err, payload: nil}
           {result, state}
       end
 

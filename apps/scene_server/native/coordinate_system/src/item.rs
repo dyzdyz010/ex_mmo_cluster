@@ -1,30 +1,8 @@
 use std::{cmp::Ordering};
 
-use rustler::{NifStruct, NifTuple, NifUnitEnum};
+use rustler::NifStruct;
 
-#[derive(NifUnitEnum, Clone, Debug, Copy)]
-pub enum OrderAxis {
-    X,
-    Y,
-    Z,
-}
-
-impl OrderAxis {
-    pub fn axis_by_index(idx: usize) -> OrderAxis {
-        match idx {
-            0 => OrderAxis::X,
-            1 => OrderAxis::Y,
-            _ => OrderAxis::Z,
-        }
-    }
-}
-
-#[derive(NifTuple, Clone, Debug, Copy)]
-pub struct CoordTuple {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
+use crate::types::{Vector, OrderAxis};
 
 // pub struct SetItem<'a> {
 //     pub data: &'a Item,
@@ -35,12 +13,12 @@ pub struct CoordTuple {
 #[module = "Item"]
 pub struct Item {
     pub cid: i64,
-    pub coord: CoordTuple,
+    pub coord: Vector,
     pub order_type: OrderAxis,
 }
 
 impl Item {
-    pub fn new_item(cid: i64, coord: CoordTuple, order_type: OrderAxis) -> Item {
+    pub fn new_item(cid: i64, coord: Vector, order_type: OrderAxis) -> Item {
         Item {
             cid,
             coord,
@@ -48,7 +26,7 @@ impl Item {
         }
     }
 
-    pub fn update_coord(&mut self, coord: CoordTuple) {
+    pub fn update_coord(&mut self, coord: Vector) {
         self.coord = coord;
     }
 
@@ -116,7 +94,7 @@ impl Ord for Item {
 
 #[cfg(test)]
 mod tests {
-    use crate::item::{CoordTuple, OrderAxis};
+    use crate::item::{Vector, OrderAxis};
 
     use super::*;
     use std::cmp::Ordering;
@@ -125,7 +103,7 @@ mod tests {
     fn test_item_compare_when_equal() {
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 4.0,
@@ -134,7 +112,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 5.0,
@@ -146,7 +124,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -155,7 +133,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 4.0,
                 y: 2.0,
                 z: 5.0,
@@ -167,7 +145,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 5.0,
@@ -176,7 +154,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 3.0,
                 y: 4.0,
                 z: 5.0,
@@ -191,7 +169,7 @@ mod tests {
     fn test_item_compare_when_less_than() {
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 4.0,
@@ -200,7 +178,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 2.0,
                 y: 2.0,
                 z: 4.0,
@@ -212,7 +190,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -221,7 +199,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 3.0,
@@ -233,7 +211,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 4.0,
@@ -242,7 +220,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 5.0,
@@ -257,7 +235,7 @@ mod tests {
     fn test_item_compare_when_greater_than() {
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 2.0,
                 y: 2.0,
                 z: 4.0,
@@ -266,7 +244,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 4.0,
@@ -278,7 +256,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 3.0,
@@ -287,7 +265,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 2.0,
                 z: 3.0,
@@ -299,7 +277,7 @@ mod tests {
 
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 5.0,
@@ -308,7 +286,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             2,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 4.0,
@@ -323,7 +301,7 @@ mod tests {
     fn test_item_distance() {
         let item1 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 1.0,
                 y: 3.0,
                 z: 5.0,
@@ -332,7 +310,7 @@ mod tests {
         );
         let item2 = Item::new_item(
             1,
-            CoordTuple {
+            Vector {
                 x: 2.0,
                 y: 3.0,
                 z: 5.0,

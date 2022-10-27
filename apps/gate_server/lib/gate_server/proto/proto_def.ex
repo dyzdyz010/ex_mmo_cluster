@@ -5,6 +5,6 @@ defmodule GateServer.Proto.ProtoDef do
     "./priv/proto/AuthRequest.proto",
     "./priv/proto/EntityAction.proto",
     "./priv/proto/ServerResponse.proto",
-    "./priv/proto/Result.proto",
+    "./priv/proto/Reply.proto",
   ]
 end

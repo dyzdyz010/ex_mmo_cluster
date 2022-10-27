@@ -6,4 +6,6 @@ defmodule SceneServer.Native.CoordinateSystem.Types do
   @type bucket :: reference()
 
   @type coordinate_system :: reference()
+
+  @type vector :: {float(), float(), float()}
 end

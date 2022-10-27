@@ -11,15 +11,20 @@ defmodule SceneServer.AoiManager do
     GenServer.start_link(__MODULE__, [], opts)
   end
 
-  @spec add_aoi_item(number(), {float(), float(), float()}, pid()) ::
+  @spec add_aoi_item(integer(), integer(), {float(), float(), float()}, pid()) ::
           {:ok, CoordinateSystem.Types.item()} | {:err, any()}
-  def add_aoi_item(cid, location, cpid) do
-    GenServer.call(__MODULE__, {:add_aoi_item, cid, location, cpid})
+  def add_aoi_item(cid, client_timestamp, location, cpid) do
+    GenServer.call(__MODULE__, {:add_aoi_item, cid, client_timestamp, location, cpid})
   end
 
   @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
   def remove_aoi_item(cid) do
     GenServer.call(__MODULE__, {:remove_aoi_item, cid})
+  end
+
+  @spec get_items_with_cids([integer()]) :: [pid()]
+  def get_items_with_cids(cids) do
+    GenServer.call(__MODULE__, {:get_items_with_cids, cids})
   end
 
   @impl true
@@ -36,14 +41,14 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def handle_call(
-        {:add_aoi_item, cid, location, cpid},
+        {:add_aoi_item, cid, client_timestamp, location, cpid},
         _from,
         %{coordinate_system: system, aois: aois} = state
       ) do
     {:ok, apid} =
       DynamicSupervisor.start_child(
         SceneServer.AoiItemSup,
-        {SceneServer.Aoi.AoiItem, {cid, location, cpid, system}}
+        {SceneServer.Aoi.AoiItem, {cid, client_timestamp, location, cpid, system}}
       )
 
     new_aois = aois |> Map.put_new(cid, apid)
@@ -55,6 +60,13 @@ defmodule SceneServer.AoiManager do
   def handle_call({:remove_aoi_item, cid}, _from, %{aois: aois} = state) do
     new_aois = aois |> Map.delete(cid)
     {:reply, {:ok, ""}, %{state | aois: new_aois}}
+  end
+
+  @impl true
+  def handle_call({:get_items_with_cids, cids}, _from, %{aois: aois} = state) do
+    items = for {k, v} <- aois, cid <- cids, k == cid, do: v
+    # Logger.debug("Items: #{inspect(items, pretty: true)}")
+    {:reply, items, state}
   end
 
   # Internal functions

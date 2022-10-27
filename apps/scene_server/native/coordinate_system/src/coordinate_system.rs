@@ -3,9 +3,9 @@ use rustler::NifStruct;
 
 use crate::{
     configuration::Configuration,
-    item::{CoordTuple, Item, OrderAxis},
+    item::Item,
     sorted_set::SortedSet,
-    AddResult, RemoveResult, SetAddResult, SetRemoveResult, UpdateResult,
+    AddResult, RemoveResult, SetAddResult, SetRemoveResult, UpdateResult, types::{Vector, OrderAxis},
 };
 
 #[derive(Debug, NifStruct, Clone)]
@@ -87,7 +87,7 @@ impl CoordinateSystem {
         result
     }
 
-    pub fn update(&mut self, item: &mut Item, new_position: CoordTuple) -> UpdateResult {
+    pub fn update(&mut self, item: &mut Item, new_position: Vector) -> UpdateResult {
         match self.remove(item) {
             RemoveResult::Error(_) => return UpdateResult::Error,
             _ => {}
@@ -100,7 +100,7 @@ impl CoordinateSystem {
         }
     }
 
-    // pub fn update_new(&mut self, item: &mut Item, new_position: CoordTuple) -> UpdateResult {
+    // pub fn update_new(&mut self, item: &mut Item, new_position: Vector) -> UpdateResult {
     //     let mut jobs: Vec<Result<Item, i32>> = Vec::with_capacity(3);
     //     self.axes.par_iter_mut().enumerate().map(|(idx, ss)| {
     //         return ss.update_with_coordinate(&Item {
@@ -122,7 +122,12 @@ impl CoordinateSystem {
         let mut items: Vec<&Item> = self.axes.par_iter().map(|set|
             set.items_within_distance_for_item(item, distance)
         ).flat_map(|a| a.to_vec()).collect();
+
+        items.sort_by(|x, y| x.cid.cmp(&y.cid));
         items.dedup_by(|a, b| a.cid == b.cid);
+
+        let idx = items.binary_search_by(|x| x.cid.cmp(&item.cid)).unwrap();
+        items.remove(idx);
 
         items
     }

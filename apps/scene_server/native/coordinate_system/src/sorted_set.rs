@@ -142,7 +142,7 @@ impl<'a> SortedSet {
     // pub fn update_with_coordinate(
     //     &mut self,
     //     item: &Item,
-    //     new_coord: CoordTuple,
+    //     new_coord: Vector,
     // ) -> Result<Item, i32> {
     //     let mut new_item: Item = Item {
     //         cid: -1,
@@ -248,7 +248,7 @@ impl Default for SortedSet {
 #[cfg(test)]
 mod tests {
 
-    use crate::item::{CoordTuple, OrderAxis};
+    use crate::types::{Vector, OrderAxis};
 
     use super::*;
 
@@ -260,7 +260,7 @@ mod tests {
         let mut set = SortedSet::new(configuration);
         set.add(Item {
             cid: 0,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 1.0,
                 y: 1.0,
                 z: 1.0,
@@ -269,7 +269,7 @@ mod tests {
         });
         set.add(Item {
             cid: 1,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 3.0,
                 y: 3.0,
                 z: 3.0,
@@ -278,7 +278,7 @@ mod tests {
         });
         set.add(Item {
             cid: 2,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 5.0,
                 y: 5.0,
                 z: 5.0,
@@ -287,7 +287,7 @@ mod tests {
         });
         set.add(Item {
             cid: 3,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 7.0,
                 y: 7.0,
                 z: 7.0,
@@ -296,7 +296,7 @@ mod tests {
         });
         set.add(Item {
             cid: 4,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 9.0,
                 y: 9.0,
                 z: 9.0,
@@ -313,7 +313,7 @@ mod tests {
 
         let item = Item {
             cid: 1,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 3.0,
                 y: 3.0,
                 z: 3.0,
@@ -342,7 +342,7 @@ mod tests {
 
     //     let item = Item {
     //         cid: 1,
-    //         coord: CoordTuple {
+    //         coord: Vector {
     //             x: 3.0,
     //             y: 3.0,
     //             z: 3.0,
@@ -355,7 +355,7 @@ mod tests {
     //     let result = set
     //         .update_with_coordinate(
     //             &item,
-    //             CoordTuple {
+    //             Vector {
     //                 x: 4.0,
     //                 y: 4.0,
     //                 z: 4.0,
@@ -382,7 +382,7 @@ mod tests {
     //     let result = set
     //         .update_with_coordinate(
     //             &item,
-    //             CoordTuple {
+    //             Vector {
     //                 x: 6.0,
     //                 y: 6.0,
     //                 z: 6.0,
@@ -408,7 +408,7 @@ mod tests {
     //     let item = set
     //         .update_with_coordinate(
     //             &item,
-    //             CoordTuple {
+    //             Vector {
     //                 x: 0.0,
     //                 y: 0.0,
     //                 z: 0.0,
@@ -444,7 +444,7 @@ mod tests {
         let set = get_set();
         let item = Item {
             cid: 2,
-            coord: CoordTuple {
+            coord: Vector {
                 x: 5.0,
                 y: 5.0,
                 z: 5.0,
