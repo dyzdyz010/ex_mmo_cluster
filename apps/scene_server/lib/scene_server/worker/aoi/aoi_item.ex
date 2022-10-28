@@ -1,5 +1,5 @@
 defmodule SceneServer.Aoi.AoiItem do
-  use GenServer, restart: :transient
+  use GenServer, restart: :temporary
 
   require Logger
 
@@ -10,16 +10,23 @@ defmodule SceneServer.Aoi.AoiItem do
   @aoi_tick_interval 1000
   @coord_tick_interval 1000
 
+  @self __MODULE__
+
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
   end
 
+  def get_location() do
+    GenServer.call(@self, :get_location)
+  end
+
   @impl true
-  def init({cid, client_timestamp, location, cpid, system}) do
+  def init({cid, client_timestamp, location, connection_pid, player_pid, system}) do
     {:ok,
      %{
        cid: cid,
-       character_pid: cpid,
+       player_pid: player_pid,
+       connection_pid: connection_pid,
        system_ref: system,
        item_ref: nil,
        movement: %{
@@ -27,9 +34,9 @@ defmodule SceneServer.Aoi.AoiItem do
          server_timestamp: :os.system_time(:millisecond),
          location: location,
          velocity: {0.0, 0.0, 0.0},
-         acceleration:  {0.0, 0.0, 0.0}
+         acceleration: {0.0, 0.0, 0.0}
        },
-       subscribers: [],
+       subscribees: [],
        interest_radius: 500,
        aoi_timer: nil,
        coord_timer: nil
@@ -53,10 +60,30 @@ defmodule SceneServer.Aoi.AoiItem do
         {:movement, timestamp, location, velocity, acceleration},
         state
       ) do
-    Logger.debug("AOI movement")
-    new_state = cast_movement(timestamp, location, velocity, acceleration, state)
+    # Logger.debug("AOI movement")
+    new_state = update_movement(timestamp, location, velocity, acceleration, state)
 
     {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast({:player_enter, cid, location}, %{connection_pid: connection_pid} = state) do
+    Logger.debug("player_enter")
+    GenServer.cast(connection_pid, {:player_enter, cid, location})
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:player_leave, cid}, %{connection_pid: connection_pid} = state) do
+    GenServer.cast(connection_pid, {:player_leave, cid})
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call(:get_location, _from, %{movement: movement} = state) do
+    {:reply, movement.location, state}
   end
 
   @impl true
@@ -69,17 +96,31 @@ defmodule SceneServer.Aoi.AoiItem do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info({_, :ok}, state) do
+    {:noreply, state}
+  end
+
   ############### Tick Functions ##############################################################################
 
   @impl true
-  def handle_info(:get_aoi_tick, %{system_ref: system, item_ref: item} = state) do
-    {:ok, cids} = CoordinateSystem.get_items_within_distance_from_system(system, item, 50000.0)
-    items = SceneServer.AoiManager.get_items_with_cids(cids)
+  def handle_info(
+        :get_aoi_tick,
+        %{
+          cid: cid,
+          movement: %{location: location},
+          system_ref: system,
+          item_ref: item,
+          subscribees: subscribees
+        } = state
+      ) do
+    # aoi_pids = get_aoi_pids(system, item, 50000.0)
+    aoi_pids = refresh_aoi_players(system, item, cid, location, subscribees)
 
-    Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
-    Logger.debug("Coordinate System: #{inspect(cids, pretty: true)}", ansi_color: :yellow)
+    # Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
+    # Logger.debug("Coordinate System: #{inspect(cids, pretty: true)}", ansi_color: :yellow)
 
-    {:noreply, %{state | aoi_timer: make_aoi_timer()}}
+    {:noreply, %{state | aoi_timer: make_aoi_timer(), subscribees: aoi_pids}}
     # {:noreply, state}
   end
 
@@ -88,21 +129,27 @@ defmodule SceneServer.Aoi.AoiItem do
         :update_coord_tick,
         %{system_ref: system, item_ref: item, movement: movement} = state
       ) do
+    new_location =
+      update_location(
+        system,
+        item,
+        movement.server_timestamp,
+        movement.location,
+        movement.velocity
+      )
 
-    new_location = if movement.velocity != {0.0, 0.0, 0.0} do
-      # Logger.debug("Coord tick.", ansi_color: :yellow)
-      new_location = CoordinateSystem.calculate_coordinate(movement.server_timestamp, :os.system_time(:millisecond), movement.location, movement.velocity)
-      CoordinateSystem.update_item_from_system(system, item, new_location)
-      new_location
-    else
-      movement.location
-    end
-
-    {:noreply, %{state | coord_timer: make_coord_timer(), movement: %{movement | location: new_location}}}
+    {:noreply,
+     %{state | coord_timer: make_coord_timer(), movement: %{movement | location: new_location}}}
   end
 
   @impl true
-  def terminate(reason, %{cid: cid, system_ref: system, item_ref: item, aoi_timer: aoi_timer, coord_timer: coord_timer}) do
+  def terminate(reason, %{
+        cid: cid,
+        system_ref: system,
+        item_ref: item,
+        aoi_timer: aoi_timer,
+        coord_timer: coord_timer
+      }) do
     {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
     Logger.debug("AOI system item removed.")
     {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
@@ -134,8 +181,8 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   # Handle `:movement` casts
-  @spec cast_movement(integer(), vector(), vector(), vector(), map()) :: map()
-  defp cast_movement(
+  @spec update_movement(integer(), vector(), vector(), vector(), map()) :: map()
+  defp update_movement(
          timestamp,
          location,
          velocity,
@@ -154,5 +201,80 @@ defmodule SceneServer.Aoi.AoiItem do
           acceleration: acceleration
         }
     }
+  end
+
+  @spec update_location(
+          CoordinateSystem.Types.coordinate_system(),
+          CoordinateSystem.Types.item(),
+          integer(),
+          vector(),
+          vector()
+        ) :: vector()
+  defp update_location(system, item, server_timestamp, location, velocity) do
+    new_location =
+      if velocity != {0.0, 0.0, 0.0} do
+        # Logger.debug("Coord tick.", ansi_color: :yellow)
+        new_location =
+          CoordinateSystem.calculate_coordinate(
+            server_timestamp,
+            :os.system_time(:millisecond),
+            location,
+            velocity
+          )
+
+        CoordinateSystem.update_item_from_system(system, item, new_location)
+        new_location
+      else
+        location
+      end
+
+    new_location
+  end
+
+  @spec refresh_aoi_players(
+          CoordinateSystem.Types.coordinate_system(),
+          CoordinateSystem.Types.item(),
+          integer(),
+          vector(),
+          [pid()]
+        ) :: no_return()
+  defp refresh_aoi_players(system, item, cid, location, subscribees) do
+    aoi_pids = get_aoi_players(system, item, 10000.0)
+    leave_pids = subscribees -- aoi_pids
+    enter_pids = aoi_pids -- subscribees
+
+    broadcast_action_player_leave(cid, leave_pids)
+    broadcast_action_player_enter(cid, location, enter_pids)
+
+    aoi_pids
+  end
+
+  @spec get_aoi_players(
+          CoordinateSystem.Types.coordinate_system(),
+          CoordinateSystem.Types.item(),
+          float()
+        ) :: [pid()]
+  defp get_aoi_players(system, item, distance) do
+    {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
+    aoi_pids = SceneServer.AoiManager.get_items_with_cids(cids)
+
+    aoi_pids
+  end
+
+  # defp broadcast_action_movement(movement, pids) do
+  # end
+
+  @spec broadcast_action_player_leave(integer(), [pid()]) :: any()
+  defp broadcast_action_player_leave(cid, pids) do
+    pids
+    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_leave, cid}) end))
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_player_enter(integer(), vector(), [pid()]) :: any()
+  defp broadcast_action_player_enter(cid, location, pids) do
+    pids
+    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_enter, cid, location}) end))
+    |> Enum.map(&Task.await(&1))
   end
 end

@@ -42,7 +42,10 @@ defmodule SceneServer.Native.CoordinateSystem do
   @spec update_item_from_system_new(Types.coordinate_system(), Types.item(), tuple()) :: {{integer(), integer(), integer()}, atom()}
   def update_item_from_system_new(_system, _item, _new_position), do: error()
 
-  @spec get_items_within_distance_from_system(Types.coordinate_system(), Types.item(), number()) :: {:ok, [integer()]} | {:err, any()}
+  @spec get_cids_within_distance_from_system(Types.coordinate_system(), Types.item(), number()) :: {:ok, [integer()]} | {:err, any()}
+  def get_cids_within_distance_from_system(_system, _item, _distance), do: error()
+
+  @spec get_items_within_distance_from_system(Types.coordinate_system(), Types.item(), number()) :: {:ok, [map()]} | {:err, any()}
   def get_items_within_distance_from_system(_system, _item, _distance), do: error()
 
   @spec get_system_raw(Types.coordinate_system()) :: {atom(), Types.sorted_set()} | {atom(), any()}

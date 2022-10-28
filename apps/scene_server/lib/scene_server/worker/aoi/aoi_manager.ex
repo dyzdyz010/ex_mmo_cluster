@@ -11,10 +11,13 @@ defmodule SceneServer.AoiManager do
     GenServer.start_link(__MODULE__, [], opts)
   end
 
-  @spec add_aoi_item(integer(), integer(), {float(), float(), float()}, pid()) ::
-          {:ok, CoordinateSystem.Types.item()} | {:err, any()}
-  def add_aoi_item(cid, client_timestamp, location, cpid) do
-    GenServer.call(__MODULE__, {:add_aoi_item, cid, client_timestamp, location, cpid})
+  @spec add_aoi_item(integer(), integer(), {float(), float(), float()}, pid(), pid()) ::
+          {:ok, pid()} | {:err, any()}
+  def add_aoi_item(cid, client_timestamp, location, connection_pid, player_pid) do
+    GenServer.call(
+      __MODULE__,
+      {:add_aoi_item, cid, client_timestamp, location, connection_pid, player_pid}
+    )
   end
 
   @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
@@ -41,14 +44,15 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def handle_call(
-        {:add_aoi_item, cid, client_timestamp, location, cpid},
+        {:add_aoi_item, cid, client_timestamp, location, connection_pid, player_pid},
         _from,
         %{coordinate_system: system, aois: aois} = state
       ) do
     {:ok, apid} =
       DynamicSupervisor.start_child(
         SceneServer.AoiItemSup,
-        {SceneServer.Aoi.AoiItem, {cid, client_timestamp, location, cpid, system}}
+        {SceneServer.Aoi.AoiItem,
+         {cid, client_timestamp, location, connection_pid, player_pid, system}}
       )
 
     new_aois = aois |> Map.put_new(cid, apid)

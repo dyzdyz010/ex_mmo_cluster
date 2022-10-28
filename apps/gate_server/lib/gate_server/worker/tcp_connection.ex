@@ -22,12 +22,21 @@ defmodule GateServer.TcpConnection do
     :pg.start_link(@scope)
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
-    {:ok, %{socket: socket, cid: -1, agent: nil, scene_ref: nil, token: nil, status: :waiting_auth}}
+
+    {:ok,
+     %{socket: socket, cid: -1, packet_id: 0, agent: nil, scene_ref: nil, token: nil, status: :waiting_auth}}
   end
 
   @impl true
-  def handle_cast({:send_data, data}, %{socket: socket} = state) do
-    send_data(data, socket)
+  def handle_cast({:send_data, data}, %{socket: socket, packet_id: packet_id} = state) do
+    send_data(data, socket, packet_id)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:player_enter, cid, location}, state) do
+    GateServer.Message.send_player_enter(cid, location, self())
 
     {:noreply, state}
   end
@@ -51,7 +60,10 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp_closed, _conn}, %{scene_ref: spid} = state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
-    GenServer.call(spid, :exit)
+
+    if spid != nil do
+      GenServer.call(spid, :exit)
+    end
 
     {:stop, :normal, state}
   end
@@ -70,19 +82,27 @@ defmodule GateServer.TcpConnection do
   @spec verify_token(any()) :: any
   def verify_token(token) do
     auth_server = GenServer.call(GateServer.Interface, :auth_server)
+
     case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:verify_token, token}) do
       {:ok, agent} ->
         {:ok, %{agent: agent}}
+
       {:error, :mismatch} ->
         {:error, :mismatch}
-      _ -> {:error, :server_error}
+
+      _ ->
+        {:error, :server_error}
     end
   end
 
-  defp send_data(packet, socket) do
+  defp send_data(payload, socket, packet_id) do
+    packet = %Packet{id: packet_id, timestamp: :os.system_time(:millisecond), payload: payload}
     {:ok, packet_data} = GateServer.Message.encode(packet)
     # Logger.debug("数据：#{inspect(packet_data, pretty: true)}")
     result = :gen_tcp.send(socket, packet_data)
-    Logger.debug("TCP 发送数据结果：#{inspect(result, pretty: true)}, socket: #{inspect(socket, pretty: true)}")
+
+    Logger.debug(
+      "TCP 发送数据结果：#{inspect(result, pretty: true)}, socket: #{inspect(socket, pretty: true)}"
+    )
   end
 end

@@ -29,6 +29,7 @@ defmodule GateServer.Message do
     end
   end
 
+  ################################### Message to server ##############################################################################################
   @doc """
   Dispatch proto message.
   """
@@ -52,36 +53,49 @@ defmodule GateServer.Message do
     #   _ -> GenServer.cast(connection, {:send, "server error"})
     #   {:ok,state}
     # end
-    %Entity.Movement{
-      location: %Entity.Vector{x: lx, y: ly, z: lz},
-      velocity: %Entity.Vector{x: vx, y: vy, z: vz},
-      acceleration: %Entity.Vector{x: ax, y: ay, z: az}
+    %Types.Movement{
+      location: %Types.Vector{x: lx, y: ly, z: lz},
+      velocity: %Types.Vector{x: vx, y: vy, z: vz},
+      acceleration: %Types.Vector{x: ax, y: ay, z: az}
     } = movement
 
-    {:ok, _} = GenServer.call(spid, {:movement, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}})
+    {:ok, _} =
+      GenServer.call(spid, {:movement, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}})
 
-    Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
+    # Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
 
-    packet = %Packet{
-      id: id,
-      timestamp: :os.system_time(:millisecond),
-      payload: {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}}
+    payload = {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}
     }
 
-    Process.sleep(200)
-    GenServer.cast(connection, {:send_data, packet})
+    Process.sleep(70)
+    GenServer.cast(connection, {:send_data, payload})
 
     {:ok, state}
   end
 
-  def dispatch(%Packet{id: id, timestamp: timestamp, payload: {:enter_scene, enter}}, state, connection) do
+  def dispatch(
+        %Packet{id: id, timestamp: timestamp, payload: {:entity_action, %Entity.EntityAction{action: {:enter_scene, enter}}}},
+        state,
+        connection
+      ) do
     {result, new_state} =
       case GenServer.call(
              {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
              {:add_player, enter.cid, connection, timestamp}
            ) do
         {:ok, ppid} ->
-          result = %Reply.Result{packet_id: id, status_code: :ok, payload: nil}
+          {x, y, z} = GenServer.call(ppid, :get_location)
+
+          result = %Reply.Result{
+            packet_id: id,
+            status_code: :ok,
+            payload:
+              {:enter_scene,
+               %Reply.EnterScene{
+                 location: %Types.Vector{x: x, y: y, z: z}
+               }}
+          }
+
           {result, %{state | scene_ref: ppid, cid: enter.cid}}
 
         _ ->
@@ -89,25 +103,34 @@ defmodule GateServer.Message do
           {result, state}
       end
 
-    packet = %Packet{id: id, timestamp: :os.system_time(:millisecond), payload: {:result, result}}
+    payload = {:result, result}
 
-    GenServer.cast(connection, {:send_data, packet})
+    GenServer.cast(connection, {:send_data, payload})
 
     {:ok, new_state}
   end
 
   def dispatch(
-        %Packet{id: id, payload: {:time_sync, _}},
+        %Packet{id: _id, payload: {:time_sync, _}},
         %{scene_ref: spid} = state,
         connection
       ) do
     {:ok, new_timestamp} = GenServer.call(spid, :time_sync)
 
     if new_timestamp != :end do
-      packet = %Packet{id: id, timestamp: new_timestamp, payload: {:time_sync, %TimeSync{}}}
-      GenServer.cast(connection, {:send_data, packet})
+      payload = {:time_sync, %TimeSync{}}
+      GenServer.cast(connection, {:send_data, payload})
     end
 
     {:ok, state}
+  end
+
+  ##################################### Message to client ##################################################################################
+
+  def send_player_enter(cid, {x, y, z}, connection) do
+    action = %Broadcast.Player.Action{action: {:player_enter, %Broadcast.Player.PlayerEnter{cid: cid, location: %Types.Vector{x: x, y: y, z: z}}}}
+    payload = {:broadcast_action, action}
+
+    GenServer.cast(connection, {:send_data, payload})
   end
 end

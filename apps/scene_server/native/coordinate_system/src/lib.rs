@@ -122,6 +122,7 @@ rustler::init!(
         remove_item_from_system,
         update_item_from_system,
         // update_item_from_system_new,
+        get_cids_within_distance_from_system,
         get_items_within_distance_from_system,
         get_system_raw,
         calculate_coordinate,
@@ -349,7 +350,7 @@ fn update_item_from_system(
 // }
 
 #[rustler::nif]
-fn get_items_within_distance_from_system(
+fn get_cids_within_distance_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
     itemref: ResourceArc<ItemResource>,
     distance: f64,
@@ -370,6 +371,30 @@ fn get_items_within_distance_from_system(
     let items = cs.items_within_distance_for_item(&item, distance);
 
     Ok(items.par_iter().map(|it| it.cid).collect())
+}
+
+#[rustler::nif]
+fn get_items_within_distance_from_system(
+    csref: ResourceArc<CoordinateSystemResource>,
+    itemref: ResourceArc<ItemResource>,
+    distance: f64,
+) -> Result<Vec<Item>, Atom> {
+    let sys_resource: &CoordinateSystemResource = &*csref;
+    let item_resource: &ItemResource = &*itemref;
+
+    let cs = match sys_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    let item = match item_resource.0.try_lock() {
+        Err(_) => return Err(atoms::lock_fail()),
+        Ok(guard) => guard,
+    };
+
+    let items = cs.items_within_distance_for_item(&item, distance);
+
+    Ok(items.par_iter().map(|&&it| it).collect())
 }
 
 #[rustler::nif]

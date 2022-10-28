@@ -10,7 +10,7 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def init({cid, pid, client_timestamp}) do
+  def init({cid, connection_pid, client_timestamp}) do
     # :pg.start_link(@scope)
     # :pg.join(@scope, @topic, self())
     Logger.debug("New player created.")
@@ -18,7 +18,7 @@ defmodule SceneServer.PlayerCharacter do
     {:ok,
      %{
        cid: cid,
-       pid: pid,
+       connection_pid: connection_pid,
        aoi_ref: nil,
        character_info: %{nickname: "Demo Player"},
        status: :in_scene,
@@ -28,20 +28,30 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def handle_continue({:load, client_timestamp}, %{cid: cid} = state) do
+  def handle_continue(
+        {:load, client_timestamp},
+        %{cid: cid, connection_pid: connection_pid} = state
+      ) do
     pmin = 400
     pmax = 3000
     x = Enum.random(pmin..pmax) * 1.0
     y = Enum.random(pmin..pmax) * 1.0
-    z = Enum.random(pmin..pmax) * 1.0
+    z = 90.0
     location = {x, y, z}
-    {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location)
+    {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location, connection_pid)
     {:noreply, %{state | aoi_ref: aoi_ref}}
   end
 
   @impl true
   def handle_call(:exit, _from, state) do
     {:stop, :normal, {:ok, ""}, state}
+  end
+
+  @impl true
+  def handle_call(:get_location, _from, %{aoi_ref: aoi} = state) do
+    location = GenServer.call(aoi, :get_location)
+
+    {:reply, location, state}
   end
 
   @impl true
@@ -99,8 +109,10 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
-  defp enter_scene(cid, client_timestamp, location) do
-    {:ok, aoi_ref} = AoiManager.add_aoi_item(cid, client_timestamp, location, self())
+  defp enter_scene(cid, client_timestamp, location, connection_pid) do
+    {:ok, aoi_ref} =
+      AoiManager.add_aoi_item(cid, client_timestamp, location, connection_pid, self())
+
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}
