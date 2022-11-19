@@ -8,7 +8,7 @@ defmodule GateServer.Message do
   def decode(data) do
     case Protox.decode(data, Packet) do
       {:ok, packet} ->
-        Logger.debug("Decoded packet: #{inspect(packet, pretty: true)}")
+        # Logger.debug("Decoded packet: #{inspect(packet, pretty: true)}")
         {:ok, packet}
 
       err ->
@@ -21,7 +21,7 @@ defmodule GateServer.Message do
   """
   @spec encode(struct) :: {:ok, iodata} | {:error, any}
   def encode(packet) do
-    Logger.debug("Packet to encode: #{inspect(packet, pretty: true)}")
+    # Logger.debug("Packet to encode: #{inspect(packet, pretty: true)}")
 
     case Protox.encode(packet) do
       {:ok, data} -> {:ok, data}
@@ -59,22 +59,27 @@ defmodule GateServer.Message do
       acceleration: %Types.Vector{x: ax, y: ay, z: az}
     } = movement
 
+    # Logger.debug("客户端加速度：#{inspect({vx, vy, vz}, pretty: true)}")
+
     {:ok, _} =
       GenServer.call(spid, {:movement, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}})
 
     # Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
 
-    payload = {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}
-    }
+    payload = {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}}
 
-    Process.sleep(70)
+    # Process.sleep(70)
     GenServer.cast(connection, {:send_data, payload})
 
     {:ok, state}
   end
 
   def dispatch(
-        %Packet{id: id, timestamp: timestamp, payload: {:entity_action, %Entity.EntityAction{action: {:enter_scene, enter}}}},
+        %Packet{
+          id: id,
+          timestamp: timestamp,
+          payload: {:entity_action, %Entity.EntityAction{action: {:enter_scene, enter}}}
+        },
         state,
         connection
       ) do
@@ -126,10 +131,57 @@ defmodule GateServer.Message do
   end
 
   ##################################### Message to client ##################################################################################
+  @doc """
+  Send `player_enter` message to the client
 
-  def send_player_enter(cid, {x, y, z}, connection) do
-    action = %Broadcast.Player.Action{action: {:player_enter, %Broadcast.Player.PlayerEnter{cid: cid, location: %Types.Vector{x: x, y: y, z: z}}}}
+  Params:
+
+  - `cid` - Character ID
+  - `location` - Coordinate of the entering player
+  - `connection` - Connection process PID
+  """
+  @spec send_player_enter(integer(), SceneServer.Aoi.AoiItem.vector(), pid()) :: :ok
+  def send_player_enter(cid, {x, y, z} = _location, connection) do
+    action = %Broadcast.Player.Action{
+      action:
+        {:player_enter,
+         %Broadcast.Player.PlayerEnter{cid: cid, location: %Types.Vector{x: x, y: y, z: z}}}
+    }
+
     payload = {:broadcast_action, action}
+    # Logger.info("玩家进入场景：#{cid}")
+
+    GenServer.cast(connection, {:send_data, payload})
+  end
+
+  @spec send_player_leave(integer(), pid()) :: :ok
+  def send_player_leave(cid, connection) do
+    action = %Broadcast.Player.Action{
+      action:
+        {:player_leave,
+         %Broadcast.Player.PlayerLeave{cid: cid}}
+    }
+
+    payload = {:broadcast_action, action}
+    # Logger.info("玩家离开场景：#{cid}")
+
+    GenServer.cast(connection, {:send_data, payload})
+  end
+
+  @spec send_player_move(integer(), SceneServer.Aoi.AoiItem.vector(), pid()) ::
+          :ok
+  def send_player_move(cid, {x, y, z} = _locaiton, connection) do
+    action = %Broadcast.Player.Action{
+      action:
+        {:player_move,
+         %Broadcast.Player.PlayerMove{
+           cid: cid,
+           movement: %Types.Movement{location: %Types.Vector{x: x, y: y, z: z}}
+         }}
+    }
+
+    payload = {:broadcast_action, action}
+    Logger.info("玩家移动：#{inspect({x, y, z}, pretty: true)}}")
 
     GenServer.cast(connection, {:send_data, payload})
   end

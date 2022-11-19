@@ -24,7 +24,15 @@ defmodule GateServer.TcpConnection do
     Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
 
     {:ok,
-     %{socket: socket, cid: -1, packet_id: 0, agent: nil, scene_ref: nil, token: nil, status: :waiting_auth}}
+     %{
+       socket: socket,
+       cid: -1,
+       packet_id: 0,
+       agent: nil,
+       scene_ref: nil,
+       token: nil,
+       status: :waiting_auth
+     }}
   end
 
   @impl true
@@ -37,6 +45,20 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_cast({:player_enter, cid, location}, state) do
     GateServer.Message.send_player_enter(cid, location, self())
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:player_leave, cid}, state) do
+    GateServer.Message.send_player_leave(cid, self())
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:player_move, cid, location}, state) do
+    GateServer.Message.send_player_move(cid, location, self())
 
     {:noreply, state}
   end
@@ -99,10 +121,10 @@ defmodule GateServer.TcpConnection do
     packet = %Packet{id: packet_id, timestamp: :os.system_time(:millisecond), payload: payload}
     {:ok, packet_data} = GateServer.Message.encode(packet)
     # Logger.debug("数据：#{inspect(packet_data, pretty: true)}")
-    result = :gen_tcp.send(socket, packet_data)
+    _result = :gen_tcp.send(socket, packet_data)
 
-    Logger.debug(
-      "TCP 发送数据结果：#{inspect(result, pretty: true)}, socket: #{inspect(socket, pretty: true)}"
-    )
+    # Logger.debug(
+    #   "TCP 发送数据结果：#{inspect(result, pretty: true)}, socket: #{inspect(socket, pretty: true)}"
+    # )
   end
 end

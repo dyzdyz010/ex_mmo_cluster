@@ -12,6 +12,7 @@ pub fn calculate_coordinate(
         result = location;
     } else {
         let time = (new_timestamp - old_timestamp) as f64 / 1000.0;
+        // println!("加速度：{:#?}", velocity);
         result.x = location.x + velocity.x * time;
         result.y = location.y + velocity.y * time;
         result.z = location.z + velocity.z * time;

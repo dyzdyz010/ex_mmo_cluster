@@ -8,7 +8,7 @@ defmodule SceneServer.Aoi.AoiItem do
   @type vector :: {float(), float(), float()}
 
   @aoi_tick_interval 1000
-  @coord_tick_interval 1000
+  @coord_tick_interval 100
 
   @self __MODULE__
 
@@ -21,6 +21,11 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
+  @spec init(
+          {integer(), integer(), vector(), pid(), pid(),
+           CoordinateSystem.Types.coordinate_system()}
+        ) ::
+          {:ok, map(), {:continue, {:load, any}}}
   def init({cid, client_timestamp, location, connection_pid, player_pid, system}) do
     {:ok,
      %{
@@ -82,6 +87,13 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
+  def handle_cast({:player_move, cid, location}, %{connection_pid: connection_pid} = state) do
+    GenServer.cast(connection_pid, {:player_move, cid, location})
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_call(:get_location, _from, %{movement: movement} = state) do
     {:reply, movement.location, state}
   end
@@ -127,7 +139,13 @@ defmodule SceneServer.Aoi.AoiItem do
   @impl true
   def handle_info(
         :update_coord_tick,
-        %{system_ref: system, item_ref: item, movement: movement} = state
+        %{
+          cid: cid,
+          system_ref: system,
+          item_ref: item,
+          movement: movement,
+          subscribees: subscribees
+        } = state
       ) do
     new_location =
       update_location(
@@ -138,8 +156,20 @@ defmodule SceneServer.Aoi.AoiItem do
         movement.velocity
       )
 
+    if new_location != movement.location and subscribees != [] do
+      broadcast_action_player_move(cid, new_location, subscribees)
+    end
+
     {:noreply,
-     %{state | coord_timer: make_coord_timer(), movement: %{movement | location: new_location}}}
+     %{
+       state
+       | coord_timer: make_coord_timer(),
+         movement: %{
+           movement
+           | location: new_location,
+             server_timestamp: :os.system_time(:millisecond)
+         }
+     }}
   end
 
   @impl true
@@ -239,12 +269,19 @@ defmodule SceneServer.Aoi.AoiItem do
           [pid()]
         ) :: no_return()
   defp refresh_aoi_players(system, item, cid, location, subscribees) do
-    aoi_pids = get_aoi_players(system, item, 10000.0)
+    aoi_pids = get_aoi_players(system, item, 1_000_000.0)
     leave_pids = subscribees -- aoi_pids
     enter_pids = aoi_pids -- subscribees
 
-    broadcast_action_player_leave(cid, leave_pids)
-    broadcast_action_player_enter(cid, location, enter_pids)
+    # Logger.debug("旧玩家列表：#{inspect(subscribees, pretty: true)}，新玩家列表：#{inspect(aoi_pids, pretty: true)}")
+
+    if leave_pids != [] do
+      broadcast_action_player_leave(cid, leave_pids)
+    end
+
+    if enter_pids != [] do
+      broadcast_action_player_enter(cid, location, enter_pids)
+    end
 
     aoi_pids
   end
@@ -256,6 +293,8 @@ defmodule SceneServer.Aoi.AoiItem do
         ) :: [pid()]
   defp get_aoi_players(system, item, distance) do
     {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
+    # data = CoordinateSystem.get_item_raw(item)
+    # Logger.debug("#{inspect(data, pretty: true)}")
     aoi_pids = SceneServer.AoiManager.get_items_with_cids(cids)
 
     aoi_pids
@@ -266,6 +305,7 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @spec broadcast_action_player_leave(integer(), [pid()]) :: any()
   defp broadcast_action_player_leave(cid, pids) do
+    # Logger.debug("待广播离开玩家：#{inspect(pids, pretty: true)}")
     pids
     |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_leave, cid}) end))
     |> Enum.map(&Task.await(&1))
@@ -273,8 +313,17 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @spec broadcast_action_player_enter(integer(), vector(), [pid()]) :: any()
   defp broadcast_action_player_enter(cid, location, pids) do
+    # Logger.debug("待广播加入玩家：#{inspect(pids, pretty: true)}")
     pids
     |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_enter, cid, location}) end))
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_player_move(integer(), vector(), [pid()]) :: any()
+  defp broadcast_action_player_move(cid, location, pids) do
+    # Logger.debug("待广播移动玩家：#{inspect(pids, pretty: true)}")
+    pids
+    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_move, cid, location}) end))
     |> Enum.map(&Task.await(&1))
   end
 end
