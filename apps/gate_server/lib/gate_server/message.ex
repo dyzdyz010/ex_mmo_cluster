@@ -181,7 +181,7 @@ defmodule GateServer.Message do
     }
 
     payload = {:broadcast_action, action}
-    Logger.info("玩家移动：#{inspect({x, y, z}, pretty: true)}}")
+    # Logger.info("玩家移动：#{inspect(cid, pretty: true)}")
 
     GenServer.cast(connection, {:send_data, payload})
   end

@@ -5,6 +5,10 @@ defmodule SceneServer.PlayerCharacter do
 
   alias SceneServer.AoiManager
 
+  @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
+
+  @movement_tick_interval 100
+
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
   end
@@ -20,10 +24,12 @@ defmodule SceneServer.PlayerCharacter do
        cid: cid,
        connection_pid: connection_pid,
        aoi_ref: nil,
-       character_info: %{nickname: "Demo Player"},
+       character_data_ref: nil,
        status: :in_scene,
        old_timestamp: nil,
-       net_delay: 0
+       net_delay: 0,
+       #  Timers
+       movement_timer: nil
      }, {:continue, {:load, client_timestamp}}}
   end
 
@@ -38,8 +44,16 @@ defmodule SceneServer.PlayerCharacter do
     y = Enum.random(pmin..pmax) * 1.0
     z = 90.0
     location = {x, y, z}
+
+    {:ok, cd_ref} =
+      SceneServer.Native.SceneOps.new_character_data(cid, "demo1", location, @default_dev_attrs)
+
     {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location, connection_pid)
-    {:noreply, %{state | aoi_ref: aoi_ref}}
+
+    movement_timer = make_movement_timer()
+
+    {:noreply,
+     %{state | aoi_ref: aoi_ref, character_data_ref: cd_ref, movement_timer: movement_timer}}
   end
 
   @impl true
@@ -48,8 +62,8 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def handle_call(:get_location, _from, %{aoi_ref: aoi} = state) do
-    location = GenServer.call(aoi, :get_location)
+  def handle_call(:get_location, _from, %{character_data_ref: cd_ref} = state) do
+    {:ok, location} = SceneServer.Native.SceneOps.get_character_location(cd_ref)
 
     {:reply, location, state}
   end
@@ -88,11 +102,14 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def handle_call(
-        {:movement, client_timestamp, location, velocity, acceleration},
+        {:movement, _client_timestamp, location, velocity, acceleration},
         _from,
-        %{aoi_ref: aoi} = state
+        %{aoi_ref: _aoi, character_data_ref: cd_ref} = state
       ) do
-    GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
+    # GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
+    {:ok, _} = SceneServer.Native.SceneOps.update_character_movement(cd_ref, location, velocity, acceleration)
+    # Logger.debug("Velocity: #{inspect(velocity, pretty: true)}")
+
     {:reply, {:ok, ""}, state}
   end
 
@@ -109,6 +126,25 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
+  # Tick functions ##########################################################
+
+  @impl true
+  def handle_info(
+        :movement_tick,
+        %{
+          character_data_ref: cd_ref,
+          aoi_ref: aoi_ref
+        } = state
+      ) do
+
+    with {:ok, location} when location != nil <- SceneServer.Native.SceneOps.movement_tick(cd_ref) do
+      # Logger.debug("Location update: #{inspect(location, pretty: true)}")
+      GenServer.cast(aoi_ref, {:self_move, location})
+    end
+
+    {:noreply, %{state | movement_timer: make_movement_timer()}}
+  end
+
   defp enter_scene(cid, client_timestamp, location, connection_pid) do
     {:ok, aoi_ref} =
       AoiManager.add_aoi_item(cid, client_timestamp, location, connection_pid, self())
@@ -116,5 +152,9 @@ defmodule SceneServer.PlayerCharacter do
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}
+  end
+
+  defp make_movement_timer() do
+    Process.send_after(self(), :movement_tick, @movement_tick_interval)
   end
 end

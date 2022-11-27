@@ -120,7 +120,7 @@ defmodule GateServer.TcpConnection do
   defp send_data(payload, socket, packet_id) do
     packet = %Packet{id: packet_id, timestamp: :os.system_time(:millisecond), payload: payload}
     {:ok, packet_data} = GateServer.Message.encode(packet)
-    # Logger.debug("数据：#{inspect(packet_data, pretty: true)}")
+    # Logger.debug("数据：#{inspect(packet, pretty: true)}")
     _result = :gen_tcp.send(socket, packet_data)
 
     # Logger.debug(

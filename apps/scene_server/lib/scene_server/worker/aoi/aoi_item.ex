@@ -43,8 +43,7 @@ defmodule SceneServer.Aoi.AoiItem do
        },
        subscribees: [],
        interest_radius: 500,
-       aoi_timer: nil,
-       coord_timer: nil
+       aoi_timer: nil
      }, {:continue, {:load, location}}}
   end
 
@@ -55,21 +54,22 @@ defmodule SceneServer.Aoi.AoiItem do
     Logger.debug("Item added to the system.")
 
     aoi_timer = make_aoi_timer()
-    coord_timer = make_coord_timer()
+    # coord_timer = make_coord_timer()
 
-    {:noreply, %{state | item_ref: item_ref, aoi_timer: aoi_timer, coord_timer: coord_timer}}
+    # {:noreply, %{state | item_ref: item_ref, aoi_timer: aoi_timer, coord_timer: coord_timer}}
+    {:noreply, %{state | item_ref: item_ref, aoi_timer: aoi_timer}}
   end
 
-  @impl true
-  def handle_cast(
-        {:movement, timestamp, location, velocity, acceleration},
-        state
-      ) do
-    # Logger.debug("AOI movement")
-    new_state = update_movement(timestamp, location, velocity, acceleration, state)
+  # @impl true
+  # def handle_cast(
+  #       {:movement, timestamp, location, velocity, acceleration},
+  #       state
+  #     ) do
+  #   # Logger.debug("AOI movement")
+  #   new_state = update_movement(timestamp, location, velocity, acceleration, state)
 
-    {:noreply, new_state}
-  end
+  #   {:noreply, new_state}
+  # end
 
   @impl true
   def handle_cast({:player_enter, cid, location}, %{connection_pid: connection_pid} = state) do
@@ -94,9 +94,17 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  def handle_call(:get_location, _from, %{movement: movement} = state) do
-    {:reply, movement.location, state}
+  def handle_cast({:self_move, location}, %{cid: cid, subscribees: subscribees} = state) do
+    # Logger.debug("广播")
+    broadcast_action_player_move(cid, location, subscribees)
+
+    {:noreply, state}
   end
+
+  # @impl true
+  # def handle_call(:get_location, _from, %{movement: movement} = state) do
+  #   {:reply, movement.location, state}
+  # end
 
   @impl true
   def handle_call(:exit, _from, state) do
@@ -136,56 +144,55 @@ defmodule SceneServer.Aoi.AoiItem do
     # {:noreply, state}
   end
 
-  @impl true
-  def handle_info(
-        :update_coord_tick,
-        %{
-          cid: cid,
-          system_ref: system,
-          item_ref: item,
-          movement: movement,
-          subscribees: subscribees
-        } = state
-      ) do
-    new_location =
-      update_location(
-        system,
-        item,
-        movement.server_timestamp,
-        movement.location,
-        movement.velocity
-      )
+  # @impl true
+  # def handle_info(
+  #       :update_coord_tick,
+  #       %{
+  #         cid: cid,
+  #         system_ref: system,
+  #         item_ref: item,
+  #         movement: movement,
+  #         subscribees: subscribees
+  #       } = state
+  #     ) do
+  #   new_location =
+  #     update_location(
+  #       system,
+  #       item,
+  #       movement.server_timestamp,
+  #       movement.location,
+  #       movement.velocity
+  #     )
+  #   # Logger.debug("Location update: #{inspect(new_location, pretty: true)}")
 
-    if new_location != movement.location and subscribees != [] do
-      broadcast_action_player_move(cid, new_location, subscribees)
-    end
+  #   if new_location != movement.location and subscribees != [] do
+  #     broadcast_action_player_move(cid, new_location, subscribees)
+  #   end
 
-    {:noreply,
-     %{
-       state
-       | coord_timer: make_coord_timer(),
-         movement: %{
-           movement
-           | location: new_location,
-             server_timestamp: :os.system_time(:millisecond)
-         }
-     }}
-  end
+  #   {:noreply,
+  #    %{
+  #      state
+  #      | coord_timer: make_coord_timer(),
+  #        movement: %{
+  #          movement
+  #          | location: new_location,
+  #            server_timestamp: :os.system_time(:millisecond)
+  #        }
+  #    }}
+  # end
 
   @impl true
   def terminate(reason, %{
         cid: cid,
         system_ref: system,
         item_ref: item,
-        aoi_timer: aoi_timer,
-        coord_timer: coord_timer
+        aoi_timer: aoi_timer
       }) do
     {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
     Logger.debug("AOI system item removed.")
     {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
     Logger.debug("Aoi index removed.")
     Process.cancel_timer(aoi_timer)
-    Process.cancel_timer(coord_timer)
     Logger.debug("Timer canceled.")
 
     Logger.warn(
@@ -206,60 +213,60 @@ defmodule SceneServer.Aoi.AoiItem do
     Process.send_after(self(), :get_aoi_tick, @aoi_tick_interval)
   end
 
-  defp make_coord_timer() do
-    Process.send_after(self(), :update_coord_tick, @coord_tick_interval)
-  end
+  # defp make_coord_timer() do
+  #   Process.send_after(self(), :update_coord_tick, @coord_tick_interval)
+  # end
 
   # Handle `:movement` casts
-  @spec update_movement(integer(), vector(), vector(), vector(), map()) :: map()
-  defp update_movement(
-         timestamp,
-         location,
-         velocity,
-         acceleration,
-         %{system_ref: system, item_ref: item} = state
-       ) do
-    {:ok, _} = CoordinateSystem.update_item_from_system(system, item, location)
+  # @spec update_movement(integer(), vector(), vector(), vector(), map()) :: map()
+  # defp update_movement(
+  #        timestamp,
+  #        location,
+  #        velocity,
+  #        acceleration,
+  #        %{system_ref: system, item_ref: item} = state
+  #      ) do
+  #   {:ok, _} = CoordinateSystem.update_item_from_system(system, item, location)
 
-    %{
-      state
-      | movement: %{
-          client_timestamp: timestamp,
-          server_timestamp: :os.system_time(:millisecond),
-          location: location,
-          velocity: velocity,
-          acceleration: acceleration
-        }
-    }
-  end
+  #   %{
+  #     state
+  #     | movement: %{
+  #         client_timestamp: timestamp,
+  #         server_timestamp: :os.system_time(:millisecond),
+  #         location: location,
+  #         velocity: velocity,
+  #         acceleration: acceleration
+  #       }
+  #   }
+  # end
 
-  @spec update_location(
-          CoordinateSystem.Types.coordinate_system(),
-          CoordinateSystem.Types.item(),
-          integer(),
-          vector(),
-          vector()
-        ) :: vector()
-  defp update_location(system, item, server_timestamp, location, velocity) do
-    new_location =
-      if velocity != {0.0, 0.0, 0.0} do
-        # Logger.debug("Coord tick.", ansi_color: :yellow)
-        new_location =
-          CoordinateSystem.calculate_coordinate(
-            server_timestamp,
-            :os.system_time(:millisecond),
-            location,
-            velocity
-          )
+  # @spec update_location(
+  #         CoordinateSystem.Types.coordinate_system(),
+  #         CoordinateSystem.Types.item(),
+  #         integer(),
+  #         vector(),
+  #         vector()
+  #       ) :: vector()
+  # defp update_location(system, item, server_timestamp, location, velocity) do
+  #   new_location =
+  #     if velocity != {0.0, 0.0, 0.0} do
+  #       # Logger.debug("Coord tick.", ansi_color: :yellow)
+  #       new_location =
+  #         CoordinateSystem.calculate_coordinate(
+  #           server_timestamp,
+  #           :os.system_time(:millisecond),
+  #           location,
+  #           velocity
+  #         )
 
-        CoordinateSystem.update_item_from_system(system, item, new_location)
-        new_location
-      else
-        location
-      end
+  #       CoordinateSystem.update_item_from_system(system, item, new_location)
+  #       new_location
+  #     else
+  #       location
+  #     end
 
-    new_location
-  end
+  #   new_location
+  # end
 
   @spec refresh_aoi_players(
           CoordinateSystem.Types.coordinate_system(),
