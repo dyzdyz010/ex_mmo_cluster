@@ -39,7 +39,7 @@ defmodule GateServer.Message do
           timestamp: timestamp,
           payload: {:entity_action, %Entity.EntityAction{action: {:movement, movement}}}
         },
-        %{scene_ref: spid} = state,
+        %{scene_ref: spid, cid: cid} = state,
         connection
       ) do
     # auth_server = GenServer.call(GateServer.Interface, :auth_server)
@@ -66,7 +66,15 @@ defmodule GateServer.Message do
 
     # Logger.debug("收到位移：#{inspect(movement, pretty: true)}")
 
-    payload = {:result, %Reply.Result{packet_id: id, status_code: :ok, payload: nil}}
+    payload =
+      {:result,
+       %Reply.Result{
+         packet_id: id,
+         status_code: :ok,
+         payload:
+           {:player_move,
+            %Reply.PlayerMove{cid: cid, location: %Types.Vector{x: lx, y: ly, z: lz}}}
+       }}
 
     # Process.sleep(70)
     GenServer.cast(connection, {:send_data, payload})
@@ -83,6 +91,7 @@ defmodule GateServer.Message do
         state,
         connection
       ) do
+    # Logger.debug("玩家请求进入场景")
     {result, new_state} =
       case GenServer.call(
              {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
@@ -157,9 +166,7 @@ defmodule GateServer.Message do
   @spec send_player_leave(integer(), pid()) :: :ok
   def send_player_leave(cid, connection) do
     action = %Broadcast.Player.Action{
-      action:
-        {:player_leave,
-         %Broadcast.Player.PlayerLeave{cid: cid}}
+      action: {:player_leave, %Broadcast.Player.PlayerLeave{cid: cid}}
     }
 
     payload = {:broadcast_action, action}

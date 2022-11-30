@@ -106,6 +106,9 @@ defmodule SceneServer.PlayerCharacter do
         _from,
         %{aoi_ref: _aoi, character_data_ref: cd_ref} = state
       ) do
+    {x, y, z} = location
+    {:ok, {ox, oy, oz}} = SceneServer.Native.SceneOps.get_character_location(cd_ref)
+    Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
     # GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
     {:ok, _} = SceneServer.Native.SceneOps.update_character_movement(cd_ref, location, velocity, acceleration)
     # Logger.debug("Velocity: #{inspect(velocity, pretty: true)}")

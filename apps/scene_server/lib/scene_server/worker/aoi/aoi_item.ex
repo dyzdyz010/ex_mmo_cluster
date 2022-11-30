@@ -26,7 +26,7 @@ defmodule SceneServer.Aoi.AoiItem do
            CoordinateSystem.Types.coordinate_system()}
         ) ::
           {:ok, map(), {:continue, {:load, any}}}
-  def init({cid, client_timestamp, location, connection_pid, player_pid, system}) do
+  def init({cid, _client_timestamp, location, connection_pid, player_pid, system}) do
     {:ok,
      %{
        cid: cid,
@@ -34,13 +34,7 @@ defmodule SceneServer.Aoi.AoiItem do
        connection_pid: connection_pid,
        system_ref: system,
        item_ref: nil,
-       movement: %{
-         client_timestamp: client_timestamp,
-         server_timestamp: :os.system_time(:millisecond),
-         location: location,
-         velocity: {0.0, 0.0, 0.0},
-         acceleration: {0.0, 0.0, 0.0}
-       },
+       location: location,
        subscribees: [],
        interest_radius: 500,
        aoi_timer: nil
@@ -98,7 +92,7 @@ defmodule SceneServer.Aoi.AoiItem do
     # Logger.debug("广播")
     broadcast_action_player_move(cid, location, subscribees)
 
-    {:noreply, state}
+    {:noreply, %{state | location: location}}
   end
 
   # @impl true
@@ -128,7 +122,7 @@ defmodule SceneServer.Aoi.AoiItem do
         :get_aoi_tick,
         %{
           cid: cid,
-          movement: %{location: location},
+          location: location,
           system_ref: system,
           item_ref: item,
           subscribees: subscribees
