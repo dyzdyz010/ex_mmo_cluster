@@ -1,0 +1,37 @@
+<h1>Listing Scenes</h1>
+
+<%= if @live_action in [:new, :edit] do %>
+  <.modal return_to={Routes.scene_index_path(@socket, :index)}>
+    <.live_component
+      module={VisualizeServerWeb.SceneLive.FormComponent}
+      id={@scene.id || :new}
+      title={@page_title}
+      action={@live_action}
+      scene={@scene}
+      return_to={Routes.scene_index_path(@socket, :index)}
+    />
+  </.modal>
+<% end %>
+
+<table>
+  <thead>
+    <tr>
+
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="scenes">
+    <%= for scene <- @scenes do %>
+      <tr id={"scene-#{scene.id}"}>
+
+        <td>
+          <span><%= live_redirect "Show", to: Routes.scene_show_path(@socket, :show, scene) %></span>
+          <span><%= live_patch "Edit", to: Routes.scene_index_path(@socket, :edit, scene) %></span>
+          <span><%= link "Delete", to: "#", phx_click: "delete", phx_value_id: scene.id, data: [confirm: "Are you sure?"] %></span>
+        </td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>
+
+<span><%= live_patch "New Scene", to: Routes.scene_index_path(@socket, :new) %></span>
