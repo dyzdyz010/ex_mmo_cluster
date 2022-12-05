@@ -18,12 +18,23 @@ defmodule VisualizeServerWeb.SceneLive.Index do
     Logger.debug("#{inspect(socket.assigns, pretty: true)}")
     Process.send_after(self(), :data_update, 1000)
 
-    {:noreply, push_event(socket, "data", %{
-      characters: [%{
-        cid: 1101,
-        location: %{x: 5.0, y: 10.0}
-      }]
-    })}
+    result =
+      GenServer.call(
+        {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
+        :get_all_players
+      )
+
+    Logger.debug("玩家获取结果：#{inspect(result, pretty: true)}")
+
+    {:noreply,
+     push_event(socket, "data", %{
+       characters: [
+         %{
+           cid: 1101,
+           location: %{x: 5.0, y: 10.0}
+         }
+       ]
+     })}
   end
 
   # @impl true

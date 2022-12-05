@@ -35,4 +35,9 @@ defmodule SceneServer.PlayerManager do
     new_players = players |> Map.delete(cid)
     {:reply, {:ok, ""}, %{state | players: new_players}}
   end
+
+  @impl true
+  def handle_call(:get_all_players, _from, %{players: players} = state) do
+    {:reply, {:ok, players}, state}
+  end
 end
