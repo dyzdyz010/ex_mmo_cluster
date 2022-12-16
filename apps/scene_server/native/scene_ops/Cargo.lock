@@ -287,10 +287,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "978aa494585d3ca4ad74929863093e87cac9790d81fe7aba2b3dc2890643a0fc"
 
 [[package]]
-name = "parry3d"
+name = "parry3d-f64"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee763b47e68f62d578bcfc3f83cf75d9d970aed5df20b6d90287ca9b3195155d"
+checksum = "3f42d28bb1263d1162e3105848230b258cc13b3084a45df0c77c3f75ea1c5306"
 dependencies = [
  "approx",
  "arrayvec",
@@ -332,10 +332,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rapier3d"
+name = "rapier3d-f64"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9cc332c8953b5a33e86cacda7466a433a38064825175be8ddd2bc631d858115"
+checksum = "132f47efc4c06400b7eb4d7b5233cd096221ac2471f14b3c88a04d413513b136"
 dependencies = [
  "approx",
  "arrayvec",
@@ -346,7 +346,7 @@ dependencies = [
  "nalgebra",
  "num-derive",
  "num-traits",
- "parry3d",
+ "parry3d-f64",
  "rayon",
  "rustc-hash",
  "simba",
@@ -458,7 +458,7 @@ name = "scene_ops"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
- "rapier3d",
+ "rapier3d-f64",
  "rustler",
 ]
 

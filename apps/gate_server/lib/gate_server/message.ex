@@ -98,7 +98,7 @@ defmodule GateServer.Message do
              {:add_player, enter.cid, connection, timestamp}
            ) do
         {:ok, ppid} ->
-          {x, y, z} = GenServer.call(ppid, :get_location)
+          {:ok, {x, y, z}} = GenServer.call(ppid, :get_location)
 
           result = %Reply.Result{
             packet_id: id,

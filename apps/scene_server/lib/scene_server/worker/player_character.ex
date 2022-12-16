@@ -65,7 +65,7 @@ defmodule SceneServer.PlayerCharacter do
   def handle_call(:get_location, _from, %{character_data_ref: cd_ref} = state) do
     {:ok, location} = SceneServer.Native.SceneOps.get_character_location(cd_ref)
 
-    {:reply, location, state}
+    {:reply, {:ok, location}, state}
   end
 
   @impl true

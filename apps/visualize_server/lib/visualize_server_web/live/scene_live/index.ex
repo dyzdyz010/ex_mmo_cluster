@@ -15,25 +15,30 @@ defmodule VisualizeServerWeb.SceneLive.Index do
 
   @impl true
   def handle_info(:data_update, socket) do
-    Logger.debug("#{inspect(socket.assigns, pretty: true)}")
+    # Logger.debug("#{inspect(socket.assigns, pretty: true)}")
     Process.send_after(self(), :data_update, 1000)
 
-    result =
+    {:ok, players_map} =
       GenServer.call(
         {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
         :get_all_players
       )
 
-    Logger.debug("玩家获取结果：#{inspect(result, pretty: true)}")
+    characters =
+      Enum.map(players_map, fn {cid, pid} ->
+        {:ok, {x, y, _z}} = GenServer.call(pid, :get_location)
+
+        %{
+          cid: cid,
+          location: %{x: x, y: y}
+        }
+      end)
+
+    Logger.debug("characters: #{inspect(characters, pretty: true)}")
 
     {:noreply,
      push_event(socket, "data", %{
-       characters: [
-         %{
-           cid: 1101,
-           location: %{x: 5.0, y: 10.0}
-         }
-       ]
+       characters: characters
      })}
   end
 

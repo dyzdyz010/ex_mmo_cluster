@@ -12,4 +12,4 @@ crate-type = ["cdylib"]
 [dependencies]
 rustler = "0.26.0"
 nalgebra = "*"
-rapier3d = { version = "*", features = [ "simd-stable", "parallel" ] }
+rapier3d-f64 = { version = "*", features = [ "simd-stable", "parallel" ] }
