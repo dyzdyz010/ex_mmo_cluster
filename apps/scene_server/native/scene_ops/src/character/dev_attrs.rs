@@ -1,7 +1,7 @@
 use rustler::NifStruct;
 
 
-#[derive(NifStruct, Clone)]
+#[derive(NifStruct, Debug, Clone)]
 #[module = "DevAttrs"]
 pub struct DevAttrs {
     // Memory - 记忆力

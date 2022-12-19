@@ -11,6 +11,7 @@ defmodule SceneServer.Application do
       # Starts a worker by calling: SceneServer.Worker.start_link(arg)
       # {SceneServer.Worker, arg}
       {SceneServer.InterfaceSup, name: SceneServer.InterfaceSup},
+      {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
       {SceneServer.AoiSup, name: SceneServer.AoiSup},
       {SceneServer.PlayerSup, name: SceneServer.PlayerManagerSup},
     ]

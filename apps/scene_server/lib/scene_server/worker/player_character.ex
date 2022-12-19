@@ -23,6 +23,7 @@ defmodule SceneServer.PlayerCharacter do
      %{
        cid: cid,
        connection_pid: connection_pid,
+       physys_ref: nil,
        aoi_ref: nil,
        character_data_ref: nil,
        status: :in_scene,
@@ -38,6 +39,8 @@ defmodule SceneServer.PlayerCharacter do
         {:load, client_timestamp},
         %{cid: cid, connection_pid: connection_pid} = state
       ) do
+    {:ok, physys_ref} = SceneServer.PhysicsManager.get_physics_system_ref()
+
     pmin = 400
     pmax = 3000
     x = Enum.random(pmin..pmax) * 1.0
@@ -46,14 +49,26 @@ defmodule SceneServer.PlayerCharacter do
     location = {x, y, z}
 
     {:ok, cd_ref} =
-      SceneServer.Native.SceneOps.new_character_data(cid, "demo1", location, @default_dev_attrs)
+      SceneServer.Native.SceneOps.new_character_data(
+        cid,
+        "demo1",
+        location,
+        @default_dev_attrs,
+        physys_ref
+      )
 
     {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location, connection_pid)
 
     movement_timer = make_movement_timer()
 
     {:noreply,
-     %{state | aoi_ref: aoi_ref, character_data_ref: cd_ref, movement_timer: movement_timer}}
+     %{
+       state
+       | physys_ref: physys_ref,
+         aoi_ref: aoi_ref,
+         character_data_ref: cd_ref,
+         movement_timer: movement_timer
+     }}
   end
 
   @impl true
@@ -62,8 +77,12 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def handle_call(:get_location, _from, %{character_data_ref: cd_ref} = state) do
-    {:ok, location} = SceneServer.Native.SceneOps.get_character_location(cd_ref)
+  def handle_call(
+        :get_location,
+        _from,
+        %{character_data_ref: cd_ref, physys_ref: physys_ref} = state
+      ) do
+    {:ok, location} = SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref)
 
     {:reply, {:ok, location}, state}
   end
@@ -104,13 +123,21 @@ defmodule SceneServer.PlayerCharacter do
   def handle_call(
         {:movement, _client_timestamp, location, velocity, acceleration},
         _from,
-        %{aoi_ref: _aoi, character_data_ref: cd_ref} = state
+        %{aoi_ref: _aoi, character_data_ref: cd_ref, physys_ref: physys_ref} = state
       ) do
     {x, y, z} = location
-    {:ok, {ox, oy, oz}} = SceneServer.Native.SceneOps.get_character_location(cd_ref)
+    {:ok, {ox, oy, oz}} = SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref)
     Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
     # GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
-    {:ok, _} = SceneServer.Native.SceneOps.update_character_movement(cd_ref, location, velocity, acceleration)
+    {:ok, _} =
+      SceneServer.Native.SceneOps.update_character_movement(
+        cd_ref,
+        location,
+        velocity,
+        acceleration,
+        physys_ref
+      )
+
     # Logger.debug("Velocity: #{inspect(velocity, pretty: true)}")
 
     {:reply, {:ok, ""}, state}
@@ -136,11 +163,12 @@ defmodule SceneServer.PlayerCharacter do
         :movement_tick,
         %{
           character_data_ref: cd_ref,
-          aoi_ref: aoi_ref
+          aoi_ref: aoi_ref,
+          physys_ref: physys_ref
         } = state
       ) do
-
-    with {:ok, location} when location != nil <- SceneServer.Native.SceneOps.movement_tick(cd_ref) do
+    with {:ok, location} when location != nil <-
+           SceneServer.Native.SceneOps.movement_tick(cd_ref, physys_ref) do
       # Logger.debug("Location update: #{inspect(location, pretty: true)}")
       GenServer.cast(aoi_ref, {:self_move, location})
     end

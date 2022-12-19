@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use rustler::NifStruct;
 
-use super::movement::Movement;
+use crate::physics::pipeline::PhySys;
+
+use super::movement::{Movement, MovementDebug};
 use super::dev_attrs::DevAttrs;
 use super::types::Vector;
 
-#[derive(NifStruct, Clone)]
-#[module = "CharacterData"]
+#[derive(Clone)]
 pub struct CharacterData {
     pub cid: u64,
     pub nickname: String,
@@ -21,6 +22,7 @@ impl CharacterData {
         nickname: String,
         location: Vector,
         dev_attrs: HashMap<String, i32>,
+        physys: &mut PhySys
     ) -> CharacterData {
         let move_comp = Movement::new(
             location,
@@ -34,6 +36,7 @@ impl CharacterData {
                 y: 0.0,
                 z: 0.0,
             },
+            physys
         );
         let dev_attrs_comp = DevAttrs::new(
             dev_attrs.get("mmr").unwrap().to_owned(),
@@ -46,15 +49,35 @@ impl CharacterData {
         CharacterData { cid, nickname, movement: move_comp, dev_attrs: dev_attrs_comp }
     }
 
-    pub fn movement_tick(&mut self) -> Option<Vector> {
-        self.movement.make_move()
+    pub fn movement_tick(&mut self, physys: &mut PhySys) -> Option<Vector> {
+        self.movement.make_move(physys)
     }
 
-    pub fn update_movement(&mut self, location: Vector, velocity: Vector, acceleration: Vector) {
-        self.movement.update(location, velocity, acceleration);
+    pub fn update_movement(&mut self, location: Vector, velocity: Vector, acceleration: Vector, physys: &mut PhySys) {
+        self.movement.update(location, velocity, acceleration, physys);
     }
 
-    pub fn get_location(&self) -> Vector {
-        self.movement.get_location()
+    pub fn get_location(&self, physys: &PhySys) -> Vector {
+        self.movement.get_location(physys)
+    }
+}
+
+#[derive(NifStruct, Debug, Clone)]
+#[module = "CharacterDataDebug"]
+pub struct CharacterDataDebug {
+    pub cid: u64,
+    pub nickname: String,
+    pub movement: MovementDebug,
+    pub dev_attrs: DevAttrs,
+}
+
+impl CharacterDataDebug {
+    pub fn new(data: &CharacterData, physys: &PhySys) -> CharacterDataDebug {
+        CharacterDataDebug {
+            cid: data.cid,
+            nickname: data.nickname.clone(),
+            movement: MovementDebug::new(&data.movement, &physys),
+            dev_attrs: data.dev_attrs.clone(),
+        }
     }
 }
