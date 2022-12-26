@@ -4,7 +4,7 @@ use rapier3d_f64::{
     prelude::{ColliderBuilder, ColliderHandle, QueryFilter},
 };
 
-use crate::physics::pipeline::PhySys;
+use crate::physics::physics_system::PhySys;
 
 use super::types::Vector;
 

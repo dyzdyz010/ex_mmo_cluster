@@ -3,7 +3,7 @@ pub mod physics;
 
 use std::{collections::HashMap, sync::Mutex};
 
-use physics::pipeline::PhySys;
+use physics::physics_system::PhySys;
 use rustler::{Atom, Env, ResourceArc, Term};
 
 use character::character_data::CharacterData;

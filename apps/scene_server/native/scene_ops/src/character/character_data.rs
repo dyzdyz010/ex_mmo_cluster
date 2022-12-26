@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rustler::NifStruct;
 
-use crate::physics::pipeline::PhySys;
+use crate::physics::physics_system::PhySys;
 
 use super::movement::{Movement, MovementDebug};
 use super::dev_attrs::DevAttrs;

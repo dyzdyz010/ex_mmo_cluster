@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustler::NifStruct;
 
-use crate::physics::pipeline::PhySys;
+use crate::physics::physics_system::PhySys;
 
 use super::{types::Vector, physics_comp::PhysicsComp};
 
