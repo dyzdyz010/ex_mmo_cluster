@@ -100,6 +100,30 @@ impl OctreeNode {
         false
     }
 
+    pub fn get(&self, bounds: BoundingBox) -> Vec<OctreeItem> {
+        let node_data = self.data.read();
+        let mut found_items = Vec::new();
+
+        // 如果给定边界框与当前节点的边界框相交
+        if node_data.boundary.intersects(&bounds) {
+            // 在当前节点的对象列表中检查与给定边界框相交的对象
+            for item in node_data.objects.iter() {
+                if bounds.contains_object(item) {
+                    found_items.push(item.clone());
+                }
+            }
+
+            // 如果当前节点有子节点，递归地在子节点中查找与给定边界框相交的对象
+            if let Some(children) = &node_data.children {
+                for child in children.iter() {
+                    found_items.extend(child.get(bounds.clone()));
+                }
+            }
+        }
+
+        found_items
+    }
+
     fn split(&self) {
         let mut self_data = self.data.write();
 
@@ -152,7 +176,7 @@ impl OctreeNode {
         (*self_data).objects.clear();
     }
 
-    pub fn merge(&self) {
+    fn merge(&self) {
         let mut node_data = self.data.write();
 
         if let Some(children) = &mut node_data.children {
@@ -267,5 +291,43 @@ mod tests {
 
         // 再次尝试删除同一个对象，此时应该返回false
         assert_eq!(root_node.remove(&item1), false);
+    }
+
+    #[test]
+    fn test_octree_get() {
+        let boundary = BoundingBox::new([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        let tree = OctreeNode::new(boundary, 0, 4, 4);
+
+        let item1 = OctreeItem {
+            data: Arc::new(RwLock::new(OctreeItemData {
+                id: 1,
+                pos: [1.0, 1.0, 1.0],
+            })),
+        };
+
+        let item2 = OctreeItem {
+            data: Arc::new(RwLock::new(OctreeItemData {
+                id: 2,
+                pos: [11.0, 11.0, 11.0],
+            })),
+        };
+
+        let item3 = OctreeItem {
+            data: Arc::new(RwLock::new(OctreeItemData {
+                id: 3,
+                pos: [2.0, 2.0, 2.0],
+            })),
+        };
+
+        tree.insert(item1.clone());
+        tree.insert(item2.clone());
+        tree.insert(item3.clone());
+
+        let search_boundary = BoundingBox::new([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+        let found_items = tree.get(search_boundary);
+
+        assert!(found_items.contains(&item1));
+        assert!(!found_items.contains(&item2));
+        assert!(found_items.contains(&item3));
     }
 }

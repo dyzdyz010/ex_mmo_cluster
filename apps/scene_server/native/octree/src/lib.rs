@@ -2,6 +2,7 @@ pub mod octree_node;
 pub mod types;
 pub mod octree_item;
 pub mod bounding_box;
+pub mod octree;
 
 #[rustler::nif]
 fn add(a: i64, b: i64) -> i64 {

@@ -12,3 +12,9 @@ pub struct OctreeItemData {
 pub struct OctreeItem {
     pub data: Arc<RwLock<OctreeItemData>>,
 }
+
+impl PartialEq for OctreeItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.data.read().id == other.data.read().id
+    }
+}

@@ -1,9 +1,9 @@
 // 八叉树边界范围
-#[derive(Clone, Copy)]
-pub struct Bounds {
-    pub min: Vector3,
-    pub max: Vector3,
-}
+// #[derive(Clone, Copy)]
+// pub struct Bounds {
+//     pub min: Vector3,
+//     pub max: Vector3,
+// }
 
 // 三维向量
 #[derive(Clone, Copy)]
