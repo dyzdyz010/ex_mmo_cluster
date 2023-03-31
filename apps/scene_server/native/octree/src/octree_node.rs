@@ -15,7 +15,7 @@ pub struct OctreeNodeData {
 
 #[derive(Clone, Debug)]
 pub struct OctreeNode {
-    data: Arc<RwLock<OctreeNodeData>>,
+    pub data: Arc<RwLock<OctreeNodeData>>,
 }
 
 impl OctreeNode {
@@ -35,12 +35,14 @@ impl OctreeNode {
 
     pub fn insert(&self, item: OctreeItem) {
         // print!("objects: {:#?}", self);
+        // print!("开始插入");
         let read_node_data = self.data.read();
 
         // 如果当前节点没有子节点并且未达到容量限制，直接将对象添加到当前节点的对象列表中
         if read_node_data.children.is_none()
             && read_node_data.objects.len() < read_node_data.capacity
         {
+            // print!("插入本级");
             drop(read_node_data);
             // let mut write_node_data = self.data.upgradable_read();
             let mut write_node_data = self.data.write();
@@ -48,15 +50,19 @@ impl OctreeNode {
         } else {
             // 如果当前节点没有子节点，进行分裂操作
             if read_node_data.children.is_none() {
+                // print!("分裂");
                 drop(read_node_data);
                 self.split();
             }
-            let write_node_data = self.data.write();
 
+            // print!("插入下级");
+            // let write_node_data = self.data.write();
+            let read_node_data = self.data.read();
             // 将对象插入到合适的子节点中
-            if let Some(children) = &write_node_data.children {
+            if let Some(children) = &read_node_data.children {
                 for child in children.iter() {
                     if child.is_inside(&item) {
+                        // drop(write_node_data);
                         child.insert(item.clone());
                         return;
                     }
@@ -122,6 +128,13 @@ impl OctreeNode {
         }
 
         found_items
+    }
+
+    pub fn update_item_position(&self, item: &OctreeItem, new_pos: [f32; 3]) {
+        if self.remove(item) {
+            item.update_position(new_pos);
+            self.insert(item.clone());
+        }
     }
 
     fn split(&self) {

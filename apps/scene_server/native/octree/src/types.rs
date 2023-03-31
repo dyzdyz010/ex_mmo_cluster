@@ -1,14 +1,15 @@
-// 八叉树边界范围
-// #[derive(Clone, Copy)]
-// pub struct Bounds {
-//     pub min: Vector3,
-//     pub max: Vector3,
-// }
+use rustler::NifTuple;
 
 // 三维向量
-#[derive(Clone, Copy)]
+#[derive(NifTuple, Clone, Debug, Copy, PartialEq)]
 pub struct Vector3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+impl Vector3 {
+    pub fn to_arr(&self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
 }

@@ -1,6 +1,6 @@
 use crate::octree_item::OctreeItem;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct BoundingBox {
     pub center: [f32; 3],
     pub half_size: [f32; 3],
