@@ -130,6 +130,30 @@ impl OctreeNode {
         found_items
     }
 
+    pub fn get_except(&self, except: &OctreeItem, bounds: BoundingBox) -> Vec<OctreeItem> {
+        let node_data = self.data.read();
+        let mut found_items = Vec::new();
+
+        // 如果给定边界框与当前节点的边界框相交
+        if node_data.boundary.intersects(&bounds) {
+            // 在当前节点的对象列表中检查与给定边界框相交的对象
+            for item in node_data.objects.iter() {
+                if bounds.contains_object(item) && !Arc::ptr_eq(&item.data, &except.data) {
+                    found_items.push(item.clone());
+                }
+            }
+
+            // 如果当前节点有子节点，递归地在子节点中查找与给定边界框相交的对象
+            if let Some(children) = &node_data.children {
+                for child in children.iter() {
+                    found_items.extend(child.get_except(except, bounds.clone()));
+                }
+            }
+        }
+
+        found_items
+    }
+
     pub fn update_item_position(&self, item: &OctreeItem, new_pos: [f32; 3]) {
         if self.remove(item) {
             item.update_position(new_pos);
@@ -342,5 +366,31 @@ mod tests {
         assert!(found_items.contains(&item1));
         assert!(!found_items.contains(&item2));
         assert!(found_items.contains(&item3));
+    }
+
+    #[test]
+    fn test_get_except() {
+        let bounds = BoundingBox::new([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        let octree = Arc::new(OctreeNode::new(bounds, 0, 0, 1));
+
+        let item1 = OctreeItem::new(1, [-3.0, -3.0, -3.0]);
+        let item2 = OctreeItem::new(2, [7.0, 7.0, 7.0]);
+        let item3 = OctreeItem::new(3, [0.0, 0.0, 0.0]);
+        let item4 = OctreeItem::new(4, [-5.0, 5.0, -5.0]);
+
+        octree.insert(item1.clone());
+        octree.insert(item2.clone());
+        octree.insert(item3.clone());
+        octree.insert(item4.clone());
+
+        let query_bounds = BoundingBox::new([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+
+        let found_items = octree.get_except(&item3, query_bounds);
+
+        assert_eq!(found_items.len(), 2);
+        assert!(found_items.contains(&item1));
+        assert!(found_items.contains(&item4));
+        assert!(!found_items.contains(&item2));
+        assert!(!found_items.contains(&item3));
     }
 }

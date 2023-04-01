@@ -26,6 +26,10 @@ impl Octree {
         self.root.get(bounds)
     }
 
+    pub fn get_except(&self, except: &OctreeItem, bounds: BoundingBox) -> Vec<OctreeItem> {
+        self.root.get_except(except, bounds)
+    }
+
     pub fn update_position(&self, item: &OctreeItem, new_pos: [f32; 3]) {
         self.root.update_item_position(item, new_pos);
     }
