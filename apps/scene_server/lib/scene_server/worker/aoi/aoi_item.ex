@@ -3,7 +3,8 @@ defmodule SceneServer.Aoi.AoiItem do
 
   require Logger
 
-  alias SceneServer.Native.CoordinateSystem
+  # alias SceneServer.Native.CoordinateSystem
+  alias SceneServer.Native.Octree
 
   @type vector :: {float(), float(), float()}
 
@@ -23,7 +24,7 @@ defmodule SceneServer.Aoi.AoiItem do
   @impl true
   @spec init(
           {integer(), integer(), vector(), pid(), pid(),
-           CoordinateSystem.Types.coordinate_system()}
+           Octree.Types.octree()}
         ) ::
           {:ok, map(), {:continue, {:load, any}}}
   def init({cid, _client_timestamp, location, connection_pid, player_pid, system}) do
@@ -182,7 +183,8 @@ defmodule SceneServer.Aoi.AoiItem do
         item_ref: item,
         aoi_timer: aoi_timer
       }) do
-    {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
+    # {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
+    true = Octree.remove_item(system, item)
     Logger.debug("AOI system item removed.")
     {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
     Logger.debug("Aoi index removed.")
@@ -198,7 +200,9 @@ defmodule SceneServer.Aoi.AoiItem do
   ################ Private Functions #######################################################################
 
   defp add_item(cid, location, system) do
-    {:ok, item_ref} = CoordinateSystem.add_item_to_system(system, cid, location)
+    # {:ok, item_ref} = CoordinateSystem.add_item_to_system(system, cid, location)
+    item_ref = Octree.new_item(cid, location)
+    Octree.add_item(system, item_ref)
 
     {:ok, item_ref}
   end
@@ -263,8 +267,8 @@ defmodule SceneServer.Aoi.AoiItem do
   # end
 
   @spec refresh_aoi_players(
-          CoordinateSystem.Types.coordinate_system(),
-          CoordinateSystem.Types.item(),
+          Octree.Types.octree(),
+          Octree.Types.octree_item(),
           integer(),
           vector(),
           [pid()]
@@ -288,12 +292,13 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @spec get_aoi_players(
-          CoordinateSystem.Types.coordinate_system(),
-          CoordinateSystem.Types.item(),
+          Octree.Types.octree(),
+          Octree.Types.octree_item(),
           float()
         ) :: [pid()]
   defp get_aoi_players(system, item, distance) do
-    {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
+    cids = Octree.get_in_bound_except(system, item, {distance, distance, distance})
+    # {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
     # data = CoordinateSystem.get_item_raw(item)
     # Logger.debug("#{inspect(data, pretty: true)}")
     aoi_pids = SceneServer.AoiManager.get_items_with_cids(cids)

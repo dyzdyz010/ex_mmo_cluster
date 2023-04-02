@@ -4,6 +4,7 @@ defmodule SceneServer.AoiManager do
   require Logger
 
   alias SceneServer.Native.CoordinateSystem
+  alias SceneServer.Native.Octree
 
   # APIs
 
@@ -77,7 +78,8 @@ defmodule SceneServer.AoiManager do
 
   @spec create_system() :: SceneServer.Native.CoordinateSystem.Types.coordinate_system()
   defp create_system() do
-    {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 5)
+    # {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 5)
+    system = Octree.new_tree({0.0, 0.0, 0.0}, {5000.0, 5000.0, 5000.0})
 
     system
   end

@@ -77,10 +77,10 @@ fn get_in_bound(tree: OctreeArc, center: Vector3, half_size: Vector3) -> Vec<i64
 fn get_in_bound_except(
     tree: OctreeArc,
     except: OctreeItemArc,
-    center: Vector3,
     half_size: Vector3,
 ) -> Vec<i64> {
-    let bounds = BoundingBox::new(center.to_arr(), half_size.to_arr());
+    let center = (*(except.data)).read().pos;
+    let bounds = BoundingBox::new(center, half_size.to_arr());
     let result = (*tree).get_except(&*except, bounds);
     result
         .into_iter()
