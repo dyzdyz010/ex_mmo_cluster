@@ -12,6 +12,15 @@ defmodule SceneServer.Native.Octree do
   @spec add_item(Types.octree(), Types.octree_item()) :: Types.octree()
   def add_item(_tree, _item), do: error()
 
+  @spec remove_item(Types.octree(), Types.octree_item()) :: boolean()
+  def remove_item(_tree, _item), do: error()
+
+  @spec get_in_bound(Types.octree(), Types.vector(), Types.vector()) :: [integer()]
+  def get_in_bound(_tree, _center, _half_size), do: error()
+
+  @spec get_in_bound_except(Types.octree(), Types.octree_item(), Types.vector(), Types.vector()) :: [integer()]
+  def get_in_bound_except(_tree, _item, _center, _half_size), do: error()
+
   @spec get_tree_raw(Types.octree()) :: map()
   def get_tree_raw(_tree), do: error()
 

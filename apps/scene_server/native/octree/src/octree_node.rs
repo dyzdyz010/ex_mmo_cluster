@@ -1,4 +1,5 @@
 use parking_lot::RwLock;
+
 use std::{convert::TryInto, sync::Arc};
 
 use crate::{bounding_box::BoundingBox, octree_item::OctreeItem};
@@ -106,24 +107,26 @@ impl OctreeNode {
         false
     }
 
-    pub fn get(&self, bounds: BoundingBox) -> Vec<OctreeItem> {
+    pub fn get(&self, bounds: &BoundingBox) -> Vec<OctreeItem> {
         let node_data = self.data.read();
         let mut found_items = Vec::new();
 
         // 如果给定边界框与当前节点的边界框相交
         if node_data.boundary.intersects(&bounds) {
-            // 在当前节点的对象列表中检查与给定边界框相交的对象
-            for item in node_data.objects.iter() {
-                if bounds.contains_object(item) {
-                    found_items.push(item.clone());
-                }
-            }
-
             // 如果当前节点有子节点，递归地在子节点中查找与给定边界框相交的对象
             if let Some(children) = &node_data.children {
                 for child in children.iter() {
-                    found_items.extend(child.get(bounds.clone()));
+                    found_items.extend(child.get(bounds));
                 }
+            } else {
+                // 在当前节点的对象列表中检查与给定边界框相交的对象
+                let objs: Vec<OctreeItem> = node_data
+                    .objects
+                    .iter()
+                    .filter(|x| bounds.contains_object(x))
+                    .map(|x| x.clone())
+                    .collect();
+                found_items.extend(objs);
             }
         }
 
@@ -361,7 +364,7 @@ mod tests {
         tree.insert(item3.clone());
 
         let search_boundary = BoundingBox::new([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
-        let found_items = tree.get(search_boundary);
+        let found_items: Vec<OctreeItem> = tree.get(&search_boundary);
 
         assert!(found_items.contains(&item1));
         assert!(!found_items.contains(&item2));

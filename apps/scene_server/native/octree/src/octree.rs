@@ -22,7 +22,7 @@ impl Octree {
         self.root.remove(item)
     }
 
-    pub fn get(&self, bounds: BoundingBox) -> Vec<OctreeItem> {
+    pub fn get(&self, bounds: &BoundingBox) -> Vec<OctreeItem> {
         self.root.get(bounds)
     }
 

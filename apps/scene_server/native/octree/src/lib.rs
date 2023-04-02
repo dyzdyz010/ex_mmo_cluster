@@ -22,7 +22,15 @@ fn load(env: Env, _info: Term) -> bool {
 
 rustler::init!(
     "Elixir.SceneServer.Native.Octree",
-    [new_tree, new_item, add_item, get_tree_raw,],
+    [
+        new_tree,
+        new_item,
+        add_item,
+        remove_item,
+        get_in_bound,
+        get_in_bound_except,
+        get_tree_raw,
+    ],
     load = load
 );
 
@@ -47,6 +55,37 @@ fn new_item(cid: i64, pos: Vector3) -> OctreeItemArc {
 #[rustler::nif]
 fn add_item(tree: OctreeArc, item: OctreeItemArc) {
     (*tree).insert((*item).clone());
+}
+
+#[rustler::nif]
+fn remove_item(tree: OctreeArc, item: OctreeItemArc) -> bool {
+    (*tree).remove(&(*item))
+}
+
+#[rustler::nif]
+fn get_in_bound(tree: OctreeArc, center: Vector3, half_size: Vector3) -> Vec<i64> {
+    let bounds = BoundingBox::new(center.to_arr(), half_size.to_arr());
+    let result: Vec<OctreeItem> = (*tree).get(&bounds);
+    // print!("result: {:#?}", result.len());
+    result
+        .into_iter()
+        .map(|item| (*(item.data)).read().id)
+        .collect()
+}
+
+#[rustler::nif]
+fn get_in_bound_except(
+    tree: OctreeArc,
+    except: OctreeItemArc,
+    center: Vector3,
+    half_size: Vector3,
+) -> Vec<i64> {
+    let bounds = BoundingBox::new(center.to_arr(), half_size.to_arr());
+    let result = (*tree).get_except(&*except, bounds);
+    result
+        .into_iter()
+        .map(|item| (*(item.data)).read().id)
+        .collect()
 }
 
 #[rustler::nif]
