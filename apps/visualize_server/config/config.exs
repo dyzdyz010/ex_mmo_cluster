@@ -10,7 +10,10 @@ import Config
 # Configures the endpoint
 config :visualize_server, VisualizeServerWeb.Endpoint,
   url: [host: "localhost"],
-  render_errors: [view: VisualizeServerWeb.ErrorView, accepts: ~w(html json), layout: false],
+  render_errors: [
+    formats: [html: VisualizeServerWeb.ErrorHTML, json: VisualizeServerWeb.ErrorJSON],
+    layout: false
+  ],
   pubsub_server: VisualizeServer.PubSub,
   live_view: [signing_salt: "uSUohzqu"]
 

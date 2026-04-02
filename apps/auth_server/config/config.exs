@@ -13,7 +13,10 @@ config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
 # Configures the endpoint
 config :auth_server, AuthServerWeb.Endpoint,
   url: [host: "localhost"],
-  render_errors: [view: AuthServerWeb.ErrorView, accepts: ~w(html json), layout: false],
+  render_errors: [
+    formats: [html: AuthServerWeb.ErrorHTML, json: AuthServerWeb.ErrorJSON],
+    layout: false
+  ],
   pubsub_server: AuthServer.PubSub,
   live_view: [signing_salt: "VRqBPZwk"]
 

@@ -1,75 +1,76 @@
 defmodule VisualizeServerWeb.SceneLive.Index do
   use VisualizeServerWeb, :live_view
 
-  require Logger
-
-  # alias VisualizeServer.World
-  # alias VisualizeServer.World.Scene
+  @refresh_interval 1_000
+  @scene_node :"scene1@127.0.0.1"
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Process.send_after(self(), :data_update, 1000)
+    if connected?(socket), do: schedule_refresh()
 
-    {:ok, assign(socket, :data, [])}
+    {:ok,
+     socket
+     |> assign(:page_title, "Scene Visualizer")
+     |> assign(:scene_node, Atom.to_string(@scene_node))
+     |> assign(:characters, [])}
   end
 
   @impl true
   def handle_info(:data_update, socket) do
-    # Logger.debug("#{inspect(socket.assigns, pretty: true)}")
-    Process.send_after(self(), :data_update, 1000)
-
-    {:ok, players_map} =
-      GenServer.call(
-        {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
-        :get_all_players
-      )
-
-    characters =
-      Enum.map(players_map, fn {cid, pid} ->
-        {:ok, {x, y, _z}} = GenServer.call(pid, :get_location)
-
-        %{
-          cid: cid,
-          location: %{x: x, y: y}
-        }
-      end)
-
-    Logger.debug("characters: #{inspect(characters, pretty: true)}")
+    schedule_refresh()
+    characters = fetch_characters()
 
     {:noreply,
-     push_event(socket, "data", %{
-       characters: characters
-     })}
+     socket
+     |> assign(:characters, characters)
+     |> push_event("data", %{characters: characters})}
   end
 
-  # @impl true
-  # def handle_params(params, _url, socket) do
-  #   {:noreply, apply_action(socket, socket.assigns.live_action, params)}
-  # end
+  defp schedule_refresh do
+    Process.send_after(self(), :data_update, @refresh_interval)
+  end
 
-  # defp apply_action(socket, :edit, %{"id" => id}) do
-  #   socket
-  #   |> assign(:page_title, "Edit Scene")
-  #   |> assign(:scene, World.get_scene!(id))
-  # end
+  defp fetch_characters do
+    with true <- Node.alive?(),
+         true <- connect_scene_node(),
+         {:ok, players_map} <- fetch_players_map() do
+      players_map
+      |> Enum.map(&build_character/1)
+      |> Enum.reject(&is_nil/1)
+    else
+      _ -> []
+    end
+  end
 
-  # defp apply_action(socket, :new, _params) do
-  #   socket
-  #   |> assign(:page_title, "New Scene")
-  #   |> assign(:scene, %Scene{})
-  # end
+  defp connect_scene_node do
+    case Node.connect(@scene_node) do
+      true -> true
+      :ignored -> true
+      _ -> false
+    end
+  end
 
-  # defp apply_action(socket, :index, _params) do
-  #   socket
-  #   |> assign(:page_title, "Scene Visualizer")
-  #   |> assign(:scene, nil)
-  # end
+  defp fetch_players_map do
+    case safe_call({SceneServer.PlayerManager, @scene_node}, :get_all_players) do
+      {:ok, {:ok, players_map}} when is_map(players_map) -> {:ok, players_map}
+      {:ok, players_map} when is_map(players_map) -> {:ok, players_map}
+      _ -> {:error, :unavailable}
+    end
+  end
 
-  # @impl true
-  # def handle_event("delete", %{"id" => id}, socket) do
-  #   scene = World.get_scene!(id)
-  #   {:ok, _} = World.delete_scene(scene)
+  defp build_character({cid, pid}) do
+    case safe_call(pid, :get_location) do
+      {:ok, {:ok, {x, y, _z}}} -> %{cid: cid, location: %{x: x, y: y}}
+      {:ok, {x, y, _z}} -> %{cid: cid, location: %{x: x, y: y}}
+      _ -> nil
+    end
+  end
 
-  #   {:noreply, assign(socket, :scenes, list_scenes())}
-  # end
+  defp safe_call(server, message, timeout \\ 1_000) do
+    try do
+      {:ok, GenServer.call(server, message, timeout)}
+    catch
+      :exit, _reason -> {:error, :exit}
+    end
+  end
 end

@@ -18,12 +18,11 @@ pub struct PhysicsComp {
 impl PhysicsComp {
     // New with default data
     pub fn new(location: Vector, physys: &mut PhySys) -> PhysicsComp {
-        // let rigid_body = RigidBodyBuilder::kinematic_position_based().translation(Vector3::new(location.x, location.y, location.z)).build();
-        // let rigid_body_handle = physys.rigid_body_set.insert(rigid_body);
         let collider = ColliderBuilder::capsule_z(0.3, 0.15)
-            .translation(Vector3::new(location.x, location.y, location.z))
+            .translation(Vector3::new(location.x, location.y, location.z).into())
             .build();
         let collider_handle = physys.collider_set.insert(collider);
+        physys.sync_colliders(&[collider_handle], &[]);
         let character_controller = KinematicCharacterController::default();
 
         PhysicsComp {
@@ -34,23 +33,25 @@ impl PhysicsComp {
 
     // Move function
     pub fn controller_move(&mut self, translation: Vector, physys: &mut PhySys) -> Vector {
-        let collider = &physys.collider_set[self.collider_handle];
-        let desired_translation = Vector3::new(translation.x, translation.y, translation.z);
+        let corrected_movement = {
+            let collider = &physys.collider_set[self.collider_handle];
+            let desired_translation = Vector3::new(translation.x, translation.y, translation.z).into();
+            let query_pipeline =
+                physys.query_pipeline(QueryFilter::default().exclude_collider(self.collider_handle));
 
-        let corrected_movement = self.character_controller.move_shape(
-            physys.integration_params.dt,
-            &physys.rigid_body_set,
-            &physys.collider_set,
-            &physys.queries,
-            physys.collider_set[self.collider_handle].shape(),
-            collider.position(),
-            desired_translation,
-            QueryFilter::default().exclude_collider(self.collider_handle),
-            |_| {},
-        );
+            self.character_controller.move_shape(
+                physys.integration_params.dt,
+                &query_pipeline,
+                collider.shape(),
+                collider.position(),
+                desired_translation,
+                |_| {},
+            )
+        };
 
         let collider = &mut physys.collider_set[self.collider_handle];
         collider.set_translation(collider.translation() + corrected_movement.translation);
+        physys.sync_colliders(&[self.collider_handle], &[]);
 
         return self.get_location(&physys);
     }

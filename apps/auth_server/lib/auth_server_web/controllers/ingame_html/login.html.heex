@@ -1,0 +1,56 @@
+<section class="mx-auto flex min-h-screen max-w-6xl items-center px-6 py-16 text-white">
+  <div class="grid w-full gap-12 lg:grid-cols-[1.1fr_0.9fr]">
+    <div class="space-y-5">
+      <p class="text-sm uppercase tracking-[0.35em] text-emerald-300">Ingame Authentication</p>
+      <h1 class="text-4xl font-semibold tracking-tight">Welcome to Hemifuture.</h1>
+      <p class="max-w-xl text-base leading-8 text-slate-200">
+        这里保留了原先的游戏内登录入口，提交后仍会跳转到成功页，并把生成的授权码带过去。
+      </p>
+    </div>
+
+    <div class="rounded-2xl border border-white/10 bg-black/20 p-8 shadow-2xl shadow-black/30 backdrop-blur">
+      <form action={~p"/ingame/login_post"} method="post" class="space-y-5">
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+        <div class="space-y-2">
+          <label for="username" class="block text-sm font-medium text-slate-200">
+            <%= gettext("Username") %>
+          </label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-400/30"
+          />
+        </div>
+
+        <div class="space-y-2">
+          <label for="password" class="block text-sm font-medium text-slate-200">
+            <%= gettext("Password") %>
+          </label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-400/30"
+          />
+        </div>
+
+        <div class="flex flex-wrap gap-3 pt-4">
+          <button
+            type="submit"
+            class="rounded-lg bg-emerald-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+          >
+            提交
+          </button>
+          <a
+            href={~p"/ingame/login"}
+            class="rounded-lg border border-white/15 px-5 py-3 text-sm font-semibold text-white transition hover:border-white/30 hover:bg-white/5"
+          >
+            返回
+          </a>
+        </div>
+      </form>
+    </div>
+  </div>
+</section>

@@ -50,8 +50,8 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
     patterns: [
       ~r"priv/static/.*(js|css|png|jpeg|jpg|gif|svg)$",
       ~r"priv/gettext/.*(po)$",
-      ~r"lib/visualize_server_web/(live|views)/.*(ex)$",
-      ~r"lib/visualize_server_web/templates/.*(eex)$"
+      ~r"lib/visualize_server_web/router\.ex$",
+      ~r"lib/visualize_server_web/(controllers|components|live)/.*\.(ex|heex)$"
     ]
   ]
 
@@ -64,3 +64,5 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
+
+config :visualize_server, dev_routes: true

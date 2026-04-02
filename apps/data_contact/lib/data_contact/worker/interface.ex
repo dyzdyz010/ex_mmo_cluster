@@ -13,8 +13,13 @@ defmodule DataContact.Interface do
 
   @impl true
   def init(_init_arg) do
-    :erlang.monitor_node(@beacon, true)
-    {:ok, %{server_state: :waiting_node}, 0}
+    if Node.alive?() do
+      :erlang.monitor_node(@beacon, true)
+      {:ok, %{server_state: :waiting_node}, 0}
+    else
+      Logger.warning("Distributed node is not alive, skipping beacon registration.")
+      {:ok, %{server_state: :standalone}}
+    end
   end
 
   @impl true
@@ -37,12 +42,14 @@ defmodule DataContact.Interface do
   defp join_beacon() do
     Logger.info("Joining beacon...")
 
-    if !Node.connect(@beacon) do
-      Logger.emergency("Beacon node not up, exiting...")
-      Application.stop(:data_store)
-    end
+    case Node.connect(@beacon) do
+      true ->
+        Logger.info("Joining beacon complete.", ansi_color: :green)
 
-    Logger.info("Joining beacon complete.", ansi_color: :green)
+      _ ->
+        Logger.emergency("Beacon node not up, exiting...")
+        Application.stop(:data_store)
+    end
   end
 
   defp register_beacon() do

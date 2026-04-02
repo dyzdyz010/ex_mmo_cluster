@@ -7,6 +7,10 @@ pub struct Octree {
     pub root: Arc<OctreeNode>,
 }
 
+impl std::panic::RefUnwindSafe for Octree {}
+
+impl std::panic::UnwindSafe for Octree {}
+
 impl Octree {
     pub fn new(bounds: BoundingBox, depth: u8, max_depth: u8, capacity: usize) -> Self {
         Octree {

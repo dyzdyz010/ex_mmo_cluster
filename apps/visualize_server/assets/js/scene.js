@@ -1,178 +1,151 @@
-import * as PIXI from 'pixi.js'
+import { Application, Container, Point, Sprite } from "pixi.js"
 
-var type = "WebGL";
-if (!PIXI.utils.isWebGLSupported()) {
-    type = "canvas";
-}
+const SCENE_WIDTH = 3000
 
-var players = {}
-var ratio = 0
-
-const app = new PIXI.Application({ width: window.innerWidth, height: window.innerHeight })
-const scene = new PIXI.Container()
-
-window.addEventListener('phx:page-loading-stop', (info) => {
-    makeScene()
-    // document.querySelector("#pixi").appendChild(app.view)
-    document.body.appendChild(app.view)
-    // app.stage.width = app.view.width
-    // app.stage.height = app.view.height
-    // app.stage.
-    app.renderer.backgroundColor = 0xbcbcbc;
-    // app.renderer.autoResize = false
-    // app.renderer.resize(app.view.width, app.view.height)
-    // app.renderer.view.width = app.view.width
-    // app.renderer.view.height = app.view.height
-    // container.width = 5000
-    // container.height = 5000
-
-    window.addEventListener('resize', resize);
-    resize()
-})
-
-function makeScene() {
-    app.stage.interactive = true
-    app.stage.hitArea = app.screen
-    app.stage.on('pointerup', onDragEnd)
-    app.stage.on('pointerupoutside', onDragEnd)
-
-    scene.interactive = true
-    scene.on('pointerdown', onDragStart, scene)
-    app.stage.addChild(scene)
-
-    // container.position.set(50)
-
-    const bg = PIXI.Sprite.from('/images/scene.png')
-    bg.anchor.set(0)
-    bg.position.set(0)
-    // bg.scale.set(0.001)
-    scene.addChild(bg)
-
-    let sprite = PIXI.Sprite.from('/images/arrow_64.png')
-    sprite.scale.set(0.5)
-    sprite.position.set(100 * ratio, 100 * ratio)
-    // // sprite.width = 20
-    // // sprite.height = 20
-    // // sprite.zIndex = 100
-
-    // scene.addChild(sprite)
-    // sprite.position.set(0)
-    bg.texture.baseTexture.on('loaded', function () {
-        console.log(bg.width, bg.height)
-        ratio = bg.width / 3000.0
-    })
-}
-
-function resize() {
-
-    // Get the p
-    const parent = app.view.parentNode.parentNode;
-    // console.log(parent.clientHeight)
-    // Resize the renderer
-    app.renderer.resize(window.innerWidth, window.innerHeight)
-}
-
+let app = null
+let scene = null
+let background = null
+const players = new Map()
+let ratio = 1
 let dragTarget = null
 
+async function ensureScene() {
+    const mount = document.querySelector("#scene-canvas")
+
+    if (!mount) {
+        return
+    }
+
+    if (!app) {
+        app = new Application()
+        await app.init({
+            antialias: true,
+            background: 0x0f172a,
+            resizeTo: mount
+        })
+
+        scene = new Container()
+        scene.eventMode = "static"
+        scene.on("pointerdown", onDragStart)
+
+        app.stage.eventMode = "static"
+        app.stage.hitArea = app.screen
+        app.stage.on("pointerup", onDragEnd)
+        app.stage.on("pointerupoutside", onDragEnd)
+        app.stage.addChild(scene)
+    }
+
+    if (!mount.contains(app.canvas)) {
+        mount.replaceChildren(app.canvas)
+    }
+
+    await ensureBackground()
+}
+
+async function ensureBackground() {
+    if (background) {
+        return
+    }
+
+    background = Sprite.from("/images/scene.png")
+    background.anchor.set(0)
+    background.position.set(0)
+    scene.addChild(background)
+
+    const updateRatio = () => {
+        if (background.width > 0) {
+            ratio = background.width / SCENE_WIDTH
+        }
+    }
+
+    updateRatio()
+
+    if (background.texture?.baseTexture && !background.texture.baseTexture.valid) {
+        background.texture.baseTexture.once("loaded", updateRatio)
+    }
+}
+
 function onDragStart(event) {
-    // console.log(event.screen)
-    // console.log(this)
-    this.alpha = 0.7
-    dragTarget = this
-    // dragTarget.offsetX = dragTarget.parent.toLocal(event.global, dragTarget).x
-    // dragTarget.offsetY = dragTarget.parent.toLocal(event.global, dragTarget).y
-
-    // dragTarget.offCoord = dragTarget.toLocal(event.global, null)
-    // dragTarget.offCoord = new PIXI.Point()
+    dragTarget = scene
+    dragTarget.alpha = 0.92
     dragTarget.offCoord = event.global.clone()
-    // dragTarget.offCoord.x = event.global.x
-    // dragTarget.offCoord.y = event.global.y
-
-    app.stage.on('pointermove', onDragMove)
-    // dragTarget.pivot.set(event.screen - dragTarget.position)
+    app.stage.on("pointermove", onDragMove)
 }
 
 function onDragMove(event) {
-    if (dragTarget) {
-        // console.log(dragTarget.offCoord)
-        let movement = new PIXI.Point()
-        movement.x = event.global.x - dragTarget.offCoord.x
-        movement.y = event.global.y - dragTarget.offCoord.y
-        let newPos = dragTarget.toLocal(event.global, null)
-        // dragTarget.position.x = newPos.x - dragTarget.offCoord.x
-        // dragTarget.position.y = newPos.y - dragTarget.offCoord.y
-        // console.log(movement)
-        dragTarget.position.x += movement.x
-        dragTarget.position.y += movement.y
-
-        // dragTarget.parent.toLocal(event.global, null, dragTarget.position)
-        dragTarget.offCoord = event.global.clone()
+    if (!dragTarget) {
+        return
     }
+
+    const movement = new Point(
+        event.global.x - dragTarget.offCoord.x,
+        event.global.y - dragTarget.offCoord.y
+    )
+
+    dragTarget.position.x += movement.x
+    dragTarget.position.y += movement.y
+    dragTarget.offCoord = event.global.clone()
 }
 
 function onDragEnd() {
-    if (dragTarget) {
-        app.stage.off('pointermove', onDragMove)
-        dragTarget.alpha = 1
-        dragTarget = null
-        // console.log(this.children[0])
+    if (!dragTarget) {
+        return
     }
+
+    app.stage.off("pointermove", onDragMove)
+    dragTarget.alpha = 1
+    dragTarget = null
 }
 
-window.addEventListener(`phx:data`, (e) => {
-    const clist = e.detail.characters
-    // console.log("自定义事件：", clist)
-    let cids = clist.map(function (ele, idx, data) {
-        return ele.cid
-    })
-    // console.log(cids)
-    clist.forEach(character => {
+window.addEventListener("DOMContentLoaded", () => {
+    void ensureScene()
+})
 
-        if (players[character.cid] == null) {
-            let sprite = PIXI.Sprite.from('/images/arrow_64.png')
-            scene.addChild(sprite)
+window.addEventListener("phx:page-loading-stop", () => {
+    void ensureScene()
+})
 
-            
-        // // console.log(players[character.cid].rotation)
-        // let angle = getRotation(character.location.x - sprite.position.x, character.location.y - sprite.position.y)
-        // // console.log(character.location.x * ratio - sprite.position.x, character.location.y * ratio - sprite.position.y)
-        // // console.log(players[character.cid].position)
-        // // players[character.cid].angle = angle
-        // // sprite.rotation = radian
-        // sprite.angle = angle
+window.addEventListener("phx:data", async (event) => {
+    await ensureScene()
 
-            sprite.position.set(character.location.x * ratio, character.location.y * ratio)
+    const characterList = event.detail.characters || []
+    const activeIds = new Set(characterList.map((character) => character.cid))
+
+    characterList.forEach((character) => {
+        const x = character.location.x * ratio
+        const y = character.location.y * ratio
+
+        if (!players.has(character.cid)) {
+            const sprite = Sprite.from("/images/arrow_64.png")
+            sprite.position.set(x, y)
             sprite.pivot.set(32, 32)
             sprite.scale.set(0.5)
-            players[character.cid] = sprite
-        } else {
-            // console.log(players[character.cid].rotation)
-            const dx = character.location.x * ratio - players[character.cid].position.x
-            const dy = character.location.y * ratio - players[character.cid].position.y
-            if (dx != 0 || dy != 0) {
-                let angle = getAngle(dx, dy)
-                console.log(angle)
-                players[character.cid].angle = angle + 180
-            }
-
-            players[character.cid].position.set(character.location.x * ratio, character.location.y * ratio)
+            scene.addChild(sprite)
+            players.set(character.cid, sprite)
+            return
         }
-    });
 
+        const sprite = players.get(character.cid)
+        const dx = x - sprite.position.x
+        const dy = y - sprite.position.y
 
-    for (const key in players) {
-        if (!cids.includes(parseInt(key))) {
-            // console.log("player leave")
-            scene.removeChild(players[key])
-            delete players[key]
+        if (dx !== 0 || dy !== 0) {
+            sprite.angle = getAngle(dx, dy) + 180
         }
+
+        sprite.position.set(x, y)
+    })
+
+    for (const [cid, sprite] of players.entries()) {
+        if (activeIds.has(cid)) {
+            continue
+        }
+
+        scene.removeChild(sprite)
+        players.delete(cid)
     }
 })
 
 function getAngle(x, y) {
-    var angle = Math.atan2(y, x);   //弧度
-    // you need to devide by PI, and MULTIPLY by 180:
-    var degrees = 180 * angle / Math.PI;  //角度
-
-    return degrees
+    return (180 * Math.atan2(y, x)) / Math.PI
 }

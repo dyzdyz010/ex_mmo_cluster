@@ -1,0 +1,23 @@
+<section class="mx-auto flex min-h-screen max-w-5xl items-center justify-center px-6 py-16 text-white">
+  <div class="w-full max-w-2xl rounded-3xl border border-emerald-300/20 bg-black/30 p-10 text-center shadow-2xl shadow-emerald-950/40 backdrop-blur">
+    <p class="text-sm uppercase tracking-[0.35em] text-emerald-300">Ingame Authentication</p>
+    <h1 class="mt-4 text-4xl font-semibold tracking-tight">Login Success</h1>
+    <p class="mt-4 text-base leading-8 text-slate-200">
+      授权流程已经完成，客户端可以继续使用下面的 code 进行后续对接。
+    </p>
+
+    <div class="mt-8 rounded-2xl border border-white/10 bg-slate-950/80 px-6 py-5 text-left">
+      <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Authorization Code</p>
+      <code class="mt-3 block overflow-x-auto text-lg text-emerald-200"><%= @code || "Unavailable" %></code>
+    </div>
+
+    <div class="mt-8">
+      <a
+        href={~p"/ingame/login"}
+        class="inline-flex rounded-lg border border-white/15 px-5 py-3 text-sm font-semibold text-white transition hover:border-white/30 hover:bg-white/5"
+      >
+        返回登录页
+      </a>
+    </div>
+  </div>
+</section>

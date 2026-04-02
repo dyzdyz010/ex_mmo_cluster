@@ -9,7 +9,7 @@ defmodule DataService.MixProject do
       config_path: "config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.13",
+      elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -19,7 +19,7 @@ defmodule DataService.MixProject do
   def application do
     [
       applications: [:memento],
-      extra_applications: [:logger, :poolboy, :bcrypt_elixir, :data_init],
+      extra_applications: [:logger, :poolboy, :data_init],
       mod: {DataService.Application, []}
     ]
   end
@@ -29,8 +29,7 @@ defmodule DataService.MixProject do
     [
       {:data_init, in_umbrella: true},
       {:poolboy, "~> 1.5.2"},
-      {:memento, "~> 0.3.2"},
-      {:bcrypt_elixir, "~> 3.0"},
+      {:memento, "~> 0.5.0"},
       # {:dep_from_hexpm, "~> 0.3.0"},
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
       # {:sibling_app_in_umbrella, in_umbrella: true}

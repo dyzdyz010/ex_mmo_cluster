@@ -3,6 +3,7 @@ defmodule DataService.Worker do
   require Logger
 
   alias DataInit.TableDef, as: Tables
+  alias DataService.Password
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
@@ -52,8 +53,6 @@ defmodule DataService.Worker do
   end
 
   defp hash_password(password) do
-    salt = Bcrypt.Base.gen_salt()
-    hashed_password = Bcrypt.Base.hash_password(password, salt)
-    {:ok, hashed_password, salt}
+    Password.hash_password(password)
   end
 end

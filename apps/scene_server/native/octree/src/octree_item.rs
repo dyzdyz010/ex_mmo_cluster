@@ -13,6 +13,10 @@ pub struct OctreeItem {
     pub data: Arc<RwLock<OctreeItemData>>,
 }
 
+impl std::panic::RefUnwindSafe for OctreeItem {}
+
+impl std::panic::UnwindSafe for OctreeItem {}
+
 impl OctreeItem {
     pub fn new(id: i64, pos: [f32; 3]) -> Self {
         OctreeItem {

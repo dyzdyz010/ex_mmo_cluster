@@ -1,0 +1,31 @@
+<section class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="mx-auto flex max-w-6xl flex-col gap-8 px-6 py-10">
+    <div class="flex flex-wrap items-end justify-between gap-6">
+      <div class="space-y-3">
+        <p class="text-xs uppercase tracking-[0.35em] text-cyan-300">Hemifuture MMO Cluster</p>
+        <h1 class="text-4xl font-semibold tracking-tight">Scene Visualizer</h1>
+        <p class="max-w-3xl text-base leading-8 text-slate-300">
+          这个页面会每秒轮询一次场景服中的角色位置，并把结果推到前端 Pixi 画布中。
+        </p>
+      </div>
+
+      <div class="grid min-w-[240px] gap-3 rounded-2xl border border-white/10 bg-white/5 p-5 text-sm shadow-lg shadow-black/30">
+        <div>
+          <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Scene Node</p>
+          <code class="mt-2 block text-emerald-300"><%= @scene_node %></code>
+        </div>
+        <div>
+          <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Tracked Characters</p>
+          <p class="mt-2 text-2xl font-semibold text-white"><%= length(@characters) %></p>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="scene-canvas"
+      phx-update="ignore"
+      class="h-[70vh] overflow-hidden rounded-3xl border border-white/10 bg-slate-900 shadow-2xl shadow-cyan-950/20"
+    >
+    </div>
+  </div>
+</section>

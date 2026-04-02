@@ -2,11 +2,8 @@ defmodule AuthServerWeb.IngameController do
   use AuthServerWeb, :controller
   require Logger
 
-  alias AuthServer.Accounts
-  alias DataInit.TableDef, as: Tables
-
   def login(conn, _params) do
-    render(conn, "login.html")
+    render(conn, :login)
   end
 
   def login_post(conn, params) do
@@ -42,10 +39,10 @@ defmodule AuthServerWeb.IngameController do
     # end
     code = "3e4fg34gf32g4g43"
     data = %{code: code}
-    redirect(conn, to: Routes.ingame_path(conn, :login_success, data))
+    redirect(conn, to: ~p"/ingame/login_success?#{data}")
   end
 
-  def login_success(conn, _params) do
-    render(conn, "login_success.html")
+  def login_success(conn, params) do
+    render(conn, :login_success, code: params["code"])
   end
 end

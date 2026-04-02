@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 use bucket::Bucket;
 use coordinate_system::CoordinateSystem;
-use jemallocator::Jemalloc;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::{Atom, Env, ResourceArc, Term};
 
@@ -71,9 +70,6 @@ pub enum SetRemoveResult {
     Removed(usize),
     NotFound,
 }
-
-#[global_allocator]
-static GLOBAL_ALLOCATOR: Jemalloc = Jemalloc;
 
 mod atoms {
     rustler::atoms! {

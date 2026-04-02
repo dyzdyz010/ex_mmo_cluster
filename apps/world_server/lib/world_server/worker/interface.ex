@@ -16,7 +16,12 @@ defmodule WorldServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{server_state: :waiting_requirements}, 0}
+    if Node.alive?() do
+      {:ok, %{server_state: :waiting_requirements}, 0}
+    else
+      Logger.warning("Distributed node is not alive, skipping beacon registration.")
+      {:ok, %{server_state: :standalone}}
+    end
   end
 
   @impl true
@@ -27,8 +32,14 @@ defmodule WorldServer.Interface do
 
   @impl true
   def handle_info({:join, beacon}, state) do
-    true = Node.connect(beacon)
-    send(self(), :register)
+    case Node.connect(beacon) do
+      true ->
+        send(self(), :register)
+
+      _ ->
+        Logger.warning("Beacon node #{inspect(beacon)} is not reachable, retrying in #{@retry_rate}s.")
+        :timer.send_after(@retry_rate * 1000, {:join, beacon})
+    end
 
     {:noreply, state}
   end

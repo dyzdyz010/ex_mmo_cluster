@@ -10,6 +10,6 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.26.0"
-nalgebra = "*"
-rapier3d-f64 = { version = "*", features = [ "simd-stable", "parallel" ] }
+rustler = "0.37.3"
+nalgebra = "0.34.2"
+rapier3d-f64 = { version = "0.32.0", features = [ "parallel" ] }
