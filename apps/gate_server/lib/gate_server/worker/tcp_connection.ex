@@ -111,9 +111,10 @@ defmodule GateServer.TcpConnection do
          %{socket: socket} = state
        ) do
     timestamp = :os.system_time(:millisecond)
+    scene_node = GenServer.call(GateServer.Interface, :scene_server)
 
     case GenServer.call(
-           {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
+           {SceneServer.PlayerManager, scene_node},
            {:add_player, cid, self(), timestamp}
          ) do
       {:ok, ppid} ->

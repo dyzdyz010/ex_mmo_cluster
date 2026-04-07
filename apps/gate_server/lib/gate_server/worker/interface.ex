@@ -4,8 +4,7 @@ defmodule GateServer.Interface do
   require Logger
 
   @resource :gate_server
-  # @requirement [:auth_server]
-  @requirement []
+  @requirement [:scene_server]
 
   # 重试间隔：s
   @retry_rate 5
@@ -16,7 +15,7 @@ defmodule GateServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{auth_server: [], server_state: :waiting_requirements}, 0}
+    {:ok, %{scene_server: nil, auth_server: nil, server_state: :waiting_requirements}, 0}
   end
 
   @impl true
@@ -37,6 +36,20 @@ defmodule GateServer.Interface do
     {:noreply, %{new_state | server_state: :ready}}
   end
 
+  # ── Public API for TcpConnection to discover services ──
+
+  @impl true
+  def handle_call(:scene_server, _from, %{scene_server: scene} = state) do
+    {:reply, scene, state}
+  end
+
+  @impl true
+  def handle_call(:auth_server, _from, %{auth_server: auth} = state) do
+    {:reply, auth, state}
+  end
+
+  # ── Private ──
+
   defp join_beacon() do
     Logger.info("Joining beacon...")
 
@@ -46,7 +59,7 @@ defmodule GateServer.Interface do
 
       :error ->
         Logger.emergency("Beacon node not up, exiting...")
-        Application.stop(:data_store)
+        Application.stop(:gate_server)
     end
   end
 
@@ -57,7 +70,7 @@ defmodule GateServer.Interface do
 
     if result != :ok do
       Logger.emergency("Register to beacon node failed: #{inspect(result)}\nExiting...")
-      Application.stop(:data_store)
+      Application.stop(:gate_server)
     end
 
     Logger.info("Registering to beacon complete", ansi_color: :green)
@@ -66,33 +79,30 @@ defmodule GateServer.Interface do
   defp get_requirements(state) do
     Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon...")
 
-    offer = BeaconServer.Client.get_requirements(node())
+    case BeaconServer.Client.get_requirements(node()) do
+      {:ok, resources} ->
+        new_state = resolve_resources(resources, state)
 
-    IO.inspect(offer)
-
-    case offer do
-      {:ok, offer} ->
-        Logger.info("Offer: #{inspect(offer)}.",
-          ansi_color: :blue
-        )
-
-        # DataInit.initialize(data_contact.node, :store)
-
-        Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon complete.",
+        Logger.info("Requirements resolved: scene_server=#{inspect(new_state.scene_server)}",
           ansi_color: :green
         )
 
-        state
+        new_state
 
-      nil ->
+      {:err, nil} ->
         Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
         Process.sleep(@retry_rate * 1000)
         get_requirements(state)
     end
   end
 
-  @impl true
-  def handle_call(:auth_server, _from, state) when length(state.auth_server) > 0 do
-    {:reply, List.first(state.auth_server), state}
+  defp resolve_resources(resources, state) do
+    Enum.reduce(resources, state, fn resource, acc ->
+      case resource.name do
+        :scene_server -> %{acc | scene_server: resource.node}
+        :auth_server -> %{acc | auth_server: resource.node}
+        _ -> acc
+      end
+    end)
   end
 end
