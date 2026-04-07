@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use parking_lot::RwLock;
 
@@ -12,6 +13,10 @@ pub struct OctreeItemData {
 pub struct OctreeItem {
     pub data: Arc<RwLock<OctreeItemData>>,
 }
+
+// Safety: OctreeItem accesses data behind Arc<RwLock>
+impl UnwindSafe for OctreeItem {}
+impl RefUnwindSafe for OctreeItem {}
 
 impl OctreeItem {
     pub fn new(id: i64, pos: [f32; 3]) -> Self {

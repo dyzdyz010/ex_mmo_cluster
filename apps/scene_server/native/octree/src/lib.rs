@@ -1,5 +1,5 @@
 use bounding_box::BoundingBox;
-use rustler::{Env, ResourceArc, Term};
+use rustler::ResourceArc;
 use types::Vector3;
 
 use crate::{debug_types::octree_debug::OctreeDebug, octree::Octree, octree_item::OctreeItem};
@@ -11,28 +11,16 @@ pub mod octree_item;
 pub mod octree_node;
 pub mod types;
 
+#[rustler::resource_impl]
+impl rustler::Resource for Octree {}
+
+#[rustler::resource_impl]
+impl rustler::Resource for OctreeItem {}
+
 pub type OctreeArc = ResourceArc<Octree>;
 pub type OctreeItemArc = ResourceArc<OctreeItem>;
 
-fn load(env: Env, _info: Term) -> bool {
-    rustler::resource!(Octree, env);
-    rustler::resource!(OctreeItem, env);
-    true
-}
-
-rustler::init!(
-    "Elixir.SceneServer.Native.Octree",
-    [
-        new_tree,
-        new_item,
-        add_item,
-        remove_item,
-        get_in_bound,
-        get_in_bound_except,
-        get_tree_raw,
-    ],
-    load = load
-);
+rustler::init!("Elixir.SceneServer.Native.Octree");
 
 // #[rustler::nif]
 // fn add(a: i64, b: i64) -> i64 {

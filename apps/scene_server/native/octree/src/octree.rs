@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use crate::{octree_node::OctreeNode, octree_item::OctreeItem, bounding_box::BoundingBox};
 
@@ -6,6 +7,10 @@ use crate::{octree_node::OctreeNode, octree_item::OctreeItem, bounding_box::Boun
 pub struct Octree {
     pub root: Arc<OctreeNode>,
 }
+
+// Safety: Octree is read-only through Arc, interior mutability is behind RwLock
+impl UnwindSafe for Octree {}
+impl RefUnwindSafe for Octree {}
 
 impl Octree {
     pub fn new(bounds: BoundingBox, depth: u8, max_depth: u8, capacity: usize) -> Self {
