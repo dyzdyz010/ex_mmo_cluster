@@ -10,7 +10,8 @@ defmodule WorldServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{scene_server: nil, data_service: nil, server_state: :waiting_requirements}, {:continue, :setup}}
+    {:ok, %{scene_server: nil, data_service: nil, server_state: :waiting_requirements},
+     {:continue, :setup}}
   end
 
   @impl true
@@ -22,7 +23,10 @@ defmodule WorldServer.Interface do
 
     {:ok, scene_node} = BeaconServer.Client.await(:scene_server)
     {:ok, data_node} = BeaconServer.Client.await(:data_service)
-    Logger.info("Found scene_server=#{inspect(scene_node)}, data_service=#{inspect(data_node)}", ansi_color: :green)
+
+    Logger.info("Found scene_server=#{inspect(scene_node)}, data_service=#{inspect(data_node)}",
+      ansi_color: :green
+    )
 
     Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
     {:noreply, %{state | scene_server: scene_node, data_service: data_node, server_state: :ready}}

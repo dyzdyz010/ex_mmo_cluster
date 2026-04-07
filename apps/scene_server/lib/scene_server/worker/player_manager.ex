@@ -18,7 +18,11 @@ defmodule SceneServer.PlayerManager do
   end
 
   @impl true
-  def handle_call({:add_player, cid, connection_pid, client_timestamp}, _from, %{players: players} = state) do
+  def handle_call(
+        {:add_player, cid, connection_pid, client_timestamp},
+        _from,
+        %{players: players} = state
+      ) do
     {:ok, player_pid} =
       DynamicSupervisor.start_child(
         SceneServer.PlayerCharacterSup,

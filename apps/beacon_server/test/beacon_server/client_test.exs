@@ -45,16 +45,19 @@ defmodule BeaconServer.ClientTest do
       test_pid = self()
 
       # Spawn a long-lived process that registers and stays alive
-      pid = spawn(fn ->
-        :ok = BeaconServer.Client.register(:delayed_service)
-        send(test_pid, :registered)
-        # Stay alive until test completes
-        receive do
-          :done -> :ok
-        end
-      end)
+      pid =
+        spawn(fn ->
+          :ok = BeaconServer.Client.register(:delayed_service)
+          send(test_pid, :registered)
+          # Stay alive until test completes
+          receive do
+            :done -> :ok
+          end
+        end)
 
-      assert {:ok, _node} = BeaconServer.Client.await(:delayed_service, timeout: 5_000, interval: 25)
+      assert {:ok, _node} =
+               BeaconServer.Client.await(:delayed_service, timeout: 5_000, interval: 25)
+
       send(pid, :done)
     end
   end

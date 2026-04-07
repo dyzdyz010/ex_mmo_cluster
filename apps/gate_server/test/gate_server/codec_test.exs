@@ -10,10 +10,9 @@ defmodule GateServer.CodecTest do
   describe "decode movement" do
     test "decodes movement with all fields" do
       msg =
-        <<0x01, 42::64-big, 1000::64-big,
-          1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
-          4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
-          7.0::float-64-big, 8.0::float-64-big, 9.0::float-64-big>>
+        <<0x01, 42::64-big, 1000::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+          4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big, 7.0::float-64-big,
+          8.0::float-64-big, 9.0::float-64-big>>
 
       assert {:ok, {:movement, 42, 1000, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}}} ==
                Codec.decode(msg)
@@ -21,9 +20,8 @@ defmodule GateServer.CodecTest do
 
     test "decodes movement with zero velocity" do
       msg =
-        <<0x01, 1::64-big, 500::64-big,
-          100.5::float-64-big, 200.5::float-64-big, 90.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+        <<0x01, 1::64-big, 500::64-big, 100.5::float-64-big, 200.5::float-64-big,
+          90.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
 
       assert {:ok, {:movement, 1, 500, {100.5, 200.5, 90.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}} ==
@@ -32,10 +30,9 @@ defmodule GateServer.CodecTest do
 
     test "decodes movement with negative coordinates" do
       msg =
-        <<0x01, 99::64-big, 0::64-big,
-          -1.5::float-64-big, -2.5::float-64-big, -3.5::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 99::64-big, 0::64-big, -1.5::float-64-big, -2.5::float-64-big, -3.5::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
 
       {:ok, {:movement, 99, 0, {lx, ly, lz}, _, _}} = Codec.decode(msg)
       assert_in_delta lx, -1.5, 0.0001
@@ -72,8 +69,7 @@ defmodule GateServer.CodecTest do
       ulen = byte_size(username)
       clen = byte_size(code)
 
-      msg =
-        <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
+      msg = <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
       assert {:ok, {:auth_request, "player1", "abc123"}} == Codec.decode(msg)
     end
@@ -84,8 +80,7 @@ defmodule GateServer.CodecTest do
       ulen = byte_size(username)
       clen = byte_size(code)
 
-      msg =
-        <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
+      msg = <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
       assert {:ok, {:auth_request, ^username, "token"}} = Codec.decode(msg)
     end
@@ -135,8 +130,8 @@ defmodule GateServer.CodecTest do
     test "encodes success with location" do
       {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 5, {1.0, 2.0, 3.0}})
 
-      assert <<0x84, 5::64-big, 0x00,
-               1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> == bin
+      assert <<0x84, 5::64-big, 0x00, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> ==
+               bin
     end
 
     test "encodes error" do
@@ -149,9 +144,8 @@ defmodule GateServer.CodecTest do
     test "encodes movement ack with position" do
       {:ok, bin} = Codec.encode({:movement_result, :ok, 10, 42, {1.5, 2.5, 3.5}})
 
-      assert <<0x80, 10::64-big, 0x00,
-               42::64-big,
-               1.5::float-64-big, 2.5::float-64-big, 3.5::float-64-big>> == bin
+      assert <<0x80, 10::64-big, 0x00, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
+               3.5::float-64-big>> == bin
     end
   end
 
@@ -159,8 +153,8 @@ defmodule GateServer.CodecTest do
     test "encodes player_enter" do
       {:ok, bin} = Codec.encode({:player_enter, 100, {10.0, 20.0, 30.0}})
 
-      assert <<0x81, 100::64-big,
-               10.0::float-64-big, 20.0::float-64-big, 30.0::float-64-big>> == bin
+      assert <<0x81, 100::64-big, 10.0::float-64-big, 20.0::float-64-big, 30.0::float-64-big>> ==
+               bin
     end
 
     test "encodes player_leave" do
@@ -171,8 +165,7 @@ defmodule GateServer.CodecTest do
     test "encodes player_move" do
       {:ok, bin} = Codec.encode({:player_move, 55, {1.0, 2.0, 3.0}})
 
-      assert <<0x83, 55::64-big,
-               1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> == bin
+      assert <<0x83, 55::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> == bin
     end
   end
 
@@ -207,10 +200,9 @@ defmodule GateServer.CodecTest do
       {_, cid, ts, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}} = original
 
       client_msg =
-        <<0x01, cid::64-big, ts::64-big,
-          lx::float-64-big, ly::float-64-big, lz::float-64-big,
-          vx::float-64-big, vy::float-64-big, vz::float-64-big,
-          ax::float-64-big, ay::float-64-big, az::float-64-big>>
+        <<0x01, cid::64-big, ts::64-big, lx::float-64-big, ly::float-64-big, lz::float-64-big,
+          vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
+          ay::float-64-big, az::float-64-big>>
 
       assert {:ok, ^original} = Codec.decode(client_msg)
     end

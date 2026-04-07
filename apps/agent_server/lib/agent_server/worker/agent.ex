@@ -54,7 +54,6 @@ defmodule AgentServer.Agent do
 
     Process.put(:name, character.name)
 
-
     {:reply, :ok, state}
   end
 end

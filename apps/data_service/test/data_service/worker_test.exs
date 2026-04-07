@@ -23,10 +23,16 @@ defmodule DataService.WorkerTest do
 
   describe "register_account" do
     test "registers a new account successfully", %{worker: pid} do
-      result = GenServer.call(pid, {:register_account, "new_player", "password123", "new@test.com", "555-0001"})
+      result =
+        GenServer.call(
+          pid,
+          {:register_account, "new_player", "password123", "new@test.com", "555-0001"}
+        )
+
       assert %Account{username: "new_player", email: "new@test.com"} = result
       assert result.id > 0
-      assert result.password != "password123"  # Should be hashed
+      # Should be hashed
+      assert result.password != "password123"
     end
 
     test "rejects duplicate username", %{worker: pid} do
@@ -43,14 +49,22 @@ defmodule DataService.WorkerTest do
 
     test "detects multiple duplicates at once", %{worker: pid} do
       GenServer.call(pid, {:register_account, "multi_dup", "pw1", "multi@test.com", "333"})
-      result = GenServer.call(pid, {:register_account, "multi_dup", "pw2", "multi@test.com", "444"})
+
+      result =
+        GenServer.call(pid, {:register_account, "multi_dup", "pw2", "multi@test.com", "444"})
+
       assert {:err, {:duplicate, dups}} = result
       assert :username in dups
       assert :email in dups
     end
 
     test "hashes password with bcrypt", %{worker: pid} do
-      result = GenServer.call(pid, {:register_account, "hash_test", "mypassword", "hash@test.com", "555"})
+      result =
+        GenServer.call(
+          pid,
+          {:register_account, "hash_test", "mypassword", "hash@test.com", "555"}
+        )
+
       assert %Account{} = result
       assert String.starts_with?(result.password, "$2b$")
       assert result.salt != nil

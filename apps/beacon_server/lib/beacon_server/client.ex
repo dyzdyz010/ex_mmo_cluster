@@ -31,14 +31,17 @@ defmodule BeaconServer.Client do
     case Node.list() do
       [] ->
         Process.sleep(1000)
+
         case Node.list() do
           [] ->
             Logger.warning("No cluster peers found after waiting")
             :error
+
           nodes ->
             Logger.info("Cluster peers found: #{inspect(nodes)}")
             :ok
         end
+
       nodes ->
         Logger.info("Cluster peers found: #{inspect(nodes)}")
         :ok
@@ -55,9 +58,11 @@ defmodule BeaconServer.Client do
       {:ok, _} ->
         Logger.info("Registered #{resource} in distributed registry")
         :ok
+
       {:error, {:already_registered, _}} ->
         Logger.info("#{resource} already registered")
         :ok
+
       {:error, reason} ->
         Logger.error("Failed to register #{resource}: #{inspect(reason)}")
         {:error, reason}
@@ -96,6 +101,7 @@ defmodule BeaconServer.Client do
     case lookup(resource) do
       {:ok, node} ->
         {:ok, node}
+
       :error ->
         if System.monotonic_time(:millisecond) >= deadline do
           :timeout

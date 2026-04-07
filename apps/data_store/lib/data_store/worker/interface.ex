@@ -48,6 +48,7 @@ defmodule DataStore.Interface do
   defp setup_database(data_contact_node) do
     store_role = Application.get_env(:data_store, :store_role, :slave)
     Logger.info("This is a #{store_role} store database.")
+
     if store_role == :slave do
       DataInit.copy_database(data_contact_node, :store)
     end

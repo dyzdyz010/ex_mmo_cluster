@@ -17,6 +17,7 @@ defmodule Mix.Tasks.Db.Initialize do
       :dir,
       ~c"priv/.mnesia/#{Mix.env()}/#{node()}"
     )
+
     :ok = DataInit.create_database()
 
     Logger.info("===Creationg database complete.===", ansi_color: :green)

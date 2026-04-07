@@ -67,7 +67,7 @@ defmodule GateServer.TcpFramingTest do
     {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
-    :inet.setopts(server, [active: false, packet: 4])
+    :inet.setopts(server, active: false, packet: 4)
 
     payload = <<0x01, 42::64, 1.0::float-64, 2.0::float-64, 3.0::float-64>>
     length = byte_size(payload)
@@ -90,7 +90,7 @@ defmodule GateServer.TcpFramingTest do
     {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
-    :inet.setopts(server, [active: false, packet: 4])
+    :inet.setopts(server, active: false, packet: 4)
 
     msg1 = <<"first_message">>
     msg2 = <<"second_message">>
@@ -117,7 +117,7 @@ defmodule GateServer.TcpFramingTest do
     {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
-    :inet.setopts(server, [packet: 4])
+    :inet.setopts(server, packet: 4)
 
     response = <<"response_data">>
     :ok = :gen_tcp.send(server, response)

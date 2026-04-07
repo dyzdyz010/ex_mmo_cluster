@@ -4,11 +4,11 @@ defmodule DataService.Schema.Account do
 
   @primary_key {:id, :id, autogenerate: false}
   schema "accounts" do
-    field :username, :string
-    field :password, :string
-    field :salt, :string
-    field :email, :string
-    field :phone, :string
+    field(:username, :string)
+    field(:password, :string)
+    field(:salt, :string)
+    field(:email, :string)
+    field(:phone, :string)
 
     timestamps()
   end

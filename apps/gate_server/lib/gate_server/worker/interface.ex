@@ -10,7 +10,8 @@ defmodule GateServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{scene_server: nil, auth_server: nil, server_state: :waiting_requirements}, {:continue, :setup}}
+    {:ok, %{scene_server: nil, auth_server: nil, server_state: :waiting_requirements},
+     {:continue, :setup}}
   end
 
   @impl true
@@ -47,6 +48,7 @@ defmodule GateServer.Interface do
     case BeaconServer.Client.lookup(:auth_server) do
       {:ok, node} ->
         {:reply, node, %{state | auth_server: node}}
+
       :error ->
         {:reply, nil, state}
     end

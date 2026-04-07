@@ -47,22 +47,37 @@ jobs:
 
       - name: Compile maintained apps (warnings as errors)
         run: |
-          # Legacy Mnesia apps are excluded from strict compilation.
-          # scene_server is compiled in its dedicated Rust-backed test job.
-          apps=(
+          # Apps with no legacy Mnesia deps — strict compilation
+          # scene_server compiled in its dedicated Rust-backed test job
+          strict_apps=(
             apps/beacon_server
             apps/gate_server
             apps/agent_manager
             apps/agent_server
             apps/world_server
+          )
+
+          for app in "${strict_apps[@]}"; do
+            echo "::group::Compiling ${app#apps/}"
+            (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
+            echo "::endgroup::"
+          done
+
+      - name: Compile apps with legacy deps
+        run: |
+          # These apps depend on data_init/memento which emit
+          # deprecation warnings from the memento library.
+          # Compiled without --warnings-as-errors until memento
+          # is fully removed.
+          legacy_apps=(
             apps/data_service
             apps/auth_server
             apps/visualize_server
           )
 
-          for app in "${apps[@]}"; do
+          for app in "${legacy_apps[@]}"; do
             echo "::group::Compiling ${app#apps/}"
-            (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
+            (cd "$app" && mix compile --no-optional-deps)
             echo "::endgroup::"
           done
 
