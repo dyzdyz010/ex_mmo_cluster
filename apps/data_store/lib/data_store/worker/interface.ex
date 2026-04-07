@@ -1,13 +1,8 @@
 defmodule DataStore.Interface do
   use GenServer
-
   require Logger
 
   @resource :data_store
-  @requirement [:data_contact]
-
-  # 重试间隔：s
-  @retry_rate 5
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
@@ -15,105 +10,46 @@ defmodule DataStore.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{data_contact: nil, server_state: :waiting_requirements}, 0}
+    {:ok, %{data_contact: nil, server_state: :waiting_requirements}, {:continue, :setup}}
   end
 
   @impl true
-  def handle_info(:timeout, state) do
-    send(self(), :establish_links)
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(:establish_links, state) do
+  def handle_continue(:setup, state) do
     Logger.info("===Starting data_store node initialization===", ansi_color: :blue)
 
-    join_beacon()
-    register_beacon()
-    new_state = get_requirements(state)
-    join_data_contact(new_state)
-    setup_database(new_state)
+    BeaconServer.Client.join_cluster()
+    BeaconServer.Client.register(@resource)
+
+    {:ok, data_contact_node} = BeaconServer.Client.await(:data_contact)
+    Logger.info("Found data_contact at #{inspect(data_contact_node)}", ansi_color: :green)
+
+    join_data_contact(data_contact_node)
+    setup_database(data_contact_node)
 
     Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
-    {:noreply, %{new_state | server_state: :ready}}
+    {:noreply, %{state | data_contact: data_contact_node, server_state: :ready}}
   end
 
-  defp join_beacon() do
-    Logger.info("Joining beacon...")
-
-    case BeaconServer.Client.join_cluster() do
-      :ok ->
-        Logger.info("Joining beacon complete.", ansi_color: :green)
-
-      :error ->
-        Logger.emergency("Beacon node not up, exiting...")
-        Application.stop(:data_store)
-    end
-  end
-
-  defp register_beacon() do
-    Logger.info("Registering to beacon...")
-
-    result = BeaconServer.Client.register(node(), __MODULE__, @resource, @requirement)
-
-    if result != :ok do
-      Logger.emergency("Register to beacon node failed: #{inspect(result)}\nExiting...")
-      Application.stop(:data_store)
-    end
-
-    Logger.info("Registering to beacon complete", ansi_color: :green)
-  end
-
-  defp get_requirements(state) do
-    Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon...")
-
-    offer = BeaconServer.Client.get_requirements(node())
-
-    # IO.inspect(offer)
-
-    case offer do
-      {:ok, [data_contact | _]} ->
-        Logger.info("Got data_contact node from beacon: #{inspect(data_contact.node)}.",
-          ansi_color: :blue
-        )
-
-        # DataInit.initialize(data_contact.node, :store)
-
-        Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon complete.",
-          ansi_color: :green
-        )
-
-        %{state | data_contact: data_contact.node}
-
-      nil ->
-        Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
-        Process.sleep(@retry_rate * 1000)
-        get_requirements(state)
-    end
-  end
-
-  defp join_data_contact(%{data_contact: data_contact}) do
-    Logger.info("Joining data_contact...")
-
+  defp join_data_contact(data_contact_node) do
     result =
       GenServer.call(
-        {DataContact.NodeManager, data_contact},
+        {DataContact.NodeManager, data_contact_node},
         {:register, node(), :store}
       )
 
     if result != :ok do
-      Logger.emergency("Join data_contact node failed: \n #{inspect(result)}\nExiting...")
+      Logger.emergency("Join data_contact node failed: #{inspect(result)}")
       Application.stop(:data_store)
     end
 
     Logger.info("Joining data_contact complete.", ansi_color: :green)
   end
 
-  defp setup_database(%{data_contact: data_contact}) do
+  defp setup_database(data_contact_node) do
     store_role = Application.get_env(:data_store, :store_role, :slave)
     Logger.info("This is a #{store_role} store database.")
     if store_role == :slave do
-      DataInit.copy_database(data_contact, :store)
+      DataInit.copy_database(data_contact_node, :store)
     end
   end
 end

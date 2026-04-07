@@ -1,13 +1,8 @@
 defmodule AgentServer.Interface do
   use GenServer
-
   require Logger
 
   @resource :agent_server
-  @requirement [:agent_manager, :data_contact]
-
-  # 重试间隔：s
-  @retry_rate 5
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
@@ -15,54 +10,20 @@ defmodule AgentServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{agent_manager: nil, data_service: nil, server_state: :waiting_requirements}, 0}
+    {:ok, %{agent_manager: nil, server_state: :waiting_requirements}, {:continue, :setup}}
   end
 
   @impl true
-  def handle_info(:timeout, state) do
-    send(self(), :join)
-    {:noreply, state}
-  end
+  def handle_continue(:setup, state) do
+    Logger.info("===Starting agent_server node initialization===", ansi_color: :blue)
 
-  @impl true
-  def handle_info(:join, state) do
-    case BeaconServer.Client.join_cluster() do
-      :ok -> send(self(), :register)
-      :error -> Logger.emergency("Beacon node not up, exiting...")
-    end
+    BeaconServer.Client.join_cluster()
+    BeaconServer.Client.register(@resource)
 
-    {:noreply, state}
-  end
+    {:ok, manager_node} = BeaconServer.Client.await(:agent_manager)
+    Logger.info("Found agent_manager at #{inspect(manager_node)}", ansi_color: :green)
 
-  @impl true
-  def handle_info(:register, state) do
-    :ok = BeaconServer.Client.register(node(), __MODULE__, @resource, @requirement)
-
-    send(self(), :get_requirements)
-
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(:get_requirements, state) do
-    offer = BeaconServer.Client.get_requirements(node())
-
-    IO.inspect(offer)
-
-    case offer do
-      {:ok, dao_server_manager} ->
-        Logger.debug("Requirements accuired, server ready.")
-        {:noreply, %{state | dao_server_manager: dao_server_manager, server_state: :ready}}
-
-      nil ->
-        Logger.debug("Not meeting requirements, retrying in #{@retry_rate}s.")
-        :timer.send_after(@retry_rate * 1000, :get_requirements)
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_call(:auth_server, _from, state) when length(state.auth_server) > 0 do
-    {:reply, List.first(state.auth_server), state}
+    Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
+    {:noreply, %{state | agent_manager: manager_node, server_state: :ready}}
   end
 end

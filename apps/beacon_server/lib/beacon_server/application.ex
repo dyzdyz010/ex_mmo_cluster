@@ -8,14 +8,10 @@ defmodule BeaconServer.Application do
     topologies = Application.get_env(:libcluster, :topologies, [])
 
     children = [
-      # Cluster auto-discovery
+      # Cluster auto-discovery (libcluster)
       {Cluster.Supervisor, [topologies, [name: BeaconServer.ClusterSupervisor]]},
-      # Distributed registry — processes registered here are visible cluster-wide
+      # Distributed registry for service discovery (replaces BeaconServer.Beacon)
       {Horde.Registry, [name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto]},
-      # Distributed supervisor — can start processes on any node
-      {Horde.DynamicSupervisor, [name: BeaconServer.DistributedSupervisor, strategy: :one_for_one, members: :auto]},
-      # The beacon GenServer (registered in Horde for HA)
-      {BeaconServer.Beacon, name: BeaconServer.Beacon}
     ]
 
     opts = [strategy: :one_for_one, name: BeaconServer.Supervisor]
