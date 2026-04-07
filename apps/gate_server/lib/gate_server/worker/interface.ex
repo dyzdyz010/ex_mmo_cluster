@@ -92,7 +92,7 @@ defmodule GateServer.Interface do
         state
 
       nil ->
-        Logger.warn("Not meeting requirements, retrying in #{@retry_rate}s.")
+        Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
         Process.sleep(@retry_rate * 1000)
         get_requirements(state)
     end

@@ -150,7 +150,7 @@ defmodule SceneServer.PlayerCharacter do
     {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
     Logger.debug("Player index removed.")
 
-    Logger.warn(
+    Logger.warning(
       "PlayerCharacter process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}",
       ansi_color: :green
     )

@@ -93,7 +93,7 @@ defmodule DataStore.Interface do
         %{state | data_contact: data_contact.node}
 
       nil ->
-        Logger.warn("Not meeting requirements, retrying in #{@retry_rate}s.")
+        Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
         Process.sleep(@retry_rate * 1000)
         get_requirements(state)
     end

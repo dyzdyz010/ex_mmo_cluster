@@ -76,7 +76,7 @@ defmodule GateServer.CodecDispatchTest do
 
     test "broadcast player_enter encodes for direct TCP send" do
       {:ok, bin} = Codec.encode({:player_enter, 55, {10.0, 20.0, 30.0}})
-      <<type::8, cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>> = bin
+      <<type::8, cid::64-big, x::float-64-big, _y::float-64-big, _z::float-64-big>> = bin
       assert type == 0x81
       assert cid == 55
       assert_in_delta x, 10.0, 0.001

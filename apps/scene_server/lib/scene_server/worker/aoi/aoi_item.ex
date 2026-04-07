@@ -191,7 +191,7 @@ defmodule SceneServer.Aoi.AoiItem do
     Process.cancel_timer(aoi_timer)
     Logger.debug("Timer canceled.")
 
-    Logger.warn(
+    Logger.warning(
       "AoiItem process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}",
       ansi_color: :green
     )

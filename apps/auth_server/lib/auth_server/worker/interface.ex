@@ -92,7 +92,7 @@ defmodule AuthServer.Interface do
         %{state | data_contact: data_contact.node}
 
       nil ->
-        Logger.warn("Not meeting requirements, retrying in #{@retry_rate}s.")
+        Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
         Process.sleep(@retry_rate * 1000)
         get_requirements(state)
     end
@@ -114,7 +114,7 @@ defmodule AuthServer.Interface do
 
         %{new_state | data_service: node}
       {:err, err} ->
-        Logger.warn("Getting data_service node from data_contact failed: #{inspect(err)}.",
+        Logger.warning("Getting data_service node from data_contact failed: #{inspect(err)}.",
           ansi_color: :yellow
         )
         Process.sleep(@retry_rate * 1000)

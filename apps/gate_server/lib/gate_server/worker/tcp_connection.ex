@@ -146,7 +146,7 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  defp dispatch({:auth_request, username, code}, %{socket: socket} = state) do
+  defp dispatch({:auth_request, _username, code}, %{socket: socket} = state) do
     case verify_token(code) do
       {:ok, %{agent: agent}} ->
         {:ok, bin} = GateServer.Codec.encode({:result, :ok, 0})
