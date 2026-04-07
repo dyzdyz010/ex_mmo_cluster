@@ -10,6 +10,9 @@ env:
   MIX_ENV: test
   ELIXIR_ERL_OPTIONS: "+fnu"
 
+permissions:
+  contents: read
+
 jobs:
   compile:
     name: Compile maintained apps

@@ -39,7 +39,7 @@ defmodule DataService.Dispatcher do
            {:register_account, "dyz", "duyizhuo", "dyzdyz010@sina.com", "13848584989"}
          ) do
       {:err, reason} ->
-        Logger.error("Accout creation failed: #{inspect(reason)}")
+        Logger.error("Account creation failed: #{inspect(reason)}")
 
       acc ->
         Logger.debug("Account created: #{inspect(acc.id)}")
