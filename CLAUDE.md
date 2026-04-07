@@ -68,8 +68,14 @@ mix test
 # Run tests for a specific app
 mix test apps/scene_server/test/
 
-# Initialize database
+# Initialize Mnesia database (legacy)
 mix db_initialize
+
+# Run Ecto migrations (PostgreSQL)
+mix ecto.migrate -r DataService.Repo
+
+# Migrate data from Mnesia to PostgreSQL
+mix migrate_to_pg
 
 # Start a cluster node (interactive)
 iex --name <node_name> --cookie mmo -S mix
