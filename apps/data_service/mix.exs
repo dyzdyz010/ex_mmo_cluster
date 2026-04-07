@@ -32,6 +32,7 @@ defmodule DataService.MixProject do
       {:bcrypt_elixir, "~> 3.0"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"},
+      {:jason, "~> 1.4"},
     ]
   end
 end
