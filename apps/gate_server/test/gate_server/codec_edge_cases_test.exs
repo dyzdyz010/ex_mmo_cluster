@@ -6,11 +6,11 @@ defmodule GateServer.CodecEdgeCasesTest do
   describe "decode edge cases" do
     test "movement with extreme float values" do
       max_f64 = 1.7976931348623157e+308
+
       msg =
-        <<0x01, 1::64-big, 0::64-big,
-          max_f64::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 1::64-big, 0::64-big, max_f64::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
 
       {:ok, {:movement, 1, 0, {x, _, _}, _, _}} = Codec.decode(msg)
       assert x == max_f64
@@ -18,11 +18,11 @@ defmodule GateServer.CodecEdgeCasesTest do
 
     test "movement with very small float values" do
       tiny = 5.0e-324
+
       msg =
-        <<0x01, 1::64-big, 0::64-big,
-          tiny::float-64-big, tiny::float-64-big, tiny::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 1::64-big, 0::64-big, tiny::float-64-big, tiny::float-64-big, tiny::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
 
       {:ok, {:movement, 1, 0, {x, _, _}, _, _}} = Codec.decode(msg)
       assert x == tiny
@@ -90,7 +90,9 @@ defmodule GateServer.CodecEdgeCasesTest do
       for msg <- server_messages do
         {:ok, bin} = Codec.encode(msg)
         <<type::8, _::binary>> = bin
-        assert type >= 0x80, "Message #{inspect(msg)} has type 0x#{Integer.to_string(type, 16)} < 0x80"
+
+        assert type >= 0x80,
+               "Message #{inspect(msg)} has type 0x#{Integer.to_string(type, 16)} < 0x80"
       end
     end
   end
@@ -125,8 +127,8 @@ defmodule GateServer.CodecEdgeCasesTest do
     test "every client message type can be decoded" do
       messages = [
         <<0x01, 0::64-big, 0::64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>,
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>,
         <<0x02, 0::64-big>>,
         <<0x03>>,
         <<0x04, 0::64-big>>,

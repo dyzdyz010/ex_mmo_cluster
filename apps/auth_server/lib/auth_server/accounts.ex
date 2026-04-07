@@ -8,6 +8,7 @@ defmodule AuthServer.Accounts do
       email: fields.email,
       phone: fields.phone
     }
+
     {:ok, account}
   end
 

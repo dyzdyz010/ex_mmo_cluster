@@ -11,7 +11,7 @@ defmodule VisualizeServer.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
-      compilers: [:gettext] ++ Mix.compilers(),
+      compilers: Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps()
@@ -60,10 +60,10 @@ defmodule VisualizeServer.MixProject do
   #     $ mix setup
   #
   # See the documentation for `Mix` for more info on aliases.
-defp aliases do
-  [
-    setup: ["deps.get"],
-    "assets.deploy": ["tailwind default --minify", "esbuild default --minify", "phx.digest"]
-  ]
-end
+  defp aliases do
+    [
+      setup: ["deps.get"],
+      "assets.deploy": ["tailwind default --minify", "esbuild default --minify", "phx.digest"]
+    ]
+  end
 end

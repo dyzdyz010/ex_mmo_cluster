@@ -13,7 +13,7 @@ defmodule SceneServer.Application do
       {SceneServer.InterfaceSup, name: SceneServer.InterfaceSup},
       {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
       {SceneServer.AoiSup, name: SceneServer.AoiSup},
-      {SceneServer.PlayerSup, name: SceneServer.PlayerManagerSup},
+      {SceneServer.PlayerSup, name: SceneServer.PlayerManagerSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

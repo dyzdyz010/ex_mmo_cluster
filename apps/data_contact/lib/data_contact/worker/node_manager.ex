@@ -43,7 +43,10 @@ defmodule DataContact.NodeManager do
 
   @impl true
   def handle_call(:db_list, _from, state) do
-    result = Map.keys(:maps.filter(fn _, v -> v == :online end, state.service_nodes)) ++ Map.keys(:maps.filter(fn _, v -> v == :online end, state.store_nodes))
+    result =
+      Map.keys(:maps.filter(fn _, v -> v == :online end, state.service_nodes)) ++
+        Map.keys(:maps.filter(fn _, v -> v == :online end, state.store_nodes))
+
     {:reply, result, state}
   end
 
@@ -51,9 +54,11 @@ defmodule DataContact.NodeManager do
   def handle_call(:get_node, _from, state) do
     Logger.debug("Nodes: #{inspect(state, pretty: true)}")
     free_node = select_free_node(state.service_nodes)
+
     case free_node do
       nil ->
         {:reply, {:err, nil}, state}
+
       _ ->
         {:reply, {:ok, free_node}, state}
     end
@@ -62,13 +67,15 @@ defmodule DataContact.NodeManager do
   @impl true
   def handle_info({:nodeup, node}, state) do
     Logger.debug("Node connected: #{node}")
-    new_state = case Map.get(state.service_nodes, node) do
-      nil ->
-        %{state | store_nodes: %{state.store_nodes | node => :online}}
-      _ ->
-        %{state | service_nodes: %{state.service_nodes | node => :online}}
-    end
 
+    new_state =
+      case Map.get(state.service_nodes, node) do
+        nil ->
+          %{state | store_nodes: %{state.store_nodes | node => :online}}
+
+        _ ->
+          %{state | service_nodes: %{state.service_nodes | node => :online}}
+      end
 
     {:noreply, new_state}
   end
@@ -77,12 +84,14 @@ defmodule DataContact.NodeManager do
   def handle_info({:nodedown, node}, state) do
     Logger.critical("Node disconnected: #{node}")
 
-    new_state = case Map.get(state.service_nodes, node) do
-      nil ->
-        %{state | store_nodes: %{state.store_nodes | node => :offline}}
-      _ ->
-        %{state | service_nodes: %{state.service_nodes | node => :offline}}
-    end
+    new_state =
+      case Map.get(state.service_nodes, node) do
+        nil ->
+          %{state | store_nodes: %{state.store_nodes | node => :offline}}
+
+        _ ->
+          %{state | service_nodes: %{state.service_nodes | node => :offline}}
+      end
 
     {:noreply, new_state}
   end
@@ -99,12 +108,14 @@ defmodule DataContact.NodeManager do
   @spec select_free_node(map()) :: atom()
   defp select_free_node(service_nodes) do
     Logger.debug("current service nodes: #{inspect(service_nodes)}")
+
     if service_nodes == %{} do
       nil
     else
       Map.keys(Map.filter(service_nodes, fn {_, v} -> v == :online end))
       |> Enum.min()
     end
+
     # [n, _] = for x <- service_nodes, do: x
     # n
   end

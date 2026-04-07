@@ -63,13 +63,11 @@ defmodule GateServer.Codec do
 
   # Movement: 1 + 8 + 8 + (9 * 8) = 89 bytes
   def decode(
-        <<@msg_movement, cid::64-big, timestamp::64-big,
-          lx::float-64-big, ly::float-64-big, lz::float-64-big,
-          vx::float-64-big, vy::float-64-big, vz::float-64-big,
+        <<@msg_movement, cid::64-big, timestamp::64-big, lx::float-64-big, ly::float-64-big,
+          lz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
           ax::float-64-big, ay::float-64-big, az::float-64-big>>
       ) do
-    {:ok,
-     {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}}}
+    {:ok, {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}}}
   end
 
   # EnterScene: 1 + 8 = 9 bytes
@@ -89,8 +87,8 @@ defmodule GateServer.Codec do
 
   # AuthRequest: 1 + 2 + username + 2 + code (length-prefixed strings)
   def decode(
-        <<@msg_auth_request, ulen::16-big, username::binary-size(ulen),
-          clen::16-big, code::binary-size(clen)>>
+        <<@msg_auth_request, ulen::16-big, username::binary-size(ulen), clen::16-big,
+          code::binary-size(clen)>>
       ) do
     {:ok, {:auth_request, username, code}}
   end
@@ -128,8 +126,8 @@ defmodule GateServer.Codec do
   # ── EnterScene result (success with location) ──
   def encode({:enter_scene_result, :ok, packet_id, {x, y, z}}) do
     {:ok,
-     <<@msg_enter_scene_result, packet_id::64-big, @status_ok,
-       x::float-64-big, y::float-64-big, z::float-64-big>>}
+     <<@msg_enter_scene_result, packet_id::64-big, @status_ok, x::float-64-big, y::float-64-big,
+       z::float-64-big>>}
   end
 
   def encode({:enter_scene_result, :error, packet_id}) do
@@ -139,15 +137,13 @@ defmodule GateServer.Codec do
   # ── Movement result (ack with player location) ──
   def encode({:movement_result, :ok, packet_id, cid, {x, y, z}}) do
     {:ok,
-     <<@msg_result, packet_id::64-big, @status_ok,
-       cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>>}
+     <<@msg_result, packet_id::64-big, @status_ok, cid::64-big, x::float-64-big, y::float-64-big,
+       z::float-64-big>>}
   end
 
   # ── Broadcast: player enter ──
   def encode({:player_enter, cid, {x, y, z}}) do
-    {:ok,
-     <<@msg_player_enter, cid::64-big,
-       x::float-64-big, y::float-64-big, z::float-64-big>>}
+    {:ok, <<@msg_player_enter, cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>>}
   end
 
   # ── Broadcast: player leave ──
@@ -157,9 +153,7 @@ defmodule GateServer.Codec do
 
   # ── Broadcast: player move ──
   def encode({:player_move, cid, {x, y, z}}) do
-    {:ok,
-     <<@msg_player_move, cid::64-big,
-       x::float-64-big, y::float-64-big, z::float-64-big>>}
+    {:ok, <<@msg_player_move, cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>>}
   end
 
   # ── TimeSync reply ──

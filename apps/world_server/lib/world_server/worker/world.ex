@@ -9,9 +9,10 @@ defmodule WorldServer.World do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{
-      online_players: %{}
-    }, 0}
+    {:ok,
+     %{
+       online_players: %{}
+     }, 0}
   end
 
   @impl true

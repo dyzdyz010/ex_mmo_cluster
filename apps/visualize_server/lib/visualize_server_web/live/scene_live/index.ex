@@ -10,17 +10,17 @@ defmodule VisualizeServerWeb.SceneLive.Index do
   def mount(_params, _session, socket) do
     if connected?(socket), do: Process.send_after(self(), :data_update, 1000)
 
-    {:ok, assign(socket, :data, [])}
+    scene_node = Application.get_env(:visualize_server, :scene_node, :"scene1@127.0.0.1")
+    {:ok, assign(socket, data: [], scene_node: scene_node)}
   end
 
   @impl true
   def handle_info(:data_update, socket) do
-    # Logger.debug("#{inspect(socket.assigns, pretty: true)}")
     Process.send_after(self(), :data_update, 1000)
 
     {:ok, players_map} =
       GenServer.call(
-        {SceneServer.PlayerManager, :"scene1@127.0.0.1"},
+        {SceneServer.PlayerManager, socket.assigns.scene_node},
         :get_all_players
       )
 

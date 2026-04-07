@@ -4,7 +4,7 @@
     </h1>
 </div>
 <div class="container mx-auto flex flex-col">
-<%# <form action="/ingame/login_post" method="post" class="mx-auto w-2/5"> %>
+<%!-- <form action="/ingame/login_post" method="post" class="mx-auto w-2/5"> --%>
 <%= form_tag "/ingame/login_post", method: "post", class: "mx-auto w-2/5" %>
     <div class="flex flex-row items-center mb-2">
         <label class=" basis-1/6 text-gray-700 font-bold mr-5" for="username">
@@ -22,5 +22,5 @@
     <%= submit "提交", data: [confirm: gettext("Submit?")], class: "text-lg basis-2/5 text-green-700 hover:text-cyan-700" %>
     <%= link "返回", to: Routes.ingame_path(@conn, :login), class: "text-lg basis-2/5 text-center" %>
     </div>
-<%# </form> %>
+<%!-- </form> --%>
 </div>

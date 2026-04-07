@@ -3,14 +3,17 @@ defmodule SceneServer.Native.SceneOps do
 
   @type vector :: {float(), float(), float()}
 
-  @spec new_character_data(integer(), binary(), vector(), map(), reference()) :: {atom(), reference()}
+  @spec new_character_data(integer(), binary(), vector(), map(), reference()) ::
+          {atom(), reference()}
   def new_character_data(_cid, _nickname, _location, _dev_attrs, _physys_ref), do: error()
 
   @spec new_physics_system() :: {:ok, reference()} | {:err, atom()}
   def new_physics_system(), do: error()
 
-  @spec update_character_movement(reference(), vector(), vector(), vector(), reference()) :: {atom(), atom()}
-  def update_character_movement(_cdref,_location, _velocity, _acceleration, _physys_ref), do: error()
+  @spec update_character_movement(reference(), vector(), vector(), vector(), reference()) ::
+          {atom(), atom()}
+  def update_character_movement(_cdref, _location, _velocity, _acceleration, _physys_ref),
+    do: error()
 
   @spec get_character_location(reference(), reference()) :: {:ok, term()} | {:err, atom()}
   def get_character_location(_cdref, _physys_ref), do: error()

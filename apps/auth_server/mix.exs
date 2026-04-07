@@ -11,7 +11,7 @@ defmodule AuthServer.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
-      compilers: [:gettext] ++ Mix.compilers(),
+      compilers: Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps()

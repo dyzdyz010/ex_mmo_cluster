@@ -12,7 +12,7 @@ defmodule GateServer.Application do
       # {GateServer.Worker, arg}
       {GateServer.InterfaceSup, name: GateServer.InterfaceSup},
       {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup},
-      {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
+      {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

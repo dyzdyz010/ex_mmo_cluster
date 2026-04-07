@@ -17,10 +17,9 @@ defmodule GateServer.CodecDispatchTest do
   describe "protocol routing by first byte" do
     test "movement message (0x01) is in codec range" do
       msg =
-        <<0x01, 1::64-big, 100::64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 1::64-big, 100::64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
 
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
@@ -59,7 +58,10 @@ defmodule GateServer.CodecDispatchTest do
 
     test "enter_scene_result success encodes with location" do
       {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 0, {100.0, 200.0, 90.0}})
-      <<type::8, _packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big>> = bin
+
+      <<type::8, _packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big>> =
+        bin
+
       assert type == 0x84
       assert status == 0x00
       assert_in_delta x, 100.0, 0.001
@@ -113,9 +115,8 @@ defmodule GateServer.CodecDispatchTest do
     test "movement: client encode → server decode → server encode response" do
       # 1. Client sends movement
       client_msg =
-        <<0x01, 42::64-big, 1000::64-big,
-          100.0::float-64-big, 200.0::float-64-big, 90.0::float-64-big,
-          1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+        <<0x01, 42::64-big, 1000::64-big, 100.0::float-64-big, 200.0::float-64-big,
+          90.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
 
       # 2. Server decodes

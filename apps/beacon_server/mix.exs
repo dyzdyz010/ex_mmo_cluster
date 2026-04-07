@@ -15,7 +15,12 @@ defmodule BeaconServer.MixProject do
       releases: [
         beacon_server: [
           include_executables_for: [:unix],
-          applications: [runtime_tools: :permanent, logger: :permanent, observer: :permanent, wx: :permanent],
+          applications: [
+            runtime_tools: :permanent,
+            logger: :permanent,
+            observer: :permanent,
+            wx: :permanent
+          ],
           steps: [:assemble, :tar]
         ]
       ]
@@ -34,7 +39,7 @@ defmodule BeaconServer.MixProject do
   defp deps do
     [
       {:libcluster, "~> 3.4"},
-      {:horde, "~> 0.9"},
+      {:horde, "~> 0.9"}
     ]
   end
 end

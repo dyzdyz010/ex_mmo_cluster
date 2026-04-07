@@ -42,7 +42,7 @@ defmodule DataService.UidGenerator do
     sequence = get_sequence(timestamp, last_time, last_sequence)
 
     uid =
-      <<0::1, (<<timestamp::@time_bits>>)::bitstring, <<service_id::@service_bits>>::bitstring,
+      <<0::1, <<timestamp::@time_bits>>::bitstring, <<service_id::@service_bits>>::bitstring,
         <<sequence::@sequence_bits>>::bitstring>>
 
     {:reply, uid, %{state | last_time: timestamp, last_sequence: sequence}}

@@ -6,11 +6,7 @@ defmodule DataService.SchemaTest do
   alias DataService.Repo
 
   setup_all do
-    # Start required applications for Ecto
-    Application.ensure_all_started(:jason)
-    Application.ensure_all_started(:postgrex)
-    Application.ensure_all_started(:ecto_sql)
-    {:ok, _} = Repo.start_link()
+    # Repo started in test_helper.exs
     :ok
   end
 
@@ -111,7 +107,12 @@ defmodule DataService.SchemaTest do
 
   describe "check_duplicate_ecto" do
     test "returns :ok when no duplicates" do
-      assert :ok == DataService.DbOps.UserAccount.check_duplicate_ecto("new_user", "new@email.com", "999")
+      assert :ok ==
+               DataService.DbOps.UserAccount.check_duplicate_ecto(
+                 "new_user",
+                 "new@email.com",
+                 "999"
+               )
     end
 
     test "detects duplicate username" do
@@ -124,7 +125,11 @@ defmodule DataService.SchemaTest do
         })
 
       assert {:duplicate, [:username]} =
-               DataService.DbOps.UserAccount.check_duplicate_ecto("taken_name", "other@email.com", "111")
+               DataService.DbOps.UserAccount.check_duplicate_ecto(
+                 "taken_name",
+                 "other@email.com",
+                 "111"
+               )
     end
 
     test "detects multiple duplicates" do
@@ -138,15 +143,22 @@ defmodule DataService.SchemaTest do
         })
 
       assert {:duplicate, dups} =
-               DataService.DbOps.UserAccount.check_duplicate_ecto("dup_user", "dup@email.com", "222")
+               DataService.DbOps.UserAccount.check_duplicate_ecto(
+                 "dup_user",
+                 "dup@email.com",
+                 "222"
+               )
 
       assert :username in dups
       assert :email in dups
     end
 
     test "ignores nil and empty phone" do
-      assert :ok == DataService.DbOps.UserAccount.check_duplicate_ecto("someone", "some@mail.com", nil)
-      assert :ok == DataService.DbOps.UserAccount.check_duplicate_ecto("someone", "some@mail.com", "")
+      assert :ok ==
+               DataService.DbOps.UserAccount.check_duplicate_ecto("someone", "some@mail.com", nil)
+
+      assert :ok ==
+               DataService.DbOps.UserAccount.check_duplicate_ecto("someone", "some@mail.com", "")
     end
   end
 end

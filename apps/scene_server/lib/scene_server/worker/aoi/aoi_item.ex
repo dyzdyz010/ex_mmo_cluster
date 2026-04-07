@@ -22,10 +22,7 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  @spec init(
-          {integer(), integer(), vector(), pid(), pid(),
-           Octree.Types.octree()}
-        ) ::
+  @spec init({integer(), integer(), vector(), pid(), pid(), Octree.Types.octree()}) ::
           {:ok, map(), {:continue, {:load, any}}}
   def init({cid, _client_timestamp, location, connection_pid, player_pid, system}) do
     {:ok,
