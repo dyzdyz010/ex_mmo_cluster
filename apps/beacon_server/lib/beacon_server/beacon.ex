@@ -51,6 +51,13 @@ defmodule BeaconServer.Beacon do
   def init(_init_arg) do
     :net_kernel.monitor_nodes(true)
 
+    # Register in Horde distributed registry for HA discovery
+    case Horde.Registry.register(BeaconServer.DistributedRegistry, :beacon, self()) do
+      {:ok, _} -> Logger.info("Beacon registered in distributed registry")
+      {:error, {:already_registered, _}} -> Logger.info("Beacon already registered in distributed registry")
+      _ -> :ok
+    end
+
     {:ok,
      %{
        nodes: %{},
