@@ -26,7 +26,7 @@ defmodule DataService.Worker do
   end
 
   defp register_account(username, password, email, phone) do
-    uid = DataService.UidGenerator.generate()
+    <<uid::64>> = DataService.UidGenerator.generate()
 
     case DataService.DbOps.UserAccount.check_duplicate_ecto(username, email, phone) do
       {:duplicate, duplicate_list} ->

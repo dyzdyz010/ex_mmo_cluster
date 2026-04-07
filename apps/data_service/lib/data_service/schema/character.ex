@@ -2,7 +2,7 @@ defmodule DataService.Schema.Character do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :integer, autogenerate: false}
+  @primary_key {:id, :id, autogenerate: false}
   schema "characters" do
     field :account, :integer
     field :name, :string

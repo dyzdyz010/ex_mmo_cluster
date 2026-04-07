@@ -1,8 +1,20 @@
 # Ex MMO Cluster — Incremental Migration Plan
 
 **Date**: 2026-04-07
+**Updated**: 2026-04-07
 **Scope**: P0 (Critical) and P1 (Important) issues. P2 listed as future work.
 **Constraint**: System must compile and pass tests after every single commit. No big-bang changes.
+
+## Completion Status
+
+| Phase | Description | Status | Commits |
+|-------|-------------|--------|---------|
+| 1 | TCP Framing + Custom Binary Protocol | **DONE** | 5 |
+| 2 | Mnesia → PostgreSQL (core path) | **DONE** | 4 |
+| 3 | Beacon HA (libcluster + Horde) | **DONE** | 3 |
+| 4 | Scene Spatial Partitioning | Pending | — |
+| 5 | Player State Persistence & Crash Recovery | Pending | — |
+| 6 | Future Work (P2) | Deferred | — |
 
 ---
 

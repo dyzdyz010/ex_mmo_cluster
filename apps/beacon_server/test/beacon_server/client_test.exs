@@ -2,8 +2,7 @@ defmodule BeaconServer.ClientTest do
   use ExUnit.Case, async: false
 
   setup_all do
-    # Start Horde registry for testing
-    {:ok, _} = Horde.Registry.start_link(name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto)
+    # Horde registry started in test_helper.exs
     {:ok, _} = BeaconServer.Beacon.start_link(name: BeaconServer.Beacon)
     :ok
   end
