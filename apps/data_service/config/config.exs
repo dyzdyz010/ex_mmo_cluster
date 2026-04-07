@@ -7,7 +7,7 @@ config :mnesia,
 
 config :data_service,
   service_id: 1,
-  use_ecto: false,
+  use_ecto: true,
   ecto_repos: [DataService.Repo]
 
 config :data_service, DataService.Repo,
