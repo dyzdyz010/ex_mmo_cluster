@@ -6,11 +6,7 @@ defmodule DataService.WorkerTest do
   alias DataService.Repo
 
   setup_all do
-    Application.ensure_all_started(:jason)
-    Application.ensure_all_started(:postgrex)
-    Application.ensure_all_started(:ecto_sql)
-    {:ok, _} = Repo.start_link()
-    # Start UID generator
+    # Repo started in test_helper.exs
     {:ok, _} = DataService.UidGenerator.start_link(name: DataService.UidGenerator)
     :ok
   end

@@ -205,12 +205,11 @@ jobs:
       - name: Compile
         run: mix compile
 
-      - name: Run Ecto migrations
-        run: mix ecto.migrate -r DataService.Repo
+      - name: Setup database
+        run: mix ecto.create -r DataService.Repo && mix ecto.migrate -r DataService.Repo
 
       - name: Run data_service tests
         run: cd apps/data_service && mix test --no-start
-        # 17 tests: Ecto schemas, worker CRUD, duplicate detection
 
   test-scene-server:
     name: Test scene_server (Rust NIFs)
