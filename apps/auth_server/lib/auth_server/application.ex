@@ -13,7 +13,7 @@ defmodule AuthServer.Application do
       # Start the PubSub system
       {Phoenix.PubSub, name: AuthServer.PubSub},
       # Start the Endpoint (http/https)
-      AuthServerWeb.Endpoint,
+      AuthServerWeb.Endpoint
       # Start a worker by calling: AuthServer.Worker.start_link(arg)
       # {AuthServer.InterfaceSup, name: AuthServer.InterfaceSup}
     ]

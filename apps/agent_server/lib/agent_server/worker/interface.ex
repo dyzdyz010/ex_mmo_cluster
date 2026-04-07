@@ -62,7 +62,7 @@ defmodule AgentServer.Interface do
   end
 
   @impl true
-  def handle_call(:auth_server, _from, state) when length(state.auth_server)>0 do
+  def handle_call(:auth_server, _from, state) when length(state.auth_server) > 0 do
     {:reply, List.first(state.auth_server), state}
   end
 end

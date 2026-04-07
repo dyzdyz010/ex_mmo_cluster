@@ -10,9 +10,12 @@ env:
   MIX_ENV: test
   ELIXIR_ERL_OPTIONS: "+fnu"
 
+permissions:
+  contents: read
+
 jobs:
   compile:
-    name: Compile
+    name: Compile maintained apps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +40,31 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Compile (warnings as errors)
-        run: mix compile --warnings-as-errors --no-optional-deps
+      - name: Compile shared dependencies
+        run: |
+          mix deps.compile
+          cd apps/data_init && mix compile
+
+      - name: Compile maintained apps (warnings as errors)
+        run: |
+          # Legacy Mnesia apps are excluded from strict compilation.
+          # scene_server is compiled in its dedicated Rust-backed test job.
+          apps=(
+            apps/beacon_server
+            apps/gate_server
+            apps/agent_manager
+            apps/agent_server
+            apps/world_server
+            apps/data_service
+            apps/auth_server
+            apps/visualize_server
+          )
+
+          for app in "${apps[@]}"; do
+            echo "::group::Compiling ${app#apps/}"
+            (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
+            echo "::endgroup::"
+          done
 
   format:
     name: Format

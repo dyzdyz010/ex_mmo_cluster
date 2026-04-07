@@ -8,8 +8,7 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
   server: false
 
 # In test we don't send emails.
-config :visualize_server, VisualizeServer.Mailer,
-  adapter: Swoosh.Adapters.Test
+config :visualize_server, VisualizeServer.Mailer, adapter: Swoosh.Adapters.Test
 
 # Print only warnings and errors during test
 config :logger, level: :warn
