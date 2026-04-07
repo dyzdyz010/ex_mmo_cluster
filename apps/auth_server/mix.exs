@@ -53,7 +53,8 @@ defmodule AuthServer.MixProject do
       {:tailwind, "~> 0.1", runtime: Mix.env() == :dev},
       {:bcrypt_elixir, "~> 3.0"},
       {:tzdata, "~> 1.1"},
-      {:data_init, in_umbrella: true}
+      {:data_init, in_umbrella: true},
+      {:beacon_server, in_umbrella: true}
     ]
   end
 

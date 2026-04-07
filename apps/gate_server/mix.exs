@@ -26,7 +26,8 @@ defmodule GateServer.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:observer_cli, "~> 1.7"}
+      {:observer_cli, "~> 1.7"},
+      {:beacon_server, in_umbrella: true}
     ]
   end
 end

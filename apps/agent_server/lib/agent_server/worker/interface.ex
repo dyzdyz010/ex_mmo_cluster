@@ -3,7 +3,6 @@ defmodule AgentServer.Interface do
 
   require Logger
 
-  @beacon :"beacon1@127.0.0.1"
   @resource :agent_server
   @requirement [:agent_manager, :data_contact]
 
@@ -21,24 +20,23 @@ defmodule AgentServer.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), {:join, @beacon})
+    send(self(), :join)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:join, beacon}, state) do
-    true = Node.connect(beacon)
-    send(self(), :register)
+  def handle_info(:join, state) do
+    case BeaconServer.Client.join_cluster() do
+      :ok -> send(self(), :register)
+      :error -> Logger.emergency("Beacon node not up, exiting...")
+    end
 
     {:noreply, state}
   end
 
   @impl true
   def handle_info(:register, state) do
-    :ok = GenServer.call(
-      {BeaconServer.Worker, @beacon},
-      {:register, {node(), __MODULE__, @resource, @requirement}}
-    )
+    :ok = BeaconServer.Client.register(node(), __MODULE__, @resource, @requirement)
 
     send(self(), :get_requirements)
 
@@ -47,11 +45,7 @@ defmodule AgentServer.Interface do
 
   @impl true
   def handle_info(:get_requirements, state) do
-    offer =
-      GenServer.call(
-        {BeaconServer.Worker, @beacon},
-        {:get_requirements, node()}
-      )
+    offer = BeaconServer.Client.get_requirements(node())
 
     IO.inspect(offer)
 

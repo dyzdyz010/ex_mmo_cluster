@@ -27,6 +27,7 @@ defmodule DataService.MixProject do
   defp deps do
     [
       {:data_init, in_umbrella: true},
+      {:beacon_server, in_umbrella: true},
       {:poolboy, "~> 1.5.2"},
       {:memento, "~> 0.3.2"},
       {:bcrypt_elixir, "~> 3.0"},

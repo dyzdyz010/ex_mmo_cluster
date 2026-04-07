@@ -3,7 +3,6 @@ defmodule DataService.Interface do
 
   require Logger
 
-  @beacon :"beacon1@127.0.0.1"
   @resource :data_service
   @requirement [:data_contact]
 
@@ -21,17 +20,17 @@ defmodule DataService.Interface do
 
   @impl true
   def handle_info(:timeout, state) do
-    send(self(), {:join, @beacon})
+    send(self(), :join)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:join, beacon}, state) do
-    case Node.connect(beacon) do
-      true ->
+  def handle_info(:join, state) do
+    case BeaconServer.Client.join_cluster() do
+      :ok ->
         send(self(), :register)
 
-      false ->
+      :error ->
         Logger.emergency("Beacon node not up, exiting...")
         Application.stop(:data_service)
     end
@@ -41,11 +40,7 @@ defmodule DataService.Interface do
 
   @impl true
   def handle_info(:register, state) do
-    :ok =
-      GenServer.call(
-        {BeaconServer.Beacon, @beacon},
-        {:register, {node(), __MODULE__, @resource, @requirement}}
-      )
+    :ok = BeaconServer.Client.register(node(), __MODULE__, @resource, @requirement)
 
     send(self(), :get_requirements)
 
@@ -55,11 +50,7 @@ defmodule DataService.Interface do
   @impl true
   def handle_info(:get_requirements, state) do
 
-    offer =
-      GenServer.call(
-        {BeaconServer.Beacon, @beacon},
-        {:get_requirements, node()}
-      )
+    offer = BeaconServer.Client.get_requirements(node())
 
     # IO.inspect(offer)
 
