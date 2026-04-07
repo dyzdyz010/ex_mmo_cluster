@@ -9,9 +9,9 @@ defmodule BeaconServer.ClientTest do
   end
 
   describe "join_cluster/0" do
-    test "returns :ok when beacon is available locally" do
-      # Beacon is started locally, so join should succeed via local lookup
-      assert BeaconServer.Client.join_cluster() == :ok
+    test "returns :error when no cluster peers (non-distributed node)" do
+      # In test environment without distributed Erlang, no peers exist
+      assert BeaconServer.Client.join_cluster() == :error
     end
   end
 

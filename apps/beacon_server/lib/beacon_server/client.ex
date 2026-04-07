@@ -3,34 +3,32 @@ defmodule BeaconServer.Client do
   Client module for interacting with the BeaconServer.
 
   Provides a stable API for service registration and discovery.
-  Tries Horde distributed registry first, falls back to hardcoded
-  beacon node during migration.
-
-  After migration is complete (Step 3.6), the fallback is removed.
+  Uses Horde distributed registry for beacon lookup, with local
+  process fallback. libcluster handles node discovery automatically.
   """
 
   require Logger
 
-  @fallback_beacon :"beacon1@127.0.0.1"
-
   @doc """
-  Connect to the cluster and join the beacon.
-  Uses libcluster for auto-discovery. Falls back to manual Node.connect.
+  Connect to the cluster.
+  libcluster handles auto-discovery via Cluster.Supervisor.
+  This function waits briefly for peers to appear.
   """
   @spec join_cluster() :: :ok | :error
   def join_cluster do
-    # libcluster handles this automatically via Cluster.Supervisor.
-    # Manual fallback for nodes not yet running libcluster.
     case Node.list() do
       [] ->
-        Logger.info("No cluster peers found via libcluster, trying fallback beacon...")
+        # Give libcluster a moment to discover peers
+        Process.sleep(1000)
 
-        if Node.connect(@fallback_beacon) do
-          Logger.info("Connected to fallback beacon #{@fallback_beacon}")
-          :ok
-        else
-          Logger.warning("Could not connect to fallback beacon #{@fallback_beacon}")
-          :error
+        case Node.list() do
+          [] ->
+            Logger.warning("No cluster peers found after waiting")
+            :error
+
+          nodes ->
+            Logger.info("Cluster peers found: #{inspect(nodes)}")
+            :ok
         end
 
       nodes ->
@@ -65,21 +63,18 @@ defmodule BeaconServer.Client do
     call_beacon({:get_requirements, node})
   end
 
-  # Try to find BeaconServer.Beacon via Horde registry first,
-  # then fall back to hardcoded node.
   defp call_beacon(message) do
     case find_beacon() do
       {:ok, pid} ->
         GenServer.call(pid, message)
 
       :error ->
-        Logger.warning("Beacon not found via Horde, trying fallback #{@fallback_beacon}")
-        GenServer.call({BeaconServer.Beacon, @fallback_beacon}, message)
+        raise "BeaconServer.Beacon not found. Ensure beacon_server is running in the cluster."
     end
   end
 
   defp find_beacon do
-    # Try Horde distributed registry
+    # Try Horde distributed registry first
     case Horde.Registry.lookup(BeaconServer.DistributedRegistry, :beacon) do
       [{pid, _}] -> {:ok, pid}
       _ -> find_beacon_local()
@@ -87,7 +82,6 @@ defmodule BeaconServer.Client do
   end
 
   defp find_beacon_local do
-    # Try local named process
     case Process.whereis(BeaconServer.Beacon) do
       nil -> :error
       pid -> {:ok, pid}

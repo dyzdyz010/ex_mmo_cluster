@@ -18,6 +18,21 @@ import Config
 #
 config :phoenix, :json_library, Jason
 
+# Cluster auto-discovery (all nodes)
+config :libcluster,
+  topologies: [
+    mmo_cluster: [
+      strategy: Cluster.Strategy.Gossip,
+      config: [
+        port: 45892,
+        if_addr: "0.0.0.0",
+        multicast_if: "127.0.0.1",
+        multicast_addr: "230.1.1.251",
+        multicast_ttl: 1
+      ]
+    ]
+  ]
+
 # Data Service - Ecto configuration
 config :data_service,
   ecto_repos: [DataService.Repo]
