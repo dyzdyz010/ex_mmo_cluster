@@ -3,10 +3,7 @@ defmodule GateServer.TcpConnection do
   Client connection.
 
   Responsible for message delivering/decrypting/encrypting.
-  Supports both custom binary codec (new) and protobuf (legacy) protocols.
-  The first byte of each message determines the protocol:
-  - 0x01–0x7F: custom binary codec (GateServer.Codec)
-  - Otherwise: legacy protobuf (GateServer.Message)
+  Uses custom binary codec (GateServer.Codec) for all messages.
   """
 
   use GenServer, restart: :temporary
@@ -14,10 +11,6 @@ defmodule GateServer.TcpConnection do
 
   @topic {:gate, __MODULE__}
   @scope :connection
-
-  # Custom codec message type range (client → server)
-  @codec_range_start 0x01
-  @codec_range_end 0x7F
 
   # Public APIs
 
@@ -35,7 +28,6 @@ defmodule GateServer.TcpConnection do
      %{
        socket: socket,
        cid: -1,
-       packet_id: 0,
        agent: nil,
        scene_ref: nil,
        token: nil,
@@ -43,21 +35,7 @@ defmodule GateServer.TcpConnection do
      }}
   end
 
-  # ── Outbound: send binary-encoded data to client ──
-
-  @impl true
-  def handle_cast({:send_binary, bin_data}, %{socket: socket} = state) do
-    :gen_tcp.send(socket, bin_data)
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_cast({:send_data, data}, %{socket: socket, packet_id: packet_id} = state) do
-    send_data_legacy(data, socket, packet_id)
-    {:noreply, state}
-  end
-
-  # ── Outbound: broadcast events from scene_server (use new codec) ──
+  # ── Outbound: broadcast events from scene_server ──
 
   @impl true
   def handle_cast({:player_enter, cid, location}, %{socket: socket} = state) do
@@ -83,26 +61,16 @@ defmodule GateServer.TcpConnection do
   # ── Inbound: TCP message dispatch ──
 
   @impl true
-  def handle_info({:tcp, _socket, <<type::8, _rest::binary>> = data}, state)
-      when type >= @codec_range_start and type <= @codec_range_end do
-    # Custom binary codec path
+  def handle_info({:tcp, _socket, data}, state) do
     case GateServer.Codec.decode(data) do
       {:ok, msg} ->
-        {:ok, new_state} = dispatch_codec(msg, state)
+        {:ok, new_state} = dispatch(msg, state)
         {:noreply, new_state}
 
       {:error, reason} ->
         Logger.error("Codec decode error: #{inspect(reason)}")
         {:noreply, state}
     end
-  end
-
-  @impl true
-  def handle_info({:tcp, _socket, data}, state) do
-    # Legacy protobuf path
-    {:ok, msg} = GateServer.Message.decode(data)
-    {:ok, new_state} = GateServer.Message.dispatch(msg, state, self())
-    {:noreply, new_state}
   end
 
   @impl true
@@ -124,9 +92,9 @@ defmodule GateServer.TcpConnection do
     {:stop, :normal, state}
   end
 
-  # ── Codec dispatch: handle decoded custom messages ──
+  # ── Message dispatch ──
 
-  defp dispatch_codec(
+  defp dispatch(
          {:movement, _cid, timestamp, location, velocity, acceleration},
          %{scene_ref: spid, cid: cid, socket: socket} = state
        ) do
@@ -138,7 +106,7 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  defp dispatch_codec(
+  defp dispatch(
          {:enter_scene, cid},
          %{socket: socket} = state
        ) do
@@ -161,7 +129,7 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  defp dispatch_codec(:time_sync, %{scene_ref: spid, socket: socket} = state) do
+  defp dispatch(:time_sync, %{scene_ref: spid, socket: socket} = state) do
     {:ok, new_timestamp} = GenServer.call(spid, :time_sync)
 
     if new_timestamp != :end do
@@ -172,24 +140,35 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  defp dispatch_codec({:heartbeat, _timestamp}, %{socket: socket} = state) do
+  defp dispatch({:heartbeat, _timestamp}, %{socket: socket} = state) do
     {:ok, bin} = GateServer.Codec.encode({:heartbeat_reply, :os.system_time(:millisecond)})
     :gen_tcp.send(socket, bin)
     {:ok, state}
   end
 
-  defp dispatch_codec(msg, state) do
-    Logger.warning("Unhandled codec message: #{inspect(msg)}")
+  defp dispatch({:auth_request, username, code}, %{socket: socket} = state) do
+    case verify_token(code) do
+      {:ok, %{agent: agent}} ->
+        {:ok, bin} = GateServer.Codec.encode({:result, :ok, 0})
+        :gen_tcp.send(socket, bin)
+        {:ok, %{state | agent: agent, status: :authenticated}}
+
+      {:error, _reason} ->
+        {:ok, bin} = GateServer.Codec.encode({:result, :error, 0})
+        :gen_tcp.send(socket, bin)
+        {:ok, state}
+    end
+  end
+
+  defp dispatch(msg, state) do
+    Logger.warning("Unhandled message: #{inspect(msg)}")
     {:ok, state}
   end
 
-  # ── Auth (unchanged) ──
+  # ── Auth ──
 
-  @doc """
-  Verify client token from auth_server
-  """
   @spec verify_token(any()) :: any
-  def verify_token(token) do
+  defp verify_token(token) do
     auth_server = GenServer.call(GateServer.Interface, :auth_server)
 
     case GenServer.call({AuthServer.AuthWorker, auth_server.node}, {:verify_token, token}) do
@@ -202,14 +181,5 @@ defmodule GateServer.TcpConnection do
       _ ->
         {:error, :server_error}
     end
-  end
-
-  # ── Legacy protobuf send (used during transition) ──
-
-  defp send_data_legacy(payload, socket, packet_id) do
-    packet = %Packet{id: packet_id, timestamp: :os.system_time(:millisecond), payload: payload}
-    {:ok, packet_data} = GateServer.Message.encode(packet)
-    Logger.debug("数据：#{inspect(packet, pretty: true)}")
-    :gen_tcp.send(socket, packet_data)
   end
 end
