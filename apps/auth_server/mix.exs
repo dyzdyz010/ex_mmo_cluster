@@ -9,7 +9,7 @@ defmodule AuthServer.MixProject do
       config_path: "config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.12",
+      elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: [:gettext] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -53,7 +53,8 @@ defmodule AuthServer.MixProject do
       {:tailwind, "~> 0.1", runtime: Mix.env() == :dev},
       {:bcrypt_elixir, "~> 3.0"},
       {:tzdata, "~> 1.1"},
-      {:data_init, in_umbrella: true}
+      {:data_init, in_umbrella: true},
+      {:beacon_server, in_umbrella: true}
     ]
   end
 

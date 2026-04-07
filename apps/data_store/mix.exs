@@ -9,7 +9,7 @@ defmodule DataStore.MixProject do
       config_path: "config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.13",
+      elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -28,7 +28,8 @@ defmodule DataStore.MixProject do
   defp deps do
     [
       {:memento, "~> 0.3.2"},
-      {:data_init, in_umbrella: true}
+      {:data_init, in_umbrella: true},
+      {:beacon_server, in_umbrella: true}
       # {:dep_from_hexpm, "~> 0.3.0"},
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
       # {:sibling_app_in_umbrella, in_umbrella: true}

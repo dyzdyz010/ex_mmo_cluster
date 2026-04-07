@@ -4,7 +4,7 @@ pub mod physics;
 use std::{collections::HashMap, sync::Mutex};
 
 use physics::physics_system::PhySys;
-use rustler::{Atom, Env, ResourceArc, Term};
+use rustler::{Atom, ResourceArc};
 
 use character::character_data::CharacterData;
 use character::types;
@@ -18,24 +18,13 @@ pub type CharacterDataArc = ResourceArc<CharacterDataResource>;
 pub struct PhySysResource(Mutex<PhySys>);
 pub type PhySysArc = ResourceArc<PhySysResource>;
 
-fn load(env: Env, _info: Term) -> bool {
-    rustler::resource!(CharacterDataResource, env);
-    rustler::resource!(PhySysResource, env);
-    true
-}
+#[rustler::resource_impl]
+impl rustler::Resource for CharacterDataResource {}
 
-rustler::init!(
-    "Elixir.SceneServer.Native.SceneOps",
-    [
-        new_character_data,
-        get_character_data_raw,
-        movement_tick,
-        update_character_movement,
-        get_character_location,
-        new_physics_system,
-    ],
-    load = load
-);
+#[rustler::resource_impl]
+impl rustler::Resource for PhySysResource {}
+
+rustler::init!("Elixir.SceneServer.Native.SceneOps");
 
 #[rustler::nif]
 fn new_character_data(

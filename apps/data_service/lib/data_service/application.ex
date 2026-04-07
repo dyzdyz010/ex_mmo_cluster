@@ -8,8 +8,7 @@ defmodule DataService.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: DataService.Worker.start_link(arg)
-      # {DataService.Worker, arg}
+      DataService.Repo,
       {DataService.InterfaceSup, name: DataService.InterfaceSup},
       {DataService.DispatcherSup, name: DataService.DispatcherSup},
       {DataService.UidGenerator, name: DataService.UidGenerator}

@@ -2,9 +2,8 @@ use std::sync::Mutex;
 
 use bucket::Bucket;
 use coordinate_system::CoordinateSystem;
-use jemallocator::Jemalloc;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use rustler::{Atom, Env, ResourceArc, Term};
+use rustler::{Atom, ResourceArc};
 
 use item::{Item};
 use sorted_set::SortedSet;
@@ -31,6 +30,18 @@ pub type SortedSetArc = ResourceArc<SortedSetResource>;
 
 pub struct CoordinateSystemResource(Mutex<CoordinateSystem>);
 pub type CoordinateSystemArc = ResourceArc<CoordinateSystemResource>;
+
+#[rustler::resource_impl]
+impl rustler::Resource for ItemResource {}
+
+#[rustler::resource_impl]
+impl rustler::Resource for BucketResource {}
+
+#[rustler::resource_impl]
+impl rustler::Resource for SortedSetResource {}
+
+#[rustler::resource_impl]
+impl rustler::Resource for CoordinateSystemResource {}
 
 #[derive(Debug, PartialEq)]
 pub enum FindResult {
@@ -72,9 +83,6 @@ pub enum SetRemoveResult {
     NotFound,
 }
 
-#[global_allocator]
-static GLOBAL_ALLOCATOR: Jemalloc = Jemalloc;
-
 mod atoms {
     rustler::atoms! {
         // Common Atoms
@@ -98,37 +106,7 @@ mod atoms {
     }
 }
 
-fn load(env: Env, _info: Term) -> bool {
-    rustler::resource!(ItemResource, env);
-    rustler::resource!(BucketResource, env);
-    rustler::resource!(SortedSetResource, env);
-    rustler::resource!(CoordinateSystemResource, env);
-    true
-}
-
-rustler::init!(
-    "Elixir.SceneServer.Native.CoordinateSystem",
-    [
-        new_item,
-        get_item_raw,
-        new_bucket,
-        add_item_to_bucket,
-        get_bucket_raw,
-        new_set,
-        add_item_to_set,
-        get_set_raw,
-        new_system,
-        add_item_to_system,
-        remove_item_from_system,
-        update_item_from_system,
-        // update_item_from_system_new,
-        get_cids_within_distance_from_system,
-        get_items_within_distance_from_system,
-        get_system_raw,
-        calculate_coordinate,
-    ],
-    load = load
-);
+rustler::init!("Elixir.SceneServer.Native.CoordinateSystem");
 
 #[rustler::nif]
 fn new_item(cid: i64, coord: Vector) -> (Atom, ItemArc) {

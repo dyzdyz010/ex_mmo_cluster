@@ -37,7 +37,7 @@ defmodule GateServer.TcpAcceptor do
   end
 
   defp listen(port) do
-    {:ok, socket} = :gen_tcp.listen(port, [:binary, packet: 0, active: true, reuseaddr: true])
+    {:ok, socket} = :gen_tcp.listen(port, [:binary, packet: 4, active: true, reuseaddr: true])
 
     Logger.debug("Accepting connections on port #{port}")
     loop_acceptor(socket)

@@ -3,7 +3,6 @@ defmodule AuthServer.Interface do
 
   require Logger
 
-  @beacon :"beacon1@127.0.0.1"
   @resource :auth_server
   @requirement [:data_contact]
 
@@ -41,22 +40,20 @@ defmodule AuthServer.Interface do
   defp join_beacon() do
     Logger.info("Joining beacon...")
 
-    if !Node.connect(@beacon) do
-      Logger.emergency("Beacon node not up, exiting...")
-      Application.stop(:data_store)
-    end
+    case BeaconServer.Client.join_cluster() do
+      :ok ->
+        Logger.info("Joining beacon complete.", ansi_color: :green)
 
-    Logger.info("Joining beacon complete.", ansi_color: :green)
+      :error ->
+        Logger.emergency("Beacon node not up, exiting...")
+        Application.stop(:data_store)
+    end
   end
 
   defp register_beacon() do
     Logger.info("Registering to beacon...")
 
-    result =
-      GenServer.call(
-        {BeaconServer.Beacon, @beacon},
-        {:register, {node(), __MODULE__, @resource, @requirement}}
-      )
+    result = BeaconServer.Client.register(node(), __MODULE__, @resource, @requirement)
 
     if result != :ok do
       Logger.emergency("Register to beacon node failed: #{inspect(result)}\nExiting...")
@@ -69,11 +66,7 @@ defmodule AuthServer.Interface do
   defp get_requirements(state) do
     Logger.info("Getting requirements(#{inspect(@requirement)}) from beacon...")
 
-    offer =
-      GenServer.call(
-        {BeaconServer.Beacon, @beacon},
-        {:get_requirements, node()}
-      )
+    offer = BeaconServer.Client.get_requirements(node())
 
     # IO.inspect(offer)
 
@@ -92,7 +85,7 @@ defmodule AuthServer.Interface do
         %{state | data_contact: data_contact.node}
 
       nil ->
-        Logger.warn("Not meeting requirements, retrying in #{@retry_rate}s.")
+        Logger.warning("Not meeting requirements, retrying in #{@retry_rate}s.")
         Process.sleep(@retry_rate * 1000)
         get_requirements(state)
     end
@@ -114,7 +107,7 @@ defmodule AuthServer.Interface do
 
         %{new_state | data_service: node}
       {:err, err} ->
-        Logger.warn("Getting data_service node from data_contact failed: #{inspect(err)}.",
+        Logger.warning("Getting data_service node from data_contact failed: #{inspect(err)}.",
           ansi_color: :yellow
         )
         Process.sleep(@retry_rate * 1000)
