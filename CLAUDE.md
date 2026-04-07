@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is an MMORPG game server cluster built with Elixir/OTP. It is structured as a Mix umbrella project with 12 specialized microservice applications under `apps/`. The system uses distributed Erlang clustering, Mnesia for the database layer, Protocol Buffers for client communication, and Rust NIFs (via Rustler) for performance-critical physics and spatial operations.
+This is an MMORPG game server cluster built with Elixir/OTP. It is structured as a Mix umbrella project with 12 specialized microservice applications under `apps/`. The system uses distributed Erlang clustering, Mnesia for the database layer, a custom binary protocol for client communication (see `PROTOCOL.md`), and Rust NIFs (via Rustler) for performance-critical physics and spatial operations.
 
 ## Tech Stack
 
@@ -10,7 +10,7 @@ This is an MMORPG game server cluster built with Elixir/OTP. It is structured as
 - **Runtime versions**: See `.tool-versions` (Erlang 25.2.2, Elixir 1.14.3-otp-25)
 - **Web framework**: Phoenix 1.6 (auth_server, visualize_server)
 - **Database**: Mnesia via Memento (distributed Erlang database)
-- **Serialization**: Protocol Buffers (protox), JSON (Jason)
+- **Serialization**: Custom binary protocol (gate_server, see `PROTOCOL.md`), JSON (Jason)
 - **Native extensions**: Rust via Rustler (physics with rapier3d, spatial indexing with octree)
 - **Frontend**: Phoenix LiveView, esbuild, Tailwind CSS
 
@@ -67,9 +67,6 @@ mix test
 
 # Run tests for a specific app
 mix test apps/scene_server/test/
-
-# Generate protobuf code (gate_server)
-mix proto_gen
 
 # Initialize database
 mix db_initialize
@@ -165,7 +162,7 @@ Building Rust NIFs requires a Rust toolchain installed on the system.
 | `phoenix` | Web framework (auth, visualization) |
 | `phoenix_live_view` | Real-time UI for visualize_server |
 | `memento` | Mnesia database wrapper |
-| `protox` | Protocol Buffers encoding/decoding |
+| — | Custom binary codec (`GateServer.Codec`) replaces protobuf |
 | `rustler` | Elixir-to-Rust NIF bridge |
 | `poolboy` | Worker pool management (data_service) |
 | `bcrypt_elixir` | Password hashing (auth_server) |
@@ -180,4 +177,5 @@ Building Rust NIFs requires a Rust toolchain installed on the system.
 - Mnesia tables are defined in `data_init` but accessed through `data_service` (RAM) and `data_store` (disk) — keep this separation
 - No CI/CD is configured; validate changes locally with `mix test` and `mix compile`
 - The project uses distributed Erlang — node names and cookies are required for clustering
-- Protocol Buffer `.proto` files live in a git submodule (`mmo_protos`)
+- Client protocol uses custom binary codec (`GateServer.Codec`), see `PROTOCOL.md` for wire format
+- Legacy `.proto` files remain in git submodule (`mmo_protos`) for reference but are not used
