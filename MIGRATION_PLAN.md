@@ -19,50 +19,119 @@
 ## Dependency Graph
 
 ```
-Phase 1 (TCP Framing) ---------> independent, do first
-Phase 2 (PostgreSQL)  ---------> independent, can parallel with Phase 1
-Phase 3 (Beacon HA)   ---------> independent of 1/2, but Phase 2 simplifies it
-Phase 4 (Zone Partitioning) ---> independent
-Phase 5 (Crash Recovery) ------> depends on Phase 2 (needs PostgreSQL)
-                              --> benefits from Phase 4 (zone_id in checkpoints)
+Phase 1 (TCP + Custom Protocol) --> independent, do first
+  1.1 TCP framing fix (packet:4)
+  1.2-1.4 Custom binary codec (hot path → all messages)
+  1.5 Remove protobuf
+  1.6 Document protocol
+Phase 2 (PostgreSQL)  ------------> independent, can parallel with Phase 1
+Phase 3 (Beacon HA)   ------------> independent of 1/2, but Phase 2 simplifies it
+Phase 4 (Zone Partitioning) ------> independent
+Phase 5 (Crash Recovery) ---------> depends on Phase 2 (needs PostgreSQL)
+                                 --> benefits from Phase 4 (zone_id in checkpoints)
 ```
 
 **Recommended execution order**:
-1. Phase 1 (smallest, safest, highest impact on correctness)
-2. Phase 2 steps 2.1–2.4 (infrastructure setup, no behavior change)
-3. Phase 2 steps 2.5–2.7 (dual-write, then switch reads)
-4. Phase 5 steps 5.1–5.2 (checkpoint schema, leveraging Ecto infra)
-5. Phase 3 (beacon HA)
-6. Phase 2 steps 2.8–2.10 (Mnesia removal, after PostgreSQL proven stable)
-7. Phase 4 (zone partitioning, largest scope)
-8. Phase 5 steps 5.3–5.6 (player recovery, after zones in place)
+1. Phase 1 step 1.1 (TCP framing — smallest, safest, critical correctness fix)
+2. Phase 1 steps 1.2–1.3 (custom codec for hot path, dual-protocol period)
+3. Phase 2 steps 2.1–2.4 (Ecto infrastructure setup, no behavior change)
+4. Phase 1 steps 1.4–1.6 (finish protocol migration, remove protobuf)
+5. Phase 2 steps 2.5–2.7 (dual-write, then switch reads)
+6. Phase 5 steps 5.1–5.2 (checkpoint schema, leveraging Ecto infra)
+7. Phase 3 (beacon HA)
+8. Phase 2 steps 2.8–2.10 (Mnesia removal, after PostgreSQL proven stable)
+9. Phase 4 (zone partitioning, largest scope)
+10. Phase 5 steps 5.3–5.6 (player recovery, after zones in place)
 
 ---
 
-## Phase 1: TCP Length-Prefix Framing (P0)
+## Phase 1: TCP Framing + Custom Binary Protocol (P0)
 
-**Problem**: `tcp_acceptor.ex` opens socket with `packet: 0` (raw mode). No message delimiter, so TCP segment merging/splitting causes protobuf decode failures.
+**Problem**: (1) `tcp_acceptor.ex` opens socket with `packet: 0` (raw mode), causing protobuf decode failures on segment merging/splitting. (2) protox (pure Elixir protobuf) is too slow for high-frequency game messages. Position sync at 10-30Hz per player requires minimal serialization overhead.
 
-**Goal**: 4-byte big-endian length prefix on every message. Erlang's `{packet, 4}` handles this natively.
+**Goal**: Fix TCP framing, then incrementally replace protobuf with a custom binary protocol. Erlang binary pattern matching is zero-allocation and the fastest path on the BEAM.
+
+**Design Decision**: All messages will eventually use custom binary format. No protobuf long-term. The custom protocol uses a fixed header + message-type-specific binary layout:
+
+```
+Wire format: <<length::32-big, msg_type::8, payload::binary>>
+  - length: auto-handled by Erlang {packet, 4}
+  - msg_type: 1 byte message type ID
+  - payload: message-type-specific binary layout (fixed size where possible)
+```
 
 ### Step 1.1: Add `packet: 4` to listening socket
 
 - **Files**: `apps/gate_server/lib/gate_server/worker/tcp_acceptor.ex`
 - **Change**: `packet: 0` → `packet: 4` in `:gen_tcp.listen/2` options
 - **Validate**: `mix compile && mix test apps/gate_server/`
-- **Invariants**: `:binary` and `active: true` preserved. No TcpConnection changes needed — accepted sockets inherit listen socket options. `:gen_tcp.send/2` auto-prepends length header when `packet: 4` is set.
+- **Invariants**: `:binary` and `active: true` preserved. Accepted sockets inherit listen socket options. `:gen_tcp.send/2` auto-prepends length header when `packet: 4` is set.
 
-### Step 1.2: Add TCP framing test
+### Step 1.2: Define custom binary codec module
 
-- **Files**: `apps/gate_server/test/gate_server/tcp_framing_test.exs` (new)
-- **Change**: Test that sends two protobuf messages in one TCP segment; verify both dispatched correctly. Test partial send reassembly.
-- **Validate**: `mix test apps/gate_server/`
-- **Invariants**: No production code changes.
+- **Files**: `apps/gate_server/lib/gate_server/codec.ex` (new)
+- **Change**: Define message type constants and encode/decode functions using binary pattern matching. Start with the hot-path messages only:
 
-### Step 1.3: Document wire protocol
+```elixir
+# Message types
+@msg_movement     0x01
+@msg_enter_scene  0x02
+@msg_time_sync    0x03
+@msg_result       0x80
+@msg_player_enter 0x81
+@msg_player_leave 0x82
+@msg_player_move  0x83
+
+# Decode: binary → tuple (zero allocation for fixed-size messages)
+def decode(<<@msg_movement, cid::64, timestamp::64,
+             lx::float-64, ly::float-64, lz::float-64,
+             vx::float-64, vy::float-64, vz::float-64,
+             ax::float-64, ay::float-64, az::float-64>>) do
+  {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}}
+end
+
+# Encode: tuple → iodata
+def encode({:player_move, cid, {x, y, z}}) do
+  <<@msg_player_move, cid::64, x::float-64, y::float-64, z::float-64>>
+end
+```
+
+- **Validate**: Unit tests for each message type: encode → decode roundtrip, verify field values.
+- **Invariants**: Old protobuf path still exists. Codec is a standalone module, not wired in yet.
+
+### Step 1.3: Wire hot-path messages through custom codec
+
+- **Files**: `apps/gate_server/lib/gate_server/worker/tcp_connection.ex`, `apps/gate_server/lib/gate_server/message.ex`
+- **Change**: In `handle_info({:tcp, _, data}, state)`, dispatch based on first byte: if it matches a known custom message type, route to `GateServer.Codec.decode/1`; otherwise fall back to `GateServer.Message.decode/1` (protobuf). Similarly, `send_data/3` uses `GateServer.Codec.encode/1` for hot-path messages.
+- **Validate**: Integration test: send a custom-encoded movement message, verify server processes it and replies with custom-encoded response.
+- **Invariants**: Protobuf path still works for all other message types. **Dual-protocol period** — both old and new clients supported.
+
+### Step 1.4: Migrate remaining message types to custom codec
+
+- **Files**: `apps/gate_server/lib/gate_server/codec.ex`, `apps/gate_server/lib/gate_server/message.ex`
+- **Change**: Add encode/decode for all remaining message types (enter_scene, time_sync, heartbeat, broadcast actions, result replies). One message type per commit if preferred.
+- **Validate**: Each message type has roundtrip test. Integration test for each dispatch path.
+- **Invariants**: All message types covered by custom codec.
+
+### Step 1.5: Remove protobuf dependency
+
+- **Files**:
+  - `apps/gate_server/lib/gate_server/message.ex` — remove `Protox.decode/2` and `Protox.encode/1` calls
+  - `apps/gate_server/lib/gate_server/proto/` — delete proto definition modules
+  - `apps/gate_server/mix.exs` — remove `{:protox, ...}` dependency
+  - `.gitmodules` — evaluate if `mmo_protos` submodule still needed
+- **Change**: All encode/decode goes through `GateServer.Codec`. Remove protox.
+- **Validate**: `mix deps.get && mix compile && mix test`. No protox references remain.
+- **Invariants**: `GateServer.Message.dispatch/3` still handles routing logic; it now receives decoded tuples from `Codec` instead of protobuf structs.
+
+### Step 1.6: Document wire protocol
 
 - **Files**: `PROTOCOL.md` (new)
-- **Change**: Document that wire protocol is `<<length::32-big-unsigned, protobuf_payload::binary-size(length)>>`.
+- **Change**: Document the complete custom binary protocol:
+  - Wire framing: `<<length::32-big, body::binary>>`
+  - Message format: `<<msg_type::8, fields::binary>>`
+  - Table of all message types with their binary layouts
+  - Byte-level field definitions for each message
 - **Validate**: N/A (documentation only).
 
 ---
@@ -340,6 +409,8 @@ Evaluate NavMesh (Recast/Detour) vs Rapier3D for MMO movement/pathfinding. NIF i
 | Step | Risk | Mitigation |
 |------|------|------------|
 | 1.1 (packet:4) | Client must update framing | Document protocol change; gate can detect old clients by failed decode |
+| 1.3 (dual protocol) | Two code paths to maintain | Keep protobuf fallback short-lived; migrate all types in 1.4 promptly |
+| 1.5 (remove protobuf) | Breaking change for old clients | Only after all message types migrated and client updated |
 | 2.5 (dual-write) | Ecto write fails silently | Add telemetry on Ecto failures; alert if rate > 0 |
 | 2.8 (remove Mnesia) | Data loss if migration incomplete | Run backfill twice; verify row counts before cutover |
 | 3.5 (Interface migration) | Horde registry not populated | Fallback in `BeaconServer.Client` ensures degradation |
