@@ -28,7 +28,9 @@ defmodule SceneServer.Interface do
 
   @impl true
   def handle_info(:establish_links, state) do
-    Logger.info("===Starting #{Application.get_application(__MODULE__)} node initialization===", ansi_color: :blue)
+    Logger.info("===Starting #{Application.get_application(__MODULE__)} node initialization===",
+      ansi_color: :blue
+    )
 
     join_beacon()
     register_beacon()

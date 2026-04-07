@@ -54,9 +54,14 @@ defmodule BeaconServer.Beacon do
     # Register in Horde distributed registry for HA discovery
     try do
       case Horde.Registry.register(BeaconServer.DistributedRegistry, :beacon, self()) do
-        {:ok, _} -> Logger.info("Beacon registered in distributed registry")
-        {:error, {:already_registered, _}} -> Logger.info("Beacon already registered in distributed registry")
-        _ -> :ok
+        {:ok, _} ->
+          Logger.info("Beacon registered in distributed registry")
+
+        {:error, {:already_registered, _}} ->
+          Logger.info("Beacon already registered in distributed registry")
+
+        _ ->
+          :ok
       end
     rescue
       _ -> Logger.debug("Horde registry not available, skipping registration")
@@ -157,6 +162,7 @@ defmodule BeaconServer.Beacon do
   defp get_requirements(node, requirements, resources) do
     req = find_requirements(node, requirements)
     Logger.debug("Find requirements: #{inspect(req, pretty: true)}")
+
     case req do
       [] ->
         {:ok, []}

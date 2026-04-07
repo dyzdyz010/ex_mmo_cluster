@@ -19,20 +19,28 @@ defmodule DataService.Dispatcher do
 
   @impl true
   def handle_call({:register_account, username, password, email, phone}, _from, state) do
-    result = :poolboy.transaction(:worker, fn pid ->
-      try do
-        GenServer.call(pid, {:register_account, username, password, email, phone})
-      catch
-        e, r -> IO.inspect("poolboy transaction caught error: #{inspect(e)}, #{inspect(r)}")
-        :err
-      end
-    end)
+    result =
+      :poolboy.transaction(:worker, fn pid ->
+        try do
+          GenServer.call(pid, {:register_account, username, password, email, phone})
+        catch
+          e, r ->
+            IO.inspect("poolboy transaction caught error: #{inspect(e)}, #{inspect(r)}")
+            :err
+        end
+      end)
+
     {:reply, result, state}
   end
 
   def regtest() do
-    case GenServer.call(__MODULE__, {:register_account, "dyz", "duyizhuo", "dyzdyz010@sina.com", "13848584989"}) do
-      {:err, reason} -> Logger.error("Accout creation failed: #{inspect(reason)}")
+    case GenServer.call(
+           __MODULE__,
+           {:register_account, "dyz", "duyizhuo", "dyzdyz010@sina.com", "13848584989"}
+         ) do
+      {:err, reason} ->
+        Logger.error("Accout creation failed: #{inspect(reason)}")
+
       acc ->
         Logger.debug("Account created: #{inspect(acc.id)}")
     end

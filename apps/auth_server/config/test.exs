@@ -8,8 +8,7 @@ config :auth_server, AuthServerWeb.Endpoint,
   server: false
 
 # In test we don't send emails.
-config :auth_server, AuthServer.Mailer,
-  adapter: Swoosh.Adapters.Test
+config :auth_server, AuthServer.Mailer, adapter: Swoosh.Adapters.Test
 
 # Print only warnings and errors during test
 config :logger, level: :warn

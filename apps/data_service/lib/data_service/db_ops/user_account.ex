@@ -95,9 +95,9 @@ defmodule DataService.DbOps.UserAccount do
           :ok | {:duplicate, [:email | :phone | :username]}
   def check_duplicate_ecto(username, email, phone) do
     dups =
-      (if exists_ecto?(:username, username), do: [:username], else: []) ++
-        (if exists_ecto?(:email, email), do: [:email], else: []) ++
-        (if exists_ecto?(:phone, phone), do: [:phone], else: [])
+      if(exists_ecto?(:username, username), do: [:username], else: []) ++
+        if(exists_ecto?(:email, email), do: [:email], else: []) ++
+        if exists_ecto?(:phone, phone), do: [:phone], else: []
 
     case dups do
       [] -> :ok
@@ -106,7 +106,13 @@ defmodule DataService.DbOps.UserAccount do
   end
 
   defp exists_ecto?(field, value) when not is_nil(value) and value != "" do
-    query = from(a in DataService.Schema.Account, where: field(a, ^field) == ^value, select: 1, limit: 1)
+    query =
+      from(a in DataService.Schema.Account,
+        where: field(a, ^field) == ^value,
+        select: 1,
+        limit: 1
+      )
+
     DataService.Repo.exists?(query)
   end
 
