@@ -3,7 +3,16 @@ import Config
 import_config("../../../config/config.exs")
 
 config :mnesia,
-  dir: 'priv/.mnesia/#{Mix.env}/#{node()}'
+  dir: ~c"priv/.mnesia/#{Mix.env}/#{node()}"
 
 config :data_service,
-  service_id: 1
+  service_id: 1,
+  use_ecto: false,
+  ecto_repos: [DataService.Repo]
+
+config :data_service, DataService.Repo,
+  database: "mmo_dev",
+  username: "mmo_dev",
+  password: "mmo_dev",
+  hostname: "localhost",
+  pool_size: 10

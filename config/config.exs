@@ -17,3 +17,14 @@ import Config
 #       metadata: [:user_id]
 #
 config :phoenix, :json_library, Jason
+
+# Data Service - Ecto configuration
+config :data_service,
+  ecto_repos: [DataService.Repo]
+
+config :data_service, DataService.Repo,
+  database: "mmo_dev",
+  username: "mmo_dev",
+  password: "mmo_dev",
+  hostname: "localhost",
+  pool_size: 10
