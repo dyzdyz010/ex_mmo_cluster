@@ -1,20 +1,5 @@
-# NIF for Elixir.SceneServer.Native.SceneOps
+# scene_ops
 
-## To build the NIF module:
+正式文档已迁移到 `docs/` 目录。
 
-- Your NIF will now build along with your project.
-
-## To load the NIF:
-
-```elixir
-defmodule SceneServer.Native.SceneOps do
-  use Rustler, otp_app: :scene_server, crate: "scene_ops"
-
-  # When your NIF is loaded, it will override this function.
-  def add(_a, _b), do: :erlang.nif_error(:nif_not_loaded)
-end
-```
-
-## Examples
-
-[This](https://github.com/rusterlium/NifIo) is a complete example of a NIF written in Rust.
+- [2026-04-10-NIF说明](docs/2026-04-10-NIF说明.md)

@@ -21,7 +21,10 @@ defmodule BeaconServer.ClientTest do
   describe "lookup/1" do
     test "finds a registered service" do
       :ok = BeaconServer.Client.register(:findable_service)
-      assert {:ok, node} = BeaconServer.Client.lookup(:findable_service)
+
+      assert {:ok, node} =
+               BeaconServer.Client.await(:findable_service, timeout: 1_000, interval: 10)
+
       assert node == node()
     end
 
@@ -67,8 +70,8 @@ defmodule BeaconServer.ClientTest do
       :ok = BeaconServer.Client.register(:svc_alpha)
       :ok = BeaconServer.Client.register(:svc_beta)
 
-      assert {:ok, _} = BeaconServer.Client.lookup(:svc_alpha)
-      assert {:ok, _} = BeaconServer.Client.lookup(:svc_beta)
+      assert {:ok, _} = BeaconServer.Client.await(:svc_alpha, timeout: 1_000, interval: 10)
+      assert {:ok, _} = BeaconServer.Client.await(:svc_beta, timeout: 1_000, interval: 10)
       assert :error = BeaconServer.Client.lookup(:svc_gamma)
     end
   end

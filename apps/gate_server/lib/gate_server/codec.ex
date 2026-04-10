@@ -61,37 +61,47 @@ defmodule GateServer.Codec do
   """
   @spec decode(binary()) :: {:ok, tuple()} | {:error, atom()}
 
-  # Movement: 1 + 8 + 8 + (9 * 8) = 89 bytes
+  # Movement: 1 + 8 + 8 + 8 + (9 * 8) = 97 bytes
   def decode(
-        <<@msg_movement, cid::64-big, timestamp::64-big, lx::float-64-big, ly::float-64-big,
-          lz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
-          ax::float-64-big, ay::float-64-big, az::float-64-big>>
+        <<@msg_movement, request_id::64-big, cid::64-big, timestamp::64-big, lx::float-64-big,
+          ly::float-64-big, lz::float-64-big, vx::float-64-big, vy::float-64-big,
+          vz::float-64-big, ax::float-64-big, ay::float-64-big, az::float-64-big>>
       ) do
-    {:ok, {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}}}
+    {:ok, {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}, request_id}}
   end
 
-  # EnterScene: 1 + 8 = 9 bytes
-  def decode(<<@msg_enter_scene, cid::64-big>>) do
-    {:ok, {:enter_scene, cid}}
+  def decode(<<@msg_movement, _rest::binary>>), do: {:error, :invalid_message}
+
+  # EnterScene: 1 + 8 + 8 = 17 bytes
+  def decode(<<@msg_enter_scene, request_id::64-big, cid::64-big>>) do
+    {:ok, {:enter_scene, cid, request_id}}
   end
 
-  # TimeSync: 1 byte
-  def decode(<<@msg_time_sync>>) do
-    {:ok, :time_sync}
+  def decode(<<@msg_enter_scene, _rest::binary>>), do: {:error, :invalid_message}
+
+  # TimeSync: 1 + 8 + 8 = 17 bytes
+  def decode(<<@msg_time_sync, request_id::64-big, client_send_ts::64-big>>) do
+    {:ok, {:time_sync, request_id, client_send_ts}}
   end
+
+  def decode(<<@msg_time_sync, _rest::binary>>), do: {:error, :invalid_message}
 
   # Heartbeat: 1 + 8 = 9 bytes
   def decode(<<@msg_heartbeat, timestamp::64-big>>) do
     {:ok, {:heartbeat, timestamp}}
   end
 
-  # AuthRequest: 1 + 2 + username + 2 + code (length-prefixed strings)
+  def decode(<<@msg_heartbeat, _rest::binary>>), do: {:error, :invalid_message}
+
+  # AuthRequest: 1 + 8 + 2 + username + 2 + code
   def decode(
-        <<@msg_auth_request, ulen::16-big, username::binary-size(ulen), clen::16-big,
-          code::binary-size(clen)>>
+        <<@msg_auth_request, request_id::64-big, ulen::16-big, username::binary-size(ulen),
+          clen::16-big, code::binary-size(clen)>>
       ) do
-    {:ok, {:auth_request, username, code}}
+    {:ok, {:auth_request, username, code, request_id}}
   end
+
+  def decode(<<@msg_auth_request, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -157,8 +167,10 @@ defmodule GateServer.Codec do
   end
 
   # ── TimeSync reply ──
-  def encode(:time_sync_reply) do
-    {:ok, <<@msg_time_sync_reply>>}
+  def encode({:time_sync_reply, packet_id, client_send_ts, server_recv_ts, server_send_ts}) do
+    {:ok,
+     <<@msg_time_sync_reply, packet_id::64-big, client_send_ts::64-big, server_recv_ts::64-big,
+       server_send_ts::64-big>>}
   end
 
   # ── Heartbeat reply ──

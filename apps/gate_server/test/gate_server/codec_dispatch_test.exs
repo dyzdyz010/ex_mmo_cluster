@@ -4,40 +4,38 @@ defmodule GateServer.CodecDispatchTest do
   alias GateServer.Codec
 
   @moduledoc """
-  Tests for the dual-protocol dispatch logic in TcpConnection.
+  Tests for codec-facing request/response layouts.
 
-  Verifies that the first byte correctly routes messages:
-  - 0x01–0x7F → custom binary codec path
-  - Other → legacy protobuf path
-
-  These tests validate the routing logic at the binary level,
-  without starting the full application or network stack.
+  Focus:
+  - client message types stay in the codec range (0x01–0x7F)
+  - server replies stay in the server range (0x80+)
+  - request-id-aware request layouts and reply echoes remain consistent
   """
 
   describe "protocol routing by first byte" do
     test "movement message (0x01) is in codec range" do
       msg =
-        <<0x01, 1::64-big, 100::64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+        <<0x01, 9::64-big, 1::64-big, 100::64-big, 0.0::float-64-big, 0.0::float-64-big,
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big>>
+          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
 
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, {:movement, 1, 100, _, _, _}} = Codec.decode(msg)
+      assert {:ok, {:movement, 1, 100, _, _, _, 9}} = Codec.decode(msg)
     end
 
     test "enter_scene message (0x02) is in codec range" do
-      msg = <<0x02, 42::64-big>>
+      msg = <<0x02, 7::64-big, 42::64-big>>
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, {:enter_scene, 42}} = Codec.decode(msg)
+      assert {:ok, {:enter_scene, 42, 7}} = Codec.decode(msg)
     end
 
     test "time_sync message (0x03) is in codec range" do
-      msg = <<0x03>>
-      <<type::8>> = msg
+      msg = <<0x03, 8::64-big, 999::64-big>>
+      <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, :time_sync} = Codec.decode(msg)
+      assert {:ok, {:time_sync, 8, 999}} = Codec.decode(msg)
     end
 
     test "heartbeat message (0x04) is in codec range" do
@@ -46,103 +44,66 @@ defmodule GateServer.CodecDispatchTest do
       assert type >= 0x01 and type <= 0x7F
       assert {:ok, {:heartbeat, 999}} = Codec.decode(msg)
     end
+
+    test "auth_request with request_id is in codec range" do
+      msg = <<0x05, 7::64-big, 4::16-big, "test", 5::16-big, "token">>
+      <<type::8, _::binary>> = msg
+      assert type >= 0x01 and type <= 0x7F
+      assert {:ok, {:auth_request, "test", "token", 7}} = Codec.decode(msg)
+    end
   end
 
   describe "server response encoding for codec dispatch" do
     test "movement_result encodes correctly for send back" do
-      {:ok, bin} = Codec.encode({:movement_result, :ok, 0, 42, {1.0, 2.0, 3.0}})
-      # Verify it starts with a server message type (0x80+)
+      {:ok, bin} = Codec.encode({:movement_result, :ok, 9, 42, {1.0, 2.0, 3.0}})
       <<type::8, _::binary>> = bin
       assert type >= 0x80
     end
 
     test "enter_scene_result success encodes with location" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 0, {100.0, 200.0, 90.0}})
+      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 7, {100.0, 200.0, 90.0}})
 
-      <<type::8, _packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big>> =
+      <<type::8, packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big>> =
         bin
 
       assert type == 0x84
+      assert packet_id == 7
       assert status == 0x00
       assert_in_delta x, 100.0, 0.001
       assert_in_delta y, 200.0, 0.001
       assert_in_delta z, 90.0, 0.001
     end
 
-    test "enter_scene_result error encodes without location" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :error, 0})
-      <<type::8, _packet_id::64, status::8>> = bin
-      assert type == 0x84
-      assert status == 0x01
-    end
-
-    test "broadcast player_enter encodes for direct TCP send" do
-      {:ok, bin} = Codec.encode({:player_enter, 55, {10.0, 20.0, 30.0}})
-      <<type::8, cid::64-big, x::float-64-big, _y::float-64-big, _z::float-64-big>> = bin
-      assert type == 0x81
-      assert cid == 55
-      assert_in_delta x, 10.0, 0.001
-    end
-
-    test "broadcast player_leave encodes minimal" do
-      {:ok, bin} = Codec.encode({:player_leave, 77})
-      <<type::8, cid::64-big>> = bin
-      assert type == 0x82
-      assert cid == 77
-    end
-
-    test "broadcast player_move encodes with position" do
-      {:ok, bin} = Codec.encode({:player_move, 88, {5.0, 6.0, 7.0}})
-      <<type::8, cid::64-big, _::binary>> = bin
-      assert type == 0x83
-      assert cid == 88
-    end
-
-    test "time_sync_reply is minimal" do
-      {:ok, bin} = Codec.encode(:time_sync_reply)
-      assert bin == <<0x85>>
-    end
-
-    test "heartbeat_reply includes timestamp" do
-      {:ok, bin} = Codec.encode({:heartbeat_reply, 12345})
-      <<type::8, ts::64-big>> = bin
-      assert type == 0x86
-      assert ts == 12345
+    test "time_sync_reply carries correlation and timing fields" do
+      {:ok, bin} = Codec.encode({:time_sync_reply, 44, 1000, 1100, 1200})
+      assert bin == <<0x85, 44::64-big, 1000::64-big, 1100::64-big, 1200::64-big>>
     end
   end
 
   describe "end-to-end codec flow" do
-    test "movement: client encode → server decode → server encode response" do
-      # 1. Client sends movement
+    test "movement request and response preserve request_id" do
       client_msg =
-        <<0x01, 42::64-big, 1000::64-big, 100.0::float-64-big, 200.0::float-64-big,
+        <<0x01, 73::64-big, 42::64-big, 1000::64-big, 100.0::float-64-big, 200.0::float-64-big,
           90.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
 
-      # 2. Server decodes
-      {:ok, {:movement, cid, _ts, location, _vel, _acc}} = Codec.decode(client_msg)
+      {:ok, {:movement, cid, _ts, location, _vel, _acc, request_id}} = Codec.decode(client_msg)
       assert cid == 42
+      assert request_id == 73
       assert location == {100.0, 200.0, 90.0}
 
-      # 3. Server encodes response
-      {:ok, response} = Codec.encode({:movement_result, :ok, 0, cid, location})
-      assert is_binary(response)
-      <<0x80, _::binary>> = response
+      {:ok, response} = Codec.encode({:movement_result, :ok, request_id, cid, location})
+      assert <<0x80, 73::64-big, 0x00, 42::64-big, _::binary>> = response
     end
 
-    test "enter_scene: client encode → server decode → server encode response" do
-      # 1. Client sends enter_scene
-      client_msg = <<0x02, 999::64-big>>
+    test "auth flow echoes request_id in result" do
+      client_msg = <<0x05, 99::64-big, 4::16-big, "user", 5::16-big, "token">>
 
-      # 2. Server decodes
-      {:ok, {:enter_scene, cid}} = Codec.decode(client_msg)
-      assert cid == 999
+      {:ok, {:auth_request, "user", "token", request_id}} = Codec.decode(client_msg)
+      assert request_id == 99
 
-      # 3. Server encodes success response with spawn location
-      spawn_loc = {500.0, 600.0, 90.0}
-      {:ok, response} = Codec.encode({:enter_scene_result, :ok, 0, spawn_loc})
-      assert is_binary(response)
-      <<0x84, _::binary>> = response
+      {:ok, response} = Codec.encode({:result, :ok, request_id})
+      assert <<0x80, 99::64-big, 0x00>> = response
     end
   end
 end

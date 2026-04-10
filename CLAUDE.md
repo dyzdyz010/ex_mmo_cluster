@@ -1,234 +1,239 @@
 # CLAUDE.md
 
-## Project Overview
+## 项目概览
 
-This is an MMORPG game server cluster built with Elixir/OTP. It is structured as a Mix umbrella project with 12 specialized microservice applications under `apps/`. The system uses distributed Erlang clustering with libcluster for auto-discovery, PostgreSQL (via Ecto) for persistent data, a custom binary protocol for client communication (see `PROTOCOL.md`), and Rust NIFs (via Rustler) for performance-critical physics and spatial operations.
+这是一个基于 Elixir/OTP 构建的 MMORPG 游戏服务集群。仓库采用 Mix umbrella 结构，在 `apps/` 下包含 12 个职责分离的微服务应用。系统当前使用分布式 Erlang 集群、`libcluster` 自动发现、PostgreSQL（通过 Ecto）作为主持久化路径、自定义二进制协议作为客户端通信格式（见 `docs/2026-04-10-线协议规范.md`），并通过 Rust NIF（Rustler）承载性能敏感的物理与空间计算逻辑。
 
-## Tech Stack
+## 技术栈
 
-- **Language**: Elixir ~> 1.15, Erlang OTP 27
-- **Runtime versions**: See `.tool-versions` (Erlang 27.3.4.9, Elixir 1.18.4-otp-27)
-- **Web framework**: Phoenix 1.6 (auth_server, visualize_server)
-- **Database**: PostgreSQL via Ecto (primary), Mnesia via Memento (legacy, migration in progress)
-- **Serialization**: Custom binary codec (`GateServer.Codec`, see `PROTOCOL.md`), JSON (Jason)
-- **Native extensions**: Rust via Rustler 0.36 (physics with rapier3d-f64, spatial indexing with octree)
-- **Clustering**: libcluster (node discovery), Horde (distributed registry/supervisor)
-- **Frontend**: Phoenix LiveView, esbuild, Tailwind CSS
+- **语言**：Elixir 1.18.x，Erlang/OTP 28
+- **运行时版本**：见 `.tool-versions`（Erlang 28.3.1，Elixir 1.18.4-otp-28）
+- **Web 框架**：Phoenix 1.6（`auth_server`、`visualize_server`）
+- **数据库**：PostgreSQL via Ecto（主路径），Mnesia via Memento（遗留、迁移中）
+- **序列化**：自定义二进制 codec（`GateServer.Codec`，见 `docs/2026-04-10-线协议规范.md`），以及 JSON（Jason）
+- **原生扩展**：Rust via Rustler 0.36（物理使用 `rapier3d-f64`，空间索引使用 octree）
+- **集群组件**：`libcluster`（节点发现）、`Horde`（分布式注册与 supervisor）
+- **前端**：Phoenix LiveView、esbuild、Tailwind CSS
 
-## Repository Structure
+## 仓库结构
 
-```
-ex_mmo_cluster/              # Umbrella root
-├── config/config.exs        # Global umbrella configuration
-├── mix.exs                  # Root project definition
-├── .tool-versions           # asdf runtime versions
-├── PROTOCOL.md              # Wire protocol specification
-├── MIGRATION_PLAN.md        # Architecture migration roadmap
+```text
+ex_mmo_cluster/                    # Umbrella 根目录
+├── config/config.exs             # 全局配置
+├── mix.exs                       # 根项目定义
+├── .tool-versions                # asdf 运行时版本固定
+├── docs/2026-04-10-线协议规范.md      # 线协议规范
+├── docs/2026-04-07-增量迁移计划.md    # 架构迁移路线图
 └── apps/
-    ├── gate_server/         # TCP socket server, custom binary codec
-    ├── agent_server/        # Player character logic handler (GenServer per player)
-    ├── agent_manager/       # Manages agent_server instances
-    ├── scene_server/        # Scene logic, physics (Rust NIFs), AOI system
-    ├── world_server/        # World-level logic, scene management
-    ├── beacon_server/       # Cluster service discovery (libcluster + Horde HA)
-    ├── auth_server/         # User authentication (Phoenix web app)
-    ├── visualize_server/    # Game state visualization (Phoenix LiveView)
-    ├── data_init/           # Database schema definitions (Mnesia tables, legacy)
-    ├── data_service/        # Database interface (PostgreSQL via Ecto + poolboy)
-    ├── data_store/          # On-disk persistent database interface (legacy Mnesia)
-    └── data_contact/        # Database cluster node coordination (legacy Mnesia)
+    ├── gate_server/              # TCP 网关与自定义二进制协议入口
+    ├── agent_server/             # 玩家/agent 行为逻辑
+    ├── agent_manager/            # agent_server 协调层
+    ├── scene_server/             # 场景逻辑、物理、AOI、Rust NIF
+    ├── world_server/             # 世界层协调逻辑
+    ├── beacon_server/            # 集群服务发现（libcluster + Horde）
+    ├── auth_server/              # 用户认证（Phoenix Web 应用）
+    ├── visualize_server/         # 游戏状态可视化（Phoenix LiveView）
+    ├── data_init/                # 数据初始化与旧 Mnesia 表定义
+    ├── data_service/             # 数据服务（PostgreSQL / Ecto）
+    ├── data_store/               # 旧 Mnesia 存储节点
+    └── data_contact/             # 旧数据集群协调节点
 ```
 
-## Architecture Layers
+## 架构分层
 
-```
-Clients
-  ↓ (custom binary protocol over TCP, packet:4 framing)
-Connection Layer:    auth_server, gate_server
+```text
+客户端
+  ↓（自定义二进制协议 over TCP，使用 packet:4 分帧）
+连接层：        auth_server, gate_server
   ↓
-Game Logic Layer:    agent_server / agent_manager, scene_server / world_server
+游戏逻辑层：    agent_server / agent_manager, scene_server / world_server
   ↓
-Data Layer:          data_service (PostgreSQL via Ecto)
+数据层：        data_service（PostgreSQL via Ecto）
   ↓
-Infrastructure:      beacon_server (libcluster + Horde, distributed)
+基础设施层：    beacon_server（libcluster + Horde，分布式）
 ```
 
-## Common Commands
+## 常用命令
 
 ```bash
-# Install dependencies
+# 安装依赖
 mix deps.get
 
-# Compile all apps
+# 编译全部应用
 mix compile
 
-# Run the formatter
+# 代码格式化
 mix format
 
-# Run tests (all apps, requires distributed node for some)
+# 运行全部测试（部分应用会依赖分布式节点）
 mix test
 
-# Run tests for a specific app (standalone, no cluster needed)
+# 运行单个应用测试（通常不需要完整集群）
 cd apps/gate_server && mix test --no-start
 cd apps/data_service && mix test --no-start
 cd apps/beacon_server && mix test --no-start
 
-# Initialize Mnesia database (legacy)
+# 初始化遗留 Mnesia 数据库
 mix db_initialize
 
-# Run Ecto migrations (PostgreSQL)
+# 运行 PostgreSQL 迁移
 mix ecto.migrate -r DataService.Repo
 
-# Migrate data from Mnesia to PostgreSQL
+# 将数据从 Mnesia 迁移到 PostgreSQL
 mix migrate_to_pg
 
-# Start a cluster node (interactive)
+# 启动一个集群节点（交互式）
 iex --name <node_name> --cookie mmo -S mix
 
-# Example: start a scene server node
+# 示例：启动一个 scene 节点
 iex --name scene1 --cookie mmo -S mix
 ```
 
-## Code Conventions
+## 代码组织约定
 
-### Module Organization
+### 模块结构
 
-Each app follows a consistent structure:
+每个 app 通常遵循如下结构：
 
-```
+```text
 app_name/lib/
-├── app_name.ex              # Main module
+├── app_name.ex              # 主模块
 └── app_name/
-    ├── application.ex       # OTP Application (supervision tree root)
-    ├── sup/                 # Supervisor modules
-    │   ├── interface_sup.ex # Message routing supervisor
-    │   └── {domain}_sup.ex  # Domain-specific supervisors
-    ├── worker/              # GenServer workers
-    │   ├── interface.ex     # Cluster interface (beacon registration via BeaconServer.Client)
-    │   └── {domain}.ex      # Domain logic workers
-    ├── native/              # Rust NIF bindings (scene_server only)
-    ├── schema/              # Ecto schemas (data_service only)
-    ├── db_ops/              # Database operation modules
-    └── codec.ex             # Binary protocol codec (gate_server only)
+    ├── application.ex       # OTP Application（监督树根）
+    ├── sup/                 # Supervisor 模块
+    │   ├── interface_sup.ex # 接口/路由 supervisor
+    │   └── {domain}_sup.ex  # 领域专用 supervisor
+    ├── worker/              # GenServer worker
+    │   ├── interface.ex     # 集群接口（通过 BeaconServer.Client 注册）
+    │   └── {domain}.ex      # 领域逻辑 worker
+    ├── native/              # Rust NIF 绑定（仅 scene_server）
+    ├── schema/              # Ecto schema（仅 data_service）
+    ├── db_ops/              # 数据操作模块
+    └── codec.ex             # 二进制协议 codec（仅 gate_server）
 ```
 
-### OTP Patterns
+### OTP 设计模式
 
-- **Supervision strategy**: `:one_for_one` (restart only the failed child)
-- **DynamicSupervisor**: Used for spawning dynamic worker pools (players, connections)
-- **GenServer callbacks**: Always annotated with `@impl true`
-- **Process groups**: `:pg` module for cluster-wide pub/sub broadcasting
-- **Interface pattern**: Each app has `worker/interface.ex` that registers with the beacon via `BeaconServer.Client` and declares its resource/requirement dependencies
-- **Service discovery**: `BeaconServer.Client.join_cluster/0`, `.register/4`, `.get_requirements/1`
+- **监督策略**：统一优先使用 `:one_for_one`
+- **DynamicSupervisor**：用于动态生成连接、玩家、worker pool 等进程
+- **GenServer 回调**：应使用 `@impl true` 明确标注
+- **进程组**：使用 `:pg` 做集群内 pub/sub 广播
+- **Interface 模式**：每个 app 都有 `worker/interface.ex`，负责 beacon 注册、资源声明、依赖解析
+- **服务发现**：通过 `BeaconServer.Client.join_cluster/0`、`.register/1`、`.lookup/1`、`.await/2`
 
-### Naming
+### 命名约定
 
-- Modules: `PascalCase` following `{AppName}.{Feature}.{Type}` (e.g., `SceneServer.AoiManager`)
-- Files: `snake_case.ex` matching module name segments
-- App names: `snake_case` with descriptive suffixes (`_server`, `_manager`, `_service`, `_store`)
+- 模块：`PascalCase`，遵循 `{AppName}.{Feature}.{Type}`，例如 `SceneServer.AoiManager`
+- 文件：`snake_case.ex`
+- app 名：`snake_case`，并通过后缀体现职责，如 `_server`、`_manager`、`_service`、`_store`
 
-### Code Style
+### 代码风格
 
-- Use `require Logger` for logging; use `Logger.warning/2` (not deprecated `Logger.warn`)
-- Pattern matching in function heads over conditional logic
-- Pipe operator `|>` for data transformation chains
-- Map-based state in GenServers: `%{key: value}`
-- Comments may be in Chinese (original author's language)
+- 记录日志使用 `require Logger`；警告使用 `Logger.warning/2`
+- 优先在函数头做模式匹配，而不是在函数体里大量分支
+- 数据变换优先使用 `|>` 管道
+- GenServer state 优先使用 map：`%{key: value}`
+- 仓库中允许出现中文注释
 
-## Database
+## 数据层
 
-### PostgreSQL (Primary — via Ecto)
+### PostgreSQL（主路径，基于 Ecto）
 
-Configured in `config/config.exs` under `:data_service, DataService.Repo`.
+配置位于 `config/config.exs` 的 `:data_service, DataService.Repo`。
 
-Schemas defined in `apps/data_service/lib/data_service/schema/`:
-- `DataService.Schema.Account` — User accounts (id, username, password, salt, email, phone)
-- `DataService.Schema.Character` — Player characters (id, account, name, title, attrs, position, hp/sp/mp)
+Schema 位于 `apps/data_service/lib/data_service/schema/`：
 
-Migrations in `apps/data_service/priv/repo/migrations/`.
+- `DataService.Schema.Account` —— 用户账户（id、username、password、salt、email、phone）
+- `DataService.Schema.Character` —— 玩家角色（id、account、name、title、attrs、position、hp/sp/mp）
 
-### Mnesia (Legacy — being phased out)
+Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
-Table definitions remain in `apps/data_init/lib/table_def.ex` for the migration task (`mix migrate_to_pg`). The `data_store` and `data_contact` apps still reference Mnesia but `data_service` worker now exclusively uses PostgreSQL.
+### Mnesia（遗留路径，正在退出）
 
-## Rust Native Extensions
+旧表定义仍保留在 `apps/data_init/lib/table_def.ex` 中，主要用于 `mix migrate_to_pg`。`data_store` 与 `data_contact` 仍依赖 Mnesia，但当前 `data_service` 的主要 worker 路径已经切到 PostgreSQL。
 
-Located in `apps/scene_server/native/`:
+## Rust 原生扩展
 
-| Crate | Rustler | Purpose |
-|-------|---------|---------|
-| `scene_ops` | 0.36.1 | Physics simulation (rapier3d-f64 0.16), character movement |
-| `octree` | 0.36.1 | Spatial indexing for efficient neighbor queries |
-| `coordinate_system` | 0.36.1 | Legacy coordinate system (replaced by octree) |
+位于 `apps/scene_server/native/`：
 
-Key NIF module: `SceneServer.Native.SceneOps`
+| Crate | Rustler | 用途 |
+|-------|---------|------|
+| `scene_ops` | 0.36.1 | 物理模拟（rapier3d-f64 0.16）、角色移动 |
+| `octree` | 0.36.1 | 空间索引与邻近查询 |
+| `coordinate_system` | 0.36.1 | 旧坐标系统实现（已逐步被 octree 替代） |
 
-Functions: `new_character_data/5`, `movement_tick/2`, `update_character_movement/5`, `get_character_location/2`, `new_physics_system/0`
+关键 NIF 模块：`SceneServer.Native.SceneOps`
 
-**Rustler 0.36 API**: Resources use `#[rustler::resource_impl] impl Resource for T {}` (not the old `rustler::resource!` macro). NIF functions use `#[rustler::nif]` attribute. Module init uses `rustler::init!("Elixir.Module.Name")` without explicit function list.
+典型函数包括：`new_character_data/5`、`movement_tick/2`、`update_character_movement/5`、`get_character_location/2`、`new_physics_system/0`
 
-Building Rust NIFs requires a Rust toolchain (tested with rustc 1.94).
+**Rustler 0.36 API 提示**：
 
-## Client Protocol
+- 资源类型使用 `#[rustler::resource_impl] impl Resource for T {}`
+- NIF 函数使用 `#[rustler::nif]`
+- 模块初始化使用 `rustler::init!("Elixir.Module.Name")`
 
-See `PROTOCOL.md` for the complete wire protocol specification.
+编译 Rust NIF 需要可用 Rust toolchain（当前环境测试过 rustc 1.94）。
 
-- **Framing**: 4-byte big-endian length prefix (`{packet, 4}` on TCP socket)
-- **Format**: `<<msg_type::8, payload::binary>>` — Erlang binary pattern matching
-- **Codec**: `GateServer.Codec` — zero-allocation decode for fixed-size messages
-- **Hot path**: Movement (89 bytes), PlayerMove broadcast (33 bytes)
+## 客户端协议
 
-## Cluster Service Discovery
+完整协议说明见 `docs/2026-04-10-线协议规范.md`。
 
-Beacon server provides distributed service discovery:
+- **分帧**：4 字节大端长度前缀（TCP socket 配置为 `{packet, 4}`）
+- **消息格式**：`<<msg_type::8, payload::binary>>`
+- **codec**：`GateServer.Codec`
+- **热点消息**：Movement（89 字节）、PlayerMove 广播（33 字节）
 
-- **libcluster**: Auto-discovers cluster nodes (gossip strategy in dev, configurable for prod)
-- **Horde**: Distributed registry ensures `BeaconServer.Beacon` is accessible cluster-wide
-- **BeaconServer.Client**: Stable API used by all Interface modules — no hardcoded node names
-- **No single point of failure**: Beacon process can run on any node, discovered via Horde registry
+## 集群服务发现
 
-## Testing
+`beacon_server` 当前提供分布式服务发现：
 
-- Framework: ExUnit (built-in)
-- Run standalone app tests: `cd apps/<app> && mix test --no-start`
-- Apps with database tests (data_service) require PostgreSQL running
-- Apps requiring cluster (data_contact, data_store) need distributed Erlang
-- CI pipeline: `.github/workflows/ci.yml`
+- **libcluster**：自动发现节点
+- **Horde**：分布式 registry，保证 `BeaconServer.Beacon` 在集群中可见
+- **BeaconServer.Client**：所有 Interface 模块统一使用的 API
+- **去单点**：不再依赖固定单节点 beacon
 
-| App | Tests | Notes |
-|-----|-------|-------|
-| gate_server | 46 | Codec, TCP framing, dispatch |
-| data_service | 10 | Ecto schemas, duplicate checks |
-| beacon_server | 7 | Client API, registration, requirements |
-| scene_server | 4 | NIF calls (requires Rust) |
-| agent_server | 2 | Smoke test |
-| world_server | 2 | Smoke test |
+## 测试说明
 
-## Key Dependencies
+- 测试框架：ExUnit
+- 单 app 测试通常使用 `cd apps/<app> && mix test --no-start`
+- 含数据库测试的应用（如 `data_service`）需要 PostgreSQL
+- 涉及集群的应用（如 `data_contact`、`data_store`）需要分布式 Erlang 环境
+- CI 配置位于 `.github/workflows/ci.yml`
 
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `phoenix` | 1.6 | Web framework (auth, visualization) |
-| `phoenix_live_view` | 0.17 | Real-time UI for visualize_server |
-| `ecto_sql` | ~> 3.12 | PostgreSQL database interface |
-| `postgrex` | latest | PostgreSQL driver |
-| `memento` | 0.3.2 | Mnesia wrapper (legacy, being phased out) |
-| `rustler` | ~> 0.36 | Elixir-to-Rust NIF bridge |
-| `libcluster` | ~> 3.4 | Cluster node auto-discovery |
-| `horde` | ~> 0.9 | Distributed registry and supervisor |
-| `poolboy` | 1.5 | Worker pool management (data_service) |
-| `bcrypt_elixir` | 3.x | Password hashing (auth_server) |
-| `jason` | 1.4 | JSON encoding/decoding |
+| App | 测试数 | 说明 |
+|-----|--------|------|
+| gate_server | 46+ | codec、TCP 分帧、dispatch |
+| data_service | 10+ | Ecto schema、重复校验 |
+| beacon_server | 7+ | Client API、注册、依赖解析 |
+| scene_server | 4+ | NIF 调用（需 Rust） |
+| agent_server | 2 | smoke test |
+| world_server | 2 | smoke test |
 
-## Notes for AI Assistants
+## 关键依赖
 
-- This is an umbrella project — always consider which app(s) a change affects
-- Inter-app communication uses GenServer calls/casts via Interface modules; respect this boundary
-- The `scene_server` app has Rust NIFs — changes to native code require Rust compilation with Rustler 0.36 API
-- **Data layer**: `data_service` uses PostgreSQL via Ecto exclusively. Mnesia code in `data_init`/`data_store`/`data_contact` is legacy
-- **Service discovery**: All Interface modules use `BeaconServer.Client` — never hardcode node names
-- The project uses distributed Erlang — node names and cookies are required for clustering
-- Client protocol uses custom binary codec (`GateServer.Codec`), see `PROTOCOL.md` for wire format
-- Legacy `.proto` files remain in git submodule (`mmo_protos`) for reference but are not used
-- **CI**: GitHub Actions configured — run `mix compile`, `mix test --no-start` for standalone apps
-- See `MIGRATION_PLAN.md` for the full architecture migration roadmap (Phases 1-3 complete, 4-5 pending)
+| 包 | 版本 | 用途 |
+|----|------|------|
+| `phoenix` | 1.6 | Web 框架（auth、visualization） |
+| `phoenix_live_view` | 0.17 | `visualize_server` 实时 UI |
+| `ecto_sql` | ~> 3.12 | PostgreSQL 数据访问 |
+| `postgrex` | latest | PostgreSQL 驱动 |
+| `memento` | 0.3.2 | Mnesia 包装层（遗留） |
+| `rustler` | ~> 0.36 | Elixir ↔ Rust NIF 桥接 |
+| `libcluster` | ~> 3.4 | 集群自动发现 |
+| `horde` | ~> 0.9 | 分布式 registry / supervisor |
+| `poolboy` | 1.5 | worker pool 管理（data_service） |
+| `bcrypt_elixir` | 3.x | 密码哈希（auth_server） |
+| `jason` | 1.4 | JSON 编解码 |
+
+## 给 AI 助手的附加说明
+
+- 这是一个 umbrella 项目，修改前必须先判断影响的是哪个 app
+- 跨 app 通信主要通过 Interface 模块和稳定公共 API，尽量不要绕过这些边界
+- `scene_server` 带 Rust NIF，修改原生代码时要考虑 Rustler 0.36 API 与 Rust 编译链
+- **数据层现状**：`data_service` 主路径已经是 PostgreSQL / Ecto；`data_init` / `data_store` / `data_contact` 主要是遗留兼容
+- **服务发现现状**：所有 Interface 模块都应通过 `BeaconServer.Client` 做发现，不要硬编码节点名
+- 项目使用分布式 Erlang，涉及多节点行为时要考虑 node name 与 cookie
+- 客户端协议已经切到自定义二进制 codec（`GateServer.Codec`），线格式见 `docs/2026-04-10-线协议规范.md`
+- 遗留 `.proto` 文件仍保存在 `mmo_protos` 子模块中，仅作参考，不再是当前运行时主路径
+- **CI**：当前应至少验证 `mix compile`、`mix test`，以及必要的单 app 测试
+- 完整迁移路线图见 `docs/2026-04-07-增量迁移计划.md`

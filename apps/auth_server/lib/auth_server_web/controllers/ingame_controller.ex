@@ -37,12 +37,39 @@ defmodule AuthServerWeb.IngameController do
     #   flash = %{error: "Invalid username or password"}
     #   redirect(conn, to: Routes.ingame_path(conn, :login, flash))
     # end
-    code = "3e4fg34gf32g4g43"
+    username = params["username"] || "dev_user"
+
+    code =
+      username
+      |> AuthServer.AuthWorker.build_session_claims(session_claim_options(params))
+      |> AuthServer.AuthWorker.issue_token()
+
     data = %{code: code}
     redirect(conn, to: Routes.ingame_path(conn, :login_success, data))
   end
 
   def login_success(conn, _params) do
     render(conn, "login_success.html")
+  end
+
+  defp session_claim_options(params) do
+    []
+    |> Keyword.put(:source, "ingame_login")
+    |> maybe_put(:cid, params["cid"])
+    |> maybe_put(:allowed_cids, parse_allowed_cids(params["allowed_cids"]))
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, _key, []), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp parse_allowed_cids(nil), do: nil
+
+  defp parse_allowed_cids(values) when is_list(values), do: values
+
+  defp parse_allowed_cids(values) when is_binary(values) do
+    values
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
   end
 end

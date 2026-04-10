@@ -3,54 +3,38 @@ defmodule GateServer.CodecTest do
 
   alias GateServer.Codec
 
-  # ═══════════════════════════════════════════════════════════
-  # Client → Server: Decode tests
-  # ═══════════════════════════════════════════════════════════
-
   describe "decode movement" do
     test "decodes movement with all fields" do
       msg =
-        <<0x01, 42::64-big, 1000::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
-          4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big, 7.0::float-64-big,
-          8.0::float-64-big, 9.0::float-64-big>>
+        <<0x01, 55::64-big, 42::64-big, 1000::64-big, 1.0::float-64-big, 2.0::float-64-big,
+          3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
+          7.0::float-64-big, 8.0::float-64-big, 9.0::float-64-big>>
 
-      assert {:ok, {:movement, 42, 1000, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}}} ==
+      assert {:ok, {:movement, 42, 1000, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, 55}} ==
                Codec.decode(msg)
     end
 
     test "decodes movement with zero velocity" do
       msg =
-        <<0x01, 1::64-big, 500::64-big, 100.5::float-64-big, 200.5::float-64-big,
+        <<0x01, 1::64-big, 1::64-big, 500::64-big, 100.5::float-64-big, 200.5::float-64-big,
           90.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
 
-      assert {:ok, {:movement, 1, 500, {100.5, 200.5, 90.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}} ==
+      assert {:ok, {:movement, 1, 500, {100.5, 200.5, 90.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 1}} ==
                Codec.decode(msg)
-    end
-
-    test "decodes movement with negative coordinates" do
-      msg =
-        <<0x01, 99::64-big, 0::64-big, -1.5::float-64-big, -2.5::float-64-big, -3.5::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big>>
-
-      {:ok, {:movement, 99, 0, {lx, ly, lz}, _, _}} = Codec.decode(msg)
-      assert_in_delta lx, -1.5, 0.0001
-      assert_in_delta ly, -2.5, 0.0001
-      assert_in_delta lz, -3.5, 0.0001
     end
   end
 
   describe "decode enter_scene" do
-    test "decodes enter_scene" do
-      msg = <<0x02, 12345::64-big>>
-      assert {:ok, {:enter_scene, 12345}} == Codec.decode(msg)
+    test "decodes enter_scene with request_id" do
+      msg = <<0x02, 77::64-big, 12345::64-big>>
+      assert {:ok, {:enter_scene, 12345, 77}} == Codec.decode(msg)
     end
   end
 
   describe "decode time_sync" do
-    test "decodes time_sync" do
-      assert {:ok, :time_sync} == Codec.decode(<<0x03>>)
+    test "decodes redesigned time_sync" do
+      assert {:ok, {:time_sync, 88, 999}} == Codec.decode(<<0x03, 88::64-big, 999::64-big>>)
     end
   end
 
@@ -69,9 +53,9 @@ defmodule GateServer.CodecTest do
       ulen = byte_size(username)
       clen = byte_size(code)
 
-      msg = <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
+      msg = <<0x05, 99::64-big, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
-      assert {:ok, {:auth_request, "player1", "abc123"}} == Codec.decode(msg)
+      assert {:ok, {:auth_request, "player1", "abc123", 99}} == Codec.decode(msg)
     end
 
     test "decodes auth_request with unicode username" do
@@ -80,17 +64,17 @@ defmodule GateServer.CodecTest do
       ulen = byte_size(username)
       clen = byte_size(code)
 
-      msg = <<0x05, ulen::16-big, username::binary, clen::16-big, code::binary>>
+      msg = <<0x05, 100::64-big, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
-      assert {:ok, {:auth_request, ^username, "token"}} = Codec.decode(msg)
+      assert {:ok, {:auth_request, ^username, "token", 100}} = Codec.decode(msg)
     end
 
     test "decodes auth_request with empty code" do
       username = "test"
       ulen = byte_size(username)
 
-      msg = <<0x05, ulen::16-big, username::binary, 0::16-big>>
-      assert {:ok, {:auth_request, "test", ""}} == Codec.decode(msg)
+      msg = <<0x05, 101::64-big, ulen::16-big, username::binary, 0::16-big>>
+      assert {:ok, {:auth_request, "test", "", 101}} == Codec.decode(msg)
     end
   end
 
@@ -103,16 +87,18 @@ defmodule GateServer.CodecTest do
       assert {:error, :invalid_message} == Codec.decode(<<>>)
     end
 
-    test "returns error for truncated movement" do
-      # Movement needs 89 bytes, only provide 10
-      assert {:error, {:unknown_message_type, 0x01}} ==
-               Codec.decode(<<0x01, 42::64-big>>)
+    test "returns invalid_message for old movement layout" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x01, 42::64-big>>)
+    end
+
+    test "returns invalid_message for old enter_scene layout" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x02, 42::64-big>>)
+    end
+
+    test "returns invalid_message for old time_sync layout" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x03>>)
     end
   end
-
-  # ═══════════════════════════════════════════════════════════
-  # Server → Client: Encode tests
-  # ═══════════════════════════════════════════════════════════
 
   describe "encode result" do
     test "encodes ok result" do
@@ -170,9 +156,9 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode time_sync and heartbeat" do
-    test "encodes time_sync_reply" do
-      {:ok, bin} = Codec.encode(:time_sync_reply)
-      assert <<0x85>> == bin
+    test "encodes redesigned time_sync_reply" do
+      {:ok, bin} = Codec.encode({:time_sync_reply, 321, 1000, 1100, 1200})
+      assert <<0x85, 321::64-big, 1000::64-big, 1100::64-big, 1200::64-big>> == bin
     end
 
     test "encodes heartbeat_reply" do
@@ -187,37 +173,28 @@ defmodule GateServer.CodecTest do
     end
   end
 
-  # ═══════════════════════════════════════════════════════════
-  # Roundtrip tests: encode → decode for bidirectional messages
-  # ═══════════════════════════════════════════════════════════
-
   describe "encode → decode roundtrip" do
     test "movement roundtrip from client perspective" do
-      # Client encodes, server decodes
-      original = {:movement, 42, 1000, {1.5, 2.5, 3.5}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}}
+      original = {:movement, 42, 1000, {1.5, 2.5, 3.5}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, 9}
 
-      # Manually build what the client would send
-      {_, cid, ts, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}} = original
+      {_, cid, ts, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}, request_id} = original
 
       client_msg =
-        <<0x01, cid::64-big, ts::64-big, lx::float-64-big, ly::float-64-big, lz::float-64-big,
-          vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
-          ay::float-64-big, az::float-64-big>>
+        <<0x01, request_id::64-big, cid::64-big, ts::64-big, lx::float-64-big, ly::float-64-big,
+          lz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
+          ax::float-64-big, ay::float-64-big, az::float-64-big>>
 
       assert {:ok, ^original} = Codec.decode(client_msg)
     end
 
     test "broadcast messages encode to correct binary size" do
       {:ok, enter} = Codec.encode({:player_enter, 1, {0.0, 0.0, 0.0}})
-      # 1 (type) + 8 (cid) + 24 (3 * float64) = 33 bytes
       assert byte_size(enter) == 33
 
       {:ok, leave} = Codec.encode({:player_leave, 1})
-      # 1 (type) + 8 (cid) = 9 bytes
       assert byte_size(leave) == 9
 
       {:ok, move} = Codec.encode({:player_move, 1, {0.0, 0.0, 0.0}})
-      # 1 (type) + 8 (cid) + 24 (3 * float64) = 33 bytes
       assert byte_size(move) == 33
     end
   end

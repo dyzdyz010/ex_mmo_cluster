@@ -7,7 +7,11 @@ defmodule DataService.WorkerTest do
 
   setup_all do
     # Repo started in test_helper.exs
-    {:ok, _} = DataService.UidGenerator.start_link(name: DataService.UidGenerator)
+    case DataService.UidGenerator.start_link(name: DataService.UidGenerator) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
     :ok
   end
 
