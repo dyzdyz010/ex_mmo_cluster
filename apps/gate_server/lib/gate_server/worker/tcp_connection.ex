@@ -65,6 +65,8 @@ defmodule GateServer.TcpConnection do
        auth_username: nil,
        auth_session_id: nil,
        scene_ref: nil,
+       udp_peer: nil,
+       udp_ticket: nil,
        token: nil,
        status: :waiting_auth
      }}
@@ -86,6 +88,11 @@ defmodule GateServer.TcpConnection do
   def handle_cast({:player_move, cid, location}, %{socket: socket} = state) do
     send_encoded(socket, {:player_move, cid, location})
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:udp_attached, peer, ticket}, state) do
+    {:noreply, %{state | udp_peer: peer, udp_ticket: ticket}}
   end
 
   @impl true
@@ -114,6 +121,30 @@ defmodule GateServer.TcpConnection do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
     cleanup_scene(state.scene_ref)
     {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:udp_movement, _request_id, _cid, timestamp, location, velocity, acceleration},
+        _from,
+        %{status: :in_scene, scene_ref: spid, cid: cid} = state
+      ) do
+    reply =
+      case safe_call(spid, {:movement, timestamp, location, velocity, acceleration}) do
+        {:ok, _} -> {:ok, cid, location}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:udp_movement, _request_id, _cid, _timestamp, _location, _velocity, _acceleration},
+        _from,
+        state
+      ) do
+    {:reply, {:error, :invalid_state}, state}
   end
 
   defp dispatch(
@@ -187,6 +218,40 @@ defmodule GateServer.TcpConnection do
 
   defp dispatch({:time_sync, request_id, _client_send_ts}, state) do
     send_result_error(state.socket, :invalid_state, request_id)
+    {:ok, state}
+  end
+
+  defp dispatch(
+         {:fast_lane_request, request_id},
+         %{status: status, socket: socket} = state
+       )
+       when status in [:authenticated, :in_scene] do
+    session_context = %{
+      auth_claims: state.auth_claims,
+      auth_username: state.auth_username,
+      auth_session_id: state.auth_session_id,
+      cid: state.cid,
+      status: status
+    }
+
+    case GateServer.FastLaneRegistry.issue_ticket(self(), session_context) do
+      {:ok, ticket} ->
+        send_encoded(
+          socket,
+          {:fast_lane_result, :ok, request_id, GateServer.UdpAcceptor.port(), ticket}
+        )
+
+        {:ok, %{state | udp_ticket: ticket}}
+
+      {:error, reason} ->
+        Logger.warning("Fast-lane ticket issuance failed: #{inspect(reason)}")
+        send_encoded(socket, {:fast_lane_result, :error, request_id})
+        {:ok, state}
+    end
+  end
+
+  defp dispatch({:fast_lane_request, request_id}, state) do
+    send_encoded(state.socket, {:fast_lane_result, :error, request_id})
     {:ok, state}
   end
 

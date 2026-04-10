@@ -49,6 +49,8 @@ defmodule GateServer.Codec do
   @msg_time_sync 0x03
   @msg_heartbeat 0x04
   @msg_auth_request 0x05
+  @msg_fast_lane_request 0x06
+  @msg_fast_lane_attach 0x07
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -58,6 +60,8 @@ defmodule GateServer.Codec do
   @msg_enter_scene_result 0x84
   @msg_time_sync_reply 0x85
   @msg_heartbeat_reply 0x86
+  @msg_fast_lane_result 0x87
+  @msg_fast_lane_attached 0x88
 
   # ── Status codes ──
   @status_ok 0x00
@@ -125,6 +129,18 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_auth_request, _rest::binary>>), do: {:error, :invalid_message}
+
+  # Fast-lane bootstrap request: 1 + 8
+  def decode(<<@msg_fast_lane_request, request_id::64-big>>) do
+    {:ok, {:fast_lane_request, request_id}}
+  end
+
+  # Fast-lane UDP attach request: 1 + 8 + 2 + ticket
+  def decode(
+        <<@msg_fast_lane_attach, request_id::64-big, tlen::16-big, ticket::binary-size(tlen)>>
+      ) do
+    {:ok, {:fast_lane_attach, request_id, ticket}}
+  end
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -208,6 +224,26 @@ defmodule GateServer.Codec do
   # ── Heartbeat reply ──
   def encode({:heartbeat_reply, timestamp}) do
     {:ok, <<@msg_heartbeat_reply, timestamp::64-big>>}
+  end
+
+  # ── Fast-lane bootstrap result (TCP) ──
+  def encode({:fast_lane_result, :ok, packet_id, udp_port, ticket}) when is_binary(ticket) do
+    {:ok,
+     <<@msg_fast_lane_result, packet_id::64-big, @status_ok, udp_port::16-big,
+       byte_size(ticket)::16-big, ticket::binary>>}
+  end
+
+  def encode({:fast_lane_result, :error, packet_id}) do
+    {:ok, <<@msg_fast_lane_result, packet_id::64-big, @status_error>>}
+  end
+
+  # ── Fast-lane attached ack (UDP) ──
+  def encode({:fast_lane_attached, :ok, packet_id}) do
+    {:ok, <<@msg_fast_lane_attached, packet_id::64-big, @status_ok>>}
+  end
+
+  def encode({:fast_lane_attached, :error, packet_id}) do
+    {:ok, <<@msg_fast_lane_attached, packet_id::64-big, @status_error>>}
   end
 
   def encode(_) do

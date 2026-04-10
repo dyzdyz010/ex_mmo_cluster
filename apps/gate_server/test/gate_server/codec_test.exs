@@ -46,6 +46,18 @@ defmodule GateServer.CodecTest do
     end
   end
 
+  describe "decode fast-lane bootstrap" do
+    test "decodes fast-lane TCP request" do
+      assert {:ok, {:fast_lane_request, 7}} == Codec.decode(<<0x06, 7::64-big>>)
+    end
+
+    test "decodes UDP attach request" do
+      ticket = "attach-ticket"
+      msg = <<0x07, 8::64-big, byte_size(ticket)::16-big, ticket::binary>>
+      assert {:ok, {:fast_lane_attach, 8, ^ticket}} = Codec.decode(msg)
+    end
+  end
+
   describe "decode auth_request" do
     test "decodes auth_request with username and code" do
       username = "player1"
@@ -164,6 +176,16 @@ defmodule GateServer.CodecTest do
     test "encodes heartbeat_reply" do
       {:ok, bin} = Codec.encode({:heartbeat_reply, 999})
       assert <<0x86, 999::64-big>> == bin
+    end
+
+    test "encodes fast-lane bootstrap result" do
+      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 5, 29001, "ticket"})
+      assert <<0x87, 5::64-big, 0x00, 29001::16-big, 6::16-big, "ticket">> == bin
+    end
+
+    test "encodes fast-lane attached ack" do
+      {:ok, bin} = Codec.encode({:fast_lane_attached, :ok, 6})
+      assert <<0x88, 6::64-big, 0x00>> == bin
     end
   end
 

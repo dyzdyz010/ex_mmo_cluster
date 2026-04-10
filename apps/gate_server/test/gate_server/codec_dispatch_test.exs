@@ -51,6 +51,13 @@ defmodule GateServer.CodecDispatchTest do
       assert type >= 0x01 and type <= 0x7F
       assert {:ok, {:auth_request, "test", "token", 7}} = Codec.decode(msg)
     end
+
+    test "fast-lane request is in codec range" do
+      msg = <<0x06, 7::64-big>>
+      <<type::8, _::binary>> = msg
+      assert type >= 0x01 and type <= 0x7F
+      assert {:ok, {:fast_lane_request, 7}} = Codec.decode(msg)
+    end
   end
 
   describe "server response encoding for codec dispatch" do
@@ -77,6 +84,12 @@ defmodule GateServer.CodecDispatchTest do
     test "time_sync_reply carries correlation and timing fields" do
       {:ok, bin} = Codec.encode({:time_sync_reply, 44, 1000, 1100, 1200})
       assert bin == <<0x85, 44::64-big, 1000::64-big, 1100::64-big, 1200::64-big>>
+    end
+
+    test "fast-lane bootstrap result is a server-range reply" do
+      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 9, 29001, "ticket"})
+      <<type::8, _::binary>> = bin
+      assert type == 0x87
     end
   end
 

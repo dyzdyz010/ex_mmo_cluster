@@ -701,6 +701,12 @@ connected
 
 - 把高频流量迁移到 UDP/KCP，同时不把当前语义混乱带过去
 
+2026-04-10 实施进展：
+
+- fast-lane attach bootstrap 已实现（TCP ticket + UDP attach ACK）
+- movement uplink 已迁入 UDP fast lane
+- 当前尚未迁移 `PlayerMove` 下行广播，仍属于下一步执行阶段
+
 依赖关系：
 
 - 这一阶段应该在 **Phase A–F 都完成之后** 再开始
@@ -785,14 +791,14 @@ connected
 
 ### 新的立即里程碑
 
-**“UDP/KCP 高速通道实现”**
+**“PlayerMove 下行广播迁入 UDP fast lane”**
 
 定义：
 
-- 开始拆分高频移动流量与可靠控制流
-- 在保持当前 TCP 协议主线稳定的前提下规划 fast lane
-- 确认 UDP/KCP 握手、会话附着与状态恢复边界
-- 不破坏当前已收口的身份与时间同步边界
+- 在现有 UDP movement uplink 的基础上，把高频 `PlayerMove` 下行广播迁入 UDP
+- 让附着的 UDP peer 接收更低延迟的玩家移动广播
+- 保持当前 TCP 主通道仍可承载可靠控制流
+- 不破坏当前已收口的身份、角色归属与时间同步边界
 
 这一里程碑的明确**非目标**：
 

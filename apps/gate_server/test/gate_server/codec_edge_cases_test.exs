@@ -77,7 +77,9 @@ defmodule GateServer.CodecEdgeCasesTest do
           0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>,
         <<0x02, 2::64-big, 0::64-big>>,
         <<0x03, 3::64-big, 4::64-big>>,
-        <<0x05, 4::64-big, 1::16-big, "a", 1::16-big, "b">>
+        <<0x05, 4::64-big, 1::16-big, "a", 1::16-big, "b">>,
+        <<0x06, 5::64-big>>,
+        <<0x07, 6::64-big, 3::16-big, "tok">>
       ]
 
       for msg <- messages do
@@ -96,6 +98,8 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:player_move, 0, {0.0, 0.0, 0.0}},
         {:time_sync_reply, 0, 1000, 1100, 1200},
         {:heartbeat_reply, 0},
+        {:fast_lane_result, :ok, 0, 29001, "ticket"},
+        {:fast_lane_attached, :ok, 0},
         {:movement_result, :ok, 0, 0, {0.0, 0.0, 0.0}}
       ]
 

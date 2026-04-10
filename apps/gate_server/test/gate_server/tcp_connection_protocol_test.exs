@@ -116,6 +116,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
     _ = Application.stop(:scene_server)
     ensure_name_available(GateServer.Interface)
     ensure_name_available(SceneServer.PlayerManager)
+    ensure_name_available(GateServer.FastLaneRegistry)
+    ensure_name_available(GateServer.UdpAcceptor)
     {:ok, _} = Application.ensure_all_started(:auth_server)
     Application.ensure_all_started(:jason)
     Application.ensure_all_started(:postgrex)
@@ -145,6 +147,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
+    _ = start_supervised({GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry})
+    _ = start_supervised({GateServer.UdpAcceptor, name: GateServer.UdpAcceptor, port: 0})
     _ = start_supervised(FakeInterface)
     _ = start_supervised(FakePlayerManager)
     :ok
@@ -413,6 +417,123 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert server_recv_ts <= server_send_ts
   end
 
+  test "fast-lane bootstrap returns udp port and ticket after auth", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 90))
+    assert {:ok, <<0x80, 90::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 91::64-big>>)
+
+    assert {:ok,
+            <<0x87, 91::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert udp_port == GateServer.UdpAcceptor.port()
+    assert is_binary(ticket)
+    assert byte_size(ticket) > 0
+    assert %{udp_ticket: ^ticket} = :sys.get_state(pid)
+  end
+
+  test "udp attach consumes ticket and records peer", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 100))
+    assert {:ok, <<0x80, 100::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 101::64-big>>)
+
+    assert {:ok,
+            <<0x87, 101::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client} = :gen_udp.open(0, [:binary, active: false])
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(102, ticket)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 102::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    wait_until(fn ->
+      match?(
+        %{peer: {{127, 0, 0, 1}, _port}},
+        GateServer.FastLaneRegistry.session_for_connection(pid)
+      )
+    end)
+
+    assert %{udp_peer: {{127, 0, 0, 1}, _}} = :sys.get_state(pid)
+    :gen_udp.close(udp_client)
+  end
+
+  test "attached udp peer can send movement uplink and receive movement_result ack", %{
+    client: client
+  } do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 110))
+    assert {:ok, <<0x80, 110::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 111))
+    assert {:ok, <<0x84, 111::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 112::64-big>>)
+
+    assert {:ok,
+            <<0x87, 112::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client} = :gen_udp.open(0, [:binary, active: false])
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(113, ticket)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 113::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    movement =
+      <<0x01, 114::64-big, 42::64-big, 200::64-big, 7.0::float-64-big, 8.0::float-64-big,
+        9.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+        0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+
+    assert :ok = :gen_udp.send(udp_client, {127, 0, 0, 1}, udp_port, movement)
+
+    assert {:ok,
+            {{127, 0, 0, 1}, _port,
+             <<0x80, 114::64-big, 0x00, 42::64-big, 7.0::float-64-big, 8.0::float-64-big,
+               9.0::float-64-big>>}} = :gen_udp.recv(udp_client, 0, 500)
+
+    :gen_udp.close(udp_client)
+  end
+
   test "malformed payload fails closed with generic error reply", %{client: client} do
     assert :ok = :gen_tcp.send(client, <<0xFF>>)
     assert {:ok, <<0x80, 0::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
@@ -444,6 +565,10 @@ defmodule GateServer.TcpConnectionProtocolTest do
     <<0x03, request_id::64-big, client_send_ts::64-big>>
   end
 
+  defp encode_fast_lane_attach(request_id, ticket) do
+    <<0x07, request_id::64-big, byte_size(ticket)::16-big, ticket::binary>>
+  end
+
   defp ensure_name_available(name) do
     case Process.whereis(name) do
       nil ->
@@ -465,6 +590,18 @@ defmodule GateServer.TcpConnectionProtocolTest do
       _pid ->
         Process.sleep(10)
         wait_until_unregistered(name, attempts - 1)
+    end
+  end
+
+  defp wait_until(fun, attempts \\ 30)
+  defp wait_until(_fun, 0), do: flunk("condition not met in time")
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      wait_until(fun, attempts - 1)
     end
   end
 
