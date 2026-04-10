@@ -1,20 +1,67 @@
 defmodule AuthServer.Accounts do
-  alias DataInit.TableDef, as: Tables
+  @moduledoc """
+  Auth-owned accessors for account and character ownership data.
 
-  def create_account(fields) do
-    account = %Tables.User.Account{
-      username: fields.username,
-      password: fields.password,
-      email: fields.email,
-      phone: fields.phone
-    }
+  The gate server should not talk to `data_service` directly for identity
+  decisions. Instead, auth owns the boundary and can resolve account/character
+  lookups through the current data source.
 
-    {:ok, account}
+  In production-like flows this module prefers the auth interface's discovered
+  `data_service` node. In tests and local single-node runs it can fall back to a
+  locally registered `DataService.Dispatcher` so the authorization path remains
+  exercisable without a full cluster.
+  """
+
+  @spec find_by_username(binary()) :: {:ok, struct() | nil} | {:error, atom()}
+  def find_by_username(username) when is_binary(username) do
+    dispatch_to_data_service({:account_by_username, username})
   end
 
-  def find_by_username(username) do
-    account = Tables.User.Account.find_by(username: username)
+  @spec character_owned_by_account?(integer(), integer()) ::
+          {:ok, struct() | nil} | {:error, atom()}
+  def character_owned_by_account?(account_id, cid)
+      when is_integer(account_id) and is_integer(cid) do
+    dispatch_to_data_service({:character_owned_by_account, account_id, cid})
+  end
 
-    {:ok, account}
+  def character_owned_by_account?(_account_id, _cid), do: {:error, :invalid_account}
+
+  defp dispatch_to_data_service(message) do
+    case data_service_target() do
+      {:error, _reason} = error ->
+        error
+
+      target ->
+        try do
+          GenServer.call(target, message)
+        catch
+          :exit, _reason -> {:error, :data_service_unavailable}
+        end
+    end
+  end
+
+  defp data_service_target do
+    cond do
+      Process.whereis(AuthServer.Interface) != nil ->
+        case safe_call(AuthServer.Interface, :data_service) do
+          {:ok, nil} -> {:error, :data_service_unavailable}
+          {:ok, node} -> {DataService.Dispatcher, node}
+          {:error, _reason} -> {:error, :data_service_unavailable}
+        end
+
+      Process.whereis(DataService.Dispatcher) != nil ->
+        DataService.Dispatcher
+
+      true ->
+        {:error, :data_service_unavailable}
+    end
+  end
+
+  defp safe_call(server, message) do
+    try do
+      {:ok, GenServer.call(server, message)}
+    catch
+      :exit, reason -> {:error, reason}
+    end
   end
 end

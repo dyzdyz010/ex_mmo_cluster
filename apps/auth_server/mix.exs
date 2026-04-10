@@ -54,6 +54,7 @@ defmodule AuthServer.MixProject do
       {:bcrypt_elixir, "~> 3.0"},
       {:tzdata, "~> 1.1"},
       {:data_init, in_umbrella: true},
+      {:data_service, in_umbrella: true},
       {:beacon_server, in_umbrella: true}
     ]
   end

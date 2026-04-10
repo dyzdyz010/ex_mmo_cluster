@@ -1,33 +1,46 @@
 defmodule GateServer.Codec do
   @moduledoc """
-  Custom binary codec for game messages.
+  Binary codec for the gate socket protocol.
 
-  Replaces protobuf for maximum decode/encode performance using Erlang
-  binary pattern matching. All vectors use float-64 (double precision)
-  for consistency with internal representation and Rust NIFs.
+  `GateServer.Codec` is the translation layer between raw TCP frames and the
+  tuples consumed by `GateServer.TcpConnection`. The socket itself uses
+  `{packet, 4}`, so this module only handles the payload after the 4-byte
+  length prefix.
 
-  ## Wire Format
+  ## Wire shape
 
-  Each message (after the 4-byte length header handled by `{packet, 4}`)
-  starts with a 1-byte message type ID followed by type-specific fields.
+  - message type is always 1 byte
+  - request IDs and entity IDs are unsigned 64-bit big-endian integers
+  - positions and velocities use 64-bit big-endian floats
+  - variable-length text fields are prefixed with 16-bit big-endian lengths
 
-  ## Message Type IDs
+  ## Message families
 
-  ### Client → Server (0x01–0x7F)
-    - 0x01: Movement
-    - 0x02: EnterScene
-    - 0x03: TimeSync
-    - 0x04: Heartbeat
-    - 0x05: AuthRequest
+  ### Client → server
 
-  ### Server → Client (0x80–0xFF)
-    - 0x80: Result (generic reply)
-    - 0x81: PlayerEnter (broadcast)
-    - 0x82: PlayerLeave (broadcast)
-    - 0x83: PlayerMove (broadcast)
-    - 0x84: EnterSceneResult
-    - 0x85: TimeSync (reply)
-    - 0x86: Heartbeat (reply)
+  - `0x01` Movement
+  - `0x02` EnterScene
+  - `0x03` TimeSync
+  - `0x04` Heartbeat
+  - `0x05` AuthRequest
+
+  ### Server → client
+
+  - `0x80` Result
+  - `0x81` PlayerEnter
+  - `0x82` PlayerLeave
+  - `0x83` PlayerMove
+  - `0x84` EnterSceneResult
+  - `0x85` TimeSync reply
+  - `0x86` Heartbeat reply
+
+  ## Round trip example
+
+      iex> {:ok, bin} = GateServer.Codec.encode({:player_leave, 42})
+      iex> byte_size(bin)
+      9
+      iex> GateServer.Codec.decode(<<0x04, 123::64-big>>)
+      {:ok, {:heartbeat, 123}}
   """
 
   # ── Client → Server message types ──
@@ -55,9 +68,19 @@ defmodule GateServer.Codec do
   # ═══════════════════════════════════════════════════════════
 
   @doc """
-  Decode a binary message (without the 4-byte length prefix) into a tuple.
+  Decode one payload frame into a protocol tuple.
 
-  Returns `{:ok, message_tuple}` or `{:error, reason}`.
+  `decode/1` expects the binary after the 4-byte packet prefix has already been
+  removed. When the frame is valid, it returns a tuple that the connection
+  worker can dispatch immediately.
+
+  ## Examples
+
+      iex> GateServer.Codec.decode(<<0x04, 123::64-big>>)
+      {:ok, {:heartbeat, 123}}
+
+      iex> GateServer.Codec.decode(<<0x7F, 1, 2, 3>>)
+      {:error, {:unknown_message_type, 127}}
   """
   @spec decode(binary()) :: {:ok, tuple()} | {:error, atom()}
 
@@ -117,10 +140,19 @@ defmodule GateServer.Codec do
   # ═══════════════════════════════════════════════════════════
 
   @doc """
-  Encode a message tuple into binary (without the 4-byte length prefix;
-  `{packet, 4}` on the socket handles that automatically).
+  Encode one protocol tuple into a TCP payload.
 
-  Returns `{:ok, iodata}` or `{:error, reason}`.
+  The returned value is iodata that can be passed straight to `:gen_tcp.send/2`.
+  The socket's `{packet, 4}` setting adds the outer length prefix for us.
+
+  ## Examples
+
+      iex> {:ok, bin} = GateServer.Codec.encode({:player_leave, 42})
+      iex> byte_size(bin)
+      9
+
+      iex> GateServer.Codec.encode(:ping)
+      {:error, :unknown_message}
   """
   @spec encode(tuple() | atom()) :: {:ok, iodata()} | {:error, atom()}
 

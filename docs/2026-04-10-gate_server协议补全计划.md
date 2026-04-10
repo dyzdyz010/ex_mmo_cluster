@@ -556,12 +556,20 @@ connected
 
 - 让“已认证身份”和“当前活跃角色所有权”真正可信
 
+2026-04-10 实施进展（真实来源校验补充）：
+
+- `data_service` 新增了按用户名查询账户与按账号校验角色归属的 worker/dispatcher 接口
+- `AuthServer.Accounts` 现在以 `data_service` 作为主数据来源，而不是旧 Mnesia 账户表
+- `AuthServer.AuthWorker.authorize_character/2` 已引入真实账户/角色归属校验
+- `GateServer.TcpConnection` 在 `EnterScene` 前会先走 claim-based 约束，再走 auth 节点的真实角色归属校验
+- gate/auth/data 相关测试已覆盖允许归属、拒绝归属与数据源可用路径
+
 2026-04-10 实施进展：
 
 - `AuthRequest.username` 已开始与 token claims 中的用户名进行一致性校验
 - auth 成功后，连接会保存显式 session 上下文（包括 `username`、`session_id`、claims）
 - 当 token claims 中声明了 `cid` 或 `allowed_cids` 时，`EnterScene(cid)` 会执行约束校验
-- 对未声明 cid 约束的旧 token 仍保持兼容，允许进入当前下游逻辑
+- 当 token claims 未声明 cid 约束时，系统会继续进入 auth 节点的真实角色来源校验
 - 新增 / 更新了以下测试：
   - `apps/auth_server/test/auth_server/auth_worker_test.exs`
   - `apps/gate_server/test/gate_server/tcp_connection_protocol_test.exs`
@@ -773,27 +781,27 @@ connected
 
 ## 7. 建议的“立即下一步”
 
-`time sync 协议重设计` 的第一轮已经完成。现在最值得继续推进的是：
+`真实角色来源校验` 的第一轮已经完成。现在最值得继续推进的是：
 
 ### 新的立即里程碑
 
-**“真实角色来源校验”**
+**“UDP/KCP 高速通道实现”**
 
 定义：
 
-- 把 token claims 约束升级为真实角色来源校验
-- 让 `EnterScene(cid)` 依赖真实账户/角色关系，而不只是 claims
-- 明确角色列表/选择的真正数据来源
-- 为后续传输层拆分保留稳定身份边界
+- 开始拆分高频移动流量与可靠控制流
+- 在保持当前 TCP 协议主线稳定的前提下规划 fast lane
+- 确认 UDP/KCP 握手、会话附着与状态恢复边界
+- 不破坏当前已收口的身份与时间同步边界
 
 这一里程碑的明确**非目标**：
 
-- 不开始 UDP/KCP 分流
-- 不直接改传输层
+- 不回退当前已收口的 gate/auth/data 身份边界
+- 不重新引入旧协议兼容分支
 
 完成这一步之后，再顺序推进：
 
-- UDP/KCP 高速通道实现
+- transport-level rollout and operational hardening
 
 ---
 

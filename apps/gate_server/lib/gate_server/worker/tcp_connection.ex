@@ -1,9 +1,36 @@
 defmodule GateServer.TcpConnection do
   @moduledoc """
-  Client connection.
+  Per-client GenServer for one accepted TCP socket.
 
-  Responsible for message delivering/decrypting/encrypting.
-  Uses custom binary codec (GateServer.Codec) for all messages.
+  The acceptor hands this process an already-accepted socket, and the process
+  takes over ownership of that socket for the rest of the connection. It keeps
+  a small state machine in process state:
+
+      waiting_auth -> authenticated -> in_scene
+
+  Incoming frames are decoded with `GateServer.Codec.decode/1`, dispatched by
+  phase, and then encoded back to the same socket with `GateServer.Codec.encode/1`.
+
+  ## Message flow
+
+      :gen_tcp active message
+           ↓
+      GateServer.Codec.decode/1
+           ↓
+      dispatch/2
+           ↓
+      auth / scene RPCs
+           ↓
+      GateServer.Codec.encode/1
+           ↓
+      :gen_tcp.send/2
+
+  ## State notes
+
+  - `status: :waiting_auth` only accepts `{:auth_request, ...}`
+  - `status: :authenticated` can answer time sync and enter-scene requests
+  - `status: :in_scene` also relays movement updates to the scene process
+  - `cid` stays at `-1` until the client successfully enters a scene
   """
 
   use GenServer, restart: :temporary
@@ -12,6 +39,13 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  @doc """
+  Start the per-socket connection process.
+
+  `socket` is the accepted `:gen_tcp` socket. `opts` are forwarded to
+  `GenServer.start_link/3`, which lets the supervisor attach a name or other
+  process options when the connection is spawned.
+  """
   def start_link(socket, opts \\ []) do
     GenServer.start_link(__MODULE__, socket, opts)
   end
@@ -109,6 +143,7 @@ defmodule GateServer.TcpConnection do
     timestamp = :os.system_time(:millisecond)
 
     with :ok <- authorize_cid(claims, cid),
+         :ok <- authorize_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
          {:ok, ppid} <- add_player(scene_node, cid, timestamp),
          {:ok, {x, y, z}} <- fetch_player_location(ppid) do
@@ -259,6 +294,19 @@ defmodule GateServer.TcpConnection do
       :ok -> :ok
       {:error, :cid_mismatch} -> {:error, :cid_mismatch}
       {:error, _reason} -> {:error, :server_error}
+    end
+  end
+
+  defp authorize_character(claims, cid) do
+    with {:ok, auth_node} <- fetch_auth_node() do
+      case :rpc.call(auth_node, AuthServer.AuthWorker, :authorize_character, [claims, cid]) do
+        :ok -> :ok
+        {:error, :cid_mismatch} -> {:error, :cid_mismatch}
+        {:error, :account_not_found} -> {:error, :cid_mismatch}
+        {:error, :data_service_unavailable} -> {:error, :auth_unavailable}
+        {:badrpc, _reason} -> {:error, :auth_unavailable}
+        _ -> {:error, :server_error}
+      end
     end
   end
 

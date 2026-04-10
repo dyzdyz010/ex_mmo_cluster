@@ -2,6 +2,10 @@ defmodule DataService.Worker do
   use GenServer
   require Logger
 
+  alias DataService.Repo
+  alias DataService.Schema.Account
+  alias DataService.Schema.Character
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
@@ -15,8 +19,20 @@ defmodule DataService.Worker do
 
   @impl true
   def handle_call({:account_by_email, email}, _from, state) do
-    account = DataService.Repo.get_by(DataService.Schema.Account, email: email)
+    account = Repo.get_by(Account, email: email)
     {:reply, {:ok, account}, state}
+  end
+
+  @impl true
+  def handle_call({:account_by_username, username}, _from, state) do
+    account = Repo.get_by(Account, username: username)
+    {:reply, {:ok, account}, state}
+  end
+
+  @impl true
+  def handle_call({:character_owned_by_account, account_id, cid}, _from, state) do
+    character = Repo.get_by(Character, id: cid, account: account_id)
+    {:reply, {:ok, character}, state}
   end
 
   @impl true
@@ -35,7 +51,7 @@ defmodule DataService.Worker do
       :ok ->
         {:ok, hashed_password, salt} = hash_password(password)
 
-        case DataService.Repo.insert(%DataService.Schema.Account{
+        case Repo.insert(%Account{
                id: uid,
                username: username,
                password: hashed_password,

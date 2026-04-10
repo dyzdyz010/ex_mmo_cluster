@@ -33,6 +33,26 @@ defmodule DataService.Dispatcher do
     {:reply, result, state}
   end
 
+  @impl true
+  def handle_call({:account_by_username, username}, _from, state) do
+    result =
+      :poolboy.transaction(:worker, fn pid ->
+        GenServer.call(pid, {:account_by_username, username})
+      end)
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:character_owned_by_account, account_id, cid}, _from, state) do
+    result =
+      :poolboy.transaction(:worker, fn pid ->
+        GenServer.call(pid, {:character_owned_by_account, account_id, cid})
+      end)
+
+    {:reply, result, state}
+  end
+
   def regtest() do
     case GenServer.call(
            __MODULE__,

@@ -3,6 +3,7 @@ defmodule DataService.WorkerTest do
 
   alias DataService.Worker
   alias DataService.Schema.Account
+  alias DataService.Schema.Character
   alias DataService.Repo
 
   setup_all do
@@ -16,6 +17,7 @@ defmodule DataService.WorkerTest do
   end
 
   setup do
+    Repo.delete_all(Character)
     Repo.delete_all(Account)
     {:ok, pid} = Worker.start_link()
     %{worker: pid}
@@ -81,6 +83,49 @@ defmodule DataService.WorkerTest do
     test "returns nil for non-existent email", %{worker: pid} do
       {:ok, account} = GenServer.call(pid, {:account_by_email, "nobody@test.com"})
       assert account == nil
+    end
+  end
+
+  describe "account and character ownership lookups" do
+    test "finds account by username", %{worker: pid} do
+      GenServer.call(pid, {:register_account, "lookup_user", "pw", "lookup@test.com", "999"})
+
+      {:ok, account} = GenServer.call(pid, {:account_by_username, "lookup_user"})
+      assert account.username == "lookup_user"
+    end
+
+    test "returns nil when username does not exist", %{worker: pid} do
+      {:ok, account} = GenServer.call(pid, {:account_by_username, "missing_user"})
+      assert account == nil
+    end
+
+    test "finds character owned by account", %{worker: pid} do
+      account = GenServer.call(pid, {:register_account, "owner", "pw", "owner@test.com", "123"})
+
+      {:ok, _character} =
+        Repo.insert(%Character{
+          id: 9001,
+          account: account.id,
+          name: "OwnerHero"
+        })
+
+      {:ok, character} = GenServer.call(pid, {:character_owned_by_account, account.id, 9001})
+      assert character.name == "OwnerHero"
+    end
+
+    test "returns nil when character does not belong to account", %{worker: pid} do
+      owner = GenServer.call(pid, {:register_account, "owner2", "pw", "owner2@test.com", "321"})
+      other = GenServer.call(pid, {:register_account, "other2", "pw", "other2@test.com", "654"})
+
+      {:ok, _character} =
+        Repo.insert(%Character{
+          id: 9002,
+          account: other.id,
+          name: "OtherHero"
+        })
+
+      {:ok, character} = GenServer.call(pid, {:character_owned_by_account, owner.id, 9002})
+      assert character == nil
     end
   end
 end

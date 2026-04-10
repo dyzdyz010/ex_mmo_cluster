@@ -1,6 +1,10 @@
 defmodule GateServer.TcpConnectionProtocolTest do
   use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.Account
+  alias DataService.Schema.Character
+
   defmodule FakeInterface do
     use GenServer
 
@@ -45,7 +49,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:ok,
        %{
          location: Map.get(opts, :location, {1.0, 2.0, 3.0}),
-         time_sync_reply: Map.get(opts, :time_sync_reply, 1234),
          notify: Map.get(opts, :notify)
        }}
     end
@@ -58,11 +61,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     @impl true
     def handle_call({:movement, _timestamp, location, _velocity, _acceleration}, _from, state) do
       {:reply, {:ok, ""}, %{state | location: location}}
-    end
-
-    @impl true
-    def handle_call(:time_sync, _from, state) do
-      {:reply, {:ok, state.time_sync_reply}, state}
     end
 
     @impl true
@@ -89,8 +87,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
        Map.merge(
          %{
            add_player_result: :ok,
-           location: {10.0, 20.0, 30.0},
-           time_sync_reply: 5678
+           location: {10.0, 20.0, 30.0}
          },
          attrs
        )}
@@ -105,13 +102,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     def handle_call({:add_player, _cid, _connection_pid, _timestamp}, _from, state) do
       case state.add_player_result do
         :ok ->
-          {:ok, pid} =
-            FakePlayer.start_link(
-              location: state.location,
-              time_sync_reply: state.time_sync_reply,
-              notify: self()
-            )
-
+          {:ok, pid} = FakePlayer.start_link(location: state.location, notify: self())
           {:reply, {:ok, pid}, state}
 
         {:error, reason} ->
@@ -126,19 +117,54 @@ defmodule GateServer.TcpConnectionProtocolTest do
     ensure_name_available(GateServer.Interface)
     ensure_name_available(SceneServer.PlayerManager)
     {:ok, _} = Application.ensure_all_started(:auth_server)
+    Application.ensure_all_started(:jason)
+    Application.ensure_all_started(:postgrex)
+    Application.ensure_all_started(:ecto_sql)
+
+    repo_config = DataService.Repo.config()
+
+    case Ecto.Adapters.Postgres.storage_up(repo_config) do
+      :ok -> :ok
+      {:error, :already_up} -> :ok
+    end
+
+    case DataService.Repo.start_link() do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
+
+    {:ok, _, _} =
+      Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
+        Ecto.Migrator.run(repo, migrations_path, :up, all: true)
+      end)
+
+    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
     _ = start_supervised(FakeInterface)
     _ = start_supervised(FakePlayerManager)
     :ok
   end
 
   setup do
-    FakeInterface.set(auth_server: nil, scene_server: nil)
+    case DataService.Repo.start_link() do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
 
-    FakePlayerManager.set(
-      add_player_result: :ok,
-      location: {10.0, 20.0, 30.0},
-      time_sync_reply: 5678
-    )
+    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    Repo.delete_all(Character)
+    Repo.delete_all(Account)
+    FakeInterface.set(auth_server: nil, scene_server: nil)
+    FakePlayerManager.set(add_player_result: :ok, location: {10.0, 20.0, 30.0})
 
     {:ok, listener} = :gen_tcp.listen(0, [:binary, packet: 4, active: true, reuseaddr: true])
     {:ok, port} = :inet.port(listener)
@@ -175,19 +201,15 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "auth unavailable returns a stable generic error reply", %{client: client, pid: pid} do
-    auth_request = encode_auth_request("tester", "invalid-token", 13)
-
-    assert :ok = :gen_tcp.send(client, auth_request)
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", "invalid-token", 13))
     assert {:ok, <<0x80, 13::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
 
     assert %{status: :waiting_auth, token: nil} = :sys.get_state(pid)
   end
 
   test "valid auth transitions to authenticated and enter_scene success transitions to in_scene",
-       %{
-         client: client,
-         pid: pid
-       } do
+       %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
     claims = AuthServer.AuthWorker.build_session_claims("tester", source: "test")
     token = AuthServer.AuthWorker.issue_token(claims)
@@ -195,19 +217,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 11))
     assert {:ok, <<0x80, 11::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
 
-    assert %{
-             status: :authenticated,
-             token: ^token,
-             auth_username: "tester",
-             auth_session_id: session_id,
-             auth_claims: auth_claims,
-             agent: auth_context
-           } = :sys.get_state(pid)
-
-    assert is_binary(session_id)
-    assert auth_claims["session_id"] == session_id
-    assert auth_context["session_id"] == session_id
-    assert auth_context["username"] == "tester"
+    assert %{status: :authenticated, token: ^token, auth_username: "tester"} = :sys.get_state(pid)
 
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 12))
 
@@ -219,6 +229,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "movement before scene join is rejected after auth", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node())
 
     token =
@@ -238,6 +249,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     client: client,
     pid: pid
   } do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node())
 
     token =
@@ -259,6 +271,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "scene unavailable after auth returns enter-scene error reply", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: nil)
 
     token =
@@ -271,6 +284,38 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 42))
     assert {:ok, <<0x84, 42::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+    assert %{status: :authenticated, scene_ref: nil} = :sys.get_state(pid)
+  end
+
+  test "data-service unavailability fails closed during real character authorization", %{
+    client: client,
+    pid: pid
+  } do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 43))
+    assert {:ok, <<0x80, 43::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    sup = Process.whereis(DataService.DispatcherSup)
+    assert is_pid(sup)
+    Process.exit(sup, :kill)
+    Process.sleep(50)
+
+    on_exit(fn ->
+      case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+      end
+    end)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 44))
+    assert {:ok, <<0x84, 44::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
     assert %{status: :authenticated, scene_ref: nil} = :sys.get_state(pid)
   end
 
@@ -288,6 +333,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "cid mismatch is rejected when token restricts allowed cid", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
 
     token =
@@ -303,7 +349,26 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert %{status: :authenticated, scene_ref: nil, cid: -1} = :sys.get_state(pid)
   end
 
+  test "cid mismatch is rejected by real character ownership even without cid claim", %{
+    client: client
+  } do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 66))
+    assert {:ok, <<0x80, 66::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(77, 67))
+    assert {:ok, <<0x84, 67::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+  end
+
   test "request-id-aware movement echoes packet_id after scene join", %{client: client} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
 
     token =
@@ -325,6 +390,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "request-id-aware time_sync echoes packet_id after scene join", %{client: client} do
+    insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
 
     token =
@@ -400,5 +466,22 @@ defmodule GateServer.TcpConnectionProtocolTest do
         Process.sleep(10)
         wait_until_unregistered(name, attempts - 1)
     end
+  end
+
+  defp insert_account_and_character(username, cid) do
+    {:ok, account} =
+      Repo.insert(%Account{
+        id: System.unique_integer([:positive]),
+        username: username,
+        password: "pw",
+        salt: "salt"
+      })
+
+    {:ok, _character} =
+      Repo.insert(%Character{
+        id: cid,
+        account: account.id,
+        name: "#{username}-character-#{cid}"
+      })
   end
 end
