@@ -108,6 +108,20 @@ jobs:
   test-gate-server:
     name: Test gate_server
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mmo_dev
+          POSTGRES_PASSWORD: mmo_dev
+          POSTGRES_DB: mmo_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -128,12 +142,9 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Compile
-        run: mix compile
-
       - name: Run gate_server tests
         run: cd apps/gate_server && mix test --no-start
-        # 60 tests: codec, TCP framing, dispatch, edge cases
+        # includes codec/framing tests plus protocol tests that boot auth/data deps against PostgreSQL
 
   test-beacon-server:
     name: Test beacon_server

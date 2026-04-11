@@ -27,7 +27,9 @@ defmodule GateServer.MixProject do
   defp deps do
     [
       {:observer_cli, "~> 1.7"},
-      {:beacon_server, in_umbrella: true}
+      {:beacon_server, in_umbrella: true},
+      {:auth_server, in_umbrella: true, only: :test},
+      {:data_service, in_umbrella: true, only: :test}
     ]
   end
 end
