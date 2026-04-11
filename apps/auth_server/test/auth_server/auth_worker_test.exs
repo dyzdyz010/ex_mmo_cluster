@@ -6,21 +6,7 @@ defmodule AuthServer.AuthWorkerTest do
   alias DataService.Schema.Character
 
   setup_all do
-    Application.ensure_all_started(:jason)
-    Application.ensure_all_started(:postgrex)
-    Application.ensure_all_started(:ecto_sql)
-
-    repo_config = DataService.Repo.config()
-
-    case Ecto.Adapters.Postgres.storage_up(repo_config) do
-      :ok -> :ok
-      {:error, :already_up} -> :ok
-    end
-
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    ensure_data_service_started()
 
     migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
 
@@ -29,20 +15,11 @@ defmodule AuthServer.AuthWorkerTest do
         Ecto.Migrator.run(repo, migrations_path, :up, all: true)
       end)
 
-    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
     :ok
   end
 
   setup do
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
+    ensure_data_service_started()
     ensure_dispatcher_sup()
 
     Repo.delete_all(Character)
@@ -127,13 +104,10 @@ defmodule AuthServer.AuthWorkerTest do
   end
 
   test "authorize_character reports data source unavailability" do
-    sup = Process.whereis(DataService.DispatcherSup)
-    assert is_pid(sup)
-    Process.exit(sup, :kill)
-    Process.sleep(50)
+    stop_data_service()
 
     on_exit(fn ->
-      ensure_dispatcher_sup()
+      ensure_data_service_started()
     end)
 
     claims = %{"account_id" => 101, "username" => "player1"}
@@ -142,13 +116,81 @@ defmodule AuthServer.AuthWorkerTest do
              AuthServer.AuthWorker.authorize_character(claims, 201)
   end
 
+  defp ensure_data_service_started do
+    Application.ensure_all_started(:jason)
+    Application.ensure_all_started(:postgrex)
+    Application.ensure_all_started(:ecto_sql)
+    ensure_repo_storage()
+
+    case Application.ensure_all_started(:data_service) do
+      {:ok, _apps} ->
+        :ok
+
+      {:error,
+       {:data_service,
+        {{:shutdown, {:failed_to_start_child, DataService.Repo, {:already_started, _pid}}},
+         {DataService.Application, :start, [:normal, []]}}}} ->
+        :ok
+
+      {:error, {:data_service, {:already_started, _pid}}} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        flunk("data_service failed to start: #{inspect(reason)}")
+    end
+
+    wait_for_process(DataService.Repo)
+    wait_for_repo()
+    ensure_dispatcher_sup()
+  end
+
+  defp ensure_repo_storage do
+    repo_config = DataService.Repo.config()
+
+    case Ecto.Adapters.Postgres.storage_up(repo_config) do
+      :ok -> :ok
+      {:error, :already_up} -> :ok
+    end
+  end
+
+  defp stop_data_service do
+    case Process.whereis(DataService.DispatcherSup) do
+      nil ->
+        :ok
+
+      pid ->
+        Supervisor.stop(pid, :shutdown, 5_000)
+    end
+
+    wait_for_process_stop(DataService.DispatcherSup, 100)
+    wait_for_process_stop(DataService.Dispatcher, 100)
+  end
+
   defp ensure_dispatcher_sup do
     case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
 
+    wait_for_process(DataService.DispatcherSup)
     wait_for_process(DataService.Dispatcher)
+  end
+
+  defp wait_for_repo(attempts \\ 30)
+  defp wait_for_repo(0), do: flunk("repo did not become queryable in time")
+
+  defp wait_for_repo(attempts) do
+    case Repo.query("SELECT 1") do
+      {:ok, _result} ->
+        :ok
+
+      {:error, _reason} ->
+        Process.sleep(10)
+        wait_for_repo(attempts - 1)
+    end
   end
 
   defp wait_for_process(name, attempts \\ 30)
@@ -162,6 +204,20 @@ defmodule AuthServer.AuthWorkerTest do
 
       _pid ->
         :ok
+    end
+  end
+
+  defp wait_for_process_stop(name, attempts)
+  defp wait_for_process_stop(_name, 0), do: flunk("process did not stop in time")
+
+  defp wait_for_process_stop(name, attempts) do
+    case Process.whereis(name) do
+      nil ->
+        :ok
+
+      _pid ->
+        Process.sleep(50)
+        wait_for_process_stop(name, attempts - 1)
     end
   end
 end

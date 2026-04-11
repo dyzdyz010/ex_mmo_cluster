@@ -30,5 +30,11 @@ config :data_service, DataService.Repo,
   port: String.to_integer(System.get_env("MMO_DB_PORT", "5432")),
   pool_size: 5
 
+# Umbrella tests run in a single local node on Windows and can leave libcluster's
+# fixed gossip socket bound between rapid reruns. Auth/DataService tests do not
+# need distributed discovery, so disable the topology in test to avoid flaky
+# startup failures before ExUnit boots.
+config :libcluster, topologies: []
+
 config :logger, level: :warn
 config :phoenix, :plug_init_mode, :runtime

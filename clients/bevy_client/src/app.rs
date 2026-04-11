@@ -5,7 +5,6 @@ use crate::{
 use bevy::{
     input::keyboard::{Key, KeyboardInput},
     prelude::*,
-    sprite::Anchor,
     window::WindowPlugin,
 };
 use std::collections::{HashMap, VecDeque};
@@ -232,7 +231,6 @@ fn poll_network_events(
                     Sprite {
                         color: Color::srgba(1.0, 0.8, 0.2, 0.55),
                         custom_size: Some(Vec2::splat(32.0)),
-                        anchor: Anchor::Center,
                         ..default()
                     },
                     Transform::from_translation(world + Vec3::new(0.0, 0.0, 5.0)),

@@ -89,6 +89,32 @@ iex --name <node_name> --cookie mmo -S mix
 iex --name scene1 --cookie mmo -S mix
 ```
 
+### Windows 运行补充
+
+在 Windows 上，本仓库当前建议通过 **VS Dev Command Prompt** 运行 Mix：
+
+- 先调用 `VsDevCmd.bat`，确保 `nmake` / `cl` 可用于编译 NIF 或 C 依赖（例如 `bcrypt_elixir`）
+- 运行 Hex/Mix 前设置：
+  - `HEX_HTTP_CONCURRENCY=1`
+  - `HEX_HTTP_TIMEOUT=120`
+- 若 PowerShell 因 `mix.ps1` 签名策略拦截，改用 `cmd /c mix ...`
+
+示例：
+
+```bat
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64
+set HEX_HTTP_CONCURRENCY=1
+set HEX_HTTP_TIMEOUT=120
+mix deps.get
+mix compile
+mix test
+```
+
+补充说明：
+
+- 这是 **本地 Windows 运行约束**，不是仓库代码层面的依赖变更
+- umbrella test 环境已经禁用了 `libcluster` gossip topology，避免 Windows 下固定 UDP 端口导致的 `:eaddrinuse`
+
 ## 代码组织约定
 
 ### 模块结构
