@@ -57,6 +57,12 @@ struct ChatState {
 #[derive(Resource)]
 struct MovementTick(Timer);
 
+#[derive(Resource, Default)]
+struct MovementIntent {
+    direction: Vec2,
+    expires_at: f64,
+}
+
 pub fn run() {
     let config = ClientConfig::from_env();
     let bridge = spawn_network_thread(config.clone());
@@ -78,6 +84,7 @@ pub fn run() {
             ..default()
         })
         .insert_resource(ChatState::default())
+        .insert_resource(MovementIntent::default())
         .insert_resource(MovementTick(Timer::from_seconds(
             config.movement_interval_ms as f32 / 1_000.0,
             TimerMode::Repeating,
@@ -98,6 +105,7 @@ pub fn run() {
                 toggle_chat_mode,
                 collect_chat_text,
                 handle_skill_input,
+                sample_movement_input,
                 movement_sender,
                 sync_player_visuals,
                 update_skill_pulses,
@@ -357,13 +365,51 @@ fn handle_skill_input(
     }
 }
 
-fn movement_sender(
+fn sample_movement_input(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    mut keyboard_input_reader: MessageReader<KeyboardInput>,
+    chat_state: Res<ChatState>,
+    mut movement_intent: ResMut<MovementIntent>,
+) {
+    if chat_state.enabled {
+        movement_intent.direction = Vec2::ZERO;
+        return;
+    }
+
+    let direction = current_movement_direction(&keyboard);
+
+    if direction.length_squared() > 0.0 {
+        movement_intent.direction = direction;
+        movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+        return;
+    }
+
+    for keyboard_input in keyboard_input_reader.read() {
+        if !keyboard_input.state.is_pressed() {
+            continue;
+        }
+
+        let direction = movement_direction_from_key(&keyboard_input.logical_key);
+        if direction.length_squared() > 0.0 {
+            movement_intent.direction = direction;
+            movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+            return;
+        }
+    }
+
+    if time.elapsed_secs_f64() >= movement_intent.expires_at {
+        movement_intent.direction = Vec2::ZERO;
+    }
+}
+
+fn movement_sender(
+    time: Res<Time>,
     bridge: Res<NetworkBridge>,
     config: Res<ClientConfig>,
-    world_state: Res<WorldState>,
+    mut world_state: ResMut<WorldState>,
     chat_state: Res<ChatState>,
+    movement_intent: Res<MovementIntent>,
     mut tick: ResMut<MovementTick>,
 ) {
     if chat_state.enabled || !world_state.scene_joined {
@@ -378,7 +424,35 @@ fn movement_sender(
         return;
     };
 
+    let direction = movement_intent.direction;
+
+    if direction.length_squared() == 0.0 {
+        return;
+    }
+
+    let (desired_position, velocity) = compute_movement_step(
+        position,
+        direction,
+        config.movement_speed,
+        config.movement_interval_ms,
+    );
+
+    bridge.send(NetworkCommand::Movement {
+        location: [
+            desired_position.x as f64,
+            desired_position.y as f64,
+            desired_position.z as f64,
+        ],
+        velocity,
+        acceleration: [0.0, 0.0, 0.0],
+    });
+
+    world_state.local_position = Some(desired_position);
+}
+
+fn current_movement_direction(keyboard: &ButtonInput<KeyCode>) -> Vec2 {
     let mut direction = Vec2::ZERO;
+
     if keyboard.pressed(KeyCode::KeyW) || keyboard.pressed(KeyCode::ArrowUp) {
         direction.y += 1.0;
     }
@@ -392,18 +466,21 @@ fn movement_sender(
         direction.x += 1.0;
     }
 
-    let velocity = if direction.length_squared() > 0.0 {
-        let normalized = direction.normalize() * config.movement_speed;
-        [normalized.x as f64, normalized.y as f64, 0.0]
-    } else {
-        [0.0, 0.0, 0.0]
-    };
+    direction
+}
 
-    bridge.send(NetworkCommand::Movement {
-        location: [position.x as f64, position.y as f64, position.z as f64],
-        velocity,
-        acceleration: [0.0, 0.0, 0.0],
-    });
+fn movement_direction_from_key(key: &Key) -> Vec2 {
+    match key {
+        Key::Character(value) if value.eq_ignore_ascii_case("w") => Vec2::new(0.0, 1.0),
+        Key::Character(value) if value.eq_ignore_ascii_case("s") => Vec2::new(0.0, -1.0),
+        Key::Character(value) if value.eq_ignore_ascii_case("a") => Vec2::new(-1.0, 0.0),
+        Key::Character(value) if value.eq_ignore_ascii_case("d") => Vec2::new(1.0, 0.0),
+        Key::ArrowUp => Vec2::new(0.0, 1.0),
+        Key::ArrowDown => Vec2::new(0.0, -1.0),
+        Key::ArrowLeft => Vec2::new(-1.0, 0.0),
+        Key::ArrowRight => Vec2::new(1.0, 0.0),
+        _ => Vec2::ZERO,
+    }
 }
 
 fn sync_player_visuals(
@@ -574,10 +651,71 @@ fn net_to_world(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
 }
 
+fn compute_movement_step(
+    position: Vec3,
+    direction: Vec2,
+    movement_speed: f32,
+    movement_interval_ms: u64,
+) -> (Vec3, [f64; 3]) {
+    let normalized = direction.normalize() * movement_speed;
+    let dt = movement_interval_ms as f32 / 1_000.0;
+    let desired_position = position + Vec3::new(normalized.x * dt, normalized.y * dt, 0.0);
+
+    (
+        desired_position,
+        [normalized.x as f64, normalized.y as f64, 0.0],
+    )
+}
+
 fn is_printable_char(chr: char) -> bool {
     let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
         || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
         || ('\u{100000}'..='\u{10fffd}').contains(&chr);
 
     !is_in_private_use_area && !chr.is_ascii_control()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_step_advances_in_input_direction() {
+        let position = Vec3::new(1_000.0, 1_000.0, 90.0);
+        let direction = Vec2::new(1.0, 0.0);
+
+        let (desired, velocity) = compute_movement_step(position, direction, 220.0, 100);
+
+        assert!(desired.x > position.x);
+        assert_eq!(desired.y, position.y);
+        assert_eq!(desired.z, position.z);
+        assert_eq!(velocity, [220.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn movement_direction_maps_wasd_and_arrows() {
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyW);
+        keyboard.press(KeyCode::ArrowLeft);
+
+        let direction = current_movement_direction(&keyboard);
+
+        assert_eq!(direction, Vec2::new(-1.0, 1.0));
+    }
+
+    #[test]
+    fn movement_direction_from_logical_key_supports_wasd_and_arrows() {
+        assert_eq!(
+            movement_direction_from_key(&Key::Character("w".into())),
+            Vec2::new(0.0, 1.0)
+        );
+        assert_eq!(
+            movement_direction_from_key(&Key::Character("A".into())),
+            Vec2::new(-1.0, 0.0)
+        );
+        assert_eq!(
+            movement_direction_from_key(&Key::ArrowRight),
+            Vec2::new(1.0, 0.0)
+        );
+    }
 }
