@@ -29,7 +29,12 @@ erl_crash.dump
 
 .mnesia
 
-apps/scene_server/priv/native/libcoordinate_system.so
+# Rustler / native build outputs
+/apps/*/priv/native/*.so
+/apps/*/priv/native/*.dylib
+/apps/*/priv/native/*.dll
+/apps/*/native/*/target/
+
 .omx/
 /Mnesia.nonode@nohost/
 /apps/beacon_server/MnesiaCore.nonode@nohost_*
