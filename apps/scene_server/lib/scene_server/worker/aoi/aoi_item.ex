@@ -86,6 +86,44 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
+  def handle_cast(
+        {:chat_message, from_cid, from_name, text},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:chat_message, from_cid, from_name, text})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:chat_say, from_cid, from_name, text},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:chat_message, from_cid, from_name, text})
+    broadcast_action_chat_message(from_cid, from_name, text, state.subscribees)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:skill_event, from_cid, skill_id, location},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:skill_event, from_cid, skill_id, location})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:skill_cast, from_cid, skill_id, location},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:skill_event, from_cid, skill_id, location})
+    broadcast_action_skill_event(from_cid, skill_id, location, state.subscribees)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:self_move, location}, %{cid: cid, subscribees: subscribees} = state) do
     # Logger.debug("广播")
     broadcast_action_player_move(cid, location, subscribees)
@@ -327,6 +365,22 @@ defmodule SceneServer.Aoi.AoiItem do
     # Logger.debug("待广播移动玩家：#{inspect(pids, pretty: true)}")
     pids
     |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_move, cid, location}) end))
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_chat_message(integer(), binary(), binary(), [pid()]) :: any()
+  defp broadcast_action_chat_message(cid, from_name, text, pids) do
+    pids
+    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:chat_message, cid, from_name, text}) end))
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_skill_event(integer(), integer(), vector(), [pid()]) :: any()
+  defp broadcast_action_skill_event(cid, skill_id, location, pids) do
+    pids
+    |> Enum.map(
+      &Task.async(fn -> GenServer.cast(&1, {:skill_event, cid, skill_id, location}) end)
+    )
     |> Enum.map(&Task.await(&1))
   end
 end

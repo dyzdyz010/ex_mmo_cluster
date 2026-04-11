@@ -8,6 +8,8 @@ defmodule SceneServer.PlayerCharacter do
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
 
   @movement_tick_interval 100
+  @pulse_skill_id 1
+  @skill_cooldown_ms 750
 
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
@@ -29,6 +31,7 @@ defmodule SceneServer.PlayerCharacter do
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0,
+       skill_casts: %{},
        #  Timers
        movement_timer: nil
      }, {:continue, {:load, client_timestamp}}}
@@ -144,6 +147,36 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
+  def handle_call({:chat_say, cid, username, text}, _from, %{aoi_ref: aoi_ref} = state) do
+    GenServer.cast(aoi_ref, {:chat_say, cid, username, text})
+    {:reply, {:ok, :sent}, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:cast_skill, skill_id},
+        _from,
+        %{
+          cid: cid,
+          aoi_ref: aoi_ref,
+          skill_casts: skill_casts,
+          character_data_ref: cd_ref,
+          physys_ref: physys_ref
+        } = state
+      ) do
+    now = :os.system_time(:millisecond)
+
+    with :ok <- validate_skill(skill_id),
+         :ok <- cooldown_ready?(skill_casts, skill_id, now),
+         {:ok, location} <- SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref) do
+      GenServer.cast(aoi_ref, {:skill_cast, cid, skill_id, location})
+      {:reply, {:ok, location}, %{state | skill_casts: Map.put(skill_casts, skill_id, now)}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
   def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
     {:ok, _} = GenServer.call(aoi_item, :exit)
     Logger.debug("AOI item removed.")
@@ -187,5 +220,16 @@ defmodule SceneServer.PlayerCharacter do
 
   defp make_movement_timer() do
     Process.send_after(self(), :movement_tick, @movement_tick_interval)
+  end
+
+  defp validate_skill(@pulse_skill_id), do: :ok
+  defp validate_skill(_skill_id), do: {:error, :invalid_skill}
+
+  defp cooldown_ready?(skill_casts, skill_id, now) do
+    case Map.get(skill_casts, skill_id) do
+      nil -> :ok
+      last_cast when now - last_cast >= @skill_cooldown_ms -> :ok
+      _last_cast -> {:error, :skill_cooldown}
+    end
   end
 end

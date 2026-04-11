@@ -32,21 +32,21 @@
 - TCP 已使用 `{packet, 4}` 做长度前缀分帧
 - `GateServer.Codec` 已经是运行时实际使用的编解码器
 - scene 的 AOI 广播已经能通过 gate 回推给客户端
+- UDP fast lane 已经承载 `Movement` 上行与 `PlayerMove` 下行
+- request/reply 关联、连接级 time sync、真实角色来源校验都已落地
 
-但 `gate_server` **还没有完成协议行为层**。
+但 `gate_server` **还没有完成协议行为层的最后一公里**。
 
 当前主要缺口有：
 
-- 连接状态机没有真正落地
-- 请求/响应关联字段（`packet_id`）只完成了一半
 - 错误语义过于粗糙
-- auth / session / cid 绑定还不完整
-- time sync 还不是一个正式可用的同步协议
-- 现有测试主要覆盖 codec / framing，没有覆盖连接级协议规则
+- fast lane 的 snapshot / resync / sequence 等恢复能力还未完成
+- 运行时治理仍缺少更细的 stale peer / 网络抖动 / 运营观测能力
+- 角色列表/选择本身仍未完全产品化
 
 当前实现最准确的描述是：
 
-> **线格式已经完成，协议契约还没有完成。**
+> **线格式和主协议契约已经基本收口，当前重点转向 fast lane 的恢复/纠偏与运行时治理。**
 
 另外一个重要补充是：
 
@@ -103,9 +103,10 @@
 
 ## 2.3 传输与分帧
 
-gate 当前仍然是 **TCP-only**：
+gate 当前已经是 **TCP 主通道 + UDP fast lane**：
 
 - `:gen_tcp.listen(..., [:binary, packet: 4, active: true, reuseaddr: true])`
+- `GateServer.UdpAcceptor` 持有共享 UDP socket，负责 attach 与 movement 热路径
 
 参考：
 
@@ -126,6 +127,8 @@ gate 当前仍然是 **TCP-only**：
 - `TimeSync`
 - `Heartbeat`
 - `AuthRequest`
+- `FastLaneRequest`
+- `FastLaneAttach`
 
 ### 服务端 → 客户端
 
@@ -136,6 +139,8 @@ gate 当前仍然是 **TCP-only**：
 - `EnterSceneResult`
 - `TimeSyncReply`
 - `HeartbeatReply`
+- `FastLaneResult`
+- `FastLaneAttached`
 
 参考：
 
@@ -151,10 +156,11 @@ gate 当前仍然是 **TCP-only**：
 
 1. 客户端通过 TCP 建连
 2. 创建 `TcpConnection`
-3. 客户端发送自定义二进制消息
-4. gate 通过 `GateServer.Codec.decode/1` 解码
-5. gate 分发到 scene / auth 逻辑
-6. gate 通过 `GateServer.Codec.encode/1` 回包或广播
+3. 客户端通过 TCP 完成 auth / enter-scene / time-sync / fast-lane ticket 请求
+4. gate 通过 `GateServer.Codec.decode/1` 解码，并在 TCP 连接层维护状态机
+5. 已附着会话的高频 movement 通过 UDP fast lane 进入 gate
+6. gate 把 movement 投递到 scene，并把权威位置作为 ack/correction 回给客户端
+7. `PlayerMove` 下行广播对已附着 peer 优先走 UDP，否则 fallback 到 TCP
 
 参考：
 
@@ -165,9 +171,10 @@ gate 当前仍然是 **TCP-only**：
 
 - `{:movement, ...}` → `SceneServer.PlayerCharacter`
 - `{:enter_scene, cid}` → `SceneServer.PlayerManager`
-- `:time_sync` → `SceneServer.PlayerCharacter`
+- `{:time_sync, ...}` → gate 直接完成时间戳采样和回包
 - `{:heartbeat, ...}` → gate 直接回复
 - `{:auth_request, username, code}` → `auth_server`
+- `{:fast_lane_request, ...}` → `GateServer.FastLaneRegistry` 签发 ticket
 
 scene 侧广播也已经连通：
 
@@ -175,7 +182,7 @@ scene 侧广播也已经连通：
 - `{:player_leave, ...}`
 - `{:player_move, ...}`
 
-这些广播来自 scene AOI 逻辑，再推回当前 TCP 客户端连接。
+这些广播来自 scene AOI 逻辑，再由 gate 按会话状态分流到 UDP 或 TCP。
 
 ---
 
@@ -705,7 +712,10 @@ connected
 
 - fast-lane attach bootstrap 已实现（TCP ticket + UDP attach ACK）
 - movement uplink 已迁入 UDP fast lane
-- 当前尚未迁移 `PlayerMove` 下行广播，仍属于下一步执行阶段
+- `PlayerMove` 下行广播也已迁入 UDP fast lane
+- movement ack 已开始回传服务端权威位置，作为最小纠偏信号
+- fast-lane 现在已具备重附着替换、空闲过期与 TCP 关闭清理等基础治理
+- 当前尚未补齐 snapshot / resync / sequence 等更强恢复能力
 
 依赖关系：
 
@@ -725,46 +735,31 @@ connected
 
 ## `apps/gate_server/lib/gate_server/worker/tcp_connection.ex`
 
-需要补的内容：
+当前继续需要补的内容：
 
-- 显式状态守卫
-- 稳定的错误回包 helper
-- fail-closed 依赖处理
-- auth / session 校验
-
-**第一补丁**最应该聚焦：
-
-- auth-before-enter-scene
-- enter-scene-before-movement/time-sync
-- nil-safe 的 `tcp_error` / scene cleanup
-- invalid-state / unavailable-service 的稳定回复
-
-后续补丁再做：
-
-- request/reply 关联
-- cid/session 更细的绑定校验
+- movement / downlink 的 snapshot / resync
+- 更细的 transport-level observability / policy
+- 更丰富的错误载荷与治理信号
 
 这是协议补全里最关键的实现文件。
 
 ## `apps/gate_server/lib/gate_server/codec.ex`
 
-需要补的内容：
+接下来仍可能继续补的内容：
 
-- 最终版 request/reply 字段设计
-- request id 相关字段
 - 更丰富的错误负载
-- time-sync 新消息布局
+- snapshot / resync / sequence 相关消息
+- 可能新增的 transport-level 治理信号
 
 它是当前运行时二进制布局的单一事实来源。
 
 ## `2026-04-10-线协议规范.md`
 
-需要补的内容：
+需要持续维护的内容：
 
 - 和实际运行时行为完全对齐
-- 去掉“只写了一半”的语义
-- 固化最终 request/reply 与错误模型
-- 增加状态/顺序章节，明确客户端哪些消息在什么阶段合法
+- 固化恢复/纠偏相关扩展
+- 持续维护状态/顺序章节，明确客户端哪些消息在什么阶段合法
 
 ## `apps/gate_server/test/...`
 
@@ -787,16 +782,16 @@ connected
 
 ## 7. 建议的“立即下一步”
 
-`真实角色来源校验` 的第一轮已经完成。现在最值得继续推进的是：
+`transport-level rollout and operational hardening` 的第一轮已经开始落地。现在最值得继续推进的是：
 
 ### 新的立即里程碑
 
-**“PlayerMove 下行广播迁入 UDP fast lane”**
+**“snapshot / resync / sequence hardening”**
 
 定义：
 
-- 在现有 UDP movement uplink 的基础上，把高频 `PlayerMove` 下行广播迁入 UDP
-- 让附着的 UDP peer 接收更低延迟的玩家移动广播
+- 为 UDP movement uplink / `PlayerMove` downlink 增加更强的 snapshot / resync / sequence 能力
+- 在现有重附着、空闲过期和 TCP 关闭清理基础上，继续补齐异常网络行为下的恢复策略
 - 保持当前 TCP 主通道仍可承载可靠控制流
 - 不破坏当前已收口的身份、角色归属与时间同步边界
 
@@ -807,20 +802,21 @@ connected
 
 完成这一步之后，再顺序推进：
 
-- transport-level rollout and operational hardening
+- 更细的 transport observability / rollout policy
+- 如果仍有充分理由，再评估是否需要 KCP 层
 
 ---
 
 ## 8. 最终判断
 
-当前 `gate_server` 已经不再卡在线格式上。
+当前 `gate_server` 已经不再卡在线格式，也不再卡在“是否分流”这一步。
 
 它现在的核心问题是：
 
-> **协议语义还没收口，而不是序列化没有做好。**
+> **UDP fast lane 已经承载热路径，但恢复/纠偏与长期治理能力还不够强。**
 
 所以最稳妥的补全路线应该是：
 
-> **先把 TCP 协议契约做稳，再去拆分高频流量。**
+> **保持当前 TCP/UDP 边界不变，继续在 fast lane 内部补齐 snapshot / resync / sequence 等恢复能力。**
 
 这是当前风险最低、后续维护性最好的实现路径。

@@ -86,13 +86,42 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_cast({:player_move, cid, location}, %{socket: socket} = state) do
-    send_encoded(socket, {:player_move, cid, location})
+    {udp_peer, state} = resolve_udp_peer(state)
+
+    if udp_peer do
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, {:player_move, cid, location})
+    else
+      send_encoded(socket, {:player_move, cid, location})
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:chat_message, cid, username, text}, %{socket: socket} = state) do
+    send_encoded(socket, {:chat_message, cid, username, text})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:skill_event, cid, skill_id, location}, %{socket: socket} = state) do
+    send_encoded(socket, {:skill_event, cid, skill_id, location})
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:udp_attached, peer, ticket}, state) do
     {:noreply, %{state | udp_peer: peer, udp_ticket: ticket}}
+  end
+
+  @impl true
+  def handle_cast({:udp_detached, peer, _reason}, %{udp_peer: peer} = state) do
+    {:noreply, %{state | udp_peer: nil, udp_ticket: nil}}
+  end
+
+  @impl true
+  def handle_cast({:udp_detached, _peer, _reason}, state) do
+    {:noreply, state}
   end
 
   @impl true
@@ -113,6 +142,7 @@ defmodule GateServer.TcpConnection do
   def handle_info({:tcp_closed, _conn}, state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
     cleanup_scene(state.scene_ref)
+    cleanup_fast_lane(self())
     {:stop, :normal, state}
   end
 
@@ -120,19 +150,23 @@ defmodule GateServer.TcpConnection do
   def handle_info({:tcp_error, _conn, err}, state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
     cleanup_scene(state.scene_ref)
+    cleanup_fast_lane(self())
     {:stop, :normal, state}
   end
 
   @impl true
   def handle_call(
-        {:udp_movement, _request_id, _cid, timestamp, location, velocity, acceleration},
+        {:udp_movement, _request_id, cid, timestamp, location, velocity, acceleration},
         _from,
-        %{status: :in_scene, scene_ref: spid, cid: cid} = state
+        %{status: :in_scene, scene_ref: spid, cid: active_cid} = state
       ) do
     reply =
-      case safe_call(spid, {:movement, timestamp, location, velocity, acceleration}) do
-        {:ok, _} -> {:ok, cid, location}
-        {:error, reason} -> {:error, reason}
+      cond do
+        cid != active_cid ->
+          {:error, :cid_mismatch}
+
+        true ->
+          acknowledge_movement(spid, active_cid, timestamp, location, velocity, acceleration)
       end
 
     {:reply, reply, state}
@@ -151,9 +185,15 @@ defmodule GateServer.TcpConnection do
          {:movement, _cid, timestamp, location, velocity, acceleration, request_id},
          %{status: :in_scene, scene_ref: spid, cid: cid, socket: socket} = state
        ) do
-    case safe_call(spid, {:movement, timestamp, location, velocity, acceleration}) do
-      {:ok, _} -> send_encoded(socket, {:movement_result, :ok, request_id, cid, location})
-      {:error, reason} -> send_result_error(socket, reason, request_id)
+    case acknowledge_movement(spid, cid, timestamp, location, velocity, acceleration) do
+      {:ok, ack_cid, authoritative_location} ->
+        send_encoded(
+          socket,
+          {:movement_result, :ok, request_id, ack_cid, authoritative_location}
+        )
+
+      {:error, reason} ->
+        send_result_error(socket, reason, request_id)
     end
 
     {:ok, state}
@@ -163,6 +203,44 @@ defmodule GateServer.TcpConnection do
          {:movement, _cid, _timestamp, _location, _velocity, _acceleration, request_id},
          state
        ) do
+    send_result_error(state.socket, :invalid_state, request_id)
+    {:ok, state}
+  end
+
+  defp dispatch(
+         {:chat_say, text, request_id},
+         %{status: :in_scene, scene_ref: spid, cid: cid, auth_username: username, socket: socket} =
+           state
+       ) do
+    case safe_call(spid, {:chat_say, cid, username || "anonymous", text}) do
+      {:ok, {:ok, _}} -> send_encoded(socket, {:result, :ok, request_id})
+      {:ok, _} -> send_result_error(socket, :server_error, request_id)
+      {:error, reason} -> send_result_error(socket, reason, request_id)
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:chat_say, _text, request_id}, state) do
+    send_result_error(state.socket, :invalid_state, request_id)
+    {:ok, state}
+  end
+
+  defp dispatch(
+         {:skill_cast, skill_id, request_id},
+         %{status: :in_scene, scene_ref: spid, socket: socket} = state
+       ) do
+    case safe_call(spid, {:cast_skill, skill_id}) do
+      {:ok, {:ok, _location}} -> send_encoded(socket, {:result, :ok, request_id})
+      {:ok, {:error, reason}} -> send_result_error(socket, reason, request_id)
+      {:ok, _} -> send_result_error(socket, :server_error, request_id)
+      {:error, reason} -> send_result_error(socket, reason, request_id)
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:skill_cast, _skill_id, request_id}, state) do
     send_result_error(state.socket, :invalid_state, request_id)
     {:ok, state}
   end
@@ -352,6 +430,14 @@ defmodule GateServer.TcpConnection do
     :ok
   end
 
+  defp cleanup_fast_lane(connection_pid) do
+    if Process.whereis(GateServer.FastLaneRegistry) do
+      _ = GateServer.FastLaneRegistry.detach_connection(connection_pid, :tcp_closed)
+    end
+
+    :ok
+  end
+
   defp authorize_cid(nil, _cid), do: {:error, :invalid_state}
 
   defp authorize_cid(claims, cid) do
@@ -414,6 +500,36 @@ defmodule GateServer.TcpConnection do
   end
 
   defp with_active_cid(auth_context, _cid), do: auth_context
+
+  defp acknowledge_movement(spid, cid, timestamp, location, velocity, acceleration) do
+    with {:ok, {:ok, _movement_applied}} <-
+           safe_call(spid, {:movement, timestamp, location, velocity, acceleration}),
+         {:ok, authoritative_location} <- fetch_player_location(spid) do
+      {:ok, cid, authoritative_location}
+    else
+      {:error, reason} -> {:error, reason}
+      {:ok, _other} -> {:error, :scene_unavailable}
+    end
+  end
+
+  defp resolve_udp_peer(%{udp_peer: nil} = state), do: {nil, state}
+
+  defp resolve_udp_peer(%{udp_peer: udp_peer} = state) do
+    active_peer =
+      if Process.whereis(GateServer.FastLaneRegistry) do
+        case GateServer.FastLaneRegistry.session_for_connection(self()) do
+          %{peer: ^udp_peer} -> udp_peer
+          _ -> nil
+        end
+      else
+        nil
+      end
+
+    case active_peer do
+      nil -> {nil, %{state | udp_peer: nil, udp_ticket: nil}}
+      peer -> {peer, state}
+    end
+  end
 
   defp send_encoded(socket, message) do
     {:ok, bin} = GateServer.Codec.encode(message)

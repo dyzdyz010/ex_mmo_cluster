@@ -33,3 +33,5 @@ apps/scene_server/priv/native/libcoordinate_system.so
 .omx/
 /Mnesia.nonode@nohost/
 /apps/beacon_server/MnesiaCore.nonode@nohost_*
+
+clients/bevy_client/target/

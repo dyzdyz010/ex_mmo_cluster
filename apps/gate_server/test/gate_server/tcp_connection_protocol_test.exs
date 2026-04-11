@@ -49,7 +49,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:ok,
        %{
          location: Map.get(opts, :location, {1.0, 2.0, 3.0}),
-         notify: Map.get(opts, :notify)
+         notify: Map.get(opts, :notify),
+         movement_reply_location: Map.get(opts, :movement_reply_location)
        }}
     end
 
@@ -60,7 +61,20 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     @impl true
     def handle_call({:movement, _timestamp, location, _velocity, _acceleration}, _from, state) do
-      {:reply, {:ok, ""}, %{state | location: location}}
+      authoritative_location = state.movement_reply_location || location
+      {:reply, {:ok, authoritative_location}, %{state | location: authoritative_location}}
+    end
+
+    @impl true
+    def handle_call({:chat_say, cid, username, text}, _from, state) do
+      if state.notify, do: send(state.notify, {:chat_say, cid, username, text})
+      {:reply, {:ok, :sent}, state}
+    end
+
+    @impl true
+    def handle_call({:cast_skill, skill_id}, _from, state) do
+      if state.notify, do: send(state.notify, {:cast_skill, skill_id})
+      {:reply, {:ok, state.location}, state}
     end
 
     @impl true
@@ -87,7 +101,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
        Map.merge(
          %{
            add_player_result: :ok,
-           location: {10.0, 20.0, 30.0}
+           location: {10.0, 20.0, 30.0},
+           movement_reply_location: nil,
+           notify: nil
          },
          attrs
        )}
@@ -102,12 +118,23 @@ defmodule GateServer.TcpConnectionProtocolTest do
     def handle_call({:add_player, _cid, _connection_pid, _timestamp}, _from, state) do
       case state.add_player_result do
         :ok ->
-          {:ok, pid} = FakePlayer.start_link(location: state.location, notify: self())
+          {:ok, pid} =
+            FakePlayer.start_link(
+              location: state.location,
+              notify: state.notify,
+              movement_reply_location: state.movement_reply_location
+            )
+
           {:reply, {:ok, pid}, state}
 
         {:error, reason} ->
           {:reply, {:error, reason}, state}
       end
+    end
+
+    @impl true
+    def handle_info({:player_exit, _pid}, state) do
+      {:noreply, state}
     end
   end
 
@@ -130,10 +157,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:error, :already_up} -> :ok
     end
 
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    ensure_repo_started()
 
     migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
 
@@ -142,12 +166,14 @@ defmodule GateServer.TcpConnectionProtocolTest do
         Ecto.Migrator.run(repo, migrations_path, :up, all: true)
       end)
 
-    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    ensure_dispatcher_sup()
 
-    _ = start_supervised({GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry})
+    _ =
+      start_supervised(
+        {GateServer.FastLaneRegistry,
+         name: GateServer.FastLaneRegistry, session_idle_timeout_ms: 250}
+      )
+
     _ = start_supervised({GateServer.UdpAcceptor, name: GateServer.UdpAcceptor, port: 0})
     _ = start_supervised(FakeInterface)
     _ = start_supervised(FakePlayerManager)
@@ -155,20 +181,19 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   setup do
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    ensure_repo_started()
+    ensure_dispatcher_sup()
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
     FakeInterface.set(auth_server: nil, scene_server: nil)
-    FakePlayerManager.set(add_player_result: :ok, location: {10.0, 20.0, 30.0})
+
+    FakePlayerManager.set(
+      add_player_result: :ok,
+      location: {10.0, 20.0, 30.0},
+      movement_reply_location: nil,
+      notify: nil
+    )
 
     {:ok, listener} = :gen_tcp.listen(0, [:binary, packet: 4, active: true, reuseaddr: true])
     {:ok, port} = :inet.port(listener)
@@ -371,9 +396,12 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, <<0x84, 67::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
   end
 
-  test "request-id-aware movement echoes packet_id after scene join", %{client: client} do
+  test "request-id-aware movement returns authoritative location after scene join", %{
+    client: client
+  } do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
+    FakePlayerManager.set(movement_reply_location: {8.0, 9.0, 10.0})
 
     token =
       "tester"
@@ -389,8 +417,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_request_movement(73, 42, 100, {4.0, 5.0, 6.0}))
 
     assert {:ok,
-            <<0x80, 73::64-big, 0x00, 42::64-big, 4.0::float-64-big, 5.0::float-64-big,
-              6.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
+            <<0x80, 73::64-big, 0x00, 42::64-big, 8.0::float-64-big, 9.0::float-64-big,
+              10.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
   end
 
   test "request-id-aware time_sync echoes packet_id after scene join", %{client: client} do
@@ -415,6 +443,68 @@ defmodule GateServer.TcpConnectionProtocolTest do
              :gen_tcp.recv(client, 0, 500)
 
     assert server_recv_ts <= server_send_ts
+  end
+
+  test "chat before scene join is rejected with generic error reply", %{client: client} do
+    assert :ok = :gen_tcp.send(client, encode_chat_say(84, "hello"))
+    assert {:ok, <<0x80, 84::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+  end
+
+  test "chat in_scene is forwarded to player process and acked", %{client: client} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+    FakePlayerManager.set(notify: self())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 85))
+    assert {:ok, <<0x80, 85::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 86))
+    assert {:ok, <<0x84, 86::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_chat_say(87, "hello world"))
+    assert {:ok, <<0x80, 87::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+    assert_receive {:chat_say, 42, "tester", "hello world"}, 500
+  end
+
+  test "chat_message cast is encoded to the client socket", %{client: client, pid: pid} do
+    GenServer.cast(pid, {:chat_message, 42, "tester", "hello world"})
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 11::16-big, "hello world">>} =
+             :gen_tcp.recv(client, 0, 500)
+  end
+
+  test "skill cast in_scene is forwarded to player process and acked", %{client: client} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+    FakePlayerManager.set(notify: self())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 88))
+    assert {:ok, <<0x80, 88::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 89))
+    assert {:ok, <<0x84, 89::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_skill_cast(90, 1))
+    assert {:ok, <<0x80, 90::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+    assert_receive {:cast_skill, 1}, 500
+  end
+
+  test "skill_event cast is encoded to the client socket", %{client: client, pid: pid} do
+    GenServer.cast(pid, {:skill_event, 42, 1, {7.0, 8.0, 9.0}})
+
+    assert {:ok,
+            <<0x8A, 42::64-big, 1::16-big, 7.0::float-64-big, 8.0::float-64-big,
+              9.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
   end
 
   test "fast-lane bootstrap returns udp port and ticket after auth", %{client: client, pid: pid} do
@@ -488,6 +578,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   } do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
+    FakePlayerManager.set(movement_reply_location: {17.0, 18.0, 19.0})
 
     token =
       "tester"
@@ -528,8 +619,226 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x80, 114::64-big, 0x00, 42::64-big, 7.0::float-64-big, 8.0::float-64-big,
-               9.0::float-64-big>>}} = :gen_udp.recv(udp_client, 0, 500)
+             <<0x80, 114::64-big, 0x00, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
+               19.0::float-64-big>>}} = :gen_udp.recv(udp_client, 0, 500)
+
+    :gen_udp.close(udp_client)
+  end
+
+  test "attached udp peer receives player_move downlink over udp instead of tcp", %{
+    client: client,
+    pid: pid
+  } do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 120))
+    assert {:ok, <<0x80, 120::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 121))
+    assert {:ok, <<0x84, 121::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 122::64-big>>)
+
+    assert {:ok,
+            <<0x87, 122::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client} = :gen_udp.open(0, [:binary, active: false])
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(123, ticket)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 123::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    GenServer.cast(pid, {:player_move, 77, {11.0, 12.0, 13.0}})
+
+    assert {:ok,
+            {{127, 0, 0, 1}, _port,
+             <<0x83, 77::64-big, 11.0::float-64-big, 12.0::float-64-big, 13.0::float-64-big>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
+
+    :gen_udp.close(udp_client)
+  end
+
+  test "reattaching fast lane replaces the previous udp peer", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 130))
+    assert {:ok, <<0x80, 130::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 131))
+    assert {:ok, <<0x84, 131::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 132::64-big>>)
+
+    assert {:ok,
+            <<0x87, 132::64-big, 0x00, udp_port::16-big, tlen::16-big,
+              ticket1::binary-size(tlen)>>} = :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client1} = :gen_udp.open(0, [:binary, active: false])
+    {:ok, client1_port} = :inet.port(udp_client1)
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client1,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(133, ticket1)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port1, <<0x88, 133::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client1, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 134::64-big>>)
+
+    assert {:ok,
+            <<0x87, 134::64-big, 0x00, ^udp_port::16-big, tlen2::16-big,
+              ticket2::binary-size(tlen2)>>} = :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client2} = :gen_udp.open(0, [:binary, active: false])
+    {:ok, client2_port} = :inet.port(udp_client2)
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client2,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(135, ticket2)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, port2, <<0x88, 135::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client2, 0, 500)
+
+    refute client1_port == client2_port
+
+    wait_until(fn ->
+      match?(
+        %{peer: {{127, 0, 0, 1}, ^client2_port}},
+        GateServer.FastLaneRegistry.session_for_connection(pid)
+      )
+    end)
+
+    GenServer.cast(pid, {:player_move, 77, {21.0, 22.0, 23.0}})
+
+    assert {:ok,
+            {{127, 0, 0, 1}, ^port2,
+             <<0x83, 77::64-big, 21.0::float-64-big, 22.0::float-64-big, 23.0::float-64-big>>}} =
+             :gen_udp.recv(udp_client2, 0, 500)
+
+    assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
+    assert %{udp_peer: {{127, 0, 0, 1}, ^client2_port}} = :sys.get_state(pid)
+
+    :gen_udp.close(udp_client1)
+    :gen_udp.close(udp_client2)
+  end
+
+  test "idle udp sessions expire and downlink falls back to tcp", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 140))
+    assert {:ok, <<0x80, 140::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 141))
+    assert {:ok, <<0x84, 141::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 142::64-big>>)
+
+    assert {:ok,
+            <<0x87, 142::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client} = :gen_udp.open(0, [:binary, active: false])
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(143, ticket)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 143::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    Process.sleep(350)
+    assert nil == GateServer.FastLaneRegistry.session_for_connection(pid)
+    wait_until(fn -> is_nil(:sys.get_state(pid).udp_peer) end)
+
+    GenServer.cast(pid, {:player_move, 88, {31.0, 32.0, 33.0}})
+
+    assert {:ok, <<0x83, 88::64-big, 31.0::float-64-big, 32.0::float-64-big, 33.0::float-64-big>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
+    :gen_udp.close(udp_client)
+  end
+
+  test "closing the tcp session clears the attached udp mapping", %{client: client, pid: pid} do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 150))
+    assert {:ok, <<0x80, 150::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 151))
+    assert {:ok, <<0x84, 151::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, <<0x06, 152::64-big>>)
+
+    assert {:ok,
+            <<0x87, 152::64-big, 0x00, udp_port::16-big, tlen::16-big, ticket::binary-size(tlen)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    {:ok, udp_client} = :gen_udp.open(0, [:binary, active: false])
+
+    assert :ok =
+             :gen_udp.send(
+               udp_client,
+               {127, 0, 0, 1},
+               udp_port,
+               encode_fast_lane_attach(153, ticket)
+             )
+
+    assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 153::64-big, 0x00>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
+
+    monitor = Process.monitor(pid)
+    assert :ok = :gen_tcp.close(client)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 500
+
+    wait_until(fn -> GateServer.FastLaneRegistry.session_for_connection(pid) == nil end)
+    assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
 
     :gen_udp.close(udp_client)
   end
@@ -565,8 +874,34 @@ defmodule GateServer.TcpConnectionProtocolTest do
     <<0x03, request_id::64-big, client_send_ts::64-big>>
   end
 
+  defp encode_chat_say(request_id, text) do
+    <<0x08, request_id::64-big, byte_size(text)::16-big, text::binary>>
+  end
+
+  defp encode_skill_cast(request_id, skill_id) do
+    <<0x09, request_id::64-big, skill_id::16-big>>
+  end
+
   defp encode_fast_lane_attach(request_id, ticket) do
     <<0x07, request_id::64-big, byte_size(ticket)::16-big, ticket::binary>>
+  end
+
+  defp ensure_repo_started do
+    case DataService.Repo.start_link() do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    wait_until(fn -> is_pid(Process.whereis(DataService.Repo)) end, 100)
+  end
+
+  defp ensure_dispatcher_sup do
+    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    wait_until(fn -> is_pid(Process.whereis(DataService.Dispatcher)) end, 100)
   end
 
   defp ensure_name_available(name) do

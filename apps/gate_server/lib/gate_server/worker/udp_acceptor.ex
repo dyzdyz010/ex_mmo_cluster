@@ -1,9 +1,17 @@
 defmodule GateServer.UdpAcceptor do
   @moduledoc """
-  UDP listener used for fast-lane bootstrap.
+  UDP listener used for the gate fast lane.
 
-  The listener currently accepts only the ticket-based attach handshake. It
-  does not yet route gameplay movement over UDP; that remains a later phase.
+  The listener owns one shared UDP socket and serves two transport-layer jobs:
+
+  1. Accept ticket-based fast-lane attachments for already-authenticated TCP
+     sessions.
+  2. Route high-frequency movement traffic for attached peers while the TCP
+     connection remains the authoritative control plane.
+
+  Session lifecycle, peer replacement, and idle expiration all live in
+  `GateServer.FastLaneRegistry`; this module delegates attachment validation to
+  that registry instead of trying to replicate session state locally.
   """
 
   use GenServer
@@ -21,6 +29,13 @@ defmodule GateServer.UdpAcceptor do
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, opts)
+  end
+
+  @doc """
+  Send a UDP payload to an attached peer through the shared listener socket.
+  """
+  def send_to_peer(peer, message) when is_tuple(peer) do
+    GenServer.cast(__MODULE__, {:send_to_peer, peer, message})
   end
 
   @doc """
@@ -50,6 +65,12 @@ defmodule GateServer.UdpAcceptor do
   @impl true
   def handle_call(:port, _from, state) do
     {:reply, state.port, state}
+  end
+
+  @impl true
+  def handle_cast({:send_to_peer, {ip, port}, message}, state) do
+    send_udp(state.socket, ip, port, message)
+    {:noreply, state}
   end
 
   @impl true
@@ -100,7 +121,7 @@ defmodule GateServer.UdpAcceptor do
          velocity,
          acceleration
        ) do
-    case GateServer.FastLaneRegistry.session_for_peer(peer) do
+    case GateServer.FastLaneRegistry.touch_peer(peer) do
       %{connection_pid: connection_pid} ->
         case GenServer.call(
                connection_pid,

@@ -58,6 +58,18 @@ defmodule GateServer.CodecTest do
     end
   end
 
+  describe "decode chat and skill" do
+    test "decodes chat_say with request_id and text" do
+      text = "hello"
+      msg = <<0x08, 42::64-big, byte_size(text)::16-big, text::binary>>
+      assert {:ok, {:chat_say, "hello", 42}} == Codec.decode(msg)
+    end
+
+    test "decodes skill_cast with request_id and skill id" do
+      assert {:ok, {:skill_cast, 1, 43}} == Codec.decode(<<0x09, 43::64-big, 1::16-big>>)
+    end
+  end
+
   describe "decode auth_request" do
     test "decodes auth_request with username and code" do
       username = "player1"
@@ -186,6 +198,20 @@ defmodule GateServer.CodecTest do
     test "encodes fast-lane attached ack" do
       {:ok, bin} = Codec.encode({:fast_lane_attached, :ok, 6})
       assert <<0x88, 6::64-big, 0x00>> == bin
+    end
+  end
+
+  describe "encode chat and skill broadcasts" do
+    test "encodes chat_message" do
+      {:ok, bin} = Codec.encode({:chat_message, 42, "tester", "hello"})
+      assert <<0x89, 42::64-big, 6::16-big, "tester", 5::16-big, "hello">> = bin
+    end
+
+    test "encodes skill_event" do
+      {:ok, bin} = Codec.encode({:skill_event, 42, 1, {1.0, 2.0, 3.0}})
+
+      assert <<0x8A, 42::64-big, 1::16-big, 1.0::float-64-big, 2.0::float-64-big,
+               3.0::float-64-big>> = bin
     end
   end
 

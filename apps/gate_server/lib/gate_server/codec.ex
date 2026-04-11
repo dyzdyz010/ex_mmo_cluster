@@ -23,6 +23,8 @@ defmodule GateServer.Codec do
   - `0x03` TimeSync
   - `0x04` Heartbeat
   - `0x05` AuthRequest
+  - `0x08` ChatSay
+  - `0x09` SkillCast
 
   ### Server → client
 
@@ -33,6 +35,8 @@ defmodule GateServer.Codec do
   - `0x84` EnterSceneResult
   - `0x85` TimeSync reply
   - `0x86` Heartbeat reply
+  - `0x89` ChatMessage
+  - `0x8A` SkillEvent
 
   ## Round trip example
 
@@ -51,6 +55,8 @@ defmodule GateServer.Codec do
   @msg_auth_request 0x05
   @msg_fast_lane_request 0x06
   @msg_fast_lane_attach 0x07
+  @msg_chat_say 0x08
+  @msg_skill_cast 0x09
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -62,6 +68,8 @@ defmodule GateServer.Codec do
   @msg_heartbeat_reply 0x86
   @msg_fast_lane_result 0x87
   @msg_fast_lane_attached 0x88
+  @msg_chat_message 0x89
+  @msg_skill_event 0x8A
 
   # ── Status codes ──
   @status_ok 0x00
@@ -141,6 +149,20 @@ defmodule GateServer.Codec do
       ) do
     {:ok, {:fast_lane_attach, request_id, ticket}}
   end
+
+  # ChatSay: 1 + 8 + 2 + text
+  def decode(<<@msg_chat_say, request_id::64-big, tlen::16-big, text::binary-size(tlen)>>) do
+    {:ok, {:chat_say, text, request_id}}
+  end
+
+  def decode(<<@msg_chat_say, _rest::binary>>), do: {:error, :invalid_message}
+
+  # SkillCast: 1 + 8 + 2
+  def decode(<<@msg_skill_cast, request_id::64-big, skill_id::16-big>>) do
+    {:ok, {:skill_cast, skill_id, request_id}}
+  end
+
+  def decode(<<@msg_skill_cast, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -244,6 +266,22 @@ defmodule GateServer.Codec do
 
   def encode({:fast_lane_attached, :error, packet_id}) do
     {:ok, <<@msg_fast_lane_attached, packet_id::64-big, @status_error>>}
+  end
+
+  # ── Chat message broadcast (TCP) ──
+  def encode({:chat_message, cid, username, text})
+      when is_integer(cid) and is_binary(username) and is_binary(text) do
+    {:ok,
+     <<@msg_chat_message, cid::64-big, byte_size(username)::16-big, username::binary,
+       byte_size(text)::16-big, text::binary>>}
+  end
+
+  # ── Skill event broadcast (TCP) ──
+  def encode({:skill_event, cid, skill_id, {x, y, z}})
+      when is_integer(cid) and is_integer(skill_id) do
+    {:ok,
+     <<@msg_skill_event, cid::64-big, skill_id::16-big, x::float-64-big, y::float-64-big,
+       z::float-64-big>>}
   end
 
   def encode(_) do

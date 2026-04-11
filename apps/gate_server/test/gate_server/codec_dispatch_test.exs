@@ -58,6 +58,20 @@ defmodule GateServer.CodecDispatchTest do
       assert type >= 0x01 and type <= 0x7F
       assert {:ok, {:fast_lane_request, 7}} = Codec.decode(msg)
     end
+
+    test "chat_say is in codec range" do
+      msg = <<0x08, 11::64-big, 2::16-big, "hi">>
+      <<type::8, _::binary>> = msg
+      assert type >= 0x01 and type <= 0x7F
+      assert {:ok, {:chat_say, "hi", 11}} = Codec.decode(msg)
+    end
+
+    test "skill_cast is in codec range" do
+      msg = <<0x09, 12::64-big, 1::16-big>>
+      <<type::8, _::binary>> = msg
+      assert type >= 0x01 and type <= 0x7F
+      assert {:ok, {:skill_cast, 1, 12}} = Codec.decode(msg)
+    end
   end
 
   describe "server response encoding for codec dispatch" do
@@ -90,6 +104,18 @@ defmodule GateServer.CodecDispatchTest do
       {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 9, 29001, "ticket"})
       <<type::8, _::binary>> = bin
       assert type == 0x87
+    end
+
+    test "chat_message is a server-range reply" do
+      {:ok, bin} = Codec.encode({:chat_message, 42, "tester", "hi"})
+      <<type::8, _::binary>> = bin
+      assert type == 0x89
+    end
+
+    test "skill_event is a server-range reply" do
+      {:ok, bin} = Codec.encode({:skill_event, 42, 1, {0.0, 0.0, 0.0}})
+      <<type::8, _::binary>> = bin
+      assert type == 0x8A
     end
   end
 

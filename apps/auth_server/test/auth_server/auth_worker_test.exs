@@ -43,10 +43,7 @@ defmodule AuthServer.AuthWorkerTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    ensure_dispatcher_sup()
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
@@ -136,15 +133,35 @@ defmodule AuthServer.AuthWorkerTest do
     Process.sleep(50)
 
     on_exit(fn ->
-      case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
-      end
+      ensure_dispatcher_sup()
     end)
 
     claims = %{"account_id" => 101, "username" => "player1"}
 
     assert {:error, :data_service_unavailable} =
              AuthServer.AuthWorker.authorize_character(claims, 201)
+  end
+
+  defp ensure_dispatcher_sup do
+    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    wait_for_process(DataService.Dispatcher)
+  end
+
+  defp wait_for_process(name, attempts \\ 30)
+  defp wait_for_process(_name, 0), do: flunk("process did not start in time")
+
+  defp wait_for_process(name, attempts) do
+    case Process.whereis(name) do
+      nil ->
+        Process.sleep(10)
+        wait_for_process(name, attempts - 1)
+
+      _pid ->
+        :ok
+    end
   end
 end
