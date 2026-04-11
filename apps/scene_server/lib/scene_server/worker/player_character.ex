@@ -47,36 +47,49 @@ defmodule SceneServer.PlayerCharacter do
         {:load, client_timestamp},
         %{cid: cid, connection_pid: connection_pid, character_profile: character_profile} = state
       ) do
-    {:ok, physys_ref} = SceneServer.PhysicsManager.get_physics_system_ref()
-
     %{name: name, position: location} = character_profile
 
-    {:ok, cd_ref} =
-      SceneServer.Native.SceneOps.new_character_data(
-        cid,
-        name,
-        location,
-        @default_dev_attrs,
-        physys_ref
-      )
+    with {:ok, physys_ref} <- SceneServer.PhysicsManager.get_physics_system_ref(),
+         {:ok, cd_ref} <-
+           new_character_data_with_retry(cid, name, location, @default_dev_attrs, physys_ref),
+         {:ok, aoi_ref} <- enter_scene(cid, client_timestamp, location, connection_pid) do
+      movement_timer = make_movement_timer()
 
-    {:ok, aoi_ref} = enter_scene(cid, client_timestamp, location, connection_pid)
-
-    movement_timer = make_movement_timer()
-
-    {:noreply,
-     %{
-       state
-       | physys_ref: physys_ref,
-         aoi_ref: aoi_ref,
-         character_data_ref: cd_ref,
-         movement_timer: movement_timer
-     }}
+      {:noreply,
+       %{
+         state
+         | physys_ref: physys_ref,
+           aoi_ref: aoi_ref,
+           character_data_ref: cd_ref,
+           movement_timer: movement_timer
+       }}
+    else
+      {:error, reason} ->
+        {:stop, {:load_failed, reason}, state}
+    end
   end
 
   @impl true
   def handle_call(:exit, _from, state) do
     {:stop, :normal, {:ok, ""}, state}
+  end
+
+  @impl true
+  def handle_call(:await_ready, _from, state) do
+    if state.character_data_ref != nil and state.physys_ref != nil and state.aoi_ref != nil do
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :not_ready}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(
+        :get_location,
+        _from,
+        %{character_data_ref: nil, last_location: last_location} = state
+      ) do
+    {:reply, {:ok, last_location}, state}
   end
 
   @impl true
@@ -132,7 +145,7 @@ defmodule SceneServer.PlayerCharacter do
         {:movement, _client_timestamp, location, velocity, acceleration},
         _from,
         %{
-          aoi_ref: _aoi,
+          aoi_ref: aoi_ref,
           character_data_ref: cd_ref,
           physys_ref: physys_ref,
           last_location: last_location
@@ -147,12 +160,16 @@ defmodule SceneServer.PlayerCharacter do
              velocity,
              acceleration,
              physys_ref
-           ) do
+           ),
+         {:ok, authoritative_location} <-
+           get_character_location_with_retry(cd_ref, physys_ref, location) do
       {x, y, z} = location
       {ox, oy, oz} = current_location
       Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
 
-      {:reply, {:ok, ""}, %{state | last_location: location}}
+      maybe_broadcast_stop(aoi_ref, authoritative_location, velocity)
+
+      {:reply, {:ok, ""}, %{state | last_location: authoritative_location}}
     else
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -193,11 +210,20 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
-    {:ok, _} = GenServer.call(aoi_item, :exit)
-    Logger.debug("AOI item removed.")
-    {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
-    Logger.debug("Player index removed.")
+  def terminate(reason, %{aoi_ref: aoi_item, cid: cid, movement_timer: movement_timer}) do
+    if movement_timer != nil do
+      Process.cancel_timer(movement_timer)
+    end
+
+    if is_pid(aoi_item) and Process.alive?(aoi_item) do
+      {:ok, _} = GenServer.call(aoi_item, :exit)
+      Logger.debug("AOI item removed.")
+    end
+
+    if Process.whereis(SceneServer.PlayerManager) do
+      {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
+      Logger.debug("Player index removed.")
+    end
 
     Logger.warning(
       "PlayerCharacter process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}",
@@ -265,6 +291,15 @@ defmodule SceneServer.PlayerCharacter do
     end
   end
 
+  defp maybe_broadcast_stop(aoi_ref, location, velocity) do
+    if zero_velocity?(velocity) do
+      GenServer.cast(aoi_ref, {:self_move, location})
+    end
+  end
+
+  defp zero_velocity?({x, y, z}) when x == 0.0 and y == 0.0 and z == 0.0, do: true
+  defp zero_velocity?(_velocity), do: false
+
   defp normalize_character_profile(cid, %{} = profile) do
     %{
       cid: cid,
@@ -312,6 +347,52 @@ defmodule SceneServer.PlayerCharacter do
 
       _ ->
         default
+    end
+  end
+
+  defp new_character_data_with_retry(
+         cid,
+         name,
+         location,
+         dev_attrs,
+         physys_ref,
+         attempts \\ @lock_retry_attempts
+       )
+
+  defp new_character_data_with_retry(
+         _cid,
+         _name,
+         _location,
+         _dev_attrs,
+         _physys_ref,
+         0
+       ),
+       do: {:error, :lock_fail}
+
+  defp new_character_data_with_retry(cid, name, location, dev_attrs, physys_ref, attempts) do
+    case SceneServer.Native.SceneOps.new_character_data(
+           cid,
+           name,
+           location,
+           dev_attrs,
+           physys_ref
+         ) do
+      {:ok, cd_ref} ->
+        {:ok, cd_ref}
+
+      {:error, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        new_character_data_with_retry(cid, name, location, dev_attrs, physys_ref, attempts - 1)
+
+      {:err, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        new_character_data_with_retry(cid, name, location, dev_attrs, physys_ref, attempts - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:err, reason} ->
+        {:error, reason}
     end
   end
 

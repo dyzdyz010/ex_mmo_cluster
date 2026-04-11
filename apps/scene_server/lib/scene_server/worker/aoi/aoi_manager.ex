@@ -33,14 +33,9 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{coordinate_system: nil, aois: %{}}, 0}
-  end
-
-  @impl true
-  def handle_info(:timeout, state) do
     Logger.debug("Aoi process created.")
     system = create_system()
-    {:noreply, %{state | coordinate_system: system}}
+    {:ok, %{coordinate_system: system, aois: %{}}}
   end
 
   @impl true

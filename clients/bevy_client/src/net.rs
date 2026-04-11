@@ -129,6 +129,9 @@ struct FastLaneState {
     ticket: Option<String>,
     attached: bool,
     last_error: Option<String>,
+    rebootstrap_attempts: u8,
+    retry_due_at: Option<Instant>,
+    cooldown_until: Option<Instant>,
 }
 
 impl FastLaneState {
@@ -150,6 +153,16 @@ impl FastLaneState {
             format!("attaching udp ({endpoint})")
         } else if self.bootstrap_request_id.is_some() {
             "requesting udp ticket".to_string()
+        } else if self.cooldown_until.is_some() {
+            match &self.last_error {
+                Some(error) => format!("tcp fallback (udp cooldown: {error})"),
+                None => "tcp fallback (udp cooldown)".to_string(),
+            }
+        } else if self.retry_due_at.is_some() {
+            match &self.last_error {
+                Some(error) => format!("tcp fallback (udp retry scheduled: {error})"),
+                None => "tcp fallback (udp retry scheduled)".to_string(),
+            }
         } else if let Some(error) = &self.last_error {
             format!("tcp fallback ({error})")
         } else {
@@ -164,6 +177,8 @@ impl FastLaneState {
         self.ticket = None;
         self.attached = false;
         self.last_error = None;
+        self.retry_due_at = None;
+        self.cooldown_until = None;
     }
 
     fn prepare_attach(&mut self, request_id: u64, udp_endpoint: SocketAddr, ticket: String) {
@@ -173,6 +188,8 @@ impl FastLaneState {
         self.ticket = Some(ticket);
         self.attached = false;
         self.last_error = None;
+        self.retry_due_at = None;
+        self.cooldown_until = None;
     }
 
     fn mark_attached(&mut self) {
@@ -180,6 +197,9 @@ impl FastLaneState {
         self.ticket = None;
         self.attached = true;
         self.last_error = None;
+        self.rebootstrap_attempts = 0;
+        self.retry_due_at = None;
+        self.cooldown_until = None;
     }
 
     fn mark_failed(&mut self, reason: String) {
@@ -189,6 +209,8 @@ impl FastLaneState {
         self.udp_endpoint = None;
         self.attached = false;
         self.last_error = Some(reason);
+        self.retry_due_at = None;
+        self.cooldown_until = None;
     }
 }
 
@@ -232,8 +254,16 @@ struct ClientRuntime {
     auth_request_id: u64,
     enter_scene_request_id: Option<u64>,
     pending_time_sync: HashMap<u64, u64>,
+    last_applied_movement_ack: u64,
+    last_remote_move_sequences: HashMap<i64, u64>,
     fast_lane: FastLaneState,
 }
+
+const MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS: u8 = 3;
+const FAST_LANE_REBOOTSTRAP_BACKOFF_MS: [u64; 3] = [250, 1_000, 3_000];
+const FAST_LANE_REBOOTSTRAP_COOLDOWN_MS: u64 = 15_000;
+const MAX_PENDING_TIME_SYNC_REQUESTS: usize = 32;
+const TIME_SYNC_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 impl ClientRuntime {
     fn new(gate_tcp_addr: SocketAddr) -> Self {
@@ -244,6 +274,8 @@ impl ClientRuntime {
             auth_request_id: 1,
             enter_scene_request_id: None,
             pending_time_sync: HashMap::new(),
+            last_applied_movement_ack: 0,
+            last_remote_move_sequences: HashMap::new(),
             fast_lane: FastLaneState::default(),
         }
     }
@@ -330,8 +362,10 @@ impl ClientRuntime {
             return None;
         }
 
+        let now = now_millis();
+        self.prune_pending_time_sync(now);
         let request_id = self.next_request_id();
-        let client_send_ts = now_millis();
+        let client_send_ts = now;
         self.pending_time_sync.insert(request_id, client_send_ts);
 
         Some(ClientMessage::TimeSync {
@@ -340,15 +374,126 @@ impl ClientRuntime {
         })
     }
 
-    fn mark_fast_lane_failed(&mut self, reason: impl Into<String>) -> RuntimeOutcome {
+    fn prune_pending_time_sync(&mut self, now: u64) {
+        self.pending_time_sync
+            .retain(|_, sent_at| now.saturating_sub(*sent_at) <= TIME_SYNC_REQUEST_TIMEOUT_MS);
+
+        if self.pending_time_sync.len() > MAX_PENDING_TIME_SYNC_REQUESTS {
+            let mut entries = self
+                .pending_time_sync
+                .iter()
+                .map(|(request_id, sent_at)| (*request_id, *sent_at))
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|(_, sent_at)| *sent_at);
+
+            let trim_count = entries.len() - MAX_PENDING_TIME_SYNC_REQUESTS;
+            for (request_id, _) in entries.into_iter().take(trim_count) {
+                self.pending_time_sync.remove(&request_id);
+            }
+        }
+    }
+
+    fn mark_fast_lane_failed(
+        &mut self,
+        reason: impl Into<String>,
+        allow_rebootstrap: bool,
+    ) -> RuntimeOutcome {
+        self.mark_fast_lane_failed_at(Instant::now(), reason, allow_rebootstrap)
+    }
+
+    fn mark_fast_lane_failed_at(
+        &mut self,
+        now: Instant,
+        reason: impl Into<String>,
+        allow_rebootstrap: bool,
+    ) -> RuntimeOutcome {
         let reason = reason.into();
+        let cooldown_until = self.fast_lane.cooldown_until;
         self.fast_lane.mark_failed(reason.clone());
 
-        RuntimeOutcome::default()
+        let mut outcome = RuntimeOutcome::default()
             .with_event(NetworkEvent::Log(format!(
                 "fast lane unavailable, continuing on TCP: {reason}"
             )))
-            .with_event(self.transport_event())
+            .with_event(self.transport_event());
+
+        if allow_rebootstrap && self.phase == ConnectionPhase::InScene {
+            if let Some(cooldown_until) = cooldown_until {
+                if cooldown_until > now {
+                    self.fast_lane.cooldown_until = Some(cooldown_until);
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "udp fast-lane retry suppressed during cooldown ({}ms remaining)",
+                        cooldown_until.duration_since(now).as_millis()
+                    )));
+                    outcome.push_event(self.transport_event());
+                    return outcome;
+                }
+            }
+
+            if self.fast_lane.rebootstrap_attempts < MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS {
+                self.fast_lane.rebootstrap_attempts += 1;
+                let attempt = self.fast_lane.rebootstrap_attempts;
+                let delay_ms = FAST_LANE_REBOOTSTRAP_BACKOFF_MS[(attempt - 1) as usize];
+                self.fast_lane.retry_due_at = Some(now + Duration::from_millis(delay_ms));
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "scheduled UDP fast-lane re-bootstrap attempt {attempt}/{MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS} in {delay_ms}ms"
+                )));
+                outcome.push_event(self.transport_event());
+            } else {
+                self.fast_lane.cooldown_until =
+                    Some(now + Duration::from_millis(FAST_LANE_REBOOTSTRAP_COOLDOWN_MS));
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "udp fast-lane retries exhausted; entering cooldown for {FAST_LANE_REBOOTSTRAP_COOLDOWN_MS}ms"
+                )));
+                outcome.push_event(self.transport_event());
+            }
+        }
+
+        outcome
+    }
+
+    fn poll_fast_lane_retry(&mut self, now: Instant) -> RuntimeOutcome {
+        let mut outcome = RuntimeOutcome::default();
+
+        if self.phase != ConnectionPhase::InScene
+            || self.fast_lane.attached
+            || self.fast_lane.bootstrap_request_id.is_some()
+            || self.fast_lane.attach_request_id.is_some()
+        {
+            return outcome;
+        }
+
+        if let Some(cooldown_until) = self.fast_lane.cooldown_until {
+            if now >= cooldown_until {
+                self.fast_lane.cooldown_until = None;
+                self.fast_lane.rebootstrap_attempts = 0;
+                let delay_ms = FAST_LANE_REBOOTSTRAP_BACKOFF_MS[0];
+                self.fast_lane.retry_due_at = Some(now + Duration::from_millis(delay_ms));
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "udp fast-lane cooldown elapsed; scheduling retry attempt 1/{MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS} in {delay_ms}ms"
+                )));
+                outcome.push_event(self.transport_event());
+            }
+
+            return outcome;
+        }
+
+        if let Some(retry_due_at) = self.fast_lane.retry_due_at {
+            if now >= retry_due_at {
+                let attempt = self.fast_lane.rebootstrap_attempts.max(1);
+                let request_id = self.next_request_id();
+                self.fast_lane.reset_for_bootstrap(request_id);
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "retrying UDP fast-lane bootstrap (attempt {attempt}/{MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS})"
+                )));
+                outcome.push_event(self.transport_event());
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                    request_id,
+                }));
+            }
+        }
+
+        outcome
     }
 
     fn handle_server_message(
@@ -365,6 +510,13 @@ impl ClientRuntime {
                 ok,
                 movement,
             } => {
+                if transport == MessageTransport::Udp && !ok {
+                    return Ok(self.mark_fast_lane_failed(
+                        format!("udp movement rejected by gate (packet_id={packet_id})"),
+                        true,
+                    ));
+                }
+
                 if packet_id == self.auth_request_id {
                     if !ok {
                         return Err("auth failed".to_string());
@@ -384,6 +536,15 @@ impl ClientRuntime {
                 }
 
                 if let Some((cid, location)) = movement {
+                    if packet_id <= self.last_applied_movement_ack {
+                        outcome.push_event(NetworkEvent::Log(format!(
+                            "ignoring stale movement ack packet_id={packet_id} (latest={})",
+                            self.last_applied_movement_ack
+                        )));
+                        return Ok(outcome);
+                    }
+
+                    self.last_applied_movement_ack = packet_id;
                     outcome.push_event(NetworkEvent::LocalPosition {
                         cid,
                         location,
@@ -414,6 +575,8 @@ impl ClientRuntime {
                 }
 
                 self.phase = ConnectionPhase::InScene;
+                self.last_applied_movement_ack = 0;
+                self.last_remote_move_sequences.clear();
                 let location =
                     location.ok_or_else(|| "enter-scene success missing location".to_string())?;
                 outcome.push_event(NetworkEvent::Status("in scene".to_string()));
@@ -446,7 +609,7 @@ impl ClientRuntime {
                 }
 
                 if !ok {
-                    return Ok(self.mark_fast_lane_failed("bootstrap rejected by gate"));
+                    return Ok(self.mark_fast_lane_failed("bootstrap rejected by gate", false));
                 }
 
                 let udp_port =
@@ -477,7 +640,7 @@ impl ClientRuntime {
                 }
 
                 if !ok {
-                    return Ok(self.mark_fast_lane_failed("udp attach rejected by gate"));
+                    return Ok(self.mark_fast_lane_failed("udp attach rejected by gate", true));
                 }
 
                 self.fast_lane.mark_attached();
@@ -489,7 +652,24 @@ impl ClientRuntime {
             ServerMessage::PlayerEnter { cid, location } => {
                 outcome.push_event(NetworkEvent::PlayerEnter { cid, location });
             }
-            ServerMessage::PlayerMove { cid, location } => {
+            ServerMessage::PlayerMove {
+                cid,
+                sequence,
+                location,
+            } => {
+                let latest_sequence = self
+                    .last_remote_move_sequences
+                    .get(&cid)
+                    .copied()
+                    .unwrap_or(0);
+                if sequence <= latest_sequence {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "ignoring stale player_move cid={cid} seq={sequence} (latest={latest_sequence})"
+                    )));
+                    return Ok(outcome);
+                }
+
+                self.last_remote_move_sequences.insert(cid, sequence);
                 outcome.push_event(NetworkEvent::PlayerMove {
                     cid,
                     location,
@@ -527,9 +707,22 @@ impl ClientRuntime {
                 server_recv_ts,
                 server_send_ts,
             } => {
-                self.pending_time_sync.remove(&packet_id);
+                let Some(sent_at) = self.pending_time_sync.remove(&packet_id) else {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "unexpected time-sync reply packet_id={packet_id}"
+                    )));
+                    return Ok(outcome);
+                };
+
                 let now = now_millis() as f64;
-                let client_send = client_send_ts as f64;
+                let client_send = sent_at as f64;
+
+                if sent_at != client_send_ts {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "time-sync reply packet_id={packet_id} returned mismatched client timestamp"
+                    )));
+                }
+
                 let server_mid = (server_recv_ts as f64 + server_send_ts as f64) / 2.0;
                 let client_mid = (client_send + now) / 2.0;
                 outcome.push_event(NetworkEvent::TimeSync {
@@ -669,6 +862,20 @@ fn network_loop(
             last_time_sync = Instant::now();
         }
 
+        let retry_outcome = runtime.poll_fast_lane_retry(Instant::now());
+        if !retry_outcome.outbounds.is_empty() || !retry_outcome.events.is_empty() {
+            if let Err(reason) = apply_runtime_outcome(
+                &mut runtime,
+                &mut stream,
+                &mut udp_socket,
+                &event_tx,
+                retry_outcome,
+            ) {
+                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                return;
+            }
+        }
+
         match stream.read(&mut read_buffer) {
             Ok(0) => {
                 let _ = event_tx.send(NetworkEvent::Disconnected(
@@ -759,8 +966,8 @@ fn network_loop(
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                     Err(err) => {
                         udp_socket = None;
-                        let outcome =
-                            runtime.mark_fast_lane_failed(format!("udp socket read failed: {err}"));
+                        let outcome = runtime
+                            .mark_fast_lane_failed(format!("udp socket read failed: {err}"), true);
                         let _ = apply_runtime_outcome(
                             &mut runtime,
                             &mut stream,
@@ -793,12 +1000,11 @@ fn apply_runtime_outcome(
                 if let Some(socket) = udp_socket.as_ref() {
                     if let Err(err) = send_udp_message(socket, &message) {
                         *udp_socket = None;
-                        let fallback = runtime.mark_fast_lane_failed(format!(
-                            "udp send failed, falling back to TCP: {err}"
-                        ));
-                        for event in fallback.events {
-                            let _ = event_tx.send(event);
-                        }
+                        let fallback = runtime.mark_fast_lane_failed(
+                            format!("udp send failed, falling back to TCP: {err}"),
+                            true,
+                        );
+                        apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
 
                         if let ClientMessage::Movement { .. } = &message {
                             send_tcp_message(stream, &message).map_err(|tcp_err| {
@@ -812,10 +1018,9 @@ fn apply_runtime_outcome(
                 } else {
                     let fallback = runtime.mark_fast_lane_failed(
                         "udp socket missing during non-movement send".to_string(),
+                        true,
                     );
-                    for event in fallback.events {
-                        let _ = event_tx.send(event);
-                    }
+                    apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
                 }
             }
             OutboundAction::OpenUdpAndAttach {
@@ -824,20 +1029,23 @@ fn apply_runtime_outcome(
                 ticket,
             } => match open_udp_socket(udp_endpoint) {
                 Ok(socket) => {
-                    send_udp_message(
+                    if let Err(err) = send_udp_message(
                         &socket,
                         &ClientMessage::FastLaneAttach { request_id, ticket },
-                    )
-                    .map_err(|err| format!("udp attach send failed: {err}"))?;
-                    *udp_socket = Some(socket);
+                    ) {
+                        *udp_socket = None;
+                        let fallback = runtime
+                            .mark_fast_lane_failed(format!("udp attach send failed: {err}"), true);
+                        apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
+                    } else {
+                        *udp_socket = Some(socket);
+                    }
                 }
                 Err(err) => {
                     *udp_socket = None;
-                    let fallback =
-                        runtime.mark_fast_lane_failed(format!("udp open/connect failed: {err}"));
-                    for event in fallback.events {
-                        let _ = event_tx.send(event);
-                    }
+                    let fallback = runtime
+                        .mark_fast_lane_failed(format!("udp open/connect failed: {err}"), true);
+                    apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
                 }
             },
         }
@@ -1097,6 +1305,7 @@ mod tests {
                 MessageTransport::Udp,
                 ServerMessage::PlayerMove {
                     cid: 77,
+                    sequence: 1,
                     location: [11.0, 12.0, 13.0],
                 },
             )
@@ -1139,11 +1348,285 @@ mod tests {
         let (status, movement_transport) = expect_transport_state(transport);
         assert!(status.starts_with("tcp fallback"));
         assert_eq!(movement_transport, MessageTransport::Tcp);
+        assert!(fallback.outbounds.is_empty());
 
         let movement = runtime.handle_command(&config, movement_command());
         assert!(matches!(
             movement.outbounds.as_slice(),
             [OutboundAction::Tcp(ClientMessage::Movement { .. })]
         ));
+    }
+
+    #[test]
+    fn udp_error_downgrades_to_tcp_and_schedules_rebootstrap() {
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+        runtime.fast_lane.attached = true;
+        runtime.fast_lane.udp_endpoint = Some(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            29_001,
+        )));
+        let now = Instant::now();
+
+        let fallback = runtime.mark_fast_lane_failed_at(
+            now,
+            "udp movement rejected by gate (packet_id=27)",
+            true,
+        );
+
+        assert!(fallback.outbounds.is_empty());
+        assert!(fallback.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("udp movement rejected by gate (packet_id=27)")
+        )));
+        assert!(fallback.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("scheduled UDP fast-lane re-bootstrap attempt 1/3 in 250ms")
+        )));
+
+        let transport_states = fallback
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                NetworkEvent::TransportState {
+                    fast_lane_status,
+                    movement_transport,
+                    ..
+                } => Some((fast_lane_status.as_str(), *movement_transport)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            transport_states,
+            vec![
+                (
+                    "tcp fallback (udp movement rejected by gate (packet_id=27))",
+                    MessageTransport::Tcp,
+                ),
+                (
+                    "tcp fallback (udp retry scheduled: udp movement rejected by gate (packet_id=27))",
+                    MessageTransport::Tcp,
+                ),
+            ]
+        );
+
+        let due = runtime.poll_fast_lane_retry(now + Duration::from_millis(250));
+        assert_eq!(
+            due.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id: 2,
+            })]
+        );
+        assert!(due.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("retrying UDP fast-lane bootstrap (attempt 1/3)")
+        )));
+    }
+
+    #[test]
+    fn rebootstrap_uses_backoff_and_enters_cooldown_after_repeated_failures() {
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+        let start = Instant::now();
+
+        runtime.fast_lane.attached = true;
+        let first = runtime.mark_fast_lane_failed_at(start, "udp send failed", true);
+        assert!(first.outbounds.is_empty());
+        assert_eq!(
+            runtime.fast_lane.retry_due_at,
+            Some(start + Duration::from_millis(FAST_LANE_REBOOTSTRAP_BACKOFF_MS[0]))
+        );
+
+        let attempt_one = runtime.poll_fast_lane_retry(start + Duration::from_millis(250));
+        assert_eq!(
+            attempt_one.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id: 2,
+            })]
+        );
+
+        runtime.fast_lane.attached = true;
+        let second = runtime.mark_fast_lane_failed_at(
+            start + Duration::from_millis(251),
+            "udp send failed again",
+            true,
+        );
+        assert!(second.outbounds.is_empty());
+        assert_eq!(
+            runtime.fast_lane.retry_due_at,
+            Some(start + Duration::from_millis(251 + FAST_LANE_REBOOTSTRAP_BACKOFF_MS[1]))
+        );
+
+        let attempt_two = runtime.poll_fast_lane_retry(start + Duration::from_millis(1_251));
+        assert_eq!(
+            attempt_two.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id: 3,
+            })]
+        );
+
+        runtime.fast_lane.attached = true;
+        let third = runtime.mark_fast_lane_failed_at(
+            start + Duration::from_millis(1_252),
+            "udp send failed third time",
+            true,
+        );
+        assert!(third.outbounds.is_empty());
+        assert_eq!(
+            runtime.fast_lane.retry_due_at,
+            Some(start + Duration::from_millis(1_252 + FAST_LANE_REBOOTSTRAP_BACKOFF_MS[2]))
+        );
+
+        let attempt_three = runtime.poll_fast_lane_retry(start + Duration::from_millis(4_252));
+        assert_eq!(
+            attempt_three.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id: 4,
+            })]
+        );
+
+        runtime.fast_lane.attached = true;
+        let exhausted = runtime.mark_fast_lane_failed_at(
+            start + Duration::from_millis(4_253),
+            "udp send failed fourth time",
+            true,
+        );
+        assert!(exhausted.outbounds.is_empty());
+        assert!(exhausted.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("udp fast-lane retries exhausted; entering cooldown for 15000ms")
+        )));
+
+        let cooldown_elapsed = runtime.poll_fast_lane_retry(
+            start + Duration::from_millis(4_253 + FAST_LANE_REBOOTSTRAP_COOLDOWN_MS),
+        );
+        assert!(cooldown_elapsed.outbounds.is_empty());
+        assert!(cooldown_elapsed.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("udp fast-lane cooldown elapsed; scheduling retry attempt 1/3 in 250ms")
+        )));
+
+        let retried_after_cooldown = runtime.poll_fast_lane_retry(
+            start
+                + Duration::from_millis(
+                    4_253 + FAST_LANE_REBOOTSTRAP_COOLDOWN_MS + FAST_LANE_REBOOTSTRAP_BACKOFF_MS[0],
+                ),
+        );
+        assert_eq!(
+            retried_after_cooldown.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id: 5,
+            })]
+        );
+    }
+
+    #[test]
+    fn ignores_stale_movement_ack_packets() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+
+        let latest = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::Result {
+                    packet_id: 10,
+                    ok: true,
+                    movement: Some((42, [4.0, 5.0, 6.0])),
+                },
+            )
+            .unwrap();
+
+        assert!(latest.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::LocalPosition {
+                cid: 42,
+                location: [4.0, 5.0, 6.0],
+                transport: MessageTransport::Udp,
+            }
+        )));
+
+        let stale = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::Result {
+                    packet_id: 9,
+                    ok: true,
+                    movement: Some((42, [1.0, 2.0, 3.0])),
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !stale
+                .events
+                .iter()
+                .any(|event| matches!(event, NetworkEvent::LocalPosition { .. }))
+        );
+        assert!(stale.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("ignoring stale movement ack packet_id=9")
+        )));
+    }
+
+    #[test]
+    fn ignores_stale_remote_player_moves_by_sequence() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+
+        let latest = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::PlayerMove {
+                    cid: 77,
+                    sequence: 3,
+                    location: [7.0, 8.0, 9.0],
+                },
+            )
+            .unwrap();
+
+        assert!(latest.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::PlayerMove {
+                cid: 77,
+                location: [7.0, 8.0, 9.0],
+                transport: MessageTransport::Udp,
+            }
+        )));
+
+        let stale = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::PlayerMove {
+                    cid: 77,
+                    sequence: 2,
+                    location: [1.0, 2.0, 3.0],
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !stale
+                .events
+                .iter()
+                .any(|event| matches!(event, NetworkEvent::PlayerMove { .. }))
+        );
+        assert!(stale.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::Log(message)
+                if message.contains("ignoring stale player_move cid=77 seq=2")
+        )));
     }
 }

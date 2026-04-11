@@ -63,6 +63,17 @@ struct MovementIntent {
     expires_at: f64,
 }
 
+#[derive(Resource)]
+struct MovementDispatchState {
+    stop_sent: bool,
+}
+
+impl Default for MovementDispatchState {
+    fn default() -> Self {
+        Self { stop_sent: true }
+    }
+}
+
 pub fn run() {
     let config = ClientConfig::from_env();
     let bridge = spawn_network_thread(config.clone());
@@ -89,6 +100,7 @@ pub fn run() {
         })
         .insert_resource(ChatState::default())
         .insert_resource(MovementIntent::default())
+        .insert_resource(MovementDispatchState::default())
         .insert_resource(MovementTick(Timer::from_seconds(
             config.movement_interval_ms as f32 / 1_000.0,
             TimerMode::Repeating,
@@ -191,6 +203,7 @@ fn poll_network_events(
     mut commands: Commands,
     bridge: Res<NetworkBridge>,
     mut world_state: ResMut<WorldState>,
+    mut movement_dispatch: ResMut<MovementDispatchState>,
 ) {
     let Ok(receiver) = bridge.rx.lock() else {
         return;
@@ -207,6 +220,10 @@ fn poll_network_events(
                 world_state.status = format!("in scene as cid {cid}");
                 world_state.local_cid = cid;
                 world_state.local_position = Some(net_to_world(location));
+                world_state.remote_players.clear();
+                world_state.last_local_update_transport = None;
+                world_state.last_remote_move_transport = None;
+                movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
             }
             NetworkEvent::LocalPosition {
@@ -295,6 +312,14 @@ fn poll_network_events(
             NetworkEvent::Disconnected(reason) => {
                 world_state.scene_joined = false;
                 world_state.status = format!("disconnected: {reason}");
+                world_state.local_position = None;
+                world_state.remote_players.clear();
+                world_state.movement_transport = MessageTransport::Tcp;
+                world_state.fast_lane_status = "tcp fallback".to_string();
+                world_state.udp_endpoint = None;
+                world_state.last_local_update_transport = None;
+                world_state.last_remote_move_transport = None;
+                movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
         }
@@ -305,7 +330,6 @@ fn toggle_chat_mode(
     keyboard: Res<ButtonInput<KeyCode>>,
     bridge: Res<NetworkBridge>,
     mut chat_state: ResMut<ChatState>,
-    mut world_state: ResMut<WorldState>,
 ) {
     if !chat_state.enabled && keyboard.just_pressed(KeyCode::Enter) {
         chat_state.enabled = true;
@@ -321,8 +345,7 @@ fn toggle_chat_mode(
     if chat_state.enabled && keyboard.just_pressed(KeyCode::Enter) {
         let message = chat_state.draft.trim().to_string();
         if !message.is_empty() {
-            bridge.send(NetworkCommand::Chat(message.clone()));
-            push_line(&mut world_state.chat_log, format!("[me] {message}"));
+            bridge.send(NetworkCommand::Chat(message));
         }
         chat_state.draft.clear();
         chat_state.enabled = false;
@@ -412,11 +435,11 @@ fn movement_sender(
     bridge: Res<NetworkBridge>,
     config: Res<ClientConfig>,
     mut world_state: ResMut<WorldState>,
-    chat_state: Res<ChatState>,
     movement_intent: Res<MovementIntent>,
+    mut movement_dispatch: ResMut<MovementDispatchState>,
     mut tick: ResMut<MovementTick>,
 ) {
-    if chat_state.enabled || !world_state.scene_joined {
+    if !world_state.scene_joined {
         return;
     }
 
@@ -430,16 +453,15 @@ fn movement_sender(
 
     let direction = movement_intent.direction;
 
-    if direction.length_squared() == 0.0 {
-        return;
-    }
-
-    let (desired_position, velocity) = compute_movement_step(
+    let Some((desired_position, velocity, stop_sent)) = next_movement_command(
         position,
         direction,
         config.movement_speed,
         config.movement_interval_ms,
-    );
+        movement_dispatch.stop_sent,
+    ) else {
+        return;
+    };
 
     bridge.send(NetworkCommand::Movement {
         location: [
@@ -451,6 +473,7 @@ fn movement_sender(
         acceleration: [0.0, 0.0, 0.0],
     });
 
+    movement_dispatch.stop_sent = stop_sent;
     world_state.local_position = Some(desired_position);
 }
 
@@ -671,6 +694,23 @@ fn compute_movement_step(
     )
 }
 
+fn next_movement_command(
+    position: Vec3,
+    direction: Vec2,
+    movement_speed: f32,
+    movement_interval_ms: u64,
+    stop_sent: bool,
+) -> Option<(Vec3, [f64; 3], bool)> {
+    if direction.length_squared() == 0.0 {
+        return (!stop_sent).then_some((position, [0.0, 0.0, 0.0], true));
+    }
+
+    let (desired_position, velocity) =
+        compute_movement_step(position, direction, movement_speed, movement_interval_ms);
+
+    Some((desired_position, velocity, false))
+}
+
 fn is_printable_char(chr: char) -> bool {
     let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
         || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
@@ -721,5 +761,32 @@ mod tests {
             movement_direction_from_key(&Key::ArrowRight),
             Vec2::new(1.0, 0.0)
         );
+    }
+
+    #[test]
+    fn next_movement_command_emits_single_stop_update() {
+        let position = Vec3::new(12.0, 34.0, 56.0);
+
+        let first_stop = next_movement_command(position, Vec2::ZERO, 220.0, 100, false);
+        let repeated_stop = next_movement_command(position, Vec2::ZERO, 220.0, 100, true);
+
+        assert_eq!(first_stop, Some((position, [0.0, 0.0, 0.0], true)));
+        assert_eq!(repeated_stop, None);
+    }
+
+    #[test]
+    fn next_movement_command_resumes_motion_after_stop() {
+        let position = Vec3::new(0.0, 0.0, 0.0);
+        let direction = Vec2::new(0.0, 1.0);
+
+        let Some((desired, velocity, stop_sent)) =
+            next_movement_command(position, direction, 220.0, 100, true)
+        else {
+            panic!("expected movement command");
+        };
+
+        assert!(desired.y > position.y);
+        assert_eq!(velocity, [0.0, 220.0, 0.0]);
+        assert!(!stop_sent);
     }
 }

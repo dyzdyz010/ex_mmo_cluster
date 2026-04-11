@@ -97,7 +97,7 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:enter_scene_result, :error, 0},
         {:player_enter, 0, {0.0, 0.0, 0.0}},
         {:player_leave, 0},
-        {:player_move, 0, {0.0, 0.0, 0.0}},
+        {:player_move, 0, 1, {0.0, 0.0, 0.0}},
         {:time_sync_reply, 0, 1000, 1100, 1200},
         {:heartbeat_reply, 0},
         {:fast_lane_result, :ok, 0, 29001, "ticket"},

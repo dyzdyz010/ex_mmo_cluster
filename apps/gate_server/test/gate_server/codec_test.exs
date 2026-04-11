@@ -173,9 +173,10 @@ defmodule GateServer.CodecTest do
     end
 
     test "encodes player_move" do
-      {:ok, bin} = Codec.encode({:player_move, 55, {1.0, 2.0, 3.0}})
+      {:ok, bin} = Codec.encode({:player_move, 55, 9, {1.0, 2.0, 3.0}})
 
-      assert <<0x83, 55::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> == bin
+      assert <<0x83, 55::64-big, 9::64-big, 1.0::float-64-big, 2.0::float-64-big,
+               3.0::float-64-big>> == bin
     end
   end
 
@@ -242,8 +243,8 @@ defmodule GateServer.CodecTest do
       {:ok, leave} = Codec.encode({:player_leave, 1})
       assert byte_size(leave) == 9
 
-      {:ok, move} = Codec.encode({:player_move, 1, {0.0, 0.0, 0.0}})
-      assert byte_size(move) == 33
+      {:ok, move} = Codec.encode({:player_move, 1, 1, {0.0, 0.0, 0.0}})
+      assert byte_size(move) == 41
     end
   end
 end

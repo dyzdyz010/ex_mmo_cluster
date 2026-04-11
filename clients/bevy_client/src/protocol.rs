@@ -66,6 +66,7 @@ pub enum ServerMessage {
     },
     PlayerMove {
         cid: i64,
+        sequence: u64,
         location: NetVec3,
     },
     TimeSyncReply {
@@ -137,7 +138,8 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
         }),
         0x83 => Ok(ServerMessage::PlayerMove {
             cid: read_i64(body, 0)?,
-            location: read_vec3(body, 8)?,
+            sequence: read_u64(body, 8)?,
+            location: read_vec3(body, 16)?,
         }),
         0x84 => {
             let packet_id = read_u64(body, 0)?;
@@ -495,6 +497,23 @@ mod tests {
                 packet_id: 21,
                 ok: true,
                 movement: Some((42, [1.0, 2.0, 3.0])),
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_player_move_with_sequence() {
+        let payload = vec![
+            0x83, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 7, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0,
+            0x40, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0,
+        ];
+
+        assert_eq!(
+            decode_server_payload(&payload).unwrap(),
+            ServerMessage::PlayerMove {
+                cid: 42,
+                sequence: 7,
+                location: [1.0, 2.0, 3.0],
             }
         );
     }

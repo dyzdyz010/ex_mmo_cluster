@@ -670,11 +670,12 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 123::64-big, 0x00>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
-    GenServer.cast(pid, {:player_move, 77, {11.0, 12.0, 13.0}})
+    GenServer.cast(pid, {:player_move, 77, {11.0, 12.0, 13.0}, 9})
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x83, 77::64-big, 11.0::float-64-big, 12.0::float-64-big, 13.0::float-64-big>>}} =
+             <<0x83, 77::64-big, 9::64-big, 11.0::float-64-big, 12.0::float-64-big,
+               13.0::float-64-big>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
@@ -746,11 +747,12 @@ defmodule GateServer.TcpConnectionProtocolTest do
       )
     end)
 
-    GenServer.cast(pid, {:player_move, 77, {21.0, 22.0, 23.0}})
+    GenServer.cast(pid, {:player_move, 77, {21.0, 22.0, 23.0}, 10})
 
     assert {:ok,
             {{127, 0, 0, 1}, ^port2,
-             <<0x83, 77::64-big, 21.0::float-64-big, 22.0::float-64-big, 23.0::float-64-big>>}} =
+             <<0x83, 77::64-big, 10::64-big, 21.0::float-64-big, 22.0::float-64-big,
+               23.0::float-64-big>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
@@ -798,9 +800,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert nil == GateServer.FastLaneRegistry.session_for_connection(pid)
     wait_until(fn -> is_nil(:sys.get_state(pid).udp_peer) end)
 
-    GenServer.cast(pid, {:player_move, 88, {31.0, 32.0, 33.0}})
+    GenServer.cast(pid, {:player_move, 88, {31.0, 32.0, 33.0}, 3})
 
-    assert {:ok, <<0x83, 88::64-big, 31.0::float-64-big, 32.0::float-64-big, 33.0::float-64-big>>} =
+    assert {:ok,
+            <<0x83, 88::64-big, 3::64-big, 31.0::float-64-big, 32.0::float-64-big,
+              33.0::float-64-big>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)

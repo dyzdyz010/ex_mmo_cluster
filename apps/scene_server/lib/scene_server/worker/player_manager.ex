@@ -3,6 +3,9 @@ defmodule SceneServer.PlayerManager do
 
   require Logger
 
+  @player_ready_attempts 40
+  @player_ready_sleep_ms 25
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end
@@ -23,15 +26,20 @@ defmodule SceneServer.PlayerManager do
         _from,
         %{players: players} = state
       ) do
-    {:ok, player_pid} =
-      DynamicSupervisor.start_child(
-        SceneServer.PlayerCharacterSup,
-        {SceneServer.PlayerCharacter, {cid, connection_pid, client_timestamp, character_profile}}
-      )
+    with {:ok, player_pid} <-
+           DynamicSupervisor.start_child(
+             SceneServer.PlayerCharacterSup,
+             {SceneServer.PlayerCharacter,
+              {cid, connection_pid, client_timestamp, character_profile}}
+           ),
+         :ok <- await_player_ready(player_pid) do
+      new_players = players |> Map.put_new(cid, player_pid)
 
-    new_players = players |> Map.put_new(cid, player_pid)
-
-    {:reply, {:ok, player_pid}, %{state | players: new_players}}
+      {:reply, {:ok, player_pid}, %{state | players: new_players}}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -43,5 +51,27 @@ defmodule SceneServer.PlayerManager do
   @impl true
   def handle_call(:get_all_players, _from, %{players: players} = state) do
     {:reply, {:ok, players}, state}
+  end
+
+  defp await_player_ready(player_pid, attempts \\ @player_ready_attempts)
+
+  defp await_player_ready(_player_pid, 0), do: {:error, :player_not_ready}
+
+  defp await_player_ready(player_pid, attempts) do
+    try do
+      case GenServer.call(player_pid, :await_ready) do
+        :ok ->
+          :ok
+
+        {:error, :not_ready} ->
+          Process.sleep(@player_ready_sleep_ms)
+          await_player_ready(player_pid, attempts - 1)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    catch
+      :exit, reason -> {:error, reason}
+    end
   end
 end

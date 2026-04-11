@@ -85,13 +85,13 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_cast({:player_move, cid, location}, %{socket: socket} = state) do
+  def handle_cast({:player_move, cid, location, sequence}, %{socket: socket} = state) do
     {udp_peer, state} = resolve_udp_peer(state)
 
     if udp_peer do
-      GateServer.UdpAcceptor.send_to_peer(udp_peer, {:player_move, cid, location})
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, {:player_move, cid, sequence, location})
     else
-      send_encoded(socket, {:player_move, cid, location})
+      send_encoded(socket, {:player_move, cid, sequence, location})
     end
 
     {:noreply, state}

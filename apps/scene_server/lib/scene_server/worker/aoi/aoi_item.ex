@@ -9,7 +9,6 @@ defmodule SceneServer.Aoi.AoiItem do
   @type vector :: {float(), float(), float()}
 
   @aoi_tick_interval 1000
-  @coord_tick_interval 100
 
   @self __MODULE__
 
@@ -33,6 +32,7 @@ defmodule SceneServer.Aoi.AoiItem do
        system_ref: system,
        item_ref: nil,
        location: location,
+       movement_sequence: 0,
        subscribees: [],
        interest_radius: 500,
        aoi_timer: nil
@@ -79,8 +79,11 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  def handle_cast({:player_move, cid, location}, %{connection_pid: connection_pid} = state) do
-    GenServer.cast(connection_pid, {:player_move, cid, location})
+  def handle_cast(
+        {:player_move, cid, location, sequence},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:player_move, cid, location, sequence})
 
     {:noreply, state}
   end
@@ -124,11 +127,22 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  def handle_cast({:self_move, location}, %{cid: cid, subscribees: subscribees} = state) do
+  def handle_cast(
+        {:self_move, location},
+        %{
+          cid: cid,
+          system_ref: system,
+          item_ref: item,
+          subscribees: subscribees,
+          movement_sequence: movement_sequence
+        } = state
+      ) do
+    {:ok, item_ref} = replace_item(cid, location, system, item)
+    sequence = movement_sequence + 1
     # Logger.debug("广播")
-    broadcast_action_player_move(cid, location, subscribees)
+    broadcast_action_player_move(cid, location, sequence, subscribees)
 
-    {:noreply, %{state | location: location}}
+    {:noreply, %{state | item_ref: item_ref, location: location, movement_sequence: sequence}}
   end
 
   # @impl true
@@ -158,6 +172,7 @@ defmodule SceneServer.Aoi.AoiItem do
         :get_aoi_tick,
         %{
           cid: cid,
+          interest_radius: interest_radius,
           location: location,
           system_ref: system,
           item_ref: item,
@@ -165,7 +180,7 @@ defmodule SceneServer.Aoi.AoiItem do
         } = state
       ) do
     # aoi_pids = get_aoi_pids(system, item, 50000.0)
-    aoi_pids = refresh_aoi_players(system, item, cid, location, subscribees)
+    aoi_pids = refresh_aoi_players(system, item, cid, location, interest_radius, subscribees)
 
     # Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
     # Logger.debug("Coordinate System: #{inspect(cids, pretty: true)}", ansi_color: :yellow)
@@ -242,6 +257,14 @@ defmodule SceneServer.Aoi.AoiItem do
     {:ok, item_ref}
   end
 
+  defp replace_item(cid, location, system, item) do
+    if item != nil do
+      true = Octree.remove_item(system, item)
+    end
+
+    add_item(cid, location, system)
+  end
+
   defp make_aoi_timer() do
     Process.send_after(self(), :get_aoi_tick, @aoi_tick_interval)
   end
@@ -306,10 +329,11 @@ defmodule SceneServer.Aoi.AoiItem do
           Octree.Types.octree_item(),
           integer(),
           vector(),
+          float(),
           [pid()]
         ) :: no_return()
-  defp refresh_aoi_players(system, item, cid, location, subscribees) do
-    aoi_pids = get_aoi_players(system, item, 1_000_000.0)
+  defp refresh_aoi_players(system, item, cid, location, interest_radius, subscribees) do
+    aoi_pids = get_aoi_players(system, item, interest_radius)
     leave_pids = subscribees -- aoi_pids
     enter_pids = aoi_pids -- subscribees
 
@@ -360,11 +384,13 @@ defmodule SceneServer.Aoi.AoiItem do
     |> Enum.map(&Task.await(&1))
   end
 
-  @spec broadcast_action_player_move(integer(), vector(), [pid()]) :: any()
-  defp broadcast_action_player_move(cid, location, pids) do
+  @spec broadcast_action_player_move(integer(), vector(), non_neg_integer(), [pid()]) :: any()
+  defp broadcast_action_player_move(cid, location, sequence, pids) do
     # Logger.debug("待广播移动玩家：#{inspect(pids, pretty: true)}")
     pids
-    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_move, cid, location}) end))
+    |> Enum.map(
+      &Task.async(fn -> GenServer.cast(&1, {:player_move, cid, location, sequence}) end)
+    )
     |> Enum.map(&Task.await(&1))
   end
 

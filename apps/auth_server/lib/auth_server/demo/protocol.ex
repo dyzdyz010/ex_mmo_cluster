@@ -69,7 +69,10 @@ defmodule Demo.Protocol do
     {:ok, {:player_leave, cid}}
   end
 
-  def decode_server(<<0x83, cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>>) do
+  def decode_server(
+        <<0x83, cid::64-big, _sequence::64-big, x::float-64-big, y::float-64-big,
+          z::float-64-big>>
+      ) do
     {:ok, {:player_move, cid, {x, y, z}}}
   end
 
