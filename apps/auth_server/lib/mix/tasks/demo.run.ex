@@ -57,6 +57,15 @@ defmodule Mix.Tasks.Demo.Run do
   end
 
   defp parse_args([flag, value | rest], opts)
+       when flag in ["--human-count", "--human_count"] do
+    with {parsed, ""} <- Integer.parse(value) do
+      parse_args(rest, [{:human_count, parsed} | opts])
+    else
+      _ -> {:error, "invalid integer for #{flag}: #{value}"}
+    end
+  end
+
+  defp parse_args([flag, value | rest], opts)
        when flag in ["--human-cid", "--human_cid"] do
     with {parsed, ""} <- Integer.parse(value) do
       parse_args(rest, [{:human_cid, parsed} | opts])

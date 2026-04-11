@@ -66,6 +66,10 @@ struct MovementIntent {
 pub fn run() {
     let config = ClientConfig::from_env();
     let bridge = spawn_network_thread(config.clone());
+    let window_title = format!(
+        "Hemifuture Bevy Client - {} / cid {}",
+        config.username, config.cid
+    );
 
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
@@ -91,7 +95,7 @@ pub fn run() {
         )))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Hemifuture Bevy Client".to_string(),
+                title: window_title,
                 resolution: (1280, 720).into(),
                 ..default()
             }),

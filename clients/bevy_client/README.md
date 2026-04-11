@@ -32,7 +32,10 @@ mix demo.run --bot-count 2
 
 - 启动本地服务端运行时
 - 补齐 demo 账号/角色
-- 生成 `.demo/human-client.ps1` / `.demo/human-client.env.sh`
+- 生成多套人类客户端配置：
+  - `.demo/human-client.ps1`
+  - `.demo/human-client-2.ps1`
+  - 以及对应的 `.json` / `.env.sh`
 - 启动真实协议 demo bots（会移动、聊天、放技能）
 
 然后在**另一个终端**导入生成的环境变量，再启动 Bevy 客户端。
@@ -53,6 +56,30 @@ cd clients/bevy_client
 cargo run
 ```
 
+## 本机多开客户端
+
+如果你想在同一台机器上打开多个客户端实例，**不要重复 source 同一个 `human-client.ps1`**，否则两个窗口会共享同一个 `username/cid/token`，场景里会被当作同一逻辑角色。
+
+正确方式是给每个实例加载不同的配置文件，例如：
+
+### 客户端 1
+
+```powershell
+. .\.demo\human-client.ps1
+cd clients\bevy_client
+cargo run
+```
+
+### 客户端 2
+
+```powershell
+. .\.demo\human-client-2.ps1
+cd clients\bevy_client
+cargo run
+```
+
+`mix demo.run` 现在会默认生成多套人类客户端配置，并在终端输出每个 slot 对应的 username/cid。
+
 ## 手动启动前准备
 
 先准备 token，并设置环境变量：
@@ -65,6 +92,14 @@ export BEVY_CLIENT_TOKEN='<你的 token>'
 ```
 
 > 最方便的方式仍然是直接使用 `mix demo.run` 生成的 `.demo/*` 配置文件。
+
+`human-client.ps1` / `human-client-2.ps1` 当前会设置这些环境变量：
+
+- `BEVY_CLIENT_GATE_ADDR`
+- `BEVY_CLIENT_USERNAME`
+- `BEVY_CLIENT_CID`
+- `BEVY_CLIENT_TOKEN`
+- `DEMO_AUTH_URL`
 
 ## 运行
 

@@ -19,10 +19,14 @@ defmodule Demo.Seeds do
   def apply_seeded_identities!(scenario) do
     identities = ensure_demo_targets!(scenario)
 
-    human =
-      identities
-      |> Enum.find(fn identity -> identity.username == scenario.human.username end)
-      |> identity_to_actor()
+    humans =
+      scenario.humans
+      |> Enum.map(fn human ->
+        identities
+        |> Enum.find(fn identity -> identity.username == human.username end)
+        |> identity_to_actor()
+        |> Map.put(:slot, human.slot)
+      end)
 
     bots =
       scenario.bots
@@ -32,7 +36,7 @@ defmodule Demo.Seeds do
         |> identity_to_actor(bot)
       end)
 
-    %{scenario | human: human, bots: bots}
+    %{scenario | human: hd(humans), humans: humans, bots: bots}
   end
 
   def ensure_storage_and_migrations! do

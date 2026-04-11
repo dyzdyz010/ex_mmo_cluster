@@ -6,23 +6,58 @@ defmodule Demo.ConfigWriter do
   def write!(scenario, output_dir) do
     File.mkdir_p!(output_dir)
 
-    json_path = Path.join(output_dir, "human-client.json")
-    ps1_path = Path.join(output_dir, "human-client.ps1")
-    sh_path = Path.join(output_dir, "human-client.env.sh")
+    client_entries =
+      scenario.humans
+      |> Enum.map(fn human ->
+        payload = %{
+          gate_addr: scenario.gate_addr,
+          auth_url: scenario.auth_url,
+          username: human.username,
+          cid: human.cid,
+          token: human.token
+        }
 
-    payload = %{
-      gate_addr: scenario.gate_addr,
-      auth_url: scenario.auth_url,
-      username: scenario.human.username,
-      cid: scenario.human.cid,
-      token: scenario.human.token
+        base =
+          if human.slot == 1 do
+            "human-client"
+          else
+            "human-client-#{human.slot}"
+          end
+
+        write_client_files!(output_dir, base, payload)
+      end)
+
+    manifest_path = Path.join(output_dir, "human-clients.json")
+    File.write!(manifest_path, Jason.encode_to_iodata!(client_entries, pretty: true))
+
+    primary = Enum.find(client_entries, &(&1.slot == 1))
+
+    %{
+      json: primary.json,
+      powershell: primary.powershell,
+      shell: primary.shell,
+      manifest: manifest_path,
+      clients: client_entries
     }
+  end
+
+  defp write_client_files!(output_dir, base, payload) do
+    json_path = Path.join(output_dir, "#{base}.json")
+    ps1_path = Path.join(output_dir, "#{base}.ps1")
+    sh_path = Path.join(output_dir, "#{base}.env.sh")
 
     File.write!(json_path, Jason.encode_to_iodata!(payload, pretty: true))
     File.write!(ps1_path, render_ps1(payload))
     File.write!(sh_path, render_sh(payload))
 
-    %{json: json_path, powershell: ps1_path, shell: sh_path}
+    %{
+      slot: payload[:slot] || infer_slot(base),
+      username: payload.username,
+      cid: payload.cid,
+      json: json_path,
+      powershell: ps1_path,
+      shell: sh_path
+    }
   end
 
   defp render_ps1(payload) do
@@ -61,5 +96,14 @@ defmodule Demo.ConfigWriter do
     value
     |> to_string()
     |> String.replace(~r/[\r\n]+/, " ")
+  end
+
+  defp infer_slot("human-client"), do: 1
+
+  defp infer_slot(base) do
+    case Integer.parse(String.replace_prefix(base, "human-client-", "")) do
+      {slot, ""} -> slot
+      _ -> 1
+    end
   end
 end

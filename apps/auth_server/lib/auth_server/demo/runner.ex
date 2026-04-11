@@ -48,8 +48,19 @@ defmodule Demo.Runner do
     Mix.shell().info("  PowerShell: #{files.powershell}")
     Mix.shell().info("  POSIX shell: #{files.shell}")
     Mix.shell().info("  JSON: #{files.json}")
+    Mix.shell().info("  Manifest: #{files.manifest}")
+
+    Enum.each(files.clients, fn client ->
+      Mix.shell().info(
+        "  human slot #{client.slot}: #{client.username} cid=#{client.cid} -> #{client.powershell}"
+      )
+    end)
+
     Mix.shell().info("")
-    Mix.shell().info("Launch the Bevy client in another shell after importing the human config.")
+
+    Mix.shell().info(
+      "Launch each Bevy client in a separate shell after importing a different human-client-*.ps1/.env.sh file."
+    )
 
     if Keyword.get(opts, :dry_run, false) do
       {:ok, %{scenario: scenario, files: files, mode: :dry_run}}
@@ -75,6 +86,7 @@ defmodule Demo.Runner do
   defp build_scenario(opts) do
     Demo.Scenario.build(
       bot_count: Keyword.get(opts, :bot_count, 3),
+      human_count: Keyword.get(opts, :human_count, 2),
       gate_addr: Keyword.get(opts, :gate_addr),
       auth_url: Keyword.get(opts, :auth_url),
       human_username: Keyword.get(opts, :human_username),
