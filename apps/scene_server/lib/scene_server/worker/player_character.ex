@@ -11,6 +11,8 @@ defmodule SceneServer.PlayerCharacter do
   @movement_tick_interval 100
   @pulse_skill_id 1
   @skill_cooldown_ms 750
+  @lock_retry_attempts 5
+  @lock_retry_sleep_ms 5
 
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
@@ -27,6 +29,7 @@ defmodule SceneServer.PlayerCharacter do
        cid: cid,
        character_profile: normalize_character_profile(cid, character_profile),
        connection_pid: connection_pid,
+       last_location: normalize_character_profile(cid, character_profile).position,
        physys_ref: nil,
        aoi_ref: nil,
        character_data_ref: nil,
@@ -80,11 +83,16 @@ defmodule SceneServer.PlayerCharacter do
   def handle_call(
         :get_location,
         _from,
-        %{character_data_ref: cd_ref, physys_ref: physys_ref} = state
+        %{character_data_ref: cd_ref, physys_ref: physys_ref, last_location: last_location} =
+          state
       ) do
-    {:ok, location} = SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref)
+    case get_character_location_with_retry(cd_ref, physys_ref, last_location) do
+      {:ok, location} ->
+        {:reply, {:ok, location}, %{state | last_location: location}}
 
-    {:reply, {:ok, location}, state}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -123,24 +131,32 @@ defmodule SceneServer.PlayerCharacter do
   def handle_call(
         {:movement, _client_timestamp, location, velocity, acceleration},
         _from,
-        %{aoi_ref: _aoi, character_data_ref: cd_ref, physys_ref: physys_ref} = state
+        %{
+          aoi_ref: _aoi,
+          character_data_ref: cd_ref,
+          physys_ref: physys_ref,
+          last_location: last_location
+        } = state
       ) do
-    {x, y, z} = location
-    {:ok, {ox, oy, oz}} = SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref)
-    Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
-    # GenServer.cast(aoi, {:movement, client_timestamp, location, velocity, acceleration})
-    {:ok, _} =
-      SceneServer.Native.SceneOps.update_character_movement(
-        cd_ref,
-        location,
-        velocity,
-        acceleration,
-        physys_ref
-      )
+    with {:ok, current_location} <-
+           get_character_location_with_retry(cd_ref, physys_ref, last_location),
+         :ok <-
+           update_character_movement_with_retry(
+             cd_ref,
+             location,
+             velocity,
+             acceleration,
+             physys_ref
+           ) do
+      {x, y, z} = location
+      {ox, oy, oz} = current_location
+      Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
 
-    # Logger.debug("Velocity: #{inspect(velocity, pretty: true)}")
-
-    {:reply, {:ok, ""}, state}
+      {:reply, {:ok, ""}, %{state | last_location: location}}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -158,16 +174,19 @@ defmodule SceneServer.PlayerCharacter do
           aoi_ref: aoi_ref,
           skill_casts: skill_casts,
           character_data_ref: cd_ref,
-          physys_ref: physys_ref
+          physys_ref: physys_ref,
+          last_location: last_location
         } = state
       ) do
     now = :os.system_time(:millisecond)
 
     with :ok <- validate_skill(skill_id),
          :ok <- cooldown_ready?(skill_casts, skill_id, now),
-         {:ok, location} <- SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref) do
+         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location) do
       GenServer.cast(aoi_ref, {:skill_cast, cid, skill_id, location})
-      {:reply, {:ok, location}, %{state | skill_casts: Map.put(skill_casts, skill_id, now)}}
+
+      {:reply, {:ok, location},
+       %{state | skill_casts: Map.put(skill_casts, skill_id, now), last_location: location}}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -194,16 +213,32 @@ defmodule SceneServer.PlayerCharacter do
         %{
           character_data_ref: cd_ref,
           aoi_ref: aoi_ref,
-          physys_ref: physys_ref
+          physys_ref: physys_ref,
+          last_location: last_location
         } = state
       ) do
-    with {:ok, location} when location != nil <-
-           SceneServer.Native.SceneOps.movement_tick(cd_ref, physys_ref) do
-      # Logger.debug("Location update: #{inspect(location, pretty: true)}")
-      GenServer.cast(aoi_ref, {:self_move, location})
-    end
+    new_state =
+      case movement_tick_with_retry(cd_ref, physys_ref) do
+        {:ok, location} when location != nil ->
+          GenServer.cast(aoi_ref, {:self_move, location})
+          %{state | last_location: location}
 
-    {:noreply, %{state | movement_timer: make_movement_timer()}}
+        {:ok, nil} ->
+          state
+
+        {:error, :lock_fail} ->
+          Logger.debug(
+            "movement_tick lock contention for cid=#{state.cid}, keeping cached location"
+          )
+
+          %{state | last_location: last_location}
+
+        {:error, reason} ->
+          Logger.warning("movement_tick failed for cid=#{state.cid}: #{inspect(reason)}")
+          state
+      end
+
+    {:noreply, %{new_state | movement_timer: make_movement_timer()}}
   end
 
   defp enter_scene(cid, client_timestamp, location, connection_pid) do
@@ -277,6 +312,133 @@ defmodule SceneServer.PlayerCharacter do
 
       _ ->
         default
+    end
+  end
+
+  defp get_character_location_with_retry(
+         cd_ref,
+         physys_ref,
+         fallback_location,
+         attempts \\ @lock_retry_attempts
+       )
+
+  defp get_character_location_with_retry(_cd_ref, _physys_ref, fallback_location, 0) do
+    Logger.debug("location fetch exhausted retries, using cached location")
+    {:ok, fallback_location}
+  end
+
+  defp get_character_location_with_retry(cd_ref, physys_ref, fallback_location, attempts) do
+    case SceneServer.Native.SceneOps.get_character_location(cd_ref, physys_ref) do
+      {:ok, location} ->
+        {:ok, location}
+
+      {:error, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        get_character_location_with_retry(cd_ref, physys_ref, fallback_location, attempts - 1)
+
+      {:err, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        get_character_location_with_retry(cd_ref, physys_ref, fallback_location, attempts - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:err, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp update_character_movement_with_retry(
+         cd_ref,
+         location,
+         velocity,
+         acceleration,
+         physys_ref,
+         attempts \\ @lock_retry_attempts
+       )
+
+  defp update_character_movement_with_retry(
+         _cd_ref,
+         _location,
+         _velocity,
+         _acceleration,
+         _physys_ref,
+         0
+       ),
+       do: {:error, :lock_fail}
+
+  defp update_character_movement_with_retry(
+         cd_ref,
+         location,
+         velocity,
+         acceleration,
+         physys_ref,
+         attempts
+       ) do
+    case SceneServer.Native.SceneOps.update_character_movement(
+           cd_ref,
+           location,
+           velocity,
+           acceleration,
+           physys_ref
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+
+        update_character_movement_with_retry(
+          cd_ref,
+          location,
+          velocity,
+          acceleration,
+          physys_ref,
+          attempts - 1
+        )
+
+      {:err, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+
+        update_character_movement_with_retry(
+          cd_ref,
+          location,
+          velocity,
+          acceleration,
+          physys_ref,
+          attempts - 1
+        )
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:err, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp movement_tick_with_retry(cd_ref, physys_ref, attempts \\ @lock_retry_attempts)
+
+  defp movement_tick_with_retry(_cd_ref, _physys_ref, 0), do: {:error, :lock_fail}
+
+  defp movement_tick_with_retry(cd_ref, physys_ref, attempts) do
+    case SceneServer.Native.SceneOps.movement_tick(cd_ref, physys_ref) do
+      {:ok, location} ->
+        {:ok, location}
+
+      {:error, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        movement_tick_with_retry(cd_ref, physys_ref, attempts - 1)
+
+      {:err, :lock_fail} ->
+        Process.sleep(@lock_retry_sleep_ms)
+        movement_tick_with_retry(cd_ref, physys_ref, attempts - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:err, reason} ->
+        {:error, reason}
     end
   end
 end

@@ -308,7 +308,7 @@ fn decode_result(body: &[u8]) -> Result<ServerMessage, ProtocolError> {
             ok: read_u8(body, 8)? == 0,
             movement: None,
         }),
-        33 => Ok(ServerMessage::Result {
+        41 => Ok(ServerMessage::Result {
             packet_id: read_u64(body, 0)?,
             ok: read_u8(body, 8)? == 0,
             movement: Some((read_i64(body, 9)?, read_vec3(body, 17)?)),
@@ -478,6 +478,23 @@ mod tests {
             ServerMessage::FastLaneAttached {
                 packet_id: 13,
                 ok: true,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_movement_result_with_cid_and_location() {
+        let payload = vec![
+            0x80, 0, 0, 0, 0, 0, 0, 0, 21, 0x00, 0, 0, 0, 0, 0, 0, 0, 42, 0x3f, 0xf0, 0, 0, 0, 0,
+            0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0,
+        ];
+
+        assert_eq!(
+            decode_server_payload(&payload).unwrap(),
+            ServerMessage::Result {
+                packet_id: 21,
+                ok: true,
+                movement: Some((42, [1.0, 2.0, 3.0])),
             }
         );
     }
