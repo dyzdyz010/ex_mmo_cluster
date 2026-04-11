@@ -21,12 +21,14 @@ defmodule GateServer.FastLaneRegistryTest do
     connection_pid = self()
 
     assert {:ok, ticket1} = GateServer.FastLaneRegistry.issue_ticket(connection_pid, %{})
+
     assert {:ok, %{peer: {{127, 0, 0, 1}, 40_001}}} =
              GateServer.FastLaneRegistry.attach_ticket(ticket1, {{127, 0, 0, 1}, 40_001})
 
     assert_receive {:"$gen_cast", {:udp_attached, {{127, 0, 0, 1}, 40_001}, ^ticket1}}, 500
 
     assert {:ok, ticket2} = GateServer.FastLaneRegistry.issue_ticket(connection_pid, %{})
+
     assert {:ok, %{peer: {{127, 0, 0, 1}, 40_002}}} =
              GateServer.FastLaneRegistry.attach_ticket(ticket2, {{127, 0, 0, 1}, 40_002})
 
@@ -47,6 +49,7 @@ defmodule GateServer.FastLaneRegistryTest do
     shared_peer = {{127, 0, 0, 1}, 41_001}
 
     assert {:ok, old_ticket} = GateServer.FastLaneRegistry.issue_ticket(old_connection, %{})
+
     assert {:ok, %{peer: ^shared_peer}} =
              GateServer.FastLaneRegistry.attach_ticket(old_ticket, shared_peer)
 
@@ -55,6 +58,7 @@ defmodule GateServer.FastLaneRegistryTest do
                    500
 
     assert {:ok, new_ticket} = GateServer.FastLaneRegistry.issue_ticket(new_connection, %{})
+
     assert {:ok, %{peer: ^shared_peer}} =
              GateServer.FastLaneRegistry.attach_ticket(new_ticket, shared_peer)
 
@@ -66,7 +70,9 @@ defmodule GateServer.FastLaneRegistryTest do
                     {:"$gen_cast", {:udp_attached, ^shared_peer, ^new_ticket}}},
                    500
 
-    assert %{peer: ^shared_peer} = GateServer.FastLaneRegistry.session_for_connection(new_connection)
+    assert %{peer: ^shared_peer} =
+             GateServer.FastLaneRegistry.session_for_connection(new_connection)
+
     assert nil == GateServer.FastLaneRegistry.session_for_connection(old_connection)
   end
 

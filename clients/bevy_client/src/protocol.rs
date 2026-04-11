@@ -9,6 +9,13 @@ pub enum ClientMessage {
         username: String,
         token: String,
     },
+    FastLaneRequest {
+        request_id: u64,
+    },
+    FastLaneAttach {
+        request_id: u64,
+        ticket: String,
+    },
     EnterScene {
         request_id: u64,
         cid: i64,
@@ -69,6 +76,16 @@ pub enum ServerMessage {
     },
     HeartbeatReply {
         timestamp: u64,
+    },
+    FastLaneResult {
+        packet_id: u64,
+        ok: bool,
+        udp_port: Option<u16>,
+        ticket: Option<String>,
+    },
+    FastLaneAttached {
+        packet_id: u64,
+        ok: bool,
     },
     ChatMessage {
         cid: i64,
@@ -137,6 +154,29 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 location,
             })
         }
+        0x87 => {
+            let packet_id = read_u64(body, 0)?;
+            let ok = read_u8(body, 8)? == 0;
+
+            let (udp_port, ticket) = if ok && body.len() >= 13 {
+                let udp_port = read_u16(body, 9)?;
+                let (ticket, _) = read_string(body, 11)?;
+                (Some(udp_port), Some(ticket))
+            } else {
+                (None, None)
+            };
+
+            Ok(ServerMessage::FastLaneResult {
+                packet_id,
+                ok,
+                udp_port,
+                ticket,
+            })
+        }
+        0x88 => Ok(ServerMessage::FastLaneAttached {
+            packet_id: read_u64(body, 0)?,
+            ok: read_u8(body, 8)? == 0,
+        }),
         0x85 => Ok(ServerMessage::TimeSyncReply {
             packet_id: read_u64(body, 0)?,
             client_send_ts: read_u64(body, 8)?,
@@ -182,7 +222,7 @@ pub fn take_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     Some(payload)
 }
 
-fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
+pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
     match message {
         ClientMessage::AuthRequest {
             request_id,
@@ -193,6 +233,17 @@ fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
             payload.extend_from_slice(&request_id.to_be_bytes());
             write_string(&mut payload, username);
             write_string(&mut payload, token);
+            payload
+        }
+        ClientMessage::FastLaneRequest { request_id } => {
+            let mut payload = vec![0x06];
+            payload.extend_from_slice(&request_id.to_be_bytes());
+            payload
+        }
+        ClientMessage::FastLaneAttach { request_id, ticket } => {
+            let mut payload = vec![0x07];
+            payload.extend_from_slice(&request_id.to_be_bytes());
+            write_string(&mut payload, ticket);
             payload
         }
         ClientMessage::EnterScene { request_id, cid } => {
@@ -359,6 +410,24 @@ mod tests {
     }
 
     #[test]
+    fn encodes_fast_lane_frames() {
+        let bootstrap = encode_client_frame(&ClientMessage::FastLaneRequest { request_id: 9 });
+        assert_eq!(bootstrap, vec![0, 0, 0, 9, 0x06, 0, 0, 0, 0, 0, 0, 0, 9]);
+
+        let attach = encode_client_frame(&ClientMessage::FastLaneAttach {
+            request_id: 10,
+            ticket: "ticket-123".into(),
+        });
+        assert_eq!(
+            attach,
+            vec![
+                0, 0, 0, 21, 0x07, 0, 0, 0, 0, 0, 0, 0, 10, 0, 10, b't', b'i', b'c', b'k', b'e',
+                b't', b'-', b'1', b'2', b'3'
+            ]
+        );
+    }
+
+    #[test]
     fn decodes_chat_and_skill_events() {
         let chat = vec![
             0x89, 0, 0, 0, 0, 0, 0, 0, 42, 0, 6, b't', b'e', b's', b't', b'e', b'r', 0, 5, b'h',
@@ -383,6 +452,32 @@ mod tests {
                 cid: 42,
                 skill_id: 1,
                 location: [1.0, 2.0, 3.0],
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_fast_lane_events() {
+        let fast_lane_result = vec![
+            0x87, 0, 0, 0, 0, 0, 0, 0, 12, 0x00, 0x71, 0x49, 0, 6, b't', b'i', b'c', b'k', b'e',
+            b't',
+        ];
+        assert_eq!(
+            decode_server_payload(&fast_lane_result).unwrap(),
+            ServerMessage::FastLaneResult {
+                packet_id: 12,
+                ok: true,
+                udp_port: Some(29_001),
+                ticket: Some("ticket".into()),
+            }
+        );
+
+        let attached = vec![0x88, 0, 0, 0, 0, 0, 0, 0, 13, 0x00];
+        assert_eq!(
+            decode_server_payload(&attached).unwrap(),
+            ServerMessage::FastLaneAttached {
+                packet_id: 13,
+                ok: true,
             }
         );
     }

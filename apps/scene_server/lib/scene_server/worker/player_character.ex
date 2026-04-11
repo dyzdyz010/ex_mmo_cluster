@@ -6,6 +6,7 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.AoiManager
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
+  @default_location {1_000.0, 1_000.0, 90.0}
 
   @movement_tick_interval 100
   @pulse_skill_id 1
@@ -16,7 +17,7 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def init({cid, connection_pid, client_timestamp}) do
+  def init({cid, connection_pid, client_timestamp, character_profile}) do
     # :pg.start_link(@scope)
     # :pg.join(@scope, @topic, self())
     Logger.debug("New player created.")
@@ -24,6 +25,7 @@ defmodule SceneServer.PlayerCharacter do
     {:ok,
      %{
        cid: cid,
+       character_profile: normalize_character_profile(cid, character_profile),
        connection_pid: connection_pid,
        physys_ref: nil,
        aoi_ref: nil,
@@ -40,21 +42,16 @@ defmodule SceneServer.PlayerCharacter do
   @impl true
   def handle_continue(
         {:load, client_timestamp},
-        %{cid: cid, connection_pid: connection_pid} = state
+        %{cid: cid, connection_pid: connection_pid, character_profile: character_profile} = state
       ) do
     {:ok, physys_ref} = SceneServer.PhysicsManager.get_physics_system_ref()
 
-    pmin = 400
-    pmax = 3000
-    x = Enum.random(pmin..pmax) * 1.0
-    y = Enum.random(pmin..pmax) * 1.0
-    z = 90.0
-    location = {x, y, z}
+    %{name: name, position: location} = character_profile
 
     {:ok, cd_ref} =
       SceneServer.Native.SceneOps.new_character_data(
         cid,
-        "demo1",
+        name,
         location,
         @default_dev_attrs,
         physys_ref
@@ -230,6 +227,56 @@ defmodule SceneServer.PlayerCharacter do
       nil -> :ok
       last_cast when now - last_cast >= @skill_cooldown_ms -> :ok
       _last_cast -> {:error, :skill_cooldown}
+    end
+  end
+
+  defp normalize_character_profile(cid, %{} = profile) do
+    %{
+      cid: cid,
+      name:
+        Map.get(profile, :name) || Map.get(profile, "name") ||
+          "character-#{cid}",
+      position: normalize_position(Map.get(profile, :position) || Map.get(profile, "position"))
+    }
+  end
+
+  defp normalize_character_profile(cid, _profile) do
+    %{cid: cid, name: "character-#{cid}", position: @default_location}
+  end
+
+  defp normalize_position({x, y, z})
+       when (is_integer(x) or is_float(x)) and (is_integer(y) or is_float(y)) and
+              (is_integer(z) or is_float(z)) do
+    {x * 1.0, y * 1.0, z * 1.0}
+  end
+
+  defp normalize_position(%{} = position) do
+    x = map_float(position, ["x", :x], elem(@default_location, 0))
+    y = map_float(position, ["y", :y], elem(@default_location, 1))
+    z = map_float(position, ["z", :z], elem(@default_location, 2))
+    {x, y, z}
+  end
+
+  defp normalize_position(_position), do: @default_location
+
+  defp map_float(map, keys, default) do
+    keys
+    |> Enum.find_value(fn key -> Map.get(map, key) end)
+    |> case do
+      value when is_integer(value) ->
+        value * 1.0
+
+      value when is_float(value) ->
+        value
+
+      value when is_binary(value) ->
+        case Float.parse(value) do
+          {parsed, ""} -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
     end
   end
 end

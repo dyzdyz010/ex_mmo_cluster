@@ -103,7 +103,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
            add_player_result: :ok,
            location: {10.0, 20.0, 30.0},
            movement_reply_location: nil,
-           notify: nil
+           notify: nil,
+           last_character_profile: nil
          },
          attrs
        )}
@@ -115,7 +116,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
 
     @impl true
-    def handle_call({:add_player, _cid, _connection_pid, _timestamp}, _from, state) do
+    def handle_call(
+          {:add_player, _cid, _connection_pid, _timestamp, character_profile},
+          _from,
+          state
+        ) do
       case state.add_player_result do
         :ok ->
           {:ok, pid} =
@@ -125,7 +130,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
               movement_reply_location: state.movement_reply_location
             )
 
-          {:reply, {:ok, pid}, state}
+          {:reply, {:ok, pid}, %{state | last_character_profile: character_profile}}
 
         {:error, reason} ->
           {:reply, {:error, reason}, state}
@@ -255,6 +260,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {x, y, z} == {10.0, 20.0, 30.0}
     assert %{status: :in_scene, cid: 42, agent: %{"active_cid" => 42}} = :sys.get_state(pid)
+
+    assert %{last_character_profile: %{name: "tester-character-42"}} =
+             :sys.get_state(SceneServer.PlayerManager)
   end
 
   test "movement before scene join is rejected after auth", %{client: client, pid: pid} do
@@ -953,7 +961,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
       Repo.insert(%Character{
         id: cid,
         account: account.id,
-        name: "#{username}-character-#{cid}"
+        name: "#{username}-character-#{cid}",
+        position: %{"x" => 10.0, "y" => 20.0, "z" => 30.0}
       })
   end
 end

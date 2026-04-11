@@ -252,9 +252,9 @@ defmodule GateServer.TcpConnection do
     timestamp = :os.system_time(:millisecond)
 
     with :ok <- authorize_cid(claims, cid),
-         :ok <- authorize_character(claims, cid),
+         {:ok, character} <- fetch_authorized_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
-         {:ok, ppid} <- add_player(scene_node, cid, timestamp),
+         {:ok, ppid} <- add_player(scene_node, cid, timestamp, build_character_profile(character)),
          {:ok, {x, y, z}} <- fetch_player_location(ppid) do
       send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}})
 
@@ -407,8 +407,11 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  defp add_player(scene_node, cid, timestamp) do
-    case safe_call({SceneServer.PlayerManager, scene_node}, {:add_player, cid, self(), timestamp}) do
+  defp add_player(scene_node, cid, timestamp, character_profile) do
+    case safe_call(
+           {SceneServer.PlayerManager, scene_node},
+           {:add_player, cid, self(), timestamp, character_profile}
+         ) do
       {:ok, {:ok, ppid}} -> {:ok, ppid}
       {:ok, _other} -> {:error, :scene_unavailable}
       {:error, _reason} -> {:error, :scene_unavailable}
@@ -448,16 +451,60 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  defp authorize_character(claims, cid) do
+  defp fetch_authorized_character(claims, cid) do
     with {:ok, auth_node} <- fetch_auth_node() do
-      case :rpc.call(auth_node, AuthServer.AuthWorker, :authorize_character, [claims, cid]) do
-        :ok -> :ok
-        {:error, :cid_mismatch} -> {:error, :cid_mismatch}
+      case :rpc.call(auth_node, AuthServer.AuthWorker, :fetch_authorized_character, [claims, cid]) do
+        {:ok, character} when is_map(character) -> {:ok, character}
         {:error, :account_not_found} -> {:error, :cid_mismatch}
+        {:error, :cid_mismatch} -> {:error, :cid_mismatch}
         {:error, :data_service_unavailable} -> {:error, :auth_unavailable}
         {:badrpc, _reason} -> {:error, :auth_unavailable}
         _ -> {:error, :server_error}
       end
+    end
+  end
+
+  defp build_character_profile(character) when is_map(character) do
+    %{
+      cid: Map.get(character, :id) || Map.get(character, "id"),
+      name:
+        Map.get(character, :name) || Map.get(character, "name") ||
+          "character-#{Map.get(character, :id) || Map.get(character, "id")}",
+      position:
+        normalize_position(Map.get(character, :position) || Map.get(character, "position"))
+    }
+  end
+
+  defp build_character_profile(_character),
+    do: %{name: "unknown", position: {1_000.0, 1_000.0, 90.0}}
+
+  defp normalize_position(%{} = position) do
+    x = map_float(position, ["x", :x], 1_000.0)
+    y = map_float(position, ["y", :y], 1_000.0)
+    z = map_float(position, ["z", :z], 90.0)
+    {x, y, z}
+  end
+
+  defp normalize_position(_position), do: {1_000.0, 1_000.0, 90.0}
+
+  defp map_float(map, keys, default) do
+    keys
+    |> Enum.find_value(fn key -> Map.get(map, key) end)
+    |> case do
+      value when is_integer(value) ->
+        value * 1.0
+
+      value when is_float(value) ->
+        value
+
+      value when is_binary(value) ->
+        case Float.parse(value) do
+          {parsed, ""} -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
     end
   end
 

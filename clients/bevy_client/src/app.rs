@@ -1,6 +1,6 @@
 use crate::{
     config::ClientConfig,
-    net::{NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
+    net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
 };
 use bevy::{
     input::keyboard::{Key, KeyboardInput},
@@ -31,6 +31,7 @@ struct SkillPulse {
 #[derive(Resource, Default)]
 struct WorldState {
     status: String,
+    scene_joined: bool,
     local_cid: i64,
     local_position: Option<Vec3>,
     remote_players: HashMap<i64, Vec3>,
@@ -39,6 +40,12 @@ struct WorldState {
     last_rtt_ms: Option<f64>,
     last_offset_ms: Option<f64>,
     last_heartbeat_ts: Option<u64>,
+    control_transport: MessageTransport,
+    movement_transport: MessageTransport,
+    fast_lane_status: String,
+    udp_endpoint: Option<String>,
+    last_local_update_transport: Option<MessageTransport>,
+    last_remote_move_transport: Option<MessageTransport>,
 }
 
 #[derive(Resource, Default)]
@@ -65,6 +72,9 @@ pub fn run() {
                 "starting client".to_string()
             },
             local_cid: config.cid,
+            control_transport: MessageTransport::Tcp,
+            movement_transport: MessageTransport::Tcp,
+            fast_lane_status: "tcp fallback".to_string(),
             ..default()
         })
         .insert_resource(ChatState::default())
@@ -181,13 +191,19 @@ fn poll_network_events(
                 push_line(&mut world_state.logs, status);
             }
             NetworkEvent::EnteredScene { cid, location } => {
+                world_state.scene_joined = true;
                 world_state.status = format!("in scene as cid {cid}");
                 world_state.local_cid = cid;
                 world_state.local_position = Some(net_to_world(location));
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
             }
-            NetworkEvent::LocalPosition { cid: _, location } => {
+            NetworkEvent::LocalPosition {
+                cid: _,
+                location,
+                transport,
+            } => {
                 world_state.local_position = Some(net_to_world(location));
+                world_state.last_local_update_transport = Some(transport);
             }
             NetworkEvent::PlayerEnter { cid, location } => {
                 if cid != world_state.local_cid {
@@ -197,12 +213,17 @@ fn poll_network_events(
                 }
                 push_line(&mut world_state.logs, format!("player {cid} entered AOI"));
             }
-            NetworkEvent::PlayerMove { cid, location } => {
+            NetworkEvent::PlayerMove {
+                cid,
+                location,
+                transport,
+            } => {
                 if cid != world_state.local_cid {
                     world_state
                         .remote_players
                         .insert(cid, net_to_world(location));
                 }
+                world_state.last_remote_move_transport = Some(transport);
             }
             NetworkEvent::PlayerLeave { cid } => {
                 world_state.remote_players.remove(&cid);
@@ -247,8 +268,20 @@ fn poll_network_events(
             NetworkEvent::Heartbeat { server_ts } => {
                 world_state.last_heartbeat_ts = Some(server_ts);
             }
+            NetworkEvent::TransportState {
+                control_transport,
+                movement_transport,
+                fast_lane_status,
+                udp_endpoint,
+            } => {
+                world_state.control_transport = control_transport;
+                world_state.movement_transport = movement_transport;
+                world_state.fast_lane_status = fast_lane_status;
+                world_state.udp_endpoint = udp_endpoint;
+            }
             NetworkEvent::Log(line) => push_line(&mut world_state.logs, line),
             NetworkEvent::Disconnected(reason) => {
+                world_state.scene_joined = false;
                 world_state.status = format!("disconnected: {reason}");
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
@@ -333,7 +366,7 @@ fn movement_sender(
     chat_state: Res<ChatState>,
     mut tick: ResMut<MovementTick>,
 ) {
-    if chat_state.enabled || !world_state.status.starts_with("in scene") {
+    if chat_state.enabled || !world_state.scene_joined {
         return;
     }
 
@@ -446,12 +479,28 @@ fn update_hud_text(
     >,
 ) {
     hud.0 = format!(
-        "status: {}\nlocal cid: {}\nposition: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {}\nlocal cid: {}\nposition: {}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
         world_state.status,
+        world_state.control_transport.label(),
+        world_state.movement_transport.label(),
+        world_state.fast_lane_status,
+        world_state
+            .udp_endpoint
+            .clone()
+            .unwrap_or_else(|| "n/a".to_string()),
+        world_state.remote_players.len(),
         world_state.local_cid,
         world_state
             .local_position
             .map(|pos| format!("{:.1}, {:.1}, {:.1}", pos.x, pos.y, pos.z))
+            .unwrap_or_else(|| "n/a".to_string()),
+        world_state
+            .last_local_update_transport
+            .map(|transport| transport.label().to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        world_state
+            .last_remote_move_transport
+            .map(|transport| transport.label().to_string())
             .unwrap_or_else(|| "n/a".to_string()),
         world_state
             .last_rtt_ms
@@ -467,17 +516,35 @@ fn update_hud_text(
             .unwrap_or_else(|| "n/a".to_string()),
     );
 
-    chat_log_text.0 = world_state
+    let recent_chat = world_state
         .chat_log
         .iter()
         .rev()
-        .take(8)
+        .take(5)
         .cloned()
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
+        .collect::<Vec<_>>();
+    let recent_logs = world_state
+        .logs
+        .iter()
+        .rev()
+        .take(4)
+        .cloned()
         .collect::<Vec<_>>()
-        .join("\n");
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+
+    let mut sections = Vec::new();
+    if !recent_chat.is_empty() {
+        sections.push(format!("chat\n{}", recent_chat.join("\n")));
+    }
+    if !recent_logs.is_empty() {
+        sections.push(format!("transport/demo\n{}", recent_logs.join("\n")));
+    }
+    chat_log_text.0 = sections.join("\n\n");
 
     chat_input_text.0 = if chat_state.enabled {
         format!("> {}_", chat_state.draft)

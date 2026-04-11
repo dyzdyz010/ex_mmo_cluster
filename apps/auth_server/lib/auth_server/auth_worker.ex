@@ -181,18 +181,40 @@ defmodule AuthServer.AuthWorker do
   checks whether the requested character belongs to that account.
   """
   def authorize_character(claims, cid) when is_map(claims) and is_integer(cid) do
-    with {:ok, account_id} <- resolve_account_id(claims),
-         {:ok, character} <- AuthServer.Accounts.character_owned_by_account?(account_id, cid) do
-      if character != nil, do: :ok, else: {:error, :cid_mismatch}
-    else
-      {:error, :invalid_account} -> {:error, :account_not_found}
-      {:error, :data_service_unavailable} -> {:error, :data_service_unavailable}
-      {:ok, nil} -> {:error, :cid_mismatch}
-      {:error, _reason} -> {:error, :account_not_found}
+    case fetch_authorized_character(claims, cid) do
+      {:ok, _character} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
   def authorize_character(_claims, _cid), do: {:error, :account_not_found}
+
+  @spec fetch_authorized_character(map(), integer()) ::
+          {:ok, struct()}
+          | {:error, :account_not_found | :cid_mismatch | :data_service_unavailable}
+  @doc """
+  Resolve the concrete character struct that the authenticated identity may enter.
+
+  This is the authoritative version of the auth/gate hand-off used by real scene
+  entry. It preserves the same ownership rules as `authorize_character/2`, but
+  returns the character record so downstream runtime code can avoid hard-coded
+  placeholder data.
+  """
+  def fetch_authorized_character(claims, cid) when is_map(claims) and is_integer(cid) do
+    with {:ok, account_id} <- resolve_account_id(claims),
+         {:ok, character} <- AuthServer.Accounts.character_owned_by_account?(account_id, cid),
+         false <- is_nil(character) do
+      {:ok, character}
+    else
+      {:error, :invalid_account} -> {:error, :account_not_found}
+      {:error, :data_service_unavailable} -> {:error, :data_service_unavailable}
+      {:ok, nil} -> {:error, :cid_mismatch}
+      true -> {:error, :cid_mismatch}
+      {:error, _reason} -> {:error, :account_not_found}
+    end
+  end
+
+  def fetch_authorized_character(_claims, _cid), do: {:error, :account_not_found}
 
   defp claim_username(claims), do: Map.get(claims, "username") || Map.get(claims, :username)
 

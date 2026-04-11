@@ -19,14 +19,14 @@ defmodule SceneServer.PlayerManager do
 
   @impl true
   def handle_call(
-        {:add_player, cid, connection_pid, client_timestamp},
+        {:add_player, cid, connection_pid, client_timestamp, character_profile},
         _from,
         %{players: players} = state
       ) do
     {:ok, player_pid} =
       DynamicSupervisor.start_child(
         SceneServer.PlayerCharacterSup,
-        {SceneServer.PlayerCharacter, {cid, connection_pid, client_timestamp}}
+        {SceneServer.PlayerCharacter, {cid, connection_pid, client_timestamp, character_profile}}
       )
 
     new_players = players |> Map.put_new(cid, player_pid)

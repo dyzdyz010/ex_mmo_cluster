@@ -2,14 +2,14 @@ use crate::{
     config::ClientConfig,
     protocol::{
         ClientMessage, NetVec3, ServerMessage, decode_server_payload, encode_client_frame,
-        take_frame,
+        encode_client_payload, take_frame,
     },
 };
 use bevy::prelude::Resource;
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, Sender},
@@ -17,6 +17,27 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageTransport {
+    Tcp,
+    Udp,
+}
+
+impl MessageTransport {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+        }
+    }
+}
+
+impl Default for MessageTransport {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
@@ -40,6 +61,7 @@ pub enum NetworkEvent {
     LocalPosition {
         cid: i64,
         location: NetVec3,
+        transport: MessageTransport,
     },
     PlayerEnter {
         cid: i64,
@@ -48,6 +70,7 @@ pub enum NetworkEvent {
     PlayerMove {
         cid: i64,
         location: NetVec3,
+        transport: MessageTransport,
     },
     PlayerLeave {
         cid: i64,
@@ -68,6 +91,12 @@ pub enum NetworkEvent {
     },
     Heartbeat {
         server_ts: u64,
+    },
+    TransportState {
+        control_transport: MessageTransport,
+        movement_transport: MessageTransport,
+        fast_lane_status: String,
+        udp_endpoint: Option<String>,
     },
     Log(String),
     Disconnected(String),
@@ -90,6 +119,433 @@ enum ConnectionPhase {
     AwaitingAuth,
     AwaitingEnterScene,
     InScene,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FastLaneState {
+    bootstrap_request_id: Option<u64>,
+    attach_request_id: Option<u64>,
+    udp_endpoint: Option<SocketAddr>,
+    ticket: Option<String>,
+    attached: bool,
+    last_error: Option<String>,
+}
+
+impl FastLaneState {
+    fn movement_transport(&self) -> MessageTransport {
+        if self.attached {
+            MessageTransport::Udp
+        } else {
+            MessageTransport::Tcp
+        }
+    }
+
+    fn status_text(&self) -> String {
+        if self.attached {
+            match self.udp_endpoint {
+                Some(endpoint) => format!("udp attached ({endpoint})"),
+                None => "udp attached".to_string(),
+            }
+        } else if let Some(endpoint) = self.udp_endpoint {
+            format!("attaching udp ({endpoint})")
+        } else if self.bootstrap_request_id.is_some() {
+            "requesting udp ticket".to_string()
+        } else if let Some(error) = &self.last_error {
+            format!("tcp fallback ({error})")
+        } else {
+            "tcp fallback".to_string()
+        }
+    }
+
+    fn reset_for_bootstrap(&mut self, request_id: u64) {
+        self.bootstrap_request_id = Some(request_id);
+        self.attach_request_id = None;
+        self.udp_endpoint = None;
+        self.ticket = None;
+        self.attached = false;
+        self.last_error = None;
+    }
+
+    fn prepare_attach(&mut self, request_id: u64, udp_endpoint: SocketAddr, ticket: String) {
+        self.bootstrap_request_id = None;
+        self.attach_request_id = Some(request_id);
+        self.udp_endpoint = Some(udp_endpoint);
+        self.ticket = Some(ticket);
+        self.attached = false;
+        self.last_error = None;
+    }
+
+    fn mark_attached(&mut self) {
+        self.attach_request_id = None;
+        self.ticket = None;
+        self.attached = true;
+        self.last_error = None;
+    }
+
+    fn mark_failed(&mut self, reason: String) {
+        self.bootstrap_request_id = None;
+        self.attach_request_id = None;
+        self.ticket = None;
+        self.udp_endpoint = None;
+        self.attached = false;
+        self.last_error = Some(reason);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OutboundAction {
+    Tcp(ClientMessage),
+    Udp(ClientMessage),
+    OpenUdpAndAttach {
+        udp_endpoint: SocketAddr,
+        request_id: u64,
+        ticket: String,
+    },
+}
+
+#[derive(Debug, Default, Clone)]
+struct RuntimeOutcome {
+    outbounds: Vec<OutboundAction>,
+    events: Vec<NetworkEvent>,
+}
+
+impl RuntimeOutcome {
+    fn with_event(mut self, event: NetworkEvent) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    fn push_outbound(&mut self, outbound: OutboundAction) {
+        self.outbounds.push(outbound);
+    }
+
+    fn push_event(&mut self, event: NetworkEvent) {
+        self.events.push(event);
+    }
+}
+
+#[derive(Debug)]
+struct ClientRuntime {
+    gate_tcp_addr: SocketAddr,
+    phase: ConnectionPhase,
+    next_request_id: u64,
+    auth_request_id: u64,
+    enter_scene_request_id: Option<u64>,
+    pending_time_sync: HashMap<u64, u64>,
+    fast_lane: FastLaneState,
+}
+
+impl ClientRuntime {
+    fn new(gate_tcp_addr: SocketAddr) -> Self {
+        Self {
+            gate_tcp_addr,
+            phase: ConnectionPhase::AwaitingAuth,
+            next_request_id: 2,
+            auth_request_id: 1,
+            enter_scene_request_id: None,
+            pending_time_sync: HashMap::new(),
+            fast_lane: FastLaneState::default(),
+        }
+    }
+
+    fn transport_event(&self) -> NetworkEvent {
+        NetworkEvent::TransportState {
+            control_transport: MessageTransport::Tcp,
+            movement_transport: self.fast_lane.movement_transport(),
+            fast_lane_status: self.fast_lane.status_text(),
+            udp_endpoint: self
+                .fast_lane
+                .udp_endpoint
+                .map(|endpoint| endpoint.to_string()),
+        }
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        request_id
+    }
+
+    fn initial_auth_message(&self, config: &ClientConfig) -> ClientMessage {
+        ClientMessage::AuthRequest {
+            request_id: self.auth_request_id,
+            username: config.username.clone(),
+            token: config.token.clone(),
+        }
+    }
+
+    fn handle_command(&mut self, config: &ClientConfig, command: NetworkCommand) -> RuntimeOutcome {
+        let mut outcome = RuntimeOutcome::default();
+
+        match command {
+            NetworkCommand::Shutdown => {}
+            NetworkCommand::Movement {
+                location,
+                velocity,
+                acceleration,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                let outbound = ClientMessage::Movement {
+                    request_id,
+                    cid: config.cid,
+                    timestamp: now_millis(),
+                    location,
+                    velocity,
+                    acceleration,
+                };
+
+                match self.fast_lane.movement_transport() {
+                    MessageTransport::Tcp => outcome.push_outbound(OutboundAction::Tcp(outbound)),
+                    MessageTransport::Udp => outcome.push_outbound(OutboundAction::Udp(outbound)),
+                }
+            }
+            NetworkCommand::Chat(text) if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::ChatSay {
+                    request_id,
+                    text,
+                }));
+            }
+            NetworkCommand::CastSkill(skill_id) if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::SkillCast {
+                    request_id,
+                    skill_id,
+                }));
+            }
+            _ => {}
+        }
+
+        outcome
+    }
+
+    fn heartbeat_message(&self) -> Option<ClientMessage> {
+        (self.phase != ConnectionPhase::AwaitingAuth).then(|| ClientMessage::Heartbeat {
+            timestamp: now_millis(),
+        })
+    }
+
+    fn time_sync_message(&mut self) -> Option<ClientMessage> {
+        if self.phase == ConnectionPhase::AwaitingAuth {
+            return None;
+        }
+
+        let request_id = self.next_request_id();
+        let client_send_ts = now_millis();
+        self.pending_time_sync.insert(request_id, client_send_ts);
+
+        Some(ClientMessage::TimeSync {
+            request_id,
+            client_send_ts,
+        })
+    }
+
+    fn mark_fast_lane_failed(&mut self, reason: impl Into<String>) -> RuntimeOutcome {
+        let reason = reason.into();
+        self.fast_lane.mark_failed(reason.clone());
+
+        RuntimeOutcome::default()
+            .with_event(NetworkEvent::Log(format!(
+                "fast lane unavailable, continuing on TCP: {reason}"
+            )))
+            .with_event(self.transport_event())
+    }
+
+    fn handle_server_message(
+        &mut self,
+        config: &ClientConfig,
+        transport: MessageTransport,
+        message: ServerMessage,
+    ) -> Result<RuntimeOutcome, String> {
+        let mut outcome = RuntimeOutcome::default();
+
+        match message {
+            ServerMessage::Result {
+                packet_id,
+                ok,
+                movement,
+            } => {
+                if packet_id == self.auth_request_id {
+                    if !ok {
+                        return Err("auth failed".to_string());
+                    }
+
+                    self.phase = ConnectionPhase::AwaitingEnterScene;
+                    let request_id = self.next_request_id();
+                    self.enter_scene_request_id = Some(request_id);
+                    outcome.push_outbound(OutboundAction::Tcp(ClientMessage::EnterScene {
+                        request_id,
+                        cid: config.cid,
+                    }));
+                    outcome.push_event(NetworkEvent::Status(
+                        "authenticated; requesting enter-scene".to_string(),
+                    ));
+                    return Ok(outcome);
+                }
+
+                if let Some((cid, location)) = movement {
+                    outcome.push_event(NetworkEvent::LocalPosition {
+                        cid,
+                        location,
+                        transport,
+                    });
+                } else {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "result packet_id={packet_id} via {} status={}",
+                        transport.label(),
+                        if ok { "ok" } else { "error" }
+                    )));
+                }
+            }
+            ServerMessage::EnterSceneResult {
+                packet_id,
+                ok,
+                location,
+            } => {
+                if Some(packet_id) != self.enter_scene_request_id {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "unexpected enter-scene packet_id={packet_id}"
+                    )));
+                    return Ok(outcome);
+                }
+
+                if !ok {
+                    return Err("enter-scene failed".to_string());
+                }
+
+                self.phase = ConnectionPhase::InScene;
+                let location =
+                    location.ok_or_else(|| "enter-scene success missing location".to_string())?;
+                outcome.push_event(NetworkEvent::Status("in scene".to_string()));
+                outcome.push_event(NetworkEvent::EnteredScene {
+                    cid: config.cid,
+                    location,
+                });
+
+                let request_id = self.next_request_id();
+                self.fast_lane.reset_for_bootstrap(request_id);
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                    request_id,
+                }));
+                outcome.push_event(NetworkEvent::Log(
+                    "scene joined; requesting UDP fast-lane bootstrap".to_string(),
+                ));
+                outcome.push_event(self.transport_event());
+            }
+            ServerMessage::FastLaneResult {
+                packet_id,
+                ok,
+                udp_port,
+                ticket,
+            } => {
+                if Some(packet_id) != self.fast_lane.bootstrap_request_id {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "unexpected fast-lane bootstrap packet_id={packet_id}"
+                    )));
+                    return Ok(outcome);
+                }
+
+                if !ok {
+                    return Ok(self.mark_fast_lane_failed("bootstrap rejected by gate"));
+                }
+
+                let udp_port =
+                    udp_port.ok_or_else(|| "fast-lane success missing udp port".to_string())?;
+                let ticket =
+                    ticket.ok_or_else(|| "fast-lane success missing attach ticket".to_string())?;
+                let attach_request_id = self.next_request_id();
+                let udp_endpoint = SocketAddr::new(self.gate_tcp_addr.ip(), udp_port);
+
+                self.fast_lane
+                    .prepare_attach(attach_request_id, udp_endpoint, ticket.clone());
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "received UDP fast-lane ticket; attaching to {udp_endpoint}"
+                )));
+                outcome.push_event(self.transport_event());
+                outcome.push_outbound(OutboundAction::OpenUdpAndAttach {
+                    udp_endpoint,
+                    request_id: attach_request_id,
+                    ticket,
+                });
+            }
+            ServerMessage::FastLaneAttached { packet_id, ok } => {
+                if Some(packet_id) != self.fast_lane.attach_request_id {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "unexpected fast-lane attach ack packet_id={packet_id}"
+                    )));
+                    return Ok(outcome);
+                }
+
+                if !ok {
+                    return Ok(self.mark_fast_lane_failed("udp attach rejected by gate"));
+                }
+
+                self.fast_lane.mark_attached();
+                outcome.push_event(NetworkEvent::Log(
+                    "udp fast lane attached; movement and AOI updates now use UDP".to_string(),
+                ));
+                outcome.push_event(self.transport_event());
+            }
+            ServerMessage::PlayerEnter { cid, location } => {
+                outcome.push_event(NetworkEvent::PlayerEnter { cid, location });
+            }
+            ServerMessage::PlayerMove { cid, location } => {
+                outcome.push_event(NetworkEvent::PlayerMove {
+                    cid,
+                    location,
+                    transport,
+                });
+            }
+            ServerMessage::PlayerLeave { cid } => {
+                outcome.push_event(NetworkEvent::PlayerLeave { cid });
+            }
+            ServerMessage::ChatMessage {
+                cid,
+                username,
+                text,
+            } => {
+                outcome.push_event(NetworkEvent::ChatMessage {
+                    cid,
+                    username,
+                    text,
+                });
+            }
+            ServerMessage::SkillEvent {
+                cid,
+                skill_id,
+                location,
+            } => {
+                outcome.push_event(NetworkEvent::SkillEvent {
+                    cid,
+                    skill_id,
+                    location,
+                });
+            }
+            ServerMessage::TimeSyncReply {
+                packet_id,
+                client_send_ts,
+                server_recv_ts,
+                server_send_ts,
+            } => {
+                self.pending_time_sync.remove(&packet_id);
+                let now = now_millis() as f64;
+                let client_send = client_send_ts as f64;
+                let server_mid = (server_recv_ts as f64 + server_send_ts as f64) / 2.0;
+                let client_mid = (client_send + now) / 2.0;
+                outcome.push_event(NetworkEvent::TimeSync {
+                    rtt_ms: now - client_send,
+                    offset_ms: server_mid - client_mid,
+                });
+            }
+            ServerMessage::HeartbeatReply { timestamp } => {
+                outcome.push_event(NetworkEvent::Heartbeat {
+                    server_ts: timestamp,
+                });
+            }
+        }
+
+        Ok(outcome)
+    }
 }
 
 pub fn spawn_network_thread(config: ClientConfig) -> NetworkBridge {
@@ -116,12 +572,22 @@ fn network_loop(
         return;
     }
 
+    let gate_tcp_addr = match resolve_gate_addr(&config.gate_addr) {
+        Ok(addr) => addr,
+        Err(err) => {
+            let _ = event_tx.send(NetworkEvent::Disconnected(format!(
+                "failed to resolve gate address {}: {err}",
+                config.gate_addr
+            )));
+            return;
+        }
+    };
+
     let _ = event_tx.send(NetworkEvent::Status(format!(
-        "connecting to {}",
-        config.gate_addr
+        "connecting to {gate_tcp_addr}"
     )));
 
-    let mut stream = match TcpStream::connect(&config.gate_addr) {
+    let mut stream = match TcpStream::connect(gate_tcp_addr) {
         Ok(stream) => stream,
         Err(err) => {
             let _ = event_tx.send(NetworkEvent::Disconnected(format!("connect failed: {err}")));
@@ -142,128 +608,62 @@ fn network_loop(
         )));
     }
 
-    let mut next_request_id = 1_u64;
-    let auth_request_id = next_request_id;
-    next_request_id += 1;
+    let mut runtime = ClientRuntime::new(gate_tcp_addr);
+    let _ = event_tx.send(runtime.transport_event());
 
-    if let Err(err) = send_message(
-        &mut stream,
-        &ClientMessage::AuthRequest {
-            request_id: auth_request_id,
-            username: config.username.clone(),
-            token: config.token.clone(),
-        },
-    ) {
+    if let Err(err) = send_tcp_message(&mut stream, &runtime.initial_auth_message(&config)) {
         let _ = event_tx.send(NetworkEvent::Disconnected(format!(
             "auth send failed: {err}"
         )));
         return;
     }
 
-    let mut phase = ConnectionPhase::AwaitingAuth;
     let mut frame_buffer = Vec::new();
     let mut read_buffer = [0_u8; 4096];
-    let mut pending_time_sync = HashMap::new();
-    let mut enter_scene_request_id = None;
+    let mut udp_socket: Option<UdpSocket> = None;
+    let mut udp_read_buffer = [0_u8; 4096];
     let mut last_heartbeat = Instant::now();
     let mut last_time_sync = Instant::now();
 
     loop {
         while let Ok(command) = command_rx.try_recv() {
-            match command {
-                NetworkCommand::Shutdown => return,
-                NetworkCommand::Movement {
-                    location,
-                    velocity,
-                    acceleration,
-                } if phase == ConnectionPhase::InScene => {
-                    let request_id = next_request_id;
-                    next_request_id += 1;
-                    if let Err(err) = send_message(
-                        &mut stream,
-                        &ClientMessage::Movement {
-                            request_id,
-                            cid: config.cid,
-                            timestamp: now_millis(),
-                            location,
-                            velocity,
-                            acceleration,
-                        },
-                    ) {
-                        let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                            "movement send failed: {err}"
-                        )));
-                        return;
-                    }
-                }
-                NetworkCommand::Chat(text) if phase == ConnectionPhase::InScene => {
-                    let request_id = next_request_id;
-                    next_request_id += 1;
-                    if let Err(err) =
-                        send_message(&mut stream, &ClientMessage::ChatSay { request_id, text })
-                    {
-                        let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                            "chat send failed: {err}"
-                        )));
-                        return;
-                    }
-                }
-                NetworkCommand::CastSkill(skill_id) if phase == ConnectionPhase::InScene => {
-                    let request_id = next_request_id;
-                    next_request_id += 1;
-                    if let Err(err) = send_message(
-                        &mut stream,
-                        &ClientMessage::SkillCast {
-                            request_id,
-                            skill_id,
-                        },
-                    ) {
-                        let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                            "skill send failed: {err}"
-                        )));
-                        return;
-                    }
-                }
-                _ => {}
+            if matches!(command, NetworkCommand::Shutdown) {
+                return;
+            }
+
+            let outcome = runtime.handle_command(&config, command);
+            if let Err(reason) = apply_runtime_outcome(
+                &mut runtime,
+                &mut stream,
+                &mut udp_socket,
+                &event_tx,
+                outcome,
+            ) {
+                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                return;
             }
         }
 
-        if phase != ConnectionPhase::AwaitingAuth
-            && last_heartbeat.elapsed() >= Duration::from_millis(config.heartbeat_interval_ms)
-        {
-            if let Err(err) = send_message(
-                &mut stream,
-                &ClientMessage::Heartbeat {
-                    timestamp: now_millis(),
-                },
-            ) {
-                let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                    "heartbeat send failed: {err}"
-                )));
-                return;
+        if last_heartbeat.elapsed() >= Duration::from_millis(config.heartbeat_interval_ms) {
+            if let Some(message) = runtime.heartbeat_message() {
+                if let Err(err) = send_tcp_message(&mut stream, &message) {
+                    let _ = event_tx.send(NetworkEvent::Disconnected(format!(
+                        "heartbeat send failed: {err}"
+                    )));
+                    return;
+                }
             }
             last_heartbeat = Instant::now();
         }
 
-        if phase != ConnectionPhase::AwaitingAuth
-            && last_time_sync.elapsed() >= Duration::from_millis(config.time_sync_interval_ms)
-        {
-            let request_id = next_request_id;
-            next_request_id += 1;
-            let client_send_ts = now_millis();
-            pending_time_sync.insert(request_id, client_send_ts);
-
-            if let Err(err) = send_message(
-                &mut stream,
-                &ClientMessage::TimeSync {
-                    request_id,
-                    client_send_ts,
-                },
-            ) {
-                let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                    "time-sync send failed: {err}"
-                )));
-                return;
+        if last_time_sync.elapsed() >= Duration::from_millis(config.time_sync_interval_ms) {
+            if let Some(message) = runtime.time_sync_message() {
+                if let Err(err) = send_tcp_message(&mut stream, &message) {
+                    let _ = event_tx.send(NetworkEvent::Disconnected(format!(
+                        "time-sync send failed: {err}"
+                    )));
+                    return;
+                }
             }
 
             last_time_sync = Instant::now();
@@ -280,22 +680,28 @@ fn network_loop(
                 frame_buffer.extend_from_slice(&read_buffer[..n]);
                 while let Some(frame) = take_frame(&mut frame_buffer) {
                     match decode_server_payload(&frame) {
-                        Ok(message) => {
-                            if let Err(err) = handle_server_message(
-                                &config,
-                                &mut stream,
-                                &event_tx,
-                                &mut next_request_id,
-                                auth_request_id,
-                                &mut enter_scene_request_id,
-                                &mut pending_time_sync,
-                                &mut phase,
-                                message,
-                            ) {
-                                let _ = event_tx.send(NetworkEvent::Disconnected(err));
+                        Ok(message) => match runtime.handle_server_message(
+                            &config,
+                            MessageTransport::Tcp,
+                            message,
+                        ) {
+                            Ok(outcome) => {
+                                if let Err(reason) = apply_runtime_outcome(
+                                    &mut runtime,
+                                    &mut stream,
+                                    &mut udp_socket,
+                                    &event_tx,
+                                    outcome,
+                                ) {
+                                    let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                    return;
+                                }
+                            }
+                            Err(reason) => {
+                                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
                                 return;
                             }
-                        }
+                        },
                         Err(err) => {
                             let _ =
                                 event_tx.send(NetworkEvent::Log(format!("decode error: {err}")));
@@ -304,7 +710,7 @@ fn network_loop(
                 }
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => {
                 let _ = event_tx.send(NetworkEvent::Disconnected(format!(
                     "socket read failed: {err}"
@@ -313,146 +719,167 @@ fn network_loop(
             }
         }
 
+        if udp_socket.is_some() {
+            loop {
+                let recv_result = match udp_socket.as_ref() {
+                    Some(socket) => socket.recv(&mut udp_read_buffer),
+                    None => break,
+                };
+
+                match recv_result {
+                    Ok(n) => match decode_server_payload(&udp_read_buffer[..n]) {
+                        Ok(message) => match runtime.handle_server_message(
+                            &config,
+                            MessageTransport::Udp,
+                            message,
+                        ) {
+                            Ok(outcome) => {
+                                if let Err(reason) = apply_runtime_outcome(
+                                    &mut runtime,
+                                    &mut stream,
+                                    &mut udp_socket,
+                                    &event_tx,
+                                    outcome,
+                                ) {
+                                    let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                    return;
+                                }
+                            }
+                            Err(reason) => {
+                                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                return;
+                            }
+                        },
+                        Err(err) => {
+                            let _ = event_tx
+                                .send(NetworkEvent::Log(format!("udp decode error: {err}")));
+                        }
+                    },
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(err) => {
+                        udp_socket = None;
+                        let outcome =
+                            runtime.mark_fast_lane_failed(format!("udp socket read failed: {err}"));
+                        let _ = apply_runtime_outcome(
+                            &mut runtime,
+                            &mut stream,
+                            &mut udp_socket,
+                            &event_tx,
+                            outcome,
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
         thread::sleep(Duration::from_millis(16));
     }
 }
 
-fn handle_server_message(
-    config: &ClientConfig,
+fn apply_runtime_outcome(
+    runtime: &mut ClientRuntime,
     stream: &mut TcpStream,
+    udp_socket: &mut Option<UdpSocket>,
     event_tx: &Sender<NetworkEvent>,
-    next_request_id: &mut u64,
-    auth_request_id: u64,
-    enter_scene_request_id: &mut Option<u64>,
-    pending_time_sync: &mut HashMap<u64, u64>,
-    phase: &mut ConnectionPhase,
-    message: ServerMessage,
+    outcome: RuntimeOutcome,
 ) -> Result<(), String> {
-    match message {
-        ServerMessage::Result {
-            packet_id,
-            ok,
-            movement,
-        } => {
-            if packet_id == auth_request_id {
-                if !ok {
-                    return Err("auth failed".to_string());
+    for outbound in outcome.outbounds {
+        match outbound {
+            OutboundAction::Tcp(message) => send_tcp_message(stream, &message)
+                .map_err(|err| format!("tcp send failed: {err}"))?,
+            OutboundAction::Udp(message) => {
+                if let Some(socket) = udp_socket.as_ref() {
+                    if let Err(err) = send_udp_message(socket, &message) {
+                        *udp_socket = None;
+                        let fallback = runtime.mark_fast_lane_failed(format!(
+                            "udp send failed, falling back to TCP: {err}"
+                        ));
+                        for event in fallback.events {
+                            let _ = event_tx.send(event);
+                        }
+
+                        if let ClientMessage::Movement { .. } = &message {
+                            send_tcp_message(stream, &message).map_err(|tcp_err| {
+                                format!("tcp fallback send failed: {tcp_err}")
+                            })?;
+                        }
+                    }
+                } else if let ClientMessage::Movement { .. } = &message {
+                    send_tcp_message(stream, &message)
+                        .map_err(|err| format!("tcp fallback send failed: {err}"))?;
+                } else {
+                    let fallback = runtime.mark_fast_lane_failed(
+                        "udp socket missing during non-movement send".to_string(),
+                    );
+                    for event in fallback.events {
+                        let _ = event_tx.send(event);
+                    }
                 }
-
-                *phase = ConnectionPhase::AwaitingEnterScene;
-                let request_id = *next_request_id;
-                *next_request_id += 1;
-                *enter_scene_request_id = Some(request_id);
-                send_message(
-                    stream,
-                    &ClientMessage::EnterScene {
-                        request_id,
-                        cid: config.cid,
-                    },
-                )
-                .map_err(|err| format!("enter-scene send failed: {err}"))?;
-                let _ = event_tx.send(NetworkEvent::Status(
-                    "authenticated; requesting enter-scene".to_string(),
-                ));
-            } else {
-                if let Some((cid, location)) = movement {
-                    let _ = event_tx.send(NetworkEvent::LocalPosition { cid, location });
+            }
+            OutboundAction::OpenUdpAndAttach {
+                udp_endpoint,
+                request_id,
+                ticket,
+            } => match open_udp_socket(udp_endpoint) {
+                Ok(socket) => {
+                    send_udp_message(
+                        &socket,
+                        &ClientMessage::FastLaneAttach { request_id, ticket },
+                    )
+                    .map_err(|err| format!("udp attach send failed: {err}"))?;
+                    *udp_socket = Some(socket);
                 }
+                Err(err) => {
+                    *udp_socket = None;
+                    let fallback =
+                        runtime.mark_fast_lane_failed(format!("udp open/connect failed: {err}"));
+                    for event in fallback.events {
+                        let _ = event_tx.send(event);
+                    }
+                }
+            },
+        }
+    }
 
-                let _ = event_tx.send(NetworkEvent::Log(format!(
-                    "result packet_id={packet_id} status={}",
-                    if ok { "ok" } else { "error" }
-                )));
-            }
-        }
-        ServerMessage::EnterSceneResult {
-            packet_id,
-            ok,
-            location,
-        } => {
-            if Some(packet_id) != *enter_scene_request_id {
-                let _ = event_tx.send(NetworkEvent::Log(format!(
-                    "unexpected enter-scene packet_id={packet_id}"
-                )));
-                return Ok(());
-            }
-
-            if !ok {
-                return Err("enter-scene failed".to_string());
-            }
-
-            *phase = ConnectionPhase::InScene;
-            let location =
-                location.ok_or_else(|| "enter-scene success missing location".to_string())?;
-            let _ = event_tx.send(NetworkEvent::Status("in scene".to_string()));
-            let _ = event_tx.send(NetworkEvent::EnteredScene {
-                cid: config.cid,
-                location,
-            });
-        }
-        ServerMessage::PlayerEnter { cid, location } => {
-            let _ = event_tx.send(NetworkEvent::PlayerEnter { cid, location });
-        }
-        ServerMessage::PlayerMove { cid, location } => {
-            let _ = event_tx.send(NetworkEvent::PlayerMove { cid, location });
-        }
-        ServerMessage::PlayerLeave { cid } => {
-            let _ = event_tx.send(NetworkEvent::PlayerLeave { cid });
-        }
-        ServerMessage::ChatMessage {
-            cid,
-            username,
-            text,
-        } => {
-            let _ = event_tx.send(NetworkEvent::ChatMessage {
-                cid,
-                username,
-                text,
-            });
-        }
-        ServerMessage::SkillEvent {
-            cid,
-            skill_id,
-            location,
-        } => {
-            let _ = event_tx.send(NetworkEvent::SkillEvent {
-                cid,
-                skill_id,
-                location,
-            });
-        }
-        ServerMessage::TimeSyncReply {
-            packet_id,
-            client_send_ts,
-            server_recv_ts,
-            server_send_ts,
-        } => {
-            pending_time_sync.remove(&packet_id);
-            let now = now_millis() as f64;
-            let client_send = client_send_ts as f64;
-            let server_mid = (server_recv_ts as f64 + server_send_ts as f64) / 2.0;
-            let client_mid = (client_send + now) / 2.0;
-            let _ = event_tx.send(NetworkEvent::TimeSync {
-                rtt_ms: now - client_send,
-                offset_ms: server_mid - client_mid,
-            });
-        }
-        ServerMessage::HeartbeatReply { timestamp } => {
-            let _ = event_tx.send(NetworkEvent::Heartbeat {
-                server_ts: timestamp,
-            });
-        }
+    for event in outcome.events {
+        let _ = event_tx.send(event);
     }
 
     Ok(())
 }
 
-fn send_message(stream: &mut TcpStream, message: &ClientMessage) -> io::Result<()> {
-    let frame = encode_client_frame(message);
-    send_bytes(stream, &frame)
+fn resolve_gate_addr(gate_addr: &str) -> io::Result<SocketAddr> {
+    gate_addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no socket addresses"))
 }
 
-fn send_bytes(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
+fn open_udp_socket(endpoint: SocketAddr) -> io::Result<UdpSocket> {
+    let bind_addr = match endpoint.ip() {
+        IpAddr::V4(_) => "0.0.0.0:0",
+        IpAddr::V6(_) => "[::]:0",
+    };
+
+    let socket = UdpSocket::bind(bind_addr)?;
+    socket.connect(endpoint)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+fn send_tcp_message(stream: &mut TcpStream, message: &ClientMessage) -> io::Result<()> {
+    let frame = encode_client_frame(message);
+    send_tcp_bytes(stream, &frame)
+}
+
+fn send_udp_message(socket: &UdpSocket, message: &ClientMessage) -> io::Result<()> {
+    let payload = encode_client_payload(message);
+    socket.send(&payload).map(|_| ())
+}
+
+fn send_tcp_bytes(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
     let mut written = 0;
     while written < bytes.len() {
         match stream.write(&bytes[written..]) {
@@ -478,4 +905,245 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    fn test_config() -> ClientConfig {
+        ClientConfig {
+            gate_addr: "127.0.0.1:29000".into(),
+            username: "tester".into(),
+            token: "token".into(),
+            cid: 42,
+            movement_speed: 220.0,
+            movement_interval_ms: 100,
+            heartbeat_interval_ms: 2_000,
+            time_sync_interval_ms: 5_000,
+        }
+    }
+
+    fn test_gate_addr() -> SocketAddr {
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 29_000))
+    }
+
+    fn movement_command() -> NetworkCommand {
+        NetworkCommand::Movement {
+            location: [1.0, 2.0, 3.0],
+            velocity: [4.0, 5.0, 0.0],
+            acceleration: [0.0, 0.0, 0.0],
+        }
+    }
+
+    fn expect_transport_state(event: &NetworkEvent) -> (&str, MessageTransport) {
+        match event {
+            NetworkEvent::TransportState {
+                fast_lane_status,
+                movement_transport,
+                ..
+            } => (fast_lane_status.as_str(), *movement_transport),
+            other => panic!("expected transport state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn requests_fast_lane_bootstrap_after_scene_join() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+
+        let auth = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::Result {
+                    packet_id: runtime.auth_request_id,
+                    ok: true,
+                    movement: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            auth.outbounds,
+            vec![OutboundAction::Tcp(ClientMessage::EnterScene {
+                request_id: 2,
+                cid: 42,
+            })]
+        );
+
+        let enter = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::EnterSceneResult {
+                    packet_id: 2,
+                    ok: true,
+                    location: Some([10.0, 20.0, 0.0]),
+                },
+            )
+            .unwrap();
+
+        assert!(
+            enter
+                .outbounds
+                .contains(&OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                    request_id: 3
+                }))
+        );
+        assert!(enter.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::EnteredScene {
+                cid: 42,
+                location: [10.0, 20.0, 0.0]
+            }
+        )));
+
+        let transport = enter
+            .events
+            .iter()
+            .find(|event| matches!(event, NetworkEvent::TransportState { .. }))
+            .expect("transport state event");
+        let (status, movement_transport) = expect_transport_state(transport);
+        assert_eq!(status, "requesting udp ticket");
+        assert_eq!(movement_transport, MessageTransport::Tcp);
+    }
+
+    #[test]
+    fn movement_uses_udp_only_after_attach_ack_and_tracks_udp_downlink() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+        runtime.fast_lane.reset_for_bootstrap(3);
+
+        let bootstrap = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::FastLaneResult {
+                    packet_id: 3,
+                    ok: true,
+                    udp_port: Some(29_001),
+                    ticket: Some("ticket-123".into()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            bootstrap.outbounds,
+            vec![OutboundAction::OpenUdpAndAttach {
+                udp_endpoint: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 29_001)),
+                request_id: 2,
+                ticket: "ticket-123".into(),
+            }]
+        );
+
+        let before_attach = runtime.handle_command(&config, movement_command());
+        assert!(matches!(
+            before_attach.outbounds.as_slice(),
+            [OutboundAction::Tcp(ClientMessage::Movement { .. })]
+        ));
+
+        let attach = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::FastLaneAttached {
+                    packet_id: 2,
+                    ok: true,
+                },
+            )
+            .unwrap();
+
+        let transport = attach
+            .events
+            .iter()
+            .find(|event| matches!(event, NetworkEvent::TransportState { .. }))
+            .expect("transport state event");
+        let (status, movement_transport) = expect_transport_state(transport);
+        assert!(status.starts_with("udp attached"));
+        assert_eq!(movement_transport, MessageTransport::Udp);
+
+        let after_attach = runtime.handle_command(&config, movement_command());
+        assert!(matches!(
+            after_attach.outbounds.as_slice(),
+            [OutboundAction::Udp(ClientMessage::Movement { .. })]
+        ));
+
+        let move_ack = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::Result {
+                    packet_id: 99,
+                    ok: true,
+                    movement: Some((42, [7.0, 8.0, 9.0])),
+                },
+            )
+            .unwrap();
+        assert!(move_ack.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::LocalPosition {
+                cid: 42,
+                location: [7.0, 8.0, 9.0],
+                transport: MessageTransport::Udp,
+            }
+        )));
+
+        let player_move = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::PlayerMove {
+                    cid: 77,
+                    location: [11.0, 12.0, 13.0],
+                },
+            )
+            .unwrap();
+        assert!(player_move.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::PlayerMove {
+                cid: 77,
+                location: [11.0, 12.0, 13.0],
+                transport: MessageTransport::Udp,
+            }
+        )));
+    }
+
+    #[test]
+    fn falls_back_to_tcp_when_fast_lane_bootstrap_fails() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+        runtime.fast_lane.reset_for_bootstrap(5);
+
+        let fallback = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Tcp,
+                ServerMessage::FastLaneResult {
+                    packet_id: 5,
+                    ok: false,
+                    udp_port: None,
+                    ticket: None,
+                },
+            )
+            .unwrap();
+
+        let transport = fallback
+            .events
+            .iter()
+            .find(|event| matches!(event, NetworkEvent::TransportState { .. }))
+            .expect("transport state event");
+        let (status, movement_transport) = expect_transport_state(transport);
+        assert!(status.starts_with("tcp fallback"));
+        assert_eq!(movement_transport, MessageTransport::Tcp);
+
+        let movement = runtime.handle_command(&config, movement_command());
+        assert!(matches!(
+            movement.outbounds.as_slice(),
+            [OutboundAction::Tcp(ClientMessage::Movement { .. })]
+        ));
+    }
 }
