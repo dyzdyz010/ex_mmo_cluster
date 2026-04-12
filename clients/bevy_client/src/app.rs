@@ -138,10 +138,9 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
                 sample_movement_input,
                 poll_stdio_commands,
                 movement_sender,
-                sync_player_visuals,
+                (sync_player_visuals, camera_follow_local_player).chain(),
                 update_skill_pulses,
                 update_hud_text,
-                camera_follow_local_player,
             ),
         )
         .run();
@@ -829,9 +828,16 @@ fn update_hud_text(
 
 fn camera_follow_local_player(
     world_state: Res<WorldState>,
+    visuals: Query<(&PlayerVisual, &Transform), Without<Camera2d>>,
     mut camera: Single<&mut Transform, (With<Camera2d>, Without<PlayerVisual>)>,
 ) {
-    if let Some(position) = world_state.local_position {
+    if let Some((_, transform)) = visuals
+        .iter()
+        .find(|(visual, _transform)| visual.cid == world_state.local_cid)
+    {
+        camera.translation.x = transform.translation.x;
+        camera.translation.y = transform.translation.y;
+    } else if let Some(position) = world_state.local_position {
         camera.translation.x = position.x;
         camera.translation.y = position.y;
     }
