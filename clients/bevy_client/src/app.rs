@@ -77,6 +77,9 @@ struct InputTraceState {
     last_direction_label: String,
 }
 
+const VISUAL_SMOOTHING_SPEED: f32 = 18.0;
+const VISUAL_SNAP_DISTANCE: f32 = 96.0;
+
 impl Default for MovementDispatchState {
     fn default() -> Self {
         Self { stop_sent: true }
@@ -649,12 +652,13 @@ fn movement_direction_from_key(key: &Key) -> Vec2 {
 
 fn sync_player_visuals(
     mut commands: Commands,
+    time: Res<Time>,
     world_state: Res<WorldState>,
-    existing: Query<(Entity, &PlayerVisual)>,
+    mut existing: Query<(Entity, &PlayerVisual, &mut Transform)>,
 ) {
     let mut entities_by_cid = HashMap::new();
-    for (entity, visual) in &existing {
-        entities_by_cid.insert(visual.cid, entity);
+    for (entity, visual, transform) in &existing {
+        entities_by_cid.insert(visual.cid, (entity, transform.translation));
     }
 
     let mut desired = world_state.remote_players.clone();
@@ -663,10 +667,18 @@ fn sync_player_visuals(
     }
 
     for (&cid, &position) in &desired {
-        if let Some(entity) = entities_by_cid.remove(&cid) {
-            commands.entity(entity).insert(Transform::from_translation(
-                position + Vec3::new(0.0, 0.0, 1.0),
-            ));
+        let target = position + Vec3::new(0.0, 0.0, 1.0);
+
+        if let Some((entity, _)) = entities_by_cid.remove(&cid) {
+            if let Ok((_entity, _visual, mut transform)) = existing.get_mut(entity) {
+                transform.translation = smooth_translation(
+                    transform.translation,
+                    target,
+                    time.delta_secs(),
+                    VISUAL_SMOOTHING_SPEED,
+                    VISUAL_SNAP_DISTANCE,
+                );
+            }
         } else {
             let color = if cid == world_state.local_cid {
                 Color::srgb(0.25, 0.95, 0.45)
@@ -677,16 +689,37 @@ fn sync_player_visuals(
             commands.spawn((
                 PlayerVisual { cid },
                 Sprite::from_color(color, Vec2::splat(24.0)),
-                Transform::from_translation(position + Vec3::new(0.0, 0.0, 1.0)),
+                Transform::from_translation(target),
             ));
         }
     }
 
-    for (cid, entity) in entities_by_cid {
+    for (cid, (entity, _translation)) in entities_by_cid {
         if cid != world_state.local_cid {
             commands.entity(entity).despawn();
         }
     }
+}
+
+fn smooth_translation(
+    current: Vec3,
+    target: Vec3,
+    delta_secs: f32,
+    smoothing_speed: f32,
+    snap_distance: f32,
+) -> Vec3 {
+    let distance = current.distance(target);
+
+    if distance <= f32::EPSILON {
+        return target;
+    }
+
+    if distance >= snap_distance {
+        return target;
+    }
+
+    let factor = (smoothing_speed * delta_secs).clamp(0.0, 1.0);
+    current.lerp(target, factor)
 }
 
 fn update_skill_pulses(
@@ -880,5 +913,27 @@ mod tests {
             movement_direction_from_key(&Key::ArrowRight),
             Vec2::new(1.0, 0.0)
         );
+    }
+
+    #[test]
+    fn smooth_translation_moves_toward_target_without_overshoot() {
+        let current = Vec3::new(0.0, 0.0, 0.0);
+        let target = Vec3::new(10.0, 0.0, 0.0);
+
+        let next = smooth_translation(current, target, 1.0 / 60.0, 18.0, 96.0);
+
+        assert!(next.x > current.x);
+        assert!(next.x < target.x);
+        assert_eq!(next.y, 0.0);
+    }
+
+    #[test]
+    fn smooth_translation_snaps_large_corrections() {
+        let current = Vec3::new(0.0, 0.0, 0.0);
+        let target = Vec3::new(200.0, 0.0, 0.0);
+
+        let next = smooth_translation(current, target, 1.0 / 60.0, 18.0, 96.0);
+
+        assert_eq!(next, target);
     }
 }
