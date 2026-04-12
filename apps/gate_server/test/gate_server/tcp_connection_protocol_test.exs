@@ -143,6 +143,24 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
   end
 
+  defmodule FakeAuthInterface do
+    use GenServer
+
+    def start_link(opts \\ []) do
+      GenServer.start_link(__MODULE__, Map.new(opts), name: AuthServer.Interface)
+    end
+
+    @impl true
+    def init(attrs) do
+      {:ok, Map.merge(%{data_service: nil}, attrs)}
+    end
+
+    @impl true
+    def handle_call(:data_service, _from, state) do
+      {:reply, state.data_service, state}
+    end
+  end
+
   setup_all do
     _ = Application.stop(:gate_server)
     _ = Application.stop(:scene_server)
@@ -339,17 +357,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 43))
     assert {:ok, <<0x80, 43::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
 
-    sup = Process.whereis(DataService.DispatcherSup)
-    assert is_pid(sup)
-    Process.exit(sup, :kill)
-    Process.sleep(50)
-
-    on_exit(fn ->
-      case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
-      end
-    end)
+    _ = start_supervised(FakeAuthInterface)
 
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 44))
     assert {:ok, <<0x84, 44::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)

@@ -1,5 +1,6 @@
 use crate::{
     config::ClientConfig,
+    observe::ClientObserver,
     protocol::{
         ClientMessage, NetVec3, ServerMessage, decode_server_payload, encode_client_frame,
         encode_client_payload, take_frame,
@@ -741,11 +742,11 @@ impl ClientRuntime {
     }
 }
 
-pub fn spawn_network_thread(config: ClientConfig) -> NetworkBridge {
+pub fn spawn_network_thread(config: ClientConfig, observer: ClientObserver) -> NetworkBridge {
     let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
 
-    thread::spawn(move || network_loop(config, command_rx, event_tx));
+    thread::spawn(move || network_loop(config, observer, command_rx, event_tx));
 
     NetworkBridge {
         tx: command_tx,
@@ -755,59 +756,83 @@ pub fn spawn_network_thread(config: ClientConfig) -> NetworkBridge {
 
 fn network_loop(
     config: ClientConfig,
+    observer: ClientObserver,
     command_rx: Receiver<NetworkCommand>,
     event_tx: Sender<NetworkEvent>,
 ) {
     if config.token.trim().is_empty() {
-        let _ = event_tx.send(NetworkEvent::Disconnected(
-            "missing token: set BEVY_CLIENT_TOKEN before launching the client".to_string(),
-        ));
+        emit_event(
+            &observer,
+            &event_tx,
+            NetworkEvent::Disconnected(
+                "missing token: set BEVY_CLIENT_TOKEN before launching the client".to_string(),
+            ),
+        );
         return;
     }
 
     let gate_tcp_addr = match resolve_gate_addr(&config.gate_addr) {
         Ok(addr) => addr,
         Err(err) => {
-            let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                "failed to resolve gate address {}: {err}",
-                config.gate_addr
-            )));
+            emit_event(
+                &observer,
+                &event_tx,
+                NetworkEvent::Disconnected(format!(
+                    "failed to resolve gate address {}: {err}",
+                    config.gate_addr
+                )),
+            );
             return;
         }
     };
 
-    let _ = event_tx.send(NetworkEvent::Status(format!(
-        "connecting to {gate_tcp_addr}"
-    )));
+    emit_event(
+        &observer,
+        &event_tx,
+        NetworkEvent::Status(format!("connecting to {gate_tcp_addr}")),
+    );
 
     let mut stream = match TcpStream::connect(gate_tcp_addr) {
         Ok(stream) => stream,
         Err(err) => {
-            let _ = event_tx.send(NetworkEvent::Disconnected(format!("connect failed: {err}")));
+            emit_event(
+                &observer,
+                &event_tx,
+                NetworkEvent::Disconnected(format!("connect failed: {err}")),
+            );
             return;
         }
     };
 
     if let Err(err) = stream.set_nonblocking(true) {
-        let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-            "nonblocking setup failed: {err}"
-        )));
+        emit_event(
+            &observer,
+            &event_tx,
+            NetworkEvent::Disconnected(format!("nonblocking setup failed: {err}")),
+        );
         return;
     }
 
     if let Err(err) = stream.set_nodelay(true) {
-        let _ = event_tx.send(NetworkEvent::Log(format!(
-            "warning: failed to enable TCP_NODELAY: {err}"
-        )));
+        emit_event(
+            &observer,
+            &event_tx,
+            NetworkEvent::Log(format!("warning: failed to enable TCP_NODELAY: {err}")),
+        );
     }
 
     let mut runtime = ClientRuntime::new(gate_tcp_addr);
-    let _ = event_tx.send(runtime.transport_event());
+    emit_event(&observer, &event_tx, runtime.transport_event());
 
-    if let Err(err) = send_tcp_message(&mut stream, &runtime.initial_auth_message(&config)) {
-        let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-            "auth send failed: {err}"
-        )));
+    let initial_auth = runtime.initial_auth_message(&config);
+    observe_outbound_message(&observer, "tcp", &initial_auth);
+
+    if let Err(err) = send_tcp_message(&mut stream, &initial_auth) {
+        emit_event(
+            &observer,
+            &event_tx,
+            NetworkEvent::Disconnected(format!("auth send failed: {err}")),
+        );
         return;
     }
 
@@ -830,19 +855,23 @@ fn network_loop(
                 &mut stream,
                 &mut udp_socket,
                 &event_tx,
+                &observer,
                 outcome,
             ) {
-                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
                 return;
             }
         }
 
         if last_heartbeat.elapsed() >= Duration::from_millis(config.heartbeat_interval_ms) {
             if let Some(message) = runtime.heartbeat_message() {
+                observe_outbound_message(&observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                        "heartbeat send failed: {err}"
-                    )));
+                    emit_event(
+                        &observer,
+                        &event_tx,
+                        NetworkEvent::Disconnected(format!("heartbeat send failed: {err}")),
+                    );
                     return;
                 }
             }
@@ -851,10 +880,13 @@ fn network_loop(
 
         if last_time_sync.elapsed() >= Duration::from_millis(config.time_sync_interval_ms) {
             if let Some(message) = runtime.time_sync_message() {
+                observe_outbound_message(&observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                        "time-sync send failed: {err}"
-                    )));
+                    emit_event(
+                        &observer,
+                        &event_tx,
+                        NetworkEvent::Disconnected(format!("time-sync send failed: {err}")),
+                    );
                     return;
                 }
             }
@@ -869,18 +901,21 @@ fn network_loop(
                 &mut stream,
                 &mut udp_socket,
                 &event_tx,
+                &observer,
                 retry_outcome,
             ) {
-                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
                 return;
             }
         }
 
         match stream.read(&mut read_buffer) {
             Ok(0) => {
-                let _ = event_tx.send(NetworkEvent::Disconnected(
-                    "server closed the connection".to_string(),
-                ));
+                emit_event(
+                    &observer,
+                    &event_tx,
+                    NetworkEvent::Disconnected("server closed the connection".to_string()),
+                );
                 return;
             }
             Ok(n) => {
@@ -898,20 +933,32 @@ fn network_loop(
                                     &mut stream,
                                     &mut udp_socket,
                                     &event_tx,
+                                    &observer,
                                     outcome,
                                 ) {
-                                    let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                    emit_event(
+                                        &observer,
+                                        &event_tx,
+                                        NetworkEvent::Disconnected(reason),
+                                    );
                                     return;
                                 }
                             }
                             Err(reason) => {
-                                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                emit_event(
+                                    &observer,
+                                    &event_tx,
+                                    NetworkEvent::Disconnected(reason),
+                                );
                                 return;
                             }
                         },
                         Err(err) => {
-                            let _ =
-                                event_tx.send(NetworkEvent::Log(format!("decode error: {err}")));
+                            emit_event(
+                                &observer,
+                                &event_tx,
+                                NetworkEvent::Log(format!("decode error: {err}")),
+                            );
                         }
                     }
                 }
@@ -919,9 +966,11 @@ fn network_loop(
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => {
-                let _ = event_tx.send(NetworkEvent::Disconnected(format!(
-                    "socket read failed: {err}"
-                )));
+                emit_event(
+                    &observer,
+                    &event_tx,
+                    NetworkEvent::Disconnected(format!("socket read failed: {err}")),
+                );
                 return;
             }
         }
@@ -946,20 +995,32 @@ fn network_loop(
                                     &mut stream,
                                     &mut udp_socket,
                                     &event_tx,
+                                    &observer,
                                     outcome,
                                 ) {
-                                    let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                    emit_event(
+                                        &observer,
+                                        &event_tx,
+                                        NetworkEvent::Disconnected(reason),
+                                    );
                                     return;
                                 }
                             }
                             Err(reason) => {
-                                let _ = event_tx.send(NetworkEvent::Disconnected(reason));
+                                emit_event(
+                                    &observer,
+                                    &event_tx,
+                                    NetworkEvent::Disconnected(reason),
+                                );
                                 return;
                             }
                         },
                         Err(err) => {
-                            let _ = event_tx
-                                .send(NetworkEvent::Log(format!("udp decode error: {err}")));
+                            emit_event(
+                                &observer,
+                                &event_tx,
+                                NetworkEvent::Log(format!("udp decode error: {err}")),
+                            );
                         }
                     },
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
@@ -973,6 +1034,7 @@ fn network_loop(
                             &mut stream,
                             &mut udp_socket,
                             &event_tx,
+                            &observer,
                             outcome,
                         );
                         break;
@@ -990,29 +1052,38 @@ fn apply_runtime_outcome(
     stream: &mut TcpStream,
     udp_socket: &mut Option<UdpSocket>,
     event_tx: &Sender<NetworkEvent>,
+    observer: &ClientObserver,
     outcome: RuntimeOutcome,
 ) -> Result<(), String> {
     for outbound in outcome.outbounds {
         match outbound {
-            OutboundAction::Tcp(message) => send_tcp_message(stream, &message)
-                .map_err(|err| format!("tcp send failed: {err}"))?,
+            OutboundAction::Tcp(message) => {
+                observe_outbound_message(observer, "tcp", &message);
+                send_tcp_message(stream, &message)
+                    .map_err(|err| format!("tcp send failed: {err}"))?
+            }
             OutboundAction::Udp(message) => {
                 if let Some(socket) = udp_socket.as_ref() {
+                    observe_outbound_message(observer, "udp", &message);
                     if let Err(err) = send_udp_message(socket, &message) {
                         *udp_socket = None;
                         let fallback = runtime.mark_fast_lane_failed(
                             format!("udp send failed, falling back to TCP: {err}"),
                             true,
                         );
-                        apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
+                        apply_runtime_outcome(
+                            runtime, stream, udp_socket, event_tx, observer, fallback,
+                        )?;
 
                         if let ClientMessage::Movement { .. } = &message {
+                            observe_outbound_message(observer, "tcp-fallback", &message);
                             send_tcp_message(stream, &message).map_err(|tcp_err| {
                                 format!("tcp fallback send failed: {tcp_err}")
                             })?;
                         }
                     }
                 } else if let ClientMessage::Movement { .. } = &message {
+                    observe_outbound_message(observer, "tcp-fallback", &message);
                     send_tcp_message(stream, &message)
                         .map_err(|err| format!("tcp fallback send failed: {err}"))?;
                 } else {
@@ -1020,7 +1091,9 @@ fn apply_runtime_outcome(
                         "udp socket missing during non-movement send".to_string(),
                         true,
                     );
-                    apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
+                    apply_runtime_outcome(
+                        runtime, stream, udp_socket, event_tx, observer, fallback,
+                    )?;
                 }
             }
             OutboundAction::OpenUdpAndAttach {
@@ -1029,6 +1102,14 @@ fn apply_runtime_outcome(
                 ticket,
             } => match open_udp_socket(udp_endpoint) {
                 Ok(socket) => {
+                    observer.emit(
+                        "network",
+                        "udp_attach_send",
+                        &[
+                            ("udp_endpoint", udp_endpoint.to_string()),
+                            ("request_id", request_id.to_string()),
+                        ],
+                    );
                     if let Err(err) = send_udp_message(
                         &socket,
                         &ClientMessage::FastLaneAttach { request_id, ticket },
@@ -1036,7 +1117,9 @@ fn apply_runtime_outcome(
                         *udp_socket = None;
                         let fallback = runtime
                             .mark_fast_lane_failed(format!("udp attach send failed: {err}"), true);
-                        apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
+                        apply_runtime_outcome(
+                            runtime, stream, udp_socket, event_tx, observer, fallback,
+                        )?;
                     } else {
                         *udp_socket = Some(socket);
                     }
@@ -1045,17 +1128,263 @@ fn apply_runtime_outcome(
                     *udp_socket = None;
                     let fallback = runtime
                         .mark_fast_lane_failed(format!("udp open/connect failed: {err}"), true);
-                    apply_runtime_outcome(runtime, stream, udp_socket, event_tx, fallback)?;
+                    apply_runtime_outcome(
+                        runtime, stream, udp_socket, event_tx, observer, fallback,
+                    )?;
                 }
             },
         }
     }
 
     for event in outcome.events {
-        let _ = event_tx.send(event);
+        emit_event(observer, event_tx, event);
     }
 
     Ok(())
+}
+
+fn emit_event(observer: &ClientObserver, event_tx: &Sender<NetworkEvent>, event: NetworkEvent) {
+    observe_network_event(observer, &event);
+    let _ = event_tx.send(event);
+}
+
+fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
+    if !observer.enabled() {
+        return;
+    }
+
+    match event {
+        NetworkEvent::Status(status) => {
+            observer.emit("network", "status", &[("message", status.clone())]);
+        }
+        NetworkEvent::EnteredScene { cid, location } => {
+            observer.emit(
+                "network",
+                "entered_scene",
+                &[("cid", cid.to_string()), ("location", format_vec(location))],
+            );
+        }
+        NetworkEvent::LocalPosition {
+            cid,
+            location,
+            transport,
+        } => {
+            observer.emit(
+                "network",
+                "movement_ack",
+                &[
+                    ("cid", cid.to_string()),
+                    ("transport", transport.label().to_string()),
+                    ("location", format_vec(location)),
+                ],
+            );
+        }
+        NetworkEvent::PlayerEnter { cid, location } => {
+            observer.emit(
+                "network",
+                "player_enter",
+                &[("cid", cid.to_string()), ("location", format_vec(location))],
+            );
+        }
+        NetworkEvent::PlayerMove {
+            cid,
+            location,
+            transport,
+        } => {
+            observer.emit(
+                "network",
+                "player_move",
+                &[
+                    ("cid", cid.to_string()),
+                    ("transport", transport.label().to_string()),
+                    ("location", format_vec(location)),
+                ],
+            );
+        }
+        NetworkEvent::PlayerLeave { cid } => {
+            observer.emit("network", "player_leave", &[("cid", cid.to_string())]);
+        }
+        NetworkEvent::ChatMessage {
+            cid,
+            username,
+            text,
+        } => {
+            observer.emit(
+                "network",
+                "chat_message",
+                &[
+                    ("cid", cid.to_string()),
+                    ("username", username.clone()),
+                    ("text", text.clone()),
+                ],
+            );
+        }
+        NetworkEvent::SkillEvent {
+            cid,
+            skill_id,
+            location,
+        } => {
+            observer.emit(
+                "network",
+                "skill_event",
+                &[
+                    ("cid", cid.to_string()),
+                    ("skill_id", skill_id.to_string()),
+                    ("location", format_vec(location)),
+                ],
+            );
+        }
+        NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
+            observer.emit(
+                "network",
+                "time_sync",
+                &[
+                    ("rtt_ms", format!("{rtt_ms:.1}")),
+                    ("offset_ms", format!("{offset_ms:.1}")),
+                ],
+            );
+        }
+        NetworkEvent::Heartbeat { server_ts } => {
+            observer.emit(
+                "network",
+                "heartbeat_reply",
+                &[("server_ts", server_ts.to_string())],
+            );
+        }
+        NetworkEvent::TransportState {
+            control_transport,
+            movement_transport,
+            fast_lane_status,
+            udp_endpoint,
+        } => {
+            observer.emit(
+                "network",
+                "transport_state",
+                &[
+                    ("control_transport", control_transport.label().to_string()),
+                    ("movement_transport", movement_transport.label().to_string()),
+                    ("fast_lane_status", fast_lane_status.clone()),
+                    (
+                        "udp_endpoint",
+                        udp_endpoint.clone().unwrap_or_else(|| "n/a".to_string()),
+                    ),
+                ],
+            );
+        }
+        NetworkEvent::Log(line) => observer.emit("network", "log", &[("message", line.clone())]),
+        NetworkEvent::Disconnected(reason) => {
+            observer.emit("network", "disconnected", &[("reason", reason.clone())]);
+        }
+    }
+}
+
+fn observe_outbound_message(observer: &ClientObserver, transport: &str, message: &ClientMessage) {
+    if !observer.enabled() {
+        return;
+    }
+
+    match message {
+        ClientMessage::AuthRequest {
+            request_id,
+            username,
+            ..
+        } => observer.emit(
+            "network",
+            "send_auth_request",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("username", username.clone()),
+            ],
+        ),
+        ClientMessage::FastLaneRequest { request_id } => observer.emit(
+            "network",
+            "send_fast_lane_request",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+            ],
+        ),
+        ClientMessage::FastLaneAttach { request_id, .. } => observer.emit(
+            "network",
+            "send_fast_lane_attach",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+            ],
+        ),
+        ClientMessage::EnterScene { request_id, cid } => observer.emit(
+            "network",
+            "send_enter_scene",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("cid", cid.to_string()),
+            ],
+        ),
+        ClientMessage::Movement {
+            request_id,
+            cid,
+            location,
+            velocity,
+            ..
+        } => observer.emit(
+            "network",
+            "send_movement",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("cid", cid.to_string()),
+                ("location", format_vec(location)),
+                ("velocity", format_vec(velocity)),
+            ],
+        ),
+        ClientMessage::TimeSync {
+            request_id,
+            client_send_ts,
+        } => observer.emit(
+            "network",
+            "send_time_sync",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("client_send_ts", client_send_ts.to_string()),
+            ],
+        ),
+        ClientMessage::Heartbeat { timestamp } => observer.emit(
+            "network",
+            "send_heartbeat",
+            &[
+                ("transport", transport.to_string()),
+                ("timestamp", timestamp.to_string()),
+            ],
+        ),
+        ClientMessage::ChatSay { request_id, text } => observer.emit(
+            "network",
+            "send_chat",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("text", text.clone()),
+            ],
+        ),
+        ClientMessage::SkillCast {
+            request_id,
+            skill_id,
+        } => observer.emit(
+            "network",
+            "send_skill",
+            &[
+                ("transport", transport.to_string()),
+                ("request_id", request_id.to_string()),
+                ("skill_id", skill_id.to_string()),
+            ],
+        ),
+    }
+}
+
+fn format_vec(value: &[f64; 3]) -> String {
+    format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
 }
 
 fn resolve_gate_addr(gate_addr: &str) -> io::Result<SocketAddr> {

@@ -38,6 +38,10 @@ defmodule Mix.Tasks.Demo.Run do
     parse_args(rest, [{:smoke, true} | opts])
   end
 
+  defp parse_args([flag | rest], opts) when flag in ["--stdio"] do
+    parse_args(rest, [{:stdio, true} | opts])
+  end
+
   defp parse_args([flag, value | rest], opts)
        when flag in ["--exit-after", "--exit_after"] do
     with {parsed, ""} <- Integer.parse(value) do
@@ -92,6 +96,11 @@ defmodule Mix.Tasks.Demo.Run do
   defp parse_args([flag, value | rest], opts)
        when flag in ["--auth-url", "--auth_url"] do
     parse_args(rest, [{:auth_url, value} | opts])
+  end
+
+  defp parse_args([flag, value | rest], opts)
+       when flag in ["--observe-dir", "--observe_dir"] do
+    parse_args(rest, [{:observe_dir, value} | opts])
   end
 
   defp parse_args([flag], _opts) do

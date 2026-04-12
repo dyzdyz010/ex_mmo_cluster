@@ -3,26 +3,30 @@ defmodule Demo.ConfigWriter do
   Emit human-friendly config files for the local demo.
   """
 
-  def write!(scenario, output_dir) do
+  def write!(scenario, output_dir, observe_dir \\ nil) do
     File.mkdir_p!(output_dir)
+    output_dir = Path.expand(output_dir)
+    observe_dir = Path.expand(observe_dir || Path.join(output_dir, "observe"))
+    File.mkdir_p!(observe_dir)
 
     client_entries =
       scenario.humans
       |> Enum.map(fn human ->
-        payload = %{
-          gate_addr: scenario.gate_addr,
-          auth_url: scenario.auth_url,
-          username: human.username,
-          cid: human.cid,
-          token: human.token
-        }
-
         base =
           if human.slot == 1 do
             "human-client"
           else
             "human-client-#{human.slot}"
           end
+
+        payload = %{
+          gate_addr: scenario.gate_addr,
+          auth_url: scenario.auth_url,
+          username: human.username,
+          cid: human.cid,
+          token: human.token,
+          observe_log: Path.join(observe_dir, "#{base}.log")
+        }
 
         write_client_files!(output_dir, base, payload)
       end)
@@ -46,6 +50,7 @@ defmodule Demo.ConfigWriter do
     ps1_path = Path.join(output_dir, "#{base}.ps1")
     sh_path = Path.join(output_dir, "#{base}.env.sh")
 
+    File.rm(payload.observe_log)
     File.write!(json_path, Jason.encode_to_iodata!(payload, pretty: true))
     File.write!(ps1_path, render_ps1(payload))
     File.write!(sh_path, render_sh(payload))
@@ -54,6 +59,7 @@ defmodule Demo.ConfigWriter do
       slot: payload[:slot] || infer_slot(base),
       username: payload.username,
       cid: payload.cid,
+      observe_log: payload.observe_log,
       json: json_path,
       powershell: ps1_path,
       shell: sh_path
@@ -66,6 +72,7 @@ defmodule Demo.ConfigWriter do
     $env:BEVY_CLIENT_USERNAME='#{ps_single_quoted(payload.username)}'
     $env:BEVY_CLIENT_CID='#{ps_single_quoted(payload.cid)}'
     $env:BEVY_CLIENT_TOKEN='#{ps_single_quoted(payload.token)}'
+    $env:BEVY_CLIENT_OBSERVE_LOG='#{ps_single_quoted(payload.observe_log)}'
     $env:DEMO_AUTH_URL='#{ps_single_quoted(payload.auth_url)}'
     """
   end
@@ -76,6 +83,7 @@ defmodule Demo.ConfigWriter do
     export BEVY_CLIENT_USERNAME='#{sh_single_quoted(payload.username)}'
     export BEVY_CLIENT_CID='#{sh_single_quoted(payload.cid)}'
     export BEVY_CLIENT_TOKEN='#{sh_single_quoted(payload.token)}'
+    export BEVY_CLIENT_OBSERVE_LOG='#{sh_single_quoted(payload.observe_log)}'
     export DEMO_AUTH_URL='#{sh_single_quoted(payload.auth_url)}'
     """
   end

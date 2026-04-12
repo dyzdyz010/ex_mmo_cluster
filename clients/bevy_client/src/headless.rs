@@ -1,0 +1,651 @@
+use crate::{
+    config::ClientConfig,
+    movement::next_movement_command,
+    net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
+    observe::ClientObserver,
+    stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+};
+use bevy::prelude::{Vec2, Vec3};
+use std::{
+    collections::HashMap,
+    sync::mpsc::TryRecvError,
+    thread,
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Debug)]
+pub struct HeadlessOptions {
+    pub script: String,
+    pub wait_for_scene_ms: u64,
+    pub drain_after_script_ms: u64,
+}
+
+impl Default for HeadlessOptions {
+    fn default() -> Self {
+        Self {
+            script: "wait:500,move:w:600,move:d:600,chat:headless hello,skill:1,wait:1500"
+                .to_string(),
+            wait_for_scene_ms: 8_000,
+            drain_after_script_ms: 1_500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum HeadlessAction {
+    Wait(u64),
+    Move {
+        direction: Vec2,
+        label: String,
+        duration_ms: u64,
+    },
+    Chat(String),
+    Skill(u16),
+    Snapshot,
+}
+
+#[derive(Debug, Default)]
+struct HeadlessState {
+    status: String,
+    scene_joined: bool,
+    local_cid: i64,
+    local_position: Option<Vec3>,
+    remote_players: HashMap<i64, Vec3>,
+    last_local_transport: Option<MessageTransport>,
+    last_remote_transport: Option<MessageTransport>,
+    movement_transport: MessageTransport,
+    fast_lane_status: String,
+}
+
+pub fn run(
+    config: ClientConfig,
+    observer: ClientObserver,
+    options: HeadlessOptions,
+) -> Result<(), String> {
+    let actions = parse_script(&options.script)?;
+    observer.emit(
+        "headless",
+        "start",
+        &[
+            ("gate_addr", config.gate_addr.clone()),
+            ("username", config.username.clone()),
+            ("cid", config.cid.to_string()),
+            ("script", options.script.clone()),
+        ],
+    );
+
+    let bridge = spawn_network_thread(config.clone(), observer.clone());
+    let mut state = HeadlessState::default();
+
+    wait_for_scene(
+        &bridge,
+        &observer,
+        &mut state,
+        Duration::from_millis(options.wait_for_scene_ms),
+    )?;
+
+    for action in actions {
+        run_action(&bridge, &config, &observer, &mut state, action)?;
+    }
+
+    drain_events_for(
+        &bridge,
+        &observer,
+        &mut state,
+        Duration::from_millis(options.drain_after_script_ms),
+    )?;
+
+    bridge.send(NetworkCommand::Shutdown);
+    observer.emit(
+        "headless",
+        "completed",
+        &[("final_status", state.status.clone())],
+    );
+
+    Ok(())
+}
+
+pub fn run_stdio(
+    config: ClientConfig,
+    observer: ClientObserver,
+    stdio: ClientStdioInterface,
+    wait_for_scene_ms: u64,
+) -> Result<(), String> {
+    observer.emit(
+        "headless",
+        "start",
+        &[
+            ("gate_addr", config.gate_addr.clone()),
+            ("username", config.username.clone()),
+            ("cid", config.cid.to_string()),
+            ("mode", "stdio".to_string()),
+        ],
+    );
+
+    let bridge = spawn_network_thread(config.clone(), observer.clone());
+    let mut state = HeadlessState::default();
+
+    wait_for_scene(
+        &bridge,
+        &observer,
+        &mut state,
+        Duration::from_millis(wait_for_scene_ms),
+    )?;
+
+    loop {
+        drain_events_once(&bridge, &observer, &mut state)?;
+
+        if let Some(command) = stdio.try_recv() {
+            match command {
+                ClientStdioCommand::Snapshot => {
+                    emit_stdio(
+                        "snapshot",
+                        &snapshot_fields(
+                            &state.status,
+                            state.scene_joined,
+                            state.local_cid,
+                            state.local_position,
+                            state.movement_transport.label(),
+                            &state.fast_lane_status,
+                            state.remote_players.len(),
+                        ),
+                    );
+                }
+                ClientStdioCommand::Position => {
+                    emit_stdio(
+                        "position",
+                        &[(
+                            "local_position",
+                            state
+                                .local_position
+                                .map(format_vec3)
+                                .unwrap_or_else(|| "n/a".to_string()),
+                        )],
+                    );
+                }
+                ClientStdioCommand::Transport => {
+                    emit_stdio(
+                        "transport",
+                        &[
+                            (
+                                "movement_transport",
+                                state.movement_transport.label().to_string(),
+                            ),
+                            ("fast_lane_status", state.fast_lane_status.clone()),
+                        ],
+                    );
+                }
+                ClientStdioCommand::Players => {
+                    emit_stdio(
+                        "players",
+                        &[("players", format_players(&state.remote_players))],
+                    );
+                }
+                ClientStdioCommand::Chat(text) => {
+                    observer.emit("headless", "chat", &[("text", text.clone())]);
+                    bridge.send(NetworkCommand::Chat(text.clone()));
+                    emit_stdio("chat_sent", &[("text", text)]);
+                }
+                ClientStdioCommand::Skill(skill_id) => {
+                    observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
+                    bridge.send(NetworkCommand::CastSkill(skill_id));
+                    emit_stdio("skill_sent", &[("skill_id", skill_id.to_string())]);
+                }
+                ClientStdioCommand::Move {
+                    direction,
+                    direction_label,
+                    duration_ms,
+                } => {
+                    run_move(
+                        &bridge,
+                        &config,
+                        &observer,
+                        &mut state,
+                        direction,
+                        &direction_label,
+                        duration_ms,
+                    )?;
+                    emit_stdio(
+                        "move_done",
+                        &[
+                            ("direction", direction_label),
+                            (
+                                "local_position",
+                                state
+                                    .local_position
+                                    .map(format_vec3)
+                                    .unwrap_or_else(|| "n/a".to_string()),
+                            ),
+                        ],
+                    );
+                }
+                ClientStdioCommand::Stop => {
+                    if let Some(position) = state.local_position
+                        && let Some((desired_position, velocity, _)) = next_movement_command(
+                            position,
+                            Vec2::ZERO,
+                            config.movement_speed,
+                            config.movement_interval_ms,
+                            false,
+                        )
+                    {
+                        bridge.send(NetworkCommand::Movement {
+                            location: [
+                                desired_position.x as f64,
+                                desired_position.y as f64,
+                                desired_position.z as f64,
+                            ],
+                            velocity,
+                            acceleration: [0.0, 0.0, 0.0],
+                        });
+                    }
+                    emit_stdio("stop", &[]);
+                }
+                ClientStdioCommand::Quit => {
+                    bridge.send(NetworkCommand::Shutdown);
+                    observer.emit(
+                        "headless",
+                        "completed",
+                        &[("final_status", state.status.clone())],
+                    );
+                    emit_stdio("quit", &[("final_status", state.status.clone())]);
+                    return Ok(());
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_scene(
+    bridge: &NetworkBridge,
+    observer: &ClientObserver,
+    state: &mut HeadlessState,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+
+    while Instant::now() < deadline {
+        drain_events_once(bridge, observer, state)?;
+        if state.scene_joined {
+            observer.emit(
+                "headless",
+                "scene_ready",
+                &[
+                    ("local_cid", state.local_cid.to_string()),
+                    ("status", state.status.clone()),
+                ],
+            );
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    Err(format!(
+        "timed out waiting for scene join; last status={}",
+        state.status
+    ))
+}
+
+fn run_action(
+    bridge: &NetworkBridge,
+    config: &ClientConfig,
+    observer: &ClientObserver,
+    state: &mut HeadlessState,
+    action: HeadlessAction,
+) -> Result<(), String> {
+    match action {
+        HeadlessAction::Wait(ms) => {
+            observer.emit("headless", "wait", &[("duration_ms", ms.to_string())]);
+            drain_events_for(bridge, observer, state, Duration::from_millis(ms))
+        }
+        HeadlessAction::Move {
+            direction,
+            label,
+            duration_ms,
+        } => run_move(
+            bridge,
+            config,
+            observer,
+            state,
+            direction,
+            &label,
+            duration_ms,
+        ),
+        HeadlessAction::Chat(text) => {
+            observer.emit("headless", "chat", &[("text", text.clone())]);
+            bridge.send(NetworkCommand::Chat(text));
+            drain_events_for(bridge, observer, state, Duration::from_millis(250))
+        }
+        HeadlessAction::Skill(skill_id) => {
+            observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
+            bridge.send(NetworkCommand::CastSkill(skill_id));
+            drain_events_for(bridge, observer, state, Duration::from_millis(250))
+        }
+        HeadlessAction::Snapshot => {
+            observer.emit(
+                "headless",
+                "snapshot",
+                &[
+                    ("status", state.status.clone()),
+                    ("scene_joined", state.scene_joined.to_string()),
+                    (
+                        "local_position",
+                        state
+                            .local_position
+                            .map(format_vec3)
+                            .unwrap_or_else(|| "n/a".to_string()),
+                    ),
+                    (
+                        "movement_transport",
+                        state.movement_transport.label().to_string(),
+                    ),
+                    ("fast_lane_status", state.fast_lane_status.clone()),
+                ],
+            );
+            Ok(())
+        }
+    }
+}
+
+fn run_move(
+    bridge: &NetworkBridge,
+    config: &ClientConfig,
+    observer: &ClientObserver,
+    state: &mut HeadlessState,
+    direction: Vec2,
+    label: &str,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let Some(mut predicted_position) = state.local_position else {
+        return Err("cannot execute headless move before local position is known".to_string());
+    };
+
+    observer.emit(
+        "headless",
+        "move_begin",
+        &[
+            ("direction", label.to_string()),
+            ("duration_ms", duration_ms.to_string()),
+            ("start_position", format_vec3(predicted_position)),
+        ],
+    );
+
+    let deadline = Instant::now() + Duration::from_millis(duration_ms);
+    let mut stop_sent = true;
+
+    while Instant::now() < deadline {
+        drain_events_once(bridge, observer, state)?;
+
+        let Some((desired_position, velocity, new_stop_sent)) = next_movement_command(
+            predicted_position,
+            direction,
+            config.movement_speed,
+            config.movement_interval_ms,
+            stop_sent,
+        ) else {
+            break;
+        };
+
+        bridge.send(NetworkCommand::Movement {
+            location: [
+                desired_position.x as f64,
+                desired_position.y as f64,
+                desired_position.z as f64,
+            ],
+            velocity,
+            acceleration: [0.0, 0.0, 0.0],
+        });
+
+        predicted_position = desired_position;
+        state.local_position = Some(desired_position);
+        stop_sent = new_stop_sent;
+        thread::sleep(Duration::from_millis(config.movement_interval_ms));
+    }
+
+    if let Some((desired_position, velocity, new_stop_sent)) = next_movement_command(
+        predicted_position,
+        Vec2::ZERO,
+        config.movement_speed,
+        config.movement_interval_ms,
+        stop_sent,
+    ) {
+        bridge.send(NetworkCommand::Movement {
+            location: [
+                desired_position.x as f64,
+                desired_position.y as f64,
+                desired_position.z as f64,
+            ],
+            velocity,
+            acceleration: [0.0, 0.0, 0.0],
+        });
+
+        state.local_position = Some(desired_position);
+        let _ = new_stop_sent;
+    }
+
+    observer.emit(
+        "headless",
+        "move_end",
+        &[
+            ("direction", label.to_string()),
+            (
+                "final_position",
+                state
+                    .local_position
+                    .map(format_vec3)
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "last_ack_transport",
+                state
+                    .last_local_transport
+                    .map(|transport| transport.label().to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+        ],
+    );
+
+    drain_events_for(bridge, observer, state, Duration::from_millis(350))
+}
+
+fn drain_events_for(
+    bridge: &NetworkBridge,
+    observer: &ClientObserver,
+    state: &mut HeadlessState,
+    duration: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        drain_events_once(bridge, observer, state)?;
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}
+
+fn drain_events_once(
+    bridge: &NetworkBridge,
+    observer: &ClientObserver,
+    state: &mut HeadlessState,
+) -> Result<(), String> {
+    let receiver = bridge
+        .rx
+        .lock()
+        .map_err(|_| "failed to lock network event receiver".to_string())?;
+
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => apply_event(observer, state, event),
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => {
+                return Err("network event channel disconnected".to_string());
+            }
+        }
+    }
+}
+
+fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: NetworkEvent) {
+    match event {
+        NetworkEvent::Status(status) => state.status = status,
+        NetworkEvent::EnteredScene { cid, location } => {
+            state.scene_joined = true;
+            state.local_cid = cid;
+            state.local_position = Some(vec3_from_net(location));
+            state.remote_players.clear();
+        }
+        NetworkEvent::LocalPosition {
+            cid,
+            location,
+            transport,
+        } => {
+            state.local_cid = cid;
+            state.local_position = Some(vec3_from_net(location));
+            state.last_local_transport = Some(transport);
+        }
+        NetworkEvent::PlayerMove {
+            transport,
+            cid,
+            location,
+        } => {
+            state.remote_players.insert(cid, vec3_from_net(location));
+            state.last_remote_transport = Some(transport);
+            observer.emit(
+                "headless",
+                "remote_move_seen",
+                &[
+                    ("cid", cid.to_string()),
+                    ("transport", transport.label().to_string()),
+                    ("location", format_net_vec(location)),
+                ],
+            );
+        }
+        NetworkEvent::TransportState {
+            movement_transport,
+            fast_lane_status,
+            ..
+        } => {
+            state.movement_transport = movement_transport;
+            state.fast_lane_status = fast_lane_status;
+        }
+        NetworkEvent::Disconnected(reason) => {
+            state.scene_joined = false;
+            state.status = format!("disconnected: {reason}");
+            state.remote_players.clear();
+        }
+        NetworkEvent::PlayerEnter { cid, location } => {
+            state.remote_players.insert(cid, vec3_from_net(location));
+        }
+        NetworkEvent::PlayerLeave { cid } => {
+            state.remote_players.remove(&cid);
+        }
+        NetworkEvent::Log(line) => {
+            observer.emit("headless", "network_log", &[("line", line)]);
+        }
+        _ => {}
+    }
+}
+
+fn parse_script(script: &str) -> Result<Vec<HeadlessAction>, String> {
+    script
+        .split(',')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(parse_action)
+        .collect()
+}
+
+fn parse_action(segment: &str) -> Result<HeadlessAction, String> {
+    let parts = segment.splitn(3, ':').collect::<Vec<_>>();
+
+    match parts.as_slice() {
+        ["wait", duration] => parse_u64(duration).map(HeadlessAction::Wait),
+        ["move", direction, duration] => Ok(HeadlessAction::Move {
+            direction: parse_direction(direction)?,
+            label: (*direction).to_string(),
+            duration_ms: parse_u64(duration)?,
+        }),
+        ["chat", text] => Ok(HeadlessAction::Chat((*text).to_string())),
+        ["skill", skill_id] => parse_u16(skill_id).map(HeadlessAction::Skill),
+        ["snapshot"] => Ok(HeadlessAction::Snapshot),
+        _ => Err(format!("unsupported headless action segment: {segment}")),
+    }
+}
+
+fn parse_direction(value: &str) -> Result<Vec2, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "w" | "up" => Ok(Vec2::new(0.0, 1.0)),
+        "s" | "down" => Ok(Vec2::new(0.0, -1.0)),
+        "a" | "left" => Ok(Vec2::new(-1.0, 0.0)),
+        "d" | "right" => Ok(Vec2::new(1.0, 0.0)),
+        other => Err(format!("unsupported move direction: {other}")),
+    }
+}
+
+fn parse_u64(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("invalid integer {value:?}: {error}"))
+}
+
+fn parse_u16(value: &str) -> Result<u16, String> {
+    value
+        .parse::<u16>()
+        .map_err(|error| format!("invalid skill id {value:?}: {error}"))
+}
+
+fn vec3_from_net(value: [f64; 3]) -> Vec3 {
+    Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
+}
+
+fn format_vec3(value: Vec3) -> String {
+    format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z)
+}
+
+fn format_net_vec(value: [f64; 3]) -> String {
+    format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
+}
+
+fn format_players(players: &HashMap<i64, Vec3>) -> String {
+    let mut entries = players
+        .iter()
+        .map(|(cid, position)| {
+            format!(
+                "{cid}:{:.1},{:.1},{:.1}",
+                position.x, position.y, position.z
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    format!("[{}]", entries.join(";"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_supported_headless_actions() {
+        assert_eq!(
+            parse_script("wait:500,move:w:600,chat:hello,skill:1,snapshot").unwrap(),
+            vec![
+                HeadlessAction::Wait(500),
+                HeadlessAction::Move {
+                    direction: Vec2::new(0.0, 1.0),
+                    label: "w".to_string(),
+                    duration_ms: 600,
+                },
+                HeadlessAction::Chat("hello".to_string()),
+                HeadlessAction::Skill(1),
+                HeadlessAction::Snapshot,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_direction() {
+        let error = parse_script("move:q:100").unwrap_err();
+        assert!(error.contains("unsupported move direction"));
+    }
+}

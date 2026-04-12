@@ -5,6 +5,24 @@ defmodule AuthServer.AuthWorkerTest do
   alias DataService.Schema.Account
   alias DataService.Schema.Character
 
+  defmodule FakeInterface do
+    use GenServer
+
+    def start_link(opts \\ []) do
+      GenServer.start_link(__MODULE__, Map.new(opts), name: AuthServer.Interface)
+    end
+
+    @impl true
+    def init(attrs) do
+      {:ok, Map.merge(%{data_service: nil}, attrs)}
+    end
+
+    @impl true
+    def handle_call(:data_service, _from, state) do
+      {:reply, state.data_service, state}
+    end
+  end
+
   setup_all do
     ensure_data_service_started()
 
@@ -104,11 +122,7 @@ defmodule AuthServer.AuthWorkerTest do
   end
 
   test "authorize_character reports data source unavailability" do
-    stop_data_service()
-
-    on_exit(fn ->
-      ensure_data_service_started()
-    end)
+    _ = start_supervised(FakeInterface)
 
     claims = %{"account_id" => 101, "username" => "player1"}
 
@@ -156,19 +170,6 @@ defmodule AuthServer.AuthWorkerTest do
     end
   end
 
-  defp stop_data_service do
-    case Process.whereis(DataService.DispatcherSup) do
-      nil ->
-        :ok
-
-      pid ->
-        Supervisor.stop(pid, :shutdown, 5_000)
-    end
-
-    wait_for_process_stop(DataService.DispatcherSup, 100)
-    wait_for_process_stop(DataService.Dispatcher, 100)
-  end
-
   defp ensure_dispatcher_sup do
     case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
       {:ok, _pid} -> :ok
@@ -207,17 +208,4 @@ defmodule AuthServer.AuthWorkerTest do
     end
   end
 
-  defp wait_for_process_stop(name, attempts)
-  defp wait_for_process_stop(_name, 0), do: flunk("process did not stop in time")
-
-  defp wait_for_process_stop(name, attempts) do
-    case Process.whereis(name) do
-      nil ->
-        :ok
-
-      _pid ->
-        Process.sleep(50)
-        wait_for_process_stop(name, attempts - 1)
-    end
-  end
 end

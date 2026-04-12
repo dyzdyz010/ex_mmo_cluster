@@ -13,6 +13,9 @@
 - 场景内聊天
 - 简单技能（默认技能 ID `1`）
 - HUD 展示 control / movement transport、fast-lane 状态、AOI peer 数
+- 集成式 stdio 调试接口
+- CLI/headless 调试模式（自动化 smoke 用）
+- 结构化 observe 日志（客户端输入 + 网络收发）
 
 ## 推荐 demo 启动方式
 
@@ -99,6 +102,7 @@ export BEVY_CLIENT_TOKEN='<你的 token>'
 - `BEVY_CLIENT_USERNAME`
 - `BEVY_CLIENT_CID`
 - `BEVY_CLIENT_TOKEN`
+- `BEVY_CLIENT_OBSERVE_LOG`
 - `DEMO_AUTH_URL`
 
 ## 运行
@@ -107,6 +111,81 @@ export BEVY_CLIENT_TOKEN='<你的 token>'
 cd clients/bevy_client
 cargo run
 ```
+
+## 集成式 stdio 接口
+
+正常 GUI 客户端也可以启用 stdio 命令接口，不需要切换到另一个 target。
+
+```bash
+cd clients/bevy_client
+cargo run -- --stdio
+```
+
+或：
+
+```bash
+BEVY_CLIENT_STDIO=1 cargo run
+```
+
+启动后可以通过 stdin 给客户端发送命令：
+
+- `help`
+- `snapshot`
+- `position`
+- `transport`
+- `players`
+- `chat hello`
+- `skill 1`
+- `move w 600`
+- `stop`
+- `quit`
+
+客户端会通过 stdout 输出 `client_stdio ...` 响应行，适合 agent 通过 stdio 驱动正在运行的正常客户端。
+
+## CLI / headless 调试
+
+如果你想不用图形界面，只用命令行验证连接、进场、移动、聊天和技能链路：
+
+```bash
+cd clients/bevy_client
+cargo run -- --headless --observe-stdout --script "wait:500,move:w:600,chat:hello,skill:1,wait:1500"
+```
+
+支持的脚本片段：
+
+- `wait:<ms>`
+- `move:<w|a|s|d|up|down|left|right>:<ms>`
+- `chat:<text>`
+- `skill:<id>`
+- `snapshot`
+
+如果已经 source 了 `mix demo.run` 生成的 `human-client*.ps1/.env.sh`，headless 模式会复用同一套 gate/token/cid 配置。
+
+> headless 主要用于自动化 smoke；长期可复用的在线调试入口优先是上面的 **集成式 stdio 接口**。
+
+## Observe 日志
+
+客户端会把结构化 observe 日志写到：
+
+- `BEVY_CLIENT_OBSERVE_LOG`
+
+而 `mix demo.run` 默认会额外生成服务端日志：
+
+- `.demo/observe/server-gate.log`
+- `.demo/observe/server-scene.log`
+
+可直接查看：
+
+```bash
+mix demo.observe --lines 40
+```
+
+这样就可以从命令行交叉对照：
+
+- 客户端输入意图
+- 客户端发出的 auth / enter-scene / movement / chat / skill
+- 服务端 gate / scene 的处理结果
+- 权威坐标与 UDP fast-lane attach / fallback
 
 如果当前环境访问 crates.io 很慢，可以临时改用 sparse 镜像：
 

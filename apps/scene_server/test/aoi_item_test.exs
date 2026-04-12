@@ -4,8 +4,8 @@ defmodule SceneServer.AoiItemTest do
   alias SceneServer.AoiManager
 
   setup do
-    start_supervised!({SceneServer.AoiManager, name: SceneServer.AoiManager})
-    start_supervised!({SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
+    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
     :ok
   end
 
@@ -99,6 +99,13 @@ defmodule SceneServer.AoiItemTest do
 
   defp unique_cid do
     System.unique_integer([:positive])
+  end
+
+  defp ensure_started(name, spec) do
+    case Process.whereis(name) do
+      nil -> start_supervised!(spec)
+      pid -> pid
+    end
   end
 
   defp wait_until(fun, attempts \\ 40)

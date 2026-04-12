@@ -56,6 +56,11 @@ defmodule GateServer.TcpConnection do
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
 
+    GateServer.CliObserve.emit("tcp_connection_init", %{
+      connection_pid: self(),
+      socket: socket
+    })
+
     {:ok,
      %{
        socket: socket,
@@ -74,12 +79,14 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_cast({:player_enter, cid, location}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("tcp_player_enter_push", %{cid: cid, location: location})
     send_encoded(socket, {:player_enter, cid, location})
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:player_leave, cid}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("tcp_player_leave_push", %{cid: cid})
     send_encoded(socket, {:player_leave, cid})
     {:noreply, state}
   end
@@ -89,8 +96,16 @@ defmodule GateServer.TcpConnection do
     {udp_peer, state} = resolve_udp_peer(state)
 
     if udp_peer do
+      GateServer.CliObserve.emit("player_move_push_udp", fn ->
+        %{cid: cid, sequence: sequence, location: location, peer: udp_peer}
+      end)
+
       GateServer.UdpAcceptor.send_to_peer(udp_peer, {:player_move, cid, sequence, location})
     else
+      GateServer.CliObserve.emit("player_move_push_tcp", fn ->
+        %{cid: cid, sequence: sequence, location: location}
+      end)
+
       send_encoded(socket, {:player_move, cid, sequence, location})
     end
 
@@ -99,23 +114,37 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_cast({:chat_message, cid, username, text}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("chat_push", %{cid: cid, username: username, text: text})
     send_encoded(socket, {:chat_message, cid, username, text})
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:skill_event, cid, skill_id, location}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("skill_push", %{cid: cid, skill_id: skill_id, location: location})
+
     send_encoded(socket, {:skill_event, cid, skill_id, location})
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:udp_attached, peer, ticket}, state) do
+    GateServer.CliObserve.emit("udp_attached", %{
+      connection_pid: self(),
+      peer: peer,
+      ticket_present?: is_binary(ticket) and ticket != ""
+    })
+
     {:noreply, %{state | udp_peer: peer, udp_ticket: ticket}}
   end
 
   @impl true
   def handle_cast({:udp_detached, peer, _reason}, %{udp_peer: peer} = state) do
+    GateServer.CliObserve.emit("udp_detached", %{
+      connection_pid: self(),
+      peer: peer
+    })
+
     {:noreply, %{state | udp_peer: nil, udp_ticket: nil}}
   end
 
@@ -126,8 +155,16 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("tcp_receive", fn ->
+      %{connection_pid: self(), bytes: byte_size(data), status: state.status}
+    end)
+
     case GateServer.Codec.decode(data) do
       {:ok, msg} ->
+        GateServer.CliObserve.emit("tcp_decoded", fn ->
+          %{connection_pid: self(), message: observe_message_summary(msg)}
+        end)
+
         {:ok, new_state} = dispatch(msg, state)
         {:noreply, new_state}
 
@@ -141,6 +178,7 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp_closed, _conn}, state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
+    GateServer.CliObserve.emit("tcp_closed", %{connection_pid: self(), cid: state.cid})
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -149,6 +187,9 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:tcp_error, _conn, err}, state) do
     Logger.error("Socket #{inspect(state.socket, pretty: true)} error: #{err}")
+
+    GateServer.CliObserve.emit("tcp_error", %{connection_pid: self(), cid: state.cid, reason: err})
+
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -160,6 +201,18 @@ defmodule GateServer.TcpConnection do
         _from,
         %{status: :in_scene, scene_ref: spid, cid: active_cid} = state
       ) do
+    GateServer.CliObserve.emit("udp_movement_received", fn ->
+      %{
+        connection_pid: self(),
+        cid: cid,
+        active_cid: active_cid,
+        timestamp: timestamp,
+        location: location,
+        velocity: velocity,
+        acceleration: acceleration
+      }
+    end)
+
     reply =
       cond do
         cid != active_cid ->
@@ -185,14 +238,38 @@ defmodule GateServer.TcpConnection do
          {:movement, _cid, timestamp, location, velocity, acceleration, request_id},
          %{status: :in_scene, scene_ref: spid, cid: cid, socket: socket} = state
        ) do
+    GateServer.CliObserve.emit("tcp_movement_received", fn ->
+      %{
+        connection_pid: self(),
+        cid: cid,
+        request_id: request_id,
+        timestamp: timestamp,
+        location: location,
+        velocity: velocity
+      }
+    end)
+
     case acknowledge_movement(spid, cid, timestamp, location, velocity, acceleration) do
       {:ok, ack_cid, authoritative_location} ->
+        GateServer.CliObserve.emit("tcp_movement_ack", fn ->
+          %{
+            connection_pid: self(),
+            cid: ack_cid,
+            request_id: request_id,
+            authoritative_location: authoritative_location
+          }
+        end)
+
         send_encoded(
           socket,
           {:movement_result, :ok, request_id, ack_cid, authoritative_location}
         )
 
       {:error, reason} ->
+        GateServer.CliObserve.emit("tcp_movement_error", fn ->
+          %{connection_pid: self(), cid: cid, request_id: request_id, reason: reason}
+        end)
+
         send_result_error(socket, reason, request_id)
     end
 
@@ -212,6 +289,14 @@ defmodule GateServer.TcpConnection do
          %{status: :in_scene, scene_ref: spid, cid: cid, auth_username: username, socket: socket} =
            state
        ) do
+    GateServer.CliObserve.emit("chat_received", %{
+      connection_pid: self(),
+      cid: cid,
+      username: username,
+      request_id: request_id,
+      text: text
+    })
+
     case safe_call(spid, {:chat_say, cid, username || "anonymous", text}) do
       {:ok, {:ok, _}} -> send_encoded(socket, {:result, :ok, request_id})
       {:ok, _} -> send_result_error(socket, :server_error, request_id)
@@ -230,6 +315,13 @@ defmodule GateServer.TcpConnection do
          {:skill_cast, skill_id, request_id},
          %{status: :in_scene, scene_ref: spid, socket: socket} = state
        ) do
+    GateServer.CliObserve.emit("skill_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request_id,
+      skill_id: skill_id
+    })
+
     case safe_call(spid, {:cast_skill, skill_id}) do
       {:ok, {:ok, _location}} -> send_encoded(socket, {:result, :ok, request_id})
       {:ok, {:error, reason}} -> send_result_error(socket, reason, request_id)
@@ -251,11 +343,25 @@ defmodule GateServer.TcpConnection do
        ) do
     timestamp = :os.system_time(:millisecond)
 
+    GateServer.CliObserve.emit("enter_scene_received", %{
+      connection_pid: self(),
+      cid: cid,
+      request_id: request_id
+    })
+
     with :ok <- authorize_cid(claims, cid),
          {:ok, character} <- fetch_authorized_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
          {:ok, ppid} <- add_player(scene_node, cid, timestamp, build_character_profile(character)),
          {:ok, {x, y, z}} <- fetch_player_location(ppid) do
+      GateServer.CliObserve.emit("enter_scene_ok", %{
+        connection_pid: self(),
+        cid: cid,
+        request_id: request_id,
+        scene_ref: ppid,
+        location: {x, y, z}
+      })
+
       send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}})
 
       {:ok,
@@ -268,6 +374,13 @@ defmodule GateServer.TcpConnection do
        }}
     else
       {:error, reason} ->
+        GateServer.CliObserve.emit("enter_scene_error", %{
+          connection_pid: self(),
+          cid: cid,
+          request_id: request_id,
+          reason: reason
+        })
+
         send_enter_scene_error(socket, reason, request_id)
         {:ok, state}
     end
@@ -304,6 +417,13 @@ defmodule GateServer.TcpConnection do
          %{status: status, socket: socket} = state
        )
        when status in [:authenticated, :in_scene] do
+    GateServer.CliObserve.emit("fast_lane_request_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request_id,
+      status: status
+    })
+
     session_context = %{
       auth_claims: state.auth_claims,
       auth_username: state.auth_username,
@@ -314,6 +434,12 @@ defmodule GateServer.TcpConnection do
 
     case GateServer.FastLaneRegistry.issue_ticket(self(), session_context) do
       {:ok, ticket} ->
+        GateServer.CliObserve.emit("fast_lane_ticket_sent", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request_id
+        })
+
         send_encoded(
           socket,
           {:fast_lane_result, :ok, request_id, GateServer.UdpAcceptor.port(), ticket}
@@ -323,6 +449,14 @@ defmodule GateServer.TcpConnection do
 
       {:error, reason} ->
         Logger.warning("Fast-lane ticket issuance failed: #{inspect(reason)}")
+
+        GateServer.CliObserve.emit("fast_lane_ticket_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request_id,
+          reason: reason
+        })
+
         send_encoded(socket, {:fast_lane_result, :error, request_id})
         {:ok, state}
     end
@@ -342,9 +476,22 @@ defmodule GateServer.TcpConnection do
          {:auth_request, username, code, request_id},
          %{status: :waiting_auth, socket: socket} = state
        ) do
+    GateServer.CliObserve.emit("auth_received", %{
+      connection_pid: self(),
+      username: username,
+      request_id: request_id
+    })
+
     with {:ok, claims} <- verify_token(code),
          :ok <- validate_username_claim(claims, username) do
       auth_context = build_auth_context(username, code, claims)
+
+      GateServer.CliObserve.emit("auth_ok", %{
+        connection_pid: self(),
+        username: username,
+        request_id: request_id
+      })
+
       send_encoded(socket, {:result, :ok, request_id})
 
       {:ok,
@@ -359,6 +506,13 @@ defmodule GateServer.TcpConnection do
        }}
     else
       {:error, reason} ->
+        GateServer.CliObserve.emit("auth_error", %{
+          connection_pid: self(),
+          username: username,
+          request_id: request_id,
+          reason: reason
+        })
+
         send_result_error(socket, reason, request_id)
         {:ok, state}
     end
@@ -524,11 +678,25 @@ defmodule GateServer.TcpConnection do
 
   defp send_result_error(socket, reason, request_id) do
     Logger.warning("Sending generic result error: #{inspect(reason)}")
+
+    GateServer.CliObserve.emit("send_result_error", %{
+      socket: socket,
+      request_id: request_id,
+      reason: reason
+    })
+
     send_encoded(socket, {:result, :error, request_id})
   end
 
   defp send_enter_scene_error(socket, reason, request_id) do
     Logger.warning("Sending enter-scene error: #{inspect(reason)}")
+
+    GateServer.CliObserve.emit("send_enter_scene_error", %{
+      socket: socket,
+      request_id: request_id,
+      reason: reason
+    })
+
     send_encoded(socket, {:enter_scene_result, :error, request_id})
   end
 
@@ -582,4 +750,10 @@ defmodule GateServer.TcpConnection do
     {:ok, bin} = GateServer.Codec.encode(message)
     :gen_tcp.send(socket, bin)
   end
+
+  defp observe_message_summary({:auth_request, username, _token, request_id}) do
+    %{type: :auth_request, username: username, request_id: request_id, token_redacted?: true}
+  end
+
+  defp observe_message_summary(message), do: message
 end

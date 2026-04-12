@@ -1,8 +1,12 @@
 use crate::{
     config::ClientConfig,
+    movement::next_movement_command,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
+    observe::ClientObserver,
+    stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
 };
 use bevy::{
+    app::AppExit,
     input::keyboard::{Key, KeyboardInput},
     prelude::*,
     window::WindowPlugin,
@@ -68,15 +72,19 @@ struct MovementDispatchState {
     stop_sent: bool,
 }
 
+#[derive(Resource, Default)]
+struct InputTraceState {
+    last_direction_label: String,
+}
+
 impl Default for MovementDispatchState {
     fn default() -> Self {
         Self { stop_sent: true }
     }
 }
 
-pub fn run() {
-    let config = ClientConfig::from_env();
-    let bridge = spawn_network_thread(config.clone());
+pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInterface) {
+    let bridge = spawn_network_thread(config.clone(), observer.clone());
     let window_title = format!(
         "Hemifuture Bevy Client - {} / cid {}",
         config.username, config.cid
@@ -101,6 +109,9 @@ pub fn run() {
         .insert_resource(ChatState::default())
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())
+        .insert_resource(InputTraceState::default())
+        .insert_resource(observer)
+        .insert_resource(stdio)
         .insert_resource(MovementTick(Timer::from_seconds(
             config.movement_interval_ms as f32 / 1_000.0,
             TimerMode::Repeating,
@@ -122,6 +133,7 @@ pub fn run() {
                 collect_chat_text,
                 handle_skill_input,
                 sample_movement_input,
+                poll_stdio_commands,
                 movement_sender,
                 sync_player_visuals,
                 update_skill_pulses,
@@ -329,16 +341,19 @@ fn poll_network_events(
 fn toggle_chat_mode(
     keyboard: Res<ButtonInput<KeyCode>>,
     bridge: Res<NetworkBridge>,
+    observer: Res<ClientObserver>,
     mut chat_state: ResMut<ChatState>,
 ) {
     if !chat_state.enabled && keyboard.just_pressed(KeyCode::Enter) {
         chat_state.enabled = true;
+        observer.emit("input", "chat_opened", &[]);
         return;
     }
 
     if chat_state.enabled && keyboard.just_pressed(KeyCode::Escape) {
         chat_state.enabled = false;
         chat_state.draft.clear();
+        observer.emit("input", "chat_cancelled", &[]);
         return;
     }
 
@@ -346,6 +361,11 @@ fn toggle_chat_mode(
         let message = chat_state.draft.trim().to_string();
         if !message.is_empty() {
             bridge.send(NetworkCommand::Chat(message));
+            observer.emit(
+                "input",
+                "chat_submitted",
+                &[("draft", chat_state.draft.clone())],
+            );
         }
         chat_state.draft.clear();
         chat_state.enabled = false;
@@ -381,6 +401,7 @@ fn collect_chat_text(
 fn handle_skill_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     bridge: Res<NetworkBridge>,
+    observer: Res<ClientObserver>,
     chat_state: Res<ChatState>,
 ) {
     if chat_state.enabled {
@@ -389,6 +410,7 @@ fn handle_skill_input(
 
     if keyboard.just_pressed(KeyCode::Digit1) {
         bridge.send(NetworkCommand::CastSkill(1));
+        observer.emit("input", "skill_key", &[("skill_id", "1".to_string())]);
     }
 }
 
@@ -397,10 +419,13 @@ fn sample_movement_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut keyboard_input_reader: MessageReader<KeyboardInput>,
     chat_state: Res<ChatState>,
+    observer: Res<ClientObserver>,
+    mut input_trace: ResMut<InputTraceState>,
     mut movement_intent: ResMut<MovementIntent>,
 ) {
     if chat_state.enabled {
         movement_intent.direction = Vec2::ZERO;
+        maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
     }
 
@@ -409,6 +434,7 @@ fn sample_movement_input(
     if direction.length_squared() > 0.0 {
         movement_intent.direction = direction;
         movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+        maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
     }
 
@@ -421,6 +447,7 @@ fn sample_movement_input(
         if direction.length_squared() > 0.0 {
             movement_intent.direction = direction;
             movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+            maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
             return;
         }
     }
@@ -428,6 +455,8 @@ fn sample_movement_input(
     if time.elapsed_secs_f64() >= movement_intent.expires_at {
         movement_intent.direction = Vec2::ZERO;
     }
+
+    maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
 }
 
 fn movement_sender(
@@ -475,6 +504,114 @@ fn movement_sender(
 
     movement_dispatch.stop_sent = stop_sent;
     world_state.local_position = Some(desired_position);
+}
+
+fn poll_stdio_commands(
+    time: Res<Time>,
+    stdio: Res<ClientStdioInterface>,
+    bridge: Res<NetworkBridge>,
+    world_state: Res<WorldState>,
+    mut movement_intent: ResMut<MovementIntent>,
+    mut app_exit: MessageWriter<AppExit>,
+) {
+    loop {
+        let Some(command) = stdio.try_recv() else {
+            break;
+        };
+
+        match command {
+            ClientStdioCommand::Snapshot => {
+                let fields = snapshot_fields(
+                    &world_state.status,
+                    world_state.scene_joined,
+                    world_state.local_cid,
+                    world_state.local_position,
+                    world_state.movement_transport.label(),
+                    &world_state.fast_lane_status,
+                    world_state.remote_players.len(),
+                );
+                emit_stdio("snapshot", &fields);
+            }
+            ClientStdioCommand::Position => {
+                emit_stdio(
+                    "position",
+                    &[(
+                        "local_position",
+                        world_state
+                            .local_position
+                            .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
+                            .unwrap_or_else(|| "n/a".to_string()),
+                    )],
+                );
+            }
+            ClientStdioCommand::Transport => {
+                emit_stdio(
+                    "transport",
+                    &[
+                        (
+                            "control_transport",
+                            world_state.control_transport.label().to_string(),
+                        ),
+                        (
+                            "movement_transport",
+                            world_state.movement_transport.label().to_string(),
+                        ),
+                        ("fast_lane_status", world_state.fast_lane_status.clone()),
+                    ],
+                );
+            }
+            ClientStdioCommand::Players => {
+                let mut players = world_state
+                    .remote_players
+                    .iter()
+                    .map(|(cid, position)| {
+                        format!(
+                            "{cid}:{:.1},{:.1},{:.1}",
+                            position.x, position.y, position.z
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                players.sort();
+                emit_stdio(
+                    "players",
+                    &[("players", format!("[{}]", players.join(";")))],
+                );
+            }
+            ClientStdioCommand::Chat(text) => {
+                bridge.send(NetworkCommand::Chat(text.clone()));
+                emit_stdio("chat_sent", &[("text", text)]);
+            }
+            ClientStdioCommand::Skill(skill_id) => {
+                bridge.send(NetworkCommand::CastSkill(skill_id));
+                emit_stdio("skill_sent", &[("skill_id", skill_id.to_string())]);
+            }
+            ClientStdioCommand::Move {
+                direction,
+                direction_label,
+                duration_ms,
+            } => {
+                movement_intent.direction = direction;
+                movement_intent.expires_at = time.elapsed_secs_f64() + duration_ms as f64 / 1_000.0;
+                emit_stdio(
+                    "move_queued",
+                    &[
+                        ("direction", direction_label),
+                        ("duration_ms", duration_ms.to_string()),
+                    ],
+                );
+            }
+            ClientStdioCommand::Stop => {
+                movement_intent.direction = Vec2::ZERO;
+                movement_intent.expires_at = 0.0;
+                emit_stdio("stop", &[]);
+            }
+            ClientStdioCommand::Quit => {
+                bridge.send(NetworkCommand::Shutdown);
+                emit_stdio("quit", &[("final_status", world_state.status.clone())]);
+                app_exit.write(AppExit::Success);
+            }
+        }
+    }
 }
 
 fn current_movement_direction(keyboard: &ButtonInput<KeyCode>) -> Vec2 {
@@ -678,39 +815,6 @@ fn net_to_world(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
 }
 
-fn compute_movement_step(
-    position: Vec3,
-    direction: Vec2,
-    movement_speed: f32,
-    movement_interval_ms: u64,
-) -> (Vec3, [f64; 3]) {
-    let normalized = direction.normalize() * movement_speed;
-    let dt = movement_interval_ms as f32 / 1_000.0;
-    let desired_position = position + Vec3::new(normalized.x * dt, normalized.y * dt, 0.0);
-
-    (
-        desired_position,
-        [normalized.x as f64, normalized.y as f64, 0.0],
-    )
-}
-
-fn next_movement_command(
-    position: Vec3,
-    direction: Vec2,
-    movement_speed: f32,
-    movement_interval_ms: u64,
-    stop_sent: bool,
-) -> Option<(Vec3, [f64; 3], bool)> {
-    if direction.length_squared() == 0.0 {
-        return (!stop_sent).then_some((position, [0.0, 0.0, 0.0], true));
-    }
-
-    let (desired_position, velocity) =
-        compute_movement_step(position, direction, movement_speed, movement_interval_ms);
-
-    Some((desired_position, velocity, false))
-}
-
 fn is_printable_char(chr: char) -> bool {
     let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
         || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
@@ -719,22 +823,37 @@ fn is_printable_char(chr: char) -> bool {
     !is_in_private_use_area && !chr.is_ascii_control()
 }
 
+fn maybe_log_direction_change(
+    observer: &ClientObserver,
+    input_trace: &mut InputTraceState,
+    direction: Vec2,
+) {
+    if !observer.enabled() {
+        return;
+    }
+
+    let label = direction_label(direction);
+    if input_trace.last_direction_label != label {
+        observer.emit(
+            "input",
+            "movement_direction_changed",
+            &[("direction", label.clone())],
+        );
+        input_trace.last_direction_label = label;
+    }
+}
+
+fn direction_label(direction: Vec2) -> String {
+    if direction == Vec2::ZERO {
+        return "idle".to_string();
+    }
+
+    format!("{:.1},{:.1}", direction.x, direction.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn movement_step_advances_in_input_direction() {
-        let position = Vec3::new(1_000.0, 1_000.0, 90.0);
-        let direction = Vec2::new(1.0, 0.0);
-
-        let (desired, velocity) = compute_movement_step(position, direction, 220.0, 100);
-
-        assert!(desired.x > position.x);
-        assert_eq!(desired.y, position.y);
-        assert_eq!(desired.z, position.z);
-        assert_eq!(velocity, [220.0, 0.0, 0.0]);
-    }
 
     #[test]
     fn movement_direction_maps_wasd_and_arrows() {
@@ -761,32 +880,5 @@ mod tests {
             movement_direction_from_key(&Key::ArrowRight),
             Vec2::new(1.0, 0.0)
         );
-    }
-
-    #[test]
-    fn next_movement_command_emits_single_stop_update() {
-        let position = Vec3::new(12.0, 34.0, 56.0);
-
-        let first_stop = next_movement_command(position, Vec2::ZERO, 220.0, 100, false);
-        let repeated_stop = next_movement_command(position, Vec2::ZERO, 220.0, 100, true);
-
-        assert_eq!(first_stop, Some((position, [0.0, 0.0, 0.0], true)));
-        assert_eq!(repeated_stop, None);
-    }
-
-    #[test]
-    fn next_movement_command_resumes_motion_after_stop() {
-        let position = Vec3::new(0.0, 0.0, 0.0);
-        let direction = Vec2::new(0.0, 1.0);
-
-        let Some((desired, velocity, stop_sent)) =
-            next_movement_command(position, direction, 220.0, 100, true)
-        else {
-            panic!("expected movement command");
-        };
-
-        assert!(desired.y > position.y);
-        assert_eq!(velocity, [0.0, 220.0, 0.0]);
-        assert!(!stop_sent);
     }
 }

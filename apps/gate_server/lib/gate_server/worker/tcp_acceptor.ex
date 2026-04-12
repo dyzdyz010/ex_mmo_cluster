@@ -40,11 +40,13 @@ defmodule GateServer.TcpAcceptor do
     {:ok, socket} = :gen_tcp.listen(port, [:binary, packet: 4, active: true, reuseaddr: true])
 
     Logger.debug("Accepting connections on port #{port}")
+    GateServer.CliObserve.emit("tcp_listen", %{port: port})
     loop_acceptor(socket)
   end
 
   defp loop_acceptor(socket) do
     {:ok, client} = :gen_tcp.accept(socket)
+    GateServer.CliObserve.emit("tcp_accept", %{socket: client})
 
     {:ok, pid} =
       DynamicSupervisor.start_child(

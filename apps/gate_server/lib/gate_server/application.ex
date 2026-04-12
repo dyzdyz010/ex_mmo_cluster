@@ -13,9 +13,12 @@ defmodule GateServer.Application do
         # {GateServer.Worker, arg}
         {GateServer.InterfaceSup, name: GateServer.InterfaceSup},
         {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
+        stdio_child(),
         {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup},
         {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup}
-      ] ++ udp_children()
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Kernel.++(udp_children())
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -28,6 +31,16 @@ defmodule GateServer.Application do
       []
     else
       [{GateServer.UdpAcceptorSup, name: GateServer.UdpAcceptorSup}]
+    end
+  end
+
+  defp stdio_child do
+    enabled? =
+      Application.get_env(:gate_server, :stdio_interface, false) ||
+        System.get_env("GATE_SERVER_STDIO") in ["1", "true", "TRUE", "yes", "on"]
+
+    if Mix.env() != :test and enabled? do
+      {GateServer.StdioInterface, name: GateServer.StdioInterface}
     end
   end
 end

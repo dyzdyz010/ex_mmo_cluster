@@ -24,6 +24,13 @@ defmodule SceneServer.PlayerCharacter do
     # :pg.join(@scope, @topic, self())
     Logger.debug("New player created.")
 
+    SceneServer.CliObserve.emit("player_init", %{
+      cid: cid,
+      connection_pid: connection_pid,
+      client_timestamp: client_timestamp,
+      profile: character_profile
+    })
+
     {:ok,
      %{
        cid: cid,
@@ -65,6 +72,7 @@ defmodule SceneServer.PlayerCharacter do
        }}
     else
       {:error, reason} ->
+        SceneServer.CliObserve.emit("player_load_error", %{cid: cid, reason: reason})
         {:stop, {:load_failed, reason}, state}
     end
   end
@@ -163,6 +171,17 @@ defmodule SceneServer.PlayerCharacter do
            ),
          {:ok, authoritative_location} <-
            get_character_location_with_retry(cd_ref, physys_ref, location) do
+      SceneServer.CliObserve.emit("player_movement_received", fn ->
+        %{
+          cid: state.cid,
+          current_location: current_location,
+          requested_location: location,
+          velocity: velocity,
+          acceleration: acceleration,
+          authoritative_location: authoritative_location
+        }
+      end)
+
       {x, y, z} = location
       {ox, oy, oz} = current_location
       Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
@@ -172,12 +191,14 @@ defmodule SceneServer.PlayerCharacter do
       {:reply, {:ok, ""}, %{state | last_location: authoritative_location}}
     else
       {:error, reason} ->
+        SceneServer.CliObserve.emit("player_movement_error", %{cid: state.cid, reason: reason})
         {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
   def handle_call({:chat_say, cid, username, text}, _from, %{aoi_ref: aoi_ref} = state) do
+    SceneServer.CliObserve.emit("player_chat", %{cid: cid, username: username, text: text})
     GenServer.cast(aoi_ref, {:chat_say, cid, username, text})
     {:reply, {:ok, :sent}, state}
   end
@@ -200,17 +221,32 @@ defmodule SceneServer.PlayerCharacter do
     with :ok <- validate_skill(skill_id),
          :ok <- cooldown_ready?(skill_casts, skill_id, now),
          {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location) do
+      SceneServer.CliObserve.emit("player_skill", %{
+        cid: cid,
+        skill_id: skill_id,
+        location: location
+      })
+
       GenServer.cast(aoi_ref, {:skill_cast, cid, skill_id, location})
 
       {:reply, {:ok, location},
        %{state | skill_casts: Map.put(skill_casts, skill_id, now), last_location: location}}
     else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, reason} ->
+        SceneServer.CliObserve.emit("player_skill_error", %{
+          cid: cid,
+          skill_id: skill_id,
+          reason: reason
+        })
+
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
   def terminate(reason, %{aoi_ref: aoi_item, cid: cid, movement_timer: movement_timer}) do
+    SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
+
     if movement_timer != nil do
       Process.cancel_timer(movement_timer)
     end
@@ -246,6 +282,10 @@ defmodule SceneServer.PlayerCharacter do
     new_state =
       case movement_tick_with_retry(cd_ref, physys_ref) do
         {:ok, location} when location != nil ->
+          SceneServer.CliObserve.emit("player_movement_tick", fn ->
+            %{cid: state.cid, location: location}
+          end)
+
           GenServer.cast(aoi_ref, {:self_move, location})
           %{state | last_location: location}
 

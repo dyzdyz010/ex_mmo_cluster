@@ -73,6 +73,13 @@ defmodule GateServer.FastLaneRegistry do
     GenServer.call(__MODULE__, {:detach_connection, connection_pid, reason})
   end
 
+  @doc """
+  Return a sanitized snapshot for CLI inspection.
+  """
+  def snapshot do
+    GenServer.call(__MODULE__, :snapshot)
+  end
+
   @impl true
   def init(opts) do
     {:ok,
@@ -98,6 +105,12 @@ defmodule GateServer.FastLaneRegistry do
       expires_at: System.system_time(:millisecond) + state.ticket_ttl_ms
     }
 
+    GateServer.CliObserve.emit("fast_lane_ticket_issued", %{
+      connection_pid: connection_pid,
+      cid: Map.get(session_context, :cid),
+      status: Map.get(session_context, :status)
+    })
+
     {:reply, {:ok, ticket}, put_in(state, [:tickets, ticket], ticket_record)}
   end
 
@@ -107,6 +120,7 @@ defmodule GateServer.FastLaneRegistry do
 
     case Map.fetch(state.tickets, ticket) do
       :error ->
+        GateServer.CliObserve.emit("fast_lane_attach_invalid_ticket", %{peer: peer})
         {:reply, {:error, :invalid_ticket}, state}
 
       {:ok, %{connection_pid: connection_pid, session_context: session_context}} ->
@@ -128,6 +142,13 @@ defmodule GateServer.FastLaneRegistry do
         }
 
         GenServer.cast(connection_pid, {:udp_attached, peer, ticket})
+
+        GateServer.CliObserve.emit("fast_lane_attached", %{
+          connection_pid: connection_pid,
+          peer: peer,
+          cid: Map.get(session_context, :cid),
+          status: Map.get(session_context, :status)
+        })
 
         new_state =
           state
@@ -162,6 +183,12 @@ defmodule GateServer.FastLaneRegistry do
       session ->
         touched_session = %{session | last_seen_at: System.system_time(:millisecond)}
 
+        GateServer.CliObserve.emit("fast_lane_touch_peer", %{
+          peer: peer,
+          connection_pid: touched_session.connection_pid,
+          cid: Map.get(touched_session.session_context, :cid)
+        })
+
         new_state =
           state
           |> put_in([:sessions, touched_session.connection_pid], touched_session)
@@ -173,7 +200,34 @@ defmodule GateServer.FastLaneRegistry do
 
   @impl true
   def handle_call({:detach_connection, connection_pid, reason}, _from, state) do
+    GateServer.CliObserve.emit("fast_lane_detach_connection", %{
+      connection_pid: connection_pid,
+      reason: reason
+    })
+
     {:reply, :ok, detach_connection_session(state, connection_pid, reason)}
+  end
+
+  @impl true
+  def handle_call(:snapshot, _from, state) do
+    state = prune_expired_sessions(prune_expired_tickets(state))
+
+    snapshot = %{
+      ticket_count: map_size(state.tickets),
+      session_count: map_size(state.sessions),
+      sessions:
+        Enum.map(state.sessions, fn {connection_pid, session} ->
+          %{
+            connection_pid: inspect(connection_pid),
+            peer: session.peer,
+            cid: Map.get(session.session_context, :cid),
+            status: Map.get(session.session_context, :status),
+            last_seen_at: session.last_seen_at
+          }
+        end)
+    }
+
+    {:reply, snapshot, state}
   end
 
   @impl true
@@ -201,6 +255,11 @@ defmodule GateServer.FastLaneRegistry do
 
     Enum.reduce(state.sessions, state, fn {connection_pid, %{last_seen_at: last_seen_at}}, acc ->
       if now - last_seen_at >= idle_timeout_ms do
+        GateServer.CliObserve.emit("fast_lane_idle_timeout", %{
+          connection_pid: connection_pid,
+          last_seen_at: last_seen_at
+        })
+
         detach_connection_session(acc, connection_pid, :idle_timeout)
       else
         acc

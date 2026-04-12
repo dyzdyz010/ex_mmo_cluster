@@ -39,20 +39,25 @@ defmodule Demo.Runner do
     scenario =
       opts
       |> build_scenario()
+      |> configure_cli_observe!(opts)
+      |> configure_stdio_interfaces!(opts)
       |> bootstrap_runtime()
       |> Demo.Seeds.apply_seeded_identities!()
 
-    files = Demo.ConfigWriter.write!(scenario, output_dir(opts))
+    files = Demo.ConfigWriter.write!(scenario, output_dir(opts), observe_dir(opts))
 
     Mix.shell().info("Demo human config written to:")
     Mix.shell().info("  PowerShell: #{files.powershell}")
     Mix.shell().info("  POSIX shell: #{files.shell}")
     Mix.shell().info("  JSON: #{files.json}")
     Mix.shell().info("  Manifest: #{files.manifest}")
+    Mix.shell().info("  Observe dir: #{observe_dir(opts)}")
+    Mix.shell().info("  Server gate log: #{server_gate_log(opts)}")
+    Mix.shell().info("  Server scene log: #{server_scene_log(opts)}")
 
     Enum.each(files.clients, fn client ->
       Mix.shell().info(
-        "  human slot #{client.slot}: #{client.username} cid=#{client.cid} -> #{client.powershell}"
+        "  human slot #{client.slot}: #{client.username} cid=#{client.cid} -> #{client.powershell} (observe #{client.observe_log})"
       )
     end)
 
@@ -71,12 +76,22 @@ defmodule Demo.Runner do
         "Started #{length(scenario.bots)} demo bots against #{scenario.gate_addr}."
       )
 
-      case smoke_seconds(opts) do
-        seconds when is_integer(seconds) and seconds > 0 ->
-          await_smoke!(seconds)
+      cond do
+        Keyword.get(opts, :smoke, false) ->
+          deadline = System.monotonic_time(:millisecond) + smoke_seconds(opts) * 1_000
+          await_smoke_until!(deadline)
+          maybe_keep_runtime_alive_until(deadline)
           {:ok, %{scenario: scenario, files: files, mode: :smoke}}
 
-        _ ->
+        bounded_seconds(opts) > 0 ->
+          seconds = bounded_seconds(opts)
+          deadline = System.monotonic_time(:millisecond) + seconds * 1_000
+          Mix.shell().info("Demo runtime will stay alive for #{seconds} second(s).")
+          Process.sleep(seconds * 1_000)
+          maybe_keep_runtime_alive_until(deadline)
+          {:ok, %{scenario: scenario, files: files, mode: :bounded}}
+
+        true ->
           Mix.shell().info("Demo is running. Press Ctrl+C twice to stop.")
           Process.sleep(:infinity)
       end
@@ -92,6 +107,24 @@ defmodule Demo.Runner do
       human_username: Keyword.get(opts, :human_username),
       human_cid: Keyword.get(opts, :human_cid)
     )
+  end
+
+  defp configure_cli_observe!(scenario, opts) do
+    observe_dir = observe_dir(opts)
+    File.mkdir_p!(observe_dir)
+    File.rm(server_gate_log(opts))
+    File.rm(server_scene_log(opts))
+    Application.put_env(:gate_server, :cli_observe_log, server_gate_log(opts))
+    Application.put_env(:scene_server, :cli_observe_log, server_scene_log(opts))
+    scenario
+  end
+
+  defp configure_stdio_interfaces!(scenario, opts) do
+    if Keyword.get(opts, :stdio, false) do
+      Application.put_env(:gate_server, :stdio_interface, true)
+    end
+
+    scenario
   end
 
   defp bootstrap_runtime(scenario) do
@@ -138,9 +171,7 @@ defmodule Demo.Runner do
     end)
   end
 
-  defp await_smoke!(seconds) do
-    deadline = System.monotonic_time(:millisecond) + seconds * 1_000
-
+  defp await_smoke_until!(deadline) do
     smoke_loop(
       %{
         fast_lane_attached?: false,
@@ -151,6 +182,20 @@ defmodule Demo.Runner do
       },
       deadline
     )
+  end
+
+  defp maybe_keep_runtime_alive_until(deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms > 0 do
+      Mix.shell().info(
+        "Demo smoke passed; keeping runtime alive for #{div(remaining_ms, 1_000)} more second(s)."
+      )
+
+      Process.sleep(remaining_ms)
+    end
+
+    :ok
   end
 
   defp smoke_loop(checks, deadline) do
@@ -197,6 +242,15 @@ defmodule Demo.Runner do
     Keyword.get(opts, :output_dir, ".demo")
   end
 
+  defp observe_dir(opts) do
+    opts
+    |> Keyword.get(:observe_dir, Path.join(output_dir(opts), "observe"))
+    |> Path.expand()
+  end
+
+  defp server_gate_log(opts), do: Path.join(observe_dir(opts), "server-gate.log")
+  defp server_scene_log(opts), do: Path.join(observe_dir(opts), "server-scene.log")
+
   defp ensure_auth_endpoint_config! do
     endpoint_config =
       Application.get_env(:auth_server, AuthServerWeb.Endpoint, [])
@@ -209,17 +263,20 @@ defmodule Demo.Runner do
   end
 
   defp smoke_seconds(opts) do
+    exit_after = bounded_seconds(opts)
+
+    cond do
+      is_integer(exit_after) and exit_after > 0 -> exit_after
+      true -> 12
+    end
+  end
+
+  defp bounded_seconds(opts) do
     exit_after = Keyword.get(opts, :exit_after)
 
     cond do
-      is_integer(exit_after) and exit_after > 0 ->
-        exit_after
-
-      Keyword.get(opts, :smoke, false) ->
-        12
-
-      true ->
-        0
+      is_integer(exit_after) and exit_after > 0 -> exit_after
+      true -> 0
     end
   end
 end
