@@ -89,17 +89,8 @@ defmodule GateServer.UdpAcceptor do
       {:ok, {:fast_lane_attach, request_id, ticket}} ->
         handle_attach(socket, ip, port, request_id, ticket)
 
-      {:ok, {:movement, cid, timestamp, location, velocity, acceleration, request_id}} ->
-        handle_udp_movement(
-          socket,
-          {ip, port},
-          request_id,
-          cid,
-          timestamp,
-          location,
-          velocity,
-          acceleration
-        )
+      {:ok, {:movement_input, frame}} ->
+        handle_udp_movement(socket, {ip, port}, frame)
 
       {:ok, unexpected} ->
         Logger.warning("Unhandled UDP payload: #{inspect(unexpected)}")
@@ -132,59 +123,50 @@ defmodule GateServer.UdpAcceptor do
     end
   end
 
-  defp handle_udp_movement(
-         socket,
-         peer = {ip, port},
-         request_id,
-         cid,
-         timestamp,
-         location,
-         velocity,
-         acceleration
-       ) do
+  defp handle_udp_movement(socket, peer = {ip, port}, frame) do
     case GateServer.FastLaneRegistry.touch_peer(peer) do
       %{connection_pid: connection_pid} ->
         GateServer.CliObserve.emit("udp_movement_forward", %{
           peer: "#{:inet.ntoa(ip)}:#{port}",
-          request_id: request_id,
-          cid: cid,
+          request_id: frame.seq,
           connection_pid: connection_pid
         })
 
-        case GenServer.call(
-               connection_pid,
-               {:udp_movement, request_id, cid, timestamp, location, velocity, acceleration}
-             ) do
-          {:ok, ack_cid, ack_location} ->
+        case GenServer.call(connection_pid, {:udp_movement, frame}) do
+          {:ok, ack} ->
             GateServer.CliObserve.emit("udp_movement_ack", %{
               peer: "#{:inet.ntoa(ip)}:#{port}",
-              request_id: request_id,
-              cid: ack_cid,
-              location: ack_location
+              request_id: ack.ack_seq,
+              cid: ack.cid,
+              location: ack.position
             })
 
-            send_udp(socket, ip, port, {:movement_result, :ok, request_id, ack_cid, ack_location})
+            send_udp(
+              socket,
+              ip,
+              port,
+              {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
+               ack.acceleration, ack.movement_mode, ack.correction_flags}
+            )
 
           {:error, reason} ->
             GateServer.CliObserve.emit("udp_movement_error", %{
               peer: "#{:inet.ntoa(ip)}:#{port}",
-              request_id: request_id,
-              cid: cid,
+              request_id: frame.seq,
               reason: reason
             })
 
-            send_udp(socket, ip, port, {:result, :error, request_id})
+            send_udp(socket, ip, port, {:result, :error, frame.seq})
         end
 
       nil ->
         GateServer.CliObserve.emit("udp_movement_rejected", %{
           peer: "#{:inet.ntoa(ip)}:#{port}",
-          request_id: request_id,
-          cid: cid,
+          request_id: frame.seq,
           reason: :no_session
         })
 
-        send_udp(socket, ip, port, {:result, :error, request_id})
+        send_udp(socket, ip, port, {:result, :error, frame.seq})
     end
   end
 

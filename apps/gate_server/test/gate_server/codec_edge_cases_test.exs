@@ -4,16 +4,15 @@ defmodule GateServer.CodecEdgeCasesTest do
   alias GateServer.Codec
 
   describe "decode edge cases" do
-    test "movement with extreme float values" do
-      max_f64 = 1.7976931348623157e+308
-
+    test "movement input with extreme float values" do
       msg =
-        <<0x01, 1::64-big, 1::64-big, 0::64-big, max_f64::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 1::32-big, 0::32-big, 16::16-big, 1.0::float-32-big, -1.0::float-32-big,
+          2.0::float-32-big, 3::16-big>>
 
-      {:ok, {:movement, 1, 0, {x, _, _}, _, _, 1}} = Codec.decode(msg)
-      assert x == max_f64
+      {:ok, {:movement_input, %{input_dir: {x, y}, speed_scale: speed_scale}}} = Codec.decode(msg)
+      assert x == 1.0
+      assert y == -1.0
+      assert speed_scale == 2.0
     end
 
     test "enter_scene with max u64 cid" do
@@ -58,9 +57,14 @@ defmodule GateServer.CodecEdgeCasesTest do
       assert_in_delta z, -100.0, 0.001
     end
 
-    test "movement_result binary size is correct" do
-      {:ok, bin} = Codec.encode({:movement_result, :ok, 0, 42, {1.0, 2.0, 3.0}})
-      assert byte_size(bin) == 42
+    test "movement_ack binary size is correct" do
+      {:ok, bin} =
+        Codec.encode(
+          {:movement_ack, 0, 0, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, :grounded,
+           0}
+        )
+
+      assert byte_size(bin) == 94
     end
 
     test "redesigned time_sync_reply binary size is correct" do
@@ -72,9 +76,8 @@ defmodule GateServer.CodecEdgeCasesTest do
   describe "protocol completeness" do
     test "every request-response client message can be decoded in new format" do
       messages = [
-        <<0x01, 1::64-big, 0::64-big, 0::64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>,
+        <<0x01, 1::32-big, 0::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 0::16-big>>,
         <<0x02, 2::64-big, 0::64-big>>,
         <<0x03, 3::64-big, 4::64-big>>,
         <<0x05, 4::64-big, 1::16-big, "a", 1::16-big, "b">>,
@@ -102,7 +105,7 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:heartbeat_reply, 0},
         {:fast_lane_result, :ok, 0, 29001, "ticket"},
         {:fast_lane_attached, :ok, 0},
-        {:movement_result, :ok, 0, 0, {0.0, 0.0, 0.0}},
+        {:movement_ack, 0, 0, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0},
         {:chat_message, 0, "npc", "hi"},
         {:skill_event, 0, 1, {0.0, 0.0, 0.0}}
       ]

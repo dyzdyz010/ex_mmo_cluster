@@ -20,13 +20,13 @@ pub enum ClientMessage {
         request_id: u64,
         cid: i64,
     },
-    Movement {
-        request_id: u64,
-        cid: i64,
-        timestamp: u64,
-        location: NetVec3,
-        velocity: NetVec3,
-        acceleration: NetVec3,
+    MovementInput {
+        seq: u32,
+        client_tick: u32,
+        dt_ms: u16,
+        input_dir: [f32; 2],
+        speed_scale: f32,
+        movement_flags: u16,
     },
     TimeSync {
         request_id: u64,
@@ -51,6 +51,16 @@ pub enum ServerMessage {
         packet_id: u64,
         ok: bool,
         movement: Option<(i64, NetVec3)>,
+    },
+    MovementAck {
+        ack_seq: u32,
+        auth_tick: u32,
+        cid: i64,
+        location: NetVec3,
+        velocity: NetVec3,
+        acceleration: NetVec3,
+        movement_mode: u8,
+        correction_flags: u32,
     },
     EnterSceneResult {
         packet_id: u64,
@@ -129,6 +139,16 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
 
     match msg_type {
         0x80 => decode_result(body),
+        0x8B => Ok(ServerMessage::MovementAck {
+            ack_seq: read_u32(body, 0)?,
+            auth_tick: read_u32(body, 4)?,
+            cid: read_i64(body, 8)?,
+            location: read_vec3(body, 16)?,
+            velocity: read_vec3(body, 40)?,
+            acceleration: read_vec3(body, 64)?,
+            movement_mode: read_u8(body, 88)?,
+            correction_flags: read_u32(body, 89)?,
+        }),
         0x81 => Ok(ServerMessage::PlayerEnter {
             cid: read_i64(body, 0)?,
             location: read_vec3(body, 8)?,
@@ -254,21 +274,22 @@ pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
             payload.extend_from_slice(&cid.to_be_bytes());
             payload
         }
-        ClientMessage::Movement {
-            request_id,
-            cid,
-            timestamp,
-            location,
-            velocity,
-            acceleration,
+        ClientMessage::MovementInput {
+            seq,
+            client_tick,
+            dt_ms,
+            input_dir,
+            speed_scale,
+            movement_flags,
         } => {
             let mut payload = vec![0x01];
-            payload.extend_from_slice(&request_id.to_be_bytes());
-            payload.extend_from_slice(&cid.to_be_bytes());
-            payload.extend_from_slice(&timestamp.to_be_bytes());
-            write_vec3(&mut payload, location);
-            write_vec3(&mut payload, velocity);
-            write_vec3(&mut payload, acceleration);
+            payload.extend_from_slice(&seq.to_be_bytes());
+            payload.extend_from_slice(&client_tick.to_be_bytes());
+            payload.extend_from_slice(&dt_ms.to_be_bytes());
+            payload.extend_from_slice(&input_dir[0].to_be_bytes());
+            payload.extend_from_slice(&input_dir[1].to_be_bytes());
+            payload.extend_from_slice(&speed_scale.to_be_bytes());
+            payload.extend_from_slice(&movement_flags.to_be_bytes());
             payload
         }
         ClientMessage::TimeSync {
@@ -327,12 +348,6 @@ fn write_string(buffer: &mut Vec<u8>, value: &str) {
     buffer.extend_from_slice(bytes);
 }
 
-fn write_vec3(buffer: &mut Vec<u8>, value: &NetVec3) {
-    buffer.extend_from_slice(&value[0].to_be_bytes());
-    buffer.extend_from_slice(&value[1].to_be_bytes());
-    buffer.extend_from_slice(&value[2].to_be_bytes());
-}
-
 fn read_u8(body: &[u8], offset: usize) -> Result<u8, ProtocolError> {
     body.get(offset)
         .copied()
@@ -351,6 +366,13 @@ fn read_u64(body: &[u8], offset: usize) -> Result<u64, ProtocolError> {
         .get(offset..offset + 8)
         .ok_or_else(|| ProtocolError(format!("missing u64 at offset {offset}")))?;
     Ok(u64::from_be_bytes(bytes.try_into().expect("slice length")))
+}
+
+fn read_u32(body: &[u8], offset: usize) -> Result<u32, ProtocolError> {
+    let bytes = body
+        .get(offset..offset + 4)
+        .ok_or_else(|| ProtocolError(format!("missing u32 at offset {offset}")))?;
+    Ok(u32::from_be_bytes(bytes.try_into().expect("slice length")))
 }
 
 fn read_i64(body: &[u8], offset: usize) -> Result<i64, ProtocolError> {
@@ -430,6 +452,21 @@ mod tests {
     }
 
     #[test]
+    fn encodes_movement_input_frame() {
+        let frame = encode_client_frame(&ClientMessage::MovementInput {
+            seq: 7,
+            client_tick: 11,
+            dt_ms: 100,
+            input_dir: [1.0, 0.0],
+            speed_scale: 1.0,
+            movement_flags: 2,
+        });
+
+        assert_eq!(u32::from_be_bytes(frame[0..4].try_into().unwrap()), 25);
+        assert_eq!(frame[4], 0x01);
+    }
+
+    #[test]
     fn decodes_chat_and_skill_events() {
         let chat = vec![
             0x89, 0, 0, 0, 0, 0, 0, 0, 42, 0, 6, b't', b'e', b's', b't', b'e', b'r', 0, 5, b'h',
@@ -497,6 +534,42 @@ mod tests {
                 packet_id: 21,
                 ok: true,
                 movement: Some((42, [1.0, 2.0, 3.0])),
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_movement_ack() {
+        let payload = {
+            let mut bytes = vec![0x8B];
+            bytes.extend_from_slice(&7_u32.to_be_bytes());
+            bytes.extend_from_slice(&11_u32.to_be_bytes());
+            bytes.extend_from_slice(&42_i64.to_be_bytes());
+            bytes.extend_from_slice(&1.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&2.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&3.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&4.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&5.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&6.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&7.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&8.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&9.0_f64.to_be_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&3_u32.to_be_bytes());
+            bytes
+        };
+
+        assert_eq!(
+            decode_server_payload(&payload).unwrap(),
+            ServerMessage::MovementAck {
+                ack_seq: 7,
+                auth_tick: 11,
+                cid: 42,
+                location: [1.0, 2.0, 3.0],
+                velocity: [4.0, 5.0, 6.0],
+                acceleration: [7.0, 8.0, 9.0],
+                movement_mode: 0,
+                correction_flags: 3,
             }
         );
     }

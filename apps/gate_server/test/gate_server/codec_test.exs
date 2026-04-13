@@ -3,25 +3,39 @@ defmodule GateServer.CodecTest do
 
   alias GateServer.Codec
 
-  describe "decode movement" do
-    test "decodes movement with all fields" do
+  describe "decode movement input" do
+    test "decodes movement input with all fields" do
       msg =
-        <<0x01, 55::64-big, 42::64-big, 1000::64-big, 1.0::float-64-big, 2.0::float-64-big,
-          3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
-          7.0::float-64-big, 8.0::float-64-big, 9.0::float-64-big>>
+        <<0x01, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
+          1.25::float-32-big, 3::16-big>>
 
-      assert {:ok, {:movement, 42, 1000, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, 55}} ==
-               Codec.decode(msg)
+      assert {:ok,
+              {:movement_input,
+               %{
+                 seq: 55,
+                 client_tick: 1000,
+                 dt_ms: 100,
+                 input_dir: {1.0, 0.5},
+                 speed_scale: 1.25,
+                 movement_flags: 3
+               }}} == Codec.decode(msg)
     end
 
-    test "decodes movement with zero velocity" do
+    test "decodes movement input with zero direction" do
       msg =
-        <<0x01, 1::64-big, 1::64-big, 500::64-big, 100.5::float-64-big, 200.5::float-64-big,
-          90.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 1::32-big, 500::32-big, 33::16-big, 0.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 2::16-big>>
 
-      assert {:ok, {:movement, 1, 500, {100.5, 200.5, 90.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 1}} ==
-               Codec.decode(msg)
+      assert {:ok,
+              {:movement_input,
+               %{
+                 seq: 1,
+                 client_tick: 500,
+                 dt_ms: 33,
+                 input_dir: {0.0, 0.0},
+                 speed_scale: 1.0,
+                 movement_flags: 2
+               }}} == Codec.decode(msg)
     end
   end
 
@@ -150,12 +164,18 @@ defmodule GateServer.CodecTest do
     end
   end
 
-  describe "encode movement_result" do
-    test "encodes movement ack with position" do
-      {:ok, bin} = Codec.encode({:movement_result, :ok, 10, 42, {1.5, 2.5, 3.5}})
+  describe "encode movement_ack" do
+    test "encodes movement ack with authority fields" do
+      {:ok, bin} =
+        Codec.encode(
+          {:movement_ack, 10, 77, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3},
+           :grounded, 3}
+        )
 
-      assert <<0x80, 10::64-big, 0x00, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
-               3.5::float-64-big>> == bin
+      assert <<0x8B, 10::32-big, 77::32-big, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
+               3.5::float-64-big, 4.5::float-64-big, 5.5::float-64-big, 6.5::float-64-big,
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 3::32-big>> ==
+               bin
     end
   end
 
@@ -223,17 +243,21 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode → decode roundtrip" do
-    test "movement roundtrip from client perspective" do
-      original = {:movement, 42, 1000, {1.5, 2.5, 3.5}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, 9}
-
-      {_, cid, ts, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}, request_id} = original
-
+    test "movement input roundtrip from client perspective" do
       client_msg =
-        <<0x01, request_id::64-big, cid::64-big, ts::64-big, lx::float-64-big, ly::float-64-big,
-          lz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
-          ax::float-64-big, ay::float-64-big, az::float-64-big>>
+        <<0x01, 9::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 2::16-big>>
 
-      assert {:ok, ^original} = Codec.decode(client_msg)
+      assert {:ok,
+              {:movement_input,
+               %{
+                 seq: 9,
+                 client_tick: 1000,
+                 dt_ms: 33,
+                 input_dir: {1.0, 0.0},
+                 speed_scale: 1.0,
+                 movement_flags: 2
+               }}} = Codec.decode(client_msg)
     end
 
     test "broadcast messages encode to correct binary size" do

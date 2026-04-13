@@ -60,6 +60,24 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
 
     @impl true
+    def handle_call({:movement_input, frame}, _from, state) do
+      authoritative_location = state.movement_reply_location || state.location
+
+      ack = %SceneServer.Movement.Ack{
+        cid: 42,
+        ack_seq: frame.seq,
+        auth_tick: frame.client_tick,
+        position: authoritative_location,
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded,
+        correction_flags: 0
+      }
+
+      {:reply, {:ok, ack}, %{state | location: authoritative_location}}
+    end
+
+    @impl true
     def handle_call({:movement, _timestamp, location, _velocity, _acceleration}, _from, state) do
       authoritative_location = state.movement_reply_location || location
       {:reply, {:ok, authoritative_location}, %{state | location: authoritative_location}}
@@ -246,7 +264,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "movement before auth is rejected with generic error reply", %{client: client, pid: pid} do
-    assert :ok = :gen_tcp.send(client, encode_request_movement(2, 42, 100, {1.0, 2.0, 3.0}))
+    assert :ok = :gen_tcp.send(client, encode_movement_input(2, 10, {1.0, 0.0}))
     assert {:ok, <<0x80, 2::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
 
     assert %{status: :waiting_auth, scene_ref: nil} = :sys.get_state(pid)
@@ -295,7 +313,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 21))
     assert {:ok, <<0x80, 21::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
 
-    assert :ok = :gen_tcp.send(client, encode_request_movement(22, 42, 100, {1.0, 2.0, 3.0}))
+    assert :ok = :gen_tcp.send(client, encode_movement_input(22, 100, {1.0, 0.0}))
     assert {:ok, <<0x80, 22::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
     assert %{status: :authenticated, scene_ref: nil} = :sys.get_state(pid)
   end
@@ -430,11 +448,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 72))
     assert {:ok, <<0x84, 72::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
 
-    assert :ok = :gen_tcp.send(client, encode_request_movement(73, 42, 100, {4.0, 5.0, 6.0}))
+    assert :ok = :gen_tcp.send(client, encode_movement_input(73, 100, {1.0, 0.0}))
 
     assert {:ok,
-            <<0x80, 73::64-big, 0x00, 42::64-big, 8.0::float-64-big, 9.0::float-64-big,
-              10.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
+            <<0x8B, 73::32-big, 100::32-big, 42::64-big, 8.0::float-64-big, 9.0::float-64-big,
+              10.0::float-64-big, _::binary>>} = :gen_tcp.recv(client, 0, 500)
   end
 
   test "request-id-aware time_sync echoes packet_id after scene join", %{client: client} do
@@ -626,17 +644,15 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 113::64-big, 0x00>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
-    movement =
-      <<0x01, 114::64-big, 42::64-big, 200::64-big, 7.0::float-64-big, 8.0::float-64-big,
-        9.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-        0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+    movement = encode_movement_input(114, 200, {1.0, 0.0})
 
     assert :ok = :gen_udp.send(udp_client, {127, 0, 0, 1}, udp_port, movement)
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x80, 114::64-big, 0x00, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
-               19.0::float-64-big>>}} = :gen_udp.recv(udp_client, 0, 500)
+             <<0x8B, 114::32-big, 200::32-big, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
+               19.0::float-64-big, _::binary>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
 
     :gen_udp.close(udp_client)
   end
@@ -884,10 +900,16 @@ defmodule GateServer.TcpConnectionProtocolTest do
     <<0x02, request_id::64-big, cid::64-big>>
   end
 
-  defp encode_request_movement(request_id, cid, timestamp, {x, y, z}) do
-    <<0x01, request_id::64-big, cid::64-big, timestamp::64-big, x::float-64-big, y::float-64-big,
-      z::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-      0.0::float-64-big, 0.0::float-64-big>>
+  defp encode_movement_input(
+         seq,
+         client_tick,
+         {dir_x, dir_y},
+         dt_ms \\ 100,
+         speed_scale \\ 1.0,
+         movement_flags \\ 0
+       ) do
+    <<0x01, seq::32-big, client_tick::32-big, dt_ms::16-big, dir_x::float-32-big,
+      dir_y::float-32-big, speed_scale::float-32-big, movement_flags::16-big>>
   end
 
   defp encode_time_sync(request_id, client_send_ts) do

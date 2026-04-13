@@ -18,7 +18,7 @@ defmodule GateServer.Codec do
 
   ### Client → server
 
-  - `0x01` Movement
+  - `0x01` MovementInput
   - `0x02` EnterScene
   - `0x03` TimeSync
   - `0x04` Heartbeat
@@ -37,6 +37,7 @@ defmodule GateServer.Codec do
   - `0x86` Heartbeat reply
   - `0x89` ChatMessage
   - `0x8A` SkillEvent
+  - `0x8B` MovementAck
 
   ## Round trip example
 
@@ -70,6 +71,7 @@ defmodule GateServer.Codec do
   @msg_fast_lane_attached 0x88
   @msg_chat_message 0x89
   @msg_skill_event 0x8A
+  @msg_movement_ack 0x8B
 
   # ── Status codes ──
   @status_ok 0x00
@@ -96,13 +98,22 @@ defmodule GateServer.Codec do
   """
   @spec decode(binary()) :: {:ok, tuple()} | {:error, atom()}
 
-  # Movement: 1 + 8 + 8 + 8 + (9 * 8) = 97 bytes
+  # MovementInput: 1 + 4 + 4 + 2 + 4 + 4 + 4 + 2 = 25 bytes
   def decode(
-        <<@msg_movement, request_id::64-big, cid::64-big, timestamp::64-big, lx::float-64-big,
-          ly::float-64-big, lz::float-64-big, vx::float-64-big, vy::float-64-big,
-          vz::float-64-big, ax::float-64-big, ay::float-64-big, az::float-64-big>>
+        <<@msg_movement, seq::32-big, client_tick::32-big, dt_ms::16-big,
+          input_dir_x::float-32-big, input_dir_y::float-32-big, speed_scale::float-32-big,
+          movement_flags::16-big>>
       ) do
-    {:ok, {:movement, cid, timestamp, {lx, ly, lz}, {vx, vy, vz}, {ax, ay, az}, request_id}}
+    {:ok,
+     {:movement_input,
+      %{
+        seq: seq,
+        client_tick: client_tick,
+        dt_ms: dt_ms,
+        input_dir: {input_dir_x * 1.0, input_dir_y * 1.0},
+        speed_scale: speed_scale * 1.0,
+        movement_flags: movement_flags
+      }}}
   end
 
   def decode(<<@msg_movement, _rest::binary>>), do: {:error, :invalid_message}
@@ -214,11 +225,16 @@ defmodule GateServer.Codec do
     {:ok, <<@msg_enter_scene_result, packet_id::64-big, @status_error>>}
   end
 
-  # ── Movement result (ack with player location) ──
-  def encode({:movement_result, :ok, packet_id, cid, {x, y, z}}) do
+  # ── Movement ack ──
+  def encode(
+        {:movement_ack, ack_seq, auth_tick, cid, {px, py, pz}, {vx, vy, vz}, {ax, ay, az},
+         movement_mode, correction_flags}
+      ) do
     {:ok,
-     <<@msg_result, packet_id::64-big, @status_ok, cid::64-big, x::float-64-big, y::float-64-big,
-       z::float-64-big>>}
+     <<@msg_movement_ack, ack_seq::32-big, auth_tick::32-big, cid::64-big, px::float-64-big,
+       py::float-64-big, pz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
+       ax::float-64-big, ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
+       correction_flags::32-big>>}
   end
 
   # ── Broadcast: player enter ──
@@ -289,4 +305,10 @@ defmodule GateServer.Codec do
   def encode(_) do
     {:error, :unknown_message}
   end
+
+  defp encode_movement_mode(:grounded), do: 0
+  defp encode_movement_mode(:airborne), do: 1
+  defp encode_movement_mode(:disabled), do: 2
+  defp encode_movement_mode(mode) when is_integer(mode), do: mode
+  defp encode_movement_mode(_mode), do: 0
 end

@@ -39,6 +39,8 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  alias SceneServer.Movement.InputFrame
+
   @doc """
   Start the per-socket connection process.
 
@@ -197,29 +199,28 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_call(
-        {:udp_movement, _request_id, cid, timestamp, location, velocity, acceleration},
+        {:udp_movement, frame_params},
         _from,
         %{status: :in_scene, scene_ref: spid, cid: active_cid} = state
       ) do
+    frame = build_input_frame(frame_params)
+
     GateServer.CliObserve.emit("udp_movement_received", fn ->
       %{
         connection_pid: self(),
-        cid: cid,
+        cid: frame.seq,
         active_cid: active_cid,
-        timestamp: timestamp,
-        location: location,
-        velocity: velocity,
-        acceleration: acceleration
+        frame: frame
       }
     end)
 
     reply =
       cond do
-        cid != active_cid ->
+        active_cid == -1 ->
           {:error, :cid_mismatch}
 
         true ->
-          acknowledge_movement(spid, active_cid, timestamp, location, velocity, acceleration)
+          acknowledge_movement_input(spid, frame)
       end
 
     {:reply, reply, state}
@@ -227,7 +228,7 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_call(
-        {:udp_movement, _request_id, _cid, _timestamp, _location, _velocity, _acceleration},
+        {:udp_movement, _frame_params},
         _from,
         state
       ) do
@@ -235,52 +236,51 @@ defmodule GateServer.TcpConnection do
   end
 
   defp dispatch(
-         {:movement, _cid, timestamp, location, velocity, acceleration, request_id},
-         %{status: :in_scene, scene_ref: spid, cid: cid, socket: socket} = state
+         {:movement_input, frame_params},
+         %{status: :in_scene, scene_ref: spid, socket: socket} = state
        ) do
+    frame = build_input_frame(frame_params)
+
     GateServer.CliObserve.emit("tcp_movement_received", fn ->
       %{
         connection_pid: self(),
-        cid: cid,
-        request_id: request_id,
-        timestamp: timestamp,
-        location: location,
-        velocity: velocity
+        seq: frame.seq,
+        client_tick: frame.client_tick,
+        input_dir: frame.input_dir
       }
     end)
 
-    case acknowledge_movement(spid, cid, timestamp, location, velocity, acceleration) do
-      {:ok, ack_cid, authoritative_location} ->
+    case acknowledge_movement_input(spid, frame) do
+      {:ok, ack} ->
         GateServer.CliObserve.emit("tcp_movement_ack", fn ->
           %{
             connection_pid: self(),
-            cid: ack_cid,
-            request_id: request_id,
-            authoritative_location: authoritative_location
+            ack_seq: ack.ack_seq,
+            auth_tick: ack.auth_tick,
+            authoritative_location: ack.position
           }
         end)
 
         send_encoded(
           socket,
-          {:movement_result, :ok, request_id, ack_cid, authoritative_location}
+          {:movement_ack, ack.ack_seq, ack.auth_tick, state.cid, ack.position, ack.velocity,
+           ack.acceleration, ack.movement_mode, ack.correction_flags}
         )
 
       {:error, reason} ->
         GateServer.CliObserve.emit("tcp_movement_error", fn ->
-          %{connection_pid: self(), cid: cid, request_id: request_id, reason: reason}
+          %{connection_pid: self(), seq: frame.seq, reason: reason}
         end)
 
-        send_result_error(socket, reason, request_id)
+        send_result_error(socket, reason, frame.seq)
     end
 
     {:ok, state}
   end
 
-  defp dispatch(
-         {:movement, _cid, _timestamp, _location, _velocity, _acceleration, request_id},
-         state
-       ) do
-    send_result_error(state.socket, :invalid_state, request_id)
+  defp dispatch({:movement_input, frame_params}, state) do
+    frame = build_input_frame(frame_params)
+    send_result_error(state.socket, :invalid_state, frame.seq)
     {:ok, state}
   end
 
@@ -716,11 +716,9 @@ defmodule GateServer.TcpConnection do
 
   defp with_active_cid(auth_context, _cid), do: auth_context
 
-  defp acknowledge_movement(spid, cid, timestamp, location, velocity, acceleration) do
-    with {:ok, {:ok, _movement_applied}} <-
-           safe_call(spid, {:movement, timestamp, location, velocity, acceleration}),
-         {:ok, authoritative_location} <- fetch_player_location(spid) do
-      {:ok, cid, authoritative_location}
+  defp acknowledge_movement_input(spid, frame) do
+    with {:ok, {:ok, ack}} <- safe_call(spid, {:movement_input, frame}) do
+      {:ok, ack}
     else
       {:error, reason} -> {:error, reason}
       {:ok, _other} -> {:error, :scene_unavailable}
@@ -755,5 +753,22 @@ defmodule GateServer.TcpConnection do
     %{type: :auth_request, username: username, request_id: request_id, token_redacted?: true}
   end
 
+  defp observe_message_summary({:movement_input, frame}) do
+    %{type: :movement_input, seq: frame.seq, client_tick: frame.client_tick}
+  end
+
   defp observe_message_summary(message), do: message
+
+  defp build_input_frame(%InputFrame{} = frame), do: frame
+
+  defp build_input_frame(%{} = frame) do
+    %InputFrame{
+      seq: Map.fetch!(frame, :seq),
+      client_tick: Map.fetch!(frame, :client_tick),
+      dt_ms: Map.fetch!(frame, :dt_ms),
+      input_dir: Map.fetch!(frame, :input_dir),
+      speed_scale: Map.fetch!(frame, :speed_scale),
+      movement_flags: Map.fetch!(frame, :movement_flags)
+    }
+  end
 end

@@ -1,8 +1,12 @@
 pub mod app;
 pub mod config;
 pub mod headless;
+pub mod input;
 pub mod movement;
 pub mod net;
 pub mod observe;
 pub mod protocol;
+pub mod protocol_v2;
+pub mod sim;
 pub mod stdio;
+pub mod world;

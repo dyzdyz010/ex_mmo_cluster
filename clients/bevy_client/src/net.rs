@@ -1,10 +1,12 @@
 use crate::{
     config::ClientConfig,
     observe::ClientObserver,
+    protocol_v2::{WireMoveInputFrame, WireMovementAck},
     protocol::{
         ClientMessage, NetVec3, ServerMessage, decode_server_payload, encode_client_frame,
         encode_client_payload, take_frame,
     },
+    world::local_player::LocalPredictionRuntime,
 };
 use bevy::prelude::Resource;
 use std::{
@@ -42,10 +44,11 @@ impl Default for MessageTransport {
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
-    Movement {
-        location: NetVec3,
-        velocity: NetVec3,
-        acceleration: NetVec3,
+    MoveInputSample {
+        input_dir: [f32; 2],
+        dt_ms: u16,
+        speed_scale: f32,
+        movement_flags: u16,
     },
     Chat(String),
     CastSkill(u16),
@@ -255,9 +258,10 @@ struct ClientRuntime {
     auth_request_id: u64,
     enter_scene_request_id: Option<u64>,
     pending_time_sync: HashMap<u64, u64>,
-    last_applied_movement_ack: u64,
+    last_applied_movement_ack: u32,
     last_remote_move_sequences: HashMap<i64, u64>,
     fast_lane: FastLaneState,
+    local_prediction: LocalPredictionRuntime,
 }
 
 const MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS: u8 = 3;
@@ -278,6 +282,7 @@ impl ClientRuntime {
             last_applied_movement_ack: 0,
             last_remote_move_sequences: HashMap::new(),
             fast_lane: FastLaneState::default(),
+            local_prediction: LocalPredictionRuntime::default(),
         }
     }
 
@@ -312,19 +317,39 @@ impl ClientRuntime {
 
         match command {
             NetworkCommand::Shutdown => {}
-            NetworkCommand::Movement {
-                location,
-                velocity,
-                acceleration,
+            NetworkCommand::MoveInputSample {
+                input_dir,
+                dt_ms,
+                speed_scale,
+                movement_flags,
             } if self.phase == ConnectionPhase::InScene => {
-                let request_id = self.next_request_id();
-                let outbound = ClientMessage::Movement {
-                    request_id,
-                    cid: config.cid,
-                    timestamp: now_millis(),
-                    location,
-                    velocity,
-                    acceleration,
+                let frame = self.local_prediction.build_input_frame(
+                    bevy::prelude::Vec2::new(input_dir[0], input_dir[1]),
+                    dt_ms,
+                    speed_scale,
+                    movement_flags,
+                );
+
+                if let Some(predicted) = self.local_prediction.apply_local_input(frame.clone()) {
+                    outcome.push_event(NetworkEvent::LocalPosition {
+                        cid: config.cid,
+                        location: [
+                            predicted.position.x as f64,
+                            predicted.position.y as f64,
+                            predicted.position.z as f64,
+                        ],
+                        transport: self.fast_lane.movement_transport(),
+                    });
+                }
+
+                let wire = WireMoveInputFrame::from(frame);
+                let outbound = ClientMessage::MovementInput {
+                    seq: wire.seq,
+                    client_tick: wire.client_tick,
+                    dt_ms: wire.dt_ms,
+                    input_dir: [wire.input_dir.x, wire.input_dir.y],
+                    speed_scale: wire.speed_scale,
+                    movement_flags: wire.movement_flags,
                 };
 
                 match self.fast_lane.movement_transport() {
@@ -537,7 +562,7 @@ impl ClientRuntime {
                 }
 
                 if let Some((cid, location)) = movement {
-                    if packet_id <= self.last_applied_movement_ack {
+                    if (packet_id as u32) <= self.last_applied_movement_ack {
                         outcome.push_event(NetworkEvent::Log(format!(
                             "ignoring stale movement ack packet_id={packet_id} (latest={})",
                             self.last_applied_movement_ack
@@ -545,7 +570,7 @@ impl ClientRuntime {
                         return Ok(outcome);
                     }
 
-                    self.last_applied_movement_ack = packet_id;
+                    self.last_applied_movement_ack = packet_id as u32;
                     outcome.push_event(NetworkEvent::LocalPosition {
                         cid,
                         location,
@@ -580,6 +605,14 @@ impl ClientRuntime {
                 self.last_remote_move_sequences.clear();
                 let location =
                     location.ok_or_else(|| "enter-scene success missing location".to_string())?;
+                self.local_prediction.reset(
+                    bevy::prelude::Vec3::new(
+                        location[0] as f32,
+                        location[1] as f32,
+                        location[2] as f32,
+                    ),
+                    None,
+                );
                 outcome.push_event(NetworkEvent::Status("in scene".to_string()));
                 outcome.push_event(NetworkEvent::EnteredScene {
                     cid: config.cid,
@@ -595,6 +628,66 @@ impl ClientRuntime {
                     "scene joined; requesting UDP fast-lane bootstrap".to_string(),
                 ));
                 outcome.push_event(self.transport_event());
+            }
+            ServerMessage::MovementAck {
+                ack_seq,
+                auth_tick,
+                cid,
+                location,
+                velocity,
+                acceleration,
+                movement_mode,
+                correction_flags,
+            } => {
+                if ack_seq <= self.last_applied_movement_ack {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "ignoring stale movement ack ack_seq={ack_seq} (latest={})",
+                        self.last_applied_movement_ack
+                    )));
+                    return Ok(outcome);
+                }
+
+                self.last_applied_movement_ack = ack_seq;
+
+                let ack = crate::sim::types::MovementAck::from(WireMovementAck {
+                    ack_seq,
+                    auth_tick,
+                    position: bevy::prelude::Vec3::new(
+                        location[0] as f32,
+                        location[1] as f32,
+                        location[2] as f32,
+                    ),
+                    velocity: bevy::prelude::Vec3::new(
+                        velocity[0] as f32,
+                        velocity[1] as f32,
+                        velocity[2] as f32,
+                    ),
+                    acceleration: bevy::prelude::Vec3::new(
+                        acceleration[0] as f32,
+                        acceleration[1] as f32,
+                        acceleration[2] as f32,
+                    ),
+                    movement_mode,
+                    correction_flags,
+                });
+
+                let latest_state = self
+                    .local_prediction
+                    .apply_ack(ack)
+                    .map(|result| result.latest_state)
+                    .or_else(|| self.local_prediction.current_state().cloned());
+
+                if let Some(state) = latest_state {
+                    outcome.push_event(NetworkEvent::LocalPosition {
+                        cid,
+                        location: [
+                            state.position.x as f64,
+                            state.position.y as f64,
+                            state.position.z as f64,
+                        ],
+                        transport,
+                    });
+                }
             }
             ServerMessage::FastLaneResult {
                 packet_id,
@@ -1075,14 +1168,14 @@ fn apply_runtime_outcome(
                             runtime, stream, udp_socket, event_tx, observer, fallback,
                         )?;
 
-                        if let ClientMessage::Movement { .. } = &message {
+                        if let ClientMessage::MovementInput { .. } = &message {
                             observe_outbound_message(observer, "tcp-fallback", &message);
                             send_tcp_message(stream, &message).map_err(|tcp_err| {
                                 format!("tcp fallback send failed: {tcp_err}")
                             })?;
                         }
                     }
-                } else if let ClientMessage::Movement { .. } = &message {
+                } else if let ClientMessage::MovementInput { .. } = &message {
                     observe_outbound_message(observer, "tcp-fallback", &message);
                     send_tcp_message(stream, &message)
                         .map_err(|err| format!("tcp fallback send failed: {err}"))?;
@@ -1322,21 +1415,26 @@ fn observe_outbound_message(observer: &ClientObserver, transport: &str, message:
                 ("cid", cid.to_string()),
             ],
         ),
-        ClientMessage::Movement {
-            request_id,
-            cid,
-            location,
-            velocity,
+        ClientMessage::MovementInput {
+            seq,
+            client_tick,
+            input_dir,
+            speed_scale,
+            movement_flags,
             ..
         } => observer.emit(
             "network",
-            "send_movement",
+            "send_movement_input",
             &[
                 ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("cid", cid.to_string()),
-                ("location", format_vec(location)),
-                ("velocity", format_vec(velocity)),
+                ("seq", seq.to_string()),
+                ("client_tick", client_tick.to_string()),
+                (
+                    "input_dir",
+                    format!("{:.2},{:.2}", input_dir[0], input_dir[1]),
+                ),
+                ("speed_scale", format!("{speed_scale:.2}")),
+                ("movement_flags", movement_flags.to_string()),
             ],
         ),
         ClientMessage::TimeSync {
@@ -1467,10 +1565,11 @@ mod tests {
     }
 
     fn movement_command() -> NetworkCommand {
-        NetworkCommand::Movement {
-            location: [1.0, 2.0, 3.0],
-            velocity: [4.0, 5.0, 0.0],
-            acceleration: [0.0, 0.0, 0.0],
+        NetworkCommand::MoveInputSample {
+            input_dir: [1.0, 0.0],
+            dt_ms: 100,
+            speed_scale: 1.0,
+            movement_flags: 0,
         }
     }
 
@@ -1553,6 +1652,9 @@ mod tests {
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
         runtime.fast_lane.reset_for_bootstrap(3);
+        runtime
+            .local_prediction
+            .reset(bevy::prelude::Vec3::ZERO, None);
 
         let bootstrap = runtime
             .handle_server_message(
@@ -1579,7 +1681,7 @@ mod tests {
         let before_attach = runtime.handle_command(&config, movement_command());
         assert!(matches!(
             before_attach.outbounds.as_slice(),
-            [OutboundAction::Tcp(ClientMessage::Movement { .. })]
+            [OutboundAction::Tcp(ClientMessage::MovementInput { .. })]
         ));
 
         let attach = runtime
@@ -1605,17 +1707,22 @@ mod tests {
         let after_attach = runtime.handle_command(&config, movement_command());
         assert!(matches!(
             after_attach.outbounds.as_slice(),
-            [OutboundAction::Udp(ClientMessage::Movement { .. })]
+            [OutboundAction::Udp(ClientMessage::MovementInput { .. })]
         ));
 
         let move_ack = runtime
             .handle_server_message(
                 &config,
                 MessageTransport::Udp,
-                ServerMessage::Result {
-                    packet_id: 99,
-                    ok: true,
-                    movement: Some((42, [7.0, 8.0, 9.0])),
+                ServerMessage::MovementAck {
+                    ack_seq: 1,
+                    auth_tick: 1,
+                    cid: 42,
+                    location: [7.0, 8.0, 9.0],
+                    velocity: [4.0, 0.0, 0.0],
+                    acceleration: [0.0, 0.0, 0.0],
+                    movement_mode: 0,
+                    correction_flags: 0,
                 },
             )
             .unwrap();
@@ -1623,8 +1730,8 @@ mod tests {
             event,
             NetworkEvent::LocalPosition {
                 cid: 42,
-                location: [7.0, 8.0, 9.0],
                 transport: MessageTransport::Udp,
+                ..
             }
         )));
 
@@ -1682,7 +1789,7 @@ mod tests {
         let movement = runtime.handle_command(&config, movement_command());
         assert!(matches!(
             movement.outbounds.as_slice(),
-            [OutboundAction::Tcp(ClientMessage::Movement { .. })]
+            [OutboundAction::Tcp(ClientMessage::MovementInput { .. })]
         ));
     }
 
@@ -1860,15 +1967,23 @@ mod tests {
         let config = test_config();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
+        runtime
+            .local_prediction
+            .reset(bevy::prelude::Vec3::ZERO, None);
 
         let latest = runtime
             .handle_server_message(
                 &config,
                 MessageTransport::Udp,
-                ServerMessage::Result {
-                    packet_id: 10,
-                    ok: true,
-                    movement: Some((42, [4.0, 5.0, 6.0])),
+                ServerMessage::MovementAck {
+                    ack_seq: 10,
+                    auth_tick: 1,
+                    cid: 42,
+                    location: [4.0, 5.0, 6.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    acceleration: [0.0, 0.0, 0.0],
+                    movement_mode: 0,
+                    correction_flags: 0,
                 },
             )
             .unwrap();
@@ -1886,10 +2001,15 @@ mod tests {
             .handle_server_message(
                 &config,
                 MessageTransport::Tcp,
-                ServerMessage::Result {
-                    packet_id: 9,
-                    ok: true,
-                    movement: Some((42, [1.0, 2.0, 3.0])),
+                ServerMessage::MovementAck {
+                    ack_seq: 9,
+                    auth_tick: 1,
+                    cid: 42,
+                    location: [1.0, 2.0, 3.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    acceleration: [0.0, 0.0, 0.0],
+                    movement_mode: 0,
+                    correction_flags: 0,
                 },
             )
             .unwrap();
@@ -1903,7 +2023,7 @@ mod tests {
         assert!(stale.events.iter().any(|event| matches!(
             event,
             NetworkEvent::Log(message)
-                if message.contains("ignoring stale movement ack packet_id=9")
+                if message.contains("ignoring stale movement ack ack_seq=9")
         )));
     }
 

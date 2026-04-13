@@ -4,6 +4,7 @@ defmodule SceneServer.PlayerCharacter do
   require Logger
 
   alias SceneServer.AoiManager
+  alias SceneServer.Movement.{Engine, InputFrame, Profile, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   @default_location {1_000.0, 1_000.0, 90.0}
@@ -40,6 +41,11 @@ defmodule SceneServer.PlayerCharacter do
        physys_ref: nil,
        aoi_ref: nil,
        character_data_ref: nil,
+       movement_state: State.idle(normalize_character_profile(cid, character_profile).position),
+       movement_profile: Profile.default(),
+       last_input_seq: 0,
+       last_client_tick: 0,
+       last_server_input_at_ms: System.monotonic_time(:millisecond),
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0,
@@ -145,6 +151,63 @@ defmodule SceneServer.PlayerCharacter do
         {false, %{state | old_timestamp: nil, net_delay: new_delay}}
 
         {:reply, {:ok, :end}, %{state | old_timestamp: nil, net_delay: new_delay}}
+    end
+  end
+
+  @impl true
+  def handle_call(
+        {:movement_input, %InputFrame{} = frame},
+        _from,
+        %{
+          cid: cid,
+          aoi_ref: aoi_ref,
+          character_data_ref: cd_ref,
+          physys_ref: physys_ref,
+          movement_state: movement_state,
+          movement_profile: movement_profile,
+          last_input_seq: last_input_seq,
+          last_client_tick: last_client_tick,
+          last_server_input_at_ms: last_server_input_at_ms
+        } = state
+      ) do
+    with {:ok, sanitized_frame, now_ms} <-
+           sanitize_input_frame(
+             frame,
+             movement_profile,
+             last_input_seq,
+             last_client_tick,
+             last_server_input_at_ms
+           ) do
+      {next_state, ack} = Engine.step(cid, movement_state, sanitized_frame, movement_profile)
+
+      with :ok <-
+             update_character_movement_with_retry(
+               cd_ref,
+               next_state.position,
+               next_state.velocity,
+               next_state.acceleration,
+               physys_ref
+             ) do
+        GenServer.cast(aoi_ref, {:self_move, next_state.position})
+
+        {:reply, {:ok, ack},
+         %{
+           state
+           | movement_state: next_state,
+             last_location: next_state.position,
+             last_input_seq: sanitized_frame.seq,
+             last_client_tick: sanitized_frame.client_tick,
+             last_server_input_at_ms: now_ms
+         }}
+      else
+        {:error, reason} ->
+          SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
+          {:reply, {:error, reason}, state}
+      end
+    else
+      {:error, reason} ->
+        SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -272,39 +335,9 @@ defmodule SceneServer.PlayerCharacter do
   @impl true
   def handle_info(
         :movement_tick,
-        %{
-          character_data_ref: cd_ref,
-          aoi_ref: aoi_ref,
-          physys_ref: physys_ref,
-          last_location: last_location
-        } = state
+        state
       ) do
-    new_state =
-      case movement_tick_with_retry(cd_ref, physys_ref) do
-        {:ok, location} when location != nil ->
-          SceneServer.CliObserve.emit("player_movement_tick", fn ->
-            %{cid: state.cid, location: location}
-          end)
-
-          GenServer.cast(aoi_ref, {:self_move, location})
-          %{state | last_location: location}
-
-        {:ok, nil} ->
-          state
-
-        {:error, :lock_fail} ->
-          Logger.debug(
-            "movement_tick lock contention for cid=#{state.cid}, keeping cached location"
-          )
-
-          %{state | last_location: last_location}
-
-        {:error, reason} ->
-          Logger.warning("movement_tick failed for cid=#{state.cid}: #{inspect(reason)}")
-          state
-      end
-
-    {:noreply, %{new_state | movement_timer: make_movement_timer()}}
+    {:noreply, %{state | movement_timer: make_movement_timer()}}
   end
 
   defp enter_scene(cid, client_timestamp, location, connection_pid) do
@@ -389,6 +422,44 @@ defmodule SceneServer.PlayerCharacter do
         default
     end
   end
+
+  defp sanitize_input_frame(
+         %InputFrame{} = frame,
+         %Profile{} = profile,
+         last_input_seq,
+         last_client_tick,
+         last_server_input_at_ms
+       ) do
+    cond do
+      frame.seq <= last_input_seq ->
+        {:error, :stale_input_seq}
+
+      frame.client_tick <= last_client_tick ->
+        {:error, :stale_client_tick}
+
+      true ->
+        now_ms = System.monotonic_time(:millisecond)
+        server_dt_ms = clamp_server_dt(now_ms - last_server_input_at_ms, profile.fixed_dt_ms)
+
+        sanitized_frame = %InputFrame{
+          frame
+          | dt_ms: server_dt_ms,
+            speed_scale: clamp_speed_scale(frame.speed_scale, profile.max_speed_scale)
+        }
+
+        {:ok, sanitized_frame, now_ms}
+    end
+  end
+
+  defp clamp_server_dt(delta_ms, _fixed_dt_ms) when delta_ms <= 0, do: 1
+
+  defp clamp_server_dt(delta_ms, fixed_dt_ms) do
+    min(max(delta_ms, 1), fixed_dt_ms)
+  end
+
+  defp clamp_speed_scale(scale, max_scale) when scale < 0.0, do: 0.0
+  defp clamp_speed_scale(scale, max_scale) when scale > max_scale, do: max_scale
+  defp clamp_speed_scale(scale, _max_scale), do: scale
 
   defp new_character_data_with_retry(
          cid,
@@ -529,31 +600,6 @@ defmodule SceneServer.PlayerCharacter do
           physys_ref,
           attempts - 1
         )
-
-      {:error, reason} ->
-        {:error, reason}
-
-      {:err, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp movement_tick_with_retry(cd_ref, physys_ref, attempts \\ @lock_retry_attempts)
-
-  defp movement_tick_with_retry(_cd_ref, _physys_ref, 0), do: {:error, :lock_fail}
-
-  defp movement_tick_with_retry(cd_ref, physys_ref, attempts) do
-    case SceneServer.Native.SceneOps.movement_tick(cd_ref, physys_ref) do
-      {:ok, location} ->
-        {:ok, location}
-
-      {:error, :lock_fail} ->
-        Process.sleep(@lock_retry_sleep_ms)
-        movement_tick_with_retry(cd_ref, physys_ref, attempts - 1)
-
-      {:err, :lock_fail} ->
-        Process.sleep(@lock_retry_sleep_ms)
-        movement_tick_with_retry(cd_ref, physys_ref, attempts - 1)
 
       {:error, reason} ->
         {:error, reason}

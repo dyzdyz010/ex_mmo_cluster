@@ -13,15 +13,14 @@ defmodule GateServer.CodecDispatchTest do
   """
 
   describe "protocol routing by first byte" do
-    test "movement message (0x01) is in codec range" do
+    test "movement input message (0x01) is in codec range" do
       msg =
-        <<0x01, 9::64-big, 1::64-big, 100::64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 9::32-big, 100::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 0::16-big>>
 
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, {:movement, 1, 100, _, _, _, 9}} = Codec.decode(msg)
+      assert {:ok, {:movement_input, %{seq: 9, client_tick: 100}}} = Codec.decode(msg)
     end
 
     test "enter_scene message (0x02) is in codec range" do
@@ -75,8 +74,13 @@ defmodule GateServer.CodecDispatchTest do
   end
 
   describe "server response encoding for codec dispatch" do
-    test "movement_result encodes correctly for send back" do
-      {:ok, bin} = Codec.encode({:movement_result, :ok, 9, 42, {1.0, 2.0, 3.0}})
+    test "movement_ack encodes correctly for send back" do
+      {:ok, bin} =
+        Codec.encode(
+          {:movement_ack, 9, 12, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0},
+           :grounded, 0}
+        )
+
       <<type::8, _::binary>> = bin
       assert type >= 0x80
     end
@@ -120,19 +124,20 @@ defmodule GateServer.CodecDispatchTest do
   end
 
   describe "end-to-end codec flow" do
-    test "movement request and response preserve request_id" do
+    test "movement input and ack preserve sequencing metadata" do
       client_msg =
-        <<0x01, 73::64-big, 42::64-big, 1000::64-big, 100.0::float-64-big, 200.0::float-64-big,
-          90.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-          0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big>>
+        <<0x01, 73::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 0::16-big>>
 
-      {:ok, {:movement, cid, _ts, location, _vel, _acc, request_id}} = Codec.decode(client_msg)
-      assert cid == 42
-      assert request_id == 73
-      assert location == {100.0, 200.0, 90.0}
+      assert {:ok, {:movement_input, %{seq: 73, client_tick: 1000}}} = Codec.decode(client_msg)
 
-      {:ok, response} = Codec.encode({:movement_result, :ok, request_id, cid, location})
-      assert <<0x80, 73::64-big, 0x00, 42::64-big, _::binary>> = response
+      {:ok, response} =
+        Codec.encode(
+          {:movement_ack, 73, 1000, 42, {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
+           :grounded, 0}
+        )
+
+      assert <<0x8B, 73::32-big, 1000::32-big, 42::64-big, _::binary>> = response
     end
 
     test "auth flow echoes request_id in result" do
