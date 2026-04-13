@@ -14,6 +14,7 @@ pub enum ClientStdioCommand {
     Position,
     Transport,
     Players,
+    Npcs,
     Chat(String),
     Skill(u16),
     Move {
@@ -42,7 +43,7 @@ impl ClientStdioInterface {
                 "ready",
                 &[(
                     "commands",
-                    "help|snapshot|position|transport|players|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
+                    "help|snapshot|position|transport|players|npcs|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
                         .to_string(),
                 )],
             );
@@ -60,7 +61,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
+                                    "help|snapshot|position|transport|players|npcs|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
                                         .to_string(),
                                 )],
                             );
@@ -126,6 +127,7 @@ pub fn snapshot_fields(
     movement_transport: &str,
     fast_lane_status: &str,
     remote_player_count: usize,
+    remote_npc_count: usize,
 ) -> Vec<(&'static str, String)> {
     vec![
         ("status", status.to_string()),
@@ -143,6 +145,7 @@ pub fn snapshot_fields(
         ("movement_transport", movement_transport.to_string()),
         ("fast_lane_status", fast_lane_status.to_string()),
         ("remote_player_count", remote_player_count.to_string()),
+        ("remote_npc_count", remote_npc_count.to_string()),
     ]
 }
 
@@ -161,6 +164,10 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
 
     if line == "players" {
         return Ok(ClientStdioCommand::Players);
+    }
+
+    if line == "npcs" {
+        return Ok(ClientStdioCommand::Npcs);
     }
 
     if line == "stop" {
@@ -235,6 +242,7 @@ mod tests {
             parse_command("players").unwrap(),
             ClientStdioCommand::Players
         );
+        assert_eq!(parse_command("npcs").unwrap(), ClientStdioCommand::Npcs);
         assert_eq!(parse_command("stop").unwrap(), ClientStdioCommand::Stop);
         assert_eq!(parse_command("quit").unwrap(), ClientStdioCommand::Quit);
     }

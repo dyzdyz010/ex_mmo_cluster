@@ -141,32 +141,48 @@ try {
     }
   }
 
+  Wait-Until -TimeoutSeconds 90 -Description "npc actor identity visible to client" -Condition {
+    (Test-Path $clientObserve) -and ((Get-Content $clientObserve -Raw) -match 'event="actor_identity".*cid="90001"')
+  }
+
   $client.StandardInput.WriteLine("snapshot")
   $client.StandardInput.WriteLine("transport")
-  $client.StandardInput.WriteLine("skill 1")
+  $client.StandardInput.WriteLine("npcs")
   $client.StandardInput.Flush()
-  Start-Sleep -Milliseconds 800
-  $client.StandardInput.WriteLine("move w 600")
-  $client.StandardInput.Flush()
-  Start-Sleep -Seconds 1
-  $client.StandardInput.WriteLine("move d 600")
-  $client.StandardInput.Flush()
-  Start-Sleep -Seconds 1
+  Start-Sleep -Seconds 2
+  $server.StandardInput.WriteLine("npcs")
+  $server.StandardInput.WriteLine("npc 90001")
+  $server.StandardInput.WriteLine("npc_state 90001")
+  $server.StandardInput.Flush()
+  Start-Sleep -Milliseconds 750
+
+  foreach ($attempt in 1..3) {
+    $client.StandardInput.WriteLine("skill 1")
+    $client.StandardInput.Flush()
+    Start-Sleep -Milliseconds 850
+  }
+
+  $server.StandardInput.WriteLine("npc_state 90001")
+  $server.StandardInput.Flush()
+  Start-Sleep -Seconds 3
   $client.StandardInput.WriteLine("chat e2e-stdio")
   $client.StandardInput.Flush()
   Start-Sleep -Milliseconds 500
-  Start-Sleep -Seconds 3
-$client.StandardInput.WriteLine("players")
-$client.StandardInput.WriteLine("position")
-$client.StandardInput.WriteLine("snapshot")
-$client.StandardInput.Flush()
-Start-Sleep -Milliseconds 500
-$server.StandardInput.WriteLine("players")
-$server.StandardInput.WriteLine("connections")
-$server.StandardInput.WriteLine("fastlane")
-$server.StandardInput.WriteLine("player $($config.cid)")
-if ($BotCount -gt 0) { $server.StandardInput.WriteLine("player_state 42101") }
-$server.StandardInput.Flush()
+  $client.StandardInput.WriteLine("players")
+  $client.StandardInput.WriteLine("npcs")
+  $client.StandardInput.WriteLine("position")
+  $client.StandardInput.WriteLine("snapshot")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 500
+  $server.StandardInput.WriteLine("players")
+  $server.StandardInput.WriteLine("connections")
+  $server.StandardInput.WriteLine("fastlane")
+  $server.StandardInput.WriteLine("player $($config.cid)")
+  if ($BotCount -gt 0) { $server.StandardInput.WriteLine("player_state 42101") }
+  $server.StandardInput.WriteLine("npcs")
+  $server.StandardInput.WriteLine("npc 90001")
+  $server.StandardInput.WriteLine("npc_state 90001")
+  $server.StandardInput.Flush()
   Start-Sleep -Milliseconds 500
   $client.StandardInput.WriteLine("quit")
   $client.StandardInput.Flush()
@@ -190,9 +206,9 @@ $server.StandardInput.Flush()
   $requiredClientPatterns = @(
     'client_stdio event="snapshot".*scene_joined="true"',
     'client_stdio event="snapshot".*remote_player_count="[1-9]',
+    'client_stdio event="snapshot".*remote_npc_count="[1-9]',
     'client_stdio event="transport".*movement_transport=',
-    'client_stdio event="move_queued".*direction="w"',
-    'client_stdio event="move_queued".*direction="d"',
+    'client_stdio event="npcs".*90001',
     'client_stdio event="chat_sent".*e2e-stdio',
     'client_stdio event="skill_sent".*skill_id="1"',
     'client_stdio event="position".*local_position=',
@@ -213,7 +229,10 @@ $server.StandardInput.Flush()
     ('server_stdio event="players".*' + [string]$config.cid),
     'server_stdio event="connections"',
     'server_stdio event="fastlane"',
-    'server_stdio event="player"'
+    'server_stdio event="player"',
+    'server_stdio event="npcs".*90001',
+    'server_stdio event="npc"',
+    'server_stdio event="npc_state"'
   )
 
   foreach ($pattern in $requiredServerPatterns) {
@@ -234,26 +253,53 @@ $server.StandardInput.Flush()
     throw "server stdio player query returned nil during E2E"
   }
 
-  if ($BotCount -gt 0) {
-    $stateLineMatch = [regex]::Match($serverStdout, 'server_stdio event="player_state".*')
-    if (-not $stateLineMatch.Success) {
-      throw "server stdio player_state output missing for combat target"
-    }
+  $npcStateLines = [regex]::Matches($serverStdout, 'server_stdio event="npc_state".*')
+  if ($npcStateLines.Count -lt 2) {
+    throw "expected multiple npc_state outputs for death/respawn validation"
+  }
 
-    $stateLine = $stateLineMatch.Value
-    $hpMatch = [regex]::Match($stateLine, 'hp: (?<hp>\d+)')
-    $maxMatch = [regex]::Match($stateLine, 'max_hp: (?<max>\d+)')
-    $aliveMatch = [regex]::Match($stateLine, 'alive: (?<alive>true|false)')
-
-    if (-not $hpMatch.Success -or -not $maxMatch.Success -or -not $aliveMatch.Success) {
-      throw "server stdio player_state output missing hp/max_hp/alive fields"
+  $sawDeadNpc = $false
+  foreach ($match in $npcStateLines) {
+    $line = $match.Value
+    $hpMatch = [regex]::Match($line, 'hp: (?<hp>\d+)')
+    $aliveMatch = [regex]::Match($line, 'alive: (?<alive>true|false)')
+    if ($hpMatch.Success -and $aliveMatch.Success) {
+      $hp = [int]$hpMatch.Groups["hp"].Value
+      $alive = $aliveMatch.Groups["alive"].Value -eq "true"
+      if (-not $alive -and $hp -eq 0) {
+        $sawDeadNpc = $true
+        break
+      }
     }
+  }
 
-    $targetHp = [int]$hpMatch.Groups["hp"].Value
-    $targetMaxHp = [int]$maxMatch.Groups["max"].Value
-    if ($targetHp -ge $targetMaxHp) {
-      throw "combat loop did not reduce target hp"
+  if (-not $sawDeadNpc) {
+    $clientObserveRaw = Get-Content $clientObserve -Raw
+    if ($clientObserveRaw -match 'event="player_state".*cid="90001".*hp="0".*alive="false"') {
+      $sawDeadNpc = $true
     }
+  }
+
+  if (-not $sawDeadNpc) {
+    throw "npc death was never observed via stdio or client observe logs"
+  }
+
+  $finalNpcLine = $npcStateLines[$npcStateLines.Count - 1].Value
+  $finalNpcHp = [regex]::Match($finalNpcLine, 'hp: (?<hp>\d+)')
+  $finalNpcMax = [regex]::Match($finalNpcLine, 'max_hp: (?<max>\d+)')
+  $finalNpcAlive = [regex]::Match($finalNpcLine, 'alive: (?<alive>true|false)')
+  $finalNpcDeaths = [regex]::Match($finalNpcLine, 'deaths: (?<deaths>\d+)')
+  if (-not $finalNpcHp.Success -or -not $finalNpcMax.Success -or -not $finalNpcAlive.Success) {
+    throw "final npc_state output missing hp/max_hp/alive"
+  }
+
+  if ($finalNpcAlive.Groups["alive"].Value -ne "true" -or
+      [int]$finalNpcHp.Groups["hp"].Value -ne [int]$finalNpcMax.Groups["max"].Value) {
+    throw "final npc_state output did not show a full respawned NPC"
+  }
+
+  if (-not $finalNpcDeaths.Success -or [int]$finalNpcDeaths.Groups["deaths"].Value -lt 1) {
+    throw "final npc_state output did not show any npc death before respawn"
   }
 
   if ($BotCount -gt 0 -and -not ((Get-Content $clientObserve -Raw) -match 'event="player_(enter|move)"')) {
@@ -262,6 +308,10 @@ $server.StandardInput.Flush()
 
   if ($BotCount -gt 0 -and -not ((Get-Content $clientObserve -Raw) -match 'event="combat_hit"')) {
     throw "client observe log did not record combat_hit after skill cast"
+  }
+
+  if (-not ((Get-Content $clientObserve -Raw) -match 'event="combat_hit".*source_cid="90001"')) {
+    throw "client observe log did not record NPC-origin combat_hit"
   }
 
   $clientMatches = [regex]::Matches($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')

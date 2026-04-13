@@ -2,6 +2,13 @@ use std::fmt;
 
 pub type NetVec3 = [f64; 3];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorKind {
+    Player,
+    Npc,
+    Unknown(u8),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientMessage {
     AuthRequest {
@@ -123,6 +130,11 @@ pub enum ServerMessage {
         damage: u16,
         hp_after: u16,
         location: NetVec3,
+    },
+    ActorIdentity {
+        cid: i64,
+        kind: ActorKind,
+        name: String,
     },
 }
 
@@ -256,6 +268,12 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             hp_after: read_u16(body, 20)?,
             location: read_vec3(body, 22)?,
         }),
+        0x8E => {
+            let cid = read_i64(body, 0)?;
+            let kind = decode_actor_kind(read_u8(body, 8)?);
+            let (name, _) = read_string(body, 9)?;
+            Ok(ServerMessage::ActorIdentity { cid, kind, name })
+        }
         other => Err(ProtocolError(format!(
             "unknown server message type: {other:#x}"
         ))),
@@ -436,6 +454,14 @@ fn read_string(body: &[u8], offset: usize) -> Result<(String, usize), ProtocolEr
     Ok((value.to_owned(), end))
 }
 
+fn decode_actor_kind(value: u8) -> ActorKind {
+    match value {
+        0 => ActorKind::Player,
+        1 => ActorKind::Npc,
+        other => ActorKind::Unknown(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +571,19 @@ mod tests {
                 damage: 25,
                 hp_after: 75,
                 location: [1.0, 2.0, 3.0],
+            }
+        );
+
+        let actor_identity = vec![
+            0x8E, 0, 0, 0, 0, 0, 1, 0x5f, 0x91, 0x01, 0, 14, b'T', b'r', b'a', b'i', b'n', b'i',
+            b'n', b'g', b' ', b'S', b'l', b'i', b'm', b'e',
+        ];
+        assert_eq!(
+            decode_server_payload(&actor_identity).unwrap(),
+            ServerMessage::ActorIdentity {
+                cid: 90_001,
+                kind: ActorKind::Npc,
+                name: "Training Slime".into(),
             }
         );
     }

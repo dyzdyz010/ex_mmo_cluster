@@ -34,6 +34,14 @@ defmodule SceneServer.Combat.Targeting do
     end
   end
 
+  @spec safe_summary_by_cid(integer()) :: {:ok, map()} | {:error, term()}
+  def safe_summary_by_cid(cid) when is_integer(cid) do
+    case SceneServer.AoiManager.get_actor_pid(cid) do
+      pid when is_pid(pid) -> safe_summary(pid)
+      _ -> {:error, :unknown_actor}
+    end
+  end
+
   defp within_radius?({ax, ay, az}, {bx, by, bz}, radius) do
     dx = ax - bx
     dy = ay - by

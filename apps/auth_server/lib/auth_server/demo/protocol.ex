@@ -133,6 +133,21 @@ defmodule Demo.Protocol do
     {:ok, {:skill_event, cid, skill_id, {x, y, z}}}
   end
 
+  def decode_server(<<0x8C, cid::64-big, hp::16-big, max_hp::16-big, alive::8>>) do
+    {:ok, {:player_state, cid, hp, max_hp, alive != 0}}
+  end
+
+  def decode_server(
+        <<0x8D, source_cid::64-big, target_cid::64-big, skill_id::16-big, damage::16-big,
+          hp_after::16-big, x::float-64-big, y::float-64-big, z::float-64-big>>
+      ) do
+    {:ok, {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, {x, y, z}}}
+  end
+
+  def decode_server(<<0x8E, cid::64-big, actor_kind::8, nlen::16-big, name::binary-size(nlen)>>) do
+    {:ok, {:actor_identity, cid, actor_kind, name}}
+  end
+
   def decode_server(_payload), do: {:error, :unknown_payload}
 
   defp status(@status_ok), do: :ok

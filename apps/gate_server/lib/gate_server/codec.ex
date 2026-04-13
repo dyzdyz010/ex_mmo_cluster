@@ -40,6 +40,7 @@ defmodule GateServer.Codec do
   - `0x8B` MovementAck
   - `0x8C` PlayerState
   - `0x8D` CombatHit
+  - `0x8E` ActorIdentity
 
   ## Round trip example
 
@@ -76,6 +77,7 @@ defmodule GateServer.Codec do
   @msg_movement_ack 0x8B
   @msg_player_state 0x8C
   @msg_combat_hit 0x8D
+  @msg_actor_identity 0x8E
 
   # ── Status codes ──
   @status_ok 0x00
@@ -321,6 +323,13 @@ defmodule GateServer.Codec do
        hp_after::16-big, x::float-64-big, y::float-64-big, z::float-64-big>>}
   end
 
+  def encode({:actor_identity, cid, actor_kind, actor_name})
+      when is_integer(cid) and is_binary(actor_name) do
+    {:ok,
+     <<@msg_actor_identity, cid::64-big, encode_actor_kind(actor_kind)::8,
+       byte_size(actor_name)::16-big, actor_name::binary>>}
+  end
+
   def encode(_) do
     {:error, :unknown_message}
   end
@@ -333,4 +342,9 @@ defmodule GateServer.Codec do
 
   defp encode_bool(true), do: 1
   defp encode_bool(_), do: 0
+
+  defp encode_actor_kind(:player), do: 0
+  defp encode_actor_kind(:npc), do: 1
+  defp encode_actor_kind(value) when is_integer(value), do: value
+  defp encode_actor_kind(_value), do: 0
 end

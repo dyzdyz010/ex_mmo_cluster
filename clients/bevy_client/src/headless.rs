@@ -3,6 +3,7 @@ use crate::{
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+    world::remote_actor::RemoteActorIdentity,
 };
 use bevy::prelude::{Vec2, Vec3};
 use std::{
@@ -53,6 +54,7 @@ struct HeadlessState {
     local_max_hp: u16,
     local_alive: bool,
     remote_players: HashMap<i64, Vec3>,
+    remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
     last_local_transport: Option<MessageTransport>,
     last_remote_transport: Option<MessageTransport>,
     movement_transport: MessageTransport,
@@ -153,6 +155,11 @@ pub fn run_stdio(
                             state.movement_transport.label(),
                             &state.fast_lane_status,
                             state.remote_players.len(),
+                            state
+                                .remote_actor_identity
+                                .values()
+                                .filter(|identity| identity.is_npc())
+                                .count(),
                         ),
                     );
                 }
@@ -185,6 +192,22 @@ pub fn run_stdio(
                         "players",
                         &[("players", format_players(&state.remote_players))],
                     );
+                }
+                ClientStdioCommand::Npcs => {
+                    let mut npcs = state
+                        .remote_actor_identity
+                        .iter()
+                        .filter_map(|(cid, identity)| {
+                            if !identity.is_npc() {
+                                return None;
+                            }
+
+                            let position = state.remote_players.get(cid)?;
+                            Some(format!("{cid}:{}:{}", identity.name, format_vec3(*position)))
+                        })
+                        .collect::<Vec<_>>();
+                    npcs.sort();
+                    emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
                 }
                 ClientStdioCommand::Chat(text) => {
                     observer.emit("headless", "chat", &[("text", text.clone())]);
@@ -453,6 +476,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             state.local_cid = cid;
             state.local_position = Some(vec3_from_net(location));
             state.remote_players.clear();
+            state.remote_actor_identity.clear();
         }
         NetworkEvent::LocalPosition {
             cid,
@@ -499,9 +523,16 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             state.scene_joined = false;
             state.status = format!("disconnected: {reason}");
             state.remote_players.clear();
+            state.remote_actor_identity.clear();
         }
         NetworkEvent::PlayerEnter { cid, location } => {
             state.remote_players.insert(cid, vec3_from_net(location));
+        }
+        NetworkEvent::ActorIdentity { cid, kind, name } => {
+            state.remote_actor_identity.insert(
+                cid,
+                RemoteActorIdentity { cid, kind, name },
+            );
         }
         NetworkEvent::PlayerState {
             cid,
@@ -537,6 +568,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         }
         NetworkEvent::PlayerLeave { cid } => {
             state.remote_players.remove(&cid);
+            state.remote_actor_identity.remove(&cid);
         }
         NetworkEvent::Log(line) => {
             observer.emit("headless", "network_log", &[("line", line)]);

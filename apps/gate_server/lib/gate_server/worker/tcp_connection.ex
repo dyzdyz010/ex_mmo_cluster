@@ -87,6 +87,18 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
+  def handle_cast({:actor_identity, cid, actor_kind, actor_name}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("actor_identity_push", %{
+      cid: cid,
+      actor_kind: actor_kind,
+      actor_name: actor_name
+    })
+
+    send_encoded(socket, {:actor_identity, cid, actor_kind, actor_name})
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:player_leave, cid}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("tcp_player_leave_push", %{cid: cid})
     send_encoded(socket, {:player_leave, cid})

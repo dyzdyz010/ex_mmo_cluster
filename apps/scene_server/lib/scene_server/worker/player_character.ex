@@ -74,7 +74,8 @@ defmodule SceneServer.PlayerCharacter do
     with {:ok, physys_ref} <- SceneServer.PhysicsManager.get_physics_system_ref(),
          {:ok, cd_ref} <-
            new_character_data_with_retry(cid, name, location, @default_dev_attrs, physys_ref),
-         {:ok, aoi_ref} <- enter_scene(cid, client_timestamp, location, connection_pid) do
+         {:ok, aoi_ref} <-
+           enter_scene(cid, client_timestamp, location, connection_pid, character_profile.name) do
       movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
       combat_state = state.combat_state
 
@@ -117,6 +118,7 @@ defmodule SceneServer.PlayerCharacter do
     summary = %{
       kind: :player,
       cid: state.cid,
+      name: state.character_profile.name,
       position: state.last_location,
       hp: state.combat_state.hp,
       max_hp: state.combat_state.max_hp,
@@ -465,9 +467,16 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
-  defp enter_scene(cid, client_timestamp, location, connection_pid) do
+  defp enter_scene(cid, client_timestamp, location, connection_pid, character_name) do
     {:ok, aoi_ref} =
-      AoiManager.add_aoi_item(cid, client_timestamp, location, connection_pid, self())
+      AoiManager.add_aoi_item(
+        cid,
+        client_timestamp,
+        location,
+        connection_pid,
+        self(),
+        %{kind: :player, name: character_name}
+      )
 
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 

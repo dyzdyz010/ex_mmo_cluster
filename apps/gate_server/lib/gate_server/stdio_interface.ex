@@ -27,7 +27,10 @@ defmodule GateServer.StdioInterface do
             "fastlane",
             "players",
             "player <cid>",
-            "player_state <cid>"
+            "player_state <cid>",
+            "npcs",
+            "npc <cid>",
+            "npc_state <cid>"
           ]
         })
 
@@ -53,7 +56,10 @@ defmodule GateServer.StdioInterface do
         "fastlane",
         "players",
         "player <cid>",
-        "player_state <cid>"
+        "player_state <cid>",
+        "npcs",
+        "npc <cid>",
+        "npc_state <cid>"
       ]
     })
 
@@ -85,6 +91,11 @@ defmodule GateServer.StdioInterface do
     {:noreply, state}
   end
 
+  def handle_info({:stdio_line, "npcs"}, state) do
+    emit("npcs", %{npcs: npc_snapshots()})
+    {:noreply, state}
+  end
+
   def handle_info({:stdio_line, "player " <> cid_text}, state) do
     emit_player(cid_text)
     {:noreply, state}
@@ -92,6 +103,16 @@ defmodule GateServer.StdioInterface do
 
   def handle_info({:stdio_line, "player_state " <> cid_text}, state) do
     emit_player_state(cid_text)
+    {:noreply, state}
+  end
+
+  def handle_info({:stdio_line, "npc " <> cid_text}, state) do
+    emit_npc(cid_text)
+    {:noreply, state}
+  end
+
+  def handle_info({:stdio_line, "npc_state " <> cid_text}, state) do
+    emit_npc_state(cid_text)
     {:noreply, state}
   end
 
@@ -120,6 +141,26 @@ defmodule GateServer.StdioInterface do
     end
   end
 
+  defp emit_npc(cid_text) do
+    case Integer.parse(cid_text) do
+      {cid, ""} ->
+        emit("npc", %{npc: npc_snapshot(cid)})
+
+      _ ->
+        emit("error", %{reason: "invalid cid"})
+    end
+  end
+
+  defp emit_npc_state(cid_text) do
+    case Integer.parse(cid_text) do
+      {cid, ""} ->
+        emit("npc_state", %{npc_state: npc_state_snapshot(cid)})
+
+      _ ->
+        emit("error", %{reason: "invalid cid"})
+    end
+  end
+
   defp snapshot do
     interface_state =
       if Process.whereis(GateServer.Interface) do
@@ -132,7 +173,8 @@ defmodule GateServer.StdioInterface do
       gate_interface: interface_state,
       connections: connection_snapshots(),
       fast_lane: GateServer.FastLaneRegistry.snapshot(),
-      players: players_snapshot()
+      players: players_snapshot(),
+      npcs: npc_snapshots()
     }
   end
 
@@ -202,6 +244,43 @@ defmodule GateServer.StdioInterface do
     else
       _ -> nil
     end
+  end
+
+  defp npc_snapshots do
+    with {:ok, scene_node} <- safe_call(GateServer.Interface, :scene_server),
+         {:ok, {:ok, summaries}} <-
+           safe_call({SceneServer.NpcManager, scene_node}, :get_all_npc_summaries) do
+      summaries
+      |> Enum.map(fn {cid, summary} ->
+        %{
+          cid: cid,
+          name: Map.get(summary, :name),
+          position: Map.get(summary, :position),
+          hp: Map.get(summary, :hp),
+          max_hp: Map.get(summary, :max_hp),
+          alive: Map.get(summary, :alive),
+          intent: Map.get(summary, :intent)
+        }
+      end)
+      |> Enum.sort_by(& &1.cid)
+    else
+      _ -> []
+    end
+  end
+
+  defp npc_snapshot(cid) when is_integer(cid) do
+    with {:ok, scene_node} <- safe_call(GateServer.Interface, :scene_server),
+         {:ok, {:ok, pid}} <- safe_call({SceneServer.NpcManager, scene_node}, {:get_npc, cid}),
+         pid when is_pid(pid) <- pid,
+         {:ok, {:ok, summary}} <- safe_call(pid, :get_state_summary) do
+      summary
+    else
+      _ -> nil
+    end
+  end
+
+  defp npc_state_snapshot(cid) when is_integer(cid) do
+    npc_snapshot(cid)
   end
 
   defp safe_call(server, message) do

@@ -248,6 +248,11 @@ defmodule GateServer.CodecTest do
       assert <<0x8D, 7::64-big, 42::64-big, 1::16-big, 25::16-big, 75::16-big, 1.0::float-64-big,
                2.0::float-64-big, 3.0::float-64-big>> = hit_bin
     end
+
+    test "encodes actor_identity" do
+      {:ok, bin} = Codec.encode({:actor_identity, 90_001, :npc, "Training Slime"})
+      assert <<0x8E, 90_001::64-big, 1::8, 14::16-big, "Training Slime">> = bin
+    end
   end
 
   describe "encode errors" do

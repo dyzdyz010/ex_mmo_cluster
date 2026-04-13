@@ -179,10 +179,15 @@ defmodule Demo.Runner do
         {:spawn_npc, 90_001,
          [
            name: "Training Slime",
-           spawn_position: {1_064.0, 1_004.0, 90.0},
+           spawn_position: {1_120.0, 1_000.0, 90.0},
            aggro_radius: 220.0,
            attack_range: 96.0,
-           leash_radius: 320.0
+           leash_radius: 320.0,
+           movement_speed_scale: 0.7,
+           max_hp: 25,
+           respawn_ms: 2_500,
+           skill_damage: 10,
+           skill_cooldown_ms: 1_250
          ]},
         5_000
       )

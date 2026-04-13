@@ -8,6 +8,7 @@ use crate::{
         smoothing::smooth_translation,
     },
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+    world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
     world::remote_player::{RemoteMotionSample, RemotePlayerState},
 };
 use bevy::{
@@ -48,6 +49,7 @@ struct WorldState {
     local_hp: u16,
     local_max_hp: u16,
     local_alive: bool,
+    remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
     remote_player_health: HashMap<i64, (u16, u16, bool)>,
     chat_log: VecDeque<String>,
     logs: VecDeque<String>,
@@ -252,6 +254,7 @@ fn poll_network_events(
                 world_state.local_position = Some(net_to_world(location));
                 world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
+                world_state.remote_actor_identity.clear();
                 world_state.remote_player_health.clear();
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
@@ -300,8 +303,19 @@ fn poll_network_events(
             }
             NetworkEvent::PlayerLeave { cid } => {
                 world_state.remote_players.remove(&cid);
+                world_state.remote_actor_identity.remove(&cid);
                 world_state.remote_player_health.remove(&cid);
                 push_line(&mut world_state.logs, format!("player {cid} left AOI"));
+            }
+            NetworkEvent::ActorIdentity { cid, kind, name } => {
+                world_state.remote_actor_identity.insert(
+                    cid,
+                    RemoteActorIdentity { cid, kind, name: name.clone() },
+                );
+                push_line(
+                    &mut world_state.logs,
+                    format!("actor: cid={cid} kind={:?} name={name}", kind),
+                );
             }
             NetworkEvent::ChatMessage {
                 cid,
@@ -396,6 +410,7 @@ fn poll_network_events(
                 world_state.local_position = None;
                 world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
+                world_state.remote_actor_identity.clear();
                 world_state.remote_player_health.clear();
                 world_state.movement_transport = MessageTransport::Tcp;
                 world_state.fast_lane_status = "tcp fallback".to_string();
@@ -600,7 +615,16 @@ fn poll_stdio_commands(
                     world_state.local_alive,
                     world_state.movement_transport.label(),
                     &world_state.fast_lane_status,
-                    world_state.remote_players.len(),
+                    world_state
+                        .remote_actor_identity
+                        .values()
+                        .filter(|identity| matches!(identity.kind, RemoteActorKind::Player))
+                        .count(),
+                    world_state
+                        .remote_actor_identity
+                        .values()
+                        .filter(|identity| identity.is_npc())
+                        .count(),
                 );
                 emit_stdio("snapshot", &fields);
             }
@@ -650,6 +674,27 @@ fn poll_stdio_commands(
                     "players",
                     &[("players", format!("[{}]", players.join(";")))],
                 );
+            }
+            ClientStdioCommand::Npcs => {
+                let now_secs = time.elapsed_secs_f64();
+                let mut npcs = world_state
+                    .remote_players
+                    .iter()
+                    .filter_map(|(cid, player)| {
+                        let identity = world_state.remote_actor_identity.get(cid)?;
+                        if !identity.is_npc() {
+                            return None;
+                        }
+
+                        let position = player.sample_motion(now_secs).position;
+                        Some(format!(
+                            "{cid}:{}:{:.1},{:.1},{:.1}",
+                            identity.name, position.x, position.y, position.z
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                npcs.sort();
+                emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
             }
             ClientStdioCommand::Chat(text) => {
                 bridge.send(NetworkCommand::Chat(text.clone()));
@@ -752,6 +797,11 @@ fn sync_player_visuals(
     for (&cid, motion) in &desired {
         let target = motion.position + Vec3::new(0.0, 0.0, 1.0);
         let animation = animation_state_from_velocity(motion.velocity, config.movement_speed);
+        let actor_kind = world_state
+            .remote_actor_identity
+            .get(&cid)
+            .map(|identity| identity.kind)
+            .unwrap_or(RemoteActorKind::Player);
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
             if let Ok((_entity, _visual, mut transform, mut sprite)) = existing.get_mut(entity) {
@@ -765,6 +815,8 @@ fn sync_player_visuals(
                 transform.scale = animated_scale(transform.scale, animation, time.delta_secs());
                 sprite.color = if cid == world_state.local_cid {
                     Color::srgb(0.25, 0.95, 0.45)
+                } else if matches!(actor_kind, RemoteActorKind::Npc) {
+                    Color::srgb(0.95, 0.45, 0.35)
                 } else if animation.moving {
                     Color::srgb(0.35, 0.75, 1.0)
                 } else {
@@ -774,13 +826,21 @@ fn sync_player_visuals(
         } else {
             let color = if cid == world_state.local_cid {
                 Color::srgb(0.25, 0.95, 0.45)
+            } else if matches!(actor_kind, RemoteActorKind::Npc) {
+                Color::srgb(0.95, 0.45, 0.35)
             } else {
                 Color::srgb(0.3, 0.65, 1.0)
             };
 
+            let size = if matches!(actor_kind, RemoteActorKind::Npc) {
+                Vec2::new(28.0, 22.0)
+            } else {
+                Vec2::splat(24.0)
+            };
+
             commands.spawn((
                 PlayerVisual { cid },
-                Sprite::from_color(color, Vec2::splat(24.0)),
+                Sprite::from_color(color, size),
                 Transform::from_translation(target).with_scale(animated_scale(
                     Vec3::ONE,
                     animation,
@@ -828,7 +888,7 @@ fn update_hud_text(
     >,
 ) {
     hud.0 = format!(
-        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
         world_state.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
@@ -838,6 +898,11 @@ fn update_hud_text(
             .clone()
             .unwrap_or_else(|| "n/a".to_string()),
         world_state.remote_players.len(),
+        world_state
+            .remote_actor_identity
+            .values()
+            .filter(|identity| identity.is_npc())
+            .count(),
         world_state.local_cid,
         world_state
             .local_position

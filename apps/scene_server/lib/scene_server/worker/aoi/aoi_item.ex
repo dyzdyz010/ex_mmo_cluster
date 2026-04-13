@@ -22,14 +22,19 @@ defmodule SceneServer.Aoi.AoiItem do
   end
 
   @impl true
-  @spec init({integer(), integer(), vector(), pid(), pid(), Octree.Types.octree()}) ::
+  @spec init(
+          {integer(), integer(), vector(), pid(), pid(), %{kind: atom(), name: String.t()},
+           Octree.Types.octree()}
+        ) ::
           {:ok, map(), {:continue, {:load, any}}}
-  def init({cid, _client_timestamp, location, connection_pid, player_pid, system}) do
+  def init({cid, _client_timestamp, location, connection_pid, player_pid, actor_meta, system}) do
     {:ok,
      %{
        cid: cid,
        player_pid: player_pid,
        connection_pid: connection_pid,
+       actor_kind: Map.get(actor_meta, :kind, :player),
+       actor_name: Map.get(actor_meta, :name, "actor-#{cid}"),
        system_ref: system,
        item_ref: nil,
        location: location,
@@ -68,6 +73,15 @@ defmodule SceneServer.Aoi.AoiItem do
     Logger.debug("player_enter")
     GenServer.cast(connection_pid, {:player_enter, cid, location})
 
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:actor_identity, cid, actor_kind, actor_name},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:actor_identity, cid, actor_kind, actor_name})
     {:noreply, state}
   end
 
@@ -228,11 +242,23 @@ defmodule SceneServer.Aoi.AoiItem do
           location: location,
           system_ref: system,
           item_ref: item,
-          subscribees: subscribees
+          subscribees: subscribees,
+          actor_kind: actor_kind,
+          actor_name: actor_name
         } = state
       ) do
     # aoi_pids = get_aoi_pids(system, item, 50000.0)
-    aoi_pids = refresh_aoi_players(system, item, cid, location, interest_radius, subscribees)
+    aoi_pids =
+      refresh_aoi_players(
+        system,
+        item,
+        cid,
+        location,
+        interest_radius,
+        subscribees,
+        actor_kind,
+        actor_name
+      )
 
     # Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
     # Logger.debug("Coordinate System: #{inspect(cids, pretty: true)}", ansi_color: :yellow)
@@ -382,9 +408,20 @@ defmodule SceneServer.Aoi.AoiItem do
           integer(),
           vector(),
           float(),
-          [pid()]
+          [pid()],
+          atom(),
+          String.t()
         ) :: no_return()
-  defp refresh_aoi_players(system, item, cid, location, interest_radius, subscribees) do
+  defp refresh_aoi_players(
+         system,
+         item,
+         cid,
+         location,
+         interest_radius,
+         subscribees,
+         actor_kind,
+         actor_name
+       ) do
     aoi_pids = get_aoi_players(system, item, interest_radius)
     leave_pids = subscribees -- aoi_pids
     enter_pids = aoi_pids -- subscribees
@@ -396,7 +433,7 @@ defmodule SceneServer.Aoi.AoiItem do
     end
 
     if enter_pids != [] do
-      broadcast_action_player_enter(cid, location, enter_pids)
+      broadcast_action_player_enter(cid, location, actor_kind, actor_name, enter_pids)
     end
 
     aoi_pids
@@ -428,11 +465,16 @@ defmodule SceneServer.Aoi.AoiItem do
     |> Enum.map(&Task.await(&1))
   end
 
-  @spec broadcast_action_player_enter(integer(), vector(), [pid()]) :: any()
-  defp broadcast_action_player_enter(cid, location, pids) do
+  @spec broadcast_action_player_enter(integer(), vector(), atom(), String.t(), [pid()]) :: any()
+  defp broadcast_action_player_enter(cid, location, actor_kind, actor_name, pids) do
     # Logger.debug("待广播加入玩家：#{inspect(pids, pretty: true)}")
     pids
-    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_enter, cid, location}) end))
+    |> Enum.map(
+      &Task.async(fn ->
+        GenServer.cast(&1, {:player_enter, cid, location})
+        GenServer.cast(&1, {:actor_identity, cid, actor_kind, actor_name})
+      end)
+    )
     |> Enum.map(&Task.await(&1))
   end
 

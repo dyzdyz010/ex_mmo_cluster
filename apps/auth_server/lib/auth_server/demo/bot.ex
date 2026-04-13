@@ -229,6 +229,18 @@ defmodule Demo.Bot do
         notify(state, {:skill_event, cid, skill_id, location})
         state
 
+      {:ok, {:player_state, cid, hp, max_hp, alive}} ->
+        notify(state, {:player_state, cid, hp, max_hp, alive})
+        state
+
+      {:ok, {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}} ->
+        notify(
+          state,
+          {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
+        )
+
+        state
+
       {:ok, {:player_enter, cid, location}} ->
         notify(state, {:player_enter, cid, location})
         state
@@ -239,6 +251,10 @@ defmodule Demo.Bot do
 
       {:ok, {:player_leave, cid}} ->
         notify(state, {:player_leave, cid})
+        state
+
+      {:ok, {:actor_identity, cid, actor_kind, name}} ->
+        notify(state, {:actor_identity, cid, actor_kind, name})
         state
 
       {:ok, other} ->

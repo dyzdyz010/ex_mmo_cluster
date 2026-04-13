@@ -2,11 +2,12 @@ use crate::{
     config::ClientConfig,
     observe::ClientObserver,
     protocol::{
-        ClientMessage, NetVec3, ServerMessage, decode_server_payload, encode_client_frame,
-        encode_client_payload, take_frame,
+        ActorKind, ClientMessage, NetVec3, ServerMessage, decode_server_payload,
+        encode_client_frame, encode_client_payload, take_frame,
     },
     protocol_v2::{WireMoveInputFrame, movement_ack_from_server, remote_move_snapshot_from_server},
     world::local_player::LocalPredictionRuntime,
+    world::remote_actor::RemoteActorKind,
 };
 use bevy::prelude::Resource;
 use std::{
@@ -78,6 +79,11 @@ pub enum NetworkEvent {
     },
     PlayerLeave {
         cid: i64,
+    },
+    ActorIdentity {
+        cid: i64,
+        kind: RemoteActorKind,
+        name: String,
     },
     ChatMessage {
         cid: i64,
@@ -761,6 +767,13 @@ impl ClientRuntime {
             ServerMessage::PlayerLeave { cid } => {
                 outcome.push_event(NetworkEvent::PlayerLeave { cid });
             }
+            ServerMessage::ActorIdentity { cid, kind, name } => {
+                outcome.push_event(NetworkEvent::ActorIdentity {
+                    cid,
+                    kind: remote_actor_kind(kind),
+                    name,
+                });
+            }
             ServerMessage::ChatMessage {
                 cid,
                 username,
@@ -1324,6 +1337,17 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
         NetworkEvent::PlayerLeave { cid } => {
             observer.emit("network", "player_leave", &[("cid", cid.to_string())]);
         }
+        NetworkEvent::ActorIdentity { cid, kind, name } => {
+            observer.emit(
+                "network",
+                "actor_identity",
+                &[
+                    ("cid", cid.to_string()),
+                    ("kind", format!("{kind:?}")),
+                    ("name", name.clone()),
+                ],
+            );
+        }
         NetworkEvent::ChatMessage {
             cid,
             username,
@@ -1548,6 +1572,14 @@ fn observe_outbound_message(observer: &ClientObserver, transport: &str, message:
 
 fn format_vec(value: &[f64; 3]) -> String {
     format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
+}
+
+fn remote_actor_kind(kind: ActorKind) -> RemoteActorKind {
+    match kind {
+        ActorKind::Player => RemoteActorKind::Player,
+        ActorKind::Npc => RemoteActorKind::Npc,
+        ActorKind::Unknown(value) => RemoteActorKind::Unknown(value),
+    }
 }
 
 fn resolve_gate_addr(gate_addr: &str) -> io::Result<SocketAddr> {

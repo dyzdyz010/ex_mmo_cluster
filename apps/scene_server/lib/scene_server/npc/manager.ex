@@ -37,6 +37,38 @@ defmodule SceneServer.Npc.Manager do
     {:reply, {:ok, npcs}, state}
   end
 
+  @impl true
+  def handle_call({:get_npc, npc_id}, _from, %{npcs: npcs} = state) do
+    {:reply, {:ok, Map.get(npcs, npc_id)}, state}
+  end
+
+  @impl true
+  def handle_call(:get_all_npc_summaries, _from, %{npcs: npcs} = state) do
+    summaries =
+      npcs
+      |> Enum.map(fn {npc_id, pid} ->
+        case safe_summary(pid) do
+          {:ok, summary} -> {npc_id, summary}
+          _ -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Map.new()
+
+    {:reply, {:ok, summaries}, state}
+  end
+
+  defp safe_summary(pid) when is_pid(pid) do
+    try do
+      case GenServer.call(pid, :get_state_summary) do
+        {:ok, summary} when is_map(summary) -> {:ok, summary}
+        other -> {:error, other}
+      end
+    catch
+      :exit, reason -> {:error, reason}
+    end
+  end
+
   defp await_npc_ready(npc_pid, attempts \\ @npc_ready_attempts)
   defp await_npc_ready(_npc_pid, 0), do: {:error, :npc_not_ready}
 

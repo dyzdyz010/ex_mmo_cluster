@@ -12,12 +12,19 @@ defmodule SceneServer.AoiManager do
     GenServer.start_link(__MODULE__, [], opts)
   end
 
-  @spec add_aoi_item(integer(), integer(), {float(), float(), float()}, pid(), pid()) ::
+  @spec add_aoi_item(
+          integer(),
+          integer(),
+          {float(), float(), float()},
+          pid(),
+          pid(),
+          %{kind: atom(), name: String.t()}
+        ) ::
           {:ok, pid()} | {:err, any()}
-  def add_aoi_item(cid, client_timestamp, location, connection_pid, actor_pid) do
+  def add_aoi_item(cid, client_timestamp, location, connection_pid, actor_pid, actor_meta) do
     GenServer.call(
       __MODULE__,
-      {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid}
+      {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid, actor_meta}
     )
   end
 
@@ -36,6 +43,11 @@ defmodule SceneServer.AoiManager do
     GenServer.call(__MODULE__, {:get_nearby_actor_pids, location, radius, exclude_cids})
   end
 
+  @spec get_actor_pid(integer()) :: pid() | nil
+  def get_actor_pid(cid) do
+    GenServer.call(__MODULE__, {:get_actor_pid, cid})
+  end
+
   @impl true
   def init(_init_arg) do
     Logger.debug("Aoi process created.")
@@ -44,8 +56,8 @@ defmodule SceneServer.AoiManager do
   end
 
   @impl true
-  def handle_call(
-        {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid},
+      def handle_call(
+        {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid, actor_meta},
         _from,
         %{coordinate_system: system, aois: aois} = state
       ) do
@@ -53,10 +65,12 @@ defmodule SceneServer.AoiManager do
       DynamicSupervisor.start_child(
         SceneServer.AoiItemSup,
         {SceneServer.Aoi.AoiItem,
-         {cid, client_timestamp, location, connection_pid, actor_pid, system}}
+         {cid, client_timestamp, location, connection_pid, actor_pid, actor_meta, system}}
       )
 
-    new_aois = aois |> Map.put_new(cid, %{aoi_pid: apid, actor_pid: actor_pid})
+    new_aois =
+      aois
+      |> Map.put_new(cid, %{aoi_pid: apid, actor_pid: actor_pid, actor_meta: actor_meta})
 
     {:reply, {:ok, apid}, %{state | aois: new_aois}}
   end
@@ -73,6 +87,17 @@ defmodule SceneServer.AoiManager do
       for {k, %{aoi_pid: aoi_pid}} <- aois, cid <- cids, k == cid, do: aoi_pid
 
     {:reply, items, state}
+  end
+
+  @impl true
+  def handle_call({:get_actor_pid, cid}, _from, %{aois: aois} = state) do
+    actor_pid =
+      case Map.get(aois, cid) do
+        %{actor_pid: pid} -> pid
+        _ -> nil
+      end
+
+    {:reply, actor_pid, state}
   end
 
   @impl true

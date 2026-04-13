@@ -46,7 +46,11 @@ defmodule SceneServer.Npc.ManagerTest do
     assert Map.get(npcs, 9001) == npc_pid
     assert {:ok, summary} = GenServer.call(npc_pid, :get_state_summary)
     assert summary.npc_id == 9001
+    assert summary.name == "Slime"
     assert summary.intent == :idle
+
+    assert {:ok, summaries} = GenServer.call(SceneServer.NpcManager, :get_all_npc_summaries)
+    assert Map.fetch!(summaries, 9001).name == "Slime"
   end
 
   defp ensure_started(name, spec) do

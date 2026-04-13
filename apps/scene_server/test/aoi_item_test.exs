@@ -66,6 +66,7 @@ defmodule SceneServer.AoiItemTest do
 
     assert_receive {:"$gen_cast", {:player_enter, ^other_cid, enter_location}}, 300
     assert enter_location == {100.0, 0.0, 0.0}
+    assert_receive {:"$gen_cast", {:actor_identity, ^other_cid, :player, _name}}, 300
 
     GenServer.cast(
       mover,
@@ -90,7 +91,15 @@ defmodule SceneServer.AoiItemTest do
   end
 
   defp add_aoi_item(cid, location, connection_pid) do
-    {:ok, pid} = AoiManager.add_aoi_item(cid, 0, location, connection_pid, self())
+    {:ok, pid} =
+      AoiManager.add_aoi_item(
+        cid,
+        0,
+        location,
+        connection_pid,
+        self(),
+        %{kind: :player, name: "test-#{cid}"}
+      )
 
     wait_until(fn ->
       case :sys.get_state(pid) do
