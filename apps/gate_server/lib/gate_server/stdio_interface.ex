@@ -91,7 +91,12 @@ defmodule GateServer.StdioInterface do
   end
 
   def handle_info({:stdio_line, "player_state " <> cid_text}, state) do
-    emit_player(cid_text)
+    emit_player_state(cid_text)
+    {:noreply, state}
+  end
+
+  def handle_info({:stdio_line, other}, state) do
+    emit("error", %{reason: "unknown command", command: other})
     {:noreply, state}
   end
 
@@ -105,9 +110,14 @@ defmodule GateServer.StdioInterface do
     end
   end
 
-  def handle_info({:stdio_line, other}, state) do
-    emit("error", %{reason: "unknown command", command: other})
-    {:noreply, state}
+  defp emit_player_state(cid_text) do
+    case Integer.parse(cid_text) do
+      {cid, ""} ->
+        emit("player_state", %{player_state: player_state_snapshot(cid)})
+
+      _ ->
+        emit("error", %{reason: "invalid cid"})
+    end
   end
 
   defp snapshot do
@@ -177,6 +187,18 @@ defmodule GateServer.StdioInterface do
         end
 
       %{cid: cid, pid: inspect(pid), location: location}
+    else
+      _ -> nil
+    end
+  end
+
+  defp player_state_snapshot(cid) when is_integer(cid) do
+    with {:ok, scene_node} <- safe_call(GateServer.Interface, :scene_server),
+         {:ok, {:ok, players}} <-
+           safe_call({SceneServer.PlayerManager, scene_node}, :get_all_players),
+         pid when is_pid(pid) <- Map.get(players, cid),
+         {:ok, {:ok, summary}} <- safe_call(pid, :get_state_summary) do
+      summary
     else
       _ -> nil
     end

@@ -49,6 +49,9 @@ struct HeadlessState {
     scene_joined: bool,
     local_cid: i64,
     local_position: Option<Vec3>,
+    local_hp: u16,
+    local_max_hp: u16,
+    local_alive: bool,
     remote_players: HashMap<i64, Vec3>,
     last_local_transport: Option<MessageTransport>,
     last_remote_transport: Option<MessageTransport>,
@@ -144,6 +147,9 @@ pub fn run_stdio(
                             state.scene_joined,
                             state.local_cid,
                             state.local_position,
+                            state.local_hp,
+                            state.local_max_hp,
+                            state.local_alive,
                             state.movement_transport.label(),
                             &state.fast_lane_status,
                             state.remote_players.len(),
@@ -496,6 +502,38 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         }
         NetworkEvent::PlayerEnter { cid, location } => {
             state.remote_players.insert(cid, vec3_from_net(location));
+        }
+        NetworkEvent::PlayerState {
+            cid,
+            hp,
+            max_hp,
+            alive,
+        } => {
+            if cid == state.local_cid {
+                state.local_hp = hp;
+                state.local_max_hp = max_hp;
+                state.local_alive = alive;
+            }
+        }
+        NetworkEvent::CombatHit {
+            source_cid,
+            target_cid,
+            skill_id,
+            damage,
+            hp_after,
+            ..
+        } => {
+            observer.emit(
+                "headless",
+                "combat_hit_seen",
+                &[
+                    ("source_cid", source_cid.to_string()),
+                    ("target_cid", target_cid.to_string()),
+                    ("skill_id", skill_id.to_string()),
+                    ("damage", damage.to_string()),
+                    ("hp_after", hp_after.to_string()),
+                ],
+            );
         }
         NetworkEvent::PlayerLeave { cid } => {
             state.remote_players.remove(&cid);

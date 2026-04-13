@@ -128,6 +128,61 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   def handle_cast(
+        {:player_state, cid, hp, max_hp, alive},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:player_state, cid, hp, max_hp, alive})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:health_update, cid, hp, max_hp, alive},
+        %{connection_pid: connection_pid, subscribees: subscribees} = state
+      ) do
+    GenServer.cast(connection_pid, {:player_state, cid, hp, max_hp, alive})
+    broadcast_action_player_state(cid, hp, max_hp, alive, subscribees)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(
+      connection_pid,
+      {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
+    )
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:combat_resolved, source_cid, target_cid, skill_id, damage, hp_after, location},
+        %{connection_pid: connection_pid, subscribees: subscribees} = state
+      ) do
+    GenServer.cast(
+      connection_pid,
+      {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
+    )
+
+    broadcast_action_combat_hit(
+      source_cid,
+      target_cid,
+      skill_id,
+      damage,
+      hp_after,
+      location,
+      subscribees
+    )
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
         {:self_move, %RemoteSnapshot{} = snapshot},
         %{
           cid: cid,
@@ -401,6 +456,51 @@ defmodule SceneServer.Aoi.AoiItem do
     pids
     |> Enum.map(
       &Task.async(fn -> GenServer.cast(&1, {:skill_event, cid, skill_id, location}) end)
+    )
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_player_state(
+          integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          boolean(),
+          [pid()]
+        ) :: any()
+  defp broadcast_action_player_state(cid, hp, max_hp, alive, pids) do
+    pids
+    |> Enum.map(
+      &Task.async(fn -> GenServer.cast(&1, {:player_state, cid, hp, max_hp, alive}) end)
+    )
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_combat_hit(
+          integer(),
+          integer(),
+          integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          vector(),
+          [pid()]
+        ) :: any()
+  defp broadcast_action_combat_hit(
+         source_cid,
+         target_cid,
+         skill_id,
+         damage,
+         hp_after,
+         location,
+         pids
+       ) do
+    pids
+    |> Enum.map(
+      &Task.async(fn ->
+        GenServer.cast(
+          &1,
+          {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
+        )
+      end)
     )
     |> Enum.map(&Task.await(&1))
   end

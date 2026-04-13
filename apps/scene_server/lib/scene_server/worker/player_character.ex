@@ -4,13 +4,15 @@ defmodule SceneServer.PlayerCharacter do
   require Logger
 
   alias SceneServer.AoiManager
+  alias SceneServer.Combat.Profile, as: CombatProfile
+  alias SceneServer.Combat.Skill
+  alias SceneServer.Combat.State, as: CombatState
+  alias SceneServer.Combat.Targeting
   alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   @default_location {1_000.0, 1_000.0, 90.0}
 
-  @pulse_skill_id 1
-  @skill_cooldown_ms 750
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
   @input_hold_timeout_multiplier 3
@@ -42,8 +44,11 @@ defmodule SceneServer.PlayerCharacter do
        physys_ref: nil,
        aoi_ref: nil,
        character_data_ref: nil,
+       spawn_location: normalize_character_profile(cid, character_profile).position,
        movement_state: State.idle(normalize_character_profile(cid, character_profile).position),
        movement_profile: Profile.default(),
+       combat_profile: CombatProfile.default(),
+       combat_state: CombatState.new(CombatProfile.default()),
        latched_input: idle_input_frame(Profile.default().fixed_dt_ms),
        last_input_seq: 0,
        last_ack_seq: 0,
@@ -53,7 +58,8 @@ defmodule SceneServer.PlayerCharacter do
        old_timestamp: nil,
        net_delay: 0,
        skill_casts: %{},
-       movement_timer: nil
+       movement_timer: nil,
+       respawn_timer: nil
      }, {:continue, {:load, client_timestamp}}}
   end
 
@@ -70,6 +76,12 @@ defmodule SceneServer.PlayerCharacter do
            new_character_data_with_retry(cid, name, location, @default_dev_attrs, physys_ref),
          {:ok, aoi_ref} <- enter_scene(cid, client_timestamp, location, connection_pid) do
       movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
+      combat_state = state.combat_state
+
+      GenServer.cast(
+        aoi_ref,
+        {:player_state, cid, combat_state.hp, combat_state.max_hp, combat_state.alive}
+      )
 
       {:noreply,
        %{
@@ -98,6 +110,20 @@ defmodule SceneServer.PlayerCharacter do
     else
       {:reply, {:error, :not_ready}, state}
     end
+  end
+
+  @impl true
+  def handle_call(:get_state_summary, _from, state) do
+    summary = %{
+      cid: state.cid,
+      position: state.last_location,
+      hp: state.combat_state.hp,
+      max_hp: state.combat_state.max_hp,
+      alive: state.combat_state.alive,
+      deaths: state.combat_state.deaths
+    }
+
+    {:reply, {:ok, summary}, state}
   end
 
   @impl true
@@ -163,6 +189,7 @@ defmodule SceneServer.PlayerCharacter do
         _from,
         %{
           cid: cid,
+          combat_state: combat_state,
           movement_profile: movement_profile,
           latched_input: latched_input,
           last_input_seq: last_input_seq,
@@ -170,7 +197,8 @@ defmodule SceneServer.PlayerCharacter do
           last_input_received_at_ms: last_input_received_at_ms
         } = state
       ) do
-    with {:ok, sanitized_frame, now_ms} <-
+    with :ok <- ensure_alive(combat_state),
+         {:ok, sanitized_frame, now_ms} <-
            sanitize_input_frame(
              frame,
              movement_profile,
@@ -208,6 +236,7 @@ defmodule SceneServer.PlayerCharacter do
           cid: cid,
           aoi_ref: aoi_ref,
           skill_casts: skill_casts,
+          combat_state: combat_state,
           character_data_ref: cd_ref,
           physys_ref: physys_ref,
           last_location: last_location
@@ -215,8 +244,9 @@ defmodule SceneServer.PlayerCharacter do
       ) do
     now = :os.system_time(:millisecond)
 
-    with :ok <- validate_skill(skill_id),
-         :ok <- cooldown_ready?(skill_casts, skill_id, now),
+    with :ok <- ensure_alive(combat_state),
+         {:ok, skill} <- Skill.fetch(skill_id),
+         :ok <- cooldown_ready?(skill_casts, skill, now),
          {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location) do
       SceneServer.CliObserve.emit("player_skill", %{
         cid: cid,
@@ -225,6 +255,7 @@ defmodule SceneServer.PlayerCharacter do
       })
 
       GenServer.cast(aoi_ref, {:skill_cast, cid, skill_id, location})
+      apply_skill_hits(cid, skill, location)
 
       {:reply, {:ok, location},
        %{state | skill_casts: Map.put(skill_casts, skill_id, now), last_location: location}}
@@ -241,6 +272,75 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
+  def handle_call(
+        {:apply_skill_hit, source_cid, %Skill{} = skill, impact_location},
+        _from,
+        %{
+          cid: cid,
+          aoi_ref: aoi_ref,
+          combat_state: combat_state,
+          respawn_timer: respawn_timer,
+          movement_profile: movement_profile,
+          movement_state: movement_state,
+          character_data_ref: cd_ref,
+          physys_ref: physys_ref,
+          last_location: last_location
+        } = state
+      ) do
+    with :ok <- ensure_alive(combat_state),
+         true <- source_cid != cid,
+         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location),
+         true <- within_skill_radius?(impact_location, location, skill.radius) do
+      case CombatState.apply_damage(combat_state, skill.damage) do
+        {:ignored, next_combat_state} ->
+          {:reply, {:ok, next_combat_state.hp},
+           %{state | combat_state: next_combat_state, last_location: location}}
+
+        {result, next_combat_state, dealt_damage} ->
+          GenServer.cast(
+            aoi_ref,
+            {:combat_resolved, source_cid, cid, skill.id, dealt_damage, next_combat_state.hp,
+             location}
+          )
+
+          GenServer.cast(
+            aoi_ref,
+            {:health_update, cid, next_combat_state.hp, next_combat_state.max_hp,
+             next_combat_state.alive}
+          )
+
+          {next_state, next_respawn_timer} =
+            case result do
+              :killed ->
+                if respawn_timer != nil, do: Process.cancel_timer(respawn_timer)
+
+                reset_movement_after_death(
+                  cd_ref,
+                  physys_ref,
+                  movement_profile,
+                  movement_state,
+                  state
+                )
+
+              :damaged ->
+                {state, respawn_timer}
+            end
+
+          {:reply, {:ok, next_combat_state.hp},
+           %{
+             next_state
+             | combat_state: next_combat_state,
+               respawn_timer: next_respawn_timer,
+               last_location: location
+           }}
+      end
+    else
+      false -> {:reply, {:error, :out_of_range}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
   def handle_info(
         :movement_tick,
         %{
@@ -249,6 +349,7 @@ defmodule SceneServer.PlayerCharacter do
           aoi_ref: aoi_ref,
           character_data_ref: cd_ref,
           physys_ref: physys_ref,
+          combat_state: combat_state,
           movement_state: movement_state,
           movement_profile: movement_profile,
           latched_input: latched_input,
@@ -264,7 +365,8 @@ defmodule SceneServer.PlayerCharacter do
         latched_input,
         movement_state,
         movement_profile,
-        now_ms - last_input_received_at_ms
+        now_ms - last_input_received_at_ms,
+        combat_state
       )
 
     cond do
@@ -321,11 +423,29 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def terminate(reason, %{aoi_ref: aoi_item, cid: cid, movement_timer: movement_timer}) do
+  def handle_info(:respawn, %{combat_state: combat_state} = state) do
+    if combat_state.alive do
+      {:noreply, %{state | respawn_timer: nil}}
+    else
+      handle_respawn(state)
+    end
+  end
+
+  @impl true
+  def terminate(reason, %{
+        aoi_ref: aoi_item,
+        cid: cid,
+        movement_timer: movement_timer,
+        respawn_timer: respawn_timer
+      }) do
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
 
     if movement_timer != nil do
       Process.cancel_timer(movement_timer)
+    end
+
+    if respawn_timer != nil do
+      Process.cancel_timer(respawn_timer)
     end
 
     if is_pid(aoi_item) and Process.alive?(aoi_item) do
@@ -376,16 +496,32 @@ defmodule SceneServer.PlayerCharacter do
          %InputFrame{} = latched_input,
          %State{} = movement_state,
          %Profile{} = profile,
-         input_age_ms
+         input_age_ms,
+         %CombatState{} = combat_state
        ) do
     timeout_ms = profile.fixed_dt_ms * @input_hold_timeout_multiplier
     next_tick = movement_state.tick + 1
 
     base_input =
-      if input_age_ms > timeout_ms do
-        %InputFrame{latched_input | input_dir: {0.0, 0.0}, speed_scale: 1.0, movement_flags: 0b10}
-      else
-        latched_input
+      cond do
+        not combat_state.alive ->
+          %InputFrame{
+            latched_input
+            | input_dir: {0.0, 0.0},
+              speed_scale: 1.0,
+              movement_flags: 0b10
+          }
+
+        input_age_ms > timeout_ms ->
+          %InputFrame{
+            latched_input
+            | input_dir: {0.0, 0.0},
+              speed_scale: 1.0,
+              movement_flags: 0b10
+          }
+
+        true ->
+          latched_input
       end
 
     %InputFrame{base_input | client_tick: next_tick, dt_ms: profile.fixed_dt_ms}
@@ -407,15 +543,116 @@ defmodule SceneServer.PlayerCharacter do
     :math.sqrt(x * x + y * y + z * z)
   end
 
-  defp validate_skill(@pulse_skill_id), do: :ok
-  defp validate_skill(_skill_id), do: {:error, :invalid_skill}
+  defp ensure_alive(%CombatState{alive: true}), do: :ok
+  defp ensure_alive(%CombatState{}), do: {:error, :dead}
 
-  defp cooldown_ready?(skill_casts, skill_id, now) do
+  defp cooldown_ready?(skill_casts, %Skill{id: skill_id, cooldown_ms: cooldown_ms}, now) do
     case Map.get(skill_casts, skill_id) do
       nil -> :ok
-      last_cast when now - last_cast >= @skill_cooldown_ms -> :ok
+      last_cast when now - last_cast >= cooldown_ms -> :ok
       _last_cast -> {:error, :skill_cooldown}
     end
+  end
+
+  defp within_skill_radius?(source, target, radius) do
+    vector_distance(source, target) <= radius
+  end
+
+  defp vector_distance({ax, ay, az}, {bx, by, bz}) do
+    dx = ax - bx
+    dy = ay - by
+    dz = az - bz
+    :math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+
+  defp apply_skill_hits(source_cid, %Skill{} = skill, location) do
+    source_cid
+    |> Targeting.nearby_player_pids(location, skill.radius)
+    |> Enum.each(fn player_pid ->
+      _ = safe_player_call(player_pid, {:apply_skill_hit, source_cid, skill, location})
+    end)
+  end
+
+  defp safe_player_call(player_pid, message) do
+    try do
+      GenServer.call(player_pid, message)
+    catch
+      :exit, reason -> {:error, reason}
+    end
+  end
+
+  defp reset_movement_after_death(cd_ref, physys_ref, movement_profile, movement_state, state) do
+    zero_state = %{
+      movement_state
+      | velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0}
+    }
+
+    :ok =
+      update_character_movement_with_retry(
+        cd_ref,
+        zero_state.position,
+        zero_state.velocity,
+        zero_state.acceleration,
+        physys_ref
+      )
+
+    timer = Process.send_after(self(), :respawn, state.combat_profile.respawn_ms)
+
+    {state
+     |> Map.put(:movement_state, zero_state)
+     |> Map.put(:latched_input, idle_input_frame(movement_profile.fixed_dt_ms)), timer}
+  end
+
+  defp handle_respawn(
+         %{
+           cid: cid,
+           aoi_ref: aoi_ref,
+           spawn_location: spawn_location,
+           movement_profile: movement_profile,
+           movement_state: movement_state,
+           combat_state: combat_state,
+           character_data_ref: cd_ref,
+           physys_ref: physys_ref
+         } = state
+       ) do
+    respawned_combat_state = CombatState.respawn(combat_state)
+
+    respawned_movement_state = %{
+      movement_state
+      | position: spawn_location,
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0}
+    }
+
+    :ok =
+      update_character_movement_with_retry(
+        cd_ref,
+        spawn_location,
+        respawned_movement_state.velocity,
+        respawned_movement_state.acceleration,
+        physys_ref
+      )
+
+    snapshot = RemoteSnapshot.from_state(cid, respawned_movement_state)
+    GenServer.cast(aoi_ref, {:self_move, snapshot})
+
+    GenServer.cast(
+      aoi_ref,
+      {:health_update, cid, respawned_combat_state.hp, respawned_combat_state.max_hp,
+       respawned_combat_state.alive}
+    )
+
+    {:noreply,
+     %{
+       state
+       | combat_state: respawned_combat_state,
+         movement_state: respawned_movement_state,
+         latched_input: idle_input_frame(movement_profile.fixed_dt_ms),
+         last_location: spawn_location,
+         skill_casts: %{},
+         respawn_timer: nil
+     }}
   end
 
   defp normalize_character_profile(cid, %{} = profile) do

@@ -46,36 +46,66 @@ function Parse-Vector3 {
   }
 }
 
-Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Where-Object { $_.LocalPort -in 29000,29001 } |
-  Select-Object -ExpandProperty OwningProcess -Unique |
-  ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 1
+function Stop-DemoPorts {
+  Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.LocalPort -in 29000,29001 } |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+
+  Wait-Until -TimeoutSeconds 20 -Description "ports 29000/29001 to be free" -Condition {
+    $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Where-Object { $_.LocalPort -in 29000,29001 }
+    $null -eq $listeners -or @($listeners).Count -eq 0
+  }
+}
+
+Stop-DemoPorts
 
 Push-Location $repoRoot
 try {
   cmd /c "cd clients\bevy_client && cargo build"
 
-  $serverPsi = New-Object System.Diagnostics.ProcessStartInfo
-  $serverPsi.FileName = "cmd.exe"
-  $serverPsi.WorkingDirectory = $repoRoot
-  $serverPsi.Arguments = "/c set HEX_HTTP_CONCURRENCY=1&& set HEX_HTTP_TIMEOUT=120&& mix demo.run --stdio --bot-count $BotCount --exit-after $ServerExitAfter --output_dir $ObserveDir --observe_dir $ObserveDir 1> ""$serverOut"" 2> ""$serverErr"""
-  $serverPsi.RedirectStandardInput = $true
-  $serverPsi.UseShellExecute = $false
-  $serverPsi.CreateNoWindow = $true
-
-  $server = New-Object System.Diagnostics.Process
-  $server.StartInfo = $serverPsi
-  $server.Start() | Out-Null
-
   $configPath = Join-Path $observeDirAbs "human-client.json"
-  Wait-Until -TimeoutSeconds 90 -Description "generated client config" -Condition {
-    Test-Path $configPath
-  }
+  $server = $null
 
-  if ($BotCount -gt 0) {
-    Wait-Until -TimeoutSeconds 90 -Description "demo bot auth in gate observe log" -Condition {
-      (Test-Path $serverGateObserve) -and ((Get-Content $serverGateObserve -Raw) -match 'demo_bot_')
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    Remove-Item $serverOut,$serverErr,$serverGateObserve -ErrorAction SilentlyContinue
+
+    $serverPsi = New-Object System.Diagnostics.ProcessStartInfo
+    $serverPsi.FileName = "cmd.exe"
+    $serverPsi.WorkingDirectory = $repoRoot
+    $serverPsi.Arguments = "/c set HEX_HTTP_CONCURRENCY=1&& set HEX_HTTP_TIMEOUT=120&& mix demo.run --stdio --bot-count $BotCount --exit-after $ServerExitAfter --output_dir $ObserveDir --observe_dir $ObserveDir 1> ""$serverOut"" 2> ""$serverErr"""
+    $serverPsi.RedirectStandardInput = $true
+    $serverPsi.UseShellExecute = $false
+    $serverPsi.CreateNoWindow = $true
+
+    $server = New-Object System.Diagnostics.Process
+    $server.StartInfo = $serverPsi
+    $server.Start() | Out-Null
+
+    try {
+      Wait-Until -TimeoutSeconds 90 -Description "generated client config" -Condition {
+        Test-Path $configPath
+      }
+
+      if ($BotCount -gt 0) {
+        Wait-Until -TimeoutSeconds 90 -Description "demo bot auth in gate observe log" -Condition {
+          (Test-Path $serverGateObserve) -and ((Get-Content $serverGateObserve -Raw) -match 'demo_bot_')
+        }
+      }
+
+      break
+    }
+    catch {
+      if ($server -and -not $server.HasExited) {
+        try { $server.Kill() } catch {}
+        $server.WaitForExit(5000) | Out-Null
+      }
+
+      if ($attempt -eq 2) { throw }
+
+      Start-Sleep -Seconds 2
+      Stop-DemoPorts
     }
   }
 
@@ -113,6 +143,9 @@ try {
 
   $client.StandardInput.WriteLine("snapshot")
   $client.StandardInput.WriteLine("transport")
+  $client.StandardInput.WriteLine("skill 1")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 800
   $client.StandardInput.WriteLine("move w 600")
   $client.StandardInput.Flush()
   Start-Sleep -Seconds 1
@@ -122,19 +155,18 @@ try {
   $client.StandardInput.WriteLine("chat e2e-stdio")
   $client.StandardInput.Flush()
   Start-Sleep -Milliseconds 500
-  $client.StandardInput.WriteLine("skill 1")
-  $client.StandardInput.Flush()
   Start-Sleep -Seconds 3
-  $client.StandardInput.WriteLine("players")
-  $client.StandardInput.WriteLine("position")
-  $client.StandardInput.WriteLine("snapshot")
-  $client.StandardInput.Flush()
-  Start-Sleep -Milliseconds 500
-  $server.StandardInput.WriteLine("players")
-  $server.StandardInput.WriteLine("connections")
-  $server.StandardInput.WriteLine("fastlane")
-  $server.StandardInput.WriteLine("player $($config.cid)")
-  $server.StandardInput.Flush()
+$client.StandardInput.WriteLine("players")
+$client.StandardInput.WriteLine("position")
+$client.StandardInput.WriteLine("snapshot")
+$client.StandardInput.Flush()
+Start-Sleep -Milliseconds 500
+$server.StandardInput.WriteLine("players")
+$server.StandardInput.WriteLine("connections")
+$server.StandardInput.WriteLine("fastlane")
+$server.StandardInput.WriteLine("player $($config.cid)")
+if ($BotCount -gt 0) { $server.StandardInput.WriteLine("player_state 42101") }
+$server.StandardInput.Flush()
   Start-Sleep -Milliseconds 500
   $client.StandardInput.WriteLine("quit")
   $client.StandardInput.Flush()
@@ -202,8 +234,34 @@ try {
     throw "server stdio player query returned nil during E2E"
   }
 
+  if ($BotCount -gt 0) {
+    $stateLineMatch = [regex]::Match($serverStdout, 'server_stdio event="player_state".*')
+    if (-not $stateLineMatch.Success) {
+      throw "server stdio player_state output missing for combat target"
+    }
+
+    $stateLine = $stateLineMatch.Value
+    $hpMatch = [regex]::Match($stateLine, 'hp: (?<hp>\d+)')
+    $maxMatch = [regex]::Match($stateLine, 'max_hp: (?<max>\d+)')
+    $aliveMatch = [regex]::Match($stateLine, 'alive: (?<alive>true|false)')
+
+    if (-not $hpMatch.Success -or -not $maxMatch.Success -or -not $aliveMatch.Success) {
+      throw "server stdio player_state output missing hp/max_hp/alive fields"
+    }
+
+    $targetHp = [int]$hpMatch.Groups["hp"].Value
+    $targetMaxHp = [int]$maxMatch.Groups["max"].Value
+    if ($targetHp -ge $targetMaxHp) {
+      throw "combat loop did not reduce target hp"
+    }
+  }
+
   if ($BotCount -gt 0 -and -not ((Get-Content $clientObserve -Raw) -match 'event="player_(enter|move)"')) {
     throw "client observe log did not record remote AOI movement/enter events"
+  }
+
+  if ($BotCount -gt 0 -and -not ((Get-Content $clientObserve -Raw) -match 'event="combat_hit"')) {
+    throw "client observe log did not record combat_hit after skill cast"
   }
 
   $clientMatches = [regex]::Matches($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')

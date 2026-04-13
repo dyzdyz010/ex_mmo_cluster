@@ -103,6 +103,24 @@ defmodule SceneServer.PlayerCharacterTest do
     refute_receive {:aoi_cast, _message}, 50
   end
 
+  test "skill hit reduces hp and broadcasts combat state" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+    {:ok, skill} = SceneServer.Combat.Skill.fetch(1)
+
+    assert {:reply, {:ok, 75}, next_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:apply_skill_hit, 7, skill, {1.0, 2.0, 3.0}},
+               {self(), make_ref()},
+               state
+             )
+
+    assert next_state.combat_state.hp == 75
+    assert_receive {:aoi_cast, {:combat_resolved, 7, 42, 1, 25, 75, {1.0, 2.0, 3.0}}}
+    assert_receive {:aoi_cast, {:health_update, 42, 75, 100, true}}
+  end
+
   defp movement_state(aoi_ref, connection_pid) do
     dev_attrs = %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
     location = {1.0, 2.0, 3.0}
@@ -124,9 +142,12 @@ defmodule SceneServer.PlayerCharacterTest do
       connection_pid: connection_pid,
       character_data_ref: character_data_ref,
       physys_ref: physys_ref,
+      spawn_location: location,
       last_location: location,
       movement_state: SceneServer.Movement.State.idle(location),
       movement_profile: SceneServer.Movement.Profile.default(),
+      combat_profile: SceneServer.Combat.Profile.default(),
+      combat_state: SceneServer.Combat.State.new(SceneServer.Combat.Profile.default()),
       latched_input: %SceneServer.Movement.InputFrame{
         seq: 0,
         client_tick: 0,
@@ -139,7 +160,8 @@ defmodule SceneServer.PlayerCharacterTest do
       last_ack_seq: 0,
       last_client_tick: 0,
       last_input_received_at_ms: System.monotonic_time(:millisecond) - 100,
-      movement_timer: nil
+      movement_timer: nil,
+      respawn_timer: nil
     }
   end
 end

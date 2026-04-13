@@ -110,6 +110,20 @@ pub enum ServerMessage {
         skill_id: u16,
         location: NetVec3,
     },
+    PlayerState {
+        cid: i64,
+        hp: u16,
+        max_hp: u16,
+        alive: bool,
+    },
+    CombatHit {
+        source_cid: i64,
+        target_cid: i64,
+        skill_id: u16,
+        damage: u16,
+        hp_after: u16,
+        location: NetVec3,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +241,20 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             cid: read_i64(body, 0)?,
             skill_id: read_u16(body, 8)?,
             location: read_vec3(body, 10)?,
+        }),
+        0x8C => Ok(ServerMessage::PlayerState {
+            cid: read_i64(body, 0)?,
+            hp: read_u16(body, 8)?,
+            max_hp: read_u16(body, 10)?,
+            alive: read_u8(body, 12)? != 0,
+        }),
+        0x8D => Ok(ServerMessage::CombatHit {
+            source_cid: read_i64(body, 0)?,
+            target_cid: read_i64(body, 8)?,
+            skill_id: read_u16(body, 16)?,
+            damage: read_u16(body, 18)?,
+            hp_after: read_u16(body, 20)?,
+            location: read_vec3(body, 22)?,
         }),
         other => Err(ProtocolError(format!(
             "unknown server message type: {other:#x}"
@@ -489,6 +517,33 @@ mod tests {
             ServerMessage::SkillEvent {
                 cid: 42,
                 skill_id: 1,
+                location: [1.0, 2.0, 3.0],
+            }
+        );
+
+        let player_state = vec![0x8C, 0, 0, 0, 0, 0, 0, 0, 42, 0, 75, 0, 100, 1];
+        assert_eq!(
+            decode_server_payload(&player_state).unwrap(),
+            ServerMessage::PlayerState {
+                cid: 42,
+                hp: 75,
+                max_hp: 100,
+                alive: true,
+            }
+        );
+
+        let combat_hit = vec![
+            0x8D, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 42, 0, 1, 0, 25, 0, 75, 0x3f, 0xf0,
+            0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(
+            decode_server_payload(&combat_hit).unwrap(),
+            ServerMessage::CombatHit {
+                source_cid: 7,
+                target_cid: 42,
+                skill_id: 1,
+                damage: 25,
+                hp_after: 75,
                 location: [1.0, 2.0, 3.0],
             }
         );

@@ -38,6 +38,8 @@ defmodule GateServer.Codec do
   - `0x89` ChatMessage
   - `0x8A` SkillEvent
   - `0x8B` MovementAck
+  - `0x8C` PlayerState
+  - `0x8D` CombatHit
 
   ## Round trip example
 
@@ -72,6 +74,8 @@ defmodule GateServer.Codec do
   @msg_chat_message 0x89
   @msg_skill_event 0x8A
   @msg_movement_ack 0x8B
+  @msg_player_state 0x8C
+  @msg_combat_hit 0x8D
 
   # ── Status codes ──
   @status_ok 0x00
@@ -305,6 +309,18 @@ defmodule GateServer.Codec do
        z::float-64-big>>}
   end
 
+  def encode({:player_state, cid, hp, max_hp, alive})
+      when is_integer(cid) and is_integer(hp) and is_integer(max_hp) do
+    {:ok, <<@msg_player_state, cid::64-big, hp::16-big, max_hp::16-big, encode_bool(alive)::8>>}
+  end
+
+  def encode({:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, {x, y, z}})
+      when is_integer(source_cid) and is_integer(target_cid) and is_integer(skill_id) do
+    {:ok,
+     <<@msg_combat_hit, source_cid::64-big, target_cid::64-big, skill_id::16-big, damage::16-big,
+       hp_after::16-big, x::float-64-big, y::float-64-big, z::float-64-big>>}
+  end
+
   def encode(_) do
     {:error, :unknown_message}
   end
@@ -314,4 +330,7 @@ defmodule GateServer.Codec do
   defp encode_movement_mode(:disabled), do: 2
   defp encode_movement_mode(mode) when is_integer(mode), do: mode
   defp encode_movement_mode(_mode), do: 0
+
+  defp encode_bool(true), do: 1
+  defp encode_bool(_), do: 0
 end

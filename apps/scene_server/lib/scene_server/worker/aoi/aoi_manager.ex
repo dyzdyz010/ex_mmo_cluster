@@ -31,6 +31,11 @@ defmodule SceneServer.AoiManager do
     GenServer.call(__MODULE__, {:get_items_with_cids, cids})
   end
 
+  @spec get_nearby_player_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
+  def get_nearby_player_pids(location, radius, exclude_cids \\ []) do
+    GenServer.call(__MODULE__, {:get_nearby_player_pids, location, radius, exclude_cids})
+  end
+
   @impl true
   def init(_init_arg) do
     Logger.debug("Aoi process created.")
@@ -51,7 +56,7 @@ defmodule SceneServer.AoiManager do
          {cid, client_timestamp, location, connection_pid, player_pid, system}}
       )
 
-    new_aois = aois |> Map.put_new(cid, apid)
+    new_aois = aois |> Map.put_new(cid, %{aoi_pid: apid, player_pid: player_pid})
 
     {:reply, {:ok, apid}, %{state | aois: new_aois}}
   end
@@ -64,9 +69,33 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def handle_call({:get_items_with_cids, cids}, _from, %{aois: aois} = state) do
-    items = for {k, v} <- aois, cid <- cids, k == cid, do: v
-    # Logger.debug("Items: #{inspect(items, pretty: true)}")
+    items =
+      for {k, %{aoi_pid: aoi_pid}} <- aois, cid <- cids, k == cid, do: aoi_pid
+
     {:reply, items, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:get_nearby_player_pids, location, radius, exclude_cids},
+        _from,
+        %{coordinate_system: system, aois: aois} = state
+      ) do
+    cids = Octree.get_in_bound(system, location, {radius, radius, radius})
+
+    player_pids =
+      cids
+      |> Enum.reject(&(&1 in exclude_cids))
+      |> Enum.map(fn cid ->
+        case Map.get(aois, cid) do
+          %{player_pid: player_pid} -> player_pid
+          _ -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    # Logger.debug("Items: #{inspect(items, pretty: true)}")
+    {:reply, player_pids, state}
   end
 
   # Internal functions

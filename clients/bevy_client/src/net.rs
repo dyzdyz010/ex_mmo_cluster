@@ -89,6 +89,20 @@ pub enum NetworkEvent {
         skill_id: u16,
         location: NetVec3,
     },
+    PlayerState {
+        cid: i64,
+        hp: u16,
+        max_hp: u16,
+        alive: bool,
+    },
+    CombatHit {
+        source_cid: i64,
+        target_cid: i64,
+        skill_id: u16,
+        damage: u16,
+        hp_after: u16,
+        location: NetVec3,
+    },
     TimeSync {
         rtt_ms: f64,
         offset_ms: f64,
@@ -769,6 +783,36 @@ impl ClientRuntime {
                     location,
                 });
             }
+            ServerMessage::PlayerState {
+                cid,
+                hp,
+                max_hp,
+                alive,
+            } => {
+                outcome.push_event(NetworkEvent::PlayerState {
+                    cid,
+                    hp,
+                    max_hp,
+                    alive,
+                });
+            }
+            ServerMessage::CombatHit {
+                source_cid,
+                target_cid,
+                skill_id,
+                damage,
+                hp_after,
+                location,
+            } => {
+                outcome.push_event(NetworkEvent::CombatHit {
+                    source_cid,
+                    target_cid,
+                    skill_id,
+                    damage,
+                    hp_after,
+                    location,
+                });
+            }
             ServerMessage::TimeSyncReply {
                 packet_id,
                 client_send_ts,
@@ -1306,6 +1350,44 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                 &[
                     ("cid", cid.to_string()),
                     ("skill_id", skill_id.to_string()),
+                    ("location", format_vec(location)),
+                ],
+            );
+        }
+        NetworkEvent::PlayerState {
+            cid,
+            hp,
+            max_hp,
+            alive,
+        } => {
+            observer.emit(
+                "network",
+                "player_state",
+                &[
+                    ("cid", cid.to_string()),
+                    ("hp", hp.to_string()),
+                    ("max_hp", max_hp.to_string()),
+                    ("alive", alive.to_string()),
+                ],
+            );
+        }
+        NetworkEvent::CombatHit {
+            source_cid,
+            target_cid,
+            skill_id,
+            damage,
+            hp_after,
+            location,
+        } => {
+            observer.emit(
+                "network",
+                "combat_hit",
+                &[
+                    ("source_cid", source_cid.to_string()),
+                    ("target_cid", target_cid.to_string()),
+                    ("skill_id", skill_id.to_string()),
+                    ("damage", damage.to_string()),
+                    ("hp_after", hp_after.to_string()),
                     ("location", format_vec(location)),
                 ],
             );

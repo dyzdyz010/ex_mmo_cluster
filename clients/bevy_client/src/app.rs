@@ -45,6 +45,10 @@ struct WorldState {
     local_position: Option<Vec3>,
     local_velocity: Vec3,
     remote_players: HashMap<i64, RemotePlayerState>,
+    local_hp: u16,
+    local_max_hp: u16,
+    local_alive: bool,
+    remote_player_health: HashMap<i64, (u16, u16, bool)>,
     chat_log: VecDeque<String>,
     logs: VecDeque<String>,
     last_rtt_ms: Option<f64>,
@@ -112,6 +116,9 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
             },
             local_cid: config.cid,
             local_velocity: Vec3::ZERO,
+            local_hp: 100,
+            local_max_hp: 100,
+            local_alive: true,
             control_transport: MessageTransport::Tcp,
             movement_transport: MessageTransport::Tcp,
             fast_lane_status: "tcp fallback".to_string(),
@@ -245,6 +252,7 @@ fn poll_network_events(
                 world_state.local_position = Some(net_to_world(location));
                 world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
+                world_state.remote_player_health.clear();
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
                 movement_dispatch.stop_sent = true;
@@ -292,6 +300,7 @@ fn poll_network_events(
             }
             NetworkEvent::PlayerLeave { cid } => {
                 world_state.remote_players.remove(&cid);
+                world_state.remote_player_health.remove(&cid);
                 push_line(&mut world_state.logs, format!("player {cid} left AOI"));
             }
             NetworkEvent::ChatMessage {
@@ -326,6 +335,42 @@ fn poll_network_events(
                     format!("skill event: cid={cid} skill={skill_id}"),
                 );
             }
+            NetworkEvent::PlayerState {
+                cid,
+                hp,
+                max_hp,
+                alive,
+            } => {
+                if cid == world_state.local_cid {
+                    world_state.local_hp = hp;
+                    world_state.local_max_hp = max_hp;
+                    world_state.local_alive = alive;
+                } else {
+                    world_state
+                        .remote_player_health
+                        .insert(cid, (hp, max_hp, alive));
+                }
+
+                push_line(
+                    &mut world_state.logs,
+                    format!("state: cid={cid} hp={hp}/{max_hp} alive={alive}"),
+                );
+            }
+            NetworkEvent::CombatHit {
+                source_cid,
+                target_cid,
+                skill_id,
+                damage,
+                hp_after,
+                ..
+            } => {
+                push_line(
+                    &mut world_state.logs,
+                    format!(
+                        "combat: {source_cid} -> {target_cid} skill={skill_id} damage={damage} hp_after={hp_after}"
+                    ),
+                );
+            }
             NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
                 world_state.last_rtt_ms = Some(rtt_ms);
                 world_state.last_offset_ms = Some(offset_ms);
@@ -351,6 +396,7 @@ fn poll_network_events(
                 world_state.local_position = None;
                 world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
+                world_state.remote_player_health.clear();
                 world_state.movement_transport = MessageTransport::Tcp;
                 world_state.fast_lane_status = "tcp fallback".to_string();
                 world_state.udp_endpoint = None;
@@ -549,6 +595,9 @@ fn poll_stdio_commands(
                     world_state.scene_joined,
                     world_state.local_cid,
                     world_state.local_position,
+                    world_state.local_hp,
+                    world_state.local_max_hp,
+                    world_state.local_alive,
                     world_state.movement_transport.label(),
                     &world_state.fast_lane_status,
                     world_state.remote_players.len(),
@@ -779,7 +828,7 @@ fn update_hud_text(
     >,
 ) {
     hud.0 = format!(
-        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {}\nlocal cid: {}\nposition: {}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
         world_state.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
@@ -794,6 +843,9 @@ fn update_hud_text(
             .local_position
             .map(|pos| format!("{:.1}, {:.1}, {:.1}", pos.x, pos.y, pos.z))
             .unwrap_or_else(|| "n/a".to_string()),
+        world_state.local_hp,
+        world_state.local_max_hp,
+        world_state.local_alive,
         world_state
             .last_local_update_transport
             .map(|transport| transport.label().to_string())

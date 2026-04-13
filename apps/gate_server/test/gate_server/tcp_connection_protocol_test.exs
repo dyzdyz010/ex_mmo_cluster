@@ -535,6 +535,23 @@ defmodule GateServer.TcpConnectionProtocolTest do
               9.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
   end
 
+  test "player_state and combat_hit casts are encoded to the client socket", %{
+    client: client,
+    pid: pid
+  } do
+    GenServer.cast(pid, {:player_state, 42, 75, 100, true})
+
+    assert {:ok, <<0x8C, 42::64-big, 75::16-big, 100::16-big, 1::8>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    GenServer.cast(pid, {:combat_hit, 7, 42, 1, 25, 75, {1.0, 2.0, 3.0}})
+
+    assert {:ok,
+            <<0x8D, 7::64-big, 42::64-big, 1::16-big, 25::16-big, 75::16-big, 1.0::float-64-big,
+              2.0::float-64-big, 3.0::float-64-big>>} =
+             :gen_tcp.recv(client, 0, 500)
+  end
+
   test "fast-lane bootstrap returns udp port and ticket after auth", %{client: client, pid: pid} do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())

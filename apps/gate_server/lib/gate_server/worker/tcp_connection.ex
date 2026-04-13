@@ -170,6 +170,41 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
+  def handle_cast({:player_state, cid, hp, max_hp, alive}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("player_state_push", %{
+      cid: cid,
+      hp: hp,
+      max_hp: max_hp,
+      alive: alive
+    })
+
+    send_encoded(socket, {:player_state, cid, hp, max_hp, alive})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location},
+        %{socket: socket} = state
+      ) do
+    GateServer.CliObserve.emit("combat_hit_push", %{
+      source_cid: source_cid,
+      target_cid: target_cid,
+      skill_id: skill_id,
+      damage: damage,
+      hp_after: hp_after,
+      location: location
+    })
+
+    send_encoded(
+      socket,
+      {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
+    )
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:udp_attached, peer, ticket}, state) do
     GateServer.CliObserve.emit("udp_attached", %{
       connection_pid: self(),
