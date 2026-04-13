@@ -124,16 +124,18 @@ try {
   Start-Sleep -Milliseconds 500
   $client.StandardInput.WriteLine("skill 1")
   $client.StandardInput.Flush()
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 3
+  $client.StandardInput.WriteLine("players")
+  $client.StandardInput.WriteLine("position")
+  $client.StandardInput.WriteLine("snapshot")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 500
   $server.StandardInput.WriteLine("players")
   $server.StandardInput.WriteLine("connections")
   $server.StandardInput.WriteLine("fastlane")
   $server.StandardInput.WriteLine("player $($config.cid)")
   $server.StandardInput.Flush()
-  Start-Sleep -Seconds 3
-  $client.StandardInput.WriteLine("players")
-  $client.StandardInput.WriteLine("position")
-  $client.StandardInput.WriteLine("snapshot")
+  Start-Sleep -Milliseconds 500
   $client.StandardInput.WriteLine("quit")
   $client.StandardInput.Flush()
   $client.StandardInput.Close()
@@ -204,11 +206,14 @@ try {
     throw "client observe log did not record remote AOI movement/enter events"
   }
 
-  $clientMatch = [regex]::Match($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')
-  $serverMatch = [regex]::Match($serverStdout, 'server_stdio event="player" payload=%\{player: %\{.*location: \{(?<pos>[-0-9\.]+), (?<posy>[-0-9\.]+), (?<posz>[-0-9\.]+)\}')
-  if (-not $clientMatch.Success -or -not $serverMatch.Success) {
+  $clientMatches = [regex]::Matches($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')
+  $serverMatches = [regex]::Matches($serverStdout, 'server_stdio event="player" payload=%\{player: %\{.*location: \{(?<pos>[-0-9\.]+), (?<posy>[-0-9\.]+), (?<posz>[-0-9\.]+)\}')
+  if ($clientMatches.Count -eq 0 -or $serverMatches.Count -eq 0) {
     throw "unable to parse final client/server positions from stdio output"
   }
+
+  $clientMatch = $clientMatches[$clientMatches.Count - 1]
+  $serverMatch = $serverMatches[$serverMatches.Count - 1]
 
   $clientPos = Parse-Vector3 $clientMatch.Groups["pos"].Value
   $serverPos = [pscustomobject]@{

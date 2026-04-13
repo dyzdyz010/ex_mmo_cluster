@@ -259,6 +259,7 @@ struct ClientRuntime {
     enter_scene_request_id: Option<u64>,
     pending_time_sync: HashMap<u64, u64>,
     last_applied_movement_ack: u32,
+    last_applied_auth_tick: u32,
     last_remote_move_ticks: HashMap<i64, u32>,
     fast_lane: FastLaneState,
     local_prediction: LocalPredictionRuntime,
@@ -280,6 +281,7 @@ impl ClientRuntime {
             enter_scene_request_id: None,
             pending_time_sync: HashMap::new(),
             last_applied_movement_ack: 0,
+            last_applied_auth_tick: 0,
             last_remote_move_ticks: HashMap::new(),
             fast_lane: FastLaneState::default(),
             local_prediction: LocalPredictionRuntime::default(),
@@ -578,6 +580,7 @@ impl ClientRuntime {
 
                 self.phase = ConnectionPhase::InScene;
                 self.last_applied_movement_ack = 0;
+                self.last_applied_auth_tick = 0;
                 self.last_remote_move_ticks.clear();
                 let location =
                     location.ok_or_else(|| "enter-scene success missing location".to_string())?;
@@ -605,16 +608,26 @@ impl ClientRuntime {
                 ));
                 outcome.push_event(self.transport_event());
             }
-            message @ ServerMessage::MovementAck { ack_seq, cid, .. } => {
-                if ack_seq <= self.last_applied_movement_ack {
+            message @ ServerMessage::MovementAck {
+                ack_seq,
+                auth_tick,
+                cid,
+                ..
+            } => {
+                if ack_seq < self.last_applied_movement_ack
+                    || (ack_seq == self.last_applied_movement_ack
+                        && auth_tick <= self.last_applied_auth_tick)
+                {
                     outcome.push_event(NetworkEvent::Log(format!(
-                        "ignoring stale movement ack ack_seq={ack_seq} (latest={})",
-                        self.last_applied_movement_ack
+                        "ignoring stale movement ack ack_seq={ack_seq} auth_tick={auth_tick} (latest={}:{})",
+                        self.last_applied_movement_ack,
+                        self.last_applied_auth_tick
                     )));
                     return Ok(outcome);
                 }
 
                 self.last_applied_movement_ack = ack_seq;
+                self.last_applied_auth_tick = auth_tick;
 
                 let ack = movement_ack_from_server(&message).expect("movement ack");
 
@@ -1984,6 +1997,65 @@ mod tests {
             event,
             NetworkEvent::Log(message)
                 if message.contains("ignoring stale movement ack ack_seq=9")
+        )));
+    }
+
+    #[test]
+    fn accepts_newer_auth_tick_for_same_ack_seq() {
+        let config = test_config();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+        runtime
+            .local_prediction
+            .reset(bevy::prelude::Vec3::ZERO, None);
+
+        let first = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::MovementAck {
+                    ack_seq: 10,
+                    auth_tick: 1,
+                    cid: 42,
+                    location: [4.0, 5.0, 6.0],
+                    velocity: [1.0, 0.0, 0.0],
+                    acceleration: [0.0, 0.0, 0.0],
+                    movement_mode: 0,
+                    correction_flags: 0,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            first
+                .events
+                .iter()
+                .any(|event| matches!(event, NetworkEvent::LocalPosition { .. }))
+        );
+
+        let newer_tick = runtime
+            .handle_server_message(
+                &config,
+                MessageTransport::Udp,
+                ServerMessage::MovementAck {
+                    ack_seq: 10,
+                    auth_tick: 2,
+                    cid: 42,
+                    location: [4.5, 5.0, 6.0],
+                    velocity: [0.5, 0.0, 0.0],
+                    acceleration: [0.0, 0.0, 0.0],
+                    movement_mode: 0,
+                    correction_flags: 0,
+                },
+            )
+            .unwrap();
+
+        assert!(newer_tick.events.iter().any(|event| matches!(
+            event,
+            NetworkEvent::LocalPosition {
+                location: [4.5, 5.0, 6.0],
+                ..
+            }
         )));
     }
 

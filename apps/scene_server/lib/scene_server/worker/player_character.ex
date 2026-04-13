@@ -13,6 +13,8 @@ defmodule SceneServer.PlayerCharacter do
   @skill_cooldown_ms 750
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
+  @input_hold_timeout_multiplier 3
+  @stopped_speed_epsilon 1.0
 
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
@@ -42,13 +44,16 @@ defmodule SceneServer.PlayerCharacter do
        character_data_ref: nil,
        movement_state: State.idle(normalize_character_profile(cid, character_profile).position),
        movement_profile: Profile.default(),
+       latched_input: idle_input_frame(Profile.default().fixed_dt_ms),
        last_input_seq: 0,
+       last_ack_seq: 0,
        last_client_tick: 0,
-       last_server_input_at_ms: System.monotonic_time(:millisecond),
+       last_input_received_at_ms: System.monotonic_time(:millisecond),
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0,
-       skill_casts: %{}
+       skill_casts: %{},
+       movement_timer: nil
      }, {:continue, {:load, client_timestamp}}}
   end
 
@@ -58,17 +63,21 @@ defmodule SceneServer.PlayerCharacter do
         %{cid: cid, connection_pid: connection_pid, character_profile: character_profile} = state
       ) do
     %{name: name, position: location} = character_profile
+    movement_profile = state.movement_profile
 
     with {:ok, physys_ref} <- SceneServer.PhysicsManager.get_physics_system_ref(),
          {:ok, cd_ref} <-
            new_character_data_with_retry(cid, name, location, @default_dev_attrs, physys_ref),
          {:ok, aoi_ref} <- enter_scene(cid, client_timestamp, location, connection_pid) do
+      movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
+
       {:noreply,
        %{
          state
          | physys_ref: physys_ref,
            aoi_ref: aoi_ref,
-           character_data_ref: cd_ref
+           character_data_ref: cd_ref,
+           movement_timer: movement_timer
        }}
     else
       {:error, reason} ->
@@ -154,14 +163,11 @@ defmodule SceneServer.PlayerCharacter do
         _from,
         %{
           cid: cid,
-          aoi_ref: aoi_ref,
-          character_data_ref: cd_ref,
-          physys_ref: physys_ref,
-          movement_state: movement_state,
           movement_profile: movement_profile,
+          latched_input: latched_input,
           last_input_seq: last_input_seq,
           last_client_tick: last_client_tick,
-          last_server_input_at_ms: last_server_input_at_ms
+          last_input_received_at_ms: last_input_received_at_ms
         } = state
       ) do
     with {:ok, sanitized_frame, now_ms} <-
@@ -170,34 +176,16 @@ defmodule SceneServer.PlayerCharacter do
              movement_profile,
              last_input_seq,
              last_client_tick,
-             last_server_input_at_ms
+             last_input_received_at_ms
            ) do
-      {next_state, ack} = Engine.step(cid, movement_state, sanitized_frame, movement_profile)
-
-      with :ok <-
-             update_character_movement_with_retry(
-               cd_ref,
-               next_state.position,
-               next_state.velocity,
-               next_state.acceleration,
-               physys_ref
-             ) do
-        GenServer.cast(aoi_ref, {:self_move, RemoteSnapshot.from_state(cid, next_state)})
-
-        {:reply, {:ok, ack},
-         %{
-           state
-           | movement_state: next_state,
-             last_location: next_state.position,
-             last_input_seq: sanitized_frame.seq,
-             last_client_tick: sanitized_frame.client_tick,
-             last_server_input_at_ms: now_ms
-         }}
-      else
-        {:error, reason} ->
-          SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
-          {:reply, {:error, reason}, state}
-      end
+      {:reply, {:ok, :accepted},
+       %{
+         state
+         | latched_input: merge_latched_input(latched_input, sanitized_frame, movement_profile),
+           last_input_seq: sanitized_frame.seq,
+           last_client_tick: sanitized_frame.client_tick,
+           last_input_received_at_ms: now_ms
+       }}
     else
       {:error, reason} ->
         SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
@@ -253,8 +241,92 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
+  def handle_info(
+        :movement_tick,
+        %{
+          cid: cid,
+          connection_pid: connection_pid,
+          aoi_ref: aoi_ref,
+          character_data_ref: cd_ref,
+          physys_ref: physys_ref,
+          movement_state: movement_state,
+          movement_profile: movement_profile,
+          latched_input: latched_input,
+          last_ack_seq: last_ack_seq,
+          last_input_received_at_ms: last_input_received_at_ms
+        } = state
+      ) do
+    movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
+    now_ms = System.monotonic_time(:millisecond)
+
+    effective_input =
+      effective_input_frame(
+        latched_input,
+        movement_state,
+        movement_profile,
+        now_ms - last_input_received_at_ms
+      )
+
+    cond do
+      should_advance_movement?(movement_state, effective_input) ->
+        {next_state, _ack} =
+          Engine.step(cid, movement_state, effective_input, movement_profile)
+
+        with :ok <-
+               update_character_movement_with_retry(
+                 cd_ref,
+                 next_state.position,
+                 next_state.velocity,
+                 next_state.acceleration,
+                 physys_ref
+               ),
+             {:ok, authoritative_location} <-
+               get_character_location_with_retry(cd_ref, physys_ref, next_state.position) do
+          authoritative_state = %{next_state | position: authoritative_location}
+          ack = Engine.build_ack(cid, authoritative_state, effective_input.seq)
+          snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
+          GenServer.cast(aoi_ref, {:self_move, snapshot})
+          GenServer.cast(connection_pid, {:movement_ack, ack})
+
+          {:noreply,
+           %{
+             state
+             | movement_state: authoritative_state,
+               last_location: authoritative_location,
+               last_ack_seq: effective_input.seq,
+               movement_timer: movement_timer,
+               latched_input: effective_input
+           }}
+        else
+          {:error, reason} ->
+            SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
+            {:noreply, %{state | movement_timer: movement_timer}}
+        end
+
+      effective_input.seq > last_ack_seq ->
+        ack = Engine.build_ack(cid, movement_state, effective_input.seq)
+        GenServer.cast(connection_pid, {:movement_ack, ack})
+
+        {:noreply,
+         %{
+           state
+           | last_ack_seq: effective_input.seq,
+             movement_timer: movement_timer,
+             latched_input: effective_input
+         }}
+
+      true ->
+        {:noreply, %{state | movement_timer: movement_timer}}
+    end
+  end
+
+  @impl true
+  def terminate(reason, %{aoi_ref: aoi_item, cid: cid, movement_timer: movement_timer}) do
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
+
+    if movement_timer != nil do
+      Process.cancel_timer(movement_timer)
+    end
 
     if is_pid(aoi_item) and Process.alive?(aoi_item) do
       {:ok, _} = GenServer.call(aoi_item, :exit)
@@ -279,6 +351,60 @@ defmodule SceneServer.PlayerCharacter do
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}
+  end
+
+  defp make_movement_timer(fixed_dt_ms) do
+    Process.send_after(self(), :movement_tick, fixed_dt_ms)
+  end
+
+  defp idle_input_frame(fixed_dt_ms) do
+    %InputFrame{
+      seq: 0,
+      client_tick: 0,
+      dt_ms: fixed_dt_ms,
+      input_dir: {0.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0b10
+    }
+  end
+
+  defp merge_latched_input(_previous, %InputFrame{} = frame, %Profile{} = profile) do
+    %InputFrame{frame | dt_ms: profile.fixed_dt_ms}
+  end
+
+  defp effective_input_frame(
+         %InputFrame{} = latched_input,
+         %State{} = movement_state,
+         %Profile{} = profile,
+         input_age_ms
+       ) do
+    timeout_ms = profile.fixed_dt_ms * @input_hold_timeout_multiplier
+    next_tick = movement_state.tick + 1
+
+    base_input =
+      if input_age_ms > timeout_ms do
+        %InputFrame{latched_input | input_dir: {0.0, 0.0}, speed_scale: 1.0, movement_flags: 0b10}
+      else
+        latched_input
+      end
+
+    %InputFrame{base_input | client_tick: next_tick, dt_ms: profile.fixed_dt_ms}
+  end
+
+  defp should_advance_movement?(%State{} = movement_state, %InputFrame{} = frame) do
+    movement_active?(movement_state) or input_active?(frame)
+  end
+
+  defp movement_active?(%State{velocity: velocity}) do
+    vector_magnitude(velocity) > @stopped_speed_epsilon
+  end
+
+  defp input_active?(%InputFrame{input_dir: {x, y}}) do
+    abs(x) > 1.0e-6 or abs(y) > 1.0e-6
+  end
+
+  defp vector_magnitude({x, y, z}) do
+    :math.sqrt(x * x + y * y + z * z)
   end
 
   defp validate_skill(@pulse_skill_id), do: :ok
@@ -347,7 +473,7 @@ defmodule SceneServer.PlayerCharacter do
          %Profile{} = profile,
          last_input_seq,
          last_client_tick,
-         last_server_input_at_ms
+         _last_input_received_at_ms
        ) do
     cond do
       frame.seq <= last_input_seq ->
@@ -358,22 +484,15 @@ defmodule SceneServer.PlayerCharacter do
 
       true ->
         now_ms = System.monotonic_time(:millisecond)
-        server_dt_ms = clamp_server_dt(now_ms - last_server_input_at_ms, profile.fixed_dt_ms)
 
         sanitized_frame = %InputFrame{
           frame
-          | dt_ms: server_dt_ms,
+          | dt_ms: profile.fixed_dt_ms,
             speed_scale: clamp_speed_scale(frame.speed_scale, profile.max_speed_scale)
         }
 
         {:ok, sanitized_frame, now_ms}
     end
-  end
-
-  defp clamp_server_dt(delta_ms, _fixed_dt_ms) when delta_ms <= 0, do: 1
-
-  defp clamp_server_dt(delta_ms, fixed_dt_ms) do
-    min(max(delta_ms, 1), fixed_dt_ms)
   end
 
   defp clamp_speed_scale(scale, _max_scale) when scale < 0.0, do: 0.0

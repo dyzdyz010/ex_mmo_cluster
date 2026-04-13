@@ -133,6 +133,9 @@ defmodule GateServer.UdpAcceptor do
         })
 
         case GenServer.call(connection_pid, {:udp_movement, frame}) do
+          :accepted ->
+            :ok
+
           {:ok, ack} ->
             GateServer.CliObserve.emit("udp_movement_ack", %{
               peer: "#{:inet.ntoa(ip)}:#{port}",

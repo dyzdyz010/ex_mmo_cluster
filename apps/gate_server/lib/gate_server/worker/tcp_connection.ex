@@ -129,6 +129,32 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
+  def handle_cast({:movement_ack, ack}, %{socket: socket} = state) do
+    {udp_peer, state} = resolve_udp_peer(state)
+
+    GateServer.CliObserve.emit("movement_ack_push", fn ->
+      %{
+        connection_pid: self(),
+        ack_seq: ack.ack_seq,
+        auth_tick: ack.auth_tick,
+        transport: if(udp_peer, do: :udp, else: :tcp)
+      }
+    end)
+
+    message =
+      {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
+       ack.acceleration, ack.movement_mode, ack.correction_flags}
+
+    if udp_peer do
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
+    else
+      send_encoded(socket, message)
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:chat_message, cid, username, text}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("chat_push", %{cid: cid, username: username, text: text})
     send_encoded(socket, {:chat_message, cid, username, text})
@@ -234,7 +260,7 @@ defmodule GateServer.TcpConnection do
           {:error, :cid_mismatch}
 
         true ->
-          acknowledge_movement_input(spid, frame)
+          accept_movement_input(spid, frame)
       end
 
     {:reply, reply, state}
@@ -264,22 +290,14 @@ defmodule GateServer.TcpConnection do
       }
     end)
 
-    case acknowledge_movement_input(spid, frame) do
+    case accept_movement_input(spid, frame) do
       {:ok, ack} ->
-        GateServer.CliObserve.emit("tcp_movement_ack", fn ->
-          %{
-            connection_pid: self(),
-            ack_seq: ack.ack_seq,
-            auth_tick: ack.auth_tick,
-            authoritative_location: ack.position
-          }
-        end)
+        GenServer.cast(self(), {:movement_ack, ack})
 
-        send_encoded(
-          socket,
-          {:movement_ack, ack.ack_seq, ack.auth_tick, state.cid, ack.position, ack.velocity,
-           ack.acceleration, ack.movement_mode, ack.correction_flags}
-        )
+      :accepted ->
+        GateServer.CliObserve.emit("tcp_movement_accepted", fn ->
+          %{connection_pid: self(), seq: frame.seq, client_tick: frame.client_tick}
+        end)
 
       {:error, reason} ->
         GateServer.CliObserve.emit("tcp_movement_error", fn ->
@@ -730,10 +748,11 @@ defmodule GateServer.TcpConnection do
 
   defp with_active_cid(auth_context, _cid), do: auth_context
 
-  defp acknowledge_movement_input(spid, frame) do
-    with {:ok, {:ok, ack}} <- safe_call(spid, {:movement_input, frame}) do
-      {:ok, ack}
-    else
+  defp accept_movement_input(spid, frame) do
+    case safe_call(spid, {:movement_input, frame}) do
+      {:ok, {:ok, :accepted}} -> :accepted
+      {:ok, {:ok, ack}} -> {:ok, ack}
+      {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
       {:ok, _other} -> {:error, :scene_unavailable}
     end
@@ -777,14 +796,15 @@ defmodule GateServer.TcpConnection do
     if Map.get(frame, :__struct__) == InputFrame do
       frame
     else
-      struct(InputFrame,
+      struct(
+        InputFrame,
         %{
-        seq: Map.fetch!(frame, :seq),
-        client_tick: Map.fetch!(frame, :client_tick),
-        dt_ms: Map.fetch!(frame, :dt_ms),
-        input_dir: Map.fetch!(frame, :input_dir),
-        speed_scale: Map.fetch!(frame, :speed_scale),
-        movement_flags: Map.fetch!(frame, :movement_flags)
+          seq: Map.fetch!(frame, :seq),
+          client_tick: Map.fetch!(frame, :client_tick),
+          dt_ms: Map.fetch!(frame, :dt_ms),
+          input_dir: Map.fetch!(frame, :input_dir),
+          speed_scale: Map.fetch!(frame, :speed_scale),
+          movement_flags: Map.fetch!(frame, :movement_flags)
         }
       )
     end
