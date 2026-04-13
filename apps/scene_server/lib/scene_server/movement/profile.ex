@@ -32,6 +32,10 @@ defmodule SceneServer.Movement.Profile do
         }
 
   def default do
+    # TODO(vnext-stage3): keep this profile contract explicitly aligned with
+    # the client predictor and Rustler movement_engine structs. If tuning starts
+    # changing often, add a parity/version check so client/server behavior
+    # cannot silently drift.
     %__MODULE__{
       max_speed: 220.0,
       max_accel: 1200.0,

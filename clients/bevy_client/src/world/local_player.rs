@@ -31,6 +31,10 @@ impl Default for LocalPredictionRuntime {
             input_history: InputHistory::new(128),
             predicted_history: PredictedHistory::new(256),
             profile: MovementProfile::default(),
+            // TODO(vnext-stage3): upgrade this fixed threshold into replay-window governance.
+            // Future work should track correction distance, replayed frame count, and
+            // bounded history watermarks so high-latency sessions can degrade gracefully
+            // instead of relying on a single hardcoded epsilon.
             position_error_threshold: 0.01,
         }
     }

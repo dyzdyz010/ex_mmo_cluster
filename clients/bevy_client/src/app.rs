@@ -654,6 +654,11 @@ fn sync_player_visuals(
     world_state: Res<WorldState>,
     mut existing: Query<(Entity, &PlayerVisual, &mut Transform)>,
 ) {
+    // TODO(vnext-stage3): move this visual sync logic into a dedicated
+    // presentation module and drive it from an explicit presentation state.
+    // Camera already follows the smoothed local visual, but animation/camera
+    // should eventually read a shared presentation proxy instead of raw
+    // world-state fields.
     let mut entities_by_cid = HashMap::new();
     for (entity, visual, transform) in &existing {
         entities_by_cid.insert(visual.cid, (entity, transform.translation));

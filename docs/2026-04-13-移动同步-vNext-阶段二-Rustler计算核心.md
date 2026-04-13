@@ -82,3 +82,7 @@
 2. **远端 snapshot buffer + 插值窗口**
 3. **camera / animation 更彻底绑定 presentation state**
 4. **Rustler 与客户端 profile 参数对齐治理**
+
+上述缺口已单独记录在：
+
+- `docs/2026-04-13-移动同步-vNext-后续缺口清单.md`

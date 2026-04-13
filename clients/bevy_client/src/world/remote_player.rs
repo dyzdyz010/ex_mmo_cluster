@@ -6,6 +6,10 @@ const MAX_REMOTE_EXTRAPOLATION_SECS: f32 = 0.12;
 
 #[derive(Debug, Clone)]
 pub struct RemotePlayerState {
+    // TODO(vnext-stage3): replace this single-latest snapshot with a proper
+    // snapshot ring buffer + interpolation cursor. The current short-term
+    // extrapolation is good enough for Stage 1/2 demos, but future network
+    // smoothing should consume buffered snapshots with an explicit playback delay.
     snapshot: RemoteMoveSnapshot,
     received_at_secs: f64,
 }
