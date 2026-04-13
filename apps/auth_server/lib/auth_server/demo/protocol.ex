@@ -36,12 +36,16 @@ defmodule Demo.Protocol do
 
   def encode_skill_cast(skill_id, request_id), do: <<0x09, request_id::64-big, skill_id::16-big>>
 
-  def encode_movement(cid, timestamp, location, request_id) do
-    {x, y, z} = location
-
-    <<0x01, request_id::64-big, cid::64-big, timestamp::64-big, x::float-64-big, y::float-64-big,
-      z::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-      0.0::float-64-big, 0.0::float-64-big>>
+  def encode_movement_input(
+        seq,
+        client_tick,
+        {input_dir_x, input_dir_y},
+        dt_ms,
+        speed_scale,
+        movement_flags
+      ) do
+    <<0x01, seq::32-big, client_tick::32-big, dt_ms::16-big, input_dir_x::float-32-big,
+      input_dir_y::float-32-big, speed_scale::float-32-big, movement_flags::16-big>>
   end
 
   def encode_time_sync(request_id, client_send_ts) do
@@ -54,13 +58,6 @@ defmodule Demo.Protocol do
     {:ok, {:result, status(status), request_id}}
   end
 
-  def decode_server(
-        <<0x80, request_id::64-big, status::8, cid::64-big, x::float-64-big, y::float-64-big,
-          z::float-64-big>>
-      ) do
-    {:ok, {:movement_result, status(status), request_id, cid, {x, y, z}}}
-  end
-
   def decode_server(<<0x81, cid::64-big, x::float-64-big, y::float-64-big, z::float-64-big>>) do
     {:ok, {:player_enter, cid, {x, y, z}}}
   end
@@ -70,10 +67,11 @@ defmodule Demo.Protocol do
   end
 
   def decode_server(
-        <<0x83, cid::64-big, _sequence::64-big, x::float-64-big, y::float-64-big,
-          z::float-64-big>>
+        <<0x83, cid::64-big, server_tick::32-big, x::float-64-big, y::float-64-big,
+          z::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
+          ay::float-64-big, az::float-64-big, movement_mode::8>>
       ) do
-    {:ok, {:player_move, cid, {x, y, z}}}
+    {:ok, {:player_move, cid, server_tick, {x, y, z}, {vx, vy, vz}, {ax, ay, az}, movement_mode}}
   end
 
   def decode_server(
@@ -110,6 +108,16 @@ defmodule Demo.Protocol do
 
   def decode_server(<<0x88, request_id::64-big, status::8>>) do
     {:ok, {:fast_lane_attached, status(status), request_id}}
+  end
+
+  def decode_server(
+        <<0x8B, ack_seq::32-big, auth_tick::32-big, cid::64-big, x::float-64-big, y::float-64-big,
+          z::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
+          ay::float-64-big, az::float-64-big, movement_mode::8, correction_flags::32-big>>
+      ) do
+    {:ok,
+     {:movement_ack, ack_seq, auth_tick, cid, {x, y, z}, {vx, vy, vz}, {ax, ay, az},
+      movement_mode, correction_flags}}
   end
 
   def decode_server(

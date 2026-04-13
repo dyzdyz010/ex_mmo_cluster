@@ -39,7 +39,7 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
-  alias SceneServer.Movement.InputFrame
+  alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
 
   @doc """
   Start the per-socket connection process.
@@ -94,21 +94,35 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_cast({:player_move, cid, location, sequence}, %{socket: socket} = state) do
+  def handle_cast({:player_move, snapshot}, %{socket: socket} = state) do
+    snapshot = normalize_remote_snapshot(snapshot)
     {udp_peer, state} = resolve_udp_peer(state)
 
     if udp_peer do
       GateServer.CliObserve.emit("player_move_push_udp", fn ->
-        %{cid: cid, sequence: sequence, location: location, peer: udp_peer}
+        %{
+          cid: snapshot.cid,
+          server_tick: snapshot.server_tick,
+          location: snapshot.position,
+          peer: udp_peer
+        }
       end)
 
-      GateServer.UdpAcceptor.send_to_peer(udp_peer, {:player_move, cid, sequence, location})
+      GateServer.UdpAcceptor.send_to_peer(
+        udp_peer,
+        {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
+         snapshot.acceleration, snapshot.movement_mode}
+      )
     else
       GateServer.CliObserve.emit("player_move_push_tcp", fn ->
-        %{cid: cid, sequence: sequence, location: location}
+        %{cid: snapshot.cid, server_tick: snapshot.server_tick, location: snapshot.position}
       end)
 
-      send_encoded(socket, {:player_move, cid, sequence, location})
+      send_encoded(
+        socket,
+        {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
+         snapshot.acceleration, snapshot.movement_mode}
+      )
     end
 
     {:noreply, state}
@@ -759,16 +773,28 @@ defmodule GateServer.TcpConnection do
 
   defp observe_message_summary(message), do: message
 
-  defp build_input_frame(%InputFrame{} = frame), do: frame
-
   defp build_input_frame(%{} = frame) do
-    %InputFrame{
-      seq: Map.fetch!(frame, :seq),
-      client_tick: Map.fetch!(frame, :client_tick),
-      dt_ms: Map.fetch!(frame, :dt_ms),
-      input_dir: Map.fetch!(frame, :input_dir),
-      speed_scale: Map.fetch!(frame, :speed_scale),
-      movement_flags: Map.fetch!(frame, :movement_flags)
-    }
+    if Map.get(frame, :__struct__) == InputFrame do
+      frame
+    else
+      struct(InputFrame,
+        %{
+        seq: Map.fetch!(frame, :seq),
+        client_tick: Map.fetch!(frame, :client_tick),
+        dt_ms: Map.fetch!(frame, :dt_ms),
+        input_dir: Map.fetch!(frame, :input_dir),
+        speed_scale: Map.fetch!(frame, :speed_scale),
+        movement_flags: Map.fetch!(frame, :movement_flags)
+        }
+      )
+    end
+  end
+
+  defp normalize_remote_snapshot(%{} = snapshot) do
+    if Map.get(snapshot, :__struct__) == RemoteSnapshot do
+      snapshot
+    else
+      raise ArgumentError, "expected remote snapshot map, got: #{inspect(snapshot)}"
+    end
   end
 end

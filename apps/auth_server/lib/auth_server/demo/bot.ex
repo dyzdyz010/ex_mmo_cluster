@@ -44,6 +44,8 @@ defmodule Demo.Bot do
       attached_udp?: false,
       position: nil,
       movement_index: 0,
+      next_input_seq: 1,
+      next_client_tick: 1,
       chat_index: 0,
       last_move_transport: nil
     }
@@ -213,7 +215,9 @@ defmodule Demo.Bot do
             state
         end
 
-      {:ok, {:movement_result, :ok, _request_id, _cid, location}} ->
+      {:ok,
+       {:movement_ack, _ack_seq, _auth_tick, _cid, location, _velocity, _acceleration,
+        _movement_mode, _correction_flags}} ->
         notify(state, {:movement_ack, state.last_move_transport || @tcp_control_transport})
         %{state | position: location}
 
@@ -229,7 +233,7 @@ defmodule Demo.Bot do
         notify(state, {:player_enter, cid, location})
         state
 
-      {:ok, {:player_move, cid, location}} ->
+      {:ok, {:player_move, cid, _server_tick, location, _velocity, _acceleration, _movement_mode}} ->
         notify(state, {:player_move, cid, location, @tcp_control_transport})
         state
 
@@ -254,11 +258,13 @@ defmodule Demo.Bot do
         notify(state, :fast_lane_attached)
         %{state | attached_udp?: true}
 
-      {:ok, {:movement_result, :ok, _request_id, _cid, location}} ->
+      {:ok,
+       {:movement_ack, _ack_seq, _auth_tick, _cid, location, _velocity, _acceleration,
+        _movement_mode, _correction_flags}} ->
         notify(state, {:movement_ack, @udp_transport})
         %{state | position: location}
 
-      {:ok, {:player_move, cid, location}} ->
+      {:ok, {:player_move, cid, _server_tick, location, _velocity, _acceleration, _movement_mode}} ->
         notify(state, {:player_move, cid, location, @udp_transport})
         state
 
@@ -279,8 +285,25 @@ defmodule Demo.Bot do
 
   defp send_demo_movement(state) do
     target = Enum.at(state.actor.movement_points, state.movement_index)
-    {request_id, state} = next_request_id(state)
-    payload = Protocol.encode_movement(state.actor.cid, now_ms(), target, request_id)
+    direction = movement_direction(state.position || target, target)
+    movement_flags = movement_flags(direction)
+
+    payload =
+      Protocol.encode_movement_input(
+        state.next_input_seq,
+        state.next_client_tick,
+        direction,
+        state.actor.movement_interval_ms,
+        1.0,
+        movement_flags
+      )
+
+    next_index =
+      if reached_waypoint?(state.position, target) do
+        next_index(state.movement_index, state.actor.movement_points)
+      else
+        state.movement_index
+      end
 
     state =
       if state.attached_udp? and state.udp do
@@ -288,7 +311,9 @@ defmodule Demo.Bot do
 
         %{
           state
-          | movement_index: next_index(state.movement_index, state.actor.movement_points),
+          | movement_index: next_index,
+            next_input_seq: state.next_input_seq + 1,
+            next_client_tick: state.next_client_tick + 1,
             last_move_transport: @udp_transport
         }
       else
@@ -296,12 +321,18 @@ defmodule Demo.Bot do
 
         %{
           state
-          | movement_index: next_index(state.movement_index, state.actor.movement_points),
+          | movement_index: next_index,
+            next_input_seq: state.next_input_seq + 1,
+            next_client_tick: state.next_client_tick + 1,
             last_move_transport: @tcp_control_transport
         }
       end
 
-    notify(state, {:movement_sent, state.last_move_transport || @tcp_control_transport, target})
+    notify(
+      state,
+      {:movement_sent, state.last_move_transport || @tcp_control_transport, target, direction}
+    )
+
     state
   end
 
@@ -363,8 +394,35 @@ defmodule Demo.Bot do
         fast_lane_request_id: nil,
         fast_lane_attach_request_id: nil,
         attached_udp?: false,
-        position: nil
+        position: nil,
+        movement_index: 0,
+        next_input_seq: 1,
+        next_client_tick: 1,
+        last_move_transport: nil
     }
+  end
+
+  defp movement_direction({x, y, _z}, {tx, ty, _tz}) do
+    dx = tx - x
+    dy = ty - y
+    magnitude = :math.sqrt(dx * dx + dy * dy)
+
+    if magnitude <= 1.0e-6 do
+      {0.0, 0.0}
+    else
+      {dx / magnitude, dy / magnitude}
+    end
+  end
+
+  defp movement_flags({x, y}) when abs(x) <= 1.0e-6 and abs(y) <= 1.0e-6, do: 0b10
+  defp movement_flags(_direction), do: 0
+
+  defp reached_waypoint?(nil, _target), do: false
+
+  defp reached_waypoint?({x, y, _z}, {tx, ty, _tz}) do
+    dx = tx - x
+    dy = ty - y
+    :math.sqrt(dx * dx + dy * dy) <= 24.0
   end
 
   defp resolve_host(host) when is_binary(host) do

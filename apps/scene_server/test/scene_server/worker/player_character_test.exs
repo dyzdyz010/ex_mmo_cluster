@@ -1,6 +1,8 @@
 defmodule SceneServer.PlayerCharacterTest do
   use ExUnit.Case, async: false
 
+  alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
+
   defmodule FakeAoi do
     use GenServer
 
@@ -20,34 +22,64 @@ defmodule SceneServer.PlayerCharacterTest do
     end
   end
 
-  test "zero-velocity movement broadcasts the authoritative stop location" do
+  test "movement_input returns authoritative ack and broadcasts remote snapshot" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
-    location = {4.0, 5.0, 6.0}
     state = movement_state(aoi_ref)
 
-    assert {:reply, {:ok, ""}, %{last_location: ^location}} =
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:reply, {:ok, ack}, next_state} =
              SceneServer.PlayerCharacter.handle_call(
-               {:movement, 100, location, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+               {:movement_input, frame},
                {self(), make_ref()},
                state
              )
 
-    assert_receive {:aoi_cast, {:self_move, ^location}}
+    assert ack.ack_seq == 1
+    assert ack.auth_tick == 1
+    assert next_state.last_input_seq == 1
+    assert next_state.last_client_tick == 1
+    assert next_state.last_location == ack.position
+
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = snapshot}}
+    assert snapshot.cid == 42
+    assert snapshot.server_tick == 1
+    assert snapshot.position == ack.position
   end
 
-  test "non-zero velocity movement does not emit an immediate stop broadcast" do
+  test "stale movement_input is rejected before touching AOI" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
-    location = {7.0, 8.0, 9.0}
-    state = movement_state(aoi_ref)
 
-    assert {:reply, {:ok, ""}, %{last_location: ^location}} =
+    state =
+      movement_state(aoi_ref)
+      |> Map.put(:last_input_seq, 5)
+      |> Map.put(:last_client_tick, 5)
+
+    frame = %InputFrame{
+      seq: 5,
+      client_tick: 6,
+      dt_ms: 100,
+      input_dir: {0.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 2
+    }
+
+    assert {:reply, {:error, :stale_input_seq}, returned_state} =
              SceneServer.PlayerCharacter.handle_call(
-               {:movement, 100, location, {15.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+               {:movement_input, frame},
                {self(), make_ref()},
                state
              )
 
-    refute_receive {:aoi_cast, {:self_move, _location}}, 50
+    assert returned_state.last_input_seq == 5
+    refute_receive {:aoi_cast, _message}, 50
   end
 
   defp movement_state(aoi_ref) do
@@ -70,7 +102,12 @@ defmodule SceneServer.PlayerCharacterTest do
       aoi_ref: aoi_ref,
       character_data_ref: character_data_ref,
       physys_ref: physys_ref,
-      last_location: location
+      last_location: location,
+      movement_state: SceneServer.Movement.State.idle(location),
+      movement_profile: SceneServer.Movement.Profile.default(),
+      last_input_seq: 0,
+      last_client_tick: 0,
+      last_server_input_at_ms: System.monotonic_time(:millisecond) - 100
     }
   end
 end

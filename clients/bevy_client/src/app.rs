@@ -1,9 +1,9 @@
 use crate::{
     config::ClientConfig,
-    movement::next_movement_command,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+    world::remote_player::RemotePlayerState,
 };
 use bevy::{
     app::AppExit,
@@ -38,7 +38,7 @@ struct WorldState {
     scene_joined: bool,
     local_cid: i64,
     local_position: Option<Vec3>,
-    remote_players: HashMap<i64, Vec3>,
+    remote_players: HashMap<i64, RemotePlayerState>,
     chat_log: VecDeque<String>,
     logs: VecDeque<String>,
     last_rtt_ms: Option<f64>,
@@ -216,6 +216,7 @@ fn spawn_grid(commands: &mut Commands) {
 fn poll_network_events(
     mut commands: Commands,
     bridge: Res<NetworkBridge>,
+    time: Res<Time>,
     mut world_state: ResMut<WorldState>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
 ) {
@@ -250,21 +251,27 @@ fn poll_network_events(
             }
             NetworkEvent::PlayerEnter { cid, location } => {
                 if cid != world_state.local_cid {
-                    world_state
-                        .remote_players
-                        .insert(cid, net_to_world(location));
+                    world_state.remote_players.insert(
+                        cid,
+                        RemotePlayerState::seeded(
+                            cid,
+                            net_to_world(location),
+                            time.elapsed_secs_f64(),
+                        ),
+                    );
                 }
                 push_line(&mut world_state.logs, format!("player {cid} entered AOI"));
             }
             NetworkEvent::PlayerMove {
-                cid,
-                location,
+                snapshot,
                 transport,
             } => {
+                let cid = snapshot.cid;
                 if cid != world_state.local_cid {
-                    world_state
-                        .remote_players
-                        .insert(cid, net_to_world(location));
+                    world_state.remote_players.insert(
+                        cid,
+                        RemotePlayerState::from_snapshot(snapshot, time.elapsed_secs_f64()),
+                    );
                 }
                 world_state.last_remote_move_transport = Some(transport);
             }
@@ -465,7 +472,7 @@ fn movement_sender(
     time: Res<Time>,
     bridge: Res<NetworkBridge>,
     config: Res<ClientConfig>,
-    mut world_state: ResMut<WorldState>,
+    world_state: Res<WorldState>,
     movement_intent: Res<MovementIntent>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
     mut tick: ResMut<MovementTick>,
@@ -478,34 +485,25 @@ fn movement_sender(
         return;
     }
 
-    let Some(position) = world_state.local_position else {
-        return;
-    };
-
     let direction = movement_intent.direction;
-
-    let Some((desired_position, velocity, stop_sent)) = next_movement_command(
-        position,
-        direction,
-        config.movement_speed,
-        config.movement_interval_ms,
-        movement_dispatch.stop_sent,
-    ) else {
-        return;
+    let movement_flags = if direction.length_squared() == 0.0 {
+        0b10
+    } else {
+        0
     };
 
-    bridge.send(NetworkCommand::Movement {
-        location: [
-            desired_position.x as f64,
-            desired_position.y as f64,
-            desired_position.z as f64,
-        ],
-        velocity,
-        acceleration: [0.0, 0.0, 0.0],
+    if direction.length_squared() == 0.0 && movement_dispatch.stop_sent {
+        return;
+    }
+
+    bridge.send(NetworkCommand::MoveInputSample {
+        input_dir: [direction.x, direction.y],
+        dt_ms: config.movement_interval_ms as u16,
+        speed_scale: 1.0,
+        movement_flags,
     });
 
-    movement_dispatch.stop_sent = stop_sent;
-    world_state.local_position = Some(desired_position);
+    movement_dispatch.stop_sent = direction.length_squared() == 0.0;
 }
 
 fn poll_stdio_commands(
@@ -566,7 +564,8 @@ fn poll_stdio_commands(
                 let mut players = world_state
                     .remote_players
                     .iter()
-                    .map(|(cid, position)| {
+                    .map(|(cid, player)| {
+                        let position = player.latest_position();
                         format!(
                             "{cid}:{:.1},{:.1},{:.1}",
                             position.x, position.y, position.z
@@ -660,7 +659,12 @@ fn sync_player_visuals(
         entities_by_cid.insert(visual.cid, (entity, transform.translation));
     }
 
-    let mut desired = world_state.remote_players.clone();
+    let now_secs = time.elapsed_secs_f64();
+    let mut desired = world_state
+        .remote_players
+        .iter()
+        .map(|(&cid, state)| (cid, state.sample_position(now_secs)))
+        .collect::<HashMap<_, _>>();
     if let Some(local) = world_state.local_position {
         desired.insert(world_state.local_cid, local);
     }

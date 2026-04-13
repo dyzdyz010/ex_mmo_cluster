@@ -1,6 +1,5 @@
 use crate::{
     config::ClientConfig,
-    movement::next_movement_command,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
@@ -220,25 +219,12 @@ pub fn run_stdio(
                     );
                 }
                 ClientStdioCommand::Stop => {
-                    if let Some(position) = state.local_position
-                        && let Some((desired_position, velocity, _)) = next_movement_command(
-                            position,
-                            Vec2::ZERO,
-                            config.movement_speed,
-                            config.movement_interval_ms,
-                            false,
-                        )
-                    {
-                        bridge.send(NetworkCommand::Movement {
-                            location: [
-                                desired_position.x as f64,
-                                desired_position.y as f64,
-                                desired_position.z as f64,
-                            ],
-                            velocity,
-                            acceleration: [0.0, 0.0, 0.0],
-                        });
-                    }
+                    bridge.send(NetworkCommand::MoveInputSample {
+                        input_dir: [0.0, 0.0],
+                        dt_ms: config.movement_interval_ms as u16,
+                        speed_scale: 1.0,
+                        movement_flags: 0b10,
+                    });
                     emit_stdio("stop", &[]);
                 }
                 ClientStdioCommand::Quit => {
@@ -359,7 +345,7 @@ fn run_move(
     label: &str,
     duration_ms: u64,
 ) -> Result<(), String> {
-    let Some(mut predicted_position) = state.local_position else {
+    let Some(start_position) = state.local_position else {
         return Err("cannot execute headless move before local position is known".to_string());
     };
 
@@ -369,62 +355,29 @@ fn run_move(
         &[
             ("direction", label.to_string()),
             ("duration_ms", duration_ms.to_string()),
-            ("start_position", format_vec3(predicted_position)),
+            ("start_position", format_vec3(start_position)),
         ],
     );
 
     let deadline = Instant::now() + Duration::from_millis(duration_ms);
-    let mut stop_sent = true;
 
     while Instant::now() < deadline {
         drain_events_once(bridge, observer, state)?;
-
-        let Some((desired_position, velocity, new_stop_sent)) = next_movement_command(
-            predicted_position,
-            direction,
-            config.movement_speed,
-            config.movement_interval_ms,
-            stop_sent,
-        ) else {
-            break;
-        };
-
-        bridge.send(NetworkCommand::Movement {
-            location: [
-                desired_position.x as f64,
-                desired_position.y as f64,
-                desired_position.z as f64,
-            ],
-            velocity,
-            acceleration: [0.0, 0.0, 0.0],
+        bridge.send(NetworkCommand::MoveInputSample {
+            input_dir: [direction.x, direction.y],
+            dt_ms: config.movement_interval_ms as u16,
+            speed_scale: 1.0,
+            movement_flags: 0,
         });
-
-        predicted_position = desired_position;
-        state.local_position = Some(desired_position);
-        stop_sent = new_stop_sent;
         thread::sleep(Duration::from_millis(config.movement_interval_ms));
     }
 
-    if let Some((desired_position, velocity, new_stop_sent)) = next_movement_command(
-        predicted_position,
-        Vec2::ZERO,
-        config.movement_speed,
-        config.movement_interval_ms,
-        stop_sent,
-    ) {
-        bridge.send(NetworkCommand::Movement {
-            location: [
-                desired_position.x as f64,
-                desired_position.y as f64,
-                desired_position.z as f64,
-            ],
-            velocity,
-            acceleration: [0.0, 0.0, 0.0],
-        });
-
-        state.local_position = Some(desired_position);
-        let _ = new_stop_sent;
-    }
+    bridge.send(NetworkCommand::MoveInputSample {
+        input_dir: [0.0, 0.0],
+        dt_ms: config.movement_interval_ms as u16,
+        speed_scale: 1.0,
+        movement_flags: 0b10,
+    });
 
     observer.emit(
         "headless",
@@ -506,9 +459,14 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         }
         NetworkEvent::PlayerMove {
             transport,
-            cid,
-            location,
+            snapshot,
         } => {
+            let cid = snapshot.cid;
+            let location = [
+                snapshot.position.x as f64,
+                snapshot.position.y as f64,
+                snapshot.position.z as f64,
+            ];
             state.remote_players.insert(cid, vec3_from_net(location));
             state.last_remote_transport = Some(transport);
             observer.emit(
@@ -516,6 +474,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
                 "remote_move_seen",
                 &[
                     ("cid", cid.to_string()),
+                    ("server_tick", snapshot.server_tick.to_string()),
                     ("transport", transport.label().to_string()),
                     ("location", format_net_vec(location)),
                 ],

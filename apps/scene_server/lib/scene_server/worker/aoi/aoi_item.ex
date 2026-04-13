@@ -4,6 +4,7 @@ defmodule SceneServer.Aoi.AoiItem do
   require Logger
 
   # alias SceneServer.Native.CoordinateSystem
+  alias SceneServer.Movement.RemoteSnapshot
   alias SceneServer.Native.Octree
 
   @type vector :: {float(), float(), float()}
@@ -32,7 +33,6 @@ defmodule SceneServer.Aoi.AoiItem do
        system_ref: system,
        item_ref: nil,
        location: location,
-       movement_sequence: 0,
        subscribees: [],
        interest_radius: 500,
        aoi_timer: nil
@@ -80,10 +80,10 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   def handle_cast(
-        {:player_move, cid, location, sequence},
+        {:player_move, %RemoteSnapshot{} = snapshot},
         %{connection_pid: connection_pid} = state
       ) do
-    GenServer.cast(connection_pid, {:player_move, cid, location, sequence})
+    GenServer.cast(connection_pid, {:player_move, snapshot})
 
     {:noreply, state}
   end
@@ -128,21 +128,18 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   def handle_cast(
-        {:self_move, location},
+        {:self_move, %RemoteSnapshot{} = snapshot},
         %{
           cid: cid,
           system_ref: system,
           item_ref: item,
-          subscribees: subscribees,
-          movement_sequence: movement_sequence
+          subscribees: subscribees
         } = state
       ) do
-    {:ok, item_ref} = replace_item(cid, location, system, item)
-    sequence = movement_sequence + 1
-    # Logger.debug("广播")
-    broadcast_action_player_move(cid, location, sequence, subscribees)
+    {:ok, item_ref} = replace_item(cid, snapshot.position, system, item)
+    broadcast_action_player_move(snapshot, subscribees)
 
-    {:noreply, %{state | item_ref: item_ref, location: location, movement_sequence: sequence}}
+    {:noreply, %{state | item_ref: item_ref, location: snapshot.position}}
   end
 
   # @impl true
@@ -384,13 +381,11 @@ defmodule SceneServer.Aoi.AoiItem do
     |> Enum.map(&Task.await(&1))
   end
 
-  @spec broadcast_action_player_move(integer(), vector(), non_neg_integer(), [pid()]) :: any()
-  defp broadcast_action_player_move(cid, location, sequence, pids) do
+  @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid()]) :: any()
+  defp broadcast_action_player_move(%RemoteSnapshot{} = snapshot, pids) do
     # Logger.debug("待广播移动玩家：#{inspect(pids, pretty: true)}")
     pids
-    |> Enum.map(
-      &Task.async(fn -> GenServer.cast(&1, {:player_move, cid, location, sequence}) end)
-    )
+    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_move, snapshot}) end))
     |> Enum.map(&Task.await(&1))
   end
 

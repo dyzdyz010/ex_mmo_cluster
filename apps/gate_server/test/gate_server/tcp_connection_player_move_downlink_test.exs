@@ -22,14 +22,25 @@ defmodule GateServer.TcpConnectionPlayerMoveDownlinkTest do
     {:ok, client: client, pid: pid}
   end
 
-  test "player_move downlink encodes the movement sequence on tcp fallback", %{
+  test "player_move downlink encodes the remote snapshot on tcp fallback", %{
     client: client,
     pid: pid
   } do
-    GenServer.cast(pid, {:player_move, 77, {11.0, 12.0, 13.0}, 9})
+    snapshot = %SceneServer.Movement.RemoteSnapshot{
+      cid: 77,
+      server_tick: 9,
+      position: {11.0, 12.0, 13.0},
+      velocity: {1.0, 2.0, 3.0},
+      acceleration: {0.1, 0.2, 0.3},
+      movement_mode: :grounded
+    }
+
+    GenServer.cast(pid, {:player_move, snapshot})
 
     assert {:ok,
-            <<0x83, 77::64-big, 9::64-big, 11.0::float-64-big, 12.0::float-64-big,
-              13.0::float-64-big>>} = :gen_tcp.recv(client, 0, 500)
+            <<0x83, 77::64-big, 9::32-big, 11.0::float-64-big, 12.0::float-64-big,
+              13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+              0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>} =
+             :gen_tcp.recv(client, 0, 500)
   end
 end

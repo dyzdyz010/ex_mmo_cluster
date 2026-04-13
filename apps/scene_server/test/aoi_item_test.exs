@@ -2,6 +2,7 @@ defmodule SceneServer.AoiItemTest do
   use ExUnit.Case, async: false
 
   alias SceneServer.AoiManager
+  alias SceneServer.Movement.RemoteSnapshot
 
   setup do
     ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
@@ -42,7 +43,19 @@ defmodule SceneServer.AoiItemTest do
     refute_receive {:"$gen_cast", {:player_enter, ^other_cid, _location}}, 150
 
     initial_item_ref = :sys.get_state(mover).item_ref
-    GenServer.cast(mover, {:self_move, {100.0, 0.0, 0.0}})
+
+    GenServer.cast(
+      mover,
+      {:self_move,
+       %RemoteSnapshot{
+         cid: other_cid,
+         server_tick: 1,
+         position: {100.0, 0.0, 0.0},
+         velocity: {0.0, 0.0, 0.0},
+         acceleration: {0.0, 0.0, 0.0},
+         movement_mode: :grounded
+       }}
+    )
 
     wait_until(fn ->
       state = :sys.get_state(mover)
@@ -54,7 +67,18 @@ defmodule SceneServer.AoiItemTest do
     assert_receive {:"$gen_cast", {:player_enter, ^other_cid, enter_location}}, 300
     assert enter_location == {100.0, 0.0, 0.0}
 
-    GenServer.cast(mover, {:self_move, {900.0, 0.0, 0.0}})
+    GenServer.cast(
+      mover,
+      {:self_move,
+       %RemoteSnapshot{
+         cid: other_cid,
+         server_tick: 2,
+         position: {900.0, 0.0, 0.0},
+         velocity: {0.0, 0.0, 0.0},
+         acceleration: {0.0, 0.0, 0.0},
+         movement_mode: :grounded
+       }}
+    )
 
     wait_until(fn ->
       state = :sys.get_state(mover)

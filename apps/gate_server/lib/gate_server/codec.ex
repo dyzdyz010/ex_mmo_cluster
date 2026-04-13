@@ -247,11 +247,14 @@ defmodule GateServer.Codec do
     {:ok, <<@msg_player_leave, cid::64-big>>}
   end
 
-  # ── Broadcast: player move ──
-  def encode({:player_move, cid, sequence, {x, y, z}}) do
+  # ── Broadcast: player move snapshot ──
+  def encode(
+        {:player_move, cid, server_tick, {x, y, z}, {vx, vy, vz}, {ax, ay, az}, movement_mode}
+      ) do
     {:ok,
-     <<@msg_player_move, cid::64-big, sequence::64-big, x::float-64-big, y::float-64-big,
-       z::float-64-big>>}
+     <<@msg_player_move, cid::64-big, server_tick::32-big, x::float-64-big, y::float-64-big,
+       z::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
+       ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode)>>}
   end
 
   # ── TimeSync reply ──

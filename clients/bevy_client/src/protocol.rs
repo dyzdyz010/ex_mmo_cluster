@@ -50,7 +50,6 @@ pub enum ServerMessage {
     Result {
         packet_id: u64,
         ok: bool,
-        movement: Option<(i64, NetVec3)>,
     },
     MovementAck {
         ack_seq: u32,
@@ -76,8 +75,11 @@ pub enum ServerMessage {
     },
     PlayerMove {
         cid: i64,
-        sequence: u64,
+        server_tick: u32,
         location: NetVec3,
+        velocity: NetVec3,
+        acceleration: NetVec3,
+        movement_mode: u8,
     },
     TimeSyncReply {
         packet_id: u64,
@@ -158,8 +160,11 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
         }),
         0x83 => Ok(ServerMessage::PlayerMove {
             cid: read_i64(body, 0)?,
-            sequence: read_u64(body, 8)?,
-            location: read_vec3(body, 16)?,
+            server_tick: read_u32(body, 8)?,
+            location: read_vec3(body, 12)?,
+            velocity: read_vec3(body, 36)?,
+            acceleration: read_vec3(body, 60)?,
+            movement_mode: read_u8(body, 84)?,
         }),
         0x84 => {
             let packet_id = read_u64(body, 0)?;
@@ -329,12 +334,6 @@ fn decode_result(body: &[u8]) -> Result<ServerMessage, ProtocolError> {
         9 => Ok(ServerMessage::Result {
             packet_id: read_u64(body, 0)?,
             ok: read_u8(body, 8)? == 0,
-            movement: None,
-        }),
-        41 => Ok(ServerMessage::Result {
-            packet_id: read_u64(body, 0)?,
-            ok: read_u8(body, 8)? == 0,
-            movement: Some((read_i64(body, 9)?, read_vec3(body, 17)?)),
         }),
         other => Err(ProtocolError(format!(
             "unexpected result body length: {other}"
@@ -522,23 +521,6 @@ mod tests {
     }
 
     #[test]
-    fn decodes_movement_result_with_cid_and_location() {
-        let payload = vec![
-            0x80, 0, 0, 0, 0, 0, 0, 0, 21, 0x00, 0, 0, 0, 0, 0, 0, 0, 42, 0x3f, 0xf0, 0, 0, 0, 0,
-            0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0,
-        ];
-
-        assert_eq!(
-            decode_server_payload(&payload).unwrap(),
-            ServerMessage::Result {
-                packet_id: 21,
-                ok: true,
-                movement: Some((42, [1.0, 2.0, 3.0])),
-            }
-        );
-    }
-
-    #[test]
     fn decodes_movement_ack() {
         let payload = {
             let mut bytes = vec![0x8B];
@@ -575,18 +557,24 @@ mod tests {
     }
 
     #[test]
-    fn decodes_player_move_with_sequence() {
+    fn decodes_player_move_snapshot() {
         let payload = vec![
-            0x83, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 7, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0,
-            0x40, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0,
+            0x83, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 7, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0,
+            0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0, 0x40, 0x04, 0,
+            0, 0, 0, 0, 0, 0x40, 0x0c, 0, 0, 0, 0, 0, 0, 0x3f, 0xb9, 0x99, 0x99, 0x99, 0x99, 0x99,
+            0x9a, 0x3f, 0xc9, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a, 0x3f, 0xd3, 0x33, 0x33, 0x33,
+            0x33, 0x33, 0x33, 1,
         ];
 
         assert_eq!(
             decode_server_payload(&payload).unwrap(),
             ServerMessage::PlayerMove {
                 cid: 42,
-                sequence: 7,
+                server_tick: 7,
                 location: [1.0, 2.0, 3.0],
+                velocity: [1.5, 2.5, 3.5],
+                acceleration: [0.1, 0.2, 0.3],
+                movement_mode: 1,
             }
         );
     }

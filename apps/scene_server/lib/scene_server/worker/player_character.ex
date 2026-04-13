@@ -4,12 +4,11 @@ defmodule SceneServer.PlayerCharacter do
   require Logger
 
   alias SceneServer.AoiManager
-  alias SceneServer.Movement.{Engine, InputFrame, Profile, State}
+  alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   @default_location {1_000.0, 1_000.0, 90.0}
 
-  @movement_tick_interval 100
   @pulse_skill_id 1
   @skill_cooldown_ms 750
   @lock_retry_attempts 5
@@ -49,9 +48,7 @@ defmodule SceneServer.PlayerCharacter do
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0,
-       skill_casts: %{},
-       #  Timers
-       movement_timer: nil
+       skill_casts: %{}
      }, {:continue, {:load, client_timestamp}}}
   end
 
@@ -66,15 +63,12 @@ defmodule SceneServer.PlayerCharacter do
          {:ok, cd_ref} <-
            new_character_data_with_retry(cid, name, location, @default_dev_attrs, physys_ref),
          {:ok, aoi_ref} <- enter_scene(cid, client_timestamp, location, connection_pid) do
-      movement_timer = make_movement_timer()
-
       {:noreply,
        %{
          state
          | physys_ref: physys_ref,
            aoi_ref: aoi_ref,
-           character_data_ref: cd_ref,
-           movement_timer: movement_timer
+           character_data_ref: cd_ref
        }}
     else
       {:error, reason} ->
@@ -188,7 +182,7 @@ defmodule SceneServer.PlayerCharacter do
                next_state.acceleration,
                physys_ref
              ) do
-        GenServer.cast(aoi_ref, {:self_move, next_state.position})
+        GenServer.cast(aoi_ref, {:self_move, RemoteSnapshot.from_state(cid, next_state)})
 
         {:reply, {:ok, ack},
          %{
@@ -207,54 +201,6 @@ defmodule SceneServer.PlayerCharacter do
     else
       {:error, reason} ->
         SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  @impl true
-  def handle_call(
-        {:movement, _client_timestamp, location, velocity, acceleration},
-        _from,
-        %{
-          aoi_ref: aoi_ref,
-          character_data_ref: cd_ref,
-          physys_ref: physys_ref,
-          last_location: last_location
-        } = state
-      ) do
-    with {:ok, current_location} <-
-           get_character_location_with_retry(cd_ref, physys_ref, last_location),
-         :ok <-
-           update_character_movement_with_retry(
-             cd_ref,
-             location,
-             velocity,
-             acceleration,
-             physys_ref
-           ),
-         {:ok, authoritative_location} <-
-           get_character_location_with_retry(cd_ref, physys_ref, location) do
-      SceneServer.CliObserve.emit("player_movement_received", fn ->
-        %{
-          cid: state.cid,
-          current_location: current_location,
-          requested_location: location,
-          velocity: velocity,
-          acceleration: acceleration,
-          authoritative_location: authoritative_location
-        }
-      end)
-
-      {x, y, z} = location
-      {ox, oy, oz} = current_location
-      Logger.debug("位置误差：(#{ox - x}, #{oy - y}, #{oz - z})")
-
-      maybe_broadcast_stop(aoi_ref, authoritative_location, velocity)
-
-      {:reply, {:ok, ""}, %{state | last_location: authoritative_location}}
-    else
-      {:error, reason} ->
-        SceneServer.CliObserve.emit("player_movement_error", %{cid: state.cid, reason: reason})
         {:reply, {:error, reason}, state}
     end
   end
@@ -307,12 +253,8 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def terminate(reason, %{aoi_ref: aoi_item, cid: cid, movement_timer: movement_timer}) do
+  def terminate(reason, %{aoi_ref: aoi_item, cid: cid}) do
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
-
-    if movement_timer != nil do
-      Process.cancel_timer(movement_timer)
-    end
 
     if is_pid(aoi_item) and Process.alive?(aoi_item) do
       {:ok, _} = GenServer.call(aoi_item, :exit)
@@ -330,16 +272,6 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
-  # Tick functions ##########################################################
-
-  @impl true
-  def handle_info(
-        :movement_tick,
-        state
-      ) do
-    {:noreply, %{state | movement_timer: make_movement_timer()}}
-  end
-
   defp enter_scene(cid, client_timestamp, location, connection_pid) do
     {:ok, aoi_ref} =
       AoiManager.add_aoi_item(cid, client_timestamp, location, connection_pid, self())
@@ -347,10 +279,6 @@ defmodule SceneServer.PlayerCharacter do
     Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
 
     {:ok, aoi_ref}
-  end
-
-  defp make_movement_timer() do
-    Process.send_after(self(), :movement_tick, @movement_tick_interval)
   end
 
   defp validate_skill(@pulse_skill_id), do: :ok
@@ -363,15 +291,6 @@ defmodule SceneServer.PlayerCharacter do
       _last_cast -> {:error, :skill_cooldown}
     end
   end
-
-  defp maybe_broadcast_stop(aoi_ref, location, velocity) do
-    if zero_velocity?(velocity) do
-      GenServer.cast(aoi_ref, {:self_move, location})
-    end
-  end
-
-  defp zero_velocity?({x, y, z}) when x == 0.0 and y == 0.0 and z == 0.0, do: true
-  defp zero_velocity?(_velocity), do: false
 
   defp normalize_character_profile(cid, %{} = profile) do
     %{
@@ -457,7 +376,7 @@ defmodule SceneServer.PlayerCharacter do
     min(max(delta_ms, 1), fixed_dt_ms)
   end
 
-  defp clamp_speed_scale(scale, max_scale) when scale < 0.0, do: 0.0
+  defp clamp_speed_scale(scale, _max_scale) when scale < 0.0, do: 0.0
   defp clamp_speed_scale(scale, max_scale) when scale > max_scale, do: max_scale
   defp clamp_speed_scale(scale, _max_scale), do: scale
 

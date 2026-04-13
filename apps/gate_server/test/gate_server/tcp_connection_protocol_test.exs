@@ -78,12 +78,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
 
     @impl true
-    def handle_call({:movement, _timestamp, location, _velocity, _acceleration}, _from, state) do
-      authoritative_location = state.movement_reply_location || location
-      {:reply, {:ok, authoritative_location}, %{state | location: authoritative_location}}
-    end
-
-    @impl true
     def handle_call({:chat_say, cid, username, text}, _from, state) do
       if state.notify, do: send(state.notify, {:chat_say, cid, username, text})
       {:reply, {:ok, :sent}, state}
@@ -607,7 +601,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     :gen_udp.close(udp_client)
   end
 
-  test "attached udp peer can send movement uplink and receive movement_result ack", %{
+  test "attached udp peer can send movement uplink and receive movement_ack", %{
     client: client
   } do
     insert_account_and_character("tester", 42)
@@ -694,12 +688,22 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, {{127, 0, 0, 1}, _port, <<0x88, 123::64-big, 0x00>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
-    GenServer.cast(pid, {:player_move, 77, {11.0, 12.0, 13.0}, 9})
+    snapshot = %SceneServer.Movement.RemoteSnapshot{
+      cid: 77,
+      server_tick: 9,
+      position: {11.0, 12.0, 13.0},
+      velocity: {1.0, 2.0, 3.0},
+      acceleration: {0.1, 0.2, 0.3},
+      movement_mode: :grounded
+    }
+
+    GenServer.cast(pid, {:player_move, snapshot})
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x83, 77::64-big, 9::64-big, 11.0::float-64-big, 12.0::float-64-big,
-               13.0::float-64-big>>}} =
+             <<0x83, 77::64-big, 9::32-big, 11.0::float-64-big, 12.0::float-64-big,
+               13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
@@ -771,12 +775,24 @@ defmodule GateServer.TcpConnectionProtocolTest do
       )
     end)
 
-    GenServer.cast(pid, {:player_move, 77, {21.0, 22.0, 23.0}, 10})
+    GenServer.cast(
+      pid,
+      {:player_move,
+       %SceneServer.Movement.RemoteSnapshot{
+         cid: 77,
+         server_tick: 10,
+         position: {21.0, 22.0, 23.0},
+         velocity: {1.0, 0.0, 0.0},
+         acceleration: {0.0, 0.0, 0.0},
+         movement_mode: :grounded
+       }}
+    )
 
     assert {:ok,
             {{127, 0, 0, 1}, ^port2,
-             <<0x83, 77::64-big, 10::64-big, 21.0::float-64-big, 22.0::float-64-big,
-               23.0::float-64-big>>}} =
+             <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
+               23.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
+               0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
@@ -824,11 +840,23 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert nil == GateServer.FastLaneRegistry.session_for_connection(pid)
     wait_until(fn -> is_nil(:sys.get_state(pid).udp_peer) end)
 
-    GenServer.cast(pid, {:player_move, 88, {31.0, 32.0, 33.0}, 3})
+    GenServer.cast(
+      pid,
+      {:player_move,
+       %SceneServer.Movement.RemoteSnapshot{
+         cid: 88,
+         server_tick: 3,
+         position: {31.0, 32.0, 33.0},
+         velocity: {0.0, 1.0, 0.0},
+         acceleration: {0.0, 0.0, 0.0},
+         movement_mode: :grounded
+       }}
+    )
 
     assert {:ok,
-            <<0x83, 88::64-big, 3::64-big, 31.0::float-64-big, 32.0::float-64-big,
-              33.0::float-64-big>>} =
+            <<0x83, 88::64-big, 3::32-big, 31.0::float-64-big, 32.0::float-64-big,
+              33.0::float-64-big, 0.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big,
+              0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0::8>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
