@@ -70,6 +70,7 @@ defmodule Demo.Runner do
     if Keyword.get(opts, :dry_run, false) do
       {:ok, %{scenario: scenario, files: files, mode: :dry_run}}
     else
+      start_npcs!()
       start_bots!(scenario)
 
       Mix.shell().info(
@@ -169,6 +170,22 @@ defmodule Demo.Runner do
     Enum.map(scenario.bots, fn bot ->
       {:ok, _pid} = Demo.Bot.start_link(actor: bot, gate_addr: scenario.gate_addr, notify: self())
     end)
+  end
+
+  defp start_npcs! do
+    {:ok, _pid} =
+      GenServer.call(
+        SceneServer.NpcManager,
+        {:spawn_npc, 90_001,
+         [
+           name: "Training Slime",
+           spawn_position: {1_064.0, 1_004.0, 90.0},
+           aggro_radius: 220.0,
+           attack_range: 96.0,
+           leash_radius: 320.0
+         ]},
+        5_000
+      )
   end
 
   defp await_smoke_until!(deadline) do

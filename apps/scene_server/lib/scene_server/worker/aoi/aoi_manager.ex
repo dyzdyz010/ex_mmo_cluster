@@ -14,10 +14,10 @@ defmodule SceneServer.AoiManager do
 
   @spec add_aoi_item(integer(), integer(), {float(), float(), float()}, pid(), pid()) ::
           {:ok, pid()} | {:err, any()}
-  def add_aoi_item(cid, client_timestamp, location, connection_pid, player_pid) do
+  def add_aoi_item(cid, client_timestamp, location, connection_pid, actor_pid) do
     GenServer.call(
       __MODULE__,
-      {:add_aoi_item, cid, client_timestamp, location, connection_pid, player_pid}
+      {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid}
     )
   end
 
@@ -31,9 +31,9 @@ defmodule SceneServer.AoiManager do
     GenServer.call(__MODULE__, {:get_items_with_cids, cids})
   end
 
-  @spec get_nearby_player_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
-  def get_nearby_player_pids(location, radius, exclude_cids \\ []) do
-    GenServer.call(__MODULE__, {:get_nearby_player_pids, location, radius, exclude_cids})
+  @spec get_nearby_actor_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
+  def get_nearby_actor_pids(location, radius, exclude_cids \\ []) do
+    GenServer.call(__MODULE__, {:get_nearby_actor_pids, location, radius, exclude_cids})
   end
 
   @impl true
@@ -45,7 +45,7 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def handle_call(
-        {:add_aoi_item, cid, client_timestamp, location, connection_pid, player_pid},
+        {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid},
         _from,
         %{coordinate_system: system, aois: aois} = state
       ) do
@@ -53,10 +53,10 @@ defmodule SceneServer.AoiManager do
       DynamicSupervisor.start_child(
         SceneServer.AoiItemSup,
         {SceneServer.Aoi.AoiItem,
-         {cid, client_timestamp, location, connection_pid, player_pid, system}}
+         {cid, client_timestamp, location, connection_pid, actor_pid, system}}
       )
 
-    new_aois = aois |> Map.put_new(cid, %{aoi_pid: apid, player_pid: player_pid})
+    new_aois = aois |> Map.put_new(cid, %{aoi_pid: apid, actor_pid: actor_pid})
 
     {:reply, {:ok, apid}, %{state | aois: new_aois}}
   end
@@ -77,25 +77,24 @@ defmodule SceneServer.AoiManager do
 
   @impl true
   def handle_call(
-        {:get_nearby_player_pids, location, radius, exclude_cids},
+        {:get_nearby_actor_pids, location, radius, exclude_cids},
         _from,
         %{coordinate_system: system, aois: aois} = state
       ) do
     cids = Octree.get_in_bound(system, location, {radius, radius, radius})
 
-    player_pids =
+    actor_pids =
       cids
       |> Enum.reject(&(&1 in exclude_cids))
       |> Enum.map(fn cid ->
         case Map.get(aois, cid) do
-          %{player_pid: player_pid} -> player_pid
+          %{actor_pid: actor_pid} -> actor_pid
           _ -> nil
         end
       end)
       |> Enum.reject(&is_nil/1)
 
-    # Logger.debug("Items: #{inspect(items, pretty: true)}")
-    {:reply, player_pids, state}
+    {:reply, actor_pids, state}
   end
 
   # Internal functions

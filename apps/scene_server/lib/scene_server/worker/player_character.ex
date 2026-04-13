@@ -115,6 +115,7 @@ defmodule SceneServer.PlayerCharacter do
   @impl true
   def handle_call(:get_state_summary, _from, state) do
     summary = %{
+      kind: :player,
       cid: state.cid,
       position: state.last_location,
       hp: state.combat_state.hp,
@@ -567,7 +568,7 @@ defmodule SceneServer.PlayerCharacter do
 
   defp apply_skill_hits(source_cid, %Skill{} = skill, location) do
     source_cid
-    |> Targeting.nearby_player_pids(location, skill.radius)
+    |> Targeting.nearby_combatant_pids(location, skill.radius)
     |> Enum.each(fn player_pid ->
       _ = safe_player_call(player_pid, {:apply_skill_hit, source_cid, skill, location})
     end)
