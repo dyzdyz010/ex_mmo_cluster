@@ -2,8 +2,13 @@ use crate::{
     config::ClientConfig,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
+    presentation::{
+        animation::{animated_scale, animation_state_from_velocity},
+        camera::{desired_camera_target, smooth_camera_translation},
+        smoothing::smooth_translation,
+    },
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
-    world::remote_player::RemotePlayerState,
+    world::remote_player::{RemoteMotionSample, RemotePlayerState},
 };
 use bevy::{
     app::AppExit,
@@ -274,10 +279,14 @@ fn poll_network_events(
             } => {
                 let cid = snapshot.cid;
                 if cid != world_state.local_cid {
-                    world_state.remote_players.insert(
-                        cid,
-                        RemotePlayerState::from_snapshot(snapshot, time.elapsed_secs_f64()),
-                    );
+                    let received_at = time.elapsed_secs_f64();
+                    if let Some(state) = world_state.remote_players.get_mut(&cid) {
+                        state.push_snapshot(snapshot, received_at);
+                    } else {
+                        world_state
+                            .remote_players
+                            .insert(cid, RemotePlayerState::from_snapshot(snapshot, received_at));
+                    }
                 }
                 world_state.last_remote_move_transport = Some(transport);
             }
@@ -575,11 +584,12 @@ fn poll_stdio_commands(
                 );
             }
             ClientStdioCommand::Players => {
+                let now_secs = time.elapsed_secs_f64();
                 let mut players = world_state
                     .remote_players
                     .iter()
                     .map(|(cid, player)| {
-                        let position = player.latest_position();
+                        let position = player.sample_motion(now_secs).position;
                         format!(
                             "{cid}:{:.1},{:.1},{:.1}",
                             position.x, position.y, position.z
@@ -666,33 +676,36 @@ fn sync_player_visuals(
     mut commands: Commands,
     time: Res<Time>,
     world_state: Res<WorldState>,
-    mut existing: Query<(Entity, &PlayerVisual, &mut Transform)>,
+    config: Res<ClientConfig>,
+    mut existing: Query<(Entity, &PlayerVisual, &mut Transform, &mut Sprite)>,
 ) {
-    // TODO(vnext-stage3): move this visual sync logic into a dedicated
-    // presentation module and drive it from an explicit presentation state.
-    // Camera already follows the smoothed local visual, but animation/camera
-    // should eventually read a shared presentation proxy instead of raw
-    // world-state fields.
     let mut entities_by_cid = HashMap::new();
-    for (entity, visual, transform) in &existing {
-        entities_by_cid.insert(visual.cid, (entity, transform.translation));
+    for (entity, visual, _transform, _sprite) in &existing {
+        entities_by_cid.insert(visual.cid, entity);
     }
 
     let now_secs = time.elapsed_secs_f64();
     let mut desired = world_state
         .remote_players
         .iter()
-        .map(|(&cid, state)| (cid, state.sample_position(now_secs)))
+        .map(|(&cid, state)| (cid, state.sample_motion(now_secs)))
         .collect::<HashMap<_, _>>();
     if let Some(local) = world_state.local_position {
-        desired.insert(world_state.local_cid, local);
+        desired.insert(
+            world_state.local_cid,
+            RemoteMotionSample {
+                position: local,
+                velocity: world_state.local_velocity,
+            },
+        );
     }
 
-    for (&cid, &position) in &desired {
-        let target = position + Vec3::new(0.0, 0.0, 1.0);
+    for (&cid, motion) in &desired {
+        let target = motion.position + Vec3::new(0.0, 0.0, 1.0);
+        let animation = animation_state_from_velocity(motion.velocity, config.movement_speed);
 
-        if let Some((entity, _)) = entities_by_cid.remove(&cid) {
-            if let Ok((_entity, _visual, mut transform)) = existing.get_mut(entity) {
+        if let Some(entity) = entities_by_cid.remove(&cid) {
+            if let Ok((_entity, _visual, mut transform, mut sprite)) = existing.get_mut(entity) {
                 transform.translation = smooth_translation(
                     transform.translation,
                     target,
@@ -700,6 +713,14 @@ fn sync_player_visuals(
                     VISUAL_SMOOTHING_SPEED,
                     VISUAL_SNAP_DISTANCE,
                 );
+                transform.scale = animated_scale(transform.scale, animation, time.delta_secs());
+                sprite.color = if cid == world_state.local_cid {
+                    Color::srgb(0.25, 0.95, 0.45)
+                } else if animation.moving {
+                    Color::srgb(0.35, 0.75, 1.0)
+                } else {
+                    Color::srgb(0.3, 0.65, 1.0)
+                };
             }
         } else {
             let color = if cid == world_state.local_cid {
@@ -711,37 +732,20 @@ fn sync_player_visuals(
             commands.spawn((
                 PlayerVisual { cid },
                 Sprite::from_color(color, Vec2::splat(24.0)),
-                Transform::from_translation(target),
+                Transform::from_translation(target).with_scale(animated_scale(
+                    Vec3::ONE,
+                    animation,
+                    time.delta_secs(),
+                )),
             ));
         }
     }
 
-    for (cid, (entity, _translation)) in entities_by_cid {
+    for (cid, entity) in entities_by_cid {
         if cid != world_state.local_cid {
             commands.entity(entity).despawn();
         }
     }
-}
-
-fn smooth_translation(
-    current: Vec3,
-    target: Vec3,
-    delta_secs: f32,
-    smoothing_speed: f32,
-    snap_distance: f32,
-) -> Vec3 {
-    let distance = current.distance(target);
-
-    if distance <= f32::EPSILON {
-        return target;
-    }
-
-    if distance >= snap_distance {
-        return target;
-    }
-
-    let factor = (smoothing_speed * delta_secs).clamp(0.0, 1.0);
-    current.lerp(target, factor)
 }
 
 fn update_skill_pulses(
@@ -850,19 +854,19 @@ fn update_hud_text(
 }
 
 fn camera_follow_local_player(
+    time: Res<Time>,
     world_state: Res<WorldState>,
     visuals: Query<(&PlayerVisual, &Transform), Without<Camera2d>>,
     mut camera: Single<&mut Transform, (With<Camera2d>, Without<PlayerVisual>)>,
 ) {
-    if let Some((_, transform)) = visuals
+    let local_visual = visuals
         .iter()
         .find(|(visual, _transform)| visual.cid == world_state.local_cid)
-    {
-        camera.translation.x = transform.translation.x;
-        camera.translation.y = transform.translation.y;
-    } else if let Some(position) = world_state.local_position {
-        camera.translation.x = position.x;
-        camera.translation.y = position.y;
+        .map(|(_visual, transform)| transform.translation);
+
+    if let Some(target) = desired_camera_target(local_visual, world_state.local_position) {
+        camera.translation =
+            smooth_camera_translation(camera.translation, target, time.delta_secs());
     }
 }
 
@@ -954,28 +958,6 @@ mod tests {
             movement_direction_from_key(&Key::ArrowRight),
             Vec2::new(1.0, 0.0)
         );
-    }
-
-    #[test]
-    fn smooth_translation_moves_toward_target_without_overshoot() {
-        let current = Vec3::new(0.0, 0.0, 0.0);
-        let target = Vec3::new(10.0, 0.0, 0.0);
-
-        let next = smooth_translation(current, target, 1.0 / 60.0, 18.0, 96.0);
-
-        assert!(next.x > current.x);
-        assert!(next.x < target.x);
-        assert_eq!(next.y, 0.0);
-    }
-
-    #[test]
-    fn smooth_translation_snaps_large_corrections() {
-        let current = Vec3::new(0.0, 0.0, 0.0);
-        let target = Vec3::new(200.0, 0.0, 0.0);
-
-        let next = smooth_translation(current, target, 1.0 / 60.0, 18.0, 96.0);
-
-        assert_eq!(next, target);
     }
 
     #[test]

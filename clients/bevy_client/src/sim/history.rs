@@ -34,6 +34,20 @@ impl InputHistory {
             .filter(move |frame| frame.client_tick > tick)
     }
 
+    pub fn frames_after_tick_cloned(&self, tick: u32) -> Vec<MoveInputFrame> {
+        self.frames_after_tick(tick).cloned().collect()
+    }
+
+    pub fn retain_recent(&mut self, max_frames: usize) {
+        while self.frames.len() > max_frames {
+            self.frames.pop_front();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
+
     pub fn len(&self) -> usize {
         self.frames.len()
     }
@@ -68,6 +82,10 @@ impl PredictedHistory {
         while matches!(self.states.back(), Some(state) if state.tick > tick) {
             self.states.pop_back();
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.states.clear();
     }
 }
 

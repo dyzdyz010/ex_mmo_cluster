@@ -630,10 +630,24 @@ impl ClientRuntime {
                 self.last_applied_auth_tick = auth_tick;
 
                 let ack = movement_ack_from_server(&message).expect("movement ack");
+                let reconcile = self.local_prediction.apply_ack(ack);
 
-                let latest_state = self
-                    .local_prediction
-                    .apply_ack(ack)
+                if let Some(result) = &reconcile {
+                    if !matches!(
+                        result.action,
+                        crate::sim::governance::ReplayAction::Accepted
+                    ) {
+                        outcome.push_event(NetworkEvent::Log(format!(
+                            "reconcile action={:?} correction_distance={:.2} replayed_frames={} pending_inputs={}",
+                            result.action,
+                            result.correction_distance,
+                            result.replayed_frames,
+                            result.pending_inputs
+                        )));
+                    }
+                }
+
+                let latest_state = reconcile
                     .map(|result| result.latest_state)
                     .or_else(|| self.local_prediction.current_state().cloned());
 

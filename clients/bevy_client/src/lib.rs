@@ -5,6 +5,7 @@ pub mod input;
 pub mod movement;
 pub mod net;
 pub mod observe;
+pub mod presentation;
 pub mod protocol;
 pub mod protocol_v2;
 pub mod sim;

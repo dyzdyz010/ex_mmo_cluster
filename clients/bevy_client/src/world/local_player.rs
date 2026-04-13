@@ -3,6 +3,7 @@ use bevy::prelude::{Vec2, Vec3};
 use crate::{
     input::commands::MoveInputFrame,
     sim::{
+        governance::{ReplayAction, ReplayGovernance, ReplayGovernanceStats},
         history::{InputHistory, PredictedHistory},
         predictor,
         profile::MovementProfile,
@@ -19,7 +20,8 @@ pub struct LocalPredictionRuntime {
     input_history: InputHistory,
     predicted_history: PredictedHistory,
     profile: MovementProfile,
-    position_error_threshold: f32,
+    governance: ReplayGovernance,
+    governance_stats: ReplayGovernanceStats,
 }
 
 impl Default for LocalPredictionRuntime {
@@ -31,11 +33,8 @@ impl Default for LocalPredictionRuntime {
             input_history: InputHistory::new(128),
             predicted_history: PredictedHistory::new(256),
             profile: MovementProfile::default(),
-            // TODO(vnext-stage3): upgrade this fixed threshold into replay-window governance.
-            // Future work should track correction distance, replayed frame count, and
-            // bounded history watermarks so high-latency sessions can degrade gracefully
-            // instead of relying on a single hardcoded epsilon.
-            position_error_threshold: 0.01,
+            governance: ReplayGovernance::default(),
+            governance_stats: ReplayGovernanceStats::default(),
         }
     }
 }
@@ -46,6 +45,7 @@ impl LocalPredictionRuntime {
         self.next_tick = 1;
         self.input_history = InputHistory::new(128);
         self.predicted_history = PredictedHistory::new(256);
+        self.governance_stats = ReplayGovernanceStats::default();
         if let Some(profile) = profile {
             self.profile = profile;
         }
@@ -61,6 +61,7 @@ impl LocalPredictionRuntime {
         self.predicted_history = PredictedHistory::new(256);
         self.next_seq = 1;
         self.next_tick = 1;
+        self.governance_stats = ReplayGovernanceStats::default();
     }
 
     pub fn build_input_frame(
@@ -99,8 +100,14 @@ impl LocalPredictionRuntime {
             &mut self.input_history,
             &mut self.predicted_history,
             &self.profile,
-            self.position_error_threshold,
+            &self.governance,
         ) {
+            self.governance_stats.record(
+                result.action,
+                result.replayed_frames,
+                result.pending_inputs,
+                result.correction_distance,
+            );
             self.current_state = Some(result.latest_state.clone());
             return Some(result);
         }
@@ -117,13 +124,20 @@ impl LocalPredictionRuntime {
         self.current_state = Some(authoritative.clone());
 
         Some(ReconcileResult {
-            replayed: false,
+            action: ReplayAction::Accepted,
             latest_state: authoritative,
+            replayed_frames: 0,
+            pending_inputs: 0,
+            correction_distance: 0.0,
         })
     }
 
     pub fn current_state(&self) -> Option<&PredictedMoveState> {
         self.current_state.as_ref()
+    }
+
+    pub fn governance_stats(&self) -> &ReplayGovernanceStats {
+        &self.governance_stats
     }
 }
 
