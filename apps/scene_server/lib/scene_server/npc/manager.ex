@@ -1,0 +1,60 @@
+defmodule SceneServer.Npc.Manager do
+  use GenServer
+
+  alias SceneServer.Npc.{Actor, Profile}
+
+  @npc_ready_attempts 40
+  @npc_ready_sleep_ms 25
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, [], opts)
+  end
+
+  @impl true
+  def init(_init_arg) do
+    {:ok, %{npcs: %{}}}
+  end
+
+  @impl true
+  def handle_call({:spawn_npc, npc_id, opts}, _from, %{npcs: npcs} = state) do
+    profile = Profile.default(npc_id, opts)
+
+    with {:ok, npc_pid} <-
+           DynamicSupervisor.start_child(
+             SceneServer.NpcActorSup,
+             {Actor, {profile, opts}}
+           ),
+         :ok <- await_npc_ready(npc_pid) do
+      {:reply, {:ok, npc_pid}, %{state | npcs: Map.put_new(npcs, npc_id, npc_pid)}}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:get_all_npcs, _from, %{npcs: npcs} = state) do
+    {:reply, {:ok, npcs}, state}
+  end
+
+  defp await_npc_ready(npc_pid, attempts \\ @npc_ready_attempts)
+  defp await_npc_ready(_npc_pid, 0), do: {:error, :npc_not_ready}
+
+  defp await_npc_ready(npc_pid, attempts) do
+    try do
+      case GenServer.call(npc_pid, :await_ready) do
+        :ok ->
+          :ok
+
+        {:error, :not_ready} ->
+          Process.sleep(@npc_ready_sleep_ms)
+          await_npc_ready(npc_pid, attempts - 1)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    catch
+      :exit, reason -> {:error, reason}
+    end
+  end
+end
