@@ -451,6 +451,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         NetworkEvent::LocalPosition {
             cid,
             location,
+            velocity: _,
             transport,
         } => {
             state.local_cid = cid;

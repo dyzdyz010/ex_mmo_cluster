@@ -38,6 +38,7 @@ struct WorldState {
     scene_joined: bool,
     local_cid: i64,
     local_position: Option<Vec3>,
+    local_velocity: Vec3,
     remote_players: HashMap<i64, RemotePlayerState>,
     chat_log: VecDeque<String>,
     logs: VecDeque<String>,
@@ -79,6 +80,7 @@ struct InputTraceState {
 
 const VISUAL_SMOOTHING_SPEED: f32 = 18.0;
 const VISUAL_SNAP_DISTANCE: f32 = 96.0;
+const FINAL_STOP_SYNC_SPEED_EPSILON: f32 = 1.0;
 
 impl Default for MovementDispatchState {
     fn default() -> Self {
@@ -104,6 +106,7 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
                 "starting client".to_string()
             },
             local_cid: config.cid,
+            local_velocity: Vec3::ZERO,
             control_transport: MessageTransport::Tcp,
             movement_transport: MessageTransport::Tcp,
             fast_lane_status: "tcp fallback".to_string(),
@@ -235,6 +238,7 @@ fn poll_network_events(
                 world_state.status = format!("in scene as cid {cid}");
                 world_state.local_cid = cid;
                 world_state.local_position = Some(net_to_world(location));
+                world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
@@ -244,9 +248,11 @@ fn poll_network_events(
             NetworkEvent::LocalPosition {
                 cid: _,
                 location,
+                velocity,
                 transport,
             } => {
                 world_state.local_position = Some(net_to_world(location));
+                world_state.local_velocity = net_to_world(velocity);
                 world_state.last_local_update_transport = Some(transport);
             }
             NetworkEvent::PlayerEnter { cid, location } => {
@@ -334,6 +340,7 @@ fn poll_network_events(
                 world_state.scene_joined = false;
                 world_state.status = format!("disconnected: {reason}");
                 world_state.local_position = None;
+                world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();
                 world_state.movement_transport = MessageTransport::Tcp;
                 world_state.fast_lane_status = "tcp fallback".to_string();
@@ -492,7 +499,13 @@ fn movement_sender(
         0
     };
 
-    if direction.length_squared() == 0.0 && movement_dispatch.stop_sent {
+    let should_send_stop_sync = should_send_stop_sync(
+        direction,
+        world_state.local_velocity,
+        movement_dispatch.stop_sent,
+    );
+
+    if direction.length_squared() == 0.0 && !should_send_stop_sync {
         return;
     }
 
@@ -503,7 +516,8 @@ fn movement_sender(
         movement_flags,
     });
 
-    movement_dispatch.stop_sent = direction.length_squared() == 0.0;
+    movement_dispatch.stop_sent = direction.length_squared() == 0.0
+        && world_state.local_velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
 }
 
 fn poll_stdio_commands(
@@ -899,6 +913,18 @@ fn direction_label(direction: Vec2) -> String {
     format!("{:.1},{:.1}", direction.x, direction.y)
 }
 
+fn should_send_stop_sync(direction: Vec2, local_velocity: Vec3, stop_sent: bool) -> bool {
+    if direction.length_squared() > 0.0 {
+        return true;
+    }
+
+    // Keep emitting zero-input brake frames until the local prediction has
+    // actually settled. Otherwise the authoritative path can stop on a
+    // non-zero residual velocity snapshot, which causes the local and remote
+    // final positions to drift apart after longer movement bursts.
+    !stop_sent || local_velocity.length() > FINAL_STOP_SYNC_SPEED_EPSILON
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,5 +976,16 @@ mod tests {
         let next = smooth_translation(current, target, 1.0 / 60.0, 18.0, 96.0);
 
         assert_eq!(next, target);
+    }
+
+    #[test]
+    fn stop_sync_continues_while_local_velocity_is_nonzero() {
+        assert!(should_send_stop_sync(
+            Vec2::ZERO,
+            Vec3::new(8.0, 0.0, 0.0),
+            true
+        ));
+        assert!(should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, false));
+        assert!(!should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, true));
     }
 }

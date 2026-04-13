@@ -65,6 +65,7 @@ pub enum NetworkEvent {
     LocalPosition {
         cid: i64,
         location: NetVec3,
+        velocity: NetVec3,
         transport: MessageTransport,
     },
     PlayerEnter {
@@ -336,6 +337,11 @@ impl ClientRuntime {
                             predicted.position.x as f64,
                             predicted.position.y as f64,
                             predicted.position.z as f64,
+                        ],
+                        velocity: [
+                            predicted.velocity.x as f64,
+                            predicted.velocity.y as f64,
+                            predicted.velocity.z as f64,
                         ],
                         transport: self.fast_lane.movement_transport(),
                     });
@@ -625,6 +631,11 @@ impl ClientRuntime {
                             state.position.x as f64,
                             state.position.y as f64,
                             state.position.z as f64,
+                        ],
+                        velocity: [
+                            state.velocity.x as f64,
+                            state.velocity.y as f64,
+                            state.velocity.z as f64,
                         ],
                         transport,
                     });
@@ -1196,6 +1207,7 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
         NetworkEvent::LocalPosition {
             cid,
             location,
+            velocity,
             transport,
         } => {
             observer.emit(
@@ -1205,6 +1217,7 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                     ("cid", cid.to_string()),
                     ("transport", transport.label().to_string()),
                     ("location", format_vec(location)),
+                    ("velocity", format_vec(velocity)),
                 ],
             );
         }
@@ -1940,6 +1953,7 @@ mod tests {
                 cid: 42,
                 location: [4.0, 5.0, 6.0],
                 transport: MessageTransport::Udp,
+                ..
             }
         )));
 

@@ -1,7 +1,8 @@
 param(
   [string]$ObserveDir = ".demo/e2e-stdio",
   [int]$BotCount = 1,
-  [int]$ServerExitAfter = 24
+  [int]$ServerExitAfter = 24,
+  [double]$FinalPositionTolerance = 5.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +33,17 @@ function Wait-Until {
   }
 
   throw "timed out waiting for $Description"
+}
+
+function Parse-Vector3 {
+  param([string]$Value)
+  $parts = $Value -split ','
+  if ($parts.Length -ne 3) { return $null }
+  return [pscustomobject]@{
+    X = [double]$parts[0]
+    Y = [double]$parts[1]
+    Z = [double]$parts[2]
+  }
 }
 
 Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
@@ -192,8 +204,30 @@ try {
     throw "client observe log did not record remote AOI movement/enter events"
   }
 
+  $clientMatch = [regex]::Match($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')
+  $serverMatch = [regex]::Match($serverStdout, 'server_stdio event="player" payload=%\{player: %\{.*location: \{(?<pos>[-0-9\.]+), (?<posy>[-0-9\.]+), (?<posz>[-0-9\.]+)\}')
+  if (-not $clientMatch.Success -or -not $serverMatch.Success) {
+    throw "unable to parse final client/server positions from stdio output"
+  }
+
+  $clientPos = Parse-Vector3 $clientMatch.Groups["pos"].Value
+  $serverPos = [pscustomobject]@{
+    X = [double]$serverMatch.Groups["pos"].Value
+    Y = [double]$serverMatch.Groups["posy"].Value
+    Z = [double]$serverMatch.Groups["posz"].Value
+  }
+
+  $dx = $clientPos.X - $serverPos.X
+  $dy = $clientPos.Y - $serverPos.Y
+  $dz = $clientPos.Z - $serverPos.Z
+  $distance = [Math]::Sqrt(($dx * $dx) + ($dy * $dy) + ($dz * $dz))
+  if ($distance -gt $FinalPositionTolerance) {
+    throw "final client/server position drift too large: $distance > $FinalPositionTolerance"
+  }
+
   Write-Host "E2E stdio passed."
   Write-Host "Artifacts: $observeDirAbs"
+  Write-Host "Final position drift: $distance"
   Write-Host ""
   Write-Host "--- SERVER STDIO ---"
   ($serverStdout -split "`r?`n" | Select-String 'server_stdio' | ForEach-Object { $_.Line })
