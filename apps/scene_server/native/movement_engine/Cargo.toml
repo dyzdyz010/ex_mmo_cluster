@@ -1,0 +1,13 @@
+[package]
+name = "movement_engine"
+version = "0.1.0"
+authors = []
+edition = "2018"
+
+[lib]
+name = "movement_engine"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.36.1"

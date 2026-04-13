@@ -1,9 +1,10 @@
 defmodule SceneServer.Movement.Engine do
-  alias SceneServer.Movement.{Ack, InputFrame, Integrator, Profile, State}
+  alias SceneServer.Movement.{Ack, InputFrame, Profile, State}
+  alias SceneServer.Native.MovementEngine, as: NativeMovementEngine
 
   @spec step(integer(), State.t(), InputFrame.t(), Profile.t()) :: {State.t(), Ack.t()}
   def step(cid, %State{} = state, %InputFrame{} = frame, %Profile{} = profile) do
-    next_state = Integrator.step(state, frame, profile)
+    next_state = NativeMovementEngine.step(state, frame, profile)
 
     ack = %Ack{
       cid: cid,
@@ -17,5 +18,11 @@ defmodule SceneServer.Movement.Engine do
     }
 
     {next_state, ack}
+  end
+
+  @spec replay(State.t(), [InputFrame.t()], Profile.t()) :: [State.t()]
+  def replay(%State{} = anchor_state, input_frames, %Profile{} = profile)
+      when is_list(input_frames) do
+    NativeMovementEngine.replay(anchor_state, input_frames, profile)
   end
 end
