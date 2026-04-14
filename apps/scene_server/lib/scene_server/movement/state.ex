@@ -1,4 +1,12 @@
 defmodule SceneServer.Movement.State do
+  @moduledoc """
+  Authoritative movement state for one actor at one fixed tick.
+
+  This struct is the simulation truth used by both player and NPC actors. AOI
+  snapshots and movement acknowledgements are derived from it rather than
+  inventing separate transport-only state.
+  """
+
   @enforce_keys [:position, :velocity, :acceleration, :movement_mode, :tick]
   defstruct [:position, :velocity, :acceleration, :movement_mode, :tick]
 
@@ -11,6 +19,9 @@ defmodule SceneServer.Movement.State do
           tick: non_neg_integer()
         }
 
+  @doc """
+  Builds a stationary grounded movement state at the provided position.
+  """
   def idle(position) do
     %__MODULE__{
       position: position,

@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.Brain do
+  @moduledoc """
+  Pure NPC decision function.
+
+  This module deliberately contains no side effects, timers, or process calls.
+  `Npc.Actor` gathers facts, then `Npc.Brain` turns those facts into an intent.
+  Navigation, attacks, and respawn handling are executed elsewhere.
+  """
+
   alias SceneServer.Npc.{Facts, Profile}
 
   @type decision ::
@@ -8,6 +16,9 @@ defmodule SceneServer.Npc.Brain do
           | {:return_home, nil}
           | {:dead, nil}
 
+  @doc """
+  Chooses the next high-level NPC intent from current facts and profile limits.
+  """
   @spec decide(Facts.t(), Profile.t()) :: decision()
   def decide(%Facts{alive: false}, _profile), do: {:dead, nil}
 

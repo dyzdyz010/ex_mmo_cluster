@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.Manager do
+  @moduledoc """
+  Registry/entrypoint for active NPC actors.
+
+  `Npc.Manager` owns spawn-time indexing and lookup. It does not make decisions
+  for NPCs; once spawned, each active NPC is driven by its own `Npc.Actor`
+  process under `SceneServer.NpcActorSup`.
+  """
+
   use GenServer
 
   alias SceneServer.Npc.{Actor, Profile}
@@ -6,6 +14,9 @@ defmodule SceneServer.Npc.Manager do
   @npc_ready_attempts 40
   @npc_ready_sleep_ms 25
 
+  @doc """
+  Starts the active NPC registry process.
+  """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end

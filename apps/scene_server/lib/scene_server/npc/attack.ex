@@ -1,7 +1,17 @@
 defmodule SceneServer.Npc.Attack do
+  @moduledoc """
+  Builds NPC-specific authoritative attack definitions from NPC profile data.
+
+  This keeps NPC damage/radius/cooldown tuning out of the player-oriented skill
+  lookup table while still reusing the shared `SceneServer.Combat.Skill` struct.
+  """
+
   alias SceneServer.Combat.Skill
   alias SceneServer.Npc.Profile
 
+  @doc """
+  Converts an NPC profile into the skill struct used by authoritative hit logic.
+  """
   @spec skill(Profile.t()) :: Skill.t()
   def skill(%Profile{} = profile) do
     %Skill{

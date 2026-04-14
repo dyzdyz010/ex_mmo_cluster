@@ -1,4 +1,17 @@
 defmodule SceneServer.Aoi.AoiItem do
+  @moduledoc """
+  Per-actor AOI fan-out process.
+
+  Each active actor (player or NPC) gets one `AoiItem` that:
+
+  - owns that actor's current octree placement
+  - refreshes nearby subscribers on a timer
+  - forwards AOI-visible events (enter/leave/move/chat/skill/combat/state)
+
+  `AoiItem` is intentionally not the authority for movement or combat; it is the
+  subscription/broadcast adapter layered on top of authoritative actors.
+  """
+
   use GenServer, restart: :temporary
 
   require Logger
@@ -17,6 +30,9 @@ defmodule SceneServer.Aoi.AoiItem do
     GenServer.start_link(__MODULE__, params, opts)
   end
 
+  @doc """
+  Reads the local item's current location.
+  """
   def get_location() do
     GenServer.call(@self, :get_location)
   end

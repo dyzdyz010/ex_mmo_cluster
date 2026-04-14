@@ -1,4 +1,12 @@
 defmodule SceneServer.Combat.State do
+  @moduledoc """
+  Mutable authoritative combat state for one combat actor.
+
+  This struct is embedded inside both `SceneServer.PlayerCharacter` and
+  `SceneServer.Npc.Actor`, which lets both actor types share the same HP/death
+  state transitions without sharing higher-level process logic.
+  """
+
   alias SceneServer.Combat.Profile
 
   @enforce_keys [:hp, :max_hp, :alive, :deaths]
@@ -16,6 +24,9 @@ defmodule SceneServer.Combat.State do
           deaths: non_neg_integer()
         }
 
+  @doc """
+  Builds an initial alive combat state from a combat profile.
+  """
   @spec new(Profile.t()) :: t()
   def new(%Profile{} = profile) do
     %__MODULE__{
@@ -26,6 +37,9 @@ defmodule SceneServer.Combat.State do
     }
   end
 
+  @doc """
+  Applies damage and returns whether the hit was ignored, damaging, or killing.
+  """
   @spec apply_damage(t(), non_neg_integer()) :: result()
   def apply_damage(%__MODULE__{alive: false} = state, _damage), do: {:ignored, state}
   def apply_damage(%__MODULE__{} = state, damage) when damage <= 0, do: {:ignored, state}
@@ -42,6 +56,9 @@ defmodule SceneServer.Combat.State do
     end
   end
 
+  @doc """
+  Restores the actor to a full-HP alive state while preserving death count.
+  """
   @spec respawn(t()) :: t()
   def respawn(%__MODULE__{} = state) do
     %{state | hp: state.max_hp, alive: true}

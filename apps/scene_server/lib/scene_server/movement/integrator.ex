@@ -1,6 +1,17 @@
 defmodule SceneServer.Movement.Integrator do
+  @moduledoc """
+  Reference Elixir implementation of the movement integration rules.
+
+  The hot path now runs in Rustler, but this module remains valuable as readable
+  documentation and as a reference implementation for tests that assert native
+  behavior matches the intended math.
+  """
+
   alias SceneServer.Movement.{InputFrame, Profile, State}
 
+  @doc """
+  Advances one movement step from a previous state and a sanitized input frame.
+  """
   @spec step(State.t(), InputFrame.t(), Profile.t()) :: State.t()
   def step(%State{} = previous, %InputFrame{} = input, %Profile{} = profile) do
     dt = max(input.dt_ms, 1) / 1000.0

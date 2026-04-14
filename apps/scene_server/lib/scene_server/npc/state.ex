@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.State do
+  @moduledoc """
+  Runtime AI/intent state for one NPC actor.
+
+  This is intentionally separate from movement and combat state so the NPC actor
+  can evolve intent (idle/chase/attack/return_home/dead) without conflating that
+  with physical position or HP bookkeeping.
+  """
+
   alias SceneServer.Npc.Profile
 
   @enforce_keys [:npc_id, :intent]
@@ -17,6 +25,9 @@ defmodule SceneServer.Npc.State do
           last_decision_at_ms: integer() | nil
         }
 
+  @doc """
+  Builds the default idle intent state for a freshly spawned or respawned NPC.
+  """
   @spec idle(Profile.t()) :: t()
   def idle(%Profile{} = profile) do
     %__MODULE__{

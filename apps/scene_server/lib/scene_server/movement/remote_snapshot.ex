@@ -1,4 +1,12 @@
 defmodule SceneServer.Movement.RemoteSnapshot do
+  @moduledoc """
+  Compact AOI broadcast snapshot for remote actor motion.
+
+  Unlike `Movement.Ack`, this snapshot is intended for *other* clients and AOI
+  subscribers. It captures the latest authoritative movement state in a form
+  that clients can interpolate.
+  """
+
   alias SceneServer.Movement.State
 
   @enforce_keys [:cid, :server_tick, :position, :velocity, :acceleration, :movement_mode]
@@ -14,6 +22,9 @@ defmodule SceneServer.Movement.RemoteSnapshot do
           movement_mode: atom()
         }
 
+  @doc """
+  Projects an authoritative movement state into a remote AOI snapshot.
+  """
   @spec from_state(integer(), State.t()) :: t()
   def from_state(cid, %State{} = state) do
     %__MODULE__{

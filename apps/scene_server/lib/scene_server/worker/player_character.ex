@@ -1,4 +1,19 @@
 defmodule SceneServer.PlayerCharacter do
+  @moduledoc """
+  Authoritative runtime process for one active player character.
+
+  `PlayerCharacter` is the player-side aggregate root. It owns:
+
+  - authoritative movement state and fixed-tick input consumption
+  - authoritative combat state and skill cooldowns
+  - AOI registration/broadcast integration
+  - respawn lifecycle
+
+  Compared with `SceneServer.Npc.Actor`, this module also mediates network-origin
+  input and time sync concerns because player actors are driven by a remote
+  client.
+  """
+
   use GenServer, restart: :temporary
 
   require Logger
@@ -18,6 +33,9 @@ defmodule SceneServer.PlayerCharacter do
   @input_hold_timeout_multiplier 3
   @stopped_speed_epsilon 1.0
 
+  @doc """
+  Starts one authoritative player character process.
+  """
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
   end

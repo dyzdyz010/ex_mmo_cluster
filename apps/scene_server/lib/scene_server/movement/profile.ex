@@ -1,4 +1,17 @@
 defmodule SceneServer.Movement.Profile do
+  @moduledoc """
+  Shared movement tuning profile for authoritative simulation and prediction.
+
+  This profile is intentionally shared conceptually across:
+
+  - scene-side authoritative stepping
+  - client-side prediction
+  - Rustler movement math
+  - NPC navigation input generation
+
+  Changes here should be mirrored carefully on the client predictor side.
+  """
+
   @enforce_keys [
     :max_speed,
     :max_accel,
@@ -31,6 +44,9 @@ defmodule SceneServer.Movement.Profile do
           max_speed_scale: float()
         }
 
+  @doc """
+  Returns the current default movement profile used by player and NPC actors.
+  """
   def default do
     # TODO(vnext-stage3): keep this profile contract explicitly aligned with
     # the client predictor and Rustler movement_engine structs. If tuning starts

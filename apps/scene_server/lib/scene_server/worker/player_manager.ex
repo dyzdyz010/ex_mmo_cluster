@@ -1,4 +1,12 @@
 defmodule SceneServer.PlayerManager do
+  @moduledoc """
+  Registry/entrypoint for active player actors.
+
+  `PlayerManager` mirrors `Npc.Manager` on the player side: it starts one
+  `PlayerCharacter` per active character and keeps the CID → PID index used by
+  the gate stdio interface and scene-side targeting helpers.
+  """
+
   use GenServer
 
   require Logger
@@ -6,6 +14,7 @@ defmodule SceneServer.PlayerManager do
   @player_ready_attempts 40
   @player_ready_sleep_ms 25
 
+  @doc "Starts the active player registry."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end

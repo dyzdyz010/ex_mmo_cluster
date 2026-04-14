@@ -1,5 +1,12 @@
 defmodule GateServer.StdioInterface do
-  @moduledoc false
+  @moduledoc """
+  Optional stdio-side inspection surface for a running gate instance.
+
+  This process is intentionally attached to the normal runtime instead of
+  creating a separate debug executable. It lets agents and local operators query
+  live connection/session/player/NPC state over stdin/stdout while the same gate
+  continues serving real traffic.
+  """
 
   use GenServer
 

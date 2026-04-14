@@ -1,7 +1,24 @@
 defmodule GateServer.Application do
   # See https://hexdocs.pm/elixir/Application.html
   # for more information on OTP Applications
-  @moduledoc false
+  @moduledoc """
+  Boots the gateway/control-plane runtime.
+
+  The gate owns:
+
+  - client-facing TCP accepts
+  - optional UDP fast-lane traffic
+  - per-connection worker supervision
+  - ticket/session tracking for UDP attachment
+  - optional stdio inspection hooks for automation
+
+  It does **not** own authoritative gameplay simulation; instead it forwards
+  authenticated requests to scene/auth services and encodes their replies for
+  clients.
+
+  See `apps/gate_server/lib/gate_server/README.md` for the current supervisor
+  tree and worker relationships.
+  """
 
   use Application
 

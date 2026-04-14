@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.Facts do
+  @moduledoc """
+  Read-only perception snapshot consumed by `SceneServer.Npc.Brain`.
+
+  `Npc.Actor` gathers these facts from authoritative AOI/combat state and then
+  passes them to the pure brain layer so decision logic stays deterministic and
+  testable.
+  """
+
   @enforce_keys [:alive, :position, :spawn_position]
   defstruct [
     :alive,

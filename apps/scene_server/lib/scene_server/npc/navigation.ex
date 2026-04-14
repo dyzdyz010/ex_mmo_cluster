@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.Navigation do
+  @moduledoc """
+  Translates NPC intent into fixed-tick movement input.
+
+  `Npc.Brain` decides *what* an NPC wants to do. `Npc.Navigation` turns that
+  intent into the same `Movement.InputFrame` shape used by authoritative actor
+  movement so NPCs and players share the same downstream movement engine.
+  """
+
   alias SceneServer.Movement.{InputFrame, Profile, State}
   alias SceneServer.Npc.Profile, as: NpcProfile
   alias SceneServer.Npc.State, as: NpcState
@@ -13,6 +21,9 @@ defmodule SceneServer.Npc.Navigation do
           {float(), float(), float()} | nil,
           non_neg_integer()
         ) :: InputFrame.t()
+  @doc """
+  Builds the authoritative movement input frame for the current NPC intent.
+  """
   def build_input_frame(
         %NpcState{} = npc_state,
         %State{} = movement_state,
@@ -46,6 +57,9 @@ defmodule SceneServer.Npc.Navigation do
 
   @spec direction_towards({float(), float(), float()}, {float(), float(), float()}) ::
           {float(), float()}
+  @doc """
+  Returns a normalized 2D direction toward the destination or zero near arrival.
+  """
   def direction_towards({x, y, _z}, {tx, ty, _tz}) do
     dx = tx - x
     dy = ty - y

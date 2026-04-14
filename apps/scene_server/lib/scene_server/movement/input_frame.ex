@@ -1,4 +1,11 @@
 defmodule SceneServer.Movement.InputFrame do
+  @moduledoc """
+  One fixed-step movement control sample.
+
+  The client sends input intent, not authority over final position. The server
+  sanitizes and latches these frames, then consumes them on its own fixed tick.
+  """
+
   @enforce_keys [:seq, :client_tick, :dt_ms, :input_dir, :speed_scale, :movement_flags]
   defstruct [:seq, :client_tick, :dt_ms, :input_dir, :speed_scale, :movement_flags]
 
@@ -14,6 +21,9 @@ defmodule SceneServer.Movement.InputFrame do
   @run_flag 0b0000_0001
   @brake_flag 0b0000_0010
 
+  @doc "Returns whether the input requests the run modifier."
   def running?(%__MODULE__{movement_flags: flags}), do: Bitwise.band(flags, @run_flag) != 0
+
+  @doc "Returns whether the input requests braking / zero-input deceleration."
   def braking?(%__MODULE__{movement_flags: flags}), do: Bitwise.band(flags, @brake_flag) != 0
 end

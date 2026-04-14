@@ -1,4 +1,20 @@
 defmodule SceneServer.Npc.Actor do
+  @moduledoc """
+  Authoritative runtime process for one active NPC.
+
+  An `Npc.Actor` combines four responsibilities that must stay in sync for one
+  NPC instance:
+
+  - AI intent state (`Npc.State`)
+  - authoritative movement state (`Movement.State`)
+  - authoritative combat state (`Combat.State`)
+  - AOI registration and broadcasts
+
+  The actor itself is the orchestration boundary; decision rules remain in
+  `Npc.Brain`, movement input shaping in `Npc.Navigation`, and attack tuning in
+  `Npc.Attack`.
+  """
+
   use GenServer, restart: :temporary
 
   alias SceneServer.AoiManager
@@ -16,6 +32,9 @@ defmodule SceneServer.Npc.Actor do
 
   @stopped_speed_epsilon 1.0
 
+  @doc """
+  Starts one active NPC actor from a concrete NPC profile.
+  """
   def start_link({profile, opts}, genserver_opts \\ []) do
     GenServer.start_link(__MODULE__, {profile, opts}, genserver_opts)
   end

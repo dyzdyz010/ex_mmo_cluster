@@ -1,4 +1,12 @@
 defmodule SceneServer.AoiManager do
+  @moduledoc """
+  Central AOI index and lookup service for active actors.
+
+  `AoiManager` owns the octree plus the mapping from CID to AOI item/actor PID.
+  Player and NPC actors both register through this module, which is why combat
+  targeting can stay actor-agnostic.
+  """
+
   use GenServer
 
   require Logger
@@ -8,6 +16,7 @@ defmodule SceneServer.AoiManager do
 
   # APIs
 
+  @doc "Starts the shared AOI index process."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end
@@ -21,6 +30,7 @@ defmodule SceneServer.AoiManager do
           %{kind: atom(), name: String.t()}
         ) ::
           {:ok, pid()} | {:err, any()}
+  @doc "Registers one actor in the AOI system and returns its dedicated AOI item PID."
   def add_aoi_item(cid, client_timestamp, location, connection_pid, actor_pid, actor_meta) do
     GenServer.call(
       __MODULE__,
@@ -29,21 +39,25 @@ defmodule SceneServer.AoiManager do
   end
 
   @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
+  @doc "Removes an actor from the AOI index by CID."
   def remove_aoi_item(cid) do
     GenServer.call(__MODULE__, {:remove_aoi_item, cid})
   end
 
   @spec get_items_with_cids([integer()]) :: [pid()]
+  @doc "Resolves AOI item PIDs for the provided CIDs."
   def get_items_with_cids(cids) do
     GenServer.call(__MODULE__, {:get_items_with_cids, cids})
   end
 
   @spec get_nearby_actor_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
+  @doc "Returns nearby actor PIDs around a location, excluding specified CIDs."
   def get_nearby_actor_pids(location, radius, exclude_cids \\ []) do
     GenServer.call(__MODULE__, {:get_nearby_actor_pids, location, radius, exclude_cids})
   end
 
   @spec get_actor_pid(integer()) :: pid() | nil
+  @doc "Resolves an authoritative actor PID by CID."
   def get_actor_pid(cid) do
     GenServer.call(__MODULE__, {:get_actor_pid, cid})
   end

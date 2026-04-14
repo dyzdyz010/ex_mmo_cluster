@@ -1,4 +1,12 @@
 defmodule SceneServer.Npc.Profile do
+  @moduledoc """
+  Static NPC template data for one spawned actor.
+
+  `NpcProfile` describes the server-side identity, perception ranges, movement
+  tuning overrides, and attack parameters for a concrete NPC instance. Runtime
+  mutable data lives in `Npc.State`, `Movement.State`, and `Combat.State`.
+  """
+
   @enforce_keys [
     :npc_id,
     :name,
@@ -53,6 +61,9 @@ defmodule SceneServer.Npc.Profile do
           skill_cooldown_ms: pos_integer()
         }
 
+  @doc """
+  Builds a default NPC profile, allowing targeted overrides for demo/runtime use.
+  """
   def default(npc_id, opts \\ []) do
     %__MODULE__{
       npc_id: npc_id,

@@ -1,4 +1,11 @@
 defmodule SceneServer.Movement.Ack do
+  @moduledoc """
+  Authoritative movement acknowledgement sent back to the controlling client.
+
+  The local client uses this struct to reconcile predicted movement against the
+  server's fixed-tick truth.
+  """
+
   @enforce_keys [
     :cid,
     :ack_seq,
