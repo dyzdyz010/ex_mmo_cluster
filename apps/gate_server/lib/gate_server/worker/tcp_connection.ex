@@ -41,6 +41,8 @@ defmodule GateServer.TcpConnection do
 
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
 
+  @scene_call_timeout 15_000
+
   @doc """
   Start the per-socket connection process.
 
@@ -376,7 +378,7 @@ defmodule GateServer.TcpConnection do
       text: text
     })
 
-    case safe_call(spid, {:chat_say, cid, username || "anonymous", text}) do
+    case safe_call(spid, {:chat_say, cid, username || "anonymous", text}, @scene_call_timeout) do
       {:ok, {:ok, _}} -> send_encoded(socket, {:result, :ok, request_id})
       {:ok, _} -> send_result_error(socket, :server_error, request_id)
       {:error, reason} -> send_result_error(socket, reason, request_id)
@@ -401,7 +403,7 @@ defmodule GateServer.TcpConnection do
       skill_id: skill_id
     })
 
-    case safe_call(spid, {:cast_skill, skill_id}) do
+    case safe_call(spid, {:cast_skill, skill_id}, @scene_call_timeout) do
       {:ok, {:ok, _location}} -> send_encoded(socket, {:result, :ok, request_id})
       {:ok, {:error, reason}} -> send_result_error(socket, reason, request_id)
       {:ok, _} -> send_result_error(socket, :server_error, request_id)
@@ -643,7 +645,8 @@ defmodule GateServer.TcpConnection do
   defp add_player(scene_node, cid, timestamp, character_profile) do
     case safe_call(
            {SceneServer.PlayerManager, scene_node},
-           {:add_player, cid, self(), timestamp, character_profile}
+           {:add_player, cid, self(), timestamp, character_profile},
+           @scene_call_timeout
          ) do
       {:ok, {:ok, ppid}} -> {:ok, ppid}
       {:ok, _other} -> {:error, :scene_unavailable}
@@ -652,7 +655,7 @@ defmodule GateServer.TcpConnection do
   end
 
   defp fetch_player_location(player_pid) do
-    case safe_call(player_pid, :get_location) do
+    case safe_call(player_pid, :get_location, @scene_call_timeout) do
       {:ok, {:ok, location}} -> {:ok, location}
       {:ok, _other} -> {:error, :scene_unavailable}
       {:error, _reason} -> {:error, :scene_unavailable}
@@ -745,11 +748,12 @@ defmodule GateServer.TcpConnection do
     apply(AuthServer.AuthWorker, :validate_username, [claims, username])
   end
 
-  defp safe_call(nil, _message), do: {:error, :unavailable}
+  defp safe_call(server, message, timeout \\ @scene_call_timeout)
+  defp safe_call(nil, _message, _timeout), do: {:error, :unavailable}
 
-  defp safe_call(server, message) do
+  defp safe_call(server, message, timeout) do
     try do
-      {:ok, GenServer.call(server, message)}
+      {:ok, GenServer.call(server, message, timeout)}
     catch
       :exit, reason -> {:error, reason}
     end

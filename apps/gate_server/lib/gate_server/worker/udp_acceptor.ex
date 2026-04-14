@@ -17,6 +17,8 @@ defmodule GateServer.UdpAcceptor do
   use GenServer
   require Logger
 
+  @connection_call_timeout 15_000
+
   @doc "Standard child spec for the shared UDP acceptor worker."
   def child_spec(opts) do
     %{
@@ -134,7 +136,7 @@ defmodule GateServer.UdpAcceptor do
           connection_pid: connection_pid
         })
 
-        case GenServer.call(connection_pid, {:udp_movement, frame}) do
+        case safe_connection_call(connection_pid, {:udp_movement, frame}) do
           :accepted ->
             :ok
 
@@ -178,5 +180,13 @@ defmodule GateServer.UdpAcceptor do
   defp send_udp(socket, ip, port, message) do
     {:ok, payload} = GateServer.Codec.encode(message)
     :gen_udp.send(socket, ip, port, payload)
+  end
+
+  defp safe_connection_call(connection_pid, message) do
+    try do
+      GenServer.call(connection_pid, message, @connection_call_timeout)
+    catch
+      :exit, reason -> {:error, reason}
+    end
   end
 end
