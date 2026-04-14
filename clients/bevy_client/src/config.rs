@@ -1,7 +1,10 @@
+//! Environment-backed client runtime configuration.
+
 use bevy::prelude::Resource;
 use std::env;
 
 #[derive(Clone, Debug, Resource)]
+/// Resolved configuration for one client launch.
 pub struct ClientConfig {
     pub gate_addr: String,
     pub username: String,
@@ -14,6 +17,7 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
+    /// Builds the client configuration from environment variables.
     pub fn from_env() -> Self {
         Self {
             gate_addr: env_or("BEVY_CLIENT_GATE_ADDR", "127.0.0.1:29000"),

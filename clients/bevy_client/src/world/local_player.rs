@@ -1,3 +1,5 @@
+//! Local predicted-player runtime state and reconciliation orchestration.
+
 use bevy::prelude::{Vec2, Vec3};
 
 use crate::{
@@ -13,6 +15,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// Local prediction runtime that owns input history, predicted history, and reconciliation stats.
 pub struct LocalPredictionRuntime {
     next_seq: u32,
     next_tick: u32,
@@ -40,6 +43,7 @@ impl Default for LocalPredictionRuntime {
 }
 
 impl LocalPredictionRuntime {
+    /// Resets local prediction around a fresh authoritative spawn position.
     pub fn reset(&mut self, position: Vec3, profile: Option<MovementProfile>) {
         self.next_seq = 1;
         self.next_tick = 1;
@@ -55,6 +59,7 @@ impl LocalPredictionRuntime {
         self.current_state = Some(state);
     }
 
+    /// Clears local prediction state after disconnect/scene leave.
     pub fn clear(&mut self) {
         self.current_state = None;
         self.input_history = InputHistory::new(128);
@@ -64,6 +69,7 @@ impl LocalPredictionRuntime {
         self.governance_stats = ReplayGovernanceStats::default();
     }
 
+    /// Builds the next local input frame using monotonic local sequence/tick counters.
     pub fn build_input_frame(
         &mut self,
         input_dir: Vec2,
@@ -85,6 +91,7 @@ impl LocalPredictionRuntime {
         frame
     }
 
+    /// Applies one locally generated input frame to the predicted timeline.
     pub fn apply_local_input(&mut self, frame: MoveInputFrame) -> Option<PredictedMoveState> {
         let current = self.current_state.clone()?;
         self.input_history.push(frame.clone());
@@ -94,6 +101,7 @@ impl LocalPredictionRuntime {
         Some(next)
     }
 
+    /// Applies one authoritative movement acknowledgement and reconciles local prediction.
     pub fn apply_ack(&mut self, ack: MovementAck) -> Option<ReconcileResult> {
         if let Some(result) = reconcile(
             &ack,
@@ -132,10 +140,12 @@ impl LocalPredictionRuntime {
         })
     }
 
+    /// Returns the current predicted state, if any.
     pub fn current_state(&self) -> Option<&PredictedMoveState> {
         self.current_state.as_ref()
     }
 
+    /// Returns the latest replay-governance stats.
     pub fn governance_stats(&self) -> &ReplayGovernanceStats {
         &self.governance_stats
     }

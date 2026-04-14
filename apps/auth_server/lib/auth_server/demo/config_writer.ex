@@ -3,6 +3,9 @@ defmodule Demo.ConfigWriter do
   Emit human-friendly config files for the local demo.
   """
 
+  @doc """
+  Writes all human-client shell/json helper files for the given scenario.
+  """
   def write!(scenario, output_dir, observe_dir \\ nil) do
     File.mkdir_p!(output_dir)
     output_dir = Path.expand(output_dir)

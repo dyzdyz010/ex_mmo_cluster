@@ -1,3 +1,5 @@
+//! Reconciliation of predicted local movement against authoritative acks.
+
 use crate::sim::{
     governance::{ReplayAction, ReplayGovernance},
     history::{InputHistory, PredictedHistory},
@@ -7,6 +9,7 @@ use crate::sim::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+/// Result of applying one authoritative movement acknowledgement locally.
 pub struct ReconcileResult {
     pub action: ReplayAction,
     pub latest_state: PredictedMoveState,
@@ -15,6 +18,7 @@ pub struct ReconcileResult {
     pub correction_distance: f32,
 }
 
+/// Reconciles the current local prediction history against an authoritative ack.
 pub fn reconcile(
     ack: &MovementAck,
     input_history: &mut InputHistory,

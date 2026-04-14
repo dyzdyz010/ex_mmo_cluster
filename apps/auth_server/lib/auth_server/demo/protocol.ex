@@ -5,6 +5,7 @@ defmodule Demo.Protocol do
 
   @status_ok 0x00
 
+  @doc "Parses a `host:port` gate address string."
   def parse_gate_addr(addr) when is_binary(addr) do
     case String.split(addr, ":", parts: 2) do
       [host, port] ->
@@ -18,24 +19,32 @@ defmodule Demo.Protocol do
     end
   end
 
+  @doc "Encodes an auth request frame for the demo bot."
   def encode_auth_request(username, token, request_id) do
     <<0x05, request_id::64-big, byte_size(username)::16-big, username::binary,
       byte_size(token)::16-big, token::binary>>
   end
 
+  @doc "Encodes an enter-scene request frame."
   def encode_enter_scene(cid, request_id), do: <<0x02, request_id::64-big, cid::64-big>>
+
+  @doc "Encodes a fast-lane bootstrap request."
   def encode_fast_lane_request(request_id), do: <<0x06, request_id::64-big>>
 
+  @doc "Encodes a UDP fast-lane attach request."
   def encode_fast_lane_attach(request_id, ticket) do
     <<0x07, request_id::64-big, byte_size(ticket)::16-big, ticket::binary>>
   end
 
+  @doc "Encodes a chat request."
   def encode_chat_say(text, request_id) do
     <<0x08, request_id::64-big, byte_size(text)::16-big, text::binary>>
   end
 
+  @doc "Encodes a skill-cast request."
   def encode_skill_cast(skill_id, request_id), do: <<0x09, request_id::64-big, skill_id::16-big>>
 
+  @doc "Encodes a movement input frame for the demo bot."
   def encode_movement_input(
         seq,
         client_tick,
@@ -48,12 +57,15 @@ defmodule Demo.Protocol do
       input_dir_y::float-32-big, speed_scale::float-32-big, movement_flags::16-big>>
   end
 
+  @doc "Encodes a time-sync request."
   def encode_time_sync(request_id, client_send_ts) do
     <<0x03, request_id::64-big, client_send_ts::64-big>>
   end
 
+  @doc "Encodes a heartbeat frame."
   def encode_heartbeat(timestamp), do: <<0x04, timestamp::64-big>>
 
+  @doc "Decodes one server payload frame into a bot-friendly tuple."
   def decode_server(<<0x80, request_id::64-big, status::8>>) do
     {:ok, {:result, status(status), request_id}}
   end

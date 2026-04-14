@@ -1,3 +1,5 @@
+//! Interactive Bevy app entrypoint and world/UI glue.
+
 use crate::{
     config::ClientConfig,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
@@ -99,6 +101,8 @@ impl Default for MovementDispatchState {
     }
 }
 
+/// Runs the interactive Bevy client using the provided config, observe sink,
+/// and optional attached stdio interface.
 pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInterface) {
     let bridge = spawn_network_thread(config.clone(), observer.clone());
     let window_title = format!(

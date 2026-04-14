@@ -9,10 +9,16 @@ defmodule Demo.Runner do
 
   @await_timeout_ms 15_000
 
+  @doc """
+  Starts the demo orchestrator process.
+  """
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @doc """
+  Runs the local demo end-to-end and returns its scenario/files metadata.
+  """
   def run(opts) do
     {:ok, pid} = start_link(opts)
     GenServer.call(pid, :run, :infinity)

@@ -1,3 +1,5 @@
+//! Local fixed-step movement predictor.
+
 use bevy::prelude::{Vec2, Vec3};
 
 use crate::{
@@ -8,6 +10,7 @@ use crate::{
     },
 };
 
+/// Advances the predicted local movement state by one input frame.
 pub fn step(
     previous: &PredictedMoveState,
     input: &MoveInputFrame,

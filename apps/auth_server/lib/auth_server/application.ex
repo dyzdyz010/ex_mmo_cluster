@@ -1,11 +1,20 @@
 defmodule AuthServer.Application do
   # See https://hexdocs.pm/elixir/Application.html
   # for more information on OTP Applications
-  @moduledoc false
+  @moduledoc """
+  Boots the auth service runtime.
+
+  In addition to the Phoenix endpoint, this application optionally starts the
+  cluster-facing auth interface outside tests so gate/runtime flows can discover
+  the auth service and validate tokens against it.
+
+  See `apps/auth_server/lib/auth_server/README.md` for the local subtree layout.
+  """
 
   use Application
 
   @impl true
+  @doc "Starts the auth application supervision tree."
   def start(_type, _args) do
     children =
       [

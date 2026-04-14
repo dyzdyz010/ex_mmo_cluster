@@ -1,3 +1,5 @@
+//! Movement-specific protocol adapters between wire messages and sim types.
+
 use bevy::prelude::{Vec2, Vec3};
 
 use crate::{
@@ -7,6 +9,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+/// Wire-shape movement input frame before conversion to the generic client message.
 pub struct WireMoveInputFrame {
     pub seq: u32,
     pub client_tick: u32,
@@ -17,6 +20,7 @@ pub struct WireMoveInputFrame {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Wire-shape authoritative movement acknowledgement.
 pub struct WireMovementAck {
     pub ack_seq: u32,
     pub auth_tick: u32,
@@ -28,6 +32,7 @@ pub struct WireMovementAck {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Wire-shape remote movement snapshot.
 pub struct WireRemoteMoveSnapshot {
     pub cid: i64,
     pub server_tick: u32,
@@ -90,6 +95,7 @@ impl From<WireRemoteMoveSnapshot> for RemoteMoveSnapshot {
     }
 }
 
+/// Extracts a typed movement ack from a generic server message when possible.
 pub fn movement_ack_from_server(message: &ServerMessage) -> Option<MovementAck> {
     match message {
         ServerMessage::MovementAck {
@@ -121,6 +127,7 @@ pub fn movement_ack_from_server(message: &ServerMessage) -> Option<MovementAck> 
     }
 }
 
+/// Extracts a typed remote movement snapshot from a generic server message when possible.
 pub fn remote_move_snapshot_from_server(message: &ServerMessage) -> Option<RemoteMoveSnapshot> {
     match message {
         ServerMessage::PlayerMove {

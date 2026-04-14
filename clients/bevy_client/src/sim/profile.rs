@@ -1,4 +1,7 @@
+//! Shared client-side movement tuning used by prediction/replay.
+
 #[derive(Debug, Clone, PartialEq)]
+/// Client-side prediction profile that mirrors the server-side movement profile.
 pub struct MovementProfile {
     pub max_speed: f32,
     pub max_accel: f32,

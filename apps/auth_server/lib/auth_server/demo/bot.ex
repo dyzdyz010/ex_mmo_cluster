@@ -19,6 +19,9 @@ defmodule Demo.Bot do
   @tcp_control_transport :tcp
   @udp_transport :udp
 
+  @doc """
+  Starts one scripted demo bot against the real gate/auth/scene pipeline.
+  """
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end

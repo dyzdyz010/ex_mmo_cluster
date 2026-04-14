@@ -1,3 +1,5 @@
+//! Remote actor motion buffering and interpolation.
+
 use bevy::prelude::Vec3;
 use std::collections::VecDeque;
 
@@ -15,17 +17,20 @@ struct BufferedSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Presentation-layer motion sample produced from buffered remote snapshots.
 pub struct RemoteMotionSample {
     pub position: Vec3,
     pub velocity: Vec3,
 }
 
 #[derive(Debug, Clone)]
+/// Buffered remote actor motion state used for interpolation/extrapolation.
 pub struct RemotePlayerState {
     snapshots: VecDeque<BufferedSnapshot>,
 }
 
 impl RemotePlayerState {
+    /// Seeds a new remote actor state from an initial position.
     pub fn seeded(cid: i64, position: Vec3, received_at_secs: f64) -> Self {
         Self::from_snapshot(
             RemoteMoveSnapshot {
@@ -40,6 +45,7 @@ impl RemotePlayerState {
         )
     }
 
+    /// Creates a remote actor state from the first received snapshot.
     pub fn from_snapshot(snapshot: RemoteMoveSnapshot, received_at_secs: f64) -> Self {
         let mut snapshots = VecDeque::with_capacity(MAX_BUFFERED_SNAPSHOTS);
         snapshots.push_back(BufferedSnapshot {
@@ -49,6 +55,7 @@ impl RemotePlayerState {
         Self { snapshots }
     }
 
+    /// Pushes a newer authoritative remote snapshot into the interpolation buffer.
     pub fn push_snapshot(&mut self, snapshot: RemoteMoveSnapshot, received_at_secs: f64) {
         if self
             .snapshots
@@ -69,6 +76,7 @@ impl RemotePlayerState {
         });
     }
 
+    /// Returns the latest known authoritative position.
     pub fn latest_position(&self) -> Vec3 {
         self.snapshots
             .back()
@@ -76,6 +84,7 @@ impl RemotePlayerState {
             .unwrap_or(Vec3::ZERO)
     }
 
+    /// Returns the latest server tick seen for this remote actor.
     pub fn server_tick(&self) -> u32 {
         self.snapshots
             .back()
@@ -83,6 +92,7 @@ impl RemotePlayerState {
             .unwrap_or(0)
     }
 
+    /// Samples a presentation-friendly remote motion state at the provided local time.
     pub fn sample_motion(&self, now_secs: f64) -> RemoteMotionSample {
         if self.snapshots.len() == 1 {
             return extrapolate_single(self.snapshots.back().expect("snapshot"), now_secs);

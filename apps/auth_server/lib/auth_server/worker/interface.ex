@@ -1,10 +1,21 @@
 defmodule AuthServer.Interface do
+  @moduledoc """
+  Auth service registration and downstream data-service lookup process.
+
+  The auth runtime uses this process to:
+
+  - register itself for cluster discovery
+  - locate `data_contact`
+  - resolve the current `data_service` node used by `AuthServer.AuthWorker`
+  """
+
   use GenServer
   require Logger
 
   @resource :auth_server
   @retry_rate 5
 
+  @doc "Starts the auth interface process."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end

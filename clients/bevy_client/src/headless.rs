@@ -1,3 +1,5 @@
+//! Headless client entrypoints used by automation and non-visual QA.
+
 use crate::{
     config::ClientConfig,
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
@@ -14,6 +16,7 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
+/// Options controlling scripted headless runs.
 pub struct HeadlessOptions {
     pub script: String,
     pub wait_for_scene_ms: u64,
@@ -61,6 +64,7 @@ struct HeadlessState {
     fast_lane_status: String,
 }
 
+/// Runs the client headlessly with a scripted action list.
 pub fn run(
     config: ClientConfig,
     observer: ClientObserver,
@@ -109,6 +113,7 @@ pub fn run(
     Ok(())
 }
 
+/// Runs the headless client while exposing the same attached stdio interface as the GUI mode.
 pub fn run_stdio(
     config: ClientConfig,
     observer: ClientObserver,

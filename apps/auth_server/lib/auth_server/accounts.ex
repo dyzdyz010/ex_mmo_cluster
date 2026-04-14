@@ -13,12 +13,14 @@ defmodule AuthServer.Accounts do
   """
 
   @spec find_by_username(binary()) :: {:ok, struct() | nil} | {:error, atom()}
+  @doc "Looks up an account by username through the auth-owned data-service boundary."
   def find_by_username(username) when is_binary(username) do
     dispatch_to_data_service({:account_by_username, username})
   end
 
   @spec character_owned_by_account?(integer(), integer()) ::
           {:ok, struct() | nil} | {:error, atom()}
+  @doc "Returns the character when it is owned by the given account ID."
   def character_owned_by_account?(account_id, cid)
       when is_integer(account_id) and is_integer(cid) do
     dispatch_to_data_service({:character_owned_by_account, account_id, cid})

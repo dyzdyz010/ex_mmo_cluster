@@ -1,11 +1,17 @@
+//! Fixed-step input command types for local prediction and network transport.
+
 use bevy::prelude::Vec2;
 
+/// Bitflag storage for movement modifiers.
 pub type MovementFlags = u16;
 
+/// Run modifier bit.
 pub const MOVEMENT_FLAG_RUN: MovementFlags = 0b0000_0001;
+/// Brake modifier bit.
 pub const MOVEMENT_FLAG_BRAKE: MovementFlags = 0b0000_0010;
 
 #[derive(Debug, Clone, PartialEq)]
+/// One local input sample destined for prediction and transport.
 pub struct MoveInputFrame {
     pub seq: u32,
     pub client_tick: u32,
@@ -16,10 +22,12 @@ pub struct MoveInputFrame {
 }
 
 impl MoveInputFrame {
+    /// Returns whether the frame requests braking behavior.
     pub fn is_braking(&self) -> bool {
         self.movement_flags & MOVEMENT_FLAG_BRAKE != 0
     }
 
+    /// Returns whether the frame requests the run modifier.
     pub fn is_running(&self) -> bool {
         self.movement_flags & MOVEMENT_FLAG_RUN != 0
     }

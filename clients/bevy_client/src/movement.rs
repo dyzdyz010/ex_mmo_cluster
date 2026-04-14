@@ -1,5 +1,8 @@
+//! Simple movement helpers retained for older/local command flows.
+
 use bevy::prelude::{Vec2, Vec3};
 
+/// Computes a naïve movement step from position, direction, speed, and interval.
 pub fn compute_movement_step(
     position: Vec3,
     direction: Vec2,
@@ -16,6 +19,7 @@ pub fn compute_movement_step(
     )
 }
 
+/// Returns the next movement command payload, including single-shot stop sync.
 pub fn next_movement_command(
     position: Vec3,
     direction: Vec2,

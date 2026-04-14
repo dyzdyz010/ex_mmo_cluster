@@ -1,3 +1,5 @@
+//! Lightweight animation-facing helpers derived from runtime velocity.
+
 use bevy::prelude::{Vec2, Vec3};
 
 use crate::presentation::smoothing::smooth_scale;
@@ -5,12 +7,14 @@ use crate::presentation::smoothing::smooth_scale;
 pub const ANIMATION_SCALE_SMOOTHING: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Simplified visual animation state derived from velocity.
 pub struct VisualAnimationState {
     pub moving: bool,
     pub speed_ratio: f32,
     pub heading: Vec2,
 }
 
+/// Derives a lightweight animation state from movement velocity.
 pub fn animation_state_from_velocity(velocity: Vec3, max_speed: f32) -> VisualAnimationState {
     let planar = Vec2::new(velocity.x, velocity.y);
     let speed = planar.length();
@@ -28,6 +32,7 @@ pub fn animation_state_from_velocity(velocity: Vec3, max_speed: f32) -> VisualAn
     }
 }
 
+/// Smoothly animates sprite scale toward the desired animation scale.
 pub fn animated_scale(
     current_scale: Vec3,
     animation: VisualAnimationState,

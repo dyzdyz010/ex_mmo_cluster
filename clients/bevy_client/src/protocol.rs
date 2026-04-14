@@ -1,8 +1,11 @@
+//! Wire-level protocol shapes shared between the client runtime and the gate.
+
 use std::fmt;
 
 pub type NetVec3 = [f64; 3];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Actor identity kind sent over the wire for remote-entity classification.
 pub enum ActorKind {
     Player,
     Npc,
@@ -10,6 +13,7 @@ pub enum ActorKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Messages the client can send to the gate.
 pub enum ClientMessage {
     AuthRequest {
         request_id: u64,
@@ -53,6 +57,7 @@ pub enum ClientMessage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Messages the client can receive from the gate.
 pub enum ServerMessage {
     Result {
         packet_id: u64,
@@ -139,6 +144,7 @@ pub enum ServerMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Binary protocol parse/encode error.
 pub struct ProtocolError(pub String);
 
 impl fmt::Display for ProtocolError {
@@ -149,6 +155,7 @@ impl fmt::Display for ProtocolError {
 
 impl std::error::Error for ProtocolError {}
 
+/// Encodes one client message as a length-prefixed TCP frame.
 pub fn encode_client_frame(message: &ClientMessage) -> Vec<u8> {
     let payload = encode_client_payload(message);
     let mut frame = Vec::with_capacity(4 + payload.len());
@@ -157,6 +164,7 @@ pub fn encode_client_frame(message: &ClientMessage) -> Vec<u8> {
     frame
 }
 
+/// Decodes one server payload (without length prefix) into a structured message.
 pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolError> {
     if payload.is_empty() {
         return Err(ProtocolError("empty payload".into()));
@@ -280,6 +288,7 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
     }
 }
 
+/// Extracts one complete frame from a length-prefixed receive buffer.
 pub fn take_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     if buffer.len() < 4 {
         return None;
@@ -295,6 +304,7 @@ pub fn take_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     Some(payload)
 }
 
+/// Encodes the payload portion of one client message.
 pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
     match message {
         ClientMessage::AuthRequest {

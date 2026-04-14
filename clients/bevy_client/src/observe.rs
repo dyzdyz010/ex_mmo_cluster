@@ -1,3 +1,5 @@
+//! Lightweight structured observe sink for the Bevy client.
+
 use bevy::prelude::Resource;
 use std::{
     fs::{OpenOptions, create_dir_all},
@@ -9,12 +11,14 @@ use std::{
 };
 
 #[derive(Clone, Default, Resource)]
+/// File/stdout-backed structured event sink used by local automation and QA.
 pub struct ClientObserver {
     sink: Option<Sender<String>>,
     stdout: bool,
 }
 
 impl ClientObserver {
+    /// Creates a new observer that can write to a file and/or stdout.
     pub fn new(path: Option<String>, stdout: bool) -> Self {
         let sink = path.and_then(|path| {
             let path = Path::new(&path);
@@ -43,10 +47,12 @@ impl ClientObserver {
         Self { sink, stdout }
     }
 
+    /// Returns whether any observe sink is enabled.
     pub fn enabled(&self) -> bool {
         self.stdout || self.sink.is_some()
     }
 
+    /// Emits one structured observe line.
     pub fn emit(&self, source: &str, event: &str, fields: &[(&str, String)]) {
         if !self.enabled() {
             return;

@@ -1,3 +1,5 @@
+//! Binary entrypoint that chooses between interactive and headless client modes.
+
 use bevy_client::{
     app,
     config::ClientConfig,
@@ -67,6 +69,7 @@ struct LaunchOptions {
 }
 
 impl LaunchOptions {
+    /// Parses launch options from CLI flags plus environment variables.
     fn from_env_and_args() -> Result<Self, String> {
         let defaults = HeadlessOptions::default();
         let mut options = Self {

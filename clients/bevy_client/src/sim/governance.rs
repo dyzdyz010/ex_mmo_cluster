@@ -1,4 +1,7 @@
+//! Policy knobs and stats for local replay/reconciliation behavior.
+
 #[derive(Debug, Clone)]
+/// Limits and thresholds for replay-based reconciliation.
 pub struct ReplayGovernance {
     pub soft_position_error: f32,
     pub hard_snap_distance: f32,
@@ -18,6 +21,7 @@ impl Default for ReplayGovernance {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// High-level reconciliation action taken for one authoritative correction.
 pub enum ReplayAction {
     Accepted,
     Replayed,
@@ -26,6 +30,7 @@ pub enum ReplayAction {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Aggregate stats collected from reconciliation behavior.
 pub struct ReplayGovernanceStats {
     pub total_corrections: u32,
     pub total_replays: u32,
@@ -37,6 +42,7 @@ pub struct ReplayGovernanceStats {
 }
 
 impl ReplayGovernanceStats {
+    /// Records one reconciliation result into the aggregate stats.
     pub fn record(
         &mut self,
         action: ReplayAction,

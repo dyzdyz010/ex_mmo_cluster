@@ -1,5 +1,8 @@
+//! Generic smoothing helpers shared by visual presentation systems.
+
 use bevy::prelude::Vec3;
 
+/// Smoothly moves toward the target or snaps when the correction is large.
 pub fn smooth_translation(
     current: Vec3,
     target: Vec3,
@@ -21,6 +24,7 @@ pub fn smooth_translation(
     current.lerp(target, factor)
 }
 
+/// Smoothly interpolates scale toward the target value.
 pub fn smooth_scale(current: Vec3, target: Vec3, delta_secs: f32, smoothing_speed: f32) -> Vec3 {
     let factor = (smoothing_speed * delta_secs).clamp(0.0, 1.0);
     current.lerp(target, factor)

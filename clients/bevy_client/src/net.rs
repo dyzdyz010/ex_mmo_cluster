@@ -1,3 +1,5 @@
+//! Network runtime thread and client-side protocol state machine.
+
 use crate::{
     config::ClientConfig,
     observe::ClientObserver,
@@ -23,12 +25,14 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Transport used for a particular message family.
 pub enum MessageTransport {
     Tcp,
     Udp,
 }
 
 impl MessageTransport {
+    /// Human-readable label used in logs and stdio output.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Tcp => "TCP",
@@ -44,6 +48,7 @@ impl Default for MessageTransport {
 }
 
 #[derive(Debug, Clone)]
+/// Commands sent from the Bevy app/headless shell into the network thread.
 pub enum NetworkCommand {
     MoveInputSample {
         input_dir: [f32; 2],
@@ -57,6 +62,7 @@ pub enum NetworkCommand {
 }
 
 #[derive(Debug, Clone)]
+/// Events emitted by the network thread back to the game/app layer.
 pub enum NetworkEvent {
     Status(String),
     EnteredScene {
@@ -127,12 +133,14 @@ pub enum NetworkEvent {
 }
 
 #[derive(Clone, Resource)]
+/// App-side handle for sending commands to and receiving events from the network thread.
 pub struct NetworkBridge {
     pub tx: Sender<NetworkCommand>,
     pub rx: Arc<Mutex<Receiver<NetworkEvent>>>,
 }
 
 impl NetworkBridge {
+    /// Sends one command to the network thread, ignoring disconnects.
     pub fn send(&self, command: NetworkCommand) {
         let _ = self.tx.send(command);
     }
@@ -866,6 +874,7 @@ impl ClientRuntime {
     }
 }
 
+/// Spawns the background network thread and returns the app-facing bridge.
 pub fn spawn_network_thread(config: ClientConfig, observer: ClientObserver) -> NetworkBridge {
     let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();

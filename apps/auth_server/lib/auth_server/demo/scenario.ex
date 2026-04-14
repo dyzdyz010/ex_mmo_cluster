@@ -82,6 +82,9 @@ defmodule Demo.Scenario do
     }
   ]
 
+  @doc """
+  Builds the stable demo scenario from defaults plus targeted overrides.
+  """
   def build(opts \\ []) do
     human_count =
       opts
@@ -123,6 +126,9 @@ defmodule Demo.Scenario do
     }
   end
 
+  @doc """
+  Issues a token for one demo actor using the real auth worker.
+  """
   def issue_token(%{username: username, account_id: account_id, cid: cid}) do
     username
     |> AuthServer.AuthWorker.build_session_claims(
@@ -134,6 +140,9 @@ defmodule Demo.Scenario do
     |> AuthServer.AuthWorker.issue_token()
   end
 
+  @doc """
+  Projects the scenario into the seed targets expected by `Demo.Seeds`.
+  """
   def as_seed_targets(%{humans: humans, bots: bots}) do
     humans ++ bots
     |> Enum.map(fn spec ->

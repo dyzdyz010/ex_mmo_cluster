@@ -10,12 +10,18 @@ defmodule Demo.Seeds do
   @dummy_password "demo-password"
   @dummy_salt "demo-salt"
 
+  @doc """
+  Ensures all human/bot identities for the scenario exist in the database.
+  """
   def ensure_demo_targets!(scenario) do
     scenario
     |> Demo.Scenario.as_seed_targets()
     |> Enum.map(&ensure_identity!/1)
   end
 
+  @doc """
+  Returns a scenario with real seeded tokens/accounts/characters attached.
+  """
   def apply_seeded_identities!(scenario) do
     identities = ensure_demo_targets!(scenario)
 
@@ -39,6 +45,9 @@ defmodule Demo.Seeds do
     %{scenario | human: hd(humans), humans: humans, bots: bots}
   end
 
+  @doc """
+  Creates storage and runs data-service migrations needed by the local demo.
+  """
   def ensure_storage_and_migrations! do
     repo_config = Repo.config()
 

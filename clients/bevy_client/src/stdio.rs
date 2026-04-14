@@ -1,3 +1,5 @@
+//! Attached stdio automation interface for the normal client runtime.
+
 use bevy::prelude::{Resource, Vec2, Vec3};
 use std::{
     io::{self, BufRead},
@@ -9,6 +11,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+/// Commands accepted by the attached stdio interface.
 pub enum ClientStdioCommand {
     Snapshot,
     Position,
@@ -27,15 +30,18 @@ pub enum ClientStdioCommand {
 }
 
 #[derive(Clone, Default, Resource)]
+/// Receiver side of the attached stdio automation channel.
 pub struct ClientStdioInterface {
     rx: Option<Arc<Mutex<Receiver<ClientStdioCommand>>>>,
 }
 
 impl ClientStdioInterface {
+    /// Returns a disabled stdio interface.
     pub fn disabled() -> Self {
         Self { rx: None }
     }
 
+    /// Spawns the stdin reader thread and returns an enabled stdio interface.
     pub fn enabled() -> Self {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -95,6 +101,7 @@ impl ClientStdioInterface {
         }
     }
 
+    /// Attempts to read the next parsed stdio command without blocking.
     pub fn try_recv(&self) -> Option<ClientStdioCommand> {
         let rx = self.rx.as_ref()?;
         let Ok(receiver) = rx.lock() else {
@@ -105,6 +112,7 @@ impl ClientStdioInterface {
     }
 }
 
+/// Emits one structured stdio response line for automation.
 pub fn emit(event: &str, fields: &[(&str, String)]) {
     let mut line = format!("client_stdio event={event:?}");
     for (key, value) in fields {
@@ -116,6 +124,7 @@ pub fn emit(event: &str, fields: &[(&str, String)]) {
     println!("{line}");
 }
 
+/// Builds the standard snapshot key/value fields used by interactive and headless modes.
 pub fn snapshot_fields(
     status: &str,
     scene_joined: bool,

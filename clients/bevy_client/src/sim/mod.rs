@@ -1,3 +1,5 @@
+//! Client-side movement simulation, prediction, and reconciliation modules.
+
 pub mod governance;
 pub mod history;
 pub mod predictor;
