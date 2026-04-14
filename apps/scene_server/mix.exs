@@ -26,7 +26,7 @@ defmodule SceneServer.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:rustler, "~> 0.36.1"},
+      {:rustler, "~> 0.37.3"},
       {:poolboy, "~> 1.5.1"},
       {:observer_cli, "~> 1.7"},
       {:benchee, "~> 1.0", only: :dev},
