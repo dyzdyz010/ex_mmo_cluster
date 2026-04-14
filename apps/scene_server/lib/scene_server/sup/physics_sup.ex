@@ -1,6 +1,11 @@
 defmodule SceneServer.PhysicsSup do
+  @moduledoc """
+  Supervisor subtree for shared native physics integration.
+  """
+
   use Supervisor
 
+  @doc "Starts the physics subtree root."
   def start_link(opts \\ []) do
     Supervisor.start_link(__MODULE__, [], opts)
   end

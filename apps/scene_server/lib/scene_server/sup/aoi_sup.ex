@@ -1,4 +1,13 @@
 defmodule SceneServer.AoiSup do
+  @moduledoc """
+  Supervisor subtree for shared AOI infrastructure.
+
+  Layout:
+
+  - `SceneServer.AoiManager` — shared octree/index process
+  - `SceneServer.AoiItemSup` — dynamic supervisor for per-actor AOI items
+  """
+
   use Supervisor
 
   # defp poolboy_config() do
@@ -10,6 +19,7 @@ defmodule SceneServer.AoiSup do
   #   ]
   # end
 
+  @doc "Starts the AOI subtree root."
   def start_link(opts \\ []) do
     Supervisor.start_link(__MODULE__, [], opts)
   end

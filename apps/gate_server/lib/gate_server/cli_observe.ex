@@ -1,11 +1,18 @@
 defmodule GateServer.CliObserve do
-  @moduledoc false
+  @moduledoc """
+  Lightweight file-backed structured observe sink for the gate runtime.
+
+  This is used by local automation and E2E flows to inspect real gateway
+  behavior without introducing a dedicated telemetry dependency.
+  """
 
   @writer __MODULE__.Writer
   @writer_key {__MODULE__, :writer}
 
+  @doc "Returns whether gate-side observe logging is enabled."
   def enabled?, do: not is_nil(path())
 
+  @doc "Appends a structured observe event when logging is enabled."
   def emit(event, fields_or_fun \\ %{})
 
   def emit(event, fields_or_fun) do
@@ -60,6 +67,7 @@ defmodule GateServer.CliObserve do
   end
 
   defmodule Writer do
+    @moduledoc false
     use GenServer
 
     @impl true

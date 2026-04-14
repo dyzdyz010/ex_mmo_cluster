@@ -17,6 +17,7 @@ defmodule GateServer.UdpAcceptor do
   use GenServer
   require Logger
 
+  @doc "Standard child spec for the shared UDP acceptor worker."
   def child_spec(opts) do
     %{
       id: __MODULE__,
@@ -27,6 +28,7 @@ defmodule GateServer.UdpAcceptor do
     }
   end
 
+  @doc "Starts the shared UDP fast-lane listener."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, opts)
   end

@@ -1,8 +1,17 @@
 defmodule SceneServer.PhysicsManager do
+  @moduledoc """
+  Owner of the shared native physics/scene reference.
+
+  Player and NPC actors do not create native physics systems directly. They ask
+  `PhysicsManager` for the shared reference so the native scene layer remains
+  centrally owned and supervised.
+  """
+
   use GenServer
 
   require Logger
 
+  @doc "Starts the shared physics manager."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end
@@ -16,6 +25,7 @@ defmodule SceneServer.PhysicsManager do
     {:ok, %{physys_ref: physys_ref}}
   end
 
+  @doc "Returns the shared native physics system reference."
   @spec get_physics_system_ref :: {:ok, reference()}
   def get_physics_system_ref() do
     GenServer.call(__MODULE__, :get_physics_system_ref)

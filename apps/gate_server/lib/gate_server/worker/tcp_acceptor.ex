@@ -1,6 +1,10 @@
 defmodule GateServer.TcpAcceptor do
   @moduledoc """
-  Listen to port and accept connections.
+  TCP listening worker for the gate runtime.
+
+  This worker owns the listening socket only. Each accepted client socket is
+  immediately handed off to a fresh `GateServer.TcpConnection` process under
+  `GateServer.TcpConnectionSup`.
   """
 
   @behaviour GenServer
@@ -9,6 +13,7 @@ defmodule GateServer.TcpAcceptor do
 
   @port 29000
 
+  @doc "Standard child spec for the TCP acceptor worker."
   def child_spec(opts) do
     %{
       id: __MODULE__,
@@ -19,6 +24,7 @@ defmodule GateServer.TcpAcceptor do
     }
   end
 
+  @doc "Starts the TCP acceptor."
   def start_link(opts) do
     GenServer.start_link(__MODULE__, [], opts)
   end

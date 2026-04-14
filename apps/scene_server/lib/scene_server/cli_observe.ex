@@ -1,11 +1,18 @@
 defmodule SceneServer.CliObserve do
-  @moduledoc false
+  @moduledoc """
+  Lightweight file-backed structured observe sink for the scene runtime.
+
+  This module lets scene-side actors emit structured breadcrumbs for local
+  automation and E2E inspection without coupling to a larger telemetry system.
+  """
 
   @writer __MODULE__.Writer
   @writer_key {__MODULE__, :writer}
 
+  @doc "Returns whether scene-side observe logging is enabled."
   def enabled?, do: not is_nil(path())
 
+  @doc "Appends a structured observe event when logging is enabled."
   def emit(event, fields_or_fun \\ %{})
 
   def emit(event, fields_or_fun) do
@@ -60,6 +67,7 @@ defmodule SceneServer.CliObserve do
   end
 
   defmodule Writer do
+    @moduledoc false
     use GenServer
 
     @impl true

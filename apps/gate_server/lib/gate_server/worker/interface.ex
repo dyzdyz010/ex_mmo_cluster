@@ -1,9 +1,19 @@
 defmodule GateServer.Interface do
+  @moduledoc """
+  Gate service registration and downstream service lookup process.
+
+  `GateServer.TcpConnection` queries this process to find the current
+  `scene_server` and `auth_server` nodes. The process caches successful lookups
+  but stays small so supervision and service-discovery concerns remain separate
+  from connection logic.
+  """
+
   use GenServer
   require Logger
 
   @resource :gate_server
 
+  @doc "Starts the gate service interface process."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end

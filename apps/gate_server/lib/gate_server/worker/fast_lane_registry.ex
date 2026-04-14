@@ -20,6 +20,7 @@ defmodule GateServer.FastLaneRegistry do
   @default_ticket_ttl_ms 60_000
   @default_session_idle_timeout_ms 15_000
 
+  @doc "Starts the shared UDP fast-lane registry."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, opts)
   end

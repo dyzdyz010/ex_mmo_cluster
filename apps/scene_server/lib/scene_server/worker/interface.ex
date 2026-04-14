@@ -1,9 +1,17 @@
 defmodule SceneServer.Interface do
+  @moduledoc """
+  Scene service registration entrypoint.
+
+  This process is intentionally small: it joins the service-discovery cluster
+  and registers the scene node so gate/auth/demo tooling can locate it.
+  """
+
   use GenServer
   require Logger
 
   @resource :scene_server
 
+  @doc "Starts the scene service interface process."
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, [], opts)
   end
