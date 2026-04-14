@@ -32,7 +32,7 @@ defmodule GateServer.CodecTest do
                  seq: 1,
                  client_tick: 500,
                  dt_ms: 33,
-                 input_dir: {0.0, 0.0},
+                 input_dir: {+0.0, +0.0},
                  speed_scale: 1.0,
                  movement_flags: 2
                }}} == Codec.decode(msg)
@@ -273,7 +273,7 @@ defmodule GateServer.CodecTest do
                  seq: 9,
                  client_tick: 1000,
                  dt_ms: 33,
-                 input_dir: {1.0, 0.0},
+                 input_dir: {1.0, +0.0},
                  speed_scale: 1.0,
                  movement_flags: 2
                }}} = Codec.decode(client_msg)

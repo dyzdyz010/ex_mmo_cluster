@@ -807,9 +807,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, ^port2,
-             <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
-               23.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big,
-               0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0::8>>}} =
+              <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
+               23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
+               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
@@ -872,8 +872,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             <<0x83, 88::64-big, 3::32-big, 31.0::float-64-big, 32.0::float-64-big,
-              33.0::float-64-big, 0.0::float-64-big, 1.0::float-64-big, 0.0::float-64-big,
-              0.0::float-64-big, 0.0::float-64-big, 0.0::float-64-big, 0::8>>} =
+              33.0::float-64-big, +0.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big,
+              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
