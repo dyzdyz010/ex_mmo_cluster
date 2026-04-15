@@ -59,6 +59,7 @@ struct HeadlessState {
     remote_players: HashMap<i64, Vec3>,
     remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
     selected_target_cid: Option<i64>,
+    selected_target_point: Option<Vec3>,
     last_local_transport: Option<MessageTransport>,
     last_remote_transport: Option<MessageTransport>,
     movement_transport: MessageTransport,
@@ -229,11 +230,24 @@ pub fn run_stdio(
                 }
                 ClientStdioCommand::Target(target_cid) => {
                     state.selected_target_cid = Some(target_cid);
+                    state.selected_target_point = None;
                     emit_stdio("target", &[("target_cid", target_cid.to_string())]);
                 }
                 ClientStdioCommand::ClearTarget => {
                     state.selected_target_cid = None;
                     emit_stdio("target_cleared", &[]);
+                }
+                ClientStdioCommand::TargetPoint(point) => {
+                    state.selected_target_point = Some(point);
+                    state.selected_target_cid = None;
+                    emit_stdio(
+                        "target_point",
+                        &[("point", format_vec3(point))],
+                    );
+                }
+                ClientStdioCommand::ClearTargetPoint => {
+                    state.selected_target_point = None;
+                    emit_stdio("target_point_cleared", &[]);
                 }
                 ClientStdioCommand::Chat(text) => {
                     observer.emit("headless", "chat", &[("text", text.clone())]);
@@ -242,6 +256,11 @@ pub fn run_stdio(
                 }
                 ClientStdioCommand::Skill { skill_id, target_cid } => {
                     let target_cid = target_cid.or(state.selected_target_cid);
+                    let target_position = if skill_id == 3 {
+                        state.selected_target_point.map(vec3_to_net)
+                    } else {
+                        None
+                    };
                     observer.emit(
                         "headless",
                         "skill",
@@ -253,12 +272,18 @@ pub fn run_stdio(
                                     .map(|value: i64| value.to_string())
                                     .unwrap_or_else(|| "auto".to_string()),
                             ),
+                            (
+                                "target_point",
+                                target_position
+                                    .map(|value| format_net_vec(value))
+                                    .unwrap_or_else(|| "n/a".to_string()),
+                            ),
                         ],
                     );
                     bridge.send(NetworkCommand::CastSkillTargeted {
                         skill_id,
                         target_cid,
-                        target_position: None,
+                        target_position,
                     });
                     emit_stdio(
                         "skill_sent",
@@ -269,6 +294,12 @@ pub fn run_stdio(
                                 target_cid
                                     .map(|value: i64| value.to_string())
                                     .unwrap_or_else(|| "auto".to_string()),
+                            ),
+                            (
+                                "target_point",
+                                target_position
+                                    .map(|value| format_net_vec(value))
+                                    .unwrap_or_else(|| "n/a".to_string()),
                             ),
                         ],
                     );
@@ -389,11 +420,16 @@ fn run_action(
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }
         HeadlessAction::Skill(skill_id) => {
+            let target_position = if skill_id == 3 {
+                state.selected_target_point.map(vec3_to_net)
+            } else {
+                None
+            };
             observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
             bridge.send(NetworkCommand::CastSkillTargeted {
                 skill_id,
                 target_cid: state.selected_target_cid,
-                target_position: None,
+                target_position,
             });
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }
@@ -583,6 +619,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             state.remote_players.clear();
             state.remote_actor_identity.clear();
             state.selected_target_cid = None;
+            state.selected_target_point = None;
         }
         NetworkEvent::PlayerEnter { cid, location } => {
             state.remote_players.insert(cid, vec3_from_net(location));
@@ -705,6 +742,10 @@ fn parse_u16(value: &str) -> Result<u16, String> {
 
 fn vec3_from_net(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
+}
+
+fn vec3_to_net(value: Vec3) -> [f64; 3] {
+    [value.x as f64, value.y as f64, value.z as f64]
 }
 
 fn format_vec3(value: Vec3) -> String {

@@ -165,9 +165,17 @@ try {
   $client.StandardInput.Flush()
   Start-Sleep -Milliseconds 1200
 
-  $client.StandardInput.WriteLine("skill 3 90001")
+  $client.StandardInput.WriteLine("target_point 1083 1001 90")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 300
+
+  $client.StandardInput.WriteLine("skill 3")
   $client.StandardInput.Flush()
   Start-Sleep -Milliseconds 1200
+
+  $client.StandardInput.WriteLine("clear_target_point")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 200
 
   $server.StandardInput.WriteLine("npc_state 90001")
   $server.StandardInput.Flush()
@@ -223,7 +231,8 @@ try {
     'client_stdio event="chat_sent".*e2e-stdio',
     'client_stdio event="skill_sent".*skill_id="1"',
     'client_stdio event="skill_sent".*skill_id="2"',
-    'client_stdio event="skill_sent".*skill_id="3"',
+    'client_stdio event="target_point".*1083.0,1001.0,90.0',
+    'client_stdio event="skill_sent".*skill_id="3".*target_point="1083.0,1001.0,90.0"',
     'client_stdio event="skill_sent".*skill_id="4"',
     'client_stdio event="position".*local_position=',
     'client_stdio event="quit".*final_status='

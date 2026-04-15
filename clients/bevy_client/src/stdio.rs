@@ -20,6 +20,8 @@ pub enum ClientStdioCommand {
     Npcs,
     Target(i64),
     ClearTarget,
+    TargetPoint(Vec3),
+    ClearTargetPoint,
     Chat(String),
     Skill {
         skill_id: u16,
@@ -54,7 +56,7 @@ impl ClientStdioInterface {
                 "ready",
                 &[(
                     "commands",
-                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
+                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
                         .to_string(),
                 )],
             );
@@ -72,7 +74,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
+                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
                                         .to_string(),
                                 )],
                             );
@@ -192,6 +194,10 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::ClearTarget);
     }
 
+    if line == "clear_target_point" {
+        return Ok(ClientStdioCommand::ClearTargetPoint);
+    }
+
     if line == "quit" || line == "exit" {
         return Ok(ClientStdioCommand::Quit);
     }
@@ -201,6 +207,28 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
             .parse::<i64>()
             .map_err(|error| format!("invalid target cid: {error}"))?;
         return Ok(ClientStdioCommand::Target(parsed));
+    }
+
+    if let Some(rest) = line.strip_prefix("target_point ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 2 || parts.len() > 3 {
+            return Err("target_point expects: target_point <x> <y> [z]".to_string());
+        }
+
+        let x = parts[0]
+            .parse::<f32>()
+            .map_err(|error| format!("invalid target x: {error}"))?;
+        let y = parts[1]
+            .parse::<f32>()
+            .map_err(|error| format!("invalid target y: {error}"))?;
+        let z = if parts.len() == 3 {
+            parts[2]
+                .parse::<f32>()
+                .map_err(|error| format!("invalid target z: {error}"))?
+        } else {
+            90.0
+        };
+        return Ok(ClientStdioCommand::TargetPoint(Vec3::new(x, y, z)));
     }
 
     if let Some(text) = line.strip_prefix("chat ") {
@@ -290,6 +318,14 @@ mod tests {
         assert_eq!(
             parse_command("clear_target").unwrap(),
             ClientStdioCommand::ClearTarget
+        );
+        assert_eq!(
+            parse_command("target_point 1080 1000 90").unwrap(),
+            ClientStdioCommand::TargetPoint(Vec3::new(1080.0, 1000.0, 90.0))
+        );
+        assert_eq!(
+            parse_command("clear_target_point").unwrap(),
+            ClientStdioCommand::ClearTargetPoint
         );
         assert_eq!(parse_command("stop").unwrap(), ClientStdioCommand::Stop);
         assert_eq!(parse_command("quit").unwrap(), ClientStdioCommand::Quit);

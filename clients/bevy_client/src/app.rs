@@ -18,7 +18,7 @@ use bevy::{
     app::AppExit,
     input::keyboard::{Key, KeyboardInput},
     prelude::*,
-    window::WindowPlugin,
+    window::{PrimaryWindow, WindowPlugin},
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -45,6 +45,9 @@ struct EffectVisual {
     radius: f32,
 }
 
+#[derive(Component)]
+struct TargetPointMarker;
+
 #[derive(Resource, Default)]
 struct WorldState {
     status: String,
@@ -70,6 +73,7 @@ struct WorldState {
     last_local_update_transport: Option<MessageTransport>,
     last_remote_move_transport: Option<MessageTransport>,
     selected_target_cid: Option<i64>,
+    selected_target_point: Option<Vec3>,
 }
 
 #[derive(Resource, Default)]
@@ -162,11 +166,13 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
                 toggle_chat_mode,
                 collect_chat_text,
                 handle_target_selection_input,
+                handle_point_target_input,
                 handle_skill_input,
                 sample_movement_input,
                 poll_stdio_commands,
                 movement_sender,
                 (sync_player_visuals, camera_follow_local_player).chain(),
+                update_target_point_marker,
                 update_effect_visuals,
                 update_hud_text,
             ),
@@ -226,6 +232,17 @@ fn setup(mut commands: Commands) {
             ..default()
         },
     ));
+
+    commands.spawn((
+        TargetPointMarker,
+        Sprite {
+            color: Color::srgba(0.95, 0.35, 0.95, 0.8),
+            custom_size: Some(Vec2::new(18.0, 18.0)),
+            ..default()
+        },
+        Visibility::Hidden,
+        Transform::from_xyz(0.0, 0.0, 6.0),
+    ));
 }
 
 fn spawn_grid(commands: &mut Commands) {
@@ -270,6 +287,7 @@ fn poll_network_events(
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
                 world_state.selected_target_cid = None;
+                world_state.selected_target_point = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
             }
@@ -444,6 +462,7 @@ fn poll_network_events(
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
                 world_state.selected_target_cid = None;
+                world_state.selected_target_point = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
@@ -569,8 +588,37 @@ fn handle_target_selection_input(
     };
 
     world_state.selected_target_cid = next;
+    world_state.selected_target_point = None;
     if let Some(cid) = next {
         observer.emit("input", "target_selected", &[("cid", cid.to_string())]);
+    }
+}
+
+fn handle_point_target_input(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Single<&Transform, (With<Camera2d>, Without<PlayerVisual>)>,
+    mut world_state: ResMut<WorldState>,
+    observer: Res<ClientObserver>,
+) {
+    if mouse.just_pressed(MouseButton::Right) {
+        let Ok(window) = windows.single() else {
+            return;
+        };
+
+        if let Some(cursor) = window.cursor_position() {
+            let world = cursor_to_world(cursor, window, camera.translation);
+            world_state.selected_target_point = Some(world);
+            world_state.selected_target_cid = None;
+            observer.emit(
+                "input",
+                "target_point_selected",
+                &[(
+                    "point",
+                    format!("{:.1},{:.1},{:.1}", world.x, world.y, world.z),
+                )],
+            );
+        }
     }
 }
 
@@ -580,11 +628,23 @@ fn send_targeted_skill(
     world_state: &WorldState,
     skill_id: u16,
 ) {
-    let target_cid = world_state.selected_target_cid;
+    let target_position = if skill_id == 3 {
+        world_state
+            .selected_target_point
+            .map(|point| [point.x as f64, point.y as f64, point.z as f64])
+    } else {
+        None
+    };
+    let target_cid = if target_position.is_some() {
+        None
+    } else {
+        world_state.selected_target_cid
+    };
+
     bridge.send(NetworkCommand::CastSkillTargeted {
         skill_id,
         target_cid,
-        target_position: None,
+        target_position,
     });
 
     observer.emit(
@@ -592,14 +652,20 @@ fn send_targeted_skill(
         "skill_key",
         &[
             ("skill_id", skill_id.to_string()),
-                            (
-                                "target_cid",
-                                target_cid
-                                    .map(|value: i64| value.to_string())
-                                    .unwrap_or_else(|| "auto".to_string()),
-                            ),
-                        ],
-                    );
+            (
+                "target_cid",
+                target_cid
+                    .map(|value: i64| value.to_string())
+                    .unwrap_or_else(|| "auto".to_string()),
+            ),
+            (
+                "target_point",
+                target_position
+                    .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+        ],
+    );
 }
 
 fn sample_movement_input(
@@ -804,22 +870,46 @@ fn poll_stdio_commands(
             }
             ClientStdioCommand::Target(target_cid) => {
                 world_state.selected_target_cid = Some(target_cid);
+                world_state.selected_target_point = None;
                 emit_stdio("target", &[("target_cid", target_cid.to_string())]);
             }
             ClientStdioCommand::ClearTarget => {
                 world_state.selected_target_cid = None;
                 emit_stdio("target_cleared", &[]);
             }
+            ClientStdioCommand::TargetPoint(point) => {
+                world_state.selected_target_point = Some(point);
+                world_state.selected_target_cid = None;
+                emit_stdio(
+                    "target_point",
+                    &[("point", format!("{:.1},{:.1},{:.1}", point.x, point.y, point.z))],
+                );
+            }
+            ClientStdioCommand::ClearTargetPoint => {
+                world_state.selected_target_point = None;
+                emit_stdio("target_point_cleared", &[]);
+            }
             ClientStdioCommand::Chat(text) => {
                 bridge.send(NetworkCommand::Chat(text.clone()));
                 emit_stdio("chat_sent", &[("text", text)]);
             }
             ClientStdioCommand::Skill { skill_id, target_cid } => {
-                let target_cid = target_cid.or(world_state.selected_target_cid);
+                let target_position = if skill_id == 3 {
+                    world_state
+                        .selected_target_point
+                        .map(|point| [point.x as f64, point.y as f64, point.z as f64])
+                } else {
+                    None
+                };
+                let target_cid = if target_position.is_some() {
+                    None
+                } else {
+                    target_cid.or(world_state.selected_target_cid)
+                };
                 bridge.send(NetworkCommand::CastSkillTargeted {
                     skill_id,
                     target_cid,
-                    target_position: None,
+                    target_position,
                 });
                 emit_stdio(
                     "skill_sent",
@@ -830,6 +920,12 @@ fn poll_stdio_commands(
                             target_cid
                                 .map(|value| value.to_string())
                                 .unwrap_or_else(|| "auto".to_string()),
+                        ),
+                        (
+                            "target_point",
+                            target_position
+                                .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
+                                .unwrap_or_else(|| "n/a".to_string()),
                         ),
                     ],
                 );
@@ -1012,6 +1108,18 @@ fn update_effect_visuals(
     }
 }
 
+fn update_target_point_marker(
+    world_state: Res<WorldState>,
+    mut marker: Single<(&mut Transform, &mut Visibility), With<TargetPointMarker>>,
+) {
+    if let Some(point) = world_state.selected_target_point {
+        *marker.1 = Visibility::Visible;
+        marker.0.translation = point + Vec3::new(0.0, 0.0, 6.0);
+    } else {
+        *marker.1 = Visibility::Hidden;
+    }
+}
+
 fn update_hud_text(
     world_state: Res<WorldState>,
     chat_state: Res<ChatState>,
@@ -1030,9 +1138,13 @@ fn update_hud_text(
         .and_then(|cid| world_state.remote_actor_identity.get(&cid))
         .map(|identity| format!("{} ({cid})", identity.name, cid = identity.cid))
         .unwrap_or_else(|| "none".to_string());
+    let selected_point = world_state
+        .selected_target_point
+        .map(|value| format!("{:.1}, {:.1}, {:.1}", value.x, value.y, value.z))
+        .unwrap_or_else(|| "none".to_string());
 
     hud.0 = format!(
-        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Tab cycle target | 1-4 cast skills | Enter chat",
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nselected point: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Tab cycle target | RMB set point | 1-4 cast skills | Enter chat",
         world_state.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
@@ -1048,6 +1160,7 @@ fn update_hud_text(
             .filter(|identity| identity.is_npc())
             .count(),
         selected_target,
+        selected_point,
         world_state.local_cid,
         world_state
             .local_position
@@ -1141,6 +1254,12 @@ fn push_line(buffer: &mut VecDeque<String>, line: String) {
 
 fn net_to_world(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
+}
+
+fn cursor_to_world(cursor: Vec2, window: &Window, camera_translation: Vec3) -> Vec3 {
+    let world_x = cursor.x - window.width() * 0.5 + camera_translation.x;
+    let world_y = cursor.y - window.height() * 0.5 + camera_translation.y;
+    Vec3::new(world_x, world_y, 90.0)
 }
 
 fn effect_color(kind: EffectCueKind) -> Color {
