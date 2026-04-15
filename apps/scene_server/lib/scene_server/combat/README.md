@@ -8,6 +8,10 @@ actors.
 - `Profile` — HP / respawn defaults
 - `State` — HP/death state machine
 - `Skill` — player-facing skill definitions
+- `CastRequest` — normalized cast targeting input
+- `EffectSpec` — declarative damage/follow-up data
+- `EffectEvent` — replicated gameplay cue payload
+- `Executor` — generic authoritative skill execution engine
 - `Targeting` — AOI-backed actor targeting
 
 ## Relationship to actors

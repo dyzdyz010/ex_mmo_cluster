@@ -84,7 +84,8 @@ defmodule GateServer.CodecEdgeCasesTest do
         <<0x06, 5::64-big>>,
         <<0x07, 6::64-big, 3::16-big, "tok">>,
         <<0x08, 7::64-big, 2::16-big, "hi">>,
-        <<0x09, 8::64-big, 1::16-big>>
+        <<0x09, 8::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
       ]
 
       for msg <- messages do
@@ -107,7 +108,8 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:fast_lane_attached, :ok, 0},
         {:movement_ack, 0, 0, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0},
         {:chat_message, 0, "npc", "hi"},
-        {:skill_event, 0, 1, {0.0, 0.0, 0.0}}
+        {:skill_event, 0, 1, {0.0, 0.0, 0.0}},
+        {:effect_event, 0, 1, :projectile, {0.0, 0.0, 0.0}, nil, {0.0, 0.0, 0.0}, 0.0, 100}
       ]
 
       for msg <- messages do

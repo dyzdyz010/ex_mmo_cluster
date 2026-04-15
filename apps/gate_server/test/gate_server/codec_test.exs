@@ -80,7 +80,19 @@ defmodule GateServer.CodecTest do
     end
 
     test "decodes skill_cast with request_id and skill id" do
-      assert {:ok, {:skill_cast, 1, 43}} == Codec.decode(<<0x09, 43::64-big, 1::16-big>>)
+      assert {:ok,
+              {:skill_cast,
+               %{
+                 skill_id: 1,
+                 request_id: 43,
+                 target_kind: :auto,
+                 target_cid: nil,
+                 target_position: {0.0, 0.0, 0.0}
+               }}} ==
+               Codec.decode(
+                 <<0x09, 43::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
+                   0.0::float-64-big, 0.0::float-64-big>>
+               )
     end
   end
 
@@ -252,6 +264,17 @@ defmodule GateServer.CodecTest do
     test "encodes actor_identity" do
       {:ok, bin} = Codec.encode({:actor_identity, 90_001, :npc, "Training Slime"})
       assert <<0x8E, 90_001::64-big, 1::8, 14::16-big, "Training Slime">> = bin
+    end
+
+    test "encodes effect_event" do
+      {:ok, bin} =
+        Codec.encode(
+          {:effect_event, 7, 4, :projectile, {1.0, 2.0, 3.0}, 42, {4.0, 5.0, 6.0}, 96.0, 350}
+        )
+
+      assert <<0x8F, 7::64-big, 4::16-big, 1::8, 42::64-big, 1.0::float-64-big,
+               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
+               6.0::float-64-big, 96.0::float-64-big, 350::32-big>> = bin
     end
   end
 

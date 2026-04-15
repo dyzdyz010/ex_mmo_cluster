@@ -66,10 +66,11 @@ defmodule GateServer.CodecDispatchTest do
     end
 
     test "skill_cast is in codec range" do
-      msg = <<0x09, 12::64-big, 1::16-big>>
+      msg = <<0x09, 12::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
+              0.0::float-64-big, 0.0::float-64-big>>
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, {:skill_cast, 1, 12}} = Codec.decode(msg)
+      assert {:ok, {:skill_cast, %{skill_id: 1, request_id: 12, target_kind: :auto}}} = Codec.decode(msg)
     end
   end
 

@@ -14,11 +14,19 @@ defmodule SceneServer.Npc.Attack do
   """
   @spec skill(Profile.t()) :: Skill.t()
   def skill(%Profile{} = profile) do
+    base =
+      case Skill.fetch(profile.skill_id) do
+        {:ok, skill} -> skill
+        {:error, _} -> Skill.fetch(101) |> elem(1)
+      end
+
     %Skill{
-      id: profile.skill_id,
-      damage: profile.skill_damage,
-      radius: profile.skill_radius,
-      cooldown_ms: profile.skill_cooldown_ms
+      base
+      | id: profile.skill_id,
+        name: profile.name,
+        cooldown_ms: profile.skill_cooldown_ms,
+        range: profile.skill_radius,
+        effects: Enum.map(base.effects, fn effect -> %{effect | damage: profile.skill_damage} end)
     }
   end
 end

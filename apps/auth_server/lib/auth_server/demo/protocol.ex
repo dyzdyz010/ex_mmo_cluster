@@ -42,7 +42,10 @@ defmodule Demo.Protocol do
   end
 
   @doc "Encodes a skill-cast request."
-  def encode_skill_cast(skill_id, request_id), do: <<0x09, request_id::64-big, skill_id::16-big>>
+  def encode_skill_cast(skill_id, request_id),
+    do:
+      <<0x09, request_id::64-big, skill_id::16-big, 0::8, -1::64-big, 0.0::float-64-big,
+        0.0::float-64-big, 0.0::float-64-big>>
 
   @doc "Encodes a movement input frame for the demo bot."
   def encode_movement_input(
@@ -154,6 +157,23 @@ defmodule Demo.Protocol do
           hp_after::16-big, x::float-64-big, y::float-64-big, z::float-64-big>>
       ) do
     {:ok, {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, {x, y, z}}}
+  end
+
+  def decode_server(
+        <<0x8F, source_cid::64-big, skill_id::16-big, cue_kind::8, target_cid::64-big-signed,
+          ox::float-64-big, oy::float-64-big, oz::float-64-big, tx::float-64-big,
+          ty::float-64-big, tz::float-64-big, radius::float-64-big, duration_ms::32-big>>
+      ) do
+    target =
+      if target_cid < 0 do
+        nil
+      else
+        target_cid
+      end
+
+    {:ok,
+     {:effect_event, source_cid, skill_id, cue_kind, target, {ox, oy, oz}, {tx, ty, tz}, radius,
+      duration_ms}}
   end
 
   def decode_server(<<0x8E, cid::64-big, actor_kind::8, nlen::16-big, name::binary-size(nlen)>>) do

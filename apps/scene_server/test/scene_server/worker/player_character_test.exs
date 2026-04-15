@@ -107,11 +107,10 @@ defmodule SceneServer.PlayerCharacterTest do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
     state = movement_state(aoi_ref, connection_pid)
-    {:ok, skill} = SceneServer.Combat.Skill.fetch(1)
 
     assert {:reply, {:ok, 75}, next_state} =
              SceneServer.PlayerCharacter.handle_call(
-               {:apply_skill_hit, 7, skill, {1.0, 2.0, 3.0}},
+               {:apply_damage_effect, 7, 1, 25, {1.0, 2.0, 3.0}},
                {self(), make_ref()},
                state
              )

@@ -9,6 +9,7 @@ use crate::{
         camera::{desired_camera_target, smooth_camera_translation},
         smoothing::smooth_translation,
     },
+    protocol::EffectCueKind,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
     world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
     world::remote_player::{RemoteMotionSample, RemotePlayerState},
@@ -36,8 +37,12 @@ struct ChatLogText;
 struct ChatInputText;
 
 #[derive(Component)]
-struct SkillPulse {
+struct EffectVisual {
+    kind: EffectCueKind,
     timer: Timer,
+    origin: Vec3,
+    target: Vec3,
+    radius: f32,
 }
 
 #[derive(Resource, Default)]
@@ -64,6 +69,7 @@ struct WorldState {
     udp_endpoint: Option<String>,
     last_local_update_transport: Option<MessageTransport>,
     last_remote_move_transport: Option<MessageTransport>,
+    selected_target_cid: Option<i64>,
 }
 
 #[derive(Resource, Default)]
@@ -155,12 +161,13 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
                 poll_network_events,
                 toggle_chat_mode,
                 collect_chat_text,
+                handle_target_selection_input,
                 handle_skill_input,
                 sample_movement_input,
                 poll_stdio_commands,
                 movement_sender,
                 (sync_player_visuals, camera_follow_local_player).chain(),
-                update_skill_pulses,
+                update_effect_visuals,
                 update_hud_text,
             ),
         )
@@ -262,6 +269,7 @@ fn poll_network_events(
                 world_state.remote_player_health.clear();
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
+                world_state.selected_target_cid = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
             }
@@ -309,6 +317,9 @@ fn poll_network_events(
                 world_state.remote_players.remove(&cid);
                 world_state.remote_actor_identity.remove(&cid);
                 world_state.remote_player_health.remove(&cid);
+                if world_state.selected_target_cid == Some(cid) {
+                    world_state.selected_target_cid = None;
+                }
                 push_line(&mut world_state.logs, format!("player {cid} left AOI"));
             }
             NetworkEvent::ActorIdentity { cid, kind, name } => {
@@ -331,23 +342,7 @@ fn poll_network_events(
                     format!("[{cid}/{username}] {text}"),
                 );
             }
-            NetworkEvent::SkillEvent {
-                cid,
-                skill_id,
-                location,
-            } => {
-                let world = net_to_world(location);
-                commands.spawn((
-                    SkillPulse {
-                        timer: Timer::from_seconds(0.45, TimerMode::Once),
-                    },
-                    Sprite {
-                        color: Color::srgba(1.0, 0.8, 0.2, 0.55),
-                        custom_size: Some(Vec2::splat(32.0)),
-                        ..default()
-                    },
-                    Transform::from_translation(world + Vec3::new(0.0, 0.0, 5.0)),
-                ));
+            NetworkEvent::SkillEvent { cid, skill_id, .. } => {
                 push_line(
                     &mut world_state.logs,
                     format!("skill event: cid={cid} skill={skill_id}"),
@@ -389,6 +384,33 @@ fn poll_network_events(
                     ),
                 );
             }
+            NetworkEvent::EffectEvent {
+                cue_kind,
+                origin,
+                target_position,
+                radius,
+                duration_ms,
+                ..
+            } => {
+                let origin_world = net_to_world(origin);
+                let target_world = net_to_world(target_position);
+                commands.spawn((
+                    EffectVisual {
+                        kind: cue_kind,
+                        timer: Timer::from_seconds(duration_ms as f32 / 1_000.0, TimerMode::Once),
+                        origin: origin_world,
+                        target: target_world,
+                        radius: radius as f32,
+                    },
+                    Sprite {
+                        color: effect_color(cue_kind),
+                        custom_size: Some(effect_size(cue_kind, radius as f32)),
+                        ..default()
+                    },
+                    Transform::from_translation(effect_spawn_translation(cue_kind, origin_world, target_world))
+                        .with_scale(effect_scale(cue_kind, radius as f32)),
+                ));
+            }
             NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
                 world_state.last_rtt_ms = Some(rtt_ms);
                 world_state.last_offset_ms = Some(offset_ms);
@@ -421,6 +443,7 @@ fn poll_network_events(
                 world_state.udp_endpoint = None;
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
+                world_state.selected_target_cid = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
@@ -493,15 +516,90 @@ fn handle_skill_input(
     bridge: Res<NetworkBridge>,
     observer: Res<ClientObserver>,
     chat_state: Res<ChatState>,
+    world_state: Res<WorldState>,
 ) {
     if chat_state.enabled {
         return;
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        bridge.send(NetworkCommand::CastSkill(1));
-        observer.emit("input", "skill_key", &[("skill_id", "1".to_string())]);
+        send_targeted_skill(&bridge, &observer, &world_state, 1);
     }
+
+    if keyboard.just_pressed(KeyCode::Digit2) {
+        send_targeted_skill(&bridge, &observer, &world_state, 2);
+    }
+
+    if keyboard.just_pressed(KeyCode::Digit3) {
+        send_targeted_skill(&bridge, &observer, &world_state, 3);
+    }
+
+    if keyboard.just_pressed(KeyCode::Digit4) {
+        send_targeted_skill(&bridge, &observer, &world_state, 4);
+    }
+}
+
+fn handle_target_selection_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut world_state: ResMut<WorldState>,
+    observer: Res<ClientObserver>,
+) {
+    if !keyboard.just_pressed(KeyCode::Tab) {
+        return;
+    }
+
+    let mut cids = world_state
+        .remote_actor_identity
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    cids.sort_unstable();
+
+    if cids.is_empty() {
+        world_state.selected_target_cid = None;
+        return;
+    }
+
+    let next = match world_state.selected_target_cid {
+        Some(current) => {
+            let index = cids.iter().position(|cid| *cid == current).unwrap_or(usize::MAX);
+            cids.get((index + 1) % cids.len()).copied()
+        }
+        None => cids.first().copied(),
+    };
+
+    world_state.selected_target_cid = next;
+    if let Some(cid) = next {
+        observer.emit("input", "target_selected", &[("cid", cid.to_string())]);
+    }
+}
+
+fn send_targeted_skill(
+    bridge: &NetworkBridge,
+    observer: &ClientObserver,
+    world_state: &WorldState,
+    skill_id: u16,
+) {
+    let target_cid = world_state.selected_target_cid;
+    bridge.send(NetworkCommand::CastSkillTargeted {
+        skill_id,
+        target_cid,
+        target_position: None,
+    });
+
+    observer.emit(
+        "input",
+        "skill_key",
+        &[
+            ("skill_id", skill_id.to_string()),
+                            (
+                                "target_cid",
+                                target_cid
+                                    .map(|value: i64| value.to_string())
+                                    .unwrap_or_else(|| "auto".to_string()),
+                            ),
+                        ],
+                    );
 }
 
 fn sample_movement_input(
@@ -598,7 +696,7 @@ fn poll_stdio_commands(
     time: Res<Time>,
     stdio: Res<ClientStdioInterface>,
     bridge: Res<NetworkBridge>,
-    world_state: Res<WorldState>,
+    mut world_state: ResMut<WorldState>,
     mut movement_intent: ResMut<MovementIntent>,
     mut app_exit: MessageWriter<AppExit>,
 ) {
@@ -665,12 +763,16 @@ fn poll_stdio_commands(
                 let mut players = world_state
                     .remote_players
                     .iter()
-                    .map(|(cid, player)| {
+                    .filter_map(|(cid, player)| {
+                        let identity = world_state.remote_actor_identity.get(cid);
+                        if matches!(identity.map(|value| value.kind), Some(RemoteActorKind::Npc)) {
+                            return None;
+                        }
                         let position = player.sample_motion(now_secs).position;
-                        format!(
+                        Some(format!(
                             "{cid}:{:.1},{:.1},{:.1}",
                             position.x, position.y, position.z
-                        )
+                        ))
                     })
                     .collect::<Vec<_>>();
                 players.sort();
@@ -700,13 +802,37 @@ fn poll_stdio_commands(
                 npcs.sort();
                 emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
             }
+            ClientStdioCommand::Target(target_cid) => {
+                world_state.selected_target_cid = Some(target_cid);
+                emit_stdio("target", &[("target_cid", target_cid.to_string())]);
+            }
+            ClientStdioCommand::ClearTarget => {
+                world_state.selected_target_cid = None;
+                emit_stdio("target_cleared", &[]);
+            }
             ClientStdioCommand::Chat(text) => {
                 bridge.send(NetworkCommand::Chat(text.clone()));
                 emit_stdio("chat_sent", &[("text", text)]);
             }
-            ClientStdioCommand::Skill(skill_id) => {
-                bridge.send(NetworkCommand::CastSkill(skill_id));
-                emit_stdio("skill_sent", &[("skill_id", skill_id.to_string())]);
+            ClientStdioCommand::Skill { skill_id, target_cid } => {
+                let target_cid = target_cid.or(world_state.selected_target_cid);
+                bridge.send(NetworkCommand::CastSkillTargeted {
+                    skill_id,
+                    target_cid,
+                    target_position: None,
+                });
+                emit_stdio(
+                    "skill_sent",
+                    &[
+                        ("skill_id", skill_id.to_string()),
+                        (
+                            "target_cid",
+                            target_cid
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "auto".to_string()),
+                        ),
+                    ],
+                );
             }
             ClientStdioCommand::Move {
                 direction,
@@ -806,6 +932,7 @@ fn sync_player_visuals(
             .get(&cid)
             .map(|identity| identity.kind)
             .unwrap_or(RemoteActorKind::Player);
+        let selected = world_state.selected_target_cid == Some(cid);
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
             if let Ok((_entity, _visual, mut transform, mut sprite)) = existing.get_mut(entity) {
@@ -819,6 +946,8 @@ fn sync_player_visuals(
                 transform.scale = animated_scale(transform.scale, animation, time.delta_secs());
                 sprite.color = if cid == world_state.local_cid {
                     Color::srgb(0.25, 0.95, 0.45)
+                } else if selected {
+                    Color::srgb(1.0, 0.95, 0.35)
                 } else if matches!(actor_kind, RemoteActorKind::Npc) {
                     Color::srgb(0.95, 0.45, 0.35)
                 } else if animation.moving {
@@ -830,6 +959,8 @@ fn sync_player_visuals(
         } else {
             let color = if cid == world_state.local_cid {
                 Color::srgb(0.25, 0.95, 0.45)
+            } else if selected {
+                Color::srgb(1.0, 0.95, 0.35)
             } else if matches!(actor_kind, RemoteActorKind::Npc) {
                 Color::srgb(0.95, 0.45, 0.35)
             } else {
@@ -861,18 +992,21 @@ fn sync_player_visuals(
     }
 }
 
-fn update_skill_pulses(
+fn update_effect_visuals(
     mut commands: Commands,
     time: Res<Time>,
-    mut pulses: Query<(Entity, &mut Transform, &mut Sprite, &mut SkillPulse)>,
+    mut effects: Query<(Entity, &mut Transform, &mut Sprite, &mut EffectVisual)>,
 ) {
-    for (entity, mut transform, mut sprite, mut pulse) in &mut pulses {
-        pulse.timer.tick(time.delta());
-        let progress = pulse.timer.fraction();
-        transform.scale = Vec3::splat(1.0 + progress * 2.5);
-        sprite.color.set_alpha(0.55 * (1.0 - progress));
+    for (entity, mut transform, mut sprite, mut effect) in &mut effects {
+        effect.timer.tick(time.delta());
+        let progress = effect.timer.fraction();
+        let translation = effect_interpolated_translation(effect.kind, effect.origin, effect.target, progress);
+        transform.translation = translation + Vec3::new(0.0, 0.0, 5.0);
+        transform.scale = effect_runtime_scale(effect.kind, effect.radius, progress);
+        transform.rotation = effect_rotation(effect.kind, effect.origin, effect.target);
+        sprite.color = effect_runtime_color(effect.kind, progress);
 
-        if pulse.timer.is_finished() {
+        if effect.timer.is_finished() {
             commands.entity(entity).despawn();
         }
     }
@@ -891,8 +1025,14 @@ fn update_hud_text(
         (With<ChatInputText>, Without<HudText>, Without<ChatLogText>),
     >,
 ) {
+    let selected_target = world_state
+        .selected_target_cid
+        .and_then(|cid| world_state.remote_actor_identity.get(&cid))
+        .map(|identity| format!("{} ({cid})", identity.name, cid = identity.cid))
+        .unwrap_or_else(|| "none".to_string());
+
     hud.0 = format!(
-        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Enter chat | 1 pulse skill",
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Tab cycle target | 1-4 cast skills | Enter chat",
         world_state.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
@@ -907,6 +1047,7 @@ fn update_hud_text(
             .values()
             .filter(|identity| identity.is_npc())
             .count(),
+        selected_target,
         world_state.local_cid,
         world_state
             .local_position
@@ -1000,6 +1141,82 @@ fn push_line(buffer: &mut VecDeque<String>, line: String) {
 
 fn net_to_world(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
+}
+
+fn effect_color(kind: EffectCueKind) -> Color {
+    match kind {
+        EffectCueKind::MeleeArc => Color::srgba(1.0, 0.82, 0.3, 0.75),
+        EffectCueKind::Projectile => Color::srgba(0.45, 0.95, 1.0, 0.9),
+        EffectCueKind::AoeRing => Color::srgba(0.8, 0.45, 1.0, 0.55),
+        EffectCueKind::ChainArc => Color::srgba(1.0, 0.95, 0.55, 0.8),
+        EffectCueKind::ImpactPulse => Color::srgba(1.0, 0.55, 0.35, 0.7),
+        EffectCueKind::Unknown(_) => Color::srgba(1.0, 1.0, 1.0, 0.5),
+    }
+}
+
+fn effect_size(kind: EffectCueKind, radius: f32) -> Vec2 {
+    match kind {
+        EffectCueKind::MeleeArc => Vec2::new(48.0, 18.0),
+        EffectCueKind::Projectile => Vec2::splat(12.0),
+        EffectCueKind::AoeRing => Vec2::new(radius.max(24.0), radius.max(24.0)),
+        EffectCueKind::ChainArc => Vec2::new(80.0, 8.0),
+        EffectCueKind::ImpactPulse => Vec2::splat(24.0),
+        EffectCueKind::Unknown(_) => Vec2::splat(16.0),
+    }
+}
+
+fn effect_scale(kind: EffectCueKind, radius: f32) -> Vec3 {
+    match kind {
+        EffectCueKind::AoeRing => Vec3::new((radius / 32.0).max(1.0), (radius / 32.0).max(1.0), 1.0),
+        _ => Vec3::ONE,
+    }
+}
+
+fn effect_spawn_translation(kind: EffectCueKind, origin: Vec3, target: Vec3) -> Vec3 {
+    match kind {
+        EffectCueKind::Projectile | EffectCueKind::MeleeArc | EffectCueKind::ChainArc => origin,
+        _ => target,
+    }
+}
+
+fn effect_interpolated_translation(kind: EffectCueKind, origin: Vec3, target: Vec3, progress: f32) -> Vec3 {
+    match kind {
+        EffectCueKind::Projectile => origin.lerp(target, progress),
+        EffectCueKind::MeleeArc => origin.lerp(target, 0.35),
+        EffectCueKind::ChainArc => origin.lerp(target, 0.5),
+        _ => target,
+    }
+}
+
+fn effect_runtime_scale(kind: EffectCueKind, radius: f32, progress: f32) -> Vec3 {
+    match kind {
+        EffectCueKind::Projectile => Vec3::splat(1.0 + progress * 0.4),
+        EffectCueKind::AoeRing => {
+            let base = (radius / 48.0).max(0.8);
+            Vec3::splat(base + progress * 0.45)
+        }
+        EffectCueKind::ImpactPulse => Vec3::splat(1.0 + progress * 1.8),
+        EffectCueKind::MeleeArc => Vec3::new(1.0 + progress * 0.8, 1.0, 1.0),
+        EffectCueKind::ChainArc => Vec3::new(1.0 + progress * 0.2, 1.0, 1.0),
+        EffectCueKind::Unknown(_) => effect_scale(kind, radius),
+    }
+}
+
+fn effect_runtime_color(kind: EffectCueKind, progress: f32) -> Color {
+    let mut color = effect_color(kind);
+    let alpha = color.to_srgba().alpha;
+    color.set_alpha((1.0 - progress).clamp(0.0, 1.0) * alpha);
+    color
+}
+
+fn effect_rotation(kind: EffectCueKind, origin: Vec3, target: Vec3) -> Quat {
+    match kind {
+        EffectCueKind::MeleeArc | EffectCueKind::ChainArc | EffectCueKind::Projectile => {
+            let delta = target - origin;
+            Quat::from_rotation_z(delta.y.atan2(delta.x))
+        }
+        _ => Quat::IDENTITY,
+    }
 }
 
 fn is_printable_char(chr: char) -> bool {

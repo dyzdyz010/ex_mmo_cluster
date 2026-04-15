@@ -19,10 +19,11 @@ defmodule SceneServer.PlayerCharacter do
   require Logger
 
   alias SceneServer.AoiManager
+  alias SceneServer.Combat.CastRequest
+  alias SceneServer.Combat.Executor, as: CombatExecutor
   alias SceneServer.Combat.Profile, as: CombatProfile
   alias SceneServer.Combat.Skill
   alias SceneServer.Combat.State, as: CombatState
-  alias SceneServer.Combat.Targeting
   alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
@@ -252,6 +253,15 @@ defmodule SceneServer.PlayerCharacter do
   @impl true
   def handle_call(
         {:cast_skill, skill_id},
+        from,
+        state
+      ) when is_integer(skill_id) do
+    handle_call({:cast_skill, CastRequest.auto(skill_id)}, from, state)
+  end
+
+  @impl true
+  def handle_call(
+        {:cast_skill, %CastRequest{} = cast_request},
         _from,
         %{
           cid: cid,
@@ -266,25 +276,32 @@ defmodule SceneServer.PlayerCharacter do
     now = :os.system_time(:millisecond)
 
     with :ok <- ensure_alive(combat_state),
-         {:ok, skill} <- Skill.fetch(skill_id),
+         {:ok, skill} <- Skill.fetch(cast_request.skill_id),
          :ok <- cooldown_ready?(skill_casts, skill, now),
-         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location) do
+         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location),
+         {:ok, execution} <-
+           CombatExecutor.prepare_cast(%{cid: cid, position: location}, cast_request, skill) do
       SceneServer.CliObserve.emit("player_skill", %{
         cid: cid,
-        skill_id: skill_id,
+        skill_id: cast_request.skill_id,
         location: location
       })
 
-      GenServer.cast(aoi_ref, {:skill_cast, cid, skill_id, location})
-      apply_skill_hits(cid, skill, location)
+      GenServer.cast(aoi_ref, {:skill_cast, cid, cast_request.skill_id, location})
+      broadcast_effect_events(aoi_ref, execution.initial_cues)
+      schedule_skill_resolution(execution.delayed_cast)
 
       {:reply, {:ok, location},
-       %{state | skill_casts: Map.put(skill_casts, skill_id, now), last_location: location}}
+       %{
+         state
+         | skill_casts: Map.put(skill_casts, cast_request.skill_id, now),
+           last_location: location
+       }}
     else
       {:error, reason} ->
         SceneServer.CliObserve.emit("player_skill_error", %{
           cid: cid,
-          skill_id: skill_id,
+          skill_id: Map.get(cast_request, :skill_id),
           reason: reason
         })
 
@@ -294,7 +311,7 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def handle_call(
-        {:apply_skill_hit, source_cid, %Skill{} = skill, impact_location},
+        {:apply_damage_effect, source_cid, skill_id, damage, _impact_location},
         _from,
         %{
           cid: cid,
@@ -310,9 +327,8 @@ defmodule SceneServer.PlayerCharacter do
       ) do
     with :ok <- ensure_alive(combat_state),
          true <- source_cid != cid,
-         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location),
-         true <- within_skill_radius?(impact_location, location, skill.radius) do
-      case CombatState.apply_damage(combat_state, skill.damage) do
+         {:ok, location} <- get_character_location_with_retry(cd_ref, physys_ref, last_location) do
+      case CombatState.apply_damage(combat_state, damage) do
         {:ignored, next_combat_state} ->
           {:reply, {:ok, next_combat_state.hp},
            %{state | combat_state: next_combat_state, last_location: location}}
@@ -320,7 +336,7 @@ defmodule SceneServer.PlayerCharacter do
         {result, next_combat_state, dealt_damage} ->
           GenServer.cast(
             aoi_ref,
-            {:combat_resolved, source_cid, cid, skill.id, dealt_damage, next_combat_state.hp,
+            {:combat_resolved, source_cid, cid, skill_id, dealt_damage, next_combat_state.hp,
              location}
           )
 
@@ -356,9 +372,18 @@ defmodule SceneServer.PlayerCharacter do
            }}
       end
     else
-      false -> {:reply, {:error, :out_of_range}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  @impl true
+  def handle_info(
+        {:resolve_skill_cast, cast},
+        %{aoi_ref: aoi_ref} = state
+      ) do
+    resolution = CombatExecutor.resolve_cast(cast)
+    broadcast_effect_events(aoi_ref, resolution.cues)
+    {:noreply, state}
   end
 
   @impl true
@@ -582,31 +607,18 @@ defmodule SceneServer.PlayerCharacter do
     end
   end
 
-  defp within_skill_radius?(source, target, radius) do
-    vector_distance(source, target) <= radius
+  defp schedule_skill_resolution(%{travel_ms: 0} = cast) do
+    send(self(), {:resolve_skill_cast, cast})
   end
 
-  defp vector_distance({ax, ay, az}, {bx, by, bz}) do
-    dx = ax - bx
-    dy = ay - by
-    dz = az - bz
-    :math.sqrt(dx * dx + dy * dy + dz * dz)
+  defp schedule_skill_resolution(%{travel_ms: travel_ms} = cast) when travel_ms > 0 do
+    Process.send_after(self(), {:resolve_skill_cast, cast}, travel_ms)
   end
 
-  defp apply_skill_hits(source_cid, %Skill{} = skill, location) do
-    source_cid
-    |> Targeting.nearby_combatant_pids(location, skill.radius)
-    |> Enum.each(fn player_pid ->
-      _ = safe_player_call(player_pid, {:apply_skill_hit, source_cid, skill, location})
+  defp broadcast_effect_events(aoi_ref, effect_events) when is_list(effect_events) do
+    Enum.each(effect_events, fn effect_event ->
+      GenServer.cast(aoi_ref, {:effect_event, effect_event})
     end)
-  end
-
-  defp safe_player_call(player_pid, message) do
-    try do
-      GenServer.call(player_pid, message)
-    catch
-      :exit, reason -> {:error, reason}
-    end
   end
 
   defp reset_movement_after_death(cd_ref, physys_ref, movement_profile, movement_state, state) do

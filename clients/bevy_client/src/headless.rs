@@ -58,6 +58,7 @@ struct HeadlessState {
     local_alive: bool,
     remote_players: HashMap<i64, Vec3>,
     remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
+    selected_target_cid: Option<i64>,
     last_local_transport: Option<MessageTransport>,
     last_remote_transport: Option<MessageTransport>,
     movement_transport: MessageTransport,
@@ -193,9 +194,21 @@ pub fn run_stdio(
                     );
                 }
                 ClientStdioCommand::Players => {
+                    let players = state
+                        .remote_players
+                        .iter()
+                        .filter_map(|(cid, position)| {
+                            let identity = state.remote_actor_identity.get(cid);
+                            if identity.is_some() && identity.is_some_and(|value| value.is_npc()) {
+                                return None;
+                            }
+
+                            Some((*cid, *position))
+                        })
+                        .collect::<HashMap<_, _>>();
                     emit_stdio(
                         "players",
-                        &[("players", format_players(&state.remote_players))],
+                        &[("players", format_players(&players))],
                     );
                 }
                 ClientStdioCommand::Npcs => {
@@ -214,15 +227,51 @@ pub fn run_stdio(
                     npcs.sort();
                     emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
                 }
+                ClientStdioCommand::Target(target_cid) => {
+                    state.selected_target_cid = Some(target_cid);
+                    emit_stdio("target", &[("target_cid", target_cid.to_string())]);
+                }
+                ClientStdioCommand::ClearTarget => {
+                    state.selected_target_cid = None;
+                    emit_stdio("target_cleared", &[]);
+                }
                 ClientStdioCommand::Chat(text) => {
                     observer.emit("headless", "chat", &[("text", text.clone())]);
                     bridge.send(NetworkCommand::Chat(text.clone()));
                     emit_stdio("chat_sent", &[("text", text)]);
                 }
-                ClientStdioCommand::Skill(skill_id) => {
-                    observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
-                    bridge.send(NetworkCommand::CastSkill(skill_id));
-                    emit_stdio("skill_sent", &[("skill_id", skill_id.to_string())]);
+                ClientStdioCommand::Skill { skill_id, target_cid } => {
+                    let target_cid = target_cid.or(state.selected_target_cid);
+                    observer.emit(
+                        "headless",
+                        "skill",
+                        &[
+                            ("skill_id", skill_id.to_string()),
+                            (
+                                "target_cid",
+                                target_cid
+                                    .map(|value: i64| value.to_string())
+                                    .unwrap_or_else(|| "auto".to_string()),
+                            ),
+                        ],
+                    );
+                    bridge.send(NetworkCommand::CastSkillTargeted {
+                        skill_id,
+                        target_cid,
+                        target_position: None,
+                    });
+                    emit_stdio(
+                        "skill_sent",
+                        &[
+                            ("skill_id", skill_id.to_string()),
+                            (
+                                "target_cid",
+                                target_cid
+                                    .map(|value: i64| value.to_string())
+                                    .unwrap_or_else(|| "auto".to_string()),
+                            ),
+                        ],
+                    );
                 }
                 ClientStdioCommand::Move {
                     direction,
@@ -341,7 +390,11 @@ fn run_action(
         }
         HeadlessAction::Skill(skill_id) => {
             observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
-            bridge.send(NetworkCommand::CastSkill(skill_id));
+            bridge.send(NetworkCommand::CastSkillTargeted {
+                skill_id,
+                target_cid: state.selected_target_cid,
+                target_position: None,
+            });
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }
         HeadlessAction::Snapshot => {
@@ -529,6 +582,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             state.status = format!("disconnected: {reason}");
             state.remote_players.clear();
             state.remote_actor_identity.clear();
+            state.selected_target_cid = None;
         }
         NetworkEvent::PlayerEnter { cid, location } => {
             state.remote_players.insert(cid, vec3_from_net(location));
@@ -574,6 +628,25 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         NetworkEvent::PlayerLeave { cid } => {
             state.remote_players.remove(&cid);
             state.remote_actor_identity.remove(&cid);
+            if state.selected_target_cid == Some(cid) {
+                state.selected_target_cid = None;
+            }
+        }
+        NetworkEvent::EffectEvent {
+            source_cid,
+            skill_id,
+            cue_kind,
+            ..
+        } => {
+            observer.emit(
+                "headless",
+                "effect_seen",
+                &[
+                    ("source_cid", source_cid.to_string()),
+                    ("skill_id", skill_id.to_string()),
+                    ("cue_kind", format!("{cue_kind:?}")),
+                ],
+            );
         }
         NetworkEvent::Log(line) => {
             observer.emit("headless", "network_log", &[("line", line)]);

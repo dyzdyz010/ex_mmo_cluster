@@ -58,6 +58,11 @@ pub enum NetworkCommand {
     },
     Chat(String),
     CastSkill(u16),
+    CastSkillTargeted {
+        skill_id: u16,
+        target_cid: Option<i64>,
+        target_position: Option<NetVec3>,
+    },
     Shutdown,
 }
 
@@ -114,6 +119,16 @@ pub enum NetworkEvent {
         damage: u16,
         hp_after: u16,
         location: NetVec3,
+    },
+    EffectEvent {
+        source_cid: i64,
+        skill_id: u16,
+        cue_kind: crate::protocol::EffectCueKind,
+        target_cid: Option<i64>,
+        origin: NetVec3,
+        target_position: NetVec3,
+        radius: f64,
+        duration_ms: u32,
     },
     TimeSync {
         rtt_ms: f64,
@@ -396,6 +411,28 @@ impl ClientRuntime {
                 outcome.push_outbound(OutboundAction::Tcp(ClientMessage::SkillCast {
                     request_id,
                     skill_id,
+                    target_kind: crate::protocol::SkillTargetKind::Auto,
+                    target_cid: -1,
+                    target_position: [0.0, 0.0, 0.0],
+                }));
+            }
+            NetworkCommand::CastSkillTargeted {
+                skill_id,
+                target_cid,
+                target_position,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                let (target_kind, cid, position) = match (target_cid, target_position) {
+                    (Some(cid), _) => (crate::protocol::SkillTargetKind::Actor, cid, [0.0, 0.0, 0.0]),
+                    (None, Some(position)) => (crate::protocol::SkillTargetKind::Point, -1, position),
+                    _ => (crate::protocol::SkillTargetKind::Auto, -1, [0.0, 0.0, 0.0]),
+                };
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::SkillCast {
+                    request_id,
+                    skill_id,
+                    target_kind,
+                    target_cid: cid,
+                    target_position: position,
                 }));
             }
             _ => {}
@@ -832,6 +869,27 @@ impl ClientRuntime {
                     damage,
                     hp_after,
                     location,
+                });
+            }
+            ServerMessage::EffectEvent {
+                source_cid,
+                skill_id,
+                cue_kind,
+                target_cid,
+                origin,
+                target_position,
+                radius,
+                duration_ms,
+            } => {
+                outcome.push_event(NetworkEvent::EffectEvent {
+                    source_cid,
+                    skill_id,
+                    cue_kind,
+                    target_cid,
+                    origin,
+                    target_position,
+                    radius,
+                    duration_ms,
                 });
             }
             ServerMessage::TimeSyncReply {
@@ -1425,6 +1483,31 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                 ],
             );
         }
+        NetworkEvent::EffectEvent {
+            source_cid,
+            skill_id,
+            cue_kind,
+            target_cid,
+            origin,
+            target_position,
+            radius,
+            duration_ms,
+        } => {
+            observer.emit(
+                "network",
+                "effect_event",
+                &[
+                    ("source_cid", source_cid.to_string()),
+                    ("skill_id", skill_id.to_string()),
+                    ("cue_kind", format!("{cue_kind:?}")),
+                    ("target_cid", target_cid.map(|v| v.to_string()).unwrap_or_else(|| "n/a".to_string())),
+                    ("origin", format_vec(origin)),
+                    ("target_position", format_vec(target_position)),
+                    ("radius", format!("{radius:.1}")),
+                    ("duration_ms", duration_ms.to_string()),
+                ],
+            );
+        }
         NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
             observer.emit(
                 "network",
@@ -1567,6 +1650,9 @@ fn observe_outbound_message(observer: &ClientObserver, transport: &str, message:
         ClientMessage::SkillCast {
             request_id,
             skill_id,
+            target_kind,
+            target_cid,
+            target_position,
         } => observer.emit(
             "network",
             "send_skill",
@@ -1574,6 +1660,9 @@ fn observe_outbound_message(observer: &ClientObserver, transport: &str, message:
                 ("transport", transport.to_string()),
                 ("request_id", request_id.to_string()),
                 ("skill_id", skill_id.to_string()),
+                ("target_kind", format!("{target_kind:?}")),
+                ("target_cid", target_cid.to_string()),
+                ("target_position", format_vec(target_position)),
             ],
         ),
     }

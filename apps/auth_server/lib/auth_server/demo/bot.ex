@@ -244,6 +244,17 @@ defmodule Demo.Bot do
 
         state
 
+      {:ok,
+       {:effect_event, source_cid, skill_id, cue_kind, target_cid, origin, target_position,
+        radius, duration_ms}} ->
+        notify(
+          state,
+          {:effect_event, source_cid, skill_id, cue_kind, target_cid, origin, target_position,
+           radius, duration_ms}
+        )
+
+        state
+
       {:ok, {:player_enter, cid, location}} ->
         notify(state, {:player_enter, cid, location})
         state

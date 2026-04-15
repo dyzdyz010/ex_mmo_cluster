@@ -12,6 +12,25 @@ pub enum ActorKind {
     Unknown(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Targeting mode attached to a skill cast request.
+pub enum SkillTargetKind {
+    Auto,
+    Actor,
+    Point,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stateless visual cue kind broadcast by the server for replicated effects.
+pub enum EffectCueKind {
+    MeleeArc,
+    Projectile,
+    AoeRing,
+    ChainArc,
+    ImpactPulse,
+    Unknown(u8),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Messages the client can send to the gate.
 pub enum ClientMessage {
@@ -53,6 +72,9 @@ pub enum ClientMessage {
     SkillCast {
         request_id: u64,
         skill_id: u16,
+        target_kind: SkillTargetKind,
+        target_cid: i64,
+        target_position: NetVec3,
     },
 }
 
@@ -140,6 +162,16 @@ pub enum ServerMessage {
         cid: i64,
         kind: ActorKind,
         name: String,
+    },
+    EffectEvent {
+        source_cid: i64,
+        skill_id: u16,
+        cue_kind: EffectCueKind,
+        target_cid: Option<i64>,
+        origin: NetVec3,
+        target_position: NetVec3,
+        radius: f64,
+        duration_ms: u32,
     },
 }
 
@@ -282,6 +314,16 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             let (name, _) = read_string(body, 9)?;
             Ok(ServerMessage::ActorIdentity { cid, kind, name })
         }
+        0x8F => Ok(ServerMessage::EffectEvent {
+            source_cid: read_i64(body, 0)?,
+            skill_id: read_u16(body, 8)?,
+            cue_kind: decode_effect_cue_kind(read_u8(body, 10)?),
+            target_cid: decode_target_cid(read_i64(body, 11)?),
+            origin: read_vec3(body, 19)?,
+            target_position: read_vec3(body, 43)?,
+            radius: read_f64(body, 67)?,
+            duration_ms: read_u32(body, 75)?,
+        }),
         other => Err(ProtocolError(format!(
             "unknown server message type: {other:#x}"
         ))),
@@ -376,10 +418,18 @@ pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
         ClientMessage::SkillCast {
             request_id,
             skill_id,
+            target_kind,
+            target_cid,
+            target_position,
         } => {
             let mut payload = vec![0x09];
             payload.extend_from_slice(&request_id.to_be_bytes());
             payload.extend_from_slice(&skill_id.to_be_bytes());
+            payload.push(encode_skill_target_kind(*target_kind));
+            payload.extend_from_slice(&target_cid.to_be_bytes());
+            payload.extend_from_slice(&target_position[0].to_be_bytes());
+            payload.extend_from_slice(&target_position[1].to_be_bytes());
+            payload.extend_from_slice(&target_position[2].to_be_bytes());
             payload
         }
     }
@@ -472,6 +522,29 @@ fn decode_actor_kind(value: u8) -> ActorKind {
     }
 }
 
+fn decode_effect_cue_kind(value: u8) -> EffectCueKind {
+    match value {
+        0 => EffectCueKind::MeleeArc,
+        1 => EffectCueKind::Projectile,
+        2 => EffectCueKind::AoeRing,
+        3 => EffectCueKind::ChainArc,
+        4 => EffectCueKind::ImpactPulse,
+        other => EffectCueKind::Unknown(other),
+    }
+}
+
+fn encode_skill_target_kind(value: SkillTargetKind) -> u8 {
+    match value {
+        SkillTargetKind::Auto => 0,
+        SkillTargetKind::Actor => 1,
+        SkillTargetKind::Point => 2,
+    }
+}
+
+fn decode_target_cid(value: i64) -> Option<i64> {
+    if value < 0 { None } else { Some(value) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,8 +565,12 @@ mod tests {
         let skill = encode_client_frame(&ClientMessage::SkillCast {
             request_id: 8,
             skill_id: 1,
+            target_kind: SkillTargetKind::Actor,
+            target_cid: 42,
+            target_position: [10.0, 20.0, 30.0],
         });
-        assert_eq!(skill, vec![0, 0, 0, 11, 0x09, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1]);
+        assert_eq!(u32::from_be_bytes(skill[0..4].try_into().unwrap()), 44);
+        assert_eq!(skill[4], 0x09);
     }
 
     #[test]
@@ -581,6 +658,36 @@ mod tests {
                 damage: 25,
                 hp_after: 75,
                 location: [1.0, 2.0, 3.0],
+            }
+        );
+
+        let effect = {
+            let mut bytes = vec![0x8F];
+            bytes.extend_from_slice(&7_i64.to_be_bytes());
+            bytes.extend_from_slice(&4_u16.to_be_bytes());
+            bytes.push(1);
+            bytes.extend_from_slice(&42_i64.to_be_bytes());
+            bytes.extend_from_slice(&1.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&2.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&3.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&4.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&5.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&6.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&96.0_f64.to_be_bytes());
+            bytes.extend_from_slice(&350_u32.to_be_bytes());
+            bytes
+        };
+        assert_eq!(
+            decode_server_payload(&effect).unwrap(),
+            ServerMessage::EffectEvent {
+                source_cid: 7,
+                skill_id: 4,
+                cue_kind: EffectCueKind::Projectile,
+                target_cid: Some(42),
+                origin: [1.0, 2.0, 3.0],
+                target_position: [4.0, 5.0, 6.0],
+                radius: 96.0,
+                duration_ms: 350,
             }
         );
 

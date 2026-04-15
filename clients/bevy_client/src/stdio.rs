@@ -18,8 +18,13 @@ pub enum ClientStdioCommand {
     Transport,
     Players,
     Npcs,
+    Target(i64),
+    ClearTarget,
     Chat(String),
-    Skill(u16),
+    Skill {
+        skill_id: u16,
+        target_cid: Option<i64>,
+    },
     Move {
         direction: Vec2,
         direction_label: String,
@@ -49,7 +54,7 @@ impl ClientStdioInterface {
                 "ready",
                 &[(
                     "commands",
-                    "help|snapshot|position|transport|players|npcs|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
+                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
                         .to_string(),
                 )],
             );
@@ -67,7 +72,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|npcs|chat <text>|skill <id>|move <dir> <ms>|stop|quit"
+                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
                                         .to_string(),
                                 )],
                             );
@@ -183,8 +188,19 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::Stop);
     }
 
+    if line == "clear_target" {
+        return Ok(ClientStdioCommand::ClearTarget);
+    }
+
     if line == "quit" || line == "exit" {
         return Ok(ClientStdioCommand::Quit);
+    }
+
+    if let Some(cid) = line.strip_prefix("target ") {
+        let parsed = cid
+            .parse::<i64>()
+            .map_err(|error| format!("invalid target cid: {error}"))?;
+        return Ok(ClientStdioCommand::Target(parsed));
     }
 
     if let Some(text) = line.strip_prefix("chat ") {
@@ -192,10 +208,25 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
     }
 
     if let Some(skill) = line.strip_prefix("skill ") {
-        let skill_id = skill
+        let parts = skill.split_whitespace().collect::<Vec<_>>();
+        if parts.is_empty() || parts.len() > 2 {
+            return Err("skill command expects: skill <id> [target_cid]".to_string());
+        }
+
+        let skill_id = parts[0]
             .parse::<u16>()
             .map_err(|error| format!("invalid skill id: {error}"))?;
-        return Ok(ClientStdioCommand::Skill(skill_id));
+        let target_cid =
+            if parts.len() == 2 {
+                Some(
+                    parts[1]
+                        .parse::<i64>()
+                        .map_err(|error| format!("invalid target cid: {error}"))?,
+                )
+            } else {
+                None
+            };
+        return Ok(ClientStdioCommand::Skill { skill_id, target_cid });
     }
 
     if let Some(rest) = line.strip_prefix("move ") {
@@ -252,6 +283,14 @@ mod tests {
             ClientStdioCommand::Players
         );
         assert_eq!(parse_command("npcs").unwrap(), ClientStdioCommand::Npcs);
+        assert_eq!(
+            parse_command("target 90001").unwrap(),
+            ClientStdioCommand::Target(90_001)
+        );
+        assert_eq!(
+            parse_command("clear_target").unwrap(),
+            ClientStdioCommand::ClearTarget
+        );
         assert_eq!(parse_command("stop").unwrap(), ClientStdioCommand::Stop);
         assert_eq!(parse_command("quit").unwrap(), ClientStdioCommand::Quit);
     }
@@ -272,7 +311,17 @@ mod tests {
         );
         assert_eq!(
             parse_command("skill 2").unwrap(),
-            ClientStdioCommand::Skill(2)
+            ClientStdioCommand::Skill {
+                skill_id: 2,
+                target_cid: None,
+            }
+        );
+        assert_eq!(
+            parse_command("skill 3 90001").unwrap(),
+            ClientStdioCommand::Skill {
+                skill_id: 3,
+                target_cid: Some(90_001),
+            }
         );
     }
 }

@@ -39,6 +39,8 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  alias SceneServer.Combat.EffectEvent
+  alias SceneServer.Combat.CastRequest
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
 
   @scene_call_timeout 15_000
@@ -180,6 +182,25 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("skill_push", %{cid: cid, skill_id: skill_id, location: location})
 
     send_encoded(socket, {:skill_event, cid, skill_id, location})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:effect_event, %EffectEvent{} = effect_event}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("effect_event_push", %{
+      source_cid: effect_event.source_cid,
+      skill_id: effect_event.skill_id,
+      cue_kind: effect_event.cue_kind,
+      target_cid: effect_event.target_cid
+    })
+
+    send_encoded(
+      socket,
+      {:effect_event, effect_event.source_cid, effect_event.skill_id, effect_event.cue_kind,
+       effect_event.origin, effect_event.target_cid, effect_event.target_position,
+       effect_event.radius, effect_event.duration_ms}
+    )
+
     {:noreply, state}
   end
 
@@ -393,7 +414,14 @@ defmodule GateServer.TcpConnection do
   end
 
   defp dispatch(
-         {:skill_cast, skill_id, request_id},
+         {:skill_cast,
+          %{
+            skill_id: skill_id,
+            request_id: request_id,
+            target_kind: target_kind,
+            target_cid: target_cid,
+            target_position: target_position
+          }},
          %{status: :in_scene, scene_ref: spid, socket: socket} = state
        ) do
     GateServer.CliObserve.emit("skill_received", %{
@@ -403,7 +431,14 @@ defmodule GateServer.TcpConnection do
       skill_id: skill_id
     })
 
-    case safe_call(spid, {:cast_skill, skill_id}, @scene_call_timeout) do
+    cast_request =
+      case target_kind do
+        :actor when is_integer(target_cid) -> CastRequest.actor(skill_id, target_cid)
+        :point -> CastRequest.point(skill_id, target_position)
+        _ -> CastRequest.auto(skill_id)
+      end
+
+    case safe_call(spid, {:cast_skill, cast_request}, @scene_call_timeout) do
       {:ok, {:ok, _location}} -> send_encoded(socket, {:result, :ok, request_id})
       {:ok, {:error, reason}} -> send_result_error(socket, reason, request_id)
       {:ok, _} -> send_result_error(socket, :server_error, request_id)
@@ -413,7 +448,7 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  defp dispatch({:skill_cast, _skill_id, request_id}, state) do
+  defp dispatch({:skill_cast, %{request_id: request_id}}, state) do
     send_result_error(state.socket, :invalid_state, request_id)
     {:ok, state}
   end

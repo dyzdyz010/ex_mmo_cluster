@@ -17,6 +17,7 @@ defmodule SceneServer.Aoi.AoiItem do
   require Logger
 
   # alias SceneServer.Native.CoordinateSystem
+  alias SceneServer.Combat.EffectEvent
   alias SceneServer.Movement.RemoteSnapshot
   alias SceneServer.Native.Octree
 
@@ -143,6 +144,25 @@ defmodule SceneServer.Aoi.AoiItem do
         %{connection_pid: connection_pid} = state
       ) do
     GenServer.cast(connection_pid, {:skill_event, from_cid, skill_id, location})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:effect_event, %EffectEvent{} = effect_event},
+        %{connection_pid: connection_pid, subscribees: subscribees} = state
+      ) do
+    GenServer.cast(connection_pid, {:effect_event, effect_event})
+    broadcast_action_effect_event(effect_event, subscribees)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:effect_cue, %EffectEvent{} = effect_event},
+        %{connection_pid: connection_pid} = state
+      ) do
+    GenServer.cast(connection_pid, {:effect_event, effect_event})
     {:noreply, state}
   end
 
@@ -328,12 +348,16 @@ defmodule SceneServer.Aoi.AoiItem do
         aoi_timer: aoi_timer
       }) do
     # {:ok, _} = CoordinateSystem.remove_item_from_system(system, item)
-    true = Octree.remove_item(system, item)
-    Logger.debug("AOI system item removed.")
+    case Octree.remove_item(system, item) do
+      true -> Logger.debug("AOI system item removed.")
+      false -> Logger.debug("AOI system item already absent during terminate.")
+    end
     {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
     Logger.debug("Aoi index removed.")
-    Process.cancel_timer(aoi_timer)
-    Logger.debug("Timer canceled.")
+    if aoi_timer != nil do
+      Process.cancel_timer(aoi_timer)
+      Logger.debug("Timer canceled.")
+    end
 
     Logger.warning(
       "AoiItem process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}",
@@ -558,6 +582,18 @@ defmodule SceneServer.Aoi.AoiItem do
           &1,
           {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
         )
+      end)
+    )
+    |> Enum.map(&Task.await(&1))
+  end
+
+  @spec broadcast_action_effect_event(EffectEvent.t(), [pid()]) :: any()
+  defp broadcast_action_effect_event(%EffectEvent{} = effect_event, pids) do
+    pids
+    |> Enum.uniq()
+    |> Enum.map(
+      &Task.async(fn ->
+        GenServer.cast(&1, {:effect_cue, effect_event})
       end)
     )
     |> Enum.map(&Task.await(&1))

@@ -18,6 +18,8 @@ defmodule SceneServer.Npc.Actor do
   use GenServer, restart: :temporary
 
   alias SceneServer.AoiManager
+  alias SceneServer.Combat.CastRequest
+  alias SceneServer.Combat.Executor, as: CombatExecutor
   alias SceneServer.Combat.Profile, as: CombatProfile
   alias SceneServer.Combat.Skill
   alias SceneServer.Combat.State, as: CombatState
@@ -122,7 +124,7 @@ defmodule SceneServer.Npc.Actor do
 
   @impl true
   def handle_call(
-        {:apply_skill_hit, source_cid, %Skill{} = skill, impact_location},
+        {:apply_damage_effect, source_cid, skill_id, damage, _impact_location},
         _from,
         %{
           profile: profile,
@@ -134,16 +136,15 @@ defmodule SceneServer.Npc.Actor do
         } = state
       ) do
     with :ok <- ensure_alive(combat_state),
-         true <- source_cid != profile.npc_id,
-         true <- within_skill_radius?(impact_location, movement_state.position, skill.radius) do
-      case CombatState.apply_damage(combat_state, skill.damage) do
+         true <- source_cid != profile.npc_id do
+      case CombatState.apply_damage(combat_state, damage) do
         {:ignored, next_combat_state} ->
           {:reply, {:ok, next_combat_state.hp}, %{state | combat_state: next_combat_state}}
 
         {result, next_combat_state, dealt_damage} ->
           GenServer.cast(
             aoi_ref,
-            {:combat_resolved, source_cid, profile.npc_id, skill.id, dealt_damage,
+            {:combat_resolved, source_cid, profile.npc_id, skill_id, dealt_damage,
              next_combat_state.hp, movement_state.position}
           )
 
@@ -179,7 +180,6 @@ defmodule SceneServer.Npc.Actor do
            }}
       end
     else
-      false -> {:reply, {:error, :out_of_range}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -191,6 +191,7 @@ defmodule SceneServer.Npc.Actor do
   def handle_cast({:actor_identity, _cid, _kind, _name}, state), do: {:noreply, state}
   def handle_cast({:chat_message, _cid, _username, _text}, state), do: {:noreply, state}
   def handle_cast({:skill_event, _cid, _skill_id, _location}, state), do: {:noreply, state}
+  def handle_cast({:effect_event, _effect_event}, state), do: {:noreply, state}
   def handle_cast({:player_state, _cid, _hp, _max_hp, _alive}, state), do: {:noreply, state}
 
   def handle_cast(
@@ -226,6 +227,16 @@ defmodule SceneServer.Npc.Actor do
       end
 
     {:noreply, %{updated_state | brain_timer: schedule_brain_tick(profile.brain_tick_ms)}}
+  end
+
+  @impl true
+  def handle_info(
+        {:resolve_skill_cast, cast},
+        %{aoi_ref: aoi_ref} = state
+      ) do
+    resolution = CombatExecutor.resolve_cast(cast)
+    broadcast_effect_events(aoi_ref, resolution.cues)
+    {:noreply, state}
   end
 
   @impl true
@@ -371,9 +382,20 @@ defmodule SceneServer.Npc.Actor do
        ) do
     case cooldown_ready?(skill_casts, skill, now) do
       :ok ->
-        GenServer.cast(aoi_ref, {:skill_cast, profile.npc_id, skill.id, movement_state.position})
-        apply_skill_hits(profile.npc_id, skill, movement_state.position)
-        %{state | npc_state: next_npc_state, skill_casts: Map.put(skill_casts, skill.id, now)}
+        case CombatExecutor.prepare_cast(
+               %{cid: profile.npc_id, position: movement_state.position},
+               CastRequest.auto(skill.id),
+               skill
+             ) do
+          {:ok, execution} ->
+            GenServer.cast(aoi_ref, {:skill_cast, profile.npc_id, skill.id, movement_state.position})
+            broadcast_effect_events(aoi_ref, execution.initial_cues)
+            schedule_skill_resolution(execution.delayed_cast)
+            %{state | npc_state: next_npc_state, skill_casts: Map.put(skill_casts, skill.id, now)}
+
+          {:error, _reason} ->
+            %{state | npc_state: next_npc_state}
+        end
 
       _ ->
         %{state | npc_state: next_npc_state}
@@ -427,31 +449,25 @@ defmodule SceneServer.Npc.Actor do
     end
   end
 
-  defp apply_skill_hits(source_cid, %Skill{} = skill, location) do
-    source_cid
-    |> Targeting.nearby_combatant_pids(location, skill.radius)
-    |> Enum.each(fn pid ->
-      _ = safe_actor_call(pid, {:apply_skill_hit, source_cid, skill, location})
-    end)
-  end
-
-  defp safe_actor_call(pid, message) do
-    try do
-      GenServer.call(pid, message)
-    catch
-      :exit, _reason -> :error
-    end
-  end
-
-  defp within_skill_radius?(source, target, radius) do
-    distance(source, target) <= radius
-  end
-
   defp distance({ax, ay, az}, {bx, by, bz}) do
     dx = ax - bx
     dy = ay - by
     dz = az - bz
     :math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+
+  defp schedule_skill_resolution(%{travel_ms: 0} = cast) do
+    send(self(), {:resolve_skill_cast, cast})
+  end
+
+  defp schedule_skill_resolution(%{travel_ms: travel_ms} = cast) when travel_ms > 0 do
+    Process.send_after(self(), {:resolve_skill_cast, cast}, travel_ms)
+  end
+
+  defp broadcast_effect_events(aoi_ref, effect_events) when is_list(effect_events) do
+    Enum.each(effect_events, fn effect_event ->
+      GenServer.cast(aoi_ref, {:effect_event, effect_event})
+    end)
   end
 
   defp schedule_brain_tick(interval_ms) do

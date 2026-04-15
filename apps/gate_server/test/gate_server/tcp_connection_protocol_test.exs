@@ -84,8 +84,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
 
     @impl true
-    def handle_call({:cast_skill, skill_id}, _from, state) do
-      if state.notify, do: send(state.notify, {:cast_skill, skill_id})
+    def handle_call({:cast_skill, cast_request}, _from, state) do
+      if state.notify, do: send(state.notify, {:cast_skill, cast_request})
       {:reply, {:ok, state.location}, state}
     end
 
@@ -524,7 +524,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert :ok = :gen_tcp.send(client, encode_skill_cast(90, 1))
     assert {:ok, <<0x80, 90::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
-    assert_receive {:cast_skill, 1}, 500
+    assert_receive {:cast_skill, %SceneServer.Combat.CastRequest{skill_id: 1, target_mode: :auto}}, 500
   end
 
   test "skill_event cast is encoded to the client socket", %{client: client, pid: pid} do
@@ -966,7 +966,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   defp encode_skill_cast(request_id, skill_id) do
-    <<0x09, request_id::64-big, skill_id::16-big>>
+    <<0x09, request_id::64-big, skill_id::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
+      0.0::float-64-big, 0.0::float-64-big>>
   end
 
   defp encode_fast_lane_attach(request_id, ticket) do

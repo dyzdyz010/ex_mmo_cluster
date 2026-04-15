@@ -77,7 +77,7 @@ defmodule SceneServer.Npc.Profile do
       movement_speed_scale: Keyword.get(opts, :movement_speed_scale, 0.8),
       max_hp: Keyword.get(opts, :max_hp, 100),
       respawn_ms: Keyword.get(opts, :respawn_ms, 3_000),
-      skill_id: Keyword.get(opts, :skill_id, 1),
+      skill_id: Keyword.get(opts, :skill_id, 101),
       skill_damage: Keyword.get(opts, :skill_damage, 25),
       skill_radius: Keyword.get(opts, :skill_radius, 96.0),
       skill_cooldown_ms: Keyword.get(opts, :skill_cooldown_ms, 750)

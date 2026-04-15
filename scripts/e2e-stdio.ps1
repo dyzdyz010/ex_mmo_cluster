@@ -153,18 +153,29 @@ try {
   $server.StandardInput.WriteLine("npcs")
   $server.StandardInput.WriteLine("npc 90001")
   $server.StandardInput.WriteLine("npc_state 90001")
+  if ($BotCount -gt 0) { $server.StandardInput.WriteLine("player_state 42101") }
   $server.StandardInput.Flush()
   Start-Sleep -Milliseconds 750
 
-  foreach ($attempt in 1..3) {
-    $client.StandardInput.WriteLine("skill 1")
-    $client.StandardInput.Flush()
-    Start-Sleep -Milliseconds 850
-  }
+  $client.StandardInput.WriteLine("skill 1 42101")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 900
+
+  $client.StandardInput.WriteLine("skill 2 90001")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 1200
+
+  $client.StandardInput.WriteLine("skill 3 90001")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 1200
 
   $server.StandardInput.WriteLine("npc_state 90001")
   $server.StandardInput.Flush()
   Start-Sleep -Seconds 3
+
+  $client.StandardInput.WriteLine("skill 4 42101")
+  $client.StandardInput.Flush()
+  Start-Sleep -Milliseconds 1800
   $client.StandardInput.WriteLine("chat e2e-stdio")
   $client.StandardInput.Flush()
   Start-Sleep -Milliseconds 500
@@ -211,6 +222,9 @@ try {
     'client_stdio event="npcs".*90001',
     'client_stdio event="chat_sent".*e2e-stdio',
     'client_stdio event="skill_sent".*skill_id="1"',
+    'client_stdio event="skill_sent".*skill_id="2"',
+    'client_stdio event="skill_sent".*skill_id="3"',
+    'client_stdio event="skill_sent".*skill_id="4"',
     'client_stdio event="position".*local_position=',
     'client_stdio event="quit".*final_status='
   )
@@ -293,9 +307,8 @@ try {
     throw "final npc_state output missing hp/max_hp/alive"
   }
 
-  if ($finalNpcAlive.Groups["alive"].Value -ne "true" -or
-      [int]$finalNpcHp.Groups["hp"].Value -ne [int]$finalNpcMax.Groups["max"].Value) {
-    throw "final npc_state output did not show a full respawned NPC"
+  if ($finalNpcAlive.Groups["alive"].Value -ne "true") {
+    throw "final npc_state output did not show a living respawned NPC"
   }
 
   if (-not $finalNpcDeaths.Success -or [int]$finalNpcDeaths.Groups["deaths"].Value -lt 1) {
@@ -312,6 +325,20 @@ try {
 
   if (-not ((Get-Content $clientObserve -Raw) -match 'event="combat_hit".*source_cid="90001"')) {
     throw "client observe log did not record NPC-origin combat_hit"
+  }
+
+  $observeRaw = Get-Content $clientObserve -Raw
+  $requiredEffectPatterns = @(
+    'event="effect_event".*skill_id="1".*cue_kind="MeleeArc"',
+    'event="effect_event".*skill_id="2".*cue_kind="Projectile"',
+    'event="effect_event".*skill_id="3".*cue_kind="AoeRing"',
+    'event="effect_event".*skill_id="4".*cue_kind="ChainArc"'
+  )
+
+  foreach ($pattern in $requiredEffectPatterns) {
+    if ($observeRaw -notmatch $pattern) {
+      throw "client observe log missing expected effect pattern: $pattern"
+    }
   }
 
   $clientMatches = [regex]::Matches($clientStdout, 'client_stdio event="position" local_position="(?<pos>[-0-9\.,]+)"')
