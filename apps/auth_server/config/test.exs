@@ -10,6 +10,22 @@ config :auth_server, AuthServerWeb.Endpoint,
 # In test we don't send emails.
 config :auth_server, AuthServer.Mailer, adapter: Swoosh.Adapters.Test
 
+# DataService.Repo config for auth_worker tests that need PostgreSQL.
+# Required when running `mix test --no-start` from apps/auth_server/ because
+# the local config_path does not include the umbrella root config.
+config :data_service, DataService.Repo,
+  database: System.get_env("MMO_DB_NAME", "mmo_dev"),
+  username: System.get_env("MMO_DB_USER", "mmo_dev"),
+  password: System.get_env("MMO_DB_PASSWORD", "mmo_dev"),
+  hostname: System.get_env("MMO_DB_HOST", "127.0.0.1"),
+  port: String.to_integer(System.get_env("MMO_DB_PORT", "5432")),
+  pool_size: 5
+
+config :data_service, ecto_repos: [DataService.Repo]
+
+# Disable libcluster in test to avoid :eaddrinuse on Windows
+config :libcluster, topologies: []
+
 # Print only warnings and errors during test
 config :logger, level: :warn
 

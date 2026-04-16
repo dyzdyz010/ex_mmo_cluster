@@ -17,7 +17,6 @@ defmodule SceneServer.Npc.Actor do
 
   use GenServer, restart: :temporary
 
-  alias SceneServer.AoiManager
   alias SceneServer.Combat.CastRequest
   alias SceneServer.Combat.Executor, as: CombatExecutor
   alias SceneServer.Combat.Profile, as: CombatProfile
@@ -42,8 +41,9 @@ defmodule SceneServer.Npc.Actor do
   end
 
   @impl true
-  def init({%NpcProfile{} = profile, _opts}) do
+  def init({%NpcProfile{} = profile, opts}) do
     combat_profile = %CombatProfile{max_hp: profile.max_hp, respawn_ms: profile.respawn_ms}
+    aoi_manager = Keyword.get(opts, :aoi_manager, SceneServer.AoiManager)
 
     state = %{
       profile: profile,
@@ -55,6 +55,7 @@ defmodule SceneServer.Npc.Actor do
       next_input_seq: 1,
       skill_casts: %{},
       aoi_ref: nil,
+      aoi_manager: aoi_manager,
       brain_timer: nil,
       movement_timer: nil,
       respawn_timer: nil
@@ -66,16 +67,13 @@ defmodule SceneServer.Npc.Actor do
   @impl true
   def handle_continue(
         :spawn_aoi,
-        %{profile: profile, combat_state: combat_state} = state
+        %{profile: profile, combat_state: combat_state, aoi_manager: aoi_manager} = state
       ) do
     {:ok, aoi_ref} =
-      AoiManager.add_aoi_item(
-        profile.npc_id,
-        System.system_time(:millisecond),
-        profile.spawn_position,
-        self(),
-        self(),
-        %{kind: :npc, name: profile.name}
+      GenServer.call(
+        aoi_manager,
+        {:add_aoi_item, profile.npc_id, System.system_time(:millisecond),
+         profile.spawn_position, self(), self(), %{kind: :npc, name: profile.name}}
       )
 
     GenServer.cast(

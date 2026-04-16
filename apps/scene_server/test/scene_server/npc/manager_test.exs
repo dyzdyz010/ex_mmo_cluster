@@ -19,6 +19,25 @@ defmodule SceneServer.Npc.ManagerTest do
     end
   end
 
+  defmodule FakeAoiManager do
+    use GenServer
+
+    def start_link(opts \\ []) do
+      GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    end
+
+    @impl true
+    def init(_opts), do: {:ok, %{}}
+
+    @impl true
+    def handle_call({:add_aoi_item, _cid, _ts, _pos, _conn, _actor, _meta}, _from, state) do
+      {:reply, {:ok, self()}, state}
+    end
+
+    @impl true
+    def handle_cast(_msg, state), do: {:noreply, state}
+  end
+
   setup do
     ensure_started(
       SceneServer.NpcActorSup,
@@ -31,6 +50,7 @@ defmodule SceneServer.Npc.ManagerTest do
     )
 
     ensure_started(FakePlayerRegistry, {FakePlayerRegistry, []})
+    ensure_started(FakeAoiManager, {FakeAoiManager, []})
     :ok
   end
 
@@ -38,7 +58,7 @@ defmodule SceneServer.Npc.ManagerTest do
     assert {:ok, npc_pid} =
              GenServer.call(
                SceneServer.NpcManager,
-               {:spawn_npc, 9001, [player_registry: FakePlayerRegistry, name: "Slime"]},
+               {:spawn_npc, 9001, [player_registry: FakePlayerRegistry, aoi_manager: FakeAoiManager, name: "Slime"]},
                5_000
              )
 

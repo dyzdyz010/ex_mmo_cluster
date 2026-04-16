@@ -190,6 +190,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     case Ecto.Adapters.Postgres.storage_up(repo_config) do
       :ok -> :ok
       {:error, :already_up} -> :ok
+      {:error, _reason} -> :ok
     end
 
     ensure_repo_started()

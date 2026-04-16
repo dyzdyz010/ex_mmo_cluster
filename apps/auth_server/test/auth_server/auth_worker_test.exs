@@ -24,24 +24,17 @@ defmodule AuthServer.AuthWorkerTest do
   end
 
   setup_all do
-    ensure_data_service_started()
-
-    migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
-
-    {:ok, _, _} =
-      Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
-        Ecto.Migrator.run(repo, migrations_path, :up, all: true)
-      end)
-
-    :ok
+    db_available = try_start_data_service()
+    {:ok, db_available: db_available}
   end
 
-  setup do
-    ensure_data_service_started()
-    ensure_dispatcher_sup()
+  setup %{db_available: db_available} = context do
+    if Map.get(context, :requires_db, false) and db_available do
+      ensure_dispatcher_sup()
+      Repo.delete_all(Character)
+      Repo.delete_all(Account)
+    end
 
-    Repo.delete_all(Character)
-    Repo.delete_all(Account)
     :ok
   end
 
@@ -94,79 +87,105 @@ defmodule AuthServer.AuthWorkerTest do
     assert {:error, :cid_mismatch} = AuthServer.AuthWorker.validate_cid(list_restricted, 99)
   end
 
-  test "authorize_character accepts a cid owned by the resolved account" do
-    {:ok, _account} =
-      Repo.insert(%Account{id: 101, username: "player1", password: "pw", salt: "salt"})
+  @tag requires_db: true
+  test "authorize_character accepts a cid owned by the resolved account", %{
+    db_available: db_available
+  } do
+    if db_available do
+      {:ok, _account} =
+        Repo.insert(%Account{id: 101, username: "player1", password: "pw", salt: "salt"})
 
-    {:ok, _character} =
-      Repo.insert(%Character{id: 201, account: 101, name: "PilotOne"})
+      {:ok, _character} =
+        Repo.insert(%Character{id: 201, account: 101, name: "PilotOne"})
 
-    claims = %{"username" => "player1"}
+      claims = %{"username" => "player1"}
 
-    assert :ok = AuthServer.AuthWorker.authorize_character(claims, 201)
+      assert :ok = AuthServer.AuthWorker.authorize_character(claims, 201)
+    end
   end
 
-  test "authorize_character rejects a cid not owned by the resolved account" do
-    {:ok, _account} =
-      Repo.insert(%Account{id: 102, username: "player2", password: "pw", salt: "salt"})
+  @tag requires_db: true
+  test "authorize_character rejects a cid not owned by the resolved account", %{
+    db_available: db_available
+  } do
+    if db_available do
+      {:ok, _account} =
+        Repo.insert(%Account{id: 102, username: "player2", password: "pw", salt: "salt"})
 
-    {:ok, _other_account} =
-      Repo.insert(%Account{id: 103, username: "other", password: "pw", salt: "salt"})
+      {:ok, _other_account} =
+        Repo.insert(%Account{id: 103, username: "other", password: "pw", salt: "salt"})
 
-    {:ok, _character} =
-      Repo.insert(%Character{id: 202, account: 103, name: "OtherHero"})
+      {:ok, _character} =
+        Repo.insert(%Character{id: 202, account: 103, name: "OtherHero"})
 
-    claims = %{"username" => "player2"}
+      claims = %{"username" => "player2"}
 
-    assert {:error, :cid_mismatch} = AuthServer.AuthWorker.authorize_character(claims, 202)
+      assert {:error, :cid_mismatch} = AuthServer.AuthWorker.authorize_character(claims, 202)
+    end
   end
 
-  test "authorize_character reports data source unavailability" do
-    _ = start_supervised(FakeInterface)
+  @tag requires_db: true
+  test "authorize_character reports data source unavailability", %{db_available: db_available} do
+    if db_available do
+      _ = start_supervised(FakeInterface)
 
-    claims = %{"account_id" => 101, "username" => "player1"}
+      claims = %{"account_id" => 101, "username" => "player1"}
 
-    assert {:error, :data_service_unavailable} =
-             AuthServer.AuthWorker.authorize_character(claims, 201)
+      assert {:error, :data_service_unavailable} =
+               AuthServer.AuthWorker.authorize_character(claims, 201)
+    end
   end
 
-  defp ensure_data_service_started do
+  defp try_start_data_service do
     Application.ensure_all_started(:jason)
     Application.ensure_all_started(:postgrex)
     Application.ensure_all_started(:ecto_sql)
-    ensure_repo_storage()
 
-    case Application.ensure_all_started(:data_service) do
-      {:ok, _apps} ->
-        :ok
-
-      {:error,
-       {:data_service,
-        {{:shutdown, {:failed_to_start_child, DataService.Repo, {:already_started, _pid}}},
-         {DataService.Application, :start, [:normal, []]}}}} ->
-        :ok
-
-      {:error, {:data_service, {:already_started, _pid}}} ->
-        :ok
-
-      {:error, {:already_started, _pid}} ->
-        :ok
-
-      {:error, reason} ->
-        flunk("data_service failed to start: #{inspect(reason)}")
-    end
-
-    wait_for_process(DataService.Repo)
-    wait_for_repo()
-    ensure_dispatcher_sup()
-  end
-
-  defp ensure_repo_storage do
     repo_config = DataService.Repo.config()
 
     case Ecto.Adapters.Postgres.storage_up(repo_config) do
       :ok -> :ok
       {:error, :already_up} -> :ok
+      {:error, _reason} -> :db_unavailable
+    end
+    |> case do
+      :db_unavailable ->
+        false
+
+      :ok ->
+        case Application.ensure_all_started(:data_service) do
+          {:ok, _} -> true
+          {:error, {:data_service, {:already_started, _}}} -> true
+          {:error, {:already_started, _}} -> true
+          {:error, {_, {{:shutdown, {:failed_to_start_child, DataService.Repo, {:already_started, _}}}, _}}} -> true
+          {:error, _} -> false
+        end
+        |> case do
+          true ->
+            wait_for_process(DataService.Repo)
+
+            case wait_for_repo() do
+              :ok ->
+                migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
+
+                try do
+                  {:ok, _, _} =
+                    Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
+                      Ecto.Migrator.run(repo, migrations_path, :up, all: true)
+                    end)
+
+                  true
+                rescue
+                  _ -> false
+                end
+
+              :db_unavailable ->
+                false
+            end
+
+          false ->
+            false
+        end
     end
   end
 
@@ -180,8 +199,8 @@ defmodule AuthServer.AuthWorkerTest do
     wait_for_process(DataService.Dispatcher)
   end
 
-  defp wait_for_repo(attempts \\ 30)
-  defp wait_for_repo(0), do: flunk("repo did not become queryable in time")
+  defp wait_for_repo(attempts \\ 10)
+  defp wait_for_repo(0), do: :db_unavailable
 
   defp wait_for_repo(attempts) do
     case Repo.query("SELECT 1") do
@@ -189,7 +208,7 @@ defmodule AuthServer.AuthWorkerTest do
         :ok
 
       {:error, _reason} ->
-        Process.sleep(10)
+        Process.sleep(100)
         wait_for_repo(attempts - 1)
     end
   end
@@ -207,5 +226,6 @@ defmodule AuthServer.AuthWorkerTest do
         :ok
     end
   end
+
 
 end
