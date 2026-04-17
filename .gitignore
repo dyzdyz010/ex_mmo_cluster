@@ -36,6 +36,14 @@ erl_crash.dump
 /apps/*/native/*/target/
 
 .omx/
+
+# OMC runtime state (per-session). Keep autopilot specs and plans tracked.
+/.omc/state/
+/.omc/logs/
+/.omc/project-memory.json
+
+# Claude Code local settings
+/.claude/
 /Mnesia.nonode@nohost/
 /apps/beacon_server/MnesiaCore.nonode@nohost_*
 
