@@ -195,7 +195,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     ensure_repo_started()
 
-    migrations_path = Path.expand("../../../../data_service/priv/repo/migrations", __DIR__)
+    migrations_path = Path.expand("../../../data_service/priv/repo/migrations", __DIR__)
 
     {:ok, _, _} =
       Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
