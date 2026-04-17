@@ -1,0 +1,52 @@
+<Layouts.app flash={@flash}>
+  <div class="hero w-full h-auto mb-10 text-center py-20">
+    <h1 class="text-4xl font-bold text-gray-700">
+      {gettext("Welcome to %{name}.", name: "Hemifuture")}
+    </h1>
+  </div>
+  <div class="container mx-auto flex flex-col">
+    <.form
+      :let={f}
+      for={%{}}
+      as={:session}
+      action={~p"/ingame/login_post"}
+      id="ingame-login-form"
+      class="mx-auto w-2/5"
+    >
+      <div class="flex flex-row items-center mb-2">
+        <label class="basis-1/6 text-gray-700 font-bold mr-5" for={f[:username].id}>
+          {gettext("Username")}
+        </label>
+        <input
+          type="text"
+          name="username"
+          id="username"
+          class="basis-5/6 p-2 border border-gray-300"
+        />
+      </div>
+      <div class="flex flex-row items-center mb-2">
+        <label class="basis-1/6 text-gray-700 font-bold mr-5" for="password">
+          {gettext("Password")}
+        </label>
+        <input
+          type="text"
+          name="password"
+          id="password"
+          class="basis-5/6 p-2 border border-gray-300"
+        />
+      </div>
+      <div class="flex flex-row justify-center mt-10">
+        <button
+          type="submit"
+          data-confirm={gettext("Submit?")}
+          class="text-lg basis-2/5 text-green-700 hover:text-cyan-700"
+        >
+          提交
+        </button>
+        <.link navigate={~p"/ingame/login"} class="text-lg basis-2/5 text-center">
+          返回
+        </.link>
+      </div>
+    </.form>
+  </div>
+</Layouts.app>

@@ -1,7 +1,7 @@
 defmodule VisualizeServerWeb.PageController do
   use VisualizeServerWeb, :controller
 
-  def index(conn, _params) do
-    render(conn, "index.html")
+  def home(conn, _params) do
+    render(conn, :home)
   end
 end

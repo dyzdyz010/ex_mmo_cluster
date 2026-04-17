@@ -41,8 +41,16 @@ defmodule SceneServer.Combat.ExecutorTest do
     end
 
     @impl true
-    def handle_call({:apply_damage_effect, source_cid, skill_id, amount, impact_location}, _from, state) do
-      send(state.notify, {:damage_applied, state.cid, source_cid, skill_id, amount, impact_location})
+    def handle_call(
+          {:apply_damage_effect, source_cid, skill_id, amount, impact_location},
+          _from,
+          state
+        ) do
+      send(
+        state.notify,
+        {:damage_applied, state.cid, source_cid, skill_id, amount, impact_location}
+      )
+
       hp = max(state.hp - amount, 0)
       {:reply, {:ok, hp}, %{state | hp: hp, alive: hp > 0}}
     end

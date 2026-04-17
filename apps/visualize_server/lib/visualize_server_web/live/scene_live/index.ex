@@ -1,75 +1,52 @@
 defmodule VisualizeServerWeb.SceneLive.Index do
+  @moduledoc """
+  Live visualization of scene state by polling the remote `SceneServer.PlayerManager`.
+  """
+
   use VisualizeServerWeb, :live_view
 
   require Logger
 
-  # alias VisualizeServer.World
-  # alias VisualizeServer.World.Scene
+  @tick_interval 1_000
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Process.send_after(self(), :data_update, 1000)
+    if connected?(socket), do: Process.send_after(self(), :data_update, @tick_interval)
 
     scene_node = Application.get_env(:visualize_server, :scene_node, :"scene1@127.0.0.1")
-    {:ok, assign(socket, data: [], scene_node: scene_node)}
+    {:ok, assign(socket, page_title: "Scene Visualizer", scene_node: scene_node)}
   end
 
   @impl true
   def handle_info(:data_update, socket) do
-    Process.send_after(self(), :data_update, 1000)
+    Process.send_after(self(), :data_update, @tick_interval)
 
-    {:ok, players_map} =
-      GenServer.call(
-        {SceneServer.PlayerManager, socket.assigns.scene_node},
-        :get_all_players
-      )
-
-    characters =
-      Enum.map(players_map, fn {cid, pid} ->
-        {:ok, {x, y, _z}} = GenServer.call(pid, :get_location)
-
-        %{
-          cid: cid,
-          location: %{x: x, y: y}
-        }
-      end)
-
+    characters = fetch_characters(socket.assigns.scene_node)
     Logger.debug("characters: #{inspect(characters, pretty: true)}")
 
-    {:noreply,
-     push_event(socket, "data", %{
-       characters: characters
-     })}
+    {:noreply, push_event(socket, "data", %{characters: characters})}
   end
 
-  # @impl true
-  # def handle_params(params, _url, socket) do
-  #   {:noreply, apply_action(socket, socket.assigns.live_action, params)}
-  # end
+  defp fetch_characters(scene_node) do
+    case safe_call({SceneServer.PlayerManager, scene_node}, :get_all_players) do
+      {:ok, players_map} ->
+        Enum.flat_map(players_map, fn {cid, pid} ->
+          case safe_call(pid, :get_location) do
+            {:ok, {x, y, _z}} -> [%{cid: cid, location: %{x: x, y: y}}]
+            _ -> []
+          end
+        end)
 
-  # defp apply_action(socket, :edit, %{"id" => id}) do
-  #   socket
-  #   |> assign(:page_title, "Edit Scene")
-  #   |> assign(:scene, World.get_scene!(id))
-  # end
+      _ ->
+        []
+    end
+  end
 
-  # defp apply_action(socket, :new, _params) do
-  #   socket
-  #   |> assign(:page_title, "New Scene")
-  #   |> assign(:scene, %Scene{})
-  # end
-
-  # defp apply_action(socket, :index, _params) do
-  #   socket
-  #   |> assign(:page_title, "Scene Visualizer")
-  #   |> assign(:scene, nil)
-  # end
-
-  # @impl true
-  # def handle_event("delete", %{"id" => id}, socket) do
-  #   scene = World.get_scene!(id)
-  #   {:ok, _} = World.delete_scene(scene)
-
-  #   {:noreply, assign(socket, :scenes, list_scenes())}
-  # end
+  defp safe_call(server, message) do
+    try do
+      GenServer.call(server, message, 500)
+    catch
+      :exit, _ -> :error
+    end
+  end
 end

@@ -19,15 +19,15 @@ defmodule AuthServerWeb.ConnCase do
 
   using do
     quote do
+      # The default endpoint for testing
+      @endpoint AuthServerWeb.Endpoint
+
+      use AuthServerWeb, :verified_routes
+
       # Import conveniences for testing with connections
       import Plug.Conn
       import Phoenix.ConnTest
       import AuthServerWeb.ConnCase
-
-      alias AuthServerWeb.Router.Helpers, as: Routes
-
-      # The default endpoint for testing
-      @endpoint AuthServerWeb.Endpoint
     end
   end
 

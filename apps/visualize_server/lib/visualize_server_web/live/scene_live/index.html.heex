@@ -1,5 +1,9 @@
-<section class="scene-visualizer-shell">
-  <h1>Scene Visualizer</h1>
-  <p>Streaming scene data from <%= @scene_node %></p>
-  <div id="scene-visualizer" phx-update="ignore"></div>
-</section>
+<Layouts.app flash={@flash}>
+  <section class="scene-visualizer-shell">
+    <h1 class="text-2xl font-bold mb-4">Scene Visualizer</h1>
+    <p class="text-sm text-gray-500 mb-4">
+      Streaming scene data from <span class="font-mono">{@scene_node}</span>
+    </p>
+    <div id="scene-visualizer" phx-update="ignore"></div>
+  </section>
+</Layouts.app>

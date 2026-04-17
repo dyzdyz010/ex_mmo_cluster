@@ -8,14 +8,13 @@ defmodule VisualizeServer.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Start the Telemetry supervisor
       VisualizeServerWeb.Telemetry,
-      # Start the PubSub system
+      {DNSCluster, query: Application.get_env(:visualize_server, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: VisualizeServer.PubSub},
-      # Start the Endpoint (http/https)
-      VisualizeServerWeb.Endpoint
       # Start a worker by calling: VisualizeServer.Worker.start_link(arg)
-      # {VisualizeServer.Worker, arg}
+      # {VisualizeServer.Worker, arg},
+      # Start to serve requests, typically the last entry
+      VisualizeServerWeb.Endpoint
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

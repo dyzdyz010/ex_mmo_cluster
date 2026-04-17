@@ -39,10 +39,15 @@ defmodule SceneServer.Combat.Executor do
   """
   @spec prepare_cast(map(), CastRequest.t(), Skill.t()) ::
           {:ok, execution_result()} | {:error, atom()}
-  def prepare_cast(%{cid: source_cid, position: source_position} = source_summary, %CastRequest{} = request, %Skill{} = skill) do
+  def prepare_cast(
+        %{cid: source_cid, position: source_position} = source_summary,
+        %CastRequest{} = request,
+        %Skill{} = skill
+      ) do
     with :ok <- validate_target_mode(skill, request),
          {:ok, primary_target} <- resolve_primary_target(source_summary, request, skill),
-         {:ok, target_position} <- resolve_target_position(source_summary, request, skill, primary_target) do
+         {:ok, target_position} <-
+           resolve_target_position(source_summary, request, skill, primary_target) do
       travel_ms = travel_ms(skill, source_position, target_position)
 
       initial_cues =
@@ -217,7 +222,12 @@ defmodule SceneServer.Combat.Executor do
 
   defp target_summary(target_cid) do
     with {:ok, summary} <- Targeting.safe_summary_by_cid(target_cid) do
-      {:ok, %{cid: summary.cid, position: summary.position, pid: SceneServer.AoiManager.get_actor_pid(summary.cid)}}
+      {:ok,
+       %{
+         cid: summary.cid,
+         position: summary.position,
+         pid: SceneServer.AoiManager.get_actor_pid(summary.cid)
+       }}
     end
   end
 
@@ -236,15 +246,28 @@ defmodule SceneServer.Combat.Executor do
     end
   end
 
-  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :point}), do: :ok
-  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :actor}), do: :ok
-  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :auto}), do: :ok
-  defp validate_target_mode(%Skill{target_mode: :actor}, %CastRequest{target_mode: mode}) when mode in [:auto, :actor], do: :ok
+  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :point}),
+    do: :ok
+
+  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :actor}),
+    do: :ok
+
+  defp validate_target_mode(%Skill{target_mode: :point}, %CastRequest{target_mode: :auto}),
+    do: :ok
+
+  defp validate_target_mode(%Skill{target_mode: :actor}, %CastRequest{target_mode: mode})
+       when mode in [:auto, :actor],
+       do: :ok
+
   defp validate_target_mode(%Skill{target_mode: :self}, %CastRequest{}), do: :ok
   defp validate_target_mode(%Skill{target_mode: mode}, %CastRequest{target_mode: mode}), do: :ok
   defp validate_target_mode(_skill, _request), do: {:error, :invalid_target_mode}
 
-  defp resolve_primary_target(%{position: source_position}, %CastRequest{target_mode: :actor, target_cid: target_cid}, %Skill{range: range}) do
+  defp resolve_primary_target(
+         %{position: source_position},
+         %CastRequest{target_mode: :actor, target_cid: target_cid},
+         %Skill{range: range}
+       ) do
     with {:ok, summary} <- Targeting.safe_summary_by_cid(target_cid),
          true <- summary.alive,
          true <- distance(source_position, summary.position) <= range do
@@ -254,18 +277,25 @@ defmodule SceneServer.Combat.Executor do
     end
   end
 
-  defp resolve_primary_target(%{cid: source_cid, position: source_position}, _request, %Skill{target_mode: :actor, range: range}) do
+  defp resolve_primary_target(%{cid: source_cid, position: source_position}, _request, %Skill{
+         target_mode: :actor,
+         range: range
+       }) do
     case source_cid
-      |> Targeting.nearby_combatant_pids(source_position, range)
-      |> summaries_from_pids()
-      |> Enum.sort_by(fn target -> distance(source_position, target.position) end)
-      |> List.first() do
+         |> Targeting.nearby_combatant_pids(source_position, range)
+         |> summaries_from_pids()
+         |> Enum.sort_by(fn target -> distance(source_position, target.position) end)
+         |> List.first() do
       nil -> {:error, :no_target}
       target -> {:ok, target}
     end
   end
 
-  defp resolve_primary_target(%{position: source_position}, %CastRequest{target_mode: :actor, target_cid: target_cid}, %Skill{target_mode: :point, range: range}) do
+  defp resolve_primary_target(
+         %{position: source_position},
+         %CastRequest{target_mode: :actor, target_cid: target_cid},
+         %Skill{target_mode: :point, range: range}
+       ) do
     with {:ok, summary} <- Targeting.safe_summary_by_cid(target_cid),
          true <- summary.alive,
          true <- distance(source_position, summary.position) <= range do
@@ -276,10 +306,21 @@ defmodule SceneServer.Combat.Executor do
   end
 
   defp resolve_primary_target(_source, _request, %Skill{target_mode: :point}), do: {:ok, nil}
-  defp resolve_primary_target(%{cid: cid, position: position}, _request, %Skill{target_mode: :self}), do: {:ok, %{cid: cid, position: position}}
+
+  defp resolve_primary_target(%{cid: cid, position: position}, _request, %Skill{
+         target_mode: :self
+       }),
+       do: {:ok, %{cid: cid, position: position}}
+
   defp resolve_primary_target(_source, _request, _skill), do: {:ok, nil}
 
-  defp resolve_target_position(%{position: source_position}, %CastRequest{target_mode: :point, target_position: target_position}, %Skill{range: range}, _primary_target) when is_tuple(target_position) do
+  defp resolve_target_position(
+         %{position: source_position},
+         %CastRequest{target_mode: :point, target_position: target_position},
+         %Skill{range: range},
+         _primary_target
+       )
+       when is_tuple(target_position) do
     if distance(source_position, target_position) <= range do
       {:ok, target_position}
     else
@@ -287,21 +328,36 @@ defmodule SceneServer.Combat.Executor do
     end
   end
 
-  defp resolve_target_position(_source, _request, _skill, %{position: position}) when is_tuple(position), do: {:ok, position}
-  defp resolve_target_position(%{position: source_position}, _request, %Skill{target_mode: :self}, _primary_target), do: {:ok, source_position}
+  defp resolve_target_position(_source, _request, _skill, %{position: position})
+       when is_tuple(position),
+       do: {:ok, position}
 
-  defp resolve_target_position(%{cid: source_cid, position: source_position}, _request, %Skill{target_mode: :point, range: range}, _primary_target) do
+  defp resolve_target_position(
+         %{position: source_position},
+         _request,
+         %Skill{target_mode: :self},
+         _primary_target
+       ),
+       do: {:ok, source_position}
+
+  defp resolve_target_position(
+         %{cid: source_cid, position: source_position},
+         _request,
+         %Skill{target_mode: :point, range: range},
+         _primary_target
+       ) do
     case source_cid
-      |> Targeting.nearby_combatant_pids(source_position, range)
-      |> summaries_from_pids()
-      |> Enum.sort_by(fn target -> distance(source_position, target.position) end)
-      |> List.first() do
+         |> Targeting.nearby_combatant_pids(source_position, range)
+         |> summaries_from_pids()
+         |> Enum.sort_by(fn target -> distance(source_position, target.position) end)
+         |> List.first() do
       nil -> {:error, :no_target}
       target -> {:ok, target.position}
     end
   end
 
-  defp resolve_target_position(_source, _request, _skill, _primary_target), do: {:error, :no_target}
+  defp resolve_target_position(_source, _request, _skill, _primary_target),
+    do: {:error, :no_target}
 
   defp maybe_limit(targets, nil), do: targets
   defp maybe_limit(targets, max_targets), do: Enum.take(targets, max_targets)

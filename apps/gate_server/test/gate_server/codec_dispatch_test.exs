@@ -66,11 +66,15 @@ defmodule GateServer.CodecDispatchTest do
     end
 
     test "skill_cast is in codec range" do
-      msg = <<0x09, 12::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
-              0.0::float-64-big, 0.0::float-64-big>>
+      msg =
+        <<0x09, 12::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
+          0.0::float-64-big, 0.0::float-64-big>>
+
       <<type::8, _::binary>> = msg
       assert type >= 0x01 and type <= 0x7F
-      assert {:ok, {:skill_cast, %{skill_id: 1, request_id: 12, target_kind: :auto}}} = Codec.decode(msg)
+
+      assert {:ok, {:skill_cast, %{skill_id: 1, request_id: 12, target_kind: :auto}}} =
+               Codec.decode(msg)
     end
   end
 
@@ -78,8 +82,8 @@ defmodule GateServer.CodecDispatchTest do
     test "movement_ack encodes correctly for send back" do
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 9, 12, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0},
-           :grounded, 0}
+          {:movement_ack, 9, 12, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}, :grounded,
+           0}
         )
 
       <<type::8, _::binary>> = bin

@@ -43,16 +43,6 @@ defmodule AuthServer.AuthWorker do
   `opts` accepts `:source`, `:session_id`, `:account_id`, `:cid`, and `:allowed_cids`.
   `:allowed_cids` may be a single value or a list; values are normalized to
   integers when possible and empty entries are discarded.
-
-  ## Examples
-
-      iex> claims = AuthServer.AuthWorker.build_session_claims("pilot", cid: 7, allowed_cids: [7, "8"])
-      iex> claims["username"]
-      "pilot"
-      iex> claims["cid"]
-      7
-      iex> claims["allowed_cids"]
-      [7, 8]
   """
   def build_session_claims(username, opts \\ []) when is_binary(username) do
     base_claims = %{
@@ -68,44 +58,13 @@ defmodule AuthServer.AuthWorker do
   end
 
   @spec issue_token(map()) :: String.t()
-  @doc """
-  Sign a claim map with `Phoenix.Token`.
-
-  The returned string is what the browser carries through the login redirect
-  and what the gate server later verifies remotely.
-
-  This call requires `AuthServerWeb.Endpoint` to have a `secret_key_base`
-  configured; the normal app boot paths provide one in dev, test, and prod.
-
-  ## Examples
-
-      iex> claims = AuthServer.AuthWorker.build_session_claims("pilot")
-      iex> is_binary(AuthServer.AuthWorker.issue_token(claims))
-      true
-  """
+  @doc "Signs a claim map with `Phoenix.Token` using the auth endpoint."
   def issue_token(claims) when is_map(claims) do
     Phoenix.Token.sign(AuthServerWeb.Endpoint, @token_salt, claims)
   end
 
   @spec verify_token(term()) :: {:ok, map()} | {:error, :mismatch}
-  @doc """
-  Verify a signed token and recover the claim map.
-
-  Tokens are accepted only while they are younger than 24 hours (`@max_age`).
-  Invalid, malformed, or expired tokens all collapse to `{:error, :mismatch}`
-  so callers do not need to distinguish cryptographic failure from user error.
-
-  The same endpoint secret used by `issue_token/1` must be available when
-  verifying the token.
-
-  ## Examples
-
-      iex> claims = AuthServer.AuthWorker.build_session_claims("pilot")
-      iex> token = AuthServer.AuthWorker.issue_token(claims)
-      iex> {:ok, verified} = AuthServer.AuthWorker.verify_token(token)
-      iex> verified["username"]
-      "pilot"
-  """
+  @doc "Verifies a signed token and returns the claim map, or `{:error, :mismatch}`."
   def verify_token(token) when is_binary(token) do
     case Phoenix.Token.verify(AuthServerWeb.Endpoint, @token_salt, token, max_age: @max_age) do
       {:ok, claims} when is_map(claims) -> {:ok, claims}
@@ -116,16 +75,7 @@ defmodule AuthServer.AuthWorker do
   def verify_token(_token), do: {:error, :mismatch}
 
   @spec validate_username(map(), term()) :: :ok | {:error, :username_mismatch}
-  @doc """
-  Confirm that the username embedded in the claims matches the presented name.
-
-  ## Examples
-
-      iex> AuthServer.AuthWorker.validate_username(%{"username" => "pilot"}, "pilot")
-      :ok
-      iex> AuthServer.AuthWorker.validate_username(%{"username" => "pilot"}, "scout")
-      {:error, :username_mismatch}
-  """
+  @doc "Confirms that the claims' username matches the presented one."
   def validate_username(claims, username) when is_map(claims) and is_binary(username) do
     case claim_username(claims) do
       ^username -> :ok
@@ -136,22 +86,7 @@ defmodule AuthServer.AuthWorker do
   def validate_username(_claims, _username), do: {:error, :username_mismatch}
 
   @spec validate_cid(map(), term()) :: :ok | {:error, :cid_mismatch}
-  @doc """
-  Confirm that the requested character ID is allowed by the claims.
-
-  If the token contains an exact `"cid"`, that value must match. Otherwise the
-  function falls back to `"allowed_cids"` and accepts any member of that list.
-  When neither restriction is present, the request is allowed.
-
-  ## Examples
-
-      iex> AuthServer.AuthWorker.validate_cid(%{"cid" => 7}, 7)
-      :ok
-      iex> AuthServer.AuthWorker.validate_cid(%{"allowed_cids" => [7, "8"]}, 8)
-      :ok
-      iex> AuthServer.AuthWorker.validate_cid(%{"allowed_cids" => [7]}, 9)
-      {:error, :cid_mismatch}
-  """
+  @doc "Confirms that the requested character ID is allowed by the claims."
   def validate_cid(claims, cid) when is_map(claims) and is_integer(cid) do
     cond do
       (claim_cid = claim_cid(claims)) != nil ->
@@ -169,17 +104,7 @@ defmodule AuthServer.AuthWorker do
 
   @spec authorize_character(map(), integer()) ::
           :ok | {:error, :account_not_found | :cid_mismatch | :data_service_unavailable}
-  @doc """
-  Confirm that the authenticated identity really owns the requested character.
-
-  This is the authoritative follow-up to `validate_cid/2`. Claim-based cid
-  filters can reject obvious mismatches quickly, but `authorize_character/2`
-  asks the current account/character source for the final answer.
-
-  If the token already contains `"account_id"`, that identifier is reused.
-  Otherwise the function resolves the account from the username claim before it
-  checks whether the requested character belongs to that account.
-  """
+  @doc "Confirms that the authenticated identity owns the requested character."
   def authorize_character(claims, cid) when is_map(claims) and is_integer(cid) do
     case fetch_authorized_character(claims, cid) do
       {:ok, _character} -> :ok
@@ -192,14 +117,7 @@ defmodule AuthServer.AuthWorker do
   @spec fetch_authorized_character(map(), integer()) ::
           {:ok, struct()}
           | {:error, :account_not_found | :cid_mismatch | :data_service_unavailable}
-  @doc """
-  Resolve the concrete character struct that the authenticated identity may enter.
-
-  This is the authoritative version of the auth/gate hand-off used by real scene
-  entry. It preserves the same ownership rules as `authorize_character/2`, but
-  returns the character record so downstream runtime code can avoid hard-coded
-  placeholder data.
-  """
+  @doc "Returns the character struct that the authenticated identity may enter."
   def fetch_authorized_character(claims, cid) when is_map(claims) and is_integer(cid) do
     with {:ok, account_id} <- resolve_account_id(claims),
          {:ok, character} <- AuthServer.Accounts.character_owned_by_account?(account_id, cid),

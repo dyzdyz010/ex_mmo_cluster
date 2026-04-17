@@ -72,8 +72,8 @@ defmodule SceneServer.Npc.Actor do
     {:ok, aoi_ref} =
       GenServer.call(
         aoi_manager,
-        {:add_aoi_item, profile.npc_id, System.system_time(:millisecond),
-         profile.spawn_position, self(), self(), %{kind: :npc, name: profile.name}}
+        {:add_aoi_item, profile.npc_id, System.system_time(:millisecond), profile.spawn_position,
+         self(), self(), %{kind: :npc, name: profile.name}}
       )
 
     GenServer.cast(
@@ -100,7 +100,12 @@ defmodule SceneServer.Npc.Actor do
   def handle_call(
         :get_state_summary,
         _from,
-        %{profile: profile, npc_state: npc_state, movement_state: movement_state, combat_state: combat_state} =
+        %{
+          profile: profile,
+          npc_state: npc_state,
+          movement_state: movement_state,
+          combat_state: combat_state
+        } =
           state
       ) do
     {:reply,
@@ -266,7 +271,10 @@ defmodule SceneServer.Npc.Actor do
       {next_movement_state, _ack} =
         Engine.step(profile.npc_id, movement_state, input_frame, movement_profile)
 
-      GenServer.cast(aoi_ref, {:self_move, RemoteSnapshot.from_state(profile.npc_id, next_movement_state)})
+      GenServer.cast(
+        aoi_ref,
+        {:self_move, RemoteSnapshot.from_state(profile.npc_id, next_movement_state)}
+      )
 
       {:noreply,
        %{
@@ -288,7 +296,12 @@ defmodule SceneServer.Npc.Actor do
   @impl true
   def handle_info(
         :respawn,
-        %{profile: profile, combat_state: combat_state, movement_state: movement_state, aoi_ref: aoi_ref} =
+        %{
+          profile: profile,
+          combat_state: combat_state,
+          movement_state: movement_state,
+          aoi_ref: aoi_ref
+        } =
           state
       ) do
     if combat_state.alive do
@@ -329,7 +342,12 @@ defmodule SceneServer.Npc.Actor do
   end
 
   @impl true
-  def terminate(_reason, %{brain_timer: brain_timer, movement_timer: movement_timer, respawn_timer: respawn_timer, aoi_ref: aoi_ref}) do
+  def terminate(_reason, %{
+        brain_timer: brain_timer,
+        movement_timer: movement_timer,
+        respawn_timer: respawn_timer,
+        aoi_ref: aoi_ref
+      }) do
     if brain_timer != nil, do: Process.cancel_timer(brain_timer)
     if movement_timer != nil, do: Process.cancel_timer(movement_timer)
     if respawn_timer != nil, do: Process.cancel_timer(respawn_timer)
@@ -337,7 +355,11 @@ defmodule SceneServer.Npc.Actor do
     :ok
   end
 
-  defp gather_facts(%{profile: profile, movement_state: movement_state, combat_state: combat_state}) do
+  defp gather_facts(%{
+         profile: profile,
+         movement_state: movement_state,
+         combat_state: combat_state
+       }) do
     {target_cid, target_distance} = nearest_player(movement_state.position, profile.aggro_radius)
 
     %Facts{
@@ -372,7 +394,12 @@ defmodule SceneServer.Npc.Actor do
   end
 
   defp maybe_cast_skill(
-         %{aoi_ref: aoi_ref, movement_state: movement_state, profile: profile, skill_casts: skill_casts} =
+         %{
+           aoi_ref: aoi_ref,
+           movement_state: movement_state,
+           profile: profile,
+           skill_casts: skill_casts
+         } =
            state,
          %NpcState{} = next_npc_state,
          %Skill{} = skill,
@@ -386,7 +413,11 @@ defmodule SceneServer.Npc.Actor do
                skill
              ) do
           {:ok, execution} ->
-            GenServer.cast(aoi_ref, {:skill_cast, profile.npc_id, skill.id, movement_state.position})
+            GenServer.cast(
+              aoi_ref,
+              {:skill_cast, profile.npc_id, skill.id, movement_state.position}
+            )
+
             broadcast_effect_events(aoi_ref, execution.initial_cues)
             schedule_skill_resolution(execution.delayed_cast)
             %{state | npc_state: next_npc_state, skill_casts: Map.put(skill_casts, skill.id, now)}
@@ -408,15 +439,22 @@ defmodule SceneServer.Npc.Actor do
     end
   end
 
-  defp target_position(%NpcState{intent: :return_home}, %NpcProfile{spawn_position: spawn_position}) do
+  defp target_position(%NpcState{intent: :return_home}, %NpcProfile{
+         spawn_position: spawn_position
+       }) do
     spawn_position
   end
 
   defp target_position(_npc_state, _profile), do: nil
 
-  defp should_advance_movement?(_movement_state, _input_frame, %CombatState{alive: false}), do: false
+  defp should_advance_movement?(_movement_state, _input_frame, %CombatState{alive: false}),
+    do: false
 
-  defp should_advance_movement?(%MovementState{} = movement_state, %InputFrame{} = input_frame, _combat_state) do
+  defp should_advance_movement?(
+         %MovementState{} = movement_state,
+         %InputFrame{} = input_frame,
+         _combat_state
+       ) do
     movement_active?(movement_state) or input_active?(input_frame)
   end
 

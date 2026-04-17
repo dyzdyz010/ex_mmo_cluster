@@ -19,15 +19,15 @@ defmodule VisualizeServerWeb.ConnCase do
 
   using do
     quote do
+      # The default endpoint for testing
+      @endpoint VisualizeServerWeb.Endpoint
+
+      use VisualizeServerWeb, :verified_routes
+
       # Import conveniences for testing with connections
       import Plug.Conn
       import Phoenix.ConnTest
       import VisualizeServerWeb.ConnCase
-
-      alias VisualizeServerWeb.Router.Helpers, as: Routes
-
-      # The default endpoint for testing
-      @endpoint VisualizeServerWeb.Endpoint
     end
   end
 

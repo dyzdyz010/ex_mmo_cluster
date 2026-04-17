@@ -468,7 +468,8 @@ defmodule GateServer.TcpConnection do
     with :ok <- authorize_cid(claims, cid),
          {:ok, character} <- fetch_authorized_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
-         {:ok, ppid} <- add_player(scene_node, cid, timestamp, build_character_profile(character)),
+         {:ok, ppid} <-
+           add_player(scene_node, cid, timestamp, build_character_profile(character)),
          {:ok, {x, y, z}} <- fetch_player_location(ppid) do
       GateServer.CliObserve.emit("enter_scene_ok", %{
         connection_pid: self(),

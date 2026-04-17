@@ -1,27 +1,18 @@
 import Config
 
+# We don't run a server during test. If one is required,
+# you can enable the server option below.
 config :auth_server, AuthServerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
-  url: [host: "localhost"],
-  render_errors: [view: AuthServerWeb.ErrorView, accepts: ~w(html json), layout: false],
-  pubsub_server: AuthServer.PubSub,
-  secret_key_base: "x2j8fVNYUpjhnt59L9KZuZyuEriApRKcMghPUkEiEZb+DGwsibCEa/GOMtMyd0+F",
-  live_view: [signing_salt: "VRqBPZwk"],
+  secret_key_base: "Mqe6YlSESPnhRs5c9BxstlH2R4ZvkNzflWyEYZITMIwyN74nYMpTF/5X02dyfmQN",
   server: false
-
-config :auth_server, AuthServer.Mailer, adapter: Swoosh.Adapters.Test
 
 config :visualize_server, VisualizeServerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4003],
-  url: [host: "localhost"],
-  render_errors: [view: VisualizeServerWeb.ErrorView, accepts: ~w(html json), layout: false],
-  pubsub_server: VisualizeServer.PubSub,
-  secret_key_base: "e9Sovnin9dxiZGj9+CW6piAVDtdZvwrIXj7xyB3b8NKDdrQID/5bZChtbAPK+noe",
-  live_view: [signing_salt: "uSUohzqu"],
+  secret_key_base: "chLpul9HpLdUaDKG7mumliAFELOvmLdd5ELmYyAFFN2K8QRcHsOPe9JPS9Uiq//8",
   server: false
 
-config :visualize_server, VisualizeServer.Mailer, adapter: Swoosh.Adapters.Test
-
+# Data Service — test uses the configured Postgres instance
 config :data_service, DataService.Repo,
   database: System.get_env("MMO_DB_NAME", "mmo_dev"),
   username: System.get_env("MMO_DB_USER", "mmo_dev"),
@@ -36,5 +27,16 @@ config :data_service, DataService.Repo,
 # startup failures before ExUnit boots.
 config :libcluster, topologies: []
 
-config :logger, level: :warn
+# Print only warnings and errors during test
+config :logger, level: :warning
+
+# Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
+
+# Enable helpful, but potentially expensive runtime checks
+config :phoenix_live_view,
+  enable_expensive_runtime_checks: true
+
+# Sort query params output of verified routes for robust url comparisons
+config :phoenix,
+  sort_verified_routes_query_params: true
