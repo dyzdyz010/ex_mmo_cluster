@@ -244,12 +244,17 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache deps
+      - name: Cache deps and cargo registry
+        # _build is intentionally NOT cached. Rustler copies *.so into
+        # _build/<env>/lib/scene_server/priv/native/, but the copy is not
+        # always reproduced from a warm cache; previous runs have hit
+        # {:load_failed, ...} when stale _build is restored without the
+        # .so files. Always rebuild the NIF from scratch; cargo registry
+        # cache keeps this under ~30s.
         uses: actions/cache@v4
         with:
           path: |
             deps
-            _build
             ~/.cargo/registry
             ~/.cargo/git
           key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
