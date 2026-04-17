@@ -1,0 +1,78 @@
+# Hemifuture MMO — single-server production stack
+#
+# Usage on server:
+#   cd /opt/hemi/deploy
+#   cp .env.example .env   # edit with real secrets + domain
+#   docker compose up -d
+#
+# Upgrade (after CI pushes a new image):
+#   docker compose pull
+#   docker compose up -d app
+#
+# MVP scope:
+#   - one app container (all umbrella apps in one BEAM node)
+#   - postgres container on internal network only
+#   - caddy container for HTTPS termination on auth/game subdomains
+#   - gate_server TCP exposed as plain TCP on host:${GATE_TCP_PORT}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MMO_DB_USER}
+      POSTGRES_PASSWORD: ${MMO_DB_PASSWORD}
+      POSTGRES_DB: ${MMO_DB_NAME}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MMO_DB_USER} -d ${MMO_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: ${IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override DB host to use the compose service name, not whatever the
+      # .env might have set for local dev.
+      MMO_DB_HOST: postgres
+    ports:
+      # Plain TCP for the custom binary protocol. Bypass caddy.
+      - "${GATE_TCP_PORT}:29000"
+    networks:
+      - internal
+    # HTTP ports (4000 auth, 4001 visualize) are only reachable via caddy.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

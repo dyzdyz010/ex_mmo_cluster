@@ -11,7 +11,7 @@ defmodule GateServer.TcpAcceptor do
 
   require Logger
 
-  @port 29000
+  @default_port 29000
 
   @doc "Standard child spec for the TCP acceptor worker."
   def child_spec(opts) do
@@ -39,7 +39,7 @@ defmodule GateServer.TcpAcceptor do
   end
 
   def handle_cast(:listen, _state) do
-    listen(@port)
+    listen(Application.get_env(:gate_server, :tcp_port, @default_port))
   end
 
   defp listen(port) do

@@ -1,0 +1,54 @@
+# Build artifacts — rebuilt inside the image
+_build/
+deps/
+.elixir_ls/
+apps/*/_build/
+apps/*/deps/
+
+# Rust build output — recompiled in builder stage
+apps/*/native/*/target/
+apps/*/priv/native/
+
+# Node / asset build artifacts — rebuilt via mix assets.deploy
+apps/*/assets/node_modules/
+apps/*/priv/static/assets/
+
+# Git & VCS
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+
+# Docs & project-management files — not needed in image
+docs/
+.omc/
+README.md
+AGENTS.md
+CLAUDE.md
+
+# CI / tooling
+.github/
+.vscode/
+.idea/
+
+# Local env & secrets — must never leak into image
+.env
+.env.*
+!.env.example
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Release bundles (if any were produced locally)
+*.tar.gz
+hemi_server-*.tar.gz
+
+# Test artifacts
+cover/
+apps/*/test-results/
+
+# Windows-specific
+*.dll
+*.exe
+*.pdb
