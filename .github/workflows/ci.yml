@@ -57,26 +57,12 @@ jobs:
             apps/world_server
             apps/auth_server
             apps/visualize_server
+            apps/data_service
           )
 
           for app in "${strict_apps[@]}"; do
             echo "::group::Compiling ${app#apps/}"
             (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
-            echo "::endgroup::"
-          done
-
-      - name: Compile apps with legacy deps
-        run: |
-          # data_service transitively pulls data_init/memento which emits
-          # deprecation warnings from the memento library.
-          # Compiled without --warnings-as-errors until memento is removed.
-          legacy_apps=(
-            apps/data_service
-          )
-
-          for app in "${legacy_apps[@]}"; do
-            echo "::group::Compiling ${app#apps/}"
-            (cd "$app" && mix compile --no-optional-deps)
             echo "::endgroup::"
           done
 

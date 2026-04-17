@@ -29,7 +29,6 @@ defmodule DataService.MixProject do
       {:data_init, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       {:poolboy, "~> 1.5.2"},
-      {:memento, "~> 0.3.2"},
       {:bcrypt_elixir, "~> 3.0"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"},
