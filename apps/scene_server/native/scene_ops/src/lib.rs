@@ -39,7 +39,10 @@ fn new_character_data(
         Ok(guard) => guard,
     };
 
-    let cd = CharacterData::new_data(cid, nickname, location, dev_attrs, &mut physys);
+    let cd = match CharacterData::new_data(cid, nickname, location, dev_attrs, &mut physys) {
+        Ok(cd) => cd,
+        Err(_) => return Err(types::atoms::missing_dev_attr()),
+    };
     let cd_arc = ResourceArc::new(CharacterDataResource(Mutex::new(cd)));
 
     Ok(cd_arc)

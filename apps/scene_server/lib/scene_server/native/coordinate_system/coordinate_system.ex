@@ -15,6 +15,11 @@ defmodule SceneServer.Native.CoordinateSystem do
   @spec new_item(integer(), {number(), number(), number()}) :: {atom(), Types.sorted_set()}
   def new_item(_cid, _coord), do: error()
 
+  @doc "Updates the coordinate of one coordinate-system item."
+  @spec update_item_coord(Types.item(), {number(), number(), number()}) ::
+          {:ok, atom()} | {:error, atom()}
+  def update_item_coord(_item, _coord), do: error()
+
   @doc "Reads the raw representation of one coordinate-system item."
   @spec get_item_raw(Types.item()) :: {atom(), Types.item()} | {atom(), any()}
   def get_item_raw(_item), do: error()

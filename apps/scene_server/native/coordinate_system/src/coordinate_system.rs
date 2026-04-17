@@ -118,7 +118,7 @@ impl CoordinateSystem {
     //     result
     // }
 
-    pub fn items_within_distance_for_item<'a>(&'a self, item: &Item, distance: f64) -> Vec<&Item> {
+    pub fn items_within_distance_for_item<'a>(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
         let mut items: Vec<&Item> = self.axes.par_iter().map(|set|
             set.items_within_distance_for_item(item, distance)
         ).flat_map(|a| a.to_vec()).collect();

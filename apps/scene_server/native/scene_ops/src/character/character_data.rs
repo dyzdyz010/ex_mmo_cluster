@@ -8,6 +8,9 @@ use super::movement::{Movement, MovementDebug};
 use super::dev_attrs::DevAttrs;
 use super::types::Vector;
 
+#[derive(Debug)]
+pub struct MissingDevAttr(pub &'static str);
+
 #[derive(Clone)]
 pub struct CharacterData {
     pub cid: u64,
@@ -23,7 +26,7 @@ impl CharacterData {
         location: Vector,
         dev_attrs: HashMap<String, i32>,
         physys: &mut PhySys
-    ) -> CharacterData {
+    ) -> Result<CharacterData, MissingDevAttr> {
         let move_comp = Movement::new(
             location,
             Vector {
@@ -38,15 +41,14 @@ impl CharacterData {
             },
             physys
         );
-        let dev_attrs_comp = DevAttrs::new(
-            dev_attrs.get("mmr").unwrap().to_owned(),
-            dev_attrs.get("cph").unwrap().to_owned(),
-            dev_attrs.get("cct").unwrap().to_owned(),
-            dev_attrs.get("pct").unwrap().to_owned(),
-            dev_attrs.get("rsl").unwrap().to_owned(),
-        );
+        let mmr = *dev_attrs.get("mmr").ok_or(MissingDevAttr("mmr"))?;
+        let cph = *dev_attrs.get("cph").ok_or(MissingDevAttr("cph"))?;
+        let cct = *dev_attrs.get("cct").ok_or(MissingDevAttr("cct"))?;
+        let pct = *dev_attrs.get("pct").ok_or(MissingDevAttr("pct"))?;
+        let rsl = *dev_attrs.get("rsl").ok_or(MissingDevAttr("rsl"))?;
+        let dev_attrs_comp = DevAttrs::new(mmr, cph, cct, pct, rsl);
 
-        CharacterData { cid, nickname, movement: move_comp, dev_attrs: dev_attrs_comp }
+        Ok(CharacterData { cid, nickname, movement: move_comp, dev_attrs: dev_attrs_comp })
     }
 
     pub fn movement_tick(&mut self, physys: &mut PhySys) -> Option<Vector> {

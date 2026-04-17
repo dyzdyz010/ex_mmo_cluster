@@ -26,5 +26,8 @@ pub mod atoms {
         // Resource Atoms
         bad_reference,
         lock_fail,
+
+        // Validation Atoms
+        missing_dev_attr,
     }
 }
