@@ -12,7 +12,7 @@
 # ============================================================================
 # Stage 1 — Builder: Elixir + OTP + Node + Rust toolchain
 # ============================================================================
-FROM hexpm/elixir:1.18.4-erlang-28.3.1-debian-bookworm-20250908-slim AS builder
+FROM hexpm/elixir:1.18.4-erlang-28.3.1-debian-bookworm-20260406-slim AS builder
 
 ENV MIX_ENV=prod \
     LANG=C.UTF-8 \
