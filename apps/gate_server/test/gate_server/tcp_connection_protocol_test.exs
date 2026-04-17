@@ -552,7 +552,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             <<0x8D, 7::64-big, 42::64-big, 1::16-big, 25::16-big, 75::16-big, 1.0::float-64-big,
-              2.0::float-64-big, 3.0::float-64-big>>} =
+              2.0::float-64-big,
+              3.0::float-64-big>>} =
              :gen_tcp.recv(client, 0, 500)
   end
 
@@ -666,7 +667,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok,
             {{127, 0, 0, 1}, _port,
              <<0x8B, 114::32-big, 200::32-big, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
-               19.0::float-64-big, _::binary>>}} =
+               19.0::float-64-big,
+               _::binary>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     :gen_udp.close(udp_client)
@@ -724,7 +726,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
             {{127, 0, 0, 1}, _port,
              <<0x83, 77::64-big, 9::32-big, 11.0::float-64-big, 12.0::float-64-big,
                13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>}} =
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
+               0::8>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
@@ -813,7 +816,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
             {{127, 0, 0, 1}, ^port2,
              <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
                23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>}} =
+               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
+               0::8>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
@@ -877,7 +881,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok,
             <<0x83, 88::64-big, 3::32-big, 31.0::float-64-big, 32.0::float-64-big,
               33.0::float-64-big, +0.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big,
-              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>} =
+              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
+              0::8>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)

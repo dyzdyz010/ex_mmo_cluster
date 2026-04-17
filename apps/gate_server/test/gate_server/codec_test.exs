@@ -186,7 +186,8 @@ defmodule GateServer.CodecTest do
 
       assert <<0x8B, 10::32-big, 77::32-big, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
                3.5::float-64-big, 4.5::float-64-big, 5.5::float-64-big, 6.5::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 3::32-big>> ==
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8,
+               3::32-big>> ==
                bin
     end
   end

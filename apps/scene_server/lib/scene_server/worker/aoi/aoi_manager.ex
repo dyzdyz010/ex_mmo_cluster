@@ -70,7 +70,7 @@ defmodule SceneServer.AoiManager do
   end
 
   @impl true
-      def handle_call(
+  def handle_call(
         {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid, actor_meta},
         _from,
         %{coordinate_system: system, aois: aois} = state

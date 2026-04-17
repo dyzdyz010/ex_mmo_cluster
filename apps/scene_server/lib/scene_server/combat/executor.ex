@@ -256,7 +256,8 @@ defmodule SceneServer.Combat.Executor do
     do: :ok
 
   defp validate_target_mode(%Skill{target_mode: :actor}, %CastRequest{target_mode: mode})
-       when mode in [:auto, :actor], do: :ok
+       when mode in [:auto, :actor],
+       do: :ok
 
   defp validate_target_mode(%Skill{target_mode: :self}, %CastRequest{}), do: :ok
   defp validate_target_mode(%Skill{target_mode: mode}, %CastRequest{target_mode: mode}), do: :ok
@@ -308,7 +309,8 @@ defmodule SceneServer.Combat.Executor do
 
   defp resolve_primary_target(%{cid: cid, position: position}, _request, %Skill{
          target_mode: :self
-       }), do: {:ok, %{cid: cid, position: position}}
+       }),
+       do: {:ok, %{cid: cid, position: position}}
 
   defp resolve_primary_target(_source, _request, _skill), do: {:ok, nil}
 
@@ -327,14 +329,16 @@ defmodule SceneServer.Combat.Executor do
   end
 
   defp resolve_target_position(_source, _request, _skill, %{position: position})
-       when is_tuple(position), do: {:ok, position}
+       when is_tuple(position),
+       do: {:ok, position}
 
   defp resolve_target_position(
          %{position: source_position},
          _request,
          %Skill{target_mode: :self},
          _primary_target
-       ), do: {:ok, source_position}
+       ),
+       do: {:ok, source_position}
 
   defp resolve_target_position(
          %{cid: source_cid, position: source_position},
