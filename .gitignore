@@ -38,9 +38,11 @@ erl_crash.dump
 .omx/
 
 # OMC runtime state (per-session). Keep autopilot specs and plans tracked.
-/.omc/state/
-/.omc/logs/
-/.omc/project-memory.json
+# Use ** so nested .omc/ directories inside umbrella apps are also ignored.
+**/.omc/state/
+**/.omc/logs/
+**/.omc/sessions/
+**/.omc/project-memory.json
 
 # Claude Code local settings
 /.claude/

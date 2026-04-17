@@ -8,12 +8,13 @@
 
 - **语言**：Elixir 1.18.x，Erlang/OTP 28
 - **运行时版本**：见 `.tool-versions`（Erlang 28.3.1，Elixir 1.18.4-otp-28）
-- **Web 框架**：Phoenix 1.6（`auth_server`、`visualize_server`）
+- **Web 框架**：Phoenix 1.8（`auth_server`、`visualize_server`，均由 `mix phx.new` 1.8 模板生成后迁移业务逻辑）
+- **HTTP 适配器**：Bandit 1.5（Phoenix 1.8 默认）
 - **数据库**：PostgreSQL via Ecto（主路径），Mnesia via Memento（遗留、迁移中）
 - **序列化**：自定义二进制 codec（`GateServer.Codec`，见 `docs/2026-04-10-线协议规范.md`），以及 JSON（Jason）
 - **原生扩展**：Rust via Rustler 0.36（物理使用 `rapier3d-f64`，空间索引使用 octree）
-- **集群组件**：`libcluster`（节点发现）、`Horde`（分布式注册与 supervisor）
-- **前端**：Phoenix LiveView、esbuild、Tailwind CSS
+- **集群组件**：`libcluster`（节点发现）、`Horde`（分布式注册与 supervisor）、`DNSCluster`（Phoenix 1.8 默认 DNS 基础集群，与 libcluster 并存）
+- **前端**：Phoenix LiveView 1.1、esbuild 0.25、Tailwind CSS 4.1、heroicons
 
 ## 仓库结构
 
@@ -239,8 +240,10 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
 | 包 | 版本 | 用途 |
 |----|------|------|
-| `phoenix` | 1.6 | Web 框架（auth、visualization） |
-| `phoenix_live_view` | 0.17 | `visualize_server` 实时 UI |
+| `phoenix` | 1.8 | Web 框架（auth、visualization） |
+| `phoenix_live_view` | 1.1 | `visualize_server` 实时 UI |
+| `bandit` | ~> 1.5 | Phoenix 1.8 默认 HTTP 适配器 |
+| `dns_cluster` | ~> 0.2 | Phoenix 1.8 默认 DNS 集群 |
 | `ecto_sql` | ~> 3.12 | PostgreSQL 数据访问 |
 | `postgrex` | latest | PostgreSQL 驱动 |
 | `memento` | 0.3.2 | Mnesia 包装层（遗留） |
