@@ -27,7 +27,12 @@ defmodule SceneServer.Npc.NavigationTest do
   test "brakes when already at destination" do
     frame =
       Navigation.build_input_frame(
-        %NpcState{npc_id: 9001, intent: :return_home, current_target_cid: nil, last_decision_at_ms: nil},
+        %NpcState{
+          npc_id: 9001,
+          intent: :return_home,
+          current_target_cid: nil,
+          last_decision_at_ms: nil
+        },
         MovementState.idle({32.0, 32.0, 0.0}),
         MovementProfile.default(),
         NpcProfile.default(9001, spawn_position: {32.0, 32.0, 0.0}),

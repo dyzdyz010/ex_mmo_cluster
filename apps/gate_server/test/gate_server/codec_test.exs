@@ -272,9 +272,9 @@ defmodule GateServer.CodecTest do
           {:effect_event, 7, 4, :projectile, {1.0, 2.0, 3.0}, 42, {4.0, 5.0, 6.0}, 96.0, 350}
         )
 
-      assert <<0x8F, 7::64-big, 4::16-big, 1::8, 42::64-big, 1.0::float-64-big,
-               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
-               6.0::float-64-big, 96.0::float-64-big, 350::32-big>> = bin
+      assert <<0x8F, 7::64-big, 4::16-big, 1::8, 42::64-big, 1.0::float-64-big, 2.0::float-64-big,
+               3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
+               96.0::float-64-big, 350::32-big>> = bin
     end
   end
 

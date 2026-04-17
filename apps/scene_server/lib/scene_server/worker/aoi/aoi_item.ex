@@ -352,8 +352,10 @@ defmodule SceneServer.Aoi.AoiItem do
       true -> Logger.debug("AOI system item removed.")
       false -> Logger.debug("AOI system item already absent during terminate.")
     end
+
     {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
     Logger.debug("Aoi index removed.")
+
     if aoi_timer != nil do
       Process.cancel_timer(aoi_timer)
       Logger.debug("Timer canceled.")

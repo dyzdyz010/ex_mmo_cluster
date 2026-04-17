@@ -255,7 +255,8 @@ defmodule SceneServer.PlayerCharacter do
         {:cast_skill, skill_id},
         from,
         state
-      ) when is_integer(skill_id) do
+      )
+      when is_integer(skill_id) do
     handle_call({:cast_skill, CastRequest.auto(skill_id)}, from, state)
   end
 

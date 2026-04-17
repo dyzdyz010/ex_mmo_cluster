@@ -58,7 +58,8 @@ defmodule SceneServer.Npc.ManagerTest do
     assert {:ok, npc_pid} =
              GenServer.call(
                SceneServer.NpcManager,
-               {:spawn_npc, 9001, [player_registry: FakePlayerRegistry, aoi_manager: FakeAoiManager, name: "Slime"]},
+               {:spawn_npc, 9001,
+                [player_registry: FakePlayerRegistry, aoi_manager: FakeAoiManager, name: "Slime"]},
                5_000
              )
 

@@ -525,7 +525,10 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert :ok = :gen_tcp.send(client, encode_skill_cast(90, 1))
     assert {:ok, <<0x80, 90::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
-    assert_receive {:cast_skill, %SceneServer.Combat.CastRequest{skill_id: 1, target_mode: :auto}}, 500
+
+    assert_receive {:cast_skill,
+                    %SceneServer.Combat.CastRequest{skill_id: 1, target_mode: :auto}},
+                   500
   end
 
   test "skill_event cast is encoded to the client socket", %{client: client, pid: pid} do
@@ -808,7 +811,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, ^port2,
-              <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
+             <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
                23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
                +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
