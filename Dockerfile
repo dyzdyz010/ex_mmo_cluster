@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 # -----------------------------------------------------------------------------
-# Hemifuture MMO server — production image
+# ex_mmo_cluster — production image
 #
 # Single-container MVP: all maintained umbrella apps packed into one Elixir
-# release (hemi_server). Rust NIFs (scene_ops / octree / coordinate_system /
+# release (ex_mmo_cluster). Rust NIFs (scene_ops / octree / coordinate_system /
 # movement_engine) are compiled inside the builder stage via Rustler.
 #
 # Target: linux/amd64 only.
@@ -61,8 +61,8 @@ RUN mix compile
 # Root alias `assets.deploy` fans out into both Phoenix apps (see mix.exs).
 RUN mix assets.deploy
 
-# Build the release. Output: _build/prod/rel/hemi_server/
-RUN mix release hemi_server
+# Build the release. Output: _build/prod/rel/ex_mmo_cluster/
+RUN mix release ex_mmo_cluster
 
 # ============================================================================
 # Stage 2 — Runtime: minimal debian-slim + libssl + ncurses (ERTS dep)
@@ -86,14 +86,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user.
-RUN groupadd --system --gid 1000 hemi \
- && useradd --system --uid 1000 --gid hemi --home /app --shell /bin/bash hemi
+RUN groupadd --system --gid 1000 ex_mmo_cluster \
+ && useradd --system --uid 1000 --gid ex_mmo_cluster --home /app --shell /bin/bash ex_mmo_cluster
 
 WORKDIR /app
 
-COPY --from=builder --chown=hemi:hemi /app/_build/prod/rel/hemi_server ./
+COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/ex_mmo_cluster ./
 
-USER hemi
+USER ex_mmo_cluster
 
 # Defaults that can be overridden by docker-compose env_file / environment.
 # Actual secrets (SECRET_KEY_BASE, DB creds, RELEASE_COOKIE) must be injected.
@@ -106,5 +106,5 @@ ENV PHX_SERVER=true \
 
 EXPOSE 4000 4001 29000
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/hemi_server"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/ex_mmo_cluster"]
 CMD ["start"]

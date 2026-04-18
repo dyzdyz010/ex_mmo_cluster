@@ -1,7 +1,7 @@
-# Hemifuture MMO — single-server production stack
+# ex_mmo_cluster — single-server production stack
 #
 # Usage on server:
-#   cd /opt/hemi/deploy
+#   cd /opt/ex_mmo_cluster/deploy
 #   cp .env.example .env   # edit with real secrets + domain
 #   docker compose up -d
 #
@@ -12,8 +12,16 @@
 # MVP scope:
 #   - one app container (all umbrella apps in one BEAM node)
 #   - postgres container on internal network only
-#   - caddy container for HTTPS termination on auth/game subdomains
-#   - gate_server TCP exposed as plain TCP on host:${GATE_TCP_PORT}
+#   - HTTP ports bound to 127.0.0.1 only — host-side nginx terminates TLS
+#     and reverse-proxies auth.${DOMAIN} / game.${DOMAIN} to these ports.
+#     See deploy/nginx.conf.example for the matching nginx config.
+#   - gate_server TCP exposed directly on host:${GATE_TCP_PORT} (custom
+#     binary protocol, not HTTP — nginx http module can't proxy it)
+
+# Pin the project name so container/network/volume names don't depend on the
+# host directory layout (i.e. /opt/ex_mmo_cluster/deploy → would default to
+# "deploy" otherwise). Resulting names: ex_mmo_cluster-app-1, ex_mmo_cluster-postgres-1.
+name: ex_mmo_cluster
 
 services:
   postgres:
@@ -45,33 +53,16 @@ services:
       # .env might have set for local dev.
       MMO_DB_HOST: postgres
     ports:
-      # Plain TCP for the custom binary protocol. Bypass caddy.
+      # HTTP ports — bound to loopback so only host-side nginx can reach them.
+      - "127.0.0.1:${AUTH_PORT}:4000"
+      - "127.0.0.1:${VISUALIZE_PORT}:4001"
+      # Plain TCP for the custom binary protocol — exposed directly.
       - "${GATE_TCP_PORT}:29000"
-    networks:
-      - internal
-    # HTTP ports (4000 auth, 4001 visualize) are only reachable via caddy.
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      - app
-    environment:
-      DOMAIN: ${DOMAIN}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
     networks:
       - internal
 
 volumes:
   pg_data:
-  caddy_data:
-  caddy_config:
 
 networks:
   internal:

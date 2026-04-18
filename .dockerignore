@@ -42,7 +42,7 @@ Thumbs.db
 
 # Release bundles (if any were produced locally)
 *.tar.gz
-hemi_server-*.tar.gz
+ex_mmo_cluster-*.tar.gz
 
 # Test artifacts
 cover/

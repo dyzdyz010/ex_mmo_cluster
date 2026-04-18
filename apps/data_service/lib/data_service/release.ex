@@ -5,7 +5,7 @@ defmodule DataService.Release do
   Used from within a `mix release` package where `Mix` itself is not
   available. Typical invocation from the production container:
 
-      /app/bin/hemi_server eval 'DataService.Release.migrate()'
+      /app/bin/ex_mmo_cluster eval 'DataService.Release.migrate()'
   """
 
   @app :data_service

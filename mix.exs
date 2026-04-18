@@ -36,7 +36,7 @@ defmodule Cluster.MixProject do
   # (data_store, data_contact) are intentionally excluded.
   defp releases do
     [
-      hemi_server: [
+      ex_mmo_cluster: [
         include_executables_for: [:unix],
         include_erts: true,
         applications: [
