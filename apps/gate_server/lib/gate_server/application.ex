@@ -22,6 +22,11 @@ defmodule GateServer.Application do
 
   use Application
 
+  # Capture the build-time env so the release (where `Mix` is not loaded) can
+  # still answer "are we in :test?" — module attributes are evaluated at compile
+  # time, so this becomes a literal `false` in the prod release.
+  @is_test_build Mix.env() == :test
+
   @impl true
   def start(_type, _args) do
     children =
@@ -44,7 +49,7 @@ defmodule GateServer.Application do
   end
 
   defp udp_children do
-    if Mix.env() == :test do
+    if @is_test_build do
       []
     else
       [{GateServer.UdpAcceptorSup, name: GateServer.UdpAcceptorSup}]
@@ -56,7 +61,7 @@ defmodule GateServer.Application do
       Application.get_env(:gate_server, :stdio_interface, false) ||
         System.get_env("GATE_SERVER_STDIO") in ["1", "true", "TRUE", "yes", "on"]
 
-    if Mix.env() != :test and enabled? do
+    if not @is_test_build and enabled? do
       {GateServer.StdioInterface, name: GateServer.StdioInterface}
     end
   end

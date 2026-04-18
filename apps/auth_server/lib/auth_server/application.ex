@@ -9,6 +9,10 @@ defmodule AuthServer.Application do
 
   use Application
 
+  # Capture the build-time env so the release (where `Mix` is not loaded) can
+  # still answer "are we in :test?" — this becomes a literal `false` in prod.
+  @is_test_build Mix.env() == :test
+
   @impl true
   def start(_type, _args) do
     children =
@@ -24,7 +28,7 @@ defmodule AuthServer.Application do
   end
 
   defp interface_children do
-    if Application.get_env(:auth_server, :start_interface?, Mix.env() != :test) do
+    if Application.get_env(:auth_server, :start_interface?, not @is_test_build) do
       [{AuthServer.InterfaceSup, name: AuthServer.InterfaceSup}]
     else
       []
