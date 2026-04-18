@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: hemi-server
+  IMAGE_NAME: ex_mmo_cluster
 
 jobs:
   build-and-push:
