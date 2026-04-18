@@ -10,8 +10,10 @@
 #
 # 前置条件:
 #   - DNS A 记录 ${DOMAIN} 已解析到本机公网 IP
-#   - 证书已落地为 /etc/nginx/ssl/${DOMAIN}/cert.pem + key.pem
-#     （若用 certbot/Let's Encrypt 默认路径，把 ssl_certificate{,_key} 改为
+#   - 证书由 acme.sh 部署到 /etc/nginx/ssl/${DOMAIN}/cert.pem + key.pem
+#     续期由 `acme.sh --install-cert ... --reloadcmd "service nginx reload"` 注册的
+#     cron 自动处理，证书文件会被覆盖写 + nginx reload，无需手动干预
+#     （若改用 certbot/Let's Encrypt，把 ssl_certificate{,_key} 改为
 #      /etc/letsencrypt/live/${DOMAIN}/fullchain.pem 与 privkey.pem）
 #   - docker compose 里 app 已经把 4000 绑到 127.0.0.1
 #   - gate_server 的 29000 TCP 端口走防火墙直连，客户端连 ${DOMAIN}:29000
