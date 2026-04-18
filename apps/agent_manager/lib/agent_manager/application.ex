@@ -8,12 +8,10 @@ defmodule AgentManager.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: AgentManager.Worker.start_link(arg)
-      # {AgentManager.Worker, arg}
+      {AgentManager.InterfaceSup, name: AgentManager.InterfaceSup},
+      {AgentManager.AgentManagerSup, name: AgentManager.AgentManagerSup}
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: AgentManager.Supervisor]
     Supervisor.start_link(children, opts)
   end

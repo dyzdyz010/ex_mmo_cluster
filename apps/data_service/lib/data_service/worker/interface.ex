@@ -10,7 +10,7 @@ defmodule DataService.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{data_contact: nil, server_state: :waiting_requirements}, {:continue, :setup}}
+    {:ok, %{server_state: :waiting_requirements}, {:continue, :setup}}
   end
 
   @impl true
@@ -20,18 +20,7 @@ defmodule DataService.Interface do
     BeaconServer.Client.join_cluster()
     BeaconServer.Client.register(@resource)
 
-    {:ok, data_contact_node} = BeaconServer.Client.await(:data_contact)
-    Logger.info("Found data_contact at #{inspect(data_contact_node)}", ansi_color: :green)
-
-    DataInit.copy_database(data_contact_node, :service)
-
-    :ok =
-      GenServer.call(
-        {DataContact.NodeManager, data_contact_node},
-        {:register, node(), :service}
-      )
-
     Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
-    {:noreply, %{state | data_contact: data_contact_node, server_state: :ready}}
+    {:noreply, %{state | server_state: :ready}}
   end
 end
