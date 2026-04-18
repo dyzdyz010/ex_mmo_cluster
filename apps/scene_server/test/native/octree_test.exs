@@ -144,6 +144,7 @@ defmodule SceneServer.Native.OctreeTest do
       Octree.add_item(tree, item)
 
       result = Octree.get_in_bound(tree, {1.0, 1.0, 1.0}, {0.0, 0.0, 0.0})
+
       # 观察 Rust 边界行为：假设边界包含（即精确命中），若 Rust 不命中则调整为 == []
       assert 200 in result
     end
