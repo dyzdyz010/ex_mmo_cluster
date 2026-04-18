@@ -51,3 +51,12 @@ erl_crash.dump
 
 clients/bevy_client/target/
 .demo/
+
+# Deployment secrets — never commit real .env, but keep .env.example tracked.
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+
+# Local docker smoke-test client logs.
+deploy/*-observe.log
+deploy/*-stdout.log
