@@ -4,12 +4,15 @@
 #   1. 复制到 /etc/nginx/sites-available/ex_mmo_cluster.conf
 #   2. 替换 ${DOMAIN} 占位符为实际域名（如 mmo.hemifuture.cn）
 #   3. 替换端口为 .env 里 AUTH_PORT 的值（默认 4000）
-#   4. ln -s /etc/nginx/sites-available/ex_mmo_cluster.conf /etc/nginx/sites-enabled/
-#   5. certbot --nginx -d ${DOMAIN}
+#   4. 确认证书路径与本机一致（默认 /etc/nginx/ssl/${DOMAIN}/{cert,key}.pem）
+#   5. ln -s /etc/nginx/sites-available/ex_mmo_cluster.conf /etc/nginx/sites-enabled/
 #   6. nginx -t && systemctl reload nginx
 #
 # 前置条件:
 #   - DNS A 记录 ${DOMAIN} 已解析到本机公网 IP
+#   - 证书已落地为 /etc/nginx/ssl/${DOMAIN}/cert.pem + key.pem
+#     （若用 certbot/Let's Encrypt 默认路径，把 ssl_certificate{,_key} 改为
+#      /etc/letsencrypt/live/${DOMAIN}/fullchain.pem 与 privkey.pem）
 #   - docker compose 里 app 已经把 4000 绑到 127.0.0.1
 #   - gate_server 的 29000 TCP 端口走防火墙直连，客户端连 ${DOMAIN}:29000
 #   - visualize_server (4001) 不走公网，运维通过 SSH 隧道访问：
@@ -25,8 +28,8 @@ server {
     listen 443 ssl http2;
     server_name ${DOMAIN};
 
-    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_certificate     /etc/nginx/ssl/${DOMAIN}/cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/${DOMAIN}/key.pem;
 
     access_log /var/log/nginx/ex_mmo_cluster.access.log;
     error_log  /var/log/nginx/ex_mmo_cluster.error.log;
@@ -61,7 +64,8 @@ server {
     listen 80;
     server_name ${DOMAIN};
 
-    # certbot 验证用的 ACME challenge 路径要放行（certbot --nginx 会自动处理）
+    # 若日后改用 certbot/Let's Encrypt，需要在此之前加一个
+    # `location /.well-known/acme-challenge/ { root /var/www/html; }`
     location / {
         return 301 https://$host$request_uri;
     }
