@@ -53,6 +53,16 @@ defmodule DataService.Dispatcher do
     {:reply, result, state}
   end
 
+  @impl true
+  def handle_call({:upsert_dev_account, username}, _from, state) do
+    result =
+      :poolboy.transaction(:worker, fn pid ->
+        GenServer.call(pid, {:upsert_dev_account, username})
+      end)
+
+    {:reply, result, state}
+  end
+
   def regtest() do
     case GenServer.call(
            __MODULE__,

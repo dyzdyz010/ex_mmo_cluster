@@ -21,6 +21,25 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("VISUALIZE_PORT", "4001"))]
 
 # ---------------------------------------------------------------------------
+# Dev-only auto-login endpoint (POST /ingame/auto_login)
+# ---------------------------------------------------------------------------
+# Set DEV_AUTO_LOGIN=true in local dev/staging to let the bevy_client bootstrap
+# a signed token by just sending a username. MUST stay unset in production —
+# the prod guard below raises at boot if someone forgets.
+dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
+
+config :auth_server, :dev_auto_login, dev_auto_login?
+
+if config_env() == :prod and dev_auto_login? do
+  raise """
+  DEV_AUTO_LOGIN=true is set in a production release. This flag exposes an
+  unauthenticated endpoint that upserts accounts from a bare username and
+  must never be enabled in prod. Remove the variable from the prod
+  environment before starting the release.
+  """
+end
+
+# ---------------------------------------------------------------------------
 # gate_server listen ports (env-driven so prod container can remap)
 # ---------------------------------------------------------------------------
 

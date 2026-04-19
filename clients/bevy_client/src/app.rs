@@ -1,7 +1,8 @@
 //! Interactive Bevy app entrypoint and world/UI glue.
 
 use crate::{
-    config::ClientConfig,
+    config::{ClientConfig, SessionCredentials},
+    login::{AppState, LoginPlugin},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     presentation::{
@@ -111,26 +112,28 @@ impl Default for MovementDispatchState {
     }
 }
 
-/// Runs the interactive Bevy client using the provided config, observe sink,
-/// and optional attached stdio interface.
-pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInterface) {
-    let bridge = spawn_network_thread(config.clone(), observer.clone());
-    let window_title = format!(
-        "Hemifuture Bevy Client - {} / cid {}",
-        config.username, config.cid
-    );
+/// Runs the interactive Bevy client.
+///
+/// If `initial_credentials` is `Some`, the login panel is skipped and the network thread
+/// is launched immediately. Otherwise the login state renders an egui panel to collect
+/// a username and perform the auto_login handshake.
+pub fn run(
+    config: ClientConfig,
+    observer: ClientObserver,
+    stdio: ClientStdioInterface,
+    initial_credentials: Option<SessionCredentials>,
+) {
+    let starts_in_game = initial_credentials.is_some();
 
-    App::new()
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
         .insert_resource(config.clone())
-        .insert_resource(bridge)
         .insert_resource(WorldState {
-            status: if config.token.is_empty() {
-                "missing token: set BEVY_CLIENT_TOKEN".to_string()
-            } else {
+            status: if starts_in_game {
                 "starting client".to_string()
+            } else {
+                "waiting for login".to_string()
             },
-            local_cid: config.cid,
             local_velocity: Vec3::ZERO,
             local_hp: 100,
             local_max_hp: 100,
@@ -152,13 +155,16 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
         )))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: window_title,
+                title: "Hemifuture Bevy Client".to_string(),
                 resolution: (1280, 720).into(),
                 ..default()
             }),
             ..default()
         }))
+        .add_plugins(LoginPlugin)
+        .init_state::<AppState>()
         .add_systems(Startup, setup)
+        .add_systems(OnEnter(AppState::Game), enter_game_setup)
         .add_systems(
             Update,
             (
@@ -175,9 +181,40 @@ pub fn run(config: ClientConfig, observer: ClientObserver, stdio: ClientStdioInt
                 update_target_point_marker,
                 update_effect_visuals,
                 update_hud_text,
-            ),
-        )
-        .run();
+            )
+                .run_if(in_state(AppState::Game)),
+        );
+
+    if let Some(creds) = initial_credentials {
+        app.insert_resource(creds);
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Game);
+    }
+
+    app.run();
+}
+
+fn enter_game_setup(
+    mut commands: Commands,
+    config: Res<ClientConfig>,
+    creds: Res<SessionCredentials>,
+    observer: Res<ClientObserver>,
+    mut world_state: ResMut<WorldState>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let bridge = spawn_network_thread(config.clone(), creds.clone(), observer.clone());
+    commands.insert_resource(bridge);
+
+    world_state.local_cid = creds.cid;
+    world_state.status = "starting client".to_string();
+
+    if let Ok(mut window) = windows.single_mut() {
+        window.title = format!(
+            "Hemifuture Bevy Client - {} / cid {}",
+            creds.username, creds.cid
+        );
+    }
 }
 
 fn setup(mut commands: Commands) {

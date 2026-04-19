@@ -5,7 +5,7 @@
 ## 当前支持
 
 - TCP 连接 gate
-- token 认证
+- 内置登录面板（egui）通过 `POST /ingame/auto_login` 拿 token
 - 进入场景
 - UDP fast-lane attach
 - 2D AOI 可视化
@@ -17,100 +17,54 @@
 - CLI/headless 调试模式（自动化 smoke 用）
 - 结构化 observe 日志（客户端输入 + 网络收发）
 
-## 推荐 demo 启动方式
+## 启动前提
 
-在仓库根目录先启动本地 demo：
+服务端需要开启 dev 登录端点：`.env` 里置 `DEV_AUTO_LOGIN=true`，否则 `/ingame/auto_login` 会返回 403。
 
-```bash
-mix demo.run --smoke --exit-after 20 --bot-count 2
-```
-
-如果你想持续运行 demo，而不是做 smoke：
-
-```bash
-mix demo.run --bot-count 2
-```
-
-命令会：
-
-- 启动本地服务端运行时
-- 补齐 demo 账号/角色
-- 生成多套人类客户端配置：
-  - `.demo/human-client.ps1`
-  - `.demo/human-client-2.ps1`
-  - 以及对应的 `.json` / `.env.sh`
-- 启动真实协议 demo bots（会移动、聊天、放技能）
-
-然后在**另一个终端**导入生成的环境变量，再启动 Bevy 客户端。
-
-### PowerShell
-
-```powershell
-. .\.demo\human-client.ps1
-cd clients\bevy_client
-cargo run
-```
-
-### Bash / Zsh
-
-```bash
-source ./.demo/human-client.env.sh
-cd clients/bevy_client
-cargo run
-```
-
-## 本机多开客户端
-
-如果你想在同一台机器上打开多个客户端实例，**不要重复 source 同一个 `human-client.ps1`**，否则两个窗口会共享同一个 `username/cid/token`，场景里会被当作同一逻辑角色。
-
-正确方式是给每个实例加载不同的配置文件，例如：
-
-### 客户端 1
-
-```powershell
-. .\.demo\human-client.ps1
-cd clients\bevy_client
-cargo run
-```
-
-### 客户端 2
-
-```powershell
-. .\.demo\human-client-2.ps1
-cd clients\bevy_client
-cargo run
-```
-
-`mix demo.run` 现在会默认生成多套人类客户端配置，并在终端输出每个 slot 对应的 username/cid。
-
-## 手动启动前准备
-
-先准备 token，并设置环境变量：
+## 运行（GUI）
 
 ```bash
 export BEVY_CLIENT_GATE_ADDR=127.0.0.1:29000
-export BEVY_CLIENT_USERNAME=tester
-export BEVY_CLIENT_CID=42
-export BEVY_CLIENT_TOKEN='<你的 token>'
-```
-
-> 最方便的方式仍然是直接使用 `mix demo.run` 生成的 `.demo/*` 配置文件。
-
-`human-client.ps1` / `human-client-2.ps1` 当前会设置这些环境变量：
-
-- `BEVY_CLIENT_GATE_ADDR`
-- `BEVY_CLIENT_USERNAME`
-- `BEVY_CLIENT_CID`
-- `BEVY_CLIENT_TOKEN`
-- `BEVY_CLIENT_OBSERVE_LOG`
-- `DEMO_AUTH_URL`
-
-## 运行
-
-```bash
+export BEVY_CLIENT_AUTH_ADDR=http://127.0.0.1:4000
 cd clients/bevy_client
 cargo run
 ```
+
+启动后会出现登录面板，输入用户名回车（或点 Enter 按钮）即可进入场景。服务端会按需 upsert 账号 + 角色并返回 token。
+
+想跳过登录面板，可以直接传 `--username`：
+
+```bash
+cargo run -- --username alice
+```
+
+## Headless / 自动化
+
+Headless 模式必须通过 `--username` 传入用户名（没有登录 UI）：
+
+```bash
+cargo run -- --headless --username alice --observe-stdout \
+    --script "wait:500,move:w:600,chat:hello,skill:1,wait:1500"
+```
+
+支持的脚本片段：
+
+- `wait:<ms>`
+- `move:<w|a|s|d|up|down|left|right>:<ms>`
+- `chat:<text>`
+- `skill:<id>`
+- `snapshot`
+
+## 本机多开客户端
+
+每个进程用不同的 `--username` 即可得到不同的 cid / token：
+
+```bash
+cargo run -- --username alice
+cargo run -- --username bob
+```
+
+或者让两个窗口各自在登录面板里输入不同的用户名。
 
 ## 集成式 stdio 接口
 
@@ -142,27 +96,6 @@ BEVY_CLIENT_STDIO=1 cargo run
 
 客户端会通过 stdout 输出 `client_stdio ...` 响应行，适合 agent 通过 stdio 驱动正在运行的正常客户端。
 
-## CLI / headless 调试
-
-如果你想不用图形界面，只用命令行验证连接、进场、移动、聊天和技能链路：
-
-```bash
-cd clients/bevy_client
-cargo run -- --headless --observe-stdout --script "wait:500,move:w:600,chat:hello,skill:1,wait:1500"
-```
-
-支持的脚本片段：
-
-- `wait:<ms>`
-- `move:<w|a|s|d|up|down|left|right>:<ms>`
-- `chat:<text>`
-- `skill:<id>`
-- `snapshot`
-
-如果已经 source 了 `mix demo.run` 生成的 `human-client*.ps1/.env.sh`，headless 模式会复用同一套 gate/token/cid 配置。
-
-> headless 主要用于自动化 smoke；长期可复用的在线调试入口优先是上面的 **集成式 stdio 接口**。
-
 ## Observe 日志
 
 客户端会把结构化 observe 日志写到：
@@ -179,13 +112,6 @@ cargo run -- --headless --observe-stdout --script "wait:500,move:w:600,chat:hell
 ```bash
 mix demo.observe --lines 40
 ```
-
-这样就可以从命令行交叉对照：
-
-- 客户端输入意图
-- 客户端发出的 auth / enter-scene / movement / chat / skill
-- 服务端 gate / scene 的处理结果
-- 权威坐标与 UDP fast-lane attach / fallback
 
 如果当前环境访问 crates.io 很慢，可以临时改用 sparse 镜像：
 
@@ -208,4 +134,4 @@ cargo run
 - auth / enter-scene / chat / skill / heartbeat / time-sync 仍走 TCP。
 - movement uplink 与 `PlayerMove` AOI downlink 在 fast-lane attach 成功后优先走 UDP。
 - 聊天和技能是本次实现补入的最小 server-backed slice，不代表完整 MMO 玩法系统已经成熟。
-- `mix demo.run` 中的 bots 通过真实 auth/gate/scene 路径接入，用来直观展示服务端权威 AOI 广播与 transport split。
+- 登录面板当前是 dev-only 流程；生产环境里 `/ingame/auto_login` 会被 `DEV_AUTO_LOGIN` 开关拦截。

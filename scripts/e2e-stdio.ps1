@@ -115,16 +115,16 @@ try {
   $clientExe = Join-Path $repoRoot "clients\bevy_client\target\debug\bevy_client.exe"
   $clientPsi.FileName = $clientExe
   $clientPsi.WorkingDirectory = Join-Path $repoRoot "clients\bevy_client"
-  $clientPsi.Arguments = "--stdio"
+  $clientPsi.Arguments = "--stdio --username $($config.username)"
   $clientPsi.RedirectStandardInput = $true
   $clientPsi.RedirectStandardOutput = $true
   $clientPsi.RedirectStandardError = $true
   $clientPsi.UseShellExecute = $false
   $clientPsi.CreateNoWindow = $true
   $clientPsi.Environment["BEVY_CLIENT_GATE_ADDR"] = $config.gate_addr
-  $clientPsi.Environment["BEVY_CLIENT_USERNAME"] = $config.username
-  $clientPsi.Environment["BEVY_CLIENT_CID"] = [string]$config.cid
-  $clientPsi.Environment["BEVY_CLIENT_TOKEN"] = $config.token
+  if ($config.PSObject.Properties.Name -contains "auth_addr") {
+    $clientPsi.Environment["BEVY_CLIENT_AUTH_ADDR"] = $config.auth_addr
+  }
   $clientPsi.Environment["BEVY_CLIENT_OBSERVE_LOG"] = $clientObserve
 
   $client = New-Object System.Diagnostics.Process

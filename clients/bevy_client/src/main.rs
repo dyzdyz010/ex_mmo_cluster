@@ -2,6 +2,7 @@
 
 use bevy_client::{
     app,
+    auth_client,
     config::ClientConfig,
     headless::{HeadlessOptions, run as run_headless, run_stdio as run_headless_stdio},
     observe::ClientObserver,
@@ -23,9 +24,23 @@ fn main() {
     let stdio_enabled = launch.stdio || env_flag("BEVY_CLIENT_STDIO");
 
     if launch.headless {
+        let Some(username) = launch.username.as_deref() else {
+            eprintln!("headless mode requires --username <name>");
+            process::exit(2);
+        };
+
+        let creds = match auth_client::auto_login(&config.auth_addr, username) {
+            Ok(creds) => creds,
+            Err(error) => {
+                eprintln!("auto_login failed: {error}");
+                process::exit(1);
+            }
+        };
+
         let result = if stdio_enabled {
             run_headless_stdio(
                 config,
+                creds,
                 observer,
                 ClientStdioInterface::enabled(),
                 launch.wait_for_scene_ms,
@@ -33,6 +48,7 @@ fn main() {
         } else {
             run_headless(
                 config,
+                creds,
                 observer,
                 HeadlessOptions {
                     script: launch.headless_script,
@@ -53,7 +69,18 @@ fn main() {
             ClientStdioInterface::disabled()
         };
 
-        app::run(config, observer, stdio);
+        let initial_credentials = match launch.username.as_deref() {
+            Some(username) => match auth_client::auto_login(&config.auth_addr, username) {
+                Ok(creds) => Some(creds),
+                Err(error) => {
+                    eprintln!("auto_login failed: {error}");
+                    process::exit(1);
+                }
+            },
+            None => None,
+        };
+
+        app::run(config, observer, stdio, initial_credentials);
     }
 }
 
@@ -66,6 +93,7 @@ struct LaunchOptions {
     observe_log: Option<String>,
     observe_stdout: bool,
     stdio: bool,
+    username: Option<String>,
 }
 
 impl LaunchOptions {
@@ -83,6 +111,7 @@ impl LaunchOptions {
             observe_log: env::var("BEVY_CLIENT_OBSERVE_LOG").ok(),
             observe_stdout: env_flag("BEVY_CLIENT_OBSERVE_STDOUT"),
             stdio: env_flag("BEVY_CLIENT_STDIO"),
+            username: None,
         };
 
         let mut args = env::args().skip(1);
@@ -100,6 +129,12 @@ impl LaunchOptions {
                     options.observe_log = Some(
                         args.next()
                             .ok_or_else(|| "missing value for --observe-log".to_string())?,
+                    );
+                }
+                "--username" => {
+                    options.username = Some(
+                        args.next()
+                            .ok_or_else(|| "missing value for --username".to_string())?,
                     );
                 }
                 "--wait-for-scene-ms" => {
@@ -146,8 +181,14 @@ fn env_parse_u64(key: &str) -> Option<u64> {
 
 fn help_text() -> String {
     [
-        "Usage: cargo run -- [--headless] [--script <steps>] [--observe-log <path>] [--observe-stdout]",
-        "                     [--stdio]",
+        "Usage: cargo run -- [--username <name>] [--headless] [--script <steps>]",
+        "                     [--observe-log <path>] [--observe-stdout] [--stdio]",
+        "",
+        "--username <name>   Skip the login panel and auto-login as <name>. Required for --headless.",
+        "",
+        "Environment:",
+        "  BEVY_CLIENT_GATE_ADDR   gate host:port (default 127.0.0.1:29000)",
+        "  BEVY_CLIENT_AUTH_ADDR   auth base URL (default http://127.0.0.1:4000)",
         "",
         "Headless script steps:",
         "  wait:<ms>",

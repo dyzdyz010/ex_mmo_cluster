@@ -40,8 +40,7 @@ defmodule GateServer.TcpConnectionPlayerMoveDownlinkTest do
     assert {:ok,
             <<0x83, 77::64-big, 9::32-big, 11.0::float-64-big, 12.0::float-64-big,
               13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
-              0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
-              0::8>>} =
+              0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>} =
              :gen_tcp.recv(client, 0, 500)
   end
 end

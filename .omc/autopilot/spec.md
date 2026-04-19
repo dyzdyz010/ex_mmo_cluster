@@ -1,58 +1,81 @@
-# Phoenix 1.8 升级迁移 Spec
+# Autopilot Spec: Dev login flow (server auto-upsert + client login screen)
 
-## 目标
-把 `auth_server` 和 `visualize_server` 从 Phoenix 1.6 升级到 Phoenix 1.8 最新稳定版，**使用 `mix phx.new` 生成的模板项目作为骨架**，迁移业务逻辑进入新项目。旧项目归档到 `archive/`，不再参与编译与分发，未来某个时间点再删。
+## Goal
 
-## 约束
-- Phoenix 1.8 latest stable
-- 保持单 app 形态（不拆 `_web`）
-- 工作分支：`phoenix-1-8-upgrade`（不动 master）
-- 旧项目**归档而非删除**：`apps/<app>/` → `archive/<app>_legacy/`
+Decouple client from pre-provisioned user/token. User opens bevy_client, types a username, clicks Enter — client issues one HTTP call that upserts account+character on the server and returns a signed token, then connects the gate normally. Deployment only sets server address env vars.
 
-## 必须保留的公共 API（被 gate_server 依赖）
-```
-AuthServer.AuthWorker.verify_token/1
-AuthServer.AuthWorker.validate_cid/2
-AuthServer.AuthWorker.fetch_authorized_character/2
-AuthServer.AuthWorker.validate_username/2
-AuthServer.AuthWorker.build_session_claims/1 or /2
-AuthServer.AuthWorker.issue_token/1
-AuthServer.Interface  (cluster 接口进程)
-AuthServer.Mailer     (config/test.exs 引用，但 lib 里无 deliver_ 调用，可精简)
-```
-以及 BeaconServer 注册名 `:auth_server`。
+## Non-goals
 
-## 新项目 phx.new 选项
-- `auth_server`: `--no-ecto`（业务数据走 data_service）+ 保留 mailer 模板（config 已引用） + 保留 LiveDashboard
-- `visualize_server`: `--no-ecto --no-mailer`（visualize 无 DB、无邮件，保留 LiveDashboard）
+- Production auth changes. The new endpoint is dev-only, gated by `DEV_AUTO_LOGIN=true`.
+- Removing the existing `/ingame/login_post` form flow.
+- Changing gate token verification.
 
-## 迁移范围
+## Server changes
 
-### auth_server 业务（从 archive 迁入新 app）
-- `lib/auth_server/accounts.ex`
-- `lib/auth_server/auth_worker.ex`
-- `lib/auth_server/sup/interface_sup.ex`
-- `lib/auth_server/worker/interface.ex`
-- `lib/auth_server/demo/` (6 文件)
-- `lib/auth_server_web/controllers/ingame_controller.ex` → Phoenix 1.8 风格
-- `lib/auth_server_web/controllers/page_controller.ex` → Phoenix 1.8 风格
-- `lib/auth_server_web/templates/ingame/*.heex` → 1.8 函数组件
-- `test/auth_server/` → 跟随代码
+1. **`AuthServer.Accounts.upsert_dev/1`** (`apps/auth_server/lib/auth_server/accounts.ex`)
+   - Input: `username` (string)
+   - Behavior: look up account by username; if present, reuse; if absent, insert new account + companion character at spawn `(1000.0, 1000.0, 100.0)` with default attrs/hp.
+   - Return: `{:ok, %{account: %Account{}, character: %Character{}}}`.
+   - cid policy: re-use existing character's `id` when account already exists; new account gets new cid from `DataService.UidGenerator.generate/0` (running GenServer in the app).
 
-### visualize_server 业务
-- `lib/visualize_server_web/live/scene_live/` → LiveView 1.x 重写
-- `lib/visualize_server_web/router.ex` 中 live 路由配置
-- `test/visualize_server/`
+2. **`AuthServerWeb.IngameController.auto_login/2`** (`apps/auth_server/lib/auth_server_web/controllers/ingame_controller.ex`)
+   - Route: `POST /ingame/auto_login` returning JSON.
+   - Request body: `{"username": "alice"}`.
+   - Response 200: `{"token": "...", "cid": 42, "username": "alice"}`.
+   - Response 403: `{"error": "dev_auto_login_disabled"}` when config flag is falsy.
+   - Uses `AuthServer.AuthWorker.build_session_claims/2` + `issue_token/1` (existing signing path, unchanged).
 
-## 非目标
-- 不动 master（只在 feature 分支）
-- 不立即删除旧 app（只移到 `archive/`）
-- 不升级其他 app（只 auth_server / visualize_server）
-- 不重写业务逻辑（只适配 Phoenix 1.8 API 变化）
+3. **Router** (`apps/auth_server/lib/auth_server_web/router.ex`)
+   - Mount `post "/auto_login"` under a new `:api` pipeline (JSON) inside the `/ingame` scope.
 
-## 验收
-1. `mix compile` 整 umbrella 通过
-2. `mix test` 整 umbrella 通过（含 gate_server 依赖 auth_server 的测试）
-3. `cd apps/auth_server && mix test --no-start` 通过
-4. `cd apps/visualize_server && mix test --no-start` 通过
-5. `archive/` 目录存在，内含两个 legacy app，不在 umbrella 编译路径
+4. **Runtime config** (`config/runtime.exs`)
+   - Read `DEV_AUTO_LOGIN` env. Store in `:auth_server, :dev_auto_login` as boolean.
+   - In `prod` env, raise at boot if `DEV_AUTO_LOGIN=true` is set — prevent accidental enablement in prod.
+
+5. **Deployment** (`deploy/.env`, `deploy/.env.example`)
+   - Add `DEV_AUTO_LOGIN=true` to local `.env`.
+   - Add comment in `.env.example` explaining it MUST stay unset in prod.
+
+## Client changes
+
+1. **Deps** (`clients/bevy_client/Cargo.toml`)
+   - Add `bevy_egui` (version compatible with current Bevy).
+   - Add `ureq` (smaller sync HTTP, no tokio).
+
+2. **Config refactor** (`clients/bevy_client/src/config.rs`)
+   - Remove `username`, `cid`, `token` from `ClientConfig::from_env`.
+   - Keep: `gate_addr`, add `auth_addr` (default `http://127.0.0.1:4000`), keep other transport/observe fields.
+   - Add `SessionCredentials { username, cid, token }` populated at runtime after login.
+
+3. **Login state** (new `clients/bevy_client/src/login.rs`)
+   - Bevy `State` enum gains `AppState::Login | AppState::Game`.
+   - egui panel: single text input (username) + Enter button.
+   - On submit: POST `{auth_addr}/ingame/auto_login` with JSON `{username}`. On 200, store credentials in a resource and transition to `AppState::Game`. On error, show inline error; stay in Login.
+   - Disable button while request in flight.
+
+4. **App wiring** (`clients/bevy_client/src/app.rs`)
+   - Register `AppState`, add `EguiPlugin`, mount Login systems on `OnEnter(Login)`, existing networking systems gated on `AppState::Game`.
+   - Network thread must not spawn until credentials present.
+
+5. **Headless adaptation** (`clients/bevy_client/src/headless.rs`, `src/main.rs`)
+   - Add CLI `--username <name>` flag; when present, bypass Login scene and do the same HTTP call synchronously before starting the network thread.
+   - Drop requirement for `BEVY_CLIENT_USERNAME/CID/TOKEN` env vars. Still accept `BEVY_CLIENT_AUTH_ADDR` + `BEVY_CLIENT_GATE_ADDR`.
+
+6. **Docs** (`clients/bevy_client/README.md`)
+   - Replace "source .demo/human-client.ps1" flow with "set two env vars and run".
+
+## Acceptance
+
+- `docker compose up -d` with `DEV_AUTO_LOGIN=true` in `.env`.
+- From host, `curl -X POST -H 'Content-Type: application/json' -d '{"username":"alice"}' http://127.0.0.1:4000/ingame/auto_login` returns `{"token":"...","cid":<int>,"username":"alice"}`.
+- Second call with same username returns same cid (character row re-used).
+- `cargo run` starts bevy_client, login screen accepts "alice", Enter transitions to game, character appears at spawn.
+- Second instance with "bob" connects; both clients see each other's AOI events.
+- Prod build with `MIX_ENV=prod` and `DEV_AUTO_LOGIN=true` refuses to start.
+- All existing `mix test` continues to pass.
+
+## Out of scope
+
+- Client-side validation of username (length/charset).
+- Persistence of last-used username.
+- UI polish beyond a single input + button.

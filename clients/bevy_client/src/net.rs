@@ -1,7 +1,7 @@
 //! Network runtime thread and client-side protocol state machine.
 
 use crate::{
-    config::ClientConfig,
+    config::{ClientConfig, SessionCredentials},
     observe::ClientObserver,
     protocol::{
         ActorKind, ClientMessage, NetVec3, ServerMessage, decode_server_payload,
@@ -349,15 +349,19 @@ impl ClientRuntime {
         request_id
     }
 
-    fn initial_auth_message(&self, config: &ClientConfig) -> ClientMessage {
+    fn initial_auth_message(&self, creds: &SessionCredentials) -> ClientMessage {
         ClientMessage::AuthRequest {
             request_id: self.auth_request_id,
-            username: config.username.clone(),
-            token: config.token.clone(),
+            username: creds.username.clone(),
+            token: creds.token.clone(),
         }
     }
 
-    fn handle_command(&mut self, config: &ClientConfig, command: NetworkCommand) -> RuntimeOutcome {
+    fn handle_command(
+        &mut self,
+        creds: &SessionCredentials,
+        command: NetworkCommand,
+    ) -> RuntimeOutcome {
         let mut outcome = RuntimeOutcome::default();
 
         match command {
@@ -377,7 +381,7 @@ impl ClientRuntime {
 
                 if let Some(predicted) = self.local_prediction.apply_local_input(frame.clone()) {
                     outcome.push_event(NetworkEvent::LocalPosition {
-                        cid: config.cid,
+                        cid: creds.cid,
                         location: [
                             predicted.position.x as f64,
                             predicted.position.y as f64,
@@ -588,7 +592,7 @@ impl ClientRuntime {
 
     fn handle_server_message(
         &mut self,
-        config: &ClientConfig,
+        creds: &SessionCredentials,
         transport: MessageTransport,
         message: ServerMessage,
     ) -> Result<RuntimeOutcome, String> {
@@ -613,7 +617,7 @@ impl ClientRuntime {
                     self.enter_scene_request_id = Some(request_id);
                     outcome.push_outbound(OutboundAction::Tcp(ClientMessage::EnterScene {
                         request_id,
-                        cid: config.cid,
+                        cid: creds.cid,
                     }));
                     outcome.push_event(NetworkEvent::Status(
                         "authenticated; requesting enter-scene".to_string(),
@@ -659,7 +663,7 @@ impl ClientRuntime {
                 );
                 outcome.push_event(NetworkEvent::Status("in scene".to_string()));
                 outcome.push_event(NetworkEvent::EnteredScene {
-                    cid: config.cid,
+                    cid: creds.cid,
                     location,
                 });
 
@@ -933,11 +937,15 @@ impl ClientRuntime {
 }
 
 /// Spawns the background network thread and returns the app-facing bridge.
-pub fn spawn_network_thread(config: ClientConfig, observer: ClientObserver) -> NetworkBridge {
+pub fn spawn_network_thread(
+    config: ClientConfig,
+    creds: SessionCredentials,
+    observer: ClientObserver,
+) -> NetworkBridge {
     let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
 
-    thread::spawn(move || network_loop(config, observer, command_rx, event_tx));
+    thread::spawn(move || network_loop(config, creds, observer, command_rx, event_tx));
 
     NetworkBridge {
         tx: command_tx,
@@ -947,16 +955,17 @@ pub fn spawn_network_thread(config: ClientConfig, observer: ClientObserver) -> N
 
 fn network_loop(
     config: ClientConfig,
+    creds: SessionCredentials,
     observer: ClientObserver,
     command_rx: Receiver<NetworkCommand>,
     event_tx: Sender<NetworkEvent>,
 ) {
-    if config.token.trim().is_empty() {
+    if creds.token.trim().is_empty() {
         emit_event(
             &observer,
             &event_tx,
             NetworkEvent::Disconnected(
-                "missing token: set BEVY_CLIENT_TOKEN before launching the client".to_string(),
+                "missing session token: auto_login did not return a token".to_string(),
             ),
         );
         return;
@@ -1015,7 +1024,7 @@ fn network_loop(
     let mut runtime = ClientRuntime::new(gate_tcp_addr);
     emit_event(&observer, &event_tx, runtime.transport_event());
 
-    let initial_auth = runtime.initial_auth_message(&config);
+    let initial_auth = runtime.initial_auth_message(&creds);
     observe_outbound_message(&observer, "tcp", &initial_auth);
 
     if let Err(err) = send_tcp_message(&mut stream, &initial_auth) {
@@ -1040,7 +1049,7 @@ fn network_loop(
                 return;
             }
 
-            let outcome = runtime.handle_command(&config, command);
+            let outcome = runtime.handle_command(&creds, command);
             if let Err(reason) = apply_runtime_outcome(
                 &mut runtime,
                 &mut stream,
@@ -1114,7 +1123,7 @@ fn network_loop(
                 while let Some(frame) = take_frame(&mut frame_buffer) {
                     match decode_server_payload(&frame) {
                         Ok(message) => match runtime.handle_server_message(
-                            &config,
+                            &creds,
                             MessageTransport::Tcp,
                             message,
                         ) {
@@ -1176,7 +1185,7 @@ fn network_loop(
                 match recv_result {
                     Ok(n) => match decode_server_payload(&udp_read_buffer[..n]) {
                         Ok(message) => match runtime.handle_server_message(
-                            &config,
+                            &creds,
                             MessageTransport::Udp,
                             message,
                         ) {
@@ -1742,16 +1751,11 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddrV4};
 
-    fn test_config() -> ClientConfig {
-        ClientConfig {
-            gate_addr: "127.0.0.1:29000".into(),
+    fn test_creds() -> SessionCredentials {
+        SessionCredentials {
             username: "tester".into(),
             token: "token".into(),
             cid: 42,
-            movement_speed: 220.0,
-            movement_interval_ms: 100,
-            heartbeat_interval_ms: 2_000,
-            time_sync_interval_ms: 5_000,
         }
     }
 
@@ -1781,12 +1785,12 @@ mod tests {
 
     #[test]
     fn requests_fast_lane_bootstrap_after_scene_join() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
 
         let auth = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::Result {
                     packet_id: runtime.auth_request_id,
@@ -1805,7 +1809,7 @@ mod tests {
 
         let enter = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::EnterSceneResult {
                     packet_id: 2,
@@ -1842,7 +1846,7 @@ mod tests {
 
     #[test]
     fn movement_uses_udp_only_after_attach_ack_and_tracks_udp_downlink() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
         runtime.fast_lane.reset_for_bootstrap(3);
@@ -1852,7 +1856,7 @@ mod tests {
 
         let bootstrap = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::FastLaneResult {
                     packet_id: 3,
@@ -1872,7 +1876,7 @@ mod tests {
             }]
         );
 
-        let before_attach = runtime.handle_command(&config, movement_command());
+        let before_attach = runtime.handle_command(&creds, movement_command());
         assert!(matches!(
             before_attach.outbounds.as_slice(),
             [OutboundAction::Tcp(ClientMessage::MovementInput { .. })]
@@ -1880,7 +1884,7 @@ mod tests {
 
         let attach = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::FastLaneAttached {
                     packet_id: 2,
@@ -1898,7 +1902,7 @@ mod tests {
         assert!(status.starts_with("udp attached"));
         assert_eq!(movement_transport, MessageTransport::Udp);
 
-        let after_attach = runtime.handle_command(&config, movement_command());
+        let after_attach = runtime.handle_command(&creds, movement_command());
         assert!(matches!(
             after_attach.outbounds.as_slice(),
             [OutboundAction::Udp(ClientMessage::MovementInput { .. })]
@@ -1906,7 +1910,7 @@ mod tests {
 
         let move_ack = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::MovementAck {
                     ack_seq: 1,
@@ -1931,7 +1935,7 @@ mod tests {
 
         let player_move = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::PlayerMove {
                     cid: 77,
@@ -1956,14 +1960,14 @@ mod tests {
 
     #[test]
     fn falls_back_to_tcp_when_fast_lane_bootstrap_fails() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
         runtime.fast_lane.reset_for_bootstrap(5);
 
         let fallback = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::FastLaneResult {
                     packet_id: 5,
@@ -1984,7 +1988,7 @@ mod tests {
         assert_eq!(movement_transport, MessageTransport::Tcp);
         assert!(fallback.outbounds.is_empty());
 
-        let movement = runtime.handle_command(&config, movement_command());
+        let movement = runtime.handle_command(&creds, movement_command());
         assert!(matches!(
             movement.outbounds.as_slice(),
             [OutboundAction::Tcp(ClientMessage::MovementInput { .. })]
@@ -2162,7 +2166,7 @@ mod tests {
 
     #[test]
     fn ignores_stale_movement_ack_packets() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
         runtime
@@ -2171,7 +2175,7 @@ mod tests {
 
         let latest = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::MovementAck {
                     ack_seq: 10,
@@ -2198,7 +2202,7 @@ mod tests {
 
         let stale = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::MovementAck {
                     ack_seq: 9,
@@ -2228,7 +2232,7 @@ mod tests {
 
     #[test]
     fn accepts_newer_auth_tick_for_same_ack_seq() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
         runtime
@@ -2237,7 +2241,7 @@ mod tests {
 
         let first = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::MovementAck {
                     ack_seq: 10,
@@ -2261,7 +2265,7 @@ mod tests {
 
         let newer_tick = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::MovementAck {
                     ack_seq: 10,
@@ -2287,13 +2291,13 @@ mod tests {
 
     #[test]
     fn ignores_stale_remote_player_moves_by_tick() {
-        let config = test_config();
+        let creds = test_creds();
         let mut runtime = ClientRuntime::new(test_gate_addr());
         runtime.phase = ConnectionPhase::InScene;
 
         let latest = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Udp,
                 ServerMessage::PlayerMove {
                     cid: 77,
@@ -2318,7 +2322,7 @@ mod tests {
 
         let stale = runtime
             .handle_server_message(
-                &config,
+                &creds,
                 MessageTransport::Tcp,
                 ServerMessage::PlayerMove {
                     cid: 77,

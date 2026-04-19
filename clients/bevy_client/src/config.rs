@@ -4,12 +4,10 @@ use bevy::prelude::Resource;
 use std::env;
 
 #[derive(Clone, Debug, Resource)]
-/// Resolved configuration for one client launch.
+/// Resolved transport/observe configuration for one client launch.
 pub struct ClientConfig {
     pub gate_addr: String,
-    pub username: String,
-    pub token: String,
-    pub cid: i64,
+    pub auth_addr: String,
     pub movement_speed: f32,
     pub movement_interval_ms: u64,
     pub heartbeat_interval_ms: u64,
@@ -21,15 +19,21 @@ impl ClientConfig {
     pub fn from_env() -> Self {
         Self {
             gate_addr: env_or("BEVY_CLIENT_GATE_ADDR", "127.0.0.1:29000"),
-            username: env_or("BEVY_CLIENT_USERNAME", "tester"),
-            token: env::var("BEVY_CLIENT_TOKEN").unwrap_or_default(),
-            cid: env_parse_or("BEVY_CLIENT_CID", 42_i64),
+            auth_addr: env_or("BEVY_CLIENT_AUTH_ADDR", "http://127.0.0.1:4000"),
             movement_speed: env_parse_or("BEVY_CLIENT_SPEED", 220.0_f32),
             movement_interval_ms: env_parse_or("BEVY_CLIENT_MOVE_INTERVAL_MS", 100_u64),
             heartbeat_interval_ms: env_parse_or("BEVY_CLIENT_HEARTBEAT_MS", 2_000_u64),
             time_sync_interval_ms: env_parse_or("BEVY_CLIENT_TIME_SYNC_MS", 5_000_u64),
         }
     }
+}
+
+#[derive(Clone, Debug, Resource)]
+/// Credentials returned by the dev auto-login endpoint after the user submits a username.
+pub struct SessionCredentials {
+    pub username: String,
+    pub cid: i64,
+    pub token: String,
 }
 
 fn env_or(key: &str, default: &str) -> String {

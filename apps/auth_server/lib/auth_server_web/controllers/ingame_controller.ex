@@ -43,6 +43,66 @@ defmodule AuthServerWeb.IngameController do
     render(conn, :login_success)
   end
 
+  @doc """
+  Dev-only JSON auto-login. Upserts account+character then returns a signed token.
+
+  Gated by `config :auth_server, :dev_auto_login`. Responds 403 when disabled.
+  """
+  def auto_login(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_auto_login(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  defp do_auto_login(conn, params) do
+    username = params["username"] |> normalize_username()
+
+    cond do
+      username == nil ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_username"})
+
+      true ->
+        case AuthServer.Accounts.upsert_dev(username) do
+          {:ok, %{account: account, character: character}} ->
+            token =
+              username
+              |> AuthServer.AuthWorker.build_session_claims(
+                source: "ingame_auto_login",
+                account_id: account.id,
+                cid: character.id
+              )
+              |> AuthServer.AuthWorker.issue_token()
+
+            json(conn, %{token: token, cid: character.id, username: username})
+
+          {:error, reason} ->
+            Logger.warning("auto_login failed for #{username}: #{inspect(reason)}")
+
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{error: "auto_login_failed"})
+        end
+    end
+  end
+
+  defp normalize_username(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      trimmed == "" -> nil
+      String.length(trimmed) > 32 -> nil
+      true -> trimmed
+    end
+  end
+
+  defp normalize_username(_), do: nil
+
   defp session_claim_options(params, account) do
     []
     |> Keyword.put(:source, "ingame_login")

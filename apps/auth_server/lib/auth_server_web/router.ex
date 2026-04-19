@@ -28,6 +28,12 @@ defmodule AuthServerWeb.Router do
     get "/login_success", IngameController, :login_success
   end
 
+  scope "/ingame", AuthServerWeb do
+    pipe_through :api
+
+    post "/auto_login", IngameController, :auto_login
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", AuthServerWeb do
   #   pipe_through :api

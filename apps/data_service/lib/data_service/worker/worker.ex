@@ -41,6 +41,63 @@ defmodule DataService.Worker do
     {:reply, acc, state}
   end
 
+  @impl true
+  def handle_call({:upsert_dev_account, username}, _from, state) do
+    {:reply, upsert_dev_account(username), state}
+  end
+
+  defp upsert_dev_account(username) do
+    with %Account{} = account <-
+           Repo.get_by(Account, username: username) || insert_dev_account(username),
+         %Character{} = character <-
+           Repo.get_by(Character, account: account.id) ||
+             insert_dev_character(account.id, username) do
+      {:ok, %{account: account, character: character}}
+    else
+      {:error, _} = error -> error
+    end
+  end
+
+  defp insert_dev_account(username) do
+    <<uid::64>> = DataService.UidGenerator.generate()
+    {:ok, hashed, salt} = hash_password("dev_auto_login")
+
+    case Repo.insert(%Account{
+           id: uid,
+           username: username,
+           password: hashed,
+           salt: salt,
+           email: "#{username}@dev.local",
+           phone: "dev-#{uid}"
+         }) do
+      {:ok, account} -> account
+      {:error, changeset} -> {:error, {:insert_account_failed, changeset}}
+    end
+  end
+
+  defp insert_dev_character(account_id, username) do
+    <<cid::64>> = DataService.UidGenerator.generate()
+
+    %Character{}
+    |> Character.changeset(%{
+      id: cid,
+      account: account_id,
+      name: "#{username}_char",
+      title: "dev",
+      base_attrs: %{},
+      battle_attrs: %{},
+      position: %{"x" => 1000.0, "y" => 1000.0, "z" => 100.0},
+      hp: 500,
+      sp: 100,
+      mp: 100
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, character} -> character
+      {:error, changeset} -> {:error, {:insert_character_failed, changeset}}
+    end
+  end
+
   defp register_account(username, password, email, phone) do
     <<uid::64>> = DataService.UidGenerator.generate()
 

@@ -28,6 +28,19 @@ defmodule AuthServer.Accounts do
 
   def character_owned_by_account?(_account_id, _cid), do: {:error, :invalid_account}
 
+  @spec upsert_dev(binary()) ::
+          {:ok, %{account: struct(), character: struct()}} | {:error, atom() | tuple()}
+  @doc """
+  Dev-only upsert: ensures an account and companion character exist for `username`.
+
+  Reuses existing rows when present. Returns the resolved account + character.
+  """
+  def upsert_dev(username) when is_binary(username) do
+    dispatch_to_data_service({:upsert_dev_account, username})
+  end
+
+  def upsert_dev(_username), do: {:error, :invalid_username}
+
   defp dispatch_to_data_service(message) do
     case data_service_target() do
       {:error, _reason} = error ->

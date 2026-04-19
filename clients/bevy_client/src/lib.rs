@@ -9,9 +9,11 @@
 //! - `app` and `headless` provide the interactive and automation entrypoints
 
 pub mod app;
+pub mod auth_client;
 pub mod config;
 pub mod headless;
 pub mod input;
+pub mod login;
 pub mod movement;
 pub mod net;
 pub mod observe;

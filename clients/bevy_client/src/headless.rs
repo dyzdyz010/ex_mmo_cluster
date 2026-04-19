@@ -1,7 +1,7 @@
 //! Headless client entrypoints used by automation and non-visual QA.
 
 use crate::{
-    config::ClientConfig,
+    config::{ClientConfig, SessionCredentials},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
@@ -69,6 +69,7 @@ struct HeadlessState {
 /// Runs the client headlessly with a scripted action list.
 pub fn run(
     config: ClientConfig,
+    creds: SessionCredentials,
     observer: ClientObserver,
     options: HeadlessOptions,
 ) -> Result<(), String> {
@@ -78,13 +79,13 @@ pub fn run(
         "start",
         &[
             ("gate_addr", config.gate_addr.clone()),
-            ("username", config.username.clone()),
-            ("cid", config.cid.to_string()),
+            ("username", creds.username.clone()),
+            ("cid", creds.cid.to_string()),
             ("script", options.script.clone()),
         ],
     );
 
-    let bridge = spawn_network_thread(config.clone(), observer.clone());
+    let bridge = spawn_network_thread(config.clone(), creds.clone(), observer.clone());
     let mut state = HeadlessState::default();
 
     wait_for_scene(
@@ -118,6 +119,7 @@ pub fn run(
 /// Runs the headless client while exposing the same attached stdio interface as the GUI mode.
 pub fn run_stdio(
     config: ClientConfig,
+    creds: SessionCredentials,
     observer: ClientObserver,
     stdio: ClientStdioInterface,
     wait_for_scene_ms: u64,
@@ -127,13 +129,13 @@ pub fn run_stdio(
         "start",
         &[
             ("gate_addr", config.gate_addr.clone()),
-            ("username", config.username.clone()),
-            ("cid", config.cid.to_string()),
+            ("username", creds.username.clone()),
+            ("cid", creds.cid.to_string()),
             ("mode", "stdio".to_string()),
         ],
     );
 
-    let bridge = spawn_network_thread(config.clone(), observer.clone());
+    let bridge = spawn_network_thread(config.clone(), creds.clone(), observer.clone());
     let mut state = HeadlessState::default();
 
     wait_for_scene(
