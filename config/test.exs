@@ -15,8 +15,8 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
 # Data Service — test uses the configured Postgres instance
 config :data_service, DataService.Repo,
   database: System.get_env("MMO_DB_NAME", "mmo_dev"),
-  username: System.get_env("MMO_DB_USER", "mmo_dev"),
-  password: System.get_env("MMO_DB_PASSWORD", "mmo_dev"),
+  username: System.get_env("MMO_DB_USER", "postgres"),
+  password: System.get_env("MMO_DB_PASSWORD", "postgres"),
   hostname: System.get_env("MMO_DB_HOST", "127.0.0.1"),
   port: String.to_integer(System.get_env("MMO_DB_PORT", "5432")),
   pool_size: 5

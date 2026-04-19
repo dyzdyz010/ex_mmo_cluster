@@ -499,33 +499,22 @@ defmodule SceneServer.Aoi.AoiItem do
   # defp broadcast_action_movement(movement, pids) do
   # end
 
-  @spec broadcast_action_player_leave(integer(), [pid()]) :: any()
+  @spec broadcast_action_player_leave(integer(), [pid()]) :: :ok
   defp broadcast_action_player_leave(cid, pids) do
-    # Logger.debug("待广播离开玩家：#{inspect(pids, pretty: true)}")
-    pids
-    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_leave, cid}) end))
-    |> Enum.map(&Task.await(&1))
+    Enum.each(pids, &GenServer.cast(&1, {:player_leave, cid}))
   end
 
-  @spec broadcast_action_player_enter(integer(), vector(), atom(), String.t(), [pid()]) :: any()
+  @spec broadcast_action_player_enter(integer(), vector(), atom(), String.t(), [pid()]) :: :ok
   defp broadcast_action_player_enter(cid, location, actor_kind, actor_name, pids) do
-    # Logger.debug("待广播加入玩家：#{inspect(pids, pretty: true)}")
-    pids
-    |> Enum.map(
-      &Task.async(fn ->
-        GenServer.cast(&1, {:player_enter, cid, location})
-        GenServer.cast(&1, {:actor_identity, cid, actor_kind, actor_name})
-      end)
-    )
-    |> Enum.map(&Task.await(&1))
+    Enum.each(pids, fn pid ->
+      GenServer.cast(pid, {:player_enter, cid, location})
+      GenServer.cast(pid, {:actor_identity, cid, actor_kind, actor_name})
+    end)
   end
 
-  @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid()]) :: any()
+  @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid()]) :: :ok
   defp broadcast_action_player_move(%RemoteSnapshot{} = snapshot, pids) do
-    # Logger.debug("待广播移动玩家：#{inspect(pids, pretty: true)}")
-    pids
-    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:player_move, snapshot}) end))
-    |> Enum.map(&Task.await(&1))
+    Enum.each(pids, &GenServer.cast(&1, {:player_move, snapshot}))
   end
 
   @spec broadcast_action_chat_message(integer(), binary(), binary(), [pid()]) :: any()

@@ -7,8 +7,10 @@ use crate::sim::types::RemoteMoveSnapshot;
 
 const MAX_BUFFERED_SNAPSHOTS: usize = 32;
 const SNAPSHOT_TICK_SECS: f64 = 0.1;
-const INTERPOLATION_DELAY_SECS: f64 = 0.15;
-const MAX_REMOTE_EXTRAPOLATION_SECS: f64 = 0.12;
+// Interp delay ≈ 2.2 × snapshot interval lets a single late/lost packet stay
+// inside the buffer instead of falling out into extrapolation territory.
+const INTERPOLATION_DELAY_SECS: f64 = 0.22;
+const MAX_REMOTE_EXTRAPOLATION_SECS: f64 = 0.25;
 
 #[derive(Debug, Clone)]
 struct BufferedSnapshot {

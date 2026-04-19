@@ -15,8 +15,8 @@ config :data_service,
 
 config :data_service, DataService.Repo,
   database: System.get_env("MMO_DB_NAME", "mmo_dev"),
-  username: System.get_env("MMO_DB_USER", "mmo_dev"),
-  password: System.get_env("MMO_DB_PASSWORD", "mmo_dev"),
+  username: System.get_env("MMO_DB_USER", "postgres"),
+  password: System.get_env("MMO_DB_PASSWORD", "postgres"),
   hostname: System.get_env("MMO_DB_HOST", "localhost"),
   port: db_port,
   pool_size: db_pool_size
