@@ -434,6 +434,19 @@ defmodule SceneServer.PlayerCharacter do
           authoritative_state = %{next_state | position: authoritative_location}
           ack = Engine.build_ack(cid, authoritative_state, effective_input.seq)
           snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
+
+          SceneServer.CliObserve.emit("player_movement_tick", %{
+            cid: cid,
+            input_seq: effective_input.seq,
+            input_tick: effective_input.client_tick,
+            input_dir: effective_input.input_dir,
+            input_age_ms: now_ms - last_input_received_at_ms,
+            authoritative_tick: authoritative_state.tick,
+            authoritative_position: authoritative_state.position,
+            authoritative_velocity: authoritative_state.velocity,
+            authoritative_acceleration: authoritative_state.acceleration
+          })
+
           GenServer.cast(aoi_ref, {:self_move, snapshot})
           GenServer.cast(connection_pid, {:movement_ack, ack})
 
@@ -454,6 +467,18 @@ defmodule SceneServer.PlayerCharacter do
 
       effective_input.seq > last_ack_seq ->
         ack = Engine.build_ack(cid, movement_state, effective_input.seq)
+
+        SceneServer.CliObserve.emit("player_movement_idle_ack", %{
+          cid: cid,
+          input_seq: effective_input.seq,
+          input_tick: effective_input.client_tick,
+          input_dir: effective_input.input_dir,
+          input_age_ms: now_ms - last_input_received_at_ms,
+          authoritative_tick: movement_state.tick,
+          authoritative_position: movement_state.position,
+          authoritative_velocity: movement_state.velocity
+        })
+
         GenServer.cast(connection_pid, {:movement_ack, ack})
 
         {:noreply,

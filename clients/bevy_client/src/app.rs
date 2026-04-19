@@ -1,6 +1,7 @@
 //! Interactive Bevy app entrypoint and world/UI glue.
 
 use crate::{
+    input::commands::{MoveInputFrame, MOVEMENT_FLAG_BRAKE},
     config::{ClientConfig, SessionCredentials},
     login::{AppState, LoginPlugin},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
@@ -11,6 +12,11 @@ use crate::{
         smoothing::smooth_translation,
     },
     protocol::EffectCueKind,
+    sim::{
+        predictor,
+        profile::MovementProfile,
+        types::{MovementMode, PredictedMoveState},
+    },
     skill_targeting::prepare_skill_dispatch,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
     world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
@@ -103,6 +109,54 @@ struct InputTraceState {
     last_direction_label: String,
 }
 
+#[derive(Resource)]
+struct LocalRenderPrediction {
+    anchor_state: Option<PredictedMoveState>,
+    render_state: Option<PredictedMoveState>,
+    partial_elapsed_secs: f32,
+    profile: MovementProfile,
+}
+
+impl Default for LocalRenderPrediction {
+    fn default() -> Self {
+        Self {
+            anchor_state: None,
+            render_state: None,
+            partial_elapsed_secs: 0.0,
+            profile: MovementProfile::default(),
+        }
+    }
+}
+
+impl LocalRenderPrediction {
+    fn reset(&mut self, position: Vec3) {
+        let state = PredictedMoveState::idle(position);
+        self.anchor_state = Some(state.clone());
+        self.render_state = Some(state);
+        self.partial_elapsed_secs = 0.0;
+    }
+
+    fn sync_full_state(&mut self, position: Vec3, velocity: Vec3, acceleration: Vec3) {
+        let state = PredictedMoveState {
+            tick: 0,
+            position,
+            velocity,
+            acceleration,
+            movement_mode: MovementMode::Grounded,
+        };
+
+        self.anchor_state = Some(state.clone());
+        self.render_state = Some(state);
+        self.partial_elapsed_secs = 0.0;
+    }
+
+    fn clear(&mut self) {
+        self.anchor_state = None;
+        self.render_state = None;
+        self.partial_elapsed_secs = 0.0;
+    }
+}
+
 const VISUAL_SMOOTHING_SPEED: f32 = 18.0;
 const VISUAL_SNAP_DISTANCE: f32 = 96.0;
 const FINAL_STOP_SYNC_SPEED_EPSILON: f32 = 1.0;
@@ -148,6 +202,7 @@ pub fn run(
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())
         .insert_resource(InputTraceState::default())
+        .insert_resource(LocalRenderPrediction::default())
         .insert_resource(observer)
         .insert_resource(stdio)
         .insert_resource(MovementTick(Timer::from_seconds(
@@ -178,7 +233,7 @@ pub fn run(
                 sample_movement_input,
                 poll_stdio_commands,
                 movement_sender,
-                (sync_player_visuals, camera_follow_local_player).chain(),
+                (advance_local_render_prediction, sync_player_visuals, camera_follow_local_player).chain(),
                 update_target_point_marker,
                 update_effect_visuals,
                 update_hud_text,
@@ -302,6 +357,7 @@ fn poll_network_events(
     time: Res<Time>,
     stdio: Res<ClientStdioInterface>,
     mut world_state: ResMut<WorldState>,
+    mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
 ) {
     let Ok(receiver) = bridge.rx.lock() else {
@@ -321,8 +377,10 @@ fn poll_network_events(
                 world_state.scene_joined = true;
                 world_state.status = format!("in scene as cid {cid}");
                 world_state.local_cid = cid;
-                world_state.local_position = Some(net_to_world(location));
+                let world_location = net_to_world(location);
+                world_state.local_position = Some(world_location);
                 world_state.local_velocity = Vec3::ZERO;
+                local_render_prediction.reset(world_location);
                 world_state.remote_players.clear();
                 world_state.remote_actor_identity.clear();
                 world_state.remote_player_health.clear();
@@ -337,10 +395,19 @@ fn poll_network_events(
                 cid: _,
                 location,
                 velocity,
+                acceleration,
                 transport,
             } => {
-                world_state.local_position = Some(net_to_world(location));
-                world_state.local_velocity = net_to_world(velocity);
+                let world_location = net_to_world(location);
+                let world_velocity = net_to_world(velocity);
+                let world_acceleration = net_to_world(acceleration);
+                world_state.local_position = Some(world_location);
+                world_state.local_velocity = world_velocity;
+                local_render_prediction.sync_full_state(
+                    world_location,
+                    world_velocity,
+                    world_acceleration,
+                );
                 world_state.last_local_update_transport = Some(transport);
             }
             NetworkEvent::PlayerEnter { cid, location } => {
@@ -564,6 +631,7 @@ fn poll_network_events(
                 world_state.last_remote_move_transport = None;
                 world_state.selected_target_cid = None;
                 world_state.selected_target_point = None;
+                local_render_prediction.clear();
                 movement_dispatch.stop_sent = true;
                 if stdio.is_enabled() {
                     emit_stdio("disconnected", &[("reason", reason.clone())]);
@@ -839,6 +907,7 @@ fn movement_sender(
     time: Res<Time>,
     bridge: Res<NetworkBridge>,
     config: Res<ClientConfig>,
+    observer: Res<ClientObserver>,
     world_state: Res<WorldState>,
     movement_intent: Res<MovementIntent>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
@@ -875,6 +944,33 @@ fn movement_sender(
         speed_scale: 1.0,
         movement_flags,
     });
+
+    observer.emit(
+        "input",
+        "movement_sample_queued",
+        &[
+            ("direction", format!("{:.2},{:.2}", direction.x, direction.y)),
+            ("movement_flags", movement_flags.to_string()),
+            ("dt_ms", config.movement_interval_ms.to_string()),
+            ("should_send_stop_sync", should_send_stop_sync.to_string()),
+            (
+                "local_position",
+                world_state
+                    .local_position
+                    .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "local_velocity",
+                format!(
+                    "{:.1},{:.1},{:.1}",
+                    world_state.local_velocity.x,
+                    world_state.local_velocity.y,
+                    world_state.local_velocity.z
+                ),
+            ),
+        ],
+    );
 
     movement_dispatch.stop_sent = direction.length_squared() == 0.0
         && world_state.local_velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
@@ -1134,6 +1230,7 @@ fn sync_player_visuals(
     mut commands: Commands,
     time: Res<Time>,
     world_state: Res<WorldState>,
+    local_render_prediction: Res<LocalRenderPrediction>,
     config: Res<ClientConfig>,
     mut existing: Query<(Entity, &PlayerVisual, &mut Transform, &mut Sprite)>,
 ) {
@@ -1148,13 +1245,23 @@ fn sync_player_visuals(
         .iter()
         .map(|(&cid, state)| (cid, state.sample_motion(now_secs)))
         .collect::<HashMap<_, _>>();
-    if let Some(local) = world_state.local_position {
-        desired.insert(
-            world_state.local_cid,
-            RemoteMotionSample {
+    if let Some(local) = local_render_prediction
+        .render_state
+        .as_ref()
+        .map(|state| RemoteMotionSample {
+            position: state.position,
+            velocity: state.velocity,
+        })
+        .or_else(|| {
+            world_state.local_position.map(|local| RemoteMotionSample {
                 position: local,
                 velocity: world_state.local_velocity,
-            },
+            })
+        })
+    {
+        desired.insert(
+            world_state.local_cid,
+            local,
         );
     }
 
@@ -1170,13 +1277,17 @@ fn sync_player_visuals(
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
             if let Ok((_entity, _visual, mut transform, mut sprite)) = existing.get_mut(entity) {
-                transform.translation = smooth_translation(
-                    transform.translation,
-                    target,
-                    time.delta_secs(),
-                    VISUAL_SMOOTHING_SPEED,
-                    VISUAL_SNAP_DISTANCE,
-                );
+                transform.translation = if cid == world_state.local_cid {
+                    target
+                } else {
+                    smooth_translation(
+                        transform.translation,
+                        target,
+                        time.delta_secs(),
+                        VISUAL_SMOOTHING_SPEED,
+                        VISUAL_SNAP_DISTANCE,
+                    )
+                };
                 transform.scale = animated_scale(transform.scale, animation, time.delta_secs());
                 sprite.color = if cid == world_state.local_cid {
                     Color::srgb(0.25, 0.95, 0.45)
@@ -1510,6 +1621,47 @@ fn direction_label(direction: Vec2) -> String {
     }
 
     format!("{:.1},{:.1}", direction.x, direction.y)
+}
+
+fn advance_local_render_prediction(
+    time: Res<Time>,
+    config: Res<ClientConfig>,
+    movement_intent: Res<MovementIntent>,
+    mut local_render_prediction: ResMut<LocalRenderPrediction>,
+) {
+    let Some(anchor) = local_render_prediction.anchor_state.clone() else {
+        return;
+    };
+
+    local_render_prediction.partial_elapsed_secs = (local_render_prediction.partial_elapsed_secs
+        + time.delta_secs())
+    .clamp(0.0, config.movement_interval_ms as f32 / 1_000.0);
+
+    let direction = movement_intent.direction;
+    let movement_flags = if direction.length_squared() == 0.0 {
+        MOVEMENT_FLAG_BRAKE
+    } else {
+        0
+    };
+
+    if local_render_prediction.partial_elapsed_secs <= f32::EPSILON {
+        local_render_prediction.render_state = Some(anchor);
+        return;
+    }
+
+    let partial_frame = MoveInputFrame {
+        seq: 0,
+        client_tick: anchor.tick,
+        dt_ms: (local_render_prediction.partial_elapsed_secs * 1_000.0)
+            .round()
+            .clamp(1.0, config.movement_interval_ms as f32) as u16,
+        input_dir: Vec2::new(direction.x, direction.y),
+        speed_scale: 1.0,
+        movement_flags,
+    };
+
+    local_render_prediction.render_state =
+        Some(predictor::step(&anchor, &partial_frame, &local_render_prediction.profile));
 }
 
 fn should_send_stop_sync(direction: Vec2, local_velocity: Vec3, stop_sent: bool) -> bool {

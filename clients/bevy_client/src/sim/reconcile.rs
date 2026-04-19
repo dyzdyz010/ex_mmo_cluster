@@ -26,7 +26,7 @@ pub fn reconcile(
     profile: &MovementProfile,
     governance: &ReplayGovernance,
 ) -> Option<ReconcileResult> {
-    input_history.drop_through(ack.ack_seq);
+    input_history.drop_through_tick(ack.auth_tick);
     let pending_frames = input_history.frames_after_tick_cloned(ack.auth_tick);
     let pending_inputs = pending_frames.len();
 
@@ -52,9 +52,14 @@ pub fn reconcile(
     let correction_distance = predicted.position.distance(authoritative.position);
 
     if correction_distance <= governance.soft_position_error {
+        let latest_state = predicted_history
+            .latest()
+            .cloned()
+            .unwrap_or_else(|| predicted.clone());
+
         return Some(ReconcileResult {
             action: ReplayAction::Accepted,
-            latest_state: predicted,
+            latest_state,
             replayed_frames: 0,
             pending_inputs,
             correction_distance,
@@ -205,5 +210,61 @@ mod tests {
 
         assert_eq!(result.action, ReplayAction::HardSnap);
         assert_eq!(result.latest_state.position, Vec3::ZERO);
+    }
+
+    #[test]
+    fn reconcile_keeps_latest_predicted_state_when_ack_matches_older_tick() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+
+        let first = MoveInputFrame {
+            seq: 1,
+            client_tick: 1,
+            dt_ms: 100,
+            input_dir: Vec2::new(0.0, 1.0),
+            speed_scale: 1.0,
+            movement_flags: 0,
+        };
+        let second = MoveInputFrame {
+            seq: 2,
+            client_tick: 2,
+            ..first.clone()
+        };
+
+        input_history.push(first.clone());
+        let predicted_one = predictor::step(&origin, &first, &profile);
+        predicted_history.push(predicted_one.clone());
+
+        input_history.push(second.clone());
+        let predicted_two = predictor::step(&predicted_one, &second, &profile);
+        predicted_history.push(predicted_two.clone());
+
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: predicted_one.position,
+            velocity: predicted_one.velocity,
+            acceleration: predicted_one.acceleration,
+            movement_mode: predicted_one.movement_mode,
+            correction_flags: 0,
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::Accepted);
+        assert_eq!(result.pending_inputs, 1);
+        assert_eq!(result.latest_state.tick, 2);
+        assert_eq!(result.latest_state.position, predicted_two.position);
     }
 }

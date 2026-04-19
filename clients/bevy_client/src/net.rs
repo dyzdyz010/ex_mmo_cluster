@@ -78,6 +78,7 @@ pub enum NetworkEvent {
         cid: i64,
         location: NetVec3,
         velocity: NetVec3,
+        acceleration: NetVec3,
         transport: MessageTransport,
     },
     PlayerEnter {
@@ -372,6 +373,24 @@ impl ClientRuntime {
                 speed_scale,
                 movement_flags,
             } if self.phase == ConnectionPhase::InScene => {
+                let current_before = self
+                    .local_prediction
+                    .current_state()
+                    .cloned()
+                    .map(|state| {
+                        (
+                            format_vec(&[
+                                state.position.x as f64,
+                                state.position.y as f64,
+                                state.position.z as f64,
+                            ]),
+                            format_vec(&[
+                                state.velocity.x as f64,
+                                state.velocity.y as f64,
+                                state.velocity.z as f64,
+                            ]),
+                        )
+                    });
                 let frame = self.local_prediction.build_input_frame(
                     bevy::prelude::Vec2::new(input_dir[0], input_dir[1]),
                     dt_ms,
@@ -380,6 +399,30 @@ impl ClientRuntime {
                 );
 
                 if let Some(predicted) = self.local_prediction.apply_local_input(frame.clone()) {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "movement_sample seq={} tick={} dt_ms={} dir={:.2},{:.2} speed_scale={:.2} flags={} previous_pos={} previous_vel={} predicted_pos={:.1},{:.1},{:.1} predicted_vel={:.1},{:.1},{:.1}",
+                        frame.seq,
+                        frame.client_tick,
+                        frame.dt_ms,
+                        input_dir[0],
+                        input_dir[1],
+                        speed_scale,
+                        movement_flags,
+                        current_before
+                            .as_ref()
+                            .map(|(position, _)| position.as_str())
+                            .unwrap_or("n/a"),
+                        current_before
+                            .as_ref()
+                            .map(|(_, velocity)| velocity.as_str())
+                            .unwrap_or("n/a"),
+                        predicted.position.x,
+                        predicted.position.y,
+                        predicted.position.z,
+                        predicted.velocity.x,
+                        predicted.velocity.y,
+                        predicted.velocity.z
+                    )));
                     outcome.push_event(NetworkEvent::LocalPosition {
                         cid: creds.cid,
                         location: [
@@ -391,6 +434,11 @@ impl ClientRuntime {
                             predicted.velocity.x as f64,
                             predicted.velocity.y as f64,
                             predicted.velocity.z as f64,
+                        ],
+                        acceleration: [
+                            predicted.acceleration.x as f64,
+                            predicted.acceleration.y as f64,
+                            predicted.acceleration.z as f64,
                         ],
                         transport: self.fast_lane.movement_transport(),
                     });
@@ -681,6 +729,9 @@ impl ClientRuntime {
                 ack_seq,
                 auth_tick,
                 cid,
+                location,
+                velocity,
+                acceleration,
                 ..
             } => {
                 if ack_seq < self.last_applied_movement_ack
@@ -698,10 +749,59 @@ impl ClientRuntime {
                 self.last_applied_movement_ack = ack_seq;
                 self.last_applied_auth_tick = auth_tick;
 
+                let predicted_before = self.local_prediction.current_state().cloned();
                 let ack = movement_ack_from_server(&message).expect("movement ack");
                 let reconcile = self.local_prediction.apply_ack(ack);
 
                 if let Some(result) = &reconcile {
+                    let before_position = predicted_before
+                        .as_ref()
+                        .map(|state| {
+                            format_vec(&[
+                                state.position.x as f64,
+                                state.position.y as f64,
+                                state.position.z as f64,
+                            ])
+                        })
+                        .unwrap_or_else(|| "n/a".to_string());
+                    let before_velocity = predicted_before
+                        .as_ref()
+                        .map(|state| {
+                            format_vec(&[
+                                state.velocity.x as f64,
+                                state.velocity.y as f64,
+                                state.velocity.z as f64,
+                            ])
+                        })
+                        .unwrap_or_else(|| "n/a".to_string());
+                    let after_position = format_vec(&[
+                        result.latest_state.position.x as f64,
+                        result.latest_state.position.y as f64,
+                        result.latest_state.position.z as f64,
+                    ]);
+                    let after_velocity = format_vec(&[
+                        result.latest_state.velocity.x as f64,
+                        result.latest_state.velocity.y as f64,
+                        result.latest_state.velocity.z as f64,
+                    ]);
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "movement_reconcile transport={} cid={} ack_seq={} auth_tick={} authoritative_pos={} authoritative_vel={} authoritative_accel={} predicted_before_pos={} predicted_before_vel={} latest_after_pos={} latest_after_vel={} action={:?} correction_distance={:.2} replayed_frames={} pending_inputs={}",
+                        transport.label(),
+                        cid,
+                        ack_seq,
+                        auth_tick,
+                        format_vec(&location),
+                        format_vec(&velocity),
+                        format_vec(&acceleration),
+                        before_position,
+                        before_velocity,
+                        after_position,
+                        after_velocity,
+                        result.action,
+                        result.correction_distance,
+                        result.replayed_frames,
+                        result.pending_inputs
+                    )));
                     if !matches!(
                         result.action,
                         crate::sim::governance::ReplayAction::Accepted
@@ -732,6 +832,11 @@ impl ClientRuntime {
                             state.velocity.x as f64,
                             state.velocity.y as f64,
                             state.velocity.z as f64,
+                        ],
+                        acceleration: [
+                            state.acceleration.x as f64,
+                            state.acceleration.y as f64,
+                            state.acceleration.z as f64,
                         ],
                         transport,
                     });
@@ -1368,6 +1473,7 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
             cid,
             location,
             velocity,
+            acceleration,
             transport,
         } => {
             observer.emit(
@@ -1378,6 +1484,7 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                     ("transport", transport.label().to_string()),
                     ("location", format_vec(location)),
                     ("velocity", format_vec(velocity)),
+                    ("acceleration", format_vec(acceleration)),
                 ],
             );
         }

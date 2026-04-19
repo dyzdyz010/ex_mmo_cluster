@@ -610,6 +610,7 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             cid,
             location,
             velocity: _,
+            acceleration: _,
             transport,
         } => {
             state.local_cid = cid;

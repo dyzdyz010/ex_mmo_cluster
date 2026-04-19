@@ -27,9 +27,9 @@ impl InputHistory {
         self.frames.push_back(frame);
     }
 
-    /// Drops all frames up to and including the acknowledged sequence number.
-    pub fn drop_through(&mut self, ack_seq: u32) {
-        while matches!(self.frames.front(), Some(frame) if frame.seq <= ack_seq) {
+    /// Drops all frames up to and including the acknowledged client tick.
+    pub fn drop_through_tick(&mut self, auth_tick: u32) {
+        while matches!(self.frames.front(), Some(frame) if frame.client_tick <= auth_tick) {
             self.frames.pop_front();
         }
     }
@@ -100,6 +100,11 @@ impl PredictedHistory {
         }
     }
 
+    /// Returns the newest predicted state currently retained.
+    pub fn latest(&self) -> Option<&PredictedMoveState> {
+        self.states.back()
+    }
+
     /// Clears all predicted-state history.
     pub fn clear(&mut self) {
         self.states.clear();
@@ -113,7 +118,7 @@ mod tests {
     use bevy::prelude::{Vec2, Vec3};
 
     #[test]
-    fn input_history_drops_acknowledged_frames() {
+    fn input_history_drops_frames_through_authoritative_tick() {
         let mut history = InputHistory::new(8);
         history.push(MoveInputFrame {
             seq: 1,
@@ -132,7 +137,7 @@ mod tests {
             movement_flags: 0,
         });
 
-        history.drop_through(1);
+        history.drop_through_tick(1);
 
         assert_eq!(history.len(), 1);
         assert_eq!(history.frames_after_tick(0).next().unwrap().seq, 2);
@@ -160,5 +165,26 @@ mod tests {
 
         history.truncate_after(1);
         assert!(history.state_at_tick(2).is_none());
+    }
+
+    #[test]
+    fn predicted_history_exposes_latest_state() {
+        let mut history = PredictedHistory::new(8);
+        history.push(PredictedMoveState {
+            tick: 1,
+            position: Vec3::new(1.0, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: MovementMode::Grounded,
+        });
+        history.push(PredictedMoveState {
+            tick: 2,
+            position: Vec3::new(2.0, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: MovementMode::Grounded,
+        });
+
+        assert_eq!(history.latest().unwrap().tick, 2);
     }
 }
