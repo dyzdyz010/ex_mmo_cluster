@@ -44,7 +44,7 @@ Headless 模式必须通过 `--username` 传入用户名（没有登录 UI）：
 
 ```bash
 cargo run -- --headless --username alice --observe-stdout \
-    --script "wait:500,move:w:600,chat:hello,skill:1,wait:1500"
+    --script "wait:500,move:w:600,chat:hello,wait:1500"
 ```
 
 支持的脚本片段：
@@ -54,6 +54,9 @@ cargo run -- --headless --username alice --observe-stdout \
 - `chat:<text>`
 - `skill:<id>`
 - `snapshot`
+
+`skill:<id>` 只有在附近存在可命中的 actor 时才会成功；单客户端 smoke
+通常更适合只验证登录 / 进场 / 移动 / 聊天。要验证技能命中，请至少再启动一个客户端。
 
 ## 本机多开客户端
 
@@ -95,6 +98,7 @@ BEVY_CLIENT_STDIO=1 cargo run
 - `quit`
 
 客户端会通过 stdout 输出 `client_stdio ...` 响应行，适合 agent 通过 stdio 驱动正在运行的正常客户端。
+若要验证 `skill <id>`，请先确保场景里有另一个玩家/NPC，或者先通过 target/point 相关命令选中目标。
 
 ## Observe 日志
 

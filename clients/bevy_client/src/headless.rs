@@ -26,8 +26,7 @@ pub struct HeadlessOptions {
 impl Default for HeadlessOptions {
     fn default() -> Self {
         Self {
-            script: "wait:500,move:w:600,move:d:600,chat:headless hello,skill:1,wait:1500"
-                .to_string(),
+            script: "wait:500,move:w:600,move:d:600,chat:headless hello,wait:1500".to_string(),
             wait_for_scene_ms: 8_000,
             drain_after_script_ms: 1_500,
         }
