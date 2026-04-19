@@ -11,6 +11,7 @@ use crate::{
         smoothing::smooth_translation,
     },
     protocol::EffectCueKind,
+    skill_targeting::prepare_skill_dispatch,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
     world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
     world::remote_player::{RemoteMotionSample, RemotePlayerState},
@@ -299,6 +300,7 @@ fn poll_network_events(
     mut commands: Commands,
     bridge: Res<NetworkBridge>,
     time: Res<Time>,
+    stdio: Res<ClientStdioInterface>,
     mut world_state: ResMut<WorldState>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
 ) {
@@ -310,6 +312,9 @@ fn poll_network_events(
         match event {
             NetworkEvent::Status(status) => {
                 world_state.status = status.clone();
+                if stdio.is_enabled() {
+                    emit_stdio("status", &[("message", status.clone())]);
+                }
                 push_line(&mut world_state.logs, status);
             }
             NetworkEvent::EnteredScene { cid, location } => {
@@ -347,6 +352,18 @@ fn poll_network_events(
                             net_to_world(location),
                             time.elapsed_secs_f64(),
                         ),
+                    );
+                }
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "player_enter",
+                        &[
+                            ("cid", cid.to_string()),
+                            (
+                                "location",
+                                format!("{:.1},{:.1},{:.1}", location[0], location[1], location[2]),
+                            ),
+                        ],
                     );
                 }
                 push_line(&mut world_state.logs, format!("player {cid} entered AOI"));
@@ -392,12 +409,31 @@ fn poll_network_events(
                 username,
                 text,
             } => {
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "chat_message",
+                        &[
+                            ("cid", cid.to_string()),
+                            ("username", username.clone()),
+                            ("text", text.clone()),
+                        ],
+                    );
+                }
                 push_line(
                     &mut world_state.chat_log,
                     format!("[{cid}/{username}] {text}"),
                 );
             }
             NetworkEvent::SkillEvent { cid, skill_id, .. } => {
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "skill_event",
+                        &[
+                            ("cid", cid.to_string()),
+                            ("skill_id", skill_id.to_string()),
+                        ],
+                    );
+                }
                 push_line(
                     &mut world_state.logs,
                     format!("skill event: cid={cid} skill={skill_id}"),
@@ -419,6 +455,17 @@ fn poll_network_events(
                         .insert(cid, (hp, max_hp, alive));
                 }
 
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "player_state",
+                        &[
+                            ("cid", cid.to_string()),
+                            ("hp", hp.to_string()),
+                            ("max_hp", max_hp.to_string()),
+                            ("alive", alive.to_string()),
+                        ],
+                    );
+                }
                 push_line(
                     &mut world_state.logs,
                     format!("state: cid={cid} hp={hp}/{max_hp} alive={alive}"),
@@ -432,6 +479,18 @@ fn poll_network_events(
                 hp_after,
                 ..
             } => {
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "combat_hit",
+                        &[
+                            ("source_cid", source_cid.to_string()),
+                            ("target_cid", target_cid.to_string()),
+                            ("skill_id", skill_id.to_string()),
+                            ("damage", damage.to_string()),
+                            ("hp_after", hp_after.to_string()),
+                        ],
+                    );
+                }
                 push_line(
                     &mut world_state.logs,
                     format!(
@@ -484,7 +543,12 @@ fn poll_network_events(
                 world_state.fast_lane_status = fast_lane_status;
                 world_state.udp_endpoint = udp_endpoint;
             }
-            NetworkEvent::Log(line) => push_line(&mut world_state.logs, line),
+            NetworkEvent::Log(line) => {
+                if stdio.is_enabled() {
+                    emit_stdio("log", &[("line", line.clone())]);
+                }
+                push_line(&mut world_state.logs, line)
+            }
             NetworkEvent::Disconnected(reason) => {
                 world_state.scene_joined = false;
                 world_state.status = format!("disconnected: {reason}");
@@ -501,6 +565,9 @@ fn poll_network_events(
                 world_state.selected_target_cid = None;
                 world_state.selected_target_point = None;
                 movement_dispatch.stop_sent = true;
+                if stdio.is_enabled() {
+                    emit_stdio("disconnected", &[("reason", reason.clone())]);
+                }
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
         }
@@ -572,26 +639,26 @@ fn handle_skill_input(
     bridge: Res<NetworkBridge>,
     observer: Res<ClientObserver>,
     chat_state: Res<ChatState>,
-    world_state: Res<WorldState>,
+    mut world_state: ResMut<WorldState>,
 ) {
     if chat_state.enabled {
         return;
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &world_state, 1);
+        send_targeted_skill(&bridge, &observer, &mut world_state, 1);
     }
 
     if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &world_state, 2);
+        send_targeted_skill(&bridge, &observer, &mut world_state, 2);
     }
 
     if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &world_state, 3);
+        send_targeted_skill(&bridge, &observer, &mut world_state, 3);
     }
 
     if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &world_state, 4);
+        send_targeted_skill(&bridge, &observer, &mut world_state, 4);
     }
 }
 
@@ -662,26 +729,42 @@ fn handle_point_target_input(
 fn send_targeted_skill(
     bridge: &NetworkBridge,
     observer: &ClientObserver,
-    world_state: &WorldState,
+    world_state: &mut WorldState,
     skill_id: u16,
 ) {
-    let target_position = if skill_id == 3 {
-        world_state
-            .selected_target_point
-            .map(|point| [point.x as f64, point.y as f64, point.z as f64])
-    } else {
-        None
-    };
-    let target_cid = if target_position.is_some() {
-        None
-    } else {
-        world_state.selected_target_cid
+    let selected_target_point = world_state
+        .selected_target_point
+        .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
+    let visible_actor_count = world_state.remote_players.len();
+
+    let dispatch = match prepare_skill_dispatch(
+        skill_id,
+        world_state.selected_target_cid,
+        selected_target_point,
+        visible_actor_count,
+    ) {
+        Ok(dispatch) => dispatch,
+        Err(block) => {
+            let message = format!("skill {skill_id} blocked: {}", block.reason);
+            world_state.status = message.clone();
+            push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
+            observer.emit(
+                "input",
+                "skill_blocked",
+                &[
+                    ("skill_id", skill_id.to_string()),
+                    ("reason", block.reason.to_string()),
+                    ("hint", block.hint.to_string()),
+                ],
+            );
+            return;
+        }
     };
 
     bridge.send(NetworkCommand::CastSkillTargeted {
         skill_id,
-        target_cid,
-        target_position,
+        target_cid: dispatch.target_cid,
+        target_position: dispatch.target_position,
     });
 
     observer.emit(
@@ -691,13 +774,15 @@ fn send_targeted_skill(
             ("skill_id", skill_id.to_string()),
             (
                 "target_cid",
-                target_cid
+                dispatch
+                    .target_cid
                     .map(|value: i64| value.to_string())
                     .unwrap_or_else(|| "auto".to_string()),
             ),
             (
                 "target_point",
-                target_position
+                dispatch
+                    .target_position
                     .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
                     .unwrap_or_else(|| "n/a".to_string()),
             ),
@@ -931,22 +1016,36 @@ fn poll_stdio_commands(
                 emit_stdio("chat_sent", &[("text", text)]);
             }
             ClientStdioCommand::Skill { skill_id, target_cid } => {
-                let target_position = if skill_id == 3 {
-                    world_state
-                        .selected_target_point
-                        .map(|point| [point.x as f64, point.y as f64, point.z as f64])
-                } else {
-                    None
-                };
-                let target_cid = if target_position.is_some() {
-                    None
-                } else {
-                    target_cid.or(world_state.selected_target_cid)
+                let selected_target_point = world_state
+                    .selected_target_point
+                    .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
+                let visible_actor_count = world_state.remote_players.len();
+                let dispatch = match prepare_skill_dispatch(
+                    skill_id,
+                    target_cid.or(world_state.selected_target_cid),
+                    selected_target_point,
+                    visible_actor_count,
+                ) {
+                    Ok(dispatch) => dispatch,
+                    Err(block) => {
+                        let message = format!("skill {skill_id} blocked: {}", block.reason);
+                        world_state.status = message.clone();
+                        push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
+                        emit_stdio(
+                            "skill_blocked",
+                            &[
+                                ("skill_id", skill_id.to_string()),
+                                ("reason", block.reason.to_string()),
+                                ("hint", block.hint.to_string()),
+                            ],
+                        );
+                        continue;
+                    }
                 };
                 bridge.send(NetworkCommand::CastSkillTargeted {
                     skill_id,
-                    target_cid,
-                    target_position,
+                    target_cid: dispatch.target_cid,
+                    target_position: dispatch.target_position,
                 });
                 emit_stdio(
                     "skill_sent",
@@ -954,13 +1053,15 @@ fn poll_stdio_commands(
                         ("skill_id", skill_id.to_string()),
                         (
                             "target_cid",
-                            target_cid
+                            dispatch
+                                .target_cid
                                 .map(|value| value.to_string())
                                 .unwrap_or_else(|| "auto".to_string()),
                         ),
                         (
                             "target_point",
-                            target_position
+                            dispatch
+                                .target_position
                                 .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
                                 .unwrap_or_else(|| "n/a".to_string()),
                         ),
@@ -1295,7 +1396,7 @@ fn net_to_world(value: [f64; 3]) -> Vec3 {
 
 fn cursor_to_world(cursor: Vec2, window: &Window, camera_translation: Vec3) -> Vec3 {
     let world_x = cursor.x - window.width() * 0.5 + camera_translation.x;
-    let world_y = cursor.y - window.height() * 0.5 + camera_translation.y;
+    let world_y = window.height() * 0.5 - cursor.y + camera_translation.y;
     Vec3::new(world_x, world_y, 90.0)
 }
 
@@ -1463,5 +1564,24 @@ mod tests {
         ));
         assert!(should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, false));
         assert!(!should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, true));
+    }
+
+    #[test]
+    fn cursor_to_world_flips_window_y_axis() {
+        let mut window = Window::default();
+        window.resolution.set(1280.0, 720.0);
+
+        let camera = Vec3::new(100.0, 200.0, 999.0);
+
+        let bottom_cursor = Vec2::new(640.0, 700.0);
+        let top_cursor = Vec2::new(640.0, 20.0);
+
+        let bottom_world = cursor_to_world(bottom_cursor, &window, camera);
+        let top_world = cursor_to_world(top_cursor, &window, camera);
+
+        assert!(bottom_world.y < camera.y);
+        assert!(top_world.y > camera.y);
+        assert_eq!(bottom_world.x, camera.x);
+        assert_eq!(top_world.x, camera.x);
     }
 }

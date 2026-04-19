@@ -108,6 +108,11 @@ impl ClientStdioInterface {
         }
     }
 
+    /// Returns whether the attached stdio command channel is active.
+    pub fn is_enabled(&self) -> bool {
+        self.rx.is_some()
+    }
+
     /// Attempts to read the next parsed stdio command without blocking.
     pub fn try_recv(&self) -> Option<ClientStdioCommand> {
         let rx = self.rx.as_ref()?;

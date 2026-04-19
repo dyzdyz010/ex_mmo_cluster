@@ -4,6 +4,7 @@ use crate::{
     config::{ClientConfig, SessionCredentials},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
+    skill_targeting::prepare_skill_dispatch,
     stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
     world::remote_actor::RemoteActorIdentity,
 };
@@ -256,11 +257,24 @@ pub fn run_stdio(
                     emit_stdio("chat_sent", &[("text", text)]);
                 }
                 ClientStdioCommand::Skill { skill_id, target_cid } => {
-                    let target_cid = target_cid.or(state.selected_target_cid);
-                    let target_position = if skill_id == 3 {
-                        state.selected_target_point.map(vec3_to_net)
-                    } else {
-                        None
+                    let dispatch = match prepare_skill_dispatch(
+                        skill_id,
+                        target_cid.or(state.selected_target_cid),
+                        state.selected_target_point.map(vec3_to_net),
+                        state.remote_players.len(),
+                    ) {
+                        Ok(dispatch) => dispatch,
+                        Err(block) => {
+                            emit_stdio(
+                                "skill_blocked",
+                                &[
+                                    ("skill_id", skill_id.to_string()),
+                                    ("reason", block.reason.to_string()),
+                                    ("hint", block.hint.to_string()),
+                                ],
+                            );
+                            continue;
+                        }
                     };
                     observer.emit(
                         "headless",
@@ -269,13 +283,15 @@ pub fn run_stdio(
                             ("skill_id", skill_id.to_string()),
                             (
                                 "target_cid",
-                                target_cid
+                                dispatch
+                                    .target_cid
                                     .map(|value: i64| value.to_string())
                                     .unwrap_or_else(|| "auto".to_string()),
                             ),
                             (
                                 "target_point",
-                                target_position
+                                dispatch
+                                    .target_position
                                     .map(|value| format_net_vec(value))
                                     .unwrap_or_else(|| "n/a".to_string()),
                             ),
@@ -283,8 +299,8 @@ pub fn run_stdio(
                     );
                     bridge.send(NetworkCommand::CastSkillTargeted {
                         skill_id,
-                        target_cid,
-                        target_position,
+                        target_cid: dispatch.target_cid,
+                        target_position: dispatch.target_position,
                     });
                     emit_stdio(
                         "skill_sent",
@@ -292,13 +308,15 @@ pub fn run_stdio(
                             ("skill_id", skill_id.to_string()),
                             (
                                 "target_cid",
-                                target_cid
+                                dispatch
+                                    .target_cid
                                     .map(|value: i64| value.to_string())
                                     .unwrap_or_else(|| "auto".to_string()),
                             ),
                             (
                                 "target_point",
-                                target_position
+                                dispatch
+                                    .target_position
                                     .map(|value| format_net_vec(value))
                                     .unwrap_or_else(|| "n/a".to_string()),
                             ),
@@ -421,16 +439,31 @@ fn run_action(
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }
         HeadlessAction::Skill(skill_id) => {
-            let target_position = if skill_id == 3 {
-                state.selected_target_point.map(vec3_to_net)
-            } else {
-                None
+            let dispatch = match prepare_skill_dispatch(
+                skill_id,
+                state.selected_target_cid,
+                state.selected_target_point.map(vec3_to_net),
+                state.remote_players.len(),
+            ) {
+                Ok(dispatch) => dispatch,
+                Err(block) => {
+                    observer.emit(
+                        "headless",
+                        "skill_blocked",
+                        &[
+                            ("skill_id", skill_id.to_string()),
+                            ("reason", block.reason.to_string()),
+                            ("hint", block.hint.to_string()),
+                        ],
+                    );
+                    return Err(format!("skill {skill_id} blocked: {}", block.reason));
+                }
             };
             observer.emit("headless", "skill", &[("skill_id", skill_id.to_string())]);
             bridge.send(NetworkCommand::CastSkillTargeted {
                 skill_id,
-                target_cid: state.selected_target_cid,
-                target_position,
+                target_cid: dispatch.target_cid,
+                target_position: dispatch.target_position,
             });
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }

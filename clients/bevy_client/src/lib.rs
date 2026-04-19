@@ -21,5 +21,6 @@ pub mod presentation;
 pub mod protocol;
 pub mod protocol_v2;
 pub mod sim;
+pub mod skill_targeting;
 pub mod stdio;
 pub mod world;

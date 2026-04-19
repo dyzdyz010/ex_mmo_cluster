@@ -98,7 +98,19 @@ BEVY_CLIENT_STDIO=1 cargo run
 - `quit`
 
 客户端会通过 stdout 输出 `client_stdio ...` 响应行，适合 agent 通过 stdio 驱动正在运行的正常客户端。
+除命令回执外，stdio 还会镜像关键运行时事件，例如 `status`、`log`、
+`player_enter`、`chat_message`、`skill_event`、`combat_hit`、`player_state`，
+便于直接从命令行排查“为什么这次施法失败/成功”。
 若要验证 `skill <id>`，请先确保场景里有另一个玩家/NPC，或者先通过 target/point 相关命令选中目标。
+当目标条件明显不满足时，stdio 会直接返回：
+
+- `client_stdio event="skill_blocked" ...`
+
+典型排查顺序：
+
+1. `players` / `npcs` 查看附近 actor
+2. `target <cid>` 或 `target_point <x> <y> [z]`
+3. 再执行 `skill <id> [target_cid]`
 
 ## Observe 日志
 
