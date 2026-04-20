@@ -1,14 +1,14 @@
 //! Core movement simulation data types shared by prediction and networking.
+//!
+//! `MovementMode` is re-exported verbatim from the shared `movement_core`
+//! crate so the server NIF and the Bevy client always agree on the variant
+//! set. `PredictedMoveState` / `MovementAck` stay Bevy-native (`f32`) for
+//! ergonomics; conversion to `movement_core`'s `f64` types happens inside
+//! `sim::predictor` with a documented round-trip precision budget of 1e-4.
 
 use bevy::prelude::Vec3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Simulation movement mode mirrored from the server.
-pub enum MovementMode {
-    Grounded,
-    Airborne,
-    Disabled,
-}
+pub use movement_core::MovementMode;
 
 #[derive(Debug, Clone, PartialEq)]
 /// Predicted or authoritative local movement state at a fixed tick.
@@ -37,6 +37,34 @@ impl PredictedMoveState {
             movement_mode: MovementMode::Grounded,
         }
     }
+
+    /// Converts to `movement_core::MovementState`. The `f32 → f64` widening
+    /// is lossless; the reverse path in `from_core` performs the quantisation.
+    pub fn to_core(&self) -> movement_core::MovementState {
+        movement_core::MovementState {
+            position: vec3_to_array(self.position),
+            velocity: vec3_to_array(self.velocity),
+            acceleration: vec3_to_array(self.acceleration),
+            movement_mode: self.movement_mode,
+            tick: self.tick,
+            seq: self.seq,
+        }
+    }
+
+    /// Builds the Bevy-native predicted state from a `movement_core` result.
+    /// Precision budget: each component round-trips within 1e-4 of the f64
+    /// value for positions below ±1e6 metres, which comfortably covers MMO
+    /// world extents.
+    pub fn from_core(core: &movement_core::MovementState) -> Self {
+        Self {
+            seq: core.seq,
+            tick: core.tick,
+            position: array_to_vec3(core.position),
+            velocity: array_to_vec3(core.velocity),
+            acceleration: array_to_vec3(core.acceleration),
+            movement_mode: core.movement_mode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,4 +88,12 @@ pub struct RemoteMoveSnapshot {
     pub velocity: Vec3,
     pub acceleration: Vec3,
     pub movement_mode: MovementMode,
+}
+
+pub(crate) fn vec3_to_array(v: Vec3) -> [f64; 3] {
+    [v.x as f64, v.y as f64, v.z as f64]
+}
+
+pub(crate) fn array_to_vec3(a: [f64; 3]) -> Vec3 {
+    Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32)
 }

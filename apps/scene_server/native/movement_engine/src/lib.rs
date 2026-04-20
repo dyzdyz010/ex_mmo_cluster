@@ -1,6 +1,5 @@
 mod atoms;
 mod integrator;
-mod math;
 mod types;
 
 use rustler::NifResult;

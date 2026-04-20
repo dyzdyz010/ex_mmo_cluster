@@ -11,3 +11,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.37.3"
+movement_core = { path = "../movement_core" }

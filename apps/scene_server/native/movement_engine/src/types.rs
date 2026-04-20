@@ -1,6 +1,16 @@
+//! Rustler term ↔ `movement_core` adapters.
+//!
+//! The Rustler struct shapes mirror `SceneServer.Movement.State` /
+//! `InputFrame` / `Profile` exactly, so the Elixir ↔ NIF boundary is
+//! unchanged. Conversion into `movement_core` types happens entirely here;
+//! the rest of the NIF is a thin pass-through.
+
 use rustler::{Atom, NifStruct};
 
-use crate::math::{Vec2, Vec3};
+use crate::atoms;
+
+pub type Vec2 = (f64, f64);
+pub type Vec3 = (f64, f64, f64);
 
 #[derive(Debug, Clone, NifStruct)]
 #[module = "SceneServer.Movement.State"]
@@ -36,8 +46,108 @@ pub struct MovementProfile {
     pub max_speed_scale: f64,
 }
 
+// ---------- atom <-> movement_core::MovementMode ----------
+
+pub fn atom_to_mode(atom: Atom) -> movement_core::MovementMode {
+    use movement_core::MovementMode::*;
+    if atom == atoms::grounded() {
+        Grounded
+    } else if atom == atoms::airborne() {
+        Airborne
+    } else if atom == atoms::scripted() {
+        Scripted
+    } else if atom == atoms::disabled() {
+        Disabled
+    } else {
+        // Unknown atom from Elixir — fall back to Grounded so the integrator
+        // still advances deterministically instead of panicking.
+        Grounded
+    }
+}
+
+pub fn mode_to_atom(mode: movement_core::MovementMode) -> Atom {
+    use movement_core::MovementMode::*;
+    match mode {
+        Grounded => atoms::grounded(),
+        Airborne => atoms::airborne(),
+        Scripted => atoms::scripted(),
+        Disabled => atoms::disabled(),
+    }
+}
+
+// ---------- tuple <-> array ----------
+
+fn vec3_to_array(v: Vec3) -> [f64; 3] {
+    [v.0, v.1, v.2]
+}
+
+fn array_to_vec3(v: [f64; 3]) -> Vec3 {
+    (v[0], v[1], v[2])
+}
+
+// ---------- struct adapters ----------
+
+impl MovementState {
+    /// Into core form. The Elixir struct does not carry `seq`, so `seq` is
+    /// synthesized from `tick` for the core type (core needs seq for its
+    /// internal scripted/disabled no-op path; Elixir never reads it back).
+    pub fn to_core(&self) -> movement_core::MovementState {
+        movement_core::MovementState {
+            position: vec3_to_array(self.position),
+            velocity: vec3_to_array(self.velocity),
+            acceleration: vec3_to_array(self.acceleration),
+            movement_mode: atom_to_mode(self.movement_mode),
+            tick: self.tick,
+            seq: self.tick,
+        }
+    }
+
+    /// Build the Elixir-facing struct from a core state. The core's `seq`
+    /// field is dropped on purpose: `SceneServer.Movement.State` has no
+    /// `:seq` key, and adding one would break every pattern match in the
+    /// server actor path.
+    pub fn from_core(core: &movement_core::MovementState) -> Self {
+        Self {
+            position: array_to_vec3(core.position),
+            velocity: array_to_vec3(core.velocity),
+            acceleration: array_to_vec3(core.acceleration),
+            movement_mode: mode_to_atom(core.movement_mode),
+            tick: core.tick,
+        }
+    }
+}
+
 impl InputFrame {
-    pub fn braking(&self) -> bool {
-        self.movement_flags & 0b10 != 0
+    /// The Elixir struct has no `:movement_mode` field — inject the default
+    /// (`Grounded`) so movement_core's dispatch always has a valid mode.
+    /// INVARIANT: `MovementMode::transition()` currently ignores
+    /// `input.movement_mode`; once transitions become input-driven, the
+    /// Elixir struct must gain a `:movement_mode` field and this default
+    /// must be replaced with a real forwarding.
+    pub fn to_core(&self) -> movement_core::InputFrame {
+        movement_core::InputFrame {
+            seq: self.seq,
+            client_tick: self.client_tick,
+            dt_ms: self.dt_ms,
+            input_dir: [self.input_dir.0, self.input_dir.1],
+            speed_scale: self.speed_scale,
+            movement_flags: self.movement_flags,
+            movement_mode: movement_core::MovementMode::default(),
+        }
+    }
+}
+
+impl MovementProfile {
+    pub fn to_core(&self) -> movement_core::MovementProfile {
+        movement_core::MovementProfile {
+            max_speed: self.max_speed,
+            max_accel: self.max_accel,
+            max_decel: self.max_decel,
+            max_jerk: self.max_jerk,
+            friction: self.friction,
+            turn_response: self.turn_response,
+            fixed_dt_ms: self.fixed_dt_ms,
+            max_speed_scale: self.max_speed_scale,
+        }
     }
 }

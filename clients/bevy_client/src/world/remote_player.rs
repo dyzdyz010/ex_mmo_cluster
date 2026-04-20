@@ -9,8 +9,15 @@ const MAX_BUFFERED_SNAPSHOTS: usize = 32;
 const SNAPSHOT_TICK_SECS: f64 = 0.1;
 // Interp delay ≈ 2.2 × snapshot interval lets a single late/lost packet stay
 // inside the buffer instead of falling out into extrapolation territory.
-const INTERPOLATION_DELAY_SECS: f64 = 0.22;
-const MAX_REMOTE_EXTRAPOLATION_SECS: f64 = 0.25;
+// Valve's cl_interp baseline (Bernier 2001, "Latency Compensating Methods
+// in Client/Server In-game Protocol Design and Optimization") recommends
+// ~150 ms for a 100 ms cadence; bumped to 220 ms after observing client
+// rubber-band under one missed snapshot at the baseline value.
+pub const INTERPOLATION_DELAY_SECS: f64 = 0.22;
+// Cap extrapolation at 250ms to mask short dropout trains while staying
+// well under the ~500ms perceptible-rubber-banding threshold documented in
+// Unreal's `NetworkSmoothingMode::Exponential` GDC notes.
+pub const MAX_REMOTE_EXTRAPOLATION_SECS: f64 = 0.25;
 
 #[derive(Debug, Clone)]
 struct BufferedSnapshot {

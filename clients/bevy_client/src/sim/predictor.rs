@@ -1,12 +1,14 @@
 //! Local fixed-step movement predictor.
-
-use bevy::prelude::{Vec2, Vec3};
+//!
+//! The kinematic algorithm lives in `movement_core::integrator` — this file
+//! is a thin `f32 ↔ f64` adapter so the Bevy client keeps its native `Vec3`
+//! surface while sharing the authoritative maths with the server NIF.
 
 use crate::{
     input::commands::MoveInputFrame,
     sim::{
         profile::MovementProfile,
-        types::{MovementMode, PredictedMoveState},
+        types::PredictedMoveState,
     },
 };
 
@@ -16,74 +18,23 @@ pub fn step(
     input: &MoveInputFrame,
     profile: &MovementProfile,
 ) -> PredictedMoveState {
-    let dt = input.dt_ms as f32 / 1_000.0;
-    let direction = normalize_or_zero(input.input_dir);
-    let desired_velocity = direction.extend(0.0) * profile.max_speed * input.speed_scale;
-    let velocity_error = desired_velocity - previous.velocity;
-    let accel_limit = accel_limit(
-        previous.velocity,
-        desired_velocity,
-        profile,
-        input.is_braking(),
+    let core_out = movement_core::integrator::step(
+        &previous.to_core(),
+        &input_to_core(input),
+        &profile.to_core(),
     );
-    let accel_target = clamp_vec3_length(velocity_error / dt.max(f32::EPSILON), accel_limit);
-    let acceleration =
-        smooth_acceleration(previous.acceleration, accel_target, profile.max_jerk, dt);
-    let velocity = clamp_vec3_length(previous.velocity + acceleration * dt, profile.max_speed);
-    let position = previous.position + velocity * dt;
+    PredictedMoveState::from_core(&core_out)
+}
 
-    PredictedMoveState {
+fn input_to_core(input: &MoveInputFrame) -> movement_core::InputFrame {
+    movement_core::InputFrame {
         seq: input.seq,
-        tick: input.client_tick,
-        position,
-        velocity,
-        acceleration,
-        movement_mode: MovementMode::Grounded,
-    }
-}
-
-fn accel_limit(
-    current_velocity: Vec3,
-    desired_velocity: Vec3,
-    profile: &MovementProfile,
-    braking: bool,
-) -> f32 {
-    if braking {
-        return profile.max_decel;
-    }
-
-    if desired_velocity.length_squared() <= f32::EPSILON
-        || desired_velocity.length() < current_velocity.length()
-    {
-        profile.max_decel
-    } else {
-        profile.max_accel
-    }
-}
-
-fn smooth_acceleration(current: Vec3, target: Vec3, max_jerk: f32, dt: f32) -> Vec3 {
-    let delta = target - current;
-    let max_delta = max_jerk * dt;
-    if delta.length() <= max_delta {
-        target
-    } else {
-        current + delta.normalize() * max_delta
-    }
-}
-
-fn normalize_or_zero(direction: Vec2) -> Vec2 {
-    if direction.length_squared() <= f32::EPSILON {
-        Vec2::ZERO
-    } else {
-        direction.normalize()
-    }
-}
-
-fn clamp_vec3_length(vector: Vec3, max_length: f32) -> Vec3 {
-    if vector.length_squared() <= max_length * max_length {
-        vector
-    } else {
-        vector.normalize() * max_length
+        client_tick: input.client_tick,
+        dt_ms: input.dt_ms,
+        input_dir: [input.input_dir.x as f64, input.input_dir.y as f64],
+        speed_scale: input.speed_scale as f64,
+        movement_flags: input.movement_flags,
+        movement_mode: movement_core::MovementMode::default(),
     }
 }
 
@@ -94,7 +45,7 @@ mod tests {
 
     #[test]
     fn step_builds_velocity_gradually_with_acceleration() {
-        let previous = PredictedMoveState::idle(Vec3::ZERO);
+        let previous = PredictedMoveState::idle(bevy::prelude::Vec3::ZERO);
         let input = MoveInputFrame {
             seq: 1,
             client_tick: 1,
@@ -118,10 +69,10 @@ mod tests {
         let previous = PredictedMoveState {
             seq: 1,
             tick: 1,
-            position: Vec3::ZERO,
-            velocity: Vec3::new(220.0, 0.0, 0.0),
-            acceleration: Vec3::ZERO,
-            movement_mode: MovementMode::Grounded,
+            position: bevy::prelude::Vec3::ZERO,
+            velocity: bevy::prelude::Vec3::new(220.0, 0.0, 0.0),
+            acceleration: bevy::prelude::Vec3::ZERO,
+            movement_mode: crate::sim::types::MovementMode::Grounded,
         };
         let input = MoveInputFrame {
             seq: 2,
@@ -136,5 +87,27 @@ mod tests {
         let next = step(&previous, &input, &profile);
 
         assert!(next.velocity.x < previous.velocity.x);
+    }
+
+    #[test]
+    fn core_bridge_round_trip_matches_core_reference_values() {
+        // Golden: (idle, +x, dt=100ms, default profile) → x position ≈ 9.0,
+        // x velocity ≈ 90.0, x acceleration ≈ 900.0 (see movement_core::
+        // integrator::golden_single_step_matches_legacy_algorithm).
+        let previous = PredictedMoveState::idle(bevy::prelude::Vec3::ZERO);
+        let input = MoveInputFrame {
+            seq: 1,
+            client_tick: 1,
+            dt_ms: 100,
+            input_dir: Vec2::new(1.0, 0.0),
+            speed_scale: 1.0,
+            movement_flags: 0,
+        };
+        let profile = MovementProfile::default();
+        let next = step(&previous, &input, &profile);
+
+        assert!((next.position.x - 9.0).abs() < 1.0e-4);
+        assert!((next.velocity.x - 90.0).abs() < 1.0e-3);
+        assert!((next.acceleration.x - 900.0).abs() < 1.0e-2);
     }
 }

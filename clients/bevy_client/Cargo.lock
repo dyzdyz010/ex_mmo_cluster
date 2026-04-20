@@ -581,6 +581,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "movement_core",
  "serde",
  "serde_json",
  "ureq",
@@ -3467,6 +3468,10 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "movement_core"
+version = "0.1.0"
 
 [[package]]
 name = "moxcms"

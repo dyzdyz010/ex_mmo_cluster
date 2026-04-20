@@ -1,91 +1,149 @@
 {
-  "title": "Movement Sync Architecture Rework",
+  "title": "Unified Movement Sync Architecture (P2)",
   "createdAt": "2026-04-20",
-  "strategy": "Quake/Valve prediction-reconciliation + Unreal ExponentialSmoothing; no novel algorithm",
+  "supersedes": "Movement Sync Architecture Rework (P1) — US-A/B/C/D completed in commit dde4955 + da1c150",
+  "strategy": "Extract triplicated step algorithm into single-source-of-truth movement_core crate; introduce MovementMode state machine; align remote interp with Valve 2001 default (150ms); no novel algorithm.",
+  "references": [
+    "Unreal CharacterMovementComponent (Epic GDC 2016/2019)",
+    "Valve Source Engine Networking (Bernier 2001)",
+    "Amazon New World 500-Players-in-One-Shard (GDC 2022)",
+    "WoW Networked Client Prediction (Blizzard GDC 2008)"
+  ],
   "stories": [
     {
-      "id": "US-C",
-      "title": "按 ack_seq 恢复对账优雅降级",
+      "id": "US-1",
+      "title": "movement_core crate skeleton with unified types",
       "priority": 1,
       "passes": true,
       "acceptanceCriteria": [
-        "PredictedMoveState 包含 seq: u32 字段 (0 表示 spawn/idle)",
-        "PredictedHistory::state_at_seq(seq) 返回 Option<&PredictedMoveState>",
-        "PredictedHistory::truncate_after_seq(seq) 实现并带单元测试",
-        "reconcile.rs 首选按 ack_seq 匹配 predicted_history；seq miss 时降级按 auth_tick 匹配",
-        "当 ack_seq + auth_tick 都匹配失败且 correction_distance < hard_snap_distance 时，返回 Accepted 分支，不再 HardSnap",
-        "新增测试 reconcile_falls_back_gracefully_when_seq_misses 覆盖上一条路径",
-        "原有 reconcile 3 个测试仍通过"
+        "apps/scene_server/native/movement_core/Cargo.toml 存在，crate-type = [\"rlib\"]，无 rustler/tokio 等 runtime 依赖",
+        "movement_core::MovementProfile 字段 (max_speed, max_accel, max_decel, max_jerk, friction, turn_response, fixed_dt_ms, max_speed_scale) 全 f64，Default 产生 220/1200/1400/9000/0/1.0/100/1.0",
+        "movement_core::InputFrame 包含 seq u32 / client_tick u32 / dt_ms u16 / input_dir [f64;2] / speed_scale f64 / movement_flags u16 / movement_mode MovementMode",
+        "movement_core::MovementState 包含 position/velocity/acceleration [f64;3] / movement_mode / tick u32 / seq u32",
+        "movement_core::MovementMode 枚举 Grounded/Airborne/Scripted/Disabled (critic-revised: 保留现有 3 变体零重命名, 新增 Scripted)，Default = Grounded",
+        "movement_core::MovementAck 字段 ack_seq u32 / auth_tick u32 / position/velocity/acceleration / movement_mode / correction_flags u32",
+        "cargo build -p movement_core 退出码 0",
+        "cargo test -p movement_core 包含 ≥3 个 sanity 测试且全绿 (profile default / mode default / state idle round-trip)"
       ],
       "files": [
-        "clients/bevy_client/src/sim/types.rs",
-        "clients/bevy_client/src/sim/history.rs",
-        "clients/bevy_client/src/sim/reconcile.rs",
-        "clients/bevy_client/src/sim/predictor.rs",
-        "clients/bevy_client/src/world/local_player.rs"
+        "apps/scene_server/native/movement_core/Cargo.toml",
+        "apps/scene_server/native/movement_core/src/lib.rs",
+        "apps/scene_server/native/movement_core/src/profile.rs",
+        "apps/scene_server/native/movement_core/src/input.rs",
+        "apps/scene_server/native/movement_core/src/state.rs",
+        "apps/scene_server/native/movement_core/src/mode.rs",
+        "apps/scene_server/native/movement_core/src/ack.rs",
+        "apps/scene_server/native/movement_core/src/integrator.rs"
       ]
     },
     {
-      "id": "US-B",
-      "title": "调参 governance + 远端插值",
+      "id": "US-2",
+      "title": "Authoritative integrator + MovementMode dispatch",
       "priority": 2,
       "passes": true,
       "acceptanceCriteria": [
-        "ReplayGovernance::default 的 soft_position_error == 2.0",
-        "ReplayGovernance::default 的 hard_snap_distance == 256.0",
-        "ReplayGovernance::default 的 max_replay_frames == 32",
-        "remote_player.rs INTERPOLATION_DELAY_SECS == 0.1",
-        "remote_player.rs MAX_REMOTE_EXTRAPOLATION_SECS == 0.25",
-        "world/local_player.rs::extend_prediction_through 使用 idle MoveInputFrame (input_dir ZERO + MOVEMENT_FLAG_BRAKE)，不再复用 last_input_frame 的方向",
-        "cargo test --lib sim:: 全部通过（governance tests + reconcile tests）",
-        "cargo test --lib world::remote_player 全部通过"
+        "movement_core::integrator::step(state, input, profile) 实现 jerk-limited kinematics，与当前 clients/bevy_client/src/sim/predictor.rs::step 语义 bit-exact",
+        "step 按 state.movement_mode 分派到 walking_step / scripted_step / disabled_step",
+        "walking_step 完整移植 velocity_error → accel_limit → smooth_acceleration → velocity → position 流程",
+        "scripted_step 不改变 position/velocity/acceleration，仅推进 tick/seq",
+        "disabled_step 将 velocity/acceleration 归零，position 不变",
+        "movement_core::integrator::replay(anchor, inputs, profile) -> Vec<MovementState> 迭代 step，与现 NIF replay 语义一致",
+        "cargo test -p movement_core 含 ≥8 个测试且全绿 (walking accel/brake/turn/jerk-clamp、scripted no-op、disabled zero-out、replay multi-step、profile golden)"
       ],
       "files": [
-        "clients/bevy_client/src/sim/governance.rs",
-        "clients/bevy_client/src/world/remote_player.rs",
+        "apps/scene_server/native/movement_core/src/integrator.rs",
+        "apps/scene_server/native/movement_core/src/mode.rs"
+      ]
+    },
+    {
+      "id": "US-3",
+      "title": "Bevy client switched to movement_core",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "clients/bevy_client/Cargo.toml 包含 movement_core = { path = \"../../apps/scene_server/native/movement_core\" }",
+        "sim/predictor.rs::step 内部不再包含 jerk-limit 算法，而是调用 movement_core::integrator::step（可包裹 Bevy Vec ↔ [f64;N] 适配）",
+        "sim/profile.rs / sim/types.rs 中的 MovementProfile/InputFrame/MovementState/MovementMode 改为 re-export 或 newtype 包裹 movement_core 同名类型",
+        "cd clients/bevy_client && cargo check --all-targets 退出码 0",
+        "cd clients/bevy_client && cargo test --lib 退出码 0 (sim:: 与 world:: 现有测试全绿)",
+        "scripts/e2e-stdio-movement (ps1 或 sh) 运行成功，reconcile_stats.hard_snaps == 0，max_correction_distance < 16.0"
+      ],
+      "files": [
+        "clients/bevy_client/Cargo.toml",
+        "clients/bevy_client/src/sim/profile.rs",
+        "clients/bevy_client/src/sim/types.rs",
+        "clients/bevy_client/src/sim/predictor.rs",
+        "clients/bevy_client/src/sim/history.rs",
+        "clients/bevy_client/src/sim/reconcile.rs",
         "clients/bevy_client/src/world/local_player.rs"
       ]
     },
     {
-      "id": "US-A",
-      "title": "可视化平滑层 + stdio 诊断",
-      "priority": 3,
-      "passes": true,
-      "acceptanceCriteria": [
-        "LocalRenderPrediction 新增字段 pending_correction: Vec3 (默认 ZERO) 与 smoothing_rate_hz: f32 (默认 15.0)",
-        "LocalRenderPrediction::advance 按 exp(-rate*dt) 衰减内部 pending_correction 并落到 render_state",
-        "app.rs LocalRenderPrediction::sync_full_state 改为只计算 pending_correction = old_rendered - new_anchor (hard_snap 超限置零)",
-        "app.rs advance_local_render_prediction 的输出来自 LocalRenderPrediction 的 render_state",
-        "stdio.rs 新增 ClientStdioCommand::ReconcileStats 与 ClientStdioCommand::DiagRender",
-        "ReconcileStats 触发 emit('reconcile_stats', total_corrections/total_replays/total_hard_snaps/total_window_trims/last_replayed_frames/last_pending_inputs/last_correction_distance)",
-        "DiagRender 触发 emit('diag_render', anchor/render/pending_correction/drift/pending_correction_distance/smoothing_rate_hz/partial_elapsed_secs)",
-        "NetworkCommand::RequestReconcileStats 与 NetworkEvent::ReconcileStats 已接线到 app.rs + headless.rs 两个消费端",
-        "cargo check --all-targets 通过"
-      ],
-      "files": [
-        "clients/bevy_client/src/world/local_player.rs",
-        "clients/bevy_client/src/app.rs",
-        "clients/bevy_client/src/net.rs",
-        "clients/bevy_client/src/stdio.rs",
-        "clients/bevy_client/src/headless.rs"
-      ]
-    },
-    {
-      "id": "US-D",
-      "title": "编译 + headless 烟测",
+      "id": "US-4",
+      "title": "Server NIF switched to movement_core",
       "priority": 4,
       "passes": true,
       "acceptanceCriteria": [
-        "cd clients/bevy_client && cargo check --all-targets 退出码 0",
-        "cd clients/bevy_client && cargo test --lib 退出码 0",
-        "mix compile 在 umbrella 根目录退出码 0",
-        "scripts/ 下存在 headless 烟测脚本（ps1 或 sh），通过 cargo test --lib 覆盖 reconcile / local_render_prediction 关键不变量 (mix demo.run 已在本轮重构前归档)",
-        "烟测脚本断言 reconcile_hard_snaps_* 与 local_render_prediction_* 相关测试全部 ok",
-        "烟测脚本以 exit code 0 结束"
+        "apps/scene_server/native/movement_engine/Cargo.toml 包含 movement_core = { path = \"../movement_core\" }",
+        "movement_engine/src/integrator.rs 不再包含算法内核，只保留 Rustler term ↔ movement_core 类型的适配",
+        "NIF 导出函数签名不变（Elixir 端 NativeMovementEngine.step / replay 调用点无须修改）",
+        "cd apps/scene_server/native/movement_engine && cargo build 退出码 0",
+        "根目录 mix compile 退出码 0",
+        "cd apps/scene_server && mix test --no-start 退出码 0",
+        "apps/scene_server/lib/scene_server/movement/integrator.ex 顶部有 @moduledoc 注释标明「参考实现，非运行时路径」"
       ],
       "files": [
-        "scripts/e2e-stdio-movement.ps1",
-        "scripts/e2e-stdio-movement.sh"
+        "apps/scene_server/native/movement_engine/Cargo.toml",
+        "apps/scene_server/native/movement_engine/src/integrator.rs",
+        "apps/scene_server/native/movement_engine/src/types.rs",
+        "apps/scene_server/native/movement_engine/src/lib.rs",
+        "apps/scene_server/lib/scene_server/movement/integrator.ex"
+      ]
+    },
+    {
+      "id": "US-5",
+      "title": "Remote interpolator aligned with Valve default",
+      "priority": 5,
+      "passes": true,
+      "acceptanceCriteria": [
+        "clients/bevy_client/src/world/remote_player.rs 中 INTERPOLATION_DELAY_SECS == 0.15",
+        "同文件 MAX_REMOTE_EXTRAPOLATION_SECS == 0.25",
+        "两个常量正上方有注释注明出处 (Valve Source Engine Networking / Bernier 2001)",
+        "cargo test --lib world::remote_player 退出码 0 (如有数值断言，需同步更新期望值)"
+      ],
+      "files": [
+        "clients/bevy_client/src/world/remote_player.rs"
+      ]
+    },
+    {
+      "id": "US-6",
+      "title": "Docs + parameter roadmap markers",
+      "priority": 6,
+      "passes": true,
+      "acceptanceCriteria": [
+        "movement_core/src/profile.rs 的 Default 实现对 max_speed/max_accel/max_decel/max_jerk 每个字段有注释，标注 Unreal CMC / Valve / MMO 推荐区间及 C 路线备选值",
+        "docs/2026-04-20-移动同步架构实现.md 追加「P2 统一架构」章节，包含 crate 拓扑图 + MovementMode 状态机说明 + bit-exact 契约清单",
+        ".omc/progress.txt 追加 P2 changelog (提及 movement_core crate、bit-exact golden、remote interp 0.15)"
+      ],
+      "files": [
+        "apps/scene_server/native/movement_core/src/profile.rs",
+        "docs/2026-04-20-移动同步架构实现.md",
+        ".omc/progress.txt"
+      ]
+    },
+    {
+      "id": "US-7",
+      "title": "Golden reconciliation test across Elixir ↔ NIF",
+      "priority": 7,
+      "passes": true,
+      "acceptanceCriteria": [
+        "apps/scene_server/test/scene_server/movement/integrator_golden_test.exs 存在",
+        "测试构造 ≥3 条固定输入序列 (直线 / 刹车 / 转向)",
+        "对每条序列，Integrator.step (Elixir) 与 Native.MovementEngine.step (NIF→movement_core) 的 position/velocity/acceleration 逐 tick 差异 < 1e-9",
+        "cd apps/scene_server && mix test --no-start test/scene_server/movement/integrator_golden_test.exs 退出码 0"
+      ],
+      "files": [
+        "apps/scene_server/test/scene_server/movement/integrator_golden_test.exs"
       ]
     }
   ]

@@ -1,10 +1,17 @@
 defmodule SceneServer.Movement.Integrator do
   @moduledoc """
-  Reference Elixir implementation of the movement integration rules.
+  参考实现，非运行时路径 / Reference-only Elixir movement integrator.
 
-  The hot path now runs in Rustler, but this module remains valuable as readable
-  documentation and as a reference implementation for tests that assert native
-  behavior matches the intended math.
+  The authoritative kinematics live in the shared Rust crate
+  `apps/scene_server/native/movement_core/` and are exposed through the
+  `movement_engine` NIF (`SceneServer.Native.MovementEngine`). This Elixir
+  module is kept for:
+
+    * readable documentation of the integrator contract;
+    * cross-implementation parity tests (`test/.../integrator_golden_test.exs`).
+
+  Nothing in the production hot path should call this module — use
+  `SceneServer.Native.MovementEngine.step/3` / `replay/3` instead.
   """
 
   alias SceneServer.Movement.{InputFrame, Profile, State}
@@ -16,10 +23,10 @@ defmodule SceneServer.Movement.Integrator do
   def step(%State{} = previous, %InputFrame{} = input, %Profile{} = profile) do
     dt = max(input.dt_ms, 1) / 1000.0
     {dir_x, dir_y} = normalize_or_zero(input.input_dir)
+    clamped_scale = clamp_speed_scale(input.speed_scale, profile.max_speed_scale)
 
     desired_velocity =
-      {dir_x * profile.max_speed * input.speed_scale,
-       dir_y * profile.max_speed * input.speed_scale, 0.0}
+      {dir_x * profile.max_speed * clamped_scale, dir_y * profile.max_speed * clamped_scale, 0.0}
 
     velocity_error = sub_vec3(desired_velocity, previous.velocity)
 
@@ -41,6 +48,10 @@ defmodule SceneServer.Movement.Integrator do
       acceleration: acceleration,
       movement_mode: :grounded
     }
+  end
+
+  defp clamp_speed_scale(scale, max_scale) do
+    scale |> max(0.0) |> min(max_scale)
   end
 
   defp accel_limit(current_velocity, desired_velocity, profile, braking?) do

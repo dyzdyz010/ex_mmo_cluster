@@ -34,9 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "movement_core"
+version = "0.1.0"
+
+[[package]]
 name = "movement_engine"
 version = "0.1.0"
 dependencies = [
+ "movement_core",
  "rustler",
 ]
 

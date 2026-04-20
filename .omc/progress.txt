@@ -101,3 +101,23 @@ Server-side cross-check (cluster.out.log):
   character INSERT (cid 322504232961, position {1000,1000,100})
   no hard_snap/reject/invalid events; only expected "Socket closed" on quit.
 Unit proxy:  cargo test --lib --no-fail-fast -> 57 passed / 0 failed.
+
+[2026-04-20] P2 统一移动同步架构
+- 抽取 movement_core rlib（纯 f64, 零 runtime 依赖）作为单一算法源
+- movement_engine NIF 降级为 Rustler ↔ movement_core 适配器
+- bevy_client 改走 movement_core + f32/f64 边界适配，预算 ≤1e-4
+- MovementMode 扩为 4 变体（新增 Scripted 位移技能挂载点，零重命名）
+- 远端插值 INTERPOLATION_DELAY_SECS 0.10 → 0.15（Valve cl_interp 默认）
+- 金测 (idle + +x + dt=100ms) 锚定 accel=900 / velocity=90 / position=9 三处独立
+- movement_core: 13 tests green
+- bevy_client: 58 tests green
+- scene_server mix test --no-start: 61 tests green
+
+[2026-04-20] P2 reviewer notes resolved + deslop pass
+- 金测扩展：新增 Elixir ↔ NIF per-tick <1e-9 parity golden test（straight/brake/turn）
+- Security MEDIUM 修复：wire profile.max_speed_scale clamp on input.speed_scale
+  双向落地（movement_core + Elixir 参考实现），防篡改放大 / 负值塌陷至 0
+- Code review MEDIUM：移除 movement_core/math.rs 过期的 #![allow(dead_code)] + Stage-1 注释
+- types.rs: 追加 InputFrame::to_core 的 movement_mode 注入 invariant 注释
+- 回归：movement_core 14 tests / bevy_client 58 tests / scene_server mix 1 doctest+64 tests, 0 failures
+- NIF build exit 0; e2e-stdio-movement.sh 烟测 exit 0

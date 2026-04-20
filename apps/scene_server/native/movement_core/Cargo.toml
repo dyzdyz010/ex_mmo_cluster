@@ -1,0 +1,12 @@
+[package]
+name = "movement_core"
+version = "0.1.0"
+authors = []
+edition = "2021"
+
+[lib]
+name = "movement_core"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
