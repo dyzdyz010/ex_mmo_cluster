@@ -31,11 +31,60 @@ defmodule SceneServer.Movement.IntegratorGoldenTest do
     end
 
     test "turning sequence holds parity under <1e-9 across 3 heading changes" do
+      inv_sqrt2 = :math.sqrt(2) / 2
       north = build_frames_from(1, 6, {1.0, 0.0}, 100, 1.0, 0)
       east = build_frames_from(7, 12, {0.0, 1.0}, 100, 1.0, 0)
-      diagonal_back = build_frames_from(13, 18, {-0.70710678, -0.70710678}, 100, 1.0, 0)
+      diagonal_back = build_frames_from(13, 18, {-inv_sqrt2, -inv_sqrt2}, 100, 1.0, 0)
 
       assert_golden_parity(State.idle({5.0, -5.0, 0.0}), north ++ east ++ diagonal_back)
+    end
+
+    test "clamp parity holds when speed_scale is tampered to 1e6" do
+      frames = build_frames_from(1, 10, {1.0, 0.0}, 100, 1.0e6, 0)
+      assert_golden_parity(State.idle({0.0, 0.0, 0.0}), frames)
+    end
+
+    test "clamp parity holds when speed_scale is negative" do
+      frames = build_frames_from(1, 10, {1.0, 0.0}, 100, -1.0, 0)
+      assert_golden_parity(State.idle({0.0, 0.0, 0.0}), frames)
+    end
+
+    test "parity survives 8 direction reversals in 16 ticks" do
+      frames =
+        for tick <- 1..16 do
+          dx = if rem(div(tick - 1, 2), 2) == 0, do: 1.0, else: -1.0
+
+          %InputFrame{
+            seq: tick,
+            client_tick: tick,
+            dt_ms: 100,
+            input_dir: {dx, 0.0},
+            speed_scale: 1.0,
+            movement_flags: 0
+          }
+        end
+
+      assert_golden_parity(State.idle({0.0, 0.0, 0.0}), frames)
+    end
+
+    test "parity holds across dt_ms edges (1ms and 1000ms)" do
+      short_frames = build_frames_from(1, 5, {1.0, 0.0}, 1, 1.0, 0)
+      long_frames = build_frames_from(6, 10, {1.0, 0.0}, 1000, 1.0, 0)
+
+      assert_golden_parity(State.idle({0.0, 0.0, 0.0}), short_frames ++ long_frames)
+    end
+
+    test "coast parity: zero input with initial velocity holds parity for 20 ticks" do
+      initial_state = %State{
+        tick: 0,
+        position: {0.0, 0.0, 0.0},
+        velocity: {50.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      frames = build_frames_from(1, 20, {0.0, 0.0}, 100, 1.0, 0)
+      assert_golden_parity(initial_state, frames)
     end
   end
 

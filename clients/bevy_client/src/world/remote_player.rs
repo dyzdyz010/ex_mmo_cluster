@@ -254,4 +254,189 @@ mod tests {
         assert!(sample.position.x >= 0.0);
         assert!(sample.position.x <= 10.0);
     }
+
+    // Valve Source Engine 2001 cl_interp semantics tests.
+    // Reference: Yahn Bernier, "Latency Compensating Methods in Client/Server
+    // In-game Protocol Design and Optimization" (Valve, GDC 2001), Section 2.2.
+
+    #[test]
+    fn cl_interp_reproduces_historical_snapshot_at_delay() {
+        // Four snapshots at server ticks [10, 11, 12, 13] (times 1.0..1.3),
+        // each received at the server time matching their tick (zero network lag).
+        let mut state = RemotePlayerState::from_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 10,
+                position: Vec3::new(0.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.0,
+        );
+        let tick12_position = Vec3::new(20.0, 0.0, 0.0);
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 11,
+                position: Vec3::new(10.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.1,
+        );
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 12,
+                position: tick12_position,
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.2,
+        );
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 13,
+                position: Vec3::new(30.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.3,
+        );
+
+        // now_secs = 1.35:
+        //   estimated_server_time = 1.3 + clamp(1.35 - 1.3, 0, 0.25) = 1.35
+        //   playback_server_time  = 1.35 - 0.15 = 1.20  (exactly tick 12)
+        //   pair [12, 13], t = (1.20 - 1.20) / 0.1 = 0.0
+        //   hermite at t=0 returns p0 = tick12_position exactly.
+        let sample = state.sample_motion(1.35);
+        let diff = (sample.position - tick12_position).length();
+        assert!(
+            diff < 1e-4,
+            "expected tick-12 position {tick12_position:?}, got {:?} (diff {diff})",
+            sample.position
+        );
+    }
+
+    #[test]
+    fn single_snapshot_drop_within_extrapolation_cap() {
+        // Snapshots at ticks [10, 11, 13] — tick 12 is dropped.
+        // Received times match server times (zero lag).
+        let mut state = RemotePlayerState::from_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 10,
+                position: Vec3::new(0.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.0,
+        );
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 11,
+                position: Vec3::new(10.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.1,
+        );
+        // Tick 12 intentionally missing.
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 13,
+                position: Vec3::new(30.0, 0.0, 0.0),
+                velocity: Vec3::new(1.0, 0.0, 0.0),
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.3,
+        );
+
+        // now_secs = 1.35:
+        //   estimated_server_time = 1.3 + clamp(0.05, 0, 0.25) = 1.35
+        //   playback_server_time  = 1.35 - 0.15 = 1.20
+        //   pair_for_playback_time checks [10,11] (1.20 not in [1.0,1.1])
+        //   then [11,13] (1.20 in [1.1, 1.3]) — match, Hermite interpolates.
+        let sample = state.sample_motion(1.35);
+
+        // The Hermite playback lives inside the [11,13] pair (playback time 1.20
+        // between endpoints 1.10 and 1.30). t = (1.20-1.10)/(1.30-1.10) = 0.5, so
+        // a straight Hermite interpolate with constant velocity 1 u/s lands
+        // exactly on the segment midpoint (x=20.0). We tighten the lower bound
+        // to 10.0 (the left endpoint tick-11 position) to assert that playback
+        // did not fall back to the oldest snapshot or reset to origin — loose
+        // [0, 30] would have masked both regressions.
+        assert!(
+            sample.position.x >= 10.0,
+            "position.x {} below left endpoint 10.0 — playback may have \
+             regressed to an older snapshot",
+            sample.position.x
+        );
+        assert!(
+            sample.position.x <= 30.0,
+            "position.x {} above right endpoint 30.0 — playback may have \
+             extrapolated past the newest snapshot",
+            sample.position.x
+        );
+    }
+
+    #[test]
+    fn large_gap_falls_back_to_capped_extrapolation() {
+        // Only ticks [10, 11] buffered; client clock is far ahead (now=10.0)
+        // so now - received_at >> MAX_REMOTE_EXTRAPOLATION_SECS.
+        let tick11_position = Vec3::new(10.0, 5.0, 0.0);
+        let tick11_velocity = Vec3::new(2.0, 0.0, 0.0);
+        let mut state = RemotePlayerState::from_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 10,
+                position: Vec3::new(0.0, 0.0, 0.0),
+                velocity: tick11_velocity,
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.0,
+        );
+        state.push_snapshot(
+            RemoteMoveSnapshot {
+                cid: 42,
+                server_tick: 11,
+                position: tick11_position,
+                velocity: tick11_velocity,
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            },
+            1.1,
+        );
+
+        // now_secs = 10.0, received_at of latest = 1.1 -> gap = 8.9s >> 0.25s cap.
+        // Multi-snapshot path:
+        //   latest_server_time    = 1.1  (tick 11 * 0.1)
+        //   estimated_server_time = 1.1 + clamp(8.9, 0, 0.25) = 1.35
+        //   playback_server_time  = 1.35 - 0.15 = 1.20
+        //   pair [10,11]: 1.20 not in [1.0, 1.1] -- no pair
+        //   oldest (tick10=1.0): playback 1.20 > 1.0 -- not clamped to oldest
+        //   falls through to extrapolate_single(latest=tick11, now=10.0)
+        //   dt = clamp(10.0 - 1.1, 0, 0.25) = 0.25
+        //   expected = tick11_position + tick11_velocity * 0.25 + 0 * (0.5 * 0.0625)
+        let dt = MAX_REMOTE_EXTRAPOLATION_SECS as f32;
+        let expected_position = tick11_position + tick11_velocity * dt;
+        let sample = state.sample_motion(10.0);
+        let diff = (sample.position - expected_position).length();
+        assert!(
+            diff < 1e-4,
+            "expected capped-extrapolation position {expected_position:?}, got {:?} (diff {diff})",
+            sample.position
+        );
+    }
 }

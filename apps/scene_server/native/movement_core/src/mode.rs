@@ -51,4 +51,25 @@ mod tests {
             MovementMode::Disabled
         );
     }
+
+    /// Extends `transition_preserves_previous_mode_this_round` with a multi-tick
+    /// run: 20 consecutive idle ticks starting from Grounded must all return
+    /// Grounded, confirming that the identity transition holds across a full
+    /// server-frame window and not just a single call.
+    ///
+    /// UE5 analogue: `SetMovementMode` is the explicit trigger for mode changes;
+    /// in the absence of such a call the mode is unconditionally preserved.
+    #[test]
+    fn transition_preserves_mode_across_ticks() {
+        let mut mode = MovementMode::Grounded;
+        for tick in 1u32..=20 {
+            let input = InputFrame::idle(tick, tick);
+            mode = MovementMode::transition(mode, &input);
+            assert_eq!(
+                mode,
+                MovementMode::Grounded,
+                "tick {tick}: mode drifted away from Grounded without an explicit transition"
+            );
+        }
+    }
 }

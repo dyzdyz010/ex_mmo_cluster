@@ -201,6 +201,364 @@ mod tests {
     };
     use bevy::prelude::{Vec2, Vec3};
 
+    /// Builds a standard MoveInputFrame with +x direction and 100 ms dt.
+    fn make_input(seq: u32) -> MoveInputFrame {
+        MoveInputFrame {
+            seq,
+            client_tick: seq,
+            dt_ms: 100,
+            input_dir: Vec2::new(1.0, 0.0),
+            speed_scale: 1.0,
+            movement_flags: 0,
+        }
+    }
+
+    /// Builds a perfectly-matching MovementAck for a given PredictedMoveState.
+    fn ack_for_state(state: &PredictedMoveState) -> MovementAck {
+        MovementAck {
+            ack_seq: state.seq,
+            auth_tick: state.tick,
+            position: state.position,
+            velocity: state.velocity,
+            acceleration: state.acceleration,
+            movement_mode: state.movement_mode,
+            correction_flags: 0,
+        }
+    }
+
+    /// Seed predicted history with states at the given seqs, each moving +x by
+    /// `step_x` units per entry.  Returns the vec of inserted states so callers
+    /// can derive authoritative payloads from them.
+    fn seed_history(
+        predicted_history: &mut PredictedHistory,
+        seqs: &[u32],
+        step_x: f32,
+    ) -> Vec<PredictedMoveState> {
+        let mut states = Vec::new();
+        for (i, &seq) in seqs.iter().enumerate() {
+            let state = PredictedMoveState {
+                seq,
+                tick: seq,
+                position: Vec3::new((i as f32 + 1.0) * step_x, 0.0, 0.0),
+                velocity: Vec3::ZERO,
+                acceleration: Vec3::ZERO,
+                movement_mode: MovementMode::Grounded,
+            };
+            predicted_history.push(state.clone());
+            states.push(state);
+        }
+        states
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1: stale ack (seq < smallest retained seq) must not regress the
+    // rendered anchor tick below the current latest.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn stale_ack_older_than_latest_is_ignored() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(32);
+        let mut predicted_history = PredictedHistory::new(32);
+
+        // Seed states at seqs [10, 11, 12, 13]; the stale ack refers to seq 8
+        // which was never in history (already acked/truncated away).
+        let seqs = [10u32, 11, 12, 13];
+        let states = seed_history(&mut predicted_history, &seqs, 10.0);
+
+        // The latest predicted state is at seq=13 / tick=13.
+        let latest_before = predicted_history.latest().unwrap().clone();
+        assert_eq!(latest_before.seq, 13);
+
+        // ack_seq=8 is stale — not in history.  Position chosen so that the
+        // distance to the current latest (seq=13, x=40) is within the default
+        // soft_position_error (2.0) — we want Accepted, not a HardSnap.
+        // We deliberately put the auth position close to the latest prediction.
+        let ack = MovementAck {
+            ack_seq: 8,
+            auth_tick: 8,
+            position: states.last().unwrap().position, // same x as seq=13
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: MovementMode::Grounded,
+            correction_flags: 0,
+        };
+
+        let governance = ReplayGovernance::default();
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("reconcile must return Some");
+
+        // Must not hard-snap or rewind below tick 13.
+        assert_ne!(
+            result.action,
+            ReplayAction::HardSnap,
+            "stale ack must not hard-snap"
+        );
+        assert!(
+            result.latest_state.tick >= latest_before.tick,
+            "rendered anchor tick must not regress: got {}, had {}",
+            result.latest_state.tick,
+            latest_before.tick
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: two consecutive Accepted reconciles for the identical ack must
+    // leave history and pending-input count unchanged on the second call.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn duplicate_ack_same_seq_is_idempotent() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(32);
+        let mut predicted_history = PredictedHistory::new(32);
+
+        // Build two steps: predict seq 1 → seq 2.
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+
+        let f1 = make_input(1);
+        let f2 = make_input(2);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+
+        input_history.push(f2.clone());
+        let s2 = predictor::step(&s1, &f2, &profile);
+        predicted_history.push(s2.clone());
+
+        // Ack for seq=1 that perfectly matches the prediction → Accepted.
+        let ack = ack_for_state(&s1);
+
+        let governance = ReplayGovernance::default();
+
+        let result1 = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("first reconcile");
+        assert_eq!(result1.action, ReplayAction::Accepted);
+
+        let pending_after_first = result1.pending_inputs;
+        let latest_after_first = result1.latest_state.clone();
+
+        // Second call with the identical ack.
+        let result2 = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("second reconcile");
+
+        assert_eq!(result2.action, ReplayAction::Accepted);
+        // Pending input count must not grow or shrink.
+        assert_eq!(
+            result2.pending_inputs, pending_after_first,
+            "pending inputs must be stable after duplicate ack"
+        );
+        // Latest state must not drift: position should be identical.
+        assert!(
+            result2.latest_state.position.distance(latest_after_first.position) < 1e-4,
+            "latest_state drifted after duplicate ack: {:?} vs {:?}",
+            result2.latest_state.position,
+            latest_after_first.position
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: an older ack arriving after a newer one must not rewind history.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn out_of_order_ack_seq_does_not_rewind_history() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(32);
+        let mut predicted_history = PredictedHistory::new(32);
+
+        // Build a chain of 13 steps (seqs 1..=13).
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+        let mut prev = origin.clone();
+        let mut states: Vec<PredictedMoveState> = vec![origin.clone()];
+        for seq in 1u32..=13 {
+            let f = make_input(seq);
+            input_history.push(f.clone());
+            let s = predictor::step(&prev, &f, &profile);
+            predicted_history.push(s.clone());
+            states.push(s.clone());
+            prev = s;
+        }
+
+        let governance = ReplayGovernance::default();
+
+        // First: process ack_seq=12 — perfect match, Accepted.
+        let ack12 = ack_for_state(&states[12]); // states[12] is seq=12
+        let result12 = reconcile(
+            &ack12,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("reconcile seq=12");
+        assert_eq!(result12.action, ReplayAction::Accepted);
+        let latest_after_12 = predicted_history.latest().unwrap().clone();
+
+        // Second: out-of-order ack_seq=10 that perfectly matches the retained
+        // historical entry.  Since we only Accepted seq=12 (no truncation), the
+        // seq=10 entry should still be in history.
+        let ack10 = ack_for_state(&states[10]); // states[10] is seq=10
+        let result10 = reconcile(
+            &ack10,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("reconcile seq=10");
+
+        // (a) Must not hard-snap.
+        assert_ne!(
+            result10.action,
+            ReplayAction::HardSnap,
+            "out-of-order ack must not hard-snap"
+        );
+
+        // (b) History latest must not have regressed below what seq=12 left us.
+        let latest_after_10 = predicted_history.latest().unwrap().clone();
+        assert!(
+            latest_after_10.tick >= latest_after_12.tick,
+            "history tip regressed after out-of-order ack: tick {} < {}",
+            latest_after_10.tick,
+            latest_after_12.tick
+        );
+
+        // (c) Entries for seq 11 and 12 must BOTH still be reachable — a
+        //     stale out-of-order ack must never truncate newer entries.
+        //     Checking with OR previously masked the case where one of them
+        //     was wiped; split into two hard assertions.
+        assert!(
+            predicted_history.state_at_seq(11).is_some(),
+            "seq=11 entry was wiped by the out-of-order ack"
+        );
+        assert!(
+            predicted_history.state_at_seq(12).is_some(),
+            "seq=12 entry was wiped by the out-of-order ack"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: a full replay after an authoritative correction must reproduce
+    // the same kinematic delta as a continuous integration.
+    //
+    // Precision note: the client-side predictor runs on Bevy's `Vec3` (f32),
+    // so 16-tick accumulations diverge from a theoretical f64 reference by
+    // up to ~1e-5 per coordinate. The `< 1e-4` tolerance at the bottom of
+    // this test reflects f32 roundoff — it is NOT a loosening of a
+    // bit-exact invariant. The authoritative NIF path (f64) is verified
+    // separately in `integrator_golden_test.exs` under `@eps 1.0e-9`.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn full_replay_matches_continuous_integration() {
+        let profile = MovementProfile::default();
+
+        // Build 16 inputs at dt=100ms, +x direction, speed_scale=1.
+        let inputs: Vec<MoveInputFrame> = (1u32..=16).map(make_input).collect();
+
+        // --- Reference path: integrate all 16 ticks from the origin. ---
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        let mut reference_states: Vec<PredictedMoveState> = vec![origin.clone()];
+        let mut prev = origin.clone();
+        for input in &inputs {
+            let s = predictor::step(&prev, input, &profile);
+            reference_states.push(s.clone());
+            prev = s;
+        }
+        // reference_states[k] is the state AFTER tick k (seqs 1..16).
+        let reference_final = reference_states[16].position;    // after all 16
+        let reference_at_4 = reference_states[4].position;     // after tick 4
+
+        // --- Simulation path ---
+        // Client predicted 4 ticks cleanly, then a server ack for tick=4
+        // arrives with a position shifted by 5 units on X vs the prediction.
+        let auth_anchor_position =
+            reference_states[4].position + Vec3::new(5.0, 0.0, 0.0);
+
+        let auth_anchor = PredictedMoveState {
+            seq: 4,
+            tick: 4,
+            position: auth_anchor_position,
+            velocity: reference_states[4].velocity,
+            acceleration: reference_states[4].acceleration,
+            movement_mode: MovementMode::Grounded,
+        };
+
+        // Build histories as a client would after 16 ticks (all inputs sent,
+        // all predicted states recorded).
+        let mut input_history = InputHistory::new(32);
+        let mut predicted_history = PredictedHistory::new(32);
+        predicted_history.push(origin.clone());
+        for (i, input) in inputs.iter().enumerate() {
+            input_history.push(input.clone());
+            predicted_history.push(reference_states[i + 1].clone());
+        }
+
+        // Craft the ack: ack_seq=4, position differs from prediction by 5 units.
+        let ack = MovementAck {
+            ack_seq: 4,
+            auth_tick: 4,
+            position: auth_anchor_position,
+            velocity: auth_anchor.velocity,
+            acceleration: auth_anchor.acceleration,
+            movement_mode: MovementMode::Grounded,
+            correction_flags: 0,
+        };
+
+        let governance = ReplayGovernance::default();
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &governance,
+        )
+        .expect("reconcile result");
+
+        // Expect a replay (correction distance = 5, within soft but above 0,
+        // below hard_snap of 256 — but 5 > soft_position_error of 2, so Replayed).
+        assert!(
+            matches!(
+                result.action,
+                ReplayAction::Replayed | ReplayAction::WindowTrimmed
+            ),
+            "expected replay action, got {:?}",
+            result.action
+        );
+
+        // The replayed final position should equal:
+        //   authoritative_anchor + (reference_final - reference_at_4)
+        // i.e. same kinematic delta as the continuous integration.
+        let expected_delta = reference_final - reference_at_4;
+        let expected_final = auth_anchor_position + expected_delta;
+        let actual_final = result.latest_state.position;
+
+        assert!(
+            (actual_final - expected_final).length() < 1e-4,
+            "replayed position {:?} differs from expected {:?} by {:?} (> 1e-4)",
+            actual_final,
+            expected_final,
+            (actual_final - expected_final).length()
+        );
+    }
+
     #[test]
     fn reconcile_replays_future_inputs_when_authoritative_state_diverges() {
         let profile = MovementProfile::default();
