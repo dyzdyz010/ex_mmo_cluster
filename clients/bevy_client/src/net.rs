@@ -63,6 +63,7 @@ pub enum NetworkCommand {
         target_cid: Option<i64>,
         target_position: Option<NetVec3>,
     },
+    RequestReconcileStats,
     Shutdown,
 }
 
@@ -143,6 +144,15 @@ pub enum NetworkEvent {
         movement_transport: MessageTransport,
         fast_lane_status: String,
         udp_endpoint: Option<String>,
+    },
+    ReconcileStats {
+        total_corrections: u32,
+        total_replays: u32,
+        total_hard_snaps: u32,
+        total_window_trims: u32,
+        last_replayed_frames: usize,
+        last_pending_inputs: usize,
+        last_correction_distance: f32,
     },
     Log(String),
     Disconnected(String),
@@ -486,6 +496,18 @@ impl ClientRuntime {
                     target_cid: cid,
                     target_position: position,
                 }));
+            }
+            NetworkCommand::RequestReconcileStats => {
+                let stats = self.local_prediction.governance_stats().clone();
+                outcome.push_event(NetworkEvent::ReconcileStats {
+                    total_corrections: stats.total_corrections,
+                    total_replays: stats.total_replays,
+                    total_hard_snaps: stats.total_hard_snaps,
+                    total_window_trims: stats.total_window_trims,
+                    last_replayed_frames: stats.last_replayed_frames,
+                    last_pending_inputs: stats.last_pending_inputs,
+                    last_correction_distance: stats.last_correction_distance,
+                });
             }
             _ => {}
         }
@@ -1657,6 +1679,32 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                     (
                         "udp_endpoint",
                         udp_endpoint.clone().unwrap_or_else(|| "n/a".to_string()),
+                    ),
+                ],
+            );
+        }
+        NetworkEvent::ReconcileStats {
+            total_corrections,
+            total_replays,
+            total_hard_snaps,
+            total_window_trims,
+            last_replayed_frames,
+            last_pending_inputs,
+            last_correction_distance,
+        } => {
+            observer.emit(
+                "network",
+                "reconcile_stats",
+                &[
+                    ("total_corrections", total_corrections.to_string()),
+                    ("total_replays", total_replays.to_string()),
+                    ("total_hard_snaps", total_hard_snaps.to_string()),
+                    ("total_window_trims", total_window_trims.to_string()),
+                    ("last_replayed_frames", last_replayed_frames.to_string()),
+                    ("last_pending_inputs", last_pending_inputs.to_string()),
+                    (
+                        "last_correction_distance",
+                        format!("{last_correction_distance:.3}"),
                     ),
                 ],
             );

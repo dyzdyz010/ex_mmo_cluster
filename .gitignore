@@ -47,6 +47,7 @@ erl_crash.dump
 # Claude Code local settings
 /.claude/
 /Mnesia.nonode@nohost/
+/Mnesia.*/
 /apps/beacon_server/MnesiaCore.nonode@nohost_*
 
 clients/bevy_client/target/

@@ -110,10 +110,16 @@ struct InputTraceState {
 }
 
 #[derive(Resource)]
+/// Visual layer for the local predicted player. Anchor mirrors the latest
+/// authoritative/predicted sim position; `pending_correction` captures any
+/// visual offset introduced by authority corrections and decays to zero via
+/// Unreal-style exponential smoothing so the player never sees a teleport.
 struct LocalRenderPrediction {
     anchor_state: Option<PredictedMoveState>,
     render_state: Option<PredictedMoveState>,
     partial_elapsed_secs: f32,
+    pending_correction: Vec3,
+    smoothing_rate_hz: f32,
     profile: MovementProfile,
 }
 
@@ -123,6 +129,8 @@ impl Default for LocalRenderPrediction {
             anchor_state: None,
             render_state: None,
             partial_elapsed_secs: 0.0,
+            pending_correction: Vec3::ZERO,
+            smoothing_rate_hz: DEFAULT_VISUAL_SMOOTHING_RATE_HZ,
             profile: MovementProfile::default(),
         }
     }
@@ -134,10 +142,17 @@ impl LocalRenderPrediction {
         self.anchor_state = Some(state.clone());
         self.render_state = Some(state);
         self.partial_elapsed_secs = 0.0;
+        self.pending_correction = Vec3::ZERO;
     }
 
+    /// Receives the next authoritative/predicted anchor sample. The old render
+    /// position is preserved by folding the resulting delta into
+    /// `pending_correction`, which decays toward zero each frame so corrections
+    /// blend in rather than teleport. Large jumps hard-snap to prevent visible
+    /// rubberbanding from accumulating.
     fn sync_full_state(&mut self, position: Vec3, velocity: Vec3, acceleration: Vec3) {
-        let state = PredictedMoveState {
+        let new_anchor = PredictedMoveState {
+            seq: 0,
             tick: 0,
             position,
             velocity,
@@ -145,20 +160,50 @@ impl LocalRenderPrediction {
             movement_mode: MovementMode::Grounded,
         };
 
-        self.anchor_state = Some(state.clone());
-        self.render_state = Some(state);
+        let old_rendered_pos = self
+            .render_state
+            .as_ref()
+            .map(|state| state.position)
+            .or_else(|| self.anchor_state.as_ref().map(|state| state.position));
+        let delta = match old_rendered_pos {
+            Some(old_rendered) => old_rendered - position,
+            None => Vec3::ZERO,
+        };
+
+        self.pending_correction = if delta.length() > VISUAL_HARD_SNAP_DISTANCE {
+            Vec3::ZERO
+        } else {
+            delta
+        };
+
+        self.anchor_state = Some(new_anchor.clone());
         self.partial_elapsed_secs = 0.0;
+
+        let render_pos = new_anchor.position + self.pending_correction;
+        self.render_state = Some(PredictedMoveState {
+            position: render_pos,
+            ..new_anchor
+        });
     }
 
     fn clear(&mut self) {
         self.anchor_state = None;
         self.render_state = None;
         self.partial_elapsed_secs = 0.0;
+        self.pending_correction = Vec3::ZERO;
+    }
+
+    /// Returns the current outstanding visual correction magnitude in world units.
+    fn pending_correction_distance(&self) -> f32 {
+        self.pending_correction.length()
     }
 }
 
 const VISUAL_SMOOTHING_SPEED: f32 = 18.0;
 const VISUAL_SNAP_DISTANCE: f32 = 96.0;
+const VISUAL_HARD_SNAP_DISTANCE: f32 = 256.0;
+const DEFAULT_VISUAL_SMOOTHING_RATE_HZ: f32 = 15.0;
+const VISUAL_CORRECTION_EPSILON_SQ: f32 = 0.01;
 const FINAL_STOP_SYNC_SPEED_EPSILON: f32 = 1.0;
 
 impl Default for MovementDispatchState {
@@ -610,6 +655,33 @@ fn poll_network_events(
                 world_state.fast_lane_status = fast_lane_status;
                 world_state.udp_endpoint = udp_endpoint;
             }
+            NetworkEvent::ReconcileStats {
+                total_corrections,
+                total_replays,
+                total_hard_snaps,
+                total_window_trims,
+                last_replayed_frames,
+                last_pending_inputs,
+                last_correction_distance,
+            } => {
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "reconcile_stats",
+                        &[
+                            ("total_corrections", total_corrections.to_string()),
+                            ("total_replays", total_replays.to_string()),
+                            ("total_hard_snaps", total_hard_snaps.to_string()),
+                            ("total_window_trims", total_window_trims.to_string()),
+                            ("last_replayed_frames", last_replayed_frames.to_string()),
+                            ("last_pending_inputs", last_pending_inputs.to_string()),
+                            (
+                                "last_correction_distance",
+                                format!("{:.3}", last_correction_distance),
+                            ),
+                        ],
+                    );
+                }
+            }
             NetworkEvent::Log(line) => {
                 if stdio.is_enabled() {
                     emit_stdio("log", &[("line", line.clone())]);
@@ -980,6 +1052,7 @@ fn poll_stdio_commands(
     time: Res<Time>,
     stdio: Res<ClientStdioInterface>,
     bridge: Res<NetworkBridge>,
+    local_render_prediction: Res<LocalRenderPrediction>,
     mut world_state: ResMut<WorldState>,
     mut movement_intent: ResMut<MovementIntent>,
     mut app_exit: MessageWriter<AppExit>,
@@ -1183,6 +1256,75 @@ fn poll_stdio_commands(
                 movement_intent.direction = Vec2::ZERO;
                 movement_intent.expires_at = 0.0;
                 emit_stdio("stop", &[]);
+            }
+            ClientStdioCommand::ReconcileStats => {
+                bridge.send(NetworkCommand::RequestReconcileStats);
+                emit_stdio("reconcile_stats_requested", &[]);
+            }
+            ClientStdioCommand::DiagRender => {
+                let anchor_position = local_render_prediction
+                    .anchor_state
+                    .as_ref()
+                    .map(|state| state.position);
+                let render_position = local_render_prediction
+                    .render_state
+                    .as_ref()
+                    .map(|state| state.position);
+                emit_stdio(
+                    "diag_render",
+                    &[
+                        (
+                            "anchor",
+                            anchor_position
+                                .map(|value| {
+                                    format!("{:.2},{:.2},{:.2}", value.x, value.y, value.z)
+                                })
+                                .unwrap_or_else(|| "n/a".to_string()),
+                        ),
+                        (
+                            "render",
+                            render_position
+                                .map(|value| {
+                                    format!("{:.2},{:.2},{:.2}", value.x, value.y, value.z)
+                                })
+                                .unwrap_or_else(|| "n/a".to_string()),
+                        ),
+                        (
+                            "pending_correction",
+                            format!(
+                                "{:.3},{:.3},{:.3}",
+                                local_render_prediction.pending_correction.x,
+                                local_render_prediction.pending_correction.y,
+                                local_render_prediction.pending_correction.z
+                            ),
+                        ),
+                        (
+                            "pending_correction_distance",
+                            format!(
+                                "{:.3}",
+                                local_render_prediction.pending_correction_distance()
+                            ),
+                        ),
+                        (
+                            "drift",
+                            format!(
+                                "{:.3}",
+                                local_render_prediction.pending_correction_distance()
+                            ),
+                        ),
+                        (
+                            "smoothing_rate_hz",
+                            format!("{:.1}", local_render_prediction.smoothing_rate_hz),
+                        ),
+                        (
+                            "partial_elapsed_secs",
+                            format!(
+                                "{:.4}",
+                                local_render_prediction.partial_elapsed_secs
+                            ),
+                        ),
+                    ],
+                );
             }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
@@ -1633,9 +1775,19 @@ fn advance_local_render_prediction(
         return;
     };
 
+    let dt_secs = time.delta_secs();
+
+    // Unreal-style exponential decay: `x(t) = x0 * exp(-rate * t)` drives the
+    // outstanding visual correction toward zero without ever teleporting.
+    let decay = (-local_render_prediction.smoothing_rate_hz * dt_secs).exp();
+    local_render_prediction.pending_correction *= decay;
+    if local_render_prediction.pending_correction.length_squared() < VISUAL_CORRECTION_EPSILON_SQ {
+        local_render_prediction.pending_correction = Vec3::ZERO;
+    }
+
     local_render_prediction.partial_elapsed_secs = (local_render_prediction.partial_elapsed_secs
-        + time.delta_secs())
-    .clamp(0.0, config.movement_interval_ms as f32 / 1_000.0);
+        + dt_secs)
+        .clamp(0.0, config.movement_interval_ms as f32 / 1_000.0);
 
     let direction = movement_intent.direction;
     let movement_flags = if direction.length_squared() == 0.0 {
@@ -1644,24 +1796,28 @@ fn advance_local_render_prediction(
         0
     };
 
-    if local_render_prediction.partial_elapsed_secs <= f32::EPSILON {
-        local_render_prediction.render_state = Some(anchor);
-        return;
-    }
-
-    let partial_frame = MoveInputFrame {
-        seq: 0,
-        client_tick: anchor.tick,
-        dt_ms: (local_render_prediction.partial_elapsed_secs * 1_000.0)
-            .round()
-            .clamp(1.0, config.movement_interval_ms as f32) as u16,
-        input_dir: Vec2::new(direction.x, direction.y),
-        speed_scale: 1.0,
-        movement_flags,
+    let partial_elapsed = local_render_prediction.partial_elapsed_secs;
+    let stepped_anchor = if partial_elapsed <= f32::EPSILON {
+        anchor.clone()
+    } else {
+        let partial_frame = MoveInputFrame {
+            seq: 0,
+            client_tick: anchor.tick,
+            dt_ms: (partial_elapsed * 1_000.0)
+                .round()
+                .clamp(1.0, config.movement_interval_ms as f32) as u16,
+            input_dir: Vec2::new(direction.x, direction.y),
+            speed_scale: 1.0,
+            movement_flags,
+        };
+        predictor::step(&anchor, &partial_frame, &local_render_prediction.profile)
     };
 
-    local_render_prediction.render_state =
-        Some(predictor::step(&anchor, &partial_frame, &local_render_prediction.profile));
+    let render_pos = stepped_anchor.position + local_render_prediction.pending_correction;
+    local_render_prediction.render_state = Some(PredictedMoveState {
+        position: render_pos,
+        ..stepped_anchor
+    });
 }
 
 fn should_send_stop_sync(direction: Vec2, local_velocity: Vec3, stop_sent: bool) -> bool {
@@ -1735,5 +1891,56 @@ mod tests {
         assert!(top_world.y > camera.y);
         assert_eq!(bottom_world.x, camera.x);
         assert_eq!(top_world.x, camera.x);
+    }
+
+    #[test]
+    fn local_render_prediction_accumulates_correction_without_teleport() {
+        let mut render = LocalRenderPrediction::default();
+        render.reset(Vec3::new(0.0, 0.0, 0.0));
+
+        // Simulate the anchor drifting forward by 8 units (predicted input).
+        render.sync_full_state(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        let render_at_first_sync = render.render_state.as_ref().unwrap().position;
+        assert!((render_at_first_sync.x - 0.0).abs() < 0.01);
+
+        // Authoritative correction pulls anchor back to 4 — render must stay
+        // near the visible 8 so the player does not see a teleport.
+        render.sync_full_state(Vec3::new(4.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        let render_after_correction = render.render_state.as_ref().unwrap().position;
+        assert!((render_after_correction.x - render_at_first_sync.x).abs() < 0.01);
+        assert!(render.pending_correction_distance() > 3.0);
+    }
+
+    #[test]
+    fn local_render_prediction_hard_snaps_on_huge_drift() {
+        let mut render = LocalRenderPrediction::default();
+        render.reset(Vec3::new(0.0, 0.0, 0.0));
+
+        // First settle at a position far from the next sync to build a visible
+        // history.
+        render.sync_full_state(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+
+        // A 400-unit authoritative jump exceeds VISUAL_HARD_SNAP_DISTANCE and
+        // must zero the pending correction — the render faithfully jumps.
+        render.sync_full_state(Vec3::new(-390.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        assert_eq!(render.pending_correction, Vec3::ZERO);
+        let rendered = render.render_state.as_ref().unwrap().position;
+        assert!((rendered.x - (-390.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn local_render_prediction_reset_clears_correction() {
+        let mut render = LocalRenderPrediction::default();
+        render.reset(Vec3::new(0.0, 0.0, 0.0));
+        render.sync_full_state(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(Vec3::new(4.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        assert!(render.pending_correction_distance() > 0.0);
+
+        render.reset(Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(render.pending_correction, Vec3::ZERO);
+        assert_eq!(
+            render.render_state.as_ref().unwrap().position,
+            Vec3::new(100.0, 0.0, 0.0)
+        );
     }
 }

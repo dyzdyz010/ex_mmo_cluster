@@ -129,6 +129,7 @@ impl LocalPredictionRuntime {
         }
 
         let authoritative = PredictedMoveState {
+            seq: ack.ack_seq,
             tick: ack.auth_tick,
             position: ack.position,
             velocity: ack.velocity,
@@ -159,10 +160,16 @@ impl LocalPredictionRuntime {
     }
 
     fn extend_prediction_through(&mut self, auth_tick: u32) {
-        let Some(mut frame) = self.last_input_frame.clone() else {
+        if self.current_state.is_none() {
             return;
-        };
+        }
 
+        // When the server's auth_tick jumps past our last predicted tick it
+        // means the server advanced internal idle frames without a matching
+        // client input. Replaying the last issued direction here would push
+        // the predicted position further from authority on every ack, so we
+        // synthesise idle (zero-input, braking) frames instead. The server
+        // does the same on its side for latched idle ticks.
         while self
             .current_state
             .as_ref()
@@ -173,9 +180,16 @@ impl LocalPredictionRuntime {
                 None => return,
             };
 
-            frame.client_tick = current.tick + 1;
+            let idle_frame = MoveInputFrame {
+                seq: 0,
+                client_tick: current.tick + 1,
+                dt_ms: self.profile.fixed_dt_ms as u16,
+                input_dir: Vec2::ZERO,
+                speed_scale: 1.0,
+                movement_flags: crate::input::commands::MOVEMENT_FLAG_BRAKE,
+            };
 
-            let next = predictor::step(&current, &frame, &self.profile);
+            let next = predictor::step(&current, &idle_frame, &self.profile);
             self.predicted_history.push(next.clone());
             self.current_state = Some(next);
         }

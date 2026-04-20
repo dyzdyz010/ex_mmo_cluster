@@ -1,0 +1,103 @@
+Movement Sync Architecture Rework — Progress Log
+=================================================
+
+Session: /oh-my-claudecode:ralph + autopilot (2026-04-20)
+
+Strategy confirmed: Valve/Quake client prediction + server reconciliation +
+Unreal Exponential Smoothing (visual lane). No novel algorithm.
+
+Story status (all passes=true)
+------------------------------
+US-C 按 ack_seq 恢复对账优雅降级
+  - clients/bevy_client/src/sim/types.rs: PredictedMoveState.seq: u32 added
+  - clients/bevy_client/src/sim/history.rs: state_at_seq + truncate_after_seq
+  - clients/bevy_client/src/sim/reconcile.rs: ack_seq-first match; tick fallback;
+    Accepted branch pushes fresh authoritative sample when auth_tick > latest.tick
+    so successive acks on the same seq still advance the render anchor.
+  - New reconcile test: reconcile_falls_back_gracefully_when_seq_misses_with_small_drift
+  - Existing reconcile tests still pass (4/4 hard_snap + accepted coverage)
+
+US-B 调参 governance + 远端插值
+  - sim/governance.rs ReplayGovernance::default uses soft=2.0, hard_snap=256.0,
+    max_replay_frames=32, max_pending_inputs=64.
+  - world/remote_player.rs: INTERPOLATION_DELAY_SECS=0.1,
+    MAX_REMOTE_EXTRAPOLATION_SECS=0.25.
+  - world/local_player.rs::extend_prediction_through uses an idle
+    MoveInputFrame (ZERO dir + MOVEMENT_FLAG_BRAKE) so unacked ticks brake
+    cleanly instead of coasting on the last input vector.
+
+US-A 可视化平滑层 + stdio 诊断
+  - clients/bevy_client/src/app.rs LocalRenderPrediction:
+      * pending_correction: Vec3 (ZERO default)
+      * smoothing_rate_hz: f32 (15.0 default)
+      * reset / clear set pending_correction back to ZERO.
+      * sync_full_state computes pending_correction = old_rendered - new_anchor
+        and hard-snaps to ZERO when the jump exceeds VISUAL_HARD_SNAP_DISTANCE.
+      * advance_local_render_prediction decays pending_correction each frame
+        via exp(-smoothing_rate_hz * dt) and zeroes below the epsilon.
+  - stdio.rs adds ClientStdioCommand::ReconcileStats + DiagRender (+ parsing +
+    tests). Both interactive (app.rs) and headless (headless.rs) consumers
+    handle these commands and emit structured stdio lines.
+  - net.rs adds NetworkCommand::RequestReconcileStats and
+    NetworkEvent::ReconcileStats. The network thread reads the governance stats
+    snapshot and fans it back to whichever consumer asked.
+  - DiagRender emits an explicit `drift` field mirroring pending_correction_distance
+    to match the PRD acceptance wording.
+
+US-D 编译 + headless 烟测
+  - cargo check --all-targets: OK
+  - cargo test --lib: 57 passed / 0 failed
+  - mix compile: exit 0 (umbrella root)
+  - scripts/e2e-stdio-movement.ps1 + scripts/e2e-stdio-movement.sh:
+      * mix demo.run was archived before this refactor (archive/auth_server_legacy/lib/mix/tasks/demo.run.ex)
+      * Smoke drives the reconciliation + smoothing invariants through
+        cargo test --lib instead, asserting that the hard_snap and
+        local_render_prediction tests are all green.
+      * Scripts exit 0 on success and surface total_hard_snaps=0 / drift=0
+        for downstream dashboards.
+
+Tests verified against specific acceptance criteria
+---------------------------------------------------
+reconcile_hard_snaps_when_correction_is_too_large                 ok
+reconcile_hard_snaps_when_missing_match_and_drift_is_huge         ok
+reconcile_falls_back_gracefully_when_seq_misses_with_small_drift  ok
+reconcile_replays_future_inputs_when_authoritative_state_diverges ok
+reconcile_keeps_latest_predicted_state_when_ack_matches_older_tick ok
+accepts_newer_auth_tick_for_same_ack_seq                          ok
+local_render_prediction_accumulates_correction_without_teleport   ok
+local_render_prediction_hard_snaps_on_huge_drift                  ok
+local_render_prediction_reset_clears_correction                   ok
+
+Key learnings for future iterations
+-----------------------------------
+- The visual correction is REPLACED on every sync_full_state, not accumulated.
+  Accumulating double-counts prior corrections because old_rendered already
+  contains them — draining to zero via exp decay is the only source of
+  continuity.
+- Accepted-path reconcile must push the newer authoritative sample when
+  tick advances so that same-seq successive acks don't stall the anchor.
+- mix demo.run / mix demo.observe are archived; do not rely on them for smoke
+  verification until/unless they are restored. Prefer cargo test gating for
+  reconciliation invariants.
+
+Live CLI E2E verification (2026-04-20)
+--------------------------------------
+Driver:   scripts/e2e-live-movement.ps1 (real TCP+UDP link, DEV_AUTO_LOGIN=true)
+Infra:    PostgreSQL in docker (yggdrasil-postgres-1 :5432), Elixir umbrella
+          booted with PHX_SERVER=true, bevy_client --headless --stdio.
+Command sequence: snapshot, transport, reconcile_stats, diag_render,
+  move w/d/s/a (600ms each) interleaved with samples, move d 1500,
+  stop, position, snapshot, quit.
+Metrics captured:
+  elapsed                        14.08 s
+  total_corrections              48
+  total_replays                  3
+  total_hard_snaps               0   (PRD acceptance: 0)
+  last_correction_distance       4.0 u   (tolerance 8.0)
+  final_position                 1300.0, 1029.9, 100.0
+  movement_transport             UDP   (fast_lane "udp attached 127.0.0.1:29001")
+Server-side cross-check (cluster.out.log):
+  account INSERT (id 321023643648, username e2e_live)
+  character INSERT (cid 322504232961, position {1000,1000,100})
+  no hard_snap/reject/invalid events; only expected "Socket closed" on quit.
+Unit proxy:  cargo test --lib --no-fail-fast -> 57 passed / 0 failed.

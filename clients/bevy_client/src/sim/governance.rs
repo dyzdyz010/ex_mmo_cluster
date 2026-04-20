@@ -11,11 +11,19 @@ pub struct ReplayGovernance {
 
 impl Default for ReplayGovernance {
     fn default() -> Self {
+        // Defaults are chosen around a 100 ms server tick and a max speed of
+        // 220 u/s:
+        // - soft_position_error: below ~2 u (<~2% of a 100 ms step) we treat
+        //   the correction as floating-point noise and accept the prediction.
+        // - hard_snap_distance: 256 u is roughly a full second of authoritative
+        //   movement; under that we replay instead of teleporting.
+        // - max_replay_frames: 32 matches 3.2 s of buffered inputs which is
+        //   deeper than typical round-trip, keeping replay budget generous.
         Self {
-            soft_position_error: 0.01,
-            hard_snap_distance: 32.0,
-            max_replay_frames: 24,
-            max_pending_inputs: 48,
+            soft_position_error: 2.0,
+            hard_snap_distance: 256.0,
+            max_replay_frames: 32,
+            max_pending_inputs: 64,
         }
     }
 }

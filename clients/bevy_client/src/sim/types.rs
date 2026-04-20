@@ -12,7 +12,12 @@ pub enum MovementMode {
 
 #[derive(Debug, Clone, PartialEq)]
 /// Predicted or authoritative local movement state at a fixed tick.
+///
+/// `seq` tracks the input-sequence number that produced this state so the
+/// reconciler can match authoritative acks by client-issued seq first and
+/// fall back to `tick` when matching server-synthesized idle frames.
 pub struct PredictedMoveState {
+    pub seq: u32,
     pub tick: u32,
     pub position: Vec3,
     pub velocity: Vec3,
@@ -24,6 +29,7 @@ impl PredictedMoveState {
     /// Builds an idle grounded state at the given position.
     pub fn idle(position: Vec3) -> Self {
         Self {
+            seq: 0,
             tick: 0,
             position,
             velocity: Vec3::ZERO,

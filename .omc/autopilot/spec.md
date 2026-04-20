@@ -1,81 +1,78 @@
-# Autopilot Spec: Dev login flow (server auto-upsert + client login screen)
+# Spec: Movement Synchronization Architecture Rework (2026-04-20)
 
 ## Goal
-
-Decouple client from pre-provisioned user/token. User opens bevy_client, types a username, clicks Enter — client issues one HTTP call that upserts account+character on the server and returns a signed token, then connects the gate normally. Deployment only sets server address env vars.
+消除 bevy_client 本地角色"卡顿 + 持续修正位置"现象，将移动同步重构为业界标准的"客户端预测 + 服务器纠偏 + 视觉平滑"三层架构（Quake/Valve 经典模型 + Unreal Exponential Smoothing），并让所有调试可通过 stdio 命令在 headless 模式下自动化验证。
 
 ## Non-goals
+- 不改服务器权威逻辑（scene_server 的 movement_tick 保持原实现）
+- 不改线协议 opcode 或字段顺序
+- 不引入新依赖（除非必要）
+- 不加图形 UI 相关调试面板，全部通过 stdio 可观测
 
-- Production auth changes. The new endpoint is dev-only, gated by `DEV_AUTO_LOGIN=true`.
-- Removing the existing `/ingame/login_post` form flow.
-- Changing gate token verification.
+## 架构评估结论
+业界最佳实践已足够：**Quake3/Valve Source 的客户端预测 + 权威纠偏 + 远端实体插值** 是 MMORPG/FPS 的事实标准。本次不发明新算法，但**融合 Unreal 的 Exponential Network Smoothing** 作为可视化层的收敛策略。
+- 预测层（Prediction）：已有 `LocalPredictionRuntime` 保留 input + predicted history。保留。
+- 对账层（Reconciliation）：已有 `sim::reconcile`。改成按 `ack_seq` 主键、`tick` 辅助的查找；对账窗口外的 ack 优雅降级（按 correction_distance 阈值而不是盲目 HardSnap）。
+- 可视化层（Visual Smoothing）：**新建**。引入 `pending_correction: Vec3` 指数衰减；渲染位置 = 预测位置 + 衰减校正量，而不是每个 LocalPosition 事件硬贴。
+- 远端插值层（Entity Interpolation）：已有 Hermite 插值。延迟从 0.15s 调到 0.1s，外推上限从 0.12s 调到 0.25s 抗丢包。
 
-## Server changes
+## 根因映射
+| 症状 | 根因 | 修复归属 |
+|------|------|---------|
+| "卡顿" | app.rs `LocalRenderPrediction.sync_full_state` 在每次 `LocalPosition` 事件（input send + ack recv）都硬贴 anchor_state 并清 partial_elapsed；本地角色 `sync_player_visuals` 直接赋值不过平滑 | US-A |
+| "持续修正位置" | `governance.hard_snap_distance=32` + `soft_position_error=0.01` 过严；`extend_prediction_through` 复用 stale `last_input_frame` 导致 idle 帧下还在累积推进 | US-A + US-B |
+| "远端角色顿挫" | `INTERPOLATION_DELAY=0.15s` 偏大，网络抖动下 playback 时常落入单帧外推分支 | US-B |
+| "长距 ack 直接 HardSnap" | `reconcile.state_at_tick` 查询落空时无条件 HardSnap，忽略 correction_distance | US-C |
 
-1. **`AuthServer.Accounts.upsert_dev/1`** (`apps/auth_server/lib/auth_server/accounts.ex`)
-   - Input: `username` (string)
-   - Behavior: look up account by username; if present, reuse; if absent, insert new account + companion character at spawn `(1000.0, 1000.0, 100.0)` with default attrs/hp.
-   - Return: `{:ok, %{account: %Account{}, character: %Character{}}}`.
-   - cid policy: re-use existing character's `id` when account already exists; new account gets new cid from `DataService.UidGenerator.generate/0` (running GenServer in the app).
+## User Stories
 
-2. **`AuthServerWeb.IngameController.auto_login/2`** (`apps/auth_server/lib/auth_server_web/controllers/ingame_controller.ex`)
-   - Route: `POST /ingame/auto_login` returning JSON.
-   - Request body: `{"username": "alice"}`.
-   - Response 200: `{"token": "...", "cid": 42, "username": "alice"}`.
-   - Response 403: `{"error": "dev_auto_login_disabled"}` when config flag is falsy.
-   - Uses `AuthServer.AuthWorker.build_session_claims/2` + `issue_token/1` (existing signing path, unchanged).
+### US-A Visual Smoothing Layer + stdio 诊断
+**目标**：重写 `LocalRenderPrediction` 为基于 `LocalPredictionRuntime.current_state()` 的投影层 + `pending_correction` 向量指数衰减；net.rs 发送/收到 ack 时只写 `pending_correction` 差分，不动预测状态；sync_player_visuals 本地角色路径走 smooth_translation；新增 stdio `diag_render` 与 `reconcile_stats` 命令。
 
-3. **Router** (`apps/auth_server/lib/auth_server_web/router.ex`)
-   - Mount `post "/auto_login"` under a new `:api` pipeline (JSON) inside the `/ingame` scope.
+**Files**: `clients/bevy_client/src/app.rs`、`clients/bevy_client/src/world/local_player.rs`、`clients/bevy_client/src/net.rs`、`clients/bevy_client/src/stdio.rs`
 
-4. **Runtime config** (`config/runtime.exs`)
-   - Read `DEV_AUTO_LOGIN` env. Store in `:auth_server, :dev_auto_login` as boolean.
-   - In `prod` env, raise at boot if `DEV_AUTO_LOGIN=true` is set — prevent accidental enablement in prod.
+### US-B 参数调整 + extend_prediction_through 修正
+**目标**：
+- `sim/governance.rs` 默认：`soft_position_error: 0.01 → 2.0`，`hard_snap_distance: 32.0 → 256.0`，`max_replay_frames: 24 → 32`
+- `world/remote_player.rs`：`INTERPOLATION_DELAY_SECS: 0.15 → 0.1`，`MAX_REMOTE_EXTRAPOLATION_SECS: 0.12 → 0.25`
+- `world/local_player.rs::extend_prediction_through`：停止复用 `last_input_frame`，改用 idle（零 input）帧
 
-5. **Deployment** (`deploy/.env`, `deploy/.env.example`)
-   - Add `DEV_AUTO_LOGIN=true` to local `.env`.
-   - Add comment in `.env.example` explaining it MUST stay unset in prod.
+**Files**: `clients/bevy_client/src/sim/governance.rs`、`clients/bevy_client/src/world/remote_player.rs`、`clients/bevy_client/src/world/local_player.rs`
 
-## Client changes
+### US-C 按 ack_seq 恢复对账优雅降级
+**目标**：
+- `sim/types.rs::PredictedMoveState` 增加 `seq: u32` 字段（或 `history` 侧维护 seq→state 映射）
+- `sim/history.rs::PredictedHistory` 新增 `state_at_seq/latest_seq/truncate_after_seq`
+- `sim/reconcile.rs`：优先 `ack_seq` 匹配；匹配成功走现有分支；匹配失败且 `ack.correction_flags == 0` 时只做 soft correction（不 HardSnap），只有 `correction_distance ≥ hard_snap_distance` 才硬吸附
 
-1. **Deps** (`clients/bevy_client/Cargo.toml`)
-   - Add `bevy_egui` (version compatible with current Bevy).
-   - Add `ureq` (smaller sync HTTP, no tokio).
+**Files**: `clients/bevy_client/src/sim/types.rs`、`clients/bevy_client/src/sim/history.rs`、`clients/bevy_client/src/sim/reconcile.rs`、`clients/bevy_client/src/world/local_player.rs`（传递 seq）、`clients/bevy_client/src/sim/predictor.rs`（保留 seq）
 
-2. **Config refactor** (`clients/bevy_client/src/config.rs`)
-   - Remove `username`, `cid`, `token` from `ClientConfig::from_env`.
-   - Keep: `gate_addr`, add `auth_addr` (default `http://127.0.0.1:4000`), keep other transport/observe fields.
-   - Add `SessionCredentials { username, cid, token }` populated at runtime after login.
+### US-D 验证 headless 烟测
+**目标**：
+- `cargo check --all-targets` 通过
+- `cargo test --lib sim::`、`cargo test --lib world::` 通过
+- `scripts/e2e-stdio.ps1` 扩展为：执行 Move→Stop 循环，读 `reconcile_stats` 断言 `hard_snaps == 0`、`max_correction_distance < 16.0`；读 `diag_render` 断言本地渲染与预测位置偏差 < 2.0 units
 
-3. **Login state** (new `clients/bevy_client/src/login.rs`)
-   - Bevy `State` enum gains `AppState::Login | AppState::Game`.
-   - egui panel: single text input (username) + Enter button.
-   - On submit: POST `{auth_addr}/ingame/auto_login` with JSON `{username}`. On 200, store credentials in a resource and transition to `AppState::Game`. On error, show inline error; stay in Login.
-   - Disable button while request in flight.
+## Acceptance（Go/No-go）
+1. `cargo check --all-targets` 通过
+2. `cargo test --lib` 在 bevy_client 全部通过（含更新后的 sim:: 测试）
+3. headless 烟测：bevy_client 跑一段 Move→Stop 循环，`reconcile_stats` 输出 `hard_snaps == 0` 且 `replays >= 1`
+4. 启用 stdio 的本地演练：连续移动 30 秒，`diag_render` 读出的 `render_drift` 始终 < 2.0
+5. `mix compile` 整 umbrella 无新警告（服务器侧无修改，应绿）
 
-4. **App wiring** (`clients/bevy_client/src/app.rs`)
-   - Register `AppState`, add `EguiPlugin`, mount Login systems on `OnEnter(Login)`, existing networking systems gated on `AppState::Game`.
-   - Network thread must not spawn until credentials present.
+## 调试工作流（stdio first，no GUI）
+```
+# 启动 headless 客户端（已有 --headless 走向）
+./target/debug/bevy_client --headless --username smoke_a
 
-5. **Headless adaptation** (`clients/bevy_client/src/headless.rs`, `src/main.rs`)
-   - Add CLI `--username <name>` flag; when present, bypass Login scene and do the same HTTP call synchronously before starting the network thread.
-   - Drop requirement for `BEVY_CLIENT_USERNAME/CID/TOKEN` env vars. Still accept `BEVY_CLIENT_AUTH_ADDR` + `BEVY_CLIENT_GATE_ADDR`.
-
-6. **Docs** (`clients/bevy_client/README.md`)
-   - Replace "source .demo/human-client.ps1" flow with "set two env vars and run".
-
-## Acceptance
-
-- `docker compose up -d` with `DEV_AUTO_LOGIN=true` in `.env`.
-- From host, `curl -X POST -H 'Content-Type: application/json' -d '{"username":"alice"}' http://127.0.0.1:4000/ingame/auto_login` returns `{"token":"...","cid":<int>,"username":"alice"}`.
-- Second call with same username returns same cid (character row re-used).
-- `cargo run` starts bevy_client, login screen accepts "alice", Enter transitions to game, character appears at spawn.
-- Second instance with "bob" connects; both clients see each other's AOI events.
-- Prod build with `MIX_ENV=prod` and `DEV_AUTO_LOGIN=true` refuses to start.
-- All existing `mix test` continues to pass.
-
-## Out of scope
-
-- Client-side validation of username (length/charset).
-- Persistence of last-used username.
-- UI polish beyond a single input + button.
+# stdio 命令验证
+> Move 1.0 0.0
+> Move 1.0 0.0
+> reconcile_stats
+reconcile_stats corrections=4 replays=4 hard_snaps=0 last_corr_dist=0.12
+> diag_render
+diag_render render_pos=105.3,200.0,100.0 pred_pos=105.4,200.0,100.0 drift=0.1 pending_corr=0.02
+> Stop
+> reconcile_stats
+reconcile_stats corrections=6 replays=5 hard_snaps=0 last_corr_dist=0.04
+```

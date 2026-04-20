@@ -33,6 +33,7 @@ pub fn step(
     let position = previous.position + velocity * dt;
 
     PredictedMoveState {
+        seq: input.seq,
         tick: input.client_tick,
         position,
         velocity,
@@ -115,6 +116,7 @@ mod tests {
     #[test]
     fn braking_uses_deceleration_limit() {
         let previous = PredictedMoveState {
+            seq: 1,
             tick: 1,
             position: Vec3::ZERO,
             velocity: Vec3::new(220.0, 0.0, 0.0),

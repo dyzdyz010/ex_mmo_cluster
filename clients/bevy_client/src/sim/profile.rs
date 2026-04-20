@@ -9,6 +9,10 @@ pub struct MovementProfile {
     pub max_jerk: f32,
     pub friction: f32,
     pub turn_response: f32,
+    /// Authoritative server tick duration in milliseconds. Mirrors
+    /// `SceneServer.Movement.Profile.fixed_dt_ms` so server-synthesized idle
+    /// frames can be replayed locally with matching step size.
+    pub fixed_dt_ms: u16,
 }
 
 impl Default for MovementProfile {
@@ -20,6 +24,7 @@ impl Default for MovementProfile {
             max_jerk: 9_000.0,
             friction: 0.0,
             turn_response: 1.0,
+            fixed_dt_ms: 100,
         }
     }
 }

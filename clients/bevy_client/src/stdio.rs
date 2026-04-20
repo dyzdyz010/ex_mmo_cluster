@@ -34,6 +34,8 @@ pub enum ClientStdioCommand {
     },
     Stop,
     Quit,
+    ReconcileStats,
+    DiagRender,
 }
 
 #[derive(Clone, Default, Resource)]
@@ -74,7 +76,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
+                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|reconcile_stats|diag_render|quit"
                                         .to_string(),
                                 )],
                             );
@@ -207,6 +209,14 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::Quit);
     }
 
+    if line == "reconcile_stats" {
+        return Ok(ClientStdioCommand::ReconcileStats);
+    }
+
+    if line == "diag_render" {
+        return Ok(ClientStdioCommand::DiagRender);
+    }
+
     if let Some(cid) = line.strip_prefix("target ") {
         let parsed = cid
             .parse::<i64>()
@@ -334,6 +344,14 @@ mod tests {
         );
         assert_eq!(parse_command("stop").unwrap(), ClientStdioCommand::Stop);
         assert_eq!(parse_command("quit").unwrap(), ClientStdioCommand::Quit);
+        assert_eq!(
+            parse_command("reconcile_stats").unwrap(),
+            ClientStdioCommand::ReconcileStats
+        );
+        assert_eq!(
+            parse_command("diag_render").unwrap(),
+            ClientStdioCommand::DiagRender
+        );
     }
 
     #[test]

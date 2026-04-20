@@ -1,0 +1,92 @@
+{
+  "title": "Movement Sync Architecture Rework",
+  "createdAt": "2026-04-20",
+  "strategy": "Quake/Valve prediction-reconciliation + Unreal ExponentialSmoothing; no novel algorithm",
+  "stories": [
+    {
+      "id": "US-C",
+      "title": "按 ack_seq 恢复对账优雅降级",
+      "priority": 1,
+      "passes": true,
+      "acceptanceCriteria": [
+        "PredictedMoveState 包含 seq: u32 字段 (0 表示 spawn/idle)",
+        "PredictedHistory::state_at_seq(seq) 返回 Option<&PredictedMoveState>",
+        "PredictedHistory::truncate_after_seq(seq) 实现并带单元测试",
+        "reconcile.rs 首选按 ack_seq 匹配 predicted_history；seq miss 时降级按 auth_tick 匹配",
+        "当 ack_seq + auth_tick 都匹配失败且 correction_distance < hard_snap_distance 时，返回 Accepted 分支，不再 HardSnap",
+        "新增测试 reconcile_falls_back_gracefully_when_seq_misses 覆盖上一条路径",
+        "原有 reconcile 3 个测试仍通过"
+      ],
+      "files": [
+        "clients/bevy_client/src/sim/types.rs",
+        "clients/bevy_client/src/sim/history.rs",
+        "clients/bevy_client/src/sim/reconcile.rs",
+        "clients/bevy_client/src/sim/predictor.rs",
+        "clients/bevy_client/src/world/local_player.rs"
+      ]
+    },
+    {
+      "id": "US-B",
+      "title": "调参 governance + 远端插值",
+      "priority": 2,
+      "passes": true,
+      "acceptanceCriteria": [
+        "ReplayGovernance::default 的 soft_position_error == 2.0",
+        "ReplayGovernance::default 的 hard_snap_distance == 256.0",
+        "ReplayGovernance::default 的 max_replay_frames == 32",
+        "remote_player.rs INTERPOLATION_DELAY_SECS == 0.1",
+        "remote_player.rs MAX_REMOTE_EXTRAPOLATION_SECS == 0.25",
+        "world/local_player.rs::extend_prediction_through 使用 idle MoveInputFrame (input_dir ZERO + MOVEMENT_FLAG_BRAKE)，不再复用 last_input_frame 的方向",
+        "cargo test --lib sim:: 全部通过（governance tests + reconcile tests）",
+        "cargo test --lib world::remote_player 全部通过"
+      ],
+      "files": [
+        "clients/bevy_client/src/sim/governance.rs",
+        "clients/bevy_client/src/world/remote_player.rs",
+        "clients/bevy_client/src/world/local_player.rs"
+      ]
+    },
+    {
+      "id": "US-A",
+      "title": "可视化平滑层 + stdio 诊断",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "LocalRenderPrediction 新增字段 pending_correction: Vec3 (默认 ZERO) 与 smoothing_rate_hz: f32 (默认 15.0)",
+        "LocalRenderPrediction::advance 按 exp(-rate*dt) 衰减内部 pending_correction 并落到 render_state",
+        "app.rs LocalRenderPrediction::sync_full_state 改为只计算 pending_correction = old_rendered - new_anchor (hard_snap 超限置零)",
+        "app.rs advance_local_render_prediction 的输出来自 LocalRenderPrediction 的 render_state",
+        "stdio.rs 新增 ClientStdioCommand::ReconcileStats 与 ClientStdioCommand::DiagRender",
+        "ReconcileStats 触发 emit('reconcile_stats', total_corrections/total_replays/total_hard_snaps/total_window_trims/last_replayed_frames/last_pending_inputs/last_correction_distance)",
+        "DiagRender 触发 emit('diag_render', anchor/render/pending_correction/drift/pending_correction_distance/smoothing_rate_hz/partial_elapsed_secs)",
+        "NetworkCommand::RequestReconcileStats 与 NetworkEvent::ReconcileStats 已接线到 app.rs + headless.rs 两个消费端",
+        "cargo check --all-targets 通过"
+      ],
+      "files": [
+        "clients/bevy_client/src/world/local_player.rs",
+        "clients/bevy_client/src/app.rs",
+        "clients/bevy_client/src/net.rs",
+        "clients/bevy_client/src/stdio.rs",
+        "clients/bevy_client/src/headless.rs"
+      ]
+    },
+    {
+      "id": "US-D",
+      "title": "编译 + headless 烟测",
+      "priority": 4,
+      "passes": true,
+      "acceptanceCriteria": [
+        "cd clients/bevy_client && cargo check --all-targets 退出码 0",
+        "cd clients/bevy_client && cargo test --lib 退出码 0",
+        "mix compile 在 umbrella 根目录退出码 0",
+        "scripts/ 下存在 headless 烟测脚本（ps1 或 sh），通过 cargo test --lib 覆盖 reconcile / local_render_prediction 关键不变量 (mix demo.run 已在本轮重构前归档)",
+        "烟测脚本断言 reconcile_hard_snaps_* 与 local_render_prediction_* 相关测试全部 ok",
+        "烟测脚本以 exit code 0 结束"
+      ],
+      "files": [
+        "scripts/e2e-stdio-movement.ps1",
+        "scripts/e2e-stdio-movement.sh"
+      ]
+    }
+  ]
+}

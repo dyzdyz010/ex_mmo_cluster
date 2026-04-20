@@ -360,6 +360,28 @@ pub fn run_stdio(
                     });
                     emit_stdio("stop", &[]);
                 }
+                ClientStdioCommand::ReconcileStats => {
+                    bridge.send(NetworkCommand::RequestReconcileStats);
+                    emit_stdio("reconcile_stats_requested", &[]);
+                }
+                ClientStdioCommand::DiagRender => {
+                    emit_stdio(
+                        "diag_render",
+                        &[
+                            (
+                                "local_position",
+                                state
+                                    .local_position
+                                    .map(|value| {
+                                        format!("{:.2},{:.2},{:.2}", value.x, value.y, value.z)
+                                    })
+                                    .unwrap_or_else(|| "n/a".to_string()),
+                            ),
+                            ("drift", "n/a".to_string()),
+                            ("mode", "headless".to_string()),
+                        ],
+                    );
+                }
                 ClientStdioCommand::Quit => {
                     bridge.send(NetworkCommand::Shutdown);
                     observer.emit(
@@ -722,6 +744,31 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
         }
         NetworkEvent::Log(line) => {
             observer.emit("headless", "network_log", &[("line", line)]);
+        }
+        NetworkEvent::ReconcileStats {
+            total_corrections,
+            total_replays,
+            total_hard_snaps,
+            total_window_trims,
+            last_replayed_frames,
+            last_pending_inputs,
+            last_correction_distance,
+        } => {
+            emit_stdio(
+                "reconcile_stats",
+                &[
+                    ("total_corrections", total_corrections.to_string()),
+                    ("total_replays", total_replays.to_string()),
+                    ("total_hard_snaps", total_hard_snaps.to_string()),
+                    ("total_window_trims", total_window_trims.to_string()),
+                    ("last_replayed_frames", last_replayed_frames.to_string()),
+                    ("last_pending_inputs", last_pending_inputs.to_string()),
+                    (
+                        "last_correction_distance",
+                        format!("{last_correction_distance:.3}"),
+                    ),
+                ],
+            );
         }
         _ => {}
     }
