@@ -65,6 +65,7 @@ defmodule AuthServer.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
+      {:websock_adapter, "~> 0.5"},
       {:bcrypt_elixir, "~> 3.0"},
       {:libcluster, "~> 3.4"},
       {:data_init, in_umbrella: true},

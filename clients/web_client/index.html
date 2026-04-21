@@ -5,23 +5,67 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ex_mmo Voxel Web Client</title>
     <style>
-      html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
+      :root {
+        color-scheme: dark;
+        --panel-bg: rgba(8, 15, 22, 0.78);
+        --panel-border: rgba(125, 170, 205, 0.22);
+        --panel-shadow: rgba(0, 0, 0, 0.38);
+      }
+      html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: "Segoe UI", "Helvetica Neue", sans-serif; overflow: hidden; }
       #app { width: 100vw; height: 100vh; display: block; }
       #hud {
         position: fixed;
-        top: 8px;
-        left: 8px;
+        top: 14px;
+        left: 14px;
         font-size: 12px;
         line-height: 1.5;
         pointer-events: none;
         text-shadow: 0 0 2px #000;
         white-space: pre;
+        padding: 10px 12px;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 12px;
+        box-shadow: 0 10px 30px var(--panel-shadow);
+        backdrop-filter: blur(10px);
+        max-width: min(520px, calc(100vw - 28px));
+      }
+      #reticle {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+      }
+      #reticle::before,
+      #reticle::after {
+        content: "";
+        position: absolute;
+        background: rgba(191, 232, 255, 0.9);
+        box-shadow: 0 0 8px rgba(191, 232, 255, 0.45);
+      }
+      #reticle::before {
+        left: 50%;
+        top: 0;
+        width: 2px;
+        height: 18px;
+        transform: translateX(-50%);
+      }
+      #reticle::after {
+        top: 50%;
+        left: 0;
+        width: 18px;
+        height: 2px;
+        transform: translateY(-50%);
       }
     </style>
   </head>
   <body>
     <canvas id="app"></canvas>
     <div id="hud"></div>
+    <div id="reticle" aria-hidden="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -1,12 +1,38 @@
 # ex_mmo Voxel Web Client
 
-一个浏览器端的体素世界原型客户端，与 `clients/bevy_client/` 并列，目的是：
+一个浏览器端客户端验证面，与 `clients/bevy_client/` 并列。当前阶段的主目标不是 voxel 联机，而是：
 
-1. **复刻** UE5 `test1` 项目的数据层与交互层（本地破坏 / 放置 / Prefab），让前端状态模型与 UE 端保持字节级一致
-2. **提前验证**服务端 `voxel_server` 的订阅 / 编辑 / AOI / 冲突协议，不必等 UE net 层就绪
-3. **压力联调**：向 `voxel_server` 压多客户端、多并发编辑，跑 `docs/2026-04-20-体素世界服务端规划.md` 第 12 节的验收指标
+1. **验证 movement sync**：浏览器直接接 `auth_server -> gate_server` 的 browser bridge，确认 prediction / ack / reconcile / remote snapshot 没问题
+2. **保留离线 voxel 世界**：把体素世界作为本地承载层和调试面，不参与当前阶段的服务端同步
+3. **保留后续扩展位**：等 movement 路径稳定后，再考虑是否继续接 `voxel_server`
 
-> 定位：服务端联调与协议验证工具。不做美术 / UI 投入，UE 端 net 层就绪后可退役或转为 e2e 回归客户端。
+> 定位：优先服务于 movement 联调与回归验证的浏览器客户端。当前不把 voxel online 作为交付目标。
+
+## 当前状态修正
+
+当前仓库里的 `web_client` 已不再只是 W-A 占位：
+
+1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
+2. voxel 当前明确保持 **offline-local**：中心准星选中、本地 `F/G` 编辑、`1..4` 切换材质，但不走服务端同步。
+3. 已有浏览器版可观测调试面：
+   - HUD 持续显示关键状态
+   - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
+   - `window.__voxelObserve.recent()` / `snapshot()` 读取结构化日志
+4. 已有真实 browser movement bridge：
+   - `POST /ingame/auto_login`
+   - `GET /ingame/ws`
+   - `AuthServerWeb.GameWebSocket -> GateServer.WsConnection`
+5. 已有 `simulated-local` 同步 demo：
+   - fixed-tick 本地预测
+   - 权威 ack 对账
+   - 本地渲染平滑
+   - 远端玩家插值
+
+仍未完成：
+
+1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
+2. voxel 现在故意保持离线，本阶段不接 `voxel_server` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`。
+3. Refined cell / Prefab / 完整视觉注册表仍是后续阶段。
 
 ## 技术栈
 
@@ -66,10 +92,10 @@ clients/web_client/
 | Web 阶段 | 对齐 UE 阶段 | 交付 |
 |----------|------------|------|
 | **W-A 类型与脚手架** ✅ | UE-A 类型基线 | `src/voxel/core`、`src/voxel/storage/types.ts`、`ChunkStorage` 写入 API、three.js 空场景 |
-| **W-B Chunk Mesher** | UE-B Mesher 首版 | greedy mesh 算法；每 Chunk 一个 `BufferGeometry`；Mesh 脏区只重建差异 |
-| **W-C 本地编辑** | UE-C1 数据流 | 鼠标拾取 → `trySetNormalBlock` / `clearCell`；高亮预览框；撤销/重做 |
-| **W-D 网络接入** | UE 未覆盖（本客户端独有价值） | WebSocket 连 gate；`ChunkSubscribe/Delta/BlockBreak/Place`；`base_hash` 乐观编辑 + `EditAck` 回滚 |
-| **W-E 视觉系统** | UE-C2 视觉系统 | `FVoxelBlockStateView` + overlay（燃烧 / 冻结 / 湿润）；基础材质注册表 |
+| **W-B Chunk Mesher** 🚧 | UE-B Mesher 首版 | 当前已完成 exposed-face chunk mesher + `BufferGeometry` 重建；greedy/worker 化后续再补 |
+| **W-C 本地编辑** 🚧 | UE-C1 数据流 | 当前已完成准星选中 + `trySetNormalBlock` / `clearCell` + 高亮预览；撤销/重做后续再补 |
+| **W-D 网络接入** ⏳ | UE 未覆盖（本客户端独有价值） | 当前只验 movement browser bridge；voxel 保持 offline-local，不接服务端 |
+| **W-E 视觉系统** 🚧 | UE-C2 视觉系统 | 当前已完成 `MaterialId + StateFlags -> display color` 首版解析；完整 registry / overlay 资产后续再补 |
 | **W-F Prefab** | UE-E Prefab | `PrefabCreate/Place` 协议；运行时 instancing 缓存；共享 / 私有可见性 |
 | **W-G 性能** | UE-F 性能 | Mesher 迁至 Web Worker；InstancedMesh / GPU instancing；订阅半径自适应 |
 
@@ -95,6 +121,38 @@ npm run dev
 # 打开 http://127.0.0.1:5173
 ```
 
+默认情况下，浏览器客户端会采用：
+
+- `voxel_sync=offline-local`
+- movement 优先尝试真实 **server-backed movement transport**
+
+- `POST /ingame/auto_login`
+- `GET /ingame/ws`
+
+如果真实 backend 在 ready 前不可用，例如：
+
+- `auth_server` 没启动
+- `DEV_AUTO_LOGIN` 没开
+- 页面跑在没有 `/ingame` 代理的静态预览地址上
+- WebSocket bridge / enter-scene 失败
+
+运行时会自动回退到 `simulated-local`，并在 HUD、`transport` CLI 快照以及 `voxel_observe` 日志里写出回退原因。  
+注意这个回退只影响 **movement transport**，不会改变 `voxel_sync=offline-local`。
+
+如果你只想跑纯本地 movement demo，可显式覆盖：
+
+```bash
+VITE_MOVEMENT_TRANSPORT=simulated npm run dev
+```
+
+如果需要指向非默认地址：
+
+```bash
+VITE_AUTH_BASE_URL=http://127.0.0.1:4000 \
+VITE_GAME_WS_URL=ws://127.0.0.1:4000/ingame/ws \
+npm run dev
+```
+
 类型检查（CI / commit 前必跑）：
 
 ```bash
@@ -108,23 +166,113 @@ npm run build   # 同时跑 tsc --noEmit 和 vite build
 npm run preview # 预览 dist
 ```
 
+注意：
+
+- `npm run dev` 默认通过 `vite.config.ts` 把 `/ingame` 代理到 `http://127.0.0.1:4000`。
+- `npm run preview` 只提供静态 `dist/`，不会自动提供 `/ingame/auto_login` 或 `/ingame/ws`。
+- 因此 preview 场景下，如果没有把 dist 挂到真实 `auth_server` 前面，运行时会自动回退到 `simulated-local`。
+
 ## W-A 冒烟验证
 
-当前 `main.ts` 做两件事：
+当前默认运行时会做四件事：
 
-1. 初始化 `ChunkStorage.createEmpty({x:0,y:0,z:0})`，HUD 显示 `macroCount = 4096`
-2. 渲染一个 MacroWorldSize 立方体 + GridHelper，验证 three.js 链路
+1. 生成一个多 Chunk 的浏览器内置离线世界
+2. 用真正的 chunk mesher 生成 `BufferGeometry`
+3. 默认优先启动真实 server-backed movement；若真实 backend 在 ready 前失败，则自动回退到本地 movement sync demo（本地预测 + ack 对账 + 远端插值）
+4. 安装 HUD + CLI + observe 调试面
 
 看到以下即表示 W-A 通过：
 
-- 背景 `#202833`，左上角 HUD 显示 `chunk 16^3 macros = 4096`
-- 网格 + 蓝灰立方体可见
-- 窗口缩放不变形
+- HUD 持续刷新 chunk / player / reconcile / edit 统计
+- HUD / `snapshot` / `transport` 明确显示 `voxel_sync=offline-local`
+- 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
+- `window.__voxelCli.run("snapshot")` 能返回结构化快照
+- 按 `F` / `G` 可以对准星选中的体素执行放置 / 破坏
+- `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
+
+## 调试 / CLI
+
+浏览器端同样遵守“CLI 可观测接口 + 结构化日志优先”的仓库约定。
+
+### 浏览器 CLI
+
+在 DevTools Console 里执行：
+
+```js
+window.__voxelCli?.run("help")
+window.__voxelCli?.run("snapshot")
+window.__voxelCli?.run("chunks 8")
+window.__voxelCli?.run("cell 0 1 0")
+window.__voxelCli?.run("select_material wood")
+window.__voxelCli?.run("place 0 5 0 2")
+window.__voxelCli?.run("break 0 5 0")
+window.__voxelCli?.run("prefabs")
+window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2")
+window.__voxelCli?.run("prefab_place test 8 5 8")
+window.__voxelCli?.run("transport")
+window.__voxelCli?.run("player")
+window.__voxelCli?.run("players")
+window.__voxelCli?.run("reconcile_stats")
+window.__voxelCli?.run("edit_stats")
+```
+
+### Observe 日志
+
+运行时会输出 `voxel_observe ...` 结构化日志到浏览器 console，并在 `window` 暴露最近事件：
+
+```js
+window.__voxelObserve?.recent(20)
+window.__voxelObserve?.snapshot()
+```
+
+调试原则：
+
+1. 先看 `snapshot / chunks / cell / reconcile_stats / edit_stats`
+2. 再看 `transport` 与 `voxel_observe` 日志确认连接、输入、权威 ack、重建与错误路径
+3. 最后才看画面本身
+
+当前建议先看两条正交状态：
+
+1. `voxel_sync=offline-local`：当前固定成立，表示体素世界只在浏览器本地运行
+2. `movement_transport=...`：当前真正需要验收的网络面
+
+movement transport 再拆成三类判断：
+
+1. `mode=server-ws` 且 `ready=true`：真实 backend 已接通
+2. `mode=simulated-local` 且 `fallbackReason` 非空：真实 backend 失败，但本地 demo 已接管
+3. `mode=server-ws` 且 `ready=false`：仍处于 bootstrap 中，继续看 `voxel_observe` 最近事件
+
+## 控制
+
+- 镜头：第三人称自动跟随本地玩家（当前不再把自由 Orbit 作为默认主视角）
+- `W/A/S/D`：驱动本地玩家 avatar；server-ws 与 simulated-local 共用同一套 movement 输入面
+- `F`：在准星相邻格放置当前材质
+- `G`：破坏准星命中的当前格
+- `1/2/3/4`：切换 `Dirt / Stone / Wood / Ice`
+
+## Smoke / 验收脚本
+
+推荐使用新的受监督 runner：
+
+```bash
+node scripts/run_ws_dual_smoke_supervised.js
+```
+
+兼容 PowerShell 入口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_ws_dual_smoke.ps1
+```
+
+说明：
+
+- 旧 PowerShell 入口现在只做转发，不再自己管理 boot/timeout/cleanup
+- 新 runner 会自动挑空闲端口、等待服务 ready、运行 probe，并在结束后清理进程树
 
 ## 不在本仓库范围
 
 - UE 客户端自身的渲染 / 物理 / 命中优化 — 由 `D:\UnrealEngine\test1` 仓库负责
-- 服务端 `voxel_server` app 实现 — 见 `docs/2026-04-20-体素世界服务端规划.md`
+- 服务端 `voxel_server` app 实现 — 当前阶段不接入；见 `docs/2026-04-20-体素世界服务端规划.md`
 - 美术资产 / UI 打磨 — 本客户端只做协议验证
 - 游戏逻辑（战斗 / 经济 / 任务）— 不在本阶段
 

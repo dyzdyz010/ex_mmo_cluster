@@ -37,7 +37,8 @@ defmodule GateServer.Application do
         {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
         stdio_child(),
         {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup},
-        {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup}
+        {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
+        {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup}
       ]
       |> Enum.reject(&is_nil/1)
       |> Kernel.++(udp_children())

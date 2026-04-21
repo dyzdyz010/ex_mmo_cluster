@@ -10,9 +10,11 @@ import {
   makeEmptyMacroHeader,
   makeEmptyNormalBlock,
   type FChunkStorageData,
+  type FMacroEnvironmentSummary,
   type FMacroCellHeader,
   type FNormalBlockData,
 } from "./types";
+import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "../meshing/types";
 
 export class ChunkStorage {
   readonly data: FChunkStorageData;
@@ -58,6 +60,15 @@ export class ChunkStorage {
     }
     const block = this.data.normalBlocks[header.payloadIndex];
     return block ?? null;
+  }
+
+  getEnvironmentSummary(localMacro: FMacroCoord): FMacroEnvironmentSummary | null {
+    const header = this.getHeaderAt(localMacro);
+    if (!header || header.environmentIndex === 0xFFFF) {
+      return null;
+    }
+    const summary = this.data.environmentSummaries[header.environmentIndex];
+    return summary ?? null;
   }
 
   // 向宏格写入一个普通块。复用 FreeNormalBlockIndices 栈，避免 normalBlocks 无限增长。
@@ -111,6 +122,101 @@ export class ChunkStorage {
     return true;
   }
 
+  setMacroEnvironmentSummary(localMacro: FMacroCoord, summary: FMacroEnvironmentSummary): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header) {
+      return false;
+    }
+
+    if (header.environmentIndex !== 0xFFFF) {
+      this.data.environmentSummaries[header.environmentIndex] = { ...summary };
+    } else {
+      const reuseIndex = this.data.freeEnvironmentSummaryIndices.pop();
+      if (reuseIndex !== undefined) {
+        this.data.environmentSummaries[reuseIndex] = { ...summary };
+        header.environmentIndex = reuseIndex;
+      } else {
+        header.environmentIndex = this.data.environmentSummaries.push({ ...summary }) - 1;
+      }
+    }
+
+    this.markDirty(localMacro, VoxelDirtyFlags.Storage);
+    return true;
+  }
+
+  buildMesherSnapshot(): FChunkMesherInputSnapshot {
+    const cells: FChunkMesherCellSnapshot[] = [];
+
+    for (let index = 0; index < this.data.macroHeaders.length; index += 1) {
+      const header = this.data.macroHeaders[index];
+      if (!header) {
+        continue;
+      }
+
+      const localMacroCoord = {
+        x: index % VoxelConstants.ChunkSizeX,
+        y: Math.floor(index / VoxelConstants.ChunkSizeX) % VoxelConstants.ChunkSizeY,
+        z: Math.floor(index / (VoxelConstants.ChunkSizeX * VoxelConstants.ChunkSizeY)),
+      };
+
+      let materialId = 0;
+      let stateFlags = 0;
+      let health = 0;
+      if (header.mode === EVoxelCellMode.SolidBlock) {
+        const block = this.data.normalBlocks[header.payloadIndex];
+        if (block) {
+          materialId = block.materialId;
+          stateFlags = block.stateFlags;
+          health = block.health;
+        }
+      }
+
+      cells.push({
+        localMacroCoord,
+        mode: header.mode,
+        materialId,
+        stateFlags,
+        health,
+      });
+    }
+
+    return {
+      chunkCoord: { ...this.data.chunkCoord },
+      dirtyMacroMin: { ...this.data.dirtyMacroMin },
+      dirtyMacroMax: { ...this.data.dirtyMacroMax },
+      dirtyFlags: this.data.dirtyFlags,
+      cells,
+    };
+  }
+
+  countSolidBlocks(): number {
+    let count = 0;
+    for (const header of this.data.macroHeaders) {
+      if (header?.mode === EVoxelCellMode.SolidBlock) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  countStateFlag(flag: number): number {
+    let count = 0;
+    for (const header of this.data.macroHeaders) {
+      if (!header || header.mode !== EVoxelCellMode.SolidBlock) {
+        continue;
+      }
+      const block = this.data.normalBlocks[header.payloadIndex];
+      if (block && (block.stateFlags & flag) !== 0) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   private markDirty(localMacro: FMacroCoord, flags: number): void {
     const had = this.data.dirtyFlags !== 0;
     if (!had) {
@@ -131,5 +237,15 @@ export class ChunkStorage {
 
   clearDirty(): void {
     this.data.dirtyFlags = 0;
+  }
+
+  consumeDirtyFlags(mask: number = VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision): number {
+    const current = this.data.dirtyFlags;
+    this.data.dirtyFlags &= ~mask;
+    if (this.data.dirtyFlags === 0) {
+      this.data.dirtyMacroMin = { x: 0, y: 0, z: 0 };
+      this.data.dirtyMacroMax = { x: 0, y: 0, z: 0 };
+    }
+    return current & mask;
   }
 }

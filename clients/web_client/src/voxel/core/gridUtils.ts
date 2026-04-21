@@ -72,3 +72,59 @@ export function macroCoordFromMicro(mc: FMicroCoord): FMacroCoord {
     z: divideFloor(mc.z, n),
   };
 }
+
+export interface WorldVectorLike {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function macroCoordFromWorldPosition(position: WorldVectorLike, macroWorldSize: number): FMacroCoord {
+  if (macroWorldSize <= 0) {
+    throw new Error(`macroCoordFromWorldPosition: macroWorldSize must be positive, got ${macroWorldSize}`);
+  }
+  return {
+    x: Math.floor(position.x / macroWorldSize),
+    y: Math.floor(position.y / macroWorldSize),
+    z: Math.floor(position.z / macroWorldSize),
+  };
+}
+
+export function macroCenterWorldPosition(macroCoord: FMacroCoord, macroWorldSize: number): WorldVectorLike {
+  return {
+    x: (macroCoord.x + 0.5) * macroWorldSize,
+    y: (macroCoord.y + 0.5) * macroWorldSize,
+    z: (macroCoord.z + 0.5) * macroWorldSize,
+  };
+}
+
+export function macroStepFromSurfaceNormal(normal: WorldVectorLike): FMacroCoord {
+  const ax = Math.abs(normal.x);
+  const ay = Math.abs(normal.y);
+  const az = Math.abs(normal.z);
+
+  if (ax >= ay && ax >= az) {
+    return { x: Math.sign(normal.x) || 0, y: 0, z: 0 };
+  }
+  if (ay >= ax && ay >= az) {
+    return { x: 0, y: Math.sign(normal.y) || 0, z: 0 };
+  }
+  return { x: 0, y: 0, z: Math.sign(normal.z) || 0 };
+}
+
+export function adjacentMacroCoordFromSurfaceNormal(macroCoord: FMacroCoord, normal: WorldVectorLike): FMacroCoord {
+  const step = macroStepFromSurfaceNormal(normal);
+  return {
+    x: macroCoord.x + step.x,
+    y: macroCoord.y + step.y,
+    z: macroCoord.z + step.z,
+  };
+}
+
+export function addMacroCoords(a: FMacroCoord, b: FMacroCoord): FMacroCoord {
+  return {
+    x: a.x + b.x,
+    y: a.y + b.y,
+    z: a.z + b.z,
+  };
+}

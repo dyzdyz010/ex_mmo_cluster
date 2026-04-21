@@ -941,15 +941,21 @@ fn sample_movement_input(
 ) {
     if chat_state.enabled {
         movement_intent.direction = Vec2::ZERO;
+        movement_intent.expires_at = 0.0;
         maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
     }
 
     let direction = current_movement_direction(&keyboard);
 
+    // `expires_at` belongs to stdio-driven timed moves. Keyboard intent must
+    // track `ButtonInput::pressed()` exactly — extending a 250 ms latch on
+    // every held frame would keep the unit sliding (and the predictor
+    // rotating residual velocity toward the last direction) for frames
+    // after every key release.
     if direction.length_squared() > 0.0 {
         movement_intent.direction = direction;
-        movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+        movement_intent.expires_at = 0.0;
         maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
     }
@@ -962,7 +968,7 @@ fn sample_movement_input(
         let direction = movement_direction_from_key(&keyboard_input.logical_key);
         if direction.length_squared() > 0.0 {
             movement_intent.direction = direction;
-            movement_intent.expires_at = time.elapsed_secs_f64() + 0.25;
+            movement_intent.expires_at = 0.0;
             maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
             return;
         }
@@ -1872,6 +1878,64 @@ mod tests {
         ));
         assert!(should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, false));
         assert!(!should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, true));
+    }
+
+    /// Regression: releasing every movement key must zero the intent on the
+    /// very next system tick. A previous 250 ms `expires_at` grace kept the
+    /// last direction latched, so the predictor and the `movement_sender` path
+    /// continued advancing the unit (and rotating residual velocity toward the
+    /// latched direction) for frames after the physical release — visible as
+    /// slide-and-auto-turn after releasing WASD.
+    #[test]
+    fn releasing_all_keys_zeroes_intent_immediately() {
+        use bevy::input::keyboard::KeyboardInput;
+
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
+            .insert_resource(ChatState::default())
+            .insert_resource(ClientObserver::default())
+            .insert_resource(InputTraceState::default())
+            .insert_resource(MovementIntent::default())
+            .add_systems(Update, sample_movement_input);
+
+        // Press W for one frame — intent should track the held direction and
+        // keep `expires_at` clear (no stdio timer latch).
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.update();
+
+        {
+            let intent = app.world().resource::<MovementIntent>();
+            assert_eq!(intent.direction, Vec2::new(0.0, 1.0));
+            assert_eq!(
+                intent.expires_at, 0.0,
+                "keyboard press must not set expires_at — that field is reserved for stdio timed moves"
+            );
+        }
+
+        // Release every key, flush the same-frame press events, and advance
+        // the Bevy clock by one 16 ms tick. With the 250 ms latch removed the
+        // intent must collapse to ZERO on this very update.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release_all();
+        app.world_mut()
+            .resource_mut::<Messages<KeyboardInput>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(16));
+        app.update();
+
+        let intent = app.world().resource::<MovementIntent>();
+        assert_eq!(
+            intent.direction,
+            Vec2::ZERO,
+            "direction must zero immediately on key release — prior 250 ms latch caused slide+auto-turn"
+        );
     }
 
     #[test]

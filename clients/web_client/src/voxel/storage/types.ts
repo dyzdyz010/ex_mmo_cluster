@@ -94,3 +94,13 @@ export function makeEmptyNormalBlock(): FNormalBlockData {
     moistureDelta: 0,
   };
 }
+
+export function makeEmptyEnvironmentSummary(): FMacroEnvironmentSummary {
+  return {
+    defaultTemperature: 0,
+    defaultMoisture: 0,
+    currentTemperature: 0,
+    currentMoisture: 0,
+    fieldMask: 0,
+  };
+}
