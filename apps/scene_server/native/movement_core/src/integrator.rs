@@ -21,6 +21,13 @@ use crate::{
     state::MovementState,
 };
 
+// Industry-standard stop threshold, mirroring Unreal CMC's BRAKE_TO_STOP_VELOCITY
+// (10 cm/s vs default MaxWalkSpeed=600). Scaled to our max_speed=220: 3.0 keeps
+// the same ~1.4% ratio. Below this speed while braking, velocity snaps to zero
+// so a jerk-limited residual acceleration cannot push the body past zero and
+// produce a visible "rubber-band" on key release.
+const BRAKE_TO_STOP_SPEED_SQ: f64 = 3.0 * 3.0;
+
 pub fn step(
     previous: &MovementState,
     input: &InputFrame,
@@ -68,6 +75,26 @@ fn grounded_step(
         0.0,
     ];
 
+    // Brake path (Unreal CMC ApplyVelocityBraking analogue): when no input is
+    // commanded (desired_velocity ≈ 0) or the client explicitly signalled
+    // BRAKE, bypass the jerk limiter and apply direct deceleration with a
+    // zero-crossing guard. The jerk-limited path leaves residual acceleration
+    // when velocity reaches zero, which would push the next tick's velocity
+    // past zero and produce a visible backward rubber-band on key release.
+    let is_braking = input.braking() || magnitude_sq(desired_velocity) <= 1.0e-6;
+    if is_braking {
+        let (velocity, acceleration) = apply_braking(previous.velocity, profile.max_decel, dt);
+        let position = add(previous.position, mul(velocity, dt));
+        return MovementState {
+            position,
+            velocity,
+            acceleration,
+            movement_mode: mode,
+            tick: input.client_tick,
+            seq: input.seq,
+        };
+    }
+
     let accel_limit = accel_limit(previous.velocity, desired_velocity, profile, input.braking());
     let velocity_error = sub(desired_velocity, previous.velocity);
     let accel_target = clamp_vec3(div(velocity_error, dt.max(f64::EPSILON)), accel_limit);
@@ -87,6 +114,39 @@ fn grounded_step(
         tick: input.client_tick,
         seq: input.seq,
     }
+}
+
+/// Unreal CMC `ApplyVelocityBraking` analogue. Applies direct deceleration
+/// along `-velocity` with a zero-crossing guard and a stop-epsilon snap.
+/// Acceleration is cleared so the next accelerating frame starts from a clean
+/// slate (otherwise the jerk limiter would carry over a stale value).
+fn apply_braking(velocity: [f64; 3], max_decel: f64, dt: f64) -> ([f64; 3], [f64; 3]) {
+    let speed_sq = magnitude_sq(velocity);
+    if speed_sq <= f64::EPSILON {
+        return ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    }
+
+    let speed = speed_sq.sqrt();
+    let unit = [velocity[0] / speed, velocity[1] / speed, velocity[2] / speed];
+    let decel_delta = max_decel * dt;
+    let new_velocity = [
+        velocity[0] - unit[0] * decel_delta,
+        velocity[1] - unit[1] * decel_delta,
+        velocity[2] - unit[2] * decel_delta,
+    ];
+
+    // Zero-crossing: if the deceleration pulse would flip velocity past zero
+    // (dot product ≤ 0), or if the resulting speed is below the stop floor,
+    // snap to rest. Matches UE CMC's `(Velocity | OldVel) <= 0` guard followed
+    // by the `BRAKE_TO_STOP_VELOCITY` clamp.
+    let dot = new_velocity[0] * velocity[0]
+        + new_velocity[1] * velocity[1]
+        + new_velocity[2] * velocity[2];
+    if dot <= 0.0 || magnitude_sq(new_velocity) <= BRAKE_TO_STOP_SPEED_SQ {
+        return ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    }
+
+    (new_velocity, [0.0, 0.0, 0.0])
 }
 
 fn scripted_step(
@@ -522,26 +582,18 @@ mod invariants {
 
     // -----------------------------------------------------------------------
     // 4. Braking with zero input reduces velocity magnitude monotonically
-    //    while speed is above a jerk-resolution threshold.
+    //    and reaches exact rest without overshooting past zero.
     //
-    //    Seeds a state at max_speed, then runs 50 ticks with zero input and
-    //    MOVEMENT_FLAG_BRAKE set.  Because smooth_acceleration is jerk-limited
-    //    the residual deceleration can carry speed briefly into the opposite
-    //    direction once the body has already stopped; the invariant therefore
-    //    only applies while the previous tick's speed exceeds the per-tick
-    //    jerk-induced velocity budget (max_jerk * dt * dt) — below that
-    //    threshold the integrator has effectively halted.  After 50 ticks the
-    //    net distance travelled must be strictly less than the 1-tick maximum.
+    //    Since the brake path became Unreal CMC's ApplyVelocityBraking analogue
+    //    (direct decel + zero-crossing guard + stop-epsilon snap), the contract
+    //    is now the strong form: speed must be strictly monotone non-increasing
+    //    on every tick, velocity must never flip sign, and the body must halt
+    //    exactly at zero within a bounded number of ticks.
     // -----------------------------------------------------------------------
     #[test]
     fn test_braking_reduces_velocity_monotonically() {
         let profile = MovementProfile::default();
-        let dt = profile.fixed_dt_ms as f64 / 1000.0;
-        // Minimum speed below which jerk-carry-over can briefly reverse
-        // velocity — below this the body is kinematically stopped.
-        let jerk_floor = profile.max_jerk * dt * dt + 1.0e-9;
 
-        // Seed state: full speed in +x direction.
         let mut state = MovementState {
             position: [0.0, 0.0, 0.0],
             velocity: [profile.max_speed, 0.0, 0.0],
@@ -557,27 +609,76 @@ mod invariants {
             state = step(&state, &input, &profile);
 
             let speed = magnitude(state.velocity);
-            // Assert monotone decrease only while the previous speed was
-            // above the jerk-floor; once we are in jerk-carry-over territory
-            // the sign of velocity is implementation-defined.
-            if prev_speed > jerk_floor {
-                assert!(
-                    speed <= prev_speed + 1.0e-9,
-                    "tick {seq}: speed {speed} increased from previous {prev_speed} \
-                     while braking (above jerk floor {jerk_floor})"
-                );
-            }
+            assert!(
+                speed <= prev_speed + 1.0e-9,
+                "tick {seq}: speed {speed} increased from previous {prev_speed} \
+                 while braking — brake path must be monotone non-increasing"
+            );
+            // Velocity must never reverse sign during a brake-to-stop.
+            assert!(
+                state.velocity[0] >= -1.0e-9,
+                "tick {seq}: velocity[0] = {} flipped negative during brake",
+                state.velocity[0]
+            );
             prev_speed = speed;
         }
 
-        // After 50 ticks (5 s) the body must have effectively halted:
-        // remaining speed must be well below the 1-tick maximum travel.
-        let max_one_tick_speed = profile.max_speed * dt;
-        assert!(
-            prev_speed < max_one_tick_speed,
-            "speed after 50 braking ticks ({prev_speed}) should be below \
-             one-tick max ({max_one_tick_speed})"
+        assert_eq!(
+            state.velocity,
+            [0.0, 0.0, 0.0],
+            "after 50 brake ticks velocity must snap exactly to rest"
         );
+        assert_eq!(
+            state.acceleration,
+            [0.0, 0.0, 0.0],
+            "after 50 brake ticks acceleration must be cleared (no jerk carry-over)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Key-release rubber-band regression guard.
+    //
+    //    Reproduces the scenario reported by the bevy_client: steady-state
+    //    forward motion, then key release. Before the industry-aligned brake
+    //    refactor the jerk-limited decelerator carried residual negative
+    //    acceleration into the next tick, producing negative velocity and a
+    //    backward position jump (visible as a ~4 unit rubber-band). Now every
+    //    post-brake tick must be forward-only: velocity[0] ≥ 0 and position[0]
+    //    must not retreat below the previous tick's position.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_brake_never_produces_backward_motion() {
+        let profile = MovementProfile::default();
+
+        let mut state = MovementState {
+            position: [100.0, 0.0, 0.0],
+            velocity: [profile.max_speed, 0.0, 0.0],
+            acceleration: [0.0, 0.0, 0.0],
+            movement_mode: MovementMode::Grounded,
+            tick: 0,
+            seq: 0,
+        };
+        let mut prev_pos_x = state.position[0];
+
+        for seq in 1u32..=30 {
+            let input = mk_input(seq, [0.0, 0.0], 1.0, MOVEMENT_FLAG_BRAKE);
+            state = step(&state, &input, &profile);
+
+            assert!(
+                state.velocity[0] >= -1.0e-9,
+                "tick {seq}: velocity[0] = {} went negative after brake",
+                state.velocity[0]
+            );
+            assert!(
+                state.position[0] + 1.0e-9 >= prev_pos_x,
+                "tick {seq}: position[0] = {} retreated below previous {prev_pos_x} \
+                 — visible rubber-band on key release",
+                state.position[0]
+            );
+            prev_pos_x = state.position[0];
+        }
+
+        assert_eq!(state.velocity, [0.0, 0.0, 0.0]);
     }
 
     // -----------------------------------------------------------------------
