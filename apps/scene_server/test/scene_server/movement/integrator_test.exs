@@ -1,7 +1,7 @@
 defmodule SceneServer.Movement.IntegratorTest do
   use ExUnit.Case, async: true
 
-  alias SceneServer.Movement.{Engine, InputFrame, Integrator, Profile, State}
+  alias SceneServer.Movement.{CorrectionFlags, Engine, InputFrame, Integrator, Profile, State}
 
   test "integrator builds acceleration and velocity from directional input" do
     state = State.idle({0.0, 0.0, 0.0})
@@ -109,5 +109,121 @@ defmodule SceneServer.Movement.IntegratorTest do
       end)
 
     assert native_states == expected_states
+  end
+
+  describe "correction flags (C.2)" do
+    # build_ack is the legacy path (no input frame available): it must emit
+    # zero flags so existing callers that don't know about the bitfield
+    # stay wire-compatible.
+    test "build_ack emits zero correction_flags" do
+      state = %State{
+        tick: 3,
+        position: {0.0, 0.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      ack = Engine.build_ack(1, state, 7)
+      assert ack.correction_flags == 0
+    end
+
+    # Heuristic: player pushes in a direction but the resulting horizontal
+    # velocity opposes the ask AND is tiny → something is holding us in
+    # place (wall, knockback, collider). Flag COLLISION_PUSH so the client
+    # can force-replay regardless of positional error.
+    test "build_ack_with_intent flags COLLISION_PUSH when input is blocked" do
+      state = %State{
+        tick: 4,
+        position: {0.0, 0.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      frame = %InputFrame{
+        seq: 9,
+        client_tick: 4,
+        dt_ms: 100,
+        input_dir: {1.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0
+      }
+
+      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      assert CorrectionFlags.collision_push?(ack.correction_flags)
+    end
+
+    # Velocity follows input at a healthy magnitude → no push flag.
+    test "build_ack_with_intent does not flag collision when velocity follows input" do
+      state = %State{
+        tick: 4,
+        position: {0.0, 0.0, 0.0},
+        velocity: {50.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      frame = %InputFrame{
+        seq: 9,
+        client_tick: 4,
+        dt_ms: 100,
+        input_dir: {1.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0
+      }
+
+      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      assert ack.correction_flags == 0
+    end
+
+    # Zero input_dir → heuristic must not produce a false-positive push.
+    test "build_ack_with_intent ignores zero input_dir" do
+      state = %State{
+        tick: 4,
+        position: {0.0, 0.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      frame = %InputFrame{
+        seq: 9,
+        client_tick: 4,
+        dt_ms: 100,
+        input_dir: {0.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0
+      }
+
+      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      assert ack.correction_flags == 0
+    end
+
+    # Explicit TELEPORT passes through and combines with auto-detected bits.
+    test "build_ack_with_intent ORs explicit flags with auto-detected collision" do
+      state = %State{
+        tick: 4,
+        position: {0.0, 0.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded
+      }
+
+      frame = %InputFrame{
+        seq: 9,
+        client_tick: 4,
+        dt_ms: 100,
+        input_dir: {1.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0
+      }
+
+      status = CorrectionFlags.status_override()
+      ack = Engine.build_ack_with_intent(1, state, frame, status)
+
+      assert CorrectionFlags.status_override?(ack.correction_flags)
+      assert CorrectionFlags.collision_push?(ack.correction_flags)
+    end
   end
 end

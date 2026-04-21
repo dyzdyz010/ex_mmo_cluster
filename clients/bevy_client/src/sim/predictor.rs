@@ -6,10 +6,7 @@
 
 use crate::{
     input::commands::MoveInputFrame,
-    sim::{
-        profile::MovementProfile,
-        types::PredictedMoveState,
-    },
+    sim::{profile::MovementProfile, types::PredictedMoveState},
 };
 
 /// Advances the predicted local movement state by one input frame.

@@ -3,6 +3,7 @@
 use bevy::prelude::Vec3;
 use std::collections::VecDeque;
 
+use crate::sim::correction::CorrectionFlags;
 use crate::sim::types::RemoteMoveSnapshot;
 
 const MAX_BUFFERED_SNAPSHOTS: usize = 32;
@@ -66,6 +67,33 @@ impl RemotePlayerState {
 
     /// Pushes a newer authoritative remote snapshot into the interpolation buffer.
     pub fn push_snapshot(&mut self, snapshot: RemoteMoveSnapshot, received_at_secs: f64) {
+        self.push_snapshot_with_flags(snapshot, CorrectionFlags::NONE, received_at_secs);
+    }
+
+    /// Pushes a newer authoritative remote snapshot, honoring correction
+    /// flags on the authoritative path (C.3).
+    ///
+    /// When `flags` carries `TELEPORT` or `ANTI_CHEAT_REJECT`, the remote
+    /// actor has undergone a discontinuous jump; interpolating from the old
+    /// buffer would produce a visible slide. The buffer is cleared and
+    /// reseeded from this snapshot so the next `sample_motion` call renders
+    /// the new position directly and future snapshots form a fresh
+    /// continuous pair.
+    pub fn push_snapshot_with_flags(
+        &mut self,
+        snapshot: RemoteMoveSnapshot,
+        flags: CorrectionFlags,
+        received_at_secs: f64,
+    ) {
+        if flags.is_teleport() || flags.is_anti_cheat_reject() {
+            self.snapshots.clear();
+            self.snapshots.push_back(BufferedSnapshot {
+                snapshot,
+                received_at_secs,
+            });
+            return;
+        }
+
         if self
             .snapshots
             .back()
@@ -204,7 +232,80 @@ fn snapshot_time_secs(server_tick: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::correction::CorrectionFlags;
     use crate::sim::types::{MovementMode, RemoteMoveSnapshot};
+
+    fn snap(cid: i64, tick: u32, x: f32) -> RemoteMoveSnapshot {
+        RemoteMoveSnapshot {
+            cid,
+            server_tick: tick,
+            position: Vec3::new(x, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: MovementMode::Grounded,
+        }
+    }
+
+    #[test]
+    fn teleport_flag_clears_buffer_and_reseeds() {
+        let mut state = RemotePlayerState::from_snapshot(snap(9, 10, 0.0), 1.0);
+        state.push_snapshot(snap(9, 11, 10.0), 1.1);
+        state.push_snapshot(snap(9, 12, 20.0), 1.2);
+
+        // Server broadcasts a teleport discontinuity to tick 40 at x=500.
+        state.push_snapshot_with_flags(snap(9, 40, 500.0), CorrectionFlags::TELEPORT, 2.0);
+
+        assert_eq!(state.server_tick(), 40);
+        assert!((state.latest_position().x - 500.0).abs() < 1e-4);
+
+        // Sampling immediately after the reset stays at / near the new
+        // position instead of blending through 0..500 with the stale buffer.
+        let sample = state.sample_motion(2.0);
+        assert!(
+            (sample.position.x - 500.0).abs() < 1e-4,
+            "expected reseeded position 500, got {}",
+            sample.position.x
+        );
+
+        // The next normal snapshot appends and forms a fresh pair.
+        state.push_snapshot(snap(9, 41, 510.0), 2.1);
+        let mid = state.sample_motion(2.1);
+        assert!(mid.position.x >= 500.0 && mid.position.x <= 510.0);
+    }
+
+    #[test]
+    fn anti_cheat_reject_takes_same_reset_path_as_teleport() {
+        let mut state = RemotePlayerState::from_snapshot(snap(9, 10, 0.0), 1.0);
+        state.push_snapshot(snap(9, 11, 10.0), 1.1);
+
+        state.push_snapshot_with_flags(snap(9, 12, -50.0), CorrectionFlags::ANTI_CHEAT_REJECT, 1.2);
+
+        let sample = state.sample_motion(1.2);
+        assert!((sample.position.x - -50.0).abs() < 1e-4);
+        assert_eq!(state.server_tick(), 12);
+    }
+
+    #[test]
+    fn empty_flags_preserve_existing_push_semantics() {
+        let mut state = RemotePlayerState::from_snapshot(snap(9, 10, 0.0), 1.0);
+        state.push_snapshot_with_flags(snap(9, 11, 10.0), CorrectionFlags::NONE, 1.1);
+        state.push_snapshot_with_flags(snap(9, 12, 20.0), CorrectionFlags::COLLISION_PUSH, 1.2);
+
+        // Non-reset flags must not touch the buffer — all three ticks present.
+        assert_eq!(state.server_tick(), 12);
+        assert!((state.latest_position().x - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn stale_teleport_still_resets_on_authoritative_flag() {
+        // Even if the arrival tick is older than what the buffer already
+        // holds, the TELEPORT flag is an authoritative override — we must
+        // honor the reset rather than dropping the snapshot as out-of-order.
+        let mut state = RemotePlayerState::from_snapshot(snap(9, 30, 300.0), 1.3);
+        state.push_snapshot_with_flags(snap(9, 5, -10.0), CorrectionFlags::TELEPORT, 2.0);
+        assert_eq!(state.server_tick(), 5);
+        assert!((state.latest_position().x - -10.0).abs() < 1e-4);
+    }
 
     #[test]
     fn samples_remote_position_with_velocity_and_acceleration() {
@@ -309,12 +410,12 @@ mod tests {
             1.3,
         );
 
-        // now_secs = 1.35:
-        //   estimated_server_time = 1.3 + clamp(1.35 - 1.3, 0, 0.25) = 1.35
-        //   playback_server_time  = 1.35 - 0.15 = 1.20  (exactly tick 12)
-        //   pair [12, 13], t = (1.20 - 1.20) / 0.1 = 0.0
+        // now_secs = 1.42:
+        //   estimated_server_time = 1.3 + clamp(1.42 - 1.3, 0, 0.25) = 1.42
+        //   playback_server_time  = 1.42 - INTERPOLATION_DELAY_SECS (0.22) = 1.20
+        //   exactly tick 12 — pair [12, 13], t = (1.20 - 1.20) / 0.1 = 0.0
         //   hermite at t=0 returns p0 = tick12_position exactly.
-        let sample = state.sample_motion(1.35);
+        let sample = state.sample_motion(1.42);
         let diff = (sample.position - tick12_position).length();
         assert!(
             diff < 1e-4,
@@ -364,18 +465,16 @@ mod tests {
 
         // now_secs = 1.35:
         //   estimated_server_time = 1.3 + clamp(0.05, 0, 0.25) = 1.35
-        //   playback_server_time  = 1.35 - 0.15 = 1.20
-        //   pair_for_playback_time checks [10,11] (1.20 not in [1.0,1.1])
-        //   then [11,13] (1.20 in [1.1, 1.3]) — match, Hermite interpolates.
+        //   playback_server_time  = 1.35 - 0.22 = 1.13
+        //   pair [10,11]: 1.13 not in [1.0, 1.1]  → no match
+        //   pair [11,13]: 1.13 in  [1.1, 1.3]     → Hermite interpolates.
         let sample = state.sample_motion(1.35);
 
-        // The Hermite playback lives inside the [11,13] pair (playback time 1.20
-        // between endpoints 1.10 and 1.30). t = (1.20-1.10)/(1.30-1.10) = 0.5, so
-        // a straight Hermite interpolate with constant velocity 1 u/s lands
-        // exactly on the segment midpoint (x=20.0). We tighten the lower bound
-        // to 10.0 (the left endpoint tick-11 position) to assert that playback
-        // did not fall back to the oldest snapshot or reset to origin — loose
-        // [0, 30] would have masked both regressions.
+        // The Hermite playback lives inside the [11,13] pair (playback time 1.13
+        // between endpoints 1.10 and 1.30). The assertion tightens the lower
+        // bound to 10.0 (the left endpoint tick-11 position) to confirm
+        // playback did not fall back to the oldest snapshot or reset to
+        // origin — loose [0, 30] would have masked both regressions.
         assert!(
             sample.position.x >= 10.0,
             "position.x {} below left endpoint 10.0 — playback may have \

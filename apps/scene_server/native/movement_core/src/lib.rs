@@ -9,7 +9,7 @@ pub mod mode;
 pub mod profile;
 pub mod state;
 
-pub use ack::MovementAck;
+pub use ack::{CorrectionFlags, MovementAck};
 pub use input::{InputFrame, MOVEMENT_FLAG_BRAKE};
 pub use mode::MovementMode;
 pub use profile::MovementProfile;

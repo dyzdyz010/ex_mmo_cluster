@@ -7,6 +7,7 @@
 //! stable identifier in a namespace both sides agree on.
 
 use crate::sim::{
+    correction::CorrectionKind,
     governance::{ReplayAction, ReplayGovernance},
     history::{InputHistory, PredictedHistory},
     predictor,
@@ -33,6 +34,7 @@ pub fn reconcile(
     governance: &ReplayGovernance,
 ) -> Option<ReconcileResult> {
     let authoritative = authoritative_from_ack(ack);
+    let kind = CorrectionKind::from_bits(ack.correction_flags);
 
     // Drop inputs covered by the ack. Prefer seq-space because `auth_tick`
     // is the server's counter — client InputHistory lives in seq-space.
@@ -47,6 +49,33 @@ pub fn reconcile(
         input_history.frames_after_tick_cloned(ack.auth_tick)
     };
     let pending_inputs = pending_frames.len();
+
+    // Semantic dispatch: the server tells us *why* this correction happened.
+    // Honour intent before any distance-based branching — scripted teleports
+    // and anti-cheat rejections must wipe history regardless of delta size;
+    // status overrides apply the ack without replay; collision push forces
+    // a replay even under the soft threshold.
+    match kind {
+        CorrectionKind::Teleport | CorrectionKind::AntiCheatReject => {
+            return Some(dispatch_teleport(
+                authoritative,
+                input_history,
+                predicted_history,
+                pending_inputs,
+            ));
+        }
+        CorrectionKind::StatusOverride => {
+            return Some(dispatch_status_override(
+                ack,
+                authoritative,
+                predicted_history,
+                pending_inputs,
+            ));
+        }
+        CorrectionKind::CollisionPush | CorrectionKind::None => {}
+    }
+
+    let force_replay = matches!(kind, CorrectionKind::CollisionPush);
 
     // Look up the predicted state that corresponds to this ack.
     let predicted_match = predicted_history
@@ -64,12 +93,13 @@ pub fn reconcile(
             predicted_history,
             pending_inputs,
             governance,
+            force_replay,
         );
     };
 
     let correction_distance = predicted.position.distance(authoritative.position);
 
-    if correction_distance <= governance.soft_position_error {
+    if correction_distance <= governance.soft_position_error && !force_replay {
         // Refresh the history tip with the latest authoritative sample so
         // consumers always observe the freshest server state, including the
         // auth_tick advancing past a latched ack_seq.
@@ -123,6 +153,8 @@ pub fn reconcile(
         replay_frames = replay_frames.split_off(start);
         input_history.retain_recent(governance.max_pending_inputs);
         ReplayAction::WindowTrimmed
+    } else if force_replay {
+        ReplayAction::ForcedReplay
     } else {
         ReplayAction::Replayed
     };
@@ -141,12 +173,67 @@ pub fn reconcile(
     })
 }
 
+fn dispatch_teleport(
+    authoritative: PredictedMoveState,
+    input_history: &mut InputHistory,
+    predicted_history: &mut PredictedHistory,
+    pending_inputs: usize,
+) -> ReconcileResult {
+    let correction_distance = predicted_history
+        .latest()
+        .map(|latest| latest.position.distance(authoritative.position))
+        .unwrap_or(0.0);
+
+    input_history.clear();
+    predicted_history.clear();
+    predicted_history.push(authoritative.clone());
+
+    ReconcileResult {
+        action: ReplayAction::Teleport,
+        latest_state: authoritative,
+        replayed_frames: 0,
+        pending_inputs,
+        correction_distance,
+    }
+}
+
+fn dispatch_status_override(
+    ack: &MovementAck,
+    authoritative: PredictedMoveState,
+    predicted_history: &mut PredictedHistory,
+    pending_inputs: usize,
+) -> ReconcileResult {
+    let correction_distance = predicted_history
+        .latest()
+        .map(|latest| latest.position.distance(authoritative.position))
+        .unwrap_or(0.0);
+
+    // Truncate predictions past the ack — they were based on pre-override
+    // assumptions (e.g. normal velocity) that no longer hold. Future
+    // predictor steps resume from the authoritative sample.
+    if ack.ack_seq > 0 {
+        predicted_history.truncate_after_seq(ack.ack_seq);
+    } else {
+        predicted_history.truncate_after(ack.auth_tick);
+    }
+    predicted_history.push(authoritative.clone());
+
+    ReconcileResult {
+        action: ReplayAction::StatusOverride,
+        latest_state: authoritative,
+        replayed_frames: 0,
+        pending_inputs,
+        correction_distance,
+    }
+}
+
 fn reconcile_without_match(
     authoritative: PredictedMoveState,
     input_history: &mut InputHistory,
     predicted_history: &mut PredictedHistory,
     pending_inputs: usize,
     governance: &ReplayGovernance,
+    force_replay: bool,
 ) -> Option<ReconcileResult> {
     let latest = predicted_history.latest().cloned();
     let correction_distance = latest
@@ -171,9 +258,14 @@ fn reconcile_without_match(
     // prediction, record the authoritative sample for future lookups, and
     // let the visual-smoothing layer blend the drift out.
     predicted_history.push(authoritative.clone());
-    let latest_state = latest.unwrap_or(authoritative);
+    let latest_state = latest.unwrap_or_else(|| authoritative.clone());
+    let action = if force_replay {
+        ReplayAction::ForcedReplay
+    } else {
+        ReplayAction::Accepted
+    };
     Some(ReconcileResult {
-        action: ReplayAction::Accepted,
+        action,
         latest_state,
         replayed_frames: 0,
         pending_inputs,
@@ -197,7 +289,10 @@ mod tests {
     use super::*;
     use crate::{
         input::commands::MoveInputFrame,
-        sim::types::{MovementMode, PredictedMoveState},
+        sim::{
+            correction::CorrectionFlags,
+            types::{MovementMode, PredictedMoveState},
+        },
     };
     use bevy::prelude::{Vec2, Vec3};
 
@@ -367,7 +462,11 @@ mod tests {
         );
         // Latest state must not drift: position should be identical.
         assert!(
-            result2.latest_state.position.distance(latest_after_first.position) < 1e-4,
+            result2
+                .latest_state
+                .position
+                .distance(latest_after_first.position)
+                < 1e-4,
             "latest_state drifted after duplicate ack: {:?} vs {:?}",
             result2.latest_state.position,
             latest_after_first.position
@@ -483,14 +582,13 @@ mod tests {
             prev = s;
         }
         // reference_states[k] is the state AFTER tick k (seqs 1..16).
-        let reference_final = reference_states[16].position;    // after all 16
-        let reference_at_4 = reference_states[4].position;     // after tick 4
+        let reference_final = reference_states[16].position; // after all 16
+        let reference_at_4 = reference_states[4].position; // after tick 4
 
         // --- Simulation path ---
         // Client predicted 4 ticks cleanly, then a server ack for tick=4
         // arrives with a position shifted by 5 units on X vs the prediction.
-        let auth_anchor_position =
-            reference_states[4].position + Vec3::new(5.0, 0.0, 0.0);
+        let auth_anchor_position = reference_states[4].position + Vec3::new(5.0, 0.0, 0.0);
 
         let auth_anchor = PredictedMoveState {
             seq: 4,
@@ -751,6 +849,246 @@ mod tests {
         assert_eq!(result.action, ReplayAction::Accepted);
         // keeps latest predicted state rather than hard snapping to ack
         assert_eq!(result.latest_state.position, Vec3::new(12.0, 0.0, 0.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // C.2 semantic-flag dispatch
+    // -----------------------------------------------------------------------
+
+    /// TELEPORT forces a hard snap even when the positional delta would
+    /// otherwise be accepted under `soft_position_error`.
+    #[test]
+    fn teleport_flag_hard_snaps_regardless_of_distance() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+
+        let f1 = make_input(1);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+
+        // Position delta of 0.5 would normally be Accepted (soft=2.0), but
+        // TELEPORT must still hard-snap and clear history.
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: s1.position + Vec3::new(0.5, 0.0, 0.0),
+            velocity: s1.velocity,
+            acceleration: s1.acceleration,
+            movement_mode: s1.movement_mode,
+            correction_flags: CorrectionFlags::TELEPORT.bits(),
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::Teleport);
+        assert_eq!(input_history.len(), 0, "TELEPORT must clear input history");
+        assert_eq!(result.latest_state.position, ack.position);
+        // The single retained predicted entry is the authoritative sample.
+        assert_eq!(predicted_history.latest().unwrap().position, ack.position);
+    }
+
+    /// ANTI_CHEAT_REJECT has teleport-level severity: same hard-snap path.
+    #[test]
+    fn anti_cheat_reject_flag_takes_teleport_path() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+        let f1 = make_input(1);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: s1.position + Vec3::new(0.1, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: s1.movement_mode,
+            correction_flags: CorrectionFlags::ANTI_CHEAT_REJECT.bits(),
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::Teleport);
+        assert_eq!(input_history.len(), 0);
+    }
+
+    /// COLLISION_PUSH forces a replay even when the positional delta is
+    /// under `soft_position_error` (being pressed into a wall keeps the
+    /// server position near the predicted position but the client must
+    /// still re-step pending inputs against the authoritative velocity).
+    #[test]
+    fn collision_flag_forces_replay_below_soft_threshold() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+
+        let f1 = make_input(1);
+        let f2 = make_input(2);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+        input_history.push(f2.clone());
+        let s2 = predictor::step(&s1, &f2, &profile);
+        predicted_history.push(s2.clone());
+
+        // Tiny position delta — normally Accepted, but the flag forces
+        // ReplayAction::ForcedReplay and re-runs pending inputs against
+        // the authoritative (zero) velocity.
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: s1.position + Vec3::new(0.1, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: s1.movement_mode,
+            correction_flags: CorrectionFlags::COLLISION_PUSH.bits(),
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(
+            result.action,
+            ReplayAction::ForcedReplay,
+            "collision push with pending inputs must force replay"
+        );
+        assert_eq!(
+            result.replayed_frames, 1,
+            "the single pending input after ack_seq=1 must be replayed"
+        );
+        assert!(
+            result.correction_distance < 1.0,
+            "correction distance was {}, expected small value",
+            result.correction_distance
+        );
+    }
+
+    /// STATUS_OVERRIDE applies the authoritative sample without replaying
+    /// pending inputs; predictions past the ack are truncated so subsequent
+    /// steps resume from the overridden state.
+    #[test]
+    fn status_override_flag_applies_auth_without_replay() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+        let f1 = make_input(1);
+        let f2 = make_input(2);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+        input_history.push(f2.clone());
+        let s2 = predictor::step(&s1, &f2, &profile);
+        predicted_history.push(s2.clone());
+
+        let override_position = s1.position + Vec3::new(2.5, 0.0, 0.0);
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: override_position,
+            // Stun zeroes velocity.
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: MovementMode::Grounded,
+            correction_flags: CorrectionFlags::STATUS_OVERRIDE.bits(),
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::StatusOverride);
+        assert_eq!(
+            result.replayed_frames, 0,
+            "status override must not replay pending inputs"
+        );
+        assert_eq!(result.latest_state.position, override_position);
+        assert_eq!(result.latest_state.velocity, Vec3::ZERO);
+        // Predictions past the ack tick must have been truncated: the tip
+        // now carries the overridden velocity rather than the pre-override
+        // prediction at s2.
+        let tip = predicted_history.latest().unwrap();
+        assert_eq!(tip.velocity, Vec3::ZERO);
+        assert_eq!(tip.position, override_position);
+    }
+
+    /// Semantic priority — AntiCheatReject wins when multiple bits coexist.
+    #[test]
+    fn combined_anti_cheat_plus_collision_takes_teleport_path() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::ZERO);
+        predicted_history.push(origin.clone());
+        let f1 = make_input(1);
+        input_history.push(f1.clone());
+        let s1 = predictor::step(&origin, &f1, &profile);
+        predicted_history.push(s1.clone());
+
+        let bits =
+            CorrectionFlags::ANTI_CHEAT_REJECT.bits() | CorrectionFlags::COLLISION_PUSH.bits();
+        let ack = MovementAck {
+            ack_seq: 1,
+            auth_tick: 1,
+            position: s1.position + Vec3::new(0.05, 0.0, 0.0),
+            velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
+            movement_mode: s1.movement_mode,
+            correction_flags: bits,
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::Teleport);
+        assert_eq!(input_history.len(), 0);
     }
 
     #[test]

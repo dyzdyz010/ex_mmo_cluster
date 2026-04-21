@@ -383,24 +383,20 @@ impl ClientRuntime {
                 speed_scale,
                 movement_flags,
             } if self.phase == ConnectionPhase::InScene => {
-                let current_before = self
-                    .local_prediction
-                    .current_state()
-                    .cloned()
-                    .map(|state| {
-                        (
-                            format_vec(&[
-                                state.position.x as f64,
-                                state.position.y as f64,
-                                state.position.z as f64,
-                            ]),
-                            format_vec(&[
-                                state.velocity.x as f64,
-                                state.velocity.y as f64,
-                                state.velocity.z as f64,
-                            ]),
-                        )
-                    });
+                let current_before = self.local_prediction.current_state().cloned().map(|state| {
+                    (
+                        format_vec(&[
+                            state.position.x as f64,
+                            state.position.y as f64,
+                            state.position.z as f64,
+                        ]),
+                        format_vec(&[
+                            state.velocity.x as f64,
+                            state.velocity.y as f64,
+                            state.velocity.z as f64,
+                        ]),
+                    )
+                });
                 let frame = self.local_prediction.build_input_frame(
                     bevy::prelude::Vec2::new(input_dir[0], input_dir[1]),
                     dt_ms,
@@ -485,8 +481,14 @@ impl ClientRuntime {
             } if self.phase == ConnectionPhase::InScene => {
                 let request_id = self.next_request_id();
                 let (target_kind, cid, position) = match (target_cid, target_position) {
-                    (Some(cid), _) => (crate::protocol::SkillTargetKind::Actor, cid, [0.0, 0.0, 0.0]),
-                    (None, Some(position)) => (crate::protocol::SkillTargetKind::Point, -1, position),
+                    (Some(cid), _) => (
+                        crate::protocol::SkillTargetKind::Actor,
+                        cid,
+                        [0.0, 0.0, 0.0],
+                    ),
+                    (None, Some(position)) => {
+                        (crate::protocol::SkillTargetKind::Point, -1, position)
+                    }
                     _ => (crate::protocol::SkillTargetKind::Auto, -1, [0.0, 0.0, 0.0]),
                 };
                 outcome.push_outbound(OutboundAction::Tcp(ClientMessage::SkillCast {
@@ -1047,8 +1049,12 @@ impl ClientRuntime {
 
                 let server_mid = (server_recv_ts as f64 + server_send_ts as f64) / 2.0;
                 let client_mid = (client_send + now) / 2.0;
+                let rtt_ms = now - client_send;
+                // Feed the jitter estimator so the next reconcile uses the
+                // adaptive soft-position threshold (C.1).
+                self.local_prediction.observe_rtt(rtt_ms as f32);
                 outcome.push_event(NetworkEvent::TimeSync {
-                    rtt_ms: now - client_send,
+                    rtt_ms,
                     offset_ms: server_mid - client_mid,
                 });
             }
@@ -1638,7 +1644,12 @@ fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
                     ("source_cid", source_cid.to_string()),
                     ("skill_id", skill_id.to_string()),
                     ("cue_kind", format!("{cue_kind:?}")),
-                    ("target_cid", target_cid.map(|v| v.to_string()).unwrap_or_else(|| "n/a".to_string())),
+                    (
+                        "target_cid",
+                        target_cid
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "n/a".to_string()),
+                    ),
                     ("origin", format_vec(origin)),
                     ("target_position", format_vec(target_position)),
                     ("radius", format!("{radius:.1}")),

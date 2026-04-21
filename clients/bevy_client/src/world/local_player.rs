@@ -7,6 +7,7 @@ use crate::{
     sim::{
         governance::{ReplayAction, ReplayGovernance, ReplayGovernanceStats},
         history::{InputHistory, PredictedHistory},
+        jitter::JitterEstimator,
         predictor,
         profile::MovementProfile,
         reconcile::{ReconcileResult, reconcile},
@@ -26,6 +27,7 @@ pub struct LocalPredictionRuntime {
     profile: MovementProfile,
     governance: ReplayGovernance,
     governance_stats: ReplayGovernanceStats,
+    jitter: JitterEstimator,
 }
 
 impl Default for LocalPredictionRuntime {
@@ -40,6 +42,7 @@ impl Default for LocalPredictionRuntime {
             profile: MovementProfile::default(),
             governance: ReplayGovernance::default(),
             governance_stats: ReplayGovernanceStats::default(),
+            jitter: JitterEstimator::default(),
         }
     }
 }
@@ -159,6 +162,24 @@ impl LocalPredictionRuntime {
         &self.governance_stats
     }
 
+    /// Feeds a fresh RTT sample (ms) into the jitter estimator and updates
+    /// the adaptive soft-position threshold so the next reconcile call sees
+    /// the jitter-inflated value.
+    pub fn observe_rtt(&mut self, rtt_ms: f32) {
+        let jitter_ms = self.jitter.observe(rtt_ms);
+        self.governance.apply_jitter(jitter_ms);
+    }
+
+    /// Returns the currently-estimated one-way jitter (ms).
+    pub fn current_jitter_ms(&self) -> f32 {
+        self.jitter.current()
+    }
+
+    /// Returns the currently-effective soft-position threshold.
+    pub fn current_soft_position_error(&self) -> f32 {
+        self.governance.soft_position_error
+    }
+
     fn extend_prediction_through(&mut self, auth_tick: u32) {
         if self.current_state.is_none() {
             return;
@@ -214,6 +235,31 @@ mod tests {
     }
 
     #[test]
+    fn observe_rtt_inflates_soft_threshold_then_clamps() {
+        let mut runtime = LocalPredictionRuntime::default();
+        let base = runtime.current_soft_position_error();
+
+        // Seed RTT so the EWMA has a previous sample to compare against.
+        runtime.observe_rtt(40.0);
+        assert!((runtime.current_jitter_ms() - 0.0).abs() < 1e-6);
+        assert!((runtime.current_soft_position_error() - base).abs() < 1e-6);
+
+        // 140 ms spike → |Δ| = 100, EWMA at α=0.15 → 15 ms jitter →
+        // +0.02 * 15 = +0.3 bump above the 2.0 floor.
+        runtime.observe_rtt(140.0);
+        let after_spike = runtime.current_soft_position_error();
+        assert!(after_spike > base, "soft threshold should inflate");
+        assert!(after_spike <= 8.0, "soft threshold must stay clamped");
+
+        // Saturate the adaptive path and confirm the cap is honored.
+        for _ in 0..200 {
+            runtime.observe_rtt(1_000.0);
+            runtime.observe_rtt(0.0);
+        }
+        assert!(runtime.current_soft_position_error() <= 8.0 + 1e-6);
+    }
+
+    #[test]
     fn runtime_extends_prediction_when_ack_tick_advances_past_last_sent_frame() {
         let mut runtime = LocalPredictionRuntime::default();
         runtime.reset(Vec3::ZERO, None);
@@ -227,7 +273,8 @@ mod tests {
             client_tick: 2,
             ..frame.clone()
         };
-        let predicted_two = predictor::step(&predicted_one, &frame_tick_two, &MovementProfile::default());
+        let predicted_two =
+            predictor::step(&predicted_one, &frame_tick_two, &MovementProfile::default());
 
         let ack = MovementAck {
             ack_seq: frame.seq,
