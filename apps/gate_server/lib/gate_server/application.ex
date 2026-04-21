@@ -57,12 +57,16 @@ defmodule GateServer.Application do
   end
 
   defp stdio_child do
-    enabled? =
-      Application.get_env(:gate_server, :stdio_interface, false) ||
-        System.get_env("GATE_SERVER_STDIO") in ["1", "true", "TRUE", "yes", "on"]
+    if @is_test_build do
+      nil
+    else
+      enabled? =
+        Application.get_env(:gate_server, :stdio_interface, false) ||
+          System.get_env("GATE_SERVER_STDIO") in ["1", "true", "TRUE", "yes", "on"]
 
-    if not @is_test_build and enabled? do
-      {GateServer.StdioInterface, name: GateServer.StdioInterface}
+      if enabled? do
+        {GateServer.StdioInterface, name: GateServer.StdioInterface}
+      end
     end
   end
 end

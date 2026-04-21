@@ -26,7 +26,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -76,7 +76,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -97,8 +97,8 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: mmo_dev
-          POSTGRES_PASSWORD: mmo_dev
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: mmo_dev
         ports:
           - 5432:5432
@@ -114,7 +114,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -147,7 +147,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -174,8 +174,8 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: mmo_dev
-          POSTGRES_PASSWORD: mmo_dev
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: mmo_dev
         ports:
           - 5432:5432
@@ -191,7 +191,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -225,7 +225,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -265,7 +265,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -297,8 +297,8 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: mmo_dev
-          POSTGRES_PASSWORD: mmo_dev
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: mmo_dev
         ports:
           - 5432:5432
@@ -314,7 +314,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -349,7 +349,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.3.1"
-          elixir-version: "1.18.4"
+          elixir-version: "1.19.5"
 
       - name: Cache deps
         uses: actions/cache@v4
