@@ -1,0 +1,21 @@
+{
+  "name": "ex-mmo-web-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based prototype client for ex_mmo_cluster voxel world (mirrors UE test1 feature plan)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

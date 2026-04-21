@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ex_mmo Voxel Web Client</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
+      #app { width: 100vw; height: 100vh; display: block; }
+      #hud {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        font-size: 12px;
+        line-height: 1.5;
+        pointer-events: none;
+        text-shadow: 0 0 2px #000;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="hud"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
