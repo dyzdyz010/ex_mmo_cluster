@@ -4,7 +4,6 @@ import {
   Mesh,
   MeshStandardMaterial,
   RingGeometry,
-  Vector2,
   Vector3,
 } from "three";
 import { installCli, type CliCommandHandler, type CliCommandResult } from "../observe/cli";
@@ -53,7 +52,6 @@ export class AppRuntime implements CliCommandHandler {
   private localPendingCorrection = new Vector3();
   private latestAuthoritativePosition = new Vector3();
   private remoteRenderedPosition = new Vector3();
-  private readonly localFacing = new Vector3(0, 0, 1);
   private diagnosticsAccumulatorMs = 0;
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -123,7 +121,6 @@ export class AppRuntime implements CliCommandHandler {
   private readonly tick = (nowMs: number): void => {
     const dtMs = Math.max(0, nowMs - this.lastFrameAtMs);
     this.lastFrameAtMs = nowMs;
-    this.sceneHandles.update(dtMs / 1000);
     const transportTick = this.movementTransport.tick(nowMs, dtMs);
     this.currentTransportMode = this.movementTransport.mode;
 
@@ -139,10 +136,11 @@ export class AppRuntime implements CliCommandHandler {
 
     this.consumeAuthority(nowMs, transportTick.acknowledgements);
     this.consumeRemoteSnapshots(nowMs, transportTick.remoteSnapshots);
-    this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
-    this.chunkRenderer.setTargetHighlights(this.currentSelection);
     this.advanceLocalRenderPrediction(dtMs / 1000);
     this.updateAvatarTransforms(nowMs / 1000);
+    this.sceneHandles.update(dtMs / 1000);
+    this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
+    this.chunkRenderer.setTargetHighlights(this.currentSelection);
     this.chunkRenderer.syncDirtyChunks(this.worldAdapter.store, this.logger);
     this.updateHud();
     this.maybeEmitDiagnostics(dtMs);
@@ -442,14 +440,6 @@ export class AppRuntime implements CliCommandHandler {
   }
 
   private updateAvatarTransforms(nowSecs: number): void {
-    const currentState = this.localPrediction.getCurrentState();
-    if (currentState) {
-      const horizontalVelocity = new Vector2(currentState.velocity.x, currentState.velocity.z);
-      if (horizontalVelocity.lengthSq() > 1) {
-        this.localFacing.set(horizontalVelocity.x, 0, horizontalVelocity.y).normalize();
-      }
-    }
-
     const localDisplay = this.groundActorPosition(this.localRenderedPosition, 60);
     const authorityDisplay = this.groundActorPosition(this.latestAuthoritativePosition, 45);
     const remoteDisplay = this.groundActorPosition(this.remoteRenderedPosition, 60);
@@ -459,7 +449,7 @@ export class AppRuntime implements CliCommandHandler {
     this.remoteAvatar.position.copy(remoteDisplay);
     this.syncRing.position.set(localDisplay.x, localDisplay.y - 59, localDisplay.z);
     this.syncRing.rotation.z = nowSecs * 0.25;
-    this.sceneHandles.setCameraFollow(localDisplay, this.localFacing);
+    this.sceneHandles.setCameraFollow(localDisplay);
   }
 
   private updateHud(): void {
@@ -484,7 +474,7 @@ export class AppRuntime implements CliCommandHandler {
       `reconcile: corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPrediction.getCurrentJitterMs().toFixed(2)}  soft=${this.localPrediction.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.worldAdapter.store.editStats.placed} broken=${this.worldAdapter.store.editStats.broken} rejected=${this.worldAdapter.store.editStats.rejected} conflicts=${this.worldAdapter.store.editStats.conflicts}`,
-      "controls: third-person follow camera, WASD move avatar, F place, G break, 1-4 material",
+      "controls: click or drag to orbit camera, wheel zoom, WASD move, F place, G break, 1-4 material",
       "cli: window.__voxelCli?.run(\"snapshot\")",
     ].join("\n");
   }

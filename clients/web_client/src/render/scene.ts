@@ -13,12 +13,22 @@ import {
 } from "three";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 
+const CAMERA_LOOK_HEIGHT = 110;
+const CAMERA_POSITION_SMOOTHING_HZ = 10;
+const CAMERA_TARGET_SMOOTHING_HZ = 12;
+const CAMERA_YAW_SENSITIVITY = 0.005;
+const CAMERA_PITCH_SENSITIVITY = 0.004;
+const CAMERA_MIN_PITCH = 0.2;
+const CAMERA_MAX_PITCH = 1.15;
+const CAMERA_MIN_DISTANCE = 180;
+const CAMERA_MAX_DISTANCE = 620;
+
 export interface SceneHandles {
   renderer: WebGLRenderer;
   scene: Scene;
   camera: PerspectiveCamera;
   worldRoot: Group;
-  setCameraFollow: (target: Vector3, facing: Vector3) => void;
+  setCameraFollow: (target: Vector3) => void;
   update: (dtSecs: number) => void;
   dispose: () => void;
 }
@@ -37,10 +47,16 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   camera.position.set(chunkExtent * 0.35, 480, chunkExtent * 0.35);
   camera.lookAt(0, 140, 0);
 
-  const cameraFollowTarget = new Vector3(0, 140, 0);
-  const cameraFacing = new Vector3(0, 0, 1);
+  const cameraFollowTarget = new Vector3(0, 0, 0);
+  const smoothedFollowTarget = new Vector3(0, 0, 0);
   const currentLookAt = new Vector3(0, 140, 0);
   const currentCameraPosition = camera.position.clone();
+  let orbitYaw = Math.PI * 0.25;
+  let orbitPitch = 0.58;
+  let orbitDistance = 410;
+  let dragActive = false;
+  let lastPointerClientX = 0;
+  let lastPointerClientY = 0;
 
   const ambient = new AmbientLight(0xffffff, 0.25);
   scene.add(ambient);
@@ -68,21 +84,84 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   };
   window.addEventListener("resize", onResize);
 
-  const setCameraFollow = (target: Vector3, facing: Vector3) => {
-    cameraFollowTarget.copy(target);
-    if (facing.lengthSq() > 1e-4) {
-      cameraFacing.copy(facing).normalize();
+  const onPointerDown = (event: PointerEvent) => {
+    dragActive = true;
+    lastPointerClientX = event.clientX;
+    lastPointerClientY = event.clientY;
+
+    if (document.pointerLockElement !== canvas) {
+      try {
+        canvas.requestPointerLock();
+      } catch {
+        // Some browsers refuse pointer lock; drag fallback still works.
+      }
     }
   };
 
-  const update = (dtSecs: number) => {
-    const lookAtTarget = cameraFollowTarget.clone().add(new Vector3(0, 110, 0));
-    const desiredPosition = lookAtTarget
-      .clone()
-      .add(cameraFacing.clone().multiplyScalar(-340))
-      .add(new Vector3(0, 220, 0));
+  const onPointerUp = () => {
+    if (document.pointerLockElement !== canvas) {
+      dragActive = false;
+    }
+  };
 
-    const lerpAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * 8);
+  const onPointerMove = (event: PointerEvent) => {
+    const pointerLocked = document.pointerLockElement === canvas;
+    if (!pointerLocked && !dragActive) {
+      return;
+    }
+
+    const deltaX = pointerLocked ? event.movementX : event.clientX - lastPointerClientX;
+    const deltaY = pointerLocked ? event.movementY : event.clientY - lastPointerClientY;
+
+    lastPointerClientX = event.clientX;
+    lastPointerClientY = event.clientY;
+
+    orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
+    orbitPitch = clamp(orbitPitch - deltaY * CAMERA_PITCH_SENSITIVITY, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+  };
+
+  const onPointerLeave = () => {
+    if (document.pointerLockElement !== canvas) {
+      dragActive = false;
+    }
+  };
+
+  const onPointerLockChange = () => {
+    if (document.pointerLockElement !== canvas) {
+      dragActive = false;
+    }
+  };
+
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    orbitDistance = clamp(orbitDistance + event.deltaY * 0.35, CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+  };
+
+  canvas.addEventListener("pointerdown", onPointerDown);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerleave", onPointerLeave);
+  document.addEventListener("pointerlockchange", onPointerLockChange);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+
+  const setCameraFollow = (target: Vector3) => {
+    cameraFollowTarget.copy(target);
+  };
+
+  const update = (dtSecs: number) => {
+    const targetAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * CAMERA_TARGET_SMOOTHING_HZ);
+    smoothedFollowTarget.lerp(cameraFollowTarget, targetAlpha);
+
+    const lookAtTarget = smoothedFollowTarget.clone().add(new Vector3(0, CAMERA_LOOK_HEIGHT, 0));
+    const cosPitch = Math.cos(orbitPitch);
+    const orbitOffset = new Vector3(
+      Math.sin(orbitYaw) * cosPitch,
+      Math.sin(orbitPitch),
+      Math.cos(orbitYaw) * cosPitch,
+    ).multiplyScalar(orbitDistance);
+    const desiredPosition = lookAtTarget.clone().add(orbitOffset);
+
+    const lerpAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * CAMERA_POSITION_SMOOTHING_HZ);
     currentLookAt.lerp(lookAtTarget, lerpAlpha);
     currentCameraPosition.lerp(desiredPosition, lerpAlpha);
     camera.position.copy(currentCameraPosition);
@@ -91,8 +170,21 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
 
   const dispose = () => {
     window.removeEventListener("resize", onResize);
+    canvas.removeEventListener("pointerdown", onPointerDown);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerleave", onPointerLeave);
+    document.removeEventListener("pointerlockchange", onPointerLockChange);
+    canvas.removeEventListener("wheel", onWheel);
+    if (document.pointerLockElement === canvas) {
+      document.exitPointerLock();
+    }
     renderer.dispose();
   };
 
   return { renderer, scene, camera, worldRoot, setCameraFollow, update, dispose };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
