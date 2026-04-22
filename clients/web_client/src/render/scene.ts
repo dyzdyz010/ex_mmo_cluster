@@ -22,6 +22,7 @@ const CAMERA_MIN_PITCH = 0.2;
 const CAMERA_MAX_PITCH = 1.15;
 const CAMERA_MIN_DISTANCE = 180;
 const CAMERA_MAX_DISTANCE = 620;
+const CAMERA_SNAP_DISTANCE = 600;
 
 export interface SceneHandles {
   renderer: WebGLRenderer;
@@ -54,6 +55,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   let orbitYaw = Math.PI * 0.25;
   let orbitPitch = 0.58;
   let orbitDistance = 410;
+  let cameraAnchored = false;
   let dragActive = false;
   let lastPointerClientX = 0;
   let lastPointerClientY = 0;
@@ -117,7 +119,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     lastPointerClientY = event.clientY;
 
     orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
-    orbitPitch = clamp(orbitPitch - deltaY * CAMERA_PITCH_SENSITIVITY, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+    orbitPitch = clamp(orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
   };
 
   const onPointerLeave = () => {
@@ -144,22 +146,41 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   document.addEventListener("pointerlockchange", onPointerLockChange);
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
-  const setCameraFollow = (target: Vector3) => {
-    cameraFollowTarget.copy(target);
-  };
-
-  const update = (dtSecs: number) => {
-    const targetAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * CAMERA_TARGET_SMOOTHING_HZ);
-    smoothedFollowTarget.lerp(cameraFollowTarget, targetAlpha);
-
-    const lookAtTarget = smoothedFollowTarget.clone().add(new Vector3(0, CAMERA_LOOK_HEIGHT, 0));
+  const computeOrbitPose = (target: Vector3) => {
+    const lookAtTarget = target.clone().add(new Vector3(0, CAMERA_LOOK_HEIGHT, 0));
     const cosPitch = Math.cos(orbitPitch);
     const orbitOffset = new Vector3(
       Math.sin(orbitYaw) * cosPitch,
       Math.sin(orbitPitch),
       Math.cos(orbitYaw) * cosPitch,
     ).multiplyScalar(orbitDistance);
-    const desiredPosition = lookAtTarget.clone().add(orbitOffset);
+    return {
+      lookAtTarget,
+      desiredPosition: lookAtTarget.clone().add(orbitOffset),
+    };
+  };
+
+  const snapCameraToTarget = (target: Vector3) => {
+    const { lookAtTarget, desiredPosition } = computeOrbitPose(target);
+    smoothedFollowTarget.copy(target);
+    currentLookAt.copy(lookAtTarget);
+    currentCameraPosition.copy(desiredPosition);
+    camera.position.copy(desiredPosition);
+    camera.lookAt(lookAtTarget);
+    cameraAnchored = true;
+  };
+
+  const setCameraFollow = (target: Vector3) => {
+    cameraFollowTarget.copy(target);
+    if (!cameraAnchored || smoothedFollowTarget.distanceTo(target) > CAMERA_SNAP_DISTANCE) {
+      snapCameraToTarget(target);
+    }
+  };
+
+  const update = (dtSecs: number) => {
+    const targetAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * CAMERA_TARGET_SMOOTHING_HZ);
+    smoothedFollowTarget.lerp(cameraFollowTarget, targetAlpha);
+    const { lookAtTarget, desiredPosition } = computeOrbitPose(smoothedFollowTarget);
 
     const lerpAlpha = 1 - Math.exp(-Math.max(dtSecs, 0) * CAMERA_POSITION_SMOOTHING_HZ);
     currentLookAt.lerp(lookAtTarget, lerpAlpha);

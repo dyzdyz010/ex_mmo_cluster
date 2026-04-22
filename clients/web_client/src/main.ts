@@ -1,6 +1,6 @@
-import { AppRuntime } from "./runtime/appRuntime";
+import { bootstrap } from "./app/bootstrap";
 
-function mountHud(): HTMLDivElement {
+function requireHud(): HTMLDivElement {
   const hud = document.getElementById("hud");
   if (!(hud instanceof HTMLDivElement)) {
     throw new Error("#hud element missing or wrong type");
@@ -8,14 +8,19 @@ function mountHud(): HTMLDivElement {
   return hud;
 }
 
-function main(): void {
+function requireCanvas(): HTMLCanvasElement {
   const canvas = document.getElementById("app");
   if (!(canvas instanceof HTMLCanvasElement)) {
     throw new Error("#app canvas missing");
   }
+  return canvas;
+}
 
-  const hud = mountHud();
-  AppRuntime.boot(canvas, hud);
+function main(): void {
+  bootstrap({
+    canvas: requireCanvas(),
+    hud: requireHud(),
+  });
 }
 
 main();
