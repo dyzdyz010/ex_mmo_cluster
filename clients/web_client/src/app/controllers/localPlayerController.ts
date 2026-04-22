@@ -1,5 +1,6 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
+import { ReplayAction } from "@domain/movement/governance";
 import { step } from "@domain/movement/predictor";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 import {
@@ -19,6 +20,20 @@ const LOCAL_RENDER_SMOOTHING_RATE_HZ = 15;
 const LOCAL_VISUAL_HARD_SNAP_DISTANCE = 256;
 const DEFAULT_SPAWN = new Vector3(-350, 650, -280);
 
+export interface MovementFrameTraceSample {
+  frame: number;
+  nowMs: number;
+  dtMs: number;
+  fixedSteps: number;
+  renderedX: number;
+  renderedZ: number;
+  deltaX: number;
+  deltaZ: number;
+  deltaDistance: number;
+  pendingCorrectionDistance: number;
+  accumulatorMs: number;
+}
+
 /**
  * Owns local-player prediction, reconciliation, and the render-anchor buffer
  * that visually damps corrections so the player never teleports on screen.
@@ -34,8 +49,12 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly renderedPosition = new Vector3();
   private readonly pendingCorrection = new Vector3();
   private readonly authoritativePosition = new Vector3();
+  private readonly lastTracedPosition = new Vector3();
+  private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
   private cameraYawResolver: () => number = () => 0;
+  private frameTraceRemaining = 0;
+  private renderSimulationState: PredictedMoveState | null = null;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -50,13 +69,16 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   onFrame(nowMs: number, dtMs: number): void {
+    let fixedSteps = 0;
     this.fixedStepAccumulatorMs += dtMs;
     while (this.fixedStepAccumulatorMs >= DEFAULT_MOVEMENT_PROFILE.fixedDtMs) {
       this.fixedStepAccumulatorMs -= DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
       this.stepFixed(nowMs);
+      fixedSteps += 1;
     }
     this.dampenPendingCorrection(dtMs / 1000);
-    this.advanceRenderedPrediction();
+    this.advanceRenderedPrediction(dtMs);
+    this.captureFrameTrace(nowMs, dtMs, fixedSteps);
   }
 
   getRenderedPosition(): Vector3 {
@@ -69,6 +91,24 @@ export class LocalPlayerController implements FrameSubscriber {
 
   getPendingCorrection(): Vector3 {
     return this.pendingCorrection;
+  }
+
+  startFrameTrace(maxFrames: number): void {
+    this.frameTraceSamples.length = 0;
+    this.frameTraceRemaining = Math.max(1, Math.floor(maxFrames));
+    this.lastTracedPosition.copy(this.renderedPosition);
+  }
+
+  clearFrameTrace(): void {
+    this.frameTraceSamples.length = 0;
+    this.frameTraceRemaining = 0;
+  }
+
+  getFrameTrace(): { active: boolean; samples: MovementFrameTraceSample[] } {
+    return {
+      active: this.frameTraceRemaining > 0,
+      samples: this.frameTraceSamples.map((sample) => ({ ...sample })),
+    };
   }
 
   getCurrentState(): PredictedMoveState | null {
@@ -119,7 +159,11 @@ export class LocalPlayerController implements FrameSubscriber {
     if (!result) return;
 
     this.authoritativePosition.copy(ack.position);
-    this.syncRenderAnchorTo(result.latestState.position);
+    if (result.action === ReplayAction.Accepted) {
+      this.syncAcceptedAnchor(result.latestState);
+    } else {
+      this.syncRenderAnchorTo(result.latestState);
+    }
 
     this.bus.emit("movement:authority-applied", {
       action: result.action,
@@ -132,17 +176,32 @@ export class LocalPlayerController implements FrameSubscriber {
     });
   }
 
-  private syncRenderAnchorTo(nextAnchor: Vector3): void {
+  private syncRenderAnchorTo(nextAnchorState: PredictedMoveState): void {
     const oldRendered = this.renderedPosition.clone();
-    this.renderAnchor.copy(nextAnchor);
-    this.pendingCorrection.copy(oldRendered.sub(nextAnchor));
+    this.renderAnchor.copy(nextAnchorState.position);
+    this.pendingCorrection.copy(oldRendered.sub(nextAnchorState.position));
     if (this.pendingCorrection.length() <= 18) {
       this.pendingCorrection.set(0, 0, 0);
     }
     if (this.pendingCorrection.length() > LOCAL_VISUAL_HARD_SNAP_DISTANCE) {
       this.pendingCorrection.set(0, 0, 0);
     }
+    this.renderSimulationState = clonePredictedMoveState(nextAnchorState);
     this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
+  }
+
+  private syncAcceptedAnchor(nextAnchorState: PredictedMoveState): void {
+    this.renderAnchor.copy(nextAnchorState.position);
+    if (!this.renderSimulationState) {
+      this.renderSimulationState = clonePredictedMoveState(nextAnchorState);
+      this.renderedPosition.copy(this.renderSimulationState.position);
+      return;
+    }
+
+    this.renderSimulationState.seq = nextAnchorState.seq;
+    this.renderSimulationState.tick = nextAnchorState.tick;
+    this.renderSimulationState.velocity.copy(nextAnchorState.velocity);
+    this.renderSimulationState.acceleration.copy(nextAnchorState.acceleration);
   }
 
   private dampenPendingCorrection(dtSecs: number): void {
@@ -153,41 +212,71 @@ export class LocalPlayerController implements FrameSubscriber {
     }
   }
 
-  private advanceRenderedPrediction(): void {
-    const anchorState = this.prediction.peekCurrentState();
-    if (!anchorState) {
+  private advanceRenderedPrediction(dtMs: number): void {
+    if (!this.renderSimulationState) {
+      const anchorState = this.prediction.peekCurrentState();
+      if (anchorState) {
+        this.renderSimulationState = clonePredictedMoveState(anchorState);
+      }
+    }
+
+    if (!this.renderSimulationState) {
       this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
       return;
     }
 
-    let displayAnchor = anchorState.position;
-    if (this.transport.isReady() && this.fixedStepAccumulatorMs > 0) {
-      displayAnchor = this.predictPartialAnchor(anchorState).position;
+    if (dtMs > 0) {
+      const inputDir = buildMovementInputDirection(
+        this.input.getMovementKeys(),
+        this.cameraYawResolver(),
+      );
+      const partialFrame: MoveInputFrame = {
+        seq: 0,
+        clientTick: this.renderSimulationState.tick,
+        dtMs,
+        inputDir,
+        speedScale: 1,
+        movementFlags:
+          inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
+      };
+      this.renderSimulationState = step(
+        this.renderSimulationState,
+        partialFrame,
+        DEFAULT_MOVEMENT_PROFILE,
+      );
     }
 
-    this.renderedPosition.copy(displayAnchor).add(this.pendingCorrection);
-  }
-
-  private predictPartialAnchor(anchorState: PredictedMoveState): PredictedMoveState {
-    const inputDir = buildMovementInputDirection(
-      this.input.getMovementKeys(),
-      this.cameraYawResolver(),
-    );
-    const partialFrame: MoveInputFrame = {
-      seq: 0,
-      clientTick: anchorState.tick,
-      dtMs: this.fixedStepAccumulatorMs,
-      inputDir,
-      speedScale: 1,
-      movementFlags:
-        inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
-    };
-
-    return step(anchorState, partialFrame, DEFAULT_MOVEMENT_PROFILE);
+    this.renderedPosition
+      .copy(this.renderSimulationState.position)
+      .add(this.pendingCorrection);
   }
 
   private syncRenderedPositionToAnchor(): void {
     this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
+  }
+
+  private captureFrameTrace(nowMs: number, dtMs: number, fixedSteps: number): void {
+    if (this.frameTraceRemaining <= 0) {
+      return;
+    }
+
+    const deltaX = this.renderedPosition.x - this.lastTracedPosition.x;
+    const deltaZ = this.renderedPosition.z - this.lastTracedPosition.z;
+    this.frameTraceSamples.push({
+      frame: this.frameTraceSamples.length + 1,
+      nowMs,
+      dtMs,
+      fixedSteps,
+      renderedX: this.renderedPosition.x,
+      renderedZ: this.renderedPosition.z,
+      deltaX,
+      deltaZ,
+      deltaDistance: Math.hypot(deltaX, deltaZ),
+      pendingCorrectionDistance: this.pendingCorrection.length(),
+      accumulatorMs: this.fixedStepAccumulatorMs,
+    });
+    this.lastTracedPosition.copy(this.renderedPosition);
+    this.frameTraceRemaining -= 1;
   }
 
   private resetTo(start: Vector3): void {
@@ -197,7 +286,25 @@ export class LocalPlayerController implements FrameSubscriber {
     this.pendingCorrection.set(0, 0, 0);
     this.authoritativePosition.copy(start);
     this.fixedStepAccumulatorMs = 0;
+    this.lastTracedPosition.copy(start);
+    this.renderSimulationState = {
+      seq: 0,
+      tick: 0,
+      position: start.clone(),
+      velocity: new Vector3(),
+      acceleration: new Vector3(),
+    };
     this.syncRenderedPositionToAnchor();
     this.bus.emit("movement:reset", { start });
   }
+}
+
+function clonePredictedMoveState(state: Readonly<PredictedMoveState>): PredictedMoveState {
+  return {
+    seq: state.seq,
+    tick: state.tick,
+    position: state.position.clone(),
+    velocity: state.velocity.clone(),
+    acceleration: state.acceleration.clone(),
+  };
 }

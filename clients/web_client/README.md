@@ -214,6 +214,9 @@ window.__voxelCli?.run("player")
 window.__voxelCli?.run("players")
 window.__voxelCli?.run("reconcile_stats")
 window.__voxelCli?.run("edit_stats")
+window.__voxelCli?.run("frame_trace_start 300")
+window.__voxelCli?.run("frame_trace")
+window.__voxelCli?.run("frame_trace_clear")
 ```
 
 ### Observe 日志

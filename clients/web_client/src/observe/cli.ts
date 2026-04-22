@@ -43,6 +43,9 @@ function defaultHelpText(): string {
     "transport",
     "reconcile_stats",
     "edit_stats",
+    "frame_trace_start [frames]",
+    "frame_trace",
+    "frame_trace_clear",
     "logs [limit]",
   ].join("\n");
 }

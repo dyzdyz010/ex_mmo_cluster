@@ -79,4 +79,36 @@ describe("LocalPlayerController", () => {
     expect(controller.getRenderedPosition().x).toBeGreaterThan(start.x);
     expect(controller.getRenderedPosition().z).toBeCloseTo(start.z, 4);
   });
+
+  it("keeps per-frame displacement continuous across fixed-tick boundaries", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.forward = true;
+
+    controller.startFrameTrace(40);
+    for (let frame = 0; frame < 40; frame += 1) {
+      controller.onFrame((frame + 1) * 10, 10);
+    }
+
+    const samples = controller.getFrameTrace().samples;
+    let maxAdjacentDrop = 0;
+    for (let i = 1; i < samples.length; i += 1) {
+      const previous = samples[i - 1];
+      const current = samples[i];
+      if (!previous || !current) {
+        continue;
+      }
+      const drop = previous.deltaDistance - current.deltaDistance;
+      if (drop > maxAdjacentDrop) {
+        maxAdjacentDrop = drop;
+      }
+    }
+
+    expect(maxAdjacentDrop).toBeLessThan(0.35);
+  });
 });

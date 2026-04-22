@@ -73,6 +73,13 @@ export class DevToolsCli implements CliCommandHandler {
         return this.ok(command, "reconcile stats", this.deps.localPlayer.getGovernanceStats());
       case "edit_stats":
         return this.ok(command, "edit stats", { ...this.deps.world.store.editStats });
+      case "frame_trace_start":
+        return this.cmdFrameTraceStart(command, args);
+      case "frame_trace":
+        return this.ok(command, "frame trace", this.frameTraceData());
+      case "frame_trace_clear":
+        this.deps.localPlayer.clearFrameTrace();
+        return this.ok(command, "frame trace cleared");
       default:
         return { ok: false, command, text: `unknown command: ${command}` };
     }
@@ -123,6 +130,15 @@ export class DevToolsCli implements CliCommandHandler {
     return this.ok(command, `selected material ${materialId}`, {
       materialId,
       material: getMaterialDefinition(materialId),
+    });
+  }
+
+  private cmdFrameTraceStart(command: string, args: string[]): CliCommandResult {
+    const frames = Number.parseInt(args[0] ?? "240", 10);
+    const safeFrames = Number.isFinite(frames) ? Math.max(1, Math.min(frames, 600)) : 240;
+    this.deps.localPlayer.startFrameTrace(safeFrames);
+    return this.ok(command, `frame trace started for ${safeFrames} frames`, {
+      frames: safeFrames,
     });
   }
 
@@ -198,6 +214,19 @@ export class DevToolsCli implements CliCommandHandler {
     };
   }
 
+  private frameTraceData(): Record<string, unknown> {
+    const trace = this.deps.localPlayer.getFrameTrace();
+    const dtValues = trace.samples.map((sample) => sample.dtMs);
+    const deltaValues = trace.samples.map((sample) => sample.deltaDistance);
+    return {
+      active: trace.active,
+      frameCount: trace.samples.length,
+      dtMs: summarizeSeries(dtValues),
+      deltaDistance: summarizeSeries(deltaValues),
+      samples: trace.samples,
+    };
+  }
+
   private playerData(): Record<string, unknown> {
     const state = this.deps.localPlayer.getCurrentState();
     return {
@@ -238,4 +267,14 @@ function formatVector(vector: Vector3): string {
 
 function formatCoord(coord: FMacroCoord): string {
   return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function summarizeSeries(values: number[]): { min: number; max: number; mean: number } | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return { min, max, mean };
 }
