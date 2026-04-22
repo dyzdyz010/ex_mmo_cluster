@@ -245,7 +245,7 @@ movement transport 再拆成三类判断：
 ## 控制
 
 - 镜头：第三人称跟随镜头；点击画布后移动鼠标，或按住鼠标拖拽，可旋转视角；滚轮缩放
-- `W/A/S/D`：驱动本地玩家 avatar；server-ws 与 simulated-local 共用同一套 movement 输入面
+- `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
 - `F`：在准星相邻格放置当前材质
 - `G`：破坏准星命中的当前格
 - `1/2/3/4`：切换 `Dirt / Stone / Wood / Ice`

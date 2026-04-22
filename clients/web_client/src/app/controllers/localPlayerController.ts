@@ -1,7 +1,13 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
+import { step } from "@domain/movement/predictor";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
-import type { MovementAck, PredictedMoveState } from "@domain/movement/types";
+import {
+  MovementFlag,
+  type MovementAck,
+  type MoveInputFrame,
+  type PredictedMoveState,
+} from "@domain/movement/types";
 import { buildMovementInputDirection } from "@domain/movement/inputDirection";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
@@ -17,10 +23,10 @@ const DEFAULT_SPAWN = new Vector3(-350, 650, -280);
  * Owns local-player prediction, reconciliation, and the render-anchor buffer
  * that visually damps corrections so the player never teleports on screen.
  *
- * Pulls pressed keys from InputController on each fixed-dt step. Consumes
- * authority via bus events emitted by TransportPump. HUD and CLI read state
- * through the getter surface — the controller keeps its internal state
- * private.
+ * Logic stays on a 100 ms fixed step for input/authority parity, but render
+ * samples are advanced every frame by replaying the in-progress remainder
+ * against the latest predicted anchor. This fills the 10 Hz gaps without
+ * changing transport cadence.
  */
 export class LocalPlayerController implements FrameSubscriber {
   private readonly prediction = new LocalPredictionRuntime();
@@ -29,6 +35,7 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly pendingCorrection = new Vector3();
   private readonly authoritativePosition = new Vector3();
   private fixedStepAccumulatorMs = 0;
+  private cameraYawResolver: () => number = () => 0;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -42,13 +49,14 @@ export class LocalPlayerController implements FrameSubscriber {
     });
   }
 
-  onFrame(_nowMs: number, dtMs: number): void {
+  onFrame(nowMs: number, dtMs: number): void {
     this.fixedStepAccumulatorMs += dtMs;
     while (this.fixedStepAccumulatorMs >= DEFAULT_MOVEMENT_PROFILE.fixedDtMs) {
       this.fixedStepAccumulatorMs -= DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
-      this.stepFixed(performance.now());
+      this.stepFixed(nowMs);
     }
     this.dampenPendingCorrection(dtMs / 1000);
+    this.advanceRenderedPrediction();
   }
 
   getRenderedPosition(): Vector3 {
@@ -79,16 +87,22 @@ export class LocalPlayerController implements FrameSubscriber {
     return this.prediction.getCurrentSoftPositionError();
   }
 
+  setCameraYawResolver(resolver: () => number): void {
+    this.cameraYawResolver = resolver;
+  }
+
   private stepFixed(nowMs: number): void {
     if (!this.transport.isReady()) return;
 
-    const inputDir = buildMovementInputDirection(this.input.getMovementKeys());
+    const inputDir = buildMovementInputDirection(
+      this.input.getMovementKeys(),
+      this.cameraYawResolver(),
+    );
     const frame = this.prediction.buildInputFrame(inputDir, DEFAULT_MOVEMENT_PROFILE.fixedDtMs, 1);
     const predicted = this.prediction.applyLocalInput(frame);
     if (!predicted) return;
 
     this.renderAnchor.copy(predicted.position);
-    this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
     this.transport.sendInput(frame, nowMs);
 
     this.bus.emit("movement:local-step", {
@@ -137,6 +151,42 @@ export class LocalPlayerController implements FrameSubscriber {
     if (this.pendingCorrection.length() < 0.01) {
       this.pendingCorrection.set(0, 0, 0);
     }
+  }
+
+  private advanceRenderedPrediction(): void {
+    const anchorState = this.prediction.getCurrentState();
+    if (!anchorState) {
+      this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
+      return;
+    }
+
+    let displayAnchor = anchorState.position;
+    if (this.transport.isReady() && this.fixedStepAccumulatorMs > 0) {
+      displayAnchor = this.predictPartialAnchor(anchorState).position;
+    }
+
+    this.renderedPosition.copy(displayAnchor).add(this.pendingCorrection);
+  }
+
+  private predictPartialAnchor(anchorState: PredictedMoveState): PredictedMoveState {
+    const inputDir = buildMovementInputDirection(
+      this.input.getMovementKeys(),
+      this.cameraYawResolver(),
+    );
+    const partialFrame: MoveInputFrame = {
+      seq: 0,
+      clientTick: anchorState.tick,
+      dtMs: this.fixedStepAccumulatorMs,
+      inputDir,
+      speedScale: 1,
+      movementFlags:
+        inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
+    };
+
+    return step(anchorState, partialFrame, DEFAULT_MOVEMENT_PROFILE);
+  }
+
+  private syncRenderedPositionToAnchor(): void {
     this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
   }
 
@@ -147,6 +197,7 @@ export class LocalPlayerController implements FrameSubscriber {
     this.pendingCorrection.set(0, 0, 0);
     this.authoritativePosition.copy(start);
     this.fixedStepAccumulatorMs = 0;
+    this.syncRenderedPositionToAnchor();
     this.bus.emit("movement:reset", { start });
   }
 }

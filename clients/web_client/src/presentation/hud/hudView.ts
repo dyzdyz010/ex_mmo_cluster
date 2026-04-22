@@ -56,7 +56,7 @@ export class HudView implements FrameSubscriber {
       `reconcile: corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.world.store.editStats.placed} broken=${this.world.store.editStats.broken} rejected=${this.world.store.editStats.rejected} conflicts=${this.world.store.editStats.conflicts}`,
-      "controls: click or drag to orbit camera, wheel zoom, WASD move, F place, G break, 1-4 material",
+      "controls: click or drag to orbit camera, wheel zoom, WASD move relative to camera, F place, G break, 1-4 material",
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }

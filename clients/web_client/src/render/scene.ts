@@ -29,6 +29,7 @@ export interface SceneHandles {
   scene: Scene;
   camera: PerspectiveCamera;
   worldRoot: Group;
+  getMovementYawRadians: () => number;
   setCameraFollow: (target: Vector3) => void;
   update: (dtSecs: number) => void;
   dispose: () => void;
@@ -203,7 +204,16 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     renderer.dispose();
   };
 
-  return { renderer, scene, camera, worldRoot, setCameraFollow, update, dispose };
+  return {
+    renderer,
+    scene,
+    camera,
+    worldRoot,
+    getMovementYawRadians: () => orbitYaw,
+    setCameraFollow,
+    update,
+    dispose,
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

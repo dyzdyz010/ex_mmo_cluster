@@ -13,6 +13,12 @@
 - `predictor.ts` 只负责单步近似运动学积分。
 - `reconcile.ts` 只负责权威对账策略。
 - `localPlayer.ts` / `remotePlayer.ts` 负责运行时编排。
+- 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
+  fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
+  用来填平 100 ms tick 之间的视觉空档；它不写回 history，也不改变网络发送频率。
+- `remotePlayer.ts` 当前采用 **150 ms 插值延迟 + 250 ms 封顶外推**：
+  150 ms 保证 100 ms 服务端快照至少保留一帧历史缓冲，同时不额外拖出
+  220 ms 的远端钝感。
 - `transport.ts` 定义 `MovementTransport` port；domain 只依赖接口，具体适配器由 composition root 注入。
 - `inputDirection.ts` 把按键状态映射成单位输入方向，纯函数、无副作用。
 

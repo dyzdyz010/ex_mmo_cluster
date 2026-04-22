@@ -3,7 +3,11 @@ import { CorrectionFlag, cloneRemoteMoveSnapshot, type RemoteMoveSnapshot } from
 
 const MAX_BUFFERED_SNAPSHOTS = 32;
 const SNAPSHOT_TICK_SECS = 0.1;
-export const INTERPOLATION_DELAY_SECS = 0.22;
+// Follow the 150 ms Bernier/Source baseline documented in
+// docs/2026-04-20-movement-reference-audit.md. This keeps one full 100 ms
+// server sample in reserve without adding the extra 70 ms "slow half-beat"
+// introduced by the previous 220 ms delay.
+export const INTERPOLATION_DELAY_SECS = 0.15;
 export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.25;
 
 interface BufferedSnapshot {

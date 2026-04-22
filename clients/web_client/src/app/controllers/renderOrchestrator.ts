@@ -85,6 +85,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     return this.sceneHandles.camera.position;
   }
 
+  getMovementYawRadians(): number {
+    return this.sceneHandles.getMovementYawRadians();
+  }
+
   dispose(): void {
     this.chunkRenderer.dispose();
     this.sceneHandles.dispose();

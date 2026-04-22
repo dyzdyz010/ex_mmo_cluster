@@ -50,6 +50,7 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
   const remotePlayer = new RemotePlayerController(eventBus);
 
   const render = new RenderOrchestrator(canvas, world, localPlayer, remotePlayer, logger);
+  localPlayer.setCameraYawResolver(() => render.getMovementYawRadians());
   const edit = new WorldEditController(eventBus, world, render);
 
   const hudView = new HudView(hud, world, transportPump, localPlayer, remotePlayer, edit, render);

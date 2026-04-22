@@ -8,8 +8,8 @@ export interface MovementProfile {
 
 export const DEFAULT_MOVEMENT_PROFILE: MovementProfile = {
   fixedDtMs: 100,
-  maxSpeed: 280,
-  maxAccel: 900,
-  maxDecel: 1200,
-  maxJerk: 1800,
+  maxSpeed: 220,
+  maxAccel: 1200,
+  maxDecel: 1400,
+  maxJerk: 9000,
 };
