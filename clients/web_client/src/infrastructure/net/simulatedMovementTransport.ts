@@ -1,27 +1,12 @@
-import { Vector2, Vector3 } from "three";
-import { LocalPredictionRuntime } from "../movement/localPlayer";
-import { DEFAULT_MOVEMENT_PROFILE } from "../movement/profile";
-import { CorrectionFlag, type MoveInputFrame, type MovementAck, type RemoteMoveSnapshot } from "../movement/types";
-
-export interface PendingMovementAck {
-  ack: MovementAck;
-  sentAtMs: number;
-}
-
-export interface MovementTransportTickResult {
-  acknowledgements: PendingMovementAck[];
-  remoteSnapshots: RemoteMoveSnapshot[];
-  spawnPosition: Vector3 | null;
-}
-
-export interface MovementTransport {
-  readonly mode: string;
-  isReady(): boolean;
-  debugSnapshot(): Record<string, unknown>;
-  reset(position: Vector3): void;
-  sendInput(frame: MoveInputFrame, nowMs: number): void;
-  tick(nowMs: number, dtMs: number): MovementTransportTickResult;
-}
+import { Vector3 } from "three";
+import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
+import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
+import { CorrectionFlag, type MoveInputFrame, type RemoteMoveSnapshot } from "@domain/movement/types";
+import type {
+  MovementTransport,
+  MovementTransportTickResult,
+  PendingMovementAck,
+} from "@domain/movement/transport";
 
 interface QueuedAck {
   frame: MoveInputFrame;
@@ -34,6 +19,11 @@ interface QueuedRemoteSnapshot {
   deliverAtMs: number;
 }
 
+/**
+ * Offline fallback adapter. Synthesizes authoritative acks by running the
+ * same predictor locally, clamps to a square arena, and drives a decorative
+ * remote actor on a circular path so the HUD / remote interpolator stay busy.
+ */
 export class SimulatedLocalMovementTransport implements MovementTransport {
   readonly mode = "simulated-local";
 
@@ -173,13 +163,4 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
     this.pendingSnapshots.splice(0, this.pendingSnapshots.length, ...remaining);
     return due;
   }
-}
-
-export function buildMovementInputDirection(keys: {
-  forward: boolean;
-  backward: boolean;
-  left: boolean;
-  right: boolean;
-}): Vector2 {
-  return new Vector2(Number(keys.right) - Number(keys.left), Number(keys.backward) - Number(keys.forward));
 }

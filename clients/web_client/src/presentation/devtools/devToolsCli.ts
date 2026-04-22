@@ -7,7 +7,7 @@ import {
 import type { CliCommandHandler, CliCommandResult } from "../../observe/cli";
 import type { ObserveLog } from "../../observe/logger";
 import { installCli } from "../../observe/cli";
-import { INTERPOLATION_DELAY_SECS } from "../../movement/remotePlayer";
+import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
 import type { FMacroCoord } from "../../voxel/core/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";

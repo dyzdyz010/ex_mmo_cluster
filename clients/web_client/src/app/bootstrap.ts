@@ -1,10 +1,8 @@
 import type { Vector3 } from "three";
 import { ObserveLog } from "../observe/logger";
-import {
-  SimulatedLocalMovementTransport,
-  type MovementTransport,
-} from "../net/movementTransport";
-import { ServerMovementTransport } from "../net/serverMovementTransport";
+import type { MovementTransport } from "@domain/movement/transport";
+import { SimulatedLocalMovementTransport } from "@infra/net/simulatedMovementTransport";
+import { ServerMovementTransport } from "@infra/net/serverMovementTransport";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
 import { HudView } from "../presentation/hud/hudView";
 import { DevToolsCli } from "../presentation/devtools/devToolsCli";

@@ -1,8 +1,8 @@
 import { Vector3 } from "three";
-import { LocalPredictionRuntime } from "../../movement/localPlayer";
-import { DEFAULT_MOVEMENT_PROFILE } from "../../movement/profile";
-import type { MovementAck, PredictedMoveState } from "../../movement/types";
-import { buildMovementInputDirection } from "../../net/movementTransport";
+import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
+import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
+import type { MovementAck, PredictedMoveState } from "@domain/movement/types";
+import { buildMovementInputDirection } from "@domain/movement/inputDirection";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";

@@ -1,6 +1,6 @@
 import type { Vector3 } from "three";
-import type { MoveInputFrame } from "../../movement/types";
-import type { MovementTransport } from "../../net/movementTransport";
+import type { MoveInputFrame } from "@domain/movement/types";
+import type { MovementTransport } from "@domain/movement/transport";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";

@@ -1,8 +1,9 @@
 import { Vector3 } from "three";
 import { encodeAuthRequest, decodeServerMessage, encodeEnterScene, encodeHeartbeat, encodeMovementInput } from "./gateProtocol";
-import type { ObserveLog } from "../observe/logger";
-import type { MoveInputFrame, RemoteMoveSnapshot } from "../movement/types";
-import { SimulatedLocalMovementTransport, type MovementTransport, type MovementTransportTickResult, type PendingMovementAck } from "./movementTransport";
+import type { ObserveLog } from "../../observe/logger";
+import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
+import type { MovementTransport, MovementTransportTickResult, PendingMovementAck } from "@domain/movement/transport";
+import { SimulatedLocalMovementTransport } from "./simulatedMovementTransport";
 
 interface AutoLoginResponse {
   token: string;

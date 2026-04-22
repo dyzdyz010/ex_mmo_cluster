@@ -1,5 +1,5 @@
 import { Vector3 } from "three";
-import type { MovementAck, RemoteMoveSnapshot } from "../movement/types";
+import type { MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
 
 export interface AuthOkMessage {
   type: "auth_ok";

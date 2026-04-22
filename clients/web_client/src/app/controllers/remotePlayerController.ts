@@ -1,5 +1,5 @@
 import { Vector3 } from "three";
-import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "../../movement/remotePlayer";
+import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "@domain/movement/remotePlayer";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";

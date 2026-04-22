@@ -1,5 +1,5 @@
 import type { Vector3 } from "three";
-import type { MovementAck, RemoteMoveSnapshot } from "../../movement/types";
+import type { MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
 import type { FMacroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
 
