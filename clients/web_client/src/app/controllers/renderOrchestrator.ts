@@ -31,6 +31,9 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly authorityAvatar: Mesh<BoxGeometry, MeshStandardMaterial>;
   private readonly remoteAvatar: Mesh<BoxGeometry, MeshStandardMaterial>;
   private readonly syncRing: Mesh<RingGeometry, MeshStandardMaterial>;
+  private readonly localDisplay = new Vector3();
+  private readonly authorityDisplay = new Vector3();
+  private readonly remoteDisplay = new Vector3();
   private currentSelection: VoxelRaySelection | null = null;
 
   constructor(
@@ -103,23 +106,24 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   }
 
   private updateAvatarTransforms(nowSecs: number): void {
-    const localDisplay = this.groundActorPosition(this.localPlayer.getRenderedPosition(), 60);
-    const authorityDisplay = this.groundActorPosition(
+    this.groundActorPosition(this.localPlayer.getRenderedPosition(), 60, this.localDisplay);
+    this.groundActorPosition(
       this.localPlayer.getAuthoritativePosition(),
       45,
+      this.authorityDisplay,
     );
-    const remoteDisplay = this.groundActorPosition(this.remotePlayer.getRenderedPosition(), 60);
+    this.groundActorPosition(this.remotePlayer.getRenderedPosition(), 60, this.remoteDisplay);
 
-    this.localAvatar.position.copy(localDisplay);
-    this.authorityAvatar.position.copy(authorityDisplay);
-    this.remoteAvatar.position.copy(remoteDisplay);
-    this.syncRing.position.set(localDisplay.x, localDisplay.y - 59, localDisplay.z);
+    this.localAvatar.position.copy(this.localDisplay);
+    this.authorityAvatar.position.copy(this.authorityDisplay);
+    this.remoteAvatar.position.copy(this.remoteDisplay);
+    this.syncRing.position.set(this.localDisplay.x, this.localDisplay.y - 59, this.localDisplay.z);
     this.syncRing.rotation.z = nowSecs * 0.25;
-    this.sceneHandles.setCameraFollow(localDisplay);
+    this.sceneHandles.setCameraFollow(this.localDisplay);
   }
 
-  private groundActorPosition(position: Vector3, halfHeight: number): Vector3 {
-    return new Vector3(
+  private groundActorPosition(position: Vector3, halfHeight: number, out: Vector3): void {
+    out.set(
       position.x,
       this.world.store.surfaceCenterYAtWorldXZ(position.x, position.z, halfHeight, position.y),
       position.z,

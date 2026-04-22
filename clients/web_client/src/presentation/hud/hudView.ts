@@ -13,8 +13,11 @@ import type { FMacroCoord } from "../../voxel/core/types";
  * Pulls display data from every controller once per frame and writes the HUD
  * overlay. Read-only — never mutates controller state.
  */
+const HUD_REFRESH_INTERVAL_MS = 125;
+
 export class HudView implements FrameSubscriber {
   private frameCount = 0;
+  private refreshAccumulatorMs = HUD_REFRESH_INTERVAL_MS;
 
   constructor(
     private readonly hud: HTMLDivElement,
@@ -28,8 +31,14 @@ export class HudView implements FrameSubscriber {
     this.hud.textContent = "ex_mmo voxel web-client (booting...)";
   }
 
-  onFrame(): void {
+  onFrame(_nowMs: number, dtMs: number): void {
     this.frameCount += 1;
+    this.refreshAccumulatorMs += dtMs;
+    if (this.refreshAccumulatorMs < HUD_REFRESH_INTERVAL_MS) {
+      return;
+    }
+    this.refreshAccumulatorMs = 0;
+
     const currentState = this.localPlayer.getCurrentState();
     const stats = this.localPlayer.getGovernanceStats();
     const selection = this.render.getCurrentSelection();

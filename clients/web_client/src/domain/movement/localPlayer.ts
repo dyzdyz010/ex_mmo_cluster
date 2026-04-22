@@ -104,6 +104,14 @@ export class LocalPredictionRuntime {
       : null;
   }
 
+  /**
+   * Read-only hot-path accessor for render sampling. Callers must not mutate
+   * the returned vectors or state object.
+   */
+  peekCurrentState(): Readonly<PredictedMoveState> | null {
+    return this.currentState;
+  }
+
   getGovernanceStats(): ReplayGovernanceStats {
     return { ...this.governanceStats };
   }

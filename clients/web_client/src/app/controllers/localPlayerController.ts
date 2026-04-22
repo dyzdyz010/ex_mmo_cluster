@@ -154,7 +154,7 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   private advanceRenderedPrediction(): void {
-    const anchorState = this.prediction.getCurrentState();
+    const anchorState = this.prediction.peekCurrentState();
     if (!anchorState) {
       this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
       return;
