@@ -91,6 +91,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   window.addEventListener("resize", onResize);
 
   const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+
     dragActive = true;
     lastPointerClientX = event.clientX;
     lastPointerClientY = event.clientY;
@@ -139,6 +143,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   };
 
   const onWheel = (event: WheelEvent) => {
+    if (!event.ctrlKey) {
+      return;
+    }
     event.preventDefault();
     orbitDistance = clamp(orbitDistance + event.deltaY * 0.35, CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
   };

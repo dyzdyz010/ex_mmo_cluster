@@ -10,6 +10,9 @@ export interface FChunkMesherCellSnapshot {
   materialId: number;
   stateFlags: number;
   health: number;
+  microOccupancyMask?: bigint;
+  microMaterialIds?: number[];
+  microStateFlags?: number[];
 }
 
 export interface FChunkMesherInputSnapshot {
@@ -21,6 +24,9 @@ export interface FChunkMesherInputSnapshot {
 }
 
 export function isSolidBlock(cell: FChunkMesherCellSnapshot): boolean {
+  if (cell.mode === EVoxelCellMode.Refined) {
+    return (cell.microOccupancyMask ?? 0n) !== 0n;
+  }
   return cell.mode === EVoxelCellMode.SolidBlock && cell.materialId !== 0;
 }
 

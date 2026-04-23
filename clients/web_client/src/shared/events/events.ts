@@ -16,6 +16,9 @@ import type { EventBus, ReadonlyEventBus } from "./eventBus";
  */
 export type AppEvents = {
   "input:material-selected": { materialId: number; source: string };
+  "input:prefab-selected": { prefabName: string; source: string };
+  "input:hotbar-cycle": { direction: -1 | 1; source: string };
+  "input:hotbar-select": { index: number; source: string };
   "input:place-block": { source: string };
   "input:break-block": { source: string };
 
@@ -47,6 +50,7 @@ export type AppEvents = {
 
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };
   "world:block-broken": { coord: FMacroCoord; source: string };
+  "world:prefab-placed": { name: string; origin: FMacroCoord; placed: number; source: string };
   "world:edit-rejected": { reason: string; source: string };
 
   "app:boot": {

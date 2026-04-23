@@ -13,8 +13,12 @@ import {
   type FMacroEnvironmentSummary,
   type FMacroCellHeader,
   type FNormalBlockData,
+  type FRefinedCellData,
+  type FPrefabInstanceData,
 } from "./types";
 import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "../meshing/types";
+
+const FULL_MACRO_MICRO_OCCUPANCY = (1n << 64n) - 1n;
 
 export class ChunkStorage {
   readonly data: FChunkStorageData;
@@ -55,11 +59,21 @@ export class ChunkStorage {
 
   getNormalBlock(localMacro: FMacroCoord): FNormalBlockData | null {
     const header = this.getHeaderAt(localMacro);
-    if (!header || header.mode !== EVoxelCellMode.SolidBlock) {
+    if (!header) {
       return null;
     }
-    const block = this.data.normalBlocks[header.payloadIndex];
-    return block ?? null;
+
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      const block = this.data.normalBlocks[header.payloadIndex];
+      return block ?? null;
+    }
+
+    if (header.mode === EVoxelCellMode.Refined) {
+      const refined = this.data.refinedCells[header.payloadIndex];
+      return refined ? refinedFullMacroAsBlock(refined) : null;
+    }
+
+    return null;
   }
 
   getEnvironmentSummary(localMacro: FMacroCoord): FMacroEnvironmentSummary | null {
@@ -113,6 +127,9 @@ export class ChunkStorage {
       this.data.normalBlocks[header.payloadIndex] = makeEmptyNormalBlock();
       this.data.freeNormalBlockIndices.push(header.payloadIndex);
     }
+    if (header.mode === EVoxelCellMode.Refined) {
+      this.data.refinedCells[header.payloadIndex] = makeEmptyRefinedCell();
+    }
 
     header.mode = EVoxelCellMode.Empty;
     header.payloadIndex = 0;
@@ -148,6 +165,76 @@ export class ChunkStorage {
     return true;
   }
 
+  setPrefabFullMacroBlock(localMacro: FMacroCoord, block: FNormalBlockData, instanceId: number): boolean {
+    return this.setPrefabRefinedMicroCell(
+      localMacro,
+      FULL_MACRO_MICRO_OCCUPANCY,
+      block.materialId,
+      block.stateFlags,
+      new Array(64).fill(0),
+      instanceId,
+    );
+  }
+
+  setPrefabRefinedMicroCell(
+    localMacro: FMacroCoord,
+    microOccupancyMask: bigint,
+    materialId: number,
+    stateFlags: number,
+    microPartIds: number[],
+    instanceId: number,
+  ): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header) {
+      return false;
+    }
+
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      this.data.normalBlocks[header.payloadIndex] = makeEmptyNormalBlock();
+      this.data.freeNormalBlockIndices.push(header.payloadIndex);
+    }
+
+    const refined = makeRefinedCell(microOccupancyMask, materialId, stateFlags, microPartIds, instanceId);
+    if (header.mode === EVoxelCellMode.Refined) {
+      this.data.refinedCells[header.payloadIndex] = mergePrefabInstance(
+        this.data.refinedCells[header.payloadIndex] ?? makeEmptyRefinedCell(),
+        refined,
+      );
+    } else {
+      header.payloadIndex = this.data.refinedCells.push(refined) - 1;
+      header.mode = EVoxelCellMode.Refined;
+    }
+
+    this.markDirty(localMacro, VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+    return true;
+  }
+
+  addPrefabInstance(instance: FPrefabInstanceData): FPrefabInstanceData {
+    const stored = clonePrefabInstance(instance);
+    this.data.prefabInstances.push(stored);
+    this.markDirty(
+      {
+        x: clampLocalMacroX(instance.coveredMacroMin.x - (this.data.chunkCoord.x * VoxelConstants.ChunkSizeX)),
+        y: clampLocalMacroY(instance.coveredMacroMin.y - (this.data.chunkCoord.y * VoxelConstants.ChunkSizeY)),
+        z: clampLocalMacroZ(instance.coveredMacroMin.z - (this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ)),
+      },
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    this.markDirty(
+      {
+        x: clampLocalMacroX(instance.coveredMacroMax.x - (this.data.chunkCoord.x * VoxelConstants.ChunkSizeX)),
+        y: clampLocalMacroY(instance.coveredMacroMax.y - (this.data.chunkCoord.y * VoxelConstants.ChunkSizeY)),
+        z: clampLocalMacroZ(instance.coveredMacroMax.z - (this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ)),
+      },
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    return stored;
+  }
+
   buildMesherSnapshot(): FChunkMesherInputSnapshot {
     const cells: FChunkMesherCellSnapshot[] = [];
 
@@ -166,22 +253,43 @@ export class ChunkStorage {
       let materialId = 0;
       let stateFlags = 0;
       let health = 0;
-      if (header.mode === EVoxelCellMode.SolidBlock) {
-        const block = this.data.normalBlocks[header.payloadIndex];
+      let microOccupancyMask: bigint | undefined;
+      let microMaterialIds: number[] | undefined;
+      let microStateFlags: number[] | undefined;
+      if (header.mode === EVoxelCellMode.SolidBlock || header.mode === EVoxelCellMode.Refined) {
+        const block = this.getNormalBlock(localMacroCoord);
         if (block) {
           materialId = block.materialId;
           stateFlags = block.stateFlags;
           health = block.health;
         }
+        if (header.mode === EVoxelCellMode.Refined) {
+          const refined = this.data.refinedCells[header.payloadIndex];
+          if (refined) {
+            microOccupancyMask = refined.microOccupancyMask;
+            microMaterialIds = [...refined.microMaterialIds];
+            microStateFlags = [...refined.microStateFlags];
+          }
+        }
       }
 
-      cells.push({
+      const cell: FChunkMesherCellSnapshot = {
         localMacroCoord,
         mode: header.mode,
         materialId,
         stateFlags,
         health,
-      });
+      };
+      if (microOccupancyMask !== undefined) {
+        cell.microOccupancyMask = microOccupancyMask;
+      }
+      if (microMaterialIds !== undefined) {
+        cell.microMaterialIds = microMaterialIds;
+      }
+      if (microStateFlags !== undefined) {
+        cell.microStateFlags = microStateFlags;
+      }
+      cells.push(cell);
     }
 
     return {
@@ -196,7 +304,7 @@ export class ChunkStorage {
   countSolidBlocks(): number {
     let count = 0;
     for (const header of this.data.macroHeaders) {
-      if (header?.mode === EVoxelCellMode.SolidBlock) {
+      if (header?.mode === EVoxelCellMode.SolidBlock || header?.mode === EVoxelCellMode.Refined) {
         count += 1;
       }
     }
@@ -205,11 +313,21 @@ export class ChunkStorage {
 
   countStateFlag(flag: number): number {
     let count = 0;
-    for (const header of this.data.macroHeaders) {
-      if (!header || header.mode !== EVoxelCellMode.SolidBlock) {
+    for (let index = 0; index < this.data.macroHeaders.length; index += 1) {
+      const header = this.data.macroHeaders[index];
+      if (!header || (header.mode !== EVoxelCellMode.SolidBlock && header.mode !== EVoxelCellMode.Refined)) {
         continue;
       }
-      const block = this.data.normalBlocks[header.payloadIndex];
+      const localMacroCoord = {
+        x: index % VoxelConstants.ChunkSizeX,
+        y: Math.floor(index / VoxelConstants.ChunkSizeX) % VoxelConstants.ChunkSizeY,
+        z: Math.floor(index / (VoxelConstants.ChunkSizeX * VoxelConstants.ChunkSizeY)),
+      };
+      const block = this.getNormalBlock({
+        x: localMacroCoord.x,
+        y: localMacroCoord.y,
+        z: localMacroCoord.z,
+      });
       if (block && (block.stateFlags & flag) !== 0) {
         count += 1;
       }
@@ -248,4 +366,87 @@ export class ChunkStorage {
     }
     return current & mask;
   }
+}
+
+function makeEmptyRefinedCell(): FRefinedCellData {
+  return {
+    microOccupancyMask: 0n,
+    microMaterialIds: [],
+    microStateFlags: [],
+    microPartIds: [],
+    prefabInstanceIds: [],
+    boundaryCache: 0,
+  };
+}
+
+function makeRefinedCell(
+  microOccupancyMask: bigint,
+  materialId: number,
+  stateFlags: number,
+  microPartIds: number[],
+  instanceId: number,
+): FRefinedCellData {
+  return {
+    microOccupancyMask,
+    microMaterialIds: new Array(64).fill(materialId),
+    microStateFlags: new Array(64).fill(stateFlags),
+    microPartIds: normalizedPartIds(microPartIds),
+    prefabInstanceIds: [instanceId],
+    boundaryCache: 0,
+  };
+}
+
+function mergePrefabInstance(existing: FRefinedCellData, next: FRefinedCellData): FRefinedCellData {
+  const ids = new Set([...existing.prefabInstanceIds, ...next.prefabInstanceIds]);
+  return {
+    ...next,
+    prefabInstanceIds: [...ids].sort((a, b) => a - b),
+  };
+}
+
+function normalizedPartIds(partIds: number[]): number[] {
+  const out = new Array(64).fill(-1);
+  for (let index = 0; index < Math.min(partIds.length, 64); index += 1) {
+    out[index] = partIds[index] ?? -1;
+  }
+  return out;
+}
+
+function refinedFullMacroAsBlock(refined: FRefinedCellData): FNormalBlockData | null {
+  if (refined.microOccupancyMask === 0n || refined.microMaterialIds.length === 0) {
+    return null;
+  }
+
+  return {
+    materialId: refined.microMaterialIds[0] ?? 0,
+    stateFlags: refined.microStateFlags.reduce((acc, value) => acc | value, 0),
+    health: 100,
+    temperatureDelta: 0,
+    moistureDelta: 0,
+  };
+}
+
+function clonePrefabInstance(instance: FPrefabInstanceData): FPrefabInstanceData {
+  return {
+    instanceId: instance.instanceId,
+    prefabId: instance.prefabId,
+    anchorMicroCoord: { ...instance.anchorMicroCoord },
+    rotation: instance.rotation,
+    ownerChunk: { ...instance.ownerChunk },
+    coveredMacroMin: { ...instance.coveredMacroMin },
+    coveredMacroMax: { ...instance.coveredMacroMax },
+    overrideSetIndex: instance.overrideSetIndex,
+  };
+}
+
+function clampLocalMacroX(value: number): number {
+  return Math.max(0, Math.min(VoxelConstants.ChunkSizeX - 1, value));
+}
+
+function clampLocalMacroY(value: number): number {
+  return Math.max(0, Math.min(VoxelConstants.ChunkSizeY - 1, value));
+}
+
+function clampLocalMacroZ(value: number): number {
+  return Math.max(0, Math.min(VoxelConstants.ChunkSizeZ - 1, value));
 }

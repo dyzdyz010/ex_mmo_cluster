@@ -52,6 +52,7 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
   const render = new RenderOrchestrator(canvas, world, localPlayer, remotePlayer, logger);
   localPlayer.setCameraYawResolver(() => render.getMovementYawRadians());
   const edit = new WorldEditController(eventBus, world, render);
+  render.setEditPreviewProvider(edit);
 
   const hudView = new HudView(hud, world, transportPump, localPlayer, remotePlayer, edit, render);
   const diagnostics = new DiagnosticsController(
@@ -80,6 +81,7 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
     remotePlayer,
     edit,
     render,
+    storage: window.localStorage,
   });
   devTools.install(window);
 
@@ -154,10 +156,21 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
   bus.on("input:material-selected", ({ materialId, source }) => {
     logger.emit("edit", "select_material", { material: materialId, source });
   });
+  bus.on("input:prefab-selected", ({ prefabName, source }) => {
+    logger.emit("edit", "select_prefab", { prefab: prefabName, source });
+  });
   bus.on("world:block-placed", ({ coord, materialId, source }) => {
     logger.emit("edit", "place", {
       coord: `${coord.x},${coord.y},${coord.z}`,
       material: materialId,
+      source,
+    });
+  });
+  bus.on("world:prefab-placed", ({ name, origin, placed, source }) => {
+    logger.emit("edit", "prefab_place", {
+      name,
+      origin: `${origin.x},${origin.y},${origin.z}`,
+      placed,
       source,
     });
   });

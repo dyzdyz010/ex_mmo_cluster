@@ -13,7 +13,7 @@
 当前仓库里的 `web_client` 已不再只是 W-A 占位：
 
 1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
-2. voxel 当前明确保持 **offline-local**：中心准星选中、本地 `F/G` 编辑、`1..4` 切换材质，但不走服务端同步。
+2. voxel 当前明确保持 **offline-local**：中心准星命中面选中、本地左键破坏 / 右键放置（`F/G` 仍可用）、滚轮 hotbar 切换材质 / builtin prefab，但不走服务端同步。
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
    - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
@@ -32,7 +32,12 @@
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
 2. voxel 现在故意保持离线，本阶段不接 `voxel_server` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`。
-3. Refined cell / Prefab / 完整视觉注册表仍是后续阶段。
+3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
+   `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
+   生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
+   Prefab definition 保留 `partDefinitions / microPartIds`，实例化后拍扁为带
+   part tag 的 refined micro 数据，供后续魔法和局部破坏按部件语义结算。
+   选中 prefab 时，准星邻接位置会显示 translucent ghost preview。
 
 ## 技术栈
 
@@ -187,7 +192,8 @@ npm run preview # 预览 dist
 - HUD / `snapshot` / `transport` 明确显示 `voxel_sync=offline-local`
 - 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
-- 按 `F` / `G` 可以对准星选中的体素执行放置 / 破坏
+- 左键 / 右键或 `F` / `G` 可以对准星命中面执行破坏 / 邻接放置；选中 prefab 时右键 / `F` 放置 prefab
+- 滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
 
 ## 调试 / CLI
@@ -206,9 +212,19 @@ window.__voxelCli?.run("cell 0 1 0")
 window.__voxelCli?.run("select_material wood")
 window.__voxelCli?.run("place 0 5 0 2")
 window.__voxelCli?.run("break 0 5 0")
+window.__voxelCli?.run("hotbar")
+window.__voxelCli?.run("hotbar_select 5")
 window.__voxelCli?.run("prefabs")
 window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2")
-window.__voxelCli?.run("prefab_place test 8 5 8")
+window.__voxelCli?.run("prefab_place test 8 5 8 rot90")
+window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8")
+window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8")
+window.__voxelCli?.run("prefab_place builtin_stairs 16 5 8 rot90")
+window.__voxelCli?.run("select_prefab builtin_sphere")
+const exported = window.__voxelCli?.run("world_export").data.json
+window.__voxelCli?.run(`world_import ${exported}`)
+window.__voxelCli?.run("world_save default")
+window.__voxelCli?.run("world_load default")
 window.__voxelCli?.run("transport")
 window.__voxelCli?.run("player")
 window.__voxelCli?.run("players")
@@ -247,11 +263,11 @@ movement transport 再拆成三类判断：
 
 ## 控制
 
-- 镜头：第三人称跟随镜头；点击画布后移动鼠标，或按住鼠标拖拽，可旋转视角；滚轮缩放
+- 镜头：第三人称跟随镜头；左键按住拖拽可旋转视角；`Ctrl+滚轮` 缩放
 - `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
-- `F`：在准星相邻格放置当前材质
-- `G`：破坏准星命中的当前格
-- `1/2/3/4`：切换 `Dirt / Stone / Wood / Ice`
+- 左键 / `G`：破坏准星命中面的当前方块
+- 右键 / `F`：在准星命中面方块的邻接位置放置当前 hotbar 项
+- 滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`，`5/6/7` 选择 `builtin_sphere / builtin_cylinder / builtin_stairs`
 
 ## Smoke / 验收脚本
 

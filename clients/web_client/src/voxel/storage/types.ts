@@ -39,6 +39,7 @@ export interface FRefinedCellData {
   microOccupancyMask: bigint;
   microMaterialIds: number[];
   microStateFlags: number[];
+  microPartIds: number[];
   prefabInstanceIds: number[];
   boundaryCache: number;
 }
@@ -52,6 +53,27 @@ export interface FPrefabInstanceData {
   coveredMacroMin: FMacroCoord;
   coveredMacroMax: FMacroCoord;
   overrideSetIndex: number;
+}
+
+export interface FPrefabDefinitionData {
+  prefabId: string;
+  boundsInMacroCells: FMacroCoord;
+  microResolution: number;
+  occupancyWords: bigint[];
+  materialChannels: number[];
+  partDefinitions: FPrefabPartDefinition[];
+  microPartIds: number[];
+  allowedRotations: EVoxelRotation[];
+  boundarySignature: number[];
+  tags: string[];
+}
+
+export interface FPrefabPartDefinition {
+  partId: string;
+  partTags: string[];
+  defaultAffordances: string[];
+  defaultHealth: number;
+  materialPolicy: "fixed" | "inherit";
 }
 
 export interface FMacroEnvironmentSummary {

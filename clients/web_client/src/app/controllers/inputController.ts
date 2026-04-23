@@ -30,10 +30,14 @@ export class InputController {
   attach(target: Window): () => void {
     target.addEventListener("keydown", this.handleKeyDown);
     target.addEventListener("keyup", this.handleKeyUp);
+    target.addEventListener("pointerdown", this.handlePointerDown);
+    target.addEventListener("wheel", this.handleWheel);
     target.addEventListener("contextmenu", this.preventContextMenu);
     return () => {
       target.removeEventListener("keydown", this.handleKeyDown);
       target.removeEventListener("keyup", this.handleKeyUp);
+      target.removeEventListener("pointerdown", this.handlePointerDown);
+      target.removeEventListener("wheel", this.handleWheel);
       target.removeEventListener("contextmenu", this.preventContextMenu);
     };
   }
@@ -44,6 +48,32 @@ export class InputController {
 
   private readonly preventContextMenu = (event: Event): void => {
     event.preventDefault();
+  };
+
+  private readonly handlePointerDown = (event: PointerEvent): void => {
+    switch (event.button) {
+      case 0:
+        event.preventDefault();
+        this.bus.emit("input:break-block", { source: "mouse_left" });
+        break;
+      case 2:
+        event.preventDefault();
+        this.bus.emit("input:place-block", { source: "mouse_right" });
+        break;
+      default:
+        break;
+    }
+  };
+
+  private readonly handleWheel = (event: WheelEvent): void => {
+    if (event.ctrlKey || event.deltaY === 0) {
+      return;
+    }
+    event.preventDefault();
+    this.bus.emit("input:hotbar-cycle", {
+      direction: event.deltaY > 0 ? 1 : -1,
+      source: "wheel",
+    });
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -85,6 +115,14 @@ export class InputController {
       case "Digit4":
         this.bus.emit("input:material-selected", {
           materialId: VoxelMaterialId.Ice,
+          source: "keyboard",
+        });
+        break;
+      case "Digit5":
+      case "Digit6":
+      case "Digit7":
+        this.bus.emit("input:hotbar-select", {
+          index: Number.parseInt(event.code.slice("Digit".length), 10) - 1,
           source: "keyboard",
         });
         break;

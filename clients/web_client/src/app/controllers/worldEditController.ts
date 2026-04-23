@@ -1,13 +1,37 @@
 import { getMaterialDefinition, VoxelMaterialId } from "../../material/catalog";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
-import type { FMacroCoord } from "../../voxel/core/types";
+import { EVoxelRotation, type FMacroCoord } from "../../voxel/core/types";
 import type { FNormalBlockData } from "../../voxel/storage/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 export interface SelectionProvider {
-  getCurrentSelection(): { occupiedMacro: FMacroCoord; adjacentMacro: FMacroCoord } | null;
+  getCurrentSelection(): {
+    occupiedMacro: FMacroCoord;
+    adjacentMacro: FMacroCoord;
+    faceNormal: FMacroCoord;
+  } | null;
 }
+
+export type HotbarEntry =
+  | { kind: "material"; label: string; materialId: number }
+  | { kind: "prefab"; label: string; prefabName: string; rotation: EVoxelRotation };
+
+export interface HotbarState {
+  entries: HotbarEntry[];
+  selectedIndex: number;
+  selected: HotbarEntry;
+}
+
+const HOTBAR_ENTRIES: HotbarEntry[] = [
+  { kind: "material", label: "dirt", materialId: VoxelMaterialId.Dirt },
+  { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
+  { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
+  { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
+  { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
+  { kind: "prefab", label: "cylinder", prefabName: "builtin_cylinder", rotation: EVoxelRotation.Rot0 },
+  { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
+];
 
 /**
  * Handles material selection, block placement, and block removal. The current
@@ -16,6 +40,7 @@ export interface SelectionProvider {
  */
 export class WorldEditController {
   private selectedMaterialId: number = VoxelMaterialId.Dirt;
+  private selectedHotbarIndex = 0;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -23,14 +48,25 @@ export class WorldEditController {
     private readonly selection: SelectionProvider,
   ) {
     this.bus.on("input:material-selected", ({ materialId }) => {
-      this.selectedMaterialId = materialId;
+      this.applyMaterialSelection(materialId);
     });
+    this.bus.on("input:prefab-selected", ({ prefabName }) => this.applyPrefabSelection(prefabName));
+    this.bus.on("input:hotbar-cycle", ({ direction, source }) => this.cycleHotbar(direction, source));
+    this.bus.on("input:hotbar-select", ({ index, source }) => this.selectHotbarIndex(index, source));
     this.bus.on("input:place-block", ({ source }) => this.placeAtSelection(source));
     this.bus.on("input:break-block", ({ source }) => this.breakAtSelection(source));
   }
 
   getSelectedMaterialId(): number {
     return this.selectedMaterialId;
+  }
+
+  getHotbarState(): HotbarState {
+    return {
+      entries: HOTBAR_ENTRIES.map((entry) => ({ ...entry })),
+      selectedIndex: this.selectedHotbarIndex,
+      selected: { ...HOTBAR_ENTRIES[this.selectedHotbarIndex]! },
+    };
   }
 
   /** CLI entrypoint for scripted edits that do not depend on the raycast. */
@@ -65,6 +101,30 @@ export class WorldEditController {
     this.bus.emit("input:material-selected", { materialId, source });
   }
 
+  selectPrefab(prefabName: string, source: string): void {
+    this.bus.emit("input:prefab-selected", { prefabName, source });
+  }
+
+  selectHotbarIndex(index: number, source: string): void {
+    if (!Number.isInteger(index) || index < 0 || index >= HOTBAR_ENTRIES.length) {
+      this.bus.emit("world:edit-rejected", { reason: "hotbar_rejected", source });
+      return;
+    }
+
+    const entry = HOTBAR_ENTRIES[index]!;
+    this.selectedHotbarIndex = index;
+    if (entry.kind === "material") {
+      this.bus.emit("input:material-selected", { materialId: entry.materialId, source });
+    } else {
+      this.bus.emit("input:prefab-selected", { prefabName: entry.prefabName, source });
+    }
+  }
+
+  private cycleHotbar(direction: -1 | 1, source: string): void {
+    const nextIndex = positiveModulo(this.selectedHotbarIndex + direction, HOTBAR_ENTRIES.length);
+    this.selectHotbarIndex(nextIndex, source);
+  }
+
   private placeAtSelection(source: string): void {
     const selection = this.selection.getCurrentSelection();
     if (!selection) {
@@ -72,7 +132,12 @@ export class WorldEditController {
       this.world.store.editStats.rejected += 1;
       return;
     }
-    this.placeAt(selection.adjacentMacro, this.selectedMaterialId, source);
+    const selected = HOTBAR_ENTRIES[this.selectedHotbarIndex]!;
+    if (selected.kind === "prefab") {
+      this.placePrefabAt(selection.adjacentMacro, selected.prefabName, selected.rotation, source);
+    } else {
+      this.placeAt(selection.adjacentMacro, selected.materialId, source);
+    }
   }
 
   private breakAtSelection(source: string): void {
@@ -84,4 +149,51 @@ export class WorldEditController {
     }
     this.breakAt(selection.occupiedMacro, source);
   }
+
+  private placePrefabAt(
+    origin: FMacroCoord,
+    prefabName: string,
+    rotation: EVoxelRotation,
+    source: string,
+  ): boolean {
+    const result = this.world.placePrefab(prefabName, origin, rotation);
+    if (result.ok) {
+      this.bus.emit("world:prefab-placed", {
+        name: prefabName,
+        origin,
+        placed: result.placed,
+        source,
+      });
+      return true;
+    }
+
+    this.bus.emit("world:edit-rejected", {
+      reason: result.conflict ? "prefab_conflict" : "prefab_place_rejected",
+      source,
+    });
+    return false;
+  }
+
+  private applyMaterialSelection(materialId: number): void {
+    this.selectedMaterialId = materialId;
+    const index = HOTBAR_ENTRIES.findIndex(
+      (entry) => entry.kind === "material" && entry.materialId === materialId,
+    );
+    if (index !== -1) {
+      this.selectedHotbarIndex = index;
+    }
+  }
+
+  private applyPrefabSelection(prefabName: string): void {
+    const index = HOTBAR_ENTRIES.findIndex(
+      (entry) => entry.kind === "prefab" && entry.prefabName === prefabName,
+    );
+    if (index !== -1) {
+      this.selectedHotbarIndex = index;
+    }
+  }
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }

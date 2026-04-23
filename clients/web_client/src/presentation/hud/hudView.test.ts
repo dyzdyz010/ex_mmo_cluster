@@ -40,6 +40,11 @@ describe("HudView", () => {
     };
     const edit = {
       getSelectedMaterialId: () => 1,
+      getHotbarState: () => ({
+        selectedIndex: 0,
+        selected: { kind: "material", label: "dirt", materialId: 1 },
+        entries: [{ kind: "material", label: "dirt", materialId: 1 }],
+      }),
     };
     const render = {
       getCurrentSelection: () => null,

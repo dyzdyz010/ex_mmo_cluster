@@ -43,12 +43,17 @@ export class HudView implements FrameSubscriber {
     const stats = this.localPlayer.getGovernanceStats();
     const selection = this.render.getCurrentSelection();
     const selectedMaterialId = this.edit.getSelectedMaterialId();
+    const hotbar = this.edit.getHotbarState();
     const transportSnapshot = {
       voxelSync: this.world.mode,
       movementTransport: this.transport.debugSnapshot(),
     };
+    const selectedHotbarText =
+      hotbar.selected.kind === "material"
+        ? `${hotbar.selectedIndex + 1}:${hotbar.selected.label}`
+        : `${hotbar.selectedIndex + 1}:prefab/${hotbar.selected.label}`;
     const selectionText = selection
-      ? `${formatCoord(selection.occupiedMacro)} -> ${formatCoord(selection.adjacentMacro)}`
+      ? `${formatCoord(selection.occupiedMacro)} face=${formatCoord(selection.faceNormal)} -> ${formatCoord(selection.adjacentMacro)}`
       : "n/a";
 
     this.hud.textContent = [
@@ -57,6 +62,7 @@ export class HudView implements FrameSubscriber {
       `movement_ready: ${this.transport.isReady()}  transport_state: ${JSON.stringify(transportSnapshot)}`,
       `chunks: ${this.world.store.listChunks().length}  solid_blocks: ${this.world.store.totalSolidBlocks()}`,
       `selected_material: ${getMaterialDefinition(selectedMaterialId).name} (${selectedMaterialId})`,
+      `hotbar: ${selectedHotbarText}  entries=${hotbar.entries.map((entry, index) => `${index + 1}:${entry.label}`).join(",")}`,
       `selection: ${selectionText}`,
       `player_rendered: ${formatVector(this.localPlayer.getRenderedPosition())}`,
       `player_authority: ${formatVector(this.localPlayer.getAuthoritativePosition())}`,
@@ -65,7 +71,7 @@ export class HudView implements FrameSubscriber {
       `reconcile: corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.world.store.editStats.placed} broken=${this.world.store.editStats.broken} rejected=${this.world.store.editStats.rejected} conflicts=${this.world.store.editStats.conflicts}`,
-      "controls: click or drag to orbit camera, wheel zoom, WASD move relative to camera, F place, G break, 1-4 material",
+      "controls: left click break, right click place, wheel hotbar, ctrl+wheel zoom, WASD, 1-7 select",
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }

@@ -8,12 +8,17 @@ import {
 } from "three";
 import type { ObserveLog } from "../../observe/logger";
 import { ChunkRenderController, type VoxelRaySelection } from "../../render/chunkRenderer";
+import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
 import { createScene, type SceneHandles } from "../../render/scene";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
-import type { SelectionProvider } from "./worldEditController";
+import type { HotbarState, SelectionProvider } from "./worldEditController";
+
+interface EditPreviewProvider {
+  getHotbarState(): HotbarState;
+}
 
 /**
  * Holds the Three.js scene, the avatar meshes, and the camera. Each frame it
@@ -35,6 +40,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly authorityDisplay = new Vector3();
   private readonly remoteDisplay = new Vector3();
   private currentSelection: VoxelRaySelection | null = null;
+  private editPreviewProvider: EditPreviewProvider | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -76,6 +82,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
     this.chunkRenderer.setTargetHighlights(this.currentSelection);
+    this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
     this.sceneHandles.renderer.render(this.sceneHandles.scene, this.sceneHandles.camera);
   }
@@ -90,6 +97,14 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   getMovementYawRadians(): number {
     return this.sceneHandles.getMovementYawRadians();
+  }
+
+  getPrefabPreviewSnapshot(): PrefabPreviewSnapshot {
+    return this.chunkRenderer.getPrefabPreviewSnapshot();
+  }
+
+  setEditPreviewProvider(provider: EditPreviewProvider): void {
+    this.editPreviewProvider = provider;
   }
 
   dispose(): void {
@@ -120,6 +135,19 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.syncRing.position.set(this.localDisplay.x, this.localDisplay.y - 59, this.localDisplay.z);
     this.syncRing.rotation.z = nowSecs * 0.25;
     this.sceneHandles.setCameraFollow(this.localDisplay);
+  }
+
+  private updatePrefabPreview(): void {
+    const selected = this.editPreviewProvider?.getHotbarState().selected;
+    if (!this.currentSelection || selected?.kind !== "prefab") {
+      this.chunkRenderer.setPrefabPreview(null, null);
+      return;
+    }
+
+    this.chunkRenderer.setPrefabPreview(
+      this.currentSelection,
+      this.world.getPrefab(selected.prefabName),
+    );
   }
 
   private groundActorPosition(position: Vector3, halfHeight: number, out: Vector3): void {

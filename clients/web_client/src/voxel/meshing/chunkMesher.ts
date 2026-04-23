@@ -1,7 +1,7 @@
-import { MacroWorldSize } from "../core/constants";
-import type { FMacroCoord } from "../core/types";
+import { MacroWorldSize, VoxelConstants } from "../core/constants";
+import { EVoxelCellMode, type FMacroCoord } from "../core/types";
 import { buildBlockStateView, resolveVoxelVisual } from "../../material/catalog";
-import type { FChunkMesherInputSnapshot } from "./types";
+import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "./types";
 
 export interface ChunkMeshBuildData {
   positions: number[];
@@ -38,7 +38,12 @@ export function buildChunkMeshData(snapshot: FChunkMesherInputSnapshot, lookup: 
 
   let solidBlockCount = 0;
   for (const cell of snapshot.cells) {
-    if (cell.mode !== 1 || cell.materialId === 0) {
+    if (cell.mode === EVoxelCellMode.Refined) {
+      solidBlockCount += appendRefinedCellMesh(cell, positions, normals, colors, indices);
+      continue;
+    }
+
+    if (cell.mode !== EVoxelCellMode.SolidBlock || cell.materialId === 0) {
       continue;
     }
 
@@ -99,4 +104,105 @@ export function buildChunkMeshData(snapshot: FChunkMesherInputSnapshot, lookup: 
     solidBlockCount,
     triangleCount: indices.length / 3,
   };
+}
+
+function appendRefinedCellMesh(
+  cell: FChunkMesherCellSnapshot,
+  positions: number[],
+  normals: number[],
+  colors: number[],
+  indices: number[],
+): number {
+  const occupancy = cell.microOccupancyMask ?? 0n;
+  if (occupancy === 0n) {
+    return 0;
+  }
+
+  let occupiedCount = 0;
+  for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
+    for (let y = 0; y < VoxelConstants.MicroPerMacro; y += 1) {
+      for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
+        const microIndex = microLinearIndex({ x, y, z });
+        if (!isMicroOccupied(occupancy, microIndex)) {
+          continue;
+        }
+        occupiedCount += 1;
+        appendMicroCube(cell, { x, y, z }, microIndex, occupancy, positions, normals, colors, indices);
+      }
+    }
+  }
+  return occupiedCount;
+}
+
+function appendMicroCube(
+  cell: FChunkMesherCellSnapshot,
+  micro: FMacroCoord,
+  microIndex: number,
+  occupancy: bigint,
+  positions: number[],
+  normals: number[],
+  colors: number[],
+  indices: number[],
+): void {
+  const materialId = cell.microMaterialIds?.[microIndex] ?? cell.materialId;
+  const stateFlags = cell.microStateFlags?.[microIndex] ?? cell.stateFlags;
+  const visual = resolveVoxelVisual(
+    buildBlockStateView({
+      materialId,
+      stateFlags,
+      health: cell.health,
+      temperatureDelta: 0,
+      moistureDelta: 0,
+    }),
+  );
+
+  for (const face of FACE_DEFINITIONS) {
+    const neighborMicro = {
+      x: micro.x + face.normal.x,
+      y: micro.y + face.normal.y,
+      z: micro.z + face.normal.z,
+    };
+    if (microInBounds(neighborMicro) && isMicroOccupied(occupancy, microLinearIndex(neighborMicro))) {
+      continue;
+    }
+
+    const baseVertex = positions.length / 3;
+    for (const corner of face.corners) {
+      positions.push(
+        (cell.localMacroCoord.x + ((micro.x + corner[0]) / VoxelConstants.MicroPerMacro)) * MacroWorldSize,
+        (cell.localMacroCoord.y + ((micro.y + corner[1]) / VoxelConstants.MicroPerMacro)) * MacroWorldSize,
+        (cell.localMacroCoord.z + ((micro.z + corner[2]) / VoxelConstants.MicroPerMacro)) * MacroWorldSize,
+      );
+      normals.push(face.normal.x, face.normal.y, face.normal.z);
+      colors.push(visual.displayColor.r, visual.displayColor.g, visual.displayColor.b);
+    }
+
+    indices.push(
+      baseVertex,
+      baseVertex + 1,
+      baseVertex + 2,
+      baseVertex,
+      baseVertex + 2,
+      baseVertex + 3,
+    );
+  }
+}
+
+function microLinearIndex(coord: FMacroCoord): number {
+  return coord.x
+    + (coord.y * VoxelConstants.MicroPerMacro)
+    + (coord.z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro);
+}
+
+function isMicroOccupied(occupancy: bigint, microIndex: number): boolean {
+  return (occupancy & (1n << BigInt(microIndex))) !== 0n;
+}
+
+function microInBounds(coord: FMacroCoord): boolean {
+  return coord.x >= 0
+    && coord.y >= 0
+    && coord.z >= 0
+    && coord.x < VoxelConstants.MicroPerMacro
+    && coord.y < VoxelConstants.MicroPerMacro
+    && coord.z < VoxelConstants.MicroPerMacro;
 }
