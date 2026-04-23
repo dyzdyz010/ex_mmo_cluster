@@ -51,6 +51,8 @@ erl_crash.dump
 /apps/beacon_server/MnesiaCore.nonode@nohost_*
 
 clients/bevy_client/target/
+clients/voxel-world-explorer/
+clients/voxel-world-explorer.zip
 .demo/
 
 # Deployment secrets — never commit real .env, but keep .env.example tracked.
