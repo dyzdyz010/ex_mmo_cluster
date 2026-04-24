@@ -3,10 +3,8 @@ import { InputController } from "./inputController";
 import { TransportPump } from "./transportPump";
 import { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
-import type {
-  MovementTransport,
-  MovementTransportTickResult,
-} from "@domain/movement/transport";
+import type { MovementTransport, MovementTransportTickResult } from "@domain/movement/transport";
+import { MovementFlag } from "@domain/movement/types";
 import type { MoveInputFrame } from "@domain/movement/types";
 import type { Vector3 } from "three";
 import type { MovementKeys } from "./inputController";
@@ -110,5 +108,41 @@ describe("LocalPlayerController", () => {
     }
 
     expect(maxAdjacentDrop).toBeLessThan(0.35);
+  });
+
+  it("sends one jump flag on the next fixed movement frame", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    input.requestJump("test");
+
+    controller.onFrame(100, 100);
+    controller.onFrame(200, 100);
+
+    expect(transport.sentInputs).toHaveLength(2);
+    expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
+    expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+  });
+
+  it("records vertical displacement and movement mode in frame traces", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    input.requestJump("test");
+    controller.startFrameTrace(8);
+    for (let frame = 0; frame < 8; frame += 1) {
+      controller.onFrame((frame + 1) * 25, 25);
+    }
+
+    const samples = controller.getFrameTrace().samples;
+    expect(samples.some((sample) => sample.renderedY !== 650)).toBe(true);
+    expect(samples.some((sample) => sample.movementMode === "airborne")).toBe(true);
+    expect(samples.some((sample) => Math.abs(sample.deltaY) > 0)).toBe(true);
   });
 });

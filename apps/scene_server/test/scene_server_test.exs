@@ -16,7 +16,7 @@ defmodule SceneServerTest do
       SceneServer.Native.SceneOps.new_character_data(0, "tuser", location, dev_attrs, physys_ref)
 
     {:ok, cd_raw} = SceneServer.Native.SceneOps.get_character_data_raw(cdata_ref, physys_ref)
-    result = SceneServer.Native.SceneOps.movement_tick(cdata_ref, physys_ref)
+    assert {:ok, _} = SceneServer.Native.SceneOps.movement_tick(cdata_ref, physys_ref)
     Logger.debug(inspect(cd_raw, pretty: true))
   end
 

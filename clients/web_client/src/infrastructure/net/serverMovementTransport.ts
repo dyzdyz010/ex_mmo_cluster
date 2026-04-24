@@ -1,8 +1,18 @@
 import { Vector3 } from "three";
-import { encodeAuthRequest, decodeServerMessage, encodeEnterScene, encodeHeartbeat, encodeMovementInput } from "./gateProtocol";
+import {
+  encodeAuthRequest,
+  decodeServerMessage,
+  encodeEnterScene,
+  encodeHeartbeat,
+  encodeMovementInput,
+} from "./gateProtocol";
 import type { ObserveLog } from "../../observe/logger";
 import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
-import type { MovementTransport, MovementTransportTickResult, PendingMovementAck } from "@domain/movement/transport";
+import type {
+  MovementTransport,
+  MovementTransportTickResult,
+  PendingMovementAck,
+} from "@domain/movement/transport";
 import { SimulatedLocalMovementTransport } from "./simulatedMovementTransport";
 
 interface AutoLoginResponse {
@@ -141,7 +151,10 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     this.connecting = true;
-    this.logger.emit("transport", "bootstrap_start", { mode: SERVER_TRANSPORT_MODE, url: this.webSocketUrl });
+    this.logger.emit("transport", "bootstrap_start", {
+      mode: SERVER_TRANSPORT_MODE,
+      url: this.webSocketUrl,
+    });
 
     try {
       const login = await this.autoLogin();
@@ -207,7 +220,10 @@ export class ServerMovementTransport implements MovementTransport {
     this.connecting = false;
     this.authRequestId = this.nextRequestId();
     socket.send(encodeAuthRequest(this.authRequestId, this.username, this.token));
-    this.logger.emit("transport", "socket_open", { mode: SERVER_TRANSPORT_MODE, auth_request_id: this.authRequestId });
+    this.logger.emit("transport", "socket_open", {
+      mode: SERVER_TRANSPORT_MODE,
+      auth_request_id: this.authRequestId,
+    });
     this.heartbeatTimer = window.setInterval(() => {
       if (this.socket?.readyState === WebSocket.OPEN) {
         this.socket.send(encodeHeartbeat(Date.now()));
@@ -222,7 +238,10 @@ export class ServerMovementTransport implements MovementTransport {
 
     const message = decodeServerMessage(data);
     if (!message) {
-      this.logger.emit("transport", "message_ignored", { mode: SERVER_TRANSPORT_MODE, bytes: data.byteLength });
+      this.logger.emit("transport", "message_ignored", {
+        mode: SERVER_TRANSPORT_MODE,
+        bytes: data.byteLength,
+      });
       return;
     }
 
@@ -231,7 +250,11 @@ export class ServerMovementTransport implements MovementTransport {
         if (message.requestId === this.authRequestId && this.socket && this.cid !== null) {
           this.enterSceneRequestId = this.nextRequestId();
           this.socket.send(encodeEnterScene(this.enterSceneRequestId, this.cid));
-          this.logger.emit("transport", "auth_ok", { mode: SERVER_TRANSPORT_MODE, cid: this.cid, enter_scene_request_id: this.enterSceneRequestId });
+          this.logger.emit("transport", "auth_ok", {
+            mode: SERVER_TRANSPORT_MODE,
+            cid: this.cid,
+            enter_scene_request_id: this.enterSceneRequestId,
+          });
         }
         break;
       case "enter_scene_ok":
@@ -245,7 +268,10 @@ export class ServerMovementTransport implements MovementTransport {
         }
         break;
       case "enter_scene_error":
-        this.logger.emit("transport", "enter_scene_error", { mode: SERVER_TRANSPORT_MODE, request_id: message.requestId });
+        this.logger.emit("transport", "enter_scene_error", {
+          mode: SERVER_TRANSPORT_MODE,
+          request_id: message.requestId,
+        });
         this.activateFallback(`enter_scene_error:${message.requestId}`);
         break;
       case "movement_ack":
@@ -297,7 +323,10 @@ export class ServerMovementTransport implements MovementTransport {
       this.socket.onerror = null;
       this.socket.onclose = null;
 
-      if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
+      if (
+        this.socket.readyState === WebSocket.OPEN ||
+        this.socket.readyState === WebSocket.CONNECTING
+      ) {
         try {
           this.socket.close(1000, "fallback_to_simulated");
         } catch {

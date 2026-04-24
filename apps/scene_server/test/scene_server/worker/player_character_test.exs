@@ -151,6 +151,34 @@ defmodule SceneServer.PlayerCharacterTest do
     assert x > 1.0
   end
 
+  test "jump input is consumed as one-shot latch after authoritative tick" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {0.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: Bitwise.bor(InputFrame.jump_flag(), 0b10)
+    }
+
+    assert {:reply, {:ok, :accepted}, latched_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, latched_state)
+
+    assert next_state.movement_state.movement_mode == :airborne
+    refute InputFrame.jumping?(next_state.latched_input)
+  end
+
   test "a burst of queued inputs produces the same final state as stepping one per tick" do
     # Simulate jittery arrival: three inputs landing together in one wall-clock tick
     # should advance the server to the exact same position/velocity as three inputs

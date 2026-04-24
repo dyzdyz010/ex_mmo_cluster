@@ -23,10 +23,15 @@ impl Default for MovementMode {
 }
 
 impl MovementMode {
-    /// Decide the mode for the upcoming step. This round we always keep the
-    /// previous mode — transitions will be added when jump/skill code lands.
-    pub fn transition(prev: MovementMode, _input: &InputFrame) -> MovementMode {
-        prev
+    /// Decide the mode for the upcoming step.
+    ///
+    /// Jump is a one-shot intent: only a grounded actor can enter Airborne from
+    /// a jump flag. Airborne cannot re-trigger the impulse until it lands.
+    pub fn transition(prev: MovementMode, input: &InputFrame) -> MovementMode {
+        match prev {
+            MovementMode::Grounded if input.jump_requested() => MovementMode::Airborne,
+            _ => prev,
+        }
     }
 }
 
@@ -40,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_preserves_previous_mode_this_round() {
+    fn transition_preserves_previous_mode_without_jump() {
         let input = InputFrame::idle(1, 1);
         assert_eq!(
             MovementMode::transition(MovementMode::Grounded, &input),
@@ -49,6 +54,20 @@ mod tests {
         assert_eq!(
             MovementMode::transition(MovementMode::Disabled, &input),
             MovementMode::Disabled
+        );
+    }
+
+    #[test]
+    fn grounded_jump_enters_airborne_once() {
+        let mut input = InputFrame::idle(1, 1);
+        input.movement_flags = crate::input::MOVEMENT_FLAG_JUMP;
+        assert_eq!(
+            MovementMode::transition(MovementMode::Grounded, &input),
+            MovementMode::Airborne
+        );
+        assert_eq!(
+            MovementMode::transition(MovementMode::Airborne, &input),
+            MovementMode::Airborne
         );
     }
 

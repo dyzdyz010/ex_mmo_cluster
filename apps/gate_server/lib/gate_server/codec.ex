@@ -362,6 +362,7 @@ defmodule GateServer.Codec do
   defp encode_movement_mode(:grounded), do: 0
   defp encode_movement_mode(:airborne), do: 1
   defp encode_movement_mode(:disabled), do: 2
+  defp encode_movement_mode(:scripted), do: 3
   defp encode_movement_mode(mode) when is_integer(mode), do: mode
   defp encode_movement_mode(_mode), do: 0
 

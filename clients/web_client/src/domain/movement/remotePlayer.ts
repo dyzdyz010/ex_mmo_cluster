@@ -23,8 +23,15 @@ export interface RemoteMotionSample {
 export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
 
-  pushSnapshot(snapshot: RemoteMoveSnapshot, correctionFlags: number, receivedAtSecs: number): void {
-    if ((correctionFlags & CorrectionFlag.Teleport) !== 0 || (correctionFlags & CorrectionFlag.AntiCheatReject) !== 0) {
+  pushSnapshot(
+    snapshot: RemoteMoveSnapshot,
+    correctionFlags: number,
+    receivedAtSecs: number,
+  ): void {
+    if (
+      (correctionFlags & CorrectionFlag.Teleport) !== 0 ||
+      (correctionFlags & CorrectionFlag.AntiCheatReject) !== 0
+    ) {
       this.snapshots.splice(0, this.snapshots.length);
     }
 
@@ -68,7 +75,8 @@ export class RemotePlayerState {
 
     const latestServerTime = snapshotTimeSecs(latest.snapshot.serverTick);
     const estimatedServerTime =
-      latestServerTime + Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
+      latestServerTime +
+      Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
     const playbackServerTime = estimatedServerTime - INTERPOLATION_DELAY_SECS;
 
     for (let index = 0; index < this.snapshots.length - 1; index += 1) {
@@ -92,7 +100,11 @@ function snapshotTimeSecs(serverTick: number): number {
   return serverTick * SNAPSHOT_TICK_SECS;
 }
 
-function interpolatePair(previous: BufferedSnapshot, next: BufferedSnapshot, playbackServerTime: number): RemoteMotionSample {
+function interpolatePair(
+  previous: BufferedSnapshot,
+  next: BufferedSnapshot,
+  playbackServerTime: number,
+): RemoteMotionSample {
   const previousTime = snapshotTimeSecs(previous.snapshot.serverTick);
   const nextTime = snapshotTimeSecs(next.snapshot.serverTick);
   const duration = Math.max(nextTime - previousTime, 1e-6);
@@ -117,7 +129,9 @@ function extrapolateSingle(entry: BufferedSnapshot, nowSecs: number): RemoteMoti
       .clone()
       .add(entry.snapshot.velocity.clone().multiplyScalar(dt))
       .add(entry.snapshot.acceleration.clone().multiplyScalar(0.5 * dt * dt)),
-    velocity: entry.snapshot.velocity.clone().add(entry.snapshot.acceleration.clone().multiplyScalar(dt)),
+    velocity: entry.snapshot.velocity
+      .clone()
+      .add(entry.snapshot.acceleration.clone().multiplyScalar(dt)),
   };
 }
 
@@ -131,9 +145,9 @@ function hermitePosition(
 ): Vector3 {
   const t2 = t * t;
   const t3 = t2 * t;
-  const h00 = (2 * t3) - (3 * t2) + 1;
-  const h10 = t3 - (2 * t2) + t;
-  const h01 = (-2 * t3) + (3 * t2);
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
   const h11 = t3 - t2;
 
   return new Vector3()

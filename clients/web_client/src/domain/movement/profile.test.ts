@@ -8,6 +8,11 @@ describe("DEFAULT_MOVEMENT_PROFILE", () => {
       maxAccel: 1200,
       maxDecel: 1400,
       maxJerk: 9000,
+      jumpImpulse: 420,
+      gravity: 980,
+      airControl: 0.35,
+      airAccel: 420,
+      maxFallSpeed: 900,
     });
   });
 });

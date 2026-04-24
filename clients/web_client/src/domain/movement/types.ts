@@ -1,17 +1,28 @@
-import { Vector2, Vector3 } from "three";
+import { type Vector2, Vector3 } from "three";
 
 export const MovementFlag = {
   None: 0,
-  Brake: 1 << 0,
+  Run: 1 << 0,
+  Brake: 1 << 1,
+  Jump: 1 << 2,
 } as const;
 
 export const CorrectionFlag = {
   None: 0,
   Teleport: 1 << 0,
   CollisionPush: 1 << 1,
-  AntiCheatReject: 1 << 2,
-  StatusOverride: 1 << 3,
+  StatusOverride: 1 << 2,
+  AntiCheatReject: 1 << 3,
 } as const;
+
+export const MovementMode = {
+  Grounded: "grounded",
+  Airborne: "airborne",
+  Scripted: "scripted",
+  Disabled: "disabled",
+} as const;
+
+export type MovementMode = (typeof MovementMode)[keyof typeof MovementMode];
 
 export interface MoveInputFrame {
   seq: number;
@@ -28,6 +39,8 @@ export interface PredictedMoveState {
   position: Vector3;
   velocity: Vector3;
   acceleration: Vector3;
+  movementMode: MovementMode;
+  groundY: number;
 }
 
 export interface MovementAck {
@@ -36,6 +49,8 @@ export interface MovementAck {
   position: Vector3;
   velocity: Vector3;
   acceleration: Vector3;
+  movementMode: MovementMode;
+  groundY?: number;
   correctionFlags: number;
 }
 
@@ -45,6 +60,7 @@ export interface RemoteMoveSnapshot {
   position: Vector3;
   velocity: Vector3;
   acceleration: Vector3;
+  movementMode: MovementMode;
 }
 
 export function makeIdleState(position: Vector3): PredictedMoveState {
@@ -54,6 +70,8 @@ export function makeIdleState(position: Vector3): PredictedMoveState {
     position: position.clone(),
     velocity: new Vector3(),
     acceleration: new Vector3(),
+    movementMode: MovementMode.Grounded,
+    groundY: position.y,
   };
 }
 
@@ -75,18 +93,25 @@ export function clonePredictedMoveState(state: PredictedMoveState): PredictedMov
     position: state.position.clone(),
     velocity: state.velocity.clone(),
     acceleration: state.acceleration.clone(),
+    movementMode: state.movementMode,
+    groundY: state.groundY,
   };
 }
 
 export function cloneMovementAck(ack: MovementAck): MovementAck {
-  return {
+  const cloned: MovementAck = {
     ackSeq: ack.ackSeq,
     authTick: ack.authTick,
     position: ack.position.clone(),
     velocity: ack.velocity.clone(),
     acceleration: ack.acceleration.clone(),
+    movementMode: ack.movementMode,
     correctionFlags: ack.correctionFlags,
   };
+  if (ack.groundY !== undefined) {
+    cloned.groundY = ack.groundY;
+  }
+  return cloned;
 }
 
 export function cloneRemoteMoveSnapshot(snapshot: RemoteMoveSnapshot): RemoteMoveSnapshot {
@@ -96,5 +121,6 @@ export function cloneRemoteMoveSnapshot(snapshot: RemoteMoveSnapshot): RemoteMov
     position: snapshot.position.clone(),
     velocity: snapshot.velocity.clone(),
     acceleration: snapshot.acceleration.clone(),
+    movementMode: snapshot.movementMode,
   };
 }

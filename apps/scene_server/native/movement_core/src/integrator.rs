@@ -36,7 +36,7 @@ pub fn step(
     let mode = MovementMode::transition(previous.movement_mode, input);
     match mode {
         MovementMode::Grounded => grounded_step(previous, input, profile, mode),
-        MovementMode::Airborne => grounded_step(previous, input, profile, mode),
+        MovementMode::Airborne => airborne_step(previous, input, profile),
         MovementMode::Scripted => scripted_step(previous, input, mode),
         MovementMode::Disabled => disabled_step(previous, input, mode),
     }
@@ -90,12 +90,18 @@ fn grounded_step(
             velocity,
             acceleration,
             movement_mode: mode,
+            ground_z: position[2],
             tick: input.client_tick,
             seq: input.seq,
         };
     }
 
-    let accel_limit = accel_limit(previous.velocity, desired_velocity, profile, input.braking());
+    let accel_limit = accel_limit(
+        previous.velocity,
+        desired_velocity,
+        profile,
+        input.braking(),
+    );
     let velocity_error = sub(desired_velocity, previous.velocity);
     let accel_target = clamp_vec3(div(velocity_error, dt.max(f64::EPSILON)), accel_limit);
     let acceleration =
@@ -111,6 +117,68 @@ fn grounded_step(
         velocity,
         acceleration,
         movement_mode: mode,
+        ground_z: position[2],
+        tick: input.client_tick,
+        seq: input.seq,
+    }
+}
+
+fn airborne_step(
+    previous: &MovementState,
+    input: &InputFrame,
+    profile: &MovementProfile,
+) -> MovementState {
+    let dt = (input.dt_ms.max(1) as f64) / 1000.0;
+    let dir2 = normalize_or_zero(input.input_dir);
+    let clamped_scale = input.speed_scale.clamp(0.0, profile.max_speed_scale);
+    let desired_horizontal = [
+        dir2[0] * profile.max_speed * clamped_scale,
+        dir2[1] * profile.max_speed * clamped_scale,
+        0.0,
+    ];
+    let current_horizontal = [previous.velocity[0], previous.velocity[1], 0.0];
+    let horizontal_error = sub(desired_horizontal, current_horizontal);
+    let air_accel_limit = profile.air_accel * profile.air_control.clamp(0.0, 1.0);
+    let horizontal_delta = clamp_vec3(horizontal_error, air_accel_limit * dt);
+
+    let launch_tick = previous.movement_mode == MovementMode::Grounded && input.jump_requested();
+    let ground_z = if launch_tick {
+        previous.position[2]
+    } else {
+        previous.ground_z
+    };
+    let start_vz = if launch_tick {
+        profile.jump_impulse
+    } else {
+        previous.velocity[2]
+    };
+    let next_vz = (start_vz - profile.gravity * dt).max(-profile.max_fall_speed);
+    let mut velocity = [
+        previous.velocity[0] + horizontal_delta[0],
+        previous.velocity[1] + horizontal_delta[1],
+        next_vz,
+    ];
+    let mut acceleration = [
+        horizontal_delta[0] / dt.max(f64::EPSILON),
+        horizontal_delta[1] / dt.max(f64::EPSILON),
+        -profile.gravity,
+    ];
+    let mut position = add(previous.position, mul(velocity, dt));
+    let mut movement_mode = MovementMode::Airborne;
+
+    if position[2] <= ground_z && velocity[2] <= 0.0 {
+        position[2] = ground_z;
+        velocity[2] = 0.0;
+        acceleration[2] = 0.0;
+        movement_mode = MovementMode::Grounded;
+    }
+
+    MovementState {
+        position,
+        velocity,
+        acceleration,
+        movement_mode,
+        ground_z,
         tick: input.client_tick,
         seq: input.seq,
     }
@@ -127,7 +195,11 @@ fn apply_braking(velocity: [f64; 3], max_decel: f64, dt: f64) -> ([f64; 3], [f64
     }
 
     let speed = speed_sq.sqrt();
-    let unit = [velocity[0] / speed, velocity[1] / speed, velocity[2] / speed];
+    let unit = [
+        velocity[0] / speed,
+        velocity[1] / speed,
+        velocity[2] / speed,
+    ];
     let decel_delta = max_decel * dt;
     let new_velocity = [
         velocity[0] - unit[0] * decel_delta,
@@ -159,6 +231,7 @@ fn scripted_step(
         velocity: previous.velocity,
         acceleration: previous.acceleration,
         movement_mode: mode,
+        ground_z: previous.ground_z,
         tick: input.client_tick,
         seq: input.seq,
     }
@@ -174,6 +247,7 @@ fn disabled_step(
         velocity: [0.0, 0.0, 0.0],
         acceleration: [0.0, 0.0, 0.0],
         movement_mode: mode,
+        ground_z: previous.ground_z,
         tick: input.client_tick,
         seq: input.seq,
     }
@@ -197,12 +271,7 @@ fn accel_limit(
     }
 }
 
-fn smooth_acceleration(
-    current: [f64; 3],
-    target: [f64; 3],
-    max_jerk: f64,
-    dt: f64,
-) -> [f64; 3] {
+fn smooth_acceleration(current: [f64; 3], target: [f64; 3], max_jerk: f64, dt: f64) -> [f64; 3] {
     let delta = sub(target, current);
     let max_delta = max_jerk * dt;
     if magnitude(delta) <= max_delta {
@@ -215,7 +284,7 @@ fn smooth_acceleration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::MOVEMENT_FLAG_BRAKE;
+    use crate::input::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP};
 
     fn idle_at(pos: [f64; 3]) -> MovementState {
         MovementState::idle(pos)
@@ -227,6 +296,7 @@ mod tests {
             velocity,
             acceleration: [0.0, 0.0, 0.0],
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
             tick: 1,
             seq: 1,
         }
@@ -242,6 +312,60 @@ mod tests {
             movement_flags: flags,
             movement_mode: MovementMode::Grounded,
         }
+    }
+
+    #[test]
+    fn jump_from_grounded_enters_airborne_with_vertical_impulse() {
+        let prev = idle_at([0.0, 0.0, 90.0]);
+        let input = input_dir(1, [0.0, 0.0], MOVEMENT_FLAG_JUMP);
+        let profile = MovementProfile::default();
+
+        let next = step(&prev, &input, &profile);
+
+        assert_eq!(next.movement_mode, MovementMode::Airborne);
+        assert!(next.velocity[2] > 0.0);
+        assert!(next.position[2] > prev.position[2]);
+        assert!((next.velocity[2] - (profile.jump_impulse - profile.gravity * 0.1)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn airborne_jump_flag_does_not_double_jump() {
+        let prev = MovementState {
+            position: [0.0, 0.0, 118.0],
+            velocity: [0.0, 0.0, 180.0],
+            acceleration: [0.0, 0.0, -MovementProfile::default().gravity],
+            movement_mode: MovementMode::Airborne,
+            ground_z: 90.0,
+            tick: 1,
+            seq: 1,
+        };
+        let input = input_dir(2, [0.0, 0.0], MOVEMENT_FLAG_JUMP);
+        let profile = MovementProfile::default();
+
+        let next = step(&prev, &input, &profile);
+
+        assert_eq!(next.movement_mode, MovementMode::Airborne);
+        assert!(next.velocity[2] < prev.velocity[2]);
+        assert!(next.velocity[2] < profile.jump_impulse);
+    }
+
+    #[test]
+    fn airborne_state_lands_on_original_ground_height() {
+        let profile = MovementProfile::default();
+        let mut state = idle_at([0.0, 0.0, 90.0]);
+        state = step(
+            &state,
+            &input_dir(1, [0.0, 0.0], MOVEMENT_FLAG_JUMP),
+            &profile,
+        );
+
+        for seq in 2u32..=20 {
+            state = step(&state, &input_dir(seq, [0.0, 0.0], 0), &profile);
+        }
+
+        assert_eq!(state.movement_mode, MovementMode::Grounded);
+        assert!((state.position[2] - 90.0).abs() < 1.0e-9);
+        assert_eq!(state.velocity[2], 0.0);
     }
 
     #[test]
@@ -317,6 +441,7 @@ mod tests {
             velocity: [5.0, -3.0, 0.0],
             acceleration: [1.0, 2.0, 0.0],
             movement_mode: MovementMode::Scripted,
+            ground_z: 0.0,
             tick: 1,
             seq: 1,
         };
@@ -345,6 +470,7 @@ mod tests {
             velocity: [100.0, -50.0, 0.0],
             acceleration: [200.0, 200.0, 0.0],
             movement_mode: MovementMode::Disabled,
+            ground_z: 0.0,
             tick: 1,
             seq: 1,
         };
@@ -487,8 +613,7 @@ mod invariants {
                     max_speed_scale: mss,
                     ..MovementProfile::default()
                 };
-                let ceiling =
-                    profile.max_speed * ss.min(profile.max_speed_scale) + 1.0e-9;
+                let ceiling = profile.max_speed * ss.min(profile.max_speed_scale) + 1.0e-9;
                 let mut state = MovementState::idle([0.0, 0.0, 0.0]);
 
                 for seq in 1u32..=200 {
@@ -599,6 +724,7 @@ mod invariants {
             velocity: [profile.max_speed, 0.0, 0.0],
             acceleration: [0.0, 0.0, 0.0],
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
             tick: 0,
             seq: 0,
         };
@@ -655,6 +781,7 @@ mod invariants {
             velocity: [profile.max_speed, 0.0, 0.0],
             acceleration: [0.0, 0.0, 0.0],
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
             tick: 0,
             seq: 0,
         };
@@ -733,6 +860,7 @@ mod mode_dispatch {
             velocity,
             acceleration: [0.0, 0.0, 0.0],
             movement_mode: mode,
+            ground_z: position[2],
             tick: 0,
             seq: 0,
         }
@@ -902,25 +1030,21 @@ mod mode_dispatch {
     }
 
     // -------------------------------------------------------------------------
-    // Test 4: Airborne — currently reuses grounded step (placeholder)
+    // Test 4: Airborne — gravity arc with limited air control
     // -------------------------------------------------------------------------
 
-    /// Per the mode.rs doc comment: "reserved for future jump; currently reuses
-    /// grounded step". This test confirms that Airborne and Grounded produce
-    /// bit-exact identical position and velocity for the same seed + input
-    /// sequence, validating the shared code path.
-    ///
-    /// When jump/gravity physics land, this test will diverge intentionally and
-    /// must be updated to assert arc/gravity behavior instead of equality.
-    ///
-    /// UE5 analogue: MOVE_Falling — gravity not yet implemented.
+    /// Airborne is the UE MOVE_Falling analogue: horizontal input is still
+    /// allowed, but at a lower acceleration budget, while gravity owns the
+    /// vertical axis.
     #[test]
-    fn airborne_mode_currently_reuses_grounded_behavior() {
+    fn airborne_mode_uses_gravity_and_limited_air_control() {
         let profile = MovementProfile::default();
 
         let mut grounded = idle_grounded();
         let mut airborne = MovementState {
             movement_mode: MovementMode::Airborne,
+            velocity: [0.0, 0.0, profile.jump_impulse],
+            ground_z: 0.0,
             ..idle_grounded()
         };
 
@@ -934,24 +1058,23 @@ mod mode_dispatch {
             grounded = step(&grounded, &g_input, &profile);
             airborne = step(&airborne, &a_input, &profile);
 
-            // Both must be bit-exact — they share grounded_step internally.
-            for axis in 0..3 {
+            if airborne.movement_mode == MovementMode::Airborne {
                 assert!(
-                    (grounded.position[axis] - airborne.position[axis]).abs() < 1.0e-9,
-                    "tick {seq}: Airborne position[{axis}] ({}) diverges from \
-                     Grounded ({}) — expected identical while placeholder is active",
-                    airborne.position[axis],
-                    grounded.position[axis]
+                    magnitude([airborne.acceleration[0], airborne.acceleration[1], 0.0])
+                        <= profile.air_accel * profile.air_control + 1.0e-9,
+                    "tick {seq}: air control acceleration exceeded configured budget"
                 );
                 assert!(
-                    (grounded.velocity[axis] - airborne.velocity[axis]).abs() < 1.0e-9,
-                    "tick {seq}: Airborne velocity[{axis}] ({}) diverges from \
-                     Grounded ({}) — expected identical while placeholder is active",
-                    airborne.velocity[axis],
-                    grounded.velocity[axis]
+                    airborne.acceleration[2] <= 0.0,
+                    "tick {seq}: airborne vertical acceleration must be gravity"
                 );
             }
         }
+
+        assert!(
+            airborne.position[2] >= airborne.ground_z,
+            "airborne integration must never sink below ground"
+        );
     }
 }
 
@@ -970,10 +1093,7 @@ mod mode_dispatch {
 mod stability {
     use super::*;
     use crate::{
-        input::InputFrame,
-        mode::MovementMode,
-        profile::MovementProfile,
-        state::MovementState,
+        input::InputFrame, mode::MovementMode, profile::MovementProfile, state::MovementState,
     };
 
     const TICKS: u32 = 100_000;
@@ -1078,16 +1198,10 @@ mod stability {
             state = step(&state, &det_input(i), &profile);
 
             for (k, &v) in state.position.iter().enumerate() {
-                assert!(
-                    v.is_finite(),
-                    "tick {i}: position[{k}] = {v} is not finite"
-                );
+                assert!(v.is_finite(), "tick {i}: position[{k}] = {v} is not finite");
             }
             for (k, &v) in state.velocity.iter().enumerate() {
-                assert!(
-                    v.is_finite(),
-                    "tick {i}: velocity[{k}] = {v} is not finite"
-                );
+                assert!(v.is_finite(), "tick {i}: velocity[{k}] = {v} is not finite");
             }
             for (k, &v) in state.acceleration.iter().enumerate() {
                 assert!(

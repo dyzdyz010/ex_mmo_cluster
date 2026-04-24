@@ -33,7 +33,7 @@ export interface FMacroCellHeader {
 }
 
 // UE 侧允许 EnvironmentIndex = MAX_uint16 表示未分配。
-export const MACRO_ENV_INDEX_UNSET = 0xFFFF;
+export const MACRO_ENV_INDEX_UNSET = 0xffff;
 
 export interface FRefinedCellData {
   microOccupancyMask: bigint;
@@ -65,7 +65,29 @@ export interface FPrefabDefinitionData {
   microPartIds: number[];
   allowedRotations: EVoxelRotation[];
   boundarySignature: number[];
+  boundaryFaceMasks: FPrefabBoundaryFaceMasks;
+  sockets: FPrefabSocketDefinition[];
   tags: string[];
+}
+
+export interface FPrefabBoundaryFaceMasks {
+  negX: bigint;
+  posX: bigint;
+  negY: bigint;
+  posY: bigint;
+  negZ: bigint;
+  posZ: bigint;
+}
+
+export interface FPrefabSocketDefinition {
+  socketId: string;
+  localMicroCoord: FMicroCoord;
+  normal: FMacroCoord;
+  tags: string[];
+  snapClass: string;
+  allowedPeerClasses: string[];
+  faceMask?: bigint;
+  priority: number;
 }
 
 export interface FPrefabPartDefinition {

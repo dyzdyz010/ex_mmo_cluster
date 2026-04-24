@@ -1,5 +1,4 @@
-import type { ObserveEvent } from "./logger";
-import { ObserveLog } from "./logger";
+import type { ObserveEvent, ObserveLog } from "./logger";
 
 export interface CliCommandResult {
   ok: boolean;
@@ -32,13 +31,20 @@ function defaultHelpText(): string {
     "snapshot",
     "chunks [limit]",
     "cell <x> <y> <z>",
+    "micro_cell <x> <y> <z> <mx> <my> <mz>",
     "place <x> <y> <z> [material]",
     "break <x> <y> <z>",
     "hotbar",
     "hotbar_select <index>",
     "prefabs",
+    "prefab_sockets <name>",
+    "prefab_boundary <name>",
     "prefab_capture <name> <minx> <miny> <minz> <maxx> <maxy> <maxz>",
     "prefab_place <name> <x> <y> <z> [rot0|rot90|rot180|rot270]",
+    "prefab_snap_preview <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270]",
+    "prefab_place_snap <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270]",
+    "prefab_snap_preview <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
+    "prefab_place_socket <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
     "select_prefab <name>",
     "select_material <id|name>",
     "world_export",
@@ -47,6 +53,7 @@ function defaultHelpText(): string {
     "world_load [slot]",
     "player",
     "players",
+    "jump",
     "transport",
     "reconcile_stats",
     "edit_stats",
@@ -57,7 +64,11 @@ function defaultHelpText(): string {
   ].join("\n");
 }
 
-export function installCli(windowObject: Window, logger: ObserveLog, handler: CliCommandHandler): void {
+export function installCli(
+  windowObject: Window,
+  logger: ObserveLog,
+  handler: CliCommandHandler,
+): void {
   const cli: VoxelCli = {
     run(commandLine: string): CliCommandResult {
       const parts = splitCommandLine(commandLine);

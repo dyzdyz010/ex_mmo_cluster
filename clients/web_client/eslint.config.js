@@ -20,7 +20,7 @@ export default tseslint.config(
         "warn",
         { prefer: "type-imports", fixStyle: "inline-type-imports" },
       ],
-      "no-console": ["warn", { allow: ["warn", "error"] }],
+      "no-console": ["warn", { allow: ["info", "warn", "error"] }],
       eqeqeq: ["error", "always"],
     },
   },

@@ -8,7 +8,7 @@ defmodule SceneServer.Movement.State do
   """
 
   @enforce_keys [:position, :velocity, :acceleration, :movement_mode, :tick]
-  defstruct [:position, :velocity, :acceleration, :movement_mode, :tick]
+  defstruct [:position, :velocity, :acceleration, :movement_mode, :tick, ground_z: 0.0]
 
   @type vector :: {float(), float(), float()}
   @type t :: %__MODULE__{
@@ -16,6 +16,7 @@ defmodule SceneServer.Movement.State do
           velocity: vector(),
           acceleration: vector(),
           movement_mode: atom(),
+          ground_z: float(),
           tick: non_neg_integer()
         }
 
@@ -28,6 +29,7 @@ defmodule SceneServer.Movement.State do
       velocity: {0.0, 0.0, 0.0},
       acceleration: {0.0, 0.0, 0.0},
       movement_mode: :grounded,
+      ground_z: elem(position, 2),
       tick: 0
     }
   end

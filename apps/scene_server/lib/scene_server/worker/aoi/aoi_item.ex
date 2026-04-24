@@ -361,13 +361,22 @@ defmodule SceneServer.Aoi.AoiItem do
       Logger.debug("Timer canceled.")
     end
 
-    Logger.warning(
-      "AoiItem process #{inspect(self(), pretty: true)} exited successfully. Reason: #{inspect(reason, pretty: true)}",
-      ansi_color: :green
-    )
+    log_termination(reason)
   end
 
   ################ Private Functions #######################################################################
+
+  defp log_termination(reason) when reason in [:normal, :shutdown] do
+    Logger.debug(
+      "AoiItem process #{inspect(self(), pretty: true)} exited normally. Reason: #{inspect(reason, pretty: true)}"
+    )
+  end
+
+  defp log_termination(reason) do
+    Logger.warning(
+      "AoiItem process #{inspect(self(), pretty: true)} exited unexpectedly. Reason: #{inspect(reason, pretty: true)}"
+    )
+  end
 
   defp add_item(cid, location, system) do
     # {:ok, item_ref} = CoordinateSystem.add_item_to_system(system, cid, location)

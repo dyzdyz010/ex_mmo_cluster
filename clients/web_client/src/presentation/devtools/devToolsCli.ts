@@ -8,8 +8,14 @@ import type { CliCommandHandler, CliCommandResult } from "../../observe/cli";
 import type { ObserveLog } from "../../observe/logger";
 import { installCli } from "../../observe/cli";
 import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
-import { EVoxelRotation, type FMacroCoord } from "../../voxel/core/types";
-import type { LocalPrefab } from "../../voxel/prefab";
+import { EVoxelRotation, type FMacroCoord, type FMicroCoord } from "../../voxel/core/types";
+import { isMicroCoordInBounds } from "../../voxel/microgrid/governance";
+import {
+  countBits,
+  type LocalPrefab,
+  type PrefabBoundarySnapPreview,
+  type PrefabSocketSnapPreview,
+} from "../../voxel/prefab";
 import type { SerializedWorldSnapshot } from "../../voxel/worldStore";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
@@ -53,6 +59,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdChunks(command, args);
       case "cell":
         return this.cmdCell(command, args);
+      case "micro_cell":
+        return this.cmdMicroCell(command, args);
       case "place":
         return this.cmdPlace(command, args);
       case "break":
@@ -62,11 +70,25 @@ export class DevToolsCli implements CliCommandHandler {
       case "hotbar_select":
         return this.cmdHotbarSelect(command, args);
       case "prefabs":
-        return this.ok(command, "prefab list", this.deps.world.listPrefabs().map(serializePrefabForCli));
+        return this.ok(
+          command,
+          "prefab list",
+          this.deps.world.listPrefabs().map(serializePrefabForCli),
+        );
+      case "prefab_sockets":
+        return this.cmdPrefabSockets(command, args);
+      case "prefab_boundary":
+        return this.cmdPrefabBoundary(command, args);
       case "prefab_capture":
         return this.cmdPrefabCapture(command, args);
       case "prefab_place":
         return this.cmdPrefabPlace(command, args);
+      case "prefab_snap_preview":
+        return this.cmdPrefabSnapPreview(command, args);
+      case "prefab_place_snap":
+        return this.cmdPrefabPlaceSnap(command, args);
+      case "prefab_place_socket":
+        return this.cmdPrefabPlaceSocket(command, args);
       case "select_prefab":
         return this.cmdSelectPrefab(command, args);
       case "select_material":
@@ -86,9 +108,13 @@ export class DevToolsCli implements CliCommandHandler {
           local: this.playerData(),
           remote: {
             position: formatVector(this.deps.remotePlayer.getRenderedPosition()),
+            movementMode: this.deps.remotePlayer.getCurrentMovementMode(),
             interpolation_delay_secs: INTERPOLATION_DELAY_SECS,
           },
         });
+      case "jump":
+        this.deps.localPlayer.requestJump("cli");
+        return this.ok(command, "jump queued", this.playerData());
       case "transport":
         return this.ok(command, "transport snapshot", this.transportData());
       case "reconcile_stats":
@@ -123,6 +149,17 @@ export class DevToolsCli implements CliCommandHandler {
     });
   }
 
+  private cmdMicroCell(command: string, args: string[]): CliCommandResult {
+    const target = parseMicroTarget(args);
+    if (!target) {
+      return { ok: false, command, text: "usage: micro_cell <x> <y> <z> <mx> <my> <mz>" };
+    }
+    return this.ok(command, `micro_cell ${formatMicroTarget(target)}`, {
+      ...target,
+      block: this.deps.world.store.getMicroBlockWorld(target.macro, target.micro),
+    });
+  }
+
   private cmdPlace(command: string, args: string[]): CliCommandResult {
     const coord = parseMacroCoord(args);
     if (!coord) return { ok: false, command, text: "usage: place <x> <y> <z> [material]" };
@@ -147,7 +184,8 @@ export class DevToolsCli implements CliCommandHandler {
     const materialArg = args[0];
     if (!materialArg) return { ok: false, command, text: "usage: select_material <id|name>" };
     const materialId = parseMaterialIdOrName(materialArg);
-    if (materialId === null) return { ok: false, command, text: `unknown material: ${materialArg}` };
+    if (materialId === null)
+      return { ok: false, command, text: `unknown material: ${materialArg}` };
     this.deps.edit.selectMaterial(materialId, "cli");
     return this.ok(command, `selected material ${materialId}`, {
       materialId,
@@ -203,7 +241,11 @@ export class DevToolsCli implements CliCommandHandler {
     const name = args[0];
     const origin = parseMacroCoord(args.slice(1, 4));
     if (!name || !origin) {
-      return { ok: false, command, text: "usage: prefab_place <name> <x> <y> <z> [rot0|rot90|rot180|rot270]" };
+      return {
+        ok: false,
+        command,
+        text: "usage: prefab_place <name> <x> <y> <z> [rot0|rot90|rot180|rot270]",
+      };
     }
     const rotation = parseRotation(args[4]);
     if (rotation === null) {
@@ -216,21 +258,148 @@ export class DevToolsCli implements CliCommandHandler {
       placed: result.placed,
       rotation,
     });
-    return this.ok(
-      command,
-      result.ok ? `placed prefab ${name}` : `unknown prefab ${name}`,
-      result,
-    );
+    return this.ok(command, result.ok ? `placed prefab ${name}` : `unknown prefab ${name}`, result);
+  }
+
+  private cmdPrefabSockets(command: string, args: string[]): CliCommandResult {
+    const name = args[0];
+    if (!name) {
+      return { ok: false, command, text: "usage: prefab_sockets <name>" };
+    }
+    const prefab = this.deps.world.getPrefab(name);
+    if (!prefab) {
+      return { ok: false, command, text: `unknown prefab: ${name}` };
+    }
+    return this.ok(command, `prefab sockets ${name}`, serializePrefabSocketData(prefab));
+  }
+
+  private cmdPrefabBoundary(command: string, args: string[]): CliCommandResult {
+    const name = args[0];
+    if (!name) {
+      return { ok: false, command, text: "usage: prefab_boundary <name>" };
+    }
+    const prefab = this.deps.world.getPrefab(name);
+    if (!prefab) {
+      return { ok: false, command, text: `unknown prefab: ${name}` };
+    }
+    return this.ok(command, `prefab boundary ${name}`, serializePrefabSocketData(prefab));
+  }
+
+  private cmdPrefabSnapPreview(command: string, args: string[]): CliCommandResult {
+    const boundaryRequest = parseBoundarySnapRequest(args);
+    if (boundaryRequest) {
+      const preview = this.deps.world.previewPrefabBoundarySnap(boundaryRequest);
+      this.emitPrefabBoundarySnapObserve(
+        preview.ok ? "prefab_boundary_snap_previewed" : "prefab_boundary_snap_rejected",
+        {
+          ...preview,
+          rejectReason: preview.rejectReason ?? "",
+        },
+      );
+      return this.ok(
+        command,
+        preview.ok ? "prefab boundary snap preview" : "prefab boundary snap rejected",
+        {
+          ...serializeBoundarySnapPreview(preview),
+          ok: preview.ok,
+        },
+      );
+    }
+
+    const request = parseSocketSnapRequest(args);
+    if (!request) {
+      return {
+        ok: false,
+        command,
+        text: "usage: prefab_snap_preview <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270] OR prefab_snap_preview <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
+      };
+    }
+    const preview = this.deps.world.previewPrefabSocketSnap(request);
+    this.emitPrefabSnapObserve(preview.ok ? "prefab_snap_previewed" : "prefab_snap_rejected", {
+      ...preview,
+      rejectReason: preview.rejectReason ?? "",
+    });
+    return this.ok(command, preview.ok ? "prefab snap preview" : "prefab snap rejected", {
+      ...serializeSnapPreview(preview),
+      ok: preview.ok,
+    });
+  }
+
+  private cmdPrefabPlaceSnap(command: string, args: string[]): CliCommandResult {
+    const request = parseBoundarySnapRequest(args);
+    if (!request) {
+      return {
+        ok: false,
+        command,
+        text: "usage: prefab_place_snap <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270]",
+      };
+    }
+    const result = this.deps.world.placePrefabBoundarySnap(request);
+    if (result.preview) {
+      this.emitPrefabBoundarySnapObserve(
+        result.ok ? "prefab_boundary_snap_committed" : "prefab_boundary_snap_rejected",
+        {
+          ...result.preview,
+          instanceId: result.instanceId ?? 0,
+          rejectReason: result.rejectReason ?? result.preview.rejectReason ?? "",
+        },
+      );
+      if (result.conflict) {
+        this.emitPrefabBoundarySnapObserve("prefab_overlap_conflict", {
+          ...result.preview,
+          instanceId: 0,
+          rejectReason: result.rejectReason ?? result.preview.rejectReason ?? "micro_overlap",
+        });
+      }
+    }
+    return this.ok(command, result.ok ? "prefab boundary placed" : "prefab boundary rejected", {
+      ...result,
+      preview: result.preview ? serializeBoundarySnapPreview(result.preview) : undefined,
+    });
+  }
+
+  private cmdPrefabPlaceSocket(command: string, args: string[]): CliCommandResult {
+    const request = parseSocketSnapRequest(args);
+    if (!request) {
+      return {
+        ok: false,
+        command,
+        text: "usage: prefab_place_socket <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
+      };
+    }
+    const result = this.deps.world.placePrefabSocketSnap(request);
+    if (result.preview) {
+      this.emitPrefabSnapObserve(result.ok ? "prefab_snap_committed" : "prefab_snap_rejected", {
+        ...result.preview,
+        instanceId: result.instanceId ?? result.preview.targetInstanceId,
+        rejectReason: result.rejectReason ?? result.preview.rejectReason ?? "",
+      });
+      if (result.conflict) {
+        this.emitPrefabSnapObserve("prefab_overlap_conflict", {
+          ...result.preview,
+          instanceId: result.preview.targetInstanceId,
+          rejectReason: result.rejectReason ?? result.preview.rejectReason ?? "micro_overlap",
+        });
+      }
+    }
+    return this.ok(command, result.ok ? "prefab socket placed" : "prefab socket rejected", {
+      ...result,
+      preview: result.preview ? serializeSnapPreview(result.preview) : undefined,
+    });
   }
 
   private cmdWorldExport(command: string): CliCommandResult {
     const snapshot = this.deps.world.exportSnapshot();
     const json = JSON.stringify(snapshot);
-    return this.ok(command, `world exported chunks=${snapshot.chunks.length} bytes=${json.length}`, {
-      snapshot,
-      json,
-      bytes: json.length,
-    });
+    return this.ok(
+      command,
+      `world exported chunks=${snapshot.chunks.length} bytes=${json.length}`,
+      {
+        snapshot,
+        json,
+        bytes: json.length,
+      },
+    );
   }
 
   private cmdWorldImport(command: string, args: string[]): CliCommandResult {
@@ -297,6 +466,7 @@ export class DevToolsCli implements CliCommandHandler {
       `solid_blocks=${this.deps.world.store.totalSolidBlocks()}`,
       `selected_material=${getMaterialDefinition(this.deps.edit.getSelectedMaterialId()).name}`,
       `player_rendered=${formatVector(this.deps.localPlayer.getRenderedPosition())}`,
+      `player_display=${formatVectorLike(this.deps.render.getActorDisplaySnapshot().local)}`,
       `player_authority=${formatVector(this.deps.localPlayer.getAuthoritativePosition())}`,
       `remote_rendered=${formatVector(this.deps.remotePlayer.getRenderedPosition())}`,
     ].join(" ");
@@ -313,6 +483,7 @@ export class DevToolsCli implements CliCommandHandler {
       hotbar: this.deps.edit.getHotbarState(),
       currentSelection: this.deps.render.getCurrentSelection(),
       prefabPreview: this.deps.render.getPrefabPreviewSnapshot(),
+      actorDisplay: this.deps.render.getActorDisplaySnapshot(),
       player: this.playerData(),
       remote: { position: formatVector(this.deps.remotePlayer.getRenderedPosition()) },
       camera: { position: formatVector(this.deps.render.getCameraPosition()) },
@@ -359,6 +530,8 @@ export class DevToolsCli implements CliCommandHandler {
             position: formatVector(state.position),
             velocity: formatVector(state.velocity),
             acceleration: formatVector(state.acceleration),
+            movementMode: state.movementMode,
+            groundY: state.groundY,
           }
         : null,
       renderedPosition: formatVector(this.deps.localPlayer.getRenderedPosition()),
@@ -372,6 +545,43 @@ export class DevToolsCli implements CliCommandHandler {
   private ok(command: string, text: string, data?: unknown): CliCommandResult {
     return data === undefined ? { ok: true, command, text } : { ok: true, command, text, data };
   }
+
+  private emitPrefabSnapObserve(
+    event: string,
+    payload: PrefabSocketSnapPreview & { instanceId?: number; rejectReason: string },
+  ): void {
+    this.deps.logger.emit("prefab", event, {
+      prefabId: payload.prefabId,
+      instanceId: payload.instanceId ?? payload.targetInstanceId,
+      anchorMicroCoord: payload.anchorMicroCoord ? formatCoord(payload.anchorMicroCoord) : "",
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      socketId: payload.socketId ?? "",
+      targetSocketId: payload.targetSocketId,
+      rejectReason: payload.rejectReason,
+    });
+  }
+
+  private emitPrefabBoundarySnapObserve(
+    event: string,
+    payload: PrefabBoundarySnapPreview & { instanceId?: number; rejectReason: string },
+  ): void {
+    this.deps.logger.emit("prefab", event, {
+      prefabId: payload.prefabId,
+      instanceId: payload.instanceId ?? 0,
+      hitMacro: formatCoord(payload.hitMacro),
+      faceNormal: formatCoord(payload.faceNormal),
+      anchorMicroCoord: payload.anchorMicroCoord ? formatCoord(payload.anchorMicroCoord) : "",
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      contactSlots: payload.contactSlots,
+      socketId: "",
+      targetSocketId: "",
+      rejectReason: payload.rejectReason,
+    });
+  }
 }
 
 function parseMacroCoord(args: string[]): FMacroCoord | null {
@@ -383,12 +593,37 @@ function parseMacroCoord(args: string[]): FMacroCoord | null {
   return { x, y, z };
 }
 
+function parseMicroTarget(args: string[]): { macro: FMacroCoord; micro: FMicroCoord } | null {
+  const macro = parseMacroCoord(args.slice(0, 3));
+  const micro = parseMicroCoord(args.slice(3, 6));
+  if (!macro || !micro) {
+    return null;
+  }
+  return { macro, micro };
+}
+
+function parseMicroCoord(args: string[]): FMicroCoord | null {
+  const coord = parseMacroCoord(args);
+  if (!coord || !isMicroCoordInBounds(coord)) {
+    return null;
+  }
+  return coord;
+}
+
 function formatVector(vector: Vector3): string {
+  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
+}
+
+function formatVectorLike(vector: { x: number; y: number; z: number }): string {
   return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
 }
 
 function formatCoord(coord: FMacroCoord): string {
   return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function formatMicroTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): string {
+  return `${formatCoord(target.macro)}:${formatCoord(target.micro)}`;
 }
 
 function parseRotation(value: string | undefined): EVoxelRotation | null {
@@ -414,6 +649,71 @@ function parseRotation(value: string | undefined): EVoxelRotation | null {
   }
 }
 
+function parseSocketSnapRequest(args: string[]): {
+  prefabName: string;
+  targetInstanceId: number;
+  targetSocketId: string;
+  incomingSocketId?: string;
+  rotation?: EVoxelRotation;
+} | null {
+  const prefabName = args[0];
+  const targetInstanceId = Number.parseInt(args[1] ?? "", 10);
+  const targetSocketId = args[2];
+  if (!prefabName || !Number.isFinite(targetInstanceId) || !targetSocketId) {
+    return null;
+  }
+
+  const fourth = args[3];
+  const fifth = args[4];
+  let incomingSocketId: string | undefined;
+  let rotation = EVoxelRotation.Rot0;
+  if (fourth !== undefined) {
+    const fourthAsRotation = parseRotation(fourth);
+    if (fourthAsRotation === null) {
+      incomingSocketId = fourth;
+      if (fifth !== undefined) {
+        const parsed = parseRotation(fifth);
+        if (parsed === null) {
+          return null;
+        }
+        rotation = parsed;
+      }
+    } else {
+      if (fifth !== undefined) {
+        return null;
+      }
+      rotation = fourthAsRotation;
+    }
+  }
+
+  return {
+    prefabName,
+    targetInstanceId,
+    targetSocketId,
+    ...(incomingSocketId ? { incomingSocketId } : {}),
+    rotation,
+  };
+}
+
+function parseBoundarySnapRequest(args: string[]): {
+  prefabName: string;
+  hitMacro: FMacroCoord;
+  faceNormal: FMacroCoord;
+  rotation?: EVoxelRotation;
+} | null {
+  const prefabName = args[0];
+  const hitMacro = parseMacroCoord(args.slice(1, 4));
+  const faceNormal = parseMacroCoord(args.slice(4, 7));
+  if (!prefabName || !hitMacro || !faceNormal) {
+    return null;
+  }
+  const rotation = parseRotation(args[7]);
+  if (rotation === null) {
+    return null;
+  }
+  return { prefabName, hitMacro, faceNormal, rotation };
+}
+
 function worldStorageKey(slot: string): string {
   return `ex_mmo_web_client.world.${slot}`;
 }
@@ -427,8 +727,62 @@ function serializePrefabForCli(prefab: LocalPrefab): Record<string, unknown> {
     definition: {
       ...prefab.definition,
       occupancyWords: prefab.definition.occupancyWords.map((word) => word.toString()),
+      boundaryFaceMasks: serializeBoundaryFaceMasks(prefab),
+      sockets: prefab.definition.sockets.map(serializeSocketForCli),
     },
   };
+}
+
+function serializePrefabSocketData(prefab: LocalPrefab): Record<string, unknown> {
+  return {
+    prefabId: prefab.definition.prefabId,
+    boundaryFaceMasks: serializeBoundaryFaceMasks(prefab),
+    sockets: prefab.definition.sockets.map(serializeSocketForCli),
+  };
+}
+
+function serializeBoundaryFaceMasks(prefab: LocalPrefab): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(prefab.definition.boundaryFaceMasks).map(([face, mask]) => [
+      face,
+      {
+        mask: mask.toString(),
+        occupiedSlots: countBits(mask),
+      },
+    ]),
+  );
+}
+
+function serializeSocketForCli(
+  socket: LocalPrefab["definition"]["sockets"][number],
+): Record<string, unknown> {
+  return {
+    ...socket,
+    faceMask: socket.faceMask?.toString(),
+    faceMaskOccupiedSlots: countBits(socket.faceMask ?? 0n),
+  };
+}
+
+function serializeSnapPreview(preview: PrefabSocketSnapPreview): Record<string, unknown> {
+  return {
+    ...preview,
+    cells: serializeRasterCells(preview.cells),
+  };
+}
+
+function serializeBoundarySnapPreview(preview: PrefabBoundarySnapPreview): Record<string, unknown> {
+  return {
+    ...preview,
+    cells: serializeRasterCells(preview.cells),
+  };
+}
+
+function serializeRasterCells(cells: PrefabSocketSnapPreview["cells"]): Record<string, unknown>[] {
+  return cells.map((cell) => ({
+    macro: cell.macro,
+    microOccupancyMask: cell.microOccupancyMask.toString(),
+    occupiedSlots: countBits(cell.microOccupancyMask),
+  }));
 }
 
 function summarizeSeries(values: number[]): { min: number; max: number; mean: number } | null {

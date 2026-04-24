@@ -19,6 +19,7 @@ pub struct MovementState {
     pub velocity: Vec3,
     pub acceleration: Vec3,
     pub movement_mode: Atom,
+    pub ground_z: f64,
     pub tick: u32,
 }
 
@@ -44,6 +45,11 @@ pub struct MovementProfile {
     pub turn_response: f64,
     pub fixed_dt_ms: u16,
     pub max_speed_scale: f64,
+    pub jump_impulse: f64,
+    pub gravity: f64,
+    pub air_control: f64,
+    pub air_accel: f64,
+    pub max_fall_speed: f64,
 }
 
 // ---------- atom <-> movement_core::MovementMode ----------
@@ -97,6 +103,7 @@ impl MovementState {
             velocity: vec3_to_array(self.velocity),
             acceleration: vec3_to_array(self.acceleration),
             movement_mode: atom_to_mode(self.movement_mode),
+            ground_z: self.ground_z,
             tick: self.tick,
             seq: self.tick,
         }
@@ -112,6 +119,7 @@ impl MovementState {
             velocity: array_to_vec3(core.velocity),
             acceleration: array_to_vec3(core.acceleration),
             movement_mode: mode_to_atom(core.movement_mode),
+            ground_z: core.ground_z,
             tick: core.tick,
         }
     }
@@ -148,6 +156,11 @@ impl MovementProfile {
             turn_response: self.turn_response,
             fixed_dt_ms: self.fixed_dt_ms,
             max_speed_scale: self.max_speed_scale,
+            jump_impulse: self.jump_impulse,
+            gravity: self.gravity,
+            air_control: self.air_control,
+            air_accel: self.air_accel,
+            max_fall_speed: self.max_fall_speed,
         }
     }
 }

@@ -24,6 +24,7 @@ export class InputController {
     left: false,
     right: false,
   };
+  private jumpPressed = false;
 
   constructor(private readonly bus: EventBus<AppEvents>) {}
 
@@ -44,6 +45,17 @@ export class InputController {
 
   getMovementKeys(): Readonly<MovementKeys> {
     return this.keys;
+  }
+
+  consumeJumpPressed(): boolean {
+    const pressed = this.jumpPressed;
+    this.jumpPressed = false;
+    return pressed;
+  }
+
+  requestJump(source = "programmatic"): void {
+    this.jumpPressed = true;
+    this.bus.emit("input:jump", { source });
   }
 
   private readonly preventContextMenu = (event: Event): void => {
@@ -132,7 +144,19 @@ export class InputController {
       case "KeyG":
         this.bus.emit("input:break-block", { source: "keyboard" });
         break;
+      case "Space":
+        event.preventDefault();
+        if (!event.repeat) {
+          this.requestJumpFromKeyboard();
+        }
+        break;
       default:
+        if (isSpaceKey(event)) {
+          event.preventDefault();
+          if (!event.repeat) {
+            this.requestJumpFromKeyboard();
+          }
+        }
         break;
     }
   };
@@ -159,4 +183,13 @@ export class InputController {
         break;
     }
   };
+
+  private requestJumpFromKeyboard(): void {
+    this.jumpPressed = true;
+    this.bus.emit("input:jump", { source: "keyboard" });
+  }
+}
+
+function isSpaceKey(event: KeyboardEvent): boolean {
+  return event.code === "Space" || event.key === " " || event.key === "Spacebar";
 }

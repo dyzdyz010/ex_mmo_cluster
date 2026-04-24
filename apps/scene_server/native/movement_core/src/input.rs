@@ -4,6 +4,8 @@ use crate::mode::MovementMode;
 
 /// Bit flag signalling the player is actively braking (e.g. release-key decel).
 pub const MOVEMENT_FLAG_BRAKE: u16 = 0b10;
+/// Bit flag signalling a one-shot grounded jump request.
+pub const MOVEMENT_FLAG_JUMP: u16 = 0b100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputFrame {
@@ -33,5 +35,9 @@ impl InputFrame {
 
     pub fn braking(&self) -> bool {
         self.movement_flags & MOVEMENT_FLAG_BRAKE != 0
+    }
+
+    pub fn jump_requested(&self) -> bool {
+        self.movement_flags & MOVEMENT_FLAG_JUMP != 0
     }
 }

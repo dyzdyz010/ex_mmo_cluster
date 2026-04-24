@@ -11,7 +11,7 @@ export function divideFloor(value: number, divisor: number): number {
   if (value >= 0) {
     return Math.floor(value / divisor);
   }
-  return -Math.floor(((-value) + divisor - 1) / divisor);
+  return -Math.floor((-value + divisor - 1) / divisor);
 }
 
 export function positiveModulo(value: number, divisor: number): number {
@@ -41,9 +41,12 @@ export function localMacroInChunk(mc: FMacroCoord): FMacroCoord {
 export function macroLinearIndex(local: FMacroCoord): number {
   const { ChunkSizeX, ChunkSizeY, ChunkSizeZ } = VoxelConstants;
   if (
-    local.x < 0 || local.x >= ChunkSizeX ||
-    local.y < 0 || local.y >= ChunkSizeY ||
-    local.z < 0 || local.z >= ChunkSizeZ
+    local.x < 0 ||
+    local.x >= ChunkSizeX ||
+    local.y < 0 ||
+    local.y >= ChunkSizeY ||
+    local.z < 0 ||
+    local.z >= ChunkSizeZ
   ) {
     return -1;
   }
@@ -79,9 +82,14 @@ export interface WorldVectorLike {
   z: number;
 }
 
-export function macroCoordFromWorldPosition(position: WorldVectorLike, macroWorldSize: number): FMacroCoord {
+export function macroCoordFromWorldPosition(
+  position: WorldVectorLike,
+  macroWorldSize: number,
+): FMacroCoord {
   if (macroWorldSize <= 0) {
-    throw new Error(`macroCoordFromWorldPosition: macroWorldSize must be positive, got ${macroWorldSize}`);
+    throw new Error(
+      `macroCoordFromWorldPosition: macroWorldSize must be positive, got ${macroWorldSize}`,
+    );
   }
   return {
     x: Math.floor(position.x / macroWorldSize),
@@ -90,7 +98,10 @@ export function macroCoordFromWorldPosition(position: WorldVectorLike, macroWorl
   };
 }
 
-export function macroCenterWorldPosition(macroCoord: FMacroCoord, macroWorldSize: number): WorldVectorLike {
+export function macroCenterWorldPosition(
+  macroCoord: FMacroCoord,
+  macroWorldSize: number,
+): WorldVectorLike {
   return {
     x: (macroCoord.x + 0.5) * macroWorldSize,
     y: (macroCoord.y + 0.5) * macroWorldSize,
@@ -112,7 +123,10 @@ export function macroStepFromSurfaceNormal(normal: WorldVectorLike): FMacroCoord
   return { x: 0, y: 0, z: Math.sign(normal.z) || 0 };
 }
 
-export function adjacentMacroCoordFromSurfaceNormal(macroCoord: FMacroCoord, normal: WorldVectorLike): FMacroCoord {
+export function adjacentMacroCoordFromSurfaceNormal(
+  macroCoord: FMacroCoord,
+  normal: WorldVectorLike,
+): FMacroCoord {
   const step = macroStepFromSurfaceNormal(normal);
   return {
     x: macroCoord.x + step.x,

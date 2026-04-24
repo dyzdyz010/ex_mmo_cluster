@@ -1,7 +1,5 @@
 import Config
 
-import_config "#{config_env()}.exs"
-
 # libcluster topology configuration
 # In production, replace with Cluster.Strategy.Kubernetes.DNS or similar
 config :libcluster,
@@ -17,3 +15,5 @@ config :libcluster,
       ]
     ]
   ]
+
+import_config "#{config_env()}.exs"

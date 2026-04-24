@@ -5,6 +5,7 @@ import { step } from "@domain/movement/predictor";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 import {
   MovementFlag,
+  MovementMode,
   type MovementAck,
   type MoveInputFrame,
   type PredictedMoveState,
@@ -26,12 +27,16 @@ export interface MovementFrameTraceSample {
   dtMs: number;
   fixedSteps: number;
   renderedX: number;
+  renderedY: number;
   renderedZ: number;
   deltaX: number;
+  deltaY: number;
   deltaZ: number;
   deltaDistance: number;
   pendingCorrectionDistance: number;
   accumulatorMs: number;
+  movementMode: string;
+  velocityY: number;
 }
 
 /**
@@ -131,6 +136,10 @@ export class LocalPlayerController implements FrameSubscriber {
     this.cameraYawResolver = resolver;
   }
 
+  requestJump(source = "cli"): void {
+    this.input.requestJump(source);
+  }
+
   private stepFixed(nowMs: number): void {
     if (!this.transport.isReady()) return;
 
@@ -138,17 +147,30 @@ export class LocalPlayerController implements FrameSubscriber {
       this.input.getMovementKeys(),
       this.cameraYawResolver(),
     );
-    const frame = this.prediction.buildInputFrame(inputDir, DEFAULT_MOVEMENT_PROFILE.fixedDtMs, 1);
+    const jumpRequested = this.input.consumeJumpPressed();
+    const frame = this.prediction.buildInputFrame(
+      inputDir,
+      DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
+      1,
+      jumpRequested,
+    );
     const predicted = this.prediction.applyLocalInput(frame);
     if (!predicted) return;
 
-    this.renderAnchor.copy(predicted.position);
+    if (jumpRequested || this.renderSimulationState?.movementMode !== predicted.movementMode) {
+      this.syncRenderAnchorTo(predicted);
+    } else {
+      this.renderAnchor.copy(predicted.position);
+    }
     this.transport.sendInput(frame, nowMs);
 
     this.bus.emit("movement:local-step", {
       seq: frame.seq,
       clientTick: frame.clientTick,
       position: predicted.position,
+      velocity: predicted.velocity,
+      movementFlags: frame.movementFlags,
+      movementMode: predicted.movementMode,
     });
   }
 
@@ -173,6 +195,8 @@ export class LocalPlayerController implements FrameSubscriber {
       pendingInputs: result.pendingInputs,
       replayedFrames: result.replayedFrames,
       rttMs,
+      movementMode: ack.movementMode,
+      velocity: ack.velocity,
     });
   }
 
@@ -200,8 +224,11 @@ export class LocalPlayerController implements FrameSubscriber {
 
     this.renderSimulationState.seq = nextAnchorState.seq;
     this.renderSimulationState.tick = nextAnchorState.tick;
+    this.renderSimulationState.position.copy(nextAnchorState.position);
     this.renderSimulationState.velocity.copy(nextAnchorState.velocity);
     this.renderSimulationState.acceleration.copy(nextAnchorState.acceleration);
+    this.renderSimulationState.movementMode = nextAnchorState.movementMode;
+    this.renderSimulationState.groundY = nextAnchorState.groundY;
   }
 
   private dampenPendingCorrection(dtSecs: number): void {
@@ -236,8 +263,7 @@ export class LocalPlayerController implements FrameSubscriber {
         dtMs,
         inputDir,
         speedScale: 1,
-        movementFlags:
-          inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
+        movementFlags: inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
       };
       this.renderSimulationState = step(
         this.renderSimulationState,
@@ -246,9 +272,7 @@ export class LocalPlayerController implements FrameSubscriber {
       );
     }
 
-    this.renderedPosition
-      .copy(this.renderSimulationState.position)
-      .add(this.pendingCorrection);
+    this.renderedPosition.copy(this.renderSimulationState.position).add(this.pendingCorrection);
   }
 
   private syncRenderedPositionToAnchor(): void {
@@ -261,6 +285,7 @@ export class LocalPlayerController implements FrameSubscriber {
     }
 
     const deltaX = this.renderedPosition.x - this.lastTracedPosition.x;
+    const deltaY = this.renderedPosition.y - this.lastTracedPosition.y;
     const deltaZ = this.renderedPosition.z - this.lastTracedPosition.z;
     this.frameTraceSamples.push({
       frame: this.frameTraceSamples.length + 1,
@@ -268,12 +293,16 @@ export class LocalPlayerController implements FrameSubscriber {
       dtMs,
       fixedSteps,
       renderedX: this.renderedPosition.x,
+      renderedY: this.renderedPosition.y,
       renderedZ: this.renderedPosition.z,
       deltaX,
+      deltaY,
       deltaZ,
-      deltaDistance: Math.hypot(deltaX, deltaZ),
+      deltaDistance: Math.hypot(deltaX, deltaY, deltaZ),
       pendingCorrectionDistance: this.pendingCorrection.length(),
       accumulatorMs: this.fixedStepAccumulatorMs,
+      movementMode: this.renderSimulationState?.movementMode ?? MovementMode.Grounded,
+      velocityY: this.renderSimulationState?.velocity.y ?? 0,
     });
     this.lastTracedPosition.copy(this.renderedPosition);
     this.frameTraceRemaining -= 1;
@@ -293,6 +322,8 @@ export class LocalPlayerController implements FrameSubscriber {
       position: start.clone(),
       velocity: new Vector3(),
       acceleration: new Vector3(),
+      movementMode: MovementMode.Grounded,
+      groundY: start.y,
     };
     this.syncRenderedPositionToAnchor();
     this.bus.emit("movement:reset", { start });
@@ -306,5 +337,7 @@ function clonePredictedMoveState(state: Readonly<PredictedMoveState>): Predicted
     position: state.position.clone(),
     velocity: state.velocity.clone(),
     acceleration: state.acceleration.clone(),
+    movementMode: state.movementMode,
+    groundY: state.groundY,
   };
 }

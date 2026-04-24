@@ -590,7 +590,7 @@ defmodule SceneServer.PlayerCharacter do
            ),
          {:ok, authoritative_location} <-
            get_character_location_with_retry(cd_ref, physys_ref, next_state.position) do
-      authoritative_state = %{next_state | position: authoritative_location}
+      authoritative_state = %{next_state | position: authoritative_location} |> refresh_ground_z()
       ack = Engine.build_ack(cid, authoritative_state, ack_seq)
       snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
 
@@ -616,7 +616,7 @@ defmodule SceneServer.PlayerCharacter do
          | movement_state: authoritative_state,
            last_location: authoritative_location,
            last_ack_seq: ack_seq,
-           latched_input: last_frame
+           latched_input: clear_one_shot_flags(last_frame)
        }}
     else
       {:error, reason} ->
@@ -636,6 +636,13 @@ defmodule SceneServer.PlayerCharacter do
     |> Enum.map(fn {%InputFrame{} = frame, idx} ->
       %InputFrame{frame | client_tick: base_tick + idx, dt_ms: fixed_dt_ms}
     end)
+  end
+
+  defp clear_one_shot_flags(%InputFrame{} = frame) do
+    %InputFrame{
+      frame
+      | movement_flags: Bitwise.band(frame.movement_flags, Bitwise.bnot(InputFrame.jump_flag()))
+    }
   end
 
   defp enqueue_input(queue, %InputFrame{} = frame) do
@@ -767,7 +774,8 @@ defmodule SceneServer.PlayerCharacter do
     zeroed_state = %State{
       movement_state
       | velocity: {0.0, 0.0, 0.0},
-        acceleration: {0.0, 0.0, 0.0}
+        acceleration: {0.0, 0.0, 0.0},
+        ground_z: elem(movement_state.position, 2)
     }
 
     _ =
@@ -830,7 +838,9 @@ defmodule SceneServer.PlayerCharacter do
     zero_state = %{
       movement_state
       | velocity: {0.0, 0.0, 0.0},
-        acceleration: {0.0, 0.0, 0.0}
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded,
+        ground_z: elem(movement_state.position, 2)
     }
 
     :ok =
@@ -867,7 +877,9 @@ defmodule SceneServer.PlayerCharacter do
       movement_state
       | position: spawn_location,
         velocity: {0.0, 0.0, 0.0},
-        acceleration: {0.0, 0.0, 0.0}
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded,
+        ground_z: elem(spawn_location, 2)
     }
 
     :ok =
@@ -899,6 +911,12 @@ defmodule SceneServer.PlayerCharacter do
          respawn_timer: nil
      }}
   end
+
+  defp refresh_ground_z(%State{movement_mode: :grounded, position: position} = movement_state) do
+    %{movement_state | ground_z: elem(position, 2)}
+  end
+
+  defp refresh_ground_z(%State{} = movement_state), do: movement_state
 
   defp normalize_character_profile(cid, %{} = profile) do
     %{

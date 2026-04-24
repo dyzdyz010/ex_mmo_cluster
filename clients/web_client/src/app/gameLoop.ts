@@ -22,11 +22,13 @@ export class GameLoop {
   private handle: number | null = null;
   private lastMs = 0;
 
-  constructor(options: {
-    raf?: (cb: FrameRequestCallback) => number;
-    cancelRaf?: (handle: number) => void;
-    reportError?: (err: unknown, subscriber: FrameSubscriber) => void;
-  } = {}) {
+  constructor(
+    options: {
+      raf?: (cb: FrameRequestCallback) => number;
+      cancelRaf?: (handle: number) => void;
+      reportError?: (err: unknown, subscriber: FrameSubscriber) => void;
+    } = {},
+  ) {
     this.raf = options.raf ?? requestAnimationFrame.bind(globalThis);
     this.cancelRaf = options.cancelRaf ?? cancelAnimationFrame.bind(globalThis);
     this.reportError = options.reportError ?? defaultReportError;

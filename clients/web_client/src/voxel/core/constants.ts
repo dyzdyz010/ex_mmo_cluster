@@ -1,12 +1,12 @@
-// 方块世界首版固定量化参数，与 UE test1 的 VoxelConstants 保持字节级一致。
-// 修改任何一个值之前必须同步 UE 端 Voxel/Core/VoxelTypes.h 中的 VoxelConstants。
+// 方块世界客户端本地量化参数。服务端/UE 同步接入 refined payload 前必须做协议协商，
+// 不要再假设 prefab/refined micro payload 只有 64 槽。
 export const VoxelConstants = {
-  MicroPerMacro: 4,
+  MicroPerMacro: 8,
   ChunkSizeX: 16,
   ChunkSizeY: 16,
   ChunkSizeZ: 16,
   MacroCountPerChunk: 16 * 16 * 16,
-  MicroCountPerMacro: 4 * 4 * 4,
+  MicroCountPerMacro: 8 * 8 * 8,
   ChunkSizeInMacros: 16,
 } as const;
 

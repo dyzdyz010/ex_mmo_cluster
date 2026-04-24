@@ -5,18 +5,30 @@ defmodule DataService.Application do
 
   use Application
 
+  @is_test_build Mix.env() == :test
+
   @impl true
   def start(_type, _args) do
-    children = [
-      DataService.Repo,
-      {DataService.InterfaceSup, name: DataService.InterfaceSup},
-      {DataService.DispatcherSup, name: DataService.DispatcherSup},
-      {DataService.UidGenerator, name: DataService.UidGenerator}
-    ]
+    children =
+      [
+        DataService.Repo,
+        interface_child(),
+        {DataService.DispatcherSup, name: DataService.DispatcherSup},
+        {DataService.UidGenerator, name: DataService.UidGenerator}
+      ]
+      |> Enum.reject(&is_nil/1)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: DataService.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp interface_child do
+    if @is_test_build do
+      nil
+    else
+      {DataService.InterfaceSup, name: DataService.InterfaceSup}
+    end
   end
 end

@@ -138,6 +138,7 @@ impl LocalPredictionRuntime {
             velocity: ack.velocity,
             acceleration: ack.acceleration,
             movement_mode: ack.movement_mode,
+            ground_z: ack.position.z,
         };
 
         self.predicted_history.push(authoritative.clone());

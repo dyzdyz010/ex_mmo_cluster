@@ -1,5 +1,6 @@
 import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "@domain/movement/remotePlayer";
+import { MovementMode, type MovementMode as MovementModeValue } from "@domain/movement/types";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";
@@ -15,18 +16,22 @@ export class RemotePlayerController implements FrameSubscriber {
 
   private readonly state = new RemotePlayerState();
   private readonly renderedPosition = DEFAULT_REMOTE_POSITION.clone();
+  private currentMovementMode: MovementModeValue = MovementMode.Grounded;
 
   constructor(private readonly bus: EventBus<AppEvents>) {
     this.bus.on("transport:snapshot-delivered", ({ snapshot }) => {
       this.state.pushSnapshot(snapshot, 0, performance.now() / 1000);
+      this.currentMovementMode = snapshot.movementMode;
       this.bus.emit("movement:remote-snapshot-ingested", {
         cid: snapshot.cid,
         serverTick: snapshot.serverTick,
         position: snapshot.position,
+        movementMode: snapshot.movementMode,
       });
     });
     this.bus.on("transport:spawn", () => {
       this.renderedPosition.copy(DEFAULT_REMOTE_POSITION);
+      this.currentMovementMode = MovementMode.Grounded;
     });
   }
 
@@ -37,5 +42,9 @@ export class RemotePlayerController implements FrameSubscriber {
 
   getRenderedPosition(): Vector3 {
     return this.renderedPosition;
+  }
+
+  getCurrentMovementMode(): MovementModeValue {
+    return this.currentMovementMode;
   }
 }

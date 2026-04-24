@@ -9,13 +9,13 @@ in `SceneServer`.
 `GateServer.Application` starts:
 
 - `GateServer.InterfaceSup`
-  - service discovery / node lookup entrypoint
+  - service discovery / node lookup entrypoint (non-test env)
 - `GateServer.FastLaneRegistry`
   - ticket/session registry for UDP attachment
 - `GateServer.StdioInterface` (optional)
   - attached runtime inspection surface for automation
 - `GateServer.TcpAcceptorSup`
-  - TCP listening acceptor(s)
+  - TCP listening acceptor(s) (non-test env)
 - `GateServer.TcpConnectionSup`
   - one `GateServer.TcpConnection` per connected client
 - `GateServer.UdpAcceptorSup` (non-test env)

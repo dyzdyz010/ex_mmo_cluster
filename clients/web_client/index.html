@@ -12,8 +12,20 @@
         --panel-border: rgba(125, 170, 205, 0.22);
         --panel-shadow: rgba(0, 0, 0, 0.38);
       }
-      html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: "Segoe UI", "Helvetica Neue", sans-serif; overflow: hidden; }
-      #app { width: 100vw; height: 100vh; display: block; }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+        overflow: hidden;
+      }
+      #app {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
       #hud {
         position: fixed;
         top: 14px;
@@ -24,6 +36,7 @@
         text-shadow: 0 0 2px #000;
         white-space: pre;
         padding: 10px 12px;
+        box-sizing: border-box;
         background: var(--panel-bg);
         border: 1px solid var(--panel-border);
         border-radius: 12px;
@@ -61,12 +74,195 @@
         height: 2px;
         transform: translateY(-50%);
       }
+      #hotbar-dock {
+        position: fixed;
+        bottom: max(18px, env(safe-area-inset-bottom));
+        left: 50%;
+        width: min(560px, calc(100vw - 24px));
+        box-sizing: border-box;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        pointer-events: auto;
+        z-index: 10;
+        color: #eef7fb;
+        font-size: 11px;
+      }
+      .hotbar-current {
+        max-width: 100%;
+        min-height: 22px;
+        box-sizing: border-box;
+        padding: 4px 10px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        background: rgba(8, 15, 22, 0.54);
+        color: rgba(238, 247, 251, 0.78);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        backdrop-filter: blur(10px);
+      }
+      .hotbar-slots {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: rgba(8, 15, 22, 0.72);
+        box-shadow: 0 12px 34px var(--panel-shadow);
+        backdrop-filter: blur(12px);
+      }
+      .hotbar-slot {
+        position: relative;
+        display: grid;
+        grid-template-rows: 12px 24px 12px;
+        align-items: center;
+        justify-items: center;
+        min-width: 0;
+        height: 56px;
+        box-sizing: border-box;
+        padding: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        background: rgba(21, 31, 38, 0.72);
+        color: rgba(238, 247, 251, 0.84);
+        cursor: pointer;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          transform 120ms ease;
+      }
+      .hotbar-slot:hover,
+      .hotbar-slot:focus-visible {
+        border-color: rgba(196, 232, 255, 0.58);
+        background: rgba(34, 50, 59, 0.88);
+        outline: none;
+      }
+      .hotbar-slot.is-selected {
+        border-color: rgba(244, 250, 255, 0.95);
+        background: rgba(44, 71, 82, 0.94);
+        transform: translateY(-2px);
+      }
+      .hotbar-slot.is-selected::after {
+        content: "";
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #f4faff;
+        box-shadow: 0 0 10px rgba(244, 250, 255, 0.75);
+      }
+      .hotbar-key {
+        justify-self: start;
+        margin-left: 3px;
+        color: rgba(238, 247, 251, 0.5);
+        font-size: 10px;
+        line-height: 1;
+      }
+      .hotbar-label {
+        max-width: 100%;
+        overflow: hidden;
+        color: rgba(238, 247, 251, 0.72);
+        font-size: 10px;
+        line-height: 1;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hotbar-icon {
+        display: block;
+        width: 22px;
+        height: 22px;
+        box-sizing: border-box;
+      }
+      .hotbar-icon--material {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 5px;
+        background: var(--slot-color);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.28),
+          0 2px 8px rgba(0, 0, 0, 0.24);
+      }
+      .hotbar-icon--sphere {
+        border: 2px solid rgba(245, 205, 114, 0.96);
+        border-radius: 50%;
+        background: rgba(245, 205, 114, 0.18);
+      }
+      .hotbar-icon--cylinder {
+        position: relative;
+        border: 2px solid rgba(132, 217, 183, 0.96);
+        border-radius: 8px;
+        background: rgba(132, 217, 183, 0.14);
+      }
+      .hotbar-icon--cylinder::before,
+      .hotbar-icon--cylinder::after {
+        content: "";
+        position: absolute;
+        left: 3px;
+        right: 3px;
+        height: 4px;
+        border: 1px solid rgba(132, 217, 183, 0.8);
+        border-radius: 50%;
+      }
+      .hotbar-icon--cylinder::before {
+        top: 2px;
+      }
+      .hotbar-icon--cylinder::after {
+        bottom: 2px;
+      }
+      .hotbar-icon--stairs {
+        position: relative;
+        border-bottom: 3px solid rgba(216, 170, 128, 0.98);
+        border-left: 3px solid rgba(216, 170, 128, 0.98);
+      }
+      .hotbar-icon--stairs::before,
+      .hotbar-icon--stairs::after {
+        content: "";
+        position: absolute;
+        background: rgba(216, 170, 128, 0.98);
+      }
+      .hotbar-icon--stairs::before {
+        left: 4px;
+        bottom: 7px;
+        width: 14px;
+        height: 3px;
+      }
+      .hotbar-icon--stairs::after {
+        left: 10px;
+        bottom: 14px;
+        width: 8px;
+        height: 3px;
+      }
+      @media (max-width: 480px) {
+        #hotbar-dock {
+          width: min(366px, calc(100vw - 16px));
+          bottom: max(12px, env(safe-area-inset-bottom));
+        }
+        .hotbar-slots {
+          gap: 5px;
+          padding: 7px;
+        }
+        .hotbar-slot {
+          height: 50px;
+          grid-template-rows: 10px 22px 10px;
+        }
+        .hotbar-label {
+          font-size: 9px;
+        }
+      }
     </style>
   </head>
   <body>
     <canvas id="app"></canvas>
     <div id="hud"></div>
     <div id="reticle" aria-hidden="true"></div>
+    <div id="hotbar-dock" aria-live="polite"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

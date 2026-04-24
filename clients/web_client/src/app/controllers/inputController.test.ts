@@ -31,9 +31,10 @@ class FakeWindowTarget {
   }
 }
 
-function pointerDown(button: number): Event {
+function pointerDown(button: number, shiftKey = false): Event {
   return {
     button,
+    shiftKey,
     preventDefault: vi.fn(),
   } as unknown as Event;
 }
@@ -42,6 +43,15 @@ function wheel(deltaY: number, ctrlKey = false): Event {
   return {
     deltaY,
     ctrlKey,
+    preventDefault: vi.fn(),
+  } as unknown as Event;
+}
+
+function keyboard(code: string, repeat = false, key = ""): Event {
+  return {
+    code,
+    key,
+    repeat,
     preventDefault: vi.fn(),
   } as unknown as Event;
 }
@@ -59,6 +69,23 @@ describe("InputController mouse editing", () => {
     input.attach(target as unknown as Window);
     target.dispatch("pointerdown", pointerDown(0));
     target.dispatch("pointerdown", pointerDown(2));
+
+    expect(breakEvents).toEqual([{ source: "mouse_left" }]);
+    expect(placeEvents).toEqual([{ source: "mouse_right" }]);
+  });
+
+  it("keeps shift mouse actions on normal block editing instead of exposing micro edits", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const breakEvents: AppEvents["input:break-block"][] = [];
+    const placeEvents: AppEvents["input:place-block"][] = [];
+    bus.on("input:break-block", (event) => breakEvents.push(event));
+    bus.on("input:place-block", (event) => placeEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("pointerdown", pointerDown(0, true));
+    target.dispatch("pointerdown", pointerDown(2, true));
 
     expect(breakEvents).toEqual([{ source: "mouse_left" }]);
     expect(placeEvents).toEqual([{ source: "mouse_right" }]);
@@ -94,5 +121,36 @@ describe("InputController mouse editing", () => {
       { direction: 1, source: "wheel" },
       { direction: -1, source: "wheel" },
     ]);
+  });
+
+  it("tracks Space as a one-shot jump request and consumes it exactly once", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const jumps: AppEvents["input:jump"][] = [];
+    bus.on("input:jump", (event) => jumps.push(event));
+
+    input.attach(target as unknown as Window);
+    const firstSpace = keyboard("Space");
+    const repeatedSpace = keyboard("Space", true);
+    target.dispatch("keydown", firstSpace);
+    target.dispatch("keydown", repeatedSpace);
+
+    expect(input.consumeJumpPressed()).toBe(true);
+    expect(input.consumeJumpPressed()).toBe(false);
+    expect(jumps).toEqual([{ source: "keyboard" }]);
+    expect(firstSpace.preventDefault).toHaveBeenCalled();
+    expect(repeatedSpace.preventDefault).toHaveBeenCalled();
+  });
+
+  it("treats Space key values as jump even when code is unavailable", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("", false, " "));
+
+    expect(input.consumeJumpPressed()).toBe(true);
   });
 });

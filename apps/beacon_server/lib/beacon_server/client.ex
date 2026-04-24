@@ -25,9 +25,21 @@ defmodule BeaconServer.Client do
 
   @doc """
   Join the cluster via libcluster. Waits briefly for peer discovery.
+
+  When cluster discovery is intentionally disabled, this returns `:error`
+  without waiting or logging peer-missing warnings; local Horde registration can
+  still be used by tests and single-node runtimes.
   """
   @spec join_cluster() :: :ok | :error
   def join_cluster do
+    if cluster_disabled?() do
+      :error
+    else
+      wait_for_cluster_peers()
+    end
+  end
+
+  defp wait_for_cluster_peers do
     case Node.list() do
       [] ->
         Process.sleep(1000)
@@ -46,6 +58,16 @@ defmodule BeaconServer.Client do
         Logger.info("Cluster peers found: #{inspect(nodes)}")
         :ok
     end
+  end
+
+  defp cluster_disabled? do
+    Application.get_env(:beacon_server, :disable_cluster, false) ||
+      System.get_env("DISABLE_CLUSTER") in ["true", "1"] ||
+      mix_test_env?()
+  end
+
+  defp mix_test_env? do
+    Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) and Mix.env() == :test
   end
 
   @doc """

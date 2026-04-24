@@ -1,10 +1,24 @@
-import { Vector2, Vector3 } from "three";
-import { DEFAULT_REPLAY_GOVERNANCE, effectiveSoftPositionError, makeReplayGovernanceStats, recordReplayAction, type ReplayGovernance, type ReplayGovernanceStats } from "./governance";
+import { Vector2, type Vector3 } from "three";
+import {
+  DEFAULT_REPLAY_GOVERNANCE,
+  effectiveSoftPositionError,
+  makeReplayGovernanceStats,
+  recordReplayAction,
+  type ReplayGovernance,
+  type ReplayGovernanceStats,
+} from "./governance";
 import { InputHistory, PredictedHistory } from "./history";
 import { DEFAULT_MOVEMENT_PROFILE, type MovementProfile } from "./profile";
 import { step } from "./predictor";
 import { reconcile, type ReconcileResult } from "./reconcile";
-import { MovementFlag, makeIdleState, type MoveInputFrame, type MovementAck, type PredictedMoveState } from "./types";
+import {
+  MovementFlag,
+  MovementMode,
+  makeIdleState,
+  type MoveInputFrame,
+  type MovementAck,
+  type PredictedMoveState,
+} from "./types";
 
 export class LocalPredictionRuntime {
   private nextSeq = 1;
@@ -33,8 +47,16 @@ export class LocalPredictionRuntime {
     this.currentState = state;
   }
 
-  buildInputFrame(inputDir: Vector2, dtMs: number, speedScale: number): MoveInputFrame {
-    const movementFlags = inputDir.lengthSq() <= 1e-6 ? MovementFlag.Brake : MovementFlag.None;
+  buildInputFrame(
+    inputDir: Vector2,
+    dtMs: number,
+    speedScale: number,
+    jumpRequested = false,
+  ): MoveInputFrame {
+    let movementFlags = inputDir.lengthSq() <= 1e-6 ? MovementFlag.Brake : MovementFlag.None;
+    if (jumpRequested) {
+      movementFlags |= MovementFlag.Jump;
+    }
     const frame: MoveInputFrame = {
       seq: this.nextSeq,
       clientTick: this.nextTick,
@@ -65,11 +87,27 @@ export class LocalPredictionRuntime {
   }
 
   applyAck(ack: MovementAck): ReconcileResult | null {
-    this.extendPredictionThrough(ack.authTick);
+    const ackWithGround: MovementAck = {
+      ...ack,
+      groundY:
+        ack.movementMode === MovementMode.Grounded
+          ? ack.position.y
+          : (this.currentState?.groundY ?? ack.position.y),
+    };
+    this.extendPredictionThrough(ackWithGround.authTick);
     this.nextTick = Math.max(this.nextTick, ack.authTick + 1);
-    this.governance.softPositionError = effectiveSoftPositionError(this.governance, this.smoothedJitterMs);
+    this.governance.softPositionError = effectiveSoftPositionError(
+      this.governance,
+      this.smoothedJitterMs,
+    );
 
-    const result = reconcile(ack, this.inputHistory, this.predictedHistory, this.profile, this.governance);
+    const result = reconcile(
+      ackWithGround,
+      this.inputHistory,
+      this.predictedHistory,
+      this.profile,
+      this.governance,
+    );
     if (!result) {
       return null;
     }
@@ -87,7 +125,8 @@ export class LocalPredictionRuntime {
 
   observeRtt(rttMs: number): void {
     const delta = Math.abs(rttMs - this.smoothedJitterMs);
-    this.smoothedJitterMs = this.smoothedJitterMs === 0 ? 0 : (this.smoothedJitterMs * 0.85) + (delta * 0.15);
+    this.smoothedJitterMs =
+      this.smoothedJitterMs === 0 ? 0 : this.smoothedJitterMs * 0.85 + delta * 0.15;
     if (this.smoothedJitterMs === 0) {
       this.smoothedJitterMs = Math.max(0, delta * 0.15);
     }

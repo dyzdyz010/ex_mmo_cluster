@@ -20,7 +20,12 @@ defmodule SceneServer.Movement.Profile do
     :friction,
     :turn_response,
     :fixed_dt_ms,
-    :max_speed_scale
+    :max_speed_scale,
+    :jump_impulse,
+    :gravity,
+    :air_control,
+    :air_accel,
+    :max_fall_speed
   ]
   defstruct [
     :max_speed,
@@ -30,7 +35,12 @@ defmodule SceneServer.Movement.Profile do
     :friction,
     :turn_response,
     :fixed_dt_ms,
-    :max_speed_scale
+    :max_speed_scale,
+    :jump_impulse,
+    :gravity,
+    :air_control,
+    :air_accel,
+    :max_fall_speed
   ]
 
   @type t :: %__MODULE__{
@@ -41,7 +51,12 @@ defmodule SceneServer.Movement.Profile do
           friction: float(),
           turn_response: float(),
           fixed_dt_ms: pos_integer(),
-          max_speed_scale: float()
+          max_speed_scale: float(),
+          jump_impulse: float(),
+          gravity: float(),
+          air_control: float(),
+          air_accel: float(),
+          max_fall_speed: float()
         }
 
   @doc """
@@ -60,7 +75,12 @@ defmodule SceneServer.Movement.Profile do
       friction: 0.0,
       turn_response: 1.0,
       fixed_dt_ms: 100,
-      max_speed_scale: 1.0
+      max_speed_scale: 1.0,
+      jump_impulse: 420.0,
+      gravity: 980.0,
+      air_control: 0.35,
+      air_accel: 420.0,
+      max_fall_speed: 900.0
     }
   end
 end

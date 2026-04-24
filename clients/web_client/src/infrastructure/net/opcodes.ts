@@ -14,7 +14,7 @@ export const VoxelOpcode = {
   ChunkInvalidate: 0x69,
 } as const;
 
-export type VoxelOpcodeValue = typeof VoxelOpcode[keyof typeof VoxelOpcode];
+export type VoxelOpcodeValue = (typeof VoxelOpcode)[keyof typeof VoxelOpcode];
 
 export const EditAckResult = {
   Applied: 0,
@@ -22,4 +22,4 @@ export const EditAckResult = {
   Rejected: 2,
 } as const;
 
-export type EditAckResultValue = typeof EditAckResult[keyof typeof EditAckResult];
+export type EditAckResultValue = (typeof EditAckResult)[keyof typeof EditAckResult];

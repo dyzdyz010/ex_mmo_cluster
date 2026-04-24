@@ -3,8 +3,10 @@ import {
   BufferGeometry,
   Float32BufferAttribute,
   Group,
+  InstancedMesh,
   LineBasicMaterial,
   LineSegments,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -15,12 +17,17 @@ import {
 import type { PerspectiveCamera } from "three";
 import { buildChunkMeshData } from "../voxel/meshing/chunkMesher";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
-import { macroCenterWorldPosition, macroCoordFromWorldPosition, macroStepFromSurfaceNormal } from "../voxel/core/gridUtils";
-import type { FMacroCoord } from "../voxel/core/types";
+import {
+  macroCenterWorldPosition,
+  macroCoordFromWorldPosition,
+  macroStepFromSurfaceNormal,
+} from "../voxel/core/gridUtils";
+import type { FMacroCoord, FMicroCoord } from "../voxel/core/types";
 import { chunkCoordKey } from "../voxel/core/types";
 import { VoxelDirtyFlags } from "../voxel/storage/types";
 import type { WorldStore } from "../voxel/worldStore";
 import type { ObserveLog } from "../observe/logger";
+import type { PrefabRasterCell } from "../voxel/prefab";
 
 const HIT_FACE_OUTLINE_OFFSET = MacroWorldSize * 0.006;
 const HIT_FACE_OUTLINE_SIZE = MacroWorldSize * 1.04;
@@ -31,6 +38,13 @@ export interface VoxelRaySelection {
   occupiedMacro: FMacroCoord;
   adjacentMacro: FMacroCoord;
   faceNormal: FMacroCoord;
+  occupiedMicro?: MicroCellTarget;
+  adjacentMicro?: MicroCellTarget;
+}
+
+export interface MicroCellTarget {
+  macro: FMacroCoord;
+  micro: FMicroCoord;
 }
 
 export interface TargetHighlightSnapshot {
@@ -50,6 +64,7 @@ export interface PrefabPreviewSnapshot {
   prefabName: string | null;
   origin: FMacroCoord | null;
   cellCount: number;
+  renderObjectCount: number;
 }
 
 export class ChunkRenderController {
@@ -70,6 +85,11 @@ export class ChunkRenderController {
     MacroWorldSize * 0.96,
     MacroWorldSize * 0.96,
   );
+  private readonly prefabMicroPreviewGeometry = new BoxGeometry(
+    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
+    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
+    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
+  );
   private readonly prefabPreviewMaterial = new MeshBasicMaterial({
     color: 0x67e8f9,
     transparent: true,
@@ -81,6 +101,7 @@ export class ChunkRenderController {
     prefabName: null,
     origin: null,
     cellCount: 0,
+    renderObjectCount: 0,
   };
   private prefabPreviewKey = "";
 
@@ -105,7 +126,9 @@ export class ChunkRenderController {
   }
 
   syncDirtyChunks(world: WorldStore, logger: ObserveLog): void {
-    const activeKeys = new Set(world.listChunks().map((chunk) => chunkCoordKey(chunk.data.chunkCoord)));
+    const activeKeys = new Set(
+      world.listChunks().map((chunk) => chunkCoordKey(chunk.data.chunkCoord)),
+    );
     for (const [key, mesh] of this.chunkMeshes) {
       if (activeKeys.has(key)) {
         continue;
@@ -129,6 +152,9 @@ export class ChunkRenderController {
       const meshData = buildChunkMeshData(snapshot, {
         isSolidWorldMacroCoord(coord: FMacroCoord): boolean {
           return world.isSolidWorldMacroCoord(coord);
+        },
+        isSolidWorldMicroCoord(macro: FMacroCoord, micro: FMicroCoord): boolean {
+          return world.isSolidWorldMicroCoord(macro, micro);
         },
       });
 
@@ -188,12 +214,16 @@ export class ChunkRenderController {
       hit.point.clone().add(worldNormal.clone().multiplyScalar(-0.1)),
       MacroWorldSize,
     );
+    const occupiedMicro = microTargetFromWorldPoint(
+      hit.point.clone().add(worldNormal.clone().multiplyScalar(-0.1)),
+    );
     const adjacentMacro = {
       x: occupiedMacro.x + faceNormal.x,
       y: occupiedMacro.y + faceNormal.y,
       z: occupiedMacro.z + faceNormal.z,
     };
-    return { occupiedMacro, adjacentMacro, faceNormal };
+    const adjacentMicro = stepMicroTarget(occupiedMicro, faceNormal);
+    return { occupiedMacro, adjacentMacro, faceNormal, occupiedMicro, adjacentMicro };
   }
 
   setTargetHighlights(selection: VoxelRaySelection | null): void {
@@ -238,6 +268,15 @@ export class ChunkRenderController {
     }
 
     this.clearPrefabPreview();
+    const mesh = new InstancedMesh(
+      this.prefabPreviewGeometry,
+      this.prefabPreviewMaterial,
+      prefab.cells.length,
+    );
+    mesh.name = `prefab-preview:${prefab.name}`;
+    mesh.frustumCulled = false;
+    const matrix = new Matrix4();
+    let instanceIndex = 0;
     for (const cell of prefab.cells) {
       const coord = {
         x: origin.x + cell.offset.x,
@@ -245,10 +284,12 @@ export class ChunkRenderController {
         z: origin.z + cell.offset.z,
       };
       const center = macroCenterWorldPosition(coord, MacroWorldSize);
-      const mesh = new Mesh(this.prefabPreviewGeometry, this.prefabPreviewMaterial);
-      mesh.position.set(center.x, center.y, center.z);
-      this.prefabPreviewGroup.add(mesh);
+      matrix.makeTranslation(center.x, center.y, center.z);
+      mesh.setMatrixAt(instanceIndex, matrix);
+      instanceIndex += 1;
     }
+    mesh.instanceMatrix.needsUpdate = true;
+    this.prefabPreviewGroup.add(mesh);
 
     this.prefabPreviewGroup.visible = true;
     this.prefabPreviewKey = key;
@@ -257,6 +298,76 @@ export class ChunkRenderController {
       prefabName: prefab.name,
       origin: { ...origin },
       cellCount: prefab.cells.length,
+      renderObjectCount: this.prefabPreviewGroup.children.length,
+    };
+  }
+
+  setPrefabRasterPreview(prefabName: string, cells: readonly PrefabRasterCell[]): void {
+    if (cells.length === 0) {
+      this.clearPrefabPreview();
+      return;
+    }
+
+    const key = `${prefabName}:${cells
+      .map((cell) => `${cell.macro.x},${cell.macro.y},${cell.macro.z}:${cell.microOccupancyMask}`)
+      .join("|")}`;
+    if (key === this.prefabPreviewKey) {
+      return;
+    }
+
+    this.clearPrefabPreview();
+    const positions: Vector3[] = [];
+    for (const cell of cells) {
+      for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
+        for (let y = 0; y < VoxelConstants.MicroPerMacro; y += 1) {
+          for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
+            const index =
+              x +
+              y * VoxelConstants.MicroPerMacro +
+              z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro;
+            if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
+              continue;
+            }
+            positions.push(
+              new Vector3(
+                (cell.macro.x + (x + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
+                (cell.macro.y + (y + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
+                (cell.macro.z + (z + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    if (positions.length === 0) {
+      this.clearPrefabPreview();
+      return;
+    }
+
+    const mesh = new InstancedMesh(
+      this.prefabMicroPreviewGeometry,
+      this.prefabPreviewMaterial,
+      positions.length,
+    );
+    mesh.name = `prefab-raster-preview:${prefabName}`;
+    mesh.frustumCulled = false;
+    const matrix = new Matrix4();
+    positions.forEach((position, index) => {
+      matrix.makeTranslation(position.x, position.y, position.z);
+      mesh.setMatrixAt(index, matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    this.prefabPreviewGroup.add(mesh);
+
+    this.prefabPreviewGroup.visible = true;
+    this.prefabPreviewKey = key;
+    this.prefabPreviewSnapshot = {
+      visible: true,
+      prefabName,
+      origin: cells[0] ? { ...cells[0].macro } : null,
+      cellCount: positions.length,
+      renderObjectCount: this.prefabPreviewGroup.children.length,
     };
   }
 
@@ -266,6 +377,7 @@ export class ChunkRenderController {
       prefabName: this.prefabPreviewSnapshot.prefabName,
       origin: this.prefabPreviewSnapshot.origin ? { ...this.prefabPreviewSnapshot.origin } : null,
       cellCount: this.prefabPreviewSnapshot.cellCount,
+      renderObjectCount: this.prefabPreviewSnapshot.renderObjectCount,
     };
   }
 
@@ -278,6 +390,7 @@ export class ChunkRenderController {
     this.targetHighlight.geometry.dispose();
     (this.targetHighlight.material as LineBasicMaterial).dispose();
     this.prefabPreviewGeometry.dispose();
+    this.prefabMicroPreviewGeometry.dispose();
     this.prefabPreviewMaterial.dispose();
   }
 
@@ -292,6 +405,7 @@ export class ChunkRenderController {
       prefabName: null,
       origin: null,
       cellCount: 0,
+      renderObjectCount: 0,
     };
   }
 }
@@ -299,14 +413,30 @@ export class ChunkRenderController {
 function makeHitFaceOutlineGeometry(): BufferGeometry {
   const half = HIT_FACE_OUTLINE_SIZE / 2;
   const positions = [
-    -half, -half, 0,
-    half, -half, 0,
-    half, -half, 0,
-    half, half, 0,
-    half, half, 0,
-    -half, half, 0,
-    -half, half, 0,
-    -half, -half, 0,
+    -half,
+    -half,
+    0,
+    half,
+    -half,
+    0,
+    half,
+    -half,
+    0,
+    half,
+    half,
+    0,
+    half,
+    half,
+    0,
+    -half,
+    half,
+    0,
+    -half,
+    half,
+    0,
+    -half,
+    -half,
+    0,
   ];
   const geometry = new BufferGeometry();
   geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
@@ -329,7 +459,7 @@ function hitFaceOutlinePose(selection: VoxelRaySelection): {
     normalVector.normalize();
   }
 
-  const faceDistance = (MacroWorldSize / 2) + HIT_FACE_OUTLINE_OFFSET;
+  const faceDistance = MacroWorldSize / 2 + HIT_FACE_OUTLINE_OFFSET;
   return {
     position: {
       x: blockCenter.x + normalVector.x * faceDistance,
@@ -338,4 +468,64 @@ function hitFaceOutlinePose(selection: VoxelRaySelection): {
     },
     normalVector,
   };
+}
+
+function microTargetFromWorldPoint(point: Vector3): MicroCellTarget {
+  const macro = macroCoordFromWorldPosition(point, MacroWorldSize);
+  return {
+    macro,
+    micro: {
+      x: microAxisFromWorld(point.x, macro.x),
+      y: microAxisFromWorld(point.y, macro.y),
+      z: microAxisFromWorld(point.z, macro.z),
+    },
+  };
+}
+
+function microAxisFromWorld(value: number, macroAxis: number): number {
+  const local = value - macroAxis * MacroWorldSize;
+  const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
+  return Math.max(
+    0,
+    Math.min(VoxelConstants.MicroPerMacro - 1, Math.floor(clampLocal(local) / microSize)),
+  );
+}
+
+function clampLocal(value: number): number {
+  return Math.max(0, Math.min(MacroWorldSize - Number.EPSILON, value));
+}
+
+function stepMicroTarget(target: MicroCellTarget, normal: FMacroCoord): MicroCellTarget {
+  const macro = { ...target.macro };
+  const micro = {
+    x: target.micro.x + normal.x,
+    y: target.micro.y + normal.y,
+    z: target.micro.z + normal.z,
+  };
+
+  if (micro.x < 0) {
+    macro.x -= 1;
+    micro.x = VoxelConstants.MicroPerMacro - 1;
+  } else if (micro.x >= VoxelConstants.MicroPerMacro) {
+    macro.x += 1;
+    micro.x = 0;
+  }
+
+  if (micro.y < 0) {
+    macro.y -= 1;
+    micro.y = VoxelConstants.MicroPerMacro - 1;
+  } else if (micro.y >= VoxelConstants.MicroPerMacro) {
+    macro.y += 1;
+    micro.y = 0;
+  }
+
+  if (micro.z < 0) {
+    macro.z -= 1;
+    micro.z = VoxelConstants.MicroPerMacro - 1;
+  } else if (micro.z >= VoxelConstants.MicroPerMacro) {
+    macro.z += 1;
+    micro.z = 0;
+  }
+
+  return { macro, micro };
 }

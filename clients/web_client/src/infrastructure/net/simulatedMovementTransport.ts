@@ -1,7 +1,12 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
-import { CorrectionFlag, type MoveInputFrame, type RemoteMoveSnapshot } from "@domain/movement/types";
+import {
+  CorrectionFlag,
+  MovementMode,
+  type MoveInputFrame,
+  type RemoteMoveSnapshot,
+} from "@domain/movement/types";
 import type {
   MovementTransport,
   MovementTransportTickResult,
@@ -123,6 +128,7 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
           position: correctedPosition,
           velocity: correctedVelocity,
           acceleration: predicted.acceleration.clone(),
+          movementMode: predicted.movementMode,
           correctionFlags,
         },
       });
@@ -142,8 +148,16 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
       const radiusX = 650;
       const radiusZ = 420;
       const position = new Vector3(Math.cos(angle) * radiusX, 650, Math.sin(angle) * radiusZ);
-      const velocity = new Vector3(-Math.sin(angle) * radiusX * 0.8, 0, Math.cos(angle) * radiusZ * 0.8);
-      const acceleration = new Vector3(-Math.cos(angle) * radiusX * 0.64, 0, -Math.sin(angle) * radiusZ * 0.64);
+      const velocity = new Vector3(
+        -Math.sin(angle) * radiusX * 0.8,
+        0,
+        Math.cos(angle) * radiusZ * 0.8,
+      );
+      const acceleration = new Vector3(
+        -Math.cos(angle) * radiusX * 0.64,
+        0,
+        -Math.sin(angle) * radiusZ * 0.64,
+      );
 
       const seqJitter = Math.cos(this.serverTick * 0.47) * 14;
       this.pendingSnapshots.push({
@@ -153,12 +167,15 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
           position,
           velocity,
           acceleration,
+          movementMode: MovementMode.Grounded,
         },
         deliverAtMs: nowMs + 90 + Math.max(0, seqJitter),
       });
     }
 
-    const due = this.pendingSnapshots.filter((item) => item.deliverAtMs <= nowMs).map((item) => item.snapshot);
+    const due = this.pendingSnapshots
+      .filter((item) => item.deliverAtMs <= nowMs)
+      .map((item) => item.snapshot);
     const remaining = this.pendingSnapshots.filter((item) => item.deliverAtMs > nowMs);
     this.pendingSnapshots.splice(0, this.pendingSnapshots.length, ...remaining);
     return due;

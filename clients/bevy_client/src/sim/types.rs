@@ -23,6 +23,7 @@ pub struct PredictedMoveState {
     pub velocity: Vec3,
     pub acceleration: Vec3,
     pub movement_mode: MovementMode,
+    pub ground_z: f32,
 }
 
 impl PredictedMoveState {
@@ -35,6 +36,7 @@ impl PredictedMoveState {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: position.z,
         }
     }
 
@@ -46,6 +48,7 @@ impl PredictedMoveState {
             velocity: vec3_to_array(self.velocity),
             acceleration: vec3_to_array(self.acceleration),
             movement_mode: self.movement_mode,
+            ground_z: self.ground_z as f64,
             tick: self.tick,
             seq: self.seq,
         }
@@ -63,6 +66,7 @@ impl PredictedMoveState {
             velocity: array_to_vec3(core.velocity),
             acceleration: array_to_vec3(core.acceleration),
             movement_mode: core.movement_mode,
+            ground_z: core.ground_z as f32,
         }
     }
 }

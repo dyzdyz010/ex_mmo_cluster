@@ -218,8 +218,7 @@ defmodule SceneServer.MovementSmokeTest do
     # There must be at least one zero-velocity snapshot after the stop input.
     zero_snaps =
       Enum.filter(snapshots, fn
-        %RemoteSnapshot{velocity: {0.0, 0.0, 0.0}} -> true
-        _ -> false
+        %RemoteSnapshot{velocity: velocity} -> zero_velocity?(velocity)
       end)
 
     assert zero_snaps != [],
@@ -231,6 +230,10 @@ defmodule SceneServer.MovementSmokeTest do
   # ------------------------------------------------------------------------
 
   defp east, do: {1.0, 0.0}
+
+  defp zero_velocity?({vx, vy, vz}) do
+    abs(vx) <= 1.0e-9 and abs(vy) <= 1.0e-9 and abs(vz) <= 1.0e-9
+  end
 
   defp send_moves(pid, {dx, dy}, seq_range, opts) do
     inter_ms = Keyword.fetch!(opts, :inter_ms)

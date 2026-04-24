@@ -1,16 +1,12 @@
-import {
-  BoxGeometry,
-  Group,
-  Mesh,
-  MeshStandardMaterial,
-  RingGeometry,
-  Vector3,
-} from "three";
+import { BoxGeometry, Group, Mesh, MeshStandardMaterial, RingGeometry, Vector3 } from "three";
 import type { ObserveLog } from "../../observe/logger";
 import { ChunkRenderController, type VoxelRaySelection } from "../../render/chunkRenderer";
 import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
 import { createScene, type SceneHandles } from "../../render/scene";
+import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
+import type { PrefabBoundarySnapPreview } from "../../voxel/prefab";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+import type { WorldEditStats } from "../../voxel/worldStore";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
@@ -19,6 +15,8 @@ import type { HotbarState, SelectionProvider } from "./worldEditController";
 interface EditPreviewProvider {
   getHotbarState(): HotbarState;
 }
+
+const PREFAB_PREVIEW_REFRESH_INTERVAL_MS = 120;
 
 /**
  * Holds the Three.js scene, the avatar meshes, and the camera. Each frame it
@@ -41,6 +39,11 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly remoteDisplay = new Vector3();
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
+  private prefabPreviewCacheKey: string | null = null;
+  private prefabPreviewBoundaryPreview: PrefabBoundarySnapPreview | null = null;
+  private prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
+  private prefabPreviewSelectedKey: string | null = null;
+  private prefabPreviewEditSignature: string | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -59,7 +62,12 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     );
     this.authorityAvatar = new Mesh(
       new BoxGeometry(50, 90, 50),
-      new MeshStandardMaterial({ color: 0xfafcff, transparent: true, opacity: 0.35, roughness: 0.2 }),
+      new MeshStandardMaterial({
+        color: 0xfafcff,
+        transparent: true,
+        opacity: 0.35,
+        roughness: 0.2,
+      }),
     );
     this.remoteAvatar = new Mesh(
       new BoxGeometry(70, 120, 70),
@@ -82,7 +90,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
     this.chunkRenderer.setTargetHighlights(this.currentSelection);
-    this.updatePrefabPreview();
+    this.updatePrefabPreview(nowMs);
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
     this.sceneHandles.renderer.render(this.sceneHandles.scene, this.sceneHandles.camera);
   }
@@ -93,6 +101,18 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   getCameraPosition(): Vector3 {
     return this.sceneHandles.camera.position;
+  }
+
+  getActorDisplaySnapshot(): {
+    local: { x: number; y: number; z: number };
+    authority: { x: number; y: number; z: number };
+    remote: { x: number; y: number; z: number };
+  } {
+    return {
+      local: vectorSnapshot(this.localDisplay),
+      authority: vectorSnapshot(this.authorityDisplay),
+      remote: vectorSnapshot(this.remoteDisplay),
+    };
   }
 
   getMovementYawRadians(): number {
@@ -121,7 +141,12 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   }
 
   private updateAvatarTransforms(nowSecs: number): void {
-    this.groundActorPosition(this.localPlayer.getRenderedPosition(), 60, this.localDisplay);
+    this.groundActorPosition(
+      this.localPlayer.getRenderedPosition(),
+      60,
+      this.localDisplay,
+      this.localPlayer.getCurrentState()?.groundY,
+    );
     this.groundActorPosition(
       this.localPlayer.getAuthoritativePosition(),
       45,
@@ -137,10 +162,61 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.sceneHandles.setCameraFollow(this.localDisplay);
   }
 
-  private updatePrefabPreview(): void {
+  private updatePrefabPreview(nowMs: number): void {
     const selected = this.editPreviewProvider?.getHotbarState().selected;
-    if (!this.currentSelection || selected?.kind !== "prefab") {
+    const selectedKey = prefabPreviewSelectedKey(selected);
+    const editSignature = prefabPreviewEditSignature(this.world.store.editStats);
+    const previewKey = prefabPreviewRequestKey(
+      selected,
+      this.currentSelection,
+      this.world.store.editStats,
+    );
+    if (!previewKey || !this.currentSelection || selected?.kind !== "prefab") {
+      this.prefabPreviewCacheKey = null;
+      this.prefabPreviewBoundaryPreview = null;
+      this.prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
+      this.prefabPreviewSelectedKey = null;
+      this.prefabPreviewEditSignature = null;
       this.chunkRenderer.setPrefabPreview(null, null);
+      return;
+    }
+
+    let preview = this.prefabPreviewBoundaryPreview;
+    const refreshPreview = shouldRefreshPrefabPreview({
+      nowMs,
+      requestKey: previewKey,
+      cachedKey: this.prefabPreviewCacheKey,
+      hasCachedPreview: preview !== null,
+      lastRefreshMs: this.prefabPreviewLastRefreshMs,
+      selectedKey,
+      lastSelectedKey: this.prefabPreviewSelectedKey,
+      editSignature,
+      lastEditSignature: this.prefabPreviewEditSignature,
+      refreshIntervalMs: PREFAB_PREVIEW_REFRESH_INTERVAL_MS,
+    });
+    if (!refreshPreview && preview) {
+      return;
+    }
+
+    if (refreshPreview || !preview) {
+      preview = this.world.previewPrefabBoundarySnap({
+        prefabName: selected.prefabName,
+        hitMacro: this.currentSelection.occupiedMacro,
+        ...(this.currentSelection.occupiedMicro
+          ? { hitMicro: this.currentSelection.occupiedMicro.micro }
+          : {}),
+        faceNormal: this.currentSelection.faceNormal,
+        rotation: selected.rotation,
+      });
+      this.prefabPreviewCacheKey = previewKey;
+      this.prefabPreviewBoundaryPreview = preview;
+      this.prefabPreviewLastRefreshMs = nowMs;
+      this.prefabPreviewSelectedKey = selectedKey;
+      this.prefabPreviewEditSignature = editSignature;
+    }
+
+    if (preview.ok) {
+      this.chunkRenderer.setPrefabRasterPreview(selected.prefabName, preview.cells);
       return;
     }
 
@@ -150,11 +226,122 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     );
   }
 
-  private groundActorPosition(position: Vector3, halfHeight: number, out: Vector3): void {
+  private groundActorPosition(
+    position: Vector3,
+    halfHeight: number,
+    out: Vector3,
+    movementGroundY?: number,
+  ): void {
+    const surfaceCenterY = this.world.store.surfaceCenterYAtWorldXZ(
+      position.x,
+      position.z,
+      halfHeight,
+      movementGroundY ?? position.y,
+    );
     out.set(
       position.x,
-      this.world.store.surfaceCenterYAtWorldXZ(position.x, position.z, halfHeight, position.y),
+      movementGroundY === undefined
+        ? surfaceCenterY
+        : resolveActorDisplayY({
+            movementY: position.y,
+            movementGroundY,
+            surfaceCenterY,
+          }),
       position.z,
     );
   }
+}
+
+export function resolveActorDisplayY({
+  movementY,
+  movementGroundY,
+  surfaceCenterY,
+}: {
+  movementY: number;
+  movementGroundY: number;
+  surfaceCenterY: number;
+}): number {
+  return surfaceCenterY + Math.max(0, movementY - movementGroundY);
+}
+
+export function prefabPreviewRequestKey(
+  selected: HotbarState["selected"] | null | undefined,
+  selection: VoxelRaySelection | null,
+  editStats: Pick<WorldEditStats, "placed" | "broken" | "conflicts">,
+): string | null {
+  if (!selection || selected?.kind !== "prefab") {
+    return null;
+  }
+
+  return [
+    selected.prefabName,
+    selected.rotation,
+    macroCoordKey(selection.occupiedMacro),
+    macroCoordKey(selection.adjacentMacro),
+    macroCoordKey(selection.faceNormal),
+    selection.occupiedMicro ? microCoordKey(selection.occupiedMicro.micro) : "micro:none",
+    editStats.placed,
+    editStats.broken,
+    editStats.conflicts,
+  ].join("|");
+}
+
+export function shouldRefreshPrefabPreview({
+  nowMs,
+  requestKey,
+  cachedKey,
+  hasCachedPreview,
+  lastRefreshMs,
+  selectedKey,
+  lastSelectedKey,
+  editSignature,
+  lastEditSignature,
+  refreshIntervalMs = PREFAB_PREVIEW_REFRESH_INTERVAL_MS,
+}: {
+  nowMs: number;
+  requestKey: string;
+  cachedKey: string | null;
+  hasCachedPreview: boolean;
+  lastRefreshMs: number;
+  selectedKey: string | null;
+  lastSelectedKey: string | null;
+  editSignature: string;
+  lastEditSignature: string | null;
+  refreshIntervalMs?: number;
+}): boolean {
+  if (!hasCachedPreview || cachedKey === null) {
+    return true;
+  }
+  if (requestKey === cachedKey) {
+    return false;
+  }
+  if (selectedKey !== lastSelectedKey) {
+    return true;
+  }
+  if (editSignature !== lastEditSignature) {
+    return true;
+  }
+  return nowMs - lastRefreshMs >= refreshIntervalMs;
+}
+
+function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
+  return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function prefabPreviewSelectedKey(selected: HotbarState["selected"] | null | undefined): string | null {
+  return selected?.kind === "prefab" ? `${selected.prefabName}:${selected.rotation}` : null;
+}
+
+function prefabPreviewEditSignature(
+  editStats: Pick<WorldEditStats, "placed" | "broken" | "conflicts">,
+): string {
+  return `${editStats.placed}:${editStats.broken}:${editStats.conflicts}`;
+}
+
+function macroCoordKey(coord: FMacroCoord): string {
+  return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function microCoordKey(coord: FMicroCoord): string {
+  return `${coord.x},${coord.y},${coord.z}`;
 }

@@ -313,7 +313,9 @@ defmodule SceneServer.Npc.Actor do
         movement_state
         | position: profile.spawn_position,
           velocity: {0.0, 0.0, 0.0},
-          acceleration: {0.0, 0.0, 0.0}
+          acceleration: {0.0, 0.0, 0.0},
+          movement_mode: :grounded,
+          ground_z: elem(profile.spawn_position, 2)
       }
 
       respawned_npc_state = NpcState.idle(profile)
@@ -471,7 +473,13 @@ defmodule SceneServer.Npc.Actor do
   end
 
   defp stopped_movement_state(%MovementState{} = movement_state) do
-    %{movement_state | velocity: {0.0, 0.0, 0.0}, acceleration: {0.0, 0.0, 0.0}}
+    %{
+      movement_state
+      | velocity: {0.0, 0.0, 0.0},
+        acceleration: {0.0, 0.0, 0.0},
+        movement_mode: :grounded,
+        ground_z: elem(movement_state.position, 2)
+    }
   end
 
   defp ensure_alive(%CombatState{alive: true}), do: :ok

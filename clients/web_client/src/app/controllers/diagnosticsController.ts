@@ -33,7 +33,10 @@ export class DiagnosticsController implements FrameSubscriber {
       solid_blocks: this.world.store.totalSolidBlocks(),
       player_rendered: formatVector(this.localPlayer.getRenderedPosition()),
       player_authority: formatVector(this.localPlayer.getAuthoritativePosition()),
+      player_mode: this.localPlayer.getCurrentState()?.movementMode ?? "unknown",
+      player_velocity: formatVector(this.localPlayer.getCurrentState()?.velocity ?? zeroVector()),
       remote_rendered: formatVector(this.remotePlayer.getRenderedPosition()),
+      remote_mode: this.remotePlayer.getCurrentMovementMode(),
       selected_material: this.edit.getSelectedMaterialId(),
     });
   }
@@ -41,4 +44,8 @@ export class DiagnosticsController implements FrameSubscriber {
 
 function formatVector(vector: Vector3): string {
   return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
+}
+
+function zeroVector(): Vector3 {
+  return { x: 0, y: 0, z: 0 } as Vector3;
 }

@@ -281,6 +281,7 @@ fn authoritative_from_ack(ack: &MovementAck) -> PredictedMoveState {
         velocity: ack.velocity,
         acceleration: ack.acceleration,
         movement_mode: ack.movement_mode,
+        ground_z: ack.position.z,
     }
 }
 

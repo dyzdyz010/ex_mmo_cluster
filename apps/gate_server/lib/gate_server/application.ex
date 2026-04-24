@@ -33,10 +33,10 @@ defmodule GateServer.Application do
       [
         # Starts a worker by calling: GateServer.Worker.start_link(arg)
         # {GateServer.Worker, arg}
-        {GateServer.InterfaceSup, name: GateServer.InterfaceSup},
+        interface_child(),
         {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
         stdio_child(),
-        {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup},
+        tcp_acceptor_child(),
         {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
         {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup}
       ]
@@ -47,6 +47,22 @@ defmodule GateServer.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: GateServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp interface_child do
+    if @is_test_build do
+      nil
+    else
+      {GateServer.InterfaceSup, name: GateServer.InterfaceSup}
+    end
+  end
+
+  defp tcp_acceptor_child do
+    if @is_test_build do
+      nil
+    else
+      {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup}
+    end
   end
 
   defp udp_children do

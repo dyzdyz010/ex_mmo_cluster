@@ -33,10 +33,34 @@ export interface ResolvedVoxelVisual {
 }
 
 const MATERIAL_DEFINITIONS: readonly VoxelMaterialDefinition[] = [
-  { materialId: VoxelMaterialId.Dirt, name: "dirt", baseColorHex: 0x8d6b44, maxHealth: 110, flammable: false },
-  { materialId: VoxelMaterialId.Stone, name: "stone", baseColorHex: 0x8f96a3, maxHealth: 180, flammable: false },
-  { materialId: VoxelMaterialId.Wood, name: "wood", baseColorHex: 0xa86c3f, maxHealth: 95, flammable: true },
-  { materialId: VoxelMaterialId.Ice, name: "ice", baseColorHex: 0xa7d9ff, maxHealth: 70, flammable: false },
+  {
+    materialId: VoxelMaterialId.Dirt,
+    name: "dirt",
+    baseColorHex: 0x8d6b44,
+    maxHealth: 110,
+    flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.Stone,
+    name: "stone",
+    baseColorHex: 0x8f96a3,
+    maxHealth: 180,
+    flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.Wood,
+    name: "wood",
+    baseColorHex: 0xa86c3f,
+    maxHealth: 95,
+    flammable: true,
+  },
+  {
+    materialId: VoxelMaterialId.Ice,
+    name: "ice",
+    baseColorHex: 0xa7d9ff,
+    maxHealth: 70,
+    flammable: false,
+  },
 ] as const;
 
 const DEFAULT_MATERIAL: VoxelMaterialDefinition = MATERIAL_DEFINITIONS[0]!;
@@ -50,7 +74,10 @@ export function listMaterialDefinitions(): readonly VoxelMaterialDefinition[] {
 }
 
 export function getMaterialDefinition(materialId: number): VoxelMaterialDefinition {
-  return MATERIAL_DEFINITIONS.find((definition) => definition.materialId === materialId) ?? DEFAULT_MATERIAL;
+  return (
+    MATERIAL_DEFINITIONS.find((definition) => definition.materialId === materialId) ??
+    DEFAULT_MATERIAL
+  );
 }
 
 export function parseMaterialIdOrName(value: string): number | null {
@@ -66,15 +93,22 @@ export function parseMaterialIdOrName(value: string): number | null {
 export function buildBlockStateView(block: FNormalBlockData): FVoxelBlockStateView {
   const definition = getMaterialDefinition(block.materialId);
   const damageRatio =
-    definition.maxHealth > 0 ? Math.max(0, Math.min(1, 1 - block.health / definition.maxHealth)) : 0;
+    definition.maxHealth > 0
+      ? Math.max(0, Math.min(1, 1 - block.health / definition.maxHealth))
+      : 0;
 
   const freezeCoverage =
-    hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Frozen) || block.temperatureDelta < -20 ? 1 : 0;
+    hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Frozen) || block.temperatureDelta < -20
+      ? 1
+      : 0;
   const wetness =
-    hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Wet) || block.moistureDelta > 20 ? 0.85 : 0;
+    hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Wet) || block.moistureDelta > 20
+      ? 0.85
+      : 0;
   const heatLevel = block.temperatureDelta > 20 ? Math.min(1, block.temperatureDelta / 80) : 0;
-  const burnIntensity =
-    hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Burning) ? Math.max(0.4, heatLevel || 0.7) : 0;
+  const burnIntensity = hasStateFlag(block.stateFlags, EVoxelBlockStateFlags.Burning)
+    ? Math.max(0.4, heatLevel || 0.7)
+    : 0;
 
   return {
     materialId: block.materialId,

@@ -20,10 +20,17 @@ defmodule SceneServer.Movement.InputFrame do
 
   @run_flag 0b0000_0001
   @brake_flag 0b0000_0010
+  @jump_flag 0b0000_0100
 
   @doc "Returns whether the input requests the run modifier."
   def running?(%__MODULE__{movement_flags: flags}), do: Bitwise.band(flags, @run_flag) != 0
 
   @doc "Returns whether the input requests braking / zero-input deceleration."
   def braking?(%__MODULE__{movement_flags: flags}), do: Bitwise.band(flags, @brake_flag) != 0
+
+  @doc "Returns the one-shot jump request bit."
+  def jump_flag, do: @jump_flag
+
+  @doc "Returns whether the input requests a grounded jump."
+  def jumping?(%__MODULE__{movement_flags: flags}), do: Bitwise.band(flags, @jump_flag) != 0
 end

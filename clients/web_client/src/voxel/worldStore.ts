@@ -1,9 +1,25 @@
 import { VoxelMaterialId } from "../material/catalog";
 import { MacroWorldSize, VoxelConstants } from "./core/constants";
-import { chunkCoordKey, EVoxelBlockStateFlags, EVoxelCellMode, type FChunkCoord, type FMacroCoord } from "./core/types";
-import { chunkCoordFromMacro, localMacroInChunk, macroCoordFromLinearIndex } from "./core/gridUtils";
+import {
+  chunkCoordKey,
+  EVoxelBlockStateFlags,
+  EVoxelCellMode,
+  type FChunkCoord,
+  type FMacroCoord,
+  type FMicroCoord,
+} from "./core/types";
+import {
+  chunkCoordFromMacro,
+  localMacroInChunk,
+  macroCoordFromLinearIndex,
+} from "./core/gridUtils";
 import { ChunkStorage } from "./storage/chunkStorage";
 import { MACRO_ENV_INDEX_UNSET, VoxelDirtyFlags } from "./storage/types";
+import {
+  FullMicroOccupancyMask,
+  MicroGridSlotCount,
+  normalizeRefinedCell,
+} from "./microgrid/governance";
 import type {
   FMacroEnvironmentSummary,
   FNormalBlockData,
@@ -23,6 +39,11 @@ export interface ChunkSummary {
   key: string;
   solidBlocks: number;
   dirtyFlags: number;
+}
+
+export interface MicroCellTarget {
+  macro: FMacroCoord;
+  micro: FMicroCoord;
 }
 
 export interface SerializedRefinedCellData {
@@ -131,7 +152,8 @@ export class WorldStore {
         y: VoxelConstants.ChunkSizeY - 1,
         z: VoxelConstants.ChunkSizeZ - 1,
       };
-      chunk.data.dirtyFlags = VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision;
+      chunk.data.dirtyFlags =
+        VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision;
     }
 
     this.editStats.placed = snapshot.editStats.placed;
@@ -147,6 +169,36 @@ export class WorldStore {
   getNormalBlockWorld(worldMacro: FMacroCoord): FNormalBlockData | null {
     const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro);
     return chunk?.getNormalBlock(localMacro) ?? null;
+  }
+
+  getMicroBlockWorld(worldMacro: FMacroCoord, micro: FMicroCoord): FNormalBlockData | null {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro);
+    return chunk?.getMicroBlock(localMacro, micro) ?? null;
+  }
+
+  getRefinedCellWorld(worldMacro: FMacroCoord): FRefinedCellData | null {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro);
+    return chunk?.getRefinedCell(localMacro) ?? null;
+  }
+
+  getMicroOccupancyMaskWorld(worldMacro: FMacroCoord): bigint {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro);
+    const header = chunk?.getHeaderAt(localMacro);
+    if (!chunk || !header) {
+      return 0n;
+    }
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      return FullMicroOccupancyMask;
+    }
+    if (header.mode !== EVoxelCellMode.Refined) {
+      return 0n;
+    }
+    const refined = chunk.data.refinedCells[header.payloadIndex];
+    return refined ? normalizeRefinedCell(refined).microOccupancyMask : 0n;
+  }
+
+  isSolidWorldMicroCoord(worldMacro: FMacroCoord, micro: FMicroCoord): boolean {
+    return this.getMicroBlockWorld(worldMacro, micro) !== null;
   }
 
   getEnvironmentSummaryWorld(worldMacro: FMacroCoord): FMacroEnvironmentSummary | null {
@@ -169,13 +221,51 @@ export class WorldStore {
     return ok;
   }
 
-  setPrefabFullMacroBlockWorld(worldMacro: FMacroCoord, block: FNormalBlockData, instanceId: number): boolean {
+  setMicroBlockWorld(
+    worldMacro: FMacroCoord,
+    micro: FMicroCoord,
+    block: FNormalBlockData,
+  ): boolean {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro, true);
+    if (!chunk) {
+      this.editStats.rejected += 1;
+      return false;
+    }
+    const ok = chunk.setMicroBlock(localMacro, micro, block);
+    if (ok) {
+      this.editStats.placed += 1;
+    } else {
+      this.editStats.rejected += 1;
+    }
+    return ok;
+  }
+
+  clearMicroBlockWorld(worldMacro: FMacroCoord, micro: FMicroCoord): boolean {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro);
+    if (!chunk) {
+      this.editStats.rejected += 1;
+      return false;
+    }
+    const ok = chunk.clearMicroBlock(localMacro, micro);
+    if (ok) {
+      this.editStats.broken += 1;
+    } else {
+      this.editStats.rejected += 1;
+    }
+    return ok;
+  }
+
+  setPrefabFullMacroBlockWorld(
+    worldMacro: FMacroCoord,
+    block: FNormalBlockData,
+    instanceId: number,
+  ): boolean {
     return this.setPrefabRefinedMicroCellWorld(
       worldMacro,
-      (1n << 64n) - 1n,
+      FullMicroOccupancyMask,
       block.materialId,
       block.stateFlags,
-      new Array(64).fill(0),
+      new Array(MicroGridSlotCount).fill(0),
       instanceId,
     );
   }
@@ -198,6 +288,35 @@ export class WorldStore {
       microOccupancyMask,
       materialId,
       stateFlags,
+      microPartIds,
+      instanceId,
+    );
+    if (ok) {
+      this.editStats.placed += 1;
+    } else {
+      this.editStats.rejected += 1;
+    }
+    return ok;
+  }
+
+  unionPrefabRefinedMicroCellWorld(
+    worldMacro: FMacroCoord,
+    microOccupancyMask: bigint,
+    microMaterialIds: number[],
+    microStateFlags: number[],
+    microPartIds: number[],
+    instanceId: number,
+  ): boolean {
+    const { chunk, localMacro } = this.resolveChunkAndLocal(worldMacro, true);
+    if (!chunk) {
+      this.editStats.rejected += 1;
+      return false;
+    }
+    const ok = chunk.unionPrefabRefinedMicroCell(
+      localMacro,
+      microOccupancyMask,
+      microMaterialIds,
+      microStateFlags,
       microPartIds,
       instanceId,
     );
@@ -236,7 +355,24 @@ export class WorldStore {
     this.editStats.conflicts += 1;
   }
 
-  surfaceCenterYAtWorldXZ(worldX: number, worldZ: number, halfHeight: number, fallbackY: number): number {
+  findPrefabInstance(instanceId: number): FPrefabInstanceData | null {
+    for (const chunk of this.listChunks()) {
+      const found = chunk.data.prefabInstances.find(
+        (instance) => instance.instanceId === instanceId,
+      );
+      if (found) {
+        return clonePrefabInstance(found);
+      }
+    }
+    return null;
+  }
+
+  surfaceCenterYAtWorldXZ(
+    worldX: number,
+    worldZ: number,
+    halfHeight: number,
+    fallbackY: number,
+  ): number {
     if (this.chunks.size === 0) {
       return fallbackY;
     }
@@ -246,12 +382,12 @@ export class WorldStore {
     const chunkYs = this.listChunks().map((chunk) => chunk.data.chunkCoord.y);
     const maxChunkY = Math.max(...chunkYs, 0);
     const minChunkY = Math.min(...chunkYs, 0);
-    const maxMacroY = ((maxChunkY + 1) * VoxelConstants.ChunkSizeY) - 1;
+    const maxMacroY = (maxChunkY + 1) * VoxelConstants.ChunkSizeY - 1;
     const minMacroY = minChunkY * VoxelConstants.ChunkSizeY;
 
     for (let macroY = maxMacroY; macroY >= minMacroY; macroY -= 1) {
       if (this.getNormalBlockWorld({ x: macroX, y: macroY, z: macroZ })) {
-        const groundedCenterY = ((macroY + 1) * MacroWorldSize) + halfHeight;
+        const groundedCenterY = (macroY + 1) * MacroWorldSize + halfHeight;
         return Math.max(groundedCenterY, fallbackY);
       }
     }
@@ -277,13 +413,16 @@ export class WorldStore {
           };
           this.setNormalBlockWorld({ x, y, z }, block);
           if (top) {
-            this.setEnvironmentSummaryWorld({ x, y, z }, {
-              defaultTemperature: getTemperatureDelta(region, top),
-              defaultMoisture: getMoistureDelta(region, top),
-              currentTemperature: getTemperatureDelta(region, top),
-              currentMoisture: getMoistureDelta(region, top),
-              fieldMask: block.stateFlags !== 0 ? 1 : 0,
-            });
+            this.setEnvironmentSummaryWorld(
+              { x, y, z },
+              {
+                defaultTemperature: getTemperatureDelta(region, top),
+                defaultMoisture: getMoistureDelta(region, top),
+                currentTemperature: getTemperatureDelta(region, top),
+                currentMoisture: getMoistureDelta(region, top),
+                fieldMask: block.stateFlags !== 0 ? 1 : 0,
+              },
+            );
           }
         }
       }
@@ -295,7 +434,10 @@ export class WorldStore {
     this.editStats.conflicts = 0;
   }
 
-  private resolveChunkAndLocal(worldMacro: FMacroCoord, createIfMissing = false): { chunk: ChunkStorage | null; localMacro: FMacroCoord } {
+  private resolveChunkAndLocal(
+    worldMacro: FMacroCoord,
+    createIfMissing = false,
+  ): { chunk: ChunkStorage | null; localMacro: FMacroCoord } {
     const chunkCoord = chunkCoordFromMacro(worldMacro);
     const localMacro = localMacroInChunk(worldMacro);
     const chunk = createIfMissing ? this.ensureChunk(chunkCoord) : this.getChunk(chunkCoord);
@@ -325,15 +467,18 @@ function serializeChunkCells(chunk: ChunkStorage): SerializedWorldCellSnapshot[]
   const cells: SerializedWorldCellSnapshot[] = [];
   for (let index = 0; index < chunk.data.macroHeaders.length; index += 1) {
     const header = chunk.data.macroHeaders[index];
-    if (!header || (header.mode === EVoxelCellMode.Empty && header.environmentIndex === MACRO_ENV_INDEX_UNSET)) {
+    if (
+      !header ||
+      (header.mode === EVoxelCellMode.Empty && header.environmentIndex === MACRO_ENV_INDEX_UNSET)
+    ) {
       continue;
     }
 
     const local = macroCoordFromLinearIndex(index);
     const coord = {
-      x: (chunk.data.chunkCoord.x * VoxelConstants.ChunkSizeX) + local.x,
-      y: (chunk.data.chunkCoord.y * VoxelConstants.ChunkSizeY) + local.y,
-      z: (chunk.data.chunkCoord.z * VoxelConstants.ChunkSizeZ) + local.z,
+      x: chunk.data.chunkCoord.x * VoxelConstants.ChunkSizeX + local.x,
+      y: chunk.data.chunkCoord.y * VoxelConstants.ChunkSizeY + local.y,
+      z: chunk.data.chunkCoord.z * VoxelConstants.ChunkSizeZ + local.z,
     };
     const cell: SerializedWorldCellSnapshot = {
       coord,
@@ -374,37 +519,40 @@ function restoreSnapshotCell(chunk: ChunkStorage, cell: SerializedWorldCellSnaps
     header.payloadIndex = chunk.data.normalBlocks.push(cloneNormalBlock(cell.normalBlock)) - 1;
   } else if (cell.mode === EVoxelCellMode.Refined && cell.refinedCell) {
     header.mode = EVoxelCellMode.Refined;
-    header.payloadIndex = chunk.data.refinedCells.push(deserializeRefinedCell(cell.refinedCell)) - 1;
+    header.payloadIndex =
+      chunk.data.refinedCells.push(deserializeRefinedCell(cell.refinedCell)) - 1;
   } else {
     header.mode = EVoxelCellMode.Empty;
     header.payloadIndex = 0;
   }
 
   if (cell.environment) {
-    header.environmentIndex = chunk.data.environmentSummaries.push(cloneEnvironmentSummary(cell.environment)) - 1;
+    header.environmentIndex =
+      chunk.data.environmentSummaries.push(cloneEnvironmentSummary(cell.environment)) - 1;
   }
 }
 
 function serializeRefinedCell(cell: FRefinedCellData): SerializedRefinedCellData {
+  const normalized = normalizeRefinedCell(cell);
   return {
-    microOccupancyMask: cell.microOccupancyMask.toString(),
-    microMaterialIds: [...cell.microMaterialIds],
-    microStateFlags: [...cell.microStateFlags],
-    microPartIds: [...cell.microPartIds],
-    prefabInstanceIds: [...cell.prefabInstanceIds],
-    boundaryCache: cell.boundaryCache,
+    microOccupancyMask: normalized.microOccupancyMask.toString(),
+    microMaterialIds: [...normalized.microMaterialIds],
+    microStateFlags: [...normalized.microStateFlags],
+    microPartIds: [...normalized.microPartIds],
+    prefabInstanceIds: [...normalized.prefabInstanceIds],
+    boundaryCache: normalized.boundaryCache,
   };
 }
 
 function deserializeRefinedCell(cell: SerializedRefinedCellData): FRefinedCellData {
-  return {
+  return normalizeRefinedCell({
     microOccupancyMask: BigInt(cell.microOccupancyMask),
     microMaterialIds: [...cell.microMaterialIds],
     microStateFlags: [...cell.microStateFlags],
     microPartIds: [...cell.microPartIds],
     prefabInstanceIds: [...cell.prefabInstanceIds],
     boundaryCache: cell.boundaryCache,
-  };
+  });
 }
 
 function clonePrefabInstance(instance: FPrefabInstanceData): FPrefabInstanceData {
@@ -469,16 +617,22 @@ function getBaseMaterialId(x: number, z: number, region: ShowcaseRegion): number
   }
 }
 
-function getStateFlags(region: ShowcaseRegion, x: number, z: number, y: number, top: boolean): number {
+function getStateFlags(
+  region: ShowcaseRegion,
+  x: number,
+  z: number,
+  y: number,
+  top: boolean,
+): number {
   let flags = 0;
   if (!top) {
     return flags;
   }
 
-  if (region === "wetland" && (Math.abs(x + z) % 3 === 0)) {
+  if (region === "wetland" && Math.abs(x + z) % 3 === 0) {
     flags |= EVoxelBlockStateFlags.Wet;
   }
-  if (region === "wetland" && (Math.abs(x - z) % 7 === 0)) {
+  if (region === "wetland" && Math.abs(x - z) % 7 === 0) {
     flags |= EVoxelBlockStateFlags.Frozen;
   }
   if (region === "wood_terrace" && y >= 2 && Math.abs(x + z) % 5 === 0) {

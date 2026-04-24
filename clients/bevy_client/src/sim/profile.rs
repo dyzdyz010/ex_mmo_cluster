@@ -13,6 +13,11 @@ pub struct MovementProfile {
     pub max_jerk: f32,
     pub friction: f32,
     pub turn_response: f32,
+    pub jump_impulse: f32,
+    pub gravity: f32,
+    pub air_control: f32,
+    pub air_accel: f32,
+    pub max_fall_speed: f32,
     /// Authoritative server tick duration in milliseconds. Mirrors
     /// `SceneServer.Movement.Profile.fixed_dt_ms` so server-synthesized idle
     /// frames can be replayed locally with matching step size.
@@ -28,6 +33,11 @@ impl Default for MovementProfile {
             max_jerk: 9_000.0,
             friction: 0.0,
             turn_response: 1.0,
+            jump_impulse: 420.0,
+            gravity: 980.0,
+            air_control: 0.35,
+            air_accel: 420.0,
+            max_fall_speed: 900.0,
             fixed_dt_ms: 100,
         }
     }
@@ -47,6 +57,11 @@ impl MovementProfile {
             turn_response: self.turn_response as f64,
             fixed_dt_ms: self.fixed_dt_ms,
             max_speed_scale: 1.0,
+            jump_impulse: self.jump_impulse as f64,
+            gravity: self.gravity as f64,
+            air_control: self.air_control as f64,
+            air_accel: self.air_accel as f64,
+            max_fall_speed: self.max_fall_speed as f64,
         }
     }
 }

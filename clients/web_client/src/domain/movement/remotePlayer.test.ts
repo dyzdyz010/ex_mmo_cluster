@@ -1,6 +1,6 @@
 import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "./remotePlayer";
-import type { RemoteMoveSnapshot } from "./types";
+import { MovementMode, type RemoteMoveSnapshot } from "./types";
 
 function snapshot(serverTick: number, x: number): RemoteMoveSnapshot {
   return {
@@ -9,6 +9,7 @@ function snapshot(serverTick: number, x: number): RemoteMoveSnapshot {
     position: new Vector3(x, 0, 0),
     velocity: new Vector3(100, 0, 0),
     acceleration: new Vector3(),
+    movementMode: MovementMode.Grounded,
   };
 }
 

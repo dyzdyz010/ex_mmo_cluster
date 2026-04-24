@@ -7,7 +7,7 @@ This directory holds the authoritative simulation/runtime side of the project.
 `SceneServer.Application` starts:
 
 - `SceneServer.InterfaceSup`
-  - node registration / service discovery entrypoint
+  - node registration / service discovery entrypoint (non-test env)
 - `SceneServer.PhysicsSup`
   - native scene/physics integration
 - `SceneServer.AoiSup`

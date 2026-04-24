@@ -13,6 +13,15 @@ actors.
 - `Engine` — stable Elixir API over the Rustler movement math
 - `Integrator` — readable Elixir reference implementation for tests/docs
 
+## Jump / airborne contract
+
+- `InputFrame.movement_flags` uses `0x0004` as a one-shot jump request.
+- Only `:grounded` actors can consume that request and enter `:airborne`.
+- `State.ground_z` is owned by the movement state so an airborne arc can land
+  back on the ground height it launched from, independent of current Z.
+- `Profile` owns airborne tuning: `jump_impulse`, `gravity`, `air_control`,
+  `air_accel`, and `max_fall_speed`.
+
 ## Relationship to actors
 
 - `SceneServer.PlayerCharacter` consumes network input and steps movement here

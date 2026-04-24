@@ -1,5 +1,5 @@
 import { Vector3 } from "three";
-import type { MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
+import { MovementMode, type MovementAck, type RemoteMoveSnapshot } from "@domain/movement/types";
 
 export interface AuthOkMessage {
   type: "auth_ok";
@@ -130,7 +130,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
         position: readServerVec3AsBrowserVec3(view, 10),
       };
     }
-    case 0x8B:
+    case 0x8b:
       return {
         type: "movement_ack",
         ack: {
@@ -139,6 +139,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           position: readServerVec3AsBrowserVec3(view, 17),
           velocity: readServerVec3AsBrowserVec3(view, 41),
           acceleration: readServerVec3AsBrowserVec3(view, 65),
+          movementMode: decodeMovementMode(view.getUint8(89)),
           correctionFlags: view.getUint32(90, false),
         },
       };
@@ -151,6 +152,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           position: readServerVec3AsBrowserVec3(view, 13),
           velocity: readServerVec3AsBrowserVec3(view, 37),
           acceleration: readServerVec3AsBrowserVec3(view, 61),
+          movementMode: decodeMovementMode(view.getUint8(85)),
         },
       };
     case 0x86:
@@ -191,4 +193,17 @@ function readVec3(view: DataView, offset: number): Vector3 {
 function readServerVec3AsBrowserVec3(view: DataView, offset: number): Vector3 {
   const server = readVec3(view, offset);
   return new Vector3(server.x, server.z, server.y);
+}
+
+function decodeMovementMode(raw: number): MovementMode {
+  switch (raw) {
+    case 1:
+      return MovementMode.Airborne;
+    case 2:
+      return MovementMode.Disabled;
+    case 3:
+      return MovementMode.Scripted;
+    default:
+      return MovementMode.Grounded;
+  }
 }

@@ -9,6 +9,10 @@
 边界：
 
 - `types.ts` / `profile.ts` 定义纯数据与参数。`CorrectionFlag` 的 4 个位义 (Teleport / CollisionPush / AntiCheatReject / StatusOverride) 是 domain 契约，`reconcile.ts` 和 `remotePlayer.ts` 会按位分支；协议编解码在 `infrastructure/net/gateProtocol.ts` 里映射到这组 flag。
+- `MovementFlag` 与服务端 bitfield 保持一致：`Run=0x01`、`Brake=0x02`、`Jump=0x04`。`Jump` 是一次性按键边沿，不允许长按重复触发。
+- `MovementMode` 使用 `grounded / airborne / scripted / disabled` 字符串；协议层将服务端 `u8` mode 解码到该枚举。
+- Web 坐标采用 Three.js 习惯：`x/z` 为水平面，`y` 为垂直轴；协议层负责把服务端 `(x, y, z)` 映射为浏览器 `(x, z, y)`。
+- `PredictedMoveState.groundY` 保存本次 airborne arc 的起跳地面高度，确保 CLI/日志可复现每帧竖直位移和落地判定。
 - `history.ts` 拥有输入/预测历史缓冲。
 - `predictor.ts` 只负责单步近似运动学积分。
 - `reconcile.ts` 只负责权威对账策略。

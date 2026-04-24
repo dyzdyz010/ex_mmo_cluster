@@ -13,7 +13,7 @@
 当前仓库里的 `web_client` 已不再只是 W-A 占位：
 
 1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
-2. voxel 当前明确保持 **offline-local**：中心准星命中面选中、本地左键破坏 / 右键放置（`F/G` 仍可用）、滚轮 hotbar 切换材质 / builtin prefab，但不走服务端同步。
+2. voxel 当前明确保持 **offline-local**：中心准星命中面选中、本地左键破坏 / 右键放置（`F/G` 仍可用），底部 hotbar dock 可点击并支持滚轮切换材质 / builtin prefab，但不走服务端同步。
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
    - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
@@ -37,16 +37,22 @@
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
    Prefab definition 保留 `partDefinitions / microPartIds`，实例化后拍扁为带
    part tag 的 refined micro 数据，供后续魔法和局部破坏按部件语义结算。
-   选中 prefab 时，准星邻接位置会显示 translucent ghost preview。
+   选中 prefab 时，准星命中已有体素表面会显示 translucent micro boundary snap
+   ghost；右键 / `F` 会优先按整数 world micro anchor 做 socket-free 边界贴合，并用
+   真实 rasterize 后的 micro occupancy 作为 ghost preview。socket 只保留为可选语义兼容层。
+4. 微格治理已有浏览器端首版：refined cell 当前按 `8x8x8` micro payload 量化；
+   mesher 会剔除相邻 micro 的内部面；CLI 只读取 `micro_cell` 用于检查 prefab/refined 内部数据，
+   不把 micro 暴露成可放置的玩家方块。Prefab snap commit 使用事务式 overlap check
+   和 refined union：不同 micro slot 可共存，任意 occupied slot 重叠则整次放置拒绝。
 
 ## 技术栈
 
-| 模块 | 选型 | 理由 |
-|------|------|------|
-| 构建 | Vite 5 + TypeScript 5 | 热更新秒级，原生 ES module |
-| 渲染 | three.js 0.170 | voxel 生态成熟，greedy mesher 参考实现多 |
-| 网络 | WebSocket + DataView | 对齐服务端 `{packet, 4}` 长度前缀 + 小端二进制 |
-| 语言 | TypeScript strict | 类型结构对齐 UE USTRUCT |
+| 模块 | 选型                  | 理由                                           |
+| ---- | --------------------- | ---------------------------------------------- |
+| 构建 | Vite 5 + TypeScript 5 | 热更新秒级，原生 ES module                     |
+| 渲染 | three.js 0.170        | voxel 生态成熟，greedy mesher 参考实现多       |
+| 网络 | WebSocket + DataView  | 对齐服务端 `{packet, 4}` 长度前缀 + 小端二进制 |
+| 语言 | TypeScript strict     | 类型结构对齐 UE USTRUCT                        |
 
 浏览器目标：Chromium 最新两个版本（调试用，不做兼容下探）。
 
@@ -66,9 +72,11 @@ clients/web_client/
     │   └── opcodes.ts              # VoxelOpcode 0x60..0x69
     └── voxel/
         ├── core/
-        │   ├── constants.ts        # VoxelConstants（与 UE 严格一致）
+        │   ├── constants.ts        # VoxelConstants（浏览器本地 refined/prefab 量化参数）
         │   ├── types.ts            # FChunkCoord / FMacroCoord / 枚举
         │   └── gridUtils.ts        # divideFloor / coord 换算
+        ├── microgrid/
+        │   └── governance.ts       # Micro occupancy 治理与 SolidBlock refine 转换
         ├── storage/
         │   ├── types.ts            # FNormalBlockData / FMacroCellHeader / FChunkStorageData
         │   └── chunkStorage.ts     # 运行时 Chunk 镜像 + 写入 API
@@ -78,31 +86,31 @@ clients/web_client/
 
 ## 与 UE test1 的映射约定
 
-| UE 符号 | Web 符号 | 注意 |
-|---------|----------|------|
-| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro` | 固定 4，两端同步修改 |
-| `FChunkCoord` | `FChunkCoord` 接口 | int32 语义，允许负象限 |
-| `FNormalBlockData` | `FNormalBlockData` 接口 | 线格式 12 字节：u16+i32+u16+i16+i16 |
-| `FMacroCellHeader` | `FMacroCellHeader` 接口 | 线格式 7 字节：u8+u16+u16+u16 |
-| `EVoxelCellMode` | `EVoxelCellMode` enum | Empty=0 / SolidBlock=1 / Refined=2 |
-| `EVoxelBlockStateFlags` | `EVoxelBlockStateFlags` enum | Burning/Frozen/Wet/… 位标志 |
-| `EVoxelRotation` | `EVoxelRotation` enum | Rot0/90/180/270 |
-| `FChunkStorageData` | `FChunkStorageData` + `ChunkStorage` class | 结构 + 写入 API 解耦 |
-| `VoxelDirtyFlags` | `VoxelDirtyFlags` | Storage / Mesh / Collision |
+| UE 符号                         | Web 符号                                   | 注意                                                      |
+| ------------------------------- | ------------------------------------------ | --------------------------------------------------------- |
+| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；接入 UE/server refined 同步前需要协议协商 |
+| `FChunkCoord`                   | `FChunkCoord` 接口                         | int32 语义，允许负象限                                    |
+| `FNormalBlockData`              | `FNormalBlockData` 接口                    | 线格式 12 字节：u16+i32+u16+i16+i16                       |
+| `FMacroCellHeader`              | `FMacroCellHeader` 接口                    | 线格式 7 字节：u8+u16+u16+u16                             |
+| `EVoxelCellMode`                | `EVoxelCellMode` enum                      | Empty=0 / SolidBlock=1 / Refined=2                        |
+| `EVoxelBlockStateFlags`         | `EVoxelBlockStateFlags` enum               | Burning/Frozen/Wet/… 位标志                               |
+| `EVoxelRotation`                | `EVoxelRotation` enum                      | Rot0/90/180/270                                           |
+| `FChunkStorageData`             | `FChunkStorageData` + `ChunkStorage` class | 结构 + 写入 API 解耦                                      |
+| `VoxelDirtyFlags`               | `VoxelDirtyFlags`                          | Storage / Mesh / Collision                                |
 
 所有字段顺序、枚举值必须与 UE `Public/Voxel/*` 头文件完全对齐。新增字段时先改 UE，再改此仓库。
 
 ## 实施路线（与 UE 阶段对齐）
 
-| Web 阶段 | 对齐 UE 阶段 | 交付 |
-|----------|------------|------|
-| **W-A 类型与脚手架** ✅ | UE-A 类型基线 | `src/voxel/core`、`src/voxel/storage/types.ts`、`ChunkStorage` 写入 API、three.js 空场景 |
-| **W-B Chunk Mesher** 🚧 | UE-B Mesher 首版 | 当前已完成 exposed-face chunk mesher + `BufferGeometry` 重建；greedy/worker 化后续再补 |
-| **W-C 本地编辑** 🚧 | UE-C1 数据流 | 当前已完成准星选中 + `trySetNormalBlock` / `clearCell` + 高亮预览；撤销/重做后续再补 |
-| **W-D 网络接入** ⏳ | UE 未覆盖（本客户端独有价值） | 当前只验 movement browser bridge；voxel 保持 offline-local，不接服务端 |
-| **W-E 视觉系统** 🚧 | UE-C2 视觉系统 | 当前已完成 `MaterialId + StateFlags -> display color` 首版解析；完整 registry / overlay 资产后续再补 |
-| **W-F Prefab** | UE-E Prefab | `PrefabCreate/Place` 协议；运行时 instancing 缓存；共享 / 私有可见性 |
-| **W-G 性能** | UE-F 性能 | Mesher 迁至 Web Worker；InstancedMesh / GPU instancing；订阅半径自适应 |
+| Web 阶段                | 对齐 UE 阶段                  | 交付                                                                                                 |
+| ----------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **W-A 类型与脚手架** ✅ | UE-A 类型基线                 | `src/voxel/core`、`src/voxel/storage/types.ts`、`ChunkStorage` 写入 API、three.js 空场景             |
+| **W-B Chunk Mesher** 🚧 | UE-B Mesher 首版              | 当前已完成 exposed-face chunk mesher + `BufferGeometry` 重建；greedy/worker 化后续再补               |
+| **W-C 本地编辑** 🚧     | UE-C1 数据流                  | 当前已完成准星选中 + `trySetNormalBlock` / `clearCell` + 高亮预览；撤销/重做后续再补                 |
+| **W-D 网络接入** ⏳     | UE 未覆盖（本客户端独有价值） | 当前只验 movement browser bridge；voxel 保持 offline-local，不接服务端                               |
+| **W-E 视觉系统** 🚧     | UE-C2 视觉系统                | 当前已完成 `MaterialId + StateFlags -> display color` 首版解析；完整 registry / overlay 资产后续再补 |
+| **W-F Prefab**          | UE-E Prefab                   | `PrefabCreate/Place` 协议；运行时 instancing 缓存；共享 / 私有可见性                                 |
+| **W-G 性能**            | UE-F 性能                     | Mesher 迁至 Web Worker；InstancedMesh / GPU instancing；订阅半径自适应                               |
 
 路线口径：
 
@@ -193,7 +201,7 @@ npm run preview # 预览 dist
 - 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
 - 左键 / 右键或 `F` / `G` 可以对准星命中面执行破坏 / 邻接放置；选中 prefab 时右键 / `F` 放置 prefab
-- 滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
+- 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
 
 ## 调试 / CLI
@@ -205,34 +213,38 @@ npm run preview # 预览 dist
 在 DevTools Console 里执行：
 
 ```js
-window.__voxelCli?.run("help")
-window.__voxelCli?.run("snapshot")
-window.__voxelCli?.run("chunks 8")
-window.__voxelCli?.run("cell 0 1 0")
-window.__voxelCli?.run("select_material wood")
-window.__voxelCli?.run("place 0 5 0 2")
-window.__voxelCli?.run("break 0 5 0")
-window.__voxelCli?.run("hotbar")
-window.__voxelCli?.run("hotbar_select 5")
-window.__voxelCli?.run("prefabs")
-window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2")
-window.__voxelCli?.run("prefab_place test 8 5 8 rot90")
-window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8")
-window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8")
-window.__voxelCli?.run("prefab_place builtin_stairs 16 5 8 rot90")
-window.__voxelCli?.run("select_prefab builtin_sphere")
-const exported = window.__voxelCli?.run("world_export").data.json
-window.__voxelCli?.run(`world_import ${exported}`)
-window.__voxelCli?.run("world_save default")
-window.__voxelCli?.run("world_load default")
-window.__voxelCli?.run("transport")
-window.__voxelCli?.run("player")
-window.__voxelCli?.run("players")
-window.__voxelCli?.run("reconcile_stats")
-window.__voxelCli?.run("edit_stats")
-window.__voxelCli?.run("frame_trace_start 300")
-window.__voxelCli?.run("frame_trace")
-window.__voxelCli?.run("frame_trace_clear")
+window.__voxelCli?.run("help");
+window.__voxelCli?.run("snapshot");
+window.__voxelCli?.run("chunks 8");
+window.__voxelCli?.run("cell 0 1 0");
+window.__voxelCli?.run("micro_cell 0 1 0 1 2 3");
+window.__voxelCli?.run("select_material wood");
+window.__voxelCli?.run("place 0 5 0 2");
+window.__voxelCli?.run("break 0 5 0");
+window.__voxelCli?.run("hotbar");
+window.__voxelCli?.run("hotbar_select 5");
+window.__voxelCli?.run("prefabs");
+window.__voxelCli?.run("prefab_boundary builtin_sphere");
+window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2");
+window.__voxelCli?.run("prefab_place test 8 5 8 rot90");
+window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8");
+window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8");
+window.__voxelCli?.run("prefab_place builtin_stairs 16 5 8 rot90");
+window.__voxelCli?.run("prefab_snap_preview builtin_sphere 12 5 8 1 0 0");
+window.__voxelCli?.run("prefab_place_snap builtin_sphere 12 5 8 1 0 0");
+window.__voxelCli?.run("select_prefab builtin_sphere");
+const exported = window.__voxelCli?.run("world_export").data.json;
+window.__voxelCli?.run(`world_import ${exported}`);
+window.__voxelCli?.run("world_save default");
+window.__voxelCli?.run("world_load default");
+window.__voxelCli?.run("transport");
+window.__voxelCli?.run("player");
+window.__voxelCli?.run("players");
+window.__voxelCli?.run("reconcile_stats");
+window.__voxelCli?.run("edit_stats");
+window.__voxelCli?.run("frame_trace_start 300");
+window.__voxelCli?.run("frame_trace");
+window.__voxelCli?.run("frame_trace_clear");
 ```
 
 ### Observe 日志
@@ -240,15 +252,19 @@ window.__voxelCli?.run("frame_trace_clear")
 运行时会输出 `voxel_observe ...` 结构化日志到浏览器 console，并在 `window` 暴露最近事件：
 
 ```js
-window.__voxelObserve?.recent(20)
-window.__voxelObserve?.snapshot()
+window.__voxelObserve?.recent(20);
+window.__voxelObserve?.snapshot();
 ```
 
 调试原则：
 
 1. 先看 `snapshot / chunks / cell / reconcile_stats / edit_stats`
 2. 再看 `transport` 与 `voxel_observe` 日志确认连接、输入、权威 ack、重建与错误路径
-3. 最后才看画面本身
+3. 对 prefab snap，优先看 `prefab_boundary / prefab_snap_preview / prefab_place_snap`
+   返回的 `anchorMicroCoord / affectedMacroCount / incomingOccupiedSlots / overlapSlots`
+   / `contactSlots`，以及 observe 事件
+   `prefab_boundary_snap_previewed / prefab_boundary_snap_committed / prefab_boundary_snap_rejected`
+4. 最后才看画面本身
 
 当前建议先看两条正交状态：
 
@@ -265,9 +281,11 @@ movement transport 再拆成三类判断：
 
 - 镜头：第三人称跟随镜头；左键按住拖拽可旋转视角；`Ctrl+滚轮` 缩放
 - `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
+- `Space`：跳跃；HUD / CLI trace 会记录 `jump_pressed`、`movement_flags`、`player_mode` 和 Y 轴变化，渲染层会把 airborne offset 加到地表显示高度上
 - 左键 / `G`：破坏准星命中面的当前方块
-- 右键 / `F`：在准星命中面方块的邻接位置放置当前 hotbar 项
-- 滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`，`5/6/7` 选择 `builtin_sphere / builtin_cylinder / builtin_stairs`
+- 右键 / `F`：在准星命中面放置当前 hotbar 项；如果当前 hotbar 是 prefab，则优先执行
+  socket-free micro boundary snap，失败时再回退到宏格邻接放置
+- 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`，`5/6/7` 选择 `builtin_sphere / builtin_cylinder / builtin_stairs`
 
 ## Smoke / 验收脚本
 
@@ -298,6 +316,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_ws_dual_smoke.ps1
 ## 相关文档
 
 - `docs/2026-04-20-体素世界服务端规划.md` — 服务端协议 / 数据 / 进程模型
+- `docs/2026-04-24-web-client-prefab-microgrid-jump-implementation.md` — 浏览器端 prefab / microgrid / jump display 当前实现记录
+- `docs/2026-04-24-web-client-prefab-microgrid-snapping-design.md` — prefab micro boundary snapping + micro occupancy union 设计
 - `docs/2026-04-10-线协议规范.md` — gate_server 二进制协议基线
 - `D:\UnrealEngine\test1\DOC\UE5_方块世界_项目架构文档.md` — UE 端分层
 - `D:\UnrealEngine\test1\DOC\UE5_方块世界_数据结构设计草案.md` — UE 端数据结构

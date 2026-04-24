@@ -1,4 +1,9 @@
-import { cloneMoveInputFrame, clonePredictedMoveState, type MoveInputFrame, type PredictedMoveState } from "./types";
+import {
+  cloneMoveInputFrame,
+  clonePredictedMoveState,
+  type MoveInputFrame,
+  type PredictedMoveState,
+} from "./types";
 
 export class InputHistory {
   private readonly frames: MoveInputFrame[] = [];

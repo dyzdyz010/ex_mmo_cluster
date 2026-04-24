@@ -1,6 +1,6 @@
 import type { Vector3 } from "three";
 import type { MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
-import type { FMacroCoord } from "../../voxel/core/types";
+import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
 
 /**
@@ -21,6 +21,7 @@ export type AppEvents = {
   "input:hotbar-select": { index: number; source: string };
   "input:place-block": { source: string };
   "input:break-block": { source: string };
+  "input:jump": { source: string };
 
   "transport:spawn": { position: Vector3 };
   "transport:mode-changed": { mode: string };
@@ -32,6 +33,9 @@ export type AppEvents = {
     seq: number;
     clientTick: number;
     position: Vector3;
+    velocity: Vector3;
+    movementFlags: number;
+    movementMode: string;
   };
   "movement:authority-applied": {
     action: string;
@@ -41,16 +45,67 @@ export type AppEvents = {
     pendingInputs: number;
     replayedFrames: number;
     rttMs: number;
+    movementMode: string;
+    velocity: Vector3;
   };
   "movement:remote-snapshot-ingested": {
     cid: number;
     serverTick: number;
     position: Vector3;
+    movementMode: string;
   };
 
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };
   "world:block-broken": { coord: FMacroCoord; source: string };
   "world:prefab-placed": { name: string; origin: FMacroCoord; placed: number; source: string };
+  "world:prefab-snap-committed": {
+    prefabId: string;
+    instanceId: number;
+    targetInstanceId: number;
+    socketId: string | null;
+    targetSocketId: string;
+    anchorMicroCoord: FMicroCoord;
+    affectedMacroCount: number;
+    incomingOccupiedSlots: number;
+    overlapSlots: number;
+    source: string;
+  };
+  "world:prefab-snap-rejected": {
+    prefabId: string;
+    targetInstanceId: number;
+    socketId: string | null;
+    targetSocketId: string;
+    anchorMicroCoord: FMicroCoord | null;
+    affectedMacroCount: number;
+    incomingOccupiedSlots: number;
+    overlapSlots: number;
+    rejectReason: string;
+    source: string;
+  };
+  "world:prefab-boundary-snap-committed": {
+    prefabId: string;
+    instanceId: number;
+    hitMacro: FMacroCoord;
+    faceNormal: FMacroCoord;
+    anchorMicroCoord: FMicroCoord;
+    affectedMacroCount: number;
+    incomingOccupiedSlots: number;
+    overlapSlots: number;
+    contactSlots: number;
+    source: string;
+  };
+  "world:prefab-boundary-snap-rejected": {
+    prefabId: string;
+    hitMacro: FMacroCoord;
+    faceNormal: FMacroCoord;
+    anchorMicroCoord: FMicroCoord | null;
+    affectedMacroCount: number;
+    incomingOccupiedSlots: number;
+    overlapSlots: number;
+    contactSlots: number;
+    rejectReason: string;
+    source: string;
+  };
   "world:edit-rejected": { reason: string; source: string };
 
   "app:boot": {

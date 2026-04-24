@@ -43,10 +43,35 @@ describe("ChunkRenderController hit-face outline", () => {
       prefabName: "builtin_sphere",
       origin: { x: 1, y: 3, z: 3 },
       cellCount: 2,
+      renderObjectCount: 1,
     });
 
     controller.setPrefabPreview(null, null);
     expect(controller.getPrefabPreviewSnapshot().visible).toBe(false);
+
+    controller.dispose();
+  });
+
+  it("renders a micro prefab ghost as one instanced object instead of one mesh per slot", () => {
+    const controller = new ChunkRenderController();
+
+    controller.setPrefabRasterPreview("builtin_sphere", [
+      {
+        macro: { x: 2, y: 3, z: 4 },
+        microOccupancyMask: 0b1111n,
+        microMaterialIds: [],
+        microStateFlags: [],
+        microPartIds: [],
+      },
+    ]);
+
+    expect(controller.getPrefabPreviewSnapshot()).toEqual({
+      visible: true,
+      prefabName: "builtin_sphere",
+      origin: { x: 2, y: 3, z: 4 },
+      cellCount: 4,
+      renderObjectCount: 1,
+    });
 
     controller.dispose();
   });

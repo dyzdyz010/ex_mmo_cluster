@@ -67,11 +67,12 @@ export class HudView implements FrameSubscriber {
       `player_rendered: ${formatVector(this.localPlayer.getRenderedPosition())}`,
       `player_authority: ${formatVector(this.localPlayer.getAuthoritativePosition())}`,
       `player_tick: ${currentState?.tick ?? 0}  player_seq: ${currentState?.seq ?? 0}`,
+      `player_mode: ${currentState?.movementMode ?? "unknown"}  player_vy: ${(currentState?.velocity?.y ?? 0).toFixed(1)}`,
       `remote_rendered: ${formatVector(this.remotePlayer.getRenderedPosition())}`,
       `reconcile: corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.world.store.editStats.placed} broken=${this.world.store.editStats.broken} rejected=${this.world.store.editStats.rejected} conflicts=${this.world.store.editStats.conflicts}`,
-      "controls: left click break, right click place, wheel hotbar, ctrl+wheel zoom, WASD, 1-7 select",
+      "controls: left click break, right click place, wheel hotbar, ctrl+wheel zoom, WASD move, Space jump, 1-7 select",
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }

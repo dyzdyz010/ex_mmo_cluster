@@ -74,7 +74,12 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   sun.position.set(1.2, 1.8, 0.7).normalize();
   scene.add(sun);
 
-  const baseGrid = new GridHelper(chunkExtent * 6, VoxelConstants.ChunkSizeInMacros * 6, 0x436072, 0x203543);
+  const baseGrid = new GridHelper(
+    chunkExtent * 6,
+    VoxelConstants.ChunkSizeInMacros * 6,
+    0x436072,
+    0x203543,
+  );
   scene.add(baseGrid);
 
   const worldRoot = new Group();
@@ -127,7 +132,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     lastPointerClientY = event.clientY;
 
     orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
-    orbitPitch = clamp(orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+    orbitPitch = clamp(
+      orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY,
+      CAMERA_MIN_PITCH,
+      CAMERA_MAX_PITCH,
+    );
   };
 
   const onPointerLeave = () => {
@@ -147,7 +156,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
       return;
     }
     event.preventDefault();
-    orbitDistance = clamp(orbitDistance + event.deltaY * 0.35, CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+    orbitDistance = clamp(
+      orbitDistance + event.deltaY * 0.35,
+      CAMERA_MIN_DISTANCE,
+      CAMERA_MAX_DISTANCE,
+    );
   };
 
   canvas.addEventListener("pointerdown", onPointerDown);
@@ -160,11 +173,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   const fillOrbitPose = (target: Vector3) => {
     desiredLookAt.set(target.x, target.y + CAMERA_LOOK_HEIGHT, target.z);
     const cosPitch = Math.cos(orbitPitch);
-    orbitOffset.set(
-      Math.sin(orbitYaw) * cosPitch,
-      Math.sin(orbitPitch),
-      Math.cos(orbitYaw) * cosPitch,
-    ).multiplyScalar(orbitDistance);
+    orbitOffset
+      .set(Math.sin(orbitYaw) * cosPitch, Math.sin(orbitPitch), Math.cos(orbitYaw) * cosPitch)
+      .multiplyScalar(orbitDistance);
     desiredPosition.copy(desiredLookAt).add(orbitOffset);
   };
 

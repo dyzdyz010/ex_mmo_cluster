@@ -24,7 +24,12 @@ describe("HudView", () => {
       getAuthoritativePosition: () => ({ x: 0, y: 0, z: 0 }),
       getCurrentState() {
         this.stateCalls += 1;
-        return { tick: 1, seq: 1 };
+        return {
+          tick: 1,
+          seq: 1,
+          movementMode: "airborne",
+          velocity: { x: 0, y: 322, z: 0 },
+        };
       },
       getGovernanceStats: () => ({
         totalCorrections: 0,
@@ -74,5 +79,8 @@ describe("HudView", () => {
 
     expect(transport.debugCalls).toBe(1);
     expect(localPlayer.stateCalls).toBe(1);
+    expect(hud.textContent).toContain("player_mode: airborne");
+    expect(hud.textContent).toContain("player_vy: 322.0");
+    expect(hud.textContent).toContain("Space jump");
   });
 });

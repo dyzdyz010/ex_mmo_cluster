@@ -111,6 +111,54 @@ defmodule SceneServer.Movement.IntegratorTest do
     assert native_states == expected_states
   end
 
+  test "jump flag moves grounded state into airborne arc" do
+    state = State.idle({0.0, 0.0, 90.0})
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {0.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: InputFrame.jump_flag()
+    }
+
+    profile = Profile.default()
+    next_state = SceneServer.Native.MovementEngine.step(state, frame, profile)
+
+    assert next_state.movement_mode == :airborne
+    {_vx, _vy, vz} = next_state.velocity
+    {_px, _py, pz} = next_state.position
+    assert vz > 0.0
+    assert pz > 90.0
+    assert_in_delta(vz, profile.jump_impulse - profile.gravity * 0.1, 1.0e-9)
+  end
+
+  test "jump arc lands back on the original grounded height" do
+    profile = Profile.default()
+
+    frames =
+      for tick <- 1..20 do
+        %InputFrame{
+          seq: tick,
+          client_tick: tick,
+          dt_ms: 100,
+          input_dir: {0.0, 0.0},
+          speed_scale: 1.0,
+          movement_flags: if(tick == 1, do: InputFrame.jump_flag(), else: 0)
+        }
+      end
+
+    [last_state | _] =
+      State.idle({0.0, 0.0, 90.0})
+      |> SceneServer.Native.MovementEngine.replay(frames, profile)
+      |> Enum.reverse()
+
+    assert last_state.movement_mode == :grounded
+    assert last_state.position == {0.0, 0.0, 90.0}
+    assert last_state.velocity == {0.0, 0.0, 0.0}
+  end
+
   describe "correction flags (C.2)" do
     # build_ack is the legacy path (no input frame available): it must emit
     # zero flags so existing callers that don't know about the bitfield

@@ -16,10 +16,19 @@ function requireCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
+function requireHotbarDock(): HTMLDivElement {
+  const dock = document.getElementById("hotbar-dock");
+  if (!(dock instanceof HTMLDivElement)) {
+    throw new Error("#hotbar-dock element missing or wrong type");
+  }
+  return dock;
+}
+
 function main(): void {
   bootstrap({
     canvas: requireCanvas(),
     hud: requireHud(),
+    hotbarDock: requireHotbarDock(),
   });
 }
 

@@ -3,8 +3,26 @@
 // 不保证所有 UE 端函数都 1:1 覆盖，优先实现前端交互和渲染需要的子集。
 
 import { VoxelConstants } from "../core/constants";
-import { EVoxelCellMode, type FChunkCoord, type FMacroCoord } from "../core/types";
+import {
+  EVoxelCellMode,
+  type FChunkCoord,
+  type FMacroCoord,
+  type FMicroCoord,
+} from "../core/types";
 import { macroLinearIndex } from "../core/gridUtils";
+import {
+  clearMicroBlock,
+  FullMicroOccupancyMask,
+  getMicroBlock,
+  isMicroOccupied as isRefinedMicroOccupied,
+  isRefinedCellEmpty,
+  makeEmptyRefinedCell as makeEmptyRefinedMicroCell,
+  makeRefinedCellFromBlock,
+  makeSingleMicroRefinedCell,
+  MicroGridSlotCount,
+  normalizeRefinedCell,
+  setMicroBlock,
+} from "../microgrid/governance";
 import {
   VoxelDirtyFlags,
   makeEmptyMacroHeader,
@@ -17,8 +35,6 @@ import {
   type FPrefabInstanceData,
 } from "./types";
 import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "../meshing/types";
-
-const FULL_MACRO_MICRO_OCCUPANCY = (1n << 64n) - 1n;
 
 export class ChunkStorage {
   readonly data: FChunkStorageData;
@@ -76,9 +92,55 @@ export class ChunkStorage {
     return null;
   }
 
+  getRefinedCell(localMacro: FMacroCoord): FRefinedCellData | null {
+    const header = this.getHeaderAt(localMacro);
+    if (!header || header.mode !== EVoxelCellMode.Refined) {
+      return null;
+    }
+
+    const refined = this.data.refinedCells[header.payloadIndex];
+    return refined ? normalizeRefinedCell(refined) : null;
+  }
+
+  getMicroBlock(localMacro: FMacroCoord, micro: FMicroCoord): FNormalBlockData | null {
+    const header = this.getHeaderAt(localMacro);
+    if (!header) {
+      return null;
+    }
+
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      return this.getNormalBlock(localMacro);
+    }
+
+    if (header.mode === EVoxelCellMode.Refined) {
+      const refined = this.data.refinedCells[header.payloadIndex];
+      return refined ? getMicroBlock(refined, micro) : null;
+    }
+
+    return null;
+  }
+
+  isMicroOccupied(localMacro: FMacroCoord, micro: FMicroCoord): boolean {
+    const header = this.getHeaderAt(localMacro);
+    if (!header) {
+      return false;
+    }
+
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      return this.getMicroBlock(localMacro, micro) !== null;
+    }
+
+    if (header.mode === EVoxelCellMode.Refined) {
+      const refined = this.data.refinedCells[header.payloadIndex];
+      return refined ? isRefinedMicroOccupied(refined, micro) : false;
+    }
+
+    return false;
+  }
+
   getEnvironmentSummary(localMacro: FMacroCoord): FMacroEnvironmentSummary | null {
     const header = this.getHeaderAt(localMacro);
-    if (!header || header.environmentIndex === 0xFFFF) {
+    if (!header || header.environmentIndex === 0xffff) {
       return null;
     }
     const summary = this.data.environmentSummaries[header.environmentIndex];
@@ -109,7 +171,106 @@ export class ChunkStorage {
       header.mode = EVoxelCellMode.SolidBlock;
     }
 
-    this.markDirty(localMacro, VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    return true;
+  }
+
+  setMicroBlock(localMacro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header) {
+      return false;
+    }
+
+    if (header.mode === EVoxelCellMode.Empty) {
+      const refined = makeSingleMicroRefinedCell(micro, block);
+      if (!refined) {
+        return false;
+      }
+      header.payloadIndex = this.data.refinedCells.push(refined) - 1;
+      header.mode = EVoxelCellMode.Refined;
+    } else if (header.mode === EVoxelCellMode.SolidBlock) {
+      const existingBlock = this.data.normalBlocks[header.payloadIndex];
+      if (!existingBlock) {
+        return false;
+      }
+      const refined = setMicroBlock(makeRefinedCellFromBlock(existingBlock), micro, block);
+      if (!refined) {
+        return false;
+      }
+      this.data.normalBlocks[header.payloadIndex] = makeEmptyNormalBlock();
+      this.data.freeNormalBlockIndices.push(header.payloadIndex);
+      header.payloadIndex = this.data.refinedCells.push(refined) - 1;
+      header.mode = EVoxelCellMode.Refined;
+    } else {
+      const current = this.data.refinedCells[header.payloadIndex] ?? makeEmptyRefinedMicroCell();
+      const refined = setMicroBlock(current, micro, block);
+      if (!refined) {
+        return false;
+      }
+      this.data.refinedCells[header.payloadIndex] = refined;
+    }
+
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    return true;
+  }
+
+  clearMicroBlock(localMacro: FMacroCoord, micro: FMicroCoord): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header || header.mode === EVoxelCellMode.Empty) {
+      return false;
+    }
+
+    let refined: FRefinedCellData | null = null;
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      const block = this.data.normalBlocks[header.payloadIndex];
+      if (!block) {
+        return false;
+      }
+      refined = clearMicroBlock(makeRefinedCellFromBlock(block), micro);
+      if (!refined) {
+        return false;
+      }
+      this.data.normalBlocks[header.payloadIndex] = makeEmptyNormalBlock();
+      this.data.freeNormalBlockIndices.push(header.payloadIndex);
+      header.payloadIndex = this.data.refinedCells.push(refined) - 1;
+      header.mode = EVoxelCellMode.Refined;
+    } else {
+      const current = this.data.refinedCells[header.payloadIndex];
+      if (!current || !isRefinedMicroOccupied(current, micro)) {
+        return false;
+      }
+      refined = clearMicroBlock(current, micro);
+      if (!refined) {
+        return false;
+      }
+      this.data.refinedCells[header.payloadIndex] = refined;
+    }
+
+    if (isRefinedCellEmpty(refined)) {
+      this.data.refinedCells[header.payloadIndex] = makeEmptyRefinedMicroCell();
+      header.mode = EVoxelCellMode.Empty;
+      header.payloadIndex = 0;
+      header.flags = 0;
+    }
+
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
     return true;
   }
 
@@ -135,7 +296,10 @@ export class ChunkStorage {
     header.payloadIndex = 0;
     header.flags = 0;
 
-    this.markDirty(localMacro, VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
     return true;
   }
 
@@ -149,7 +313,7 @@ export class ChunkStorage {
       return false;
     }
 
-    if (header.environmentIndex !== 0xFFFF) {
+    if (header.environmentIndex !== 0xffff) {
       this.data.environmentSummaries[header.environmentIndex] = { ...summary };
     } else {
       const reuseIndex = this.data.freeEnvironmentSummaryIndices.pop();
@@ -165,13 +329,17 @@ export class ChunkStorage {
     return true;
   }
 
-  setPrefabFullMacroBlock(localMacro: FMacroCoord, block: FNormalBlockData, instanceId: number): boolean {
+  setPrefabFullMacroBlock(
+    localMacro: FMacroCoord,
+    block: FNormalBlockData,
+    instanceId: number,
+  ): boolean {
     return this.setPrefabRefinedMicroCell(
       localMacro,
-      FULL_MACRO_MICRO_OCCUPANCY,
+      FullMicroOccupancyMask,
       block.materialId,
       block.stateFlags,
-      new Array(64).fill(0),
+      new Array(MicroGridSlotCount).fill(0),
       instanceId,
     );
   }
@@ -181,6 +349,24 @@ export class ChunkStorage {
     microOccupancyMask: bigint,
     materialId: number,
     stateFlags: number,
+    microPartIds: number[],
+    instanceId: number,
+  ): boolean {
+    return this.unionPrefabRefinedMicroCell(
+      localMacro,
+      microOccupancyMask,
+      new Array(MicroGridSlotCount).fill(materialId),
+      new Array(MicroGridSlotCount).fill(stateFlags),
+      microPartIds,
+      instanceId,
+    );
+  }
+
+  unionPrefabRefinedMicroCell(
+    localMacro: FMacroCoord,
+    microOccupancyMask: bigint,
+    microMaterialIds: number[],
+    microStateFlags: number[],
     microPartIds: number[],
     instanceId: number,
   ): boolean {
@@ -198,9 +384,15 @@ export class ChunkStorage {
       this.data.freeNormalBlockIndices.push(header.payloadIndex);
     }
 
-    const refined = makeRefinedCell(microOccupancyMask, materialId, stateFlags, microPartIds, instanceId);
+    const refined = makePrefabRefinedCell(
+      microOccupancyMask,
+      microMaterialIds,
+      microStateFlags,
+      microPartIds,
+      instanceId,
+    );
     if (header.mode === EVoxelCellMode.Refined) {
-      this.data.refinedCells[header.payloadIndex] = mergePrefabInstance(
+      this.data.refinedCells[header.payloadIndex] = mergePrefabRefinedCell(
         this.data.refinedCells[header.payloadIndex] ?? makeEmptyRefinedCell(),
         refined,
       );
@@ -209,7 +401,10 @@ export class ChunkStorage {
       header.mode = EVoxelCellMode.Refined;
     }
 
-    this.markDirty(localMacro, VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
     return true;
   }
 
@@ -218,17 +413,29 @@ export class ChunkStorage {
     this.data.prefabInstances.push(stored);
     this.markDirty(
       {
-        x: clampLocalMacroX(instance.coveredMacroMin.x - (this.data.chunkCoord.x * VoxelConstants.ChunkSizeX)),
-        y: clampLocalMacroY(instance.coveredMacroMin.y - (this.data.chunkCoord.y * VoxelConstants.ChunkSizeY)),
-        z: clampLocalMacroZ(instance.coveredMacroMin.z - (this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ)),
+        x: clampLocalMacroX(
+          instance.coveredMacroMin.x - this.data.chunkCoord.x * VoxelConstants.ChunkSizeX,
+        ),
+        y: clampLocalMacroY(
+          instance.coveredMacroMin.y - this.data.chunkCoord.y * VoxelConstants.ChunkSizeY,
+        ),
+        z: clampLocalMacroZ(
+          instance.coveredMacroMin.z - this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ,
+        ),
       },
       VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
     );
     this.markDirty(
       {
-        x: clampLocalMacroX(instance.coveredMacroMax.x - (this.data.chunkCoord.x * VoxelConstants.ChunkSizeX)),
-        y: clampLocalMacroY(instance.coveredMacroMax.y - (this.data.chunkCoord.y * VoxelConstants.ChunkSizeY)),
-        z: clampLocalMacroZ(instance.coveredMacroMax.z - (this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ)),
+        x: clampLocalMacroX(
+          instance.coveredMacroMax.x - this.data.chunkCoord.x * VoxelConstants.ChunkSizeX,
+        ),
+        y: clampLocalMacroY(
+          instance.coveredMacroMax.y - this.data.chunkCoord.y * VoxelConstants.ChunkSizeY,
+        ),
+        z: clampLocalMacroZ(
+          instance.coveredMacroMax.z - this.data.chunkCoord.z * VoxelConstants.ChunkSizeZ,
+        ),
       },
       VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
     );
@@ -315,7 +522,10 @@ export class ChunkStorage {
     let count = 0;
     for (let index = 0; index < this.data.macroHeaders.length; index += 1) {
       const header = this.data.macroHeaders[index];
-      if (!header || (header.mode !== EVoxelCellMode.SolidBlock && header.mode !== EVoxelCellMode.Refined)) {
+      if (
+        !header ||
+        (header.mode !== EVoxelCellMode.SolidBlock && header.mode !== EVoxelCellMode.Refined)
+      ) {
         continue;
       }
       const localMacroCoord = {
@@ -357,7 +567,9 @@ export class ChunkStorage {
     this.data.dirtyFlags = 0;
   }
 
-  consumeDirtyFlags(mask: number = VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision): number {
+  consumeDirtyFlags(
+    mask: number = VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+  ): number {
     const current = this.data.dirtyFlags;
     this.data.dirtyFlags &= ~mask;
     if (this.data.dirtyFlags === 0) {
@@ -369,45 +581,63 @@ export class ChunkStorage {
 }
 
 function makeEmptyRefinedCell(): FRefinedCellData {
-  return {
-    microOccupancyMask: 0n,
-    microMaterialIds: [],
-    microStateFlags: [],
-    microPartIds: [],
-    prefabInstanceIds: [],
-    boundaryCache: 0,
-  };
+  return makeEmptyRefinedMicroCell();
 }
 
-function makeRefinedCell(
+function makePrefabRefinedCell(
   microOccupancyMask: bigint,
-  materialId: number,
-  stateFlags: number,
+  microMaterialIds: number[],
+  microStateFlags: number[],
   microPartIds: number[],
   instanceId: number,
 ): FRefinedCellData {
-  return {
+  return normalizeRefinedCell({
     microOccupancyMask,
-    microMaterialIds: new Array(64).fill(materialId),
-    microStateFlags: new Array(64).fill(stateFlags),
+    microMaterialIds: normalizeNumberSlots(microMaterialIds, 0),
+    microStateFlags: normalizeNumberSlots(microStateFlags, 0),
     microPartIds: normalizedPartIds(microPartIds),
     prefabInstanceIds: [instanceId],
     boundaryCache: 0,
-  };
+  });
 }
 
-function mergePrefabInstance(existing: FRefinedCellData, next: FRefinedCellData): FRefinedCellData {
-  const ids = new Set([...existing.prefabInstanceIds, ...next.prefabInstanceIds]);
-  return {
-    ...next,
-    prefabInstanceIds: [...ids].sort((a, b) => a - b),
-  };
+function mergePrefabRefinedCell(
+  existing: FRefinedCellData,
+  next: FRefinedCellData,
+): FRefinedCellData {
+  const out = normalizeRefinedCell(existing);
+  const incoming = normalizeRefinedCell(next);
+  out.microOccupancyMask |= incoming.microOccupancyMask;
+
+  for (let index = 0; index < MicroGridSlotCount; index += 1) {
+    const bit = 1n << BigInt(index);
+    if ((incoming.microOccupancyMask & bit) === 0n) {
+      continue;
+    }
+    out.microMaterialIds[index] = incoming.microMaterialIds[index] ?? 0;
+    out.microStateFlags[index] = incoming.microStateFlags[index] ?? 0;
+    out.microPartIds[index] = incoming.microPartIds[index] ?? -1;
+  }
+
+  out.prefabInstanceIds = [
+    ...new Set([...out.prefabInstanceIds, ...incoming.prefabInstanceIds]),
+  ].sort((a, b) => a - b);
+  out.boundaryCache = 0;
+  return out;
 }
 
 function normalizedPartIds(partIds: number[]): number[] {
-  const out = new Array(64).fill(-1);
-  for (let index = 0; index < Math.min(partIds.length, 64); index += 1) {
+  const out = new Array(MicroGridSlotCount).fill(-1);
+  for (let index = 0; index < Math.min(partIds.length, MicroGridSlotCount); index += 1) {
     out[index] = partIds[index] ?? -1;
+  }
+  return out;
+}
+
+function normalizeNumberSlots(values: number[], fallback: number): number[] {
+  const out = new Array(MicroGridSlotCount).fill(fallback);
+  for (let index = 0; index < Math.min(values.length, MicroGridSlotCount); index += 1) {
+    out[index] = values[index] ?? fallback;
   }
   return out;
 }
@@ -416,14 +646,28 @@ function refinedFullMacroAsBlock(refined: FRefinedCellData): FNormalBlockData | 
   if (refined.microOccupancyMask === 0n || refined.microMaterialIds.length === 0) {
     return null;
   }
+  const normalized = normalizeRefinedCell(refined);
+  const firstOccupiedIndex = firstOccupiedSlotIndex(normalized.microOccupancyMask);
+  if (firstOccupiedIndex === -1) {
+    return null;
+  }
 
   return {
-    materialId: refined.microMaterialIds[0] ?? 0,
-    stateFlags: refined.microStateFlags.reduce((acc, value) => acc | value, 0),
+    materialId: normalized.microMaterialIds[firstOccupiedIndex] ?? 0,
+    stateFlags: normalized.microStateFlags.reduce((acc, value) => acc | value, 0),
     health: 100,
     temperatureDelta: 0,
     moistureDelta: 0,
   };
+}
+
+function firstOccupiedSlotIndex(mask: bigint): number {
+  for (let index = 0; index < MicroGridSlotCount; index += 1) {
+    if ((mask & (1n << BigInt(index))) !== 0n) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function clonePrefabInstance(instance: FPrefabInstanceData): FPrefabInstanceData {

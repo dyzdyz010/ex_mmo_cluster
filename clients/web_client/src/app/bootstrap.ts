@@ -5,6 +5,7 @@ import { SimulatedLocalMovementTransport } from "@infra/net/simulatedMovementTra
 import { ServerMovementTransport } from "@infra/net/serverMovementTransport";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
 import { HudView } from "../presentation/hud/hudView";
+import { HotbarDockView } from "../presentation/hud/hotbarDockView";
 import { DevToolsCli } from "../presentation/devtools/devToolsCli";
 import { EventBus } from "../shared/events/eventBus";
 import type { AppEvents } from "../shared/events/events";
@@ -25,6 +26,7 @@ export interface AppContext {
 export interface BootstrapTargets {
   canvas: HTMLCanvasElement;
   hud: HTMLDivElement;
+  hotbarDock: HTMLDivElement;
 }
 
 /**
@@ -34,7 +36,11 @@ export interface BootstrapTargets {
  * This is the only file allowed to `new` a controller or transport. Everything
  * else takes its dependencies through constructors.
  */
-export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
+export function bootstrap({ canvas, hud, hotbarDock }: BootstrapTargets): AppContext {
+  canvas.tabIndex = 0;
+  canvas.focus();
+  canvas.addEventListener("pointerdown", () => canvas.focus());
+
   const logger = new ObserveLog(1200);
   const eventBus = new EventBus<AppEvents>();
   const world: VoxelWorldAdapter = new LocalVoxelWorldAdapter();
@@ -55,13 +61,8 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
   render.setEditPreviewProvider(edit);
 
   const hudView = new HudView(hud, world, transportPump, localPlayer, remotePlayer, edit, render);
-  const diagnostics = new DiagnosticsController(
-    logger,
-    world,
-    localPlayer,
-    remotePlayer,
-    edit,
-  );
+  const hotbarDockView = new HotbarDockView(hotbarDock, edit);
+  const diagnostics = new DiagnosticsController(logger, world, localPlayer, remotePlayer, edit);
 
   const loop = new GameLoop();
   loop.subscribe(transportPump);
@@ -69,6 +70,7 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
   loop.subscribe(remotePlayer);
   loop.subscribe(render);
   loop.subscribe(hudView);
+  loop.subscribe(hotbarDockView);
   loop.subscribe(diagnostics);
 
   bridgeBusToLogger(eventBus, logger);
@@ -104,6 +106,7 @@ export function bootstrap({ canvas, hud }: BootstrapTargets): AppContext {
     disposed = true;
     loop.stop();
     detachInput();
+    hotbarDockView.dispose();
     render.dispose();
     eventBus.clear();
   }
@@ -127,30 +130,42 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
   bus.on("movement:reset", ({ start }) => {
     logger.emit("movement", "demo_reset", { start: formatVector(start) });
   });
-  bus.on("movement:local-step", ({ seq, clientTick, position }) => {
-    logger.emit("movement", "input_frame", {
-      seq,
-      tick: clientTick,
-      predicted: formatVector(position),
-    });
-  });
+  bus.on(
+    "movement:local-step",
+    ({ seq, clientTick, position, velocity, movementFlags, movementMode }) => {
+      logger.emit("movement", "input_frame", {
+        seq,
+        tick: clientTick,
+        predicted: formatVector(position),
+        velocity: formatVector(velocity),
+        movement_flags: movementFlags,
+        movement_mode: movementMode,
+      });
+    },
+  );
   bus.on("movement:authority-applied", (payload) => {
     logger.emit("movement", "ack", {
       seq: payload.ackSeq,
       tick: payload.authTick,
       action: payload.action,
+      movement_mode: payload.movementMode,
+      velocity: formatVector(payload.velocity),
       correction_distance: payload.correctionDistance.toFixed(2),
       pending_inputs: payload.pendingInputs,
       replayed_frames: payload.replayedFrames,
       rtt_ms: payload.rttMs.toFixed(1),
     });
   });
-  bus.on("movement:remote-snapshot-ingested", ({ cid, serverTick, position }) => {
+  bus.on("movement:remote-snapshot-ingested", ({ cid, serverTick, position, movementMode }) => {
     logger.emit("movement", "remote_snapshot", {
       cid,
       tick: serverTick,
       position: formatVector(position),
+      movement_mode: movementMode,
     });
+  });
+  bus.on("input:jump", ({ source }) => {
+    logger.emit("input", "jump_pressed", { source });
   });
 
   bus.on("input:material-selected", ({ materialId, source }) => {
@@ -174,6 +189,63 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
       source,
     });
   });
+  bus.on("world:prefab-snap-committed", (payload) => {
+    logger.emit("prefab", "prefab_snap_committed", {
+      prefabId: payload.prefabId,
+      instanceId: payload.instanceId,
+      targetInstanceId: payload.targetInstanceId,
+      socketId: payload.socketId ?? "",
+      targetSocketId: payload.targetSocketId,
+      anchorMicroCoord: formatCoord(payload.anchorMicroCoord),
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      source: payload.source,
+    });
+  });
+  bus.on("world:prefab-snap-rejected", (payload) => {
+    logger.emit("prefab", "prefab_snap_rejected", {
+      prefabId: payload.prefabId,
+      instanceId: payload.targetInstanceId,
+      socketId: payload.socketId ?? "",
+      targetSocketId: payload.targetSocketId,
+      anchorMicroCoord: payload.anchorMicroCoord ? formatCoord(payload.anchorMicroCoord) : "",
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      rejectReason: payload.rejectReason,
+      source: payload.source,
+    });
+  });
+  bus.on("world:prefab-boundary-snap-committed", (payload) => {
+    logger.emit("prefab", "prefab_boundary_snap_committed", {
+      prefabId: payload.prefabId,
+      instanceId: payload.instanceId,
+      hitMacro: formatCoord(payload.hitMacro),
+      faceNormal: formatCoord(payload.faceNormal),
+      anchorMicroCoord: formatCoord(payload.anchorMicroCoord),
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      contactSlots: payload.contactSlots,
+      source: payload.source,
+    });
+  });
+  bus.on("world:prefab-boundary-snap-rejected", (payload) => {
+    logger.emit("prefab", "prefab_boundary_snap_rejected", {
+      prefabId: payload.prefabId,
+      instanceId: 0,
+      hitMacro: formatCoord(payload.hitMacro),
+      faceNormal: formatCoord(payload.faceNormal),
+      anchorMicroCoord: payload.anchorMicroCoord ? formatCoord(payload.anchorMicroCoord) : "",
+      affectedMacroCount: payload.affectedMacroCount,
+      incomingOccupiedSlots: payload.incomingOccupiedSlots,
+      overlapSlots: payload.overlapSlots,
+      contactSlots: payload.contactSlots,
+      rejectReason: payload.rejectReason,
+      source: payload.source,
+    });
+  });
   bus.on("world:block-broken", ({ coord, source }) => {
     logger.emit("edit", "break", {
       coord: `${coord.x},${coord.y},${coord.z}`,
@@ -191,4 +263,8 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
 
 function formatVector(vector: Vector3): string {
   return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
+}
+
+function formatCoord(coord: { x: number; y: number; z: number }): string {
+  return `${coord.x},${coord.y},${coord.z}`;
 }

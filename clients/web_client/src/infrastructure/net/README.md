@@ -15,6 +15,7 @@
 
 - movement 已接入真实浏览器 transport：`auth_server /ingame/ws` -> `AuthServerWeb.GameWebSocket` -> `GateServer.WsConnection`。
 - `clients/web_client` 默认优先尝试 `server-ws`；可通过 `VITE_MOVEMENT_TRANSPORT=simulated` 强制使用 simulated-local。
+- movement 协议当前会解码 `MovementAck` / `PlayerMove` 的 `movement_mode`，并把服务端坐标 `(x,y,z)` 转成浏览器坐标 `(x,z,y)`；跳跃的竖直轴在浏览器中是 `Vector3.y`。
 - 体素协议 `0x60..0x6F` 仍主要保留 opcode 与接口边界，真实 chunk subscribe / snapshot / delta / edit ack 流还未接到服务端。
 
 约束：

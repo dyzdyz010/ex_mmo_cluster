@@ -158,6 +158,7 @@ impl LocalRenderPrediction {
             velocity,
             acceleration,
             movement_mode: MovementMode::Grounded,
+            ground_z: position.z,
         };
 
         let old_rendered_pos = self

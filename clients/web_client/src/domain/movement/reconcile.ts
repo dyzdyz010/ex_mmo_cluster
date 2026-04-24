@@ -1,7 +1,13 @@
-import { CorrectionFlag, clonePredictedMoveState, type MovementAck, type PredictedMoveState } from "./types";
+import {
+  CorrectionFlag,
+  MovementMode,
+  clonePredictedMoveState,
+  type MovementAck,
+  type PredictedMoveState,
+} from "./types";
 import type { ReplayGovernance } from "./governance";
 import { ReplayAction } from "./governance";
-import { InputHistory, PredictedHistory } from "./history";
+import type { InputHistory, PredictedHistory } from "./history";
 import type { MovementProfile } from "./profile";
 import { step } from "./predictor";
 
@@ -20,6 +26,8 @@ function authoritativeFromAck(ack: MovementAck): PredictedMoveState {
     position: ack.position.clone(),
     velocity: ack.velocity.clone(),
     acceleration: ack.acceleration.clone(),
+    movementMode: ack.movementMode,
+    groundY: ack.groundY ?? ack.position.y,
   };
 }
 
@@ -32,7 +40,10 @@ export function reconcile(
 ): ReconcileResult | null {
   const authoritative = authoritativeFromAck(ack);
 
-  if ((ack.correctionFlags & CorrectionFlag.Teleport) !== 0 || (ack.correctionFlags & CorrectionFlag.AntiCheatReject) !== 0) {
+  if (
+    (ack.correctionFlags & CorrectionFlag.Teleport) !== 0 ||
+    (ack.correctionFlags & CorrectionFlag.AntiCheatReject) !== 0
+  ) {
     inputHistory.clear();
     predictedHistory.clear();
     predictedHistory.push(authoritative);
@@ -51,11 +62,15 @@ export function reconcile(
     inputHistory.dropThroughTick(ack.authTick);
   }
 
-  const pendingFrames = ack.ackSeq > 0 ? inputHistory.framesAfterSeq(ack.ackSeq) : inputHistory.framesAfterTick(ack.authTick);
+  const pendingFrames =
+    ack.ackSeq > 0
+      ? inputHistory.framesAfterSeq(ack.ackSeq)
+      : inputHistory.framesAfterTick(ack.authTick);
   const pendingInputs = pendingFrames.length;
 
   const forceReplay = (ack.correctionFlags & CorrectionFlag.CollisionPush) !== 0;
-  const predictedMatch = predictedHistory.stateAtSeq(ack.ackSeq) ?? predictedHistory.stateAtTick(ack.authTick);
+  const predictedMatch =
+    predictedHistory.stateAtSeq(ack.ackSeq) ?? predictedHistory.stateAtTick(ack.authTick);
 
   if (!predictedMatch) {
     predictedHistory.push(authoritative);
@@ -69,6 +84,11 @@ export function reconcile(
   }
 
   const correctionDistance = predictedMatch.position.distanceTo(authoritative.position);
+  const modeMismatch = predictedMatch.movementMode !== authoritative.movementMode;
+  const airborneVerticalError =
+    authoritative.movementMode === MovementMode.Airborne
+      ? Math.abs(predictedMatch.position.y - authoritative.position.y)
+      : 0;
 
   if ((ack.correctionFlags & CorrectionFlag.StatusOverride) !== 0) {
     if (ack.ackSeq > 0) {
@@ -86,7 +106,12 @@ export function reconcile(
     };
   }
 
-  if (correctionDistance <= governance.softPositionError && !forceReplay) {
+  if (
+    correctionDistance <= governance.softPositionError &&
+    !forceReplay &&
+    !modeMismatch &&
+    airborneVerticalError <= 1.0
+  ) {
     const latest = predictedHistory.latest();
     if (!latest || authoritative.tick >= latest.tick) {
       predictedHistory.push(authoritative);

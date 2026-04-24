@@ -14,6 +14,11 @@ pub struct MovementProfile {
     pub turn_response: f64,
     pub fixed_dt_ms: u16,
     pub max_speed_scale: f64,
+    pub jump_impulse: f64,
+    pub gravity: f64,
+    pub air_control: f64,
+    pub air_accel: f64,
+    pub max_fall_speed: f64,
 }
 
 impl Default for MovementProfile {
@@ -44,6 +49,12 @@ impl Default for MovementProfile {
             // change is P3+ scope, not P2.
             fixed_dt_ms: 100,
             max_speed_scale: 1.0,
+            // Conservative MMO jump arc: about 70 cm apex at 100 ms ticks.
+            jump_impulse: 420.0,
+            gravity: 980.0,
+            air_control: 0.35,
+            air_accel: 420.0,
+            max_fall_speed: 900.0,
         }
     }
 }
@@ -63,5 +74,10 @@ mod tests {
         assert_eq!(p.turn_response, 1.0);
         assert_eq!(p.fixed_dt_ms, 100);
         assert_eq!(p.max_speed_scale, 1.0);
+        assert_eq!(p.jump_impulse, 420.0);
+        assert_eq!(p.gravity, 980.0);
+        assert_eq!(p.air_control, 0.35);
+        assert_eq!(p.air_accel, 420.0);
+        assert_eq!(p.max_fall_speed, 900.0);
     }
 }
