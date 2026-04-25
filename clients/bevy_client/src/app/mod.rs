@@ -1,5 +1,16 @@
 //! Interactive Bevy app entrypoint and world/UI glue.
+//!
+//! `app::run` is the composition root for the GUI / stdio modes. The
+//! restructure plan in `docs/superpowers/specs/2026-04-25-bevy-client-restructure-design.md`
+//! splits this file into Bevy `Plugin`s (one per domain) under
+//! `app::plugins::BevyClientPlugins`. While that migration is in progress
+//! `app::run` continues to register systems directly; new systems should
+//! land inside their owning Plugin instead.
 
+pub mod plugins;
+pub mod schedule;
+
+use self::{plugins::BevyClientPlugins, schedule::configure_client_sets};
 use crate::{
     config::{ClientConfig, SessionCredentials},
     input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame},
@@ -11,7 +22,6 @@ use crate::{
         smoothing::smooth_translation,
     },
     protocol::EffectCueKind,
-    schedule::configure_client_sets,
     sim::{
         predictor,
         profile::MovementProfile,
@@ -468,6 +478,7 @@ pub fn run(
             ..default()
         }))
         .add_plugins(LoginPlugin)
+        .add_plugins(BevyClientPlugins)
         .init_state::<AppState>();
 
     configure_client_sets(&mut app);
