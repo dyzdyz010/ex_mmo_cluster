@@ -17,6 +17,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
+use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
 use crate::stdio::StdioPlugin;
 
@@ -76,10 +77,7 @@ stub_plugin!(
     SkillPlugin,
     "Skill targeting, casting queue, and target-point picking."
 );
-stub_plugin!(
-    MovementSyncPlugin,
-    "Movement uplink tick + local render prediction integration."
-);
+// MovementSyncPlugin is now defined in `crate::movement::plugin`.
 stub_plugin!(
     EffectPlugin,
     "Effect-cue visuals (gizmo + transient meshes)."

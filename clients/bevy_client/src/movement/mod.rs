@@ -1,4 +1,10 @@
-//! Simple movement helpers retained for older/local command flows.
+//! Movement: pure step helpers for local command flows + the Bevy
+//! `MovementSyncPlugin` (sample_movement_input + movement_sender +
+//! advance_local_render_prediction).
+
+pub mod plugin;
+
+pub use plugin::MovementSyncPlugin;
 
 use bevy::prelude::{Vec2, Vec3};
 
