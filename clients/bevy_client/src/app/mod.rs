@@ -29,19 +29,15 @@ use crate::{
         types::{MovementMode, PredictedMoveState},
     },
     skill_targeting::prepare_skill_dispatch,
-    stdio::{
-        ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
-        emit_owned as emit_stdio_owned, snapshot_fields,
-    },
+    stdio::{ClientStdioInterface, emit as emit_stdio},
     voxel::{
         BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCoord, NormalBlockData,
-        VoxelMaterialId, VoxelRenderCell, VoxelWorld, execute_voxel_cli_command,
+        VoxelMaterialId, VoxelRenderCell, VoxelWorld,
     },
     world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
     world::remote_player::{RemoteMotionSample, RemotePlayerState},
 };
 use bevy::{
-    app::AppExit,
     ecs::system::SystemParam,
     input::{
         keyboard::{Key, KeyboardInput},
@@ -172,18 +168,6 @@ struct PlayerVisualParams<'w, 's> {
     >,
 }
 
-#[derive(SystemParam)]
-struct StdioCommandParams<'w> {
-    time: Res<'w, Time>,
-    stdio: Res<'w, ClientStdioInterface>,
-    bridge: Res<'w, NetworkBridge>,
-    local_render_prediction: Res<'w, LocalRenderPrediction>,
-    voxel_world: ResMut<'w, VoxelWorld>,
-    world_state: ResMut<'w, WorldState>,
-    movement_intent: ResMut<'w, MovementIntent>,
-    app_exit: MessageWriter<'w, AppExit>,
-}
-
 type HudTextSingle<'w, 's> = Single<
     'w,
     's,
@@ -254,15 +238,15 @@ pub(crate) struct ChatState {
 struct MovementTick(Timer);
 
 #[derive(Resource, Default)]
-struct MovementIntent {
-    direction: Vec2,
-    expires_at: f64,
-    jump_requested: bool,
+pub(crate) struct MovementIntent {
+    pub direction: Vec2,
+    pub expires_at: f64,
+    pub jump_requested: bool,
 }
 
 #[derive(Resource)]
-struct MovementDispatchState {
-    stop_sent: bool,
+pub(crate) struct MovementDispatchState {
+    pub stop_sent: bool,
 }
 
 #[derive(Resource, Default)]
@@ -356,7 +340,7 @@ impl LocalRenderPrediction {
     }
 
     /// Returns the current outstanding visual correction magnitude in world units.
-    fn pending_correction_distance(&self) -> f32 {
+    pub(crate) fn pending_correction_distance(&self) -> f32 {
         self.pending_correction.length()
     }
 }
@@ -455,7 +439,6 @@ pub fn run(
                     .chain(),
                 handle_skill_input,
                 sample_movement_input,
-                poll_stdio_commands,
                 movement_sender,
                 (
                     sync_voxel_visuals,
@@ -1507,320 +1490,6 @@ fn movement_sender(params: MovementSendParams) {
         && world_state.local_velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
 }
 
-fn poll_stdio_commands(params: StdioCommandParams) {
-    let StdioCommandParams {
-        time,
-        stdio,
-        bridge,
-        local_render_prediction,
-        mut voxel_world,
-        mut world_state,
-        mut movement_intent,
-        mut app_exit,
-    } = params;
-
-    loop {
-        let Some(command) = stdio.try_recv() else {
-            break;
-        };
-
-        match command {
-            ClientStdioCommand::Snapshot => {
-                let mut fields = snapshot_fields(SnapshotFields {
-                    status: &world_state.status,
-                    scene_joined: world_state.scene_joined,
-                    local_cid: world_state.local_cid,
-                    local_position: world_state.local_position,
-                    local_hp: world_state.local_hp,
-                    local_max_hp: world_state.local_max_hp,
-                    local_alive: world_state.local_alive,
-                    movement_transport: world_state.movement_transport.label(),
-                    fast_lane_status: &world_state.fast_lane_status,
-                    remote_player_count: world_state
-                        .remote_actor_identity
-                        .values()
-                        .filter(|identity| matches!(identity.kind, RemoteActorKind::Player))
-                        .count(),
-                    remote_npc_count: world_state
-                        .remote_actor_identity
-                        .values()
-                        .filter(|identity| identity.is_npc())
-                        .count(),
-                });
-                fields.push(("voxel_sync", "offline-local".to_string()));
-                fields.push((
-                    "voxel_solid_cells",
-                    voxel_world.total_solid_cells().to_string(),
-                ));
-                fields.push((
-                    "voxel_hotbar",
-                    (voxel_world.hotbar().selected_index + 1).to_string(),
-                ));
-                fields.push(("voxel_selected", voxel_world.hotbar().selected.label));
-                emit_stdio("snapshot", &fields);
-            }
-            ClientStdioCommand::Position => {
-                emit_stdio(
-                    "position",
-                    &[(
-                        "local_position",
-                        world_state
-                            .local_position
-                            .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
-                            .unwrap_or_else(|| "n/a".to_string()),
-                    )],
-                );
-            }
-            ClientStdioCommand::Transport => {
-                emit_stdio(
-                    "transport",
-                    &[
-                        (
-                            "control_transport",
-                            world_state.control_transport.label().to_string(),
-                        ),
-                        (
-                            "movement_transport",
-                            world_state.movement_transport.label().to_string(),
-                        ),
-                        ("fast_lane_status", world_state.fast_lane_status.clone()),
-                    ],
-                );
-            }
-            ClientStdioCommand::Players => {
-                let now_secs = time.elapsed_secs_f64();
-                let mut players = world_state
-                    .remote_players
-                    .iter()
-                    .filter_map(|(cid, player)| {
-                        let identity = world_state.remote_actor_identity.get(cid);
-                        if matches!(identity.map(|value| value.kind), Some(RemoteActorKind::Npc)) {
-                            return None;
-                        }
-                        let position = player.sample_motion(now_secs).position;
-                        Some(format!(
-                            "{cid}:{:.1},{:.1},{:.1}",
-                            position.x, position.y, position.z
-                        ))
-                    })
-                    .collect::<Vec<_>>();
-                players.sort();
-                emit_stdio(
-                    "players",
-                    &[("players", format!("[{}]", players.join(";")))],
-                );
-            }
-            ClientStdioCommand::Npcs => {
-                let now_secs = time.elapsed_secs_f64();
-                let mut npcs = world_state
-                    .remote_players
-                    .iter()
-                    .filter_map(|(cid, player)| {
-                        let identity = world_state.remote_actor_identity.get(cid)?;
-                        if !identity.is_npc() {
-                            return None;
-                        }
-
-                        let position = player.sample_motion(now_secs).position;
-                        Some(format!(
-                            "{cid}:{}:{:.1},{:.1},{:.1}",
-                            identity.name, position.x, position.y, position.z
-                        ))
-                    })
-                    .collect::<Vec<_>>();
-                npcs.sort();
-                emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
-            }
-            ClientStdioCommand::Target(target_cid) => {
-                world_state.selected_target_cid = Some(target_cid);
-                world_state.selected_target_point = None;
-                emit_stdio("target", &[("target_cid", target_cid.to_string())]);
-            }
-            ClientStdioCommand::ClearTarget => {
-                world_state.selected_target_cid = None;
-                emit_stdio("target_cleared", &[]);
-            }
-            ClientStdioCommand::TargetPoint(point) => {
-                world_state.selected_target_point = Some(point);
-                world_state.selected_target_cid = None;
-                emit_stdio(
-                    "target_point",
-                    &[(
-                        "point",
-                        format!("{:.1},{:.1},{:.1}", point.x, point.y, point.z),
-                    )],
-                );
-            }
-            ClientStdioCommand::ClearTargetPoint => {
-                world_state.selected_target_point = None;
-                emit_stdio("target_point_cleared", &[]);
-            }
-            ClientStdioCommand::Chat(text) => {
-                bridge.send(NetworkCommand::Chat(text.clone()));
-                emit_stdio("chat_sent", &[("text", text)]);
-            }
-            ClientStdioCommand::Skill {
-                skill_id,
-                target_cid,
-            } => {
-                let selected_target_point = world_state
-                    .selected_target_point
-                    .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
-                let visible_actor_count = world_state.remote_players.len();
-                let dispatch = match prepare_skill_dispatch(
-                    skill_id,
-                    target_cid.or(world_state.selected_target_cid),
-                    selected_target_point,
-                    visible_actor_count,
-                ) {
-                    Ok(dispatch) => dispatch,
-                    Err(block) => {
-                        let message = format!("skill {skill_id} blocked: {}", block.reason);
-                        world_state.status = message.clone();
-                        push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
-                        emit_stdio(
-                            "skill_blocked",
-                            &[
-                                ("skill_id", skill_id.to_string()),
-                                ("reason", block.reason.to_string()),
-                                ("hint", block.hint.to_string()),
-                            ],
-                        );
-                        continue;
-                    }
-                };
-                bridge.send(NetworkCommand::CastSkillTargeted {
-                    skill_id,
-                    target_cid: dispatch.target_cid,
-                    target_position: dispatch.target_position,
-                });
-                emit_stdio(
-                    "skill_sent",
-                    &[
-                        ("skill_id", skill_id.to_string()),
-                        (
-                            "target_cid",
-                            dispatch
-                                .target_cid
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| "auto".to_string()),
-                        ),
-                        (
-                            "target_point",
-                            dispatch
-                                .target_position
-                                .map(|value| {
-                                    format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
-                                })
-                                .unwrap_or_else(|| "n/a".to_string()),
-                        ),
-                    ],
-                );
-            }
-            ClientStdioCommand::Move {
-                direction,
-                direction_label,
-                duration_ms,
-            } => {
-                movement_intent.direction = direction;
-                movement_intent.expires_at = time.elapsed_secs_f64() + duration_ms as f64 / 1_000.0;
-                emit_stdio(
-                    "move_queued",
-                    &[
-                        ("direction", direction_label),
-                        ("duration_ms", duration_ms.to_string()),
-                    ],
-                );
-            }
-            ClientStdioCommand::Stop => {
-                movement_intent.direction = Vec2::ZERO;
-                movement_intent.expires_at = 0.0;
-                emit_stdio("stop", &[]);
-            }
-            ClientStdioCommand::Jump => {
-                movement_intent.jump_requested = true;
-                emit_stdio("jump", &[("queued", "true".to_string())]);
-            }
-            ClientStdioCommand::ReconcileStats => {
-                bridge.send(NetworkCommand::RequestReconcileStats);
-                emit_stdio("reconcile_stats_requested", &[]);
-            }
-            ClientStdioCommand::DiagRender => {
-                let anchor_position = local_render_prediction
-                    .anchor_state
-                    .as_ref()
-                    .map(|state| state.position);
-                let render_position = local_render_prediction
-                    .render_state
-                    .as_ref()
-                    .map(|state| state.position);
-                emit_stdio(
-                    "diag_render",
-                    &[
-                        (
-                            "anchor",
-                            anchor_position
-                                .map(|value| {
-                                    format!("{:.2},{:.2},{:.2}", value.x, value.y, value.z)
-                                })
-                                .unwrap_or_else(|| "n/a".to_string()),
-                        ),
-                        (
-                            "render",
-                            render_position
-                                .map(|value| {
-                                    format!("{:.2},{:.2},{:.2}", value.x, value.y, value.z)
-                                })
-                                .unwrap_or_else(|| "n/a".to_string()),
-                        ),
-                        (
-                            "pending_correction",
-                            format!(
-                                "{:.3},{:.3},{:.3}",
-                                local_render_prediction.pending_correction.x,
-                                local_render_prediction.pending_correction.y,
-                                local_render_prediction.pending_correction.z
-                            ),
-                        ),
-                        (
-                            "pending_correction_distance",
-                            format!(
-                                "{:.3}",
-                                local_render_prediction.pending_correction_distance()
-                            ),
-                        ),
-                        (
-                            "drift",
-                            format!(
-                                "{:.3}",
-                                local_render_prediction.pending_correction_distance()
-                            ),
-                        ),
-                        (
-                            "smoothing_rate_hz",
-                            format!("{:.1}", local_render_prediction.smoothing_rate_hz),
-                        ),
-                        (
-                            "partial_elapsed_secs",
-                            format!("{:.4}", local_render_prediction.partial_elapsed_secs),
-                        ),
-                    ],
-                );
-            }
-            ClientStdioCommand::Voxel(command) => {
-                let result =
-                    execute_voxel_cli_command(&mut voxel_world, command, Some(&voxel_save_dir()));
-                emit_stdio_owned(&result.event, result.ok, &result.fields);
-            }
-            ClientStdioCommand::Quit => {
-                bridge.send(NetworkCommand::Shutdown);
-                emit_stdio("quit", &[("final_status", world_state.status.clone())]);
-                app_exit.write(AppExit::Success);
-            }
-        }
-    }
-}
-
 fn current_movement_direction(keyboard: &ButtonInput<KeyCode>) -> Vec2 {
     let mut direction = Vec2::ZERO;
 
@@ -2151,7 +1820,7 @@ fn update_hud_text(
     };
 }
 
-fn push_line(buffer: &mut VecDeque<String>, line: String) {
+pub(crate) fn push_line(buffer: &mut VecDeque<String>, line: String) {
     if buffer.len() >= 10 {
         buffer.pop_front();
     }
@@ -2760,7 +2429,7 @@ fn direction_label(direction: Vec2) -> String {
     format!("{:.1},{:.1}", direction.x, direction.y)
 }
 
-fn voxel_save_dir() -> PathBuf {
+pub(crate) fn voxel_save_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")

@@ -1,4 +1,12 @@
 //! Attached stdio automation interface for the normal client runtime.
+//!
+//! - The types/parser/emit helpers live here in `mod.rs`.
+//! - `plugin` registers the system that drains queued commands once per
+//!   frame in the Bevy app.
+
+pub mod plugin;
+
+pub use plugin::StdioPlugin;
 
 use crate::voxel::{VoxelCliCommand, parse_voxel_cli_command};
 use bevy::prelude::{Resource, Vec2, Vec3};

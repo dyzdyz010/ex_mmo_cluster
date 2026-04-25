@@ -17,6 +17,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
+use crate::stdio::StdioPlugin;
 
 /// Canonical Bevy client `PluginGroup`.
 ///
@@ -59,10 +60,7 @@ stub_plugin!(
     NetworkPlugin,
     "Network bridge, command queue, and `NetworkEvent` polling."
 );
-stub_plugin!(
-    StdioPlugin,
-    "Drains queued stdio commands so the rest of the frame sees them as input."
-);
+// StdioPlugin is now defined in `crate::stdio::plugin`.
 stub_plugin!(
     InputPlugin,
     "Keyboard / mouse / chat input — emits domain events for voxel, skill, chat, hotbar."
