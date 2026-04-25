@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use crate::app::{LocalRenderPrediction, WorldState};
 use crate::chat::ChatState;
 use crate::login::AppState;
+use crate::observe::ClientObserver;
 use crate::presentation::actor_render_position;
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
@@ -40,21 +41,47 @@ struct OrbitCameraParams<'w, 's> {
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: Res<'w, VoxelWorld>,
     orbit: ResMut<'w, OrbitCameraState>,
+    observer: Res<'w, ClientObserver>,
     camera: Single<'w, 's, &'static mut Transform, With<MainCamera>>,
 }
 
 fn update_orbit_camera(mut params: OrbitCameraParams) {
     if !params.chat_state.enabled {
-        let rotating =
-            params.mouse.pressed(MouseButton::Left) || params.mouse.pressed(MouseButton::Middle);
+        // Either mouse button counts as a drag intent. RMB is also
+        // accepted because most "third-person camera" reflexes (WoW,
+        // FFXIV, Source) bind RMB drag to orbit; the existing place /
+        // target-point actions stay on `just_pressed(Right)` so a
+        // continued hold still rotates without re-triggering placement.
+        let rotating = params.mouse.pressed(MouseButton::Left)
+            || params.mouse.pressed(MouseButton::Middle)
+            || params.mouse.pressed(MouseButton::Right);
         if rotating {
             let delta = params
                 .motion_reader
                 .read()
                 .fold(Vec2::ZERO, |acc, event| acc + event.delta);
-            params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
-            params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
-                .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+            if delta.length_squared() > 0.0 && params.observer.enabled() {
+                let pre_yaw = params.orbit.yaw;
+                let pre_pitch = params.orbit.pitch;
+                params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
+                params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
+                    .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+                params.observer.emit(
+                    "camera",
+                    "orbit_drag",
+                    &[
+                        ("delta", format!("{:.2},{:.2}", delta.x, delta.y)),
+                        ("pre_yaw", format!("{pre_yaw:.3}")),
+                        ("post_yaw", format!("{:.3}", params.orbit.yaw)),
+                        ("pre_pitch", format!("{pre_pitch:.3}")),
+                        ("post_pitch", format!("{:.3}", params.orbit.pitch)),
+                    ],
+                );
+            } else {
+                params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
+                params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
+                    .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+            }
         } else {
             params.motion_reader.clear();
         }

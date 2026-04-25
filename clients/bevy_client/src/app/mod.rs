@@ -26,7 +26,7 @@ use crate::{
     stdio::ClientStdioInterface,
     voxel::{
         VoxelMaterialId, VoxelWorld,
-        plugin::{TargetPointMarker, transparent_material, voxel_material_color},
+        plugin::{TargetPointMarker, voxel_material_color},
     },
     world::remote_actor::RemoteActorIdentity,
     world::remote_player::RemotePlayerState,
@@ -48,6 +48,9 @@ pub(crate) struct RenderRay {
 
 /// Scene-wide render assets created in `setup` and consumed by all of
 /// the in-world render plugins (`VoxelPlugin`, `PresentationPlugin`, …).
+///
+/// Refined micro cells share the same opaque material as their macro
+/// parents — see `voxel::plugin::voxel_material_color`.
 #[derive(Resource, Clone)]
 pub(crate) struct SceneRenderAssets {
     pub cube_mesh: Handle<Mesh>,
@@ -57,10 +60,6 @@ pub(crate) struct SceneRenderAssets {
     pub stone_material: Handle<StandardMaterial>,
     pub wood_material: Handle<StandardMaterial>,
     pub ice_material: Handle<StandardMaterial>,
-    pub dirt_refined_material: Handle<StandardMaterial>,
-    pub stone_refined_material: Handle<StandardMaterial>,
-    pub wood_refined_material: Handle<StandardMaterial>,
-    pub ice_refined_material: Handle<StandardMaterial>,
     pub local_player_material: Handle<StandardMaterial>,
     pub remote_player_material: Handle<StandardMaterial>,
     pub moving_player_material: Handle<StandardMaterial>,
@@ -331,22 +330,6 @@ fn setup(
             metallic: 0.02,
             ..default()
         }),
-        dirt_refined_material: materials.add(transparent_material(voxel_material_color(
-            VoxelMaterialId::Dirt,
-            true,
-        ))),
-        stone_refined_material: materials.add(transparent_material(voxel_material_color(
-            VoxelMaterialId::Stone,
-            true,
-        ))),
-        wood_refined_material: materials.add(transparent_material(voxel_material_color(
-            VoxelMaterialId::Wood,
-            true,
-        ))),
-        ice_refined_material: materials.add(transparent_material(voxel_material_color(
-            VoxelMaterialId::Ice,
-            true,
-        ))),
         local_player_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.25, 0.95, 0.45),
             emissive: Color::srgb(0.02, 0.16, 0.04).into(),

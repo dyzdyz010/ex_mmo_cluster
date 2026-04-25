@@ -715,43 +715,34 @@ fn voxel_render_scale(cell: VoxelRenderCell) -> Vec3 {
     Vec3::splat(size)
 }
 
-pub(crate) fn voxel_material_color(material_id: VoxelMaterialId, refined: bool) -> Color {
-    let color = match material_id {
+pub(crate) fn voxel_material_color(material_id: VoxelMaterialId, _refined: bool) -> Color {
+    // Refined micro cells share the same opaque colour as their macro
+    // parents — the previous half-transparent tint produced severe
+    // depth-sort flicker because hundreds of `AlphaMode::Blend` cubes
+    // overlap inside one prefab. The web client (`chunkRenderer.ts`)
+    // also uses opaque `MeshStandardMaterial` for everything.
+    match material_id {
         VoxelMaterialId::Dirt => Color::srgb(0.45, 0.34, 0.22),
         VoxelMaterialId::Stone => Color::srgb(0.48, 0.52, 0.56),
         VoxelMaterialId::Wood => Color::srgb(0.64, 0.42, 0.22),
         VoxelMaterialId::Ice => Color::srgb(0.52, 0.82, 0.95),
-    };
-    if refined {
-        color.with_alpha(0.82)
-    } else {
-        color
-    }
-}
-
-pub(crate) fn transparent_material(color: Color) -> StandardMaterial {
-    StandardMaterial {
-        base_color: color,
-        alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.88,
-        ..default()
     }
 }
 
 fn voxel_material_handle(
     assets: &SceneRenderAssets,
     material_id: VoxelMaterialId,
-    refined: bool,
+    _refined: bool,
 ) -> Handle<StandardMaterial> {
-    match (material_id, refined) {
-        (VoxelMaterialId::Dirt, false) => assets.dirt_material.clone(),
-        (VoxelMaterialId::Stone, false) => assets.stone_material.clone(),
-        (VoxelMaterialId::Wood, false) => assets.wood_material.clone(),
-        (VoxelMaterialId::Ice, false) => assets.ice_material.clone(),
-        (VoxelMaterialId::Dirt, true) => assets.dirt_refined_material.clone(),
-        (VoxelMaterialId::Stone, true) => assets.stone_refined_material.clone(),
-        (VoxelMaterialId::Wood, true) => assets.wood_refined_material.clone(),
-        (VoxelMaterialId::Ice, true) => assets.ice_refined_material.clone(),
+    // Both macro blocks and refined micro cells use the same opaque
+    // material per material id. Two parallel handles existed historically
+    // (with the refined variant configured `AlphaMode::Blend`) but that
+    // produced flicker (see `voxel_material_color` doc-comment).
+    match material_id {
+        VoxelMaterialId::Dirt => assets.dirt_material.clone(),
+        VoxelMaterialId::Stone => assets.stone_material.clone(),
+        VoxelMaterialId::Wood => assets.wood_material.clone(),
+        VoxelMaterialId::Ice => assets.ice_material.clone(),
     }
 }
 
