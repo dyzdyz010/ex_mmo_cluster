@@ -11,6 +11,7 @@ use crate::{
         smoothing::smooth_translation,
     },
     protocol::EffectCueKind,
+    schedule::configure_client_sets,
     sim::{
         predictor,
         profile::MovementProfile,
@@ -467,8 +468,11 @@ pub fn run(
             ..default()
         }))
         .add_plugins(LoginPlugin)
-        .init_state::<AppState>()
-        .add_systems(Startup, setup)
+        .init_state::<AppState>();
+
+    configure_client_sets(&mut app);
+
+    app.add_systems(Startup, setup)
         .add_systems(OnEnter(AppState::Game), enter_game_setup)
         .add_systems(
             Update,
