@@ -484,14 +484,14 @@ pub(crate) fn ray_from_viewport(
         .ok()?;
     Some(RenderRay {
         origin: ray.origin,
-        direction: ray.direction.into(),
+        direction: ray.direction.as_vec3(),
     })
 }
 
 /// Intersects a render-space ray against a horizontal plane at the given
 /// world-space `y`.
 pub(crate) fn ray_intersection_with_y_plane(origin: Vec3, direction: Vec3, y: f32) -> Option<Vec3> {
-    if direction.y.abs() < f32::EPSILON {
+    if direction.y.abs() <= f32::EPSILON {
         return None;
     }
     let distance = (y - origin.y) / direction.y;

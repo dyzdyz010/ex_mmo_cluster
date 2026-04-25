@@ -49,6 +49,31 @@ impl Default for OrbitCameraState {
     }
 }
 
+/// Rotates a 2D WASD input vector (`x` = strafe / D-key, `y` = forward /
+/// W-key) into the sim-coordinate horizontal velocity direction expected
+/// by the server's movement integrator.
+///
+/// Without this rotation, pressing W always sends "north in sim space"
+/// regardless of camera direction — the player walks away from where the
+/// camera is pointing. Mirrors `clients/web_client/src/domain/movement/
+/// inputDirection.ts::buildMovementInputDirection`.
+///
+/// Convention: `OrbitCameraState::yaw` rotates the camera offset around
+/// the world Y axis as `(h*sin(yaw), _, h*cos(yaw))`, so camera forward
+/// (where the player walks when pressing W) is `(-sin(yaw), 0, -cos(yaw))`
+/// in render space; mapping render `(x, z)` to sim `(x, y)` gives the
+/// formula below.
+pub fn input_to_world_direction(input: bevy::prelude::Vec2, yaw: f32) -> bevy::prelude::Vec2 {
+    let cos_yaw = yaw.cos();
+    let sin_yaw = yaw.sin();
+    let strafe = input.x;
+    let forward = input.y;
+    bevy::prelude::Vec2::new(
+        strafe * cos_yaw - forward * sin_yaw,
+        -strafe * sin_yaw - forward * cos_yaw,
+    )
+}
+
 /// Builds a Bevy `Transform` from the orbit state — pure math, no Bevy
 /// world access. Used both by `camera::plugin::update_orbit_camera` and
 /// by the initial `setup` system that spawns the camera entity.
@@ -60,4 +85,48 @@ pub fn camera_transform_from_orbit(state: &OrbitCameraState) -> Transform {
         horizontal * state.yaw.cos(),
     );
     Transform::from_translation(state.target + offset).looking_at(state.target, Vec3::Y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::Vec2;
+
+    /// W press (forward = 1) at yaw=0 must produce sim direction (0, -1).
+    /// At yaw=0 the camera is at +Z render = +Y sim, looking toward the
+    /// origin (camera forward = -Z render = -Y sim). "Forward" therefore
+    /// walks in -Y sim.
+    #[test]
+    fn input_to_world_direction_w_at_zero_yaw_walks_negative_y() {
+        let direction = input_to_world_direction(Vec2::new(0.0, 1.0), 0.0);
+        assert!((direction.x - 0.0).abs() < 1e-6);
+        assert!((direction.y - (-1.0)).abs() < 1e-6);
+    }
+
+    /// W press at yaw = π/2 rotates the camera so it sits at +X render and
+    /// looks toward -X. Pressing W must walk in -X sim.
+    #[test]
+    fn input_to_world_direction_w_at_quarter_yaw_walks_negative_x() {
+        let direction = input_to_world_direction(Vec2::new(0.0, 1.0), std::f32::consts::FRAC_PI_2);
+        assert!((direction.x - (-1.0)).abs() < 1e-6);
+        assert!((direction.y - 0.0).abs() < 1e-6);
+    }
+
+    /// D press (strafe = 1) at yaw=0 must walk in +X sim — the camera is
+    /// behind the player, screen-right is +X.
+    #[test]
+    fn input_to_world_direction_d_at_zero_yaw_walks_positive_x() {
+        let direction = input_to_world_direction(Vec2::new(1.0, 0.0), 0.0);
+        assert!((direction.x - 1.0).abs() < 1e-6);
+        assert!((direction.y - 0.0).abs() < 1e-6);
+    }
+
+    /// D press at yaw = π/2 — camera at +X looking -X — screen-right is
+    /// -Z render = -Y sim.
+    #[test]
+    fn input_to_world_direction_d_at_quarter_yaw_walks_negative_y() {
+        let direction = input_to_world_direction(Vec2::new(1.0, 0.0), std::f32::consts::FRAC_PI_2);
+        assert!((direction.x - 0.0).abs() < 1e-6);
+        assert!((direction.y - (-1.0)).abs() < 1e-6);
+    }
 }

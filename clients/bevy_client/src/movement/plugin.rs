@@ -9,6 +9,7 @@ use crate::app::{
     FINAL_STOP_SYNC_SPEED_EPSILON, LocalRenderPrediction, MovementDispatchState, MovementIntent,
     VISUAL_CORRECTION_EPSILON_SQ, WorldState,
 };
+use crate::camera::{OrbitCameraState, orbit::input_to_world_direction};
 use crate::chat::ChatState;
 use crate::config::ClientConfig;
 use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame};
@@ -64,11 +65,13 @@ struct MovementSendParams<'w> {
     tick: ResMut<'w, MovementTick>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_movement_input(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut keyboard_input_reader: MessageReader<KeyboardInput>,
     chat_state: Res<ChatState>,
+    orbit: Res<OrbitCameraState>,
     observer: Res<ClientObserver>,
     mut input_trace: ResMut<InputTraceState>,
     mut movement_intent: ResMut<MovementIntent>,
@@ -90,15 +93,22 @@ pub(crate) fn sample_movement_input(
         );
     }
 
-    let direction = current_movement_direction(&keyboard);
+    let raw_direction = current_movement_direction(&keyboard);
 
     // `expires_at` belongs to stdio-driven timed moves. Keyboard intent must
     // track `ButtonInput::pressed()` exactly — extending a 250 ms latch on
     // every held frame would keep the unit sliding (and the predictor
     // rotating residual velocity toward the last direction) for frames
     // after every key release.
-    if direction.length_squared() > 0.0 {
-        movement_intent.direction = direction;
+    //
+    // WASD inputs are camera-relative (W = "walk where the camera is
+    // pointing"); `input_to_world_direction` rotates them into the
+    // sim-space world axis the server's movement integrator expects. The
+    // stdio Move command writes `movement_intent.direction` directly and
+    // is treated as already-world-axis (automation flows specify their
+    // own direction).
+    if raw_direction.length_squared() > 0.0 {
+        movement_intent.direction = input_to_world_direction(raw_direction, orbit.yaw);
         movement_intent.expires_at = 0.0;
         maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
@@ -109,9 +119,9 @@ pub(crate) fn sample_movement_input(
             continue;
         }
 
-        let direction = movement_direction_from_key(&keyboard_input.logical_key);
-        if direction.length_squared() > 0.0 {
-            movement_intent.direction = direction;
+        let raw_direction = movement_direction_from_key(&keyboard_input.logical_key);
+        if raw_direction.length_squared() > 0.0 {
+            movement_intent.direction = input_to_world_direction(raw_direction, orbit.yaw);
             movement_intent.expires_at = 0.0;
             maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
             return;
@@ -390,8 +400,19 @@ mod tests {
         assert!(!should_send_stop_sync(Vec2::ZERO, Vec3::ZERO, true));
     }
 
+    fn camera_at_zero_yaw() -> OrbitCameraState {
+        OrbitCameraState {
+            yaw: 0.0,
+            pitch: 0.5,
+            distance: 400.0,
+            target: Vec3::ZERO,
+        }
+    }
+
     /// Regression: releasing every movement key must zero the intent on the
-    /// very next system tick.
+    /// very next system tick. The non-zero direction during the W press is
+    /// the camera-relative-rotated value: at yaw=0 forward = -Y sim, so
+    /// W produces (0, -1).
     #[test]
     fn releasing_all_keys_zeroes_intent_immediately() {
         let mut app = App::new();
@@ -402,6 +423,7 @@ mod tests {
             .insert_resource(ClientObserver::default())
             .insert_resource(InputTraceState::default())
             .insert_resource(MovementIntent::default())
+            .insert_resource(camera_at_zero_yaw())
             .add_systems(Update, sample_movement_input);
 
         app.world_mut()
@@ -411,7 +433,8 @@ mod tests {
 
         {
             let intent = app.world().resource::<MovementIntent>();
-            assert_eq!(intent.direction, Vec2::new(0.0, 1.0));
+            assert!((intent.direction.x - 0.0).abs() < 1e-6);
+            assert!((intent.direction.y - (-1.0)).abs() < 1e-6);
             assert_eq!(intent.expires_at, 0.0);
         }
 
@@ -440,6 +463,7 @@ mod tests {
             .insert_resource(ClientObserver::default())
             .insert_resource(InputTraceState::default())
             .insert_resource(MovementIntent::default())
+            .insert_resource(camera_at_zero_yaw())
             .add_systems(Update, sample_movement_input);
 
         app.world_mut()
@@ -453,5 +477,41 @@ mod tests {
             movement_flags_for_intent(Vec2::ZERO, true),
             MOVEMENT_FLAG_BRAKE | crate::input::commands::MOVEMENT_FLAG_JUMP
         );
+    }
+
+    /// Camera-relative input: pressing W while the camera has yawed 90°
+    /// must walk the player along sim -X, not sim -Y. Direct test of the
+    /// `sample_movement_input` glue (the math is unit-tested in
+    /// `crate::camera::orbit::tests`).
+    #[test]
+    fn w_press_rotates_input_by_camera_yaw() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
+            .insert_resource(ChatState::default())
+            .insert_resource(ClientObserver::default())
+            .insert_resource(InputTraceState::default())
+            .insert_resource(MovementIntent::default())
+            .insert_resource(OrbitCameraState {
+                yaw: std::f32::consts::FRAC_PI_2,
+                pitch: 0.5,
+                distance: 400.0,
+                target: Vec3::ZERO,
+            })
+            .add_systems(Update, sample_movement_input);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.update();
+
+        let intent = app.world().resource::<MovementIntent>();
+        assert!(
+            (intent.direction.x - (-1.0)).abs() < 1e-6,
+            "W at yaw=π/2 must rotate to sim -X, got {}",
+            intent.direction.x,
+        );
+        assert!((intent.direction.y - 0.0).abs() < 1e-6);
     }
 }
