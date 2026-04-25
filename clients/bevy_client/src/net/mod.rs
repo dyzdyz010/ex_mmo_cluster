@@ -12,9 +12,11 @@
 pub mod events;
 pub mod fastlane;
 pub mod observe;
+pub mod plugin;
 pub mod runtime;
 pub mod thread;
 pub mod transport;
 
 pub use events::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent};
+pub use plugin::NetworkPlugin;
 pub use thread::spawn_network_thread;

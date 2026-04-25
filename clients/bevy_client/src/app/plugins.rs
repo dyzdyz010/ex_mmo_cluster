@@ -17,6 +17,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
+use crate::net::NetworkPlugin;
 use crate::stdio::StdioPlugin;
 
 /// Canonical Bevy client `PluginGroup`.
@@ -56,10 +57,7 @@ macro_rules! stub_plugin {
     };
 }
 
-stub_plugin!(
-    NetworkPlugin,
-    "Network bridge, command queue, and `NetworkEvent` polling."
-);
+// NetworkPlugin is now defined in `crate::net::plugin`.
 // StdioPlugin is now defined in `crate::stdio::plugin`.
 stub_plugin!(
     InputPlugin,
