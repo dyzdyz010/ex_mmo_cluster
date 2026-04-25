@@ -18,8 +18,11 @@
 
 pub mod cli;
 pub mod core;
+pub mod plugin;
 pub mod prefab;
 pub mod world;
+
+pub use plugin::VoxelPlugin;
 
 pub use cli::{
     VoxelCliCommand, VoxelCliResult, execute_voxel_cli_command, parse_voxel_cli_command,

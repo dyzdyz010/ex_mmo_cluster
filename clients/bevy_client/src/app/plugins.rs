@@ -18,10 +18,14 @@ use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
 use crate::chat::ChatPlugin;
+use crate::effects::EffectPlugin;
+use crate::hud::HudPlugin;
 use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
+use crate::presentation::PresentationPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
+use crate::voxel::VoxelPlugin;
 
 /// Canonical Bevy client `PluginGroup`.
 ///
@@ -68,21 +72,12 @@ stub_plugin!(
 );
 // CameraPlugin is now defined in `crate::camera::plugin`.
 // ChatPlugin is now defined in `crate::chat::plugin`.
-stub_plugin!(
-    VoxelPlugin,
-    "Voxel selection, hit-face highlight, prefab preview, edit dispatch."
-);
+// VoxelPlugin is now defined in `crate::voxel::plugin`.
 // SkillPlugin is now defined in `crate::skill::plugin`.
 // MovementSyncPlugin is now defined in `crate::movement::plugin`.
-stub_plugin!(
-    EffectPlugin,
-    "Effect-cue visuals (gizmo + transient meshes)."
-);
-stub_plugin!(HudPlugin, "HUD text aggregation and rendering.");
-stub_plugin!(
-    PresentationPlugin,
-    "Player visuals, actor materials, selection guides."
-);
+// EffectPlugin is now defined in `crate::effects::plugin`.
+// HudPlugin is now defined in `crate::hud::plugin`.
+// PresentationPlugin is now defined in `crate::presentation::plugin`.
 stub_plugin!(
     ObservePlugin,
     "Observe log flush + lifetime hooks (Startup + Last)."

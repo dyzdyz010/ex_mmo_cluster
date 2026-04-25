@@ -5,9 +5,10 @@
 use bevy::prelude::*;
 
 use crate::app::{
-    EffectVisual, LocalRenderPrediction, MovementDispatchState, WorldState,
-    effect_spawn_translation, net_to_world, push_line, sim_to_render_position,
+    LocalRenderPrediction, MovementDispatchState, WorldState, net_to_world, push_line,
+    sim_to_render_position,
 };
+use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::login::AppState;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::remote_actor::RemoteActorIdentity;
