@@ -40,9 +40,15 @@ pub struct OrbitCameraState {
 
 impl Default for OrbitCameraState {
     fn default() -> Self {
+        // Match the web client's starting view (`Math.PI * 0.25`,
+        // `clients/web_client/src/render/scene.ts`) so both clients spawn
+        // the camera in the same quadrant. With this yaw the camera sits
+        // in the +X+Z render quadrant looking back at the player; the
+        // associated `input_to_world_direction` rotation makes W feel like
+        // "walk where the camera is pointing".
         Self {
-            yaw: -0.75,
-            pitch: 0.55,
+            yaw: std::f32::consts::FRAC_PI_4,
+            pitch: 0.58,
             distance: CAMERA_DEFAULT_DISTANCE,
             target: Vec3::new(0.0, CAMERA_LOOK_HEIGHT, 0.0),
         }
