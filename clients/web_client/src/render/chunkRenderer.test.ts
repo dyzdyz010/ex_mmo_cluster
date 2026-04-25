@@ -44,6 +44,8 @@ describe("ChunkRenderController hit-face outline", () => {
       origin: { x: 1, y: 3, z: 3 },
       cellCount: 2,
       renderObjectCount: 1,
+      renderStyle: "wire-bounds",
+      wireSegmentCount: 24,
     });
 
     controller.setPrefabPreview(null, null);
@@ -52,7 +54,7 @@ describe("ChunkRenderController hit-face outline", () => {
     controller.dispose();
   });
 
-  it("renders a micro prefab ghost as one instanced object instead of one mesh per slot", () => {
+  it("renders a micro prefab ghost as one low-cost micro wire object", () => {
     const controller = new ChunkRenderController();
 
     controller.setPrefabRasterPreview("builtin_sphere", [
@@ -65,13 +67,16 @@ describe("ChunkRenderController hit-face outline", () => {
       },
     ]);
 
-    expect(controller.getPrefabPreviewSnapshot()).toEqual({
+    const snapshot = controller.getPrefabPreviewSnapshot();
+    expect(snapshot).toMatchObject({
       visible: true,
       prefabName: "builtin_sphere",
       origin: { x: 2, y: 3, z: 4 },
       cellCount: 4,
       renderObjectCount: 1,
+      renderStyle: "micro-wire",
     });
+    expect(snapshot.wireSegmentCount).toBeGreaterThan(12);
 
     controller.dispose();
   });

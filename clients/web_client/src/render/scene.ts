@@ -23,6 +23,7 @@ const CAMERA_MAX_PITCH = 1.15;
 const CAMERA_MIN_DISTANCE = 180;
 const CAMERA_MAX_DISTANCE = 620;
 const CAMERA_SNAP_DISTANCE = 600;
+const CAMERA_INTERACTION_IDLE_MS = 50;
 
 export interface SceneHandles {
   renderer: WebGLRenderer;
@@ -30,6 +31,7 @@ export interface SceneHandles {
   camera: PerspectiveCamera;
   worldRoot: Group;
   getMovementYawRadians: () => number;
+  isCameraInteracting: () => boolean;
   setCameraFollow: (target: Vector3) => void;
   update: (dtSecs: number) => void;
   dispose: () => void;
@@ -63,6 +65,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
   let dragActive = false;
   let lastPointerClientX = 0;
   let lastPointerClientY = 0;
+  let lastCameraInteractionMs = Number.NEGATIVE_INFINITY;
 
   const ambient = new AmbientLight(0xffffff, 0.25);
   scene.add(ambient);
@@ -103,6 +106,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     dragActive = true;
     lastPointerClientX = event.clientX;
     lastPointerClientY = event.clientY;
+    lastCameraInteractionMs = performance.now();
 
     if (document.pointerLockElement !== canvas) {
       try {
@@ -130,6 +134,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
 
     lastPointerClientX = event.clientX;
     lastPointerClientY = event.clientY;
+    lastCameraInteractionMs = performance.now();
 
     orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
     orbitPitch = clamp(
@@ -228,6 +233,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     camera,
     worldRoot,
     getMovementYawRadians: () => orbitYaw,
+    isCameraInteracting: () => performance.now() - lastCameraInteractionMs < CAMERA_INTERACTION_IDLE_MS,
     setCameraFollow,
     update,
     dispose,

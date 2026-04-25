@@ -4,6 +4,7 @@ import {
   prefabPreviewRequestKey,
   resolveActorDisplayY,
   shouldRefreshPrefabPreview,
+  shouldUseCoarsePrefabPreview,
 } from "./renderOrchestrator";
 
 describe("resolveActorDisplayY", () => {
@@ -149,5 +150,34 @@ describe("shouldRefreshPrefabPreview", () => {
 
   it("does not refresh when the request key is unchanged", () => {
     expect(shouldRefreshPrefabPreview({ ...base, requestKey: base.cachedKey })).toBe(false);
+  });
+});
+
+describe("shouldUseCoarsePrefabPreview", () => {
+  it("uses coarse prefab preview only when camera interaction has no reusable precise preview", () => {
+    const selectedPrefab = {
+      kind: "prefab" as const,
+      label: "sphere",
+      prefabName: "builtin_sphere",
+      rotation: EVoxelRotation.Rot0,
+    };
+    const selection = {
+      occupiedMacro: { x: 1, y: 2, z: 3 },
+      adjacentMacro: { x: 1, y: 3, z: 3 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    };
+
+    expect(shouldUseCoarsePrefabPreview(selectedPrefab, selection, true, false)).toBe(true);
+    expect(shouldUseCoarsePrefabPreview(selectedPrefab, selection, true, true)).toBe(false);
+    expect(shouldUseCoarsePrefabPreview(selectedPrefab, selection, false, false)).toBe(false);
+    expect(
+      shouldUseCoarsePrefabPreview(
+        { kind: "material", label: "stone", materialId: 2 },
+        selection,
+        true,
+        false,
+      ),
+    ).toBe(false);
+    expect(shouldUseCoarsePrefabPreview(selectedPrefab, null, true, false)).toBe(false);
   });
 });

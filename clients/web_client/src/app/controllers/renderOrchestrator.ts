@@ -181,6 +181,30 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       return;
     }
 
+    const hasReusablePrecisePreview =
+      this.prefabPreviewBoundaryPreview?.ok === true &&
+      this.prefabPreviewSelectedKey === selectedKey &&
+      this.prefabPreviewEditSignature === editSignature;
+    if (
+      shouldUseCoarsePrefabPreview(
+        selected,
+        this.currentSelection,
+        this.sceneHandles.isCameraInteracting(),
+        hasReusablePrecisePreview,
+      )
+    ) {
+      this.prefabPreviewCacheKey = null;
+      this.prefabPreviewBoundaryPreview = null;
+      this.prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
+      this.prefabPreviewSelectedKey = null;
+      this.prefabPreviewEditSignature = null;
+      this.chunkRenderer.setPrefabPreview(
+        this.currentSelection,
+        this.world.getPrefab(selected.prefabName),
+      );
+      return;
+    }
+
     let preview = this.prefabPreviewBoundaryPreview;
     const refreshPreview = shouldRefreshPrefabPreview({
       nowMs,
@@ -322,6 +346,20 @@ export function shouldRefreshPrefabPreview({
     return true;
   }
   return nowMs - lastRefreshMs >= refreshIntervalMs;
+}
+
+export function shouldUseCoarsePrefabPreview(
+  selected: HotbarState["selected"] | null | undefined,
+  selection: VoxelRaySelection | null,
+  cameraInteracting: boolean,
+  hasReusablePrecisePreview: boolean,
+): boolean {
+  return (
+    cameraInteracting &&
+    !hasReusablePrecisePreview &&
+    selection !== null &&
+    selected?.kind === "prefab"
+  );
 }
 
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {

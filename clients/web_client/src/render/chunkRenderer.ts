@@ -1,14 +1,10 @@
 import {
-  BoxGeometry,
   BufferGeometry,
   Float32BufferAttribute,
   Group,
-  InstancedMesh,
   LineBasicMaterial,
   LineSegments,
-  Matrix4,
   Mesh,
-  MeshBasicMaterial,
   MeshStandardMaterial,
   Raycaster,
   Vector2,
@@ -32,7 +28,7 @@ import type { PrefabRasterCell } from "../voxel/prefab";
 const HIT_FACE_OUTLINE_OFFSET = MacroWorldSize * 0.006;
 const HIT_FACE_OUTLINE_SIZE = MacroWorldSize * 1.04;
 const LOCAL_FACE_NORMAL = new Vector3(0, 0, 1);
-const PREFAB_GHOST_OPACITY = 0.28;
+const PREFAB_PREVIEW_INSET = MacroWorldSize * 0.03;
 
 export interface VoxelRaySelection {
   occupiedMacro: FMacroCoord;
@@ -65,6 +61,14 @@ export interface PrefabPreviewSnapshot {
   origin: FMacroCoord | null;
   cellCount: number;
   renderObjectCount: number;
+  renderStyle: "none" | "wire-bounds" | "micro-wire";
+  wireSegmentCount: number;
+}
+
+export interface PrefabRasterMicroWireGeometry {
+  positions: number[];
+  occupiedSlotCount: number;
+  wireSegmentCount: number;
 }
 
 export class ChunkRenderController {
@@ -80,21 +84,8 @@ export class ChunkRenderController {
   private readonly targetHighlight: LineSegments;
   private targetHighlightFaceNormal: FMacroCoord | null = null;
   private readonly prefabPreviewGroup = new Group();
-  private readonly prefabPreviewGeometry = new BoxGeometry(
-    MacroWorldSize * 0.96,
-    MacroWorldSize * 0.96,
-    MacroWorldSize * 0.96,
-  );
-  private readonly prefabMicroPreviewGeometry = new BoxGeometry(
-    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
-    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
-    (MacroWorldSize / VoxelConstants.MicroPerMacro) * 0.92,
-  );
-  private readonly prefabPreviewMaterial = new MeshBasicMaterial({
+  private readonly prefabPreviewLineMaterial = new LineBasicMaterial({
     color: 0x67e8f9,
-    transparent: true,
-    opacity: PREFAB_GHOST_OPACITY,
-    depthWrite: false,
   });
   private prefabPreviewSnapshot: PrefabPreviewSnapshot = {
     visible: false,
@@ -102,6 +93,8 @@ export class ChunkRenderController {
     origin: null,
     cellCount: 0,
     renderObjectCount: 0,
+    renderStyle: "none",
+    wireSegmentCount: 0,
   };
   private prefabPreviewKey = "";
 
@@ -267,39 +260,23 @@ export class ChunkRenderController {
       return;
     }
 
-    this.clearPrefabPreview();
-    const mesh = new InstancedMesh(
-      this.prefabPreviewGeometry,
-      this.prefabPreviewMaterial,
-      prefab.cells.length,
-    );
-    mesh.name = `prefab-preview:${prefab.name}`;
-    mesh.frustumCulled = false;
-    const matrix = new Matrix4();
-    let instanceIndex = 0;
+    const positions: number[] = [];
     for (const cell of prefab.cells) {
       const coord = {
         x: origin.x + cell.offset.x,
         y: origin.y + cell.offset.y,
         z: origin.z + cell.offset.z,
       };
-      const center = macroCenterWorldPosition(coord, MacroWorldSize);
-      matrix.makeTranslation(center.x, center.y, center.z);
-      mesh.setMatrixAt(instanceIndex, matrix);
-      instanceIndex += 1;
+      appendMacroCellWireBox(positions, coord);
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.prefabPreviewGroup.add(mesh);
 
-    this.prefabPreviewGroup.visible = true;
-    this.prefabPreviewKey = key;
-    this.prefabPreviewSnapshot = {
+    this.setPrefabWirePreview(key, positions, {
       visible: true,
       prefabName: prefab.name,
       origin: { ...origin },
       cellCount: prefab.cells.length,
-      renderObjectCount: this.prefabPreviewGroup.children.length,
-    };
+      renderStyle: "wire-bounds",
+    });
   }
 
   setPrefabRasterPreview(prefabName: string, cells: readonly PrefabRasterCell[]): void {
@@ -315,60 +292,19 @@ export class ChunkRenderController {
       return;
     }
 
-    this.clearPrefabPreview();
-    const positions: Vector3[] = [];
-    for (const cell of cells) {
-      for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
-        for (let y = 0; y < VoxelConstants.MicroPerMacro; y += 1) {
-          for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
-            const index =
-              x +
-              y * VoxelConstants.MicroPerMacro +
-              z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro;
-            if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
-              continue;
-            }
-            positions.push(
-              new Vector3(
-                (cell.macro.x + (x + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
-                (cell.macro.y + (y + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
-                (cell.macro.z + (z + 0.5) / VoxelConstants.MicroPerMacro) * MacroWorldSize,
-              ),
-            );
-          }
-        }
-      }
-    }
-
-    if (positions.length === 0) {
+    const geometry = buildPrefabRasterMicroWireGeometry(cells);
+    if (geometry.occupiedSlotCount === 0 || geometry.wireSegmentCount === 0) {
       this.clearPrefabPreview();
       return;
     }
 
-    const mesh = new InstancedMesh(
-      this.prefabMicroPreviewGeometry,
-      this.prefabPreviewMaterial,
-      positions.length,
-    );
-    mesh.name = `prefab-raster-preview:${prefabName}`;
-    mesh.frustumCulled = false;
-    const matrix = new Matrix4();
-    positions.forEach((position, index) => {
-      matrix.makeTranslation(position.x, position.y, position.z);
-      mesh.setMatrixAt(index, matrix);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    this.prefabPreviewGroup.add(mesh);
-
-    this.prefabPreviewGroup.visible = true;
-    this.prefabPreviewKey = key;
-    this.prefabPreviewSnapshot = {
+    this.setPrefabWirePreview(key, geometry.positions, {
       visible: true,
       prefabName,
       origin: cells[0] ? { ...cells[0].macro } : null,
-      cellCount: positions.length,
-      renderObjectCount: this.prefabPreviewGroup.children.length,
-    };
+      cellCount: geometry.occupiedSlotCount,
+      renderStyle: "micro-wire",
+    });
   }
 
   getPrefabPreviewSnapshot(): PrefabPreviewSnapshot {
@@ -378,6 +314,8 @@ export class ChunkRenderController {
       origin: this.prefabPreviewSnapshot.origin ? { ...this.prefabPreviewSnapshot.origin } : null,
       cellCount: this.prefabPreviewSnapshot.cellCount,
       renderObjectCount: this.prefabPreviewSnapshot.renderObjectCount,
+      renderStyle: this.prefabPreviewSnapshot.renderStyle,
+      wireSegmentCount: this.prefabPreviewSnapshot.wireSegmentCount,
     };
   }
 
@@ -389,14 +327,14 @@ export class ChunkRenderController {
     this.chunkMaterial.dispose();
     this.targetHighlight.geometry.dispose();
     (this.targetHighlight.material as LineBasicMaterial).dispose();
-    this.prefabPreviewGeometry.dispose();
-    this.prefabMicroPreviewGeometry.dispose();
-    this.prefabPreviewMaterial.dispose();
+    this.prefabPreviewLineMaterial.dispose();
   }
 
   private clearPrefabPreview(): void {
     for (const child of [...this.prefabPreviewGroup.children]) {
       this.prefabPreviewGroup.remove(child);
+      const geometry = (child as { geometry?: { dispose(): void } }).geometry;
+      geometry?.dispose();
     }
     this.prefabPreviewGroup.visible = false;
     this.prefabPreviewKey = "";
@@ -406,7 +344,204 @@ export class ChunkRenderController {
       origin: null,
       cellCount: 0,
       renderObjectCount: 0,
+      renderStyle: "none",
+      wireSegmentCount: 0,
     };
+  }
+
+  private setPrefabWirePreview(
+    key: string,
+    positions: number[],
+    snapshot: Omit<PrefabPreviewSnapshot, "renderObjectCount" | "wireSegmentCount">,
+  ): void {
+    this.clearPrefabPreview();
+    const geometry = new BufferGeometry();
+    geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+    const lines = new LineSegments(geometry, this.prefabPreviewLineMaterial);
+    lines.name = `prefab-wire-preview:${snapshot.prefabName ?? "unknown"}`;
+    lines.frustumCulled = false;
+    this.prefabPreviewGroup.add(lines);
+    this.prefabPreviewGroup.visible = true;
+    this.prefabPreviewKey = key;
+    this.prefabPreviewSnapshot = {
+      ...snapshot,
+      renderObjectCount: this.prefabPreviewGroup.children.length,
+      wireSegmentCount: positions.length / 6,
+    };
+  }
+}
+
+interface MicroGridCorner {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function buildPrefabRasterMicroWireGeometry(
+  cells: readonly PrefabRasterCell[],
+): PrefabRasterMicroWireGeometry {
+  const edges = new Map<string, [MicroGridCorner, MicroGridCorner]>();
+  let occupiedSlotCount = 0;
+
+  for (const cell of cells) {
+    for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
+      for (let y = 0; y < VoxelConstants.MicroPerMacro; y += 1) {
+        for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
+          const index =
+            x +
+            y * VoxelConstants.MicroPerMacro +
+            z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro;
+          if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
+            continue;
+          }
+          occupiedSlotCount += 1;
+          appendMicroSlotWireEdges(edges, cell.macro, { x, y, z });
+        }
+      }
+    }
+  }
+
+  const positions: number[] = [];
+  for (const [from, to] of edges.values()) {
+    appendMicroGridEdgeWorldPositions(positions, from, to);
+  }
+
+  return {
+    positions,
+    occupiedSlotCount,
+    wireSegmentCount: edges.size,
+  };
+}
+
+function appendMicroSlotWireEdges(
+  edges: Map<string, [MicroGridCorner, MicroGridCorner]>,
+  macro: FMacroCoord,
+  micro: FMicroCoord,
+): void {
+  const base = {
+    x: macro.x * VoxelConstants.MicroPerMacro + micro.x,
+    y: macro.y * VoxelConstants.MicroPerMacro + micro.y,
+    z: macro.z * VoxelConstants.MicroPerMacro + micro.z,
+  };
+  const corners: MicroGridCorner[] = [
+    { x: base.x, y: base.y, z: base.z },
+    { x: base.x + 1, y: base.y, z: base.z },
+    { x: base.x + 1, y: base.y + 1, z: base.z },
+    { x: base.x, y: base.y + 1, z: base.z },
+    { x: base.x, y: base.y, z: base.z + 1 },
+    { x: base.x + 1, y: base.y, z: base.z + 1 },
+    { x: base.x + 1, y: base.y + 1, z: base.z + 1 },
+    { x: base.x, y: base.y + 1, z: base.z + 1 },
+  ];
+  const edgeIndices: Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7],
+  ];
+
+  for (const [fromIndex, toIndex] of edgeIndices) {
+    addCanonicalMicroGridEdge(edges, corners[fromIndex]!, corners[toIndex]!);
+  }
+}
+
+function addCanonicalMicroGridEdge(
+  edges: Map<string, [MicroGridCorner, MicroGridCorner]>,
+  a: MicroGridCorner,
+  b: MicroGridCorner,
+): void {
+  const [from, to] = compareMicroGridCorners(a, b) <= 0 ? [a, b] : [b, a];
+  edges.set(`${microGridCornerKey(from)}|${microGridCornerKey(to)}`, [from, to]);
+}
+
+function compareMicroGridCorners(a: MicroGridCorner, b: MicroGridCorner): number {
+  if (a.x !== b.x) {
+    return a.x - b.x;
+  }
+  if (a.y !== b.y) {
+    return a.y - b.y;
+  }
+  return a.z - b.z;
+}
+
+function microGridCornerKey(corner: MicroGridCorner): string {
+  return `${corner.x},${corner.y},${corner.z}`;
+}
+
+function appendMicroGridEdgeWorldPositions(
+  positions: number[],
+  from: MicroGridCorner,
+  to: MicroGridCorner,
+): void {
+  positions.push(
+    microGridCornerWorldAxis(from.x),
+    microGridCornerWorldAxis(from.y),
+    microGridCornerWorldAxis(from.z),
+    microGridCornerWorldAxis(to.x),
+    microGridCornerWorldAxis(to.y),
+    microGridCornerWorldAxis(to.z),
+  );
+}
+
+function microGridCornerWorldAxis(value: number): number {
+  return (value / VoxelConstants.MicroPerMacro) * MacroWorldSize;
+}
+
+function appendMacroCellWireBox(positions: number[], coord: FMacroCoord): void {
+  appendWireBox(
+    positions,
+    {
+      x: coord.x * MacroWorldSize + PREFAB_PREVIEW_INSET,
+      y: coord.y * MacroWorldSize + PREFAB_PREVIEW_INSET,
+      z: coord.z * MacroWorldSize + PREFAB_PREVIEW_INSET,
+    },
+    {
+      x: (coord.x + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
+      y: (coord.y + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
+      z: (coord.z + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
+    },
+  );
+}
+
+function appendWireBox(
+  positions: number[],
+  min: { x: number; y: number; z: number },
+  max: { x: number; y: number; z: number },
+): void {
+  const corners: Array<[number, number, number]> = [
+    [min.x, min.y, min.z],
+    [max.x, min.y, min.z],
+    [max.x, max.y, min.z],
+    [min.x, max.y, min.z],
+    [min.x, min.y, max.z],
+    [max.x, min.y, max.z],
+    [max.x, max.y, max.z],
+    [min.x, max.y, max.z],
+  ];
+  const edges: Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7],
+  ];
+  for (const [a, b] of edges) {
+    positions.push(...corners[a]!, ...corners[b]!);
   }
 }
 
