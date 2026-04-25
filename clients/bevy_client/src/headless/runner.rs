@@ -1,81 +1,35 @@
-//! Headless client entrypoints used by automation and non-visual QA.
+//! Server-attached headless modes: scripted (`run`) and stdio-driven
+//! (`run_stdio`).
 
-use crate::{
-    config::{ClientConfig, SessionCredentials},
-    input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP},
-    net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
-    observe::ClientObserver,
-    skill_targeting::prepare_skill_dispatch,
-    stdio::{
-        ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
-        emit_owned as emit_stdio_owned, snapshot_fields,
-    },
-    voxel::{VoxelWorld, execute_voxel_cli_command, parse_voxel_cli_command},
-    world::remote_actor::RemoteActorIdentity,
+use std::sync::mpsc::TryRecvError;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use bevy::prelude::Vec2;
+
+use crate::config::{ClientConfig, SessionCredentials};
+use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP};
+use crate::net::{NetworkBridge, NetworkCommand, spawn_network_thread};
+use crate::observe::ClientObserver;
+use crate::skill_targeting::prepare_skill_dispatch;
+use crate::stdio::{
+    ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
+    emit_owned as emit_stdio_owned, snapshot_fields,
 };
-use bevy::prelude::{Vec2, Vec3};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::mpsc::TryRecvError,
-    thread,
-    time::{Duration, Instant},
+use crate::voxel::execute_voxel_cli_command;
+
+use super::script::{HeadlessAction, parse_script};
+use super::state::{
+    HeadlessState, apply_event, format_net_vec, format_players, format_vec3, vec3_to_net,
+    voxel_save_dir,
 };
 
-#[derive(Clone, Debug)]
 /// Options controlling scripted headless runs.
+#[derive(Clone, Debug)]
 pub struct HeadlessOptions {
     pub script: String,
     pub wait_for_scene_ms: u64,
     pub drain_after_script_ms: u64,
-}
-
-/// Runs the offline-local voxel runtime without requiring auth or gate server.
-pub fn run_voxel_headless(observer: ClientObserver, script: &str) -> Result<(), String> {
-    let mut world = VoxelWorld::new();
-    world.bootstrap_showcase(2);
-
-    observer.emit("voxel_headless", "start", &[("script", script.to_string())]);
-
-    for segment in script
-        .split(';')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        let command = parse_voxel_cli_command(segment)?
-            .ok_or_else(|| format!("unsupported voxel command: {segment}"))?;
-        let result = execute_voxel_cli_command(&mut world, command, Some(&voxel_save_dir()));
-        emit_stdio_owned(&result.event, result.ok, &result.fields);
-        observer.emit(
-            "voxel_headless",
-            &result.event,
-            &[
-                ("ok", result.ok.to_string()),
-                (
-                    "fields",
-                    result
-                        .fields
-                        .iter()
-                        .map(|(key, value)| format!("{key}={value}"))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                ),
-            ],
-        );
-        if !result.ok {
-            return Err(format!(
-                "voxel command failed: {segment}: {}",
-                result.field("reason").unwrap_or("unknown")
-            ));
-        }
-    }
-
-    observer.emit(
-        "voxel_headless",
-        "completed",
-        &[("solid_cells", world.total_solid_cells().to_string())],
-    );
-    Ok(())
 }
 
 impl Default for HeadlessOptions {
@@ -86,40 +40,6 @@ impl Default for HeadlessOptions {
             drain_after_script_ms: 1_500,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum HeadlessAction {
-    Wait(u64),
-    Move {
-        direction: Vec2,
-        label: String,
-        duration_ms: u64,
-    },
-    Chat(String),
-    Skill(u16),
-    Jump,
-    Snapshot,
-}
-
-#[derive(Debug, Default)]
-struct HeadlessState {
-    status: String,
-    scene_joined: bool,
-    local_cid: i64,
-    local_position: Option<Vec3>,
-    local_hp: u16,
-    local_max_hp: u16,
-    local_alive: bool,
-    remote_players: HashMap<i64, Vec3>,
-    remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
-    selected_target_cid: Option<i64>,
-    selected_target_point: Option<Vec3>,
-    last_local_transport: Option<MessageTransport>,
-    last_remote_transport: Option<MessageTransport>,
-    movement_transport: MessageTransport,
-    fast_lane_status: String,
-    voxel_world: VoxelWorld,
 }
 
 /// Runs the client headlessly with a scripted action list.
@@ -172,7 +92,8 @@ pub fn run(
     Ok(())
 }
 
-/// Runs the headless client while exposing the same attached stdio interface as the GUI mode.
+/// Runs the headless client while exposing the same attached stdio interface
+/// as the GUI mode.
 pub fn run_stdio(
     config: ClientConfig,
     creds: SessionCredentials,
@@ -272,7 +193,7 @@ pub fn run_stdio(
 
                             Some((*cid, *position))
                         })
-                        .collect::<HashMap<_, _>>();
+                        .collect::<std::collections::HashMap<_, _>>();
                     emit_stdio("players", &[("players", format_players(&players))]);
                 }
                 ClientStdioCommand::Npcs => {
@@ -707,276 +628,5 @@ fn drain_events_once(
                 return Err("network event channel disconnected".to_string());
             }
         }
-    }
-}
-
-fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: NetworkEvent) {
-    match event {
-        NetworkEvent::Status(status) => state.status = status,
-        NetworkEvent::EnteredScene { cid, location } => {
-            state.scene_joined = true;
-            state.local_cid = cid;
-            state.local_position = Some(vec3_from_net(location));
-            state.remote_players.clear();
-            state.remote_actor_identity.clear();
-        }
-        NetworkEvent::LocalPosition {
-            cid,
-            location,
-            velocity: _,
-            acceleration: _,
-            transport,
-        } => {
-            state.local_cid = cid;
-            state.local_position = Some(vec3_from_net(location));
-            state.last_local_transport = Some(transport);
-        }
-        NetworkEvent::PlayerMove {
-            transport,
-            snapshot,
-        } => {
-            let cid = snapshot.cid;
-            let location = [
-                snapshot.position.x as f64,
-                snapshot.position.y as f64,
-                snapshot.position.z as f64,
-            ];
-            state.remote_players.insert(cid, vec3_from_net(location));
-            state.last_remote_transport = Some(transport);
-            observer.emit(
-                "headless",
-                "remote_move_seen",
-                &[
-                    ("cid", cid.to_string()),
-                    ("server_tick", snapshot.server_tick.to_string()),
-                    ("transport", transport.label().to_string()),
-                    ("location", format_net_vec(location)),
-                ],
-            );
-        }
-        NetworkEvent::TransportState {
-            movement_transport,
-            fast_lane_status,
-            ..
-        } => {
-            state.movement_transport = movement_transport;
-            state.fast_lane_status = fast_lane_status;
-        }
-        NetworkEvent::Disconnected(reason) => {
-            state.scene_joined = false;
-            state.status = format!("disconnected: {reason}");
-            state.remote_players.clear();
-            state.remote_actor_identity.clear();
-            state.selected_target_cid = None;
-            state.selected_target_point = None;
-        }
-        NetworkEvent::PlayerEnter { cid, location } => {
-            state.remote_players.insert(cid, vec3_from_net(location));
-        }
-        NetworkEvent::ActorIdentity { cid, kind, name } => {
-            state
-                .remote_actor_identity
-                .insert(cid, RemoteActorIdentity { cid, kind, name });
-        }
-        NetworkEvent::PlayerState {
-            cid,
-            hp,
-            max_hp,
-            alive,
-        } => {
-            if cid == state.local_cid {
-                state.local_hp = hp;
-                state.local_max_hp = max_hp;
-                state.local_alive = alive;
-            }
-        }
-        NetworkEvent::CombatHit {
-            source_cid,
-            target_cid,
-            skill_id,
-            damage,
-            hp_after,
-            ..
-        } => {
-            observer.emit(
-                "headless",
-                "combat_hit_seen",
-                &[
-                    ("source_cid", source_cid.to_string()),
-                    ("target_cid", target_cid.to_string()),
-                    ("skill_id", skill_id.to_string()),
-                    ("damage", damage.to_string()),
-                    ("hp_after", hp_after.to_string()),
-                ],
-            );
-        }
-        NetworkEvent::PlayerLeave { cid } => {
-            state.remote_players.remove(&cid);
-            state.remote_actor_identity.remove(&cid);
-            if state.selected_target_cid == Some(cid) {
-                state.selected_target_cid = None;
-            }
-        }
-        NetworkEvent::EffectEvent {
-            source_cid,
-            skill_id,
-            cue_kind,
-            ..
-        } => {
-            observer.emit(
-                "headless",
-                "effect_seen",
-                &[
-                    ("source_cid", source_cid.to_string()),
-                    ("skill_id", skill_id.to_string()),
-                    ("cue_kind", format!("{cue_kind:?}")),
-                ],
-            );
-        }
-        NetworkEvent::Log(line) => {
-            observer.emit("headless", "network_log", &[("line", line)]);
-        }
-        NetworkEvent::ReconcileStats {
-            total_corrections,
-            total_replays,
-            total_hard_snaps,
-            total_window_trims,
-            last_replayed_frames,
-            last_pending_inputs,
-            last_correction_distance,
-        } => {
-            emit_stdio(
-                "reconcile_stats",
-                &[
-                    ("total_corrections", total_corrections.to_string()),
-                    ("total_replays", total_replays.to_string()),
-                    ("total_hard_snaps", total_hard_snaps.to_string()),
-                    ("total_window_trims", total_window_trims.to_string()),
-                    ("last_replayed_frames", last_replayed_frames.to_string()),
-                    ("last_pending_inputs", last_pending_inputs.to_string()),
-                    (
-                        "last_correction_distance",
-                        format!("{last_correction_distance:.3}"),
-                    ),
-                ],
-            );
-        }
-        _ => {}
-    }
-}
-
-fn parse_script(script: &str) -> Result<Vec<HeadlessAction>, String> {
-    script
-        .split(',')
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .map(parse_action)
-        .collect()
-}
-
-fn parse_action(segment: &str) -> Result<HeadlessAction, String> {
-    let parts = segment.splitn(3, ':').collect::<Vec<_>>();
-
-    match parts.as_slice() {
-        ["wait", duration] => parse_u64(duration).map(HeadlessAction::Wait),
-        ["move", direction, duration] => Ok(HeadlessAction::Move {
-            direction: parse_direction(direction)?,
-            label: (*direction).to_string(),
-            duration_ms: parse_u64(duration)?,
-        }),
-        ["chat", text] => Ok(HeadlessAction::Chat((*text).to_string())),
-        ["skill", skill_id] => parse_u16(skill_id).map(HeadlessAction::Skill),
-        ["jump"] => Ok(HeadlessAction::Jump),
-        ["snapshot"] => Ok(HeadlessAction::Snapshot),
-        _ => Err(format!("unsupported headless action segment: {segment}")),
-    }
-}
-
-fn parse_direction(value: &str) -> Result<Vec2, String> {
-    match value.to_ascii_lowercase().as_str() {
-        "w" | "up" => Ok(Vec2::new(0.0, 1.0)),
-        "s" | "down" => Ok(Vec2::new(0.0, -1.0)),
-        "a" | "left" => Ok(Vec2::new(-1.0, 0.0)),
-        "d" | "right" => Ok(Vec2::new(1.0, 0.0)),
-        other => Err(format!("unsupported move direction: {other}")),
-    }
-}
-
-fn parse_u64(value: &str) -> Result<u64, String> {
-    value
-        .parse::<u64>()
-        .map_err(|error| format!("invalid integer {value:?}: {error}"))
-}
-
-fn parse_u16(value: &str) -> Result<u16, String> {
-    value
-        .parse::<u16>()
-        .map_err(|error| format!("invalid skill id {value:?}: {error}"))
-}
-
-fn vec3_from_net(value: [f64; 3]) -> Vec3 {
-    Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
-}
-
-fn vec3_to_net(value: Vec3) -> [f64; 3] {
-    [value.x as f64, value.y as f64, value.z as f64]
-}
-
-fn format_vec3(value: Vec3) -> String {
-    format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z)
-}
-
-fn format_net_vec(value: [f64; 3]) -> String {
-    format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
-}
-
-fn format_players(players: &HashMap<i64, Vec3>) -> String {
-    let mut entries = players
-        .iter()
-        .map(|(cid, position)| {
-            format!(
-                "{cid}:{:.1},{:.1},{:.1}",
-                position.x, position.y, position.z
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    format!("[{}]", entries.join(";"))
-}
-
-fn voxel_save_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join(".demo")
-        .join("observe")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_supported_headless_actions() {
-        assert_eq!(
-            parse_script("wait:500,move:w:600,chat:hello,skill:1,snapshot").unwrap(),
-            vec![
-                HeadlessAction::Wait(500),
-                HeadlessAction::Move {
-                    direction: Vec2::new(0.0, 1.0),
-                    label: "w".to_string(),
-                    duration_ms: 600,
-                },
-                HeadlessAction::Chat("hello".to_string()),
-                HeadlessAction::Skill(1),
-                HeadlessAction::Snapshot,
-            ]
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_direction() {
-        let error = parse_script("move:q:100").unwrap_err();
-        assert!(error.contains("unsupported move direction"));
     }
 }

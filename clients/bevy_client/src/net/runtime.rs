@@ -1,274 +1,43 @@
-//! Network runtime thread and client-side protocol state machine.
+//! Network thread state machine: connection phase, fast-lane bootstrap, and
+//! all command/server-message handling.
+//!
+//! `ClientRuntime` is the testable core of the network layer. It produces
+//! [`RuntimeOutcome`]s that the I/O glue in [`super::thread`] then translates
+//! into TCP / UDP socket activity. Keeping the runtime free of socket
+//! ownership lets the unit tests below drive the same logic without sockets.
 
-use crate::{
-    config::{ClientConfig, SessionCredentials},
-    observe::ClientObserver,
-    protocol::{
-        ActorKind, ClientMessage, NetVec3, ServerMessage, decode_server_payload,
-        encode_client_frame, encode_client_payload, take_frame,
-    },
-    protocol_v2::{WireMoveInputFrame, movement_ack_from_server, remote_move_snapshot_from_server},
-    world::local_player::LocalPredictionRuntime,
-    world::remote_actor::RemoteActorKind,
-};
-use bevy::prelude::Resource;
 use std::{
     collections::HashMap,
-    io::{self, Read, Write},
-    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
-    thread,
+    net::SocketAddr,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-/// Transport used for a particular message family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MessageTransport {
-    #[default]
-    Tcp,
-    Udp,
-}
+use crate::config::SessionCredentials;
+use crate::protocol::{ActorKind, ClientMessage, ServerMessage};
+use crate::protocol_v2::{
+    WireMoveInputFrame, movement_ack_from_server, remote_move_snapshot_from_server,
+};
+use crate::world::local_player::LocalPredictionRuntime;
+use crate::world::remote_actor::RemoteActorKind;
 
-impl MessageTransport {
-    /// Human-readable label used in logs and stdio output.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Tcp => "TCP",
-            Self::Udp => "UDP",
-        }
-    }
-}
+use super::events::{MessageTransport, NetworkCommand, NetworkEvent};
+use super::fastlane::{
+    FAST_LANE_REBOOTSTRAP_BACKOFF_MS, FAST_LANE_REBOOTSTRAP_COOLDOWN_MS, FastLaneState,
+    MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS,
+};
 
-#[derive(Debug, Clone)]
-/// Commands sent from the Bevy app/headless shell into the network thread.
-pub enum NetworkCommand {
-    MoveInputSample {
-        input_dir: [f32; 2],
-        dt_ms: u16,
-        speed_scale: f32,
-        movement_flags: u16,
-    },
-    Chat(String),
-    CastSkill(u16),
-    CastSkillTargeted {
-        skill_id: u16,
-        target_cid: Option<i64>,
-        target_position: Option<NetVec3>,
-    },
-    RequestReconcileStats,
-    Shutdown,
-}
-
-#[derive(Debug, Clone)]
-/// Events emitted by the network thread back to the game/app layer.
-pub enum NetworkEvent {
-    Status(String),
-    EnteredScene {
-        cid: i64,
-        location: NetVec3,
-    },
-    LocalPosition {
-        cid: i64,
-        location: NetVec3,
-        velocity: NetVec3,
-        acceleration: NetVec3,
-        transport: MessageTransport,
-    },
-    PlayerEnter {
-        cid: i64,
-        location: NetVec3,
-    },
-    PlayerMove {
-        snapshot: crate::sim::types::RemoteMoveSnapshot,
-        transport: MessageTransport,
-    },
-    PlayerLeave {
-        cid: i64,
-    },
-    ActorIdentity {
-        cid: i64,
-        kind: RemoteActorKind,
-        name: String,
-    },
-    ChatMessage {
-        cid: i64,
-        username: String,
-        text: String,
-    },
-    SkillEvent {
-        cid: i64,
-        skill_id: u16,
-        location: NetVec3,
-    },
-    PlayerState {
-        cid: i64,
-        hp: u16,
-        max_hp: u16,
-        alive: bool,
-    },
-    CombatHit {
-        source_cid: i64,
-        target_cid: i64,
-        skill_id: u16,
-        damage: u16,
-        hp_after: u16,
-        location: NetVec3,
-    },
-    EffectEvent {
-        source_cid: i64,
-        skill_id: u16,
-        cue_kind: crate::protocol::EffectCueKind,
-        target_cid: Option<i64>,
-        origin: NetVec3,
-        target_position: NetVec3,
-        radius: f64,
-        duration_ms: u32,
-    },
-    TimeSync {
-        rtt_ms: f64,
-        offset_ms: f64,
-    },
-    Heartbeat {
-        server_ts: u64,
-    },
-    TransportState {
-        control_transport: MessageTransport,
-        movement_transport: MessageTransport,
-        fast_lane_status: String,
-        udp_endpoint: Option<String>,
-    },
-    ReconcileStats {
-        total_corrections: u32,
-        total_replays: u32,
-        total_hard_snaps: u32,
-        total_window_trims: u32,
-        last_replayed_frames: usize,
-        last_pending_inputs: usize,
-        last_correction_distance: f32,
-    },
-    Log(String),
-    Disconnected(String),
-}
-
-#[derive(Clone, Resource)]
-/// App-side handle for sending commands to and receiving events from the network thread.
-pub struct NetworkBridge {
-    pub tx: Sender<NetworkCommand>,
-    pub rx: Arc<Mutex<Receiver<NetworkEvent>>>,
-}
-
-impl NetworkBridge {
-    /// Sends one command to the network thread, ignoring disconnects.
-    pub fn send(&self, command: NetworkCommand) {
-        let _ = self.tx.send(command);
-    }
-}
+const MAX_PENDING_TIME_SYNC_REQUESTS: usize = 32;
+const TIME_SYNC_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectionPhase {
+pub(super) enum ConnectionPhase {
     AwaitingAuth,
     AwaitingEnterScene,
     InScene,
 }
 
-#[derive(Debug, Clone, Default)]
-struct FastLaneState {
-    bootstrap_request_id: Option<u64>,
-    attach_request_id: Option<u64>,
-    udp_endpoint: Option<SocketAddr>,
-    ticket: Option<String>,
-    attached: bool,
-    last_error: Option<String>,
-    rebootstrap_attempts: u8,
-    retry_due_at: Option<Instant>,
-    cooldown_until: Option<Instant>,
-}
-
-impl FastLaneState {
-    fn movement_transport(&self) -> MessageTransport {
-        if self.attached {
-            MessageTransport::Udp
-        } else {
-            MessageTransport::Tcp
-        }
-    }
-
-    fn status_text(&self) -> String {
-        if self.attached {
-            match self.udp_endpoint {
-                Some(endpoint) => format!("udp attached ({endpoint})"),
-                None => "udp attached".to_string(),
-            }
-        } else if let Some(endpoint) = self.udp_endpoint {
-            format!("attaching udp ({endpoint})")
-        } else if self.bootstrap_request_id.is_some() {
-            "requesting udp ticket".to_string()
-        } else if self.cooldown_until.is_some() {
-            match &self.last_error {
-                Some(error) => format!("tcp fallback (udp cooldown: {error})"),
-                None => "tcp fallback (udp cooldown)".to_string(),
-            }
-        } else if self.retry_due_at.is_some() {
-            match &self.last_error {
-                Some(error) => format!("tcp fallback (udp retry scheduled: {error})"),
-                None => "tcp fallback (udp retry scheduled)".to_string(),
-            }
-        } else if let Some(error) = &self.last_error {
-            format!("tcp fallback ({error})")
-        } else {
-            "tcp fallback".to_string()
-        }
-    }
-
-    fn reset_for_bootstrap(&mut self, request_id: u64) {
-        self.bootstrap_request_id = Some(request_id);
-        self.attach_request_id = None;
-        self.udp_endpoint = None;
-        self.ticket = None;
-        self.attached = false;
-        self.last_error = None;
-        self.retry_due_at = None;
-        self.cooldown_until = None;
-    }
-
-    fn prepare_attach(&mut self, request_id: u64, udp_endpoint: SocketAddr, ticket: String) {
-        self.bootstrap_request_id = None;
-        self.attach_request_id = Some(request_id);
-        self.udp_endpoint = Some(udp_endpoint);
-        self.ticket = Some(ticket);
-        self.attached = false;
-        self.last_error = None;
-        self.retry_due_at = None;
-        self.cooldown_until = None;
-    }
-
-    fn mark_attached(&mut self) {
-        self.attach_request_id = None;
-        self.ticket = None;
-        self.attached = true;
-        self.last_error = None;
-        self.rebootstrap_attempts = 0;
-        self.retry_due_at = None;
-        self.cooldown_until = None;
-    }
-
-    fn mark_failed(&mut self, reason: String) {
-        self.bootstrap_request_id = None;
-        self.attach_request_id = None;
-        self.ticket = None;
-        self.udp_endpoint = None;
-        self.attached = false;
-        self.last_error = Some(reason);
-        self.retry_due_at = None;
-        self.cooldown_until = None;
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
-enum OutboundAction {
+pub(super) enum OutboundAction {
     Tcp(ClientMessage),
     Udp(ClientMessage),
     OpenUdpAndAttach {
@@ -279,49 +48,43 @@ enum OutboundAction {
 }
 
 #[derive(Debug, Default, Clone)]
-struct RuntimeOutcome {
-    outbounds: Vec<OutboundAction>,
-    events: Vec<NetworkEvent>,
+pub(super) struct RuntimeOutcome {
+    pub outbounds: Vec<OutboundAction>,
+    pub events: Vec<NetworkEvent>,
 }
 
 impl RuntimeOutcome {
-    fn with_event(mut self, event: NetworkEvent) -> Self {
+    pub(super) fn with_event(mut self, event: NetworkEvent) -> Self {
         self.events.push(event);
         self
     }
 
-    fn push_outbound(&mut self, outbound: OutboundAction) {
+    pub(super) fn push_outbound(&mut self, outbound: OutboundAction) {
         self.outbounds.push(outbound);
     }
 
-    fn push_event(&mut self, event: NetworkEvent) {
+    pub(super) fn push_event(&mut self, event: NetworkEvent) {
         self.events.push(event);
     }
 }
 
 #[derive(Debug)]
-struct ClientRuntime {
-    gate_tcp_addr: SocketAddr,
-    phase: ConnectionPhase,
-    next_request_id: u64,
-    auth_request_id: u64,
-    enter_scene_request_id: Option<u64>,
-    pending_time_sync: HashMap<u64, u64>,
-    last_applied_movement_ack: u32,
-    last_applied_auth_tick: u32,
-    last_remote_move_ticks: HashMap<i64, u32>,
-    fast_lane: FastLaneState,
-    local_prediction: LocalPredictionRuntime,
+pub(super) struct ClientRuntime {
+    pub(super) gate_tcp_addr: SocketAddr,
+    pub(super) phase: ConnectionPhase,
+    pub(super) next_request_id: u64,
+    pub(super) auth_request_id: u64,
+    pub(super) enter_scene_request_id: Option<u64>,
+    pub(super) pending_time_sync: HashMap<u64, u64>,
+    pub(super) last_applied_movement_ack: u32,
+    pub(super) last_applied_auth_tick: u32,
+    pub(super) last_remote_move_ticks: HashMap<i64, u32>,
+    pub(super) fast_lane: FastLaneState,
+    pub(super) local_prediction: LocalPredictionRuntime,
 }
 
-const MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS: u8 = 3;
-const FAST_LANE_REBOOTSTRAP_BACKOFF_MS: [u64; 3] = [250, 1_000, 3_000];
-const FAST_LANE_REBOOTSTRAP_COOLDOWN_MS: u64 = 15_000;
-const MAX_PENDING_TIME_SYNC_REQUESTS: usize = 32;
-const TIME_SYNC_REQUEST_TIMEOUT_MS: u64 = 30_000;
-
 impl ClientRuntime {
-    fn new(gate_tcp_addr: SocketAddr) -> Self {
+    pub(super) fn new(gate_tcp_addr: SocketAddr) -> Self {
         Self {
             gate_tcp_addr,
             phase: ConnectionPhase::AwaitingAuth,
@@ -337,7 +100,7 @@ impl ClientRuntime {
         }
     }
 
-    fn transport_event(&self) -> NetworkEvent {
+    pub(super) fn transport_event(&self) -> NetworkEvent {
         NetworkEvent::TransportState {
             control_transport: MessageTransport::Tcp,
             movement_transport: self.fast_lane.movement_transport(),
@@ -355,7 +118,7 @@ impl ClientRuntime {
         request_id
     }
 
-    fn initial_auth_message(&self, creds: &SessionCredentials) -> ClientMessage {
+    pub(super) fn initial_auth_message(&self, creds: &SessionCredentials) -> ClientMessage {
         ClientMessage::AuthRequest {
             request_id: self.auth_request_id,
             username: creds.username.clone(),
@@ -363,7 +126,7 @@ impl ClientRuntime {
         }
     }
 
-    fn handle_command(
+    pub(super) fn handle_command(
         &mut self,
         creds: &SessionCredentials,
         command: NetworkCommand,
@@ -512,13 +275,13 @@ impl ClientRuntime {
         outcome
     }
 
-    fn heartbeat_message(&self) -> Option<ClientMessage> {
+    pub(super) fn heartbeat_message(&self) -> Option<ClientMessage> {
         (self.phase != ConnectionPhase::AwaitingAuth).then(|| ClientMessage::Heartbeat {
             timestamp: now_millis(),
         })
     }
 
-    fn time_sync_message(&mut self) -> Option<ClientMessage> {
+    pub(super) fn time_sync_message(&mut self) -> Option<ClientMessage> {
         if self.phase == ConnectionPhase::AwaitingAuth {
             return None;
         }
@@ -554,7 +317,7 @@ impl ClientRuntime {
         }
     }
 
-    fn mark_fast_lane_failed(
+    pub(super) fn mark_fast_lane_failed(
         &mut self,
         reason: impl Into<String>,
         allow_rebootstrap: bool,
@@ -562,7 +325,7 @@ impl ClientRuntime {
         self.mark_fast_lane_failed_at(Instant::now(), reason, allow_rebootstrap)
     }
 
-    fn mark_fast_lane_failed_at(
+    pub(super) fn mark_fast_lane_failed_at(
         &mut self,
         now: Instant,
         reason: impl Into<String>,
@@ -613,7 +376,7 @@ impl ClientRuntime {
         outcome
     }
 
-    fn poll_fast_lane_retry(&mut self, now: Instant) -> RuntimeOutcome {
+    pub(super) fn poll_fast_lane_retry(&mut self, now: Instant) -> RuntimeOutcome {
         let mut outcome = RuntimeOutcome::default();
 
         if self.phase != ConnectionPhase::InScene
@@ -657,7 +420,7 @@ impl ClientRuntime {
         outcome
     }
 
-    fn handle_server_message(
+    pub(super) fn handle_server_message(
         &mut self,
         creds: &SessionCredentials,
         transport: MessageTransport,
@@ -1045,8 +808,6 @@ impl ClientRuntime {
                 let server_mid = (server_recv_ts as f64 + server_send_ts as f64) / 2.0;
                 let client_mid = (client_send + now) / 2.0;
                 let rtt_ms = now - client_send;
-                // Feed the jitter estimator so the next reconcile uses the
-                // adaptive soft-position threshold (C.1).
                 self.local_prediction.observe_rtt(rtt_ms as f32);
                 outcome.push_event(NetworkEvent::TimeSync {
                     rtt_ms,
@@ -1064,777 +825,6 @@ impl ClientRuntime {
     }
 }
 
-/// Spawns the background network thread and returns the app-facing bridge.
-pub fn spawn_network_thread(
-    config: ClientConfig,
-    creds: SessionCredentials,
-    observer: ClientObserver,
-) -> NetworkBridge {
-    let (command_tx, command_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
-
-    thread::spawn(move || network_loop(config, creds, observer, command_rx, event_tx));
-
-    NetworkBridge {
-        tx: command_tx,
-        rx: Arc::new(Mutex::new(event_rx)),
-    }
-}
-
-fn network_loop(
-    config: ClientConfig,
-    creds: SessionCredentials,
-    observer: ClientObserver,
-    command_rx: Receiver<NetworkCommand>,
-    event_tx: Sender<NetworkEvent>,
-) {
-    if creds.token.trim().is_empty() {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Disconnected(
-                "missing session token: auto_login did not return a token".to_string(),
-            ),
-        );
-        return;
-    }
-
-    let gate_tcp_addr = match resolve_gate_addr(&config.gate_addr) {
-        Ok(addr) => addr,
-        Err(err) => {
-            emit_event(
-                &observer,
-                &event_tx,
-                NetworkEvent::Disconnected(format!(
-                    "failed to resolve gate address {}: {err}",
-                    config.gate_addr
-                )),
-            );
-            return;
-        }
-    };
-
-    emit_event(
-        &observer,
-        &event_tx,
-        NetworkEvent::Status(format!("connecting to {gate_tcp_addr}")),
-    );
-
-    let mut stream = match TcpStream::connect(gate_tcp_addr) {
-        Ok(stream) => stream,
-        Err(err) => {
-            emit_event(
-                &observer,
-                &event_tx,
-                NetworkEvent::Disconnected(format!("connect failed: {err}")),
-            );
-            return;
-        }
-    };
-
-    if let Err(err) = stream.set_nonblocking(true) {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Disconnected(format!("nonblocking setup failed: {err}")),
-        );
-        return;
-    }
-
-    if let Err(err) = stream.set_nodelay(true) {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Log(format!("warning: failed to enable TCP_NODELAY: {err}")),
-        );
-    }
-
-    let mut runtime = ClientRuntime::new(gate_tcp_addr);
-    emit_event(&observer, &event_tx, runtime.transport_event());
-
-    let initial_auth = runtime.initial_auth_message(&creds);
-    observe_outbound_message(&observer, "tcp", &initial_auth);
-
-    if let Err(err) = send_tcp_message(&mut stream, &initial_auth) {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Disconnected(format!("auth send failed: {err}")),
-        );
-        return;
-    }
-
-    let mut frame_buffer = Vec::new();
-    let mut read_buffer = [0_u8; 4096];
-    let mut udp_socket: Option<UdpSocket> = None;
-    let mut udp_read_buffer = [0_u8; 4096];
-    let mut last_heartbeat = Instant::now();
-    let mut last_time_sync = Instant::now();
-
-    loop {
-        while let Ok(command) = command_rx.try_recv() {
-            if matches!(command, NetworkCommand::Shutdown) {
-                return;
-            }
-
-            let outcome = runtime.handle_command(&creds, command);
-            if let Err(reason) = apply_runtime_outcome(
-                &mut runtime,
-                &mut stream,
-                &mut udp_socket,
-                &event_tx,
-                &observer,
-                outcome,
-            ) {
-                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-                return;
-            }
-        }
-
-        if last_heartbeat.elapsed() >= Duration::from_millis(config.heartbeat_interval_ms) {
-            if let Some(message) = runtime.heartbeat_message() {
-                observe_outbound_message(&observer, "tcp", &message);
-                if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected(format!("heartbeat send failed: {err}")),
-                    );
-                    return;
-                }
-            }
-            last_heartbeat = Instant::now();
-        }
-
-        if last_time_sync.elapsed() >= Duration::from_millis(config.time_sync_interval_ms) {
-            if let Some(message) = runtime.time_sync_message() {
-                observe_outbound_message(&observer, "tcp", &message);
-                if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected(format!("time-sync send failed: {err}")),
-                    );
-                    return;
-                }
-            }
-
-            last_time_sync = Instant::now();
-        }
-
-        let retry_outcome = runtime.poll_fast_lane_retry(Instant::now());
-        if (!retry_outcome.outbounds.is_empty() || !retry_outcome.events.is_empty())
-            && let Err(reason) = apply_runtime_outcome(
-                &mut runtime,
-                &mut stream,
-                &mut udp_socket,
-                &event_tx,
-                &observer,
-                retry_outcome,
-            )
-        {
-            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-            return;
-        }
-
-        match stream.read(&mut read_buffer) {
-            Ok(0) => {
-                emit_event(
-                    &observer,
-                    &event_tx,
-                    NetworkEvent::Disconnected("server closed the connection".to_string()),
-                );
-                return;
-            }
-            Ok(n) => {
-                frame_buffer.extend_from_slice(&read_buffer[..n]);
-                while let Some(frame) = take_frame(&mut frame_buffer) {
-                    match decode_server_payload(&frame) {
-                        Ok(message) => match runtime.handle_server_message(
-                            &creds,
-                            MessageTransport::Tcp,
-                            message,
-                        ) {
-                            Ok(outcome) => {
-                                if let Err(reason) = apply_runtime_outcome(
-                                    &mut runtime,
-                                    &mut stream,
-                                    &mut udp_socket,
-                                    &event_tx,
-                                    &observer,
-                                    outcome,
-                                ) {
-                                    emit_event(
-                                        &observer,
-                                        &event_tx,
-                                        NetworkEvent::Disconnected(reason),
-                                    );
-                                    return;
-                                }
-                            }
-                            Err(reason) => {
-                                emit_event(
-                                    &observer,
-                                    &event_tx,
-                                    NetworkEvent::Disconnected(reason),
-                                );
-                                return;
-                            }
-                        },
-                        Err(err) => {
-                            emit_event(
-                                &observer,
-                                &event_tx,
-                                NetworkEvent::Log(format!("decode error: {err}")),
-                            );
-                        }
-                    }
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => {
-                emit_event(
-                    &observer,
-                    &event_tx,
-                    NetworkEvent::Disconnected(format!("socket read failed: {err}")),
-                );
-                return;
-            }
-        }
-
-        if udp_socket.is_some() {
-            while let Some(socket) = udp_socket.as_ref() {
-                let recv_result = socket.recv(&mut udp_read_buffer);
-
-                match recv_result {
-                    Ok(n) => match decode_server_payload(&udp_read_buffer[..n]) {
-                        Ok(message) => match runtime.handle_server_message(
-                            &creds,
-                            MessageTransport::Udp,
-                            message,
-                        ) {
-                            Ok(outcome) => {
-                                if let Err(reason) = apply_runtime_outcome(
-                                    &mut runtime,
-                                    &mut stream,
-                                    &mut udp_socket,
-                                    &event_tx,
-                                    &observer,
-                                    outcome,
-                                ) {
-                                    emit_event(
-                                        &observer,
-                                        &event_tx,
-                                        NetworkEvent::Disconnected(reason),
-                                    );
-                                    return;
-                                }
-                            }
-                            Err(reason) => {
-                                emit_event(
-                                    &observer,
-                                    &event_tx,
-                                    NetworkEvent::Disconnected(reason),
-                                );
-                                return;
-                            }
-                        },
-                        Err(err) => {
-                            emit_event(
-                                &observer,
-                                &event_tx,
-                                NetworkEvent::Log(format!("udp decode error: {err}")),
-                            );
-                        }
-                    },
-                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(err) => {
-                        udp_socket = None;
-                        let outcome = runtime
-                            .mark_fast_lane_failed(format!("udp socket read failed: {err}"), true);
-                        let _ = apply_runtime_outcome(
-                            &mut runtime,
-                            &mut stream,
-                            &mut udp_socket,
-                            &event_tx,
-                            &observer,
-                            outcome,
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-
-        thread::sleep(Duration::from_millis(16));
-    }
-}
-
-fn apply_runtime_outcome(
-    runtime: &mut ClientRuntime,
-    stream: &mut TcpStream,
-    udp_socket: &mut Option<UdpSocket>,
-    event_tx: &Sender<NetworkEvent>,
-    observer: &ClientObserver,
-    outcome: RuntimeOutcome,
-) -> Result<(), String> {
-    for outbound in outcome.outbounds {
-        match outbound {
-            OutboundAction::Tcp(message) => {
-                observe_outbound_message(observer, "tcp", &message);
-                send_tcp_message(stream, &message)
-                    .map_err(|err| format!("tcp send failed: {err}"))?
-            }
-            OutboundAction::Udp(message) => {
-                if let Some(socket) = udp_socket.as_ref() {
-                    observe_outbound_message(observer, "udp", &message);
-                    if let Err(err) = send_udp_message(socket, &message) {
-                        *udp_socket = None;
-                        let fallback = runtime.mark_fast_lane_failed(
-                            format!("udp send failed, falling back to TCP: {err}"),
-                            true,
-                        );
-                        apply_runtime_outcome(
-                            runtime, stream, udp_socket, event_tx, observer, fallback,
-                        )?;
-
-                        if let ClientMessage::MovementInput { .. } = &message {
-                            observe_outbound_message(observer, "tcp-fallback", &message);
-                            send_tcp_message(stream, &message).map_err(|tcp_err| {
-                                format!("tcp fallback send failed: {tcp_err}")
-                            })?;
-                        }
-                    }
-                } else if let ClientMessage::MovementInput { .. } = &message {
-                    observe_outbound_message(observer, "tcp-fallback", &message);
-                    send_tcp_message(stream, &message)
-                        .map_err(|err| format!("tcp fallback send failed: {err}"))?;
-                } else {
-                    let fallback = runtime.mark_fast_lane_failed(
-                        "udp socket missing during non-movement send".to_string(),
-                        true,
-                    );
-                    apply_runtime_outcome(
-                        runtime, stream, udp_socket, event_tx, observer, fallback,
-                    )?;
-                }
-            }
-            OutboundAction::OpenUdpAndAttach {
-                udp_endpoint,
-                request_id,
-                ticket,
-            } => match open_udp_socket(udp_endpoint) {
-                Ok(socket) => {
-                    observer.emit(
-                        "network",
-                        "udp_attach_send",
-                        &[
-                            ("udp_endpoint", udp_endpoint.to_string()),
-                            ("request_id", request_id.to_string()),
-                        ],
-                    );
-                    if let Err(err) = send_udp_message(
-                        &socket,
-                        &ClientMessage::FastLaneAttach { request_id, ticket },
-                    ) {
-                        *udp_socket = None;
-                        let fallback = runtime
-                            .mark_fast_lane_failed(format!("udp attach send failed: {err}"), true);
-                        apply_runtime_outcome(
-                            runtime, stream, udp_socket, event_tx, observer, fallback,
-                        )?;
-                    } else {
-                        *udp_socket = Some(socket);
-                    }
-                }
-                Err(err) => {
-                    *udp_socket = None;
-                    let fallback = runtime
-                        .mark_fast_lane_failed(format!("udp open/connect failed: {err}"), true);
-                    apply_runtime_outcome(
-                        runtime, stream, udp_socket, event_tx, observer, fallback,
-                    )?;
-                }
-            },
-        }
-    }
-
-    for event in outcome.events {
-        emit_event(observer, event_tx, event);
-    }
-
-    Ok(())
-}
-
-fn emit_event(observer: &ClientObserver, event_tx: &Sender<NetworkEvent>, event: NetworkEvent) {
-    observe_network_event(observer, &event);
-    let _ = event_tx.send(event);
-}
-
-fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
-    if !observer.enabled() {
-        return;
-    }
-
-    match event {
-        NetworkEvent::Status(status) => {
-            observer.emit("network", "status", &[("message", status.clone())]);
-        }
-        NetworkEvent::EnteredScene { cid, location } => {
-            observer.emit(
-                "network",
-                "entered_scene",
-                &[("cid", cid.to_string()), ("location", format_vec(location))],
-            );
-        }
-        NetworkEvent::LocalPosition {
-            cid,
-            location,
-            velocity,
-            acceleration,
-            transport,
-        } => {
-            observer.emit(
-                "network",
-                "movement_ack",
-                &[
-                    ("cid", cid.to_string()),
-                    ("transport", transport.label().to_string()),
-                    ("location", format_vec(location)),
-                    ("velocity", format_vec(velocity)),
-                    ("acceleration", format_vec(acceleration)),
-                ],
-            );
-        }
-        NetworkEvent::PlayerEnter { cid, location } => {
-            observer.emit(
-                "network",
-                "player_enter",
-                &[("cid", cid.to_string()), ("location", format_vec(location))],
-            );
-        }
-        NetworkEvent::PlayerMove {
-            snapshot,
-            transport,
-        } => {
-            observer.emit(
-                "network",
-                "player_move",
-                &[
-                    ("cid", snapshot.cid.to_string()),
-                    ("server_tick", snapshot.server_tick.to_string()),
-                    ("transport", transport.label().to_string()),
-                    (
-                        "location",
-                        format_vec(&[
-                            snapshot.position.x as f64,
-                            snapshot.position.y as f64,
-                            snapshot.position.z as f64,
-                        ]),
-                    ),
-                ],
-            );
-        }
-        NetworkEvent::PlayerLeave { cid } => {
-            observer.emit("network", "player_leave", &[("cid", cid.to_string())]);
-        }
-        NetworkEvent::ActorIdentity { cid, kind, name } => {
-            observer.emit(
-                "network",
-                "actor_identity",
-                &[
-                    ("cid", cid.to_string()),
-                    ("kind", format!("{kind:?}")),
-                    ("name", name.clone()),
-                ],
-            );
-        }
-        NetworkEvent::ChatMessage {
-            cid,
-            username,
-            text,
-        } => {
-            observer.emit(
-                "network",
-                "chat_message",
-                &[
-                    ("cid", cid.to_string()),
-                    ("username", username.clone()),
-                    ("text", text.clone()),
-                ],
-            );
-        }
-        NetworkEvent::SkillEvent {
-            cid,
-            skill_id,
-            location,
-        } => {
-            observer.emit(
-                "network",
-                "skill_event",
-                &[
-                    ("cid", cid.to_string()),
-                    ("skill_id", skill_id.to_string()),
-                    ("location", format_vec(location)),
-                ],
-            );
-        }
-        NetworkEvent::PlayerState {
-            cid,
-            hp,
-            max_hp,
-            alive,
-        } => {
-            observer.emit(
-                "network",
-                "player_state",
-                &[
-                    ("cid", cid.to_string()),
-                    ("hp", hp.to_string()),
-                    ("max_hp", max_hp.to_string()),
-                    ("alive", alive.to_string()),
-                ],
-            );
-        }
-        NetworkEvent::CombatHit {
-            source_cid,
-            target_cid,
-            skill_id,
-            damage,
-            hp_after,
-            location,
-        } => {
-            observer.emit(
-                "network",
-                "combat_hit",
-                &[
-                    ("source_cid", source_cid.to_string()),
-                    ("target_cid", target_cid.to_string()),
-                    ("skill_id", skill_id.to_string()),
-                    ("damage", damage.to_string()),
-                    ("hp_after", hp_after.to_string()),
-                    ("location", format_vec(location)),
-                ],
-            );
-        }
-        NetworkEvent::EffectEvent {
-            source_cid,
-            skill_id,
-            cue_kind,
-            target_cid,
-            origin,
-            target_position,
-            radius,
-            duration_ms,
-        } => {
-            observer.emit(
-                "network",
-                "effect_event",
-                &[
-                    ("source_cid", source_cid.to_string()),
-                    ("skill_id", skill_id.to_string()),
-                    ("cue_kind", format!("{cue_kind:?}")),
-                    (
-                        "target_cid",
-                        target_cid
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "n/a".to_string()),
-                    ),
-                    ("origin", format_vec(origin)),
-                    ("target_position", format_vec(target_position)),
-                    ("radius", format!("{radius:.1}")),
-                    ("duration_ms", duration_ms.to_string()),
-                ],
-            );
-        }
-        NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
-            observer.emit(
-                "network",
-                "time_sync",
-                &[
-                    ("rtt_ms", format!("{rtt_ms:.1}")),
-                    ("offset_ms", format!("{offset_ms:.1}")),
-                ],
-            );
-        }
-        NetworkEvent::Heartbeat { server_ts } => {
-            observer.emit(
-                "network",
-                "heartbeat_reply",
-                &[("server_ts", server_ts.to_string())],
-            );
-        }
-        NetworkEvent::TransportState {
-            control_transport,
-            movement_transport,
-            fast_lane_status,
-            udp_endpoint,
-        } => {
-            observer.emit(
-                "network",
-                "transport_state",
-                &[
-                    ("control_transport", control_transport.label().to_string()),
-                    ("movement_transport", movement_transport.label().to_string()),
-                    ("fast_lane_status", fast_lane_status.clone()),
-                    (
-                        "udp_endpoint",
-                        udp_endpoint.clone().unwrap_or_else(|| "n/a".to_string()),
-                    ),
-                ],
-            );
-        }
-        NetworkEvent::ReconcileStats {
-            total_corrections,
-            total_replays,
-            total_hard_snaps,
-            total_window_trims,
-            last_replayed_frames,
-            last_pending_inputs,
-            last_correction_distance,
-        } => {
-            observer.emit(
-                "network",
-                "reconcile_stats",
-                &[
-                    ("total_corrections", total_corrections.to_string()),
-                    ("total_replays", total_replays.to_string()),
-                    ("total_hard_snaps", total_hard_snaps.to_string()),
-                    ("total_window_trims", total_window_trims.to_string()),
-                    ("last_replayed_frames", last_replayed_frames.to_string()),
-                    ("last_pending_inputs", last_pending_inputs.to_string()),
-                    (
-                        "last_correction_distance",
-                        format!("{last_correction_distance:.3}"),
-                    ),
-                ],
-            );
-        }
-        NetworkEvent::Log(line) => observer.emit("network", "log", &[("message", line.clone())]),
-        NetworkEvent::Disconnected(reason) => {
-            observer.emit("network", "disconnected", &[("reason", reason.clone())]);
-        }
-    }
-}
-
-fn observe_outbound_message(observer: &ClientObserver, transport: &str, message: &ClientMessage) {
-    if !observer.enabled() {
-        return;
-    }
-
-    match message {
-        ClientMessage::AuthRequest {
-            request_id,
-            username,
-            ..
-        } => observer.emit(
-            "network",
-            "send_auth_request",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("username", username.clone()),
-            ],
-        ),
-        ClientMessage::FastLaneRequest { request_id } => observer.emit(
-            "network",
-            "send_fast_lane_request",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-            ],
-        ),
-        ClientMessage::FastLaneAttach { request_id, .. } => observer.emit(
-            "network",
-            "send_fast_lane_attach",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-            ],
-        ),
-        ClientMessage::EnterScene { request_id, cid } => observer.emit(
-            "network",
-            "send_enter_scene",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("cid", cid.to_string()),
-            ],
-        ),
-        ClientMessage::MovementInput {
-            seq,
-            client_tick,
-            input_dir,
-            speed_scale,
-            movement_flags,
-            ..
-        } => observer.emit(
-            "network",
-            "send_movement_input",
-            &[
-                ("transport", transport.to_string()),
-                ("seq", seq.to_string()),
-                ("client_tick", client_tick.to_string()),
-                (
-                    "input_dir",
-                    format!("{:.2},{:.2}", input_dir[0], input_dir[1]),
-                ),
-                ("speed_scale", format!("{speed_scale:.2}")),
-                ("movement_flags", movement_flags.to_string()),
-            ],
-        ),
-        ClientMessage::TimeSync {
-            request_id,
-            client_send_ts,
-        } => observer.emit(
-            "network",
-            "send_time_sync",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("client_send_ts", client_send_ts.to_string()),
-            ],
-        ),
-        ClientMessage::Heartbeat { timestamp } => observer.emit(
-            "network",
-            "send_heartbeat",
-            &[
-                ("transport", transport.to_string()),
-                ("timestamp", timestamp.to_string()),
-            ],
-        ),
-        ClientMessage::ChatSay { request_id, text } => observer.emit(
-            "network",
-            "send_chat",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("text", text.clone()),
-            ],
-        ),
-        ClientMessage::SkillCast {
-            request_id,
-            skill_id,
-            target_kind,
-            target_cid,
-            target_position,
-        } => observer.emit(
-            "network",
-            "send_skill",
-            &[
-                ("transport", transport.to_string()),
-                ("request_id", request_id.to_string()),
-                ("skill_id", skill_id.to_string()),
-                ("target_kind", format!("{target_kind:?}")),
-                ("target_cid", target_cid.to_string()),
-                ("target_position", format_vec(target_position)),
-            ],
-        ),
-    }
-}
-
 fn format_vec(value: &[f64; 3]) -> String {
     format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
 }
@@ -1847,56 +837,6 @@ fn remote_actor_kind(kind: ActorKind) -> RemoteActorKind {
     }
 }
 
-fn resolve_gate_addr(gate_addr: &str) -> io::Result<SocketAddr> {
-    gate_addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no socket addresses"))
-}
-
-fn open_udp_socket(endpoint: SocketAddr) -> io::Result<UdpSocket> {
-    let bind_addr = match endpoint.ip() {
-        IpAddr::V4(_) => "0.0.0.0:0",
-        IpAddr::V6(_) => "[::]:0",
-    };
-
-    let socket = UdpSocket::bind(bind_addr)?;
-    socket.connect(endpoint)?;
-    socket.set_nonblocking(true)?;
-    Ok(socket)
-}
-
-fn send_tcp_message(stream: &mut TcpStream, message: &ClientMessage) -> io::Result<()> {
-    let frame = encode_client_frame(message);
-    send_tcp_bytes(stream, &frame)
-}
-
-fn send_udp_message(socket: &UdpSocket, message: &ClientMessage) -> io::Result<()> {
-    let payload = encode_client_payload(message);
-    socket.send(&payload).map(|_| ())
-}
-
-fn send_tcp_bytes(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
-    let mut written = 0;
-    while written < bytes.len() {
-        match stream.write(&bytes[written..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "socket closed while writing",
-                ));
-            }
-            Ok(n) => written += n,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5))
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(())
-}
-
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1907,6 +847,8 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SessionCredentials;
+    use crate::protocol::{ClientMessage, ServerMessage};
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     fn test_creds() -> SessionCredentials {
