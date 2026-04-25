@@ -12,6 +12,7 @@ pub mod schedule;
 
 use self::{plugins::BevyClientPlugins, schedule::configure_client_sets};
 use crate::{
+    camera::{MainCamera, OrbitCameraState, camera_transform_from_orbit},
     config::{ClientConfig, SessionCredentials},
     input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame},
     login::{AppState, LoginPlugin},
@@ -44,7 +45,7 @@ use bevy::{
     ecs::system::SystemParam,
     input::{
         keyboard::{Key, KeyboardInput},
-        mouse::{MouseMotion, MouseWheel},
+        mouse::MouseWheel,
     },
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
@@ -79,28 +80,6 @@ struct EffectVisual {
 
 #[derive(Component)]
 struct TargetPointMarker;
-
-#[derive(Component)]
-struct MainCamera;
-
-#[derive(Resource, Debug)]
-struct OrbitCameraState {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for OrbitCameraState {
-    fn default() -> Self {
-        Self {
-            yaw: -0.75,
-            pitch: 0.55,
-            distance: CAMERA_DEFAULT_DISTANCE,
-            target: Vec3::new(0.0, CAMERA_LOOK_HEIGHT, 0.0),
-        }
-    }
-}
 
 #[derive(Resource, Default, Debug, Clone)]
 struct VoxelSelectionState {
@@ -174,21 +153,6 @@ struct MovementSendParams<'w> {
 }
 
 #[derive(SystemParam)]
-struct OrbitCameraParams<'w, 's> {
-    time: Res<'w, Time>,
-    chat_state: Res<'w, ChatState>,
-    mouse: Res<'w, ButtonInput<MouseButton>>,
-    keyboard: Res<'w, ButtonInput<KeyCode>>,
-    motion_reader: MessageReader<'w, 's, MouseMotion>,
-    wheel_reader: MessageReader<'w, 's, MouseWheel>,
-    world_state: Res<'w, WorldState>,
-    local_render_prediction: Res<'w, LocalRenderPrediction>,
-    voxel_world: Res<'w, VoxelWorld>,
-    orbit: ResMut<'w, OrbitCameraState>,
-    camera: Single<'w, 's, &'static mut Transform, With<MainCamera>>,
-}
-
-#[derive(SystemParam)]
 struct PlayerVisualParams<'w, 's> {
     time: Res<'w, Time>,
     world_state: Res<'w, WorldState>,
@@ -253,37 +217,37 @@ struct VoxelCellVisual {
 }
 
 #[derive(Resource, Default)]
-struct WorldState {
-    status: String,
-    scene_joined: bool,
-    local_cid: i64,
-    local_position: Option<Vec3>,
-    local_velocity: Vec3,
-    remote_players: HashMap<i64, RemotePlayerState>,
-    local_hp: u16,
-    local_max_hp: u16,
-    local_alive: bool,
-    remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
-    remote_player_health: HashMap<i64, (u16, u16, bool)>,
-    chat_log: VecDeque<String>,
-    logs: VecDeque<String>,
-    last_rtt_ms: Option<f64>,
-    last_offset_ms: Option<f64>,
-    last_heartbeat_ts: Option<u64>,
-    control_transport: MessageTransport,
-    movement_transport: MessageTransport,
-    fast_lane_status: String,
-    udp_endpoint: Option<String>,
-    last_local_update_transport: Option<MessageTransport>,
-    last_remote_move_transport: Option<MessageTransport>,
-    selected_target_cid: Option<i64>,
-    selected_target_point: Option<Vec3>,
+pub(crate) struct WorldState {
+    pub status: String,
+    pub scene_joined: bool,
+    pub local_cid: i64,
+    pub local_position: Option<Vec3>,
+    pub local_velocity: Vec3,
+    pub remote_players: HashMap<i64, RemotePlayerState>,
+    pub local_hp: u16,
+    pub local_max_hp: u16,
+    pub local_alive: bool,
+    pub remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
+    pub remote_player_health: HashMap<i64, (u16, u16, bool)>,
+    pub chat_log: VecDeque<String>,
+    pub logs: VecDeque<String>,
+    pub last_rtt_ms: Option<f64>,
+    pub last_offset_ms: Option<f64>,
+    pub last_heartbeat_ts: Option<u64>,
+    pub control_transport: MessageTransport,
+    pub movement_transport: MessageTransport,
+    pub fast_lane_status: String,
+    pub udp_endpoint: Option<String>,
+    pub last_local_update_transport: Option<MessageTransport>,
+    pub last_remote_move_transport: Option<MessageTransport>,
+    pub selected_target_cid: Option<i64>,
+    pub selected_target_point: Option<Vec3>,
 }
 
 #[derive(Resource, Default)]
-struct ChatState {
-    enabled: bool,
-    draft: String,
+pub(crate) struct ChatState {
+    pub enabled: bool,
+    pub draft: String,
 }
 
 #[derive(Resource)]
@@ -311,13 +275,13 @@ struct InputTraceState {
 /// authoritative/predicted sim position; `pending_correction` captures any
 /// visual offset introduced by authority corrections and decays to zero via
 /// Unreal-style exponential smoothing so the player never sees a teleport.
-struct LocalRenderPrediction {
-    anchor_state: Option<PredictedMoveState>,
-    render_state: Option<PredictedMoveState>,
-    partial_elapsed_secs: f32,
-    pending_correction: Vec3,
-    smoothing_rate_hz: f32,
-    profile: MovementProfile,
+pub(crate) struct LocalRenderPrediction {
+    pub anchor_state: Option<PredictedMoveState>,
+    pub render_state: Option<PredictedMoveState>,
+    pub partial_elapsed_secs: f32,
+    pub pending_correction: Vec3,
+    pub smoothing_rate_hz: f32,
+    pub profile: MovementProfile,
 }
 
 impl Default for LocalRenderPrediction {
@@ -405,14 +369,6 @@ const VISUAL_CORRECTION_EPSILON_SQ: f32 = 0.01;
 const FINAL_STOP_SYNC_SPEED_EPSILON: f32 = 1.0;
 const VOXEL_RENDER_CELL_SIZE: f32 = 100.0;
 const VOXEL_RENDER_MICRO_SIZE: f32 = VOXEL_RENDER_CELL_SIZE / crate::voxel::MICRO_PER_MACRO as f32;
-const CAMERA_LOOK_HEIGHT: f32 = 110.0;
-const CAMERA_DEFAULT_DISTANCE: f32 = 410.0;
-const CAMERA_MIN_DISTANCE: f32 = 180.0;
-const CAMERA_MAX_DISTANCE: f32 = 620.0;
-const CAMERA_YAW_SENSITIVITY: f32 = 0.005;
-const CAMERA_PITCH_SENSITIVITY: f32 = 0.004;
-const CAMERA_MIN_PITCH: f32 = 0.2;
-const CAMERA_MAX_PITCH: f32 = 1.15;
 const VOXEL_RAY_MAX_DISTANCE: f32 = 2_500.0;
 const ACTOR_HALF_HEIGHT: f32 = 18.0;
 
@@ -460,7 +416,6 @@ pub fn run(
         .insert_resource(MovementDispatchState::default())
         .insert_resource(InputTraceState::default())
         .insert_resource(LocalRenderPrediction::default())
-        .insert_resource(OrbitCameraState::default())
         .insert_resource(VoxelSelectionState::default())
         .insert_resource(voxel_world)
         .insert_resource(observer)
@@ -492,7 +447,6 @@ pub fn run(
                 toggle_chat_mode,
                 collect_chat_text,
                 (
-                    update_orbit_camera,
                     update_voxel_selection,
                     handle_target_selection_input,
                     handle_point_target_input,
@@ -2216,16 +2170,6 @@ fn render_to_sim_position(position: Vec3) -> Vec3 {
     Vec3::new(position.x, position.z, position.y)
 }
 
-fn camera_transform_from_orbit(state: &OrbitCameraState) -> Transform {
-    let horizontal = state.distance * state.pitch.cos();
-    let offset = Vec3::new(
-        horizontal * state.yaw.sin(),
-        state.distance * state.pitch.sin(),
-        horizontal * state.yaw.cos(),
-    );
-    Transform::from_translation(state.target + offset).looking_at(state.target, Vec3::Y)
-}
-
 fn ray_from_viewport(
     camera: &Camera,
     camera_transform: &GlobalTransform,
@@ -2334,59 +2278,6 @@ fn actor_material_handle(
 
 fn should_fallback_to_macro_prefab_place(reason: &str) -> bool {
     matches!(reason, "no_target_boundary" | "no_contact" | "empty_prefab")
-}
-
-fn update_orbit_camera(mut params: OrbitCameraParams) {
-    if !params.chat_state.enabled {
-        let rotating =
-            params.mouse.pressed(MouseButton::Left) || params.mouse.pressed(MouseButton::Middle);
-        if rotating {
-            let delta = params
-                .motion_reader
-                .read()
-                .fold(Vec2::ZERO, |acc, event| acc + event.delta);
-            params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
-            params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
-                .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
-        } else {
-            params.motion_reader.clear();
-        }
-
-        let control_zoom = params.keyboard.pressed(KeyCode::ControlLeft)
-            || params.keyboard.pressed(KeyCode::ControlRight);
-        let wheel_delta = params.wheel_reader.read().map(|event| event.y).sum::<f32>();
-        if control_zoom && wheel_delta.abs() > f32::EPSILON {
-            params.orbit.distance = (params.orbit.distance - wheel_delta * 28.0)
-                .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
-        }
-    } else {
-        params.motion_reader.clear();
-        params.wheel_reader.clear();
-    }
-
-    let desired_target = params
-        .local_render_prediction
-        .render_state
-        .as_ref()
-        .map(|state| actor_render_position(&params.voxel_world, state.position))
-        .or_else(|| {
-            params
-                .world_state
-                .local_position
-                .map(|position| actor_render_position(&params.voxel_world, position))
-        })
-        .map(|position| position + Vec3::Y * CAMERA_LOOK_HEIGHT)
-        .unwrap_or(params.orbit.target);
-
-    let target = smooth_translation(
-        params.orbit.target,
-        desired_target,
-        params.time.delta_secs(),
-        8.0,
-        300.0,
-    );
-    params.orbit.target = target;
-    **params.camera = camera_transform_from_orbit(&params.orbit);
 }
 
 fn update_voxel_selection(
@@ -2503,7 +2394,7 @@ fn draw_effect_gizmos(effects: Query<&EffectVisual>, mut gizmos: Gizmos) {
     }
 }
 
-fn actor_render_position(voxel_world: &VoxelWorld, sim_position: Vec3) -> Vec3 {
+pub(crate) fn actor_render_position(voxel_world: &VoxelWorld, sim_position: Vec3) -> Vec3 {
     let render = sim_to_render_position(sim_position);
     let grounded_y =
         surface_center_y_at_render_xz(voxel_world, render.x, render.z, ACTOR_HALF_HEIGHT, render.y);

@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod auth_client;
+pub mod camera;
 pub mod config;
 pub mod headless;
 pub mod input;

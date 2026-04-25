@@ -16,6 +16,8 @@
 use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
 
+use crate::camera::CameraPlugin;
+
 /// Canonical Bevy client `PluginGroup`.
 ///
 /// Plugins listed here run in addition to `LoginPlugin` and Bevy's
@@ -65,7 +67,7 @@ stub_plugin!(
     InputPlugin,
     "Keyboard / mouse / chat input — emits domain events for voxel, skill, chat, hotbar."
 );
-stub_plugin!(CameraPlugin, "Orbit camera state and zoom handling.");
+// CameraPlugin is now defined in `crate::camera::plugin`.
 stub_plugin!(
     ChatPlugin,
     "Chat input mode, log buffer, and outbound chat dispatch."
