@@ -1,5 +1,6 @@
 //! Attached stdio automation interface for the normal client runtime.
 
+use crate::voxel::{VoxelCliCommand, parse_voxel_cli_command};
 use bevy::prelude::{Resource, Vec2, Vec3};
 use std::{
     io::{self, BufRead},
@@ -32,10 +33,12 @@ pub enum ClientStdioCommand {
         direction_label: String,
         duration_ms: u64,
     },
+    Jump,
     Stop,
     Quit,
     ReconcileStats,
     DiagRender,
+    Voxel(VoxelCliCommand),
 }
 
 #[derive(Clone, Default, Resource)]
@@ -58,7 +61,7 @@ impl ClientStdioInterface {
                 "ready",
                 &[(
                     "commands",
-                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|quit"
+                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|voxel_snapshot|place|break|micro_cell|prefab_place|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
                         .to_string(),
                 )],
             );
@@ -76,7 +79,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|reconcile_stats|diag_render|quit"
+                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|reconcile_stats|diag_render|voxel_snapshot|place|break|hotbar|hotbar_select|micro_cell|prefabs|prefab_place|prefab_snap_preview|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
                                         .to_string(),
                                 )],
                             );
@@ -138,37 +141,60 @@ pub fn emit(event: &str, fields: &[(&str, String)]) {
     println!("{line}");
 }
 
+/// Emits one structured stdio response line from owned key/value fields.
+pub fn emit_owned(event: &str, ok: bool, fields: &[(String, String)]) {
+    let mut line = format!("client_stdio event={event:?} ok={ok:?}");
+    for (key, value) in fields {
+        line.push(' ');
+        line.push_str(key);
+        line.push('=');
+        line.push_str(&format!("{value:?}"));
+    }
+    println!("{line}");
+}
+
+/// Standard snapshot data shared by interactive and headless stdio output.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotFields<'a> {
+    pub status: &'a str,
+    pub scene_joined: bool,
+    pub local_cid: i64,
+    pub local_position: Option<Vec3>,
+    pub local_hp: u16,
+    pub local_max_hp: u16,
+    pub local_alive: bool,
+    pub movement_transport: &'a str,
+    pub fast_lane_status: &'a str,
+    pub remote_player_count: usize,
+    pub remote_npc_count: usize,
+}
+
 /// Builds the standard snapshot key/value fields used by interactive and headless modes.
-pub fn snapshot_fields(
-    status: &str,
-    scene_joined: bool,
-    local_cid: i64,
-    local_position: Option<Vec3>,
-    local_hp: u16,
-    local_max_hp: u16,
-    local_alive: bool,
-    movement_transport: &str,
-    fast_lane_status: &str,
-    remote_player_count: usize,
-    remote_npc_count: usize,
-) -> Vec<(&'static str, String)> {
+pub fn snapshot_fields(snapshot: SnapshotFields<'_>) -> Vec<(&'static str, String)> {
     vec![
-        ("status", status.to_string()),
-        ("scene_joined", scene_joined.to_string()),
-        ("local_cid", local_cid.to_string()),
+        ("status", snapshot.status.to_string()),
+        ("scene_joined", snapshot.scene_joined.to_string()),
+        ("local_cid", snapshot.local_cid.to_string()),
         (
             "local_position",
-            local_position
+            snapshot
+                .local_position
                 .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
                 .unwrap_or_else(|| "n/a".to_string()),
         ),
-        ("local_hp", local_hp.to_string()),
-        ("local_max_hp", local_max_hp.to_string()),
-        ("local_alive", local_alive.to_string()),
-        ("movement_transport", movement_transport.to_string()),
-        ("fast_lane_status", fast_lane_status.to_string()),
-        ("remote_player_count", remote_player_count.to_string()),
-        ("remote_npc_count", remote_npc_count.to_string()),
+        ("local_hp", snapshot.local_hp.to_string()),
+        ("local_max_hp", snapshot.local_max_hp.to_string()),
+        ("local_alive", snapshot.local_alive.to_string()),
+        (
+            "movement_transport",
+            snapshot.movement_transport.to_string(),
+        ),
+        ("fast_lane_status", snapshot.fast_lane_status.to_string()),
+        (
+            "remote_player_count",
+            snapshot.remote_player_count.to_string(),
+        ),
+        ("remote_npc_count", snapshot.remote_npc_count.to_string()),
     ]
 }
 
@@ -195,6 +221,10 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
 
     if line == "stop" {
         return Ok(ClientStdioCommand::Stop);
+    }
+
+    if line == "jump" {
+        return Ok(ClientStdioCommand::Jump);
     }
 
     if line == "clear_target" {
@@ -259,17 +289,19 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         let skill_id = parts[0]
             .parse::<u16>()
             .map_err(|error| format!("invalid skill id: {error}"))?;
-        let target_cid =
-            if parts.len() == 2 {
-                Some(
-                    parts[1]
-                        .parse::<i64>()
-                        .map_err(|error| format!("invalid target cid: {error}"))?,
-                )
-            } else {
-                None
-            };
-        return Ok(ClientStdioCommand::Skill { skill_id, target_cid });
+        let target_cid = if parts.len() == 2 {
+            Some(
+                parts[1]
+                    .parse::<i64>()
+                    .map_err(|error| format!("invalid target cid: {error}"))?,
+            )
+        } else {
+            None
+        };
+        return Ok(ClientStdioCommand::Skill {
+            skill_id,
+            target_cid,
+        });
     }
 
     if let Some(rest) = line.strip_prefix("move ") {
@@ -290,7 +322,10 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         });
     }
 
-    Err("unknown command".to_string())
+    match parse_voxel_cli_command(line)? {
+        Some(command) => Ok(ClientStdioCommand::Voxel(command)),
+        None => Err("unknown command".to_string()),
+    }
 }
 
 fn parse_direction(value: &str) -> Result<Vec2, String> {
@@ -343,6 +378,7 @@ mod tests {
             ClientStdioCommand::ClearTargetPoint
         );
         assert_eq!(parse_command("stop").unwrap(), ClientStdioCommand::Stop);
+        assert_eq!(parse_command("jump").unwrap(), ClientStdioCommand::Jump);
         assert_eq!(parse_command("quit").unwrap(), ClientStdioCommand::Quit);
         assert_eq!(
             parse_command("reconcile_stats").unwrap(),
@@ -352,6 +388,10 @@ mod tests {
             parse_command("diag_render").unwrap(),
             ClientStdioCommand::DiagRender
         );
+        assert!(matches!(
+            parse_command("place 1 2 3 wood").unwrap(),
+            ClientStdioCommand::Voxel(_)
+        ));
     }
 
     #[test]

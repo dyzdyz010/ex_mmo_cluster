@@ -1,14 +1,13 @@
 //! Interactive Bevy app entrypoint and world/UI glue.
 
 use crate::{
-    input::commands::{MoveInputFrame, MOVEMENT_FLAG_BRAKE},
     config::{ClientConfig, SessionCredentials},
+    input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame},
     login::{AppState, LoginPlugin},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     presentation::{
         animation::{animated_scale, animation_state_from_velocity},
-        camera::{desired_camera_target, smooth_camera_translation},
         smoothing::smooth_translation,
     },
     protocol::EffectCueKind,
@@ -18,17 +17,31 @@ use crate::{
         types::{MovementMode, PredictedMoveState},
     },
     skill_targeting::prepare_skill_dispatch,
-    stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+    stdio::{
+        ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
+        emit_owned as emit_stdio_owned, snapshot_fields,
+    },
+    voxel::{
+        BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCoord, NormalBlockData,
+        VoxelMaterialId, VoxelRenderCell, VoxelWorld, execute_voxel_cli_command,
+    },
     world::remote_actor::{RemoteActorIdentity, RemoteActorKind},
     world::remote_player::{RemoteMotionSample, RemotePlayerState},
 };
 use bevy::{
     app::AppExit,
-    input::keyboard::{Key, KeyboardInput},
+    ecs::system::SystemParam,
+    input::{
+        keyboard::{Key, KeyboardInput},
+        mouse::{MouseMotion, MouseWheel},
+    },
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
 };
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 #[derive(Component)]
 struct PlayerVisual {
@@ -55,6 +68,178 @@ struct EffectVisual {
 
 #[derive(Component)]
 struct TargetPointMarker;
+
+#[derive(Component)]
+struct MainCamera;
+
+#[derive(Resource, Debug)]
+struct OrbitCameraState {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    target: Vec3,
+}
+
+impl Default for OrbitCameraState {
+    fn default() -> Self {
+        Self {
+            yaw: -0.75,
+            pitch: 0.55,
+            distance: CAMERA_DEFAULT_DISTANCE,
+            target: Vec3::new(0.0, CAMERA_LOOK_HEIGHT, 0.0),
+        }
+    }
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+struct VoxelSelectionState {
+    selection: Option<VoxelRaySelection>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct RenderRay {
+    origin: Vec3,
+    direction: Vec3,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct MicroCellTarget {
+    macro_coord: MacroCoord,
+    micro: MicroCoord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VoxelRaySelection {
+    occupied_macro: MacroCoord,
+    adjacent_macro: MacroCoord,
+    face_normal: MacroCoord,
+    occupied_micro: Option<MicroCellTarget>,
+    adjacent_micro: Option<MicroCellTarget>,
+}
+
+#[derive(Resource, Clone)]
+struct SceneRenderAssets {
+    cube_mesh: Handle<Mesh>,
+    player_mesh: Handle<Mesh>,
+    target_mesh: Handle<Mesh>,
+    dirt_material: Handle<StandardMaterial>,
+    stone_material: Handle<StandardMaterial>,
+    wood_material: Handle<StandardMaterial>,
+    ice_material: Handle<StandardMaterial>,
+    dirt_refined_material: Handle<StandardMaterial>,
+    stone_refined_material: Handle<StandardMaterial>,
+    wood_refined_material: Handle<StandardMaterial>,
+    ice_refined_material: Handle<StandardMaterial>,
+    local_player_material: Handle<StandardMaterial>,
+    remote_player_material: Handle<StandardMaterial>,
+    moving_player_material: Handle<StandardMaterial>,
+    selected_actor_material: Handle<StandardMaterial>,
+    npc_material: Handle<StandardMaterial>,
+    target_material: Handle<StandardMaterial>,
+}
+
+#[derive(SystemParam)]
+struct VoxelInputParams<'w, 's> {
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    wheel_reader: MessageReader<'w, 's, MouseWheel>,
+    chat_state: Res<'w, ChatState>,
+    observer: Res<'w, ClientObserver>,
+    selection_state: Res<'w, VoxelSelectionState>,
+    voxel_world: ResMut<'w, VoxelWorld>,
+    world_state: ResMut<'w, WorldState>,
+}
+
+#[derive(SystemParam)]
+struct MovementSendParams<'w> {
+    time: Res<'w, Time>,
+    bridge: Res<'w, NetworkBridge>,
+    config: Res<'w, ClientConfig>,
+    observer: Res<'w, ClientObserver>,
+    world_state: Res<'w, WorldState>,
+    movement_intent: ResMut<'w, MovementIntent>,
+    movement_dispatch: ResMut<'w, MovementDispatchState>,
+    tick: ResMut<'w, MovementTick>,
+}
+
+#[derive(SystemParam)]
+struct OrbitCameraParams<'w, 's> {
+    time: Res<'w, Time>,
+    chat_state: Res<'w, ChatState>,
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    motion_reader: MessageReader<'w, 's, MouseMotion>,
+    wheel_reader: MessageReader<'w, 's, MouseWheel>,
+    world_state: Res<'w, WorldState>,
+    local_render_prediction: Res<'w, LocalRenderPrediction>,
+    voxel_world: Res<'w, VoxelWorld>,
+    orbit: ResMut<'w, OrbitCameraState>,
+    camera: Single<'w, 's, &'static mut Transform, With<MainCamera>>,
+}
+
+#[derive(SystemParam)]
+struct PlayerVisualParams<'w, 's> {
+    time: Res<'w, Time>,
+    world_state: Res<'w, WorldState>,
+    local_render_prediction: Res<'w, LocalRenderPrediction>,
+    config: Res<'w, ClientConfig>,
+    voxel_world: Res<'w, VoxelWorld>,
+    assets: Res<'w, SceneRenderAssets>,
+    existing: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static PlayerVisual,
+            &'static mut Transform,
+            &'static mut MeshMaterial3d<StandardMaterial>,
+        ),
+    >,
+}
+
+#[derive(SystemParam)]
+struct StdioCommandParams<'w> {
+    time: Res<'w, Time>,
+    stdio: Res<'w, ClientStdioInterface>,
+    bridge: Res<'w, NetworkBridge>,
+    local_render_prediction: Res<'w, LocalRenderPrediction>,
+    voxel_world: ResMut<'w, VoxelWorld>,
+    world_state: ResMut<'w, WorldState>,
+    movement_intent: ResMut<'w, MovementIntent>,
+    app_exit: MessageWriter<'w, AppExit>,
+}
+
+type HudTextSingle<'w, 's> = Single<
+    'w,
+    's,
+    &'static mut Text,
+    (With<HudText>, Without<ChatLogText>, Without<ChatInputText>),
+>;
+type ChatLogTextSingle<'w, 's> = Single<
+    'w,
+    's,
+    &'static mut Text,
+    (With<ChatLogText>, Without<HudText>, Without<ChatInputText>),
+>;
+type ChatInputTextSingle<'w, 's> = Single<
+    'w,
+    's,
+    &'static mut Text,
+    (With<ChatInputText>, Without<HudText>, Without<ChatLogText>),
+>;
+
+#[derive(SystemParam)]
+struct HudTextParams<'w, 's> {
+    hud: HudTextSingle<'w, 's>,
+    chat_log_text: ChatLogTextSingle<'w, 's>,
+    chat_input_text: ChatInputTextSingle<'w, 's>,
+}
+
+#[derive(Component, Copy, Clone, PartialEq, Eq, Hash)]
+struct VoxelCellVisual {
+    macro_coord: MacroCoord,
+    micro: Option<crate::voxel::MicroCoord>,
+}
 
 #[derive(Resource, Default)]
 struct WorldState {
@@ -97,6 +282,7 @@ struct MovementTick(Timer);
 struct MovementIntent {
     direction: Vec2,
     expires_at: f64,
+    jump_requested: bool,
 }
 
 #[derive(Resource)]
@@ -206,6 +392,18 @@ const VISUAL_HARD_SNAP_DISTANCE: f32 = 256.0;
 const DEFAULT_VISUAL_SMOOTHING_RATE_HZ: f32 = 15.0;
 const VISUAL_CORRECTION_EPSILON_SQ: f32 = 0.01;
 const FINAL_STOP_SYNC_SPEED_EPSILON: f32 = 1.0;
+const VOXEL_RENDER_CELL_SIZE: f32 = 100.0;
+const VOXEL_RENDER_MICRO_SIZE: f32 = VOXEL_RENDER_CELL_SIZE / crate::voxel::MICRO_PER_MACRO as f32;
+const CAMERA_LOOK_HEIGHT: f32 = 110.0;
+const CAMERA_DEFAULT_DISTANCE: f32 = 410.0;
+const CAMERA_MIN_DISTANCE: f32 = 180.0;
+const CAMERA_MAX_DISTANCE: f32 = 620.0;
+const CAMERA_YAW_SENSITIVITY: f32 = 0.005;
+const CAMERA_PITCH_SENSITIVITY: f32 = 0.004;
+const CAMERA_MIN_PITCH: f32 = 0.2;
+const CAMERA_MAX_PITCH: f32 = 1.15;
+const VOXEL_RAY_MAX_DISTANCE: f32 = 2_500.0;
+const ACTOR_HALF_HEIGHT: f32 = 18.0;
 
 impl Default for MovementDispatchState {
     fn default() -> Self {
@@ -225,6 +423,8 @@ pub fn run(
     initial_credentials: Option<SessionCredentials>,
 ) {
     let starts_in_game = initial_credentials.is_some();
+    let mut voxel_world = VoxelWorld::new();
+    voxel_world.bootstrap_showcase(2);
 
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
@@ -249,6 +449,9 @@ pub fn run(
         .insert_resource(MovementDispatchState::default())
         .insert_resource(InputTraceState::default())
         .insert_resource(LocalRenderPrediction::default())
+        .insert_resource(OrbitCameraState::default())
+        .insert_resource(VoxelSelectionState::default())
+        .insert_resource(voxel_world)
         .insert_resource(observer)
         .insert_resource(stdio)
         .insert_resource(MovementTick(Timer::from_seconds(
@@ -273,14 +476,27 @@ pub fn run(
                 poll_network_events,
                 toggle_chat_mode,
                 collect_chat_text,
-                handle_target_selection_input,
-                handle_point_target_input,
+                (
+                    update_orbit_camera,
+                    update_voxel_selection,
+                    handle_target_selection_input,
+                    handle_point_target_input,
+                    handle_voxel_input,
+                )
+                    .chain(),
                 handle_skill_input,
                 sample_movement_input,
                 poll_stdio_commands,
                 movement_sender,
-                (advance_local_render_prediction, sync_player_visuals, camera_follow_local_player).chain(),
+                (
+                    sync_voxel_visuals,
+                    advance_local_render_prediction,
+                    sync_player_visuals,
+                )
+                    .chain(),
                 update_target_point_marker,
+                draw_voxel_guides,
+                draw_effect_gizmos,
                 update_effect_visuals,
                 update_hud_text,
             )
@@ -319,10 +535,92 @@ fn enter_game_setup(
     }
 }
 
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let assets = SceneRenderAssets {
+        cube_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        player_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        target_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        dirt_material: materials.add(StandardMaterial {
+            base_color: voxel_material_color(VoxelMaterialId::Dirt, false),
+            perceptual_roughness: 0.9,
+            ..default()
+        }),
+        stone_material: materials.add(StandardMaterial {
+            base_color: voxel_material_color(VoxelMaterialId::Stone, false),
+            perceptual_roughness: 0.95,
+            ..default()
+        }),
+        wood_material: materials.add(StandardMaterial {
+            base_color: voxel_material_color(VoxelMaterialId::Wood, false),
+            perceptual_roughness: 0.86,
+            ..default()
+        }),
+        ice_material: materials.add(StandardMaterial {
+            base_color: voxel_material_color(VoxelMaterialId::Ice, false),
+            perceptual_roughness: 0.38,
+            metallic: 0.02,
+            ..default()
+        }),
+        dirt_refined_material: materials.add(transparent_material(voxel_material_color(
+            VoxelMaterialId::Dirt,
+            true,
+        ))),
+        stone_refined_material: materials.add(transparent_material(voxel_material_color(
+            VoxelMaterialId::Stone,
+            true,
+        ))),
+        wood_refined_material: materials.add(transparent_material(voxel_material_color(
+            VoxelMaterialId::Wood,
+            true,
+        ))),
+        ice_refined_material: materials.add(transparent_material(voxel_material_color(
+            VoxelMaterialId::Ice,
+            true,
+        ))),
+        local_player_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.25, 0.95, 0.45),
+            emissive: Color::srgb(0.02, 0.16, 0.04).into(),
+            ..default()
+        }),
+        remote_player_material: materials.add(Color::srgb(0.3, 0.65, 1.0)),
+        moving_player_material: materials.add(Color::srgb(0.35, 0.75, 1.0)),
+        selected_actor_material: materials.add(Color::srgb(1.0, 0.95, 0.35)),
+        npc_material: materials.add(Color::srgb(0.95, 0.45, 0.35)),
+        target_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.95, 0.35, 0.95, 0.82),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        }),
+    };
 
-    spawn_grid(&mut commands);
+    commands.spawn((
+        PointLight {
+            intensity: 2_600_000.0,
+            range: 1_800.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(450.0, 900.0, 450.0),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 7_000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(-1.0, 2.0, 1.0)).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        Camera3d::default(),
+        MainCamera,
+        camera_transform_from_orbit(&OrbitCameraState::default()),
+    ));
 
     commands.spawn((
         HudText,
@@ -374,27 +672,13 @@ fn setup(mut commands: Commands) {
 
     commands.spawn((
         TargetPointMarker,
-        Sprite {
-            color: Color::srgba(0.95, 0.35, 0.95, 0.8),
-            custom_size: Some(Vec2::new(18.0, 18.0)),
-            ..default()
-        },
+        Mesh3d(assets.target_mesh.clone()),
+        MeshMaterial3d(assets.target_material.clone()),
         Visibility::Hidden,
-        Transform::from_xyz(0.0, 0.0, 6.0),
+        Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(22.0, 6.0, 22.0)),
     ));
-}
 
-fn spawn_grid(commands: &mut Commands) {
-    for offset in (-10..=10).map(|step| step as f32 * 200.0) {
-        commands.spawn((
-            Sprite::from_color(Color::srgba(0.2, 0.25, 0.3, 0.5), Vec2::new(4_200.0, 2.0)),
-            Transform::from_xyz(0.0, offset, -10.0),
-        ));
-        commands.spawn((
-            Sprite::from_color(Color::srgba(0.2, 0.25, 0.3, 0.5), Vec2::new(2.0, 4_200.0)),
-            Transform::from_xyz(offset, 0.0, -10.0),
-        ));
-    }
+    commands.insert_resource(assets);
 }
 
 fn poll_network_events(
@@ -510,7 +794,11 @@ fn poll_network_events(
             NetworkEvent::ActorIdentity { cid, kind, name } => {
                 world_state.remote_actor_identity.insert(
                     cid,
-                    RemoteActorIdentity { cid, kind, name: name.clone() },
+                    RemoteActorIdentity {
+                        cid,
+                        kind,
+                        name: name.clone(),
+                    },
                 );
                 push_line(
                     &mut world_state.logs,
@@ -541,10 +829,7 @@ fn poll_network_events(
                 if stdio.is_enabled() {
                     emit_stdio(
                         "skill_event",
-                        &[
-                            ("cid", cid.to_string()),
-                            ("skill_id", skill_id.to_string()),
-                        ],
+                        &[("cid", cid.to_string()), ("skill_id", skill_id.to_string())],
                     );
                 }
                 push_line(
@@ -629,13 +914,11 @@ fn poll_network_events(
                         target: target_world,
                         radius: radius as f32,
                     },
-                    Sprite {
-                        color: effect_color(cue_kind),
-                        custom_size: Some(effect_size(cue_kind, radius as f32)),
-                        ..default()
-                    },
-                    Transform::from_translation(effect_spawn_translation(cue_kind, origin_world, target_world))
-                        .with_scale(effect_scale(cue_kind, radius as f32)),
+                    Transform::from_translation(sim_to_render_position(effect_spawn_translation(
+                        cue_kind,
+                        origin_world,
+                        target_world,
+                    ))),
                 ));
             }
             NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
@@ -786,6 +1069,12 @@ fn handle_skill_input(
         return;
     }
 
+    let skill_modifier =
+        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    if !skill_modifier {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::Digit1) {
         send_targeted_skill(&bridge, &observer, &mut world_state, 1);
     }
@@ -826,7 +1115,10 @@ fn handle_target_selection_input(
 
     let next = match world_state.selected_target_cid {
         Some(current) => {
-            let index = cids.iter().position(|cid| *cid == current).unwrap_or(usize::MAX);
+            let index = cids
+                .iter()
+                .position(|cid| *cid == current)
+                .unwrap_or(usize::MAX);
             cids.get((index + 1) % cids.len()).copied()
         }
         None => cids.first().copied(),
@@ -841,29 +1133,207 @@ fn handle_target_selection_input(
 
 fn handle_point_target_input(
     mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    camera: Single<&Transform, (With<Camera2d>, Without<PlayerVisual>)>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut world_state: ResMut<WorldState>,
     observer: Res<ClientObserver>,
 ) {
-    if mouse.just_pressed(MouseButton::Right) {
+    let target_modifier =
+        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    if mouse.just_pressed(MouseButton::Right) && target_modifier {
         let Ok(window) = windows.single() else {
             return;
         };
 
         if let Some(cursor) = window.cursor_position() {
-            let world = cursor_to_world(cursor, window, camera.translation);
-            world_state.selected_target_point = Some(world);
+            let (camera, camera_transform) = *camera;
+            let Some(render_point) = ray_from_viewport(camera, camera_transform, cursor)
+                .and_then(|ray| ray_intersection_with_y_plane(ray.origin, ray.direction, 0.0))
+            else {
+                return;
+            };
+            let sim_point = render_to_sim_position(render_point);
+            world_state.selected_target_point = Some(sim_point);
             world_state.selected_target_cid = None;
             observer.emit(
                 "input",
                 "target_point_selected",
                 &[(
                     "point",
-                    format!("{:.1},{:.1},{:.1}", world.x, world.y, world.z),
+                    format!("{:.1},{:.1},{:.1}", sim_point.x, sim_point.y, sim_point.z),
                 )],
             );
         }
+    }
+}
+
+fn handle_voxel_input(params: VoxelInputParams) {
+    let VoxelInputParams {
+        mouse,
+        keyboard,
+        mut wheel_reader,
+        chat_state,
+        observer,
+        selection_state,
+        mut voxel_world,
+        mut world_state,
+    } = params;
+
+    if chat_state.enabled {
+        return;
+    }
+
+    for (key, index) in [
+        (KeyCode::Digit1, 0),
+        (KeyCode::Digit2, 1),
+        (KeyCode::Digit3, 2),
+        (KeyCode::Digit4, 3),
+        (KeyCode::Digit5, 4),
+        (KeyCode::Digit6, 5),
+        (KeyCode::Digit7, 6),
+    ] {
+        if keyboard.just_pressed(key) && voxel_world.select_hotbar_index(index).is_ok() {
+            observer.emit(
+                "voxel",
+                "hotbar_select",
+                &[
+                    ("index", (index + 1).to_string()),
+                    ("selected", voxel_world.hotbar().selected.label),
+                    ("source", "keyboard".to_string()),
+                ],
+            );
+        }
+    }
+
+    let wheel_delta = wheel_reader.read().map(|event| event.y).sum::<f32>();
+    let control_zoom =
+        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if wheel_delta.abs() > f32::EPSILON && !control_zoom {
+        let len = voxel_world.hotbar().entries.len();
+        let current = voxel_world.hotbar().selected_index;
+        let next = if wheel_delta < 0.0 {
+            (current + 1) % len
+        } else {
+            (current + len - 1) % len
+        };
+        let _ = voxel_world.select_hotbar_index(next);
+        observer.emit(
+            "voxel",
+            "hotbar_select",
+            &[
+                ("index", (next + 1).to_string()),
+                ("selected", voxel_world.hotbar().selected.label),
+                ("source", "wheel".to_string()),
+            ],
+        );
+    }
+
+    let place_requested = keyboard.just_pressed(KeyCode::KeyF)
+        || (mouse.just_pressed(MouseButton::Right)
+            && !keyboard.pressed(KeyCode::ShiftLeft)
+            && !keyboard.pressed(KeyCode::ShiftRight));
+    let break_requested =
+        keyboard.just_pressed(KeyCode::KeyG) || mouse.just_pressed(MouseButton::Left);
+    if !place_requested && !break_requested {
+        return;
+    }
+
+    let Some(selection) = selection_state.selection.clone() else {
+        observer.emit(
+            "voxel",
+            "edit_rejected",
+            &[("reason", "no_selection".to_string())],
+        );
+        return;
+    };
+
+    if break_requested {
+        let coord = selection.occupied_macro;
+        let ok = voxel_world.break_block(coord);
+        observer.emit(
+            "voxel",
+            if ok { "break" } else { "break_rejected" },
+            &[
+                ("coord", crate::voxel::format_macro_coord(coord)),
+                (
+                    "face_normal",
+                    crate::voxel::format_macro_coord(selection.face_normal),
+                ),
+                ("source", "center_ray".to_string()),
+            ],
+        );
+        push_line(
+            &mut world_state.logs,
+            format!(
+                "voxel break {} ok={ok}",
+                crate::voxel::format_macro_coord(coord)
+            ),
+        );
+    }
+
+    if place_requested {
+        let selected = voxel_world.hotbar().selected;
+        let coord = selection.adjacent_macro;
+        let (ok, label, event) = if let Some(material) = selected.material_id {
+            (
+                voxel_world.place_block(coord, NormalBlockData::new(material)),
+                material.label().to_string(),
+                "place",
+            )
+        } else if let Some(prefab_name) = selected.prefab_name {
+            let request = BoundarySnapRequest {
+                prefab_name: prefab_name.clone(),
+                hit_macro: selection.occupied_macro,
+                face_normal: selection.face_normal,
+                rotation: selected.rotation,
+            };
+            let snap = voxel_world.place_prefab_boundary_snap(&request);
+            let ok = if snap.ok {
+                true
+            } else {
+                let reason = snap
+                    .preview
+                    .as_ref()
+                    .and_then(|preview| preview.reject_reason.as_deref())
+                    .unwrap_or("preview_unavailable");
+                if should_fallback_to_macro_prefab_place(reason) {
+                    voxel_world
+                        .place_prefab(&prefab_name, coord, selected.rotation)
+                        .ok
+                } else {
+                    false
+                }
+            };
+            (ok, prefab_name, "prefab_place_snap")
+        } else {
+            (false, selected.label, "place")
+        };
+        observer.emit(
+            "voxel",
+            if ok { event } else { "place_rejected" },
+            &[
+                ("coord", crate::voxel::format_macro_coord(coord)),
+                (
+                    "hit_coord",
+                    crate::voxel::format_macro_coord(selection.occupied_macro),
+                ),
+                (
+                    "face_normal",
+                    crate::voxel::format_macro_coord(selection.face_normal),
+                ),
+                ("selected", label.clone()),
+                ("source", "center_ray".to_string()),
+            ],
+        );
+        push_line(
+            &mut world_state.logs,
+            format!(
+                "voxel place {} selected={} ok={ok}",
+                crate::voxel::format_macro_coord(coord),
+                label
+            ),
+        );
     }
 }
 
@@ -943,8 +1413,18 @@ fn sample_movement_input(
     if chat_state.enabled {
         movement_intent.direction = Vec2::ZERO;
         movement_intent.expires_at = 0.0;
+        movement_intent.jump_requested = false;
         maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
         return;
+    }
+
+    if keyboard.just_pressed(KeyCode::Space) {
+        movement_intent.jump_requested = true;
+        observer.emit(
+            "input",
+            "jump_pressed",
+            &[("source", "keyboard".to_string())],
+        );
     }
 
     let direction = current_movement_direction(&keyboard);
@@ -982,16 +1462,18 @@ fn sample_movement_input(
     maybe_log_direction_change(&observer, &mut input_trace, movement_intent.direction);
 }
 
-fn movement_sender(
-    time: Res<Time>,
-    bridge: Res<NetworkBridge>,
-    config: Res<ClientConfig>,
-    observer: Res<ClientObserver>,
-    world_state: Res<WorldState>,
-    movement_intent: Res<MovementIntent>,
-    mut movement_dispatch: ResMut<MovementDispatchState>,
-    mut tick: ResMut<MovementTick>,
-) {
+fn movement_sender(params: MovementSendParams) {
+    let MovementSendParams {
+        time,
+        bridge,
+        config,
+        observer,
+        world_state,
+        mut movement_intent,
+        mut movement_dispatch,
+        mut tick,
+    } = params;
+
     if !world_state.scene_joined {
         return;
     }
@@ -1001,11 +1483,8 @@ fn movement_sender(
     }
 
     let direction = movement_intent.direction;
-    let movement_flags = if direction.length_squared() == 0.0 {
-        0b10
-    } else {
-        0
-    };
+    let jump_requested = movement_intent.jump_requested;
+    let movement_flags = movement_flags_for_intent(direction, jump_requested);
 
     let should_send_stop_sync = should_send_stop_sync(
         direction,
@@ -1013,7 +1492,7 @@ fn movement_sender(
         movement_dispatch.stop_sent,
     );
 
-    if direction.length_squared() == 0.0 && !should_send_stop_sync {
+    if direction.length_squared() == 0.0 && !should_send_stop_sync && !jump_requested {
         return;
     }
 
@@ -1028,7 +1507,10 @@ fn movement_sender(
         "input",
         "movement_sample_queued",
         &[
-            ("direction", format!("{:.2},{:.2}", direction.x, direction.y)),
+            (
+                "direction",
+                format!("{:.2},{:.2}", direction.x, direction.y),
+            ),
             ("movement_flags", movement_flags.to_string()),
             ("dt_ms", config.movement_interval_ms.to_string()),
             ("should_send_stop_sync", should_send_stop_sync.to_string()),
@@ -1051,19 +1533,23 @@ fn movement_sender(
         ],
     );
 
+    movement_intent.jump_requested = false;
     movement_dispatch.stop_sent = direction.length_squared() == 0.0
         && world_state.local_velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
 }
 
-fn poll_stdio_commands(
-    time: Res<Time>,
-    stdio: Res<ClientStdioInterface>,
-    bridge: Res<NetworkBridge>,
-    local_render_prediction: Res<LocalRenderPrediction>,
-    mut world_state: ResMut<WorldState>,
-    mut movement_intent: ResMut<MovementIntent>,
-    mut app_exit: MessageWriter<AppExit>,
-) {
+fn poll_stdio_commands(params: StdioCommandParams) {
+    let StdioCommandParams {
+        time,
+        stdio,
+        bridge,
+        local_render_prediction,
+        mut voxel_world,
+        mut world_state,
+        mut movement_intent,
+        mut app_exit,
+    } = params;
+
     loop {
         let Some(command) = stdio.try_recv() else {
             break;
@@ -1071,27 +1557,37 @@ fn poll_stdio_commands(
 
         match command {
             ClientStdioCommand::Snapshot => {
-                let fields = snapshot_fields(
-                    &world_state.status,
-                    world_state.scene_joined,
-                    world_state.local_cid,
-                    world_state.local_position,
-                    world_state.local_hp,
-                    world_state.local_max_hp,
-                    world_state.local_alive,
-                    world_state.movement_transport.label(),
-                    &world_state.fast_lane_status,
-                    world_state
+                let mut fields = snapshot_fields(SnapshotFields {
+                    status: &world_state.status,
+                    scene_joined: world_state.scene_joined,
+                    local_cid: world_state.local_cid,
+                    local_position: world_state.local_position,
+                    local_hp: world_state.local_hp,
+                    local_max_hp: world_state.local_max_hp,
+                    local_alive: world_state.local_alive,
+                    movement_transport: world_state.movement_transport.label(),
+                    fast_lane_status: &world_state.fast_lane_status,
+                    remote_player_count: world_state
                         .remote_actor_identity
                         .values()
                         .filter(|identity| matches!(identity.kind, RemoteActorKind::Player))
                         .count(),
-                    world_state
+                    remote_npc_count: world_state
                         .remote_actor_identity
                         .values()
                         .filter(|identity| identity.is_npc())
                         .count(),
-                );
+                });
+                fields.push(("voxel_sync", "offline-local".to_string()));
+                fields.push((
+                    "voxel_solid_cells",
+                    voxel_world.total_solid_cells().to_string(),
+                ));
+                fields.push((
+                    "voxel_hotbar",
+                    (voxel_world.hotbar().selected_index + 1).to_string(),
+                ));
+                fields.push(("voxel_selected", voxel_world.hotbar().selected.label));
                 emit_stdio("snapshot", &fields);
             }
             ClientStdioCommand::Position => {
@@ -1180,7 +1676,10 @@ fn poll_stdio_commands(
                 world_state.selected_target_cid = None;
                 emit_stdio(
                     "target_point",
-                    &[("point", format!("{:.1},{:.1},{:.1}", point.x, point.y, point.z))],
+                    &[(
+                        "point",
+                        format!("{:.1},{:.1},{:.1}", point.x, point.y, point.z),
+                    )],
                 );
             }
             ClientStdioCommand::ClearTargetPoint => {
@@ -1191,7 +1690,10 @@ fn poll_stdio_commands(
                 bridge.send(NetworkCommand::Chat(text.clone()));
                 emit_stdio("chat_sent", &[("text", text)]);
             }
-            ClientStdioCommand::Skill { skill_id, target_cid } => {
+            ClientStdioCommand::Skill {
+                skill_id,
+                target_cid,
+            } => {
                 let selected_target_point = world_state
                     .selected_target_point
                     .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
@@ -1238,7 +1740,9 @@ fn poll_stdio_commands(
                             "target_point",
                             dispatch
                                 .target_position
-                                .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
+                                .map(|value| {
+                                    format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2])
+                                })
                                 .unwrap_or_else(|| "n/a".to_string()),
                         ),
                     ],
@@ -1263,6 +1767,10 @@ fn poll_stdio_commands(
                 movement_intent.direction = Vec2::ZERO;
                 movement_intent.expires_at = 0.0;
                 emit_stdio("stop", &[]);
+            }
+            ClientStdioCommand::Jump => {
+                movement_intent.jump_requested = true;
+                emit_stdio("jump", &[("queued", "true".to_string())]);
             }
             ClientStdioCommand::ReconcileStats => {
                 bridge.send(NetworkCommand::RequestReconcileStats);
@@ -1325,13 +1833,15 @@ fn poll_stdio_commands(
                         ),
                         (
                             "partial_elapsed_secs",
-                            format!(
-                                "{:.4}",
-                                local_render_prediction.partial_elapsed_secs
-                            ),
+                            format!("{:.4}", local_render_prediction.partial_elapsed_secs),
                         ),
                     ],
                 );
+            }
+            ClientStdioCommand::Voxel(command) => {
+                let result =
+                    execute_voxel_cli_command(&mut voxel_world, command, Some(&voxel_save_dir()));
+                emit_stdio_owned(&result.event, result.ok, &result.fields);
             }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
@@ -1375,26 +1885,73 @@ fn movement_direction_from_key(key: &Key) -> Vec2 {
     }
 }
 
-fn sync_player_visuals(
+fn sync_voxel_visuals(
     mut commands: Commands,
-    time: Res<Time>,
-    world_state: Res<WorldState>,
-    local_render_prediction: Res<LocalRenderPrediction>,
-    config: Res<ClientConfig>,
-    mut existing: Query<(Entity, &PlayerVisual, &mut Transform, &mut Sprite)>,
+    voxel_world: Res<VoxelWorld>,
+    assets: Res<SceneRenderAssets>,
+    mut existing: Query<(
+        Entity,
+        &VoxelCellVisual,
+        &mut Transform,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
 ) {
+    let desired = voxel_world
+        .render_cells_3d()
+        .into_iter()
+        .map(|cell| ((cell.macro_coord, cell.micro), cell))
+        .collect::<HashMap<_, _>>();
+
+    let mut remaining = desired.clone();
+    for (entity, visual, mut transform, mut material) in &mut existing {
+        let key = (visual.macro_coord, visual.micro);
+        if let Some(cell) = desired.get(&key) {
+            transform.translation = voxel_render_translation(*cell);
+            transform.scale = voxel_render_scale(*cell);
+            *material = MeshMaterial3d(voxel_material_handle(
+                &assets,
+                cell.material_id,
+                cell.refined,
+            ));
+            remaining.remove(&key);
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    for cell in remaining.values().copied() {
+        commands.spawn((
+            VoxelCellVisual {
+                macro_coord: cell.macro_coord,
+                micro: cell.micro,
+            },
+            Mesh3d(assets.cube_mesh.clone()),
+            MeshMaterial3d(voxel_material_handle(
+                &assets,
+                cell.material_id,
+                cell.refined,
+            )),
+            Transform::from_translation(voxel_render_translation(cell))
+                .with_scale(voxel_render_scale(cell)),
+        ));
+    }
+}
+
+fn sync_player_visuals(mut commands: Commands, mut params: PlayerVisualParams) {
     let mut entities_by_cid = HashMap::new();
-    for (entity, visual, _transform, _sprite) in &existing {
+    for (entity, visual, _transform, _material) in &params.existing {
         entities_by_cid.insert(visual.cid, entity);
     }
 
-    let now_secs = time.elapsed_secs_f64();
-    let mut desired = world_state
+    let now_secs = params.time.elapsed_secs_f64();
+    let mut desired = params
+        .world_state
         .remote_players
         .iter()
         .map(|(&cid, state)| (cid, state.sample_motion(now_secs)))
         .collect::<HashMap<_, _>>();
-    if let Some(local) = local_render_prediction
+    if let Some(local) = params
+        .local_render_prediction
         .render_state
         .as_ref()
         .map(|state| RemoteMotionSample {
@@ -1402,85 +1959,77 @@ fn sync_player_visuals(
             velocity: state.velocity,
         })
         .or_else(|| {
-            world_state.local_position.map(|local| RemoteMotionSample {
-                position: local,
-                velocity: world_state.local_velocity,
-            })
+            params
+                .world_state
+                .local_position
+                .map(|local| RemoteMotionSample {
+                    position: local,
+                    velocity: params.world_state.local_velocity,
+                })
         })
     {
-        desired.insert(
-            world_state.local_cid,
-            local,
-        );
+        desired.insert(params.world_state.local_cid, local);
     }
 
     for (&cid, motion) in &desired {
-        let target = motion.position + Vec3::new(0.0, 0.0, 1.0);
-        let animation = animation_state_from_velocity(motion.velocity, config.movement_speed);
-        let actor_kind = world_state
+        let target = actor_render_position(&params.voxel_world, motion.position);
+        let animation =
+            animation_state_from_velocity(motion.velocity, params.config.movement_speed);
+        let actor_kind = params
+            .world_state
             .remote_actor_identity
             .get(&cid)
             .map(|identity| identity.kind)
             .unwrap_or(RemoteActorKind::Player);
-        let selected = world_state.selected_target_cid == Some(cid);
+        let selected = params.world_state.selected_target_cid == Some(cid);
+        let local = cid == params.world_state.local_cid;
+        let material = actor_material_handle(
+            &params.assets,
+            local,
+            selected,
+            actor_kind,
+            animation.moving,
+        );
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
-            if let Ok((_entity, _visual, mut transform, mut sprite)) = existing.get_mut(entity) {
-                transform.translation = if cid == world_state.local_cid {
+            if let Ok((_entity, _visual, mut transform, mut existing_material)) =
+                params.existing.get_mut(entity)
+            {
+                transform.translation = if local {
                     target
                 } else {
                     smooth_translation(
                         transform.translation,
                         target,
-                        time.delta_secs(),
+                        params.time.delta_secs(),
                         VISUAL_SMOOTHING_SPEED,
                         VISUAL_SNAP_DISTANCE,
                     )
                 };
-                transform.scale = animated_scale(transform.scale, animation, time.delta_secs());
-                sprite.color = if cid == world_state.local_cid {
-                    Color::srgb(0.25, 0.95, 0.45)
-                } else if selected {
-                    Color::srgb(1.0, 0.95, 0.35)
-                } else if matches!(actor_kind, RemoteActorKind::Npc) {
-                    Color::srgb(0.95, 0.45, 0.35)
-                } else if animation.moving {
-                    Color::srgb(0.35, 0.75, 1.0)
-                } else {
-                    Color::srgb(0.3, 0.65, 1.0)
-                };
+                transform.scale =
+                    animated_scale(transform.scale, animation, params.time.delta_secs());
+                *existing_material = MeshMaterial3d(material);
             }
         } else {
-            let color = if cid == world_state.local_cid {
-                Color::srgb(0.25, 0.95, 0.45)
-            } else if selected {
-                Color::srgb(1.0, 0.95, 0.35)
-            } else if matches!(actor_kind, RemoteActorKind::Npc) {
-                Color::srgb(0.95, 0.45, 0.35)
+            let scale = if matches!(actor_kind, RemoteActorKind::Npc) {
+                Vec3::new(30.0, 28.0, 24.0)
             } else {
-                Color::srgb(0.3, 0.65, 1.0)
-            };
-
-            let size = if matches!(actor_kind, RemoteActorKind::Npc) {
-                Vec2::new(28.0, 22.0)
-            } else {
-                Vec2::splat(24.0)
+                Vec3::new(24.0, 36.0, 24.0)
             };
 
             commands.spawn((
                 PlayerVisual { cid },
-                Sprite::from_color(color, size),
-                Transform::from_translation(target).with_scale(animated_scale(
-                    Vec3::ONE,
-                    animation,
-                    time.delta_secs(),
-                )),
+                Mesh3d(params.assets.player_mesh.clone()),
+                MeshMaterial3d(material),
+                Transform::from_translation(target).with_scale(
+                    scale * animated_scale(Vec3::ONE, animation, params.time.delta_secs()),
+                ),
             ));
         }
     }
 
     for (cid, entity) in entities_by_cid {
-        if cid != world_state.local_cid {
+        if cid != params.world_state.local_cid {
             commands.entity(entity).despawn();
         }
     }
@@ -1489,16 +2038,14 @@ fn sync_player_visuals(
 fn update_effect_visuals(
     mut commands: Commands,
     time: Res<Time>,
-    mut effects: Query<(Entity, &mut Transform, &mut Sprite, &mut EffectVisual)>,
+    mut effects: Query<(Entity, &mut Transform, &mut EffectVisual)>,
 ) {
-    for (entity, mut transform, mut sprite, mut effect) in &mut effects {
+    for (entity, mut transform, mut effect) in &mut effects {
         effect.timer.tick(time.delta());
         let progress = effect.timer.fraction();
-        let translation = effect_interpolated_translation(effect.kind, effect.origin, effect.target, progress);
-        transform.translation = translation + Vec3::new(0.0, 0.0, 5.0);
-        transform.scale = effect_runtime_scale(effect.kind, effect.radius, progress);
-        transform.rotation = effect_rotation(effect.kind, effect.origin, effect.target);
-        sprite.color = effect_runtime_color(effect.kind, progress);
+        let translation =
+            effect_interpolated_translation(effect.kind, effect.origin, effect.target, progress);
+        transform.translation = sim_to_render_position(translation) + Vec3::Y * 10.0;
 
         if effect.timer.is_finished() {
             commands.entity(entity).despawn();
@@ -1512,7 +2059,7 @@ fn update_target_point_marker(
 ) {
     if let Some(point) = world_state.selected_target_point {
         *marker.1 = Visibility::Visible;
-        marker.0.translation = point + Vec3::new(0.0, 0.0, 6.0);
+        marker.0.translation = sim_to_render_position(point) + Vec3::Y * 6.0;
     } else {
         *marker.1 = Visibility::Hidden;
     }
@@ -1521,15 +2068,9 @@ fn update_target_point_marker(
 fn update_hud_text(
     world_state: Res<WorldState>,
     chat_state: Res<ChatState>,
-    mut hud: Single<&mut Text, (With<HudText>, Without<ChatLogText>, Without<ChatInputText>)>,
-    mut chat_log_text: Single<
-        &mut Text,
-        (With<ChatLogText>, Without<HudText>, Without<ChatInputText>),
-    >,
-    mut chat_input_text: Single<
-        &mut Text,
-        (With<ChatInputText>, Without<HudText>, Without<ChatLogText>),
-    >,
+    voxel_world: Res<VoxelWorld>,
+    selection_state: Res<VoxelSelectionState>,
+    mut texts: HudTextParams,
 ) {
     let selected_target = world_state
         .selected_target_cid
@@ -1540,9 +2081,21 @@ fn update_hud_text(
         .selected_target_point
         .map(|value| format!("{:.1}, {:.1}, {:.1}", value.x, value.y, value.z))
         .unwrap_or_else(|| "none".to_string());
+    let voxel_selection = selection_state
+        .selection
+        .as_ref()
+        .map(|selection| {
+            format!(
+                "hit={} adjacent={} normal={}",
+                crate::voxel::format_macro_coord(selection.occupied_macro),
+                crate::voxel::format_macro_coord(selection.adjacent_macro),
+                crate::voxel::format_macro_coord(selection.face_normal)
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
 
-    hud.0 = format!(
-        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nselected point: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD move | Tab cycle target | RMB set point | 1-4 cast skills | Enter chat",
+    texts.hud.0 = format!(
+        "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nselected point: {}\nvoxel hotbar: {} ({})\nvoxel selection: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD/Space move | drag LMB/MMB orbit | Ctrl+wheel zoom | center ray LMB/G break | RMB/F place | wheel/1-7 hotbar | Shift+1-4 skills | Shift+RMB target | Enter chat",
         world_state.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
@@ -1559,6 +2112,9 @@ fn update_hud_text(
             .count(),
         selected_target,
         selected_point,
+        voxel_world.hotbar().selected.label,
+        voxel_world.hotbar().selected_index + 1,
+        voxel_selection,
         world_state.local_cid,
         world_state
             .local_position
@@ -1617,30 +2173,13 @@ fn update_hud_text(
     if !recent_logs.is_empty() {
         sections.push(format!("transport/demo\n{}", recent_logs.join("\n")));
     }
-    chat_log_text.0 = sections.join("\n\n");
+    texts.chat_log_text.0 = sections.join("\n\n");
 
-    chat_input_text.0 = if chat_state.enabled {
+    texts.chat_input_text.0 = if chat_state.enabled {
         format!("> {}_", chat_state.draft)
     } else {
         String::new()
     };
-}
-
-fn camera_follow_local_player(
-    time: Res<Time>,
-    world_state: Res<WorldState>,
-    visuals: Query<(&PlayerVisual, &Transform), Without<Camera2d>>,
-    mut camera: Single<&mut Transform, (With<Camera2d>, Without<PlayerVisual>)>,
-) {
-    let local_visual = visuals
-        .iter()
-        .find(|(visual, _transform)| visual.cid == world_state.local_cid)
-        .map(|(_visual, transform)| transform.translation);
-
-    if let Some(target) = desired_camera_target(local_visual, world_state.local_position) {
-        camera.translation =
-            smooth_camera_translation(camera.translation, target, time.delta_secs());
-    }
 }
 
 fn push_line(buffer: &mut VecDeque<String>, line: String) {
@@ -1654,10 +2193,590 @@ fn net_to_world(value: [f64; 3]) -> Vec3 {
     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32)
 }
 
-fn cursor_to_world(cursor: Vec2, window: &Window, camera_translation: Vec3) -> Vec3 {
-    let world_x = cursor.x - window.width() * 0.5 + camera_translation.x;
-    let world_y = window.height() * 0.5 - cursor.y + camera_translation.y;
-    Vec3::new(world_x, world_y, 90.0)
+fn sim_to_render_position(position: Vec3) -> Vec3 {
+    Vec3::new(position.x, position.z, position.y)
+}
+
+fn render_to_sim_position(position: Vec3) -> Vec3 {
+    Vec3::new(position.x, position.z, position.y)
+}
+
+fn camera_transform_from_orbit(state: &OrbitCameraState) -> Transform {
+    let horizontal = state.distance * state.pitch.cos();
+    let offset = Vec3::new(
+        horizontal * state.yaw.sin(),
+        state.distance * state.pitch.sin(),
+        horizontal * state.yaw.cos(),
+    );
+    Transform::from_translation(state.target + offset).looking_at(state.target, Vec3::Y)
+}
+
+fn ray_from_viewport(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    viewport_position: Vec2,
+) -> Option<RenderRay> {
+    let ray = camera
+        .viewport_to_world(camera_transform, viewport_position)
+        .ok()?;
+    Some(RenderRay {
+        origin: ray.origin,
+        direction: ray.direction.as_vec3(),
+    })
+}
+
+fn ray_intersection_with_y_plane(origin: Vec3, direction: Vec3, y: f32) -> Option<Vec3> {
+    if direction.y.abs() <= f32::EPSILON {
+        return None;
+    }
+    let distance = (y - origin.y) / direction.y;
+    (distance >= 0.0).then_some(origin + direction * distance)
+}
+
+fn voxel_render_translation(cell: VoxelRenderCell) -> Vec3 {
+    let mut x = cell.macro_coord.x as f32 * VOXEL_RENDER_CELL_SIZE + VOXEL_RENDER_CELL_SIZE * 0.5;
+    let mut y = cell.macro_coord.y as f32 * VOXEL_RENDER_CELL_SIZE + VOXEL_RENDER_CELL_SIZE * 0.5;
+    let mut z = cell.macro_coord.z as f32 * VOXEL_RENDER_CELL_SIZE + VOXEL_RENDER_CELL_SIZE * 0.5;
+    if let Some(micro) = cell.micro {
+        x = cell.macro_coord.x as f32 * VOXEL_RENDER_CELL_SIZE
+            + (micro.x as f32 + 0.5) * VOXEL_RENDER_MICRO_SIZE;
+        y = cell.macro_coord.y as f32 * VOXEL_RENDER_CELL_SIZE
+            + (micro.y as f32 + 0.5) * VOXEL_RENDER_MICRO_SIZE;
+        z = cell.macro_coord.z as f32 * VOXEL_RENDER_CELL_SIZE
+            + (micro.z as f32 + 0.5) * VOXEL_RENDER_MICRO_SIZE;
+    }
+    Vec3::new(x, y, z)
+}
+
+fn voxel_render_scale(cell: VoxelRenderCell) -> Vec3 {
+    let size = if cell.refined {
+        VOXEL_RENDER_MICRO_SIZE * 0.95
+    } else {
+        VOXEL_RENDER_CELL_SIZE * 0.96
+    };
+    Vec3::splat(size)
+}
+
+fn voxel_material_color(material_id: VoxelMaterialId, refined: bool) -> Color {
+    let color = match material_id {
+        VoxelMaterialId::Dirt => Color::srgb(0.45, 0.34, 0.22),
+        VoxelMaterialId::Stone => Color::srgb(0.48, 0.52, 0.56),
+        VoxelMaterialId::Wood => Color::srgb(0.64, 0.42, 0.22),
+        VoxelMaterialId::Ice => Color::srgb(0.52, 0.82, 0.95),
+    };
+    if refined {
+        color.with_alpha(0.82)
+    } else {
+        color
+    }
+}
+
+fn transparent_material(color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color,
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 0.88,
+        ..default()
+    }
+}
+
+fn voxel_material_handle(
+    assets: &SceneRenderAssets,
+    material_id: VoxelMaterialId,
+    refined: bool,
+) -> Handle<StandardMaterial> {
+    match (material_id, refined) {
+        (VoxelMaterialId::Dirt, false) => assets.dirt_material.clone(),
+        (VoxelMaterialId::Stone, false) => assets.stone_material.clone(),
+        (VoxelMaterialId::Wood, false) => assets.wood_material.clone(),
+        (VoxelMaterialId::Ice, false) => assets.ice_material.clone(),
+        (VoxelMaterialId::Dirt, true) => assets.dirt_refined_material.clone(),
+        (VoxelMaterialId::Stone, true) => assets.stone_refined_material.clone(),
+        (VoxelMaterialId::Wood, true) => assets.wood_refined_material.clone(),
+        (VoxelMaterialId::Ice, true) => assets.ice_refined_material.clone(),
+    }
+}
+
+fn actor_material_handle(
+    assets: &SceneRenderAssets,
+    local: bool,
+    selected: bool,
+    actor_kind: RemoteActorKind,
+    moving: bool,
+) -> Handle<StandardMaterial> {
+    if local {
+        assets.local_player_material.clone()
+    } else if selected {
+        assets.selected_actor_material.clone()
+    } else if matches!(actor_kind, RemoteActorKind::Npc) {
+        assets.npc_material.clone()
+    } else if moving {
+        assets.moving_player_material.clone()
+    } else {
+        assets.remote_player_material.clone()
+    }
+}
+
+fn should_fallback_to_macro_prefab_place(reason: &str) -> bool {
+    matches!(reason, "no_target_boundary" | "no_contact" | "empty_prefab")
+}
+
+fn update_orbit_camera(mut params: OrbitCameraParams) {
+    if !params.chat_state.enabled {
+        let rotating =
+            params.mouse.pressed(MouseButton::Left) || params.mouse.pressed(MouseButton::Middle);
+        if rotating {
+            let delta = params
+                .motion_reader
+                .read()
+                .fold(Vec2::ZERO, |acc, event| acc + event.delta);
+            params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
+            params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
+                .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+        } else {
+            params.motion_reader.clear();
+        }
+
+        let control_zoom = params.keyboard.pressed(KeyCode::ControlLeft)
+            || params.keyboard.pressed(KeyCode::ControlRight);
+        let wheel_delta = params.wheel_reader.read().map(|event| event.y).sum::<f32>();
+        if control_zoom && wheel_delta.abs() > f32::EPSILON {
+            params.orbit.distance = (params.orbit.distance - wheel_delta * 28.0)
+                .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+        }
+    } else {
+        params.motion_reader.clear();
+        params.wheel_reader.clear();
+    }
+
+    let desired_target = params
+        .local_render_prediction
+        .render_state
+        .as_ref()
+        .map(|state| actor_render_position(&params.voxel_world, state.position))
+        .or_else(|| {
+            params
+                .world_state
+                .local_position
+                .map(|position| actor_render_position(&params.voxel_world, position))
+        })
+        .map(|position| position + Vec3::Y * CAMERA_LOOK_HEIGHT)
+        .unwrap_or(params.orbit.target);
+
+    let target = smooth_translation(
+        params.orbit.target,
+        desired_target,
+        params.time.delta_secs(),
+        8.0,
+        300.0,
+    );
+    params.orbit.target = target;
+    **params.camera = camera_transform_from_orbit(&params.orbit);
+}
+
+fn update_voxel_selection(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    voxel_world: Res<VoxelWorld>,
+    mut selection_state: ResMut<VoxelSelectionState>,
+) {
+    let Ok(window) = windows.single() else {
+        selection_state.selection = None;
+        return;
+    };
+    let center = Vec2::new(window.width() * 0.5, window.height() * 0.5);
+    let (camera, camera_transform) = *camera;
+    selection_state.selection = ray_from_viewport(camera, camera_transform, center)
+        .and_then(|ray| find_voxel_selection_from_ray(&voxel_world, ray.origin, ray.direction));
+}
+
+fn draw_voxel_guides(
+    voxel_world: Res<VoxelWorld>,
+    selection_state: Res<VoxelSelectionState>,
+    mut gizmos: Gizmos,
+) {
+    let grid_extent = VOXEL_RENDER_CELL_SIZE * 24.0;
+    let grid_color = Color::srgba(0.32, 0.38, 0.44, 0.36);
+    for index in -12..=12 {
+        let offset = index as f32 * VOXEL_RENDER_CELL_SIZE;
+        gizmos.line(
+            Vec3::new(-grid_extent, 0.0, offset),
+            Vec3::new(grid_extent, 0.0, offset),
+            grid_color,
+        );
+        gizmos.line(
+            Vec3::new(offset, 0.0, -grid_extent),
+            Vec3::new(offset, 0.0, grid_extent),
+            grid_color,
+        );
+    }
+
+    let Some(selection) = selection_state.selection.as_ref() else {
+        return;
+    };
+
+    let (hit_min, hit_max) = selection_bounds(selection);
+    draw_face_outline(
+        &mut gizmos,
+        hit_min,
+        hit_max,
+        selection.face_normal,
+        Color::srgb(1.0, 0.95, 0.35),
+    );
+
+    let selected = voxel_world.hotbar().selected;
+    if selected.material_id.is_some() {
+        let (min, max) = macro_bounds(selection.adjacent_macro);
+        draw_box_wire(&mut gizmos, min, max, Color::srgba(0.35, 1.0, 0.55, 0.72));
+        return;
+    }
+
+    if let Some(prefab_name) = selected.prefab_name {
+        let request = BoundarySnapRequest {
+            prefab_name,
+            hit_macro: selection.occupied_macro,
+            face_normal: selection.face_normal,
+            rotation: selected.rotation,
+        };
+        let preview = voxel_world.preview_prefab_boundary_snap(&request);
+        if preview.ok {
+            draw_prefab_preview(&mut gizmos, &preview, Color::srgba(0.45, 0.9, 1.0, 0.7));
+        } else if preview
+            .reject_reason
+            .as_deref()
+            .is_some_and(should_fallback_to_macro_prefab_place)
+        {
+            let (min, max) = macro_bounds(selection.adjacent_macro);
+            draw_box_wire(&mut gizmos, min, max, Color::srgba(0.45, 0.9, 1.0, 0.5));
+        }
+    }
+}
+
+fn draw_effect_gizmos(effects: Query<&EffectVisual>, mut gizmos: Gizmos) {
+    for effect in &effects {
+        let progress = effect.timer.fraction();
+        let color = effect_runtime_color(effect.kind, progress);
+        let origin = sim_to_render_position(effect.origin) + Vec3::Y * 18.0;
+        let target = sim_to_render_position(effect.target) + Vec3::Y * 18.0;
+        let current = sim_to_render_position(effect_interpolated_translation(
+            effect.kind,
+            effect.origin,
+            effect.target,
+            progress,
+        )) + Vec3::Y * 18.0;
+
+        match effect.kind {
+            EffectCueKind::Projectile => {
+                gizmos.line(origin, current, color);
+                gizmos.sphere(current, 8.0, color);
+            }
+            EffectCueKind::MeleeArc | EffectCueKind::ChainArc => {
+                gizmos.line(origin, target, color);
+                gizmos.sphere(current, 5.0, color);
+            }
+            EffectCueKind::AoeRing => {
+                gizmos.circle(
+                    Isometry3d::new(target, Quat::from_rotation_arc(Vec3::Z, Vec3::Y)),
+                    effect.radius.max(24.0),
+                    color,
+                );
+            }
+            EffectCueKind::ImpactPulse | EffectCueKind::Unknown(_) => {
+                gizmos.sphere(current, 10.0 + progress * 22.0, color);
+            }
+        }
+    }
+}
+
+fn actor_render_position(voxel_world: &VoxelWorld, sim_position: Vec3) -> Vec3 {
+    let render = sim_to_render_position(sim_position);
+    let grounded_y =
+        surface_center_y_at_render_xz(voxel_world, render.x, render.z, ACTOR_HALF_HEIGHT, render.y);
+    Vec3::new(render.x, grounded_y, render.z)
+}
+
+fn surface_center_y_at_render_xz(
+    voxel_world: &VoxelWorld,
+    render_x: f32,
+    render_z: f32,
+    half_height: f32,
+    fallback_y: f32,
+) -> f32 {
+    let mut top_y = None::<f32>;
+    for cell in voxel_world.render_cells_3d() {
+        let (min, max) = voxel_cell_bounds(cell);
+        if render_x >= min.x && render_x <= max.x && render_z >= min.z && render_z <= max.z {
+            top_y = Some(top_y.map_or(max.y, |current| current.max(max.y)));
+        }
+    }
+    top_y
+        .map(|top| top + half_height)
+        .unwrap_or(fallback_y)
+        .max(fallback_y)
+}
+
+fn find_voxel_selection_from_ray(
+    voxel_world: &VoxelWorld,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<VoxelRaySelection> {
+    let direction = direction.try_normalize()?;
+    let mut best = None::<(f32, VoxelRenderCell, MacroCoord, Vec3)>;
+
+    for cell in voxel_world.render_cells_3d() {
+        let (min, max) = voxel_cell_bounds(cell);
+        if let Some((distance, face_normal)) =
+            ray_intersect_aabb(origin, direction, min, max, VOXEL_RAY_MAX_DISTANCE)
+            && best
+                .as_ref()
+                .is_none_or(|(best_distance, _, _, _)| distance < *best_distance)
+        {
+            best = Some((distance, cell, face_normal, origin + direction * distance));
+        }
+    }
+
+    let (_distance, cell, face_normal, hit_point) = best?;
+    let adjacent_macro = MacroCoord::new(
+        cell.macro_coord.x + face_normal.x,
+        cell.macro_coord.y + face_normal.y,
+        cell.macro_coord.z + face_normal.z,
+    );
+    let occupied_micro = match cell.micro {
+        Some(micro) => Some(MicroCellTarget {
+            macro_coord: cell.macro_coord,
+            micro,
+        }),
+        None => micro_target_from_render_point(hit_point - macro_coord_to_vec3(face_normal) * 0.01),
+    };
+    let adjacent_micro =
+        micro_target_from_render_point(hit_point + macro_coord_to_vec3(face_normal) * 0.01);
+
+    Some(VoxelRaySelection {
+        occupied_macro: cell.macro_coord,
+        adjacent_macro,
+        face_normal,
+        occupied_micro,
+        adjacent_micro,
+    })
+}
+
+fn ray_intersect_aabb(
+    origin: Vec3,
+    direction: Vec3,
+    min: Vec3,
+    max: Vec3,
+    max_distance: f32,
+) -> Option<(f32, MacroCoord)> {
+    let mut t_min = 0.0_f32;
+    let mut t_max = max_distance;
+    let mut normal = MacroCoord::new(0, 0, 0);
+
+    for axis in 0..3 {
+        let origin_axis = origin[axis];
+        let direction_axis = direction[axis];
+        let min_axis = min[axis];
+        let max_axis = max[axis];
+
+        if direction_axis.abs() <= f32::EPSILON {
+            if origin_axis < min_axis || origin_axis > max_axis {
+                return None;
+            }
+            continue;
+        }
+
+        let (near_plane, far_plane, near_normal, _far_normal) = if direction_axis > 0.0 {
+            (
+                min_axis,
+                max_axis,
+                negative_axis_normal(axis),
+                positive_axis_normal(axis),
+            )
+        } else {
+            (
+                max_axis,
+                min_axis,
+                positive_axis_normal(axis),
+                negative_axis_normal(axis),
+            )
+        };
+        let t_near = (near_plane - origin_axis) / direction_axis;
+        let t_far = (far_plane - origin_axis) / direction_axis;
+
+        if t_near > t_min {
+            t_min = t_near;
+            normal = near_normal;
+        }
+        t_max = t_max.min(t_far);
+        if t_min > t_max {
+            return None;
+        }
+    }
+
+    (t_min >= 0.0 && t_min <= max_distance).then_some((t_min, normal))
+}
+
+fn positive_axis_normal(axis: usize) -> MacroCoord {
+    match axis {
+        0 => MacroCoord::new(1, 0, 0),
+        1 => MacroCoord::new(0, 1, 0),
+        _ => MacroCoord::new(0, 0, 1),
+    }
+}
+
+fn negative_axis_normal(axis: usize) -> MacroCoord {
+    match axis {
+        0 => MacroCoord::new(-1, 0, 0),
+        1 => MacroCoord::new(0, -1, 0),
+        _ => MacroCoord::new(0, 0, -1),
+    }
+}
+
+fn macro_coord_to_vec3(coord: MacroCoord) -> Vec3 {
+    Vec3::new(coord.x as f32, coord.y as f32, coord.z as f32)
+}
+
+fn voxel_cell_bounds(cell: VoxelRenderCell) -> (Vec3, Vec3) {
+    if let Some(micro) = cell.micro {
+        micro_bounds(MicroCellTarget {
+            macro_coord: cell.macro_coord,
+            micro,
+        })
+    } else {
+        macro_bounds(cell.macro_coord)
+    }
+}
+
+fn macro_bounds(coord: MacroCoord) -> (Vec3, Vec3) {
+    let min = Vec3::new(
+        coord.x as f32 * VOXEL_RENDER_CELL_SIZE,
+        coord.y as f32 * VOXEL_RENDER_CELL_SIZE,
+        coord.z as f32 * VOXEL_RENDER_CELL_SIZE,
+    );
+    (min, min + Vec3::splat(VOXEL_RENDER_CELL_SIZE))
+}
+
+fn micro_bounds(target: MicroCellTarget) -> (Vec3, Vec3) {
+    let min = Vec3::new(
+        target.macro_coord.x as f32 * VOXEL_RENDER_CELL_SIZE
+            + target.micro.x as f32 * VOXEL_RENDER_MICRO_SIZE,
+        target.macro_coord.y as f32 * VOXEL_RENDER_CELL_SIZE
+            + target.micro.y as f32 * VOXEL_RENDER_MICRO_SIZE,
+        target.macro_coord.z as f32 * VOXEL_RENDER_CELL_SIZE
+            + target.micro.z as f32 * VOXEL_RENDER_MICRO_SIZE,
+    );
+    (min, min + Vec3::splat(VOXEL_RENDER_MICRO_SIZE))
+}
+
+fn micro_target_from_render_point(point: Vec3) -> Option<MicroCellTarget> {
+    let macro_coord = MacroCoord::new(
+        (point.x / VOXEL_RENDER_CELL_SIZE).floor() as i32,
+        (point.y / VOXEL_RENDER_CELL_SIZE).floor() as i32,
+        (point.z / VOXEL_RENDER_CELL_SIZE).floor() as i32,
+    );
+    let macro_min = Vec3::new(
+        macro_coord.x as f32 * VOXEL_RENDER_CELL_SIZE,
+        macro_coord.y as f32 * VOXEL_RENDER_CELL_SIZE,
+        macro_coord.z as f32 * VOXEL_RENDER_CELL_SIZE,
+    );
+    let local = point - macro_min;
+    let micro = MicroCoord::new(
+        (local.x / VOXEL_RENDER_MICRO_SIZE)
+            .floor()
+            .clamp(0.0, (crate::voxel::MICRO_PER_MACRO - 1) as f32) as i32,
+        (local.y / VOXEL_RENDER_MICRO_SIZE)
+            .floor()
+            .clamp(0.0, (crate::voxel::MICRO_PER_MACRO - 1) as f32) as i32,
+        (local.z / VOXEL_RENDER_MICRO_SIZE)
+            .floor()
+            .clamp(0.0, (crate::voxel::MICRO_PER_MACRO - 1) as f32) as i32,
+    );
+    Some(MicroCellTarget { macro_coord, micro })
+}
+
+fn selection_bounds(selection: &VoxelRaySelection) -> (Vec3, Vec3) {
+    selection
+        .occupied_micro
+        .map(micro_bounds)
+        .unwrap_or_else(|| macro_bounds(selection.occupied_macro))
+}
+
+fn draw_prefab_preview(gizmos: &mut Gizmos, preview: &BoundarySnapPreview, color: Color) {
+    for cell in &preview.cells {
+        for x in 0..crate::voxel::MICRO_PER_MACRO {
+            for y in 0..crate::voxel::MICRO_PER_MACRO {
+                for z in 0..crate::voxel::MICRO_PER_MACRO {
+                    let micro = MicroCoord::new(x, y, z);
+                    if cell.data.micro_occupancy_mask.contains(micro) {
+                        let (min, max) = micro_bounds(MicroCellTarget {
+                            macro_coord: cell.macro_coord,
+                            micro,
+                        });
+                        draw_box_wire(gizmos, min, max, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_face_outline(gizmos: &mut Gizmos, min: Vec3, max: Vec3, normal: MacroCoord, color: Color) {
+    let corners = if normal.x != 0 {
+        let x = if normal.x > 0 { max.x } else { min.x };
+        [
+            Vec3::new(x, min.y, min.z),
+            Vec3::new(x, max.y, min.z),
+            Vec3::new(x, max.y, max.z),
+            Vec3::new(x, min.y, max.z),
+        ]
+    } else if normal.y != 0 {
+        let y = if normal.y > 0 { max.y } else { min.y };
+        [
+            Vec3::new(min.x, y, min.z),
+            Vec3::new(max.x, y, min.z),
+            Vec3::new(max.x, y, max.z),
+            Vec3::new(min.x, y, max.z),
+        ]
+    } else {
+        let z = if normal.z > 0 { max.z } else { min.z };
+        [
+            Vec3::new(min.x, min.y, z),
+            Vec3::new(max.x, min.y, z),
+            Vec3::new(max.x, max.y, z),
+            Vec3::new(min.x, max.y, z),
+        ]
+    };
+    for index in 0..4 {
+        gizmos.line(corners[index], corners[(index + 1) % 4], color);
+    }
+}
+
+fn draw_box_wire(gizmos: &mut Gizmos, min: Vec3, max: Vec3, color: Color) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+    for (a, b) in [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ] {
+        gizmos.line(corners[a], corners[b], color);
+    }
 }
 
 fn effect_color(kind: EffectCueKind) -> Color {
@@ -1671,24 +2790,6 @@ fn effect_color(kind: EffectCueKind) -> Color {
     }
 }
 
-fn effect_size(kind: EffectCueKind, radius: f32) -> Vec2 {
-    match kind {
-        EffectCueKind::MeleeArc => Vec2::new(48.0, 18.0),
-        EffectCueKind::Projectile => Vec2::splat(12.0),
-        EffectCueKind::AoeRing => Vec2::new(radius.max(24.0), radius.max(24.0)),
-        EffectCueKind::ChainArc => Vec2::new(80.0, 8.0),
-        EffectCueKind::ImpactPulse => Vec2::splat(24.0),
-        EffectCueKind::Unknown(_) => Vec2::splat(16.0),
-    }
-}
-
-fn effect_scale(kind: EffectCueKind, radius: f32) -> Vec3 {
-    match kind {
-        EffectCueKind::AoeRing => Vec3::new((radius / 32.0).max(1.0), (radius / 32.0).max(1.0), 1.0),
-        _ => Vec3::ONE,
-    }
-}
-
 fn effect_spawn_translation(kind: EffectCueKind, origin: Vec3, target: Vec3) -> Vec3 {
     match kind {
         EffectCueKind::Projectile | EffectCueKind::MeleeArc | EffectCueKind::ChainArc => origin,
@@ -1696,7 +2797,12 @@ fn effect_spawn_translation(kind: EffectCueKind, origin: Vec3, target: Vec3) -> 
     }
 }
 
-fn effect_interpolated_translation(kind: EffectCueKind, origin: Vec3, target: Vec3, progress: f32) -> Vec3 {
+fn effect_interpolated_translation(
+    kind: EffectCueKind,
+    origin: Vec3,
+    target: Vec3,
+    progress: f32,
+) -> Vec3 {
     match kind {
         EffectCueKind::Projectile => origin.lerp(target, progress),
         EffectCueKind::MeleeArc => origin.lerp(target, 0.35),
@@ -1705,35 +2811,11 @@ fn effect_interpolated_translation(kind: EffectCueKind, origin: Vec3, target: Ve
     }
 }
 
-fn effect_runtime_scale(kind: EffectCueKind, radius: f32, progress: f32) -> Vec3 {
-    match kind {
-        EffectCueKind::Projectile => Vec3::splat(1.0 + progress * 0.4),
-        EffectCueKind::AoeRing => {
-            let base = (radius / 48.0).max(0.8);
-            Vec3::splat(base + progress * 0.45)
-        }
-        EffectCueKind::ImpactPulse => Vec3::splat(1.0 + progress * 1.8),
-        EffectCueKind::MeleeArc => Vec3::new(1.0 + progress * 0.8, 1.0, 1.0),
-        EffectCueKind::ChainArc => Vec3::new(1.0 + progress * 0.2, 1.0, 1.0),
-        EffectCueKind::Unknown(_) => effect_scale(kind, radius),
-    }
-}
-
 fn effect_runtime_color(kind: EffectCueKind, progress: f32) -> Color {
     let mut color = effect_color(kind);
     let alpha = color.to_srgba().alpha;
     color.set_alpha((1.0 - progress).clamp(0.0, 1.0) * alpha);
     color
-}
-
-fn effect_rotation(kind: EffectCueKind, origin: Vec3, target: Vec3) -> Quat {
-    match kind {
-        EffectCueKind::MeleeArc | EffectCueKind::ChainArc | EffectCueKind::Projectile => {
-            let delta = target - origin;
-            Quat::from_rotation_z(delta.y.atan2(delta.x))
-        }
-        _ => Quat::IDENTITY,
-    }
 }
 
 fn is_printable_char(chr: char) -> bool {
@@ -1772,6 +2854,14 @@ fn direction_label(direction: Vec2) -> String {
     format!("{:.1},{:.1}", direction.x, direction.y)
 }
 
+fn voxel_save_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(".demo")
+        .join("observe")
+}
+
 fn advance_local_render_prediction(
     time: Res<Time>,
     config: Res<ClientConfig>,
@@ -1797,11 +2887,7 @@ fn advance_local_render_prediction(
         .clamp(0.0, config.movement_interval_ms as f32 / 1_000.0);
 
     let direction = movement_intent.direction;
-    let movement_flags = if direction.length_squared() == 0.0 {
-        MOVEMENT_FLAG_BRAKE
-    } else {
-        0
-    };
+    let movement_flags = movement_flags_for_intent(direction, movement_intent.jump_requested);
 
     let partial_elapsed = local_render_prediction.partial_elapsed_secs;
     let stepped_anchor = if partial_elapsed <= f32::EPSILON {
@@ -1837,6 +2923,20 @@ fn should_send_stop_sync(direction: Vec2, local_velocity: Vec3, stop_sent: bool)
     // non-zero residual velocity snapshot, which causes the local and remote
     // final positions to drift apart after longer movement bursts.
     !stop_sent || local_velocity.length() > FINAL_STOP_SYNC_SPEED_EPSILON
+}
+
+fn movement_flags_for_intent(direction: Vec2, jump_requested: bool) -> u16 {
+    let mut movement_flags = if direction.length_squared() == 0.0 {
+        MOVEMENT_FLAG_BRAKE
+    } else {
+        0
+    };
+
+    if jump_requested {
+        movement_flags |= MOVEMENT_FLAG_JUMP;
+    }
+
+    movement_flags
 }
 
 #[cfg(test)]
@@ -1940,22 +3040,72 @@ mod tests {
     }
 
     #[test]
-    fn cursor_to_world_flips_window_y_axis() {
-        let mut window = Window::default();
-        window.resolution.set(1280.0, 720.0);
+    fn pressing_space_sets_one_shot_jump_intent_and_flag() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
+            .insert_resource(ChatState::default())
+            .insert_resource(ClientObserver::default())
+            .insert_resource(InputTraceState::default())
+            .insert_resource(MovementIntent::default())
+            .add_systems(Update, sample_movement_input);
 
-        let camera = Vec3::new(100.0, 200.0, 999.0);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.update();
 
-        let bottom_cursor = Vec2::new(640.0, 700.0);
-        let top_cursor = Vec2::new(640.0, 20.0);
+        let intent = app.world().resource::<MovementIntent>();
+        assert!(intent.jump_requested);
+        assert_eq!(
+            movement_flags_for_intent(Vec2::ZERO, true),
+            MOVEMENT_FLAG_BRAKE | crate::input::commands::MOVEMENT_FLAG_JUMP
+        );
+    }
 
-        let bottom_world = cursor_to_world(bottom_cursor, &window, camera);
-        let top_world = cursor_to_world(top_cursor, &window, camera);
+    #[test]
+    fn voxel_3d_ray_selects_hit_face_and_adjacent_macro() {
+        let mut world = VoxelWorld::new();
+        world.place_block(
+            MacroCoord::new(0, 0, 0),
+            NormalBlockData::new(VoxelMaterialId::Dirt),
+        );
 
-        assert!(bottom_world.y < camera.y);
-        assert!(top_world.y > camera.y);
-        assert_eq!(bottom_world.x, camera.x);
-        assert_eq!(top_world.x, camera.x);
+        let selection = find_voxel_selection_from_ray(
+            &world,
+            Vec3::new(50.0, 260.0, 50.0),
+            Vec3::new(0.0, -1.0, 0.0),
+        )
+        .expect("top face hit");
+
+        assert_eq!(selection.occupied_macro, MacroCoord::new(0, 0, 0));
+        assert_eq!(selection.face_normal, MacroCoord::new(0, 1, 0));
+        assert_eq!(selection.adjacent_macro, MacroCoord::new(0, 1, 0));
+        assert_eq!(selection.occupied_micro.unwrap().micro.y, 7);
+        assert_eq!(
+            selection.adjacent_micro.unwrap().macro_coord,
+            MacroCoord::new(0, 1, 0)
+        );
+    }
+
+    #[test]
+    fn voxel_3d_render_cells_include_all_refined_micro_slots() {
+        let mut world = VoxelWorld::new();
+        let placed = world.place_prefab(
+            "builtin_sphere",
+            MacroCoord::new(8, 5, 8),
+            crate::voxel::Rotation::Rot0,
+        );
+        assert!(placed.ok);
+
+        let refined_cells = world.render_cells_3d();
+        assert_eq!(refined_cells.len(), 280);
+        assert!(refined_cells.iter().any(|cell| {
+            cell.macro_coord == MacroCoord::new(8, 5, 8)
+                && cell.micro == Some(crate::voxel::MicroCoord::new(4, 4, 4))
+                && cell.material_id == VoxelMaterialId::Wood
+        }));
     }
 
     #[test]

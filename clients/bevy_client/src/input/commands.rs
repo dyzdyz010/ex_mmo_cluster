@@ -9,6 +9,8 @@ pub type MovementFlags = u16;
 pub const MOVEMENT_FLAG_RUN: MovementFlags = 0b0000_0001;
 /// Brake modifier bit.
 pub const MOVEMENT_FLAG_BRAKE: MovementFlags = 0b0000_0010;
+/// One-shot grounded jump request bit.
+pub const MOVEMENT_FLAG_JUMP: MovementFlags = 0b0000_0100;
 
 #[derive(Debug, Clone, PartialEq)]
 /// One local input sample destined for prediction and transport.
@@ -31,6 +33,11 @@ impl MoveInputFrame {
     pub fn is_running(&self) -> bool {
         self.movement_flags & MOVEMENT_FLAG_RUN != 0
     }
+
+    /// Returns whether the frame requests a one-shot grounded jump.
+    pub fn is_jump_requested(&self) -> bool {
+        self.movement_flags & MOVEMENT_FLAG_JUMP != 0
+    }
 }
 
 #[cfg(test)]
@@ -50,5 +57,19 @@ mod tests {
 
         assert!(frame.is_running());
         assert!(frame.is_braking());
+    }
+
+    #[test]
+    fn movement_flags_report_jump() {
+        let frame = MoveInputFrame {
+            seq: 1,
+            client_tick: 10,
+            dt_ms: 16,
+            input_dir: Vec2::ZERO,
+            speed_scale: 1.0,
+            movement_flags: MOVEMENT_FLAG_JUMP,
+        };
+
+        assert!(frame.is_jump_requested());
     }
 }

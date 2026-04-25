@@ -19,8 +19,17 @@ keeping all networking/gameplay glue inside `app.rs`.
   - smoothing, camera, animation-facing helpers
 - `world/`
   - local vs remote actor runtime state
+- `voxel/`
+  - offline-local voxel world, refined microgrid, prefab/hotbar, CLI snapshot truth
+- `app.rs`
+  - Bevy runtime composition; owns the 3D camera, PBR voxel/actor meshes,
+    center-ray voxel picking, face highlight, prefab preview gizmos, and the
+    GUI-to-voxel input adapter
 - `stdio.rs`
   - attached stdio automation interface
+- `login.rs`
+  - egui login UI; systems that construct egui widgets must run in
+    `EguiPrimaryContextPass`, not the normal Bevy `Update` schedule
 - `headless.rs`
   - non-visual automation/QA entrypoint
 

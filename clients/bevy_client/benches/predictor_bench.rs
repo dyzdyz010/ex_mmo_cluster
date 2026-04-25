@@ -4,7 +4,7 @@
 //!   1. `predictor::step`     — one local f32 prediction tick (per input frame).
 //!   2. `reconcile` (accept)  — hot path when the ack matches predicted state.
 //!   3. `reconcile` (replay)  — cold path when the ack diverges by >soft but
-//!                              <hard threshold, forcing a full replay.
+//!      <hard threshold, forcing a full replay.
 //!   4. `reconcile` (hard_snap) — emergency path when distance > 256 units.
 //!
 //! Run with `cargo bench --bench predictor_bench` from the bevy_client dir.
@@ -21,7 +21,7 @@ use bevy_client::{
         types::{MovementAck, PredictedMoveState},
     },
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use movement_core::MovementMode;
 
 fn make_input(seq: u32, dir: bevy::prelude::Vec2) -> MoveInputFrame {
@@ -42,11 +42,8 @@ fn bench_predictor_step(c: &mut Criterion) {
 
     c.bench_function("predictor::step single_tick", |b| {
         b.iter(|| {
-            let next = predictor::step(
-                black_box(&previous),
-                black_box(&input),
-                black_box(&profile),
-            );
+            let next =
+                predictor::step(black_box(&previous), black_box(&input), black_box(&profile));
             black_box(next);
         });
     });
@@ -115,11 +112,8 @@ fn bench_reconcile_replay_full(c: &mut Criterion) {
             let mut inputs = input_history_src.clone();
             let mut predicted = predicted_history_src.clone();
             // Ack seq=4, position shifted by 5 units to force divergence < hard-snap.
-            let shifted_position = predicted
-                .state_at_seq(4)
-                .unwrap()
-                .position
-                + Vec3::new(5.0, 0.0, 0.0);
+            let shifted_position =
+                predicted.state_at_seq(4).unwrap().position + Vec3::new(5.0, 0.0, 0.0);
             let anchor_velocity = predicted.state_at_seq(4).unwrap().velocity;
             let anchor_acceleration = predicted.state_at_seq(4).unwrap().acceleration;
             let ack = MovementAck {

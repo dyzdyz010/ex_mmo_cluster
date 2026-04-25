@@ -24,9 +24,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Transport used for a particular message family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MessageTransport {
+    #[default]
     Tcp,
     Udp,
 }
@@ -38,12 +39,6 @@ impl MessageTransport {
             Self::Tcp => "TCP",
             Self::Udp => "UDP",
         }
-    }
-}
-
-impl Default for MessageTransport {
-    fn default() -> Self {
-        Self::Tcp
     }
 }
 
@@ -584,16 +579,16 @@ impl ClientRuntime {
             .with_event(self.transport_event());
 
         if allow_rebootstrap && self.phase == ConnectionPhase::InScene {
-            if let Some(cooldown_until) = cooldown_until {
-                if cooldown_until > now {
-                    self.fast_lane.cooldown_until = Some(cooldown_until);
-                    outcome.push_event(NetworkEvent::Log(format!(
-                        "udp fast-lane retry suppressed during cooldown ({}ms remaining)",
-                        cooldown_until.duration_since(now).as_millis()
-                    )));
-                    outcome.push_event(self.transport_event());
-                    return outcome;
-                }
+            if let Some(cooldown_until) = cooldown_until
+                && cooldown_until > now
+            {
+                self.fast_lane.cooldown_until = Some(cooldown_until);
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "udp fast-lane retry suppressed during cooldown ({}ms remaining)",
+                    cooldown_until.duration_since(now).as_millis()
+                )));
+                outcome.push_event(self.transport_event());
+                return outcome;
             }
 
             if self.fast_lane.rebootstrap_attempts < MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS {
@@ -644,19 +639,19 @@ impl ClientRuntime {
             return outcome;
         }
 
-        if let Some(retry_due_at) = self.fast_lane.retry_due_at {
-            if now >= retry_due_at {
-                let attempt = self.fast_lane.rebootstrap_attempts.max(1);
-                let request_id = self.next_request_id();
-                self.fast_lane.reset_for_bootstrap(request_id);
-                outcome.push_event(NetworkEvent::Log(format!(
-                    "retrying UDP fast-lane bootstrap (attempt {attempt}/{MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS})"
-                )));
-                outcome.push_event(self.transport_event());
-                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::FastLaneRequest {
-                    request_id,
-                }));
-            }
+        if let Some(retry_due_at) = self.fast_lane.retry_due_at
+            && now >= retry_due_at
+        {
+            let attempt = self.fast_lane.rebootstrap_attempts.max(1);
+            let request_id = self.next_request_id();
+            self.fast_lane.reset_for_bootstrap(request_id);
+            outcome.push_event(NetworkEvent::Log(format!(
+                "retrying UDP fast-lane bootstrap (attempt {attempt}/{MAX_FAST_LANE_REBOOTSTRAP_ATTEMPTS})"
+            )));
+            outcome.push_event(self.transport_event());
+            outcome.push_outbound(OutboundAction::Tcp(ClientMessage::FastLaneRequest {
+                request_id,
+            }));
         }
 
         outcome
@@ -1228,18 +1223,18 @@ fn network_loop(
         }
 
         let retry_outcome = runtime.poll_fast_lane_retry(Instant::now());
-        if !retry_outcome.outbounds.is_empty() || !retry_outcome.events.is_empty() {
-            if let Err(reason) = apply_runtime_outcome(
+        if (!retry_outcome.outbounds.is_empty() || !retry_outcome.events.is_empty())
+            && let Err(reason) = apply_runtime_outcome(
                 &mut runtime,
                 &mut stream,
                 &mut udp_socket,
                 &event_tx,
                 &observer,
                 retry_outcome,
-            ) {
-                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-                return;
-            }
+            )
+        {
+            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
+            return;
         }
 
         match stream.read(&mut read_buffer) {
@@ -1309,11 +1304,8 @@ fn network_loop(
         }
 
         if udp_socket.is_some() {
-            loop {
-                let recv_result = match udp_socket.as_ref() {
-                    Some(socket) => socket.recv(&mut udp_read_buffer),
-                    None => break,
-                };
+            while let Some(socket) = udp_socket.as_ref() {
+                let recv_result = socket.recv(&mut udp_read_buffer);
 
                 match recv_result {
                     Ok(n) => match decode_server_payload(&udp_read_buffer[..n]) {

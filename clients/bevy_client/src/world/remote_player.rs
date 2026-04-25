@@ -147,13 +147,13 @@ impl RemotePlayerState {
             return interpolate_pair(previous, next, playback_server_time);
         }
 
-        if let Some(oldest) = self.snapshots.front() {
-            if playback_server_time <= snapshot_time_secs(oldest.snapshot.server_tick) {
-                return RemoteMotionSample {
-                    position: oldest.snapshot.position,
-                    velocity: oldest.snapshot.velocity,
-                };
-            }
+        if let Some(oldest) = self.snapshots.front()
+            && playback_server_time <= snapshot_time_secs(oldest.snapshot.server_tick)
+        {
+            return RemoteMotionSample {
+                position: oldest.snapshot.position,
+                velocity: oldest.snapshot.velocity,
+            };
         }
 
         extrapolate_single(latest, now_secs)

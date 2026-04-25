@@ -83,6 +83,11 @@ impl InputHistory {
     pub fn len(&self) -> usize {
         self.frames.len()
     }
+
+    /// Returns whether the buffer has no input frames.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +198,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
         history.push(PredictedMoveState {
             seq: 2,
@@ -201,6 +207,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         assert_eq!(history.state_at_tick(2).unwrap().position.x, 2.0);
@@ -219,6 +226,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
         history.push(PredictedMoveState {
             seq: 2,
@@ -227,6 +235,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         assert_eq!(history.latest().unwrap().tick, 2);
@@ -242,6 +251,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
         history.push(PredictedMoveState {
             seq: 11,
@@ -250,6 +260,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         assert_eq!(history.state_at_seq(11).unwrap().position.x, 2.0);
@@ -268,6 +279,7 @@ mod tests {
                 velocity: Vec3::ZERO,
                 acceleration: Vec3::ZERO,
                 movement_mode: MovementMode::Grounded,
+                ground_z: 0.0,
             });
         }
 

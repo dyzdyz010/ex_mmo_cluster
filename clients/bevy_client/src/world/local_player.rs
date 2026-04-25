@@ -205,7 +205,7 @@ impl LocalPredictionRuntime {
             let idle_frame = MoveInputFrame {
                 seq: 0,
                 client_tick: current.tick + 1,
-                dt_ms: self.profile.fixed_dt_ms as u16,
+                dt_ms: self.profile.fixed_dt_ms,
                 input_dir: Vec2::ZERO,
                 speed_scale: 1.0,
                 movement_flags: crate::input::commands::MOVEMENT_FLAG_BRAKE,

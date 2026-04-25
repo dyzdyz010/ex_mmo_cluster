@@ -1,10 +1,11 @@
 //! Binary entrypoint that chooses between interactive and headless client modes.
 
 use bevy_client::{
-    app,
-    auth_client,
+    app, auth_client,
     config::ClientConfig,
-    headless::{HeadlessOptions, run as run_headless, run_stdio as run_headless_stdio},
+    headless::{
+        HeadlessOptions, run as run_headless, run_stdio as run_headless_stdio, run_voxel_headless,
+    },
     observe::ClientObserver,
     stdio::ClientStdioInterface,
 };
@@ -14,6 +15,11 @@ fn main() {
     let launch = match LaunchOptions::from_env_and_args() {
         Ok(options) => options,
         Err(error) => {
+            if error.starts_with("Usage:") {
+                println!("{error}");
+                process::exit(0);
+            }
+
             eprintln!("{error}");
             process::exit(2);
         }
@@ -23,7 +29,12 @@ fn main() {
     let observer = ClientObserver::new(launch.observe_log.clone(), launch.observe_stdout);
     let stdio_enabled = launch.stdio || env_flag("BEVY_CLIENT_STDIO");
 
-    if launch.headless {
+    if launch.voxel_headless {
+        if let Err(error) = run_voxel_headless(observer, &launch.headless_script) {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+    } else if launch.headless {
         let Some(username) = launch.username.as_deref() else {
             eprintln!("headless mode requires --username <name>");
             process::exit(2);
@@ -87,6 +98,7 @@ fn main() {
 #[derive(Debug)]
 struct LaunchOptions {
     headless: bool,
+    voxel_headless: bool,
     headless_script: String,
     wait_for_scene_ms: u64,
     drain_after_script_ms: u64,
@@ -102,6 +114,7 @@ impl LaunchOptions {
         let defaults = HeadlessOptions::default();
         let mut options = Self {
             headless: env_flag("BEVY_CLIENT_HEADLESS"),
+            voxel_headless: env_flag("BEVY_CLIENT_VOXEL_HEADLESS"),
             headless_script: env::var("BEVY_CLIENT_HEADLESS_SCRIPT")
                 .unwrap_or_else(|_| defaults.script.clone()),
             wait_for_scene_ms: env_parse_u64("BEVY_CLIENT_WAIT_FOR_SCENE_MS")
@@ -118,6 +131,7 @@ impl LaunchOptions {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--headless" => options.headless = true,
+                "--voxel-headless" => options.voxel_headless = true,
                 "--observe-stdout" => options.observe_stdout = true,
                 "--stdio" => options.stdio = true,
                 "--script" => {
@@ -182,7 +196,7 @@ fn env_parse_u64(key: &str) -> Option<u64> {
 fn help_text() -> String {
     [
         "Usage: cargo run -- [--username <name>] [--headless] [--script <steps>]",
-        "                     [--observe-log <path>] [--observe-stdout] [--stdio]",
+        "                     [--voxel-headless] [--observe-log <path>] [--observe-stdout] [--stdio]",
         "",
         "--username <name>   Skip the login panel and auto-login as <name>. Required for --headless.",
         "",
@@ -196,6 +210,9 @@ fn help_text() -> String {
         "  chat:<text>",
         "  skill:<id>",
         "  snapshot",
+        "",
+        "Voxel headless script steps are semicolon-separated web-style CLI commands:",
+        "  voxel_snapshot; place 1 2 3 wood; prefab_place builtin_sphere 8 5 8; world_export",
     ]
     .join("\n")
 }

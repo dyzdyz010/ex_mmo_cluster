@@ -2,15 +2,21 @@
 
 use crate::{
     config::{ClientConfig, SessionCredentials},
+    input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP},
     net::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent, spawn_network_thread},
     observe::ClientObserver,
     skill_targeting::prepare_skill_dispatch,
-    stdio::{ClientStdioCommand, ClientStdioInterface, emit as emit_stdio, snapshot_fields},
+    stdio::{
+        ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
+        emit_owned as emit_stdio_owned, snapshot_fields,
+    },
+    voxel::{VoxelWorld, execute_voxel_cli_command, parse_voxel_cli_command},
     world::remote_actor::RemoteActorIdentity,
 };
 use bevy::prelude::{Vec2, Vec3};
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::mpsc::TryRecvError,
     thread,
     time::{Duration, Instant},
@@ -22,6 +28,54 @@ pub struct HeadlessOptions {
     pub script: String,
     pub wait_for_scene_ms: u64,
     pub drain_after_script_ms: u64,
+}
+
+/// Runs the offline-local voxel runtime without requiring auth or gate server.
+pub fn run_voxel_headless(observer: ClientObserver, script: &str) -> Result<(), String> {
+    let mut world = VoxelWorld::new();
+    world.bootstrap_showcase(2);
+
+    observer.emit("voxel_headless", "start", &[("script", script.to_string())]);
+
+    for segment in script
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let command = parse_voxel_cli_command(segment)?
+            .ok_or_else(|| format!("unsupported voxel command: {segment}"))?;
+        let result = execute_voxel_cli_command(&mut world, command, Some(&voxel_save_dir()));
+        emit_stdio_owned(&result.event, result.ok, &result.fields);
+        observer.emit(
+            "voxel_headless",
+            &result.event,
+            &[
+                ("ok", result.ok.to_string()),
+                (
+                    "fields",
+                    result
+                        .fields
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+            ],
+        );
+        if !result.ok {
+            return Err(format!(
+                "voxel command failed: {segment}: {}",
+                result.field("reason").unwrap_or("unknown")
+            ));
+        }
+    }
+
+    observer.emit(
+        "voxel_headless",
+        "completed",
+        &[("solid_cells", world.total_solid_cells().to_string())],
+    );
+    Ok(())
 }
 
 impl Default for HeadlessOptions {
@@ -44,6 +98,7 @@ enum HeadlessAction {
     },
     Chat(String),
     Skill(u16),
+    Jump,
     Snapshot,
 }
 
@@ -64,6 +119,7 @@ struct HeadlessState {
     last_remote_transport: Option<MessageTransport>,
     movement_transport: MessageTransport,
     fast_lane_status: String,
+    voxel_world: VoxelWorld,
 }
 
 /// Runs the client headlessly with a scripted action list.
@@ -151,26 +207,34 @@ pub fn run_stdio(
         if let Some(command) = stdio.try_recv() {
             match command {
                 ClientStdioCommand::Snapshot => {
-                    emit_stdio(
-                        "snapshot",
-                        &snapshot_fields(
-                            &state.status,
-                            state.scene_joined,
-                            state.local_cid,
-                            state.local_position,
-                            state.local_hp,
-                            state.local_max_hp,
-                            state.local_alive,
-                            state.movement_transport.label(),
-                            &state.fast_lane_status,
-                            state.remote_players.len(),
-                            state
-                                .remote_actor_identity
-                                .values()
-                                .filter(|identity| identity.is_npc())
-                                .count(),
-                        ),
-                    );
+                    let mut fields = snapshot_fields(SnapshotFields {
+                        status: &state.status,
+                        scene_joined: state.scene_joined,
+                        local_cid: state.local_cid,
+                        local_position: state.local_position,
+                        local_hp: state.local_hp,
+                        local_max_hp: state.local_max_hp,
+                        local_alive: state.local_alive,
+                        movement_transport: state.movement_transport.label(),
+                        fast_lane_status: &state.fast_lane_status,
+                        remote_player_count: state.remote_players.len(),
+                        remote_npc_count: state
+                            .remote_actor_identity
+                            .values()
+                            .filter(|identity| identity.is_npc())
+                            .count(),
+                    });
+                    fields.push(("voxel_sync", "offline-local".to_string()));
+                    fields.push((
+                        "voxel_solid_cells",
+                        state.voxel_world.total_solid_cells().to_string(),
+                    ));
+                    fields.push((
+                        "voxel_hotbar",
+                        (state.voxel_world.hotbar().selected_index + 1).to_string(),
+                    ));
+                    fields.push(("voxel_selected", state.voxel_world.hotbar().selected.label));
+                    emit_stdio("snapshot", &fields);
                 }
                 ClientStdioCommand::Position => {
                     emit_stdio(
@@ -209,10 +273,7 @@ pub fn run_stdio(
                             Some((*cid, *position))
                         })
                         .collect::<HashMap<_, _>>();
-                    emit_stdio(
-                        "players",
-                        &[("players", format_players(&players))],
-                    );
+                    emit_stdio("players", &[("players", format_players(&players))]);
                 }
                 ClientStdioCommand::Npcs => {
                     let mut npcs = state
@@ -224,7 +285,11 @@ pub fn run_stdio(
                             }
 
                             let position = state.remote_players.get(cid)?;
-                            Some(format!("{cid}:{}:{}", identity.name, format_vec3(*position)))
+                            Some(format!(
+                                "{cid}:{}:{}",
+                                identity.name,
+                                format_vec3(*position)
+                            ))
                         })
                         .collect::<Vec<_>>();
                     npcs.sort();
@@ -242,10 +307,7 @@ pub fn run_stdio(
                 ClientStdioCommand::TargetPoint(point) => {
                     state.selected_target_point = Some(point);
                     state.selected_target_cid = None;
-                    emit_stdio(
-                        "target_point",
-                        &[("point", format_vec3(point))],
-                    );
+                    emit_stdio("target_point", &[("point", format_vec3(point))]);
                 }
                 ClientStdioCommand::ClearTargetPoint => {
                     state.selected_target_point = None;
@@ -256,7 +318,10 @@ pub fn run_stdio(
                     bridge.send(NetworkCommand::Chat(text.clone()));
                     emit_stdio("chat_sent", &[("text", text)]);
                 }
-                ClientStdioCommand::Skill { skill_id, target_cid } => {
+                ClientStdioCommand::Skill {
+                    skill_id,
+                    target_cid,
+                } => {
                     let dispatch = match prepare_skill_dispatch(
                         skill_id,
                         target_cid.or(state.selected_target_cid),
@@ -292,7 +357,7 @@ pub fn run_stdio(
                                 "target_point",
                                 dispatch
                                     .target_position
-                                    .map(|value| format_net_vec(value))
+                                    .map(format_net_vec)
                                     .unwrap_or_else(|| "n/a".to_string()),
                             ),
                         ],
@@ -317,7 +382,7 @@ pub fn run_stdio(
                                 "target_point",
                                 dispatch
                                     .target_position
-                                    .map(|value| format_net_vec(value))
+                                    .map(format_net_vec)
                                     .unwrap_or_else(|| "n/a".to_string()),
                             ),
                         ],
@@ -356,9 +421,18 @@ pub fn run_stdio(
                         input_dir: [0.0, 0.0],
                         dt_ms: config.movement_interval_ms as u16,
                         speed_scale: 1.0,
-                        movement_flags: 0b10,
+                        movement_flags: MOVEMENT_FLAG_BRAKE,
                     });
                     emit_stdio("stop", &[]);
+                }
+                ClientStdioCommand::Jump => {
+                    bridge.send(NetworkCommand::MoveInputSample {
+                        input_dir: [0.0, 0.0],
+                        dt_ms: config.movement_interval_ms as u16,
+                        speed_scale: 1.0,
+                        movement_flags: MOVEMENT_FLAG_BRAKE | MOVEMENT_FLAG_JUMP,
+                    });
+                    emit_stdio("jump", &[("queued", "true".to_string())]);
                 }
                 ClientStdioCommand::ReconcileStats => {
                     bridge.send(NetworkCommand::RequestReconcileStats);
@@ -381,6 +455,14 @@ pub fn run_stdio(
                             ("mode", "headless".to_string()),
                         ],
                     );
+                }
+                ClientStdioCommand::Voxel(command) => {
+                    let result = execute_voxel_cli_command(
+                        &mut state.voxel_world,
+                        command,
+                        Some(&voxel_save_dir()),
+                    );
+                    emit_stdio_owned(&result.event, result.ok, &result.fields);
                 }
                 ClientStdioCommand::Quit => {
                     bridge.send(NetworkCommand::Shutdown);
@@ -489,6 +571,16 @@ fn run_action(
             });
             drain_events_for(bridge, observer, state, Duration::from_millis(250))
         }
+        HeadlessAction::Jump => {
+            observer.emit("headless", "jump", &[]);
+            bridge.send(NetworkCommand::MoveInputSample {
+                input_dir: [0.0, 0.0],
+                dt_ms: config.movement_interval_ms as u16,
+                speed_scale: 1.0,
+                movement_flags: MOVEMENT_FLAG_BRAKE | MOVEMENT_FLAG_JUMP,
+            });
+            drain_events_for(bridge, observer, state, Duration::from_millis(350))
+        }
         HeadlessAction::Snapshot => {
             observer.emit(
                 "headless",
@@ -555,7 +647,7 @@ fn run_move(
         input_dir: [0.0, 0.0],
         dt_ms: config.movement_interval_ms as u16,
         speed_scale: 1.0,
-        movement_flags: 0b10,
+        movement_flags: MOVEMENT_FLAG_BRAKE,
     });
 
     observer.emit(
@@ -682,10 +774,9 @@ fn apply_event(observer: &ClientObserver, state: &mut HeadlessState, event: Netw
             state.remote_players.insert(cid, vec3_from_net(location));
         }
         NetworkEvent::ActorIdentity { cid, kind, name } => {
-            state.remote_actor_identity.insert(
-                cid,
-                RemoteActorIdentity { cid, kind, name },
-            );
+            state
+                .remote_actor_identity
+                .insert(cid, RemoteActorIdentity { cid, kind, name });
         }
         NetworkEvent::PlayerState {
             cid,
@@ -795,6 +886,7 @@ fn parse_action(segment: &str) -> Result<HeadlessAction, String> {
         }),
         ["chat", text] => Ok(HeadlessAction::Chat((*text).to_string())),
         ["skill", skill_id] => parse_u16(skill_id).map(HeadlessAction::Skill),
+        ["jump"] => Ok(HeadlessAction::Jump),
         ["snapshot"] => Ok(HeadlessAction::Snapshot),
         _ => Err(format!("unsupported headless action segment: {segment}")),
     }
@@ -850,6 +942,14 @@ fn format_players(players: &HashMap<i64, Vec3>) -> String {
         .collect::<Vec<_>>();
     entries.sort();
     format!("[{}]", entries.join(";"))
+}
+
+fn voxel_save_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(".demo")
+        .join("observe")
 }
 
 #[cfg(test)]

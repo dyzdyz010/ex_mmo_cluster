@@ -5,7 +5,7 @@ use crate::{
     config::{ClientConfig, SessionCredentials},
 };
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use std::{
     sync::{
         Mutex,
@@ -41,10 +41,15 @@ impl Plugin for LoginPlugin {
             app.add_plugins(EguiPlugin::default());
         }
 
-        app.insert_resource(LoginUi::default()).add_systems(
-            Update,
-            (login_panel_system, poll_pending_auth_system).run_if(in_state(AppState::Login)),
-        );
+        app.insert_resource(LoginUi::default())
+            .add_systems(
+                EguiPrimaryContextPass,
+                login_panel_system.run_if(in_state(AppState::Login)),
+            )
+            .add_systems(
+                Update,
+                poll_pending_auth_system.run_if(in_state(AppState::Login)),
+            );
     }
 }
 
@@ -74,8 +79,8 @@ fn login_panel_system(
                 !ui_state.in_flight,
                 egui::TextEdit::singleline(&mut ui_state.username_draft).desired_width(240.0),
             );
-            let submitted_with_enter = response.lost_focus()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let submitted_with_enter =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
             ui.add_space(8.0);
             let enter_clicked = ui

@@ -70,6 +70,7 @@ mod tests {
             velocity: bevy::prelude::Vec3::new(220.0, 0.0, 0.0),
             acceleration: bevy::prelude::Vec3::ZERO,
             movement_mode: crate::sim::types::MovementMode::Grounded,
+            ground_z: 0.0,
         };
         let input = MoveInputFrame {
             seq: 2,

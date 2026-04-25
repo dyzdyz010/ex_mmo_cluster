@@ -339,6 +339,7 @@ mod tests {
                 velocity: Vec3::ZERO,
                 acceleration: Vec3::ZERO,
                 movement_mode: MovementMode::Grounded,
+                ground_z: 0.0,
             };
             predicted_history.push(state.clone());
             states.push(state);
@@ -598,6 +599,7 @@ mod tests {
             velocity: reference_states[4].velocity,
             acceleration: reference_states[4].acceleration,
             movement_mode: MovementMode::Grounded,
+            ground_z: auth_anchor_position.z,
         };
 
         // Build histories as a client would after 16 ticks (all inputs sent,
@@ -727,6 +729,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         let ack = MovementAck {
@@ -739,8 +742,10 @@ mod tests {
             correction_flags: 0,
         };
 
-        let mut governance = crate::sim::governance::ReplayGovernance::default();
-        governance.hard_snap_distance = 64.0;
+        let governance = crate::sim::governance::ReplayGovernance {
+            hard_snap_distance: 64.0,
+            ..Default::default()
+        };
 
         let result = reconcile(
             &ack,
@@ -826,6 +831,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         let ack = MovementAck {
@@ -1104,6 +1110,7 @@ mod tests {
             velocity: Vec3::ZERO,
             acceleration: Vec3::ZERO,
             movement_mode: MovementMode::Grounded,
+            ground_z: 0.0,
         });
 
         let ack = MovementAck {
@@ -1116,8 +1123,10 @@ mod tests {
             correction_flags: 0,
         };
 
-        let mut governance = ReplayGovernance::default();
-        governance.hard_snap_distance = 64.0;
+        let governance = ReplayGovernance {
+            hard_snap_distance: 64.0,
+            ..Default::default()
+        };
 
         let result = reconcile(
             &ack,

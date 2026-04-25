@@ -23,4 +23,5 @@ pub mod protocol_v2;
 pub mod sim;
 pub mod skill_targeting;
 pub mod stdio;
+pub mod voxel;
 pub mod world;
