@@ -5,11 +5,11 @@ use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 
-use crate::app::ChatState;
 use crate::app::{
     FINAL_STOP_SYNC_SPEED_EPSILON, LocalRenderPrediction, MovementDispatchState, MovementIntent,
     VISUAL_CORRECTION_EPSILON_SQ, WorldState,
 };
+use crate::chat::ChatState;
 use crate::config::ClientConfig;
 use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame};
 use crate::login::AppState;
@@ -349,6 +349,7 @@ pub(crate) fn movement_flags_for_intent(direction: Vec2, jump_requested: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ChatState;
     use crate::observe::ClientObserver;
 
     #[test]

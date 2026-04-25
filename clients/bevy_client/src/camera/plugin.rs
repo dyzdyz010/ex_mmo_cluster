@@ -6,7 +6,8 @@ use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 
-use crate::app::{ChatState, LocalRenderPrediction, WorldState, actor_render_position};
+use crate::app::{LocalRenderPrediction, WorldState, actor_render_position};
+use crate::chat::ChatState;
 use crate::login::AppState;
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;

@@ -11,6 +11,7 @@
 pub mod app;
 pub mod auth_client;
 pub mod camera;
+pub mod chat;
 pub mod config;
 pub mod headless;
 pub mod input;
@@ -22,7 +23,7 @@ pub mod presentation;
 pub mod protocol;
 pub mod protocol_v2;
 pub mod sim;
-pub mod skill_targeting;
+pub mod skill;
 pub mod stdio;
 pub mod voxel;
 pub mod world;

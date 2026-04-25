@@ -11,7 +11,7 @@ use crate::config::{ClientConfig, SessionCredentials};
 use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP};
 use crate::net::{NetworkBridge, NetworkCommand, spawn_network_thread};
 use crate::observe::ClientObserver;
-use crate::skill_targeting::prepare_skill_dispatch;
+use crate::skill::prepare_skill_dispatch;
 use crate::stdio::{
     ClientStdioCommand, ClientStdioInterface, SnapshotFields, emit as emit_stdio,
     emit_owned as emit_stdio_owned, snapshot_fields,

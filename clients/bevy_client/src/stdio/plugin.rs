@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::app::{LocalRenderPrediction, MovementIntent, WorldState, push_line, voxel_save_dir};
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
-use crate::skill_targeting::prepare_skill_dispatch;
+use crate::skill::prepare_skill_dispatch;
 use crate::voxel::{VoxelWorld, execute_voxel_cli_command};
 use crate::world::remote_actor::RemoteActorKind;
 

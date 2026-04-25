@@ -17,8 +17,10 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
+use crate::chat::ChatPlugin;
 use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
+use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 
 /// Canonical Bevy client `PluginGroup`.
@@ -65,18 +67,12 @@ stub_plugin!(
     "Keyboard / mouse / chat input — emits domain events for voxel, skill, chat, hotbar."
 );
 // CameraPlugin is now defined in `crate::camera::plugin`.
-stub_plugin!(
-    ChatPlugin,
-    "Chat input mode, log buffer, and outbound chat dispatch."
-);
+// ChatPlugin is now defined in `crate::chat::plugin`.
 stub_plugin!(
     VoxelPlugin,
     "Voxel selection, hit-face highlight, prefab preview, edit dispatch."
 );
-stub_plugin!(
-    SkillPlugin,
-    "Skill targeting, casting queue, and target-point picking."
-);
+// SkillPlugin is now defined in `crate::skill::plugin`.
 // MovementSyncPlugin is now defined in `crate::movement::plugin`.
 stub_plugin!(
     EffectPlugin,

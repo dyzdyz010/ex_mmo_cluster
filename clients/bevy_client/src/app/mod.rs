@@ -13,9 +13,10 @@ pub mod schedule;
 use self::{plugins::BevyClientPlugins, schedule::configure_client_sets};
 use crate::{
     camera::{MainCamera, OrbitCameraState, camera_transform_from_orbit},
+    chat::{ChatInputText, ChatLogText, ChatState},
     config::{ClientConfig, SessionCredentials},
     login::{AppState, LoginPlugin},
-    net::{MessageTransport, NetworkBridge, NetworkCommand, spawn_network_thread},
+    net::{MessageTransport, spawn_network_thread},
     observe::ClientObserver,
     presentation::{
         animation::{animated_scale, animation_state_from_velocity},
@@ -26,7 +27,6 @@ use crate::{
         profile::MovementProfile,
         types::{MovementMode, PredictedMoveState},
     },
-    skill_targeting::prepare_skill_dispatch,
     stdio::ClientStdioInterface,
     voxel::{
         BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCoord, NormalBlockData,
@@ -37,10 +37,7 @@ use crate::{
 };
 use bevy::{
     ecs::system::SystemParam,
-    input::{
-        keyboard::{Key, KeyboardInput},
-        mouse::MouseWheel,
-    },
+    input::mouse::MouseWheel,
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
 };
@@ -56,12 +53,6 @@ struct PlayerVisual {
 
 #[derive(Component)]
 struct HudText;
-
-#[derive(Component)]
-struct ChatLogText;
-
-#[derive(Component)]
-struct ChatInputText;
 
 #[derive(Component)]
 pub(crate) struct EffectVisual {
@@ -81,9 +72,9 @@ struct VoxelSelectionState {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-struct RenderRay {
-    origin: Vec3,
-    direction: Vec3,
+pub(crate) struct RenderRay {
+    pub origin: Vec3,
+    pub direction: Vec3,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -212,12 +203,6 @@ pub(crate) struct WorldState {
     pub last_remote_move_transport: Option<MessageTransport>,
     pub selected_target_cid: Option<i64>,
     pub selected_target_point: Option<Vec3>,
-}
-
-#[derive(Resource, Default)]
-pub(crate) struct ChatState {
-    pub enabled: bool,
-    pub draft: String,
 }
 
 #[derive(Resource, Default)]
@@ -373,7 +358,6 @@ pub fn run(
             fast_lane_status: "tcp fallback".to_string(),
             ..default()
         })
-        .insert_resource(ChatState::default())
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())
         .insert_resource(LocalRenderPrediction::default())
@@ -400,16 +384,7 @@ pub fn run(
         .add_systems(
             Update,
             (
-                toggle_chat_mode,
-                collect_chat_text,
-                (
-                    update_voxel_selection,
-                    handle_target_selection_input,
-                    handle_point_target_input,
-                    handle_voxel_input,
-                )
-                    .chain(),
-                handle_skill_input,
+                (update_voxel_selection, handle_voxel_input).chain(),
                 (sync_voxel_visuals, sync_player_visuals).chain(),
                 update_target_point_marker,
                 draw_voxel_guides,
@@ -598,176 +573,6 @@ fn setup(
     commands.insert_resource(assets);
 }
 
-fn toggle_chat_mode(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    bridge: Res<NetworkBridge>,
-    observer: Res<ClientObserver>,
-    mut chat_state: ResMut<ChatState>,
-) {
-    if !chat_state.enabled && keyboard.just_pressed(KeyCode::Enter) {
-        chat_state.enabled = true;
-        observer.emit("input", "chat_opened", &[]);
-        return;
-    }
-
-    if chat_state.enabled && keyboard.just_pressed(KeyCode::Escape) {
-        chat_state.enabled = false;
-        chat_state.draft.clear();
-        observer.emit("input", "chat_cancelled", &[]);
-        return;
-    }
-
-    if chat_state.enabled && keyboard.just_pressed(KeyCode::Enter) {
-        let message = chat_state.draft.trim().to_string();
-        if !message.is_empty() {
-            bridge.send(NetworkCommand::Chat(message));
-            observer.emit(
-                "input",
-                "chat_submitted",
-                &[("draft", chat_state.draft.clone())],
-            );
-        }
-        chat_state.draft.clear();
-        chat_state.enabled = false;
-    }
-}
-
-fn collect_chat_text(
-    mut keyboard_input_reader: MessageReader<KeyboardInput>,
-    mut chat_state: ResMut<ChatState>,
-) {
-    if !chat_state.enabled {
-        return;
-    }
-
-    for keyboard_input in keyboard_input_reader.read() {
-        if !keyboard_input.state.is_pressed() {
-            continue;
-        }
-
-        match (&keyboard_input.logical_key, &keyboard_input.text) {
-            (Key::Backspace, _) => {
-                chat_state.draft.pop();
-            }
-            (Key::Enter, _) => {}
-            (_, Some(inserted_text)) if inserted_text.chars().all(is_printable_char) => {
-                chat_state.draft.push_str(inserted_text);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn handle_skill_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    bridge: Res<NetworkBridge>,
-    observer: Res<ClientObserver>,
-    chat_state: Res<ChatState>,
-    mut world_state: ResMut<WorldState>,
-) {
-    if chat_state.enabled {
-        return;
-    }
-
-    let skill_modifier =
-        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    if !skill_modifier {
-        return;
-    }
-
-    if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 1);
-    }
-
-    if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 2);
-    }
-
-    if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 3);
-    }
-
-    if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 4);
-    }
-}
-
-fn handle_target_selection_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut world_state: ResMut<WorldState>,
-    observer: Res<ClientObserver>,
-) {
-    if !keyboard.just_pressed(KeyCode::Tab) {
-        return;
-    }
-
-    let mut cids = world_state
-        .remote_actor_identity
-        .keys()
-        .copied()
-        .collect::<Vec<_>>();
-    cids.sort_unstable();
-
-    if cids.is_empty() {
-        world_state.selected_target_cid = None;
-        return;
-    }
-
-    let next = match world_state.selected_target_cid {
-        Some(current) => {
-            let index = cids
-                .iter()
-                .position(|cid| *cid == current)
-                .unwrap_or(usize::MAX);
-            cids.get((index + 1) % cids.len()).copied()
-        }
-        None => cids.first().copied(),
-    };
-
-    world_state.selected_target_cid = next;
-    world_state.selected_target_point = None;
-    if let Some(cid) = next {
-        observer.emit("input", "target_selected", &[("cid", cid.to_string())]);
-    }
-}
-
-fn handle_point_target_input(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
-    mut world_state: ResMut<WorldState>,
-    observer: Res<ClientObserver>,
-) {
-    let target_modifier =
-        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    if mouse.just_pressed(MouseButton::Right) && target_modifier {
-        let Ok(window) = windows.single() else {
-            return;
-        };
-
-        if let Some(cursor) = window.cursor_position() {
-            let (camera, camera_transform) = *camera;
-            let Some(render_point) = ray_from_viewport(camera, camera_transform, cursor)
-                .and_then(|ray| ray_intersection_with_y_plane(ray.origin, ray.direction, 0.0))
-            else {
-                return;
-            };
-            let sim_point = render_to_sim_position(render_point);
-            world_state.selected_target_point = Some(sim_point);
-            world_state.selected_target_cid = None;
-            observer.emit(
-                "input",
-                "target_point_selected",
-                &[(
-                    "point",
-                    format!("{:.1},{:.1},{:.1}", sim_point.x, sim_point.y, sim_point.z),
-                )],
-            );
-        }
-    }
-}
-
 fn handle_voxel_input(params: VoxelInputParams) {
     let VoxelInputParams {
         mouse,
@@ -935,70 +740,6 @@ fn handle_voxel_input(params: VoxelInputParams) {
             ),
         );
     }
-}
-
-fn send_targeted_skill(
-    bridge: &NetworkBridge,
-    observer: &ClientObserver,
-    world_state: &mut WorldState,
-    skill_id: u16,
-) {
-    let selected_target_point = world_state
-        .selected_target_point
-        .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
-    let visible_actor_count = world_state.remote_players.len();
-
-    let dispatch = match prepare_skill_dispatch(
-        skill_id,
-        world_state.selected_target_cid,
-        selected_target_point,
-        visible_actor_count,
-    ) {
-        Ok(dispatch) => dispatch,
-        Err(block) => {
-            let message = format!("skill {skill_id} blocked: {}", block.reason);
-            world_state.status = message.clone();
-            push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
-            observer.emit(
-                "input",
-                "skill_blocked",
-                &[
-                    ("skill_id", skill_id.to_string()),
-                    ("reason", block.reason.to_string()),
-                    ("hint", block.hint.to_string()),
-                ],
-            );
-            return;
-        }
-    };
-
-    bridge.send(NetworkCommand::CastSkillTargeted {
-        skill_id,
-        target_cid: dispatch.target_cid,
-        target_position: dispatch.target_position,
-    });
-
-    observer.emit(
-        "input",
-        "skill_key",
-        &[
-            ("skill_id", skill_id.to_string()),
-            (
-                "target_cid",
-                dispatch
-                    .target_cid
-                    .map(|value: i64| value.to_string())
-                    .unwrap_or_else(|| "auto".to_string()),
-            ),
-            (
-                "target_point",
-                dispatch
-                    .target_position
-                    .map(|value| format!("{:.1},{:.1},{:.1}", value[0], value[1], value[2]))
-                    .unwrap_or_else(|| "n/a".to_string()),
-            ),
-        ],
-    );
 }
 
 fn sync_voxel_visuals(
@@ -1313,11 +1054,11 @@ pub(crate) fn sim_to_render_position(position: Vec3) -> Vec3 {
     Vec3::new(position.x, position.z, position.y)
 }
 
-fn render_to_sim_position(position: Vec3) -> Vec3 {
+pub(crate) fn render_to_sim_position(position: Vec3) -> Vec3 {
     Vec3::new(position.x, position.z, position.y)
 }
 
-fn ray_from_viewport(
+pub(crate) fn ray_from_viewport(
     camera: &Camera,
     camera_transform: &GlobalTransform,
     viewport_position: Vec2,
@@ -1331,7 +1072,7 @@ fn ray_from_viewport(
     })
 }
 
-fn ray_intersection_with_y_plane(origin: Vec3, direction: Vec3, y: f32) -> Option<Vec3> {
+pub(crate) fn ray_intersection_with_y_plane(origin: Vec3, direction: Vec3, y: f32) -> Option<Vec3> {
     if direction.y.abs() <= f32::EPSILON {
         return None;
     }
@@ -1869,14 +1610,6 @@ fn effect_runtime_color(kind: EffectCueKind, progress: f32) -> Color {
     let alpha = color.to_srgba().alpha;
     color.set_alpha((1.0 - progress).clamp(0.0, 1.0) * alpha);
     color
-}
-
-fn is_printable_char(chr: char) -> bool {
-    let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
-        || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
-        || ('\u{100000}'..='\u{10fffd}').contains(&chr);
-
-    !is_in_private_use_area && !chr.is_ascii_control()
 }
 
 pub(crate) fn voxel_save_dir() -> PathBuf {
