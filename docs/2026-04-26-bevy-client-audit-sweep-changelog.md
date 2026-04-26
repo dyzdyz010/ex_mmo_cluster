@@ -20,14 +20,14 @@
 ## Slice B: Sim + Movement + Server seq 握手（12 confirmed）
 
 - [x] **B-S1** + **B-SRV1/2/3** EnterSceneResult.expected_seq 协议变更原子 commit (1fc5507)
-- [ ] **B-S2** 无历史命中时强制 replay pending
-- [ ] **B-S3** correction.rs from_bits 校验未知位
-- [ ] **B-M1** governance hysteresis band
+- [x] **B-S2** 无历史命中时强制 replay pending (661d948)
+- [x] **B-S3** correction.rs from_bits 校验未知位 → 未知位下沉到 None (661d948)
+- [x] **B-M1** governance 上升即时/下降 25% 混合的非对称 hysteresis (661d948)
 - [ ] **B-M2** MovementAck 携带 fixed_dt_ms 校验
-- [ ] **B-M3** history.rs 容量告警 + retain_recent
-- [ ] **B-L1** jitter EWMA 时间衰减 / 静默 reset
-- [ ] **B-L2** StatusOverride 与 pending 输入交互文档化 + 测试
-- [ ] **B-L3** smoothing_rate_hz 与 jitter 联动
+- [x] **B-M3** history overflow_drops 计数 + is_at_high_water (661d948)
+- [x] **B-L1** jitter reset_if_stale + observe_rtt_at + reset_with_seq 一并清理 (661d948)
+- [x] **B-L2** dispatch_status_override 加正式 doc，已有测试覆盖契约 (661d948)
+- [x] **B-L3** smoothing_rate_hz **故意**与 jitter 解耦，文档化原因 (661d948)
 
 ## Slice C: Camera + Input（8 confirmed，C-S2 与 C-L2 合并）
 
