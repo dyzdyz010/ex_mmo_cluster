@@ -32,9 +32,15 @@
      | needs_more_context
 ```
 
-**严格性**：所有 35 条（含轻微）必须经 validator agent 评审。validator 只做研究、不写代码。validator 必须给出文件:行号 + 复现路径或反证。需要时可单开 validator 专攻某一条。
+**严格性（最高优先级）**：
+- 所有 35 条（含轻微）必须经 validator agent 评审
+- validator 只做研究、不写代码
+- validator 必须给出文件:行号 + 复现路径（confirmed）或反证（false_positive）
+- 单条 verdict 不接受 "可能"、"也许"、"或许" 等模糊表述；不充分时必须 escalate 为 `needs_more_context` 并单开 validator 专攻
+- implementer 完成后由独立 reviewer agent 二次审核，原 implementer 不得自审
+- reviewer 必须给出 `pass | needs_rework`，pass 必须举证（哪一行改对了哪一条 punch）
 
-**时间窗**：单条 validator 控制在 15 分钟内；单切片 implementer 控制在 60 分钟内；reviewer agent 控制在 30 分钟内。超时即上报，由人决定是切小还是延后。
+**时间窗**：单条 validator 不限时（必要时切多轮调研）；单切片 implementer 控制在 60 分钟内；reviewer agent 控制在 30 分钟内。超时即上报由人裁决。
 
 ## 切片与依赖
 
@@ -71,9 +77,9 @@
 2. 进场 / 重连 → 在 `EnterSceneResult` 里塞当前 `next_input_seq`
 3. 收到的 `Movement(seq)` 落后于 `next_input_seq` → 丢弃 + 日志；超前 → 缓存（可选）或丢弃 + 日志
 
-**版本协商**：`EnterSceneResult` 长度可变，旧 client 收到带新字段的包按当前长度截断（已是大端 u32，最后追加不破坏前面 layout）。新 client 收到老 server 的包时检测长度不足 → fallback `expected_seq = 1`，并在 observer log warn。
+**版本兼容**：不做。这是第一版协议，client 与 server 必须同时升级。`EnterSceneResult` 长度严格固定为新 layout，缺字段 = decode error = 断线，由顶层错误路径处理。
 
-**回滚**：拆 server 新字段写入逻辑（保持长度不变）；client 自动走 fallback 路径。
+**回滚**：单一 commit 整体 revert（client + server + 协议规范文档同改），不做 feature flag。
 
 ## 验收门
 
@@ -111,7 +117,7 @@ cd ../.. && mix test    # 全套，含 NIF
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | seq 握手 server 端实现引入新 bug | 全员断线 | 先在 ExUnit 加 contract test；上线前在本地双 client（bevy + 旧 web）冒烟 |
-| 协议字段长度变化引发老 client 不兼容 | 仅影响未升级 web client | 已设计为末尾追加 + fallback；新增门：升级 server 前确认 web client 的 codec 不会因长度大于预期而 panic |
+| 协议字段长度变化引发老 client 不兼容 | 仅影响未升级 web client | 不做兼容；本 sweep 不动 web client，发布时由 server 同步升级 + web client 单独立项跟进 |
 | 5 路 implementer 同时改文件冲突 | 编译失败 | 切片严格按文件范围划分；reviewer agent 跨切片做合并检查 |
 | 某些"严重"项是 false positive | 改了无效代码 | 阶段 0 validator agent 强制评审；reviewer 阶段双重检查 |
 | 单测覆盖不到位 | 修复回归无人发现 | implementer 必须先写 reproducer test |
