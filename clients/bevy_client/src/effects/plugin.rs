@@ -21,14 +21,37 @@ pub struct EffectVisual {
     pub radius: f32,
 }
 
+/// Toggle for the diagnostic gizmo overlay drawn on top of effect entities.
+///
+/// Audit E-L3: previously the gizmo system always ran. With many concurrent
+/// effects (>100) the per-frame line / sphere / circle calls became a
+/// noticeable cost. The default is still `true` so debug builds light up
+/// out of the box; production / perf measurements can drop the resource to
+/// `false` (e.g. via stdio command or a release-build init).
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectGizmosEnabled(pub bool);
+
+impl Default for EffectGizmosEnabled {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 pub struct EffectPlugin;
 
 impl Plugin for EffectPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (update_effect_visuals, draw_effect_gizmos).run_if(in_state(AppState::Game)),
-        );
+        app.init_resource::<EffectGizmosEnabled>()
+            .add_systems(
+                Update,
+                update_effect_visuals.run_if(in_state(AppState::Game)),
+            )
+            .add_systems(
+                Update,
+                draw_effect_gizmos
+                    .run_if(in_state(AppState::Game))
+                    .run_if(|toggle: Res<EffectGizmosEnabled>| toggle.0),
+            );
     }
 }
 

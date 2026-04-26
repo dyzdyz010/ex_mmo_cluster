@@ -38,6 +38,15 @@ struct StdioCommandParams<'w> {
     app_exit: MessageWriter<'w, AppExit>,
 }
 
+/// Maximum number of stdio commands processed per Bevy frame.
+///
+/// Audit E-L1: previously the loop drained the entire channel each frame,
+/// so a 1000-command burst (replay scripts, fuzz harness, accidental
+/// `cat huge_file.txt | ./bevy_client`) could starve the rest of the
+/// schedule. With a per-frame budget the rest of the burst simply spills
+/// to the next frame.
+const STDIO_COMMANDS_PER_FRAME: usize = 16;
+
 fn poll_stdio_commands(params: StdioCommandParams) {
     let StdioCommandParams {
         time,
@@ -50,10 +59,17 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         mut app_exit,
     } = params;
 
+    let mut processed = 0usize;
     loop {
+        if processed >= STDIO_COMMANDS_PER_FRAME {
+            // Defer the remainder until the next frame to keep frame time
+            // bounded under bursts.
+            break;
+        }
         let Some(command) = stdio.try_recv() else {
             break;
         };
+        processed += 1;
 
         match command {
             ClientStdioCommand::Snapshot => {

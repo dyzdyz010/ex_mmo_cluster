@@ -72,11 +72,28 @@ pub fn prepare_skill_dispatch(
     }
 }
 
+// Audit E-M3: extracted hard-coded skill IDs to a single named table so a
+// new demo skill only needs one edit here rather than scattered match arms.
+// The mapping mirrors the demo skills the server currently exposes
+// (`apps/scene_server` + `apps/gate_server`); when a real skill catalog
+// arrives this table can be replaced by a server-driven lookup.
+const ACTOR_TARGETED_DEMO_SKILLS: &[u16] = &[
+    1,   // pulse (the only documented gate-protocol skill, see gate docs)
+    2,   // demo actor skill #2
+    4,   // demo actor skill #4
+    101, // default NPC skill, see scene_server/npc/profile.ex
+];
+const POINT_TARGETED_DEMO_SKILLS: &[u16] = &[
+    3, // demo point skill
+];
+
 fn skill_target_mode(skill_id: u16) -> SkillTargetMode {
-    match skill_id {
-        1 | 2 | 4 | 101 => SkillTargetMode::Actor,
-        3 => SkillTargetMode::Point,
-        _ => SkillTargetMode::Unknown,
+    if ACTOR_TARGETED_DEMO_SKILLS.contains(&skill_id) {
+        SkillTargetMode::Actor
+    } else if POINT_TARGETED_DEMO_SKILLS.contains(&skill_id) {
+        SkillTargetMode::Point
+    } else {
+        SkillTargetMode::Unknown
     }
 }
 

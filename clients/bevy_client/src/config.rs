@@ -2,6 +2,7 @@
 
 use bevy::prelude::Resource;
 use std::env;
+use std::fmt;
 
 #[derive(Clone, Debug, Resource)]
 /// Resolved transport/observe configuration for one client launch.
@@ -28,12 +29,45 @@ impl ClientConfig {
     }
 }
 
-#[derive(Clone, Debug, Resource)]
+#[derive(Clone, Resource)]
 /// Credentials returned by the dev auto-login endpoint after the user submits a username.
 pub struct SessionCredentials {
     pub username: String,
     pub cid: i64,
     pub token: String,
+}
+
+// Audit E-M2: hand-written Debug that redacts the token. The auto-derived
+// Debug printed the token verbatim, leaking it into any panic/log/observer
+// dump. Keep username and cid visible (they are not secret) so the field is
+// still useful in diagnostics.
+impl fmt::Debug for SessionCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionCredentials")
+            .field("username", &self.username)
+            .field("cid", &self.cid)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_credentials_debug_redacts_token() {
+        let creds = SessionCredentials {
+            username: "alice".into(),
+            cid: 7,
+            token: "super-secret-token-do-not-leak".into(),
+        };
+        let dumped = format!("{creds:?}");
+        assert!(!dumped.contains("super-secret-token-do-not-leak"));
+        assert!(dumped.contains("<redacted>"));
+        assert!(dumped.contains("alice"));
+        assert!(dumped.contains("cid: 7"));
+    }
 }
 
 fn env_or(key: &str, default: &str) -> String {
