@@ -55,12 +55,12 @@
 - [ ] **E-S1** stdin 读失败上抛事件
 - [ ] **E-S2** Mutex 锁失败 observer log
 - [ ] **E-M1** observe.rs emit 写入失败计数 + 阈值禁用
-- [ ] **E-M2** SessionCredentials 手写 Debug 跳过 token
-- [ ] **E-M3** skill_id 抽常量到一处
+- [x] **E-M2** SessionCredentials 手写 Debug 跳过 token (ddaaa2a)
+- [x] **E-M3** skill_id 抽常量到一处 (ddaaa2a)
 - [ ] **E-M4** auto_login 加 30s timeout
-- [ ] **E-L1** stdio 命令循环每帧 max 10 条
+- [x] **E-L1** stdio 命令循环每帧 max 16 条 (ddaaa2a)
 - [ ] **E-L2** HUD dirty flag 仅变化时重建
-- [ ] **E-L3** effects gizmo run_if + DiagRenderToggle
+- [x] **E-L3** effects gizmo run_if + EffectGizmosEnabled (ddaaa2a)
 - [x] **E-L4** app/mod.rs 测试 unwrap → expect (commit 300c179)
 
 **已关闭**：E-S3 (false_positive，movement/mod.rs:82 是测试代码 panic)
@@ -75,7 +75,7 @@
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
 | D | 8 | 0 | 0% |
-| E | 10 | 0 | 0% |
+| E | 10 | 5 | 50% |
 | **合计** | **48** | **0** | **0%** |
 
 **注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。
