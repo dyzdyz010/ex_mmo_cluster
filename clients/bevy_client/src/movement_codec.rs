@@ -1,9 +1,10 @@
-//! Movement-specific protocol adapters between wire messages and sim types.
+//! Movement-specific protocol adapters between wire `ServerMessage` /
+//! `ClientMessage` variants and the typed sim values used by the
+//! prediction / reconciliation layer.
 //!
-//! TODO(audit A-L3): the `_v2` suffix is misleading — this is not a protocol
-//! version, just movement-specific wire marshaling. Rename to
-//! `movement_codec.rs` (or similar) in a follow-up. Deferred from the
-//! 2026-04-26 audit sweep to keep that PR focused on bug fixes.
+//! This module was previously called `protocol_v2.rs` — the `_v2` suffix
+//! suggested a protocol version, which it never was. Renamed in audit
+//! sweep 2026-04-26 (item A-L3 follow-up).
 
 use bevy::prelude::{Vec2, Vec3};
 

@@ -13,10 +13,10 @@ use std::{
 };
 
 use crate::config::SessionCredentials;
-use crate::protocol::{ActorKind, ClientMessage, ServerMessage};
-use crate::protocol_v2::{
+use crate::movement_codec::{
     WireMoveInputFrame, movement_ack_from_server, remote_move_snapshot_from_server,
 };
+use crate::protocol::{ActorKind, ClientMessage, ServerMessage};
 use crate::world::local_player::LocalPredictionRuntime;
 use crate::world::remote_actor::RemoteActorKind;
 

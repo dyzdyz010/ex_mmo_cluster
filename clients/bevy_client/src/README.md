@@ -35,7 +35,8 @@ directly.
 
 - `auth_client.rs` — HTTP `auto_login` request
 - `config.rs` — `ClientConfig` + `SessionCredentials`
-- `protocol.rs` / `protocol_v2.rs` — wire format and movement DTOs
+- `protocol.rs` — wire format DTOs (audit A-L3 renamed `protocol_v2.rs` to `movement_codec.rs`)
+- `movement_codec.rs` — typed movement-input + movement-ack adapters between wire and sim
 - `input/` — `MoveInputFrame` + movement flag constants
 - `sim/` — prediction, reconciliation, replay governance, jitter EWMA
 - `world/` — local-prediction runtime, remote-actor identity, remote-player
