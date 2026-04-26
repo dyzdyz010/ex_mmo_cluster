@@ -143,12 +143,21 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
         .map(|position| position + Vec3::Y * CAMERA_LOOK_HEIGHT)
         .unwrap_or(params.orbit.target);
 
+    // Audit D-S3: these tuned constants are intentionally distinct from the
+    // older orbital constants in `presentation::camera`. They control the
+    // third-person follow feel — gentle 8.0 follow speed (slower than the
+    // 12.0 orbital camera so swing/strafe doesn't whip the view) and a
+    // larger 300.0 snap radius (third-person camera sits farther from the
+    // actor, so what feels "too large to ease" is bigger). See
+    // `presentation::camera` module doc for the boundary.
+    const THIRD_PERSON_FOLLOW_SPEED: f32 = 8.0;
+    const THIRD_PERSON_SNAP_DISTANCE: f32 = 300.0;
     let target = smooth_translation(
         params.orbit.target,
         desired_target,
         params.time.delta_secs(),
-        8.0,
-        300.0,
+        THIRD_PERSON_FOLLOW_SPEED,
+        THIRD_PERSON_SNAP_DISTANCE,
     );
     params.orbit.target = target;
     **params.camera = camera_transform_from_orbit(&params.orbit);

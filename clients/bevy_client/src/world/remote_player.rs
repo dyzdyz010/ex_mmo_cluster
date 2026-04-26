@@ -131,8 +131,21 @@ impl RemotePlayerState {
 
     /// Samples a presentation-friendly remote motion state at the provided local time.
     pub fn sample_motion(&self, now_secs: f64) -> RemoteMotionSample {
+        self.sample_motion_with_path(now_secs).0
+    }
+
+    /// Samples remote motion *and* reports which interpolation/extrapolation
+    /// branch was taken. Audit D-S2: the orphaned `extrapolate_single`
+    /// branch (no usable interpolation pair, oldest snapshot already in the
+    /// future) is the path that produces visible "snap" jumps after a long
+    /// network gap. Surfacing this lets callers (presentation/observe) log
+    /// when it happens instead of silently hiding the visual artefact.
+    pub fn sample_motion_with_path(&self, now_secs: f64) -> (RemoteMotionSample, RemoteSamplePath) {
         if self.snapshots.len() == 1 {
-            return extrapolate_single(self.snapshots.back().expect("snapshot"), now_secs);
+            return (
+                extrapolate_single(self.snapshots.back().expect("snapshot"), now_secs),
+                RemoteSamplePath::SingleSnapshotExtrapolation,
+            );
         }
 
         let latest = self.snapshots.back().expect("latest snapshot");
@@ -144,20 +157,44 @@ impl RemotePlayerState {
         if let Some((previous, next)) =
             pair_for_playback_time(&self.snapshots, playback_server_time)
         {
-            return interpolate_pair(previous, next, playback_server_time);
+            return (
+                interpolate_pair(previous, next, playback_server_time),
+                RemoteSamplePath::Interpolated,
+            );
         }
 
         if let Some(oldest) = self.snapshots.front()
             && playback_server_time <= snapshot_time_secs(oldest.snapshot.server_tick)
         {
-            return RemoteMotionSample {
-                position: oldest.snapshot.position,
-                velocity: oldest.snapshot.velocity,
-            };
+            return (
+                RemoteMotionSample {
+                    position: oldest.snapshot.position,
+                    velocity: oldest.snapshot.velocity,
+                },
+                RemoteSamplePath::HeldAtOldest,
+            );
         }
 
-        extrapolate_single(latest, now_secs)
+        (
+            extrapolate_single(latest, now_secs),
+            RemoteSamplePath::OrphanedExtrapolation,
+        )
     }
+}
+
+/// Which branch `sample_motion_with_path` returned through. See its doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSamplePath {
+    /// Normal path: client time falls inside a buffered snapshot pair.
+    Interpolated,
+    /// Only one snapshot known, extrapolating from it.
+    SingleSnapshotExtrapolation,
+    /// Client time is older than the oldest buffered snapshot — held there.
+    HeldAtOldest,
+    /// No usable pair *and* client time is past the oldest — extrapolating
+    /// from the latest beyond the buffer. This is the path that can produce
+    /// visible "snap" jumps when the next snapshot arrives.
+    OrphanedExtrapolation,
 }
 
 fn pair_for_playback_time(
