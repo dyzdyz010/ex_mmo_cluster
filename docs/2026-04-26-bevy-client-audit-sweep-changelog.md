@@ -5,10 +5,10 @@
 ## Slice A: Net + Protocol（9 confirmed）
 
 - [x] **A-S1** MovementAck correction_flags 偏移前置长度校验 (f636b0f)
-- [ ] **A-S2** 阻塞 TCP 写硬自旋 → 非阻塞缓冲队列
+- [x] **A-S2** 阻塞 TCP 写硬自旋 → 指数退避 + 1s 总时长上限 (8525633)
 - [x] **A-S3** ~~UDP 单包接收~~ → 二次审查后为 **false_positive**：`net/thread.rs:264-326` 已经是 `while let Some(socket) { match recv ... Ok => process+continue, WouldBlock => break }` 的标准 draining 循环。原 validator A 误读代码（把 `while let` 看成绑定检查而非循环条件）。无需修复。
 - [x] **A-M1** `expect("movement ack")` → 显式错误传播 (f636b0f)
-- [ ] **A-M2** Auth 失败无重试 → 指数退避
+- [x] **A-M2** Auth 失败无重试 → 3 次重试指数退避 (8525633)
 - [x] **A-M3** EnterSceneResult 缺位置 expect → 显式错误路径 (f636b0f)
 - [x] **A-L1** payload 最小长度未验证 → 各分支前断言 (f636b0f)
 - [x] **A-L2** 跳帧无检测日志 → PlayerMove 跳帧 log (f636b0f)
@@ -71,7 +71,7 @@
 
 | 切片 | 总 confirmed | 已修 | 进度 |
 |---|---|---|---|
-| A | 9 | 7 | 78% (A-S3 改判 false_positive) |
+| A | 9 | 9 | 100% ✅ (A-S3 改判 false_positive) |
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
 | D | 8 | 0 | 0% |
