@@ -266,3 +266,10 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 - 遗留 `.proto` 文件仍保存在 `mmo_protos` 子模块中，仅作参考，不再是当前运行时主路径
 - **CI**：当前应至少验证 `mix compile`、`mix test`，以及必要的单 app 测试
 - 完整迁移路线图见 `docs/2026-04-07-增量迁移计划.md`
+
+## 客户端策略（2026-04-26 后冻结）
+
+- **当前唯一在迭代的客户端是 `clients/bevy_client`**（Rust + Bevy 0.18，第三人称 3D 视图）。
+- **`clients/web_client` 已冻结**：从 2026-04-26 起，所有新功能 / bug fix / 重构都**只动 bevy_client**。web_client 仅保留以备紧急回退或参考实现，不再新增改动，也不再为它做协议同步、parity 测试或字节序对齐。
+- 协议层只追加字段、不破坏 wire layout 的纪律仍然适用，但跨客户端 parity 不再是约束——bevy 端可以自由演进。
+- 任何 audit / sweep / 设计文档若涉及"双端同步"，统一缩到只 bevy_client 这一端。
