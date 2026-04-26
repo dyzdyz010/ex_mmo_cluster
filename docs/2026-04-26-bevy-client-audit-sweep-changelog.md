@@ -19,7 +19,7 @@
 
 ## Slice B: Sim + Movement + Server seq 握手（12 confirmed）
 
-- [ ] **B-S1** + **B-SRV1/2/3** 重连 seq 握手（协议变更原子 commit，含 client/server/规范）
+- [x] **B-S1** + **B-SRV1/2/3** EnterSceneResult.expected_seq 协议变更原子 commit (1fc5507)
 - [ ] **B-S2** 无历史命中时强制 replay pending
 - [ ] **B-S3** correction.rs from_bits 校验未知位
 - [ ] **B-M1** governance hysteresis band
