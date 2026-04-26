@@ -131,8 +131,24 @@ fn poll_pending_auth_system(
         return;
     };
 
-    let Ok(receiver) = pending.0.lock() else {
-        return;
+    let receiver = match pending.0.lock() {
+        Ok(receiver) => receiver,
+        Err(poisoned) => {
+            // Audit E-S2: previously this returned silently. A poisoned mutex
+            // here means the auth worker thread panicked while holding the
+            // lock — surfacing it in the login UI gives the operator a
+            // recoverable error instead of "login screen frozen forever".
+            ui_state.in_flight = false;
+            ui_state.error = Some(
+                "auth pending channel mutex was poisoned (worker panicked); please retry"
+                    .to_string(),
+            );
+            // Recover the inner receiver so we can drop the resource and
+            // unblock subsequent retries.
+            drop(poisoned.into_inner());
+            commands.remove_resource::<PendingAuth>();
+            return;
+        }
     };
 
     match receiver.try_recv() {

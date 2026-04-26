@@ -104,15 +104,32 @@ impl ClientStdioInterface {
                         }
                     }
                     Err(error) => {
+                        // Audit E-S1: surface stdin failures explicitly. The
+                        // reader thread cannot recover from an Io error on
+                        // stdin (terminal closed, pipe broken), so we emit a
+                        // structured `stdin_closed` event before exiting.
+                        // The Quit synthesised below also reaches the Bevy
+                        // side via the command channel so the app shuts down
+                        // cleanly. Together these mean the operator can tell
+                        // *why* the stdio interface went silent rather than
+                        // wondering whether the binary hung.
                         emit(
                             "error",
                             &[("reason", format!("stdin read failed: {error}"))],
                         );
+                        emit("stdin_closed", &[("cause", "io_error".to_string())]);
                         break;
                     }
                 }
             }
 
+            // Reached when stdin EOF or the loop above broke. If we did not
+            // already announce closure (the io-error branch did), say so now
+            // so log scrapers see a definitive end-of-stdio marker.
+            emit(
+                "stdin_closed",
+                &[("cause", "eof_or_broken_pipe".to_string())],
+            );
             let _ = tx.send(ClientStdioCommand::Quit);
         });
 

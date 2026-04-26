@@ -5,6 +5,13 @@
 
 use crate::config::SessionCredentials;
 use serde::Deserialize;
+use std::time::Duration;
+
+/// Audit E-M4: bound the synchronous auth roundtrip so the login-thread
+/// (and the spinner UI behind it) cannot wedge indefinitely if the auth
+/// server hangs. 30 seconds is generous enough for a cold dev container
+/// boot, short enough that the user gets actionable feedback.
+const AUTO_LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct AutoLoginResponse {
@@ -16,7 +23,15 @@ struct AutoLoginResponse {
 /// Issues a blocking POST to `{auth_addr}/ingame/auto_login` and returns credentials.
 pub fn auto_login(auth_addr: &str, username: &str) -> Result<SessionCredentials, String> {
     let url = format!("{}/ingame/auto_login", auth_addr.trim_end_matches('/'));
-    let response = match ureq::post(&url).send_json(ureq::json!({ "username": username })) {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(AUTO_LOGIN_TIMEOUT)
+        .timeout_read(AUTO_LOGIN_TIMEOUT)
+        .timeout_write(AUTO_LOGIN_TIMEOUT)
+        .build();
+    let response = match agent
+        .post(&url)
+        .send_json(ureq::json!({ "username": username }))
+    {
         Ok(response) => response,
         Err(ureq::Error::Status(code, response)) => {
             let body = response

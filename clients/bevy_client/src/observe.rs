@@ -5,16 +5,29 @@ use std::{
     fs::{OpenOptions, create_dir_all},
     io::{BufWriter, Write},
     path::Path,
+    sync::Arc,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::mpsc::{self, Sender},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Audit E-M1: how many silent send-failures we tolerate before announcing
+/// the loss on stderr. Above this we still keep counting (so the operator
+/// sees a final tally), but we throttle the noise so a torn-down sink does
+/// not spam every emit call.
+const OBSERVER_DROP_LOG_INTERVAL: usize = 256;
 
 #[derive(Clone, Default, Resource)]
 /// File/stdout-backed structured event sink used by local automation and QA.
 pub struct ClientObserver {
     sink: Option<Sender<String>>,
     stdout: bool,
+    /// Cumulative count of lines dropped because the sink-channel send failed
+    /// (writer thread gone or channel closed). Shared via Arc so cloned
+    /// observers (Bevy's `Resource` is cloned across threads) accumulate
+    /// into the same counter.
+    dropped: Arc<AtomicUsize>,
 }
 
 impl ClientObserver {
@@ -44,7 +57,17 @@ impl ClientObserver {
             Some(tx)
         });
 
-        Self { sink, stdout }
+        Self {
+            sink,
+            stdout,
+            dropped: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Total number of observe lines dropped so far because the sink channel
+    /// was closed. Test/diagnostic accessor.
+    pub fn dropped_count(&self) -> usize {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Returns whether any observe sink is enabled.
@@ -73,9 +96,54 @@ impl ClientObserver {
             print!("{line}");
         }
 
-        if let Some(sink) = &self.sink {
-            let _ = sink.send(line);
+        if let Some(sink) = &self.sink
+            && sink.send(line).is_err()
+        {
+            // Audit E-M1: previously the SendError was swallowed so a dead
+            // writer thread looked identical to a working one. Track the
+            // count and announce on stderr at coarse intervals so the
+            // operator notices instead of hunting the missing log file.
+            let prev = self.dropped.fetch_add(1, Ordering::Relaxed);
+            let now = prev + 1;
+            if now == 1 || now.is_multiple_of(OBSERVER_DROP_LOG_INTERVAL) {
+                eprintln!(
+                    "[bevy_client::observe] sink dropped {now} line(s); writer thread is gone"
+                );
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_counter_starts_at_zero() {
+        let observer = ClientObserver::default();
+        assert_eq!(observer.dropped_count(), 0);
+    }
+
+    #[test]
+    fn dropped_count_is_shared_across_clones() {
+        // Construct a sink whose receiver is dropped immediately so any
+        // send fails. We can't go through `new()` (it requires a real
+        // file path), so build the struct manually.
+        let (tx, rx) = mpsc::channel::<String>();
+        drop(rx);
+        let observer = ClientObserver {
+            sink: Some(tx),
+            stdout: false,
+            dropped: Arc::new(AtomicUsize::new(0)),
+        };
+        let twin = observer.clone();
+
+        observer.emit("test", "first", &[]);
+        observer.emit("test", "second", &[]);
+        twin.emit("test", "third", &[]);
+
+        assert_eq!(observer.dropped_count(), 3);
+        assert_eq!(twin.dropped_count(), 3);
     }
 }
 
