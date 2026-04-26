@@ -52,12 +52,12 @@
 
 ## Slice E: App glue + Stdio + UI（10 confirmed）
 
-- [ ] **E-S1** stdin 读失败上抛事件
-- [ ] **E-S2** Mutex 锁失败 observer log
-- [ ] **E-M1** observe.rs emit 写入失败计数 + 阈值禁用
+- [x] **E-S1** stdin 读失败上抛事件 (32fbb82)
+- [x] **E-S2** Mutex 锁失败 observer log (32fbb82, login.rs only; net/plugin.rs:36 由 Slice A 处理待补)
+- [x] **E-M1** observe.rs emit 写入失败计数 + 256 间隔 stderr (32fbb82)
 - [x] **E-M2** SessionCredentials 手写 Debug 跳过 token (ddaaa2a)
 - [x] **E-M3** skill_id 抽常量到一处 (ddaaa2a)
-- [ ] **E-M4** auto_login 加 30s timeout
+- [x] **E-M4** auto_login 加 30s timeout (32fbb82)
 - [x] **E-L1** stdio 命令循环每帧 max 16 条 (ddaaa2a)
 - [ ] **E-L2** HUD dirty flag 仅变化时重建
 - [x] **E-L3** effects gizmo run_if + EffectGizmosEnabled (ddaaa2a)
@@ -75,7 +75,7 @@
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
 | D | 8 | 0 | 0% |
-| E | 10 | 5 | 50% |
+| E | 10 | 9 | 90% (E-L2 HUD dirty flag 待办) |
 | **合计** | **48** | **0** | **0%** |
 
 **注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。
