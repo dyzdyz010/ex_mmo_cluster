@@ -12,7 +12,7 @@
 - [ ] **A-M3** EnterSceneResult 缺位置 expect → 显式错误路径
 - [ ] **A-L1** payload 最小长度未验证 → 各分支前断言
 - [ ] **A-L2** 跳帧无检测日志 → PlayerMove 跳帧 log
-- [ ] **A-L3** protocol_v2.rs 命名误导 → 文件顶部 TODO 注释
+- [x] **A-L3** protocol_v2.rs 命名误导 → 文件顶部 TODO 注释 (704ead7)
 - [ ] **A-L4** observe.rs send 错误吞掉 → 至少记录一次
 
 **已关闭**：A-M4 (false_positive，fastlane race 经多重保护不会发生)
@@ -45,10 +45,10 @@
 - [ ] **D-S2** sample_motion 孤立 extrapolate observer event
 - [ ] **D-S3** presentation/camera vs camera/plugin 边界 + 常量统一
 - [ ] **D-M1** animation velocity 从 smoothed position 求导
-- [ ] **D-M2** 删除 voxel_material_color/handle 的 _refined 参数
+- [x] **D-M2** 删除 voxel_material_color/handle 的 _refined 参数 (704ead7)
 - [ ] **D-M3** voxel parity 测试补 3 类（refined cell / prefab overlap / batch import）
-- [ ] **D-L1** smoothing.rs 顶部 doc 说明 snap/lerp 边界
-- [ ] **D-L2** 合成 idle_frame.seq=0 内联注释
+- [x] **D-L1** smoothing.rs 顶部 doc 说明 snap/lerp 边界 (704ead7)
+- [x] **D-L2** 合成 idle_frame.seq=0 内联注释 (704ead7)
 
 ## Slice E: App glue + Stdio + UI（10 confirmed）
 
