@@ -46,7 +46,7 @@
 - [x] **D-S3** presentation/camera 文档化为被动工具库 + 常量明示职责 (6a8f215)
 - [x] **D-M1** animation velocity 从 smoothed position 求导 (6a8f215)
 - [x] **D-M2** 删除 voxel_material_color/handle 的 _refined 参数 (704ead7)
-- [ ] **D-M3** voxel parity 测试补 3 类（refined cell / prefab overlap / batch import）
+- [x] **D-M3** voxel parity 测试补 3 类（refined cell / prefab overlap / batch import）(1045b66)
 - [x] **D-L1** smoothing.rs 顶部 doc 说明 snap/lerp 边界 (704ead7)
 - [x] **D-L2** 合成 idle_frame.seq=0 内联注释 (704ead7)
 
@@ -74,7 +74,7 @@
 | A | 9 | 9 | 100% ✅ (A-S3 改判 false_positive) |
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
-| D | 8 | 7 | 88% (D-M3 parity tests 待办) |
+| D | 8 | 8 | 100% ✅ |
 | E | 10 | 10 | 100% ✅ |
 | **合计** | **48** | **0** | **0%** |
 
