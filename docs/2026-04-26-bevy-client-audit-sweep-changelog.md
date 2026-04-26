@@ -61,7 +61,7 @@
 - [ ] **E-L1** stdio 命令循环每帧 max 10 条
 - [ ] **E-L2** HUD dirty flag 仅变化时重建
 - [ ] **E-L3** effects gizmo run_if + DiagRenderToggle
-- [ ] **E-L4** app/mod.rs 测试 unwrap → expect
+- [x] **E-L4** app/mod.rs 测试 unwrap → expect (commit 300c179)
 
 **已关闭**：E-S3 (false_positive，movement/mod.rs:82 是测试代码 panic)
 
