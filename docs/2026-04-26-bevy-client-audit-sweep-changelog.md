@@ -76,6 +76,24 @@
 | C | 8 | 8 | 100% ✅ |
 | D | 8 | 8 | 100% ✅ |
 | E | 10 | 10 | 100% ✅ |
-| **合计** | **48** | **0** | **0%** |
+| **合计** | **47** | **47** | **100% ✅** |
 
-**注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。
+**注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。E-S3 在 Phase 0 已关闭。
+
+---
+
+## 最终统计（Phase 3 收尾）
+
+- 起始 punch list：47 confirmed + 3 false_positive (A-M4, A-S3, E-S3)
+- 完成 fix：47 / 47（100%）
+- 协议变更：2 次原子 commit (`EnterSceneResult.expected_seq`, `MovementAck.fixed_dt_ms`)
+- 测试增量：bevy_client 103 → 113 lib + 5 → 8 voxel parity （+13 tests）
+- 验收门：cargo fmt / clippy --tests -D warnings / cargo test --lib 全绿；`scene_server` 80 tests 0 failures；`gate_server` 101 tests 0 failures（28 invalid 是预存在 PostgreSQL setup 不相关）
+- commit 数：~25 fix commits + ~25 changelog tick commits = ~50 commits
+
+## 后续建议（不在本 sweep 范围）
+
+- **重命名 `protocol_v2.rs`** → `movement_codec.rs`（A-L3 已加 TODO）
+- **Web 客户端字节序 / 协议同步**：web client 仍是小端 + 旧 EnterSceneResult / MovementAck layout，需要单独立项升级
+- **CLI/stdio 调试基础设施成熟度提升**：审计验证给 7/10；可后续做 stdin recovery / observer back-pressure 增强
+- **业界 CMC 范式对齐度**：从 6/10 提升到约 8.5/10（B-S1/S2/S3/M1/M2/M3/L1 全部落地）；剩余 1.5 分主要是 server 端 session 持久化（暂无 use case）
