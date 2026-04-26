@@ -532,7 +532,21 @@ impl ClientRuntime {
                 self.last_applied_auth_tick = auth_tick;
 
                 let predicted_before = self.local_prediction.current_state().cloned();
-                let ack = movement_ack_from_server(&message).expect("movement ack");
+                // Audit A-M1: replace `expect()` with explicit error reporting
+                // so a non-MovementAck server message routed here cannot panic
+                // the network thread. The match arm above already gates on
+                // ServerMessage::MovementAck so this should be unreachable in
+                // practice, but defending against future routing changes is
+                // cheap.
+                let ack = match movement_ack_from_server(&message) {
+                    Some(ack) => ack,
+                    None => {
+                        outcome.push_event(NetworkEvent::Log(
+                            "internal: non-MovementAck routed to MovementAck handler".to_string(),
+                        ));
+                        return Ok(outcome);
+                    }
+                };
                 let reconcile = self.local_prediction.apply_ack(ack);
 
                 if let Some(result) = &reconcile {
@@ -682,8 +696,17 @@ impl ClientRuntime {
                 outcome.push_event(NetworkEvent::PlayerEnter { cid, location });
             }
             message @ ServerMessage::PlayerMove { cid, .. } => {
-                let snapshot =
-                    remote_move_snapshot_from_server(&message).expect("remote move snapshot");
+                let snapshot = match remote_move_snapshot_from_server(&message) {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        // Audit A-M1 sibling: defensive check against future
+                        // routing changes. The arm gate already requires PlayerMove.
+                        outcome.push_event(NetworkEvent::Log(
+                            "internal: non-PlayerMove routed to PlayerMove handler".to_string(),
+                        ));
+                        return Ok(outcome);
+                    }
+                };
                 let latest_tick = self.last_remote_move_ticks.get(&cid).copied().unwrap_or(0);
                 if snapshot.server_tick <= latest_tick {
                     outcome.push_event(NetworkEvent::Log(format!(
@@ -691,6 +714,17 @@ impl ClientRuntime {
                         snapshot.server_tick
                     )));
                     return Ok(outcome);
+                }
+
+                // Audit A-L2: log when remote-move snapshot ticks jump by more
+                // than 1 — useful for diagnosing late/dropped UDP packets.
+                // `latest_tick == 0` means "first ever", not a real jump.
+                if latest_tick != 0 && snapshot.server_tick > latest_tick + 1 {
+                    let gap = snapshot.server_tick - latest_tick - 1;
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "player_move tick jump cid={cid} from={latest_tick} to={} (skipped {gap})",
+                        snapshot.server_tick
+                    )));
                 }
 
                 self.last_remote_move_ticks

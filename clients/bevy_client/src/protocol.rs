@@ -207,39 +207,55 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
 
     match msg_type {
         0x80 => decode_result(body),
-        0x8B => Ok(ServerMessage::MovementAck {
-            ack_seq: read_u32(body, 0)?,
-            auth_tick: read_u32(body, 4)?,
-            cid: read_i64(body, 8)?,
-            location: read_vec3(body, 16)?,
-            velocity: read_vec3(body, 40)?,
-            acceleration: read_vec3(body, 64)?,
-            movement_mode: read_u8(body, 88)?,
-            correction_flags: read_u32(body, 89)?,
-        }),
-        0x81 => Ok(ServerMessage::PlayerEnter {
-            cid: read_i64(body, 0)?,
-            location: read_vec3(body, 8)?,
-        }),
-        0x82 => Ok(ServerMessage::PlayerLeave {
-            cid: read_i64(body, 0)?,
-        }),
-        0x83 => Ok(ServerMessage::PlayerMove {
-            cid: read_i64(body, 0)?,
-            server_tick: read_u32(body, 8)?,
-            location: read_vec3(body, 12)?,
-            velocity: read_vec3(body, 36)?,
-            acceleration: read_vec3(body, 60)?,
-            movement_mode: read_u8(body, 84)?,
-        }),
+        0x8B => {
+            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 = 93
+            require_body_len(body, 93, "MovementAck")?;
+            Ok(ServerMessage::MovementAck {
+                ack_seq: read_u32(body, 0)?,
+                auth_tick: read_u32(body, 4)?,
+                cid: read_i64(body, 8)?,
+                location: read_vec3(body, 16)?,
+                velocity: read_vec3(body, 40)?,
+                acceleration: read_vec3(body, 64)?,
+                movement_mode: read_u8(body, 88)?,
+                correction_flags: read_u32(body, 89)?,
+            })
+        }
+        0x81 => {
+            // 8 + 24 = 32
+            require_body_len(body, 32, "PlayerEnter")?;
+            Ok(ServerMessage::PlayerEnter {
+                cid: read_i64(body, 0)?,
+                location: read_vec3(body, 8)?,
+            })
+        }
+        0x82 => {
+            require_body_len(body, 8, "PlayerLeave")?;
+            Ok(ServerMessage::PlayerLeave {
+                cid: read_i64(body, 0)?,
+            })
+        }
+        0x83 => {
+            // 8 + 4 + 24 + 24 + 24 + 1 = 85
+            require_body_len(body, 85, "PlayerMove")?;
+            Ok(ServerMessage::PlayerMove {
+                cid: read_i64(body, 0)?,
+                server_tick: read_u32(body, 8)?,
+                location: read_vec3(body, 12)?,
+                velocity: read_vec3(body, 36)?,
+                acceleration: read_vec3(body, 60)?,
+                movement_mode: read_u8(body, 84)?,
+            })
+        }
         0x84 => {
+            // 8 + 1 = 9 minimum (ok=false), or 9 + 24 = 33 (ok=true)
+            require_body_len(body, 9, "EnterSceneResult")?;
             let packet_id = read_u64(body, 0)?;
             let ok = read_u8(body, 8)? == 0;
-            let location = if ok && body.len() >= 33 {
-                Some(read_vec3(body, 9)?)
-            } else {
-                None
-            };
+            // Audit A-M3: when ok, location is required by the protocol.
+            // Previously we silently fell back to None on a short body and
+            // then `runtime` `expect()`-panicked. Surface a proper error.
+            let location = if ok { Some(read_vec3(body, 9)?) } else { None };
 
             Ok(ServerMessage::EnterSceneResult {
                 packet_id,
@@ -248,6 +264,7 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             })
         }
         0x87 => {
+            require_body_len(body, 9, "FastLaneResult")?;
             let packet_id = read_u64(body, 0)?;
             let ok = read_u8(body, 8)? == 0;
 
@@ -266,20 +283,31 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 ticket,
             })
         }
-        0x88 => Ok(ServerMessage::FastLaneAttached {
-            packet_id: read_u64(body, 0)?,
-            ok: read_u8(body, 8)? == 0,
-        }),
-        0x85 => Ok(ServerMessage::TimeSyncReply {
-            packet_id: read_u64(body, 0)?,
-            client_send_ts: read_u64(body, 8)?,
-            server_recv_ts: read_u64(body, 16)?,
-            server_send_ts: read_u64(body, 24)?,
-        }),
-        0x86 => Ok(ServerMessage::HeartbeatReply {
-            timestamp: read_u64(body, 0)?,
-        }),
+        0x88 => {
+            require_body_len(body, 9, "FastLaneAttached")?;
+            Ok(ServerMessage::FastLaneAttached {
+                packet_id: read_u64(body, 0)?,
+                ok: read_u8(body, 8)? == 0,
+            })
+        }
+        0x85 => {
+            // 8 + 8 + 8 + 8 = 32
+            require_body_len(body, 32, "TimeSyncReply")?;
+            Ok(ServerMessage::TimeSyncReply {
+                packet_id: read_u64(body, 0)?,
+                client_send_ts: read_u64(body, 8)?,
+                server_recv_ts: read_u64(body, 16)?,
+                server_send_ts: read_u64(body, 24)?,
+            })
+        }
+        0x86 => {
+            require_body_len(body, 8, "HeartbeatReply")?;
+            Ok(ServerMessage::HeartbeatReply {
+                timestamp: read_u64(body, 0)?,
+            })
+        }
         0x89 => {
+            require_body_len(body, 10, "ChatMessage")?; // 8 cid + 2 string-len prefix
             let cid = read_i64(body, 0)?;
             let (username, after_name) = read_string(body, 8)?;
             let (text, _) = read_string(body, after_name)?;
@@ -289,41 +317,58 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 text,
             })
         }
-        0x8A => Ok(ServerMessage::SkillEvent {
-            cid: read_i64(body, 0)?,
-            skill_id: read_u16(body, 8)?,
-            location: read_vec3(body, 10)?,
-        }),
-        0x8C => Ok(ServerMessage::PlayerState {
-            cid: read_i64(body, 0)?,
-            hp: read_u16(body, 8)?,
-            max_hp: read_u16(body, 10)?,
-            alive: read_u8(body, 12)? != 0,
-        }),
-        0x8D => Ok(ServerMessage::CombatHit {
-            source_cid: read_i64(body, 0)?,
-            target_cid: read_i64(body, 8)?,
-            skill_id: read_u16(body, 16)?,
-            damage: read_u16(body, 18)?,
-            hp_after: read_u16(body, 20)?,
-            location: read_vec3(body, 22)?,
-        }),
+        0x8A => {
+            // 8 + 2 + 24 = 34
+            require_body_len(body, 34, "SkillEvent")?;
+            Ok(ServerMessage::SkillEvent {
+                cid: read_i64(body, 0)?,
+                skill_id: read_u16(body, 8)?,
+                location: read_vec3(body, 10)?,
+            })
+        }
+        0x8C => {
+            // 8 + 2 + 2 + 1 = 13
+            require_body_len(body, 13, "PlayerState")?;
+            Ok(ServerMessage::PlayerState {
+                cid: read_i64(body, 0)?,
+                hp: read_u16(body, 8)?,
+                max_hp: read_u16(body, 10)?,
+                alive: read_u8(body, 12)? != 0,
+            })
+        }
+        0x8D => {
+            // 8 + 8 + 2 + 2 + 2 + 24 = 46
+            require_body_len(body, 46, "CombatHit")?;
+            Ok(ServerMessage::CombatHit {
+                source_cid: read_i64(body, 0)?,
+                target_cid: read_i64(body, 8)?,
+                skill_id: read_u16(body, 16)?,
+                damage: read_u16(body, 18)?,
+                hp_after: read_u16(body, 20)?,
+                location: read_vec3(body, 22)?,
+            })
+        }
         0x8E => {
+            require_body_len(body, 11, "ActorIdentity")?; // 8 cid + 1 kind + 2 string-len
             let cid = read_i64(body, 0)?;
             let kind = decode_actor_kind(read_u8(body, 8)?);
             let (name, _) = read_string(body, 9)?;
             Ok(ServerMessage::ActorIdentity { cid, kind, name })
         }
-        0x8F => Ok(ServerMessage::EffectEvent {
-            source_cid: read_i64(body, 0)?,
-            skill_id: read_u16(body, 8)?,
-            cue_kind: decode_effect_cue_kind(read_u8(body, 10)?),
-            target_cid: decode_target_cid(read_i64(body, 11)?),
-            origin: read_vec3(body, 19)?,
-            target_position: read_vec3(body, 43)?,
-            radius: read_f64(body, 67)?,
-            duration_ms: read_u32(body, 75)?,
-        }),
+        0x8F => {
+            // 8 + 2 + 1 + 8 + 24 + 24 + 8 + 4 = 79
+            require_body_len(body, 79, "EffectEvent")?;
+            Ok(ServerMessage::EffectEvent {
+                source_cid: read_i64(body, 0)?,
+                skill_id: read_u16(body, 8)?,
+                cue_kind: decode_effect_cue_kind(read_u8(body, 10)?),
+                target_cid: decode_target_cid(read_i64(body, 11)?),
+                origin: read_vec3(body, 19)?,
+                target_position: read_vec3(body, 43)?,
+                radius: read_f64(body, 67)?,
+                duration_ms: read_u32(body, 75)?,
+            })
+        }
         other => Err(ProtocolError(format!(
             "unknown server message type: {other:#x}"
         ))),
@@ -451,6 +496,21 @@ fn write_string(buffer: &mut Vec<u8>, value: &str) {
     let bytes = value.as_bytes();
     buffer.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
     buffer.extend_from_slice(bytes);
+}
+
+/// Asserts that `body` is at least `expected_min` bytes long, returning a
+/// kind-specific error otherwise. Audit A-S1 / A-L1: makes "body too short"
+/// errors precise per message type rather than relying on the underlying
+/// `read_*` helpers' generic "missing X at offset Y" message.
+fn require_body_len(body: &[u8], expected_min: usize, msg_kind: &str) -> Result<(), ProtocolError> {
+    if body.len() < expected_min {
+        return Err(ProtocolError(format!(
+            "{msg_kind} body too short: {} < {}",
+            body.len(),
+            expected_min
+        )));
+    }
+    Ok(())
 }
 
 fn read_u8(body: &[u8], offset: usize) -> Result<u8, ProtocolError> {
@@ -795,5 +855,83 @@ mod tests {
         let mut buffer = vec![0, 0, 0, 3, 0x04, 1, 2, 0, 0, 0, 1, 0x05];
         assert_eq!(take_frame(&mut buffer), Some(vec![0x04, 1, 2]));
         assert_eq!(buffer, vec![0, 0, 0, 1, 0x05]);
+    }
+
+    // Audit A-S1: short MovementAck must produce a precise, kind-specific
+    // error rather than a generic "missing u32 at offset 89".
+    #[test]
+    fn movement_ack_short_body_is_rejected_with_kind_error() {
+        let mut payload = vec![0x8B];
+        payload.extend(std::iter::repeat_n(0u8, 50)); // way too short
+        let err = decode_server_payload(&payload).unwrap_err();
+        let msg = format!("{}", err.0);
+        assert!(
+            msg.contains("MovementAck"),
+            "expected MovementAck-tagged error, got {msg}"
+        );
+        assert!(
+            msg.contains("body too short"),
+            "expected body-too-short error, got {msg}"
+        );
+    }
+
+    // Audit A-L1: every fixed-size variant should reject short bodies with
+    // its kind name in the error.
+    #[test]
+    fn fixed_size_variants_reject_short_bodies() {
+        for (msg_type, kind) in [
+            (0x81u8, "PlayerEnter"),
+            (0x82, "PlayerLeave"),
+            (0x83, "PlayerMove"),
+            (0x85, "TimeSyncReply"),
+            (0x86, "HeartbeatReply"),
+            (0x88, "FastLaneAttached"),
+            (0x8A, "SkillEvent"),
+            (0x8C, "PlayerState"),
+            (0x8D, "CombatHit"),
+            (0x8F, "EffectEvent"),
+        ] {
+            let payload = vec![msg_type]; // empty body
+            let err = decode_server_payload(&payload).unwrap_err();
+            let msg = format!("{}", err.0);
+            assert!(
+                msg.contains(kind) && msg.contains("body too short"),
+                "msg_type {msg_type:#x} ({kind}) expected kind-specific length error, got {msg}"
+            );
+        }
+    }
+
+    // Audit A-M3: EnterSceneResult with ok=success but missing location must
+    // surface a ProtocolError instead of silently returning None (which would
+    // panic upstream when `expect`-unwrapped).
+    #[test]
+    fn enter_scene_result_success_without_location_errors() {
+        // body = packet_id(8) + ok(1) ; ok=0 means "ok" per protocol, no location.
+        let mut payload = vec![0x84];
+        payload.extend([0u8; 8]); // packet_id
+        payload.push(0); // ok = success
+        // intentionally no 24-byte vec3
+        let err = decode_server_payload(&payload).unwrap_err();
+        let msg = format!("{}", err.0);
+        assert!(
+            msg.contains("vec3") || msg.contains("missing"),
+            "expected vec3/missing-component error, got {msg}"
+        );
+    }
+
+    #[test]
+    fn enter_scene_result_failure_short_body_is_accepted() {
+        // ok=1 means failure, no location expected
+        let mut payload = vec![0x84];
+        payload.extend([0u8; 8]);
+        payload.push(1); // ok = failure
+        let result = decode_server_payload(&payload).unwrap();
+        match result {
+            ServerMessage::EnterSceneResult { ok, location, .. } => {
+                assert!(!ok);
+                assert!(location.is_none());
+            }
+            other => panic!("expected EnterSceneResult, got {other:?}"),
+        }
     }
 }

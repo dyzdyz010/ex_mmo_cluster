@@ -19,7 +19,21 @@ pub(super) fn emit_event(
     event: NetworkEvent,
 ) {
     observe_network_event(observer, &event);
-    let _ = event_tx.send(event);
+    if let Err(err) = event_tx.send(event) {
+        // Audit A-L4: previously this swallowed the SendError silently.
+        // The receiver being dropped means the Bevy app side has shut down
+        // or the channel is gone — log it once via the observer (if still
+        // available) so debugging is possible. The network thread will
+        // continue and let its main loop notice the closed channel through
+        // its own retry/exit path.
+        if observer.enabled() {
+            observer.emit(
+                "network",
+                "event_channel_closed",
+                &[("dropped_event", format!("{:?}", err.0))],
+            );
+        }
+    }
 }
 
 pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEvent) {
