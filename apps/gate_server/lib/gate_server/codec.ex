@@ -233,11 +233,16 @@ defmodule GateServer.Codec do
     {:ok, <<@msg_result, packet_id::64-big, @status_error>>}
   end
 
-  # ── EnterScene result (success with location) ──
-  def encode({:enter_scene_result, :ok, packet_id, {x, y, z}}) do
+  # ── EnterScene result (success with location + expected next input seq) ──
+  # Audit B-S1 / B-SRV2: success carries expected_seq so the client can
+  # initialise its local input-frame counter to the value the server is
+  # going to validate against. v1 layout — no fallback / compatibility
+  # branch; client and server must ship together.
+  def encode({:enter_scene_result, :ok, packet_id, {x, y, z}, expected_seq})
+      when is_integer(expected_seq) and expected_seq >= 0 do
     {:ok,
      <<@msg_enter_scene_result, packet_id::64-big, @status_ok, x::float-64-big, y::float-64-big,
-       z::float-64-big>>}
+       z::float-64-big, expected_seq::32-big>>}
   end
 
   def encode({:enter_scene_result, :error, packet_id}) do

@@ -97,7 +97,7 @@ defmodule GateServer.CodecEdgeCasesTest do
       messages = [
         {:result, :ok, 0},
         {:result, :error, 0},
-        {:enter_scene_result, :ok, 0, {0.0, 0.0, 0.0}},
+        {:enter_scene_result, :ok, 0, {0.0, 0.0, 0.0}, 1},
         {:enter_scene_result, :error, 0},
         {:player_enter, 0, {0.0, 0.0, 0.0}},
         {:player_leave, 0},

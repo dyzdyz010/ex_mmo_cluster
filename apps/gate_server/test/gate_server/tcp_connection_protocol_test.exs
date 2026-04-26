@@ -59,6 +59,14 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:reply, {:ok, state.location}, state}
     end
 
+    # Audit B-S1 / B-SRV1: tcp_connection now queries this between
+    # add_player and EnterSceneResult encoding. Fresh fake player just
+    # reports 1.
+    @impl true
+    def handle_call(:get_next_input_seq, _from, state) do
+      {:reply, {:ok, 1}, state}
+    end
+
     @impl true
     def handle_call({:movement_input, frame}, _from, state) do
       authoritative_location = state.movement_reply_location || state.location

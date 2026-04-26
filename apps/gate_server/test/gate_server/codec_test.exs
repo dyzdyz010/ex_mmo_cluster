@@ -163,10 +163,12 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode enter_scene_result" do
-    test "encodes success with location" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 5, {1.0, 2.0, 3.0}})
+    test "encodes success with location and expected next input seq" do
+      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 5, {1.0, 2.0, 3.0}, 1})
 
-      assert <<0x84, 5::64-big, 0x00, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big>> ==
+      # Audit B-SRV2 layout: msg + packet_id + ok + vec3 + expected_seq u32 BE.
+      assert <<0x84, 5::64-big, 0x00, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+               1::32-big>> ==
                bin
     end
 

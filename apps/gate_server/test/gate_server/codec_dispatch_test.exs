@@ -90,15 +90,16 @@ defmodule GateServer.CodecDispatchTest do
       assert type >= 0x80
     end
 
-    test "enter_scene_result success encodes with location" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 7, {100.0, 200.0, 90.0}})
+    test "enter_scene_result success encodes with location and expected_seq" do
+      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 7, {100.0, 200.0, 90.0}, 42})
 
-      <<type::8, packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big>> =
-        bin
+      <<type::8, packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big,
+        expected_seq::32-big>> = bin
 
       assert type == 0x84
       assert packet_id == 7
       assert status == 0x00
+      assert expected_seq == 42
       assert_in_delta x, 100.0, 0.001
       assert_in_delta y, 200.0, 0.001
       assert_in_delta z, 90.0, 0.001

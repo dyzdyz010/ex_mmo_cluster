@@ -465,6 +465,7 @@ impl ClientRuntime {
                 packet_id,
                 ok,
                 location,
+                expected_seq,
             } => {
                 if Some(packet_id) != self.enter_scene_request_id {
                     outcome.push_event(NetworkEvent::Log(format!(
@@ -483,13 +484,21 @@ impl ClientRuntime {
                 self.last_remote_move_ticks.clear();
                 let location =
                     location.ok_or_else(|| "enter-scene success missing location".to_string())?;
-                self.local_prediction.reset(
+                let expected_seq = expected_seq
+                    .ok_or_else(|| "enter-scene success missing expected_seq".to_string())?;
+                outcome.push_event(NetworkEvent::Log(format!(
+                    "enter-scene handshake: expected_seq={expected_seq}"
+                )));
+                // Audit B-S1 / B-SRV1: align client input counter with the
+                // value the server is going to validate against.
+                self.local_prediction.reset_with_seq(
                     bevy::prelude::Vec3::new(
                         location[0] as f32,
                         location[1] as f32,
                         location[2] as f32,
                     ),
                     None,
+                    expected_seq,
                 );
                 outcome.push_event(NetworkEvent::Status("in scene".to_string()));
                 outcome.push_event(NetworkEvent::EnteredScene {
@@ -949,6 +958,7 @@ mod tests {
                     packet_id: 2,
                     ok: true,
                     location: Some([10.0, 20.0, 0.0]),
+                    expected_seq: Some(1),
                 },
             )
             .unwrap();

@@ -49,8 +49,26 @@ impl Default for LocalPredictionRuntime {
 
 impl LocalPredictionRuntime {
     /// Resets local prediction around a fresh authoritative spawn position.
+    /// `next_seq` defaults to 1 — see [`reset_with_seq`] for the variant
+    /// used during reconnect/handshake.
     pub fn reset(&mut self, position: Vec3, profile: Option<MovementProfile>) {
-        self.next_seq = 1;
+        self.reset_with_seq(position, profile, 1);
+    }
+
+    /// Resets local prediction with an explicit `next_seq`.
+    ///
+    /// Audit B-S1 / B-SRV1: server hands the client its expected next
+    /// movement-input `seq` in `EnterSceneResult.expected_seq`. Plumbing
+    /// it through here means we no longer rely on the implicit "both
+    /// sides start at 1" contract — if a future server change introduces
+    /// session reuse, the client automatically picks up the right value.
+    pub fn reset_with_seq(
+        &mut self,
+        position: Vec3,
+        profile: Option<MovementProfile>,
+        next_seq: u32,
+    ) {
+        self.next_seq = next_seq.max(1);
         self.next_tick = 1;
         self.input_history = InputHistory::new(128);
         self.predicted_history = PredictedHistory::new(256);

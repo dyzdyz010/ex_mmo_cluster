@@ -143,6 +143,17 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
+  def handle_call(:get_next_input_seq, _from, state) do
+    # Audit B-S1 / B-SRV1: report the seq the server is going to expect for
+    # the *next* movement input. Initial state has last_input_seq = 0, so a
+    # fresh PlayerCharacter (every reconnect — PlayerManager rebuilds the
+    # process) yields next = 1, matching the client's reset_to_seq(1) on
+    # cold start. If sessions ever start being recycled, this handler is
+    # the single point where the contract is upheld.
+    {:reply, {:ok, state.last_input_seq + 1}, state}
+  end
+
+  @impl true
   def handle_call(:get_state_summary, _from, state) do
     summary = %{
       kind: :player,

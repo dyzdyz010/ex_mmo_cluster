@@ -202,8 +202,9 @@ defmodule GateServer.WsConnection do
          {:ok, character} <- fetch_authorized_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
          {:ok, ppid} <- add_player(scene_node, cid, timestamp, build_character_profile(character)),
-         {:ok, {x, y, z}} <- fetch_player_location(ppid) do
-      send_encoded(state, {:enter_scene_result, :ok, request_id, {x, y, z}})
+         {:ok, {x, y, z}} <- fetch_player_location(ppid),
+         {:ok, expected_seq} <- fetch_next_input_seq(ppid) do
+      send_encoded(state, {:enter_scene_result, :ok, request_id, {x, y, z}, expected_seq})
 
       {:ok,
        %{
@@ -343,6 +344,16 @@ defmodule GateServer.WsConnection do
   defp fetch_player_location(player_pid) do
     case safe_call(player_pid, :get_location, @scene_call_timeout) do
       {:ok, {:ok, location}} -> {:ok, location}
+      {:ok, _other} -> {:error, :scene_unavailable}
+      {:error, _reason} -> {:error, :scene_unavailable}
+    end
+  end
+
+  # See tcp_connection.fetch_next_input_seq for the audit B-S1 / B-SRV1
+  # rationale.
+  defp fetch_next_input_seq(player_pid) do
+    case safe_call(player_pid, :get_next_input_seq, @scene_call_timeout) do
+      {:ok, {:ok, seq}} -> {:ok, seq}
       {:ok, _other} -> {:error, :scene_unavailable}
       {:error, _reason} -> {:error, :scene_unavailable}
     end

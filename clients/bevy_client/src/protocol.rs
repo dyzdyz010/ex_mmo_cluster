@@ -99,6 +99,11 @@ pub enum ServerMessage {
         packet_id: u64,
         ok: bool,
         location: Option<NetVec3>,
+        /// Audit B-S1 / B-SRV2: server-side next-expected movement input
+        /// `seq`. Present only on success (None on error). The client must
+        /// reset its local input counter to this value before any movement
+        /// input is sent.
+        expected_seq: Option<u32>,
     },
     PlayerEnter {
         cid: i64,
@@ -248,19 +253,27 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             })
         }
         0x84 => {
-            // 8 + 1 = 9 minimum (ok=false), or 9 + 24 = 33 (ok=true)
+            // 8 + 1 = 9 minimum (ok=false), or 9 + 24 + 4 = 37 (ok=true).
+            // Audit B-S1 / B-SRV2 added the trailing expected_seq u32.
             require_body_len(body, 9, "EnterSceneResult")?;
             let packet_id = read_u64(body, 0)?;
             let ok = read_u8(body, 8)? == 0;
             // Audit A-M3: when ok, location is required by the protocol.
             // Previously we silently fell back to None on a short body and
             // then `runtime` `expect()`-panicked. Surface a proper error.
-            let location = if ok { Some(read_vec3(body, 9)?) } else { None };
+            let (location, expected_seq) = if ok {
+                let location = read_vec3(body, 9)?;
+                let expected_seq = read_u32(body, 33)?;
+                (Some(location), Some(expected_seq))
+            } else {
+                (None, None)
+            };
 
             Ok(ServerMessage::EnterSceneResult {
                 packet_id,
                 ok,
                 location,
+                expected_seq,
             })
         }
         0x87 => {
@@ -921,15 +934,47 @@ mod tests {
 
     #[test]
     fn enter_scene_result_failure_short_body_is_accepted() {
-        // ok=1 means failure, no location expected
+        // ok=1 means failure, no location and no expected_seq expected.
         let mut payload = vec![0x84];
         payload.extend([0u8; 8]);
         payload.push(1); // ok = failure
         let result = decode_server_payload(&payload).unwrap();
         match result {
-            ServerMessage::EnterSceneResult { ok, location, .. } => {
+            ServerMessage::EnterSceneResult {
+                ok,
+                location,
+                expected_seq,
+                ..
+            } => {
                 assert!(!ok);
                 assert!(location.is_none());
+                assert!(expected_seq.is_none());
+            }
+            other => panic!("expected EnterSceneResult, got {other:?}"),
+        }
+    }
+
+    // Audit B-S1 / B-SRV2: success carries the trailing expected_seq u32 BE.
+    #[test]
+    fn enter_scene_result_success_carries_expected_seq() {
+        // body = packet_id(8) + ok(1) + vec3(24) + expected_seq u32 BE
+        let mut payload = vec![0x84];
+        payload.extend([0u8; 8]); // packet_id = 0
+        payload.push(0); // ok = success
+        payload.extend([0u8; 24]); // location = (0, 0, 0)
+        payload.extend([0, 0, 0, 7]); // expected_seq = 7
+
+        let result = decode_server_payload(&payload).unwrap();
+        match result {
+            ServerMessage::EnterSceneResult {
+                ok,
+                location,
+                expected_seq,
+                ..
+            } => {
+                assert!(ok);
+                assert!(location.is_some());
+                assert_eq!(expected_seq, Some(7));
             }
             other => panic!("expected EnterSceneResult, got {other:?}"),
         }

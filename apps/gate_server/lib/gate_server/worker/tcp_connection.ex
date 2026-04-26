@@ -470,16 +470,18 @@ defmodule GateServer.TcpConnection do
          {:ok, scene_node} <- fetch_scene_node(),
          {:ok, ppid} <-
            add_player(scene_node, cid, timestamp, build_character_profile(character)),
-         {:ok, {x, y, z}} <- fetch_player_location(ppid) do
+         {:ok, {x, y, z}} <- fetch_player_location(ppid),
+         {:ok, expected_seq} <- fetch_next_input_seq(ppid) do
       GateServer.CliObserve.emit("enter_scene_ok", %{
         connection_pid: self(),
         cid: cid,
         request_id: request_id,
         scene_ref: ppid,
-        location: {x, y, z}
+        location: {x, y, z},
+        expected_seq: expected_seq
       })
 
-      send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}})
+      send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}, expected_seq})
 
       {:ok,
        %{
@@ -693,6 +695,17 @@ defmodule GateServer.TcpConnection do
   defp fetch_player_location(player_pid) do
     case safe_call(player_pid, :get_location, @scene_call_timeout) do
       {:ok, {:ok, location}} -> {:ok, location}
+      {:ok, _other} -> {:error, :scene_unavailable}
+      {:error, _reason} -> {:error, :scene_unavailable}
+    end
+  end
+
+  # Audit B-S1 / B-SRV1: fetch the next-expected movement input seq from
+  # the freshly-spawned PlayerCharacter so we can plumb it through
+  # EnterSceneResult to the client. See codec.ex for layout.
+  defp fetch_next_input_seq(player_pid) do
+    case safe_call(player_pid, :get_next_input_seq, @scene_call_timeout) do
+      {:ok, {:ok, seq}} -> {:ok, seq}
       {:ok, _other} -> {:error, :scene_unavailable}
       {:error, _reason} -> {:error, :scene_unavailable}
     end
