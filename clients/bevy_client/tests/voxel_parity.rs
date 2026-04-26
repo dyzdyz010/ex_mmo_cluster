@@ -124,3 +124,116 @@ fn boundary_snap_uses_micro_overlap_and_contact_rules() {
     assert!(!rejected.ok);
     assert!(rejected.conflict);
 }
+
+// Audit D-M3: parity tests for the three previously-uncovered web-vs-bevy
+// behaviours — refined cell multi-coord tracking, prefab boundary-snap
+// rejection on overlap, and multi-prefab snapshot round-trip identity.
+
+#[test]
+fn refined_cell_tracks_multiple_micro_blocks_and_overwrite_is_idempotent() {
+    let mut world = VoxelWorld::new();
+    let macro_coord = MacroCoord::new(2, 4, 2);
+
+    let coords = [
+        MicroCoord::new(0, 0, 0),
+        MicroCoord::new(7, 7, 7),
+        MicroCoord::new(4, 4, 4),
+        MicroCoord::new(0, 0, 7),
+        MicroCoord::new(7, 0, 0),
+    ];
+    for coord in coords {
+        assert!(world.set_micro_block(macro_coord, coord, block(VoxelMaterialId::Stone)));
+    }
+
+    let refined = world
+        .refined_cell(macro_coord)
+        .expect("refined cell after multi-coord placement");
+    assert_eq!(refined.occupied_slot_count() as usize, coords.len());
+
+    // Overwriting an already-occupied slot must not double-count and the
+    // refined material reflects the latest write.
+    assert!(world.set_micro_block(macro_coord, coords[0], block(VoxelMaterialId::Wood)));
+    let refined = world
+        .refined_cell(macro_coord)
+        .expect("refined cell after overwrite");
+    assert_eq!(refined.occupied_slot_count() as usize, coords.len());
+    assert_eq!(
+        world
+            .micro_block(macro_coord, coords[0])
+            .map(|b| b.material_id),
+        Some(VoxelMaterialId::Wood)
+    );
+}
+
+#[test]
+fn place_prefab_boundary_snap_rejects_when_overlap_slots_present() {
+    let mut world = VoxelWorld::new();
+    // Place a base macro block that the snapped prefab will lean against.
+    assert!(world.place_block(MacroCoord::new(2, 4, 2), block(VoxelMaterialId::Stone)));
+
+    // First snap place succeeds (no overlap, contact slots present).
+    let request = BoundarySnapRequest {
+        prefab_name: "builtin_sphere".to_string(),
+        hit_macro: MacroCoord::new(2, 4, 2),
+        face_normal: MacroCoord::new(1, 0, 0),
+        rotation: Rotation::Rot0,
+    };
+    let placed = world.place_prefab_boundary_snap(&request);
+    assert!(placed.ok, "first snap place must succeed");
+    assert!(placed.instance_id.is_some());
+
+    // Second snap place at the same request now overlaps the freshly-placed
+    // sphere and must be rejected with conflict=true. preview must agree.
+    let preview = world.preview_prefab_boundary_snap(&request);
+    assert!(!preview.ok, "preview must reject overlap");
+    assert!(preview.overlap_slots > 0);
+    let rerun = world.place_prefab_boundary_snap(&request);
+    assert!(!rerun.ok);
+    assert!(rerun.conflict);
+    assert!(rerun.instance_id.is_none());
+}
+
+#[test]
+fn batch_import_preserves_multiple_prefab_placements() {
+    let mut world = VoxelWorld::new();
+    world.bootstrap_showcase(1);
+
+    // Place two distinct prefabs at distinct macro origins. Recording the
+    // placement results lets us assert every per-prefab fact survives a
+    // snapshot round-trip.
+    let sphere = world.place_prefab("builtin_sphere", MacroCoord::new(8, 5, 8), Rotation::Rot0);
+    assert!(sphere.ok);
+    assert!(sphere.placed > 0);
+    let sphere_instance = sphere.instance_id.expect("sphere instance id");
+
+    let cylinder = world.place_prefab(
+        "builtin_cylinder",
+        MacroCoord::new(16, 5, 16),
+        Rotation::Rot0,
+    );
+    assert!(cylinder.ok);
+    assert!(cylinder.placed > 0);
+    let cylinder_instance = cylinder.instance_id.expect("cylinder instance id");
+    assert_ne!(sphere_instance, cylinder_instance);
+
+    let total_before = world.total_solid_cells();
+    assert!(total_before > 0);
+
+    let exported = world.export_snapshot();
+    let imported = VoxelWorld::from_snapshot(exported).expect("snapshot import must succeed");
+    assert_eq!(imported.total_solid_cells(), total_before);
+
+    // Both prefab core cells should still be present after the round-trip.
+    assert!(
+        imported
+            .micro_block(MacroCoord::new(8, 5, 8), MicroCoord::new(4, 4, 4))
+            .is_some(),
+        "sphere center must survive import"
+    );
+    assert!(
+        imported
+            .micro_block(MacroCoord::new(16, 5, 16), MicroCoord::new(4, 4, 4))
+            .is_some(),
+        "cylinder center must survive import"
+    );
+}

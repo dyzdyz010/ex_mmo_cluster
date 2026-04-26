@@ -864,7 +864,7 @@ mod tests {
         let mut payload = vec![0x8B];
         payload.extend(std::iter::repeat_n(0u8, 50)); // way too short
         let err = decode_server_payload(&payload).unwrap_err();
-        let msg = format!("{}", err.0);
+        let msg = err.0.clone();
         assert!(
             msg.contains("MovementAck"),
             "expected MovementAck-tagged error, got {msg}"
@@ -893,7 +893,7 @@ mod tests {
         ] {
             let payload = vec![msg_type]; // empty body
             let err = decode_server_payload(&payload).unwrap_err();
-            let msg = format!("{}", err.0);
+            let msg = err.0.clone();
             assert!(
                 msg.contains(kind) && msg.contains("body too short"),
                 "msg_type {msg_type:#x} ({kind}) expected kind-specific length error, got {msg}"
@@ -912,7 +912,7 @@ mod tests {
         payload.push(0); // ok = success
         // intentionally no 24-byte vec3
         let err = decode_server_payload(&payload).unwrap_err();
-        let msg = format!("{}", err.0);
+        let msg = err.0.clone();
         assert!(
             msg.contains("vec3") || msg.contains("missing"),
             "expected vec3/missing-component error, got {msg}"

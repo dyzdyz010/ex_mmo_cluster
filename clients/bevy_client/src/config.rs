@@ -51,6 +51,20 @@ impl fmt::Debug for SessionCredentials {
     }
 }
 
+fn env_or(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_parse_or<T>(key: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+{
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<T>().ok())
+        .unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,18 +82,4 @@ mod tests {
         assert!(dumped.contains("alice"));
         assert!(dumped.contains("cid: 7"));
     }
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-fn env_parse_or<T>(key: &str, default: T) -> T
-where
-    T: std::str::FromStr,
-{
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<T>().ok())
-        .unwrap_or(default)
 }

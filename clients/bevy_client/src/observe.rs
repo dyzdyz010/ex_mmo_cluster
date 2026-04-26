@@ -114,6 +114,13 @@ impl ClientObserver {
     }
 }
 
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,11 +152,4 @@ mod tests {
         assert_eq!(observer.dropped_count(), 3);
         assert_eq!(twin.dropped_count(), 3);
     }
-}
-
-fn unix_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
 }
