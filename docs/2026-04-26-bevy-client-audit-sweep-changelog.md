@@ -23,7 +23,7 @@
 - [x] **B-S2** 无历史命中时强制 replay pending (661d948)
 - [x] **B-S3** correction.rs from_bits 校验未知位 → 未知位下沉到 None (661d948)
 - [x] **B-M1** governance 上升即时/下降 25% 混合的非对称 hysteresis (661d948)
-- [ ] **B-M2** MovementAck 携带 fixed_dt_ms 校验
+- [x] **B-M2** MovementAck.fixed_dt_ms 协议字段 + client 漂移日志 (765bb44)
 - [x] **B-M3** history overflow_drops 计数 + is_at_high_water (661d948)
 - [x] **B-L1** jitter reset_if_stale + observe_rtt_at + reset_with_seq 一并清理 (661d948)
 - [x] **B-L2** dispatch_status_override 加正式 doc，已有测试覆盖契约 (661d948)
@@ -72,7 +72,7 @@
 | 切片 | 总 confirmed | 已修 | 进度 |
 |---|---|---|---|
 | A | 9 | 9 | 100% ✅ (A-S3 改判 false_positive) |
-| B | 12 | 0 | 0% |
+| B | 12 | 12 | 100% ✅ |
 | C | 8 | 0 | 0% |
 | D | 8 | 8 | 100% ✅ |
 | E | 10 | 10 | 100% ✅ |
