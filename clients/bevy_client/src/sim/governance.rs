@@ -58,8 +58,23 @@ impl ReplayGovernance {
 
     /// Updates `soft_position_error` in-place from the current jitter, so
     /// the next `reconcile()` call sees the jitter-adjusted threshold.
+    ///
+    /// Audit B-M1: applies an asymmetric hysteresis — the threshold
+    /// follows a *rising* jitter immediately (we'd rather over-tolerate
+    /// briefly than thrash on a real spike), but only blends *down*
+    /// toward the calmer target at `RELAX_BLEND` per call. Without this,
+    /// every-other-RTT pings near the soft boundary made
+    /// `soft_position_error` bounce between `base` and `max` and
+    /// produced a sequence of Accepted ↔ Replayed flip-flops in the
+    /// reconciler logs.
     pub fn apply_jitter(&mut self, jitter_ms: f32) {
-        self.soft_position_error = self.effective_soft_position_error(jitter_ms);
+        const RELAX_BLEND: f32 = 0.25;
+        let target = self.effective_soft_position_error(jitter_ms);
+        if target >= self.soft_position_error {
+            self.soft_position_error = target;
+        } else {
+            self.soft_position_error += (target - self.soft_position_error) * RELAX_BLEND;
+        }
     }
 }
 
@@ -178,14 +193,23 @@ mod tests {
         let mut gov = ReplayGovernance::default();
         assert!((gov.soft_position_error - 2.0).abs() < 1e-6);
         gov.apply_jitter(100.0);
-        // 100 ms × 0.02 = 2.0 bump → 4.0.
+        // 100 ms × 0.02 = 2.0 bump → 4.0 (rises immediately).
         assert!((gov.soft_position_error - 4.0).abs() < 1e-4);
-        // Larger spike → clamp.
+        // Larger spike → clamp (rises immediately).
         gov.apply_jitter(10_000.0);
         assert!((gov.soft_position_error - gov.max_soft_position_error).abs() < 1e-6);
-        // Calming down returns to the floor.
+        // Audit B-M1: calming down only blends 25 % toward target per
+        // call to avoid soft-threshold ping-pong. Many quiet samples are
+        // required before the threshold reaches the floor.
+        let max = gov.max_soft_position_error;
+        let base = gov.base_soft_position_error;
         gov.apply_jitter(0.0);
-        assert!((gov.soft_position_error - gov.base_soft_position_error).abs() < 1e-6);
+        let after_one = gov.soft_position_error;
+        assert!(after_one < max && after_one > base);
+        for _ in 0..40 {
+            gov.apply_jitter(0.0);
+        }
+        assert!((gov.soft_position_error - base).abs() < 1e-3);
     }
 
     #[test]

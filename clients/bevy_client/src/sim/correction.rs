@@ -37,6 +37,21 @@ impl CorrectionKind {
     }
 
     pub fn from_bits(bits: u32) -> Self {
+        // Audit B-S3: previously a server packet with garbage / forward-
+        // compatible bits in `correction_flags` would silently round-trip
+        // through `CorrectionFlags::from_bits` (which is a transparent
+        // wrapper that accepts any u32). The classifier above then
+        // ignored the unknown bits and possibly picked a known branch
+        // anyway. Reject unknown bits explicitly so a future protocol
+        // expansion or a buggy server cannot trigger a bogus
+        // teleport / anti-cheat reset on the client.
+        const KNOWN_BITS: u32 = CorrectionFlags::TELEPORT.bits()
+            | CorrectionFlags::COLLISION_PUSH.bits()
+            | CorrectionFlags::STATUS_OVERRIDE.bits()
+            | CorrectionFlags::ANTI_CHEAT_REJECT.bits();
+        if bits & !KNOWN_BITS != 0 {
+            return CorrectionKind::None;
+        }
         Self::classify(CorrectionFlags::from_bits(bits))
     }
 }
@@ -97,5 +112,18 @@ mod tests {
             CorrectionKind::from_bits(bits),
             CorrectionKind::StatusOverride
         );
+    }
+
+    // Audit B-S3: forward-compat / garbage bits must not silently map to a
+    // real correction branch. Picking a high bit guaranteed to be outside
+    // the current flag union exercises the rejection path.
+    #[test]
+    fn unknown_high_bit_rejected_to_none() {
+        let unknown = 1u32 << 31;
+        assert_eq!(CorrectionKind::from_bits(unknown), CorrectionKind::None);
+        // Mixing a known + unknown bit: still rejected — we cannot trust
+        // the packet's intent if any unknown bit is set.
+        let mixed = unknown | CorrectionFlags::TELEPORT.bits();
+        assert_eq!(CorrectionKind::from_bits(mixed), CorrectionKind::None);
     }
 }

@@ -8,6 +8,9 @@ use std::collections::VecDeque;
 pub struct InputHistory {
     capacity: usize,
     frames: VecDeque<MoveInputFrame>,
+    /// Cumulative number of frames evicted because the buffer was full.
+    /// Audit B-M3: previously the eviction was completely silent.
+    overflow_drops: u64,
 }
 
 impl InputHistory {
@@ -16,6 +19,7 @@ impl InputHistory {
         Self {
             capacity,
             frames: VecDeque::with_capacity(capacity),
+            overflow_drops: 0,
         }
     }
 
@@ -23,8 +27,21 @@ impl InputHistory {
     pub fn push(&mut self, frame: MoveInputFrame) {
         if self.frames.len() == self.capacity {
             self.frames.pop_front();
+            self.overflow_drops = self.overflow_drops.saturating_add(1);
         }
         self.frames.push_back(frame);
+    }
+
+    /// Returns true once the buffer has reached the high-water mark
+    /// (≥ 80 % full). Audit B-M3: surfaces "we are about to start losing
+    /// inputs" before reconcile actually misses an ack.
+    pub fn is_at_high_water(&self) -> bool {
+        self.capacity > 0 && self.frames.len() * 5 >= self.capacity * 4
+    }
+
+    /// Cumulative number of frames dropped due to overflow. See `push`.
+    pub fn overflow_drops(&self) -> u64 {
+        self.overflow_drops
     }
 
     /// Drops all frames up to and including the acknowledged client tick.
@@ -95,6 +112,7 @@ impl InputHistory {
 pub struct PredictedHistory {
     capacity: usize,
     states: VecDeque<PredictedMoveState>,
+    overflow_drops: u64,
 }
 
 impl PredictedHistory {
@@ -103,6 +121,7 @@ impl PredictedHistory {
         Self {
             capacity,
             states: VecDeque::with_capacity(capacity),
+            overflow_drops: 0,
         }
     }
 
@@ -110,8 +129,19 @@ impl PredictedHistory {
     pub fn push(&mut self, state: PredictedMoveState) {
         if self.states.len() == self.capacity {
             self.states.pop_front();
+            self.overflow_drops = self.overflow_drops.saturating_add(1);
         }
         self.states.push_back(state);
+    }
+
+    /// Audit B-M3: see InputHistory::is_at_high_water — same idea for
+    /// the predicted-state ring.
+    pub fn is_at_high_water(&self) -> bool {
+        self.capacity > 0 && self.states.len() * 5 >= self.capacity * 4
+    }
+
+    pub fn overflow_drops(&self) -> u64 {
+        self.overflow_drops
     }
 
     /// Looks up the predicted state for an exact tick.

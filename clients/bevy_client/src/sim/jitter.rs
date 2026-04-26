@@ -66,6 +66,30 @@ impl JitterEstimator {
         self.prev_rtt = None;
         self.value = 0.0;
     }
+
+    /// Resets the estimator if the caller has been silent (no `observe`
+    /// call) for at least `silence_threshold_secs`.
+    ///
+    /// Audit B-L1: without periodic samples the EWMA stays pinned at the
+    /// last computed value forever. After ~5 s of silence the value is
+    /// stale enough that the next sample should not be averaged against
+    /// the historical jitter — better to start clean than carry a 60 ms
+    /// jitter floor into a now-quiet network.
+    ///
+    /// Returns `true` when the estimator was actually reset.
+    pub fn reset_if_stale(
+        &mut self,
+        elapsed_since_last_observe_secs: f32,
+        silence_threshold_secs: f32,
+    ) -> bool {
+        if elapsed_since_last_observe_secs >= silence_threshold_secs && silence_threshold_secs > 0.0
+        {
+            self.reset();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for JitterEstimator {

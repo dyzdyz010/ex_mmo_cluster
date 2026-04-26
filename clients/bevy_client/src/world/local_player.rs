@@ -15,6 +15,11 @@ use crate::{
     },
 };
 
+/// Audit B-L1: stale-data threshold for the jitter estimator. After this
+/// many seconds of no RTT samples, the next sample resets the EWMA so an
+/// old jitter spike does not pollute a now-quiet network.
+pub const JITTER_STALE_RESET_SECS: f32 = 5.0;
+
 #[derive(Debug, Clone)]
 /// Local prediction runtime that owns input history, predicted history, and reconciliation stats.
 pub struct LocalPredictionRuntime {
@@ -28,6 +33,7 @@ pub struct LocalPredictionRuntime {
     governance: ReplayGovernance,
     governance_stats: ReplayGovernanceStats,
     jitter: JitterEstimator,
+    last_rtt_observe_secs: Option<f64>,
 }
 
 impl Default for LocalPredictionRuntime {
@@ -42,6 +48,7 @@ impl Default for LocalPredictionRuntime {
             profile: MovementProfile::default(),
             governance: ReplayGovernance::default(),
             governance_stats: ReplayGovernanceStats::default(),
+            last_rtt_observe_secs: None,
             jitter: JitterEstimator::default(),
         }
     }
@@ -74,6 +81,10 @@ impl LocalPredictionRuntime {
         self.predicted_history = PredictedHistory::new(256);
         self.governance_stats = ReplayGovernanceStats::default();
         self.last_input_frame = None;
+        // Audit B-L1: enter-scene is a fresh start — drop any historic
+        // jitter so we don't carry pre-handshake noise into the new scene.
+        self.jitter.reset();
+        self.last_rtt_observe_secs = None;
         if let Some(profile) = profile {
             self.profile = profile;
         }
@@ -187,6 +198,34 @@ impl LocalPredictionRuntime {
     pub fn observe_rtt(&mut self, rtt_ms: f32) {
         let jitter_ms = self.jitter.observe(rtt_ms);
         self.governance.apply_jitter(jitter_ms);
+    }
+
+    /// Same as `observe_rtt` but auto-resets the jitter EWMA when no
+    /// sample has been seen in `JITTER_STALE_RESET_SECS`. Audit B-L1.
+    pub fn observe_rtt_at(&mut self, rtt_ms: f32, now_secs: f64) {
+        if let Some(prev_secs) = self.last_rtt_observe_secs {
+            let elapsed = (now_secs - prev_secs) as f32;
+            self.jitter.reset_if_stale(elapsed, JITTER_STALE_RESET_SECS);
+        }
+        self.last_rtt_observe_secs = Some(now_secs);
+        let jitter_ms = self.jitter.observe(rtt_ms);
+        self.governance.apply_jitter(jitter_ms);
+    }
+
+    /// Audit B-M3: returns true once either history ring is at the
+    /// 80 % high-water mark. Caller (network plugin) can emit a log so
+    /// that "old inputs are silently dropping" is observable before the
+    /// first ack actually misses its history slot.
+    pub fn history_at_high_water(&self) -> bool {
+        self.input_history.is_at_high_water() || self.predicted_history.is_at_high_water()
+    }
+
+    pub fn input_history_overflow_drops(&self) -> u64 {
+        self.input_history.overflow_drops()
+    }
+
+    pub fn predicted_history_overflow_drops(&self) -> u64 {
+        self.predicted_history.overflow_drops()
     }
 
     /// Returns the currently-estimated one-way jitter (ms).

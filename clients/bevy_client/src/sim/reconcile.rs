@@ -6,6 +6,7 @@
 //! idle/latched frames without a new client input, so `ack_seq` is the only
 //! stable identifier in a namespace both sides agree on.
 
+use crate::input::commands::MoveInputFrame;
 use crate::sim::{
     correction::CorrectionKind,
     governance::{ReplayAction, ReplayGovernance},
@@ -91,7 +92,9 @@ pub fn reconcile(
             authoritative,
             input_history,
             predicted_history,
+            pending_frames,
             pending_inputs,
+            profile,
             governance,
             force_replay,
         );
@@ -197,6 +200,27 @@ fn dispatch_teleport(
     }
 }
 
+/// Handles a `StatusOverride` correction.
+///
+/// Audit B-L2: clarifies the contract that was previously implicit.
+/// `StatusOverride` (e.g. `mounted`, `frozen`, `disabled`) means the
+/// server has decided the avatar is no longer subject to the input the
+/// client just sent. We therefore:
+/// - Truncate any predicted state past the ack point (pre-override
+///   inputs would be re-applied on top of stale assumptions).
+/// - **Discard** the pending input frames at the call site by reporting
+///   them via `pending_inputs` for the stats but letting the caller's
+///   `drop_through_seq` already-applied prior to dispatch take effect:
+///   we do not call `input_history.frames_after_seq_cloned` again, so
+///   the unsent frames sit in the input history but are not replayed
+///   against the override-affected authoritative state. Subsequent
+///   reconciliations / movement_input calls will resume with whatever
+///   the user is pressing *after* the override, which matches the UE
+///   CMC convention for one-shot status overrides.
+///
+/// New input frames that arrive *after* the override pass through the
+/// normal predictor path on top of the post-override authoritative
+/// state — see `apply_local_input` in `world::local_player`.
 fn dispatch_status_override(
     ack: &MovementAck,
     authoritative: PredictedMoveState,
@@ -227,11 +251,14 @@ fn dispatch_status_override(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_without_match(
     authoritative: PredictedMoveState,
     input_history: &mut InputHistory,
     predicted_history: &mut PredictedHistory,
+    pending_frames: Vec<MoveInputFrame>,
     pending_inputs: usize,
+    profile: &MovementProfile,
     governance: &ReplayGovernance,
     force_replay: bool,
 ) -> Option<ReconcileResult> {
@@ -254,20 +281,48 @@ fn reconcile_without_match(
         });
     }
 
-    // Small correction without a matching predicted state: keep current
-    // prediction, record the authoritative sample for future lookups, and
-    // let the visual-smoothing layer blend the drift out.
+    // Audit B-S2: previously this path silently pushed the authoritative
+    // state and returned, *throwing away* any pending input frames the
+    // client has queued past the ack. The next predictor step would then
+    // start from `authoritative` with no replay context, accumulating
+    // drift on every subsequent ack until the user releases keys. Now
+    // we replay the pending inputs on top of the authoritative state —
+    // the same algorithm the matched-history path runs — so the post-ack
+    // predicted tip stays consistent with what the user actually pressed.
     predicted_history.push(authoritative.clone());
-    let latest_state = latest.unwrap_or_else(|| authoritative.clone());
-    let action = if force_replay {
+
+    let mut replay_state = authoritative.clone();
+    let mut replay_frames = pending_frames;
+    let trimmed = if replay_frames.len() > governance.max_replay_frames {
+        let start = replay_frames.len() - governance.max_replay_frames;
+        replay_frames = replay_frames.split_off(start);
+        input_history.retain_recent(governance.max_pending_inputs);
+        true
+    } else {
+        false
+    };
+
+    for frame in &replay_frames {
+        replay_state = predictor::step(&replay_state, frame, profile);
+        predicted_history.push(replay_state.clone());
+    }
+
+    let action = if trimmed {
+        ReplayAction::WindowTrimmed
+    } else if force_replay || !replay_frames.is_empty() {
         ReplayAction::ForcedReplay
     } else {
         ReplayAction::Accepted
     };
+    let latest_state = if replay_frames.is_empty() {
+        latest.unwrap_or(replay_state)
+    } else {
+        replay_state
+    };
     Some(ReconcileResult {
         action,
         latest_state,
-        replayed_frames: 0,
+        replayed_frames: replay_frames.len(),
         pending_inputs,
         correction_distance,
     })

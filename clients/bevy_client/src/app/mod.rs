@@ -113,6 +113,19 @@ pub(crate) struct MovementDispatchState {
 /// authoritative/predicted sim position; `pending_correction` captures any
 /// visual offset introduced by authority corrections and decays to zero via
 /// Unreal-style exponential smoothing so the player never sees a teleport.
+///
+/// Audit B-L3: `smoothing_rate_hz` is **deliberately decoupled** from the
+/// adaptive `ReplayGovernance::soft_position_error` / jitter EWMA in
+/// `LocalPredictionRuntime`. Rationale: the visual smoothing rate must
+/// stay perceptually constant — making it follow jitter would mean a
+/// laggy network suddenly feels mushy *and* that the avatar drifts
+/// noticeably for the duration of the spike. The reconciler already
+/// inflates its tolerance under jitter (B-M1) so the visual layer does
+/// not need a second feedback loop. If a future use case demands
+/// jitter-aware smoothing, route it through
+/// `LocalPredictionRuntime::current_jitter_ms` rather than reading the
+/// governance threshold directly — the governance value is bounded by
+/// `max_soft_position_error` which would silently cap any derived rate.
 pub(crate) struct LocalRenderPrediction {
     pub anchor_state: Option<PredictedMoveState>,
     pub render_state: Option<PredictedMoveState>,
