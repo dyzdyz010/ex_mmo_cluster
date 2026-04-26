@@ -4,26 +4,52 @@
 **输入**：`docs/2026-04-26-bevy-client-audit-findings.md` 的 47 client + 3 server findings
 **评审方式**：5 路 Explore agent 并行核验，read-only
 
-## 汇总
+## 汇总（含 Phase 0.7 追研结果）
 
 | 切片 | confirmed | false_positive | needs_more_context | 备注 |
 |---|---|---|---|---|
-| A: Net+Protocol | 10 | 0 | 1 (A-M4 fastlane race) | 1 条进 Phase 0.7 追研 |
-| B: Sim+Movement+Server | 11 | 0 | 1 (B-SRV1 enter_scene 全文) | 1 条进 Phase 0.7 追研 |
+| A: Net+Protocol | 9 | 1 (A-M4 fastlane race) | 0 | A-M4 经 0.7 反证关闭 |
+| B: Sim+Movement+Server | 12 | 0 | 0 | B-SRV1 经 0.7 完全 confirmed |
 | C: Camera+Input | 8 | 0 | 0 | C-S2 与 C-L2 重复，合并修 |
 | D: Voxel+World+Presentation | 8 | 0 | 0 | — |
 | E: App+UI+Stdio | 10 | 1 (E-S3 测试代码 panic) | 0 | E-S3 关闭 |
-| **合计** | **47** | **1** | **2** | — |
+| **合计** | **47** | **2** | **0** | — |
 
 ## 关键观察
 
 - **E-S3 false_positive**：`movement/mod.rs:82` 的 panic 是 `#[test]` 函数内的测试断言模式（`let Some(...) else { panic!() };`），并非生产网络线程崩溃。原审计误读，关闭。
-- **A-M4 fastlane 竞态**：validator A 自述未在本次核验范围阅读 fastlane.rs。Phase 0.7 单独派 validator 专攻。
-- **B-SRV1 server next_input_seq**：PlayerCharacter 已有 `last_input_seq` 状态，但 enter_scene 函数全文未读，需要确认 `next_input_seq = last_input_seq + 1` 推导符合 server 状态机假设。
 - **C-S2 与 C-L2 同源**：input_to_world_direction 未归一化既是上行抖动后果（C-S2）也是命名违反最小惊讶（C-L2），可合并为一处修复。
 - **D 切片三聚类**：presentation/camera 边界（D-S3 + D-L1）、remote actor 插值（D-S2 + D-M1）、voxel 测试与 API 卫生（D-M2/M3/L2/S1）。
 - **B-SRV2 用户决策已明确**：v1 协议直接末尾追加 expected_seq u32 BE，**不做向后兼容**。原 validator 出于谨慎标 needs_more_context，本汇总按用户决策升级为 confirmed。
 - **B-SRV3 文档同步**：归类 confirmed 防遗忘（不是 bug 但是 sweep deliverable）。
+
+## Phase 0.7 追研结论
+
+### A-M4 fastlane race → false_positive
+
+5 处具体证据反证：
+1. `runtime.rs:663-669` `attach_request_id` 校验（不匹配的旧响应被丢弃）
+2. `runtime.rs:115-119` `next_request_id` 单调递增不重用
+3. `thread.rs:382-418` socket 替换原子性（attach 报文成功发送后才赋值新 socket）
+4. UDP 消息路由无歧义（其他消息不依赖 fastlane 状态）
+5. `fastlane.rs:85-88` `prepare_attach()` 清空旧 ID 同时设置新 ID，无重叠窗口
+
+### B-SRV1 → confirmed，但语义需澄清
+
+**关键发现**：server 端 `PlayerManager` **无 session 持久化**，每次重连都新建 PlayerCharacter（`last_input_seq: 0`）。所以 client 现在的 `reset()` 回到 1 与 server 隐式一致——**B-S1 当前不是 production bug，是架构脆弱性**。
+
+仍按设计落地 `expected_seq` 字段，理由调整为：
+- **显式化协议契约**：不依赖"双方都从 1 开始"的隐式假设
+- **未来防御**：若 server 引入 session 复用 / supervisor restart 复用旧进程，client 自动对齐
+- **可观测性**：debug 日志能直接对照 server expected vs client next
+
+`next_input_seq = last_input_seq + 1` 推导正确（`player_character.ex:228-249` 的 `frame.seq > last_input_seq` 校验确认）。
+
+**实施步骤**（4 处改动）：
+1. `apps/gate_server/lib/gate_server/codec.ex:237-240` encode `{:enter_scene_result, :ok, packet_id, {x,y,z}, expected_seq}`，追加 `expected_seq::32-big`
+2. `apps/scene_server/lib/scene_server/worker/player_character.ex` 提供 `:get_next_input_seq` call handler 返回 `last_input_seq + 1`
+3. `apps/gate_server/lib/gate_server/worker/tcp_connection.ex:472-482` `add_player` 后调 `fetch_next_input_seq(ppid)` 注入 encode
+4. `apps/gate_server/test/.../tcp_connection_protocol_test.exs` FakePlayer 加 `:get_next_input_seq` handler，加协议字段测试
 
 ---
 
