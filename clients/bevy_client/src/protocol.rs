@@ -94,6 +94,10 @@ pub enum ServerMessage {
         acceleration: NetVec3,
         movement_mode: u8,
         correction_flags: u32,
+        /// Audit B-M2: server-authoritative fixed-tick interval (ms),
+        /// echoed in every ack so the client can compare it with its
+        /// own `MovementProfile.fixed_dt_ms` and warn on drift.
+        server_fixed_dt_ms: u16,
     },
     EnterSceneResult {
         packet_id: u64,
@@ -213,8 +217,8 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
     match msg_type {
         0x80 => decode_result(body),
         0x8B => {
-            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 = 93
-            require_body_len(body, 93, "MovementAck")?;
+            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 + 2 = 95 (audit B-M2 added u16).
+            require_body_len(body, 95, "MovementAck")?;
             Ok(ServerMessage::MovementAck {
                 ack_seq: read_u32(body, 0)?,
                 auth_tick: read_u32(body, 4)?,
@@ -224,6 +228,7 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 acceleration: read_vec3(body, 64)?,
                 movement_mode: read_u8(body, 88)?,
                 correction_flags: read_u32(body, 89)?,
+                server_fixed_dt_ms: read_u16(body, 93)?,
             })
         }
         0x81 => {
@@ -822,6 +827,8 @@ mod tests {
             bytes.extend_from_slice(&9.0_f64.to_be_bytes());
             bytes.push(0);
             bytes.extend_from_slice(&3_u32.to_be_bytes());
+            // Audit B-M2: trailing fixed_dt_ms u16 BE.
+            bytes.extend_from_slice(&100_u16.to_be_bytes());
             bytes
         };
 
@@ -836,6 +843,7 @@ mod tests {
                 acceleration: [7.0, 8.0, 9.0],
                 movement_mode: 0,
                 correction_flags: 3,
+                server_fixed_dt_ms: 100,
             }
         );
     }

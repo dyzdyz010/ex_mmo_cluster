@@ -153,7 +153,7 @@ defmodule GateServer.UdpAcceptor do
               ip,
               port,
               {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
-               ack.acceleration, ack.movement_mode, ack.correction_flags}
+               ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms}
             )
 
           {:error, reason} ->

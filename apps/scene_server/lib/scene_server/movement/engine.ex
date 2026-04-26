@@ -22,7 +22,7 @@ defmodule SceneServer.Movement.Engine do
           {State.t(), Ack.t()}
   def step(cid, %State{} = state, %InputFrame{} = frame, %Profile{} = profile, flags \\ 0) do
     next_state = NativeMovementEngine.step(state, frame, profile)
-    ack = build_ack_with_intent(cid, next_state, frame, flags)
+    ack = build_ack_with_intent(cid, next_state, frame, flags, profile.fixed_dt_ms)
 
     {next_state, ack}
   end
@@ -34,8 +34,9 @@ defmodule SceneServer.Movement.Engine do
   have the input frame that produced the state so collision push can be
   auto-detected.
   """
-  @spec build_ack(integer(), State.t(), non_neg_integer()) :: Ack.t()
-  def build_ack(cid, %State{} = state, ack_seq) do
+  @spec build_ack(integer(), State.t(), non_neg_integer(), pos_integer()) :: Ack.t()
+  def build_ack(cid, %State{} = state, ack_seq, fixed_dt_ms)
+      when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
     %Ack{
       cid: cid,
       ack_seq: ack_seq,
@@ -44,7 +45,8 @@ defmodule SceneServer.Movement.Engine do
       velocity: state.velocity,
       acceleration: state.acceleration,
       movement_mode: state.movement_mode,
-      correction_flags: 0
+      correction_flags: 0,
+      fixed_dt_ms: fixed_dt_ms
     }
   end
 
@@ -56,10 +58,11 @@ defmodule SceneServer.Movement.Engine do
           integer(),
           State.t(),
           InputFrame.t(),
-          CorrectionFlags.t()
+          CorrectionFlags.t(),
+          pos_integer()
         ) :: Ack.t()
-  def build_ack_with_intent(cid, %State{} = state, %InputFrame{} = frame, flags)
-      when is_integer(flags) and flags >= 0 do
+  def build_ack_with_intent(cid, %State{} = state, %InputFrame{} = frame, flags, fixed_dt_ms)
+      when is_integer(flags) and flags >= 0 and is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
     auto_flags = detect_collision_push(frame, state)
 
     %Ack{
@@ -70,7 +73,8 @@ defmodule SceneServer.Movement.Engine do
       velocity: state.velocity,
       acceleration: state.acceleration,
       movement_mode: state.movement_mode,
-      correction_flags: CorrectionFlags.combine([flags, auto_flags])
+      correction_flags: CorrectionFlags.combine([flags, auto_flags]),
+      fixed_dt_ms: fixed_dt_ms
     }
   end
 

@@ -250,15 +250,21 @@ defmodule GateServer.Codec do
   end
 
   # ── Movement ack ──
+  # Audit B-M2: trailing fixed_dt_ms (u16 BE) lets the client detect when
+  # its own MovementProfile.fixed_dt_ms has drifted from the server's
+  # authoritative value. Drift would silently accumulate prediction error
+  # over hundreds of replay frames; surfacing it lets the client log and
+  # downgrade gracefully.
   def encode(
         {:movement_ack, ack_seq, auth_tick, cid, {px, py, pz}, {vx, vy, vz}, {ax, ay, az},
-         movement_mode, correction_flags}
-      ) do
+         movement_mode, correction_flags, fixed_dt_ms}
+      )
+      when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
     {:ok,
      <<@msg_movement_ack, ack_seq::32-big, auth_tick::32-big, cid::64-big, px::float-64-big,
        py::float-64-big, pz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
        ax::float-64-big, ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
-       correction_flags::32-big>>}
+       correction_flags::32-big, fixed_dt_ms::16-big>>}
   end
 
   # ── Broadcast: player enter ──

@@ -220,6 +220,13 @@ impl LocalPredictionRuntime {
         self.input_history.is_at_high_water() || self.predicted_history.is_at_high_water()
     }
 
+    /// Audit B-M2: returns the client's locally-configured fixed-tick
+    /// interval (ms). Used by the network runtime to compare against the
+    /// server's ack-reported `server_fixed_dt_ms` and warn on drift.
+    pub fn movement_profile_fixed_dt_ms(&self) -> u16 {
+        self.profile.fixed_dt_ms
+    }
+
     pub fn input_history_overflow_drops(&self) -> u64 {
         self.input_history.overflow_drops()
     }

@@ -172,8 +172,9 @@ defmodule SceneServer.Movement.IntegratorTest do
         movement_mode: :grounded
       }
 
-      ack = Engine.build_ack(1, state, 7)
+      ack = Engine.build_ack(1, state, 7, 100)
       assert ack.correction_flags == 0
+      assert ack.fixed_dt_ms == 100
     end
 
     # Heuristic: player pushes in a direction but the resulting horizontal
@@ -198,7 +199,7 @@ defmodule SceneServer.Movement.IntegratorTest do
         movement_flags: 0
       }
 
-      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      ack = Engine.build_ack_with_intent(1, state, frame, 0, 100)
       assert CorrectionFlags.collision_push?(ack.correction_flags)
     end
 
@@ -221,7 +222,7 @@ defmodule SceneServer.Movement.IntegratorTest do
         movement_flags: 0
       }
 
-      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      ack = Engine.build_ack_with_intent(1, state, frame, 0, 100)
       assert ack.correction_flags == 0
     end
 
@@ -244,7 +245,7 @@ defmodule SceneServer.Movement.IntegratorTest do
         movement_flags: 0
       }
 
-      ack = Engine.build_ack_with_intent(1, state, frame, 0)
+      ack = Engine.build_ack_with_intent(1, state, frame, 0, 100)
       assert ack.correction_flags == 0
     end
 
@@ -268,7 +269,7 @@ defmodule SceneServer.Movement.IntegratorTest do
       }
 
       status = CorrectionFlags.status_override()
-      ack = Engine.build_ack_with_intent(1, state, frame, status)
+      ack = Engine.build_ack_with_intent(1, state, frame, status, 100)
 
       assert CorrectionFlags.status_override?(ack.correction_flags)
       assert CorrectionFlags.collision_push?(ack.correction_flags)

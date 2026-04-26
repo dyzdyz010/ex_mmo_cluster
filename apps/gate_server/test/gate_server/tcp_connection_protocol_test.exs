@@ -79,7 +79,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
         velocity: {0.0, 0.0, 0.0},
         acceleration: {0.0, 0.0, 0.0},
         movement_mode: :grounded,
-        correction_flags: 0
+        correction_flags: 0,
+        fixed_dt_ms: 100
       }
 
       {:reply, {:ok, ack}, %{state | location: authoritative_location}}

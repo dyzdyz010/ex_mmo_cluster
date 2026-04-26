@@ -83,7 +83,7 @@ defmodule GateServer.CodecDispatchTest do
       {:ok, bin} =
         Codec.encode(
           {:movement_ack, 9, 12, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}, :grounded,
-           0}
+           0, 100}
         )
 
       <<type::8, _::binary>> = bin
@@ -140,7 +140,7 @@ defmodule GateServer.CodecDispatchTest do
       {:ok, response} =
         Codec.encode(
           {:movement_ack, 73, 1000, 42, {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
-           :grounded, 0}
+           :grounded, 0, 100}
         )
 
       assert <<0x8B, 73::32-big, 1000::32-big, 42::64-big, _::binary>> = response

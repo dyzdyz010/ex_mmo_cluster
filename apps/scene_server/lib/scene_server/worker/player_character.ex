@@ -472,7 +472,13 @@ defmodule SceneServer.PlayerCharacter do
             )
 
           effective_input.seq > last_ack_seq ->
-            ack = Engine.build_ack(cid, movement_state, effective_input.seq)
+            ack =
+              Engine.build_ack(
+                cid,
+                movement_state,
+                effective_input.seq,
+                movement_profile.fixed_dt_ms
+              )
 
             SceneServer.CliObserve.emit("player_movement_idle_ack", %{
               cid: cid,
@@ -542,7 +548,8 @@ defmodule SceneServer.PlayerCharacter do
       physys_ref,
       effective_input,
       input_age_ms,
-      :single
+      :single,
+      movement_profile
     )
   end
 
@@ -574,7 +581,8 @@ defmodule SceneServer.PlayerCharacter do
       physys_ref,
       last_frame,
       input_age_ms,
-      {:replayed, length(renumbered)}
+      {:replayed, length(renumbered)},
+      movement_profile
     )
   end
 
@@ -589,7 +597,8 @@ defmodule SceneServer.PlayerCharacter do
          physys_ref,
          last_frame,
          input_age_ms,
-         mode
+         mode,
+         movement_profile
        ) do
     with :ok <-
            update_character_movement_with_retry(
@@ -602,7 +611,7 @@ defmodule SceneServer.PlayerCharacter do
          {:ok, authoritative_location} <-
            get_character_location_with_retry(cd_ref, physys_ref, next_state.position) do
       authoritative_state = %{next_state | position: authoritative_location} |> refresh_ground_z()
-      ack = Engine.build_ack(cid, authoritative_state, ack_seq)
+      ack = Engine.build_ack(cid, authoritative_state, ack_seq, movement_profile.fixed_dt_ms)
       snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
 
       SceneServer.CliObserve.emit("player_movement_tick", %{

@@ -81,6 +81,10 @@ pub(super) struct ClientRuntime {
     pub(super) last_remote_move_ticks: HashMap<i64, u32>,
     pub(super) fast_lane: FastLaneState,
     pub(super) local_prediction: LocalPredictionRuntime,
+    /// Audit B-M2: last server-reported fixed_dt_ms we already logged as
+    /// a mismatch — used to throttle the per-ack warning to once per
+    /// distinct mismatch value.
+    pub(super) last_logged_fixed_dt_mismatch: Option<u16>,
 }
 
 impl ClientRuntime {
@@ -97,6 +101,7 @@ impl ClientRuntime {
             last_remote_move_ticks: HashMap::new(),
             fast_lane: FastLaneState::default(),
             local_prediction: LocalPredictionRuntime::default(),
+            last_logged_fixed_dt_mismatch: None,
         }
     }
 
@@ -523,6 +528,7 @@ impl ClientRuntime {
                 location,
                 velocity,
                 acceleration,
+                server_fixed_dt_ms,
                 ..
             } => {
                 if ack_seq < self.last_applied_movement_ack
@@ -539,6 +545,25 @@ impl ClientRuntime {
 
                 self.last_applied_movement_ack = ack_seq;
                 self.last_applied_auth_tick = auth_tick;
+
+                // Audit B-M2: detect fixed_dt_ms drift. If the value the
+                // server is using diverges from the client's
+                // MovementProfile.fixed_dt_ms, hundreds of frames of replay
+                // would silently accumulate drift. Surface it via observer
+                // log so an operator can react. Throttling is left to the
+                // observer side (sample is per-ack but jitter logs already
+                // dwarf this volume).
+                let client_fixed_dt_ms = self.local_prediction.movement_profile_fixed_dt_ms();
+                if server_fixed_dt_ms != 0
+                    && client_fixed_dt_ms != 0
+                    && server_fixed_dt_ms != client_fixed_dt_ms
+                    && self.last_logged_fixed_dt_mismatch != Some(server_fixed_dt_ms)
+                {
+                    outcome.push_event(NetworkEvent::Log(format!(
+                        "movement profile fixed_dt_ms drift: server={server_fixed_dt_ms} client={client_fixed_dt_ms}; replay accuracy may degrade until profiles realign"
+                    )));
+                    self.last_logged_fixed_dt_mismatch = Some(server_fixed_dt_ms);
+                }
 
                 let predicted_before = self.local_prediction.current_state().cloned();
                 // Audit A-M1: replace `expect()` with explicit error reporting
@@ -1065,6 +1090,7 @@ mod tests {
                     acceleration: [0.0, 0.0, 0.0],
                     movement_mode: 0,
                     correction_flags: 0,
+                    server_fixed_dt_ms: 100,
                 },
             )
             .unwrap();
@@ -1330,6 +1356,7 @@ mod tests {
                     acceleration: [0.0, 0.0, 0.0],
                     movement_mode: 0,
                     correction_flags: 0,
+                    server_fixed_dt_ms: 100,
                 },
             )
             .unwrap();
@@ -1357,6 +1384,7 @@ mod tests {
                     acceleration: [0.0, 0.0, 0.0],
                     movement_mode: 0,
                     correction_flags: 0,
+                    server_fixed_dt_ms: 100,
                 },
             )
             .unwrap();
@@ -1396,6 +1424,7 @@ mod tests {
                     acceleration: [0.0, 0.0, 0.0],
                     movement_mode: 0,
                     correction_flags: 0,
+                    server_fixed_dt_ms: 100,
                 },
             )
             .unwrap();
@@ -1420,6 +1449,7 @@ mod tests {
                     acceleration: [0.0, 0.0, 0.0],
                     movement_mode: 0,
                     correction_flags: 0,
+                    server_fixed_dt_ms: 100,
                 },
             )
             .unwrap();

@@ -159,7 +159,7 @@ defmodule GateServer.TcpConnection do
 
     message =
       {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
-       ack.acceleration, ack.movement_mode, ack.correction_flags}
+       ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms}
 
     if udp_peer do
       GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
