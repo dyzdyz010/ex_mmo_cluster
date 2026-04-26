@@ -8,12 +8,12 @@
 
 | 切片 | confirmed | false_positive | needs_more_context | 备注 |
 |---|---|---|---|---|
-| A: Net+Protocol | 9 | 1 (A-M4 fastlane race) | 0 | A-M4 经 0.7 反证关闭 |
+| A: Net+Protocol | 8 | 2 (A-M4 fastlane, A-S3 UDP recv) | 0 | A-S3 在 implementer 阶段二次反证关闭 |
 | B: Sim+Movement+Server | 12 | 0 | 0 | B-SRV1 经 0.7 完全 confirmed |
 | C: Camera+Input | 8 | 0 | 0 | C-S2 与 C-L2 重复，合并修 |
 | D: Voxel+World+Presentation | 8 | 0 | 0 | — |
 | E: App+UI+Stdio | 10 | 1 (E-S3 测试代码 panic) | 0 | E-S3 关闭 |
-| **合计** | **47** | **2** | **0** | — |
+| **合计** | **46** | **3** | **0** | — |
 
 ## 关键观察
 
@@ -24,6 +24,20 @@
 - **B-SRV3 文档同步**：归类 confirmed 防遗忘（不是 bug 但是 sweep deliverable）。
 
 ## Phase 0.7 追研结论
+
+### A-S3 UDP 单包接收 → false_positive（implementer 二次审查发现）
+
+implementer 阶段实际查看 `clients/bevy_client/src/net/thread.rs:264-326` 时发现：当前代码已经是 draining 循环——
+```rust
+while let Some(socket) = udp_socket.as_ref() {
+    match socket.recv(&mut buf) {
+        Ok(n) => { /* process */ }    // 自然 fall-through，下一轮 iteration 继续 recv
+        Err(WouldBlock) => break,
+        ...
+    }
+}
+```
+原 validator A 把 `while let Some(socket) = ...` 误读成"socket 还绑定时一次执行"，实际上它是 while 循环，Ok 路径会再次进入 recv 直到 WouldBlock。多包积压本就是单帧 drain 干净的，无 bug。无需修复。
 
 ### A-M4 fastlane race → false_positive
 

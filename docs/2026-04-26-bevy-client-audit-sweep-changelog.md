@@ -6,7 +6,7 @@
 
 - [x] **A-S1** MovementAck correction_flags 偏移前置长度校验 (f636b0f)
 - [ ] **A-S2** 阻塞 TCP 写硬自旋 → 非阻塞缓冲队列
-- [ ] **A-S3** UDP 单包接收 → 循环读到 WouldBlock
+- [x] **A-S3** ~~UDP 单包接收~~ → 二次审查后为 **false_positive**：`net/thread.rs:264-326` 已经是 `while let Some(socket) { match recv ... Ok => process+continue, WouldBlock => break }` 的标准 draining 循环。原 validator A 误读代码（把 `while let` 看成绑定检查而非循环条件）。无需修复。
 - [x] **A-M1** `expect("movement ack")` → 显式错误传播 (f636b0f)
 - [ ] **A-M2** Auth 失败无重试 → 指数退避
 - [x] **A-M3** EnterSceneResult 缺位置 expect → 显式错误路径 (f636b0f)
@@ -71,11 +71,11 @@
 
 | 切片 | 总 confirmed | 已修 | 进度 |
 |---|---|---|---|
-| A | 10 | 0 | 0% |
+| A | 9 | 7 | 78% (A-S3 改判 false_positive) |
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
 | D | 8 | 0 | 0% |
 | E | 10 | 0 | 0% |
 | **合计** | **48** | **0** | **0%** |
 
-**注**：A 切片 10 项是因为 A-S1/A-S2/A-S3/A-M1/A-M2/A-M3/A-L1/A-L2/A-L3/A-L4 共 10 条，A-M4 已 false_positive 关闭。
+**注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。
