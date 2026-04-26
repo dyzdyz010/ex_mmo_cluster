@@ -23,7 +23,10 @@ export type AppEvents = {
   "input:break-block": { source: string };
   "input:jump": { source: string };
 
-  "transport:spawn": { position: Vector3 };
+  // Audit B-S1 / B-SRV2: expectedSeq is the server-reported next-input
+  // seq the client must align its local counter to before sending any
+  // movement input.
+  "transport:spawn": { position: Vector3; expectedSeq: number };
   "transport:mode-changed": { mode: string };
   "transport:ack-delivered": { ack: MovementAck; sentAtMs: number };
   "transport:snapshot-delivered": { snapshot: RemoteMoveSnapshot };

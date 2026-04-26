@@ -31,7 +31,9 @@ describe("gate movement protocol", () => {
   });
 
   it("decodes movement ack mode and correction flags from the wire", () => {
-    const buffer = new ArrayBuffer(95);
+    // Audit B-M2: trailing fixed_dt_ms u16 BE pushed total frame from
+    // 95 → 96 bytes; new field lives at view offset 94.
+    const buffer = new ArrayBuffer(96);
     const view = new DataView(buffer);
     view.setUint8(0, 0x8b);
     view.setUint32(1, 10, false);
@@ -42,6 +44,7 @@ describe("gate movement protocol", () => {
     writeVec3(view, 65, 7, 8, 9);
     view.setUint8(89, 1);
     view.setUint32(90, CorrectionFlag.StatusOverride, false);
+    view.setUint16(94, 100, false);
 
     const message = decodeServerMessage(buffer);
 
@@ -50,6 +53,29 @@ describe("gate movement protocol", () => {
     expect(message.ack.movementMode).toBe(MovementMode.Airborne);
     expect(message.ack.correctionFlags).toBe(CorrectionFlag.StatusOverride);
     expect(message.ack.position).toEqual(new Vector3(1, 3, 2));
+    expect(message.ack.serverFixedDtMs).toBe(100);
+  });
+
+  it("decodes enter_scene_ok with expectedSeq", () => {
+    // Audit B-S1 / B-SRV2: success body is packet_id(8) + ok(1) +
+    // vec3(24) + expected_seq(u32 BE). Total frame = 38 bytes (1 +37).
+    const buffer = new ArrayBuffer(38);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x84);
+    view.setBigUint64(1, 7n, false); // requestId
+    view.setUint8(9, 0); // ok
+    writeVec3(view, 10, 100, 200, 90);
+    view.setUint32(34, 42, false); // expected_seq
+
+    const message = decodeServerMessage(buffer);
+    expect(message?.type).toBe("enter_scene_ok");
+    if (message?.type !== "enter_scene_ok") return;
+    expect(message.requestId).toBe(7);
+    expect(message.expectedSeq).toBe(42);
+    // Server vec3 (x, y, z) → browser (x, z, y) per readServerVec3AsBrowserVec3.
+    expect(message.position.x).toBe(100);
+    expect(message.position.y).toBe(90);
+    expect(message.position.z).toBe(200);
   });
 
   it("decodes remote snapshot movement mode from the wire", () => {

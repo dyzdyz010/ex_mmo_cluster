@@ -47,8 +47,11 @@ export class TransportPump implements FrameSubscriber {
     const result = this.transport.tick(nowMs, dtMs);
     this.publishModeIfChanged();
 
-    if (result.spawnPosition) {
-      this.bus.emit("transport:spawn", { position: result.spawnPosition });
+    if (result.spawn) {
+      this.bus.emit("transport:spawn", {
+        position: result.spawn.position,
+        expectedSeq: result.spawn.expectedSeq,
+      });
     }
     for (const delivered of result.acknowledgements) {
       this.bus.emit("transport:ack-delivered", {

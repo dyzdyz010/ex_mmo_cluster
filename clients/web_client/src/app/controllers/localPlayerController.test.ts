@@ -31,7 +31,7 @@ class FakeMovementTransport implements MovementTransport {
     return {
       acknowledgements: [],
       remoteSnapshots: [],
-      spawnPosition: null,
+      spawn: null,
     };
   }
 }

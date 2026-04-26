@@ -38,6 +38,9 @@ export class ServerMovementTransport implements MovementTransport {
   private readonly remoteSnapshots: RemoteMoveSnapshot[] = [];
   private readonly sentAtBySeq = new Map<number, number>();
   private spawnPosition: Vector3 | null = null;
+  // Audit B-S1 / B-SRV2: server-reported next-input seq for the upcoming
+  // spawn. Consumed alongside spawnPosition by the transport pump.
+  private spawnExpectedSeq: number | null = null;
   private readonly fallbackTransport = new SimulatedLocalMovementTransport();
   private fallbackReason: string | null = null;
   private readonly lastResetPosition = new Vector3(-350, 650, -280);
@@ -108,6 +111,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.acknowledgements.splice(0, this.acknowledgements.length);
     this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
     this.spawnPosition = null;
+    this.spawnExpectedSeq = null;
 
     if (this.usingFallback()) {
       this.fallbackTransport.reset(position);
@@ -140,9 +144,16 @@ export class ServerMovementTransport implements MovementTransport {
 
     const acknowledgements = this.acknowledgements.splice(0, this.acknowledgements.length);
     const remoteSnapshots = this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
-    const spawnPosition = this.spawnPosition;
+    const spawn =
+      this.spawnPosition && this.spawnExpectedSeq !== null
+        ? {
+            position: this.spawnPosition,
+            expectedSeq: this.spawnExpectedSeq,
+          }
+        : null;
     this.spawnPosition = null;
-    return { acknowledgements, remoteSnapshots, spawnPosition };
+    this.spawnExpectedSeq = null;
+    return { acknowledgements, remoteSnapshots, spawn };
   }
 
   private async bootstrap(): Promise<void> {
@@ -261,9 +272,11 @@ export class ServerMovementTransport implements MovementTransport {
         if (message.requestId === this.enterSceneRequestId) {
           this.ready = true;
           this.spawnPosition = message.position;
+          this.spawnExpectedSeq = message.expectedSeq;
           this.logger.emit("transport", "enter_scene_ok", {
             mode: SERVER_TRANSPORT_MODE,
             position: `${message.position.x.toFixed(1)},${message.position.y.toFixed(1)},${message.position.z.toFixed(1)}`,
+            expected_seq: message.expectedSeq,
           });
         }
         break;
@@ -350,6 +363,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
     this.sentAtBySeq.clear();
     this.spawnPosition = null;
+    this.spawnExpectedSeq = null;
   }
 }
 

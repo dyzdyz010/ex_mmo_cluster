@@ -52,6 +52,10 @@ export interface MovementAck {
   movementMode: MovementMode;
   groundY?: number;
   correctionFlags: number;
+  // Audit B-M2 (bevy sweep 2026-04-26): server-authoritative fixed-tick
+  // interval (ms) echoed in every ack. Used to detect MovementProfile
+  // drift before it accumulates into prediction error.
+  serverFixedDtMs: number;
 }
 
 export interface RemoteMoveSnapshot {
@@ -107,6 +111,7 @@ export function cloneMovementAck(ack: MovementAck): MovementAck {
     acceleration: ack.acceleration.clone(),
     movementMode: ack.movementMode,
     correctionFlags: ack.correctionFlags,
+    serverFixedDtMs: ack.serverFixedDtMs,
   };
   if (ack.groundY !== undefined) {
     cloned.groundY = ack.groundY;

@@ -6,10 +6,16 @@ export interface PendingMovementAck {
   sentAtMs: number;
 }
 
+export interface SpawnInfo {
+  position: Vector3;
+  // Audit B-S1 / B-SRV2: server-reported next-input seq for this spawn.
+  expectedSeq: number;
+}
+
 export interface MovementTransportTickResult {
   acknowledgements: PendingMovementAck[];
   remoteSnapshots: RemoteMoveSnapshot[];
-  spawnPosition: Vector3 | null;
+  spawn: SpawnInfo | null;
 }
 
 /**

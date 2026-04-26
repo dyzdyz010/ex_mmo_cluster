@@ -67,7 +67,12 @@ export class LocalPlayerController implements FrameSubscriber {
     private readonly transport: TransportPump,
   ) {
     this.resetTo(DEFAULT_SPAWN);
-    this.bus.on("transport:spawn", ({ position }) => this.resetTo(position));
+    // Audit B-S1 / B-SRV2: spawn handshake carries the server's
+    // expectedSeq; pass it through so the local input counter aligns
+    // with what the server is going to validate against.
+    this.bus.on("transport:spawn", ({ position, expectedSeq }) =>
+      this.resetTo(position, expectedSeq),
+    );
     this.bus.on("transport:ack-delivered", ({ ack, sentAtMs }) => {
       this.consumeAuthority(performance.now(), ack, sentAtMs);
     });
@@ -308,8 +313,8 @@ export class LocalPlayerController implements FrameSubscriber {
     this.frameTraceRemaining -= 1;
   }
 
-  private resetTo(start: Vector3): void {
-    this.prediction.reset(start);
+  private resetTo(start: Vector3, nextSeq: number = 1): void {
+    this.prediction.resetWithSeq(start, nextSeq);
     this.renderAnchor.copy(start);
     this.renderedPosition.copy(start);
     this.pendingCorrection.set(0, 0, 0);

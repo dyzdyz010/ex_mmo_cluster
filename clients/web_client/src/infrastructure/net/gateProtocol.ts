@@ -10,6 +10,11 @@ export interface EnterSceneOkMessage {
   type: "enter_scene_ok";
   requestId: number;
   position: Vector3;
+  // Audit B-S1 / B-SRV2 (bevy sweep 2026-04-26): server-side next-expected
+  // movement input `seq`. The client must align its local input counter
+  // to this value before sending any movement input, so the server's
+  // first-seq validation accepts it.
+  expectedSeq: number;
 }
 
 export interface EnterSceneErrorMessage {
@@ -124,13 +129,19 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       if (!ok) {
         return { type: "enter_scene_error", requestId };
       }
+      // Layout (audit B-S1 / B-SRV2): packet_id(8) + ok(1) + vec3(24) +
+      // expected_seq(u32 BE). Total body = 37; with msg_type the frame is
+      // 38 bytes.
       return {
         type: "enter_scene_ok",
         requestId,
         position: readServerVec3AsBrowserVec3(view, 10),
+        expectedSeq: view.getUint32(34, false),
       };
     }
     case 0x8b:
+      // Layout (audit B-M2): + trailing fixed_dt_ms u16 BE at body offset 93
+      // (i.e. msg_type-relative offset 94). Total body = 95; frame = 96.
       return {
         type: "movement_ack",
         ack: {
@@ -141,6 +152,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           acceleration: readServerVec3AsBrowserVec3(view, 65),
           movementMode: decodeMovementMode(view.getUint8(89)),
           correctionFlags: view.getUint32(90, false),
+          serverFixedDtMs: view.getUint16(94, false),
         },
       };
     case 0x83:

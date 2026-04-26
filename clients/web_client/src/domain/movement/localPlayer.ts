@@ -35,7 +35,18 @@ export class LocalPredictionRuntime {
   ) {}
 
   reset(position: Vector3): void {
-    this.nextSeq = 1;
+    this.resetWithSeq(position, 1);
+  }
+
+  /**
+   * Audit B-S1 / B-SRV1 (bevy sweep 2026-04-26): align the local input
+   * counter to whatever value the server told us via
+   * `EnterSceneOkMessage.expectedSeq`. Drops the implicit "both sides
+   * always start at 1" contract so a future server-side session reuse
+   * does not silently desync.
+   */
+  resetWithSeq(position: Vector3, nextSeq: number): void {
+    this.nextSeq = Math.max(1, Math.trunc(nextSeq));
     this.nextTick = 1;
     this.inputHistory.clear();
     this.predictedHistory.clear();

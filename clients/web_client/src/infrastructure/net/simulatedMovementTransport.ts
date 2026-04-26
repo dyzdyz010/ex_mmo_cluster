@@ -76,7 +76,9 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
     return {
       acknowledgements: this.consumeAcknowledgements(nowMs),
       remoteSnapshots: this.consumeRemoteSnapshots(nowMs, dtMs),
-      spawnPosition: null,
+      // Simulated transport never produces a spawn handshake — there is
+      // no enter_scene round trip to mirror.
+      spawn: null,
     };
   }
 
@@ -130,6 +132,10 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
           acceleration: predicted.acceleration.clone(),
           movementMode: predicted.movementMode,
           correctionFlags,
+          // Audit B-M2: simulated transport reports the same fixed_dt_ms
+          // the local profile uses, so drift detection is a no-op here
+          // by construction.
+          serverFixedDtMs: DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
         },
       });
     }
