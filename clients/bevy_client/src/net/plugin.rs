@@ -33,8 +33,25 @@ fn poll_network_events(
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
 ) {
-    let Ok(receiver) = bridge.rx.lock() else {
-        return;
+    let receiver = match bridge.rx.lock() {
+        Ok(receiver) => receiver,
+        Err(poisoned) => {
+            // Audit E-S2: poisoned NetworkBridge mutex means the network
+            // thread panicked while holding the lock. Surface it through
+            // WorldState so the operator sees a definitive error in HUD /
+            // stdio instead of silent freeze. Recover the inner receiver to
+            // continue draining events that may have arrived before the
+            // panic.
+            let recovered = poisoned.into_inner();
+            world_state.status =
+                "network bridge mutex poisoned (network thread panicked)".to_string();
+            push_line(
+                &mut world_state.logs,
+                "network bridge mutex poisoned; receiver recovered, but the network thread is dead — please restart"
+                    .to_string(),
+            );
+            recovered
+        }
     };
 
     while let Ok(event) = receiver.try_recv() {
