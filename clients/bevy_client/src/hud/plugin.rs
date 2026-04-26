@@ -54,6 +54,20 @@ fn update_hud_text(
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
 ) {
+    // Audit E-L2: previously this system reformatted ~30 lines of text into
+    // three Bevy `Text` components every frame, allocating dozens of
+    // `String`s each time, even when nothing visible had changed. Bevy's
+    // change-detection lets us short-circuit cleanly: if none of the input
+    // resources changed since this system last ran, nothing on the HUD can
+    // have changed either, so skip the work entirely.
+    if !world_state.is_changed()
+        && !chat_state.is_changed()
+        && !voxel_world.is_changed()
+        && !selection_state.is_changed()
+    {
+        return;
+    }
+
     let selected_target = world_state
         .selected_target_cid
         .and_then(|cid| world_state.remote_actor_identity.get(&cid))
