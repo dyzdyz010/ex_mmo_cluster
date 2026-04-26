@@ -4,16 +4,16 @@
 
 ## Slice A: Net + Protocol（9 confirmed）
 
-- [ ] **A-S1** MovementAck correction_flags 偏移前置长度校验
+- [x] **A-S1** MovementAck correction_flags 偏移前置长度校验 (f636b0f)
 - [ ] **A-S2** 阻塞 TCP 写硬自旋 → 非阻塞缓冲队列
 - [ ] **A-S3** UDP 单包接收 → 循环读到 WouldBlock
-- [ ] **A-M1** `expect("movement ack")` → 显式错误传播
+- [x] **A-M1** `expect("movement ack")` → 显式错误传播 (f636b0f)
 - [ ] **A-M2** Auth 失败无重试 → 指数退避
-- [ ] **A-M3** EnterSceneResult 缺位置 expect → 显式错误路径
-- [ ] **A-L1** payload 最小长度未验证 → 各分支前断言
-- [ ] **A-L2** 跳帧无检测日志 → PlayerMove 跳帧 log
+- [x] **A-M3** EnterSceneResult 缺位置 expect → 显式错误路径 (f636b0f)
+- [x] **A-L1** payload 最小长度未验证 → 各分支前断言 (f636b0f)
+- [x] **A-L2** 跳帧无检测日志 → PlayerMove 跳帧 log (f636b0f)
 - [x] **A-L3** protocol_v2.rs 命名误导 → 文件顶部 TODO 注释 (704ead7)
-- [ ] **A-L4** observe.rs send 错误吞掉 → 至少记录一次
+- [x] **A-L4** observe.rs send 错误吞掉 → 至少记录一次 (f636b0f)
 
 **已关闭**：A-M4 (false_positive，fastlane race 经多重保护不会发生)
 
