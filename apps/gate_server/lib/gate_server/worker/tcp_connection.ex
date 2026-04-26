@@ -289,7 +289,12 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def handle_info({:tcp_closed, _conn}, state) do
-    Logger.error("Socket #{inspect(state.socket, pretty: true)} closed.")
+    # Audit (e2e smoke 2026-04-26): client-initiated TCP close is the
+    # normal session-end flow (logout / browser tab closed / SIGINT on
+    # the bevy headless). Logging it at :error inflated alert volume in
+    # the smoke run; an :info line is enough — surrounding scene/fast-lane
+    # cleanup metrics still fire through CliObserve.
+    Logger.info("Socket #{inspect(state.socket, pretty: true)} closed by peer.")
     GateServer.CliObserve.emit("tcp_closed", %{connection_pid: self(), cid: state.cid})
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())

@@ -60,7 +60,33 @@ defmodule GateServer.TcpAcceptor do
         {GateServer.TcpConnection, client}
       )
 
-    :ok = :gen_tcp.controlling_process(client, pid)
+    # Audit (e2e smoke 2026-04-26): a client may close the connection in
+    # the window between `:gen_tcp.accept/1` returning and us handing the
+    # socket to its connection process — `controlling_process/2` then
+    # returns `{:error, :closed}` and the prior `:ok = ...` match crashed
+    # the acceptor. The supervisor restarts it, so functionality survives,
+    # but the noise hides real problems. Handle the race quietly: drop
+    # the orphaned connection process (no socket to own) and continue.
+    case :gen_tcp.controlling_process(client, pid) do
+      :ok ->
+        :ok
+
+      {:error, :closed} ->
+        # Socket already gone — close our end and tear down the orphaned
+        # connection process. DynamicSupervisor terminate is best-effort.
+        _ = :gen_tcp.close(client)
+        _ = DynamicSupervisor.terminate_child(GateServer.TcpConnectionSup, pid)
+
+        GateServer.CliObserve.emit("tcp_accept_race_closed", %{
+          connection_pid: pid
+        })
+
+      {:error, reason} ->
+        # Genuine controlling_process failure (badarg, eperm, etc.) —
+        # surface it. Acceptor still survives via supervisor restart, but
+        # we want this to be loud.
+        raise "controlling_process failed for socket #{inspect(client)}: #{inspect(reason)}"
+    end
 
     loop_acceptor(socket)
   end
