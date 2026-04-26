@@ -31,13 +31,13 @@
 
 ## Slice C: Camera + Input（8 confirmed，C-S2 与 C-L2 合并）
 
-- [ ] **C-S1** cursor grab 监听 Window::focused
-- [ ] **C-S2 + C-L2** input_to_world_direction 输出归一化
-- [ ] **C-M1** 摄像机 ray-cast 碰撞回退
-- [ ] **C-M2** web 默认 pitch 对齐测试
-- [ ] **C-M3** manage_cursor_grab run_if 状态变化
-- [ ] **C-L1** speed_scale 抽常量 + TODO
-- [ ] **C-L3** orbit_motion observer 阈值过滤
+- [x] **C-S1** WindowFocusGate + WindowFocused 事件监听 (10f03f1)
+- [x] **C-S2 + C-L2** input_to_world_direction normalize_or_zero (10f03f1)
+- [x] **C-M1** voxel_ray_first_hit_distance + requested_distance/distance 分离 (10f03f1)
+- [x] **C-M2** default_orbit_pitch_matches_web_client 测试 (10f03f1)
+- [x] **C-M3** manage_cursor_grab run_if(state_changed/resource_changed) (10f03f1)
+- [x] **C-L1** DEFAULT_MOVEMENT_SPEED_SCALE 常量 (10f03f1)
+- [x] **C-L3** orbit_motion 4px 阈值过滤 (10f03f1)
 
 ## Slice D: Voxel + World + Presentation（8 confirmed）
 
@@ -73,7 +73,7 @@
 |---|---|---|---|
 | A | 9 | 9 | 100% ✅ (A-S3 改判 false_positive) |
 | B | 12 | 12 | 100% ✅ |
-| C | 8 | 0 | 0% |
+| C | 8 | 8 | 100% ✅ |
 | D | 8 | 8 | 100% ✅ |
 | E | 10 | 10 | 100% ✅ |
 | **合计** | **48** | **0** | **0%** |
