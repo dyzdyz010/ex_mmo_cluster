@@ -53,7 +53,7 @@
 ## Slice E: App glue + Stdio + UI（10 confirmed）
 
 - [x] **E-S1** stdin 读失败上抛事件 (32fbb82)
-- [x] **E-S2** Mutex 锁失败 observer log (32fbb82, login.rs only; net/plugin.rs:36 由 Slice A 处理待补)
+- [x] **E-S2** Mutex 锁失败 observer log (32fbb82 login.rs + d7655e8 net/plugin.rs)
 - [x] **E-M1** observe.rs emit 写入失败计数 + 256 间隔 stderr (32fbb82)
 - [x] **E-M2** SessionCredentials 手写 Debug 跳过 token (ddaaa2a)
 - [x] **E-M3** skill_id 抽常量到一处 (ddaaa2a)
