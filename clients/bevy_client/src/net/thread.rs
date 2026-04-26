@@ -113,11 +113,39 @@ fn network_loop(
     let initial_auth = runtime.initial_auth_message(&creds);
     observe_outbound_message(&observer, "tcp", &initial_auth);
 
-    if let Err(err) = send_tcp_message(&mut stream, &initial_auth) {
+    // Audit A-M2: previously a single auth send failure dropped the
+    // connection. Retry with exponential backoff so transient network
+    // hiccups (TCP send buffer momentarily full, server briefly busy) do
+    // not force the user to restart the client.
+    const AUTH_SEND_MAX_ATTEMPTS: u32 = 3;
+    let mut auth_attempt = 0u32;
+    let mut auth_backoff = Duration::from_millis(50);
+    let auth_send_result = loop {
+        auth_attempt += 1;
+        match send_tcp_message(&mut stream, &initial_auth) {
+            Ok(()) => break Ok(()),
+            Err(err) if auth_attempt < AUTH_SEND_MAX_ATTEMPTS => {
+                emit_event(
+                    &observer,
+                    &event_tx,
+                    NetworkEvent::Log(format!(
+                        "auth send attempt {auth_attempt}/{AUTH_SEND_MAX_ATTEMPTS} failed: {err}; retrying in {}ms",
+                        auth_backoff.as_millis()
+                    )),
+                );
+                thread::sleep(auth_backoff);
+                auth_backoff *= 2;
+            }
+            Err(err) => break Err(err),
+        }
+    };
+    if let Err(err) = auth_send_result {
         emit_event(
             &observer,
             &event_tx,
-            NetworkEvent::Disconnected(format!("auth send failed: {err}")),
+            NetworkEvent::Disconnected(format!(
+                "auth send failed after {AUTH_SEND_MAX_ATTEMPTS} attempts: {err}"
+            )),
         );
         return;
     }

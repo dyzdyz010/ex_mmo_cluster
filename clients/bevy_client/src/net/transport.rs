@@ -41,8 +41,22 @@ pub(super) fn send_udp_message(socket: &UdpSocket, message: &ClientMessage) -> i
     socket.send(&payload).map(|_| ())
 }
 
+/// Maximum cumulative time we will spend retrying `WouldBlock` on a single
+/// outbound TCP frame before giving up. Audit A-S2: previously the code did
+/// a hard `thread::sleep(5ms)` with no cap, so a stuck send-buffer could
+/// block the network thread for arbitrary time.
+const MAX_TCP_SEND_WAIT: Duration = Duration::from_millis(1_000);
+
+/// Initial backoff after a `WouldBlock`. Doubles each retry, clamped to
+/// `MAX_TCP_SEND_BACKOFF` so progressively-longer waits stay bounded.
+const INITIAL_TCP_SEND_BACKOFF: Duration = Duration::from_millis(1);
+const MAX_TCP_SEND_BACKOFF: Duration = Duration::from_millis(64);
+
 fn send_tcp_bytes(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
     let mut written = 0;
+    let mut waited = Duration::ZERO;
+    let mut backoff = INITIAL_TCP_SEND_BACKOFF;
+
     while written < bytes.len() {
         match stream.write(&bytes[written..]) {
             Ok(0) => {
@@ -51,9 +65,27 @@ fn send_tcp_bytes(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
                     "socket closed while writing",
                 ));
             }
-            Ok(n) => written += n,
+            Ok(n) => {
+                written += n;
+                // Successful progress resets the backoff window.
+                waited = Duration::ZERO;
+                backoff = INITIAL_TCP_SEND_BACKOFF;
+            }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5))
+                if waited >= MAX_TCP_SEND_WAIT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "tcp send blocked > {}ms ({} of {} bytes written)",
+                            MAX_TCP_SEND_WAIT.as_millis(),
+                            written,
+                            bytes.len()
+                        ),
+                    ));
+                }
+                thread::sleep(backoff);
+                waited += backoff;
+                backoff = (backoff * 2).min(MAX_TCP_SEND_BACKOFF);
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(err) => return Err(err),
