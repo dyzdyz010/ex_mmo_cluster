@@ -352,9 +352,13 @@ fn setup(
             metallic: 0.02,
             ..default()
         }),
+        // GUI-smoke 2026-04-26 follow-up: brighter base + much stronger
+        // emissive so the local actor is unmistakable against an empty
+        // (no-voxel) background and against neighbouring NPC/player cubes.
         local_player_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.25, 0.95, 0.45),
-            emissive: Color::srgb(0.02, 0.16, 0.04).into(),
+            base_color: Color::srgb(0.30, 1.00, 0.50),
+            emissive: Color::srgb(0.20, 1.20, 0.40).into(),
+            perceptual_roughness: 0.4,
             ..default()
         }),
         remote_player_material: materials.add(Color::srgb(0.3, 0.65, 1.0)),
@@ -449,7 +453,68 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(22.0, 6.0, 22.0)),
     ));
 
+    // GUI-smoke 2026-04-26 follow-up: third-person + free-look mouse mode
+    // hides the OS cursor (audit C-S1), so the user otherwise had no
+    // indicator of where shots / interactions would land. Spawn a small
+    // crosshair as two thin white bars centred at 50%/50% of the viewport
+    // — pure UI so it stays anchored regardless of camera motion.
+    spawn_crosshair(&mut commands);
+
     commands.insert_resource(assets);
+}
+
+/// Marker for the screen-centre crosshair (used so future systems can
+/// hide it, e.g. while chat is open or in cinematic cutscenes).
+#[derive(Component)]
+pub struct Crosshair;
+
+fn spawn_crosshair(commands: &mut Commands) {
+    let arm_long: f32 = 14.0;
+    let arm_short: f32 = 2.0;
+    let bar_color = Color::srgba(1.0, 1.0, 1.0, 0.85);
+
+    // Container centred on the viewport — children align to its centre.
+    commands
+        .spawn((
+            Crosshair,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Percent(50.0),
+                width: Val::Px(arm_long * 2.0),
+                height: Val::Px(arm_long * 2.0),
+                margin: UiRect {
+                    left: Val::Px(-arm_long),
+                    top: Val::Px(-arm_long),
+                    ..default()
+                },
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|parent| {
+            // Horizontal bar.
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(arm_long * 2.0),
+                    height: Val::Px(arm_short),
+                    ..default()
+                },
+                BackgroundColor(bar_color),
+            ));
+            // Vertical bar.
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(arm_short),
+                    height: Val::Px(arm_long * 2.0),
+                    ..default()
+                },
+                BackgroundColor(bar_color),
+            ));
+        });
 }
 
 pub(crate) fn voxel_save_dir() -> PathBuf {

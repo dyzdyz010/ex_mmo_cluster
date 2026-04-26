@@ -162,6 +162,36 @@ fn sync_player_visuals(
                         VISUAL_SNAP_DISTANCE,
                     )
                 };
+                if local
+                    && params.observer.enabled()
+                    && (transform.translation - prev_translation).length_squared() > 1.0
+                {
+                    // Trace big local-actor jumps so we can verify the cube
+                    // really moved to the post-spawn server position. Tagged
+                    // 1u² threshold so steady-state idle frames don't spam.
+                    params.observer.emit(
+                        "presentation",
+                        "local_visual_moved",
+                        &[
+                            (
+                                "from",
+                                format!(
+                                    "{:.1},{:.1},{:.1}",
+                                    prev_translation.x, prev_translation.y, prev_translation.z
+                                ),
+                            ),
+                            (
+                                "to",
+                                format!(
+                                    "{:.1},{:.1},{:.1}",
+                                    transform.translation.x,
+                                    transform.translation.y,
+                                    transform.translation.z
+                                ),
+                            ),
+                        ],
+                    );
+                }
                 // Audit D-M1: derive animation velocity from the *rendered*
                 // translation delta instead of the buffered/extrapolated
                 // motion.velocity. This keeps legs and body in sync after a
@@ -210,6 +240,25 @@ fn sync_player_visuals(
                 Transform::from_translation(target)
                     .with_scale(scale * animated_scale(Vec3::ONE, animation, delta_secs)),
             ));
+
+            if params.observer.enabled() {
+                params.observer.emit(
+                    "presentation",
+                    "player_visual_spawn",
+                    &[
+                        ("cid", cid.to_string()),
+                        ("local", local.to_string()),
+                        (
+                            "target",
+                            format!("{:.1},{:.1},{:.1}", target.x, target.y, target.z),
+                        ),
+                        (
+                            "scale",
+                            format!("{:.0},{:.0},{:.0}", scale.x, scale.y, scale.z),
+                        ),
+                    ],
+                );
+            }
         }
     }
 

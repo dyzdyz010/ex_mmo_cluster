@@ -53,6 +53,7 @@ fn update_hud_text(
     voxel_world: Res<VoxelWorld>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
+    mut populated_once: Local<bool>,
 ) {
     // Audit E-L2: previously this system reformatted ~30 lines of text into
     // three Bevy `Text` components every frame, allocating dozens of
@@ -60,13 +61,21 @@ fn update_hud_text(
     // change-detection lets us short-circuit cleanly: if none of the input
     // resources changed since this system last ran, nothing on the HUD can
     // have changed either, so skip the work entirely.
-    if !world_state.is_changed()
+    //
+    // GUI-smoke 2026-04-26 follow-up: the early-return previously also fired
+    // on the first frame after entering AppState::Game, leaving the HUD
+    // text empty until the first network event mutated WorldState. Track a
+    // `populated_once` flag so the first run always writes a full snapshot
+    // even if no resource was mutated this exact frame.
+    if *populated_once
+        && !world_state.is_changed()
         && !chat_state.is_changed()
         && !voxel_world.is_changed()
         && !selection_state.is_changed()
     {
         return;
     }
+    *populated_once = true;
 
     let selected_target = world_state
         .selected_target_cid
