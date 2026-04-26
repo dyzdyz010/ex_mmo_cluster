@@ -243,6 +243,36 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
     }
 
     **params.camera = camera_transform_from_orbit(&params.orbit);
+
+    // GUI-smoke 2026-04-26: log camera + target every ~1s so we can verify
+    // from the observer log that the camera really follows the actor.
+    static LAST_LOG_SECS: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(0);
+    let now_sec = params.time.elapsed_secs() as i64;
+    if params.observer.enabled()
+        && LAST_LOG_SECS.swap(now_sec, std::sync::atomic::Ordering::Relaxed) != now_sec
+    {
+        let cam = params.camera.translation;
+        params.observer.emit(
+            "camera",
+            "follow_state",
+            &[
+                (
+                    "target",
+                    format!("{:.0},{:.0},{:.0}", target.x, target.y, target.z),
+                ),
+                (
+                    "camera",
+                    format!("{:.0},{:.0},{:.0}", cam.x, cam.y, cam.z),
+                ),
+                ("distance", format!("{:.0}", params.orbit.distance)),
+                (
+                    "yaw_pitch",
+                    format!("{:.2},{:.2}", params.orbit.yaw, params.orbit.pitch),
+                ),
+            ],
+        );
+    }
 }
 
 /// Audit C-M1: returns the unit-vector pointing from `target` to the

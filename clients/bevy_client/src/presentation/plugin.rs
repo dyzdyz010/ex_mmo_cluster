@@ -227,8 +227,15 @@ fn sync_player_visuals(
                 actor_kind,
                 animation.moving,
             );
+            // GUI-smoke 2026-04-26 follow-up: previous player scale of
+            // (24, 36, 24) made the actor a tiny ~4° spec from the
+            // default 410u camera distance — easy to miss against the
+            // empty no-voxel background. Bump the local actor a lot
+            // bigger than remote players so "where am I?" is obvious.
             let scale = if matches!(actor_kind, RemoteActorKind::Npc) {
                 Vec3::new(30.0, 28.0, 24.0)
+            } else if local {
+                Vec3::new(48.0, 90.0, 48.0)
             } else {
                 Vec3::new(24.0, 36.0, 24.0)
             };

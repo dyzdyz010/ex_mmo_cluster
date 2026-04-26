@@ -724,10 +724,15 @@ fn voxel_render_translation(cell: VoxelRenderCell) -> Vec3 {
 }
 
 fn voxel_render_scale(cell: VoxelRenderCell) -> Vec3 {
+    // GUI-smoke 2026-04-26 follow-up: previously each cube was rendered
+    // at 95-96% of its cell size, leaving a visible 4-5% gap on every
+    // edge. Used to be a debug aid for cube-boundary visibility but it
+    // looks like seam noise to a user expecting a solid voxel surface.
+    // Render at full size so adjacent cubes tile without gaps.
     let size = if cell.refined {
-        VOXEL_RENDER_MICRO_SIZE * 0.95
+        VOXEL_RENDER_MICRO_SIZE
     } else {
-        VOXEL_RENDER_CELL_SIZE * 0.96
+        VOXEL_RENDER_CELL_SIZE
     };
     Vec3::splat(size)
 }

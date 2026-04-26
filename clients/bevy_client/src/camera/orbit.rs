@@ -10,18 +10,25 @@ use bevy::prelude::{Component, Resource, Transform, Vec3};
 /// Y offset above the local actor used as the orbit camera's look-at
 /// height.
 pub const CAMERA_LOOK_HEIGHT: f32 = 110.0;
-/// Default orbit distance from the look-at target.
-pub const CAMERA_DEFAULT_DISTANCE: f32 = 410.0;
+/// Default orbit distance from the look-at target. GUI-smoke 2026-04-26:
+/// the previous 410 u placed the camera so far back that a 36 u-tall
+/// player cube subtended only ~5° of view — visually negligible. 240 u
+/// keeps a respectable third-person framing while making the actor
+/// obviously visible against an empty no-voxel background.
+pub const CAMERA_DEFAULT_DISTANCE: f32 = 240.0;
 /// Minimum allowed orbit distance (closest zoom).
-pub const CAMERA_MIN_DISTANCE: f32 = 180.0;
+pub const CAMERA_MIN_DISTANCE: f32 = 120.0;
 /// Maximum allowed orbit distance (farthest zoom).
 pub const CAMERA_MAX_DISTANCE: f32 = 620.0;
 /// Yaw rotation per pixel of horizontal mouse motion when dragging.
 pub const CAMERA_YAW_SENSITIVITY: f32 = 0.005;
 /// Pitch rotation per pixel of vertical mouse motion when dragging.
 pub const CAMERA_PITCH_SENSITIVITY: f32 = 0.004;
-/// Minimum allowed pitch (looking nearly straight forward).
-pub const CAMERA_MIN_PITCH: f32 = 0.2;
+/// Minimum allowed pitch. Negative values place the camera *below* the
+/// look-at target so the player can tilt the view up toward the sky.
+/// `-0.45 rad` (~26°) keeps the camera from rolling all the way under
+/// the floor while still letting the user look meaningfully up.
+pub const CAMERA_MIN_PITCH: f32 = -0.45;
 /// Maximum allowed pitch (looking nearly straight down).
 pub const CAMERA_MAX_PITCH: f32 = 1.15;
 
