@@ -18,6 +18,14 @@ use crate::net::{NetworkBridge, NetworkCommand};
 use crate::observe::ClientObserver;
 use crate::sim::{predictor, types::PredictedMoveState};
 
+/// Audit C-L1: speed scale baked into every uplink movement sample.
+///
+/// `1.0` is the only value the integrator currently consumes — the field
+/// remains in the wire format for forward compat (sprint / slow / status
+/// effect modifiers). Centralising it here means a future change has one
+/// edit instead of a grep across all callers.
+const DEFAULT_MOVEMENT_SPEED_SCALE: f32 = 1.0;
+
 pub struct MovementSyncPlugin;
 
 impl Plugin for MovementSyncPlugin {
@@ -172,7 +180,7 @@ fn movement_sender(params: MovementSendParams) {
     bridge.send(NetworkCommand::MoveInputSample {
         input_dir: [direction.x, direction.y],
         dt_ms: config.movement_interval_ms as u16,
-        speed_scale: 1.0,
+        speed_scale: DEFAULT_MOVEMENT_SPEED_SCALE,
         movement_flags,
     });
 
@@ -405,6 +413,7 @@ mod tests {
             yaw: 0.0,
             pitch: 0.5,
             distance: 400.0,
+            requested_distance: 400.0,
             target: Vec3::ZERO,
         }
     }
@@ -497,6 +506,7 @@ mod tests {
                 yaw: std::f32::consts::FRAC_PI_2,
                 pitch: 0.5,
                 distance: 400.0,
+                requested_distance: 400.0,
                 target: Vec3::ZERO,
             })
             .add_systems(Update, sample_movement_input);

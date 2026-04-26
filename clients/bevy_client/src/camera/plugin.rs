@@ -11,7 +11,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
 
 use crate::app::{LocalRenderPrediction, WorldState};
 use crate::chat::ChatState;
@@ -32,11 +32,52 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<OrbitCameraState>()
-            // Cursor lock management runs every frame regardless of state
-            // so the egui login panel keeps the cursor visible and the
-            // game state grabs it as soon as the user clicks past login.
-            .add_systems(Update, manage_cursor_grab)
+            .init_resource::<WindowFocusGate>()
+            // Audit C-S1: keep window focus state in a resource so
+            // `manage_cursor_grab` can release the cursor as soon as we
+            // lose focus (Alt-Tab, OS notification, IME popup) without
+            // depending on Bevy's per-frame cursor-grab state.
+            .add_systems(Update, track_window_focus)
+            // Audit C-M3: re-evaluate cursor grab only when one of the
+            // inputs the decision depends on actually changed. Without
+            // this `run_if` it ran every frame and re-touched
+            // CursorOptions even when nothing was different.
+            .add_systems(
+                Update,
+                manage_cursor_grab.run_if(
+                    state_changed::<AppState>
+                        .or(resource_changed::<ChatState>)
+                        .or(resource_changed::<WindowFocusGate>),
+                ),
+            )
             .add_systems(Update, update_orbit_camera.run_if(in_state(AppState::Game)));
+    }
+}
+
+/// Audit C-S1: tracks whether the primary window currently has focus.
+/// Replaces the previous "always assume focused" assumption that left
+/// the cursor locked after Alt-Tab.
+#[derive(Resource, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct WindowFocusGate {
+    pub focused: bool,
+}
+
+impl Default for WindowFocusGate {
+    fn default() -> Self {
+        // Most app launches begin with the window focused; rely on the
+        // first WindowFocused event to flip this off if needed.
+        Self { focused: true }
+    }
+}
+
+fn track_window_focus(
+    mut focus_events: MessageReader<WindowFocused>,
+    mut gate: ResMut<WindowFocusGate>,
+) {
+    for event in focus_events.read() {
+        if gate.focused != event.focused {
+            gate.focused = event.focused;
+        }
     }
 }
 
@@ -50,11 +91,15 @@ impl Plugin for CameraPlugin {
 fn manage_cursor_grab(
     state: Res<State<AppState>>,
     chat_state: Option<Res<ChatState>>,
+    focus: Res<WindowFocusGate>,
     cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     let mut cursor = cursor.into_inner();
     let chat_open = chat_state.map(|state| state.enabled).unwrap_or(false);
-    let want_grabbed = matches!(state.get(), AppState::Game) && !chat_open;
+    // Audit C-S1: even in-game we MUST release the cursor while the
+    // window is unfocused — otherwise Alt-Tab leaves the cursor pinned
+    // inside the (possibly invisible) Bevy window.
+    let want_grabbed = matches!(state.get(), AppState::Game) && !chat_open && focus.focused;
 
     let desired_grab = if want_grabbed {
         CursorGrabMode::Locked
@@ -99,7 +144,14 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
             params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
             params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
                 .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
-            if params.observer.enabled() {
+            // Audit C-L3: filter out micro-motion observer noise. Mouse
+            // events fire at >120 Hz on most desktops; emitting per-frame
+            // saturated debug logs and made it hard to spot real motion.
+            // 4 px (squared = 16) is below human-noticeable orbit drift
+            // but well above sensor noise.
+            const ORBIT_MOTION_LOG_THRESHOLD_SQ: f32 = 16.0;
+            if params.observer.enabled() && delta.length_squared() >= ORBIT_MOTION_LOG_THRESHOLD_SQ
+            {
                 params.observer.emit(
                     "camera",
                     "orbit_motion",
@@ -118,7 +170,11 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
             || params.keyboard.pressed(KeyCode::ControlRight);
         let wheel_delta = params.wheel_reader.read().map(|event| event.y).sum::<f32>();
         if control_zoom && wheel_delta.abs() > f32::EPSILON {
-            params.orbit.distance = (params.orbit.distance - wheel_delta * 28.0)
+            // Audit C-M1: write to `requested_distance`, not `distance`,
+            // so the collision logic below does not see its own ephemeral
+            // shorten as the next frame's "user wanted this distance".
+            params.orbit.requested_distance = (params.orbit.requested_distance
+                - wheel_delta * 28.0)
                 .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
         }
     } else {
@@ -160,5 +216,46 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
         THIRD_PERSON_SNAP_DISTANCE,
     );
     params.orbit.target = target;
+
+    // Audit C-M1: ray-cast from the camera target outward toward the
+    // ideal camera position; if a voxel intersects between, shorten
+    // `orbit.distance` so the camera sits in front of the wall instead
+    // of clipping into terrain. We restore distance up to the user's
+    // chosen wheel-zoom value (`requested_distance`) on subsequent
+    // frames once the obstruction is gone.
+    const CAMERA_COLLISION_PADDING: f32 = 8.0;
+    let requested_distance = params
+        .orbit
+        .requested_distance
+        .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+    let camera_offset_dir = camera_offset_direction(&params.orbit);
+    if let Some(hit_distance) = crate::voxel::plugin::voxel_ray_first_hit_distance(
+        &params.voxel_world,
+        target,
+        camera_offset_dir,
+        requested_distance,
+    ) {
+        let safe_distance = (hit_distance - CAMERA_COLLISION_PADDING)
+            .clamp(CAMERA_MIN_DISTANCE, requested_distance);
+        params.orbit.distance = safe_distance;
+    } else {
+        params.orbit.distance = requested_distance;
+    }
+
     **params.camera = camera_transform_from_orbit(&params.orbit);
+}
+
+/// Audit C-M1: returns the unit-vector pointing from `target` to the
+/// ideal camera position, derived from the same yaw/pitch math used
+/// inside `camera_transform_from_orbit`. Splitting it out lets the
+/// collision ray-cast use the direction without re-deriving the
+/// transform.
+fn camera_offset_direction(orbit: &OrbitCameraState) -> Vec3 {
+    let horizontal = orbit.pitch.cos();
+    Vec3::new(
+        horizontal * orbit.yaw.sin(),
+        orbit.pitch.sin(),
+        horizontal * orbit.yaw.cos(),
+    )
+    .normalize_or_zero()
 }

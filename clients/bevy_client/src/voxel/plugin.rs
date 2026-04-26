@@ -419,6 +419,31 @@ pub(crate) fn surface_center_y_at_render_xz(
         .max(fallback_y)
 }
 
+/// Audit C-M1: returns the distance from `origin` along `direction`
+/// (must be a unit vector) to the nearest voxel hit, or `None` if no
+/// voxel intersects within `max_distance`. Used by the camera follow
+/// logic to clamp the orbit distance against terrain so the third-person
+/// camera never clips inside a wall / hill.
+pub(crate) fn voxel_ray_first_hit_distance(
+    voxel_world: &VoxelWorld,
+    origin: Vec3,
+    direction: Vec3,
+    max_distance: f32,
+) -> Option<f32> {
+    let direction = direction.try_normalize()?;
+    let mut nearest: Option<f32> = None;
+    for cell in voxel_world.render_cells_3d() {
+        let (min, max) = voxel_cell_bounds(cell);
+        if let Some((distance, _normal)) =
+            ray_intersect_aabb(origin, direction, min, max, max_distance)
+            && nearest.as_ref().is_none_or(|best| distance < *best)
+        {
+            nearest = Some(distance);
+        }
+    }
+    nearest
+}
+
 pub(crate) fn find_voxel_selection_from_ray(
     voxel_world: &VoxelWorld,
     origin: Vec3,

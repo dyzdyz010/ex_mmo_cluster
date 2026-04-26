@@ -30,11 +30,20 @@ pub const CAMERA_MAX_PITCH: f32 = 1.15;
 pub struct MainCamera;
 
 /// Orbit camera bookkeeping resource — yaw/pitch around the look-at target.
+///
+/// `distance` is the *applied* distance — the value
+/// `camera_transform_from_orbit` reads. `requested_distance` is what the
+/// user (mouse-wheel zoom) asked for. Audit C-M1: the third-person
+/// follow camera ray-casts against terrain and may shorten `distance`
+/// below `requested_distance` to avoid clipping inside a wall; the
+/// requested value is preserved so the camera springs back out as the
+/// obstruction clears.
 #[derive(Resource, Debug)]
 pub struct OrbitCameraState {
     pub yaw: f32,
     pub pitch: f32,
     pub distance: f32,
+    pub requested_distance: f32,
     pub target: Vec3,
 }
 
@@ -50,6 +59,7 @@ impl Default for OrbitCameraState {
             yaw: std::f32::consts::FRAC_PI_4,
             pitch: 0.58,
             distance: CAMERA_DEFAULT_DISTANCE,
+            requested_distance: CAMERA_DEFAULT_DISTANCE,
             target: Vec3::new(0.0, CAMERA_LOOK_HEIGHT, 0.0),
         }
     }
@@ -74,10 +84,17 @@ pub fn input_to_world_direction(input: bevy::prelude::Vec2, yaw: f32) -> bevy::p
     let sin_yaw = yaw.sin();
     let strafe = input.x;
     let forward = input.y;
-    bevy::prelude::Vec2::new(
+    let world = bevy::prelude::Vec2::new(
         strafe * cos_yaw - forward * sin_yaw,
         -strafe * sin_yaw - forward * cos_yaw,
-    )
+    );
+    // Audit C-S2 / C-L2: normalize so a diagonal WASD press (W+D) is
+    // length 1 instead of √2. The server's integrator works on this
+    // vector directly; without normalisation diagonal motion was about
+    // 1.41× faster than cardinal motion, *and* the magnitude shifted
+    // every frame as the camera yaw rotated, manifesting as visible
+    // jitter. `normalize_or_zero` keeps the (0, 0) idle case safe.
+    world.normalize_or_zero()
 }
 
 /// Builds a Bevy `Transform` from the orbit state — pure math, no Bevy
@@ -134,5 +151,52 @@ mod tests {
         let direction = input_to_world_direction(Vec2::new(1.0, 0.0), std::f32::consts::FRAC_PI_2);
         assert!((direction.x - 0.0).abs() < 1e-6);
         assert!((direction.y - (-1.0)).abs() < 1e-6);
+    }
+
+    /// Audit C-S2 / C-L2: a diagonal WASD input (W+D, length √2) must
+    /// be normalised to length 1 so the server does not see a 1.41×
+    /// faster diagonal motion than cardinal motion. We additionally
+    /// verify that the *direction* is preserved and that the (0, 0)
+    /// idle case does not divide-by-zero (`normalize_or_zero`).
+    #[test]
+    fn input_to_world_direction_normalises_diagonal_inputs() {
+        let direction = input_to_world_direction(Vec2::new(1.0, 1.0), 0.0);
+        assert!(
+            (direction.length() - 1.0).abs() < 1e-5,
+            "diagonal direction must be unit length, got {}",
+            direction.length()
+        );
+        // Direction preserved: pre-normalise was (cos0 - sin0, -sin0 - cos0)
+        // = (1, -1), so post-normalise is (1/√2, -1/√2).
+        let inv_sqrt2 = 1.0_f32 / 2.0_f32.sqrt();
+        assert!((direction.x - inv_sqrt2).abs() < 1e-5);
+        assert!((direction.y + inv_sqrt2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn input_to_world_direction_zero_input_yields_zero() {
+        let direction = input_to_world_direction(Vec2::ZERO, 1.234);
+        assert_eq!(direction, Vec2::ZERO);
+    }
+
+    /// Audit C-M2: web client and bevy client must agree on the default
+    /// orbit pitch. `clients/web_client/src/render/scene.ts` ships with
+    /// `let orbitPitch = 0.58;`; pin the bevy default so a future tweak
+    /// fails this test instead of silently drifting.
+    #[test]
+    fn default_orbit_pitch_matches_web_client() {
+        let orbit = OrbitCameraState::default();
+        assert!(
+            (orbit.pitch - 0.58).abs() < 1e-6,
+            "default pitch {} drifted from the web client's 0.58",
+            orbit.pitch
+        );
+        // Yaw default also pins to web `Math.PI * 0.25` = π/4.
+        assert!(
+            (orbit.yaw - std::f32::consts::FRAC_PI_4).abs() < 1e-6,
+            "default yaw {} drifted from web's π/4 ({})",
+            orbit.yaw,
+            std::f32::consts::FRAC_PI_4
+        );
     }
 }
