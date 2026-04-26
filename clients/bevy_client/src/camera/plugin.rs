@@ -1,10 +1,17 @@
-//! `CameraPlugin` — registers the orbit camera resource and the system
-//! that follows the local actor while honouring chat-mode mouse capture
-//! and `Ctrl + wheel` zoom.
+//! `CameraPlugin` — third-person follow camera.
+//!
+//! In gameplay (`AppState::Game`, chat closed) the cursor is grabbed and
+//! hidden, and any mouse motion rotates the orbit around the local actor
+//! free-look style — the same convention as WoW / FFXIV / Source-engine
+//! third-person modes. Opening chat (`Enter`) or returning to the login
+//! screen releases the cursor so users can interact with text input or
+//! the egui login panel. `Ctrl + wheel` zooms toward / away from the
+//! actor; the wheel without `Ctrl` is reserved for the voxel hotbar.
 
 use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::app::{LocalRenderPrediction, WorldState};
 use crate::chat::ChatState;
@@ -25,7 +32,40 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<OrbitCameraState>()
+            // Cursor lock management runs every frame regardless of state
+            // so the egui login panel keeps the cursor visible and the
+            // game state grabs it as soon as the user clicks past login.
+            .add_systems(Update, manage_cursor_grab)
             .add_systems(Update, update_orbit_camera.run_if(in_state(AppState::Game)));
+    }
+}
+
+/// Grab + hide the cursor while we're in `AppState::Game` and chat input
+/// is closed. Anything else (login screen, chat-open) keeps the cursor
+/// visible so the user can drive the egui panel or watch their typing.
+///
+/// In Bevy 0.18 `CursorOptions` is a separate component on the window
+/// entity (Bevy auto-adds it via `#[require(CursorOptions)]` on
+/// `Window`).
+fn manage_cursor_grab(
+    state: Res<State<AppState>>,
+    chat_state: Option<Res<ChatState>>,
+    cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    let mut cursor = cursor.into_inner();
+    let chat_open = chat_state.map(|state| state.enabled).unwrap_or(false);
+    let want_grabbed = matches!(state.get(), AppState::Game) && !chat_open;
+
+    let desired_grab = if want_grabbed {
+        CursorGrabMode::Locked
+    } else {
+        CursorGrabMode::None
+    };
+    if cursor.grab_mode != desired_grab {
+        cursor.grab_mode = desired_grab;
+    }
+    if cursor.visible == want_grabbed {
+        cursor.visible = !want_grabbed;
     }
 }
 
@@ -33,7 +73,6 @@ impl Plugin for CameraPlugin {
 struct OrbitCameraParams<'w, 's> {
     time: Res<'w, Time>,
     chat_state: Res<'w, ChatState>,
-    mouse: Res<'w, ButtonInput<MouseButton>>,
     keyboard: Res<'w, ButtonInput<KeyCode>>,
     motion_reader: MessageReader<'w, 's, MouseMotion>,
     wheel_reader: MessageReader<'w, 's, MouseWheel>,
@@ -47,28 +86,23 @@ struct OrbitCameraParams<'w, 's> {
 
 fn update_orbit_camera(mut params: OrbitCameraParams) {
     if !params.chat_state.enabled {
-        // Either mouse button counts as a drag intent. RMB is also
-        // accepted because most "third-person camera" reflexes (WoW,
-        // FFXIV, Source) bind RMB drag to orbit; the existing place /
-        // target-point actions stay on `just_pressed(Right)` so a
-        // continued hold still rotates without re-triggering placement.
-        let rotating = params.mouse.pressed(MouseButton::Left)
-            || params.mouse.pressed(MouseButton::Middle)
-            || params.mouse.pressed(MouseButton::Right);
-        if rotating {
-            let delta = params
-                .motion_reader
-                .read()
-                .fold(Vec2::ZERO, |acc, event| acc + event.delta);
-            if delta.length_squared() > 0.0 && params.observer.enabled() {
-                let pre_yaw = params.orbit.yaw;
-                let pre_pitch = params.orbit.pitch;
-                params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
-                params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
-                    .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+        // Cursor is grabbed (`manage_cursor_grab`) so every motion event
+        // is camera-rotation. Web-browser pointer-lock equivalents and
+        // the WoW / Source / FFXIV third-person feel.
+        let delta = params
+            .motion_reader
+            .read()
+            .fold(Vec2::ZERO, |acc, event| acc + event.delta);
+        if delta.length_squared() > 0.0 {
+            let pre_yaw = params.orbit.yaw;
+            let pre_pitch = params.orbit.pitch;
+            params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
+            params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
+                .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+            if params.observer.enabled() {
                 params.observer.emit(
                     "camera",
-                    "orbit_drag",
+                    "orbit_motion",
                     &[
                         ("delta", format!("{:.2},{:.2}", delta.x, delta.y)),
                         ("pre_yaw", format!("{pre_yaw:.3}")),
@@ -77,13 +111,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
                         ("post_pitch", format!("{:.3}", params.orbit.pitch)),
                     ],
                 );
-            } else {
-                params.orbit.yaw -= delta.x * CAMERA_YAW_SENSITIVITY;
-                params.orbit.pitch = (params.orbit.pitch + delta.y * CAMERA_PITCH_SENSITIVITY)
-                    .clamp(CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
             }
-        } else {
-            params.motion_reader.clear();
         }
 
         let control_zoom = params.keyboard.pressed(KeyCode::ControlLeft)
@@ -94,6 +122,9 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
                 .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
         }
     } else {
+        // Chat is open: drop pending mouse motion + wheel events so a
+        // rapid type-burst does not snap the camera the moment chat
+        // closes.
         params.motion_reader.clear();
         params.wheel_reader.clear();
     }

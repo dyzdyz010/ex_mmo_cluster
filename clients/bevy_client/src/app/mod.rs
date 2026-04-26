@@ -227,6 +227,14 @@ pub fn run(
     let mut voxel_world = VoxelWorld::new();
     voxel_world.bootstrap_showcase(2);
 
+    // Seed the local actor at the world origin so the third-person camera
+    // has a target to follow and `sync_player_visuals` has a local cid to
+    // render even before (or in lieu of) a server connection. Once the
+    // network thread receives `EnteredScene` / `LocalPosition`,
+    // `NetworkPlugin` overwrites both with the server-authoritative state.
+    let mut local_render_prediction = LocalRenderPrediction::default();
+    local_render_prediction.reset(Vec3::ZERO);
+
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
         .insert_resource(config.clone())
@@ -236,6 +244,7 @@ pub fn run(
             } else {
                 "waiting for login".to_string()
             },
+            local_position: Some(Vec3::ZERO),
             local_velocity: Vec3::ZERO,
             local_hp: 100,
             local_max_hp: 100,
@@ -247,7 +256,7 @@ pub fn run(
         })
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())
-        .insert_resource(LocalRenderPrediction::default())
+        .insert_resource(local_render_prediction)
         .insert_resource(voxel_world)
         .insert_resource(observer)
         .insert_resource(stdio)
