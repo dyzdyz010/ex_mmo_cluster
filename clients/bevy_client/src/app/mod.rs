@@ -529,13 +529,21 @@ mod tests {
 
         // Simulate the anchor drifting forward by 8 units (predicted input).
         render.sync_full_state(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
-        let render_at_first_sync = render.render_state.as_ref().unwrap().position;
+        let render_at_first_sync = render
+            .render_state
+            .as_ref()
+            .expect("render_state should be set after sync_full_state")
+            .position;
         assert!((render_at_first_sync.x - 0.0).abs() < 0.01);
 
         // Authoritative correction pulls anchor back to 4 — render must stay
         // near the visible 8 so the player does not see a teleport.
         render.sync_full_state(Vec3::new(4.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
-        let render_after_correction = render.render_state.as_ref().unwrap().position;
+        let render_after_correction = render
+            .render_state
+            .as_ref()
+            .expect("render_state should be set after sync_full_state")
+            .position;
         assert!((render_after_correction.x - render_at_first_sync.x).abs() < 0.01);
         assert!(render.pending_correction_distance() > 3.0);
     }
@@ -553,7 +561,11 @@ mod tests {
         // must zero the pending correction — the render faithfully jumps.
         render.sync_full_state(Vec3::new(-390.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
         assert_eq!(render.pending_correction, Vec3::ZERO);
-        let rendered = render.render_state.as_ref().unwrap().position;
+        let rendered = render
+            .render_state
+            .as_ref()
+            .expect("render_state should be set after sync_full_state")
+            .position;
         assert!((rendered.x - (-390.0)).abs() < 0.01);
     }
 
@@ -568,7 +580,11 @@ mod tests {
         render.reset(Vec3::new(100.0, 0.0, 0.0));
         assert_eq!(render.pending_correction, Vec3::ZERO);
         assert_eq!(
-            render.render_state.as_ref().unwrap().position,
+            render
+                .render_state
+                .as_ref()
+                .expect("render_state should be set after reset")
+                .position,
             Vec3::new(100.0, 0.0, 0.0)
         );
     }
