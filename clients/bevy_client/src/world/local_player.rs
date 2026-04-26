@@ -202,6 +202,10 @@ impl LocalPredictionRuntime {
                 None => return,
             };
 
+            // `seq: 0` is a sentinel marking a synthetic idle frame that is
+            // never sent to the server (real input frames start at seq=1 and
+            // are monotonic). It only feeds the local predictor so prediction
+            // can advance through latched idle ticks. See audit D-L2.
             let idle_frame = MoveInputFrame {
                 seq: 0,
                 client_tick: current.tick + 1,

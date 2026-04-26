@@ -319,22 +319,22 @@ fn setup(
         player_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         target_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         dirt_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Dirt, false),
+            base_color: voxel_material_color(VoxelMaterialId::Dirt),
             perceptual_roughness: 0.9,
             ..default()
         }),
         stone_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Stone, false),
+            base_color: voxel_material_color(VoxelMaterialId::Stone),
             perceptual_roughness: 0.95,
             ..default()
         }),
         wood_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Wood, false),
+            base_color: voxel_material_color(VoxelMaterialId::Wood),
             perceptual_roughness: 0.86,
             ..default()
         }),
         ice_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Ice, false),
+            base_color: voxel_material_color(VoxelMaterialId::Ice),
             perceptual_roughness: 0.38,
             metallic: 0.02,
             ..default()

@@ -304,11 +304,7 @@ fn sync_voxel_visuals(
         if let Some(cell) = desired.get(&key) {
             transform.translation = voxel_render_translation(*cell);
             transform.scale = voxel_render_scale(*cell);
-            *material = MeshMaterial3d(voxel_material_handle(
-                &assets,
-                cell.material_id,
-                cell.refined,
-            ));
+            *material = MeshMaterial3d(voxel_material_handle(&assets, cell.material_id));
             remaining.remove(&key);
         } else {
             commands.entity(entity).despawn();
@@ -322,11 +318,7 @@ fn sync_voxel_visuals(
                 micro: cell.micro,
             },
             Mesh3d(assets.cube_mesh.clone()),
-            MeshMaterial3d(voxel_material_handle(
-                &assets,
-                cell.material_id,
-                cell.refined,
-            )),
+            MeshMaterial3d(voxel_material_handle(&assets, cell.material_id)),
             Transform::from_translation(voxel_render_translation(cell))
                 .with_scale(voxel_render_scale(cell)),
         ));
@@ -715,7 +707,7 @@ fn voxel_render_scale(cell: VoxelRenderCell) -> Vec3 {
     Vec3::splat(size)
 }
 
-pub(crate) fn voxel_material_color(material_id: VoxelMaterialId, _refined: bool) -> Color {
+pub(crate) fn voxel_material_color(material_id: VoxelMaterialId) -> Color {
     // Refined micro cells share the same opaque colour as their macro
     // parents — the previous half-transparent tint produced severe
     // depth-sort flicker because hundreds of `AlphaMode::Blend` cubes
@@ -732,7 +724,6 @@ pub(crate) fn voxel_material_color(material_id: VoxelMaterialId, _refined: bool)
 fn voxel_material_handle(
     assets: &SceneRenderAssets,
     material_id: VoxelMaterialId,
-    _refined: bool,
 ) -> Handle<StandardMaterial> {
     // Both macro blocks and refined micro cells use the same opaque
     // material per material id. Two parallel handles existed historically

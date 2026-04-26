@@ -3,6 +3,14 @@
 use bevy::prelude::Vec3;
 
 /// Smoothly moves toward the target or snaps when the correction is large.
+///
+/// Branch boundaries (audit D-L1):
+/// - `distance <= EPSILON`: already at target → return target (no work).
+/// - `distance >= snap_distance`: correction too large to hide → snap (avoids
+///   slow-motion catch-up after a teleport).
+/// - otherwise: exponential ease-in via `lerp(current, target, factor)`,
+///   with `factor` clamped to `[0, 1]` so a large `delta_secs` (frame hitch)
+///   cannot overshoot past the target.
 pub fn smooth_translation(
     current: Vec3,
     target: Vec3,

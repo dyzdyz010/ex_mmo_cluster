@@ -1,4 +1,9 @@
 //! Movement-specific protocol adapters between wire messages and sim types.
+//!
+//! TODO(audit A-L3): the `_v2` suffix is misleading — this is not a protocol
+//! version, just movement-specific wire marshaling. Rename to
+//! `movement_codec.rs` (or similar) in a follow-up. Deferred from the
+//! 2026-04-26 audit sweep to keep that PR focused on bug fixes.
 
 use bevy::prelude::{Vec2, Vec3};
 
