@@ -59,7 +59,7 @@
 - [x] **E-M3** skill_id 抽常量到一处 (ddaaa2a)
 - [x] **E-M4** auto_login 加 30s timeout (32fbb82)
 - [x] **E-L1** stdio 命令循环每帧 max 16 条 (ddaaa2a)
-- [ ] **E-L2** HUD dirty flag 仅变化时重建
+- [x] **E-L2** HUD 用 Bevy `is_changed()` 仅资源变化时重建 (e4aa47e)
 - [x] **E-L3** effects gizmo run_if + EffectGizmosEnabled (ddaaa2a)
 - [x] **E-L4** app/mod.rs 测试 unwrap → expect (commit 300c179)
 
@@ -75,7 +75,7 @@
 | B | 12 | 0 | 0% |
 | C | 8 | 0 | 0% |
 | D | 8 | 0 | 0% |
-| E | 10 | 9 | 90% (E-L2 HUD dirty flag 待办) |
+| E | 10 | 10 | 100% ✅ |
 | **合计** | **48** | **0** | **0%** |
 
 **注**：A 切片 9 项有效 = 10 条 - A-S3（implementer 二次审查改判 false_positive）。A-M4 在 Phase 0.7 已关闭。
