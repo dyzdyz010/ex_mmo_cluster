@@ -32,6 +32,11 @@ use crate::{
     world::remote_player::RemotePlayerState,
 };
 use bevy::{
+    camera::Exposure,
+    core_pipeline::tonemapping::Tonemapping,
+    light::{AtmosphereEnvironmentMapLight, light_consts::lux},
+    pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium},
+    post_process::bloom::Bloom,
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
 };
@@ -326,6 +331,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scattering_mediums: ResMut<Assets<ScatteringMedium>>,
 ) {
     let assets = SceneRenderAssets {
         cube_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
@@ -373,28 +379,35 @@ fn setup(
         }),
     };
 
-    commands.spawn((
-        PointLight {
-            intensity: 2_600_000.0,
-            range: 1_800.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(450.0, 900.0, 450.0),
-    ));
+    // Sun. `lux::RAW_SUNLIGHT` is the raw extra-atmospheric value the
+    // `Atmosphere` post-process expects as input — it then attenuates and
+    // tints the light per ray through the medium, so the ground sees the
+    // "post-scattering" colour automatically. Pre-atmosphere scenes used a
+    // hand-tuned 7_000 lx + a corrective PointLight; both go away here.
     commands.spawn((
         DirectionalLight {
-            illuminance: 7_000.0,
+            illuminance: lux::RAW_SUNLIGHT,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_translation(Vec3::new(-1.0, 2.0, 1.0)).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(1.0, 0.6, 0.3).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
+    // Camera with procedural atmospheric scattering (Hillaire 2020). HDR is
+    // auto-required by `Atmosphere`; tonemapping + exposure are needed to
+    // bring `lux::RAW_SUNLIGHT` (~120k lx) back into a viewable range.
+    // `AtmosphereEnvironmentMapLight` lets the sky drive ambient IBL so
+    // shadowed surfaces aren't pitch black without the old PointLight.
     commands.spawn((
         Camera3d::default(),
         MainCamera,
         camera_transform_from_orbit(&OrbitCameraState::default()),
+        Atmosphere::earthlike(scattering_mediums.add(ScatteringMedium::default())),
+        AtmosphereSettings::default(),
+        AtmosphereEnvironmentMapLight::default(),
+        Exposure { ev100: 13.0 },
+        Tonemapping::AcesFitted,
+        Bloom::NATURAL,
     ));
 
     commands.spawn((
