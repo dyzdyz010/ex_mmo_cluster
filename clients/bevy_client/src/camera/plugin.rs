@@ -20,6 +20,7 @@ use crate::observe::ClientObserver;
 use crate::presentation::actor_render_position;
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
+use crate::voxel::plugin::ACTOR_HALF_HEIGHT;
 
 use super::orbit::{
     CAMERA_LOOK_HEIGHT, CAMERA_MAX_DISTANCE, CAMERA_MAX_PITCH, CAMERA_MIN_DISTANCE,
@@ -189,12 +190,11 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
         .local_render_prediction
         .render_state
         .as_ref()
-        .map(|state| actor_render_position(&params.voxel_world, state.position))
+        .map(|state| actor_render_position(&params.voxel_world, state.position, ACTOR_HALF_HEIGHT))
         .or_else(|| {
-            params
-                .world_state
-                .local_position
-                .map(|position| actor_render_position(&params.voxel_world, position))
+            params.world_state.local_position.map(|position| {
+                actor_render_position(&params.voxel_world, position, ACTOR_HALF_HEIGHT)
+            })
         })
         .map(|position| position + Vec3::Y * CAMERA_LOOK_HEIGHT)
         .unwrap_or(params.orbit.target);

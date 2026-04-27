@@ -29,7 +29,13 @@ use crate::voxel::{
 const VOXEL_RENDER_CELL_SIZE: f32 = 100.0;
 const VOXEL_RENDER_MICRO_SIZE: f32 = VOXEL_RENDER_CELL_SIZE / crate::voxel::MICRO_PER_MACRO as f32;
 const VOXEL_RAY_MAX_DISTANCE: f32 = 2_500.0;
-pub(crate) const ACTOR_HALF_HEIGHT: f32 = 18.0;
+/// Default half-height used for camera follow / orbit grounding when the
+/// caller doesn't already know the specific actor's cube size. Matches the
+/// local-player cube authored in `presentation::plugin` (`scale.y = 90.0` →
+/// half = 45). Per-actor grounding (the spawn / update path in
+/// `presentation::plugin`) reads `PlayerVisual::base_scale` and passes that
+/// half explicitly so remote / NPC cubes ground correctly too.
+pub(crate) const ACTOR_HALF_HEIGHT: f32 = 45.0;
 
 /// Resource caching the most recent voxel hit produced by the screen-
 /// center ray.

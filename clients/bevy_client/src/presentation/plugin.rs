@@ -14,17 +14,27 @@ use crate::app::{
 use crate::config::ClientConfig;
 use crate::login::AppState;
 use crate::observe::ClientObserver;
-use crate::presentation::animation::{animated_scale, animation_state_from_velocity};
+use crate::presentation::animation::{
+    animated_scale, animation_scale_multiplier, animation_state_from_velocity,
+};
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
-use crate::voxel::plugin::{ACTOR_HALF_HEIGHT, surface_center_y_at_render_xz};
+use crate::voxel::plugin::surface_center_y_at_render_xz;
 use crate::world::remote_actor::RemoteActorKind;
 use crate::world::remote_player::{RemoteMotionSample, RemoteSamplePath};
 
 /// Marker + payload component for one in-world actor visual cube.
+///
+/// `base_scale` is the authored cube size (e.g. `(48, 90, 48)` for the
+/// local player). The per-frame breathing animation multiplies through
+/// this base; without storing it on the component, smoothing would
+/// collapse `transform.scale` toward the bare multiplier (~`Vec3::ONE`)
+/// and the actor would shrink to an unrenderable unit cube within a few
+/// hundred frames.
 #[derive(Component)]
 pub struct PlayerVisual {
     pub cid: i64,
+    pub base_scale: Vec3,
 }
 
 pub struct PresentationPlugin;
@@ -136,7 +146,6 @@ fn sync_player_visuals(
 
     let delta_secs = params.time.delta_secs();
     for (&cid, motion) in &desired {
-        let target = actor_render_position(&params.voxel_world, motion.position);
         let actor_kind = params
             .world_state
             .remote_actor_identity
@@ -147,9 +156,14 @@ fn sync_player_visuals(
         let local = cid == params.world_state.local_cid;
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
-            if let Ok((_entity, _visual, mut transform, mut existing_material)) =
+            if let Ok((_entity, visual, mut transform, mut existing_material)) =
                 params.existing.get_mut(entity)
             {
+                let target = actor_render_position(
+                    &params.voxel_world,
+                    motion.position,
+                    visual.base_scale.y * 0.5,
+                );
                 let prev_translation = transform.translation;
                 transform.translation = if local {
                     target
@@ -212,7 +226,8 @@ fn sync_player_visuals(
                     actor_kind,
                     animation.moving,
                 );
-                transform.scale = animated_scale(transform.scale, animation, delta_secs);
+                transform.scale =
+                    animated_scale(transform.scale, visual.base_scale, animation, delta_secs);
                 *existing_material = MeshMaterial3d(material);
             }
         } else {
@@ -240,12 +255,17 @@ fn sync_player_visuals(
                 Vec3::new(24.0, 36.0, 24.0)
             };
 
+            let target = actor_render_position(&params.voxel_world, motion.position, scale.y * 0.5);
+
             commands.spawn((
-                PlayerVisual { cid },
+                PlayerVisual {
+                    cid,
+                    base_scale: scale,
+                },
                 Mesh3d(params.assets.player_mesh.clone()),
                 MeshMaterial3d(material),
                 Transform::from_translation(target)
-                    .with_scale(scale * animated_scale(Vec3::ONE, animation, delta_secs)),
+                    .with_scale(scale * animation_scale_multiplier(animation)),
             ));
 
             if params.observer.enabled() {
@@ -279,10 +299,19 @@ fn sync_player_visuals(
 /// Renders an actor's sim-coord position into the voxel render space and
 /// snaps it to the top of the supporting voxel column. Used by both the
 /// presentation layer (player visual sync) and the camera follow target.
-pub fn actor_render_position(voxel_world: &VoxelWorld, sim_position: Vec3) -> Vec3 {
+///
+/// `half_height` is the actor cube's half-Y extent in render units. Pass
+/// `PlayerVisual::base_scale.y * 0.5` for per-actor grounding, or
+/// [`ACTOR_HALF_HEIGHT`] (the local-player default) for the camera follow
+/// path that doesn't yet know which cube it's looking at.
+pub fn actor_render_position(
+    voxel_world: &VoxelWorld,
+    sim_position: Vec3,
+    half_height: f32,
+) -> Vec3 {
     let render = crate::app::sim_to_render_position(sim_position);
     let grounded_y =
-        surface_center_y_at_render_xz(voxel_world, render.x, render.z, ACTOR_HALF_HEIGHT, render.y);
+        surface_center_y_at_render_xz(voxel_world, render.x, render.z, half_height, render.y);
     Vec3::new(render.x, grounded_y, render.z)
 }
 
