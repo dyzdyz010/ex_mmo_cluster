@@ -15,6 +15,7 @@ use crate::voxel::core::{
 
 use super::definition::{PrefabDefinitionCell, PrefabRasterCell};
 use super::registry::LocalPrefab;
+use super::rotation::rotate_micro;
 
 /// Socket-free boundary snap request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,56 @@ pub(crate) fn contact_slots_for_face(prefab: &LocalPrefab, normal: MacroCoord) -
         .sum()
 }
 
+/// Returns the prefab-local micro coord that should anchor against the
+/// user-aimed `adjacent_micro` when the user clicks a face whose outward
+/// normal is `face_normal`. Picks the centre of the prefab's *contact*
+/// face (= -face_normal) before applying `rotation`. Falls back to the
+/// prefab's geometric centre for non-axial normals.
+///
+/// Builtin prefabs all have `bounds_in_macro_cells == (1, 1, 1)`, so the
+/// returned coord is in `[0, MICRO_PER_MACRO)` on each axis. For
+/// multi-macro prefabs the coord may still address the bounds-relative
+/// micro extent but the calling site must combine it with the prefab's
+/// origin macro to compute a world-space anchor.
+pub(crate) fn contact_face_center(
+    prefab: &LocalPrefab,
+    face_normal: MacroCoord,
+    rotation: Rotation,
+) -> MicroCoord {
+    let bounds = prefab.definition.bounds_in_macro_cells;
+    let max_x = bounds.x * MICRO_PER_MACRO - 1;
+    let max_y = bounds.y * MICRO_PER_MACRO - 1;
+    let max_z = bounds.z * MICRO_PER_MACRO - 1;
+    let cx = max_x / 2;
+    let cy = max_y / 2;
+    let cz = max_z / 2;
+
+    // Contact face = -face_normal. Pick the centre of that face on the
+    // prefab BEFORE rotation. Rotation is applied below so each axis
+    // is treated as if the prefab were in its un-rotated frame.
+    let local = match (face_normal.x, face_normal.y, face_normal.z) {
+        (0, 1, 0) => MicroCoord::new(cx, 0, cz), // user clicked +Y → prefab bottom
+        (0, -1, 0) => MicroCoord::new(cx, max_y, cz), // user clicked -Y → prefab top
+        (1, 0, 0) => MicroCoord::new(0, cy, cz), // user clicked +X → prefab -X face
+        (-1, 0, 0) => MicroCoord::new(max_x, cy, cz), // user clicked -X → prefab +X face
+        (0, 0, 1) => MicroCoord::new(cx, cy, 0), // user clicked +Z → prefab -Z face
+        (0, 0, -1) => MicroCoord::new(cx, cy, max_z), // user clicked -Z → prefab +Z face
+        _ => MicroCoord::new(cx, cy, cz),        // non-axial → prefab geometric centre
+    };
+
+    // Bounds rotation only matters for multi-macro prefabs; for the (1,1,1)
+    // builtins `rotate_micro` operates in a single macro frame and is
+    // exactly the right transform.
+    if matches!(bounds, MacroCoord { x: 1, y: 1, z: 1 }) {
+        rotate_micro(local, rotation)
+    } else {
+        // Future multi-macro prefab support: rotate around the bounds
+        // centre. For now we keep the local coord untransformed and let
+        // callers inspect bounds.
+        local
+    }
+}
+
 pub(crate) fn prefab_cell_from_mask(
     offset: MacroCoord,
     mask: MicroMask,
@@ -125,5 +176,74 @@ pub(crate) fn prefab_cell_from_mask(
         micro_material_ids: materials,
         micro_state_flags: states,
         micro_part_ids: part_ids,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voxel::prefab::registry::LocalPrefabRegistry;
+
+    fn sphere() -> LocalPrefab {
+        LocalPrefabRegistry::with_builtins()
+            .get("builtin_sphere")
+            .expect("sphere prefab")
+            .clone()
+    }
+
+    /// `MICRO_PER_MACRO = 8`, so for a (1,1,1) bounds prefab the
+    /// per-axis range is `[0, 7]` and the centre is `7/2 = 3`.
+    const CENTER: i32 = 3;
+    const MAX: i32 = MICRO_PER_MACRO - 1;
+
+    #[test]
+    fn contact_face_center_for_top_face_uses_prefab_bottom_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(0, 1, 0), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(CENTER, 0, CENTER));
+    }
+
+    #[test]
+    fn contact_face_center_for_bottom_face_uses_prefab_top_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(0, -1, 0), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(CENTER, MAX, CENTER));
+    }
+
+    #[test]
+    fn contact_face_center_for_east_face_uses_prefab_west_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(1, 0, 0), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(0, CENTER, CENTER));
+    }
+
+    #[test]
+    fn contact_face_center_for_west_face_uses_prefab_east_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(-1, 0, 0), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(MAX, CENTER, CENTER));
+    }
+
+    #[test]
+    fn contact_face_center_for_south_face_uses_prefab_north_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(0, 0, 1), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(CENTER, CENTER, 0));
+    }
+
+    #[test]
+    fn contact_face_center_for_north_face_uses_prefab_south_center() {
+        let coord = contact_face_center(&sphere(), MacroCoord::new(0, 0, -1), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(CENTER, CENTER, MAX));
+    }
+
+    #[test]
+    fn contact_face_center_for_non_axial_falls_back_to_geometric_center() {
+        // (1, 1, 0) is not an axial face normal — should not pick any face.
+        let coord = contact_face_center(&sphere(), MacroCoord::new(1, 1, 0), Rotation::Rot0);
+        assert_eq!(coord, MicroCoord::new(CENTER, CENTER, CENTER));
+    }
+
+    #[test]
+    fn contact_face_center_rot90_rotates_top_face_anchor() {
+        // Top-face anchor is (3, 0, 3) at Rot0. After Rot90 (around vertical
+        // Y axis), (3, 0, 3) → (max - 3, 0, 3) = (4, 0, 3).
+        let coord = contact_face_center(&sphere(), MacroCoord::new(0, 1, 0), Rotation::Rot90);
+        assert_eq!(coord, MicroCoord::new(MAX - CENTER, 0, CENTER));
     }
 }

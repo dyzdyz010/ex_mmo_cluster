@@ -60,7 +60,7 @@ pub(crate) fn rotate_prefab_cell(
     }
 }
 
-fn rotate_micro(coord: MicroCoord, rotation: Rotation) -> MicroCoord {
+pub(crate) fn rotate_micro(coord: MicroCoord, rotation: Rotation) -> MicroCoord {
     let max = MICRO_PER_MACRO - 1;
     match rotation {
         Rotation::Rot0 => coord,
