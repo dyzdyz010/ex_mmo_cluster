@@ -22,8 +22,8 @@ use crate::chat::ChatState;
 use crate::login::AppState;
 use crate::observe::ClientObserver;
 use crate::voxel::{
-    BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCoord, NormalBlockData,
-    VoxelMaterialId, VoxelRenderCell, VoxelWorld,
+    BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCellTarget, MicroCoord,
+    NormalBlockData, VoxelMaterialId, VoxelRenderCell, VoxelWorld,
 };
 
 const VOXEL_RENDER_CELL_SIZE: f32 = 100.0;
@@ -49,11 +49,7 @@ pub struct VoxelRaySelection {
     pub adjacent_micro: Option<MicroCellTarget>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct MicroCellTarget {
-    pub macro_coord: MacroCoord,
-    pub micro: MicroCoord,
-}
+// MicroCellTarget moved to crate::voxel::core::coord (re-exported below).
 
 /// Per-cell render visual marker.
 #[derive(Component, Copy, Clone, PartialEq, Eq, Hash)]
@@ -226,11 +222,16 @@ fn handle_voxel_input(params: VoxelInputParams) {
                 "place",
             )
         } else if let Some(prefab_name) = selected.prefab_name {
+            // Prefab micro-snap (design 2026-04-26): pass the user's
+            // adjacent_micro hit so the prefab is anchored at micro
+            // precision (and can span macros). Falls back to the legacy
+            // macro-aligned path when adjacent_micro is None.
             let request = BoundarySnapRequest {
                 prefab_name: prefab_name.clone(),
                 hit_macro: selection.occupied_macro,
                 face_normal: selection.face_normal,
                 rotation: selected.rotation,
+                anchor_micro: selection.adjacent_micro,
             };
             let snap = voxel_world.place_prefab_boundary_snap(&request);
             let ok = if snap.ok {
@@ -384,6 +385,7 @@ fn draw_voxel_guides(
             hit_macro: selection.occupied_macro,
             face_normal: selection.face_normal,
             rotation: selected.rotation,
+            anchor_micro: selection.adjacent_micro,
         };
         let preview = voxel_world.preview_prefab_boundary_snap(&request);
         if preview.ok {

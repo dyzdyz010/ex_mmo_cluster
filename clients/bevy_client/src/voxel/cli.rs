@@ -607,6 +607,7 @@ fn parse_boundary_snap_request(parts: &[&str]) -> Result<BoundarySnapRequest, St
         })?,
         rotation: Rotation::parse(parts.get(7).copied())
             .ok_or_else(|| format!("invalid rotation: {}", parts.get(7).copied().unwrap_or("")))?,
+        anchor_micro: None,
     })
 }
 

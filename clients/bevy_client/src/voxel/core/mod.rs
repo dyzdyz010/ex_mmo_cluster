@@ -11,9 +11,9 @@ pub mod mask;
 pub mod material;
 
 pub use coord::{
-    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCoord, Rotation, format_macro_coord,
-    format_micro_coord, is_micro_coord_in_bounds, micro_coord_from_index, micro_linear_index,
-    parse_macro_coord, parse_micro_coord,
+    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCellTarget, MicroCoord, Rotation,
+    format_macro_coord, format_micro_coord, is_micro_coord_in_bounds, micro_coord_from_index,
+    micro_linear_index, parse_macro_coord, parse_micro_coord,
 };
 pub use mask::MicroMask;
 pub use material::VoxelMaterialId;

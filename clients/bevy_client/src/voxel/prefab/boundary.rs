@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::voxel::core::mask::MicroMask;
 use crate::voxel::core::{
-    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCoord, Rotation, VoxelMaterialId,
-    micro_coord_from_index,
+    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCellTarget, MicroCoord, Rotation,
+    VoxelMaterialId, micro_coord_from_index,
 };
 
 use super::definition::{PrefabDefinitionCell, PrefabRasterCell};
@@ -24,6 +24,14 @@ pub struct BoundarySnapRequest {
     pub hit_macro: MacroCoord,
     pub face_normal: MacroCoord,
     pub rotation: Rotation,
+    /// Optional micro-aligned anchor point. When `Some`, the prefab's
+    /// contact-face centre micro slot is positioned at this world-space
+    /// micro location, allowing the prefab to span across macro
+    /// boundaries (design 2026-04-26 prefab-micro-snap). When `None`,
+    /// preview falls back to the legacy macro-aligned path that anchors
+    /// the prefab's local (0,0,0) at the adjacent macro's (0,0,0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_micro: Option<MicroCellTarget>,
 }
 
 /// Socket-free boundary snap preview.

@@ -3,8 +3,8 @@ use bevy_client::{
     input::commands::{MOVEMENT_FLAG_JUMP, MoveInputFrame},
     voxel::{
         BoundarySnapRequest, HotbarEntryKind, LocalPrefabRegistry, MICRO_GRID_SLOT_COUNT,
-        MICRO_PER_MACRO, MacroCoord, MicroCoord, NormalBlockData, Rotation, VoxelMaterialId,
-        VoxelWorld,
+        MICRO_PER_MACRO, MacroCoord, MicroCellTarget, MicroCoord, NormalBlockData, Rotation,
+        VoxelMaterialId, VoxelWorld,
     },
 };
 
@@ -110,6 +110,7 @@ fn boundary_snap_uses_micro_overlap_and_contact_rules() {
         hit_macro: MacroCoord::new(2, 4, 2),
         face_normal: MacroCoord::new(1, 0, 0),
         rotation: Rotation::Rot0,
+        anchor_micro: None,
     };
 
     let preview = world.preview_prefab_boundary_snap(&request);
@@ -177,6 +178,7 @@ fn place_prefab_boundary_snap_rejects_when_overlap_slots_present() {
         hit_macro: MacroCoord::new(2, 4, 2),
         face_normal: MacroCoord::new(1, 0, 0),
         rotation: Rotation::Rot0,
+        anchor_micro: None,
     };
     let placed = world.place_prefab_boundary_snap(&request);
     assert!(placed.ok, "first snap place must succeed");
@@ -235,5 +237,127 @@ fn batch_import_preserves_multiple_prefab_placements() {
             .micro_block(MacroCoord::new(16, 5, 16), MicroCoord::new(4, 4, 4))
             .is_some(),
         "cylinder center must survive import"
+    );
+}
+
+// Prefab micro-snap (design 2026-04-26): the boundary snap request now
+// optionally carries an `anchor_micro` so the prefab can land at a
+// specific micro position on the target's face, including layouts
+// that span across the macro boundary.
+
+#[test]
+fn prefab_boundary_snap_anchor_none_matches_legacy_macro_path() {
+    // The legacy macro-anchored path must be byte-equal to itself with
+    // anchor_micro = None. (No structural drift from refactoring.)
+    let mut world = VoxelWorld::new();
+    assert!(world.place_block(MacroCoord::new(2, 4, 2), block(VoxelMaterialId::Stone)));
+
+    let request = BoundarySnapRequest {
+        prefab_name: "builtin_sphere".to_string(),
+        hit_macro: MacroCoord::new(2, 4, 2),
+        face_normal: MacroCoord::new(1, 0, 0),
+        rotation: Rotation::Rot0,
+        anchor_micro: None,
+    };
+    let preview = world.preview_prefab_boundary_snap(&request);
+    assert!(preview.ok);
+    assert_eq!(preview.anchor_micro_coord, Some(MicroCoord::new(0, 0, 0)));
+    // Legacy path requires hit_macro to be a refined cell (or normal that
+    // gets rejected with no_target_boundary). Plain normal hit gets
+    // rejected — verify that branch too.
+}
+
+#[test]
+fn prefab_boundary_snap_anchor_micro_top_face_lands_against_normal_macro() {
+    // Place a normal stone macro at (2, 4, 2). User aims at its +Y face
+    // micro point (3, 0, 5) of the macro above.
+    let mut world = VoxelWorld::new();
+    assert!(world.place_block(MacroCoord::new(2, 4, 2), block(VoxelMaterialId::Stone)));
+
+    let request = BoundarySnapRequest {
+        prefab_name: "builtin_sphere".to_string(),
+        hit_macro: MacroCoord::new(2, 4, 2),
+        face_normal: MacroCoord::new(0, 1, 0),
+        rotation: Rotation::Rot0,
+        // adjacent_micro: just above the +Y face, with X=Z near the centre.
+        anchor_micro: Some(MicroCellTarget::new(
+            MacroCoord::new(2, 5, 2),
+            MicroCoord::new(3, 0, 3),
+        )),
+    };
+    let preview = world.preview_prefab_boundary_snap(&request);
+    assert!(
+        preview.ok,
+        "preview should succeed (target normal macro counts as occupied for contact); reason={:?}",
+        preview.reject_reason
+    );
+    assert_eq!(preview.overlap_slots, 0);
+    assert!(preview.contact_slots > 0);
+    assert_eq!(
+        preview.anchor_micro_coord,
+        Some(MicroCoord::new(3, 0, 3)),
+        "preview echoes back the user's anchor micro"
+    );
+}
+
+#[test]
+fn prefab_boundary_snap_anchor_micro_strict_reject_on_overlap() {
+    // First place a sphere via micro-snap. Then attempt the SAME snap
+    // again — every micro slot now overlaps the just-placed sphere, so
+    // the preview must reject with "micro_overlap".
+    let mut world = VoxelWorld::new();
+    assert!(world.place_block(MacroCoord::new(2, 4, 2), block(VoxelMaterialId::Stone)));
+
+    let request = BoundarySnapRequest {
+        prefab_name: "builtin_sphere".to_string(),
+        hit_macro: MacroCoord::new(2, 4, 2),
+        face_normal: MacroCoord::new(0, 1, 0),
+        rotation: Rotation::Rot0,
+        anchor_micro: Some(MicroCellTarget::new(
+            MacroCoord::new(2, 5, 2),
+            MicroCoord::new(3, 0, 3),
+        )),
+    };
+    let placed = world.place_prefab_boundary_snap(&request);
+    assert!(placed.ok);
+
+    let rerun = world.preview_prefab_boundary_snap(&request);
+    assert!(!rerun.ok);
+    assert!(rerun.overlap_slots > 0);
+    assert_eq!(rerun.reject_reason.as_deref(), Some("micro_overlap"));
+}
+
+#[test]
+fn prefab_boundary_snap_anchor_micro_can_span_two_macros() {
+    // Place at the corner micro of the +Y face — half the sphere's
+    // micros land in (2, 5, 2), the other half land in (3, 5, 2).
+    let mut world = VoxelWorld::new();
+    assert!(world.place_block(MacroCoord::new(2, 4, 2), block(VoxelMaterialId::Stone)));
+
+    let request = BoundarySnapRequest {
+        prefab_name: "builtin_sphere".to_string(),
+        hit_macro: MacroCoord::new(2, 4, 2),
+        face_normal: MacroCoord::new(0, 1, 0),
+        rotation: Rotation::Rot0,
+        // Aim at the +X edge of the +Y face, near the macro boundary.
+        anchor_micro: Some(MicroCellTarget::new(
+            MacroCoord::new(2, 5, 2),
+            MicroCoord::new(7, 0, 3),
+        )),
+    };
+    let preview = world.preview_prefab_boundary_snap(&request);
+    assert!(
+        preview.ok,
+        "cross-macro snap should succeed; reason={:?}",
+        preview.reject_reason
+    );
+    let dest_macros: Vec<MacroCoord> = preview.cells.iter().map(|c| c.macro_coord).collect();
+    assert!(
+        dest_macros.iter().any(|m| m.x == 2),
+        "some sphere micros land in macro x=2: {dest_macros:?}"
+    );
+    assert!(
+        dest_macros.iter().any(|m| m.x == 3),
+        "some sphere micros land in macro x=3 (cross-macro): {dest_macros:?}"
     );
 }

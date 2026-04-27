@@ -28,8 +28,8 @@ pub use cli::{
     VoxelCliCommand, VoxelCliResult, execute_voxel_cli_command, parse_voxel_cli_command,
 };
 pub use core::{
-    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCoord, MicroMask, Rotation,
-    VoxelMaterialId, format_macro_coord, format_micro_coord, is_micro_coord_in_bounds,
+    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCellTarget, MicroCoord, MicroMask,
+    Rotation, VoxelMaterialId, format_macro_coord, format_micro_coord, is_micro_coord_in_bounds,
     micro_coord_from_index, micro_linear_index, parse_macro_coord, parse_micro_coord,
 };
 pub use prefab::{

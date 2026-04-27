@@ -12,14 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::voxel::core::mask::MicroMask;
 use crate::voxel::core::{
-    MICRO_GRID_SLOT_COUNT, MacroCoord, MicroCoord, Rotation, VoxelMaterialId,
+    MICRO_GRID_SLOT_COUNT, MICRO_PER_MACRO, MacroCoord, MicroCoord, Rotation, VoxelMaterialId,
     is_micro_coord_in_bounds, micro_coord_from_index, micro_linear_index,
 };
 use crate::voxel::prefab::{
     LocalPrefab, LocalPrefabRegistry,
     boundary::{
-        BoundarySnapPlaceResult, BoundarySnapPreview, BoundarySnapRequest, contact_slots_for_face,
-        is_axis_normal, opposite_normal,
+        BoundarySnapPlaceResult, BoundarySnapPreview, BoundarySnapRequest, contact_face_center,
+        contact_slots_for_face, is_axis_normal, opposite_normal,
     },
     definition::{PrefabCellData, PrefabRasterCell},
 };
@@ -452,6 +452,16 @@ impl VoxelWorld {
     }
 
     /// Previews socket-free micro boundary snapping.
+    ///
+    /// Dispatches on `request.anchor_micro`:
+    /// - `Some(target)` (design 2026-04-26 prefab-micro-snap): the
+    ///   prefab's contact-face centre micro is positioned at
+    ///   `target`'s world micro coord. The resulting raster may span
+    ///   multiple destination macros. Works against any existing voxel
+    ///   (refined OR fully-occupied normal macro) — the no-refined-cell
+    ///   short-circuit only applies to the legacy path.
+    /// - `None` (legacy): macro-aligned anchor, requires hit_macro to be
+    ///   a refined cell. Behaviour byte-equal to pre-2026-04-26.
     pub fn preview_prefab_boundary_snap(
         &self,
         request: &BoundarySnapRequest,
@@ -462,6 +472,12 @@ impl VoxelWorld {
         if !is_axis_normal(request.face_normal) {
             return BoundarySnapPreview::rejected(request, "invalid_face_normal");
         }
+
+        if let Some(target) = request.anchor_micro {
+            return self.preview_micro_anchored(&prefab, request, target);
+        }
+
+        // Legacy macro-aligned path.
         if self.refined_cell(request.hit_macro).is_none() {
             return BoundarySnapPreview::rejected(request, "no_target_boundary");
         }
@@ -507,6 +523,131 @@ impl VoxelWorld {
                 None
             },
             cells: raster,
+        }
+    }
+
+    fn preview_micro_anchored(
+        &self,
+        prefab: &LocalPrefab,
+        request: &BoundarySnapRequest,
+        target: crate::voxel::core::MicroCellTarget,
+    ) -> BoundarySnapPreview {
+        // Origin macro: the macro adjacent to hit_macro along face_normal.
+        // Rasterising at `origin` then shifting puts the prefab's contact-
+        // face centre micro at the user's target micro.
+        let origin = request.hit_macro.offset(request.face_normal);
+        let prefab_local = contact_face_center(prefab, request.face_normal, request.rotation);
+
+        let target_world_x = target.macro_coord.x * MICRO_PER_MACRO + target.micro.x;
+        let target_world_y = target.macro_coord.y * MICRO_PER_MACRO + target.micro.y;
+        let target_world_z = target.macro_coord.z * MICRO_PER_MACRO + target.micro.z;
+        let origin_world_x = origin.x * MICRO_PER_MACRO + prefab_local.x;
+        let origin_world_y = origin.y * MICRO_PER_MACRO + prefab_local.y;
+        let origin_world_z = origin.z * MICRO_PER_MACRO + prefab_local.z;
+        let shift_x = target_world_x - origin_world_x;
+        let shift_y = target_world_y - origin_world_y;
+        let shift_z = target_world_z - origin_world_z;
+
+        let raster =
+            prefab.rasterize_with_micro_shift(origin, request.rotation, shift_x, shift_y, shift_z);
+
+        // Overlap: any prefab micro slot that lands on an existing
+        // occupied micro (refined OR fully-occupied normal macro).
+        let overlap_slots: u32 = raster
+            .iter()
+            .map(|cell| self.cell_micro_overlap_count(cell))
+            .sum();
+
+        // Contact: any prefab micro slot whose neighbour in -face_normal
+        // direction is occupied in the world.
+        let contact_slots = if overlap_slots == 0 {
+            self.compute_micro_contact_slots(&raster, request.face_normal)
+        } else {
+            0
+        };
+
+        BoundarySnapPreview {
+            ok: overlap_slots == 0 && contact_slots > 0,
+            prefab_id: request.prefab_name.clone(),
+            hit_macro: request.hit_macro,
+            face_normal: request.face_normal,
+            anchor_micro_coord: Some(target.micro),
+            affected_macro_count: raster.len() as u32,
+            incoming_occupied_slots: raster
+                .iter()
+                .map(|cell| cell.data.micro_occupancy_mask.occupied_slot_count())
+                .sum(),
+            overlap_slots,
+            contact_slots,
+            reject_reason: if overlap_slots > 0 {
+                Some("micro_overlap".to_string())
+            } else if contact_slots == 0 {
+                Some("no_contact".to_string())
+            } else {
+                None
+            },
+            cells: raster,
+        }
+    }
+
+    /// Counts prefab micro slots in `cell` that overlap an existing
+    /// occupied micro at the same world position. Treats normal macros
+    /// as fully occupied and refined macros via their micro mask.
+    fn cell_micro_overlap_count(&self, cell: &PrefabRasterCell) -> u32 {
+        match self.cells.get(&cell.macro_coord) {
+            None => 0,
+            Some(CellData::Normal(_)) => cell.data.micro_occupancy_mask.occupied_slot_count(),
+            Some(CellData::Refined(refined)) => refined
+                .micro_occupancy_mask
+                .overlap_count(cell.data.micro_occupancy_mask),
+        }
+    }
+
+    /// Counts prefab micro slots whose -face_normal neighbour (1 micro
+    /// in the opposite direction of the user's click) is occupied in the
+    /// world. ≥1 means the prefab is touching the existing structure.
+    fn compute_micro_contact_slots(
+        &self,
+        raster: &[PrefabRasterCell],
+        face_normal: MacroCoord,
+    ) -> u32 {
+        let mut count = 0u32;
+        for cell in raster {
+            for slot_index in cell.data.micro_occupancy_mask.indices() {
+                let Some(local) = micro_coord_from_index(slot_index) else {
+                    continue;
+                };
+                // World micro coord of this slot.
+                let wx = cell.macro_coord.x * MICRO_PER_MACRO + local.x;
+                let wy = cell.macro_coord.y * MICRO_PER_MACRO + local.y;
+                let wz = cell.macro_coord.z * MICRO_PER_MACRO + local.z;
+                // Neighbour in -face_normal direction.
+                let nwx = wx - face_normal.x;
+                let nwy = wy - face_normal.y;
+                let nwz = wz - face_normal.z;
+                let neighbour_macro = MacroCoord::new(
+                    nwx.div_euclid(MICRO_PER_MACRO),
+                    nwy.div_euclid(MICRO_PER_MACRO),
+                    nwz.div_euclid(MICRO_PER_MACRO),
+                );
+                let neighbour_micro = MicroCoord::new(
+                    nwx.rem_euclid(MICRO_PER_MACRO),
+                    nwy.rem_euclid(MICRO_PER_MACRO),
+                    nwz.rem_euclid(MICRO_PER_MACRO),
+                );
+                if self.world_micro_occupied(neighbour_macro, neighbour_micro) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn world_micro_occupied(&self, macro_coord: MacroCoord, micro: MicroCoord) -> bool {
+        match self.cells.get(&macro_coord) {
+            None => false,
+            Some(CellData::Normal(_)) => true,
+            Some(CellData::Refined(refined)) => refined.micro_occupancy_mask.contains(micro),
         }
     }
 

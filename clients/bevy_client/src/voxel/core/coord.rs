@@ -47,6 +47,21 @@ impl MicroCoord {
     }
 }
 
+/// World-space anchor for a micro slot: which macro it lives in and which
+/// micro inside that macro. Used by boundary snap requests + ray-pick
+/// selection state.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MicroCellTarget {
+    pub macro_coord: MacroCoord,
+    pub micro: MicroCoord,
+}
+
+impl MicroCellTarget {
+    pub const fn new(macro_coord: MacroCoord, micro: MicroCoord) -> Self {
+        Self { macro_coord, micro }
+    }
+}
+
 /// Supported prefab rotations around the vertical axis.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Rotation {
