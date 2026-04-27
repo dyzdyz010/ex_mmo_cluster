@@ -57,6 +57,7 @@ pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEv
             location,
             velocity,
             acceleration,
+            movement_mode,
             transport,
         } => {
             observer.emit(
@@ -68,6 +69,7 @@ pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEv
                     ("location", format_vec(location)),
                     ("velocity", format_vec(velocity)),
                     ("acceleration", format_vec(acceleration)),
+                    ("movement_mode", format!("{movement_mode:?}")),
                 ],
             );
         }

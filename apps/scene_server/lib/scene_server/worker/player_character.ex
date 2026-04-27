@@ -611,7 +611,16 @@ defmodule SceneServer.PlayerCharacter do
          {:ok, authoritative_location} <-
            get_character_location_with_retry(cd_ref, physys_ref, next_state.position) do
       authoritative_state = %{next_state | position: authoritative_location} |> refresh_ground_z()
-      ack = Engine.build_ack(cid, authoritative_state, ack_seq, movement_profile.fixed_dt_ms)
+
+      ack =
+        Engine.build_ack_with_intent(
+          cid,
+          authoritative_state,
+          last_frame,
+          0,
+          movement_profile.fixed_dt_ms
+        )
+
       snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
 
       SceneServer.CliObserve.emit("player_movement_tick", %{

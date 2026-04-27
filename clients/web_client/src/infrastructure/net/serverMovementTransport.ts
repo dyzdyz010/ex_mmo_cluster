@@ -36,6 +36,14 @@ export class ServerMovementTransport implements MovementTransport {
   private token: string | null = null;
   private readonly acknowledgements: PendingMovementAck[] = [];
   private readonly remoteSnapshots: RemoteMoveSnapshot[] = [];
+  private readonly remoteEntityEnters: { cid: number; position: Vector3 }[] = [];
+  private readonly remoteEntityLeaves: number[] = [];
+  private readonly timeSyncSamples: {
+    requestId: number;
+    clientSendTs: number;
+    serverRecvTs: number;
+    serverSendTs: number;
+  }[] = [];
   private readonly sentAtBySeq = new Map<number, number>();
   private spawnPosition: Vector3 | null = null;
   // Audit B-S1 / B-SRV2: server-reported next-input seq for the upcoming
@@ -101,6 +109,9 @@ export class ServerMovementTransport implements MovementTransport {
       enterSceneRequestId: this.enterSceneRequestId,
       queuedAcks: this.acknowledgements.length,
       queuedRemoteSnapshots: this.remoteSnapshots.length,
+      queuedRemoteEnters: this.remoteEntityEnters.length,
+      queuedRemoteLeaves: this.remoteEntityLeaves.length,
+      queuedTimeSyncSamples: this.timeSyncSamples.length,
       authBaseUrl: this.authBaseUrl,
       webSocketUrl: this.webSocketUrl,
     };
@@ -110,6 +121,9 @@ export class ServerMovementTransport implements MovementTransport {
     this.lastResetPosition.copy(position);
     this.acknowledgements.splice(0, this.acknowledgements.length);
     this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
+    this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
+    this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
+    this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
 
@@ -144,6 +158,9 @@ export class ServerMovementTransport implements MovementTransport {
 
     const acknowledgements = this.acknowledgements.splice(0, this.acknowledgements.length);
     const remoteSnapshots = this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
+    const remoteEntityEnters = this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
+    const remoteEntityLeaves = this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
+    const timeSyncSamples = this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
     const spawn =
       this.spawnPosition && this.spawnExpectedSeq !== null
         ? {
@@ -153,7 +170,14 @@ export class ServerMovementTransport implements MovementTransport {
         : null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
-    return { acknowledgements, remoteSnapshots, spawn };
+    return {
+      acknowledgements,
+      remoteSnapshots,
+      spawn,
+      remoteEntityEnters,
+      remoteEntityLeaves,
+      timeSyncSamples,
+    };
   }
 
   private async bootstrap(): Promise<void> {
@@ -297,6 +321,20 @@ export class ServerMovementTransport implements MovementTransport {
       case "player_move":
         this.remoteSnapshots.push(message.snapshot);
         break;
+      case "player_enter":
+        this.remoteEntityEnters.push({ cid: message.cid, position: message.position });
+        break;
+      case "player_leave":
+        this.remoteEntityLeaves.push(message.cid);
+        break;
+      case "time_sync_reply":
+        this.timeSyncSamples.push({
+          requestId: message.requestId,
+          clientSendTs: message.clientSendTs,
+          serverRecvTs: message.serverRecvTs,
+          serverSendTs: message.serverSendTs,
+        });
+        break;
       case "heartbeat_reply":
         this.logger.emit("transport", "heartbeat_reply", { mode: SERVER_TRANSPORT_MODE });
         break;
@@ -361,6 +399,9 @@ export class ServerMovementTransport implements MovementTransport {
   private clearPendingMessages(): void {
     this.acknowledgements.splice(0, this.acknowledgements.length);
     this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
+    this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
+    this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
+    this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
     this.sentAtBySeq.clear();
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;

@@ -209,6 +209,7 @@ impl ClientRuntime {
                             predicted.acceleration.y as f64,
                             predicted.acceleration.z as f64,
                         ],
+                        movement_mode: predicted.movement_mode,
                         transport: self.fast_lane.movement_transport(),
                     });
                 }
@@ -668,6 +669,7 @@ impl ClientRuntime {
                             state.acceleration.y as f64,
                             state.acceleration.z as f64,
                         ],
+                        movement_mode: state.movement_mode,
                         transport,
                     });
                 }
@@ -1447,7 +1449,7 @@ mod tests {
                     location: [4.5, 5.0, 6.0],
                     velocity: [0.5, 0.0, 0.0],
                     acceleration: [0.0, 0.0, 0.0],
-                    movement_mode: 0,
+                    movement_mode: 1,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
                 },
@@ -1458,6 +1460,7 @@ mod tests {
             event,
             NetworkEvent::LocalPosition {
                 location: [4.5, 5.0, 6.0],
+                movement_mode: crate::sim::types::MovementMode::Airborne,
                 ..
             }
         )));

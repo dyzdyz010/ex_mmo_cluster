@@ -28,4 +28,43 @@ describe("RemotePlayerController", () => {
     expect(controller.getCurrentMovementMode()).toBe(MovementMode.Airborne);
     expect(ingested[0]).toMatchObject({ movementMode: MovementMode.Airborne });
   });
+
+  it("keeps independent interpolators for each remote cid", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: { ...remoteSnapshot(), cid: 42, position: new Vector3(10, 0, 0) },
+    });
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: { ...remoteSnapshot(), cid: 77, position: new Vector3(100, 0, 0) },
+    });
+    controller.onFrame(1_000, 16);
+
+    expect(controller.getVisibleEntityIds().sort()).toEqual([42, 77]);
+    expect(controller.getRenderedPositionFor(42).x).toBeCloseTo(10, 4);
+    expect(controller.getRenderedPositionFor(77).x).toBeCloseTo(100, 4);
+  });
+
+  it("removes remote entities when AOI leave arrives", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:snapshot-delivered", { snapshot: remoteSnapshot() });
+    expect(controller.getVisibleEntityIds()).toContain(42);
+
+    bus.emit("transport:entity-left", { cid: 42 });
+
+    expect(controller.getVisibleEntityIds()).not.toContain(42);
+  });
+
+  it("keeps AOI enter positions until the first movement snapshot arrives", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:entity-entered", { cid: 99, position: new Vector3(25, 5, 75) });
+    controller.onFrame(1_000, 16);
+
+    expect(controller.getRenderedPositionFor(99)).toEqual(new Vector3(25, 5, 75));
+  });
 });

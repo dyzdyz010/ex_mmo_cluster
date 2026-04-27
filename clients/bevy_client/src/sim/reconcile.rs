@@ -1,10 +1,10 @@
 //! Reconciliation of predicted local movement against authoritative acks.
 //!
-//! The reconciler prefers matching by `ack_seq` (the client's input sequence
-//! number) over `auth_tick` (the server's fixed-step counter). Server and
-//! client tick spaces can drift independently when the server advances
-//! idle/latched frames without a new client input, so `ack_seq` is the only
-//! stable identifier in a namespace both sides agree on.
+//! The reconciler prefers matching by `auth_tick` (the server's fixed-step
+//! counter) and falls back to `ack_seq` for older histories. Server acks can
+//! legitimately advance idle/latched frames without a new client input; in
+//! that case `ack_seq` stays pinned while `auth_tick` is the precise replay
+//! anchor.
 
 use crate::input::commands::MoveInputFrame;
 use crate::sim::{
@@ -78,11 +78,16 @@ pub fn reconcile(
 
     let force_replay = matches!(kind, CorrectionKind::CollisionPush);
 
-    // Look up the predicted state that corresponds to this ack.
+    // Look up the predicted state that corresponds to this ack. Server acks
+    // can legitimately advance `auth_tick` while `ack_seq` stays latched to
+    // the last real input (airborne/idle continuation frames). In that case a
+    // synthetic local prediction for the exact authoritative tick is the best
+    // comparison point; `ack_seq` remains the fallback for older histories that
+    // do not contain server-synthesized ticks.
     let predicted_match = predicted_history
-        .state_at_seq(ack.ack_seq)
+        .state_at_tick(ack.auth_tick)
         .cloned()
-        .or_else(|| predicted_history.state_at_tick(ack.auth_tick).cloned());
+        .or_else(|| predicted_history.state_at_seq(ack.ack_seq).cloned());
 
     let Some(predicted) = predicted_match else {
         // No matching predicted entry. This happens when history was
@@ -344,7 +349,7 @@ fn authoritative_from_ack(ack: &MovementAck) -> PredictedMoveState {
 mod tests {
     use super::*;
     use crate::{
-        input::commands::MoveInputFrame,
+        input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame},
         sim::{
             correction::CorrectionFlags,
             types::{MovementMode, PredictedMoveState},
@@ -869,6 +874,63 @@ mod tests {
         assert_eq!(result.pending_inputs, 1);
         assert_eq!(result.latest_state.tick, 2);
         assert_eq!(result.latest_state.position, predicted_two.position);
+    }
+
+    #[test]
+    fn reconcile_prefers_matching_auth_tick_when_seq_is_latched_across_airborne_ticks() {
+        let profile = MovementProfile::default();
+        let mut input_history = InputHistory::new(16);
+        let mut predicted_history = PredictedHistory::new(16);
+
+        let origin = PredictedMoveState::idle(Vec3::new(0.0, 0.0, 100.0));
+        predicted_history.push(origin.clone());
+
+        let jump = MoveInputFrame {
+            seq: 8,
+            client_tick: 9,
+            dt_ms: 100,
+            input_dir: Vec2::ZERO,
+            speed_scale: 1.0,
+            movement_flags: MOVEMENT_FLAG_JUMP,
+        };
+        let airborne_tick_9 = predictor::step(&origin, &jump, &profile);
+        predicted_history.push(airborne_tick_9.clone());
+
+        let synthetic_airborne_tick = MoveInputFrame {
+            seq: 0,
+            client_tick: 10,
+            dt_ms: 100,
+            input_dir: Vec2::ZERO,
+            speed_scale: 1.0,
+            movement_flags: MOVEMENT_FLAG_BRAKE,
+        };
+        let airborne_tick_10 =
+            predictor::step(&airborne_tick_9, &synthetic_airborne_tick, &profile);
+        predicted_history.push(airborne_tick_10.clone());
+
+        let ack = MovementAck {
+            ack_seq: 8,
+            auth_tick: 10,
+            position: airborne_tick_10.position,
+            velocity: airborne_tick_10.velocity,
+            acceleration: airborne_tick_10.acceleration,
+            movement_mode: airborne_tick_10.movement_mode,
+            correction_flags: 0,
+        };
+
+        let result = reconcile(
+            &ack,
+            &mut input_history,
+            &mut predicted_history,
+            &profile,
+            &ReplayGovernance::default(),
+        )
+        .expect("reconcile result");
+
+        assert_eq!(result.action, ReplayAction::Accepted);
+        assert_eq!(result.correction_distance, 0.0);
+        assert_eq!(result.latest_state.tick, 10);
+        assert_eq!(result.latest_state.position, airborne_tick_10.position);
     }
 
     #[test]

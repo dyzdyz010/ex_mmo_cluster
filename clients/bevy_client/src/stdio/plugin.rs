@@ -6,7 +6,10 @@ use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::app::{LocalRenderPrediction, MovementIntent, WorldState, push_line, voxel_save_dir};
+use crate::app::{
+    LocalRenderPrediction, MovementIntent, WorldState, push_line, schedule::ClientSet,
+    voxel_save_dir,
+};
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::skill::prepare_skill_dispatch;
@@ -22,7 +25,12 @@ pub struct StdioPlugin;
 
 impl Plugin for StdioPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, poll_stdio_commands.run_if(in_state(AppState::Game)));
+        app.add_systems(
+            Update,
+            poll_stdio_commands
+                .in_set(ClientSet::Stdio)
+                .run_if(in_state(AppState::Game)),
+        );
     }
 }
 

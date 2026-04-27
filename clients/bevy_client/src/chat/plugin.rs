@@ -4,6 +4,7 @@
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 
+use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::observe::ClientObserver;
@@ -27,7 +28,9 @@ impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChatState>().add_systems(
             Update,
-            (toggle_chat_mode, collect_chat_text).run_if(in_state(AppState::Game)),
+            (toggle_chat_mode, collect_chat_text)
+                .in_set(ClientSet::Input)
+                .run_if(in_state(AppState::Game)),
         );
     }
 }

@@ -13,7 +13,7 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
 
-use crate::app::{LocalRenderPrediction, WorldState};
+use crate::app::{LocalRenderPrediction, WorldState, schedule::ClientSet};
 use crate::chat::ChatState;
 use crate::login::AppState;
 use crate::observe::ClientObserver;
@@ -38,20 +38,25 @@ impl Plugin for CameraPlugin {
             // `manage_cursor_grab` can release the cursor as soon as we
             // lose focus (Alt-Tab, OS notification, IME popup) without
             // depending on Bevy's per-frame cursor-grab state.
-            .add_systems(Update, track_window_focus)
+            .add_systems(Update, track_window_focus.in_set(ClientSet::Render))
             // Audit C-M3: re-evaluate cursor grab only when one of the
             // inputs the decision depends on actually changed. Without
             // this `run_if` it ran every frame and re-touched
             // CursorOptions even when nothing was different.
             .add_systems(
                 Update,
-                manage_cursor_grab.run_if(
+                manage_cursor_grab.in_set(ClientSet::Render).run_if(
                     state_changed::<AppState>
                         .or(resource_changed::<ChatState>)
                         .or(resource_changed::<WindowFocusGate>),
                 ),
             )
-            .add_systems(Update, update_orbit_camera.run_if(in_state(AppState::Game)));
+            .add_systems(
+                Update,
+                update_orbit_camera
+                    .in_set(ClientSet::Render)
+                    .run_if(in_state(AppState::Game)),
+            );
     }
 }
 

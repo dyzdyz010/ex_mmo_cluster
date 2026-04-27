@@ -65,7 +65,7 @@ export class PredictedHistory {
   }
 
   stateAtTick(tick: number): PredictedMoveState | null {
-    const state = this.states.find((candidate) => candidate.tick === tick);
+    const state = this.findLatest((candidate) => candidate.tick === tick);
     return state ? clonePredictedMoveState(state) : null;
   }
 
@@ -73,8 +73,15 @@ export class PredictedHistory {
     if (seq === 0) {
       return null;
     }
-    const state = this.states.find((candidate) => candidate.seq === seq);
+    const state = this.findLatest((candidate) => candidate.seq === seq);
     return state ? clonePredictedMoveState(state) : null;
+  }
+
+  replaceFromTick(tick: number, state: PredictedMoveState): void {
+    while ((this.states.at(-1)?.tick ?? Number.NEGATIVE_INFINITY) >= tick) {
+      this.states.pop();
+    }
+    this.push(state);
   }
 
   truncateAfterTick(tick: number): void {
@@ -96,5 +103,15 @@ export class PredictedHistory {
 
   clear(): void {
     this.states.splice(0, this.states.length);
+  }
+
+  private findLatest(predicate: (state: PredictedMoveState) => boolean): PredictedMoveState | null {
+    for (let index = this.states.length - 1; index >= 0; index -= 1) {
+      const state = this.states[index];
+      if (state && predicate(state)) {
+        return state;
+      }
+    }
+    return null;
   }
 }

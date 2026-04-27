@@ -1,5 +1,5 @@
 //! `MovementSyncPlugin` — owns the keyboard movement-input sampling, the
-//! 50 Hz uplink tick, and the local render-prediction integration.
+//! configured uplink tick, and the local render-prediction integration.
 
 use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use crate::app::{
     FINAL_STOP_SYNC_SPEED_EPSILON, LocalRenderPrediction, MovementDispatchState, MovementIntent,
-    VISUAL_CORRECTION_EPSILON_SQ, WorldState,
+    VISUAL_CORRECTION_EPSILON_SQ, WorldState, schedule::ClientSet,
 };
 use crate::camera::{OrbitCameraState, orbit::input_to_world_direction};
 use crate::chat::ChatState;
@@ -43,11 +43,15 @@ impl Plugin for MovementSyncPlugin {
             )))
             .add_systems(
                 Update,
-                (
-                    sample_movement_input,
-                    movement_sender,
-                    advance_local_render_prediction,
-                )
+                sample_movement_input
+                    .in_set(ClientSet::Input)
+                    .run_if(in_state(AppState::Game)),
+            )
+            .add_systems(
+                Update,
+                (advance_local_render_prediction, movement_sender)
+                    .chain()
+                    .in_set(ClientSet::Sync)
                     .run_if(in_state(AppState::Game)),
             );
     }

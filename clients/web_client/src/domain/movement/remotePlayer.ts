@@ -2,7 +2,7 @@ import { Vector3 } from "three";
 import { CorrectionFlag, cloneRemoteMoveSnapshot, type RemoteMoveSnapshot } from "./types";
 
 const MAX_BUFFERED_SNAPSHOTS = 32;
-const SNAPSHOT_TICK_SECS = 0.1;
+const DEFAULT_SNAPSHOT_TICK_SECS = 0.1;
 // Follow the 150 ms Bernier/Source baseline documented in
 // docs/2026-04-20-movement-reference-audit.md. This keeps one full 100 ms
 // server sample in reserve without adding the extra 70 ms "slow half-beat"
@@ -22,6 +22,18 @@ export interface RemoteMotionSample {
 
 export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
+
+  constructor(
+    private options: { tickDurationSecs: number } = {
+      tickDurationSecs: DEFAULT_SNAPSHOT_TICK_SECS,
+    },
+  ) {}
+
+  setTickDurationSecs(tickDurationSecs: number): void {
+    if (Number.isFinite(tickDurationSecs) && tickDurationSecs > 0) {
+      this.options = { tickDurationSecs };
+    }
+  }
 
   pushSnapshot(
     snapshot: RemoteMoveSnapshot,
@@ -73,7 +85,7 @@ export class RemotePlayerState {
       return { position: new Vector3(), velocity: new Vector3() };
     }
 
-    const latestServerTime = snapshotTimeSecs(latest.snapshot.serverTick);
+    const latestServerTime = this.snapshotTimeSecs(latest.snapshot.serverTick);
     const estimatedServerTime =
       latestServerTime +
       Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
@@ -85,28 +97,29 @@ export class RemotePlayerState {
       if (!previous || !next) {
         continue;
       }
-      const previousTime = snapshotTimeSecs(previous.snapshot.serverTick);
-      const nextTime = snapshotTimeSecs(next.snapshot.serverTick);
+      const previousTime = this.snapshotTimeSecs(previous.snapshot.serverTick);
+      const nextTime = this.snapshotTimeSecs(next.snapshot.serverTick);
       if (playbackServerTime >= previousTime && playbackServerTime <= nextTime) {
-        return interpolatePair(previous, next, playbackServerTime);
+        return interpolatePair(previous, next, playbackServerTime, this.options.tickDurationSecs);
       }
     }
 
     return extrapolateSingle(latest, nowSecs);
   }
-}
 
-function snapshotTimeSecs(serverTick: number): number {
-  return serverTick * SNAPSHOT_TICK_SECS;
+  private snapshotTimeSecs(serverTick: number): number {
+    return serverTick * this.options.tickDurationSecs;
+  }
 }
 
 function interpolatePair(
   previous: BufferedSnapshot,
   next: BufferedSnapshot,
   playbackServerTime: number,
+  tickDurationSecs: number,
 ): RemoteMotionSample {
-  const previousTime = snapshotTimeSecs(previous.snapshot.serverTick);
-  const nextTime = snapshotTimeSecs(next.snapshot.serverTick);
+  const previousTime = previous.snapshot.serverTick * tickDurationSecs;
+  const nextTime = next.snapshot.serverTick * tickDurationSecs;
   const duration = Math.max(nextTime - previousTime, 1e-6);
   const t = Math.min(1, Math.max(0, (playbackServerTime - previousTime) / duration));
 

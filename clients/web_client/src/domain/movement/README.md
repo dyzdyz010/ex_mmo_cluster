@@ -13,16 +13,23 @@
 - `MovementMode` 使用 `grounded / airborne / scripted / disabled` 字符串；协议层将服务端 `u8` mode 解码到该枚举。
 - Web 坐标采用 Three.js 习惯：`x/z` 为水平面，`y` 为垂直轴；协议层负责把服务端 `(x, y, z)` 映射为浏览器 `(x, z, y)`。
 - `PredictedMoveState.groundY` 保存本次 airborne arc 的起跳地面高度，确保 CLI/日志可复现每帧竖直位移和落地判定。
-- `history.ts` 拥有输入/预测历史缓冲。
+- `history.ts` 拥有输入/预测历史缓冲。预测历史按 `authTick`
+  优先对账，并在同 tick / seq 重复写入时使用最新样本，避免旧预测覆盖
+  后到的服务端锚点。
 - `predictor.ts` 只负责单步近似运动学积分。
-- `reconcile.ts` 只负责权威对账策略。
-- `localPlayer.ts` / `remotePlayer.ts` 负责运行时编排。
+- `reconcile.ts` 只负责权威对账策略。服务端 ack 的 `authTick` 是
+  本机预测/服务器校正的主时间轴；`ackSeq` 只作为兜底索引。历史缺失时
+  从服务端权威状态重放尚未确认的输入，不允许静默把缺失当作接受。
+- `localPlayer.ts` / `remotePlayer.ts` 负责运行时编排。`remotePlayer.ts`
+  只维护单个远端实体的快照插值缓冲；多实体生命周期由
+  `app/controllers/remotePlayerController.ts` 按 `cid` 管理。
 - 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
   fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
   用来填平 100 ms tick 之间的视觉空档；它不写回 history，也不改变网络发送频率。
 - `remotePlayer.ts` 当前采用 **150 ms 插值延迟 + 250 ms 封顶外推**：
   150 ms 保证 100 ms 服务端快照至少保留一帧历史缓冲，同时不额外拖出
-  220 ms 的远端钝感。
+  220 ms 的远端钝感。tick 时长默认 100 ms，但会接受服务端 ack 回传的
+  `serverFixedDtMs`，避免远端插值时间轴与服务端固定步长漂移。
 - `transport.ts` 定义 `MovementTransport` port；domain 只依赖接口，具体适配器由 composition root 注入。
 - `inputDirection.ts` 把按键状态映射成单位输入方向，纯函数、无副作用。
 

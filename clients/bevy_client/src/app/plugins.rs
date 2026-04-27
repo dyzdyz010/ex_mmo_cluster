@@ -1,17 +1,15 @@
 //! `BevyClientPlugins` — the canonical PluginGroup for the GUI / stdio
 //! Bevy client.
 //!
-//! Phase 3 introduces this PluginGroup as a structural skeleton. Each
-//! domain Plugin currently registers nothing; phase 4 of the restructure
-//! plan migrates systems out of `app::run` into their owning Plugin one
-//! domain at a time. Adding the Plugin now (instead of waiting until the
-//! migration finishes) makes each subsequent phase a pure additive change
-//! to a single Plugin's `build()`.
+//! This PluginGroup is the structural spine for the GUI / stdio client.
+//! Domain systems are being moved out of `app::run` into their owning
+//! plugins one subsystem at a time; plugins that have not migrated yet stay
+//! as explicit stubs so the final boundary remains visible.
 //!
-//! Order matters: Plugins are added in the canonical
-//! `Network → Stdio → Input → Logic → Sync → Render` ordering described in
-//! `crate::app::schedule::ClientSet`. Plugins do not currently tag their
-//! systems with these sets — they will once the systems migrate.
+//! Order matters at the plugin-boundary level, and gameplay systems that are
+//! sensitive to frame order opt into the canonical `Network -> Stdio -> Input
+//! -> Logic -> Sync -> Render` sets described in
+//! `crate::app::schedule::ClientSet`.
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
 use bevy::prelude::*;
@@ -58,7 +56,8 @@ macro_rules! stub_plugin {
 
         impl Plugin for $name {
             fn build(&self, _app: &mut App) {
-                // Phase 3 stub — systems migrate here in phase 4.
+                // Migration stub — systems move here as each domain is split
+                // out of app::run.
             }
         }
     };

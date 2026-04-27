@@ -167,14 +167,20 @@ impl LocalRenderPrediction {
     /// `pending_correction`, which decays toward zero each frame so corrections
     /// blend in rather than teleport. Large jumps hard-snap to prevent visible
     /// rubberbanding from accumulating.
-    pub(crate) fn sync_full_state(&mut self, position: Vec3, velocity: Vec3, acceleration: Vec3) {
+    pub(crate) fn sync_full_state(
+        &mut self,
+        position: Vec3,
+        velocity: Vec3,
+        acceleration: Vec3,
+        movement_mode: MovementMode,
+    ) {
         let new_anchor = PredictedMoveState {
             seq: 0,
             tick: 0,
             position,
             velocity,
             acceleration,
-            movement_mode: MovementMode::Grounded,
+            movement_mode,
             ground_z: position.z,
         };
 
@@ -619,7 +625,12 @@ mod tests {
         render.reset(Vec3::new(0.0, 0.0, 0.0));
 
         // Simulate the anchor drifting forward by 8 units (predicted input).
-        render.sync_full_state(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(
+            Vec3::new(8.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
         let render_at_first_sync = render
             .render_state
             .as_ref()
@@ -629,7 +640,12 @@ mod tests {
 
         // Authoritative correction pulls anchor back to 4 — render must stay
         // near the visible 8 so the player does not see a teleport.
-        render.sync_full_state(Vec3::new(4.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
         let render_after_correction = render
             .render_state
             .as_ref()
@@ -640,17 +656,56 @@ mod tests {
     }
 
     #[test]
+    fn local_render_prediction_preserves_authoritative_movement_mode() {
+        let mut render = LocalRenderPrediction::default();
+
+        render.sync_full_state(
+            Vec3::new(0.0, 0.0, 100.0),
+            Vec3::new(0.0, 0.0, 25.0),
+            Vec3::ZERO,
+            MovementMode::Airborne,
+        );
+
+        assert_eq!(
+            render
+                .anchor_state
+                .as_ref()
+                .expect("anchor_state should be set after sync_full_state")
+                .movement_mode,
+            MovementMode::Airborne
+        );
+        assert_eq!(
+            render
+                .render_state
+                .as_ref()
+                .expect("render_state should be set after sync_full_state")
+                .movement_mode,
+            MovementMode::Airborne
+        );
+    }
+
+    #[test]
     fn local_render_prediction_hard_snaps_on_huge_drift() {
         let mut render = LocalRenderPrediction::default();
         render.reset(Vec3::new(0.0, 0.0, 0.0));
 
         // First settle at a position far from the next sync to build a visible
         // history.
-        render.sync_full_state(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
 
         // A 400-unit authoritative jump exceeds VISUAL_HARD_SNAP_DISTANCE and
         // must zero the pending correction — the render faithfully jumps.
-        render.sync_full_state(Vec3::new(-390.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(
+            Vec3::new(-390.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
         assert_eq!(render.pending_correction, Vec3::ZERO);
         let rendered = render
             .render_state
@@ -664,8 +719,18 @@ mod tests {
     fn local_render_prediction_reset_clears_correction() {
         let mut render = LocalRenderPrediction::default();
         render.reset(Vec3::new(0.0, 0.0, 0.0));
-        render.sync_full_state(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
-        render.sync_full_state(Vec3::new(4.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        render.sync_full_state(
+            Vec3::new(8.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
+        render.sync_full_state(
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            MovementMode::Grounded,
+        );
         assert!(render.pending_correction_distance() > 0.0);
 
         render.reset(Vec3::new(100.0, 0.0, 0.0));

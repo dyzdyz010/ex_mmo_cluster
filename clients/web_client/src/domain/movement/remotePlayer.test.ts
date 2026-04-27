@@ -29,4 +29,16 @@ describe("remotePlayer", () => {
 
     expect(sample.position.x).toBeCloseTo(20, 4);
   });
+
+  it("uses the server advertised tick duration when converting snapshot ticks", () => {
+    const state = new RemotePlayerState({ tickDurationSecs: 0.05 });
+    state.pushSnapshot(snapshot(20, 0), 0, 1.0);
+    state.pushSnapshot(snapshot(21, 10), 0, 1.05);
+    state.pushSnapshot(snapshot(22, 20), 0, 1.1);
+    state.pushSnapshot(snapshot(23, 30), 0, 1.15);
+
+    const sample = state.sampleMotion(1.25);
+
+    expect(sample.position.x).toBeCloseTo(20, 4);
+  });
 });

@@ -32,6 +32,25 @@ export interface RemoteMoveMessage {
   snapshot: RemoteMoveSnapshot;
 }
 
+export interface PlayerEnterMessage {
+  type: "player_enter";
+  cid: number;
+  position: Vector3;
+}
+
+export interface PlayerLeaveMessage {
+  type: "player_leave";
+  cid: number;
+}
+
+export interface TimeSyncReplyMessage {
+  type: "time_sync_reply";
+  requestId: number;
+  clientSendTs: number;
+  serverRecvTs: number;
+  serverSendTs: number;
+}
+
 export interface HeartbeatReplyMessage {
   type: "heartbeat_reply";
 }
@@ -42,6 +61,9 @@ export type ServerGateMessage =
   | EnterSceneErrorMessage
   | MovementAckMessage
   | RemoteMoveMessage
+  | PlayerEnterMessage
+  | PlayerLeaveMessage
+  | TimeSyncReplyMessage
   | HeartbeatReplyMessage;
 
 export function encodeAuthRequest(requestId: number, username: string, token: string): Uint8Array {
@@ -123,6 +145,17 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       const ok = view.getUint8(9) === 0;
       return ok ? { type: "auth_ok", requestId } : null;
     }
+    case 0x81:
+      return {
+        type: "player_enter",
+        cid: readI64(view, 1),
+        position: readServerVec3AsBrowserVec3(view, 9),
+      };
+    case 0x82:
+      return {
+        type: "player_leave",
+        cid: readI64(view, 1),
+      };
     case 0x84: {
       const requestId = readU64(view, 1);
       const ok = view.getUint8(9) === 0;
@@ -166,6 +199,14 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           acceleration: readServerVec3AsBrowserVec3(view, 61),
           movementMode: decodeMovementMode(view.getUint8(85)),
         },
+      };
+    case 0x85:
+      return {
+        type: "time_sync_reply",
+        requestId: readU64(view, 1),
+        clientSendTs: readU64(view, 9),
+        serverRecvTs: readU64(view, 17),
+        serverSendTs: readU64(view, 25),
       };
     case 0x86:
       return { type: "heartbeat_reply" };

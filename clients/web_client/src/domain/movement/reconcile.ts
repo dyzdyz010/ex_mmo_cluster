@@ -1,6 +1,5 @@
 import {
   CorrectionFlag,
-  MovementMode,
   clonePredictedMoveState,
   type MovementAck,
   type PredictedMoveState,
@@ -70,14 +69,22 @@ export function reconcile(
 
   const forceReplay = (ack.correctionFlags & CorrectionFlag.CollisionPush) !== 0;
   const predictedMatch =
-    predictedHistory.stateAtSeq(ack.ackSeq) ?? predictedHistory.stateAtTick(ack.authTick);
+    predictedHistory.stateAtTick(ack.authTick) ?? predictedHistory.stateAtSeq(ack.ackSeq);
 
   if (!predictedMatch) {
+    predictedHistory.clear();
     predictedHistory.push(authoritative);
+
+    let replayState = clonePredictedMoveState(authoritative);
+    for (const frame of pendingFrames) {
+      replayState = step(replayState, frame, profile);
+      predictedHistory.push(replayState);
+    }
+
     return {
-      action: ReplayAction.Accepted,
-      latestState: clonePredictedMoveState(authoritative),
-      replayedFrames: 0,
+      action: pendingFrames.length > 0 ? ReplayAction.Replayed : ReplayAction.Accepted,
+      latestState: clonePredictedMoveState(replayState),
+      replayedFrames: pendingFrames.length,
       pendingInputs,
       correctionDistance: 0,
     };
@@ -85,18 +92,9 @@ export function reconcile(
 
   const correctionDistance = predictedMatch.position.distanceTo(authoritative.position);
   const modeMismatch = predictedMatch.movementMode !== authoritative.movementMode;
-  const airborneVerticalError =
-    authoritative.movementMode === MovementMode.Airborne
-      ? Math.abs(predictedMatch.position.y - authoritative.position.y)
-      : 0;
 
   if ((ack.correctionFlags & CorrectionFlag.StatusOverride) !== 0) {
-    if (ack.ackSeq > 0) {
-      predictedHistory.truncateAfterSeq(ack.ackSeq);
-    } else {
-      predictedHistory.truncateAfterTick(ack.authTick);
-    }
-    predictedHistory.push(authoritative);
+    predictedHistory.replaceFromTick(authoritative.tick, authoritative);
     return {
       action: ReplayAction.StatusOverride,
       latestState: clonePredictedMoveState(authoritative),
@@ -106,15 +104,10 @@ export function reconcile(
     };
   }
 
-  if (
-    correctionDistance <= governance.softPositionError &&
-    !forceReplay &&
-    !modeMismatch &&
-    airborneVerticalError <= 1.0
-  ) {
+  if (correctionDistance <= governance.softPositionError && !forceReplay && !modeMismatch) {
     const latest = predictedHistory.latest();
     if (!latest || authoritative.tick >= latest.tick) {
-      predictedHistory.push(authoritative);
+      predictedHistory.replaceFromTick(authoritative.tick, authoritative);
     }
     return {
       action: ReplayAction.Accepted,
@@ -138,11 +131,7 @@ export function reconcile(
     };
   }
 
-  if (predictedMatch.seq > 0) {
-    predictedHistory.truncateAfterSeq(predictedMatch.seq);
-  } else {
-    predictedHistory.truncateAfterTick(predictedMatch.tick);
-  }
+  predictedHistory.replaceFromTick(authoritative.tick, authoritative);
 
   let replayFrames = pendingFrames;
   let action = forceReplay ? ReplayAction.ForcedReplay : ReplayAction.Replayed;

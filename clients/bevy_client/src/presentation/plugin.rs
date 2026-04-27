@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use crate::app::{
     LocalRenderPrediction, SceneRenderAssets, VISUAL_SMOOTHING_SPEED, VISUAL_SNAP_DISTANCE,
-    WorldState,
+    WorldState, schedule::ClientSet,
 };
 use crate::config::ClientConfig;
 use crate::login::AppState;
@@ -41,7 +41,12 @@ pub struct PresentationPlugin;
 
 impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, sync_player_visuals.run_if(in_state(AppState::Game)));
+        app.add_systems(
+            Update,
+            sync_player_visuals
+                .in_set(ClientSet::Render)
+                .run_if(in_state(AppState::Game)),
+        );
     }
 }
 

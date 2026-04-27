@@ -50,6 +50,7 @@ pub(super) fn apply_event(
             location,
             velocity: _,
             acceleration: _,
+            movement_mode: _,
             transport,
         } => {
             state.local_cid = cid;

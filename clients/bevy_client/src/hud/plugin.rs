@@ -4,7 +4,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::app::WorldState;
+use crate::app::{WorldState, schedule::ClientSet};
 use crate::chat::{ChatInputText, ChatLogText, ChatState};
 use crate::login::AppState;
 use crate::voxel::VoxelWorld;
@@ -17,7 +17,12 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, update_hud_text.run_if(in_state(AppState::Game)));
+        app.add_systems(
+            Update,
+            update_hud_text
+                .in_set(ClientSet::Render)
+                .run_if(in_state(AppState::Game)),
+        );
     }
 }
 

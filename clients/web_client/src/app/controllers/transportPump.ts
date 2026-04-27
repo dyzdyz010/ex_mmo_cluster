@@ -62,6 +62,15 @@ export class TransportPump implements FrameSubscriber {
     for (const snapshot of result.remoteSnapshots) {
       this.bus.emit("transport:snapshot-delivered", { snapshot });
     }
+    for (const entered of result.remoteEntityEnters ?? []) {
+      this.bus.emit("transport:entity-entered", entered);
+    }
+    for (const cid of result.remoteEntityLeaves ?? []) {
+      this.bus.emit("transport:entity-left", { cid });
+    }
+    for (const sample of result.timeSyncSamples ?? []) {
+      this.bus.emit("transport:time-sync", sample);
+    }
   }
 
   private publishModeIfChanged(): void {

@@ -12,10 +12,25 @@ export interface SpawnInfo {
   expectedSeq: number;
 }
 
+export interface RemoteEntityEnter {
+  cid: number;
+  position: Vector3;
+}
+
+export interface TimeSyncSample {
+  requestId: number;
+  clientSendTs: number;
+  serverRecvTs: number;
+  serverSendTs: number;
+}
+
 export interface MovementTransportTickResult {
   acknowledgements: PendingMovementAck[];
   remoteSnapshots: RemoteMoveSnapshot[];
   spawn: SpawnInfo | null;
+  remoteEntityEnters?: RemoteEntityEnter[];
+  remoteEntityLeaves?: number[];
+  timeSyncSamples?: TimeSyncSample[];
 }
 
 /**

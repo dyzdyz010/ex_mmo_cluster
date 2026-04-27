@@ -95,4 +95,48 @@ describe("gate movement protocol", () => {
     if (message?.type !== "player_move") return;
     expect(message.snapshot.movementMode).toBe(MovementMode.Airborne);
   });
+
+  it("decodes AOI enter and leave messages for remote entity lifetime", () => {
+    const enter = new ArrayBuffer(33);
+    const enterView = new DataView(enter);
+    enterView.setUint8(0, 0x81);
+    enterView.setBigInt64(1, 42n, false);
+    writeVec3(enterView, 9, 1, 2, 3);
+
+    const leave = new ArrayBuffer(9);
+    const leaveView = new DataView(leave);
+    leaveView.setUint8(0, 0x82);
+    leaveView.setBigInt64(1, 42n, false);
+
+    const enterMessage = decodeServerMessage(enter);
+    const leaveMessage = decodeServerMessage(leave);
+
+    expect(enterMessage?.type).toBe("player_enter");
+    if (enterMessage?.type === "player_enter") {
+      expect(enterMessage.cid).toBe(42);
+      expect(enterMessage.position).toEqual(new Vector3(1, 3, 2));
+    }
+
+    expect(leaveMessage).toEqual({ type: "player_leave", cid: 42 });
+  });
+
+  it("decodes time sync replies for server-clock interpolation", () => {
+    const buffer = new ArrayBuffer(33);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x85);
+    view.setBigUint64(1, 7n, false);
+    view.setBigUint64(9, 100n, false);
+    view.setBigUint64(17, 120n, false);
+    view.setBigUint64(25, 125n, false);
+
+    const message = decodeServerMessage(buffer);
+
+    expect(message).toEqual({
+      type: "time_sync_reply",
+      requestId: 7,
+      clientSendTs: 100,
+      serverRecvTs: 120,
+      serverSendTs: 125,
+    });
+  });
 });

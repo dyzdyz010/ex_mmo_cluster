@@ -32,7 +32,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly chunkRenderer = new ChunkRenderController();
   private readonly localAvatar: Mesh<BoxGeometry, MeshStandardMaterial>;
   private readonly authorityAvatar: Mesh<BoxGeometry, MeshStandardMaterial>;
-  private readonly remoteAvatar: Mesh<BoxGeometry, MeshStandardMaterial>;
+  private readonly remoteAvatars = new Map<number, Mesh<BoxGeometry, MeshStandardMaterial>>();
   private readonly syncRing: Mesh<RingGeometry, MeshStandardMaterial>;
   private readonly localDisplay = new Vector3();
   private readonly authorityDisplay = new Vector3();
@@ -69,17 +69,13 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
         roughness: 0.2,
       }),
     );
-    this.remoteAvatar = new Mesh(
-      new BoxGeometry(70, 120, 70),
-      new MeshStandardMaterial({ color: 0xffbb55, emissive: 0x4c2b08, roughness: 0.4 }),
-    );
     this.syncRing = new Mesh(
       new RingGeometry(170, 190, 48),
       new MeshStandardMaterial({ color: 0x284051, emissive: 0x0d1a22, roughness: 0.9 }),
     );
     this.syncRing.rotation.x = -Math.PI / 2;
 
-    this.rootGroup.add(this.localAvatar, this.authorityAvatar, this.remoteAvatar, this.syncRing);
+    this.rootGroup.add(this.localAvatar, this.authorityAvatar, this.syncRing);
 
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
   }
@@ -134,8 +130,11 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.localAvatar.material.dispose();
     this.authorityAvatar.geometry.dispose();
     this.authorityAvatar.material.dispose();
-    this.remoteAvatar.geometry.dispose();
-    this.remoteAvatar.material.dispose();
+    for (const avatar of this.remoteAvatars.values()) {
+      avatar.geometry.dispose();
+      avatar.material.dispose();
+    }
+    this.remoteAvatars.clear();
     this.syncRing.geometry.dispose();
     this.syncRing.material.dispose();
   }
@@ -153,13 +152,46 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       this.authorityDisplay,
     );
     this.groundActorPosition(this.remotePlayer.getRenderedPosition(), 60, this.remoteDisplay);
+    this.syncRemoteAvatarMeshes();
 
     this.localAvatar.position.copy(this.localDisplay);
     this.authorityAvatar.position.copy(this.authorityDisplay);
-    this.remoteAvatar.position.copy(this.remoteDisplay);
     this.syncRing.position.set(this.localDisplay.x, this.localDisplay.y - 59, this.localDisplay.z);
     this.syncRing.rotation.z = nowSecs * 0.25;
     this.sceneHandles.setCameraFollow(this.localDisplay);
+  }
+
+  private syncRemoteAvatarMeshes(): void {
+    const rendered = this.remotePlayer.getRenderedEntities();
+    const visible = new Set(rendered.map((entity) => entity.cid));
+    for (const [cid, avatar] of this.remoteAvatars) {
+      if (!visible.has(cid)) {
+        this.rootGroup.remove(avatar);
+        avatar.geometry.dispose();
+        avatar.material.dispose();
+        this.remoteAvatars.delete(cid);
+      }
+    }
+
+    for (const entity of rendered) {
+      const avatar = this.ensureRemoteAvatar(entity.cid);
+      const display = new Vector3();
+      this.groundActorPosition(entity.position, 60, display);
+      avatar.position.copy(display);
+    }
+  }
+
+  private ensureRemoteAvatar(cid: number): Mesh<BoxGeometry, MeshStandardMaterial> {
+    let avatar = this.remoteAvatars.get(cid);
+    if (!avatar) {
+      avatar = new Mesh(
+        new BoxGeometry(70, 120, 70),
+        new MeshStandardMaterial({ color: 0xffbb55, emissive: 0x4c2b08, roughness: 0.4 }),
+      );
+      this.remoteAvatars.set(cid, avatar);
+      this.rootGroup.add(avatar);
+    }
+    return avatar;
   }
 
   private updatePrefabPreview(nowMs: number): void {
@@ -366,7 +398,9 @@ function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
   return { x: vector.x, y: vector.y, z: vector.z };
 }
 
-function prefabPreviewSelectedKey(selected: HotbarState["selected"] | null | undefined): string | null {
+function prefabPreviewSelectedKey(
+  selected: HotbarState["selected"] | null | undefined,
+): string | null {
   return selected?.kind === "prefab" ? `${selected.prefabName}:${selected.rotation}` : null;
 }
 

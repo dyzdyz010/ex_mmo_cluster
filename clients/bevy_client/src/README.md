@@ -25,7 +25,7 @@ directly.
 | `ChatPlugin` | `chat/plugin.rs` | chat input mode + draft buffer + chat-log/chat-input HUD components |
 | `VoxelPlugin` | `voxel/plugin.rs` | center-ray selection, voxel edit input, voxel mesh sync, prefab preview gizmos, target-point marker |
 | `SkillPlugin` | `skill/plugin.rs` | Shift+1-4 skill keys, Tab actor cycling, Shift+RMB target-point picking |
-| `MovementSyncPlugin` | `movement/plugin.rs` | keyboard movement sample, 50 Hz uplink tick, local render-prediction integration |
+| `MovementSyncPlugin` | `movement/plugin.rs` | keyboard movement sample, configured uplink tick, local render-prediction integration |
 | `EffectPlugin` | `effects/plugin.rs` | transient skill/combat visual cues (projectile, AOE ring, melee/chain arc, impact pulse) |
 | `HudPlugin` | `hud/plugin.rs` | HUD text aggregation (status, transport, voxel hotbar, AOI peers, RTT) |
 | `PresentationPlugin` | `presentation/plugin.rs` | local + remote actor visuals + actor-material lookup |

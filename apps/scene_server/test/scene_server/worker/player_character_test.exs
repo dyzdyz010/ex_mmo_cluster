@@ -1,7 +1,7 @@
 defmodule SceneServer.PlayerCharacterTest do
   use ExUnit.Case, async: false
 
-  alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
+  alias SceneServer.Movement.{CorrectionFlags, InputFrame, Profile, RemoteSnapshot}
 
   defmodule FakeAoi do
     use GenServer
@@ -177,6 +177,40 @@ defmodule SceneServer.PlayerCharacterTest do
 
     assert next_state.movement_state.movement_mode == :airborne
     refute InputFrame.jumping?(next_state.latched_input)
+  end
+
+  test "authoritative movement tick preserves correction flags from intent ack path" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+
+    default_profile = Profile.default()
+    movement_profile = %Profile{default_profile | max_speed: 0.0, max_accel: 0.0}
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:movement_profile, movement_profile)
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:reply, {:ok, :accepted}, latched_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, _next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, latched_state)
+
+    assert_receive {:connection_cast, {:movement_ack, ack}}
+    assert CorrectionFlags.collision_push?(ack.correction_flags)
   end
 
   test "a burst of queued inputs produces the same final state as stepping one per tick" do

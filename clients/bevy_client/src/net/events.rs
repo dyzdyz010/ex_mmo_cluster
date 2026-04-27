@@ -9,7 +9,7 @@ use std::sync::{
 use bevy::prelude::Resource;
 
 use crate::protocol::{EffectCueKind, NetVec3};
-use crate::sim::types::RemoteMoveSnapshot;
+use crate::sim::types::{MovementMode, RemoteMoveSnapshot};
 use crate::world::remote_actor::RemoteActorKind;
 
 /// Transport used for a particular message family.
@@ -63,6 +63,7 @@ pub enum NetworkEvent {
         location: NetVec3,
         velocity: NetVec3,
         acceleration: NetVec3,
+        movement_mode: MovementMode,
         transport: MessageTransport,
     },
     PlayerEnter {

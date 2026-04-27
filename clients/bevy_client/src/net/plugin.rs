@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use crate::app::{
     LocalRenderPrediction, MovementDispatchState, WorldState, net_to_world, push_line,
-    sim_to_render_position,
+    schedule::ClientSet, sim_to_render_position,
 };
 use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::login::AppState;
@@ -20,7 +20,12 @@ pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, poll_network_events.run_if(in_state(AppState::Game)));
+        app.add_systems(
+            Update,
+            poll_network_events
+                .in_set(ClientSet::Network)
+                .run_if(in_state(AppState::Game)),
+        );
     }
 }
 
@@ -86,6 +91,7 @@ fn poll_network_events(
                 location,
                 velocity,
                 acceleration,
+                movement_mode,
                 transport,
             } => {
                 let world_location = net_to_world(location);
@@ -97,6 +103,7 @@ fn poll_network_events(
                     world_location,
                     world_velocity,
                     world_acceleration,
+                    movement_mode,
                 );
                 world_state.last_local_update_transport = Some(transport);
             }

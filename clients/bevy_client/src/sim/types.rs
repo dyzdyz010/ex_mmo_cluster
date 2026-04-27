@@ -14,8 +14,9 @@ pub use movement_core::MovementMode;
 /// Predicted or authoritative local movement state at a fixed tick.
 ///
 /// `seq` tracks the input-sequence number that produced this state so the
-/// reconciler can match authoritative acks by client-issued seq first and
-/// fall back to `tick` when matching server-synthesized idle frames.
+/// reconciler can match authoritative acks by fixed server tick first and
+/// fall back to client-issued seq for older histories that do not contain
+/// server-synthesized idle frames.
 pub struct PredictedMoveState {
     pub seq: u32,
     pub tick: u32,

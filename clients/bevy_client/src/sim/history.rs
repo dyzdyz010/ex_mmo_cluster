@@ -44,7 +44,11 @@ impl InputHistory {
         self.overflow_drops
     }
 
-    /// Drops all frames up to and including the acknowledged client tick.
+    /// Drops all frames up to and including the provided tick.
+    ///
+    /// This is the compatibility path for acks that do not carry a client
+    /// input seq. Normal reconciliation uses [`Self::drop_through_seq`]
+    /// because input history is keyed by client-issued input numbers.
     pub fn drop_through_tick(&mut self, auth_tick: u32) {
         while matches!(self.frames.front(), Some(frame) if frame.client_tick <= auth_tick) {
             self.frames.pop_front();
@@ -151,9 +155,9 @@ impl PredictedHistory {
 
     /// Looks up the predicted state for an exact input seq.
     ///
-    /// Preferred for reconciliation because each client-issued input carries a
-    /// unique seq, while `tick` may collide when the server advances idle
-    /// frames independently of the client.
+    /// Used as a fallback when exact `auth_tick` history is unavailable.
+    /// Multiple server ticks can share the same latched `ack_seq`, so the
+    /// reconciler prefers [`Self::state_at_tick`] when possible.
     pub fn state_at_seq(&self, seq: u32) -> Option<&PredictedMoveState> {
         if seq == 0 {
             return None;

@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use crate::app::sim_to_render_position;
+use crate::app::{schedule::ClientSet, sim_to_render_position};
 use crate::login::AppState;
 use crate::protocol::EffectCueKind;
 
@@ -44,11 +44,14 @@ impl Plugin for EffectPlugin {
         app.init_resource::<EffectGizmosEnabled>()
             .add_systems(
                 Update,
-                update_effect_visuals.run_if(in_state(AppState::Game)),
+                update_effect_visuals
+                    .in_set(ClientSet::Render)
+                    .run_if(in_state(AppState::Game)),
             )
             .add_systems(
                 Update,
                 draw_effect_gizmos
+                    .in_set(ClientSet::Render)
                     .run_if(in_state(AppState::Game))
                     .run_if(|toggle: Res<EffectGizmosEnabled>| toggle.0),
             );

@@ -30,6 +30,14 @@ export type AppEvents = {
   "transport:mode-changed": { mode: string };
   "transport:ack-delivered": { ack: MovementAck; sentAtMs: number };
   "transport:snapshot-delivered": { snapshot: RemoteMoveSnapshot };
+  "transport:entity-entered": { cid: number; position: Vector3 };
+  "transport:entity-left": { cid: number };
+  "transport:time-sync": {
+    requestId: number;
+    clientSendTs: number;
+    serverRecvTs: number;
+    serverSendTs: number;
+  };
 
   "movement:reset": { start: Vector3 };
   "movement:local-step": {
