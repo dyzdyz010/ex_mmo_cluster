@@ -74,10 +74,14 @@ export class RemotePlayerController implements FrameSubscriber {
         serverTick: snapshot.serverTick,
         position: snapshot.position.clone(),
         movementMode: snapshot.movementMode,
-        priorityBand: snapshot.priorityBand,
-        priorityScore: snapshot.priorityScore,
-        observerDistance: snapshot.observerDistance,
-        deliveryInterval: snapshot.deliveryInterval,
+        ...(snapshot.priorityBand !== undefined ? { priorityBand: snapshot.priorityBand } : {}),
+        ...(snapshot.priorityScore !== undefined ? { priorityScore: snapshot.priorityScore } : {}),
+        ...(snapshot.observerDistance !== undefined
+          ? { observerDistance: snapshot.observerDistance }
+          : {}),
+        ...(snapshot.deliveryInterval !== undefined
+          ? { deliveryInterval: snapshot.deliveryInterval }
+          : {}),
       });
     });
     this.bus.on("transport:entity-entered", ({ cid, position }) => {

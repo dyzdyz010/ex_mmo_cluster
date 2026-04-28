@@ -33,6 +33,7 @@ describe("HudView", () => {
       },
       getGovernanceStats: () => ({
         totalCorrections: 0,
+        totalAcks: 0,
         totalReplays: 0,
         totalHardSnaps: 0,
         lastCorrectionDistance: 0,
@@ -53,6 +54,14 @@ describe("HudView", () => {
     };
     const render = {
       getCurrentSelection: () => null,
+      getRendererDebugSnapshot: () => ({
+        requested: "auto",
+        active: "webgl",
+        renderer: "WebGLRenderer",
+        backend: "WebGLRenderer",
+        webgpuAvailable: false,
+        fallbackReason: "navigator_gpu_unavailable_or_insecure_context",
+      }),
     };
     const world = {
       mode: "offline-local",
@@ -81,6 +90,7 @@ describe("HudView", () => {
     expect(localPlayer.stateCalls).toBe(1);
     expect(hud.textContent).toContain("player_mode: airborne");
     expect(hud.textContent).toContain("player_vy: 322.0");
+    expect(hud.textContent).toContain("renderer: webgl");
     expect(hud.textContent).toContain("Space jump");
   });
 });

@@ -1,4 +1,3 @@
-import type { Vector3 } from "three";
 import {
   getMaterialDefinition,
   listMaterialDefinitions,
@@ -8,14 +7,7 @@ import type { CliCommandHandler, CliCommandResult } from "../../observe/cli";
 import type { ObserveLog } from "../../observe/logger";
 import { installCli } from "../../observe/cli";
 import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
-import { EVoxelRotation, type FMacroCoord, type FMicroCoord } from "../../voxel/core/types";
-import { isMicroCoordInBounds } from "../../voxel/microgrid/governance";
-import {
-  countBits,
-  type LocalPrefab,
-  type PrefabBoundarySnapPreview,
-  type PrefabSocketSnapPreview,
-} from "../../voxel/prefab";
+import type { PrefabBoundarySnapPreview, PrefabSocketSnapPreview } from "../../voxel/prefab";
 import type { SerializedWorldSnapshot } from "../../voxel/worldStore";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
@@ -23,6 +15,27 @@ import type { RemotePlayerController } from "../../app/controllers/remotePlayerC
 import type { RenderOrchestrator } from "../../app/controllers/renderOrchestrator";
 import type { TransportPump } from "../../app/controllers/transportPump";
 import type { WorldEditController } from "../../app/controllers/worldEditController";
+import {
+  formatCoord,
+  formatMicroTarget,
+  formatVector,
+  formatVectorLike,
+  summarizeSeries,
+} from "./devToolsFormat";
+import {
+  parseBoundarySnapRequest,
+  parseMacroCoord,
+  parseMicroTarget,
+  parseRotation,
+  parseSocketSnapRequest,
+  worldStorageKey,
+} from "./devToolsParsers";
+import {
+  serializeBoundarySnapPreview,
+  serializePrefabForCli,
+  serializePrefabSocketData,
+  serializeSnapPreview,
+} from "./devToolsSerializers";
 
 interface WorldStorageLike {
   getItem(key: string): string | null;
@@ -55,6 +68,8 @@ export class DevToolsCli implements CliCommandHandler {
     switch (command) {
       case "snapshot":
         return this.ok(command, this.snapshotText(), this.snapshotData());
+      case "renderer":
+        return this.ok(command, this.rendererText(), this.deps.render.getRendererDebugSnapshot());
       case "chunks":
         return this.cmdChunks(command, args);
       case "cell":
@@ -496,6 +511,7 @@ export class DevToolsCli implements CliCommandHandler {
 
   private snapshotText(): string {
     return [
+      this.rendererText(),
       `transport=${this.deps.transport.getMode()}`,
       `voxel_sync=${this.deps.world.mode}`,
       `chunks=${this.deps.world.store.listChunks().length}`,
@@ -510,6 +526,7 @@ export class DevToolsCli implements CliCommandHandler {
 
   private snapshotData(): Record<string, unknown> {
     return {
+      renderer: this.deps.render.getRendererDebugSnapshot(),
       transport: this.deps.transport.getMode(),
       voxelSync: this.deps.world.mode,
       chunks: this.deps.world.store.listChunks().length,
@@ -527,6 +544,16 @@ export class DevToolsCli implements CliCommandHandler {
       transportState: this.transportData(),
       materials: listMaterialDefinitions(),
     };
+  }
+
+  private rendererText(): string {
+    const renderer = this.deps.render.getRendererDebugSnapshot();
+    return [
+      `renderer=${renderer.active}`,
+      `renderer_backend=${renderer.backend}`,
+      `renderer_requested=${renderer.requested}`,
+      `renderer_fallback=${renderer.fallbackReason ?? "none"}`,
+    ].join(" ");
   }
 
   private transportData(): Record<string, unknown> {
@@ -619,215 +646,4 @@ export class DevToolsCli implements CliCommandHandler {
       rejectReason: payload.rejectReason,
     });
   }
-}
-
-function parseMacroCoord(args: string[]): FMacroCoord | null {
-  const [xRaw, yRaw, zRaw] = args;
-  const x = Number.parseInt(xRaw ?? "", 10);
-  const y = Number.parseInt(yRaw ?? "", 10);
-  const z = Number.parseInt(zRaw ?? "", 10);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-  return { x, y, z };
-}
-
-function parseMicroTarget(args: string[]): { macro: FMacroCoord; micro: FMicroCoord } | null {
-  const macro = parseMacroCoord(args.slice(0, 3));
-  const micro = parseMicroCoord(args.slice(3, 6));
-  if (!macro || !micro) {
-    return null;
-  }
-  return { macro, micro };
-}
-
-function parseMicroCoord(args: string[]): FMicroCoord | null {
-  const coord = parseMacroCoord(args);
-  if (!coord || !isMicroCoordInBounds(coord)) {
-    return null;
-  }
-  return coord;
-}
-
-function formatVector(vector: Vector3): string {
-  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
-}
-
-function formatVectorLike(vector: { x: number; y: number; z: number }): string {
-  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
-}
-
-function formatCoord(coord: FMacroCoord): string {
-  return `${coord.x},${coord.y},${coord.z}`;
-}
-
-function formatMicroTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): string {
-  return `${formatCoord(target.macro)}:${formatCoord(target.micro)}`;
-}
-
-function parseRotation(value: string | undefined): EVoxelRotation | null {
-  if (value === undefined) {
-    return EVoxelRotation.Rot0;
-  }
-
-  switch (value.toLowerCase()) {
-    case "0":
-    case "rot0":
-      return EVoxelRotation.Rot0;
-    case "90":
-    case "rot90":
-      return EVoxelRotation.Rot90;
-    case "180":
-    case "rot180":
-      return EVoxelRotation.Rot180;
-    case "270":
-    case "rot270":
-      return EVoxelRotation.Rot270;
-    default:
-      return null;
-  }
-}
-
-function parseSocketSnapRequest(args: string[]): {
-  prefabName: string;
-  targetInstanceId: number;
-  targetSocketId: string;
-  incomingSocketId?: string;
-  rotation?: EVoxelRotation;
-} | null {
-  const prefabName = args[0];
-  const targetInstanceId = Number.parseInt(args[1] ?? "", 10);
-  const targetSocketId = args[2];
-  if (!prefabName || !Number.isFinite(targetInstanceId) || !targetSocketId) {
-    return null;
-  }
-
-  const fourth = args[3];
-  const fifth = args[4];
-  let incomingSocketId: string | undefined;
-  let rotation = EVoxelRotation.Rot0;
-  if (fourth !== undefined) {
-    const fourthAsRotation = parseRotation(fourth);
-    if (fourthAsRotation === null) {
-      incomingSocketId = fourth;
-      if (fifth !== undefined) {
-        const parsed = parseRotation(fifth);
-        if (parsed === null) {
-          return null;
-        }
-        rotation = parsed;
-      }
-    } else {
-      if (fifth !== undefined) {
-        return null;
-      }
-      rotation = fourthAsRotation;
-    }
-  }
-
-  return {
-    prefabName,
-    targetInstanceId,
-    targetSocketId,
-    ...(incomingSocketId ? { incomingSocketId } : {}),
-    rotation,
-  };
-}
-
-function parseBoundarySnapRequest(args: string[]): {
-  prefabName: string;
-  hitMacro: FMacroCoord;
-  faceNormal: FMacroCoord;
-  rotation?: EVoxelRotation;
-} | null {
-  const prefabName = args[0];
-  const hitMacro = parseMacroCoord(args.slice(1, 4));
-  const faceNormal = parseMacroCoord(args.slice(4, 7));
-  if (!prefabName || !hitMacro || !faceNormal) {
-    return null;
-  }
-  const rotation = parseRotation(args[7]);
-  if (rotation === null) {
-    return null;
-  }
-  return { prefabName, hitMacro, faceNormal, rotation };
-}
-
-function worldStorageKey(slot: string): string {
-  return `ex_mmo_web_client.world.${slot}`;
-}
-
-function serializePrefabForCli(prefab: LocalPrefab): Record<string, unknown> {
-  return {
-    name: prefab.name,
-    boundsMin: prefab.boundsMin,
-    boundsMax: prefab.boundsMax,
-    blockCount: prefab.blocks.length,
-    definition: {
-      ...prefab.definition,
-      occupancyWords: prefab.definition.occupancyWords.map((word) => word.toString()),
-      boundaryFaceMasks: serializeBoundaryFaceMasks(prefab),
-      sockets: prefab.definition.sockets.map(serializeSocketForCli),
-    },
-  };
-}
-
-function serializePrefabSocketData(prefab: LocalPrefab): Record<string, unknown> {
-  return {
-    prefabId: prefab.definition.prefabId,
-    boundaryFaceMasks: serializeBoundaryFaceMasks(prefab),
-    sockets: prefab.definition.sockets.map(serializeSocketForCli),
-  };
-}
-
-function serializeBoundaryFaceMasks(prefab: LocalPrefab): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(prefab.definition.boundaryFaceMasks).map(([face, mask]) => [
-      face,
-      {
-        mask: mask.toString(),
-        occupiedSlots: countBits(mask),
-      },
-    ]),
-  );
-}
-
-function serializeSocketForCli(
-  socket: LocalPrefab["definition"]["sockets"][number],
-): Record<string, unknown> {
-  return {
-    ...socket,
-    faceMask: socket.faceMask?.toString(),
-    faceMaskOccupiedSlots: countBits(socket.faceMask ?? 0n),
-  };
-}
-
-function serializeSnapPreview(preview: PrefabSocketSnapPreview): Record<string, unknown> {
-  return {
-    ...preview,
-    cells: serializeRasterCells(preview.cells),
-  };
-}
-
-function serializeBoundarySnapPreview(preview: PrefabBoundarySnapPreview): Record<string, unknown> {
-  return {
-    ...preview,
-    cells: serializeRasterCells(preview.cells),
-  };
-}
-
-function serializeRasterCells(cells: PrefabSocketSnapPreview["cells"]): Record<string, unknown>[] {
-  return cells.map((cell) => ({
-    macro: cell.macro,
-    microOccupancyMask: cell.microOccupancyMask.toString(),
-    occupiedSlots: countBits(cell.microOccupancyMask),
-  }));
-}
-
-function summarizeSeries(values: number[]): { min: number; max: number; mean: number } | null {
-  if (values.length === 0) {
-    return null;
-  }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return { min, max, mean };
 }

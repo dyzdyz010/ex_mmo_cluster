@@ -1,5 +1,5 @@
-import type { Vector3 } from "three";
 import { getMaterialDefinition } from "../../material/catalog";
+import { formatCoord, formatVector } from "../../shared/runtimeFormat";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
 import type { RemotePlayerController } from "../../app/controllers/remotePlayerController";
@@ -7,7 +7,6 @@ import type { RenderOrchestrator } from "../../app/controllers/renderOrchestrato
 import type { TransportPump } from "../../app/controllers/transportPump";
 import type { WorldEditController } from "../../app/controllers/worldEditController";
 import type { FrameSubscriber } from "../../app/gameLoop";
-import type { FMacroCoord } from "../../voxel/core/types";
 
 /**
  * Pulls display data from every controller once per frame and writes the HUD
@@ -42,6 +41,7 @@ export class HudView implements FrameSubscriber {
     const currentState = this.localPlayer.getCurrentState();
     const stats = this.localPlayer.getGovernanceStats();
     const selection = this.render.getCurrentSelection();
+    const renderer = this.render.getRendererDebugSnapshot();
     const selectedMaterialId = this.edit.getSelectedMaterialId();
     const hotbar = this.edit.getHotbarState();
     const transportSnapshot = {
@@ -58,6 +58,7 @@ export class HudView implements FrameSubscriber {
 
     this.hud.textContent = [
       `ex_mmo voxel web-client  frame: ${this.frameCount}`,
+      `renderer: ${renderer.active}  backend: ${renderer.backend}  fallback: ${renderer.fallbackReason ?? "none"}`,
       `voxel_sync: ${this.world.mode}  movement_transport: ${this.transport.getMode()}`,
       `movement_ready: ${this.transport.isReady()}  transport_state: ${JSON.stringify(transportSnapshot)}`,
       `chunks: ${this.world.store.listChunks().length}  solid_blocks: ${this.world.store.totalSolidBlocks()}`,
@@ -69,19 +70,11 @@ export class HudView implements FrameSubscriber {
       `player_tick: ${currentState?.tick ?? 0}  player_seq: ${currentState?.seq ?? 0}`,
       `player_mode: ${currentState?.movementMode ?? "unknown"}  player_vy: ${(currentState?.velocity?.y ?? 0).toFixed(1)}`,
       `remote_rendered: ${formatVector(this.remotePlayer.getRenderedPosition())}`,
-      `reconcile: corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
+      `reconcile: acks=${stats.totalAcks} corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.world.store.editStats.placed} broken=${this.world.store.editStats.broken} rejected=${this.world.store.editStats.rejected} conflicts=${this.world.store.editStats.conflicts}`,
       "controls: left click break, right click place, wheel hotbar, ctrl+wheel zoom, WASD move, Space jump, 1-7 select",
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }
-}
-
-function formatVector(vector: Vector3): string {
-  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
-}
-
-function formatCoord(coord: FMacroCoord): string {
-  return `${coord.x},${coord.y},${coord.z}`;
 }

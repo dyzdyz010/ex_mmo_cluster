@@ -8,7 +8,7 @@
 结构：
 
 - `opcodes.ts` / `gateProtocol.ts` — 纯 codec，把线格式映射到 `@domain/movement/types` 里的契约类型。
-- `simulatedMovementTransport.ts` — 离线仿真适配器，合成 ack + 装饰性远端 actor。
+- `simulatedMovementTransport.ts` — 离线仿真适配器，本地输入按顺序立即合成 ack；不再生成装饰性远端 actor，避免把本地 fallback 误看成真实 NPC/AOI。
 - `serverMovementTransport.ts` — 真实 WebSocket 适配器，握手失败或 ready 前断开会内嵌回退到 simulated-local，并把原因写进 observe/HUD/CLI。
 
 当前阶段：

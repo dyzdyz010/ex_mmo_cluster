@@ -9,9 +9,14 @@ import {
   PerspectiveCamera,
   Scene,
   Vector3,
-  WebGLRenderer,
 } from "three";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
+import {
+  createRendererBackend,
+  type RendererBackend,
+  type RendererDebugSnapshot,
+  type RendererPreference,
+} from "./rendererBackend";
 
 const CAMERA_LOOK_HEIGHT = 110;
 const CAMERA_POSITION_SMOOTHING_HZ = 10;
@@ -26,19 +31,31 @@ const CAMERA_SNAP_DISTANCE = 600;
 const CAMERA_INTERACTION_IDLE_MS = 50;
 
 export interface SceneHandles {
-  renderer: WebGLRenderer;
+  renderer: RendererBackend;
   scene: Scene;
   camera: PerspectiveCamera;
   worldRoot: Group;
+  getRendererDebugSnapshot: () => RendererDebugSnapshot;
   getMovementYawRadians: () => number;
   isCameraInteracting: () => boolean;
   setCameraFollow: (target: Vector3) => void;
   update: (dtSecs: number) => void;
+  render: () => void;
   dispose: () => void;
 }
 
-export function createScene(canvas: HTMLCanvasElement): SceneHandles {
-  const renderer = new WebGLRenderer({ canvas, antialias: true });
+export interface SceneOptions {
+  rendererPreference?: RendererPreference;
+}
+
+export async function createScene(
+  canvas: HTMLCanvasElement,
+  options: SceneOptions = {},
+): Promise<SceneHandles> {
+  const renderer = await createRendererBackend(
+    canvas,
+    options.rendererPreference ? { preference: options.rendererPreference } : {},
+  );
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight, false);
 
@@ -213,6 +230,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     camera.lookAt(currentLookAt);
   };
 
+  const render = () => {
+    renderer.render(scene, camera);
+  };
+
   const dispose = () => {
     window.removeEventListener("resize", onResize);
     canvas.removeEventListener("pointerdown", onPointerDown);
@@ -232,10 +253,13 @@ export function createScene(canvas: HTMLCanvasElement): SceneHandles {
     scene,
     camera,
     worldRoot,
+    getRendererDebugSnapshot: () => renderer.getDebugSnapshot(),
     getMovementYawRadians: () => orbitYaw,
-    isCameraInteracting: () => performance.now() - lastCameraInteractionMs < CAMERA_INTERACTION_IDLE_MS,
+    isCameraInteracting: () =>
+      performance.now() - lastCameraInteractionMs < CAMERA_INTERACTION_IDLE_MS,
     setCameraFollow,
     update,
+    render,
     dispose,
   };
 }

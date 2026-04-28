@@ -45,21 +45,34 @@ checkpoint.
 
 ## Verification Status
 
-- `mix format` was attempted, but failed before formatting due to an Erlang
-  `:einval` while Mix inspected a git dependency under `deps/heroicons`.
-- `npm run typecheck` was attempted before dependencies were present and failed
-  because `tsc` was unavailable.
-- `npm ci` was attempted to restore web dependencies; the first sandboxed run
-  failed because npm cache-only mode lacked cached packages. A follow-up install
-  was interrupted by the user, so web typecheck/tests were not completed in this
-  checkpoint.
+- `cmd /c mix format --check-formatted` passes after formatting the gate codec
+  and TCP / WebSocket downlink files.
+- `npm run typecheck` passes in `clients/web_client`.
+- Focused server regression coverage passes:
+  `cmd /c mix test apps/gate_server/test/gate_server/codec_test.exs
+  apps/scene_server/test/scene_server/aoi/priority_test.exs
+  apps/scene_server/test/aoi_item_test.exs`.
+- Focused web regression coverage passes:
+  `npm test -- src/infrastructure/net/gateProtocol.test.ts
+  src/app/controllers/remotePlayerController.test.ts
+  src/domain/movement/remotePlayer.test.ts`.
+- Full web regression / build coverage passes:
+  `npm test` and `npm run build` from `clients/web_client`.
+- Full umbrella regression coverage passes with a temporary local Postgres
+  container exposed through `MMO_DB_PORT=55432`: `cmd /c mix test`.
+- Real WebSocket smoke coverage now asserts AOI priority metadata on the
+  observed remote `player_move` frame. Verified with a temporary local Postgres
+  container plus migrations:
+  `MMO_DB_PORT=55432 node scripts/run_ws_dual_smoke_supervised.js`.
+  The probe observed `priority=high:0.764:118.0:1` on B's remote movement frame.
 
 ## Follow-Up
 
-- Re-run Elixir formatting/tests after resolving the local Mix dependency git
-  inspection issue.
-- Re-run `npm ci`, `npm run typecheck`, and focused Vitest suites after the web
-  dependency install is allowed to finish.
 - Continue from this checkpoint by tightening server-side input governance and
   expanding end-to-end smoke coverage for AOI priority behavior over real
   WebSocket sessions.
+- Promote the temporary-Postgres smoke setup into a repeatable local command or
+  CI fixture so the WebSocket AOI priority probe does not depend on a manually
+  prepared database.
+- Combat lag compensation / rewind remains intentionally out of scope for this
+  checkpoint.

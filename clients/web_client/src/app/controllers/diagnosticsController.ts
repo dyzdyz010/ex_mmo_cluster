@@ -1,9 +1,10 @@
-import type { Vector3 } from "three";
 import type { ObserveLog } from "../../observe/logger";
+import { formatVector } from "../../shared/runtimeFormat";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
+import type { RenderOrchestrator } from "./renderOrchestrator";
 import type { WorldEditController } from "./worldEditController";
 
 const DIAGNOSTICS_INTERVAL_MS = 2000;
@@ -20,6 +21,7 @@ export class DiagnosticsController implements FrameSubscriber {
     private readonly world: VoxelWorldAdapter,
     private readonly localPlayer: LocalPlayerController,
     private readonly remotePlayer: RemotePlayerController,
+    private readonly render: RenderOrchestrator,
     private readonly edit: WorldEditController,
   ) {}
 
@@ -40,15 +42,14 @@ export class DiagnosticsController implements FrameSubscriber {
       remote_count: this.remotePlayer.getVisibleEntityIds().length,
       remote_aoi: JSON.stringify(this.remotePlayer.getDebugSnapshot()),
       remote_clock: JSON.stringify(this.remotePlayer.getClockDebugSnapshot()),
+      renderer: this.render.getRendererDebugSnapshot().active,
+      renderer_backend: this.render.getRendererDebugSnapshot().backend,
+      renderer_fallback_reason: this.render.getRendererDebugSnapshot().fallbackReason ?? "",
       selected_material: this.edit.getSelectedMaterialId(),
     });
   }
 }
 
-function formatVector(vector: Vector3): string {
-  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
-}
-
-function zeroVector(): Vector3 {
-  return { x: 0, y: 0, z: 0 } as Vector3;
+function zeroVector(): { x: number; y: number; z: number } {
+  return { x: 0, y: 0, z: 0 };
 }

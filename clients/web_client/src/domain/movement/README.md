@@ -26,6 +26,9 @@
 - 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
   fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
   用来填平 100 ms tick 之间的视觉空档；它不写回 history，也不改变网络发送频率。
+- `ReplayGovernanceStats.totalAcks` 统计所有权威回包；`totalCorrections`
+  只统计 replay / snap / status override 等真实校正，不再把 accepted ack
+  误报成“拉回”。
 - `remotePlayer.ts` 当前采用 **150 ms 插值延迟 + 250 ms 封顶外推**：
   150 ms 保证 100 ms 服务端快照至少保留一帧历史缓冲，同时不额外拖出
   220 ms 的远端钝感。tick 时长默认 100 ms，但会接受服务端 ack 回传的

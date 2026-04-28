@@ -287,8 +287,8 @@ defmodule GateServer.Codec do
      <<@msg_player_move, cid::64-big, server_tick::32-big, x::float-64-big, y::float-64-big,
        z::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
        ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
-       encode_priority_band(priority_band)::8, (priority_score * 1.0)::float-32-big,
-       (observer_distance * 1.0)::float-32-big, delivery_interval::16-big>>}
+       encode_priority_band(priority_band)::8, priority_score * 1.0::float-32-big,
+       observer_distance * 1.0::float-32-big, delivery_interval::16-big>>}
   end
 
   def encode(

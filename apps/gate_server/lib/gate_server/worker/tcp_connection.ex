@@ -927,19 +927,21 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  defp player_move_message(%RemoteSnapshot{
-         priority_band: nil,
-         priority_score: nil,
-         observer_distance: nil,
-         delivery_interval: nil
-       } = snapshot) do
+  defp player_move_message(
+         %RemoteSnapshot{
+           priority_band: nil,
+           priority_score: nil,
+           observer_distance: nil,
+           delivery_interval: nil
+         } = snapshot
+       ) do
     {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
      snapshot.acceleration, snapshot.movement_mode}
   end
 
   defp player_move_message(%RemoteSnapshot{} = snapshot) do
     {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band, snapshot.priority_score,
-     snapshot.observer_distance, snapshot.delivery_interval}
+     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
+     snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
   end
 end

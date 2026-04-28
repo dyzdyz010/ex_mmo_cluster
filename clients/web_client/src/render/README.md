@@ -3,9 +3,11 @@
 职责：
 
 - three.js 场景、摄像机和交互控制。
+- 渲染器由 `rendererBackend.ts` 统一选择：默认 WebGPU 优先，初始化失败或浏览器能力不足时回退 WebGL。
 - Chunk mesh 的挂载、重建、命中与高亮。
+- `prefabPreviewGeometry.ts` 负责 prefab 线框预览几何生成；交互中的放置图示只使用低成本 `wire-bounds`，精确 micro snap 留给真正放置提交时执行。
 - 命中高亮只渲染当前命中面轮廓；放置位置由该面法线推导，不再同时显示破坏/放置整块红绿框。
-- 选中 prefab 时，render 层只渲染 ghost preview；实际写入仍由 `WorldEditController -> WorldStore` 完成。
+- 选中 prefab 时，render 层只渲染非半透明材质的线框 preview；实际写入与精确 snap 仍由 `WorldEditController -> WorldStore` 完成。
 - 本地/远端 avatar 的可视化，以及与调试 HUD 相关的最低限度表现。
 - 本地 avatar 显示高度由地表中心高度加 movement airborne offset 组成，避免
   Space 跳跃被地表吸附逻辑吞掉视觉反馈。
@@ -13,6 +15,8 @@
 边界：
 
 - render 层不拥有世界真相；它只消费 `voxel/` 和 `movement/` 导出的只读状态。
+- render 层拥有浏览器渲染后端的初始化、回退与诊断信息；业务层只能读取
+  `RendererDebugSnapshot`，不能绕过后端工厂直接创建 renderer。
 - Chunk 网格的拓扑来自 `voxel/meshing`，render 不直接改写存储层。
 - 鼠标左/右键只发出宏格编辑意图；具体破坏 occupied macro 或放置 adjacent macro 由 `WorldEditController` 负责。
 - render 层可为 refined/prefab 命中保留 micro selection 派生数据，但当前不把

@@ -26,7 +26,7 @@
    - fixed-tick 本地预测
    - 权威 ack 对账
    - 本地渲染平滑
-   - 远端玩家插值
+   - 不再生成装饰性远端 actor；远端玩家插值只由真实 AOI / snapshot 输入驱动
 
 仍未完成：
 
@@ -49,8 +49,8 @@
 
 | 模块 | 选型                  | 理由                                           |
 | ---- | --------------------- | ---------------------------------------------- |
-| 构建 | Vite 5 + TypeScript 5 | 热更新秒级，原生 ES module                     |
-| 渲染 | three.js 0.170        | voxel 生态成熟，greedy mesher 参考实现多       |
+| 构建 | Vite 8 + TypeScript 5 | 热更新秒级，原生 ES module                     |
+| 渲染 | three.js 0.184        | WebGPU 优先，WebGL 可回退，voxel 生态成熟      |
 | 网络 | WebSocket + DataView  | 对齐服务端 `{packet, 4}` 长度前缀 + 小端二进制 |
 | 语言 | TypeScript strict     | 类型结构对齐 UE USTRUCT                        |
 
@@ -137,6 +137,7 @@ npm run dev
 默认情况下，浏览器客户端会采用：
 
 - `voxel_sync=offline-local`
+- `renderer=auto`，优先尝试 `WebGPURenderer` / WebGPU backend
 - movement 优先尝试真实 **server-backed movement transport**
 
 - `POST /ingame/auto_login`
@@ -156,6 +157,16 @@ npm run dev
 
 ```bash
 VITE_MOVEMENT_TRANSPORT=simulated npm run dev
+```
+
+如果需要强制渲染后端，可用 query 参数或环境变量：
+
+```bash
+npm run dev
+# http://127.0.0.1:5173/?renderer=webgpu
+# http://127.0.0.1:5173/?renderer=webgl
+
+VITE_RENDER_BACKEND=webgl npm run dev
 ```
 
 如果需要指向非默认地址：
@@ -191,7 +202,7 @@ npm run preview # 预览 dist
 
 1. 生成一个多 Chunk 的浏览器内置离线世界
 2. 用真正的 chunk mesher 生成 `BufferGeometry`
-3. 默认优先启动真实 server-backed movement；若真实 backend 在 ready 前失败，则自动回退到本地 movement sync demo（本地预测 + ack 对账 + 远端插值）
+3. 默认优先启动真实 server-backed movement；若真实 backend 在 ready 前失败，则自动回退到本地 movement sync demo（本地预测 + ack 对账）
 4. 安装 HUD + CLI + observe 调试面
 
 看到以下即表示 W-A 通过：
@@ -203,6 +214,7 @@ npm run preview # 预览 dist
 - 左键 / 右键或 `F` / `G` 可以对准星命中面执行破坏 / 邻接放置；选中 prefab 时右键 / `F` 放置 prefab
 - 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
+- 本地 fallback 初始出生点会从内置地形表面求角色中心高度，不再使用空中硬编码高度
 
 ## 调试 / CLI
 
@@ -215,6 +227,7 @@ npm run preview # 预览 dist
 ```js
 window.__voxelCli?.run("help");
 window.__voxelCli?.run("snapshot");
+window.__voxelCli?.run("renderer");
 window.__voxelCli?.run("chunks 8");
 window.__voxelCli?.run("cell 0 1 0");
 window.__voxelCli?.run("micro_cell 0 1 0 1 2 3");
@@ -259,7 +272,7 @@ window.__voxelObserve?.snapshot();
 调试原则：
 
 1. 先看 `snapshot / chunks / cell / reconcile_stats / edit_stats`
-2. 再看 `transport` 与 `voxel_observe` 日志确认连接、输入、权威 ack、重建与错误路径
+2. 再看 `renderer / transport` 与 `voxel_observe` 日志确认渲染后端、连接、输入、权威 ack、重建与错误路径
 3. 对 prefab snap，优先看 `prefab_boundary / prefab_snap_preview / prefab_place_snap`
    返回的 `anchorMicroCoord / affectedMacroCount / incomingOccupiedSlots / overlapSlots`
    / `contactSlots`，以及 observe 事件

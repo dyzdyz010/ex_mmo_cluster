@@ -295,10 +295,13 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 12))
 
-    assert {:ok, <<0x84, 12::64-big, 0x00, x::float-64-big, y::float-64-big, z::float-64-big>>} =
+    assert {:ok,
+            <<0x84, 12::64-big, 0x00, x::float-64-big, y::float-64-big, z::float-64-big,
+              expected_seq::32-big>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {x, y, z} == {10.0, 20.0, 30.0}
+    assert expected_seq == 1
     assert %{status: :in_scene, cid: 42, agent: %{"active_cid" => 42}} = :sys.get_state(pid)
 
     assert %{last_character_profile: %{name: "tester-character-42"}} =

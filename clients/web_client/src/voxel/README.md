@@ -12,8 +12,9 @@
 - `microgrid/` 负责 Macro 内 `8x8x8` Micro occupancy 的索引、边界治理和动态槽数 payload 规范。
 - `storage/` 拥有 Chunk 真相层。
 - `meshing/` 负责把真相层转成几何输入。
-- `worldStore.ts` 拥有多 Chunk 世界级索引与演示世界生成。
-- `worldStore.ts` 也提供本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
+- `worldStore.ts` 拥有多 Chunk 世界级索引、编辑统计，以及世界级读写 API。
+- `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
+- `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
 - `prefab.ts` 负责浏览器本地 Prefab Definition/Instance 编排。当前阶段已按 UE
   `test1` 的 `FPrefabDefinitionData` / `FPrefabInstanceData` 分层建模：
   capture 生成定义，place 生成实例并写入所有覆盖到的 Chunk。内置

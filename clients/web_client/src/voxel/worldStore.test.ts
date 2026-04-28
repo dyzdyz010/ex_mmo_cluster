@@ -99,3 +99,18 @@ describe("WorldStore microgrid governance", () => {
     expect(refined?.microOccupancyMask).toBe(FullMicroOccupancyMask & ~1n);
   });
 });
+
+describe("WorldStore showcase seed", () => {
+  it("builds the regional demo terrain and resets edit counters", () => {
+    const world = new WorldStore();
+    world.setNormalBlockWorld({ x: 0, y: 0, z: 0 }, block(VoxelMaterialId.Stone));
+    world.markConflict();
+
+    world.seedRegionalShowcase(1);
+
+    expect(world.totalSolidBlocks()).toBeGreaterThan(0);
+    expect(world.getNormalBlockWorld({ x: 0, y: 3, z: 0 })?.materialId).toBe(VoxelMaterialId.Ice);
+    expect(world.getEnvironmentSummaryWorld({ x: 0, y: 3, z: 0 })?.currentTemperature).toBe(-42);
+    expect(world.editStats).toEqual({ placed: 0, broken: 0, rejected: 0, conflicts: 0 });
+  });
+});

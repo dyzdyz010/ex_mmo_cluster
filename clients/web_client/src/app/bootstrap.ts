@@ -1,14 +1,16 @@
-import type { Vector3 } from "three";
 import { ObserveLog } from "../observe/logger";
 import type { MovementTransport } from "@domain/movement/transport";
 import { SimulatedLocalMovementTransport } from "@infra/net/simulatedMovementTransport";
 import { ServerMovementTransport } from "@infra/net/serverMovementTransport";
+import { createScene } from "../render/scene";
+import { normalizeRendererPreference, type RendererPreference } from "../render/rendererBackend";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
 import { DevToolsCli } from "../presentation/devtools/devToolsCli";
 import { EventBus } from "../shared/events/eventBus";
 import type { AppEvents } from "../shared/events/events";
+import { formatCoord, formatVector } from "../shared/runtimeFormat";
 import { DiagnosticsController } from "./controllers/diagnosticsController";
 import { InputController } from "./controllers/inputController";
 import { LocalPlayerController } from "./controllers/localPlayerController";
@@ -17,6 +19,7 @@ import { RenderOrchestrator } from "./controllers/renderOrchestrator";
 import { TransportPump } from "./controllers/transportPump";
 import { WorldEditController } from "./controllers/worldEditController";
 import { GameLoop } from "./gameLoop";
+import { resolveInitialLocalSpawn } from "./spawn";
 
 export interface AppContext {
   readonly eventBus: EventBus<AppEvents>;
@@ -36,7 +39,11 @@ export interface BootstrapTargets {
  * This is the only file allowed to `new` a controller or transport. Everything
  * else takes its dependencies through constructors.
  */
-export function bootstrap({ canvas, hud, hotbarDock }: BootstrapTargets): AppContext {
+export async function bootstrap({
+  canvas,
+  hud,
+  hotbarDock,
+}: BootstrapTargets): Promise<AppContext> {
   canvas.tabIndex = 0;
   canvas.focus();
   canvas.addEventListener("pointerdown", () => canvas.focus());
@@ -45,24 +52,36 @@ export function bootstrap({ canvas, hud, hotbarDock }: BootstrapTargets): AppCon
   const eventBus = new EventBus<AppEvents>();
   const world: VoxelWorldAdapter = new LocalVoxelWorldAdapter();
   world.bootstrap();
+  const initialSpawn = resolveInitialLocalSpawn(world);
 
   const transport = createMovementTransport(logger);
   const transportPump = new TransportPump(transport, eventBus);
+  transportPump.reset(initialSpawn);
 
   const input = new InputController(eventBus);
   const detachInput = input.attach(window);
 
-  const localPlayer = new LocalPlayerController(eventBus, input, transportPump);
+  const localPlayer = new LocalPlayerController(eventBus, input, transportPump, initialSpawn);
   const remotePlayer = new RemotePlayerController(eventBus);
 
-  const render = new RenderOrchestrator(canvas, world, localPlayer, remotePlayer, logger);
+  const sceneHandles = await createScene(canvas, {
+    rendererPreference: resolveRendererPreference(),
+  });
+  const render = new RenderOrchestrator(sceneHandles, world, localPlayer, remotePlayer, logger);
   localPlayer.setCameraYawResolver(() => render.getMovementYawRadians());
   const edit = new WorldEditController(eventBus, world, render);
   render.setEditPreviewProvider(edit);
 
   const hudView = new HudView(hud, world, transportPump, localPlayer, remotePlayer, edit, render);
   const hotbarDockView = new HotbarDockView(hotbarDock, edit);
-  const diagnostics = new DiagnosticsController(logger, world, localPlayer, remotePlayer, edit);
+  const diagnostics = new DiagnosticsController(
+    logger,
+    world,
+    localPlayer,
+    remotePlayer,
+    render,
+    edit,
+  );
 
   const loop = new GameLoop();
   loop.subscribe(transportPump);
@@ -87,10 +106,16 @@ export function bootstrap({ canvas, hud, hotbarDock }: BootstrapTargets): AppCon
   });
   devTools.install(window);
 
+  const rendererSnapshot = render.getRendererDebugSnapshot();
   logger.emit("boot", "runtime_started", {
     chunks: world.store.listChunks().length,
+    renderer: rendererSnapshot.active,
+    renderer_backend: rendererSnapshot.backend,
+    renderer_fallback_reason: rendererSnapshot.fallbackReason ?? "",
+    renderer_requested: rendererSnapshot.requested,
     solid_blocks: world.store.totalSolidBlocks(),
     selected_material: edit.getSelectedMaterialId(),
+    spawn: formatVector(initialSpawn),
     transport: transportPump.getMode(),
     world_mode: world.mode,
   });
@@ -119,6 +144,11 @@ function createMovementTransport(logger: ObserveLog): MovementTransport {
     return new SimulatedLocalMovementTransport();
   }
   return new ServerMovementTransport(logger);
+}
+
+export function resolveRendererPreference(): RendererPreference {
+  const queryPreference = new URLSearchParams(window.location.search).get("renderer");
+  return normalizeRendererPreference(queryPreference ?? import.meta.env.VITE_RENDER_BACKEND);
 }
 
 /**
@@ -265,12 +295,4 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
   bus.on("transport:mode-changed", ({ mode }) => {
     logger.emit("transport", "mode_changed", { mode });
   });
-}
-
-function formatVector(vector: Vector3): string {
-  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
-}
-
-function formatCoord(coord: { x: number; y: number; z: number }): string {
-  return `${coord.x},${coord.y},${coord.z}`;
 }

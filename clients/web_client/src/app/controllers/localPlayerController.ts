@@ -11,6 +11,7 @@ import {
   type PredictedMoveState,
 } from "@domain/movement/types";
 import { buildMovementInputDirection } from "@domain/movement/inputDirection";
+import { makeFallbackLocalSpawn } from "../spawn";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";
@@ -19,7 +20,6 @@ import type { TransportPump } from "./transportPump";
 
 const LOCAL_RENDER_SMOOTHING_RATE_HZ = 15;
 const LOCAL_VISUAL_HARD_SNAP_DISTANCE = 256;
-const DEFAULT_SPAWN = new Vector3(-350, 650, -280);
 
 export interface MovementFrameTraceSample {
   frame: number;
@@ -65,8 +65,9 @@ export class LocalPlayerController implements FrameSubscriber {
     private readonly bus: EventBus<AppEvents>,
     private readonly input: InputController,
     private readonly transport: TransportPump,
+    initialPosition: Vector3 = makeFallbackLocalSpawn(),
   ) {
-    this.resetTo(DEFAULT_SPAWN);
+    this.resetTo(initialPosition);
     // Audit B-S1 / B-SRV2: spawn handshake carries the server's
     // expectedSeq; pass it through so the local input counter aligns
     // with what the server is going to validate against.
@@ -229,11 +230,10 @@ export class LocalPlayerController implements FrameSubscriber {
       return;
     }
 
+    // Accepted acks have no authoritative correction. Keep the in-frame render
+    // phase intact instead of rewinding it to the last fixed-tick anchor.
     this.renderSimulationState.seq = nextAnchorState.seq;
     this.renderSimulationState.tick = nextAnchorState.tick;
-    this.renderSimulationState.position.copy(nextAnchorState.position);
-    this.renderSimulationState.velocity.copy(nextAnchorState.velocity);
-    this.renderSimulationState.acceleration.copy(nextAnchorState.acceleration);
     this.renderSimulationState.movementMode = nextAnchorState.movementMode;
     this.renderSimulationState.groundY = nextAnchorState.groundY;
   }

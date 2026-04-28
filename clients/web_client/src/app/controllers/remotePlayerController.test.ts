@@ -29,6 +29,20 @@ describe("RemotePlayerController", () => {
     expect(ingested[0]).toMatchObject({ movementMode: MovementMode.Airborne });
   });
 
+  it("omits absent AOI priority fields from ingested events", () => {
+    const bus = new EventBus<AppEvents>();
+    new RemotePlayerController(bus);
+    const ingested: AppEvents["movement:remote-snapshot-ingested"][] = [];
+    bus.on("movement:remote-snapshot-ingested", (event) => ingested.push(event));
+
+    bus.emit("transport:snapshot-delivered", { snapshot: remoteSnapshot() });
+
+    expect(ingested[0]).not.toHaveProperty("priorityBand");
+    expect(ingested[0]).not.toHaveProperty("priorityScore");
+    expect(ingested[0]).not.toHaveProperty("observerDistance");
+    expect(ingested[0]).not.toHaveProperty("deliveryInterval");
+  });
+
   it("keeps independent interpolators for each remote cid", () => {
     const bus = new EventBus<AppEvents>();
     const controller = new RemotePlayerController(bus);

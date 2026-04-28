@@ -4,10 +4,13 @@ import { TransportPump } from "./transportPump";
 import { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { MovementTransport, MovementTransportTickResult } from "@domain/movement/transport";
-import { MovementFlag } from "@domain/movement/types";
+import { CorrectionFlag, MovementFlag, MovementMode } from "@domain/movement/types";
+import { makeIdleState } from "@domain/movement/types";
 import type { MoveInputFrame } from "@domain/movement/types";
-import type { Vector3 } from "three";
+import { Vector3 } from "three";
 import type { MovementKeys } from "./inputController";
+import { step } from "@domain/movement/predictor";
+import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 
 class FakeMovementTransport implements MovementTransport {
   readonly mode = "test";
@@ -37,6 +40,19 @@ class FakeMovementTransport implements MovementTransport {
 }
 
 describe("LocalPlayerController", () => {
+  it("initializes prediction, rendered position, and ground from the provided spawn", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const spawn = new Vector3(-350, 260, -280);
+    const controller = new LocalPlayerController(bus, input, pump, spawn);
+
+    expect(controller.getRenderedPosition()).toEqual(spawn);
+    expect(controller.getAuthoritativePosition()).toEqual(spawn);
+    expect(controller.getCurrentState()).toMatchObject({ groundY: 260 });
+  });
+
   it("advances the rendered local position before the first 100 ms fixed step lands", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
@@ -110,6 +126,83 @@ describe("LocalPlayerController", () => {
     expect(maxAdjacentDrop).toBeLessThan(0.35);
   });
 
+  it("does not rewind the render phase when an accepted ack has no correction", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.right = true;
+
+    for (let frame = 0; frame < 16; frame += 1) {
+      controller.onFrame((frame + 1) * 10, 10);
+    }
+    const acceptedState = controller.getCurrentState();
+    expect(acceptedState).not.toBeNull();
+
+    const beforeAckFrame = controller.getRenderedPosition().clone();
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ackSeq: acceptedState!.seq,
+        authTick: acceptedState!.tick,
+        position: acceptedState!.position.clone(),
+        velocity: acceptedState!.velocity.clone(),
+        acceleration: acceptedState!.acceleration.clone(),
+        movementMode: MovementMode.Grounded,
+        correctionFlags: CorrectionFlag.None,
+        serverFixedDtMs: 100,
+      },
+      sentAtMs: performance.now(),
+    });
+
+    controller.onFrame(170, 10);
+
+    expect(controller.getRenderedPosition().x).toBeGreaterThanOrEqual(beforeAckFrame.x);
+    expect(controller.getPendingCorrection().length()).toBe(0);
+  });
+
+  it("keeps moving forward when a delayed accepted ack matches an older predicted tick", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.right = true;
+    const start = controller.getRenderedPosition().clone();
+
+    for (let frame = 0; frame < 36; frame += 1) {
+      controller.onFrame((frame + 1) * 10, 10);
+    }
+
+    const firstInput = transport.sentInputs[0];
+    expect(firstInput).toBeDefined();
+    const firstAuthoritative = step(makeIdleState(start), firstInput!, DEFAULT_MOVEMENT_PROFILE);
+    const beforeAckFrame = controller.getRenderedPosition().clone();
+
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ackSeq: firstInput!.seq,
+        authTick: firstInput!.clientTick,
+        position: firstAuthoritative.position.clone(),
+        velocity: firstAuthoritative.velocity.clone(),
+        acceleration: firstAuthoritative.acceleration.clone(),
+        movementMode: firstAuthoritative.movementMode,
+        correctionFlags: CorrectionFlag.None,
+        serverFixedDtMs: 100,
+      },
+      sentAtMs: performance.now(),
+    });
+
+    controller.onFrame(370, 10);
+
+    expect(controller.getRenderedPosition().x).toBeGreaterThanOrEqual(beforeAckFrame.x);
+    expect(controller.getPendingCorrection().length()).toBe(0);
+  });
+
   it("sends one jump flag on the next fixed movement frame", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
@@ -133,6 +226,7 @@ describe("LocalPlayerController", () => {
     const transport = new FakeMovementTransport();
     const pump = new TransportPump(transport, bus);
     const controller = new LocalPlayerController(bus, input, pump);
+    const startY = controller.getRenderedPosition().y;
 
     input.requestJump("test");
     controller.startFrameTrace(8);
@@ -141,7 +235,7 @@ describe("LocalPlayerController", () => {
     }
 
     const samples = controller.getFrameTrace().samples;
-    expect(samples.some((sample) => sample.renderedY !== 650)).toBe(true);
+    expect(samples.some((sample) => sample.renderedY !== startY)).toBe(true);
     expect(samples.some((sample) => sample.movementMode === "airborne")).toBe(true);
     expect(samples.some((sample) => Math.abs(sample.deltaY) > 0)).toBe(true);
   });

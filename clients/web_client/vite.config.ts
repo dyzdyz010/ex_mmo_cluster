@@ -30,9 +30,12 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: true,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
         manualChunks(id) {
+          if (id.includes("node_modules/three/build/three.webgpu")) {
+            return "three-webgpu";
+          }
           if (id.includes("node_modules/three")) {
             return "three";
           }

@@ -107,6 +107,7 @@ defmodule GateServer.WsConnection do
 
   def handle_cast({:player_move, snapshot}, state) do
     snapshot = normalize_remote_snapshot(snapshot)
+
     GateServer.CliObserve.emit("ws_player_move_push", fn ->
       %{
         cid: snapshot.cid,
@@ -520,19 +521,21 @@ defmodule GateServer.WsConnection do
   defp normalize_close_reason({:error, :closed}), do: :normal
   defp normalize_close_reason(reason), do: reason
 
-  defp player_move_message(%RemoteSnapshot{
-         priority_band: nil,
-         priority_score: nil,
-         observer_distance: nil,
-         delivery_interval: nil
-       } = snapshot) do
+  defp player_move_message(
+         %RemoteSnapshot{
+           priority_band: nil,
+           priority_score: nil,
+           observer_distance: nil,
+           delivery_interval: nil
+         } = snapshot
+       ) do
     {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
      snapshot.acceleration, snapshot.movement_mode}
   end
 
   defp player_move_message(%RemoteSnapshot{} = snapshot) do
     {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band, snapshot.priority_score,
-     snapshot.observer_distance, snapshot.delivery_interval}
+     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
+     snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
   end
 end

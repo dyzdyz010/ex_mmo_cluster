@@ -19,6 +19,7 @@ export interface ReplayGovernance {
 }
 
 export interface ReplayGovernanceStats {
+  totalAcks: number;
   totalCorrections: number;
   totalReplays: number;
   totalHardSnaps: number;
@@ -43,6 +44,7 @@ export const DEFAULT_REPLAY_GOVERNANCE: ReplayGovernance = {
 
 export function makeReplayGovernanceStats(): ReplayGovernanceStats {
   return {
+    totalAcks: 0,
     totalCorrections: 0,
     totalReplays: 0,
     totalHardSnaps: 0,
@@ -68,31 +70,37 @@ export function recordReplayAction(
   pendingInputs: number,
   correctionDistance: number,
 ): void {
-  stats.totalCorrections += 1;
+  stats.totalAcks += 1;
   stats.lastReplayedFrames = replayedFrames;
   stats.lastPendingInputs = pendingInputs;
   stats.lastCorrectionDistance = correctionDistance;
 
   switch (action) {
     case ReplayAction.Replayed:
+      stats.totalCorrections += 1;
       stats.totalReplays += 1;
       break;
     case ReplayAction.HardSnap:
+      stats.totalCorrections += 1;
       stats.totalHardSnaps += 1;
       break;
     case ReplayAction.WindowTrimmed:
+      stats.totalCorrections += 1;
       stats.totalReplays += 1;
       stats.totalWindowTrims += 1;
       break;
     case ReplayAction.ForcedReplay:
+      stats.totalCorrections += 1;
       stats.totalReplays += 1;
       stats.totalForcedReplays += 1;
       break;
     case ReplayAction.Teleport:
+      stats.totalCorrections += 1;
       stats.totalHardSnaps += 1;
       stats.totalTeleports += 1;
       break;
     case ReplayAction.StatusOverride:
+      stats.totalCorrections += 1;
       stats.totalStatusOverrides += 1;
       break;
     case ReplayAction.Accepted:

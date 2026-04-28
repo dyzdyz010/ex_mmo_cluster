@@ -2,11 +2,9 @@ import { BoxGeometry, Group, Mesh, MeshStandardMaterial, RingGeometry, Vector3 }
 import type { ObserveLog } from "../../observe/logger";
 import { ChunkRenderController, type VoxelRaySelection } from "../../render/chunkRenderer";
 import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
-import { createScene, type SceneHandles } from "../../render/scene";
-import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
-import type { PrefabBoundarySnapPreview } from "../../voxel/prefab";
+import type { RendererDebugSnapshot } from "../../render/rendererBackend";
+import type { SceneHandles } from "../../render/scene";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
-import type { WorldEditStats } from "../../voxel/worldStore";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
@@ -15,8 +13,6 @@ import type { HotbarState, SelectionProvider } from "./worldEditController";
 interface EditPreviewProvider {
   getHotbarState(): HotbarState;
 }
-
-const PREFAB_PREVIEW_REFRESH_INTERVAL_MS = 120;
 
 /**
  * Holds the Three.js scene, the avatar meshes, and the camera. Each frame it
@@ -39,20 +35,15 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly remoteDisplay = new Vector3();
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
-  private prefabPreviewCacheKey: string | null = null;
-  private prefabPreviewBoundaryPreview: PrefabBoundarySnapPreview | null = null;
-  private prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
-  private prefabPreviewSelectedKey: string | null = null;
-  private prefabPreviewEditSignature: string | null = null;
 
   constructor(
-    canvas: HTMLCanvasElement,
+    sceneHandles: SceneHandles,
     private readonly world: VoxelWorldAdapter,
     private readonly localPlayer: LocalPlayerController,
     private readonly remotePlayer: RemotePlayerController,
     private readonly logger: ObserveLog,
   ) {
-    this.sceneHandles = createScene(canvas);
+    this.sceneHandles = sceneHandles;
     this.sceneHandles.scene.add(this.rootGroup);
     this.chunkRenderer.attachToScene(this.rootGroup);
 
@@ -86,9 +77,9 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
     this.chunkRenderer.setTargetHighlights(this.currentSelection);
-    this.updatePrefabPreview(nowMs);
+    this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
-    this.sceneHandles.renderer.render(this.sceneHandles.scene, this.sceneHandles.camera);
+    this.sceneHandles.render();
   }
 
   getCurrentSelection(): VoxelRaySelection | null {
@@ -117,6 +108,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   getPrefabPreviewSnapshot(): PrefabPreviewSnapshot {
     return this.chunkRenderer.getPrefabPreviewSnapshot();
+  }
+
+  getRendererDebugSnapshot(): RendererDebugSnapshot {
+    return this.sceneHandles.getRendererDebugSnapshot();
   }
 
   setEditPreviewProvider(provider: EditPreviewProvider): void {
@@ -194,85 +189,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     return avatar;
   }
 
-  private updatePrefabPreview(nowMs: number): void {
+  private updatePrefabPreview(): void {
     const selected = this.editPreviewProvider?.getHotbarState().selected;
-    const selectedKey = prefabPreviewSelectedKey(selected);
-    const editSignature = prefabPreviewEditSignature(this.world.store.editStats);
-    const previewKey = prefabPreviewRequestKey(
-      selected,
-      this.currentSelection,
-      this.world.store.editStats,
-    );
-    if (!previewKey || !this.currentSelection || selected?.kind !== "prefab") {
-      this.prefabPreviewCacheKey = null;
-      this.prefabPreviewBoundaryPreview = null;
-      this.prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
-      this.prefabPreviewSelectedKey = null;
-      this.prefabPreviewEditSignature = null;
+    if (!this.currentSelection || selected?.kind !== "prefab") {
       this.chunkRenderer.setPrefabPreview(null, null);
-      return;
-    }
-
-    const hasReusablePrecisePreview =
-      this.prefabPreviewBoundaryPreview?.ok === true &&
-      this.prefabPreviewSelectedKey === selectedKey &&
-      this.prefabPreviewEditSignature === editSignature;
-    if (
-      shouldUseCoarsePrefabPreview(
-        selected,
-        this.currentSelection,
-        this.sceneHandles.isCameraInteracting(),
-        hasReusablePrecisePreview,
-      )
-    ) {
-      this.prefabPreviewCacheKey = null;
-      this.prefabPreviewBoundaryPreview = null;
-      this.prefabPreviewLastRefreshMs = Number.NEGATIVE_INFINITY;
-      this.prefabPreviewSelectedKey = null;
-      this.prefabPreviewEditSignature = null;
-      this.chunkRenderer.setPrefabPreview(
-        this.currentSelection,
-        this.world.getPrefab(selected.prefabName),
-      );
-      return;
-    }
-
-    let preview = this.prefabPreviewBoundaryPreview;
-    const refreshPreview = shouldRefreshPrefabPreview({
-      nowMs,
-      requestKey: previewKey,
-      cachedKey: this.prefabPreviewCacheKey,
-      hasCachedPreview: preview !== null,
-      lastRefreshMs: this.prefabPreviewLastRefreshMs,
-      selectedKey,
-      lastSelectedKey: this.prefabPreviewSelectedKey,
-      editSignature,
-      lastEditSignature: this.prefabPreviewEditSignature,
-      refreshIntervalMs: PREFAB_PREVIEW_REFRESH_INTERVAL_MS,
-    });
-    if (!refreshPreview && preview) {
-      return;
-    }
-
-    if (refreshPreview || !preview) {
-      preview = this.world.previewPrefabBoundarySnap({
-        prefabName: selected.prefabName,
-        hitMacro: this.currentSelection.occupiedMacro,
-        ...(this.currentSelection.occupiedMicro
-          ? { hitMicro: this.currentSelection.occupiedMicro.micro }
-          : {}),
-        faceNormal: this.currentSelection.faceNormal,
-        rotation: selected.rotation,
-      });
-      this.prefabPreviewCacheKey = previewKey;
-      this.prefabPreviewBoundaryPreview = preview;
-      this.prefabPreviewLastRefreshMs = nowMs;
-      this.prefabPreviewSelectedKey = selectedKey;
-      this.prefabPreviewEditSignature = editSignature;
-    }
-
-    if (preview.ok) {
-      this.chunkRenderer.setPrefabRasterPreview(selected.prefabName, preview.cells);
       return;
     }
 
@@ -320,100 +240,6 @@ export function resolveActorDisplayY({
   return surfaceCenterY + Math.max(0, movementY - movementGroundY);
 }
 
-export function prefabPreviewRequestKey(
-  selected: HotbarState["selected"] | null | undefined,
-  selection: VoxelRaySelection | null,
-  editStats: Pick<WorldEditStats, "placed" | "broken" | "conflicts">,
-): string | null {
-  if (!selection || selected?.kind !== "prefab") {
-    return null;
-  }
-
-  return [
-    selected.prefabName,
-    selected.rotation,
-    macroCoordKey(selection.occupiedMacro),
-    macroCoordKey(selection.adjacentMacro),
-    macroCoordKey(selection.faceNormal),
-    selection.occupiedMicro ? microCoordKey(selection.occupiedMicro.micro) : "micro:none",
-    editStats.placed,
-    editStats.broken,
-    editStats.conflicts,
-  ].join("|");
-}
-
-export function shouldRefreshPrefabPreview({
-  nowMs,
-  requestKey,
-  cachedKey,
-  hasCachedPreview,
-  lastRefreshMs,
-  selectedKey,
-  lastSelectedKey,
-  editSignature,
-  lastEditSignature,
-  refreshIntervalMs = PREFAB_PREVIEW_REFRESH_INTERVAL_MS,
-}: {
-  nowMs: number;
-  requestKey: string;
-  cachedKey: string | null;
-  hasCachedPreview: boolean;
-  lastRefreshMs: number;
-  selectedKey: string | null;
-  lastSelectedKey: string | null;
-  editSignature: string;
-  lastEditSignature: string | null;
-  refreshIntervalMs?: number;
-}): boolean {
-  if (!hasCachedPreview || cachedKey === null) {
-    return true;
-  }
-  if (requestKey === cachedKey) {
-    return false;
-  }
-  if (selectedKey !== lastSelectedKey) {
-    return true;
-  }
-  if (editSignature !== lastEditSignature) {
-    return true;
-  }
-  return nowMs - lastRefreshMs >= refreshIntervalMs;
-}
-
-export function shouldUseCoarsePrefabPreview(
-  selected: HotbarState["selected"] | null | undefined,
-  selection: VoxelRaySelection | null,
-  cameraInteracting: boolean,
-  hasReusablePrecisePreview: boolean,
-): boolean {
-  return (
-    cameraInteracting &&
-    !hasReusablePrecisePreview &&
-    selection !== null &&
-    selected?.kind === "prefab"
-  );
-}
-
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
   return { x: vector.x, y: vector.y, z: vector.z };
-}
-
-function prefabPreviewSelectedKey(
-  selected: HotbarState["selected"] | null | undefined,
-): string | null {
-  return selected?.kind === "prefab" ? `${selected.prefabName}:${selected.rotation}` : null;
-}
-
-function prefabPreviewEditSignature(
-  editStats: Pick<WorldEditStats, "placed" | "broken" | "conflicts">,
-): string {
-  return `${editStats.placed}:${editStats.broken}:${editStats.conflicts}`;
-}
-
-function macroCoordKey(coord: FMacroCoord): string {
-  return `${coord.x},${coord.y},${coord.z}`;
-}
-
-function microCoordKey(coord: FMicroCoord): string {
-  return `${coord.x},${coord.y},${coord.z}`;
 }

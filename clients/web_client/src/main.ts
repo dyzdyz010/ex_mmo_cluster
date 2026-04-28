@@ -24,12 +24,14 @@ function requireHotbarDock(): HTMLDivElement {
   return dock;
 }
 
-function main(): void {
-  bootstrap({
+async function main(): Promise<void> {
+  await bootstrap({
     canvas: requireCanvas(),
     hud: requireHud(),
     hotbarDock: requireHotbarDock(),
   });
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error("[web-client] bootstrap failed", error);
+});
