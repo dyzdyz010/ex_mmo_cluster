@@ -339,6 +339,69 @@ jobs:
         # :start_interface? config, so no beacon_server required.
         run: cd apps/auth_server && mix test
 
+  smoke-ws-dual:
+    name: Smoke WebSocket dual movement
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mmo_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.3.1"
+          elixir-version: "1.19.5"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache deps and cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile
+
+      - name: Run WebSocket dual movement smoke
+        run: node scripts/run_ws_dual_smoke_supervised.js
+
+      - name: Upload smoke observe logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws-dual-smoke-observe
+          path: .demo/observe/ws-dual-*
+
   test-visualize-server:
     name: Test visualize_server
     runs-on: ubuntu-latest

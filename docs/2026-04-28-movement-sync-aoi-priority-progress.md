@@ -60,19 +60,23 @@ checkpoint.
   `npm test` and `npm run build` from `clients/web_client`.
 - Full umbrella regression coverage passes with a temporary local Postgres
   container exposed through `MMO_DB_PORT=55432`: `cmd /c mix test`.
-- Real WebSocket smoke coverage now asserts AOI priority metadata on the
-  observed remote `player_move` frame. Verified with a temporary local Postgres
-  container plus migrations:
-  `MMO_DB_PORT=55432 node scripts/run_ws_dual_smoke_supervised.js`.
-  The probe observed `priority=high:0.764:118.0:1` on B's remote movement frame.
+- Real WebSocket smoke coverage is now a repeatable supervised runner:
+  `node scripts/run_ws_dual_smoke_supervised.js`. The runner starts the full
+  `MIX_ENV=dev` runtime on free local ports, creates/migrates the configured
+  Postgres database, seeds `ws_smoke_a` / `ws_smoke_b`, runs a two-client
+  WebSocket probe, writes logs and JSON summary under `.demo/observe/`, then
+  cleans up the booted BEAM process tree.
+- Latest local supervised probe observed B receiving A's movement stream with
+  AOI priority metadata and jump sync: remote ticks advanced, priority samples
+  included `high:1.000:0.0:1`, remote airborne samples were observed, and
+  remote Z rose from `100` to `170`.
+- CI now includes `smoke-ws-dual`, a dedicated Postgres-backed job that runs
+  the same supervised WebSocket smoke command.
 
 ## Follow-Up
 
 - Continue from this checkpoint by tightening server-side input governance and
-  expanding end-to-end smoke coverage for AOI priority behavior over real
-  WebSocket sessions.
-- Promote the temporary-Postgres smoke setup into a repeatable local command or
-  CI fixture so the WebSocket AOI priority probe does not depend on a manually
-  prepared database.
+  expanding end-to-end smoke coverage for rejection / correction behavior over
+  real WebSocket sessions.
 - Combat lag compensation / rewind remains intentionally out of scope for this
   checkpoint.

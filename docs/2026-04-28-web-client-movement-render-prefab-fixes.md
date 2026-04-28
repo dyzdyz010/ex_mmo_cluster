@@ -303,6 +303,16 @@ specific browser smoke verified `simulated-local` fallback. Server-side
 movement / AOI priority coverage was verified through focused ExUnit and the
 updated WebSocket smoke path.
 
+Follow-up smoke hardening:
+
+- `node scripts/run_ws_dual_smoke_supervised.js` is now the repeatable
+  WebSocket movement smoke. It uses the full `MIX_ENV=dev` runtime, runs DB
+  create/migrate/seed for `ws_smoke_a` and `ws_smoke_b`, writes
+  `.demo/observe/ws-dual-smoke-summary.json`, and cleans up the booted runtime.
+- The probe asserts enter-scene success, movement ack delivery, authoritative
+  airborne jump, remote `player_move` tick growth, AOI priority metadata, remote
+  airborne mode, and remote jump Y/Z rise on the observing client.
+
 ## Practical Debug Entry Points
 
 Browser console:

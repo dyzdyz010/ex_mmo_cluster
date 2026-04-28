@@ -308,6 +308,12 @@ movement transport 再拆成三类判断：
 node scripts/run_ws_dual_smoke_supervised.js
 ```
 
+该 runner 会使用完整 `MIX_ENV=dev` 运行时，自动执行 data_service 数据库
+create/migrate，并预置 `ws_smoke_a` / `ws_smoke_b` 两个 smoke 账号，避免
+依赖手动准备的临时数据。运行产物写入 `.demo/observe/`，其中
+`ws-dual-smoke-summary.json` 会记录登录、enter-scene、发送输入帧、ack、
+AOI priority、remote tick 增长和 remote jump 抬升断言。
+
 兼容 PowerShell 入口：
 
 ```powershell

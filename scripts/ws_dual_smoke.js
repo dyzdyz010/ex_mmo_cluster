@@ -1,7 +1,92 @@
+const fs = require("node:fs");
+const path = require("node:path");
+
+if (typeof WebSocket !== "function") {
+  throw new Error("ws_dual_smoke requires Node.js 22+ with the global WebSocket API");
+}
+
 const enc = new TextEncoder();
 
+const root = path.resolve(__dirname, "..");
+const observeDir =
+  process.env.WS_SMOKE_OBSERVE_DIR || path.join(root, ".demo", "observe");
+const summaryPath =
+  process.env.WS_SMOKE_SUMMARY_PATH ||
+  path.join(observeDir, "ws-dual-smoke-summary.json");
 const AUTH_BASE_URL = process.env.AUTH_BASE_URL || "http://127.0.0.1:4100";
 const WS_URL = process.env.WS_URL || "ws://127.0.0.1:4100/ingame/ws";
+const timeoutMs = Number(process.env.WS_SMOKE_TIMEOUT_MS || 30_000);
+
+fs.mkdirSync(observeDir, { recursive: true });
+
+const MovementFlag = {
+  None: 0,
+  Brake: 1 << 1,
+  Jump: 1 << 2,
+};
+
+const framePlan = [
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "move-1" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "move-2" },
+  { dx: 1, dy: 0, flags: MovementFlag.Jump, label: "jump" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-1" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-2" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-3" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-4" },
+  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-5" },
+  { dx: 0, dy: 0, flags: MovementFlag.Brake, label: "stop" },
+];
+
+const summary = {
+  startedAt: new Date().toISOString(),
+  authBaseUrl: AUTH_BASE_URL,
+  wsUrl: WS_URL,
+  users: {},
+  cids: {},
+  enter: {},
+  sentFrames: [],
+  ackedFrames: [],
+  remote: {
+    observer: "B",
+    subject: "A",
+    snapshots: 0,
+    firstTick: null,
+    lastTick: null,
+    firstZ: null,
+    maxZ: null,
+    movementModes: {},
+    prioritySamples: [],
+  },
+  assertions: {
+    remoteEnterObserved: false,
+    ackObserved: false,
+    ackAirborneObserved: false,
+    remoteSnapshotsObserved: false,
+    remoteTickAdvanced: false,
+    aoiPriorityObserved: false,
+    remoteAirborneObserved: false,
+    remoteJumpRiseObserved: false,
+  },
+};
+
+function writeSummary(extra = {}) {
+  const payload = {
+    ...summary,
+    ...extra,
+    finishedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(summaryPath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function fail(code, message, detail) {
+  if (detail !== undefined) {
+    console.error(message, JSON.stringify(detail));
+  } else {
+    console.error(message);
+  }
+  writeSummary({ status: "failed", failure: { code, message, detail } });
+  process.exit(code);
+}
 
 function writeU64(view, offset, value) {
   view.setBigUint64(offset, BigInt(value), false);
@@ -39,33 +124,44 @@ function encodeEnterScene(requestId, cid) {
   return new Uint8Array(buffer);
 }
 
-function encodeMove(seq) {
+function encodeMove({ seq, clientTick, dx, dy, flags }) {
   const buffer = new ArrayBuffer(25);
   const view = new DataView(buffer);
   let offset = 0;
   view.setUint8(offset++, 0x01);
   view.setUint32(offset, seq, false);
   offset += 4;
-  view.setUint32(offset, seq, false);
+  view.setUint32(offset, clientTick, false);
   offset += 4;
   view.setUint16(offset, 100, false);
   offset += 2;
+  view.setFloat32(offset, dx, false);
+  offset += 4;
+  view.setFloat32(offset, dy, false);
+  offset += 4;
   view.setFloat32(offset, 1, false);
   offset += 4;
-  view.setFloat32(offset, 0, false);
-  offset += 4;
-  view.setFloat32(offset, 1, false);
-  offset += 4;
-  view.setUint16(offset, 0, false);
+  view.setUint16(offset, flags, false);
   return new Uint8Array(buffer);
 }
 
-function formatVec3(view, offset) {
-  return [
-    view.getFloat64(offset, false).toFixed(1),
-    view.getFloat64(offset + 8, false).toFixed(1),
-    view.getFloat64(offset + 16, false).toFixed(1),
-  ].join(",");
+function vec3(view, offset) {
+  return {
+    x: view.getFloat64(offset, false),
+    y: view.getFloat64(offset + 8, false),
+    z: view.getFloat64(offset + 16, false),
+  };
+}
+
+function formatVec3(position) {
+  return `${position.x.toFixed(1)},${position.y.toFixed(1)},${position.z.toFixed(1)}`;
+}
+
+function decodeMovementMode(raw) {
+  if (raw === 1) return "airborne";
+  if (raw === 2) return "disabled";
+  if (raw === 3) return "scripted";
+  return "grounded";
 }
 
 function decodePriorityBand(raw) {
@@ -87,6 +183,37 @@ function decodeAoiPriority(view, offset) {
   };
 }
 
+function decodeEnterScene(view) {
+  return {
+    requestId: Number(view.getBigUint64(1, false)),
+    ok: view.getUint8(9) === 0,
+    position: vec3(view, 10),
+    expectedSeq: view.byteLength >= 38 ? view.getUint32(34, false) : 1,
+  };
+}
+
+function decodeMovementAck(view) {
+  return {
+    ackSeq: view.getUint32(1, false),
+    authTick: view.getUint32(5, false),
+    cid: Number(view.getBigInt64(9, false)),
+    position: vec3(view, 17),
+    movementMode: decodeMovementMode(view.getUint8(89)),
+    correctionFlags: view.getUint32(90, false),
+    fixedDtMs: view.getUint16(94, false),
+  };
+}
+
+function decodePlayerMove(view) {
+  return {
+    cid: Number(view.getBigInt64(1, false)),
+    serverTick: view.getUint32(9, false),
+    position: vec3(view, 13),
+    movementMode: decodeMovementMode(view.getUint8(85)),
+    priority: decodeAoiPriority(view, 86),
+  };
+}
+
 async function autoLogin(username) {
   const response = await fetch(`${AUTH_BASE_URL}/ingame/auto_login`, {
     method: "POST",
@@ -102,139 +229,284 @@ async function autoLogin(username) {
 }
 
 function connect(label, login, hooks) {
-  const socket = new WebSocket(WS_URL);
-  socket.binaryType = "arraybuffer";
-  const authRequestId = 1;
-  const enterSceneRequestId = 2;
-
-  socket.onopen = () => {
-    console.log(label, "open");
-    socket.send(encodeAuth(authRequestId, login.username, login.token));
+  const state = {
+    label,
+    login,
+    socket: new WebSocket(WS_URL),
+    entered: false,
+    expectedSeq: 1,
+    enterPosition: null,
   };
 
-  socket.onmessage = (event) => {
+  const authRequestId = 1;
+  const enterSceneRequestId = 2;
+  state.socket.binaryType = "arraybuffer";
+
+  state.socket.onopen = () => {
+    console.log(label, "open");
+    state.socket.send(encodeAuth(authRequestId, login.username, login.token));
+  };
+
+  state.socket.onmessage = (event) => {
     const view = new DataView(event.data);
     const msgType = view.getUint8(0);
 
     if (msgType === 0x80) {
       const requestId = Number(view.getBigUint64(1, false));
-      const status = view.getUint8(9);
-      if (requestId === authRequestId && status === 0) {
+      const ok = view.getUint8(9) === 0;
+      if (requestId === authRequestId && ok) {
         console.log(label, "auth_ok");
-        socket.send(encodeEnterScene(enterSceneRequestId, login.cid));
+        state.socket.send(encodeEnterScene(enterSceneRequestId, login.cid));
+      } else if (!ok) {
+        fail(11, `${label}_auth_failed`, { requestId });
       }
       return;
     }
 
-    if (msgType === 0x84) {
-      console.log(label, "enter_scene", formatVec3(view, 10));
-      hooks.onEnterScene(socket);
+    if (msgType === 0x81) {
+      const cid = Number(view.getBigInt64(1, false));
+      const position = vec3(view, 9);
+      console.log(label, "player_enter", cid, formatVec3(position));
+      hooks.onPlayerEnter?.(state, { cid, position });
       return;
     }
 
-    if (msgType === 0x8B) {
-      console.log(label, "movement_ack", view.getUint32(1, false), formatVec3(view, 17));
-      hooks.onMovementAck(socket);
+    if (msgType === 0x82) {
+      console.log(label, "player_leave", Number(view.getBigInt64(1, false)));
+      return;
+    }
+
+    if (msgType === 0x84) {
+      const enter = decodeEnterScene(view);
+      if (!enter.ok) {
+        fail(12, `${label}_enter_scene_failed`, enter);
+      }
+      state.entered = true;
+      state.expectedSeq = enter.expectedSeq;
+      state.enterPosition = enter.position;
+      summary.enter[label] = enter;
+      console.log(
+        label,
+        "enter_scene",
+        formatVec3(enter.position),
+        `expected_seq=${enter.expectedSeq}`,
+      );
+      hooks.onEnterScene(state, enter);
+      return;
+    }
+
+    if (msgType === 0x8b) {
+      const ack = decodeMovementAck(view);
+      console.log(
+        label,
+        "movement_ack",
+        ack.ackSeq,
+        `tick=${ack.authTick}`,
+        `mode=${ack.movementMode}`,
+        formatVec3(ack.position),
+      );
+      hooks.onMovementAck(state, ack);
       return;
     }
 
     if (msgType === 0x83) {
-      const priority = decodeAoiPriority(view, 86);
-      const priorityText = priority
-        ? `priority=${priority.band}:${priority.score.toFixed(3)}:${priority.distance.toFixed(1)}:${priority.interval}`
+      const move = decodePlayerMove(view);
+      const priorityText = move.priority
+        ? `priority=${move.priority.band}:${move.priority.score.toFixed(3)}:${move.priority.distance.toFixed(1)}:${move.priority.interval}`
         : "priority=missing";
-      console.log(label, "player_move", Number(view.getBigInt64(1, false)), view.getUint32(9, false), formatVec3(view, 13), priorityText);
-      hooks.onPlayerMove(socket, priority);
+      console.log(
+        label,
+        "player_move",
+        move.cid,
+        `tick=${move.serverTick}`,
+        `mode=${move.movementMode}`,
+        formatVec3(move.position),
+        priorityText,
+      );
+      hooks.onPlayerMove(state, move);
       return;
     }
 
     console.log(label, "msg", msgType, view.byteLength);
   };
 
-  socket.onerror = () => {
+  state.socket.onerror = () => {
     console.log(label, "ws_error");
   };
 
-  socket.onclose = (event) => {
+  state.socket.onclose = (event) => {
     console.log(label, "ws_close", event.code, event.reason || "");
   };
 
-  return socket;
+  return state;
 }
 
 async function main() {
-  const loginA = await autoLogin("web_a");
-  const loginB = await autoLogin("web_b");
+  const loginA = await autoLogin(process.env.WS_SMOKE_USER_A || "ws_smoke_a");
+  const loginB = await autoLogin(process.env.WS_SMOKE_USER_B || "ws_smoke_b");
+
+  summary.users.A = loginA.username;
+  summary.users.B = loginB.username;
+  summary.cids.A = loginA.cid;
+  summary.cids.B = loginB.cid;
 
   console.log("login_a", JSON.stringify(loginA));
   console.log("login_b", JSON.stringify(loginB));
 
-  let enteredA = false;
-  let enteredB = false;
-  let acked = false;
-  let moved = false;
-  let priorityObserved = false;
-  let moveSent = false;
   let socketA;
   let socketB;
+  let frameTimer = null;
+  let nextPlanIndex = 0;
+  let nextSeq = 1;
+  let finished = false;
+  let baselineZ = null;
 
-  const maybeSendMove = () => {
-    if (enteredA && enteredB && !moveSent) {
-      moveSent = true;
-      socketA.send(encodeMove(1));
-    }
+  const timeout = setTimeout(() => {
+    fail(2, "timeout", summary.assertions);
+  }, timeoutMs);
+
+  const closeAndExit = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    if (frameTimer) clearInterval(frameTimer);
+    writeSummary({ status: "ok" });
+    socketA.socket.close(1000, "done");
+    socketB.socket.close(1000, "done");
+    console.log("summary", JSON.stringify(summary.assertions));
+    console.log("summary_path", path.relative(root, summaryPath));
+    setTimeout(() => process.exit(0), 250);
   };
 
   const maybeFinish = () => {
-    if (acked && moved && priorityObserved) {
-      socketA.close(1000, "done");
-      socketB.close(1000, "done");
-      setTimeout(() => process.exit(0), 250);
+    const sentAll = nextPlanIndex >= framePlan.length;
+    summary.assertions.ackObserved = summary.ackedFrames.length > 0;
+    summary.assertions.remoteSnapshotsObserved = summary.remote.snapshots >= 3;
+    summary.assertions.remoteTickAdvanced =
+      summary.remote.firstTick != null &&
+      summary.remote.lastTick != null &&
+      summary.remote.lastTick > summary.remote.firstTick;
+
+    if (
+      sentAll &&
+      summary.assertions.remoteEnterObserved &&
+      summary.assertions.ackObserved &&
+      summary.assertions.ackAirborneObserved &&
+      summary.assertions.remoteSnapshotsObserved &&
+      summary.assertions.remoteTickAdvanced &&
+      summary.assertions.aoiPriorityObserved &&
+      summary.assertions.remoteAirborneObserved &&
+      summary.assertions.remoteJumpRiseObserved
+    ) {
+      closeAndExit();
     }
   };
 
-  const timeout = setTimeout(() => {
-    console.log("timeout");
-    process.exit(2);
-  }, 20_000);
+  const sendNextFrame = () => {
+    if (nextPlanIndex >= framePlan.length) {
+      if (frameTimer) clearInterval(frameTimer);
+      frameTimer = null;
+      maybeFinish();
+      return;
+    }
+
+    const plan = framePlan[nextPlanIndex++];
+    const frame = {
+      seq: nextSeq,
+      clientTick: nextSeq,
+      dx: plan.dx,
+      dy: plan.dy,
+      flags: plan.flags,
+    };
+    nextSeq += 1;
+    socketA.socket.send(encodeMove(frame));
+    summary.sentFrames.push({ ...frame, label: plan.label });
+    console.log("A", "movement_input", frame.seq, plan.label, `flags=${frame.flags}`);
+  };
+
+  const maybeStartFrames = () => {
+    if (!socketA.entered || !socketB.entered || !summary.assertions.remoteEnterObserved || frameTimer) {
+      return;
+    }
+
+    nextSeq = socketA.expectedSeq;
+    baselineZ = socketA.enterPosition?.z ?? null;
+    sendNextFrame();
+    frameTimer = setInterval(sendNextFrame, 110);
+  };
 
   socketA = connect("A", loginA, {
-    onEnterScene: () => {
-      enteredA = true;
-      maybeSendMove();
-    },
-    onMovementAck: () => {
-      acked = true;
-      clearTimeout(timeout);
+    onEnterScene: () => maybeStartFrames(),
+    onMovementAck: (_state, ack) => {
+      summary.ackedFrames.push({
+        ackSeq: ack.ackSeq,
+        authTick: ack.authTick,
+        movementMode: ack.movementMode,
+        z: ack.position.z,
+      });
+      if (ack.movementMode === "airborne") {
+        summary.assertions.ackAirborneObserved = true;
+      }
       maybeFinish();
     },
+    onPlayerEnter: () => {},
     onPlayerMove: () => {},
   });
 
   socketB = connect("B", loginB, {
-    onEnterScene: () => {
-      enteredB = true;
-      maybeSendMove();
-    },
+    onEnterScene: () => maybeStartFrames(),
     onMovementAck: () => {},
-    onPlayerMove: (_socket, priority) => {
-      if (!priority) {
-        console.error("missing_aoi_priority_metadata");
-        process.exit(3);
+    onPlayerEnter: (_state, enter) => {
+      if (enter.cid !== loginA.cid) {
+        return;
       }
-      if (!Number.isFinite(priority.score) || priority.interval < 1) {
-        console.error("invalid_aoi_priority_metadata", JSON.stringify(priority));
-        process.exit(4);
+      summary.assertions.remoteEnterObserved = true;
+      baselineZ = enter.position.z;
+      maybeStartFrames();
+    },
+    onPlayerMove: (_state, move) => {
+      if (move.cid !== loginA.cid) {
+        return;
       }
-      moved = true;
-      priorityObserved = true;
-      clearTimeout(timeout);
+
+      if (!move.priority) {
+        fail(3, "missing_aoi_priority_metadata", move);
+      }
+      if (!Number.isFinite(move.priority.score) || move.priority.interval < 1) {
+        fail(4, "invalid_aoi_priority_metadata", move.priority);
+      }
+
+      summary.assertions.aoiPriorityObserved = true;
+      summary.remote.snapshots += 1;
+      summary.remote.firstTick ??= move.serverTick;
+      summary.remote.lastTick = move.serverTick;
+      summary.remote.firstZ ??= move.position.z;
+      summary.remote.maxZ =
+        summary.remote.maxZ == null ? move.position.z : Math.max(summary.remote.maxZ, move.position.z);
+      summary.remote.movementModes[move.movementMode] =
+        (summary.remote.movementModes[move.movementMode] || 0) + 1;
+      summary.remote.prioritySamples.push({
+        tick: move.serverTick,
+        band: move.priority.band,
+        score: Number(move.priority.score.toFixed(3)),
+        distance: Number(move.priority.distance.toFixed(1)),
+        interval: move.priority.interval,
+      });
+
+      if (move.movementMode === "airborne") {
+        summary.assertions.remoteAirborneObserved = true;
+      }
+
+      const groundZ = baselineZ ?? summary.remote.firstZ;
+      if (groundZ != null && move.movementMode === "airborne" && move.position.z > groundZ + 5) {
+        summary.assertions.remoteJumpRiseObserved = true;
+      }
+
       maybeFinish();
     },
   });
 }
 
 main().catch((error) => {
-  console.error(error);
-  process.exit(1);
+  fail(1, error.stack || String(error));
 });
