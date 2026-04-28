@@ -24,6 +24,14 @@ export const MovementMode = {
 
 export type MovementMode = (typeof MovementMode)[keyof typeof MovementMode];
 
+export const AoiPriorityBand = {
+  High: "high",
+  Medium: "medium",
+  Low: "low",
+} as const;
+
+export type AoiPriorityBand = (typeof AoiPriorityBand)[keyof typeof AoiPriorityBand];
+
 export interface MoveInputFrame {
   seq: number;
   clientTick: number;
@@ -65,6 +73,10 @@ export interface RemoteMoveSnapshot {
   velocity: Vector3;
   acceleration: Vector3;
   movementMode: MovementMode;
+  priorityBand?: AoiPriorityBand;
+  priorityScore?: number;
+  observerDistance?: number;
+  deliveryInterval?: number;
 }
 
 export function makeIdleState(position: Vector3): PredictedMoveState {
@@ -120,7 +132,7 @@ export function cloneMovementAck(ack: MovementAck): MovementAck {
 }
 
 export function cloneRemoteMoveSnapshot(snapshot: RemoteMoveSnapshot): RemoteMoveSnapshot {
-  return {
+  const cloned: RemoteMoveSnapshot = {
     cid: snapshot.cid,
     serverTick: snapshot.serverTick,
     position: snapshot.position.clone(),
@@ -128,4 +140,9 @@ export function cloneRemoteMoveSnapshot(snapshot: RemoteMoveSnapshot): RemoteMov
     acceleration: snapshot.acceleration.clone(),
     movementMode: snapshot.movementMode,
   };
+  if (snapshot.priorityBand !== undefined) cloned.priorityBand = snapshot.priorityBand;
+  if (snapshot.priorityScore !== undefined) cloned.priorityScore = snapshot.priorityScore;
+  if (snapshot.observerDistance !== undefined) cloned.observerDistance = snapshot.observerDistance;
+  if (snapshot.deliveryInterval !== undefined) cloned.deliveryInterval = snapshot.deliveryInterval;
+  return cloned;
 }

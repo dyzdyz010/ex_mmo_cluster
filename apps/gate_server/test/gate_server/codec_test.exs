@@ -218,6 +218,19 @@ defmodule GateServer.CodecTest do
                3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
                0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 1::8>> == bin
     end
+
+    test "encodes player_move with AOI priority metadata" do
+      {:ok, bin} =
+        Codec.encode(
+          {:player_move, 55, 9, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :grounded,
+           :medium, 0.75, 125.5, 2}
+        )
+
+      assert <<0x83, 55::64-big, 9::32-big, 1.0::float-64-big, 2.0::float-64-big,
+               3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 1::8,
+               0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
+    end
   end
 
   describe "encode time_sync and heartbeat" do

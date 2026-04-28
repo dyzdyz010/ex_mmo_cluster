@@ -41,4 +41,18 @@ describe("remotePlayer", () => {
 
     expect(sample.position.x).toBeCloseTo(20, 4);
   });
+
+  it("reports interpolation buffer diagnostics for CLI observability", () => {
+    const state = new RemotePlayerState();
+    state.pushSnapshot(snapshot(10, 0), 0, 1.0);
+    state.pushSnapshot(snapshot(11, 10), 0, 1.1);
+
+    const sample = state.sampleMotion(1.4);
+    const debug = state.debugSnapshot();
+
+    expect(sample.mode).toBe("extrapolated");
+    expect(debug.bufferedSnapshots).toBe(2);
+    expect(debug.latestServerTick).toBe(11);
+    expect(debug.lastSampleMode).toBe("extrapolated");
+  });
 });

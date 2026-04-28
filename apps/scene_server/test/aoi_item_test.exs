@@ -90,6 +90,45 @@ defmodule SceneServer.AoiItemTest do
     assert_receive {:"$gen_cast", {:player_leave, ^other_cid}}, 300
   end
 
+  test "movement snapshots are decorated and throttled by AOI priority" do
+    mover_cid = unique_cid()
+    high_cid = unique_cid()
+    low_cid = unique_cid()
+
+    mover = add_aoi_item(mover_cid, {0.0, 0.0, 0.0}, spawn_connection())
+    high_observer = add_aoi_item(high_cid, {50.0, 0.0, 0.0}, self())
+    low_observer = add_aoi_item(low_cid, {450.0, 0.0, 0.0}, self())
+
+    on_exit(fn ->
+      exit_aoi_item(mover)
+      exit_aoi_item(high_observer)
+      exit_aoi_item(low_observer)
+    end)
+
+    send(mover, :get_aoi_tick)
+    assert_receive {:"$gen_cast", {:player_enter, ^mover_cid, _location}}, 300
+    assert_receive {:"$gen_cast", {:actor_identity, ^mover_cid, :player, _name}}, 300
+    assert_receive {:"$gen_cast", {:player_enter, ^mover_cid, _location}}, 300
+    assert_receive {:"$gen_cast", {:actor_identity, ^mover_cid, :player, _name}}, 300
+
+    GenServer.cast(mover, {:self_move, moving_snapshot(mover_cid, 1)})
+
+    assert_receive {:"$gen_cast", {:player_move, %RemoteSnapshot{} = high_snapshot}}, 300
+    assert high_snapshot.priority_band == :high
+    assert high_snapshot.delivery_interval == 1
+    refute_receive {:"$gen_cast", {:player_move, %RemoteSnapshot{priority_band: :low}}}, 150
+
+    GenServer.cast(mover, {:self_move, moving_snapshot(mover_cid, 5)})
+
+    delivered =
+      2
+      |> collect_player_moves(300)
+      |> Enum.map(& &1.priority_band)
+      |> Enum.sort()
+
+    assert delivered == [:high, :low]
+  end
+
   defp add_aoi_item(cid, location, connection_pid) do
     {:ok, pid} =
       AoiManager.add_aoi_item(
@@ -122,6 +161,39 @@ defmodule SceneServer.AoiItemTest do
 
   defp spawn_connection do
     spawn(fn -> connection_loop() end)
+  end
+
+  defp moving_snapshot(cid, tick) do
+    %RemoteSnapshot{
+      cid: cid,
+      server_tick: tick,
+      position: {0.0, 0.0, 0.0},
+      velocity: {10.0, 0.0, 0.0},
+      acceleration: {0.0, 0.0, 0.0},
+      movement_mode: :grounded
+    }
+  end
+
+  defp collect_player_moves(count, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    collect_player_moves_loop(count, deadline, [])
+  end
+
+  defp collect_player_moves_loop(0, _deadline, acc), do: Enum.reverse(acc)
+
+  defp collect_player_moves_loop(count, deadline, acc) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      Enum.reverse(acc)
+    else
+      receive do
+        {:"$gen_cast", {:player_move, %RemoteSnapshot{} = snapshot}} ->
+          collect_player_moves_loop(count - 1, deadline, [snapshot | acc])
+      after
+        remaining -> Enum.reverse(acc)
+      end
+    end
   end
 
   defp connection_loop do

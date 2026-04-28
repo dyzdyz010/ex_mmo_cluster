@@ -202,6 +202,8 @@ export class LocalPlayerController implements FrameSubscriber {
       rttMs,
       movementMode: ack.movementMode,
       velocity: ack.velocity,
+      serverFixedDtMs: ack.serverFixedDtMs,
+      fixedDtDriftMs: ack.serverFixedDtMs - DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
     });
   }
 

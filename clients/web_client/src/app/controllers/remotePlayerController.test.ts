@@ -1,6 +1,6 @@
 import { Vector3 } from "three";
 import { describe, expect, it } from "vitest";
-import { MovementMode, type RemoteMoveSnapshot } from "@domain/movement/types";
+import { AoiPriorityBand, MovementMode, type RemoteMoveSnapshot } from "@domain/movement/types";
 import { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import { RemotePlayerController } from "./remotePlayerController";
@@ -66,5 +66,33 @@ describe("RemotePlayerController", () => {
     controller.onFrame(1_000, 16);
 
     expect(controller.getRenderedPositionFor(99)).toEqual(new Vector3(25, 5, 75));
+  });
+
+  it("exposes per-cid AOI priority and interpolation diagnostics", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: {
+        ...remoteSnapshot(),
+        priorityBand: AoiPriorityBand.High,
+        priorityScore: 0.9,
+        observerDistance: 50,
+        deliveryInterval: 1,
+      },
+    });
+    controller.onFrame(1_000, 16);
+
+    expect(controller.getDebugSnapshot()).toMatchObject([
+      {
+        cid: 42,
+        bufferedSnapshots: 1,
+        latestServerTick: 7,
+        priorityBand: AoiPriorityBand.High,
+        priorityScore: 0.9,
+        observerDistance: 50,
+        deliveryInterval: 1,
+      },
+    ]);
   });
 });

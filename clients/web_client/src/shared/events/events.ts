@@ -1,5 +1,5 @@
 import type { Vector3 } from "three";
-import type { MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
+import type { AoiPriorityBand, MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
 
@@ -58,12 +58,18 @@ export type AppEvents = {
     rttMs: number;
     movementMode: string;
     velocity: Vector3;
+    serverFixedDtMs: number;
+    fixedDtDriftMs: number;
   };
   "movement:remote-snapshot-ingested": {
     cid: number;
     serverTick: number;
     position: Vector3;
     movementMode: string;
+    priorityBand?: AoiPriorityBand;
+    priorityScore?: number;
+    observerDistance?: number;
+    deliveryInterval?: number;
   };
 
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };

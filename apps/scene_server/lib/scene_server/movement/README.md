@@ -24,6 +24,9 @@ actors.
 - `Ack.auth_tick` is the client reconciliation timeline. `ack_seq` identifies
   the last accepted input command, but clients should anchor replay to
   `auth_tick` first and use `ack_seq` only as a fallback lookup.
+- `RemoteSnapshot` is created from authoritative actor state. AOI workers may
+  add observer-specific priority metadata before fan-out; movement actors do
+  not own observer priority.
 
 ## Jump / airborne contract
 

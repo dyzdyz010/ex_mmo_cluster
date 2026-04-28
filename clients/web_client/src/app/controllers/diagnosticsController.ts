@@ -37,6 +37,9 @@ export class DiagnosticsController implements FrameSubscriber {
       player_velocity: formatVector(this.localPlayer.getCurrentState()?.velocity ?? zeroVector()),
       remote_rendered: formatVector(this.remotePlayer.getRenderedPosition()),
       remote_mode: this.remotePlayer.getCurrentMovementMode(),
+      remote_count: this.remotePlayer.getVisibleEntityIds().length,
+      remote_aoi: JSON.stringify(this.remotePlayer.getDebugSnapshot()),
+      remote_clock: JSON.stringify(this.remotePlayer.getClockDebugSnapshot()),
       selected_material: this.edit.getSelectedMaterialId(),
     });
   }

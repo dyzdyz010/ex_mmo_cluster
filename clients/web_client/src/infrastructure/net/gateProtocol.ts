@@ -1,5 +1,10 @@
 import { Vector3 } from "three";
-import { MovementMode, type MovementAck, type RemoteMoveSnapshot } from "@domain/movement/types";
+import {
+  AoiPriorityBand,
+  MovementMode,
+  type MovementAck,
+  type RemoteMoveSnapshot,
+} from "@domain/movement/types";
 
 export interface AuthOkMessage {
   type: "auth_ok";
@@ -198,6 +203,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           velocity: readServerVec3AsBrowserVec3(view, 37),
           acceleration: readServerVec3AsBrowserVec3(view, 61),
           movementMode: decodeMovementMode(view.getUint8(85)),
+          ...decodeAoiPriority(view, 86),
         },
       };
     case 0x85:
@@ -258,5 +264,32 @@ function decodeMovementMode(raw: number): MovementMode {
       return MovementMode.Scripted;
     default:
       return MovementMode.Grounded;
+  }
+}
+
+function decodeAoiPriority(
+  view: DataView,
+  offset: number,
+): Partial<RemoteMoveSnapshot> {
+  if (view.byteLength < offset + 11) {
+    return {};
+  }
+
+  return {
+    priorityBand: decodePriorityBand(view.getUint8(offset)),
+    priorityScore: view.getFloat32(offset + 1, false),
+    observerDistance: view.getFloat32(offset + 5, false),
+    deliveryInterval: view.getUint16(offset + 9, false),
+  };
+}
+
+function decodePriorityBand(raw: number) {
+  switch (raw) {
+    case 1:
+      return AoiPriorityBand.Medium;
+    case 2:
+      return AoiPriorityBand.Low;
+    default:
+      return AoiPriorityBand.High;
   }
 }

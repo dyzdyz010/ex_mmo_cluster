@@ -1,6 +1,11 @@
 import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "@domain/movement/remotePlayer";
-import { MovementMode, type MovementMode as MovementModeValue } from "@domain/movement/types";
+import {
+  cloneRemoteMoveSnapshot,
+  MovementMode,
+  type MovementMode as MovementModeValue,
+  type RemoteMoveSnapshot,
+} from "@domain/movement/types";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import type { FrameSubscriber } from "../gameLoop";
@@ -12,12 +17,31 @@ interface RemoteEntityRuntime {
   renderedPosition: Vector3;
   movementMode: MovementModeValue;
   hasSnapshots: boolean;
+  lastSnapshot: RemoteMoveSnapshot | null;
+  enteredAtMs: number;
+  lastSnapshotAtMs: number | null;
 }
 
 export interface RenderedRemoteEntity {
   cid: number;
   position: Vector3;
   movementMode: MovementModeValue;
+}
+
+export interface RemoteEntityDebugSnapshot {
+  cid: number;
+  renderedPosition: string;
+  movementMode: MovementModeValue;
+  hasSnapshots: boolean;
+  enteredAtMs: number;
+  lastSnapshotAtMs: number | null;
+  latestServerTick: number | null;
+  bufferedSnapshots: number;
+  interpolationMode: "empty" | "interpolated" | "extrapolated";
+  priorityBand: string;
+  priorityScore: number | null;
+  observerDistance: number | null;
+  deliveryInterval: number | null;
 }
 
 /**
@@ -32,6 +56,8 @@ export class RemotePlayerController implements FrameSubscriber {
   private readonly renderedPosition = DEFAULT_REMOTE_POSITION.clone();
   private primaryCid: number | null = null;
   private tickDurationSecs = 0.1;
+  private serverClockOffsetMs: number | null = null;
+  private timeSyncRttMs: number | null = null;
 
   constructor(private readonly bus: EventBus<AppEvents>) {
     this.bus.on("transport:snapshot-delivered", ({ snapshot }) => {
@@ -40,12 +66,18 @@ export class RemotePlayerController implements FrameSubscriber {
       entity.hasSnapshots = true;
       entity.renderedPosition.copy(snapshot.position);
       entity.movementMode = snapshot.movementMode;
+      entity.lastSnapshot = cloneRemoteMoveSnapshot(snapshot);
+      entity.lastSnapshotAtMs = performance.now();
       this.primaryCid = snapshot.cid;
       this.bus.emit("movement:remote-snapshot-ingested", {
         cid: snapshot.cid,
         serverTick: snapshot.serverTick,
         position: snapshot.position.clone(),
         movementMode: snapshot.movementMode,
+        priorityBand: snapshot.priorityBand,
+        priorityScore: snapshot.priorityScore,
+        observerDistance: snapshot.observerDistance,
+        deliveryInterval: snapshot.deliveryInterval,
       });
     });
     this.bus.on("transport:entity-entered", ({ cid, position }) => {
@@ -73,6 +105,13 @@ export class RemotePlayerController implements FrameSubscriber {
       this.renderedPosition.copy(DEFAULT_REMOTE_POSITION);
       this.entities.clear();
       this.primaryCid = null;
+    });
+    this.bus.on("transport:time-sync", (sample) => {
+      const clientRecvTs = Date.now();
+      this.timeSyncRttMs =
+        clientRecvTs - sample.clientSendTs - (sample.serverSendTs - sample.serverRecvTs);
+      this.serverClockOffsetMs =
+        (sample.serverRecvTs - sample.clientSendTs + sample.serverSendTs - clientRecvTs) / 2;
     });
   }
 
@@ -109,6 +148,34 @@ export class RemotePlayerController implements FrameSubscriber {
     return Array.from(this.entities.keys());
   }
 
+  getDebugSnapshot(): RemoteEntityDebugSnapshot[] {
+    return Array.from(this.entities.entries()).map(([cid, entity]) => {
+      const debug = entity.state.debugSnapshot();
+      return {
+        cid,
+        renderedPosition: formatVector(entity.renderedPosition),
+        movementMode: entity.movementMode,
+        hasSnapshots: entity.hasSnapshots,
+        enteredAtMs: entity.enteredAtMs,
+        lastSnapshotAtMs: entity.lastSnapshotAtMs,
+        latestServerTick: debug.latestServerTick,
+        bufferedSnapshots: debug.bufferedSnapshots,
+        interpolationMode: debug.lastSampleMode,
+        priorityBand: entity.lastSnapshot?.priorityBand ?? "unknown",
+        priorityScore: entity.lastSnapshot?.priorityScore ?? null,
+        observerDistance: entity.lastSnapshot?.observerDistance ?? null,
+        deliveryInterval: entity.lastSnapshot?.deliveryInterval ?? null,
+      };
+    });
+  }
+
+  getClockDebugSnapshot(): { serverClockOffsetMs: number | null; timeSyncRttMs: number | null } {
+    return {
+      serverClockOffsetMs: this.serverClockOffsetMs,
+      timeSyncRttMs: this.timeSyncRttMs,
+    };
+  }
+
   getCurrentMovementMode(): MovementModeValue {
     return this.primaryEntity()?.movementMode ?? MovementMode.Grounded;
   }
@@ -121,6 +188,9 @@ export class RemotePlayerController implements FrameSubscriber {
         renderedPosition: DEFAULT_REMOTE_POSITION.clone(),
         movementMode: MovementMode.Grounded,
         hasSnapshots: false,
+        lastSnapshot: null,
+        enteredAtMs: performance.now(),
+        lastSnapshotAtMs: null,
       };
       this.entities.set(cid, entity);
     }
@@ -130,4 +200,8 @@ export class RemotePlayerController implements FrameSubscriber {
   private primaryEntity(): RemoteEntityRuntime | null {
     return this.primaryCid === null ? null : (this.entities.get(this.primaryCid) ?? null);
   }
+}
+
+function formatVector(vector: Vector3): string {
+  return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
 }

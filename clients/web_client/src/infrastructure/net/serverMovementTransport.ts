@@ -52,6 +52,14 @@ export class ServerMovementTransport implements MovementTransport {
   private readonly fallbackTransport = new SimulatedLocalMovementTransport();
   private fallbackReason: string | null = null;
   private readonly lastResetPosition = new Vector3(-350, 650, -280);
+  private sentInputCount = 0;
+  private receivedMessageCount = 0;
+  private receivedAckCount = 0;
+  private receivedRemoteSnapshotCount = 0;
+  private lastAckSeq: number | null = null;
+  private lastRemoteTickByCid = new Map<number, number>();
+  private lastTimeSyncOffsetMs: number | null = null;
+  private lastError: string | null = null;
 
   constructor(
     private readonly logger: ObserveLog,
@@ -112,6 +120,14 @@ export class ServerMovementTransport implements MovementTransport {
       queuedRemoteEnters: this.remoteEntityEnters.length,
       queuedRemoteLeaves: this.remoteEntityLeaves.length,
       queuedTimeSyncSamples: this.timeSyncSamples.length,
+      sentInputCount: this.sentInputCount,
+      receivedMessageCount: this.receivedMessageCount,
+      receivedAckCount: this.receivedAckCount,
+      receivedRemoteSnapshotCount: this.receivedRemoteSnapshotCount,
+      lastAckSeq: this.lastAckSeq,
+      lastRemoteTickByCid: Object.fromEntries(this.lastRemoteTickByCid),
+      lastTimeSyncOffsetMs: this.lastTimeSyncOffsetMs,
+      lastError: this.lastError,
       authBaseUrl: this.authBaseUrl,
       webSocketUrl: this.webSocketUrl,
     };
@@ -144,6 +160,7 @@ export class ServerMovementTransport implements MovementTransport {
 
     this.socket.send(encodeMovementInput(frame));
     this.sentAtBySeq.set(frame.seq, nowMs);
+    this.sentInputCount += 1;
     this.logger.emit("transport", "movement_sent", {
       seq: frame.seq,
       tick: frame.clientTick,
@@ -199,6 +216,7 @@ export class ServerMovementTransport implements MovementTransport {
       this.openSocket();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
+      this.lastError = reason;
       this.logger.emit("transport", "bootstrap_error", {
         mode: SERVER_TRANSPORT_MODE,
         reason,
@@ -227,6 +245,7 @@ export class ServerMovementTransport implements MovementTransport {
     socket.onopen = () => this.handleOpen(socket);
     socket.onmessage = (event) => this.handleMessage(event.data);
     socket.onerror = () => {
+      this.lastError = "socket_error";
       this.logger.emit("transport", "socket_error", { mode: SERVER_TRANSPORT_MODE });
     };
     socket.onclose = (event) => {
@@ -271,8 +290,10 @@ export class ServerMovementTransport implements MovementTransport {
       return;
     }
 
+    this.receivedMessageCount += 1;
     const message = decodeServerMessage(data);
     if (!message) {
+      this.lastError = `message_ignored:${data.byteLength}`;
       this.logger.emit("transport", "message_ignored", {
         mode: SERVER_TRANSPORT_MODE,
         bytes: data.byteLength,
@@ -317,9 +338,22 @@ export class ServerMovementTransport implements MovementTransport {
           sentAtMs: this.sentAtBySeq.get(message.ack.ackSeq) ?? performance.now(),
         });
         this.sentAtBySeq.delete(message.ack.ackSeq);
+        this.receivedAckCount += 1;
+        this.lastAckSeq = message.ack.ackSeq;
         break;
       case "player_move":
         this.remoteSnapshots.push(message.snapshot);
+        this.receivedRemoteSnapshotCount += 1;
+        this.lastRemoteTickByCid.set(message.snapshot.cid, message.snapshot.serverTick);
+        this.logger.emit("transport", "remote_snapshot_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          cid: message.snapshot.cid,
+          tick: message.snapshot.serverTick,
+          priority_band: message.snapshot.priorityBand ?? "unknown",
+          priority_score: message.snapshot.priorityScore ?? -1,
+          observer_distance: message.snapshot.observerDistance ?? -1,
+          delivery_interval: message.snapshot.deliveryInterval ?? -1,
+        });
         break;
       case "player_enter":
         this.remoteEntityEnters.push({ cid: message.cid, position: message.position });
@@ -334,6 +368,8 @@ export class ServerMovementTransport implements MovementTransport {
           serverRecvTs: message.serverRecvTs,
           serverSendTs: message.serverSendTs,
         });
+        this.lastTimeSyncOffsetMs =
+          (message.serverRecvTs + message.serverSendTs) / 2 - Date.now();
         break;
       case "heartbeat_reply":
         this.logger.emit("transport", "heartbeat_reply", { mode: SERVER_TRANSPORT_MODE });

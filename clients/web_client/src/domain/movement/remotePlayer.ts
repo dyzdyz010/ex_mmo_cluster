@@ -18,10 +18,20 @@ interface BufferedSnapshot {
 export interface RemoteMotionSample {
   position: Vector3;
   velocity: Vector3;
+  mode: "empty" | "interpolated" | "extrapolated";
+}
+
+export interface RemoteInterpolationDebug {
+  bufferedSnapshots: number;
+  latestServerTick: number | null;
+  lastSampleMode: "empty" | "interpolated" | "extrapolated";
+  interpolationDelaySecs: number;
+  maxExtrapolationSecs: number;
 }
 
 export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
+  private lastSampleMode: RemoteMotionSample["mode"] = "empty";
 
   constructor(
     private options: { tickDurationSecs: number } = {
@@ -63,26 +73,33 @@ export class RemotePlayerState {
 
   sampleMotion(nowSecs: number): RemoteMotionSample {
     if (this.snapshots.length === 0) {
+      this.lastSampleMode = "empty";
       return {
         position: new Vector3(),
         velocity: new Vector3(),
+        mode: "empty",
       };
     }
 
     if (this.snapshots.length === 1) {
       const only = this.snapshots[0];
       if (!only) {
+        this.lastSampleMode = "empty";
         return {
           position: new Vector3(),
           velocity: new Vector3(),
+          mode: "empty",
         };
       }
-      return extrapolateSingle(only, nowSecs);
+      const sample = extrapolateSingle(only, nowSecs);
+      this.lastSampleMode = sample.mode;
+      return sample;
     }
 
     const latest = this.snapshots.at(-1);
     if (!latest) {
-      return { position: new Vector3(), velocity: new Vector3() };
+      this.lastSampleMode = "empty";
+      return { position: new Vector3(), velocity: new Vector3(), mode: "empty" };
     }
 
     const latestServerTime = this.snapshotTimeSecs(latest.snapshot.serverTick);
@@ -100,11 +117,30 @@ export class RemotePlayerState {
       const previousTime = this.snapshotTimeSecs(previous.snapshot.serverTick);
       const nextTime = this.snapshotTimeSecs(next.snapshot.serverTick);
       if (playbackServerTime >= previousTime && playbackServerTime <= nextTime) {
-        return interpolatePair(previous, next, playbackServerTime, this.options.tickDurationSecs);
+        const sample = interpolatePair(
+          previous,
+          next,
+          playbackServerTime,
+          this.options.tickDurationSecs,
+        );
+        this.lastSampleMode = sample.mode;
+        return sample;
       }
     }
 
-    return extrapolateSingle(latest, nowSecs);
+    const sample = extrapolateSingle(latest, nowSecs);
+    this.lastSampleMode = sample.mode;
+    return sample;
+  }
+
+  debugSnapshot(): RemoteInterpolationDebug {
+    return {
+      bufferedSnapshots: this.snapshots.length,
+      latestServerTick: this.snapshots.at(-1)?.snapshot.serverTick ?? null,
+      lastSampleMode: this.lastSampleMode,
+      interpolationDelaySecs: INTERPOLATION_DELAY_SECS,
+      maxExtrapolationSecs: MAX_REMOTE_EXTRAPOLATION_SECS,
+    };
   }
 
   private snapshotTimeSecs(serverTick: number): number {
@@ -132,7 +168,7 @@ function interpolatePair(
     t,
   );
   const velocity = previous.snapshot.velocity.clone().lerp(next.snapshot.velocity, t);
-  return { position, velocity };
+  return { position, velocity, mode: "interpolated" };
 }
 
 function extrapolateSingle(entry: BufferedSnapshot, nowSecs: number): RemoteMotionSample {
@@ -145,6 +181,7 @@ function extrapolateSingle(entry: BufferedSnapshot, nowSecs: number): RemoteMoti
     velocity: entry.snapshot.velocity
       .clone()
       .add(entry.snapshot.acceleration.clone().multiplyScalar(dt)),
+    mode: "extrapolated",
   };
 }
 

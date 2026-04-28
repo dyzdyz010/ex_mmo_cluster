@@ -110,8 +110,18 @@ export class DevToolsCli implements CliCommandHandler {
             position: formatVector(this.deps.remotePlayer.getRenderedPosition()),
             movementMode: this.deps.remotePlayer.getCurrentMovementMode(),
             interpolation_delay_secs: INTERPOLATION_DELAY_SECS,
+            clock: this.deps.remotePlayer.getClockDebugSnapshot(),
+            entities: this.deps.remotePlayer.getDebugSnapshot(),
           },
         });
+      case "aoi":
+        return this.ok(command, "AOI remote entities", {
+          visibleEntityIds: this.deps.remotePlayer.getVisibleEntityIds(),
+          clock: this.deps.remotePlayer.getClockDebugSnapshot(),
+          entities: this.deps.remotePlayer.getDebugSnapshot(),
+        });
+      case "remote":
+        return this.cmdRemote(command, args);
       case "jump":
         this.deps.localPlayer.requestJump("cli");
         return this.ok(command, "jump queued", this.playerData());
@@ -119,6 +129,18 @@ export class DevToolsCli implements CliCommandHandler {
         return this.ok(command, "transport snapshot", this.transportData());
       case "reconcile_stats":
         return this.ok(command, "reconcile stats", this.deps.localPlayer.getGovernanceStats());
+      case "sync_stats":
+        return this.ok(command, "movement sync stats", {
+          local: {
+            governance: this.deps.localPlayer.getGovernanceStats(),
+            jitterMs: this.deps.localPlayer.getCurrentJitterMs(),
+            softPositionError: this.deps.localPlayer.getCurrentSoftPositionError(),
+            pendingCorrection: formatVector(this.deps.localPlayer.getPendingCorrection()),
+          },
+          clock: this.deps.remotePlayer.getClockDebugSnapshot(),
+          remote: this.deps.remotePlayer.getDebugSnapshot(),
+          transport: this.transportData(),
+        });
       case "edit_stats":
         return this.ok(command, "edit stats", { ...this.deps.world.store.editStats });
       case "frame_trace_start":
@@ -219,6 +241,20 @@ export class DevToolsCli implements CliCommandHandler {
     return this.ok(command, `frame trace started for ${safeFrames} frames`, {
       frames: safeFrames,
     });
+  }
+
+  private cmdRemote(command: string, args: string[]): CliCommandResult {
+    const cid = Number.parseInt(args[0] ?? "", 10);
+    if (!Number.isFinite(cid)) {
+      return { ok: false, command, text: "usage: remote <cid>" };
+    }
+
+    const entity = this.deps.remotePlayer.getDebugSnapshot().find((item) => item.cid === cid);
+    if (!entity) {
+      return { ok: false, command, text: `remote entity not visible: ${cid}` };
+    }
+
+    return this.ok(command, `remote entity ${cid}`, entity);
   }
 
   private cmdPrefabCapture(command: string, args: string[]): CliCommandResult {
@@ -486,6 +522,7 @@ export class DevToolsCli implements CliCommandHandler {
       actorDisplay: this.deps.render.getActorDisplaySnapshot(),
       player: this.playerData(),
       remote: { position: formatVector(this.deps.remotePlayer.getRenderedPosition()) },
+      aoi: this.deps.remotePlayer.getDebugSnapshot(),
       camera: { position: formatVector(this.deps.render.getCameraPosition()) },
       transportState: this.transportData(),
       materials: listMaterialDefinitions(),

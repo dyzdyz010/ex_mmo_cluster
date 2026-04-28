@@ -120,25 +120,29 @@ defmodule GateServer.TcpConnection do
           cid: snapshot.cid,
           server_tick: snapshot.server_tick,
           location: snapshot.position,
-          peer: udp_peer
+          peer: udp_peer,
+          priority_band: snapshot.priority_band,
+          priority_score: snapshot.priority_score,
+          observer_distance: snapshot.observer_distance,
+          delivery_interval: snapshot.delivery_interval
         }
       end)
 
-      GateServer.UdpAcceptor.send_to_peer(
-        udp_peer,
-        {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-         snapshot.acceleration, snapshot.movement_mode}
-      )
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, player_move_message(snapshot))
     else
       GateServer.CliObserve.emit("player_move_push_tcp", fn ->
-        %{cid: snapshot.cid, server_tick: snapshot.server_tick, location: snapshot.position}
+        %{
+          cid: snapshot.cid,
+          server_tick: snapshot.server_tick,
+          location: snapshot.position,
+          priority_band: snapshot.priority_band,
+          priority_score: snapshot.priority_score,
+          observer_distance: snapshot.observer_distance,
+          delivery_interval: snapshot.delivery_interval
+        }
       end)
 
-      send_encoded(
-        socket,
-        {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-         snapshot.acceleration, snapshot.movement_mode}
-      )
+      send_encoded(socket, player_move_message(snapshot))
     end
 
     {:noreply, state}
@@ -921,5 +925,21 @@ defmodule GateServer.TcpConnection do
     else
       raise ArgumentError, "expected remote snapshot map, got: #{inspect(snapshot)}"
     end
+  end
+
+  defp player_move_message(%RemoteSnapshot{
+         priority_band: nil,
+         priority_score: nil,
+         observer_distance: nil,
+         delivery_interval: nil
+       } = snapshot) do
+    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
+     snapshot.acceleration, snapshot.movement_mode}
+  end
+
+  defp player_move_message(%RemoteSnapshot{} = snapshot) do
+    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
+     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band, snapshot.priority_score,
+     snapshot.observer_distance, snapshot.delivery_interval}
   end
 end

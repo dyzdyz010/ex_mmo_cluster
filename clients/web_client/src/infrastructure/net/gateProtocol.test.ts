@@ -1,6 +1,7 @@
 import { Vector2, Vector3 } from "three";
 import { decodeServerMessage, encodeMovementInput } from "./gateProtocol";
 import {
+  AoiPriorityBand,
   CorrectionFlag,
   MovementFlag,
   MovementMode,
@@ -94,6 +95,31 @@ describe("gate movement protocol", () => {
     expect(message?.type).toBe("player_move");
     if (message?.type !== "player_move") return;
     expect(message.snapshot.movementMode).toBe(MovementMode.Airborne);
+  });
+
+  it("decodes optional AOI priority metadata on remote snapshots", () => {
+    const buffer = new ArrayBuffer(97);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x83);
+    view.setBigInt64(1, 42n, false);
+    view.setUint32(9, 7, false);
+    writeVec3(view, 13, 1, 2, 3);
+    writeVec3(view, 37, 4, 5, 6);
+    writeVec3(view, 61, 7, 8, 9);
+    view.setUint8(85, 0);
+    view.setUint8(86, 1);
+    view.setFloat32(87, 0.75, false);
+    view.setFloat32(91, 125.5, false);
+    view.setUint16(95, 2, false);
+
+    const message = decodeServerMessage(buffer);
+
+    expect(message?.type).toBe("player_move");
+    if (message?.type !== "player_move") return;
+    expect(message.snapshot.priorityBand).toBe(AoiPriorityBand.Medium);
+    expect(message.snapshot.priorityScore).toBeCloseTo(0.75, 4);
+    expect(message.snapshot.observerDistance).toBeCloseTo(125.5, 4);
+    expect(message.snapshot.deliveryInterval).toBe(2);
   });
 
   it("decodes AOI enter and leave messages for remote entity lifetime", () => {

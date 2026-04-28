@@ -279,6 +279,19 @@ defmodule GateServer.Codec do
 
   # ── Broadcast: player move snapshot ──
   def encode(
+        {:player_move, cid, server_tick, {x, y, z}, {vx, vy, vz}, {ax, ay, az}, movement_mode,
+         priority_band, priority_score, observer_distance, delivery_interval}
+      )
+      when is_integer(delivery_interval) and delivery_interval > 0 do
+    {:ok,
+     <<@msg_player_move, cid::64-big, server_tick::32-big, x::float-64-big, y::float-64-big,
+       z::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big,
+       ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
+       encode_priority_band(priority_band)::8, (priority_score * 1.0)::float-32-big,
+       (observer_distance * 1.0)::float-32-big, delivery_interval::16-big>>}
+  end
+
+  def encode(
         {:player_move, cid, server_tick, {x, y, z}, {vx, vy, vz}, {ax, ay, az}, movement_mode}
       ) do
     {:ok,
@@ -376,6 +389,12 @@ defmodule GateServer.Codec do
   defp encode_movement_mode(:scripted), do: 3
   defp encode_movement_mode(mode) when is_integer(mode), do: mode
   defp encode_movement_mode(_mode), do: 0
+
+  defp encode_priority_band(:high), do: 0
+  defp encode_priority_band(:medium), do: 1
+  defp encode_priority_band(:low), do: 2
+  defp encode_priority_band(value) when is_integer(value), do: value
+  defp encode_priority_band(_value), do: 0
 
   defp encode_bool(true), do: 1
   defp encode_bool(_), do: 0

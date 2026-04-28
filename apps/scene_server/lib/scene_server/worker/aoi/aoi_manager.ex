@@ -50,6 +50,24 @@ defmodule SceneServer.AoiManager do
     GenServer.call(__MODULE__, {:get_items_with_cids, cids})
   end
 
+  @spec get_entries_with_cids([integer()]) :: [map()]
+  @doc """
+  Resolves AOI entries for the provided CIDs.
+
+  Entries include `:cid`, `:aoi_pid`, actor metadata, and the latest AOI
+  location. This is the read side used by priority sync; `AoiManager` owns the
+  CID index while each `AoiItem` owns its process-local subscription list.
+  """
+  def get_entries_with_cids(cids) do
+    GenServer.call(__MODULE__, {:get_entries_with_cids, cids})
+  end
+
+  @spec update_item_location(integer(), {float(), float(), float()}) :: :ok
+  @doc "Updates the manager-side location cache for one AOI item."
+  def update_item_location(cid, location) do
+    GenServer.cast(__MODULE__, {:update_item_location, cid, location})
+  end
+
   @spec get_nearby_actor_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
   @doc "Returns nearby actor PIDs around a location, excluding specified CIDs."
   def get_nearby_actor_pids(location, radius, exclude_cids \\ []) do
@@ -84,7 +102,13 @@ defmodule SceneServer.AoiManager do
 
     new_aois =
       aois
-      |> Map.put_new(cid, %{aoi_pid: apid, actor_pid: actor_pid, actor_meta: actor_meta})
+      |> Map.put_new(cid, %{
+        cid: cid,
+        aoi_pid: apid,
+        actor_pid: actor_pid,
+        actor_meta: actor_meta,
+        location: location
+      })
 
     {:reply, {:ok, apid}, %{state | aois: new_aois}}
   end
@@ -101,6 +125,16 @@ defmodule SceneServer.AoiManager do
       for {k, %{aoi_pid: aoi_pid}} <- aois, cid <- cids, k == cid, do: aoi_pid
 
     {:reply, items, state}
+  end
+
+  @impl true
+  def handle_call({:get_entries_with_cids, cids}, _from, %{aois: aois} = state) do
+    entries =
+      cids
+      |> Enum.map(&Map.get(aois, &1))
+      |> Enum.reject(&is_nil/1)
+
+    {:reply, entries, state}
   end
 
   @impl true
@@ -134,6 +168,19 @@ defmodule SceneServer.AoiManager do
       |> Enum.reject(&is_nil/1)
 
     {:reply, actor_pids, state}
+  end
+
+  @impl true
+  def handle_cast({:update_item_location, cid, location}, %{aois: aois} = state) do
+    next_aois =
+      Map.update(aois, cid, nil, fn
+        nil -> nil
+        entry -> %{entry | location: location}
+      end)
+      |> Enum.reject(fn {_cid, entry} -> is_nil(entry) end)
+      |> Map.new()
+
+    {:noreply, %{state | aois: next_aois}}
   end
 
   # Internal functions

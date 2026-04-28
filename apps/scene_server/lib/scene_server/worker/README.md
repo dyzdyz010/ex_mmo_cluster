@@ -16,10 +16,13 @@ state.
 - `aoi/aoi_manager.ex`
   - shared spatial index and CID → actor lookup
 - `aoi/aoi_item.ex`
-  - per-actor AOI broadcast adapter
+  - per-actor AOI broadcast adapter and priority fan-out executor
+- `../aoi/priority.ex`
+  - pure AOI priority/cadence policy used by `aoi_item.ex`
 
 ## Design rule
 
 Workers in this directory own runtime state. Reusable value objects and pure
 logic should live in sibling directories such as `movement/`, `combat/`, and
-`npc/`.
+`npc/`. AOI priority decisions live in `../aoi/`; AOI workers only apply those
+decisions to their owned subscription state.

@@ -17,6 +17,7 @@ defmodule SceneServer.Aoi.AoiItem do
   require Logger
 
   # alias SceneServer.Native.CoordinateSystem
+  alias SceneServer.Aoi.Priority
   alias SceneServer.Combat.EffectEvent
   alias SceneServer.Movement.RemoteSnapshot
   alias SceneServer.Native.Octree
@@ -242,6 +243,7 @@ defmodule SceneServer.Aoi.AoiItem do
         } = state
       ) do
     {:ok, item_ref} = replace_item(cid, snapshot.position, system, item)
+    SceneServer.AoiManager.update_item_location(cid, snapshot.position)
     broadcast_action_player_move(snapshot, subscribees)
 
     {:noreply, %{state | item_ref: item_ref, location: snapshot.position}}
@@ -284,7 +286,7 @@ defmodule SceneServer.Aoi.AoiItem do
         } = state
       ) do
     # aoi_pids = get_aoi_pids(system, item, 50000.0)
-    aoi_pids =
+    aoi_targets =
       refresh_aoi_players(
         system,
         item,
@@ -299,7 +301,7 @@ defmodule SceneServer.Aoi.AoiItem do
     # Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
     # Logger.debug("Coordinate System: #{inspect(cids, pretty: true)}", ansi_color: :yellow)
 
-    {:noreply, %{state | aoi_timer: make_aoi_timer(), subscribees: aoi_pids}}
+    {:noreply, %{state | aoi_timer: make_aoi_timer(), subscribees: aoi_targets}}
     # {:noreply, state}
   end
 
@@ -459,10 +461,10 @@ defmodule SceneServer.Aoi.AoiItem do
           integer(),
           vector(),
           float(),
-          [pid()],
+          [Priority.target()],
           atom(),
           String.t()
-        ) :: no_return()
+        ) :: [Priority.target()]
   defp refresh_aoi_players(
          system,
          item,
@@ -473,9 +475,11 @@ defmodule SceneServer.Aoi.AoiItem do
          actor_kind,
          actor_name
        ) do
-    aoi_pids = get_aoi_players(system, item, interest_radius)
-    leave_pids = subscribees -- aoi_pids
-    enter_pids = aoi_pids -- subscribees
+    aoi_targets = get_aoi_targets(system, item, location, interest_radius)
+    old_pids = subscriber_pids(subscribees)
+    new_pids = subscriber_pids(aoi_targets)
+    leave_pids = old_pids -- new_pids
+    enter_pids = new_pids -- old_pids
 
     # Logger.debug("旧玩家列表：#{inspect(subscribees, pretty: true)}，新玩家列表：#{inspect(aoi_pids, pretty: true)}")
 
@@ -487,59 +491,110 @@ defmodule SceneServer.Aoi.AoiItem do
       broadcast_action_player_enter(cid, location, actor_kind, actor_name, enter_pids)
     end
 
-    aoi_pids
+    SceneServer.CliObserve.emit("aoi_refresh", %{
+      cid: cid,
+      subscriber_count: length(aoi_targets),
+      enter_count: length(enter_pids),
+      leave_count: length(leave_pids),
+      high_priority: count_band(aoi_targets, :high),
+      medium_priority: count_band(aoi_targets, :medium),
+      low_priority: count_band(aoi_targets, :low)
+    })
+
+    aoi_targets
   end
 
-  @spec get_aoi_players(
+  @spec get_aoi_targets(
           Octree.Types.octree(),
           Octree.Types.octree_item(),
+          vector(),
           float()
-        ) :: [pid()]
-  defp get_aoi_players(system, item, distance) do
+        ) :: [Priority.target()]
+  defp get_aoi_targets(system, item, location, distance) do
     cids = Octree.get_in_bound_except(system, item, {distance, distance, distance})
     # {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
     # data = CoordinateSystem.get_item_raw(item)
     # Logger.debug("#{inspect(data, pretty: true)}")
-    aoi_pids = SceneServer.AoiManager.get_items_with_cids(cids)
 
-    aoi_pids
+    cids
+    |> SceneServer.AoiManager.get_entries_with_cids()
+    |> Priority.build_targets(location, distance)
   end
 
   # defp broadcast_action_movement(movement, pids) do
   # end
 
-  @spec broadcast_action_player_leave(integer(), [pid()]) :: :ok
-  defp broadcast_action_player_leave(cid, pids) do
-    Enum.each(pids, &GenServer.cast(&1, {:player_leave, cid}))
+  @spec broadcast_action_player_leave(integer(), [pid() | Priority.target()]) :: :ok
+  defp broadcast_action_player_leave(cid, subscribers) do
+    subscribers
+    |> subscriber_pids()
+    |> Enum.each(&GenServer.cast(&1, {:player_leave, cid}))
   end
 
-  @spec broadcast_action_player_enter(integer(), vector(), atom(), String.t(), [pid()]) :: :ok
-  defp broadcast_action_player_enter(cid, location, actor_kind, actor_name, pids) do
-    Enum.each(pids, fn pid ->
+  @spec broadcast_action_player_enter(integer(), vector(), atom(), String.t(), [
+          pid() | Priority.target()
+        ]) :: :ok
+  defp broadcast_action_player_enter(cid, location, actor_kind, actor_name, subscribers) do
+    subscribers
+    |> subscriber_pids()
+    |> Enum.each(fn pid ->
       GenServer.cast(pid, {:player_enter, cid, location})
       GenServer.cast(pid, {:actor_identity, cid, actor_kind, actor_name})
     end)
   end
 
-  @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid()]) :: :ok
-  defp broadcast_action_player_move(%RemoteSnapshot{} = snapshot, pids) do
-    Enum.each(pids, &GenServer.cast(&1, {:player_move, snapshot}))
+  @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid() | Priority.target()]) :: :ok
+  defp broadcast_action_player_move(%RemoteSnapshot{} = snapshot, subscribers) do
+    {sent, skipped, bands} =
+      Enum.reduce(subscribers, {0, 0, %{}}, fn subscriber, {sent, skipped, bands} ->
+        case priority_delivery(snapshot, subscriber) do
+          {:send, pid, decorated, band} ->
+            GenServer.cast(pid, {:player_move, decorated})
+            {sent + 1, skipped, Map.update(bands, band, 1, &(&1 + 1))}
+
+          :skip ->
+            {sent, skipped + 1, bands}
+        end
+      end)
+
+    if sent > 0 or skipped > 0 do
+      SceneServer.CliObserve.emit("aoi_priority_snapshot", %{
+        cid: snapshot.cid,
+        server_tick: snapshot.server_tick,
+        sent: sent,
+        skipped: skipped,
+        high_priority: Map.get(bands, :high, 0),
+        medium_priority: Map.get(bands, :medium, 0),
+        low_priority: Map.get(bands, :low, 0)
+      })
+    end
+
+    :ok
   end
 
-  @spec broadcast_action_chat_message(integer(), binary(), binary(), [pid()]) :: any()
-  defp broadcast_action_chat_message(cid, from_name, text, pids) do
-    pids
-    |> Enum.map(&Task.async(fn -> GenServer.cast(&1, {:chat_message, cid, from_name, text}) end))
-    |> Enum.map(&Task.await(&1))
-  end
-
-  @spec broadcast_action_skill_event(integer(), integer(), vector(), [pid()]) :: any()
-  defp broadcast_action_skill_event(cid, skill_id, location, pids) do
-    pids
-    |> Enum.map(
-      &Task.async(fn -> GenServer.cast(&1, {:skill_event, cid, skill_id, location}) end)
+  @spec broadcast_action_chat_message(integer(), binary(), binary(), [
+          pid() | Priority.target()
+        ]) :: any()
+  defp broadcast_action_chat_message(cid, from_name, text, subscribers) do
+    subscribers
+    |> subscriber_pids()
+    |> Task.async_stream(fn pid -> GenServer.cast(pid, {:chat_message, cid, from_name, text}) end,
+      timeout: :infinity
     )
-    |> Enum.map(&Task.await(&1))
+    |> Enum.to_list()
+  end
+
+  @spec broadcast_action_skill_event(integer(), integer(), vector(), [
+          pid() | Priority.target()
+        ]) :: any()
+  defp broadcast_action_skill_event(cid, skill_id, location, subscribers) do
+    subscribers
+    |> subscriber_pids()
+    |> Task.async_stream(
+      fn pid -> GenServer.cast(pid, {:skill_event, cid, skill_id, location}) end,
+      timeout: :infinity
+    )
+    |> Enum.to_list()
   end
 
   @spec broadcast_action_player_state(
@@ -547,14 +602,16 @@ defmodule SceneServer.Aoi.AoiItem do
           non_neg_integer(),
           non_neg_integer(),
           boolean(),
-          [pid()]
+          [pid() | Priority.target()]
         ) :: any()
-  defp broadcast_action_player_state(cid, hp, max_hp, alive, pids) do
-    pids
-    |> Enum.map(
-      &Task.async(fn -> GenServer.cast(&1, {:player_state, cid, hp, max_hp, alive}) end)
+  defp broadcast_action_player_state(cid, hp, max_hp, alive, subscribers) do
+    subscribers
+    |> subscriber_pids()
+    |> Task.async_stream(
+      fn pid -> GenServer.cast(pid, {:player_state, cid, hp, max_hp, alive}) end,
+      timeout: :infinity
     )
-    |> Enum.map(&Task.await(&1))
+    |> Enum.to_list()
   end
 
   @spec broadcast_action_combat_hit(
@@ -564,7 +621,7 @@ defmodule SceneServer.Aoi.AoiItem do
           non_neg_integer(),
           non_neg_integer(),
           vector(),
-          [pid()]
+          [pid() | Priority.target()]
         ) :: any()
   defp broadcast_action_combat_hit(
          source_cid,
@@ -573,29 +630,59 @@ defmodule SceneServer.Aoi.AoiItem do
          damage,
          hp_after,
          location,
-         pids
+         subscribers
        ) do
-    pids
-    |> Enum.map(
-      &Task.async(fn ->
+    subscribers
+    |> subscriber_pids()
+    |> Task.async_stream(
+      fn pid ->
         GenServer.cast(
-          &1,
+          pid,
           {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
         )
-      end)
+      end,
+      timeout: :infinity
     )
-    |> Enum.map(&Task.await(&1))
+    |> Enum.to_list()
   end
 
-  @spec broadcast_action_effect_event(EffectEvent.t(), [pid()]) :: any()
-  defp broadcast_action_effect_event(%EffectEvent{} = effect_event, pids) do
-    pids
+  @spec broadcast_action_effect_event(EffectEvent.t(), [pid() | Priority.target()]) :: any()
+  defp broadcast_action_effect_event(%EffectEvent{} = effect_event, subscribers) do
+    subscribers
+    |> subscriber_pids()
     |> Enum.uniq()
-    |> Enum.map(
-      &Task.async(fn ->
-        GenServer.cast(&1, {:effect_cue, effect_event})
-      end)
+    |> Task.async_stream(fn pid -> GenServer.cast(pid, {:effect_cue, effect_event}) end,
+      timeout: :infinity
     )
-    |> Enum.map(&Task.await(&1))
+    |> Enum.to_list()
+  end
+
+  defp priority_delivery(%RemoteSnapshot{} = snapshot, %{aoi_pid: pid} = target) do
+    if Priority.due?(snapshot, target) do
+      {:send, pid, Priority.decorate_snapshot(snapshot, target), target.priority_band}
+    else
+      :skip
+    end
+  end
+
+  defp priority_delivery(%RemoteSnapshot{} = snapshot, pid) when is_pid(pid) do
+    {:send, pid, snapshot, :legacy}
+  end
+
+  defp subscriber_pids(subscribers) do
+    subscribers
+    |> Enum.map(&subscriber_pid/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp subscriber_pid(%{aoi_pid: pid}) when is_pid(pid), do: pid
+  defp subscriber_pid(pid) when is_pid(pid), do: pid
+  defp subscriber_pid(_subscriber), do: nil
+
+  defp count_band(targets, band) do
+    Enum.count(targets, fn
+      %{priority_band: ^band} -> true
+      _target -> false
+    end)
   end
 end

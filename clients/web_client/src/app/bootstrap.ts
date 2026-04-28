@@ -154,14 +154,20 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
       pending_inputs: payload.pendingInputs,
       replayed_frames: payload.replayedFrames,
       rtt_ms: payload.rttMs.toFixed(1),
+      server_fixed_dt_ms: payload.serverFixedDtMs,
+      fixed_dt_drift_ms: payload.fixedDtDriftMs,
     });
   });
-  bus.on("movement:remote-snapshot-ingested", ({ cid, serverTick, position, movementMode }) => {
+  bus.on("movement:remote-snapshot-ingested", (payload) => {
     logger.emit("movement", "remote_snapshot", {
-      cid,
-      tick: serverTick,
-      position: formatVector(position),
-      movement_mode: movementMode,
+      cid: payload.cid,
+      tick: payload.serverTick,
+      position: formatVector(payload.position),
+      movement_mode: payload.movementMode,
+      priority_band: payload.priorityBand ?? "unknown",
+      priority_score: payload.priorityScore ?? -1,
+      observer_distance: payload.observerDistance ?? -1,
+      delivery_interval: payload.deliveryInterval ?? -1,
     });
   });
   bus.on("input:jump", ({ source }) => {
