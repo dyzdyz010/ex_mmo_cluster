@@ -5,7 +5,10 @@ import { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
 import { RemotePlayerController } from "./remotePlayerController";
 
-function remoteSnapshot(movementMode = MovementMode.Airborne): RemoteMoveSnapshot {
+function remoteSnapshot(
+  movementMode: MovementMode = MovementMode.Airborne,
+  overrides: Partial<RemoteMoveSnapshot> = {},
+): RemoteMoveSnapshot {
   return {
     cid: 42,
     serverTick: 7,
@@ -13,6 +16,7 @@ function remoteSnapshot(movementMode = MovementMode.Airborne): RemoteMoveSnapsho
     velocity: new Vector3(0, 10, 0),
     acceleration: new Vector3(0, -9, 0),
     movementMode,
+    ...overrides,
   };
 }
 
@@ -58,6 +62,56 @@ describe("RemotePlayerController", () => {
     expect(controller.getVisibleEntityIds().sort()).toEqual([42, 77]);
     expect(controller.getRenderedPositionFor(42).x).toBeCloseTo(10, 4);
     expect(controller.getRenderedPositionFor(77).x).toBeCloseTo(100, 4);
+  });
+
+  it("does not snap the rendered position to every delivered snapshot", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: remoteSnapshot(MovementMode.Grounded, {
+        serverTick: 1,
+        position: new Vector3(10, 100, 10),
+        velocity: new Vector3(0, 0, 0),
+        acceleration: new Vector3(0, 0, 0),
+      }),
+    });
+    controller.onFrame(1_000, 16);
+
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: remoteSnapshot(MovementMode.Grounded, {
+        serverTick: 2,
+        position: new Vector3(110, 100, 10),
+        velocity: new Vector3(0, 0, 0),
+        acceleration: new Vector3(0, 0, 0),
+      }),
+    });
+
+    expect(controller.getRenderedPositionFor(42).x).toBeCloseTo(10, 4);
+  });
+
+  it("keeps a grounded baseline for remote airborne display", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new RemotePlayerController(bus);
+
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: remoteSnapshot(MovementMode.Grounded, {
+        serverTick: 1,
+        position: new Vector3(10, 100, 10),
+      }),
+    });
+    controller.onFrame(1_000, 16);
+    bus.emit("transport:snapshot-delivered", {
+      snapshot: remoteSnapshot(MovementMode.Airborne, {
+        serverTick: 2,
+        position: new Vector3(10, 145, 10),
+      }),
+    });
+
+    expect(controller.getRenderedEntities()[0]).toMatchObject({
+      movementMode: MovementMode.Airborne,
+      movementGroundY: 100,
+    });
   });
 
   it("removes remote entities when AOI leave arrives", () => {

@@ -88,6 +88,7 @@ defmodule SceneServer.PlayerCharacter do
        net_delay: 0,
        skill_casts: %{},
        movement_timer: nil,
+       aoi_monitor_ref: nil,
        respawn_timer: nil
      }, {:continue, {:load, client_timestamp}}}
   end
@@ -106,6 +107,7 @@ defmodule SceneServer.PlayerCharacter do
          {:ok, aoi_ref} <-
            enter_scene(cid, client_timestamp, location, connection_pid, character_profile.name) do
       movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
+      aoi_monitor_ref = Process.monitor(aoi_ref)
       combat_state = state.combat_state
 
       GenServer.cast(
@@ -118,6 +120,7 @@ defmodule SceneServer.PlayerCharacter do
          state
          | physys_ref: physys_ref,
            aoi_ref: aoi_ref,
+           aoi_monitor_ref: aoi_monitor_ref,
            character_data_ref: cd_ref,
            movement_timer: movement_timer
        }}
@@ -412,11 +415,43 @@ defmodule SceneServer.PlayerCharacter do
 
   @impl true
   def handle_info(
+        {:DOWN, monitor_ref, :process, aoi_ref, reason},
+        %{aoi_monitor_ref: monitor_ref, aoi_ref: aoi_ref} = state
+      ) do
+    case recover_aoi_adapter(state, reason) do
+      {:ok, next_state} ->
+        {:noreply, next_state}
+
+      {:error, recover_reason} ->
+        SceneServer.CliObserve.emit("player_aoi_recover_error", %{
+          cid: state.cid,
+          down_reason: reason,
+          recover_reason: recover_reason
+        })
+
+        Process.send_after(self(), :recover_aoi, 250)
+        {:noreply, %{state | aoi_monitor_ref: nil}}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, _monitor_ref, :process, _pid, _reason}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info(:recover_aoi, state) do
+    case ensure_aoi_runtime(state) do
+      {:ok, next_state} -> {:noreply, next_state}
+      {:error, _reason} -> {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(
         :movement_tick,
         %{
           cid: cid,
           connection_pid: connection_pid,
-          aoi_ref: aoi_ref,
+          aoi_ref: _aoi_ref,
           character_data_ref: cd_ref,
           physys_ref: physys_ref,
           combat_state: combat_state,
@@ -428,6 +463,13 @@ defmodule SceneServer.PlayerCharacter do
           last_input_received_at_ms: last_input_received_at_ms
         } = state
       ) do
+    state =
+      case ensure_aoi_runtime(state) do
+        {:ok, next_state} -> next_state
+        {:error, _reason} -> state
+      end
+
+    aoi_ref = state.aoi_ref
     movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
     now_ms = System.monotonic_time(:millisecond)
 
@@ -633,7 +675,8 @@ defmodule SceneServer.PlayerCharacter do
         authoritative_tick: authoritative_state.tick,
         authoritative_position: authoritative_state.position,
         authoritative_velocity: authoritative_state.velocity,
-        authoritative_acceleration: authoritative_state.acceleration
+        authoritative_acceleration: authoritative_state.acceleration,
+        movement_mode: authoritative_state.movement_mode
       })
 
       GenServer.cast(aoi_ref, {:self_move, snapshot})
@@ -674,6 +717,64 @@ defmodule SceneServer.PlayerCharacter do
     }
   end
 
+  defp ensure_aoi_runtime(%{aoi_ref: aoi_ref} = state) when is_pid(aoi_ref) do
+    if Process.alive?(aoi_ref) do
+      {:ok, state}
+    else
+      recover_aoi_adapter(state, :dead_aoi_ref)
+    end
+  end
+
+  defp ensure_aoi_runtime(state), do: recover_aoi_adapter(state, :missing_aoi_ref)
+
+  defp recover_aoi_adapter(state, reason) do
+    if is_reference(Map.get(state, :aoi_monitor_ref)) do
+      Process.demonitor(state.aoi_monitor_ref, [:flush])
+    end
+
+    location = Map.get(state, :last_location) || state.movement_state.position
+
+    SceneServer.CliObserve.emit("player_aoi_recover", %{
+      cid: state.cid,
+      reason: reason,
+      location: location
+    })
+
+    case enter_scene(
+           state.cid,
+           :os.system_time(:millisecond),
+           location,
+           state.connection_pid,
+           character_name(state)
+         ) do
+      {:ok, aoi_ref} ->
+        monitor_ref = Process.monitor(aoi_ref)
+        send(aoi_ref, :get_aoi_tick)
+        broadcast_current_aoi_state(aoi_ref, state)
+        {:ok, %{state | aoi_ref: aoi_ref, aoi_monitor_ref: monitor_ref}}
+
+      {:error, recover_reason} ->
+        {:error, recover_reason}
+    end
+  end
+
+  defp broadcast_current_aoi_state(aoi_ref, state) do
+    GenServer.cast(
+      aoi_ref,
+      {:player_state, state.cid, state.combat_state.hp, state.combat_state.max_hp,
+       state.combat_state.alive}
+    )
+
+    GenServer.cast(
+      aoi_ref,
+      {:self_move, RemoteSnapshot.from_state(state.cid, state.movement_state)}
+    )
+  end
+
+  defp character_name(%{character_profile: %{name: name}}) when is_binary(name), do: name
+  defp character_name(%{character_profile: %{"name" => name}}) when is_binary(name), do: name
+  defp character_name(%{cid: cid}), do: "player-#{cid}"
+
   defp enqueue_input(queue, %InputFrame{} = frame) do
     case queue ++ [frame] do
       list when length(list) > @max_input_queue ->
@@ -689,6 +790,7 @@ defmodule SceneServer.PlayerCharacter do
         aoi_ref: aoi_item,
         cid: cid,
         movement_timer: movement_timer,
+        aoi_monitor_ref: aoi_monitor_ref,
         respawn_timer: respawn_timer
       }) do
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
@@ -699,6 +801,10 @@ defmodule SceneServer.PlayerCharacter do
 
     if respawn_timer != nil do
       Process.cancel_timer(respawn_timer)
+    end
+
+    if is_reference(aoi_monitor_ref) do
+      Process.demonitor(aoi_monitor_ref, [:flush])
     end
 
     if is_pid(aoi_item) and Process.alive?(aoi_item) do
@@ -718,19 +824,24 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp enter_scene(cid, client_timestamp, location, connection_pid, character_name) do
-    {:ok, aoi_ref} =
-      AoiManager.add_aoi_item(
-        cid,
-        client_timestamp,
-        location,
-        connection_pid,
-        self(),
-        %{kind: :player, name: character_name}
-      )
+    case AoiManager.add_aoi_item(
+           cid,
+           client_timestamp,
+           location,
+           connection_pid,
+           self(),
+           %{kind: :player, name: character_name}
+         ) do
+      {:ok, aoi_ref} ->
+        Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
+        {:ok, aoi_ref}
 
-    Logger.debug("Character added to Coordinate System: #{inspect(aoi_ref, pretty: true)}")
+      {:err, reason} ->
+        {:error, reason}
 
-    {:ok, aoi_ref}
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp make_movement_timer(fixed_dt_ms) do

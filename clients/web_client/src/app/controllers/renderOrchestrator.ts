@@ -4,11 +4,14 @@ import { ChunkRenderController, type VoxelRaySelection } from "../../render/chun
 import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
 import type { RendererDebugSnapshot } from "../../render/rendererBackend";
 import type { SceneHandles } from "../../render/scene";
+import { VoxelConstants } from "../../voxel/core/constants";
+import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+import type { WorldEditStats } from "../../voxel/worldStore";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
-import type { HotbarState, SelectionProvider } from "./worldEditController";
+import type { HotbarState, HotbarEntry, SelectionProvider } from "./worldEditController";
 
 interface EditPreviewProvider {
   getHotbarState(): HotbarState;
@@ -35,6 +38,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private readonly remoteDisplay = new Vector3();
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
+  private prefabPreviewIntentKey = "";
 
   constructor(
     sceneHandles: SceneHandles,
@@ -146,7 +150,12 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       45,
       this.authorityDisplay,
     );
-    this.groundActorPosition(this.remotePlayer.getRenderedPosition(), 60, this.remoteDisplay);
+    this.groundActorPosition(
+      this.remotePlayer.getRenderedPosition(),
+      60,
+      this.remoteDisplay,
+      this.remotePlayer.getRenderedGroundY() ?? undefined,
+    );
     this.syncRemoteAvatarMeshes();
 
     this.localAvatar.position.copy(this.localDisplay);
@@ -171,7 +180,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     for (const entity of rendered) {
       const avatar = this.ensureRemoteAvatar(entity.cid);
       const display = new Vector3();
-      this.groundActorPosition(entity.position, 60, display);
+      this.groundActorPosition(entity.position, 60, display, entity.movementGroundY ?? undefined);
       avatar.position.copy(display);
     }
   }
@@ -192,7 +201,34 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private updatePrefabPreview(): void {
     const selected = this.editPreviewProvider?.getHotbarState().selected;
     if (!this.currentSelection || selected?.kind !== "prefab") {
-      this.chunkRenderer.setPrefabPreview(null, null);
+      this.clearPrefabPreviewIfNeeded();
+      return;
+    }
+
+    const intentKey = prefabPreviewIntentKey(
+      this.currentSelection,
+      selected,
+      this.world.store.editStats,
+    );
+    if (intentKey === this.prefabPreviewIntentKey) {
+      return;
+    }
+    this.prefabPreviewIntentKey = intentKey;
+
+    const boundaryPreview = this.world.previewPrefabBoundarySnap({
+      prefabName: selected.prefabName,
+      hitMacro: this.currentSelection.occupiedMacro,
+      ...(this.currentSelection.occupiedMicro
+        ? { hitMicro: this.currentSelection.occupiedMicro.micro }
+        : {}),
+      ...(this.currentSelection.adjacentMicro
+        ? { anchorMicroCoord: worldMicroCoordFromTarget(this.currentSelection.adjacentMicro) }
+        : {}),
+      faceNormal: this.currentSelection.faceNormal,
+      rotation: selected.rotation,
+    });
+    if (boundaryPreview.cells.length > 0) {
+      this.chunkRenderer.setPrefabRasterPreview(selected.prefabName, boundaryPreview.cells);
       return;
     }
 
@@ -200,6 +236,14 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       this.currentSelection,
       this.world.getPrefab(selected.prefabName),
     );
+  }
+
+  private clearPrefabPreviewIfNeeded(): void {
+    if (this.prefabPreviewIntentKey === "") {
+      return;
+    }
+    this.prefabPreviewIntentKey = "";
+    this.chunkRenderer.setPrefabPreview(null, null);
   }
 
   private groundActorPosition(
@@ -242,4 +286,38 @@ export function resolveActorDisplayY({
 
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
   return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function prefabPreviewIntentKey(
+  selection: VoxelRaySelection,
+  selected: Extract<HotbarEntry, { kind: "prefab" }>,
+  editStats: WorldEditStats,
+): string {
+  return [
+    selected.prefabName,
+    selected.rotation,
+    coordKey(selection.occupiedMacro),
+    coordKey(selection.adjacentMacro),
+    coordKey(selection.faceNormal),
+    selection.occupiedMicro ? coordKey(selection.occupiedMicro.macro) : "",
+    selection.occupiedMicro ? coordKey(selection.occupiedMicro.micro) : "",
+    selection.adjacentMicro ? coordKey(selection.adjacentMicro.macro) : "",
+    selection.adjacentMicro ? coordKey(selection.adjacentMicro.micro) : "",
+    editStats.placed,
+    editStats.broken,
+    editStats.rejected,
+    editStats.conflicts,
+  ].join("|");
+}
+
+function coordKey(coord: { x: number; y: number; z: number }): string {
+  return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function worldMicroCoordFromTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): FMicroCoord {
+  return {
+    x: target.macro.x * VoxelConstants.MicroPerMacro + target.micro.x,
+    y: target.macro.y * VoxelConstants.MicroPerMacro + target.micro.y,
+    z: target.macro.z * VoxelConstants.MicroPerMacro + target.micro.z,
+  };
 }

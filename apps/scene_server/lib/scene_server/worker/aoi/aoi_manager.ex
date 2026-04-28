@@ -102,7 +102,7 @@ defmodule SceneServer.AoiManager do
 
     new_aois =
       aois
-      |> Map.put_new(cid, %{
+      |> Map.put(cid, %{
         cid: cid,
         aoi_pid: apid,
         actor_pid: actor_pid,

@@ -23,7 +23,7 @@ describe("ChunkRenderController hit-face outline", () => {
     controller.dispose();
   });
 
-  it("shows a prefab ghost preview at the adjacent macro cells", () => {
+  it("shows a prefab micro-wire preview at the adjacent placement cells", () => {
     const controller = new ChunkRenderController();
 
     controller.setPrefabPreview(
@@ -34,22 +34,51 @@ describe("ChunkRenderController hit-face outline", () => {
       },
       {
         name: "builtin_sphere",
-        cells: [{ offset: { x: 0, y: 0, z: 0 } }, { offset: { x: 1, y: 0, z: 0 } }],
+        cells: [
+          { offset: { x: 0, y: 0, z: 0 }, occupancyWord: 0b1111n },
+          { offset: { x: 1, y: 0, z: 0 }, occupancyWord: 0b1n },
+        ],
       },
     );
 
-    expect(controller.getPrefabPreviewSnapshot()).toEqual({
+    const snapshot = controller.getPrefabPreviewSnapshot();
+    expect(snapshot).toMatchObject({
       visible: true,
       prefabName: "builtin_sphere",
       origin: { x: 1, y: 3, z: 3 },
-      cellCount: 2,
+      cellCount: 5,
       renderObjectCount: 1,
-      renderStyle: "wire-bounds",
-      wireSegmentCount: 24,
+      renderStyle: "micro-wire",
     });
+    expect(snapshot.wireSegmentCount).toBeGreaterThan(24);
 
     controller.setPrefabPreview(null, null);
     expect(controller.getPrefabPreviewSnapshot().visible).toBe(false);
+
+    controller.dispose();
+  });
+
+  it("refreshes prefab micro-wire preview when micro occupancy changes within the same macro cells", () => {
+    const controller = new ChunkRenderController();
+    const selection = {
+      occupiedMacro: { x: 1, y: 2, z: 3 },
+      adjacentMacro: { x: 1, y: 3, z: 3 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    };
+
+    controller.setPrefabPreview(selection, {
+      name: "mutable_shape",
+      cells: [{ offset: { x: 0, y: 0, z: 0 }, occupancyWord: 0b1n }],
+    });
+    expect(controller.getPrefabPreviewSnapshot().cellCount).toBe(1);
+
+    controller.setPrefabPreview(selection, {
+      name: "mutable_shape",
+      cells: [{ offset: { x: 0, y: 0, z: 0 }, occupancyWord: 0b1111n }],
+    });
+    const snapshot = controller.getPrefabPreviewSnapshot();
+    expect(snapshot.cellCount).toBe(4);
+    expect(snapshot.renderStyle).toBe("micro-wire");
 
     controller.dispose();
   });

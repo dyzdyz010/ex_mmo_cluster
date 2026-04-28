@@ -362,7 +362,7 @@ export class DevToolsCli implements CliCommandHandler {
       return {
         ok: false,
         command,
-        text: "usage: prefab_snap_preview <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270] OR prefab_snap_preview <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
+        text: "usage: prefab_snap_preview <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270] [anchor_micro_x anchor_micro_y anchor_micro_z] OR prefab_snap_preview <name> <target-instance> <target-socket> [incoming-socket] [rot0|rot90|rot180|rot270]",
       };
     }
     const preview = this.deps.world.previewPrefabSocketSnap(request);
@@ -382,7 +382,7 @@ export class DevToolsCli implements CliCommandHandler {
       return {
         ok: false,
         command,
-        text: "usage: prefab_place_snap <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270]",
+        text: "usage: prefab_place_snap <name> <x> <y> <z> <nx> <ny> <nz> [rot0|rot90|rot180|rot270] [anchor_micro_x anchor_micro_y anchor_micro_z]",
       };
     }
     const result = this.deps.world.placePrefabBoundarySnap(request);

@@ -19,15 +19,13 @@ import {
   macroStepFromSurfaceNormal,
 } from "../voxel/core/gridUtils";
 import type { FMacroCoord, FMicroCoord } from "../voxel/core/types";
+import { FullMicroOccupancyMask } from "../voxel/microgrid/governance";
 import { chunkCoordKey } from "../voxel/core/types";
 import { VoxelDirtyFlags } from "../voxel/storage/types";
 import type { WorldStore } from "../voxel/worldStore";
 import type { ObserveLog } from "../observe/logger";
 import type { PrefabRasterCell } from "../voxel/prefab";
-import {
-  buildMacroCellWirePositions,
-  buildPrefabRasterMicroWireGeometry,
-} from "./prefabPreviewGeometry";
+import { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 
@@ -57,7 +55,7 @@ export interface TargetHighlightSnapshot {
 
 export interface PrefabPreviewInput {
   name: string;
-  cells: readonly { offset: FMacroCoord }[];
+  cells: readonly { offset: FMacroCoord; occupancyWord?: bigint }[];
 }
 
 export interface PrefabPreviewSnapshot {
@@ -66,7 +64,7 @@ export interface PrefabPreviewSnapshot {
   origin: FMacroCoord | null;
   cellCount: number;
   renderObjectCount: number;
-  renderStyle: "none" | "wire-bounds" | "micro-wire";
+  renderStyle: "none" | "micro-wire";
   wireSegmentCount: number;
 }
 
@@ -253,20 +251,30 @@ export class ChunkRenderController {
 
     const origin = selection.adjacentMacro;
     const key = `${prefab.name}:${origin.x},${origin.y},${origin.z}:${prefab.cells
-      .map((cell) => `${cell.offset.x},${cell.offset.y},${cell.offset.z}`)
+      .map(
+        (cell) =>
+          `${cell.offset.x},${cell.offset.y},${cell.offset.z}:${
+            cell.occupancyWord ?? FullMicroOccupancyMask
+          }`,
+      )
       .join("|")}`;
     if (key === this.prefabPreviewKey) {
       return;
     }
 
-    const positions = buildMacroCellWirePositions(origin, prefab.cells);
+    const rasterCells = prefabPreviewInputToRasterCells(origin, prefab);
+    const geometry = buildPrefabRasterMicroWireGeometry(rasterCells);
+    if (geometry.occupiedSlotCount === 0 || geometry.wireSegmentCount === 0) {
+      this.clearPrefabPreview();
+      return;
+    }
 
-    this.setPrefabWirePreview(key, positions, {
+    this.setPrefabWirePreview(key, geometry.positions, {
       visible: true,
       prefabName: prefab.name,
       origin: { ...origin },
-      cellCount: prefab.cells.length,
-      renderStyle: "wire-bounds",
+      cellCount: geometry.occupiedSlotCount,
+      renderStyle: "micro-wire",
     });
   }
 
@@ -480,4 +488,23 @@ function stepMicroTarget(target: MicroCellTarget, normal: FMacroCoord): MicroCel
   }
 
   return { macro, micro };
+}
+
+function prefabPreviewInputToRasterCells(
+  origin: FMacroCoord,
+  prefab: PrefabPreviewInput,
+): PrefabRasterCell[] {
+  return prefab.cells
+    .map((cell) => ({
+      macro: {
+        x: origin.x + cell.offset.x,
+        y: origin.y + cell.offset.y,
+        z: origin.z + cell.offset.z,
+      },
+      microOccupancyMask: cell.occupancyWord ?? FullMicroOccupancyMask,
+      microMaterialIds: [],
+      microStateFlags: [],
+      microPartIds: [],
+    }))
+    .filter((cell) => cell.microOccupancyMask !== 0n);
 }

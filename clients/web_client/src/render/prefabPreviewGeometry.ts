@@ -2,8 +2,6 @@ import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../voxel/core/types";
 import type { PrefabRasterCell } from "../voxel/prefab";
 
-const PREFAB_PREVIEW_INSET = MacroWorldSize * 0.03;
-
 interface MicroGridCorner {
   x: number;
   y: number;
@@ -14,21 +12,6 @@ export interface PrefabRasterMicroWireGeometry {
   positions: number[];
   occupiedSlotCount: number;
   wireSegmentCount: number;
-}
-
-export function buildMacroCellWirePositions(
-  origin: FMacroCoord,
-  cells: readonly { offset: FMacroCoord }[],
-): number[] {
-  const positions: number[] = [];
-  for (const cell of cells) {
-    appendMacroCellWireBox(positions, {
-      x: origin.x + cell.offset.x,
-      y: origin.y + cell.offset.y,
-      z: origin.z + cell.offset.z,
-    });
-  }
-  return positions;
 }
 
 export function buildPrefabRasterMicroWireGeometry(
@@ -147,54 +130,4 @@ function appendMicroGridEdgeWorldPositions(
 
 function microGridCornerWorldAxis(value: number): number {
   return (value / VoxelConstants.MicroPerMacro) * MacroWorldSize;
-}
-
-function appendMacroCellWireBox(positions: number[], coord: FMacroCoord): void {
-  appendWireBox(
-    positions,
-    {
-      x: coord.x * MacroWorldSize + PREFAB_PREVIEW_INSET,
-      y: coord.y * MacroWorldSize + PREFAB_PREVIEW_INSET,
-      z: coord.z * MacroWorldSize + PREFAB_PREVIEW_INSET,
-    },
-    {
-      x: (coord.x + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
-      y: (coord.y + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
-      z: (coord.z + 1) * MacroWorldSize - PREFAB_PREVIEW_INSET,
-    },
-  );
-}
-
-function appendWireBox(
-  positions: number[],
-  min: { x: number; y: number; z: number },
-  max: { x: number; y: number; z: number },
-): void {
-  const corners: Array<[number, number, number]> = [
-    [min.x, min.y, min.z],
-    [max.x, min.y, min.z],
-    [max.x, max.y, min.z],
-    [min.x, max.y, min.z],
-    [min.x, min.y, max.z],
-    [max.x, min.y, max.z],
-    [max.x, max.y, max.z],
-    [min.x, max.y, max.z],
-  ];
-  const edges: Array<[number, number]> = [
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 0],
-    [4, 5],
-    [5, 6],
-    [6, 7],
-    [7, 4],
-    [0, 4],
-    [1, 5],
-    [2, 6],
-    [3, 7],
-  ];
-  for (const [a, b] of edges) {
-    positions.push(...corners[a]!, ...corners[b]!);
-  }
 }

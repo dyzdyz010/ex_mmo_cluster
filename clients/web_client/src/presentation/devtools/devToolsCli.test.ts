@@ -211,4 +211,42 @@ describe("DevToolsCli microgrid boundary", () => {
       }),
     );
   });
+
+  it("accepts an optional world-micro anchor for boundary snap preview diagnostics", () => {
+    const world = new LocalVoxelWorldAdapter();
+    world.placePrefab("builtin_stairs", { x: 20, y: 10, z: 20 });
+    const cli = new DevToolsCli({
+      logger: { emit: vi.fn() },
+      world,
+    } as unknown as DevToolsDeps);
+
+    expect(
+      cli.executeCliCommand("prefab_snap_preview", [
+        "builtin_stairs",
+        "20",
+        "10",
+        "20",
+        "0",
+        "1",
+        "0",
+        "rot0",
+        String(20 * VoxelConstants.MicroPerMacro + 3),
+        "84",
+        "164",
+      ]),
+    ).toMatchObject({
+      ok: true,
+      command: "prefab_snap_preview",
+      data: {
+        ok: true,
+        anchorMicroCoord: { x: 156, y: 84, z: 160 },
+        overlapSlots: 0,
+        debug: expect.objectContaining({
+          mode: "anchored",
+          incomingBoundaryCount: 64,
+          targetBoundaryCount: 1,
+        }),
+      },
+    });
+  });
 });

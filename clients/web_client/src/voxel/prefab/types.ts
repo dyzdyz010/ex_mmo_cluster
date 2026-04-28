@@ -68,8 +68,17 @@ export interface PrefabBoundarySnapRequest {
   hitMacro: FMacroCoord;
   faceNormal: FMacroCoord;
   hitMicro?: FMicroCoord;
+  anchorMicroCoord?: FMicroCoord;
   rotation?: EVoxelRotation;
   searchRadius?: number;
+}
+
+export interface PrefabBoundarySnapDebug {
+  mode: "anchored" | "search";
+  incomingBoundaryCount: number;
+  targetBoundaryCount: number;
+  anchorCandidateCount: number;
+  rasterizeCount: number;
 }
 
 export interface PrefabBoundarySnapPreview {
@@ -84,6 +93,7 @@ export interface PrefabBoundarySnapPreview {
   contactSlots: number;
   cells: PrefabRasterCell[];
   rejectReason?: string;
+  debug?: PrefabBoundarySnapDebug;
 }
 
 export interface PrefabBoundarySnapResult {

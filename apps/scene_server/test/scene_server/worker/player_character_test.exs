@@ -179,6 +179,47 @@ defmodule SceneServer.PlayerCharacterTest do
     refute InputFrame.jumping?(next_state.latched_input)
   end
 
+  test "AOI adapter DOWN is rebuilt and registered again" do
+    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
+    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+
+    cid = System.unique_integer([:positive])
+    location = {1.0, 2.0, 3.0}
+
+    {:ok, aoi_ref} =
+      SceneServer.AoiManager.add_aoi_item(
+        cid,
+        0,
+        location,
+        connection_pid,
+        self(),
+        %{kind: :player, name: "tester"}
+      )
+
+    monitor_ref = Process.monitor(aoi_ref)
+    GenServer.call(aoi_ref, :exit)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^aoi_ref, :normal}, 300
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:cid, cid)
+      |> Map.put(:aoi_monitor_ref, monitor_ref)
+      |> Map.put(:character_profile, %{name: "tester", position: location})
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(
+               {:DOWN, monitor_ref, :process, aoi_ref, :normal},
+               state
+             )
+
+    refute next_state.aoi_ref == aoi_ref
+    assert Process.alive?(next_state.aoi_ref)
+
+    [registered] = SceneServer.AoiManager.get_items_with_cids([cid])
+    assert registered == next_state.aoi_ref
+  end
+
   test "authoritative movement tick preserves correction flags from intent ack path" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
@@ -366,7 +407,16 @@ defmodule SceneServer.PlayerCharacterTest do
       last_client_tick: 0,
       last_input_received_at_ms: System.monotonic_time(:millisecond) - 100,
       movement_timer: nil,
-      respawn_timer: nil
+      respawn_timer: nil,
+      aoi_monitor_ref: nil,
+      character_profile: %{name: "tester", position: location}
     }
+  end
+
+  defp ensure_started(name, spec) do
+    case Process.whereis(name) do
+      nil -> start_supervised!(spec)
+      pid -> pid
+    end
   end
 end

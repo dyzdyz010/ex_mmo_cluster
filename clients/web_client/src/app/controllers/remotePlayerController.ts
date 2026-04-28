@@ -16,6 +16,7 @@ interface RemoteEntityRuntime {
   state: RemotePlayerState;
   renderedPosition: Vector3;
   movementMode: MovementModeValue;
+  movementGroundY: number | null;
   hasSnapshots: boolean;
   lastSnapshot: RemoteMoveSnapshot | null;
   enteredAtMs: number;
@@ -26,12 +27,14 @@ export interface RenderedRemoteEntity {
   cid: number;
   position: Vector3;
   movementMode: MovementModeValue;
+  movementGroundY: number | null;
 }
 
 export interface RemoteEntityDebugSnapshot {
   cid: number;
   renderedPosition: string;
   movementMode: MovementModeValue;
+  movementGroundY: number | null;
   hasSnapshots: boolean;
   enteredAtMs: number;
   lastSnapshotAtMs: number | null;
@@ -62,10 +65,16 @@ export class RemotePlayerController implements FrameSubscriber {
   constructor(private readonly bus: EventBus<AppEvents>) {
     this.bus.on("transport:snapshot-delivered", ({ snapshot }) => {
       const entity = this.ensureEntity(snapshot.cid);
+      const isFirstSnapshot = !entity.hasSnapshots;
       entity.state.pushSnapshot(snapshot, 0, performance.now() / 1000);
       entity.hasSnapshots = true;
-      entity.renderedPosition.copy(snapshot.position);
       entity.movementMode = snapshot.movementMode;
+      if (entity.movementGroundY === null || snapshot.movementMode === MovementMode.Grounded) {
+        entity.movementGroundY = snapshot.position.y;
+      }
+      if (isFirstSnapshot) {
+        entity.renderedPosition.copy(snapshot.position);
+      }
       entity.lastSnapshot = cloneRemoteMoveSnapshot(snapshot);
       entity.lastSnapshotAtMs = performance.now();
       this.primaryCid = snapshot.cid;
@@ -87,6 +96,7 @@ export class RemotePlayerController implements FrameSubscriber {
     this.bus.on("transport:entity-entered", ({ cid, position }) => {
       const entity = this.ensureEntity(cid);
       entity.renderedPosition.copy(position);
+      entity.movementGroundY = position.y;
       this.primaryCid ??= cid;
     });
     this.bus.on("transport:entity-left", ({ cid }) => {
@@ -145,6 +155,7 @@ export class RemotePlayerController implements FrameSubscriber {
       cid,
       position: entity.renderedPosition.clone(),
       movementMode: entity.movementMode,
+      movementGroundY: entity.movementGroundY,
     }));
   }
 
@@ -159,6 +170,7 @@ export class RemotePlayerController implements FrameSubscriber {
         cid,
         renderedPosition: formatVector(entity.renderedPosition),
         movementMode: entity.movementMode,
+        movementGroundY: entity.movementGroundY,
         hasSnapshots: entity.hasSnapshots,
         enteredAtMs: entity.enteredAtMs,
         lastSnapshotAtMs: entity.lastSnapshotAtMs,
@@ -184,6 +196,10 @@ export class RemotePlayerController implements FrameSubscriber {
     return this.primaryEntity()?.movementMode ?? MovementMode.Grounded;
   }
 
+  getRenderedGroundY(): number | null {
+    return this.primaryEntity()?.movementGroundY ?? null;
+  }
+
   private ensureEntity(cid: number): RemoteEntityRuntime {
     let entity = this.entities.get(cid);
     if (!entity) {
@@ -191,6 +207,7 @@ export class RemotePlayerController implements FrameSubscriber {
         state: new RemotePlayerState({ tickDurationSecs: this.tickDurationSecs }),
         renderedPosition: DEFAULT_REMOTE_POSITION.clone(),
         movementMode: MovementMode.Grounded,
+        movementGroundY: null,
         hasSnapshots: false,
         lastSnapshot: null,
         enteredAtMs: performance.now(),

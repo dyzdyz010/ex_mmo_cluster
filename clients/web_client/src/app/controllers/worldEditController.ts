@@ -1,6 +1,7 @@
 import { getMaterialDefinition, VoxelMaterialId } from "../../material/catalog";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
+import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelRotation, type FMacroCoord, type FMicroCoord } from "../../voxel/core/types";
 import type { FNormalBlockData } from "../../voxel/storage/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
@@ -201,6 +202,9 @@ export class WorldEditController {
       prefabName,
       hitMacro: selection.occupiedMacro,
       ...(selection.occupiedMicro ? { hitMicro: selection.occupiedMicro.micro } : {}),
+      ...(selection.adjacentMicro
+        ? { anchorMicroCoord: worldMicroCoordFromTarget(selection.adjacentMicro) }
+        : {}),
       faceNormal: selection.faceNormal,
       rotation,
     });
@@ -272,4 +276,12 @@ function shouldFallbackToMacroPrefabPlace(rejectReason: string | undefined): boo
     rejectReason === "no_contact" ||
     rejectReason === "empty_prefab"
   );
+}
+
+function worldMicroCoordFromTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): FMicroCoord {
+  return {
+    x: target.macro.x * VoxelConstants.MicroPerMacro + target.micro.x,
+    y: target.macro.y * VoxelConstants.MicroPerMacro + target.micro.y,
+    z: target.macro.z * VoxelConstants.MicroPerMacro + target.micro.z,
+  };
 }

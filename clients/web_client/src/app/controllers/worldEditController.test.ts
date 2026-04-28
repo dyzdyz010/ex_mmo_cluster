@@ -113,4 +113,37 @@ describe("WorldEditController selection edits", () => {
       world.store.getMicroBlockWorld({ x: 1, y: 0, z: 0 }, { x: 0, y: 4, z: 4 })?.materialId,
     ).toBe(VoxelMaterialId.Ice);
   });
+
+  it("passes the aimed adjacent micro slot into prefab boundary snapping", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new LocalVoxelWorldAdapter();
+    world.placePrefab("builtin_stairs", { x: 20, y: 10, z: 20 });
+    const selection = new StaticSelectionProvider({
+      occupiedMacro: { x: 20, y: 10, z: 20 },
+      adjacentMacro: { x: 20, y: 11, z: 20 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+      occupiedMicro: {
+        macro: { x: 20, y: 10, z: 20 },
+        micro: { x: 3, y: 3, z: 4 },
+      },
+      adjacentMicro: {
+        macro: { x: 20, y: 10, z: 20 },
+        micro: { x: 3, y: 4, z: 4 },
+      },
+    });
+    const edit = new WorldEditController(bus, world, selection);
+    const committed: AppEvents["world:prefab-boundary-snap-committed"][] = [];
+    bus.on("world:prefab-boundary-snap-committed", (event) => committed.push(event));
+
+    edit.selectPrefab("builtin_stairs", "test");
+    bus.emit("input:place-block", { source: "mouse_right" });
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]).toMatchObject({
+      prefabId: "builtin_stairs",
+      anchorMicroCoord: { x: 156, y: 84, z: 160 },
+      overlapSlots: 0,
+      source: "mouse_right",
+    });
+  });
 });

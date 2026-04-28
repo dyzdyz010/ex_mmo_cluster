@@ -5,9 +5,9 @@
 - three.js 场景、摄像机和交互控制。
 - 渲染器由 `rendererBackend.ts` 统一选择：默认 WebGPU 优先，初始化失败或浏览器能力不足时回退 WebGL。
 - Chunk mesh 的挂载、重建、命中与高亮。
-- `prefabPreviewGeometry.ts` 负责 prefab 线框预览几何生成；交互中的放置图示只使用低成本 `wire-bounds`，精确 micro snap 留给真正放置提交时执行。
+- `prefabPreviewGeometry.ts` 负责 prefab 线框预览几何生成；交互中的放置图示使用低成本 `micro-wire`，保留真实 micro occupancy 形状但不渲染半透明实体。
 - 命中高亮只渲染当前命中面轮廓；放置位置由该面法线推导，不再同时显示破坏/放置整块红绿框。
-- 选中 prefab 时，render 层只渲染非半透明材质的线框 preview；实际写入与精确 snap 仍由 `WorldEditController -> WorldStore` 完成。
+- 选中 prefab 时，render 层只渲染非半透明材质的微格线框 preview；hover 预览会把鼠标命中的 `adjacentMicro` 作为 `anchorMicroCoord` 传给 snap 层，避免全宏格候选搜索。实际写入与精确 snap 仍由 `WorldEditController -> WorldStore` 完成。
 - 本地/远端 avatar 的可视化，以及与调试 HUD 相关的最低限度表现。
 - 本地 avatar 显示高度由地表中心高度加 movement airborne offset 组成，避免
   Space 跳跃被地表吸附逻辑吞掉视觉反馈。

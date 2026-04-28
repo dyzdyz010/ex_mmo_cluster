@@ -94,6 +94,7 @@ export function parseBoundarySnapRequest(args: string[]): {
   prefabName: string;
   hitMacro: FMacroCoord;
   faceNormal: FMacroCoord;
+  anchorMicroCoord?: FMicroCoord;
   rotation?: EVoxelRotation;
 } | null {
   const prefabName = args[0];
@@ -102,11 +103,31 @@ export function parseBoundarySnapRequest(args: string[]): {
   if (!prefabName || !hitMacro || !faceNormal) {
     return null;
   }
-  const rotation = parseRotation(args[7]);
-  if (rotation === null) {
-    return null;
+  let rotation = EVoxelRotation.Rot0;
+  let anchorStart = 7;
+  if (args[7] !== undefined) {
+    const parsedRotation = parseRotation(args[7]);
+    if (parsedRotation !== null) {
+      rotation = parsedRotation;
+      anchorStart = 8;
+    }
   }
-  return { prefabName, hitMacro, faceNormal, rotation };
+
+  let anchorMicroCoord: FMicroCoord | null = null;
+  if (args.length > anchorStart) {
+    anchorMicroCoord = parseMacroCoord(args.slice(anchorStart, anchorStart + 3));
+    if (!anchorMicroCoord || args.length > anchorStart + 3) {
+      return null;
+    }
+  }
+
+  return {
+    prefabName,
+    hitMacro,
+    faceNormal,
+    ...(anchorMicroCoord ? { anchorMicroCoord } : {}),
+    rotation,
+  };
 }
 
 export function worldStorageKey(slot: string): string {

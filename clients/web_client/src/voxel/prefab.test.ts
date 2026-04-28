@@ -217,6 +217,40 @@ describe("LocalPrefabRegistry", () => {
     expect(preview.cells).not.toHaveLength(0);
   });
 
+  it("anchors boundary snap candidates to the aimed adjacent micro slot for responsive stair placement", () => {
+    const registry = new LocalPrefabRegistry();
+    const world = new WorldStore();
+    registry.place("builtin_stairs", { x: 20, y: 10, z: 20 }, world);
+
+    const preview = registry.previewBoundarySnap(
+      {
+        prefabName: "builtin_stairs",
+        hitMacro: { x: 20, y: 10, z: 20 },
+        hitMicro: { x: 3, y: 3, z: 4 },
+        anchorMicroCoord: { x: 20 * VoxelConstants.MicroPerMacro + 3, y: 84, z: 164 },
+        faceNormal: { x: 0, y: 1, z: 0 },
+        rotation: EVoxelRotation.Rot0,
+      },
+      world,
+    );
+
+    expect(preview).toMatchObject({
+      ok: true,
+      prefabId: "builtin_stairs",
+      anchorMicroCoord: { x: 156, y: 84, z: 160 },
+      overlapSlots: 0,
+      debug: expect.objectContaining({
+        mode: "anchored",
+        incomingBoundaryCount: 64,
+        targetBoundaryCount: 1,
+      }),
+    });
+    expect(preview.debug?.anchorCandidateCount).toBeLessThanOrEqual(64);
+    expect(preview.debug?.rasterizeCount).toBeLessThanOrEqual(64);
+    expect(preview.contactSlots).toBeGreaterThan(0);
+    expect(preview.cells.length).toBeGreaterThan(0);
+  });
+
   it("commits micro boundary snaps and rejects overlap candidates transactionally", () => {
     const registry = new LocalPrefabRegistry();
     const world = new WorldStore();

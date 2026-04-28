@@ -4,6 +4,7 @@ import type { FPrefabInstanceData, FPrefabSocketDefinition } from "../storage/ty
 import type { WorldStore } from "../worldStore";
 import type {
   LocalPrefab,
+  PrefabBoundarySnapDebug,
   PrefabBoundarySnapPreview,
   PrefabBoundarySnapRequest,
   PrefabSocketSnapPreview,
@@ -39,6 +40,7 @@ interface BoundaryCandidate {
   preview: PrefabBoundarySnapPreview;
   hitDistance: number;
   anchorDistance: number;
+  contactCenterDistance?: number;
 }
 
 interface AnchorCandidate {
@@ -68,10 +70,23 @@ export function previewBoundarySnap(
     return rejectedBoundaryPreview(request, "empty_prefab", incoming.definition.prefabId);
   }
 
+  if (request.anchorMicroCoord) {
+    return previewAnchoredBoundarySnap(incoming, request, world, rotation, incomingBoundary);
+  }
+
   const searchRadius = Math.max(0, request.searchRadius ?? VoxelConstants.MicroPerMacro - 1);
   const targetBoundary = listWorldBoundaryPoints(world, request, searchRadius);
+  const debugBase: Omit<PrefabBoundarySnapDebug, "anchorCandidateCount" | "rasterizeCount"> = {
+    mode: "search",
+    incomingBoundaryCount: incomingBoundary.length,
+    targetBoundaryCount: targetBoundary.length,
+  };
   if (targetBoundary.length === 0) {
-    return rejectedBoundaryPreview(request, "no_target_boundary", incoming.definition.prefabId);
+    return rejectedBoundaryPreview(request, "no_target_boundary", incoming.definition.prefabId, {
+      ...debugBase,
+      anchorCandidateCount: 0,
+      rasterizeCount: 0,
+    });
   }
 
   const anchorCandidates = new Map<string, AnchorCandidate>();
@@ -109,8 +124,10 @@ export function previewBoundarySnap(
   }
 
   const candidates: BoundaryCandidate[] = [];
+  let rasterizeCount = 0;
   for (const anchor of anchorCandidates.values()) {
     const rasterized = rasterizePrefabDetailed(incoming, rotation, anchor.anchorMicroCoord);
+    rasterizeCount += 1;
     const { cells, incomingOccupiedSlots } = rasterized;
     if (incomingOccupiedSlots === 0) {
       continue;
@@ -134,6 +151,11 @@ export function previewBoundarySnap(
         overlapSlots,
         contactSlots,
         cells,
+        debug: {
+          ...debugBase,
+          anchorCandidateCount: anchorCandidates.size,
+          rasterizeCount: anchorCandidates.size,
+        },
         ...(overlapSlots > 0 ? { rejectReason: "micro_overlap" } : {}),
       },
       hitDistance: anchor.hitDistance,
@@ -141,6 +163,11 @@ export function previewBoundarySnap(
     });
   }
 
+  const finalSearchDebug: PrefabBoundarySnapDebug = {
+    ...debugBase,
+    anchorCandidateCount: anchorCandidates.size,
+    rasterizeCount,
+  };
   const sorted = [...candidates.values()].sort(compareBoundaryCandidates);
   const valid = sorted.find(
     (candidate) =>
@@ -149,7 +176,7 @@ export function previewBoundarySnap(
       candidate.preview.contactSlots > 0,
   );
   if (valid) {
-    return valid.preview;
+    return { ...valid.preview, debug: finalSearchDebug };
   }
 
   const overlapping = sorted.find(
@@ -160,16 +187,23 @@ export function previewBoundarySnap(
       ...overlapping.preview,
       ok: false,
       rejectReason: "micro_overlap",
+      debug: finalSearchDebug,
     };
   }
 
-  return rejectedBoundaryPreview(request, "no_contact", incoming.definition.prefabId);
+  return rejectedBoundaryPreview(
+    request,
+    "no_contact",
+    incoming.definition.prefabId,
+    finalSearchDebug,
+  );
 }
 
 function rejectedBoundaryPreview(
   request: PrefabBoundarySnapRequest,
   rejectReason: string,
   prefabId: string = request.prefabName,
+  debug?: PrefabBoundarySnapDebug,
 ): PrefabBoundarySnapPreview {
   return {
     ok: false,
@@ -183,6 +217,167 @@ function rejectedBoundaryPreview(
     contactSlots: 0,
     cells: [],
     rejectReason,
+    ...(debug ? { debug } : {}),
+  };
+}
+
+function previewAnchoredBoundarySnap(
+  incoming: LocalPrefab,
+  request: PrefabBoundarySnapRequest,
+  world: WorldStore,
+  rotation: EVoxelRotation,
+  incomingBoundary: LocalMicroPoint[],
+): PrefabBoundarySnapPreview {
+  const anchorMicroCoord = request.anchorMicroCoord;
+  if (!anchorMicroCoord) {
+    return rejectedBoundaryPreview(request, "missing_anchor_micro", incoming.definition.prefabId);
+  }
+
+  const debugBase: Omit<PrefabBoundarySnapDebug, "anchorCandidateCount" | "rasterizeCount"> = {
+    mode: "anchored",
+    incomingBoundaryCount: incomingBoundary.length,
+    targetBoundaryCount: 1,
+  };
+  const targetWorldMicro = subtractMicroCoord(anchorMicroCoord, request.faceNormal);
+  if (
+    !isWorldMicroOccupied(world, targetWorldMicro) ||
+    isWorldMicroOccupied(world, anchorMicroCoord)
+  ) {
+    return rejectedBoundaryPreview(request, "no_target_boundary", incoming.definition.prefabId, {
+      ...debugBase,
+      anchorCandidateCount: 0,
+      rasterizeCount: 0,
+    });
+  }
+
+  const contactCenter = contactCenterFromBoundary(incomingBoundary);
+  const orderedIncomingBoundary = [...incomingBoundary].sort(
+    (a, b) =>
+      manhattanDistance(a.localMicro, contactCenter) -
+        manhattanDistance(b.localMicro, contactCenter) ||
+      coordKey(a.localMicro).localeCompare(coordKey(b.localMicro)),
+  );
+
+  let rasterizeCount = 0;
+  let bestOverlapping: BoundaryCandidate | null = null;
+  for (const incomingPoint of orderedIncomingBoundary) {
+    rasterizeCount += 1;
+    const candidate = buildAnchoredBoundaryCandidate(
+      incoming,
+      request,
+      world,
+      rotation,
+      incomingPoint,
+      contactCenter,
+      {
+        ...debugBase,
+        anchorCandidateCount: rasterizeCount,
+        rasterizeCount,
+      },
+    );
+    if (!candidate) {
+      continue;
+    }
+    if (candidate.preview.ok) {
+      return candidate.preview;
+    }
+    if (
+      candidate.preview.contactSlots > 0 &&
+      (!bestOverlapping || compareAnchoredOverlappingCandidates(candidate, bestOverlapping) < 0)
+    ) {
+      bestOverlapping = candidate;
+    }
+  }
+
+  if (bestOverlapping) {
+    return {
+      ...bestOverlapping.preview,
+      ok: false,
+      rejectReason: "micro_overlap",
+      debug: {
+        ...debugBase,
+        anchorCandidateCount: rasterizeCount,
+        rasterizeCount,
+      },
+    };
+  }
+
+  return rejectedBoundaryPreview(request, "no_contact", incoming.definition.prefabId, {
+    ...debugBase,
+    anchorCandidateCount: rasterizeCount,
+    rasterizeCount,
+  });
+}
+
+function buildAnchoredBoundaryCandidate(
+  incoming: LocalPrefab,
+  request: PrefabBoundarySnapRequest,
+  world: WorldStore,
+  rotation: EVoxelRotation,
+  incomingPoint: LocalMicroPoint,
+  contactCenter: FMicroCoord,
+  debug: PrefabBoundarySnapDebug,
+): BoundaryCandidate | null {
+  const anchorMicroCoord = subtractMicroCoord(request.anchorMicroCoord!, incomingPoint.localMicro);
+  const rasterized = rasterizePrefabDetailed(incoming, rotation, anchorMicroCoord);
+  const { cells, incomingOccupiedSlots } = rasterized;
+  if (incomingOccupiedSlots === 0) {
+    return null;
+  }
+
+  const overlapSlots = countOverlapSlots(cells, world);
+  const contactSlots = countBoundaryContactSlots(
+    rasterized.occupiedWorldMicro,
+    world,
+    request.faceNormal,
+  );
+  return {
+    preview: {
+      ok: overlapSlots === 0 && contactSlots > 0,
+      prefabId: incoming.definition.prefabId,
+      hitMacro: { ...request.hitMacro },
+      faceNormal: { ...request.faceNormal },
+      anchorMicroCoord,
+      affectedMacroCount: cells.length,
+      incomingOccupiedSlots,
+      overlapSlots,
+      contactSlots,
+      cells,
+      debug,
+      ...(overlapSlots > 0 ? { rejectReason: "micro_overlap" } : {}),
+    },
+    hitDistance: 0,
+    anchorDistance: request.anchorMicroCoord
+      ? manhattanDistance(anchorMicroCoord, request.anchorMicroCoord)
+      : 0,
+    contactCenterDistance: manhattanDistance(incomingPoint.localMicro, contactCenter),
+  };
+}
+
+function contactCenterFromBoundary(incomingBoundary: LocalMicroPoint[]): FMicroCoord {
+  const first = incomingBoundary[0]?.localMicro;
+  if (!first) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const bounds = incomingBoundary.reduce(
+    (acc, point) => ({
+      min: {
+        x: Math.min(acc.min.x, point.localMicro.x),
+        y: Math.min(acc.min.y, point.localMicro.y),
+        z: Math.min(acc.min.z, point.localMicro.z),
+      },
+      max: {
+        x: Math.max(acc.max.x, point.localMicro.x),
+        y: Math.max(acc.max.y, point.localMicro.y),
+        z: Math.max(acc.max.z, point.localMicro.z),
+      },
+    }),
+    { min: { ...first }, max: { ...first } },
+  );
+  return {
+    x: Math.floor((bounds.min.x + bounds.max.x + 1) / 2),
+    y: Math.floor((bounds.min.y + bounds.max.y + 1) / 2),
+    z: Math.floor((bounds.min.z + bounds.max.z + 1) / 2),
   };
 }
 
@@ -288,6 +483,20 @@ function compareBoundaryCandidates(a: BoundaryCandidate, b: BoundaryCandidate): 
     a.preview.overlapSlots - b.preview.overlapSlots ||
     a.hitDistance - b.hitDistance ||
     a.anchorDistance - b.anchorDistance ||
+    coordKey(a.preview.anchorMicroCoord ?? { x: 0, y: 0, z: 0 }).localeCompare(
+      coordKey(b.preview.anchorMicroCoord ?? { x: 0, y: 0, z: 0 }),
+    )
+  );
+}
+
+function compareAnchoredOverlappingCandidates(
+  a: BoundaryCandidate,
+  b: BoundaryCandidate,
+): number {
+  return (
+    a.preview.overlapSlots - b.preview.overlapSlots ||
+    (a.contactCenterDistance ?? 0) - (b.contactCenterDistance ?? 0) ||
+    b.preview.contactSlots - a.preview.contactSlots ||
     coordKey(a.preview.anchorMicroCoord ?? { x: 0, y: 0, z: 0 }).localeCompare(
       coordKey(b.preview.anchorMicroCoord ?? { x: 0, y: 0, z: 0 }),
     )

@@ -18,12 +18,15 @@ Search keywords:
 - `resolveInitialLocalSpawn`
 - `surfaceCenterYAtWorldXZ`
 - `groundY`
-- `wire-bounds`
+- `micro-wire`
 - `prefabPreviewGeometry`
 - `renderer=webgpu`
 - `renderer=webgl`
 - `totalCorrections`
 - `AOI priority`
+- `AOI adapter DOWN`
+- `movementGroundY`
+- `RemotePlayerController`
 
 ## User-Visible Problems
 
@@ -34,6 +37,8 @@ The browser client had four connected symptoms:
 3. A cube that looked like an NPC circled the scene forever.
 4. The local avatar appeared suspended above the terrain instead of standing on
    the ground.
+5. With two browser clients, local movement was smooth but remote players could
+   freeze/stutter badly and remote jump height was not visible.
 
 ## Root Causes
 
@@ -88,6 +93,28 @@ Relevant files:
 - `clients/web_client/src/app/controllers/renderOrchestrator.ts`
 - `clients/web_client/src/voxel/worldStore.ts`
 
+### Remote player stutter and missing jump sync
+
+There were three separate issues in the remote path:
+
+1. A server-side `SceneServer.Aoi.AoiItem` can exit while the authoritative
+   `SceneServer.PlayerCharacter` continues running. Before the fix, the player
+   actor kept a dead `aoi_ref`, so remote observers stopped receiving fresh
+   `player_move` snapshots and froze on the last tick.
+2. `RemotePlayerController` copied every delivered snapshot directly into
+   `renderedPosition`. That bypassed the snapshot interpolation buffer and
+   created visible packet-rate snapping even when delivery was healthy.
+3. `RenderOrchestrator` rendered remote avatars without a movement ground
+   baseline. Airborne Y offset arrived in the remote snapshot, but display Y was
+   forced back to the terrain surface.
+
+Relevant files:
+
+- `apps/scene_server/lib/scene_server/worker/player_character.ex`
+- `apps/scene_server/lib/scene_server/worker/aoi/aoi_manager.ex`
+- `clients/web_client/src/app/controllers/remotePlayerController.ts`
+- `clients/web_client/src/app/controllers/renderOrchestrator.ts`
+
 ## Fixes Landed
 
 ### Simulated transport is local-only
@@ -134,17 +161,47 @@ That rule is intentional because jump visuals must preserve airborne offset.
 The fix is to start `movementY` and `movementGroundY` on the correct terrain
 surface, not to remove the airborne offset logic.
 
-### Prefab preview uses cheap wire geometry while hovering
+### Prefab preview uses cheap micro wire geometry while hovering
 
-The interactive hover preview is now a low-cost wire outline (`wire-bounds`).
-Precise micro rasterization and overlap legality stay in the actual
+The interactive hover preview is now a low-cost micro occupancy wire outline
+(`micro-wire`). It keeps the prefab's true microgrid shape, but renders only
+plain `LineSegments` with no translucent fill, glow, or ghost mesh.
+
+Boundary snapping still uses the same rasterized prefab preview cells that the
+editing layer exposes. Overlap legality remains owned by the actual
 `WorldEditController -> WorldStore` placement path and CLI preview commands.
 
 Expected diagnostics after selecting a prefab:
 
 - `window.__voxelCli.run("snapshot").data.prefabPreview.renderStyle`
-  should be `"wire-bounds"` during hover preview.
+  should be `"micro-wire"` during hover preview.
 - `renderObjectCount` should stay small for hover preview.
+
+Follow-up correction from visual review:
+
+- Do not replace prefab placement preview with macro-cell boxes. The preview
+  must preserve the prefab's micro occupancy shape.
+- The cheap path is a plain micro wireframe: one `LineSegments` object,
+  `LineBasicMaterial`, no transparent mesh, no glow, and no filled placeholder.
+- Browser CLI smoke on `http://127.0.0.1:5174/?renderer=webgl` after selecting
+  `builtin_sphere`: `renderStyle="micro-wire"`, `cellCount=280`,
+  `renderObjectCount=1`, `wireSegmentCount=1176`.
+
+Follow-up performance and placement correction:
+
+- The remaining hover stall was not caused by the wireframe renderer. The
+  measured hot path was `previewBoundarySnap(...)`: legacy stairs-on-stairs
+  preview averaged about `289 ms` per call because it enumerated an entire
+  macro cell of target boundary points.
+- `PrefabBoundarySnapRequest.anchorMicroCoord` is now the fast path used by
+  hover preview and right-click placement. It fixes the target contact micro to
+  the actual aimed adjacent micro slot, then tests the incoming prefab boundary
+  points in contact-center order until a non-overlapping candidate is found.
+- The same stairs-on-stairs middle-step probe now uses `mode="anchored"`,
+  `targetBoundaryCount=1`, `anchorCandidateCount=25`, and averaged about
+  `13.5 ms` per preview call in browser CLI smoke.
+- CLI diagnostics can reproduce the anchored path with:
+  `prefab_snap_preview builtin_stairs 20 10 20 0 1 0 rot0 163 84 164`.
 
 ### Renderer backend is explicit
 
@@ -157,6 +214,30 @@ and fall back to WebGL. Runtime can force a backend with:
 
 Use `window.__voxelCli.run("renderer")` or `snapshot.renderer` before making
 claims about backend behavior.
+
+### Remote AOI and jump sync are recovered
+
+`PlayerCharacter` now monitors its `AoiItem`. If the AOI fan-out adapter exits,
+the player actor recreates it, re-registers the current authoritative position,
+forces an AOI refresh, and republishes the current movement snapshot.
+
+`RemotePlayerController` now seeds `renderedPosition` from the first snapshot
+only. Later snapshots update the interpolation buffer and movement mode without
+directly snapping the rendered transform. It also tracks `movementGroundY` from
+grounded snapshots.
+
+`RenderOrchestrator` passes remote `movementGroundY` into the same display rule
+used by the local player:
+
+- display Y = `surfaceCenterY + max(0, movementY - movementGroundY)`
+
+Expected diagnostics during a two-client jump:
+
+- A's `window.__voxelCli.run("players").data.remote.entities[0].interpolationMode`
+  stays `"interpolated"` under healthy local delivery.
+- A's remote entity `movementMode` becomes `"airborne"` while B is jumping.
+- A's remote entity `movementGroundY` remains at the grounded baseline.
+- A's `snapshot.actorDisplay.remote.y` rises above its grounded display Y.
 
 ## Verification Performed
 
@@ -187,6 +268,26 @@ cmd /c mix test apps/gate_server/test/gate_server/codec_test.exs apps/gate_serve
 cmd /c mix test apps/scene_server/test/scene_server/aoi/priority_test.exs apps/scene_server/test/aoi_item_test.exs
 ```
 
+Focused remote movement checks:
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/worker/player_character_test.exs
+cd clients/web_client
+npm test -- remotePlayerController.test.ts
+npm run lint -- --quiet
+```
+
+Two browser clients on `http://127.0.0.1:5174/?renderer=webgl` after restarting
+the server:
+
+- A observed B with `receivedRemoteSnapshotCount=356`,
+  `lastRemoteTickByCid={B:392}`, `interpolationMode="interpolated"`.
+- B observed A with `receivedRemoteSnapshotCount=344`,
+  `lastRemoteTickByCid={A:389}`, `interpolationMode="interpolated"`.
+- During B's jump, A observed remote `movementMode="airborne"`,
+  `movementGroundY=100`, interpolated tick growth from `629` through `636`, and
+  `actorDisplay.remote.y` rising from `460` to about `529.8`.
+
 Browser CLI smoke on `http://127.0.0.1:5174/?renderer=webgl`:
 
 - `decorativeRemoteActor=false`
@@ -195,7 +296,7 @@ Browser CLI smoke on `http://127.0.0.1:5174/?renderer=webgl`:
 - recent observe `remote_snapshot` count = `0`
 - `player_rendered=-350.0,260.0,-280.0`
 - `groundY=260`
-- prefab hover preview uses `wire-bounds`
+- prefab hover preview uses `micro-wire`
 
 Known caveat: the final browser pass hit `auto_login_failed:502`, so that
 specific browser smoke verified `simulated-local` fallback. Server-side
@@ -221,7 +322,10 @@ Useful assertions:
 - Accepted fallback acks should not increment correction counters.
 - Local spawn should be on terrain center height, not `650`.
 - Jump should change rendered Y while preserving the terrain-based ground.
-- Prefab hover preview should remain wire-only and cheap.
+- Remote jump should show the same airborne mode and display Y rise on another
+  client; if it freezes, inspect AOI adapter liveness and
+  `players.remote.entities[*].latestServerTick`.
+- Prefab hover preview should remain micro-shape, wire-only, and cheap.
 
 ## Files To Read First Next Time
 
