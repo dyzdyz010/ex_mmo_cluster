@@ -1,5 +1,5 @@
-// 与 docs/2026-04-20-体素世界服务端规划.md 第 5 节保持一致。
-// 所有多字节字段统一小端，帧层使用 {packet, 4} 长度前缀。
+// 与 docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md 保持一致。
+// 所有多字节字段统一 big-endian / network byte order，帧层使用 {packet, 4} 长度前缀。
 
 export const VoxelOpcode = {
   ChunkSubscribe: 0x60,

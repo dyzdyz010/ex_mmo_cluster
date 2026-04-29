@@ -4,7 +4,7 @@
 
 1. **验证 movement sync**：浏览器直接接 `auth_server -> gate_server` 的 browser bridge，确认 prediction / ack / reconcile / remote snapshot 没问题
 2. **保留离线 voxel 世界**：把体素世界作为本地承载层和调试面，不参与当前阶段的服务端同步
-3. **保留后续扩展位**：等 movement 路径稳定后，再考虑是否继续接 `voxel_server`
+3. **保留后续扩展位**：等 movement 路径稳定后，再接 `SceneServer.Voxel.*` 服务端权威体素链路
 
 > 定位：优先服务于 movement 联调与回归验证的浏览器客户端。当前不把 voxel online 作为交付目标。
 
@@ -31,15 +31,15 @@
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 现在故意保持离线，本阶段不接 `voxel_server` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`。
+2. voxel 现在故意保持离线，本阶段不接 `SceneServer.Voxel.*` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
    Prefab definition 保留 `partDefinitions / microPartIds`，实例化后拍扁为带
    part tag 的 refined micro 数据，供后续魔法和局部破坏按部件语义结算。
-   选中 prefab 时，准星命中已有体素表面会显示 translucent micro boundary snap
-   ghost；右键 / `F` 会优先按整数 world micro anchor 做 socket-free 边界贴合，并用
-   真实 rasterize 后的 micro occupancy 作为 ghost preview。socket 只保留为可选语义兼容层。
+   选中 prefab 时，准星命中已有体素表面会显示低成本 micro-wire boundary snap
+   preview；右键 / `F` 会优先按整数 world micro anchor 做 socket-free 边界贴合，并用
+   真实 rasterize 后的 micro occupancy 作为线框预览。socket 只保留为可选语义兼容层。
 4. 微格治理已有浏览器端首版：refined cell 当前按 `8x8x8` micro payload 量化；
    mesher 会剔除相邻 micro 的内部面；CLI 只读取 `micro_cell` 用于检查 prefab/refined 内部数据，
    不把 micro 暴露成可放置的玩家方块。Prefab snap commit 使用事务式 overlap check
@@ -51,7 +51,7 @@
 | ---- | --------------------- | ---------------------------------------------- |
 | 构建 | Vite 8 + TypeScript 5 | 热更新秒级，原生 ES module                     |
 | 渲染 | three.js 0.184        | WebGPU 优先，WebGL 可回退，voxel 生态成熟      |
-| 网络 | WebSocket + DataView  | 对齐服务端 `{packet, 4}` 长度前缀 + 小端二进制 |
+| 网络 | WebSocket + DataView  | 对齐服务端 `{packet, 4}` 长度前缀 + big-endian 二进制 |
 | 语言 | TypeScript strict     | 类型结构对齐 UE USTRUCT                        |
 
 浏览器目标：Chromium 最新两个版本（调试用，不做兼容下探）。
@@ -88,9 +88,9 @@ clients/web_client/
 
 | UE 符号                         | Web 符号                                   | 注意                                                      |
 | ------------------------------- | ------------------------------------------ | --------------------------------------------------------- |
-| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；接入 UE/server refined 同步前需要协议协商 |
+| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；server v1 canonical 也为 8；UE `test1` 的 4 只作为历史参考 |
 | `FChunkCoord`                   | `FChunkCoord` 接口                         | int32 语义，允许负象限                                    |
-| `FNormalBlockData`              | `FNormalBlockData` 接口                    | 线格式 12 字节：u16+i32+u16+i16+i16                       |
+| `FNormalBlockData`              | `FNormalBlockData` 接口                    | 当前本地接口沿用 12 字节基础字段；server v1 wire 追加 attribute/tag refs 后固定 20 字节 |
 | `FMacroCellHeader`              | `FMacroCellHeader` 接口                    | 线格式 7 字节：u8+u16+u16+u16                             |
 | `EVoxelCellMode`                | `EVoxelCellMode` enum                      | Empty=0 / SolidBlock=1 / Refined=2                        |
 | `EVoxelBlockStateFlags`         | `EVoxelBlockStateFlags` enum               | Burning/Frozen/Wet/… 位标志                               |
@@ -98,7 +98,9 @@ clients/web_client/
 | `FChunkStorageData`             | `FChunkStorageData` + `ChunkStorage` class | 结构 + 写入 API 解耦                                      |
 | `VoxelDirtyFlags`               | `VoxelDirtyFlags`                          | Storage / Mesh / Collision                                |
 
-所有字段顺序、枚举值必须与 UE `Public/Voxel/*` 头文件完全对齐。新增字段时先改 UE，再改此仓库。
+UE `Public/Voxel/*` 是空间模型和真相层参考，不再作为本仓库服务端 wire contract 的唯一来源。
+服务端权威协议以 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` 为准；
+新增跨端字段时先更新 canonical doc + golden fixture，再同步 UE / web / Bevy / Elixir codec。
 
 ## 实施路线（与 UE 阶段对齐）
 
@@ -115,8 +117,8 @@ clients/web_client/
 路线口径：
 
 - W-A → W-D 以"**最快看到服务端交互**"为准，渲染优先用 per-face 简单三角面，不做 greedy
-- W-D 上线后开始压测；若压测不过 `docs/2026-04-20-体素世界服务端规划.md` § 12 指标，优先修服务端，不在客户端堆优化
-- 任何新字段：UE 端先落（`Voxel/*.h`）→ 本客户端类型跟进 → 服务端 codec 跟进。三端顺序不可颠倒
+- W-D 上线后开始压测；若压测不过 canonical server-authoritative voxel 指标，优先修服务端，不在客户端堆优化
+- 任何跨端 wire 新字段：canonical doc + golden fixture 先落 → Elixir / TypeScript codec 跟进 → UE / Bevy 适配跟进。
 
 ## 运行
 
@@ -329,15 +331,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_ws_dual_smoke.ps1
 ## 不在本仓库范围
 
 - UE 客户端自身的渲染 / 物理 / 命中优化 — 由 `D:\UnrealEngine\test1` 仓库负责
-- 服务端 `voxel_server` app 实现 — 当前阶段不接入；见 `docs/2026-04-20-体素世界服务端规划.md`
+- web client 内不实现服务端权威 voxel；服务端侧应按 `SceneServer.Voxel.*` 设计推进，见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`
 - 美术资产 / UI 打磨 — 本客户端只做协议验证
 - 游戏逻辑（战斗 / 经济 / 任务）— 不在本阶段
 
 ## 相关文档
 
-- `docs/2026-04-20-体素世界服务端规划.md` — 服务端协议 / 数据 / 进程模型
+- `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` — 当前 canonical 服务端权威 voxel 数据结构 / 协议 / scene authority 设计
 - `docs/2026-04-29-voxel-server-authority-convergence-research.md` — 当前代码现状下把
   voxel 从 offline-local 收拢为服务端权威的研究结论和分阶段切入点
+- `docs/2026-04-20-体素世界服务端规划.md` — 历史规划，已被 2026-04-29 canonical 设计取代
 - `docs/2026-04-28-web-client-movement-render-prefab-fixes.md` — movement 丝滑化、prefab 预览优化、simulated-local 假远端 actor 移除、地形出生点修复的后续接手笔记
 - `docs/2026-04-24-web-client-prefab-microgrid-jump-implementation.md` — 浏览器端 prefab / microgrid / jump display 当前实现记录
 - `docs/2026-04-24-web-client-prefab-microgrid-snapping-design.md` — prefab micro boundary snapping + micro occupancy union 设计

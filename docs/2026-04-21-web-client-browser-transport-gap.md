@@ -35,7 +35,7 @@
 若未来要做 voxel 在线同步，再考虑补以下一项：
 
 1. 在现有 browser bridge 上补 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`
-2. 或直接在 `gate_server` / 新 `voxel_server` 中实现 voxel world browser transport
+2. 或直接在 `gate_server` / 新 `voxel_server` 中实现 voxel world browser transport（历史选项；当前 canonical 设计改为 gate 路由到 `SceneServer.Voxel.*`）
 
 ## 已核对的仓库事实
 

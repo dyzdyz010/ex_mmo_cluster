@@ -17,7 +17,9 @@ DataService owns persistence, not runtime authority.
 迁移、入口路由和全局协调；具体场景内的分块、编辑、AOI、碰撞和玩法结算应与该 scene 的
 `SceneServer` 权威进程共址。
 
-早期 `docs/2026-04-20-体素世界服务端规划.md` 规划了新建 `VoxelServer.*` app；本研究第一版曾
+当前 canonical 数据结构与协议设计已经落在
+`docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`。早期
+`docs/2026-04-20-体素世界服务端规划.md` 规划了新建 `VoxelServer.*` app；本研究第一版曾
 建议直接落到 `world_server`，那是基于当前代码空壳的最小落点，不是领域边界最优解。若项目
 的领域模型是“world 协调多个 scene，scene 负责具体空间”，则应采用
 `SceneServer.Voxel.*` 或 `SceneServer.SceneVoxel.*` 子命名空间；未来只有在体素热路径需要
@@ -48,19 +50,23 @@ DataService owns persistence, not runtime authority.
   场景内热路径。体素编辑会影响碰撞、AOI 可见性和战斗/交互，因此应与 scene authority 共址。
 - `data_service` 目前没有 `voxel_chunks / voxel_prefabs / voxel_edit_log` 等 schema。
 
-### 2.3 文档冲突
+### 2.3 已收敛的文档冲突
 
 早期服务端规划写的是 `MicroPerMacro=4` 和 `u64 micro_solid_bitmap`。当前 web / bevy 客户端
 已经走到 `MicroPerMacro=8`，`u64` 只能表达 64 slots，不能表达 512 slots。继续沿用旧线格式会
 静默截断 refined prefab。
 
-本轮建议把 v1 服务端权威量化定为 `MicroPerMacro=8`，并在协议中显式携带：
+当前已把 v1 服务端权威量化定为 `MicroPerMacro=8`，并在协议中显式携带：
 
 - `schema_version`
 - `micro_resolution`
 - `chunk_size_in_macro`
 
 不要让任何一端靠旧文档猜测量化参数。
+
+同时已统一 wire byte order：所有 voxel payload 与 gate 主协议一致，均使用
+**big-endian / network byte order**。客户端 TypeScript、Elixir、Rust、UE 侧都必须通过 golden
+fixture 显式验证，不再允许“frame 大端、voxel payload 小端”的混合协议。
 
 ## 3. 必须先固定的原则
 
@@ -159,15 +165,15 @@ HUD / CLI 必须能读到：
 
 ## 5. 线格式关键点
 
-### 5.1 endian 不要混用到同一个 codec
+### 5.1 endian 统一为 big-endian
 
-movement 的 `GateServer.Codec` 目前使用 big-endian；`opcodes.ts` 注释写 voxel 多字节字段统一
-little-endian。两者可以共存，但必须拆成明确模块：
+movement 的 `GateServer.Codec` 当前使用 big-endian。voxel 不再另开 little-endian payload；
+所有多字节字段统一为 big-endian：
 
 ```text
-GateServer.Codec          movement/chat/combat big-endian
+GateServer.Codec          movement/chat/combat/voxel dispatch, big-endian frame/body
 GateServer.Codec.Voxel    voxel opcode dispatch only
-SceneServer.Voxel.Codec   voxel payload little-endian
+SceneServer.Voxel.Codec   voxel payload big-endian
 ```
 
 每个 voxel 消息都要有 TypeScript 和 Elixir 的 golden binary fixture，避免靠注释同步。
@@ -175,22 +181,34 @@ SceneServer.Voxel.Codec   voxel payload little-endian
 ### 5.2 512-slot refined payload
 
 `MicroPerMacro=8` 后，occupancy mask 是 512 bits。推荐线格式不要用单个整数字段，而用固定
-8 个 `u64 little-endian` 或固定 64 bytes：
+8 个 `u64 big-endian` 或固定 64 bytes：
 
 ```text
-micro_occupancy_words[8] u64-le
-micro_material_ids[512] u16-le or compressed layer
-micro_state_flags[512]  u16-le or compressed layer
-micro_part_ids[512]     i32-le or compressed layer
+micro_occupancy_words[8] u64-be
+micro_layers[]           layer mask + material/state/attr/tag/provenance
 ```
 
-v1 可以先用未压缩数组换可调试性；压缩层作为性能优化，不作为协议起点。
+v1 不建议传全量 512 槽材料/状态数组作为默认 wire 起点；使用 `MicroLayer { mask_words,
+material_id, state_flags, attribute_set_ref, tag_set_ref, owner_object_id, owner_part_id }`
+能同时保持可调试性和对 prefab provenance / 魔法标签的扩展位。
 
 ### 5.3 Normal block 字节数要重新定版
 
 旧规划写 `FNormalBlockData = 10 bytes`，当前 web 类型注释写紧凑线格式是
-`u16 + i32 + u16 + i16 + i16 = 12 bytes`。服务端实现前必须选定一个 canonical wire layout，
-并把 web / bevy / Elixir 测试都锁到同一组 fixture。
+`u16 + i32 + u16 + i16 + i16 = 12 bytes`。当前 canonical wire layout 已定为固定 20 bytes：
+
+```text
+material_id       u16
+state_flags       u32
+health            u16
+temperature_delta i16
+moisture_delta    i16
+attribute_set_ref u32
+tag_set_ref       u32
+```
+
+`attribute_set_ref` 和 `tag_set_ref` 是后续自身属性、魔法标签、材质派生规则的扩展入口，避免未来
+再次 wire-breaking。
 
 ## 6. 推荐分阶段
 

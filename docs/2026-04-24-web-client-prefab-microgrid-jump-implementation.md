@@ -9,7 +9,7 @@
 2. microgrid：当前浏览器端量化为 `8x8x8 = 512` slots，用于 prefab/refined 数据，不作为玩家可直接放置的方块单位。
 3. Space jump：输入、预测、日志、frame trace 和 avatar 显示高度现在能在真实浏览器路径中闭环验证。
 
-注意：`docs/2026-04-20-体素世界服务端规划.md` 仍记录服务端/UE 侧早期 `MicroPerMacro=4` 规划。浏览器端此处升到 8 是为了提升本地 prefab 形状表现；未来接入服务端 refined 同步时必须先做协议协商或统一量化参数，不能直接假设两端一致。
+注意：`docs/2026-04-20-体素世界服务端规划.md` 是历史规划。当前 canonical 服务端权威设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，server v1 与浏览器端统一采用 `MicroPerMacro=8`；UE `test1` 的 `MicroPerMacro=4` 只作为早期参考。
 
 ## 2. 文件职责
 
@@ -23,7 +23,7 @@
 | `clients/web_client/src/voxel/worldStore.ts` | 多 Chunk 世界索引、snapshot import/export、世界级写入入口。 |
 | `clients/web_client/src/voxel/prefab.ts` | 本地 prefab definition / instance 编排，内置 prefab 生成与放置。 |
 | `clients/web_client/src/voxel/meshing/chunkMesher.ts` | 把 refined micro occupancy 转成实际 micro cube faces。 |
-| `clients/web_client/src/render/chunkRenderer.ts` | Chunk mesh 挂载、准星选中、prefab ghost preview。 |
+| `clients/web_client/src/render/chunkRenderer.ts` | Chunk mesh 挂载、准星选中、prefab micro-wire preview。 |
 | `clients/web_client/src/app/controllers/worldEditController.ts` | 玩家编辑意图入口；只处理宏格和 prefab，不暴露 micro write。 |
 | `clients/web_client/src/app/controllers/renderOrchestrator.ts` | avatar 显示高度、摄像机跟随、render frame orchestration。 |
 | `clients/web_client/src/presentation/devtools/devToolsCli.ts` | 浏览器 CLI 命令实现；提供 `micro_cell` 只读检查与 `actorDisplay` 快照。 |
@@ -188,10 +188,10 @@ microgrid 不是玩家编辑单位。当前公共用户路径只有：
 
 这使 prefab 局部凿除后不会渲染隐藏面。
 
-### 6.2 Prefab ghost preview
+### 6.2 Prefab micro-wire preview
 
 `RenderOrchestrator` 每帧读取当前准星 selection 和 hotbar selected item。  
-如果选中的是 prefab，则 `chunkRenderer.setPrefabPreview` 在 adjacent macro cells 上渲染半透明 ghost。
+如果选中的是 prefab，则 `chunkRenderer.setPrefabPreview` 在 adjacent placement cells 上渲染低成本 micro-wire preview。当前实现不再使用半透明实体 ghost、glow 或填充材质。
 
 实际写入仍由：
 
