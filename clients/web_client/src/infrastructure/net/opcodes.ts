@@ -6,20 +6,27 @@ export const VoxelOpcode = {
   ChunkUnsubscribe: 0x61,
   ChunkSnapshot: 0x62,
   ChunkDelta: 0x63,
-  BlockBreak: 0x64,
-  BlockPlace: 0x65,
-  PrefabCreate: 0x66,
-  PrefabPlace: 0x67,
-  EditAck: 0x68,
+  VoxelImpactIntent: 0x64,
+  BuildReservationIntent: 0x65,
+  BlueprintCreate: 0x66,
+  PrefabPlaceIntent: 0x67,
+  VoxelIntentResult: 0x68,
   ChunkInvalidate: 0x69,
+  ParcelQuery: 0x6a,
+  ObjectAction: 0x6b,
+  ObjectStateDelta: 0x6c,
+  TagCatalogSnapshot: 0x6d,
+  AttributeCatalogSnapshot: 0x6e,
+  VoxelDebugProbe: 0x6f,
 } as const;
 
 export type VoxelOpcodeValue = (typeof VoxelOpcode)[keyof typeof VoxelOpcode];
 
-export const EditAckResult = {
-  Applied: 0,
-  Conflict: 1,
+export const VoxelIntentResult = {
+  Accepted: 0,
+  Deferred: 1,
   Rejected: 2,
+  Stale: 3,
 } as const;
 
-export type EditAckResultValue = (typeof EditAckResult)[keyof typeof EditAckResult];
+export type VoxelIntentResultValue = (typeof VoxelIntentResult)[keyof typeof VoxelIntentResult];

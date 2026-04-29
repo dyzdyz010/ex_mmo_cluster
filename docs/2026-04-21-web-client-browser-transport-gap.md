@@ -14,7 +14,7 @@
 3. `/ingame/ws` 通过 `AuthServerWeb.GameWebSocket` 把浏览器二进制帧桥接到 `GateServer.WsConnection`。
 4. 该桥接链已经能跑通 `auth -> enter-scene -> movement_ack -> player_move`。
 5. `visualize_server` 的 WebSocket 仍然只是 Phoenix LiveView 场景可视化，不承担游戏 transport。
-6. 体素协议 `0x60..0x6F` 目前仍主要停留在 `docs/2026-04-20-体素世界服务端规划.md` 与 `clients/web_client/src/net/opcodes.ts`，且当前阶段不作为网页客户端交付目标。
+6. 体素协议 `0x60..0x6F` 的服务端权威第一版规范见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，且当前阶段不作为网页客户端交付目标。
 
 因此网页客户端当前阶段应采用“voxel 离线、movement 在线优先”的验证策略：
 
@@ -34,8 +34,8 @@
 
 若未来要做 voxel 在线同步，再考虑补以下一项：
 
-1. 在现有 browser bridge 上补 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`
-2. 或直接在 `gate_server` / 新 `voxel_server` 中实现 voxel world browser transport（历史选项；当前 canonical 设计改为 gate 路由到 `SceneServer.Voxel.*`）
+1. 在现有 browser bridge 上补 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult`
+2. 由 `gate_server` 按连接的 `scene_ref` 路由到 `SceneServer.Voxel.*`
 
 ## 已核对的仓库事实
 

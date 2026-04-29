@@ -94,6 +94,6 @@
 ## 后续建议（不在本 sweep 范围）
 
 - **重命名 `protocol_v2.rs`** → `movement_codec.rs`（A-L3 已加 TODO）
-- **Web 客户端字节序 / 协议同步**：本审计当时记录的是历史状态；当前 canonical voxel wire 已统一为 big-endian，见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`
+- **Web 客户端字节序 / 协议同步**：voxel wire 统一为 big-endian，见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`
 - **CLI/stdio 调试基础设施成熟度提升**：审计验证给 7/10；可后续做 stdin recovery / observer back-pressure 增强
 - **业界 CMC 范式对齐度**：从 6/10 提升到约 8.5/10（B-S1/S2/S3/M1/M2/M3/L1 全部落地）；剩余 1.5 分主要是 server 端 session 持久化（暂无 use case）

@@ -9,7 +9,7 @@
 2. microgrid：当前浏览器端量化为 `8x8x8 = 512` slots，用于 prefab/refined 数据，不作为玩家可直接放置的方块单位。
 3. Space jump：输入、预测、日志、frame trace 和 avatar 显示高度现在能在真实浏览器路径中闭环验证。
 
-注意：`docs/2026-04-20-体素世界服务端规划.md` 是历史规划。当前 canonical 服务端权威设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，server v1 与浏览器端统一采用 `MicroPerMacro=8`；UE `test1` 的 `MicroPerMacro=4` 只作为早期参考。
+服务端权威第一版规范见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，server v1 与浏览器端统一采用 `MicroPerMacro=8`。MMO 模式下，浏览器本地编辑仍只作为 offline-local 验证面；服务端接入后，体素 confirmed data 必须只由服务器 snapshot/delta/result 更新。
 
 ## 2. 文件职责
 

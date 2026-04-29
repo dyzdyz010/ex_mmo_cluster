@@ -244,12 +244,12 @@ snapshot 至少记录：
 3. refined cell occupancy/material/state/part/instance payload。
 4. prefab definition version。
 
-未来接服务端 authority 前需要解决：
+接入服务端 authority 时需要遵守第一版规范：
 
-1. `MicroPerMacro=8` 与服务端/UE 历史量化差异。
-2. refined payload wire format。
+1. `MicroPerMacro=8`。
+2. refined payload wire format 使用 512-bit occupancy。
 3. prefab definition registry 与版本兼容。
-4. 多人编辑时的 bitmask merge / reject 策略。
+4. 客户端只提交 placement intent，服务端重算 raster。
 5. 跨 chunk transaction 边界。
 
 ## 10. CLI / Observe

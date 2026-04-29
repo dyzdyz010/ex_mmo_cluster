@@ -31,7 +31,7 @@
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 现在故意保持离线，本阶段不接 `SceneServer.Voxel.*` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / EditAck`。
+2. voxel 现在故意保持离线，本阶段不接 `SceneServer.Voxel.*` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult`。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
@@ -88,7 +88,7 @@ clients/web_client/
 
 | UE 符号                         | Web 符号                                   | 注意                                                      |
 | ------------------------------- | ------------------------------------------ | --------------------------------------------------------- |
-| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；server v1 canonical 也为 8；UE `test1` 的 4 只作为历史参考 |
+| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；server v1 canonical 也为 8 |
 | `FChunkCoord`                   | `FChunkCoord` 接口                         | int32 语义，允许负象限                                    |
 | `FNormalBlockData`              | `FNormalBlockData` 接口                    | 当前本地接口沿用 12 字节基础字段；server v1 wire 追加 attribute/tag refs 后固定 20 字节 |
 | `FMacroCellHeader`              | `FMacroCellHeader` 接口                    | 线格式 7 字节：u8+u16+u16+u16                             |
@@ -331,16 +331,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_ws_dual_smoke.ps1
 ## 不在本仓库范围
 
 - UE 客户端自身的渲染 / 物理 / 命中优化 — 由 `D:\UnrealEngine\test1` 仓库负责
-- web client 内不实现服务端权威 voxel；服务端侧应按 `SceneServer.Voxel.*` 设计推进，见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`
+- web client 内不实现服务端权威 voxel；服务端侧应按 `SceneServer.Voxel.*` 第一版规范推进，见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`
 - 美术资产 / UI 打磨 — 本客户端只做协议验证
 - 游戏逻辑（战斗 / 经济 / 任务）— 不在本阶段
 
 ## 相关文档
 
-- `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` — 当前 canonical 服务端权威 voxel 数据结构 / 协议 / scene authority 设计
-- `docs/2026-04-29-voxel-server-authority-convergence-research.md` — 当前代码现状下把
-  voxel 从 offline-local 收拢为服务端权威的研究结论和分阶段切入点
-- `docs/2026-04-20-体素世界服务端规划.md` — 历史规划，已被 2026-04-29 canonical 设计取代
+- `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` — 服务端权威 voxel 第一版数据结构 / 协议 / scene authority 规范
 - `docs/2026-04-28-web-client-movement-render-prefab-fixes.md` — movement 丝滑化、prefab 预览优化、simulated-local 假远端 actor 移除、地形出生点修复的后续接手笔记
 - `docs/2026-04-24-web-client-prefab-microgrid-jump-implementation.md` — 浏览器端 prefab / microgrid / jump display 当前实现记录
 - `docs/2026-04-24-web-client-prefab-microgrid-snapping-design.md` — prefab micro boundary snapping + micro occupancy union 设计

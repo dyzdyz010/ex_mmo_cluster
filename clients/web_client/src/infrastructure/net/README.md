@@ -19,7 +19,8 @@
 - 体素协议 `0x60..0x6F` 仍主要保留 opcode 与接口边界，真实 chunk subscribe / snapshot / delta / edit ack 流还未接到服务端。
   当前 canonical 设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`：
   `SceneServer.Voxel.*` 持有 hot chunk truth，voxel payload 统一 big-endian，
-  server v1 使用 `MicroPerMacro=8` 和 512-bit refined occupancy。
+  server v1 使用 `MicroPerMacro=8` 和 512-bit refined occupancy。玩家侧 movement/skill
+  表现可以本地预测或预演；体素 confirmed data 只能由服务器 snapshot/delta/result 更新。
 
 约束：
 
