@@ -70,7 +70,7 @@ describe("createRendererBackend", () => {
 
     expect(fake.initSpy).toHaveBeenCalledOnce();
     expect(backend.getDebugSnapshot()).toMatchObject({
-      requested: "auto",
+      requested: "webgpu",
       active: "webgpu",
       renderer: "WebGPURenderer",
       backend: "FakeWebGPUBackend",
@@ -83,7 +83,7 @@ describe("createRendererBackend", () => {
     const backend = await createRendererBackend(fakeCanvas(), optionsWithWebGPU(fake));
 
     expect(backend.getDebugSnapshot()).toMatchObject({
-      requested: "auto",
+      requested: "webgpu",
       active: "webgl",
       renderer: "WebGPURenderer",
       backend: "FakeWebGLBackend",
@@ -101,7 +101,7 @@ describe("createRendererBackend", () => {
 
     expect(webgpu.initSpy).toHaveBeenCalledOnce();
     expect(backend.getDebugSnapshot()).toMatchObject({
-      requested: "auto",
+      requested: "webgpu",
       active: "webgl",
       renderer: "WebGLRenderer",
       backend: "WebGLRenderer",

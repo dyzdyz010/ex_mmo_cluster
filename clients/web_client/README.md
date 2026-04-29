@@ -137,7 +137,7 @@ npm run dev
 默认情况下，浏览器客户端会采用：
 
 - `voxel_sync=offline-local`
-- `renderer=auto`，优先尝试 `WebGPURenderer` / WebGPU backend
+- `renderer=webgpu`，优先尝试 `WebGPURenderer` / WebGPU backend，不可用时回退 WebGL
 - movement 优先尝试真实 **server-backed movement transport**
 
 - `POST /ingame/auto_login`
@@ -163,6 +163,7 @@ VITE_MOVEMENT_TRANSPORT=simulated npm run dev
 
 ```bash
 npm run dev
+# http://127.0.0.1:5173 默认就是 WebGPU 优先
 # http://127.0.0.1:5173/?renderer=webgpu
 # http://127.0.0.1:5173/?renderer=webgl
 

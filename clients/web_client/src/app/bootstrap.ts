@@ -3,7 +3,11 @@ import type { MovementTransport } from "@domain/movement/transport";
 import { SimulatedLocalMovementTransport } from "@infra/net/simulatedMovementTransport";
 import { ServerMovementTransport } from "@infra/net/serverMovementTransport";
 import { createScene } from "../render/scene";
-import { normalizeRendererPreference, type RendererPreference } from "../render/rendererBackend";
+import {
+  DefaultRendererPreference,
+  normalizeRendererPreference,
+  type RendererPreference,
+} from "../render/rendererBackend";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
@@ -148,7 +152,19 @@ function createMovementTransport(logger: ObserveLog): MovementTransport {
 
 export function resolveRendererPreference(): RendererPreference {
   const queryPreference = new URLSearchParams(window.location.search).get("renderer");
-  return normalizeRendererPreference(queryPreference ?? import.meta.env.VITE_RENDER_BACKEND);
+  return resolveRendererPreferenceFrom(queryPreference, import.meta.env.VITE_RENDER_BACKEND);
+}
+
+export function resolveRendererPreferenceFrom(
+  queryPreference: string | null,
+  envPreference: string | undefined,
+): RendererPreference {
+  const explicitPreference = queryPreference ?? envPreference;
+  return explicitPreference === undefined ||
+    explicitPreference === null ||
+    explicitPreference === ""
+    ? DefaultRendererPreference
+    : normalizeRendererPreference(explicitPreference);
 }
 
 /**

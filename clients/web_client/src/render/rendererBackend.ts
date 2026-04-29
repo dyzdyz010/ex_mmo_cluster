@@ -5,6 +5,7 @@ import type { WebGPURenderer } from "three/webgpu";
 export type RendererPreference = "auto" | "webgpu" | "webgl";
 export type RendererBackendKind = "webgpu" | "webgl";
 export type RendererName = "WebGPURenderer" | "WebGLRenderer";
+export const DefaultRendererPreference: RendererPreference = "webgpu";
 
 export interface RendererDebugSnapshot {
   requested: RendererPreference;
@@ -60,7 +61,7 @@ export async function createRendererBackend(
   canvas: HTMLCanvasElement,
   options: RendererBackendOptions = {},
 ): Promise<RendererBackend> {
-  const requested = options.preference ?? "auto";
+  const requested = options.preference ?? DefaultRendererPreference;
   const webgpuAvailable = (options.isWebGPUAvailable ?? detectWebGPUAvailability)();
 
   if (requested === "webgl") {

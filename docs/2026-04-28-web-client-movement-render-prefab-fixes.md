@@ -206,8 +206,10 @@ Follow-up performance and placement correction:
 ### Renderer backend is explicit
 
 The web client now uses `rendererBackend.ts` to prefer WebGPU where possible
-and fall back to WebGL. Runtime can force a backend with:
+and fall back to WebGL. The default browser entrypoint requests WebGPU
+explicitly; runtime can still force a backend with:
 
+- `http://127.0.0.1:5173` (default WebGPU-first path)
 - `http://127.0.0.1:5173/?renderer=webgpu`
 - `http://127.0.0.1:5173/?renderer=webgl`
 - `VITE_RENDER_BACKEND=webgl npm run dev`
