@@ -14,7 +14,7 @@ DRIFT_TOLERANCE="${DRIFT_TOLERANCE:-2.0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$REPO_ROOT/clients/bevy_client"
-OBSERVE_DIR="$REPO_ROOT/.demo/e2e-stdio-movement"
+OBSERVE_DIR="${OBSERVE_DIR:-$REPO_ROOT/.demo/e2e-stdio-movement}"
 TEST_LOG="$OBSERVE_DIR/cargo-test.log"
 
 mkdir -p "$OBSERVE_DIR"

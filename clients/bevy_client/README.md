@@ -165,15 +165,31 @@ Voxel 典型排查顺序：
 - `BEVY_CLIENT_OBSERVE_LOG`
 - `--voxel-headless --observe-log ..\..\.demo\observe\<name>.log`
 
-而 `mix demo.run` 默认会额外生成服务端日志：
+服务端 observe 通过环境变量开启。推荐写到：
 
 - `.demo/observe/server-gate.log`
 - `.demo/observe/server-scene.log`
 
-可直接查看：
+示例：
 
 ```bash
-mix demo.observe --lines 40
+mix run --no-start scripts/ws_smoke_db_setup.exs
+GATE_SERVER_OBSERVE_LOG=.demo/observe/server-gate.log \
+SCENE_SERVER_OBSERVE_LOG=.demo/observe/server-scene.log \
+mix run --no-start scripts/ws_smoke_boot.exs
+```
+
+当前完整运行时 smoke 会自动写 `.demo/observe/ws-dual-*` 与
+`.demo/observe/ws-dual-smoke-summary.json`：
+
+```bash
+node scripts/run_ws_dual_smoke_supervised.js
+```
+
+日志可直接用系统工具查看：
+
+```bash
+tail -n 40 .demo/observe/server-gate.log .demo/observe/server-scene.log
 ```
 
 如果当前环境访问 crates.io 很慢，可以临时改用 sparse 镜像：

@@ -1,4 +1,5 @@
 param(
+  [string]$ObserveDir = ".demo/e2e-stdio-movement",
   [double]$DriftTolerance = 2.0
 )
 
@@ -6,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $clientDir = Join-Path $repoRoot "clients\bevy_client"
-$observeDir = Join-Path $repoRoot ".demo\e2e-stdio-movement"
+$observeDir = Join-Path $repoRoot $ObserveDir
 New-Item -ItemType Directory -Force -Path $observeDir | Out-Null
 
 $testLog = Join-Path $observeDir "cargo-test.log"

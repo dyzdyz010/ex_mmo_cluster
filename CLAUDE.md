@@ -6,13 +6,13 @@
 
 ## 技术栈
 
-- **语言**：Elixir 1.18.x，Erlang/OTP 28
-- **运行时版本**：见 `.tool-versions`（Erlang 28.3.1，Elixir 1.18.4-otp-28）
+- **语言**：Elixir 1.19.x，Erlang/OTP 28
+- **运行时版本**：见 `.tool-versions`（Erlang 28.3.1，Elixir 1.19.5-otp-28）
 - **Web 框架**：Phoenix 1.8（`auth_server`、`visualize_server`，均由 `mix phx.new` 1.8 模板生成后迁移业务逻辑）
 - **HTTP 适配器**：Bandit 1.5（Phoenix 1.8 默认）
 - **数据库**：PostgreSQL via Ecto（主路径），Mnesia via Memento（遗留、迁移中）
 - **序列化**：自定义二进制 codec（`GateServer.Codec`，见 `docs/2026-04-10-线协议规范.md`），以及 JSON（Jason）
-- **原生扩展**：Rust via Rustler 0.36（物理使用 `rapier3d-f64`，空间索引使用 octree）
+- **原生扩展**：Rust via Rustler 0.37.3（物理使用 `rapier3d-f64`，空间索引使用 octree）
 - **集群组件**：`libcluster`（节点发现）、`Horde`（分布式注册与 supervisor）、`DNSCluster`（Phoenix 1.8 默认 DNS 基础集群，与 libcluster 并存）
 - **前端**：Phoenix LiveView 1.1、esbuild 0.25、Tailwind CSS 4.1、heroicons
 
@@ -185,15 +185,16 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
 | Crate | Rustler | 用途 |
 |-------|---------|------|
-| `scene_ops` | 0.36.1 | 物理模拟（rapier3d-f64 0.16）、角色移动 |
-| `octree` | 0.36.1 | 空间索引与邻近查询 |
-| `coordinate_system` | 0.36.1 | 旧坐标系统实现（已逐步被 octree 替代） |
+| `scene_ops` | 0.37.3 | 物理模拟（rapier3d-f64 0.16）、角色移动 |
+| `movement_engine` | 0.37.3 | 服务端权威移动积分与回放校正 |
+| `octree` | 0.37.3 | 空间索引与邻近查询 |
+| `coordinate_system` | 0.37.3 | 旧坐标系统实现（已逐步被 octree 替代） |
 
 关键 NIF 模块：`SceneServer.Native.SceneOps`
 
 典型函数包括：`new_character_data/5`、`movement_tick/2`、`update_character_movement/5`、`get_character_location/2`、`new_physics_system/0`
 
-**Rustler 0.36 API 提示**：
+**Rustler 0.37.3 API 提示**：
 
 - 资源类型使用 `#[rustler::resource_impl] impl Resource for T {}`
 - NIF 函数使用 `#[rustler::nif]`
@@ -245,9 +246,9 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 | `bandit` | ~> 1.5 | Phoenix 1.8 默认 HTTP 适配器 |
 | `dns_cluster` | ~> 0.2 | Phoenix 1.8 默认 DNS 集群 |
 | `ecto_sql` | ~> 3.12 | PostgreSQL 数据访问 |
-| `postgrex` | latest | PostgreSQL 驱动 |
+| `postgrex` | 锁定 0.22.0 | PostgreSQL 驱动 |
 | `memento` | 0.3.2 | Mnesia 包装层（遗留） |
-| `rustler` | ~> 0.36 | Elixir ↔ Rust NIF 桥接 |
+| `rustler` | ~> 0.37.3 | Elixir ↔ Rust NIF 桥接 |
 | `libcluster` | ~> 3.4 | 集群自动发现 |
 | `horde` | ~> 0.9 | 分布式 registry / supervisor |
 | `poolboy` | 1.5 | worker pool 管理（data_service） |
@@ -258,7 +259,7 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
 - 这是一个 umbrella 项目，修改前必须先判断影响的是哪个 app
 - 跨 app 通信主要通过 Interface 模块和稳定公共 API，尽量不要绕过这些边界
-- `scene_server` 带 Rust NIF，修改原生代码时要考虑 Rustler 0.36 API 与 Rust 编译链
+- `scene_server` 带 Rust NIF，修改原生代码时要考虑 Rustler 0.37.3 API 与 Rust 编译链
 - **数据层现状**：`data_service` 主路径已经是 PostgreSQL / Ecto；`data_init` / `data_store` / `data_contact` 主要是遗留兼容
 - **服务发现现状**：所有 Interface 模块都应通过 `BeaconServer.Client` 做发现，不要硬编码节点名
 - 项目使用分布式 Erlang，涉及多节点行为时要考虑 node name 与 cookie

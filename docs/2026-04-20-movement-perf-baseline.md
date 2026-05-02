@@ -142,6 +142,7 @@ ENTITIES=5000 mix run bench/scene_load_bench.exs
 
 - OS: Windows 11 Home China 10.0.26200
 - Rust: stable（cargo bench 使用 `--release`）
-- Erlang/OTP: 28.3.1, Elixir 1.18.4-otp-28
+- Erlang/OTP: 28.3.1, Elixir 1.18.4-otp-28（当次 bench 环境）
+- 当前仓库 `.tool-versions`：Erlang/OTP 28.3.1, Elixir 1.19.5-otp-28；新 baseline 需要按当前工具链重跑
 - movement_core crate: 本仓当前 commit
 - bevy_client: bevy 0.18.1

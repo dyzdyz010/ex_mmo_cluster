@@ -25,10 +25,15 @@
 - `gate_server`：记录 TCP/UDP 接入、auth、enter-scene、movement、fast-lane attach/detach、错误回复
 - `scene_server`：记录角色加载、位置更新、movement tick、chat、skill、退出
 
-默认由 `mix demo.run` 写到：
+本地 smoke runner 或显式环境变量会把它们写到可复现目录。推荐路径：
 
 - `.demo/observe/server-gate.log`
 - `.demo/observe/server-scene.log`
+
+对应环境变量：
+
+- `GATE_SERVER_OBSERVE_LOG=.demo/observe/server-gate.log`
+- `SCENE_SERVER_OBSERVE_LOG=.demo/observe/server-scene.log`
 
 ### 2. 集成式 stdio 接口
 
@@ -75,24 +80,33 @@ Bevy 客户端增加：
 
 ## CLI 使用方式
 
-### 启动带 observe 的本地 demo
+### 启动带 observe 的完整运行时 smoke
 
 ```bash
-mix demo.run --bot-count 2
+node scripts/run_ws_dual_smoke_supervised.js
 ```
 
-默认会准备 `.demo/observe/` 目录。
+该 runner 会启动本地 auth / gate / scene / data 等真实运行路径，自动准备
+PostgreSQL smoke 数据，并把 boot / probe / summary 产物写到 `.demo/observe/`。
 
-### 启动带服务端 stdio 的 gate
+### 启动带服务端 stdio 的本地 smoke runtime
 
 ```bash
-mix demo.run --stdio --bot-count 1
+mix run --no-start scripts/ws_smoke_db_setup.exs
+GATE_SERVER_STDIO=1 \
+GATE_SERVER_OBSERVE_LOG=.demo/observe/server-gate.log \
+SCENE_SERVER_OBSERVE_LOG=.demo/observe/server-scene.log \
+mix run --no-start scripts/ws_smoke_boot.exs
 ```
 
-或：
+PowerShell 等价写法：
 
-```bash
-GATE_SERVER_STDIO=1 mix demo.run --bot-count 1
+```powershell
+$env:GATE_SERVER_STDIO = "1"
+$env:GATE_SERVER_OBSERVE_LOG = ".demo/observe/server-gate.log"
+$env:SCENE_SERVER_OBSERVE_LOG = ".demo/observe/server-scene.log"
+mix run --no-start scripts/ws_smoke_db_setup.exs
+mix run --no-start scripts/ws_smoke_boot.exs
 ```
 
 启动后可直接在服务端 stdin 输入：
@@ -117,7 +131,14 @@ clients/bevy_client/target/debug/bevy_client.exe --headless --stdio
 ### 查看最新 observe 日志
 
 ```bash
-mix demo.observe --lines 40
+tail -n 40 .demo/observe/server-gate.log .demo/observe/server-scene.log
+```
+
+PowerShell：
+
+```powershell
+Get-Content .demo/observe/server-gate.log -Tail 40
+Get-Content .demo/observe/server-scene.log -Tail 40
 ```
 
 ### 启动 headless 客户端
@@ -144,34 +165,41 @@ cargo run -- --headless --observe-stdout --script "wait:500,move:w:600,chat:hell
 
 ## 5. 可复用 E2E harness
 
-仓库现在提供一个基于 **server stdio + client stdio** 的 Windows E2E 脚本：
+仓库当前保留三个无截图回归入口：
 
-```powershell
-.\scripts\e2e-stdio.ps1
+1. 完整运行时 WebSocket 双客户端 smoke：
+
+```bash
+node scripts/run_ws_dual_smoke_supervised.js
 ```
 
-它会：
+它会自动启动 runtime、运行 probe、写 `.demo/observe/ws-dual-*` 与
+`.demo/observe/ws-dual-smoke-summary.json`，是当前 CI 使用的完整运行时 smoke。
 
-1. 构建客户端
-2. 启动 `mix demo.run --stdio`
-3. 启动同一客户端二进制的 `--headless --stdio`
-4. 通过 stdio 向服务端发送：
-   - `players`
-   - `connections`
-   - `fastlane`
-   - `player <cid>`
-5. 通过 stdio 向客户端发送：
-   - `snapshot`
-   - `transport`
-   - `move w 600`
-   - `move d 600`
-   - `chat e2e-stdio`
-   - `skill 1`
-   - `players`
-   - `position`
-   - `snapshot`
-   - `quit`
-6. 校验 stdout 中的预期模式
-7. 把完整工件写到 `.demo/e2e-stdio/`
+2. Bevy movement stdio 单元代理：
 
-这是当前推荐的 **无截图 E2E 回归入口**。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\e2e-stdio-movement.ps1
+```
+
+POSIX：
+
+```bash
+scripts/e2e-stdio-movement.sh
+```
+
+它通过 `cargo test --lib` 验证 reconcile / smoothing / hard-snap 不变式。
+
+3. 已有本地服务上的 Bevy headless 真实链路：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\e2e-live-movement.ps1
+```
+
+它要求 `auth/gate/scene` 已经在默认端口或参数指定端口运行，然后用同一
+Bevy 二进制的 `--headless --stdio` 入口发 movement 命令并校验 drift。
+
+旧入口 `scripts/e2e-stdio.ps1` 现在只是兼容包装器，不再调用已归档的
+`mix demo.run`。默认 `-Mode movement-proxy` 会转到
+`scripts/e2e-stdio-movement.ps1`；需要完整 runtime smoke 时使用
+`-Mode ws-dual`；需要连接已有服务时使用 `-Mode live-movement`。
