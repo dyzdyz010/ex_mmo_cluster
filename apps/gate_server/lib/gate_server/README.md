@@ -47,6 +47,19 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
   Gate 还会先校验当前连接的有效角色 ID 和服务端技能表，避免未知技能直接写入体素。
 - `udp_acceptor.ex` 拥有共享 UDP 套接字，但权威判断仍委托给连接层和场景层。
 - `stdio_interface.ex` 只提供观察和轻量控制入口，不能成为第二份运行时事实来源。
+  可用命令包括 `snapshot`、`connections`、`players`、`npcs` 和 `voxel`；其中 `voxel`
+  会以内联快照说明 Gate 连接订阅、World 区域租约、Scene 热区块目录和 DataService
+  写入令牌 / 快照表。
 
 Gate 不拥有体素真相。体素流量中，Gate 只拥有传输、会话状态和结构化观测事件；
 World 拥有区域权威和租约，Scene 拥有热区块状态，DataService 拥有带围栏的持久化。
+
+## 非 GUI 冒烟验证
+
+`mix gate_server.voxel_smoke` 会在单个 BEAM 节点内启动最小本地运行时，用真实 WebSocket
+二进制帧驱动 `ChunkSubscribe`、`VoxelImpactIntent`、快照推送和 `ChunkUnsubscribe`：
+
+- Gate 日志：解码、路由、订阅、意图应用和快照转发。
+- World 日志：区域登记、租约发放和区块路由。
+- Scene 日志：热区块启动、订阅、持久化后快照推送和退订。
+- stdio 日志：`server_stdio event="voxel"` 格式的运行时快照，默认写入 `.demo/observe/`。

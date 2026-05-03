@@ -38,6 +38,23 @@ defmodule SceneServer.CliObserve do
       System.get_env("SCENE_SERVER_OBSERVE_LOG")
   end
 
+  @doc "Blocks until the current writer has processed pending observe writes."
+  def flush(timeout \\ 5_000) do
+    case Process.whereis(@writer) do
+      nil ->
+        :ok
+
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          _state = :sys.get_state(pid, timeout)
+        end
+
+        :ok
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
   defp ensure_writer(path) do
     case :persistent_term.get(@writer_key, nil) do
       %{pid: pid, path: ^path} when is_pid(pid) ->

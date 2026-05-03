@@ -10,6 +10,47 @@ defmodule GateServer.StdioInterface do
 
   use GenServer
 
+  @commands [
+    "help",
+    "snapshot",
+    "connections",
+    "sessions",
+    "fastlane",
+    "players",
+    "player <cid>",
+    "player_state <cid>",
+    "npcs",
+    "npc <cid>",
+    "npc_state <cid>",
+    "voxel"
+  ]
+
+  @doc "Returns the supported stdio commands."
+  def commands, do: @commands
+
+  @doc "Formats one stdio event line exactly as the runtime emits it."
+  def format_event(event, payload) do
+    "server_stdio event=#{inspect(event)} payload=#{inspect(payload, limit: :infinity)}\n"
+  end
+
+  @doc "Emits one stdio event line to stdout."
+  def emit_event(event, payload) do
+    IO.write(format_event(event, payload))
+  end
+
+  @doc "Returns the live voxel authority and transport snapshot used by the `voxel` command."
+  def voxel_snapshot do
+    %{
+      gate: %{
+        tcp_connections: connection_snapshots(),
+        ws_connections: ws_connection_snapshots()
+      },
+      world: world_voxel_snapshot(),
+      scene: scene_voxel_snapshot(),
+      data_service: data_voxel_snapshot()
+    }
+  end
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, opts)
   end
@@ -26,19 +67,7 @@ defmodule GateServer.StdioInterface do
     {:ok, _reader_pid} =
       Task.start_link(fn ->
         emit("ready", %{
-          commands: [
-            "help",
-            "snapshot",
-            "connections",
-            "sessions",
-            "fastlane",
-            "players",
-            "player <cid>",
-            "player_state <cid>",
-            "npcs",
-            "npc <cid>",
-            "npc_state <cid>"
-          ]
+          commands: commands()
         })
 
         IO.stream(:stdio, :line)
@@ -55,19 +84,7 @@ defmodule GateServer.StdioInterface do
 
   def handle_info({:stdio_line, "help"}, state) do
     emit("help", %{
-      commands: [
-        "help",
-        "snapshot",
-        "connections",
-        "sessions",
-        "fastlane",
-        "players",
-        "player <cid>",
-        "player_state <cid>",
-        "npcs",
-        "npc <cid>",
-        "npc_state <cid>"
-      ]
+      commands: commands()
     })
 
     {:noreply, state}
@@ -100,6 +117,11 @@ defmodule GateServer.StdioInterface do
 
   def handle_info({:stdio_line, "npcs"}, state) do
     emit("npcs", %{npcs: npc_snapshots()})
+    {:noreply, state}
+  end
+
+  def handle_info({:stdio_line, "voxel"}, state) do
+    emit("voxel", voxel_snapshot())
     {:noreply, state}
   end
 
@@ -179,6 +201,7 @@ defmodule GateServer.StdioInterface do
     %{
       gate_interface: interface_state,
       connections: connection_snapshots(),
+      ws_connections: ws_connection_snapshots(),
       fast_lane: GateServer.FastLaneRegistry.snapshot(),
       players: players_snapshot(),
       npcs: npc_snapshots()
@@ -204,6 +227,102 @@ defmodule GateServer.StdioInterface do
     catch
       :exit, _reason -> []
     end
+  end
+
+  defp ws_connection_snapshots do
+    :pg.get_members(:connection, {:gate, GateServer.WsConnection})
+    |> Enum.map(fn pid ->
+      state = :sys.get_state(pid)
+
+      %{
+        pid: inspect(pid),
+        status: Map.get(state, :status),
+        cid: Map.get(state, :cid),
+        auth_username: Map.get(state, :auth_username),
+        scene_ref: inspect(Map.get(state, :scene_ref)),
+        voxel_subscription_count: state |> Map.get(:voxel_subscriptions, %{}) |> map_size(),
+        voxel_subscriptions:
+          state
+          |> Map.get(:voxel_subscriptions, %{})
+          |> Map.keys()
+          |> Enum.map(&inspect/1)
+      }
+    end)
+  catch
+    :exit, _reason -> []
+  end
+
+  defp world_voxel_snapshot do
+    safe_snapshot(WorldServer.Voxel.MapLedger)
+  end
+
+  defp scene_voxel_snapshot do
+    safe_snapshot(SceneServer.Voxel.ChunkDirectory)
+  end
+
+  defp data_voxel_snapshot do
+    %{
+      write_tokens: safe_snapshot(Module.concat([DataService, Voxel, WriteTokenStore])),
+      chunk_snapshots: data_snapshot_summary()
+    }
+  end
+
+  defp data_snapshot_summary do
+    case safe_snapshot(Module.concat([DataService, Voxel, ChunkSnapshotStore])) do
+      snapshots when is_map(snapshots) ->
+        summarize_snapshot_table(snapshots)
+
+      other ->
+        other
+    end
+  end
+
+  defp summarize_snapshot_table(snapshots) do
+    if snapshot_table?(snapshots) do
+      Map.new(snapshots, fn {key, snapshot} ->
+        data = Map.get(snapshot, :data)
+
+        {inspect(key),
+         %{
+           chunk_version: Map.get(snapshot, :chunk_version),
+           lease_id: Map.get(snapshot, :lease_id),
+           owner_scene_instance_ref: Map.get(snapshot, :owner_scene_instance_ref),
+           owner_epoch: Map.get(snapshot, :owner_epoch),
+           bytes: if(is_binary(data), do: byte_size(data), else: 0)
+         }}
+      end)
+    else
+      snapshots
+    end
+  end
+
+  defp snapshot_table?(snapshots) do
+    Enum.all?(snapshots, fn
+      {{logical_scene_id, {cx, cy, cz}}, snapshot}
+      when is_integer(logical_scene_id) and is_integer(cx) and is_integer(cy) and is_integer(cz) ->
+        is_map(snapshot)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp safe_snapshot(module) when is_atom(module) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} ->
+        if Process.whereis(module) do
+          apply(module, :snapshot, [])
+        else
+          %{available?: true, running?: false}
+        end
+
+      _other ->
+        %{available?: false, running?: false}
+    end
+  rescue
+    exception -> %{available?: true, running?: false, reason: Exception.message(exception)}
+  catch
+    :exit, reason -> %{available?: true, running?: false, reason: inspect(reason)}
   end
 
   defp players_snapshot do
@@ -299,6 +418,6 @@ defmodule GateServer.StdioInterface do
   end
 
   defp emit(event, payload) do
-    IO.puts("server_stdio event=#{inspect(event)} payload=#{inspect(payload, limit: :infinity)}")
+    emit_event(event, payload)
   end
 end
