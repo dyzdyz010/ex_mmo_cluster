@@ -4,6 +4,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
   alias DataService.Repo
   alias DataService.Schema.Account
   alias DataService.Schema.Character
+  alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
+  alias WorldServer.Voxel.MapLedger
 
   defmodule FakeInterface do
     use GenServer
@@ -18,7 +20,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     @impl true
     def init(attrs) do
-      {:ok, Map.merge(%{auth_server: nil, scene_server: nil}, attrs)}
+      {:ok, Map.merge(%{auth_server: nil, scene_server: nil, world_server: nil}, attrs)}
     end
 
     @impl true
@@ -34,6 +36,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     @impl true
     def handle_call(:scene_server, _from, state) do
       {:reply, state.scene_server, state}
+    end
+
+    @impl true
+    def handle_call(:world_server, _from, state) do
+      {:reply, state.world_server, state}
     end
   end
 
@@ -231,7 +238,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
-    FakeInterface.set(auth_server: nil, scene_server: nil)
+    FakeInterface.set(auth_server: nil, scene_server: nil, world_server: nil)
 
     FakePlayerManager.set(
       add_player_result: :ok,
@@ -940,6 +947,39 @@ defmodule GateServer.TcpConnectionProtocolTest do
     :gen_udp.close(udp_client)
   end
 
+  test "voxel subscription over tcp forwards initial and later authoritative snapshots", %{
+    client: client,
+    pid: pid
+  } do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+    put_voxel_region(881, region_id: System.unique_integer([:positive, :monotonic]))
+
+    FakeInterface.set(scene_server: node(), world_server: node())
+    put_connection_in_scene(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(201, 881, {0, 0, 0}))
+
+    assert {:ok, <<0x62, initial_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.request_id == 201
+    assert initial.storage.chunk_version == 0
+
+    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    assert Map.has_key?(subscriptions, {881, {0, 0, 0}})
+
+    assert :ok = :gen_tcp.send(client, encode_voxel_impact(202, 301, 881, {8, 16, 24}))
+
+    assert {:ok,
+            <<0x68, 202::64-big, 301::32-big, 881::64-big, 0::8, 1::64-big, 0::16-big, 2::16-big,
+              "ok">>} = :gen_tcp.recv(client, 0, 500)
+
+    assert {:ok, <<0x62, updated_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, updated} = SceneVoxelCodec.decode_chunk_snapshot_payload(updated_payload)
+    assert updated.request_id == 201
+    assert updated.storage.chunk_version == 1
+  end
+
   test "malformed payload fails closed with generic error reply", %{client: client} do
     assert :ok = :gen_tcp.send(client, <<0xFF>>)
     assert {:ok, <<0x80, 0::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
@@ -988,6 +1028,94 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
   defp encode_fast_lane_attach(request_id, ticket) do
     <<0x07, request_id::64-big, byte_size(ticket)::16-big, ticket::binary>>
+  end
+
+  defp encode_chunk_subscribe(request_id, logical_scene_id, {cx, cy, cz}) do
+    <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,
+      cz::32-big-signed, 0::8, 1::8, 0::16-big>>
+  end
+
+  defp encode_voxel_impact(request_id, client_intent_seq, logical_scene_id, {x, y, z}) do
+    <<0x64, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big, 1::32-big,
+      x::64-big-signed, y::64-big-signed, z::64-big-signed, 2::16-big, 0::64-big>>
+  end
+
+  defp put_connection_in_scene(pid) do
+    :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
+    _ = :sys.get_state(pid)
+    :ok
+  end
+
+  defp ensure_map_ledger_started do
+    ensure_data_voxel_started()
+
+    case Process.whereis(MapLedger) do
+      nil ->
+        start_supervised!(
+          {MapLedger, name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore}
+        )
+
+      _pid ->
+        :ok
+    end
+  end
+
+  defp ensure_scene_voxel_started do
+    ensure_data_voxel_started()
+
+    if is_nil(Process.whereis(SceneServer.VoxelChunkSup)) do
+      start_supervised!({SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup})
+    end
+
+    if is_nil(Process.whereis(SceneServer.Voxel.ChunkDirectory)) do
+      start_supervised!(
+        {SceneServer.Voxel.ChunkDirectory,
+         name: SceneServer.Voxel.ChunkDirectory, chunk_sup: SceneServer.VoxelChunkSup}
+      )
+    end
+
+    :ok
+  end
+
+  defp put_voxel_region(logical_scene_id, opts) do
+    region_id = Keyword.fetch!(opts, :region_id)
+    owner_scene_instance_ref = Keyword.get(opts, :owner_scene_instance_ref, 7_001)
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: owner_scene_instance_ref,
+               owner_epoch: 0
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, owner_scene_instance_ref,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+  end
+
+  defp ensure_data_voxel_started do
+    if is_nil(Process.whereis(DataService.Voxel.WriteTokenStore)) do
+      start_supervised!(
+        {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore}
+      )
+    end
+
+    if is_nil(Process.whereis(DataService.Voxel.ChunkSnapshotStore)) do
+      start_supervised!(
+        {DataService.Voxel.ChunkSnapshotStore,
+         name: DataService.Voxel.ChunkSnapshotStore,
+         write_token_store: DataService.Voxel.WriteTokenStore}
+      )
+    end
+
+    :ok
   end
 
   defp ensure_repo_started do

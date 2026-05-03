@@ -30,7 +30,8 @@ defmodule SceneServer.MixProject do
       {:poolboy, "~> 1.5.1"},
       {:observer_cli, "~> 1.7"},
       {:benchee, "~> 1.0", only: :dev},
-      {:beacon_server, in_umbrella: true}
+      {:beacon_server, in_umbrella: true},
+      {:data_service, in_umbrella: true}
       # {:dep_from_hexpm, "~> 0.3.0"},
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
       # {:sibling_app_in_umbrella, in_umbrella: true}

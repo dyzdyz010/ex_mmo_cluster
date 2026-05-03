@@ -11,7 +11,9 @@ defmodule WorldServer.WorldSup do
 
   def init(_init_arg) do
     children = [
-      # {WorldServer.Worker, name: WorldServer.Worker}
+      {WorldServer.Voxel.MapLedger,
+       name: WorldServer.Voxel.MapLedger, write_token_store: DataService.Voxel.WriteTokenStore},
+      {WorldServer.Voxel.TransactionCoordinator, name: WorldServer.Voxel.TransactionCoordinator}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

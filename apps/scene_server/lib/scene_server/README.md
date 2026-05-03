@@ -1,15 +1,19 @@
-# SceneServer runtime map
+# SceneServer 运行时边界
 
-This directory holds the authoritative simulation/runtime side of the project.
+本目录承载项目的权威模拟和场景运行时。
 
-## Top-level supervision tree
+## 顶层监督树
 
-`SceneServer.Application` starts:
+`SceneServer.Application` 启动：
 
 - `SceneServer.InterfaceSup`
-  - node registration / service discovery entrypoint (non-test env)
+  - 节点注册和服务发现入口，测试环境之外启用
 - `SceneServer.PhysicsSup`
-  - native scene/physics integration
+  - 原生场景和物理集成
+- `SceneServer.VoxelSup`
+  - `SceneServer.Voxel.RegionRuntime`
+  - `SceneServer.VoxelChunkSup`
+  - `SceneServer.Voxel.ChunkDirectory`
 - `SceneServer.AoiSup`
   - `SceneServer.AoiManager`
   - `SceneServer.AoiItemSup`
@@ -20,49 +24,59 @@ This directory holds the authoritative simulation/runtime side of the project.
   - `SceneServer.NpcActorSup`
   - `SceneServer.NpcManager`
 
-## Authority split
+## 权威边界
 
 ### `movement/`
 
-Shared authoritative movement model:
+共享权威移动模型：
 
-- `Profile` — shared movement tuning
-- `InputFrame` — fixed-step control sample
-- `State` — authoritative movement state
-- `Ack` — controlling-client reconciliation payload
-- `RemoteSnapshot` — AOI broadcast payload
-- `Engine` — façade over Rustler movement math
-- `Integrator` — reference Elixir implementation used by tests/docs
+- `Profile`：共享移动调参。
+- `InputFrame`：固定步长输入样本。
+- `State`：权威移动状态。
+- `Ack`：发给操控客户端的校正载荷。
+- `RemoteSnapshot`：AOI 广播快照载荷。
+- `Engine`：Rustler 移动数学的 Elixir 门面。
+- `Integrator`：测试和文档使用的 Elixir 参考实现。
 
 ### `combat/`
 
-Shared combat primitives for both players and NPCs:
+玩家和 NPC 共享的战斗基础结构：
 
-- `Profile` — HP / respawn defaults
-- `State` — HP/death state machine
-- `Skill` — player-oriented skill definitions
-- `Targeting` — actor-agnostic AOI targeting
+- `Profile`：生命值和重生默认值。
+- `State`：生命值与死亡状态机。
+- `Skill`：面向玩家的技能定义。
+- `Targeting`：不依赖具体角色类型的 AOI 选目标逻辑。
 
 ### `worker/`
 
-Long-lived authoritative actors and infrastructure:
+长生命周期的权威角色和基础设施：
 
-- `PlayerCharacter` — one active player aggregate root
-- `PlayerManager` — player spawn/index façade
-- `AoiManager` — shared octree/index
-- `Aoi.AoiItem` — per-actor AOI subscription/broadcast adapter
+- `PlayerCharacter`：一个在线玩家的聚合根。
+- `PlayerManager`：玩家生成和索引门面。
+- `AoiManager`：共享八叉树和索引。
+- `Aoi.AoiItem`：每个角色的 AOI 订阅和广播适配器。
+
+### `voxel/`
+
+Scene 侧热体素运行时：
+
+- `RegionRuntime`：本地租约缓存、邻区租约缓存，以及 `BoundaryVoxelEvent` 校验。
+  迁移期间的旧事件会先在这里被拒绝，不能影响热体素状态。
+- `ChunkProcess`：一个已租约区块的热状态拥有者。它生成快照载荷，并且必须通过
+  DataService 写入令牌围栏持久化之后才提交状态。
+- `ChunkDirectory`：区块进程的稳定查找和按需启动门面。
 
 ### `npc/`
 
-NPC-specific actor model built on top of shared movement/combat:
+建立在共享移动和战斗基础上的 NPC 专属角色模型：
 
-- `Profile` — static NPC template/config
-- `Facts` — read-only perception snapshot
-- `Brain` — pure intent selection
-- `Navigation` — intent → movement input translation
-- `Attack` — NPC profile → combat skill translation
-- `State` — NPC intent state only
-- `Actor` — one active NPC aggregate root
-- `Manager` — NPC spawn/index façade
+- `Profile`：静态 NPC 模板和配置。
+- `Facts`：只读感知快照。
+- `Brain`：纯意图选择逻辑。
+- `Navigation`：从意图到移动输入的转换。
+- `Attack`：从 NPC 配置到战斗技能的转换。
+- `State`：NPC 意图状态。
+- `Actor`：一个在线 NPC 的聚合根。
+- `Manager`：NPC 生成和索引门面。
 
-See `npc/README.md` for the NPC-specific flow.
+NPC 细分流程见 `npc/README.md`。

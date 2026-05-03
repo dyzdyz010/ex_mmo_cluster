@@ -1,14 +1,17 @@
-# Scene supervisor subtrees
+# Scene 监督树子树
 
-This directory contains the small supervisor wrappers that shape the scene
-runtime tree.
+本目录包含用于组织 Scene 运行时树的小型监督器包装模块。
 
-## Current subtrees
+## 当前子树
 
 - `InterfaceSup`
   - `SceneServer.Interface`
 - `PhysicsSup`
   - `SceneServer.PhysicsManager`
+- `VoxelSup`
+  - `SceneServer.Voxel.RegionRuntime`
+  - `SceneServer.VoxelChunkSup`
+  - `SceneServer.Voxel.ChunkDirectory`
 - `AoiSup`
   - `SceneServer.AoiManager`
   - `SceneServer.AoiItemSup`
@@ -19,7 +22,7 @@ runtime tree.
   - `SceneServer.NpcActorSup`
   - `SceneServer.NpcManager`
 
-## Why keep these wrappers small
+## 为什么保持包装模块轻量
 
-The wrappers make the application tree legible and give each subsystem a stable
-home without pushing domain logic into supervisors.
+这些包装模块让应用监督树更容易阅读，并为每个子系统提供稳定归属。领域逻辑不应塞进
+监督器；监督器只负责启动、重启和组织进程。

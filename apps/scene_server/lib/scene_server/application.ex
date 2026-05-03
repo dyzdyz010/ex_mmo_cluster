@@ -8,6 +8,7 @@ defmodule SceneServer.Application do
 
   - scene registration and lookup (`SceneServer.InterfaceSup`)
   - physics/native scene integration (`SceneServer.PhysicsSup`)
+  - voxel chunk authority and directory processes (`SceneServer.VoxelSup`)
   - AOI indexing and fan-out (`SceneServer.AoiSup`)
   - authoritative player actors (`SceneServer.PlayerSup`)
   - authoritative NPC actors (`SceneServer.NpcSup`)
@@ -28,6 +29,7 @@ defmodule SceneServer.Application do
         # {SceneServer.Worker, arg}
         interface_child(),
         {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
+        {SceneServer.VoxelSup, name: SceneServer.VoxelSup},
         {SceneServer.AoiSup, name: SceneServer.AoiSup},
         {SceneServer.PlayerSup, name: SceneServer.PlayerManagerSup},
         {SceneServer.NpcSup, name: SceneServer.NpcManagerSup}

@@ -1,0 +1,295 @@
+defmodule WorldServer.Voxel.MapLedgerTest do
+  use ExUnit.Case, async: true
+
+  alias DataService.Voxel.WriteTokenStore
+  alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.TransactionParticipant
+
+  test "rejects active region bounds overlap in the same logical scene" do
+    ledger = start_supervised!(MapLedger)
+
+    put_region!(ledger, 10, {0, 0, 0}, {4, 4, 4}, 1_000)
+
+    assert {:error, :region_bounds_overlap} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 20,
+               bounds_chunk_min: {3, 0, 0},
+               bounds_chunk_max: {5, 2, 2},
+               owner_scene_instance_ref: 2_000,
+               owner_epoch: 0
+             })
+
+    snapshot = MapLedger.snapshot(ledger)
+    assert Map.has_key?(snapshot.assignments, 10)
+    refute Map.has_key?(snapshot.assignments, 20)
+  end
+
+  test "allows same region id to update its own bounds" do
+    ledger = start_supervised!(MapLedger)
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 2, 2}, 1_000)
+
+    assert {:ok, updated_assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {1, 0, 0},
+               bounds_chunk_max: {3, 2, 2},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0
+             })
+
+    assert updated_assignment.bounds_chunk_min == {1, 0, 0}
+    assert {:error, :unassigned_chunk} = MapLedger.route_chunk(ledger, 1, {0, 0, 0})
+    assert {:ok, routed_assignment} = MapLedger.route_chunk(ledger, 1, {2, 0, 0})
+    assert routed_assignment.region_id == 10
+  end
+
+  test "allows overlapping active bounds across logical scenes" do
+    ledger = start_supervised!(MapLedger)
+
+    put_region!(ledger, 1, 10, {0, 0, 0}, {4, 4, 4}, 1_000)
+    put_region!(ledger, 2, 20, {0, 0, 0}, {4, 4, 4}, 2_000)
+
+    assert {:ok, scene_one_assignment} = MapLedger.route_chunk(ledger, 1, {1, 0, 0})
+    assert {:ok, scene_two_assignment} = MapLedger.route_chunk(ledger, 2, {1, 0, 0})
+    assert scene_one_assignment.region_id == 10
+    assert scene_two_assignment.region_id == 20
+  end
+
+  test "publishes lease write tokens and fences stale writes after migration" do
+    token_store = start_supervised!(WriteTokenStore)
+    ledger = start_supervised!({MapLedger, write_token_store: token_store})
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {4, 4, 4},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0
+             })
+
+    assert {:ok, lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert :ok =
+             MapLedger.validate_write(ledger, %{
+               logical_scene_id: 1,
+               chunk_coord: {1, 0, 0},
+               lease_id: lease_v1.lease_id,
+               owner_scene_instance_ref: lease_v1.owner_scene_instance_ref,
+               owner_epoch: lease_v1.owner_epoch
+             })
+
+    assert :ok =
+             WriteTokenStore.validate_write(token_store, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               chunk_coord: {1, 0, 0},
+               lease_id: lease_v1.lease_id,
+               owner_scene_instance_ref: lease_v1.owner_scene_instance_ref,
+               owner_epoch: lease_v1.owner_epoch
+             })
+
+    assert {:ok, lease_v2} =
+             MapLedger.migrate_region(ledger, 10, 2_000,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2
+             )
+
+    assert {:error, :lease_id_mismatch} =
+             MapLedger.validate_write(ledger, %{
+               logical_scene_id: 1,
+               chunk_coord: {1, 0, 0},
+               lease_id: lease_v1.lease_id,
+               owner_scene_instance_ref: lease_v1.owner_scene_instance_ref,
+               owner_epoch: lease_v1.owner_epoch
+             })
+
+    assert {:error, :lease_id_mismatch} =
+             WriteTokenStore.validate_write(token_store, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               chunk_coord: {1, 0, 0},
+               lease_id: lease_v1.lease_id,
+               owner_scene_instance_ref: lease_v1.owner_scene_instance_ref,
+               owner_epoch: lease_v1.owner_epoch
+             })
+
+    assert :ok =
+             MapLedger.validate_write(ledger, %{
+               logical_scene_id: 1,
+               chunk_coord: {1, 0, 0},
+               lease_id: lease_v2.lease_id,
+               owner_scene_instance_ref: lease_v2.owner_scene_instance_ref,
+               owner_epoch: lease_v2.owner_epoch
+             })
+  end
+
+  test "stages migration handoff and cuts over route lease after prewarm" do
+    token_store = start_supervised!(WriteTokenStore)
+    ledger = start_supervised!({MapLedger, write_token_store: token_store})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-10"
+
+    put_region!(ledger, 10, {0, 0, 0}, {4, 4, 4}, 1_000)
+
+    assert {:ok, lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               slice_width: 2
+             )
+
+    assert plan.state == :prewarming
+    assert plan.source_scene_instance_ref == 1_000
+    assert plan.target_scene_instance_ref == 2_000
+    assert plan.old_lease.lease_id == lease_v1.lease_id
+    assert plan.new_lease.lease_id == 101
+    assert plan.affected_chunk_min == {0, 0, 0}
+    assert plan.affected_chunk_max == {4, 4, 4}
+
+    assert {:ok, %{lease: routed_before}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {1, 0, 0})
+
+    assert routed_before.lease_id == lease_v1.lease_id
+    assert :ok = MapLedger.validate_write(ledger, write_attrs(lease_v1, {1, 0, 0}))
+
+    assert {:ok, slice_0} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+    assert slice_0.bounds_chunk_min == {0, 0, 0}
+    assert slice_0.bounds_chunk_max == {2, 4, 4}
+
+    assert {:error, :migration_prewarm_incomplete} =
+             MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, slice_1} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+    assert slice_1.bounds_chunk_min == {2, 0, 0}
+    assert slice_1.bounds_chunk_max == {4, 4, 4}
+
+    assert {:ok, handoff} = MapLedger.migration_handoff(ledger, migration_id)
+    assert handoff.old_lease.lease_id == lease_v1.lease_id
+    assert handoff.new_lease.lease_id == 101
+    assert handoff.planned_slices == [slice_0, slice_1]
+
+    assert {:ok, prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+    assert prewarmed_plan.state == :prewarmed
+
+    assert {:ok, snapshot_before_cutover} = MapLedger.migration_snapshot(ledger, migration_id)
+    assert snapshot_before_cutover.state == :prewarmed
+
+    assert {:ok, cutover_plan} = MapLedger.cutover_migration(ledger, migration_id)
+    assert cutover_plan.state == :cutover
+
+    assert {:error, :lease_id_mismatch} =
+             MapLedger.validate_write(ledger, write_attrs(lease_v1, {1, 0, 0}))
+
+    assert {:error, :lease_id_mismatch} =
+             WriteTokenStore.validate_write(token_store, write_attrs(lease_v1, {1, 0, 0}))
+
+    assert {:ok, %{assignment: assignment_after, lease: routed_after}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {1, 0, 0})
+
+    assert assignment_after.owner_scene_instance_ref == 2_000
+    assert assignment_after.lease_id == 101
+    assert routed_after.lease_id == 101
+    assert routed_after.owner_scene_instance_ref == 2_000
+    assert :ok = MapLedger.validate_write(ledger, write_attrs(routed_after, {1, 0, 0}))
+
+    assert {:ok, completed_plan} = MapLedger.complete_migration(ledger, migration_id)
+    assert completed_plan.state == :completed
+
+    snapshot = MapLedger.snapshot(ledger)
+    assert snapshot.migrations[migration_id].state == :completed
+  end
+
+  test "builds deterministic lease-scoped transaction participants" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 2, 2}, 1_000)
+    put_region!(ledger, 20, {2, 0, 0}, {4, 2, 2}, 1_000)
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 20, 1_000,
+               lease_id: 200,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert {:ok,
+            [
+              %TransactionParticipant{
+                region_id: 10,
+                lease_id: 100,
+                affected_chunks: [{0, 0, 0}]
+              },
+              %TransactionParticipant{
+                region_id: 20,
+                lease_id: 200,
+                affected_chunks: [{2, 0, 0}, {3, 0, 0}]
+              }
+            ]} =
+             MapLedger.transaction_participants(ledger, 1, [
+               {3, 0, 0},
+               {0, 0, 0},
+               {2, 0, 0},
+               {0, 0, 0}
+             ])
+  end
+
+  defp put_region!(ledger, region_id, min, max, owner_ref) do
+    put_region!(ledger, 1, region_id, min, max, owner_ref)
+  end
+
+  defp put_region!(ledger, logical_scene_id, region_id, min, max, owner_ref) do
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: logical_scene_id,
+               region_id: region_id,
+               bounds_chunk_min: min,
+               bounds_chunk_max: max,
+               owner_scene_instance_ref: owner_ref,
+               owner_epoch: 0
+             })
+  end
+
+  defp write_attrs(lease, chunk_coord) do
+    %{
+      logical_scene_id: lease.logical_scene_id,
+      region_id: lease.region_id,
+      chunk_coord: chunk_coord,
+      lease_id: lease.lease_id,
+      owner_scene_instance_ref: lease.owner_scene_instance_ref,
+      owner_epoch: lease.owner_epoch
+    }
+  end
+end

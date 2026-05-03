@@ -2,10 +2,10 @@ defmodule GateServer.Interface do
   @moduledoc """
   Gate service registration and downstream service lookup process.
 
-  `GateServer.TcpConnection` queries this process to find the current
-  `scene_server` and `auth_server` nodes. The process caches successful lookups
-  but stays small so supervision and service-discovery concerns remain separate
-  from connection logic.
+  Gate connection workers query this process to find the current
+  `scene_server`, `world_server`, and `auth_server` nodes. The process caches
+  successful lookups but stays small so supervision and service-discovery
+  concerns remain separate from connection logic.
   """
 
   use GenServer
@@ -20,8 +20,13 @@ defmodule GateServer.Interface do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{scene_server: nil, auth_server: nil, server_state: :waiting_requirements},
-     {:continue, :setup}}
+    {:ok,
+     %{
+       scene_server: nil,
+       world_server: nil,
+       auth_server: nil,
+       server_state: :waiting_requirements
+     }, {:continue, :setup}}
   end
 
   @impl true
@@ -34,7 +39,13 @@ defmodule GateServer.Interface do
     {:ok, scene_node} = BeaconServer.Client.await(:scene_server)
     Logger.info("Found scene_server at #{inspect(scene_node)}", ansi_color: :green)
 
-    # auth_server is optional at startup — look up on demand
+    # world_server and auth_server are optional at startup -- look up on demand.
+    world_node =
+      case BeaconServer.Client.lookup(:world_server) do
+        {:ok, node} -> node
+        :error -> nil
+      end
+
     auth_node =
       case BeaconServer.Client.lookup(:auth_server) do
         {:ok, node} -> node
@@ -42,14 +53,38 @@ defmodule GateServer.Interface do
       end
 
     Logger.info("===Server initialization complete, server ready===", ansi_color: :blue)
-    {:noreply, %{state | scene_server: scene_node, auth_server: auth_node, server_state: :ready}}
+
+    {:noreply,
+     %{
+       state
+       | scene_server: scene_node,
+         world_server: world_node,
+         auth_server: auth_node,
+         server_state: :ready
+     }}
   end
 
-  # ── Service lookup for TcpConnection ──
+  # -- Service lookup for connection workers --
 
   @impl true
   def handle_call(:scene_server, _from, %{scene_server: scene} = state) do
     {:reply, scene, state}
+  end
+
+  @impl true
+  def handle_call(:world_server, _from, %{world_server: nil} = state) do
+    case BeaconServer.Client.lookup(:world_server) do
+      {:ok, node} ->
+        {:reply, node, %{state | world_server: node}}
+
+      :error ->
+        {:reply, nil, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:world_server, _from, %{world_server: world} = state) do
+    {:reply, world, state}
   end
 
   @impl true

@@ -25,6 +25,10 @@ defmodule GateServer.Codec do
   - `0x05` AuthRequest
   - `0x08` ChatSay
   - `0x09` SkillCast
+  - `0x60` Voxel ChunkSubscribe
+  - `0x61` Voxel ChunkUnsubscribe
+  - `0x64` VoxelImpactIntent
+  - `0x6F` VoxelDebugProbe
 
   ### Server → client
 
@@ -42,6 +46,9 @@ defmodule GateServer.Codec do
   - `0x8D` CombatHit
   - `0x8E` ActorIdentity
   - `0x8F` EffectEvent
+  - `0x62` Voxel ChunkSnapshot
+  - `0x68` VoxelIntentResult
+  - `0x6F` VoxelDebugProbe
 
   ## Round trip example
 
@@ -62,6 +69,12 @@ defmodule GateServer.Codec do
   @msg_fast_lane_attach 0x07
   @msg_chat_say 0x08
   @msg_skill_cast 0x09
+  @msg_voxel_chunk_subscribe 0x60
+  @msg_voxel_chunk_unsubscribe 0x61
+  @msg_voxel_chunk_snapshot 0x62
+  @msg_voxel_impact_intent 0x64
+  @msg_voxel_intent_result 0x68
+  @msg_voxel_debug_probe 0x6F
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -193,6 +206,89 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_skill_cast, _rest::binary>>), do: {:error, :invalid_message}
+
+  # Voxel ChunkSubscribe:
+  # 1 + request_id:u64 + logical_scene_id:u64 + center_chunk:i32x3 +
+  # radius_l_inf:u8 + want_snapshot:u8 + known_count:u16 + known[]
+  def decode(
+        <<@msg_voxel_chunk_subscribe, request_id::64-big, logical_scene_id::64-big,
+          cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, radius_l_inf::8,
+          want_snapshot::8, known_count::16-big, rest::binary>>
+      ) do
+    with {:ok, known, <<>>} <- decode_voxel_known_chunks(rest, known_count, []) do
+      {:ok,
+       {:voxel_chunk_subscribe,
+        %{
+          request_id: request_id,
+          logical_scene_id: logical_scene_id,
+          center_chunk: {cx, cy, cz},
+          radius_l_inf: radius_l_inf,
+          want_snapshot: decode_bool(want_snapshot),
+          known: known
+        }}}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_message}
+    end
+  end
+
+  def decode(<<@msg_voxel_chunk_subscribe, _rest::binary>>), do: {:error, :invalid_message}
+
+  # Voxel ChunkUnsubscribe:
+  # 1 + request_id:u64 + logical_scene_id:u64 + chunk_count:u16 + ChunkCoord[]
+  def decode(
+        <<@msg_voxel_chunk_unsubscribe, request_id::64-big, logical_scene_id::64-big,
+          chunk_count::16-big, rest::binary>>
+      ) do
+    with {:ok, chunks, <<>>} <- decode_voxel_chunk_coords(rest, chunk_count, []) do
+      {:ok,
+       {:voxel_chunk_unsubscribe,
+        %{
+          request_id: request_id,
+          logical_scene_id: logical_scene_id,
+          chunks: chunks
+        }}}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_message}
+    end
+  end
+
+  def decode(<<@msg_voxel_chunk_unsubscribe, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelImpactIntent:
+  # 1 + request_id:u64 + client_intent_seq:u32 + logical_scene_id:u64 +
+  # source_skill_id:u32 + target_world_micro:i64x3 + impact_kind:u16 +
+  # client_hint_hash:u64
+  def decode(
+        <<@msg_voxel_impact_intent, request_id::64-big, client_intent_seq::32-big,
+          logical_scene_id::64-big, source_skill_id::32-big, wx::64-big-signed,
+          wy::64-big-signed, wz::64-big-signed, impact_kind::16-big,
+          client_hint_hash::64-big>>
+      ) do
+    {:ok,
+     {:voxel_impact_intent,
+      %{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        source_skill_id: source_skill_id,
+        target_world_micro: {wx, wy, wz},
+        impact_kind: impact_kind,
+        client_hint_hash: client_hint_hash
+      }}}
+  end
+
+  def decode(<<@msg_voxel_impact_intent, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelDebugProbe:
+  # 1 + request_id:u64 + command:string
+  def decode(<<@msg_voxel_debug_probe, request_id::64-big, command_len::16-big, rest::binary>>)
+      when byte_size(rest) == command_len do
+    {:ok, {:voxel_debug_probe, %{request_id: request_id, command: rest}}}
+  end
+
+  def decode(<<@msg_voxel_debug_probe, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -379,8 +475,119 @@ defmodule GateServer.Codec do
        radius::float-64-big, duration_ms::32-big>>}
   end
 
+  def encode(
+        {:voxel_chunk_snapshot,
+         %{
+           request_id: request_id,
+           logical_scene_id: logical_scene_id,
+           chunk_coord: {cx, cy, cz},
+           schema_version: schema_version,
+           chunk_size_in_macro: chunk_size_in_macro,
+           micro_resolution: micro_resolution,
+           chunk_version: chunk_version,
+           chunk_hash: chunk_hash,
+           sections: sections
+         }}
+      )
+      when is_list(sections) do
+    {:ok,
+     [
+       <<@msg_voxel_chunk_snapshot, request_id::64-big, logical_scene_id::64-big,
+         cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, schema_version::16-big,
+         chunk_size_in_macro::8, micro_resolution::8, chunk_version::64-big, chunk_hash::64-big,
+         length(sections)::16-big>>,
+       encode_voxel_sections(sections)
+     ]}
+  end
+
+  def encode({:voxel_chunk_snapshot_payload, payload}) when is_binary(payload) do
+    {:ok, [<<@msg_voxel_chunk_snapshot>>, payload]}
+  end
+
+  def encode(
+        {:voxel_intent_result,
+         %{
+           request_id: request_id,
+           client_intent_seq: client_intent_seq,
+           logical_scene_id: logical_scene_id,
+           result_code: result_code,
+           result_ref: result_ref,
+           authoritative: authoritative,
+           reason: reason
+         }}
+      )
+      when is_list(authoritative) and is_binary(reason) do
+    {:ok,
+     [
+       <<@msg_voxel_intent_result, request_id::64-big, client_intent_seq::32-big,
+         logical_scene_id::64-big, encode_voxel_result_code(result_code)::8, result_ref::64-big,
+         length(authoritative)::16-big>>,
+       encode_voxel_authoritative(authoritative),
+       <<byte_size(reason)::16-big, reason::binary>>
+     ]}
+  end
+
+  def encode({:voxel_debug_probe, %{request_id: request_id, result: result}})
+      when is_binary(result) do
+    {:ok,
+     <<@msg_voxel_debug_probe, request_id::64-big, byte_size(result)::16-big, result::binary>>}
+  end
+
   def encode(_) do
     {:error, :unknown_message}
+  end
+
+  defp decode_voxel_known_chunks(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
+
+  defp decode_voxel_known_chunks(
+         <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, version::64-big,
+           rest::binary>>,
+         count,
+         acc
+       )
+       when count > 0 do
+    decode_voxel_known_chunks(rest, count - 1, [
+      %{chunk_coord: {cx, cy, cz}, chunk_version: version} | acc
+    ])
+  end
+
+  defp decode_voxel_known_chunks(_rest, _count, _acc), do: {:error, :invalid_message}
+
+  defp decode_voxel_chunk_coords(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
+
+  defp decode_voxel_chunk_coords(
+         <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, rest::binary>>,
+         count,
+         acc
+       )
+       when count > 0 do
+    decode_voxel_chunk_coords(rest, count - 1, [{cx, cy, cz} | acc])
+  end
+
+  defp decode_voxel_chunk_coords(_rest, _count, _acc), do: {:error, :invalid_message}
+
+  defp encode_voxel_sections(sections) do
+    Enum.map(sections, fn {section_type, section_data}
+                          when is_integer(section_type) and is_binary(section_data) ->
+      <<section_type::8, byte_size(section_data)::32-big, section_data::binary>>
+    end)
+  end
+
+  defp encode_voxel_authoritative(authoritative) do
+    Enum.map(authoritative, fn %{
+                                 chunk_coord: {cx, cy, cz},
+                                 chunk_version: chunk_version,
+                                 macro_index: macro_index,
+                                 cell_version: cell_version,
+                                 cell_hash: cell_hash,
+                                 payload_kind: payload_kind,
+                                 cell_payload: cell_payload
+                               }
+                               when is_binary(cell_payload) ->
+      <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, chunk_version::64-big,
+        macro_index::16-big, cell_version::32-big, cell_hash::32-big, payload_kind::8,
+        byte_size(cell_payload)::32-big, cell_payload::binary>>
+    end)
   end
 
   defp encode_movement_mode(:grounded), do: 0
@@ -398,6 +605,9 @@ defmodule GateServer.Codec do
 
   defp encode_bool(true), do: 1
   defp encode_bool(_), do: 0
+
+  defp decode_bool(0), do: false
+  defp decode_bool(_), do: true
 
   defp encode_actor_kind(:player), do: 0
   defp encode_actor_kind(:npc), do: 1
@@ -419,6 +629,13 @@ defmodule GateServer.Codec do
   defp encode_cue_kind(:impact_pulse), do: 4
   defp encode_cue_kind(value) when is_integer(value), do: value
   defp encode_cue_kind(_value), do: 0
+
+  defp encode_voxel_result_code(:accepted), do: 0
+  defp encode_voxel_result_code(:deferred), do: 1
+  defp encode_voxel_result_code(:rejected), do: 2
+  defp encode_voxel_result_code(:stale), do: 3
+  defp encode_voxel_result_code(value) when is_integer(value), do: value
+  defp encode_voxel_result_code(_value), do: 2
 
   defp target_cid_or_zero(nil), do: -1
   defp target_cid_or_zero(value), do: value

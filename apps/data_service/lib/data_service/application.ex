@@ -14,7 +14,11 @@ defmodule DataService.Application do
         DataService.Repo,
         interface_child(),
         {DataService.DispatcherSup, name: DataService.DispatcherSup},
-        {DataService.UidGenerator, name: DataService.UidGenerator}
+        {DataService.UidGenerator, name: DataService.UidGenerator},
+        {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore},
+        {DataService.Voxel.ChunkSnapshotStore,
+         name: DataService.Voxel.ChunkSnapshotStore,
+         write_token_store: DataService.Voxel.WriteTokenStore}
       ]
       |> Enum.reject(&is_nil/1)
 

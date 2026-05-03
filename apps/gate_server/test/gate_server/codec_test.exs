@@ -96,6 +96,73 @@ defmodule GateServer.CodecTest do
     end
   end
 
+  describe "decode voxel messages" do
+    test "decodes chunk subscribe with known chunk refs" do
+      msg =
+        <<0x60, 99::64-big, 1::64-big, -2::32-big-signed, 3::32-big-signed, 4::32-big-signed,
+          5::8, 1::8, 2::16-big, -2::32-big-signed, 3::32-big-signed, 4::32-big-signed,
+          10::64-big, -1::32-big-signed, 3::32-big-signed, 4::32-big-signed, 11::64-big>>
+
+      assert {:ok,
+              {:voxel_chunk_subscribe,
+               %{
+                 request_id: 99,
+                 logical_scene_id: 1,
+                 center_chunk: {-2, 3, 4},
+                 radius_l_inf: 5,
+                 want_snapshot: true,
+                 known: [
+                   %{chunk_coord: {-2, 3, 4}, chunk_version: 10},
+                   %{chunk_coord: {-1, 3, 4}, chunk_version: 11}
+                 ]
+               }}} == Codec.decode(msg)
+    end
+
+    test "decodes chunk unsubscribe" do
+      msg =
+        <<0x61, 100::64-big, 1::64-big, 2::16-big, 0::32-big-signed, 0::32-big-signed,
+          0::32-big-signed, 1::32-big-signed, 0::32-big-signed, 0::32-big-signed>>
+
+      assert {:ok,
+              {:voxel_chunk_unsubscribe,
+               %{
+                 request_id: 100,
+                 logical_scene_id: 1,
+                 chunks: [{0, 0, 0}, {1, 0, 0}]
+               }}} == Codec.decode(msg)
+    end
+
+    test "decodes voxel impact intent" do
+      msg =
+        <<0x64, 101::64-big, 12::32-big, 77::64-big, 44::32-big, -8::64-big-signed,
+          16::64-big-signed, 24::64-big-signed, 3::16-big, 0x0102030405060708::64-big>>
+
+      assert {:ok,
+              {:voxel_impact_intent,
+               %{
+                 request_id: 101,
+                 client_intent_seq: 12,
+                 logical_scene_id: 77,
+                 source_skill_id: 44,
+                 target_world_micro: {-8, 16, 24},
+                 impact_kind: 3,
+                 client_hint_hash: 0x0102030405060708
+               }}} == Codec.decode(msg)
+    end
+
+    test "rejects malformed voxel impact intent" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x64, 101::64-big>>)
+    end
+
+    test "decodes voxel debug probe" do
+      command = "voxel_transport"
+      msg = <<0x6F, 7::64-big, byte_size(command)::16-big, command::binary>>
+
+      assert {:ok, {:voxel_debug_probe, %{request_id: 7, command: "voxel_transport"}}} ==
+               Codec.decode(msg)
+    end
+  end
+
   describe "decode auth_request" do
     test "decodes auth_request with username and code" do
       username = "player1"
@@ -230,6 +297,74 @@ defmodule GateServer.CodecTest do
                3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
                0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 1::8,
                0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
+    end
+  end
+
+  describe "encode voxel messages" do
+    test "encodes chunk snapshot with sections" do
+      {:ok, iodata} =
+        Codec.encode(
+          {:voxel_chunk_snapshot,
+           %{
+             request_id: 9,
+             logical_scene_id: 1,
+             chunk_coord: {-1, 2, 3},
+             schema_version: 1,
+             chunk_size_in_macro: 16,
+             micro_resolution: 8,
+             chunk_version: 22,
+             chunk_hash: 0x0102030405060708,
+             sections: [{0x01, <<1, 2>>}, {0x02, <<3>>}]
+           }}
+        )
+
+      bin = IO.iodata_to_binary(iodata)
+
+      assert <<0x62, 9::64-big, 1::64-big, -1::32-big-signed, 2::32-big-signed, 3::32-big-signed,
+               1::16-big, 16::8, 8::8, 22::64-big, 0x0102030405060708::64-big, 2::16-big, 0x01::8,
+               2::32-big, 1, 2, 0x02::8, 1::32-big, 3>> == bin
+    end
+
+    test "encodes raw chunk snapshot payload" do
+      {:ok, iodata} = Codec.encode({:voxel_chunk_snapshot_payload, <<1, 2, 3>>})
+      assert <<0x62, 1, 2, 3>> == IO.iodata_to_binary(iodata)
+    end
+
+    test "encodes voxel intent result" do
+      {:ok, iodata} =
+        Codec.encode(
+          {:voxel_intent_result,
+           %{
+             request_id: 9,
+             client_intent_seq: 2,
+             logical_scene_id: 1,
+             result_code: :accepted,
+             result_ref: 123,
+             authoritative: [
+               %{
+                 chunk_coord: {0, 0, 0},
+                 chunk_version: 10,
+                 macro_index: 7,
+                 cell_version: 3,
+                 cell_hash: 0xAABBCCDD,
+                 payload_kind: 1,
+                 cell_payload: <<4, 5, 6>>
+               }
+             ],
+             reason: "ok"
+           }}
+        )
+
+      bin = IO.iodata_to_binary(iodata)
+
+      assert <<0x68, 9::64-big, 2::32-big, 1::64-big, 0::8, 123::64-big, 1::16-big,
+               0::32-big-signed, 0::32-big-signed, 0::32-big-signed, 10::64-big, 7::16-big,
+               3::32-big, 0xAABBCCDD::32-big, 1::8, 3::32-big, 4, 5, 6, 2::16-big, "ok">> == bin
+    end
+
+    test "encodes voxel debug probe reply" do
+      {:ok, bin} = Codec.encode({:voxel_debug_probe, %{request_id: 7, result: "ok"}})
+      assert <<0x6F, 7::64-big, 2::16-big, "ok">> == bin
     end
   end
 
