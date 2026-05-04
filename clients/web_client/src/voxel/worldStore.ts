@@ -95,6 +95,29 @@ export class WorldStore {
     return metadata ? { ...metadata } : null;
   }
 
+  bumpChunkAuthorityVersion(
+    coord: FChunkCoord,
+    update: { chunkVersion: number; chunkHash?: number; receivedAtMs?: number },
+  ): AuthoritativeChunkMetadata | null {
+    const key = chunkCoordKey(coord);
+    const existing = this.authoritativeChunkMetadata.get(key);
+    if (!existing) {
+      return null;
+    }
+    const next: AuthoritativeChunkMetadata = {
+      ...existing,
+      chunkVersion: update.chunkVersion,
+      chunkHash: update.chunkHash ?? existing.chunkHash,
+      receivedAtMs: update.receivedAtMs ?? existing.receivedAtMs,
+    };
+    this.authoritativeChunkMetadata.set(key, next);
+    return { ...next };
+  }
+
+  invalidateChunkAuthority(coord: FChunkCoord): boolean {
+    return this.authoritativeChunkMetadata.delete(chunkCoordKey(coord));
+  }
+
   authoritativeChunkSummaries(limit = 16): Array<AuthoritativeChunkMetadata & { coord: FChunkCoord; key: string }> {
     return this.listChunks()
       .slice(0, limit)

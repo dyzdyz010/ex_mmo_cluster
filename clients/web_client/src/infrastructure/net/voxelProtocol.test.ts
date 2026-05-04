@@ -115,6 +115,64 @@ describe("voxel gate protocol", () => {
     expect(message.resultRef).toBe(77);
     expect(message.reason).toBe("ok");
   });
+
+  it("decodes a CellSolid ChunkDelta payload from the 0x63 opcode", () => {
+    // 20-byte NormalBlockData payload (materialId=42, health=80, default zeros)
+    const blockPayload = new Uint8Array(20);
+    const blockView = new DataView(blockPayload.buffer);
+    blockView.setUint16(0, 42, false);
+    blockView.setUint32(2, 0, false);
+    blockView.setUint16(6, 80, false);
+    // remaining bytes (temperatureDelta i16 +2, moistureDelta i16 +2,
+    // attributeSetRef u32 +4, tagSetRef u32 +4) stay zero.
+
+    const headerSize = 1 + 8 + 12 + 8 + 8 + 2;
+    const opSize = 1 + 2 + 4 + 4 + 2 + blockPayload.length;
+    const buffer = new ArrayBuffer(headerSize + opSize);
+    const view = new DataView(buffer);
+    let offset = 0;
+    view.setUint8(offset, VoxelOpcode.ChunkDelta);
+    offset += 1;
+    view.setBigUint64(offset, 7n, false);
+    offset += 8;
+    view.setInt32(offset, 1, false);
+    view.setInt32(offset + 4, 2, false);
+    view.setInt32(offset + 8, 3, false);
+    offset += 12;
+    view.setBigUint64(offset, 4n, false);
+    offset += 8;
+    view.setBigUint64(offset, 5n, false);
+    offset += 8;
+    view.setUint16(offset, 1, false);
+    offset += 2;
+    view.setUint8(offset, 1);
+    offset += 1;
+    view.setUint16(offset, 1234, false);
+    offset += 2;
+    view.setUint32(offset, 5, false);
+    offset += 4;
+    view.setUint32(offset, 0xcafe, false);
+    offset += 4;
+    view.setUint16(offset, blockPayload.length, false);
+    offset += 2;
+    new Uint8Array(buffer, offset, blockPayload.length).set(blockPayload);
+
+    const message = decodeVoxelServerMessage(buffer);
+
+    expect(message?.type).toBe("voxel_chunk_delta");
+    if (message?.type !== "voxel_chunk_delta") return;
+    expect(message.logicalSceneId).toBe(7);
+    expect(message.chunkCoord).toEqual({ x: 1, y: 2, z: 3 });
+    expect(message.baseChunkVersion).toBe(4);
+    expect(message.newChunkVersion).toBe(5);
+    expect(message.ops).toHaveLength(1);
+    const op = message.ops[0];
+    expect(op.deltaKind).toBe(1);
+    expect(op.macroIndex).toBe(1234);
+    expect(op.cellVersion).toBe(5);
+    expect(op.cellHash).toBe(0xcafe);
+    expect(Array.from(op.payload)).toEqual(Array.from(blockPayload));
+  });
 });
 
 function buildSnapshotFrame(): ArrayBuffer {

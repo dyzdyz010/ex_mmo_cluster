@@ -8,6 +8,7 @@ import {
 } from "./gateProtocol";
 import {
   decodeVoxelServerMessage,
+  type VoxelChunkDeltaMessage,
   encodeVoxelChunkSubscribe,
   encodeVoxelChunkUnsubscribe,
   encodeVoxelDebugProbe,
@@ -57,6 +58,8 @@ export class ServerMovementTransport implements MovementTransport {
     serverSendTs: number;
   }[] = [];
   private readonly voxelSnapshots: VoxelChunkSnapshotMessage[] = [];
+  private readonly voxelDeltas: VoxelChunkDeltaMessage[] = [];
+  private receivedVoxelDeltaCount = 0;
   private readonly voxelIntentResults: VoxelIntentResultMessage[] = [];
   private readonly voxelDebugProbes: VoxelDebugProbeMessage[] = [];
   private readonly voxelKnownVersions = new Map<string, number>();
@@ -317,6 +320,10 @@ export class ServerMovementTransport implements MovementTransport {
 
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[] {
     return this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
+  }
+
+  drainVoxelDeltas(): VoxelChunkDeltaMessage[] {
+    return this.voxelDeltas.splice(0, this.voxelDeltas.length);
   }
 
   drainVoxelIntentResults(): VoxelIntentResultMessage[] {
@@ -580,6 +587,7 @@ export class ServerMovementTransport implements MovementTransport {
   private handleVoxelMessage(data: ArrayBuffer): boolean {
     let message:
       | VoxelChunkSnapshotMessage
+      | VoxelChunkDeltaMessage
       | VoxelIntentResultMessage
       | VoxelDebugProbeMessage
       | null = null;
@@ -619,6 +627,19 @@ export class ServerMovementTransport implements MovementTransport {
           chunk_version: message.chunkVersion,
           chunk_hash: message.chunkHash,
           normal_blocks: message.storage.normalBlocks.length,
+        });
+        return true;
+      case "voxel_chunk_delta":
+        this.voxelDeltas.push(message);
+        this.receivedVoxelDeltaCount += 1;
+        this.voxelKnownVersions.set(chunkCoordKey(message.chunkCoord), message.newChunkVersion);
+        this.logger.emit("voxel", "chunk_delta_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          logical_scene_id: message.logicalSceneId,
+          chunk_coord: chunkCoordKey(message.chunkCoord),
+          base_chunk_version: message.baseChunkVersion,
+          new_chunk_version: message.newChunkVersion,
+          op_count: message.ops.length,
         });
         return true;
       case "voxel_intent_result":

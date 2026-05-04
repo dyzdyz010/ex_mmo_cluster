@@ -1,12 +1,15 @@
 import type { AppEventBus } from "../shared/events/events";
 import { VoxelConstants } from "./core/constants";
 import { chunkCoordKey, type FChunkCoord, type FMacroCoord, type FMicroCoord } from "./core/types";
-import type {
-  VoxelChunkSnapshotMessage,
-  VoxelDebugProbeMessage,
-  VoxelIntentResultMessage,
-  VoxelKnownChunk,
+import {
+  decodeNormalBlockDataPayload,
+  type VoxelChunkDeltaMessage,
+  type VoxelChunkSnapshotMessage,
+  type VoxelDebugProbeMessage,
+  type VoxelIntentResultMessage,
+  type VoxelKnownChunk,
 } from "../infrastructure/net/voxelProtocol";
+import { macroCoordFromLinearIndex } from "./core/gridUtils";
 import type { ObserveLog } from "../observe/logger";
 import type { EVoxelRotation } from "./core/types";
 import type { FNormalBlockData } from "./storage/types";
@@ -44,6 +47,7 @@ export interface ServerVoxelTransportPort {
     clientHintHash?: number;
   }): number | null;
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[];
+  drainVoxelDeltas(): VoxelChunkDeltaMessage[];
   drainVoxelIntentResults(): VoxelIntentResultMessage[];
   drainVoxelDebugProbes(): VoxelDebugProbeMessage[];
 }
@@ -274,12 +278,70 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const snapshot of this.transport.drainVoxelSnapshots()) {
       this.applySnapshot(snapshot);
     }
+    for (const delta of this.transport.drainVoxelDeltas()) {
+      this.applyDelta(delta);
+    }
     for (const result of this.transport.drainVoxelIntentResults()) {
       this.applyIntentResult(result);
     }
     for (const probe of this.transport.drainVoxelDebugProbes()) {
       this.lastDebugProbe = probe.result;
     }
+  }
+
+  private applyDelta(delta: VoxelChunkDeltaMessage): void {
+    const chunk = this.store.getChunk(delta.chunkCoord);
+    const metadata = this.store.getChunkAuthorityMetadata(delta.chunkCoord);
+
+    if (!chunk || !metadata) {
+      this.bus.emit("world:chunk-delta-skipped", {
+        logicalSceneId: delta.logicalSceneId,
+        chunkCoord: delta.chunkCoord,
+        baseChunkVersion: delta.baseChunkVersion,
+        newChunkVersion: delta.newChunkVersion,
+        reason: "chunk_not_loaded",
+      });
+      return;
+    }
+
+    if (metadata.chunkVersion !== delta.baseChunkVersion) {
+      this.store.invalidateChunkAuthority(delta.chunkCoord);
+      this.bus.emit("world:chunk-delta-skipped", {
+        logicalSceneId: delta.logicalSceneId,
+        chunkCoord: delta.chunkCoord,
+        baseChunkVersion: delta.baseChunkVersion,
+        newChunkVersion: delta.newChunkVersion,
+        reason: "stale_base_version",
+        knownChunkVersion: metadata.chunkVersion,
+      });
+      return;
+    }
+
+    let appliedOps = 0;
+
+    for (const op of delta.ops) {
+      if (op.deltaKind === 1) {
+        const block = decodeNormalBlockDataPayload(op.payload);
+        const localMacro = macroCoordFromLinearIndex(op.macroIndex);
+        if (chunk.trySetNormalBlock(localMacro, block)) {
+          appliedOps += 1;
+        }
+      }
+    }
+
+    this.store.bumpChunkAuthorityVersion(delta.chunkCoord, {
+      chunkVersion: delta.newChunkVersion,
+      receivedAtMs: Math.round(performance.now()),
+    });
+
+    this.bus.emit("world:chunk-delta-applied", {
+      logicalSceneId: delta.logicalSceneId,
+      chunkCoord: delta.chunkCoord,
+      baseChunkVersion: delta.baseChunkVersion,
+      newChunkVersion: delta.newChunkVersion,
+      opCount: delta.ops.length,
+      appliedOps,
+    });
   }
 
   private applySnapshot(snapshot: VoxelChunkSnapshotMessage): void {
@@ -413,6 +475,7 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.voxelDebugSnapshot === "function" &&
     typeof candidate.sendVoxelChunkSubscribe === "function" &&
     typeof candidate.sendVoxelImpactIntent === "function" &&
-    typeof candidate.drainVoxelSnapshots === "function"
+    typeof candidate.drainVoxelSnapshots === "function" &&
+    typeof candidate.drainVoxelDeltas === "function"
   );
 }

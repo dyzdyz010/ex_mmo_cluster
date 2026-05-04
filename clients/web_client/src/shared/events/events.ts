@@ -88,6 +88,22 @@ export type AppEvents = {
     chunkHash: number;
     solidBlocks: number;
   };
+  "world:chunk-delta-applied": {
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    baseChunkVersion: number;
+    newChunkVersion: number;
+    opCount: number;
+    appliedOps: number;
+  };
+  "world:chunk-delta-skipped": {
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    baseChunkVersion: number;
+    newChunkVersion: number;
+    reason: "chunk_not_loaded" | "stale_base_version";
+    knownChunkVersion?: number;
+  };
   "world:voxel-intent-result": {
     requestId: number;
     clientIntentSeq: number;

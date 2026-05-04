@@ -52,6 +52,35 @@ export interface VoxelAuthoritativeCell {
   cellPayload: Uint8Array;
 }
 
+export interface VoxelChunkDeltaOp {
+  deltaKind: number;
+  macroIndex: number;
+  cellVersion: number;
+  cellHash: number;
+  payload: Uint8Array;
+}
+
+export interface VoxelChunkDeltaMessage {
+  type: "voxel_chunk_delta";
+  logicalSceneId: number;
+  chunkCoord: FChunkCoord;
+  baseChunkVersion: number;
+  newChunkVersion: number;
+  ops: VoxelChunkDeltaOp[];
+}
+
+export const VoxelChunkDeltaKind = {
+  CellEmpty: 0,
+  CellSolid: 1,
+  CellRefined: 2,
+  EnvironmentUpdated: 3,
+  ObjectRefUpdated: 4,
+  CatalogPatch: 5,
+} as const;
+
+export type VoxelChunkDeltaKindValue =
+  (typeof VoxelChunkDeltaKind)[keyof typeof VoxelChunkDeltaKind];
+
 export interface VoxelIntentResultMessage {
   type: "voxel_intent_result";
   requestId: number;
@@ -72,6 +101,7 @@ export interface VoxelDebugProbeMessage {
 
 export type VoxelServerMessage =
   | VoxelChunkSnapshotMessage
+  | VoxelChunkDeltaMessage
   | VoxelIntentResultMessage
   | VoxelDebugProbeMessage;
 
@@ -190,6 +220,8 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
   switch (opcode) {
     case VoxelOpcode.ChunkSnapshot:
       return decodeChunkSnapshot(view);
+    case VoxelOpcode.ChunkDelta:
+      return decodeChunkDelta(view);
     case VoxelOpcode.VoxelIntentResult:
       return decodeIntentResult(view);
     case VoxelOpcode.VoxelDebugProbe:
@@ -197,6 +229,53 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
     default:
       return null;
   }
+}
+
+function decodeChunkDelta(view: DataView): VoxelChunkDeltaMessage {
+  let offset = 1;
+  const logicalSceneId = readU64(view, offset);
+  offset += 8;
+  const chunkCoord = readChunkCoord(view, offset);
+  offset += 12;
+  const baseChunkVersion = readU64(view, offset);
+  offset += 8;
+  const newChunkVersion = readU64(view, offset);
+  offset += 8;
+  const opCount = view.getUint16(offset, false);
+  offset += 2;
+
+  const ops: VoxelChunkDeltaOp[] = [];
+  const buffer = view.buffer;
+  for (let i = 0; i < opCount; i += 1) {
+    const deltaKind = view.getUint8(offset);
+    offset += 1;
+    const macroIndex = view.getUint16(offset, false);
+    offset += 2;
+    const cellVersion = view.getUint32(offset, false);
+    offset += 4;
+    const cellHash = view.getUint32(offset, false);
+    offset += 4;
+    const payloadLen = view.getUint16(offset, false);
+    offset += 2;
+    const payload = new Uint8Array(buffer, view.byteOffset + offset, payloadLen);
+    offset += payloadLen;
+    ops.push({
+      deltaKind,
+      macroIndex,
+      cellVersion,
+      cellHash,
+      payload: new Uint8Array(payload),
+    });
+  }
+
+  return {
+    type: "voxel_chunk_delta",
+    logicalSceneId,
+    chunkCoord,
+    baseChunkVersion,
+    newChunkVersion,
+    ops,
+  };
 }
 
 function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
@@ -388,18 +467,32 @@ function decodeNormalBlocks(section: DataView): FNormalBlockData[] {
   const blocks: FNormalBlockData[] = [];
   let offset = 4;
   for (let index = 0; index < count; index += 1) {
-    blocks.push({
-      materialId: section.getUint16(offset, false),
-      stateFlags: section.getUint32(offset + 2, false),
-      health: section.getUint16(offset + 6, false),
-      temperatureDelta: section.getInt16(offset + 8, false),
-      moistureDelta: section.getInt16(offset + 10, false),
-      attributeSetRef: section.getUint32(offset + 12, false),
-      tagSetRef: section.getUint32(offset + 16, false),
-    });
+    blocks.push(readNormalBlockAt(section, offset));
     offset += wireSize;
   }
   return blocks;
+}
+
+const NORMAL_BLOCK_WIRE_SIZE = 20;
+
+function readNormalBlockAt(view: DataView, offset: number): FNormalBlockData {
+  return {
+    materialId: view.getUint16(offset, false),
+    stateFlags: view.getUint32(offset + 2, false),
+    health: view.getUint16(offset + 6, false),
+    temperatureDelta: view.getInt16(offset + 8, false),
+    moistureDelta: view.getInt16(offset + 10, false),
+    attributeSetRef: view.getUint32(offset + 12, false),
+    tagSetRef: view.getUint32(offset + 16, false),
+  };
+}
+
+export function decodeNormalBlockDataPayload(payload: Uint8Array): FNormalBlockData {
+  if (payload.byteLength !== NORMAL_BLOCK_WIRE_SIZE) {
+    throw new Error(`invalid_normal_block_payload:${payload.byteLength}`);
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  return readNormalBlockAt(view, 0);
 }
 
 function decodeEnvironmentSummaries(section: DataView): FMacroEnvironmentSummary[] {
