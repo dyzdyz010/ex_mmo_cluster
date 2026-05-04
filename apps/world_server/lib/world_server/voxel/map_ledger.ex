@@ -119,18 +119,52 @@ defmodule WorldServer.Voxel.MapLedger do
 
   @impl true
   def init(opts) do
-    {:ok,
-     %{
-       assignments: %{},
-       leases: %{},
-       chunk_summaries: %{},
-       migrations: %{},
-       write_token_store: Keyword.get(opts, :write_token_store)
-     }}
+    persistence_path = Keyword.get(opts, :persistence_path)
+
+    base = %{
+      assignments: %{},
+      leases: %{},
+      chunk_summaries: %{},
+      migrations: %{},
+      write_token_store: Keyword.get(opts, :write_token_store),
+      persistence_path: persistence_path
+    }
+
+    case load_persisted_state(persistence_path) do
+      {:ok, restored} ->
+        {:ok, Map.merge(base, restored)}
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_map_ledger_persist_load_failed", fn ->
+          %{reason: inspect(reason), path: persistence_path}
+        end)
+
+        {:ok, base}
+    end
   end
 
   @impl true
-  def handle_call({:put_region, attrs}, _from, state) do
+  def handle_call(message, from, state) do
+    case do_handle_call(message, from, state) do
+      {:reply, _reply, ^state} = ret ->
+        ret
+
+      {:reply, reply, next_state} ->
+        case maybe_persist_state(next_state) do
+          :ok ->
+            {:reply, reply, next_state}
+
+          {:error, reason} ->
+            CliObserve.emit("voxel_map_ledger_persist_failed", fn ->
+              %{reason: inspect(reason)}
+            end)
+
+            {:reply, reply, next_state}
+        end
+    end
+  end
+
+  defp do_handle_call({:put_region, attrs}, _from, state) do
     assignment = RegionAssignment.new(attrs)
     key = assignment.region_id
 
@@ -166,7 +200,7 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
-  def handle_call({:issue_lease, region_id, owner_scene_instance_ref, opts}, _from, state) do
+  defp do_handle_call({:issue_lease, region_id, owner_scene_instance_ref, opts}, _from, state) do
     case Map.fetch(state.assignments, region_id) do
       {:ok, assignment} ->
         {reply, next_state} =
@@ -179,51 +213,51 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
-  def handle_call({:migrate_region, region_id, target_scene_instance_ref, opts}, _from, state) do
+  defp do_handle_call({:migrate_region, region_id, target_scene_instance_ref, opts}, _from, state) do
     {reply, next_state} =
       migrate_region_in_state(state, region_id, target_scene_instance_ref, opts)
 
     {:reply, reply, next_state}
   end
 
-  def handle_call({:begin_migration, region_id, target_scene_instance_ref, opts}, _from, state) do
+  defp do_handle_call({:begin_migration, region_id, target_scene_instance_ref, opts}, _from, state) do
     {reply, next_state} =
       begin_migration_in_state(state, region_id, target_scene_instance_ref, opts)
 
     {:reply, reply, next_state}
   end
 
-  def handle_call({:plan_next_migration_slice, migration_id}, _from, state) do
+  defp do_handle_call({:plan_next_migration_slice, migration_id}, _from, state) do
     {reply, next_state} = plan_next_migration_slice_in_state(state, migration_id)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:mark_prewarmed, migration_id}, _from, state) do
+  defp do_handle_call({:mark_prewarmed, migration_id}, _from, state) do
     {reply, next_state} = mark_prewarmed_in_state(state, migration_id)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:mark_slice_prewarmed, migration_id, attrs}, _from, state) do
+  defp do_handle_call({:mark_slice_prewarmed, migration_id, attrs}, _from, state) do
     {reply, next_state} = mark_slice_prewarmed_in_state(state, migration_id, attrs)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:mark_slice_final_caught_up, migration_id, attrs}, _from, state) do
+  defp do_handle_call({:mark_slice_final_caught_up, migration_id, attrs}, _from, state) do
     {reply, next_state} = mark_slice_final_caught_up_in_state(state, migration_id, attrs)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:cutover_migration, migration_id}, _from, state) do
+  defp do_handle_call({:cutover_migration, migration_id}, _from, state) do
     {reply, next_state} = cutover_migration_in_state(state, migration_id)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:complete_migration, migration_id}, _from, state) do
+  defp do_handle_call({:complete_migration, migration_id}, _from, state) do
     {reply, next_state} = complete_migration_in_state(state, migration_id)
     {:reply, reply, next_state}
   end
 
-  def handle_call({:migration_handoff, migration_id}, _from, state) do
+  defp do_handle_call({:migration_handoff, migration_id}, _from, state) do
     reply =
       with {:ok, plan} <- fetch_migration(state, migration_id) do
         handoff = MigrationPlan.handoff(plan)
@@ -238,15 +272,15 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, state}
   end
 
-  def handle_call({:migration_snapshot, migration_id}, _from, state) do
+  defp do_handle_call({:migration_snapshot, migration_id}, _from, state) do
     {:reply, fetch_migration(state, migration_id), state}
   end
 
-  def handle_call({:route_chunk, logical_scene_id, chunk_coord}, _from, state) do
+  defp do_handle_call({:route_chunk, logical_scene_id, chunk_coord}, _from, state) do
     {:reply, route_chunk_in_state(state, logical_scene_id, chunk_coord), state}
   end
 
-  def handle_call({:route_chunk_with_lease, logical_scene_id, chunk_coord}, _from, state) do
+  defp do_handle_call({:route_chunk_with_lease, logical_scene_id, chunk_coord}, _from, state) do
     reply =
       with {:ok, assignment} <- route_chunk_in_state(state, logical_scene_id, chunk_coord),
            {:ok, lease} <- fetch_region_lease(state, assignment.region_id) do
@@ -256,15 +290,15 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, state}
   end
 
-  def handle_call({:validate_write, write}, _from, state) do
+  defp do_handle_call({:validate_write, write}, _from, state) do
     {:reply, validate_write_in_state(state, write), state}
   end
 
-  def handle_call({:transaction_participants, logical_scene_id, affected_chunks}, _from, state) do
+  defp do_handle_call({:transaction_participants, logical_scene_id, affected_chunks}, _from, state) do
     {:reply, participants_for_chunks(state, logical_scene_id, affected_chunks), state}
   end
 
-  def handle_call(:snapshot, _from, state) do
+  defp do_handle_call(:snapshot, _from, state) do
     {:reply, state, state}
   end
 
@@ -979,4 +1013,64 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp now_ms, do: System.system_time(:millisecond)
+
+  defp maybe_persist_state(%{persistence_path: nil}), do: :ok
+
+  defp maybe_persist_state(%{persistence_path: path} = state) when is_binary(path) do
+    payload =
+      state
+      |> Map.take([:assignments, :leases, :chunk_summaries, :migrations])
+      |> :erlang.term_to_binary()
+
+    tmp_path = path <> ".tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(tmp_path, payload),
+         :ok <- File.rename(tmp_path, path) do
+      :ok
+    end
+  end
+
+  defp load_persisted_state(nil), do: {:ok, %{}}
+
+  defp load_persisted_state(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, binary} ->
+        try do
+          term = :erlang.binary_to_term(binary, [:safe])
+
+          case validate_persisted_payload(term) do
+            {:ok, _} = ok -> ok
+            {:error, _} = err -> err
+          end
+        rescue
+          exception in [ArgumentError] -> {:error, Exception.message(exception)}
+        end
+
+      {:error, :enoent} ->
+        {:ok, %{}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_persisted_payload(payload) when is_map(payload) do
+    expected_keys = [:assignments, :leases, :chunk_summaries, :migrations]
+
+    keys = Map.keys(payload)
+
+    cond do
+      Enum.any?(keys, fn key -> key not in expected_keys end) ->
+        {:error, {:unexpected_keys, keys -- expected_keys}}
+
+      Enum.any?(payload, fn {_key, value} -> not is_map(value) end) ->
+        {:error, :unexpected_value_shape}
+
+      true ->
+        {:ok, payload}
+    end
+  end
+
+  defp validate_persisted_payload(_other), do: {:error, :unexpected_payload_shape}
 end

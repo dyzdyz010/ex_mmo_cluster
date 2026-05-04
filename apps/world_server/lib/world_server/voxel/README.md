@@ -4,6 +4,11 @@
 低频权威逻辑，不保存完整区块内容，也不执行逐帧体素规则。
 
 - `MapLedger` 拥有区域分配、租约签发、路由查询、Gate / Scene 当前租约查询，以及事务参与者规划。
+  传 `persistence_path: <file>` 启动时，每次 state 突变都会原子写入该文件
+  （`<path>.tmp` → `rename`），下次启动时自动 `binary_to_term/2` 还原 assignments、
+  leases、chunk_summaries、migrations。文件路径未给则保持纯内存行为，外层 supervisor /
+  application 可决定是否启用。这一版只支持单节点本地文件；多节点 / Postgres 持久化是
+  后续切片（保留同一接口边界即可平滑替换）。
 - `RegionAssignment` 是可持久化的区域拥有者记录。
 - `SceneLease` 是发给某个 Scene 实例的热写入授权；租约过期或纪元不匹配时，Scene 不能写。
 - `LeaseWriteToken` 是从租约派生出的 DataService 写入围栏；DataService 用它拒绝旧拥有者写入。
