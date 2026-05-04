@@ -121,22 +121,30 @@ defmodule WorldServer.Voxel.MapLedger do
   def init(opts) do
     persistence_path = Keyword.get(opts, :persistence_path)
 
+    persist_fn =
+      Keyword.get(opts, :persist_fn) ||
+        if persistence_path, do: file_persist_fn(persistence_path)
+
+    load_fn =
+      Keyword.get(opts, :load_fn) ||
+        if persistence_path, do: file_load_fn(persistence_path)
+
     base = %{
       assignments: %{},
       leases: %{},
       chunk_summaries: %{},
       migrations: %{},
       write_token_store: Keyword.get(opts, :write_token_store),
-      persistence_path: persistence_path
+      persist_fn: persist_fn
     }
 
-    case load_persisted_state(persistence_path) do
+    case run_load(load_fn) do
       {:ok, restored} ->
         {:ok, Map.merge(base, restored)}
 
       {:error, reason} ->
         CliObserve.emit("voxel_map_ledger_persist_load_failed", fn ->
-          %{reason: inspect(reason), path: persistence_path}
+          %{reason: inspect(reason)}
         end)
 
         {:ok, base}
@@ -220,7 +228,11 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, next_state}
   end
 
-  defp do_handle_call({:begin_migration, region_id, target_scene_instance_ref, opts}, _from, state) do
+  defp do_handle_call(
+         {:begin_migration, region_id, target_scene_instance_ref, opts},
+         _from,
+         state
+       ) do
     {reply, next_state} =
       begin_migration_in_state(state, region_id, target_scene_instance_ref, opts)
 
@@ -294,7 +306,11 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, validate_write_in_state(state, write), state}
   end
 
-  defp do_handle_call({:transaction_participants, logical_scene_id, affected_chunks}, _from, state) do
+  defp do_handle_call(
+         {:transaction_participants, logical_scene_id, affected_chunks},
+         _from,
+         state
+       ) do
     {:reply, participants_for_chunks(state, logical_scene_id, affected_chunks), state}
   end
 
@@ -1014,44 +1030,52 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp now_ms, do: System.system_time(:millisecond)
 
-  defp maybe_persist_state(%{persistence_path: nil}), do: :ok
+  defp maybe_persist_state(%{persist_fn: nil}), do: :ok
 
-  defp maybe_persist_state(%{persistence_path: path} = state) when is_binary(path) do
-    payload =
-      state
-      |> Map.take([:assignments, :leases, :chunk_summaries, :migrations])
-      |> :erlang.term_to_binary()
+  defp maybe_persist_state(%{persist_fn: persist_fn} = state) when is_function(persist_fn, 1) do
+    payload = Map.take(state, [:assignments, :leases, :chunk_summaries, :migrations])
+    persist_fn.(payload)
+  end
 
-    tmp_path = path <> ".tmp"
+  defp run_load(nil), do: {:ok, %{}}
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(tmp_path, payload),
-         :ok <- File.rename(tmp_path, path) do
-      :ok
+  defp run_load(load_fn) when is_function(load_fn, 0) do
+    case load_fn.() do
+      {:ok, payload} when is_map(payload) -> validate_persisted_payload(payload)
+      {:error, _reason} = err -> err
+      other -> {:error, {:unexpected_load_result, other}}
     end
   end
 
-  defp load_persisted_state(nil), do: {:ok, %{}}
+  defp file_persist_fn(path) when is_binary(path) do
+    fn payload ->
+      binary = :erlang.term_to_binary(payload)
+      tmp_path = path <> ".tmp"
 
-  defp load_persisted_state(path) when is_binary(path) do
-    case File.read(path) do
-      {:ok, binary} ->
-        try do
-          term = :erlang.binary_to_term(binary, [:safe])
+      with :ok <- File.mkdir_p(Path.dirname(path)),
+           :ok <- File.write(tmp_path, binary),
+           :ok <- File.rename(tmp_path, path) do
+        :ok
+      end
+    end
+  end
 
-          case validate_persisted_payload(term) do
-            {:ok, _} = ok -> ok
-            {:error, _} = err -> err
+  defp file_load_fn(path) when is_binary(path) do
+    fn ->
+      case File.read(path) do
+        {:ok, binary} ->
+          try do
+            {:ok, :erlang.binary_to_term(binary, [:safe])}
+          rescue
+            exception in [ArgumentError] -> {:error, Exception.message(exception)}
           end
-        rescue
-          exception in [ArgumentError] -> {:error, Exception.message(exception)}
-        end
 
-      {:error, :enoent} ->
-        {:ok, %{}}
+        {:error, :enoent} ->
+          {:ok, %{}}
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1061,6 +1085,9 @@ defmodule WorldServer.Voxel.MapLedger do
     keys = Map.keys(payload)
 
     cond do
+      keys == [] ->
+        {:ok, %{}}
+
       Enum.any?(keys, fn key -> key not in expected_keys end) ->
         {:error, {:unexpected_keys, keys -- expected_keys}}
 

@@ -202,8 +202,7 @@ defmodule SceneServer.Voxel.Codec do
   def decode_chunk_delta_payload!(
         <<logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
           cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
-          base_version::unsigned-big-integer-size(64),
-          new_version::unsigned-big-integer-size(64),
+          base_version::unsigned-big-integer-size(64), new_version::unsigned-big-integer-size(64),
           op_count::unsigned-big-integer-size(16), rest::binary>>
       ) do
     {ops, <<>>} = decode_delta_ops(rest, op_count, [])
@@ -427,9 +426,9 @@ defmodule SceneServer.Voxel.Codec do
 
   defp decode_delta_ops(
          <<kind::unsigned-integer-size(8), macro_index::unsigned-big-integer-size(16),
-           cell_version::unsigned-big-integer-size(32),
-           cell_hash::unsigned-big-integer-size(32), payload_len::unsigned-big-integer-size(16),
-           payload::binary-size(payload_len), rest::binary>>,
+           cell_version::unsigned-big-integer-size(32), cell_hash::unsigned-big-integer-size(32),
+           payload_len::unsigned-big-integer-size(16), payload::binary-size(payload_len),
+           rest::binary>>,
          remaining,
          acc
        )

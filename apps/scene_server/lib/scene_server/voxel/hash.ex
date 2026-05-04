@@ -60,15 +60,15 @@ defmodule SceneServer.Voxel.Hash do
 
     {h64, tail} =
       if len >= 32 do
-        v1 = (seed + @prime1 + @prime2) &&& @u64_mask
-        v2 = (seed + @prime2) &&& @u64_mask
+        v1 = seed + @prime1 + @prime2 &&& @u64_mask
+        v2 = seed + @prime2 &&& @u64_mask
         v3 = seed
-        v4 = (seed - @prime1) &&& @u64_mask
+        v4 = seed - @prime1 &&& @u64_mask
 
         {v1, v2, v3, v4, rest} = consume_stripes(input, v1, v2, v3, v4)
 
         h =
-          (rotl64(v1, 1) + rotl64(v2, 7) + rotl64(v3, 12) + rotl64(v4, 18)) &&& @u64_mask
+          rotl64(v1, 1) + rotl64(v2, 7) + rotl64(v3, 12) + rotl64(v4, 18) &&& @u64_mask
 
         h =
           h
@@ -79,7 +79,7 @@ defmodule SceneServer.Voxel.Hash do
 
         {h, rest}
       else
-        {(seed + @prime5) &&& @u64_mask, input}
+        {seed + @prime5 &&& @u64_mask, input}
       end
 
     h64
@@ -89,7 +89,13 @@ defmodule SceneServer.Voxel.Hash do
     |> avalanche()
   end
 
-  defp consume_stripes(<<a::little-64, b::little-64, c::little-64, d::little-64, rest::binary>>, v1, v2, v3, v4) do
+  defp consume_stripes(
+         <<a::little-64, b::little-64, c::little-64, d::little-64, rest::binary>>,
+         v1,
+         v2,
+         v3,
+         v4
+       ) do
     consume_stripes(rest, round64(v1, a), round64(v2, b), round64(v3, c), round64(v4, d))
   end
 
@@ -108,7 +114,7 @@ defmodule SceneServer.Voxel.Hash do
 
   defp consume_tail(h, <<k1::little-32, rest::binary>>) do
     h
-    |> bxor((k1 * @prime1) &&& @u64_mask)
+    |> bxor(k1 * @prime1 &&& @u64_mask)
     |> rotl64(23)
     |> Kernel.*(@prime2)
     |> band(@u64_mask)
@@ -119,7 +125,7 @@ defmodule SceneServer.Voxel.Hash do
 
   defp consume_tail(h, <<k1::8, rest::binary>>) do
     h
-    |> bxor((k1 * @prime5) &&& @u64_mask)
+    |> bxor(k1 * @prime5 &&& @u64_mask)
     |> rotl64(11)
     |> Kernel.*(@prime1)
     |> band(@u64_mask)
@@ -129,9 +135,9 @@ defmodule SceneServer.Voxel.Hash do
   defp consume_tail(h, <<>>), do: h
 
   defp round64(acc, val) do
-    acc = (acc + val * @prime2) &&& @u64_mask
+    acc = acc + val * @prime2 &&& @u64_mask
     acc = rotl64(acc, 31)
-    (acc * @prime1) &&& @u64_mask
+    acc * @prime1 &&& @u64_mask
   end
 
   defp merge_round(h, val) do
@@ -145,14 +151,14 @@ defmodule SceneServer.Voxel.Hash do
 
   defp avalanche(h) do
     h = bxor(h, h >>> 33)
-    h = (h * @prime2) &&& @u64_mask
+    h = h * @prime2 &&& @u64_mask
     h = bxor(h, h >>> 29)
-    h = (h * @prime3) &&& @u64_mask
+    h = h * @prime3 &&& @u64_mask
     bxor(h, h >>> 32)
   end
 
   defp rotl64(value, n) when n in 1..63 do
     masked = value &&& @u64_mask
-    ((masked <<< n) ||| (masked >>> (64 - n))) &&& @u64_mask
+    (masked <<< n ||| masked >>> (64 - n)) &&& @u64_mask
   end
 end
