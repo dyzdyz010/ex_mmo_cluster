@@ -93,6 +93,40 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, :persist)
   end
 
+  @doc """
+  Reserves a transaction fence for an upcoming voxel write.
+
+  The fence stores the normalized intent without applying it. While a fence is
+  held, ad-hoc `apply_intent/2` for any other transaction is rejected; the
+  transaction must use `commit_transaction/2` or `abort_transaction/2` to
+  release the chunk. Re-preparing the same transaction with the same intent is
+  idempotent and returns the original fence summary.
+  """
+  def prepare_transaction(server, transaction_id, attrs) when is_binary(transaction_id) do
+    GenServer.call(server, {:prepare_transaction, transaction_id, attrs})
+  end
+
+  @doc """
+  Applies the previously fenced transaction intent and releases the fence.
+
+  Returns the same shape as `apply_intent/2` so callers can publish the
+  resulting snapshot payload. Calling commit on a chunk that does not hold the
+  matching transaction fence returns `{:error, :transaction_not_prepared}`.
+  """
+  def commit_transaction(server, transaction_id) when is_binary(transaction_id) do
+    GenServer.call(server, {:commit_transaction, transaction_id})
+  end
+
+  @doc """
+  Releases the transaction fence without applying its intent.
+
+  Idempotent: aborting a transaction that does not own the current fence (or
+  any chunk that has no pending fence) returns `:ok`.
+  """
+  def abort_transaction(server, transaction_id) when is_binary(transaction_id) do
+    GenServer.call(server, {:abort_transaction, transaction_id})
+  end
+
   @doc "Returns process state for CLI/debug inspection."
   def debug_state(server) do
     GenServer.call(server, :debug_state)
@@ -116,7 +150,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
        lease: normalize_optional_lease(Keyword.get(opts, :lease)),
        snapshot_store: Keyword.get(opts, :snapshot_store, DataService.Voxel.ChunkSnapshotStore),
        subscribers: %{},
-       subscriber_monitors: %{}
+       subscriber_monitors: %{},
+       pending_fence: nil
      }}
   end
 
@@ -179,36 +214,96 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   def handle_call({:apply_intent, attrs}, _from, state) do
-    case normalize_apply_intent(attrs) do
-      {:ok, intent} ->
-        case apply_normalized_intent(state, intent) do
-          {:ok, reply, next_state} ->
-            CliObserve.emit("voxel_intent_applied", fn ->
-              %{
-                logical_scene_id: next_state.logical_scene_id,
-                chunk_coord: next_state.chunk_coord,
-                chunk_version: next_state.storage.chunk_version,
-                operation: intent.operation,
-                macro: intent.macro,
-                region_id: intent.lease.region_id,
-                lease_id: intent.lease.lease_id,
-                persist_result: reply.persist_result,
-                snapshot_bytes: byte_size(reply.snapshot_payload)
-              }
-            end)
+    case state.pending_fence do
+      %{transaction_id: tid} ->
+        reason = {:chunk_fenced_by_transaction, tid}
+        emit_intent_rejected(state, attrs, reason)
+        {:reply, {:error, reason}, state}
 
-            push_snapshot_fallbacks(next_state, :apply_intent)
-            {:reply, {:ok, reply}, next_state}
+      nil ->
+        case normalize_apply_intent(attrs) do
+          {:ok, intent} ->
+            case apply_normalized_intent(state, intent) do
+              {:ok, reply, next_state} ->
+                CliObserve.emit("voxel_intent_applied", fn ->
+                  %{
+                    logical_scene_id: next_state.logical_scene_id,
+                    chunk_coord: next_state.chunk_coord,
+                    chunk_version: next_state.storage.chunk_version,
+                    operation: intent.operation,
+                    macro: intent.macro,
+                    region_id: intent.lease.region_id,
+                    lease_id: intent.lease.lease_id,
+                    persist_result: reply.persist_result,
+                    snapshot_bytes: byte_size(reply.snapshot_payload)
+                  }
+                end)
+
+                push_snapshot_fallbacks(next_state, :apply_intent)
+                {:reply, {:ok, reply}, next_state}
+
+              {:error, reason} ->
+                emit_intent_rejected(state, attrs, reason)
+                {:reply, {:error, reason}, state}
+            end
 
           {:error, reason} ->
             emit_intent_rejected(state, attrs, reason)
             {:reply, {:error, reason}, state}
         end
+    end
+  end
+
+  def handle_call({:prepare_transaction, transaction_id, attrs}, _from, state) do
+    case prepare_transaction_in_state(state, transaction_id, attrs) do
+      {:ok, summary, next_state} ->
+        emit_transaction_event(
+          next_state,
+          transaction_id,
+          "voxel_chunk_transaction_prepared",
+          summary
+        )
+
+        {:reply, {:ok, summary}, next_state}
 
       {:error, reason} ->
-        emit_intent_rejected(state, attrs, reason)
+        emit_transaction_event(state, transaction_id, "voxel_chunk_transaction_prepare_failed", %{
+          reason: inspect(reason)
+        })
+
         {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:commit_transaction, transaction_id}, _from, state) do
+    case commit_transaction_in_state(state, transaction_id) do
+      {:ok, reply, next_state} ->
+        emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
+          chunk_version: next_state.storage.chunk_version,
+          snapshot_bytes: byte_size(reply.snapshot_payload),
+          persist_result: reply.persist_result
+        })
+
+        push_snapshot_fallbacks(next_state, :commit_transaction)
+        {:reply, {:ok, reply}, next_state}
+
+      {:error, reason} ->
+        emit_transaction_event(state, transaction_id, "voxel_chunk_transaction_commit_failed", %{
+          reason: inspect(reason)
+        })
+
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:abort_transaction, transaction_id}, _from, state) do
+    {released?, next_state} = abort_transaction_in_state(state, transaction_id)
+
+    emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_aborted", %{
+      released?: released?
+    })
+
+    {:reply, :ok, next_state}
   end
 
   def handle_call({:put_solid_block, macro_index_or_coord, block, opts}, _from, state) do
@@ -396,6 +491,77 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end
     end
   end
+
+  defp prepare_transaction_in_state(state, transaction_id, attrs) do
+    case state.pending_fence do
+      %{transaction_id: ^transaction_id} = existing ->
+        {:ok, fence_summary(existing), state}
+
+      %{transaction_id: holder} ->
+        {:error, {:chunk_already_fenced, holder}}
+
+      nil ->
+        with {:ok, intent} <- normalize_apply_intent(attrs),
+             :ok <- validate_intent_scope(state, intent) do
+          fence = %{transaction_id: transaction_id, intent: intent, fenced_at_ms: now_ms()}
+          {:ok, fence_summary(fence), %{state | pending_fence: fence}}
+        end
+    end
+  end
+
+  defp commit_transaction_in_state(state, transaction_id) do
+    case state.pending_fence do
+      %{transaction_id: ^transaction_id, intent: intent} ->
+        case apply_normalized_intent(state, intent) do
+          {:ok, reply, next_state_after_apply} ->
+            {:ok, reply, %{next_state_after_apply | pending_fence: nil}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      %{transaction_id: holder} ->
+        {:error, {:chunk_fence_owned_by_another_transaction, holder}}
+
+      nil ->
+        {:error, :transaction_not_prepared}
+    end
+  end
+
+  defp abort_transaction_in_state(state, transaction_id) do
+    case state.pending_fence do
+      %{transaction_id: ^transaction_id} ->
+        {true, %{state | pending_fence: nil}}
+
+      _other ->
+        {false, state}
+    end
+  end
+
+  defp fence_summary(fence) do
+    %{
+      transaction_id: fence.transaction_id,
+      chunk_coord: fence.intent.chunk_coord,
+      operation: fence.intent.operation,
+      macro: fence.intent.macro,
+      fenced_at_ms: fence.fenced_at_ms
+    }
+  end
+
+  defp emit_transaction_event(state, transaction_id, event, payload) when is_map(payload) do
+    CliObserve.emit(event, fn ->
+      Map.merge(
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          transaction_id: transaction_id
+        },
+        payload
+      )
+    end)
+  end
+
+  defp now_ms, do: System.system_time(:millisecond)
 
   defp validate_intent_scope(state, intent) do
     cond do

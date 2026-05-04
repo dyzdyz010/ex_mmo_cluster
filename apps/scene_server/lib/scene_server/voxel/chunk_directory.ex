@@ -94,6 +94,28 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     GenServer.call(server, {:apply_intent, attrs})
   end
 
+  @doc """
+  Reserves a transaction fence on the chunk for a future commit.
+
+  The directory ensures the chunk exists and routes to `ChunkProcess.prepare_transaction/3`.
+  """
+  def prepare_transaction(server \\ __MODULE__, transaction_id, attrs)
+      when is_binary(transaction_id) do
+    GenServer.call(server, {:prepare_transaction, transaction_id, attrs})
+  end
+
+  @doc "Applies the previously fenced intent on the chunk and releases the fence."
+  def commit_transaction(server \\ __MODULE__, transaction_id, attrs)
+      when is_binary(transaction_id) do
+    GenServer.call(server, {:commit_transaction, transaction_id, attrs})
+  end
+
+  @doc "Releases the chunk fence without applying. Idempotent."
+  def abort_transaction(server \\ __MODULE__, transaction_id, attrs)
+      when is_binary(transaction_id) do
+    GenServer.call(server, {:abort_transaction, transaction_id, attrs})
+  end
+
   @doc "Returns the known chunk process table for CLI/debug inspection."
   def snapshot(server \\ __MODULE__) do
     GenServer.call(server, :snapshot)
@@ -212,6 +234,55 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
           {{:error, reason}, next_state} ->
             {:reply, {:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:prepare_transaction, transaction_id, attrs}, _from, state) do
+    case normalize_apply_intent_attrs(attrs) do
+      {:ok, attrs} ->
+        case ensure_chunk_in_state(state, attrs) do
+          {{:ok, chunk_pid}, next_state} ->
+            reply = ChunkProcess.prepare_transaction(chunk_pid, transaction_id, attrs)
+            {:reply, reply, next_state}
+
+          {{:error, reason}, next_state} ->
+            {:reply, {:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:commit_transaction, transaction_id, attrs}, _from, state) do
+    case normalize_chunk_key(attrs) do
+      {:ok, key} ->
+        case fetch_chunk_pid(state, key) do
+          {:ok, chunk_pid} ->
+            {:reply, ChunkProcess.commit_transaction(chunk_pid, transaction_id), state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:abort_transaction, transaction_id, attrs}, _from, state) do
+    case normalize_chunk_key(attrs) do
+      {:ok, key} ->
+        case fetch_chunk_pid(state, key) do
+          {:ok, chunk_pid} ->
+            {:reply, ChunkProcess.abort_transaction(chunk_pid, transaction_id), state}
+
+          {:error, :chunk_not_started} ->
+            {:reply, :ok, state}
         end
 
       {:error, reason} ->
@@ -555,6 +626,42 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   defp normalize_apply_intent_attrs(_attrs), do: {:error, :invalid_voxel_intent}
+
+  defp normalize_chunk_key(attrs) when is_map(attrs) do
+    with {:ok, logical_scene_id} <- fetch_logical_scene_id(attrs),
+         {:ok, chunk_coord} <- fetch_chunk_coord(attrs) do
+      {:ok, {logical_scene_id, chunk_coord}}
+    end
+  rescue
+    _exception in [ArgumentError, KeyError] -> {:error, :invalid_voxel_chunk_key}
+  end
+
+  defp normalize_chunk_key(_attrs), do: {:error, :invalid_voxel_chunk_key}
+
+  defp fetch_logical_scene_id(attrs) do
+    case Map.get(attrs, :logical_scene_id) do
+      value when is_integer(value) and value >= 0 -> {:ok, value}
+      _other -> {:error, :missing_logical_scene_id}
+    end
+  end
+
+  defp fetch_chunk_coord(attrs) do
+    case Map.get(attrs, :chunk_coord) || Map.get(attrs, :center_chunk) do
+      {x, y, z} when is_integer(x) and is_integer(y) and is_integer(z) -> {:ok, {x, y, z}}
+      [x, y, z] when is_integer(x) and is_integer(y) and is_integer(z) -> {:ok, {x, y, z}}
+      _other -> {:error, :missing_chunk_coord}
+    end
+  end
+
+  defp fetch_chunk_pid(state, {_logical_scene_id, _chunk_coord} = key) do
+    case Map.get(state.chunks, key) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :chunk_not_started}
+
+      _other ->
+        {:error, :chunk_not_started}
+    end
+  end
 
   defp normalize_source_handoff(handoff) when is_map(handoff) do
     old_lease = Map.fetch!(handoff, :old_lease)

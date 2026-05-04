@@ -11,8 +11,16 @@
   新旧租约、受影响区块范围、预热切片和当前迁移阶段。目标 Scene 预热时读取交接载荷；
   World 只在切换阶段改变路由并发布新的写入令牌。
 - `TransactionParticipant` 和 `BuildTransaction` 描述可恢复的跨区域工作。
-- `TransactionCoordinator` 拥有 World 侧内存版 `BuildTransaction` 状态机。它记录参与者准备确认，
-  并为每个 `transaction_id + decision_version` 记录唯一提交 / 放弃决策，不直接调用 Scene。
+- `TransactionCoordinator` 拥有 World 侧内存版 `BuildTransaction` 状态机。它记录参与者
+  准备确认，并为每个 `transaction_id + decision_version` 记录唯一提交 / 放弃决策。
+  调用方负责把 prepare/commit/abort 真的送到 Scene；coordinator 本身不做 RPC，只承担
+  状态机和幂等账本。
+- `TransactionExecutor` 是在 World 进程内驱动 `TransactionCoordinator` 的同步 dispatcher。
+  它逐 participant 调 Scene 侧 `BuildTransactionApplier.prepare/4`、把每个返回的
+  `:prepared` / `:failed` 转成 `prepare_ack`，然后按 coordinator 的最终状态再调
+  `commit/3` 或 `abort/3`，最后回写 `commit_decision` 或 `abort_decision`。
+  对已经决定的事务做 replay 时短路返回，不重复触发 Scene 侧动作。当前不做超时扫描，也
+  不在节点重启后恢复 in-flight 事务；这些与持久化 ledger 一起留给后续切片。
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
