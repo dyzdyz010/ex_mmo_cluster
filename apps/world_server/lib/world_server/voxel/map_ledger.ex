@@ -62,6 +62,16 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:mark_prewarmed, migration_id})
   end
 
+  @doc "Records one target Scene prewarm ACK for a planned migration slice."
+  def mark_slice_prewarmed(server \\ __MODULE__, migration_id, attrs) do
+    GenServer.call(server, {:mark_slice_prewarmed, migration_id, attrs})
+  end
+
+  @doc "Records one final catch-up ACK for a prewarmed migration slice."
+  def mark_slice_final_caught_up(server \\ __MODULE__, migration_id, attrs) do
+    GenServer.call(server, {:mark_slice_final_caught_up, migration_id, attrs})
+  end
+
   @doc "Cuts over a prewarmed migration by publishing the new lease and changing route owner."
   def cutover_migration(server \\ __MODULE__, migration_id) do
     GenServer.call(server, {:cutover_migration, migration_id})
@@ -193,6 +203,16 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, next_state}
   end
 
+  def handle_call({:mark_slice_prewarmed, migration_id, attrs}, _from, state) do
+    {reply, next_state} = mark_slice_prewarmed_in_state(state, migration_id, attrs)
+    {:reply, reply, next_state}
+  end
+
+  def handle_call({:mark_slice_final_caught_up, migration_id, attrs}, _from, state) do
+    {reply, next_state} = mark_slice_final_caught_up_in_state(state, migration_id, attrs)
+    {:reply, reply, next_state}
+  end
+
   def handle_call({:cutover_migration, migration_id}, _from, state) do
     {reply, next_state} = cutover_migration_in_state(state, migration_id)
     {:reply, reply, next_state}
@@ -302,7 +322,11 @@ defmodule WorldServer.Voxel.MapLedger do
     case begin_reply do
       {:ok, plan} ->
         with {:ok, _planned_plan, state} <- plan_all_slices_for_migrate(state, plan.migration_id),
+             {:ok, _acked_plan, state} <-
+               mark_all_slices_prewarmed_for_migrate(state, plan.migration_id),
              {:ok, _prewarmed_plan, state} <- mark_prewarmed_for_migrate(state, plan.migration_id),
+             {:ok, _caught_up_plan, state} <-
+               mark_all_slices_final_caught_up_for_migrate(state, plan.migration_id),
              {:ok, _cutover_plan, state} <- cutover_for_migrate(state, plan.migration_id),
              {:ok, completed_plan, state} <- complete_for_migrate(state, plan.migration_id) do
           {{:ok, completed_plan.new_lease}, state}
@@ -332,10 +356,71 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
+  defp mark_all_slices_prewarmed_for_migrate(state, migration_id) do
+    case fetch_migration(state, migration_id) do
+      {:ok, plan} ->
+        Enum.reduce_while(plan.planned_slices, {:ok, state, nil}, fn slice,
+                                                                     {:ok, acc_state, _last} ->
+          attrs = %{
+            slice_id: slice.slice_id,
+            scene_ref: plan.target_scene_instance_ref,
+            loaded_count: 0,
+            empty_count: 0,
+            max_chunk_version: 0
+          }
+
+          case mark_slice_prewarmed_in_state(acc_state, migration_id, attrs) do
+            {{:ok, next_plan, _slice}, next_state} -> {:cont, {:ok, next_state, next_plan}}
+            {{:error, reason}, next_state} -> {:halt, {:error, reason, next_state}}
+          end
+        end)
+        |> case do
+          {:ok, next_state, nil} -> {:ok, plan, next_state}
+          {:ok, next_state, next_plan} -> {:ok, next_plan, next_state}
+          {:error, reason, next_state} -> {:error, reason, next_state}
+        end
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
   defp mark_prewarmed_for_migrate(state, migration_id) do
     case mark_prewarmed_in_state(state, migration_id) do
       {{:ok, plan}, next_state} -> {:ok, plan, next_state}
       {{:error, reason}, next_state} -> {:error, reason, next_state}
+    end
+  end
+
+  defp mark_all_slices_final_caught_up_for_migrate(state, migration_id) do
+    case fetch_migration(state, migration_id) do
+      {:ok, plan} ->
+        Enum.reduce_while(plan.planned_slices, {:ok, state, nil}, fn slice,
+                                                                     {:ok, acc_state, _last} ->
+          attrs = %{
+            slice_id: slice.slice_id,
+            scene_ref: plan.target_scene_instance_ref,
+            loaded_count: 0,
+            empty_count: 0,
+            max_chunk_version: 0,
+            source_persisted_count: 0,
+            source_missing_count: 0,
+            source_error_count: 0
+          }
+
+          case mark_slice_final_caught_up_in_state(acc_state, migration_id, attrs) do
+            {{:ok, next_plan, _slice}, next_state} -> {:cont, {:ok, next_state, next_plan}}
+            {{:error, reason}, next_state} -> {:halt, {:error, reason, next_state}}
+          end
+        end)
+        |> case do
+          {:ok, next_state, nil} -> {:ok, plan, next_state}
+          {:ok, next_state, next_plan} -> {:ok, next_plan, next_state}
+          {:error, reason, next_state} -> {:error, reason, next_state}
+        end
+
+      {:error, reason} ->
+        {:error, reason, state}
     end
   end
 
@@ -428,6 +513,76 @@ defmodule WorldServer.Voxel.MapLedger do
       {:error, reason} -> {{:error, reason}, state}
     end
   end
+
+  defp mark_slice_prewarmed_in_state(state, migration_id, attrs) do
+    now_ms = now_ms()
+
+    with {:ok, plan} <- fetch_migration(state, migration_id),
+         {:ok, attrs} <- put_ack_time(attrs, now_ms),
+         {:ok, next_plan, slice} <- MigrationPlan.mark_slice_prewarmed(plan, attrs, now_ms) do
+      next_state = put_in(state.migrations[migration_id], next_plan)
+
+      CliObserve.emit("voxel_migration_slice_prewarmed", fn ->
+        %{
+          migration_id: next_plan.migration_id,
+          logical_scene_id: next_plan.logical_scene_id,
+          region_id: next_plan.region_id,
+          state: next_plan.state,
+          source_scene_instance_ref: next_plan.source_scene_instance_ref,
+          target_scene_instance_ref: next_plan.target_scene_instance_ref,
+          slice: MigrationPlan.slice_summary(slice),
+          prewarm_ack_count: map_size(next_plan.prewarm_acks),
+          total_slices: next_plan.total_slices
+        }
+      end)
+
+      {{:ok, next_plan, slice}, next_state}
+    else
+      {:error, reason} -> {{:error, reason}, state}
+    end
+  end
+
+  defp mark_slice_final_caught_up_in_state(state, migration_id, attrs) do
+    now_ms = now_ms()
+
+    with {:ok, plan} <- fetch_migration(state, migration_id),
+         {:ok, attrs} <- put_final_catchup_ack_time(attrs, now_ms),
+         {:ok, next_plan, slice} <-
+           MigrationPlan.mark_slice_final_caught_up(plan, attrs, now_ms) do
+      next_state = put_in(state.migrations[migration_id], next_plan)
+
+      CliObserve.emit("voxel_migration_slice_final_caught_up", fn ->
+        %{
+          migration_id: next_plan.migration_id,
+          logical_scene_id: next_plan.logical_scene_id,
+          region_id: next_plan.region_id,
+          state: next_plan.state,
+          source_scene_instance_ref: next_plan.source_scene_instance_ref,
+          target_scene_instance_ref: next_plan.target_scene_instance_ref,
+          slice: MigrationPlan.slice_summary(slice),
+          final_catchup_ack_count: map_size(next_plan.final_catchup_acks),
+          total_slices: next_plan.total_slices
+        }
+      end)
+
+      {{:ok, next_plan, slice}, next_state}
+    else
+      {:error, reason} -> {{:error, reason}, state}
+    end
+  end
+
+  defp put_ack_time(attrs, now_ms) when is_map(attrs) do
+    {:ok, Map.put(attrs, :acked_at_ms, Map.get(attrs, :acked_at_ms, now_ms))}
+  end
+
+  defp put_ack_time(_attrs, _now_ms), do: {:error, :invalid_migration_slice_ack}
+
+  defp put_final_catchup_ack_time(attrs, now_ms) when is_map(attrs) do
+    {:ok, Map.put(attrs, :acked_at_ms, Map.get(attrs, :acked_at_ms, now_ms))}
+  end
+
+  defp put_final_catchup_ack_time(_attrs, _now_ms),
+    do: {:error, :invalid_migration_final_catchup_ack}
 
   defp mark_prewarmed_in_state(state, migration_id) do
     with {:ok, plan} <- fetch_migration(state, migration_id),
@@ -661,6 +816,8 @@ defmodule WorldServer.Voxel.MapLedger do
         max: coord_list(handoff.affected_chunk_bounds.max)
       },
       planned_slices: Enum.map(handoff.planned_slices, &MigrationPlan.slice_summary/1),
+      prewarm_ack_count: map_size(Map.get(handoff, :prewarm_acks, %{})),
+      final_catchup_ack_count: map_size(Map.get(handoff, :final_catchup_acks, %{})),
       next_slice_index: handoff.next_slice_index,
       total_slices: handoff.total_slices
     }

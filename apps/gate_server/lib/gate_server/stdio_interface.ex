@@ -221,7 +221,12 @@ defmodule GateServer.StdioInterface do
           cid: Map.get(state, :cid),
           auth_username: Map.get(state, :auth_username),
           scene_ref: inspect(Map.get(state, :scene_ref)),
-          udp_attached?: not is_nil(Map.get(state, :udp_peer))
+          udp_attached?: not is_nil(Map.get(state, :udp_peer)),
+          voxel_subscription_count: state |> Map.get(:voxel_subscriptions, %{}) |> map_size(),
+          voxel_subscriptions:
+            state
+            |> Map.get(:voxel_subscriptions, %{})
+            |> subscription_summaries()
         }
       end)
     catch
@@ -244,13 +249,31 @@ defmodule GateServer.StdioInterface do
         voxel_subscriptions:
           state
           |> Map.get(:voxel_subscriptions, %{})
-          |> Map.keys()
-          |> Enum.map(&inspect/1)
+          |> subscription_summaries()
       }
     end)
   catch
     :exit, _reason -> []
   end
+
+  defp subscription_summaries(subscriptions) when is_map(subscriptions) do
+    subscriptions
+    |> Map.values()
+    |> Enum.map(fn subscription ->
+      %{
+        logical_scene_id: Map.get(subscription, :logical_scene_id),
+        chunk_coord: Map.get(subscription, :chunk_coord),
+        region_id: Map.get(subscription, :region_id),
+        lease_id: Map.get(subscription, :lease_id),
+        owner_scene_instance_ref: Map.get(subscription, :owner_scene_instance_ref),
+        owner_epoch: Map.get(subscription, :owner_epoch),
+        scene_node: inspect(Map.get(subscription, :scene_node)),
+        request_id: Map.get(subscription, :request_id)
+      }
+    end)
+  end
+
+  defp subscription_summaries(_subscriptions), do: []
 
   defp world_voxel_snapshot do
     safe_snapshot(WorldServer.Voxel.MapLedger)

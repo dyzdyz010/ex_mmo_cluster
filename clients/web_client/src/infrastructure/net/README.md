@@ -7,16 +7,17 @@
 
 结构：
 
-- `opcodes.ts` / `gateProtocol.ts` — 纯 codec，把线格式映射到 `@domain/movement/types` 里的契约类型。
+- `opcodes.ts` / `gateProtocol.ts` — movement 纯 codec，把线格式映射到 `@domain/movement/types` 里的契约类型。
+- `voxelProtocol.ts` — server-authoritative voxel S1 codec，负责编码 `ChunkSubscribe` / `VoxelImpactIntent` / `VoxelDebugProbe`，解码 `ChunkSnapshot` / `VoxelIntentResult` / `VoxelDebugProbe`。
 - `simulatedMovementTransport.ts` — 离线仿真适配器，本地输入按顺序立即合成 ack；不再生成装饰性远端 actor，避免把本地 fallback 误看成真实 NPC/AOI。
-- `serverMovementTransport.ts` — 真实 WebSocket 适配器，握手失败或 ready 前断开会内嵌回退到 simulated-local，并把原因写进 observe/HUD/CLI。
+- `serverMovementTransport.ts` — 真实 WebSocket 适配器，握手失败或 ready 前断开会内嵌回退到 simulated-local，并把原因写进 observe/HUD/CLI；同一个 socket 也提供薄 voxel transport port，供网页体素同步层复用。
 
 当前阶段：
 
 - movement 已接入真实浏览器 transport：`auth_server /ingame/ws` -> `AuthServerWeb.GameWebSocket` -> `GateServer.WsConnection`。
 - `clients/web_client` 默认优先尝试 `server-ws`；可通过 `VITE_MOVEMENT_TRANSPORT=simulated` 强制使用 simulated-local。
 - movement 协议当前会解码 `MovementAck` / `PlayerMove` 的 `movement_mode`，并把服务端坐标 `(x,y,z)` 转成浏览器坐标 `(x,z,y)`；跳跃的竖直轴在浏览器中是 `Vector3.y`。
-- 体素协议 `0x60..0x6F` 仍主要保留 opcode 与接口边界，真实 chunk subscribe / snapshot / delta / edit ack 流还未接到服务端。
+- 体素协议 `0x60..0x6F` 已接入 S1：`ChunkSubscribe -> ChunkSnapshot`、`VoxelImpactIntent -> VoxelIntentResult` 和 `VoxelDebugProbe`。`ChunkDelta`、break intent、prefab intent 仍是后续实现。
   当前 canonical 设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`：
   `SceneServer.Voxel.*` 持有 hot chunk truth，voxel payload 统一 big-endian，
   server v1 使用 `MicroPerMacro=8` 和 512-bit refined occupancy。玩家侧 movement/skill

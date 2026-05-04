@@ -17,17 +17,25 @@
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
   标记预热、切换、完成迁移，并把写入令牌校验结果写入结构化日志，供 CLI 和测试检查。
+- `DevSeed` 是本地网页 / CLI 冒烟使用的幂等入口。它只准备默认区域、租约和 DataService 写入令牌，
+  不保存区块真相，也不绕过 Scene；浏览器随后仍要通过 Gate 订阅和提交 intent。已有区域再次 seed
+  时会续发开发租约，避免网页长时间运行或刷新后出现“能订阅旧快照、但写入被租约过期拒绝”的假健康状态。
 
 `route_chunk_with_lease/3` 是 Gate 向 Scene 请求区块快照前使用的控制面交接函数。它让客户端路径
 先对齐 World 权威，同时仍然把完整区块真相留在 Scene。
 
 `begin_migration/4`, `plan_next_migration_slice/2`, `migration_handoff/2`,
-`mark_prewarmed/2`, `cutover_migration/2` 和 `complete_migration/2` 是可观测迁移 API。
+`mark_slice_prewarmed/3`, `mark_prewarmed/2`, `mark_slice_final_caught_up/3`,
+`cutover_migration/2` 和 `complete_migration/2` 是可观测迁移 API。
 `migration_handoff/2` 返回给目标 Scene 的交接载荷，不改变 World 状态；载荷包含
 `migration_id`、逻辑场景和区域 id、当前迁移阶段、源 / 目标 Scene 引用、旧租约、待切换的
 新租约、写入令牌版本、受影响区块边界、已规划的预热切片、下一切片索引和总切片数。
-`mark_prewarmed/2` 只在全部预热切片已经规划后成功；目标 Scene 仍要通过自己的预热适配器
-读取 DataService 快照并准备热区块，World 不直接搬运区块内容。
+`mark_prewarmed/2` 只在全部预热切片已经规划、并通过 `mark_slice_prewarmed/3` 收到目标 Scene
+逐切片 ACK 后成功；目标 Scene 仍要通过自己的预热适配器读取 DataService 快照并准备热区块，
+World 不直接搬运区块内容。
+`cutover_migration/2` 还要求每个切片都通过 `mark_slice_final_caught_up/3` 提交最终追平 ACK；
+最终追平指源 Scene 已把切换前最后一版热区块写入 DataService，目标 Scene 已重新加载这些
+最新快照。这样预热完成到租约切换之间的写入不会只留在旧 owner 内存里。
 `migrate_region/4` 保持旧调用方兼容，但内部走同一条“建计划、预热、切换、完成”路径，并保留
 已完成的迁移快照用于观察。
 

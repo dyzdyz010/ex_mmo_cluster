@@ -1,21 +1,24 @@
 # ex_mmo Voxel Web Client
 
-一个浏览器端客户端验证面，与 `clients/bevy_client/` 并列。当前阶段的主目标不是 voxel 联机，而是：
+一个浏览器端客户端验证面，与 `clients/bevy_client/` 并列。当前阶段的主目标是把
+movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 
 1. **验证 movement sync**：浏览器直接接 `auth_server -> gate_server` 的 browser bridge，确认 prediction / ack / reconcile / remote snapshot 没问题
-2. **保留离线 voxel 世界**：把体素世界作为本地承载层和调试面，不参与当前阶段的服务端同步
-3. **保留后续扩展位**：等 movement 路径稳定后，再接 `SceneServer.Voxel.*` 服务端权威体素链路
+2. **验证 server-authoritative voxel S1**：复用同一个 `/ingame/ws`，执行 `ChunkSubscribe -> ChunkSnapshot`、`VoxelImpactIntent -> VoxelIntentResult`，并把权威 chunk 应用到 `WorldStore`
+3. **保留离线 voxel 模式**：`VITE_VOXEL_SYNC=offline` 可回到纯本地 world，作为渲染 / prefab / mesher 调试面
 
-> 定位：优先服务于 movement 联调与回归验证的浏览器客户端。当前不把 voxel online 作为交付目标。
+> 定位：网页客户端必须同时能被用户操作、HUD 观察、`window.__voxelCli` 驱动和 observe 日志回放。
 
 ## 当前状态修正
 
 当前仓库里的 `web_client` 已不再只是 W-A 占位：
 
 1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
-2. voxel 当前明确保持 **offline-local**：中心准星命中面选中、本地左键破坏 / 右键放置（`F/G` 仍可用），底部 hotbar dock 可点击并支持滚轮切换材质 / builtin prefab，但不走服务端同步。
+2. voxel 默认进入 **server-authoritative**：启动后会调用 dev seed 准备 World lease，订阅中心 chunk，把服务端 `ChunkSnapshot` 整体替换到本地 truth；右键 / CLI 放置会提交 `VoxelImpactIntent`，不直接改本地真相。`VITE_VOXEL_SYNC=offline` 才使用纯本地编辑。
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
+   - 右上角 `Server Voxel` 面板可直接触发 `voxel_sync` / `voxel_probe` / `chunk_versions` /
+     `voxel_subscribe` / `voxel_impact` / `Rebind`，用于不打开控制台的网页验收
    - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
    - `window.__voxelObserve.recent()` / `snapshot()` 读取结构化日志
 4. 已有真实 browser movement bridge：
@@ -31,7 +34,7 @@
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 现在故意保持离线，本阶段不接 `SceneServer.Voxel.*` 的 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult`。
+2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / VoxelIntentResult / VoxelDebugProbe` 首版；`ChunkDelta`、break intent、prefab intent 和多 chunk 自适应订阅仍未完成。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
@@ -47,12 +50,12 @@
 
 ## 技术栈
 
-| 模块 | 选型                  | 理由                                           |
-| ---- | --------------------- | ---------------------------------------------- |
-| 构建 | Vite 8 + TypeScript 5 | 热更新秒级，原生 ES module                     |
-| 渲染 | three.js 0.184        | WebGPU 优先，WebGL 可回退，voxel 生态成熟      |
+| 模块 | 选型                  | 理由                                                  |
+| ---- | --------------------- | ----------------------------------------------------- |
+| 构建 | Vite 8 + TypeScript 5 | 热更新秒级，原生 ES module                            |
+| 渲染 | three.js 0.184        | WebGPU 优先，WebGL 可回退，voxel 生态成熟             |
 | 网络 | WebSocket + DataView  | 对齐服务端 `{packet, 4}` 长度前缀 + big-endian 二进制 |
-| 语言 | TypeScript strict     | 类型结构对齐 UE USTRUCT                        |
+| 语言 | TypeScript strict     | 类型结构对齐 UE USTRUCT                               |
 
 浏览器目标：Chromium 最新两个版本（调试用，不做兼容下探）。
 
@@ -86,17 +89,17 @@ clients/web_client/
 
 ## 与 UE test1 的映射约定
 
-| UE 符号                         | Web 符号                                   | 注意                                                      |
-| ------------------------------- | ------------------------------------------ | --------------------------------------------------------- |
-| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；server v1 canonical 也为 8 |
-| `FChunkCoord`                   | `FChunkCoord` 接口                         | int32 语义，允许负象限                                    |
+| UE 符号                         | Web 符号                                   | 注意                                                                                    |
+| ------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `VoxelConstants::MicroPerMacro` | `VoxelConstants.MicroPerMacro`             | 浏览器本地为 8；server v1 canonical 也为 8                                              |
+| `FChunkCoord`                   | `FChunkCoord` 接口                         | int32 语义，允许负象限                                                                  |
 | `FNormalBlockData`              | `FNormalBlockData` 接口                    | 当前本地接口沿用 12 字节基础字段；server v1 wire 追加 attribute/tag refs 后固定 20 字节 |
-| `FMacroCellHeader`              | `FMacroCellHeader` 接口                    | 线格式 7 字节：u8+u16+u16+u16                             |
-| `EVoxelCellMode`                | `EVoxelCellMode` enum                      | Empty=0 / SolidBlock=1 / Refined=2                        |
-| `EVoxelBlockStateFlags`         | `EVoxelBlockStateFlags` enum               | Burning/Frozen/Wet/… 位标志                               |
-| `EVoxelRotation`                | `EVoxelRotation` enum                      | Rot0/90/180/270                                           |
-| `FChunkStorageData`             | `FChunkStorageData` + `ChunkStorage` class | 结构 + 写入 API 解耦                                      |
-| `VoxelDirtyFlags`               | `VoxelDirtyFlags`                          | Storage / Mesh / Collision                                |
+| `FMacroCellHeader`              | `FMacroCellHeader` 接口                    | 线格式 7 字节：u8+u16+u16+u16                                                           |
+| `EVoxelCellMode`                | `EVoxelCellMode` enum                      | Empty=0 / SolidBlock=1 / Refined=2                                                      |
+| `EVoxelBlockStateFlags`         | `EVoxelBlockStateFlags` enum               | Burning/Frozen/Wet/… 位标志                                                             |
+| `EVoxelRotation`                | `EVoxelRotation` enum                      | Rot0/90/180/270                                                                         |
+| `FChunkStorageData`             | `FChunkStorageData` + `ChunkStorage` class | 结构 + 写入 API 解耦                                                                    |
+| `VoxelDirtyFlags`               | `VoxelDirtyFlags`                          | Storage / Mesh / Collision                                                              |
 
 UE `Public/Voxel/*` 是空间模型和真相层参考，不再作为本仓库服务端 wire contract 的唯一来源。
 服务端权威协议以 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` 为准；
@@ -109,7 +112,7 @@ UE `Public/Voxel/*` 是空间模型和真相层参考，不再作为本仓库服
 | **W-A 类型与脚手架** ✅ | UE-A 类型基线                 | `src/voxel/core`、`src/voxel/storage/types.ts`、`ChunkStorage` 写入 API、three.js 空场景             |
 | **W-B Chunk Mesher** 🚧 | UE-B Mesher 首版              | 当前已完成 exposed-face chunk mesher + `BufferGeometry` 重建；greedy/worker 化后续再补               |
 | **W-C 本地编辑** 🚧     | UE-C1 数据流                  | 当前已完成准星选中 + `trySetNormalBlock` / `clearCell` + 高亮预览；撤销/重做后续再补                 |
-| **W-D 网络接入** ⏳     | UE 未覆盖（本客户端独有价值） | 当前只验 movement browser bridge；voxel 保持 offline-local，不接服务端                               |
+| **W-D 网络接入** 🚧     | UE 未覆盖（本客户端独有价值） | movement browser bridge 已在线；voxel 已接 S1 subscribe/snapshot/impact/result，delta/prefab 后续补  |
 | **W-E 视觉系统** 🚧     | UE-C2 视觉系统                | 当前已完成 `MaterialId + StateFlags -> display color` 首版解析；完整 registry / overlay 资产后续再补 |
 | **W-F Prefab**          | UE-E Prefab                   | `PrefabCreate/Place` 协议；运行时 instancing 缓存；共享 / 私有可见性                                 |
 | **W-G 性能**            | UE-F 性能                     | Mesher 迁至 Web Worker；InstancedMesh / GPU instancing；订阅半径自适应                               |
@@ -138,7 +141,7 @@ npm run dev
 
 默认情况下，浏览器客户端会采用：
 
-- `voxel_sync=offline-local`
+- `voxel_sync=server-authoritative`
 - `renderer=webgpu`，优先尝试 `WebGPURenderer` / WebGPU backend，不可用时回退 WebGL
 - movement 优先尝试真实 **server-backed movement transport**
 
@@ -152,13 +155,20 @@ npm run dev
 - 页面跑在没有 `/ingame` 代理的静态预览地址上
 - WebSocket bridge / enter-scene 失败
 
-运行时会自动回退到 `simulated-local`，并在 HUD、`transport` CLI 快照以及 `voxel_observe` 日志里写出回退原因。  
-注意这个回退只影响 **movement transport**，不会改变 `voxel_sync=offline-local`。
+movement 运行时会自动回退到 `simulated-local`，并在 HUD、`transport` CLI 快照以及
+`voxel_observe` 日志里写出回退原因。voxel 在 server-authoritative 模式下不会伪造权威写入；
+若需要纯本地体素调试，请显式设置 `VITE_VOXEL_SYNC=offline`。
 
 如果你只想跑纯本地 movement demo，可显式覆盖：
 
 ```bash
 VITE_MOVEMENT_TRANSPORT=simulated npm run dev
+```
+
+如果你只想跑纯本地 voxel demo，可显式覆盖：
+
+```bash
+VITE_VOXEL_SYNC=offline npm run dev
 ```
 
 如果需要强制渲染后端，可用 query 参数或环境变量：
@@ -203,18 +213,19 @@ npm run preview # 预览 dist
 
 当前默认运行时会做四件事：
 
-1. 生成一个多 Chunk 的浏览器内置离线世界
+1. 生成一个多 Chunk 的浏览器内置预览世界，并在服务端 snapshot 到达后替换对应权威 chunk
 2. 用真正的 chunk mesher 生成 `BufferGeometry`
-3. 默认优先启动真实 server-backed movement；若真实 backend 在 ready 前失败，则自动回退到本地 movement sync demo（本地预测 + ack 对账）
+3. 默认优先启动真实 server-backed movement 和 server-authoritative voxel；movement 若在 ready 前失败会自动回退到本地 movement sync demo
 4. 安装 HUD + CLI + observe 调试面
 
 看到以下即表示 W-A 通过：
 
 - HUD 持续刷新 chunk / player / reconcile / edit 统计
-- HUD / `snapshot` / `transport` 明确显示 `voxel_sync=offline-local`
+- HUD / `snapshot` / `transport` 明确显示 `voxel_sync=server-authoritative`，并能看到 `seedState`、`subscriptionState`、`lastSnapshot` 或 `lastError`
 - 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
-- 左键 / 右键或 `F` / `G` 可以对准星命中面执行破坏 / 邻接放置；选中 prefab 时右键 / `F` 放置 prefab
+- `window.__voxelCli.run("voxel_subscribe 0 0 0 0")` 能主动订阅 chunk，`voxel_probe` 能读取服务端 voxel transport 调试串，`voxel_probe voxel_rebind 1 all` 能触发 Gate 订阅重绑定
+- 右键或 `F` 对准星邻接格提交 `VoxelImpactIntent`；服务端 snapshot 回推后，`cell` / `chunks` / HUD 能读到权威变化。离线模式才允许本地 break / prefab place。
 - 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
 - 本地 fallback 初始出生点会从内置地形表面求角色中心高度，不再使用空中硬编码高度
@@ -232,6 +243,12 @@ window.__voxelCli?.run("help");
 window.__voxelCli?.run("snapshot");
 window.__voxelCli?.run("renderer");
 window.__voxelCli?.run("chunks 8");
+window.__voxelCli?.run("voxel_sync");
+window.__voxelCli?.run("voxel_probe");
+window.__voxelCli?.run("voxel_probe voxel_rebind 1 all");
+window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
+window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
+window.__voxelCli?.run("chunk_versions");
 window.__voxelCli?.run("cell 0 1 0");
 window.__voxelCli?.run("micro_cell 0 1 0 1 2 3");
 window.__voxelCli?.run("select_material wood");
@@ -274,7 +291,7 @@ window.__voxelObserve?.snapshot();
 
 调试原则：
 
-1. 先看 `snapshot / chunks / cell / reconcile_stats / edit_stats`
+1. 先看 `snapshot / voxel_sync / chunks / chunk_versions / cell / reconcile_stats / edit_stats`
 2. 再看 `renderer / transport` 与 `voxel_observe` 日志确认渲染后端、连接、输入、权威 ack、重建与错误路径
 3. 对 prefab snap，优先看 `prefab_boundary / prefab_snap_preview / prefab_place_snap`
    返回的 `anchorMicroCoord / affectedMacroCount / incomingOccupiedSlots / overlapSlots`
@@ -284,8 +301,8 @@ window.__voxelObserve?.snapshot();
 
 当前建议先看两条正交状态：
 
-1. `voxel_sync=offline-local`：当前固定成立，表示体素世界只在浏览器本地运行
-2. `movement_transport=...`：当前真正需要验收的网络面
+1. `voxel_sync=server-authoritative`：体素真相来自服务端；`seedState` / `subscriptionState` / `lastError` 用于定位订阅与 dev seed 问题
+2. `movement_transport=...`：movement 网络面，独立判断预测 / ack / reconcile
 
 movement transport 再拆成三类判断：
 
@@ -298,9 +315,8 @@ movement transport 再拆成三类判断：
 - 镜头：第三人称跟随镜头；左键按住拖拽可旋转视角；`Ctrl+滚轮` 缩放
 - `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
 - `Space`：跳跃；HUD / CLI trace 会记录 `jump_pressed`、`movement_flags`、`player_mode` 和 Y 轴变化，渲染层会把 airborne offset 加到地表显示高度上
-- 左键 / `G`：破坏准星命中面的当前方块
-- 右键 / `F`：在准星命中面放置当前 hotbar 项；如果当前 hotbar 是 prefab，则优先执行
-  socket-free micro boundary snap，失败时再回退到宏格邻接放置
+- 默认 server-authoritative 模式：右键 / `F` 在准星邻接格提交服务端 `VoxelImpactIntent`；break / prefab intent 尚未接入服务端
+- `VITE_VOXEL_SYNC=offline` 模式：左键 / `G` 破坏本地方块；右键 / `F` 放置当前 hotbar 项，prefab 会优先执行 socket-free micro boundary snap
 - 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`，`5/6/7` 选择 `builtin_sphere / builtin_cylinder / builtin_stairs`
 
 ## Smoke / 验收脚本

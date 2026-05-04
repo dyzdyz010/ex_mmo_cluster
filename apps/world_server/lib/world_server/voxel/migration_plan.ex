@@ -42,7 +42,9 @@ defmodule WorldServer.Voxel.MigrationPlan do
     slice_width: 1,
     next_slice_index: 0,
     total_slices: 0,
-    planned_slices: []
+    planned_slices: [],
+    prewarm_acks: %{},
+    final_catchup_acks: %{}
   ]
 
   @type chunk_coord :: {integer(), integer(), integer()}
@@ -52,7 +54,9 @@ defmodule WorldServer.Voxel.MigrationPlan do
           required(:index) => non_neg_integer(),
           required(:bounds_chunk_min) => chunk_coord(),
           required(:bounds_chunk_max) => chunk_coord(),
-          required(:state) => :planned
+          required(:state) => :planned | :prewarmed,
+          optional(:prewarm_ack) => map(),
+          optional(:final_catchup_ack) => map()
         }
 
   @type t :: %__MODULE__{
@@ -76,7 +80,9 @@ defmodule WorldServer.Voxel.MigrationPlan do
           slice_width: pos_integer(),
           next_slice_index: non_neg_integer(),
           total_slices: non_neg_integer(),
-          planned_slices: [slice()]
+          planned_slices: [slice()],
+          prewarm_acks: %{optional(binary()) => map()},
+          final_catchup_acks: %{optional(binary()) => map()}
         }
 
   @doc "Builds a normalized migration plan."
@@ -131,12 +137,64 @@ defmodule WorldServer.Voxel.MigrationPlan do
 
   def plan_next_slice(%__MODULE__{}, _now_ms), do: {:error, :migration_not_prewarming}
 
+  @doc "Records one target Scene prewarm ACK for a planned slice."
+  def mark_slice_prewarmed(%__MODULE__{state: :prewarming} = plan, attrs, now_ms) do
+    with {:ok, ack} <- normalize_slice_ack(plan, attrs),
+         {:ok, slice} <- fetch_planned_slice(plan, ack.slice_id) do
+      next_slice = Map.merge(slice, %{state: :prewarmed, prewarm_ack: ack})
+
+      next_plan = %{
+        plan
+        | planned_slices: replace_slice(plan.planned_slices, next_slice),
+          prewarm_acks: Map.put(plan.prewarm_acks, ack.slice_id, ack),
+          updated_at_ms: now_ms
+      }
+
+      {:ok, next_plan, next_slice}
+    end
+  end
+
+  def mark_slice_prewarmed(%__MODULE__{}, _attrs, _now_ms),
+    do: {:error, :migration_not_prewarming}
+
+  @doc """
+  Records one final catch-up ACK for a prewarmed slice.
+
+  A final catch-up ACK means the source Scene has drained its latest hot chunk
+  state into DataService and the target Scene has loaded that latest persisted
+  snapshot for this slice. World requires one ACK per planned slice before
+  cutover can publish the new write lease.
+  """
+  def mark_slice_final_caught_up(%__MODULE__{state: :prewarmed} = plan, attrs, now_ms) do
+    with {:ok, ack} <- normalize_slice_final_catchup_ack(plan, attrs),
+         {:ok, slice} <- fetch_planned_slice(plan, ack.slice_id) do
+      next_slice = Map.merge(slice, %{final_catchup_ack: ack})
+
+      next_plan = %{
+        plan
+        | planned_slices: replace_slice(plan.planned_slices, next_slice),
+          final_catchup_acks: Map.put(plan.final_catchup_acks, ack.slice_id, ack),
+          updated_at_ms: now_ms
+      }
+
+      {:ok, next_plan, next_slice}
+    end
+  end
+
+  def mark_slice_final_caught_up(%__MODULE__{}, _attrs, _now_ms),
+    do: {:error, :migration_not_prewarmed}
+
   @doc "Marks the migration as prewarmed after Scene reports readiness."
   def mark_prewarmed(%__MODULE__{state: :prewarming} = plan, now_ms) do
-    if all_slices_planned?(plan) do
-      {:ok, %{plan | state: :prewarmed, prewarmed_at_ms: now_ms, updated_at_ms: now_ms}}
-    else
-      {:error, :migration_prewarm_incomplete}
+    cond do
+      not all_slices_planned?(plan) ->
+        {:error, :migration_prewarm_incomplete}
+
+      not all_slices_prewarmed?(plan) ->
+        {:error, :migration_prewarm_ack_incomplete}
+
+      true ->
+        {:ok, %{plan | state: :prewarmed, prewarmed_at_ms: now_ms, updated_at_ms: now_ms}}
     end
   end
 
@@ -145,7 +203,11 @@ defmodule WorldServer.Voxel.MigrationPlan do
 
   @doc "Marks the plan as cut over after World has published the new write lease."
   def cutover(%__MODULE__{state: :prewarmed} = plan, now_ms) do
-    {:ok, %{plan | state: :cutover, cutover_at_ms: now_ms, updated_at_ms: now_ms}}
+    if all_slices_final_caught_up?(plan) do
+      {:ok, %{plan | state: :cutover, cutover_at_ms: now_ms, updated_at_ms: now_ms}}
+    else
+      {:error, :migration_final_catchup_ack_incomplete}
+    end
   end
 
   def cutover(%__MODULE__{state: :cutover} = plan, _now_ms), do: {:ok, plan}
@@ -176,6 +238,8 @@ defmodule WorldServer.Voxel.MigrationPlan do
         max: plan.affected_chunk_max
       },
       planned_slices: plan.planned_slices,
+      prewarm_acks: plan.prewarm_acks,
+      final_catchup_acks: plan.final_catchup_acks,
       next_slice_index: plan.next_slice_index,
       total_slices: plan.total_slices
     }
@@ -201,19 +265,25 @@ defmodule WorldServer.Voxel.MigrationPlan do
       slice_width: plan.slice_width,
       next_slice_index: plan.next_slice_index,
       total_slices: plan.total_slices,
-      planned_slices: Enum.map(plan.planned_slices, &slice_summary/1)
+      planned_slices: Enum.map(plan.planned_slices, &slice_summary/1),
+      prewarm_ack_count: map_size(plan.prewarm_acks),
+      final_catchup_ack_count: map_size(plan.final_catchup_acks)
     }
   end
 
   @doc "Returns a compact summary for a planned prewarm slice."
   def slice_summary(slice) when is_map(slice) do
-    %{
+    summary = %{
       slice_id: Map.fetch!(slice, :slice_id),
       index: Map.fetch!(slice, :index),
       state: Map.fetch!(slice, :state),
       bounds_chunk_min: coord_list(Map.fetch!(slice, :bounds_chunk_min)),
       bounds_chunk_max: coord_list(Map.fetch!(slice, :bounds_chunk_max))
     }
+
+    summary
+    |> maybe_put_ack(:prewarm_ack, Map.get(slice, :prewarm_ack))
+    |> maybe_put_ack(:final_catchup_ack, Map.get(slice, :final_catchup_ack))
   end
 
   defp build_slice(plan, index) do
@@ -263,6 +333,109 @@ defmodule WorldServer.Voxel.MigrationPlan do
     plan.next_slice_index >= plan.total_slices and
       length(plan.planned_slices) >= plan.total_slices
   end
+
+  defp all_slices_prewarmed?(plan) do
+    length(plan.planned_slices) == plan.total_slices and
+      Enum.all?(plan.planned_slices, &(&1.state == :prewarmed))
+  end
+
+  defp all_slices_final_caught_up?(plan) do
+    length(plan.planned_slices) == plan.total_slices and
+      Enum.all?(plan.planned_slices, &Map.has_key?(&1, :final_catchup_ack))
+  end
+
+  defp normalize_slice_ack(plan, attrs) when is_map(attrs) do
+    slice_id = Map.get(attrs, :slice_id)
+    scene_ref = Map.get(attrs, :scene_ref, plan.target_scene_instance_ref)
+
+    cond do
+      not is_binary(slice_id) ->
+        {:error, :invalid_migration_slice_ack}
+
+      scene_ref != plan.target_scene_instance_ref ->
+        {:error, :migration_slice_ack_scene_mismatch}
+
+      true ->
+        {:ok,
+         %{
+           slice_id: slice_id,
+           scene_ref: scene_ref,
+           loaded_count: non_negative_int(Map.get(attrs, :loaded_count, 0)),
+           empty_count: non_negative_int(Map.get(attrs, :empty_count, 0)),
+           max_chunk_version: non_negative_int(Map.get(attrs, :max_chunk_version, 0)),
+           acked_at_ms: Map.get(attrs, :acked_at_ms)
+         }}
+    end
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_migration_slice_ack}
+  end
+
+  defp normalize_slice_ack(_plan, _attrs), do: {:error, :invalid_migration_slice_ack}
+
+  defp normalize_slice_final_catchup_ack(plan, attrs) when is_map(attrs) do
+    slice_id = Map.get(attrs, :slice_id)
+    scene_ref = Map.get(attrs, :scene_ref, plan.target_scene_instance_ref)
+
+    cond do
+      not is_binary(slice_id) ->
+        {:error, :invalid_migration_final_catchup_ack}
+
+      scene_ref != plan.target_scene_instance_ref ->
+        {:error, :migration_final_catchup_ack_scene_mismatch}
+
+      true ->
+        {:ok,
+         %{
+           slice_id: slice_id,
+           scene_ref: scene_ref,
+           loaded_count: non_negative_int(Map.get(attrs, :loaded_count, 0)),
+           empty_count: non_negative_int(Map.get(attrs, :empty_count, 0)),
+           max_chunk_version: non_negative_int(Map.get(attrs, :max_chunk_version, 0)),
+           source_persisted_count: non_negative_int(Map.get(attrs, :source_persisted_count, 0)),
+           source_missing_count: non_negative_int(Map.get(attrs, :source_missing_count, 0)),
+           source_error_count: non_negative_int(Map.get(attrs, :source_error_count, 0)),
+           acked_at_ms: Map.get(attrs, :acked_at_ms)
+         }}
+    end
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_migration_final_catchup_ack}
+  end
+
+  defp normalize_slice_final_catchup_ack(_plan, _attrs),
+    do: {:error, :invalid_migration_final_catchup_ack}
+
+  defp fetch_planned_slice(plan, slice_id) do
+    case Enum.find(plan.planned_slices, &(&1.slice_id == slice_id)) do
+      nil -> {:error, :unknown_migration_slice}
+      slice -> {:ok, slice}
+    end
+  end
+
+  defp replace_slice(slices, next_slice) do
+    Enum.map(slices, fn
+      %{slice_id: slice_id} when slice_id == next_slice.slice_id -> next_slice
+      slice -> slice
+    end)
+  end
+
+  defp non_negative_int(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative_int(_value), do: raise(ArgumentError, "expected non-negative integer")
+
+  defp ack_summary(ack) do
+    Map.take(ack, [
+      :scene_ref,
+      :loaded_count,
+      :empty_count,
+      :max_chunk_version,
+      :source_persisted_count,
+      :source_missing_count,
+      :source_error_count,
+      :acked_at_ms
+    ])
+  end
+
+  defp maybe_put_ack(summary, _key, nil), do: summary
+  defp maybe_put_ack(summary, key, ack), do: Map.put(summary, key, ack_summary(ack))
 
   defp axis_value({x, _y, _z}, :x), do: x
   defp axis_value({_x, y, _z}, :y), do: y

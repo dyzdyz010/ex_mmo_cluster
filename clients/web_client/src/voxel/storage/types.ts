@@ -23,6 +23,8 @@ export interface FNormalBlockData {
   health: number;
   temperatureDelta: number;
   moistureDelta: number;
+  attributeSetRef?: number;
+  tagSetRef?: number;
 }
 
 export interface FMacroCellHeader {
@@ -30,6 +32,8 @@ export interface FMacroCellHeader {
   payloadIndex: number;
   environmentIndex: number;
   flags: number;
+  cellVersion?: number;
+  cellHash?: number;
 }
 
 // UE 侧允许 EnvironmentIndex = MAX_uint16 表示未分配。
@@ -104,6 +108,7 @@ export interface FMacroEnvironmentSummary {
   currentTemperature: number;
   currentMoisture: number;
   fieldMask: number;
+  sourceHash?: number;
 }
 
 export interface FChunkStorageData {

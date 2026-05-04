@@ -20,7 +20,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     @impl true
     def init(attrs) do
-      {:ok, Map.merge(%{auth_server: nil, scene_server: nil, world_server: nil}, attrs)}
+      {:ok,
+       Map.merge(
+         %{auth_server: nil, scene_server: nil, scene_owner_nodes: %{}, world_server: nil},
+         attrs
+       )}
     end
 
     @impl true
@@ -36,6 +40,16 @@ defmodule GateServer.TcpConnectionProtocolTest do
     @impl true
     def handle_call(:scene_server, _from, state) do
       {:reply, state.scene_server, state}
+    end
+
+    @impl true
+    def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
+      scene_node =
+        Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
+          Map.get(state.scene_owner_nodes, :default) ||
+          state.scene_server
+
+      {:reply, scene_node, state}
     end
 
     @impl true

@@ -10,6 +10,7 @@ import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
 import type { PrefabBoundarySnapPreview, PrefabSocketSnapPreview } from "../../voxel/prefab";
 import type { SerializedWorldSnapshot } from "../../voxel/worldStore";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+import type { FChunkCoord, FMacroCoord } from "../../voxel/core/types";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
 import type { RemotePlayerController } from "../../app/controllers/remotePlayerController";
 import type { RenderOrchestrator } from "../../app/controllers/renderOrchestrator";
@@ -42,6 +43,13 @@ interface WorldStorageLike {
   setItem(key: string, value: string): void;
 }
 
+interface OnlineVoxelCliWorld extends VoxelWorldAdapter {
+  requestVoxelDebugProbe(command?: string): number | null;
+  subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf?: number): number | null;
+  unsubscribeVoxelChunk(chunk: FChunkCoord): number | null;
+  sendVoxelImpactMacro(coord: FMacroCoord, materialId: number): number | null;
+}
+
 export interface DevToolsDeps {
   logger: ObserveLog;
   world: VoxelWorldAdapter;
@@ -72,6 +80,21 @@ export class DevToolsCli implements CliCommandHandler {
         return this.ok(command, this.rendererText(), this.deps.render.getRendererDebugSnapshot());
       case "chunks":
         return this.cmdChunks(command, args);
+      case "voxel_sync":
+      case "voxel":
+        return this.ok(command, "voxel sync", this.deps.world.debugSnapshot());
+      case "voxel_probe":
+        return this.cmdVoxelProbe(command, args);
+      case "voxel_subscribe":
+        return this.cmdVoxelSubscribe(command, args);
+      case "voxel_unsubscribe":
+        return this.cmdVoxelUnsubscribe(command, args);
+      case "voxel_impact":
+        return this.cmdVoxelImpact(command, args);
+      case "chunk_versions":
+        return this.ok(command, "authoritative chunk versions", {
+          chunks: this.deps.world.store.authoritativeChunkSummaries(128),
+        });
       case "cell":
         return this.cmdCell(command, args);
       case "micro_cell":
@@ -174,6 +197,78 @@ export class DevToolsCli implements CliCommandHandler {
     const limit = Number.parseInt(args[0] ?? "12", 10);
     const chunks = this.deps.world.store.chunkSummaries(Number.isFinite(limit) ? limit : 12);
     return this.ok(command, `chunks=${chunks.length}`, chunks);
+  }
+
+  private cmdVoxelProbe(command: string, args: string[]): CliCommandResult {
+    const world = this.onlineVoxelWorld();
+    if (!world) return { ok: false, command, text: "voxel transport unavailable" };
+    const requestId = world.requestVoxelDebugProbe(args.join(" ") || "voxel_transport");
+    return this.ok(command, requestId === null ? "voxel probe rejected" : "voxel probe sent", {
+      requestId,
+      voxel: world.debugSnapshot(),
+    });
+  }
+
+  private cmdVoxelSubscribe(command: string, args: string[]): CliCommandResult {
+    const world = this.onlineVoxelWorld();
+    if (!world) return { ok: false, command, text: "voxel transport unavailable" };
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: "usage: voxel_subscribe <cx> <cy> <cz> [radius]" };
+    }
+    const radius = Number.parseInt(args[3] ?? "0", 10);
+    const safeRadius = Number.isFinite(radius) ? Math.max(0, Math.min(radius, 4)) : 0;
+    const requestId = world.subscribeVoxelChunk(coord, safeRadius);
+    return this.ok(
+      command,
+      requestId === null ? "voxel subscribe rejected" : "voxel subscribe sent",
+      {
+        requestId,
+        centerChunk: coord,
+        radiusLInf: safeRadius,
+        voxel: world.debugSnapshot(),
+      },
+    );
+  }
+
+  private cmdVoxelUnsubscribe(command: string, args: string[]): CliCommandResult {
+    const world = this.onlineVoxelWorld();
+    if (!world) return { ok: false, command, text: "voxel transport unavailable" };
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: "usage: voxel_unsubscribe <cx> <cy> <cz>" };
+    }
+    const requestId = world.unsubscribeVoxelChunk(coord);
+    return this.ok(
+      command,
+      requestId === null ? "voxel unsubscribe rejected" : "voxel unsubscribe sent",
+      {
+        requestId,
+        chunk: coord,
+        voxel: world.debugSnapshot(),
+      },
+    );
+  }
+
+  private cmdVoxelImpact(command: string, args: string[]): CliCommandResult {
+    const world = this.onlineVoxelWorld();
+    if (!world) return { ok: false, command, text: "voxel transport unavailable" };
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: "usage: voxel_impact <x> <y> <z> [material]" };
+    }
+    const materialArg = args[3];
+    const materialId =
+      materialArg !== undefined
+        ? (parseMaterialIdOrName(materialArg) ?? this.deps.edit.getSelectedMaterialId())
+        : this.deps.edit.getSelectedMaterialId();
+    const requestId = world.sendVoxelImpactMacro(coord, materialId);
+    return this.ok(command, requestId === null ? "voxel impact rejected" : "voxel impact sent", {
+      requestId,
+      coord,
+      materialId,
+      voxel: world.debugSnapshot(),
+    });
   }
 
   private cmdCell(command: string, args: string[]): CliCommandResult {
@@ -529,6 +624,7 @@ export class DevToolsCli implements CliCommandHandler {
       renderer: this.deps.render.getRendererDebugSnapshot(),
       transport: this.deps.transport.getMode(),
       voxelSync: this.deps.world.mode,
+      voxel: this.deps.world.debugSnapshot(),
       chunks: this.deps.world.store.listChunks().length,
       solidBlocks: this.deps.world.store.totalSolidBlocks(),
       selectedMaterialId: this.deps.edit.getSelectedMaterialId(),
@@ -559,6 +655,7 @@ export class DevToolsCli implements CliCommandHandler {
   private transportData(): Record<string, unknown> {
     return {
       voxelSync: this.deps.world.mode,
+      voxel: this.deps.world.debugSnapshot(),
       movementTransport: this.deps.transport.debugSnapshot(),
     };
   }
@@ -568,6 +665,7 @@ export class DevToolsCli implements CliCommandHandler {
       chunks: this.deps.world.store.listChunks().length,
       solidBlocks: this.deps.world.store.totalSolidBlocks(),
       editStats: { ...this.deps.world.store.editStats },
+      authoritativeChunks: this.deps.world.store.authoritativeChunkSummaries(16),
     };
   }
 
@@ -608,6 +706,15 @@ export class DevToolsCli implements CliCommandHandler {
 
   private ok(command: string, text: string, data?: unknown): CliCommandResult {
     return data === undefined ? { ok: true, command, text } : { ok: true, command, text, data };
+  }
+
+  private onlineVoxelWorld(): OnlineVoxelCliWorld | null {
+    const candidate = this.deps.world as Partial<OnlineVoxelCliWorld>;
+    return typeof candidate.requestVoxelDebugProbe === "function" &&
+      typeof candidate.subscribeVoxelChunk === "function" &&
+      typeof candidate.sendVoxelImpactMacro === "function"
+      ? (this.deps.world as OnlineVoxelCliWorld)
+      : null;
   }
 
   private emitPrefabSnapObserve(

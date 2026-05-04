@@ -34,7 +34,15 @@ Application.put_env(:gate_server, :tcp_port, gate_tcp_port)
 Application.put_env(:gate_server, :udp_port, gate_udp_port)
 
 Enum.each(
-  [:data_service, :data_init, :beacon_server, :scene_server, :auth_server, :gate_server],
+  [
+    :data_service,
+    :data_init,
+    :beacon_server,
+    :scene_server,
+    :world_server,
+    :auth_server,
+    :gate_server
+  ],
   fn app ->
     case Application.ensure_all_started(app) do
       {:ok, _} ->

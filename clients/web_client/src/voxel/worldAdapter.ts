@@ -18,6 +18,7 @@ export interface VoxelWorldAdapter {
   readonly mode: string;
   readonly store: WorldStore;
   bootstrap(): void;
+  debugSnapshot(): Record<string, unknown>;
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean;
   breakBlock(coord: FMacroCoord): boolean;
   placeMicroBlock(macro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean;
@@ -43,12 +44,22 @@ export interface VoxelWorldAdapter {
 }
 
 export class LocalVoxelWorldAdapter implements VoxelWorldAdapter {
-  readonly mode = "offline-local";
+  readonly mode: string = "offline-local";
   readonly store = new WorldStore();
   private readonly prefabs = new LocalPrefabRegistry();
 
   bootstrap(): void {
     this.store.seedRegionalShowcase(2);
+  }
+
+  debugSnapshot(): Record<string, unknown> {
+    return {
+      mode: this.mode,
+      chunks: this.store.listChunks().length,
+      solidBlocks: this.store.totalSolidBlocks(),
+      editStats: { ...this.store.editStats },
+      authoritativeChunks: this.store.authoritativeChunkSummaries(16),
+    };
   }
 
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean {

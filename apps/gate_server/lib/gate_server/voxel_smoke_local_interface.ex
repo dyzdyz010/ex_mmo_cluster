@@ -33,5 +33,8 @@ defmodule GateServer.VoxelSmokeLocalInterface do
 
   def handle_call(:scene_server, _from, state), do: {:reply, state.scene_server, state}
 
+  def handle_call({:scene_server_for_owner, _owner_scene_instance_ref}, _from, state),
+    do: {:reply, state.scene_server, state}
+
   def handle_call(:world_server, _from, state), do: {:reply, state.world_server, state}
 end

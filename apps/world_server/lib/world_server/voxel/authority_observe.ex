@@ -104,9 +104,13 @@ defmodule WorldServer.Voxel.AuthorityObserve do
            ),
          {:ok, migration_slices} <- plan_all_migration_slices(ledger, migration_id),
          {:ok, migration_handoff} <- MapLedger.migration_handoff(ledger, migration_id),
+         {:ok, acked_slices} <-
+           ack_migration_slices(ledger, migration_id, migration_slices, target_ref),
          {:ok, prewarmed_plan} <- MapLedger.mark_prewarmed(ledger, migration_id),
          {:ok, prewarmed_snapshot} <-
            migration_snapshot_and_observe(ledger, migration_id, "prewarmed"),
+         {:ok, final_catchup_slices} <-
+           final_catchup_migration_slices(ledger, migration_id, migration_slices, target_ref),
          {:ok, cutover_plan} <- MapLedger.cutover_migration(ledger, migration_id),
          {:ok, completed_plan} <- MapLedger.complete_migration(ledger, migration_id),
          {:ok, token_v2} <- fetch_current_token(token_store, logical_scene_id, region_id),
@@ -139,6 +143,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
           plan: MigrationPlan.summary(migration_plan),
           slice: migration_slices |> List.first() |> MigrationPlan.slice_summary(),
           slices: Enum.map(migration_slices, &MigrationPlan.slice_summary/1),
+          acked_slices: Enum.map(acked_slices, &MigrationPlan.slice_summary/1),
+          final_catchup_slices: Enum.map(final_catchup_slices, &MigrationPlan.slice_summary/1),
           handoff: migration_handoff_summary(migration_handoff),
           prewarmed: MigrationPlan.summary(prewarmed_plan),
           prewarmed_snapshot: MigrationPlan.summary(prewarmed_snapshot),
@@ -205,6 +211,57 @@ defmodule WorldServer.Voxel.AuthorityObserve do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp ack_migration_slices(ledger, migration_id, slices, target_ref) do
+    Enum.reduce_while(slices, {:ok, []}, fn slice, {:ok, acc} ->
+      chunk_count = slice_chunk_count(slice)
+
+      case MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+             slice_id: slice.slice_id,
+             scene_ref: target_ref,
+             loaded_count: chunk_count,
+             empty_count: 0,
+             max_chunk_version: 0
+           }) do
+        {:ok, _plan, acked_slice} -> {:cont, {:ok, [acked_slice | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, acked_slices} -> {:ok, Enum.reverse(acked_slices)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp final_catchup_migration_slices(ledger, migration_id, slices, target_ref) do
+    Enum.reduce_while(slices, {:ok, []}, fn slice, {:ok, acc} ->
+      chunk_count = slice_chunk_count(slice)
+
+      case MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+             slice_id: slice.slice_id,
+             scene_ref: target_ref,
+             loaded_count: chunk_count,
+             empty_count: 0,
+             max_chunk_version: 0,
+             source_persisted_count: chunk_count,
+             source_missing_count: 0,
+             source_error_count: 0
+           }) do
+        {:ok, _plan, caught_up_slice} -> {:cont, {:ok, [caught_up_slice | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, caught_up_slices} -> {:ok, Enum.reverse(caught_up_slices)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp slice_chunk_count(slice) do
+    {min_x, min_y, min_z} = slice.bounds_chunk_min
+    {max_x, max_y, max_z} = slice.bounds_chunk_max
+    (max_x - min_x) * (max_y - min_y) * (max_z - min_z)
   end
 
   defp route_and_observe(ledger, logical_scene_id, chunk_coord, phase) do
@@ -428,6 +485,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
         max: coord_list(handoff.affected_chunk_bounds.max)
       },
       planned_slices: Enum.map(handoff.planned_slices, &MigrationPlan.slice_summary/1),
+      prewarm_ack_count: map_size(Map.get(handoff, :prewarm_acks, %{})),
+      final_catchup_ack_count: map_size(Map.get(handoff, :final_catchup_acks, %{})),
       next_slice_index: handoff.next_slice_index,
       total_slices: handoff.total_slices
     }

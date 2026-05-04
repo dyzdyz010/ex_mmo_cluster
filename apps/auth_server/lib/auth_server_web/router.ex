@@ -32,6 +32,7 @@ defmodule AuthServerWeb.Router do
     pipe_through :api
 
     post "/auto_login", IngameController, :auto_login
+    post "/voxel/dev_seed", IngameController, :voxel_dev_seed
   end
 
   scope "/ingame", AuthServerWeb do

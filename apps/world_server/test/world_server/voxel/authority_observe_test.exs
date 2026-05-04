@@ -44,6 +44,15 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
     assert result.migration.slice.bounds_chunk_max == [2, 4, 4]
     assert result.migration.handoff.old_lease.lease_id == 100
     assert result.migration.handoff.new_lease.lease_id == 101
+    assert length(result.migration.acked_slices) == 2
+    assert Enum.all?(result.migration.acked_slices, &(&1.state == :prewarmed))
+    assert length(result.migration.final_catchup_slices) == 2
+
+    assert Enum.all?(
+             result.migration.final_catchup_slices,
+             &Map.has_key?(&1, :final_catchup_ack)
+           )
+
     assert result.migration.prewarmed_snapshot.state == :prewarmed
     assert result.migration.completed.state == :completed
     assert result.validations.current_before_migration == %{world: :ok, data_service: :ok}
@@ -62,9 +71,11 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
     assert event?(observe_log, "voxel_authority_chunk_routed")
     assert event?(observe_log, "voxel_migration_begun")
     assert event?(observe_log, "voxel_migration_slice_planned")
+    assert event?(observe_log, "voxel_migration_slice_prewarmed")
     assert event?(observe_log, "voxel_migration_handoff_read")
     assert event?(observe_log, "voxel_migration_prewarmed")
     assert event?(observe_log, "voxel_authority_migration_snapshot")
+    assert event?(observe_log, "voxel_migration_slice_final_caught_up")
     assert event?(observe_log, "voxel_migration_cutover")
     assert event?(observe_log, "voxel_region_migrated")
     assert event?(observe_log, "voxel_migration_completed")

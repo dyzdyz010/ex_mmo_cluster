@@ -262,9 +262,8 @@ defmodule GateServer.Codec do
   # client_hint_hash:u64
   def decode(
         <<@msg_voxel_impact_intent, request_id::64-big, client_intent_seq::32-big,
-          logical_scene_id::64-big, source_skill_id::32-big, wx::64-big-signed,
-          wy::64-big-signed, wz::64-big-signed, impact_kind::16-big,
-          client_hint_hash::64-big>>
+          logical_scene_id::64-big, source_skill_id::32-big, wx::64-big-signed, wy::64-big-signed,
+          wz::64-big-signed, impact_kind::16-big, client_hint_hash::64-big>>
       ) do
     {:ok,
      {:voxel_impact_intent,

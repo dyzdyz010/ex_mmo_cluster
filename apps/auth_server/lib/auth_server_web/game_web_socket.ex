@@ -31,8 +31,9 @@ defmodule AuthServerWeb.GameWebSocket do
   end
 
   @impl true
-  def handle_info({:gate_ws_send, payload}, state) when is_binary(payload) do
-    {:push, {:binary, payload}, state}
+  def handle_info({:gate_ws_send, payload}, state)
+      when is_binary(payload) or is_list(payload) do
+    {:push, {:binary, IO.iodata_to_binary(payload)}, state}
   end
 
   def handle_info(_message, state) do

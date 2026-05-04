@@ -9,8 +9,13 @@ import {
   type RendererPreference,
 } from "../render/rendererBackend";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
+import {
+  isServerVoxelTransportPort,
+  OnlineVoxelWorldAdapter,
+} from "../voxel/onlineVoxelWorldAdapter";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
+import { VoxelDebugPanelView } from "../presentation/hud/voxelDebugPanelView";
 import { DevToolsCli } from "../presentation/devtools/devToolsCli";
 import { EventBus } from "../shared/events/eventBus";
 import type { AppEvents } from "../shared/events/events";
@@ -34,6 +39,7 @@ export interface BootstrapTargets {
   canvas: HTMLCanvasElement;
   hud: HTMLDivElement;
   hotbarDock: HTMLDivElement;
+  voxelPanel: HTMLDivElement;
 }
 
 /**
@@ -47,6 +53,7 @@ export async function bootstrap({
   canvas,
   hud,
   hotbarDock,
+  voxelPanel,
 }: BootstrapTargets): Promise<AppContext> {
   canvas.tabIndex = 0;
   canvas.focus();
@@ -54,11 +61,11 @@ export async function bootstrap({
 
   const logger = new ObserveLog(1200);
   const eventBus = new EventBus<AppEvents>();
-  const world: VoxelWorldAdapter = new LocalVoxelWorldAdapter();
+  const transport = createMovementTransport(logger);
+  const world: VoxelWorldAdapter = createVoxelWorldAdapter(logger, eventBus, transport);
   world.bootstrap();
   const initialSpawn = resolveInitialLocalSpawn(world);
 
-  const transport = createMovementTransport(logger);
   const transportPump = new TransportPump(transport, eventBus);
   transportPump.reset(initialSpawn);
 
@@ -87,17 +94,6 @@ export async function bootstrap({
     edit,
   );
 
-  const loop = new GameLoop();
-  loop.subscribe(transportPump);
-  loop.subscribe(localPlayer);
-  loop.subscribe(remotePlayer);
-  loop.subscribe(render);
-  loop.subscribe(hudView);
-  loop.subscribe(hotbarDockView);
-  loop.subscribe(diagnostics);
-
-  bridgeBusToLogger(eventBus, logger);
-
   const devTools = new DevToolsCli({
     logger,
     world,
@@ -109,6 +105,22 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
+  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world);
+
+  const loop = new GameLoop();
+  loop.subscribe(transportPump);
+  if (isFrameDrivenVoxelWorld(world)) {
+    loop.subscribe(world);
+  }
+  loop.subscribe(localPlayer);
+  loop.subscribe(remotePlayer);
+  loop.subscribe(render);
+  loop.subscribe(hudView);
+  loop.subscribe(hotbarDockView);
+  loop.subscribe(voxelDebugPanelView);
+  loop.subscribe(diagnostics);
+
+  bridgeBusToLogger(eventBus, logger);
 
   const rendererSnapshot = render.getRendererDebugSnapshot();
   logger.emit("boot", "runtime_started", {
@@ -135,6 +147,7 @@ export async function bootstrap({
     disposed = true;
     loop.stop();
     detachInput();
+    voxelDebugPanelView.dispose();
     hotbarDockView.dispose();
     render.dispose();
     eventBus.clear();
@@ -148,6 +161,40 @@ function createMovementTransport(logger: ObserveLog): MovementTransport {
     return new SimulatedLocalMovementTransport();
   }
   return new ServerMovementTransport(logger);
+}
+
+function createVoxelWorldAdapter(
+  logger: ObserveLog,
+  eventBus: EventBus<AppEvents>,
+  transport: MovementTransport,
+): VoxelWorldAdapter {
+  if (import.meta.env.VITE_VOXEL_SYNC === "offline") {
+    return new LocalVoxelWorldAdapter();
+  }
+
+  if (isServerVoxelTransportPort(transport)) {
+    return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
+      logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),
+      defaultRadiusLInf: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS, 0),
+      devSeed: import.meta.env.VITE_VOXEL_DEV_SEED !== "0",
+      primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK !== "0",
+    });
+  }
+
+  return new LocalVoxelWorldAdapter();
+}
+
+interface FrameDrivenVoxelWorldAdapter extends VoxelWorldAdapter {
+  onFrame(nowMs: number, dtMs: number): void;
+}
+
+function isFrameDrivenVoxelWorld(world: VoxelWorldAdapter): world is FrameDrivenVoxelWorldAdapter {
+  return typeof (world as Partial<FrameDrivenVoxelWorldAdapter>).onFrame === "function";
+}
+
+function parsePositiveIntEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 export function resolveRendererPreference(): RendererPreference {
@@ -303,6 +350,40 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
       coord: `${coord.x},${coord.y},${coord.z}`,
       source,
     });
+  });
+  bus.on("world:chunk-subscribed", ({ requestId, logicalSceneId, centerChunk, radiusLInf }) => {
+    logger.emit("voxel", "chunk_subscribed", {
+      request_id: requestId,
+      logical_scene_id: logicalSceneId,
+      center_chunk: formatCoord(centerChunk),
+      radius_l_inf: radiusLInf,
+    });
+  });
+  bus.on(
+    "world:chunk-snapshot-applied",
+    ({ requestId, logicalSceneId, chunkCoord, chunkVersion, chunkHash, solidBlocks }) => {
+      logger.emit("voxel", "chunk_snapshot_applied", {
+        request_id: requestId,
+        logical_scene_id: logicalSceneId,
+        chunk_coord: formatCoord(chunkCoord),
+        chunk_version: chunkVersion,
+        chunk_hash: chunkHash,
+        solid_blocks: solidBlocks,
+      });
+    },
+  );
+  bus.on("world:voxel-intent-result", (payload) => {
+    logger.emit("voxel", "intent_result_applied", {
+      request_id: payload.requestId,
+      client_intent_seq: payload.clientIntentSeq,
+      logical_scene_id: payload.logicalSceneId,
+      result_code: payload.resultCodeName,
+      result_ref: payload.resultRef,
+      reason: payload.reason,
+    });
+  });
+  bus.on("world:voxel-sync-error", ({ reason, source }) => {
+    logger.emit("voxel", "sync_error", { reason, source });
   });
   bus.on("world:edit-rejected", ({ reason, source }) => {
     logger.emit("edit", reason, { source });

@@ -90,6 +90,165 @@
         color: #eef7fb;
         font-size: 11px;
       }
+      #voxel-panel {
+        position: fixed;
+        right: 14px;
+        top: 14px;
+        z-index: 11;
+        width: min(344px, calc(100vw - 28px));
+        color: #eef7fb;
+        font-size: 11px;
+        pointer-events: auto;
+      }
+      .voxel-panel-surface {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        box-sizing: border-box;
+        padding: 10px;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: rgba(8, 15, 22, 0.76);
+        box-shadow: 0 10px 30px var(--panel-shadow);
+        backdrop-filter: blur(12px);
+      }
+      .voxel-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-width: 0;
+      }
+      .voxel-panel-title {
+        overflow: hidden;
+        color: rgba(238, 247, 251, 0.86);
+        font-size: 12px;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .voxel-panel-badge {
+        flex: 0 0 auto;
+        min-width: 64px;
+        box-sizing: border-box;
+        padding: 3px 7px;
+        border: 1px solid rgba(126, 229, 178, 0.34);
+        border-radius: 999px;
+        background: rgba(53, 159, 117, 0.18);
+        color: rgba(185, 255, 219, 0.9);
+        text-align: center;
+      }
+      .voxel-panel-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        margin: 0;
+      }
+      .voxel-panel-stat {
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 6px 7px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 7px;
+        background: rgba(18, 28, 35, 0.66);
+      }
+      .voxel-panel-stat dt {
+        margin: 0 0 2px;
+        color: rgba(238, 247, 251, 0.45);
+        font-size: 9px;
+        text-transform: uppercase;
+      }
+      .voxel-panel-stat dd {
+        margin: 0;
+        overflow: hidden;
+        color: rgba(238, 247, 251, 0.86);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .voxel-panel-actions,
+      .voxel-panel-form {
+        display: grid;
+        gap: 6px;
+      }
+      .voxel-panel-actions {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .voxel-panel-form--subscribe,
+      .voxel-panel-form--impact {
+        grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(74px, 0.9fr);
+      }
+      .voxel-panel-button {
+        min-width: 0;
+        height: 30px;
+        box-sizing: border-box;
+        border: 1px solid rgba(196, 232, 255, 0.22);
+        border-radius: 7px;
+        background: rgba(28, 45, 55, 0.82);
+        color: rgba(238, 247, 251, 0.9);
+        cursor: pointer;
+        font: inherit;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          transform 120ms ease;
+      }
+      .voxel-panel-button:hover,
+      .voxel-panel-button:focus-visible {
+        border-color: rgba(196, 232, 255, 0.66);
+        background: rgba(47, 75, 87, 0.9);
+        outline: none;
+      }
+      .voxel-panel-button:active {
+        transform: translateY(1px);
+      }
+      .voxel-panel-input {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .voxel-panel-input span {
+        overflow: hidden;
+        color: rgba(238, 247, 251, 0.48);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .voxel-panel-input input {
+        width: 100%;
+        height: 30px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.11);
+        border-radius: 7px;
+        background: rgba(5, 11, 16, 0.66);
+        color: rgba(238, 247, 251, 0.92);
+        font: inherit;
+        outline: none;
+        padding: 0 6px;
+      }
+      .voxel-panel-input input:focus {
+        border-color: rgba(196, 232, 255, 0.58);
+      }
+      .voxel-panel-result {
+        min-height: 28px;
+        box-sizing: border-box;
+        overflow: hidden;
+        padding: 6px 7px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 7px;
+        background: rgba(18, 28, 35, 0.58);
+        color: rgba(238, 247, 251, 0.72);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .voxel-panel-result.is-ok {
+        border-color: rgba(126, 229, 178, 0.28);
+        color: rgba(185, 255, 219, 0.92);
+      }
+      .voxel-panel-result.is-error {
+        border-color: rgba(244, 120, 120, 0.34);
+        color: rgba(255, 189, 189, 0.92);
+      }
       .hotbar-current {
         max-width: 100%;
         min-height: 22px;
@@ -244,6 +403,16 @@
           width: min(366px, calc(100vw - 16px));
           bottom: max(12px, env(safe-area-inset-bottom));
         }
+        #voxel-panel {
+          top: auto;
+          right: 8px;
+          bottom: calc(104px + env(safe-area-inset-bottom));
+          left: 8px;
+          width: auto;
+        }
+        .voxel-panel-stats {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
         .hotbar-slots {
           gap: 5px;
           padding: 7px;
@@ -262,6 +431,7 @@
     <canvas id="app"></canvas>
     <div id="hud"></div>
     <div id="reticle" aria-hidden="true"></div>
+    <div id="voxel-panel" aria-live="polite"></div>
     <div id="hotbar-dock" aria-live="polite"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

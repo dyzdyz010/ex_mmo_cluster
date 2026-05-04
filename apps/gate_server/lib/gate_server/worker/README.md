@@ -24,6 +24,8 @@
 体素区块订阅要先向 `WorldServer.Voxel.MapLedger` 查询当前租约，再向 Scene 建立真实订阅；
 后续区块变化由 Scene 推送到 Gate，Gate 只负责转发。体素退订必须同步清理 Gate 订阅表和
 Scene 区块订阅者。
+订阅表必须保存 World 路由返回的区域、租约、owner 纪元和 Scene 节点；迁移后重绑定时，
+连接进程会重新查询 World，并在新路由不同的时候重新向 Scene 订阅。
 
 体素冲击意图也要先校验连接角色和服务端技能表，再经过 World 路由，最后由 Scene 带租约
 执行写入并通过 DataService 持久化。这样 Gate 可以被观察为路由器和协议适配器，而不会

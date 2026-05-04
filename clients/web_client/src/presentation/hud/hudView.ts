@@ -44,8 +44,10 @@ export class HudView implements FrameSubscriber {
     const renderer = this.render.getRendererDebugSnapshot();
     const selectedMaterialId = this.edit.getSelectedMaterialId();
     const hotbar = this.edit.getHotbarState();
+    const voxelSnapshot = this.world.debugSnapshot();
     const transportSnapshot = {
       voxelSync: this.world.mode,
+      voxel: voxelSnapshot,
       movementTransport: this.transport.debugSnapshot(),
     };
     const selectedHotbarText =
@@ -60,6 +62,7 @@ export class HudView implements FrameSubscriber {
       `ex_mmo voxel web-client  frame: ${this.frameCount}`,
       `renderer: ${renderer.active}  backend: ${renderer.backend}  fallback: ${renderer.fallbackReason ?? "none"}`,
       `voxel_sync: ${this.world.mode}  movement_transport: ${this.transport.getMode()}`,
+      `voxel_state: ${truncateJson(voxelSnapshot, 360)}`,
       `movement_ready: ${this.transport.isReady()}  transport_state: ${JSON.stringify(transportSnapshot)}`,
       `chunks: ${this.world.store.listChunks().length}  solid_blocks: ${this.world.store.totalSolidBlocks()}`,
       `selected_material: ${getMaterialDefinition(selectedMaterialId).name} (${selectedMaterialId})`,
@@ -77,4 +80,9 @@ export class HudView implements FrameSubscriber {
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }
+}
+
+function truncateJson(value: unknown, maxLength: number): string {
+  const text = JSON.stringify(value);
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }

@@ -60,7 +60,7 @@ defmodule GateServer.TcpConnection do
 
   @impl true
   def init(socket) do
-    :pg.start_link(@scope)
+    ensure_pg_scope_started()
     :pg.join(@scope, @topic, self())
     Logger.debug("New client connected. socket: #{inspect(socket, pretty: true)}")
 
@@ -84,6 +84,17 @@ defmodule GateServer.TcpConnection do
        status: :waiting_auth,
        voxel_subscriptions: %{}
      }}
+  end
+
+  defp ensure_pg_scope_started do
+    case :pg.start_link(@scope) do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+    end
   end
 
   @impl true
@@ -835,6 +846,14 @@ defmodule GateServer.TcpConnection do
     end
   end
 
+  defp fetch_scene_node_for_owner(owner_scene_instance_ref) do
+    case safe_call(GateServer.Interface, {:scene_server_for_owner, owner_scene_instance_ref}) do
+      {:ok, nil} -> {:error, :scene_unavailable}
+      {:ok, scene_node} -> {:ok, scene_node}
+      {:error, _reason} -> fetch_scene_node()
+    end
+  end
+
   defp fetch_world_node do
     case safe_call(GateServer.Interface, :world_server) do
       {:ok, nil} -> {:error, :world_unavailable}
@@ -1040,12 +1059,27 @@ defmodule GateServer.TcpConnection do
     with :ok <- authorize_voxel_impact_intent(request, state),
          {:ok, target} <- voxel_impact_target(request),
          {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node() do
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("voxel_impact_intent_routed", %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        chunk_coord: target.chunk_coord,
+        region_id: lease.region_id,
+        lease_id: lease.lease_id,
+        owner_scene_instance_ref: lease.owner_scene_instance_ref,
+        owner_epoch: lease.owner_epoch,
+        scene_node: scene_node
+      })
+
       attrs = %{
         request_id: request.request_id,
         logical_scene_id: request.logical_scene_id,
         chunk_coord: target.chunk_coord,
-        lease: Map.fetch!(route, :lease),
+        lease: lease,
         operation: :put_solid_block,
         macro: target.local_macro,
         block: voxel_impact_block(request)
@@ -1069,6 +1103,13 @@ defmodule GateServer.TcpConnection do
           {:error, :scene_unavailable}
       end
     end
+  end
+
+  defp fetch_scene_node_for_route(route) do
+    route
+    |> Map.fetch!(:lease)
+    |> Map.fetch!(:owner_scene_instance_ref)
+    |> fetch_scene_node_for_owner()
   end
 
   defp authorize_voxel_impact_intent(request, state) do
@@ -1179,15 +1220,16 @@ defmodule GateServer.TcpConnection do
 
   defp subscribe_voxel_chunk(request, chunk_coord, known_versions, state) do
     with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node() do
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
       emit_voxel_chunk_subscribe_routed(%{request | center_chunk: chunk_coord}, state, route)
+      lease = Map.fetch!(route, :lease)
 
       attrs = %{
         request_id: request.request_id,
         logical_scene_id: request.logical_scene_id,
         chunk_coord: chunk_coord,
         subscriber: self(),
-        lease: Map.fetch!(route, :lease),
+        lease: lease,
         send_snapshot?: request.want_snapshot,
         known_version: Map.get(known_versions, chunk_coord)
       }
@@ -1205,7 +1247,11 @@ defmodule GateServer.TcpConnection do
             logical_scene_id: request.logical_scene_id,
             chunk_coord: chunk_coord,
             request_id: request.request_id,
-            scene_node: scene_node
+            scene_node: scene_node,
+            region_id: lease.region_id,
+            lease_id: lease.lease_id,
+            owner_scene_instance_ref: lease.owner_scene_instance_ref,
+            owner_epoch: lease.owner_epoch
           }
 
           next_state = put_in(state.voxel_subscriptions[key], subscription)
@@ -1349,6 +1395,7 @@ defmodule GateServer.TcpConnection do
       "scene_attached=#{not is_nil(state.scene_ref)}",
       "voxel_subscription_count=#{map_size(state.voxel_subscriptions)}",
       "voxel_subscriptions=#{inspect(state.voxel_subscriptions |> Map.keys() |> Enum.take(16))}",
+      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(state.voxel_subscriptions))}",
       "confirmed_chunk_versions={}",
       "inflight_intent_count=0",
       "voxel_codec_endian=big",
@@ -1364,6 +1411,23 @@ defmodule GateServer.TcpConnection do
       "voxel_debug=unknown_command"
     ]
     |> Enum.join("\n")
+  end
+
+  defp voxel_subscription_debug(subscriptions) do
+    subscriptions
+    |> Map.values()
+    |> Enum.take(16)
+    |> Enum.map(fn subscription ->
+      Map.take(subscription, [
+        :logical_scene_id,
+        :chunk_coord,
+        :region_id,
+        :lease_id,
+        :owner_scene_instance_ref,
+        :owner_epoch,
+        :scene_node
+      ])
+    end)
   end
 
   defp build_input_frame(%{} = frame) do

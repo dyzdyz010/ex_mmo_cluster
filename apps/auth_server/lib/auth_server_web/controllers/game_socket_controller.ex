@@ -13,7 +13,7 @@ defmodule AuthServerWeb.GameSocketController do
     |> put_resp_header("cache-control", "no-store")
     |> WebSockAdapter.upgrade(AuthServerWeb.GameWebSocket, %{},
       timeout: 120_000,
-      max_frame_size: 64 * 1024,
+      max_frame_size: 512 * 1024,
       compress: false
     )
     |> halt()

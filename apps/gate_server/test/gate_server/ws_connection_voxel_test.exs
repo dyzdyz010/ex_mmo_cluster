@@ -17,7 +17,11 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     @impl true
     def init(attrs) do
-      {:ok, Map.merge(%{auth_server: nil, scene_server: nil, world_server: nil}, attrs)}
+      {:ok,
+       Map.merge(
+         %{auth_server: nil, scene_server: nil, scene_owner_nodes: %{}, world_server: nil},
+         attrs
+       )}
     end
 
     @impl true
@@ -28,6 +32,16 @@ defmodule GateServer.WsConnectionVoxelTest do
     @impl true
     def handle_call(:scene_server, _from, state) do
       {:reply, state.scene_server, state}
+    end
+
+    @impl true
+    def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
+      scene_node =
+        Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
+          Map.get(state.scene_owner_nodes, :default) ||
+          state.scene_server
+
+      {:reply, scene_node, state}
     end
 
     @impl true
@@ -245,13 +259,26 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(11, 321, {2, 3, 4}))
 
-    assert_receive {:gate_ws_send, iodata}
-    assert <<0x62, snapshot_payload::binary>> = IO.iodata_to_binary(iodata)
+    assert_receive {:gate_ws_send, bin}
+    assert is_binary(bin)
+    assert <<0x62, snapshot_payload::binary>> = bin
 
     assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
     assert snapshot.request_id == 11
     assert snapshot.storage.logical_scene_id == 321
     assert snapshot.storage.chunk_coord == {2, 3, 4}
+
+    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+
+    assert %{
+             region_id: ^region_id,
+             lease_id: 9001,
+             owner_scene_instance_ref: 7001,
+             owner_epoch: 5,
+             scene_node: scene_node
+           } = Map.fetch!(subscriptions, {321, {2, 3, 4}})
+
+    assert scene_node == node()
 
     assert {:ok, chunk_pid} =
              SceneServer.Voxel.ChunkDirectory.ensure_chunk(SceneServer.Voxel.ChunkDirectory, %{
@@ -268,6 +295,74 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert observe_log =~ "lease_id: 9001"
   end
 
+  test "rebinds voxel subscriptions after world migration cutover" do
+    observe_path = observe_path("ws_chunk_subscribe_rebind.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    put_voxel_region(779, region_id: region_id, owner_scene_instance_ref: 7_001)
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(41, 779, {0, 0, 0}))
+
+    assert_receive {:gate_ws_send, initial_bin}
+    assert <<0x62, initial_payload::binary>> = initial_bin
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.request_id == 41
+
+    assert %{voxel_subscriptions: subscriptions_before} = :sys.get_state(pid)
+
+    assert %{owner_scene_instance_ref: 7_001, owner_epoch: 1} =
+             Map.fetch!(subscriptions_before, {779, {0, 0, 0}})
+
+    assert {:ok, lease_v2} =
+             MapLedger.migrate_region(MapLedger, region_id, 8_001,
+               lease_id: 91_779,
+               owner_epoch: 2,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    WsConnection.receive_frame(pid, debug_probe_frame(42, "voxel_rebind 779 #{region_id}"))
+    _ = :sys.get_state(pid)
+
+    assert_receive {:gate_ws_send,
+                    <<0x6F, 42::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>}
+
+    assert debug_result =~ "voxel_rebind=ok"
+    assert debug_result =~ "rebound_count=1"
+
+    assert_receive {:gate_ws_send, rebound_bin}
+    assert <<0x62, rebound_payload::binary>> = rebound_bin
+    assert {:ok, rebound} = SceneVoxelCodec.decode_chunk_snapshot_payload(rebound_payload)
+    assert rebound.request_id == 41
+
+    assert %{voxel_subscriptions: subscriptions_after} = :sys.get_state(pid)
+
+    assert %{
+             region_id: ^region_id,
+             lease_id: 91_779,
+             owner_scene_instance_ref: 8_001,
+             owner_epoch: 2
+           } = Map.fetch!(subscriptions_after, {779, {0, 0, 0}})
+
+    assert lease_v2.lease_id == 91_779
+
+    flush_observe_writer()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_requested")
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_routed")
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_subscribed_new")
+  end
+
   test "chunk subscribe forwards later authoritative snapshot pushes after impact" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
@@ -281,8 +376,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(21, 777, {0, 0, 0}))
 
-    assert_receive {:gate_ws_send, initial_iodata}
-    assert <<0x62, initial_payload::binary>> = IO.iodata_to_binary(initial_iodata)
+    assert_receive {:gate_ws_send, initial_bin}
+    assert is_binary(initial_bin)
+    assert <<0x62, initial_payload::binary>> = initial_bin
     assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
     assert initial.request_id == 21
     assert initial.storage.chunk_version == 0
@@ -299,8 +395,9 @@ defmodule GateServer.WsConnectionVoxelTest do
       result_ref: 1
     )
 
-    assert_receive {:gate_ws_send, updated_iodata}
-    assert <<0x62, updated_payload::binary>> = IO.iodata_to_binary(updated_iodata)
+    assert_receive {:gate_ws_send, updated_bin}
+    assert is_binary(updated_bin)
+    assert <<0x62, updated_payload::binary>> = updated_bin
     assert {:ok, updated} = SceneVoxelCodec.decode_chunk_snapshot_payload(updated_payload)
     assert updated.request_id == 21
     assert updated.storage.chunk_version == 1
@@ -321,8 +418,9 @@ defmodule GateServer.WsConnectionVoxelTest do
     put_connection_in_scene(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(31, 778, {0, 0, 0}))
-    assert_receive {:gate_ws_send, initial_iodata}
-    assert <<0x62, _initial_payload::binary>> = IO.iodata_to_binary(initial_iodata)
+    assert_receive {:gate_ws_send, initial_bin}
+    assert is_binary(initial_bin)
+    assert <<0x62, _initial_payload::binary>> = initial_bin
 
     WsConnection.receive_frame(pid, chunk_unsubscribe_frame(32, 778, [{0, 0, 0}]))
     assert_receive {:gate_ws_send, <<0x80, 32::64-big, 0x00>>}
@@ -350,6 +448,10 @@ defmodule GateServer.WsConnectionVoxelTest do
   defp chunk_subscribe_frame(request_id, logical_scene_id, {cx, cy, cz}, radius \\ 0) do
     <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,
       cz::32-big-signed, radius::8, 1::8, 0::16-big>>
+  end
+
+  defp debug_probe_frame(request_id, command) do
+    <<0x6F, request_id::64-big, byte_size(command)::16-big, command::binary>>
   end
 
   defp chunk_unsubscribe_frame(request_id, logical_scene_id, chunks) do

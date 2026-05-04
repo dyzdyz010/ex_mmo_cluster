@@ -34,9 +34,23 @@ defmodule GateServer.WsConnection do
     GenServer.cast(connection_pid, {:ws_closed, reason})
   end
 
+  @doc "Re-routes existing voxel subscriptions after a World migration cutover."
+  def rebind_voxel_subscriptions(
+        connection_pid,
+        logical_scene_id,
+        region_selector \\ :all,
+        reason \\ :manual
+      )
+      when is_pid(connection_pid) do
+    GenServer.cast(
+      connection_pid,
+      {:voxel_rebind_subscriptions, logical_scene_id, region_selector, reason}
+    )
+  end
+
   @impl true
   def init(owner_pid) when is_pid(owner_pid) do
-    :pg.start_link(@scope)
+    ensure_pg_scope_started()
     :pg.join(@scope, @topic, self())
 
     GateServer.CliObserve.emit("ws_connection_init", %{
@@ -57,6 +71,17 @@ defmodule GateServer.WsConnection do
        status: :waiting_auth,
        voxel_subscriptions: %{}
      }}
+  end
+
+  defp ensure_pg_scope_started do
+    case :pg.start_link(@scope) do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+    end
   end
 
   @impl true
@@ -91,6 +116,25 @@ defmodule GateServer.WsConnection do
     })
 
     {:stop, stop_reason, state}
+  end
+
+  def handle_cast({:voxel_rebind_subscriptions, logical_scene_id, region_selector, reason}, state) do
+    {next_state, result} =
+      rebind_voxel_subscriptions_in_state(state, logical_scene_id, region_selector, reason)
+
+    GateServer.CliObserve.emit("voxel_subscription_rebind_completed", %{
+      connection_pid: self(),
+      cid: state.cid,
+      logical_scene_id: logical_scene_id,
+      region_selector: region_selector,
+      reason: reason,
+      rebound_count: result.rebound_count,
+      skipped_count: result.skipped_count,
+      error_count: result.error_count,
+      subscription_count: map_size(next_state.voxel_subscriptions)
+    })
+
+    {:noreply, next_state}
   end
 
   def handle_cast({:player_enter, cid, location}, state) do
@@ -400,12 +444,11 @@ defmodule GateServer.WsConnection do
       status: state.status
     })
 
-    send_encoded(
-      state,
-      {:voxel_debug_probe, %{request_id: request_id, result: voxel_debug_result(command, state)}}
-    )
+    {result, next_state} = handle_voxel_debug_command(command, state)
 
-    {:ok, state}
+    send_encoded(state, {:voxel_debug_probe, %{request_id: request_id, result: result}})
+
+    {:ok, next_state}
   end
 
   defp dispatch(
@@ -445,8 +488,8 @@ defmodule GateServer.WsConnection do
   end
 
   defp send_encoded(state, message) do
-    {:ok, bin} = GateServer.Codec.encode(message)
-    send(state.owner_pid, {:gate_ws_send, bin})
+    {:ok, iodata} = GateServer.Codec.encode(message)
+    send(state.owner_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
   end
 
   defp verify_token(token) do
@@ -477,6 +520,14 @@ defmodule GateServer.WsConnection do
       {:ok, nil} -> {:error, :scene_unavailable}
       {:ok, scene_node} -> {:ok, scene_node}
       {:error, _reason} -> {:error, :scene_unavailable}
+    end
+  end
+
+  defp fetch_scene_node_for_owner(owner_scene_instance_ref) do
+    case safe_call(GateServer.Interface, {:scene_server_for_owner, owner_scene_instance_ref}) do
+      {:ok, nil} -> {:error, :scene_unavailable}
+      {:ok, scene_node} -> {:ok, scene_node}
+      {:error, _reason} -> fetch_scene_node()
     end
   end
 
@@ -656,12 +707,27 @@ defmodule GateServer.WsConnection do
     with :ok <- authorize_voxel_impact_intent(request, state),
          {:ok, target} <- voxel_impact_target(request),
          {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node() do
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("voxel_impact_intent_routed", %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        chunk_coord: target.chunk_coord,
+        region_id: lease.region_id,
+        lease_id: lease.lease_id,
+        owner_scene_instance_ref: lease.owner_scene_instance_ref,
+        owner_epoch: lease.owner_epoch,
+        scene_node: scene_node
+      })
+
       attrs = %{
         request_id: request.request_id,
         logical_scene_id: request.logical_scene_id,
         chunk_coord: target.chunk_coord,
-        lease: Map.fetch!(route, :lease),
+        lease: lease,
         operation: :put_solid_block,
         macro: target.local_macro,
         block: voxel_impact_block(request)
@@ -685,6 +751,13 @@ defmodule GateServer.WsConnection do
           {:error, :scene_unavailable}
       end
     end
+  end
+
+  defp fetch_scene_node_for_route(route) do
+    route
+    |> Map.fetch!(:lease)
+    |> Map.fetch!(:owner_scene_instance_ref)
+    |> fetch_scene_node_for_owner()
   end
 
   defp authorize_voxel_impact_intent(request, state) do
@@ -795,15 +868,16 @@ defmodule GateServer.WsConnection do
 
   defp subscribe_voxel_chunk(request, chunk_coord, known_versions, state) do
     with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node() do
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
       emit_voxel_chunk_subscribe_routed(%{request | center_chunk: chunk_coord}, state, route)
+      lease = Map.fetch!(route, :lease)
 
       attrs = %{
         request_id: request.request_id,
         logical_scene_id: request.logical_scene_id,
         chunk_coord: chunk_coord,
         subscriber: self(),
-        lease: Map.fetch!(route, :lease),
+        lease: lease,
         send_snapshot?: request.want_snapshot,
         known_version: Map.get(known_versions, chunk_coord)
       }
@@ -821,7 +895,11 @@ defmodule GateServer.WsConnection do
             logical_scene_id: request.logical_scene_id,
             chunk_coord: chunk_coord,
             request_id: request.request_id,
-            scene_node: scene_node
+            scene_node: scene_node,
+            region_id: lease.region_id,
+            lease_id: lease.lease_id,
+            owner_scene_instance_ref: lease.owner_scene_instance_ref,
+            owner_epoch: lease.owner_epoch
           }
 
           next_state = put_in(state.voxel_subscriptions[key], subscription)
@@ -836,6 +914,161 @@ defmodule GateServer.WsConnection do
         {:error, _reason} ->
           {:error, :scene_unavailable}
       end
+    end
+  end
+
+  defp rebind_voxel_subscriptions_in_state(state, logical_scene_id, region_selector, reason) do
+    GateServer.CliObserve.emit("voxel_subscription_rebind_requested", %{
+      connection_pid: self(),
+      cid: state.cid,
+      logical_scene_id: logical_scene_id,
+      region_selector: region_selector,
+      reason: reason,
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    Enum.reduce(
+      state.voxel_subscriptions,
+      {state, %{rebound_count: 0, skipped_count: 0, error_count: 0}},
+      fn {key, subscription}, {acc_state, acc_result} ->
+        if rebind_subscription_selected?(subscription, logical_scene_id, region_selector) do
+          case rebind_voxel_subscription(subscription, reason) do
+            {:ok, next_subscription, :rebound} ->
+              {put_in(acc_state.voxel_subscriptions[key], next_subscription),
+               Map.update!(acc_result, :rebound_count, &(&1 + 1))}
+
+            {:ok, _next_subscription, :skipped} ->
+              {acc_state, Map.update!(acc_result, :skipped_count, &(&1 + 1))}
+
+            {:error, reason} ->
+              GateServer.CliObserve.emit("voxel_subscription_rebind_error", %{
+                connection_pid: self(),
+                cid: state.cid,
+                logical_scene_id: subscription.logical_scene_id,
+                chunk_coord: subscription.chunk_coord,
+                region_id: Map.get(subscription, :region_id),
+                reason: reason
+              })
+
+              {acc_state, Map.update!(acc_result, :error_count, &(&1 + 1))}
+          end
+        else
+          {acc_state, acc_result}
+        end
+      end
+    )
+  end
+
+  defp rebind_subscription_selected?(subscription, logical_scene_id, region_selector) do
+    subscription.logical_scene_id == logical_scene_id and
+      (region_selector == :all or Map.get(subscription, :region_id) == region_selector)
+  end
+
+  defp rebind_voxel_subscription(subscription, reason) do
+    with {:ok, route} <-
+           route_voxel_chunk(subscription.logical_scene_id, subscription.chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("voxel_subscription_rebind_routed", %{
+        connection_pid: self(),
+        logical_scene_id: subscription.logical_scene_id,
+        chunk_coord: subscription.chunk_coord,
+        reason: reason,
+        old_scene_node: Map.get(subscription, :scene_node),
+        new_scene_node: scene_node,
+        old_lease_id: Map.get(subscription, :lease_id),
+        new_lease_id: lease.lease_id,
+        old_owner_scene_instance_ref: Map.get(subscription, :owner_scene_instance_ref),
+        new_owner_scene_instance_ref: lease.owner_scene_instance_ref,
+        new_owner_epoch: lease.owner_epoch
+      })
+
+      if subscription_matches_route?(subscription, scene_node, lease) do
+        GateServer.CliObserve.emit("voxel_subscription_rebind_skipped", %{
+          connection_pid: self(),
+          logical_scene_id: subscription.logical_scene_id,
+          chunk_coord: subscription.chunk_coord,
+          lease_id: lease.lease_id,
+          owner_scene_instance_ref: lease.owner_scene_instance_ref,
+          owner_epoch: lease.owner_epoch
+        })
+
+        {:ok, subscription, :skipped}
+      else
+        subscribe_attrs = %{
+          request_id: subscription.request_id,
+          logical_scene_id: subscription.logical_scene_id,
+          chunk_coord: subscription.chunk_coord,
+          subscriber: self(),
+          lease: lease,
+          send_snapshot?: true,
+          known_version: nil
+        }
+
+        case safe_call(
+               {SceneServer.Voxel.ChunkDirectory, scene_node},
+               {:subscribe, subscribe_attrs},
+               @scene_call_timeout
+             ) do
+          {:ok, {:ok, _payload}} ->
+            maybe_unsubscribe_rebound_source(subscription, scene_node)
+
+            next_subscription = %{
+              subscription
+              | scene_node: scene_node,
+                region_id: lease.region_id,
+                lease_id: lease.lease_id,
+                owner_scene_instance_ref: lease.owner_scene_instance_ref,
+                owner_epoch: lease.owner_epoch
+            }
+
+            GateServer.CliObserve.emit("voxel_subscription_rebind_subscribed_new", %{
+              connection_pid: self(),
+              logical_scene_id: next_subscription.logical_scene_id,
+              chunk_coord: next_subscription.chunk_coord,
+              scene_node: next_subscription.scene_node,
+              region_id: next_subscription.region_id,
+              lease_id: next_subscription.lease_id,
+              owner_scene_instance_ref: next_subscription.owner_scene_instance_ref,
+              owner_epoch: next_subscription.owner_epoch
+            })
+
+            {:ok, next_subscription, :rebound}
+
+          {:ok, {:error, reason}} ->
+            {:error, reason}
+
+          {:ok, _other} ->
+            {:error, :scene_unavailable}
+
+          {:error, _reason} ->
+            {:error, :scene_unavailable}
+        end
+      end
+    end
+  end
+
+  defp subscription_matches_route?(subscription, scene_node, lease) do
+    Map.get(subscription, :scene_node) == scene_node and
+      Map.get(subscription, :lease_id) == lease.lease_id and
+      Map.get(subscription, :owner_scene_instance_ref) == lease.owner_scene_instance_ref and
+      Map.get(subscription, :owner_epoch) == lease.owner_epoch
+  end
+
+  defp maybe_unsubscribe_rebound_source(subscription, new_scene_node) do
+    if Map.get(subscription, :scene_node) != new_scene_node do
+      scene_unsubscribe(subscription)
+
+      GateServer.CliObserve.emit("voxel_subscription_rebind_unsubscribed_old", %{
+        connection_pid: self(),
+        logical_scene_id: subscription.logical_scene_id,
+        chunk_coord: subscription.chunk_coord,
+        scene_node: Map.get(subscription, :scene_node),
+        lease_id: Map.get(subscription, :lease_id),
+        owner_scene_instance_ref: Map.get(subscription, :owner_scene_instance_ref),
+        owner_epoch: Map.get(subscription, :owner_epoch)
+      })
     end
   end
 
@@ -932,6 +1165,68 @@ defmodule GateServer.WsConnection do
 
   defp observe_message_summary(message), do: message
 
+  defp handle_voxel_debug_command("voxel_rebind" <> _rest = command, state) do
+    case parse_voxel_rebind_command(command) do
+      {:ok, logical_scene_id, region_selector} ->
+        {next_state, result} =
+          rebind_voxel_subscriptions_in_state(
+            state,
+            logical_scene_id,
+            region_selector,
+            :debug_probe
+          )
+
+        text =
+          [
+            "voxel_rebind=ok",
+            "logical_scene_id=#{logical_scene_id}",
+            "region_selector=#{region_selector}",
+            "rebound_count=#{result.rebound_count}",
+            "skipped_count=#{result.skipped_count}",
+            "error_count=#{result.error_count}",
+            voxel_debug_result("voxel_transport", next_state)
+          ]
+          |> Enum.join("\n")
+
+        {text, next_state}
+
+      {:error, reason} ->
+        {"voxel_rebind=error\nreason=#{reason}", state}
+    end
+  end
+
+  defp handle_voxel_debug_command(command, state), do: {voxel_debug_result(command, state), state}
+
+  defp parse_voxel_rebind_command(command) do
+    case String.split(command, ~r/\s+/, trim: true) do
+      ["voxel_rebind", logical_scene_id] ->
+        with {:ok, logical_scene_id} <- parse_non_negative_integer(logical_scene_id) do
+          {:ok, logical_scene_id, :all}
+        end
+
+      ["voxel_rebind", logical_scene_id, "all"] ->
+        with {:ok, logical_scene_id} <- parse_non_negative_integer(logical_scene_id) do
+          {:ok, logical_scene_id, :all}
+        end
+
+      ["voxel_rebind", logical_scene_id, region_id] ->
+        with {:ok, logical_scene_id} <- parse_non_negative_integer(logical_scene_id),
+             {:ok, region_id} <- parse_non_negative_integer(region_id) do
+          {:ok, logical_scene_id, region_id}
+        end
+
+      _other ->
+        {:error, :usage_voxel_rebind_logical_scene_id_region_id_or_all}
+    end
+  end
+
+  defp parse_non_negative_integer(value) do
+    case Integer.parse(value) do
+      {int, ""} when int >= 0 -> {:ok, int}
+      _other -> {:error, :invalid_integer}
+    end
+  end
+
   defp voxel_debug_result("voxel_transport", state) do
     [
       "voxel_sync=server-authoritative",
@@ -941,6 +1236,7 @@ defmodule GateServer.WsConnection do
       "scene_attached=#{not is_nil(state.scene_ref)}",
       "voxel_subscription_count=#{map_size(state.voxel_subscriptions)}",
       "voxel_subscriptions=#{inspect(state.voxel_subscriptions |> Map.keys() |> Enum.take(16))}",
+      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(state.voxel_subscriptions))}",
       "confirmed_chunk_versions={}",
       "inflight_intent_count=0",
       "voxel_codec_endian=big",
@@ -956,6 +1252,23 @@ defmodule GateServer.WsConnection do
       "voxel_debug=unknown_command"
     ]
     |> Enum.join("\n")
+  end
+
+  defp voxel_subscription_debug(subscriptions) do
+    subscriptions
+    |> Map.values()
+    |> Enum.take(16)
+    |> Enum.map(fn subscription ->
+      Map.take(subscription, [
+        :logical_scene_id,
+        :chunk_coord,
+        :region_id,
+        :lease_id,
+        :owner_scene_instance_ref,
+        :owner_epoch,
+        :scene_node
+      ])
+    end)
   end
 
   defp build_input_frame(%{} = frame) do

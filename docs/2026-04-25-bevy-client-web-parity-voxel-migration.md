@@ -10,8 +10,9 @@ back into `clients/bevy_client`:
 3. user-operable entrypoints: 3D GUI controls, stdio CLI, and server-free voxel headless smoke.
 4. structured verification: `client_stdio ...` lines plus observe logs under `.demo/observe/`.
 
-Voxel remains **offline-local**, matching the browser client. It does not sync
-through gate/scene server yet.
+Voxel remains **offline-local** for the Bevy parity slice. The browser client
+now defaults to server-authoritative voxel S1, so this document is historical
+for Bevy migration scope rather than the current browser runtime contract.
 
 ## Web-Parity Checklist
 

@@ -60,6 +60,31 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  Persists hot source chunks for one migration slice before World cutover.
+
+  This is the Scene-side drain hook for migrations. It does not change routing
+  or lease ownership; it only asks already-hot source chunk processes inside the
+  slice to persist their latest storage with the old lease fence. Chunks that
+  are not hot in this directory are reported as `:not_hot`.
+  """
+  def persist_handoff_slice(handoff, slice) when is_map(handoff) and is_map(slice) do
+    persist_handoff_slice(__MODULE__, handoff, slice, [])
+  end
+
+  def persist_handoff_slice(server, handoff, slice) when is_map(handoff) and is_map(slice) do
+    persist_handoff_slice(server, handoff, slice, [])
+  end
+
+  def persist_handoff_slice(server, handoff, slice, opts)
+      when is_map(handoff) and is_map(slice) and is_list(opts) do
+    GenServer.call(
+      server,
+      {:persist_handoff_slice, handoff, slice, opts},
+      Keyword.get(opts, :timeout, 30_000)
+    )
+  end
+
+  @doc """
   Applies a World-authorized voxel write intent to a hot chunk.
 
   The directory owns chunk lookup/startup only. `ChunkProcess` remains the owner
@@ -166,6 +191,16 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
+  def handle_call({:persist_handoff_slice, handoff, slice, _opts}, _from, state) do
+    with {:ok, handoff} <- normalize_source_handoff(handoff),
+         {:ok, slice} <- normalize_source_slice(slice) do
+      reply = persist_handoff_slice_in_state(state, handoff, slice)
+      {:reply, reply, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:apply_intent, attrs}, _from, state) do
     case normalize_apply_intent_attrs(attrs) do
       {:ok, attrs} ->
@@ -199,6 +234,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     case Map.get(state.chunks, key) do
       pid when is_pid(pid) ->
         if Process.alive?(pid) do
+          maybe_apply_chunk_lease(pid, Map.get(attrs, :lease))
           {{:ok, pid}, state}
         else
           start_chunk(state, key, attrs)
@@ -235,6 +271,13 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {:error, reason} ->
         {{:error, reason}, state}
     end
+  end
+
+  defp maybe_apply_chunk_lease(_pid, nil), do: :ok
+
+  defp maybe_apply_chunk_lease(pid, lease) do
+    _ = ChunkProcess.apply_lease(pid, lease)
+    :ok
   end
 
   defp normalize_attrs(attrs) when is_map(attrs) do
@@ -355,6 +398,72 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
+  defp persist_handoff_slice_in_state(state, handoff, slice) do
+    chunk_coords = slice_chunk_coords(slice)
+
+    results =
+      Enum.map(chunk_coords, fn chunk_coord ->
+        persist_source_chunk(state, handoff, chunk_coord)
+      end)
+
+    summary = %{
+      migration_id: handoff.migration_id,
+      logical_scene_id: handoff.logical_scene_id,
+      region_id: handoff.region_id,
+      slice_id: slice.slice_id,
+      chunk_count: length(results),
+      persisted_count: Enum.count(results, &(&1.status == :persisted)),
+      not_hot_count: Enum.count(results, &(&1.status == :not_hot)),
+      error_count: Enum.count(results, &(&1.status == :error)),
+      max_chunk_version: max_chunk_version(results),
+      chunks: results
+    }
+
+    CliObserve.emit("voxel_migration_source_slice_persisted", summary)
+
+    if summary.error_count == 0 do
+      {:ok, summary}
+    else
+      {:error, :migration_source_slice_persist_failed}
+    end
+  end
+
+  defp persist_source_chunk(state, handoff, chunk_coord) do
+    key = {handoff.logical_scene_id, chunk_coord}
+
+    case Map.get(state.chunks, key) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          persist_live_source_chunk(pid, handoff, chunk_coord)
+        else
+          %{chunk_coord: chunk_coord, status: :not_hot}
+        end
+
+      _other ->
+        %{chunk_coord: chunk_coord, status: :not_hot}
+    end
+  end
+
+  defp persist_live_source_chunk(chunk_pid, handoff, chunk_coord) do
+    with {:ok, _lease} <- ChunkProcess.apply_lease(chunk_pid, handoff.old_lease),
+         {:ok, persist_result} <- ChunkProcess.persist(chunk_pid),
+         %{chunk_version: chunk_version} <- ChunkProcess.debug_state(chunk_pid) do
+      %{
+        chunk_coord: chunk_coord,
+        status: :persisted,
+        persist_result: persist_result,
+        chunk_version: chunk_version
+      }
+    else
+      {:error, reason} ->
+        %{
+          chunk_coord: chunk_coord,
+          status: :error,
+          reason: reason
+        }
+    end
+  end
+
   defp prewarm_chunk(state, handoff, chunk_coord) do
     attrs = %{
       logical_scene_id: handoff.logical_scene_id,
@@ -416,6 +525,12 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
+  defp max_chunk_version(chunks) do
+    chunks
+    |> Enum.map(&Map.get(&1, :chunk_version, 0))
+    |> Enum.max(fn -> 0 end)
+  end
+
   defp slice_chunk_coords(%{bounds_chunk_min: min_coord, bounds_chunk_max: max_coord}) do
     {min_x, min_y, min_z} = min_coord
     {max_x, max_y, max_z} = max_coord
@@ -440,6 +555,43 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   defp normalize_apply_intent_attrs(_attrs), do: {:error, :invalid_voxel_intent}
+
+  defp normalize_source_handoff(handoff) when is_map(handoff) do
+    old_lease = Map.fetch!(handoff, :old_lease)
+
+    if is_nil(old_lease) do
+      {:error, :missing_source_lease}
+    else
+      {:ok,
+       %{
+         migration_id: Map.fetch!(handoff, :migration_id),
+         logical_scene_id: Map.fetch!(handoff, :logical_scene_id),
+         region_id: Map.fetch!(handoff, :region_id),
+         old_lease: old_lease
+       }}
+    end
+  rescue
+    _exception in [ArgumentError, KeyError] -> {:error, :invalid_migration_handoff}
+  end
+
+  defp normalize_source_handoff(_handoff), do: {:error, :invalid_migration_handoff}
+
+  defp normalize_source_slice(slice) when is_map(slice) do
+    min_coord = coord!(Map.fetch!(slice, :bounds_chunk_min))
+    max_coord = coord!(Map.fetch!(slice, :bounds_chunk_max))
+    validate_slice_bounds!(min_coord, max_coord)
+
+    {:ok,
+     %{
+       slice_id: Map.fetch!(slice, :slice_id),
+       bounds_chunk_min: min_coord,
+       bounds_chunk_max: max_coord
+     }}
+  rescue
+    _exception in [ArgumentError, KeyError] -> {:error, :invalid_migration_slice}
+  end
+
+  defp normalize_source_slice(_slice), do: {:error, :invalid_migration_slice}
 
   defp emit_apply_intent_result(attrs, reply) do
     CliObserve.emit("voxel_directory_intent_result", fn ->

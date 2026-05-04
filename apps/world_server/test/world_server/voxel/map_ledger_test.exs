@@ -193,11 +193,76 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     assert handoff.new_lease.lease_id == 101
     assert handoff.planned_slices == [slice_0, slice_1]
 
+    assert {:error, :migration_prewarm_ack_incomplete} =
+             MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, acked_plan_0, acked_slice_0} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000,
+               loaded_count: 8,
+               empty_count: 0,
+               max_chunk_version: 4
+             })
+
+    assert acked_slice_0.state == :prewarmed
+    assert acked_plan_0.prewarm_acks[slice_0.slice_id].loaded_count == 8
+
+    assert {:error, :migration_prewarm_ack_incomplete} =
+             MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _acked_plan_1, acked_slice_1} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice_1.slice_id,
+               scene_ref: 2_000,
+               loaded_count: 8,
+               empty_count: 0,
+               max_chunk_version: 4
+             })
+
+    assert acked_slice_1.state == :prewarmed
+
     assert {:ok, prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
     assert prewarmed_plan.state == :prewarmed
+    assert map_size(prewarmed_plan.prewarm_acks) == 2
 
     assert {:ok, snapshot_before_cutover} = MapLedger.migration_snapshot(ledger, migration_id)
     assert snapshot_before_cutover.state == :prewarmed
+
+    assert {:error, :migration_final_catchup_ack_incomplete} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert {:ok, _caught_up_plan_0, caught_up_slice_0} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000,
+               loaded_count: 8,
+               empty_count: 0,
+               max_chunk_version: 5,
+               source_persisted_count: 8,
+               source_missing_count: 0,
+               source_error_count: 0
+             })
+
+    assert caught_up_slice_0.final_catchup_ack.max_chunk_version == 5
+
+    assert {:error, :migration_final_catchup_ack_incomplete} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert {:ok, caught_up_plan_1, caught_up_slice_1} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice_1.slice_id,
+               scene_ref: 2_000,
+               loaded_count: 8,
+               empty_count: 0,
+               max_chunk_version: 5,
+               source_persisted_count: 8,
+               source_missing_count: 0,
+               source_error_count: 0
+             })
+
+    assert caught_up_slice_1.final_catchup_ack.max_chunk_version == 5
+    assert map_size(caught_up_plan_1.final_catchup_acks) == 2
 
     assert {:ok, cutover_plan} = MapLedger.cutover_migration(ledger, migration_id)
     assert cutover_plan.state == :cutover
@@ -222,6 +287,75 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
     snapshot = MapLedger.snapshot(ledger)
     assert snapshot.migrations[migration_id].state == :completed
+  end
+
+  test "rejects final catch-up ack before migration is prewarmed" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-catchup-too-early"
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 2, 2}, 1_000)
+
+    assert {:ok, _lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:error, :migration_not_prewarmed} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+  end
+
+  test "rejects slice prewarm ack from the wrong target scene" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-wrong-target"
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 2, 2}, 1_000)
+
+    assert {:ok, _lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:error, :migration_slice_ack_scene_mismatch} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 3_000
+             })
+
+    assert {:error, :migration_prewarm_incomplete} =
+             MapLedger.mark_prewarmed(ledger, migration_id)
   end
 
   test "builds deterministic lease-scoped transaction participants" do

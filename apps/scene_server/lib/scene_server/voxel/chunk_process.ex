@@ -367,13 +367,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
     with :ok <- validate_intent_scope(state, intent),
          {:ok, next_storage} <- build_intent_storage(state.storage, intent) do
       snapshot_payload = encode_snapshot_payload(next_storage, intent.request_id)
+      persist_payload = encode_snapshot_payload(next_storage, 0)
 
       case persist_snapshot(
              state.snapshot_store,
              intent.lease,
              state.chunk_coord,
              next_storage,
-             snapshot_payload
+             persist_payload
            ) do
         {:ok, persist_result} ->
           next_state = %{state | storage: next_storage, lease: intent.lease}

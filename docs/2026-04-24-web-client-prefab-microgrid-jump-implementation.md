@@ -2,14 +2,14 @@
 
 ## 1. 当前结论
 
-`clients/web_client` 当前仍是 **voxel offline-local + movement server-ws 优先** 的浏览器验证客户端。  
+`clients/web_client` 当前是 **server-authoritative voxel S1 + movement server-ws 优先** 的浏览器验证客户端；`VITE_VOXEL_SYNC=offline` 保留原本的本地 prefab / microgrid 调试面。
 本轮实现把三个用户可见问题收口到同一条客户端运行时边界上：
 
 1. 内置 prefab：`builtin_sphere`、`builtin_cylinder`、`builtin_stairs` 已落在 refined micro occupancy 上。
 2. microgrid：当前浏览器端量化为 `8x8x8 = 512` slots，用于 prefab/refined 数据，不作为玩家可直接放置的方块单位。
 3. Space jump：输入、预测、日志、frame trace 和 avatar 显示高度现在能在真实浏览器路径中闭环验证。
 
-服务端权威第一版规范见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，server v1 与浏览器端统一采用 `MicroPerMacro=8`。MMO 模式下，浏览器本地编辑仍只作为 offline-local 验证面；服务端接入后，体素 confirmed data 必须只由服务器 snapshot/delta/result 更新。
+服务端权威第一版规范见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`，server v1 与浏览器端统一采用 `MicroPerMacro=8`。MMO 模式下，体素 confirmed data 必须只由服务器 snapshot/delta/result 更新；浏览器本地 prefab / microgrid 写入仅在 offline 调试模式可用。
 
 ## 2. 文件职责
 

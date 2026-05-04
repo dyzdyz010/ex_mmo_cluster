@@ -64,6 +64,10 @@ export class ChunkStorage {
     return new ChunkStorage(data);
   }
 
+  static fromData(data: FChunkStorageData): ChunkStorage {
+    return new ChunkStorage(cloneChunkStorageData(data));
+  }
+
   getHeaderAt(localMacro: FMacroCoord): FMacroCellHeader | null {
     const idx = macroLinearIndex(localMacro);
     if (idx < 0) {
@@ -578,6 +582,62 @@ export class ChunkStorage {
     }
     return current & mask;
   }
+}
+
+function cloneChunkStorageData(data: FChunkStorageData): FChunkStorageData {
+  return {
+    chunkCoord: { ...data.chunkCoord },
+    macroHeaders: data.macroHeaders.map((header) => ({ ...header })),
+    normalBlocks: data.normalBlocks.map(cloneNormalBlock),
+    refinedCells: data.refinedCells.map((cell) =>
+      normalizeRefinedCell({
+        microOccupancyMask: cell.microOccupancyMask,
+        microMaterialIds: [...cell.microMaterialIds],
+        microStateFlags: [...cell.microStateFlags],
+        microPartIds: [...cell.microPartIds],
+        prefabInstanceIds: [...cell.prefabInstanceIds],
+        boundaryCache: cell.boundaryCache,
+      }),
+    ),
+    prefabInstances: data.prefabInstances.map(clonePrefabInstance),
+    environmentSummaries: data.environmentSummaries.map(cloneEnvironmentSummary),
+    freeNormalBlockIndices: [...data.freeNormalBlockIndices],
+    freeEnvironmentSummaryIndices: [...data.freeEnvironmentSummaryIndices],
+    dirtyMacroMin: { ...data.dirtyMacroMin },
+    dirtyMacroMax: { ...data.dirtyMacroMax },
+    dirtyFlags: data.dirtyFlags,
+  };
+}
+
+function cloneNormalBlock(block: FNormalBlockData): FNormalBlockData {
+  const cloned: FNormalBlockData = {
+    materialId: block.materialId,
+    stateFlags: block.stateFlags,
+    health: block.health,
+    temperatureDelta: block.temperatureDelta,
+    moistureDelta: block.moistureDelta,
+  };
+  if (block.attributeSetRef !== undefined) {
+    cloned.attributeSetRef = block.attributeSetRef;
+  }
+  if (block.tagSetRef !== undefined) {
+    cloned.tagSetRef = block.tagSetRef;
+  }
+  return cloned;
+}
+
+function cloneEnvironmentSummary(summary: FMacroEnvironmentSummary): FMacroEnvironmentSummary {
+  const cloned: FMacroEnvironmentSummary = {
+    defaultTemperature: summary.defaultTemperature,
+    defaultMoisture: summary.defaultMoisture,
+    currentTemperature: summary.currentTemperature,
+    currentMoisture: summary.currentMoisture,
+    fieldMask: summary.fieldMask,
+  };
+  if (summary.sourceHash !== undefined) {
+    cloned.sourceHash = summary.sourceHash;
+  }
+  return cloned;
 }
 
 function makeEmptyRefinedCell(): FRefinedCellData {

@@ -58,6 +58,22 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only JSON hook that prepares the default server-authoritative voxel lease.
+
+  This is intentionally tied to `:dev_auto_login` because it exists for local
+  browser smoke runs, not for production gameplay authority management.
+  """
+  def voxel_dev_seed(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_dev_seed(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -91,6 +107,29 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  defp do_voxel_dev_seed(conn, params) do
+    module = Module.concat([WorldServer, Voxel, DevSeed])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <-
+           apply(module, :ensure_default_region, [[logical_scene_id: logical_scene_id]]) do
+      json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel dev seed failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "voxel_dev_seed_failed", reason: inspect(reason)})
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
   defp normalize_username(value) when is_binary(value) do
     trimmed = String.trim(value)
 
@@ -102,6 +141,17 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp normalize_username(_), do: nil
+
+  defp parse_non_negative_int(value, _fallback) when is_integer(value) and value >= 0, do: value
+
+  defp parse_non_negative_int(value, fallback) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _other -> fallback
+    end
+  end
+
+  defp parse_non_negative_int(_value, fallback), do: fallback
 
   defp session_claim_options(params, account) do
     []

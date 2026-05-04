@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const srcDir = resolve(__dirname, "src");
+const ingameProxyTarget = process.env.VITE_INGAME_PROXY_TARGET || "http://127.0.0.1:4000";
 
 export default defineConfig({
   resolve: {
@@ -21,7 +22,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/ingame": {
-        target: "http://127.0.0.1:4000",
+        target: ingameProxyTarget,
         changeOrigin: true,
         ws: true,
       },

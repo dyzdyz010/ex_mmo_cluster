@@ -22,6 +22,7 @@ import {
   type WorldEditStats,
 } from "./worldSnapshot";
 import type {
+  FChunkStorageData,
   FMacroEnvironmentSummary,
   FNormalBlockData,
   FPrefabInstanceData,
@@ -33,12 +34,25 @@ export interface ChunkSummary {
   key: string;
   solidBlocks: number;
   dirtyFlags: number;
+  logicalSceneId?: number;
+  chunkVersion?: number;
+  chunkHash?: number;
+}
+
+export interface AuthoritativeChunkMetadata {
+  requestId: number;
+  logicalSceneId: number;
+  schemaVersion: number;
+  chunkVersion: number;
+  chunkHash: number;
+  receivedAtMs: number;
 }
 
 export type { SerializedWorldSnapshot, WorldEditStats } from "./worldSnapshot";
 
 export class WorldStore {
   private readonly chunks = new Map<string, ChunkStorage>();
+  private readonly authoritativeChunkMetadata = new Map<string, AuthoritativeChunkMetadata>();
   readonly editStats: WorldEditStats = {
     placed: 0,
     broken: 0,
@@ -61,6 +75,39 @@ export class WorldStore {
     return this.chunks.get(chunkCoordKey(coord)) ?? null;
   }
 
+  replaceChunkStorage(
+    data: FChunkStorageData,
+    metadata?: AuthoritativeChunkMetadata,
+  ): ChunkStorage {
+    const chunk = ChunkStorage.fromData(data);
+    const key = chunkCoordKey(data.chunkCoord);
+    this.chunks.set(key, chunk);
+    if (metadata) {
+      this.authoritativeChunkMetadata.set(key, { ...metadata });
+    } else {
+      this.authoritativeChunkMetadata.delete(key);
+    }
+    return chunk;
+  }
+
+  getChunkAuthorityMetadata(coord: FChunkCoord): AuthoritativeChunkMetadata | null {
+    const metadata = this.authoritativeChunkMetadata.get(chunkCoordKey(coord));
+    return metadata ? { ...metadata } : null;
+  }
+
+  authoritativeChunkSummaries(limit = 16): Array<AuthoritativeChunkMetadata & { coord: FChunkCoord; key: string }> {
+    return this.listChunks()
+      .slice(0, limit)
+      .flatMap((chunk) => {
+        const key = chunkCoordKey(chunk.data.chunkCoord);
+        const metadata = this.authoritativeChunkMetadata.get(key);
+        if (!metadata) {
+          return [];
+        }
+        return [{ ...metadata, coord: { ...chunk.data.chunkCoord }, key }];
+      });
+  }
+
   listChunks(): ChunkStorage[] {
     return [...this.chunks.values()].sort((a, b) =>
       chunkCoordKey(a.data.chunkCoord).localeCompare(chunkCoordKey(b.data.chunkCoord)),
@@ -75,6 +122,7 @@ export class WorldStore {
         key: chunkCoordKey(chunk.data.chunkCoord),
         solidBlocks: chunk.countSolidBlocks(),
         dirtyFlags: chunk.data.dirtyFlags,
+        ...this.chunkAuthoritySummaryFields(chunk.data.chunkCoord),
       }));
   }
 
@@ -92,6 +140,7 @@ export class WorldStore {
       clearChunks: () => this.chunks.clear(),
       ensureChunk: (coord) => this.ensureChunk(coord),
     });
+    this.authoritativeChunkMetadata.clear();
   }
 
   isSolidWorldMacroCoord(worldMacro: FMacroCoord): boolean {
@@ -329,6 +378,20 @@ export class WorldStore {
 
   seedRegionalShowcase(radius: number = 2): void {
     seedRegionalShowcaseWorld(this, radius);
+  }
+
+  private chunkAuthoritySummaryFields(
+    coord: FChunkCoord,
+  ): Pick<ChunkSummary, "logicalSceneId" | "chunkVersion" | "chunkHash"> {
+    const metadata = this.getChunkAuthorityMetadata(coord);
+    if (!metadata) {
+      return {};
+    }
+    return {
+      logicalSceneId: metadata.logicalSceneId,
+      chunkVersion: metadata.chunkVersion,
+      chunkHash: metadata.chunkHash,
+    };
   }
 
   private resolveChunkAndLocal(

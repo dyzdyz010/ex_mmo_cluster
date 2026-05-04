@@ -1,6 +1,6 @@
 import type { Vector3 } from "three";
 import type { AoiPriorityBand, MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
-import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
+import type { FChunkCoord, FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
 
 /**
@@ -74,6 +74,29 @@ export type AppEvents = {
 
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };
   "world:block-broken": { coord: FMacroCoord; source: string };
+  "world:chunk-subscribed": {
+    requestId: number;
+    logicalSceneId: number;
+    centerChunk: FChunkCoord;
+    radiusLInf: number;
+  };
+  "world:chunk-snapshot-applied": {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    chunkVersion: number;
+    chunkHash: number;
+    solidBlocks: number;
+  };
+  "world:voxel-intent-result": {
+    requestId: number;
+    clientIntentSeq: number;
+    logicalSceneId: number;
+    resultCodeName: string;
+    resultRef: number;
+    reason: string;
+  };
+  "world:voxel-sync-error": { reason: string; source: string };
   "world:prefab-placed": { name: string; origin: FMacroCoord; placed: number; source: string };
   "world:prefab-snap-committed": {
     prefabId: string;

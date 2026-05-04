@@ -65,6 +65,7 @@ describe("HudView", () => {
     };
     const world = {
       mode: "offline-local",
+      debugSnapshot: () => ({ mode: "offline-local" }),
       store: {
         listChunks: () => [],
         totalSolidBlocks: () => 0,

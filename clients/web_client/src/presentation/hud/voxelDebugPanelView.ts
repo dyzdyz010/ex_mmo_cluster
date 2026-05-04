@@ -1,0 +1,341 @@
+import type { FrameSubscriber } from "../../app/gameLoop";
+import type { CliCommandResult } from "../../observe/cli";
+import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+
+export interface VoxelDebugPanelCommandPort {
+  executeCliCommand(command: string, args: string[]): CliCommandResult;
+}
+
+type VoxelPanelButtonTarget = {
+  getAttribute(name: string): string | null;
+};
+
+type VoxelPanelInputTarget = {
+  value: string;
+  getAttribute(name: string): string | null;
+};
+
+interface VoxelPanelFormState {
+  subscribeCx: string;
+  subscribeCy: string;
+  subscribeCz: string;
+  subscribeRadius: string;
+  impactX: string;
+  impactY: string;
+  impactZ: string;
+  material: string;
+}
+
+const PANEL_REFRESH_INTERVAL_MS = 250;
+
+const DefaultFormState: VoxelPanelFormState = {
+  subscribeCx: "0",
+  subscribeCy: "0",
+  subscribeCz: "0",
+  subscribeRadius: "0",
+  impactX: "0",
+  impactY: "0",
+  impactZ: "0",
+  material: "1",
+};
+
+/**
+ * Visible server-authoritative voxel control surface. It owns only DOM
+ * projection; commands are delegated to the same DevTools handler as the CLI.
+ */
+export class VoxelDebugPanelView implements FrameSubscriber {
+  private refreshAccumulatorMs = PANEL_REFRESH_INTERVAL_MS;
+  private renderKey = "";
+  private formState: VoxelPanelFormState = { ...DefaultFormState };
+  private lastResult: CliCommandResult | null = null;
+
+  constructor(
+    private readonly panel: HTMLDivElement,
+    private readonly commands: VoxelDebugPanelCommandPort,
+    private readonly world: VoxelWorldAdapter,
+  ) {
+    this.panel.addEventListener("click", this.handleClick);
+    this.panel.addEventListener("input", this.handleInput);
+    this.panel.addEventListener("pointerdown", this.stopWorldEditPointer);
+    this.renderNow(true);
+  }
+
+  onFrame(_nowMs: number, dtMs: number): void {
+    this.refreshAccumulatorMs += dtMs;
+    if (this.refreshAccumulatorMs < PANEL_REFRESH_INTERVAL_MS) {
+      return;
+    }
+    this.refreshAccumulatorMs = 0;
+    this.renderNow();
+  }
+
+  dispose(): void {
+    this.panel.removeEventListener("click", this.handleClick);
+    this.panel.removeEventListener("input", this.handleInput);
+    this.panel.removeEventListener("pointerdown", this.stopWorldEditPointer);
+    this.panel.innerHTML = "";
+  }
+
+  private readonly handleClick = (event: MouseEvent): void => {
+    const button = closestVoxelPanelButton(event.target);
+    if (!button) {
+      return;
+    }
+
+    const action = button.getAttribute("data-voxel-action");
+    if (!action) {
+      return;
+    }
+
+    event.preventDefault();
+    this.lastResult = this.runAction(action);
+    this.renderKey = "";
+    this.renderNow(true);
+  };
+
+  private readonly handleInput = (event: Event): void => {
+    const input = voxelPanelInput(event.target);
+    if (!input) {
+      return;
+    }
+
+    const field = input.getAttribute("data-voxel-input");
+    if (isVoxelPanelField(field)) {
+      this.formState = { ...this.formState, [field]: input.value };
+    }
+  };
+
+  private readonly stopWorldEditPointer = (event: PointerEvent): void => {
+    event.stopPropagation();
+  };
+
+  private runAction(action: string): CliCommandResult {
+    switch (action) {
+      case "refresh":
+        return this.commands.executeCliCommand("voxel_sync", []);
+      case "probe":
+        return this.commands.executeCliCommand("voxel_probe", []);
+      case "rebind":
+        return this.commands.executeCliCommand("voxel_probe", [
+          `voxel_rebind ${this.logicalSceneId()} all`,
+        ]);
+      case "versions":
+        return this.commands.executeCliCommand("chunk_versions", []);
+      case "subscribe":
+        return this.commands.executeCliCommand("voxel_subscribe", [
+          this.formState.subscribeCx,
+          this.formState.subscribeCy,
+          this.formState.subscribeCz,
+          this.formState.subscribeRadius,
+        ]);
+      case "impact":
+        return this.commands.executeCliCommand("voxel_impact", [
+          this.formState.impactX,
+          this.formState.impactY,
+          this.formState.impactZ,
+          this.formState.material,
+        ]);
+      default:
+        return { ok: false, command: action, text: "unknown voxel panel action" };
+    }
+  }
+
+  private logicalSceneId(): number {
+    return numberAt(this.world.debugSnapshot(), "logicalSceneId") ?? 1;
+  }
+
+  private renderNow(force = false): void {
+    const snapshot = this.world.debugSnapshot();
+    const nextKey = JSON.stringify({
+      snapshot: summarizeVoxelSnapshot(snapshot),
+      formState: this.formState,
+      lastResult: summarizeResult(this.lastResult),
+    });
+
+    if (!force && nextKey === this.renderKey) {
+      return;
+    }
+
+    this.panel.innerHTML = renderVoxelDebugPanelHtml(snapshot, this.formState, this.lastResult);
+    this.renderKey = nextKey;
+  }
+}
+
+export function renderVoxelDebugPanelHtml(
+  snapshot: Record<string, unknown>,
+  formState: VoxelPanelFormState = DefaultFormState,
+  lastResult: CliCommandResult | null = null,
+): string {
+  const summary = summarizeVoxelSnapshot(snapshot);
+  const resultClass = lastResult ? (lastResult.ok ? " is-ok" : " is-error") : "";
+  const resultText = lastResult
+    ? `${lastResult.command}: ${lastResult.text}`
+    : `${summary.mode} / ${summary.subscriptionState}`;
+
+  return [
+    `<section class="voxel-panel-surface" aria-label="Server voxel">`,
+    `<div class="voxel-panel-header">`,
+    `<span class="voxel-panel-title">Server Voxel</span>`,
+    `<span class="voxel-panel-badge" data-voxel-panel-status>${escapeHtml(summary.subscriptionState)}</span>`,
+    `</div>`,
+    `<dl class="voxel-panel-stats">`,
+    renderStat("mode", summary.mode),
+    renderStat("seed", summary.seedState),
+    renderStat("snapshots", summary.snapshotCount),
+    renderStat("chunk", summary.lastChunk),
+    renderStat("intent", summary.lastIntent),
+    `</dl>`,
+    `<div class="voxel-panel-actions" role="toolbar" aria-label="Voxel sync actions">`,
+    renderButton("refresh", "Sync"),
+    renderButton("probe", "Probe"),
+    renderButton("rebind", "Rebind"),
+    renderButton("versions", "Versions"),
+    `</div>`,
+    `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
+    renderNumberInput("subscribeCx", "Sub X", formState.subscribeCx),
+    renderNumberInput("subscribeCy", "Sub Y", formState.subscribeCy),
+    renderNumberInput("subscribeCz", "Sub Z", formState.subscribeCz),
+    renderNumberInput("subscribeRadius", "R", formState.subscribeRadius, 0),
+    renderButton("subscribe", "Subscribe"),
+    `</div>`,
+    `<div class="voxel-panel-form voxel-panel-form--impact">`,
+    renderNumberInput("impactX", "X", formState.impactX),
+    renderNumberInput("impactY", "Y", formState.impactY),
+    renderNumberInput("impactZ", "Z", formState.impactZ),
+    renderNumberInput("material", "Mat", formState.material, 1),
+    renderButton("impact", "Impact"),
+    `</div>`,
+    `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
+    `</section>`,
+  ].join("");
+}
+
+function renderStat(label: string, value: string): string {
+  return [
+    `<div class="voxel-panel-stat">`,
+    `<dt>${escapeHtml(label)}</dt>`,
+    `<dd>${escapeHtml(value)}</dd>`,
+    `</div>`,
+  ].join("");
+}
+
+function renderButton(action: string, label: string): string {
+  return [
+    `<button class="voxel-panel-button" type="button"`,
+    ` data-voxel-action="${escapeHtml(action)}"`,
+    ` aria-label="${escapeHtml(label)}">`,
+    escapeHtml(label),
+    `</button>`,
+  ].join("");
+}
+
+function renderNumberInput(
+  field: keyof VoxelPanelFormState,
+  label: string,
+  value: string,
+  min?: number,
+): string {
+  const minAttr = min === undefined ? "" : ` min="${min}"`;
+  return [
+    `<label class="voxel-panel-input">`,
+    `<span>${escapeHtml(label)}</span>`,
+    `<input type="number"${minAttr} value="${escapeHtml(value)}"`,
+    ` data-voxel-input="${field}" aria-label="${escapeHtml(label)}" />`,
+    `</label>`,
+  ].join("");
+}
+
+function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
+  const lastSnapshot = objectAt(snapshot, "lastSnapshot");
+  const lastIntent = objectAt(snapshot, "lastIntentResult");
+  const transport = objectAt(snapshot, "transport");
+  const snapshotCount = numberText(transport?.receivedVoxelSnapshotCount);
+  const chunkCoord = stringAt(lastSnapshot, "chunkCoord") ?? "none";
+  const chunkVersion = numberText(lastSnapshot?.chunkVersion);
+  const intentCode = stringAt(lastIntent, "resultCodeName") ?? "none";
+  const intentRef = numberText(lastIntent?.resultRef);
+
+  return {
+    mode: stringAt(snapshot, "mode") ?? "unknown",
+    seedState: stringAt(snapshot, "seedState") ?? "n/a",
+    subscriptionState: stringAt(snapshot, "subscriptionState") ?? "n/a",
+    snapshotCount,
+    lastChunk: `${chunkCoord} v${chunkVersion}`,
+    lastIntent: `${intentCode} #${intentRef}`,
+  };
+}
+
+function summarizeResult(result: CliCommandResult | null): Record<string, unknown> | null {
+  if (!result) {
+    return null;
+  }
+  return { ok: result.ok, command: result.command, text: result.text };
+}
+
+function objectAt(
+  source: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = source?.[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringAt(source: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberAt(source: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = source?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function numberText(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
+}
+
+function closestVoxelPanelButton(target: EventTarget | null): VoxelPanelButtonTarget | null {
+  const candidate = target as { closest?: (selector: string) => unknown } | null;
+  const button = candidate?.closest?.("[data-voxel-action]");
+  if (!button || typeof (button as { getAttribute?: unknown }).getAttribute !== "function") {
+    return null;
+  }
+  return button as VoxelPanelButtonTarget;
+}
+
+function voxelPanelInput(target: EventTarget | null): VoxelPanelInputTarget | null {
+  const candidate = target as Partial<VoxelPanelInputTarget> | null;
+  if (
+    !candidate ||
+    typeof candidate.value !== "string" ||
+    typeof candidate.getAttribute !== "function"
+  ) {
+    return null;
+  }
+  return candidate as VoxelPanelInputTarget;
+}
+
+function isVoxelPanelField(field: string | null): field is keyof VoxelPanelFormState {
+  return field !== null && Object.prototype.hasOwnProperty.call(DefaultFormState, field);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
+}

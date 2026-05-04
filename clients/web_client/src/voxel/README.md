@@ -13,6 +13,8 @@
 - `storage/` 拥有 Chunk 真相层。
 - `meshing/` 负责把真相层转成几何输入。
 - `worldStore.ts` 拥有多 Chunk 世界级索引、编辑统计，以及世界级读写 API。
+- `worldAdapter.ts` 定义 UI / CLI 访问体素世界的端口；`LocalVoxelWorldAdapter` 拥有离线本地 truth。
+- `onlineVoxelWorldAdapter.ts` 是 server-authoritative 适配器：它不让 UI 直接写本地 truth，而是提交服务端 intent、订阅 chunk snapshot，并在 snapshot 到达时一次性替换 `WorldStore` 中对应 chunk。
 - `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
 - `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
 - `prefab.ts` 负责浏览器本地 Prefab Definition/Instance 编排。当前阶段已按 UE

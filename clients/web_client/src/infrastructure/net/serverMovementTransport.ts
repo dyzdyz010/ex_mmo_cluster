@@ -6,6 +6,17 @@ import {
   encodeHeartbeat,
   encodeMovementInput,
 } from "./gateProtocol";
+import {
+  decodeVoxelServerMessage,
+  encodeVoxelChunkSubscribe,
+  encodeVoxelChunkUnsubscribe,
+  encodeVoxelDebugProbe,
+  encodeVoxelImpactIntent,
+  type VoxelChunkSnapshotMessage,
+  type VoxelDebugProbeMessage,
+  type VoxelIntentResultMessage,
+  type VoxelKnownChunk,
+} from "./voxelProtocol";
 import type { ObserveLog } from "../../observe/logger";
 import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
 import type {
@@ -14,6 +25,7 @@ import type {
   PendingMovementAck,
 } from "@domain/movement/transport";
 import { SimulatedLocalMovementTransport } from "./simulatedMovementTransport";
+import { chunkCoordKey, type FChunkCoord, type FMacroCoord } from "../../voxel/core/types";
 
 interface AutoLoginResponse {
   token: string;
@@ -44,6 +56,10 @@ export class ServerMovementTransport implements MovementTransport {
     serverRecvTs: number;
     serverSendTs: number;
   }[] = [];
+  private readonly voxelSnapshots: VoxelChunkSnapshotMessage[] = [];
+  private readonly voxelIntentResults: VoxelIntentResultMessage[] = [];
+  private readonly voxelDebugProbes: VoxelDebugProbeMessage[] = [];
+  private readonly voxelKnownVersions = new Map<string, number>();
   private readonly sentAtBySeq = new Map<number, number>();
   private spawnPosition: Vector3 | null = null;
   // Audit B-S1 / B-SRV2: server-reported next-input seq for the upcoming
@@ -60,6 +76,26 @@ export class ServerMovementTransport implements MovementTransport {
   private lastRemoteTickByCid = new Map<number, number>();
   private lastTimeSyncOffsetMs: number | null = null;
   private lastError: string | null = null;
+  private sentVoxelMessageCount = 0;
+  private receivedVoxelSnapshotCount = 0;
+  private receivedVoxelIntentResultCount = 0;
+  private receivedVoxelDebugProbeCount = 0;
+  private lastVoxelSnapshot: {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    chunkVersion: number;
+    chunkHash: number;
+  } | null = null;
+  private lastVoxelIntentResult: {
+    requestId: number;
+    clientIntentSeq: number;
+    logicalSceneId: number;
+    resultCodeName: string;
+    resultRef: number;
+    reason: string;
+  } | null = null;
+  private lastVoxelError: string | null = null;
 
   constructor(
     private readonly logger: ObserveLog,
@@ -100,6 +136,7 @@ export class ServerMovementTransport implements MovementTransport {
           hasToken: this.token !== null,
           authRequestId: this.authRequestId,
           enterSceneRequestId: this.enterSceneRequestId,
+          voxel: this.voxelDebugSnapshot(),
         },
         fallbackTransport: this.fallbackTransport.debugSnapshot(),
       };
@@ -130,7 +167,164 @@ export class ServerMovementTransport implements MovementTransport {
       lastError: this.lastError,
       authBaseUrl: this.authBaseUrl,
       webSocketUrl: this.webSocketUrl,
+      voxel: this.voxelDebugSnapshot(),
     };
+  }
+
+  canUseServerVoxel(): boolean {
+    return !this.usingFallback() && this.ready && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  getAuthBaseUrl(): string {
+    return this.authBaseUrl;
+  }
+
+  voxelDebugSnapshot(): Record<string, unknown> {
+    return {
+      available: this.canUseServerVoxel(),
+      queuedSnapshots: this.voxelSnapshots.length,
+      queuedIntentResults: this.voxelIntentResults.length,
+      queuedDebugProbes: this.voxelDebugProbes.length,
+      knownChunks: this.voxelKnownVersions.size,
+      sentVoxelMessageCount: this.sentVoxelMessageCount,
+      receivedVoxelSnapshotCount: this.receivedVoxelSnapshotCount,
+      receivedVoxelIntentResultCount: this.receivedVoxelIntentResultCount,
+      receivedVoxelDebugProbeCount: this.receivedVoxelDebugProbeCount,
+      lastSnapshot: this.lastVoxelSnapshot
+        ? {
+            ...this.lastVoxelSnapshot,
+            chunkCoord: chunkCoordKey(this.lastVoxelSnapshot.chunkCoord),
+          }
+        : null,
+      lastIntentResult: this.lastVoxelIntentResult,
+      lastError: this.lastVoxelError,
+    };
+  }
+
+  sendVoxelDebugProbe(command: string = "voxel_transport"): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      this.lastVoxelError = "voxel_transport_unavailable";
+      return null;
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(encodeVoxelDebugProbe(requestId, command));
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "debug_probe_sent", {
+      request_id: requestId,
+      command,
+      mode: this.mode,
+    });
+    return requestId;
+  }
+
+  sendVoxelChunkSubscribe(request: {
+    logicalSceneId: number;
+    centerChunk: FChunkCoord;
+    radiusLInf?: number;
+    wantSnapshot?: boolean;
+    known?: readonly VoxelKnownChunk[];
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      this.lastVoxelError = "voxel_transport_unavailable";
+      return null;
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelChunkSubscribe({
+        requestId,
+        logicalSceneId: request.logicalSceneId,
+        centerChunk: request.centerChunk,
+        radiusLInf: request.radiusLInf ?? 0,
+        wantSnapshot: request.wantSnapshot ?? true,
+        known: request.known ?? [],
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "chunk_subscribe_sent", {
+      request_id: requestId,
+      logical_scene_id: request.logicalSceneId,
+      center_chunk: chunkCoordKey(request.centerChunk),
+      radius_l_inf: request.radiusLInf ?? 0,
+      want_snapshot: request.wantSnapshot ?? true,
+      known_count: request.known?.length ?? 0,
+    });
+    return requestId;
+  }
+
+  sendVoxelChunkUnsubscribe(request: {
+    logicalSceneId: number;
+    chunks: readonly FChunkCoord[];
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      this.lastVoxelError = "voxel_transport_unavailable";
+      return null;
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelChunkUnsubscribe({
+        requestId,
+        logicalSceneId: request.logicalSceneId,
+        chunks: request.chunks,
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "chunk_unsubscribe_sent", {
+      request_id: requestId,
+      logical_scene_id: request.logicalSceneId,
+      chunk_count: request.chunks.length,
+    });
+    return requestId;
+  }
+
+  sendVoxelImpactIntent(request: {
+    logicalSceneId: number;
+    sourceSkillId: number;
+    targetWorldMicro: FMacroCoord;
+    impactKind: number;
+    clientIntentSeq: number;
+    clientHintHash?: number;
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      this.lastVoxelError = "voxel_transport_unavailable";
+      return null;
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelImpactIntent({
+        requestId,
+        clientIntentSeq: request.clientIntentSeq,
+        logicalSceneId: request.logicalSceneId,
+        sourceSkillId: request.sourceSkillId,
+        targetWorldMicro: request.targetWorldMicro,
+        impactKind: request.impactKind,
+        clientHintHash: request.clientHintHash ?? 0,
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "impact_intent_sent", {
+      request_id: requestId,
+      client_intent_seq: request.clientIntentSeq,
+      logical_scene_id: request.logicalSceneId,
+      target_world_micro: `${request.targetWorldMicro.x},${request.targetWorldMicro.y},${request.targetWorldMicro.z}`,
+      impact_kind: request.impactKind,
+    });
+    return requestId;
+  }
+
+  drainVoxelSnapshots(): VoxelChunkSnapshotMessage[] {
+    return this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
+  }
+
+  drainVoxelIntentResults(): VoxelIntentResultMessage[] {
+    return this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
+  }
+
+  drainVoxelDebugProbes(): VoxelDebugProbeMessage[] {
+    return this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
   }
 
   reset(position: Vector3): void {
@@ -140,6 +334,9 @@ export class ServerMovementTransport implements MovementTransport {
     this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
     this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
     this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
+    this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
+    this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
+    this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
 
@@ -293,6 +490,10 @@ export class ServerMovementTransport implements MovementTransport {
     this.receivedMessageCount += 1;
     const message = decodeServerMessage(data);
     if (!message) {
+      if (this.handleVoxelMessage(data)) {
+        return;
+      }
+
       this.lastError = `message_ignored:${data.byteLength}`;
       this.logger.emit("transport", "message_ignored", {
         mode: SERVER_TRANSPORT_MODE,
@@ -368,12 +569,86 @@ export class ServerMovementTransport implements MovementTransport {
           serverRecvTs: message.serverRecvTs,
           serverSendTs: message.serverSendTs,
         });
-        this.lastTimeSyncOffsetMs =
-          (message.serverRecvTs + message.serverSendTs) / 2 - Date.now();
+        this.lastTimeSyncOffsetMs = (message.serverRecvTs + message.serverSendTs) / 2 - Date.now();
         break;
       case "heartbeat_reply":
         this.logger.emit("transport", "heartbeat_reply", { mode: SERVER_TRANSPORT_MODE });
         break;
+    }
+  }
+
+  private handleVoxelMessage(data: ArrayBuffer): boolean {
+    let message:
+      | VoxelChunkSnapshotMessage
+      | VoxelIntentResultMessage
+      | VoxelDebugProbeMessage
+      | null = null;
+    try {
+      message = decodeVoxelServerMessage(data);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown";
+      this.lastVoxelError = reason;
+      this.logger.emit("voxel", "message_decode_error", {
+        mode: SERVER_TRANSPORT_MODE,
+        bytes: data.byteLength,
+        reason,
+      });
+      return true;
+    }
+
+    if (!message) {
+      return false;
+    }
+
+    switch (message.type) {
+      case "voxel_chunk_snapshot":
+        this.voxelSnapshots.push(message);
+        this.receivedVoxelSnapshotCount += 1;
+        this.voxelKnownVersions.set(chunkCoordKey(message.chunkCoord), message.chunkVersion);
+        this.lastVoxelSnapshot = {
+          requestId: message.requestId,
+          logicalSceneId: message.logicalSceneId,
+          chunkCoord: { ...message.chunkCoord },
+          chunkVersion: message.chunkVersion,
+          chunkHash: message.chunkHash,
+        };
+        this.logger.emit("voxel", "chunk_snapshot_received", {
+          request_id: message.requestId,
+          logical_scene_id: message.logicalSceneId,
+          chunk_coord: chunkCoordKey(message.chunkCoord),
+          chunk_version: message.chunkVersion,
+          chunk_hash: message.chunkHash,
+          normal_blocks: message.storage.normalBlocks.length,
+        });
+        return true;
+      case "voxel_intent_result":
+        this.voxelIntentResults.push(message);
+        this.receivedVoxelIntentResultCount += 1;
+        this.lastVoxelIntentResult = {
+          requestId: message.requestId,
+          clientIntentSeq: message.clientIntentSeq,
+          logicalSceneId: message.logicalSceneId,
+          resultCodeName: message.resultCodeName,
+          resultRef: message.resultRef,
+          reason: message.reason,
+        };
+        this.logger.emit("voxel", "intent_result_received", {
+          request_id: message.requestId,
+          client_intent_seq: message.clientIntentSeq,
+          logical_scene_id: message.logicalSceneId,
+          result_code: message.resultCodeName,
+          result_ref: message.resultRef,
+          reason: message.reason,
+        });
+        return true;
+      case "voxel_debug_probe":
+        this.voxelDebugProbes.push(message);
+        this.receivedVoxelDebugProbeCount += 1;
+        this.logger.emit("voxel", "debug_probe_received", {
+          request_id: message.requestId,
+          result: message.result.slice(0, 240),
+        });
+        return true;
     }
   }
 
@@ -438,6 +713,9 @@ export class ServerMovementTransport implements MovementTransport {
     this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
     this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
     this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
+    this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
+    this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
+    this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
     this.sentAtBySeq.clear();
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;

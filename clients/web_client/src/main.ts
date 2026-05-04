@@ -24,11 +24,20 @@ function requireHotbarDock(): HTMLDivElement {
   return dock;
 }
 
+function requireVoxelPanel(): HTMLDivElement {
+  const panel = document.getElementById("voxel-panel");
+  if (!(panel instanceof HTMLDivElement)) {
+    throw new Error("#voxel-panel element missing or wrong type");
+  }
+  return panel;
+}
+
 async function main(): Promise<void> {
   await bootstrap({
     canvas: requireCanvas(),
     hud: requireHud(),
     hotbarDock: requireHotbarDock(),
+    voxelPanel: requireVoxelPanel(),
   });
 }
 

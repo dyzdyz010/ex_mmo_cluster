@@ -40,6 +40,10 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
 - 体素区块订阅必须先请求 `WorldServer.Voxel.MapLedger` 路由。World 返回当前区域租约
   后，Gate 才能向 `SceneServer.Voxel.ChunkDirectory` 建立真实订阅；初始快照和后续快照
   回退推送都由 Scene 区块进程发给 Gate，再由 Gate 转发给客户端。
+- Gate 保存的体素订阅会记录 `region_id`、`lease_id`、`owner_scene_instance_ref`、
+  `owner_epoch` 和实际 Scene 节点。迁移 cutover 后，WebSocket 连接可以通过
+  `voxel_rebind <logical_scene_id> <region_id|all>` 调试探针重查 World 路由，并把已有订阅
+  重绑到新租约；结构化日志会记录 requested / routed / skipped / subscribed_new / error。
 - 体素区块退订 `ChunkUnsubscribe` 会移除 Gate 保存的订阅状态，并向 Scene 做幂等退订。
 - 体素冲击意图 `VoxelImpactIntent` 同样必须先经过 World 路由和租约发放。Gate 只把
   客户端世界坐标换算为区块坐标和区块内坐标，再把带租约的写入请求转交给 Scene；
