@@ -31,6 +31,14 @@ defmodule WorldServer.Voxel.AuthorityObserve do
     * `:observe_log` - explicit observe log path.
     * `:ledger` - optional `MapLedger` process for tests.
     * `:write_token_store` - optional `WriteTokenStore` process for tests.
+    * `:scene_invalidator` - optional 1-arity function passed through to a
+      caller-managed `MapLedger`. Tests and the e2e CLI can use this to wire a
+      real `SceneServer.Voxel.ChunkDirectory.invalidate_chunk/2` call. Ignored
+      when the runner manages its own `MapLedger` process.
+    * `:scene_chunk_directory` - optional `SceneServer.Voxel.ChunkDirectory`
+      pid/name. When supplied without `:ledger`, the runner builds a default
+      `:scene_invalidator` that calls
+      `SceneServer.Voxel.ChunkDirectory.invalidate_chunk/2` against it.
 
   When no log path is configured, the runner writes to
   `.demo/observe/world-voxel-authority-<logical_scene_id>.log`.
@@ -45,6 +53,28 @@ defmodule WorldServer.Voxel.AuthorityObserve do
         result
       end)
     end)
+  end
+
+  @doc """
+  Builds a 1-arity scene invalidator that forwards to
+  `SceneServer.Voxel.ChunkDirectory.invalidate_chunk/2`.
+
+  The returned function accepts `%{logical_scene_id, chunk_coord, reason}` and
+  is suitable to pass as the `:scene_invalidator` option to `MapLedger`. The
+  helper does not require `scene_server` at compile time; if the directory
+  module is unavailable at runtime it returns `{:error, :scene_directory_unavailable}`.
+  """
+  def scene_directory_invalidator(directory) when not is_nil(directory) do
+    fn attrs ->
+      directory_module = Module.concat(["SceneServer", "Voxel", "ChunkDirectory"])
+
+      if Code.ensure_loaded?(directory_module) and
+           function_exported?(directory_module, :invalidate_chunk, 2) do
+        directory_module.invalidate_chunk(directory, attrs)
+      else
+        {:error, :scene_directory_unavailable}
+      end
+    end
   end
 
   @doc "Returns the default observe log path for a logical scene id."
@@ -349,17 +379,23 @@ defmodule WorldServer.Voxel.AuthorityObserve do
         fun.(ledger, token_store)
 
       {nil, nil} ->
-        start_runtime(fun)
+        start_runtime(opts, fun)
 
       {_ledger, _token_store} ->
         {:error, :ledger_and_write_token_store_must_be_passed_together}
     end
   end
 
-  defp start_runtime(fun) do
+  defp start_runtime(opts, fun) do
+    ledger_opts =
+      case resolve_scene_invalidator(opts) do
+        nil -> []
+        invalidator -> [scene_invalidator: invalidator]
+      end
+
     case WriteTokenStore.start_link([]) do
       {:ok, token_store} ->
-        case MapLedger.start_link(write_token_store: token_store) do
+        case MapLedger.start_link([{:write_token_store, token_store} | ledger_opts]) do
           {:ok, ledger} ->
             try do
               fun.(ledger, token_store)
@@ -375,6 +411,19 @@ defmodule WorldServer.Voxel.AuthorityObserve do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp resolve_scene_invalidator(opts) do
+    cond do
+      invalidator = Keyword.get(opts, :scene_invalidator) ->
+        invalidator
+
+      directory = Keyword.get(opts, :scene_chunk_directory) ->
+        scene_directory_invalidator(directory)
+
+      true ->
+        nil
     end
   end
 

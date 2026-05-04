@@ -400,6 +400,172 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              ])
   end
 
+  test "invokes scene invalidator for every chunk in affected bounds on cutover" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      {:ok, %{subscriber_count: 0, reason: attrs.reason}}
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-cutover-invalidate"
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {2, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0
+             })
+
+    assert {:ok, _lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               slice_width: 2
+             )
+
+    assert {:ok, slice_0} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:error, :migration_slices_exhausted} =
+             MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked_slice_0} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _final_plan, _final_slice_0} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, cutover_plan} = MapLedger.cutover_migration(ledger, migration_id)
+    assert cutover_plan.state == :cutover
+
+    calls = Agent.get(recorder, fn calls -> Enum.reverse(calls) end)
+    assert length(calls) == 2
+    assert Enum.all?(calls, &(&1.logical_scene_id == 1))
+    assert Enum.all?(calls, &(&1.reason == 0x01))
+
+    chunk_coords = calls |> Enum.map(& &1.chunk_coord) |> Enum.sort()
+    assert chunk_coords == [{0, 0, 0}, {1, 0, 0}]
+  end
+
+  test "does not invoke scene invalidator when cutover fails" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      :ok
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-cutover-fails"
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 1, 1}, 1_000)
+
+    assert {:ok, _lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2
+             )
+
+    # Cutover before plan is prewarmed must fail.
+    assert {:error, :migration_not_prewarmed} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert Agent.get(recorder, & &1) == []
+  end
+
+  test "tolerates a raising scene invalidator without breaking cutover" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      raise "scene exploded"
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-cutover-invalidate-error"
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 1, 1}, 1_000)
+
+    assert {:ok, _lease_v1} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               slice_width: 2
+             )
+
+    assert {:ok, slice_0} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _final, _final_slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice_0.slice_id,
+               scene_ref: 2_000
+             })
+
+    # Cutover succeeds even if every invalidator call raises.
+    assert {:ok, cutover_plan} = MapLedger.cutover_migration(ledger, migration_id)
+    assert cutover_plan.state == :cutover
+
+    # Recorder still saw both attempted calls.
+    calls = Agent.get(recorder, fn calls -> Enum.reverse(calls) end)
+    assert length(calls) == 2
+  end
+
   defp put_region!(ledger, region_id, min, max, owner_ref) do
     put_region!(ledger, 1, region_id, min, max, owner_ref)
   end

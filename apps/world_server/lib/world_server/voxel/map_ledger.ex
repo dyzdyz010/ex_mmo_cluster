@@ -19,6 +19,7 @@ defmodule WorldServer.Voxel.MapLedger do
   alias WorldServer.Voxel.TransactionParticipant
 
   @default_lease_ttl_ms :timer.minutes(5)
+  @migration_cutover_reason 0x01
 
   @doc "Starts the map ledger."
   def start_link(opts \\ []) do
@@ -135,7 +136,8 @@ defmodule WorldServer.Voxel.MapLedger do
       chunk_summaries: %{},
       migrations: %{},
       write_token_store: Keyword.get(opts, :write_token_store),
-      persist_fn: persist_fn
+      persist_fn: persist_fn,
+      scene_invalidator: Keyword.get(opts, :scene_invalidator)
     }
 
     case run_load(load_fn) do
@@ -663,10 +665,90 @@ defmodule WorldServer.Voxel.MapLedger do
 
       CliObserve.emit("voxel_migration_cutover", fn -> MigrationPlan.summary(cutover_plan) end)
       emit_legacy_region_migrated(cutover_plan)
+      emit_cutover_invalidations(next_state, cutover_plan)
 
       {{:ok, cutover_plan}, next_state}
     else
       {:error, reason} -> {{:error, reason}, state}
+    end
+  end
+
+  defp emit_cutover_invalidations(%{scene_invalidator: nil}, _plan), do: :ok
+
+  defp emit_cutover_invalidations(%{scene_invalidator: invalidator}, plan)
+       when is_function(invalidator, 1) do
+    chunk_coords = chunk_coords_in_bounds(plan.affected_chunk_min, plan.affected_chunk_max)
+
+    {ok_count, error_count} =
+      Enum.reduce(chunk_coords, {0, 0}, fn chunk_coord, {ok_acc, err_acc} ->
+        attrs = %{
+          logical_scene_id: plan.logical_scene_id,
+          chunk_coord: chunk_coord,
+          reason: @migration_cutover_reason
+        }
+
+        case safe_invoke_scene_invalidator(invalidator, attrs) do
+          {:ok, _result} -> {ok_acc + 1, err_acc}
+          {:error, _reason} -> {ok_acc, err_acc + 1}
+        end
+      end)
+
+    CliObserve.emit("voxel_migration_cutover_invalidate_emitted", fn ->
+      %{
+        migration_id: plan.migration_id,
+        logical_scene_id: plan.logical_scene_id,
+        region_id: plan.region_id,
+        source_scene_instance_ref: plan.source_scene_instance_ref,
+        target_scene_instance_ref: plan.target_scene_instance_ref,
+        reason: @migration_cutover_reason,
+        chunk_count: length(chunk_coords),
+        ok_count: ok_count,
+        error_count: error_count,
+        affected_chunk_bounds: %{
+          min: coord_list(plan.affected_chunk_min),
+          max: coord_list(plan.affected_chunk_max)
+        }
+      }
+    end)
+
+    :ok
+  end
+
+  defp emit_cutover_invalidations(_state, _plan), do: :ok
+
+  defp safe_invoke_scene_invalidator(invalidator, attrs) do
+    {:ok, invalidator.(attrs)}
+  rescue
+    exception ->
+      CliObserve.emit("voxel_migration_cutover_invalidate_failed", fn ->
+        %{
+          logical_scene_id: attrs.logical_scene_id,
+          chunk_coord: coord_list(attrs.chunk_coord),
+          reason: @migration_cutover_reason,
+          error: Exception.message(exception)
+        }
+      end)
+
+      {:error, exception}
+  catch
+    kind, reason ->
+      CliObserve.emit("voxel_migration_cutover_invalidate_failed", fn ->
+        %{
+          logical_scene_id: attrs.logical_scene_id,
+          chunk_coord: coord_list(attrs.chunk_coord),
+          reason: @migration_cutover_reason,
+          error: inspect({kind, reason})
+        }
+      end)
+
+      {:error, {kind, reason}}
+  end
+
+  defp chunk_coords_in_bounds({min_x, min_y, min_z}, {max_x, max_y, max_z}) do
+    for x <- min_x..(max_x - 1)//1,
+        y <- min_y..(max_y - 1)//1,
+        z <- min_z..(max_z - 1)//1 do
+      {x, y, z}
     end
   end
 

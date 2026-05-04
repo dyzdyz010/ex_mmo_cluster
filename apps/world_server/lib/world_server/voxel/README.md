@@ -9,6 +9,14 @@
   leases、chunk_summaries、migrations。文件路径未给则保持纯内存行为，外层 supervisor /
   application 可决定是否启用。这一版只支持单节点本地文件；多节点 / Postgres 持久化是
   后续切片（保留同一接口边界即可平滑替换）。
+  另外可传 `scene_invalidator: fn attrs -> result end`（1-arity 函数），`attrs` 形如
+  `%{logical_scene_id, chunk_coord, reason}`。在 `cutover_migration/2` 成功之后，ledger 会
+  在 `affected_chunk_min .. affected_chunk_max`（半开）内的每一个 chunk_coord 上调用一次
+  invalidator，`reason` 固定为 `0x01`（`:migration_cutover`）。默认 `nil` 表示不触发任何
+  Scene 侧失效广播；invalidator 异常或返回 `{:error, _}` 不会回滚切换，只会在 observe
+  日志里记录（事件 `voxel_migration_cutover_invalidate_emitted` /
+  `voxel_migration_cutover_invalidate_failed`）。这样让 World 控制面保持不直接耦合
+  `scene_server`，由 `AuthorityObserve` 等上层 runner 注入实际 `ChunkDirectory.invalidate_chunk/2`。
 - `RegionAssignment` 是可持久化的区域拥有者记录。
 - `SceneLease` 是发给某个 Scene 实例的热写入授权；租约过期或纪元不匹配时，Scene 不能写。
 - `LeaseWriteToken` 是从租约派生出的 DataService 写入围栏；DataService 用它拒绝旧拥有者写入。
@@ -30,6 +38,10 @@
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
   标记预热、切换、完成迁移，并把写入令牌校验结果写入结构化日志，供 CLI 和测试检查。
+  额外可选项：`:scene_invalidator` 直接传 1-arity 函数；`:scene_chunk_directory` 传一个
+  `SceneServer.Voxel.ChunkDirectory` 的 pid/name，runner 会用 `scene_directory_invalidator/1`
+  构造一个调用 `ChunkDirectory.invalidate_chunk/2` 的 invalidator 注入到内部启动的
+  ledger。两者只在 runner 自己创建 ledger 时生效；调用方自带 `:ledger` 时由调用方决定。
 - `DevSeed` 是本地网页 / CLI 冒烟使用的幂等入口。它只准备默认区域、租约和 DataService 写入令牌，
   不保存区块真相，也不绕过 Scene；浏览器随后仍要通过 Gate 订阅和提交 intent。已有区域再次 seed
   时会续发开发租约，避免网页长时间运行或刷新后出现“能订阅旧快照、但写入被租约过期拒绝”的假健康状态。
