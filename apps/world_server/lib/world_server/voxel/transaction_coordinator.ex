@@ -150,18 +150,60 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   end
 
   @impl true
-  def init(_opts) do
-    {:ok,
-     %{
-       transactions: %{},
-       begin_fingerprints: %{},
-       decisions: %{},
-       decision_index: %{}
-     }}
+  def init(opts) do
+    persistence_path = Keyword.get(opts, :persistence_path)
+
+    persist_fn =
+      Keyword.get(opts, :persist_fn) ||
+        if persistence_path, do: file_persist_fn(persistence_path)
+
+    load_fn =
+      Keyword.get(opts, :load_fn) ||
+        if persistence_path, do: file_load_fn(persistence_path)
+
+    base = %{
+      transactions: %{},
+      begin_fingerprints: %{},
+      decisions: %{},
+      decision_index: %{},
+      persist_fn: persist_fn
+    }
+
+    case run_load(load_fn) do
+      {:ok, restored} ->
+        {:ok, Map.merge(base, restored)}
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_transaction_coordinator_persist_load_failed", fn ->
+          %{reason: inspect(reason)}
+        end)
+
+        {:ok, base}
+    end
   end
 
   @impl true
-  def handle_call({:begin_transaction, attrs}, _from, state) do
+  def handle_call(message, from, state) do
+    case do_handle_call(message, from, state) do
+      {:reply, _reply, ^state} = ret ->
+        ret
+
+      {:reply, reply, next_state} ->
+        case maybe_persist_state(next_state) do
+          :ok ->
+            {:reply, reply, next_state}
+
+          {:error, reason} ->
+            CliObserve.emit("voxel_transaction_coordinator_persist_failed", fn ->
+              %{reason: inspect(reason)}
+            end)
+
+            {:reply, reply, next_state}
+        end
+    end
+  end
+
+  defp do_handle_call({:begin_transaction, attrs}, _from, state) do
     case build_transaction(attrs) do
       {:ok, transaction, fingerprint} ->
         {reply, next_state} = put_new_transaction(state, transaction, fingerprint)
@@ -172,7 +214,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     end
   end
 
-  def handle_call({:prepare_ack, transaction_id, ack}, _from, state) do
+  defp do_handle_call({:prepare_ack, transaction_id, ack}, _from, state) do
     with {:ok, transaction} <- fetch_transaction(state, transaction_id),
          {:ok, normalized_ack} <- normalize_prepare_ack(ack),
          {:ok, next_transaction} <- apply_prepare_ack(transaction, normalized_ack) do
@@ -189,7 +231,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     end
   end
 
-  def handle_call({:decision, transaction_id, decision_version, decision}, _from, state) do
+  defp do_handle_call({:decision, transaction_id, decision_version, decision}, _from, state) do
     with {:ok, decision_version} <- normalize_decision_version(decision_version),
          {:ok, transaction} <- fetch_transaction(state, transaction_id),
          :ok <- validate_decision_version(transaction, decision_version),
@@ -208,7 +250,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     end
   end
 
-  def handle_call(:snapshot, _from, state) do
+  defp do_handle_call(:snapshot, _from, state) do
     {:reply, snapshot_from_state(state), state}
   end
 
@@ -634,4 +676,75 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   end
 
   defp now_ms, do: System.system_time(:millisecond)
+
+  defp maybe_persist_state(%{persist_fn: nil}), do: :ok
+
+  defp maybe_persist_state(%{persist_fn: persist_fn} = state) when is_function(persist_fn, 1) do
+    payload = Map.take(state, [:transactions, :begin_fingerprints, :decisions, :decision_index])
+    persist_fn.(payload)
+  end
+
+  defp run_load(nil), do: {:ok, %{}}
+
+  defp run_load(load_fn) when is_function(load_fn, 0) do
+    case load_fn.() do
+      {:ok, payload} when is_map(payload) -> validate_persisted_payload(payload)
+      {:error, _reason} = err -> err
+      other -> {:error, {:unexpected_load_result, other}}
+    end
+  end
+
+  defp file_persist_fn(path) when is_binary(path) do
+    fn payload ->
+      binary = :erlang.term_to_binary(payload)
+      tmp_path = path <> ".tmp"
+
+      with :ok <- File.mkdir_p(Path.dirname(path)),
+           :ok <- File.write(tmp_path, binary),
+           :ok <- File.rename(tmp_path, path) do
+        :ok
+      end
+    end
+  end
+
+  defp file_load_fn(path) when is_binary(path) do
+    fn ->
+      case File.read(path) do
+        {:ok, binary} ->
+          try do
+            {:ok, :erlang.binary_to_term(binary, [:safe])}
+          rescue
+            exception in [ArgumentError] -> {:error, Exception.message(exception)}
+          end
+
+        {:error, :enoent} ->
+          {:ok, %{}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp validate_persisted_payload(payload) when is_map(payload) do
+    expected_keys = [:transactions, :begin_fingerprints, :decisions, :decision_index]
+
+    keys = Map.keys(payload)
+
+    cond do
+      keys == [] ->
+        {:ok, %{}}
+
+      Enum.any?(keys, fn key -> key not in expected_keys end) ->
+        {:error, {:unexpected_keys, keys -- expected_keys}}
+
+      Enum.any?(payload, fn {_key, value} -> not is_map(value) end) ->
+        {:error, :unexpected_value_shape}
+
+      true ->
+        {:ok, payload}
+    end
+  end
+
+  defp validate_persisted_payload(_other), do: {:error, :unexpected_payload_shape}
 end
