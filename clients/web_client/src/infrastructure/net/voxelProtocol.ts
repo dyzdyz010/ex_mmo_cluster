@@ -81,6 +81,24 @@ export const VoxelChunkDeltaKind = {
 export type VoxelChunkDeltaKindValue =
   (typeof VoxelChunkDeltaKind)[keyof typeof VoxelChunkDeltaKind];
 
+export const VoxelChunkInvalidateReason = {
+  Unspecified: 0,
+  MigrationCutover: 1,
+  RegionRemoved: 2,
+  CatalogChanged: 3,
+} as const;
+
+export type VoxelChunkInvalidateReasonValue =
+  (typeof VoxelChunkInvalidateReason)[keyof typeof VoxelChunkInvalidateReason];
+
+export interface VoxelChunkInvalidateMessage {
+  type: "voxel_chunk_invalidate";
+  logicalSceneId: number;
+  chunkCoord: FChunkCoord;
+  reason: number;
+  reasonName: "unspecified" | "migration_cutover" | "region_removed" | "catalog_changed" | "unknown";
+}
+
 export interface VoxelIntentResultMessage {
   type: "voxel_intent_result";
   requestId: number;
@@ -102,6 +120,7 @@ export interface VoxelDebugProbeMessage {
 export type VoxelServerMessage =
   | VoxelChunkSnapshotMessage
   | VoxelChunkDeltaMessage
+  | VoxelChunkInvalidateMessage
   | VoxelIntentResultMessage
   | VoxelDebugProbeMessage;
 
@@ -222,12 +241,48 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
       return decodeChunkSnapshot(view);
     case VoxelOpcode.ChunkDelta:
       return decodeChunkDelta(view);
+    case VoxelOpcode.ChunkInvalidate:
+      return decodeChunkInvalidate(view);
     case VoxelOpcode.VoxelIntentResult:
       return decodeIntentResult(view);
     case VoxelOpcode.VoxelDebugProbe:
       return decodeDebugProbe(view);
     default:
       return null;
+  }
+}
+
+function decodeChunkInvalidate(view: DataView): VoxelChunkInvalidateMessage {
+  let offset = 1;
+  const logicalSceneId = readU64(view, offset);
+  offset += 8;
+  const chunkCoord = readChunkCoord(view, offset);
+  offset += 12;
+  const reason = view.getUint8(offset);
+
+  return {
+    type: "voxel_chunk_invalidate",
+    logicalSceneId,
+    chunkCoord,
+    reason,
+    reasonName: invalidateReasonName(reason),
+  };
+}
+
+function invalidateReasonName(
+  reason: number,
+): VoxelChunkInvalidateMessage["reasonName"] {
+  switch (reason) {
+    case VoxelChunkInvalidateReason.Unspecified:
+      return "unspecified";
+    case VoxelChunkInvalidateReason.MigrationCutover:
+      return "migration_cutover";
+    case VoxelChunkInvalidateReason.RegionRemoved:
+      return "region_removed";
+    case VoxelChunkInvalidateReason.CatalogChanged:
+      return "catalog_changed";
+    default:
+      return "unknown";
   }
 }
 

@@ -104,6 +104,11 @@ export type AppEvents = {
     reason: "chunk_not_loaded" | "stale_base_version";
     knownChunkVersion?: number;
   };
+  "world:chunk-invalidated": {
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    reason: string;
+  };
   "world:voxel-intent-result": {
     requestId: number;
     clientIntentSeq: number;

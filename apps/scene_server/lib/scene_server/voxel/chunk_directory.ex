@@ -116,6 +116,19 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     GenServer.call(server, {:abort_transaction, transaction_id, attrs})
   end
 
+  @doc """
+  Pushes a `ChunkInvalidate` payload to every subscriber of one chunk and
+  forgets them. Returns `{:ok, %{subscriber_count: n, reason: reason}}` when
+  the chunk is hot, or `{:error, :chunk_not_started}` if the directory has not
+  spawned a process for that coord yet (no subscribers either way).
+
+  See `SceneServer.Voxel.Codec.invalidate_reason_name/1` for the supported
+  `reason` byte values.
+  """
+  def invalidate_chunk(server \\ __MODULE__, attrs) do
+    GenServer.call(server, {:invalidate_chunk, attrs})
+  end
+
   @doc "Returns the known chunk process table for CLI/debug inspection."
   def snapshot(server \\ __MODULE__) do
     GenServer.call(server, :snapshot)
@@ -287,6 +300,17 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:invalidate_chunk, attrs}, _from, state) do
+    reason = Map.get(attrs, :reason, 0x00)
+
+    with {:ok, key} <- normalize_chunk_key(attrs),
+         {:ok, chunk_pid} <- fetch_chunk_pid(state, key) do
+      {:reply, ChunkProcess.invalidate_subscribers(chunk_pid, reason), state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 

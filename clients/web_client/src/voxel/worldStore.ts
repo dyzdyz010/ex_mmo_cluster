@@ -118,6 +118,13 @@ export class WorldStore {
     return this.authoritativeChunkMetadata.delete(chunkCoordKey(coord));
   }
 
+  removeChunk(coord: FChunkCoord): boolean {
+    const key = chunkCoordKey(coord);
+    const had = this.chunks.delete(key);
+    this.authoritativeChunkMetadata.delete(key);
+    return had;
+  }
+
   authoritativeChunkSummaries(limit = 16): Array<AuthoritativeChunkMetadata & { coord: FChunkCoord; key: string }> {
     return this.listChunks()
       .slice(0, limit)

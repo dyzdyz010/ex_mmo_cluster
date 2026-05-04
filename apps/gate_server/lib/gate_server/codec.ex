@@ -75,6 +75,7 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_delta 0x63
   @msg_voxel_impact_intent 0x64
   @msg_voxel_intent_result 0x68
+  @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_debug_probe 0x6F
 
   # ── Server → Client message types ──
@@ -506,6 +507,10 @@ defmodule GateServer.Codec do
 
   def encode({:voxel_chunk_delta_payload, payload}) when is_binary(payload) do
     {:ok, [<<@msg_voxel_chunk_delta>>, payload]}
+  end
+
+  def encode({:voxel_chunk_invalidate_payload, payload}) when is_binary(payload) do
+    {:ok, [<<@msg_voxel_chunk_invalidate>>, payload]}
   end
 
   def encode(

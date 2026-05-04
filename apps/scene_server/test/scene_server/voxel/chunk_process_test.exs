@@ -228,6 +228,26 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert Codec.decode_normal_block_data(block_payload) == NormalBlockData.normalize!(block)
   end
 
+  test "invalidate_subscribers pushes a ChunkInvalidate payload and drops every subscriber" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self())
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok, %{subscriber_count: 1, reason: 0x01}} =
+             ChunkProcess.invalidate_subscribers(chunk, 0x01)
+
+    assert_receive {:voxel_chunk_invalidate_payload, payload}
+    assert {:ok, decoded} = Codec.decode_chunk_invalidate_payload(payload)
+    assert decoded.logical_scene_id == 1
+    assert decoded.chunk_coord == {0, 0, 0}
+    assert decoded.reason == 0x01
+    assert decoded.reason_name == :migration_cutover
+
+    # Subscriber list is now empty so subsequent edits do not push back.
+    assert ChunkProcess.debug_state(chunk).subscriber_count == 0
+  end
+
   test "unsubscribe stops future snapshot fallback pushes" do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 

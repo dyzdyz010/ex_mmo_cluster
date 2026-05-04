@@ -335,6 +335,11 @@ defmodule GateServer.CodecTest do
       assert <<0x63, 9, 8, 7, 6>> == IO.iodata_to_binary(iodata)
     end
 
+    test "encodes raw chunk invalidate payload with the 0x69 opcode" do
+      {:ok, iodata} = Codec.encode({:voxel_chunk_invalidate_payload, <<5, 4, 3>>})
+      assert <<0x69, 5, 4, 3>> == IO.iodata_to_binary(iodata)
+    end
+
     test "encodes voxel intent result" do
       {:ok, iodata} =
         Codec.encode(

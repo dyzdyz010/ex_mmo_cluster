@@ -161,4 +161,38 @@ defmodule SceneServer.Voxel.CodecTest do
   test "rejects malformed ChunkDelta payload" do
     assert {:error, _reason} = Codec.decode_chunk_delta_payload(<<0, 1, 2>>)
   end
+
+  test "round-trips a ChunkInvalidate payload with its reason byte" do
+    payload =
+      Codec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 11,
+        chunk_coord: {-2, 3, -4},
+        reason: 0x01
+      })
+
+    assert byte_size(payload) == 8 + 12 + 1
+
+    assert {:ok, decoded} = Codec.decode_chunk_invalidate_payload(payload)
+    assert decoded.logical_scene_id == 11
+    assert decoded.chunk_coord == {-2, 3, -4}
+    assert decoded.reason == 0x01
+    assert decoded.reason_name == :migration_cutover
+  end
+
+  test "ChunkInvalidate decodes unknown reason bytes as :unknown but preserves the byte" do
+    payload =
+      Codec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 1,
+        chunk_coord: {0, 0, 0},
+        reason: 0x77
+      })
+
+    assert {:ok, decoded} = Codec.decode_chunk_invalidate_payload(payload)
+    assert decoded.reason == 0x77
+    assert decoded.reason_name == :unknown
+  end
+
+  test "rejects malformed ChunkInvalidate payload" do
+    assert {:error, _reason} = Codec.decode_chunk_invalidate_payload(<<0, 1, 2>>)
+  end
 end

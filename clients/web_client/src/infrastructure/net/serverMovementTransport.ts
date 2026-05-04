@@ -9,6 +9,7 @@ import {
 import {
   decodeVoxelServerMessage,
   type VoxelChunkDeltaMessage,
+  type VoxelChunkInvalidateMessage,
   encodeVoxelChunkSubscribe,
   encodeVoxelChunkUnsubscribe,
   encodeVoxelDebugProbe,
@@ -60,6 +61,8 @@ export class ServerMovementTransport implements MovementTransport {
   private readonly voxelSnapshots: VoxelChunkSnapshotMessage[] = [];
   private readonly voxelDeltas: VoxelChunkDeltaMessage[] = [];
   private receivedVoxelDeltaCount = 0;
+  private readonly voxelInvalidates: VoxelChunkInvalidateMessage[] = [];
+  private receivedVoxelInvalidateCount = 0;
   private readonly voxelIntentResults: VoxelIntentResultMessage[] = [];
   private readonly voxelDebugProbes: VoxelDebugProbeMessage[] = [];
   private readonly voxelKnownVersions = new Map<string, number>();
@@ -326,6 +329,10 @@ export class ServerMovementTransport implements MovementTransport {
     return this.voxelDeltas.splice(0, this.voxelDeltas.length);
   }
 
+  drainVoxelInvalidates(): VoxelChunkInvalidateMessage[] {
+    return this.voxelInvalidates.splice(0, this.voxelInvalidates.length);
+  }
+
   drainVoxelIntentResults(): VoxelIntentResultMessage[] {
     return this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
   }
@@ -588,6 +595,7 @@ export class ServerMovementTransport implements MovementTransport {
     let message:
       | VoxelChunkSnapshotMessage
       | VoxelChunkDeltaMessage
+      | VoxelChunkInvalidateMessage
       | VoxelIntentResultMessage
       | VoxelDebugProbeMessage
       | null = null;
@@ -640,6 +648,17 @@ export class ServerMovementTransport implements MovementTransport {
           base_chunk_version: message.baseChunkVersion,
           new_chunk_version: message.newChunkVersion,
           op_count: message.ops.length,
+        });
+        return true;
+      case "voxel_chunk_invalidate":
+        this.voxelInvalidates.push(message);
+        this.receivedVoxelInvalidateCount += 1;
+        this.voxelKnownVersions.delete(chunkCoordKey(message.chunkCoord));
+        this.logger.emit("voxel", "chunk_invalidate_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          logical_scene_id: message.logicalSceneId,
+          chunk_coord: chunkCoordKey(message.chunkCoord),
+          reason: message.reasonName,
         });
         return true;
       case "voxel_intent_result":

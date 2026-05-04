@@ -221,6 +221,79 @@ defmodule SceneServer.Voxel.Codec do
   end
 
   @doc """
+  Encodes a v1 `ChunkInvalidate` payload (opcode `0x69`).
+
+  Wire layout (21 bytes fixed):
+
+      logical_scene_id    u64
+      chunk_coord         i32 cx, i32 cy, i32 cz
+      reason              u8
+
+  Defined `reason` values:
+
+  - `0x00` `unspecified` — generic invalidate, the client should drop and
+    re-subscribe to refresh the chunk.
+  - `0x01` `migration_cutover` — the region's owner Scene changed and the old
+    snapshot is no longer authoritative.
+  - `0x02` `region_removed` — the region was unassigned; the client must not
+    re-subscribe until World announces a new owner.
+  - `0x03` `catalog_changed` — attribute / tag catalog churned beneath this
+    chunk; existing snapshot field references may be stale.
+
+  Other `reason` values are accepted by the decoder for forward compatibility;
+  unknown reasons round-trip as their numeric byte.
+  """
+  @spec encode_chunk_invalidate_payload(map()) :: binary()
+  def encode_chunk_invalidate_payload(%{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: {cx, cy, cz},
+        reason: reason
+      })
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_integer(cx) and
+             is_integer(cy) and is_integer(cz) and is_integer(reason) and reason >= 0 and
+             reason <= 0xFF do
+    <<logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
+      cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
+      reason::unsigned-integer-size(8)>>
+  end
+
+  @doc "Decodes a v1 `ChunkInvalidate` payload, returning `{:ok, invalidate}` or `{:error, reason}`."
+  @spec decode_chunk_invalidate_payload(binary()) :: {:ok, map()} | {:error, term()}
+  def decode_chunk_invalidate_payload(payload) when is_binary(payload) do
+    {:ok, decode_chunk_invalidate_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc "Decodes a v1 `ChunkInvalidate` payload or raises `ArgumentError`."
+  @spec decode_chunk_invalidate_payload!(binary()) :: map()
+  def decode_chunk_invalidate_payload!(
+        <<logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
+          cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
+          reason::unsigned-integer-size(8)>>
+      ) do
+    %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: {cx, cy, cz},
+      reason: reason,
+      reason_name: invalidate_reason_name(reason)
+    }
+  end
+
+  def decode_chunk_invalidate_payload!(_payload) do
+    raise ArgumentError, "malformed ChunkInvalidate payload"
+  end
+
+  @doc "Maps a numeric ChunkInvalidate reason byte to a stable atom for log/observe consumers."
+  @spec invalidate_reason_name(0..0xFF) :: atom()
+  def invalidate_reason_name(0x00), do: :unspecified
+  def invalidate_reason_name(0x01), do: :migration_cutover
+  def invalidate_reason_name(0x02), do: :region_removed
+  def invalidate_reason_name(0x03), do: :catalog_changed
+  def invalidate_reason_name(_other), do: :unknown
+
+  @doc """
   Encodes a single `NormalBlockData` value into the canonical 20-byte wire form.
 
   Used as the `CellSolid` payload inside a `ChunkDelta` op and as the per-block

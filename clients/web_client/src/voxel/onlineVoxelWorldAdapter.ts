@@ -4,6 +4,7 @@ import { chunkCoordKey, type FChunkCoord, type FMacroCoord, type FMicroCoord } f
 import {
   decodeNormalBlockDataPayload,
   type VoxelChunkDeltaMessage,
+  type VoxelChunkInvalidateMessage,
   type VoxelChunkSnapshotMessage,
   type VoxelDebugProbeMessage,
   type VoxelIntentResultMessage,
@@ -48,6 +49,7 @@ export interface ServerVoxelTransportPort {
   }): number | null;
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[];
   drainVoxelDeltas(): VoxelChunkDeltaMessage[];
+  drainVoxelInvalidates(): VoxelChunkInvalidateMessage[];
   drainVoxelIntentResults(): VoxelIntentResultMessage[];
   drainVoxelDebugProbes(): VoxelDebugProbeMessage[];
 }
@@ -281,12 +283,27 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const delta of this.transport.drainVoxelDeltas()) {
       this.applyDelta(delta);
     }
+    for (const invalidate of this.transport.drainVoxelInvalidates()) {
+      this.applyInvalidate(invalidate);
+    }
     for (const result of this.transport.drainVoxelIntentResults()) {
       this.applyIntentResult(result);
     }
     for (const probe of this.transport.drainVoxelDebugProbes()) {
       this.lastDebugProbe = probe.result;
     }
+  }
+
+  private applyInvalidate(invalidate: VoxelChunkInvalidateMessage): void {
+    this.store.invalidateChunkAuthority(invalidate.chunkCoord);
+    this.store.removeChunk(invalidate.chunkCoord);
+    this.subscriptionState = "idle";
+
+    this.bus.emit("world:chunk-invalidated", {
+      logicalSceneId: invalidate.logicalSceneId,
+      chunkCoord: invalidate.chunkCoord,
+      reason: invalidate.reasonName,
+    });
   }
 
   private applyDelta(delta: VoxelChunkDeltaMessage): void {
@@ -476,6 +493,7 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.sendVoxelChunkSubscribe === "function" &&
     typeof candidate.sendVoxelImpactIntent === "function" &&
     typeof candidate.drainVoxelSnapshots === "function" &&
-    typeof candidate.drainVoxelDeltas === "function"
+    typeof candidate.drainVoxelDeltas === "function" &&
+    typeof candidate.drainVoxelInvalidates === "function"
   );
 }

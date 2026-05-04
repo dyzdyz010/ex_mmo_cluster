@@ -127,6 +127,23 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, {:abort_transaction, transaction_id})
   end
 
+  @doc """
+  Pushes a `ChunkInvalidate` payload to every subscriber and forgets them.
+
+  Used when chunk ownership flips (migration cutover) or when the region is
+  unassigned. The chunk process keeps its hot state — Gate / World decide
+  whether to terminate the process — but it forgets the subscribers so later
+  edits do not push stale snapshots / deltas back to clients that should be
+  re-subscribing.
+
+  `reason` accepts the byte values defined in
+  `SceneServer.Voxel.Codec.invalidate_reason_name/1`.
+  """
+  def invalidate_subscribers(server, reason \\ 0x00)
+      when is_integer(reason) and reason >= 0 and reason <= 0xFF do
+    GenServer.call(server, {:invalidate_subscribers, reason})
+  end
+
   @doc "Returns process state for CLI/debug inspection."
   def debug_state(server) do
     GenServer.call(server, :debug_state)
@@ -304,6 +321,36 @@ defmodule SceneServer.Voxel.ChunkProcess do
     })
 
     {:reply, :ok, next_state}
+  end
+
+  def handle_call({:invalidate_subscribers, reason}, _from, state) do
+    payload =
+      Codec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        reason: reason
+      })
+
+    subscriber_count = map_size(state.subscribers)
+
+    Enum.each(state.subscribers, fn {subscriber, _opts} ->
+      send(subscriber, {:voxel_chunk_invalidate_payload, payload})
+    end)
+
+    next_state = clear_subscriptions(state)
+
+    CliObserve.emit("voxel_chunk_invalidate_pushed", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        reason: reason,
+        reason_name: Codec.invalidate_reason_name(reason),
+        subscriber_count: subscriber_count,
+        byte_size: byte_size(payload)
+      }
+    end)
+
+    {:reply, {:ok, %{subscriber_count: subscriber_count, reason: reason}}, next_state}
   end
 
   def handle_call({:put_solid_block, macro_index_or_coord, block, opts}, _from, state) do
@@ -747,6 +794,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
       | subscribers: Map.delete(state.subscribers, subscriber),
         subscriber_monitors: Map.delete(state.subscriber_monitors, monitor_ref)
     }
+  end
+
+  defp clear_subscriptions(state) do
+    Enum.each(state.subscriber_monitors, fn {monitor_ref, _subscriber} ->
+      Process.demonitor(monitor_ref, [:flush])
+    end)
+
+    %{state | subscribers: %{}, subscriber_monitors: %{}}
   end
 
   defp push_intent_outcome(state_before, state_after, intent, reason) do

@@ -116,6 +116,26 @@ describe("voxel gate protocol", () => {
     expect(message.reason).toBe("ok");
   });
 
+  it("decodes a ChunkInvalidate payload from the 0x69 opcode", () => {
+    const buffer = new ArrayBuffer(1 + 8 + 12 + 1);
+    const view = new DataView(buffer);
+    view.setUint8(0, VoxelOpcode.ChunkInvalidate);
+    view.setBigUint64(1, 11n, false);
+    view.setInt32(9, -2, false);
+    view.setInt32(13, 3, false);
+    view.setInt32(17, -4, false);
+    view.setUint8(21, 0x01);
+
+    const message = decodeVoxelServerMessage(buffer);
+
+    expect(message?.type).toBe("voxel_chunk_invalidate");
+    if (message?.type !== "voxel_chunk_invalidate") return;
+    expect(message.logicalSceneId).toBe(11);
+    expect(message.chunkCoord).toEqual({ x: -2, y: 3, z: -4 });
+    expect(message.reason).toBe(0x01);
+    expect(message.reasonName).toBe("migration_cutover");
+  });
+
   it("decodes a CellSolid ChunkDelta payload from the 0x63 opcode", () => {
     // 20-byte NormalBlockData payload (materialId=42, health=80, default zeros)
     const blockPayload = new Uint8Array(20);
@@ -166,7 +186,8 @@ describe("voxel gate protocol", () => {
     expect(message.baseChunkVersion).toBe(4);
     expect(message.newChunkVersion).toBe(5);
     expect(message.ops).toHaveLength(1);
-    const op = message.ops[0];
+    const [op] = message.ops;
+    if (!op) throw new Error("expected one op");
     expect(op.deltaKind).toBe(1);
     expect(op.macroIndex).toBe(1234);
     expect(op.cellVersion).toBe(5);
