@@ -363,7 +363,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert observe_log =~ ~s(event="voxel_subscription_rebind_subscribed_new")
   end
 
-  test "chunk subscribe forwards later authoritative snapshot pushes after impact" do
+  test "chunk subscribe forwards initial snapshot then ChunkDelta on later impact" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
 
@@ -397,13 +397,13 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert_receive {:gate_ws_send, updated_bin}
     assert is_binary(updated_bin)
-    assert <<0x62, updated_payload::binary>> = updated_bin
-    assert {:ok, updated} = SceneVoxelCodec.decode_chunk_snapshot_payload(updated_payload)
-    assert updated.request_id == 21
-    assert updated.storage.chunk_version == 1
-
-    assert Storage.macro_header_at(updated.storage, {1, 2, 3}).mode ==
-             MacroCellHeader.cell_mode_solid_block()
+    assert <<0x63, delta_payload::binary>> = updated_bin
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.logical_scene_id == 777
+    assert delta.chunk_coord == {0, 0, 0}
+    assert delta.base_chunk_version == 0
+    assert delta.new_chunk_version == 1
+    assert [%{delta_kind: 1, cell_version: 1}] = delta.ops
   end
 
   test "chunk unsubscribe removes live subscription and stops later snapshot pushes" do

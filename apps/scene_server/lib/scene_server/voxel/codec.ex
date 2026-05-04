@@ -131,6 +131,114 @@ defmodule SceneServer.Voxel.Codec do
     raise ArgumentError, "malformed ChunkSnapshot payload"
   end
 
+  @doc """
+  Encodes a v1 `ChunkDelta` payload (protocol design 13.3, opcode `0x63`).
+
+  Wire layout:
+
+      logical_scene_id            u64
+      chunk_coord         i32 cx, i32 cy, i32 cz
+      base_chunk_version  u64
+      new_chunk_version   u64
+      op_count            u16
+      ops[] {
+        delta_kind         u8
+        macro_index        u16
+        cell_version       u32
+        cell_hash          u32
+        payload_len        u16
+        payload            binary-size(payload_len)
+      }
+
+  The `payload_len` prefix is added so decoders can skip ops with unknown
+  `delta_kind` values forward-compatibly. `delta_kind = 1` (CellSolid) carries
+  a 20-byte `NormalBlockData`; the other kinds in the spec are not yet emitted
+  by S0 and round-trip as opaque bytes.
+  """
+  @spec encode_chunk_delta_payload(map()) :: binary()
+  def encode_chunk_delta_payload(%{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: {cx, cy, cz},
+        base_chunk_version: base_version,
+        new_chunk_version: new_version,
+        ops: ops
+      })
+      when is_integer(logical_scene_id) and is_integer(cx) and is_integer(cy) and
+             is_integer(cz) and is_integer(base_version) and is_integer(new_version) and
+             is_list(ops) do
+    cond do
+      base_version < 0 or new_version < 0 ->
+        raise ArgumentError, "chunk versions must be non-negative"
+
+      length(ops) > 0xFFFF ->
+        raise ArgumentError, "delta op_count exceeds u16 range"
+
+      true ->
+        encoded_ops = Enum.map(ops, &encode_delta_op/1)
+
+        IO.iodata_to_binary([
+          <<logical_scene_id::unsigned-big-integer-size(64)>>,
+          <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+            cz::signed-big-integer-size(32)>>,
+          <<base_version::unsigned-big-integer-size(64)>>,
+          <<new_version::unsigned-big-integer-size(64)>>,
+          <<length(ops)::unsigned-big-integer-size(16)>>,
+          encoded_ops
+        ])
+    end
+  end
+
+  @doc "Decodes a v1 `ChunkDelta` payload, returning `{:ok, delta}` or `{:error, reason}`."
+  @spec decode_chunk_delta_payload(binary()) :: {:ok, map()} | {:error, term()}
+  def decode_chunk_delta_payload(payload) when is_binary(payload) do
+    {:ok, decode_chunk_delta_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc "Decodes a v1 `ChunkDelta` payload or raises `ArgumentError`."
+  @spec decode_chunk_delta_payload!(binary()) :: map()
+  def decode_chunk_delta_payload!(
+        <<logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
+          cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
+          base_version::unsigned-big-integer-size(64),
+          new_version::unsigned-big-integer-size(64),
+          op_count::unsigned-big-integer-size(16), rest::binary>>
+      ) do
+    {ops, <<>>} = decode_delta_ops(rest, op_count, [])
+
+    %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: {cx, cy, cz},
+      base_chunk_version: base_version,
+      new_chunk_version: new_version,
+      ops: ops
+    }
+  end
+
+  def decode_chunk_delta_payload!(_payload) do
+    raise ArgumentError, "malformed ChunkDelta payload"
+  end
+
+  @doc """
+  Encodes a single `NormalBlockData` value into the canonical 20-byte wire form.
+
+  Used as the `CellSolid` payload inside a `ChunkDelta` op and as the per-block
+  body inside a `ChunkSnapshot` `NormalBlocks` section.
+  """
+  @spec encode_normal_block_data(NormalBlockData.t() | map()) :: binary()
+  def encode_normal_block_data(block) do
+    encode_normal_block(block)
+  end
+
+  @doc "Decodes a single `NormalBlockData` value from the canonical 20-byte wire form."
+  @spec decode_normal_block_data(binary()) :: NormalBlockData.t()
+  def decode_normal_block_data(<<_::binary-size(@normal_block_wire_size)>> = block_binary) do
+    [block] = decode_normal_blocks!(<<1::unsigned-big-integer-size(32), block_binary::binary>>)
+    block
+  end
+
   @doc "Returns the S0 canonical chunk content hash for storage truth fields."
   @spec chunk_hash(Storage.t()) :: 0..0xFFFF_FFFF_FFFF_FFFF
   def chunk_hash(%Storage{} = storage) do
@@ -288,6 +396,57 @@ defmodule SceneServer.Voxel.Codec do
       min_y::unsigned-integer-size(8), min_z::unsigned-integer-size(8),
       max_x::unsigned-integer-size(8), max_y::unsigned-integer-size(8),
       max_z::unsigned-integer-size(8), ref.cover_hash::unsigned-big-integer-size(64)>>
+  end
+
+  defp encode_delta_op(%{
+         delta_kind: kind,
+         macro_index: macro_index,
+         cell_version: cell_version,
+         cell_hash: cell_hash,
+         payload: payload
+       })
+       when is_integer(kind) and kind >= 0 and kind <= 0xFF and
+              is_integer(macro_index) and macro_index >= 0 and macro_index <= 0xFFFF and
+              is_integer(cell_version) and cell_version >= 0 and
+              is_integer(cell_hash) and cell_hash >= 0 and is_binary(payload) do
+    if byte_size(payload) > 0xFFFF do
+      raise ArgumentError, "delta op payload exceeds u16 length"
+    end
+
+    [
+      <<kind::unsigned-integer-size(8)>>,
+      <<macro_index::unsigned-big-integer-size(16)>>,
+      <<cell_version::unsigned-big-integer-size(32)>>,
+      <<cell_hash::unsigned-big-integer-size(32)>>,
+      <<byte_size(payload)::unsigned-big-integer-size(16)>>,
+      payload
+    ]
+  end
+
+  defp decode_delta_ops(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_delta_ops(
+         <<kind::unsigned-integer-size(8), macro_index::unsigned-big-integer-size(16),
+           cell_version::unsigned-big-integer-size(32),
+           cell_hash::unsigned-big-integer-size(32), payload_len::unsigned-big-integer-size(16),
+           payload::binary-size(payload_len), rest::binary>>,
+         remaining,
+         acc
+       )
+       when remaining > 0 do
+    op = %{
+      delta_kind: kind,
+      macro_index: macro_index,
+      cell_version: cell_version,
+      cell_hash: cell_hash,
+      payload: payload
+    }
+
+    decode_delta_ops(rest, remaining - 1, [op | acc])
+  end
+
+  defp decode_delta_ops(_rest, _remaining, _acc) do
+    raise ArgumentError, "malformed ChunkDelta ops binary"
   end
 
   defp encode_empty_pool_for_wire([], _label), do: <<0::unsigned-big-integer-size(32)>>

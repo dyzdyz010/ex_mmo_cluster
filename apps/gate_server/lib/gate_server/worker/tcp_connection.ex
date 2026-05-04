@@ -297,6 +297,19 @@ defmodule GateServer.TcpConnection do
     {:noreply, state}
   end
 
+  def handle_info({:voxel_chunk_delta_payload, payload}, %{socket: socket} = state)
+      when is_binary(payload) do
+    GateServer.CliObserve.emit("voxel_chunk_delta_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send_encoded(socket, {:voxel_chunk_delta_payload, payload})
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("tcp_receive", fn ->

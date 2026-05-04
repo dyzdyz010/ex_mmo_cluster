@@ -961,7 +961,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     :gen_udp.close(udp_client)
   end
 
-  test "voxel subscription over tcp forwards initial and later authoritative snapshots", %{
+  test "voxel subscription over tcp forwards initial snapshot then ChunkDelta on impact", %{
     client: client,
     pid: pid
   } do
@@ -988,10 +988,13 @@ defmodule GateServer.TcpConnectionProtocolTest do
             <<0x68, 202::64-big, 301::32-big, 881::64-big, 0::8, 1::64-big, 0::16-big, 2::16-big,
               "ok">>} = :gen_tcp.recv(client, 0, 500)
 
-    assert {:ok, <<0x62, updated_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
-    assert {:ok, updated} = SceneVoxelCodec.decode_chunk_snapshot_payload(updated_payload)
-    assert updated.request_id == 201
-    assert updated.storage.chunk_version == 1
+    assert {:ok, <<0x63, delta_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.logical_scene_id == 881
+    assert delta.chunk_coord == {0, 0, 0}
+    assert delta.base_chunk_version == 0
+    assert delta.new_chunk_version == 1
+    assert [%{delta_kind: 1, cell_version: 1}] = delta.ops
   end
 
   test "malformed payload fails closed with generic error reply", %{client: client} do

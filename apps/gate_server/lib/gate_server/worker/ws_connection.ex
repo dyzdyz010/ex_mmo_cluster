@@ -232,6 +232,18 @@ defmodule GateServer.WsConnection do
     {:noreply, state}
   end
 
+  def handle_info({:voxel_chunk_delta_payload, payload}, state) when is_binary(payload) do
+    GateServer.CliObserve.emit("ws_voxel_chunk_delta_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send_encoded(state, {:voxel_chunk_delta_payload, payload})
+    {:noreply, state}
+  end
+
   @impl true
   def terminate(_reason, state) do
     cleanup_voxel_subscriptions(state)

@@ -195,7 +195,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
   end
 
-  test "apply_intent pushes snapshot fallback payloads to subscribers after persistence" do
+  test "apply_intent pushes a CellSolid ChunkDelta to subscribers after persistence" do
     {_token_store, snapshot_store, lease} = start_snapshot_store()
 
     chunk =
@@ -207,22 +207,25 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
 
+    block = NormalBlockData.new(9)
+
     assert {:ok, %{chunk_version: 1}} =
              ChunkProcess.apply_intent(
                chunk,
-               intent_attrs(lease, macro: {2, 0, 0}, block: NormalBlockData.new(9))
+               intent_attrs(lease, macro: {2, 0, 0}, block: block)
              )
 
-    assert_receive {:voxel_chunk_snapshot_payload, updated_payload}
-    assert updated_payload != initial_payload
+    assert_receive {:voxel_chunk_delta_payload, delta_payload}
+    refute delta_payload == initial_payload
 
-    assert {:ok, %{request_id: 88, storage: decoded_storage}} =
-             Codec.decode_chunk_snapshot_payload(updated_payload)
+    assert {:ok, decoded} = Codec.decode_chunk_delta_payload(delta_payload)
+    assert decoded.logical_scene_id == 1
+    assert decoded.chunk_coord == {1, 1, 1}
+    assert decoded.base_chunk_version == 0
+    assert decoded.new_chunk_version == 1
 
-    assert decoded_storage.chunk_version == 1
-
-    assert Storage.macro_header_at(decoded_storage, {2, 0, 0}).mode ==
-             MacroCellHeader.cell_mode_solid_block()
+    assert [%{delta_kind: 1, cell_version: 1, payload: block_payload}] = decoded.ops
+    assert Codec.decode_normal_block_data(block_payload) == NormalBlockData.normalize!(block)
   end
 
   test "unsubscribe stops future snapshot fallback pushes" do

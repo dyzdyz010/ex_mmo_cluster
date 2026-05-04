@@ -82,4 +82,83 @@ defmodule SceneServer.Voxel.CodecTest do
     assert Codec.chunk_hash(decoded_storage) == hash
     assert Codec.chunk_hash(%{storage | chunk_version: 999}) == hash
   end
+
+  test "round-trips a single CellSolid ChunkDelta op" do
+    block = NormalBlockData.new(7, health: 80)
+    block_payload = Codec.encode_normal_block_data(block)
+
+    delta = %{
+      logical_scene_id: 42,
+      chunk_coord: {-1, 0, 2},
+      base_chunk_version: 5,
+      new_chunk_version: 6,
+      ops: [
+        %{
+          delta_kind: 1,
+          macro_index: 1234,
+          cell_version: 6,
+          cell_hash: 0xCAFE,
+          payload: block_payload
+        }
+      ]
+    }
+
+    payload = Codec.encode_chunk_delta_payload(delta)
+
+    assert <<42::unsigned-big-integer-size(64), -1::signed-big-integer-size(32),
+             0::signed-big-integer-size(32), 2::signed-big-integer-size(32),
+             5::unsigned-big-integer-size(64), 6::unsigned-big-integer-size(64),
+             1::unsigned-big-integer-size(16), _ops::binary>> = payload
+
+    assert {:ok, decoded} = Codec.decode_chunk_delta_payload(payload)
+    assert decoded.logical_scene_id == 42
+    assert decoded.chunk_coord == {-1, 0, 2}
+    assert decoded.base_chunk_version == 5
+    assert decoded.new_chunk_version == 6
+
+    assert [
+             %{
+               delta_kind: 1,
+               macro_index: 1234,
+               cell_version: 6,
+               cell_hash: 0xCAFE,
+               payload: ^block_payload
+             }
+           ] = decoded.ops
+
+    assert Codec.decode_normal_block_data(block_payload) == block
+  end
+
+  test "round-trips a multi-op ChunkDelta and preserves op order" do
+    payload = Codec.encode_normal_block_data(NormalBlockData.new(3))
+
+    ops =
+      Enum.map(0..2, fn i ->
+        %{
+          delta_kind: 1,
+          macro_index: 100 + i,
+          cell_version: 10 + i,
+          cell_hash: 0xAA00 + i,
+          payload: payload
+        }
+      end)
+
+    delta = %{
+      logical_scene_id: 1,
+      chunk_coord: {0, 0, 0},
+      base_chunk_version: 9,
+      new_chunk_version: 12,
+      ops: ops
+    }
+
+    encoded = Codec.encode_chunk_delta_payload(delta)
+    assert {:ok, decoded} = Codec.decode_chunk_delta_payload(encoded)
+
+    assert Enum.map(decoded.ops, & &1.macro_index) == [100, 101, 102]
+    assert Enum.map(decoded.ops, & &1.cell_version) == [10, 11, 12]
+  end
+
+  test "rejects malformed ChunkDelta payload" do
+    assert {:error, _reason} = Codec.decode_chunk_delta_payload(<<0, 1, 2>>)
+  end
 end

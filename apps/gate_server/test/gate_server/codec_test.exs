@@ -330,6 +330,11 @@ defmodule GateServer.CodecTest do
       assert <<0x62, 1, 2, 3>> == IO.iodata_to_binary(iodata)
     end
 
+    test "encodes raw chunk delta payload with the 0x63 opcode" do
+      {:ok, iodata} = Codec.encode({:voxel_chunk_delta_payload, <<9, 8, 7, 6>>})
+      assert <<0x63, 9, 8, 7, 6>> == IO.iodata_to_binary(iodata)
+    end
+
     test "encodes voxel intent result" do
       {:ok, iodata} =
         Codec.encode(

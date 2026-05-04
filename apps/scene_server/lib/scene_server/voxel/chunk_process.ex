@@ -239,7 +239,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
                   }
                 end)
 
-                push_snapshot_fallbacks(next_state, :apply_intent)
+                push_intent_outcome(state, next_state, intent, :apply_intent)
                 {:reply, {:ok, reply}, next_state}
 
               {:error, reason} ->
@@ -277,14 +277,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   def handle_call({:commit_transaction, transaction_id}, _from, state) do
     case commit_transaction_in_state(state, transaction_id) do
-      {:ok, reply, next_state} ->
+      {:ok, reply, next_state, intent} ->
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
           chunk_version: next_state.storage.chunk_version,
           snapshot_bytes: byte_size(reply.snapshot_payload),
           persist_result: reply.persist_result
         })
 
-        push_snapshot_fallbacks(next_state, :commit_transaction)
+        push_intent_outcome(state, next_state, intent, :commit_transaction)
         {:reply, {:ok, reply}, next_state}
 
       {:error, reason} ->
@@ -514,7 +514,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
       %{transaction_id: ^transaction_id, intent: intent} ->
         case apply_normalized_intent(state, intent) do
           {:ok, reply, next_state_after_apply} ->
-            {:ok, reply, %{next_state_after_apply | pending_fence: nil}}
+            {:ok, reply, %{next_state_after_apply | pending_fence: nil}, intent}
 
           {:error, reason} ->
             {:error, reason}
@@ -747,6 +747,70 @@ defmodule SceneServer.Voxel.ChunkProcess do
       | subscribers: Map.delete(state.subscribers, subscriber),
         subscriber_monitors: Map.delete(state.subscriber_monitors, monitor_ref)
     }
+  end
+
+  defp push_intent_outcome(state_before, state_after, intent, reason) do
+    case build_intent_delta_op(intent, state_after.storage.chunk_version) do
+      {:ok, op} ->
+        push_chunk_delta(
+          state_after,
+          state_before.storage.chunk_version,
+          [op],
+          reason
+        )
+
+      :fallback_to_snapshot ->
+        push_snapshot_fallbacks(state_after, reason)
+    end
+  end
+
+  defp build_intent_delta_op(%{operation: :put_solid_block} = intent, new_chunk_version) do
+    cell_version = Keyword.get(intent.opts, :cell_version, new_chunk_version)
+
+    cell_hash =
+      Keyword.get_lazy(intent.opts, :cell_hash, fn -> Hash.digest32(inspect(intent.block)) end)
+
+    payload = Codec.encode_normal_block_data(intent.block)
+
+    {:ok,
+     %{
+       delta_kind: 1,
+       macro_index: intent.macro,
+       cell_version: cell_version,
+       cell_hash: cell_hash,
+       payload: payload
+     }}
+  end
+
+  defp build_intent_delta_op(_intent, _new_chunk_version), do: :fallback_to_snapshot
+
+  defp push_chunk_delta(state, base_version, ops, reason) do
+    delta_payload =
+      Codec.encode_chunk_delta_payload(%{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        base_chunk_version: base_version,
+        new_chunk_version: state.storage.chunk_version,
+        ops: ops
+      })
+
+    Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
+      send(subscriber, {:voxel_chunk_delta_payload, delta_payload})
+
+      CliObserve.emit("voxel_chunk_delta_push", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          base_chunk_version: base_version,
+          new_chunk_version: state.storage.chunk_version,
+          op_count: length(ops),
+          subscriber: subscriber,
+          request_id: request_id,
+          reason: reason,
+          byte_size: byte_size(delta_payload)
+        }
+      end)
+    end)
   end
 
   defp push_snapshot_fallbacks(state, reason) do
