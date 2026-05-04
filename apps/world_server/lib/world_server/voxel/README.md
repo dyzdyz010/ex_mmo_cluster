@@ -28,11 +28,17 @@
   准备确认，并为每个 `transaction_id + decision_version` 记录唯一提交 / 放弃决策。
   调用方负责把 prepare/commit/abort 真的送到 Scene；coordinator 本身不做 RPC，只承担
   状态机和幂等账本。
-- `TransactionExecutor` 是在 World 进程内驱动 `TransactionCoordinator` 的同步 dispatcher。
-  它逐 participant 调 Scene 侧 `BuildTransactionApplier.prepare/4`、把每个返回的
-  `:prepared` / `:failed` 转成 `prepare_ack`，然后按 coordinator 的最终状态再调
-  `commit/3` 或 `abort/3`，最后回写 `commit_decision` 或 `abort_decision`。
-  对已经决定的事务做 replay 时短路返回，不重复触发 Scene 侧动作。当前不做超时扫描，也
+- `TransactionExecutor` 是在 World 进程内驱动 `TransactionCoordinator` 的并行 dispatcher。
+  它对 participants 用 `Task.async_stream` 同时调 Scene 侧 `BuildTransactionApplier.prepare/4`、
+  把每个返回的 `:prepared` / `:failed` 转成 `prepare_ack`，然后按 coordinator 的最终状态再
+  并行调 `commit/3` 或 `abort/3`，最后回写 `commit_decision` 或 `abort_decision`。每个
+  participant 有 `:per_participant_timeout_ms`（prepare 默认 5_000ms，commit / abort 可单独配
+  `:commit_timeout_ms` / `:abort_timeout_ms`），整个 executor pass 还有
+  `:transaction_timeout_ms`（默认 30_000ms）的整体期限。超时、`{:exit, _}` 或 `{:error, _}` 一律
+  作为 `:failed` ack 上报，结构化失败原因（`:timeout` / `:transaction_timeout` /
+  `{:participant_crashed, _}`）记入 `prepare_results`。executor 对 scene caller 的返回值用
+  `try/rescue/catch` 包了一层，单个 participant 抛异常 / `exit` 不会拖垮 executor 进程。
+  对已经决定的事务做 replay 时短路返回，不重复触发 Scene 侧动作。当前不做长时超时扫描，也
   不在节点重启后恢复 in-flight 事务；这些与持久化 ledger 一起留给后续切片。
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实

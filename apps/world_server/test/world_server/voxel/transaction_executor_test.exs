@@ -10,17 +10,22 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     def prepare(participant, transaction_id, intents_by_chunk, opts) do
       log_call(opts, {:prepare, participant.region_id, transaction_id, intents_by_chunk})
 
+      maybe_sleep(opts, :prepare_sleeps_ms, participant.region_id)
+      maybe_raise(opts, :prepare_raises, participant.region_id)
+
       Keyword.get(opts, :prepare_responses, %{})
       |> Map.get(participant.region_id, {:ok, %{prepared_chunks: []}})
     end
 
     def commit(participant, transaction_id, opts) do
       log_call(opts, {:commit, participant.region_id, transaction_id})
+      maybe_sleep(opts, :commit_sleeps_ms, participant.region_id)
       {:ok, %{committed_chunks: []}}
     end
 
     def abort(participant, transaction_id, opts) do
       log_call(opts, {:abort, participant.region_id, transaction_id})
+      maybe_sleep(opts, :abort_sleeps_ms, participant.region_id)
       :ok
     end
 
@@ -28,6 +33,24 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       case Keyword.fetch(opts, :recorder) do
         {:ok, agent} -> Agent.update(agent, &(&1 ++ [event]))
         :error -> :ok
+      end
+    end
+
+    defp maybe_sleep(opts, key, region_id) do
+      sleeps = Keyword.get(opts, key, %{})
+
+      case Map.get(sleeps, region_id) do
+        nil -> :ok
+        ms when is_integer(ms) -> Process.sleep(ms)
+      end
+    end
+
+    defp maybe_raise(opts, key, region_id) do
+      raises = Keyword.get(opts, key, %{})
+
+      case Map.get(raises, region_id) do
+        nil -> :ok
+        reason -> raise reason
       end
     end
   end
@@ -165,6 +188,169 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
 
     second_snapshot = TransactionCoordinator.snapshot(coordinator)
     assert second_snapshot.decision_index["tx-replay"].decision == :commit
+  end
+
+  test "fails the slow participant on per-participant prepare timeout and aborts the prepared one" do
+    coordinator = start_supervised!(TransactionCoordinator)
+    recorder = start_supervised!({Agent, fn -> [] end})
+
+    {:ok, transaction} =
+      TransactionCoordinator.begin_transaction(
+        coordinator,
+        transaction_attrs("tx-prepare-timeout")
+      )
+
+    assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
+             TransactionExecutor.execute(coordinator, transaction, %{},
+               scene_caller: StubSceneCaller,
+               scene_opts: [
+                 recorder: recorder,
+                 # Region 20 sleeps longer than its per-participant budget.
+                 prepare_sleeps_ms: %{20 => 200}
+               ],
+               per_participant_timeout_ms: 50
+             )
+
+    assert result.transaction.state == :aborted
+
+    prepare_by_region =
+      Map.new(prepare_results, fn {participant, result} -> {participant.region_id, result} end)
+
+    assert prepare_by_region[20] == {:error, :timeout}
+    assert match?({:ok, _}, prepare_by_region[10])
+
+    calls = Agent.get(recorder, & &1)
+
+    # Region 10 prepared OK so it must receive an abort. Region 20 timed out
+    # before returning, so it must NOT receive a commit.
+    abort_regions =
+      for {:abort, region, _tx} <- calls, do: region
+
+    assert abort_regions == [10]
+
+    refute Enum.any?(calls, fn
+             {:commit, _, _} -> true
+             _ -> false
+           end)
+
+    snapshot = TransactionCoordinator.snapshot(coordinator)
+    persisted = snapshot.transactions["tx-prepare-timeout"]
+
+    assert persisted.state == :aborted
+
+    region_20_status =
+      persisted.participants
+      |> Enum.find(&(&1.region_id == 20))
+      |> Map.get(:prepare_status)
+
+    assert region_20_status == :failed
+  end
+
+  test "treats a participant prepare crash as :failed and aborts the transaction" do
+    coordinator = start_supervised!(TransactionCoordinator)
+    recorder = start_supervised!({Agent, fn -> [] end})
+
+    {:ok, transaction} =
+      TransactionCoordinator.begin_transaction(
+        coordinator,
+        transaction_attrs("tx-prepare-crash")
+      )
+
+    # Silence the unavoidable Task crash report so the test output stays clean.
+    ExUnit.CaptureLog.with_log(fn ->
+      assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts: [
+                   recorder: recorder,
+                   prepare_raises: %{20 => "boom in prepare"}
+                 ]
+               )
+
+      assert result.transaction.state == :aborted
+
+      prepare_by_region =
+        Map.new(prepare_results, fn {participant, result} -> {participant.region_id, result} end)
+
+      assert match?({:error, {:participant_crashed, _}}, prepare_by_region[20])
+      assert match?({:ok, _}, prepare_by_region[10])
+    end)
+  end
+
+  test "abandons every participant when the overall transaction timeout elapses" do
+    coordinator = start_supervised!(TransactionCoordinator)
+    recorder = start_supervised!({Agent, fn -> [] end})
+
+    {:ok, transaction} =
+      TransactionCoordinator.begin_transaction(
+        coordinator,
+        transaction_attrs("tx-overall-timeout")
+      )
+
+    assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
+             TransactionExecutor.execute(coordinator, transaction, %{},
+               scene_caller: StubSceneCaller,
+               scene_opts: [
+                 recorder: recorder,
+                 prepare_sleeps_ms: %{10 => 1_000, 20 => 1_000}
+               ],
+               per_participant_timeout_ms: 5_000,
+               transaction_timeout_ms: 50
+             )
+
+    assert result.transaction.state == :aborted
+
+    # Every participant must end up :failed at the executor layer; the
+    # specific reason can be either :timeout (per-item kill triggered first)
+    # or :transaction_timeout (overall deadline cut the stream loose). Both
+    # are valid "abandoned" outcomes for the spec.
+    for {_participant, prepare_result} <- prepare_results do
+      assert match?(
+               {:error, reason} when reason in [:timeout, :transaction_timeout],
+               prepare_result
+             )
+    end
+
+    snapshot = TransactionCoordinator.snapshot(coordinator)
+    persisted = snapshot.transactions["tx-overall-timeout"]
+
+    assert persisted.state == :aborted
+
+    for participant <- persisted.participants do
+      assert participant.prepare_status == :failed
+    end
+  end
+
+  test "runs prepare in parallel: total wall-clock time is well under sequential" do
+    coordinator = start_supervised!(TransactionCoordinator)
+    recorder = start_supervised!({Agent, fn -> [] end})
+
+    {:ok, transaction} =
+      TransactionCoordinator.begin_transaction(
+        coordinator,
+        transaction_attrs("tx-parallel")
+      )
+
+    {time_us, {:ok, %{decision: :commit}}} =
+      :timer.tc(fn ->
+        TransactionExecutor.execute(coordinator, transaction, %{},
+          scene_caller: StubSceneCaller,
+          scene_opts: [
+            recorder: recorder,
+            prepare_sleeps_ms: %{10 => 200, 20 => 200}
+          ],
+          per_participant_timeout_ms: 1_000,
+          transaction_timeout_ms: 5_000
+        )
+      end)
+
+    elapsed_ms = div(time_us, 1_000)
+
+    # Sequential would be >= 400ms (200 + 200). Parallel should be just
+    # above 200ms with a slack budget for scheduling, BEAM startup, and
+    # the synchronous coordinator GenServer round-trips. We allow up to 350ms.
+    assert elapsed_ms < 350,
+           "expected parallel prepare to finish in < 350ms, got #{elapsed_ms}ms"
   end
 
   defp transaction_attrs(transaction_id) do
