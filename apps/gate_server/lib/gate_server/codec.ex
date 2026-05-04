@@ -28,6 +28,8 @@ defmodule GateServer.Codec do
   - `0x60` Voxel ChunkSubscribe
   - `0x61` Voxel ChunkUnsubscribe
   - `0x64` VoxelImpactIntent
+  - `0x65` VoxelBuildReservationIntent
+  - `0x67` VoxelPrefabPlaceIntent
   - `0x6F` VoxelDebugProbe
 
   ### Server → client
@@ -74,6 +76,8 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_snapshot 0x62
   @msg_voxel_chunk_delta 0x63
   @msg_voxel_impact_intent 0x64
+  @msg_voxel_build_reservation_intent 0x65
+  @msg_voxel_prefab_place_intent 0x67
   @msg_voxel_intent_result 0x68
   @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_debug_probe 0x6F
@@ -281,6 +285,25 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_impact_intent, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelBuildReservationIntent (0x65). Canonical decode lives in
+  # `SceneServer.Voxel.Codec` because the payload is voxel-truth-shaped and
+  # is forwarded across services unchanged.
+  def decode(<<@msg_voxel_build_reservation_intent, payload::binary>>) do
+    case SceneServer.Voxel.Codec.decode_build_reservation_intent_payload(payload) do
+      {:ok, intent} -> {:ok, {:voxel_build_reservation_intent, intent}}
+      {:error, _reason} -> {:error, :invalid_message}
+    end
+  end
+
+  # VoxelPrefabPlaceIntent (0x67). Canonical decode lives in
+  # `SceneServer.Voxel.Codec`; the gate codec only frames the opcode here.
+  def decode(<<@msg_voxel_prefab_place_intent, payload::binary>>) do
+    case SceneServer.Voxel.Codec.decode_prefab_place_intent_payload(payload) do
+      {:ok, intent} -> {:ok, {:voxel_prefab_place_intent, intent}}
+      {:error, _reason} -> {:error, :invalid_message}
+    end
+  end
 
   # VoxelDebugProbe:
   # 1 + request_id:u64 + command:string
@@ -534,6 +557,16 @@ defmodule GateServer.Codec do
        encode_voxel_authoritative(authoritative),
        <<byte_size(reason)::16-big, reason::binary>>
      ]}
+  end
+
+  def encode({:voxel_build_reservation_intent, %{} = intent}) do
+    payload = SceneServer.Voxel.Codec.encode_build_reservation_intent_payload(intent)
+    {:ok, [<<@msg_voxel_build_reservation_intent>>, payload]}
+  end
+
+  def encode({:voxel_prefab_place_intent, %{} = intent}) do
+    payload = SceneServer.Voxel.Codec.encode_prefab_place_intent_payload(intent)
+    {:ok, [<<@msg_voxel_prefab_place_intent>>, payload]}
   end
 
   def encode({:voxel_debug_probe, %{request_id: request_id, result: result}})

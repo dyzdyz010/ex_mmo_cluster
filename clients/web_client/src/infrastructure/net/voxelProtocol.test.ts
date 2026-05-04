@@ -4,9 +4,11 @@ import { VoxelDirtyFlags } from "../../voxel/storage/types";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
   decodeVoxelServerMessage,
+  encodeVoxelBuildReservationIntent,
   encodeVoxelChunkSubscribe,
   encodeVoxelDebugProbe,
   encodeVoxelImpactIntent,
+  encodeVoxelPrefabPlaceIntent,
 } from "./voxelProtocol";
 
 describe("voxel gate protocol", () => {
@@ -62,6 +64,134 @@ describe("voxel gate protocol", () => {
     expect(Number(view.getBigInt64(33, false))).toBe(-8);
     expect(Number(view.getBigInt64(41, false))).toBe(24);
     expect(view.getUint16(49, false)).toBe(2);
+  });
+
+  it("encodes voxel build reservation intent with big-endian fields and signed AabbI64 bounds", () => {
+    const encoded = encodeVoxelBuildReservationIntent({
+      requestId: 200,
+      clientIntentSeq: 5,
+      logicalSceneId: 555,
+      parcelId: 9001,
+      knownParcelBuildEpoch: 17,
+      boundsWorldMicro: {
+        minX: -100,
+        minY: -50,
+        minZ: -25,
+        maxX: 200,
+        maxY: 75,
+        maxZ: 50,
+      },
+      intentHash: 0xdead_beef,
+      ttlMs: 5000,
+    });
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    // 1 (opcode) + 8 + 4 + 8 + 8 + 8 + 6 * 8 + 8 + 4 = 97 bytes.
+    expect(encoded.byteLength).toBe(97);
+    expect(view.getUint8(0)).toBe(VoxelOpcode.BuildReservationIntent);
+    expect(Number(view.getBigUint64(1, false))).toBe(200);
+    expect(view.getUint32(9, false)).toBe(5);
+    expect(Number(view.getBigUint64(13, false))).toBe(555);
+    expect(Number(view.getBigUint64(21, false))).toBe(9001);
+    expect(Number(view.getBigUint64(29, false))).toBe(17);
+    expect(Number(view.getBigInt64(37, false))).toBe(-100);
+    expect(Number(view.getBigInt64(45, false))).toBe(-50);
+    expect(Number(view.getBigInt64(53, false))).toBe(-25);
+    expect(Number(view.getBigInt64(61, false))).toBe(200);
+    expect(Number(view.getBigInt64(69, false))).toBe(75);
+    expect(Number(view.getBigInt64(77, false))).toBe(50);
+    expect(Number(view.getBigUint64(85, false))).toBe(0xdead_beef);
+    expect(view.getUint32(93, false)).toBe(5000);
+  });
+
+  it("encodes voxel prefab place intent with known refs, objects and cell refs in big-endian order", () => {
+    const encoded = encodeVoxelPrefabPlaceIntent({
+      requestId: 300,
+      clientIntentSeq: 6,
+      logicalSceneId: 777,
+      parcelId: 8888,
+      knownParcelBuildEpoch: 21,
+      blueprintId: 4242,
+      blueprintVersion: 7,
+      anchorWorldMicro: { x: 1000, y: -2000, z: 3000 },
+      rotation: 90,
+      knownRefs: [{ chunkCoord: { x: -1, y: 0, z: 1 }, chunkVersion: 11 }],
+      knownObjects: [{ objectId: 9001, objectVersion: 1 }],
+      knownCellRefs: [
+        {
+          chunkCoord: { x: -1, y: 0, z: 1 },
+          macroIndex: 1234,
+          cellVersion: 5,
+          cellHash: 0xaabb_ccdd,
+        },
+      ],
+      placementFlags: 0x0000_0001,
+    });
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    // Header (74) + ref_count u16 (2) + 1 ref (20) + obj_count u16 (2) +
+    // 1 obj (16) + cell_count u16 (2) + 1 cell ref (22) + flags u32 (4)
+    // = 142 bytes total.
+    expect(encoded.byteLength).toBe(142);
+    expect(view.getUint8(0)).toBe(VoxelOpcode.PrefabPlaceIntent);
+    expect(Number(view.getBigUint64(1, false))).toBe(300);
+    expect(view.getUint32(9, false)).toBe(6);
+    expect(Number(view.getBigUint64(13, false))).toBe(777);
+    expect(Number(view.getBigUint64(21, false))).toBe(8888);
+    expect(Number(view.getBigUint64(29, false))).toBe(21);
+    expect(Number(view.getBigUint64(37, false))).toBe(4242);
+    expect(view.getUint32(45, false)).toBe(7);
+    expect(Number(view.getBigInt64(49, false))).toBe(1000);
+    expect(Number(view.getBigInt64(57, false))).toBe(-2000);
+    expect(Number(view.getBigInt64(65, false))).toBe(3000);
+    expect(view.getUint8(73)).toBe(90);
+    expect(view.getUint16(74, false)).toBe(1);
+
+    // known_refs[0]
+    expect(view.getInt32(76, false)).toBe(-1);
+    expect(view.getInt32(80, false)).toBe(0);
+    expect(view.getInt32(84, false)).toBe(1);
+    expect(Number(view.getBigUint64(88, false))).toBe(11);
+
+    // known_object_count + known_objects[0]
+    expect(view.getUint16(96, false)).toBe(1);
+    expect(Number(view.getBigUint64(98, false))).toBe(9001);
+    expect(Number(view.getBigUint64(106, false))).toBe(1);
+
+    // known_cell_ref_count + known_cell_refs[0]
+    expect(view.getUint16(114, false)).toBe(1);
+    expect(view.getInt32(116, false)).toBe(-1);
+    expect(view.getInt32(120, false)).toBe(0);
+    expect(view.getInt32(124, false)).toBe(1);
+    expect(view.getUint16(128, false)).toBe(1234);
+    expect(view.getUint32(130, false)).toBe(5);
+    expect(view.getUint32(134, false)).toBe(0xaabb_ccdd);
+
+    // placement_flags trailer
+    expect(view.getUint32(138, false)).toBe(0x0000_0001);
+  });
+
+  it("encodes voxel prefab place intent with empty known arrays", () => {
+    const encoded = encodeVoxelPrefabPlaceIntent({
+      requestId: 1,
+      clientIntentSeq: 2,
+      logicalSceneId: 3,
+      parcelId: 4,
+      knownParcelBuildEpoch: 5,
+      blueprintId: 6,
+      blueprintVersion: 7,
+      anchorWorldMicro: { x: 0, y: 0, z: 0 },
+      rotation: 0,
+    });
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    // Header 74 + 2 + 0 + 2 + 0 + 2 + 0 + 4 = 84 bytes.
+    expect(encoded.byteLength).toBe(84);
+    expect(view.getUint8(0)).toBe(VoxelOpcode.PrefabPlaceIntent);
+    expect(view.getUint16(74, false)).toBe(0);
+    expect(view.getUint16(76, false)).toBe(0);
+    expect(view.getUint16(78, false)).toBe(0);
+    expect(view.getUint32(80, false)).toBe(0);
   });
 
   it("decodes server chunk snapshots into storage truth", () => {

@@ -195,4 +195,120 @@ defmodule SceneServer.Voxel.CodecTest do
   test "rejects malformed ChunkInvalidate payload" do
     assert {:error, _reason} = Codec.decode_chunk_invalidate_payload(<<0, 1, 2>>)
   end
+
+  test "round-trips a BuildReservationIntent payload with big-endian fields" do
+    intent = %{
+      request_id: 0xDEAD_BEEF_CAFE_F00D,
+      client_intent_seq: 42,
+      logical_scene_id: 555,
+      parcel_id: 9_001,
+      known_parcel_build_epoch: 17,
+      bounds_world_micro: {-100, -50, -25, 200, 75, 50},
+      intent_hash: 0x0102_0304_0506_0708,
+      ttl_ms: 5_000
+    }
+
+    payload = Codec.encode_build_reservation_intent_payload(intent)
+
+    # 8(request_id) + 4(seq) + 8(logical_scene_id) + 8(parcel_id) +
+    # 8(epoch) + 6*8(AabbI64) + 8(intent_hash) + 4(ttl_ms) = 96 bytes
+    assert byte_size(payload) == 96
+
+    assert <<0xDEAD_BEEF_CAFE_F00D::unsigned-big-integer-size(64),
+             42::unsigned-big-integer-size(32), 555::unsigned-big-integer-size(64),
+             9_001::unsigned-big-integer-size(64), 17::unsigned-big-integer-size(64),
+             -100::signed-big-integer-size(64), -50::signed-big-integer-size(64),
+             -25::signed-big-integer-size(64), 200::signed-big-integer-size(64),
+             75::signed-big-integer-size(64), 50::signed-big-integer-size(64),
+             0x0102_0304_0506_0708::unsigned-big-integer-size(64),
+             5_000::unsigned-big-integer-size(32)>> = payload
+
+    assert {:ok, decoded} = Codec.decode_build_reservation_intent_payload(payload)
+    assert decoded == intent
+  end
+
+  test "rejects malformed BuildReservationIntent payload" do
+    assert {:error, _reason} = Codec.decode_build_reservation_intent_payload(<<0, 1, 2>>)
+  end
+
+  test "round-trips a PrefabPlaceIntent payload with empty known arrays" do
+    intent = %{
+      request_id: 1,
+      client_intent_seq: 2,
+      logical_scene_id: 3,
+      parcel_id: 4,
+      known_parcel_build_epoch: 5,
+      blueprint_id: 6,
+      blueprint_version: 7,
+      anchor_world_micro: {-8, 16, -24},
+      rotation: 90,
+      known_refs: [],
+      known_objects: [],
+      known_cell_refs: [],
+      placement_flags: 0xCAFE
+    }
+
+    payload = Codec.encode_prefab_place_intent_payload(intent)
+
+    # 8+4+8+8+8+8+4+24+1+2+2+2+4 = 83 bytes
+    assert byte_size(payload) == 83
+
+    assert {:ok, decoded} = Codec.decode_prefab_place_intent_payload(payload)
+    assert decoded == intent
+  end
+
+  test "round-trips a PrefabPlaceIntent payload with known refs, objects, and cell refs" do
+    intent = %{
+      request_id: 100,
+      client_intent_seq: 101,
+      logical_scene_id: 200,
+      parcel_id: 300,
+      known_parcel_build_epoch: 400,
+      blueprint_id: 500,
+      blueprint_version: 600,
+      anchor_world_micro: {1_000, -2_000, 3_000},
+      rotation: 180,
+      known_refs: [
+        %{chunk_coord: {-1, 0, 1}, chunk_version: 11},
+        %{chunk_coord: {2, -3, 4}, chunk_version: 12}
+      ],
+      known_objects: [
+        %{object_id: 9_001, object_version: 1},
+        %{object_id: 9_002, object_version: 2}
+      ],
+      known_cell_refs: [
+        %{
+          chunk_coord: {-1, 0, 1},
+          macro_index: 1234,
+          cell_version: 5,
+          cell_hash: 0xAABB_CCDD
+        }
+      ],
+      placement_flags: 0x0000_0001
+    }
+
+    payload = Codec.encode_prefab_place_intent_payload(intent)
+
+    assert <<request_id::unsigned-big-integer-size(64),
+             client_intent_seq::unsigned-big-integer-size(32),
+             logical_scene_id::unsigned-big-integer-size(64),
+             parcel_id::unsigned-big-integer-size(64), _epoch::unsigned-big-integer-size(64),
+             _blueprint_id::unsigned-big-integer-size(64),
+             _blueprint_version::unsigned-big-integer-size(32),
+             1_000::signed-big-integer-size(64), -2_000::signed-big-integer-size(64),
+             3_000::signed-big-integer-size(64), 180::unsigned-integer-size(8),
+             2::unsigned-big-integer-size(16), _rest::binary>> = payload
+
+    assert request_id == 100
+    assert client_intent_seq == 101
+    assert logical_scene_id == 200
+    assert parcel_id == 300
+
+    assert {:ok, decoded} = Codec.decode_prefab_place_intent_payload(payload)
+    assert decoded == intent
+  end
+
+  test "rejects malformed PrefabPlaceIntent payload" do
+    assert {:error, _reason} = Codec.decode_prefab_place_intent_payload(<<0, 1, 2>>)
+  end
 end

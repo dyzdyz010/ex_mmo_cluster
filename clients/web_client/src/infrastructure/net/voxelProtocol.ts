@@ -196,6 +196,173 @@ export function encodeVoxelChunkUnsubscribe(request: {
   return new Uint8Array(buffer);
 }
 
+export interface VoxelAabbI64 {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+}
+
+export interface VoxelPrefabKnownRef {
+  chunkCoord: FChunkCoord;
+  chunkVersion: number;
+}
+
+export interface VoxelPrefabKnownObject {
+  objectId: number;
+  objectVersion: number;
+}
+
+export interface VoxelPrefabKnownCellRef {
+  chunkCoord: FChunkCoord;
+  macroIndex: number;
+  cellVersion: number;
+  cellHash: number;
+}
+
+export function encodeVoxelBuildReservationIntent(request: {
+  requestId: number;
+  clientIntentSeq: number;
+  logicalSceneId: number;
+  parcelId: number;
+  knownParcelBuildEpoch: number;
+  boundsWorldMicro: VoxelAabbI64;
+  intentHash?: number;
+  ttlMs: number;
+}): Uint8Array {
+  // 1 (opcode) + 8 (request_id) + 4 (client_intent_seq) + 8 (logical_scene_id) +
+  // 8 (parcel_id) + 8 (known_parcel_build_epoch) + 6 * 8 (AabbI64) +
+  // 8 (intent_hash) + 4 (ttl_ms) = 97 bytes total.
+  const buffer = new ArrayBuffer(1 + 8 + 4 + 8 + 8 + 8 + 6 * 8 + 8 + 4);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, VoxelOpcode.BuildReservationIntent);
+  offset += 1;
+  writeU64(view, offset, request.requestId);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.clientIntentSeq)), false);
+  offset += 4;
+  writeU64(view, offset, request.logicalSceneId);
+  offset += 8;
+  writeU64(view, offset, request.parcelId);
+  offset += 8;
+  writeU64(view, offset, request.knownParcelBuildEpoch);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.minX);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.minY);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.minZ);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.maxX);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.maxY);
+  offset += 8;
+  writeI64(view, offset, request.boundsWorldMicro.maxZ);
+  offset += 8;
+  writeU64(view, offset, request.intentHash ?? 0);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.ttlMs)), false);
+  return new Uint8Array(buffer);
+}
+
+export function encodeVoxelPrefabPlaceIntent(request: {
+  requestId: number;
+  clientIntentSeq: number;
+  logicalSceneId: number;
+  parcelId: number;
+  knownParcelBuildEpoch: number;
+  blueprintId: number;
+  blueprintVersion: number;
+  anchorWorldMicro: FMacroCoord;
+  rotation: number;
+  knownRefs?: readonly VoxelPrefabKnownRef[];
+  knownObjects?: readonly VoxelPrefabKnownObject[];
+  knownCellRefs?: readonly VoxelPrefabKnownCellRef[];
+  placementFlags?: number;
+}): Uint8Array {
+  const knownRefs = request.knownRefs ?? [];
+  const knownObjects = request.knownObjects ?? [];
+  const knownCellRefs = request.knownCellRefs ?? [];
+
+  // Header (fixed): 1 (opcode) + 8 (request_id) + 4 (client_intent_seq) +
+  // 8 (logical_scene_id) + 8 (parcel_id) + 8 (epoch) + 8 (blueprint_id) +
+  // 4 (blueprint_version) + 24 (anchor) + 1 (rotation) = 74 bytes.
+  // known_refs[]: 12 (chunk_coord) + 8 (chunk_version) = 20 bytes per ref.
+  // known_objects[]: 8 + 8 = 16 bytes per object.
+  // known_cell_refs[]: 12 + 2 + 4 + 4 = 22 bytes per cell ref.
+  // Plus three u16 counts (6 bytes) and one u32 placement_flags trailer.
+  const totalLength =
+    74 +
+    2 +
+    knownRefs.length * 20 +
+    2 +
+    knownObjects.length * 16 +
+    2 +
+    knownCellRefs.length * 22 +
+    4;
+
+  const buffer = new ArrayBuffer(totalLength);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, VoxelOpcode.PrefabPlaceIntent);
+  offset += 1;
+  writeU64(view, offset, request.requestId);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.clientIntentSeq)), false);
+  offset += 4;
+  writeU64(view, offset, request.logicalSceneId);
+  offset += 8;
+  writeU64(view, offset, request.parcelId);
+  offset += 8;
+  writeU64(view, offset, request.knownParcelBuildEpoch);
+  offset += 8;
+  writeU64(view, offset, request.blueprintId);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.blueprintVersion)), false);
+  offset += 4;
+  writeI64(view, offset, request.anchorWorldMicro.x);
+  offset += 8;
+  writeI64(view, offset, request.anchorWorldMicro.y);
+  offset += 8;
+  writeI64(view, offset, request.anchorWorldMicro.z);
+  offset += 8;
+  view.setUint8(offset, Math.max(0, Math.min(0xff, Math.trunc(request.rotation))));
+  offset += 1;
+  view.setUint16(offset, knownRefs.length, false);
+  offset += 2;
+  for (const ref of knownRefs) {
+    writeChunkCoord(view, offset, ref.chunkCoord);
+    offset += 12;
+    writeU64(view, offset, ref.chunkVersion);
+    offset += 8;
+  }
+  view.setUint16(offset, knownObjects.length, false);
+  offset += 2;
+  for (const object of knownObjects) {
+    writeU64(view, offset, object.objectId);
+    offset += 8;
+    writeU64(view, offset, object.objectVersion);
+    offset += 8;
+  }
+  view.setUint16(offset, knownCellRefs.length, false);
+  offset += 2;
+  for (const cellRef of knownCellRefs) {
+    writeChunkCoord(view, offset, cellRef.chunkCoord);
+    offset += 12;
+    view.setUint16(offset, Math.max(0, Math.min(0xffff, Math.trunc(cellRef.macroIndex))), false);
+    offset += 2;
+    view.setUint32(offset, Math.max(0, Math.trunc(cellRef.cellVersion)), false);
+    offset += 4;
+    view.setUint32(offset, Math.max(0, Math.trunc(cellRef.cellHash)), false);
+    offset += 4;
+  }
+  view.setUint32(offset, Math.max(0, Math.trunc(request.placementFlags ?? 0)), false);
+  return new Uint8Array(buffer);
+}
+
 export function encodeVoxelImpactIntent(request: {
   requestId: number;
   clientIntentSeq: number;

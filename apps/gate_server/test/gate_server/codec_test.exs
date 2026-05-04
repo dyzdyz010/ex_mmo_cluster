@@ -154,6 +154,105 @@ defmodule GateServer.CodecTest do
       assert {:error, :invalid_message} == Codec.decode(<<0x64, 101::64-big>>)
     end
 
+    test "decodes voxel build reservation intent" do
+      # Wire layout (96 bytes after the 1-byte opcode):
+      # request_id u64 + client_intent_seq u32 + logical_scene_id u64 +
+      # parcel_id u64 + known_parcel_build_epoch u64 + AabbI64 (6 * i64) +
+      # intent_hash u64 + ttl_ms u32.
+      msg =
+        <<0x65, 200::64-big, 5::32-big, 555::64-big, 9_001::64-big, 17::64-big,
+          -100::64-big-signed, -50::64-big-signed, -25::64-big-signed, 200::64-big-signed,
+          75::64-big-signed, 50::64-big-signed, 0xCAFE_BABE_DEAD_BEEF::64-big, 5_000::32-big>>
+
+      assert {:ok,
+              {:voxel_build_reservation_intent,
+               %{
+                 request_id: 200,
+                 client_intent_seq: 5,
+                 logical_scene_id: 555,
+                 parcel_id: 9_001,
+                 known_parcel_build_epoch: 17,
+                 bounds_world_micro: {-100, -50, -25, 200, 75, 50},
+                 intent_hash: 0xCAFE_BABE_DEAD_BEEF,
+                 ttl_ms: 5_000
+               }}} == Codec.decode(msg)
+    end
+
+    test "rejects malformed voxel build reservation intent" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x65, 1, 2, 3>>)
+    end
+
+    test "decodes voxel prefab place intent with known refs and objects" do
+      msg =
+        <<
+          0x67,
+          300::64-big,
+          6::32-big,
+          777::64-big,
+          8_888::64-big,
+          21::64-big,
+          4_242::64-big,
+          7::32-big,
+          1_000::64-big-signed,
+          -2_000::64-big-signed,
+          3_000::64-big-signed,
+          90::8,
+          # known_ref_count = 1
+          1::16-big,
+          # known_refs[0]: chunk_coord (-1, 0, 1), chunk_version 11
+          -1::32-big-signed,
+          0::32-big-signed,
+          1::32-big-signed,
+          11::64-big,
+          # known_object_count = 1
+          1::16-big,
+          # known_objects[0]: object_id 9_001, object_version 1
+          9_001::64-big,
+          1::64-big,
+          # known_cell_ref_count = 1
+          1::16-big,
+          # known_cell_refs[0]: chunk_coord (-1, 0, 1), macro_index 1234,
+          # cell_version 5, cell_hash 0xAABBCCDD
+          -1::32-big-signed,
+          0::32-big-signed,
+          1::32-big-signed,
+          1_234::16-big,
+          5::32-big,
+          0xAABB_CCDD::32-big,
+          # placement_flags
+          0x0000_0001::32-big
+        >>
+
+      assert {:ok,
+              {:voxel_prefab_place_intent,
+               %{
+                 request_id: 300,
+                 client_intent_seq: 6,
+                 logical_scene_id: 777,
+                 parcel_id: 8_888,
+                 known_parcel_build_epoch: 21,
+                 blueprint_id: 4_242,
+                 blueprint_version: 7,
+                 anchor_world_micro: {1_000, -2_000, 3_000},
+                 rotation: 90,
+                 known_refs: [%{chunk_coord: {-1, 0, 1}, chunk_version: 11}],
+                 known_objects: [%{object_id: 9_001, object_version: 1}],
+                 known_cell_refs: [
+                   %{
+                     chunk_coord: {-1, 0, 1},
+                     macro_index: 1_234,
+                     cell_version: 5,
+                     cell_hash: 0xAABB_CCDD
+                   }
+                 ],
+                 placement_flags: 0x0000_0001
+               }}} == Codec.decode(msg)
+    end
+
+    test "rejects malformed voxel prefab place intent" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x67, 1, 2, 3>>)
+    end
+
     test "decodes voxel debug probe" do
       command = "voxel_transport"
       msg = <<0x6F, 7::64-big, byte_size(command)::16-big, command::binary>>
@@ -375,6 +474,60 @@ defmodule GateServer.CodecTest do
     test "encodes voxel debug probe reply" do
       {:ok, bin} = Codec.encode({:voxel_debug_probe, %{request_id: 7, result: "ok"}})
       assert <<0x6F, 7::64-big, 2::16-big, "ok">> == bin
+    end
+
+    test "encodes a voxel build reservation intent that round-trips through decode" do
+      intent = %{
+        request_id: 200,
+        client_intent_seq: 5,
+        logical_scene_id: 555,
+        parcel_id: 9_001,
+        known_parcel_build_epoch: 17,
+        bounds_world_micro: {-100, -50, -25, 200, 75, 50},
+        intent_hash: 0xCAFE_BABE_DEAD_BEEF,
+        ttl_ms: 5_000
+      }
+
+      {:ok, iodata} = Codec.encode({:voxel_build_reservation_intent, intent})
+      bin = IO.iodata_to_binary(iodata)
+
+      assert <<0x65, 200::64-big, 5::32-big, 555::64-big, 9_001::64-big, 17::64-big,
+               -100::64-big-signed, -50::64-big-signed, -25::64-big-signed, 200::64-big-signed,
+               75::64-big-signed, 50::64-big-signed, 0xCAFE_BABE_DEAD_BEEF::64-big,
+               5_000::32-big>> = bin
+
+      assert {:ok, {:voxel_build_reservation_intent, ^intent}} = Codec.decode(bin)
+    end
+
+    test "encodes a voxel prefab place intent that round-trips through decode" do
+      intent = %{
+        request_id: 300,
+        client_intent_seq: 6,
+        logical_scene_id: 777,
+        parcel_id: 8_888,
+        known_parcel_build_epoch: 21,
+        blueprint_id: 4_242,
+        blueprint_version: 7,
+        anchor_world_micro: {1_000, -2_000, 3_000},
+        rotation: 90,
+        known_refs: [%{chunk_coord: {-1, 0, 1}, chunk_version: 11}],
+        known_objects: [%{object_id: 9_001, object_version: 1}],
+        known_cell_refs: [
+          %{
+            chunk_coord: {-1, 0, 1},
+            macro_index: 1_234,
+            cell_version: 5,
+            cell_hash: 0xAABB_CCDD
+          }
+        ],
+        placement_flags: 0x0000_0001
+      }
+
+      {:ok, iodata} = Codec.encode({:voxel_prefab_place_intent, intent})
+      bin = IO.iodata_to_binary(iodata)
+
+      assert <<0x67, 300::64-big, _rest::binary>> = bin
+      assert {:ok, {:voxel_prefab_place_intent, ^intent}} = Codec.decode(bin)
     end
   end
 

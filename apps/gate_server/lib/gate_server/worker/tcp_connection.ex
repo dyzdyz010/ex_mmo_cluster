@@ -766,6 +766,58 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
+  defp dispatch(
+         {:voxel_build_reservation_intent, request},
+         %{status: :in_scene, socket: socket} = state
+       ) do
+    GateServer.CliObserve.emit("voxel_build_reservation_intent_received", fn ->
+      %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        client_intent_seq: request.client_intent_seq,
+        logical_scene_id: request.logical_scene_id,
+        parcel_id: request.parcel_id,
+        ttl_ms: request.ttl_ms
+      }
+    end)
+
+    send_encoded(socket, voxel_intent_stub_accepted(request))
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_build_reservation_intent, request}, state) do
+    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  defp dispatch(
+         {:voxel_prefab_place_intent, request},
+         %{status: :in_scene, socket: socket} = state
+       ) do
+    GateServer.CliObserve.emit("voxel_prefab_place_intent_received", fn ->
+      %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        client_intent_seq: request.client_intent_seq,
+        logical_scene_id: request.logical_scene_id,
+        parcel_id: request.parcel_id,
+        blueprint_id: request.blueprint_id,
+        blueprint_version: request.blueprint_version,
+        rotation: request.rotation
+      }
+    end)
+
+    send_encoded(socket, voxel_intent_stub_accepted(request))
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_prefab_place_intent, request}, state) do
+    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
+    {:ok, state}
+  end
+
   defp dispatch({:voxel_debug_probe, %{request_id: request_id, command: command}}, state) do
     GateServer.CliObserve.emit("voxel_debug_probe_received", %{
       connection_pid: self(),
@@ -1213,6 +1265,22 @@ defmodule GateServer.TcpConnection do
        result_ref: result.chunk_version,
        authoritative: [],
        reason: "ok"
+     }}
+  end
+
+  # Stub accept used by build-reservation / prefab-place intents until the
+  # real reservation and rasterisation pipeline lands. The wire shape matches
+  # the eventual spec so clients can round-trip the result frame today.
+  defp voxel_intent_stub_accepted(request) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: Map.get(request, :client_intent_seq, 0),
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: 0,
+       authoritative: [],
+       reason: ""
      }}
   end
 

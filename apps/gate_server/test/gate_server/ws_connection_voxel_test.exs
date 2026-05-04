@@ -406,6 +406,46 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert [%{delta_kind: 1, cell_version: 1}] = delta.ops
   end
 
+  test "build reservation intent in scene returns stub-accepted voxel intent result" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(
+      pid,
+      build_reservation_intent_frame(401, 11, 555, 9_001,
+        bounds: {-100, -50, -25, 200, 75, 50},
+        ttl_ms: 5_000
+      )
+    )
+
+    assert_voxel_intent_stub_accepted(
+      request_id: 401,
+      client_intent_seq: 11,
+      logical_scene_id: 555
+    )
+  end
+
+  test "prefab place intent in scene returns stub-accepted voxel intent result" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(501, 12, 777, 8_888,
+        blueprint_id: 4_242,
+        blueprint_version: 7,
+        anchor: {1_000, -2_000, 3_000},
+        rotation: 90
+      )
+    )
+
+    assert_voxel_intent_stub_accepted(
+      request_id: 501,
+      client_intent_seq: 12,
+      logical_scene_id: 777
+    )
+  end
+
   test "chunk unsubscribe removes live subscription and stops later snapshot pushes" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
@@ -471,6 +511,46 @@ defmodule GateServer.WsConnectionVoxelTest do
       0::64-big>>
   end
 
+  defp build_reservation_intent_frame(
+         request_id,
+         client_intent_seq,
+         logical_scene_id,
+         parcel_id,
+         opts \\ []
+       ) do
+    {min_x, min_y, min_z, max_x, max_y, max_z} =
+      Keyword.get(opts, :bounds, {-1, -1, -1, 1, 1, 1})
+
+    known_parcel_build_epoch = Keyword.get(opts, :known_parcel_build_epoch, 0)
+    intent_hash = Keyword.get(opts, :intent_hash, 0)
+    ttl_ms = Keyword.get(opts, :ttl_ms, 1_000)
+
+    <<0x65, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big,
+      parcel_id::64-big, known_parcel_build_epoch::64-big, min_x::64-big-signed,
+      min_y::64-big-signed, min_z::64-big-signed, max_x::64-big-signed, max_y::64-big-signed,
+      max_z::64-big-signed, intent_hash::64-big, ttl_ms::32-big>>
+  end
+
+  defp prefab_place_intent_frame(
+         request_id,
+         client_intent_seq,
+         logical_scene_id,
+         parcel_id,
+         opts \\ []
+       ) do
+    blueprint_id = Keyword.get(opts, :blueprint_id, 1)
+    blueprint_version = Keyword.get(opts, :blueprint_version, 1)
+    {ax, ay, az} = Keyword.get(opts, :anchor, {0, 0, 0})
+    rotation = Keyword.get(opts, :rotation, 0)
+    known_parcel_build_epoch = Keyword.get(opts, :known_parcel_build_epoch, 0)
+    placement_flags = Keyword.get(opts, :placement_flags, 0)
+
+    <<0x67, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big,
+      parcel_id::64-big, known_parcel_build_epoch::64-big, blueprint_id::64-big,
+      blueprint_version::32-big, ax::64-big-signed, ay::64-big-signed, az::64-big-signed,
+      rotation::8, 0::16-big, 0::16-big, 0::16-big, placement_flags::32-big>>
+  end
+
   defp assert_voxel_intent_result(opts) do
     request_id = Keyword.fetch!(opts, :request_id)
     client_intent_seq = Keyword.get(opts, :client_intent_seq, 0)
@@ -488,6 +568,22 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert got_client_intent_seq == client_intent_seq
     assert got_logical_scene_id == logical_scene_id
     assert got_reason == reason
+  end
+
+  defp assert_voxel_intent_stub_accepted(opts) do
+    request_id = Keyword.fetch!(opts, :request_id)
+    client_intent_seq = Keyword.fetch!(opts, :client_intent_seq)
+    logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
+
+    assert_receive {:gate_ws_send, iodata}
+
+    assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
+             got_logical_scene_id::64-big, 0::8, 0::64-big, 0::16-big, 0::16-big>> =
+             IO.iodata_to_binary(iodata)
+
+    assert got_request_id == request_id
+    assert got_client_intent_seq == client_intent_seq
+    assert got_logical_scene_id == logical_scene_id
   end
 
   defp assert_voxel_intent_accepted(opts) do

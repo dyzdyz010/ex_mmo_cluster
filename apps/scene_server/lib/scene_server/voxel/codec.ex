@@ -294,6 +294,327 @@ defmodule SceneServer.Voxel.Codec do
   def invalidate_reason_name(_other), do: :unknown
 
   @doc """
+  Encodes a v1 `BuildReservationIntent` payload (protocol design 13.4, opcode `0x65`).
+
+  Wire layout (104 bytes fixed):
+
+      request_id                u64
+      client_intent_seq         u32
+      logical_scene_id          u64
+      parcel_id                 u64
+      known_parcel_build_epoch  u64
+      bounds_world_micro        AabbI64 (i64 minx,miny,minz,maxx,maxy,maxz)
+      intent_hash               u64
+      ttl_ms                    u32
+  """
+  @spec encode_build_reservation_intent_payload(map()) :: binary()
+  def encode_build_reservation_intent_payload(%{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        parcel_id: parcel_id,
+        known_parcel_build_epoch: known_parcel_build_epoch,
+        bounds_world_micro: {min_x, min_y, min_z, max_x, max_y, max_z},
+        intent_hash: intent_hash,
+        ttl_ms: ttl_ms
+      })
+      when is_integer(request_id) and request_id >= 0 and
+             is_integer(client_intent_seq) and client_intent_seq >= 0 and
+             is_integer(logical_scene_id) and logical_scene_id >= 0 and
+             is_integer(parcel_id) and parcel_id >= 0 and
+             is_integer(known_parcel_build_epoch) and known_parcel_build_epoch >= 0 and
+             is_integer(min_x) and is_integer(min_y) and is_integer(min_z) and
+             is_integer(max_x) and is_integer(max_y) and is_integer(max_z) and
+             is_integer(intent_hash) and intent_hash >= 0 and
+             is_integer(ttl_ms) and ttl_ms >= 0 do
+    <<request_id::unsigned-big-integer-size(64), client_intent_seq::unsigned-big-integer-size(32),
+      logical_scene_id::unsigned-big-integer-size(64), parcel_id::unsigned-big-integer-size(64),
+      known_parcel_build_epoch::unsigned-big-integer-size(64), min_x::signed-big-integer-size(64),
+      min_y::signed-big-integer-size(64), min_z::signed-big-integer-size(64),
+      max_x::signed-big-integer-size(64), max_y::signed-big-integer-size(64),
+      max_z::signed-big-integer-size(64), intent_hash::unsigned-big-integer-size(64),
+      ttl_ms::unsigned-big-integer-size(32)>>
+  end
+
+  @doc "Decodes a v1 `BuildReservationIntent` payload, returning `{:ok, intent}` or `{:error, reason}`."
+  @spec decode_build_reservation_intent_payload(binary()) :: {:ok, map()} | {:error, term()}
+  def decode_build_reservation_intent_payload(payload) when is_binary(payload) do
+    {:ok, decode_build_reservation_intent_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc "Decodes a v1 `BuildReservationIntent` payload or raises `ArgumentError`."
+  @spec decode_build_reservation_intent_payload!(binary()) :: map()
+  def decode_build_reservation_intent_payload!(
+        <<request_id::unsigned-big-integer-size(64),
+          client_intent_seq::unsigned-big-integer-size(32),
+          logical_scene_id::unsigned-big-integer-size(64),
+          parcel_id::unsigned-big-integer-size(64),
+          known_parcel_build_epoch::unsigned-big-integer-size(64),
+          min_x::signed-big-integer-size(64), min_y::signed-big-integer-size(64),
+          min_z::signed-big-integer-size(64), max_x::signed-big-integer-size(64),
+          max_y::signed-big-integer-size(64), max_z::signed-big-integer-size(64),
+          intent_hash::unsigned-big-integer-size(64), ttl_ms::unsigned-big-integer-size(32)>>
+      ) do
+    %{
+      request_id: request_id,
+      client_intent_seq: client_intent_seq,
+      logical_scene_id: logical_scene_id,
+      parcel_id: parcel_id,
+      known_parcel_build_epoch: known_parcel_build_epoch,
+      bounds_world_micro: {min_x, min_y, min_z, max_x, max_y, max_z},
+      intent_hash: intent_hash,
+      ttl_ms: ttl_ms
+    }
+  end
+
+  def decode_build_reservation_intent_payload!(_payload) do
+    raise ArgumentError, "malformed BuildReservationIntent payload"
+  end
+
+  @doc """
+  Encodes a v1 `PrefabPlaceIntent` payload (protocol design 13.5, opcode `0x67`).
+
+  Wire layout:
+
+      request_id                u64
+      client_intent_seq         u32
+      logical_scene_id          u64
+      parcel_id                 u64
+      known_parcel_build_epoch  u64
+      blueprint_id              u64
+      blueprint_version         u32
+      anchor_world_micro        i64 x, i64 y, i64 z
+      rotation                  u8
+      known_ref_count           u16
+      known_refs[] {
+        chunk_coord             i32 cx, i32 cy, i32 cz
+        chunk_version           u64
+      }
+      known_object_count        u16
+      known_objects[] {
+        object_id               u64
+        object_version          u64
+      }
+      known_cell_ref_count      u16
+      known_cell_refs[] {
+        chunk_coord             i32 cx, i32 cy, i32 cz
+        macro_index             u16
+        cell_version            u32
+        cell_hash               u32
+      }
+      placement_flags           u32
+  """
+  @spec encode_prefab_place_intent_payload(map()) :: binary()
+  def encode_prefab_place_intent_payload(%{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        parcel_id: parcel_id,
+        known_parcel_build_epoch: known_parcel_build_epoch,
+        blueprint_id: blueprint_id,
+        blueprint_version: blueprint_version,
+        anchor_world_micro: {ax, ay, az},
+        rotation: rotation,
+        known_refs: known_refs,
+        known_objects: known_objects,
+        known_cell_refs: known_cell_refs,
+        placement_flags: placement_flags
+      })
+      when is_integer(request_id) and request_id >= 0 and
+             is_integer(client_intent_seq) and client_intent_seq >= 0 and
+             is_integer(logical_scene_id) and logical_scene_id >= 0 and
+             is_integer(parcel_id) and parcel_id >= 0 and
+             is_integer(known_parcel_build_epoch) and known_parcel_build_epoch >= 0 and
+             is_integer(blueprint_id) and blueprint_id >= 0 and
+             is_integer(blueprint_version) and blueprint_version >= 0 and
+             is_integer(ax) and is_integer(ay) and is_integer(az) and
+             is_integer(rotation) and rotation >= 0 and rotation <= 0xFF and
+             is_list(known_refs) and is_list(known_objects) and is_list(known_cell_refs) and
+             is_integer(placement_flags) and placement_flags >= 0 do
+    cond do
+      length(known_refs) > 0xFFFF ->
+        raise ArgumentError, "known_ref_count exceeds u16 range"
+
+      length(known_objects) > 0xFFFF ->
+        raise ArgumentError, "known_object_count exceeds u16 range"
+
+      length(known_cell_refs) > 0xFFFF ->
+        raise ArgumentError, "known_cell_ref_count exceeds u16 range"
+
+      true ->
+        IO.iodata_to_binary([
+          <<request_id::unsigned-big-integer-size(64),
+            client_intent_seq::unsigned-big-integer-size(32),
+            logical_scene_id::unsigned-big-integer-size(64),
+            parcel_id::unsigned-big-integer-size(64),
+            known_parcel_build_epoch::unsigned-big-integer-size(64),
+            blueprint_id::unsigned-big-integer-size(64),
+            blueprint_version::unsigned-big-integer-size(32), ax::signed-big-integer-size(64),
+            ay::signed-big-integer-size(64), az::signed-big-integer-size(64),
+            rotation::unsigned-integer-size(8),
+            length(known_refs)::unsigned-big-integer-size(16)>>,
+          Enum.map(known_refs, &encode_prefab_known_ref/1),
+          <<length(known_objects)::unsigned-big-integer-size(16)>>,
+          Enum.map(known_objects, &encode_prefab_known_object/1),
+          <<length(known_cell_refs)::unsigned-big-integer-size(16)>>,
+          Enum.map(known_cell_refs, &encode_prefab_known_cell_ref/1),
+          <<placement_flags::unsigned-big-integer-size(32)>>
+        ])
+    end
+  end
+
+  @doc "Decodes a v1 `PrefabPlaceIntent` payload, returning `{:ok, intent}` or `{:error, reason}`."
+  @spec decode_prefab_place_intent_payload(binary()) :: {:ok, map()} | {:error, term()}
+  def decode_prefab_place_intent_payload(payload) when is_binary(payload) do
+    {:ok, decode_prefab_place_intent_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc "Decodes a v1 `PrefabPlaceIntent` payload or raises `ArgumentError`."
+  @spec decode_prefab_place_intent_payload!(binary()) :: map()
+  def decode_prefab_place_intent_payload!(
+        <<request_id::unsigned-big-integer-size(64),
+          client_intent_seq::unsigned-big-integer-size(32),
+          logical_scene_id::unsigned-big-integer-size(64),
+          parcel_id::unsigned-big-integer-size(64),
+          known_parcel_build_epoch::unsigned-big-integer-size(64),
+          blueprint_id::unsigned-big-integer-size(64),
+          blueprint_version::unsigned-big-integer-size(32), ax::signed-big-integer-size(64),
+          ay::signed-big-integer-size(64), az::signed-big-integer-size(64),
+          rotation::unsigned-integer-size(8), known_ref_count::unsigned-big-integer-size(16),
+          rest::binary>>
+      ) do
+    {known_refs, after_refs} = decode_prefab_known_refs(rest, known_ref_count, [])
+
+    <<known_object_count::unsigned-big-integer-size(16), after_object_count::binary>> = after_refs
+
+    {known_objects, after_objects} =
+      decode_prefab_known_objects(after_object_count, known_object_count, [])
+
+    <<known_cell_ref_count::unsigned-big-integer-size(16), after_cell_count::binary>> =
+      after_objects
+
+    {known_cell_refs, <<placement_flags::unsigned-big-integer-size(32)>>} =
+      decode_prefab_known_cell_refs(after_cell_count, known_cell_ref_count, [])
+
+    %{
+      request_id: request_id,
+      client_intent_seq: client_intent_seq,
+      logical_scene_id: logical_scene_id,
+      parcel_id: parcel_id,
+      known_parcel_build_epoch: known_parcel_build_epoch,
+      blueprint_id: blueprint_id,
+      blueprint_version: blueprint_version,
+      anchor_world_micro: {ax, ay, az},
+      rotation: rotation,
+      known_refs: known_refs,
+      known_objects: known_objects,
+      known_cell_refs: known_cell_refs,
+      placement_flags: placement_flags
+    }
+  end
+
+  def decode_prefab_place_intent_payload!(_payload) do
+    raise ArgumentError, "malformed PrefabPlaceIntent payload"
+  end
+
+  defp encode_prefab_known_ref(%{chunk_coord: {cx, cy, cz}, chunk_version: chunk_version})
+       when is_integer(cx) and is_integer(cy) and is_integer(cz) and
+              is_integer(chunk_version) and chunk_version >= 0 do
+    <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+      cz::signed-big-integer-size(32), chunk_version::unsigned-big-integer-size(64)>>
+  end
+
+  defp encode_prefab_known_object(%{object_id: object_id, object_version: object_version})
+       when is_integer(object_id) and object_id >= 0 and
+              is_integer(object_version) and object_version >= 0 do
+    <<object_id::unsigned-big-integer-size(64), object_version::unsigned-big-integer-size(64)>>
+  end
+
+  defp encode_prefab_known_cell_ref(%{
+         chunk_coord: {cx, cy, cz},
+         macro_index: macro_index,
+         cell_version: cell_version,
+         cell_hash: cell_hash
+       })
+       when is_integer(cx) and is_integer(cy) and is_integer(cz) and
+              is_integer(macro_index) and macro_index >= 0 and macro_index <= 0xFFFF and
+              is_integer(cell_version) and cell_version >= 0 and
+              is_integer(cell_hash) and cell_hash >= 0 do
+    <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+      cz::signed-big-integer-size(32), macro_index::unsigned-big-integer-size(16),
+      cell_version::unsigned-big-integer-size(32), cell_hash::unsigned-big-integer-size(32)>>
+  end
+
+  defp decode_prefab_known_refs(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_prefab_known_refs(
+         <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+           cz::signed-big-integer-size(32), chunk_version::unsigned-big-integer-size(64),
+           rest::binary>>,
+         remaining,
+         acc
+       )
+       when remaining > 0 do
+    decode_prefab_known_refs(rest, remaining - 1, [
+      %{chunk_coord: {cx, cy, cz}, chunk_version: chunk_version} | acc
+    ])
+  end
+
+  defp decode_prefab_known_refs(_rest, _remaining, _acc) do
+    raise ArgumentError, "malformed PrefabPlaceIntent known_refs"
+  end
+
+  defp decode_prefab_known_objects(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_prefab_known_objects(
+         <<object_id::unsigned-big-integer-size(64),
+           object_version::unsigned-big-integer-size(64), rest::binary>>,
+         remaining,
+         acc
+       )
+       when remaining > 0 do
+    decode_prefab_known_objects(rest, remaining - 1, [
+      %{object_id: object_id, object_version: object_version} | acc
+    ])
+  end
+
+  defp decode_prefab_known_objects(_rest, _remaining, _acc) do
+    raise ArgumentError, "malformed PrefabPlaceIntent known_objects"
+  end
+
+  defp decode_prefab_known_cell_refs(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_prefab_known_cell_refs(
+         <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+           cz::signed-big-integer-size(32), macro_index::unsigned-big-integer-size(16),
+           cell_version::unsigned-big-integer-size(32), cell_hash::unsigned-big-integer-size(32),
+           rest::binary>>,
+         remaining,
+         acc
+       )
+       when remaining > 0 do
+    decode_prefab_known_cell_refs(rest, remaining - 1, [
+      %{
+        chunk_coord: {cx, cy, cz},
+        macro_index: macro_index,
+        cell_version: cell_version,
+        cell_hash: cell_hash
+      }
+      | acc
+    ])
+  end
+
+  defp decode_prefab_known_cell_refs(_rest, _remaining, _acc) do
+    raise ArgumentError, "malformed PrefabPlaceIntent known_cell_refs"
+  end
+
+  @doc """
   Encodes a single `NormalBlockData` value into the canonical 20-byte wire form.
 
   Used as the `CellSolid` payload inside a `ChunkDelta` op and as the per-block
