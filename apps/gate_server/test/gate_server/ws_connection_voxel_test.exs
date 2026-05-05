@@ -425,24 +425,179 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent in scene returns stub-accepted voxel intent result" do
+  test "prefab place intent rasterizes pillar, applies real writes, and emits ChunkDelta per cell" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: 666,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_001,
+               owner_epoch: 0
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_001,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # Subscribe first so we observe the per-cell ChunkDelta stream.
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(601, 666, {0, 0, 0}))
+    assert_receive {:gate_ws_send, initial_bin}
+    assert <<0x62, initial_payload::binary>> = initial_bin
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.storage.chunk_version == 0
+
+    # Pillar (blueprint 1) anchored at world-micro (8, 16, 24) → world-macro (1, 2, 3).
+    # Three cells all stay in chunk (0, 0, 0) at locals (1,2,3), (1,2,4), (1,2,5).
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(602, 13, 666, 8_888,
+        blueprint_id: 1,
+        blueprint_version: 1,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    # The accept reply lands first because the dispatch sends it synchronously
+    # while still inside the per-frame cast handler. The three ChunkDelta
+    # payloads queue up in the WsConnection's mailbox while apply_intent is
+    # being called, then drain through `handle_info` and forward to the owner
+    # after dispatch returns.
+    assert_voxel_intent_accepted(
+      request_id: 602,
+      client_intent_seq: 13,
+      logical_scene_id: 666,
+      result_ref: 3
+    )
+
+    # Three cells → three ChunkDelta pushes, each with cell_version growing 1..3.
+    deltas =
+      for _ <- 1..3 do
+        assert_receive {:gate_ws_send, delta_bin}
+        assert <<0x63, delta_payload::binary>> = delta_bin
+        assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+        delta
+      end
+
+    # Each delta is for chunk (0,0,0) and contains exactly one put-solid op.
+    Enum.each(deltas, fn delta ->
+      assert delta.logical_scene_id == 666
+      assert delta.chunk_coord == {0, 0, 0}
+      assert [%{delta_kind: 1}] = delta.ops
+    end)
+
+    versions = Enum.map(deltas, & &1.new_chunk_version)
+    assert versions == [1, 2, 3]
+
+    base_versions = Enum.map(deltas, & &1.base_chunk_version)
+    assert base_versions == [0, 1, 2]
+
+    cell_versions =
+      Enum.map(deltas, fn delta -> delta.ops |> hd() |> Map.fetch!(:cell_version) end)
+
+    assert cell_versions == [1, 2, 3]
+  end
+
+  test "prefab place intent rejects unknown blueprint with v1 reason" do
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
     WsConnection.receive_frame(
       pid,
-      prefab_place_intent_frame(501, 12, 777, 8_888,
+      prefab_place_intent_frame(701, 14, 555, 9_999,
         blueprint_id: 4_242,
-        blueprint_version: 7,
-        anchor: {1_000, -2_000, 3_000},
+        blueprint_version: 1,
+        anchor: {0, 0, 0},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_result(
+      request_id: 701,
+      client_intent_seq: 14,
+      logical_scene_id: 555,
+      reason: ":unknown_blueprint"
+    )
+  end
+
+  test "prefab place intent rejects unsupported rotation in v1" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(702, 15, 555, 9_999,
+        blueprint_id: 1,
+        blueprint_version: 1,
+        anchor: {0, 0, 0},
         rotation: 90
       )
     )
 
-    assert_voxel_intent_stub_accepted(
-      request_id: 501,
-      client_intent_seq: 12,
-      logical_scene_id: 777
+    assert_voxel_intent_result(
+      request_id: 702,
+      client_intent_seq: 15,
+      logical_scene_id: 555,
+      reason: ":unsupported_rotation"
+    )
+  end
+
+  test "prefab place intent rejects when world routing fails" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # No FakeInterface started → fetch_world_node fails fast.
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(703, 16, 555, 9_999,
+        blueprint_id: 1,
+        blueprint_version: 1,
+        anchor: {0, 0, 0},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_result(
+      request_id: 703,
+      client_intent_seq: 16,
+      logical_scene_id: 555,
+      reason: ":world_unavailable"
+    )
+  end
+
+  test "prefab place intent outside scene rejects with invalid_state" do
+    {:ok, pid} = WsConnection.start_link(self())
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(704, 17, 555, 9_999,
+        blueprint_id: 1,
+        blueprint_version: 1,
+        anchor: {0, 0, 0},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_result(
+      request_id: 704,
+      client_intent_seq: 17,
+      logical_scene_id: 555,
+      reason: ":invalid_state"
     )
   end
 

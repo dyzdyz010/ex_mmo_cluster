@@ -61,5 +61,33 @@ participant 级 prepare/commit/abort 的薄适配器：
 - SceneServer 只拥有当前已租约区域的热执行状态。
 - DataService 只有在写入令牌匹配当前 World 租约时，才持久化区块真相。
 
+`SceneServer.Voxel.BlueprintCatalog` 是 v1 写死的预制蓝图目录。它把 `blueprint_id`
+映射到固定的宏单元偏移列表 + 单一材质 id，并强制 `blueprint_version` 必须为 1。当前
+v1 catalog 内容：
+
+| id | name                | 形状                            | material_id |
+|----|---------------------|---------------------------------|-------------|
+| 1  | builtin_pillar_3    | 沿 z 轴 3 个垂直方块            | 1           |
+| 2  | builtin_floor_3x3   | z=0 平面 3×3 共 9 个方块        | 2           |
+| 3  | builtin_cube_2x2x2  | 2×2×2 共 8 个方块               | 3           |
+
+`SceneServer.Voxel.PrefabRaster.rasterize/4` 是把蓝图 + 锚点光栅化为
+`(chunk_coord, local_macro, NormalBlockData)` 写入单元的纯函数。它先把
+`anchor_world_micro` 用 `floor_div` 转成 world-macro 锚点，再加上每个 cell 偏移，
+最后通过 `Types.chunk_and_local_macro!/1` 解出宏块所属的 chunk + 本地坐标。所有
+cell 共用同一份 `NormalBlockData.new(material_id, health: 100)`。`group_by_chunk/1`
+方便按 chunk 聚合统计。当前 v1 不支持非 0 旋转、亚网格预制、跨蓝图版本协商；这些
+都在 v2 实现。
+
+Gate 上的 `0x67 PrefabPlaceIntent` 真实路径是：先通过 `BlueprintCatalog` + `PrefabRaster`
+拿到 cell 列表，然后对每个 cell 走和 `0x64 VoxelImpactIntent` 完全相同的
+`MapLedger.route_chunk_with_lease` + `ChunkDirectory.apply_intent` 管线；每次 apply
+都已经原生发出 `ChunkDelta`，订阅者按 cell 顺序逐块拿到结果。**v1 故意不做跨 chunk
+原子性**：第一格写成功、后续格因租约失效或路由翻动而失败时，前面已经落地的写入不
+回滚，dispatch 把已完成的格数和原因记录到 `ws_voxel_prefab_place_intent_error` /
+`voxel_prefab_place_intent_error` observe 事件，然后给客户端返回
+`VoxelIntentResult{Rejected, reason}`。v2 会用 `BuildTransactionApplier` 风格的两段
+提交补齐这一层。
+
 后续切片会在同一子树下补充紧凑区块增量、Scene 持久化的事务恢复（节点重启不丢 in-flight
 事务），以及更完整的迁移回滚。

@@ -14,7 +14,7 @@ defmodule GateServer.WsConnection do
 
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
-  alias SceneServer.Voxel.{NormalBlockData, Types}
+  alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
 
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
@@ -481,6 +481,22 @@ defmodule GateServer.WsConnection do
     {:ok, state}
   end
 
+  # Real `0x67 PrefabPlaceIntent` dispatch.
+  #
+  # The handler resolves `blueprint_id` + anchor through
+  # `SceneServer.Voxel.PrefabRaster`, then loops the produced macro-cell list
+  # cell-by-cell through `WorldServer.Voxel.MapLedger.route_chunk_with_lease/3`
+  # and `SceneServer.Voxel.ChunkDirectory.apply_intent/2`, the exact same path
+  # as `0x64 VoxelImpactIntent`. Each successful apply already pushes a
+  # `ChunkDelta` to existing subscribers via `ChunkProcess`, so the
+  # block-by-block reveal happens automatically.
+  #
+  # v1 deliberately does not provide cross-chunk atomicity: if the first cell
+  # is accepted and a later cell is rejected (lease lost mid-prefab, world
+  # routing flaps, etc.) the partial writes already persisted are NOT rolled
+  # back. The dispatch records the partial-write summary in observe events
+  # and returns `:rejected` to the client. v2 will replace this with a
+  # `BuildTransactionApplier`-style two-phase commit.
   defp dispatch({:voxel_prefab_place_intent, request}, %{status: :in_scene} = state) do
     GateServer.CliObserve.emit("ws_voxel_prefab_place_intent_received", fn ->
       %{
@@ -496,7 +512,38 @@ defmodule GateServer.WsConnection do
       }
     end)
 
-    send_encoded(state, voxel_intent_stub_accepted(request))
+    case apply_voxel_prefab_place_intent(request, state) do
+      {:ok, summary} ->
+        GateServer.CliObserve.emit("ws_voxel_prefab_place_intent_applied", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          blueprint_id: request.blueprint_id,
+          cell_count: summary.cell_count,
+          chunk_count: summary.chunk_count,
+          max_chunk_version: summary.max_chunk_version
+        })
+
+        send_encoded(state, voxel_prefab_result_ok(request, summary))
+
+      {:error, %{reason: reason} = failure} ->
+        GateServer.CliObserve.emit("ws_voxel_prefab_place_intent_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          blueprint_id: request.blueprint_id,
+          reason: reason,
+          applied_cell_count: failure.applied_cell_count,
+          total_cell_count: failure.total_cell_count
+        })
+
+        send_encoded(state, voxel_result_error(request, reason))
+    end
+
     {:ok, state}
   end
 
@@ -865,6 +912,122 @@ defmodule GateServer.WsConnection do
     )
   end
 
+  defp apply_voxel_prefab_place_intent(request, state) do
+    with :ok <- authorize_voxel_prefab_place_intent(state),
+         {:ok, cells} <-
+           PrefabRaster.rasterize(
+             request.blueprint_id,
+             request.blueprint_version,
+             request.anchor_world_micro,
+             request.rotation
+           ) do
+      apply_prefab_cells(cells, request, state)
+    else
+      {:error, reason} ->
+        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
+    end
+  end
+
+  defp authorize_voxel_prefab_place_intent(state) do
+    if is_integer(state.cid) and state.cid > 0 do
+      :ok
+    else
+      {:error, :cid_mismatch}
+    end
+  end
+
+  # Cell-major loop. For each cell, route the chunk through World, then call
+  # `ChunkDirectory.apply_intent` on the owning Scene node. Stops on the first
+  # error and reports how many cells already landed (no rollback in v1).
+  defp apply_prefab_cells(cells, request, state) do
+    total = length(cells)
+
+    cells
+    |> Enum.with_index()
+    |> Enum.reduce_while(
+      {:ok, %{cell_count: 0, max_chunk_version: 0, chunk_coords: MapSet.new()}},
+      fn {cell, index}, {:ok, acc} ->
+        case apply_prefab_cell(cell, request, state, index) do
+          {:ok, reply} ->
+            {:cont,
+             {:ok,
+              %{
+                cell_count: acc.cell_count + 1,
+                max_chunk_version: max(acc.max_chunk_version, reply.chunk_version),
+                chunk_coords: MapSet.put(acc.chunk_coords, reply.chunk_coord)
+              }}}
+
+          {:error, reason} ->
+            {:halt,
+             {:error,
+              %{
+                reason: reason,
+                applied_cell_count: acc.cell_count,
+                total_cell_count: total
+              }}}
+        end
+      end
+    )
+    |> case do
+      {:ok, acc} ->
+        {:ok,
+         %{
+           cell_count: acc.cell_count,
+           chunk_count: MapSet.size(acc.chunk_coords),
+           max_chunk_version: acc.max_chunk_version
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp apply_prefab_cell(cell, request, state, cell_index) do
+    with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, cell.chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("ws_voxel_prefab_cell_routed", fn ->
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          logical_scene_id: request.logical_scene_id,
+          blueprint_id: request.blueprint_id,
+          cell_index: cell_index,
+          chunk_coord: cell.chunk_coord,
+          local_macro: cell.local_macro,
+          region_id: lease.region_id,
+          lease_id: lease.lease_id,
+          owner_scene_instance_ref: lease.owner_scene_instance_ref,
+          owner_epoch: lease.owner_epoch,
+          scene_node: scene_node
+        }
+      end)
+
+      attrs = %{
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        chunk_coord: cell.chunk_coord,
+        lease: lease,
+        operation: :put_solid_block,
+        macro: cell.local_macro,
+        block: cell.block
+      }
+
+      case safe_call(
+             {SceneServer.Voxel.ChunkDirectory, scene_node},
+             {:apply_intent, attrs},
+             @scene_call_timeout
+           ) do
+        {:ok, {:ok, reply}} -> {:ok, reply}
+        {:ok, {:error, reason}} -> {:error, reason}
+        {:ok, _other} -> {:error, :scene_unavailable}
+        {:error, _reason} -> {:error, :scene_unavailable}
+      end
+    end
+  end
+
   defp emit_voxel_chunk_subscribe_routed(request, state, route) do
     assignment = Map.fetch!(route, :assignment)
     lease = Map.fetch!(route, :lease)
@@ -903,6 +1066,19 @@ defmodule GateServer.WsConnection do
        logical_scene_id: request.logical_scene_id,
        result_code: :accepted,
        result_ref: result.chunk_version,
+       authoritative: [],
+       reason: "ok"
+     }}
+  end
+
+  defp voxel_prefab_result_ok(request, summary) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: request.client_intent_seq,
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: summary.max_chunk_version,
        authoritative: [],
        reason: "ok"
      }}
