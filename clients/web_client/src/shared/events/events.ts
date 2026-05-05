@@ -117,6 +117,13 @@ export type AppEvents = {
     resultRef: number;
     reason: string;
   };
+  "world:voxel-prefab-result": {
+    blueprintId: number;
+    blueprintName: string;
+    requestId: number;
+    accepted: boolean;
+    reason: string;
+  };
   "world:voxel-sync-error": { reason: string; source: string };
   "world:prefab-placed": { name: string; origin: FMacroCoord; placed: number; source: string };
   "world:prefab-snap-committed": {

@@ -9,7 +9,11 @@ import {
   type VoxelDebugProbeMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
+  type VoxelPrefabKnownCellRef,
+  type VoxelPrefabKnownObject,
+  type VoxelPrefabKnownRef,
 } from "../infrastructure/net/voxelProtocol";
+import { resolveBlueprint } from "./onlinePrefabCatalog";
 import { macroCoordFromLinearIndex } from "./core/gridUtils";
 import type { ObserveLog } from "../observe/logger";
 import type { EVoxelRotation } from "./core/types";
@@ -47,6 +51,20 @@ export interface ServerVoxelTransportPort {
     clientIntentSeq: number;
     clientHintHash?: number;
   }): number | null;
+  sendVoxelPrefabPlaceIntent(request: {
+    logicalSceneId: number;
+    parcelId: number;
+    knownParcelBuildEpoch: number;
+    blueprintId: number;
+    blueprintVersion: number;
+    anchorWorldMicro: FMacroCoord;
+    rotation: number;
+    clientIntentSeq: number;
+    knownRefs?: readonly VoxelPrefabKnownRef[];
+    knownObjects?: readonly VoxelPrefabKnownObject[];
+    knownCellRefs?: readonly VoxelPrefabKnownCellRef[];
+    placementFlags?: number;
+  }): number | null;
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[];
   drainVoxelDeltas(): VoxelChunkDeltaMessage[];
   drainVoxelInvalidates(): VoxelChunkInvalidateMessage[];
@@ -79,6 +97,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private subscriptionRequestId: number | null = null;
   private pendingIntentCount = 0;
   private clientIntentSeq = 1;
+  private readonly pendingPrefabIntents = new Map<
+    number,
+    { blueprintId: number; blueprintName: string }
+  >();
   private lastSeedAttemptMs = 0;
   private lastSnapshot: {
     requestId: number;
@@ -149,6 +171,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       subscriptionState: this.subscriptionState,
       subscriptionRequestId: this.subscriptionRequestId,
       pendingIntentCount: this.pendingIntentCount,
+      pendingPrefabIntentCount: this.pendingPrefabIntents.size,
       clientIntentSeqNext: this.clientIntentSeq,
       lastSnapshot: this.lastSnapshot
         ? {
@@ -192,12 +215,49 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   override placePrefab(
-    _name: string,
-    _origin: FMacroCoord,
+    name: string,
+    origin: FMacroCoord,
     _rotation?: EVoxelRotation,
   ): { ok: boolean; placed: number; instanceId?: number; conflict?: boolean } {
-    this.rejectServerOnlyEdit("prefab_place_not_supported_by_server");
-    return { ok: false, placed: 0 };
+    const blueprint = resolveBlueprint(name);
+    if (!blueprint) {
+      const reason = `unknown_blueprint:${name}`;
+      this.rejectServerOnlyEdit(reason);
+      this.bus.emit("world:voxel-sync-error", { reason, source: "prefab_place" });
+      return { ok: false, placed: 0 };
+    }
+
+    const clientIntentSeq = this.clientIntentSeq;
+    // v1: rotation is intentionally pinned to 0 on the wire — the server
+    // does not yet support arbitrary rotations and the local UI signature
+    // accepts an EVoxelRotation purely for forward-compatibility.
+    const requestId = this.transport.sendVoxelPrefabPlaceIntent({
+      logicalSceneId: this.logicalSceneId,
+      parcelId: 0,
+      knownParcelBuildEpoch: 0,
+      blueprintId: blueprint.id,
+      blueprintVersion: blueprint.version,
+      anchorWorldMicro: {
+        x: origin.x * VoxelConstants.MicroPerMacro,
+        y: origin.y * VoxelConstants.MicroPerMacro,
+        z: origin.z * VoxelConstants.MicroPerMacro,
+      },
+      rotation: 0,
+      clientIntentSeq,
+    });
+
+    if (requestId === null) {
+      this.rejectServerOnlyEdit("voxel_transport_unavailable");
+      return { ok: false, placed: 0 };
+    }
+
+    this.clientIntentSeq += 1;
+    this.pendingIntentCount += 1;
+    this.pendingPrefabIntents.set(requestId, {
+      blueprintId: blueprint.id,
+      blueprintName: name,
+    });
+    return { ok: true, placed: blueprint.expectedCellCount };
   }
 
   override placePrefabSocketSnap(_request: PrefabSocketSnapRequest): PrefabSocketSnapResult {
@@ -424,6 +484,18 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       resultRef: result.resultRef,
       reason: result.reason,
     });
+
+    const pendingPrefab = this.pendingPrefabIntents.get(result.requestId);
+    if (pendingPrefab) {
+      this.pendingPrefabIntents.delete(result.requestId);
+      this.bus.emit("world:voxel-prefab-result", {
+        blueprintId: pendingPrefab.blueprintId,
+        blueprintName: pendingPrefab.blueprintName,
+        requestId: result.requestId,
+        accepted: result.resultCodeName === "accepted",
+        reason: result.reason,
+      });
+    }
   }
 
   private subscribeDefaultChunk(): void {
@@ -492,6 +564,7 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.voxelDebugSnapshot === "function" &&
     typeof candidate.sendVoxelChunkSubscribe === "function" &&
     typeof candidate.sendVoxelImpactIntent === "function" &&
+    typeof candidate.sendVoxelPrefabPlaceIntent === "function" &&
     typeof candidate.drainVoxelSnapshots === "function" &&
     typeof candidate.drainVoxelDeltas === "function" &&
     typeof candidate.drainVoxelInvalidates === "function"

@@ -14,10 +14,14 @@ import {
   encodeVoxelChunkUnsubscribe,
   encodeVoxelDebugProbe,
   encodeVoxelImpactIntent,
+  encodeVoxelPrefabPlaceIntent,
   type VoxelChunkSnapshotMessage,
   type VoxelDebugProbeMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
+  type VoxelPrefabKnownCellRef,
+  type VoxelPrefabKnownObject,
+  type VoxelPrefabKnownRef,
 } from "./voxelProtocol";
 import type { ObserveLog } from "../../observe/logger";
 import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
@@ -100,6 +104,15 @@ export class ServerMovementTransport implements MovementTransport {
     resultCodeName: string;
     resultRef: number;
     reason: string;
+  } | null = null;
+  private readonly pendingVoxelPrefabRequests = new Set<number>();
+  private lastVoxelPrefabRequest: {
+    requestId: number;
+    clientIntentSeq: number;
+    logicalSceneId: number;
+    blueprintId: number;
+    blueprintVersion: number;
+    rotation: number;
   } | null = null;
   private lastVoxelError: string | null = null;
 
@@ -192,6 +205,7 @@ export class ServerMovementTransport implements MovementTransport {
       queuedIntentResults: this.voxelIntentResults.length,
       queuedDebugProbes: this.voxelDebugProbes.length,
       knownChunks: this.voxelKnownVersions.size,
+      pendingPrefabRequests: this.pendingVoxelPrefabRequests.size,
       sentVoxelMessageCount: this.sentVoxelMessageCount,
       receivedVoxelSnapshotCount: this.receivedVoxelSnapshotCount,
       receivedVoxelIntentResultCount: this.receivedVoxelIntentResultCount,
@@ -203,6 +217,7 @@ export class ServerMovementTransport implements MovementTransport {
           }
         : null,
       lastIntentResult: this.lastVoxelIntentResult,
+      lastPrefabRequest: this.lastVoxelPrefabRequest,
       lastError: this.lastVoxelError,
     };
   }
@@ -321,6 +336,65 @@ export class ServerMovementTransport implements MovementTransport {
     return requestId;
   }
 
+  sendVoxelPrefabPlaceIntent(request: {
+    logicalSceneId: number;
+    parcelId: number;
+    knownParcelBuildEpoch: number;
+    blueprintId: number;
+    blueprintVersion: number;
+    anchorWorldMicro: FMacroCoord;
+    rotation: number;
+    clientIntentSeq: number;
+    knownRefs?: readonly VoxelPrefabKnownRef[];
+    knownObjects?: readonly VoxelPrefabKnownObject[];
+    knownCellRefs?: readonly VoxelPrefabKnownCellRef[];
+    placementFlags?: number;
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      this.lastVoxelError = "voxel_transport_unavailable";
+      return null;
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelPrefabPlaceIntent({
+        requestId,
+        clientIntentSeq: request.clientIntentSeq,
+        logicalSceneId: request.logicalSceneId,
+        parcelId: request.parcelId,
+        knownParcelBuildEpoch: request.knownParcelBuildEpoch,
+        blueprintId: request.blueprintId,
+        blueprintVersion: request.blueprintVersion,
+        anchorWorldMicro: request.anchorWorldMicro,
+        rotation: request.rotation,
+        knownRefs: request.knownRefs ?? [],
+        knownObjects: request.knownObjects ?? [],
+        knownCellRefs: request.knownCellRefs ?? [],
+        placementFlags: request.placementFlags ?? 0,
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.pendingVoxelPrefabRequests.add(requestId);
+    this.lastVoxelPrefabRequest = {
+      requestId,
+      clientIntentSeq: request.clientIntentSeq,
+      logicalSceneId: request.logicalSceneId,
+      blueprintId: request.blueprintId,
+      blueprintVersion: request.blueprintVersion,
+      rotation: request.rotation,
+    };
+    this.logger.emit("voxel", "prefab_place_intent_sent", {
+      request_id: requestId,
+      client_intent_seq: request.clientIntentSeq,
+      logical_scene_id: request.logicalSceneId,
+      blueprint_id: request.blueprintId,
+      blueprint_version: request.blueprintVersion,
+      anchor_world_micro: `${request.anchorWorldMicro.x},${request.anchorWorldMicro.y},${request.anchorWorldMicro.z}`,
+      rotation: request.rotation,
+    });
+    return requestId;
+  }
+
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[] {
     return this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
   }
@@ -351,6 +425,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
+    this.pendingVoxelPrefabRequests.clear();
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
 
@@ -664,6 +739,7 @@ export class ServerMovementTransport implements MovementTransport {
       case "voxel_intent_result":
         this.voxelIntentResults.push(message);
         this.receivedVoxelIntentResultCount += 1;
+        this.pendingVoxelPrefabRequests.delete(message.requestId);
         this.lastVoxelIntentResult = {
           requestId: message.requestId,
           clientIntentSeq: message.clientIntentSeq,
@@ -756,6 +832,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
+    this.pendingVoxelPrefabRequests.clear();
     this.sentAtBySeq.clear();
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
