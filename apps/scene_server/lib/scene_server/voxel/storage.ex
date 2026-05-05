@@ -121,6 +121,31 @@ defmodule SceneServer.Voxel.Storage do
     |> normalize!()
   end
 
+  @doc """
+  Clears a macro cell back to empty mode.
+
+  The header at `macro_index_or_coord` is replaced with an empty header carrying
+  the bumped `cell_version` / fresh `cell_hash` from `opts`. Any payload entry
+  the cell previously pointed at is left in `normal_blocks` (orphaned) — full
+  compaction is intentionally deferred to a future slice; the wire `ChunkDelta`
+  with `delta_kind = 0` (CellEmpty) is the source of truth for clients.
+  """
+  @spec clear_macro_cell(t(), integer() | term(), keyword()) :: t()
+  def clear_macro_cell(%__MODULE__{} = storage, macro_index_or_coord, opts \\ []) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+
+    header =
+      MacroCellHeader.empty(
+        flags: Keyword.get(opts, :flags, 0),
+        cell_version: Keyword.get(opts, :cell_version, 0),
+        cell_hash: Keyword.get(opts, :cell_hash, 0)
+      )
+
+    %{storage | macro_headers: List.replace_at(storage.macro_headers, macro_index, header)}
+    |> normalize!()
+  end
+
   @doc "Reads one macro header by local macro coord or macro index."
   @spec macro_header_at(t(), integer() | term()) :: MacroCellHeader.t()
   def macro_header_at(%__MODULE__{} = storage, macro_index_or_coord) do

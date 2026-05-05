@@ -840,15 +840,15 @@ defmodule GateServer.WsConnection do
         scene_node: scene_node
       })
 
-      attrs = %{
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: target.chunk_coord,
-        lease: lease,
-        operation: :put_solid_block,
-        macro: target.local_macro,
-        block: voxel_impact_block(request)
-      }
+      attrs =
+        %{
+          request_id: request.request_id,
+          logical_scene_id: request.logical_scene_id,
+          chunk_coord: target.chunk_coord,
+          lease: lease,
+          macro: target.local_macro
+        }
+        |> Map.merge(voxel_impact_op_attrs(request))
 
       case safe_call(
              {SceneServer.Voxel.ChunkDirectory, scene_node},
@@ -910,6 +910,16 @@ defmodule GateServer.WsConnection do
       health: 100,
       state_flags: request.source_skill_id
     )
+  end
+
+  # Wire convention: `impact_kind == 0` is the break sentinel — the cell
+  # gets cleared back to empty mode (delta_kind 0 CellEmpty on the wire).
+  # Any non-zero `impact_kind` is treated as a `material_id` for a put-solid
+  # write (delta_kind 1 CellSolid).
+  defp voxel_impact_op_attrs(%{impact_kind: 0}), do: %{operation: :break_block}
+
+  defp voxel_impact_op_attrs(request) do
+    %{operation: :put_solid_block, block: voxel_impact_block(request)}
   end
 
   defp apply_voxel_prefab_place_intent(request, state) do

@@ -663,6 +663,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
   end
 
+  defp build_intent_storage(storage, %{operation: :break_block} = intent) do
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, storage.chunk_version + 1)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    storage =
+      storage
+      |> Storage.clear_macro_cell(intent.macro, opts)
+      |> bump_chunk_version()
+
+    {:ok, storage}
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
   defp persist_snapshot(_snapshot_store, nil, _chunk_coord, _storage, _payload) do
     {:error, :missing_lease}
   end
@@ -837,6 +853,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
      }}
   end
 
+  defp build_intent_delta_op(%{operation: :break_block} = intent, new_chunk_version) do
+    cell_version = Keyword.get(intent.opts, :cell_version, new_chunk_version)
+    cell_hash = Keyword.get(intent.opts, :cell_hash, 0)
+
+    {:ok,
+     %{
+       delta_kind: 0,
+       macro_index: intent.macro,
+       cell_version: cell_version,
+       cell_hash: cell_hash,
+       payload: <<>>
+     }}
+  end
+
   defp build_intent_delta_op(_intent, _new_chunk_version), do: :fallback_to_snapshot
 
   defp push_chunk_delta(state, base_version, ops, reason) do
@@ -929,9 +959,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
              :missing_macro
            ),
          {:ok, macro_index} <- safe_macro_index(macro_index),
-         {:ok, block} <-
-           fetch_required([intent_attrs, attrs], [:block, :normal_block], :missing_block),
-         {:ok, block} <- safe_normalize_block(block),
+         {:ok, block} <- normalize_intent_block(operation, intent_attrs, attrs),
          {:ok, request_id} <-
            normalize_request_id(
              fetch_optional(intent_attrs, [:request_id]) || fetch_optional(attrs, [:request_id])
@@ -952,6 +980,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp normalize_apply_intent(_attrs), do: {:error, :invalid_voxel_intent}
+
+  # `:break_block` clears a macro cell back to empty mode and never carries
+  # block payload on the wire (delta_kind = 0 CellEmpty). Every other operation
+  # must include a normalized NormalBlockData.
+  defp normalize_intent_block(:break_block, _intent_attrs, _attrs), do: {:ok, nil}
+
+  defp normalize_intent_block(_operation, intent_attrs, attrs) do
+    with {:ok, block} <-
+           fetch_required([intent_attrs, attrs], [:block, :normal_block], :missing_block),
+         {:ok, block} <- safe_normalize_block(block) do
+      {:ok, block}
+    end
+  end
 
   defp normalize_load_snapshot(attrs) when is_map(attrs) do
     with {:ok, storage} <- load_snapshot_storage(attrs),
@@ -1026,6 +1067,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_operation("put_solid_block"), do: {:ok, :put_solid_block}
   defp normalize_operation(:solid_block), do: {:ok, :put_solid_block}
   defp normalize_operation("solid_block"), do: {:ok, :put_solid_block}
+  defp normalize_operation(:break_block), do: {:ok, :break_block}
+  defp normalize_operation("break_block"), do: {:ok, :break_block}
+  defp normalize_operation(:break), do: {:ok, :break_block}
+  defp normalize_operation("break"), do: {:ok, :break_block}
   defp normalize_operation(_operation), do: {:error, :unsupported_voxel_intent}
 
   defp normalize_request_id(nil), do: {:ok, 0}

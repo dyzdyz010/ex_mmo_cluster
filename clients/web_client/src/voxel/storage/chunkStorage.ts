@@ -182,6 +182,36 @@ export class ChunkStorage {
     return true;
   }
 
+  // Clears a macro cell back to empty mode. Mirrors the server's
+  // Storage.clear_macro_cell — used by ChunkDelta delta_kind = 0 (CellEmpty).
+  // Returns true when the header was non-empty before, false otherwise.
+  tryClearMacroCell(localMacro: FMacroCoord): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header) {
+      return false;
+    }
+    if (header.mode === EVoxelCellMode.Empty) {
+      return false;
+    }
+
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      this.data.freeNormalBlockIndices.push(header.payloadIndex);
+    }
+
+    header.mode = EVoxelCellMode.Empty;
+    header.payloadIndex = 0;
+
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    return true;
+  }
+
   setMicroBlock(localMacro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean {
     const idx = macroLinearIndex(localMacro);
     if (idx < 0) {

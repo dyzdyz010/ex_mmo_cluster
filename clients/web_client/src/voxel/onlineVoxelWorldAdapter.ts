@@ -195,9 +195,18 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return true;
   }
 
-  override breakBlock(_coord: FMacroCoord): boolean {
-    this.rejectServerOnlyEdit("break_not_supported_by_server");
-    return false;
+  override breakBlock(coord: FMacroCoord): boolean {
+    // Wire convention: impactKind === 0 is the break sentinel. The server
+    // gate translates that to a `:break_block` operation that clears the
+    // macro cell to empty mode and emits a delta_kind = 0 (CellEmpty)
+    // ChunkDelta. Local state is server-authoritative — the change only
+    // takes effect when that delta arrives back via applyDelta.
+    const requestId = this.sendVoxelImpactMacro(coord, 0);
+    if (requestId === null) {
+      this.store.editStats.rejected += 1;
+      return false;
+    }
+    return true;
   }
 
   override placeMicroBlock(
@@ -397,10 +406,15 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     let appliedOps = 0;
 
     for (const op of delta.ops) {
+      const localMacro = macroCoordFromLinearIndex(op.macroIndex);
+
       if (op.deltaKind === 1) {
         const block = decodeNormalBlockDataPayload(op.payload);
-        const localMacro = macroCoordFromLinearIndex(op.macroIndex);
         if (chunk.trySetNormalBlock(localMacro, block)) {
+          appliedOps += 1;
+        }
+      } else if (op.deltaKind === 0) {
+        if (chunk.tryClearMacroCell(localMacro)) {
           appliedOps += 1;
         }
       }
