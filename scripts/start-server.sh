@@ -54,10 +54,10 @@ if [ "${DETACH}" -eq 1 ]; then
   echo "[start-server] Mode: detach (elixir --no-halt)"
   echo ""
   exec elixir --name "${NODE_NAME}" --cookie "${ERLANG_COOKIE}" \
-    -S mix run --no-halt "${EXTRA_ARGS[@]}"
+    -S mix run --no-halt ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 else
   echo "[start-server] Mode: foreground iex (Ctrl+C twice to stop)"
   echo ""
   exec iex --name "${NODE_NAME}" --cookie "${ERLANG_COOKIE}" \
-    -S mix "${EXTRA_ARGS[@]}"
+    -S mix ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 fi
