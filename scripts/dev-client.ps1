@@ -8,7 +8,7 @@
 #   ... -Stdio                     # run in stdio control mode (scriptable; no window)
 #   ... -Release                   # use release build (faster; requires `cargo build --release` once)
 #   ... -SkipBuild                 # don't run `cargo build` before launching
-#   ... -GateAddr 127.0.0.1:29000 -AuthAddr http://127.0.0.1:4000
+#   ... -GateAddr 127.0.0.1:20002 -AuthAddr http://127.0.0.1:20000
 #   ... -ObserveLog .demo/client.observe.log
 
 [CmdletBinding()]
@@ -17,8 +17,8 @@ param(
   [switch]$Stdio,
   [switch]$Release,
   [switch]$SkipBuild,
-  [string]$GateAddr = "127.0.0.1:29000",
-  [string]$AuthAddr = "http://127.0.0.1:4000",
+  [string]$GateAddr = "127.0.0.1:20002",
+  [string]$AuthAddr = "http://127.0.0.1:20000",
   [string]$ObserveLog,
   [string]$Script,
   [double]$MovementSpeed,

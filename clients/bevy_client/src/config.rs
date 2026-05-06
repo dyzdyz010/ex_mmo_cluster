@@ -19,8 +19,8 @@ impl ClientConfig {
     /// Builds the client configuration from environment variables.
     pub fn from_env() -> Self {
         Self {
-            gate_addr: env_or("BEVY_CLIENT_GATE_ADDR", "127.0.0.1:29000"),
-            auth_addr: env_or("BEVY_CLIENT_AUTH_ADDR", "http://127.0.0.1:4000"),
+            gate_addr: env_or("BEVY_CLIENT_GATE_ADDR", "127.0.0.1:20002"),
+            auth_addr: env_or("BEVY_CLIENT_AUTH_ADDR", "http://127.0.0.1:20000"),
             movement_speed: env_parse_or("BEVY_CLIENT_SPEED", 220.0_f32),
             movement_interval_ms: env_parse_or("BEVY_CLIENT_MOVE_INTERVAL_MS", 100_u64),
             heartbeat_interval_ms: env_parse_or("BEVY_CLIENT_HEARTBEAT_MS", 2_000_u64),

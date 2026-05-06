@@ -105,7 +105,7 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:player_move, 0, 1, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded},
         {:time_sync_reply, 0, 1000, 1100, 1200},
         {:heartbeat_reply, 0},
-        {:fast_lane_result, :ok, 0, 29001, "ticket"},
+        {:fast_lane_result, :ok, 0, 20003, "ticket"},
         {:fast_lane_attached, :ok, 0},
         {:movement_ack, 0, 0, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0,
          100},

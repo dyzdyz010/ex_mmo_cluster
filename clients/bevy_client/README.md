@@ -40,8 +40,8 @@ cargo run
 只有服务地址不是默认值时，才需要覆盖：
 
 ```bash
-export BEVY_CLIENT_GATE_ADDR=127.0.0.1:29000
-export BEVY_CLIENT_AUTH_ADDR=http://127.0.0.1:4000
+export BEVY_CLIENT_GATE_ADDR=127.0.0.1:20002
+export BEVY_CLIENT_AUTH_ADDR=http://127.0.0.1:20000
 cargo run
 ```
 

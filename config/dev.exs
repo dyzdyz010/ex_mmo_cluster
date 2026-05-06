@@ -4,7 +4,7 @@ import Config
 # debugging and code reloading.
 
 config :auth_server, AuthServerWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4000],
+  http: [ip: {127, 0, 0, 1}, port: 20000],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
@@ -26,7 +26,7 @@ config :auth_server, AuthServerWeb.Endpoint,
 config :auth_server, dev_routes: true
 
 config :visualize_server, VisualizeServerWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4001],
+  http: [ip: {127, 0, 0, 1}, port: 20001],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

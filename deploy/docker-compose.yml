@@ -54,10 +54,12 @@ services:
       MMO_DB_HOST: postgres
     ports:
       # HTTP ports — bound to loopback so only host-side nginx can reach them.
-      - "127.0.0.1:${AUTH_PORT}:4000"
-      - "127.0.0.1:${VISUALIZE_PORT}:4001"
+      - "127.0.0.1:${AUTH_PORT}:20000"
+      - "127.0.0.1:${VISUALIZE_PORT}:20001"
       # Plain TCP for the custom binary protocol — exposed directly.
-      - "${GATE_TCP_PORT}:29000"
+      - "${GATE_TCP_PORT}:20002"
+      # UDP fast lane for high-frequency movement packets.
+      - "${GATE_UDP_PORT}:20003/udp"
     networks:
       - internal
 

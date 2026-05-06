@@ -47,16 +47,16 @@ if [ "${SKIP_INSTALL:-0}" != "1" ]; then
   fi
 fi
 
-# 透传给 vite，使其知道 server 地址。web_client 自己读 import.meta.env 时
-# 用的是 VITE_GAME_*，但 dev-env.sh 给的是 GAME_*；这里映射一遍。
-export VITE_GAME_AUTH_BASE_URL="${GAME_AUTH_BASE_URL}"
-export VITE_GAME_WS_URL="${GAME_WS_URL}"
-export VITE_GAME_CLIENT_USERNAME="${GAME_CLIENT_USERNAME}"
+# 透传给 vite，使其知道 server 地址。HTTP auth/dev_seed 默认走 Vite 的
+# /ingame 同源代理，避免浏览器 CORS；WebSocket 可以直连 Phoenix。
+export VITE_INGAME_PROXY_TARGET="${VITE_INGAME_PROXY_TARGET:-${GAME_AUTH_BASE_URL}}"
+export VITE_GAME_WS_URL="${VITE_GAME_WS_URL:-${GAME_WS_URL}}"
+export VITE_GAME_CLIENT_USERNAME="${VITE_GAME_CLIENT_USERNAME:-${GAME_CLIENT_USERNAME}}"
 
 PORT="${PORT:-5173}"
 
 echo "${GREEN}[start-client] Launching web_client (port=${PORT})${RESET}"
-echo "[start-client] Auth=${VITE_GAME_AUTH_BASE_URL}  WS=${VITE_GAME_WS_URL}  Username=${VITE_GAME_CLIENT_USERNAME}"
+echo "[start-client] AuthProxy=${VITE_INGAME_PROXY_TARGET}  WS=${VITE_GAME_WS_URL}  Username=${VITE_GAME_CLIENT_USERNAME}"
 echo "[start-client] Vite will hot-reload on src changes; Ctrl+C to stop."
 echo ""
 

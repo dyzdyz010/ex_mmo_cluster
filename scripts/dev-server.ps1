@@ -9,7 +9,7 @@
 #   ... -SkipMigrate          # skip `mix ecto.migrate`
 #   ... -NoVsDevCmd           # don't source VsDevCmd (assume env already set)
 #   ... -NodeName foo@127.0.0.1 -Cookie mmo
-#   ... -GateTcpPort 29000 -GateUdpPort 29001 -AuthPort 4000 -VisualizePort 4001
+#   ... -GateTcpPort 20002 -GateUdpPort 20003 -AuthPort 20000 -VisualizePort 20001
 
 [CmdletBinding()]
 param(
@@ -19,10 +19,10 @@ param(
   [switch]$DisableDevAutoLogin,
   [string]$NodeName = "dev@127.0.0.1",
   [string]$Cookie = "mmo",
-  [int]$GateTcpPort = 29000,
-  [int]$GateUdpPort = 29001,
-  [int]$AuthPort = 4000,
-  [int]$VisualizePort = 4001,
+  [int]$GateTcpPort = 20002,
+  [int]$GateUdpPort = 20003,
+  [int]$AuthPort = 20000,
+  [int]$VisualizePort = 20001,
   [string]$DbHost = $env:MMO_DB_HOST,
   [string]$DbName = $env:MMO_DB_NAME,
   [string]$DbUser = $env:MMO_DB_USER,

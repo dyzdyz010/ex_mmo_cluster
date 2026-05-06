@@ -3,12 +3,12 @@ import Config
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :auth_server, AuthServerWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4002],
+  http: [ip: {127, 0, 0, 1}, port: 20010],
   secret_key_base: "Mqe6YlSESPnhRs5c9BxstlH2R4ZvkNzflWyEYZITMIwyN74nYMpTF/5X02dyfmQN",
   server: false
 
 config :visualize_server, VisualizeServerWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4003],
+  http: [ip: {127, 0, 0, 1}, port: 20011],
   secret_key_base: "chLpul9HpLdUaDKG7mumliAFELOvmLdd5ELmYyAFFN2K8QRcHsOPe9JPS9Uiq//8",
   server: false
 

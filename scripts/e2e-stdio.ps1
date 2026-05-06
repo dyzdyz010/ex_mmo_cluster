@@ -6,8 +6,8 @@ param(
   [int]$ServerExitAfter = 24,
   [double]$FinalPositionTolerance = 5.0,
   [string]$Username = "e2e_live",
-  [string]$GateAddr = "127.0.0.1:29000",
-  [string]$AuthAddr = "http://127.0.0.1:4000"
+  [string]$GateAddr = "127.0.0.1:20002",
+  [string]$AuthAddr = "http://127.0.0.1:20000"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,8 +34,8 @@ switch ($Mode) {
     Warn-IfCustom -Name "BotCount" -Value $BotCount -DefaultValue 1 -Reason "movement-proxy runs bevy_client cargo tests, not demo bots."
     Warn-IfCustom -Name "ServerExitAfter" -Value $ServerExitAfter -DefaultValue 24 -Reason "movement-proxy does not start a server process."
     Warn-IfCustom -Name "Username" -Value $Username -DefaultValue "e2e_live" -Reason "movement-proxy does not log in."
-    Warn-IfCustom -Name "GateAddr" -Value $GateAddr -DefaultValue "127.0.0.1:29000" -Reason "movement-proxy does not connect to gate."
-    Warn-IfCustom -Name "AuthAddr" -Value $AuthAddr -DefaultValue "http://127.0.0.1:4000" -Reason "movement-proxy does not connect to auth."
+    Warn-IfCustom -Name "GateAddr" -Value $GateAddr -DefaultValue "127.0.0.1:20002" -Reason "movement-proxy does not connect to gate."
+    Warn-IfCustom -Name "AuthAddr" -Value $AuthAddr -DefaultValue "http://127.0.0.1:20000" -Reason "movement-proxy does not connect to auth."
 
     & "$PSScriptRoot\e2e-stdio-movement.ps1" `
       -ObserveDir $ObserveDir `
@@ -59,8 +59,8 @@ switch ($Mode) {
     Warn-IfCustom -Name "ServerExitAfter" -Value $ServerExitAfter -DefaultValue 24 -Reason "ws-dual has its own supervised timeout."
     Warn-IfCustom -Name "FinalPositionTolerance" -Value $FinalPositionTolerance -DefaultValue 5.0 -Reason "ws-dual validates its own movement summary assertions."
     Warn-IfCustom -Name "Username" -Value $Username -DefaultValue "e2e_live" -Reason "ws-dual seeds and drives ws_smoke_a/ws_smoke_b."
-    Warn-IfCustom -Name "GateAddr" -Value $GateAddr -DefaultValue "127.0.0.1:29000" -Reason "ws-dual chooses free ports automatically."
-    Warn-IfCustom -Name "AuthAddr" -Value $AuthAddr -DefaultValue "http://127.0.0.1:4000" -Reason "ws-dual chooses free ports automatically."
+    Warn-IfCustom -Name "GateAddr" -Value $GateAddr -DefaultValue "127.0.0.1:20002" -Reason "ws-dual chooses free ports automatically."
+    Warn-IfCustom -Name "AuthAddr" -Value $AuthAddr -DefaultValue "http://127.0.0.1:20000" -Reason "ws-dual chooses free ports automatically."
     Warn-IfCustom -Name "ObserveDir" -Value $ObserveDir -DefaultValue ".demo/e2e-stdio" -Reason "ws-dual writes to .demo/observe."
 
     Push-Location $repoRoot

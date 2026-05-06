@@ -543,8 +543,8 @@ defmodule GateServer.CodecTest do
     end
 
     test "encodes fast-lane bootstrap result" do
-      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 5, 29001, "ticket"})
-      assert <<0x87, 5::64-big, 0x00, 29001::16-big, 6::16-big, "ticket">> == bin
+      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 5, 20003, "ticket"})
+      assert <<0x87, 5::64-big, 0x00, 20003::16-big, 6::16-big, "ticket">> == bin
     end
 
     test "encodes fast-lane attached ack" do

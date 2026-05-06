@@ -1,7 +1,7 @@
 param(
   [string]$Username = "e2e_live",
-  [string]$GateAddr = "127.0.0.1:29000",
-  [string]$AuthAddr = "http://127.0.0.1:4000",
+  [string]$GateAddr = "127.0.0.1:20002",
+  [string]$AuthAddr = "http://127.0.0.1:20000",
   [string]$ObserveDir = ".demo/e2e-live",
   [double]$DriftTolerance = 8.0
 )

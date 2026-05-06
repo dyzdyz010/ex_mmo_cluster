@@ -930,7 +930,7 @@ mod tests {
     }
 
     fn test_gate_addr() -> SocketAddr {
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 29_000))
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 20_002))
     }
 
     fn movement_command() -> NetworkCommand {
@@ -1032,7 +1032,7 @@ mod tests {
                 ServerMessage::FastLaneResult {
                     packet_id: 3,
                     ok: true,
-                    udp_port: Some(29_001),
+                    udp_port: Some(20_003),
                     ticket: Some("ticket-123".into()),
                 },
             )
@@ -1041,7 +1041,7 @@ mod tests {
         assert_eq!(
             bootstrap.outbounds,
             vec![OutboundAction::OpenUdpAndAttach {
-                udp_endpoint: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 29_001)),
+                udp_endpoint: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 20_003)),
                 request_id: 2,
                 ticket: "ticket-123".into(),
             }]
@@ -1174,7 +1174,7 @@ mod tests {
         runtime.fast_lane.attached = true;
         runtime.fast_lane.udp_endpoint = Some(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::LOCALHOST,
-            29_001,
+            20_003,
         )));
         let now = Instant::now();
 

@@ -11,7 +11,7 @@ defmodule GateServer.TcpAcceptor do
 
   require Logger
 
-  @default_port 29000
+  @default_port 20002
 
   @doc "Standard child spec for the TCP acceptor worker."
   def child_spec(opts) do

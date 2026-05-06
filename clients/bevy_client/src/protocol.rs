@@ -794,7 +794,7 @@ mod tests {
             ServerMessage::FastLaneResult {
                 packet_id: 12,
                 ok: true,
-                udp_port: Some(29_001),
+                udp_port: Some(20_003),
                 ticket: Some("ticket".into()),
             }
         );

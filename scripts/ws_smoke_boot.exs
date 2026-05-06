@@ -6,10 +6,10 @@ env_int = fn name, default ->
 end
 
 endpoint = Application.get_env(:auth_server, AuthServerWeb.Endpoint, [])
-auth_port = env_int.("AUTH_PORT", 4100)
-visualize_port = env_int.("VISUALIZE_PORT", 4101)
-gate_tcp_port = env_int.("GATE_TCP_PORT", 29_100)
-gate_udp_port = env_int.("GATE_UDP_PORT", 29_101)
+auth_port = env_int.("AUTH_PORT", 20000)
+visualize_port = env_int.("VISUALIZE_PORT", 20001)
+gate_tcp_port = env_int.("GATE_TCP_PORT", 20_002)
+gate_udp_port = env_int.("GATE_UDP_PORT", 20_003)
 
 Application.put_env(
   :auth_server,

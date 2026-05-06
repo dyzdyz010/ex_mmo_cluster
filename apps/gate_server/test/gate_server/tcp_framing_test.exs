@@ -1,8 +1,6 @@
 defmodule GateServer.TcpFramingTest do
   use ExUnit.Case, async: true
 
-  @port 29100
-
   @moduledoc """
   Tests for TCP length-prefix framing (packet: 4).
 
@@ -15,16 +13,18 @@ defmodule GateServer.TcpFramingTest do
   setup do
     # Start a minimal TCP listener with packet: 4
     {:ok, listen_socket} =
-      :gen_tcp.listen(@port, [:binary, packet: 4, active: false, reuseaddr: true])
+      :gen_tcp.listen(0, [:binary, packet: 4, active: false, reuseaddr: true])
+
+    {:ok, port} = :inet.port(listen_socket)
 
     on_exit(fn -> :gen_tcp.close(listen_socket) end)
 
-    %{listen_socket: listen_socket}
+    %{listen_socket: listen_socket, port: port}
   end
 
-  test "single message is delivered intact", %{listen_socket: listen_socket} do
+  test "single message is delivered intact", %{listen_socket: listen_socket, port: port} do
     # Connect with packet: 4 on client side too
-    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 4, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: 4, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
     payload = <<1, 2, 3, 4, 5>>
@@ -38,9 +38,10 @@ defmodule GateServer.TcpFramingTest do
   end
 
   test "two messages sent rapidly are delivered as separate packets", %{
-    listen_socket: listen_socket
+    listen_socket: listen_socket,
+    port: port
   } do
-    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 4, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: 4, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
     msg1 = <<"hello">>
@@ -60,11 +61,12 @@ defmodule GateServer.TcpFramingTest do
   end
 
   test "raw client with manual length prefix is correctly parsed by packet:4 server", %{
-    listen_socket: listen_socket
+    listen_socket: listen_socket,
+    port: port
   } do
     # Client uses raw TCP (packet: 0) and manually prepends 4-byte length header
     # This simulates what a non-Erlang client (e.g., game client in C++/Unity) would do
-    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
     :inet.setopts(server, active: false, packet: 4)
@@ -84,10 +86,11 @@ defmodule GateServer.TcpFramingTest do
   end
 
   test "two messages concatenated in one TCP send are split correctly", %{
-    listen_socket: listen_socket
+    listen_socket: listen_socket,
+    port: port
   } do
     # Raw client sends two length-prefixed messages in a single TCP write
-    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
     :inet.setopts(server, active: false, packet: 4)
@@ -111,10 +114,11 @@ defmodule GateServer.TcpFramingTest do
   end
 
   test "server can send length-prefixed response back to raw client", %{
-    listen_socket: listen_socket
+    listen_socket: listen_socket,
+    port: port
   } do
     # Verify server-to-client framing: packet:4 on server auto-prepends length
-    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: 0, active: false])
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: 0, active: false])
     {:ok, server} = :gen_tcp.accept(listen_socket, 1000)
 
     :inet.setopts(server, packet: 4)

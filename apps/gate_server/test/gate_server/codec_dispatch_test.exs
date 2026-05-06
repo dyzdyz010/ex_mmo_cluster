@@ -111,7 +111,7 @@ defmodule GateServer.CodecDispatchTest do
     end
 
     test "fast-lane bootstrap result is a server-range reply" do
-      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 9, 29001, "ticket"})
+      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 9, 20003, "ticket"})
       <<type::8, _::binary>> = bin
       assert type == 0x87
     end

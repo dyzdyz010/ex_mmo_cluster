@@ -20,7 +20,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "dev-env.ps1")
 
 Write-Host "[start-server] Booting node $env:NODE_NAME with cookie $env:ERLANG_COOKIE ..." -ForegroundColor Green
-Write-Host "[start-server] AUTH=$env:AUTH_PORT  GATE_TCP=$env:GATE_TCP_PORT  GATE_UDP=$env:GATE_UDP_PORT"
+Write-Host "[start-server] AUTH=$env:AUTH_PORT  VISUALIZE=$env:VISUALIZE_PORT  GATE_TCP=$env:GATE_TCP_PORT  GATE_UDP=$env:GATE_UDP_PORT"
 
 # PowerShell 有内建别名 iex = Invoke-Expression; 必须解析到 PATH 上的实际 iex.bat.
 # Detach 模式改用 elixir.bat -S mix run --no-halt 以避开 Windows 下 iex 的

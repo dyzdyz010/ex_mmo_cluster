@@ -15,10 +15,10 @@ if System.get_env("PHX_SERVER") do
 end
 
 config :auth_server, AuthServerWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("AUTH_PORT", "4000"))]
+  http: [port: String.to_integer(System.get_env("AUTH_PORT", "20000"))]
 
 config :visualize_server, VisualizeServerWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("VISUALIZE_PORT", "4001"))]
+  http: [port: String.to_integer(System.get_env("VISUALIZE_PORT", "20001"))]
 
 # ---------------------------------------------------------------------------
 # Dev-only auto-login endpoint (POST /ingame/auto_login)
@@ -44,8 +44,8 @@ end
 # ---------------------------------------------------------------------------
 
 config :gate_server,
-  tcp_port: String.to_integer(System.get_env("GATE_TCP_PORT", "29000")),
-  udp_port: String.to_integer(System.get_env("GATE_UDP_PORT", "29001"))
+  tcp_port: String.to_integer(System.get_env("GATE_TCP_PORT", "20002")),
+  udp_port: String.to_integer(System.get_env("GATE_UDP_PORT", "20003"))
 
 # ---------------------------------------------------------------------------
 # Production-only: secrets, DB, cluster disable

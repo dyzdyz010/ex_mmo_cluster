@@ -47,7 +47,7 @@ defmodule GateServer.UdpAcceptor do
   """
   def port do
     case Process.whereis(__MODULE__) do
-      nil -> Application.get_env(:gate_server, :udp_port, 29_001)
+      nil -> Application.get_env(:gate_server, :udp_port, 20_003)
       _pid -> GenServer.call(__MODULE__, :port)
     end
   end
@@ -55,7 +55,7 @@ defmodule GateServer.UdpAcceptor do
   @impl true
   def init(opts) do
     requested_port =
-      Keyword.get(opts, :port, Application.get_env(:gate_server, :udp_port, 29_001))
+      Keyword.get(opts, :port, Application.get_env(:gate_server, :udp_port, 20_003))
 
     socket_opts = [:binary, active: true, reuseaddr: true]
     {:ok, socket} = :gen_udp.open(requested_port, socket_opts)

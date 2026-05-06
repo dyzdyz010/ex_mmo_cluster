@@ -46,7 +46,7 @@ else
 fi
 
 echo "${GREEN}[start-server] Booting node ${NODE_NAME} with cookie ${ERLANG_COOKIE} ...${RESET}"
-echo "[start-server] AUTH=${AUTH_PORT}  GATE_TCP=${GATE_TCP_PORT}  GATE_UDP=${GATE_UDP_PORT}"
+echo "[start-server] AUTH=${AUTH_PORT}  VISUALIZE=${VISUALIZE_PORT}  GATE_TCP=${GATE_TCP_PORT}  GATE_UDP=${GATE_UDP_PORT}"
 
 cd "${REPO_ROOT}"
 
