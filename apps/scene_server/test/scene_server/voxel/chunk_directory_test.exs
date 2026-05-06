@@ -78,6 +78,49 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert directory_snapshot.chunk_count == 1
   end
 
+  test "apply_intents batches same-chunk writes through one persisted snapshot" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    token_store = start_supervised!(WriteTokenStore)
+
+    snapshot_store =
+      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
+
+    directory =
+      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+
+    lease = lease()
+
+    assert {:ok, :inserted} =
+             WriteTokenStore.upsert_token(token_store, Map.put(lease, :token_version, 1))
+
+    attrs =
+      for x <- 0..2 do
+        %{
+          request_id: 100 + x,
+          logical_scene_id: 1,
+          chunk_coord: {1, 1, 1},
+          lease: lease,
+          operation: :put_solid_block,
+          macro: {x, 0, 0},
+          block: NormalBlockData.new(11, health: 40)
+        }
+      end
+
+    assert {:ok,
+            %{
+              chunk_version: 1,
+              changed_count: 3,
+              skipped_count: 0,
+              snapshot_payload: payload
+            }} = ChunkDirectory.apply_intents(directory, attrs)
+
+    assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
+    assert storage.chunk_version == 1
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert snapshot.chunk_version == 1
+  end
+
   test "apply_intent rejects missing leases before starting a chunk" do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})

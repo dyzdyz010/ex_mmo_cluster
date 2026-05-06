@@ -18,6 +18,8 @@ defmodule GateServer.VoxelSmokeTest do
 
     assert summary.status == :ok
     assert summary.protocol.initial_snapshot_version == 0
+    assert summary.protocol.updated_frame_type == :delta
+    assert summary.protocol.updated_chunk_version == 1
     assert summary.protocol.updated_snapshot_version == 1
     assert summary.protocol.stored_snapshot_version == 2
     assert summary.protocol.unsubscribe_stopped_push? == true
@@ -31,9 +33,11 @@ defmodule GateServer.VoxelSmokeTest do
     assert gate_log =~ ~s(event="ws_voxel_chunk_subscribe_received")
     assert gate_log =~ ~s(event="ws_voxel_impact_intent_applied")
     assert scene_log =~ ~s(event="voxel_chunk_snapshot_push")
+    assert scene_log =~ ~s(event="voxel_chunk_delta_push")
     assert world_log =~ ~s(event="voxel_region_put")
     assert stdio_log =~ ~s(server_stdio event="voxel")
     assert stdio_log =~ "ws_connections"
+    assert summary_log =~ "updated_frame_type: :delta"
     assert summary_log =~ "unsubscribe_stopped_push?: true"
 
     :ok

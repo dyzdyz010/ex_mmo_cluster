@@ -13,6 +13,7 @@ defmodule GateServer.VoxelSmoke do
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.MapLedger
 
   @default_observe_dir ".demo/observe"
@@ -21,6 +22,7 @@ defmodule GateServer.VoxelSmoke do
   @owner_epoch 1
   @started_key {__MODULE__, :started}
   @ws_pid_key {__MODULE__, :ws_pid}
+  @deferred_chunk_updates_key {__MODULE__, :deferred_chunk_updates}
 
   @doc """
   Runs the voxel protocol smoke scenario.
@@ -52,6 +54,7 @@ defmodule GateServer.VoxelSmoke do
     with_observe_logs(paths, fn ->
       Process.put(@started_key, [])
       Process.put(@ws_pid_key, nil)
+      Process.put(@deferred_chunk_updates_key, [])
 
       try do
         append_stdio(paths.stdio_log, "voxel_smoke_started", %{
@@ -96,6 +99,7 @@ defmodule GateServer.VoxelSmoke do
         cleanup_started(Process.get(@started_key, []))
         Process.delete(@started_key)
         Process.delete(@ws_pid_key)
+        Process.delete(@deferred_chunk_updates_key)
         restore_self_mailbox()
       end
     end)
@@ -131,9 +135,9 @@ defmodule GateServer.VoxelSmoke do
     result_v1 = impact_chunk!(ws_pid, 3, 1, logical_scene_id, {8, 16, 24})
     assert_equal!(result_v1.result_code, :accepted, :impact_v1_rejected)
 
-    updated = receive_snapshot!(2)
-    assert_equal!(updated.storage.chunk_version, 1, :updated_snapshot_not_version_one)
-    assert_solid_block!(updated.storage, {1, 2, 3})
+    updated = receive_chunk_update!(2)
+    assert_equal!(chunk_update_version(updated), 1, :updated_chunk_not_version_one)
+    assert_chunk_update_applied!(updated, logical_scene_id, {0, 0, 0}, {1, 2, 3})
 
     stored_v1 = stored_snapshot!(logical_scene_id, {0, 0, 0})
     assert_equal!(stored_v1.chunk_version, 1, :stored_snapshot_not_version_one)
@@ -142,7 +146,7 @@ defmodule GateServer.VoxelSmoke do
 
     result_v2 = impact_chunk!(ws_pid, 5, 2, logical_scene_id, {16, 16, 24})
     assert_equal!(result_v2.result_code, :accepted, :impact_v2_rejected)
-    refute_snapshot_push!(150)
+    refute_chunk_push!(150)
 
     stored_v2 = stored_snapshot!(logical_scene_id, {0, 0, 0})
     assert_equal!(stored_v2.chunk_version, 2, :stored_snapshot_not_version_two)
@@ -160,7 +164,11 @@ defmodule GateServer.VoxelSmoke do
       protocol: %{
         initial_snapshot_version: initial.storage.chunk_version,
         impact_v1_result_ref: result_v1.result_ref,
-        updated_snapshot_version: updated.storage.chunk_version,
+        updated_frame_type: chunk_update_type(updated),
+        updated_chunk_version: chunk_update_version(updated),
+        # Backward-compatible field for older CLI consumers. Check
+        # `updated_frame_type` before assuming the wire frame was a snapshot.
+        updated_snapshot_version: chunk_update_version(updated),
         impact_v2_result_ref: result_v2.result_ref,
         stored_snapshot_version: stored_v2.chunk_version,
         unsubscribe_stopped_push?: true
@@ -390,9 +398,20 @@ defmodule GateServer.VoxelSmoke do
         x::64-big-signed, y::64-big-signed, z::64-big-signed, 2::16-big, 0::64-big>>
     )
 
+    receive_intent_result!(request_id, client_intent_seq)
+  end
+
+  defp receive_intent_result!(request_id, client_intent_seq) do
     receive do
       {:gate_ws_send, iodata} ->
-        decode_intent_result!(IO.iodata_to_binary(iodata), request_id, client_intent_seq)
+        case IO.iodata_to_binary(iodata) do
+          <<opcode, _payload::binary>> = chunk_update when opcode in [0x62, 0x63] ->
+            defer_chunk_update(chunk_update)
+            receive_intent_result!(request_id, client_intent_seq)
+
+          other ->
+            decode_intent_result!(other, request_id, client_intent_seq)
+        end
     after
       2_000 -> raise "timed out waiting for voxel intent result"
     end
@@ -401,29 +420,69 @@ defmodule GateServer.VoxelSmoke do
   defp receive_snapshot!(request_id) do
     receive do
       {:gate_ws_send, iodata} ->
-        case IO.iodata_to_binary(iodata) do
-          <<0x62, payload::binary>> ->
-            case SceneVoxelCodec.decode_chunk_snapshot_payload(payload) do
-              {:ok, snapshot} ->
-                assert_equal!(snapshot.request_id, request_id, :snapshot_request_id_mismatch)
-                snapshot
-
-              {:error, reason} ->
-                raise "invalid voxel snapshot payload: #{inspect(reason)}"
-            end
-
-          other ->
-            raise "unexpected snapshot response: #{inspect(other)}"
-        end
+        IO.iodata_to_binary(iodata)
+        |> decode_snapshot_frame!(request_id)
     after
       2_000 -> raise "timed out waiting for voxel snapshot"
     end
   end
 
-  defp refute_snapshot_push!(timeout_ms) do
+  defp receive_chunk_update!(subscription_request_id) do
+    case pop_deferred_chunk_update() do
+      nil ->
+        receive do
+          {:gate_ws_send, iodata} ->
+            IO.iodata_to_binary(iodata)
+            |> decode_chunk_update_frame!(subscription_request_id)
+        after
+          2_000 -> raise "timed out waiting for voxel chunk update"
+        end
+
+      deferred ->
+        decode_chunk_update_frame!(deferred, subscription_request_id)
+    end
+  end
+
+  defp decode_chunk_update_frame!(<<0x62, _payload::binary>> = frame, subscription_request_id) do
+    {:snapshot, decode_snapshot_frame!(frame, subscription_request_id)}
+  end
+
+  defp decode_chunk_update_frame!(<<0x63, payload::binary>>, _subscription_request_id) do
+    case SceneVoxelCodec.decode_chunk_delta_payload(payload) do
+      {:ok, delta} ->
+        {:delta, delta}
+
+      {:error, reason} ->
+        raise "invalid voxel delta payload: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_chunk_update_frame!(other, _subscription_request_id) do
+    raise "unexpected chunk update response: #{inspect(other)}"
+  end
+
+  defp decode_snapshot_frame!(<<0x62, payload::binary>>, request_id) do
+    case SceneVoxelCodec.decode_chunk_snapshot_payload(payload) do
+      {:ok, snapshot} ->
+        assert_equal!(snapshot.request_id, request_id, :snapshot_request_id_mismatch)
+        snapshot
+
+      {:error, reason} ->
+        raise "invalid voxel snapshot payload: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_snapshot_frame!(other, _request_id) do
+    raise "unexpected snapshot response: #{inspect(other)}"
+  end
+
+  defp refute_chunk_push!(timeout_ms) do
     receive do
       {:gate_ws_send, <<0x62, _payload::binary>>} ->
         raise "received voxel snapshot push after unsubscribe"
+
+      {:gate_ws_send, <<0x63, _payload::binary>>} ->
+        raise "received voxel delta push after unsubscribe"
 
       {:gate_ws_send, other} ->
         raise "unexpected post-unsubscribe frame: #{inspect(IO.iodata_to_binary(other))}"
@@ -431,6 +490,60 @@ defmodule GateServer.VoxelSmoke do
       timeout_ms -> :ok
     end
   end
+
+  defp defer_chunk_update(chunk_update) do
+    updates = Process.get(@deferred_chunk_updates_key, [])
+    Process.put(@deferred_chunk_updates_key, updates ++ [chunk_update])
+  end
+
+  defp pop_deferred_chunk_update do
+    case Process.get(@deferred_chunk_updates_key, []) do
+      [] ->
+        nil
+
+      [head | tail] ->
+        Process.put(@deferred_chunk_updates_key, tail)
+        head
+    end
+  end
+
+  defp chunk_update_type({type, _payload}), do: type
+  defp chunk_update_version({:snapshot, snapshot}), do: snapshot.storage.chunk_version
+  defp chunk_update_version({:delta, delta}), do: delta.new_chunk_version
+
+  defp assert_chunk_update_applied!(
+         {:snapshot, snapshot},
+         logical_scene_id,
+         chunk_coord,
+         local_macro
+       ) do
+    assert_equal!(snapshot.storage.logical_scene_id, logical_scene_id, :snapshot_scene_mismatch)
+    assert_equal!(snapshot.storage.chunk_coord, chunk_coord, :snapshot_chunk_mismatch)
+    assert_solid_block!(snapshot.storage, local_macro)
+  end
+
+  defp assert_chunk_update_applied!({:delta, delta}, logical_scene_id, chunk_coord, local_macro) do
+    expected_macro_index = Types.macro_index!(local_macro)
+
+    assert_equal!(delta.logical_scene_id, logical_scene_id, :delta_scene_mismatch)
+    assert_equal!(delta.chunk_coord, chunk_coord, :delta_chunk_mismatch)
+    assert_equal!(delta.base_chunk_version, 0, :delta_base_version_mismatch)
+    assert_equal!(delta.new_chunk_version, 1, :delta_new_version_mismatch)
+
+    case Enum.find(delta.ops, &solid_delta_op?(&1, expected_macro_index)) do
+      nil ->
+        raise "missing CellSolid ChunkDelta op for macro #{inspect(local_macro)}"
+
+      op ->
+        assert_equal!(byte_size(op.payload), 20, :delta_cell_solid_payload_size_mismatch)
+    end
+  end
+
+  defp solid_delta_op?(%{delta_kind: 1, macro_index: macro_index}, expected_macro_index) do
+    macro_index == expected_macro_index
+  end
+
+  defp solid_delta_op?(_op, _expected_macro_index), do: false
 
   defp decode_intent_result!(
          <<0x68, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big,

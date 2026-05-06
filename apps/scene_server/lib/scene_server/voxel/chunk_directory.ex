@@ -95,6 +95,17 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  Applies multiple World-authorized write intents to one chunk with one persist.
+
+  This directory still owns only chunk lookup/startup. `ChunkProcess` owns the
+  atomic mutation, persistence fence, and subscriber notification. All intents
+  must target the same `{logical_scene_id, chunk_coord}`.
+  """
+  def apply_intents(server \\ __MODULE__, attrs_list) when is_list(attrs_list) do
+    GenServer.call(server, {:apply_intents, attrs_list}, 30_000)
+  end
+
+  @doc """
   Reserves a transaction fence on the chunk for a future commit.
 
   The directory ensures the chunk exists and routes to `ChunkProcess.prepare_transaction/3`.
@@ -243,6 +254,39 @@ defmodule SceneServer.Voxel.ChunkDirectory do
           {{:ok, chunk_pid}, next_state} ->
             reply = ChunkProcess.apply_intent(chunk_pid, attrs)
             emit_apply_intent_result(attrs, reply)
+            {:reply, reply, next_state}
+
+          {{:error, reason}, next_state} ->
+            {:reply, {:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:apply_intents, []}, _from, state) do
+    {:reply,
+     {:ok,
+      %{
+        logical_scene_id: nil,
+        chunk_coord: nil,
+        chunk_version: 0,
+        changed?: false,
+        changed_count: 0,
+        skipped_count: 0,
+        persist_result: :unchanged,
+        snapshot_payload: <<>>
+      }}, state}
+  end
+
+  def handle_call({:apply_intents, attrs_list}, _from, state) when is_list(attrs_list) do
+    case normalize_apply_intents_attrs(attrs_list) do
+      {:ok, attrs, normalized_attrs} ->
+        case ensure_chunk_in_state(state, attrs) do
+          {{:ok, chunk_pid}, next_state} ->
+            reply = ChunkProcess.apply_intents(chunk_pid, attrs_list)
+            emit_apply_intents_result(attrs, normalized_attrs, reply)
             {:reply, reply, next_state}
 
           {{:error, reason}, next_state} ->
@@ -651,6 +695,37 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   defp normalize_apply_intent_attrs(_attrs), do: {:error, :invalid_voxel_intent}
 
+  defp normalize_apply_intents_attrs([first | _rest] = attrs_list) do
+    with {:ok, first_attrs} <- normalize_apply_intent_attrs(first),
+         {:ok, normalized_attrs} <- normalize_apply_intents_targets(attrs_list, first_attrs) do
+      {:ok, first_attrs, normalized_attrs}
+    end
+  end
+
+  defp normalize_apply_intents_attrs(_attrs_list), do: {:error, :invalid_voxel_intent}
+
+  defp normalize_apply_intents_targets(attrs_list, first_attrs) do
+    attrs_list
+    |> Enum.reduce_while({:ok, []}, fn attrs, {:ok, acc} ->
+      case normalize_apply_intent_attrs(attrs) do
+        {:ok, attrs} ->
+          if attrs.logical_scene_id == first_attrs.logical_scene_id and
+               attrs.chunk_coord == first_attrs.chunk_coord do
+            {:cont, {:ok, [attrs | acc]}}
+          else
+            {:halt, {:error, :batch_cross_chunk_unsupported}}
+          end
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, attrs} -> {:ok, Enum.reverse(attrs)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp normalize_chunk_key(attrs) when is_map(attrs) do
     with {:ok, logical_scene_id} <- fetch_logical_scene_id(attrs),
          {:ok, chunk_coord} <- fetch_chunk_coord(attrs) do
@@ -729,6 +804,17 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       %{
         logical_scene_id: attrs.logical_scene_id,
         chunk_coord: attrs.chunk_coord,
+        result: inspect(reply)
+      }
+    end)
+  end
+
+  defp emit_apply_intents_result(attrs, normalized_attrs, reply) do
+    CliObserve.emit("voxel_directory_intents_result", fn ->
+      %{
+        logical_scene_id: attrs.logical_scene_id,
+        chunk_coord: attrs.chunk_coord,
+        intent_count: length(normalized_attrs),
         result: inspect(reply)
       }
     end)

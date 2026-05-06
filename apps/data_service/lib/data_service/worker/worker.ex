@@ -86,7 +86,11 @@ defmodule DataService.Worker do
       title: "dev",
       base_attrs: %{},
       battle_attrs: %{},
-      position: %{"x" => 1000.0, "y" => 1000.0, "z" => 100.0},
+      # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
+      # Movement world coords use server Z as vertical. The browser maps this
+      # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered
+      # at x/z = 750 in renderer units.
+      position: %{"x" => 750.0, "y" => 750.0, "z" => 100.0},
       hp: 500,
       sp: 100,
       mp: 100

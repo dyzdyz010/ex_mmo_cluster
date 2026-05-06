@@ -125,6 +125,82 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.lease.lease_id == lease.lease_id
   end
 
+  test "apply_intent skips identical solid cells without persisting or pushing deltas" do
+    {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+      )
+
+    block = NormalBlockData.new(7)
+
+    assert {:ok, %{chunk_version: 1, changed?: true}} =
+             ChunkProcess.apply_intent(chunk, intent_attrs(lease, macro: {0, 0, 0}, block: block))
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 72)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok,
+            %{
+              chunk_version: 1,
+              changed?: false,
+              persist_result: :unchanged,
+              snapshot_payload: noop_payload
+            }} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 73, macro: {0, 0, 0}, block: block)
+             )
+
+    refute_received {:voxel_chunk_delta_payload, _payload}
+    refute_received {:voxel_chunk_snapshot_payload, _payload}
+
+    assert {:ok, %{request_id: 73, storage: noop_storage}} =
+             Codec.decode_chunk_snapshot_payload(noop_payload)
+
+    assert noop_storage.chunk_version == 1
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert snapshot.chunk_version == 1
+  end
+
+  test "apply_intents batches many cells into one chunk version and one persist" do
+    {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+      )
+
+    attrs =
+      for x <- 0..2 do
+        intent_attrs(lease, request_id: 80 + x, macro: {x, 0, 0}, block: NormalBlockData.new(5))
+      end
+
+    assert {:ok,
+            %{
+              chunk_version: 1,
+              changed?: true,
+              changed_count: 3,
+              skipped_count: 0,
+              persist_result: :inserted,
+              snapshot_payload: payload
+            }} = ChunkProcess.apply_intents(chunk, attrs)
+
+    assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
+    assert storage.chunk_version == 1
+
+    Enum.each(0..2, fn x ->
+      assert Storage.macro_header_at(storage, {x, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_solid_block()
+    end)
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert snapshot.chunk_version == 1
+  end
+
   test "apply_intent rejects missing leases without mutating or persisting" do
     {_token_store, snapshot_store, lease} = start_snapshot_store()
 

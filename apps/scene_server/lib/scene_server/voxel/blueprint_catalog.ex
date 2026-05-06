@@ -45,14 +45,14 @@ defmodule SceneServer.Voxel.BlueprintCatalog do
       name: "builtin_pillar_3",
       version: 1,
       material_id: 1,
-      cells: [{0, 0, 0}, {0, 0, 1}, {0, 0, 2}]
+      cells: [{0, 0, 0}, {0, 1, 0}, {0, 2, 0}]
     },
     2 => %{
       id: 2,
       name: "builtin_floor_3x3",
       version: 1,
       material_id: 2,
-      cells: for(x <- 0..2, y <- 0..2, do: {x, y, 0})
+      cells: for(x <- 0..2, z <- 0..2, do: {x, 0, z})
     },
     3 => %{
       id: 3,

@@ -154,6 +154,19 @@ defmodule SceneServer.Voxel.Storage do
     Enum.at(storage.macro_headers, macro_index)
   end
 
+  @doc "Reads the normal-block payload for a solid macro cell, or nil."
+  @spec normal_block_at(t(), integer() | term()) :: NormalBlockData.t() | nil
+  def normal_block_at(%__MODULE__{} = storage, macro_index_or_coord) do
+    storage = normalize!(storage)
+    header = macro_header_at(storage, macro_index_or_coord)
+
+    if header.mode == MacroCellHeader.cell_mode_solid_block() do
+      Enum.at(storage.normal_blocks, header.payload_index)
+    else
+      nil
+    end
+  end
+
   @doc "Normalizes a chunk storage struct or compatible map."
   @spec normalize!(t() | map()) :: t()
   def normalize!(%__MODULE__{} = storage) do

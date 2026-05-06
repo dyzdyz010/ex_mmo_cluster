@@ -12,7 +12,7 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
 
     assert length(cells) == 3
 
-    assert Enum.map(cells, & &1.local_macro) == [{0, 0, 0}, {0, 0, 1}, {0, 0, 2}]
+    assert Enum.map(cells, & &1.local_macro) == [{0, 0, 0}, {0, 1, 0}, {0, 2, 0}]
 
     Enum.each(cells, fn cell ->
       assert cell.chunk_coord == {0, 0, 0}
@@ -25,16 +25,16 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     assert {:ok, cells} = PrefabRaster.rasterize(1, 1, {@micro, 2 * @micro, 3 * @micro}, 0)
 
     assert length(cells) == 3
-    # Pillar grows along z. anchor world_macro = (1, 2, 3); cells (1,2,3),(1,2,4),(1,2,5).
+    # Pillar grows along y. anchor world_macro = (1, 2, 3); cells (1,2,3),(1,3,3),(1,4,3).
     locals = Enum.map(cells, & &1.local_macro)
-    assert locals == [{1, 2, 3}, {1, 2, 4}, {1, 2, 5}]
+    assert locals == [{1, 2, 3}, {1, 3, 3}, {1, 4, 3}]
 
     Enum.each(cells, fn cell -> assert cell.chunk_coord == {0, 0, 0} end)
   end
 
   test "anchors that span chunk boundaries assign each cell to its proper chunk" do
-    # Pillar starting at world-macro (15, 0, 0) spans chunk_coord (0,0,0) only on z (vertical).
-    # We instead use the floor blueprint (3x3 at z=0) anchored so it crosses x=15..17,
+    # Pillar starting at world-macro (15, 0, 0) spans chunk_coord (0,0,0) only on y (vertical).
+    # We instead use the floor blueprint (3x3 at y=0) anchored so it crosses x=15..17,
     # which spills the x=16, x=17 cells into chunk (1, 0, 0).
     anchor_micro = {15 * @micro, 0, 0}
 
@@ -52,14 +52,14 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     {chunk_one, chunk_two} = {Map.fetch!(by_chunk, {0, 0, 0}), Map.fetch!(by_chunk, {1, 0, 0})}
     assert length(chunk_two) == 6
 
-    Enum.each(chunk_one, fn %{local_macro: {lx, _, lz}} ->
+    Enum.each(chunk_one, fn %{local_macro: {lx, ly, _lz}} ->
       assert lx == 15
-      assert lz == 0
+      assert ly == 0
     end)
 
-    Enum.each(chunk_two, fn %{local_macro: {lx, _, lz}} ->
+    Enum.each(chunk_two, fn %{local_macro: {lx, ly, _lz}} ->
       assert lx in [0, 1]
-      assert lz == 0
+      assert ly == 0
     end)
   end
 
@@ -76,13 +76,13 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     assert cc1 == {-1, -1, -1}
     assert lm1 == {15, 15, 15}
 
-    # z+1 from world-macro -1 is 0 -> chunk (-1, -1, 0), local (15, 15, 0).
-    assert cc2 == {-1, -1, 0}
-    assert lm2 == {15, 15, 0}
+    # y+1 from world-macro -1 is 0 -> chunk (-1, 0, -1), local (15, 0, 15).
+    assert cc2 == {-1, 0, -1}
+    assert lm2 == {15, 0, 15}
 
-    # z+2 from world-macro -1 is +1 -> chunk (-1, -1, 0), local (15, 15, 1).
-    assert cc3 == {-1, -1, 0}
-    assert lm3 == {15, 15, 1}
+    # y+2 from world-macro -1 is +1 -> chunk (-1, 0, -1), local (15, 1, 15).
+    assert cc3 == {-1, 0, -1}
+    assert lm3 == {15, 1, 15}
   end
 
   test "applies a single material per blueprint to every cell" do

@@ -7,6 +7,8 @@ defmodule Mix.Tasks.GateServer.VoxelSmoke do
 
   The task writes Gate/Scene/World observe logs and `server_stdio`-formatted
   snapshots under `.demo/observe/` by default, then prints a compact CLI summary.
+  Initial chunk state is expected as `ChunkSnapshot`; later subscribed updates
+  may be `ChunkDelta` and are reported with `updated_frame_type`.
   """
 
   use Mix.Task
@@ -62,6 +64,8 @@ defmodule Mix.Tasks.GateServer.VoxelSmoke do
       "region_id=#{result.region_id}",
       "cid=#{result.cid}",
       "initial_snapshot_version=#{result.protocol.initial_snapshot_version}",
+      "updated_frame_type=#{result.protocol.updated_frame_type}",
+      "updated_chunk_version=#{result.protocol.updated_chunk_version}",
       "updated_snapshot_version=#{result.protocol.updated_snapshot_version}",
       "stored_snapshot_version=#{result.protocol.stored_snapshot_version}",
       "unsubscribe_stopped_push=#{result.protocol.unsubscribe_stopped_push?}",

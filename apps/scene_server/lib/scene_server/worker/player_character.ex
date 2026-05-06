@@ -27,7 +27,12 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
-  @default_location {1_000.0, 1_000.0, 90.0}
+  # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
+  #
+  # Movement world coords use server Z as vertical. The browser maps this
+  # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered at
+  # x/z = 750 in renderer units.
+  @default_location {750.0, 750.0, 100.0}
 
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5

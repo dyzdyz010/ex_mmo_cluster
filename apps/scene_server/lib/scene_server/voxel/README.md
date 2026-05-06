@@ -67,8 +67,8 @@ v1 catalog 内容：
 
 | id | name                | 形状                            | material_id |
 |----|---------------------|---------------------------------|-------------|
-| 1  | builtin_pillar_3    | 沿 z 轴 3 个垂直方块            | 1           |
-| 2  | builtin_floor_3x3   | z=0 平面 3×3 共 9 个方块        | 2           |
+| 1  | builtin_pillar_3    | 沿 y 轴 3 个垂直方块            | 1           |
+| 2  | builtin_floor_3x3   | y=0 平面 3×3 共 9 个方块        | 2           |
 | 3  | builtin_cube_2x2x2  | 2×2×2 共 8 个方块               | 3           |
 
 `SceneServer.Voxel.PrefabRaster.rasterize/4` 是把蓝图 + 锚点光栅化为

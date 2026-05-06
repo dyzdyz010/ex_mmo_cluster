@@ -13,6 +13,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.Hash
+  alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -53,6 +54,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
   """
   def apply_intent(server, attrs) do
     GenServer.call(server, {:apply_intent, attrs})
+  end
+
+  @doc """
+  Applies multiple World-authorized write intents to the same chunk atomically.
+
+  The batch path is used by development seeding and migration helpers that need
+  many cells to become visible together. The chunk process owns the hot storage
+  mutation, persists exactly one fenced snapshot when anything changed, and
+  pushes a snapshot fallback to current subscribers instead of a long delta list.
+  """
+  def apply_intents(server, attrs_list) when is_list(attrs_list) do
+    GenServer.call(server, {:apply_intents, attrs_list}, 30_000)
   end
 
   @doc "Places a solid normal block and increments the chunk version."
@@ -251,12 +264,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
                     macro: intent.macro,
                     region_id: intent.lease.region_id,
                     lease_id: intent.lease.lease_id,
+                    changed?: reply.changed?,
                     persist_result: reply.persist_result,
                     snapshot_bytes: byte_size(reply.snapshot_payload)
                   }
                 end)
 
-                push_intent_outcome(state, next_state, intent, :apply_intent)
+                if reply.changed? do
+                  push_intent_outcome(state, next_state, intent, :apply_intent)
+                end
+
                 {:reply, {:ok, reply}, next_state}
 
               {:error, reason} ->
@@ -266,6 +283,52 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
           {:error, reason} ->
             emit_intent_rejected(state, attrs, reason)
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  def handle_call({:apply_intents, attrs_list}, _from, state) when is_list(attrs_list) do
+    case state.pending_fence do
+      %{transaction_id: tid} ->
+        reason = {:chunk_fenced_by_transaction, tid}
+        emit_intent_rejected(state, %{batch_count: length(attrs_list)}, reason)
+        {:reply, {:error, reason}, state}
+
+      nil ->
+        case normalize_apply_intents(attrs_list) do
+          {:ok, intents} ->
+            case apply_normalized_intents(state, intents) do
+              {:ok, reply, next_state} ->
+                CliObserve.emit("voxel_intents_applied", fn ->
+                  %{
+                    logical_scene_id: next_state.logical_scene_id,
+                    chunk_coord: next_state.chunk_coord,
+                    chunk_version: next_state.storage.chunk_version,
+                    intent_count: length(intents),
+                    changed_count: reply.changed_count,
+                    skipped_count: reply.skipped_count,
+                    region_id: Map.get(reply.lease, :region_id, 0),
+                    lease_id: Map.get(reply.lease, :lease_id, 0),
+                    changed?: reply.changed?,
+                    persist_result: reply.persist_result,
+                    snapshot_bytes: byte_size(reply.snapshot_payload)
+                  }
+                end)
+
+                if reply.changed? do
+                  push_snapshot_fallbacks(next_state, :apply_intents)
+                end
+
+                {:reply, {:ok, reply}, next_state}
+
+              {:error, reason} ->
+                emit_intent_rejected(state, %{batch_count: length(attrs_list)}, reason)
+                {:reply, {:error, reason}, state}
+            end
+
+          {:error, reason} ->
+            emit_intent_rejected(state, %{batch_count: length(attrs_list)}, reason)
             {:reply, {:error, reason}, state}
         end
     end
@@ -298,10 +361,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
           chunk_version: next_state.storage.chunk_version,
           snapshot_bytes: byte_size(reply.snapshot_payload),
+          changed?: reply.changed?,
           persist_result: reply.persist_result
         })
 
-        push_intent_outcome(state, next_state, intent, :commit_transaction)
+        if reply.changed? do
+          push_intent_outcome(state, next_state, intent, :commit_transaction)
+        end
+
         {:reply, {:ok, reply}, next_state}
 
       {:error, reason} ->
@@ -507,36 +574,132 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp apply_normalized_intent(state, intent) do
     with :ok <- validate_intent_scope(state, intent),
-         {:ok, next_storage} <- build_intent_storage(state.storage, intent) do
+         {:ok, next_storage, changed?} <- build_intent_storage(state.storage, intent) do
       snapshot_payload = encode_snapshot_payload(next_storage, intent.request_id)
       persist_payload = encode_snapshot_payload(next_storage, 0)
 
-      case persist_snapshot(
-             state.snapshot_store,
-             intent.lease,
-             state.chunk_coord,
-             next_storage,
-             persist_payload
-           ) do
-        {:ok, persist_result} ->
-          next_state = %{state | storage: next_storage, lease: intent.lease}
+      if changed? do
+        case persist_snapshot(
+               state.snapshot_store,
+               intent.lease,
+               state.chunk_coord,
+               next_storage,
+               persist_payload
+             ) do
+          {:ok, persist_result} ->
+            next_state = %{state | storage: next_storage, lease: intent.lease}
 
-          reply = %{
-            logical_scene_id: next_storage.logical_scene_id,
-            chunk_coord: next_storage.chunk_coord,
-            chunk_version: next_storage.chunk_version,
-            operation: intent.operation,
-            macro: intent.macro,
-            persist_result: persist_result,
-            snapshot_payload: snapshot_payload
-          }
+            {:ok, intent_reply(next_storage, intent, persist_result, snapshot_payload, true),
+             next_state}
 
-          {:ok, reply, next_state}
-
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        next_state = %{state | lease: intent.lease}
+        {:ok, intent_reply(next_storage, intent, :unchanged, snapshot_payload, false), next_state}
       end
     end
+  end
+
+  defp apply_normalized_intents(state, []) do
+    payload = encode_snapshot_payload(state.storage, 0)
+
+    {:ok,
+     %{
+       logical_scene_id: state.logical_scene_id,
+       chunk_coord: state.chunk_coord,
+       chunk_version: state.storage.chunk_version,
+       changed?: false,
+       changed_count: 0,
+       skipped_count: 0,
+       persist_result: :unchanged,
+       snapshot_payload: payload,
+       lease: state.lease || %{}
+     }, state}
+  end
+
+  defp apply_normalized_intents(state, intents) do
+    with :ok <- validate_batch_scope(state, intents),
+         {:ok, next_storage, changed_count, skipped_count} <-
+           build_intents_storage(state.storage, intents) do
+      request_id = intents |> List.first() |> Map.fetch!(:request_id)
+      snapshot_payload = encode_snapshot_payload(next_storage, request_id)
+      persist_payload = encode_snapshot_payload(next_storage, 0)
+      lease = intents |> List.first() |> Map.fetch!(:lease)
+
+      if changed_count > 0 do
+        case persist_snapshot(
+               state.snapshot_store,
+               lease,
+               state.chunk_coord,
+               next_storage,
+               persist_payload
+             ) do
+          {:ok, persist_result} ->
+            reply =
+              batch_intent_reply(
+                next_storage,
+                lease,
+                persist_result,
+                snapshot_payload,
+                changed_count,
+                skipped_count
+              )
+
+            {:ok, reply, %{state | storage: next_storage, lease: lease}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        reply =
+          batch_intent_reply(
+            next_storage,
+            lease,
+            :unchanged,
+            snapshot_payload,
+            changed_count,
+            skipped_count
+          )
+
+        {:ok, reply, %{state | lease: lease}}
+      end
+    end
+  end
+
+  defp intent_reply(storage, intent, persist_result, snapshot_payload, changed?) do
+    %{
+      logical_scene_id: storage.logical_scene_id,
+      chunk_coord: storage.chunk_coord,
+      chunk_version: storage.chunk_version,
+      operation: intent.operation,
+      macro: intent.macro,
+      changed?: changed?,
+      persist_result: persist_result,
+      snapshot_payload: snapshot_payload
+    }
+  end
+
+  defp batch_intent_reply(
+         storage,
+         lease,
+         persist_result,
+         snapshot_payload,
+         changed_count,
+         skipped_count
+       ) do
+    %{
+      logical_scene_id: storage.logical_scene_id,
+      chunk_coord: storage.chunk_coord,
+      chunk_version: storage.chunk_version,
+      changed?: changed_count > 0,
+      changed_count: changed_count,
+      skipped_count: skipped_count,
+      persist_result: persist_result,
+      snapshot_payload: snapshot_payload,
+      lease: lease
+    }
   end
 
   defp prepare_transaction_in_state(state, transaction_id, attrs) do
@@ -629,6 +792,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp validate_batch_scope(state, intents) do
+    Enum.reduce_while(intents, :ok, fn intent, :ok ->
+      case validate_intent_scope(state, intent) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
   defp validate_loaded_snapshot(state, storage) do
     cond do
       storage.logical_scene_id != state.logical_scene_id ->
@@ -647,36 +819,118 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp build_intent_storage(storage, %{operation: :put_solid_block} = intent) do
     block = intent.block
+    next_version = storage.chunk_version + 1
 
     opts =
       intent.opts
-      |> Keyword.put_new(:cell_version, storage.chunk_version + 1)
+      |> Keyword.put_new(:cell_version, next_version)
       |> Keyword.put_new_lazy(:cell_hash, fn -> Hash.digest32(inspect(block)) end)
 
-    storage =
-      storage
-      |> Storage.put_solid_block(intent.macro, block, opts)
-      |> bump_chunk_version()
+    if solid_block_matches?(storage, intent.macro, block) do
+      {:ok, storage, false}
+    else
+      storage =
+        storage
+        |> Storage.put_solid_block(intent.macro, block, opts)
+        |> bump_chunk_version()
 
-    {:ok, storage}
+      {:ok, storage, true}
+    end
   rescue
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
   end
 
   defp build_intent_storage(storage, %{operation: :break_block} = intent) do
+    next_version = storage.chunk_version + 1
+
     opts =
       intent.opts
-      |> Keyword.put_new(:cell_version, storage.chunk_version + 1)
+      |> Keyword.put_new(:cell_version, next_version)
       |> Keyword.put_new(:cell_hash, 0)
 
-    storage =
-      storage
-      |> Storage.clear_macro_cell(intent.macro, opts)
-      |> bump_chunk_version()
+    if empty_cell?(storage, intent.macro) do
+      {:ok, storage, false}
+    else
+      storage =
+        storage
+        |> Storage.clear_macro_cell(intent.macro, opts)
+        |> bump_chunk_version()
 
-    {:ok, storage}
+      {:ok, storage, true}
+    end
   rescue
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp build_intents_storage(storage, intents) do
+    next_version = storage.chunk_version + 1
+
+    {storage, changed_count, skipped_count} =
+      Enum.reduce(intents, {storage, 0, 0}, fn intent, {acc_storage, changed, skipped} ->
+        {:ok, next_storage, changed?} =
+          build_intent_storage_without_chunk_bump(acc_storage, intent, next_version)
+
+        if changed? do
+          {next_storage, changed + 1, skipped}
+        else
+          {next_storage, changed, skipped + 1}
+        end
+      end)
+
+    storage =
+      if changed_count > 0 do
+        bump_chunk_version(storage)
+      else
+        storage
+      end
+
+    {:ok, storage, changed_count, skipped_count}
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp build_intent_storage_without_chunk_bump(
+         storage,
+         %{operation: :put_solid_block} = intent,
+         next_version
+       ) do
+    block = intent.block
+
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new_lazy(:cell_hash, fn -> Hash.digest32(inspect(block)) end)
+
+    if solid_block_matches?(storage, intent.macro, block) do
+      {:ok, storage, false}
+    else
+      {:ok, Storage.put_solid_block(storage, intent.macro, block, opts), true}
+    end
+  end
+
+  defp build_intent_storage_without_chunk_bump(
+         storage,
+         %{operation: :break_block} = intent,
+         next_version
+       ) do
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    if empty_cell?(storage, intent.macro) do
+      {:ok, storage, false}
+    else
+      {:ok, Storage.clear_macro_cell(storage, intent.macro, opts), true}
+    end
+  end
+
+  defp solid_block_matches?(storage, macro_index, block) do
+    Storage.normal_block_at(storage, macro_index) == NormalBlockData.normalize!(block)
+  end
+
+  defp empty_cell?(storage, macro_index) do
+    Storage.macro_header_at(storage, macro_index).mode == MacroCellHeader.cell_mode_empty()
   end
 
   defp persist_snapshot(_snapshot_store, nil, _chunk_coord, _storage, _payload) do
@@ -980,6 +1234,24 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp normalize_apply_intent(_attrs), do: {:error, :invalid_voxel_intent}
+
+  defp normalize_apply_intents([]), do: {:ok, []}
+
+  defp normalize_apply_intents(attrs_list) when is_list(attrs_list) do
+    attrs_list
+    |> Enum.reduce_while({:ok, []}, fn attrs, {:ok, acc} ->
+      case normalize_apply_intent(attrs) do
+        {:ok, intent} -> {:cont, {:ok, [intent | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, intents} -> {:ok, Enum.reverse(intents)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_apply_intents(_attrs_list), do: {:error, :invalid_voxel_intent}
 
   # `:break_block` clears a macro cell back to empty mode and never carries
   # block payload on the wire (delta_kind = 0 CellEmpty). Every other operation
