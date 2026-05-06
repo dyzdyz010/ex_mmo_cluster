@@ -102,6 +102,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     { blueprintId: number; blueprintName: string }
   >();
   private lastSeedAttemptMs = 0;
+  private lastSeedDurationMs: number | null = null;
+  private lastSeedSummary: Record<string, unknown> | null = null;
   private lastSnapshot: {
     requestId: number;
     logicalSceneId: number;
@@ -136,6 +138,13 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.primeDemoBlock = options.primeDemoBlock ?? true;
     this.sourceSkillId = options.sourceSkillId ?? 1;
     this.seedState = this.devSeed ? "idle" : "disabled";
+  }
+
+  override bootstrap(): void {
+    // Server-authoritative mode must start empty locally. Authoritative
+    // terrain arrives from DevSeed + ChunkSnapshot; seeding the offline
+    // showcase here would make CLI/render observations mix local-only and
+    // server-owned cells.
   }
 
   onFrame(nowMs: number): void {
@@ -182,6 +191,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastIntentResult: this.lastIntentResult,
       lastDebugProbe: this.lastDebugProbe,
       lastError: this.lastError,
+      lastSeedDurationMs: this.lastSeedDurationMs,
+      lastSeedSummary: this.lastSeedSummary,
       transport: this.transport.voxelDebugSnapshot(),
     };
   }
@@ -275,7 +286,6 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   override placePrefabBoundarySnap(_request: PrefabBoundarySnapRequest): PrefabBoundarySnapResult {
-    this.rejectServerOnlyEdit("prefab_boundary_snap_not_supported_by_server");
     return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" };
   }
 
@@ -463,6 +473,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       solidBlocks,
     });
 
+    // Demo-only fallback for empty servers. Triggered when an authoritative
+    // snapshot arrives with zero solid blocks AND the operator has explicitly
+    // opted in via `VITE_VOXEL_PRIME_DEMO_BLOCK=1`. Defaults to off because
+    // production demos rely on `WorldServer.Voxel.DevSeed` to seed the
+    // starter terrain server-side; client-side priming is a relic kept only
+    // for emergency local debugging when the seed path is unavailable.
     if (this.primeDemoBlock && !this.primeSent && solidBlocks === 0) {
       this.primeSent = true;
       this.sendVoxelImpactMacro(
@@ -489,6 +505,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     if (result.resultCodeName === "rejected" || result.resultCodeName === "stale") {
       this.store.editStats.rejected += 1;
       this.lastError = result.reason;
+    } else if (result.resultCodeName === "accepted") {
+      this.lastError = null;
     }
     this.bus.emit("world:voxel-intent-result", {
       requestId: result.requestId,
@@ -536,6 +554,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     }
     this.seedState = "pending";
     this.lastSeedAttemptMs = nowMs;
+    const startedAtMs = performance.now();
     const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/dev_seed`;
     void fetch(url, {
       method: "POST",
@@ -551,8 +570,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       .then((payload) => {
         this.seedState = "ready";
         this.lastError = null;
+        this.lastSeedDurationMs = Math.round(performance.now() - startedAtMs);
+        this.lastSeedSummary = seedSummary(payload);
         this.logger.emit("voxel", "dev_seed_ready", {
           logical_scene_id: this.logicalSceneId,
+          duration_ms: this.lastSeedDurationMs,
+          terrain: JSON.stringify(this.lastSeedSummary),
           result: JSON.stringify(payload).slice(0, 240),
         });
       })
@@ -560,6 +583,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         const reason = error instanceof Error ? error.message : String(error);
         this.seedState = "failed";
         this.lastError = reason;
+        this.lastSeedDurationMs = Math.round(performance.now() - startedAtMs);
         this.bus.emit("world:voxel-sync-error", { reason, source: "dev_seed" });
       });
   }
@@ -583,4 +607,20 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.drainVoxelDeltas === "function" &&
     typeof candidate.drainVoxelInvalidates === "function"
   );
+}
+
+function seedSummary(payload: Record<string, unknown>): Record<string, unknown> {
+  const terrain = payload["terrain"];
+  if (!terrain || typeof terrain !== "object" || Array.isArray(terrain)) {
+    return {};
+  }
+
+  const source = terrain as Record<string, unknown>;
+  return {
+    attempted: source["attempted"] ?? 0,
+    written: source["written"] ?? 0,
+    skipped: source["skipped"] ?? 0,
+    errors: source["errors"] ?? 0,
+    maxChunkVersion: source["max_chunk_version"] ?? 0,
+  };
 }

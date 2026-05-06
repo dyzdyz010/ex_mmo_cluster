@@ -167,17 +167,26 @@ export function renderVoxelDebugPanelHtml(
   lastResult: CliCommandResult | null = null,
 ): string {
   const summary = summarizeVoxelSnapshot(snapshot);
+  const alerts = summarizeVoxelAlerts(snapshot);
   const resultClass = lastResult ? (lastResult.ok ? " is-ok" : " is-error") : "";
+  const badgeClass = alerts.length > 0 ? " is-error" : "";
   const resultText = lastResult
     ? `${lastResult.command}: ${lastResult.text}`
     : `${summary.mode} / ${summary.subscriptionState}`;
+  const alertHtml =
+    alerts.length > 0
+      ? `<div class="voxel-panel-alerts" data-voxel-panel-alerts>${alerts
+          .map((alert) => `<div>${escapeHtml(alert)}</div>`)
+          .join("")}</div>`
+      : "";
 
   return [
     `<section class="voxel-panel-surface" aria-label="Server voxel">`,
     `<div class="voxel-panel-header">`,
     `<span class="voxel-panel-title">Server Voxel</span>`,
-    `<span class="voxel-panel-badge" data-voxel-panel-status>${escapeHtml(summary.subscriptionState)}</span>`,
+    `<span class="voxel-panel-badge${badgeClass}" data-voxel-panel-status>${escapeHtml(summary.subscriptionState)}</span>`,
     `</div>`,
+    alertHtml,
     `<dl class="voxel-panel-stats">`,
     renderStat("mode", summary.mode),
     renderStat("seed", summary.seedState),
@@ -265,6 +274,58 @@ function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
   };
 }
 
+function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {
+  const alerts: string[] = [];
+  const seedState = stringAt(snapshot, "seedState");
+  const subscriptionState = stringAt(snapshot, "subscriptionState");
+  const lastError = stringAt(snapshot, "lastError");
+  const transport = objectAt(snapshot, "transport");
+  const available = booleanAt(transport, "available");
+  const transportStatus = stringAt(transport, "connectionStatus");
+  const transportPhase = stringAt(transport, "connectionPhase");
+  const connectionLostReason = stringAt(transport, "connectionLostReason");
+  const transportError = stringAt(transport, "lastError");
+  const blockedSend = objectAt(transport, "lastBlockedSend");
+  const lastIntent = objectAt(snapshot, "lastIntentResult");
+  const intentCode = stringAt(lastIntent, "resultCodeName");
+
+  if (seedState === "failed") {
+    alerts.push(`dev_seed failed: ${lastError || "unknown"}`);
+  } else if (seedState === "idle" && available === false) {
+    alerts.push(
+      `dev_seed not started: waiting for transport (${transportStatus || "unknown"}:${transportPhase || "unknown"})`,
+    );
+  } else if (seedState && seedState !== "ready" && seedState !== "disabled") {
+    alerts.push(`waiting for dev_seed: ${seedState}`);
+  }
+
+  if (available === false) {
+    alerts.push(
+      `transport unavailable: ${transportError || connectionLostReason || transportStatus || "not connected"}`,
+    );
+  }
+
+  if (subscriptionState && subscriptionState !== "active") {
+    alerts.push(`subscription not active: ${subscriptionState}`);
+  }
+
+  if (blockedSend) {
+    alerts.push(
+      `send blocked: ${stringAt(blockedSend, "source") || "unknown"}: ${stringAt(blockedSend, "reason") || "unknown"}`,
+    );
+  }
+
+  if (intentCode === "rejected" || intentCode === "stale") {
+    alerts.push(`${intentCode}: ${stringAt(lastIntent, "reason") || "unknown"}`);
+  }
+
+  if (lastError && seedState !== "failed") {
+    alerts.push(`last error: ${lastError}`);
+  }
+
+  return Array.from(new Set(alerts)).slice(0, 5);
+}
+
 function summarizeResult(result: CliCommandResult | null): Record<string, unknown> | null {
   if (!result) {
     return null;
@@ -290,6 +351,11 @@ function stringAt(source: Record<string, unknown> | undefined, key: string): str
 function numberAt(source: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = source?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanAt(source: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const value = source?.[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function numberText(value: unknown): string {

@@ -53,6 +53,10 @@ export class InputController {
     return pressed;
   }
 
+  hasPendingJump(): boolean {
+    return this.jumpPressed;
+  }
+
   requestJump(source = "programmatic"): void {
     this.jumpPressed = true;
     this.bus.emit("input:jump", { source });

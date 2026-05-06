@@ -15,9 +15,10 @@ import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 class FakeMovementTransport implements MovementTransport {
   readonly mode = "test";
   readonly sentInputs: MoveInputFrame[] = [];
+  ready = true;
 
   isReady(): boolean {
-    return true;
+    return this.ready;
   }
 
   debugSnapshot(): Record<string, unknown> {
@@ -218,6 +219,33 @@ describe("LocalPlayerController", () => {
     expect(transport.sentInputs).toHaveLength(2);
     expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
     expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+  });
+
+  it("emits an observable blocked-input event when controls are used before transport is ready", () => {
+    const bus = new EventBus<AppEvents>();
+    const blocked: AppEvents["movement:input-blocked"][] = [];
+    bus.on("movement:input-blocked", (event) => blocked.push(event));
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    transport.ready = false;
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.forward = true;
+    input.requestJump("test");
+
+    controller.onFrame(100, 100);
+    controller.onFrame(200, 100);
+
+    expect(transport.sentInputs).toHaveLength(0);
+    expect(blocked).toEqual([
+      {
+        reason: "transport_not_ready",
+        keys: { forward: true, backward: false, left: false, right: false },
+        jump: true,
+      },
+    ]);
   });
 
   it("records vertical displacement and movement mode in frame traces", () => {

@@ -60,6 +60,7 @@ export class LocalPlayerController implements FrameSubscriber {
   private cameraYawResolver: () => number = () => 0;
   private frameTraceRemaining = 0;
   private renderSimulationState: PredictedMoveState | null = null;
+  private lastInputBlockedAtMs = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -147,12 +148,15 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   private stepFixed(nowMs: number): void {
-    if (!this.transport.isReady()) return;
-
     const inputDir = buildMovementInputDirection(
       this.input.getMovementKeys(),
       this.cameraYawResolver(),
     );
+    if (!this.transport.isReady()) {
+      this.emitInputBlockedIfActive(nowMs);
+      return;
+    }
+
     const jumpRequested = this.input.consumeJumpPressed();
     const frame = this.prediction.buildInputFrame(
       inputDir,
@@ -177,6 +181,22 @@ export class LocalPlayerController implements FrameSubscriber {
       velocity: predicted.velocity,
       movementFlags: frame.movementFlags,
       movementMode: predicted.movementMode,
+    });
+  }
+
+  private emitInputBlockedIfActive(nowMs: number): void {
+    const keys = this.input.getMovementKeys();
+    const jump = this.input.hasPendingJump();
+    const hasMoveInput = keys.forward || keys.backward || keys.left || keys.right;
+    if ((!hasMoveInput && !jump) || nowMs - this.lastInputBlockedAtMs < 1_000) {
+      return;
+    }
+
+    this.lastInputBlockedAtMs = nowMs;
+    this.bus.emit("movement:input-blocked", {
+      reason: "transport_not_ready",
+      keys: { ...keys },
+      jump,
     });
   }
 

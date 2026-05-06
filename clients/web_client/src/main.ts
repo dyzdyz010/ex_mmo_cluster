@@ -43,4 +43,17 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   console.error("[web-client] bootstrap failed", error);
+  const reason = error instanceof Error ? error.message : String(error);
+  const hud = document.getElementById("hud");
+  if (hud instanceof HTMLDivElement) {
+    hud.textContent = [
+      "!! BOOTSTRAP FAILED",
+      reason,
+      "Check server/client configuration and window.__voxelObserve when available.",
+    ].join("\n");
+  }
+  const panel = document.getElementById("voxel-panel");
+  if (panel instanceof HTMLDivElement) {
+    panel.textContent = `Bootstrap failed: ${reason}`;
+  }
 });

@@ -30,7 +30,6 @@ import type {
   MovementTransportTickResult,
   PendingMovementAck,
 } from "@domain/movement/transport";
-import { SimulatedLocalMovementTransport } from "./simulatedMovementTransport";
 import { chunkCoordKey, type FChunkCoord, type FMacroCoord } from "../../voxel/core/types";
 
 interface AutoLoginResponse {
@@ -40,12 +39,34 @@ interface AutoLoginResponse {
 }
 
 const SERVER_TRANSPORT_MODE = "server-ws";
+const AUTO_LOGIN_TIMEOUT_MS = 5_000;
+const HANDSHAKE_TIMEOUT_MS = 8_000;
+
+/**
+ * Connection lifecycle as observed by the rest of the app.
+ *
+ * The transport never silently downgrades to a simulated/local lane. When
+ * something fails (auth, socket, enter-scene, late drop), it transitions to
+ * `disconnected`, surfaces the reason, and stops sending. Callers see
+ * `isReady() === false` and a stable `mode` of `server-ws` with the failure
+ * reason in `debugSnapshot()`.
+ */
+type ConnectionStatus = "connecting" | "connected" | "disconnected";
+type ConnectionPhase =
+  | "init"
+  | "auto_login"
+  | "socket_connect"
+  | "auth_request"
+  | "enter_scene"
+  | "ready"
+  | "disconnected";
 
 export class ServerMovementTransport implements MovementTransport {
   private socket: WebSocket | null = null;
   private ready = false;
   private connecting = false;
   private heartbeatTimer: number | null = null;
+  private handshakeTimer: number | null = null;
   private requestId = 1;
   private authRequestId = 0;
   private enterSceneRequestId = 0;
@@ -75,17 +96,28 @@ export class ServerMovementTransport implements MovementTransport {
   // Audit B-S1 / B-SRV2: server-reported next-input seq for the upcoming
   // spawn. Consumed alongside spawnPosition by the transport pump.
   private spawnExpectedSeq: number | null = null;
-  private readonly fallbackTransport = new SimulatedLocalMovementTransport();
-  private fallbackReason: string | null = null;
   private readonly lastResetPosition = new Vector3(-350, 650, -280);
+  private connectionStatus: ConnectionStatus = "connecting";
+  private connectionPhase: ConnectionPhase = "init";
+  private connectionLostReason: string | null = null;
   private sentInputCount = 0;
   private receivedMessageCount = 0;
   private receivedAckCount = 0;
   private receivedRemoteSnapshotCount = 0;
   private lastAckSeq: number | null = null;
   private lastRemoteTickByCid = new Map<number, number>();
+  private receivedPlayerStateCount = 0;
+  private lastPlayerState: { cid: number; hp: number; maxHp: number; alive: boolean } | null = null;
   private lastTimeSyncOffsetMs: number | null = null;
   private lastError: string | null = null;
+  private blockedInputCount = 0;
+  private lastBlockedInputReason: string | null = null;
+  private lastBlockedInputSeq: number | null = null;
+  private lastBlockedInputLogAtMs = Number.NEGATIVE_INFINITY;
+  private bootstrapStartedAtMs: number | null = null;
+  private phaseStartedAtMs: number | null = null;
+  private lastAutoLoginDurationMs: number | null = null;
+  private lastReadyDurationMs: number | null = null;
   private sentVoxelMessageCount = 0;
   private receivedVoxelSnapshotCount = 0;
   private receivedVoxelIntentResultCount = 0;
@@ -115,6 +147,8 @@ export class ServerMovementTransport implements MovementTransport {
     rotation: number;
   } | null = null;
   private lastVoxelError: string | null = null;
+  private blockedVoxelSendCount = 0;
+  private lastBlockedVoxelSend: { source: string; reason: string } | null = null;
 
   constructor(
     private readonly logger: ObserveLog,
@@ -127,42 +161,19 @@ export class ServerMovementTransport implements MovementTransport {
   }
 
   get mode(): string {
-    return this.usingFallback() ? this.fallbackTransport.mode : SERVER_TRANSPORT_MODE;
+    return SERVER_TRANSPORT_MODE;
   }
 
   isReady(): boolean {
-    if (this.usingFallback()) {
-      return this.fallbackTransport.isReady();
-    }
-
-    return this.ready;
+    return this.connectionStatus === "connected" && this.ready;
   }
 
   debugSnapshot(): Record<string, unknown> {
-    if (this.usingFallback()) {
-      return {
-        mode: this.mode,
-        fallbackFrom: SERVER_TRANSPORT_MODE,
-        fallbackReason: this.fallbackReason,
-        authBaseUrl: this.authBaseUrl,
-        webSocketUrl: this.webSocketUrl,
-        serverState: {
-          ready: this.ready,
-          connecting: this.connecting,
-          cid: this.cid,
-          username: this.username,
-          socketState: this.socket?.readyState ?? null,
-          hasToken: this.token !== null,
-          authRequestId: this.authRequestId,
-          enterSceneRequestId: this.enterSceneRequestId,
-          voxel: this.voxelDebugSnapshot(),
-        },
-        fallbackTransport: this.fallbackTransport.debugSnapshot(),
-      };
-    }
-
     return {
       mode: this.mode,
+      connectionStatus: this.connectionStatus,
+      connectionPhase: this.connectionPhase,
+      connectionLostReason: this.connectionLostReason,
       ready: this.ready,
       connecting: this.connecting,
       cid: this.cid,
@@ -182,8 +193,23 @@ export class ServerMovementTransport implements MovementTransport {
       receivedRemoteSnapshotCount: this.receivedRemoteSnapshotCount,
       lastAckSeq: this.lastAckSeq,
       lastRemoteTickByCid: Object.fromEntries(this.lastRemoteTickByCid),
+      receivedPlayerStateCount: this.receivedPlayerStateCount,
+      lastPlayerState: this.lastPlayerState,
       lastTimeSyncOffsetMs: this.lastTimeSyncOffsetMs,
       lastError: this.lastError,
+      bootstrapElapsedMs:
+        this.bootstrapStartedAtMs === null
+          ? null
+          : Math.round(performance.now() - this.bootstrapStartedAtMs),
+      phaseElapsedMs:
+        this.phaseStartedAtMs === null
+          ? null
+          : Math.round(performance.now() - this.phaseStartedAtMs),
+      lastAutoLoginDurationMs: this.lastAutoLoginDurationMs,
+      lastReadyDurationMs: this.lastReadyDurationMs,
+      blockedInputCount: this.blockedInputCount,
+      lastBlockedInputReason: this.lastBlockedInputReason,
+      lastBlockedInputSeq: this.lastBlockedInputSeq,
       authBaseUrl: this.authBaseUrl,
       webSocketUrl: this.webSocketUrl,
       voxel: this.voxelDebugSnapshot(),
@@ -191,7 +217,11 @@ export class ServerMovementTransport implements MovementTransport {
   }
 
   canUseServerVoxel(): boolean {
-    return !this.usingFallback() && this.ready && this.socket?.readyState === WebSocket.OPEN;
+    return (
+      this.connectionStatus === "connected" &&
+      this.ready &&
+      this.socket?.readyState === WebSocket.OPEN
+    );
   }
 
   getAuthBaseUrl(): string {
@@ -201,6 +231,13 @@ export class ServerMovementTransport implements MovementTransport {
   voxelDebugSnapshot(): Record<string, unknown> {
     return {
       available: this.canUseServerVoxel(),
+      connectionStatus: this.connectionStatus,
+      connectionPhase: this.connectionPhase,
+      connectionLostReason: this.connectionLostReason,
+      ready: this.ready,
+      socketState: this.socket?.readyState ?? null,
+      authBaseUrl: this.authBaseUrl,
+      webSocketUrl: this.webSocketUrl,
       queuedSnapshots: this.voxelSnapshots.length,
       queuedIntentResults: this.voxelIntentResults.length,
       queuedDebugProbes: this.voxelDebugProbes.length,
@@ -219,13 +256,14 @@ export class ServerMovementTransport implements MovementTransport {
       lastIntentResult: this.lastVoxelIntentResult,
       lastPrefabRequest: this.lastVoxelPrefabRequest,
       lastError: this.lastVoxelError,
+      blockedSendCount: this.blockedVoxelSendCount,
+      lastBlockedSend: this.lastBlockedVoxelSend,
     };
   }
 
   sendVoxelDebugProbe(command: string = "voxel_transport"): number | null {
     if (!this.canUseServerVoxel() || !this.socket) {
-      this.lastVoxelError = "voxel_transport_unavailable";
-      return null;
+      return this.blockVoxelSend("debug_probe");
     }
 
     const requestId = this.nextRequestId();
@@ -247,8 +285,7 @@ export class ServerMovementTransport implements MovementTransport {
     known?: readonly VoxelKnownChunk[];
   }): number | null {
     if (!this.canUseServerVoxel() || !this.socket) {
-      this.lastVoxelError = "voxel_transport_unavailable";
-      return null;
+      return this.blockVoxelSend("chunk_subscribe");
     }
 
     const requestId = this.nextRequestId();
@@ -279,8 +316,7 @@ export class ServerMovementTransport implements MovementTransport {
     chunks: readonly FChunkCoord[];
   }): number | null {
     if (!this.canUseServerVoxel() || !this.socket) {
-      this.lastVoxelError = "voxel_transport_unavailable";
-      return null;
+      return this.blockVoxelSend("chunk_unsubscribe");
     }
 
     const requestId = this.nextRequestId();
@@ -309,8 +345,7 @@ export class ServerMovementTransport implements MovementTransport {
     clientHintHash?: number;
   }): number | null {
     if (!this.canUseServerVoxel() || !this.socket) {
-      this.lastVoxelError = "voxel_transport_unavailable";
-      return null;
+      return this.blockVoxelSend("impact_intent");
     }
 
     const requestId = this.nextRequestId();
@@ -351,8 +386,7 @@ export class ServerMovementTransport implements MovementTransport {
     placementFlags?: number;
   }): number | null {
     if (!this.canUseServerVoxel() || !this.socket) {
-      this.lastVoxelError = "voxel_transport_unavailable";
-      return null;
+      return this.blockVoxelSend("prefab_place_intent");
     }
 
     const requestId = this.nextRequestId();
@@ -426,21 +460,14 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
     this.pendingVoxelPrefabRequests.clear();
+    this.lastPlayerState = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
-
-    if (this.usingFallback()) {
-      this.fallbackTransport.reset(position);
-    }
   }
 
   sendInput(frame: MoveInputFrame, nowMs: number): void {
-    if (this.usingFallback()) {
-      this.fallbackTransport.sendInput(frame, nowMs);
-      return;
-    }
-
-    if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (!this.isReady() || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.recordBlockedInput(frame, nowMs, this.unavailableReason());
       return;
     }
 
@@ -454,11 +481,7 @@ export class ServerMovementTransport implements MovementTransport {
     });
   }
 
-  tick(nowMs: number, dtMs: number): MovementTransportTickResult {
-    if (this.usingFallback()) {
-      return this.fallbackTransport.tick(nowMs, dtMs);
-    }
-
+  tick(_nowMs: number, _dtMs: number): MovementTransportTickResult {
     const acknowledgements = this.acknowledgements.splice(0, this.acknowledgements.length);
     const remoteSnapshots = this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
     const remoteEntityEnters = this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
@@ -489,9 +512,17 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     this.connecting = true;
+    this.connectionStatus = "connecting";
+    this.connectionPhase = "auto_login";
+    this.bootstrapStartedAtMs = performance.now();
+    this.phaseStartedAtMs = this.bootstrapStartedAtMs;
+    this.lastAutoLoginDurationMs = null;
+    this.lastReadyDurationMs = null;
+    this.connectionLostReason = null;
     this.logger.emit("transport", "bootstrap_start", {
       mode: SERVER_TRANSPORT_MODE,
       url: this.webSocketUrl,
+      auth_base_url: this.authBaseUrl || "(vite /ingame proxy)",
     });
 
     try {
@@ -499,6 +530,8 @@ export class ServerMovementTransport implements MovementTransport {
       this.token = login.token;
       this.cid = login.cid;
       this.username = login.username;
+      this.connectionPhase = "socket_connect";
+      this.phaseStartedAtMs = performance.now();
       this.openSocket();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
@@ -507,22 +540,44 @@ export class ServerMovementTransport implements MovementTransport {
         mode: SERVER_TRANSPORT_MODE,
         reason,
       });
-      this.activateFallback(reason);
+      this.markDisconnected(`bootstrap_error:${reason}`);
     }
   }
 
   private async autoLogin(): Promise<AutoLoginResponse> {
-    const response = await fetch(`${this.authBaseUrl}/ingame/auto_login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: this.username }),
-    });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), AUTO_LOGIN_TIMEOUT_MS);
+    const startedAtMs = performance.now();
+    let response: Response;
+
+    try {
+      response = await fetch(`${this.authBaseUrl}/ingame/auto_login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: this.username }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error(`auto_login_timeout:${AUTO_LOGIN_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
 
     if (!response.ok) {
       throw new Error(`auto_login_failed:${response.status}`);
     }
 
-    return response.json() as Promise<AutoLoginResponse>;
+    const login = (await response.json()) as AutoLoginResponse;
+    this.lastAutoLoginDurationMs = Math.round(performance.now() - startedAtMs);
+    this.logger.emit("transport", "auto_login_ok", {
+      mode: SERVER_TRANSPORT_MODE,
+      duration_ms: this.lastAutoLoginDurationMs,
+      cid: login.cid,
+    });
+    return login;
   }
 
   private openSocket(): void {
@@ -535,7 +590,6 @@ export class ServerMovementTransport implements MovementTransport {
       this.logger.emit("transport", "socket_error", { mode: SERVER_TRANSPORT_MODE });
     };
     socket.onclose = (event) => {
-      const closedBeforeReady = !this.ready;
       this.ready = false;
       this.connecting = false;
       this.clearHeartbeat();
@@ -544,12 +598,10 @@ export class ServerMovementTransport implements MovementTransport {
         code: event.code,
         reason: event.reason || "closed",
       });
-
-      if (closedBeforeReady) {
-        this.activateFallback(`socket_closed:${event.code}:${event.reason || "closed"}`);
-      }
+      this.markDisconnected(`socket_closed:${event.code}:${event.reason || "closed"}`);
     };
     this.socket = socket;
+    this.startHandshakeTimer("socket_connect");
   }
 
   private handleOpen(socket: WebSocket): void {
@@ -558,6 +610,9 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     this.connecting = false;
+    this.connectionPhase = "auth_request";
+    this.phaseStartedAtMs = performance.now();
+    this.startHandshakeTimer("auth_request");
     this.authRequestId = this.nextRequestId();
     socket.send(encodeAuthRequest(this.authRequestId, this.username, this.token));
     this.logger.emit("transport", "socket_open", {
@@ -583,9 +638,11 @@ export class ServerMovementTransport implements MovementTransport {
         return;
       }
 
-      this.lastError = `message_ignored:${data.byteLength}`;
+      const opcode = data.byteLength > 0 ? new DataView(data).getUint8(0) : null;
+      this.lastError = `message_ignored:${opcode === null ? "empty" : `0x${opcode.toString(16)}`}:${data.byteLength}`;
       this.logger.emit("transport", "message_ignored", {
         mode: SERVER_TRANSPORT_MODE,
+        opcode: opcode ?? -1,
         bytes: data.byteLength,
       });
       return;
@@ -594,6 +651,9 @@ export class ServerMovementTransport implements MovementTransport {
     switch (message.type) {
       case "auth_ok":
         if (message.requestId === this.authRequestId && this.socket && this.cid !== null) {
+          this.connectionPhase = "enter_scene";
+          this.phaseStartedAtMs = performance.now();
+          this.startHandshakeTimer("enter_scene");
           this.enterSceneRequestId = this.nextRequestId();
           this.socket.send(encodeEnterScene(this.enterSceneRequestId, this.cid));
           this.logger.emit("transport", "auth_ok", {
@@ -606,12 +666,22 @@ export class ServerMovementTransport implements MovementTransport {
       case "enter_scene_ok":
         if (message.requestId === this.enterSceneRequestId) {
           this.ready = true;
+          this.connectionStatus = "connected";
+          this.connectionPhase = "ready";
+          this.phaseStartedAtMs = performance.now();
+          this.lastReadyDurationMs =
+            this.bootstrapStartedAtMs === null
+              ? null
+              : Math.round(this.phaseStartedAtMs - this.bootstrapStartedAtMs);
+          this.connectionLostReason = null;
+          this.clearHandshakeTimer();
           this.spawnPosition = message.position;
           this.spawnExpectedSeq = message.expectedSeq;
           this.logger.emit("transport", "enter_scene_ok", {
             mode: SERVER_TRANSPORT_MODE,
             position: `${message.position.x.toFixed(1)},${message.position.y.toFixed(1)},${message.position.z.toFixed(1)}`,
             expected_seq: message.expectedSeq,
+            ready_ms: this.lastReadyDurationMs ?? -1,
           });
         }
         break;
@@ -620,7 +690,7 @@ export class ServerMovementTransport implements MovementTransport {
           mode: SERVER_TRANSPORT_MODE,
           request_id: message.requestId,
         });
-        this.activateFallback(`enter_scene_error:${message.requestId}`);
+        this.markDisconnected(`enter_scene_error:${message.requestId}`);
         break;
       case "movement_ack":
         this.acknowledgements.push({
@@ -662,6 +732,31 @@ export class ServerMovementTransport implements MovementTransport {
         break;
       case "heartbeat_reply":
         this.logger.emit("transport", "heartbeat_reply", { mode: SERVER_TRANSPORT_MODE });
+        break;
+      case "player_state":
+        this.receivedPlayerStateCount += 1;
+        this.lastPlayerState = {
+          cid: message.cid,
+          hp: message.hp,
+          maxHp: message.maxHp,
+          alive: message.alive,
+        };
+        this.logger.emit("transport", "player_state_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          cid: message.cid,
+          hp: message.hp,
+          max_hp: message.maxHp,
+          alive: message.alive,
+          received_count: this.receivedPlayerStateCount,
+        });
+        break;
+      case "known_unhandled_downlink":
+        this.logger.emit("transport", "known_downlink_unhandled", {
+          mode: SERVER_TRANSPORT_MODE,
+          opcode: `0x${message.opcode.toString(16)}`,
+          name: message.name,
+          bytes: message.byteLength,
+        });
         break;
     }
   }
@@ -768,6 +863,66 @@ export class ServerMovementTransport implements MovementTransport {
     }
   }
 
+  private unavailableReason(): string {
+    if (this.connectionStatus !== "connected") {
+      return this.connectionLostReason
+        ? `${this.connectionStatus}:${this.connectionLostReason}`
+        : this.connectionStatus;
+    }
+
+    if (!this.ready) {
+      return "not_ready";
+    }
+
+    if (!this.socket) {
+      return "socket_missing";
+    }
+
+    if (this.socket.readyState !== WebSocket.OPEN) {
+      return `socket_state_${this.socket.readyState}`;
+    }
+
+    return "unknown";
+  }
+
+  private recordBlockedInput(frame: MoveInputFrame, nowMs: number, reason: string): void {
+    this.blockedInputCount += 1;
+    this.lastBlockedInputReason = reason;
+    this.lastBlockedInputSeq = frame.seq;
+
+    if (nowMs - this.lastBlockedInputLogAtMs < 1_000) {
+      return;
+    }
+
+    this.lastBlockedInputLogAtMs = nowMs;
+    this.logger.emit("transport", "movement_input_blocked", {
+      mode: SERVER_TRANSPORT_MODE,
+      reason,
+      seq: frame.seq,
+      tick: frame.clientTick,
+      blocked_count: this.blockedInputCount,
+      connection_status: this.connectionStatus,
+      connection_lost_reason: this.connectionLostReason ?? "",
+      socket_state: this.socket?.readyState ?? -1,
+    });
+  }
+
+  private blockVoxelSend(source: string): null {
+    const reason = this.unavailableReason();
+    this.blockedVoxelSendCount += 1;
+    this.lastBlockedVoxelSend = { source, reason };
+    this.lastVoxelError = `${source}_blocked:${reason}`;
+    this.logger.emit("voxel", "send_blocked", {
+      source,
+      reason,
+      blocked_count: this.blockedVoxelSendCount,
+      connection_status: this.connectionStatus,
+      connection_lost_reason: this.connectionLostReason ?? "",
+      socket_state: this.socket?.readyState ?? -1,
+    });
+    return null;
+  }
+
   private nextRequestId(): number {
     const current = this.requestId;
     this.requestId += 1;
@@ -781,18 +936,29 @@ export class ServerMovementTransport implements MovementTransport {
     }
   }
 
-  private usingFallback(): boolean {
-    return this.fallbackReason !== null;
+  private startHandshakeTimer(phase: ConnectionPhase): void {
+    this.clearHandshakeTimer();
+    this.handshakeTimer = window.setTimeout(() => {
+      this.markDisconnected(`${phase}_timeout:${HANDSHAKE_TIMEOUT_MS}ms`);
+    }, HANDSHAKE_TIMEOUT_MS);
   }
 
-  private activateFallback(reason: string): void {
-    if (this.usingFallback()) {
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer !== null) {
+      window.clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
+  }
+
+  private markDisconnected(reason: string): void {
+    if (this.connectionStatus === "disconnected") {
       return;
     }
 
     this.ready = false;
     this.connecting = false;
     this.clearHeartbeat();
+    this.clearHandshakeTimer();
     this.clearPendingMessages();
 
     if (this.socket) {
@@ -806,20 +972,20 @@ export class ServerMovementTransport implements MovementTransport {
         this.socket.readyState === WebSocket.CONNECTING
       ) {
         try {
-          this.socket.close(1000, "fallback_to_simulated");
+          this.socket.close(1000, "transport_disconnect");
         } catch {
-          // Ignore cleanup failures while switching to offline simulation.
+          // Ignore close failures while cleaning up.
         }
       }
     }
 
     this.socket = null;
-    this.fallbackReason = reason;
-    this.fallbackTransport.reset(this.lastResetPosition);
-    this.logger.emit("transport", "fallback_to_simulated", {
-      from: SERVER_TRANSPORT_MODE,
+    this.connectionStatus = "disconnected";
+    this.connectionPhase = "disconnected";
+    this.connectionLostReason = reason;
+    this.logger.emit("transport", "connection_lost", {
+      mode: SERVER_TRANSPORT_MODE,
       reason,
-      start: `${this.lastResetPosition.x.toFixed(1)},${this.lastResetPosition.y.toFixed(1)},${this.lastResetPosition.z.toFixed(1)}`,
     });
   }
 
@@ -834,40 +1000,75 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
     this.pendingVoxelPrefabRequests.clear();
     this.sentAtBySeq.clear();
+    this.lastPlayerState = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
   }
 }
 
-function resolveDefaultUsername(): string {
-  if (import.meta.env.VITE_GAME_USERNAME) {
-    return import.meta.env.VITE_GAME_USERNAME;
+export function resolveDefaultUsername(
+  env: Record<string, string | undefined> = import.meta.env,
+  storage: Storage | null = window.sessionStorage,
+): string {
+  const configured = firstNonBlank(env.VITE_GAME_CLIENT_USERNAME, env.VITE_GAME_USERNAME);
+  if (configured) {
+    return configured;
   }
 
   try {
     const key = "ex_mmo_web_client.runtime_username";
-    const existing = window.sessionStorage.getItem(key);
+    const existing = storage?.getItem(key);
     if (existing && existing.trim() !== "") {
       return existing;
     }
 
     const generated = `web_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    window.sessionStorage.setItem(key, generated);
+    storage?.setItem(key, generated);
     return generated;
   } catch {
     return `web_${Math.random().toString(36).slice(2, 10)}`;
   }
 }
 
-function resolveAuthBaseUrl(): string {
-  return import.meta.env.VITE_AUTH_BASE_URL || "";
+export function resolveAuthBaseUrl(
+  env: Record<string, string | undefined> = import.meta.env,
+  _location: Pick<Location, "protocol" | "host" | "origin"> = window.location,
+): string {
+  return firstNonBlank(env.VITE_GAME_AUTH_BASE_URL, env.VITE_AUTH_BASE_URL) ?? "";
 }
 
-function resolveGameWsUrl(): string {
-  if (import.meta.env.VITE_GAME_WS_URL) {
-    return import.meta.env.VITE_GAME_WS_URL;
+export function resolveGameWsUrl(
+  env: Record<string, string | undefined> = import.meta.env,
+  location: Pick<Location, "protocol" | "host" | "origin"> = window.location,
+): string {
+  const configured = firstNonBlank(env.VITE_GAME_WS_URL, env.VITE_WS_URL);
+  if (configured) {
+    return configured;
   }
 
-  const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${wsProtocol}//${window.location.host}/ingame/ws`;
+  const authBaseUrl = resolveAuthBaseUrl(env, location);
+  if (authBaseUrl === "") {
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${location.host}/ingame/ws`;
+  }
+
+  const url = new URL(authBaseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/ingame/ws";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function firstNonBlank(...values: Array<string | undefined>): string | null {
+  for (const value of values) {
+    if (value && value.trim() !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }

@@ -165,4 +165,35 @@ describe("gate movement protocol", () => {
       serverSendTs: 125,
     });
   });
+
+  it("decodes player state pushes instead of treating them as ignored frames", () => {
+    const buffer = new ArrayBuffer(14);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x8c);
+    view.setBigInt64(1, 42n, false);
+    view.setUint16(9, 75, false);
+    view.setUint16(11, 100, false);
+    view.setUint8(13, 1);
+
+    const message = decodeServerMessage(buffer);
+
+    expect(message).toEqual({
+      type: "player_state",
+      cid: 42,
+      hp: 75,
+      maxHp: 100,
+      alive: true,
+    });
+  });
+
+  it("labels known but currently unhandled downlink frames for observe logs", () => {
+    const message = decodeServerMessage(new Uint8Array([0x8e, 0, 1, 2]).buffer);
+
+    expect(message).toEqual({
+      type: "known_unhandled_downlink",
+      opcode: 0x8e,
+      name: "actor_identity",
+      byteLength: 4,
+    });
+  });
 });

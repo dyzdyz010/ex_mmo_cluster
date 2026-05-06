@@ -6,6 +6,7 @@ if (typeof WebSocket !== "function") {
 }
 
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 
 const root = path.resolve(__dirname, "..");
 const observeDir =
@@ -13,8 +14,8 @@ const observeDir =
 const summaryPath =
   process.env.WS_SMOKE_SUMMARY_PATH ||
   path.join(observeDir, "ws-dual-smoke-summary.json");
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL || "http://127.0.0.1:4100";
-const WS_URL = process.env.WS_URL || "ws://127.0.0.1:4100/ingame/ws";
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL || "http://127.0.0.1:20000";
+const WS_URL = process.env.WS_URL || "ws://127.0.0.1:20000/ingame/ws";
 const timeoutMs = Number(process.env.WS_SMOKE_TIMEOUT_MS || 30_000);
 
 fs.mkdirSync(observeDir, { recursive: true });
@@ -57,6 +58,7 @@ const summary = {
     movementModes: {},
     prioritySamples: [],
   },
+  downlinks: {},
   assertions: {
     remoteEnterObserved: false,
     ackObserved: false,
@@ -214,6 +216,49 @@ function decodePlayerMove(view) {
   };
 }
 
+function decodePlayerState(view) {
+  return {
+    cid: Number(view.getBigInt64(1, false)),
+    hp: view.getUint16(9, false),
+    maxHp: view.getUint16(11, false),
+    alive: view.getUint8(13) !== 0,
+  };
+}
+
+function decodeActorIdentity(view) {
+  const nameLength = view.byteLength >= 12 ? view.getUint16(10, false) : 0;
+  const name =
+    view.byteLength >= 12 + nameLength
+      ? dec.decode(new Uint8Array(view.buffer, view.byteOffset + 12, nameLength))
+      : "";
+  return {
+    cid: Number(view.getBigInt64(1, false)),
+    actorKind: decodeActorKind(view.getUint8(9)),
+    name,
+  };
+}
+
+function decodeActorKind(raw) {
+  if (raw === 1) return "npc";
+  if (raw === 2) return "monster";
+  if (raw === 3) return "object";
+  return "player";
+}
+
+function knownDownlinkName(msgType) {
+  if (msgType === 0x87) return "fast_lane_result";
+  if (msgType === 0x88) return "fast_lane_attached";
+  if (msgType === 0x89) return "chat_message";
+  if (msgType === 0x8a) return "skill_event";
+  if (msgType === 0x8d) return "combat_hit";
+  if (msgType === 0x8f) return "effect_event";
+  return null;
+}
+
+function recordDownlink(name) {
+  summary.downlinks[name] = (summary.downlinks[name] || 0) + 1;
+}
+
 async function autoLogin(username) {
   const response = await fetch(`${AUTH_BASE_URL}/ingame/auto_login`, {
     method: "POST",
@@ -327,7 +372,40 @@ function connect(label, login, hooks) {
       return;
     }
 
-    console.log(label, "msg", msgType, view.byteLength);
+    if (msgType === 0x8c && view.byteLength === 14) {
+      const state = decodePlayerState(view);
+      recordDownlink("player_state");
+      console.log(
+        label,
+        "player_state",
+        state.cid,
+        `hp=${state.hp}/${state.maxHp}`,
+        `alive=${state.alive}`,
+      );
+      return;
+    }
+
+    if (msgType === 0x8e) {
+      const identity = decodeActorIdentity(view);
+      recordDownlink("actor_identity");
+      console.log(
+        label,
+        "actor_identity",
+        identity.cid,
+        `kind=${identity.actorKind}`,
+        `name=${identity.name || "<empty>"}`,
+      );
+      return;
+    }
+
+    const knownName = knownDownlinkName(msgType);
+    if (knownName) {
+      recordDownlink(knownName);
+      console.log(label, "known_downlink_unhandled", knownName, `opcode=${msgType}`, `bytes=${view.byteLength}`);
+      return;
+    }
+
+    console.log(label, "unknown_msg", `opcode=${msgType}`, `bytes=${view.byteLength}`);
   };
 
   state.socket.onerror = () => {

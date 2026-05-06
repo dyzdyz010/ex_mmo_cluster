@@ -15,6 +15,20 @@ class StaticSelectionProvider implements SelectionProvider {
   }
 }
 
+class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
+  override readonly mode = "server-authoritative";
+  readonly prefabPlaceCalls: Array<{ name: string; origin: FMacroCoord }> = [];
+
+  override placePrefabBoundarySnap() {
+    return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" as const };
+  }
+
+  override placePrefab(name: string, origin: FMacroCoord) {
+    this.prefabPlaceCalls.push({ name, origin: { ...origin } });
+    return { ok: true, placed: 3 };
+  }
+}
+
 describe("WorldEditController selection edits", () => {
   it("breaks the occupied block and places into the hit-face adjacent cell", () => {
     const bus = new EventBus<AppEvents>();
@@ -67,6 +81,53 @@ describe("WorldEditController selection edits", () => {
         name: "builtin_sphere",
         origin: adjacentMacro,
         placed: 1,
+        source: "mouse_right",
+      },
+    ]);
+  });
+
+  it("uses server-supported prefabs and falls back to a server prefab intent in online mode", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    const adjacentMacro: FMacroCoord = { x: 8, y: 1, z: 8 };
+    const selection = new StaticSelectionProvider({
+      occupiedMacro: { x: 8, y: 0, z: 8 },
+      adjacentMacro,
+      faceNormal: { x: 0, y: 1, z: 0 },
+    });
+    const edit = new WorldEditController(bus, world, selection);
+    const placedPrefabs: AppEvents["world:prefab-placed"][] = [];
+    const fallbacks: AppEvents["world:prefab-boundary-snap-fallback"][] = [];
+    bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
+    bus.on("world:prefab-boundary-snap-fallback", (event) => fallbacks.push(event));
+
+    for (let i = 0; i < 4; i += 1) {
+      bus.emit("input:hotbar-cycle", { direction: 1, source: "test" });
+    }
+
+    expect(edit.getHotbarState().selected).toMatchObject({
+      kind: "prefab",
+      prefabName: "builtin_pillar_3",
+    });
+
+    bus.emit("input:place-block", { source: "mouse_right" });
+
+    expect(world.prefabPlaceCalls).toEqual([{ name: "builtin_pillar_3", origin: adjacentMacro }]);
+    expect(fallbacks).toEqual([
+      {
+        prefabId: "builtin_pillar_3",
+        hitMacro: { x: 8, y: 0, z: 8 },
+        adjacentMacro,
+        faceNormal: { x: 0, y: 1, z: 0 },
+        rejectReason: "server_authority_not_supported",
+        source: "mouse_right",
+      },
+    ]);
+    expect(placedPrefabs).toEqual([
+      {
+        name: "builtin_pillar_3",
+        origin: adjacentMacro,
+        placed: 3,
         source: "mouse_right",
       },
     ]);

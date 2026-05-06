@@ -36,9 +36,9 @@ export interface OnlinePrefabBlueprint {
 }
 
 const ONLINE_PREFAB_CATALOG: Readonly<Record<string, OnlinePrefabBlueprint>> = {
-  // 3 vertical blocks stacked on Z.
+  // 3 vertical blocks stacked on the browser/server voxel Y axis.
   builtin_pillar_3: { id: 1, version: BLUEPRINT_VERSION, expectedCellCount: 3 },
-  // 3x3 floor laid out at z=0.
+  // 3x3 floor laid out at y=0.
   builtin_floor_3x3: { id: 2, version: BLUEPRINT_VERSION, expectedCellCount: 9 },
   // 2x2x2 solid cube.
   builtin_cube_2x2x2: { id: 3, version: BLUEPRINT_VERSION, expectedCellCount: 8 },

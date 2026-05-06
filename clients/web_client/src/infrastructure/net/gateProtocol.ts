@@ -48,6 +48,14 @@ export interface PlayerLeaveMessage {
   cid: number;
 }
 
+export interface PlayerStateMessage {
+  type: "player_state";
+  cid: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+}
+
 export interface TimeSyncReplyMessage {
   type: "time_sync_reply";
   requestId: number;
@@ -60,6 +68,13 @@ export interface HeartbeatReplyMessage {
   type: "heartbeat_reply";
 }
 
+export interface KnownUnhandledDownlinkMessage {
+  type: "known_unhandled_downlink";
+  opcode: number;
+  name: string;
+  byteLength: number;
+}
+
 export type ServerGateMessage =
   | AuthOkMessage
   | EnterSceneOkMessage
@@ -68,8 +83,10 @@ export type ServerGateMessage =
   | RemoteMoveMessage
   | PlayerEnterMessage
   | PlayerLeaveMessage
+  | PlayerStateMessage
   | TimeSyncReplyMessage
-  | HeartbeatReplyMessage;
+  | HeartbeatReplyMessage
+  | KnownUnhandledDownlinkMessage;
 
 export function encodeAuthRequest(requestId: number, username: string, token: string): Uint8Array {
   const usernameBytes = encoder.encode(username);
@@ -216,8 +233,23 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       };
     case 0x86:
       return { type: "heartbeat_reply" };
-    default:
-      return null;
+    case 0x8c:
+      if (view.byteLength !== 14) {
+        return null;
+      }
+      return {
+        type: "player_state",
+        cid: readI64(view, 1),
+        hp: view.getUint16(9, false),
+        maxHp: view.getUint16(11, false),
+        alive: view.getUint8(13) !== 0,
+      };
+    default: {
+      const name = knownUnhandledDownlinkName(msgType);
+      return name
+        ? { type: "known_unhandled_downlink", opcode: msgType, name, byteLength: view.byteLength }
+        : null;
+    }
   }
 }
 
@@ -291,5 +323,26 @@ function decodePriorityBand(raw: number) {
       return AoiPriorityBand.Low;
     default:
       return AoiPriorityBand.High;
+  }
+}
+
+function knownUnhandledDownlinkName(opcode: number): string | null {
+  switch (opcode) {
+    case 0x87:
+      return "fast_lane_result";
+    case 0x88:
+      return "fast_lane_attached";
+    case 0x89:
+      return "chat_message";
+    case 0x8a:
+      return "skill_event";
+    case 0x8d:
+      return "combat_hit";
+    case 0x8e:
+      return "actor_identity";
+    case 0x8f:
+      return "effect_event";
+    default:
+      return null;
   }
 }

@@ -138,6 +138,28 @@
         color: rgba(185, 255, 219, 0.9);
         text-align: center;
       }
+      .voxel-panel-badge.is-error {
+        border-color: rgba(244, 120, 120, 0.42);
+        background: rgba(151, 39, 39, 0.24);
+        color: rgba(255, 203, 203, 0.96);
+      }
+      .voxel-panel-alerts {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        border: 1px solid rgba(244, 120, 120, 0.34);
+        border-radius: 7px;
+        background: rgba(78, 19, 24, 0.42);
+        color: rgba(255, 213, 213, 0.96);
+        line-height: 1.35;
+      }
+      .voxel-panel-alerts div {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .voxel-panel-stats {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));

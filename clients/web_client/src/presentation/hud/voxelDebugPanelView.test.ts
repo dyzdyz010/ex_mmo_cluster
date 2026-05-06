@@ -94,6 +94,47 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain("voxel_sync: voxel sync");
   });
 
+  it("renders sync failures in the visible panel instead of hiding them in JSON", () => {
+    const html = renderVoxelDebugPanelHtml({
+      mode: "server-authoritative",
+      seedState: "failed",
+      subscriptionState: "idle",
+      lastError: "dev_seed_failed:500",
+      transport: {
+        available: false,
+        connectionStatus: "disconnected",
+        connectionLostReason: "socket_closed:1006:closed",
+        lastBlockedSend: {
+          source: "impact_intent",
+          reason: "disconnected:socket_closed:1006:closed",
+        },
+      },
+    });
+
+    expect(html).toContain("voxel-panel-alerts");
+    expect(html).toContain("dev_seed failed: dev_seed_failed:500");
+    expect(html).toContain("transport unavailable: socket_closed:1006:closed");
+    expect(html).toContain("send blocked: impact_intent");
+    expect(html).toContain("voxel-panel-badge is-error");
+  });
+
+  it("states that idle dev_seed is waiting on transport readiness", () => {
+    const html = renderVoxelDebugPanelHtml({
+      mode: "server-authoritative",
+      seedState: "idle",
+      subscriptionState: "idle",
+      transport: {
+        available: false,
+        connectionStatus: "connecting",
+        connectionPhase: "auto_login",
+      },
+    });
+
+    expect(html).toContain("dev_seed not started: waiting for transport");
+    expect(html).toContain("connecting:auto_login");
+    expect(html).not.toContain("waiting for dev_seed: idle");
+  });
+
   it("delegates visible controls to the same command port as the CLI", () => {
     const root = new FakeVoxelPanelRoot();
     const commands = new FakeCommands();
@@ -136,9 +177,7 @@ describe("VoxelDebugPanelView", () => {
 
     root.clickAction("rebind");
 
-    expect(commands.calls).toEqual([
-      { command: "voxel_probe", args: ["voxel_rebind 779 all"] },
-    ]);
+    expect(commands.calls).toEqual([{ command: "voxel_probe", args: ["voxel_rebind 779 all"] }]);
 
     view.dispose();
   });

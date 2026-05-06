@@ -4,7 +4,7 @@
 movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 
 1. **验证 movement sync**：浏览器直接接 `auth_server -> gate_server` 的 browser bridge，确认 prediction / ack / reconcile / remote snapshot 没问题
-2. **验证 server-authoritative voxel S1**：复用同一个 `/ingame/ws`，执行 `ChunkSubscribe -> ChunkSnapshot`、`VoxelImpactIntent -> VoxelIntentResult`，并把权威 chunk 应用到 `WorldStore`
+2. **验证 server-authoritative voxel S1**：复用同一个 `/ingame/ws`，执行 `ChunkSubscribe -> ChunkSnapshot/ChunkDelta`、`VoxelImpactIntent/PrefabPlaceIntent -> VoxelIntentResult`，并把权威 chunk 应用到 `WorldStore`
 3. **保留离线 voxel 模式**：`VITE_VOXEL_SYNC=offline` 可回到纯本地 world，作为渲染 / prefab / mesher 调试面
 
 > 定位：网页客户端必须同时能被用户操作、HUD 观察、`window.__voxelCli` 驱动和 observe 日志回放。
@@ -14,7 +14,7 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 当前仓库里的 `web_client` 已不再只是 W-A 占位：
 
 1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
-2. voxel 默认进入 **server-authoritative**：启动后会调用 dev seed 准备 World lease，订阅中心 chunk，把服务端 `ChunkSnapshot` 整体替换到本地 truth；右键 / CLI 放置会提交 `VoxelImpactIntent`，不直接改本地真相。`VITE_VOXEL_SYNC=offline` 才使用纯本地编辑。
+2. voxel 默认进入 **server-authoritative**：启动后会调用 dev seed 准备 World lease 和 starter terrain，订阅中心 chunk，把服务端 `ChunkSnapshot/ChunkDelta` 应用到本地 truth；左键 / 右键 / CLI 会提交服务端 intent，不直接改本地真相。`VITE_VOXEL_SYNC=offline` 才使用纯本地编辑。
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
    - 右上角 `Server Voxel` 面板可直接触发 `voxel_sync` / `voxel_probe` / `chunk_versions` /
@@ -34,7 +34,7 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / VoxelIntentResult / VoxelDebugProbe` 首版；`ChunkDelta`、break intent、prefab intent 和多 chunk 自适应订阅仍未完成。
+2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和 `PrefabPlaceIntent` v1；多 chunk 自适应订阅与 prefab 跨 chunk 原子事务仍未完成。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
@@ -155,8 +155,8 @@ npm run dev
 - 页面跑在没有 `/ingame` 代理的静态预览地址上
 - WebSocket bridge / enter-scene 失败
 
-movement 运行时会自动回退到 `simulated-local`，并在 HUD、`transport` CLI 快照以及
-`voxel_observe` 日志里写出回退原因。voxel 在 server-authoritative 模式下不会伪造权威写入；
+movement 运行时会保持 `server-ws` 且标记 `connectionStatus=disconnected`，并在 HUD、`transport` CLI 快照以及
+observe 日志里写出断开原因。voxel 在 server-authoritative 模式下不会伪造权威写入；
 若需要纯本地体素调试，请显式设置 `VITE_VOXEL_SYNC=offline`。
 
 如果你只想跑纯本地 movement demo，可显式覆盖：
@@ -185,8 +185,8 @@ VITE_RENDER_BACKEND=webgl npm run dev
 如果需要指向非默认地址：
 
 ```bash
-VITE_AUTH_BASE_URL=http://127.0.0.1:4000 \
-VITE_GAME_WS_URL=ws://127.0.0.1:4000/ingame/ws \
+VITE_INGAME_PROXY_TARGET=http://127.0.0.1:20000 \
+VITE_GAME_WS_URL=ws://127.0.0.1:20000/ingame/ws \
 npm run dev
 ```
 
@@ -205,9 +205,9 @@ npm run preview # 预览 dist
 
 注意：
 
-- `npm run dev` 默认通过 `vite.config.ts` 把 `/ingame` 代理到 `http://127.0.0.1:4000`。
+- `npm run dev` 默认通过 `vite.config.ts` 把 `/ingame` 代理到 `http://127.0.0.1:20000`。
 - `npm run preview` 只提供静态 `dist/`，不会自动提供 `/ingame/auto_login` 或 `/ingame/ws`。
-- 因此 preview 场景下，如果没有把 dist 挂到真实 `auth_server` 前面，运行时会自动回退到 `simulated-local`。
+- 因此 preview 场景下，如果没有把 dist 挂到真实 `auth_server` 前面，运行时会停在 `server-ws` disconnected；需要显式设置 `VITE_MOVEMENT_TRANSPORT=simulated` 才进入纯本地 movement demo。
 
 ## W-A 冒烟验证
 
@@ -215,7 +215,7 @@ npm run preview # 预览 dist
 
 1. 生成一个多 Chunk 的浏览器内置预览世界，并在服务端 snapshot 到达后替换对应权威 chunk
 2. 用真正的 chunk mesher 生成 `BufferGeometry`
-3. 默认优先启动真实 server-backed movement 和 server-authoritative voxel；movement 若在 ready 前失败会自动回退到本地 movement sync demo
+3. 默认优先启动真实 server-backed movement 和 server-authoritative voxel；如果登录、WS、enter-scene 或订阅失败，不会静默回退，HUD / CLI / observe 会显示具体阶段和原因
 4. 安装 HUD + CLI + observe 调试面
 
 看到以下即表示 W-A 通过：
@@ -225,8 +225,8 @@ npm run preview # 预览 dist
 - 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
 - `window.__voxelCli.run("voxel_subscribe 0 0 0 0")` 能主动订阅 chunk，`voxel_probe` 能读取服务端 voxel transport 调试串，`voxel_probe voxel_rebind 1 all` 能触发 Gate 订阅重绑定
-- 右键或 `F` 对准星邻接格提交 `VoxelImpactIntent`；服务端 snapshot 回推后，`cell` / `chunks` / HUD 能读到权威变化。离线模式才允许本地 break / prefab place。
-- 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或 builtin prefab
+- 右键或 `F` 对准星邻接格提交 `VoxelImpactIntent`；选中在线 prefab 时提交 `PrefabPlaceIntent`。服务端 snapshot/delta 回推后，`cell` / `chunks` / HUD 能读到权威变化。
+- 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或当前模式支持的 builtin prefab。
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
 - 本地 fallback 初始出生点会从内置地形表面求角色中心高度，不再使用空中硬编码高度
 
@@ -260,6 +260,9 @@ window.__voxelCli?.run("prefabs");
 window.__voxelCli?.run("prefab_boundary builtin_sphere");
 window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2");
 window.__voxelCli?.run("prefab_place test 8 5 8 rot90");
+window.__voxelCli?.run("prefab_place builtin_pillar_3 12 1 8");
+window.__voxelCli?.run("prefab_place builtin_floor_3x3 14 1 8");
+window.__voxelCli?.run("prefab_place builtin_cube_2x2x2 16 1 8");
 window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8");
 window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8");
 window.__voxelCli?.run("prefab_place builtin_stairs 16 5 8 rot90");
@@ -307,17 +310,35 @@ window.__voxelObserve?.snapshot();
 movement transport 再拆成三类判断：
 
 1. `mode=server-ws` 且 `ready=true`：真实 backend 已接通
-2. `mode=simulated-local` 且 `fallbackReason` 非空：真实 backend 失败，但本地 demo 已接管
-3. `mode=server-ws` 且 `ready=false`：仍处于 bootstrap 中，继续看 `voxel_observe` 最近事件
+2. `mode=server-ws` 且 `ready=false`、`connectionStatus=connecting`：仍处于 bootstrap 中，继续看 observe 最近事件
+3. `mode=server-ws` 且 `ready=false`、`connectionStatus=disconnected`：真实 backend 未接通，HUD/CLI 会显示 `connectionLostReason`
+
+### 本机链路 doctor
+
+如果页面一直停在 `transport unavailable: connecting` 或
+`subscription not active: idle`，先跑 CLI doctor：
+
+```bash
+./scripts/dev-doctor.sh
+```
+
+它会把配置、端口占用、`/ingame/auto_login`、`/ingame/voxel/dev_seed`
+以及 Vite `/ingame` 代理检查写到 `.demo/observe/dev-doctor.log`。如果
+`AUTH_PORT=20000` 被其他服务占用，可用另一组 20000 号段端口启动：
+
+```bash
+AUTH_PORT=20010 VISUALIZE_PORT=20011 GATE_TCP_PORT=20012 GATE_UDP_PORT=20013 ./scripts/start-server.sh --detach
+AUTH_PORT=20010 PORT=5173 ./scripts/start-client.sh
+```
 
 ## 控制
 
 - 镜头：第三人称跟随镜头；左键按住拖拽可旋转视角；`Ctrl+滚轮` 缩放
 - `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
 - `Space`：跳跃；HUD / CLI trace 会记录 `jump_pressed`、`movement_flags`、`player_mode` 和 Y 轴变化，渲染层会把 airborne offset 加到地表显示高度上
-- 默认 server-authoritative 模式：右键 / `F` 在准星邻接格提交服务端 `VoxelImpactIntent`；break / prefab intent 尚未接入服务端
+- 默认 server-authoritative 模式：左键 / `G` 对准星命中格提交 break intent；右键 / `F` 在准星邻接格提交 place intent；选中 prefab 时提交 `PrefabPlaceIntent` v1
 - `VITE_VOXEL_SYNC=offline` 模式：左键 / `G` 破坏本地方块；右键 / `F` 放置当前 hotbar 项，prefab 会优先执行 socket-free micro boundary snap
-- 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`，`5/6/7` 选择 `builtin_sphere / builtin_cylinder / builtin_stairs`
+- 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`。server-authoritative 下 `5/6/7` 是 `builtin_pillar_3 / builtin_floor_3x3 / builtin_cube_2x2x2`；offline 下是 `builtin_sphere / builtin_cylinder / builtin_stairs`
 
 ## Smoke / 验收脚本
 

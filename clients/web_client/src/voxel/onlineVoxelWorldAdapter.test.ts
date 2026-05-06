@@ -61,7 +61,13 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
     return this.allocateRequestId();
   }
 
-  sendVoxelImpactIntent(request: ImpactCall & { targetWorldMicro: { x: number; y: number; z: number }; impactKind: number; clientHintHash?: number }): number | null {
+  sendVoxelImpactIntent(
+    request: ImpactCall & {
+      targetWorldMicro: { x: number; y: number; z: number };
+      impactKind: number;
+      clientHintHash?: number;
+    },
+  ): number | null {
     if (!this.available) return null;
     this.impactCalls.push({
       logicalSceneId: request.logicalSceneId,
@@ -136,6 +142,15 @@ afterEach(() => {
 });
 
 describe("OnlineVoxelWorldAdapter#placePrefab", () => {
+  it("does not seed the offline showcase during bootstrap", () => {
+    const { adapter } = createAdapter();
+
+    adapter.bootstrap();
+
+    expect(adapter.store.totalSolidBlocks()).toBe(0);
+    expect(adapter.store.listChunks()).toHaveLength(0);
+  });
+
   it("translates a known blueprint name into the expected prefab place intent", () => {
     const { adapter, transport } = createAdapter();
 

@@ -83,7 +83,16 @@ export async function bootstrap({
   const edit = new WorldEditController(eventBus, world, render);
   render.setEditPreviewProvider(edit);
 
-  const hudView = new HudView(hud, world, transportPump, localPlayer, remotePlayer, edit, render);
+  const hudView = new HudView(
+    hud,
+    world,
+    transportPump,
+    localPlayer,
+    remotePlayer,
+    edit,
+    render,
+    eventBus,
+  );
   const hotbarDockView = new HotbarDockView(hotbarDock, edit);
   const diagnostics = new DiagnosticsController(
     logger,
@@ -181,7 +190,16 @@ function createVoxelWorldAdapter(
     });
   }
 
-  return new LocalVoxelWorldAdapter();
+  // No silent downgrade. If `VITE_VOXEL_SYNC` is anything other than
+  // "offline" but the configured transport cannot satisfy
+  // `ServerVoxelTransportPort`, that almost always means the dev-env was
+  // forced into a simulated movement transport. Prefer surfacing the
+  // mismatch immediately over starting a local-only world that the
+  // operator did not actually ask for.
+  const movementTransportEnv = import.meta.env.VITE_MOVEMENT_TRANSPORT ?? "(unset)";
+  throw new Error(
+    `Voxel sync requires a server transport but VITE_MOVEMENT_TRANSPORT=${movementTransportEnv} produced a non-server transport. Set VITE_VOXEL_SYNC=offline if you want offline mode explicitly.`,
+  );
 }
 
 interface FrameDrivenVoxelWorldAdapter extends VoxelWorldAdapter {
@@ -266,6 +284,16 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
   bus.on("input:jump", ({ source }) => {
     logger.emit("input", "jump_pressed", { source });
   });
+  bus.on("movement:input-blocked", ({ reason, keys, jump }) => {
+    logger.emit("movement", "input_blocked", {
+      reason,
+      forward: keys.forward,
+      backward: keys.backward,
+      left: keys.left,
+      right: keys.right,
+      jump,
+    });
+  });
 
   bus.on("input:material-selected", ({ materialId, source }) => {
     logger.emit("edit", "select_material", { material: materialId, source });
@@ -341,6 +369,16 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
       incomingOccupiedSlots: payload.incomingOccupiedSlots,
       overlapSlots: payload.overlapSlots,
       contactSlots: payload.contactSlots,
+      rejectReason: payload.rejectReason,
+      source: payload.source,
+    });
+  });
+  bus.on("world:prefab-boundary-snap-fallback", (payload) => {
+    logger.emit("prefab", "prefab_boundary_snap_fallback", {
+      prefabId: payload.prefabId,
+      hitMacro: formatCoord(payload.hitMacro),
+      adjacentMacro: formatCoord(payload.adjacentMacro),
+      faceNormal: formatCoord(payload.faceNormal),
       rejectReason: payload.rejectReason,
       source: payload.source,
     });

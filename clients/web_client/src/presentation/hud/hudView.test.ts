@@ -1,4 +1,4 @@
-import { HudView } from "./hudView";
+import { buildRuntimeAlerts, HudView } from "./hudView";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
 import type { RemotePlayerController } from "../../app/controllers/remotePlayerController";
 import type { RenderOrchestrator } from "../../app/controllers/renderOrchestrator";
@@ -93,5 +93,77 @@ describe("HudView", () => {
     expect(hud.textContent).toContain("player_vy: 322.0");
     expect(hud.textContent).toContain("renderer: webgl");
     expect(hud.textContent).toContain("Space jump");
+  });
+
+  it("surfaces transport and voxel failures as persistent HUD alerts", () => {
+    const alerts = buildRuntimeAlerts(
+      {
+        mode: "server-authoritative",
+        seedState: "failed",
+        subscriptionState: "idle",
+        lastError: "dev_seed_failed:500",
+        transport: {
+          available: false,
+          connectionStatus: "disconnected",
+          lastError: "impact_intent_blocked:disconnected:socket_closed:1006:closed",
+          lastBlockedSend: {
+            source: "impact_intent",
+            reason: "disconnected:socket_closed:1006:closed",
+          },
+        },
+      },
+      {
+        connectionStatus: "disconnected",
+        connectionLostReason: "socket_closed:1006:closed",
+        webSocketUrl: "ws://127.0.0.1:20000/ingame/ws",
+        authBaseUrl: "",
+        blockedInputCount: 3,
+        lastBlockedInputReason: "disconnected:socket_closed:1006:closed",
+      },
+      false,
+      "server-authoritative",
+    );
+
+    expect(alerts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("TRANSPORT DISCONNECTED"),
+        expect.stringContaining("MOVEMENT INPUT BLOCKED"),
+        expect.stringContaining("VOXEL DEV SEED FAILED"),
+        expect.stringContaining("VOXEL TRANSPORT UNAVAILABLE"),
+        expect.stringContaining("VOXEL SEND BLOCKED"),
+      ]),
+    );
+  });
+
+  it("explains that idle dev_seed means transport has not become usable yet", () => {
+    const alerts = buildRuntimeAlerts(
+      {
+        mode: "server-authoritative",
+        seedState: "idle",
+        subscriptionState: "idle",
+        transport: {
+          available: false,
+          connectionStatus: "connecting",
+          connectionPhase: "auto_login",
+        },
+      },
+      {
+        connectionStatus: "connecting",
+        connectionPhase: "auto_login",
+        webSocketUrl: "ws://127.0.0.1:5173/ingame/ws",
+        authBaseUrl: "",
+      },
+      false,
+      "server-authoritative",
+    );
+
+    expect(alerts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("TRANSPORT CONNECTING: phase=auto_login"),
+        expect.stringContaining("VOXEL DEV SEED NOT STARTED"),
+        expect.stringContaining("connecting:auto_login"),
+      ]),
+    );
+    expect(alerts.some((alert) => alert.includes("VOXEL WAITING FOR DEV SEED: idle"))).toBe(false);
   });
 });

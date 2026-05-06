@@ -28,7 +28,7 @@ export interface HotbarState {
   selected: HotbarEntry;
 }
 
-const HOTBAR_ENTRIES: HotbarEntry[] = [
+const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "dirt", materialId: VoxelMaterialId.Dirt },
   { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
@@ -43,6 +43,31 @@ const HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
 ];
 
+const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
+  { kind: "material", label: "dirt", materialId: VoxelMaterialId.Dirt },
+  { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
+  { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
+  { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
+  {
+    kind: "prefab",
+    label: "pillar",
+    prefabName: "builtin_pillar_3",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "floor",
+    prefabName: "builtin_floor_3x3",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "cube",
+    prefabName: "builtin_cube_2x2x2",
+    rotation: EVoxelRotation.Rot0,
+  },
+];
+
 /**
  * Handles material selection, block placement, and block removal. The current
  * camera-centre selection is pulled from a SelectionProvider (the render
@@ -51,12 +76,14 @@ const HOTBAR_ENTRIES: HotbarEntry[] = [
 export class WorldEditController {
   private selectedMaterialId: number = VoxelMaterialId.Dirt;
   private selectedHotbarIndex = 0;
+  private readonly hotbarEntries: HotbarEntry[];
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
     private readonly world: VoxelWorldAdapter,
     private readonly selection: SelectionProvider,
   ) {
+    this.hotbarEntries = hotbarEntriesForWorld(world);
     this.bus.on("input:material-selected", ({ materialId }) => {
       this.applyMaterialSelection(materialId);
     });
@@ -77,9 +104,9 @@ export class WorldEditController {
 
   getHotbarState(): HotbarState {
     return {
-      entries: HOTBAR_ENTRIES.map((entry) => ({ ...entry })),
+      entries: this.hotbarEntries.map((entry) => ({ ...entry })),
       selectedIndex: this.selectedHotbarIndex,
-      selected: { ...HOTBAR_ENTRIES[this.selectedHotbarIndex]! },
+      selected: { ...this.hotbarEntries[this.selectedHotbarIndex]! },
     };
   }
 
@@ -120,12 +147,12 @@ export class WorldEditController {
   }
 
   selectHotbarIndex(index: number, source: string): void {
-    if (!Number.isInteger(index) || index < 0 || index >= HOTBAR_ENTRIES.length) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.hotbarEntries.length) {
       this.bus.emit("world:edit-rejected", { reason: "hotbar_rejected", source });
       return;
     }
 
-    const entry = HOTBAR_ENTRIES[index]!;
+    const entry = this.hotbarEntries[index]!;
     this.selectedHotbarIndex = index;
     if (entry.kind === "material") {
       this.bus.emit("input:material-selected", { materialId: entry.materialId, source });
@@ -135,7 +162,10 @@ export class WorldEditController {
   }
 
   private cycleHotbar(direction: -1 | 1, source: string): void {
-    const nextIndex = positiveModulo(this.selectedHotbarIndex + direction, HOTBAR_ENTRIES.length);
+    const nextIndex = positiveModulo(
+      this.selectedHotbarIndex + direction,
+      this.hotbarEntries.length,
+    );
     this.selectHotbarIndex(nextIndex, source);
   }
 
@@ -146,7 +176,7 @@ export class WorldEditController {
       this.world.store.editStats.rejected += 1;
       return;
     }
-    const selected = HOTBAR_ENTRIES[this.selectedHotbarIndex]!;
+    const selected = this.hotbarEntries[this.selectedHotbarIndex]!;
     if (selected.kind === "prefab") {
       this.placePrefabAtSelection(selection, selected.prefabName, selected.rotation, source);
     } else {
@@ -209,6 +239,14 @@ export class WorldEditController {
       rotation,
     });
     if (!result.ok && shouldFallbackToMacroPrefabPlace(result.rejectReason)) {
+      this.bus.emit("world:prefab-boundary-snap-fallback", {
+        prefabId: prefabName,
+        hitMacro: selection.occupiedMacro,
+        adjacentMacro: selection.adjacentMacro,
+        faceNormal: selection.faceNormal,
+        rejectReason: result.rejectReason ?? "prefab_boundary_snap_rejected",
+        source,
+      });
       return this.placePrefabAt(selection.adjacentMacro, prefabName, rotation, source);
     }
     if (result.ok && result.preview && result.instanceId !== undefined) {
@@ -248,7 +286,7 @@ export class WorldEditController {
 
   private applyMaterialSelection(materialId: number): void {
     this.selectedMaterialId = materialId;
-    const index = HOTBAR_ENTRIES.findIndex(
+    const index = this.hotbarEntries.findIndex(
       (entry) => entry.kind === "material" && entry.materialId === materialId,
     );
     if (index !== -1) {
@@ -257,11 +295,16 @@ export class WorldEditController {
   }
 
   private applyPrefabSelection(prefabName: string): void {
-    const index = HOTBAR_ENTRIES.findIndex(
+    const index = this.hotbarEntries.findIndex(
       (entry) => entry.kind === "prefab" && entry.prefabName === prefabName,
     );
     if (index !== -1) {
       this.selectedHotbarIndex = index;
+    } else {
+      this.bus.emit("world:edit-rejected", {
+        reason: `unknown_prefab:${prefabName}`,
+        source: "select_prefab",
+      });
     }
   }
 }
@@ -274,11 +317,21 @@ function shouldFallbackToMacroPrefabPlace(rejectReason: string | undefined): boo
   return (
     rejectReason === "no_target_boundary" ||
     rejectReason === "no_contact" ||
-    rejectReason === "empty_prefab"
+    rejectReason === "empty_prefab" ||
+    rejectReason === "server_authority_not_supported"
   );
 }
 
-function worldMicroCoordFromTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): FMicroCoord {
+function hotbarEntriesForWorld(world: VoxelWorldAdapter): HotbarEntry[] {
+  const source =
+    world.mode === "server-authoritative" ? SERVER_HOTBAR_ENTRIES : OFFLINE_HOTBAR_ENTRIES;
+  return source.map((entry) => ({ ...entry }));
+}
+
+function worldMicroCoordFromTarget(target: {
+  macro: FMacroCoord;
+  micro: FMicroCoord;
+}): FMicroCoord {
   return {
     x: target.macro.x * VoxelConstants.MicroPerMacro + target.micro.x,
     y: target.macro.y * VoxelConstants.MicroPerMacro + target.micro.y,

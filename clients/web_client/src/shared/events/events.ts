@@ -48,6 +48,16 @@ export type AppEvents = {
     movementFlags: number;
     movementMode: string;
   };
+  "movement:input-blocked": {
+    reason: string;
+    keys: {
+      forward: boolean;
+      backward: boolean;
+      left: boolean;
+      right: boolean;
+    };
+    jump: boolean;
+  };
   "movement:authority-applied": {
     action: string;
     ackSeq: number;
@@ -171,6 +181,14 @@ export type AppEvents = {
     incomingOccupiedSlots: number;
     overlapSlots: number;
     contactSlots: number;
+    rejectReason: string;
+    source: string;
+  };
+  "world:prefab-boundary-snap-fallback": {
+    prefabId: string;
+    hitMacro: FMacroCoord;
+    adjacentMacro: FMacroCoord;
+    faceNormal: FMacroCoord;
     rejectReason: string;
     source: string;
   };
