@@ -23,7 +23,7 @@
       "@presentation/*": ["src/presentation/*"],
       "@shared/*": ["src/shared/*"]
     },
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals", "node"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
   "exclude": ["node_modules", "dist"]

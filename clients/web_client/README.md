@@ -375,6 +375,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_ws_dual_smoke.ps1
 ## 相关文档
 
 - `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md` — 服务端权威 voxel 第一版数据结构 / 协议 / scene authority 规范
+- `docs/2026-05-07-体素服务器权威化架构进度检查.md` — 当前 macro-only 权威 MVP 到 refined micro / 属性 / 事务化权威链路的架构缺口
 - `docs/2026-04-28-web-client-movement-render-prefab-fixes.md` — movement 丝滑化、prefab 预览优化、simulated-local 假远端 actor 移除、地形出生点修复的后续接手笔记
 - `docs/2026-04-24-web-client-prefab-microgrid-jump-implementation.md` — 浏览器端 prefab / microgrid / jump display 当前实现记录
 - `docs/2026-04-24-web-client-prefab-microgrid-snapping-design.md` — prefab micro boundary snapping + micro occupancy union 设计

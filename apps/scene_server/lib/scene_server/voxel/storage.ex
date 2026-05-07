@@ -13,6 +13,7 @@ defmodule SceneServer.Voxel.Storage do
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Types
 
   @schema_version 1
@@ -48,7 +49,7 @@ defmodule SceneServer.Voxel.Storage do
           flags: 0..0xFFFF_FFFF,
           macro_headers: [MacroCellHeader.t()],
           normal_blocks: [NormalBlockData.t()],
-          refined_cells: [term()],
+          refined_cells: [RefinedCellData.t()],
           environment_summaries: [MacroEnvironmentSummary.t()],
           object_refs: [ChunkObjectRef.t()],
           attribute_sets: [term()],
@@ -207,7 +208,12 @@ defmodule SceneServer.Voxel.Storage do
           &NormalBlockData.normalize!/1,
           :normal_blocks
         ),
-      refined_cells: fetch(attrs, :refined_cells, []),
+      refined_cells:
+        normalize_list!(
+          fetch(attrs, :refined_cells, []),
+          &RefinedCellData.normalize!/1,
+          :refined_cells
+        ),
       environment_summaries:
         normalize_list!(
           fetch(attrs, :environment_summaries, []),

@@ -4,15 +4,19 @@ defmodule SceneServer.Voxel.Codec do
 
   S0 supports canonical `ChunkSnapshot` payloads with fixed v1 parameters:
   `chunk_size_in_macro = 16`, `micro_resolution = 8`, and exactly 4096 macro
-  headers. Refined cells and catalogs are sectioned but intentionally limited to
-  empty pools until later implementation slices add their wire structures.
+  headers. Refined cells now have a real wire encoding (Phase 1a); attribute
+  and tag catalog sections remain limited to empty pools until later
+  implementation slices add their structures.
   """
 
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
+  alias SceneServer.Voxel.MicroLayer
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.ObjectCoverRef
+  alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Storage
 
   @section_macro_headers 0x01
@@ -102,7 +106,7 @@ defmodule SceneServer.Voxel.Codec do
         macro_headers: decode_macro_headers!(fetch_section!(sections, @section_macro_headers)),
         normal_blocks: decode_normal_blocks!(fetch_section!(sections, @section_normal_blocks)),
         refined_cells:
-          decode_empty_pool!(fetch_section!(sections, @section_refined_cells), :refined_cells),
+          decode_refined_cell_pool!(fetch_section!(sections, @section_refined_cells)),
         attribute_sets:
           decode_empty_pool!(fetch_section!(sections, @section_attribute_sets), :attribute_sets),
         tag_sets: decode_empty_pool!(fetch_section!(sections, @section_tag_sets), :tag_sets),
@@ -655,7 +659,7 @@ defmodule SceneServer.Voxel.Codec do
       <<storage.micro_resolution::unsigned-integer-size(8)>>,
       encode_macro_header_truth(storage.macro_headers),
       encode_normal_block_pool(storage.normal_blocks),
-      encode_empty_pool_for_truth(storage.refined_cells, :refined_cells),
+      encode_refined_cell_pool(storage.refined_cells),
       encode_environment_pool(storage.environment_summaries),
       encode_object_ref_pool(storage.object_refs),
       encode_empty_pool_for_truth(storage.attribute_sets, :attribute_sets),
@@ -685,10 +689,7 @@ defmodule SceneServer.Voxel.Codec do
     [
       encode_section(@section_macro_headers, encode_macro_headers(storage.macro_headers)),
       encode_section(@section_normal_blocks, encode_normal_block_pool(storage.normal_blocks)),
-      encode_section(
-        @section_refined_cells,
-        encode_empty_pool_for_wire(storage.refined_cells, :refined_cells)
-      ),
+      encode_section(@section_refined_cells, encode_refined_cell_pool(storage.refined_cells)),
       encode_section(
         @section_attribute_sets,
         encode_empty_pool_for_wire(storage.attribute_sets, :attribute_sets)
@@ -854,6 +855,227 @@ defmodule SceneServer.Voxel.Codec do
   defp encode_empty_pool_for_truth(values, label) do
     raise ArgumentError,
           "#{label} canonical encoding is not implemented in S0, got #{length(values)} entries"
+  end
+
+  # ----------------------------------------------------------------------------
+  # RefinedCells pool — Phase 1a wire form (protocol design §5.4).
+  #
+  # Identical for both wire and canonical-truth encodings. Empty list emits
+  # exactly `<<0u32>>` (4 bytes count=0), byte-for-byte compatible with the
+  # legacy `encode_empty_pool_for_*` output, so chunk_hash remains stable for
+  # every storage whose `refined_cells` is `[]`.
+  #
+  # Per-cell layout:
+  #   occupancy_words    u64 × 8           (64 bytes)
+  #   boundary_cache     u64               (8 bytes)
+  #   layer_count        u16
+  #   layers[layer_count] {
+  #     mask_words           u64 × 8
+  #     material_id          u16
+  #     state_flags          u32
+  #     health               u16
+  #     attribute_set_ref    u32
+  #     tag_set_ref          u32
+  #     owner_object_id      u64
+  #     owner_part_id        u32
+  #   }
+  #   object_ref_count   u16
+  #   object_refs[object_ref_count] {
+  #     owner_object_id  u64
+  #     owner_part_id    u32
+  #     mask_words       u64 × 8
+  #   }
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Encodes a list of `RefinedCellData` into the RefinedCells section payload
+  (Phase 1a wire form). The result begins with a u32 entry count and is
+  byte-for-byte stable across calls; an empty list emits exactly `<<0u32>>`,
+  byte-compatible with the legacy empty-pool encoding so chunk_hash stays
+  stable for storages whose `refined_cells` is `[]`.
+  """
+  @spec encode_refined_cell_pool([RefinedCellData.t()]) :: binary()
+  def encode_refined_cell_pool([]), do: <<0::unsigned-big-integer-size(32)>>
+
+  def encode_refined_cell_pool(cells) when is_list(cells) do
+    count = length(cells)
+
+    if count > 0xFFFF_FFFF do
+      raise ArgumentError, "refined_cells count #{count} exceeds u32"
+    end
+
+    IO.iodata_to_binary([
+      <<count::unsigned-big-integer-size(32)>>,
+      Enum.map(cells, &encode_refined_cell/1)
+    ])
+  end
+
+  defp encode_refined_cell(%RefinedCellData{} = cell) do
+    layer_count = length(cell.layers)
+    object_ref_count = length(cell.object_refs)
+
+    if layer_count > 0xFFFF do
+      raise ArgumentError, "refined_cell layer_count #{layer_count} exceeds u16"
+    end
+
+    if object_ref_count > 0xFFFF do
+      raise ArgumentError,
+            "refined_cell object_ref_count #{object_ref_count} exceeds u16"
+    end
+
+    [
+      encode_mask_words(cell.occupancy_words),
+      <<cell.boundary_cache::unsigned-big-integer-size(64)>>,
+      <<layer_count::unsigned-big-integer-size(16)>>,
+      Enum.map(cell.layers, &encode_micro_layer/1),
+      <<object_ref_count::unsigned-big-integer-size(16)>>,
+      Enum.map(cell.object_refs, &encode_object_cover_ref/1)
+    ]
+  end
+
+  defp encode_micro_layer(%MicroLayer{} = layer) do
+    [
+      encode_mask_words(layer.mask_words),
+      <<layer.material_id::unsigned-big-integer-size(16),
+        layer.state_flags::unsigned-big-integer-size(32),
+        layer.health::unsigned-big-integer-size(16),
+        layer.attribute_set_ref::unsigned-big-integer-size(32),
+        layer.tag_set_ref::unsigned-big-integer-size(32),
+        layer.owner_object_id::unsigned-big-integer-size(64),
+        layer.owner_part_id::unsigned-big-integer-size(32)>>
+    ]
+  end
+
+  defp encode_object_cover_ref(%ObjectCoverRef{} = ref) do
+    [
+      <<ref.owner_object_id::unsigned-big-integer-size(64),
+        ref.owner_part_id::unsigned-big-integer-size(32)>>,
+      encode_mask_words(ref.mask_words)
+    ]
+  end
+
+  defp encode_mask_words(words) when length(words) == 8 do
+    for w <- words, do: <<w::unsigned-big-integer-size(64)>>
+  end
+
+  @doc """
+  Decodes the RefinedCells section payload back to a list of `RefinedCellData`.
+  Returns `{:ok, cells}` or `{:error, reason}` instead of raising.
+  """
+  @spec decode_refined_cell_pool(binary()) :: {:ok, [RefinedCellData.t()]} | {:error, term()}
+  def decode_refined_cell_pool(payload) when is_binary(payload) do
+    {:ok, decode_refined_cell_pool!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc """
+  Decodes the RefinedCells section payload back to a list of `RefinedCellData`.
+  Raises `ArgumentError` on malformed or trailing bytes.
+  """
+  @spec decode_refined_cell_pool!(binary()) :: [RefinedCellData.t()]
+  def decode_refined_cell_pool!(<<0::unsigned-big-integer-size(32)>>), do: []
+
+  def decode_refined_cell_pool!(<<count::unsigned-big-integer-size(32), rest::binary>>) do
+    {cells, leftover} = decode_refined_cells(rest, count, [])
+
+    if leftover != <<>> do
+      raise ArgumentError,
+            "trailing bytes in refined_cells section: #{byte_size(leftover)} bytes"
+    end
+
+    cells
+  end
+
+  def decode_refined_cell_pool!(_data),
+    do: raise(ArgumentError, "malformed refined_cells pool section")
+
+  defp decode_refined_cells(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_refined_cells(data, count, acc) when count > 0 do
+    {cell, rest} = decode_refined_cell(data)
+    decode_refined_cells(rest, count - 1, [cell | acc])
+  end
+
+  defp decode_refined_cell(data) do
+    {occupancy_words, rest} = decode_mask_words(data)
+
+    <<boundary_cache::unsigned-big-integer-size(64), layer_count::unsigned-big-integer-size(16),
+      rest::binary>> = rest
+
+    {layers, rest} = decode_micro_layers(rest, layer_count, [])
+
+    <<object_ref_count::unsigned-big-integer-size(16), rest::binary>> = rest
+
+    {object_refs, rest} = decode_object_cover_refs(rest, object_ref_count, [])
+
+    cell =
+      RefinedCellData.normalize!(%{
+        occupancy_words: occupancy_words,
+        boundary_cache: boundary_cache,
+        layers: layers,
+        object_refs: object_refs
+      })
+
+    {cell, rest}
+  end
+
+  defp decode_micro_layers(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_micro_layers(data, count, acc) when count > 0 do
+    {mask_words, rest} = decode_mask_words(data)
+
+    <<material_id::unsigned-big-integer-size(16), state_flags::unsigned-big-integer-size(32),
+      health::unsigned-big-integer-size(16), attribute_set_ref::unsigned-big-integer-size(32),
+      tag_set_ref::unsigned-big-integer-size(32), owner_object_id::unsigned-big-integer-size(64),
+      owner_part_id::unsigned-big-integer-size(32), rest::binary>> = rest
+
+    layer =
+      MicroLayer.normalize!(%{
+        mask_words: mask_words,
+        material_id: material_id,
+        state_flags: state_flags,
+        health: health,
+        attribute_set_ref: attribute_set_ref,
+        tag_set_ref: tag_set_ref,
+        owner_object_id: owner_object_id,
+        owner_part_id: owner_part_id
+      })
+
+    decode_micro_layers(rest, count - 1, [layer | acc])
+  end
+
+  defp decode_object_cover_refs(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_object_cover_refs(data, count, acc) when count > 0 do
+    <<owner_object_id::unsigned-big-integer-size(64),
+      owner_part_id::unsigned-big-integer-size(32), rest::binary>> = data
+
+    {mask_words, rest} = decode_mask_words(rest)
+
+    ref =
+      ObjectCoverRef.normalize!(%{
+        owner_object_id: owner_object_id,
+        owner_part_id: owner_part_id,
+        mask_words: mask_words
+      })
+
+    decode_object_cover_refs(rest, count - 1, [ref | acc])
+  end
+
+  defp decode_mask_words(<<
+         w0::unsigned-big-integer-size(64),
+         w1::unsigned-big-integer-size(64),
+         w2::unsigned-big-integer-size(64),
+         w3::unsigned-big-integer-size(64),
+         w4::unsigned-big-integer-size(64),
+         w5::unsigned-big-integer-size(64),
+         w6::unsigned-big-integer-size(64),
+         w7::unsigned-big-integer-size(64),
+         rest::binary
+       >>) do
+    {[w0, w1, w2, w3, w4, w5, w6, w7], rest}
   end
 
   defp decode_sections(rest, 0, acc), do: {acc, rest}

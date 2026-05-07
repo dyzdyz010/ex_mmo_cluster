@@ -154,6 +154,506 @@ defmodule GateServer.CodecTest do
       assert {:error, :invalid_message} == Codec.decode(<<0x64, 101::64-big>>)
     end
 
+    test "decodes voxel edit intent (typed, fixed 91-byte payload)" do
+      msg =
+        <<0x70, 1001::64-big, 17::32-big, 99::64-big, 0::8, 1::8, -8::64-big-signed,
+          16::64-big-signed, 24::64-big-signed, 0::8-signed, 1::8-signed, 0::8-signed, 42::16-big,
+          0::32-big, 0xDEAD_BEEF::64-big, 7::32-big, 0::32-big, 0xFFFF_FFFF_FFFF_FFFF::64-big,
+          0xFFFF_FFFF::32-big, 0xCAFE_BABE_DEAD_BEEF::64-big>>
+
+      assert byte_size(msg) == 92
+
+      assert {:ok,
+              {:voxel_edit_intent,
+               %{
+                 request_id: 1001,
+                 client_intent_seq: 17,
+                 logical_scene_id: 99,
+                 action: 0,
+                 target_granularity: 1,
+                 target_world_micro: {-8, 16, 24},
+                 face_normal: {0, 1, 0},
+                 material_id: 42,
+                 blueprint_ref: 0,
+                 object_ref: 0xDEAD_BEEF,
+                 part_ref: 7,
+                 attribute_patch_ref: 0,
+                 expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
+                 expected_cell_hash: 0xFFFF_FFFF,
+                 client_hint_hash: 0xCAFE_BABE_DEAD_BEEF
+               }}} == Codec.decode(msg)
+    end
+
+    test "rejects malformed voxel edit intent (short payload)" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x70, 1001::64-big>>)
+    end
+
+    test "rejects voxel edit intent with payload longer than 91 bytes (no trailing bytes allowed)" do
+      base = build_edit_intent_wire(edit_intent_default_fields())
+      assert byte_size(base) == 92
+      assert {:error, :invalid_message} == Codec.decode(base <> <<0xFF>>)
+      assert {:error, :invalid_message} == Codec.decode(base <> <<0, 0, 0, 0>>)
+    end
+
+    test "rejects voxel edit intent with empty payload (just the opcode byte)" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x70>>)
+    end
+
+    test "decode is forward-compatible: accepts unknown action values up to u8 max" do
+      for unknown_action <- [5, 99, 200, 0xFF] do
+        msg = build_edit_intent_wire(%{edit_intent_default_fields() | action: unknown_action})
+
+        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert intent.action == unknown_action
+      end
+    end
+
+    test "decode is forward-compatible: accepts unknown target_granularity values" do
+      for unknown_granularity <- [3, 99, 0xFF] do
+        msg =
+          build_edit_intent_wire(%{
+            edit_intent_default_fields()
+            | target_granularity: unknown_granularity
+          })
+
+        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert intent.target_granularity == unknown_granularity
+      end
+    end
+
+    test "decode accepts wire-legal but semantically-invalid face_normal (e.g. (5, 0, 0))" do
+      # Codec stays byte-faithful; `(5, 0, 0)` violates the "±1 / 0 only"
+      # semantic rule but is a legal i8 triple. Business layer in Phase 1c
+      # will reject; the decoder must not.
+      msg = build_edit_intent_wire(%{edit_intent_default_fields() | face_normal: {5, 0, 0}})
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert intent.face_normal == {5, 0, 0}
+    end
+
+    test "decode interprets face_normal bytes as signed i8 (e.g. byte 0xFF → -1)" do
+      # We set the wire byte to 0xFF directly via -1 i8. Confirms that the
+      # decoder uses `8-signed`, not unsigned.
+      msg = build_edit_intent_wire(%{edit_intent_default_fields() | face_normal: {-1, -2, -3}})
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert intent.face_normal == {-1, -2, -3}
+    end
+
+    test "decode preserves byte-level boundary values for u32 / u16 / u8" do
+      msg =
+        build_edit_intent_wire(%{
+          edit_intent_default_fields()
+          | client_intent_seq: 0xFFFF_FFFF,
+            material_id: 0xFFFF,
+            blueprint_ref: 0xFFFF_FFFF,
+            part_ref: 0xFFFF_FFFF,
+            attribute_patch_ref: 0xFFFF_FFFF,
+            expected_cell_hash: 0xFFFF_FFFF,
+            action: 0xFF,
+            target_granularity: 0xFF
+        })
+
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert intent.client_intent_seq == 0xFFFF_FFFF
+      assert intent.material_id == 0xFFFF
+      assert intent.blueprint_ref == 0xFFFF_FFFF
+      assert intent.part_ref == 0xFFFF_FFFF
+      assert intent.attribute_patch_ref == 0xFFFF_FFFF
+      assert intent.expected_cell_hash == 0xFFFF_FFFF
+      assert intent.action == 0xFF
+      assert intent.target_granularity == 0xFF
+    end
+
+    test "decode preserves byte-level boundary values for u64 fields" do
+      msg =
+        build_edit_intent_wire(%{
+          edit_intent_default_fields()
+          | request_id: 0xFFFF_FFFF_FFFF_FFFF,
+            logical_scene_id: 0xFFFF_FFFF_FFFF_FFFF,
+            object_ref: 0xFFFF_FFFF_FFFF_FFFF,
+            expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
+            client_hint_hash: 0xFFFF_FFFF_FFFF_FFFF
+        })
+
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert intent.request_id == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent.logical_scene_id == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent.object_ref == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent.expected_chunk_version == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent.client_hint_hash == 0xFFFF_FFFF_FFFF_FFFF
+    end
+
+    test "decode preserves i64 target_world_micro extremes" do
+      for tuple <- [
+            {-0x8000_0000_0000_0000, 0x7FFF_FFFF_FFFF_FFFF, 0},
+            {0x7FFF_FFFF_FFFF_FFFF, -0x8000_0000_0000_0000, -1},
+            {0, 0, -0x8000_0000_0000_0000}
+          ] do
+        msg = build_edit_intent_wire(%{edit_intent_default_fields() | target_world_micro: tuple})
+        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert intent.target_world_micro == tuple
+      end
+    end
+
+    test "decode round-trips zero values across all fields" do
+      zero = edit_intent_default_fields()
+      msg = build_edit_intent_wire(zero)
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+
+      # Only fields with sentinels diverge from zero by design; the rest
+      # should equal exactly the zero defaults from `edit_intent_default_fields/0`.
+      for {key, value} <- zero do
+        assert Map.fetch!(intent, key) == value
+      end
+    end
+
+    test "decodes voxel edit intent with all sentinels (no constraints)" do
+      msg =
+        <<0x70, 1::64-big, 1::32-big, 1::64-big, 1::8, 0::8, 0::64-big-signed, 0::64-big-signed,
+          0::64-big-signed, 0::8-signed, 0::8-signed, 0::8-signed, 0::16-big, 0::32-big,
+          0::64-big, 0::32-big, 0::32-big, 0xFFFF_FFFF_FFFF_FFFF::64-big, 0xFFFF_FFFF::32-big,
+          0::64-big>>
+
+      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert intent.action == 1
+      assert intent.target_granularity == 0
+      assert intent.expected_chunk_version == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent.expected_cell_hash == 0xFFFF_FFFF
+      assert intent.material_id == 0
+    end
+
+    test "round-trips voxel edit intent via encode/decode" do
+      intent = %{
+        request_id: 555,
+        client_intent_seq: 9,
+        logical_scene_id: 12,
+        action: 3,
+        target_granularity: 2,
+        target_world_micro: {-100, 0, 100},
+        face_normal: {1, 0, -1},
+        material_id: 0xABCD,
+        blueprint_ref: 0x1234_5678,
+        object_ref: 0x0000_0000_DEAD_BEEF,
+        part_ref: 11,
+        attribute_patch_ref: 0xFEED_FACE,
+        expected_chunk_version: 0,
+        expected_cell_hash: 0xCAFE_BABE,
+        client_hint_hash: 0xFFFF_FFFF_FFFF_FFFF
+      }
+
+      assert {:ok, iodata} = Codec.encode({:voxel_edit_intent, intent})
+      bytes = IO.iodata_to_binary(iodata)
+      assert byte_size(bytes) == 92
+      assert <<0x70, _payload::binary-size(91)>> = bytes
+
+      assert {:ok, {:voxel_edit_intent, decoded}} = Codec.decode(bytes)
+      assert decoded == intent
+    end
+
+    test "decodes the shared fixture voxel_edit_intent_v1.bin and matches expected fields" do
+      bytes =
+        File.read!(Path.join([__DIR__, "..", "fixtures", "voxel", "voxel_edit_intent_v1.bin"]))
+
+      # The fixture concatenates two intents back-to-back (each 92 bytes).
+      assert byte_size(bytes) == 184
+      <<frame_a::binary-size(92), frame_b::binary-size(92)>> = bytes
+
+      assert {:ok, {:voxel_edit_intent, intent_a}} = Codec.decode(frame_a)
+      assert intent_a.request_id == 0x0000_0000_0000_00A1
+      assert intent_a.action == 0
+      assert intent_a.target_granularity == 0
+      assert intent_a.target_world_micro == {16, 0, 32}
+      assert intent_a.face_normal == {0, 1, 0}
+      assert intent_a.material_id == 17
+      assert intent_a.expected_chunk_version == 0xFFFF_FFFF_FFFF_FFFF
+      assert intent_a.expected_cell_hash == 0xFFFF_FFFF
+
+      assert {:ok, {:voxel_edit_intent, intent_b}} = Codec.decode(frame_b)
+      assert intent_b.request_id == 0x0000_0000_0000_00B2
+      assert intent_b.action == 1
+      assert intent_b.target_granularity == 2
+      assert intent_b.object_ref == 0x0000_0000_DEAD_BEEF
+      assert intent_b.part_ref == 7
+      assert intent_b.expected_chunk_version == 0x0000_0000_0000_0123
+      assert intent_b.expected_cell_hash == 0xCAFE_BABE
+    end
+
+    test "fixture is in sync with the generator script (no stale bytes)" do
+      bytes =
+        File.read!(Path.join([__DIR__, "..", "fixtures", "voxel", "voxel_edit_intent_v1.bin"]))
+
+      # Mirror of priv/scripts/gen_voxel_edit_intent_fixture.exs. Any change
+      # in the script's intent definitions MUST be mirrored here, and vice
+      # versa. The generated bytes must match the fixture byte-for-byte;
+      # if they drift this test fails before any client/server divergence
+      # can ship.
+      intent_a = %{
+        request_id: 0x0000_0000_0000_00A1,
+        client_intent_seq: 1,
+        logical_scene_id: 0x0000_0000_0000_002A,
+        action: 0,
+        target_granularity: 0,
+        target_world_micro: {16, 0, 32},
+        face_normal: {0, 1, 0},
+        material_id: 17,
+        blueprint_ref: 0,
+        object_ref: 0,
+        part_ref: 0,
+        attribute_patch_ref: 0,
+        expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
+        expected_cell_hash: 0xFFFF_FFFF,
+        client_hint_hash: 0
+      }
+
+      intent_b = %{
+        request_id: 0x0000_0000_0000_00B2,
+        client_intent_seq: 2,
+        logical_scene_id: 0x0000_0000_0000_002A,
+        action: 1,
+        target_granularity: 2,
+        target_world_micro: {-100, 0, 100},
+        face_normal: {1, 0, -1},
+        material_id: 0,
+        blueprint_ref: 0,
+        object_ref: 0x0000_0000_DEAD_BEEF,
+        part_ref: 7,
+        attribute_patch_ref: 0,
+        expected_chunk_version: 0x0000_0000_0000_0123,
+        expected_cell_hash: 0xCAFE_BABE,
+        client_hint_hash: 0xFFFF_EEEE_DDDD_CCCC
+      }
+
+      {:ok, ia} = Codec.encode({:voxel_edit_intent, intent_a})
+      {:ok, ib} = Codec.encode({:voxel_edit_intent, intent_b})
+      regenerated = IO.iodata_to_binary([ia, ib])
+      assert regenerated == bytes
+    end
+
+    test "encode rejects out-of-range u8 fields (action / target_granularity)" do
+      base = edit_intent_zero_base()
+
+      for {field, bad} <- [
+            {:action, 256},
+            {:action, -1},
+            {:target_granularity, 256},
+            {:target_granularity, -1}
+          ] do
+        assert {:error, {:invalid_field, ^field, ^bad}} =
+                 Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+               "expected #{field}=#{bad} to be rejected"
+      end
+    end
+
+    test "encode rejects out-of-range u16 field (material_id)" do
+      base = edit_intent_zero_base()
+
+      for bad <- [-1, 0x1_0000, 0xFFFF_FFFF_FFFF_FFFF] do
+        assert {:error, {:invalid_field, :material_id, ^bad}} =
+                 Codec.encode({:voxel_edit_intent, %{base | material_id: bad}}),
+               "expected material_id=#{bad} to be rejected"
+      end
+    end
+
+    test "encode rejects out-of-range u32 fields" do
+      base = edit_intent_zero_base()
+
+      for field <- [
+            :client_intent_seq,
+            :blueprint_ref,
+            :part_ref,
+            :attribute_patch_ref,
+            :expected_cell_hash
+          ] do
+        for bad <- [-1, 0x1_0000_0000] do
+          assert {:error, {:invalid_field, ^field, ^bad}} =
+                   Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                 "expected #{field}=#{bad} to be rejected as u32"
+        end
+      end
+    end
+
+    test "encode rejects out-of-range u64 fields" do
+      base = edit_intent_zero_base()
+
+      for field <- [
+            :request_id,
+            :logical_scene_id,
+            :object_ref,
+            :expected_chunk_version,
+            :client_hint_hash
+          ] do
+        for bad <- [-1, 0x1_0000_0000_0000_0000] do
+          assert {:error, {:invalid_field, ^field, ^bad}} =
+                   Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                 "expected #{field}=#{bad} to be rejected as u64"
+        end
+      end
+    end
+
+    test "encode accepts u64 sentinel value 0xFFFF_FFFF_FFFF_FFFF (max u64) and 0 (min)" do
+      base = edit_intent_zero_base()
+
+      for {field, bound} <- [
+            {:request_id, 0xFFFF_FFFF_FFFF_FFFF},
+            {:request_id, 0},
+            {:object_ref, 0xFFFF_FFFF_FFFF_FFFF},
+            {:expected_chunk_version, 0xFFFF_FFFF_FFFF_FFFF},
+            {:client_hint_hash, 0xFFFF_FFFF_FFFF_FFFF}
+          ] do
+        assert {:ok, _} = Codec.encode({:voxel_edit_intent, Map.put(base, field, bound)}),
+               "#{field}=#{bound} should be accepted"
+      end
+    end
+
+    test "encode rejects out-of-range i64 target_world_micro coords" do
+      base = edit_intent_zero_base()
+
+      for bad_world <- [
+            {0x1_0000_0000_0000_0000, 0, 0},
+            {0, 0x1_0000_0000_0000_0000, 0},
+            {0, 0, 0x1_0000_0000_0000_0000},
+            {-0x8000_0000_0000_0001, 0, 0}
+          ] do
+        assert {:error, {:invalid_field, :target_world_micro, ^bad_world}} =
+                 Codec.encode({:voxel_edit_intent, %{base | target_world_micro: bad_world}}),
+               "expected target_world_micro=#{inspect(bad_world)} to be rejected"
+      end
+    end
+
+    test "encode accepts i64 boundary target_world_micro values" do
+      base = edit_intent_zero_base()
+
+      boundaries = [
+        {-0x8000_0000_0000_0000, 0x7FFF_FFFF_FFFF_FFFF, 0},
+        {0x7FFF_FFFF_FFFF_FFFF, -0x8000_0000_0000_0000, 0},
+        {0, 0, -0x8000_0000_0000_0000}
+      ]
+
+      for tuple <- boundaries do
+        assert {:ok, _} =
+                 Codec.encode({:voxel_edit_intent, %{base | target_world_micro: tuple}}),
+               "target_world_micro=#{inspect(tuple)} should be accepted at i64 boundary"
+      end
+    end
+
+    test "encode rejects out-of-range i8 face_normal components" do
+      base = edit_intent_zero_base()
+
+      for bad_normal <- [{128, 0, 0}, {-129, 0, 0}, {0, 128, 0}, {0, 0, 128}, {200, -200, 5}] do
+        assert {:error, {:invalid_field, :face_normal, ^bad_normal}} =
+                 Codec.encode({:voxel_edit_intent, %{base | face_normal: bad_normal}}),
+               "expected face_normal=#{inspect(bad_normal)} to be rejected"
+      end
+    end
+
+    test "encode accepts face_normal i8 boundaries (-128 / 127)" do
+      base = edit_intent_zero_base()
+
+      for tuple <- [{127, 0, 0}, {-128, 0, 0}, {0, 127, -128}] do
+        assert {:ok, _} = Codec.encode({:voxel_edit_intent, %{base | face_normal: tuple}}),
+               "face_normal=#{inspect(tuple)} should be accepted at i8 boundary"
+      end
+    end
+
+    test "encode rejects non-integer fields (atoms / strings / nils)" do
+      base = edit_intent_zero_base()
+
+      assert {:error, {:invalid_field, :request_id, :not_a_number}} =
+               Codec.encode({:voxel_edit_intent, %{base | request_id: :not_a_number}})
+
+      assert {:error, {:invalid_field, :material_id, "0"}} =
+               Codec.encode({:voxel_edit_intent, %{base | material_id: "0"}})
+
+      # Nil falls through u64!/u32!/u8!/u16! since `nil` is not an integer; we
+      # exercise both via :request_id (u64) and :action (u8).
+      assert {:error, {:invalid_field, :request_id, nil}} =
+               Codec.encode({:voxel_edit_intent, %{base | request_id: nil}})
+
+      assert {:error, {:invalid_field, :action, nil}} =
+               Codec.encode({:voxel_edit_intent, %{base | action: nil}})
+    end
+
+    test "encode rejects malformed target_world_micro / face_normal tuples" do
+      base = edit_intent_zero_base()
+
+      for {field, bad} <- [
+            {:target_world_micro, {0, 0}},
+            {:target_world_micro, [0, 0, 0]},
+            {:target_world_micro, "abc"},
+            {:target_world_micro, nil},
+            {:face_normal, {0, 0}},
+            {:face_normal, [0, 0, 0]},
+            {:face_normal, nil}
+          ] do
+        assert {:error, {:invalid_field, ^field, ^bad}} =
+                 Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+               "expected #{field}=#{inspect(bad)} to be rejected"
+      end
+    end
+
+    test "encode treats missing keys as nil and reports {:invalid_field, _, nil}" do
+      # Minimal map with only one key — encoder reaches request_id first.
+      assert {:error, {:invalid_field, :request_id, nil}} =
+               Codec.encode({:voxel_edit_intent, %{action: 0}})
+    end
+
+    defp edit_intent_default_fields do
+      %{
+        request_id: 0,
+        client_intent_seq: 0,
+        logical_scene_id: 0,
+        action: 0,
+        target_granularity: 0,
+        target_world_micro: {0, 0, 0},
+        face_normal: {0, 0, 0},
+        material_id: 0,
+        blueprint_ref: 0,
+        object_ref: 0,
+        part_ref: 0,
+        attribute_patch_ref: 0,
+        expected_chunk_version: 0,
+        expected_cell_hash: 0,
+        client_hint_hash: 0
+      }
+    end
+
+    # Builds a wire-form 92-byte VoxelEditIntent message (opcode + 91-byte
+    # payload) directly from a map of field values. Handy for decode tests
+    # that want to construct a wire-level corner case (oversized payload,
+    # forward-compatible action enum, signed face_normal byte etc.) without
+    # going through the encoder's range checks.
+    defp build_edit_intent_wire(fields) do
+      {wx, wy, wz} = fields.target_world_micro
+      {fnx, fny, fnz} = fields.face_normal
+
+      <<0x70, fields.request_id::64-big, fields.client_intent_seq::32-big,
+        fields.logical_scene_id::64-big, fields.action::8, fields.target_granularity::8,
+        wx::64-big-signed, wy::64-big-signed, wz::64-big-signed, fnx::8-signed, fny::8-signed,
+        fnz::8-signed, fields.material_id::16-big, fields.blueprint_ref::32-big,
+        fields.object_ref::64-big, fields.part_ref::32-big, fields.attribute_patch_ref::32-big,
+        fields.expected_chunk_version::64-big, fields.expected_cell_hash::32-big,
+        fields.client_hint_hash::64-big>>
+    end
+
+    defp edit_intent_zero_base do
+      %{
+        request_id: 0,
+        client_intent_seq: 0,
+        logical_scene_id: 0,
+        action: 0,
+        target_granularity: 0,
+        target_world_micro: {0, 0, 0},
+        face_normal: {0, 0, 0},
+        material_id: 0,
+        blueprint_ref: 0,
+        object_ref: 0,
+        part_ref: 0,
+        attribute_patch_ref: 0,
+        expected_chunk_version: 0,
+        expected_cell_hash: 0,
+        client_hint_hash: 0
+      }
+    end
+
     test "decodes voxel build reservation intent" do
       # Wire layout (96 bytes after the 1-byte opcode):
       # request_id u64 + client_intent_seq u32 + logical_scene_id u64 +

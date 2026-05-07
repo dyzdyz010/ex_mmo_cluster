@@ -75,12 +75,15 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_unsubscribe 0x61
   @msg_voxel_chunk_snapshot 0x62
   @msg_voxel_chunk_delta 0x63
+  # DEPRECATED for client-side direct edit; use @msg_voxel_edit_intent (0x70).
+  # Kept for skill/tool-system flow per protocol §13.6.
   @msg_voxel_impact_intent 0x64
   @msg_voxel_build_reservation_intent 0x65
   @msg_voxel_prefab_place_intent 0x67
   @msg_voxel_intent_result 0x68
   @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_debug_probe 0x6F
+  @msg_voxel_edit_intent 0x70
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -313,6 +316,40 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_debug_probe, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelEditIntent (0x70) — typed client edit channel; see protocol §13.6.1.
+  # Fixed 91-byte payload. Phase 1b: Gate decodes and observes only; routing
+  # to Scene mutation API arrives in Phase 1c.
+  def decode(
+        <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,
+          logical_scene_id::64-big, action::8, target_granularity::8, wx::64-big-signed,
+          wy::64-big-signed, wz::64-big-signed, fnx::8-signed, fny::8-signed, fnz::8-signed,
+          material_id::16-big, blueprint_ref::32-big, object_ref::64-big, part_ref::32-big,
+          attribute_patch_ref::32-big, expected_chunk_version::64-big, expected_cell_hash::32-big,
+          client_hint_hash::64-big>>
+      ) do
+    {:ok,
+     {:voxel_edit_intent,
+      %{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        action: action,
+        target_granularity: target_granularity,
+        target_world_micro: {wx, wy, wz},
+        face_normal: {fnx, fny, fnz},
+        material_id: material_id,
+        blueprint_ref: blueprint_ref,
+        object_ref: object_ref,
+        part_ref: part_ref,
+        attribute_patch_ref: attribute_patch_ref,
+        expected_chunk_version: expected_chunk_version,
+        expected_cell_hash: expected_cell_hash,
+        client_hint_hash: client_hint_hash
+      }}}
+  end
+
+  def decode(<<@msg_voxel_edit_intent, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -575,9 +612,76 @@ defmodule GateServer.Codec do
      <<@msg_voxel_debug_probe, request_id::64-big, byte_size(result)::16-big, result::binary>>}
   end
 
+  def encode({:voxel_edit_intent, %{} = intent}) do
+    case encode_voxel_edit_intent_payload(intent) do
+      {:ok, payload} -> {:ok, [<<@msg_voxel_edit_intent>>, payload]}
+      {:error, _} = err -> err
+    end
+  end
+
   def encode(_) do
     {:error, :unknown_message}
   end
+
+  # Encodes a VoxelEditIntent payload (without the opcode prefix). Returns
+  # {:ok, binary} | {:error, reason}. All required fields must be present in
+  # the input map; sentinel values (e.g. expected_chunk_version =
+  # 0xFFFF_FFFF_FFFF_FFFF) are caller-provided.
+  defp encode_voxel_edit_intent_payload(intent) do
+    with {:ok, request_id} <- u64!(intent[:request_id], :request_id),
+         {:ok, client_intent_seq} <- u32!(intent[:client_intent_seq], :client_intent_seq),
+         {:ok, logical_scene_id} <- u64!(intent[:logical_scene_id], :logical_scene_id),
+         {:ok, action} <- u8!(intent[:action], :action),
+         {:ok, granularity} <- u8!(intent[:target_granularity], :target_granularity),
+         {:ok, {wx, wy, wz}} <- world_micro!(intent[:target_world_micro]),
+         {:ok, {fnx, fny, fnz}} <- face_normal!(intent[:face_normal]),
+         {:ok, material_id} <- u16!(intent[:material_id], :material_id),
+         {:ok, blueprint_ref} <- u32!(intent[:blueprint_ref], :blueprint_ref),
+         {:ok, object_ref} <- u64!(intent[:object_ref], :object_ref),
+         {:ok, part_ref} <- u32!(intent[:part_ref], :part_ref),
+         {:ok, attribute_patch_ref} <- u32!(intent[:attribute_patch_ref], :attribute_patch_ref),
+         {:ok, expected_chunk_version} <-
+           u64!(intent[:expected_chunk_version], :expected_chunk_version),
+         {:ok, expected_cell_hash} <- u32!(intent[:expected_cell_hash], :expected_cell_hash),
+         {:ok, client_hint_hash} <- u64!(intent[:client_hint_hash], :client_hint_hash) do
+      {:ok,
+       <<request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big, action::8,
+         granularity::8, wx::64-big-signed, wy::64-big-signed, wz::64-big-signed, fnx::8-signed,
+         fny::8-signed, fnz::8-signed, material_id::16-big, blueprint_ref::32-big,
+         object_ref::64-big, part_ref::32-big, attribute_patch_ref::32-big,
+         expected_chunk_version::64-big, expected_cell_hash::32-big, client_hint_hash::64-big>>}
+    end
+  end
+
+  defp u8!(v, _f) when is_integer(v) and v in 0..0xFF, do: {:ok, v}
+  defp u8!(v, f), do: {:error, {:invalid_field, f, v}}
+
+  defp u16!(v, _f) when is_integer(v) and v in 0..0xFFFF, do: {:ok, v}
+  defp u16!(v, f), do: {:error, {:invalid_field, f, v}}
+
+  defp u32!(v, _f) when is_integer(v) and v in 0..0xFFFF_FFFF, do: {:ok, v}
+  defp u32!(v, f), do: {:error, {:invalid_field, f, v}}
+
+  defp u64!(v, _f) when is_integer(v) and v >= 0 and v <= 0xFFFF_FFFF_FFFF_FFFF, do: {:ok, v}
+  defp u64!(v, f), do: {:error, {:invalid_field, f, v}}
+
+  defp world_micro!({x, y, z})
+       when is_integer(x) and is_integer(y) and is_integer(z) and
+              x in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF and
+              y in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF and
+              z in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF do
+    {:ok, {x, y, z}}
+  end
+
+  defp world_micro!(other), do: {:error, {:invalid_field, :target_world_micro, other}}
+
+  defp face_normal!({nx, ny, nz})
+       when is_integer(nx) and is_integer(ny) and is_integer(nz) and nx in -128..127 and
+              ny in -128..127 and nz in -128..127 do
+    {:ok, {nx, ny, nz}}
+  end
+
+  defp face_normal!(other), do: {:error, {:invalid_field, :face_normal, other}}
 
   defp decode_voxel_known_chunks(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 

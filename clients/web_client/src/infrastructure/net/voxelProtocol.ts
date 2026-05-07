@@ -9,6 +9,7 @@ import {
   type FNormalBlockData,
 } from "../../voxel/storage/types";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
+import { decodeRefinedCellPool, type RefinedCellWireData } from "./refinedCellWire";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -40,6 +41,10 @@ export interface VoxelChunkSnapshotMessage {
   chunkVersion: number;
   chunkHash: number;
   storage: FChunkStorageData;
+  // Phase 1a: server-authoritative refined-cell wire data, parallel to the
+  // legacy `storage.refinedCells` (which stays empty in online mode and is
+  // owned by browser offline path). 1c will lift this into storage proper.
+  refinedCellsWire: RefinedCellWireData[];
 }
 
 export interface VoxelAuthoritativeCell {
@@ -363,6 +368,13 @@ export function encodeVoxelPrefabPlaceIntent(request: {
   return new Uint8Array(buffer);
 }
 
+/**
+ * @deprecated Use `encodeVoxelEditIntent` (opcode 0x70) for client-side direct
+ * edits. `VoxelImpactIntent` (0x64) is now reserved for the skill/tool-system
+ * flow per protocol §13.6 / §13.6.1. Phase 1c will fully take over with the
+ * typed intent; until then this function stays callable to avoid breaking
+ * existing wiring.
+ */
 export function encodeVoxelImpactIntent(request: {
   requestId: number;
   clientIntentSeq: number;
@@ -524,7 +536,9 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
   const sections = readSections(view, offset, sectionCount);
   const macroHeaders = decodeMacroHeaders(requireSection(sections, SnapshotSection.MacroHeaders));
   const normalBlocks = decodeNormalBlocks(requireSection(sections, SnapshotSection.NormalBlocks));
-  ensureEmptyPool(requireSection(sections, SnapshotSection.RefinedCells), "refined_cells");
+  const refinedCellsWire = decodeRefinedCellPool(
+    requireSection(sections, SnapshotSection.RefinedCells),
+  );
   ensureEmptyPool(requireSection(sections, SnapshotSection.AttributeSets), "attribute_sets");
   ensureEmptyPool(requireSection(sections, SnapshotSection.TagSets), "tag_sets");
   const environmentSummaries = decodeEnvironmentSummaries(
@@ -556,6 +570,7 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
       dirtyMacroMax: { x: max, y: max, z: max },
       dirtyFlags: VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
     },
+    refinedCellsWire,
   };
 }
 

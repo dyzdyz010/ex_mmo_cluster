@@ -634,6 +634,89 @@ defmodule GateServer.WsConnectionVoxelTest do
     refute_receive {:gate_ws_send, <<0x62, _payload::binary>>}, 100
   end
 
+  test "voxel_edit_intent in :in_scene state emits observe and does NOT reply with VoxelIntentResult" do
+    observe_path = observe_path("ws_voxel_edit_intent_received.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    frame =
+      voxel_edit_intent_frame(
+        request_id: 9001,
+        client_intent_seq: 42,
+        logical_scene_id: 7777,
+        action: 1,
+        target_granularity: 1,
+        target_world_micro: {-100, 0, 100},
+        face_normal: {0, 1, 0},
+        material_id: 0,
+        object_ref: 0xDEAD_BEEF,
+        part_ref: 7,
+        expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
+        expected_cell_hash: 0xFFFF_FFFF,
+        client_hint_hash: 0xCAFE_BABE
+      )
+
+    WsConnection.receive_frame(pid, frame)
+
+    # The whole point of Phase 1b: no VoxelIntentResult is sent.
+    refute_receive {:gate_ws_send, <<0x68, _rest::binary>>}, 100
+    refute_receive {:gate_ws_send, _other_frame}, 100
+
+    flush_observe_writer()
+    log = File.read!(observe_path)
+
+    assert log =~ ~s(event="ws_voxel_edit_intent_received")
+    assert log =~ ~s(phase: "1b_decode_only_no_route")
+    assert log =~ "request_id: 9001"
+    assert log =~ "client_intent_seq: 42"
+    assert log =~ "logical_scene_id: 7777"
+    assert log =~ "action: 1"
+    assert log =~ "target_granularity: 1"
+    assert log =~ "object_ref: 3735928559"
+    assert log =~ "part_ref: 7"
+    assert log =~ "client_hint_hash: 3405691582"
+  end
+
+  test "voxel_edit_intent outside :in_scene state emits dropped observe and stays silent" do
+    observe_path = observe_path("ws_voxel_edit_intent_dropped.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    {:ok, pid} = WsConnection.start_link(self())
+    # Intentionally NOT calling put_connection_in_scene/1.
+
+    frame = voxel_edit_intent_frame(request_id: 7000)
+
+    WsConnection.receive_frame(pid, frame)
+
+    refute_receive {:gate_ws_send, _bin}, 100
+
+    flush_observe_writer()
+    log = File.read!(observe_path)
+
+    assert log =~ ~s(event="ws_voxel_edit_intent_dropped_invalid_state")
+    assert log =~ "request_id: 7000"
+  end
+
+  test "voxel_edit_intent does not interfere with the deprecated voxel_impact_intent path" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # Send an edit intent first (silent under 1b)…
+    WsConnection.receive_frame(pid, voxel_edit_intent_frame(request_id: 50))
+    refute_receive {:gate_ws_send, _bin}, 100
+
+    # …then send the legacy impact intent and verify it still produces an
+    # IntentResult error reply (chunk has no lease, no scene wired). The
+    # exact error doesn't matter here — what matters is that the legacy
+    # opcode keeps replying after we added the new one.
+    WsConnection.receive_frame(pid, voxel_impact_frame(51, 1, 999, {1, 2, 3}))
+    assert_receive {:gate_ws_send, <<0x68, _rest::binary>>}, 500
+  end
+
   defp put_connection_in_scene(pid) do
     :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
     _ = :sys.get_state(pid)
@@ -664,6 +747,30 @@ defmodule GateServer.WsConnectionVoxelTest do
     <<0x64, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big,
       source_skill_id::32-big, x::64-big-signed, y::64-big-signed, z::64-big-signed, 2::16-big,
       0::64-big>>
+  end
+
+  defp voxel_edit_intent_frame(opts) do
+    request_id = Keyword.get(opts, :request_id, 1)
+    client_intent_seq = Keyword.get(opts, :client_intent_seq, 0)
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, 0)
+    action = Keyword.get(opts, :action, 0)
+    target_granularity = Keyword.get(opts, :target_granularity, 0)
+    {wx, wy, wz} = Keyword.get(opts, :target_world_micro, {0, 0, 0})
+    {fnx, fny, fnz} = Keyword.get(opts, :face_normal, {0, 0, 0})
+    material_id = Keyword.get(opts, :material_id, 0)
+    blueprint_ref = Keyword.get(opts, :blueprint_ref, 0)
+    object_ref = Keyword.get(opts, :object_ref, 0)
+    part_ref = Keyword.get(opts, :part_ref, 0)
+    attribute_patch_ref = Keyword.get(opts, :attribute_patch_ref, 0)
+    expected_chunk_version = Keyword.get(opts, :expected_chunk_version, 0xFFFF_FFFF_FFFF_FFFF)
+    expected_cell_hash = Keyword.get(opts, :expected_cell_hash, 0xFFFF_FFFF)
+    client_hint_hash = Keyword.get(opts, :client_hint_hash, 0)
+
+    <<0x70, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big, action::8,
+      target_granularity::8, wx::64-big-signed, wy::64-big-signed, wz::64-big-signed,
+      fnx::8-signed, fny::8-signed, fnz::8-signed, material_id::16-big, blueprint_ref::32-big,
+      object_ref::64-big, part_ref::32-big, attribute_patch_ref::32-big,
+      expected_chunk_version::64-big, expected_cell_hash::32-big, client_hint_hash::64-big>>
   end
 
   defp build_reservation_intent_frame(

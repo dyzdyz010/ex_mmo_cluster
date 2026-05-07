@@ -1495,6 +1495,7 @@ section_data bytes[section_len]
 | `0x6D` | S->C | `TagCatalogSnapshot` | 标签目录下发 |
 | `0x6E` | S->C | `AttributeCatalogSnapshot` | 属性目录下发 |
 | `0x6F` | 双向 | `VoxelDebugProbe` | 本地/开发调试保留 |
+| `0x70` | C->S | `VoxelEditIntent` | 客户端编辑意图(macro / micro / object-part 通用入口) |
 
 ## 13. 关键消息
 
@@ -1697,6 +1698,8 @@ placement_flags     u32
 
 ### 13.6 VoxelImpactIntent `0x64`
 
+> **客户端直接编辑请使用 `VoxelEditIntent (0x70)`**(§13.6.1)。`VoxelImpactIntent` 自 Phase 1b 起被定位为"技能/工具系统专用通道":要么由服务端技能逻辑内部触发,要么用于需要客户端显式指定地形目标的特殊技能(例如远程爆破)。常规放置/破坏请走 typed `VoxelEditIntent`。
+
 技能系统通常在服务端内部直接触发体素影响；此消息只给工具、特殊交互或需要客户端显式指定地形目标的技能使用。
 
 ```text
@@ -1722,6 +1725,74 @@ client_hint_hash    u64
 | `client_hint_hash u64` | 非权威快速提示。 | 排障或快速拒绝明显过期目标。 |
 
 客户端不能提交 `source_actor_id`；Gate 必须从已鉴权会话注入 actor，并把注入后的服务端内部事件交给 Scene。服务器可以忽略 `client_hint_hash`，它只用于排障或快速拒绝明显过期的客户端目标。
+
+### 13.6.1 VoxelEditIntent `0x70`
+
+客户端编辑体素的 typed 入口。统一表达 macro / micro / object-part 三种粒度上的 place / break / damage / replace / attribute_patch 操作。固定线格式 91 字节(不含 1 字节 opcode);未指定字段使用 sentinel,wire 偏移恒定。
+
+```text
+request_id              u64
+client_intent_seq       u32
+logical_scene_id        u64
+action                  u8
+target_granularity      u8
+target_world_micro      i64 x, i64 y, i64 z
+face_normal             i8 nx, i8 ny, i8 nz
+material_id             u16
+blueprint_ref           u32
+object_ref              u64
+part_ref                u32
+attribute_patch_ref     u32
+expected_chunk_version  u64
+expected_cell_hash      u32
+client_hint_hash        u64
+```
+
+字段说明：
+
+| 字段 | 类型选择理由 | 用途 |
+| --- | --- | --- |
+| `request_id u64` | 与其他意图一致。 | 匹配 `VoxelIntentResult`。 |
+| `client_intent_seq u32` | 客户端局部序列。 | 幂等(重复提交不重复生效)和顺序。 |
+| `logical_scene_id u64` | 场景路由。 | 所属场景。 |
+| `action u8` | 操作类型小枚举。 | 见下表 `action`。 |
+| `target_granularity u8` | 粒度小枚举。 | 见下表 `target_granularity`。 |
+| `target_world_micro i64 x/y/z` | 世界微格目标可为负;复用 `VoxelImpactIntent` 同字段。 | 命中 / 锚点位置。`Macro` 粒度时由服务端 floor 到 macro。 |
+| `face_normal i8 nx/ny/nz` | 命中面法线只取 ±1 / 0,`i8` 足够。 | `Place` 时与目标位形成相邻偏移;其他 action 可为 (0,0,0)。 |
+| `material_id u16` | 与 `NormalBlockData.material_id` 一致。 | `Place` / `Replace` 时表示新材质;其他 action 取 0(unspecified)。 |
+| `blueprint_ref u32` | 蓝图目录索引;0 = unspecified。 | `Place` 大粒度蓝图时引用 prefab/blueprint;`PrefabPlaceIntent (0x67)` 仍保留作为蓝图主路径。 |
+| `object_ref u64` | 对象长期 id;0 = unspecified。 | `ObjectPart` 粒度时定位 owner object。 |
+| `part_ref u32` | 部件局部 id;0 = unspecified。 | `ObjectPart` 粒度时定位 part。 |
+| `attribute_patch_ref u32` | 属性补丁池索引;0 = unspecified。 | `AttributePatch` action 时引用补丁;其他 action 取 0。 |
+| `expected_chunk_version u64` | 客户端基准 chunk_version;`0xFFFF_FFFF_FFFF_FFFF` = unspecified。 | optimistic concurrency:服务端版本超过此值则拒绝(Stale)。真实版本范围 0..2^63-1,sentinel 不与合法值冲突。 |
+| `expected_cell_hash u32` | 客户端基准 cell_hash;`0xFFFF_FFFF` = unspecified。 | 局部一致性预校验。hash 全 1 概率极低,实际安全。 |
+| `client_hint_hash u64` | 与 `VoxelImpactIntent` 一致。 | 服务端可忽略;排障/快速拒绝过期目标。 |
+
+`action` 枚举:
+
+| 值 | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | `Place` | 在目标邻接位放置(`material_id` / `blueprint_ref` 至少一个有意义)。`face_normal` 决定相邻偏移。 |
+| 1 | `Break` | 破坏目标。 |
+| 2 | `Damage` | 减目标 health(具体规则在 attribute system 实施后明确)。 |
+| 3 | `Replace` | 用 `material_id` 替换目标材质。 |
+| 4 | `AttributePatch` | 应用 `attribute_patch_ref` 引用的补丁(attribute system 实施后明确)。 |
+
+未来值保留;decoder 应接受未知 `action` 并交业务层拒绝。
+
+`target_granularity` 枚举:
+
+| 值 | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | `Macro` | 命中整宏格。`target_world_micro` 由服务端 floor 到 macro。 |
+| 1 | `Micro` | 命中单 micro slot。`target_world_micro` 取 micro 精度。 |
+| 2 | `ObjectPart` | 命中由 `(object_ref, part_ref)` 标识的对象部件;`target_world_micro` 用于排障定位。 |
+
+未来值保留。
+
+客户端不能提交 actor;Gate 必须从已鉴权会话注入 actor,并把注入后的服务端内部事件交给 Scene。`client_hint_hash` 与 `expected_chunk_version` / `expected_cell_hash` 都是非权威预校验,服务端最终以自身真相为准。
+
+**Phase 1b 实施范围**:Gate 解码并落 observe 日志,**不路由到 Scene 也不返回 `VoxelIntentResult`**。Scene mutation API 与端到端通路在 Phase 1c 引入。客户端不应在 1b 期间发送 `VoxelEditIntent`;若发送,observe 日志能帮助定位"提交了但未生效"的现象。
 
 ### 13.7 VoxelIntentResult `0x68`
 

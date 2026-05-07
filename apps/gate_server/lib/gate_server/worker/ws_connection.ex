@@ -411,6 +411,10 @@ defmodule GateServer.WsConnection do
     {:ok, state}
   end
 
+  # DEPRECATED for client-side direct edit; protocol §13.6 / §13.6.1.
+  # Use VoxelEditIntent (0x70) for typed client edits. This handler stays for
+  # the skill/tool-system flow (and existing client-side wiring) until 1c
+  # removes it.
   defp dispatch({:voxel_impact_intent, request}, %{status: :in_scene} = state) do
     GateServer.CliObserve.emit("ws_voxel_impact_intent_received", %{
       connection_pid: self(),
@@ -456,6 +460,47 @@ defmodule GateServer.WsConnection do
 
   defp dispatch({:voxel_impact_intent, request}, state) do
     send_encoded(state, voxel_result_error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  # VoxelEditIntent (0x70) — typed client edit channel; protocol §13.6.1.
+  # Phase 1b: Gate decodes and emits observe; routing to Scene mutation API
+  # arrives in Phase 1c. We intentionally do NOT send a VoxelIntentResult
+  # here — clients should not be sending this opcode in 1b, and emitting a
+  # result would create a false "edit applied" impression.
+  defp dispatch({:voxel_edit_intent, request}, %{status: :in_scene} = state) do
+    GateServer.CliObserve.emit("ws_voxel_edit_intent_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      client_intent_seq: request.client_intent_seq,
+      logical_scene_id: request.logical_scene_id,
+      action: request.action,
+      target_granularity: request.target_granularity,
+      target_world_micro: request.target_world_micro,
+      face_normal: request.face_normal,
+      material_id: request.material_id,
+      blueprint_ref: request.blueprint_ref,
+      object_ref: request.object_ref,
+      part_ref: request.part_ref,
+      attribute_patch_ref: request.attribute_patch_ref,
+      expected_chunk_version: request.expected_chunk_version,
+      expected_cell_hash: request.expected_cell_hash,
+      client_hint_hash: request.client_hint_hash,
+      phase: "1b_decode_only_no_route"
+    })
+
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_edit_intent, request}, state) do
+    GateServer.CliObserve.emit("ws_voxel_edit_intent_dropped_invalid_state", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      status: state.status
+    })
+
     {:ok, state}
   end
 

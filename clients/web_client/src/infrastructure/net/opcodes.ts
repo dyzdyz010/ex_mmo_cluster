@@ -18,6 +18,7 @@ export const VoxelOpcode = {
   TagCatalogSnapshot: 0x6d,
   AttributeCatalogSnapshot: 0x6e,
   VoxelDebugProbe: 0x6f,
+  VoxelEditIntent: 0x70,
 } as const;
 
 export type VoxelOpcodeValue = (typeof VoxelOpcode)[keyof typeof VoxelOpcode];
