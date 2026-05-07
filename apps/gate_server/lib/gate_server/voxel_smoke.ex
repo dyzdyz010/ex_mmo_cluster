@@ -244,12 +244,10 @@ defmodule GateServer.VoxelSmoke do
            ensure_named(token_store, fn ->
              apply(token_store, :start_link, [[name: token_store]])
            end),
-         :ok <-
-           ensure_named(snapshot_store, fn ->
-             apply(snapshot_store, :start_link, [
-               [name: snapshot_store, write_token_store: token_store]
-             ])
-           end),
+         # Phase 1d: ChunkSnapshotStore is a stateless module backed by
+         # `DataService.Repo`. The Repo lives in `DataService.Application`'s
+         # supervision tree, so smoke runs only need to verify the module
+         # loaded — there is no GenServer to spin up here.
          :ok <-
            ensure_named(MapLedger, fn ->
              MapLedger.start_link(name: MapLedger, write_token_store: token_store)
@@ -262,8 +260,7 @@ defmodule GateServer.VoxelSmoke do
            ensure_named(SceneServer.Voxel.ChunkDirectory, fn ->
              SceneServer.Voxel.ChunkDirectory.start_link(
                name: SceneServer.Voxel.ChunkDirectory,
-               chunk_sup: SceneServer.VoxelChunkSup,
-               snapshot_store: snapshot_store
+               chunk_sup: SceneServer.VoxelChunkSup
              )
            end),
          :ok <-

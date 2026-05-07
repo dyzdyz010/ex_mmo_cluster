@@ -1,104 +1,135 @@
 defmodule DataService.Voxel.ChunkSnapshotStoreTest do
-  use ExUnit.Case, async: true
+  # Phase 1d: ChunkSnapshotStore is a stateless module backed by Postgres.
+  # The shared `voxel_chunks` table forces sync execution + per-test cleanup.
+  use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
 
-  test "accepts snapshots from the current token holder" do
-    {_token_store, snapshot_store, token} = start_stores()
-    attrs = snapshot_attrs(token, chunk_version: 1, chunk_hash: "hash-v1", data: <<1, 2, 3>>)
+  setup do
+    Repo.delete_all(VoxelChunkSnapshot)
 
-    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
+    {:ok, token_store} =
+      start_supervised({WriteTokenStore, name: :"#{__MODULE__}_#{:rand.uniform(1_000_000)}"})
 
-    debug_snapshot = ChunkSnapshotStore.snapshot(snapshot_store)
+    {:ok, token_store: token_store}
+  end
+
+  test "accepts snapshots from the current token holder", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
+
+    attrs = snapshot_attrs(token, chunk_version: 1, chunk_hash: hash(<<1>>), data: <<1, 2, 3>>)
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
+
+    debug_snapshot = ChunkSnapshotStore.snapshot()
     assert %{chunk_version: 1, data: <<1, 2, 3>>} = Map.fetch!(debug_snapshot, {1, {1, 1, 1}})
   end
 
-  test "rejects stale token writes after the region token advances" do
-    {token_store, snapshot_store, token_v1} = start_stores()
+  test "rejects stale token writes after the region token advances", %{token_store: token_store} do
+    token_v1 = upsert_token(token_store, token())
 
-    token_v2 = %{
-      token_v1
-      | lease_id: 101,
+    token_v2 =
+      Map.merge(token_v1, %{
+        lease_id: 101,
         owner_scene_instance_ref: 2_000,
         owner_epoch: 2,
         token_version: 2
-    }
+      })
 
     assert {:ok, :updated} = WriteTokenStore.upsert_token(token_store, token_v2)
 
     assert {:error, :lease_id_mismatch} =
-             ChunkSnapshotStore.put_snapshot(snapshot_store, snapshot_attrs(token_v1))
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token_v1),
+               write_token_store: token_store
+             )
 
-    assert {:error, :snapshot_not_found} =
-             ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:error, :snapshot_not_found} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
-  test "rejects older chunk versions from the current token holder" do
-    {_token_store, snapshot_store, token} = start_stores()
+  test "rejects older chunk versions from the current token holder", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
 
     assert {:ok, :inserted} =
              ChunkSnapshotStore.put_snapshot(
-               snapshot_store,
-               snapshot_attrs(token, chunk_version: 3, chunk_hash: "hash-v3", data: <<3>>)
+               snapshot_attrs(token, chunk_version: 3, chunk_hash: hash(<<3>>), data: <<3>>),
+               write_token_store: token_store
              )
 
     assert {:error, :stale_chunk_version} =
              ChunkSnapshotStore.put_snapshot(
-               snapshot_store,
-               snapshot_attrs(token, chunk_version: 2, chunk_hash: "hash-v2", data: <<2>>)
+               snapshot_attrs(token, chunk_version: 2, chunk_hash: hash(<<2>>), data: <<2>>),
+               write_token_store: token_store
              )
   end
 
-  test "treats same version and same payload replays as idempotent" do
-    {_token_store, snapshot_store, token} = start_stores()
-    attrs = snapshot_attrs(token, chunk_version: 7, chunk_hash: "hash-v7", data: <<7, 7>>)
+  test "treats same version and same payload replays as idempotent", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
+    attrs = snapshot_attrs(token, chunk_version: 7, chunk_hash: hash(<<7>>), data: <<7, 7>>)
 
-    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
-    assert {:ok, :unchanged} = ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
+
+    assert {:ok, :unchanged} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
   end
 
-  test "rejects same version writes with different payloads" do
-    {_token_store, snapshot_store, token} = start_stores()
-    attrs = snapshot_attrs(token, chunk_version: 7, chunk_hash: "hash-v7", data: <<7, 7>>)
+  test "rejects same version writes with different payloads", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
+    attrs = snapshot_attrs(token, chunk_version: 7, chunk_hash: hash(<<7>>), data: <<7, 7>>)
 
-    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
 
     assert {:error, :chunk_version_conflict} =
              ChunkSnapshotStore.put_snapshot(
-               snapshot_store,
-               snapshot_attrs(token, chunk_version: 7, chunk_hash: "hash-v7b", data: <<7, 8>>)
+               snapshot_attrs(token,
+                 chunk_version: 7,
+                 chunk_hash: hash(<<7, 7, 0xAB>>),
+                 data: <<7, 8>>
+               ),
+               write_token_store: token_store
              )
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
-    assert snapshot.chunk_hash == "hash-v7"
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert snapshot.chunk_hash == hash(<<7>>)
     assert snapshot.data == <<7, 7>>
   end
 
-  test "reads stored snapshots by logical scene chunk" do
-    {_token_store, snapshot_store, token} = start_stores()
-    attrs = snapshot_attrs(token, chunk_version: 1, chunk_hash: "hash-read", data: <<9, 8, 7>>)
+  test "reads stored snapshots by logical scene chunk", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
 
-    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
+    attrs =
+      snapshot_attrs(token, chunk_version: 1, chunk_hash: hash("read"), data: <<9, 8, 7>>)
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.logical_scene_id == 1
     assert snapshot.region_id == 10
     assert snapshot.chunk_version == 1
-    assert snapshot.chunk_hash == "hash-read"
+    assert snapshot.chunk_hash == hash("read")
     assert snapshot.data == <<9, 8, 7>>
   end
 
-  defp start_stores do
-    token_store = start_supervised!(WriteTokenStore)
+  test "rejects chunk_hash that is not exactly 8 bytes", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
 
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
+    assert {:error, :invalid_chunk_hash} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token, chunk_hash: <<1, 2, 3>>, data: <<>>),
+               write_token_store: token_store
+             )
+  end
 
-    token = token()
-    assert {:ok, :inserted} = WriteTokenStore.upsert_token(token_store, token)
-
-    {token_store, snapshot_store, token}
+  defp upsert_token(token_store, token) do
+    {:ok, _} = WriteTokenStore.upsert_token(token_store, token)
+    token
   end
 
   defp token do
@@ -126,10 +157,20 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
     ])
     |> Map.merge(%{
       chunk_coord: {1, 1, 1},
+      schema_version: 1,
+      chunk_size_in_macro: 16,
+      micro_resolution: 8,
       chunk_version: 1,
-      chunk_hash: "hash-v1",
+      chunk_hash: hash(<<1>>),
       data: <<1>>
     })
     |> Map.merge(Map.new(overrides))
+  end
+
+  # Convert any input into a stable 8-byte binary so the test fixtures match
+  # the bytea(8) constraint enforced by the migration.
+  defp hash(seed) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(seed))
+    |> :binary.part(0, 8)
   end
 end

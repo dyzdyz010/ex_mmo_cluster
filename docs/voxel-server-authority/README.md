@@ -18,7 +18,7 @@
 | 1a | RefinedCellData typed domain (read-only wire) | 已完成 | [`phase-1a-refined-cell-domain.md`](./phase-1a-refined-cell-domain.md) |
 | 1b | typed `VoxelEditIntent` (decode-only) + `VoxelImpactIntent` 进入 deprecation | 已完成 | [`phase-1b-typed-edit-intent.md`](./phase-1b-typed-edit-intent.md) |
 | 1c | Scene refined mutation API + `CellRefined` delta | 已完成 | [`phase-1c-refined-mutation.md`](./phase-1c-refined-mutation.md) |
-| 1d | DataService canonical 持久化 + chunk_hash 全字段覆盖回归 | 未开始 | — |
+| 1d | DataService canonical 持久化 + chunk_hash 全字段覆盖回归 | 已完成 | [`phase-1d-canonical-persistence.md`](./phase-1d-canonical-persistence.md) |
 | 2 | (原文档 Phase 2)refined micro edit 端到端贯通 | 未开始 | — |
 | 3 | prefab v2 事务化(World/Scene transaction coordinator) | 未开始 | — |
 | 4 | object provenance 与局部破坏 | 未开始 | — |

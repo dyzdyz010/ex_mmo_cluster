@@ -186,7 +186,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
        chunk_coord: storage.chunk_coord,
        storage: storage,
        lease: normalize_optional_lease(Keyword.get(opts, :lease)),
-       snapshot_store: Keyword.get(opts, :snapshot_store, DataService.Voxel.ChunkSnapshotStore),
        subscribers: %{},
        subscriber_monitors: %{},
        pending_fence: nil
@@ -522,7 +521,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     reply =
       persist_snapshot(
-        state.snapshot_store,
         state.lease,
         state.chunk_coord,
         state.storage,
@@ -589,7 +587,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
       if changed? do
         case persist_snapshot(
-               state.snapshot_store,
                intent.lease,
                state.chunk_coord,
                next_storage,
@@ -640,7 +637,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
       if changed_count > 0 do
         case persist_snapshot(
-               state.snapshot_store,
                lease,
                state.chunk_coord,
                next_storage,
@@ -1109,11 +1105,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
       MacroCellHeader.cell_mode_solid_block()
   end
 
-  defp persist_snapshot(_snapshot_store, nil, _chunk_coord, _storage, _payload) do
+  defp persist_snapshot(nil, _chunk_coord, _storage, _payload) do
     {:error, :missing_lease}
   end
 
-  defp persist_snapshot(snapshot_store, lease, chunk_coord, storage, payload) do
+  defp persist_snapshot(lease, chunk_coord, storage, payload) do
     chunk_hash = Codec.chunk_hash(storage)
 
     attrs =
@@ -1127,12 +1123,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
       ])
       |> Map.merge(%{
         chunk_coord: chunk_coord,
+        schema_version: storage.schema_version,
+        chunk_size_in_macro: storage.chunk_size_in_macro,
+        micro_resolution: storage.micro_resolution,
         chunk_version: storage.chunk_version,
         chunk_hash: Hash.encode64(chunk_hash),
         data: payload
       })
 
-    DataService.Voxel.ChunkSnapshotStore.put_snapshot(snapshot_store, attrs)
+    DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
   end
 
   defp chunk_in_lease_bounds?({cx, cy, cz}, lease) do

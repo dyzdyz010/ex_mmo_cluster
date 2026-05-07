@@ -1,6 +1,10 @@
 defmodule SceneServer.Voxel.ChunkProcessTest do
-  use ExUnit.Case, async: true
+  # Phase 1d: ChunkSnapshotStore writes through DataService.Repo. The shared
+  # voxel_chunks table forces sync execution + per-test cleanup.
+  use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.ChunkProcess
@@ -8,6 +12,12 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
+
+  setup do
+    Repo.delete_all(VoxelChunkSnapshot)
+    WriteTokenStore.reset(WriteTokenStore)
+    :ok
+  end
 
   test "builds snapshot payloads from hot chunk truth" do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
@@ -73,13 +83,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "apply_intent writes a solid block, increments versions, and persists snapshots" do
-    {_token_store, snapshot_store, lease} = start_snapshot_store()
+    lease = start_snapshot_store()
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok,
             %{
@@ -114,7 +121,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                )
              )
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 2
     assert byte_size(snapshot.chunk_hash) == 8
     assert {:ok, %{storage: stored_storage}} = Codec.decode_chunk_snapshot_payload(snapshot.data)
@@ -126,13 +133,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "apply_intent skips identical solid cells without persisting or pushing deltas" do
-    {_token_store, snapshot_store, lease} = start_snapshot_store()
+    lease = start_snapshot_store()
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     block = NormalBlockData.new(7)
 
@@ -161,18 +165,15 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              Codec.decode_chunk_snapshot_payload(noop_payload)
 
     assert noop_storage.chunk_version == 1
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
   end
 
   test "apply_intents batches many cells into one chunk version and one persist" do
-    {_token_store, snapshot_store, lease} = start_snapshot_store()
+    lease = start_snapshot_store()
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     attrs =
       for x <- 0..2 do
@@ -197,18 +198,15 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                MacroCellHeader.cell_mode_solid_block()
     end)
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
   end
 
   test "apply_intent rejects missing leases without mutating or persisting" do
-    {_token_store, snapshot_store, lease} = start_snapshot_store()
+    lease = start_snapshot_store()
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     attrs = lease |> intent_attrs() |> Map.delete(:lease)
 
@@ -216,18 +214,15 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert ChunkProcess.debug_state(chunk).chunk_version == 0
 
     assert {:error, :snapshot_not_found} =
-             ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+             ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
   test "apply_intent rejects expired leases without mutating or persisting" do
     expired_lease = %{lease() | expires_at_ms: System.system_time(:millisecond) - 1}
-    {_token_store, snapshot_store, _lease} = start_snapshot_store(expired_lease)
+    _lease = start_snapshot_store(expired_lease)
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:error, :lease_expired} =
              ChunkProcess.apply_intent(chunk, intent_attrs(expired_lease))
@@ -235,7 +230,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert ChunkProcess.debug_state(chunk).chunk_version == 0
 
     assert {:error, :snapshot_not_found} =
-             ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+             ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
   test "apply_intent rejects lease identity mismatches without mutating or persisting" do
@@ -248,19 +243,14 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
         owner_epoch: 2
     }
 
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(current_lease, :token_version, 2))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(current_lease, :token_version, 2)
+             )
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:error, :lease_id_mismatch} =
              ChunkProcess.apply_intent(chunk, intent_attrs(stale_lease))
@@ -268,17 +258,14 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert ChunkProcess.debug_state(chunk).chunk_version == 0
 
     assert {:error, :snapshot_not_found} =
-             ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+             ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
   test "apply_intent pushes a CellSolid ChunkDelta to subscribers after persistence" do
-    {_token_store, snapshot_store, lease} = start_snapshot_store()
+    lease = start_snapshot_store()
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -376,27 +363,22 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "persists snapshots through DataService write-token fence" do
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
     lease = lease()
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease, :token_version, 1)
+             )
 
     chunk =
-      start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease, snapshot_store: snapshot_store}
-      )
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, 0, NormalBlockData.new(7), cell_version: 1)
 
     assert {:ok, :inserted} = ChunkProcess.persist(chunk)
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
 
     assert snapshot.chunk_version == 1
     assert byte_size(snapshot.chunk_hash) == 8
@@ -405,27 +387,24 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "stale lease cannot persist after token advances" do
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
     lease_v1 = lease()
     lease_v2 = %{lease_v1 | lease_id: 101, owner_scene_instance_ref: 2_000, owner_epoch: 2}
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease_v1, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease_v1, :token_version, 1)
+             )
 
     assert {:ok, :updated} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease_v2, :token_version, 2))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease_v2, :token_version, 2)
+             )
 
     chunk =
       start_supervised!(
-        {ChunkProcess,
-         logical_scene_id: 1,
-         chunk_coord: {1, 1, 1},
-         lease: lease_v1,
-         snapshot_store: snapshot_store}
+        {ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease_v1}
       )
 
     assert {:ok, _storage} =
@@ -436,13 +415,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   describe "Phase 1c — :put_micro_block / :clear_micro_block intents" do
     test "apply_intent :put_micro_block writes a refined slot, bumps versions, persists snapshot" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1, persist_result: :inserted}} =
                ChunkProcess.apply_intent(
@@ -455,7 +431,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                  )
                )
 
-      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
       assert snapshot.chunk_version == 1
 
       assert {:ok, %{storage: stored_storage}} =
@@ -473,13 +449,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent :put_micro_block on already-occupied slot returns :micro_slot_already_occupied" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -505,13 +478,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent :clear_micro_block clears the slot and downgrades to empty when last" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       put = fn slot, mat ->
         ChunkProcess.apply_intent(
@@ -550,7 +520,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                  )
                )
 
-      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
 
       assert {:ok, %{storage: stored_storage}} =
                Codec.decode_chunk_snapshot_payload(snapshot.data)
@@ -560,13 +530,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent :clear_micro_block on empty slot is a noop (no version bump)" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 0, changed?: false, persist_result: :unchanged}} =
                ChunkProcess.apply_intent(
@@ -580,13 +547,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent :put_micro_block on a solid macro is rejected" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -620,7 +584,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent rejects micro_slot out of 0..511" do
-      {_token_store, _snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
         start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
@@ -640,7 +604,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent :put_micro_block requires micro_layer" do
-      {_token_store, _snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
         start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
@@ -657,13 +621,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "subscribers receive a CellRefined ChunkDelta (delta_kind=2) after a micro put" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 200)
       assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -695,13 +656,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "subscribers receive CellEmpty ChunkDelta (delta_kind=0) when last slot is cleared" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -735,13 +693,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "clear_micro_block leaves a refined cell ChunkDelta (delta_kind=2) when slots remain" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       put = fn slot, mat ->
         ChunkProcess.apply_intent(
@@ -784,13 +739,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   describe "Phase 1c — expected_chunk_version / expected_cell_hash optimistic concurrency" do
     test "apply_intent rejects when expected_chunk_version does not match current version" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -814,13 +766,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent accepts when expected_chunk_version matches current version" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -840,13 +789,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent treats 0xFFFF...FFFF expected_chunk_version sentinel as unspecified" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       # Bump current chunk_version to 1 first.
       assert {:ok, _} =
@@ -869,13 +815,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent rejects when expected_cell_hash does not match macro header" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -895,13 +838,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent treats 0xFFFF_FFFF expected_cell_hash sentinel as unspecified" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -915,13 +855,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
 
     test "apply_intent rejects garbage expected_chunk_version up front" do
-      {_token_store, snapshot_store, lease} = start_snapshot_store()
+      lease = start_snapshot_store()
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
-        )
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:error, :invalid_expected_chunk_version} =
                ChunkProcess.apply_intent(
@@ -948,16 +885,17 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     }
   end
 
+  # Phase 1d helper: ensures the global WriteTokenStore knows about the test
+  # lease and clears any previous voxel_chunks rows. Returns the lease the
+  # caller should plumb through ChunkProcess intents.
   defp start_snapshot_store(token \\ lease()) do
-    token_store = start_supervised!(WriteTokenStore)
+    assert {:ok, _} =
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(token, :token_version, 1)
+             )
 
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(token, :token_version, 1))
-
-    {token_store, snapshot_store, token}
+    token
   end
 
   defp intent_attrs(lease, overrides \\ []) do

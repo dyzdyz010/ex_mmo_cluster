@@ -1,6 +1,9 @@
 defmodule SceneServer.Voxel.ChunkDirectoryTest do
-  use ExUnit.Case, async: true
+  # Phase 1d: ChunkSnapshotStore is Repo-backed; tests share `voxel_chunks`.
+  use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.ChunkDirectory
@@ -10,6 +13,12 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
   alias SceneServer.VoxelChunkSup
+
+  setup do
+    Repo.delete_all(VoxelChunkSnapshot)
+    WriteTokenStore.reset(WriteTokenStore)
+    :ok
+  end
 
   test "lazily starts chunks and returns snapshot payloads" do
     chunk_sup = start_supervised!(VoxelChunkSup)
@@ -34,18 +43,15 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "apply_intent starts a chunk, writes through the lease fence, and persists" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
     lease = lease()
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease, :token_version, 1)
+             )
 
     assert {:ok,
             %{
@@ -71,7 +77,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert Storage.macro_header_at(storage, {3, 0, 0}).mode ==
              MacroCellHeader.cell_mode_solid_block()
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
 
     directory_snapshot = ChunkDirectory.snapshot(directory)
@@ -80,18 +86,15 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "apply_intents batches same-chunk writes through one persisted snapshot" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
     lease = lease()
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease, :token_version, 1)
+             )
 
     attrs =
       for x <- 0..2 do
@@ -117,7 +120,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
     assert storage.chunk_version == 1
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
   end
 
@@ -140,13 +143,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "prewarm_handoff loads persisted snapshots into target chunks without rewriting" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-
-    snapshot_store =
-      start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
     old_lease = lease()
     new_lease = %{old_lease | lease_id: 101, owner_scene_instance_ref: 2_000, owner_epoch: 2}
@@ -160,10 +157,13 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     payload = Codec.encode_chunk_snapshot_payload(%{request_id: 0, storage: storage})
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(old_lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(old_lease, :token_version, 1)
+             )
 
     assert {:ok, :inserted} =
-             ChunkSnapshotStore.put_snapshot(snapshot_store, %{
+             ChunkSnapshotStore.put_snapshot(%{
                logical_scene_id: 1,
                region_id: old_lease.region_id,
                chunk_coord: {1, 0, 0},

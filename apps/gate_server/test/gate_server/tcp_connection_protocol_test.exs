@@ -1124,13 +1124,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
       )
     end
 
-    if is_nil(Process.whereis(DataService.Voxel.ChunkSnapshotStore)) do
-      start_supervised!(
-        {DataService.Voxel.ChunkSnapshotStore,
-         name: DataService.Voxel.ChunkSnapshotStore,
-         write_token_store: DataService.Voxel.WriteTokenStore}
-      )
-    end
+    # Phase 1d: ChunkSnapshotStore is a stateless module backed by
+    # `DataService.Repo`; the test_helper boots the Repo, so there is
+    # nothing else to start here.
 
     :ok
   end

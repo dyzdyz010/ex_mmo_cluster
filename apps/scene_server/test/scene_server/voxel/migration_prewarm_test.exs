@@ -1,7 +1,9 @@
 defmodule SceneServer.Voxel.MigrationPrewarmTest do
-  use ExUnit.Case, async: true
+  # Phase 1d: ChunkSnapshotStore is Repo-backed; tests share `voxel_chunks`.
+  use ExUnit.Case, async: false
 
-  alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.Codec
@@ -11,13 +13,15 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
   alias SceneServer.Voxel.Storage
   alias SceneServer.VoxelChunkSup
 
+  setup do
+    Repo.delete_all(VoxelChunkSnapshot)
+    WriteTokenStore.reset(WriteTokenStore)
+    :ok
+  end
+
   test "prewarms handoff slices and returns world-ready ACK payloads" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-    snapshot_store = start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
     assert {:ok, %{acks: [ack_0, ack_1]}} =
              MigrationPrewarm.prewarm_slices(handoff(), chunk_directory: directory)
@@ -42,25 +46,26 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
 
   test "final catch-up persists source chunks and reloads target chunks" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-    snapshot_store = start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
     handoff = one_chunk_handoff()
     old_lease = handoff.old_lease
 
     source_directory =
       start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store},
+        {ChunkDirectory, chunk_sup: chunk_sup},
         id: :source_chunk_directory
       )
 
     target_directory =
       start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store},
+        {ChunkDirectory, chunk_sup: chunk_sup},
         id: :target_chunk_directory
       )
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(old_lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(old_lease, :token_version, 1)
+             )
 
     assert {:ok, %{chunk_version: 1}} =
              ChunkDirectory.apply_intent(source_directory, %{

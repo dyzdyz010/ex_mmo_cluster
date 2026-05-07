@@ -150,7 +150,6 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     {:ok,
      %{
        chunk_sup: Keyword.get(opts, :chunk_sup, SceneServer.VoxelChunkSup),
-       snapshot_store: Keyword.get(opts, :snapshot_store, DataService.Voxel.ChunkSnapshotStore),
        chunks: %{}
      }}
   end
@@ -387,8 +386,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   defp start_chunk(state, key, attrs) do
     chunk_opts = [
       logical_scene_id: attrs.logical_scene_id,
-      chunk_coord: attrs.chunk_coord,
-      snapshot_store: state.snapshot_store
+      chunk_coord: attrs.chunk_coord
     ]
 
     chunk_opts =
@@ -614,7 +612,6 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {{:ok, chunk_pid}, next_state} ->
         reply =
           case DataService.Voxel.ChunkSnapshotStore.get_snapshot(
-                 state.snapshot_store,
                  handoff.logical_scene_id,
                  chunk_coord
                ) do

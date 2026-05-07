@@ -1,7 +1,10 @@
 defmodule GateServer.WsConnectionVoxelTest do
   use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.WriteTokenStore
   alias GateServer.WsConnection
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
   alias SceneServer.Voxel.MacroCellHeader
@@ -53,6 +56,14 @@ defmodule GateServer.WsConnectionVoxelTest do
   setup do
     old_observe_log = Application.get_env(:gate_server, :cli_observe_log)
     stop_named(GateServer.Interface)
+
+    # Phase 1d: clear the shared `voxel_chunks` table + WriteTokenStore state
+    # so every test starts from a known baseline.
+    Repo.delete_all(VoxelChunkSnapshot)
+
+    if Process.whereis(WriteTokenStore) do
+      WriteTokenStore.reset(WriteTokenStore)
+    end
 
     on_exit(fn ->
       stop_named(GateServer.Interface)
@@ -1467,13 +1478,10 @@ defmodule GateServer.WsConnectionVoxelTest do
       )
     end
 
-    if is_nil(Process.whereis(DataService.Voxel.ChunkSnapshotStore)) do
-      start_supervised!(
-        {DataService.Voxel.ChunkSnapshotStore,
-         name: DataService.Voxel.ChunkSnapshotStore,
-         write_token_store: DataService.Voxel.WriteTokenStore}
-      )
-    end
+    # Phase 1d: ChunkSnapshotStore is a stateless module backed by
+    # `DataService.Repo`; the test_helper boots the Repo, so there is
+    # nothing else to start here. The shared `voxel_chunks` table is
+    # cleared per-test via `setup do Repo.delete_all(...) end`.
 
     :ok
   end

@@ -50,6 +50,14 @@ defmodule DataService.Voxel.WriteTokenStore do
     GenServer.call(server, :snapshot)
   end
 
+  @doc """
+  Clears every stored token. Test-only hatch; production code never needs to
+  drop the in-flight authority because lease lifetime is owned by World.
+  """
+  def reset(server \\ __MODULE__) do
+    GenServer.call(server, :reset)
+  end
+
   @impl true
   def init(_opts) do
     {:ok, %{tokens: %{}}}
@@ -74,6 +82,10 @@ defmodule DataService.Voxel.WriteTokenStore do
 
   def handle_call({:validate_write, write}, _from, state) do
     {:reply, validate_against_tokens(state.tokens, write, now_ms()), state}
+  end
+
+  def handle_call(:reset, _from, _state) do
+    {:reply, :ok, %{tokens: %{}}}
   end
 
   def handle_call(:snapshot, _from, state) do

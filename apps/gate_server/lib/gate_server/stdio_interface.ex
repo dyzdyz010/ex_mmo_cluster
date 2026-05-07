@@ -291,12 +291,25 @@ defmodule GateServer.StdioInterface do
   end
 
   defp data_snapshot_summary do
-    case safe_snapshot(Module.concat([DataService, Voxel, ChunkSnapshotStore])) do
-      snapshots when is_map(snapshots) ->
-        summarize_snapshot_table(snapshots)
+    # Phase 1d: ChunkSnapshotStore is a stateless module backed by Postgres,
+    # no GenServer pid to whereis. Call the module directly and tolerate
+    # Repo unavailability (e.g. Repo never started in a unit test).
+    module = Module.concat([DataService, Voxel, ChunkSnapshotStore])
 
-      other ->
-        other
+    case Code.ensure_loaded(module) do
+      {:module, ^module} ->
+        try do
+          summarize_snapshot_table(apply(module, :snapshot, []))
+        rescue
+          exception ->
+            %{available?: true, running?: false, reason: Exception.message(exception)}
+        catch
+          :exit, reason ->
+            %{available?: true, running?: false, reason: inspect(reason)}
+        end
+
+      _other ->
+        %{available?: false, running?: false}
     end
   end
 

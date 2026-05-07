@@ -1,6 +1,8 @@
 defmodule SceneServer.Voxel.CodecTest do
   use ExUnit.Case, async: true
 
+  import Bitwise, only: [bxor: 2]
+
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
@@ -851,5 +853,270 @@ defmodule SceneServer.Voxel.CodecTest do
       object_refs: [object_ref],
       boundary_cache: 0
     )
+  end
+
+  # ============================================================================
+  # Phase 1d — chunk_hash 全字段覆盖回归
+  #
+  # The hash MUST change whenever any canonical-truth field changes, and MUST
+  # NOT change when only derived / line-wire fields change. The matrix below
+  # catches accidental schema drift: if a future PR adds a new truth field
+  # (e.g. `voxel_attribute_sets` content for Phase 5) the encoder will need
+  # an explicit branch and this test becomes the contract that flags it.
+  # ============================================================================
+  describe "chunk_hash 全字段覆盖回归 (Phase 1d)" do
+    setup do
+      {:ok, baseline: full_baseline_storage()}
+    end
+
+    # ─────── truth fields: changes MUST flip chunk_hash ───────
+
+    test "logical_scene_id is canonical truth", %{baseline: storage} do
+      assert_truth(storage, %{storage | logical_scene_id: storage.logical_scene_id + 1})
+    end
+
+    test "chunk_coord (every axis) is canonical truth", %{baseline: storage} do
+      {x, y, z} = storage.chunk_coord
+      assert_truth(storage, %{storage | chunk_coord: {x + 1, y, z}})
+      assert_truth(storage, %{storage | chunk_coord: {x, y + 1, z}})
+      assert_truth(storage, %{storage | chunk_coord: {x, y, z + 1}})
+    end
+
+    test "macro_header.mode is canonical truth", %{baseline: storage} do
+      assert_truth(storage, mutate_first_macro_header(storage, &%{&1 | mode: 0}))
+    end
+
+    test "macro_header.flags (canonical bits) is canonical truth", %{baseline: storage} do
+      # 0x10 is outside the transient dirty mask (0x07), so flipping it goes
+      # through canonical_flags/1 unchanged and reaches the hash input.
+      assert_truth(
+        storage,
+        mutate_first_macro_header(storage, &%{&1 | flags: bxor(&1.flags, 0x10)})
+      )
+    end
+
+    test "macro_header.payload_index is canonical truth", %{baseline: storage} do
+      assert_truth(
+        storage,
+        mutate_first_macro_header(storage, &%{&1 | payload_index: &1.payload_index + 1})
+      )
+    end
+
+    test "macro_header.environment_index is canonical truth", %{baseline: storage} do
+      assert_truth(
+        storage,
+        mutate_first_macro_header(storage, &%{&1 | environment_index: 0xFFFE})
+      )
+    end
+
+    test "normal_blocks fields are canonical truth", %{baseline: storage} do
+      [block | rest] = storage.normal_blocks
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | material_id: block.material_id + 1} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | state_flags: bxor(block.state_flags, 0x1)} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | health: block.health + 1} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | temperature_delta: block.temperature_delta + 1} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | moisture_delta: block.moisture_delta + 1} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | attribute_set_ref: block.attribute_set_ref + 1} | rest]
+      })
+
+      assert_truth(storage, %{
+        storage
+        | normal_blocks: [%{block | tag_set_ref: block.tag_set_ref + 1} | rest]
+      })
+    end
+
+    test "refined_cells.occupancy_words is canonical truth", %{baseline: storage} do
+      [cell | rest] = storage.refined_cells
+      [layer | layer_rest] = cell.layers
+      delta = 0xF000
+
+      # Storage.normalize! enforces `occupancy_words == OR(layer.mask_words)`,
+      # so bumping the cell's occupancy without bumping the matching layer
+      # raises. Flip both in lockstep — the hash MUST still differ because
+      # the canonical truth payload encodes both.
+      bumped = %{
+        cell
+        | occupancy_words: List.update_at(cell.occupancy_words, 0, &bxor(&1, delta)),
+          layers: [
+            %{layer | mask_words: List.update_at(layer.mask_words, 0, &bxor(&1, delta))}
+            | layer_rest
+          ]
+      }
+
+      assert_truth(storage, %{storage | refined_cells: [bumped | rest]})
+    end
+
+    test "refined_cells.boundary_cache is canonical truth", %{baseline: storage} do
+      [cell | rest] = storage.refined_cells
+
+      assert_truth(
+        storage,
+        %{storage | refined_cells: [%{cell | boundary_cache: cell.boundary_cache + 1} | rest]}
+      )
+    end
+
+    test "refined_cells.layers (each field) are canonical truth", %{baseline: storage} do
+      [cell | rest_cells] = storage.refined_cells
+      [layer | rest_layers] = cell.layers
+
+      [
+        %{layer | material_id: layer.material_id + 1},
+        %{layer | state_flags: bxor(layer.state_flags, 0x1)},
+        %{layer | health: layer.health + 1},
+        %{layer | attribute_set_ref: layer.attribute_set_ref + 1},
+        %{layer | tag_set_ref: layer.tag_set_ref + 1},
+        %{layer | owner_object_id: layer.owner_object_id + 1},
+        %{layer | owner_part_id: layer.owner_part_id + 1}
+      ]
+      |> Enum.each(fn mutated_layer ->
+        next_cell = %{cell | layers: [mutated_layer | rest_layers]}
+        assert_truth(storage, %{storage | refined_cells: [next_cell | rest_cells]})
+      end)
+    end
+
+    test "refined_cells.object_refs (each field) are canonical truth", %{baseline: storage} do
+      [cell | rest_cells] = storage.refined_cells
+      [object_ref | rest_refs] = cell.object_refs
+
+      [
+        %{object_ref | owner_object_id: object_ref.owner_object_id + 1},
+        %{object_ref | owner_part_id: object_ref.owner_part_id + 1},
+        %{
+          object_ref
+          | mask_words: List.update_at(object_ref.mask_words, 0, &bxor(&1, 0x1))
+        }
+      ]
+      |> Enum.each(fn mutated_ref ->
+        next_cell = %{cell | object_refs: [mutated_ref | rest_refs]}
+        assert_truth(storage, %{storage | refined_cells: [next_cell | rest_cells]})
+      end)
+    end
+
+    test "environment_summaries fields are canonical truth", %{baseline: storage} do
+      [summary | rest] = storage.environment_summaries
+
+      [
+        %{summary | default_temperature: summary.default_temperature + 1},
+        %{summary | default_moisture: summary.default_moisture + 1},
+        %{summary | current_temperature: summary.current_temperature + 1},
+        %{summary | current_moisture: summary.current_moisture + 1},
+        %{summary | field_mask: bxor(summary.field_mask, 0x1)},
+        %{summary | source_hash: summary.source_hash + 1}
+      ]
+      |> Enum.each(fn mutated_summary ->
+        assert_truth(storage, %{storage | environment_summaries: [mutated_summary | rest]})
+      end)
+    end
+
+    # ─────── derived fields: changes MUST NOT flip chunk_hash ───────
+
+    test "chunk_version does NOT change chunk_hash", %{baseline: storage} do
+      assert_derived(storage, %{storage | chunk_version: storage.chunk_version + 1})
+    end
+
+    test "dirty_bounds (min_macro / max_macro / reason_flags) does NOT change chunk_hash",
+         %{baseline: storage} do
+      bounds = storage.dirty_bounds
+
+      # Bump max first so the new (min, max) pair stays half-open valid when
+      # we then bump min in a separate mutation.
+      grown_max = %{bounds | max_macro: {15, 15, 15}}
+      assert_derived(storage, %{storage | dirty_bounds: grown_max})
+
+      shifted_window = %{bounds | min_macro: {1, 1, 1}, max_macro: {15, 15, 15}}
+      assert_derived(storage, %{storage | dirty_bounds: shifted_window})
+
+      assert_derived(storage, %{storage | dirty_bounds: %{bounds | reason_flags: 0xFFFF}})
+    end
+
+    test "chunk-level flags does NOT change chunk_hash", %{baseline: storage} do
+      assert_derived(storage, %{storage | flags: bxor(storage.flags, 0x1)})
+    end
+
+    test "macro_header transient flag bits do NOT change chunk_hash", %{baseline: storage} do
+      # 0x07 = dirty_storage | dirty_mesh | dirty_rules — all transient.
+      assert_derived(
+        storage,
+        mutate_first_macro_header(storage, &%{&1 | flags: bxor(&1.flags, 0x07)})
+      )
+    end
+
+    test "macro_header.cell_version does NOT change chunk_hash", %{baseline: storage} do
+      mutated =
+        mutate_first_macro_header(storage, &%{&1 | cell_version: (&1.cell_version || 0) + 7})
+
+      assert_derived(storage, mutated)
+    end
+
+    test "macro_header.cell_hash (wire field) does NOT change chunk_hash", %{baseline: storage} do
+      mutated =
+        mutate_first_macro_header(storage, &%{&1 | cell_hash: (&1.cell_hash || 0) + 13})
+
+      assert_derived(storage, mutated)
+    end
+  end
+
+  defp full_baseline_storage do
+    block = NormalBlockData.new(11, health: 100, attribute_set_ref: 5, tag_set_ref: 6)
+
+    seeded =
+      0..2
+      |> Enum.reduce(Storage.empty(123, {0, 0, 0}, chunk_version: 9), fn i, acc ->
+        Storage.put_solid_block(acc, {i, 0, 0}, block,
+          cell_version: 1,
+          cell_hash: 0xA000_0000 + i
+        )
+      end)
+
+    env =
+      MacroEnvironmentSummary.new(
+        default_temperature: 20,
+        default_moisture: 40,
+        current_temperature: 25,
+        current_moisture: 38,
+        field_mask: 0x000F,
+        source_hash: 0xCAFE_BABE
+      )
+
+    refined = sample_refined_cell_with_object_ref()
+
+    %{seeded | environment_summaries: [env], refined_cells: [refined]}
+    |> Storage.normalize!()
+  end
+
+  defp mutate_first_macro_header(storage, fun) do
+    [header | rest] = storage.macro_headers
+    %{storage | macro_headers: [fun.(header) | rest]}
+  end
+
+  defp assert_truth(baseline, mutated) do
+    refute Codec.chunk_hash(baseline) == Codec.chunk_hash(mutated)
+  end
+
+  defp assert_derived(baseline, mutated) do
+    assert Codec.chunk_hash(baseline) == Codec.chunk_hash(mutated)
   end
 end

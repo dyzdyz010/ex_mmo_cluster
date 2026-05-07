@@ -1,12 +1,20 @@
 defmodule SceneServer.Voxel.BuildTransactionApplierTest do
-  use ExUnit.Case, async: true
+  # Phase 1d: ChunkSnapshotStore is Repo-backed; tests share `voxel_chunks`.
+  use ExUnit.Case, async: false
 
-  alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Repo
+  alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.BuildTransactionApplier
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.VoxelChunkSup
+
+  setup do
+    Repo.delete_all(VoxelChunkSnapshot)
+    WriteTokenStore.reset(WriteTokenStore)
+    :ok
+  end
 
   @logical_scene_id 1
   @region_id 10
@@ -130,11 +138,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
 
   defp boot do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    token_store = start_supervised!(WriteTokenStore)
-    snapshot_store = start_supervised!({ChunkSnapshotStore, write_token_store: token_store})
-
-    directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, snapshot_store: snapshot_store})
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
     lease = %{
       logical_scene_id: @logical_scene_id,
@@ -148,7 +152,10 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
     }
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(token_store, Map.put(lease, :token_version, 1))
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease, :token_version, 1)
+             )
 
     {directory, lease}
   end
