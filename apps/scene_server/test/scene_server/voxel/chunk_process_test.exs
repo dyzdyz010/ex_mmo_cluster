@@ -594,7 +594,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                  intent_attrs(lease, macro: {0, 0, 0}, block: NormalBlockData.new(11))
                )
 
-      assert {:error, :invalid_voxel_intent} =
+      # Decision 2 / Phase 1c v1: solid macros do NOT auto-promote to refined
+      # under a micro write. Surface the specific reason so client UX can
+      # explain why the click was a no-op.
+      assert {:error, :cannot_micro_edit_solid_macro} =
                ChunkProcess.apply_intent(
                  chunk,
                  micro_intent_attrs(lease,
@@ -602,6 +605,16 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                    macro: {0, 0, 0},
                    micro_slot: 5,
                    micro_layer: %{material_id: 17}
+                 )
+               )
+
+      assert {:error, :cannot_micro_edit_solid_macro} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5
                  )
                )
     end

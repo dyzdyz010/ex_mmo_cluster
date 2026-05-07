@@ -107,6 +107,9 @@ adjusted_target_world_micro = target_world_micro + face_normal  # 单个 micro s
 
 ## 进度日志
 
+- 2026-05-07: **1c-6 加固落地**,scene_server 247 tests 不变(强化已有 solid → micro 用例),gate_server 176 → 181 tests, 0 failures。
+  - **ChunkProcess 错误归一**:`build_intent_storage(:put_micro_block / :clear_micro_block)` 在 `Storage` 调用前先 `solid_cell?` 预检,直接返回 `:cannot_micro_edit_solid_macro`,不再被 `rescue ArgumentError` 吞成笼统的 `:invalid_voxel_intent`。客户端 UI 现在可以解释为什么右键命中 prefab(solid macro)的 micro 操作没生效。同步把 chunk_process 旧测试改为期望具体 reason,并补 clear_micro_block 路径的对称用例。
+  - **Gate 加固测试**:`Phase 1c-6 hardening` describe 块覆盖:未知 `action` 码 → `:invalid_voxel_edit_intent`;未知 `target_granularity` 码 → `:invalid_voxel_edit_intent`;Place + Micro 时 `object_ref > u63 max` → `:invalid_object_ref`;Break 操作忽略 `face_normal`(决策 6:Break 不偏移),验证 clicked macro 被清空、+1 邻居仍空;Place + Micro 在 solid macro 上 → `:cannot_micro_edit_solid_macro` 端到端贯通。
 - 2026-05-07: **1c-5 落地**(web client 解锁 micro 编辑 + 消费 CellRefined delta),web_client 206 → 210 tests, 0 failures;tsc clean;Elixir 测试不动。
   - **网络层**:`ServerVoxelTransportPort.sendVoxelEditIntent` + `ServerMovementTransport.sendVoxelEditIntent` 实现,落 `voxel.edit_intent_sent` observe。`OnlineVoxelWorldAdapter.placeMicroBlock` / `breakMicroBlock` 改用 typed 0x70(action=Place/Break,granularity=Micro,face_normal=(0,0,0))。 micro_slot 从 `(macro × 8 + micro)` world-micro 计算,服务端用 face_normal=0 直接 floor 命中目标 slot(决策 6)。
   - **Delta 消费**:`VoxelChunkDeltaOp.refinedCell?: RefinedCellWireData` 字段在 `decodeChunkDelta` 中按 `delta_kind=2` 预解码。`OnlineVoxelWorldAdapter.applyDelta` 加 `delta_kind=2` 分支:wire → FRefinedCellData(经 `wireToRefinedCell` lossy adapter)→ `ChunkStorage.applyRefinedCellFromWire`,正确处理 Empty/SolidBlock/Refined 三态转换。`applySnapshot` 同样把 `refinedCellsWire` materialize 进 `storage.refinedCells`,使 reload 后 refined macro 渲染一致。

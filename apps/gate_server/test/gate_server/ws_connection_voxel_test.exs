@@ -1032,6 +1032,212 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
   end
 
+  describe "Phase 1c-6 — VoxelEditIntent (0x70) hardening" do
+    test "voxel_edit_intent rejects unknown action codes" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9801,
+          client_intent_seq: 1,
+          logical_scene_id: 700,
+          action: 99,
+          target_granularity: 0
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9801,
+        client_intent_seq: 1,
+        logical_scene_id: 700,
+        reason: ":invalid_voxel_edit_intent"
+      )
+    end
+
+    test "voxel_edit_intent rejects unknown granularity codes" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9802,
+          client_intent_seq: 2,
+          logical_scene_id: 701,
+          action: 0,
+          target_granularity: 99
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9802,
+        client_intent_seq: 2,
+        logical_scene_id: 701,
+        reason: ":invalid_voxel_edit_intent"
+      )
+    end
+
+    test "voxel_edit_intent (Place + Micro) rejects object_ref outside u63 range" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9803,
+          client_intent_seq: 3,
+          logical_scene_id: 702,
+          action: 0,
+          target_granularity: 1,
+          object_ref: 0x8000_0000_0000_0000
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9803,
+        client_intent_seq: 3,
+        logical_scene_id: 702,
+        reason: ":invalid_object_ref"
+      )
+    end
+
+    test "voxel_edit_intent (Break) ignores face_normal — target stays at the clicked cell" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 703
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # Seed a solid macro at chunk-local {0, 0, 0} (world_micro {0..7, 0..7, 0..7}).
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9810,
+          client_intent_seq: 10,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {0, 0, 0},
+          material_id: 1
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9810,
+        client_intent_seq: 10,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
+
+      # Break with face_normal=(1,0,0); decision 6 says Break ignores
+      # face_normal, so the clicked macro {0, 0, 0} is the cell that gets
+      # cleared (NOT the +1 neighbour at {1, 0, 0}).
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9811,
+          client_intent_seq: 11,
+          logical_scene_id: logical_scene_id,
+          action: 1,
+          target_granularity: 0,
+          target_world_micro: {0, 0, 0},
+          face_normal: {1, 0, 0}
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9811,
+        client_intent_seq: 11,
+        logical_scene_id: logical_scene_id,
+        result_ref: 2
+      )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+
+      assert {:ok, %{storage: storage}} =
+               SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot.data)
+
+      # The clicked macro {0, 0, 0} is empty (the Break landed there);
+      # the offset-by-face_normal macro {1, 0, 0} is still empty (never
+      # touched).
+      assert Storage.macro_header_at(storage, {0, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_empty()
+
+      assert Storage.macro_header_at(storage, {1, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_empty()
+    end
+
+    test "voxel_edit_intent (Place + Micro) on solid macro rejects with :cannot_micro_edit_solid_macro" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 704
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # Seed solid macro at world_macro {2, 2, 2} → world_micro {16, 16, 16}.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9820,
+          client_intent_seq: 20,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {16, 16, 16},
+          material_id: 1
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9820,
+        client_intent_seq: 20,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
+
+      # Now try to Place a Micro slot inside that solid macro — decision 2
+      # rejects this without coercing the macro into refined mode.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9821,
+          client_intent_seq: 21,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 1,
+          target_world_micro: {16, 16, 16},
+          face_normal: {0, 0, 0},
+          material_id: 7
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9821,
+        client_intent_seq: 21,
+        logical_scene_id: logical_scene_id,
+        reason: ":cannot_micro_edit_solid_macro"
+      )
+    end
+  end
+
   defp put_connection_in_scene(pid) do
     :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
     _ = :sys.get_state(pid)

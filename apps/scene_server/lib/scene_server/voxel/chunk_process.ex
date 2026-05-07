@@ -929,15 +929,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
       |> Keyword.put_new(:cell_version, next_version)
       |> Keyword.put_new(:cell_hash, 0)
 
-    if micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
-      {:error, :micro_slot_already_occupied}
-    else
-      storage =
-        storage
-        |> Storage.put_micro_block(intent.macro, intent.micro_slot, intent.micro_layer, opts)
-        |> bump_chunk_version()
+    cond do
+      solid_cell?(storage, intent.macro) ->
+        {:error, :cannot_micro_edit_solid_macro}
 
-      {:ok, storage, true}
+      micro_slot_occupied?(storage, intent.macro, intent.micro_slot) ->
+        {:error, :micro_slot_already_occupied}
+
+      true ->
+        storage =
+          storage
+          |> Storage.put_micro_block(intent.macro, intent.micro_slot, intent.micro_layer, opts)
+          |> bump_chunk_version()
+
+        {:ok, storage, true}
     end
   rescue
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
@@ -951,15 +956,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
       |> Keyword.put_new(:cell_version, next_version)
       |> Keyword.put_new(:cell_hash, 0)
 
-    if not micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
-      {:ok, storage, false}
-    else
-      storage =
-        storage
-        |> Storage.clear_micro_block(intent.macro, intent.micro_slot, opts)
-        |> bump_chunk_version()
+    cond do
+      solid_cell?(storage, intent.macro) ->
+        {:error, :cannot_micro_edit_solid_macro}
 
-      {:ok, storage, true}
+      not micro_slot_occupied?(storage, intent.macro, intent.micro_slot) ->
+        {:ok, storage, false}
+
+      true ->
+        storage =
+          storage
+          |> Storage.clear_micro_block(intent.macro, intent.micro_slot, opts)
+          |> bump_chunk_version()
+
+        {:ok, storage, true}
     end
   rescue
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
@@ -1092,6 +1102,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp empty_cell?(storage, macro_index) do
     Storage.macro_header_at(storage, macro_index).mode == MacroCellHeader.cell_mode_empty()
+  end
+
+  defp solid_cell?(storage, macro_index) do
+    Storage.macro_header_at(storage, macro_index).mode ==
+      MacroCellHeader.cell_mode_solid_block()
   end
 
   defp persist_snapshot(_snapshot_store, nil, _chunk_coord, _storage, _payload) do
