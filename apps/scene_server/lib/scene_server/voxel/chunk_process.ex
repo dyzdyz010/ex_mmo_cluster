@@ -115,22 +115,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc """
-  Reserves a transaction fence for an upcoming voxel write.
+  Reserves a transaction fence for an upcoming voxel batch write.
 
-  The fence stores the normalized intent without applying it. While a fence is
-  held, ad-hoc `apply_intent/2` for any other transaction is rejected; the
-  transaction must use `commit_transaction/2` or `abort_transaction/2` to
-  release the chunk. Re-preparing the same transaction with the same intent is
-  idempotent and returns the original fence summary.
+  `intents` is a non-empty list of `apply_intent` payloads scoped to this chunk
+  (every entry must agree on `:logical_scene_id` and `:chunk_coord` with the
+  process state). The fence stores the normalized intent batch without
+  applying it; while a fence is held, ad-hoc `apply_intent/2` /
+  `apply_intents/2` for any other transaction is rejected. The transaction
+  must use `commit_transaction/2` or `abort_transaction/2` to release the
+  chunk. Re-preparing the same transaction with the same batch is idempotent
+  and returns the original fence summary.
   """
-  def prepare_transaction(server, transaction_id, attrs) when is_binary(transaction_id) do
-    GenServer.call(server, {:prepare_transaction, transaction_id, attrs})
+  def prepare_transaction(server, transaction_id, intents)
+      when is_binary(transaction_id) and is_list(intents) do
+    GenServer.call(server, {:prepare_transaction, transaction_id, intents})
   end
 
   @doc """
-  Applies the previously fenced transaction intent and releases the fence.
+  Applies the previously fenced transaction intent batch and releases the fence.
 
-  Returns the same shape as `apply_intent/2` so callers can publish the
+  Returns the same shape as `apply_intents/2` so callers can publish the
   resulting snapshot payload. Calling commit on a chunk that does not hold the
   matching transaction fence returns `{:error, :transaction_not_prepared}`.
   """
@@ -341,8 +345,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  def handle_call({:prepare_transaction, transaction_id, attrs}, _from, state) do
-    case prepare_transaction_in_state(state, transaction_id, attrs) do
+  def handle_call({:prepare_transaction, transaction_id, intents}, _from, state) do
+    case prepare_transaction_in_state(state, transaction_id, intents) do
       {:ok, summary, next_state} ->
         emit_transaction_event(
           next_state,
@@ -364,16 +368,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   def handle_call({:commit_transaction, transaction_id}, _from, state) do
     case commit_transaction_in_state(state, transaction_id) do
-      {:ok, reply, next_state, intent} ->
+      {:ok, reply, next_state, intents} ->
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
           chunk_version: next_state.storage.chunk_version,
           snapshot_bytes: byte_size(reply.snapshot_payload),
           changed?: reply.changed?,
+          changed_count: reply.changed_count,
+          skipped_count: reply.skipped_count,
+          intent_count: length(intents),
           persist_result: reply.persist_result
         })
 
         if reply.changed? do
-          push_intent_outcome(state, next_state, intent, :commit_transaction)
+          push_snapshot_fallbacks(next_state, :commit_transaction)
         end
 
         {:reply, {:ok, reply}, next_state}
@@ -708,7 +715,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
     }
   end
 
-  defp prepare_transaction_in_state(state, transaction_id, attrs) do
+  defp prepare_transaction_in_state(_state, _transaction_id, []) do
+    {:error, :empty_intents}
+  end
+
+  defp prepare_transaction_in_state(state, transaction_id, intents) when is_list(intents) do
     case state.pending_fence do
       %{transaction_id: ^transaction_id} = existing ->
         {:ok, fence_summary(existing), state}
@@ -717,9 +728,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
         {:error, {:chunk_already_fenced, holder}}
 
       nil ->
-        with {:ok, intent} <- normalize_apply_intent(attrs),
-             :ok <- validate_intent_scope(state, intent) do
-          fence = %{transaction_id: transaction_id, intent: intent, fenced_at_ms: now_ms()}
+        with {:ok, normalized} <- normalize_apply_intents(intents),
+             :ok <- validate_batch_scope(state, normalized),
+             :ok <- validate_batch_preconditions(state, normalized) do
+          fence = %{
+            transaction_id: transaction_id,
+            intents: normalized,
+            fenced_at_ms: now_ms()
+          }
+
           {:ok, fence_summary(fence), %{state | pending_fence: fence}}
         end
     end
@@ -727,10 +744,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp commit_transaction_in_state(state, transaction_id) do
     case state.pending_fence do
-      %{transaction_id: ^transaction_id, intent: intent} ->
-        case apply_normalized_intent(state, intent) do
+      %{transaction_id: ^transaction_id, intents: intents} ->
+        case apply_normalized_intents(state, intents) do
           {:ok, reply, next_state_after_apply} ->
-            {:ok, reply, %{next_state_after_apply | pending_fence: nil}, intent}
+            {:ok, reply, %{next_state_after_apply | pending_fence: nil}, intents}
 
           {:error, reason} ->
             {:error, reason}
@@ -755,11 +772,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp fence_summary(fence) do
+    intents = fence.intents
+    chunk_coord = if first = List.first(intents), do: first.chunk_coord, else: nil
+
     %{
       transaction_id: fence.transaction_id,
-      chunk_coord: fence.intent.chunk_coord,
-      operation: fence.intent.operation,
-      macro: fence.intent.macro,
+      chunk_coord: chunk_coord,
+      intent_count: length(intents),
       fenced_at_ms: fence.fenced_at_ms
     }
   end

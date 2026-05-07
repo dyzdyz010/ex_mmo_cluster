@@ -22,14 +22,14 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
   @owner_scene_instance_ref 1_000
   @owner_epoch 1
 
-  test "prepares every affected chunk and commit applies the staged intent" do
+  test "prepares every affected chunk and commit applies the staged batch" do
     {directory, lease} = boot()
 
     participant = participant(affected_chunks: [{0, 0, 0}, {1, 0, 0}])
 
     intents = %{
-      {0, 0, 0} => intent_attrs(lease, {0, 0, 0}, {2, 0, 0}, 21),
-      {1, 0, 0} => intent_attrs(lease, {1, 0, 0}, {3, 0, 0}, 22)
+      {0, 0, 0} => [intent_attrs(lease, {0, 0, 0}, {2, 0, 0}, 21)],
+      {1, 0, 0} => [intent_attrs(lease, {1, 0, 0}, {3, 0, 0}, 22)]
     }
 
     assert {:ok, %{prepared_chunks: prepared}} =
@@ -39,7 +39,10 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
              )
 
     assert length(prepared) == 2
-    assert Enum.all?(prepared, fn {_chunk, summary} -> summary.transaction_id == "tx-happy" end)
+
+    assert Enum.all?(prepared, fn {_chunk, summary} ->
+             summary.transaction_id == "tx-happy" and summary.intent_count == 1
+           end)
 
     assert {:ok, %{committed_chunks: committed}} =
              BuildTransactionApplier.commit(participant, "tx-happy",
@@ -52,15 +55,75 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
     Enum.each(committed, fn {_chunk_coord, summary} ->
       assert summary.chunk_version == 1
       assert is_binary(summary.snapshot_payload)
+      assert summary.changed_count == 1
     end)
   end
 
-  test "abort releases fences without applying the staged intent" do
+  test "single chunk batch with multiple macros commits atomically" do
+    {directory, lease} = boot()
+
+    chunk = {0, 0, 0}
+    participant = participant(affected_chunks: [chunk])
+
+    intents = %{
+      chunk => [
+        intent_attrs(lease, chunk, {1, 0, 0}, 41),
+        intent_attrs(lease, chunk, {2, 0, 0}, 42),
+        intent_attrs(lease, chunk, {3, 0, 0}, 43)
+      ]
+    }
+
+    assert {:ok, %{prepared_chunks: [{^chunk, summary}]}} =
+             BuildTransactionApplier.prepare(participant, "tx-batch-happy", intents,
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+
+    assert summary.intent_count == 3
+
+    assert {:ok, %{committed_chunks: [{^chunk, commit_summary}]}} =
+             BuildTransactionApplier.commit(participant, "tx-batch-happy",
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+
+    assert commit_summary.changed_count == 3
+    assert commit_summary.skipped_count == 0
+    assert commit_summary.chunk_version == 1
+  end
+
+  test "batch prepare rejected when any intent in the chunk is invalid" do
+    {directory, lease} = boot()
+
+    chunk = {0, 0, 0}
+    participant = participant(affected_chunks: [chunk])
+
+    # Second intent targets a different chunk than the prepare batch claims,
+    # so normalize_apply_intents_targets rejects the whole batch.
+    intents = %{
+      chunk => [
+        intent_attrs(lease, chunk, {1, 0, 0}, 51),
+        intent_attrs(lease, {1, 0, 0}, {0, 0, 0}, 52)
+      ]
+    }
+
+    assert {:error, {:prepare_failed, ^chunk, :batch_cross_chunk_unsupported}} =
+             BuildTransactionApplier.prepare(participant, "tx-batch-invalid", intents,
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+
+    # Chunk should remain free for ad-hoc writes since the fence never landed.
+    assert {:ok, %{chunk_version: 1}} =
+             ChunkDirectory.apply_intent(directory, intent_attrs(lease, chunk, {0, 0, 0}, 99))
+  end
+
+  test "abort releases fences without applying the staged batch" do
     {directory, lease} = boot()
 
     participant = participant(affected_chunks: [{0, 0, 0}])
 
-    intents = %{{0, 0, 0} => intent_attrs(lease, {0, 0, 0}, {1, 1, 1}, 30)}
+    intents = %{{0, 0, 0} => [intent_attrs(lease, {0, 0, 0}, {1, 1, 1}, 30)]}
 
     assert {:ok, _summary} =
              BuildTransactionApplier.prepare(participant, "tx-abort", intents,
@@ -95,14 +158,18 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
              ChunkDirectory.prepare_transaction(
                directory,
                "tx-other",
-               intent_attrs(lease, chunk_b, {0, 0, 0}, 7)
+               %{
+                 logical_scene_id: @logical_scene_id,
+                 chunk_coord: chunk_b,
+                 intents: [intent_attrs(lease, chunk_b, {0, 0, 0}, 7)]
+               }
              )
 
     participant = participant(affected_chunks: [chunk_a, chunk_b])
 
     intents = %{
-      chunk_a => intent_attrs(lease, chunk_a, {2, 0, 0}, 11),
-      chunk_b => intent_attrs(lease, chunk_b, {3, 0, 0}, 12)
+      chunk_a => [intent_attrs(lease, chunk_a, {2, 0, 0}, 11)],
+      chunk_b => [intent_attrs(lease, chunk_b, {3, 0, 0}, 12)]
     }
 
     assert {:error, {:prepare_failed, ^chunk_b, {:chunk_already_fenced, "tx-other"}}} =

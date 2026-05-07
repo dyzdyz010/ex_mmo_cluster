@@ -3,12 +3,16 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   Scene-side participant for World-coordinated voxel build transactions.
 
   The applier turns a `WorldServer.Voxel.TransactionParticipant` plus a per-chunk
-  intent map into the three coordinator phases that World drives:
+  intent batch (`%{chunk_coord => [intent_attrs, ...]}`) into the three
+  coordinator phases that World drives:
 
   - `prepare/3` reserves a transaction fence on every affected chunk and stages
-    the per-chunk intent. On any failure the already-fenced chunks are rolled
-    back so a participant either ends up fully prepared or fully unprepared.
-  - `commit/3` applies the staged intent on each chunk and releases the fence.
+    the per-chunk intent batch. On any failure the already-fenced chunks are
+    rolled back so a participant either ends up fully prepared or fully
+    unprepared.
+  - `commit/3` applies the staged intent batch on each chunk and releases the
+    fence (chunk-local atomic: any single intent's apply failure rolls back
+    the whole chunk's batch).
   - `abort/3` releases every chunk fence held by the transaction without
     applying. Idempotent against missing or already-released fences.
 
@@ -20,7 +24,10 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkDirectory
 
-  @type intents_by_chunk :: %{optional(coord :: {integer(), integer(), integer()}) => map()}
+  @type intent_attrs :: map()
+  @type intents_by_chunk :: %{
+          optional(coord :: {integer(), integer(), integer()}) => [intent_attrs(), ...]
+        }
   @type participant :: %{
           required(:region_id) => non_neg_integer(),
           required(:lease_id) => non_neg_integer(),
@@ -172,12 +179,20 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
         participant.affected_chunks,
         {[], nil},
         fn chunk_coord, {acc, _err} ->
-          intent = Map.fetch!(intents_by_chunk, chunk_coord)
+          intents = Map.fetch!(intents_by_chunk, chunk_coord)
 
-          attrs =
-            intent
-            |> Map.put_new(:logical_scene_id, logical_scene_id)
-            |> Map.put_new(:chunk_coord, chunk_coord)
+          intents =
+            Enum.map(intents, fn intent ->
+              intent
+              |> Map.put_new(:logical_scene_id, logical_scene_id)
+              |> Map.put_new(:chunk_coord, chunk_coord)
+            end)
+
+          attrs = %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            intents: intents
+          }
 
           case ChunkDirectory.prepare_transaction(chunk_directory, transaction_id, attrs) do
             {:ok, summary} ->
