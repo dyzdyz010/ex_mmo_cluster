@@ -160,6 +160,10 @@ export class WorldStore {
     return this.listChunks().reduce((sum, chunk) => sum + chunk.countSolidBlocks(), 0);
   }
 
+  totalRefinedCells(): number {
+    return this.listChunks().reduce((sum, chunk) => sum + chunk.countRefinedCells(), 0);
+  }
+
   exportSnapshot(): SerializedWorldSnapshot {
     return exportWorldSnapshot(this.listChunks(), this.editStats);
   }

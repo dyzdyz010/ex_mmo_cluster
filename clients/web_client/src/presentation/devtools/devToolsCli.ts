@@ -99,6 +99,10 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdCell(command, args);
       case "micro_cell":
         return this.cmdMicroCell(command, args);
+      case "micro_place":
+        return this.cmdMicroPlace(command, args);
+      case "micro_break":
+        return this.cmdMicroBreak(command, args);
       case "place":
         return this.cmdPlace(command, args);
       case "break":
@@ -290,6 +294,37 @@ export class DevToolsCli implements CliCommandHandler {
       ...target,
       block: this.deps.world.store.getMicroBlockWorld(target.macro, target.micro),
     });
+  }
+
+  private cmdMicroPlace(command: string, args: string[]): CliCommandResult {
+    const target = parseMicroTarget(args);
+    if (!target) {
+      return {
+        ok: false,
+        command,
+        text: "usage: micro_place <x> <y> <z> <mx> <my> <mz> [material]",
+      };
+    }
+    const materialArg = args[6];
+    const materialId =
+      materialArg !== undefined
+        ? (parseMaterialIdOrName(materialArg) ?? this.deps.edit.getSelectedMaterialId())
+        : this.deps.edit.getSelectedMaterialId();
+    const ok = this.deps.edit.placeMicroAt(target.macro, target.micro, materialId, "cli");
+    return this.ok(command, ok ? "micro placed" : "micro place rejected", {
+      ...target,
+      materialId,
+      ok,
+    });
+  }
+
+  private cmdMicroBreak(command: string, args: string[]): CliCommandResult {
+    const target = parseMicroTarget(args);
+    if (!target) {
+      return { ok: false, command, text: "usage: micro_break <x> <y> <z> <mx> <my> <mz>" };
+    }
+    const ok = this.deps.edit.breakMicroAt(target.macro, target.micro, "cli");
+    return this.ok(command, ok ? "micro broken" : "micro break rejected", { ...target, ok });
   }
 
   private cmdPlace(command: string, args: string[]): CliCommandResult {

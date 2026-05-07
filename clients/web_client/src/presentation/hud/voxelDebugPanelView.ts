@@ -192,6 +192,7 @@ export function renderVoxelDebugPanelHtml(
     renderStat("seed", summary.seedState),
     renderStat("snapshots", summary.snapshotCount),
     renderStat("chunk", summary.lastChunk),
+    renderStat("cells", summary.cells),
     renderStat("intent", summary.lastIntent),
     `</dl>`,
     `<div class="voxel-panel-actions" role="toolbar" aria-label="Voxel sync actions">`,
@@ -263,6 +264,8 @@ function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
   const chunkVersion = numberText(lastSnapshot?.chunkVersion);
   const intentCode = stringAt(lastIntent, "resultCodeName") ?? "none";
   const intentRef = numberText(lastIntent?.resultRef);
+  const totalSolid = numberText(snapshot.totalSolidBlocks);
+  const totalRefined = numberText(snapshot.totalRefinedCells);
 
   return {
     mode: stringAt(snapshot, "mode") ?? "unknown",
@@ -271,6 +274,7 @@ function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
     snapshotCount,
     lastChunk: `${chunkCoord} v${chunkVersion}`,
     lastIntent: `${intentCode} #${intentRef}`,
+    cells: `solid=${totalSolid} refined=${totalRefined}`,
   };
 }
 

@@ -308,6 +308,67 @@ export class ChunkStorage {
     return true;
   }
 
+  /**
+   * Replace the targeted macro cell with the supplied `FRefinedCellData`.
+   * Used by the online voxel adapter to apply ChunkDelta `delta_kind = 2`
+   * (CellRefined) ops, where the server emits the full refined-cell wire
+   * payload for one macro cell. Empties the cell back to `Empty` mode if the
+   * refined payload occupies no slots.
+   *
+   * Returns true when the macro mode or payload changes; returns false when
+   * the new payload is empty and the cell was already empty.
+   */
+  applyRefinedCellFromWire(localMacro: FMacroCoord, refined: FRefinedCellData): boolean {
+    const idx = macroLinearIndex(localMacro);
+    if (idx < 0) {
+      return false;
+    }
+    const header = this.data.macroHeaders[idx];
+    if (!header) {
+      return false;
+    }
+
+    const empty = isRefinedCellEmpty(refined);
+
+    if (empty) {
+      if (header.mode === EVoxelCellMode.Empty) {
+        return false;
+      }
+      this.releaseMacroPayload(header);
+      header.mode = EVoxelCellMode.Empty;
+      header.payloadIndex = 0;
+      header.flags = 0;
+      this.markDirty(
+        localMacro,
+        VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+      );
+      return true;
+    }
+
+    const normalized = normalizeRefinedCell(refined);
+    if (header.mode === EVoxelCellMode.Refined) {
+      this.data.refinedCells[header.payloadIndex] = normalized;
+    } else {
+      this.releaseMacroPayload(header);
+      header.payloadIndex = this.data.refinedCells.push(normalized) - 1;
+      header.mode = EVoxelCellMode.Refined;
+    }
+    this.markDirty(
+      localMacro,
+      VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
+    );
+    return true;
+  }
+
+  private releaseMacroPayload(header: FMacroCellHeader): void {
+    if (header.mode === EVoxelCellMode.SolidBlock) {
+      this.data.normalBlocks[header.payloadIndex] = makeEmptyNormalBlock();
+      this.data.freeNormalBlockIndices.push(header.payloadIndex);
+    } else if (header.mode === EVoxelCellMode.Refined) {
+      this.data.refinedCells[header.payloadIndex] = makeEmptyRefinedMicroCell();
+    }
+  }
+
   clearCell(localMacro: FMacroCoord): boolean {
     const idx = macroLinearIndex(localMacro);
     if (idx < 0) {
@@ -546,6 +607,16 @@ export class ChunkStorage {
     let count = 0;
     for (const header of this.data.macroHeaders) {
       if (header?.mode === EVoxelCellMode.SolidBlock || header?.mode === EVoxelCellMode.Refined) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  countRefinedCells(): number {
+    let count = 0;
+    for (const header of this.data.macroHeaders) {
+      if (header?.mode === EVoxelCellMode.Refined) {
         count += 1;
       }
     }

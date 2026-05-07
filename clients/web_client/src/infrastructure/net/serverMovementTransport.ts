@@ -23,6 +23,11 @@ import {
   type VoxelPrefabKnownObject,
   type VoxelPrefabKnownRef,
 } from "./voxelProtocol";
+import {
+  encodeVoxelEditIntent,
+  EXPECTED_CELL_HASH_UNSPECIFIED,
+  EXPECTED_CHUNK_VERSION_UNSPECIFIED,
+} from "./voxelEditIntent";
 import type { ObserveLog } from "../../observe/logger";
 import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
 import type {
@@ -367,6 +372,64 @@ export class ServerMovementTransport implements MovementTransport {
       logical_scene_id: request.logicalSceneId,
       target_world_micro: `${request.targetWorldMicro.x},${request.targetWorldMicro.y},${request.targetWorldMicro.z}`,
       impact_kind: request.impactKind,
+    });
+    return requestId;
+  }
+
+  sendVoxelEditIntent(request: {
+    logicalSceneId: number;
+    action: number;
+    targetGranularity: number;
+    targetWorldMicro: FMacroCoord;
+    faceNormal: { x: number; y: number; z: number };
+    materialId: number;
+    blueprintRef?: number;
+    objectRef?: bigint;
+    partRef?: number;
+    attributePatchRef?: number;
+    expectedChunkVersion?: bigint;
+    expectedCellHash?: number;
+    clientIntentSeq: number;
+    clientHintHash?: bigint;
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      return this.blockVoxelSend("edit_intent");
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelEditIntent({
+        requestId: BigInt(requestId),
+        clientIntentSeq: request.clientIntentSeq,
+        logicalSceneId: BigInt(request.logicalSceneId),
+        action: request.action,
+        targetGranularity: request.targetGranularity,
+        targetWorldMicro: {
+          x: BigInt(request.targetWorldMicro.x),
+          y: BigInt(request.targetWorldMicro.y),
+          z: BigInt(request.targetWorldMicro.z),
+        },
+        faceNormal: request.faceNormal,
+        materialId: request.materialId,
+        blueprintRef: request.blueprintRef ?? 0,
+        objectRef: request.objectRef ?? 0n,
+        partRef: request.partRef ?? 0,
+        attributePatchRef: request.attributePatchRef ?? 0,
+        expectedChunkVersion: request.expectedChunkVersion ?? EXPECTED_CHUNK_VERSION_UNSPECIFIED,
+        expectedCellHash: request.expectedCellHash ?? EXPECTED_CELL_HASH_UNSPECIFIED,
+        clientHintHash: request.clientHintHash ?? 0n,
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "edit_intent_sent", {
+      request_id: requestId,
+      client_intent_seq: request.clientIntentSeq,
+      logical_scene_id: request.logicalSceneId,
+      action: request.action,
+      target_granularity: request.targetGranularity,
+      target_world_micro: `${request.targetWorldMicro.x},${request.targetWorldMicro.y},${request.targetWorldMicro.z}`,
+      face_normal: `${request.faceNormal.x},${request.faceNormal.y},${request.faceNormal.z}`,
+      material_id: request.materialId,
     });
     return requestId;
   }

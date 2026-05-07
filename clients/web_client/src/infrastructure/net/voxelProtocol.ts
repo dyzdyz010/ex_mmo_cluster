@@ -9,7 +9,11 @@ import {
   type FNormalBlockData,
 } from "../../voxel/storage/types";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
-import { decodeRefinedCellPool, type RefinedCellWireData } from "./refinedCellWire";
+import {
+  decodeRefinedCellPayload,
+  decodeRefinedCellPool,
+  type RefinedCellWireData,
+} from "./refinedCellWire";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -63,6 +67,11 @@ export interface VoxelChunkDeltaOp {
   cellVersion: number;
   cellHash: number;
   payload: Uint8Array;
+  // Phase 1c-3 / 1c-5: pre-decoded payload for `delta_kind = 2 (CellRefined)`
+  // ops, so consumers can apply the wire-form refined cell without each
+  // touching `decodeRefinedCellPayload` themselves. Other delta kinds leave
+  // this `null` and continue to inspect `payload` directly.
+  refinedCell: RefinedCellWireData | null;
 }
 
 export interface VoxelChunkDeltaMessage {
@@ -493,12 +502,20 @@ function decodeChunkDelta(view: DataView): VoxelChunkDeltaMessage {
     offset += 2;
     const payload = new Uint8Array(buffer, view.byteOffset + offset, payloadLen);
     offset += payloadLen;
+    const payloadCopy = new Uint8Array(payload);
+    const refinedCell =
+      deltaKind === VoxelChunkDeltaKind.CellRefined && payloadCopy.length > 0
+        ? decodeRefinedCellPayload(
+            new DataView(payloadCopy.buffer, payloadCopy.byteOffset, payloadCopy.byteLength),
+          )
+        : null;
     ops.push({
       deltaKind,
       macroIndex,
       cellVersion,
       cellHash,
-      payload: new Uint8Array(payload),
+      payload: payloadCopy,
+      refinedCell,
     });
   }
 

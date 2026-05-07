@@ -138,6 +138,40 @@ export class WorldEditController {
     return ok;
   }
 
+  /** Phase 1c-5: scripted micro-grid place driven by the dev CLI. */
+  placeMicroAt(
+    macro: FMacroCoord,
+    micro: FMicroCoord,
+    materialId: number,
+    source: string,
+  ): boolean {
+    const block: FNormalBlockData = {
+      materialId,
+      stateFlags: 0,
+      health: getMaterialDefinition(materialId).maxHealth,
+      temperatureDelta: 0,
+      moistureDelta: 0,
+    };
+    const ok = this.world.placeMicroBlock(macro, micro, block);
+    if (ok) {
+      this.bus.emit("world:micro-placed", { macro, micro, materialId, source });
+    } else {
+      this.bus.emit("world:edit-rejected", { reason: "micro_place_rejected", source });
+    }
+    return ok;
+  }
+
+  /** Phase 1c-5: scripted micro-grid break driven by the dev CLI. */
+  breakMicroAt(macro: FMacroCoord, micro: FMicroCoord, source: string): boolean {
+    const ok = this.world.breakMicroBlock(macro, micro);
+    if (ok) {
+      this.bus.emit("world:micro-broken", { macro, micro, source });
+    } else {
+      this.bus.emit("world:edit-rejected", { reason: "micro_break_rejected", source });
+    }
+    return ok;
+  }
+
   selectMaterial(materialId: number, source: string): void {
     this.bus.emit("input:material-selected", { materialId, source });
   }

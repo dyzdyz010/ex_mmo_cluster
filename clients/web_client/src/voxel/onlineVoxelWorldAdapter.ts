@@ -3,6 +3,7 @@ import { VoxelConstants } from "./core/constants";
 import { chunkCoordKey, type FChunkCoord, type FMacroCoord, type FMicroCoord } from "./core/types";
 import {
   decodeNormalBlockDataPayload,
+  VoxelChunkDeltaKind,
   type VoxelChunkDeltaMessage,
   type VoxelChunkInvalidateMessage,
   type VoxelChunkSnapshotMessage,
@@ -13,8 +14,15 @@ import {
   type VoxelPrefabKnownObject,
   type VoxelPrefabKnownRef,
 } from "../infrastructure/net/voxelProtocol";
+import {
+  EXPECTED_CELL_HASH_UNSPECIFIED,
+  EXPECTED_CHUNK_VERSION_UNSPECIFIED,
+  VoxelEditAction,
+  VoxelEditTargetGranularity,
+} from "../infrastructure/net/voxelEditIntent";
 import { resolveBlueprint } from "./onlinePrefabCatalog";
 import { macroCoordFromLinearIndex } from "./core/gridUtils";
+import { wireToRefinedCell } from "./wireToRefinedCell";
 import type { ObserveLog } from "../observe/logger";
 import type { EVoxelRotation } from "./core/types";
 import type { FNormalBlockData } from "./storage/types";
@@ -50,6 +58,22 @@ export interface ServerVoxelTransportPort {
     impactKind: number;
     clientIntentSeq: number;
     clientHintHash?: number;
+  }): number | null;
+  sendVoxelEditIntent(request: {
+    logicalSceneId: number;
+    action: number;
+    targetGranularity: number;
+    targetWorldMicro: FMacroCoord;
+    faceNormal: { x: number; y: number; z: number };
+    materialId: number;
+    blueprintRef?: number;
+    objectRef?: bigint;
+    partRef?: number;
+    attributePatchRef?: number;
+    expectedChunkVersion?: bigint;
+    expectedCellHash?: number;
+    clientIntentSeq: number;
+    clientHintHash?: bigint;
   }): number | null;
   sendVoxelPrefabPlaceIntent(request: {
     logicalSceneId: number;
@@ -182,6 +206,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       pendingIntentCount: this.pendingIntentCount,
       pendingPrefabIntentCount: this.pendingPrefabIntents.size,
       clientIntentSeqNext: this.clientIntentSeq,
+      // Phase 1c-5: surface refined-cell counts so the HUD can confirm that
+      // micro edits actually landed (CellRefined deltas write here).
+      totalSolidBlocks: this.store.totalSolidBlocks(),
+      totalRefinedCells: this.store.totalRefinedCells(),
       lastSnapshot: this.lastSnapshot
         ? {
             ...this.lastSnapshot,
@@ -221,17 +249,71 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   override placeMicroBlock(
-    _macro: FMacroCoord,
-    _micro: FMicroCoord,
-    _block: FNormalBlockData,
+    macro: FMacroCoord,
+    micro: FMicroCoord,
+    block: FNormalBlockData,
   ): boolean {
-    this.rejectServerOnlyEdit("micro_place_not_supported_by_server");
-    return false;
+    const requestId = this.sendVoxelEditMicro({
+      action: VoxelEditAction.Place,
+      macro,
+      micro,
+      materialId: block.materialId,
+    });
+    if (requestId === null) {
+      this.store.editStats.rejected += 1;
+      return false;
+    }
+    return true;
   }
 
-  override breakMicroBlock(_macro: FMacroCoord, _micro: FMicroCoord): boolean {
-    this.rejectServerOnlyEdit("micro_break_not_supported_by_server");
-    return false;
+  override breakMicroBlock(macro: FMacroCoord, micro: FMicroCoord): boolean {
+    const requestId = this.sendVoxelEditMicro({
+      action: VoxelEditAction.Break,
+      macro,
+      micro,
+      materialId: 0,
+    });
+    if (requestId === null) {
+      this.store.editStats.rejected += 1;
+      return false;
+    }
+    return true;
+  }
+
+  // Convert macro+micro coordinates into a world-micro target and dispatch a
+  // typed VoxelEditIntent (0x70). Phase 1c-5 keeps `face_normal = (0,0,0)`
+  // because the caller has already resolved the targeted slot — the server
+  // will treat the literal world-micro as the cell to mutate (decision 6).
+  private sendVoxelEditMicro(request: {
+    action: number;
+    macro: FMacroCoord;
+    micro: FMicroCoord;
+    materialId: number;
+  }): number | null {
+    const targetWorldMicro = {
+      x: request.macro.x * VoxelConstants.MicroPerMacro + request.micro.x,
+      y: request.macro.y * VoxelConstants.MicroPerMacro + request.micro.y,
+      z: request.macro.z * VoxelConstants.MicroPerMacro + request.micro.z,
+    };
+    const clientIntentSeq = this.clientIntentSeq;
+    const requestId = this.transport.sendVoxelEditIntent({
+      logicalSceneId: this.logicalSceneId,
+      action: request.action,
+      targetGranularity: VoxelEditTargetGranularity.Micro,
+      targetWorldMicro,
+      faceNormal: { x: 0, y: 0, z: 0 },
+      materialId: request.materialId,
+      expectedChunkVersion: EXPECTED_CHUNK_VERSION_UNSPECIFIED,
+      expectedCellHash: EXPECTED_CELL_HASH_UNSPECIFIED,
+      clientIntentSeq,
+    });
+    if (requestId === null) {
+      this.lastError = "voxel_transport_unavailable";
+      return null;
+    }
+    this.clientIntentSeq += 1;
+    this.pendingIntentCount += 1;
+    return requestId;
   }
 
   override placePrefab(
@@ -418,13 +500,18 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const op of delta.ops) {
       const localMacro = macroCoordFromLinearIndex(op.macroIndex);
 
-      if (op.deltaKind === 1) {
+      if (op.deltaKind === VoxelChunkDeltaKind.CellSolid) {
         const block = decodeNormalBlockDataPayload(op.payload);
         if (chunk.trySetNormalBlock(localMacro, block)) {
           appliedOps += 1;
         }
-      } else if (op.deltaKind === 0) {
+      } else if (op.deltaKind === VoxelChunkDeltaKind.CellEmpty) {
         if (chunk.tryClearMacroCell(localMacro)) {
+          appliedOps += 1;
+        }
+      } else if (op.deltaKind === VoxelChunkDeltaKind.CellRefined && op.refinedCell) {
+        const refined = wireToRefinedCell(op.refinedCell);
+        if (chunk.applyRefinedCellFromWire(localMacro, refined)) {
           appliedOps += 1;
         }
       }
@@ -446,7 +533,19 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   private applySnapshot(snapshot: VoxelChunkSnapshotMessage): void {
-    const chunk = this.store.replaceChunkStorage(snapshot.storage, {
+    // Materialize the wire-form refined cells into FRefinedCellData so the
+    // mesher / collision / debug consumers (which still read the legacy
+    // shape) reflect refined macros after a snapshot. Decision 5 of
+    // phase-1c-refined-mutation.md keeps the wire form canonical; this is a
+    // 1c-5 lossy bridge until the renderer learns to read the wire form
+    // directly. The macroHeaders pool keeps using the refined-cell indices
+    // shipped in the same snapshot.
+    const storage = {
+      ...snapshot.storage,
+      refinedCells: snapshot.refinedCellsWire.map(wireToRefinedCell),
+    };
+
+    const chunk = this.store.replaceChunkStorage(storage, {
       requestId: snapshot.requestId,
       logicalSceneId: snapshot.logicalSceneId,
       schemaVersion: snapshot.schemaVersion,

@@ -84,6 +84,13 @@ export type AppEvents = {
 
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };
   "world:block-broken": { coord: FMacroCoord; source: string };
+  "world:micro-placed": {
+    macro: FMacroCoord;
+    micro: FMicroCoord;
+    materialId: number;
+    source: string;
+  };
+  "world:micro-broken": { macro: FMacroCoord; micro: FMicroCoord; source: string };
   "world:chunk-subscribed": {
     requestId: number;
     logicalSceneId: number;

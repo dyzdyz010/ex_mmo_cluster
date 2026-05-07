@@ -4,7 +4,9 @@ import { VoxelConstants } from "../../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 describe("DevToolsCli microgrid boundary", () => {
-  it("keeps microgrid writes out of the public CLI while allowing cell inspection", () => {
+  it("inspects micro cells via micro_cell and routes micro_place/micro_break to the edit controller", () => {
+    const placeMicroAt = vi.fn(() => true);
+    const breakMicroAt = vi.fn(() => true);
     const cli = new DevToolsCli({
       world: {
         store: {
@@ -12,8 +14,9 @@ describe("DevToolsCli microgrid boundary", () => {
         },
       },
       edit: {
-        placeMicroAt: vi.fn(),
-        breakMicroAt: vi.fn(),
+        placeMicroAt,
+        breakMicroAt,
+        getSelectedMaterialId: vi.fn(() => 5),
       },
     } as unknown as DevToolsDeps);
 
@@ -26,16 +29,16 @@ describe("DevToolsCli microgrid boundary", () => {
         block: null,
       },
     });
-    expect(cli.executeCliCommand("micro_place", ["0", "1", "2", "1", "2", "3"])).toMatchObject({
-      ok: false,
-      command: "micro_place",
-      text: "unknown command: micro_place",
-    });
-    expect(cli.executeCliCommand("micro_break", ["0", "1", "2", "1", "2", "3"])).toMatchObject({
-      ok: false,
-      command: "micro_break",
-      text: "unknown command: micro_break",
-    });
+
+    const placeResult = cli.executeCliCommand("micro_place", ["0", "1", "2", "1", "2", "3"]);
+    expect(placeResult.ok).toBe(true);
+    expect(placeResult.command).toBe("micro_place");
+    expect(placeMicroAt).toHaveBeenCalledWith({ x: 0, y: 1, z: 2 }, { x: 1, y: 2, z: 3 }, 5, "cli");
+
+    const breakResult = cli.executeCliCommand("micro_break", ["0", "1", "2", "1", "2", "3"]);
+    expect(breakResult.ok).toBe(true);
+    expect(breakResult.command).toBe("micro_break");
+    expect(breakMicroAt).toHaveBeenCalledWith({ x: 0, y: 1, z: 2 }, { x: 1, y: 2, z: 3 }, "cli");
   });
 
   it("exposes prefab sockets and socket snap preview/commit through the CLI observe surface", () => {

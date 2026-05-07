@@ -31,9 +31,22 @@ interface ImpactCall {
   clientIntentSeq: number;
 }
 
+interface EditIntentCall {
+  logicalSceneId: number;
+  action: number;
+  targetGranularity: number;
+  targetWorldMicro: { x: number; y: number; z: number };
+  faceNormal: { x: number; y: number; z: number };
+  materialId: number;
+  expectedChunkVersion: bigint;
+  expectedCellHash: number;
+  clientIntentSeq: number;
+}
+
 class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly prefabCalls: PrefabPlaceCall[] = [];
   readonly impactCalls: ImpactCall[] = [];
+  readonly editIntentCalls: EditIntentCall[] = [];
   available = true;
   nextRequestId = 100;
 
@@ -73,6 +86,38 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
       logicalSceneId: request.logicalSceneId,
       sourceSkillId: request.sourceSkillId,
       impactKind: request.impactKind,
+      clientIntentSeq: request.clientIntentSeq,
+    });
+    return this.allocateRequestId();
+  }
+
+  sendVoxelEditIntent(request: {
+    logicalSceneId: number;
+    action: number;
+    targetGranularity: number;
+    targetWorldMicro: { x: number; y: number; z: number };
+    faceNormal: { x: number; y: number; z: number };
+    materialId: number;
+    blueprintRef?: number;
+    objectRef?: bigint;
+    partRef?: number;
+    attributePatchRef?: number;
+    expectedChunkVersion?: bigint;
+    expectedCellHash?: number;
+    clientIntentSeq: number;
+    clientHintHash?: bigint;
+  }): number | null {
+    if (!this.available) return null;
+    this.editIntentCalls.push({
+      logicalSceneId: request.logicalSceneId,
+      action: request.action,
+      targetGranularity: request.targetGranularity,
+      targetWorldMicro: { ...request.targetWorldMicro },
+      faceNormal: { ...request.faceNormal },
+      materialId: request.materialId,
+      expectedChunkVersion:
+        request.expectedChunkVersion ?? 0xffff_ffff_ffff_ffffn,
+      expectedCellHash: request.expectedCellHash ?? 0xffff_ffff,
       clientIntentSeq: request.clientIntentSeq,
     });
     return this.allocateRequestId();
@@ -280,5 +325,62 @@ describe("OnlineVoxelWorldAdapter wire opcode coverage", () => {
     // file rather than at the network boundary.
     expect(VoxelOpcode.PrefabPlaceIntent).toBe(0x67);
     expect(VoxelOpcode.VoxelIntentResult).toBe(0x68);
+    expect(VoxelOpcode.VoxelEditIntent).toBe(0x70);
+  });
+});
+
+describe("OnlineVoxelWorldAdapter#placeMicroBlock / #breakMicroBlock (Phase 1c-5)", () => {
+  it("placeMicroBlock dispatches a typed VoxelEditIntent with action=Place + Micro granularity", () => {
+    const { adapter, transport } = createAdapter();
+
+    const ok = adapter.placeMicroBlock(
+      { x: 1, y: 2, z: 3 },
+      { x: 4, y: 5, z: 6 },
+      { materialId: 17, stateFlags: 0, health: 0, temperatureDelta: 0, moistureDelta: 0 },
+    );
+
+    expect(ok).toBe(true);
+    expect(transport.editIntentCalls).toHaveLength(1);
+    const [call] = transport.editIntentCalls;
+    if (!call) throw new Error("expected one edit intent call");
+    expect(call.action).toBe(0); // Place
+    expect(call.targetGranularity).toBe(1); // Micro
+    // macro=(1,2,3) micro=(4,5,6) → world_micro=(1*8+4, 2*8+5, 3*8+6)=(12, 21, 30).
+    expect(call.targetWorldMicro).toEqual({ x: 12, y: 21, z: 30 });
+    expect(call.faceNormal).toEqual({ x: 0, y: 0, z: 0 });
+    expect(call.materialId).toBe(17);
+    expect(call.expectedChunkVersion).toBe(0xffff_ffff_ffff_ffffn);
+    expect(call.expectedCellHash).toBe(0xffff_ffff);
+    expect(call.clientIntentSeq).toBe(1);
+  });
+
+  it("breakMicroBlock dispatches a typed VoxelEditIntent with action=Break + Micro granularity", () => {
+    const { adapter, transport } = createAdapter();
+
+    const ok = adapter.breakMicroBlock({ x: 0, y: 0, z: 0 }, { x: 7, y: 0, z: 0 });
+
+    expect(ok).toBe(true);
+    expect(transport.editIntentCalls).toHaveLength(1);
+    const [call] = transport.editIntentCalls;
+    if (!call) throw new Error("expected one edit intent call");
+    expect(call.action).toBe(1); // Break
+    expect(call.targetGranularity).toBe(1); // Micro
+    expect(call.targetWorldMicro).toEqual({ x: 7, y: 0, z: 0 });
+    expect(call.materialId).toBe(0);
+  });
+
+  it("placeMicroBlock returns false and increments rejected stats when transport refuses", () => {
+    const { adapter, transport } = createAdapter();
+    transport.available = false;
+
+    const ok = adapter.placeMicroBlock(
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 0, z: 0 },
+      { materialId: 1, stateFlags: 0, health: 0, temperatureDelta: 0, moistureDelta: 0 },
+    );
+
+    expect(ok).toBe(false);
+    expect(transport.editIntentCalls).toHaveLength(0);
+    expect(adapter.store.editStats.rejected).toBe(1);
   });
 });
