@@ -153,4 +153,58 @@ participants = [
 
 ## 进度日志
 
+- 2026-05-07: **Phase 3 全程落地**(prefab v2 事务化)。
+  - **Step 3-1**(commit `3fc9966`):删 `TransactionCoordinator` file 持久化路径,接入
+    `DataService.Voxel.TransactionCoordinatorStore`(Postgres 单行 snapshot)。`WorldSup`
+    注入 persist/load fn。`world_server` test_helper 启动 Repo + migrations 模式与
+    1d 后的 scene/gate test_helper 对齐。`transaction_coordinator_persistence_test`
+    重写为 Postgres 路径,setup truncate `voxel_transaction_coordinator_snapshots`,断言
+    重启 reload 来自数据库。原 `:postgres` exclude tag 移除,`map_ledger_repo_persistence_test`
+    一并启用。
+  - **Step 3-2**(commit `6973843`):新建 `WorldServer.Voxel.TransactionRecoveryWatcher`
+    GenServer,init 时扫描 coordinator snapshot:`:preparing` / `:aborting` 自动调
+    `abort_decision/3` 滚回;`:prepared` 保持挂着并 emit
+    `voxel_transaction_recovery_pending_commit` observe 事件;finalized 状态跳过。
+    `WorldSup` children 列表追加 watcher(coordinator 之后)。新建
+    `transaction_recovery_watcher_test`(7 in-memory async 用例)+
+    `transaction_coordinator_persistence_test` 加 2 个重启 + watcher 自动 abort 的
+    端到端 Postgres 用例。world_server 39 → 48 tests。
+  - **RFC 备注 / Step 3-3 实施期发现**:决策稿原文未覆盖 ChunkProcess fence 单 intent
+    vs batch intents 的设计点。一个真实 prefab 经常在同一 chunk 内放置多个 macro
+    (例如 4×1×4 prefab 在某 chunk 边界内含 2 个 macro),原 fence 只能锁单 intent
+    会强制 prefab 退化为"每 chunk 至多 1 macro"或回到 cell-by-cell partial-write,
+    破坏 Phase 3 原子性目标。**用户拍板按 A 落地**:升级 fence 为 intent 清单,
+    chunk-local 原子(任一 intent apply 失败整 chunk 回滚到 prepare 前 storage)。
+    无 back-compat 双路径。
+  - **Step 3-3a**(commit `bd74e01`):`ChunkProcess.prepare_transaction/3` 接收非空
+    intents 列表;fence 持有整个 list,用 `apply_normalized_intents/2` commit。
+    `fence_summary` 字段从 operation/macro 改为 intent_count。`ChunkDirectory.prepare_transaction`
+    attrs 改成 `%{logical_scene_id, chunk_coord, intents: [...]}`,内部复用既有
+    `normalize_apply_intents_targets` 做跨 chunk 校验(同 chunk batch 是 OK,跨 chunk
+    被拒)。`BuildTransactionApplier.intents_by_chunk` 类型改为
+    `%{chunk_coord => [intent_attrs, ...]}`。`build_transaction_applier_test` 增加
+    "single chunk batch with multiple macros commits atomically" + "batch prepare
+    rejected when any intent in the chunk is invalid"。scene_server 257 → 267 tests。
+  - **RFC 备注 / Step 3-3b D5 微调**:决策稿 D5 文字要求 Gate 用
+    `BeaconServer.Client.lookup(:voxel_transaction_coordinator)`,实施时改走
+    `fetch_world_node/0`(GateServer.Interface,内部仍是 BeaconServer-backed),保留
+    Gate 现有 `FakeInterface` mock 测试基础设施。语义等价(单 coordinator 跑在 world
+    node,与 `:world_server` resource 1:1 对应)。`WorldServer.Interface` 仍 register
+    `:voxel_transaction_coordinator`,作为未来 per-coordinator 路由的 hook。
+  - **Step 3-3b**(commit `e91c38f`):`WorldServer.Interface` register
+    `:voxel_transaction_coordinator`。Gate ws/tcp connection 重写
+    `apply_voxel_prefab_place_intent`:rasterize → 按 chunk 分组 → 第一个 chunk route
+    出 lease + scene_node → 构造 single-participant `BuildTransaction` →
+    `TransactionCoordinator.begin_transaction` → `TransactionExecutor.execute(scene_opts:
+    [chunk_directory: {ChunkDirectory, scene_node}])` → 根据 decision 回包。删除 cell-by-cell
+    `apply_prefab_cells` / `apply_prefab_cell` 旧路径。`ws_connection_voxel_test` happy
+    path 重写为"3 cells 一次 batch commit,result_ref=1,1 个 snapshot push 而非 3 个
+    ChunkDelta"。其它 4 个错误 case(unknown_blueprint / unsupported_rotation /
+    world_unavailable / invalid_state)行为不变。gate_server 181/181 全绿。
+  - **Step 3-4**(commit `b93a10d`):加 `BuildTransactionApplier` "abort 后再 commit
+    返回 :transaction_not_prepared" 契约测试,锁定 D4(fence 不持久化)的可观察行为,
+    供 Phase 3-bis recovery 使用。scene_server 267 → 268 tests。
+  - **Step 3-5**(本 commit):`apps/scene_server/lib/scene_server/voxel/README.md`、
+    `apps/world_server/lib/world_server/voxel/README.md` 同步描述 fence batch、Postgres
+    持久化、RecoveryWatcher、Phase 3 prefab 路径;README 阶段表 Phase 3 状态置 `已完成`。
 - 2026-05-07: D1-D7 推荐值用户全部同意。决策稿入仓,准备开始 Step 3-1。

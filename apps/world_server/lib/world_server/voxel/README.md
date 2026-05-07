@@ -24,22 +24,35 @@
   新旧租约、受影响区块范围、预热切片和当前迁移阶段。目标 Scene 预热时读取交接载荷；
   World 只在切换阶段改变路由并发布新的写入令牌。
 - `TransactionParticipant` 和 `BuildTransaction` 描述可恢复的跨区域工作。
-- `TransactionCoordinator` 拥有 World 侧内存版 `BuildTransaction` 状态机。它记录参与者
-  准备确认，并为每个 `transaction_id + decision_version` 记录唯一提交 / 放弃决策。
-  调用方负责把 prepare/commit/abort 真的送到 Scene；coordinator 本身不做 RPC，只承担
-  状态机和幂等账本。
-- `TransactionExecutor` 是在 World 进程内驱动 `TransactionCoordinator` 的并行 dispatcher。
-  它对 participants 用 `Task.async_stream` 同时调 Scene 侧 `BuildTransactionApplier.prepare/4`、
-  把每个返回的 `:prepared` / `:failed` 转成 `prepare_ack`，然后按 coordinator 的最终状态再
-  并行调 `commit/3` 或 `abort/3`，最后回写 `commit_decision` 或 `abort_decision`。每个
-  participant 有 `:per_participant_timeout_ms`（prepare 默认 5_000ms，commit / abort 可单独配
+- `TransactionCoordinator` 拥有 World 侧 `BuildTransaction` 状态机。它记录参与者准备确认，
+  并为每个 `transaction_id + decision_version` 记录唯一提交 / 放弃决策。调用方负责把
+  prepare/commit/abort 真的送到 Scene；coordinator 本身不做 RPC，只承担状态机和幂等账本。
+  **持久化（Phase 3-1 起）**：通过启动选项 `:persist_fn` / `:load_fn` 注入；生产路径在
+  `WorldSup` 里注入 `DataService.Voxel.TransactionCoordinatorStore`，每次 state 变更后单行
+  upsert 写 `voxel_transaction_coordinator_snapshots` 表，节点重启时 `init/1` 自动加载。
+  无文件持久化路径（Phase 3-1 后已移除），测试场景下不传 `:persist_fn` / `:load_fn` 即可
+  纯内存运行。
+- `TransactionExecutor` 是驱动 `TransactionCoordinator` 的并行 dispatcher。它对 participants
+  用 `Task.async_stream` 同时调 Scene 侧 `BuildTransactionApplier.prepare/4`、把每个返回的
+  `:prepared` / `:failed` 转成 `prepare_ack`，然后按 coordinator 的最终状态再并行调
+  `commit/3` 或 `abort/3`，最后回写 `commit_decision` 或 `abort_decision`。每个 participant
+  有 `:per_participant_timeout_ms`（prepare 默认 5_000ms，commit / abort 可单独配
   `:commit_timeout_ms` / `:abort_timeout_ms`），整个 executor pass 还有
   `:transaction_timeout_ms`（默认 30_000ms）的整体期限。超时、`{:exit, _}` 或 `{:error, _}` 一律
   作为 `:failed` ack 上报，结构化失败原因（`:timeout` / `:transaction_timeout` /
   `{:participant_crashed, _}`）记入 `prepare_results`。executor 对 scene caller 的返回值用
   `try/rescue/catch` 包了一层，单个 participant 抛异常 / `exit` 不会拖垮 executor 进程。
-  对已经决定的事务做 replay 时短路返回，不重复触发 Scene 侧动作。当前不做长时超时扫描，也
-  不在节点重启后恢复 in-flight 事务；这些与持久化 ledger 一起留给后续切片。
+  对已经决定的事务做 replay 时短路返回，不重复触发 Scene 侧动作。executor 在 Phase 3 由 Gate
+  进程同步驱动（Gate 拿 `{TransactionCoordinator, world_node}` ref，跨节点 prepare/commit
+  ack；scene call 通过 `chunk_directory: {ChunkDirectory, scene_node}` opt 跨节点路由），
+  Gate 0x67 dispatch 等执行结果直接成包回客户端。
+- `TransactionRecoveryWatcher` 是 Phase 3-2 加入的一次性恢复扫描器，与
+  `TransactionCoordinator` 一起被 `WorldSup` 启动。它在 init 时读取 coordinator 当前
+  snapshot，对 `:preparing` / `:aborting` 状态的 in-flight 事务自动调 `abort_decision/3`
+  滚回；对 `:prepared` 状态的事务保持挂着并 emit `voxel_transaction_recovery_pending_commit`
+  observe 事件提示运维（auto-resume commit 需要 intents_by_participant 持久化，留 Phase
+  3-bis）；对 `:committed` / `:aborted` 状态跳过。所有动作幂等，watcher 自身被 supervisor
+  restart 时重放扫描也无副作用。
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、

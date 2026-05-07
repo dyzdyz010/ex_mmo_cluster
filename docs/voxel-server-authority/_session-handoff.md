@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**: 2026-05-07,Phase 1d commit `36b8ad7` 落地后。
+**Last updated**: 2026-05-07,Phase 3 全程落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -12,15 +12,18 @@
 | 1b typed VoxelEditIntent (decode-only) + VoxelImpactIntent deprecation | 已完成 | `872e439` |
 | 1c Scene refined mutation API + CellRefined delta + 客户端解锁 | 已完成 | `c99d6fd` (1c-1/2/3) → `508ce1e` (1c-4) → `a02817a` (1c-5) → `07bee6b` (1c-6) |
 | 1d DataService canonical 持久化 + chunk_hash 全字段覆盖回归 | 已完成 | `36b8ad7` |
+| 2 refined micro edit 端到端贯通 | 已完成(被 1c 吸收) | `314ad8a` (stub + README) |
+| 3 prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | `a053c82` (决策稿) → `3fc9966` (3-1) → `6973843` (3-2) → `bd74e01` (3-3a) → `e91c38f` (3-3b) → `b93a10d` (3-4) → 本会话 (3-5) |
 
 测试规模(2026-05-07 末态):
 
-- data_service: 41 tests (+1 chunk_hash 8-byte CHECK)
-- scene_server: 265 tests (+18 chunk_hash 全字段覆盖矩阵)
-- gate_server: 181 tests (+5 hardening + 9 typed VoxelEditIntent routing)
-- web_client: 210 vitest, tsc clean
+- data_service: 41 tests
+- scene_server: 268 tests (+1 fence-released 契约 case)
+- gate_server: 181 tests (0x67 happy path 重写为 batch commit + snapshot 推送)
+- world_server: 48 tests (+ TransactionCoordinator Postgres + RecoveryWatcher)
+- web_client: 210 vitest, tsc clean(本阶段未动)
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin。
+未 push(用户没说 push 就别 push)。本地 master 领先 origin 16 commits。
 
 ## 已知预存失败(本环境)
 
@@ -32,25 +35,22 @@
 
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
-| 2 | 未开始 | (原文档 Phase 2)refined micro edit 端到端贯通 |
-| 3 | 未开始 | prefab v2 事务化(World/Scene transaction coordinator) |
 | 4 | 未开始 | object provenance 与局部破坏 |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 
-**关于 Phase 2**:1c-5 已经把 micro edit 客户端→服务端→ delta 回推 → 客户端应用全程贯通了一次。所以 Phase 2 可能是:
+**Phase 3 留下的 backlog**(若用户优先做"先把 3 收尾再开 4"):
 
-- (a) 实质上已被 1c 吸收,只剩"标记完成"这种动作,
-- (b) 还有遗留 scope(例如决策 5 RFC 留下的"在线模式 truth 改用 RefinedCellWireData[] 而不是 lossy adapter 到 FRefinedCellData"),
-- (c) 端到端 e2e 自动化测试(目前是 ExUnit + vitest 各自覆盖,没有真正跨进程的 e2e)。
+- ChunkProcess `pending_fence` 持久化(D4 推到 Phase 3-bis):需要新表 `voxel_chunk_pending_transactions`,Scene 重启不丢 fence,与 D3 配合实现真正的 auto-resume commit。
+- `:prepared` 事务 auto-resume commit(D3 推到 Phase 3-bis):需要把 `intents_by_participant` 也持久化,coordinator 重启后扫到 `:prepared` 不再仅仅 emit observe,而是重发 commit dispatch。
+- 跨 region 多 participant 事务(D6 推到 Phase 3-bis):BuildTransaction 已支持 multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。需要先有跨 region prefab 的语义设计文档。
+- Per-region coordinator(D5 留 Phase 6):当前单全局 coordinator 是潜在 SPOF。
+- 紧凑 ChunkDelta(取代 commit 时的 snapshot fan-out):commit 时把 batch 内每个 intent 编成 ChunkDelta op 推送,不必走整 chunk snapshot。
+- 跨进程 e2e harness(Phase 2 决策稿 park 的 backlog):gate ↔ scene ↔ data_service ↔ web_client 全链路 e2e 自动化。
 
-下个会话第一件事应该是和用户对齐 Phase 2 实际范围,**不要直接动手**。如果用户说"接着做",问"Phase 2 落地哪个 scope"。如果用户跳过 Phase 2 直接说"做 Phase 3",按 prefab v2 事务化推进。
+**Phase 4 object provenance 与局部破坏**(README 顺序下一阶段):
 
-**Phase 3 prefab v2 事务化**(如果选这个):
-
-- 当前实现:`apps/scene_server/lib/scene_server/voxel/build_transaction_applier.ex` 已经存在 prepare/commit/abort 三相骨架。
-- 当前 `0x67 PrefabPlaceIntent` Gate dispatch 走 cell-major 循环 + 单 chunk apply_intent,无跨 chunk atomicity(prefab 部分写不会回滚)。
-- Phase 3 目标:World 协调跨 Scene/跨 chunk 的 prepare/commit/abort,事务可恢复(ProcessRestart 后能继续 commit 或 abort,不产生半提交)。
-- 新决策稿位置:`docs/voxel-server-authority/phase-3-prefab-v2-transactions.md`(待建)。
+- 还没建决策稿。需要先和用户对齐:从 prefab/part 反查 owner、prefab 内"挖一个 micro slot"的局部破坏语义、`voxel_scene_objects` 表的形态(协议设计文档 §11 已留 placeholder)。
+- 新决策稿位置:`docs/voxel-server-authority/phase-4-object-provenance.md`(待建)。
 
 ## 工作流约定(跨会话)
 
@@ -82,8 +82,11 @@
 
 - ChunkSnapshotStore 是 stateless module,直走 `DataService.Repo`(Phase 1d)。
 - WriteTokenStore 仍是 GenServer(in-memory);Phase 1d 加了 `reset/1` test hatch。
-- ChunkProcess 是每个 chunk 一个 GenServer,持有 hot truth + lease。
-- ChunkDirectory 注册 chunk 到 ChunkProcess pid,负责 apply_intent 路由 + handoff prewarm。
+- ChunkProcess 是每个 chunk 一个 GenServer,持有 hot truth + lease;`pending_fence.intents` 是 list(Phase 3-3a 升级,支持单 chunk 多 macro 的 batch fence)。
+- ChunkDirectory 注册 chunk 到 ChunkProcess pid,负责 apply_intent 路由 + handoff prewarm + transaction prepare/commit/abort 路由。
+- TransactionCoordinator 持久化走 Postgres(`voxel_transaction_coordinator_snapshots` 单行 snapshot,Phase 3-1)。
+- TransactionRecoveryWatcher 在 WorldSup 启动后扫描 in-flight 事务:`:preparing`/`:aborting` 自动 abort,`:prepared` 挂着等运维(Phase 3-2)。
+- 0x67 PrefabPlaceIntent dispatch 切到 World 事务路径(Phase 3-3b):rasterize → 按 chunk 分组 → 单 lease 事务 → executor 三相 → atomic commit/abort。
 - 客户端在线模式:storage.refinedCells 仍然是 `FRefinedCellData[]`(lossy 自 wire);Phase 1c-5 决策 5 RFC 备注了"未来改 wire-form-as-truth"。
 
 ### 前端策略冻结(2026-04-26)
@@ -112,21 +115,30 @@
 | Web client 在线 adapter | `clients/web_client/src/voxel/onlineVoxelWorldAdapter.ts` |
 | Web client wire decoder | `clients/web_client/src/infrastructure/net/refinedCellWire.ts`,`voxelEditIntent.ts`,`voxelProtocol.ts` |
 
-## 这次会话产出(2026-05-07)
+## 这次会话产出(2026-05-07,Phase 2 + Phase 3)
 
-5 个 commit,本地 master 未 push:
+8 个 commit,本地 master 未 push:
 
 ```
+本会话 docs(voxel): finalize Phase 3 (apps READMEs + plan progress log + handoff)
+b93a10d voxel: lock down :transaction_not_prepared contract for released fences (Phase 3-4)
+e91c38f voxel: route 0x67 PrefabPlaceIntent through World transaction (Phase 3-3b)
+bd74e01 voxel: ChunkProcess fence holds intent batch instead of single intent (Phase 3-3a)
+6973843 voxel: TransactionRecoveryWatcher sweeps in-flight tx on startup (Phase 3-2)
+3fc9966 voxel: TransactionCoordinator persists through Postgres only (Phase 3-1)
+a053c82 docs(voxel): land Phase 3 plan (prefab v2 transactionalization)
+314ad8a docs(voxel): mark Phase 2 as absorbed by Phase 1c (refined micro edit roundtrip)
+```
+
+加上上一会话已经在 master 上的 Phase 1d 收尾:
+
+```
+f24cb6c docs(voxel): add session handoff landing pad for cross-conversation continuity
 36b8ad7 voxel: canonical Postgres persistence + chunk_hash regression matrix (Phase 1d)
 204c285 docs(voxel): mark Phase 1c as completed in tracking index
 07bee6b voxel: harden VoxelEditIntent dispatch + surface specific solid-macro reason (Phase 1c-6)
 a02817a voxel: web client unlocks micro edits + consumes CellRefined deltas (Phase 1c-5)
 508ce1e voxel: route typed VoxelEditIntent end-to-end (Phase 1c-4)
-```
-
-加上更早会话已经在 master 上的 1c-1/2/3:
-
-```
 c99d6fd voxel: server-side micro mutation slice (Phase 1c-1 / 1c-2 / 1c-3)
 872e439 voxel: lay down server-authoritative wire foundation (Phase 1a + 1b)
 ```
