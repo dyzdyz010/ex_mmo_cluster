@@ -971,6 +971,47 @@ defmodule SceneServer.Voxel.Codec do
   end
 
   @doc """
+  Encodes a single `RefinedCellData` as a standalone payload (no surrounding
+  count-prefixed pool). Used as the ChunkDelta op payload for
+  `delta_kind = 2 (CellRefined)` (Phase 1c).
+
+  The byte layout matches a single entry inside `encode_refined_cell_pool/1`,
+  so a 1-cell pool is exactly `<<1::32>> <> encode_refined_cell_payload(cell)`.
+  """
+  @spec encode_refined_cell_payload(RefinedCellData.t()) :: binary()
+  def encode_refined_cell_payload(%RefinedCellData{} = cell) do
+    IO.iodata_to_binary(encode_refined_cell(cell))
+  end
+
+  @doc """
+  Decodes a single `RefinedCellData` from a standalone payload produced by
+  `encode_refined_cell_payload/1`. Raises on malformed input or trailing bytes.
+  """
+  @spec decode_refined_cell_payload!(binary()) :: RefinedCellData.t()
+  def decode_refined_cell_payload!(payload) when is_binary(payload) do
+    {cell, rest} = decode_refined_cell(payload)
+
+    if rest != <<>> do
+      raise ArgumentError,
+            "trailing bytes in refined_cell payload: #{byte_size(rest)}"
+    end
+
+    cell
+  end
+
+  @doc """
+  Decodes a single `RefinedCellData` standalone payload, returning
+  `{:ok, cell}` or `{:error, reason}`.
+  """
+  @spec decode_refined_cell_payload(binary()) :: {:ok, RefinedCellData.t()} | {:error, term()}
+  def decode_refined_cell_payload(payload) when is_binary(payload) do
+    {:ok, decode_refined_cell_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc """
   Decodes the RefinedCells section payload back to a list of `RefinedCellData`.
   Raises `ArgumentError` on malformed or trailing bytes.
   """

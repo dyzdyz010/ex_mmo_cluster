@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import {
+  decodeRefinedCellPayload,
   decodeRefinedCellPool,
+  encodeRefinedCellPayload,
   encodeRefinedCellPool,
   type RefinedCellWireData,
 } from "./refinedCellWire";
@@ -13,6 +15,10 @@ const __dirname = dirname(__filename);
 const FIXTURE_PATH = resolve(
   __dirname,
   "../../../test/fixtures/voxel/refined_512_cell_v1.bin",
+);
+const DELTA_FIXTURE_PATH = resolve(
+  __dirname,
+  "../../../test/fixtures/voxel/cell_refined_delta_v1.bin",
 );
 
 const ZERO_MASK: bigint[] = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
@@ -183,6 +189,146 @@ describe("refinedCellWire decoder (Phase 1a)", () => {
     // round-trip the bytes through encode and confirm they match
     const reEncoded = encodeRefinedCellPool(cells);
     expect(Array.from(reEncoded)).toEqual(Array.from(buffer));
+  });
+
+  describe("single-cell payload (delta_kind=2 CellRefined, Phase 1c-3)", () => {
+    it("round-trips a non-empty cell through encode/decode payload", () => {
+      const cell: RefinedCellWireData = {
+        occupancyWords: [0xfn, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+        boundaryCache: 0xcafef00dn,
+        layers: [
+          {
+            maskWords: [0xfn, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+            materialId: 17,
+            stateFlags: 0x10,
+            health: 200,
+            attributeSetRef: 0,
+            tagSetRef: 0,
+            ownerObjectId: 0n,
+            ownerPartId: 0,
+          },
+        ],
+        objectRefs: [],
+      };
+
+      const bytes = encodeRefinedCellPayload(cell);
+      const decoded = decodeRefinedCellPayload(viewOf(bytes));
+      expect(decoded).toEqual(cell);
+    });
+
+    it("encodes empty cell (no layers, no object refs, all-zero occupancy)", () => {
+      const empty: RefinedCellWireData = {
+        occupancyWords: ZERO_MASK,
+        boundaryCache: 0n,
+        layers: [],
+        objectRefs: [],
+      };
+      const bytes = encodeRefinedCellPayload(empty);
+      expect(decodeRefinedCellPayload(viewOf(bytes))).toEqual(empty);
+    });
+
+    it("single-cell payload bytes match a 1-cell pool minus the u32 count prefix", () => {
+      const cell: RefinedCellWireData = {
+        occupancyWords: [0xfn, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+        boundaryCache: 0xabcdn,
+        layers: [
+          {
+            maskWords: [0xfn, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+            materialId: 1,
+            stateFlags: 0,
+            health: 0,
+            attributeSetRef: 0,
+            tagSetRef: 0,
+            ownerObjectId: 0n,
+            ownerPartId: 0,
+          },
+        ],
+        objectRefs: [],
+      };
+
+      const poolBytes = encodeRefinedCellPool([cell]);
+      const payloadBytes = encodeRefinedCellPayload(cell);
+
+      // Pool prefix is <<1::u32>> = [0,0,0,1]
+      expect(Array.from(poolBytes.slice(0, 4))).toEqual([0, 0, 0, 1]);
+      expect(Array.from(poolBytes.slice(4))).toEqual(Array.from(payloadBytes));
+    });
+
+    it("decode rejects trailing bytes", () => {
+      const cell: RefinedCellWireData = {
+        occupancyWords: [0x1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+        boundaryCache: 0n,
+        layers: [
+          {
+            maskWords: [0x1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+            materialId: 1,
+            stateFlags: 0,
+            health: 0,
+            attributeSetRef: 0,
+            tagSetRef: 0,
+            ownerObjectId: 0n,
+            ownerPartId: 0,
+          },
+        ],
+        objectRefs: [],
+      };
+      const bytes = encodeRefinedCellPayload(cell);
+      const padded = new Uint8Array(bytes.byteLength + 1);
+      padded.set(bytes, 0);
+      padded[bytes.byteLength] = 0xff;
+
+      expect(() => decodeRefinedCellPayload(viewOf(padded))).toThrow(
+        /trailing_refined_cell_payload_bytes/,
+      );
+    });
+
+    it("decode rejects truncated payload", () => {
+      const cell: RefinedCellWireData = {
+        occupancyWords: [0x1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
+        boundaryCache: 0n,
+        layers: [],
+        objectRefs: [],
+      };
+      const bytes = encodeRefinedCellPayload(cell);
+      const truncated = bytes.slice(0, bytes.byteLength - 4);
+
+      expect(() => decodeRefinedCellPayload(viewOf(truncated))).toThrow(
+        /truncated_refined_cells_section/,
+      );
+    });
+
+    it("decodes the shared fixture cell_refined_delta_v1.bin and matches Elixir bytes", () => {
+      const buffer = readFileSync(DELTA_FIXTURE_PATH);
+      const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      const cell = decodeRefinedCellPayload(view);
+
+      expect(cell.occupancyWords).toEqual([0n, 0n, 0n, 0n, 0n, 0n, 0n, 0xffn]);
+      expect(cell.boundaryCache).toBe(0xcafebabedeadbeefn);
+      expect(cell.layers.length).toBe(2);
+
+      const [a, b] = cell.layers as [
+        (typeof cell.layers)[number],
+        (typeof cell.layers)[number],
+      ];
+      expect(a.materialId).toBe(42);
+      expect(a.ownerObjectId).toBe(0xdeadbeefn);
+      expect(a.ownerPartId).toBe(7);
+      expect(a.maskWords).toEqual([0n, 0n, 0n, 0n, 0n, 0n, 0n, 0xf0n]);
+      expect(b.materialId).toBe(99);
+      expect(b.attributeSetRef).toBe(5);
+      expect(b.tagSetRef).toBe(6);
+
+      expect(cell.objectRefs.length).toBe(1);
+      const [ref] = cell.objectRefs as [(typeof cell.objectRefs)[number]];
+      expect(ref.ownerObjectId).toBe(0xdeadbeefn);
+      expect(ref.ownerPartId).toBe(7);
+      expect(ref.maskWords).toEqual([0n, 0n, 0n, 0n, 0n, 0n, 0n, 0xf0n]);
+
+      // Re-encode and confirm byte-for-byte equality with the Elixir-produced
+      // fixture — this is the cross-language wire contract.
+      const reEncoded = encodeRefinedCellPayload(cell);
+      expect(Array.from(reEncoded)).toEqual(Array.from(buffer));
+    });
   });
 
   it("preserves big-endian byte order for u64/u32/u16 fields", () => {

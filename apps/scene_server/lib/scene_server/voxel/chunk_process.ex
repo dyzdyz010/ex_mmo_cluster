@@ -18,6 +18,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
+  import Bitwise
+
   @intent_option_keys [:cell_hash, :cell_version, :environment_index, :flags]
 
   @doc "Starts one chunk process."
@@ -862,6 +864,50 @@ defmodule SceneServer.Voxel.ChunkProcess do
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
   end
 
+  defp build_intent_storage(storage, %{operation: :put_micro_block} = intent) do
+    next_version = storage.chunk_version + 1
+
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    if micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
+      {:error, :micro_slot_already_occupied}
+    else
+      storage =
+        storage
+        |> Storage.put_micro_block(intent.macro, intent.micro_slot, intent.micro_layer, opts)
+        |> bump_chunk_version()
+
+      {:ok, storage, true}
+    end
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp build_intent_storage(storage, %{operation: :clear_micro_block} = intent) do
+    next_version = storage.chunk_version + 1
+
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    if not micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
+      {:ok, storage, false}
+    else
+      storage =
+        storage
+        |> Storage.clear_micro_block(intent.macro, intent.micro_slot, opts)
+        |> bump_chunk_version()
+
+      {:ok, storage, true}
+    end
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
   defp build_intents_storage(storage, intents) do
     next_version = storage.chunk_version + 1
 
@@ -922,6 +968,64 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, storage, false}
     else
       {:ok, Storage.clear_macro_cell(storage, intent.macro, opts), true}
+    end
+  end
+
+  defp build_intent_storage_without_chunk_bump(
+         storage,
+         %{operation: :put_micro_block} = intent,
+         next_version
+       ) do
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    # Batch path stays idempotent: an already-occupied slot is a skip,
+    # not an error (matches `:put_solid_block` batch behaviour). Single-intent
+    # callers go through `build_intent_storage/2`, which DOES surface
+    # `:micro_slot_already_occupied` as an error.
+    if micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
+      {:ok, storage, false}
+    else
+      {:ok,
+       Storage.put_micro_block(
+         storage,
+         intent.macro,
+         intent.micro_slot,
+         intent.micro_layer,
+         opts
+       ), true}
+    end
+  end
+
+  defp build_intent_storage_without_chunk_bump(
+         storage,
+         %{operation: :clear_micro_block} = intent,
+         next_version
+       ) do
+    opts =
+      intent.opts
+      |> Keyword.put_new(:cell_version, next_version)
+      |> Keyword.put_new(:cell_hash, 0)
+
+    if not micro_slot_occupied?(storage, intent.macro, intent.micro_slot) do
+      {:ok, storage, false}
+    else
+      {:ok, Storage.clear_micro_block(storage, intent.macro, intent.micro_slot, opts), true}
+    end
+  end
+
+  defp micro_slot_occupied?(storage, macro_index, slot_index) do
+    case Storage.refined_cell_at(storage, macro_index) do
+      nil ->
+        false
+
+      %{occupancy_words: words} ->
+        word_idx = div(slot_index, 64)
+        bit_idx = rem(slot_index, 64)
+        word = Enum.at(words, word_idx)
+        band(word, bsl(1, bit_idx)) != 0
     end
   end
 
@@ -1075,7 +1179,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp push_intent_outcome(state_before, state_after, intent, reason) do
-    case build_intent_delta_op(intent, state_after.storage.chunk_version) do
+    case build_intent_delta_op(intent, state_after) do
       {:ok, op} ->
         push_chunk_delta(
           state_after,
@@ -1089,7 +1193,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  defp build_intent_delta_op(%{operation: :put_solid_block} = intent, new_chunk_version) do
+  defp build_intent_delta_op(%{operation: :put_solid_block} = intent, state_after) do
+    new_chunk_version = state_after.storage.chunk_version
     cell_version = Keyword.get(intent.opts, :cell_version, new_chunk_version)
 
     cell_hash =
@@ -1107,7 +1212,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
      }}
   end
 
-  defp build_intent_delta_op(%{operation: :break_block} = intent, new_chunk_version) do
+  defp build_intent_delta_op(%{operation: :break_block} = intent, state_after) do
+    new_chunk_version = state_after.storage.chunk_version
     cell_version = Keyword.get(intent.opts, :cell_version, new_chunk_version)
     cell_hash = Keyword.get(intent.opts, :cell_hash, 0)
 
@@ -1121,7 +1227,51 @@ defmodule SceneServer.Voxel.ChunkProcess do
      }}
   end
 
-  defp build_intent_delta_op(_intent, _new_chunk_version), do: :fallback_to_snapshot
+  # Phase 1c-3: emit CellRefined (delta_kind = 2) carrying the full
+  # post-mutation RefinedCellData. Layer-diff is intentionally deferred
+  # (see phase-1c-refined-mutation.md decision 4).
+  defp build_intent_delta_op(%{operation: :put_micro_block} = intent, state_after) do
+    header = Storage.macro_header_at(state_after.storage, intent.macro)
+    cell = Storage.refined_cell_at(state_after.storage, intent.macro)
+
+    {:ok,
+     %{
+       delta_kind: 2,
+       macro_index: intent.macro,
+       cell_version: header.cell_version,
+       cell_hash: header.cell_hash,
+       payload: Codec.encode_refined_cell_payload(cell)
+     }}
+  end
+
+  defp build_intent_delta_op(%{operation: :clear_micro_block} = intent, state_after) do
+    header = Storage.macro_header_at(state_after.storage, intent.macro)
+
+    if header.mode == MacroCellHeader.cell_mode_empty() do
+      # Last slot cleared → macro downgraded to :empty → CellEmpty op.
+      {:ok,
+       %{
+         delta_kind: 0,
+         macro_index: intent.macro,
+         cell_version: header.cell_version,
+         cell_hash: header.cell_hash,
+         payload: <<>>
+       }}
+    else
+      cell = Storage.refined_cell_at(state_after.storage, intent.macro)
+
+      {:ok,
+       %{
+         delta_kind: 2,
+         macro_index: intent.macro,
+         cell_version: header.cell_version,
+         cell_hash: header.cell_hash,
+         payload: Codec.encode_refined_cell_payload(cell)
+       }}
+    end
+  end
+
+  defp build_intent_delta_op(_intent, _state_after), do: :fallback_to_snapshot
 
   defp push_chunk_delta(state, base_version, ops, reason) do
     delta_payload =
@@ -1214,6 +1364,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
            ),
          {:ok, macro_index} <- safe_macro_index(macro_index),
          {:ok, block} <- normalize_intent_block(operation, intent_attrs, attrs),
+         {:ok, micro_slot} <- normalize_intent_micro_slot(operation, intent_attrs, attrs),
+         {:ok, micro_layer} <- normalize_intent_micro_layer(operation, intent_attrs, attrs),
          {:ok, request_id} <-
            normalize_request_id(
              fetch_optional(intent_attrs, [:request_id]) || fetch_optional(attrs, [:request_id])
@@ -1228,6 +1380,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
          operation: operation,
          macro: macro_index,
          block: block,
+         micro_slot: micro_slot,
+         micro_layer: micro_layer,
          opts: opts
        }}
     end
@@ -1254,9 +1408,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_apply_intents(_attrs_list), do: {:error, :invalid_voxel_intent}
 
   # `:break_block` clears a macro cell back to empty mode and never carries
-  # block payload on the wire (delta_kind = 0 CellEmpty). Every other operation
-  # must include a normalized NormalBlockData.
+  # block payload on the wire (delta_kind = 0 CellEmpty). Micro operations
+  # carry their own MicroLayer attrs in the `micro_layer` intent field, not
+  # a NormalBlockData. Every other operation must include a normalized
+  # NormalBlockData.
   defp normalize_intent_block(:break_block, _intent_attrs, _attrs), do: {:ok, nil}
+  defp normalize_intent_block(:put_micro_block, _intent_attrs, _attrs), do: {:ok, nil}
+  defp normalize_intent_block(:clear_micro_block, _intent_attrs, _attrs), do: {:ok, nil}
 
   defp normalize_intent_block(_operation, intent_attrs, attrs) do
     with {:ok, block} <-
@@ -1265,6 +1423,58 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, block}
     end
   end
+
+  # Phase 1c — extract micro_slot for :put_micro_block / :clear_micro_block.
+  defp normalize_intent_micro_slot(op, intent_attrs, attrs)
+       when op in [:put_micro_block, :clear_micro_block] do
+    with {:ok, slot} <-
+           fetch_required(
+             [intent_attrs, attrs],
+             [:micro_slot, :micro_slot_index],
+             :missing_micro_slot
+           ),
+         {:ok, slot} <- safe_micro_slot(slot) do
+      {:ok, slot}
+    end
+  end
+
+  defp normalize_intent_micro_slot(_op, _intent_attrs, _attrs), do: {:ok, nil}
+
+  # Phase 1c — extract micro_layer attrs for :put_micro_block.
+  defp normalize_intent_micro_layer(:put_micro_block, intent_attrs, attrs) do
+    with {:ok, layer} <-
+           fetch_required(
+             [intent_attrs, attrs],
+             [:micro_layer, :layer],
+             :missing_micro_layer
+           ),
+         {:ok, layer} <- safe_normalize_micro_layer(layer) do
+      {:ok, layer}
+    end
+  end
+
+  defp normalize_intent_micro_layer(_op, _intent_attrs, _attrs), do: {:ok, nil}
+
+  defp safe_micro_slot(value) when is_integer(value) and value >= 0 and value <= 511 do
+    {:ok, value}
+  end
+
+  defp safe_micro_slot(_), do: {:error, :invalid_micro_slot}
+
+  defp safe_normalize_micro_layer(layer) when is_map(layer) do
+    {:ok,
+     Map.take(layer, [
+       :material_id,
+       :state_flags,
+       :health,
+       :attribute_set_ref,
+       :tag_set_ref,
+       :owner_object_id,
+       :owner_part_id
+     ])}
+  end
+
+  defp safe_normalize_micro_layer(_), do: {:error, :invalid_micro_layer}
 
   defp normalize_load_snapshot(attrs) when is_map(attrs) do
     with {:ok, storage} <- load_snapshot_storage(attrs),
@@ -1343,6 +1553,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_operation("break_block"), do: {:ok, :break_block}
   defp normalize_operation(:break), do: {:ok, :break_block}
   defp normalize_operation("break"), do: {:ok, :break_block}
+  defp normalize_operation(:put_micro_block), do: {:ok, :put_micro_block}
+  defp normalize_operation("put_micro_block"), do: {:ok, :put_micro_block}
+  defp normalize_operation(:clear_micro_block), do: {:ok, :clear_micro_block}
+  defp normalize_operation("clear_micro_block"), do: {:ok, :clear_micro_block}
   defp normalize_operation(_operation), do: {:error, :unsupported_voxel_intent}
 
   defp normalize_request_id(nil), do: {:ok, 0}

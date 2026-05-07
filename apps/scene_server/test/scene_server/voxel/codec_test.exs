@@ -487,6 +487,71 @@ defmodule SceneServer.Voxel.CodecTest do
     end
   end
 
+  describe "encode_refined_cell_payload / decode_refined_cell_payload (Phase 1c-3)" do
+    test "round-trips a single non-empty cell through the standalone payload form" do
+      cell = sample_refined_cell()
+      bytes = Codec.encode_refined_cell_payload(cell)
+
+      assert is_binary(bytes)
+      assert byte_size(bytes) > 0
+
+      assert {:ok, decoded} = Codec.decode_refined_cell_payload(bytes)
+      assert decoded == cell
+    end
+
+    test "round-trips a cell with multiple layers and object refs" do
+      cell = sample_refined_cell_with_object_ref()
+      bytes = Codec.encode_refined_cell_payload(cell)
+
+      assert {:ok, decoded} = Codec.decode_refined_cell_payload(bytes)
+      assert decoded == cell
+    end
+
+    test "single-cell payload bytes match a 1-cell pool minus the count u32 prefix" do
+      cell = sample_refined_cell()
+
+      pool_bytes = Codec.encode_refined_cell_pool([cell])
+      payload_bytes = Codec.encode_refined_cell_payload(cell)
+
+      # Pool layout: <<count::u32, cell_bytes...>>
+      assert <<1::unsigned-big-integer-size(32), expected_payload::binary>> = pool_bytes
+      assert payload_bytes == expected_payload
+    end
+
+    test "decode rejects trailing bytes" do
+      cell = sample_refined_cell()
+      bytes = Codec.encode_refined_cell_payload(cell)
+
+      assert {:error, _} = Codec.decode_refined_cell_payload(bytes <> <<0xFF>>)
+
+      assert_raise ArgumentError, ~r/trailing bytes/, fn ->
+        Codec.decode_refined_cell_payload!(bytes <> <<0xFF>>)
+      end
+    end
+
+    test "decode rejects truncated payload" do
+      cell = sample_refined_cell()
+      bytes = Codec.encode_refined_cell_payload(cell)
+      truncated = binary_part(bytes, 0, byte_size(bytes) - 4)
+
+      assert {:error, _} = Codec.decode_refined_cell_payload(truncated)
+    end
+
+    test "round-trips a cell with empty layers and object_refs (orphan / downgraded)" do
+      empty_cell =
+        RefinedCellData.new(
+          occupancy_words: List.duplicate(0, 8),
+          layers: [],
+          object_refs: [],
+          boundary_cache: 0
+        )
+
+      bytes = Codec.encode_refined_cell_payload(empty_cell)
+      assert {:ok, decoded} = Codec.decode_refined_cell_payload(bytes)
+      assert decoded == empty_cell
+    end
+  end
+
   describe "shared fixture refined_512_cell_v1.bin" do
     test "decodes the shared fixture and matches expected fields" do
       bytes =
@@ -548,6 +613,89 @@ defmodule SceneServer.Voxel.CodecTest do
       regenerated = Codec.encode_refined_cell_pool(fixture_cells_from_script_definition())
       assert regenerated == bytes
     end
+  end
+
+  describe "shared fixture cell_refined_delta_v1.bin (Phase 1c-3)" do
+    test "decodes the shared single-cell delta payload and matches expected fields" do
+      bytes =
+        File.read!(
+          Path.join([__DIR__, "..", "..", "fixtures", "voxel", "cell_refined_delta_v1.bin"])
+        )
+
+      assert {:ok, cell} = Codec.decode_refined_cell_payload(bytes)
+
+      assert cell.occupancy_words == [0, 0, 0, 0, 0, 0, 0, 0xFF]
+      assert cell.boundary_cache == 0xCAFE_BABE_DEAD_BEEF
+      assert length(cell.layers) == 2
+
+      [a, b] = cell.layers
+      assert a.material_id == 42
+      assert a.owner_object_id == 0xDEAD_BEEF
+      assert a.owner_part_id == 7
+      assert a.mask_words == [0, 0, 0, 0, 0, 0, 0, 0xF0]
+      assert b.material_id == 99
+      assert b.attribute_set_ref == 5
+      assert b.tag_set_ref == 6
+
+      [ref] = cell.object_refs
+      assert ref.owner_object_id == 0xDEAD_BEEF
+      assert ref.mask_words == [0, 0, 0, 0, 0, 0, 0, 0xF0]
+
+      assert Codec.encode_refined_cell_payload(cell) == bytes
+    end
+
+    test "fixture is in sync with the delta-payload generator script" do
+      bytes =
+        File.read!(
+          Path.join([__DIR__, "..", "..", "fixtures", "voxel", "cell_refined_delta_v1.bin"])
+        )
+
+      regenerated = Codec.encode_refined_cell_payload(cell_refined_delta_fixture_cell())
+      assert regenerated == bytes
+    end
+  end
+
+  # Mirror of `priv/scripts/gen_cell_refined_delta_fixture.exs`. Any change
+  # here MUST be mirrored in the script — the "fixture is in sync" test
+  # enforces it.
+  defp cell_refined_delta_fixture_cell do
+    layer_a =
+      MicroLayer.new(
+        mask_words: [0, 0, 0, 0, 0, 0, 0, 0xF0],
+        material_id: 42,
+        state_flags: 0,
+        health: 100,
+        attribute_set_ref: 0,
+        tag_set_ref: 0,
+        owner_object_id: 0xDEAD_BEEF,
+        owner_part_id: 7
+      )
+
+    layer_b =
+      MicroLayer.new(
+        mask_words: [0, 0, 0, 0, 0, 0, 0, 0x0F],
+        material_id: 99,
+        state_flags: 0x01,
+        health: 50,
+        attribute_set_ref: 5,
+        tag_set_ref: 6,
+        owner_object_id: 0,
+        owner_part_id: 0
+      )
+
+    object_ref =
+      ObjectCoverRef.new(
+        owner_object_id: 0xDEAD_BEEF,
+        owner_part_id: 7,
+        mask_words: [0, 0, 0, 0, 0, 0, 0, 0xF0]
+      )
+
+    RefinedCellData.new(
+      occupancy_words: [0, 0, 0, 0, 0, 0, 0, 0xFF],
+      boundary_cache: 0xCAFE_BABE_DEAD_BEEF,
+      layers: [layer_a, layer_b],
+      object_refs: [object_ref]
+    )
   end
 
   defp empty_baseline_storage do

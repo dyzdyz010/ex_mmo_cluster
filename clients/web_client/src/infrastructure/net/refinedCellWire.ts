@@ -114,6 +114,38 @@ export function encodeRefinedCellPool(cells: RefinedCellWireData[]): Uint8Array 
   return new Uint8Array(buffer);
 }
 
+/**
+ * Decode a single RefinedCellData from a standalone payload (no count
+ * prefix). This is the form used by ChunkDelta op payloads when
+ * `delta_kind = 2 (CellRefined)` (Phase 1c-3). Bytes match a single entry
+ * inside `decodeRefinedCellPool`, so a 1-cell pool payload is exactly
+ * `<<1::u32>> <> encodeRefinedCellPayload(cell)`.
+ */
+export function decodeRefinedCellPayload(payload: DataView): RefinedCellWireData {
+  const cursor: Cursor = { view: payload, offset: 0 };
+  const cell = readRefinedCell(cursor);
+  if (cursor.offset !== payload.byteLength) {
+    throw new Error(
+      `trailing_refined_cell_payload_bytes:${payload.byteLength - cursor.offset}`,
+    );
+  }
+  return cell;
+}
+
+/**
+ * Encode a single RefinedCellData as a standalone payload (no count prefix).
+ */
+export function encodeRefinedCellPayload(cell: RefinedCellWireData): Uint8Array {
+  const totalBytes = cellByteSize(cell);
+  const buffer = new ArrayBuffer(totalBytes);
+  const view = new DataView(buffer);
+  const written = writeRefinedCell(view, 0, cell);
+  if (written !== totalBytes) {
+    throw new Error(`refined_cell_payload_size_mismatch:${written}_vs_${totalBytes}`);
+  }
+  return new Uint8Array(buffer);
+}
+
 interface Cursor {
   view: DataView;
   offset: number;

@@ -434,6 +434,341 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:error, :lease_id_mismatch} = ChunkProcess.persist(chunk)
   end
 
+  describe "Phase 1c — :put_micro_block / :clear_micro_block intents" do
+    test "apply_intent :put_micro_block writes a refined slot, bumps versions, persists snapshot" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, %{chunk_version: 1, persist_result: :inserted}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {2, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17, health: 100}
+                 )
+               )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+      assert snapshot.chunk_version == 1
+
+      assert {:ok, %{storage: stored_storage}} =
+               Codec.decode_chunk_snapshot_payload(snapshot.data)
+
+      header = Storage.macro_header_at(stored_storage, {2, 0, 0})
+      assert header.mode == MacroCellHeader.cell_mode_refined()
+
+      cell = Storage.refined_cell_at(stored_storage, {2, 0, 0})
+      [layer] = cell.layers
+      assert layer.material_id == 17
+      assert layer.health == 100
+      expected_word = Bitwise.bsl(1, 5)
+      assert cell.occupancy_words == [expected_word, 0, 0, 0, 0, 0, 0, 0]
+    end
+
+    test "apply_intent :put_micro_block on already-occupied slot returns :micro_slot_already_occupied" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17}
+                 )
+               )
+
+      assert {:error, :micro_slot_already_occupied} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 99}
+                 )
+               )
+    end
+
+    test "apply_intent :clear_micro_block clears the slot and downgrades to empty when last" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      put = fn slot, mat ->
+        ChunkProcess.apply_intent(
+          chunk,
+          micro_intent_attrs(lease,
+            operation: :put_micro_block,
+            macro: {0, 0, 0},
+            micro_slot: slot,
+            micro_layer: %{material_id: mat}
+          )
+        )
+      end
+
+      assert {:ok, _} = put.(5, 17)
+      assert {:ok, _} = put.(9, 17)
+
+      # Clear slot 5 — cell should still be refined with one slot remaining.
+      assert {:ok, %{chunk_version: 3}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5
+                 )
+               )
+
+      # Clear slot 9 — cell becomes empty, header downgrades.
+      assert {:ok, %{chunk_version: 4}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 9
+                 )
+               )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(snapshot_store, 1, {1, 1, 1})
+
+      assert {:ok, %{storage: stored_storage}} =
+               Codec.decode_chunk_snapshot_payload(snapshot.data)
+
+      header = Storage.macro_header_at(stored_storage, {0, 0, 0})
+      assert header.mode == MacroCellHeader.cell_mode_empty()
+    end
+
+    test "apply_intent :clear_micro_block on empty slot is a noop (no version bump)" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, %{chunk_version: 0, changed?: false, persist_result: :unchanged}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5
+                 )
+               )
+    end
+
+    test "apply_intent :put_micro_block on a solid macro is rejected" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: {0, 0, 0}, block: NormalBlockData.new(11))
+               )
+
+      assert {:error, :invalid_voxel_intent} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17}
+                 )
+               )
+    end
+
+    test "apply_intent rejects micro_slot out of 0..511" do
+      {_token_store, _snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      for bad <- [-1, 512, 1024] do
+        assert {:error, :invalid_micro_slot} =
+                 ChunkProcess.apply_intent(
+                   chunk,
+                   micro_intent_attrs(lease,
+                     operation: :put_micro_block,
+                     macro: {0, 0, 0},
+                     micro_slot: bad,
+                     micro_layer: %{material_id: 1}
+                   )
+                 )
+      end
+    end
+
+    test "apply_intent :put_micro_block requires micro_layer" do
+      {_token_store, _snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      attrs =
+        micro_intent_attrs(lease,
+          operation: :put_micro_block,
+          macro: {0, 0, 0},
+          micro_slot: 5
+        )
+        |> Map.delete(:micro_layer)
+
+      assert {:error, :missing_micro_layer} = ChunkProcess.apply_intent(chunk, attrs)
+    end
+
+    test "subscribers receive a CellRefined ChunkDelta (delta_kind=2) after a micro put" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 200)
+      assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17}
+                 )
+               )
+
+      assert_receive {:voxel_chunk_delta_payload, delta_payload}
+      refute_received {:voxel_chunk_snapshot_payload, _}
+
+      assert {:ok, delta} = Codec.decode_chunk_delta_payload(delta_payload)
+      assert [op] = delta.ops
+      assert op.delta_kind == 2
+      assert op.macro_index == 0
+
+      # The op payload is a single-cell RefinedCellData (delta_kind=2 wire).
+      assert {:ok, cell} = Codec.decode_refined_cell_payload(op.payload)
+      [layer] = cell.layers
+      assert layer.material_id == 17
+      assert cell.occupancy_words == [Bitwise.bsl(1, 5), 0, 0, 0, 0, 0, 0, 0]
+    end
+
+    test "subscribers receive CellEmpty ChunkDelta (delta_kind=0) when last slot is cleared" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17}
+                 )
+               )
+
+      assert {:ok, _} = ChunkProcess.subscribe(chunk, self(), request_id: 201)
+      assert_receive {:voxel_chunk_snapshot_payload, _initial}
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5
+                 )
+               )
+
+      assert_receive {:voxel_chunk_delta_payload, delta_payload}
+      assert {:ok, delta} = Codec.decode_chunk_delta_payload(delta_payload)
+      assert [op] = delta.ops
+      assert op.delta_kind == 0
+      assert op.payload == <<>>
+    end
+
+    test "clear_micro_block leaves a refined cell ChunkDelta (delta_kind=2) when slots remain" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      put = fn slot, mat ->
+        ChunkProcess.apply_intent(
+          chunk,
+          micro_intent_attrs(lease,
+            operation: :put_micro_block,
+            macro: {0, 0, 0},
+            micro_slot: slot,
+            micro_layer: %{material_id: mat}
+          )
+        )
+      end
+
+      assert {:ok, _} = put.(5, 17)
+      assert {:ok, _} = put.(9, 17)
+
+      assert {:ok, _} = ChunkProcess.subscribe(chunk, self(), request_id: 202)
+      assert_receive {:voxel_chunk_snapshot_payload, _initial}
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   operation: :clear_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5
+                 )
+               )
+
+      assert_receive {:voxel_chunk_delta_payload, delta_payload}
+      assert {:ok, delta} = Codec.decode_chunk_delta_payload(delta_payload)
+      assert [op] = delta.ops
+      assert op.delta_kind == 2
+
+      assert {:ok, cell} = Codec.decode_refined_cell_payload(op.payload)
+      [layer] = cell.layers
+      assert layer.mask_words == [Bitwise.bsl(1, 9), 0, 0, 0, 0, 0, 0, 0]
+    end
+  end
+
   defp lease do
     %{
       logical_scene_id: 1,
@@ -468,6 +803,20 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       operation: :put_solid_block,
       macro: 0,
       block: NormalBlockData.new(7)
+    }
+    |> Map.merge(Map.new(overrides))
+  end
+
+  defp micro_intent_attrs(lease, overrides \\ []) do
+    %{
+      request_id: 70,
+      logical_scene_id: lease.logical_scene_id,
+      chunk_coord: {1, 1, 1},
+      lease: lease,
+      operation: :put_micro_block,
+      macro: {0, 0, 0},
+      micro_slot: 0,
+      micro_layer: %{material_id: 1, health: 100}
     }
     |> Map.merge(Map.new(overrides))
   end

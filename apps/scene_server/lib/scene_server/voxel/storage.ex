@@ -12,9 +12,12 @@ defmodule SceneServer.Voxel.Storage do
   alias SceneServer.Voxel.DirtyMacroBounds
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
+  alias SceneServer.Voxel.MicroLayer
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Types
+
+  import Bitwise
 
   @schema_version 1
   @chunk_size_in_macro 16
@@ -147,6 +150,126 @@ defmodule SceneServer.Voxel.Storage do
     |> normalize!()
   end
 
+  @doc """
+  Puts (or sets) a single micro slot inside the macro cell at
+  `macro_index_or_coord`.
+
+  `micro_slot_index` is in `0..511` (8³ slots per macro at v1
+  `micro_resolution = 8`). `layer_attrs` is a map of `MicroLayer` field
+  values (material_id / state_flags / health / attribute_set_ref /
+  tag_set_ref / owner_object_id / owner_part_id). Slots sharing the same
+  attribute signature are merged into one layer per protocol §5.4 invariant 4.
+
+  State transitions (Phase 1c v1):
+
+    * `empty`   → `refined`  (new RefinedCellData appended to pool)
+    * `refined` → `refined`  (existing cell mutated in place at its pool index)
+    * `solid`   → raises `ArgumentError` `:cannot_micro_edit_solid_macro`
+
+  `opts` accepts `cell_version` / `cell_hash` / `flags` /
+  `environment_index` / `boundary_cache` for the resulting macro header
+  and refined cell.
+  """
+  @spec put_micro_block(
+          t(),
+          integer() | term(),
+          0..511,
+          map(),
+          keyword()
+        ) :: t()
+  def put_micro_block(
+        %__MODULE__{} = storage,
+        macro_index_or_coord,
+        micro_slot_index,
+        layer_attrs,
+        opts \\ []
+      ) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    micro_slot_index = micro_slot!(micro_slot_index)
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        raise ArgumentError,
+          message:
+            "cannot_micro_edit_solid_macro: macro #{macro_index} is in :solid mode; " <>
+              "Phase 1c v1 only supports empty ↔ refined transitions"
+
+      header.mode == MacroCellHeader.cell_mode_empty() ->
+        new_cell = build_initial_refined_cell(micro_slot_index, layer_attrs, opts)
+        append_refined_cell(storage, macro_index, new_cell, opts)
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        cell = Enum.at(storage.refined_cells, header.payload_index)
+        updated_cell = upsert_micro_slot(cell, micro_slot_index, layer_attrs, opts)
+        replace_refined_cell(storage, macro_index, header.payload_index, updated_cell, opts)
+
+      true ->
+        raise ArgumentError, "unknown macro mode: #{header.mode}"
+    end
+  end
+
+  @doc """
+  Clears a single micro slot inside the macro cell at `macro_index_or_coord`.
+
+  If the slot is currently unoccupied, returns the storage unchanged
+  (idempotent). If clearing leaves the cell with no layers and no object
+  refs, the macro header is downgraded back to `:empty` mode and the pool
+  entry is left orphaned (matching `clear_macro_cell/3` compaction policy).
+
+  `solid` macros raise; `empty` macros no-op.
+  """
+  @spec clear_micro_block(t(), integer() | term(), 0..511, keyword()) :: t()
+  def clear_micro_block(
+        %__MODULE__{} = storage,
+        macro_index_or_coord,
+        micro_slot_index,
+        opts \\ []
+      ) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    micro_slot_index = micro_slot!(micro_slot_index)
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_empty() ->
+        storage
+
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        raise ArgumentError,
+          message:
+            "cannot_micro_edit_solid_macro: macro #{macro_index} is in :solid mode; " <>
+              "Phase 1c v1 only supports empty ↔ refined transitions"
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        cell = Enum.at(storage.refined_cells, header.payload_index)
+        updated_cell = remove_micro_slot(cell, micro_slot_index)
+
+        if refined_cell_empty?(updated_cell) do
+          downgrade_refined_to_empty(storage, macro_index, header.payload_index, opts)
+        else
+          replace_refined_cell(storage, macro_index, header.payload_index, updated_cell, opts)
+        end
+
+      true ->
+        raise ArgumentError, "unknown macro mode: #{header.mode}"
+    end
+  end
+
+  @doc "Reads the RefinedCellData payload for a refined macro cell, or nil."
+  @spec refined_cell_at(t(), integer() | term()) :: RefinedCellData.t() | nil
+  def refined_cell_at(%__MODULE__{} = storage, macro_index_or_coord) do
+    storage = normalize!(storage)
+    header = macro_header_at(storage, macro_index_or_coord)
+
+    if header.mode == MacroCellHeader.cell_mode_refined() do
+      Enum.at(storage.refined_cells, header.payload_index)
+    else
+      nil
+    end
+  end
+
   @doc "Reads one macro header by local macro coord or macro index."
   @spec macro_header_at(t(), integer() | term()) :: MacroCellHeader.t()
   def macro_header_at(%__MODULE__{} = storage, macro_index_or_coord) do
@@ -232,6 +355,190 @@ defmodule SceneServer.Voxel.Storage do
         DirtyMacroBounds.normalize!(fetch(attrs, :dirty_bounds, DirtyMacroBounds.empty()))
     }
   end
+
+  # ----------------------------------------------------------------------------
+  # Phase 1c — refined micro mutation helpers
+  # ----------------------------------------------------------------------------
+
+  defp micro_slot!(index) when is_integer(index) and index >= 0 and index <= 511, do: index
+
+  defp micro_slot!(index) do
+    raise ArgumentError, "micro_slot_index must be in 0..511, got: #{inspect(index)}"
+  end
+
+  defp build_initial_refined_cell(slot_index, layer_attrs, opts) do
+    mask = single_bit_mask(slot_index)
+    layer = MicroLayer.normalize!(Map.put(layer_attrs, :mask_words, mask))
+
+    RefinedCellData.new(
+      occupancy_words: mask,
+      layers: [layer],
+      object_refs: [],
+      boundary_cache: Keyword.get(opts, :boundary_cache, 0)
+    )
+  end
+
+  defp append_refined_cell(storage, macro_index, cell, opts) do
+    payload_index = length(storage.refined_cells)
+
+    header =
+      MacroCellHeader.refined(payload_index,
+        flags: Keyword.get(opts, :flags, 0),
+        environment_index: Keyword.get(opts, :environment_index, MacroCellHeader.no_index()),
+        cell_version: Keyword.get(opts, :cell_version, 0),
+        cell_hash: Keyword.get(opts, :cell_hash, 0)
+      )
+
+    %{
+      storage
+      | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
+        refined_cells: storage.refined_cells ++ [cell]
+    }
+    |> normalize!()
+  end
+
+  defp replace_refined_cell(storage, macro_index, payload_index, cell, opts) do
+    header_now = Enum.at(storage.macro_headers, macro_index)
+
+    header =
+      MacroCellHeader.refined(payload_index,
+        flags: Keyword.get(opts, :flags, header_now.flags),
+        environment_index: Keyword.get(opts, :environment_index, header_now.environment_index),
+        cell_version: Keyword.get(opts, :cell_version, header_now.cell_version),
+        cell_hash: Keyword.get(opts, :cell_hash, header_now.cell_hash)
+      )
+
+    %{
+      storage
+      | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
+        refined_cells: List.replace_at(storage.refined_cells, payload_index, cell)
+    }
+    |> normalize!()
+  end
+
+  defp downgrade_refined_to_empty(storage, macro_index, payload_index, opts) do
+    # Match `clear_macro_cell/3`'s compaction policy: leave the orphaned
+    # RefinedCellData in the pool (an empty-but-valid cell) and just flip
+    # the macro header back to empty mode.
+    header_now = Enum.at(storage.macro_headers, macro_index)
+
+    header =
+      MacroCellHeader.empty(
+        flags: Keyword.get(opts, :flags, header_now.flags),
+        cell_version: Keyword.get(opts, :cell_version, header_now.cell_version),
+        cell_hash: Keyword.get(opts, :cell_hash, header_now.cell_hash)
+      )
+
+    empty_cell =
+      RefinedCellData.new(
+        occupancy_words: List.duplicate(0, 8),
+        layers: [],
+        object_refs: [],
+        boundary_cache: 0
+      )
+
+    %{
+      storage
+      | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
+        refined_cells: List.replace_at(storage.refined_cells, payload_index, empty_cell)
+    }
+    |> normalize!()
+  end
+
+  defp upsert_micro_slot(cell, slot_index, layer_attrs, opts) do
+    bit_mask = single_bit_mask(slot_index)
+
+    if slot_currently_occupied?(cell, slot_index) do
+      raise ArgumentError,
+        message:
+          "micro_slot_already_occupied: slot #{slot_index} already belongs to a layer; " <>
+            "callers must clear it first or use a future replace path"
+    end
+
+    target_layer = MicroLayer.normalize!(Map.put(layer_attrs, :mask_words, bit_mask))
+    target_sig = MicroLayer.attribute_signature(target_layer)
+
+    {merged_layers, found?} =
+      Enum.map_reduce(cell.layers, false, fn %MicroLayer{} = layer, found ->
+        if MicroLayer.attribute_signature(layer) == target_sig do
+          {%{layer | mask_words: bitwise_or_words(layer.mask_words, bit_mask)}, true}
+        else
+          {layer, found}
+        end
+      end)
+
+    new_layers = if found?, do: merged_layers, else: cell.layers ++ [target_layer]
+
+    new_occupancy = bitwise_or_words(cell.occupancy_words, bit_mask)
+
+    RefinedCellData.new(
+      occupancy_words: new_occupancy,
+      layers: new_layers,
+      object_refs: cell.object_refs,
+      boundary_cache: Keyword.get(opts, :boundary_cache, cell.boundary_cache)
+    )
+  end
+
+  defp remove_micro_slot(cell, slot_index) do
+    bit_mask = single_bit_mask(slot_index)
+
+    {new_layers, _changed?} =
+      Enum.map_reduce(cell.layers, false, fn %MicroLayer{} = layer, changed ->
+        cleared = bitwise_andnot_words(layer.mask_words, bit_mask)
+        {%{layer | mask_words: cleared}, changed or cleared != layer.mask_words}
+      end)
+
+    # Drop layers that became all-zero (ghost layers are forbidden by §5.4).
+    pruned_layers =
+      Enum.reject(new_layers, fn layer ->
+        Enum.all?(layer.mask_words, &(&1 == 0))
+      end)
+
+    new_occupancy = bitwise_andnot_words(cell.occupancy_words, bit_mask)
+
+    pruned_object_refs =
+      cell.object_refs
+      |> Enum.map(fn ref ->
+        %{ref | mask_words: bitwise_andnot_words(ref.mask_words, bit_mask)}
+      end)
+      |> Enum.reject(fn ref ->
+        Enum.all?(ref.mask_words, &(&1 == 0))
+      end)
+
+    RefinedCellData.new(
+      occupancy_words: new_occupancy,
+      layers: pruned_layers,
+      object_refs: pruned_object_refs,
+      boundary_cache: cell.boundary_cache
+    )
+  end
+
+  defp refined_cell_empty?(%RefinedCellData{} = cell) do
+    Enum.all?(cell.occupancy_words, &(&1 == 0)) and
+      cell.layers == [] and
+      cell.object_refs == []
+  end
+
+  defp slot_currently_occupied?(%RefinedCellData{} = cell, slot_index) do
+    bit_mask = single_bit_mask(slot_index)
+
+    cell.occupancy_words
+    |> Enum.zip(bit_mask)
+    |> Enum.any?(fn {word, mask_word} -> band(word, mask_word) != 0 end)
+  end
+
+  defp single_bit_mask(slot_index) do
+    word_index = div(slot_index, 64)
+    bit_index = rem(slot_index, 64)
+    bit = bsl(1, bit_index)
+    List.replace_at(List.duplicate(0, 8), word_index, bit)
+  end
+
+  defp bitwise_or_words(a, b), do: Enum.zip_with(a, b, &bor/2)
+
+  # bitwise AND NOT: clears bits in `a` that are set in `b`.
+  defp bitwise_andnot_words(a, b),
+    do: Enum.zip_with(a, b, fn x, y -> band(x, bnot(y) &&& 0xFFFF_FFFF_FFFF_FFFF) end)
 
   defp normalize_macro_headers!([]), do: empty_macro_headers()
 
