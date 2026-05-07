@@ -16,7 +16,10 @@ defmodule WorldServer.WorldSup do
       {WorldServer.Voxel.TransactionCoordinator,
        name: WorldServer.Voxel.TransactionCoordinator,
        persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
-       load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)}
+       load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)},
+      {WorldServer.Voxel.TransactionRecoveryWatcher,
+       name: WorldServer.Voxel.TransactionRecoveryWatcher,
+       coordinator: WorldServer.Voxel.TransactionCoordinator}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

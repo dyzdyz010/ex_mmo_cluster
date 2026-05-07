@@ -7,6 +7,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
   alias WorldServer.Voxel.BuildTransaction
   alias WorldServer.Voxel.TransactionCoordinator
   alias WorldServer.Voxel.TransactionParticipant
+  alias WorldServer.Voxel.TransactionRecoveryWatcher
 
   setup do
     Repo.delete_all(VoxelTransactionCoordinatorSnapshot)
@@ -112,6 +113,72 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
              TransactionCoordinator.abort_decision(revived, "tx-abort-restart", 1)
 
     assert TransactionCoordinator.snapshot(revived) == revived_snapshot
+  end
+
+  test "RecoveryWatcher aborts :preparing transaction after coordinator restart" do
+    coordinator =
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_recovery_coord)
+
+    assert {:ok, %BuildTransaction{state: :preparing}} =
+             TransactionCoordinator.begin_transaction(
+               coordinator,
+               transaction_attrs("tx-recovery-preparing")
+             )
+
+    stop_supervised!(:first_recovery_coord)
+
+    revived =
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_recovery_coord)
+
+    revived_pre_sweep = TransactionCoordinator.snapshot(revived)
+    assert revived_pre_sweep.transactions["tx-recovery-preparing"].state == :preparing
+
+    _watcher =
+      start_supervised!(
+        {TransactionRecoveryWatcher, coordinator: revived},
+        id: :recovery_watcher_for_revived
+      )
+
+    revived_post_sweep = TransactionCoordinator.snapshot(revived)
+    assert revived_post_sweep.transactions["tx-recovery-preparing"].state == :aborted
+
+    assert revived_post_sweep.decision_index["tx-recovery-preparing"].decision == :abort
+
+    # The abort decision must have been written through to Postgres so that a
+    # second restart cycle does not see the same transaction as :preparing.
+    stop_supervised!(:recovery_watcher_for_revived)
+    stop_supervised!(:revived_recovery_coord)
+
+    final =
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :final_recovery_coord)
+
+    final_snapshot = TransactionCoordinator.snapshot(final)
+    assert final_snapshot.transactions["tx-recovery-preparing"].state == :aborted
+  end
+
+  test "RecoveryWatcher leaves :prepared transaction parked after restart" do
+    coordinator =
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_parked_coord)
+
+    prepare_all!(coordinator, "tx-recovery-prepared")
+
+    assert TransactionCoordinator.snapshot(coordinator).transactions["tx-recovery-prepared"].state ==
+             :prepared
+
+    stop_supervised!(:first_parked_coord)
+
+    revived =
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_parked_coord)
+
+    _watcher =
+      start_supervised!(
+        {TransactionRecoveryWatcher, coordinator: revived},
+        id: :recovery_watcher_for_parked
+      )
+
+    revived_snapshot = TransactionCoordinator.snapshot(revived)
+    assert revived_snapshot.transactions["tx-recovery-prepared"].state == :prepared
+    refute Map.has_key?(revived_snapshot.decision_index, "tx-recovery-prepared")
   end
 
   test "init survives an empty Postgres table" do
