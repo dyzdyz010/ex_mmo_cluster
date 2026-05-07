@@ -183,6 +183,36 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
              ChunkDirectory.apply_intent(directory, intent_attrs(lease, chunk_a, {2, 0, 0}, 11))
   end
 
+  test "commit_transaction returns :transaction_not_prepared once the fence is aborted" do
+    {directory, lease} = boot()
+
+    participant = participant(affected_chunks: [{0, 0, 0}])
+
+    intents = %{{0, 0, 0} => [intent_attrs(lease, {0, 0, 0}, {1, 0, 0}, 60)]}
+
+    assert {:ok, _} =
+             BuildTransactionApplier.prepare(participant, "tx-released", intents,
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+
+    assert :ok =
+             BuildTransactionApplier.abort(participant, "tx-released",
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+
+    # Phase 3 D4: ChunkProcess fences are not persisted, so a coordinator that
+    # restarts and re-issues commit_decision against a chunk whose fence has
+    # since been released must see :transaction_not_prepared and let the
+    # surrounding executor treat the whole transaction as a partial failure.
+    assert {:error, {:commit_failed, {0, 0, 0}, :transaction_not_prepared}} =
+             BuildTransactionApplier.commit(participant, "tx-released",
+               chunk_directory: directory,
+               logical_scene_id: @logical_scene_id
+             )
+  end
+
   test "raises when :logical_scene_id is missing from opts" do
     {directory, _lease} = boot()
 
