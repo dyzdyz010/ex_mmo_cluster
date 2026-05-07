@@ -769,6 +769,159 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     end
   end
 
+  describe "Phase 1c — expected_chunk_version / expected_cell_hash optimistic concurrency" do
+    test "apply_intent rejects when expected_chunk_version does not match current version" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, %{chunk_version: 1}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: 0, block: NormalBlockData.new(7))
+               )
+
+      # Current version is 1; client believes it is still 0.
+      assert {:error, :stale_chunk_version} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 1,
+                   block: NormalBlockData.new(8),
+                   expected_chunk_version: 0
+                 )
+               )
+
+      # State unchanged — chunk still at version 1, only macro 0 written.
+      assert ChunkProcess.debug_state(chunk).chunk_version == 1
+    end
+
+    test "apply_intent accepts when expected_chunk_version matches current version" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, %{chunk_version: 1}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: 0, block: NormalBlockData.new(7))
+               )
+
+      assert {:ok, %{chunk_version: 2}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 1,
+                   block: NormalBlockData.new(8),
+                   expected_chunk_version: 1
+                 )
+               )
+    end
+
+    test "apply_intent treats 0xFFFF...FFFF expected_chunk_version sentinel as unspecified" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      # Bump current chunk_version to 1 first.
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: 0, block: NormalBlockData.new(7))
+               )
+
+      # Sentinel value should bypass the precondition — write succeeds even
+      # though chunk_version is no longer the wire's "max u64" placeholder.
+      assert {:ok, %{chunk_version: 2}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 1,
+                   block: NormalBlockData.new(8),
+                   expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF
+                 )
+               )
+    end
+
+    test "apply_intent rejects when expected_cell_hash does not match macro header" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: 0, block: NormalBlockData.new(7), cell_hash: 0xABCD)
+               )
+
+      assert {:error, :stale_cell_hash} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 0,
+                   block: NormalBlockData.new(8),
+                   expected_cell_hash: 0xDEAD
+                 )
+               )
+    end
+
+    test "apply_intent treats 0xFFFF_FFFF expected_cell_hash sentinel as unspecified" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:ok, %{chunk_version: 1}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 0,
+                   block: NormalBlockData.new(7),
+                   expected_cell_hash: 0xFFFF_FFFF
+                 )
+               )
+    end
+
+    test "apply_intent rejects garbage expected_chunk_version up front" do
+      {_token_store, snapshot_store, lease} = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: 1, chunk_coord: {1, 1, 1}, snapshot_store: snapshot_store}
+        )
+
+      assert {:error, :invalid_expected_chunk_version} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease,
+                   macro: 0,
+                   block: NormalBlockData.new(7),
+                   expected_chunk_version: -1
+                 )
+               )
+    end
+  end
+
   defp lease do
     %{
       logical_scene_id: 1,

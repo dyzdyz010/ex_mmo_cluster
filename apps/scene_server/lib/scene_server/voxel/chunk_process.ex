@@ -22,6 +22,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   @intent_option_keys [:cell_hash, :cell_version, :environment_index, :flags]
 
+  # Wire sentinels for VoxelEditIntent (0x70) optimistic concurrency fields;
+  # see docs/2026-04-10-线协议规范.md §13.6.1. Sentinel = "client did not pin a
+  # baseline" → server skips the precondition check for that field.
+  @expected_chunk_version_unspecified 0xFFFF_FFFF_FFFF_FFFF
+  @expected_cell_hash_unspecified 0xFFFF_FFFF
+
   @doc "Starts one chunk process."
   def start_link(opts) when is_list(opts) do
     {server_opts, init_opts} = Keyword.split(opts, [:name])
@@ -576,6 +582,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp apply_normalized_intent(state, intent) do
     with :ok <- validate_intent_scope(state, intent),
+         :ok <- validate_intent_preconditions(state, intent),
          {:ok, next_storage, changed?} <- build_intent_storage(state.storage, intent) do
       snapshot_payload = encode_snapshot_payload(next_storage, intent.request_id)
       persist_payload = encode_snapshot_payload(next_storage, 0)
@@ -623,6 +630,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp apply_normalized_intents(state, intents) do
     with :ok <- validate_batch_scope(state, intents),
+         :ok <- validate_batch_preconditions(state, intents),
          {:ok, next_storage, changed_count, skipped_count} <-
            build_intents_storage(state.storage, intents) do
       request_id = intents |> List.first() |> Map.fetch!(:request_id)
@@ -797,6 +805,55 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp validate_batch_scope(state, intents) do
     Enum.reduce_while(intents, :ok, fn intent, :ok ->
       case validate_intent_scope(state, intent) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  # Optimistic concurrency check for typed `VoxelEditIntent` (0x70).
+  #
+  # Each intent may pin a baseline `expected_chunk_version` (full chunk) and/or
+  # `expected_cell_hash` (the targeted macro cell). Both are nullable; the
+  # caller-side codec resolves the wire sentinels (`0xFF...FF` / `0xFFFF_FFFF`)
+  # to `nil` so a "client did not pin" intent passes through unchanged. If the
+  # current state diverges from a pinned value the intent is rejected with
+  # `:stale_chunk_version` / `:stale_cell_hash`, which the Gate maps to the
+  # protocol-level `Stale` (3) `VoxelIntentResult` code.
+  defp validate_intent_preconditions(state, intent) do
+    with :ok <- validate_expected_chunk_version(state, intent),
+         :ok <- validate_expected_cell_hash(state, intent) do
+      :ok
+    end
+  end
+
+  defp validate_expected_chunk_version(_state, %{expected_chunk_version: nil}), do: :ok
+
+  defp validate_expected_chunk_version(state, %{expected_chunk_version: expected})
+       when is_integer(expected) do
+    if state.storage.chunk_version == expected,
+      do: :ok,
+      else: {:error, :stale_chunk_version}
+  end
+
+  defp validate_expected_chunk_version(_state, _intent), do: :ok
+
+  defp validate_expected_cell_hash(_state, %{expected_cell_hash: nil}), do: :ok
+
+  defp validate_expected_cell_hash(state, %{expected_cell_hash: expected, macro: macro_index})
+       when is_integer(expected) do
+    header = Storage.macro_header_at(state.storage, macro_index)
+
+    if header.cell_hash == expected,
+      do: :ok,
+      else: {:error, :stale_cell_hash}
+  end
+
+  defp validate_expected_cell_hash(_state, _intent), do: :ok
+
+  defp validate_batch_preconditions(state, intents) do
+    Enum.reduce_while(intents, :ok, fn intent, :ok ->
+      case validate_intent_preconditions(state, intent) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -1370,6 +1427,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
            normalize_request_id(
              fetch_optional(intent_attrs, [:request_id]) || fetch_optional(attrs, [:request_id])
            ),
+         {:ok, expected_chunk_version} <-
+           normalize_expected_chunk_version(
+             fetch_optional(intent_attrs, [:expected_chunk_version]) ||
+               fetch_optional(attrs, [:expected_chunk_version])
+           ),
+         {:ok, expected_cell_hash} <-
+           normalize_expected_cell_hash(
+             fetch_optional(intent_attrs, [:expected_cell_hash]) ||
+               fetch_optional(attrs, [:expected_cell_hash])
+           ),
          {:ok, opts} <- normalize_intent_opts(attrs, intent_attrs) do
       {:ok,
        %{
@@ -1382,6 +1449,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
          block: block,
          micro_slot: micro_slot,
          micro_layer: micro_layer,
+         expected_chunk_version: expected_chunk_version,
+         expected_cell_hash: expected_cell_hash,
          opts: opts
        }}
     end
@@ -1562,6 +1631,24 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_request_id(nil), do: {:ok, 0}
   defp normalize_request_id(value) when is_integer(value) and value >= 0, do: {:ok, value}
   defp normalize_request_id(_value), do: {:error, :invalid_request_id}
+
+  defp normalize_expected_chunk_version(nil), do: {:ok, nil}
+  defp normalize_expected_chunk_version(@expected_chunk_version_unspecified), do: {:ok, nil}
+
+  defp normalize_expected_chunk_version(value)
+       when is_integer(value) and value >= 0 and value <= @expected_chunk_version_unspecified,
+       do: {:ok, value}
+
+  defp normalize_expected_chunk_version(_value), do: {:error, :invalid_expected_chunk_version}
+
+  defp normalize_expected_cell_hash(nil), do: {:ok, nil}
+  defp normalize_expected_cell_hash(@expected_cell_hash_unspecified), do: {:ok, nil}
+
+  defp normalize_expected_cell_hash(value)
+       when is_integer(value) and value >= 0 and value <= @expected_cell_hash_unspecified,
+       do: {:ok, value}
+
+  defp normalize_expected_cell_hash(_value), do: {:error, :invalid_expected_cell_hash}
 
   defp normalize_intent_opts(attrs, intent_attrs) do
     opts_value = fetch_optional(intent_attrs, [:opts]) || fetch_optional(attrs, [:opts]) || []

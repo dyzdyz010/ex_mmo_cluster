@@ -634,87 +634,402 @@ defmodule GateServer.WsConnectionVoxelTest do
     refute_receive {:gate_ws_send, <<0x62, _payload::binary>>}, 100
   end
 
-  test "voxel_edit_intent in :in_scene state emits observe and does NOT reply with VoxelIntentResult" do
-    observe_path = observe_path("ws_voxel_edit_intent_received.log")
-    File.rm(observe_path)
-    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+  describe "Phase 1c — VoxelEditIntent (0x70) routing" do
+    test "voxel_edit_intent outside scene replies with invalid_state intent result" do
+      observe_path = observe_path("ws_voxel_edit_intent_dropped.log")
+      File.rm(observe_path)
+      Application.put_env(:gate_server, :cli_observe_log, observe_path)
 
-    {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+      {:ok, pid} = WsConnection.start_link(self())
+      # Intentionally NOT calling put_connection_in_scene/1.
 
-    frame =
-      voxel_edit_intent_frame(
-        request_id: 9001,
-        client_intent_seq: 42,
-        logical_scene_id: 7777,
-        action: 1,
-        target_granularity: 1,
-        target_world_micro: {-100, 0, 100},
-        face_normal: {0, 1, 0},
-        material_id: 0,
-        object_ref: 0xDEAD_BEEF,
-        part_ref: 7,
-        expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
-        expected_cell_hash: 0xFFFF_FFFF,
-        client_hint_hash: 0xCAFE_BABE
+      frame =
+        voxel_edit_intent_frame(
+          request_id: 7000,
+          client_intent_seq: 11,
+          logical_scene_id: 222
+        )
+
+      WsConnection.receive_frame(pid, frame)
+
+      assert_voxel_intent_result(
+        request_id: 7000,
+        client_intent_seq: 11,
+        logical_scene_id: 222,
+        reason: ":invalid_state"
       )
 
-    WsConnection.receive_frame(pid, frame)
+      flush_observe_writer()
+      log = File.read!(observe_path)
 
-    # The whole point of Phase 1b: no VoxelIntentResult is sent.
-    refute_receive {:gate_ws_send, <<0x68, _rest::binary>>}, 100
-    refute_receive {:gate_ws_send, _other_frame}, 100
+      assert log =~ ~s(event="ws_voxel_edit_intent_dropped_invalid_state")
+      assert log =~ "request_id: 7000"
+    end
 
-    flush_observe_writer()
-    log = File.read!(observe_path)
+    test "voxel_edit_intent in scene rejects when world lookup is unavailable" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
 
-    assert log =~ ~s(event="ws_voxel_edit_intent_received")
-    assert log =~ ~s(phase: "1b_decode_only_no_route")
-    assert log =~ "request_id: 9001"
-    assert log =~ "client_intent_seq: 42"
-    assert log =~ "logical_scene_id: 7777"
-    assert log =~ "action: 1"
-    assert log =~ "target_granularity: 1"
-    assert log =~ "object_ref: 3735928559"
-    assert log =~ "part_ref: 7"
-    assert log =~ "client_hint_hash: 3405691582"
-  end
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 8001,
+          client_intent_seq: 12,
+          logical_scene_id: 100,
+          action: 0,
+          target_granularity: 0
+        )
+      )
 
-  test "voxel_edit_intent outside :in_scene state emits dropped observe and stays silent" do
-    observe_path = observe_path("ws_voxel_edit_intent_dropped.log")
-    File.rm(observe_path)
-    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+      assert_voxel_intent_result(
+        request_id: 8001,
+        client_intent_seq: 12,
+        logical_scene_id: 100,
+        reason: ":world_unavailable"
+      )
+    end
 
-    {:ok, pid} = WsConnection.start_link(self())
-    # Intentionally NOT calling put_connection_in_scene/1.
+    test "voxel_edit_intent (Place + Macro) routes through world, applies solid block, persists snapshot" do
+      observe_path = observe_path("ws_voxel_edit_intent_macro_place.log")
+      File.rm(observe_path)
+      Application.put_env(:gate_server, :cli_observe_log, observe_path)
 
-    frame = voxel_edit_intent_frame(request_id: 7000)
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
 
-    WsConnection.receive_frame(pid, frame)
+      logical_scene_id = 600
 
-    refute_receive {:gate_ws_send, _bin}, 100
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
 
-    flush_observe_writer()
-    log = File.read!(observe_path)
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
-    assert log =~ ~s(event="ws_voxel_edit_intent_dropped_invalid_state")
-    assert log =~ "request_id: 7000"
-  end
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
 
-  test "voxel_edit_intent does not interfere with the deprecated voxel_impact_intent path" do
-    {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9101,
+          client_intent_seq: 7,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {8, 16, 24},
+          material_id: 13,
+          client_hint_hash: 0xC0FFEE
+        )
+      )
 
-    # Send an edit intent first (silent under 1b)…
-    WsConnection.receive_frame(pid, voxel_edit_intent_frame(request_id: 50))
-    refute_receive {:gate_ws_send, _bin}, 100
+      assert_voxel_intent_accepted(
+        request_id: 9101,
+        client_intent_seq: 7,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
 
-    # …then send the legacy impact intent and verify it still produces an
-    # IntentResult error reply (chunk has no lease, no scene wired). The
-    # exact error doesn't matter here — what matters is that the legacy
-    # opcode keeps replying after we added the new one.
-    WsConnection.receive_frame(pid, voxel_impact_frame(51, 1, 999, {1, 2, 3}))
-    assert_receive {:gate_ws_send, <<0x68, _rest::binary>>}, 500
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+      assert snapshot.chunk_version == 1
+
+      assert {:ok, %{storage: storage}} =
+               SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot.data)
+
+      header = Storage.macro_header_at(storage, {1, 2, 3})
+      assert header.mode == MacroCellHeader.cell_mode_solid_block()
+
+      flush_observe_writer()
+      log = File.read!(observe_path)
+
+      assert log =~ ~s(event="ws_voxel_edit_intent_received")
+      assert log =~ "client_hint_hash: 12648430"
+      assert log =~ ~s(event="voxel_edit_intent_routed")
+      assert log =~ "operation: :put_solid_block"
+      assert log =~ ~s(event="ws_voxel_edit_intent_applied")
+    end
+
+    test "voxel_edit_intent (Place + Micro) writes a refined slot in the targeted macro cell" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 601
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # Empty target macro at world_micro (16, 16, 16) → world_macro {2, 2, 2}
+      # → chunk {0, 0, 0}, local_macro {2, 2, 2}. With face_normal (0, 0, 0)
+      # the resolved target equals (16, 16, 16) → micro_slot {0, 0, 0} = 0.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9201,
+          client_intent_seq: 8,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 1,
+          target_world_micro: {16, 16, 16},
+          face_normal: {0, 0, 0},
+          material_id: 5
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9201,
+        client_intent_seq: 8,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+
+      assert {:ok, %{storage: storage}} =
+               SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot.data)
+
+      assert Storage.macro_header_at(storage, {2, 2, 2}).mode ==
+               MacroCellHeader.cell_mode_refined()
+    end
+
+    test "voxel_edit_intent (Place) consumes face_normal and shifts target by one micro slot" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 602
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # target_world_micro (7, 0, 0) is in macro {0, 0, 0}; with face_normal
+      # (1, 0, 0) the resolved target is (8, 0, 0) → macro {1, 0, 0}.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9301,
+          client_intent_seq: 9,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {7, 0, 0},
+          face_normal: {1, 0, 0},
+          material_id: 17
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9301,
+        client_intent_seq: 9,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+
+      assert {:ok, %{storage: storage}} =
+               SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot.data)
+
+      # The shifted macro {1, 0, 0} is the one that became solid; the original
+      # macro {0, 0, 0} stays empty.
+      assert Storage.macro_header_at(storage, {1, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_solid_block()
+
+      assert Storage.macro_header_at(storage, {0, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_empty()
+    end
+
+    test "voxel_edit_intent (Place + ObjectPart) is rejected with granularity_object_part_not_implemented" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9401,
+          client_intent_seq: 10,
+          logical_scene_id: 603,
+          action: 0,
+          target_granularity: 2
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9401,
+        client_intent_seq: 10,
+        logical_scene_id: 603,
+        reason: ":granularity_object_part_not_implemented"
+      )
+    end
+
+    test "voxel_edit_intent (Damage) is rejected wholesale with action_not_implemented" do
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9501,
+          client_intent_seq: 11,
+          logical_scene_id: 604,
+          action: 2,
+          target_granularity: 0
+        )
+      )
+
+      assert_voxel_intent_result(
+        request_id: 9501,
+        client_intent_seq: 11,
+        logical_scene_id: 604,
+        reason: ":action_not_implemented"
+      )
+    end
+
+    test "voxel_edit_intent rejects with Stale code when expected_chunk_version mismatches" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 605
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # First write succeeds — current chunk_version becomes 1.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9601,
+          client_intent_seq: 12,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {0, 0, 0},
+          material_id: 1
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9601,
+        client_intent_seq: 12,
+        logical_scene_id: logical_scene_id,
+        result_ref: 1
+      )
+
+      # Second write pins expected_chunk_version=0; current is 1 → Stale.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9602,
+          client_intent_seq: 13,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 0,
+          target_world_micro: {16, 0, 0},
+          material_id: 2,
+          expected_chunk_version: 0
+        )
+      )
+
+      assert_voxel_intent_stale(
+        request_id: 9602,
+        client_intent_seq: 13,
+        logical_scene_id: logical_scene_id,
+        reason: ":stale_chunk_version"
+      )
+    end
+
+    test "voxel_edit_intent (Break + Micro) clears just the targeted slot, leaving siblings" do
+      ensure_map_ledger_started()
+      ensure_scene_voxel_started()
+
+      logical_scene_id = 606
+
+      put_voxel_region(logical_scene_id,
+        region_id: System.unique_integer([:positive, :monotonic])
+      )
+
+      start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+      {:ok, pid} = WsConnection.start_link(self())
+      put_connection_in_scene(pid)
+
+      # Place two micro slots in macro {0,0,0}, then break only one.
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9701,
+          client_intent_seq: 14,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 1,
+          target_world_micro: {0, 0, 0},
+          face_normal: {0, 0, 0},
+          material_id: 5
+        )
+      )
+
+      assert_receive {:gate_ws_send, <<0x68, _::binary>>}
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9702,
+          client_intent_seq: 15,
+          logical_scene_id: logical_scene_id,
+          action: 0,
+          target_granularity: 1,
+          target_world_micro: {1, 0, 0},
+          face_normal: {0, 0, 0},
+          material_id: 5
+        )
+      )
+
+      assert_receive {:gate_ws_send, <<0x68, _::binary>>}
+
+      WsConnection.receive_frame(
+        pid,
+        voxel_edit_intent_frame(
+          request_id: 9703,
+          client_intent_seq: 16,
+          logical_scene_id: logical_scene_id,
+          action: 1,
+          target_granularity: 1,
+          target_world_micro: {0, 0, 0},
+          face_normal: {0, 0, 0}
+        )
+      )
+
+      assert_voxel_intent_accepted(
+        request_id: 9703,
+        client_intent_seq: 16,
+        logical_scene_id: logical_scene_id,
+        result_ref: 3
+      )
+
+      assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+
+      assert {:ok, %{storage: storage}} =
+               SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot.data)
+
+      # Macro is still refined because slot 1 remains.
+      assert Storage.macro_header_at(storage, {0, 0, 0}).mode ==
+               MacroCellHeader.cell_mode_refined()
+    end
   end
 
   defp put_connection_in_scene(pid) do
@@ -811,6 +1126,25 @@ defmodule GateServer.WsConnectionVoxelTest do
       parcel_id::64-big, known_parcel_build_epoch::64-big, blueprint_id::64-big,
       blueprint_version::32-big, ax::64-big-signed, ay::64-big-signed, az::64-big-signed,
       rotation::8, 0::16-big, 0::16-big, 0::16-big, placement_flags::32-big>>
+  end
+
+  defp assert_voxel_intent_stale(opts) do
+    request_id = Keyword.fetch!(opts, :request_id)
+    client_intent_seq = Keyword.fetch!(opts, :client_intent_seq)
+    logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
+    reason = Keyword.fetch!(opts, :reason)
+
+    assert_receive {:gate_ws_send, iodata}
+
+    assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
+             got_logical_scene_id::64-big, 3::8, 0::64-big, 0::16-big, reason_len::16-big,
+             got_reason::binary-size(reason_len)>> =
+             IO.iodata_to_binary(iodata)
+
+    assert got_request_id == request_id
+    assert got_client_intent_seq == client_intent_seq
+    assert got_logical_scene_id == logical_scene_id
+    assert got_reason == reason
   end
 
   defp assert_voxel_intent_result(opts) do

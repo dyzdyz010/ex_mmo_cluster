@@ -770,31 +770,43 @@ defmodule GateServer.TcpConnection do
   end
 
   # VoxelEditIntent (0x70) — typed client edit channel; protocol §13.6.1.
-  # Phase 1b: Gate decodes and emits observe; routing to Scene mutation API
-  # arrives in Phase 1c. We intentionally do NOT send a VoxelIntentResult
-  # here — clients should not be sending this opcode in 1b, and emitting a
-  # result would create a false "edit applied" impression.
-  defp dispatch({:voxel_edit_intent, request}, %{status: :in_scene} = state) do
-    GateServer.CliObserve.emit("voxel_edit_intent_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      client_intent_seq: request.client_intent_seq,
-      logical_scene_id: request.logical_scene_id,
-      action: request.action,
-      target_granularity: request.target_granularity,
-      target_world_micro: request.target_world_micro,
-      face_normal: request.face_normal,
-      material_id: request.material_id,
-      blueprint_ref: request.blueprint_ref,
-      object_ref: request.object_ref,
-      part_ref: request.part_ref,
-      attribute_patch_ref: request.attribute_patch_ref,
-      expected_chunk_version: request.expected_chunk_version,
-      expected_cell_hash: request.expected_cell_hash,
-      client_hint_hash: request.client_hint_hash,
-      phase: "1b_decode_only_no_route"
-    })
+  # Phase 1c routing: dispatch the typed request to ChunkDirectory.apply_intent
+  # via the standard World map-ledger lease path, then reply with the
+  # `VoxelIntentResult` (0x68) frame.
+  defp dispatch(
+         {:voxel_edit_intent, request},
+         %{status: :in_scene, socket: socket} = state
+       ) do
+    emit_voxel_edit_intent_received(request, state)
+
+    case apply_voxel_edit_intent(request, state) do
+      {:ok, result} ->
+        GateServer.CliObserve.emit("voxel_edit_intent_applied", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          chunk_coord: result.chunk_coord,
+          chunk_version: result.chunk_version,
+          macro: result.macro,
+          operation: result.operation
+        })
+
+        send_encoded(socket, voxel_edit_intent_result_ok(request, result))
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("voxel_edit_intent_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          reason: reason
+        })
+
+        send_encoded(socket, voxel_edit_intent_result_error(request, reason))
+    end
 
     {:ok, state}
   end
@@ -806,6 +818,8 @@ defmodule GateServer.TcpConnection do
       request_id: request.request_id,
       status: state.status
     })
+
+    send_encoded(state.socket, voxel_edit_intent_result_error(request, :invalid_state))
 
     {:ok, state}
   end
@@ -1320,6 +1334,250 @@ defmodule GateServer.TcpConnection do
 
   defp voxel_impact_op_attrs(request) do
     %{operation: :put_solid_block, block: voxel_impact_block(request)}
+  end
+
+  defp emit_voxel_edit_intent_received(request, state) do
+    GateServer.CliObserve.emit("voxel_edit_intent_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      client_intent_seq: request.client_intent_seq,
+      logical_scene_id: request.logical_scene_id,
+      action: request.action,
+      target_granularity: request.target_granularity,
+      target_world_micro: request.target_world_micro,
+      face_normal: request.face_normal,
+      material_id: request.material_id,
+      blueprint_ref: request.blueprint_ref,
+      object_ref: request.object_ref,
+      part_ref: request.part_ref,
+      attribute_patch_ref: request.attribute_patch_ref,
+      expected_chunk_version: request.expected_chunk_version,
+      expected_cell_hash: request.expected_cell_hash,
+      client_hint_hash: request.client_hint_hash
+    })
+  end
+
+  defp apply_voxel_edit_intent(request, state) do
+    with :ok <- authorize_voxel_edit_intent(state),
+         {:ok, op} <- voxel_edit_intent_op(request),
+         {:ok, target} <- voxel_edit_intent_target(request, op),
+         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("voxel_edit_intent_routed", %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        action: request.action,
+        target_granularity: request.target_granularity,
+        operation: op.operation,
+        chunk_coord: target.chunk_coord,
+        local_macro: target.local_macro,
+        adjusted_world_micro: target.adjusted_world_micro,
+        region_id: lease.region_id,
+        lease_id: lease.lease_id,
+        owner_scene_instance_ref: lease.owner_scene_instance_ref,
+        owner_epoch: lease.owner_epoch,
+        scene_node: scene_node
+      })
+
+      attrs = build_voxel_edit_intent_attrs(request, op, target, lease)
+
+      case safe_call(
+             {SceneServer.Voxel.ChunkDirectory, scene_node},
+             {:apply_intent, attrs},
+             @scene_call_timeout
+           ) do
+        {:ok, {:ok, reply}} ->
+          {:ok, Map.merge(reply, %{macro: target.local_macro, operation: op.operation})}
+
+        {:ok, {:error, reason}} ->
+          {:error, reason}
+
+        {:ok, _other} ->
+          {:error, :scene_unavailable}
+
+        {:error, _reason} ->
+          {:error, :scene_unavailable}
+      end
+    end
+  end
+
+  defp authorize_voxel_edit_intent(state) do
+    if is_integer(state.cid) and state.cid > 0 do
+      :ok
+    else
+      {:error, :cid_mismatch}
+    end
+  end
+
+  # Decision 3 / Phase 1c: action × target_granularity → Scene operation.
+  # ObjectPart granularity is rejected for the supported actions; Damage /
+  # Replace / AttributePatch are rejected wholesale until the Phase 5 attribute
+  # catalog work lands.
+  defp voxel_edit_intent_op(%{action: action}) when action in [2, 3, 4] do
+    {:error, :action_not_implemented}
+  end
+
+  defp voxel_edit_intent_op(%{action: action, target_granularity: 2}) when action in [0, 1] do
+    {:error, :granularity_object_part_not_implemented}
+  end
+
+  defp voxel_edit_intent_op(%{action: 0, target_granularity: 0} = request) do
+    {:ok, %{operation: :put_solid_block, block: voxel_edit_intent_block(request)}}
+  end
+
+  defp voxel_edit_intent_op(%{action: 0, target_granularity: 1} = request) do
+    case voxel_edit_intent_micro_layer(request) do
+      {:ok, micro_layer} ->
+        {:ok, %{operation: :put_micro_block, micro_layer: micro_layer}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp voxel_edit_intent_op(%{action: 1, target_granularity: 0}) do
+    {:ok, %{operation: :break_block}}
+  end
+
+  defp voxel_edit_intent_op(%{action: 1, target_granularity: 1}) do
+    {:ok, %{operation: :clear_micro_block}}
+  end
+
+  defp voxel_edit_intent_op(_request), do: {:error, :invalid_voxel_edit_intent}
+
+  defp voxel_edit_intent_block(request) do
+    NormalBlockData.new(request.material_id,
+      attribute_set_ref: request.attribute_patch_ref
+    )
+  end
+
+  defp voxel_edit_intent_micro_layer(request) do
+    with {:ok, owner_object_id} <- voxel_edit_owner_object_id(request.object_ref) do
+      {:ok,
+       %{
+         material_id: request.material_id,
+         attribute_set_ref: request.attribute_patch_ref,
+         owner_object_id: owner_object_id,
+         owner_part_id: request.part_ref
+       }}
+    end
+  end
+
+  # owner_object_id is a u63 (`MicroLayer.@type`); the wire field is u64. The
+  # high bit is reserved for future use, so reject values that don't fit.
+  defp voxel_edit_owner_object_id(value)
+       when is_integer(value) and value >= 0 and value <= 0x7FFF_FFFF_FFFF_FFFF,
+       do: {:ok, value}
+
+  defp voxel_edit_owner_object_id(_value), do: {:error, :invalid_object_ref}
+
+  # Decision 6 / Phase 1c: Place actions consume `face_normal` here at the Gate
+  # by offsetting `target_world_micro` by one micro slot in the direction of
+  # the hit face. Break actions ignore `face_normal` — the resolved cell is
+  # the one the client clicked.
+  defp voxel_edit_intent_target(request, %{operation: operation}) do
+    {wx, wy, wz} = request.target_world_micro
+    {fnx, fny, fnz} = request.face_normal
+
+    {ax, ay, az} =
+      case operation do
+        :put_solid_block -> {wx + fnx, wy + fny, wz + fnz}
+        :put_micro_block -> {wx + fnx, wy + fny, wz + fnz}
+        _other -> {wx, wy, wz}
+      end
+
+    micro_resolution = Types.micro_resolution()
+
+    world_macro = {
+      Types.floor_div(ax, micro_resolution),
+      Types.floor_div(ay, micro_resolution),
+      Types.floor_div(az, micro_resolution)
+    }
+
+    {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
+
+    local_micro = {
+      Types.floor_mod(ax, micro_resolution),
+      Types.floor_mod(ay, micro_resolution),
+      Types.floor_mod(az, micro_resolution)
+    }
+
+    {:ok,
+     %{
+       chunk_coord: chunk_coord,
+       local_macro: local_macro,
+       local_micro: local_micro,
+       adjusted_world_micro: {ax, ay, az}
+     }}
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_target_world_micro}
+  end
+
+  defp build_voxel_edit_intent_attrs(request, op, target, lease) do
+    base = %{
+      request_id: request.request_id,
+      logical_scene_id: request.logical_scene_id,
+      chunk_coord: target.chunk_coord,
+      lease: lease,
+      operation: op.operation,
+      macro: target.local_macro,
+      expected_chunk_version: request.expected_chunk_version,
+      expected_cell_hash: request.expected_cell_hash
+    }
+
+    base
+    |> maybe_put_voxel_edit(:block, Map.get(op, :block))
+    |> maybe_put_voxel_edit(:micro_layer, Map.get(op, :micro_layer))
+    |> maybe_put_voxel_edit_micro_slot(op, target)
+  end
+
+  defp maybe_put_voxel_edit(map, _key, nil), do: map
+  defp maybe_put_voxel_edit(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_voxel_edit_micro_slot(map, %{operation: op}, target)
+       when op in [:put_micro_block, :clear_micro_block] do
+    Map.put(map, :micro_slot, Types.micro_index!(target.local_micro))
+  end
+
+  defp maybe_put_voxel_edit_micro_slot(map, _op, _target), do: map
+
+  # `:stale_chunk_version` and `:stale_cell_hash` come back from
+  # `ChunkProcess.validate_intent_preconditions/2` and map to the protocol
+  # `Stale` (3) `VoxelIntentResult` code. Everything else is a generic
+  # `Rejected` (2). Successful applies use `:accepted` (0).
+  defp voxel_edit_intent_result_code(:stale_chunk_version), do: :stale
+  defp voxel_edit_intent_result_code(:stale_cell_hash), do: :stale
+  defp voxel_edit_intent_result_code(_reason), do: :rejected
+
+  defp voxel_edit_intent_result_error(request, reason) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: Map.get(request, :client_intent_seq, 0),
+       logical_scene_id: request.logical_scene_id,
+       result_code: voxel_edit_intent_result_code(reason),
+       result_ref: 0,
+       authoritative: [],
+       reason: inspect(reason)
+     }}
+  end
+
+  defp voxel_edit_intent_result_ok(request, result) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: request.client_intent_seq,
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: result.chunk_version,
+       authoritative: [],
+       reason: "ok"
+     }}
   end
 
   defp apply_voxel_prefab_place_intent(request, state) do
