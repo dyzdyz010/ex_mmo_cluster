@@ -20,6 +20,7 @@ defmodule WorldServer.Interface do
 
     BeaconServer.Client.join_cluster()
     BeaconServer.Client.register(@resource)
+    BeaconServer.Client.register(:voxel_transaction_coordinator)
 
     {:ok, scene_node} = BeaconServer.Client.await(:scene_server)
     {:ok, data_node} = BeaconServer.Client.await(:data_service)

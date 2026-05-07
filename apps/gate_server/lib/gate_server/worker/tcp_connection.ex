@@ -1589,7 +1589,7 @@ defmodule GateServer.TcpConnection do
              request.anchor_world_micro,
              request.rotation
            ) do
-      apply_prefab_cells(cells, request, state)
+      run_prefab_transaction(cells, request, state)
     else
       {:error, reason} ->
         {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
@@ -1604,96 +1604,218 @@ defmodule GateServer.TcpConnection do
     end
   end
 
-  # Cell-major loop. For each cell, route the chunk through World, then call
-  # `ChunkDirectory.apply_intent` on the owning Scene node. Stops on the first
-  # error and reports how many cells already landed (no rollback in v1).
-  defp apply_prefab_cells(cells, request, state) do
+  # Phase 3: 0x67 prefab now goes through World's TransactionCoordinator +
+  # TransactionExecutor. Cells are grouped by chunk_coord into one batch per
+  # chunk; the whole prefab commits atomically (any chunk's prepare or apply
+  # failure rolls back every fence) or aborts atomically (no partial writes).
+  defp run_prefab_transaction([], _request, _state) do
+    {:ok, %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}}
+  end
+
+  defp run_prefab_transaction(cells, request, state) do
     total = length(cells)
 
-    cells
-    |> Enum.with_index()
-    |> Enum.reduce_while(
-      {:ok, %{cell_count: 0, max_chunk_version: 0, chunk_coords: MapSet.new()}},
-      fn {cell, index}, {:ok, acc} ->
-        case apply_prefab_cell(cell, request, state, index) do
-          {:ok, reply} ->
-            {:cont,
-             {:ok,
-              %{
-                cell_count: acc.cell_count + 1,
-                max_chunk_version: max(acc.max_chunk_version, reply.chunk_version),
-                chunk_coords: MapSet.put(acc.chunk_coords, reply.chunk_coord)
-              }}}
-
-          {:error, reason} ->
-            {:halt,
-             {:error,
-              %{
-                reason: reason,
-                applied_cell_count: acc.cell_count,
-                total_cell_count: total
-              }}}
-        end
-      end
-    )
-    |> case do
-      {:ok, acc} ->
-        {:ok,
-         %{
-           cell_count: acc.cell_count,
-           chunk_count: MapSet.size(acc.chunk_coords),
-           max_chunk_version: acc.max_chunk_version
-         }}
-
-      {:error, _} = error ->
-        error
+    with {:ok, plan} <- build_prefab_plan(cells, request, state),
+         {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
+         {:ok, transaction} <-
+           coordinator_begin_transaction(coordinator_ref, plan, request),
+         {:ok, executor_result} <-
+           executor_execute(coordinator_ref, transaction, plan) do
+      finalize_prefab_outcome(executor_result, plan, total)
+    else
+      {:error, reason} ->
+        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: total}}
     end
   end
 
-  defp apply_prefab_cell(cell, request, state, cell_index) do
-    with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, cell.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      lease = Map.fetch!(route, :lease)
+  # Group cells by chunk_coord, resolve route on the FIRST chunk, then reuse
+  # that lease + scene_node for every other chunk. Phase 3 D6 limits prefabs
+  # to one region / one lease per dispatch, so a uniform lease is the only
+  # valid case; if a chunk actually belongs to a different lease the
+  # downstream BuildTransactionApplier.prepare rejects it during the
+  # transaction and the executor aborts the whole prefab.
+  defp build_prefab_plan(cells, request, state) do
+    cells_by_chunk = Enum.group_by(cells, & &1.chunk_coord)
+    chunk_coords = Map.keys(cells_by_chunk)
 
-      GateServer.CliObserve.emit("voxel_prefab_cell_routed", fn ->
+    case chunk_coords do
+      [first_chunk | _] ->
+        with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, first_chunk),
+             {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+          lease = Map.fetch!(route, :lease)
+
+          GateServer.CliObserve.emit("voxel_prefab_routed", fn ->
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              request_id: request.request_id,
+              logical_scene_id: request.logical_scene_id,
+              blueprint_id: request.blueprint_id,
+              chunk_count: length(chunk_coords),
+              cell_count: length(cells),
+              region_id: lease.region_id,
+              lease_id: lease.lease_id,
+              owner_scene_instance_ref: lease.owner_scene_instance_ref,
+              owner_epoch: lease.owner_epoch,
+              scene_node: scene_node
+            }
+          end)
+
+          intents_by_chunk = build_prefab_intents_by_chunk(cells_by_chunk, request, lease)
+
+          {:ok,
+           %{
+             lease: lease,
+             scene_node: scene_node,
+             intents_by_chunk: intents_by_chunk,
+             chunk_coords: chunk_coords
+           }}
+        end
+
+      [] ->
+        {:error, :empty_prefab}
+    end
+  end
+
+  defp build_prefab_intents_by_chunk(cells_by_chunk, request, lease) do
+    Map.new(cells_by_chunk, fn {chunk_coord, cells_in_chunk} ->
+      intents =
+        Enum.map(cells_in_chunk, fn cell ->
+          %{
+            request_id: request.request_id,
+            logical_scene_id: request.logical_scene_id,
+            chunk_coord: chunk_coord,
+            lease: lease,
+            operation: :put_solid_block,
+            macro: cell.local_macro,
+            block: cell.block
+          }
+        end)
+
+      {chunk_coord, intents}
+    end)
+  end
+
+  # See ws_connection's matching helper for the rationale on going through
+  # `fetch_world_node/0` instead of calling `BeaconServer.Client.lookup/1`
+  # directly.
+  defp locate_voxel_transaction_coordinator do
+    case fetch_world_node() do
+      {:ok, world_node} ->
+        {:ok, {WorldServer.Voxel.TransactionCoordinator, world_node}}
+
+      {:error, _reason} ->
+        {:error, :voxel_transaction_coordinator_unavailable}
+    end
+  end
+
+  defp coordinator_begin_transaction(coordinator_ref, plan, request) do
+    transaction_id = unique_prefab_transaction_id(request)
+    lease = plan.lease
+
+    attrs = %{
+      logical_scene_id: request.logical_scene_id,
+      parcel_id: Map.get(request, :parcel_id, 0),
+      reservation_id: prefab_reservation_id(request),
+      decision_version: 1,
+      participants: [
         %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          logical_scene_id: request.logical_scene_id,
-          blueprint_id: request.blueprint_id,
-          cell_index: cell_index,
-          chunk_coord: cell.chunk_coord,
-          local_macro: cell.local_macro,
           region_id: lease.region_id,
           lease_id: lease.lease_id,
           owner_scene_instance_ref: lease.owner_scene_instance_ref,
           owner_epoch: lease.owner_epoch,
-          scene_node: scene_node
+          affected_chunks: plan.chunk_coords
         }
-      end)
+      ]
+    }
 
-      attrs = %{
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: cell.chunk_coord,
-        lease: lease,
-        operation: :put_solid_block,
-        macro: cell.local_macro,
-        block: cell.block
-      }
-
-      case safe_call(
-             {SceneServer.Voxel.ChunkDirectory, scene_node},
-             {:apply_intent, attrs},
-             @scene_call_timeout
+    try do
+      case WorldServer.Voxel.TransactionCoordinator.begin_transaction(
+             coordinator_ref,
+             transaction_id,
+             attrs
            ) do
-        {:ok, {:ok, reply}} -> {:ok, reply}
-        {:ok, {:error, reason}} -> {:error, reason}
-        {:ok, _other} -> {:error, :scene_unavailable}
-        {:error, _reason} -> {:error, :scene_unavailable}
+        {:ok, transaction} -> {:ok, transaction}
+        {:error, reason} -> {:error, {:coordinator_begin_failed, reason}}
       end
+    catch
+      :exit, _reason -> {:error, :coordinator_unavailable}
     end
+  end
+
+  defp executor_execute(coordinator_ref, transaction, plan) do
+    intents_by_participant = %{
+      {plan.lease.region_id, plan.lease.lease_id} => plan.intents_by_chunk
+    }
+
+    scene_opts = [
+      chunk_directory: {SceneServer.Voxel.ChunkDirectory, plan.scene_node}
+    ]
+
+    try do
+      WorldServer.Voxel.TransactionExecutor.execute(
+        coordinator_ref,
+        transaction,
+        intents_by_participant,
+        scene_opts: scene_opts
+      )
+    catch
+      :exit, _reason -> {:error, :executor_crashed}
+    end
+  end
+
+  defp finalize_prefab_outcome(executor_result, plan, total) do
+    case executor_result do
+      %{decision: :commit, participant_results: results} ->
+        max_version = max_chunk_version_from_results(results)
+
+        {:ok,
+         %{
+           cell_count: total,
+           chunk_count: length(plan.chunk_coords),
+           max_chunk_version: max_version
+         }}
+
+      %{decision: :abort, prepare_results: prepare_results} ->
+        reason = first_prepare_failure_reason(prepare_results) || :prefab_transaction_aborted
+
+        {:error,
+         %{
+           reason: reason,
+           applied_cell_count: 0,
+           total_cell_count: total
+         }}
+    end
+  end
+
+  defp max_chunk_version_from_results(results) do
+    Enum.reduce(results, 0, fn
+      {_participant, {:ok, summary}}, acc ->
+        committed = Map.get(summary, :committed_chunks, [])
+
+        Enum.reduce(committed, acc, fn {_chunk, chunk_summary}, inner ->
+          max(inner, Map.get(chunk_summary, :chunk_version, 0))
+        end)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp first_prepare_failure_reason(prepare_results) do
+    Enum.find_value(prepare_results, fn
+      {_participant, {:error, reason}} -> reason
+      _ -> nil
+    end)
+  end
+
+  defp unique_prefab_transaction_id(request) do
+    unique = System.unique_integer([:positive, :monotonic])
+    "prefab-#{request.request_id}-#{unique}"
+  end
+
+  defp prefab_reservation_id(request) do
+    "prefab-reservation-#{request.request_id}"
   end
 
   defp emit_voxel_chunk_subscribe_routed(request, state, route) do

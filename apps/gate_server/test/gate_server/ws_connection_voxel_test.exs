@@ -436,7 +436,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent rasterizes pillar, applies real writes, and emits ChunkDelta per cell" do
+  test "prefab place intent rasterizes pillar and lands as a single batch commit" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
 
@@ -465,7 +465,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
-    # Subscribe first so we observe the per-cell ChunkDelta stream.
+    # Subscribe first so we observe the post-commit snapshot push.
     WsConnection.receive_frame(pid, chunk_subscribe_frame(601, 666, {0, 0, 0}))
     assert_receive {:gate_ws_send, initial_bin}
     assert <<0x62, initial_payload::binary>> = initial_bin
@@ -484,44 +484,27 @@ defmodule GateServer.WsConnectionVoxelTest do
       )
     )
 
-    # The accept reply lands first because the dispatch sends it synchronously
-    # while still inside the per-frame cast handler. The three ChunkDelta
-    # payloads queue up in the WsConnection's mailbox while apply_intent is
-    # being called, then drain through `handle_info` and forward to the owner
-    # after dispatch returns.
+    # Phase 3: prefab now goes through World's TransactionCoordinator +
+    # TransactionExecutor, so all three cells land in a single batch commit.
+    # The chunk version bumps once (0 -> 1) and result_ref reflects that
+    # single bump (was 3 in the old cell-by-cell loop).
     assert_voxel_intent_accepted(
       request_id: 602,
       client_intent_seq: 13,
       logical_scene_id: 666,
-      result_ref: 3
+      result_ref: 1
     )
 
-    # Three cells → three ChunkDelta pushes, each with cell_version growing 1..3.
-    deltas =
-      for _ <- 1..3 do
-        assert_receive {:gate_ws_send, delta_bin}
-        assert <<0x63, delta_payload::binary>> = delta_bin
-        assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
-        delta
-      end
+    # The whole batch produces one snapshot fan-out instead of three deltas.
+    assert_receive {:gate_ws_send, snapshot_bin}
+    assert <<0x62, snapshot_payload::binary>> = snapshot_bin
+    assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
+    assert snapshot.storage.logical_scene_id == 666
+    assert snapshot.storage.chunk_coord == {0, 0, 0}
+    assert snapshot.storage.chunk_version == 1
 
-    # Each delta is for chunk (0,0,0) and contains exactly one put-solid op.
-    Enum.each(deltas, fn delta ->
-      assert delta.logical_scene_id == 666
-      assert delta.chunk_coord == {0, 0, 0}
-      assert [%{delta_kind: 1}] = delta.ops
-    end)
-
-    versions = Enum.map(deltas, & &1.new_chunk_version)
-    assert versions == [1, 2, 3]
-
-    base_versions = Enum.map(deltas, & &1.base_chunk_version)
-    assert base_versions == [0, 1, 2]
-
-    cell_versions =
-      Enum.map(deltas, fn delta -> delta.ops |> hd() |> Map.fetch!(:cell_version) end)
-
-    assert cell_versions == [1, 2, 3]
+    # No further pushes for this prefab.
+    refute_receive {:gate_ws_send, _}, 100
   end
 
   test "prefab place intent rejects unknown blueprint with v1 reason" do
