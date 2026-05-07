@@ -1,21 +1,20 @@
 defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
+  alias DataService.Repo
+  alias DataService.Schema.VoxelTransactionCoordinatorSnapshot
+  alias DataService.Voxel.TransactionCoordinatorStore
   alias WorldServer.Voxel.BuildTransaction
   alias WorldServer.Voxel.TransactionCoordinator
   alias WorldServer.Voxel.TransactionParticipant
 
   setup do
-    tmp_dir = System.tmp_dir!()
-    name = "voxel_transaction_coordinator_#{System.unique_integer([:positive, :monotonic])}.bin"
-    path = Path.join(tmp_dir, name)
-    on_exit(fn -> File.rm(path) end)
-    {:ok, path: path}
+    Repo.delete_all(VoxelTransactionCoordinatorSnapshot)
+    :ok
   end
 
-  test "begin_transaction state survives restart through file persistence", %{path: path} do
-    coordinator =
-      start_supervised!({TransactionCoordinator, persistence_path: path}, id: :first_coord)
+  test "begin_transaction state survives restart through Postgres persistence" do
+    coordinator = start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_coord)
 
     assert {:ok, %BuildTransaction{state: :preparing}} =
              TransactionCoordinator.begin_transaction(
@@ -23,8 +22,10 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
                transaction_attrs("tx-restart")
              )
 
-    assert File.exists?(path)
-    payload = File.read!(path)
+    assert %VoxelTransactionCoordinatorSnapshot{payload: payload} =
+             Repo.get(VoxelTransactionCoordinatorSnapshot, 1)
+
+    assert is_binary(payload)
     assert byte_size(payload) > 0
 
     snapshot = TransactionCoordinator.snapshot(coordinator)
@@ -32,8 +33,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
 
     stop_supervised!(:first_coord)
 
-    revived =
-      start_supervised!({TransactionCoordinator, persistence_path: path}, id: :revived_coord)
+    revived = start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_coord)
 
     revived_snapshot = TransactionCoordinator.snapshot(revived)
     assert Map.has_key?(revived_snapshot.transactions, "tx-restart")
@@ -48,9 +48,9 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
              )
   end
 
-  test "commit decision_index survives restart through file persistence", %{path: path} do
+  test "commit decision_index survives restart through Postgres persistence" do
     coordinator =
-      start_supervised!({TransactionCoordinator, persistence_path: path}, id: :first_commit_coord)
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_commit_coord)
 
     prepare_all!(coordinator, "tx-commit-restart")
 
@@ -63,9 +63,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
     stop_supervised!(:first_commit_coord)
 
     revived =
-      start_supervised!({TransactionCoordinator, persistence_path: path},
-        id: :revived_commit_coord
-      )
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_commit_coord)
 
     revived_snapshot = TransactionCoordinator.snapshot(revived)
     assert revived_snapshot.decision_index["tx-commit-restart"].decision == :commit
@@ -76,9 +74,9 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
              TransactionCoordinator.commit_decision(revived, "tx-commit-restart", 1)
   end
 
-  test "abort decision is idempotent through restart", %{path: path} do
+  test "abort decision is idempotent through restart" do
     coordinator =
-      start_supervised!({TransactionCoordinator, persistence_path: path}, id: :first_abort_coord)
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_abort_coord)
 
     assert {:ok, _transaction} =
              TransactionCoordinator.begin_transaction(
@@ -103,9 +101,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
     stop_supervised!(:first_abort_coord)
 
     revived =
-      start_supervised!({TransactionCoordinator, persistence_path: path},
-        id: :revived_abort_coord
-      )
+      start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_abort_coord)
 
     revived_snapshot = TransactionCoordinator.snapshot(revived)
     assert revived_snapshot.decision_index["tx-abort-restart"].decision == :abort
@@ -118,16 +114,22 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
     assert TransactionCoordinator.snapshot(revived) == revived_snapshot
   end
 
-  test "init survives an empty/missing persistence file", %{path: path} do
-    refute File.exists?(path)
+  test "init survives an empty Postgres table" do
+    refute Repo.get(VoxelTransactionCoordinatorSnapshot, 1)
 
-    coordinator =
-      start_supervised!({TransactionCoordinator, persistence_path: path}, id: :empty_coord)
+    coordinator = start_supervised!({TransactionCoordinator, persist_opts()}, id: :empty_coord)
 
     snapshot = TransactionCoordinator.snapshot(coordinator)
     assert snapshot.transactions == %{}
     assert snapshot.decisions == %{}
     assert snapshot.decision_index == %{}
+  end
+
+  defp persist_opts do
+    [
+      persist_fn: TransactionCoordinatorStore.persist_fn(Repo),
+      load_fn: TransactionCoordinatorStore.load_fn(Repo)
+    ]
   end
 
   defp prepare_all!(coordinator, transaction_id) do

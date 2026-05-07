@@ -13,7 +13,10 @@ defmodule WorldServer.WorldSup do
     children = [
       {WorldServer.Voxel.MapLedger,
        name: WorldServer.Voxel.MapLedger, write_token_store: DataService.Voxel.WriteTokenStore},
-      {WorldServer.Voxel.TransactionCoordinator, name: WorldServer.Voxel.TransactionCoordinator}
+      {WorldServer.Voxel.TransactionCoordinator,
+       name: WorldServer.Voxel.TransactionCoordinator,
+       persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
+       load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

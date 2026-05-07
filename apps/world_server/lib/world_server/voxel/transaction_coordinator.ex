@@ -1,16 +1,21 @@
 defmodule WorldServer.Voxel.TransactionCoordinator do
   @moduledoc """
-  In-memory coordinator for recoverable voxel build transactions.
+  Coordinator for recoverable voxel build transactions.
 
   The coordinator owns the world-side transaction state machine. Scene
-  processes remain participants: they will eventually execute prepare and
-  commit/abort work, while this module records the durable intent, participant
-  acknowledgements, and the single world decision for each
-  `{transaction_id, decision_version}` pair.
+  processes remain participants: they execute prepare and commit/abort work,
+  while this module records the durable intent, participant acknowledgements,
+  and the single world decision for each `{transaction_id, decision_version}`
+  pair.
 
-  This first backend intentionally does not call Scene. It keeps enough
-  structured state for CLI inspection, replay, and a later Scene adapter to pick
-  up pending decisions without changing the transaction rules.
+  ## Durable persistence
+
+  Persistence is injected via the `:persist_fn` (1-arity) and `:load_fn`
+  (0-arity) start options. Production wiring uses
+  `DataService.Voxel.TransactionCoordinatorStore.persist_fn/1` /
+  `load_fn/1` so coordinator state survives node restart through Postgres.
+  When neither option is supplied the coordinator runs purely in memory
+  (used by isolated unit tests that do not need persistence).
   """
 
   use GenServer
@@ -151,15 +156,8 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
   @impl true
   def init(opts) do
-    persistence_path = Keyword.get(opts, :persistence_path)
-
-    persist_fn =
-      Keyword.get(opts, :persist_fn) ||
-        if persistence_path, do: file_persist_fn(persistence_path)
-
-    load_fn =
-      Keyword.get(opts, :load_fn) ||
-        if persistence_path, do: file_load_fn(persistence_path)
+    persist_fn = Keyword.get(opts, :persist_fn)
+    load_fn = Keyword.get(opts, :load_fn)
 
     base = %{
       transactions: %{},
@@ -691,38 +689,6 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
       {:ok, payload} when is_map(payload) -> validate_persisted_payload(payload)
       {:error, _reason} = err -> err
       other -> {:error, {:unexpected_load_result, other}}
-    end
-  end
-
-  defp file_persist_fn(path) when is_binary(path) do
-    fn payload ->
-      binary = :erlang.term_to_binary(payload)
-      tmp_path = path <> ".tmp"
-
-      with :ok <- File.mkdir_p(Path.dirname(path)),
-           :ok <- File.write(tmp_path, binary),
-           :ok <- File.rename(tmp_path, path) do
-        :ok
-      end
-    end
-  end
-
-  defp file_load_fn(path) when is_binary(path) do
-    fn ->
-      case File.read(path) do
-        {:ok, binary} ->
-          try do
-            {:ok, :erlang.binary_to_term(binary, [:safe])}
-          rescue
-            exception in [ArgumentError] -> {:error, Exception.message(exception)}
-          end
-
-        {:error, :enoent} ->
-          {:ok, %{}}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
     end
   end
 
