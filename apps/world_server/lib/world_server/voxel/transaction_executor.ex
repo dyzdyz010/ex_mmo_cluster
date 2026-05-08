@@ -121,6 +121,30 @@ defmodule WorldServer.Voxel.TransactionExecutor do
            prepare_results: []
          }}
 
+      :prepared ->
+        # Phase 3-bis fast-path: the coordinator is already past prepare —
+        # this is a recovery resume, not a fresh transaction. Skip prepare /
+        # record_prepare_acks entirely and dispatch commit directly. The
+        # `intents_by_participant` argument is accepted for API symmetry but
+        # commit phase does not consume per-chunk intents (the fence on each
+        # ChunkProcess already holds them).
+        emit("voxel_transaction_executor_resume_started", transaction, %{
+          participant_count: length(transaction.participants),
+          commit_timeout_ms: commit_timeout
+        })
+
+        prepare_results = derive_prepare_results_from_prepared_state(transaction)
+
+        run_commit(
+          coordinator,
+          transaction,
+          prepare_results,
+          scene_caller,
+          scene_opts,
+          commit_timeout,
+          deadline
+        )
+
       _ ->
         emit("voxel_transaction_executor_started", transaction, %{
           participant_count: length(transaction.participants),
@@ -166,6 +190,23 @@ defmodule WorldServer.Voxel.TransactionExecutor do
             )
         end
     end
+  end
+
+  # Phase 3-bis: synthesize a `prepare_results` list from a coordinator
+  # transaction that is already in `:prepared` state. Every participant whose
+  # `prepare_status` is `:prepared` becomes a runnable commit target;
+  # `:failed` participants are pre-baked as errors so `run_commit` can split
+  # them off without dispatching scene-side calls. The `resumed?: true`
+  # marker lets observers distinguish a Phase 3-bis resume from a fresh
+  # prepare ack.
+  defp derive_prepare_results_from_prepared_state(transaction) do
+    Enum.map(transaction.participants, fn participant ->
+      case participant.prepare_status do
+        :prepared -> {participant, {:ok, %{resumed?: true}}}
+        :failed -> {participant, {:error, :prepare_failed_before_resume}}
+        :pending -> {participant, {:error, :prepare_status_pending_at_resume}}
+      end
+    end)
   end
 
   defp replay_decision(:committed), do: :commit

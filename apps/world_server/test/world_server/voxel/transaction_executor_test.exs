@@ -353,6 +353,133 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
            "expected parallel prepare to finish in < 350ms, got #{elapsed_ms}ms"
   end
 
+  describe "Phase 3-bis :prepared fast-path" do
+    test "skips prepare dispatch and runs commit directly when transaction is already :prepared" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, transaction_attrs("tx-resume"))
+
+      # Push the transaction to :prepared via direct prepare_ack (simulates
+      # the coordinator state we'd reload from Postgres after a crash that
+      # happened between :prepared and commit dispatch).
+      assert {:ok, _} =
+               TransactionCoordinator.prepare_ack(coordinator, transaction.transaction_id, %{
+                 region_id: 10,
+                 lease_id: 100,
+                 status: :prepared,
+                 acked_at_ms: 1
+               })
+
+      assert {:ok, %BuildTransaction{state: :prepared} = prepared} =
+               TransactionCoordinator.prepare_ack(coordinator, transaction.transaction_id, %{
+                 region_id: 20,
+                 lease_id: 200,
+                 status: :prepared,
+                 acked_at_ms: 2
+               })
+
+      assert {:ok,
+              %{
+                decision: :commit,
+                transaction: %BuildTransaction{state: :committed},
+                participant_results: results,
+                prepare_results: prepare_results
+              }} =
+               TransactionExecutor.execute(coordinator, prepared, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts: [recorder: recorder]
+               )
+
+      # No prepare calls should have hit the scene caller — the executor
+      # short-circuited that phase.
+      calls = Agent.get(recorder, & &1)
+      refute Enum.any?(calls, &match?({:prepare, _, _, _}, &1))
+
+      # Commit was dispatched for both participants.
+      assert Enum.count(calls, &match?({:commit, _, _}, &1)) == 2
+
+      # Synthetic prepare_results carry the resumed? marker.
+      assert Enum.all?(prepare_results, fn {_participant, outcome} ->
+               match?({:ok, %{resumed?: true}}, outcome)
+             end)
+
+      assert Enum.count(results, &match?({_p, {:ok, _}}, &1)) == 2
+    end
+
+    test "marks failed prepare participants as prepare_failed_before_resume" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      attrs = transaction_attrs("tx-resume-mixed")
+      {:ok, _transaction} = TransactionCoordinator.begin_transaction(coordinator, attrs)
+
+      # One participant prepared, the other failed — coordinator transitions
+      # to :aborting, not :prepared. We force it to :prepared in this test by
+      # only acking the prepared one and not the other; that leaves state
+      # :preparing. Switch the test to :prepared by acking both as prepared
+      # then mutating one's prepare_status via a direct snapshot inspection
+      # is brittle, so instead test the :failed-before-resume path through
+      # `derive_prepare_results_from_prepared_state` with a hand-rolled
+      # transaction that has `:prepared` overall but a participant whose
+      # status is anomalous.
+      assert {:ok, _} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-resume-mixed", %{
+                 region_id: 10,
+                 lease_id: 100,
+                 status: :prepared,
+                 acked_at_ms: 1
+               })
+
+      assert {:ok, prepared} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-resume-mixed", %{
+                 region_id: 20,
+                 lease_id: 200,
+                 status: :prepared,
+                 acked_at_ms: 2
+               })
+
+      # Force one participant's status to :failed while keeping transaction
+      # state == :prepared. This shape can occur after a crash recovery
+      # where a participant was reverted while the transaction stayed
+      # in the prepared bucket; the executor must not redispatch commit on it.
+      forced_transaction = force_participant_failure(prepared, 20)
+
+      assert {:ok, %{participant_results: results, prepare_results: prepare_results}} =
+               TransactionExecutor.execute(coordinator, forced_transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts: [recorder: recorder]
+               )
+
+      assert {_failed_p, {:error, :prepare_failed_before_resume}} =
+               Enum.find(prepare_results, fn {p, _} -> p.region_id == 20 end)
+
+      # Only the prepared participant got a commit dispatch.
+      calls = Agent.get(recorder, & &1)
+      assert Enum.count(calls, &match?({:commit, 10, _}, &1)) == 1
+      refute Enum.any?(calls, &match?({:commit, 20, _}, &1))
+
+      # The participant that was already failed shows up in participant_results
+      # carrying the same prepare-time error.
+      assert {_failed_p, {:error, :prepare_failed_before_resume}} =
+               Enum.find(results, fn {p, _} -> p.region_id == 20 end)
+    end
+  end
+
+  defp force_participant_failure(transaction, region_id) do
+    participants =
+      Enum.map(transaction.participants, fn participant ->
+        if participant.region_id == region_id do
+          %{participant | prepare_status: :failed}
+        else
+          participant
+        end
+      end)
+
+    %{transaction | participants: participants}
+  end
+
   defp transaction_attrs(transaction_id) do
     %{
       transaction_id: transaction_id,
