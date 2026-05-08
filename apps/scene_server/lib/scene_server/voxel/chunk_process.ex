@@ -204,6 +204,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, {:invalidate_subscribers, reason})
   end
 
+  @doc """
+  Fan-out a pre-encoded `ObjectStateDelta` (0x6C) wire payload to every
+  subscriber of this chunk process.
+
+  Phase 4-bis (D1):this is the cast entry point used by `ObjectRegistry`
+  after `lookup_chunk_pid/3` resolves a chunk pid for an affected coord.
+  The caller is responsible for encoding the payload via
+  `SceneServer.Voxel.Codec.encode_voxel_object_state_delta_payload/1` so
+  the same binary can be reused across multiple subscriber sends.
+
+  Cast(not call):the broadcast is fire-and-forget;the caller does not
+  block on subscriber delivery. Subscribers receive
+  `{:voxel_object_state_delta_payload, payload}` and forward it through
+  the same gate-side pipeline used for ChunkDelta.
+  """
+  @spec push_object_state_delta_payload(GenServer.server(), binary()) :: :ok
+  def push_object_state_delta_payload(server, payload) when is_binary(payload) do
+    GenServer.cast(server, {:push_object_state_delta_payload, payload})
+  end
+
   @doc "Returns process state for CLI/debug inspection."
   def debug_state(server) do
     GenServer.call(server, :debug_state)
@@ -701,6 +721,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers)
      }, state}
+  end
+
+  @impl true
+  def handle_cast({:push_object_state_delta_payload, payload}, state) when is_binary(payload) do
+    fan_out_object_state_delta_payload(state, payload)
+    {:noreply, state}
   end
 
   @impl true
@@ -1805,6 +1831,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
     Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
       payload = encode_snapshot_payload(state.storage, request_id)
       push_snapshot_fallback(state, subscriber, request_id, payload, reason)
+    end)
+  end
+
+  # Phase 4-bis (D1):fan out an already-encoded ObjectStateDelta wire
+  # payload to every subscriber of this chunk. ObjectRegistry encodes once
+  # and pushes the same binary to every affected ChunkProcess; each
+  # ChunkProcess fan-outs to its own subscribers (mirroring push_chunk_delta).
+  defp fan_out_object_state_delta_payload(state, payload) do
+    Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
+      send(subscriber, {:voxel_object_state_delta_payload, payload})
+
+      CliObserve.emit("voxel_object_state_delta_push", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          subscriber: subscriber,
+          request_id: request_id,
+          byte_size: byte_size(payload)
+        }
+      end)
     end)
   end
 
