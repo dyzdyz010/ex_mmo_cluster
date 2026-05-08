@@ -16,6 +16,7 @@ defmodule SceneServer.Voxel.PartState do
 
   @flag_damaged 0x01
   @flag_destroyed 0x02
+  @flag_part_destroyed 0x04
 
   @max_u32 0xFFFF_FFFF
 
@@ -31,9 +32,18 @@ defmodule SceneServer.Voxel.PartState do
   @spec flag_damaged() :: 1
   def flag_damaged, do: @flag_damaged
 
-  @doc "The 'destroyed' state_flag bit (set when health <= 0 and mask wiped)."
+  @doc "The 'destroyed' state_flag bit (set on a PartState when health <= 0 and mask wiped)."
   @spec flag_destroyed() :: 2
   def flag_destroyed, do: @flag_destroyed
+
+  @doc """
+  The 'part_destroyed' state_flag bit used in `ObjectStateDelta` (0x6C)
+  broadcasts to mark "one part of a still-alive object just died".
+  Distinct from `flag_destroyed`(整个 object 死透),mirrors protocol §9
+  state_flags semantics. Phase 4-bis decision D5.
+  """
+  @spec flag_part_destroyed() :: 4
+  def flag_part_destroyed, do: @flag_part_destroyed
 
   @doc "Builds and validates a PartState."
   @spec new(keyword() | map()) :: t()

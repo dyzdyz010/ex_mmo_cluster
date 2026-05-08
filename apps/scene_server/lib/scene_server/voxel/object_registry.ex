@@ -32,6 +32,8 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   alias DataService.Voxel.SceneObjectStore
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ChunkProcess
+  alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.PartState
 
   import Bitwise
@@ -226,7 +228,8 @@ defmodule SceneServer.Voxel.ObjectRegistry do
        scenes_loaded: MapSet.new(),
        objects: %{},
        store: Keyword.get(opts, :store, SceneObjectStore),
-       store_opts: Keyword.get(opts, :store_opts, [])
+       store_opts: Keyword.get(opts, :store_opts, []),
+       chunk_directory: Keyword.get(opts, :chunk_directory, ChunkDirectory)
      }}
   end
 
@@ -372,6 +375,13 @@ defmodule SceneServer.Voxel.ObjectRegistry do
                   case persist_and_cache(new_instance, state) do
                     {:ok, new_state} ->
                       emit_damage(scene_id, object_id, part_id, damaged_part_state, damage)
+
+                      dispatch_object_state_delta(
+                        new_state,
+                        new_instance,
+                        PartState.flag_damaged()
+                      )
+
                       {:reply, :ok, new_state}
 
                     {:error, reason} ->
@@ -476,6 +486,13 @@ defmodule SceneServer.Voxel.ObjectRegistry do
       case persist_and_cache(new_instance, state) do
         {:ok, staged_state} ->
           emit_part_destroyed(scene_id, object_id, part_id)
+
+          dispatch_object_state_delta(
+            staged_state,
+            new_instance,
+            PartState.flag_part_destroyed()
+          )
+
           final_state = run_destroy_object(staged_state, scene_id, new_instance, opts)
 
           {{:object_destroyed,
@@ -488,6 +505,12 @@ defmodule SceneServer.Voxel.ObjectRegistry do
       case persist_and_cache(new_instance, state) do
         {:ok, new_state} ->
           emit_part_destroyed(scene_id, object_id, part_id)
+
+          dispatch_object_state_delta(
+            new_state,
+            new_instance,
+            PartState.flag_part_destroyed()
+          )
 
           {{:part_destroyed,
             %{
@@ -531,7 +554,15 @@ defmodule SceneServer.Voxel.ObjectRegistry do
 
     new_state = %{state | objects: new_objects}
 
-    emit_object_destroyed(scene_id, instance.object_id)
+    # Phase 4-bis (D5):每条 0x6C 消息表达"这次事件";cascade 路径已经
+    # 在 do_destroy_part 那一层 dispatch 过 part_destroyed flag,这里
+    # 只 dispatch destroyed flag。bump object_version 以保证客户端
+    # version 单调去重(D3)能区分两条独立消息。
+    bumped_instance = %{instance | object_version: instance.object_version + 1}
+
+    emit_object_destroyed(scene_id, bumped_instance.object_id)
+
+    dispatch_object_state_delta(new_state, bumped_instance, PartState.flag_destroyed())
 
     new_state
   end
@@ -563,6 +594,70 @@ defmodule SceneServer.Voxel.ObjectRegistry do
       %{
         logical_scene_id: scene_id,
         object_id: object_id
+      }
+    end)
+  end
+
+  ## ObjectStateDelta dispatch (Phase 4-bis D1 / D2 / D4 / D5 / D7)
+
+  # Encode 0x6C ObjectStateDelta payload once via the canonical scene codec
+  # (D2),then fan-out to every affected ChunkProcess via
+  # ChunkDirectory.lookup_chunk_pid/3 (D1). Failures(chunk not started,
+  # cast :exit)are silently swallowed but observed (D4)。`single_flag`
+  # carries the **this-event** flag bit (D5)。
+  defp dispatch_object_state_delta(state, instance, single_flag) do
+    payload =
+      Codec.encode_voxel_object_state_delta_payload(%{
+        logical_scene_id: instance.logical_scene_id,
+        object_id: instance.object_id,
+        object_version: instance.object_version,
+        state_flags: single_flag,
+        affected_chunks: instance.covered_chunks
+      })
+
+    CliObserve.emit("voxel_object_state_delta_dispatch", fn ->
+      %{
+        logical_scene_id: instance.logical_scene_id,
+        object_id: instance.object_id,
+        object_version: instance.object_version,
+        state_flags: single_flag,
+        affected_chunk_count: length(instance.covered_chunks)
+      }
+    end)
+
+    Enum.each(instance.covered_chunks, fn chunk_coord ->
+      safe_dispatch_to_chunk(state, instance, chunk_coord, payload)
+    end)
+
+    :ok
+  end
+
+  defp safe_dispatch_to_chunk(state, instance, chunk_coord, payload) do
+    case ChunkDirectory.lookup_chunk_pid(
+           state.chunk_directory,
+           instance.logical_scene_id,
+           chunk_coord
+         ) do
+      {:ok, pid} ->
+        try do
+          ChunkProcess.push_object_state_delta_payload(pid, payload)
+        catch
+          :exit, reason ->
+            emit_dispatch_failed(instance, chunk_coord, {:exit, reason})
+        end
+
+      :not_started ->
+        emit_dispatch_failed(instance, chunk_coord, :chunk_not_started)
+    end
+  end
+
+  defp emit_dispatch_failed(instance, chunk_coord, reason) do
+    CliObserve.emit("voxel_object_state_delta_dispatch_failed", fn ->
+      %{
+        logical_scene_id: instance.logical_scene_id,
+        object_id: instance.object_id,
+        chunk_coord: chunk_coord,
+        reason: inspect(reason)
       }
     end)
   end
