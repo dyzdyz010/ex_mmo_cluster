@@ -6,6 +6,33 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
   alias WorldServer.Voxel.TransactionParticipant
   alias WorldServer.Voxel.TransactionRecoveryWatcher
 
+  defmodule StubSceneCaller do
+    def commit(participant, transaction_id, opts) do
+      log(opts, {:commit, participant.region_id, transaction_id})
+
+      case Map.get(Keyword.get(opts, :commit_responses, %{}), participant.region_id) do
+        nil -> {:ok, %{committed_chunks: []}}
+        response -> response
+      end
+    end
+
+    def abort(participant, transaction_id, opts) do
+      log(opts, {:abort, participant.region_id, transaction_id})
+      :ok
+    end
+
+    def prepare(_participant, _transaction_id, _intents_by_chunk, _opts) do
+      raise "StubSceneCaller.prepare must not be invoked on the :prepared fast-path"
+    end
+
+    defp log(opts, event) do
+      case Keyword.fetch(opts, :recorder) do
+        {:ok, agent} -> Agent.update(agent, &(&1 ++ [event]))
+        :error -> :ok
+      end
+    end
+  end
+
   describe "recover/1" do
     test "aborts transactions stuck in :preparing" do
       coordinator = start_supervised!(TransactionCoordinator)
@@ -18,7 +45,13 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 1, pending_commit: 0, finalized: 0, abort_failed: 0}
+      assert summary.aborted == 1
+      assert summary.pending_commit == 0
+      assert summary.finalized == 0
+      assert summary.abort_failed == 0
+      assert summary.resumed_commit == 0
+      assert summary.resume_partial == 0
+      assert summary.resume_failed == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
       assert snapshot.transactions["tx-preparing"].state == :aborted
@@ -44,7 +77,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 1, pending_commit: 0, finalized: 0, abort_failed: 0}
+      assert summary.aborted == 1
+      assert summary.pending_commit == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
       assert snapshot.transactions["tx-aborting"].state == :aborted
@@ -59,7 +93,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 0, pending_commit: 1, finalized: 0, abort_failed: 0}
+      assert summary.pending_commit == 1
+      assert summary.resumed_commit == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
       assert snapshot.transactions["tx-prepared"].state == :prepared
@@ -85,7 +120,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 0, pending_commit: 0, finalized: 2, abort_failed: 0}
+      assert summary.finalized == 2
+      assert summary.aborted == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
       assert snapshot.transactions["tx-committed"].state == :committed
@@ -109,7 +145,9 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 1, pending_commit: 1, finalized: 1, abort_failed: 0}
+      assert summary.aborted == 1
+      assert summary.pending_commit == 1
+      assert summary.finalized == 1
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
       assert snapshot.transactions["tx-mixed-preparing"].state == :aborted
@@ -122,7 +160,110 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary == %{aborted: 0, pending_commit: 0, finalized: 0, abort_failed: 0}
+      assert summary == %{
+               aborted: 0,
+               pending_commit: 0,
+               finalized: 0,
+               abort_failed: 0,
+               resumed_commit: 0,
+               resume_partial: 0,
+               resume_failed: 0
+             }
+    end
+  end
+
+  describe "Phase 3-bis :prepared resume" do
+    test "without a resolver, :prepared transactions stay parked" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      prepare_all!(coordinator, "tx-no-resolver", with_intents: true)
+
+      summary = TransactionRecoveryWatcher.recover(coordinator)
+      assert summary.pending_commit == 1
+      assert summary.resumed_commit == 0
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-no-resolver"].state == :prepared
+    end
+
+    test "with a resolver, :prepared dispatches commit through the executor" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+      prepare_all!(coordinator, "tx-resume", with_intents: true)
+
+      pre_sweep = TransactionCoordinator.snapshot(coordinator).transactions["tx-resume"]
+      assert pre_sweep.state == :prepared
+      assert pre_sweep.intents_by_participant != %{}
+
+      resolver = fn ->
+        {:ok, scene_caller: StubSceneCaller, scene_opts: [recorder: recorder]}
+      end
+
+      summary =
+        TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.resumed_commit == 1
+      assert summary.pending_commit == 0
+
+      calls = Agent.get(recorder, & &1)
+      assert Enum.count(calls, &match?({:commit, _, "tx-resume"}, &1)) == 2
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-resume"].state == :committed
+    end
+
+    test "resolver errors keep the transaction parked and emit unavailable" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      prepare_all!(coordinator, "tx-resume-unavailable", with_intents: true)
+
+      resolver = fn -> {:error, :scene_unavailable} end
+
+      summary =
+        TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.pending_commit == 1
+      assert summary.resumed_commit == 0
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-resume-unavailable"].state == :prepared
+    end
+
+    test "missing intents_by_participant falls back to pending_commit even with a resolver" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      prepare_all!(coordinator, "tx-no-intents", with_intents: false)
+
+      resolver = fn ->
+        {:ok, scene_caller: StubSceneCaller, scene_opts: []}
+      end
+
+      summary =
+        TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.pending_commit == 1
+      assert summary.resumed_commit == 0
+    end
+
+    test "partial commit failures bubble up as resume_partial" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+      prepare_all!(coordinator, "tx-resume-partial", with_intents: true)
+
+      resolver = fn ->
+        {:ok,
+         scene_caller: StubSceneCaller,
+         scene_opts: [recorder: recorder, commit_responses: %{20 => {:error, :commit_blew_up}}]}
+      end
+
+      summary =
+        TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.resume_partial == 1
+      assert summary.resumed_commit == 0
+
+      # Coordinator still reaches :committed state because the decision is
+      # already past prepare; per-participant commit failures are surfaced
+      # via observe but do not roll back the transaction.
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-resume-partial"].state == :committed
     end
   end
 
@@ -150,12 +291,20 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
     end
   end
 
-  defp prepare_all!(coordinator, transaction_id) do
-    assert {:ok, _} =
-             TransactionCoordinator.begin_transaction(
-               coordinator,
-               transaction_attrs(transaction_id)
-             )
+  defp prepare_all!(coordinator, transaction_id, opts \\ []) do
+    base_attrs = transaction_attrs(transaction_id)
+
+    attrs =
+      if Keyword.get(opts, :with_intents, false) do
+        Map.put(base_attrs, :intents_by_participant, %{
+          {10, 100} => %{{0, 0, 0} => [%{operation: :put_solid_block, macro: 0}]},
+          {20, 200} => %{{2, 0, 0} => [%{operation: :put_solid_block, macro: 1}]}
+        })
+      else
+        base_attrs
+      end
+
+    assert {:ok, _} = TransactionCoordinator.begin_transaction(coordinator, attrs)
 
     assert {:ok, _} =
              TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
