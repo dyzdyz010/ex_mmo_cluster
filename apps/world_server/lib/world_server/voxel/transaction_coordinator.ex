@@ -158,13 +158,15 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   def init(opts) do
     persist_fn = Keyword.get(opts, :persist_fn)
     load_fn = Keyword.get(opts, :load_fn)
+    next_object_id_fn = Keyword.get(opts, :next_object_id_fn, &default_next_object_id/0)
 
     base = %{
       transactions: %{},
       begin_fingerprints: %{},
       decisions: %{},
       decision_index: %{},
-      persist_fn: persist_fn
+      persist_fn: persist_fn,
+      next_object_id_fn: next_object_id_fn
     }
 
     case run_load(load_fn) do
@@ -178,6 +180,12 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
         {:ok, base}
     end
+  end
+
+  # Phase 4 (D2):default sequence-backed allocator. Tests inject a stubbed
+  # `next_object_id_fn` opt so they don't depend on Postgres directly.
+  defp default_next_object_id do
+    DataService.Voxel.SceneObjectStore.next_object_id()
   end
 
   @impl true
@@ -202,7 +210,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   end
 
   defp do_handle_call({:begin_transaction, attrs}, _from, state) do
-    case build_transaction(attrs) do
+    case build_transaction(attrs, state) do
       {:ok, transaction, fingerprint} ->
         {reply, next_state} = put_new_transaction(state, transaction, fingerprint)
         {:reply, reply, next_state}
@@ -395,28 +403,206 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     end
   end
 
-  defp build_transaction(attrs) do
+  defp build_transaction(attrs, state) do
     attrs = attrs_map(attrs)
 
-    with {:ok, participants} <- fetch_participants(attrs),
-         {:ok, decision_version} <- normalize_decision_version(value(attrs, :decision_version, 1)),
-         {:ok, intents_by_participant} <- normalize_intents_by_participant(attrs) do
-      transaction = %BuildTransaction{
-        transaction_id: value(attrs, :transaction_id, unique_transaction_id()),
-        logical_scene_id: value(attrs, :logical_scene_id),
-        parcel_id: value(attrs, :parcel_id),
-        reservation_id: value(attrs, :reservation_id),
-        participants: participants,
-        intent_hash: value(attrs, :intent_hash, default_intent_hash(attrs, participants)),
-        decision_version: decision_version,
-        timeout_at_ms: value(attrs, :timeout_at_ms, now_ms() + @default_timeout_ms),
-        state: :preparing,
-        intents_by_participant: intents_by_participant
-      }
+    transaction_id = value(attrs, :transaction_id, unique_transaction_id())
 
-      {:ok, transaction, begin_fingerprint(transaction)}
+    # Phase 4 (D2):skip allocation entirely on replay so the sequence is not
+    # advanced on every begin_transaction retry. The replay path returns the
+    # already-stored transaction (with its original object_id values).
+    case Map.fetch(state.transactions, transaction_id) do
+      {:ok, _existing} ->
+        with {:ok, participants} <- fetch_participants(attrs),
+             {:ok, decision_version} <-
+               normalize_decision_version(value(attrs, :decision_version, 1)),
+             {:ok, intents_by_participant} <- normalize_intents_by_participant(attrs) do
+          # Build a fingerprint matching the existing transaction so
+          # `put_new_transaction` returns `{:ok, existing}`. `scene_objects`
+          # is intentionally absent from the fingerprint (allocations are not
+          # part of "is this the same transaction" identity).
+          transaction = %BuildTransaction{
+            transaction_id: transaction_id,
+            logical_scene_id: value(attrs, :logical_scene_id),
+            parcel_id: value(attrs, :parcel_id),
+            reservation_id: value(attrs, :reservation_id),
+            participants: participants,
+            intent_hash: value(attrs, :intent_hash, default_intent_hash(attrs, participants)),
+            decision_version: decision_version,
+            timeout_at_ms: value(attrs, :timeout_at_ms, now_ms() + @default_timeout_ms),
+            state: :preparing,
+            intents_by_participant: intents_by_participant,
+            scene_objects: []
+          }
+
+          {:ok, transaction, begin_fingerprint(transaction)}
+        end
+
+      :error ->
+        with {:ok, participants} <- fetch_participants(attrs),
+             {:ok, decision_version} <-
+               normalize_decision_version(value(attrs, :decision_version, 1)),
+             {:ok, intents_by_participant} <- normalize_intents_by_participant(attrs),
+             {:ok, scene_objects} <-
+               allocate_scene_objects(attrs, state.next_object_id_fn) do
+          transaction = %BuildTransaction{
+            transaction_id: transaction_id,
+            logical_scene_id: value(attrs, :logical_scene_id),
+            parcel_id: value(attrs, :parcel_id),
+            reservation_id: value(attrs, :reservation_id),
+            participants: participants,
+            intent_hash: value(attrs, :intent_hash, default_intent_hash(attrs, participants)),
+            decision_version: decision_version,
+            timeout_at_ms: value(attrs, :timeout_at_ms, now_ms() + @default_timeout_ms),
+            state: :preparing,
+            intents_by_participant: intents_by_participant,
+            scene_objects: scene_objects
+          }
+
+          {:ok, transaction, begin_fingerprint(transaction)}
+        end
     end
   end
+
+  # Phase 4 (D2 + D3):normalize each scene_object seed and allocate an
+  # `object_id` from the sequence. Empty list → no objects to create (e.g.
+  # break-only transactions).
+  defp allocate_scene_objects(attrs, next_object_id_fn) do
+    case value(attrs, :scene_objects, []) do
+      [] ->
+        {:ok, []}
+
+      seeds when is_list(seeds) ->
+        seeds
+        |> Enum.reduce_while({:ok, []}, fn seed, {:ok, acc} ->
+          with {:ok, normalized} <- normalize_scene_object_seed(seed),
+               {:ok, object_id} <- run_next_object_id(next_object_id_fn) do
+            {:cont, {:ok, [Map.put(normalized, :object_id, object_id) | acc]}}
+          else
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, list} -> {:ok, Enum.reverse(list)}
+          error -> error
+        end
+
+      _other ->
+        {:error, :invalid_scene_objects}
+    end
+  end
+
+  defp run_next_object_id(fun) when is_function(fun, 0) do
+    case fun.() do
+      {:ok, id} when is_integer(id) and id > 0 -> {:ok, id}
+      _ -> {:error, :object_id_unavailable}
+    end
+  rescue
+    _exception -> {:error, :object_id_unavailable}
+  end
+
+  defp run_next_object_id(_), do: {:error, :object_id_unavailable}
+
+  defp normalize_scene_object_seed(seed) when is_map(seed) or is_list(seed) do
+    seed = attrs_map(seed)
+
+    with {:ok, blueprint_id} <- required_value(seed, :blueprint_id),
+         {:ok, blueprint_version} <- required_value(seed, :blueprint_version),
+         {:ok, parcel_id} <- required_value(seed, :parcel_id),
+         {:ok, anchor} <- required_value(seed, :anchor_world_micro),
+         {:ok, anchor_norm} <- normalize_anchor_world_micro(anchor),
+         {:ok, rotation} <- required_value(seed, :rotation),
+         {:ok, owner_actor_id} <- required_value(seed, :owner_actor_id),
+         {:ok, covered_chunks} <- required_value(seed, :covered_chunks),
+         {:ok, covered_chunks_norm} <- normalize_covered_chunks(covered_chunks),
+         {:ok, part_states} <- required_value(seed, :part_states),
+         {:ok, part_states_norm} <- normalize_part_states(part_states) do
+      {:ok,
+       %{
+         blueprint_id: blueprint_id,
+         blueprint_version: blueprint_version,
+         parcel_id: parcel_id,
+         anchor_world_micro: anchor_norm,
+         rotation: rotation,
+         owner_actor_id: owner_actor_id,
+         covered_chunks: covered_chunks_norm,
+         part_states: part_states_norm,
+         state_flags: value(seed, :state_flags, 0),
+         object_attribute_ref: value(seed, :object_attribute_ref, 0),
+         object_tag_set_ref: value(seed, :object_tag_set_ref, 0),
+         object_version: value(seed, :object_version, 1)
+       }}
+    else
+      {:error, {:missing, key}} -> {:error, {:missing_scene_object_field, key}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_scene_object_seed(_), do: {:error, :invalid_scene_object}
+
+  defp normalize_anchor_world_micro({x, y, z})
+       when is_integer(x) and is_integer(y) and is_integer(z),
+       do: {:ok, {x, y, z}}
+
+  defp normalize_anchor_world_micro([x, y, z])
+       when is_integer(x) and is_integer(y) and is_integer(z),
+       do: {:ok, {x, y, z}}
+
+  defp normalize_anchor_world_micro(_), do: {:error, :invalid_anchor_world_micro}
+
+  defp normalize_covered_chunks([]), do: {:error, :invalid_covered_chunks}
+
+  defp normalize_covered_chunks(list) when is_list(list) do
+    if Enum.all?(list, fn
+         {x, y, z} when is_integer(x) and is_integer(y) and is_integer(z) -> true
+         _ -> false
+       end) do
+      {:ok, list}
+    else
+      {:error, :invalid_covered_chunks}
+    end
+  end
+
+  defp normalize_covered_chunks(_), do: {:error, :invalid_covered_chunks}
+
+  defp normalize_part_states([]), do: {:error, :invalid_part_states}
+
+  defp normalize_part_states(list) when is_list(list) do
+    list
+    |> Enum.reduce_while([], fn entry, acc ->
+      case normalize_part_state(entry) do
+        {:ok, ps} -> {:cont, [ps | acc]}
+        {:error, _} -> {:halt, :error}
+      end
+    end)
+    |> case do
+      :error -> {:error, :invalid_part_states}
+      list -> {:ok, Enum.reverse(list)}
+    end
+  end
+
+  defp normalize_part_states(_), do: {:error, :invalid_part_states}
+
+  defp normalize_part_state(entry) when is_map(entry) or is_list(entry) do
+    entry = attrs_map(entry)
+
+    with {:ok, part_id} <- required_value(entry, :part_id),
+         true <- is_integer(part_id) and part_id >= 0,
+         {:ok, health} <- required_value(entry, :health),
+         true <- is_integer(health) do
+      {:ok,
+       %{
+         part_id: part_id,
+         health: health,
+         state_flags: value(entry, :state_flags, 0)
+       }}
+    else
+      {:error, _} = err -> err
+      false -> {:error, :invalid_part_state}
+    end
+  end
+
+  defp normalize_part_state(_), do: {:error, :invalid_part_state}
 
   # Phase 3-bis: optional but typed when present. The shape is the same
   # `intents_by_participant` map `TransactionExecutor.execute/4` consumes:
