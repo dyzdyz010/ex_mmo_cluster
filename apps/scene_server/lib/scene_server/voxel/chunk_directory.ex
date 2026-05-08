@@ -164,6 +164,25 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     GenServer.call(server, {:invalidate_chunk, attrs})
   end
 
+  @doc """
+  Look up an already-started ChunkProcess pid by `{logical_scene_id, chunk_coord}`.
+
+  Returns `{:ok, pid}` if the directory has a registered, alive chunk process,
+  or `:not_started` if the directory has no entry for that coord (or the
+  registered pid is no longer alive).
+
+  Phase 4-bis (D1):used by `ObjectRegistry` to dispatch ObjectStateDelta
+  broadcasts to chunks affected by an object lifecycle event, **without**
+  starting a new chunk process. If the chunk is not hot,the broadcast
+  for that chunk is silently dropped(any subscriber would have to
+  re-subscribe and re-snapshot anyway,which carries the current truth).
+  """
+  @spec lookup_chunk_pid(GenServer.server(), non_neg_integer(), {integer(), integer(), integer()}) ::
+          {:ok, pid()} | :not_started
+  def lookup_chunk_pid(server \\ __MODULE__, logical_scene_id, chunk_coord) do
+    GenServer.call(server, {:lookup_chunk_pid, logical_scene_id, chunk_coord})
+  end
+
   @doc "Returns the known chunk process table for CLI/debug inspection."
   def snapshot(server \\ __MODULE__) do
     GenServer.call(server, :snapshot)
@@ -413,6 +432,20 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {:reply, ChunkProcess.invalidate_subscribers(chunk_pid, reason), state}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:lookup_chunk_pid, logical_scene_id, chunk_coord}, _from, state) do
+    case Map.get(state.chunks, {logical_scene_id, chunk_coord}) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          {:reply, {:ok, pid}, state}
+        else
+          {:reply, :not_started, state}
+        end
+
+      _ ->
+        {:reply, :not_started, state}
     end
   end
 

@@ -222,6 +222,67 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
              MacroCellHeader.cell_mode_solid_block()
   end
 
+  describe "lookup_chunk_pid/3 (Phase 4-bis D1)" do
+    test "returns :not_started when no chunk has been registered for the coord" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 1, {0, 0, 0})
+    end
+
+    test "returns {:ok, pid} for a chunk that was started via snapshot_payload" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+      assert {:ok, _payload} =
+               ChunkDirectory.snapshot_payload(directory, %{
+                 request_id: 1,
+                 logical_scene_id: 1,
+                 center_chunk: {7, 7, 7}
+               })
+
+      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {7, 7, 7})
+      assert is_pid(pid)
+      assert Process.alive?(pid)
+    end
+
+    test "scopes lookup by logical_scene_id (different scene with same coord misses)" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+      assert {:ok, _} =
+               ChunkDirectory.snapshot_payload(directory, %{
+                 request_id: 1,
+                 logical_scene_id: 1,
+                 center_chunk: {0, 0, 0}
+               })
+
+      assert {:ok, _pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {0, 0, 0})
+      # Same coord, different scene → miss
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 2, {0, 0, 0})
+    end
+
+    test "returns :not_started when the registered chunk pid is dead" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+      assert {:ok, _} =
+               ChunkDirectory.snapshot_payload(directory, %{
+                 request_id: 1,
+                 logical_scene_id: 1,
+                 center_chunk: {3, 3, 3}
+               })
+
+      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {3, 3, 3})
+
+      Process.exit(pid, :kill)
+      # Allow the EXIT to propagate.
+      Process.sleep(20)
+
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 1, {3, 3, 3})
+    end
+  end
+
   defp lease do
     %{
       logical_scene_id: 1,
