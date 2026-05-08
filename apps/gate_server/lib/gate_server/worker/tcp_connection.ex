@@ -323,6 +323,23 @@ defmodule GateServer.TcpConnection do
     {:noreply, state}
   end
 
+  # Phase 4-bis (D7):forward 0x6C ObjectStateDelta from ChunkProcess fan-out
+  # to the TCP socket. ObjectRegistry encoded the binary once;ChunkProcess
+  # cast it into our mailbox via `send/2`;we just prefix the opcode and
+  # write to the socket.
+  def handle_info({:voxel_object_state_delta_payload, payload}, %{socket: socket} = state)
+      when is_binary(payload) do
+    GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send_encoded(socket, {:voxel_object_state_delta_payload, payload})
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("tcp_receive", fn ->
