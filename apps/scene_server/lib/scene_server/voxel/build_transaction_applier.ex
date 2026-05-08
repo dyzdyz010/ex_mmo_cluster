@@ -23,6 +23,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ObjectRegistry
 
   @type intent_attrs :: map()
   @type intents_by_chunk :: %{
@@ -167,6 +168,56 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
     emit_event("voxel_transaction_participant_aborted", participant, transaction_id, %{
       chunk_count: length(participant.affected_chunks)
     })
+
+    :ok
+  end
+
+  @doc """
+  Phase 4 (D5):upserts the per-transaction `scene_objects` (allocated by
+  the coordinator at `begin_transaction`) into the per-scene
+  `SceneServer.Voxel.ObjectRegistry`,which in turn syncs them to
+  `voxel_scene_objects` via `DataService.Voxel.SceneObjectStore`.
+
+  Called by `WorldServer.Voxel.TransactionExecutor.run_commit/7` once after
+  `commit_decision` succeeds — i.e. exactly once per transaction, after
+  every chunk has applied its intents and refreshed its
+  `ChunkObjectRef[]`. Called with an empty list it's a cheap no-op for
+  transactions that did not allocate any objects (e.g. break-only
+  transactions in Phase 5+).
+
+  Optional `opts[:object_registry]` overrides the default registry module
+  (used by tests).
+
+  Failures during upsert do not block the executor;they are emitted
+  as `voxel_scene_object_register_failed` observe events and otherwise
+  swallowed (the transaction is already committed, the registry can pick
+  up missing rows on next reload from `SceneObjectStore`)。
+  """
+  @spec register_scene_objects([map()], keyword()) :: :ok
+  def register_scene_objects(scene_objects, opts \\ [])
+
+  def register_scene_objects([], _opts), do: :ok
+
+  def register_scene_objects(scene_objects, opts) when is_list(scene_objects) and is_list(opts) do
+    registry = Keyword.get(opts, :object_registry, ObjectRegistry)
+
+    Enum.each(scene_objects, fn obj ->
+      case ObjectRegistry.upsert_object(registry, obj) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          CliObserve.emit("voxel_scene_object_register_failed", fn ->
+            %{
+              object_id: Map.get(obj, :object_id),
+              logical_scene_id: Map.get(obj, :logical_scene_id),
+              reason: inspect(reason)
+            }
+          end)
+
+          :ok
+      end
+    end)
 
     :ok
   end

@@ -340,6 +340,13 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         transaction.decision_version
       )
 
+    # Phase 4 (D5):after coordinator records the commit decision, register
+    # all scene_objects allocated at begin_transaction with the Scene-side
+    # ObjectRegistry. This is the last write of the commit phase;
+    # failures are non-blocking (registry can re-load from SceneObjectStore
+    # if it misses an upsert; rows are persisted by ObjectRegistry itself).
+    register_scene_objects_after_commit(scene_caller, transaction, scene_opts)
+
     emit("voxel_transaction_executor_committed", transaction, %{
       participant_count: length(participant_results)
     })
@@ -351,6 +358,22 @@ defmodule WorldServer.Voxel.TransactionExecutor do
        participant_results: participant_results,
        prepare_results: prepare_results
      }}
+  end
+
+  defp register_scene_objects_after_commit(scene_caller, transaction, scene_opts) do
+    case Map.get(transaction, :scene_objects, []) do
+      [] ->
+        :ok
+
+      scene_objects when is_list(scene_objects) ->
+        if function_exported?(scene_caller, :register_scene_objects, 2) do
+          safely_invoke(fn ->
+            apply(scene_caller, :register_scene_objects, [scene_objects, scene_opts])
+          end)
+        end
+
+        :ok
+    end
   end
 
   defp run_abort(

@@ -626,6 +626,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
        logical_scene_id: state.logical_scene_id,
        chunk_coord: state.chunk_coord,
        chunk_version: state.storage.chunk_version,
+       storage: state.storage,
        has_lease?: not is_nil(state.lease),
        lease: state.lease,
        subscriber_count: map_size(state.subscribers),
@@ -662,7 +663,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp apply_normalized_intent(state, intent) do
     with :ok <- validate_intent_scope(state, intent),
          :ok <- validate_intent_preconditions(state, intent),
-         {:ok, next_storage, changed?} <- build_intent_storage(state.storage, intent) do
+         {:ok, raw_storage, changed?} <- build_intent_storage(state.storage, intent) do
+      # Phase 4 (D6):mirror the apply_normalized_intents/2 batch path —
+      # rebuild ChunkObjectRef[] from layer truth so single-intent flows
+      # (apply_intent/2 direct path) keep object provenance摘要 in sync.
+      next_storage =
+        if changed?, do: Storage.refresh_chunk_object_refs(raw_storage), else: raw_storage
+
       snapshot_payload = encode_snapshot_payload(next_storage, intent.request_id)
       persist_payload = encode_snapshot_payload(next_storage, 0)
 
@@ -709,8 +716,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp apply_normalized_intents(state, intents) do
     with :ok <- validate_batch_scope(state, intents),
          :ok <- validate_batch_preconditions(state, intents),
-         {:ok, next_storage, changed_count, skipped_count} <-
+         {:ok, raw_storage, changed_count, skipped_count} <-
            build_intents_storage(state.storage, intents) do
+      # Phase 4 (D6):after every apply rebuild per-cell ObjectCoverRef[] and
+      # chunk-level ChunkObjectRef[] from the new MicroLayer truth. The
+      # refresh is idempotent and cheap (4096 macro headers, sparse refined
+      # cells), and keeps owner provenance摘要 in sync without touching
+      # the hot apply path semantics.
+      next_storage = Storage.refresh_chunk_object_refs(raw_storage)
       request_id = intents |> List.first() |> Map.fetch!(:request_id)
       snapshot_payload = encode_snapshot_payload(next_storage, request_id)
       persist_payload = encode_snapshot_payload(next_storage, 0)
