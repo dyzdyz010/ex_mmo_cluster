@@ -23,6 +23,7 @@
 | 3 | prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | [`phase-3-prefab-v2-transactions.md`](./phase-3-prefab-v2-transactions.md) |
 | 3-bis | fence persistence + auto-resume commit(crash safety 闭环) | 已完成 | [`phase-3-bis-fence-and-resume.md`](./phase-3-bis-fence-and-resume.md) |
 | 4 | object provenance、局部破坏与整体销毁 | 已完成 | [`phase-4-object-provenance.md`](./phase-4-object-provenance.md) |
+| 4-bis | ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 进行中 | [`phase-4-bis-object-state-delta-push.md`](./phase-4-bis-object-state-delta-push.md) |
 | 5 | 属性目录 + 温湿度基础模拟 | 未开始 | — |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
