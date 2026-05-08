@@ -399,7 +399,8 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     attrs = attrs_map(attrs)
 
     with {:ok, participants} <- fetch_participants(attrs),
-         {:ok, decision_version} <- normalize_decision_version(value(attrs, :decision_version, 1)) do
+         {:ok, decision_version} <- normalize_decision_version(value(attrs, :decision_version, 1)),
+         {:ok, intents_by_participant} <- normalize_intents_by_participant(attrs) do
       transaction = %BuildTransaction{
         transaction_id: value(attrs, :transaction_id, unique_transaction_id()),
         logical_scene_id: value(attrs, :logical_scene_id),
@@ -409,10 +410,23 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
         intent_hash: value(attrs, :intent_hash, default_intent_hash(attrs, participants)),
         decision_version: decision_version,
         timeout_at_ms: value(attrs, :timeout_at_ms, now_ms() + @default_timeout_ms),
-        state: :preparing
+        state: :preparing,
+        intents_by_participant: intents_by_participant
       }
 
       {:ok, transaction, begin_fingerprint(transaction)}
+    end
+  end
+
+  # Phase 3-bis: optional but typed when present. The shape is the same
+  # `intents_by_participant` map `TransactionExecutor.execute/4` consumes:
+  # `%{ {region_id, lease_id} => %{chunk_coord => [intent_attrs, ...]} }`.
+  # The coordinator persists it as part of the transaction so a Watcher
+  # restart can replay commit dispatch.
+  defp normalize_intents_by_participant(attrs) do
+    case value(attrs, :intents_by_participant, %{}) do
+      map when is_map(map) -> {:ok, map}
+      _other -> {:error, :invalid_intents_by_participant}
     end
   end
 

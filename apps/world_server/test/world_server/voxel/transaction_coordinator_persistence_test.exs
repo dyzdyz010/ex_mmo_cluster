@@ -192,6 +192,38 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
     assert snapshot.decision_index == %{}
   end
 
+  # Phase 3-bis: BuildTransaction.intents_by_participant must round-trip
+  # through Postgres so a coordinator restart can reconstruct the commit
+  # dispatch payload.
+  test "intents_by_participant survives restart through Postgres persistence" do
+    coordinator = start_supervised!({TransactionCoordinator, persist_opts()}, id: :first_intents)
+
+    intents = %{
+      {10, 100} => %{
+        {0, 0, 0} => [%{operation: :put_solid_block, macro: 0, lease_id: 100}]
+      },
+      {20, 200} => %{
+        {2, 0, 0} => [%{operation: :put_solid_block, macro: 1, lease_id: 200}]
+      }
+    }
+
+    attrs =
+      "tx-intents-restart"
+      |> transaction_attrs()
+      |> Map.put(:intents_by_participant, intents)
+
+    assert {:ok, %BuildTransaction{intents_by_participant: ^intents}} =
+             TransactionCoordinator.begin_transaction(coordinator, attrs)
+
+    stop_supervised!(:first_intents)
+
+    revived = start_supervised!({TransactionCoordinator, persist_opts()}, id: :revived_intents)
+
+    revived_snapshot = TransactionCoordinator.snapshot(revived)
+
+    assert revived_snapshot.transactions["tx-intents-restart"].intents_by_participant == intents
+  end
+
   defp persist_opts do
     [
       persist_fn: TransactionCoordinatorStore.persist_fn(Repo),

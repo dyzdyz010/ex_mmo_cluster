@@ -131,6 +131,55 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
     assert TransactionCoordinator.snapshot(coordinator) == snapshot
   end
 
+  describe "intents_by_participant (Phase 3-bis)" do
+    test "defaults to %{} when caller does not pass it" do
+      coordinator = start_supervised!(TransactionCoordinator)
+
+      assert {:ok, %BuildTransaction{intents_by_participant: %{}}} =
+               TransactionCoordinator.begin_transaction(
+                 coordinator,
+                 transaction_attrs("tx-no-intents")
+               )
+    end
+
+    test "round-trips the supplied intents_by_participant on begin_transaction" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      attrs = Map.put(transaction_attrs("tx-with-intents"), :intents_by_participant, intents())
+
+      assert {:ok, %BuildTransaction{intents_by_participant: stored}} =
+               TransactionCoordinator.begin_transaction(coordinator, attrs)
+
+      assert stored == intents()
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-with-intents"].intents_by_participant == intents()
+    end
+
+    test "begin_fingerprint ignores intents — replay returns the original transaction" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      first_attrs = Map.put(transaction_attrs("tx-replay-intents"), :intents_by_participant, %{})
+
+      assert {:ok, %BuildTransaction{intents_by_participant: %{}}} =
+               TransactionCoordinator.begin_transaction(coordinator, first_attrs)
+
+      # Replay with a different intents map — same identity / fingerprint, so
+      # the coordinator returns the original transaction without overwriting
+      # intents.
+      replay_attrs = Map.put(first_attrs, :intents_by_participant, intents())
+
+      assert {:ok, %BuildTransaction{intents_by_participant: %{}}} =
+               TransactionCoordinator.begin_transaction(coordinator, replay_attrs)
+    end
+
+    test "rejects a non-map intents_by_participant" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      attrs = Map.put(transaction_attrs("tx-bad-intents"), :intents_by_participant, :nope)
+
+      assert {:error, :invalid_intents_by_participant} =
+               TransactionCoordinator.begin_transaction(coordinator, attrs)
+    end
+  end
+
   defp prepare_all!(coordinator, transaction_id) do
     assert {:ok, _transaction} =
              TransactionCoordinator.begin_transaction(
@@ -185,5 +234,16 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
         affected_chunks: [{0, 0, 0}]
       }
     ]
+  end
+
+  defp intents do
+    %{
+      {10, 100} => %{
+        {0, 0, 0} => [%{operation: :put_solid_block, macro: 0}]
+      },
+      {20, 200} => %{
+        {2, 0, 0} => [%{operation: :put_solid_block, macro: 1}]
+      }
+    }
   end
 end

@@ -25,6 +25,11 @@ defmodule WorldServer.Voxel.BuildTransaction do
     :intent_hash,
     :decision_version,
     :timeout_at_ms,
-    state: :preparing
+    state: :preparing,
+    # Phase 3-bis: %{ {region_id, lease_id} => %{chunk_coord => [intent_attrs]} }.
+    # Persisted alongside the transaction so a coordinator restart can
+    # reconstruct the commit dispatch (TransactionRecoveryWatcher reads this
+    # back when resuming a `:prepared` transaction).
+    intents_by_participant: %{}
   ]
 end
