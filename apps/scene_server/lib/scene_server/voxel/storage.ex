@@ -10,10 +10,12 @@ defmodule SceneServer.Voxel.Storage do
 
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.DirtyMacroBounds
+  alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
   alias SceneServer.Voxel.MicroLayer
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.ObjectCoverRef
   alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Types
 
@@ -289,6 +291,182 @@ defmodule SceneServer.Voxel.Storage do
     else
       nil
     end
+  end
+
+  # ----------------------------------------------------------------------------
+  # Phase 4 — object provenance reverse lookup + chunk-level cover aggregation
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Returns `{owner_object_id, owner_part_id}` for the layer that occupies the
+  given micro slot inside the macro at `macro_index_or_coord`. Returns `nil`
+  when the slot is unoccupied or the macro is not in `:refined` mode.
+
+  Note that a terrain layer (`owner_object_id = 0`) still returns
+  `{0, 0}` — callers attributing damage to objects must filter
+  non-zero owners themselves.
+
+  Phase 4 (D6 反向查询):used by ChunkProcess damage routing to figure out
+  which object/part owns a micro slot before/after a `break_micro_block`
+  intent applies.
+  """
+  @spec lookup_owner_at(t(), integer() | term(), 0..511) ::
+          {non_neg_integer(), non_neg_integer()} | nil
+  def lookup_owner_at(%__MODULE__{} = storage, macro_index_or_coord, micro_slot_index) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    micro_slot_index = micro_slot!(micro_slot_index)
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    if header.mode == MacroCellHeader.cell_mode_refined() do
+      cell = Enum.at(storage.refined_cells, header.payload_index)
+      bit_mask = single_bit_mask(micro_slot_index)
+
+      Enum.find_value(cell.layers, fn layer ->
+        if mask_intersects?(layer.mask_words, bit_mask) do
+          {layer.owner_object_id, layer.owner_part_id}
+        else
+          nil
+        end
+      end)
+    else
+      nil
+    end
+  end
+
+  @doc """
+  Recomputes per-cell `ObjectCoverRef[]` and chunk-level `ChunkObjectRef[]`
+  from the current `MicroLayer.owner_object_id` / `owner_part_id` truth.
+
+  Both indices are derived data:`MicroLayer` is the source of truth, the
+  cover refs are caches that speed up object-scoped queries (cell level)
+  and snapshot摘要 (chunk level)。重算策略走"整 chunk 重算"(决策稿 D6)
+  —— 4096 macro × few refined cells × few layers,扫成本 < ms。
+
+  Phase 4:called by `ChunkProcess` after every `apply_intent` commit and
+  after `destroy_part` / `destroy_object` cleanup paths to keep the indices
+  in sync with layer truth. `object_version` 在 storage 层不可知,固定写 0;
+  ObjectRegistry 在自己的内存视图里维护实时 version。
+  """
+  @spec refresh_chunk_object_refs(t()) :: t()
+  def refresh_chunk_object_refs(%__MODULE__{} = storage) do
+    storage = normalize!(storage)
+
+    # Step 1: rebuild per-cell ObjectCoverRef[] from layer truth.
+    new_refined_cells =
+      Enum.map(storage.refined_cells, fn %RefinedCellData{} = cell ->
+        %{cell | object_refs: derive_cell_object_refs(cell.layers)}
+      end)
+
+    storage = %{storage | refined_cells: new_refined_cells}
+
+    # Step 2: aggregate chunk-level ChunkObjectRef[] across refined cells.
+    new_chunk_refs = derive_chunk_object_refs(storage)
+
+    %{storage | object_refs: new_chunk_refs}
+  end
+
+  defp derive_cell_object_refs(layers) do
+    layers
+    |> Enum.reject(fn layer -> layer.owner_object_id == 0 end)
+    |> Enum.group_by(fn layer -> {layer.owner_object_id, layer.owner_part_id} end)
+    |> Enum.map(fn {{oid, pid}, group} ->
+      mask =
+        Enum.reduce(group, List.duplicate(0, 8), fn layer, acc ->
+          bitwise_or_words(acc, layer.mask_words)
+        end)
+
+      ObjectCoverRef.new(
+        owner_object_id: oid,
+        owner_part_id: pid,
+        mask_words: mask
+      )
+    end)
+    |> Enum.sort_by(fn ref -> {ref.owner_object_id, ref.owner_part_id} end)
+  end
+
+  defp derive_chunk_object_refs(storage) do
+    # %{object_id => %{macro_index => or'd mask_words across all parts}}
+    aggregated =
+      storage.macro_headers
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {header, macro_index}, acc ->
+        if header.mode == MacroCellHeader.cell_mode_refined() do
+          cell = Enum.at(storage.refined_cells, header.payload_index)
+
+          Enum.reduce(cell.object_refs, acc, fn ref, inner_acc ->
+            inner_acc
+            |> Map.put_new(ref.owner_object_id, %{})
+            |> Map.update!(ref.owner_object_id, fn macros ->
+              Map.update(
+                macros,
+                macro_index,
+                ref.mask_words,
+                &bitwise_or_words(&1, ref.mask_words)
+              )
+            end)
+          end)
+        else
+          acc
+        end
+      end)
+
+    aggregated
+    |> Enum.map(fn {object_id, macros} ->
+      coords = macros |> Map.keys() |> Enum.map(&Types.macro_coord!/1)
+      {min_macro, max_macro} = aabb_half_open(coords)
+      cover_hash = compute_cover_hash(object_id, min_macro, max_macro, macros)
+
+      ChunkObjectRef.new(object_id,
+        object_version: 0,
+        covered_macro_min: min_macro,
+        covered_macro_max: max_macro,
+        cover_hash: cover_hash
+      )
+    end)
+    |> Enum.sort_by(& &1.object_id)
+  end
+
+  defp aabb_half_open(coords) do
+    xs = Enum.map(coords, &elem(&1, 0))
+    ys = Enum.map(coords, &elem(&1, 1))
+    zs = Enum.map(coords, &elem(&1, 2))
+
+    min_macro = {Enum.min(xs), Enum.min(ys), Enum.min(zs)}
+    max_macro = {Enum.max(xs) + 1, Enum.max(ys) + 1, Enum.max(zs) + 1}
+
+    {min_macro, max_macro}
+  end
+
+  defp compute_cover_hash(object_id, {min_x, min_y, min_z}, {max_x, max_y, max_z}, macros) do
+    sorted = Enum.sort_by(macros, fn {idx, _} -> idx end)
+
+    iodata = [
+      <<object_id::unsigned-big-integer-size(64)>>,
+      <<min_x::unsigned-big-integer-size(8)>>,
+      <<min_y::unsigned-big-integer-size(8)>>,
+      <<min_z::unsigned-big-integer-size(8)>>,
+      <<max_x::unsigned-big-integer-size(8)>>,
+      <<max_y::unsigned-big-integer-size(8)>>,
+      <<max_z::unsigned-big-integer-size(8)>>,
+      <<length(sorted)::unsigned-big-integer-size(32)>>,
+      Enum.map(sorted, fn {macro_index, mask_words} ->
+        [
+          <<macro_index::unsigned-big-integer-size(16)>>,
+          Enum.map(mask_words, fn w ->
+            <<w::unsigned-big-integer-size(64)>>
+          end)
+        ]
+      end)
+    ]
+
+    Hash.digest64(iodata)
+  end
+
+  defp mask_intersects?(mask_a, mask_b) do
+    mask_a
+    |> Enum.zip(mask_b)
+    |> Enum.any?(fn {a, b} -> band(a, b) != 0 end)
   end
 
   @doc "Normalizes a chunk storage struct or compatible map."
