@@ -620,64 +620,17 @@ defmodule GateServer.Codec do
     end
   end
 
-  # Phase 4 (D11):0x6C ObjectStateDelta — server-authoritative object
-  # state change broadcast (created / damaged / part_destroyed / destroyed).
-  # `attribute_patch` / `tag_patch` are fixed empty in Phase 4 (Phase 5+
-  # populates them with the attribute/tag目录 patches).
-  def encode({:voxel_object_state_delta, %{} = delta}) do
-    case encode_voxel_object_state_delta_payload(delta) do
-      {:ok, payload} -> {:ok, [<<@msg_voxel_object_state_delta>>, payload]}
-      {:error, _} = err -> err
-    end
+  # Phase 4-bis (D2):0x6C ObjectStateDelta encoder 主战场已挪到
+  # scene_server/voxel/codec.ex(对齐 chunk_snapshot/chunk_delta/chunk_invalidate
+  # 风格)。gate codec 端只做 binary pass-through:scene 端先 encode
+  # 出 binary,gate 端 prefix 0x6C opcode 后写到 socket。decode 仍保留在
+  # gate 端供 server-side 调试 / 测试用(见 decode_voxel_object_state_delta_payload/1)。
+  def encode({:voxel_object_state_delta_payload, payload}) when is_binary(payload) do
+    {:ok, [<<@msg_voxel_object_state_delta>>, payload]}
   end
 
   def encode(_) do
     {:error, :unknown_message}
-  end
-
-  # Encodes a VoxelEditIntent payload (without the opcode prefix). Returns
-  # {:ok, binary} | {:error, reason}. All required fields must be present in
-  # the input map; sentinel values (e.g. expected_chunk_version =
-  # 0xFFFF_FFFF_FFFF_FFFF) are caller-provided.
-  # Phase 4 (D11) wire encoding for ObjectStateDelta:
-  #   logical_scene_id::u64-be
-  #   object_id::u64-be
-  #   object_version::u64-be
-  #   state_flags::u32-be
-  #   attribute_patch_count::u16-be (Phase 4 always 0)
-  #   tag_patch_count::u16-be       (Phase 4 always 0)
-  #   affected_chunk_count::u16-be
-  #   affected_chunks::ChunkCoord[]  (each: i32-be x/y/z)
-  defp encode_voxel_object_state_delta_payload(delta) do
-    with {:ok, logical_scene_id} <- u64!(delta[:logical_scene_id], :logical_scene_id),
-         {:ok, object_id} <- u64!(delta[:object_id], :object_id),
-         {:ok, object_version} <- u64!(delta[:object_version], :object_version),
-         {:ok, state_flags} <- u32!(delta[:state_flags], :state_flags),
-         {:ok, affected_chunks} <- chunk_coord_list!(delta[:affected_chunks]) do
-      affected_count = length(affected_chunks)
-
-      affected_payload =
-        affected_chunks
-        |> Enum.map(fn {x, y, z} ->
-          <<x::32-big-signed, y::32-big-signed, z::32-big-signed>>
-        end)
-
-      {:ok,
-       [
-         <<
-           logical_scene_id::64-big,
-           object_id::64-big,
-           object_version::64-big,
-           state_flags::32-big,
-           # attribute_patch_count = 0
-           0::16-big,
-           # tag_patch_count = 0
-           0::16-big,
-           affected_count::16-big
-         >>,
-         affected_payload
-       ]}
-    end
   end
 
   @doc """
@@ -720,17 +673,6 @@ defmodule GateServer.Codec do
   end
 
   defp decode_affected_chunks(_, _, _), do: {:error, :invalid_affected_chunks}
-
-  defp chunk_coord_list!(value) when is_list(value) do
-    if Enum.all?(value, fn
-         {x, y, z} when is_integer(x) and is_integer(y) and is_integer(z) -> true
-         _ -> false
-       end) and length(value) <= 0xFFFF,
-       do: {:ok, value},
-       else: {:error, {:invalid_field, :affected_chunks, value}}
-  end
-
-  defp chunk_coord_list!(value), do: {:error, {:invalid_field, :affected_chunks, value}}
 
   defp encode_voxel_edit_intent_payload(intent) do
     with {:ok, request_id} <- u64!(intent[:request_id], :request_id),
