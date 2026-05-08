@@ -15,7 +15,44 @@ import {
   type VoxelPrefabKnownObject,
   type VoxelPrefabKnownRef,
 } from "../infrastructure/net/voxelProtocol";
-import { ObjectStateDeltaConsumer } from "../infrastructure/net/objectStateDeltaConsumer";
+import {
+  ObjectStateDeltaConsumer,
+  type ObjectStateFlagName,
+} from "../infrastructure/net/objectStateDeltaConsumer";
+import type { ObjectStateDelta } from "../infrastructure/net/objectStateDelta";
+import { ClearedSlotCache } from "./clearedSlotCache";
+import { DebrisSimulation, type DebrisSpawnPoint } from "./debrisEffect";
+import { MacroWorldSize } from "./core/constants";
+
+// Phase 4-bis Step 4-bis-10 timing / sampling constants.
+const OBJECT_STATE_DELTA_RETRY_DELAY_MS = 100;
+
+const DEBRIS_SAMPLE_LIMITS: Record<ObjectStateFlagName, number> = {
+  destroyed: 20,
+  part_destroyed: 10,
+  damaged: 5,
+  unknown: 0,
+};
+
+function sampleDebrisPoints(
+  points: readonly DebrisSpawnPoint[],
+  flagName: ObjectStateFlagName,
+): DebrisSpawnPoint[] {
+  const limit = DEBRIS_SAMPLE_LIMITS[flagName];
+  if (limit <= 0 || points.length === 0) {
+    return [];
+  }
+  if (points.length <= limit) {
+    return points.slice();
+  }
+  // Even-stride downsampling — deterministic and cheap.
+  const out: DebrisSpawnPoint[] = [];
+  const stride = points.length / limit;
+  for (let i = 0; i < limit; i++) {
+    out.push(points[Math.floor(i * stride)]!);
+  }
+  return out;
+}
 import {
   EXPECTED_CELL_HASH_UNSPECIFIED,
   EXPECTED_CHUNK_VERSION_UNSPECIFIED,
@@ -150,11 +187,18 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastDebugProbe: string | null = null;
   private lastError: string | null = null;
   private primeSent = false;
-  // Phase 4-bis Step 4-bis-7:0x6C ObjectStateDelta consumer。本 step 仅
-  // decode + 去重 + console.log,粒子 / HUD 在 Step 4-bis-10 串联。
+  // Phase 4-bis 0x6C ObjectStateDelta processing.
   private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
+  private readonly clearedSlotCache: ClearedSlotCache;
+  private readonly debrisSimulation: DebrisSimulation;
+  private readonly objectStateDeltaRetryQueue: {
+    delta: ObjectStateDelta;
+    flagName: ObjectStateFlagName;
+    retryAtMs: number;
+  }[] = [];
   private receivedObjectStateDeltaCount = 0;
   private dedupedObjectStateDeltaCount = 0;
+  private lastObjectStateFrameMs: number | null = null;
 
   constructor(
     private readonly transport: ServerVoxelTransportPort,
@@ -171,6 +215,9 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.sourceSkillId = options.sourceSkillId ?? 1;
     this.seedState = this.devSeed ? "idle" : "disabled";
 
+    this.clearedSlotCache = new ClearedSlotCache();
+    this.debrisSimulation = new DebrisSimulation();
+
     this.objectStateDeltaConsumer = new ObjectStateDeltaConsumer({
       onDelta: (delta, flagName) => {
         this.logger.emit("voxel", "object_state_delta_consumed", {
@@ -180,6 +227,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
           state_flags: `0x${delta.stateFlags.toString(16)}`,
           affected_chunks: delta.affectedChunks.length,
         });
+        this.handleObjectStateDeltaForDebris(delta, flagName);
       },
       onDuplicate: (delta) => {
         this.dedupedObjectStateDeltaCount += 1;
@@ -199,7 +247,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   onFrame(nowMs: number): void {
+    // Update lastObjectStateFrameMs first so handleObjectStateDeltaForDebris
+    // (called from drainVoxelMessages) can timestamp retry-queue entries
+    // against the *current* frame instead of falling back to performance.now().
+    this.tickDebris(nowMs);
     this.drainVoxelMessages();
+    this.processObjectStateDeltaRetryQueue(nowMs);
 
     if (!this.transport.canUseServerVoxel()) {
       return;
@@ -492,6 +545,154 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
     this.receivedObjectStateDeltaCount += 1;
     this.objectStateDeltaConsumer.consume(message.delta);
+  }
+
+  // Phase 4-bis Step 4-bis-10:每帧 advance debris simulation + 流出过期
+  // 粒子;先用 lastObjectStateFrameMs 计算 dt 补偿 GameLoop 不传 dtMs 的
+  // 接口缺口。
+  private tickDebris(nowMs: number): void {
+    if (this.lastObjectStateFrameMs === null) {
+      this.lastObjectStateFrameMs = nowMs;
+      return;
+    }
+    const dtMs = Math.max(0, nowMs - this.lastObjectStateFrameMs);
+    this.lastObjectStateFrameMs = nowMs;
+
+    if (dtMs > 0) {
+      this.debrisSimulation.update(dtMs);
+      // Sweep stale ClearedSlotCache entries to bound memory.
+      this.clearedSlotCache.sweep(nowMs);
+    }
+  }
+
+  // Phase 4-bis Step 4-bis-10 / Decision D6:0x6C 来时 take ClearedSlotCache
+  // 拿粒子起点;若空(典型场景:0x6C 比 ChunkDelta 先到,或者 cache hook
+  // 还没接 owner_object_id provenance — 见 step commit message)入重试队列,
+  // 100ms 后再尝试,仍空降级到 affected_chunks 中心点。
+  private handleObjectStateDeltaForDebris(
+    delta: ObjectStateDelta,
+    flagName: ObjectStateFlagName,
+  ): void {
+    if (flagName === "unknown") {
+      // Don't waste a retry / fallback for empty / unknown flag bits.
+      return;
+    }
+
+    const slots = this.clearedSlotCache.take(delta.objectId);
+    if (slots.length > 0) {
+      this.spawnDebrisAndEmit(delta, flagName, slots, "cleared_slot_cache");
+      return;
+    }
+
+    // Cache miss → defer 100ms (retry from queue) before falling back.
+    this.objectStateDeltaRetryQueue.push({
+      delta,
+      flagName,
+      retryAtMs: this.currentFrameTimeMs() + OBJECT_STATE_DELTA_RETRY_DELAY_MS,
+    });
+  }
+
+  private processObjectStateDeltaRetryQueue(nowMs: number): void {
+    if (this.objectStateDeltaRetryQueue.length === 0) {
+      return;
+    }
+    let writeIdx = 0;
+    for (let readIdx = 0; readIdx < this.objectStateDeltaRetryQueue.length; readIdx++) {
+      const item = this.objectStateDeltaRetryQueue[readIdx]!;
+      if (nowMs < item.retryAtMs) {
+        if (writeIdx !== readIdx) {
+          this.objectStateDeltaRetryQueue[writeIdx] = item;
+        }
+        writeIdx += 1;
+        continue;
+      }
+
+      // Time to fire.
+      const slots = this.clearedSlotCache.take(item.delta.objectId);
+      if (slots.length > 0) {
+        this.spawnDebrisAndEmit(item.delta, item.flagName, slots, "delayed_retry");
+      } else {
+        this.spawnDebrisFromAffectedChunks(item.delta, item.flagName);
+      }
+    }
+    if (writeIdx !== this.objectStateDeltaRetryQueue.length) {
+      this.objectStateDeltaRetryQueue.length = writeIdx;
+    }
+  }
+
+  private spawnDebrisFromAffectedChunks(
+    delta: ObjectStateDelta,
+    flagName: ObjectStateFlagName,
+  ): void {
+    if (delta.affectedChunks.length === 0) {
+      this.emitObjectStateDeltaEvent(delta, flagName, 0, "none");
+      return;
+    }
+
+    const halfChunkM = (VoxelConstants.ChunkSizeInMacros * MacroWorldSize) / 2 / 100; // 100 cm per macro
+    const chunkSizeM = (VoxelConstants.ChunkSizeInMacros * MacroWorldSize) / 100;
+    const points: DebrisSpawnPoint[] = delta.affectedChunks.map((coord) => ({
+      worldX: coord.x * chunkSizeM + halfChunkM,
+      worldY: coord.y * chunkSizeM + halfChunkM,
+      worldZ: coord.z * chunkSizeM + halfChunkM,
+    }));
+
+    if (flagName === "unknown") {
+      this.emitObjectStateDeltaEvent(delta, flagName, 0, "affected_chunks_fallback");
+      return;
+    }
+    const limited = sampleDebrisPoints(points, flagName);
+    const spawned = this.debrisSimulation.spawn(limited, flagName);
+    this.emitObjectStateDeltaEvent(delta, flagName, spawned, "affected_chunks_fallback");
+  }
+
+  private spawnDebrisAndEmit(
+    delta: ObjectStateDelta,
+    flagName: ObjectStateFlagName,
+    slots: { worldX: number; worldY: number; worldZ: number }[],
+    source: "cleared_slot_cache" | "delayed_retry",
+  ): void {
+    const points: DebrisSpawnPoint[] = slots.map((s) => ({
+      worldX: s.worldX,
+      worldY: s.worldY,
+      worldZ: s.worldZ,
+    }));
+    const limited = sampleDebrisPoints(points, flagName);
+    if (flagName === "unknown") {
+      this.emitObjectStateDeltaEvent(delta, flagName, 0, source);
+      return;
+    }
+    const spawned = this.debrisSimulation.spawn(limited, flagName);
+    this.emitObjectStateDeltaEvent(delta, flagName, spawned, source);
+  }
+
+  private emitObjectStateDeltaEvent(
+    delta: ObjectStateDelta,
+    flagName: ObjectStateFlagName,
+    debrisSpawned: number,
+    source: "cleared_slot_cache" | "delayed_retry" | "affected_chunks_fallback" | "none",
+  ): void {
+    this.bus.emit("world:object-state-delta", {
+      objectId: delta.objectId.toString(),
+      objectVersion: delta.objectVersion.toString(),
+      flagName,
+      affectedChunkCount: delta.affectedChunks.length,
+      debrisSpawned,
+      debrisSource: source,
+    });
+  }
+
+  private currentFrameTimeMs(): number {
+    return this.lastObjectStateFrameMs ?? Math.round(performance.now());
+  }
+
+  // Phase 4-bis Step 4-bis-10 test hatches.
+  debrisSimulationForTest(): DebrisSimulation {
+    return this.debrisSimulation;
+  }
+
+  clearedSlotCacheForTest(): ClearedSlotCache {
+    return this.clearedSlotCache;
   }
 
   private applyInvalidate(invalidate: VoxelChunkInvalidateMessage): void {

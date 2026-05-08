@@ -391,3 +391,156 @@ describe("OnlineVoxelWorldAdapter#placeMicroBlock / #breakMicroBlock (Phase 1c-5
     expect(adapter.store.editStats.rejected).toBe(1);
   });
 });
+
+describe("OnlineVoxelWorldAdapter ObjectStateDelta pipeline (Phase 4-bis-10)", () => {
+  function buildOsd(overrides: Partial<{
+    logicalSceneId: bigint;
+    objectId: bigint;
+    objectVersion: bigint;
+    stateFlags: number;
+    affectedChunks: { x: number; y: number; z: number }[];
+  }> = {}): VoxelObjectStateDeltaMessage {
+    return {
+      type: "voxel_object_state_delta",
+      delta: {
+        logicalSceneId: overrides.logicalSceneId ?? 7n,
+        objectId: overrides.objectId ?? 100n,
+        objectVersion: overrides.objectVersion ?? 1n,
+        stateFlags: overrides.stateFlags ?? 0x02, // destroyed
+        attributePatchCount: 0,
+        tagPatchCount: 0,
+        affectedChunks: overrides.affectedChunks ?? [{ x: 0, y: 0, z: 0 }],
+      },
+    };
+  }
+
+  it("cache hit → spawn debris with cleared_slot_cache source", () => {
+    const { adapter, transport, bus } = createAdapter();
+    const events: { source: string; spawned: number; flag: string }[] = [];
+    bus.on("world:object-state-delta", (e) =>
+      events.push({ source: e.debrisSource, spawned: e.debrisSpawned, flag: e.flagName }),
+    );
+
+    // Pre-populate cache with one slot for object 100.
+    adapter
+      .clearedSlotCacheForTest()
+      .put(100n, { worldX: 12, worldY: 34, worldZ: 56, timestampMs: 0 });
+
+    transport.queuedObjectStateDeltas.push(
+      buildOsd({ stateFlags: 0x02 /* destroyed */ }),
+    );
+
+    adapter.onFrame(0);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.source).toBe("cleared_slot_cache");
+    expect(events[0]!.flag).toBe("destroyed");
+    expect(events[0]!.spawned).toBeGreaterThan(0);
+    expect(adapter.debrisSimulationForTest().activeCount()).toBeGreaterThan(0);
+  });
+
+  it("cache miss → 100ms retry → still empty → affected_chunks fallback", () => {
+    const { adapter, transport, bus } = createAdapter();
+    const events: { source: string; spawned: number }[] = [];
+    bus.on("world:object-state-delta", (e) =>
+      events.push({ source: e.debrisSource, spawned: e.debrisSpawned }),
+    );
+
+    transport.queuedObjectStateDeltas.push(
+      buildOsd({ stateFlags: 0x02, affectedChunks: [{ x: 1, y: 0, z: 0 }] }),
+    );
+
+    // Frame 1: receives 0x6C, cache empty → enters retry queue.
+    adapter.onFrame(0);
+    expect(events).toHaveLength(0);
+
+    // Frame 2: 50 ms later — still inside retry window.
+    adapter.onFrame(50);
+    expect(events).toHaveLength(0);
+
+    // Frame 3: 120 ms later — past retry window, cache still empty → fallback.
+    adapter.onFrame(120);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.source).toBe("affected_chunks_fallback");
+    expect(events[0]!.spawned).toBeGreaterThan(0);
+  });
+
+  it("cache miss → cache filled within 100ms window → delayed_retry hits", () => {
+    const { adapter, transport, bus } = createAdapter();
+    const events: { source: string }[] = [];
+    bus.on("world:object-state-delta", (e) => events.push({ source: e.debrisSource }));
+
+    transport.queuedObjectStateDeltas.push(
+      buildOsd({ stateFlags: 0x04 /* part_destroyed */ }),
+    );
+
+    adapter.onFrame(0); // cache empty → retry queued
+
+    // Within delay window, ChunkDelta hook would fill cache (simulated here):
+    adapter
+      .clearedSlotCacheForTest()
+      .put(100n, { worldX: 7, worldY: 8, worldZ: 9, timestampMs: 50 });
+
+    // Past 100 ms threshold — retry pulls from cache.
+    adapter.onFrame(150);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.source).toBe("delayed_retry");
+  });
+
+  it("unknown flag is dropped without spawning or queuing", () => {
+    const { adapter, transport, bus } = createAdapter();
+    const events: unknown[] = [];
+    bus.on("world:object-state-delta", (e) => events.push(e));
+
+    transport.queuedObjectStateDeltas.push(buildOsd({ stateFlags: 0x00 /* unknown */ }));
+    adapter.onFrame(0);
+    adapter.onFrame(200);
+
+    expect(events).toHaveLength(0);
+    expect(adapter.debrisSimulationForTest().activeCount()).toBe(0);
+  });
+
+  it("dedupes a stale-version 0x6C and does not spawn", () => {
+    const { adapter, transport, bus } = createAdapter();
+    const events: unknown[] = [];
+    bus.on("world:object-state-delta", (e) => events.push(e));
+
+    adapter
+      .clearedSlotCacheForTest()
+      .put(100n, { worldX: 0, worldY: 0, worldZ: 0, timestampMs: 0 });
+
+    transport.queuedObjectStateDeltas.push(
+      buildOsd({ objectVersion: 5n, stateFlags: 0x02 }),
+    );
+    adapter.onFrame(0);
+    expect(events).toHaveLength(1);
+
+    // Same object_version → dedupe path,no second emit.
+    transport.queuedObjectStateDeltas.push(
+      buildOsd({ objectVersion: 5n, stateFlags: 0x02 }),
+    );
+    adapter.onFrame(10);
+    expect(events).toHaveLength(1);
+  });
+
+  it("debris simulation advances frame-by-frame and ages out", () => {
+    const { adapter, transport } = createAdapter();
+    adapter
+      .clearedSlotCacheForTest()
+      .put(100n, { worldX: 0, worldY: 0, worldZ: 0, timestampMs: 0 });
+
+    transport.queuedObjectStateDeltas.push(buildOsd({ stateFlags: 0x02 }));
+    adapter.onFrame(0);
+
+    const initialCount = adapter.debrisSimulationForTest().activeCount();
+    expect(initialCount).toBeGreaterThan(0);
+
+    // Advance > particleLifetimeMs (default 800ms) → particles age out.
+    adapter.onFrame(50);
+    adapter.onFrame(900);
+
+    expect(adapter.debrisSimulationForTest().activeCount()).toBeLessThan(initialCount);
+  });
+});

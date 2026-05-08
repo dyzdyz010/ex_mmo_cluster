@@ -201,6 +201,17 @@ export type AppEvents = {
   };
   "world:edit-rejected": { reason: string; source: string };
 
+  // Phase 4-bis Step 4-bis-10:0x6C ObjectStateDelta 客户端处理后 emit。
+  // HUD / 任意旁观者可订阅;destroyed flag 时显示一行临时提示。
+  "world:object-state-delta": {
+    objectId: string;
+    objectVersion: string;
+    flagName: "damaged" | "part_destroyed" | "destroyed" | "unknown";
+    affectedChunkCount: number;
+    debrisSpawned: number;
+    debrisSource: "cleared_slot_cache" | "delayed_retry" | "affected_chunks_fallback" | "none";
+  };
+
   "app:boot": {
     chunks: number;
     solidBlocks: number;
