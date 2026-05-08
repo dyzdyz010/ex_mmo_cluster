@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   use GenServer
 
+  alias DataService.Voxel.ChunkPendingTransactionStore
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.Hash
@@ -125,10 +126,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
   must use `commit_transaction/2` or `abort_transaction/2` to release the
   chunk. Re-preparing the same transaction with the same batch is idempotent
   and returns the original fence summary.
+
+  Phase 3-bis: the fence row is also persisted into
+  `voxel_chunk_pending_transactions` so that a Scene restart can reload the
+  fence before the surrounding transaction reaches its commit decision.
+  Persistence must succeed for prepare to accept the fence; on DB failure
+  the call returns `{:error, :fence_persist_failed}` and the in-memory
+  pending_fence is left untouched.
+
+  `opts[:decision_version]` propagates the coordinator's `decision_version`
+  into the persisted row for diagnostics. Defaults to 0; Phase 3-bis-3 wires
+  the real value through `BuildTransactionApplier`.
   """
-  def prepare_transaction(server, transaction_id, intents)
-      when is_binary(transaction_id) and is_list(intents) do
-    GenServer.call(server, {:prepare_transaction, transaction_id, intents})
+  def prepare_transaction(server, transaction_id, intents, opts \\ [])
+      when is_binary(transaction_id) and is_list(intents) and is_list(opts) do
+    GenServer.call(server, {:prepare_transaction, transaction_id, intents, opts})
   end
 
   @doc """
@@ -184,16 +196,78 @@ defmodule SceneServer.Voxel.ChunkProcess do
       |> Keyword.get(:storage, Storage.empty(logical_scene_id, chunk_coord))
       |> Storage.normalize!()
 
+    lease = normalize_optional_lease(Keyword.get(opts, :lease))
+
+    pending_fence = load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
+
     {:ok,
      %{
        logical_scene_id: storage.logical_scene_id,
        chunk_coord: storage.chunk_coord,
        storage: storage,
-       lease: normalize_optional_lease(Keyword.get(opts, :lease)),
+       lease: lease,
        subscribers: %{},
        subscriber_monitors: %{},
-       pending_fence: nil
+       pending_fence: pending_fence
      }}
+  end
+
+  defp load_persisted_fence(logical_scene_id, chunk_coord, lease) do
+    case ChunkPendingTransactionStore.get_fence(logical_scene_id, chunk_coord) do
+      {:ok, persisted} ->
+        if lease_matches_persisted?(lease, persisted) do
+          %{
+            transaction_id: persisted.transaction_id,
+            decision_version: persisted.decision_version,
+            intents: persisted.intents,
+            fenced_at_ms: persisted.fenced_at_ms
+          }
+        else
+          # Lease changed (epoch bumped, or chunk transferred to another
+          # Scene instance) while a fence was outstanding. The persisted
+          # fence is now an orphan; drop it both in memory and in the DB
+          # so the chunk does not refuse fresh prepares.
+          _ = ChunkPendingTransactionStore.delete_fence(logical_scene_id, chunk_coord)
+
+          CliObserve.emit("voxel_chunk_pending_transaction_orphaned", fn ->
+            %{
+              logical_scene_id: logical_scene_id,
+              chunk_coord: chunk_coord,
+              persisted_owner_lease_id: persisted.owner_lease_id,
+              persisted_owner_epoch: persisted.owner_epoch,
+              current_lease: summarize_lease(lease),
+              transaction_id: persisted.transaction_id
+            }
+          end)
+
+          nil
+        end
+
+      {:error, :fence_not_found} ->
+        nil
+
+      {:error, reason} ->
+        # Postgres unreachable / payload corrupt — start without a fence and
+        # let the surrounding transaction replay path handle recovery.
+        CliObserve.emit("voxel_chunk_pending_transaction_load_failed", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            reason: inspect(reason)
+          }
+        end)
+
+        nil
+    end
+  end
+
+  defp lease_matches_persisted?(nil, _persisted), do: false
+
+  defp lease_matches_persisted?(lease, persisted) do
+    lease.region_id == persisted.owner_region_id and
+      lease.lease_id == persisted.owner_lease_id and
+      lease.owner_scene_instance_ref == persisted.owner_scene_instance_ref and
+      lease.owner_epoch == persisted.owner_epoch
   end
 
   @impl true
@@ -345,8 +419,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  def handle_call({:prepare_transaction, transaction_id, intents}, _from, state) do
-    case prepare_transaction_in_state(state, transaction_id, intents) do
+  def handle_call({:prepare_transaction, transaction_id, intents, opts}, _from, state) do
+    case prepare_transaction_in_state(state, transaction_id, intents, opts) do
       {:ok, summary, next_state} ->
         emit_transaction_event(
           next_state,
@@ -715,11 +789,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
     }
   end
 
-  defp prepare_transaction_in_state(_state, _transaction_id, []) do
+  defp prepare_transaction_in_state(_state, _transaction_id, [], _opts) do
     {:error, :empty_intents}
   end
 
-  defp prepare_transaction_in_state(state, transaction_id, intents) when is_list(intents) do
+  defp prepare_transaction_in_state(state, transaction_id, intents, opts)
+       when is_list(intents) and is_list(opts) do
     case state.pending_fence do
       %{transaction_id: ^transaction_id} = existing ->
         {:ok, fence_summary(existing), state}
@@ -728,25 +803,60 @@ defmodule SceneServer.Voxel.ChunkProcess do
         {:error, {:chunk_already_fenced, holder}}
 
       nil ->
+        decision_version = Keyword.get(opts, :decision_version, 0)
+
         with {:ok, normalized} <- normalize_apply_intents(intents),
              :ok <- validate_batch_scope(state, normalized),
-             :ok <- validate_batch_preconditions(state, normalized) do
-          fence = %{
+             :ok <- validate_batch_preconditions(state, normalized),
+             {:ok, owner_lease} <- fetch_fence_owner_lease(normalized) do
+          fenced_at_ms = now_ms()
+
+          fence_attrs = %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
             transaction_id: transaction_id,
+            decision_version: decision_version,
+            owner_region_id: owner_lease.region_id,
+            owner_lease_id: owner_lease.lease_id,
+            owner_scene_instance_ref: owner_lease.owner_scene_instance_ref,
+            owner_epoch: owner_lease.owner_epoch,
             intents: normalized,
-            fenced_at_ms: now_ms()
+            fenced_at_ms: fenced_at_ms
           }
 
-          {:ok, fence_summary(fence), %{state | pending_fence: fence}}
+          case ChunkPendingTransactionStore.put_fence(fence_attrs) do
+            {:ok, :inserted} ->
+              fence = %{
+                transaction_id: transaction_id,
+                decision_version: decision_version,
+                intents: normalized,
+                fenced_at_ms: fenced_at_ms
+              }
+
+              {:ok, fence_summary(fence), %{state | pending_fence: fence}}
+
+            {:error, reason} ->
+              {:error, persist_fence_reason(reason)}
+          end
         end
     end
   end
+
+  defp fetch_fence_owner_lease([%{lease: lease} | _]) when is_map(lease), do: {:ok, lease}
+  defp fetch_fence_owner_lease(_intents), do: {:error, :missing_lease}
+
+  defp persist_fence_reason(:fence_already_present), do: :fence_already_present
+  defp persist_fence_reason(:invalid_fence_attrs), do: :fence_persist_failed
+  defp persist_fence_reason(:fence_persist_failed), do: :fence_persist_failed
+  defp persist_fence_reason(reason) when is_atom(reason), do: reason
+  defp persist_fence_reason(_other), do: :fence_persist_failed
 
   defp commit_transaction_in_state(state, transaction_id) do
     case state.pending_fence do
       %{transaction_id: ^transaction_id, intents: intents} ->
         case apply_normalized_intents(state, intents) do
           {:ok, reply, next_state_after_apply} ->
+            delete_persisted_fence(state, transaction_id, :commit)
             {:ok, reply, %{next_state_after_apply | pending_fence: nil}, intents}
 
           {:error, reason} ->
@@ -764,10 +874,35 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp abort_transaction_in_state(state, transaction_id) do
     case state.pending_fence do
       %{transaction_id: ^transaction_id} ->
+        delete_persisted_fence(state, transaction_id, :abort)
         {true, %{state | pending_fence: nil}}
 
       _other ->
         {false, state}
+    end
+  end
+
+  defp delete_persisted_fence(state, transaction_id, reason) do
+    case ChunkPendingTransactionStore.delete_fence(state.logical_scene_id, state.chunk_coord) do
+      {:ok, _} ->
+        :ok
+
+      {:error, error_reason} ->
+        # The persisted row may now linger. The next ChunkProcess.init load
+        # will see the orphan, fail the lease check (since we are still the
+        # current process), and clean it up — but emit observe so operators
+        # can spot the divergence.
+        CliObserve.emit("voxel_chunk_pending_transaction_delete_failed", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            transaction_id: transaction_id,
+            reason: inspect(error_reason),
+            release_reason: reason
+          }
+        end)
+
+        :ok
     end
   end
 

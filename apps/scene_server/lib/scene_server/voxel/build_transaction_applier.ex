@@ -47,6 +47,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   Optional `opts`:
 
   - `:chunk_directory` — override the default directory module/pid for tests.
+  - `:decision_version` — coordinator's `decision_version`, propagated into
+    the persisted fence row for diagnostics. Defaults to 0.
 
   Returns `{:ok, summaries}` when every chunk fence was acquired (or already
   held by the same `transaction_id`). On the first per-chunk failure, all
@@ -56,6 +58,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
       when is_binary(transaction_id) and is_map(intents_by_chunk) and is_list(opts) do
     chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
     logical_scene_id = fetch_logical_scene_id!(opts)
+    decision_version = fetch_decision_version(opts)
 
     case validate_intents_cover_chunks(participant, intents_by_chunk) do
       :ok ->
@@ -73,7 +76,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
           participant,
           transaction_id,
           intents_by_chunk,
-          logical_scene_id
+          logical_scene_id,
+          decision_version
         )
 
       {:error, reason} = error ->
@@ -172,7 +176,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
          participant,
          transaction_id,
          intents_by_chunk,
-         logical_scene_id
+         logical_scene_id,
+         decision_version
        ) do
     {summaries, error} =
       Enum.reduce_while(
@@ -191,7 +196,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
           attrs = %{
             logical_scene_id: logical_scene_id,
             chunk_coord: chunk_coord,
-            intents: intents
+            intents: intents,
+            decision_version: decision_version
           }
 
           case ChunkDirectory.prepare_transaction(chunk_directory, transaction_id, attrs) do
@@ -269,6 +275,13 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
       :error ->
         raise ArgumentError, "missing required :logical_scene_id"
+    end
+  end
+
+  defp fetch_decision_version(opts) do
+    case Keyword.get(opts, :decision_version, 0) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> 0
     end
   end
 

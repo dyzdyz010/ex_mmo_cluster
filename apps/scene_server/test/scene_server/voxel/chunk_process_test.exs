@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   use ExUnit.Case, async: false
 
   alias DataService.Repo
+  alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
@@ -15,6 +16,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+    Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
     :ok
   end

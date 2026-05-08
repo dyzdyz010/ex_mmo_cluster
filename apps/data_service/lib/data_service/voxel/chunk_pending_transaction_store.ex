@@ -76,14 +76,14 @@ defmodule DataService.Voxel.ChunkPendingTransactionStore do
     _exception in Postgrex.Error -> {:error, :fence_persist_failed}
   end
 
+  def put_fence(_attrs, _opts), do: {:error, :invalid_fence_attrs}
+
   defp unique_violation?(errors) do
     Enum.any?(errors, fn
       {_field, {"fence already present", _opts}} -> true
       _ -> false
     end)
   end
-
-  def put_fence(_attrs, _opts), do: {:error, :invalid_fence_attrs}
 
   @doc """
   Reads the persisted fence for a chunk.

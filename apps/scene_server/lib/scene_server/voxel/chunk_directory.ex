@@ -299,10 +299,12 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   def handle_call({:prepare_transaction, transaction_id, attrs}, _from, state) do
     case normalize_prepare_transaction_attrs(attrs) do
-      {:ok, route_attrs, intents} ->
+      {:ok, route_attrs, intents, prepare_opts} ->
         case ensure_chunk_in_state(state, route_attrs) do
           {{:ok, chunk_pid}, next_state} ->
-            reply = ChunkProcess.prepare_transaction(chunk_pid, transaction_id, intents)
+            reply =
+              ChunkProcess.prepare_transaction(chunk_pid, transaction_id, intents, prepare_opts)
+
             {:reply, reply, next_state}
 
           {{:error, reason}, next_state} ->
@@ -703,14 +705,35 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   defp normalize_prepare_transaction_attrs(attrs) when is_map(attrs) do
     case Map.get(attrs, :intents) do
-      [_ | _] = intents -> normalize_apply_intents_attrs(intents)
-      [] -> {:error, :empty_intents}
-      nil -> {:error, :missing_intents}
-      _other -> {:error, :invalid_intents}
+      [_ | _] = intents ->
+        case normalize_apply_intents_attrs(intents) do
+          {:ok, route_attrs, normalized_attrs} ->
+            opts = collect_prepare_opts(attrs)
+            {:ok, route_attrs, normalized_attrs, opts}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      [] ->
+        {:error, :empty_intents}
+
+      nil ->
+        {:error, :missing_intents}
+
+      _other ->
+        {:error, :invalid_intents}
     end
   end
 
   defp normalize_prepare_transaction_attrs(_attrs), do: {:error, :invalid_voxel_intent}
+
+  defp collect_prepare_opts(attrs) do
+    case Map.get(attrs, :decision_version) do
+      version when is_integer(version) and version >= 0 -> [decision_version: version]
+      _ -> []
+    end
+  end
 
   defp normalize_apply_intents_targets(attrs_list, first_attrs) do
     attrs_list

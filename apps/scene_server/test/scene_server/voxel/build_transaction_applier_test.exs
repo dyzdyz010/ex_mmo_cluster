@@ -3,6 +3,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
   use ExUnit.Case, async: false
 
   alias DataService.Repo
+  alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.BuildTransactionApplier
@@ -12,6 +13,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+    Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
     :ok
   end
