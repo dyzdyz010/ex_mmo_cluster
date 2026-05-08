@@ -298,6 +298,146 @@ defmodule SceneServer.Voxel.Codec do
   def invalidate_reason_name(_other), do: :unknown
 
   @doc """
+  Encodes a v1 `ObjectStateDelta` payload (opcode `0x6C`).
+
+  Wire layout:
+
+      logical_scene_id        u64
+      object_id               u64
+      object_version          u64
+      state_flags             u32
+      attribute_patch_count   u16   (Phase 4-bis: always 0)
+      tag_patch_count         u16   (Phase 4-bis: always 0)
+      affected_chunk_count    u16
+      affected_chunks         ChunkCoord[]   (each: i32 x, i32 y, i32 z)
+
+  Phase 4-bis decision D2: canonical encoder lives here in scene_server's
+  voxel codec, alongside the other server→client wire payload encoders
+  (`encode_chunk_snapshot_payload` / `encode_chunk_delta_payload` /
+  `encode_chunk_invalidate_payload`). `gate_server/codec.ex` accepts a
+  pre-encoded binary as `{:voxel_object_state_delta_payload, payload}` and
+  forwards it with the `0x6C` opcode prefix.
+
+  `state_flags` semantic (decision D5):每条消息的 `state_flags` 表达
+  **这次事件**触发的位,而不是 instance 累计的 mask。客户端按
+  `object_version` 单调递增去重(decision D3)。
+  """
+  @spec encode_voxel_object_state_delta_payload(map()) :: binary()
+  def encode_voxel_object_state_delta_payload(%{
+        logical_scene_id: logical_scene_id,
+        object_id: object_id,
+        object_version: object_version,
+        state_flags: state_flags,
+        affected_chunks: affected_chunks
+      })
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and
+             is_integer(object_id) and object_id >= 0 and
+             is_integer(object_version) and object_version >= 0 and
+             is_integer(state_flags) and state_flags >= 0 and
+             is_list(affected_chunks) do
+    cond do
+      state_flags > 0xFFFF_FFFF ->
+        raise ArgumentError, "state_flags exceeds u32 range"
+
+      length(affected_chunks) > 0xFFFF ->
+        raise ArgumentError, "affected_chunks exceeds u16 range"
+
+      true ->
+        Enum.each(affected_chunks, &validate_object_state_delta_chunk_coord!/1)
+
+        affected_count = length(affected_chunks)
+
+        affected_payload =
+          Enum.map(affected_chunks, fn {x, y, z} ->
+            <<x::signed-big-integer-size(32), y::signed-big-integer-size(32),
+              z::signed-big-integer-size(32)>>
+          end)
+
+        IO.iodata_to_binary([
+          <<logical_scene_id::unsigned-big-integer-size(64)>>,
+          <<object_id::unsigned-big-integer-size(64)>>,
+          <<object_version::unsigned-big-integer-size(64)>>,
+          <<state_flags::unsigned-big-integer-size(32)>>,
+          <<0::unsigned-big-integer-size(16)>>,
+          <<0::unsigned-big-integer-size(16)>>,
+          <<affected_count::unsigned-big-integer-size(16)>>,
+          affected_payload
+        ])
+    end
+  end
+
+  defp validate_object_state_delta_chunk_coord!({x, y, z})
+       when is_integer(x) and is_integer(y) and is_integer(z) do
+    cond do
+      x < -0x8000_0000 or x > 0x7FFF_FFFF ->
+        raise ArgumentError, "ObjectStateDelta chunk_coord x out of i32 range"
+
+      y < -0x8000_0000 or y > 0x7FFF_FFFF ->
+        raise ArgumentError, "ObjectStateDelta chunk_coord y out of i32 range"
+
+      z < -0x8000_0000 or z > 0x7FFF_FFFF ->
+        raise ArgumentError, "ObjectStateDelta chunk_coord z out of i32 range"
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_object_state_delta_chunk_coord!(other) do
+    raise ArgumentError,
+          "ObjectStateDelta affected_chunks entry must be {i32, i32, i32}, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Decodes a v1 `ObjectStateDelta` payload **(without the opcode byte)**.
+  Returns `{:ok, map(), rest_binary}` on success or `{:error, atom()}`.
+
+  Trailing bytes after the affected_chunks block are returned as `rest` for
+  forward compatibility (Phase 5 will append `attribute_patch[]` /
+  `tag_patch[]` payloads here without breaking older decoders).
+  """
+  @spec decode_voxel_object_state_delta_payload(binary()) ::
+          {:ok, map(), binary()} | {:error, atom()}
+  def decode_voxel_object_state_delta_payload(
+        <<logical_scene_id::unsigned-big-integer-size(64),
+          object_id::unsigned-big-integer-size(64), object_version::unsigned-big-integer-size(64),
+          state_flags::unsigned-big-integer-size(32),
+          attribute_patch_count::unsigned-big-integer-size(16),
+          tag_patch_count::unsigned-big-integer-size(16),
+          affected_count::unsigned-big-integer-size(16), rest::binary>>
+      ) do
+    with {:ok, affected_chunks, after_chunks} <-
+           decode_object_state_delta_chunks(rest, affected_count, []) do
+      {:ok,
+       %{
+         logical_scene_id: logical_scene_id,
+         object_id: object_id,
+         object_version: object_version,
+         state_flags: state_flags,
+         attribute_patch_count: attribute_patch_count,
+         tag_patch_count: tag_patch_count,
+         affected_chunks: affected_chunks
+       }, after_chunks}
+    end
+  end
+
+  def decode_voxel_object_state_delta_payload(_), do: {:error, :invalid_object_state_delta}
+
+  defp decode_object_state_delta_chunks(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
+
+  defp decode_object_state_delta_chunks(
+         <<x::signed-big-integer-size(32), y::signed-big-integer-size(32),
+           z::signed-big-integer-size(32), rest::binary>>,
+         n,
+         acc
+       )
+       when n > 0 do
+    decode_object_state_delta_chunks(rest, n - 1, [{x, y, z} | acc])
+  end
+
+  defp decode_object_state_delta_chunks(_, _, _), do: {:error, :invalid_affected_chunks}
+
+  @doc """
   Encodes a v1 `BuildReservationIntent` payload (protocol design 13.4, opcode `0x65`).
 
   Wire layout (104 bytes fixed):
