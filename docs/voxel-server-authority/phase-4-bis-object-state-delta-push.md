@@ -550,8 +550,109 @@ end
 
 ## 进度日志
 
-- **2026-05-08**:决策稿 land。用户对 D1-D4 / D7 / D8 / D9 按推荐值
-  确认;D5 按推荐"这次事件"语义生效;D6 升级为档 B(碎屑粒子沿
-  micro slot 散布)+ 棕色调 0.05m 小立方体 + InstancedMesh 单 draw call。
+- **2026-05-08**:决策稿 land(commit `ed16fef`)。用户对 D1-D4 / D7 / D8 / D9
+  按推荐值确认;D5 按推荐"这次事件"语义生效;D6 升级为档 B(碎屑粒子
+  沿 micro slot 散布)+ 棕色调 0.05m 小立方体 + InstancedMesh 单 draw call。
   Step 切片由 9 个扩展到 13 个,新增 ClearedSlotCache / DebrisEffect /
-  consumer 串联 / 浏览器手测各一 step。下一步:Step 4-bis-1 开始动代码。
+  consumer 串联 / 浏览器手测各一 step。
+
+- **2026-05-08, Step 4-bis-1**(commit `0d9df62`):scene_server/voxel/codec.ex
+  加 `encode_voxel_object_state_delta_payload/1` + `decode_voxel_object_state_delta_payload/1`
+  (D2:0x6C codec 主战场迁到 scene 端)。13 个测试 case 覆盖 minimal /
+  multi-chunk / empty / 固定头大小 / 越界 state_flags / overflow chunks /
+  非整数 coord / i32 越界 / 截断 / 尾随 bytes 转 rest / 非零 attr/tag count 透传。
+  scene_server: 330 → 343 tests。
+
+- **2026-05-08, Step 4-bis-2**(commit `3b96714`):gate_server/codec.ex 删
+  map encode + chunk_coord_list! dead helper,加 binary pass-through encode
+  (镜像 chunk_delta 模式)。decode 保留供 server-side 调试。gate_server: 188 → 189
+  (净 +1,8 个测试 case 包含 cross-codec roundtrip 用 SceneServer.Voxel.Codec encode → GateServer.Codec decode)。
+
+- **2026-05-08, Step 4-bis-3**(commit `77f690d`):ChunkDirectory.lookup_chunk_pid/3
+  read-only API。state.chunks 已注册且 alive 返回 {:ok, pid},否则 :not_started,
+  **不**lazy-start。4 个 case 覆盖 unknown coord / started chunk / scene_id 隔离 /
+  pid 死后返回 not_started。scene_server: 343 → 347。
+
+- **2026-05-08, Step 4-bis-4**(commit `2cb2373`):ChunkProcess.push_object_state_delta_payload/2
+  GenServer.cast 公共 API + handle_cast handler + fan_out_object_state_delta_payload
+  私有 helper(镜像 push_chunk_delta 风格,emit observe key
+  voxel_object_state_delta_push)。4 个 case 覆盖 0 subscribers no-op /
+  单 / 多 subscriber fan-out / 非 binary 输入 raise。scene_server: 347 → 351。
+
+- **2026-05-08, Step 4-bis-5**(commit `3ca3f6e`):ObjectRegistry 在 emit_xxx
+  之后同步 dispatch broadcast(D4)。PartState 加 flag_part_destroyed = 0x04
+  (D5 完成对齐 protocol §9 三段 state_flags)。ObjectRegistry init 加
+  :chunk_directory opt(默认 module-named singleton)。dispatch_object_state_delta
+  → encode 一次 + lookup_chunk_pid + cast + try/catch :exit 失败容忍 + 4 个
+  observe key。run_destroy_object 内 bump object_version 保证 cascade 路径
+  (part_destroyed → destroyed)版本号单调。FakeChunkDirectory 测试 fixture
+  覆盖 5 个 case(damage / direct destroy_part / cascade 双 0x6C / direct
+  destroy_object / lookup miss 静默吞)。scene_server: 351 → 356。
+
+- **2026-05-08, Step 4-bis-6**(commit `a5b4eca`):gate ws_connection / tcp_connection
+  handle_info({:voxel_object_state_delta_payload, payload}, state) clause +
+  observe key tcp/ws_voxel_object_state_delta_forwarded。**未**单独加 forward
+  单测(决策稿 D8 列了但 trade-off:Phase 4 chunk_delta forward 现状也无单测,
+  靠 e2e 覆盖;Step 4-bis-11 e2e 验证整链路)。
+
+- **2026-05-08, Step 4-bis-7**(commit `1ed8fd8`):web_client 接 0x6C wire 入口
+  + 去重(D3)+ console log。新加 ObjectStateDeltaConsumer + ObjectStateFlag
+  常量 + describeObjectStateFlag(位优先级 destroyed > part_destroyed > damaged)。
+  voxelProtocol 加 VoxelObjectStateDeltaMessage type + decodeVoxelServerMessage
+  switch 接 ObjectStateDelta opcode → 调既有 decodeObjectStateDelta(payload[1..])。
+  serverMovementTransport 加 voxelObjectStateDeltas 队列 + dispatch case +
+  drainVoxelObjectStateDeltas() + reset 路径清队列。OnlineVoxelWorldAdapter
+  接 transport drain 入口,实例化 consumer 注 onDelta/onDuplicate 钩子。
+  vitest: 216 → 226。
+
+- **2026-05-08, Step 4-bis-8**(commit `1e34841`):ClearedSlotCache 数据结构 +
+  TTL sweep + 单 object 容量上限 + 9 个单测。**ChunkDelta apply 前 hook 推到
+  Step 4-bis-10**(理由:cell-by-cell diff 需要 owner_object_id 信息,而当前
+  FRefinedCellData 不携带,需要 Phase 5 wire-form-as-truth 工作)。vitest: 226 → 235。
+
+- **2026-05-08, Step 4-bis-9**(commit `bc89cea`):DebrisSimulation 状态机
+  (纯数据 + 物理积分,与 InstancedMesh renderer 拆分)。spawn → 半球面随机方向
+  + 中心向外 push + 切向抖动;update → symplectic Euler 重力积分 + lifetime
+  剔除 + array compaction。9 个 case 覆盖 spawn 数量 / 全局 trim / 重力 /
+  lifetime / dt<=0 / 部分到期 compaction / 默认参数 / reset。vitest: 235 → 244。
+
+- **2026-05-08, Step 4-bis-10**(commit `d37598a`):0x6C 全 pipeline 串联到
+  OnlineVoxelWorldAdapter。新 event world:object-state-delta(供 HUD / 旁观者
+  订阅,debrisSource 标识来源)。onFrame 顺序:tickDebris → drainVoxelMessages →
+  processObjectStateDeltaRetryQueue。consumer onDelta 钩子升级到
+  handleObjectStateDeltaForDebris:cache.take 命中 → spawn,miss → 入队 100ms
+  retry,仍空 → affected_chunks 中心点 fallback。sampleDebrisPoints 按 flag 限额
+  (destroyed 20 / part_destroyed 10 / damaged 5)+ even-stride 下采样。**ChunkDelta
+  apply 前 cache hook 仍未接**(待 Phase 5 owner_object_id 进入 FRefinedCellData),
+  pipeline 实际只走 fallback 路径,粒子在 chunk 中心点散开(决策稿档 A 兜底)。
+  6 个 pipeline case + 现有 11 个 adapter case。vitest: 244 → 250。
+
+- **2026-05-08, Step 4-bis-11**(commit `c78e04f`):服务端 e2e:
+  ObjectRegistry → ChunkDirectory → ChunkProcess(real)→ self() subscriber
+  → assert_receive 0x6C binary → Codec decode 字段断言。3 个用例:destroy_object /
+  非致命 damage / cascade(致命 damage → 双 0x6C 版本号单调)。scene_server:
+  356 → 359。
+
+- **2026-05-08, Step 4-bis-12**(commit `1f6cc13`):DebrisRenderer InstancedMesh
+  wrapper(BoxGeometry 0.05m × MacroWorldSize 100 = 5 世界单位棕色立方体,
+  syncFromSimulation 每帧 setMatrixAt + count)。RenderOrchestrator constructor
+  duck-typing 检测 world.getDebrisSimulation 存在则实例化 + 加进 rootGroup;
+  onFrame 调 syncFromSimulation。HudView 订阅 world:object-state-delta,
+  destroyed flag 时 showFlash("object #N destroyed (M debris)")3.5s。
+  代码侧接入到位,**实际眼睛验证留给用户启 dev server**(commit message 给了
+  浏览器步骤)。vitest: 250 → 254。
+
+- **2026-05-08, Step 4-bis-13**(本 commit):docs sync(本进度日志 + apps
+  READMEs + 阶段表 + handoff)。Phase 4-bis 收尾。
+
+**RFC 备注 / 实施期偏离**:
+- D6 决策稿写"档 B 碎屑沿 micro slot 散布"。实际 Step 4-bis-10 由于
+  FRefinedCellData 不持 owner_object_id 字段(Phase 1c-5 决策 5 RFC park
+  的 wire-form-as-truth 还没动),ClearedSlotCache 的 ChunkDelta apply 前
+  hook 没接;production 路径全走 affected_chunks_fallback,效果是档 A
+  (chunk 中心点一团粒子)。pipeline 数据结构 + 100ms delay + retry queue
+  全留好,Phase 5 把 owner_object_id 接进 FRefinedCellData 后,新增一行
+  cache hook 即可升级到精确档 B。
+- Step 4-bis-6 没写 ws/tcp forward 单测,靠 Step 4-bis-11 e2e 覆盖整链路。
+- DebrisRenderer 暂用单一棕色 base material,per-instance 颜色微抖留 Phase 5
+  (instanceColor 通道)。

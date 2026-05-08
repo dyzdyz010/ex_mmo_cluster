@@ -147,5 +147,60 @@ commit / abort 三相。**任一 chunk 的 prepare 失败或 commit 时 batch ap
 `voxel_chunk_destroy_part`，Phase 5+ 下游钩子（掉落物 / 任务系统 /
 资源回收）挂在这些 observe 上即可。
 
+**Phase 4-bis：0x6C `ObjectStateDelta` 推送链路** —— 把 Phase 4 D11 deferred
+的"ObjectRegistry 状态变化 → 客户端"实际推送通道接完：
+
+- `Codec.encode_voxel_object_state_delta_payload/1` /
+  `decode_voxel_object_state_delta_payload/1`：协议 §9 `ObjectStateDelta`
+  wire encode / decode。`attribute_patch_count` / `tag_patch_count` 字段
+  Phase 4-bis 固定 0，decoder 透传非零值给 forward compat。Phase 4 期 codec
+  最初放在 `gate_server/codec.ex`，Phase 4-bis 迁到 scene 端（与 chunk_delta
+  / chunk_snapshot / chunk_invalidate 同位）；gate codec 改 binary
+  pass-through。
+- `PartState.flag_part_destroyed` = 0x04（与 `flag_damaged` 0x01 /
+  `flag_destroyed` 0x02 配合，对齐 protocol §9 三段 state_flags 语义）。
+- `ChunkDirectory.lookup_chunk_pid/3`：read-only，不 lazy-start，**只**返回
+  已注册且 alive 的 ChunkProcess pid。给 ObjectRegistry dispatch 路径用。
+- `ChunkProcess.push_object_state_delta_payload/2`：GenServer.cast 公共 API，
+  接收已 encoded binary payload，handle_cast 调
+  `fan_out_object_state_delta_payload`（私有）→
+  `Enum.each(state.subscribers, send/2)` 镜像 `push_chunk_delta` 模式。
+  Subscriber 收 `{:voxel_object_state_delta_payload, payload}`，gate
+  ws/tcp_connection 同模式 forward 到 socket。
+- `ObjectRegistry` 在 `emit_damage` / `emit_part_destroyed` /
+  `emit_object_destroyed` 之后**同步**调 `dispatch_object_state_delta/3`：
+  encode 一次 binary → 对每个 covered_chunk lookup_chunk_pid → cast push。
+  失败（chunk 未启 / cast :exit）静默 try/catch + observe
+  `voxel_object_state_delta_dispatch_failed`，不阻塞主路径。
+  `run_destroy_object` 内 bump `instance.object_version` 保证 cascade 路径
+  (part_destroyed → destroyed) 两条 0x6C 版本号严格单调（D5 客户端按
+  version 单调去重）。`init_opts` 加 `:chunk_directory`（默认 module-named
+  singleton；tests 注入 `FakeChunkDirectory`）。
+- 4 个新 observe key：`voxel_object_state_delta_dispatch`（broadcast 起点）、
+  `voxel_object_state_delta_push`（fan-out 到单 subscriber）、
+  `voxel_object_state_delta_dispatch_failed`（lookup miss / cast :exit）、
+  gate 端 `tcp_voxel_object_state_delta_forwarded` /
+  `ws_voxel_object_state_delta_forwarded`。
+
+state_flags 语义（D5）：每条 0x6C 表达**这次事件**触发的 flag（damaged /
+part_destroyed / destroyed 三选一），**不**带累计 mask。客户端按
+`object_version` 单调递增去重（D3）。
+
+客户端消费形态（D6）：web_client 的 `OnlineVoxelWorldAdapter` 持
+`ClearedSlotCache` + `DebrisSimulation`，consumer 去重通过后调
+`handleObjectStateDeltaForDebris`：cache.take 命中 spawn 粒子；miss → 入
+retry queue 100ms 后重试；仍空降级到 affected_chunks 中心点（档 A 兜底）。
+`DebrisRenderer`（InstancedMesh 棕色立方体粒子）通过
+`RenderOrchestrator` duck typing 接 scene。HUD destroyed flag 时显示
+`object #N destroyed (M debris)` 提示 3.5s。
+
+**已知 deferral**（Phase 5 接入 wire-form-as-truth 后落地）：
+`ClearedSlotCache` 数据结构 + 100ms retry pipeline 已 wired 完整，但
+`onlineVoxelWorldAdapter.applyDelta` 之前的 cache hook 未接（FRefinedCellData
+还不携带 ownerObjectId 字段）。production 路径目前全走
+`affected_chunks_fallback`（粒子在 chunk 中心点散开）。Phase 5 把
+ownerObjectId 字段引入 FRefinedCellData 后，加一行 cache hook 即可升级到
+精确档 B（沿被清空的 micro slot 散布）。
+
 后续切片会在同一子树下补充紧凑区块增量、跨 region 多 participant 事务、per-region
 coordinator 切片，以及更完整的迁移回滚。

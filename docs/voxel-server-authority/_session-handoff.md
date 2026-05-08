@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-08,Phase 4 全程落地后。
+**Last updated**:2026-05-08,Phase 4-bis 全程落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -15,20 +15,27 @@
 | 2 refined micro edit 端到端贯通 | 已完成(被 1c 吸收) | `314ad8a` (stub + README) |
 | 3 prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | `a053c82` (决策稿) → `3fc9966` (3-1) → `6973843` (3-2) → `bd74e01` (3-3a) → `e91c38f` (3-3b) → `b93a10d` (3-4) → `86d9186` (3-5) |
 | 3-bis fence persistence + auto-resume commit(crash safety 闭环) | 已完成 | `5e3b1e7` (决策稿) → `5cadbdf` (3-bis-1) → `f6602b0` (3-bis-2) → `d767c29` (3-bis-3) → `9db8c1d` (3-bis-4) → `d01b3d6` (3-bis-5) → `c7ef222` (3-bis-6) |
-| 4 object provenance + part-health 破坏闭环(含整体销毁) | 已完成 | `067085f` (决策稿) → `df1ba93` (4-1) → `95a3330` (4-2) → `f61351c` (4-3) → `686d3cd` (4-4) → `53e4e7d` (4-5) → `330d528` (4-6) → `d800996` (4-7) → `0a5b428` (4-8) → `5352040` (4-9) → 本会话 (4-10) |
+| 4 object provenance + part-health 破坏闭环(含整体销毁) | 已完成 | `067085f` (决策稿) → `df1ba93` (4-1) → `95a3330` (4-2) → `f61351c` (4-3) → `686d3cd` (4-4) → `53e4e7d` (4-5) → `330d528` (4-6) → `d800996` (4-7) → `0a5b428` (4-8) → `5352040` (4-9) → `b10e197` (4-10) |
+| 4-bis ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 已完成 | `ed16fef` (决策稿) → `0d9df62` (4-bis-1) → `3b96714` (4-bis-2) → `77f690d` (4-bis-3) → `2cb2373` (4-bis-4) → `3ca3f6e` (4-bis-5) → `a5b4eca` (4-bis-6) → `1ed8fd8` (4-bis-7) → `1e34841` (4-bis-8) → `bc89cea` (4-bis-9) → `d37598a` (4-bis-10) → `c78e04f` (4-bis-11) → `1f6cc13` (4-bis-12) → 本会话 (4-bis-13) |
 
-测试规模(2026-05-08 末态,Phase 4 收尾):
+测试规模(2026-05-08 末态,Phase 4-bis 收尾):
 
-- data_service: 71 tests (+18 SceneObjectStore)
-- scene_server: 330 tests (+53 across StorageObjectRefs / ObjectRegistry / ChunkProcessObjectProvenance / ObjectLifecycleIntegration)
-- gate_server: 188 tests (+7 ObjectStateDelta wire codec)
-- world_server: 72 tests (+12 TransactionCoordinatorObjectAlloc)
-- web_client: 216 vitest, tsc clean (+6 objectStateDelta)
+- data_service: 71 tests (Phase 4 末态;4-bis 未触)
+- scene_server: 359 tests (+29 from Phase 4 末态 330):codec_object_state_delta(+13) /
+  chunk_directory.lookup_chunk_pid(+4) / chunk_process push fan-out(+4) /
+  object_registry_broadcast(+5) / object_state_delta_e2e(+3)
+- gate_server: 189 tests (+1 net,删 7 加 8:binary pass-through encode +
+  cross-codec roundtrip + 保留 decode)
+- world_server: 72 tests (Phase 4 末态;4-bis 未触)
+- web_client: 254 vitest (+38 from Phase 4 末态 216):objectStateDeltaConsumer(+10) /
+  clearedSlotCache(+9) / debrisEffect(+9) / debrisRenderer(+4) /
+  onlineVoxelWorldAdapter pipeline(+6)
 
 预存失败:`apps/world_server/test/world_server/voxel/authority_observe_test.exs:35`
 Windows path 大小写,不动(memory 已记)。
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin 35 commits。
+未 push(用户没说 push 就别 push)。本地 master 领先 origin **49 commits**
+(Phase 4 末 35 + Phase 4-bis 14)。
 
 ## 已知预存失败(本环境)
 
@@ -42,13 +49,26 @@ Windows path 大小写,不动(memory 已记)。
 | --- | --- | --- |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 
-**Phase 4 后剩余的 backlog**(若用户优先继续巩固 Phase 4 系):
+**Phase 4-bis 后剩余的 backlog**(若用户优先继续巩固 4-bis 系):
 
-- **0x6C ObjectStateDelta 服务端→Gate 订阅者实际推送链路**(Phase 4-8 仅落 wire codec + 测试,实际通过 Gate 连接的订阅者推送 deferred 到 Phase 4.5 / Phase 5):需要 `ChunkProcess.push_object_state_delta_payload` + `ChunkDirectory.broadcast_object_state_delta` + ObjectRegistry destroy 路径里调一次。
-- **跨 region 多 participant 事务**(Phase 3-bis 后续):BuildTransaction 已支持 multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。需要先有跨 region prefab 的语义设计文档。
+- **0x6C ChunkDelta apply 前 cache hook**(Phase 4-bis-10 deferred 到 Phase 5):
+  ClearedSlotCache + DebrisSimulation pipeline 已 wired,但 cache 实际无写入,
+  production 路径全走 affected_chunks_fallback(粒子在 chunk 中心点散开,
+  不是沿 micro slot 散布)。Phase 5 把 owner_object_id 接进 FRefinedCellData
+  之后,新增一行 cache hook(applyDelta CellRefined / CellEmpty op 之前
+  diff layer.ownerObjectId)即可升级到精确档 B。
+- **DebrisRenderer per-instance 颜色微抖**:Phase 4-bis-12 用单一 base 棕色;
+  per-instance instanceColor 通道留待 Phase 5。
+- **HUD destroyed 升级**:目前一行字 3.5s。Phase 5+ 可加屏幕红闪 / 音效 /
+  destroyed object 中心爆炸 emoji。
+- **跨 region 多 participant 事务**(Phase 3-bis 后续):BuildTransaction 已支持
+  multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。
+  需要先有跨 region prefab 的语义设计文档。
 - **Per-region coordinator**(Phase 6 留):当前单全局 coordinator 是潜在 SPOF。
-- **紧凑 ChunkDelta**(取代 commit 时的 snapshot fan-out):commit 时把 batch 内每个 intent 编成 ChunkDelta op 推送,不必走整 chunk snapshot。
-- **跨进程 e2e harness**(Phase 2 决策稿 park 的 backlog):gate ↔ scene ↔ data_service ↔ web_client 全链路 e2e 自动化。
+- **紧凑 ChunkDelta**(取代 commit 时的 snapshot fan-out):commit 时把 batch
+  内每个 intent 编成 ChunkDelta op 推送,不必走整 chunk snapshot。
+- **跨进程 e2e harness**(Phase 2 决策稿 park 的 backlog):gate ↔ scene ↔
+  data_service ↔ web_client 全链路 e2e 自动化。
 - **fence 超时 sweeper**:`fenced_at_ms` 字段已写入,但目前没自动清理"卡死"fence。
 
 **Phase 5 属性目录 + 温湿度基础模拟**(README 顺序下一阶段):
@@ -104,8 +124,49 @@ Windows path 大小写,不动(memory 已记)。
   - `SceneServer.Voxel.PartState`:新 struct,health/state_flags + 位常量。
   - `SceneServer.Voxel.ObjectRegistry`:per-scene GenServer(默认 module-named singleton,tests 注 `:name` 起独立实例),accumulate_damage / destroy_part / destroy_object 同步 cascade 链路。
   - `BuildTransactionApplier.register_scene_objects/2`:scene-side 把 transaction.scene_objects upsert 到 ObjectRegistry。
-  - `0x6C ObjectStateDelta` wire codec encode/decode + web_client decoder stub(实际 Gate 推送链路 deferred)。
+  - `0x6C ObjectStateDelta` wire codec encode/decode + web_client decoder stub(实际 Gate 推送链路 deferred 到 4-bis)。
+- **Phase 4-bis 新增**:
+  - `0x6C` codec 主战场迁到 `scene_server/voxel/codec.ex`(对齐 chunk_delta /
+    chunk_snapshot / chunk_invalidate);gate codec 改 binary pass-through。
+  - `PartState.flag_part_destroyed = 0x04`(完成 D5 三段 state_flags 对齐
+    protocol §9)。
+  - `ChunkDirectory.lookup_chunk_pid/3`:read-only,**不**lazy-start。
+  - `ChunkProcess.push_object_state_delta_payload/2`(GenServer.cast)+
+    `fan_out_object_state_delta_payload/2` private(镜像 push_chunk_delta)+
+    observe key `voxel_object_state_delta_push`。
+  - `ObjectRegistry` 在 emit_damage / emit_part_destroyed / emit_object_destroyed
+    之后**同步** dispatch 0x6C broadcast(D4)。`run_destroy_object` 内 bump
+    object_version 保 cascade 路径版本号单调。`:chunk_directory` init opt 注入。
+  - 4 个新 observe key:`voxel_object_state_delta_dispatch` /
+    `voxel_object_state_delta_push` / `voxel_object_state_delta_dispatch_failed` /
+    `tcp_voxel_object_state_delta_forwarded` + `ws_voxel_object_state_delta_forwarded`。
+  - gate `WsConnection` / `TcpConnection` `handle_info({:voxel_object_state_delta_payload, payload}, ...)`
+    forward to socket(同 chunk_delta forward 模式)。
+  - **web_client**:
+    - `ObjectStateDeltaConsumer`(per-object_id `last_seen_version` 去重
+      + `onDelta` / `onDuplicate` 钩子)
+    - `ClearedSlotCache`(per-object slots Map + TTL 2s sweep + 单 object 上限
+      256;**production cache hook 推到 Phase 5**,目前数据结构 + pipeline
+      已就位但 ChunkDelta apply 前 hook 未接,因为 FRefinedCellData 不含
+      ownerObjectId)
+    - `DebrisSimulation`(纯数据状态机,半球面随机 + 重力 + lifetime + 全局
+      上限 500)
+    - `DebrisRenderer`(InstancedMesh 包装,棕色 0.05m × MacroWorldSize 立方体)
+    - `OnlineVoxelWorldAdapter` 持有 cache + sim,onFrame 顺序
+      tickDebris → drainVoxelMessages → processObjectStateDeltaRetryQueue;
+      consumer onDelta 钩子调 handleObjectStateDeltaForDebris(cache.take →
+      spawn / 100ms retry / affected_chunks_fallback);emit
+      `world:object-state-delta` event
+    - `RenderOrchestrator` 通过 duck typing 在构造时检测
+      `world.getDebrisSimulation`,实例化 DebrisRenderer 并挂到 rootGroup;
+      onFrame 调 syncFromSimulation
+    - `HudView` 订阅 `world:object-state-delta` event,destroyed flag 时
+      `showFlash("object #N destroyed (M debris)")` 3.5s
 - 客户端在线模式:storage.refinedCells 仍然是 `FRefinedCellData[]`(lossy 自 wire);Phase 1c-5 决策 5 RFC 备注了"未来改 wire-form-as-truth"。
+  **特别注意**(Phase 4-bis):由于 FRefinedCellData 不携带 ownerObjectId,
+  ClearedSlotCache 的 ChunkDelta apply 前 hook 还没接,debris 粒子目前
+  全走 affected_chunks_fallback(chunk 中心点散开)。Phase 5 接 owner 进
+  FRefinedCellData 后可升级到精确档 B(沿 micro slot 散布)。
 
 ### 前端策略冻结(2026-04-26)
 
@@ -131,24 +192,30 @@ Windows path 大小写,不动(memory 已记)。
 | World map ledger | `apps/world_server/lib/world_server/voxel/map_ledger.ex` |
 | **World transaction(Phase 4 加 scene_objects)** | `apps/world_server/lib/world_server/voxel/build_transaction.ex`、`apps/world_server/lib/world_server/voxel/transaction_coordinator.ex`、`apps/world_server/lib/world_server/voxel/transaction_executor.ex` |
 | Web client 在线 adapter | `clients/web_client/src/voxel/onlineVoxelWorldAdapter.ts` |
-| Web client wire decoder | `clients/web_client/src/infrastructure/net/refinedCellWire.ts`、`voxelEditIntent.ts`、`voxelProtocol.ts`、**`objectStateDelta.ts`(Phase 4)** |
+| Web client wire decoder | `clients/web_client/src/infrastructure/net/refinedCellWire.ts`、`voxelEditIntent.ts`、`voxelProtocol.ts`、`objectStateDelta.ts`(Phase 4)、**`objectStateDeltaConsumer.ts`(Phase 4-bis)** |
+| **Web client 碎屑粒子(Phase 4-bis)** | `clients/web_client/src/voxel/clearedSlotCache.ts`、`debrisEffect.ts`(simulation)、`debrisRenderer.ts`(InstancedMesh) |
+| **Web client HUD(Phase 4-bis 起订阅 world:object-state-delta)** | `clients/web_client/src/presentation/hud/hudView.ts` |
 
-## 这次会话产出(2026-05-08,Phase 4)
+## 这次会话产出(2026-05-08,Phase 4-bis)
 
-11 个 commit,本地 master 未 push:
+14 个 commit,本地 master 未 push(本会话尾的 Phase 4 收尾 commit 也含在内):
 
 ```
-本会话 docs(voxel): finalize Phase 4 (apps READMEs + plan progress log + handoff)
-5352040 voxel: web_client objectStateDelta decoder stub (Phase 4-9)
-0a5b428 voxel: 0x6C ObjectStateDelta wire codec (Phase 4-8)
-d800996 voxel: end-to-end object lifecycle integration test (Phase 4-7)
-330d528 voxel: damage / destroy_part / destroy_object closure (Phase 4-6)
-53e4e7d voxel: ChunkProcess refresh + ObjectRegistry register on commit (Phase 4-5)
-686d3cd voxel: BuildTransaction.scene_objects + coordinator object_id alloc (Phase 4-4)
-f61351c voxel: ObjectRegistry GenServer + PartState struct (Phase 4-3)
-95a3330 voxel: Storage.refresh_chunk_object_refs + lookup_owner_at (Phase 4-2)
-df1ba93 voxel: voxel_scene_objects schema + SceneObjectStore (Phase 4-1)
-067085f docs(voxel): land Phase 4 plan (object provenance + part-health destruction)
+本会话    docs(voxel): finalize Phase 4-bis (apps READMEs + plan progress log + handoff)
+1f6cc13   voxel: DebrisRenderer + RenderOrchestrator + HUD wiring (Phase 4-bis-12)
+c78e04f   voxel: 0x6C ObjectStateDelta end-to-end push test (Phase 4-bis-11)
+d37598a   voxel: 0x6C ObjectStateDelta debris pipeline串联 (Phase 4-bis-10)
+bc89cea   voxel: DebrisSimulation particle state machine (Phase 4-bis-9)
+1e34841   voxel: ClearedSlotCache short-lived owner-tracking cache (Phase 4-bis-8)
+1ed8fd8   voxel: web_client 0x6C ObjectStateDelta consumer + dispatch (Phase 4-bis-7)
+a5b4eca   voxel: gate ws/tcp forward 0x6C ObjectStateDelta to socket (Phase 4-bis-6)
+3ca3f6e   voxel: ObjectRegistry dispatches 0x6C ObjectStateDelta after emit (Phase 4-bis-5)
+2cb2373   voxel: ChunkProcess.push_object_state_delta_payload cast + fan-out (Phase 4-bis-4)
+77f690d   voxel: ChunkDirectory.lookup_chunk_pid/3 read-only API (Phase 4-bis-3)
+3b96714   voxel: gate codec 0x6C binary pass-through (Phase 4-bis-2)
+0d9df62   voxel: scene codec encode/decode_voxel_object_state_delta_payload (Phase 4-bis-1)
+ed16fef   docs(voxel): land Phase 4-bis plan (ObjectStateDelta push + debris particles)
 ```
 
-加上之前会话已经在 master 上的所有 Phase 1a → 3-bis commits(完整列表见上一个会话的 handoff)。
+加上 Phase 4 收尾 commit `b10e197` 与之前会话已经在 master 上的所有 Phase 1a → 4
+commits(完整列表见上一个会话的 handoff)。

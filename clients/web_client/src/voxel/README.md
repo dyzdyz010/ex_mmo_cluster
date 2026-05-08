@@ -37,3 +37,52 @@
 - 微格写入 API 只服务 prefab/refined 内部数据治理和后续局部破坏系统，不作为
   玩家可直接放置 micro 方块的编辑入口。CLI 暴露 `micro_cell` 读取检查，以及
   `prefab_boundary / prefab_snap_preview / prefab_place_snap` 验证 socket-free 微格边界贴合。
+
+## Phase 4-bis：0x6C ObjectStateDelta + 碎屑粒子(2026-05-08)
+
+服务端权威破坏事件(damage / part_destroyed / destroyed)推送到客户端后，
+通过 `OnlineVoxelWorldAdapter` 内部 pipeline 转化为 HUD 提示 + 棕色碎屑
+立方体粒子。模块拓扑(均在 `clients/web_client/src/voxel/`):
+
+- `clearedSlotCache.ts`：per-object_id `Map<bigint, ClearedSlot[]>`，TTL
+  2 秒 + 单 object 容量上限 256。**production cache hook 推到 Phase 5**
+  (FRefinedCellData 当前不持 ownerObjectId，Phase 1c-5 wire-form-as-truth
+  RFC park)；Phase 4-bis 数据结构 + sweep 已落，实际写入路径暂空。
+- `debrisEffect.ts`：`DebrisSimulation` 纯数据状态机。`spawn(samplePoints, kind)`
+  对每个采样点产生 `burstSize` 个粒子(默认 8，半球面随机方向 + 中心向外
+  push + 切向抖动)；`update(dtMs)` symplectic Euler 重力积分(-9.8 m/s²)
+  + lifetime(默认 0.8s)剔除 + array compaction；全局上限 500 粒子(超出
+  FIFO trim oldest)。
+- `debrisRenderer.ts`：`DebrisRenderer` THREE.InstancedMesh 包装。每帧
+  `syncFromSimulation()` 把 `liveParticles()` 的位置写到 `setMatrixAt` +
+  `count` + `instanceMatrix.needsUpdate`。粒子立方体边长 = 0.05m ×
+  MacroWorldSize(=5 世界单位)，颜色 `#8b4513` MeshStandardMaterial。
+- `OnlineVoxelWorldAdapter` 主循环顺序：
+  ```
+  tickDebris(nowMs)            ← sim.update(dt) + cache.sweep(now)
+  drainVoxelMessages           ← drain transport queues + apply
+  processObjectStateDeltaRetryQueue(nowMs)
+  ```
+  `ObjectStateDeltaConsumer.onDelta` 钩子通过去重后调
+  `handleObjectStateDeltaForDebris`：
+  1. cache.take 命中 → spawn(限额 destroyed 20 / part_destroyed 10 /
+     damaged 5)+ emit `world:object-state-delta` event (source =
+     "cleared_slot_cache")
+  2. miss → push retry queue，retryAtMs = currentFrameTime + 100ms
+  3. retry 到期再 take，仍空 → fallback 到 affected_chunks 中心点
+     (source = "affected_chunks_fallback")
+- HUD(`presentation/hud/hudView.ts`)订阅
+  `world:object-state-delta` event，destroyed flag 时 showFlash 一行
+  `object #N destroyed (M debris)` 3.5s。damaged / part_destroyed
+  不上 HUD 避免高频破坏刷屏。
+- RenderOrchestrator 通过 duck typing(`world.getDebrisSimulation`)
+  在构造时实例化 DebrisRenderer 并加进 rootGroup，onFrame 调
+  syncFromSimulation。离线 / 浏览器 fallback adapter 不暴露
+  getDebrisSimulation 时静默 skip。
+
+**已知限制 / 待 Phase 5 升级**：
+- ChunkDelta apply 前的 cache hook 没接，production 路径全走 fallback
+  (粒子从 chunk 中心点散开，不沿 micro slot 散布)。决策稿档 B 完整效果
+  待 Phase 5 把 ownerObjectId 引入 FRefinedCellData 后落地。
+- DebrisRenderer 暂用单一棕色 base material；per-instance 颜色微抖
+  (instanceColor 通道)留待 Phase 5。
