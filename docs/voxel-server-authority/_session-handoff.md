@@ -1,10 +1,10 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**: 2026-05-07,Phase 3 全程落地后。
+**Last updated**: 2026-05-08,Phase 3-bis 全程落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
-## 已落地阶段(2026-05-07 收盘)
+## 已落地阶段(2026-05-08 收盘)
 
 | 阶段 | 状态 | 关键 commit |
 | --- | --- | --- |
@@ -13,17 +13,21 @@
 | 1c Scene refined mutation API + CellRefined delta + 客户端解锁 | 已完成 | `c99d6fd` (1c-1/2/3) → `508ce1e` (1c-4) → `a02817a` (1c-5) → `07bee6b` (1c-6) |
 | 1d DataService canonical 持久化 + chunk_hash 全字段覆盖回归 | 已完成 | `36b8ad7` |
 | 2 refined micro edit 端到端贯通 | 已完成(被 1c 吸收) | `314ad8a` (stub + README) |
-| 3 prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | `a053c82` (决策稿) → `3fc9966` (3-1) → `6973843` (3-2) → `bd74e01` (3-3a) → `e91c38f` (3-3b) → `b93a10d` (3-4) → 本会话 (3-5) |
+| 3 prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | `a053c82` (决策稿) → `3fc9966` (3-1) → `6973843` (3-2) → `bd74e01` (3-3a) → `e91c38f` (3-3b) → `b93a10d` (3-4) → `86d9186` (3-5) |
+| 3-bis fence persistence + auto-resume commit(crash safety 闭环) | 已完成 | `5e3b1e7` (决策稿) → `5cadbdf` (3-bis-1) → `f6602b0` (3-bis-2) → `d767c29` (3-bis-3) → `9db8c1d` (3-bis-4) → `d01b3d6` (3-bis-5) → 本会话 (3-bis-6) |
 
-测试规模(2026-05-07 末态):
+测试规模(2026-05-08 末态,Phase 3-bis 收尾):
 
-- data_service: 41 tests
-- scene_server: 268 tests (+1 fence-released 契约 case)
-- gate_server: 181 tests (0x67 happy path 重写为 batch commit + snapshot 推送)
-- world_server: 48 tests (+ TransactionCoordinator Postgres + RecoveryWatcher)
-- web_client: 210 vitest, tsc clean(本阶段未动)
+- data_service: 53 tests (+12 ChunkPendingTransactionStore)
+- scene_server: 277 tests (+9 chunk_process_persistence_test)
+- gate_server: 181 tests (Phase 3 后未变)
+- world_server: 60 tests (+5 intents_by_participant / fast-path / resume)
+- web_client: 210 vitest, tsc clean(Phase 3 后未变)
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin 16 commits。
+预存失败:`apps/world_server/test/world_server/voxel/authority_observe_test.exs:35`
+Windows path 大小写,不动(memory 已记)。
+
+未 push(用户没说 push 就别 push)。本地 master 领先 origin 23 commits。
 
 ## 已知预存失败(本环境)
 
@@ -38,14 +42,13 @@
 | 4 | 未开始 | object provenance 与局部破坏 |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 
-**Phase 3 留下的 backlog**(若用户优先做"先把 3 收尾再开 4"):
+**Phase 3-bis 后剩余的 backlog**(若用户优先继续巩固 3 系):
 
-- ChunkProcess `pending_fence` 持久化(D4 推到 Phase 3-bis):需要新表 `voxel_chunk_pending_transactions`,Scene 重启不丢 fence,与 D3 配合实现真正的 auto-resume commit。
-- `:prepared` 事务 auto-resume commit(D3 推到 Phase 3-bis):需要把 `intents_by_participant` 也持久化,coordinator 重启后扫到 `:prepared` 不再仅仅 emit observe,而是重发 commit dispatch。
-- 跨 region 多 participant 事务(D6 推到 Phase 3-bis):BuildTransaction 已支持 multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。需要先有跨 region prefab 的语义设计文档。
+- 跨 region 多 participant 事务(D6 推到 Phase 3-bis 后续):BuildTransaction 已支持 multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。需要先有跨 region prefab 的语义设计文档。
 - Per-region coordinator(D5 留 Phase 6):当前单全局 coordinator 是潜在 SPOF。
 - 紧凑 ChunkDelta(取代 commit 时的 snapshot fan-out):commit 时把 batch 内每个 intent 编成 ChunkDelta op 推送,不必走整 chunk snapshot。
 - 跨进程 e2e harness(Phase 2 决策稿 park 的 backlog):gate ↔ scene ↔ data_service ↔ web_client 全链路 e2e 自动化。
+- fence 超时 sweeper:`fenced_at_ms` 字段已写入,但目前没自动清理"卡死"fence(coordinator 持续不可达 + Scene 持续不重启的极端场景)。
 
 **Phase 4 object provenance 与局部破坏**(README 顺序下一阶段):
 
@@ -81,11 +84,13 @@
 ### 体素架构现状
 
 - ChunkSnapshotStore 是 stateless module,直走 `DataService.Repo`(Phase 1d)。
+- ChunkPendingTransactionStore 也是 stateless module,直走 `DataService.Repo`(Phase 3-bis-1):新表 `voxel_chunk_pending_transactions`,复合 PK `(logical_scene_id, coord_x, coord_y, coord_z)`,fence_payload 用 term_to_binary 编码 normalized intent batch。
 - WriteTokenStore 仍是 GenServer(in-memory);Phase 1d 加了 `reset/1` test hatch。
-- ChunkProcess 是每个 chunk 一个 GenServer,持有 hot truth + lease;`pending_fence.intents` 是 list(Phase 3-3a 升级,支持单 chunk 多 macro 的 batch fence)。
-- ChunkDirectory 注册 chunk 到 ChunkProcess pid,负责 apply_intent 路由 + handoff prewarm + transaction prepare/commit/abort 路由。
-- TransactionCoordinator 持久化走 Postgres(`voxel_transaction_coordinator_snapshots` 单行 snapshot,Phase 3-1)。
-- TransactionRecoveryWatcher 在 WorldSup 启动后扫描 in-flight 事务:`:preparing`/`:aborting` 自动 abort,`:prepared` 挂着等运维(Phase 3-2)。
+- ChunkProcess 是每个 chunk 一个 GenServer,持有 hot truth + lease;`pending_fence.intents` 是 list(Phase 3-3a 升级,支持单 chunk 多 macro 的 batch fence);**fence 同步持久化进 voxel_chunk_pending_transactions**(Phase 3-bis-2),init 时按 lease 一致性校验 reload,不匹配丢弃孤儿。
+- ChunkDirectory 注册 chunk 到 ChunkProcess pid,负责 apply_intent 路由 + handoff prewarm + transaction prepare/commit/abort 路由(Phase 3-bis-2 起 attrs 透传 `:decision_version`)。
+- TransactionCoordinator 持久化走 Postgres(`voxel_transaction_coordinator_snapshots` 单行 snapshot,Phase 3-1);**`BuildTransaction.intents_by_participant` 字段随之持久化**(Phase 3-bis-3)。
+- TransactionExecutor 加 `:prepared` fast-path(Phase 3-bis-4):跳过 prepare phase 直接 dispatch commit,`prepare_results` 由 `derive_prepare_results_from_prepared_state/1` 推导。
+- TransactionRecoveryWatcher 对 `:preparing`/`:aborting` 自动 abort(Phase 3-2);**对 `:prepared` 通过 `:scene_opts_resolver` 自动重发 commit dispatch**(Phase 3-bis-5):WorldSup 注入 BeaconServer-backed resolver,scene_node 不可达时退化为 :pending_commit + emit unavailable。
 - 0x67 PrefabPlaceIntent dispatch 切到 World 事务路径(Phase 3-3b):rasterize → 按 chunk 分组 → 单 lease 事务 → executor 三相 → atomic commit/abort。
 - 客户端在线模式:storage.refinedCells 仍然是 `FRefinedCellData[]`(lossy 自 wire);Phase 1c-5 决策 5 RFC 备注了"未来改 wire-form-as-truth"。
 
@@ -115,12 +120,24 @@
 | Web client 在线 adapter | `clients/web_client/src/voxel/onlineVoxelWorldAdapter.ts` |
 | Web client wire decoder | `clients/web_client/src/infrastructure/net/refinedCellWire.ts`,`voxelEditIntent.ts`,`voxelProtocol.ts` |
 
-## 这次会话产出(2026-05-07,Phase 2 + Phase 3)
+## 这次会话产出(2026-05-08,Phase 3-bis)
 
-8 个 commit,本地 master 未 push:
+7 个 commit,本地 master 未 push:
 
 ```
-本会话 docs(voxel): finalize Phase 3 (apps READMEs + plan progress log + handoff)
+本会话 docs(voxel): finalize Phase 3-bis (apps READMEs + plan progress log + handoff)
+d01b3d6 voxel: TransactionRecoveryWatcher auto-resumes :prepared via executor (Phase 3-bis-5)
+9db8c1d voxel: TransactionExecutor :prepared fast-path (Phase 3-bis-4)
+d767c29 voxel: BuildTransaction.intents_by_participant + coordinator persistence (Phase 3-bis-3)
+f6602b0 voxel: ChunkProcess persists pending_fence to Postgres (Phase 3-bis-2)
+5cadbdf voxel: ChunkPendingTransactionStore + voxel_chunk_pending_transactions table (Phase 3-bis-1)
+5e3b1e7 docs(voxel): land Phase 3-bis plan (fence persistence + auto-resume commit)
+```
+
+加上上一会话已经在 master 上的 Phase 3 收尾(从 Phase 1a 一路到 Phase 3 全部 commit):
+
+```
+86d9186 docs(voxel): finalize Phase 3 (READMEs + plan progress log + handoff)
 b93a10d voxel: lock down :transaction_not_prepared contract for released fences (Phase 3-4)
 e91c38f voxel: route 0x67 PrefabPlaceIntent through World transaction (Phase 3-3b)
 bd74e01 voxel: ChunkProcess fence holds intent batch instead of single intent (Phase 3-3a)
@@ -128,11 +145,6 @@ bd74e01 voxel: ChunkProcess fence holds intent batch instead of single intent (P
 3fc9966 voxel: TransactionCoordinator persists through Postgres only (Phase 3-1)
 a053c82 docs(voxel): land Phase 3 plan (prefab v2 transactionalization)
 314ad8a docs(voxel): mark Phase 2 as absorbed by Phase 1c (refined micro edit roundtrip)
-```
-
-加上上一会话已经在 master 上的 Phase 1d 收尾:
-
-```
 f24cb6c docs(voxel): add session handoff landing pad for cross-conversation continuity
 36b8ad7 voxel: canonical Postgres persistence + chunk_hash regression matrix (Phase 1d)
 204c285 docs(voxel): mark Phase 1c as completed in tracking index
