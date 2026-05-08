@@ -21,6 +21,7 @@
 | 1d | DataService canonical 持久化 + chunk_hash 全字段覆盖回归 | 已完成 | [`phase-1d-canonical-persistence.md`](./phase-1d-canonical-persistence.md) |
 | 2 | (原文档 Phase 2)refined micro edit 端到端贯通 | 已完成(被 1c 吸收) | [`phase-2-micro-edit-roundtrip.md`](./phase-2-micro-edit-roundtrip.md) |
 | 3 | prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | [`phase-3-prefab-v2-transactions.md`](./phase-3-prefab-v2-transactions.md) |
+| 3-bis | fence persistence + auto-resume commit(crash safety 闭环) | 进行中 | [`phase-3-bis-fence-and-resume.md`](./phase-3-bis-fence-and-resume.md) |
 | 4 | object provenance 与局部破坏 | 未开始 | — |
 | 5 | 属性目录 + 温湿度基础模拟 | 未开始 | — |
 
