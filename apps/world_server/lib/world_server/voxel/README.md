@@ -102,5 +102,40 @@ World 不直接搬运区块内容。
 `migrate_region/4` 保持旧调用方兼容，但内部走同一条“建计划、预热、切换、完成”路径，并保留
 已完成的迁移快照用于观察。
 
+**Phase 4：object_id 分配 + scene_objects 持久化** ——
+`BuildTransaction.scene_objects` 字段携带本笔事务要创建的对象实例
+（已分配 `object_id`、初始 `part_states`、`covered_chunks` 等）。
+
+- `TransactionCoordinator.begin_transaction/2/3` attrs 接受 `:scene_objects`
+  种子列表（无 `object_id`），coordinator 同步从
+  `voxel_scene_object_id_seq`（Postgres SEQUENCE）取 `next_object_id`
+  逐条分配，写入 `BuildTransaction.scene_objects`。
+- 同 `transaction_id` 的 begin_transaction 二次调用走 replay 路径，**不再
+  分配 ID**（避免 sequence 浪费）；`begin_fingerprint` 也不含
+  `scene_objects`（allocations 不是 transaction identity 的一部分）。
+- 分配失败（DB 不可达 / sequence 异常）→ begin_transaction 立即拒绝
+  `:object_id_unavailable`。
+- 持久化沿用既有 `voxel_transaction_coordinator_snapshots` 单行 snapshot
+  路径，`scene_objects` 字段随 transaction 一起 `term_to_binary` 落盘，
+  coordinator 重启 reload 完整保留。
+- `TransactionExecutor.run_commit/7` 在 `commit_decision` 之后调
+  `scene_caller.register_scene_objects(transaction.scene_objects, scene_opts)`
+  把对象实例 upsert 到 Scene 端 `ObjectRegistry`（`function_exported?` +
+  `safely_invoke` 守门，旧 scene_caller 兼容、失败非阻塞）。
+
+实例字段（`BuildTransaction.scene_objects` 内每条）：
+
+```text
+%{
+  object_id, blueprint_id, blueprint_version, parcel_id,
+  anchor_world_micro, rotation, owner_actor_id,
+  covered_chunks, part_states,
+  state_flags, object_attribute_ref, object_tag_set_ref, object_version
+}
+```
+
+`part_states` 是 `[%{part_id, health, state_flags}, ...]`（plain map 形态，
+Scene 侧 ObjectRegistry 会归一化为 `%PartState{}` struct）。
+
 WorldServer 不保存完整区块真相，也不运行高频体素规则。它只决定拥有者，并发布写入围栏，
 防止迁移后的旧 Scene 进程继续写入。

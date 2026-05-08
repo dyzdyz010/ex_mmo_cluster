@@ -107,5 +107,45 @@ commit / abort 三相。**任一 chunk 的 prepare 失败或 commit 时 batch ap
 要么收到 `VoxelIntentResult{Rejected, reason}` 且 chunk 状态全部回到 prepare 前。**v1
 的 cell-by-cell + 部分写不回滚行为已被替换**。
 
+**Phase 4：object provenance + part-health 破坏闭环** ——
+`MicroLayer.owner_object_id` / `owner_part_id` 已在 Phase 1c 落地；Phase 4
+让真实 prefab 写入时填实这两字段，并补齐反向索引与破坏链路：
+
+- `Storage.refresh_chunk_object_refs/1`：整 chunk 重算策略——从 layer truth
+  推导 cell 级 `ObjectCoverRef[]` + chunk 级 `ChunkObjectRef[]`（含
+  AABB + xxHash64 cover_hash）。`apply_normalized_intent` /
+  `apply_normalized_intents` / `destroy_part` 三处自动触发。
+- `Storage.lookup_owner_at/3`：反向查 `(macro, slot) → {object_id, part_id} | nil`，
+  damage attribution 路径用。
+- `SceneServer.Voxel.PartState`：`%{part_id, health, state_flags}`，带
+  damaged / destroyed 位 + `apply_damage` / `mark_damaged` / `mark_destroyed`
+  helper。Phase 4 health 初始值 = part 占用的 micro 数 × ratio（默认 1.0，
+  Phase 5 引入 `PartDefinition.default_health_ratio` 协议字段后改 per-part）。
+- `SceneServer.Voxel.ObjectRegistry`：per-scene GenServer，持
+  `SceneObjectInstance` 内存真相 + 同步落 `voxel_scene_objects`。API：
+  `lookup_object/3`、`list_objects_in_chunk/3`、`upsert_object/2`、
+  `apply_chunk_cover_change/5`、`accumulate_damage/6`、`destroy_part/5`、
+  `destroy_object/4`、`load_scene/2`（lazy）、`snapshot/1`、`reset/1`（test）。
+  `accumulate_damage` 同步 cascade 到 `destroy_part`（health <= 0）→
+  `destroy_object`（所有 part destroyed）。
+- `ChunkProcess` damage attribution：每次 commit 前用
+  `Storage.lookup_owner_at` 收集 `{(oid, pid) => damage_count}`，
+  commit 后 `Task.start` 异步 dispatch 到 `ObjectRegistry.accumulate_damage`，
+  打破 ChunkProcess → ObjectRegistry → ChunkDirectory →
+  ChunkProcess.destroy_part 同步 deadlock。
+- `ChunkProcess.destroy_part/2` / `cleanup_object_refs/2`：server-internal
+  cleanup，不走 lease 校验但仍用当前 lease 持久化。`destroy_part` 扫所有
+  refined cells 找 owner=X、part=Y 的 layer，逐 micro slot 调
+  `Storage.clear_micro_block`，然后 refresh + bump version + persist。
+- `BuildTransactionApplier.register_scene_objects/2`：World executor
+  `commit_decision` 后，scene_caller 把 `transaction.scene_objects`（每条
+  含已分配的 `object_id` + 初始 `part_states`）upsert 到 ObjectRegistry。
+  失败 emit `voxel_scene_object_register_failed` 非阻塞。
+
+破坏路径全链路 emit observe：`voxel_part_damaged` /
+`voxel_part_destroyed` / `voxel_object_destroyed` /
+`voxel_chunk_destroy_part`，Phase 5+ 下游钩子（掉落物 / 任务系统 /
+资源回收）挂在这些 observe 上即可。
+
 后续切片会在同一子树下补充紧凑区块增量、跨 region 多 participant 事务、per-region
 coordinator 切片，以及更完整的迁移回滚。

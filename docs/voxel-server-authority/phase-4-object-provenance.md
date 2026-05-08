@@ -587,8 +587,95 @@ part 状态,本阶段无法。Phase 5 引入 part 级 wire 字段时再补。本
 
 ## 进度日志
 
-(待 Step 1 启动后逐条追加 `YYYY-MM-DD: ...`)
-
 - 2026-05-08:决策稿初稿(方案 B / 纯 part 血条)入仓审稿
 - 2026-05-08:用户审后改方案 E + E1(微格视觉 + part 血条独立累计)。
   整体销毁闭环拉进 Phase 4。决策稿重写,等待 D1–D12 推荐值确认。
+- 2026-05-08:用户确认 D1–D12 推荐值生效,决策稿入仓 commit `067085f`。
+- 2026-05-08:**Phase 4 全程落地**(object provenance + part-health 破坏闭环 + 整体销毁)。
+  - **Step 4-1**(commit `df1ba93`):新建 `voxel_scene_objects` schema +
+    migration + sequence + `DataService.Schema.VoxelSceneObject` Ecto schema +
+    `DataService.Voxel.SceneObjectStore`(stateless module:`put_object/2`、
+    `get_object/2`、`delete_object/2`、`list_in_scene/2`、`next_object_id/1`、
+    `reset/1`)。`covered_chunks` + `part_states` 用 `term_to_binary` 编码,
+    反序列化用 `[:safe]` 模式。data_service:53 → 71 tests。
+  - **Step 4-2**(commit `95a3330`):`Storage.refresh_chunk_object_refs/1`
+    整 chunk 重算 cell + chunk 级 object refs(xxHash64 cover_hash 走规范
+    编码:object_id::u64 ++ AABB::6×u8 ++ macro_count::u32 ++
+    [(macro_idx::u16, mask_words[8 × u64])])。`Storage.lookup_owner_at/3`
+    反向查询。scene_server:277 → 293 tests。
+  - **Step 4-3**(commit `f61351c`):`SceneServer.Voxel.PartState` struct +
+    flag bit 常量 + `apply_damage/mark_damaged/mark_destroyed` helpers。
+    `SceneServer.Voxel.ObjectRegistry` GenServer 基本 API:`lookup_object/3`、
+    `list_objects_in_chunk/3`、`upsert_object/2`、`apply_chunk_cover_change/5`、
+    `load_scene/2`(lazy)、`snapshot/1`、`reset/1`。`covered_chunks` 收缩到
+    空集 → `:covered_chunks_would_be_empty` 错误提示走 destroy_object。
+    scene_server:293 → 309 tests。
+  - **Step 4-4**(commit `686d3cd`):`BuildTransaction.scene_objects` 字段
+    (默认 [],持久化随既有 voxel_transaction_coordinator_snapshots 透传)+
+    `TransactionCoordinator` `:next_object_id_fn` init opt(默认绑
+    `SceneObjectStore.next_object_id`)+ `begin_transaction` 内逐 seed 分配
+    object_id + replay 路径跳过 allocation 避免 sequence 浪费 +
+    `begin_fingerprint` 不含 scene_objects + `:object_id_unavailable` 兜底。
+    world_server:60 → 72 tests。
+  - **Step 4-5**(commit `53e4e7d`):`ChunkProcess.apply_normalized_intent` /
+    `apply_normalized_intents` 在 build_intent(s)_storage 之后调
+    `Storage.refresh_chunk_object_refs/1`(覆盖 direct apply 路径 + batch +
+    transaction commit)。`BuildTransactionApplier.register_scene_objects/2`
+    把 transaction.scene_objects upsert 到 ObjectRegistry,失败 emit
+    `voxel_scene_object_register_failed` 非阻塞。`TransactionExecutor.run_commit`
+    在 commit_decision 之后 `function_exported?` 守门 + safely_invoke 调
+    scene_caller 的 register_scene_objects。`ChunkProcess.debug_state` 加
+    `:storage` 字段方便测试。scene_server:309 → 315 tests。
+  - **Step 4-6**(commit `330d528`):破坏闭环全链路。`ObjectRegistry`
+    `accumulate_damage/6` + `destroy_part/5` + `destroy_object/4` 同步
+    cascade 链。`ChunkDirectory.destroy_part/2` + `cleanup_object_refs/2`
+    路由。`ChunkProcess` 同 API + `destroy_part_in_state` 扫所有 refined
+    cells 找 owner=X、part=Y layer 逐 micro slot 调 Storage.clear_micro_block。
+    `ChunkProcess` apply 路径加 damage attribution:pre-apply
+    `lookup_owner_at` 收集 `{(oid,pid) => count}`,post-persist `Task.start`
+    异步 dispatch 避免 ChunkProcess→ObjectRegistry→ChunkDirectory→ChunkProcess
+    同步 deadlock。emit `voxel_part_damaged` / `voxel_part_destroyed` /
+    `voxel_object_destroyed` / `voxel_chunk_destroy_part`。scene_server:
+    315 → 328 tests。
+  - **Step 4-7**(commit `d800996`):`object_lifecycle_integration_test` 端到端
+    用例,真跑 ObjectRegistry + ChunkDirectory + ChunkProcess 三栈无 mock。
+    覆盖 single-part full lifecycle 与 multi-part 中间状态。`assert_eventually`
+    等异步 Task.start 派发 cascade 收尾。scene_server:328 → 330 tests。
+  - **Step 4-8**(commit `0a5b428`):`GateServer.Codec.@msg_voxel_object_state_delta`
+    = 0x6C + encode/decode roundtrip + truncated header / truncated chunks
+    rejection 测试。**实际通过 Gate 订阅者推送链路 deferred 到 Phase 4.5 /
+    Phase 5**(decision doc D11 显式允许这种分阶段)。gate_server:181 → 188 tests。
+  - **Step 4-9**(commit `5352040`):`clients/web_client/src/infrastructure/net/objectStateDelta.ts`
+    decoder + console.log stub + 反向查 attributePatchCount / tagPatchCount
+    forwards-compat 用例。web_client:210 → 216 vitest tests,tsc clean。
+  - **Step 4-10**(本 commit):docs 同步:
+    `apps/scene_server/lib/scene_server/voxel/README.md`、
+    `apps/world_server/lib/world_server/voxel/README.md`、
+    `apps/data_service/lib/data_service/voxel/README.md`、
+    `docs/voxel-server-authority/README.md` 阶段表 Phase 4 = 已完成 +
+    `_session-handoff.md` 更新到 Phase 4 末态。
+
+**RFC 备注 / 实施期偏离**:
+
+- D11(0x6C wire)实施时仅落 codec encode/decode + web_client decoder stub,
+  服务端 → Gate 订阅者实际推送链路标为 Phase 4.5 / Phase 5 backlog。原因:
+  scene_server → gate_server 没 dep,跨 app 推送需要新 ChunkProcess /
+  ChunkDirectory broadcast API 配套,且与 Phase 5 attribute_patch / tag_patch
+  填充强耦合;Phase 4 的核心(object provenance + part-health 状态机 + 整体
+  销毁)已经全链路落地,wire 通道也已打通,推送只是把 ObjectRegistry 端的
+  observe 转成订阅者消息,机械工作。
+
+- 未在决策稿中显式但实施时确认的小决策:
+  - `ObjectRegistry` 默认 module-named singleton,tests 通过 `:name` opt
+    起独立实例(对齐 ChunkDirectory 风格)
+  - `ChunkProcess` 加 `:object_registry` / `:chunk_directory` init opts
+    默认 `SceneServer.Voxel.{ObjectRegistry, ChunkDirectory}`,tests 注入
+    stub。无 ObjectRegistry 进程时 dispatch_damage_async 内部 `try/catch :exit`
+    静默吞掉,best-effort。
+  - `ChunkProcess.destroy_part` 通过 state.lease 持久化(server-internal 操作
+    不走 user lease validate,但仍用当前 lease 作为持久化身份);state.lease
+    为 nil 时 `persist_snapshot` 返 `:missing_lease`,destroy_part 链路自然
+    fail-fast。
+  - `MicroLayer.attribute_signature` 已经包含 owner_object_id /
+    owner_part_id(Phase 1c 既有),所以同 owner 的 micros 自动合并成一个
+    layer,ObjectCoverRef 重建只产生 |distinct part| 个条目。
