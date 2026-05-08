@@ -9,6 +9,7 @@ import type {
   VoxelChunkSnapshotMessage,
   VoxelDebugProbeMessage,
   VoxelIntentResultMessage,
+  VoxelObjectStateDeltaMessage,
 } from "../infrastructure/net/voxelProtocol";
 import { OnlineVoxelWorldAdapter, type ServerVoxelTransportPort } from "./onlineVoxelWorldAdapter";
 import { OnlinePrefabBlueprintVersion } from "./onlinePrefabCatalog";
@@ -156,6 +157,12 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
 
   drainVoxelDebugProbes(): VoxelDebugProbeMessage[] {
     return [];
+  }
+
+  readonly queuedObjectStateDeltas: VoxelObjectStateDeltaMessage[] = [];
+
+  drainVoxelObjectStateDeltas(): VoxelObjectStateDeltaMessage[] {
+    return this.queuedObjectStateDeltas.splice(0, this.queuedObjectStateDeltas.length);
   }
 
   private allocateRequestId(): number {

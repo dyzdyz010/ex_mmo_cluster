@@ -19,6 +19,7 @@ import {
   type VoxelDebugProbeMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
+  type VoxelObjectStateDeltaMessage,
   type VoxelPrefabKnownCellRef,
   type VoxelPrefabKnownObject,
   type VoxelPrefabKnownRef,
@@ -95,6 +96,8 @@ export class ServerMovementTransport implements MovementTransport {
   private receivedVoxelInvalidateCount = 0;
   private readonly voxelIntentResults: VoxelIntentResultMessage[] = [];
   private readonly voxelDebugProbes: VoxelDebugProbeMessage[] = [];
+  private readonly voxelObjectStateDeltas: VoxelObjectStateDeltaMessage[] = [];
+  private receivedVoxelObjectStateDeltaCount = 0;
   private readonly voxelKnownVersions = new Map<string, number>();
   private readonly sentAtBySeq = new Map<number, number>();
   private spawnPosition: Vector3 | null = null;
@@ -512,6 +515,10 @@ export class ServerMovementTransport implements MovementTransport {
     return this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
   }
 
+  drainVoxelObjectStateDeltas(): VoxelObjectStateDeltaMessage[] {
+    return this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
+  }
+
   reset(position: Vector3): void {
     this.lastResetPosition.copy(position);
     this.acknowledgements.splice(0, this.acknowledgements.length);
@@ -522,6 +529,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
+    this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
     this.pendingVoxelPrefabRequests.clear();
     this.lastPlayerState = null;
     this.spawnPosition = null;
@@ -831,6 +839,7 @@ export class ServerMovementTransport implements MovementTransport {
       | VoxelChunkInvalidateMessage
       | VoxelIntentResultMessage
       | VoxelDebugProbeMessage
+      | VoxelObjectStateDeltaMessage
       | null = null;
     try {
       message = decodeVoxelServerMessage(data);
@@ -921,6 +930,17 @@ export class ServerMovementTransport implements MovementTransport {
         this.logger.emit("voxel", "debug_probe_received", {
           request_id: message.requestId,
           result: message.result.slice(0, 240),
+        });
+        return true;
+      case "voxel_object_state_delta":
+        this.voxelObjectStateDeltas.push(message);
+        this.receivedVoxelObjectStateDeltaCount += 1;
+        this.logger.emit("voxel", "object_state_delta_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          object_id: message.delta.objectId.toString(),
+          object_version: message.delta.objectVersion.toString(),
+          state_flags: `0x${message.delta.stateFlags.toString(16)}`,
+          affected_chunk_count: message.delta.affectedChunks.length,
         });
         return true;
     }
@@ -1061,6 +1081,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
+    this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
     this.pendingVoxelPrefabRequests.clear();
     this.sentAtBySeq.clear();
     this.lastPlayerState = null;

@@ -8,6 +8,7 @@ import {
   type FMacroEnvironmentSummary,
   type FNormalBlockData,
 } from "../../voxel/storage/types";
+import { decodeObjectStateDelta, type ObjectStateDelta } from "./objectStateDelta";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
   decodeRefinedCellPayload,
@@ -131,12 +132,23 @@ export interface VoxelDebugProbeMessage {
   result: string;
 }
 
+// Phase 4-bis: 0x6C ObjectStateDelta — server-authoritative object state
+// change (created / damaged / part_destroyed / destroyed). Mirrors the
+// scene-side encoder in `apps/scene_server/lib/scene_server/voxel/codec.ex`.
+// `delta` carries bigint-typed scalars (the underlying decoder lives in
+// objectStateDelta.ts and is shared with cross-codec roundtrip tests).
+export interface VoxelObjectStateDeltaMessage {
+  type: "voxel_object_state_delta";
+  delta: ObjectStateDelta;
+}
+
 export type VoxelServerMessage =
   | VoxelChunkSnapshotMessage
   | VoxelChunkDeltaMessage
   | VoxelChunkInvalidateMessage
   | VoxelIntentResultMessage
-  | VoxelDebugProbeMessage;
+  | VoxelDebugProbeMessage
+  | VoxelObjectStateDeltaMessage;
 
 export function encodeVoxelDebugProbe(
   requestId: number,
@@ -435,9 +447,19 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
       return decodeIntentResult(view);
     case VoxelOpcode.VoxelDebugProbe:
       return decodeDebugProbe(view);
+    case VoxelOpcode.ObjectStateDelta:
+      return decodeObjectStateDeltaMessage(payload);
     default:
       return null;
   }
+}
+
+function decodeObjectStateDeltaMessage(payload: ArrayBuffer): VoxelObjectStateDeltaMessage {
+  // Skip the leading opcode byte; the shared decoder consumes the payload
+  // body without the opcode prefix.
+  const body = new Uint8Array(payload, 1);
+  const delta = decodeObjectStateDelta(body);
+  return { type: "voxel_object_state_delta", delta };
 }
 
 function decodeChunkInvalidate(view: DataView): VoxelChunkInvalidateMessage {

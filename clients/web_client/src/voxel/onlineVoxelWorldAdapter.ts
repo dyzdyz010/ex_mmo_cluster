@@ -10,10 +10,12 @@ import {
   type VoxelDebugProbeMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
+  type VoxelObjectStateDeltaMessage,
   type VoxelPrefabKnownCellRef,
   type VoxelPrefabKnownObject,
   type VoxelPrefabKnownRef,
 } from "../infrastructure/net/voxelProtocol";
+import { ObjectStateDeltaConsumer } from "../infrastructure/net/objectStateDeltaConsumer";
 import {
   EXPECTED_CELL_HASH_UNSPECIFIED,
   EXPECTED_CHUNK_VERSION_UNSPECIFIED,
@@ -94,6 +96,7 @@ export interface ServerVoxelTransportPort {
   drainVoxelInvalidates(): VoxelChunkInvalidateMessage[];
   drainVoxelIntentResults(): VoxelIntentResultMessage[];
   drainVoxelDebugProbes(): VoxelDebugProbeMessage[];
+  drainVoxelObjectStateDeltas(): VoxelObjectStateDeltaMessage[];
 }
 
 export interface OnlineVoxelWorldOptions {
@@ -147,6 +150,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastDebugProbe: string | null = null;
   private lastError: string | null = null;
   private primeSent = false;
+  // Phase 4-bis Step 4-bis-7:0x6C ObjectStateDelta consumer。本 step 仅
+  // decode + 去重 + console.log,粒子 / HUD 在 Step 4-bis-10 串联。
+  private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
+  private receivedObjectStateDeltaCount = 0;
+  private dedupedObjectStateDeltaCount = 0;
 
   constructor(
     private readonly transport: ServerVoxelTransportPort,
@@ -162,6 +170,25 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.primeDemoBlock = options.primeDemoBlock ?? true;
     this.sourceSkillId = options.sourceSkillId ?? 1;
     this.seedState = this.devSeed ? "idle" : "disabled";
+
+    this.objectStateDeltaConsumer = new ObjectStateDeltaConsumer({
+      onDelta: (delta, flagName) => {
+        this.logger.emit("voxel", "object_state_delta_consumed", {
+          flag_name: flagName,
+          object_id: delta.objectId.toString(),
+          object_version: delta.objectVersion.toString(),
+          state_flags: `0x${delta.stateFlags.toString(16)}`,
+          affected_chunks: delta.affectedChunks.length,
+        });
+      },
+      onDuplicate: (delta) => {
+        this.dedupedObjectStateDeltaCount += 1;
+        this.logger.emit("voxel", "object_state_delta_deduped", {
+          object_id: delta.objectId.toString(),
+          object_version: delta.objectVersion.toString(),
+        });
+      },
+    });
   }
 
   override bootstrap(): void {
@@ -221,6 +248,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastError: this.lastError,
       lastSeedDurationMs: this.lastSeedDurationMs,
       lastSeedSummary: this.lastSeedSummary,
+      objectStateDeltas: {
+        received: this.receivedObjectStateDeltaCount,
+        deduped: this.dedupedObjectStateDeltaCount,
+      },
       transport: this.transport.voxelDebugSnapshot(),
     };
   }
@@ -453,6 +484,14 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const probe of this.transport.drainVoxelDebugProbes()) {
       this.lastDebugProbe = probe.result;
     }
+    for (const message of this.transport.drainVoxelObjectStateDeltas()) {
+      this.applyObjectStateDelta(message);
+    }
+  }
+
+  private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
+    this.receivedObjectStateDeltaCount += 1;
+    this.objectStateDeltaConsumer.consume(message.delta);
   }
 
   private applyInvalidate(invalidate: VoxelChunkInvalidateMessage): void {
@@ -704,7 +743,8 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.sendVoxelPrefabPlaceIntent === "function" &&
     typeof candidate.drainVoxelSnapshots === "function" &&
     typeof candidate.drainVoxelDeltas === "function" &&
-    typeof candidate.drainVoxelInvalidates === "function"
+    typeof candidate.drainVoxelInvalidates === "function" &&
+    typeof candidate.drainVoxelObjectStateDeltas === "function"
   );
 }
 
