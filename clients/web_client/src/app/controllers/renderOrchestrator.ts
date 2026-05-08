@@ -8,10 +8,16 @@ import { VoxelConstants } from "../../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { WorldEditStats } from "../../voxel/worldStore";
+import { DebrisRenderer } from "../../voxel/debrisRenderer";
+import type { DebrisSimulation } from "../../voxel/debrisEffect";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
 import type { HotbarState, HotbarEntry, SelectionProvider } from "./worldEditController";
+
+interface MaybeDebrisProvider {
+  getDebrisSimulation?(): DebrisSimulation;
+}
 
 interface EditPreviewProvider {
   getHotbarState(): HotbarState;
@@ -39,6 +45,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
   private prefabPreviewIntentKey = "";
+  private readonly debrisRenderer: DebrisRenderer | null;
 
   constructor(
     sceneHandles: SceneHandles,
@@ -72,6 +79,19 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
     this.rootGroup.add(this.localAvatar, this.authorityAvatar, this.syncRing);
 
+    // Phase 4-bis Step 4-bis-12:if the world adapter exposes a
+    // DebrisSimulation(OnlineVoxelWorldAdapter does),wire its InstancedMesh
+    // into the world root so destroyed-object debris is visible to the
+    // user. Offline / browser-fallback adapters skip silently.
+    const maybeDebrisProvider = this.world as unknown as MaybeDebrisProvider;
+    if (typeof maybeDebrisProvider.getDebrisSimulation === "function") {
+      const sim = maybeDebrisProvider.getDebrisSimulation();
+      this.debrisRenderer = new DebrisRenderer(sim);
+      this.rootGroup.add(this.debrisRenderer.mesh);
+    } else {
+      this.debrisRenderer = null;
+    }
+
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
   }
 
@@ -83,6 +103,9 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.chunkRenderer.setTargetHighlights(this.currentSelection);
     this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
+    if (this.debrisRenderer !== null) {
+      this.debrisRenderer.syncFromSimulation();
+    }
     this.sceneHandles.render();
   }
 

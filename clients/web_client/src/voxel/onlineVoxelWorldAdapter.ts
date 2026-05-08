@@ -686,6 +686,13 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return this.lastObjectStateFrameMs ?? Math.round(performance.now());
   }
 
+  // Phase 4-bis Step 4-bis-12 production hook:RenderOrchestrator picks
+  // this up via duck typing to wire the DebrisRenderer InstancedMesh into
+  // the scene root group.
+  getDebrisSimulation(): DebrisSimulation {
+    return this.debrisSimulation;
+  }
+
   // Phase 4-bis Step 4-bis-10 test hatches.
   debrisSimulationForTest(): DebrisSimulation {
     return this.debrisSimulation;

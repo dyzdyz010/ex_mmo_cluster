@@ -57,6 +57,16 @@ export class HudView implements FrameSubscriber {
       bus.on("transport:mode-changed", ({ mode }) => {
         this.showFlash(`transport: ${mode}`, FLASH_DEFAULT_DURATION_MS);
       });
+      // Phase 4-bis Step 4-bis-12:destroyed object 路演反馈。damaged /
+      // part_destroyed 不上 HUD(避免高频破坏刷屏)。
+      bus.on("world:object-state-delta", ({ flagName, objectId, debrisSpawned }) => {
+        if (flagName === "destroyed") {
+          this.showFlash(
+            `object #${objectId} destroyed (${debrisSpawned} debris)`,
+            FAILURE_FLASH_DURATION_MS,
+          );
+        }
+      });
     }
   }
 
