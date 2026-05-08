@@ -30,7 +30,11 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   use GenServer
 
   alias DataService.Voxel.SceneObjectStore
+  alias SceneServer.CliObserve
+  alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.PartState
+
+  import Bitwise
 
   @type chunk_coord :: {integer(), integer(), integer()}
   @type cover_kind :: :add | :remove
@@ -123,6 +127,84 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   @spec load_scene(GenServer.server(), non_neg_integer()) :: :ok
   def load_scene(server \\ __MODULE__, logical_scene_id) do
     GenServer.call(server, {:load_scene, logical_scene_id})
+  end
+
+  @doc """
+  Phase 4 (D7):accumulates `damage` (positive integer) on the named PartState.
+
+  Subtracts from `health`,asserts the `damaged` bit, and if `health <= 0`
+  triggers `destroy_part/4` synchronously inside the registry's GenServer
+  call (which in turn may trigger `destroy_object/3` if all parts are now
+  destroyed).
+
+  Returns:
+    * `:ok` — health > 0 after damage applied
+    * `{:part_destroyed, ...}` — part transitioned to destroyed
+    * `{:object_destroyed, ...}` — last surviving part transitioned, object destroyed
+    * `{:error, :object_not_found | :part_not_found | :already_destroyed}`
+
+  `opts[:chunk_directory]` overrides the default `ChunkDirectory` for the
+  cascading destroy paths.
+  """
+  @spec accumulate_damage(
+          GenServer.server(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          keyword()
+        ) :: :ok | {:part_destroyed, map()} | {:object_destroyed, map()} | {:error, atom()}
+  def accumulate_damage(
+        server \\ __MODULE__,
+        logical_scene_id,
+        object_id,
+        part_id,
+        damage,
+        opts \\ []
+      )
+      when is_integer(damage) and damage >= 0 do
+    GenServer.call(
+      server,
+      {:accumulate_damage, logical_scene_id, object_id, part_id, damage, opts}
+    )
+  end
+
+  @doc """
+  Phase 4 (D8):forces a part to its destroyed terminal state.
+
+  Iterates the object's `covered_chunks` and asks each chunk to wipe every
+  `(owner_object_id, owner_part_id)` micro slot via
+  `SceneServer.Voxel.ChunkProcess.destroy_part/2`,then marks the
+  PartState destroyed and persists the row. If this transitions every
+  PartState to destroyed,it cascades into `destroy_object/3` and returns
+  `{:object_destroyed, ...}`.
+  """
+  @spec destroy_part(
+          GenServer.server(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          keyword()
+        ) :: {:part_destroyed, map()} | {:object_destroyed, map()} | {:error, atom()}
+  def destroy_part(server \\ __MODULE__, logical_scene_id, object_id, part_id, opts \\ []) do
+    GenServer.call(server, {:destroy_part, logical_scene_id, object_id, part_id, opts})
+  end
+
+  @doc """
+  Phase 4 (D9):final cleanup for an object. Deletes the
+  `voxel_scene_objects` row and removes the in-memory entry. Each
+  `covered_chunks` entry is asked to drop any stale ChunkObjectRef[]
+  pointing at the dead object — defensive belt-and-suspenders;
+  `Storage.refresh_chunk_object_refs/1` after `destroy_part` already
+  removes the entry naturally.
+
+  Emits `voxel_object_destroyed` observe so Phase 5+ downstream hooks
+  (掉落物 / 任务系统 / 资源回收) can chain off it.
+  """
+  @spec destroy_object(GenServer.server(), non_neg_integer(), non_neg_integer(), keyword()) ::
+          {:object_destroyed, map()} | {:error, atom()}
+  def destroy_object(server \\ __MODULE__, logical_scene_id, object_id, opts \\ []) do
+    GenServer.call(server, {:destroy_object, logical_scene_id, object_id, opts})
   end
 
   @doc "Internal state snapshot. CLI / debug only."
@@ -234,6 +316,255 @@ defmodule SceneServer.Voxel.ObjectRegistry do
 
   def handle_call(:reset, _from, state) do
     {:reply, :ok, %{state | scenes_loaded: MapSet.new(), objects: %{}}}
+  end
+
+  def handle_call(
+        {:accumulate_damage, scene_id, object_id, part_id, damage, opts},
+        _from,
+        state
+      ) do
+    state = ensure_scene_loaded(state, scene_id)
+
+    case get_in(state, [:objects, scene_id, object_id]) do
+      nil ->
+        {:reply, {:error, :object_not_found}, state}
+
+      instance ->
+        case find_part_index(instance.part_states, part_id) do
+          nil ->
+            {:reply, {:error, :part_not_found}, state}
+
+          {idx, part_state} ->
+            cond do
+              PartState.destroyed?(part_state) ->
+                {:reply, {:error, :already_destroyed}, state}
+
+              true ->
+                damaged_part_state =
+                  part_state
+                  |> PartState.apply_damage(damage)
+                  |> PartState.mark_damaged()
+
+                new_part_states =
+                  List.replace_at(instance.part_states, idx, damaged_part_state)
+
+                new_instance =
+                  %{
+                    instance
+                    | part_states: new_part_states,
+                      state_flags: bor(instance.state_flags, PartState.flag_damaged()),
+                      object_version: instance.object_version + 1
+                  }
+
+                # If health <= 0, cascade into destroy_part synchronously.
+                if damaged_part_state.health <= 0 do
+                  case persist_and_cache(new_instance, state) do
+                    {:ok, staged_state} ->
+                      {reply, final_state} =
+                        run_destroy_part(staged_state, scene_id, object_id, part_id, opts)
+
+                      {:reply, reply, final_state}
+
+                    {:error, reason} ->
+                      {:reply, {:error, reason}, state}
+                  end
+                else
+                  case persist_and_cache(new_instance, state) do
+                    {:ok, new_state} ->
+                      emit_damage(scene_id, object_id, part_id, damaged_part_state, damage)
+                      {:reply, :ok, new_state}
+
+                    {:error, reason} ->
+                      {:reply, {:error, reason}, state}
+                  end
+                end
+            end
+        end
+    end
+  end
+
+  def handle_call({:destroy_part, scene_id, object_id, part_id, opts}, _from, state) do
+    state = ensure_scene_loaded(state, scene_id)
+
+    case get_in(state, [:objects, scene_id, object_id]) do
+      nil ->
+        {:reply, {:error, :object_not_found}, state}
+
+      _instance ->
+        {reply, new_state} = run_destroy_part(state, scene_id, object_id, part_id, opts)
+        {:reply, reply, new_state}
+    end
+  end
+
+  def handle_call({:destroy_object, scene_id, object_id, opts}, _from, state) do
+    state = ensure_scene_loaded(state, scene_id)
+
+    case get_in(state, [:objects, scene_id, object_id]) do
+      nil ->
+        {:reply, {:error, :object_not_found}, state}
+
+      instance ->
+        new_state = run_destroy_object(state, scene_id, instance, opts)
+        {:reply, {:object_destroyed, %{object_id: object_id, scene_id: scene_id}}, new_state}
+    end
+  end
+
+  ## Damage / destroy helpers
+
+  defp find_part_index(part_states, part_id) do
+    case Enum.find_index(part_states, fn ps -> ps.part_id == part_id end) do
+      nil -> nil
+      idx -> {idx, Enum.at(part_states, idx)}
+    end
+  end
+
+  # Returns `{reply, new_state}`.
+  defp run_destroy_part(state, scene_id, object_id, part_id, opts) do
+    instance = get_in(state, [:objects, scene_id, object_id])
+
+    cond do
+      instance == nil ->
+        {{:error, :object_not_found}, state}
+
+      true ->
+        case find_part_index(instance.part_states, part_id) do
+          nil ->
+            {{:error, :part_not_found}, state}
+
+          {idx, part_state} ->
+            if PartState.destroyed?(part_state) do
+              {{:error, :already_destroyed}, state}
+            else
+              do_destroy_part(state, scene_id, instance, idx, part_state, opts)
+            end
+        end
+    end
+  end
+
+  defp do_destroy_part(state, scene_id, instance, idx, part_state, opts) do
+    chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    object_id = instance.object_id
+    part_id = part_state.part_id
+
+    # Step 1:wipe the part's micros from every covered chunk.
+    Enum.each(instance.covered_chunks, fn chunk_coord ->
+      ChunkDirectory.destroy_part(chunk_directory, %{
+        logical_scene_id: scene_id,
+        chunk_coord: chunk_coord,
+        object_id: object_id,
+        part_id: part_id
+      })
+    end)
+
+    # Step 2:mark the PartState destroyed.
+    new_part_states =
+      List.replace_at(instance.part_states, idx, PartState.mark_destroyed(part_state))
+
+    new_instance =
+      %{
+        instance
+        | part_states: new_part_states,
+          state_flags: bor(instance.state_flags, PartState.flag_damaged()),
+          object_version: instance.object_version + 1
+      }
+
+    # Step 3:if every part is destroyed, cascade into destroy_object.
+    if Enum.all?(new_part_states, &PartState.destroyed?/1) do
+      new_instance =
+        %{new_instance | state_flags: bor(new_instance.state_flags, PartState.flag_destroyed())}
+
+      case persist_and_cache(new_instance, state) do
+        {:ok, staged_state} ->
+          emit_part_destroyed(scene_id, object_id, part_id)
+          final_state = run_destroy_object(staged_state, scene_id, new_instance, opts)
+
+          {{:object_destroyed,
+            %{object_id: object_id, scene_id: scene_id, last_part_id: part_id}}, final_state}
+
+        {:error, reason} ->
+          {{:error, reason}, state}
+      end
+    else
+      case persist_and_cache(new_instance, state) do
+        {:ok, new_state} ->
+          emit_part_destroyed(scene_id, object_id, part_id)
+
+          {{:part_destroyed,
+            %{
+              object_id: object_id,
+              scene_id: scene_id,
+              part_id: part_id,
+              remaining_parts: Enum.count(new_part_states, &(not PartState.destroyed?(&1)))
+            }}, new_state}
+
+        {:error, reason} ->
+          {{:error, reason}, state}
+      end
+    end
+  end
+
+  defp run_destroy_object(state, scene_id, instance, opts) do
+    chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+
+    # Defensive belt-and-suspenders:ask every covered chunk to drop any
+    # stale ChunkObjectRef[] pointing at the dead object_id. After
+    # destroy_part across all parts, refresh has already cleared them.
+    Enum.each(instance.covered_chunks, fn chunk_coord ->
+      ChunkDirectory.cleanup_object_refs(chunk_directory, %{
+        logical_scene_id: scene_id,
+        chunk_coord: chunk_coord,
+        object_id: instance.object_id
+      })
+    end)
+
+    # Delete the row + drop from in-memory.
+    state.store.delete_object(instance.object_id, state.store_opts)
+
+    new_objects =
+      case Map.get(state.objects, scene_id) do
+        nil ->
+          state.objects
+
+        scene_map ->
+          Map.put(state.objects, scene_id, Map.delete(scene_map, instance.object_id))
+      end
+
+    new_state = %{state | objects: new_objects}
+
+    emit_object_destroyed(scene_id, instance.object_id)
+
+    new_state
+  end
+
+  defp emit_damage(scene_id, object_id, part_id, part_state, damage) do
+    CliObserve.emit("voxel_part_damaged", fn ->
+      %{
+        logical_scene_id: scene_id,
+        object_id: object_id,
+        part_id: part_id,
+        damage: damage,
+        health: part_state.health
+      }
+    end)
+  end
+
+  defp emit_part_destroyed(scene_id, object_id, part_id) do
+    CliObserve.emit("voxel_part_destroyed", fn ->
+      %{
+        logical_scene_id: scene_id,
+        object_id: object_id,
+        part_id: part_id
+      }
+    end)
+  end
+
+  defp emit_object_destroyed(scene_id, object_id) do
+    CliObserve.emit("voxel_object_destroyed", fn ->
+      %{
+        logical_scene_id: scene_id,
+        object_id: object_id
+      }
+    end)
   end
 
   ## Helpers

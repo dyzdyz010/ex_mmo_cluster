@@ -160,6 +160,134 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
   end
 
+  describe "ChunkProcess.destroy_part/2 (Phase 4 D8)" do
+    test "wipes every micro slot owned by (object_id, part_id)" do
+      lease = lease_with_token()
+      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      # Place owner=42 part=3 at slots 0,1; owner=42 part=4 at slot 2;
+      # owner=99 part=1 at slot 3.
+      attrs = [
+        micro_intent_attrs(lease,
+          request_id: 1,
+          macro: {0, 0, 0},
+          micro_slot: 0,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        ),
+        micro_intent_attrs(lease,
+          request_id: 2,
+          macro: {0, 0, 0},
+          micro_slot: 1,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        ),
+        micro_intent_attrs(lease,
+          request_id: 3,
+          macro: {0, 0, 0},
+          micro_slot: 2,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 4}
+        ),
+        micro_intent_attrs(lease,
+          request_id: 4,
+          macro: {0, 0, 0},
+          micro_slot: 3,
+          micro_layer: %{material_id: 1, owner_object_id: 99, owner_part_id: 1}
+        )
+      ]
+
+      assert {:ok, _reply} = ChunkProcess.apply_intents(chunk, attrs)
+
+      # Apply lease to the chunk so destroy_part's persist call works
+      {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
+
+      # Destroy part 3 of object 42 — should clear slots 0,1 only
+      assert {:ok, %{changed?: true, cleared_count: 2}} =
+               ChunkProcess.destroy_part(chunk, %{object_id: 42, part_id: 3})
+
+      storage = ChunkProcess.debug_state(chunk).storage
+
+      # Part 4 of object 42 still alive (slot 2)
+      assert Storage.lookup_owner_at(storage, {0, 0, 0}, 2) == {42, 4}
+      # Part 3 slots cleared
+      assert Storage.lookup_owner_at(storage, {0, 0, 0}, 0) == nil
+      assert Storage.lookup_owner_at(storage, {0, 0, 0}, 1) == nil
+      # Object 99 still alive
+      assert Storage.lookup_owner_at(storage, {0, 0, 0}, 3) == {99, 1}
+
+      # Chunk-level ChunkObjectRef still has 42 (part 4 alive) and 99
+      assert Enum.map(storage.object_refs, & &1.object_id) |> Enum.sort() == [42, 99]
+    end
+
+    test "is a no-op when no matching slots exist" do
+      lease = lease_with_token()
+      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
+
+      # Empty chunk → destroy_part is a clean no-op
+      assert {:ok, %{changed?: false, cleared_count: 0}} =
+               ChunkProcess.destroy_part(chunk, %{object_id: 42, part_id: 3})
+    end
+
+    test "fully drains the only object → ChunkObjectRef[] becomes empty" do
+      lease = lease_with_token()
+      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      attrs = [
+        micro_intent_attrs(lease,
+          request_id: 1,
+          macro: {0, 0, 0},
+          micro_slot: 0,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        )
+      ]
+
+      assert {:ok, _} = ChunkProcess.apply_intents(chunk, attrs)
+      {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
+
+      assert {:ok, %{changed?: true, cleared_count: 1}} =
+               ChunkProcess.destroy_part(chunk, %{object_id: 42, part_id: 3})
+
+      storage = ChunkProcess.debug_state(chunk).storage
+      assert storage.object_refs == []
+    end
+  end
+
+  describe "ChunkProcess.cleanup_object_refs/2 (Phase 4 D9)" do
+    test "drops a stale ChunkObjectRef[] entry by object_id" do
+      lease = lease_with_token()
+      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      attrs = [
+        micro_intent_attrs(lease,
+          request_id: 1,
+          macro: {0, 0, 0},
+          micro_slot: 0,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        )
+      ]
+
+      assert {:ok, _} = ChunkProcess.apply_intents(chunk, attrs)
+      assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
+
+      # Sanity: ref present
+      assert [%{object_id: 42}] = ChunkProcess.debug_state(chunk).storage.object_refs
+
+      # cleanup
+      assert :ok = ChunkProcess.cleanup_object_refs(chunk, %{object_id: 42})
+
+      assert ChunkProcess.debug_state(chunk).storage.object_refs == []
+    end
+
+    test "is idempotent when no stale entry exists" do
+      lease = lease_with_token()
+      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
+
+      assert :ok = ChunkProcess.cleanup_object_refs(chunk, %{object_id: 42})
+    end
+  end
+
   describe "BuildTransactionApplier.register_scene_objects/2 (Phase 4 D5)" do
     test "upserts every scene_object into the ObjectRegistry" do
       registry =

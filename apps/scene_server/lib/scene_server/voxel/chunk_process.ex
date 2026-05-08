@@ -165,6 +165,29 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc """
+  Phase 4 (D8):wipes every micro slot owned by `(object_id, part_id)` in
+  this chunk. Iterates layers, clears matching mask bits, refreshes object
+  refs, and persists. Idempotent — a chunk with no matching layers is a
+  cheap no-op.
+
+  `attrs` requires `:object_id` and `:part_id`.
+  """
+  def destroy_part(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:destroy_part, attrs})
+  end
+
+  @doc """
+  Phase 4 (D9):drops any `ChunkObjectRef[]` entry pointing at the dead
+  `object_id`. Defensive — `destroy_part` already cleared the layers and
+  the next refresh removed the ChunkObjectRef.
+
+  `attrs` requires `:object_id`.
+  """
+  def cleanup_object_refs(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:cleanup_object_refs, attrs})
+  end
+
+  @doc """
   Pushes a `ChunkInvalidate` payload to every subscriber and forgets them.
 
   Used when chunk ownership flips (migration cutover) or when the region is
@@ -208,7 +231,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
        lease: lease,
        subscribers: %{},
        subscriber_monitors: %{},
-       pending_fence: pending_fence
+       pending_fence: pending_fence,
+       # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
+       # attribution and downstream destroy_part dispatch. Tests inject
+       # stubbed names; production wiring uses module-named singletons.
+       object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
+       chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory)
      }}
   end
 
@@ -478,6 +506,47 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {:reply, :ok, next_state}
   end
 
+  def handle_call({:destroy_part, attrs}, _from, state) do
+    case destroy_part_in_state(state, attrs) do
+      {:ok, reply, next_state} ->
+        emit_destroy_part_event(next_state, attrs, reply)
+
+        if reply.changed? do
+          push_snapshot_fallbacks(next_state, :destroy_part)
+        end
+
+        {:reply, {:ok, reply}, next_state}
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_chunk_destroy_part_failed", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            object_id: Map.get(attrs, :object_id),
+            part_id: Map.get(attrs, :part_id),
+            reason: inspect(reason)
+          }
+        end)
+
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:cleanup_object_refs, attrs}, _from, state) do
+    object_id = Map.fetch!(attrs, :object_id)
+
+    new_object_refs =
+      Enum.reject(state.storage.object_refs, fn ref -> ref.object_id == object_id end)
+
+    if new_object_refs == state.storage.object_refs do
+      {:reply, :ok, state}
+    else
+      next_storage = %{state.storage | object_refs: new_object_refs}
+      next_state = %{state | storage: next_storage}
+      {:reply, :ok, next_state}
+    end
+  end
+
   def handle_call({:invalidate_subscribers, reason}, _from, state) do
     payload =
       Codec.encode_chunk_invalidate_payload(%{
@@ -661,12 +730,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_info(_message, state), do: {:noreply, state}
 
   defp apply_normalized_intent(state, intent) do
+    # Phase 4 (D7):collect damage attribution from owner lookups BEFORE
+    # the apply clears the slot (post-apply lookup would see the empty
+    # slot).
+    damage_attribution = collect_damage_attribution(state.storage, [intent])
+
     with :ok <- validate_intent_scope(state, intent),
          :ok <- validate_intent_preconditions(state, intent),
          {:ok, raw_storage, changed?} <- build_intent_storage(state.storage, intent) do
-      # Phase 4 (D6):mirror the apply_normalized_intents/2 batch path —
-      # rebuild ChunkObjectRef[] from layer truth so single-intent flows
-      # (apply_intent/2 direct path) keep object provenance摘要 in sync.
+      # Phase 4 (D6):rebuild ChunkObjectRef[] from layer truth so
+      # single-intent flows (apply_intent/2 direct path) keep object
+      # provenance摘要 in sync.
       next_storage =
         if changed?, do: Storage.refresh_chunk_object_refs(raw_storage), else: raw_storage
 
@@ -682,6 +756,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
              ) do
           {:ok, persist_result} ->
             next_state = %{state | storage: next_storage, lease: intent.lease}
+            dispatch_damage_async(next_state, damage_attribution)
 
             {:ok, intent_reply(next_storage, intent, persist_result, snapshot_payload, true),
              next_state}
@@ -714,6 +789,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp apply_normalized_intents(state, intents) do
+    # Phase 4 (D7):collect damage attribution before clearing micros.
+    damage_attribution = collect_damage_attribution(state.storage, intents)
+
     with :ok <- validate_batch_scope(state, intents),
          :ok <- validate_batch_preconditions(state, intents),
          {:ok, raw_storage, changed_count, skipped_count} <-
@@ -747,7 +825,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 skipped_count
               )
 
-            {:ok, reply, %{state | storage: next_storage, lease: lease}}
+            next_state = %{state | storage: next_storage, lease: lease}
+            dispatch_damage_async(next_state, damage_attribution)
+
+            {:ok, reply, next_state}
 
           {:error, reason} ->
             {:error, reason}
@@ -766,6 +847,62 @@ defmodule SceneServer.Voxel.ChunkProcess do
         {:ok, reply, %{state | lease: lease}}
       end
     end
+  end
+
+  # Phase 4 (D7):damage attribution helpers. Pre-apply lookup of owner +
+  # accumulator + post-apply async dispatch (Task.start to break the
+  # ChunkProcess → ObjectRegistry → ChunkDirectory → ChunkProcess.destroy_part
+  # synchronous loop).
+  defp collect_damage_attribution(storage, intents) when is_list(intents) do
+    Enum.reduce(intents, %{}, &accumulate_intent_damage(&1, &2, storage))
+  end
+
+  defp accumulate_intent_damage(
+         %{operation: :clear_micro_block, macro: macro, micro_slot: slot},
+         acc,
+         storage
+       ) do
+    case Storage.lookup_owner_at(storage, macro, slot) do
+      {oid, pid} when oid > 0 ->
+        Map.update(acc, {oid, pid}, 1, &(&1 + 1))
+
+      _ ->
+        acc
+    end
+  end
+
+  defp accumulate_intent_damage(_intent, acc, _storage), do: acc
+
+  defp dispatch_damage_async(_state, attribution) when map_size(attribution) == 0, do: :ok
+
+  defp dispatch_damage_async(%{object_registry: nil}, _attribution), do: :ok
+
+  defp dispatch_damage_async(state, attribution) do
+    registry = state.object_registry
+    chunk_directory = state.chunk_directory
+    scene_id = state.logical_scene_id
+
+    Task.start(fn ->
+      Enum.each(attribution, fn {{oid, pid}, count} ->
+        try do
+          SceneServer.Voxel.ObjectRegistry.accumulate_damage(
+            registry,
+            scene_id,
+            oid,
+            pid,
+            count,
+            chunk_directory: chunk_directory
+          )
+        catch
+          # Registry not running (test harness w/o ObjectRegistry, or restart
+          # in flight). Damage is best-effort: drop on the floor; the next
+          # apply will re-attribute as the registry comes back up.
+          :exit, _ -> :ok
+        end
+      end)
+    end)
+
+    :ok
   end
 
   defp intent_reply(storage, intent, persist_result, snapshot_payload, changed?) do
@@ -1270,6 +1407,130 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp solid_cell?(storage, macro_index) do
     Storage.macro_header_at(storage, macro_index).mode ==
       MacroCellHeader.cell_mode_solid_block()
+  end
+
+  # Phase 4 (D8) — destroy_part helper. Server-internal cleanup, never via
+  # user lease. Persistence still uses the chunk's current state.lease.
+  defp destroy_part_in_state(state, attrs) do
+    object_id = Map.fetch!(attrs, :object_id)
+    part_id = Map.fetch!(attrs, :part_id)
+    storage_before = state.storage
+
+    targets = collect_part_target_slots(storage_before, object_id, part_id)
+
+    cond do
+      targets == [] ->
+        reply = build_destroy_part_reply(state, object_id, part_id, false, 0, storage_before)
+        {:ok, reply, state}
+
+      true ->
+        cleared_storage =
+          Enum.reduce(targets, storage_before, fn {macro_idx, slot}, acc ->
+            Storage.clear_micro_block(acc, macro_idx, slot)
+          end)
+
+        refreshed =
+          cleared_storage
+          |> Storage.refresh_chunk_object_refs()
+          |> bump_chunk_version()
+
+        payload = encode_snapshot_payload(refreshed, 0)
+
+        case persist_snapshot(state.lease, state.chunk_coord, refreshed, payload) do
+          {:ok, _persist_result} ->
+            next_state = %{state | storage: refreshed}
+
+            reply =
+              build_destroy_part_reply(
+                next_state,
+                object_id,
+                part_id,
+                true,
+                length(targets),
+                refreshed,
+                payload
+              )
+
+            {:ok, reply, next_state}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp collect_part_target_slots(storage, object_id, part_id) do
+    storage.macro_headers
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {header, macro_idx} ->
+      if header.mode == MacroCellHeader.cell_mode_refined() do
+        cell = Enum.at(storage.refined_cells, header.payload_index)
+
+        cell.layers
+        |> Enum.filter(fn layer ->
+          layer.owner_object_id == object_id and layer.owner_part_id == part_id
+        end)
+        |> Enum.flat_map(fn layer ->
+          layer.mask_words
+          |> slots_in_mask_words()
+          |> Enum.map(&{macro_idx, &1})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  defp slots_in_mask_words(mask_words) do
+    mask_words
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {word, word_idx} ->
+      bits_in_word(word) |> Enum.map(&(word_idx * 64 + &1))
+    end)
+  end
+
+  defp bits_in_word(word) when is_integer(word) and word >= 0 do
+    Enum.reduce(0..63, [], fn i, acc ->
+      if band(word, bsl(1, i)) != 0, do: [i | acc], else: acc
+    end)
+    |> Enum.reverse()
+  end
+
+  defp build_destroy_part_reply(
+         state,
+         object_id,
+         part_id,
+         changed?,
+         cleared_count,
+         storage,
+         payload \\ nil
+       ) do
+    payload = payload || encode_snapshot_payload(storage, 0)
+
+    %{
+      logical_scene_id: state.logical_scene_id,
+      chunk_coord: state.chunk_coord,
+      object_id: object_id,
+      part_id: part_id,
+      changed?: changed?,
+      chunk_version: storage.chunk_version,
+      snapshot_payload: payload,
+      cleared_count: cleared_count
+    }
+  end
+
+  defp emit_destroy_part_event(state, attrs, reply) do
+    CliObserve.emit("voxel_chunk_destroy_part", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        object_id: Map.get(attrs, :object_id),
+        part_id: Map.get(attrs, :part_id),
+        changed?: reply.changed?,
+        cleared_count: reply.cleared_count,
+        chunk_version: reply.chunk_version
+      }
+    end)
   end
 
   defp persist_snapshot(nil, _chunk_coord, _storage, _payload) do

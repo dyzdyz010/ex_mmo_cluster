@@ -128,6 +128,30 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  Phase 4 (D8):wipes every micro slot owned by `(object_id, part_id)` in
+  the named chunk, refreshes object refs, and persists. Idempotent — a
+  chunk that has no matching slots is a cheap no-op.
+
+  `attrs` requires `:logical_scene_id`, `:chunk_coord`, `:object_id`,
+  `:part_id`.
+  """
+  def destroy_part(server \\ __MODULE__, attrs) do
+    GenServer.call(server, {:destroy_part, attrs})
+  end
+
+  @doc """
+  Phase 4 (D9):drops any `ChunkObjectRef[]` entry pointing at the dead
+  `object_id`. Defensive cleanup — under normal flow `destroy_part`
+  already cleared the underlying layers and the next refresh removes the
+  stale ChunkObjectRef.
+
+  Idempotent.
+  """
+  def cleanup_object_refs(server \\ __MODULE__, attrs) do
+    GenServer.call(server, {:cleanup_object_refs, attrs})
+  end
+
+  @doc """
   Pushes a `ChunkInvalidate` payload to every subscriber of one chunk and
   forgets them. Returns `{:ok, %{subscriber_count: n, reason: reason}}` when
   the chunk is hot, or `{:error, :chunk_not_started}` if the directory has not
@@ -338,6 +362,39 @@ defmodule SceneServer.Voxel.ChunkDirectory do
         case fetch_chunk_pid(state, key) do
           {:ok, chunk_pid} ->
             {:reply, ChunkProcess.abort_transaction(chunk_pid, transaction_id), state}
+
+          {:error, :chunk_not_started} ->
+            {:reply, :ok, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:destroy_part, attrs}, _from, state) do
+    case normalize_chunk_key(attrs) do
+      {:ok, key} ->
+        case fetch_chunk_pid(state, key) do
+          {:ok, chunk_pid} ->
+            {:reply, ChunkProcess.destroy_part(chunk_pid, attrs), state}
+
+          # Chunk not started — no slots there to wipe.
+          {:error, :chunk_not_started} ->
+            {:reply, :ok, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:cleanup_object_refs, attrs}, _from, state) do
+    case normalize_chunk_key(attrs) do
+      {:ok, key} ->
+        case fetch_chunk_pid(state, key) do
+          {:ok, chunk_pid} ->
+            {:reply, ChunkProcess.cleanup_object_refs(chunk_pid, attrs), state}
 
           {:error, :chunk_not_started} ->
             {:reply, :ok, state}
