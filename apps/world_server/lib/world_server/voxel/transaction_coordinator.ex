@@ -444,7 +444,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
                normalize_decision_version(value(attrs, :decision_version, 1)),
              {:ok, intents_by_participant} <- normalize_intents_by_participant(attrs),
              {:ok, scene_objects} <-
-               allocate_scene_objects(attrs, state.next_object_id_fn) do
+               allocate_scene_objects(attrs, state.next_object_id_fn, participants) do
           transaction = %BuildTransaction{
             transaction_id: transaction_id,
             logical_scene_id: value(attrs, :logical_scene_id),
@@ -467,7 +467,12 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   # Phase 4 (D2 + D3):normalize each scene_object seed and allocate an
   # `object_id` from the sequence. Empty list → no objects to create (e.g.
   # break-only transactions).
-  defp allocate_scene_objects(attrs, next_object_id_fn) do
+  # Phase A4-3:除了分配 object_id,还按 D6 字典序规则推导 owner participant
+  # (字典序第一个 covered chunk 所在 participant 的 region_id / lease_id)。
+  # 任一 covered chunk 不被任何 participant 的 affected_chunks 覆盖时,该 seed
+  # 无法选 owner → :scene_object_owner_undeterminable(说明 caller 路由信息
+  # 跟 covered_chunks 不一致)。
+  defp allocate_scene_objects(attrs, next_object_id_fn, participants) do
     case value(attrs, :scene_objects, []) do
       [] ->
         {:ok, []}
@@ -476,8 +481,14 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
         seeds
         |> Enum.reduce_while({:ok, []}, fn seed, {:ok, acc} ->
           with {:ok, normalized} <- normalize_scene_object_seed(seed),
-               {:ok, object_id} <- run_next_object_id(next_object_id_fn) do
-            {:cont, {:ok, [Map.put(normalized, :object_id, object_id) | acc]}}
+               {:ok, object_id} <- run_next_object_id(next_object_id_fn),
+               {:ok, owner} <- derive_scene_object_owner(normalized, participants) do
+            entry =
+              normalized
+              |> Map.put(:object_id, object_id)
+              |> Map.merge(owner)
+
+            {:cont, {:ok, [entry | acc]}}
           else
             {:error, reason} -> {:halt, {:error, reason}}
           end
@@ -489,6 +500,29 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
       _other ->
         {:error, :invalid_scene_objects}
+    end
+  end
+
+  # D6:owner 是字典序(`{x, y, z}` ascending)第一个 covered chunk 所在的
+  # participant。同一 prefab 的所有 covered chunks 必须落到 transaction
+  # participants 的某一个 affected_chunks(否则 caller 路由信息错位)。
+  defp derive_scene_object_owner(normalized_seed, participants) do
+    case Enum.sort(normalized_seed.covered_chunks) do
+      [] ->
+        {:error, :invalid_covered_chunks}
+
+      [first_chunk | _] ->
+        case Enum.find(participants, fn p -> first_chunk in p.affected_chunks end) do
+          nil ->
+            {:error, :scene_object_owner_undeterminable}
+
+          participant ->
+            {:ok,
+             %{
+               owner_region_id: participant.region_id,
+               owner_lease_id: participant.lease_id
+             }}
+        end
     end
   end
 

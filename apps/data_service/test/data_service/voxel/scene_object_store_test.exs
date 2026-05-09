@@ -188,6 +188,37 @@ defmodule DataService.Voxel.SceneObjectStoreTest do
     end
   end
 
+  describe "Phase A4-3 owner_region_id / owner_lease_id" do
+    setup do
+      SceneObjectStore.reset()
+      :ok
+    end
+
+    test "owner fields round-trip through put_object/get_object" do
+      attrs = object_attrs(owner_region_id: 42, owner_lease_id: 4_242)
+      assert {:ok, :upserted} = SceneObjectStore.put_object(attrs)
+
+      assert {:ok, got} = SceneObjectStore.get_object(attrs.object_id)
+      assert got.owner_region_id == 42
+      assert got.owner_lease_id == 4_242
+    end
+
+    test "rejects put when owner_region_id is missing" do
+      attrs = object_attrs() |> Map.delete(:owner_region_id)
+      assert {:error, :missing_owner_region_id} = SceneObjectStore.put_object(attrs)
+    end
+
+    test "rejects put when owner_lease_id is missing" do
+      attrs = object_attrs() |> Map.delete(:owner_lease_id)
+      assert {:error, :missing_owner_lease_id} = SceneObjectStore.put_object(attrs)
+    end
+
+    test "rejects put when owner_region_id is negative" do
+      attrs = object_attrs(owner_region_id: -1)
+      assert {:error, :invalid_owner_region_id} = SceneObjectStore.put_object(attrs)
+    end
+  end
+
   defp object_attrs(overrides \\ []) do
     overrides = Map.new(overrides)
 
@@ -208,7 +239,9 @@ defmodule DataService.Voxel.SceneObjectStoreTest do
         %{part_id: 1, health: 80, state_flags: 0},
         %{part_id: 2, health: 40, state_flags: 0}
       ],
-      object_version: 1
+      object_version: 1,
+      owner_region_id: 1,
+      owner_lease_id: 100
     }
 
     Map.merge(base, overrides)

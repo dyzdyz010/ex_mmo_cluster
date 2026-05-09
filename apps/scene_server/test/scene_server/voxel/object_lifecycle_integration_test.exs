@@ -276,7 +276,9 @@ defmodule SceneServer.Voxel.ObjectLifecycleIntegrationTest do
       object_tag_set_ref: 0,
       covered_chunks: [{1, 1, 1}],
       part_states: [PartState.new(part_id: 1, health: 80, state_flags: 0)],
-      object_version: 1
+      object_version: 1,
+      owner_region_id: 1,
+      owner_lease_id: 100
     }
     |> Map.merge(Map.new(overrides))
   end

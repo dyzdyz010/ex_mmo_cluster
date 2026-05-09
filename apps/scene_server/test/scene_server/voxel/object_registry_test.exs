@@ -269,7 +269,8 @@ defmodule SceneServer.Voxel.ObjectRegistryTest do
     test "accumulate_damage at health <= 0 cascades into destroy_part", %{registry: r} do
       mock_chunks =
         start_supervised!(
-          {__MODULE__.MockChunkDirectory, name: :"mock_dir_destroy_#{System.unique_integer([:positive])}"}
+          {__MODULE__.MockChunkDirectory,
+           name: :"mock_dir_destroy_#{System.unique_integer([:positive])}"}
         )
 
       instance =
@@ -506,7 +507,9 @@ defmodule SceneServer.Voxel.ObjectRegistryTest do
         PartState.new(part_id: 1, health: 80, state_flags: 0),
         PartState.new(part_id: 2, health: 40, state_flags: 0)
       ],
-      object_version: 1
+      object_version: 1,
+      owner_region_id: 1,
+      owner_lease_id: 100
     }
 
     Map.merge(base, overrides)

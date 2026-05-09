@@ -389,7 +389,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       part_states: [
         %{part_id: 1, health: 80, state_flags: 0}
       ],
-      object_version: 1
+      object_version: 1,
+      owner_region_id: 1,
+      owner_lease_id: 100
     }
     |> Map.merge(Map.new(overrides))
   end

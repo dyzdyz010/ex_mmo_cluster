@@ -37,6 +37,11 @@ defmodule DataService.Schema.VoxelSceneObject do
     field(:covered_chunks, :binary)
     field(:part_states, :binary)
     field(:object_version, :integer)
+    # Phase A4-3:owner participant 元数据。D6 字典序第一个 covered chunk
+    # 所在的 region 是 owner;ObjectRegistry 只在 owner scene_node 上单点
+    # 注册;A4-4 ObjectOwnerLookup 据此跨节点路由 damage / 0x6C 广播。
+    field(:owner_region_id, :integer)
+    field(:owner_lease_id, :integer)
 
     timestamps()
   end
@@ -57,7 +62,9 @@ defmodule DataService.Schema.VoxelSceneObject do
     :object_tag_set_ref,
     :covered_chunks,
     :part_states,
-    :object_version
+    :object_version,
+    :owner_region_id,
+    :owner_lease_id
   ]
 
   # `anchor_world_micro_*` 是 i64 世界坐标,可负;不加非负约束。
@@ -72,7 +79,9 @@ defmodule DataService.Schema.VoxelSceneObject do
     :state_flags,
     :object_attribute_ref,
     :object_tag_set_ref,
-    :object_version
+    :object_version,
+    :owner_region_id,
+    :owner_lease_id
   ]
 
   def changeset(struct, attrs) do

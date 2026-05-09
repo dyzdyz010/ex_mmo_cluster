@@ -369,11 +369,10 @@ defmodule WorldServer.Voxel.TransactionExecutor do
      }}
   end
 
-  # Phase A4-1:scene_objects 注册路径暂仍走单一 opts(选 sorted-key 第一个
-  # participant 的 opts,decision 同 register_owner_participant)。Phase A4-3
-  # 加 owner_region_id / owner_lease_id 列后,这里改成按 owner_participant
-  # 分组,每个 owner 用自己的 opts 调一次 register_scene_objects。当前 single-
-  # region 单 entry map 行为完全不变。
+  # Phase A4-3:scene_objects 已经在 coordinator allocate 阶段按 D6 字典序
+  # 规则带上 owner_region_id / owner_lease_id。这里按 owner participant key
+  # 分组,每组用自己 participant 的 scene_opts 调一次 register_scene_objects;
+  # 单 region 退化情形是单组单调用,行为等价于 Phase 4 旧路径。
   defp register_scene_objects_after_commit(scene_caller, transaction, scene_opts_by_participant) do
     case Map.get(transaction, :scene_objects, []) do
       [] ->
@@ -381,13 +380,25 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
       scene_objects when is_list(scene_objects) ->
         if function_exported?(scene_caller, :register_scene_objects, 2) do
-          opts = register_owner_opts(scene_opts_by_participant, transaction)
+          scene_objects
+          |> group_scene_objects_by_owner()
+          |> Enum.each(fn {owner_key, objects} ->
+            case Map.fetch(scene_opts_by_participant, owner_key) do
+              {:ok, opts} ->
+                safely_invoke(fn ->
+                  apply(scene_caller, :register_scene_objects, [
+                    objects,
+                    scene_opts_with_logical_scene_id(opts, transaction)
+                  ])
+                end)
 
-          safely_invoke(fn ->
-            apply(scene_caller, :register_scene_objects, [
-              scene_objects,
-              scene_opts_with_logical_scene_id(opts, transaction)
-            ])
+              :error ->
+                emit("voxel_scene_object_register_owner_unavailable", transaction, %{
+                  owner_region_id: elem(owner_key, 0),
+                  owner_lease_id: elem(owner_key, 1),
+                  object_count: length(objects)
+                })
+            end
           end)
         end
 
@@ -395,16 +406,10 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     end
   end
 
-  # Deterministic owner-opts pick before A4-3 introduces per-object owner
-  # routing: smallest `{region_id, lease_id}` tuple. Single-region maps
-  # collapse to the only entry.
-  defp register_owner_opts(scene_opts_by_participant, _transaction) do
-    {_key, opts} =
-      scene_opts_by_participant
-      |> Enum.sort_by(fn {key, _} -> key end)
-      |> List.first()
-
-    opts
+  defp group_scene_objects_by_owner(scene_objects) do
+    Enum.group_by(scene_objects, fn obj ->
+      {Map.fetch!(obj, :owner_region_id), Map.fetch!(obj, :owner_lease_id)}
+    end)
   end
 
   defp run_abort(

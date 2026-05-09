@@ -29,6 +29,15 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       :ok
     end
 
+    def register_scene_objects(scene_objects, opts) do
+      log_call(
+        opts,
+        {:register_scene_objects, length(scene_objects), Enum.map(scene_objects, & &1.object_id)}
+      )
+
+      :ok
+    end
+
     defp log_call(opts, event) do
       case Keyword.fetch(opts, :recorder) do
         {:ok, agent} -> Agent.update(agent, &(&1 ++ [event]))
@@ -328,6 +337,100 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     end
   end
 
+  describe "Phase A4-3 register_scene_objects fan-out" do
+    test "splits scene_objects by owner_region/lease and uses each participant's opts" do
+      coordinator =
+        start_supervised!(
+          {TransactionCoordinator,
+           name: :"coord_#{System.unique_integer([:positive])}",
+           next_object_id_fn: counter_allocator([501, 502])}
+        )
+
+      recorder_a = start_supervised!({Agent, fn -> [] end}, id: :recorder_a)
+      recorder_b = start_supervised!({Agent, fn -> [] end}, id: :recorder_b)
+
+      attrs =
+        transaction_attrs("tx-register-fan-out")
+        |> Map.put(:scene_objects, [
+          # Owner = first sorted chunk → participant 10/100 (covers {0,0,0}).
+          scene_object_seed(blueprint_id: 71, covered_chunks: [{0, 0, 0}]),
+          # Owner = first sorted chunk → participant 20/200 (covers {2,0,0}).
+          scene_object_seed(blueprint_id: 72, covered_chunks: [{2, 0, 0}])
+        ])
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, "tx-register-fan-out", attrs)
+
+      assert {:ok, %{decision: :commit}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant: %{
+                   {10, 100} => [recorder: recorder_a],
+                   {20, 200} => [recorder: recorder_b]
+                 }
+               )
+
+      [{event_a_kind, count_a, ids_a}] =
+        Agent.get(recorder_a, & &1)
+        |> Enum.filter(&match?({:register_scene_objects, _, _}, &1))
+
+      [{event_b_kind, count_b, ids_b}] =
+        Agent.get(recorder_b, & &1)
+        |> Enum.filter(&match?({:register_scene_objects, _, _}, &1))
+
+      assert event_a_kind == :register_scene_objects
+      assert count_a == 1
+      assert ids_a == [501]
+
+      assert event_b_kind == :register_scene_objects
+      assert count_b == 1
+      assert ids_b == [502]
+    end
+
+    test "single-region degenerate: one participant, one register call with all objects" do
+      coordinator =
+        start_supervised!(
+          {TransactionCoordinator,
+           name: :"coord_#{System.unique_integer([:positive])}",
+           next_object_id_fn: counter_allocator([601, 602])}
+        )
+
+      recorder_a = start_supervised!({Agent, fn -> [] end}, id: :recorder_a)
+      recorder_b = start_supervised!({Agent, fn -> [] end}, id: :recorder_b)
+
+      attrs =
+        transaction_attrs("tx-register-single")
+        |> Map.put(:scene_objects, [
+          # Both objects covered_chunks fall into participant 10/100's affected_chunks.
+          scene_object_seed(blueprint_id: 71, covered_chunks: [{0, 0, 0}]),
+          scene_object_seed(blueprint_id: 72, covered_chunks: [{0, 0, 0}])
+        ])
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, "tx-register-single", attrs)
+
+      assert {:ok, %{decision: :commit}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant: %{
+                   {10, 100} => [recorder: recorder_a],
+                   {20, 200} => [recorder: recorder_b]
+                 }
+               )
+
+      a_register =
+        Agent.get(recorder_a, & &1)
+        |> Enum.filter(&match?({:register_scene_objects, _, _}, &1))
+
+      b_register =
+        Agent.get(recorder_b, & &1)
+        |> Enum.filter(&match?({:register_scene_objects, _, _}, &1))
+
+      assert [{:register_scene_objects, 2, [601, 602]}] = a_register
+      assert b_register == []
+    end
+  end
+
   describe "Phase A4-1 per-participant scene_opts" do
     test "feeds each participant its own scene_opts during prepare / commit" do
       coordinator = start_supervised!(TransactionCoordinator)
@@ -553,6 +656,39 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       {10, 100} => base_opts,
       {20, 200} => base_opts
     }
+  end
+
+  # Phase A4-3 helpers ────────────────────────────────────────────────
+
+  defp scene_object_seed(overrides) do
+    base = %{
+      blueprint_id: 7,
+      blueprint_version: 1,
+      parcel_id: 13,
+      anchor_world_micro: {0, 0, 0},
+      rotation: 0,
+      owner_actor_id: 1_001,
+      covered_chunks: [{0, 0, 0}],
+      part_states: [%{part_id: 1, health: 80, state_flags: 0}],
+      object_version: 1
+    }
+
+    Map.merge(base, Map.new(overrides))
+  end
+
+  defp counter_allocator(ids) do
+    counter = :counters.new(1, [])
+    :counters.put(counter, 1, 0)
+
+    fn ->
+      :counters.add(counter, 1, 1)
+      idx = :counters.get(counter, 1)
+
+      case Enum.at(ids, idx - 1) do
+        nil -> {:error, :exhausted}
+        id -> {:ok, id}
+      end
+    end
   end
 
   defp force_participant_failure(transaction, region_id) do

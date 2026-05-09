@@ -54,7 +54,10 @@ defmodule DataService.Voxel.SceneObjectStore do
           required(:object_tag_set_ref) => non_neg_integer(),
           required(:covered_chunks) => [chunk_coord()],
           required(:part_states) => [part_state()],
-          required(:object_version) => non_neg_integer()
+          required(:object_version) => non_neg_integer(),
+          # Phase A4-3:owner participant 元数据(D6 字典序选)。
+          required(:owner_region_id) => non_neg_integer(),
+          required(:owner_lease_id) => non_neg_integer()
         }
 
   @type put_result :: {:ok, :upserted} | {:error, atom()}
@@ -219,7 +222,9 @@ defmodule DataService.Voxel.SceneObjectStore do
          object_tag_set_ref: row.object_tag_set_ref,
          covered_chunks: covered_chunks,
          part_states: part_states,
-         object_version: row.object_version
+         object_version: row.object_version,
+         owner_region_id: row.owner_region_id,
+         owner_lease_id: row.owner_lease_id
        }}
     end
   end
@@ -277,7 +282,9 @@ defmodule DataService.Voxel.SceneObjectStore do
            fetch_non_neg_integer_default(attrs, :object_tag_set_ref, 0),
          {:ok, covered_chunks} <- fetch_covered_chunks(attrs),
          {:ok, part_states} <- fetch_part_states(attrs),
-         {:ok, object_version} <- fetch_non_neg_integer(attrs, :object_version) do
+         {:ok, object_version} <- fetch_non_neg_integer(attrs, :object_version),
+         {:ok, owner_region_id} <- fetch_non_neg_integer(attrs, :owner_region_id),
+         {:ok, owner_lease_id} <- fetch_non_neg_integer(attrs, :owner_lease_id) do
       {:ok,
        %{
          object_id: object_id,
@@ -295,7 +302,9 @@ defmodule DataService.Voxel.SceneObjectStore do
          object_tag_set_ref: object_tag_set_ref,
          covered_chunks: :erlang.term_to_binary(covered_chunks),
          part_states: :erlang.term_to_binary(part_states),
-         object_version: object_version
+         object_version: object_version,
+         owner_region_id: owner_region_id,
+         owner_lease_id: owner_lease_id
        }}
     end
   end
@@ -402,6 +411,8 @@ defmodule DataService.Voxel.SceneObjectStore do
   defp missing_reason(:covered_chunks), do: :missing_covered_chunks
   defp missing_reason(:part_states), do: :missing_part_states
   defp missing_reason(:object_version), do: :missing_object_version
+  defp missing_reason(:owner_region_id), do: :missing_owner_region_id
+  defp missing_reason(:owner_lease_id), do: :missing_owner_lease_id
 
   defp invalid_reason(:object_id), do: :invalid_object_id
   defp invalid_reason(:logical_scene_id), do: :invalid_logical_scene_id
@@ -417,4 +428,6 @@ defmodule DataService.Voxel.SceneObjectStore do
   defp invalid_reason(:covered_chunks), do: :invalid_covered_chunks
   defp invalid_reason(:part_states), do: :invalid_part_states
   defp invalid_reason(:object_version), do: :invalid_object_version
+  defp invalid_reason(:owner_region_id), do: :invalid_owner_region_id
+  defp invalid_reason(:owner_lease_id), do: :invalid_owner_lease_id
 end
