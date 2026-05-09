@@ -18,16 +18,16 @@ import {
   type RendererPreference,
 } from "./rendererBackend";
 
-const CAMERA_LOOK_HEIGHT = 110;
+const CAMERA_LOOK_HEIGHT = 145;
 const CAMERA_POSITION_SMOOTHING_HZ = 10;
 const CAMERA_TARGET_SMOOTHING_HZ = 12;
 const CAMERA_YAW_SENSITIVITY = 0.005;
 const CAMERA_PITCH_SENSITIVITY = 0.004;
 const CAMERA_MIN_PITCH = 0.2;
 const CAMERA_MAX_PITCH = 1.15;
-const CAMERA_MIN_DISTANCE = 180;
-const CAMERA_MAX_DISTANCE = 620;
-const CAMERA_SNAP_DISTANCE = 600;
+const CAMERA_MIN_DISTANCE = 200;
+const CAMERA_MAX_DISTANCE = 800;
+const CAMERA_SNAP_DISTANCE = 700;
 const CAMERA_INTERACTION_IDLE_MS = 50;
 
 export interface SceneHandles {
@@ -65,19 +65,19 @@ export async function createScene(
 
   const chunkExtent = VoxelConstants.ChunkSizeInMacros * MacroWorldSize * 2;
   const camera = new PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000);
-  camera.position.set(chunkExtent * 0.35, 480, chunkExtent * 0.35);
-  camera.lookAt(0, 140, 0);
+  camera.position.set(chunkExtent * 0.35, 550, chunkExtent * 0.35);
+  camera.lookAt(0, CAMERA_LOOK_HEIGHT, 0);
 
   const cameraFollowTarget = new Vector3(0, 0, 0);
   const smoothedFollowTarget = new Vector3(0, 0, 0);
-  const currentLookAt = new Vector3(0, 140, 0);
+  const currentLookAt = new Vector3(0, CAMERA_LOOK_HEIGHT, 0);
   const currentCameraPosition = camera.position.clone();
   const orbitOffset = new Vector3();
   const desiredLookAt = new Vector3();
   const desiredPosition = new Vector3();
   let orbitYaw = Math.PI * 0.25;
   let orbitPitch = 0.58;
-  let orbitDistance = 410;
+  let orbitDistance = 500;
   let cameraAnchored = false;
   let dragActive = false;
   let lastPointerClientX = 0;
