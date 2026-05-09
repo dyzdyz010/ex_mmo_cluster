@@ -18,9 +18,14 @@ pub struct PhysicsComp {
 impl PhysicsComp {
     // New with default data
     pub fn new(location: Vector, physys: &mut PhySys) -> PhysicsComp {
-        // let rigid_body = RigidBodyBuilder::kinematic_position_based().translation(Vector3::new(location.x, location.y, location.z)).build();
-        // let rigid_body_handle = physys.rigid_body_set.insert(rigid_body);
-        let collider = ColliderBuilder::capsule_z(0.3, 0.15)
+        // Phase A2 Step 5:旧版 capsule_z(0.3, 0.15) 用 SI(米)单位,而世界
+        // 其余部分(player_character.ex / movement_core / web_client 渲染)
+        // 都是 1 unit = 1 cm。混用单位会让 collider 实际只有 60cm 高 30cm 直径
+        // 的"针尖大"形状坐在 cm 坐标里。movement 主路径走 movement_core 不读
+        // capsule 形状,所以一直没出事;为日后 npc / chunk 体素碰撞重新启用
+        // rapier character controller 时形状对得上,改 cm 单位 = 角色 1.7m 高
+        // 0.6m 直径(half-height 85, radius 30,跟 web_client AvatarConstants 同步)。
+        let collider = ColliderBuilder::capsule_z(85.0, 30.0)
             .translation(Vector3::new(location.x, location.y, location.z))
             .build();
         let collider_handle = physys.collider_set.insert(collider);
