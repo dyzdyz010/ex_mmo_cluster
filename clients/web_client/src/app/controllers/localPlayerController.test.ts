@@ -46,12 +46,12 @@ describe("LocalPlayerController", () => {
     const input = new InputController(bus);
     const transport = new FakeMovementTransport();
     const pump = new TransportPump(transport, bus);
-    const spawn = new Vector3(-350, 260, -280);
+    const spawn = new Vector3(0, 123, 0);
     const controller = new LocalPlayerController(bus, input, pump, spawn);
 
     expect(controller.getRenderedPosition()).toEqual(spawn);
     expect(controller.getAuthoritativePosition()).toEqual(spawn);
-    expect(controller.getCurrentState()).toMatchObject({ groundY: 260 });
+    expect(controller.getCurrentState()).toMatchObject({ groundY: 123 });
   });
 
   it("advances the rendered local position before the first 100 ms fixed step lands", () => {

@@ -4,7 +4,7 @@ import { ChunkRenderController, type VoxelRaySelection } from "../../render/chun
 import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
 import type { RendererDebugSnapshot } from "../../render/rendererBackend";
 import type { SceneHandles } from "../../render/scene";
-import { VoxelConstants } from "../../voxel/core/constants";
+import { AvatarConstants, VoxelConstants } from "../../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { WorldEditStats } from "../../voxel/worldStore";
@@ -59,11 +59,11 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.chunkRenderer.attachToScene(this.rootGroup);
 
     this.localAvatar = new Mesh(
-      new BoxGeometry(70, 120, 70),
+      new BoxGeometry(AvatarConstants.WidthCm, AvatarConstants.HeightCm, AvatarConstants.WidthCm),
       new MeshStandardMaterial({ color: 0x63d4ff, emissive: 0x113447, roughness: 0.35 }),
     );
     this.authorityAvatar = new Mesh(
-      new BoxGeometry(50, 90, 50),
+      new BoxGeometry(35, 120, 35),
       new MeshStandardMaterial({
         color: 0xfafcff,
         transparent: true,
@@ -72,7 +72,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       }),
     );
     this.syncRing = new Mesh(
-      new RingGeometry(170, 190, 48),
+      new RingGeometry(120, 140, 48),
       new MeshStandardMaterial({ color: 0x284051, emissive: 0x0d1a22, roughness: 0.9 }),
     );
     this.syncRing.rotation.x = -Math.PI / 2;
@@ -164,18 +164,18 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private updateAvatarTransforms(nowSecs: number): void {
     this.groundActorPosition(
       this.localPlayer.getRenderedPosition(),
-      60,
+      AvatarConstants.HalfHeightCm,
       this.localDisplay,
       this.localPlayer.getCurrentState()?.groundY,
     );
     this.groundActorPosition(
       this.localPlayer.getAuthoritativePosition(),
-      45,
+      60,
       this.authorityDisplay,
     );
     this.groundActorPosition(
       this.remotePlayer.getRenderedPosition(),
-      60,
+      AvatarConstants.HalfHeightCm,
       this.remoteDisplay,
       this.remotePlayer.getRenderedGroundY() ?? undefined,
     );
@@ -183,7 +183,11 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
     this.localAvatar.position.copy(this.localDisplay);
     this.authorityAvatar.position.copy(this.authorityDisplay);
-    this.syncRing.position.set(this.localDisplay.x, this.localDisplay.y - 59, this.localDisplay.z);
+    this.syncRing.position.set(
+      this.localDisplay.x,
+      this.localDisplay.y - (AvatarConstants.HalfHeightCm - 1),
+      this.localDisplay.z,
+    );
     this.syncRing.rotation.z = nowSecs * 0.25;
     this.sceneHandles.setCameraFollow(this.localDisplay);
   }
@@ -203,7 +207,12 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     for (const entity of rendered) {
       const avatar = this.ensureRemoteAvatar(entity.cid);
       const display = new Vector3();
-      this.groundActorPosition(entity.position, 60, display, entity.movementGroundY ?? undefined);
+      this.groundActorPosition(
+        entity.position,
+        AvatarConstants.HalfHeightCm,
+        display,
+        entity.movementGroundY ?? undefined,
+      );
       avatar.position.copy(display);
     }
   }
@@ -212,7 +221,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     let avatar = this.remoteAvatars.get(cid);
     if (!avatar) {
       avatar = new Mesh(
-        new BoxGeometry(70, 120, 70),
+        new BoxGeometry(AvatarConstants.WidthCm, AvatarConstants.HeightCm, AvatarConstants.WidthCm),
         new MeshStandardMaterial({ color: 0xffbb55, emissive: 0x4c2b08, roughness: 0.4 }),
       );
       this.remoteAvatars.set(cid, avatar);

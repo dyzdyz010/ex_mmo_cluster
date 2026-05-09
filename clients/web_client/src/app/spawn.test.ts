@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { AvatarConstants } from "../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../voxel/worldAdapter";
-import {
-  DEFAULT_LOCAL_SPAWN_X,
-  DEFAULT_LOCAL_SPAWN_Z,
-  LOCAL_AVATAR_HALF_HEIGHT,
-  resolveInitialLocalSpawn,
-} from "./spawn";
+import { DEFAULT_LOCAL_SPAWN_X, DEFAULT_LOCAL_SPAWN_Z, resolveInitialLocalSpawn } from "./spawn";
 
 describe("resolveInitialLocalSpawn", () => {
   it("grounds the initial local actor center on the seeded terrain surface", () => {
@@ -20,17 +16,17 @@ describe("resolveInitialLocalSpawn", () => {
       world.store.surfaceCenterYAtWorldXZ(
         DEFAULT_LOCAL_SPAWN_X,
         DEFAULT_LOCAL_SPAWN_Z,
-        LOCAL_AVATAR_HALF_HEIGHT,
-        LOCAL_AVATAR_HALF_HEIGHT,
+        AvatarConstants.HalfHeightCm,
+        AvatarConstants.HalfHeightCm,
       ),
     );
-    expect(spawn.y).toBeGreaterThan(LOCAL_AVATAR_HALF_HEIGHT);
+    expect(spawn.y).toBeGreaterThan(AvatarConstants.HalfHeightCm);
     expect(spawn.y).toBeLessThan(650);
   });
 
   it("falls back to the avatar half height when no terrain exists", () => {
     const world = new LocalVoxelWorldAdapter();
 
-    expect(resolveInitialLocalSpawn(world).y).toBe(LOCAL_AVATAR_HALF_HEIGHT);
+    expect(resolveInitialLocalSpawn(world).y).toBe(AvatarConstants.HalfHeightCm);
   });
 });
