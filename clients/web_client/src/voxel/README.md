@@ -17,7 +17,7 @@
 - `onlineVoxelWorldAdapter.ts` 是 server-authoritative 适配器：它不让 UI 直接写本地 truth，而是提交服务端 intent、订阅 chunk snapshot，并在 snapshot 到达时一次性替换 `WorldStore` 中对应 chunk。
   在线模式启动时必须保持本地 store 为空，初始地形只能来自 `WorldServer.Voxel.DevSeed`
   和后续 chunk snapshot，避免 CLI / 渲染结果混入离线 showcase 的本地假数据。
-  在线 prefab 热栏只暴露服务端 v1 catalog 已支持的 `builtin_pillar_3`、`builtin_floor_3x3`、`builtin_cube_2x2x2`；离线 refined prefab 仍保留在本地适配器里。
+  在线 prefab 热栏暴露服务端 v2 catalog 的 `builtin_sphere`、`builtin_cylinder`、`builtin_stairs`(Phase A1-1 起,跟客户端 micro mask 对齐);离线 refined prefab 仍保留在本地适配器里。
 - `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
 - `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
 - `prefab.ts` 负责浏览器本地 Prefab Definition/Instance 编排。当前阶段已按 UE

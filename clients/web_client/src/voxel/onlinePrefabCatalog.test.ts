@@ -6,35 +6,39 @@ import {
 } from "./onlinePrefabCatalog";
 
 describe("onlinePrefabCatalog", () => {
-  it("resolves the three v1 builtin blueprints to their server-side ids", () => {
-    expect(resolveBlueprint("builtin_pillar_3")).toEqual({
+  it("resolves the three v2 builtin blueprints to their server-side ids", () => {
+    expect(resolveBlueprint("builtin_sphere")).toEqual({
       id: 1,
       version: OnlinePrefabBlueprintVersion,
-      expectedCellCount: 3,
+      expectedCellCount: 248,
     });
-    expect(resolveBlueprint("builtin_floor_3x3")).toEqual({
+    expect(resolveBlueprint("builtin_cylinder")).toEqual({
       id: 2,
       version: OnlinePrefabBlueprintVersion,
-      expectedCellCount: 9,
+      expectedCellCount: 336,
     });
-    expect(resolveBlueprint("builtin_cube_2x2x2")).toEqual({
+    expect(resolveBlueprint("builtin_stairs")).toEqual({
       id: 3,
       version: OnlinePrefabBlueprintVersion,
-      expectedCellCount: 8,
+      expectedCellCount: 288,
     });
   });
 
-  it("returns null for any name not in the v1 catalog", () => {
-    expect(resolveBlueprint("builtin_sphere")).toBeNull();
+  it("returns null for any name not in the v2 catalog", () => {
+    expect(resolveBlueprint("builtin_pillar_3")).toBeNull();
     expect(resolveBlueprint("")).toBeNull();
     expect(resolveBlueprint("totally_unknown_prefab")).toBeNull();
   });
 
-  it("exposes the full v1 name list in a stable order for callers/UI", () => {
+  it("exposes the full v2 name list in a stable order for callers/UI", () => {
     expect(listOnlinePrefabNames()).toEqual([
-      "builtin_pillar_3",
-      "builtin_floor_3x3",
-      "builtin_cube_2x2x2",
+      "builtin_sphere",
+      "builtin_cylinder",
+      "builtin_stairs",
     ]);
+  });
+
+  it("exposes blueprint version 2 (Phase A1-1 micro-mask wire)", () => {
+    expect(OnlinePrefabBlueprintVersion).toBe(2);
   });
 });

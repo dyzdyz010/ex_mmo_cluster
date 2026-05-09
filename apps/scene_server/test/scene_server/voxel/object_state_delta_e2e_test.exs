@@ -212,7 +212,7 @@ defmodule SceneServer.Voxel.ObjectStateDeltaE2ETest do
       logical_scene_id: 1,
       parcel_id: 13,
       blueprint_id: 7,
-      blueprint_version: 1,
+      blueprint_version: 2,
       anchor_world_micro: {0, 0, 0},
       rotation: 0,
       owner_actor_id: 1_001,

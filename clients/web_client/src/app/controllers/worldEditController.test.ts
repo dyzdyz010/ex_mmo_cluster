@@ -107,15 +107,15 @@ describe("WorldEditController selection edits", () => {
 
     expect(edit.getHotbarState().selected).toMatchObject({
       kind: "prefab",
-      prefabName: "builtin_pillar_3",
+      prefabName: "builtin_sphere",
     });
 
     bus.emit("input:place-block", { source: "mouse_right" });
 
-    expect(world.prefabPlaceCalls).toEqual([{ name: "builtin_pillar_3", origin: adjacentMacro }]);
+    expect(world.prefabPlaceCalls).toEqual([{ name: "builtin_sphere", origin: adjacentMacro }]);
     expect(fallbacks).toEqual([
       {
-        prefabId: "builtin_pillar_3",
+        prefabId: "builtin_sphere",
         hitMacro: { x: 8, y: 0, z: 8 },
         adjacentMacro,
         faceNormal: { x: 0, y: 1, z: 0 },
@@ -125,7 +125,7 @@ describe("WorldEditController selection edits", () => {
     ]);
     expect(placedPrefabs).toEqual([
       {
-        name: "builtin_pillar_3",
+        name: "builtin_sphere",
         origin: adjacentMacro,
         placed: 3,
         source: "mouse_right",

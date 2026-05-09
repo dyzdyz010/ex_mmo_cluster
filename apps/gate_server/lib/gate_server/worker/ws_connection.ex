@@ -1348,9 +1348,11 @@ defmodule GateServer.WsConnection do
             logical_scene_id: request.logical_scene_id,
             chunk_coord: chunk_coord,
             lease: lease,
-            operation: :put_solid_block,
+            operation: :put_micro_block,
             macro: cell.local_macro,
-            block: cell.block
+            micro_slot: cell.micro_slot,
+            micro_layer: cell.layer_attrs,
+            opts: []
           }
         end)
 

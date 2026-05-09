@@ -206,9 +206,9 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
   it("translates a known blueprint name into the expected prefab place intent", () => {
     const { adapter, transport } = createAdapter();
 
-    const result = adapter.placePrefab("builtin_pillar_3", { x: 4, y: -2, z: 1 });
+    const result = adapter.placePrefab("builtin_sphere", { x: 4, y: -2, z: 1 });
 
-    expect(result).toEqual({ ok: true, placed: 3 });
+    expect(result).toEqual({ ok: true, placed: 248 });
     expect(transport.prefabCalls).toHaveLength(1);
     const [call] = transport.prefabCalls;
     if (!call) throw new Error("expected one prefab call");
@@ -226,7 +226,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
   it("ignores the rotation argument in v1 and pins rotation to 0", () => {
     const { adapter, transport } = createAdapter();
 
-    adapter.placePrefab("builtin_floor_3x3", { x: 0, y: 0, z: 0 }, 2);
+    adapter.placePrefab("builtin_cylinder", { x: 0, y: 0, z: 0 }, 2);
 
     const [call] = transport.prefabCalls;
     if (!call) throw new Error("expected one prefab call");
@@ -253,7 +253,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     const { adapter, transport } = createAdapter();
     transport.available = false;
 
-    const result = adapter.placePrefab("builtin_cube_2x2x2", { x: 0, y: 0, z: 0 });
+    const result = adapter.placePrefab("builtin_stairs", { x: 0, y: 0, z: 0 });
 
     expect(result).toEqual({ ok: false, placed: 0 });
     expect(adapter.store.editStats.rejected).toBe(1);
@@ -265,7 +265,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     bus.on("world:voxel-prefab-result", (payload) => prefabResults.push(payload));
 
     const requestIdBefore = transport.nextRequestId;
-    adapter.placePrefab("builtin_cube_2x2x2", { x: 1, y: 2, z: 3 });
+    adapter.placePrefab("builtin_stairs", { x: 1, y: 2, z: 3 });
     const requestId = requestIdBefore;
 
     const acceptedResult: VoxelIntentResultMessage = {
@@ -286,7 +286,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     expect(prefabResults).toEqual([
       {
         blueprintId: 3,
-        blueprintName: "builtin_cube_2x2x2",
+        blueprintName: "builtin_stairs",
         requestId,
         accepted: true,
         reason: "ok",
@@ -300,7 +300,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     bus.on("world:voxel-prefab-result", (payload) => prefabResults.push(payload));
 
     const requestId = transport.nextRequestId;
-    adapter.placePrefab("builtin_pillar_3", { x: 0, y: 0, z: 0 });
+    adapter.placePrefab("builtin_sphere", { x: 0, y: 0, z: 0 });
 
     const rejectedResult: VoxelIntentResultMessage = {
       type: "voxel_intent_result",

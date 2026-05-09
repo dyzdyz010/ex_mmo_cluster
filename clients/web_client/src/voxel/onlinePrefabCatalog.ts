@@ -1,47 +1,40 @@
 // Server-authoritative prefab catalog for the online voxel adapter.
 //
-// The bevy/Elixir server owns the canonical prefab blueprint table. In v1
-// the server registers a small fixed set of builtins under stable IDs;
-// this map mirrors that table on the client so `placePrefab(name, ...)`
-// can be translated into a wire-level `0x67 PrefabPlaceIntent` carrying
-// the matching `blueprint_id` / `blueprint_version` pair.
+// Phase A1-1: server-side BlueprintCatalog 升级到 v2 micro mask 表示,跟
+// 客户端 prefab/definitions.ts 的几何函数(球/圆柱/阶梯)对齐。每个 prefab
+// 占用单 macro 内的若干 micro slots (0..511);wire 上仍只携带 blueprint_id
+// + blueprint_version + anchor_world_micro,服务端按 catalog occupied_slots
+// 展开成 micro `:put_micro_block` intents。
 //
 // IMPORTANT:
 // - Names that are NOT in this catalog must NOT be sent over the wire.
 //   Callers should treat `resolveBlueprint` returning `null` as a hard
 //   reject and surface a `world:voxel-sync-error` event with reason
 //   `unknown_blueprint:<name>`.
-// - Cell counts here describe how many macro cells the server is
-//   expected to materialize for each blueprint, used purely for the
-//   adapter's optimistic `placed` return value. Actual cell state is
-//   delivered to the client via incoming ChunkDeltas; the client never
-//   optimistically applies prefab cells locally in server-authoritative
-//   mode.
-// - Blueprint version is currently a single shared constant. Bumping it
-//   requires coordination with the server-side blueprint registry; the
-//   wire format treats this as an opaque u32.
+// - `expectedCellCount` 是 micro slot 数(不再是 macro cell 数),只用于 UI
+//   层的 optimistic `placed` 返回值,真实状态走 ChunkDelta。
 
-const BLUEPRINT_VERSION = 1;
+const BLUEPRINT_VERSION = 2;
 
 export interface OnlinePrefabBlueprint {
   readonly id: number;
   readonly version: number;
   /**
-   * Number of macro cells the blueprint is expected to occupy. Used to
-   * report a non-zero `placed` count back to the UI layer immediately
-   * after dispatching the intent. The authoritative state still flows
-   * through ChunkDeltas.
+   * Phase A1-1 起改为 micro slot 数(单 macro 内 0..512)。仅用于 UI 层
+   * 在 dispatch intent 后立即 echo 一个 placed 计数。authoritative state
+   * 仍由 ChunkDelta 推送。
    */
   readonly expectedCellCount: number;
 }
 
+// 跟服务端 BlueprintCatalog 对齐:
+// id 1 = sphere   (Ice = 4),~248 micro slots
+// id 2 = cylinder (Stone = 2),~336 micro slots
+// id 3 = stairs   (Wood = 3),288 micro slots(y ≤ x rule × 8 z)
 const ONLINE_PREFAB_CATALOG: Readonly<Record<string, OnlinePrefabBlueprint>> = {
-  // 3 vertical blocks stacked on the browser/server voxel Y axis.
-  builtin_pillar_3: { id: 1, version: BLUEPRINT_VERSION, expectedCellCount: 3 },
-  // 3x3 floor laid out at y=0.
-  builtin_floor_3x3: { id: 2, version: BLUEPRINT_VERSION, expectedCellCount: 9 },
-  // 2x2x2 solid cube.
-  builtin_cube_2x2x2: { id: 3, version: BLUEPRINT_VERSION, expectedCellCount: 8 },
+  builtin_sphere: { id: 1, version: BLUEPRINT_VERSION, expectedCellCount: 248 },
+  builtin_cylinder: { id: 2, version: BLUEPRINT_VERSION, expectedCellCount: 336 },
+  builtin_stairs: { id: 3, version: BLUEPRINT_VERSION, expectedCellCount: 288 },
 };
 
 export function resolveBlueprint(name: string): OnlinePrefabBlueprint | null {

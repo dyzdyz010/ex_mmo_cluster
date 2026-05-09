@@ -43,29 +43,22 @@ const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
 ];
 
+// Phase A1-1: server-side BlueprintCatalog v2 跟客户端 sphere/cylinder/stairs
+// 形状对齐(`onlinePrefabCatalog.ts` blueprint_id 1/2/3),hotbar 不再用旧的
+// pillar/floor/cube macro placeholder。两 mode hotbar 统一 prefab 列表。
 const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "dirt", materialId: VoxelMaterialId.Dirt },
   { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
+  { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
-    label: "pillar",
-    prefabName: "builtin_pillar_3",
+    label: "cylinder",
+    prefabName: "builtin_cylinder",
     rotation: EVoxelRotation.Rot0,
   },
-  {
-    kind: "prefab",
-    label: "floor",
-    prefabName: "builtin_floor_3x3",
-    rotation: EVoxelRotation.Rot0,
-  },
-  {
-    kind: "prefab",
-    label: "cube",
-    prefabName: "builtin_cube_2x2x2",
-    rotation: EVoxelRotation.Rot0,
-  },
+  { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
 ];
 
 /**

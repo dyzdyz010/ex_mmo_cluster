@@ -436,7 +436,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent rasterizes pillar and lands as a single batch commit" do
+  test "prefab place intent rasterizes sphere and lands as a single batch commit" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
 
@@ -472,31 +472,35 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
     assert initial.storage.chunk_version == 0
 
-    # Pillar (blueprint 1) anchored at world-micro (8, 16, 24) → world-macro (1, 2, 3).
-    # Three cells all stay in chunk (0, 0, 0) at locals (1,2,3), (1,2,4), (1,2,5).
+    # Phase A1-1:Sphere (blueprint 1) anchored at world-micro (8, 16, 24) →
+    # world-macro (1, 2, 3) → chunk (0,0,0) local macro (1,2,3). All ~248 micro
+    # slots land on the SAME macro cell (sphere mask is single-macro).
     WsConnection.receive_frame(
       pid,
       prefab_place_intent_frame(602, 13, 666, 8_888,
         blueprint_id: 1,
-        blueprint_version: 1,
+        blueprint_version: 2,
         anchor: {8, 16, 24},
         rotation: 0
       )
     )
 
-    # Phase 3: prefab now goes through World's TransactionCoordinator +
-    # TransactionExecutor, so all three cells land in a single batch commit.
-    # The chunk version bumps once (0 -> 1) and result_ref reflects that
-    # single bump (was 3 in the old cell-by-cell loop).
+    # Phase 3: prefab goes through World's TransactionCoordinator +
+    # TransactionExecutor → all micro intents land in a single batch commit.
+    # The chunk version bumps once (0 -> 1).
+    # Phase A1-1:timeout 调到 5s 因为 sphere 有 ~248 micro intents,Storage
+    # 的 per-intent normalize! 是 O(macro_count),N² 累计在 1.5s 量级。
+    # Storage.put_micro_blocks/4 batch API 优化是 follow-up step。
     assert_voxel_intent_accepted(
       request_id: 602,
       client_intent_seq: 13,
       logical_scene_id: 666,
-      result_ref: 1
+      result_ref: 1,
+      timeout: 5_000
     )
 
-    # The whole batch produces one snapshot fan-out instead of three deltas.
-    assert_receive {:gate_ws_send, snapshot_bin}
+    # The whole batch produces one snapshot fan-out instead of N deltas.
+    assert_receive {:gate_ws_send, snapshot_bin}, 5_000
     assert <<0x62, snapshot_payload::binary>> = snapshot_bin
     assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
     assert snapshot.storage.logical_scene_id == 666
@@ -515,7 +519,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       pid,
       prefab_place_intent_frame(701, 14, 555, 9_999,
         blueprint_id: 4_242,
-        blueprint_version: 1,
+        blueprint_version: 2,
         anchor: {0, 0, 0},
         rotation: 0
       )
@@ -537,7 +541,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       pid,
       prefab_place_intent_frame(702, 15, 555, 9_999,
         blueprint_id: 1,
-        blueprint_version: 1,
+        blueprint_version: 2,
         anchor: {0, 0, 0},
         rotation: 90
       )
@@ -560,7 +564,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       pid,
       prefab_place_intent_frame(703, 16, 555, 9_999,
         blueprint_id: 1,
-        blueprint_version: 1,
+        blueprint_version: 2,
         anchor: {0, 0, 0},
         rotation: 0
       )
@@ -581,7 +585,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       pid,
       prefab_place_intent_frame(704, 17, 555, 9_999,
         blueprint_id: 1,
-        blueprint_version: 1,
+        blueprint_version: 2,
         anchor: {0, 0, 0},
         rotation: 0
       )
@@ -1316,7 +1320,7 @@ defmodule GateServer.WsConnectionVoxelTest do
          opts \\ []
        ) do
     blueprint_id = Keyword.get(opts, :blueprint_id, 1)
-    blueprint_version = Keyword.get(opts, :blueprint_version, 1)
+    blueprint_version = Keyword.get(opts, :blueprint_version, 2)
     {ax, ay, az} = Keyword.get(opts, :anchor, {0, 0, 0})
     rotation = Keyword.get(opts, :rotation, 0)
     known_parcel_build_epoch = Keyword.get(opts, :known_parcel_build_epoch, 0)
@@ -1387,8 +1391,9 @@ defmodule GateServer.WsConnectionVoxelTest do
     client_intent_seq = Keyword.fetch!(opts, :client_intent_seq)
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     result_ref = Keyword.fetch!(opts, :result_ref)
+    timeout = Keyword.get(opts, :timeout, 1_000)
 
-    assert_receive {:gate_ws_send, iodata}
+    assert_receive {:gate_ws_send, iodata}, timeout
 
     assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
              got_logical_scene_id::64-big, 0::8, got_result_ref::64-big, 0::16-big, 2::16-big,
