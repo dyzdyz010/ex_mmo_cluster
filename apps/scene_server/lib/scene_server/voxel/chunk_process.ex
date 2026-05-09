@@ -984,6 +984,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
         with {:ok, normalized} <- normalize_apply_intents(intents),
              :ok <- validate_batch_scope(state, normalized),
              :ok <- validate_batch_preconditions(state, normalized),
+             :ok <- validate_batch_occupancy(state, normalized),
              {:ok, owner_lease} <- fetch_fence_owner_lease(normalized) do
           fenced_at_ms = now_ms()
 
@@ -1185,6 +1186,62 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end
     end)
   end
+
+  # Phase A1-2:整 batch occupancy precheck。任何一 intent 跟当前 storage
+  # 冲突(macro 已是 solid / 目标 micro slot 已占)→ 整个 transaction abort,
+  # gate 端 wire 响应 :rejected 给客户端。Phase 3 transaction 语义是"全成功
+  # 或全失败",这里把"全失败"判据从 commit 推到 prepare,让 prefab 防覆盖
+  # 在 fence 写表前就拒绝,zero-cost cleanup。
+  #
+  # 同 batch 内的内部冲突(2 个 intent 写同一 micro slot)用一个 in-batch
+  # claimed-set 跟踪,后到的 intent 也算 occupied。
+  defp validate_batch_occupancy(state, intents) do
+    intents
+    |> Enum.reduce_while({:ok, %{}}, fn intent, {:ok, claimed} ->
+      case validate_intent_occupancy(state, intent, claimed) do
+        {:ok, next_claimed} -> {:cont, {:ok, next_claimed}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, _claimed} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_intent_occupancy(
+         state,
+         %{operation: :put_micro_block, macro: macro_index, micro_slot: slot_index},
+         claimed
+       ) do
+    cond do
+      solid_cell?(state.storage, macro_index) ->
+        {:error, :cannot_micro_edit_solid_macro}
+
+      micro_slot_occupied?(state.storage, macro_index, slot_index) ->
+        {:error, :micro_slot_already_occupied}
+
+      MapSet.member?(Map.get(claimed, macro_index, MapSet.new()), slot_index) ->
+        {:error, :micro_slot_already_occupied}
+
+      true ->
+        next_claimed =
+          Map.update(
+            claimed,
+            macro_index,
+            MapSet.new([slot_index]),
+            &MapSet.put(&1, slot_index)
+          )
+
+        {:ok, next_claimed}
+    end
+  end
+
+  # Other operations(:put_solid_block / :break_block / :clear_micro_block)
+  # 暂不 occupancy precheck — Phase A1-2 范围只覆盖 prefab 防覆盖
+  # (走 :put_micro_block)。non-micro 路径的 idempotency 行为保持现状,留给
+  # 后续 step 收紧。
+  defp validate_intent_occupancy(_state, _intent, claimed), do: {:ok, claimed}
 
   defp validate_loaded_snapshot(state, storage) do
     cond do

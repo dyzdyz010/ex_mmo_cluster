@@ -1472,11 +1472,23 @@ defmodule GateServer.WsConnection do
   end
 
   defp first_prepare_failure_reason(prepare_results) do
-    Enum.find_value(prepare_results, fn
+    prepare_results
+    |> Enum.find_value(fn
       {_participant, {:error, reason}} -> reason
       _ -> nil
     end)
+    |> unwrap_prepare_reason()
   end
+
+  # Phase A1-2:`BuildTransactionApplier.prepare_chunks` 把 chunk 级 prepare
+  # 失败 wrap 成 `{:prepare_failed, chunk_coord, inner_reason}`。Gate wire
+  # 透传给 client 时,wrapped tuple 在 :reason 字段会变成
+  # `"{:prepare_failed, {0, 0, 0}, :micro_slot_already_occupied}"` 这种串,
+  # client UI 难以识别业务级 reject。这里 unwrap 成 inner atom 让 wire reason
+  # 跟 single-intent path(0x70 voxel_edit_intent → :stale_chunk_version 之类)
+  # 风格一致。其他 wrap 形式(:commit_failed 等)保持原样。
+  defp unwrap_prepare_reason({:prepare_failed, _chunk_coord, inner_reason}), do: inner_reason
+  defp unwrap_prepare_reason(other), do: other
 
   defp unique_prefab_transaction_id(request) do
     unique = System.unique_integer([:positive, :monotonic])

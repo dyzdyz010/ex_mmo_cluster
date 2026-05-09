@@ -1822,11 +1822,17 @@ defmodule GateServer.TcpConnection do
   end
 
   defp first_prepare_failure_reason(prepare_results) do
-    Enum.find_value(prepare_results, fn
+    prepare_results
+    |> Enum.find_value(fn
       {_participant, {:error, reason}} -> reason
       _ -> nil
     end)
+    |> unwrap_prepare_reason()
   end
+
+  # Phase A1-2:跟 ws_connection 同 unwrap 逻辑(见同名函数注释)。
+  defp unwrap_prepare_reason({:prepare_failed, _chunk_coord, inner_reason}), do: inner_reason
+  defp unwrap_prepare_reason(other), do: other
 
   defp unique_prefab_transaction_id(request) do
     unique = System.unique_integer([:positive, :monotonic])

@@ -67,6 +67,17 @@ export class HudView implements FrameSubscriber {
           );
         }
       });
+      // Phase A1-2:prefab 防覆盖。服务端 prepare 阶段拒绝时 wire reason 是
+      // 原子级 atom(:micro_slot_already_occupied / :cannot_micro_edit_solid_macro
+      // / :stale_chunk_version etc),客户端 HUD flash 提示用户。
+      bus.on("world:voxel-prefab-result", ({ blueprintName, accepted, reason }) => {
+        if (!accepted) {
+          this.showFlash(
+            `prefab ${blueprintName} rejected: ${reason}`,
+            FAILURE_FLASH_DURATION_MS,
+          );
+        }
+      });
     }
   }
 

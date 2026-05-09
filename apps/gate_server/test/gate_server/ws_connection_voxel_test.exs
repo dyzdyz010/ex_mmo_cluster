@@ -679,6 +679,150 @@ defmodule GateServer.WsConnectionVoxelTest do
     """)
   end
 
+  test "Phase A1-2 e2e: second sphere on same anchor is rejected by occupancy precheck" do
+    # Phase A1-2:防覆盖。第一次放 sphere → accept;第二次同 anchor → reject
+    # `:micro_slot_already_occupied`(prepare 阶段 occupancy precheck 拦截,
+    # fence 未写入 Postgres,zero-cost cleanup);chunk_version 不再 bump,
+    # 第二次结果是纯 reject 而非 silent overwrite。
+    log_root = Path.join(System.tmp_dir!(), "a1-2-occupancy-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(log_root)
+    scene_log = Path.join(log_root, "scene.log")
+    gate_log = Path.join(log_root, "gate.log")
+
+    Application.put_env(:scene_server, :cli_observe_log, scene_log)
+    Application.put_env(:gate_server, :cli_observe_log, gate_log)
+
+    on_exit(fn ->
+      Application.delete_env(:scene_server, :cli_observe_log)
+      Application.delete_env(:gate_server, :cli_observe_log)
+    end)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    logical_scene_id = 7_778
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_003,
+               owner_epoch: 0
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_003,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # Subscribe so we observe both snapshot pushes.
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(801, logical_scene_id, {0, 0, 0}))
+    assert_receive {:gate_ws_send, _initial_bin}, 5_000
+
+    # Place 1: sphere at world-micro (8, 16, 24) → world-macro (1, 2, 3).
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(802, 20, logical_scene_id, 9_002,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_accepted(
+      request_id: 802,
+      client_intent_seq: 20,
+      logical_scene_id: logical_scene_id,
+      result_ref: 1,
+      timeout: 10_000
+    )
+
+    # Drain the post-commit snapshot push.
+    assert_receive {:gate_ws_send, _snapshot_bin}, 5_000
+
+    # Place 2: same blueprint, same anchor → 280 micro slots already occupied.
+    reject_started_at = System.monotonic_time(:millisecond)
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(803, 21, logical_scene_id, 9_002,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_result(
+      request_id: 803,
+      client_intent_seq: 21,
+      logical_scene_id: logical_scene_id,
+      reason: ":micro_slot_already_occupied",
+      timeout: 5_000
+    )
+
+    reject_elapsed_ms = System.monotonic_time(:millisecond) - reject_started_at
+
+    # No further pushes for the rejected place — chunk version不变。
+    refute_receive {:gate_ws_send, _}, 200
+
+    # Verify storage still at chunk_version=1 (rejected place doesn't bump).
+    assert {:ok, persisted_row} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+    assert persisted_row.chunk_version == 1
+
+    # Flush observe + sample logs.
+    SceneServer.CliObserve.flush()
+    GateServer.CliObserve.flush()
+
+    scene_log_lines = read_log_lines(scene_log)
+    gate_log_lines = read_log_lines(gate_log)
+
+    # Scene should record exactly ONE prepare_failed (second place) and ONE
+    # committed (first place).
+    prepare_failed_lines =
+      Enum.filter(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_prepare_failed"))
+
+    assert length(prepare_failed_lines) >= 1,
+           "scene log missing voxel_chunk_transaction_prepare_failed event"
+
+    # Gate should record one applied (first) and one error (second) for prefab.
+    applied_count =
+      Enum.count(gate_log_lines, &String.contains?(&1, "ws_voxel_prefab_place_intent_applied"))
+
+    error_count =
+      Enum.count(gate_log_lines, &String.contains?(&1, "ws_voxel_prefab_place_intent_error"))
+
+    assert applied_count == 1, "expected exactly 1 prefab applied, got #{applied_count}"
+    assert error_count == 1, "expected exactly 1 prefab error, got #{error_count}"
+
+    # Smoke summary — visible in mix test output.
+    IO.puts("""
+
+    ── Phase A1-2 occupancy reject e2e smoke ────────────────────
+      first place result:        accepted (chunk_version 0 → 1)
+      second place result:       rejected (:micro_slot_already_occupied)
+      reject elapsed:            #{reject_elapsed_ms} ms
+      chunk_version after reject: #{persisted_row.chunk_version} (unchanged)
+      observe log root:          #{log_root}
+      scene prepare_failed events: #{length(prepare_failed_lines)}
+      gate applied events:       #{applied_count}
+      gate error events:         #{error_count}
+    ─────────────────────────────────────────────────────────────
+    """)
+  end
+
   defp read_log_lines(path) do
     case File.read(path) do
       {:ok, content} -> String.split(content, "\n", trim: true)
@@ -1538,8 +1682,9 @@ defmodule GateServer.WsConnectionVoxelTest do
     client_intent_seq = Keyword.get(opts, :client_intent_seq, 0)
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     reason = Keyword.fetch!(opts, :reason)
+    timeout = Keyword.get(opts, :timeout, 1_000)
 
-    assert_receive {:gate_ws_send, iodata}
+    assert_receive {:gate_ws_send, iodata}, timeout
 
     assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
              got_logical_scene_id::64-big, 2::8, 0::64-big, 0::16-big, reason_len::16-big,
