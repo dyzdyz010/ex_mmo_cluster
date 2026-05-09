@@ -70,8 +70,13 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   - `:scene_caller` — module exposing `prepare/4`, `commit/3`, `abort/3` with
     the same signature as `SceneServer.Voxel.BuildTransactionApplier`. Defaults
     to that module.
-  - `:scene_opts` — base keyword list passed through to the scene caller. The
-    executor merges in the transaction's `:logical_scene_id` automatically.
+  - `:scene_opts_by_participant` — **required** map `%{ {region_id, lease_id} =>
+    keyword_list }` carrying the per-participant scene opts (most importantly
+    `:chunk_directory` for the participant's scene_node). Phase A4-1 replaced
+    the old single `:scene_opts` keyword (no double-path; full multi-region
+    parity from this module's perspective). The executor automatically merges
+    in the transaction's `:logical_scene_id` per participant. Single-region
+    callers pass a one-entry map.
   - `:now_ms_fun` — 0-arity function returning a monotonic-ish timestamp; used
     in the prepare ACK timestamps. Defaults to `System.system_time/1`.
   - `:per_participant_timeout_ms` — per-participant prepare timeout in ms.
@@ -89,7 +94,6 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   def execute(coordinator, %BuildTransaction{} = transaction, intents_by_participant, opts \\ [])
       when is_map(intents_by_participant) and is_list(opts) do
     scene_caller = Keyword.get(opts, :scene_caller, @default_scene_caller)
-    base_scene_opts = Keyword.get(opts, :scene_opts, [])
     now_fun = Keyword.get(opts, :now_ms_fun, &default_now_ms/0)
 
     per_participant_timeout =
@@ -101,9 +105,11 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     commit_timeout = Keyword.get(opts, :commit_timeout_ms, per_participant_timeout)
     abort_timeout = Keyword.get(opts, :abort_timeout_ms, per_participant_timeout)
 
-    scene_opts =
-      base_scene_opts
-      |> Keyword.put(:logical_scene_id, transaction.logical_scene_id)
+    scene_opts_by_participant =
+      validate_scene_opts_by_participant!(
+        Keyword.get(opts, :scene_opts_by_participant),
+        transaction
+      )
 
     deadline = monotonic_now_ms() + transaction_timeout
 
@@ -140,7 +146,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
           transaction,
           prepare_results,
           scene_caller,
-          scene_opts,
+          scene_opts_by_participant,
           commit_timeout,
           deadline
         )
@@ -157,7 +163,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
             transaction,
             intents_by_participant,
             scene_caller,
-            scene_opts,
+            scene_opts_by_participant,
             per_participant_timeout,
             deadline
           )
@@ -173,7 +179,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
               transaction,
               prepare_results,
               scene_caller,
-              scene_opts,
+              scene_opts_by_participant,
               commit_timeout,
               deadline
             )
@@ -184,7 +190,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
               transaction,
               prepare_results,
               scene_caller,
-              scene_opts,
+              scene_opts_by_participant,
               abort_timeout,
               deadline
             )
@@ -216,7 +222,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
          transaction,
          intents_by_participant,
          scene_caller,
-         scene_opts,
+         scene_opts_by_participant,
          per_participant_timeout,
          deadline
        ) do
@@ -224,18 +230,19 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
     work_items =
       Enum.map(participants, fn participant ->
-        key = {participant.region_id, participant.lease_id}
+        key = participant_key(participant)
         intents_by_chunk = Map.get(intents_by_participant, key, %{})
-        {participant, intents_by_chunk}
+        scene_opts = Map.fetch!(scene_opts_by_participant, key)
+        {participant, intents_by_chunk, scene_opts}
       end)
 
-    fun = fn {participant, intents_by_chunk} ->
+    fun = fn {participant, intents_by_chunk, scene_opts} ->
       safely_invoke(fn ->
         apply(scene_caller, :prepare, [
           participant,
           transaction.transaction_id,
           intents_by_chunk,
-          scene_opts
+          scene_opts_with_logical_scene_id(scene_opts, transaction)
         ])
       end)
     end
@@ -296,7 +303,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
          transaction,
          prepare_results,
          scene_caller,
-         scene_opts,
+         scene_opts_by_participant,
          commit_timeout,
          deadline
        ) do
@@ -307,11 +314,13 @@ defmodule WorldServer.Voxel.TransactionExecutor do
       end)
 
     fun = fn {participant, _prepare_result} ->
+      scene_opts = Map.fetch!(scene_opts_by_participant, participant_key(participant))
+
       safely_invoke(fn ->
         apply(scene_caller, :commit, [
           participant,
           transaction.transaction_id,
-          scene_opts
+          scene_opts_with_logical_scene_id(scene_opts, transaction)
         ])
       end)
     end
@@ -345,7 +354,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     # ObjectRegistry. This is the last write of the commit phase;
     # failures are non-blocking (registry can re-load from SceneObjectStore
     # if it misses an upsert; rows are persisted by ObjectRegistry itself).
-    register_scene_objects_after_commit(scene_caller, transaction, scene_opts)
+    register_scene_objects_after_commit(scene_caller, transaction, scene_opts_by_participant)
 
     emit("voxel_transaction_executor_committed", transaction, %{
       participant_count: length(participant_results)
@@ -360,15 +369,25 @@ defmodule WorldServer.Voxel.TransactionExecutor do
      }}
   end
 
-  defp register_scene_objects_after_commit(scene_caller, transaction, scene_opts) do
+  # Phase A4-1:scene_objects 注册路径暂仍走单一 opts(选 sorted-key 第一个
+  # participant 的 opts,decision 同 register_owner_participant)。Phase A4-3
+  # 加 owner_region_id / owner_lease_id 列后,这里改成按 owner_participant
+  # 分组,每个 owner 用自己的 opts 调一次 register_scene_objects。当前 single-
+  # region 单 entry map 行为完全不变。
+  defp register_scene_objects_after_commit(scene_caller, transaction, scene_opts_by_participant) do
     case Map.get(transaction, :scene_objects, []) do
       [] ->
         :ok
 
       scene_objects when is_list(scene_objects) ->
         if function_exported?(scene_caller, :register_scene_objects, 2) do
+          opts = register_owner_opts(scene_opts_by_participant, transaction)
+
           safely_invoke(fn ->
-            apply(scene_caller, :register_scene_objects, [scene_objects, scene_opts])
+            apply(scene_caller, :register_scene_objects, [
+              scene_objects,
+              scene_opts_with_logical_scene_id(opts, transaction)
+            ])
           end)
         end
 
@@ -376,12 +395,24 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     end
   end
 
+  # Deterministic owner-opts pick before A4-3 introduces per-object owner
+  # routing: smallest `{region_id, lease_id}` tuple. Single-region maps
+  # collapse to the only entry.
+  defp register_owner_opts(scene_opts_by_participant, _transaction) do
+    {_key, opts} =
+      scene_opts_by_participant
+      |> Enum.sort_by(fn {key, _} -> key end)
+      |> List.first()
+
+    opts
+  end
+
   defp run_abort(
          coordinator,
          transaction,
          prepare_results,
          scene_caller,
-         scene_opts,
+         scene_opts_by_participant,
          abort_timeout,
          deadline
        ) do
@@ -392,11 +423,13 @@ defmodule WorldServer.Voxel.TransactionExecutor do
       end)
 
     fun = fn {participant, _prepare_result} ->
+      scene_opts = Map.fetch!(scene_opts_by_participant, participant_key(participant))
+
       safely_invoke(fn ->
         apply(scene_caller, :abort, [
           participant,
           transaction.transaction_id,
-          scene_opts
+          scene_opts_with_logical_scene_id(scene_opts, transaction)
         ])
       end)
     end
@@ -450,6 +483,48 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   defp normalize_dispatch_outcome({:exit, :timeout}), do: {:error, :timeout}
   defp normalize_dispatch_outcome({:exit, reason}), do: {:error, {:participant_crashed, reason}}
   defp normalize_dispatch_outcome(:transaction_timeout), do: {:error, :transaction_timeout}
+
+  # Phase A4-1 helpers ──────────────────────────────────────────────────
+
+  defp participant_key(%{region_id: region_id, lease_id: lease_id}) do
+    {region_id, lease_id}
+  end
+
+  defp scene_opts_with_logical_scene_id(opts, transaction) when is_list(opts) do
+    Keyword.put(opts, :logical_scene_id, transaction.logical_scene_id)
+  end
+
+  defp validate_scene_opts_by_participant!(nil, _transaction) do
+    raise ArgumentError,
+          "TransactionExecutor.execute/4 requires :scene_opts_by_participant " <>
+            "(map keyed by {region_id, lease_id}); legacy :scene_opts was " <>
+            "removed in Phase A4-1"
+  end
+
+  defp validate_scene_opts_by_participant!(map, transaction) when is_map(map) do
+    missing =
+      transaction.participants
+      |> Enum.map(&participant_key/1)
+      |> Enum.reject(&Map.has_key?(map, &1))
+
+    case missing do
+      [] ->
+        map
+
+      _ ->
+        raise ArgumentError,
+              "TransactionExecutor.execute/4 missing scene_opts for " <>
+                inspect(missing) <>
+                " in :scene_opts_by_participant; got keys " <>
+                inspect(Map.keys(map))
+    end
+  end
+
+  defp validate_scene_opts_by_participant!(other, _transaction) do
+    raise ArgumentError,
+          "TransactionExecutor.execute/4 :scene_opts_by_participant must be a " <>
+            "map keyed by {region_id, lease_id}; got " <> inspect(other)
+  end
 
   # Wraps a 0-arity invocation that calls into the scene caller. Normal returns
   # surface as `{:scene_result, value}`; exceptions / throws / exits surface as

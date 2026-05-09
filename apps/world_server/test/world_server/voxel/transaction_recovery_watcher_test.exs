@@ -194,8 +194,13 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       assert pre_sweep.state == :prepared
       assert pre_sweep.intents_by_participant != %{}
 
-      resolver = fn ->
-        {:ok, scene_caller: StubSceneCaller, scene_opts: [recorder: recorder]}
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p ->
+            {{p.region_id, p.lease_id}, [recorder: recorder]}
+          end)
+
+        {:ok, scene_caller: StubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
       end
 
       summary =
@@ -215,7 +220,7 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       coordinator = start_supervised!(TransactionCoordinator)
       prepare_all!(coordinator, "tx-resume-unavailable", with_intents: true)
 
-      resolver = fn -> {:error, :scene_unavailable} end
+      resolver = fn _participants -> {:error, :scene_unavailable} end
 
       summary =
         TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
@@ -231,8 +236,11 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       coordinator = start_supervised!(TransactionCoordinator)
       prepare_all!(coordinator, "tx-no-intents", with_intents: false)
 
-      resolver = fn ->
-        {:ok, scene_caller: StubSceneCaller, scene_opts: []}
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p -> {{p.region_id, p.lease_id}, []} end)
+
+        {:ok, scene_caller: StubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
       end
 
       summary =
@@ -247,10 +255,14 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       recorder = start_supervised!({Agent, fn -> [] end})
       prepare_all!(coordinator, "tx-resume-partial", with_intents: true)
 
-      resolver = fn ->
-        {:ok,
-         scene_caller: StubSceneCaller,
-         scene_opts: [recorder: recorder, commit_responses: %{20 => {:error, :commit_blew_up}}]}
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p ->
+            {{p.region_id, p.lease_id},
+             [recorder: recorder, commit_responses: %{20 => {:error, :commit_blew_up}}]}
+          end)
+
+        {:ok, scene_caller: StubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
       end
 
       summary =

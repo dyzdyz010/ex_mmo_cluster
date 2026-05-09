@@ -65,7 +65,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :commit, transaction: %BuildTransaction{state: :committed}}} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [recorder: recorder]
+               scene_opts_by_participant: uniform_opts(recorder: recorder)
              )
 
     calls = Agent.get(recorder, & &1)
@@ -96,10 +96,13 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :abort, transaction: %BuildTransaction{state: :aborted}}} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [
-                 recorder: recorder,
-                 prepare_responses: %{20 => {:error, {:prepare_failed, {2, 0, 0}, :stale_lease}}}
-               ]
+               scene_opts_by_participant:
+                 uniform_opts(
+                   recorder: recorder,
+                   prepare_responses: %{
+                     20 => {:error, {:prepare_failed, {2, 0, 0}, :stale_lease}}
+                   }
+                 )
              )
 
     calls = Agent.get(recorder, & &1)
@@ -133,13 +136,14 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :abort, transaction: %BuildTransaction{state: :aborted}}} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [
-                 recorder: recorder,
-                 prepare_responses: %{
-                   10 => {:error, :stale_lease},
-                   20 => {:error, :stale_lease}
-                 }
-               ]
+               scene_opts_by_participant:
+                 uniform_opts(
+                   recorder: recorder,
+                   prepare_responses: %{
+                     10 => {:error, :stale_lease},
+                     20 => {:error, :stale_lease}
+                   }
+                 )
              )
 
     calls = Agent.get(recorder, & &1)
@@ -165,7 +169,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, _result} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [recorder: recorder]
+               scene_opts_by_participant: uniform_opts(recorder: recorder)
              )
 
     snapshot = TransactionCoordinator.snapshot(coordinator)
@@ -183,7 +187,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :commit}} =
              TransactionExecutor.execute(coordinator, replay_transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [recorder: recorder]
+               scene_opts_by_participant: uniform_opts(recorder: recorder)
              )
 
     second_snapshot = TransactionCoordinator.snapshot(coordinator)
@@ -203,11 +207,12 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [
-                 recorder: recorder,
-                 # Region 20 sleeps longer than its per-participant budget.
-                 prepare_sleeps_ms: %{20 => 200}
-               ],
+               scene_opts_by_participant:
+                 uniform_opts(
+                   recorder: recorder,
+                   # Region 20 sleeps longer than its per-participant budget.
+                   prepare_sleeps_ms: %{20 => 200}
+                 ),
                per_participant_timeout_ms: 50
              )
 
@@ -261,10 +266,11 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
                TransactionExecutor.execute(coordinator, transaction, %{},
                  scene_caller: StubSceneCaller,
-                 scene_opts: [
-                   recorder: recorder,
-                   prepare_raises: %{20 => "boom in prepare"}
-                 ]
+                 scene_opts_by_participant:
+                   uniform_opts(
+                     recorder: recorder,
+                     prepare_raises: %{20 => "boom in prepare"}
+                   )
                )
 
       assert result.transaction.state == :aborted
@@ -290,10 +296,11 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     assert {:ok, %{decision: :abort, prepare_results: prepare_results} = result} =
              TransactionExecutor.execute(coordinator, transaction, %{},
                scene_caller: StubSceneCaller,
-               scene_opts: [
-                 recorder: recorder,
-                 prepare_sleeps_ms: %{10 => 1_000, 20 => 1_000}
-               ],
+               scene_opts_by_participant:
+                 uniform_opts(
+                   recorder: recorder,
+                   prepare_sleeps_ms: %{10 => 1_000, 20 => 1_000}
+                 ),
                per_participant_timeout_ms: 5_000,
                transaction_timeout_ms: 50
              )
@@ -321,6 +328,76 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     end
   end
 
+  describe "Phase A4-1 per-participant scene_opts" do
+    test "feeds each participant its own scene_opts during prepare / commit" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder_a = start_supervised!({Agent, fn -> [] end}, id: :recorder_a)
+      recorder_b = start_supervised!({Agent, fn -> [] end}, id: :recorder_b)
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(
+          coordinator,
+          transaction_attrs("tx-per-participant-opts")
+        )
+
+      # Each participant gets its own recorder. After execute we must see
+      # *exactly one* prepare event in each recorder, addressed to its own
+      # region — proving the executor routed per-participant opts correctly.
+      assert {:ok, %{decision: :commit}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant: %{
+                   {10, 100} => [recorder: recorder_a],
+                   {20, 200} => [recorder: recorder_b]
+                 }
+               )
+
+      calls_a = Agent.get(recorder_a, & &1)
+      calls_b = Agent.get(recorder_b, & &1)
+
+      assert Enum.count(calls_a, &match?({:prepare, 10, _, _}, &1)) == 1
+      assert Enum.count(calls_a, &match?({:commit, 10, _}, &1)) == 1
+      refute Enum.any?(calls_a, &match?({:prepare, 20, _, _}, &1))
+      refute Enum.any?(calls_a, &match?({:commit, 20, _}, &1))
+
+      assert Enum.count(calls_b, &match?({:prepare, 20, _, _}, &1)) == 1
+      assert Enum.count(calls_b, &match?({:commit, 20, _}, &1)) == 1
+      refute Enum.any?(calls_b, &match?({:prepare, 10, _, _}, &1))
+      refute Enum.any?(calls_b, &match?({:commit, 10, _}, &1))
+    end
+
+    test "raises when :scene_opts_by_participant is missing (no double-path with old :scene_opts)" do
+      coordinator = start_supervised!(TransactionCoordinator)
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(
+          coordinator,
+          transaction_attrs("tx-missing-opts")
+        )
+
+      assert_raise ArgumentError, ~r/scene_opts_by_participant/, fn ->
+        TransactionExecutor.execute(coordinator, transaction, %{}, scene_caller: StubSceneCaller)
+      end
+    end
+
+    test "raises when a participant has no entry in scene_opts_by_participant" do
+      coordinator = start_supervised!(TransactionCoordinator)
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(
+          coordinator,
+          transaction_attrs("tx-partial-opts")
+        )
+
+      assert_raise ArgumentError, ~r/missing scene_opts.*\{20, 200\}/, fn ->
+        TransactionExecutor.execute(coordinator, transaction, %{},
+          scene_caller: StubSceneCaller,
+          scene_opts_by_participant: %{{10, 100} => []}
+        )
+      end
+    end
+  end
+
   test "runs prepare in parallel: total wall-clock time is well under sequential" do
     coordinator = start_supervised!(TransactionCoordinator)
     recorder = start_supervised!({Agent, fn -> [] end})
@@ -335,10 +412,11 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       :timer.tc(fn ->
         TransactionExecutor.execute(coordinator, transaction, %{},
           scene_caller: StubSceneCaller,
-          scene_opts: [
-            recorder: recorder,
-            prepare_sleeps_ms: %{10 => 200, 20 => 200}
-          ],
+          scene_opts_by_participant:
+            uniform_opts(
+              recorder: recorder,
+              prepare_sleeps_ms: %{10 => 200, 20 => 200}
+            ),
           per_participant_timeout_ms: 1_000,
           transaction_timeout_ms: 5_000
         )
@@ -389,7 +467,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
               }} =
                TransactionExecutor.execute(coordinator, prepared, %{},
                  scene_caller: StubSceneCaller,
-                 scene_opts: [recorder: recorder]
+                 scene_opts_by_participant: uniform_opts(recorder: recorder)
                )
 
       # No prepare calls should have hit the scene caller — the executor
@@ -449,7 +527,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       assert {:ok, %{participant_results: results, prepare_results: prepare_results}} =
                TransactionExecutor.execute(coordinator, forced_transaction, %{},
                  scene_caller: StubSceneCaller,
-                 scene_opts: [recorder: recorder]
+                 scene_opts_by_participant: uniform_opts(recorder: recorder)
                )
 
       assert {_failed_p, {:error, :prepare_failed_before_resume}} =
@@ -465,6 +543,16 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       assert {_failed_p, {:error, :prepare_failed_before_resume}} =
                Enum.find(results, fn {p, _} -> p.region_id == 20 end)
     end
+  end
+
+  # Uniform helper: every participant in `transaction_attrs/1` gets the same
+  # base opts. Multi-region tests (A4-1 onward) inject per-participant opts
+  # directly via the by_participant map.
+  defp uniform_opts(base_opts) do
+    %{
+      {10, 100} => base_opts,
+      {20, 200} => base_opts
+    }
   end
 
   defp force_participant_failure(transaction, region_id) do

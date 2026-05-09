@@ -26,16 +26,18 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
 
   ## `:scene_opts_resolver`
 
-  A 0-arity function returning `{:ok, executor_opts}` or `{:error, reason}`.
-  `executor_opts` is a keyword list passed straight to
-  `TransactionExecutor.execute/4` and may include `:scene_caller`,
-  `:scene_opts`, and other executor knobs. `WorldSup` injects an
-  implementation that locates the current Scene node via
-  `BeaconServer.Client.lookup(:scene_server)` and builds
-  `[scene_opts: [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]]`.
-  Tests can inject a stub resolver that returns
-  `[scene_caller: TestStub, scene_opts: [...]]`. A `nil` resolver makes the
-  watcher fall back to the Phase 3 parked-pending-commit behaviour.
+  A 1-arity function `fn participants -> {:ok, executor_opts} | {:error, reason}`
+  (Phase A4-1 changed from 0-arity to 1-arity to match `TransactionExecutor`'s
+  per-participant scene_opts API). `executor_opts` is a keyword list passed
+  straight to `TransactionExecutor.execute/4` and **must** include
+  `:scene_opts_by_participant` (a map keyed by `{region_id, lease_id}`); it
+  may also include `:scene_caller` and other executor knobs.
+
+  `WorldSup` injects an implementation that locates the current Scene node(s)
+  via `BeaconServer.Client.lookup(:scene_server)` and builds the per-participant
+  map (single-region today, per-region after A4-2). Tests can inject a stub
+  resolver. A `nil` resolver makes the watcher fall back to the Phase 3
+  parked-pending-commit behaviour.
   """
 
   use GenServer
@@ -183,9 +185,9 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
   end
 
   defp resume_prepared(coordinator, transaction, resolver) do
-    case safe_resolve(resolver) do
-      {:ok, scene_opts} ->
-        run_resume(coordinator, transaction, scene_opts)
+    case safe_resolve(resolver, transaction.participants) do
+      {:ok, executor_opts} ->
+        run_resume(coordinator, transaction, executor_opts)
 
       {:error, reason} ->
         emit("voxel_transaction_recovery_scene_opts_unavailable", transaction, %{
@@ -245,8 +247,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
       :resume_failed
   end
 
-  defp safe_resolve(resolver) when is_function(resolver, 0) do
-    case resolver.() do
+  defp safe_resolve(resolver, participants) when is_function(resolver, 1) do
+    case resolver.(participants) do
       {:ok, executor_opts} when is_list(executor_opts) -> {:ok, executor_opts}
       {:error, reason} -> {:error, reason}
       other -> {:error, {:invalid_resolver_return, other}}
@@ -255,7 +257,7 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
     exception -> {:error, {:resolver_crashed, exception}}
   end
 
-  defp safe_resolve(_resolver), do: {:error, :resolver_not_callable}
+  defp safe_resolve(_resolver, _participants), do: {:error, :resolver_not_callable}
 
   defp count_failures(results) do
     Enum.count(results, fn

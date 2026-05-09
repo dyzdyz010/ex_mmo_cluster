@@ -1413,20 +1413,25 @@ defmodule GateServer.WsConnection do
   end
 
   defp executor_execute(coordinator_ref, transaction, plan) do
-    intents_by_participant = %{
-      {plan.lease.region_id, plan.lease.lease_id} => plan.intents_by_chunk
-    }
+    participant_key = {plan.lease.region_id, plan.lease.lease_id}
 
-    scene_opts = [
-      chunk_directory: {SceneServer.Voxel.ChunkDirectory, plan.scene_node}
-    ]
+    intents_by_participant = %{participant_key => plan.intents_by_chunk}
+
+    # Phase A4-1:executor 改 :scene_opts_by_participant map(per-participant
+    # 路由)。Phase A4 此 step 的 build_prefab_plan 仍是 single-participant,
+    # A4-2 改成 per-chunk 路由后这里会自然变 multi-entry map。
+    scene_opts_by_participant = %{
+      participant_key => [
+        chunk_directory: {SceneServer.Voxel.ChunkDirectory, plan.scene_node}
+      ]
+    }
 
     try do
       WorldServer.Voxel.TransactionExecutor.execute(
         coordinator_ref,
         transaction,
         intents_by_participant,
-        scene_opts: scene_opts
+        scene_opts_by_participant: scene_opts_by_participant
       )
     catch
       :exit, _reason -> {:error, :executor_crashed}

@@ -20,29 +20,40 @@ defmodule WorldServer.WorldSup do
       {WorldServer.Voxel.TransactionRecoveryWatcher,
        name: WorldServer.Voxel.TransactionRecoveryWatcher,
        coordinator: WorldServer.Voxel.TransactionCoordinator,
-       scene_opts_resolver: &__MODULE__.default_scene_opts_resolver/0}
+       scene_opts_resolver: &__MODULE__.default_scene_opts_resolver/1}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
   end
 
   @doc """
-  Resolves `scene_opts` for `WorldServer.Voxel.TransactionRecoveryWatcher` by
-  looking up the current Scene node through `BeaconServer`.
+  Resolves `:scene_opts_by_participant` for the
+  `WorldServer.Voxel.TransactionRecoveryWatcher` resume path by looking up
+  each participant's scene node through `BeaconServer`.
 
-  Returns `{:ok, scene_opts}` when a Scene node has registered itself, or
+  Phase A4-1 changed the watcher contract from `0-arity → {:ok, [scene_opts:
+  ...]}` to `1-arity(participants) → {:ok, [scene_opts_by_participant: %{...}]}`
+  to match `TransactionExecutor.execute/4` per-participant API. Phase A4
+  still uses a single global Scene node for all participants(BeaconServer
+  registers `:scene_server` once); A4-2 will switch to per-region scene-node
+  resolution via lease.
+
+  Returns `{:ok, executor_opts}` when the Scene node is reachable, or
   `{:error, :scene_unavailable}` when the registry has no entry yet
-  (e.g. Watcher started before the Scene node finished joining the cluster).
-  In the unavailable case the watcher leaves the transaction parked and
-  emits `voxel_transaction_recovery_scene_opts_unavailable` for ops.
-
-  Phase 3-bis assumes a single Scene node serves the world; once Phase 6
-  introduces per-region coordinators we will route by region instead.
+  (e.g. watcher started before the Scene node finished joining). The
+  watcher leaves the transaction parked and emits
+  `voxel_transaction_recovery_scene_opts_unavailable` in that case.
   """
-  def default_scene_opts_resolver do
+  def default_scene_opts_resolver(participants) when is_list(participants) do
     case BeaconServer.Client.lookup(:scene_server) do
       {:ok, scene_node} ->
-        {:ok, [scene_opts: [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]]}
+        scene_opts_by_participant =
+          Map.new(participants, fn participant ->
+            {{participant.region_id, participant.lease_id},
+             [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]}
+          end)
+
+        {:ok, [scene_opts_by_participant: scene_opts_by_participant]}
 
       :error ->
         {:error, :scene_unavailable}
