@@ -68,19 +68,19 @@ defmodule SceneServer.Movement.Profile do
     # changing often, add a parity/version check so client/server behavior
     # cannot silently drift.
     %__MODULE__{
-      max_speed: 220.0,
-      max_accel: 1200.0,
-      max_decel: 1400.0,
-      max_jerk: 9000.0,
+      max_speed: 600.0,
+      max_accel: 3300.0,
+      max_decel: 3800.0,
+      max_jerk: 24_500.0,
       friction: 0.0,
       turn_response: 1.0,
       fixed_dt_ms: 100,
       max_speed_scale: 1.0,
-      jump_impulse: 420.0,
+      jump_impulse: 485.0,
       gravity: 980.0,
       air_control: 0.35,
-      air_accel: 420.0,
-      max_fall_speed: 900.0
+      air_accel: 1140.0,
+      max_fall_speed: 5300.0
     }
   end
 end

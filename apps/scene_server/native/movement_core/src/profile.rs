@@ -24,37 +24,37 @@ pub struct MovementProfile {
 impl Default for MovementProfile {
     fn default() -> Self {
         Self {
-            // MMO walking baseline (7–8 m/s at 1 unit = 1 cm). Below Unreal
-            // CMC default `MaxWalkSpeed = 600` because our 1 unit = 1 cm world
-            // runs slower than UE's 1 unit = 1 cm humanoid. Roadmap (plan C):
-            // shift to per-class profile (ranger 240 / heavy 180).
-            max_speed: 220.0,
-            // Unreal CMC default `MaxAcceleration = 2048`; MMO-tuned lower so
-            // players never exceed walking physics in one tick. Roadmap: keep
-            // < max_speed * 6 for stable jerk-limited response.
-            max_accel: 1200.0,
-            // Valve/Source recommend decel ≈ 1.15 × accel so key-release feels
-            // snappier than key-hold. Roadmap: expose as PVP vs PVE scaler.
-            max_decel: 1400.0,
-            // GDC 2016 Epic "Networked Character Movement": jerk ceiling ≈ 7.5
-            // × max_accel keeps transient acceleration responsive without
-            // shoulder-popping artefacts. Roadmap: per-mount override.
-            max_jerk: 9_000.0,
-            // Floor friction driven per-surface by the physics layer; the
-            // integrator itself treats friction as already resolved.
+            // MMO running baseline (6 m/s at 1 unit = 1 cm), matches Unreal CMC
+            // default `MaxWalkSpeed = 600`. Phase A2 设定:per-class 速度档调
+            // 用 max_speed_scale,profile default 给"满速跑"。
+            max_speed: 600.0,
+            // 维持 max_accel ≈ max_speed * 5.5 的 jerk-limited 响应窗口
+            // (旧 1200 / 220 = 5.45,新 3300 / 600 = 5.5)。
+            max_accel: 3300.0,
+            // Valve/Source 经验 decel ≈ 1.15 × accel 让按键释放比按下更脆。
+            max_decel: 3800.0,
+            // GDC 2016 Epic "Networked Character Movement":jerk ≈ 7.5 ×
+            // max_accel 让瞬时加速不肩膀震弹。
+            max_jerk: 24_500.0,
+            // Floor friction 由 physics layer 按 surface 算,integrator 视为
+            // 已结算。
             friction: 0.0,
             turn_response: 1.0,
-            // 100ms authoritative tick matches Amazon New World GDC 2022
-            // "500 players in one shard" default. Roadmap: stays 100ms — any
-            // change is P3+ scope, not P2.
+            // 100ms 权威 tick 对齐 Amazon New World GDC 2022 "500 players in
+            // one shard"。改 tick 长度是 P3+ 范围。
             fixed_dt_ms: 100,
             max_speed_scale: 1.0,
-            // Conservative MMO jump arc: about 70 cm apex at 100 ms ticks.
-            jump_impulse: 420.0,
+            // 现实立定跳远 0.5-0.8m,demo 体感 1.2m apex 更舒服:
+            // apex = jump_impulse² / (2 × gravity) = 485² / 1960 ≈ 120 cm。
+            jump_impulse: 485.0,
+            // 9.8 m/s²,符合现实重力。
             gravity: 980.0,
             air_control: 0.35,
-            air_accel: 420.0,
-            max_fall_speed: 900.0,
+            // air_accel 跟 max_accel 同比例(0.35 × 3300 ≈ 1140),air_control
+            // 系数另算。
+            air_accel: 1140.0,
+            // 人体 terminal velocity ≈ 53 m/s。
+            max_fall_speed: 5300.0,
         }
     }
 }
