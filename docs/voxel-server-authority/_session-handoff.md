@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-09 晚,Phase A1 + A2 hotfix + A1-1b batch API + watcher hotfix 全部落地后。
+**Last updated**:2026-05-10,Phase A1 + A2 hotfix + A1-1b batch API + watcher hotfix + prefab micro-precision 落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -22,24 +22,26 @@
 | A2 hotfix:client `DEFAULT_MOVEMENT_PROFILE` 同步 server max_speed=600 等 | 已完成 | `58a7a9e` |
 | A1-1b Storage.put_micro_blocks/4 batch API(prefab 卡死性能优化,1.5s → 46ms,33×) | 已完成 | `0e3434c` |
 | Server 启动 hotfix:TransactionRecoveryWatcher 接 plain-map stale snapshot | 已完成 | `cc3a31d` |
+| Prefab 摆放精度 hotfix:server 按 world-micro 精度落 prefab + online adapter 走 boundary-snap micro 锚 | 已完成 | `a7a5bc9` (server raster) → `20f6a8a` (online adapter) |
 
-测试规模(2026-05-09 晚末态,Phase A1 + A1-1b 收尾):
+测试规模(2026-05-10,prefab 微精度 hotfix 收尾):
 
 - data_service: 71 tests
-- scene_server: **375 tests** (+7 from A1 末态 368:A1-1b Storage batch API
-  unit tests × 7,验证 batch 跟 N×sequential put_micro_block 像素级等价)
-- scene_server :smoke: 5 tests (+1 A1-4 jump arc smoke)
+- scene_server: **378 tests** (+3 from prefab micro hotfix:mid-macro 跨
+  macro / 跨 chunk / group_by_chunk 多桶 case;原 floor-divided +
+  negative-anchor 用例改写)
+- scene_server :smoke: 5 tests
 - gate_server: 191 tests
 - world_server: 72 tests (1 预存失败 Windows path,不动)
-- web_client: 258 vitest
+- web_client: **260 vitest** (+2 placePrefabBoundarySnap online 用例)
 - movement_core cargo: 39 tests
 
 预存失败:`apps/world_server/test/world_server/voxel/authority_observe_test.exs:35`
 Windows path 大小写,不动(memory 已记)。
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin **69 commits**
+未 push(用户没说 push 就别 push)。本地 master 领先 origin **72 commits**
 (Phase 4 末 35 + Phase 4-bis 14 + Phase A2 8 + Phase A1 9 + A2 hotfix 1 +
-A1-1b 1 + watcher hotfix 1)。
+A1-1b 1 + watcher hotfix 1 + handoff docs 1 + prefab micro hotfix 2)。
 
 ## 已知预存失败(本环境)
 
@@ -63,10 +65,17 @@ A1-1b 1 + watcher hotfix 1)。
 placement < 100ms 不再卡死**。
 
 **用户实测验证状态**:
-- A1-1b 修完后 user 还**没有 fresh demo 验证**(本会话末段 server crash on
-  startup 因为 stale `:preparing` snapshot,我加了 watcher catchall hotfix
-  `cc3a31d`)。下个会话开始前先确认 user 重启 server 是否成功,prefab 是否
-  立刻响应。
+- A1-1b 修完后 user 报 server 重启 OK,但发现客户端线框预览(micro 精度)和
+  服务端实际摆放(macro 对齐)不符 — 服务端按方框位摆,丢了 micro offset。
+  Prefab micro-precision hotfix 已落(`a7a5bc9` server raster + `20f6a8a`
+  online adapter):server `prefab_raster` 按 world-micro 精度 per-cell 拆
+  (chunk, local_macro, slot),online adapter 走 boundary-snap 出 micro 锚发
+  `0x67`。**下个会话开始前先确认 user fresh demo:prefab 实际落地是否和
+  线框严格一致**。如果还有偏差,可能是 wireframe 几何 vs server raster slot
+  decode 顺序细节(应该不会,两端都用 `slot = x + y*8 + z*64`),或者 boundary
+  snap 选锚算法选了不同候选(可在 client 端 emit `world:prefab-boundary-snap-committed`
+  比对 anchorMicroCoord 与 server `voxel_chunk_transaction_committed` log 里的
+  intent 起点)。
 
 **Phase 4-bis 后剩余的 backlog**(若用户优先继续巩固 4-bis 系):
 
@@ -323,16 +332,30 @@ A2 之前的所有 Phase 1a → 4-bis commits(完整列表见上一个会话的 
 
 ## ⚠️ 跨会话恢复优先动作
 
-下个会话开始,**先确认这两条**:
+下个会话开始,**先确认这三条**:
 
-1. **用户能否成功重启 server**(本会话末加了 watcher catchall hotfix `cc3a31d`,
-   下次 user `iex --name mmo@127.0.0.1 --cookie mmo -S mix` 应该正常起来)。
-   如果还 crash,可能是 stale row 太多 / coordinator init race / 别的层 stale。
-   提供 fallback:`mix run scripts/truncate_voxel_tables.exs` 清表(scripts
-   目录已有这个脚本,untracked,需要时可以 commit + 用)。
+1. **用户能否成功重启 server**(watcher catchall hotfix `cc3a31d` 后通常能起;
+   如果 crash,可能是更深层 stale shape — 已知 `cc3a31d` catchall 只匹配带
+   `transaction_id` key 的 plain map,但仍有可能见到只带 `state + decision_version`
+   两个 key 的 stale,触发 FunctionClauseError → world_server 起不来 → umbrella
+   shutdown)。临时修法:`cmd /c mix run --no-start scripts/truncate_voxel_tables.exs`
+   清表(scripts 目录已有,untracked)。根治候选:**TransactionCoordinator
+   `validate_persisted_payload` 拒绝任何 inner transactions value 不是
+   `%BuildTransaction{}` 的 stale payload,让 coordinator 启动空状态而不是
+   把 plain-map stale 喂给 watcher**(handoff backlog,与 BuildTransaction
+   schema_version 化是同一根因)。
 
-2. **用户重启后是否能流畅放 prefab**(不再卡死)。如果还慢,可能 A1-1b
-   batch fast-path 没命中 — 检查 `chunk_process.detect_micro_block_batch/1`,
-   或者 `client send 0x67 → server` 链路里别的层成了瓶颈。
+2. **用户重启后能否流畅放 prefab + 摆放位置和线框预览像素级一致**:
+   - 流畅性靠 A1-1b batch API(33×)
+   - 精度靠 prefab micro-precision hotfix(`a7a5bc9` + `20f6a8a`)
+   - 如果摆放位置和线框还有偏差:对比 client `world:prefab-boundary-snap-committed`
+     event 里的 `anchorMicroCoord` vs server `voxel_chunk_transaction_committed`
+     log 里 intent 起点(macro+slot 还原成 world micro 应该完全相等)
+
+3. **多 chunk prefab 跨 region 警告**:mid-macro 锚把 prefab 摆在 chunk 边界
+   附近时,可能跨两 chunks。**两 chunks 在同一 region/lease 时正常**;**跨
+   region 时 gate dispatch 会 reject**(handoff backlog "跨 region 多 participant
+   事务",未实现)。如果 user 实测发现某些边界位置 prefab 被 reject,大概率
+   是这个。临时绕路:挪开锚点远离 chunk 边界。
 
 如果以上都 OK,可以推进 **A3 多客户端联调** 或 Phase 5。

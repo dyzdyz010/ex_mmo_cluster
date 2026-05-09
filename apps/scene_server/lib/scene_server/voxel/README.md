@@ -87,12 +87,16 @@ v1 catalog 内容：
 | 3  | builtin_cube_2x2x2  | 2×2×2 共 8 个方块               | 3           |
 
 `SceneServer.Voxel.PrefabRaster.rasterize/4` 是把蓝图 + 锚点光栅化为
-`(chunk_coord, local_macro, NormalBlockData)` 写入单元的纯函数。它先把
-`anchor_world_micro` 用 `floor_div` 转成 world-macro 锚点，再加上每个 cell 偏移，
-最后通过 `Types.chunk_and_local_macro!/1` 解出宏块所属的 chunk + 本地坐标。所有
-cell 共用同一份 `NormalBlockData.new(material_id, health: 100)`。`group_by_chunk/1`
-方便按 chunk 聚合统计。当前 v1 不支持非 0 旋转、亚网格预制、跨蓝图版本协商；这些
-都在 v2 实现。
+`(chunk_coord, local_macro, micro_slot, layer_attrs)` 写入单元的纯函数。
+**Phase A1 hotfix(2026-05-09)起按 world-micro 精度落地**：每个 occupied
+slot 把 `(slot_x, slot_y, slot_z)` 加到 `anchor_world_micro` 后，再
+`floor_div / floor_mod` 拆出该 cell 的 `(chunk_coord, local_macro, micro_slot)`。
+这样 macro-aligned 锚点是退化情形（单 macro / 单 chunk），mid-macro 锚点会
+让 prefab 自然跨 2~8 个 macros / 1~4 个 chunks，与客户端 boundary-snap
+线框预览像素级一致。所有 cell 共用同一份 `layer_attrs = %{material_id, health: 100}`。
+`group_by_chunk/1` 方便按 chunk 聚合做 per-chunk 事务参与方分发。当前 v2 不支持
+非 0 旋转、跨 region 多 lease 事务（gate dispatch 仍是 single-lease，跨 region
+prefab 在 backlog）。
 
 Gate 上的 `0x67 PrefabPlaceIntent` 真实路径（Phase 3 起）：先通过 `BlueprintCatalog` +
 `PrefabRaster` 拿到 cell 列表，按 `chunk_coord` 分组成
