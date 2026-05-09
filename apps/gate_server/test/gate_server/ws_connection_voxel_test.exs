@@ -511,6 +511,188 @@ defmodule GateServer.WsConnectionVoxelTest do
     refute_receive {:gate_ws_send, _}, 100
   end
 
+  test "Phase A1-1 e2e: sphere prefab lands as 248 micro slots matching BlueprintCatalog mask" do
+    # Phase A1-1 端到端冒烟测试:
+    # 1. 启 stdio observe log (scene + gate + world) 写到 .demo/observe/a1-sphere-e2e/
+    # 2. 通过 gate WsConnection 发 0x67 PrefabPlaceIntent (sphere blueprint)
+    # 3. 解码 chunk snapshot 拿 storage,断言 macro (1,2,3) 处的 refined cell
+    #    占用 mask 跟 BlueprintCatalog.occupancy_words/1 完全一致(像素级)
+    # 4. flush observe writers 后读 scene/gate log 确认关键事件 emit
+    # 5. IO.puts 总结到测试输出,便于 mix test 报告里直接看到 e2e 数据
+    log_root = Path.join(System.tmp_dir!(), "a1-sphere-e2e-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(log_root)
+    scene_log = Path.join(log_root, "scene.log")
+    gate_log = Path.join(log_root, "gate.log")
+    world_log = Path.join(log_root, "world.log")
+
+    Application.put_env(:scene_server, :cli_observe_log, scene_log)
+    Application.put_env(:gate_server, :cli_observe_log, gate_log)
+    Application.put_env(:world_server, :cli_observe_log, world_log)
+
+    on_exit(fn ->
+      Application.delete_env(:scene_server, :cli_observe_log)
+      Application.delete_env(:gate_server, :cli_observe_log)
+      Application.delete_env(:world_server, :cli_observe_log)
+    end)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    logical_scene_id = 7_777
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_002,
+               owner_epoch: 0
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_002,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # Subscribe to chunk (0,0,0) so we get post-commit snapshot push.
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(701, logical_scene_id, {0, 0, 0}))
+    assert_receive {:gate_ws_send, _initial_bin}, 5_000
+
+    # Place sphere: blueprint_id=1, version=2, anchor world-micro (8, 16, 24)
+    # → world-macro (1, 2, 3) → chunk (0,0,0) local macro (1, 2, 3).
+    place_started_at = System.monotonic_time(:millisecond)
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(702, 14, logical_scene_id, 9_001,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_accepted(
+      request_id: 702,
+      client_intent_seq: 14,
+      logical_scene_id: logical_scene_id,
+      result_ref: 1,
+      timeout: 10_000
+    )
+
+    place_elapsed_ms = System.monotonic_time(:millisecond) - place_started_at
+
+    # Pull the snapshot fan-out and decode storage.
+    assert_receive {:gate_ws_send, snapshot_bin}, 5_000
+    assert <<0x62, snapshot_payload::binary>> = snapshot_bin
+    assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
+    storage = snapshot.storage
+    assert storage.chunk_version == 1
+
+    # Macro (1, 2, 3) → linear index 1 + 2*16 + 3*256 = 801.
+    macro_index = 1 + 2 * 16 + 3 * 256
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    assert header.mode == MacroCellHeader.cell_mode_refined(),
+           "expected macro #{macro_index} to be in :refined mode, got mode=#{header.mode}"
+
+    refined_cell = Enum.at(storage.refined_cells, header.payload_index)
+    storage_words = refined_cell.occupancy_words
+
+    {:ok, sphere} = SceneServer.Voxel.BlueprintCatalog.fetch(1, 2)
+    expected_words = SceneServer.Voxel.BlueprintCatalog.occupancy_words(sphere)
+    expected_slot_count = length(sphere.occupied_slots)
+
+    storage_slot_count =
+      Enum.reduce(storage_words, 0, fn word, acc -> acc + popcount(word) end)
+
+    # Pixel-perfect mask match — sphere shape really sphere on disk.
+    assert storage_words == expected_words,
+           """
+           sphere occupancy mask mismatch with BlueprintCatalog!
+           storage popcount: #{storage_slot_count}
+           expected popcount: #{expected_slot_count}
+           """
+
+    assert storage_slot_count == expected_slot_count
+
+    # Verify chunk-level snapshot was persisted to Postgres.
+    assert {:ok, persisted_row} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+    assert persisted_row.chunk_version == 1
+
+    assert {:ok, %{storage: persisted_storage}} =
+             SceneVoxelCodec.decode_chunk_snapshot_payload(persisted_row.data)
+
+    assert persisted_storage.chunk_version == 1
+    persisted_header = Enum.at(persisted_storage.macro_headers, macro_index)
+    assert persisted_header.mode == MacroCellHeader.cell_mode_refined()
+    persisted_cell = Enum.at(persisted_storage.refined_cells, persisted_header.payload_index)
+    assert persisted_cell.occupancy_words == expected_words
+
+    # Flush observe writers + sample the logs.
+    SceneServer.CliObserve.flush()
+    GateServer.CliObserve.flush()
+    WorldServer.CliObserve.flush()
+
+    scene_log_lines = read_log_lines(scene_log)
+    gate_log_lines = read_log_lines(gate_log)
+    world_log_lines = read_log_lines(world_log)
+
+    # Spot-check key events on the apply path.
+    assert Enum.any?(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_committed")),
+           "scene log missing voxel_chunk_transaction_committed event"
+
+    assert Enum.any?(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_prepared")),
+           "scene log missing voxel_chunk_transaction_prepared event"
+
+    assert Enum.any?(
+             gate_log_lines,
+             &String.contains?(&1, "ws_voxel_prefab_place_intent_applied")
+           ),
+           "gate log missing ws_voxel_prefab_place_intent_applied event"
+
+    # Smoke summary — visible in mix test output for human review.
+    IO.puts("""
+
+    ── Phase A1-1 sphere e2e smoke ──────────────────────────────
+      placement elapsed:        #{place_elapsed_ms} ms
+      sphere occupied slots:    #{storage_slot_count}
+      catalog occupied slots:   #{expected_slot_count}
+      mask pixel-perfect match: #{storage_words == expected_words}
+      chunk_version after place: #{storage.chunk_version}
+      persisted to Postgres:    yes (chunk_version=#{persisted_storage.chunk_version})
+      observe log root:         #{log_root}
+      scene log lines:          #{length(scene_log_lines)}
+      gate log lines:           #{length(gate_log_lines)}
+      world log lines:          #{length(world_log_lines)}
+    ─────────────────────────────────────────────────────────────
+    """)
+  end
+
+  defp read_log_lines(path) do
+    case File.read(path) do
+      {:ok, content} -> String.split(content, "\n", trim: true)
+      {:error, _} -> []
+    end
+  end
+
+  defp popcount(word) when is_integer(word) and word >= 0 do
+    do_popcount(word, 0)
+  end
+
+  defp do_popcount(0, acc), do: acc
+  defp do_popcount(n, acc), do: do_popcount(Bitwise.band(n, n - 1), acc + 1)
+
   test "prefab place intent rejects unknown blueprint with v1 reason" do
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
