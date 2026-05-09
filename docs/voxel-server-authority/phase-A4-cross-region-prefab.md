@@ -8,9 +8,17 @@ A3(多客户端联调)和本阶段独立,顺序无强约束。
 
 ## 阶段目标
 
-- **能力**:`0x67 PrefabPlaceIntent` 在 prefab 跨多个 region/lease 时也能成功落地,而不是在 Scene `BuildTransactionApplier.prepare` 里因为 lease mismatch 整体 reject。
-- **2PC 完整性**:任意 participant prepare 失败 → 全部 abort,不留半提交;任意 participant commit 失败 → 已 commit 的 chunks 不变(2PC 不能回滚已 commit,但可以观测/告警),Phase 3-bis recovery watcher 接管 `:prepared` 状态。
-- **诱因**:Phase A1 hotfix 让 mid-macro 锚有可能让 prefab 自然跨 chunk;chunk 边界恰好是 region 边界时,会触发 cross-region 路径。本阶段把这条路径变可用而不是 reject。
+跨 region prefab **整条用户体验**(摆放 + 破坏 + 广播)端到端可用,不是只摆放成功而破坏链路碎掉。
+
+具体三条:
+
+1. **摆放**:`0x67 PrefabPlaceIntent` 在 prefab 跨多个 region/lease 时落地成功,不再在 `BuildTransactionApplier.prepare` 里因 lease mismatch 整体 reject。任意 participant prepare 失败 → 全部 abort 不留半提交。
+2. **破坏路由**:玩家攻击跨 region prefab 的**任何一个 chunk**(不论是否是 object owner region),都能正确触发 `ObjectRegistry.accumulate_damage` → cascade(damage / part_destroyed / object_destroyed)。
+3. **广播触达**:0x6C `ObjectStateDelta` 推送到 prefab 覆盖的**所有 chunks 的订阅客户端**,跨 region 不漏帧;玩家在两 region 各自看到自己附近 chunk 的破坏视效。
+
+**2PC 完整性**:任意 participant prepare 失败 → 全部 abort,不留半提交;任意 participant commit 失败 → 已 commit 的 chunks 不变(2PC 不能回滚已 commit,但可以观测/告警),Phase 3-bis recovery watcher 接管 `:prepared` 状态。
+
+**诱因**:Phase A1 hotfix 让 mid-macro 锚有可能让 prefab 自然跨 chunk;chunk 边界恰好是 region 边界时,会触发 cross-region 路径。**摆放 + 破坏 + 广播**三条都要打通才算"跨 region prefab 可用",只做摆放是半成品。
 
 ## 不在范围
 
@@ -20,7 +28,8 @@ A3(多客户端联调)和本阶段独立,顺序无强约束。
 - **prefab v3 多 macro mask**:`BlueprintCatalog` 仍单 macro mask(8³ slots),mid-macro 锚仍最多扩到 8 macros / 4 chunks(2³)。
 - **客户端跨 region 预览提示**:线框预览不知道(也不需要知道)是否跨 region;只在服务端 reject 时 HUD flash 提示用户(D3 决定)。
 - **Recovery watcher resume 路径完善 multi-participant**:本阶段如果 recovery watcher 已经能正确处理 multi-participant `:prepared` 重发(Phase 3-bis-5 的 resume 逻辑应该自然支持,因为 `intents_by_participant` 已经在 BuildTransaction 持久化),只 verify;如果有 gap,**留 backlog**,本阶段不修。
-- **跨 region object provenance / damage cascade**:Phase 4 的 ObjectRegistry 已支持 cross-chunk cascade(4-bis 0x6C broadcast 通过 ChunkDirectory fan-out),本阶段不动 cascade 算法,只确保 owner 选取规则不破坏 cascade 触达。
+- **damage 跨 scene_node RPC 失败时的重试 / 死信**:跨 region damage RPC 失败(网络抖动 / 远端 ObjectRegistry crash)时只 emit observe + drop,不重试。生产环境 HA 范围,Phase 6 留。
+- **0x6C 跨 region 广播的去重 / 严格顺序**:跨 region fan-out 时不同 region 客户端可能不同时收到广播,object_version 单调保 dedup,但严格 wall-clock 同序留 Phase 5+。
 
 ## 决策项
 
@@ -63,36 +72,23 @@ TransactionExecutor.execute(
 >
 > Watcher init 时刚加载 transaction(含 participants),lease 是 dynamic 状态(可能换 scene_node 了),map 必须现解。**推荐:watcher 用 callback,executor 用 map**。两者签名都支持 `:scene_opts_resolver` 作为 fallback,但 executor 优先用 map(显式更好序列化测试)。
 
-### D2. scene_objects fan-out 策略(单 owner)
+### D2. scene_objects 注册:单 owner participant + 持久化 owner 元数据
 
 **现状**:Phase 4 起 prefab transaction 可能在 `BuildTransaction.scene_objects` 中携带新建的 scene_objects(给 prefab 实例分配 object_id);commit 后 `register_scene_objects_after_commit/3` 把它们 upsert 到 scene-side `ObjectRegistry`。当前**单 scene_node** 路径只在那一个 node 上 register。
 
 跨 region 时,一个 scene_object 的 `covered_chunks` 可能跨多个 region。问题:每个 region 都有自己的 `ObjectRegistry`(scene-local),要不要每个都 register?
 
-**推荐方案**(D2.A):**单 owner participant**。
+**推荐方案**(D2.A):**单 owner participant + 持久化 owner 元数据**。
 
 - 每个 scene_object 选**第一个 covered chunk(按 `chunk_coord` ascending 排序)所在的 region** 作为 owner participant
-- 只在 owner participant 的 scene_node 上的 `ObjectRegistry` register
-- 读侧:damage 路由(`Storage.lookup_owner_at` → `ObjectRegistry.accumulate_damage`)走该 chunk 所在 scene_node 的 `ObjectRegistry`。如果 damage 命中的 chunk 不在 object owner 的 region,需要跨 region lookup(详见 sub-decision)
-- 0x6C cascade broadcast 仍走 `ChunkProcess.push_object_state_delta_payload` per-chunk fan-out,**不依赖 ObjectRegistry 物理位置**(Phase 4-bis-4 的 broadcast 路径走 ChunkDirectory.lookup_chunk_pid),所以 cross-chunk cascade 已支持
+- 只在 owner participant 的 scene_node 上的 `ObjectRegistry` register(权威态单点,destroy/damage 不会双副本不一致)
+- `voxel_scene_objects` 表新加 `owner_region_id` + `owner_lease_id` 列;commit 时按 owner participant 写入(D6 决定字典序选取规则)
+- 读侧 D7 决定:damage 路由 / 0x6C 广播在跨 region 时通过 owner 元数据 RPC 到正确 scene_node
 
 **被否方案**:
 - D2.B fan-out register 到所有 covered participants(双副本)。**否**:destroy_object 时多副本一致性难(一个 region destroy 了怎么 propagate),容错复杂度大于收益。
 - D2.C ObjectRegistry 改成 World-side 全局。**否**:架构大改,本阶段范围爆炸。
-
-**Sub-decision D2.1**:跨 region damage 路由?
-
-`SceneServer.Combat.VoxelDamageRouter.dispatch_damage` 当前单 scene_node 内 lookup_owner_at + ObjectRegistry。跨 region 时:
-- 客户端 attack target_position 落在 chunk C(in region B);chunk C 的 micro layer owner_object_id 指向 object O
-- O 的 owner participant 是 region A(因为 O 的第一个 covered chunk 在 region A)
-- damage 要发到 region A 的 `ObjectRegistry`
-
-**推荐**:
-- `VoxelDamageRouter` 通过 `Storage.lookup_owner_at` 拿到 `object_id` 后,**通过 `BeaconServer.Client.lookup` 找 object 所在 region 的 `ObjectRegistry`**(怎么找:object_id → owner_region 的映射要么持久化在 `voxel_scene_objects` 表里,要么通过 broadcast 探测)
-- **简化**:在 `voxel_scene_objects` 表新加 `owner_region_id` + `owner_lease_id` 字段(持久化 owner participant);damage 路由先 SELECT 一行拿 owner,再 RPC 到 owner 的 scene_node `ObjectRegistry`
-- **本阶段最小动作**:只做 register 部分(D2.A),damage 跨 region lookup **留 sub-backlog A4-bis**(不跨 region 的 prefab 不受影响;跨 region 的 prefab damage 路径暂时只在 owner region 内的 chunks 工作,owner 区外的 chunks 上 damage 落空 — 用户实测 demo 几乎不会遇到)
-
-**接受的代价**:跨 region prefab 的非-owner chunks 上 damage 暂时落空(目标 cells 仍会被 break,只是不触发 part_destroyed cascade)。这是已知 trade-off,记 handoff backlog。
+- D2.D 单 owner 但 damage / 广播跨 region 落空(本阶段只做 register)。**否**:用户明确指出"跨 region 摆放 = 半成品破坏"违背阶段目标。修法见 D7。
 
 ### D3. 失败时 wire reason 格式
 
@@ -159,18 +155,57 @@ TransactionExecutor.execute(
 **推荐方案**(D6.A):
 - 每个 scene_object 的 `covered_chunks` 里挑**字典序(`{x, y, z}` ascending)第一个 chunk 所在的 region** 作为 owner participant。
 - 编码进 `BuildTransactionApplier.register_scene_objects/2`:之前是直接 upsert ObjectRegistry,现在先按 owner_region_id 分组,只 upsert 自己 region 的 objects。
-- `voxel_scene_objects` 表加两列 `owner_region_id` + `owner_lease_id`(为 D2.1 的 damage 跨 region lookup 后续做铺垫,本阶段写入但不查询)。
+- `voxel_scene_objects` 表加两列 `owner_region_id` + `owner_lease_id`,本阶段**写入并查询**(D7 用)。
 
 **推荐:采纳 D6.A**。
+
+### D7. 跨 region damage 路由 + 0x6C 广播投递
+
+**现状**:
+- `SceneServer.Combat.VoxelDamageRouter.dispatch_damage` 在拿到 `Storage.lookup_owner_at` 返回的 `{object_id, ...}` 后,直接调本地 `ObjectRegistry.accumulate_damage`。跨 region 时,玩家攻击的 chunk 在 region B,但 object owner 在 region A,**本地 ObjectRegistry 找不到该 object → damage 落空**。
+- `ObjectRegistry` cascade(part_destroyed / object_destroyed) 后调用 `ChunkProcess.push_object_state_delta_payload(delta)`,内部 `ChunkDirectory.lookup_chunk_pid` 按 `delta.affected_chunks` 找 chunk_pid 推送。跨 region 时,affected_chunks 中的非-owner-region chunks 不在本地 ChunkDirectory 里,**那些 chunks 的订阅客户端收不到 0x6C 广播**。
+
+**目标**:跨 region 时 damage 路由命中正确的 owner ObjectRegistry,cascade 广播触达所有 covered chunks 的订阅客户端。
+
+**推荐方案**(D7.A):**owner 元数据 + per-hop scene_node lookup**。
+
+1. **新模块 `SceneServer.Voxel.ObjectOwnerLookup`**(per-scene cache):
+   - API:`fetch_owner(scene_id, object_id) :: {:ok, %{owner_region_id, owner_lease_id, scene_node}} | {:error, :not_found}`
+   - 冷启动从 `voxel_scene_objects` SELECT;hot path 命中 ETS / GenServer state
+   - `register_scene_objects_after_commit` 完成后写入 cache(避免 commit 后 SELECT race)
+   - `ObjectRegistry.destroy_object` 后 evict
+   - scene_node 通过 `BeaconServer.Client.lookup({:voxel_region_scene_node, region_id, lease_id})` 解析(已有 region/lease → scene_node 映射,Phase 1c 起就用)
+
+2. **`VoxelDamageRouter.dispatch_damage` 改造**:
+   - `Storage.lookup_owner_at` → `object_id`
+   - `ObjectOwnerLookup.fetch_owner` → `{owner_region_id, scene_node}`
+   - 本地 → `ObjectRegistry.accumulate_damage(...)` 原路径
+   - 跨节点 → `:rpc.call(scene_node, ObjectRegistry, :accumulate_damage_remote, [...], 200)`,失败 emit `voxel_damage_cross_region_failed` observe + drop(不重试,不破坏 damage 主路径)
+   - 新 observe:`voxel_damage_routed_cross_region`(成功)/ `voxel_damage_cross_region_failed`(rpc fail)
+
+3. **0x6C 跨 region 广播**:**owner-driven fan-out**(对齐 owner 单点权威语义)
+   - `ObjectRegistry.emit_object_state_delta`(在 owner scene_node 上)按 `delta.affected_chunks` 分组:本地 chunks 走原 `ChunkDirectory.push_object_state_delta_payload`;远端 chunks 走 `BeaconServer.Client.lookup({:voxel_region_chunk_directory, region_id})` 找远端 ChunkDirectory pid,`GenServer.cast({ChunkDirectory, scene_node}, {:push_object_state_delta_payload, delta_subset})`
+   - 远端 ChunkDirectory 收到 cast → 本地 fan-out 给本 region 内的 chunks(原 4-bis 路径)
+   - 跨 region cast 失败 → emit `voxel_object_state_delta_cross_region_dropped` + drop(fire-and-forget,object_version 单调保 client dedup,后续广播会让 client 状态收敛)
+   - **affected_chunks 按 region 分组**:`ChunkDirectory` 持有自己 region 的 chunk_coord set,owner 端通过 `voxel_scene_objects.covered_chunks` + 每个 chunk 的 region 解析(冷启动时不知 region → 一次性 SELECT covered chunks 各自的 owner region;cache in ObjectOwnerLookup)
+
+**被否方案**:
+- D7.B 通过 World-side 全局 ObjectRegistry 中转 damage / 广播。**否**:架构大改,World 不该承担 hot path 路由(coordinator 只管 transaction account-keeping)。
+- D7.C ChunkDirectory.lookup_chunk_pid 直接跨 region 透明查(每次 lookup miss → BeaconServer)。**否**:hot path 在 lookup_chunk_pid,加 BeaconServer 调用拖慢同 region 的 99% 路径;owner-driven fan-out 只在跨 region 时付代价。
+- D7.D 把 owner 元数据缓存进 `MicroLayer` 的 owner 信息里(`owner_object_id` 旁边再放 `owner_region_id`)。**否**:micro layer 已经是 wire/persist 关键路径,加字段会让 chunk_hash / wire 编码扩张;ObjectOwnerLookup 一层 SELECT cache 的代价更小。
+
+**推荐:采纳 D7.A**。owner-driven fan-out 是关键设计 — 单点权威 + per-hop 解析,既保证 hot path 不退化,也对齐 ObjectRegistry "object owner 是单点权威"语义。
 
 ## 风险
 
 1. **`BuildTransaction` 持久化字段又演进**:加 `owner_region_id` / `owner_lease_id` 到 `voxel_scene_objects`,但 `BuildTransaction.scene_objects` 字段(in-memory)语义没变。`cc3a31d` 的 stale-snapshot catchall 仍然只兜底 transaction 主体的 plain-map shape;`scene_objects` 列表如果旧 blob 反序列化出 plain map,`register_scene_objects` 会 raise。**缓解**:在 `BuildTransactionApplier.register_scene_objects/2` 入口加 `is_struct(obj, SceneObject)` 校验,plain map 直接 emit observe + skip(不 raise),让 commit 不被这个非关键步骤阻塞。
-2. **跨 region object damage 路由 sub-backlog**:D2.1 决定本阶段只做 register,跨 region damage 落空。**用户路演 demo 通常不会触发**(prefab 落地后立即破坏的概率低,且 mid-macro 跨 region 罕见),但要写进 handoff 让下个会话知道。
-3. **`:pg` group 命名空间在测试 fixture 里冲突**:`ChunkDirectory` 用 `:pg` 分发 broadcast。两个 named directory 共享同一 `:pg` group 会让 RegionA 收到 RegionB 的消息。**缓解**:`MultiRegionFixture` 给每个 directory 一个独立 `:pg_group_name`(已有 opt)或注入 mock dispatcher。
-4. **跨 region prepare 超时**:`per_participant_timeout_ms = 5000` 仍然每 participant 独立(并行 `Task.async_stream`),延迟不累加。但**transaction_timeout_ms = 30000** 是 ceiling,跨 region 对它挤压更大。本阶段保持现值,测试时 verify 能在 30s 内跑完;真实生产(跨地理 region)再调。
-5. **`MultiRegionFixture` 跟现有 `chunk_process_test` per-instance 模式重复造轮子**:实施时 verify 能否复用 existing helper(`SceneServer.Voxel.TestHelpers.start_chunk_directory_instance/2` 之类),不能再新建。
-6. **`unique_prefab_transaction_id`(`prefab-#{request_id}-#{unique}`)在多 participant 下仍唯一**:已 monotonic + 进程级 unique_integer,无需改。
+2. **`ObjectOwnerLookup` 冷启动 SELECT 风暴**:server 重启后 lookup cache 空,首批 damage 都触发 SELECT。`voxel_scene_objects` 表行数若大(prefab 累积),冷启动期 damage 路径变慢。**缓解**:cache miss SELECT 加 `FOR SHARE` 锁避免重复请求;打开 metric 看冷启动期 95p latency。如果实测有问题,加 `OnDemandPreload`(server boot 时异步预热 cache)— 留 sub-backlog 不在主路径。
+3. **跨节点 RPC 失败处理(damage / 0x6C)**:`:rpc.call` 200ms 超时 / 远端 ObjectRegistry crash 时本阶段是 fire-and-forget(emit observe + drop)。意味着**网络抖动期间客户端可能漏帧 / 漏 damage**,但 object_version 单调让后续广播帮 client 状态收敛。**缓解**:加 metric `voxel_damage_cross_region_failed_rate` 和 `voxel_object_state_delta_cross_region_dropped_rate`,超阈值告警;真重试 / 死信队列留 Phase 6 HA。
+4. **0x6C 跨 region 广播的 affected_chunks per-region 分组**:owner-driven fan-out 要把 `delta.affected_chunks` 拆成 per-region 子集。owner 端必须知道每个 chunk 在哪个 region,这要么走 `voxel_scene_objects.covered_chunks` + per-chunk SELECT(慢),要么把 per-chunk owner_region 也 cache 在 ObjectOwnerLookup 里(命中率高但内存大)。**推荐 cache 整 covered_chunks 元组**(每个 object 通常只跨 2-4 chunks,内存可控);prefab register 时一次性写入,evict 时随 destroy_object 整体清。
+5. **`:pg` group 命名空间在测试 fixture 里冲突**:`ChunkDirectory` 用 `:pg` 分发 broadcast。两个 named directory 共享同一 `:pg` group 会让 RegionA 收到 RegionB 的消息。**缓解**:`MultiRegionFixture` 给每个 directory 一个独立 `:pg_group_name`(已有 opt)或注入 mock dispatcher。
+6. **跨 region prepare 超时**:`per_participant_timeout_ms = 5000` 仍然每 participant 独立(并行 `Task.async_stream`),延迟不累加。但 **`transaction_timeout_ms = 30000`** 是 ceiling,跨 region 对它挤压更大。本阶段保持现值,测试时 verify 能在 30s 内跑完;真实生产(跨地理 region)再调。
+7. **`MultiRegionFixture` 跟现有 `chunk_process_test` per-instance 模式重复造轮子**:实施时 verify 能否复用 existing helper(`SceneServer.Voxel.TestHelpers.start_chunk_directory_instance/2` 之类),不能再新建。
+8. **`unique_prefab_transaction_id`(`prefab-#{request_id}-#{unique}`)在多 participant 下仍唯一**:已 monotonic + 进程级 unique_integer,无需改。
 
 ## 步骤分解
 
@@ -180,12 +215,13 @@ TransactionExecutor.execute(
 |---|---|---|---|
 | **A4-1** | `TransactionExecutor.execute` 接受 `:scene_opts_by_participant` map(替换原 `:scene_opts`,无双路径);`run_prepare`/`run_commit`/`run_abort`/`register_scene_objects_after_commit` 取 per-participant opts;executor 单测加 multi-participant case | scene_server / world_server 单测全绿 | 0.5 天 |
 | **A4-2** | Gate `build_prefab_plan` per-chunk `route_voxel_chunk` + 按 `{region_id, lease_id}` 分组成 participants;`coordinator_begin_transaction` 构造 multi-participant `attrs.participants`;`executor_execute` 喂 `scene_opts_by_participant` map(ws + tcp 镜像);gate 单测 multi-participant + fail-fast | gate_server 测试全绿,e2e 单 region 路径不破坏 | 0.5 天 |
-| **A4-3** | `BuildTransactionApplier.register_scene_objects/2` 按 owner_region_id 分组,只 upsert 自 region;`voxel_scene_objects` schema + migration 加 `owner_region_id` / `owner_lease_id` 列;`SceneObjectStore` 写入新字段 | data_service / scene_server 测试全绿 | 0.5 天 |
-| **A4-4** | `MultiRegionFixture` test helper(单 BEAM 双 named ChunkDirectory + 独立 :pg group + mock_route_voxel_chunk);跨 region prefab e2e test(prefab 锚跨两 chunks 各属一 region,gate 0x67 → 双 region prepare/commit → storage 都被写 + scene_objects 在 owner region 注册) | 新 e2e test 绿 + 现有测试不破坏 | 0.5-1 天 |
-| **A4-5** | Recovery watcher resume 路径 verify multi-participant `:prepared` 重发(应该自然支持,但 verify);如有 gap 修;新增 multi-participant resume 单测 | world_server recovery 测试 + multi-participant resume 单测全绿 | 0.3 天 |
-| **A4-final** | 决策稿状态改"已完成";同步 `_session-handoff.md`(阶段表 + backlog "跨 region damage 路由" 入 sub-backlog A4-bis)+ scene_server voxel README + world_server voxel README | git status 干净 | 0.2 天 |
+| **A4-3** | `voxel_scene_objects` schema + migration 加 `owner_region_id` / `owner_lease_id` + `covered_chunks_by_region` 列;`SceneObjectStore` 写入新字段;`BuildTransactionApplier.register_scene_objects/2` 按 owner_region_id 分组,只 upsert 自 region | data_service / scene_server 测试全绿 | 0.5 天 |
+| **A4-4** | `SceneServer.Voxel.ObjectOwnerLookup` per-scene cache(冷启动 SELECT,register_after_commit 写入,destroy_object evict);`VoxelDamageRouter.dispatch_damage` 跨 region RPC(本地 → 原路径,跨节点 → `:rpc.call(scene_node, ObjectRegistry, :accumulate_damage_remote, ...)` 200ms 超时 + observe);`ObjectRegistry.emit_object_state_delta` 0x6C 广播按 covered_chunks_by_region 分桶 owner-driven fan-out(本 region 走原 ChunkDirectory,远 region 走 `BeaconServer.Client.lookup` + cast);新增 metric / observe key | 单测 + 跨节点 RPC mock test 绿 | 1 天 |
+| **A4-5** | `MultiRegionFixture` test helper(单 BEAM 双 named ChunkDirectory + 独立 :pg group + mock_route_voxel_chunk);跨 region prefab placement e2e(锚跨两 chunks 各属一 region,gate 0x67 → 双 region prepare/commit → storage 都被写 + scene_objects 在 owner region 注册);**跨 region damage cascade e2e**(玩家攻击非 owner region 的 chunk → owner ObjectRegistry 命中 → part_destroyed cascade → 两 region 客户端都收到 0x6C → debris/HUD flash 正常) | 两条 e2e 都绿 + 现有测试不破坏 | 1 天 |
+| **A4-6** | Recovery watcher resume 路径 verify multi-participant `:prepared` 重发(应该自然支持,但 verify);如有 gap 修;新增 multi-participant resume 单测 | world_server recovery 测试 + multi-participant resume 单测全绿 | 0.3 天 |
+| **A4-final** | 决策稿状态改"已完成";同步 `_session-handoff.md`(阶段表 + 跨 region damage 现已闭环不再列 backlog)+ scene_server voxel README + world_server voxel README | git status 干净 | 0.2 天 |
 
-总估时:**2-3 天**。
+总估时:**3-4 天**。
 
 ## 验收标准
 
@@ -195,18 +231,25 @@ TransactionExecutor.execute(
   - gate `build_prefab_plan` 多 region(A4-2):2 个 chunks 路由到不同 region → 2 个 participant entries
   - gate fail-fast(A4-2):任一 chunk 路由失败 → 整个 prefab reject 并 reason `:no_route_for_chunk`
   - register_scene_objects fan-out(A4-3):scene_objects 按 owner_region_id 分组,跨 region 时只 upsert 自 region
-  - 跨 region prefab e2e(A4-4):锚跨 chunk 边界 + 两 chunks 在不同 region → 整 prefab 落地,两 region 的 storage 都被写,scene_objects 在 owner region 注册
+  - `ObjectOwnerLookup` 单测(A4-4):cache 命中/miss/evict;register_after_commit 写入;destroy 后 evict
+  - `VoxelDamageRouter` 跨节点 RPC 单测(A4-4):本地路径 + 跨节点路径(mock `:rpc.call`)+ rpc 失败时 emit observe 不破坏主路径
+  - `ObjectRegistry.emit_object_state_delta` per-region 分桶单测(A4-4):本 region chunks 走本地 ChunkDirectory,跨 region chunks 走远端 cast
+  - 跨 region prefab placement e2e(A4-5):锚跨 chunk 边界 + 两 chunks 在不同 region → 整 prefab 落地,两 region 的 storage 都被写,scene_objects 在 owner region 注册
+  - **跨 region damage cascade e2e(A4-5)**:跨 region prefab 落地后,玩家攻击**非 owner region** 的 chunk → owner ObjectRegistry 命中 accumulate_damage → part_destroyed cascade → 两 region 各自的客户端 ws 都收到 0x6C → debris simulation 接收
 - 手动 demo:
   - 单 region prefab 流畅放(回归)
   - 跨 chunk 单 region prefab 流畅放(回归 A1 hotfix 路径)
   - 跨 region prefab(配置 multi-region scene fixture)流畅放,客户端线框预览和服务端落地一致
+  - **跨 region prefab 破坏端到端**:拿 prefab 跨 region 边界放下 → 用技能打 owner 区外的 chunk → 客户端看到 debris 飞溅 + part_destroyed flash(不再因为跨 region 半成品丢失视效)
 
 ## 进度日志
 
 - 2026-05-10:决策稿起草。等用户拍 D1-D6 后开始实施。
+- 2026-05-10:用户指出"只做摆放、damage 跨 region 落空 = 半成品",同意把原 A4-bis 折回主范围。新增 D7(跨 region damage 路由 + 0x6C 广播 owner-driven fan-out),`voxel_scene_objects` 加 `owner_region_id` / `owner_lease_id` / `covered_chunks_by_region`,新模块 `SceneServer.Voxel.ObjectOwnerLookup`,`VoxelDamageRouter` 走 `:rpc.call`,`ObjectRegistry.emit_object_state_delta` 分桶 owner-driven fan-out。Step 列表加 A4-4(owner lookup + damage RPC + 广播分桶),A4-5 e2e 加跨 region cascade case。总估时 2-3 天 → 3-4 天。
 
 ## 已知 sub-backlog(本阶段不做)
 
-- **A4-bis 跨 region object damage 路由**(D2.1 决定):跨 region prefab 非-owner chunks 上的 damage 暂时落空(目标 cell 仍 break,但 part_destroyed cascade 不触发)。修法:`VoxelDamageRouter.dispatch_damage` 拿到 object_id 后通过 `voxel_scene_objects.owner_region_id` 跨 region RPC 到 owner 的 ObjectRegistry。1 天工作量。
-- **`MultiRegionFixture` 跟 chunk_process_test 现有 per-instance 模式整合**(D4 风险 5):如果 A4-4 实施时发现可以复用 existing helper,去掉重复。
+- **`MultiRegionFixture` 跟 chunk_process_test 现有 per-instance 模式整合**(D4 风险 7):如果 A4-5 实施时发现可以复用 existing helper,去掉重复。
 - **跨 region prepare 超时压测**:本阶段保持 `transaction_timeout_ms = 30000`。真实生产场景(地理跨 region,> 100ms RPC)需要观测 + 调参,留 Phase 6 HA 范围。
+- **跨节点 damage RPC 重试 / 死信**:本阶段失败 fire-and-forget。生产环境网络抖动期间可能漏 damage / 漏 0x6C,object_version 单调让 client 状态最终收敛,但短窗口 UX 不一致。Phase 6 HA 范围。
+- **`ObjectOwnerLookup` boot 期 SELECT 风暴预热**:风险 2 提到。本阶段实测 acceptable 就不做;如果冷启动期 95p latency 抖动明显,加异步 OnDemandPreload。
