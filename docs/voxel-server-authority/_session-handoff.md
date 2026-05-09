@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-09,Phase A1(playable client experience)全部子 step 落地后。
+**Last updated**:2026-05-09 晚,Phase A1 + A2 hotfix + A1-1b batch API + watcher hotfix 全部落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -18,26 +18,28 @@
 | 4 object provenance + part-health 破坏闭环(含整体销毁) | 已完成 | `067085f` (决策稿) → `df1ba93` (4-1) → `95a3330` (4-2) → `f61351c` (4-3) → `686d3cd` (4-4) → `53e4e7d` (4-5) → `330d528` (4-6) → `d800996` (4-7) → `0a5b428` (4-8) → `5352040` (4-9) → `b10e197` (4-10) |
 | 4-bis ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 已完成 | `ed16fef` (决策稿) → `0d9df62` (4-bis-1) → `3b96714` (4-bis-2) → `77f690d` (4-bis-3) → `2cb2373` (4-bis-4) → `3ca3f6e` (4-bis-5) → `a5b4eca` (4-bis-6) → `1ed8fd8` (4-bis-7) → `1e34841` (4-bis-8) → `bc89cea` (4-bis-9) → `d37598a` (4-bis-10) → `c78e04f` (4-bis-11) → `1f6cc13` (4-bis-12) → `f9906b1` (4-bis-13 docs 收尾) |
 | A2 阶段 A 子 1:尺寸真实化(角色 1.7m / 跑速 6 m/s / apex 1.2m) | 已完成 | `6144408` (决策稿) → `aec8a98` (A2-1) → `05cebdf` (A2-2) → `ef5d524` (A2-3) → `03690c0` (A2-4) → `630d257` (A2-5) → `fb69661` (A2-6) → `730e6e7` (A2-final) |
-| A1 阶段 A 子 2:客户端可玩 demo 必须线(prefab micro / 防覆盖 / 线框预览 / 跳跃同步 / 破坏技能) | 已完成 | `edbfbda` (决策稿) → `0275899` (A1-1 prefab catalog v2) → `d399f7c` (A1-1 progress) → `a4616e9` (A1-1 sphere e2e smoke) → `14c90a9` (A1-2 prefab 防覆盖) → `b2fe630` (A1-3 preview regression) → `b692ab1` (A1-4 ack ground_z wire) → `133bb85` (A1-4 jump arc smoke) → `7932fe2` (A1-5 voxel damage router) → 本会话 (A1-final) |
+| A1 阶段 A 子 2:客户端可玩 demo 必须线(prefab micro / 防覆盖 / 线框预览 / 跳跃同步 / 破坏技能) | 已完成 | `edbfbda` (决策稿) → `0275899` (A1-1 prefab catalog v2) → `d399f7c` (A1-1 progress) → `a4616e9` (A1-1 sphere e2e smoke) → `14c90a9` (A1-2 prefab 防覆盖) → `b2fe630` (A1-3 preview regression) → `b692ab1` (A1-4 ack ground_z wire) → `133bb85` (A1-4 jump arc smoke) → `7932fe2` (A1-5 voxel damage router) → `6d261d7` (A1-final) |
+| A2 hotfix:client `DEFAULT_MOVEMENT_PROFILE` 同步 server max_speed=600 等 | 已完成 | `58a7a9e` |
+| A1-1b Storage.put_micro_blocks/4 batch API(prefab 卡死性能优化,1.5s → 46ms,33×) | 已完成 | `0e3434c` |
+| Server 启动 hotfix:TransactionRecoveryWatcher 接 plain-map stale snapshot | 已完成 | `cc3a31d` |
 
-测试规模(2026-05-09 末态,Phase A1 收尾):
+测试规模(2026-05-09 晚末态,Phase A1 + A1-1b 收尾):
 
 - data_service: 71 tests
-- scene_server: 368 tests (+9 from A2 末态 359:A1-1 BlueprintCatalog v2
-  invariants × 3 / PrefabRaster v2 重写 +2 / A1-5 VoxelDamageRouter +4)
+- scene_server: **375 tests** (+7 from A1 末态 368:A1-1b Storage batch API
+  unit tests × 7,验证 batch 跟 N×sequential put_micro_block 像素级等价)
 - scene_server :smoke: 5 tests (+1 A1-4 jump arc smoke)
-- gate_server: 191 tests (+2 from A2 末态 189:A1-1 sphere e2e + A1-2
-  occupancy reject e2e)
+- gate_server: 191 tests
 - world_server: 72 tests (1 预存失败 Windows path,不动)
-- web_client: 258 vitest (+4 from A2 末态 254:A1-1 OnlinePrefabBlueprintVersion
-  +1 / A1-3 sphere/cylinder/stairs preview shape regression +3)
+- web_client: 258 vitest
 - movement_core cargo: 39 tests
 
 预存失败:`apps/world_server/test/world_server/voxel/authority_observe_test.exs:35`
 Windows path 大小写,不动(memory 已记)。
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin **66 commits**
-(Phase 4 末 35 + Phase 4-bis 14 + Phase A2 8 + Phase A1 9)。
+未 push(用户没说 push 就别 push)。本地 master 领先 origin **69 commits**
+(Phase 4 末 35 + Phase 4-bis 14 + Phase A2 8 + Phase A1 9 + A2 hotfix 1 +
+A1-1b 1 + watcher hotfix 1)。
 
 ## 已知预存失败(本环境)
 
@@ -50,13 +52,21 @@ Windows path 大小写,不动(memory 已记)。
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
 | A3 | 未开始 | 阶段 A 子 3:多客户端同世界联调(本地多 tab / 多机 + chunk 订阅一致性 + 移动同步 + 破坏可见性) |
-| A1-1b | 未开始 | Storage.put_micro_blocks/4 batch API,把 prefab 1.5-2s 性能问题降到 < 200ms |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
+| 测试隔离 | 未开始 | test_helper 加 setup TRUNCATE `voxel_transaction_coordinator_snapshots` / `voxel_chunk_pending_transactions`,避免跨 mix test stale snapshot 让 transaction 路径走 replay-skip |
+| BuildTransaction snapshot 字段演进 | 待评估 | A1-1b 这次发现 stale snapshot binary_to_term 出 plain map 而不是 struct,让 watcher 启动 crash。已加 catchall fix,但根因(Phase 3-bis-3 加 intents_by_participant / Phase 4 加 scene_objects 后旧 blob 的 struct 形态变了)需要正经评估是否需要 schema_version 化 |
 
-**阶段 A 进度**:A2 + A1 全部完成 2026-05-09。剩 A3(1-2 周)+ A1-1b 性能优化(可选,demo 已可玩)。
-A2 + A1 打好物理基础和 prefab/防覆盖/破坏技能 e2e。下一步 A3 是多客户端联调,
-所有底层逻辑已经 ready,A3 主要是本地多 tab + chunk 订阅一致性 + 跨客户端
-movement / 破坏可见性的实测和 jitter 调参。
+**阶段 A 进度**:A2 + A1 + A1-1b 全部完成 2026-05-09。剩 A3(多客户端联调)
++ Phase 5(属性目录)。A2 + A1 + A1-1b 已经把"路演 demo 必须线"全部打通:
+角色 1.7m / 跑速 6 m/s / 跳跃 apex 1.2m / sphere/cylinder/stairs 形状 / prefab
+防覆盖 / 线框预览 / 跳跃同步(ack ground_z wire 端到端)/ 破坏技能 / **prefab
+placement < 100ms 不再卡死**。
+
+**用户实测验证状态**:
+- A1-1b 修完后 user 还**没有 fresh demo 验证**(本会话末段 server crash on
+  startup 因为 stale `:preparing` snapshot,我加了 watcher catchall hotfix
+  `cc3a31d`)。下个会话开始前先确认 user 重启 server 是否成功,prefab 是否
+  立刻响应。
 
 **Phase 4-bis 后剩余的 backlog**(若用户优先继续巩固 4-bis 系):
 
@@ -205,9 +215,17 @@ movement / 破坏可见性的实测和 jitter 调参。
 | **Web client 碎屑粒子(Phase 4-bis)** | `clients/web_client/src/voxel/clearedSlotCache.ts`、`debrisEffect.ts`(simulation)、`debrisRenderer.ts`(InstancedMesh) |
 | **Web client HUD(Phase 4-bis 起订阅 world:object-state-delta)** | `clients/web_client/src/presentation/hud/hudView.ts` |
 
-## 这次会话产出(2026-05-09,Phase A2 + A1)
+## 这次会话产出(2026-05-09,Phase A2 + A1 + 性能优化 + hotfix)
 
-A2 8 个 + A1 9 个 = **17 个 commit**(加 final 收尾共 18),本地 master 未 push:
+A2 8 个 + A1 10 个 + A2 hotfix 1 + A1-1b 1 + watcher hotfix 1 = **21 个 commit**,
+本地 master 未 push:
+
+性能优化 + hotfix(后段加的):
+```
+cc3a31d   voxel(hotfix): TransactionRecoveryWatcher 接 plain-map stale snapshot
+0e3434c   voxel(A1-1b): Storage batch micro_block API(prefab 卡死性能优化)
+58a7a9e   voxel(A2 hotfix): 同步 client DEFAULT_MOVEMENT_PROFILE 到 A2 新值
+```
 
 A2(尺寸真实化):
 ```
@@ -253,9 +271,68 @@ A2 + A1 的核心收益:
   Storage.lookup_owner_at → ObjectRegistry.accumulate_damage,自动 fan-out 0x6C
   ObjectStateDelta(Phase 4-bis 链路)+ 客户端碎屑粒子
 
+后段三个 hotfix:
+
+1. **A2 hotfix**(`58a7a9e`):用户实测发现移动延迟严重 — 根因是 A2 commit
+   `ef5d524` 改了 server `MovementProfile.default/0` 但**漏改 client
+   `clients/web_client/src/domain/movement/profile.ts` `DEFAULT_MOVEMENT_PROFILE`**。
+   Client predict 用旧 220 cm/s,server 真实 600 cm/s,每个 ack 触发 reconcile
+   把 client 向前 snap ~38cm,体感 = 100ms 延迟。修法:client profile.ts
+   整套跟 server 同步;profile.test.ts 断言更新(本来名字就是"matches the
+   authoritative SceneServer movement defaults",讽刺地 A2 时漏跑这个测试)。
+   **教训**:任何 movement profile 改动都必须同步 3 处:profile.ex /
+   profile.rs / profile.ts。
+
+2. **A1-1b**(`0e3434c`):用户实测发现"右键放 prefab 整服务器卡死,移动也
+   被阻塞 1.5-2s"。根因不是网络/wire,是 Elixir 端 algorithmic O(N²)。
+   旧路径每次 `Storage.put_micro_block` 调 `normalize!(storage)`(整 4096
+   macro_headers list rebuild)+ List.replace_at(O(N)),sphere 280 slots 跑
+   ~1.5s。期间 ws_connection / chunk_process GenServer 邮箱被锁,同玩家所有
+   movement input ack 等 prefab 完成才发,体感"整服务器卡死"。修法:加
+   `Storage.put_micro_blocks/4` 一次性接 N 个 (slot, layer_attrs),按 attribute
+   signature 分组合并 → 1 次 normalize + 1 次 List.replace_at。算法 O(N²) →
+   O(N + macro_count)。`ChunkProcess.build_intents_storage` 加
+   `detect_micro_block_batch/1` fast-path 检测 single-macro micro batch 走
+   batch API,否则 fallback 到旧逐 intent reduce 路径。**实测 1.5s → 46ms
+   (33×)**,7 个新 unit test 验证 batch 跟 N×sequential 像素级等价。
+   **不需要 Rust NIF**(这是 algorithmic fix 不是常数优化,Rust 也写不出
+   O(1) normalize)。
+
+3. **Watcher hotfix**(`cc3a31d`):用户重启 server 时 crash —
+   `TransactionRecoveryWatcher.handle_transaction/3` 收到 plain map(不是
+   `%BuildTransaction{}` struct)的 stale snapshot 时 FunctionClauseError,
+   watcher init 失败 → WorldSup 起不来 → world_server.Application crash →
+   整 umbrella shutdown。根因:Phase 3-bis-3 / Phase 4 给 BuildTransaction
+   defstruct 加了 `intents_by_participant` / `scene_objects` 字段,旧 stale
+   blob 反序列化字段不全 fallback 成 plain map,所有 struct-pattern clause
+   miss。修法:加 `not is_struct(stale, BuildTransaction)` catchall clause,
+   plain map 直接 `abort_decision` + emit `voxel_transaction_recovery_stale_*`
+   observe event。Backlog:**BuildTransaction snapshot schema_version 化**
+   是更彻底的修法。
+
 backlog:
-- **A1-1b** Storage.put_micro_blocks/4 batch API(prefab 1.5-2s 延迟优化,
-  单 prefab placement 涉及 ~280 个 micro intents,O(N²) 时 normalize storage)
+- ~~**A1-1b** Storage.put_micro_blocks/4 batch API(已完成 `0e3434c`)~~
+- **测试隔离**:test_helper 加 setup TRUNCATE 几张 voxel 表(本会话多次踩到
+  stale snapshot 让 transaction 走 replay-skip 路径让 e2e smoke 失败假象,
+  得 fresh DB 才能 verify)
+- **BuildTransaction snapshot schema_version 化**:防止下次再加字段时 stale
+  blob 又 plain map(catchall hotfix 是 band-aid)
 - **A3** 多客户端联调
 
 A2 之前的所有 Phase 1a → 4-bis commits(完整列表见上一个会话的 handoff)。
+
+## ⚠️ 跨会话恢复优先动作
+
+下个会话开始,**先确认这两条**:
+
+1. **用户能否成功重启 server**(本会话末加了 watcher catchall hotfix `cc3a31d`,
+   下次 user `iex --name mmo@127.0.0.1 --cookie mmo -S mix` 应该正常起来)。
+   如果还 crash,可能是 stale row 太多 / coordinator init race / 别的层 stale。
+   提供 fallback:`mix run scripts/truncate_voxel_tables.exs` 清表(scripts
+   目录已有这个脚本,untracked,需要时可以 commit + 用)。
+
+2. **用户重启后是否能流畅放 prefab**(不再卡死)。如果还慢,可能 A1-1b
+   batch fast-path 没命中 — 检查 `chunk_process.detect_micro_block_batch/1`,
+   或者 `client send 0x67 → server` 链路里别的层成了瓶颈。
+
+如果以上都 OK,可以推进 **A3 多客户端联调** 或 Phase 5。
