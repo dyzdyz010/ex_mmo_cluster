@@ -24,6 +24,7 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.Combat.Profile, as: CombatProfile
   alias SceneServer.Combat.Skill
   alias SceneServer.Combat.State, as: CombatState
+  alias SceneServer.Combat.VoxelDamageRouter
   alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
@@ -94,7 +95,12 @@ defmodule SceneServer.PlayerCharacter do
        skill_casts: %{},
        movement_timer: nil,
        aoi_monitor_ref: nil,
-       respawn_timer: nil
+       respawn_timer: nil,
+       # Phase A1-5:scene_id 用于把 skill cast 的 target_position lookup
+       # 进 ChunkSnapshotStore → ObjectRegistry.accumulate_damage(voxel
+       # damage 路由)。Demo 阶段 default 1;follow-up:从 enter_scene
+       # wire 或 character_profile 读真实 logical_scene_id。
+       logical_scene_id: 1
      }, {:continue, {:load, client_timestamp}}}
   end
 
@@ -411,10 +417,14 @@ defmodule SceneServer.PlayerCharacter do
   @impl true
   def handle_info(
         {:resolve_skill_cast, cast},
-        %{aoi_ref: aoi_ref} = state
+        %{aoi_ref: aoi_ref, logical_scene_id: scene_id} = state
       ) do
     resolution = CombatExecutor.resolve_cast(cast)
     broadcast_effect_events(aoi_ref, resolution.cues)
+    # Phase A1-5:并行尝试 voxel damage(actor damage 已经 fan-out 走
+    # CombatExecutor.resolve_cast)。target_position 单位是 world cm;
+    # 1 macro = 100 cm = 8 micro,所以 cm × 8 / 100 = micro_unit_index。
+    try_voxel_damage(scene_id, cast)
     {:noreply, state}
   end
 
@@ -972,6 +982,56 @@ defmodule SceneServer.PlayerCharacter do
   defp schedule_skill_resolution(%{travel_ms: travel_ms} = cast) when travel_ms > 0 do
     Process.send_after(self(), {:resolve_skill_cast, cast}, travel_ms)
   end
+
+  # Phase A1-5:把 cast.target_position(cm)转 world micro index 并调
+  # VoxelDamageRouter。:cascade / :applied / :no_voxel / :error 全部 emit
+  # observe(让 CLI 调试可见命中链路),但**不**短路 actor damage 路径
+  # (那条已经在 resolve_cast → broadcast_effect_events 走完)。
+  defp try_voxel_damage(scene_id, %{target_position: target_position, skill: skill}) do
+    damage = primary_damage_from_skill(skill)
+
+    cond do
+      damage <= 0 ->
+        :ok
+
+      not is_tuple(target_position) ->
+        :ok
+
+      true ->
+        world_micro = world_cm_to_micro(target_position)
+
+        outcome = VoxelDamageRouter.try_apply_damage(scene_id, world_micro, damage)
+
+        SceneServer.CliObserve.emit("voxel_skill_damage_attempt", fn ->
+          %{
+            logical_scene_id: scene_id,
+            skill_id: skill.id,
+            target_position: inspect(target_position),
+            world_micro: inspect(world_micro),
+            damage: damage,
+            outcome: inspect(outcome, limit: 4)
+          }
+        end)
+
+        :ok
+    end
+  end
+
+  defp world_cm_to_micro({wx, wy, wz}) do
+    {floor_to_int(wx * 8.0 / 100.0), floor_to_int(wy * 8.0 / 100.0),
+     floor_to_int(wz * 8.0 / 100.0)}
+  end
+
+  defp floor_to_int(value) when is_float(value), do: :erlang.floor(value)
+  defp floor_to_int(value) when is_integer(value), do: value
+
+  # Picks the first effect's damage as the canonical "skill damage" for voxel
+  # path。Multi-effect skills(circle / chain)在 actor 路径仍按 effects 列表
+  # 走;voxel 路径只取首个 effect 的 damage 让 demo 形为可控。
+  defp primary_damage_from_skill(%Skill{effects: [%{damage: damage} | _]}) when damage > 0,
+    do: damage
+
+  defp primary_damage_from_skill(_skill), do: 0
 
   defp broadcast_effect_events(aoi_ref, effect_events) when is_list(effect_events) do
     Enum.each(effect_events, fn effect_event ->
