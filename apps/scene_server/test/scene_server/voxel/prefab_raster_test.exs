@@ -33,18 +33,24 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     Enum.each(stairs_cells, fn cell -> assert cell.layer_attrs.material_id == 3 end)
   end
 
-  test "anchor world-micro is floor-divided to a single target macro" do
+  test "macro-aligned anchor preserves slot indices and lands on that one macro" do
     # world_macro = (1, 2, 3); anchor in world-micro = (8, 16, 24).
     assert {:ok, cells} =
              PrefabRaster.rasterize(1, @blueprint_version, {@micro, 2 * @micro, 3 * @micro}, 0)
+
+    {:ok, blueprint} = BlueprintCatalog.fetch(1, @blueprint_version)
+    expected_slots = MapSet.new(blueprint.occupied_slots)
+    actual_slots = MapSet.new(Enum.map(cells, & &1.micro_slot))
 
     Enum.each(cells, fn cell ->
       assert cell.chunk_coord == {0, 0, 0}
       assert cell.local_macro == {1, 2, 3}
     end)
+
+    assert actual_slots == expected_slots
   end
 
-  test "anchor that lands on chunk boundary keeps the macro inside the new chunk" do
+  test "macro-aligned anchor on a chunk boundary lands at local (0, 0, 0)" do
     # world_macro (16, 0, 0) is the first cell of chunk (1, 0, 0) at local (0, 0, 0).
     anchor_micro = {16 * @micro, 0, 0}
 
@@ -56,13 +62,100 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     end)
   end
 
-  test "negative world-micro anchors floor toward minus infinity (Euclidean local)" do
-    # world-micro -1 → world-macro -1 → chunk -1, local 15.
-    assert {:ok, cells} = PrefabRaster.rasterize(1, @blueprint_version, {-1, -1, -1}, 0)
+  test "mid-macro anchor splits cells across the two adjacent macros along X" do
+    # anchor +4 in X within macro 0 → slots with lx ∈ 0..3 stay in macro (0,0,0)
+    # at x = lx+4; slots with lx ∈ 4..7 spill into macro (1,0,0) at x = lx-4.
+    anchor_micro = {4, 0, 0}
+    assert {:ok, cells} = PrefabRaster.rasterize(1, @blueprint_version, anchor_micro, 0)
+
+    {:ok, blueprint} = BlueprintCatalog.fetch(1, @blueprint_version)
+    assert length(cells) == length(blueprint.occupied_slots)
+
+    macros = cells |> Enum.map(& &1.local_macro) |> Enum.uniq() |> Enum.sort()
+    assert {0, 0, 0} in macros
+    assert {1, 0, 0} in macros
 
     Enum.each(cells, fn cell ->
-      assert cell.chunk_coord == {-1, -1, -1}
-      assert cell.local_macro == {15, 15, 15}
+      assert cell.chunk_coord == {0, 0, 0}
+    end)
+
+    # Round-trip every blueprint slot to its expected (macro, slot) destination.
+    Enum.each(blueprint.occupied_slots, fn slot ->
+      {lx, ly, lz} = decode_slot(slot)
+      wx = 4 + lx
+      wy = ly
+      wz = lz
+      expected_macro = {div(wx, @micro), div(wy, @micro), div(wz, @micro)}
+      expected_local_micro = {rem(wx, @micro), rem(wy, @micro), rem(wz, @micro)}
+      expected_slot = encode_slot(expected_local_micro)
+
+      assert Enum.any?(cells, fn cell ->
+               cell.local_macro == expected_macro and cell.micro_slot == expected_slot
+             end),
+             "slot #{slot} expected at macro #{inspect(expected_macro)} slot #{expected_slot}"
+    end)
+  end
+
+  test "mid-macro anchor near a chunk boundary spans two chunks" do
+    # macro (15, 0, 0) is the last macro of chunk (0,0,0) along X.
+    # anchor world-micro = 15 * 8 + 4 = 124. Slots with lx ∈ 0..3 stay in
+    # macro (15, 0, 0) (chunk 0); slots with lx ∈ 4..7 spill into macro
+    # (16, 0, 0) (chunk 1, local (0, 0, 0)).
+    anchor_micro = {15 * @micro + 4, 0, 0}
+    assert {:ok, cells} = PrefabRaster.rasterize(1, @blueprint_version, anchor_micro, 0)
+
+    by_chunk = Enum.group_by(cells, & &1.chunk_coord)
+    assert Map.has_key?(by_chunk, {0, 0, 0})
+    assert Map.has_key?(by_chunk, {1, 0, 0})
+
+    Enum.each(Map.fetch!(by_chunk, {0, 0, 0}), fn cell ->
+      assert cell.local_macro == {15, 0, 0}
+    end)
+
+    Enum.each(Map.fetch!(by_chunk, {1, 0, 0}), fn cell ->
+      assert cell.local_macro == {0, 0, 0}
+    end)
+  end
+
+  test "negative mid-macro anchor floors toward minus infinity per slot" do
+    # anchor (-1, -1, -1) shifts every blueprint slot one micro toward -∞.
+    # We don't pin which sphere slots actually occupy the corner regions
+    # (the geometry is up to BlueprintCatalog); we instead round-trip every
+    # occupied slot through the expected (chunk, local_macro, micro_slot)
+    # mapping so the rasterizer is exercised across all four `floor_div(_, 8)`
+    # quadrants the negative anchor produces.
+    assert {:ok, cells} = PrefabRaster.rasterize(1, @blueprint_version, {-1, -1, -1}, 0)
+
+    {:ok, blueprint} = BlueprintCatalog.fetch(1, @blueprint_version)
+    assert length(cells) == length(blueprint.occupied_slots)
+
+    cells_set =
+      MapSet.new(cells, fn cell -> {cell.chunk_coord, cell.local_macro, cell.micro_slot} end)
+
+    Enum.each(blueprint.occupied_slots, fn slot ->
+      {lx, ly, lz} = decode_slot(slot)
+      wx = -1 + lx
+      wy = -1 + ly
+      wz = -1 + lz
+      expected_macro = {floor_div(wx, @micro), floor_div(wy, @micro), floor_div(wz, @micro)}
+      expected_local_micro = {floor_mod(wx, @micro), floor_mod(wy, @micro), floor_mod(wz, @micro)}
+      expected_slot = encode_slot(expected_local_micro)
+
+      expected_chunk = {
+        floor_div(elem(expected_macro, 0), 16),
+        floor_div(elem(expected_macro, 1), 16),
+        floor_div(elem(expected_macro, 2), 16)
+      }
+
+      expected_local_macro = {
+        floor_mod(elem(expected_macro, 0), 16),
+        floor_mod(elem(expected_macro, 1), 16),
+        floor_mod(elem(expected_macro, 2), 16)
+      }
+
+      assert {expected_chunk, expected_local_macro, expected_slot} in cells_set,
+             "slot #{slot} expected at chunk #{inspect(expected_chunk)} local_macro " <>
+               "#{inspect(expected_local_macro)} slot #{expected_slot}"
     end)
   end
 
@@ -100,9 +193,20 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     assert PrefabRaster.group_by_chunk([]) == %{}
   end
 
-  test "group_by_chunk groups single-macro v2 prefabs into one chunk key" do
+  test "group_by_chunk groups macro-aligned v2 prefabs into one chunk key" do
     {:ok, cells} = PrefabRaster.rasterize(2, @blueprint_version, {0, 0, 0}, 0)
     assert PrefabRaster.group_by_chunk(cells) == %{{0, 0, 0} => cells}
+  end
+
+  test "group_by_chunk separates cells when the anchor straddles a chunk boundary" do
+    # Same setup as the cross-chunk mid-macro test; assert the helper buckets
+    # the cells into two distinct chunk keys for downstream per-chunk dispatch.
+    anchor_micro = {15 * @micro + 4, 0, 0}
+    {:ok, cells} = PrefabRaster.rasterize(1, @blueprint_version, anchor_micro, 0)
+
+    grouped = PrefabRaster.group_by_chunk(cells)
+    assert MapSet.new(Map.keys(grouped)) == MapSet.new([{0, 0, 0}, {1, 0, 0}])
+    assert grouped |> Map.values() |> Enum.map(&length/1) |> Enum.sum() == length(cells)
   end
 
   describe "BlueprintCatalog v2 invariants" do
@@ -148,6 +252,31 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
 
       assert total_bits == length(sphere.occupied_slots)
     end
+  end
+
+  defp floor_div(dividend, divisor)
+       when is_integer(dividend) and is_integer(divisor) and divisor > 0 do
+    q = div(dividend, divisor)
+    r = rem(dividend, divisor)
+    if r < 0, do: q - 1, else: q
+  end
+
+  defp floor_mod(dividend, divisor)
+       when is_integer(dividend) and is_integer(divisor) and divisor > 0 do
+    r = rem(dividend, divisor)
+    if r < 0, do: r + divisor, else: r
+  end
+
+  defp decode_slot(slot) do
+    z = div(slot, @micro * @micro)
+    rem_after_z = rem(slot, @micro * @micro)
+    y = div(rem_after_z, @micro)
+    x = rem(rem_after_z, @micro)
+    {x, y, z}
+  end
+
+  defp encode_slot({x, y, z}) do
+    x + y * @micro + z * @micro * @micro
   end
 
   defp popcount(word) when is_integer(word) and word >= 0 do
