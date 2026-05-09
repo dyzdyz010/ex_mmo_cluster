@@ -684,7 +684,9 @@ defmodule GateServer.WsConnectionVoxelTest do
     # `:micro_slot_already_occupied`(prepare 阶段 occupancy precheck 拦截,
     # fence 未写入 Postgres,zero-cost cleanup);chunk_version 不再 bump,
     # 第二次结果是纯 reject 而非 silent overwrite。
-    log_root = Path.join(System.tmp_dir!(), "a1-2-occupancy-#{System.unique_integer([:positive])}")
+    log_root =
+      Path.join(System.tmp_dir!(), "a1-2-occupancy-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(log_root)
     scene_log = Path.join(log_root, "scene.log")
     gate_log = Path.join(log_root, "gate.log")
@@ -792,7 +794,10 @@ defmodule GateServer.WsConnectionVoxelTest do
     # Scene should record exactly ONE prepare_failed (second place) and ONE
     # committed (first place).
     prepare_failed_lines =
-      Enum.filter(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_prepare_failed"))
+      Enum.filter(
+        scene_log_lines,
+        &String.contains?(&1, "voxel_chunk_transaction_prepare_failed")
+      )
 
     assert length(prepare_failed_lines) >= 1,
            "scene log missing voxel_chunk_transaction_prepare_failed event"
@@ -881,11 +886,15 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent rejects when world routing fails" do
+  test "prefab place intent rejects when any chunk fails to route" do
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
     # No FakeInterface started → fetch_world_node fails fast.
+    # Phase A4-2 D5: any per-chunk routing failure rolls up to a single
+    # :no_route_for_chunk reason on the wire (transaction is all-or-nothing,
+    # there's no "partial route" to surface). The underlying
+    # :world_unavailable lands in observe logs for ops.
     WsConnection.receive_frame(
       pid,
       prefab_place_intent_frame(703, 16, 555, 9_999,
@@ -900,7 +909,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       request_id: 703,
       client_intent_seq: 16,
       logical_scene_id: 555,
-      reason: ":world_unavailable"
+      reason: ":no_route_for_chunk"
     )
   end
 
