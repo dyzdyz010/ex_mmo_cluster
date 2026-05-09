@@ -226,6 +226,96 @@ defmodule SceneServer.MovementSmokeTest do
   end
 
   # ------------------------------------------------------------------------
+  # Scenario 5 (Phase A1-4): jump arc — Airborne mode + ground_z plumbed
+  # all the way to the ack
+  # ------------------------------------------------------------------------
+
+  test "jump input transitions to airborne and ack carries launch ground_z", ctx do
+    # Phase A1-4 端到端冒烟:跳跃 input → server integrator airborne_step
+    # → ack 携带 ground_z (起跳点 z) → client reconcile 拿到正确落地高度。
+    # 不再走前一个版本"客户端用 position.y 当 groundY"的本地 hack。
+
+    initial_state = :sys.get_state(ctx.player)
+    initial_z = elem(initial_state.last_location, 2)
+
+    # 1. 一帧 grounded(零位移)拿 baseline ack.ground_z=initial_z。
+    {:ok, :accepted} = call_input(ctx.player, grounded_idle_frame(1))
+    Process.sleep(110)
+
+    # 2. 跳跃帧:input_dir 不动,Jump flag 置位。
+    {:ok, :accepted} = send_jump(ctx.player, 2)
+    Process.sleep(110)
+
+    # 3. 跳跃 arc 演进:再 6 帧 grounded(零位移)跨越 600ms,让 server 把
+    # airborne arc 跑出来(jump apex ~1.2m,落地 ~500ms 量级)。
+    Enum.each(3..8, fn seq ->
+      {:ok, :accepted} = call_input(ctx.player, grounded_idle_frame(seq))
+      Process.sleep(110)
+    end)
+
+    acks = collect_acks_for_ms(200) ++ collect_acks(0, 0)
+    # 至少要拿到 6 个 ack(ack 速率 = 100ms/tick,8 帧 input 跨 ~800ms)。
+    assert length(acks) >= 6,
+           "expected at least 6 acks across the jump arc, got #{length(acks)}"
+
+    [ack1 | rest] = acks
+
+    # First ack:Grounded mode,ground_z = 起步 z。
+    assert ack1.movement_mode == :grounded
+    assert_in_delta ack1.ground_z, initial_z, 1.0e-9
+
+    # 找出至少一个 airborne ack(jump 帧 + 后续若干 arc 帧)。
+    airborne_acks = Enum.filter(rest, fn a -> a.movement_mode == :airborne end)
+
+    assert airborne_acks != [],
+           "no airborne ack observed after jump input; jump path didn't transition mode"
+
+    # 关键不变量:整个 airborne arc 中 ack.ground_z 全部等于 launch ground z
+    # (= initial_z),不跟着 position.z 漂移。这是 Phase A1-4 修复点。
+    Enum.each(airborne_acks, fn airborne_ack ->
+      assert_in_delta airborne_ack.ground_z,
+                      initial_z,
+                      1.0e-9,
+                      "airborne ack ground_z drifted from launch z; ack=#{inspect(airborne_ack)}"
+    end)
+
+    # 至少一帧 airborne 的 z position 高于 initial_z(确实在空中)。
+    max_z =
+      airborne_acks
+      |> Enum.map(fn a -> elem(a.position, 2) end)
+      |> Enum.max()
+
+    assert max_z > initial_z + 1.0,
+           "airborne arc never lifted above initial_z=#{initial_z}; max_z=#{max_z}"
+
+    # Phase A1-4 e2e summary,可见在 mix test --only smoke 输出。
+    IO.puts("""
+
+    ── Phase A1-4 jump arc e2e smoke ────────────────────────────
+      total acks observed:      #{length(acks)}
+      grounded acks:            #{Enum.count(acks, &(&1.movement_mode == :grounded))}
+      airborne acks:            #{length(airborne_acks)}
+      initial_z:                #{Float.round(initial_z, 4)}
+      ground_z (first ack):     #{Float.round(ack1.ground_z, 4)}
+      ground_z 在 arc 中漂移:    0(像素级 launch ground_z 锁定)
+      max_z reached in arc:     #{Float.round(max_z, 4)}
+      apex above launch:        #{Float.round(max_z - initial_z, 4)}
+    ─────────────────────────────────────────────────────────────
+    """)
+  end
+
+  defp grounded_idle_frame(seq) do
+    %InputFrame{
+      seq: seq,
+      client_tick: seq,
+      dt_ms: 100,
+      input_dir: {0.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+  end
+
+  # ------------------------------------------------------------------------
   # Helpers
   # ------------------------------------------------------------------------
 
@@ -261,6 +351,20 @@ defmodule SceneServer.MovementSmokeTest do
       input_dir: {0.0, 0.0},
       speed_scale: 1.0,
       movement_flags: 0b10
+    }
+
+    call_input(pid, frame)
+  end
+
+  defp send_jump(pid, seq, dir \\ {0.0, 0.0}) do
+    frame = %InputFrame{
+      seq: seq,
+      client_tick: seq,
+      dt_ms: 100,
+      input_dir: dir,
+      speed_scale: 1.0,
+      # 0b100 = MOVEMENT_FLAG_JUMP (input_frame.ex @jump_flag)
+      movement_flags: 0b100
     }
 
     call_input(pid, frame)
