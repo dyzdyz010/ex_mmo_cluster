@@ -66,18 +66,18 @@ mod tests {
     #[test]
     fn default_matches_mmo_starter_tuning() {
         let p = MovementProfile::default();
-        assert_eq!(p.max_speed, 220.0);
-        assert_eq!(p.max_accel, 1200.0);
-        assert_eq!(p.max_decel, 1400.0);
-        assert_eq!(p.max_jerk, 9_000.0);
+        assert_eq!(p.max_speed, 600.0);
+        assert_eq!(p.max_accel, 3300.0);
+        assert_eq!(p.max_decel, 3800.0);
+        assert_eq!(p.max_jerk, 24_500.0);
         assert_eq!(p.friction, 0.0);
         assert_eq!(p.turn_response, 1.0);
         assert_eq!(p.fixed_dt_ms, 100);
         assert_eq!(p.max_speed_scale, 1.0);
-        assert_eq!(p.jump_impulse, 420.0);
+        assert_eq!(p.jump_impulse, 485.0);
         assert_eq!(p.gravity, 980.0);
         assert_eq!(p.air_control, 0.35);
-        assert_eq!(p.air_accel, 420.0);
-        assert_eq!(p.max_fall_speed, 900.0);
+        assert_eq!(p.air_accel, 1140.0);
+        assert_eq!(p.max_fall_speed, 5300.0);
     }
 }

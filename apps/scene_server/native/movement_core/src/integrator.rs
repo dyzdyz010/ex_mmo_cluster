@@ -22,11 +22,11 @@ use crate::{
 };
 
 // Industry-standard stop threshold, mirroring Unreal CMC's BRAKE_TO_STOP_VELOCITY
-// (10 cm/s vs default MaxWalkSpeed=600). Scaled to our max_speed=220: 3.0 keeps
-// the same ~1.4% ratio. Below this speed while braking, velocity snaps to zero
-// so a jerk-limited residual acceleration cannot push the body past zero and
-// produce a visible "rubber-band" on key release.
-const BRAKE_TO_STOP_SPEED_SQ: f64 = 3.0 * 3.0;
+// (10 cm/s vs default MaxWalkSpeed=600). Phase A2 把 max_speed 调到 600 跟 UE
+// 一致,所以这里也直接用 UE 的 10 cm/s 阈值。Below this speed while braking,
+// velocity snaps to zero so a jerk-limited residual acceleration cannot push the
+// body past zero and produce a visible "rubber-band" on key release.
+const BRAKE_TO_STOP_SPEED_SQ: f64 = 10.0 * 10.0;
 
 pub fn step(
     previous: &MovementState,
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn grounded_jerk_clamp_bounds_acceleration_delta() {
-        // With dt=0.1 and max_jerk=9000, accel delta magnitude ≤ 900 per step.
+        // With dt=0.1 and max_jerk=24500, accel delta magnitude ≤ 2450 per step.
         let prev = idle_at([0.0, 0.0, 0.0]);
         let input = input_dir(1, [1.0, 0.0], 0);
         let profile = MovementProfile::default();
@@ -556,16 +556,16 @@ mod tests {
         let profile = MovementProfile::default();
         let next = step(&prev, &input, &profile);
 
-        // Deterministic algorithm identity:
-        // dt = 0.1; desired = (220,0,0); velocity_error = (220,0,0)
-        // accel_target = clamp((2200,0,0), accel_limit=1200) = (1200,0,0)
-        // max_delta = 9000*0.1 = 900; delta_mag=1200 > 900, so
-        // acceleration = current + unit(delta)*900 = (900,0,0)
-        // velocity = clamp((0+900*0.1,0,0), 220) = (90,0,0)
-        // position = (0+90*0.1, 0, 0) = (9.0, 0, 0)
-        assert!((next.acceleration[0] - 900.0).abs() < 1.0e-9);
-        assert!((next.velocity[0] - 90.0).abs() < 1.0e-9);
-        assert!((next.position[0] - 9.0).abs() < 1.0e-9);
+        // Deterministic algorithm identity (Phase A2 default profile):
+        // dt = 0.1; desired = (600,0,0); velocity_error = (600,0,0)
+        // accel_target = clamp((6000,0,0), accel_limit=3300) = (3300,0,0)
+        // max_delta = max_jerk*dt = 24500*0.1 = 2450; delta_mag=3300 > 2450, so
+        // acceleration = current + unit(delta)*2450 = (2450,0,0)
+        // velocity = clamp((0+2450*0.1,0,0), 600) = (245,0,0)
+        // position = (0+245*0.1, 0, 0) = (24.5, 0, 0)
+        assert!((next.acceleration[0] - 2450.0).abs() < 1.0e-9);
+        assert!((next.velocity[0] - 245.0).abs() < 1.0e-9);
+        assert!((next.position[0] - 24.5).abs() < 1.0e-9);
         assert_eq!(next.acceleration[1], 0.0);
         assert_eq!(next.acceleration[2], 0.0);
     }
@@ -1185,8 +1185,8 @@ mod stability {
     /// Over 100_000 ticks assert every tick's position, velocity, and
     /// acceleration components remain finite (no NaN, no Inf).
     ///
-    /// At max_speed=220 and dt=0.1 the integrator accumulates at most 2.2
-    /// units/tick; 100k ticks yields ~220k units, well inside f64 range
+    /// At max_speed=600 and dt=0.1 the integrator accumulates at most 60
+    /// units/tick; 100k ticks yields ~6M units, well inside f64 range
     /// (~1.8e308). Any NaN/Inf signals division-by-zero, degenerate input, or
     /// FP overflow in intermediate kinematic calculations.
     #[test]
