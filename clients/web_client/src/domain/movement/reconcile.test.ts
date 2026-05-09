@@ -41,6 +41,7 @@ function ack({
     movementMode: MovementMode.Grounded,
     correctionFlags: 0,
     serverFixedDtMs: 100,
+    groundY: 0,
   };
 }
 

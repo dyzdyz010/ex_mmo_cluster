@@ -195,8 +195,20 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       };
     }
     case 0x8b:
-      // Layout (audit B-M2): + trailing fixed_dt_ms u16 BE at body offset 93
-      // (i.e. msg_type-relative offset 94). Total body = 95; frame = 96.
+      // Layout (audit B-M2 + Phase A1-4): + trailing fixed_dt_ms u16 BE at
+      // body offset 93 + ground_z f64 BE at body offset 95. Frame layout:
+      //   [0]  opcode (1)
+      //   [1]  ack_seq u32 (4)
+      //   [5]  auth_tick u32 (4)
+      //   [9]  cid i64 (8)              ← client doesn't decode (player owns own ack)
+      //   [17] position vec3 f64×3 (24)
+      //   [41] velocity vec3 f64×3 (24)
+      //   [65] acceleration vec3 f64×3 (24)
+      //   [89] movement_mode u8 (1)
+      //   [90] correction_flags u32 (4)
+      //   [94] fixed_dt_ms u16 (2)
+      //   [96] ground_z f64 (8)         ← Phase A1-4
+      // Total: 104 bytes (1 opcode + 103 body).
       return {
         type: "movement_ack",
         ack: {
@@ -208,6 +220,10 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           movementMode: decodeMovementMode(view.getUint8(89)),
           correctionFlags: view.getUint32(90, false),
           serverFixedDtMs: view.getUint16(94, false),
+          // Phase A1-4: server's launch z (ground level for the current
+          // airborne arc). Server maps z → browser y in readServerVec3AsBrowserVec3,
+          // so we mirror the same convention here for groundY.
+          groundY: view.getFloat64(96, false),
         },
       };
     case 0x83:

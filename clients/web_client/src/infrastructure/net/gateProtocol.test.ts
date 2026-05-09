@@ -33,8 +33,10 @@ describe("gate movement protocol", () => {
 
   it("decodes movement ack mode and correction flags from the wire", () => {
     // Audit B-M2: trailing fixed_dt_ms u16 BE pushed total frame from
-    // 95 → 96 bytes; new field lives at view offset 94.
-    const buffer = new ArrayBuffer(96);
+    // 95 → 96 bytes;new field lives at view offset 94.
+    // Phase A1-4: trailing ground_z f64 BE pushed total frame from
+    // 96 → 104 bytes;new field lives at view offset 96.
+    const buffer = new ArrayBuffer(104);
     const view = new DataView(buffer);
     view.setUint8(0, 0x8b);
     view.setUint32(1, 10, false);
@@ -46,6 +48,8 @@ describe("gate movement protocol", () => {
     view.setUint8(89, 1);
     view.setUint32(90, CorrectionFlag.StatusOverride, false);
     view.setUint16(94, 100, false);
+    // Phase A1-4:server's ground_z (browser y axis after vec3 swap).
+    view.setFloat64(96, 7.5, false);
 
     const message = decodeServerMessage(buffer);
 
@@ -55,6 +59,7 @@ describe("gate movement protocol", () => {
     expect(message.ack.correctionFlags).toBe(CorrectionFlag.StatusOverride);
     expect(message.ack.position).toEqual(new Vector3(1, 3, 2));
     expect(message.ack.serverFixedDtMs).toBe(100);
+    expect(message.ack.groundY).toBe(7.5);
   });
 
   it("decodes enter_scene_ok with expectedSeq", () => {

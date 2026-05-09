@@ -46,7 +46,8 @@ defmodule SceneServer.Movement.Engine do
       acceleration: state.acceleration,
       movement_mode: state.movement_mode,
       correction_flags: 0,
-      fixed_dt_ms: fixed_dt_ms
+      fixed_dt_ms: fixed_dt_ms,
+      ground_z: state.ground_z
     }
   end
 
@@ -74,7 +75,8 @@ defmodule SceneServer.Movement.Engine do
       acceleration: state.acceleration,
       movement_mode: state.movement_mode,
       correction_flags: CorrectionFlags.combine([flags, auto_flags]),
-      fixed_dt_ms: fixed_dt_ms
+      fixed_dt_ms: fixed_dt_ms,
+      ground_z: state.ground_z
     }
   end
 

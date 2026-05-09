@@ -154,6 +154,7 @@ describe("LocalPlayerController", () => {
         movementMode: MovementMode.Grounded,
         correctionFlags: CorrectionFlag.None,
         serverFixedDtMs: 100,
+        groundY: acceptedState!.groundY,
       },
       sentAtMs: performance.now(),
     });
@@ -194,6 +195,7 @@ describe("LocalPlayerController", () => {
         movementMode: firstAuthoritative.movementMode,
         correctionFlags: CorrectionFlag.None,
         serverFixedDtMs: 100,
+        groundY: firstAuthoritative.groundY,
       },
       sentAtMs: performance.now(),
     });

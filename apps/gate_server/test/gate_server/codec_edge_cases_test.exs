@@ -59,13 +59,14 @@ defmodule GateServer.CodecEdgeCasesTest do
 
     test "movement_ack binary size is correct" do
       # Audit B-M2: 94 → 96 with trailing fixed_dt_ms u16.
+      # Phase A1-4: 96 → 104 with trailing ground_z f64 BE.
       {:ok, bin} =
         Codec.encode(
           {:movement_ack, 0, 0, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, :grounded,
-           0, 100}
+           0, 100, 3.0}
         )
 
-      assert byte_size(bin) == 96
+      assert byte_size(bin) == 104
     end
 
     test "redesigned time_sync_reply binary size is correct" do
@@ -108,7 +109,7 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:fast_lane_result, :ok, 0, 20003, "ticket"},
         {:fast_lane_attached, :ok, 0},
         {:movement_ack, 0, 0, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0,
-         100},
+         100, 0.0},
         {:chat_message, 0, "npc", "hi"},
         {:skill_event, 0, 1, {0.0, 0.0, 0.0}},
         {:effect_event, 0, 1, :projectile, {0.0, 0.0, 0.0}, nil, {0.0, 0.0, 0.0}, 0.0, 100}

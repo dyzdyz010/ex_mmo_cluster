@@ -15,7 +15,8 @@ defmodule SceneServer.Movement.Ack do
     :acceleration,
     :movement_mode,
     :correction_flags,
-    :fixed_dt_ms
+    :fixed_dt_ms,
+    :ground_z
   ]
   defstruct [
     :cid,
@@ -26,7 +27,8 @@ defmodule SceneServer.Movement.Ack do
     :acceleration,
     :movement_mode,
     :correction_flags,
-    :fixed_dt_ms
+    :fixed_dt_ms,
+    :ground_z
   ]
 
   @type t :: %__MODULE__{
@@ -41,6 +43,12 @@ defmodule SceneServer.Movement.Ack do
           # Audit B-M2: server's authoritative fixed-tick interval (ms),
           # echoed so the client can detect MovementProfile.fixed_dt_ms
           # drift before it accumulates into prediction error.
-          fixed_dt_ms: pos_integer()
+          fixed_dt_ms: pos_integer(),
+          # Phase A1-4: jump arc reconciliation needs the launch ground level
+          # echoed back so the client predictor's stepAirborne can land at
+          # the correct z. Without ground_z on the wire, client falls back to
+          # ack.position.z, which during airborne ticks is the in-air position
+          # and would cause "永不落地" prediction drift.
+          ground_z: float()
         }
 end

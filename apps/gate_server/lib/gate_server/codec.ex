@@ -415,14 +415,14 @@ defmodule GateServer.Codec do
   # downgrade gracefully.
   def encode(
         {:movement_ack, ack_seq, auth_tick, cid, {px, py, pz}, {vx, vy, vz}, {ax, ay, az},
-         movement_mode, correction_flags, fixed_dt_ms}
+         movement_mode, correction_flags, fixed_dt_ms, ground_z}
       )
-      when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
+      when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 and is_float(ground_z) do
     {:ok,
      <<@msg_movement_ack, ack_seq::32-big, auth_tick::32-big, cid::64-big, px::float-64-big,
        py::float-64-big, pz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
        ax::float-64-big, ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
-       correction_flags::32-big, fixed_dt_ms::16-big>>}
+       correction_flags::32-big, fixed_dt_ms::16-big, ground_z::float-64-big>>}
   end
 
   # ── Broadcast: player enter ──

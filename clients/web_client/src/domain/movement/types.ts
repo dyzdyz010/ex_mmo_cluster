@@ -58,7 +58,10 @@ export interface MovementAck {
   velocity: Vector3;
   acceleration: Vector3;
   movementMode: MovementMode;
-  groundY?: number;
+  // Phase A1-4: server now authoritatively echos ground_z(launch level for
+  // current airborne arc)on every ack。required field — wire format always
+  // carries it,client predictor's stepAirborne 必须按此值落地。
+  groundY: number;
   correctionFlags: number;
   // Audit B-M2 (bevy sweep 2026-04-26): server-authoritative fixed-tick
   // interval (ms) echoed in every ack. Used to detect MovementProfile
@@ -124,10 +127,8 @@ export function cloneMovementAck(ack: MovementAck): MovementAck {
     movementMode: ack.movementMode,
     correctionFlags: ack.correctionFlags,
     serverFixedDtMs: ack.serverFixedDtMs,
+    groundY: ack.groundY,
   };
-  if (ack.groundY !== undefined) {
-    cloned.groundY = ack.groundY;
-  }
   return cloned;
 }
 

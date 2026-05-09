@@ -94,6 +94,10 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
           // the local profile uses, so drift detection is a no-op here
           // by construction.
           serverFixedDtMs: DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
+          // Phase A1-4: simulated transport mirrors the predicted state's
+          // groundY so reconcile sees a consistent value(没有真实 server
+          // launch_ground_z 概念,直接 echo predicted.groundY)。
+          groundY: predicted.groundY,
         },
       },
       deliverAtMs: nowMs,

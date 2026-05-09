@@ -13,7 +13,6 @@ import { step } from "./predictor";
 import { reconcile, type ReconcileResult } from "./reconcile";
 import {
   MovementFlag,
-  MovementMode,
   makeIdleState,
   type MoveInputFrame,
   type MovementAck,
@@ -98,14 +97,11 @@ export class LocalPredictionRuntime {
   }
 
   applyAck(ack: MovementAck): ReconcileResult | null {
-    const ackWithGround: MovementAck = {
-      ...ack,
-      groundY:
-        ack.movementMode === MovementMode.Grounded
-          ? ack.position.y
-          : (this.currentState?.groundY ?? ack.position.y),
-    };
-    this.extendPredictionThrough(ackWithGround.authTick);
+    // Phase A1-4: server now sends authoritative ground_z on every ack
+    // (跟 launch tick 时锁定的 ground 一致),client 直接用,不再本地 hack
+    // groundY = position.y(本地 hack 在 airborne 时会让 groundY 跟着 position
+    // 升,导致永不落地)。
+    this.extendPredictionThrough(ack.authTick);
     this.nextTick = Math.max(this.nextTick, ack.authTick + 1);
     this.governance.softPositionError = effectiveSoftPositionError(
       this.governance,
@@ -113,7 +109,7 @@ export class LocalPredictionRuntime {
     );
 
     const result = reconcile(
-      ackWithGround,
+      ack,
       this.inputHistory,
       this.predictedHistory,
       this.profile,

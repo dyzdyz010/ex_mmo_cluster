@@ -26,7 +26,10 @@ function authoritativeFromAck(ack: MovementAck): PredictedMoveState {
     velocity: ack.velocity.clone(),
     acceleration: ack.acceleration.clone(),
     movementMode: ack.movementMode,
-    groundY: ack.groundY ?? ack.position.y,
+    // Phase A1-4: groundY is required on the wire (not optional anymore).
+    // Server's launch_ground_z is echoed every ack so the predictor can
+    // land at the correct z during a replayed jump arc.
+    groundY: ack.groundY,
   };
 }
 
