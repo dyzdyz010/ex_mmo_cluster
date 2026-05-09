@@ -26,6 +26,7 @@
 | 4-bis | ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 已完成 | [`phase-4-bis-object-state-delta-push.md`](./phase-4-bis-object-state-delta-push.md) |
 | A2 | 阶段 A 子 1:尺寸真实化(角色 1.7m / 跑速 6 m/s / apex 1.2m) | 已完成 | [`phase-A2-real-world-scale.md`](./phase-A2-real-world-scale.md) |
 | A1 | 阶段 A 子 2:客户端可玩 demo 必须线(prefab micro / 防覆盖 / 线框预览 / 跳跃同步 / 破坏技能) | 已完成 | [`phase-A1-playable-client-experience.md`](./phase-A1-playable-client-experience.md) |
+| A4 | 阶段 A 子 4:跨 region prefab 多 participant 事务(打通 mid-macro 锚跨 region 边界场景) | 进行中(决策稿) | [`phase-A4-cross-region-prefab.md`](./phase-A4-cross-region-prefab.md) |
 | 5 | 属性目录 + 温湿度基础模拟 | 未开始 | — |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
