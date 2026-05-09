@@ -150,6 +150,38 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
     :finalized
   end
 
+  # Phase A1-1b 修:如果 transaction 反序列化只得到 plain map(stale snapshot
+  # 跨版本字段缺失 / `%BuildTransaction{}` struct 形态变了 / sweep 看到的是
+  # `TransactionCoordinator.snapshot/1` 返回的简化视图 etc),把它当 stale
+  # 残留处理 — 直接尝试 abort。落到这条 catchall 之前,plain-map 命中不到
+  # 任何 struct-pattern clause,recovery_watcher.init 会 raise
+  # FunctionClauseError,整个 world_server.WorldSup 起不来,server boot 失败。
+  defp handle_transaction(
+         coordinator,
+         %{transaction_id: tx_id, decision_version: dv, state: state} = stale,
+         _resolver
+       )
+       when not is_struct(stale, BuildTransaction) do
+    case TransactionCoordinator.abort_decision(coordinator, tx_id, dv) do
+      {:ok, _aborted} ->
+        emit("voxel_transaction_recovery_stale_aborted", stale, %{
+          from_state: state,
+          stale_shape: :plain_map
+        })
+
+        :aborted
+
+      {:error, reason} ->
+        emit("voxel_transaction_recovery_stale_abort_failed", stale, %{
+          from_state: state,
+          reason: inspect(reason),
+          stale_shape: :plain_map
+        })
+
+        :abort_failed
+    end
+  end
+
   defp resume_prepared(coordinator, transaction, resolver) do
     case safe_resolve(resolver) do
       {:ok, scene_opts} ->
