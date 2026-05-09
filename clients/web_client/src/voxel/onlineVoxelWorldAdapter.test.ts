@@ -326,6 +326,67 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
   });
 });
 
+describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
+  function seedSolidMacroAtOrigin(adapter: OnlineVoxelWorldAdapter): void {
+    adapter.store.setNormalBlockWorld(
+      { x: 0, y: 0, z: 0 },
+      { materialId: 1, stateFlags: 0, health: 100, temperatureDelta: 0, moistureDelta: 0 },
+    );
+  }
+
+  it("sends the wire intent with the boundary-snap micro anchor (not the macro origin)", () => {
+    const { adapter, transport } = createAdapter();
+    seedSolidMacroAtOrigin(adapter);
+
+    const request = {
+      prefabName: "builtin_sphere",
+      hitMacro: { x: 0, y: 0, z: 0 },
+      hitMicro: { x: 5, y: 7, z: 5 },
+      anchorMicroCoord: { x: 5, y: 8, z: 5 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    };
+
+    const preview = adapter.previewPrefabBoundarySnap(request);
+    expect(preview.ok).toBe(true);
+    expect(preview.anchorMicroCoord).not.toBeNull();
+
+    const result = adapter.placePrefabBoundarySnap(request);
+    expect(result.ok).toBe(true);
+    expect(transport.prefabCalls).toHaveLength(1);
+
+    const [call] = transport.prefabCalls;
+    if (!call) throw new Error("expected one prefab call");
+    expect(call.blueprintId).toBe(1);
+    expect(call.blueprintVersion).toBe(OnlinePrefabBlueprintVersion);
+    expect(call.anchorWorldMicro).toEqual(preview.anchorMicroCoord);
+    // The boundary snap searches around the request anchor and shifts by the
+    // best incoming boundary point, so at least one axis must come out
+    // non-zero modulo 8 (otherwise it collapses to a macro origin and the
+    // server-side placement diverges from the client wireframe).
+    const anchor = call.anchorWorldMicro;
+    expect(
+      anchor.x % 8 !== 0 || anchor.y % 8 !== 0 || anchor.z % 8 !== 0,
+    ).toBe(true);
+  });
+
+  it("returns the preview rejection when boundary snap finds no target", () => {
+    const { adapter, transport } = createAdapter();
+    // No seed: the world is empty, so previewBoundarySnap rejects with
+    // no_target_boundary.
+    const request = {
+      prefabName: "builtin_sphere",
+      hitMacro: { x: 0, y: 0, z: 0 },
+      anchorMicroCoord: { x: 5, y: 8, z: 5 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    };
+
+    const result = adapter.placePrefabBoundarySnap(request);
+    expect(result.ok).toBe(false);
+    expect(result.rejectReason).toBe("no_target_boundary");
+    expect(transport.prefabCalls).toHaveLength(0);
+  });
+});
+
 describe("OnlineVoxelWorldAdapter wire opcode coverage", () => {
   it("routes prefab placement through the 0x67 opcode constant the transport encodes", () => {
     // Defensive sanity check so accidental constant drift surfaces in this test

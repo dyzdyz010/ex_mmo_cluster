@@ -451,8 +451,75 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" };
   }
 
-  override placePrefabBoundarySnap(_request: PrefabBoundarySnapRequest): PrefabBoundarySnapResult {
-    return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" };
+  // Phase A1 hotfix(2026-05-09):服务端权威路径下,placePrefabBoundarySnap
+  // 不再无条件 reject。让本地 mirror 跑一次 previewBoundarySnap 算出
+  // micro 精度的 anchor(线框预览同一份计算),再把这个 anchor 通过 0x67
+  // 发给服务器,保证服务端实际放置位置和客户端线框像素级一致。
+  // 之前永远 reject 让 worldEditController fallback 到 macro 原点,导致
+  // wire 上 anchor 被 macro 对齐 → 与线框 (mid-macro) 不符。
+  override placePrefabBoundarySnap(request: PrefabBoundarySnapRequest): PrefabBoundarySnapResult {
+    const preview = this.previewPrefabBoundarySnap(request);
+    if (!preview.ok || !preview.anchorMicroCoord) {
+      const conflict = preview.rejectReason === "micro_overlap";
+      if (conflict) {
+        this.store.markConflict();
+      }
+      return {
+        ok: false,
+        placed: 0,
+        ...(conflict ? { conflict: true } : {}),
+        ...(preview.rejectReason ? { rejectReason: preview.rejectReason } : {}),
+        preview,
+      };
+    }
+
+    const blueprint = resolveBlueprint(request.prefabName);
+    if (!blueprint) {
+      const reason = `unknown_blueprint:${request.prefabName}`;
+      this.rejectServerOnlyEdit(reason);
+      this.bus.emit("world:voxel-sync-error", { reason, source: "prefab_boundary_snap" });
+      return {
+        ok: false,
+        placed: 0,
+        rejectReason: reason,
+        preview,
+      };
+    }
+
+    const clientIntentSeq = this.clientIntentSeq;
+    const requestId = this.transport.sendVoxelPrefabPlaceIntent({
+      logicalSceneId: this.logicalSceneId,
+      parcelId: 0,
+      knownParcelBuildEpoch: 0,
+      blueprintId: blueprint.id,
+      blueprintVersion: blueprint.version,
+      anchorWorldMicro: { ...preview.anchorMicroCoord },
+      rotation: 0,
+      clientIntentSeq,
+    });
+
+    if (requestId === null) {
+      this.rejectServerOnlyEdit("voxel_transport_unavailable");
+      return {
+        ok: false,
+        placed: 0,
+        rejectReason: "voxel_transport_unavailable",
+        preview,
+      };
+    }
+
+    this.clientIntentSeq += 1;
+    this.pendingIntentCount += 1;
+    this.pendingPrefabIntents.set(requestId, {
+      blueprintId: blueprint.id,
+      blueprintName: request.prefabName,
+    });
+
+    return {
+      ok: true,
+      placed: preview.incomingOccupiedSlots,
+      preview,
+    };
   }
 
   override importSnapshot(
