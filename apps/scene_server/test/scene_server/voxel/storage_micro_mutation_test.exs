@@ -22,6 +22,131 @@ defmodule SceneServer.Voxel.StorageMicroMutationTest do
     Storage.empty(1, {0, 0, 0})
   end
 
+  describe "put_micro_blocks — Phase A1-1b batch API" do
+    test "batch on empty macro produces same shape as N x put_micro_block(同攻击 attrs)" do
+      pairs = [
+        {5, default_layer_attrs(17)},
+        {9, default_layer_attrs(17)},
+        {64, default_layer_attrs(17)}
+      ]
+
+      batch_storage = Storage.put_micro_blocks(empty_storage(), 0, pairs)
+
+      sequential_storage =
+        empty_storage()
+        |> Storage.put_micro_block(0, 5, default_layer_attrs(17))
+        |> Storage.put_micro_block(0, 9, default_layer_attrs(17))
+        |> Storage.put_micro_block(0, 64, default_layer_attrs(17))
+
+      assert Storage.macro_header_at(batch_storage, 0) ==
+               Storage.macro_header_at(sequential_storage, 0)
+
+      assert Storage.refined_cell_at(batch_storage, 0) ==
+               Storage.refined_cell_at(sequential_storage, 0)
+    end
+
+    test "batch with mixed material_ids splits into multiple layers correctly" do
+      pairs = [
+        {5, default_layer_attrs(17)},
+        {9, default_layer_attrs(42)},
+        {10, default_layer_attrs(17)}
+      ]
+
+      storage = Storage.put_micro_blocks(empty_storage(), 0, pairs)
+      cell = Storage.refined_cell_at(storage, 0)
+
+      # 17 / 42 → 2 layers
+      assert length(cell.layers) == 2
+      [layer_17, layer_42] = Enum.sort_by(cell.layers, & &1.material_id)
+
+      assert layer_17.material_id == 17
+      # slot 5 + 10 in layer 17 → bits 5, 10 in word 0
+      assert layer_17.mask_words == [
+               Bitwise.bor(Bitwise.bsl(1, 5), Bitwise.bsl(1, 10)),
+               0,
+               0,
+               0,
+               0,
+               0,
+               0,
+               0
+             ]
+
+      assert layer_42.material_id == 42
+      # slot 9 in layer 42 → bit 9 in word 0
+      assert layer_42.mask_words == [Bitwise.bsl(1, 9), 0, 0, 0, 0, 0, 0, 0]
+
+      # Combined occupancy
+      expected_occ =
+        Bitwise.bor(Bitwise.bsl(1, 5), Bitwise.bor(Bitwise.bsl(1, 9), Bitwise.bsl(1, 10)))
+
+      assert cell.occupancy_words == [expected_occ, 0, 0, 0, 0, 0, 0, 0]
+    end
+
+    test "batch on refined macro merges with existing layers (same signature)" do
+      base = empty_storage() |> Storage.put_micro_block(0, 100, default_layer_attrs(99))
+      pairs = [{5, default_layer_attrs(99)}, {9, default_layer_attrs(99)}]
+
+      storage = Storage.put_micro_blocks(base, 0, pairs)
+      cell = Storage.refined_cell_at(storage, 0)
+
+      # Same material_id → merged into the existing layer
+      assert length(cell.layers) == 1
+      [layer] = cell.layers
+      assert layer.material_id == 99
+      # bits 5, 9, 100 set
+      bit_5_9 = Bitwise.bor(Bitwise.bsl(1, 5), Bitwise.bsl(1, 9))
+      bit_100_word = div(100, 64)
+      bit_100_offset = rem(100, 64)
+      expected = List.duplicate(0, 8)
+      expected = List.replace_at(expected, 0, bit_5_9)
+      expected = List.replace_at(expected, bit_100_word, Bitwise.bsl(1, bit_100_offset))
+      assert layer.mask_words == expected
+    end
+
+    test "batch raises on already-occupied slot" do
+      base = empty_storage() |> Storage.put_micro_block(0, 5, default_layer_attrs(1))
+
+      assert_raise ArgumentError, ~r/micro_slot_already_occupied/, fn ->
+        Storage.put_micro_blocks(base, 0, [{5, default_layer_attrs(2)}])
+      end
+    end
+
+    test "batch raises on solid macro" do
+      storage = empty_storage() |> Storage.put_solid_block(0, NormalBlockData.new(7))
+
+      assert_raise ArgumentError, ~r/cannot_micro_edit_solid_macro/, fn ->
+        Storage.put_micro_blocks(storage, 0, [{5, default_layer_attrs(2)}])
+      end
+    end
+
+    test "empty pairs list is a no-op" do
+      base = empty_storage() |> Storage.put_micro_block(0, 5, default_layer_attrs(1))
+      result = Storage.put_micro_blocks(base, 0, [])
+      assert Storage.macro_header_at(result, 0) == Storage.macro_header_at(base, 0)
+      assert Storage.refined_cell_at(result, 0) == Storage.refined_cell_at(base, 0)
+    end
+
+    test "batch matches sequential for sphere-sized payload (280 slots)" do
+      # Phase A1-1b 实际场景:sphere prefab 一次 280 个 micro slots。Storage
+      # 行为必须跟 280 次 sequential put_micro_block 完全等价(像素级)。
+      pairs = for slot <- 0..279, do: {slot, default_layer_attrs(4)}
+
+      batch_storage = Storage.put_micro_blocks(empty_storage(), 0, pairs)
+
+      sequential_storage =
+        Enum.reduce(pairs, empty_storage(), fn {slot, attrs}, acc ->
+          Storage.put_micro_block(acc, 0, slot, attrs)
+        end)
+
+      assert Storage.macro_header_at(batch_storage, 0) ==
+               Storage.macro_header_at(sequential_storage, 0)
+
+      assert Storage.refined_cell_at(batch_storage, 0) ==
+               Storage.refined_cell_at(sequential_storage, 0)
+    end
+  end
+
   describe "put_micro_block — empty → refined transition" do
     test "promotes an empty macro cell to refined and creates one layer with one bit" do
       storage =
