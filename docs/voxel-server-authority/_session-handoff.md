@@ -1,10 +1,10 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-08,Phase 4-bis 全程落地后。
+**Last updated**:2026-05-09,Phase A2 落地后。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
-## 已落地阶段(2026-05-08 收盘)
+## 已落地阶段(2026-05-09 收盘)
 
 | 阶段 | 状态 | 关键 commit |
 | --- | --- | --- |
@@ -16,26 +16,24 @@
 | 3 prefab v2 事务化(World/Scene transaction coordinator) | 已完成 | `a053c82` (决策稿) → `3fc9966` (3-1) → `6973843` (3-2) → `bd74e01` (3-3a) → `e91c38f` (3-3b) → `b93a10d` (3-4) → `86d9186` (3-5) |
 | 3-bis fence persistence + auto-resume commit(crash safety 闭环) | 已完成 | `5e3b1e7` (决策稿) → `5cadbdf` (3-bis-1) → `f6602b0` (3-bis-2) → `d767c29` (3-bis-3) → `9db8c1d` (3-bis-4) → `d01b3d6` (3-bis-5) → `c7ef222` (3-bis-6) |
 | 4 object provenance + part-health 破坏闭环(含整体销毁) | 已完成 | `067085f` (决策稿) → `df1ba93` (4-1) → `95a3330` (4-2) → `f61351c` (4-3) → `686d3cd` (4-4) → `53e4e7d` (4-5) → `330d528` (4-6) → `d800996` (4-7) → `0a5b428` (4-8) → `5352040` (4-9) → `b10e197` (4-10) |
-| 4-bis ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 已完成 | `ed16fef` (决策稿) → `0d9df62` (4-bis-1) → `3b96714` (4-bis-2) → `77f690d` (4-bis-3) → `2cb2373` (4-bis-4) → `3ca3f6e` (4-bis-5) → `a5b4eca` (4-bis-6) → `1ed8fd8` (4-bis-7) → `1e34841` (4-bis-8) → `bc89cea` (4-bis-9) → `d37598a` (4-bis-10) → `c78e04f` (4-bis-11) → `1f6cc13` (4-bis-12) → 本会话 (4-bis-13) |
+| 4-bis ObjectStateDelta 推送链路 + 客户端碎屑粒子消费 | 已完成 | `ed16fef` (决策稿) → `0d9df62` (4-bis-1) → `3b96714` (4-bis-2) → `77f690d` (4-bis-3) → `2cb2373` (4-bis-4) → `3ca3f6e` (4-bis-5) → `a5b4eca` (4-bis-6) → `1ed8fd8` (4-bis-7) → `1e34841` (4-bis-8) → `bc89cea` (4-bis-9) → `d37598a` (4-bis-10) → `c78e04f` (4-bis-11) → `1f6cc13` (4-bis-12) → `f9906b1` (4-bis-13 docs 收尾) |
+| A2 阶段 A 子 1:尺寸真实化(角色 1.7m / 跑速 6 m/s / apex 1.2m) | 已完成 | `6144408` (决策稿) → `aec8a98` (A2-1) → `05cebdf` (A2-2) → `ef5d524` (A2-3) → `03690c0` (A2-4) → `630d257` (A2-5) → `fb69661` (A2-6) → 本会话尾 (A2-final) |
 
-测试规模(2026-05-08 末态,Phase 4-bis 收尾):
+测试规模(2026-05-09 末态,Phase A2 收尾):
 
-- data_service: 71 tests (Phase 4 末态;4-bis 未触)
-- scene_server: 359 tests (+29 from Phase 4 末态 330):codec_object_state_delta(+13) /
-  chunk_directory.lookup_chunk_pid(+4) / chunk_process push fan-out(+4) /
-  object_registry_broadcast(+5) / object_state_delta_e2e(+3)
-- gate_server: 189 tests (+1 net,删 7 加 8:binary pass-through encode +
-  cross-codec roundtrip + 保留 decode)
-- world_server: 72 tests (Phase 4 末态;4-bis 未触)
-- web_client: 254 vitest (+38 from Phase 4 末态 216):objectStateDeltaConsumer(+10) /
-  clearedSlotCache(+9) / debrisEffect(+9) / debrisRenderer(+4) /
-  onlineVoxelWorldAdapter pipeline(+6)
+- data_service: 71 tests (Phase 4 末态;4-bis / A2 未触)
+- scene_server: 359 tests (Phase 4-bis 末态;A2 调 movement profile 默认值
+  没增减 test 数量,只重生成 golden 期望)
+- gate_server: 189 tests (Phase 4-bis 末态;A2 未触)
+- world_server: 72 tests (1 预存失败,Windows path,不动)
+- web_client: 254 vitest (Phase 4-bis 末态;A2 调 avatar 尺寸/相机参数没增减)
+- movement_core cargo: 39 tests (A2 修了 2 个旧值断言)
 
 预存失败:`apps/world_server/test/world_server/voxel/authority_observe_test.exs:35`
 Windows path 大小写,不动(memory 已记)。
 
-未 push(用户没说 push 就别 push)。本地 master 领先 origin **49 commits**
-(Phase 4 末 35 + Phase 4-bis 14)。
+未 push(用户没说 push 就别 push)。本地 master 领先 origin **57 commits**
+(Phase 4 末 35 + Phase 4-bis 14 + Phase A2 8)。
 
 ## 已知预存失败(本环境)
 
@@ -47,7 +45,15 @@ Windows path 大小写,不动(memory 已记)。
 
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
+| A1 | 未开始 | 阶段 A 子 2:移动 + 跳跃同步(服务端 movement_engine 垂直速度 + 客户端预测和解) |
+| A3 | 未开始 | 阶段 A 子 3:多客户端同世界联调(本地多 tab / 多机 + chunk 订阅一致性 + 移动同步 + 破坏可见性) |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
+
+**阶段 A 进度**:A2(尺寸真实化)已完成 2026-05-09。剩 A1(2-5 天)+ A3(1-2 周)。
+完成阶段 A 后路演 demo 三条最低线全齐(角色看起来正常 + 跳跃 + 多客户端能看见对方破坏)。
+A2 已为 A1 打好物理基础(jump_impulse 485 / max_fall_speed 5300 / gravity 980),
+A1 主要工作是把 movement_engine 的 `Airborne` mode 跑通端到端(predictor 已支持,
+client 输入对接 + reconciliation 跑通)。
 
 **Phase 4-bis 后剩余的 backlog**(若用户优先继续巩固 4-bis 系):
 
@@ -196,26 +202,29 @@ Windows path 大小写,不动(memory 已记)。
 | **Web client 碎屑粒子(Phase 4-bis)** | `clients/web_client/src/voxel/clearedSlotCache.ts`、`debrisEffect.ts`(simulation)、`debrisRenderer.ts`(InstancedMesh) |
 | **Web client HUD(Phase 4-bis 起订阅 world:object-state-delta)** | `clients/web_client/src/presentation/hud/hudView.ts` |
 
-## 这次会话产出(2026-05-08,Phase 4-bis)
+## 这次会话产出(2026-05-09,Phase A2)
 
-14 个 commit,本地 master 未 push(本会话尾的 Phase 4 收尾 commit 也含在内):
+8 个 commit,本地 master 未 push:
 
 ```
-本会话    docs(voxel): finalize Phase 4-bis (apps READMEs + plan progress log + handoff)
-1f6cc13   voxel: DebrisRenderer + RenderOrchestrator + HUD wiring (Phase 4-bis-12)
-c78e04f   voxel: 0x6C ObjectStateDelta end-to-end push test (Phase 4-bis-11)
-d37598a   voxel: 0x6C ObjectStateDelta debris pipeline串联 (Phase 4-bis-10)
-bc89cea   voxel: DebrisSimulation particle state machine (Phase 4-bis-9)
-1e34841   voxel: ClearedSlotCache short-lived owner-tracking cache (Phase 4-bis-8)
-1ed8fd8   voxel: web_client 0x6C ObjectStateDelta consumer + dispatch (Phase 4-bis-7)
-a5b4eca   voxel: gate ws/tcp forward 0x6C ObjectStateDelta to socket (Phase 4-bis-6)
-3ca3f6e   voxel: ObjectRegistry dispatches 0x6C ObjectStateDelta after emit (Phase 4-bis-5)
-2cb2373   voxel: ChunkProcess.push_object_state_delta_payload cast + fan-out (Phase 4-bis-4)
-77f690d   voxel: ChunkDirectory.lookup_chunk_pid/3 read-only API (Phase 4-bis-3)
-3b96714   voxel: gate codec 0x6C binary pass-through (Phase 4-bis-2)
-0d9df62   voxel: scene codec encode/decode_voxel_object_state_delta_payload (Phase 4-bis-1)
-ed16fef   docs(voxel): land Phase 4-bis plan (ObjectStateDelta push + debris particles)
+本会话    docs(voxel): finalize Phase A2 (status + README + handoff)
+fb69661   voxel(A2-6): magic number sweep
+630d257   voxel(A2-5): scene_ops capsule 单位修正(米 → cm)
+03690c0   voxel(A2-4): movement_core unit test 跟随新 profile + 注释 sweep
+ef5d524   voxel(A2-3): movement profile 默认值调到现实人体数值
+05cebdf   voxel(A2-2): camera 参数适配 1.7m 角色
+aec8a98   voxel(A2-1): AvatarConstants + avatar mesh / ring 调到 1.7m 角色
+6144408   docs(voxel): land Phase A2 plan (real-world scale)
 ```
 
-加上 Phase 4 收尾 commit `b10e197` 与之前会话已经在 master 上的所有 Phase 1a → 4
-commits(完整列表见上一个会话的 handoff)。
+A2 的核心收益:
+
+- **角色尺寸**:1.2m → 1.7m(`AvatarConstants` 集中常量,删除 `LOCAL_AVATAR_HALF_HEIGHT` alias)
+- **跑速**:2.2 m/s → 6 m/s(`max_speed` 220 → 600,跟 UE CMC 默认对齐)
+- **跳跃**:apex 0.9m → 1.2m(`jump_impulse` 420 → 485)
+- **重力 / 下落终速**:9.8 m/s² 不变 / 9 m/s → 53 m/s(terminal velocity)
+- **scene_ops capsule latent bug 修了**:`capsule_z(0.3, 0.15)` 米单位 → `(85.0, 30.0)` cm
+- **相机**:LOOK_HEIGHT 110 → 145(角色胸口),距离温和扩大
+- **BRAKE_TO_STOP_SPEED_SQ**:3² → 10²(跟 UE CMC `BRAKE_TO_STOP_VELOCITY=10` 对齐)
+
+A2 之前的所有 Phase 1a → 4-bis commits(完整列表见上一个会话的 handoff)。

@@ -1,6 +1,6 @@
 # Phase A2 — 尺寸真实化 (real-world scale)
 
-**起草日期**:2026-05-08。**状态**:决策稿(待用户审)。
+**起草日期**:2026-05-08。**状态**:已完成(2026-05-09)。
 
 阶段 A(可玩 demo 最低线)的第一子阶段。在 A1(移动 + 跳跃同步)/ A3(多客户端联调)之前先把世界尺度对齐到现实数值,后续物理调参不必重做一轮。
 
@@ -197,4 +197,11 @@ let collider = ColliderBuilder::capsule_z(85.0, 30.0)  // cm,角色 1.7m 高、0
 ## 进度日志
 
 - 2026-05-08:决策稿起草。
-- 2026-05-09:用户审 D1-D6,采纳推荐值;补充 verify `localPlayerController.test.ts:54` 与 half-height 无依赖,Step A2-1 顺手清理字面值耦合;待 commit 决策稿入仓后开 Step A2-1。
+- 2026-05-09:用户审 D1-D6,采纳推荐值;补充 verify `localPlayerController.test.ts:54` 与 half-height 无依赖,Step A2-1 顺手清理字面值耦合。决策稿入仓 commit `6144408`。
+- 2026-05-09:Step A2-1 落地(commit `aec8a98`)。`AvatarConstants` 引入,删除 `LOCAL_AVATAR_HALF_HEIGHT` 不留 alias。avatar mesh 1.2m → 1.7m,authorityAvatar ghost 0.9m → 1.2m,syncRing 1.7m/1.9m → 1.2m/1.4m 内/外径。`localPlayerController.test.ts:49` 字面值 `(-350, 260, -280)` → `(0, 123, 0)` 解耦。web vitest 254 → 254。
+- 2026-05-09:Step A2-2 落地(commit `05cebdf`)。Camera LOOK_HEIGHT 110→145,MIN/MAX/SNAP/orbit 距离温和扩大,初始 camera y 480→550,所有 magic number 引用 CAMERA_LOOK_HEIGHT。web vitest 254 → 254。
+- 2026-05-09:Step A2-3 落地(commit `ef5d524`)。movement profile 默认值整套调到现实人体数值:max_speed 220→600,max_accel/decel/jerk 同比 ×2.7,jump_impulse 420→485(apex 1.2m),max_fall_speed 900→5300(53 m/s),air_accel 跟 max_accel 同比例。`profile.ex` + `profile.rs` 同步改 + 注释更新。mix test scene_server 359 → 359 pass(parity test 不依赖具体值);cargo test 预期 2 失败(profile default 单测 + golden_single_step),A2-4 修。
+- 2026-05-09:Step A2-4 落地(commit `03690c0`)。修两个失败 cargo test:`default_matches_mmo_starter_tuning` 断言新值;`golden_single_step_matches_legacy_algorithm` 重新推导 acc=2450/vel=245/pos=24.5。顺手 sweep `BRAKE_TO_STOP_SPEED_SQ` 3.0² → 10.0²(跟 UE CMC `BRAKE_TO_STOP_VELOCITY=10` 对齐,因 max_speed=600 跟 UE MaxWalkSpeed 一致)+ jerk_clamp / long_horizon 注释更新。cargo test 39 → 39 pass。
+- 2026-05-09:Step A2-5 落地(commit `630d257`)。修 `physics_comp.rs` capsule_z(0.3, 0.15) 米单位 latent bug → capsule_z(85.0, 30.0) cm,跟 web_client AvatarConstants 同步。scene_server 359 → 359 pass。
+- 2026-05-09:Step A2-6 落地(commit `fb69661`)。Magic number sweep:`integrator.rs` test fixture `moving_state([220.0,...])` × 2 → `[600.0,...]`;`movement_smoke_test.exs:156` 注释 max_decel=1400 → 3800(保留旧 bug 上下文)。web 254 / scene 359 / gate 189 / data_service 71 / cargo 39 全 pass。
+- 2026-05-09:Step A2-final 收尾。决策稿状态改"已完成";README 阶段表加 A2 行;_session-handoff.md 更新本会话产出。Phase A2 完成,A1 / A3 决策稿待开。
