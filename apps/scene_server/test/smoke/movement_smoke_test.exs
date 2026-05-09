@@ -153,11 +153,11 @@ defmodule SceneServer.MovementSmokeTest do
 
     {vx_gap, _vy_gap, _vz_gap} = last_during_gap.velocity
 
-    # With the old bug we would have decelerated heavily (max_decel=1400, so
-    # within 400ms past the 300ms timeout we should have bled >500u/s worth of
-    # speed). With the fix the server keeps applying the held direction, so
-    # velocity should remain close to the moving_ack value (within a small
-    # floating-point tolerance driven purely by sim stability).
+    # With the old bug we would have decelerated heavily (Phase A2 默认
+    # max_decel=3800, 旧值 1400, 任一值 400ms 都会减速 >500u/s). With the
+    # fix the server keeps applying the held direction, so velocity should
+    # remain close to the moving_ack value (within a small floating-point
+    # tolerance driven purely by sim stability).
     assert vx_gap >= vx0 * 0.9,
            "server decelerated during brief gap: vx went #{vx0} -> #{vx_gap}"
   end

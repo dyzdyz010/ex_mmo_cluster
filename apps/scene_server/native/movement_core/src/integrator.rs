@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn grounded_braking_applies_decel_limit() {
-        let prev = moving_state([220.0, 0.0, 0.0]);
+        let prev = moving_state([600.0, 0.0, 0.0]);
         let input = input_dir(2, [0.0, 0.0], MOVEMENT_FLAG_BRAKE);
         let profile = MovementProfile::default();
 
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn grounded_turn_decelerates_then_redirects() {
         // Moving east at full speed, commanded to go north.
-        let prev = moving_state([220.0, 0.0, 0.0]);
+        let prev = moving_state([600.0, 0.0, 0.0]);
         let input = input_dir(2, [0.0, 1.0], 0);
         let profile = MovementProfile::default();
 
