@@ -146,6 +146,20 @@ export class HudView implements FrameSubscriber {
       `player_authority: ${formatVector(this.localPlayer.getAuthoritativePosition())}`,
       `player_tick: ${currentState?.tick ?? 0}  player_seq: ${currentState?.seq ?? 0}`,
       `player_mode: ${currentState?.movementMode ?? "unknown"}  player_vy: ${(currentState?.velocity?.y ?? 0).toFixed(1)}`,
+      // Phase A4-bis follow-up: surface cid + username + visible remote
+      // entities one line each so the user can eyeball whether two tabs
+      // accidentally share a cid (sessionStorage / browser cache leak)
+      // or whether the AOI broadcast pipeline is dropping the other
+      // tab. `my_cid` is the local-player id auth issued to this tab;
+      // `remote_visible` lists which other-player cids this tab is
+      // currently rendering. Two tabs of the *same* player will show
+      // the same `my_cid`. Two distinct players who can see each other
+      // will show different `my_cid`s and each tab's `remote_visible`
+      // will contain the other tab's `my_cid`.
+      `multiplayer: my_cid=${(movementSnapshot as { cid?: number | null }).cid ?? "n/a"}` +
+        ` username=${(movementSnapshot as { username?: string }).username ?? "n/a"}` +
+        ` remote_visible=[${this.remotePlayer.getVisibleEntityIds().join(",")}]` +
+        ` self_loop_dropped=${(movementSnapshot as { droppedSelfLoopSnapshotCount?: number }).droppedSelfLoopSnapshotCount ?? 0}`,
       `remote_rendered: ${formatVector(this.remotePlayer.getRenderedPosition())}`,
       `reconcile: acks=${stats.totalAcks} corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
