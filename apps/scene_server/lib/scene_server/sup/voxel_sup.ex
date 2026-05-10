@@ -18,7 +18,9 @@ defmodule SceneServer.VoxelSup do
     children = [
       {SceneServer.Voxel.RegionRuntime, name: SceneServer.Voxel.RegionRuntime},
       {SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup},
-      {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory}
+      {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory},
+      {SceneServer.Voxel.ObjectRegistry, name: SceneServer.Voxel.ObjectRegistry},
+      {SceneServer.Voxel.ObjectOwnerLookup, name: SceneServer.Voxel.ObjectOwnerLookup}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

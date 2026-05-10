@@ -23,6 +23,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ObjectOwnerLookup
   alias SceneServer.Voxel.ObjectRegistry
 
   @type intent_attrs :: map()
@@ -185,13 +186,25 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   transactions that did not allocate any objects (e.g. break-only
   transactions in Phase 5+).
 
-  Optional `opts[:object_registry]` overrides the default registry module
-  (used by tests).
+  Optional `opts`:
+
+    * `:object_registry` — overrides the default registry module (test only)
+    * `:owner_lookup` / `:owner_lookup_server` — `ObjectOwnerLookup` module
+      and named server (Phase A4-4 D7;default `ObjectOwnerLookup`)。Each
+      scene_object's `:covered_chunks_by_region` (added by
+      `WorldServer.Voxel.TransactionExecutor` from the transaction's
+      participants) is forwarded into the lookup cache so subsequent
+      cross-region damage / 0x6C broadcasts route correctly without
+      hitting Postgres on the hot path.
 
   Failures during upsert do not block the executor;they are emitted
   as `voxel_scene_object_register_failed` observe events and otherwise
   swallowed (the transaction is already committed, the registry can pick
-  up missing rows on next reload from `SceneObjectStore`)。
+  up missing rows on next reload from `SceneObjectStore`)。Failures during
+  the owner-lookup write are emitted as
+  `voxel_scene_object_owner_lookup_register_failed` and similarly do not
+  block(`ObjectOwnerLookup.fetch_owner` will lazily reload from
+  `SceneObjectStore` on next miss)。
   """
   @spec register_scene_objects([map()], keyword()) :: :ok
   def register_scene_objects(scene_objects, opts \\ [])
@@ -200,11 +213,13 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
   def register_scene_objects(scene_objects, opts) when is_list(scene_objects) and is_list(opts) do
     registry = Keyword.get(opts, :object_registry, ObjectRegistry)
+    owner_lookup = Keyword.get(opts, :owner_lookup, ObjectOwnerLookup)
+    owner_lookup_server = Keyword.get(opts, :owner_lookup_server, ObjectOwnerLookup)
 
     Enum.each(scene_objects, fn obj ->
       case ObjectRegistry.upsert_object(registry, obj) do
         :ok ->
-          :ok
+          register_owner_lookup(owner_lookup, owner_lookup_server, obj)
 
         {:error, reason} ->
           CliObserve.emit("voxel_scene_object_register_failed", fn ->
@@ -217,6 +232,32 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
           :ok
       end
+    end)
+
+    :ok
+  end
+
+  # Phase A4-4 D7:write the per-region split into the scene-local
+  # `ObjectOwnerLookup` so cross-region damage / 0x6C broadcasts can pull
+  # owner metadata without round-tripping to Postgres on every hit.
+  defp register_owner_lookup(owner_lookup, owner_lookup_server, obj) do
+    covered = Map.get(obj, :covered_chunks_by_region, %{}) || %{}
+    owner_lookup.register(owner_lookup_server, obj, covered)
+  rescue
+    error ->
+      emit_owner_lookup_register_failed(obj, {:error, error})
+  catch
+    :exit, reason ->
+      emit_owner_lookup_register_failed(obj, {:exit, reason})
+  end
+
+  defp emit_owner_lookup_register_failed(obj, reason) do
+    CliObserve.emit("voxel_scene_object_owner_lookup_register_failed", fn ->
+      %{
+        object_id: Map.get(obj, :object_id),
+        logical_scene_id: Map.get(obj, :logical_scene_id),
+        reason: inspect(reason)
+      }
     end)
 
     :ok

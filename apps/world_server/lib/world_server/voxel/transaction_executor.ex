@@ -373,6 +373,13 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   # 规则带上 owner_region_id / owner_lease_id。这里按 owner participant key
   # 分组,每组用自己 participant 的 scene_opts 调一次 register_scene_objects;
   # 单 region 退化情形是单组单调用,行为等价于 Phase 4 旧路径。
+  #
+  # Phase A4-4 (D7):同时给每个 obj 附加 in-memory `:covered_chunks_by_region`
+  # 字段(从 `transaction.participants.affected_chunks` 推算 chunk → participant
+  # 反向 map)。Scene-side 的 `BuildTransactionApplier.register_scene_objects`
+  # 把它写入 `ObjectOwnerLookup`,让 cross-region 0x6C 广播 / damage 路由
+  # 不必再跑 SELECT。该字段不持久化(`SceneObjectStore` schema 不包含),
+  # 仅作 commit-time inflate 用。
   defp register_scene_objects_after_commit(scene_caller, transaction, scene_opts_by_participant) do
     case Map.get(transaction, :scene_objects, []) do
       [] ->
@@ -380,7 +387,18 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
       scene_objects when is_list(scene_objects) ->
         if function_exported?(scene_caller, :register_scene_objects, 2) do
-          scene_objects
+          chunk_to_participant = build_chunk_to_participant_map(transaction)
+
+          inflated =
+            Enum.map(scene_objects, fn obj ->
+              Map.put(
+                obj,
+                :covered_chunks_by_region,
+                covered_chunks_by_region_for(obj, chunk_to_participant)
+              )
+            end)
+
+          inflated
           |> group_scene_objects_by_owner()
           |> Enum.each(fn {owner_key, objects} ->
             case Map.fetch(scene_opts_by_participant, owner_key) do
@@ -409,6 +427,30 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   defp group_scene_objects_by_owner(scene_objects) do
     Enum.group_by(scene_objects, fn obj ->
       {Map.fetch!(obj, :owner_region_id), Map.fetch!(obj, :owner_lease_id)}
+    end)
+  end
+
+  # `%{ chunk_coord => {region_id, lease_id} }` reverse map from the
+  # transaction's participants. Each participant carries its `affected_chunks`,
+  # so the union covers every chunk touched by the transaction.
+  defp build_chunk_to_participant_map(transaction) do
+    transaction.participants
+    |> Enum.flat_map(fn p ->
+      Enum.map(p.affected_chunks, fn coord -> {coord, {p.region_id, p.lease_id}} end)
+    end)
+    |> Map.new()
+  end
+
+  # Group an object's `covered_chunks` by which participant owns each chunk.
+  # Defensive default: a chunk that is not in any participant's
+  # `affected_chunks` (should not happen for committed transactions) falls
+  # back to the object's own owner key so the owner-driven fan-out at
+  # least targets the local region.
+  defp covered_chunks_by_region_for(obj, chunk_to_participant) do
+    fallback_key = {Map.fetch!(obj, :owner_region_id), Map.fetch!(obj, :owner_lease_id)}
+
+    Enum.group_by(Map.fetch!(obj, :covered_chunks), fn coord ->
+      Map.get(chunk_to_participant, coord, fallback_key)
     end)
   end
 

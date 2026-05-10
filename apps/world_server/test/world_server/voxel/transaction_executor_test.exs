@@ -35,6 +35,17 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
         {:register_scene_objects, length(scene_objects), Enum.map(scene_objects, & &1.object_id)}
       )
 
+      # Phase A4-4 (D7):the executor inflates each obj with the per-region
+      # split derived from the transaction's participants. Capture it for
+      # the dedicated assertion below.
+      Enum.each(scene_objects, fn obj ->
+        log_call(
+          opts,
+          {:scene_object_register, obj.object_id,
+           Map.get(obj, :covered_chunks_by_region, :missing)}
+        )
+      end)
+
       :ok
     end
 
@@ -385,6 +396,62 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       assert event_b_kind == :register_scene_objects
       assert count_b == 1
       assert ids_b == [502]
+    end
+
+    test "Phase A4-4 D7: per-object covered_chunks_by_region is inflated for the scene_caller" do
+      coordinator =
+        start_supervised!(
+          {TransactionCoordinator,
+           name: :"coord_#{System.unique_integer([:positive])}",
+           next_object_id_fn: counter_allocator([701, 702])}
+        )
+
+      recorder_a = start_supervised!({Agent, fn -> [] end}, id: :recorder_a)
+      recorder_b = start_supervised!({Agent, fn -> [] end}, id: :recorder_b)
+
+      # Object 701 is owned by participant 10/100 but its covered_chunks
+      # span both regions ({0,0,0} ∈ region 10, {2,0,0} ∈ region 20).
+      # Object 702 only covers region 10.
+      attrs =
+        transaction_attrs("tx-inflate-covered-chunks")
+        |> Map.put(:scene_objects, [
+          scene_object_seed(blueprint_id: 71, covered_chunks: [{0, 0, 0}, {2, 0, 0}]),
+          scene_object_seed(blueprint_id: 72, covered_chunks: [{0, 0, 0}])
+        ])
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, "tx-inflate-covered-chunks", attrs)
+
+      assert {:ok, %{decision: :commit}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant: %{
+                   {10, 100} => [recorder: recorder_a],
+                   {20, 200} => [recorder: recorder_b]
+                 }
+               )
+
+      a_inflate =
+        Agent.get(recorder_a, & &1)
+        |> Enum.filter(&match?({:scene_object_register, _, _}, &1))
+
+      # Owner = participant 10/100 (字典序首 chunk = {0,0,0});both objects
+      # are registered through recorder_a since the executor groups by owner.
+      assert length(a_inflate) == 2
+
+      [{:scene_object_register, 701, covered_701}, {:scene_object_register, 702, covered_702}] =
+        Enum.sort_by(a_inflate, &elem(&1, 1))
+
+      assert covered_701 == %{
+               {10, 100} => [{0, 0, 0}],
+               {20, 200} => [{2, 0, 0}]
+             }
+
+      assert covered_702 == %{{10, 100} => [{0, 0, 0}]}
+
+      # No register on recorder_b (owner of both objects is 10/100).
+      assert Agent.get(recorder_b, & &1)
+             |> Enum.filter(&match?({:scene_object_register, _, _}, &1)) == []
     end
 
     test "single-region degenerate: one participant, one register call with all objects" do

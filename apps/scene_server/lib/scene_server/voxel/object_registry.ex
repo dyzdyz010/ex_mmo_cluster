@@ -34,6 +34,7 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.ObjectOwnerLookup
   alias SceneServer.Voxel.PartState
 
   import Bitwise
@@ -229,7 +230,19 @@ defmodule SceneServer.Voxel.ObjectRegistry do
        objects: %{},
        store: Keyword.get(opts, :store, SceneObjectStore),
        store_opts: Keyword.get(opts, :store_opts, []),
-       chunk_directory: Keyword.get(opts, :chunk_directory, ChunkDirectory)
+       chunk_directory: Keyword.get(opts, :chunk_directory, ChunkDirectory),
+       # Phase A4-4 (D7):owner-driven 0x6C fan-out lookup. Default talks to
+       # the runtime-shared `ObjectOwnerLookup`;tests can inject a stub
+       # module/server pair.
+       owner_lookup: Keyword.get(opts, :owner_lookup, ObjectOwnerLookup),
+       owner_lookup_server: Keyword.get(opts, :owner_lookup_server, ObjectOwnerLookup),
+       # Phase A4-4 (D7):per-region chunk_directory resolver for cross-region
+       # fan-out. Function `(participant_key -> chunk_directory_target)`
+       # resolves a `{region_id, lease_id}` key to the ChunkDirectory module
+       # / `{module, node}` pair the broadcast should target. `nil` means
+       # "always use the registry's own `:chunk_directory`" (single-region
+       # production default; legacy A1/A2 path)。
+       region_routing_fn: Keyword.get(opts, :region_routing_fn)
      }}
   end
 
@@ -543,6 +556,10 @@ defmodule SceneServer.Voxel.ObjectRegistry do
     # Delete the row + drop from in-memory.
     state.store.delete_object(instance.object_id, state.store_opts)
 
+    # Phase A4-4 (D7):evict the owner cache so cross-region damage / 0x6C
+    # broadcasts don't keep targeting a destroyed object.
+    safe_evict_owner_lookup(state, scene_id, instance.object_id)
+
     new_objects =
       case Map.get(state.objects, scene_id) do
         nil ->
@@ -598,13 +615,23 @@ defmodule SceneServer.Voxel.ObjectRegistry do
     end)
   end
 
-  ## ObjectStateDelta dispatch (Phase 4-bis D1 / D2 / D4 / D5 / D7)
+  defp safe_evict_owner_lookup(state, scene_id, object_id) do
+    state.owner_lookup.evict(state.owner_lookup_server, scene_id, object_id)
+  catch
+    :exit, _reason -> :ok
+  end
 
-  # Encode 0x6C ObjectStateDelta payload once via the canonical scene codec
-  # (D2),then fan-out to every affected ChunkProcess via
-  # ChunkDirectory.lookup_chunk_pid/3 (D1). Failures(chunk not started,
-  # cast :exit)are silently swallowed but observed (D4)。`single_flag`
-  # carries the **this-event** flag bit (D5)。
+  ## ObjectStateDelta dispatch (Phase 4-bis D1 / D2 / D4 / D5 / D7;
+  ## Phase A4-4 D7 owner-driven cross-region fan-out)
+
+  # Encode the 0x6C payload once via the canonical scene codec (D2). Phase
+  # A4-4 routes the fan-out by `covered_chunks_by_region` (looked up via
+  # `ObjectOwnerLookup`):each per-region bucket targets its own
+  # `chunk_directory` (resolved by `region_routing_fn`), which in
+  # single-region production collapses to the registry's local
+  # `state.chunk_directory`. Failures(chunk not started, cast :exit)are
+  # silently swallowed but observed (D4)。`single_flag` carries the
+  # **this-event** flag bit (D5)。
   defp dispatch_object_state_delta(state, instance, single_flag) do
     payload =
       Codec.encode_voxel_object_state_delta_payload(%{
@@ -615,48 +642,120 @@ defmodule SceneServer.Voxel.ObjectRegistry do
         affected_chunks: instance.covered_chunks
       })
 
+    covered_by_region = covered_chunks_by_region_for(state, instance)
+
     CliObserve.emit("voxel_object_state_delta_dispatch", fn ->
       %{
         logical_scene_id: instance.logical_scene_id,
         object_id: instance.object_id,
         object_version: instance.object_version,
         state_flags: single_flag,
-        affected_chunk_count: length(instance.covered_chunks)
+        affected_chunk_count: length(instance.covered_chunks),
+        region_bucket_count: map_size(covered_by_region)
       }
     end)
 
-    Enum.each(instance.covered_chunks, fn chunk_coord ->
-      safe_dispatch_to_chunk(state, instance, chunk_coord, payload)
+    Enum.each(covered_by_region, fn {participant_key, chunk_coords} ->
+      chunk_dir_target = resolve_chunk_directory(state, participant_key)
+
+      Enum.each(chunk_coords, fn chunk_coord ->
+        safe_dispatch_to_chunk(state, instance, chunk_coord, payload, chunk_dir_target)
+      end)
     end)
 
     :ok
   end
 
-  defp safe_dispatch_to_chunk(state, instance, chunk_coord, payload) do
-    case ChunkDirectory.lookup_chunk_pid(
-           state.chunk_directory,
-           instance.logical_scene_id,
-           chunk_coord
-         ) do
+  # Look up `(scene_id, object_id)` in `ObjectOwnerLookup` to get the
+  # owner-driven per-region split. Cache miss / unregistered objects fall
+  # back to "all chunks under the local chunk_directory" — preserves
+  # single-region A1/A2 behaviour for objects not yet routed through the
+  # transaction's `register_scene_objects` path. Errors (lookup module
+  # crashed / not started) follow the same fallback so a misconfigured
+  # registry never brings down the broadcast path.
+  defp covered_chunks_by_region_for(state, instance) do
+    case safe_fetch_owner(state, instance) do
+      {:ok, %{covered_chunks_by_region: covered}} when map_size(covered) > 0 ->
+        covered
+
+      _ ->
+        %{:__local__ => instance.covered_chunks}
+    end
+  end
+
+  defp safe_fetch_owner(state, instance) do
+    state.owner_lookup.fetch_owner(
+      state.owner_lookup_server,
+      instance.logical_scene_id,
+      instance.object_id
+    )
+  rescue
+    _error -> {:error, :not_found}
+  catch
+    :exit, _reason -> {:error, :not_found}
+  end
+
+  defp resolve_chunk_directory(state, :__local__), do: state.chunk_directory
+
+  defp resolve_chunk_directory(state, participant_key) do
+    case state.region_routing_fn do
+      nil -> state.chunk_directory
+      fun when is_function(fun, 1) -> fun.(participant_key)
+    end
+  end
+
+  defp safe_dispatch_to_chunk(state, instance, chunk_coord, payload, chunk_directory_target) do
+    case safe_lookup_chunk_pid(chunk_directory_target, instance.logical_scene_id, chunk_coord) do
       {:ok, pid} ->
         try do
           ChunkProcess.push_object_state_delta_payload(pid, payload)
         catch
           :exit, reason ->
-            emit_dispatch_failed(instance, chunk_coord, {:exit, reason})
+            emit_dispatch_failed(
+              instance,
+              chunk_coord,
+              chunk_directory_target,
+              {:exit, reason}
+            )
         end
 
       :not_started ->
-        emit_dispatch_failed(instance, chunk_coord, :chunk_not_started)
+        emit_dispatch_failed(
+          instance,
+          chunk_coord,
+          chunk_directory_target,
+          :chunk_not_started
+        )
+
+      {:error, reason} ->
+        emit_dispatch_failed(
+          instance,
+          chunk_coord,
+          chunk_directory_target,
+          {:lookup_error, reason}
+        )
     end
+
+    _ = state
+    :ok
   end
 
-  defp emit_dispatch_failed(instance, chunk_coord, reason) do
+  # `ChunkDirectory.lookup_chunk_pid/3` raises on a remote `{Mod, node}`
+  # target that is unreachable / not started — guard the cross-region
+  # path with a try/catch so a network blip does not crash the registry.
+  defp safe_lookup_chunk_pid(chunk_directory_target, logical_scene_id, chunk_coord) do
+    ChunkDirectory.lookup_chunk_pid(chunk_directory_target, logical_scene_id, chunk_coord)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp emit_dispatch_failed(instance, chunk_coord, chunk_directory_target, reason) do
     CliObserve.emit("voxel_object_state_delta_dispatch_failed", fn ->
       %{
         logical_scene_id: instance.logical_scene_id,
         object_id: instance.object_id,
         chunk_coord: chunk_coord,
+        chunk_directory_target: inspect(chunk_directory_target),
         reason: inspect(reason)
       }
     end)
