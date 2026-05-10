@@ -11,20 +11,10 @@ defmodule SceneServer.Voxel.RegionRoutingTest do
   # so production-path assertions start it ad-hoc here. Stub-path assertions
   # don't need the registry.
 
+  # `BeaconServer.DistributedRegistry` is started in
+  # `apps/scene_server/test/test_helper.exs` for all scene_server tests.
   setup do
-    case Horde.Registry.start_link(
-           name: BeaconServer.DistributedRegistry,
-           keys: :unique,
-           members: :auto
-         ) do
-      {:ok, _} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    on_exit(fn ->
-      RegionRouting.__clear_stub__()
-    end)
-
+    on_exit(fn -> RegionRouting.__clear_stub__() end)
     :ok
   end
 
@@ -32,7 +22,7 @@ defmodule SceneServer.Voxel.RegionRoutingTest do
     test "register_local_region → resolve_scene_node hits this node" do
       region_id = unique_region_id()
       assert :ok = RegionRouting.register_local_region(region_id)
-      assert {:ok, node} = RegionRouting.resolve_scene_node(region_id, _lease = nil)
+      assert {:ok, node} = await_resolve(region_id)
       assert node == node()
     end
 
@@ -63,17 +53,20 @@ defmodule SceneServer.Voxel.RegionRoutingTest do
         end)
 
       assert_receive :registered, 1_000
-      assert {:ok, _} = RegionRouting.resolve_scene_node(region_id, nil)
+      assert {:ok, _} = await_resolve(region_id)
 
       send(pid, :withdraw)
       assert_receive :withdrawn, 1_000
 
-      assert :error = RegionRouting.resolve_scene_node(region_id, nil)
+      assert eventually_unresolved(region_id)
     end
 
     test "resolve_chunk_directory of local region returns the bare module atom" do
       region_id = unique_region_id()
       :ok = RegionRouting.register_local_region(region_id)
+      # Wait for Horde CRDT to propagate the registration before
+      # resolve_chunk_directory (which delegates to resolve_scene_node).
+      assert {:ok, _} = await_resolve(region_id)
 
       assert ChunkDirectory ==
                RegionRouting.resolve_chunk_directory({region_id, _lease_id = nil})
@@ -153,4 +146,49 @@ defmodule SceneServer.Voxel.RegionRoutingTest do
   end
 
   defp unique_region_id, do: System.unique_integer([:positive, :monotonic])
+
+  # Horde's CRDT is eventually consistent. In single-node tests the
+  # propagation window is small but non-zero — poll for visibility
+  # rather than assume immediate visibility after `register/3`.
+  defp await_resolve(region_id, deadline_ms \\ 500) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+    poll = fn poll ->
+      case RegionRouting.resolve_scene_node(region_id, nil) do
+        {:ok, _} = ok ->
+          ok
+
+        :error ->
+          if System.monotonic_time(:millisecond) >= deadline do
+            :error
+          else
+            Process.sleep(10)
+            poll.(poll)
+          end
+      end
+    end
+
+    poll.(poll)
+  end
+
+  defp eventually_unresolved(region_id, deadline_ms \\ 500) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+    poll = fn poll ->
+      case RegionRouting.resolve_scene_node(region_id, nil) do
+        :error ->
+          true
+
+        {:ok, _} ->
+          if System.monotonic_time(:millisecond) >= deadline do
+            false
+          else
+            Process.sleep(10)
+            poll.(poll)
+          end
+      end
+    end
+
+    poll.(poll)
+  end
 end

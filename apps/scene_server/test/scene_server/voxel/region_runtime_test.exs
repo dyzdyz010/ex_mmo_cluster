@@ -1,7 +1,18 @@
 defmodule SceneServer.Voxel.RegionRuntimeTest do
-  use ExUnit.Case, async: true
+  # async: false because the cluster-routing tests boot the singleton
+  # `BeaconServer.DistributedRegistry` Horde registry and exercise
+  # process-exit reaping, which can race with other concurrent tests
+  # touching the same registry.
+  use ExUnit.Case, async: false
 
-  alias SceneServer.Voxel.RegionRuntime
+  alias SceneServer.Voxel.{RegionRouting, RegionRuntime}
+
+  # `BeaconServer.DistributedRegistry` is started in
+  # `apps/scene_server/test/test_helper.exs` for all scene_server tests.
+  setup do
+    on_exit(fn -> RegionRouting.__clear_stub__() end)
+    :ok
+  end
 
   test "accepts current boundary events and rejects events after target lease migration" do
     runtime = start_supervised!(RegionRuntime)
@@ -43,6 +54,51 @@ defmodule SceneServer.Voxel.RegionRuntimeTest do
              )
   end
 
+  describe "cluster region routing (Phase A4-bis-3)" do
+    test "apply_lease registers the local node in BeaconServer for the region" do
+      region_id = unique_region_id()
+      runtime = start_supervised!(RegionRuntime)
+
+      # Sanity: not registered yet.
+      assert :error = RegionRouting.resolve_scene_node(region_id, nil)
+
+      assert {:ok, _} = RegionRuntime.apply_lease(runtime, lease(region_id, 100, 1_000, 1))
+
+      # Horde CRDT propagation: register/3 returns immediately but the
+      # `lookup` ETS may take a few ms to converge.
+      local_node = node()
+      assert {:ok, ^local_node} = await_resolve_to(region_id, {:ok, local_node}, 500)
+    end
+
+    test "applying the same region twice (lease upgrade) is idempotent" do
+      region_id = unique_region_id()
+      runtime = start_supervised!(RegionRuntime)
+
+      assert {:ok, _} = RegionRuntime.apply_lease(runtime, lease(region_id, 100, 1_000, 1))
+      # Second apply (e.g. lease epoch bump) must not return error or
+      # crash the process; BeaconServer's `:already_registered` is
+      # treated as `:ok` by the client.
+      assert {:ok, _} = RegionRuntime.apply_lease(runtime, lease(region_id, 101, 1_000, 2))
+      assert {:ok, _node} = await_resolve_to(region_id, {:ok, node()}, 500)
+    end
+
+    test "RegionRuntime exit clears its BeaconServer entries (Horde reaping)" do
+      region_id = unique_region_id()
+      runtime = start_supervised!(RegionRuntime)
+      ref = Process.monitor(runtime)
+
+      assert {:ok, _} = RegionRuntime.apply_lease(runtime, lease(region_id, 100, 1_000, 1))
+      assert {:ok, _node} = await_resolve_to(region_id, {:ok, node()}, 500)
+
+      :ok = stop_supervised!(RegionRuntime)
+      assert_receive {:DOWN, ^ref, :process, ^runtime, _reason}, 1_000
+
+      # Horde reaps registry entries on owner exit. Allow a brief
+      # window for the CRDT to converge.
+      assert :error = await_resolve_to(region_id, :error, 500)
+    end
+  end
+
   defp lease(region_id, lease_id, owner_ref, owner_epoch) do
     %{
       logical_scene_id: 1,
@@ -73,5 +129,39 @@ defmodule SceneServer.Voxel.RegionRuntimeTest do
       payload_hash: 12_345,
       payload: <<1, 2, 3>>
     }
+  end
+
+  # Use a high integer so we don't collide with the legacy
+  # boundary-event tests above (which hard-code region 10/20).
+  defp unique_region_id, do: 1_000 + System.unique_integer([:positive, :monotonic])
+
+  # Horde's CRDT is eventually consistent; poll until the resolver
+  # matches `expected` or the deadline elapses. Returns the most
+  # recently observed value (may be `:error` after a successful
+  # propagation, or `{:ok, node}` after an unexpected race).
+  defp await_resolve_to(region_id, expected, deadline_ms) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+    poll = fn poll ->
+      observed =
+        case RegionRouting.resolve_scene_node(region_id, nil) do
+          :error -> :error
+          {:ok, _} = ok -> ok
+        end
+
+      cond do
+        observed == expected ->
+          observed
+
+        System.monotonic_time(:millisecond) >= deadline ->
+          observed
+
+        true ->
+          Process.sleep(10)
+          poll.(poll)
+      end
+    end
+
+    poll.(poll)
   end
 end

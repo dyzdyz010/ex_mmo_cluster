@@ -6,11 +6,28 @@ defmodule SceneServer.Voxel.RegionRuntime do
   WorldServer. This process records local leases, caches neighbor lease metadata,
   and rejects ordinary cross-boundary rule events that no longer match the
   current source or target lease after migration.
+
+  ## Cluster region routing (Phase A4-bis-3)
+
+  When a lease is applied (`apply_lease/2`) this process also registers
+  the local node as the owning `scene_node` for the region by calling
+  `SceneServer.Voxel.RegionRouting.register_local_region/2`. That makes
+  the region resolvable cluster-wide via
+  `BeaconServer.Client.lookup({:voxel_region_scene_node, region_id})`,
+  which `ObjectOwnerLookup` / `VoxelDamageRouter` / `ObjectRegistry`
+  consume in A4-bis-5 to route cross-region damage and `0x6C` fan-out.
+
+  Lease release is currently *implicit*: when the `RegionRuntime`
+  process exits (or is restarted), Horde reaps its registry entries.
+  An explicit `release_lease/2` API will be added when a World-driven
+  migration / expiry caller actually needs it (YAGNI; A4-bis-3
+  out of scope).
   """
 
   use GenServer
 
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.RegionRouting
 
   @doc "Starts the scene voxel region runtime."
   def start_link(opts \\ []) do
@@ -54,6 +71,8 @@ defmodule SceneServer.Voxel.RegionRuntime do
         :owner_epoch
       ])
     end)
+
+    register_region_routing(lease)
 
     {:reply, {:ok, lease}, put_in(state.leases[lease.region_id], lease)}
   end
@@ -228,5 +247,29 @@ defmodule SceneServer.Voxel.RegionRuntime do
 
   defp coord!(value) do
     raise ArgumentError, "expected chunk coord as {x, y, z}, got: #{inspect(value)}"
+  end
+
+  # Register this scene_node as the owner of `lease.region_id` in the
+  # cluster routing facade. Failures don't block the lease apply
+  # (lease-local state is the source of truth); we surface them via
+  # observe so operators can investigate (e.g. BeaconServer cluster
+  # split-brain or Horde join failure).
+  defp register_region_routing(%{region_id: region_id} = lease) do
+    case RegionRouting.register_local_region(region_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_lease_region_routing_register_failed", fn ->
+          %{
+            logical_scene_id: lease.logical_scene_id,
+            region_id: region_id,
+            lease_id: lease.lease_id,
+            reason: reason
+          }
+        end)
+
+        :ok
+    end
   end
 end

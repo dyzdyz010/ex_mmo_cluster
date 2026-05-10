@@ -26,6 +26,20 @@ migrations_path =
     Ecto.Migrator.run(repo, migrations_path, :up, all: true)
   end)
 
+# Phase A4-bis: scene-side region routing tests (`RegionRouting`,
+# `RegionRuntime` Phase A4-bis-3 e2e) call `BeaconServer.Client.register`
+# / `lookup`, which require a Horde registry. Boot it once here so the
+# CRDT keys ETS table has time to settle before any test touches it
+# (per-test `start_link` from a `setup` block races with Horde init).
+case Horde.Registry.start_link(
+       name: BeaconServer.DistributedRegistry,
+       keys: :unique,
+       members: :auto
+     ) do
+  {:ok, _} -> :ok
+  {:error, {:already_started, _pid}} -> :ok
+end
+
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto. Bump the
 # default `assert_receive` window so tests waiting on apply→persist→delta
 # round trips don't flake on a real DB INSERT.
