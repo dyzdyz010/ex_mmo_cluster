@@ -114,4 +114,35 @@ defmodule BeaconServer.ClientTest do
                BeaconServer.Client.await({:never, :coming, 0}, timeout: 100, interval: 50)
     end
   end
+
+  describe "unregister/1" do
+    test "round-trip: register → lookup hit → unregister → lookup :error" do
+      key = {:voxel_region_scene_node, 4242}
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          :ok = BeaconServer.Client.register(key)
+          send(parent, :registered)
+
+          receive do
+            :withdraw ->
+              :ok = BeaconServer.Client.unregister(key)
+              send(parent, :unregistered)
+          end
+        end)
+
+      assert_receive :registered, 1_000
+      assert {:ok, _node} = BeaconServer.Client.lookup(key)
+
+      send(pid, :withdraw)
+      assert_receive :unregistered, 1_000
+
+      assert :error = BeaconServer.Client.lookup(key)
+    end
+
+    test "unregister with no prior registration is a no-op returning :ok" do
+      assert :ok = BeaconServer.Client.unregister({:never_registered, 0})
+    end
+  end
 end

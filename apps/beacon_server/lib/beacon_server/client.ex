@@ -157,4 +157,19 @@ defmodule BeaconServer.Client do
         end
     end
   end
+
+  @doc """
+  Unregister the calling process for `resource`. No-op when the caller
+  has no registration. Always returns `:ok`.
+
+  Horde.Registry's `unregister/2` matches on the calling process; only
+  the owner can withdraw its own entry. Cross-process / cross-node
+  withdrawal requires the owner to call this itself, or for the owner
+  process to exit (entry is then reaped by Horde).
+  """
+  @spec unregister(resource_key()) :: :ok
+  def unregister(resource) do
+    Horde.Registry.unregister(@registry, resource)
+    :ok
+  end
 end
