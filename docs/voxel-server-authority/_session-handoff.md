@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-10,**Phase A4 主体落地后**(跨 region prefab 事务 + 跨节点 damage 路由 + 0x6C owner-driven fan-out)。A4-bis-cluster 决策稿就位等启动。
+**Last updated**:2026-05-10,**A4-bis-1 落地后**(BeaconServer.Client term key 全量升级 — `register`/`lookup`/`await` 签名 `atom()` → `term()`,所有 caller 无需改动,基础设施第一步就绪)。Phase A4 主体已闭环;A4-bis-cluster 进行中。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -23,7 +23,8 @@
 | A1-1b Storage.put_micro_blocks/4 batch API(prefab 卡死性能优化,1.5s → 46ms,33×) | 已完成 | `0e3434c` |
 | Server 启动 hotfix:TransactionRecoveryWatcher 接 plain-map stale snapshot | 已完成 | `cc3a31d` |
 | Prefab 摆放精度 hotfix:server 按 world-micro 精度落 prefab + online adapter 走 boundary-snap micro 锚 | 已完成 | `a7a5bc9` (server raster) → `20f6a8a` (online adapter) |
-| **A4 跨 region prefab 多 participant 事务 + 跨节点 damage / 0x6C 路由(主体)** | 已完成 | `f49c0b9` (决策稿) → `22312e0` (D7 折回) → `3f381d0` (A4-1) → `6acd37d` (A4-2) → `e6eafa3` (A4-3) → `630574b` (A4-4) → `13ef21a` (偏移同步) → `4ab6c83` (D8-D11 拍板) → `4198b8e` (A4-5) → 本会话 (A4-6 + A4-final) |
+| **A4 跨 region prefab 多 participant 事务 + 跨节点 damage / 0x6C 路由(主体)** | 已完成 | `f49c0b9` (决策稿) → `22312e0` (D7 折回) → `3f381d0` (A4-1) → `6acd37d` (A4-2) → `e6eafa3` (A4-3) → `630574b` (A4-4) → `13ef21a` (偏移同步) → `4ab6c83` (D8-D11 拍板) → `4198b8e` (A4-5) → `e3a5c01` (A4-6 + A4-final) |
+| A4-bis-cluster A4-bis-1:`BeaconServer.Client` term key 全量升级 | 已完成 | 本会话 |
 
 测试规模(2026-05-10,prefab 微精度 hotfix 收尾):
 
@@ -54,7 +55,7 @@ A1-1b 1 + watcher hotfix 1 + handoff docs 1 + prefab micro hotfix 2)。
 
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
-| A4-bis-cluster | 决策稿就位 | 真正的多 scene_node 分布式部署:BeaconServer term key 全量升级 + RegionRouting 模块 + lease 按 scene_node 分配 + ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default 走 RegionRouting + 双 BEAM 节点 e2e。决策来源:用户"MVP 大世界一台机扛不住",从 Phase 6 HA 提前。估时 4-5.5 天。文档:`phase-A4-cross-region-prefab.md` 文末 A4-bis-cluster 段 |
+| A4-bis-cluster | 进行中(A4-bis-1 ✓ → 5 step 待办) | 真正的多 scene_node 分布式部署。剩余步骤:**A4-bis-2** SceneServer.Voxel.RegionRouting 新模块(`register_local_region` / `unregister_local_region` / `resolve_scene_node` / `resolve_chunk_directory`,test stub 通过 `:persistent_term` 注入);**A4-bis-3** RegionRuntime.apply_lease/release 接 RegionRouting register/unregister;**A4-bis-4** World 端 `MapLedger` region → scene_node 分配(D8.B join-order)+ `WorldServer.Voxel.SceneNodeRegistry` + `world_sup` / Worker.Interface 改造按 participant 解析对应 scene_node + `MapLedger.region_for_chunk/2`;**A4-bis-5** ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default opts 改为走 RegionRouting + cold-start 走 region resolver;**A4-bis-6** 双 BEAM `:peer` 节点 e2e;**A4-bis-final** 决策稿/handoff 同步。决策来源:用户"MVP 大世界一台机扛不住",从 Phase 6 HA 提前。剩余估时 3.5-5 天。文档:`phase-A4-cross-region-prefab.md` 文末 A4-bis-cluster 段 |
 | A3 | 未开始 | 阶段 A 子 3:多客户端同世界联调(本地多 tab / 多机 + chunk 订阅一致性 + 移动同步 + 破坏可见性) |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 | 测试隔离 | 未开始 | test_helper 加 setup TRUNCATE `voxel_transaction_coordinator_snapshots` / `voxel_chunk_pending_transactions`,避免跨 mix test stale snapshot 让 transaction 路径走 replay-skip |
@@ -394,6 +395,10 @@ A2 之前的所有 Phase 1a → 4-bis commits(完整列表见上一个会话的 
    分布式部署在 A4-bis-cluster 阶段。
 
 如果以上都 OK,可以推进:
-- **A4-bis-cluster**(真多 scene_node 部署,MVP 必需,决策稿就位 4-5.5 天)
+- **A4-bis-cluster**(真多 scene_node 部署,MVP 必需。**A4-bis-1 已完成本会话**:`BeaconServer.Client.register/lookup/await` 签名升级为 `term()`,所有 caller 无代码改动直接兼容;新增 5 个 term key 单测全绿。剩 A4-bis-2~6 + A4-bis-final,3.5-5 天)
 - **A3** 多客户端联调
 - **Phase 5** 属性目录 + 温湿度
+
+## ⚠️ A4-bis 期间已知非 regression 失败
+
+- `apps/gate_server/test/gate_server/ws_connection_voxel_cross_region_test.exs` 第二个 test 在 `__ex_unit_setup_0/1` 注册 region_b 时偶现 `:region_bounds_overlap`。根因:`MapLedger` fixture 用 `ensure_started!` 走全局 named singleton,跨 2 个 test 的 setup 重复注册同 bounds region(region_id 是 `System.unique_integer/1` 唯一,但 bounds_chunk_min/max 是同一对常量),`validate_region_bounds_available` reject。**与 BeaconServer.Client term key 升级无关**。修法候选:fixture `on_exit` 清理 MapLedger 注册,或每 test 用不同 bounds(连同 anchor 偏移)。A4-5 progress log 标的"3 fail → 3 fail"应该是当时 CI 漏拍此 fail。**留 A4-bis 期间 backlog**,本会话不动以免 scope creep。

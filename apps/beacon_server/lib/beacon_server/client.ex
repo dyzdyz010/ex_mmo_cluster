@@ -2,10 +2,21 @@ defmodule BeaconServer.Client do
   @moduledoc """
   Service discovery client using Horde distributed registry.
 
-  Each app registers its resource name (e.g. :scene_server) in the
-  distributed registry. Consumers look up services directly by name.
+  Each app registers a resource key (atom or any term) in the
+  distributed registry. Consumers look up services directly by key.
 
   No central coordinator — fully distributed via Horde.Registry.
+
+  ## Resource keys
+
+  Resource keys may be any Erlang term. The two common shapes:
+
+  - **Atom keys** for module-level singletons:
+    `:scene_server`, `:auth_server`, `:voxel_transaction_coordinator` …
+  - **Tuple keys** for parameterized resources (e.g. one entry per
+    region / shard / tenant):
+    `{:voxel_region_scene_node, region_id}`,
+    `{:voxel_region_chunk_directory, region_id}` …
 
   ## Usage
 
@@ -17,6 +28,10 @@ defmodule BeaconServer.Client do
 
       # Wait for a service to become available (with retry)
       {:ok, node} = BeaconServer.Client.await(:data_contact, timeout: 30_000)
+
+      # Tuple key — register the scene_node that hosts a region
+      BeaconServer.Client.register({:voxel_region_scene_node, region_id})
+      {:ok, node} = BeaconServer.Client.lookup({:voxel_region_scene_node, region_id})
   """
 
   require Logger
@@ -70,32 +85,41 @@ defmodule BeaconServer.Client do
     Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) and Mix.env() == :test
   end
 
-  @doc """
-  Register the current process as a provider of the given service.
-  Stores `node()` as the value so consumers can find which node provides it.
+  @typedoc """
+  Resource key for service discovery. Atoms for module-level singletons,
+  tuples for parameterized resources (e.g. `{:voxel_region_scene_node, id}`).
   """
-  @spec register(atom()) :: :ok | {:error, term()}
+  @type resource_key :: term()
+
+  @doc """
+  Register the current process as a provider of the given resource.
+  Stores `node()` as the value so consumers can find which node provides it.
+
+  `resource` may be any term — an atom for a singleton service, or a tuple
+  for a parameterized one (see module doc).
+  """
+  @spec register(resource_key()) :: :ok | {:error, term()}
   def register(resource) do
     case Horde.Registry.register(@registry, resource, node()) do
       {:ok, _} ->
-        Logger.info("Registered #{resource} in distributed registry")
+        Logger.info("Registered #{inspect(resource)} in distributed registry")
         :ok
 
       {:error, {:already_registered, _}} ->
-        Logger.info("#{resource} already registered")
+        Logger.info("#{inspect(resource)} already registered")
         :ok
 
       {:error, reason} ->
-        Logger.error("Failed to register #{resource}: #{inspect(reason)}")
+        Logger.error("Failed to register #{inspect(resource)}: #{inspect(reason)}")
         {:error, reason}
     end
   end
 
   @doc """
-  Look up which node provides the given service.
+  Look up which node provides the given resource.
   Returns `{:ok, node}` or `:error`.
   """
-  @spec lookup(atom()) :: {:ok, node()} | :error
+  @spec lookup(resource_key()) :: {:ok, node()} | :error
   def lookup(resource) do
     case Horde.Registry.lookup(@registry, resource) do
       [{_pid, node}] -> {:ok, node}
@@ -104,13 +128,13 @@ defmodule BeaconServer.Client do
   end
 
   @doc """
-  Wait for a service to become available, retrying with interval.
+  Wait for a resource to become available, retrying with interval.
 
   Options:
   - `:timeout` — max wait time in ms (default: 30_000)
   - `:interval` — retry interval in ms (default: 1_000)
   """
-  @spec await(atom(), keyword()) :: {:ok, node()} | :timeout
+  @spec await(resource_key(), keyword()) :: {:ok, node()} | :timeout
   def await(resource, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 30_000)
     interval = Keyword.get(opts, :interval, 1_000)

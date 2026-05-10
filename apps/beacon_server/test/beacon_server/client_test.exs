@@ -75,4 +75,43 @@ defmodule BeaconServer.ClientTest do
       assert :error = BeaconServer.Client.lookup(:svc_gamma)
     end
   end
+
+  # A4-bis-1: term key paths (tuples for parameterized resources, e.g.
+  # {:voxel_region_scene_node, region_id}). Atom path remains the common
+  # case for module-level singletons; both must work.
+  describe "term key (tuple) resources" do
+    test "register / lookup / await round-trip with tuple key" do
+      key = {:voxel_region_scene_node, 42}
+      assert :ok = BeaconServer.Client.register(key)
+      assert {:ok, node} = BeaconServer.Client.lookup(key)
+      assert node == node()
+      assert {:ok, ^node} = BeaconServer.Client.await(key, timeout: 1_000, interval: 10)
+    end
+
+    test "tuple key is namespaced from atom of the same shape" do
+      atom_key = :region_alpha
+      tuple_key = {:region_alpha, 1}
+
+      :ok = BeaconServer.Client.register(atom_key)
+      :ok = BeaconServer.Client.register(tuple_key)
+
+      assert {:ok, _} = BeaconServer.Client.lookup(atom_key)
+      assert {:ok, _} = BeaconServer.Client.lookup(tuple_key)
+    end
+
+    test "lookup returns :error for an unregistered tuple key" do
+      assert :error = BeaconServer.Client.lookup({:voxel_region_scene_node, 999})
+    end
+
+    test "re-registering the same tuple key is idempotent" do
+      key = {:voxel_region_chunk_directory, 7}
+      :ok = BeaconServer.Client.register(key)
+      assert :ok = BeaconServer.Client.register(key)
+    end
+
+    test "await :timeout for a never-registered tuple key" do
+      assert :timeout =
+               BeaconServer.Client.await({:never, :coming, 0}, timeout: 100, interval: 50)
+    end
+  end
 end
