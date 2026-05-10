@@ -1132,26 +1132,39 @@ export class ServerMovementTransport implements MovementTransport {
 
 export function resolveDefaultUsername(
   env: Record<string, string | undefined> = import.meta.env,
-  storage: Storage | null = window.sessionStorage,
+  // `storage` is kept for API compatibility but no longer used. See
+  // the rationale block below.
+  _storage: Storage | null = null,
 ): string {
   const configured = firstNonBlank(env.VITE_GAME_CLIENT_USERNAME, env.VITE_GAME_USERNAME);
   if (configured) {
     return configured;
   }
 
-  try {
-    const key = "ex_mmo_web_client.runtime_username";
-    const existing = storage?.getItem(key);
-    if (existing && existing.trim() !== "") {
-      return existing;
-    }
+  // Phase A4-bis follow-up: dev `auth_server.AuthServer.Accounts.upsert_dev/1`
+  // maps `username → cid` deterministically (same name returns same cid).
+  // Earlier versions persisted a generated username in `sessionStorage`,
+  // but Chrome COPIES `sessionStorage` when a tab is duplicated or when a
+  // link is opened with "Open in new tab" — both common ways to launch
+  // multiple game windows for multiplayer testing. Two tabs sharing
+  // `sessionStorage` ⇒ two tabs share the same cid ⇒ the server treats
+  // them as a single player, which manifests on the client as "remote
+  // player cube follows me", "characters disappear", and "wrong remote
+  // position" all at once.
+  //
+  // Generate a fresh username per page load instead. Each tab — duplicated
+  // or not — gets its own cid. This costs us username-stability across
+  // refresh, which is fine for dev demos; production logins go through
+  // a real auth flow that overrides this default.
+  return generateFreshUsername();
+}
 
-    const generated = `web_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    storage?.setItem(key, generated);
-    return generated;
-  } catch {
-    return `web_${Math.random().toString(36).slice(2, 10)}`;
+function generateFreshUsername(): string {
+  const cryptoRef: Crypto | undefined = typeof crypto !== "undefined" ? crypto : undefined;
+  if (cryptoRef && typeof cryptoRef.randomUUID === "function") {
+    return `web_${cryptoRef.randomUUID().slice(0, 8)}`;
   }
+  return `web_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function resolveAuthBaseUrl(

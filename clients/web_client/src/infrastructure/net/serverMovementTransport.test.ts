@@ -43,4 +43,23 @@ describe("server movement transport runtime config", () => {
     expect(resolveAuthBaseUrl({}, viteDevLocation)).toBe("");
     expect(resolveGameWsUrl({}, viteDevLocation)).toBe("ws://127.0.0.1:5173/ingame/ws");
   });
+
+  // Phase A4-bis follow-up: dev auto_login maps username → cid 1:1, so
+  // two tabs sharing a username (Chrome copies sessionStorage on
+  // Duplicate Tab / "open in new tab") would collide on the same cid
+  // and the server treats them as one player — breaking remote
+  // rendering. resolveDefaultUsername() must return a fresh value per
+  // call so each tab is a distinct user out of the box.
+  it("generates a fresh username per call when no env override is set", () => {
+    const a = resolveDefaultUsername({}, null);
+    const b = resolveDefaultUsername({}, null);
+    const c = resolveDefaultUsername({}, null);
+
+    expect(a).toMatch(/^web_/);
+    expect(b).toMatch(/^web_/);
+    expect(c).toMatch(/^web_/);
+    expect(a).not.toBe(b);
+    expect(b).not.toBe(c);
+    expect(a).not.toBe(c);
+  });
 });
