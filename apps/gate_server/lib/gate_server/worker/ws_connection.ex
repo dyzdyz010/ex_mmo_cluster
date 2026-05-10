@@ -1483,7 +1483,8 @@ defmodule GateServer.WsConnection do
     scene_opts_by_participant =
       plan.participants
       |> Enum.map(fn p ->
-        {p.participant_key, [chunk_directory: {SceneServer.Voxel.ChunkDirectory, p.scene_node}]}
+        module = voxel_chunk_directory_module_for(p.participant_key)
+        {p.participant_key, [chunk_directory: {module, p.scene_node}]}
       end)
       |> Map.new()
 
@@ -1496,6 +1497,19 @@ defmodule GateServer.WsConnection do
       )
     catch
       :exit, _reason -> {:error, :executor_crashed}
+    end
+  end
+
+  # Phase A4-5:per-participant chunk_directory module 解析。生产 default
+  # `SceneServer.Voxel.ChunkDirectory`(单 module 跨所有 region);test 注入
+  # `:voxel_chunk_directory_resolver` env fn 让不同 participant 路由到不同
+  # named instance(`ChunkDirectory.RegionA` / `ChunkDirectory.RegionB`),
+  # 在单 BEAM 内模拟多 scene_node 部署。A4-bis-cluster 落地后 default 改为
+  # 走 `RegionRouting.resolve_chunk_directory/1`。
+  defp voxel_chunk_directory_module_for(participant_key) do
+    case Application.get_env(:gate_server, :voxel_chunk_directory_resolver) do
+      nil -> SceneServer.Voxel.ChunkDirectory
+      fun when is_function(fun, 1) -> fun.(participant_key)
     end
   end
 
