@@ -69,11 +69,26 @@ defmodule SceneServer.PlayerCharacter do
       profile: character_profile
     })
 
+    # Phase A4-bis follow-up: monitor the gate connection_pid so we
+    # tear down promptly when the player disconnects (browser refresh,
+    # tab close, ws drop). Without this the PlayerCharacter outlives
+    # the connection, keeps occupying its AoiManager entry, and shows
+    # up to other players as a stationary "ghost" stuck at spawn —
+    # which is exactly the "remote cube doesn't follow you, then
+    # appears to follow because you walked back" optical illusion.
+    connection_monitor_ref =
+      if is_pid(connection_pid) and Process.alive?(connection_pid) do
+        Process.monitor(connection_pid)
+      else
+        nil
+      end
+
     {:ok,
      %{
        cid: cid,
        character_profile: normalize_character_profile(cid, character_profile),
        connection_pid: connection_pid,
+       connection_monitor_ref: connection_monitor_ref,
        last_location: normalize_character_profile(cid, character_profile).position,
        physys_ref: nil,
        aoi_ref: nil,
@@ -426,6 +441,23 @@ defmodule SceneServer.PlayerCharacter do
     # 1 macro = 100 cm = 8 micro,所以 cm × 8 / 100 = micro_unit_index。
     try_voxel_damage(scene_id, cast)
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(
+        {:DOWN, monitor_ref, :process, conn_pid, reason},
+        %{connection_monitor_ref: monitor_ref, connection_pid: conn_pid} = state
+      ) do
+    SceneServer.CliObserve.emit("player_connection_down", %{
+      cid: state.cid,
+      connection_pid: conn_pid,
+      reason: inspect(reason)
+    })
+
+    # Stop normally so terminate/2 runs the AOI / PlayerManager cleanup
+    # path. Returning :normal keeps DynamicSupervisor from logging this
+    # as a crash — disconnect is the expected end-of-session signal.
+    {:stop, :normal, %{state | connection_monitor_ref: nil}}
   end
 
   @impl true
@@ -801,13 +833,17 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def terminate(reason, %{
-        aoi_ref: aoi_item,
-        cid: cid,
-        movement_timer: movement_timer,
-        aoi_monitor_ref: aoi_monitor_ref,
-        respawn_timer: respawn_timer
-      }) do
+  def terminate(reason, state) do
+    %{
+      aoi_ref: aoi_item,
+      cid: cid,
+      movement_timer: movement_timer,
+      aoi_monitor_ref: aoi_monitor_ref,
+      respawn_timer: respawn_timer
+    } = state
+
+    connection_monitor_ref = Map.get(state, :connection_monitor_ref)
+
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
 
     if movement_timer != nil do
@@ -816,6 +852,10 @@ defmodule SceneServer.PlayerCharacter do
 
     if respawn_timer != nil do
       Process.cancel_timer(respawn_timer)
+    end
+
+    if is_reference(connection_monitor_ref) do
+      Process.demonitor(connection_monitor_ref, [:flush])
     end
 
     if is_reference(aoi_monitor_ref) do
