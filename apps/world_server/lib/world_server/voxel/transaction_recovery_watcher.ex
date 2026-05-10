@@ -229,13 +229,6 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
         })
 
         :resume_failed
-
-      {:error, reason} ->
-        emit("voxel_transaction_recovery_resume_failed", transaction, %{
-          reason: inspect(reason)
-        })
-
-        :resume_failed
     end
   rescue
     exception ->

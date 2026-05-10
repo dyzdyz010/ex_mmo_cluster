@@ -250,6 +250,52 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       assert summary.resumed_commit == 0
     end
 
+    test "A4-6 verify: multi-participant resume 喂 per-participant scene_opts,跳过 prepare 直接 commit" do
+      # 决策稿 A4-6:Recovery watcher resume 路径在 multi-participant transaction
+      # 上自然支持(intents_by_participant 已经在 BuildTransaction 持久化,
+      # scene_opts_resolver 是 1-arity 接 participants list)。本测试明确断言:
+      #   1. 两个 participant 各自的 commit 都被调到(executor :prepared fast-path)
+      #   2. 没调 prepare(resume 跳过 prepare phase)
+      #   3. 每个 participant 用各自的 scene_opts(用 recorder_a / recorder_b 区分)
+      #   4. transaction 落 :committed
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder_a = start_supervised!({Agent, fn -> [] end}, id: :recorder_a)
+      recorder_b = start_supervised!({Agent, fn -> [] end}, id: :recorder_b)
+
+      prepare_all!(coordinator, "tx-a4-6-multi-resume", with_intents: true)
+
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p ->
+            recorder = if p.region_id == 10, do: recorder_a, else: recorder_b
+            {{p.region_id, p.lease_id}, [recorder: recorder]}
+          end)
+
+        {:ok, scene_caller: StubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
+      end
+
+      summary =
+        TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.resumed_commit == 1
+      assert summary.pending_commit == 0
+
+      calls_a = Agent.get(recorder_a, & &1)
+      calls_b = Agent.get(recorder_b, & &1)
+
+      # 每个 recorder 看到自己 region 的 commit,且只一次。
+      assert [{:commit, 10, "tx-a4-6-multi-resume"}] = calls_a
+      assert [{:commit, 20, "tx-a4-6-multi-resume"}] = calls_b
+
+      # 两 recorder 都不应记录 prepare(resume 跳过 prepare phase,
+      # `derive_prepare_results_from_prepared_state` 直接 prebake)。
+      refute Enum.any?(calls_a, &match?({:prepare, _, _, _}, &1))
+      refute Enum.any?(calls_b, &match?({:prepare, _, _, _}, &1))
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-a4-6-multi-resume"].state == :committed
+    end
+
     test "partial commit failures bubble up as resume_partial" do
       coordinator = start_supervised!(TransactionCoordinator)
       recorder = start_supervised!({Agent, fn -> [] end})

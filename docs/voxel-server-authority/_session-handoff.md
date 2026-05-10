@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-10,Phase A1 + A2 hotfix + A1-1b batch API + watcher hotfix + prefab micro-precision 落地后。
+**Last updated**:2026-05-10,**Phase A4 主体落地后**(跨 region prefab 事务 + 跨节点 damage 路由 + 0x6C owner-driven fan-out)。A4-bis-cluster 决策稿就位等启动。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -23,6 +23,7 @@
 | A1-1b Storage.put_micro_blocks/4 batch API(prefab 卡死性能优化,1.5s → 46ms,33×) | 已完成 | `0e3434c` |
 | Server 启动 hotfix:TransactionRecoveryWatcher 接 plain-map stale snapshot | 已完成 | `cc3a31d` |
 | Prefab 摆放精度 hotfix:server 按 world-micro 精度落 prefab + online adapter 走 boundary-snap micro 锚 | 已完成 | `a7a5bc9` (server raster) → `20f6a8a` (online adapter) |
+| **A4 跨 region prefab 多 participant 事务 + 跨节点 damage / 0x6C 路由(主体)** | 已完成 | `f49c0b9` (决策稿) → `22312e0` (D7 折回) → `3f381d0` (A4-1) → `6acd37d` (A4-2) → `e6eafa3` (A4-3) → `630574b` (A4-4) → `13ef21a` (偏移同步) → `4ab6c83` (D8-D11 拍板) → `4198b8e` (A4-5) → 本会话 (A4-6 + A4-final) |
 
 测试规模(2026-05-10,prefab 微精度 hotfix 收尾):
 
@@ -53,6 +54,7 @@ A1-1b 1 + watcher hotfix 1 + handoff docs 1 + prefab micro hotfix 2)。
 
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
+| A4-bis-cluster | 决策稿就位 | 真正的多 scene_node 分布式部署:BeaconServer term key 全量升级 + RegionRouting 模块 + lease 按 scene_node 分配 + ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default 走 RegionRouting + 双 BEAM 节点 e2e。决策来源:用户"MVP 大世界一台机扛不住",从 Phase 6 HA 提前。估时 4-5.5 天。文档:`phase-A4-cross-region-prefab.md` 文末 A4-bis-cluster 段 |
 | A3 | 未开始 | 阶段 A 子 3:多客户端同世界联调(本地多 tab / 多机 + chunk 订阅一致性 + 移动同步 + 破坏可见性) |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 | 测试隔离 | 未开始 | test_helper 加 setup TRUNCATE `voxel_transaction_coordinator_snapshots` / `voxel_chunk_pending_transactions`,避免跨 mix test stale snapshot 让 transaction 路径走 replay-skip |
@@ -89,9 +91,7 @@ placement < 100ms 不再卡死**。
   per-instance instanceColor 通道留待 Phase 5。
 - **HUD destroyed 升级**:目前一行字 3.5s。Phase 5+ 可加屏幕红闪 / 音效 /
   destroyed object 中心爆炸 emoji。
-- **跨 region 多 participant 事务**(Phase 3-bis 后续):BuildTransaction 已支持
-  multi-participant,Gate 的 prefab dispatch 还只构造 single-participant。
-  需要先有跨 region prefab 的语义设计文档。
+- ~~**跨 region 多 participant 事务**(Phase 3-bis 后续)~~:**已在 Phase A4 主体闭环**(A4-1 ~ A4-final 落地 2026-05-10):BuildTransaction multi-participant + Gate per-chunk routing + 跨节点 damage RPC + 0x6C owner-driven fan-out。生产路径仍单 scene_node;真分布式部署在 A4-bis-cluster 决策稿就位。
 - **Per-region coordinator**(Phase 6 留):当前单全局 coordinator 是潜在 SPOF。
 - **紧凑 ChunkDelta**(取代 commit 时的 snapshot fan-out):commit 时把 batch
   内每个 intent 编成 ChunkDelta op 推送,不必走整 chunk snapshot。
@@ -153,6 +153,37 @@ placement < 100ms 不再卡死**。
   - `SceneServer.Voxel.ObjectRegistry`:per-scene GenServer(默认 module-named singleton,tests 注 `:name` 起独立实例),accumulate_damage / destroy_part / destroy_object 同步 cascade 链路。
   - `BuildTransactionApplier.register_scene_objects/2`:scene-side 把 transaction.scene_objects upsert 到 ObjectRegistry。
   - `0x6C ObjectStateDelta` wire codec encode/decode + web_client decoder stub(实际 Gate 推送链路 deferred 到 4-bis)。
+- **Phase A4 新增**(跨 region prefab 事务 + 跨节点 damage / 0x6C 路由):
+  - `voxel_scene_objects` schema 加 `owner_region_id` / `owner_lease_id`(字典序首
+    covered_chunk 所在 region 是 owner;**不**持久化 `covered_chunks_by_region`
+    —— 该信息动态,改运行时 inflate)
+  - `WorldServer.Voxel.TransactionExecutor`:`:scene_opts_by_participant` map
+    替换 `:scene_opts`(per-participant);`register_scene_objects_after_commit`
+    给每个 obj inflate `:covered_chunks_by_region`(从 `transaction.participants
+    .affected_chunks` 反向推算)
+  - Gate `build_prefab_plan` per-chunk routing + 按 `(region_id, lease_id)` 分组
+    成 multi-participant;任一 chunk 路由失败 fail-fast `:no_route_for_chunk`
+  - `SceneServer.Voxel.ObjectOwnerLookup`:per-scene ETS cache,hot path 直读
+    `:ets.lookup`,miss 走 GenServer.call SELECT;register-after-commit 写入
+    准确 split,destroy_object 时 evict
+  - `VoxelDamageRouter`:owner_lookup → `:scene_node_resolver_fn` 解析 owner
+    scene_node → 透明 `GenServer.call({Mod, scene_node}, ..., 200ms)` 跨节点
+    GenServer 协议;失败 emit `voxel_damage_cross_region_failed`,成功 emit
+    `voxel_damage_routed_cross_region`
+  - `ObjectRegistry.dispatch_object_state_delta`:按 `covered_chunks_by_region`
+    分桶,每桶通过 `:region_routing_fn` opt 解析到 chunk_directory_target
+    (default `nil` 退化为本地 `state.chunk_directory`)
+  - `ObjectRegistry` + `ObjectOwnerLookup` **挂入 `VoxelSup` 生产监督树**(顺手
+    补 Phase 4 起一直未挂的 ObjectRegistry)
+  - Gate `executor_execute` 加 `:voxel_chunk_directory_resolver` env hook
+    (default `SceneServer.Voxel.ChunkDirectory`,test 注入 fn 让 participant
+    路由到不同 named instance,A4-bis-cluster 后改为走 RegionRouting)
+  - `TransactionRecoveryWatcher.scene_opts_resolver` 改 1-arity 接 participants
+    (multi-participant resume 自然支持,因 intents_by_participant Phase 3-bis-3
+    起就持久化)
+  - 决策稿草稿引用的"已有 region/lease → scene_node 映射"**事实错误**(`BeaconServer
+    .Client.lookup` 当前只支持 atom resource);跨节点路径在 A4 阶段是注入式
+    接口,真路由在 A4-bis-cluster 落地
 - **Phase 4-bis 新增**:
   - `0x6C` codec 主战场迁到 `scene_server/voxel/codec.ex`(对齐 chunk_delta /
     chunk_snapshot / chunk_invalidate);gate codec 改 binary pass-through。
@@ -213,6 +244,7 @@ placement < 100ms 不再卡死**。
 | Codec / chunk_hash | `apps/scene_server/lib/scene_server/voxel/codec.ex` |
 | Storage(canonical truth) | `apps/scene_server/lib/scene_server/voxel/storage.ex` |
 | **Object provenance(Phase 4)** | `apps/scene_server/lib/scene_server/voxel/object_registry.ex`、`apps/scene_server/lib/scene_server/voxel/part_state.ex` |
+| **Owner lookup cache + 跨节点 damage 路由(Phase A4)** | `apps/scene_server/lib/scene_server/voxel/object_owner_lookup.ex`、`apps/scene_server/lib/scene_server/combat/voxel_damage_router.ex` |
 | Postgres 持久化(1d 后) | `apps/data_service/lib/data_service/voxel/chunk_snapshot_store.ex` |
 | **Postgres scene_objects(Phase 4)** | `apps/data_service/lib/data_service/voxel/scene_object_store.ex`、`apps/data_service/lib/data_service/schema/voxel_scene_object.ex`、`apps/data_service/priv/repo/migrations/20260508000002_create_voxel_scene_objects.exs` |
 | Gate 协议 codec | `apps/gate_server/lib/gate_server/codec.ex` |
@@ -352,10 +384,16 @@ A2 之前的所有 Phase 1a → 4-bis commits(完整列表见上一个会话的 
      event 里的 `anchorMicroCoord` vs server `voxel_chunk_transaction_committed`
      log 里 intent 起点(macro+slot 还原成 world micro 应该完全相等)
 
-3. **多 chunk prefab 跨 region 警告**:mid-macro 锚把 prefab 摆在 chunk 边界
-   附近时,可能跨两 chunks。**两 chunks 在同一 region/lease 时正常**;**跨
-   region 时 gate dispatch 会 reject**(handoff backlog "跨 region 多 participant
-   事务",未实现)。如果 user 实测发现某些边界位置 prefab 被 reject,大概率
-   是这个。临时绕路:挪开锚点远离 chunk 边界。
+3. **~~多 chunk prefab 跨 region 警告~~**:**Phase A4 主体已闭环**(2026-05-10)。
+   mid-macro 锚把 prefab 摆在 chunk 边界附近跨两 chunks 时,gate `build_prefab_plan`
+   会按 `(region_id, lease_id)` 分组成 multi-participant,World coordinator
+   begin_transaction 持 N 个 participant,executor 走 multi-participant prepare
+   + commit 路径,任一 prepare 失败 fail-fast abort。Storage 在两 chunk 都被
+   写,scene_objects 在 owner participant(字典序首 chunk 所在 region)的
+   ObjectRegistry 注册。生产仍单 scene_node(所有 region 跑同一 BEAM),真
+   分布式部署在 A4-bis-cluster 阶段。
 
-如果以上都 OK,可以推进 **A3 多客户端联调** 或 Phase 5。
+如果以上都 OK,可以推进:
+- **A4-bis-cluster**(真多 scene_node 部署,MVP 必需,决策稿就位 4-5.5 天)
+- **A3** 多客户端联调
+- **Phase 5** 属性目录 + 温湿度

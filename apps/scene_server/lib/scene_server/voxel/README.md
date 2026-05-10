@@ -206,5 +206,43 @@ retry queue 100ms 后重试；仍空降级到 affected_chunks 中心点（档 A 
 ownerObjectId 字段引入 FRefinedCellData 后，加一行 cache hook 即可升级到
 精确档 B（沿被清空的 micro slot 散布）。
 
-后续切片会在同一子树下补充紧凑区块增量、跨 region 多 participant 事务、per-region
-coordinator 切片，以及更完整的迁移回滚。
+**Phase A4 新增**(跨 region prefab + 跨节点 damage / 0x6C 路由):
+
+- `SceneServer.Voxel.ObjectOwnerLookup`(Phase A4-4):per-scene ETS-backed
+  owner cache。hot path 直读 `:ets.lookup({scene_id, object_id})`,miss 走
+  `GenServer.call({:resolve, ...})` SELECT `voxel_scene_objects`。冷启动
+  miss 退化为 `%{owner_key => obj.covered_chunks}`(degenerate split,所有
+  chunks 归 owner region;A4-bis-cluster 加 `MapLedger.region_for_chunk` 后
+  退役该兜底)。`register/3` 由 `BuildTransactionApplier.register_scene_objects`
+  在 commit 后调,写入准确的 `covered_chunks_by_region`(由 World 端
+  `TransactionExecutor` 从 `transaction.participants.affected_chunks` 反向
+  推算并 inflate 到 obj 上)。`evict/3` 在 `ObjectRegistry.destroy_object`
+  路径调用。
+- `ObjectRegistry.dispatch_object_state_delta/3`(Phase A4-4):按
+  `covered_chunks_by_region` 分桶,每个 `(region_id, lease_id)` 桶通过
+  `:region_routing_fn` opt 解析到 chunk_directory_target(默认 `nil` 即所有
+  桶都走 `state.chunk_directory`,生产单 scene_node 退化为本地 fan-out)。
+  `chunk_directory_target` 形态既可以是 local atom(如 `ChunkDirectory.RegionA`)
+  也可以是 `{Mod, scene_node}` tuple(GenServer.call 天然支持跨节点);
+  跨节点 lookup / cast 失败 catch :exit + emit
+  `voxel_object_state_delta_dispatch_failed` observe(fire-and-forget,
+  object_version 单调保 client dedup)。
+- `SceneServer.Combat.VoxelDamageRouter.try_apply_damage`(Phase A4-4):拿到
+  `(object_id, part_id)` 后调 `ObjectOwnerLookup.fetch_owner` →
+  `:scene_node_resolver_fn` 解析 owner scene_node →
+  `GenServer.call({Mod, scene_node}, {:accumulate_damage, ...}, 200)` 透明
+  跨节点 GenServer 协议(**非** `:rpc.call`,语义等价但不需新增
+  `accumulate_damage_remote/4` API)。失败 catch :exit + emit
+  `voxel_damage_cross_region_failed`,成功 emit `voxel_damage_routed_cross_region`。
+  Owner cache miss 退到本地 legacy 路径,保持 A1-5 单 region 兼容性。
+- `ObjectRegistry` + `ObjectOwnerLookup` 挂入 `VoxelSup` **生产监督树**
+  (Phase A4-4 顺手补 Phase 4 起一直未挂的 ObjectRegistry;之前 register
+  路径在生产环境 :noproc exit,只在测试中通过 `start_supervised!` 启动)。
+- 跨节点 default resolver 的真路由(`RegionRouting.resolve_scene_node` /
+  `resolve_chunk_directory`)在 **A4-bis-cluster** 阶段落地(决策稿就位:
+  `docs/voxel-server-authority/phase-A4-cross-region-prefab.md` 文末专段)。
+  A4 主体留 `:scene_node_resolver_fn` / `:region_routing_fn` opt 注入,生产
+  default 退化为本节点;真分布式部署时 caller 注入 RegionRouting fn。
+
+后续切片会在同一子树下补充紧凑区块增量、A4-bis-cluster 真多 scene_node
+部署、per-region coordinator 切片,以及更完整的迁移回滚。

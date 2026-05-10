@@ -137,5 +137,34 @@ World 不直接搬运区块内容。
 `part_states` 是 `[%{part_id, health, state_flags}, ...]`（plain map 形态，
 Scene 侧 ObjectRegistry 会归一化为 `%PartState{}` struct）。
 
+**Phase A4 跨 region prefab 多 participant 事务**(2026-05-10 落地):
+
+- `BuildTransaction.participants` 现在是 N 个 `TransactionParticipant`(每个
+  含 `region_id` / `lease_id` / `affected_chunks`),Gate `build_prefab_plan`
+  按 `(region_id, lease_id)` 分组成 multi-participant。
+- `TransactionExecutor.execute/4` 接受 `:scene_opts_by_participant`
+  `%{ {region_id, lease_id} => keyword_list }` 替换原 `:scene_opts`
+  (Phase A4-1,无双路径)。`run_prepare` / `run_commit` / `run_abort` 内按
+  `participant_key` 取对应 scene_opts,自然支持跨 region 不同 chunk_directory
+  / scene_node 的 transaction 路径。
+- `register_scene_objects_after_commit/3` 给每个 obj **inflate**
+  `:covered_chunks_by_region`(从 `transaction.participants.affected_chunks`
+  反向推算 `chunk → participant_key` map);scene 侧
+  `BuildTransactionApplier.register_scene_objects` 把它写入 `ObjectOwnerLookup`,
+  让 cross-region damage / 0x6C 广播能 cache 命中而不必走 SELECT。
+- `voxel_scene_objects` 加 `owner_region_id` / `owner_lease_id` 列(Phase A4-3,
+  D6 字典序首 covered chunk 所在 region 是 owner);**不**持久化
+  `covered_chunks_by_region`(动态信息,改运行时 cache,见 ObjectOwnerLookup)。
+- `TransactionRecoveryWatcher.scene_opts_resolver` 改为 1-arity 接 participants
+  list(Phase A4-1),resume 路径在 multi-participant transaction 上自然支持
+  (`intents_by_participant` 已经在 Phase 3-bis-3 起持久化)。
+
+**A4-bis-cluster 子阶段**(决策稿就位 2026-05-10,等启动):真正的多 scene_node
+分布式部署 — `BeaconServer.Client` term key 全量升级、`SceneServer.Voxel
+.RegionRouting` 模块、`MapLedger` 加 region → scene_node 分配策略 + per-chunk
+region resolver、`world_sup` / `Worker.Interface` 改为按 transaction.participants
+解析对应 scene_node。详见 `docs/voxel-server-authority/phase-A4-cross-region-prefab.md`
+文末 A4-bis-cluster 段。
+
 WorldServer 不保存完整区块真相，也不运行高频体素规则。它只决定拥有者，并发布写入围栏，
 防止迁移后的旧 Scene 进程继续写入。
