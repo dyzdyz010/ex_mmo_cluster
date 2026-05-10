@@ -23,6 +23,7 @@ A3(多客户端联调)和本阶段独立,顺序无强约束。
 ## 不在范围
 
 - **per-region coordinator / coordinator HA**:仍然是单全局 coordinator,Phase 6 留。
+- **多 scene_node 分布式部署本身**:A4-1~A4-6 主体仍假设生产单 scene_node(`world_sup` `BeaconServer.Client.await(:scene_server)` 拿单 node)。MVP 真上大世界要把 region 分散到多台 scene_node(一台 BEAM 扛不住所有 region 物理模拟),这部分**从 Phase 6 抽出**,作为 **A4-bis-cluster** 阶段(见文末专段),紧接 A4 主体后实施。A4-1~A4-4 留好的注入式接口(`:scene_node_resolver_fn` / `:region_routing_fn` / `scene_opts_by_participant`)就是为 A4-bis-cluster 串通而设计。
 - **超大 prefab(覆盖多于 ~4 chunks)**:本阶段不做 prefab geometry 生成层面限制。如果 v3 prefab 真的能跨 8+ chunks,网络扇出风险大,触发 e2e 测试再加 cap。
 - **wire 协议升级**:不动。`0x67` 输入不变,`0x68 VoxelIntentResult` reason 沿用现有 atom 风格。
 - **prefab v3 多 macro mask**:`BlueprintCatalog` 仍单 macro mask(8³ slots),mid-macro 锚仍最多扩到 8 macros / 4 chunks(2³)。
@@ -83,7 +84,10 @@ TransactionExecutor.execute(
 - 每个 scene_object 选**第一个 covered chunk(按 `chunk_coord` ascending 排序)所在的 region** 作为 owner participant
 - 只在 owner participant 的 scene_node 上的 `ObjectRegistry` register(权威态单点,destroy/damage 不会双副本不一致)
 - `voxel_scene_objects` 表新加 `owner_region_id` + `owner_lease_id` 列;commit 时按 owner participant 写入(D6 决定字典序选取规则)
-- 读侧 D7 决定:damage 路由 / 0x6C 广播在跨 region 时通过 owner 元数据 RPC 到正确 scene_node
+- **不**持久化 `covered_chunks_by_region`(决策稿草稿和早期 step A4-3 描述提过加这一列)。**修订原因**:chunk → region 是 World ledger 当前 lease 划分决定的**动态信息**,lease 漂移 / region 重分配会让该列变成过期数据(行级数据无法自检过期)。改为运行时 inflate + `ObjectOwnerLookup` 内存 cache(详见 D7.A 第 1 条):
+  - register-after-commit 路径准确写入(由 `TransactionExecutor` 从 `transaction.participants.affected_chunks` 反向推算)
+  - 冷启动 cache miss 走 SELECT 兜底,degenerate 为 `%{owner_key => obj.covered_chunks}`(所有 chunk 归 owner region);A4-bis-cluster 加 chunk → region resolver 后退役该兜底
+- 读侧 D7 决定:damage 路由 / 0x6C 广播在跨 region 时通过 owner 元数据路由到正确 scene_node
 
 **被否方案**:
 - D2.B fan-out register 到所有 covered participants(双副本)。**否**:destroy_object 时多副本一致性难(一个 region destroy 了怎么 propagate),容错复杂度大于收益。
@@ -170,24 +174,28 @@ TransactionExecutor.execute(
 **推荐方案**(D7.A):**owner 元数据 + per-hop scene_node lookup**。
 
 1. **新模块 `SceneServer.Voxel.ObjectOwnerLookup`**(per-scene cache):
-   - API:`fetch_owner(scene_id, object_id) :: {:ok, %{owner_region_id, owner_lease_id, scene_node}} | {:error, :not_found}`
-   - 冷启动从 `voxel_scene_objects` SELECT;hot path 命中 ETS / GenServer state
-   - `register_scene_objects_after_commit` 完成后写入 cache(避免 commit 后 SELECT race)
+   - API:`fetch_owner(scene_id, object_id) :: {:ok, %{owner_region_id, owner_lease_id, covered_chunks_by_region}} | {:error, :not_found}`
+   - 冷启动从 `voxel_scene_objects` SELECT(只有 owner_region_id / owner_lease_id 持久化,`covered_chunks_by_region` 取 degenerate split `%{owner_key => obj.covered_chunks}`)
+   - hot path 直读 ETS(`read_concurrency: true`);miss 走 GenServer.call 串行化避免重复 SELECT
+   - `register_scene_objects_after_commit` 路径写入准确 covered_chunks_by_region(由 `TransactionExecutor` 从 `transaction.participants.affected_chunks` 反向推算并 inflate 到 obj 上);避免 commit 后 SELECT race
    - `ObjectRegistry.destroy_object` 后 evict
-   - scene_node 通过 `BeaconServer.Client.lookup({:voxel_region_scene_node, region_id, lease_id})` 解析(已有 region/lease → scene_node 映射,Phase 1c 起就用)
+   - **scene_node 解析的现实修订**:决策稿草稿写"通过 `BeaconServer.Client.lookup({:voxel_region_scene_node, region_id, lease_id})` 解析(已有 region/lease → scene_node 映射,Phase 1c 起就用)"——**事实错误**,该映射不存在(Phase 1c 起的 `BeaconServer.Client` 仅 `lookup(:scene_server)` atom 单点查询,没有 per-region key)。**A4-4 阶段**:`VoxelDamageRouter` 通过 `:scene_node_resolver_fn` opt 注入 `(region_id, lease_id) → node()`,default `fn _, _ -> node() end`(生产单 scene_node 退化本地);`ObjectRegistry` 通过 `:region_routing_fn` opt 注入 `participant_key → chunk_directory_target`,default `nil` 即所有桶走本地 `state.chunk_directory`。**真正的 region → scene_node 映射在 A4-bis-cluster 阶段补**(见步骤分解后 A4-bis-cluster 段)
 
-2. **`VoxelDamageRouter.dispatch_damage` 改造**:
-   - `Storage.lookup_owner_at` → `object_id`
-   - `ObjectOwnerLookup.fetch_owner` → `{owner_region_id, scene_node}`
-   - 本地 → `ObjectRegistry.accumulate_damage(...)` 原路径
-   - 跨节点 → `:rpc.call(scene_node, ObjectRegistry, :accumulate_damage_remote, [...], 200)`,失败 emit `voxel_damage_cross_region_failed` observe + drop(不重试,不破坏 damage 主路径)
+2. **`VoxelDamageRouter.try_apply_damage` 改造**:
+   - `Storage.lookup_owner_at` → `(object_id, part_id)`
+   - `ObjectOwnerLookup.fetch_owner` → `{owner_region_id, owner_lease_id}`
+   - `:scene_node_resolver_fn` 解析 `(region_id, lease_id) → scene_node`(default `fn _, _ -> node() end`,A4-bis-cluster 改为 `&RegionRouting.resolve_scene_node/2`)
+   - 本地(`scene_node == node()`)→ `GenServer.call(ObjectRegistry, ...)` 原路径
+   - 跨节点 → `GenServer.call({ObjectRegistry, scene_node}, {:accumulate_damage, ...}, 200)` 透明跨节点 GenServer 协议(**非** :rpc.call —— 后者要新建 `accumulate_damage_remote/4` API,前者直接复用现有 GenServer 接口,语义等价。失败兜底改为 `try / catch :exit` 而非 match `{:badrpc, _}`)
+   - 失败 emit `voxel_damage_cross_region_failed` observe + drop(不重试,不破坏 damage 主路径)
    - 新 observe:`voxel_damage_routed_cross_region`(成功)/ `voxel_damage_cross_region_failed`(rpc fail)
 
 3. **0x6C 跨 region 广播**:**owner-driven fan-out**(对齐 owner 单点权威语义)
-   - `ObjectRegistry.emit_object_state_delta`(在 owner scene_node 上)按 `delta.affected_chunks` 分组:本地 chunks 走原 `ChunkDirectory.push_object_state_delta_payload`;远端 chunks 走 `BeaconServer.Client.lookup({:voxel_region_chunk_directory, region_id})` 找远端 ChunkDirectory pid,`GenServer.cast({ChunkDirectory, scene_node}, {:push_object_state_delta_payload, delta_subset})`
-   - 远端 ChunkDirectory 收到 cast → 本地 fan-out 给本 region 内的 chunks(原 4-bis 路径)
-   - 跨 region cast 失败 → emit `voxel_object_state_delta_cross_region_dropped` + drop(fire-and-forget,object_version 单调保 client dedup,后续广播会让 client 状态收敛)
-   - **affected_chunks 按 region 分组**:`ChunkDirectory` 持有自己 region 的 chunk_coord set,owner 端通过 `voxel_scene_objects.covered_chunks` + 每个 chunk 的 region 解析(冷启动时不知 region → 一次性 SELECT covered chunks 各自的 owner region;cache in ObjectOwnerLookup)
+   - `ObjectRegistry.dispatch_object_state_delta`(在 owner scene_node 上;函数名 `dispatch_` 对齐代码现状,决策稿草稿写 `emit_` 是脑补)按 `covered_chunks_by_region`(从 `ObjectOwnerLookup` 拿)分组:每个 `(region_id, lease_id)` 桶通过 `:region_routing_fn` opt 解析到具体的 chunk_directory_target;default `nil` 即所有桶都走本地 `state.chunk_directory`(生产单 scene_node 退化为本地 fan-out)
+   - **A4-4 阶段不接 BeaconServer 注册** `{:voxel_region_chunk_directory, region_id}`(BeaconServer.Client API 当前只接受 atom resource,扩展 term key 是基础设施改动,挤进 A4-4 范围爆炸);**真正的跨节点 fan-out 在 A4-bis-cluster 阶段补**(默认 `:region_routing_fn` 改为 `&RegionRouting.resolve_chunk_directory/1`,见步骤分解后 A4-bis-cluster 段)
+   - 测试 / A4-5 fixture 通过 `:region_routing_fn` opt 注入,把 `{1, 100}` 路由到 `ChunkDirectory.RegionA`,`{2, 200}` 路由到 `ChunkDirectory.RegionB`,在单 BEAM 内验证分桶行为
+   - `chunk_directory_target` 形态(本地 atom / `{Mod, scene_node}` 形式)由 routing fn 决定,后续 `ChunkDirectory.lookup_chunk_pid` 是 GenServer.call 天然支持跨节点;跨节点 cast / lookup 失败 catch :exit + emit `voxel_object_state_delta_cross_region_dropped` observe(fire-and-forget,object_version 单调保 client dedup,后续广播会让 client 状态收敛)
+   - **affected_chunks 按 region 分组**:`covered_chunks_by_region` 由 `TransactionExecutor.register_scene_objects_after_commit` 从 `transaction.participants.affected_chunks` 反向推算并 inflate 到 obj 上,`BuildTransactionApplier.register_scene_objects` 写入 `ObjectOwnerLookup`;冷启动 cache miss 时退化为 `%{owner_key => obj.covered_chunks}`(degenerate split,所有 chunks 都归 owner region,A4-bis-cluster 加 chunk → region resolver 解决)
 
 **被否方案**:
 - D7.B 通过 World-side 全局 ObjectRegistry 中转 damage / 广播。**否**:架构大改,World 不该承担 hot path 路由(coordinator 只管 transaction account-keeping)。
@@ -215,8 +223,8 @@ TransactionExecutor.execute(
 |---|---|---|---|
 | **A4-1** | `TransactionExecutor.execute` 接受 `:scene_opts_by_participant` map(替换原 `:scene_opts`,无双路径);`run_prepare`/`run_commit`/`run_abort`/`register_scene_objects_after_commit` 取 per-participant opts;executor 单测加 multi-participant case | scene_server / world_server 单测全绿 | 0.5 天 |
 | **A4-2** | Gate `build_prefab_plan` per-chunk `route_voxel_chunk` + 按 `{region_id, lease_id}` 分组成 participants;`coordinator_begin_transaction` 构造 multi-participant `attrs.participants`;`executor_execute` 喂 `scene_opts_by_participant` map(ws + tcp 镜像);gate 单测 multi-participant + fail-fast | gate_server 测试全绿,e2e 单 region 路径不破坏 | 0.5 天 |
-| **A4-3** | `voxel_scene_objects` schema + migration 加 `owner_region_id` / `owner_lease_id` + `covered_chunks_by_region` 列;`SceneObjectStore` 写入新字段;`BuildTransactionApplier.register_scene_objects/2` 按 owner_region_id 分组,只 upsert 自 region | data_service / scene_server 测试全绿 | 0.5 天 |
-| **A4-4** | `SceneServer.Voxel.ObjectOwnerLookup` per-scene cache(冷启动 SELECT,register_after_commit 写入,destroy_object evict);`VoxelDamageRouter.dispatch_damage` 跨 region RPC(本地 → 原路径,跨节点 → `:rpc.call(scene_node, ObjectRegistry, :accumulate_damage_remote, ...)` 200ms 超时 + observe);`ObjectRegistry.emit_object_state_delta` 0x6C 广播按 covered_chunks_by_region 分桶 owner-driven fan-out(本 region 走原 ChunkDirectory,远 region 走 `BeaconServer.Client.lookup` + cast);新增 metric / observe key | 单测 + 跨节点 RPC mock test 绿 | 1 天 |
+| **A4-3** | `voxel_scene_objects` schema + migration 加 `owner_region_id` / `owner_lease_id` 两列(**修订:不加** `covered_chunks_by_region` 列 — 该信息动态,改运行时 cache,见 D2 修订);`SceneObjectStore` 写入新字段;`BuildTransactionApplier.register_scene_objects/2` 按 owner_region_id 分组,只 upsert 自 region | data_service / scene_server 测试全绿 | 0.5 天 |
+| **A4-4** | `SceneServer.Voxel.ObjectOwnerLookup` per-scene ETS cache(冷启动 SELECT degenerate split,register_after_commit 写入准确 split,destroy_object evict);**挂入 `VoxelSup` 生产监督树,顺带补挂 Phase 4 起一直未挂的 `ObjectRegistry`**;`VoxelDamageRouter.try_apply_damage` 跨 region 路由(本地 → 原路径,跨节点 → `GenServer.call({Mod, scene_node}, ..., 200)` 透明跨节点 GenServer 协议 + catch :exit + observe);`ObjectRegistry.dispatch_object_state_delta` 0x6C 广播按 `covered_chunks_by_region` 分桶 owner-driven fan-out,通过 `:region_routing_fn` opt 路由(default 单 scene_node 退化本地);新增 observe key:`voxel_damage_routed_cross_region` / `voxel_damage_cross_region_failed` / `voxel_scene_object_owner_lookup_register_failed` | 单测 + 跨节点路由 mock test 绿 | 1 天 |
 | **A4-5** | `MultiRegionFixture` test helper(单 BEAM 双 named ChunkDirectory + 独立 :pg group + mock_route_voxel_chunk);跨 region prefab placement e2e(锚跨两 chunks 各属一 region,gate 0x67 → 双 region prepare/commit → storage 都被写 + scene_objects 在 owner region 注册);**跨 region damage cascade e2e**(玩家攻击非 owner region 的 chunk → owner ObjectRegistry 命中 → part_destroyed cascade → 两 region 客户端都收到 0x6C → debris/HUD flash 正常) | 两条 e2e 都绿 + 现有测试不破坏 | 1 天 |
 | **A4-6** | Recovery watcher resume 路径 verify multi-participant `:prepared` 重发(应该自然支持,但 verify);如有 gap 修;新增 multi-participant resume 单测 | world_server recovery 测试 + multi-participant resume 单测全绿 | 0.3 天 |
 | **A4-final** | 决策稿状态改"已完成";同步 `_session-handoff.md`(阶段表 + 跨 region damage 现已闭环不再列 backlog)+ scene_server voxel README + world_server voxel README | git status 干净 | 0.2 天 |
@@ -231,9 +239,10 @@ TransactionExecutor.execute(
   - gate `build_prefab_plan` 多 region(A4-2):2 个 chunks 路由到不同 region → 2 个 participant entries
   - gate fail-fast(A4-2):任一 chunk 路由失败 → 整个 prefab reject 并 reason `:no_route_for_chunk`
   - register_scene_objects fan-out(A4-3):scene_objects 按 owner_region_id 分组,跨 region 时只 upsert 自 region
-  - `ObjectOwnerLookup` 单测(A4-4):cache 命中/miss/evict;register_after_commit 写入;destroy 后 evict
-  - `VoxelDamageRouter` 跨节点 RPC 单测(A4-4):本地路径 + 跨节点路径(mock `:rpc.call`)+ rpc 失败时 emit observe 不破坏主路径
-  - `ObjectRegistry.emit_object_state_delta` per-region 分桶单测(A4-4):本 region chunks 走本地 ChunkDirectory,跨 region chunks 走远端 cast
+  - `ObjectOwnerLookup` 单测(A4-4):cache 命中/miss/evict;register_after_commit 写入;destroy 后 evict;cold-start degenerate split
+  - `VoxelDamageRouter` 跨节点路由单测(A4-4):本地路径 + 跨节点路径(mock `:scene_node_resolver_fn` 返回不可达 node;`GenServer.call({Mod, node})` :exit 兜底)+ owner cache miss legacy fallback + rpc 失败时 emit observe 不破坏主路径
+  - `ObjectRegistry.dispatch_object_state_delta` per-region 分桶单测(A4-4):mock `:region_routing_fn` 把 `(1,100)` / `(2,200)` 路由到不同 fake ChunkDirectory,验证 chunks 按桶分发;cache miss fallback 到本地 chunk_directory
+  - `BuildTransactionApplier.register_scene_objects` 单测(A4-4):upsert + 写 ObjectOwnerLookup;upsert 失败 skip lookup;`covered_chunks_by_region` 缺省默认空 map
   - 跨 region prefab placement e2e(A4-5):锚跨 chunk 边界 + 两 chunks 在不同 region → 整 prefab 落地,两 region 的 storage 都被写,scene_objects 在 owner region 注册
   - **跨 region damage cascade e2e(A4-5)**:跨 region prefab 落地后,玩家攻击**非 owner region** 的 chunk → owner ObjectRegistry 命中 accumulate_damage → part_destroyed cascade → 两 region 各自的客户端 ws 都收到 0x6C → debris simulation 接收
 - 手动 demo:
@@ -248,6 +257,7 @@ TransactionExecutor.execute(
 - 2026-05-10:用户指出"只做摆放、damage 跨 region 落空 = 半成品",同意把原 A4-bis 折回主范围。新增 D7(跨 region damage 路由 + 0x6C 广播 owner-driven fan-out),`voxel_scene_objects` 加 `owner_region_id` / `owner_lease_id` / `covered_chunks_by_region`,新模块 `SceneServer.Voxel.ObjectOwnerLookup`,`VoxelDamageRouter` 走 `:rpc.call`,`ObjectRegistry.emit_object_state_delta` 分桶 owner-driven fan-out。Step 列表加 A4-4(owner lookup + damage RPC + 广播分桶),A4-5 e2e 加跨 region cascade case。总估时 2-3 天 → 3-4 天。
 - 2026-05-10:A4-1 / A4-2 / A4-3 已落地(commits 3f381d0 / 6acd37d / e6eafa3)。
 - 2026-05-10:**A4-4 落地**。`SceneServer.Voxel.ObjectOwnerLookup`(ETS 读路径直读、写路径 GenServer.call 串行)挂入 `VoxelSup`(同时把 Phase 4 起一直未挂的 `ObjectRegistry` 也补挂);`VoxelDamageRouter.try_apply_damage` 拿到 `(object_id, part_id)` 后 `fetch_owner` → `:scene_node_resolver_fn` 解 owner scene_node → 透明 `GenServer.call({Mod, scene_node}, ..., 200ms)`;失败 emit `voxel_damage_cross_region_failed` + 路由成功 emit `voxel_damage_routed_cross_region`;`ObjectRegistry.dispatch_object_state_delta` 改为按 `covered_chunks_by_region` 分桶,每桶按 `:region_routing_fn` 路由到对应 chunk_directory(本地仍走原 `state.chunk_directory`,fallback `:__local__` 兜底);`run_destroy_object` 加 evict cache;`covered_chunks_by_region_for` / `safe_evict_owner_lookup` 在 owner_lookup 未启动时 catch :exit 退回 legacy fallback,确保现有 broadcast_test 不破坏。`BuildTransactionApplier.register_scene_objects` 同时调 `ObjectOwnerLookup.register`。World 端 `TransactionExecutor.register_scene_objects_after_commit` 给每个 obj inflate `:covered_chunks_by_region`(从 `transaction.participants.affected_chunks` 反向 map 推算)。新增观测点 `voxel_damage_routed_cross_region` / `voxel_damage_cross_region_failed` / `voxel_scene_object_owner_lookup_register_failed`。**注**:决策稿 step A4-3 表里写"covered_chunks_by_region 列",实际未加 PG 列(动态信息,取决于 World 当前 region 划分);改为运行时 inflate + cache。新增 4 套单测合计 19 tests 全绿(`object_owner_lookup_test` 9 / `object_registry_cross_region_test` 3 / `voxel_damage_router_cross_region_test` 4 / `build_transaction_applier_owner_lookup_test` 3),world_server `transaction_executor_test` 加 1 条 inflate 断言后 16/16 全绿;scene_server 全套 baseline 87 fail → 82 fail(只增不减,且未引入 regression)。
+- 2026-05-10:**A4-4 偏移同步回正文**。在 D2 / D7.A 第 1-3 条 / 步骤分解表 A4-3 / A4-4 / 验收标准段全部修订原方案描述,标注:`covered_chunks_by_region` 不进 PG;`:rpc.call` 改透明 `GenServer.call({Mod, node})`,不新增 `accumulate_damage_remote`;BeaconServer per-region key 不接,改 `:region_routing_fn` opt 注入。决策稿草稿引用的"已有 region/lease → scene_node 映射(Phase 1c 起就用)"**事实错误**,该映射不存在。**新增 A4-bis-cluster 阶段段**(原属 Phase 6 HA 范围,用户明确"MVP 大世界一台机扛不住"决策提前):BeaconServer term key 扩展 + RegionRouting 模块 + lease 按 scene_node 分配 + ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default 走 RegionRouting + 双 BEAM 节点 e2e。"不在范围"段同步标注"多 scene_node 部署"从 Phase 6 抽出归 A4-bis-cluster。
 
 ## 已知 sub-backlog(本阶段不做)
 
@@ -255,3 +265,111 @@ TransactionExecutor.execute(
 - **跨 region prepare 超时压测**:本阶段保持 `transaction_timeout_ms = 30000`。真实生产场景(地理跨 region,> 100ms RPC)需要观测 + 调参,留 Phase 6 HA 范围。
 - **跨节点 damage RPC 重试 / 死信**:本阶段失败 fire-and-forget。生产环境网络抖动期间可能漏 damage / 漏 0x6C,object_version 单调让 client 状态最终收敛,但短窗口 UX 不一致。Phase 6 HA 范围。
 - **`ObjectOwnerLookup` boot 期 SELECT 风暴预热**:风险 2 提到。本阶段实测 acceptable 就不做;如果冷启动期 95p latency 抖动明显,加异步 OnDemandPreload。
+
+---
+
+## A4-bis-cluster — 真正的多 scene_node 分布式部署
+
+> 起草日期:2026-05-10。**状态**:决策稿(等用户拍 D8-D11 后开始实施;紧接 A4-final 之后,A5 之前)。
+
+### 触发原因
+
+A4-1~A4-6 主体留下的"跨节点路径"事实上只能在测试 mock 里命中——生产路径下所有 region 都跑在同一 BEAM(World 端 `BeaconServer.Client.await(:scene_server)` 拿单一 node;`world_sup.ex:49-53` 用单一 scene_node 构造 `scene_opts_by_participant`)。
+
+MVP 阶段单台机器能撑当前规模,但**真正大世界**(玩家数 / 物体数 / chunk 数 ↑)BEAM 物理模拟 + chunk 状态会扛不住单进程。必须把 region 分散到多台 scene_node 上跑。**用户决策(2026-05-10)**:从 Phase 6 HA 范围把"多 scene_node 部署"提前到 A4-bis-cluster,紧跟 A4 主体后实施。
+
+A4-1~A4-4 已经把"跨节点路径"用注入式接口串好(`:scene_node_resolver_fn` / `:region_routing_fn` / `scene_opts_by_participant: %{...participant => [chunk_directory: {Mod, scene_node}]}`),A4-bis-cluster 把这些接口连到真实的 region → scene_node 路由设施。
+
+### 阶段目标
+
+1. **region 分配**:World coordinator 按某种策略(D8)决定 region 落哪台 scene_node,持久化到 lease 字段
+2. **服务发现**:每台 scene_node 启动时按本节点持有的 region 注册 BeaconServer 的 `{:voxel_region_scene_node, region_id}` key(D9 扩展 BeaconServer.Client term key)
+3. **路由设施**:新模块 `SceneServer.Voxel.RegionRouting` 封装 register / unregister / resolve_scene_node / resolve_chunk_directory,作为 ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry 的 default resolver
+4. **transaction 跨节点**:World 端 `world_sup` / `WorldServer.Worker.Interface` 改造,按 transaction.participants 分别拿对应 scene_node 构造 `scene_opts_by_participant`(替代当前固定单 node)
+5. **冷启动准确性**:`MapLedger.region_for_chunk/2` API + `ObjectOwnerLookup` cold-start 走该 resolver,decommission degenerate split fallback(D11)
+6. **e2e 验证**:双 BEAM `:peer` 节点测跨节点 prefab placement / damage cascade / 0x6C fan-out
+
+### 不在范围
+
+- **per-region coordinator / coordinator HA**:仍单全局 coordinator(World 端单点);Phase 6 HA 留
+- **scene_node crash 后的 region failover**:本阶段只支持启动期分配 + lease 内 boundary migration,不支持 runtime 跨节点 lease 转手;真 failover 留 Phase 6
+- **跨 scene_node chunk migration**(boundary migration 跨节点转手):lease 仍 per-scene_node 持有,boundary 在同节点 region 间走 A2 现有路径;跨节点转手留 Phase 5+
+- **跨节点 damage RPC 重试 / 死信**:仍 fire-and-forget(已在 A4 backlog,本阶段不解决)
+- **动态再平衡**:基于 metric 的 region 重分配留 Phase 6;A4-bis-cluster 只做启动期分配 + 静态 / 简策略(D8)
+- **客户端节点感知**:client wire 不暴露 scene_node 信息,继续用 logical_scene_id + region_id 寻址
+
+### 决策项(待用户敲定)
+
+#### D8. region → scene_node 分配策略
+
+  - **D8.A**:静态 hash(region_id mod scene_node_count)。简单,但加节点要重映射全部 region。**否**(MVP 不接受运维痛点)
+  - **D8.B**:World coordinator 启动时按 scene_node join 顺序,把 region 列表均分给已 join 的 scene_node。新加 scene_node 时只接 backlog region(已有 region 不动)。简单,顺序敏感但 MVP 可接受。**倾向**
+  - **D8.C**:基于 metric 的动态均衡(节点 CPU / 内存 / chunk 数)。Phase 6 留
+  - **倾向 D8.B 起手,D8.C 留 Phase 6**
+
+#### D9. BeaconServer term key 扩展
+
+`BeaconServer.Client.register/1` / `lookup/1` 当前签名只接 atom resource。要支持 `{:voxel_region_scene_node, region_id}` 这种 term tuple key:
+
+  - **D9.A**:加一对 `register_term/2` / `lookup_term/1` API,Horde.Registry 注册 term key 直接走;atom 路径保持兼容。**倾向**(不动现有 caller)
+  - **D9.B**:改 `register/1` / `lookup/1` 接受 atom OR term tuple(参数 polymorphic)。**否**(touch 面太大,所有 caller 要重测)
+
+#### D10. Scene 端 ObjectRegistry / ChunkDirectory 的 instance 形态
+
+  - **D10.A**:per-region named instance(每个 scene_node 上每个 region 启动独立 `ChunkDirectory.Region<id>` / `ObjectRegistry.Region<id>`)。supervision 树膨胀(N region 启 2N 进程),但语义清晰
+  - **D10.B**:单 instance,内部按 region_id 路由(scene_node 上一个 ChunkDirectory + 一个 ObjectRegistry,内部 state 按 region 分桶)。supervision 简单,跟 A4-4 当前架构连续
+  - **倾向 D10.B**:`:region_routing_fn` 仍可注入,只是 default 不再退化为本地——而是按 region_id 解析到对应 instance(同一 BEAM 内不同 region 路由到同一 instance,但跨节点路由到对方 BEAM 的 instance)。chunk_pid 仍 per-chunk 独立进程,通过 chunk_coord lookup 找到
+
+#### D11. chunk → region resolver(decommission ObjectOwnerLookup degenerate split)
+
+冷启动 cache miss 时 `ObjectOwnerLookup.fetch_owner` 当前退化为 `%{owner_key => obj.covered_chunks}`(所有 chunks 归 owner region)。A4-bis-cluster 加 chunk → region resolver:
+
+  - 调 `MapLedger.region_for_chunk(scene_id, chunk_coord) :: {:ok, region_id} | {:error, :not_in_any_region}`(API 待加;查 World 当前 lease 划分,具体读 `state.lease_by_region` 反向 chunk → lease/region 索引)
+  - 一次性给每个 covered_chunk 解析,组装准确的 covered_chunks_by_region
+  - 写入 cache
+
+如果 `MapLedger.region_for_chunk` API 还没有,本阶段顺手加;预期是 World 端 ledger 维护一个 `chunk_coord → region_id` 反向索引(可能要在 lease apply / release 路径增量维护)。
+
+### 风险
+
+1. **Horde.Registry term key 注册行为**:term key 在 Horde 中的负载均衡 / 冲突解决跟 atom 一样吗?需要验证(可能 Horde 用 atom 哈希分布到 ring 上,term tuple 走 `:erlang.phash2`)
+2. **lease 漂移期间 ObjectOwnerLookup cache 过期**:某 region 从 scene_node A 转到 scene_node B 时,A 上的 ObjectOwnerLookup cache 中 owner 元数据仍指向 A 的 chunk_directory_target。A4-bis-cluster 需要在 RegionRuntime.lease release 时广播 evict 通知,或者每个 fetch_owner 校验 lease_id epoch
+3. **RPC 跨节点延迟对 transaction_timeout 挤压**:A2 backlog 已记。本阶段 verify 在 LAN 内(< 1ms RPC)`transaction_timeout_ms = 30000` 足够;真上 WAN 跨地理区域需要调参
+4. **双 BEAM e2e 启动慢**:`:peer.start` 启第二节点要 ~2-5 秒,CI 会变慢。考虑只在专用 e2e job 跑,unit test 不引入
+5. **`world_sup` 重构面比预期大**:当前 `world_sup` 单一 `BeaconServer.Client.await(:scene_server)` 拿 node 然后构造 scene_opts。改为 per-region 拿 node 意味着 `world_sup` 持有 region → scene_node map,且 lease 变化时要 update。可能需要 World 端单独一个 GenServer 维护此 map(`WorldServer.Voxel.SceneNodeRegistry`?)
+6. **现有 single-region 路径回归**:A4-bis-cluster 改 default opts 后,所有 single-region 测试都要走新路径。需要确保 `RegionRouting.resolve_scene_node` 在单 BEAM 下退化为 `node()` 行为不变
+
+### 步骤分解
+
+| Step | 范围 | 估时 |
+|---|---|---|
+| **A4-bis-1** | `BeaconServer.Client` term key 扩展(D9):新增 `register_term/2` / `lookup_term/1` / `unregister_term/1`;atom API 不动 | 0.3-0.5 天 |
+| **A4-bis-2** | `SceneServer.Voxel.RegionRouting` 新模块:`register_local_region/2` / `unregister_local_region/1` / `resolve_scene_node/1` / `resolve_chunk_directory/1`;test 用 :persistent_term / Process dictionary 注入 stub | 0.5 天 |
+| **A4-bis-3** | `RegionRuntime.apply_lease` 接 `RegionRouting.register_local_region`;lease 释放(migration / expiry)接 unregister;e2e:lease apply → BeaconServer 可见 | 0.5 天 |
+| **A4-bis-4** | World 端 `MapLedger` 加 region → scene_node 分配策略(D8);新增 `WorldServer.Voxel.SceneNodeRegistry`(World 端 region → scene_node map);`world_sup` / Worker.Interface 路径改造为按 transaction.participants 解析对应 scene_node 构造 `scene_opts_by_participant`;`MapLedger.region_for_chunk/2` API(D11) | 1-1.5 天 |
+| **A4-bis-5** | `ObjectOwnerLookup` / `VoxelDamageRouter` / `ObjectRegistry` default opts 改为走 `RegionRouting`(`:scene_node_resolver_fn` default = `&RegionRouting.resolve_scene_node/2`,`:region_routing_fn` default = `&RegionRouting.resolve_chunk_directory/1`);`ObjectOwnerLookup` cold-start 走 `MapLedger.region_for_chunk` 解析 covered_chunks_by_region | 0.5 天 |
+| **A4-bis-6** | 双 BEAM `:peer` 节点 e2e:节点 A 持 region 1、节点 B 持 region 2;World 端跨节点 transaction prepare/commit;玩家在节点 A 攻击 region 2 chunk → owner ObjectRegistry(节点 B)收到 damage → cascade 0x6C 跨节点 fan-out 到节点 A 客户端 | 1-1.5 天 |
+| **A4-bis-final** | 决策稿 / `_session-handoff.md` 同步;移除 Phase 6 backlog 中已被 A4-bis-cluster 吸收的项;手动 demo 双 BEAM 跑同 logical_scene 跨 region prefab 摆放 / 破坏 | 0.2 天 |
+
+总估时:**3.5-5 天**。
+
+### 验收标准
+
+- A4-1~A4-6 现有测试矩阵不破坏(scene 397+ / gate 191 / world 77+ / data_service 75 / web 260+ / cargo 39)
+- 新增测试:
+  - `BeaconServer.Client` term key 单测(register / lookup / unregister)
+  - `RegionRouting` 单测(register / unregister / resolve / 不存在的 region 返回 :error)
+  - `MapLedger.region_for_chunk` 单测(覆盖在 lease 中的 chunk + 不在任何 lease 中的 chunk)
+  - `ObjectOwnerLookup` cold-start 走 region resolver 的单测(replace degenerate split)
+  - 双 BEAM e2e:跨节点 prefab placement + 跨节点 damage cascade + 跨节点 0x6C fan-out
+- 手动 demo:
+  - 双 BEAM 节点跑同 logical_scene,客户端跨 region prefab 摆放 / 破坏跟单节点路径行为一致(不应感知节点切换)
+  - kill 一个 scene_node 后 World 端能否继续运转(本阶段允许 lease degraded,真 failover 留 Phase 6)
+
+### 触发条件
+
+A4-4 / A4-5 / A4-6 落地后(单 BEAM 内验证跨 region 路径正确)→ A4-bis-cluster 启动。**MVP 真上多机器之前必须落地**(用户决策 2026-05-10)。
+
+### 进度日志
+
+- 2026-05-10:决策稿起草。等用户拍 D8-D11 后开始实施。从 Phase 6 HA 范围抽出"多 scene_node 部署",决策来源:用户指出"MVP 大世界一台机扛不住"。
