@@ -13,6 +13,14 @@ defmodule WorldServer.WorldSup do
     children = [
       {WorldServer.Voxel.MapLedger,
        name: WorldServer.Voxel.MapLedger, write_token_store: DataService.Voxel.WriteTokenStore},
+      # Phase A4-bis-cluster step 4 (segment 2a): membership + assignment
+      # state for the multi-scene_node cluster. SceneNodeRegistry is the
+      # state, SceneNodeMonitor sweeps it on `:nodedown`. Mounted before
+      # the transaction coordinator so resolvers introduced in 2d find
+      # them already running.
+      {WorldServer.Voxel.SceneNodeRegistry, name: WorldServer.Voxel.SceneNodeRegistry},
+      {WorldServer.Voxel.SceneNodeMonitor,
+       name: WorldServer.Voxel.SceneNodeMonitor, registry: WorldServer.Voxel.SceneNodeRegistry},
       {WorldServer.Voxel.TransactionCoordinator,
        name: WorldServer.Voxel.TransactionCoordinator,
        persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
