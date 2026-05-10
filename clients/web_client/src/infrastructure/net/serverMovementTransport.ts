@@ -112,6 +112,7 @@ export class ServerMovementTransport implements MovementTransport {
   private receivedMessageCount = 0;
   private receivedAckCount = 0;
   private receivedRemoteSnapshotCount = 0;
+  private droppedSelfLoopSnapshotCount = 0;
   private lastAckSeq: number | null = null;
   private lastRemoteTickByCid = new Map<number, number>();
   private receivedPlayerStateCount = 0;
@@ -199,6 +200,7 @@ export class ServerMovementTransport implements MovementTransport {
       receivedMessageCount: this.receivedMessageCount,
       receivedAckCount: this.receivedAckCount,
       receivedRemoteSnapshotCount: this.receivedRemoteSnapshotCount,
+      droppedSelfLoopSnapshotCount: this.droppedSelfLoopSnapshotCount,
       lastAckSeq: this.lastAckSeq,
       lastRemoteTickByCid: Object.fromEntries(this.lastRemoteTickByCid),
       receivedPlayerStateCount: this.receivedPlayerStateCount,
@@ -773,6 +775,26 @@ export class ServerMovementTransport implements MovementTransport {
         this.lastAckSeq = message.ack.ackSeq;
         break;
       case "player_move":
+        // Defense-in-depth: AOI broadcast on the server side is supposed to
+        // exclude the moving player itself (Octree.get_in_bound_except), but
+        // if that filter ever fails — or if a same-cid actor (NPC reusing a
+        // player cid, double-bound connection, etc.) leaks one through —
+        // the client would create a "remote" mesh keyed by its own cid and
+        // happily update it from every self-move snapshot, producing the
+        // "remote cube follows me" symptom. Drop the snapshot here and emit
+        // a structured observe so we can see post-mortem if the server is
+        // actually self-looping.
+        if (this.cid !== null && message.snapshot.cid === this.cid) {
+          this.droppedSelfLoopSnapshotCount += 1;
+          this.logger.emit("transport", "remote_snapshot_self_loop_dropped", {
+            mode: SERVER_TRANSPORT_MODE,
+            cid: this.cid,
+            tick: message.snapshot.serverTick,
+            dropped_count: this.droppedSelfLoopSnapshotCount,
+          });
+          break;
+        }
+
         this.remoteSnapshots.push(message.snapshot);
         this.receivedRemoteSnapshotCount += 1;
         this.lastRemoteTickByCid.set(message.snapshot.cid, message.snapshot.serverTick);
@@ -787,9 +809,27 @@ export class ServerMovementTransport implements MovementTransport {
         });
         break;
       case "player_enter":
+        if (this.cid !== null && message.cid === this.cid) {
+          this.droppedSelfLoopSnapshotCount += 1;
+          this.logger.emit("transport", "remote_enter_self_loop_dropped", {
+            mode: SERVER_TRANSPORT_MODE,
+            cid: this.cid,
+            dropped_count: this.droppedSelfLoopSnapshotCount,
+          });
+          break;
+        }
         this.remoteEntityEnters.push({ cid: message.cid, position: message.position });
         break;
       case "player_leave":
+        if (this.cid !== null && message.cid === this.cid) {
+          this.droppedSelfLoopSnapshotCount += 1;
+          this.logger.emit("transport", "remote_leave_self_loop_dropped", {
+            mode: SERVER_TRANSPORT_MODE,
+            cid: this.cid,
+            dropped_count: this.droppedSelfLoopSnapshotCount,
+          });
+          break;
+        }
         this.remoteEntityLeaves.push(message.cid);
         break;
       case "time_sync_reply":
