@@ -38,35 +38,72 @@ defmodule WorldServer.WorldSup do
 
   @doc """
   Resolves `:scene_opts_by_participant` for the
-  `WorldServer.Voxel.TransactionRecoveryWatcher` resume path by looking up
-  each participant's scene node through `BeaconServer`.
+  `WorldServer.Voxel.TransactionRecoveryWatcher` resume path by looking
+  up **each participant's** scene_node from `MapLedger` (Phase A4-bis-4
+  段 2d).
 
-  Phase A4-1 changed the watcher contract from `0-arity → {:ok, [scene_opts:
-  ...]}` to `1-arity(participants) → {:ok, [scene_opts_by_participant: %{...}]}`
-  to match `TransactionExecutor.execute/4` per-participant API. Phase A4
-  still uses a single global Scene node for all participants(BeaconServer
-  registers `:scene_server` once); A4-2 will switch to per-region scene-node
-  resolution via lease.
+  Each participant's `region_id` is resolved through
+  `MapLedger.lookup_region_scene_node/2` (which reads the
+  `RegionAssignment.assigned_scene_node` filled in by `put_region` from
+  `SceneNodeRegistry.assign_region/2`). A `chunk_directory` target of
+  `{SceneServer.Voxel.ChunkDirectory, scene_node}` is built per
+  participant — single-BEAM dev / single-`scene_node` deployment ends
+  up with all participants pointing at the same node, multi-`scene_node`
+  deployments naturally route to different nodes.
 
-  Returns `{:ok, executor_opts}` when the Scene node is reachable, or
-  `{:error, :scene_unavailable}` when the registry has no entry yet
-  (e.g. watcher started before the Scene node finished joining). The
-  watcher leaves the transaction parked and emits
-  `voxel_transaction_recovery_scene_opts_unavailable` in that case.
+  Returns:
+
+  * `{:ok, executor_opts}` — at least one participant resolved, all
+    resolved participants are in the per-participant opts map.
+    Unresolved participants (region not yet assigned to a scene_node)
+    are dropped from the map; the executor will fail those participants
+    individually later. *Open question:* should we instead fail the whole
+    resume here? For now, partial-resolution lets the executor
+    distinguish "per-participant prepare failure" from "world routing
+    failure" in observe.
+  * `{:error, :scene_unavailable}` — *no* participant has an assigned
+    scene_node. Watcher leaves the transaction parked and emits
+    `voxel_transaction_recovery_scene_opts_unavailable`.
   """
-  def default_scene_opts_resolver(participants) when is_list(participants) do
-    case BeaconServer.Client.lookup(:scene_server) do
-      {:ok, scene_node} ->
-        scene_opts_by_participant =
-          Map.new(participants, fn participant ->
-            {{participant.region_id, participant.lease_id},
-             [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]}
-          end)
+  def default_scene_opts_resolver(participants) when is_list(participants),
+    do: default_scene_opts_resolver(participants, [])
 
-        {:ok, [scene_opts_by_participant: scene_opts_by_participant]}
+  @doc """
+  Same as `default_scene_opts_resolver/1` but with injectable opts —
+  used by tests that need to point at a per-test isolated MapLedger
+  rather than the production global `WorldServer.Voxel.MapLedger`.
 
-      :error ->
+  Opts:
+
+  * `:ledger` — `MapLedger` GenServer name / pid (default
+    `WorldServer.Voxel.MapLedger`).
+  """
+  def default_scene_opts_resolver(participants, opts) when is_list(participants) do
+    ledger = Keyword.get(opts, :ledger, WorldServer.Voxel.MapLedger)
+
+    pairs =
+      Enum.flat_map(participants, fn participant ->
+        case WorldServer.Voxel.MapLedger.lookup_region_scene_node(
+               ledger,
+               participant.region_id
+             ) do
+          {:ok, scene_node} ->
+            [
+              {{participant.region_id, participant.lease_id},
+               [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]}
+            ]
+
+          :error ->
+            []
+        end
+      end)
+
+    case pairs do
+      [] ->
         {:error, :scene_unavailable}
+
+      _ ->
+        {:ok, [scene_opts_by_participant: Map.new(pairs)]}
     end
   end
 end

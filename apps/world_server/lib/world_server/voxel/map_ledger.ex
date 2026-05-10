@@ -98,6 +98,16 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:route_chunk, logical_scene_id, chunk_coord})
   end
 
+  @doc """
+  Phase A4-bis-4 段 2d: returns the scene_node currently assigned to
+  `region_id`, or `:error` when the region is unknown / has no
+  scene_node assigned (e.g. World booted before any scene_node
+  registered). Read-only.
+  """
+  def lookup_region_scene_node(server \\ __MODULE__, region_id) do
+    GenServer.call(server, {:lookup_region_scene_node, region_id})
+  end
+
   @doc "Routes a chunk coordinate and returns both the assignment and current lease."
   def route_chunk_with_lease(server \\ __MODULE__, logical_scene_id, chunk_coord) do
     GenServer.call(server, {:route_chunk_with_lease, logical_scene_id, chunk_coord})
@@ -303,6 +313,22 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp do_handle_call({:route_chunk, logical_scene_id, chunk_coord}, _from, state) do
     {:reply, route_chunk_in_state(state, logical_scene_id, chunk_coord), state}
+  end
+
+  defp do_handle_call({:lookup_region_scene_node, region_id}, _from, state) do
+    reply =
+      case Map.fetch(state.assignments, region_id) do
+        {:ok, %RegionAssignment{assigned_scene_node: node}} when not is_nil(node) ->
+          {:ok, node}
+
+        {:ok, %RegionAssignment{assigned_scene_node: nil}} ->
+          :error
+
+        :error ->
+          :error
+      end
+
+    {:reply, reply, state}
   end
 
   defp do_handle_call({:route_chunk_with_lease, logical_scene_id, chunk_coord}, _from, state) do
