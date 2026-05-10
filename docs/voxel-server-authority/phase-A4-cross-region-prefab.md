@@ -270,7 +270,7 @@ TransactionExecutor.execute(
 
 ## A4-bis-cluster — 真正的多 scene_node 分布式部署
 
-> 起草日期:2026-05-10。**状态**:决策稿(等用户拍 D8-D11 后开始实施;紧接 A4-final 之后,A5 之前)。
+> 起草日期:2026-05-10。**状态**:决策稿已拍板(D8.B / D9 全量升级 / D10.B / D11 推荐采纳),等 A4-5 / A4-6 / A4-final 落地后开始实施;紧接 A4-final 之后,A5 之前。
 
 ### 触发原因
 
@@ -298,37 +298,67 @@ A4-1~A4-4 已经把"跨节点路径"用注入式接口串好(`:scene_node_resolv
 - **动态再平衡**:基于 metric 的 region 重分配留 Phase 6;A4-bis-cluster 只做启动期分配 + 静态 / 简策略(D8)
 - **客户端节点感知**:client wire 不暴露 scene_node 信息,继续用 logical_scene_id + region_id 寻址
 
-### 决策项(待用户敲定)
+### 决策项(已拍板 2026-05-10)
 
-#### D8. region → scene_node 分配策略
+#### D8. region → scene_node 分配策略 — 采纳 **D8.B**
 
-  - **D8.A**:静态 hash(region_id mod scene_node_count)。简单,但加节点要重映射全部 region。**否**(MVP 不接受运维痛点)
-  - **D8.B**:World coordinator 启动时按 scene_node join 顺序,把 region 列表均分给已 join 的 scene_node。新加 scene_node 时只接 backlog region(已有 region 不动)。简单,顺序敏感但 MVP 可接受。**倾向**
-  - **D8.C**:基于 metric 的动态均衡(节点 CPU / 内存 / chunk 数)。Phase 6 留
-  - **倾向 D8.B 起手,D8.C 留 Phase 6**
+被否方案:
 
-#### D9. BeaconServer term key 扩展
+  - **D8.A**:静态 hash(region_id mod scene_node_count)。**否** —— 加节点要重映射全部 region,MVP 不接受运维痛点
+  - **D8.C**:基于 metric 的动态均衡(节点 CPU / 内存 / chunk 数)。**否(本阶段)** —— 留 Phase 6 HA
 
-`BeaconServer.Client.register/1` / `lookup/1` 当前签名只接 atom resource。要支持 `{:voxel_region_scene_node, region_id}` 这种 term tuple key:
+采纳:
 
-  - **D9.A**:加一对 `register_term/2` / `lookup_term/1` API,Horde.Registry 注册 term key 直接走;atom 路径保持兼容。**倾向**(不动现有 caller)
-  - **D9.B**:改 `register/1` / `lookup/1` 接受 atom OR term tuple(参数 polymorphic)。**否**(touch 面太大,所有 caller 要重测)
+  - **D8.B**:World coordinator 启动时按 scene_node join 顺序,把 region 列表均分给已 join 的 scene_node。新加 scene_node 时只接 backlog region(已有 region 不动,避免 runtime 转手)。简单、顺序敏感但 MVP 可接受。
 
-#### D10. Scene 端 ObjectRegistry / ChunkDirectory 的 instance 形态
+实施细节:
 
-  - **D10.A**:per-region named instance(每个 scene_node 上每个 region 启动独立 `ChunkDirectory.Region<id>` / `ObjectRegistry.Region<id>`)。supervision 树膨胀(N region 启 2N 进程),但语义清晰
-  - **D10.B**:单 instance,内部按 region_id 路由(scene_node 上一个 ChunkDirectory + 一个 ObjectRegistry,内部 state 按 region 分桶)。supervision 简单,跟 A4-4 当前架构连续
-  - **倾向 D10.B**:`:region_routing_fn` 仍可注入,只是 default 不再退化为本地——而是按 region_id 解析到对应 instance(同一 BEAM 内不同 region 路由到同一 instance,但跨节点路由到对方 BEAM 的 instance)。chunk_pid 仍 per-chunk 独立进程,通过 chunk_coord lookup 找到
+  - `WorldServer.Voxel.SceneNodeRegistry` 新模块持有 `scene_node_join_order :: [node()]` + `region_assignments :: %{region_id => node()}`
+  - scene_node join(BeaconServer 监听 `:scene_server` 注册事件)→ append 到 join_order;尚未分配的 region 按 round-robin 分给所有已 join 节点
+  - scene_node leave(节点 down)→ MVP 不做 reassignment(失联 region 进入 unavailable 状态,World 拒绝相关 lease;真 failover 留 Phase 6)
 
-#### D11. chunk → region resolver(decommission ObjectOwnerLookup degenerate split)
+#### D9. BeaconServer 全量升级支持 term key — 采纳 **彻底升级,不留兼容**
+
+`BeaconServer.Client.register/1` / `lookup/1` / `await/2` 当前签名只接 atom resource。要支持 `{:voxel_region_scene_node, region_id}` 这种 term tuple key。
+
+**用户决策(2026-05-10)**:遵循"全新未上线系统不留兼容"纪律,**直接把 resource 参数升级为 `term()`,所有现有 atom caller 一并迁移到新签名**。没有 `register_term/2` 双 API,没有 atom / term polymorphic,没有 deprecated 别名。
+
+修改面:
+
+  - `BeaconServer.Client.register/1` / `lookup/1` / `await/2` 签名:`atom()` → `term()`(实际是 `atom() | tuple()`)
+  - Horde.Registry 调用层:验证 term key 在 Horde 中的注册行为(可能需要 `:erlang.phash2/1` 哈希分布)
+  - 所有现有 caller 迁移:`apps/*/lib/.../interface.ex` 中的 `register/1` / `await/1`(`:scene_server` / `:data_contact` / `:data_service` / `:beacon_server` 等所有 resource)
+  - 全套 `BeaconServer.Client` 测试覆盖 atom 和 term 两条路径
+
+被否方案:
+
+  - **D9.A**(双 API):`register_term/2` + atom `register/1` 共存。**否** —— 双路径维护成本 > 收益,违反全新未上线纪律
+  - **D9.B**(polymorphic):`register/1` 接受 atom OR tuple。**否** —— 等价于 D9 采纳但语义模糊(签名 `term()` 比 `atom() | tuple()` 更清晰)
+
+#### D10. Scene 端 ObjectRegistry / ChunkDirectory 的 instance 形态 — 采纳 **D10.B**
+
+被否方案:
+
+  - **D10.A**:per-region named instance(每个 scene_node 上每个 region 启动独立 `ChunkDirectory.Region<id>` / `ObjectRegistry.Region<id>`)。**否** —— supervision 树膨胀(N region 启 2N 进程),且 cross-region API call 要靠名字寻址 instance,跟 A4-4 现有 `:region_routing_fn` 注入式接口语义不连续
+
+采纳:
+
+  - **D10.B**:单 instance 内部按 region 分桶(scene_node 上一个 ChunkDirectory + 一个 ObjectRegistry,内部 state 按 region_id 分组)
+
+实施细节:
+
+  - 同一 BEAM 内不同 region → `:region_routing_fn` 解析为 local atom(直接调本地 instance)
+  - 跨节点 region → 解析为 `{Mod, scene_node}` tuple(GenServer.call / cast 天然跨节点)
+  - chunk_pid 仍 per-chunk 独立进程,通过 chunk_coord 在对应 ChunkDirectory 内 lookup
+  - ChunkDirectory state 不需要硬性按 region 分桶(chunk_coord lookup 已经唯一);但 ObjectOwnerLookup / RegionRuntime 内部按 region 分桶维护 lease / cache 状态
+
+#### D11. chunk → region resolver — 采纳 **加 `MapLedger.region_for_chunk/2` API + 反向索引**
 
 冷启动 cache miss 时 `ObjectOwnerLookup.fetch_owner` 当前退化为 `%{owner_key => obj.covered_chunks}`(所有 chunks 归 owner region)。A4-bis-cluster 加 chunk → region resolver:
 
-  - 调 `MapLedger.region_for_chunk(scene_id, chunk_coord) :: {:ok, region_id} | {:error, :not_in_any_region}`(API 待加;查 World 当前 lease 划分,具体读 `state.lease_by_region` 反向 chunk → lease/region 索引)
-  - 一次性给每个 covered_chunk 解析,组装准确的 covered_chunks_by_region
-  - 写入 cache
-
-如果 `MapLedger.region_for_chunk` API 还没有,本阶段顺手加;预期是 World 端 ledger 维护一个 `chunk_coord → region_id` 反向索引(可能要在 lease apply / release 路径增量维护)。
+  - 新 API `MapLedger.region_for_chunk(scene_id, chunk_coord) :: {:ok, region_id} | {:error, :not_in_any_region}`
+  - World 端 ledger 维护 `chunk_coord → region_id` 反向索引,在 lease apply / release / migration 路径增量维护(具体怎么挂在 `MapLedger` state 里实施时定)
+  - `ObjectOwnerLookup` cold-start 改为按 covered_chunks 逐个 resolve,组装准确的 covered_chunks_by_region 并写入 cache
 
 ### 风险
 
@@ -343,7 +373,7 @@ A4-1~A4-4 已经把"跨节点路径"用注入式接口串好(`:scene_node_resolv
 
 | Step | 范围 | 估时 |
 |---|---|---|
-| **A4-bis-1** | `BeaconServer.Client` term key 扩展(D9):新增 `register_term/2` / `lookup_term/1` / `unregister_term/1`;atom API 不动 | 0.3-0.5 天 |
+| **A4-bis-1** | `BeaconServer.Client` 签名升级为 `term()`(D9 全量升级):`register/1` / `lookup/1` / `await/2` 参数从 atom 升级到 term;**所有现有 caller 一并迁移**(`scene_server` / `data_contact` / `data_service` / `beacon_server` 等 `interface.ex` + `world_sup`);atom 路径不留 deprecated 别名;BeaconServer.Client 全套测试覆盖 atom 和 term 两条路径 | 0.5-1 天 |
 | **A4-bis-2** | `SceneServer.Voxel.RegionRouting` 新模块:`register_local_region/2` / `unregister_local_region/1` / `resolve_scene_node/1` / `resolve_chunk_directory/1`;test 用 :persistent_term / Process dictionary 注入 stub | 0.5 天 |
 | **A4-bis-3** | `RegionRuntime.apply_lease` 接 `RegionRouting.register_local_region`;lease 释放(migration / expiry)接 unregister;e2e:lease apply → BeaconServer 可见 | 0.5 天 |
 | **A4-bis-4** | World 端 `MapLedger` 加 region → scene_node 分配策略(D8);新增 `WorldServer.Voxel.SceneNodeRegistry`(World 端 region → scene_node map);`world_sup` / Worker.Interface 路径改造为按 transaction.participants 解析对应 scene_node 构造 `scene_opts_by_participant`;`MapLedger.region_for_chunk/2` API(D11) | 1-1.5 天 |
@@ -351,7 +381,7 @@ A4-1~A4-4 已经把"跨节点路径"用注入式接口串好(`:scene_node_resolv
 | **A4-bis-6** | 双 BEAM `:peer` 节点 e2e:节点 A 持 region 1、节点 B 持 region 2;World 端跨节点 transaction prepare/commit;玩家在节点 A 攻击 region 2 chunk → owner ObjectRegistry(节点 B)收到 damage → cascade 0x6C 跨节点 fan-out 到节点 A 客户端 | 1-1.5 天 |
 | **A4-bis-final** | 决策稿 / `_session-handoff.md` 同步;移除 Phase 6 backlog 中已被 A4-bis-cluster 吸收的项;手动 demo 双 BEAM 跑同 logical_scene 跨 region prefab 摆放 / 破坏 | 0.2 天 |
 
-总估时:**3.5-5 天**。
+总估时:**4-5.5 天**(D9 全量升级比加新 API 多 0.5 天迁移所有 caller)。
 
 ### 验收标准
 
@@ -372,4 +402,5 @@ A4-4 / A4-5 / A4-6 落地后(单 BEAM 内验证跨 region 路径正确)→ A4-bi
 
 ### 进度日志
 
-- 2026-05-10:决策稿起草。等用户拍 D8-D11 后开始实施。从 Phase 6 HA 范围抽出"多 scene_node 部署",决策来源:用户指出"MVP 大世界一台机扛不住"。
+- 2026-05-10:决策稿起草。从 Phase 6 HA 范围抽出"多 scene_node 部署",决策来源:用户指出"MVP 大世界一台机扛不住"。
+- 2026-05-10:**D8-D11 拍板**。D8 采纳 D8.B(scene_node join 顺序均分,新加节点只接 backlog region);**D9 升级方案改为彻底升级,不留兼容**(用户决策:"全新系统不留兼容,要升级就彻底升级"——`BeaconServer.Client.register/1` / `lookup/1` / `await/2` 签名升级为 `term()`,所有现有 atom caller 一并迁移,无 `register_term/2` 双 API、无 polymorphic、无 deprecated 别名;估时 +0.5 天 cover 所有 caller 迁移);D10 采纳 D10.B(单 instance 内部按 region 分桶);D11 采纳新 API `MapLedger.region_for_chunk/2` + 反向索引。总估时 3.5-5 天 → 4-5.5 天。等 A4-5 / A4-6 / A4-final 落地后开始实施。
