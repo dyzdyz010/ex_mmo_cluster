@@ -1,6 +1,6 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-10,**A4-bis-3 落地后**(`RegionRuntime.apply_lease` 在 put state.leases 后调 `RegionRouting.register_local_region`;lease 释放走 process exit + Horde reap;Horde startup 移到 `scene_server/test/test_helper.exs`)。生产路径 RegionRuntime 还无 lease caller(A4-bis-4 接 World 后才在生产触发 register)。A4-bis-cluster 6 step 已落地 3 / 6。
+**Last updated**:2026-05-10,**A4-bis-4 段 1 落地后**(World 端新模块 `WorldServer.Voxel.SceneNodeRegistry` 实现 D8.B join-order round-robin region 分配 + 不 reassign 已分配 region 的核心 invariant;**段 1 纯独立模块 + 单测,零 production-path 改动**;段 2 接 supervision tree / BeaconServer subscriber / MapLedger 集成 / world_sup 改造)。A4-bis-cluster 6 step 已落地 3.5 / 6。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
@@ -26,7 +26,8 @@
 | **A4 跨 region prefab 多 participant 事务 + 跨节点 damage / 0x6C 路由(主体)** | 已完成 | `f49c0b9` (决策稿) → `22312e0` (D7 折回) → `3f381d0` (A4-1) → `6acd37d` (A4-2) → `e6eafa3` (A4-3) → `630574b` (A4-4) → `13ef21a` (偏移同步) → `4ab6c83` (D8-D11 拍板) → `4198b8e` (A4-5) → `e3a5c01` (A4-6 + A4-final) |
 | A4-bis-cluster A4-bis-1:`BeaconServer.Client` term key 全量升级 | 已完成 | 本会话 (`1fd1446`) |
 | A4-bis-cluster A4-bis-2:`SceneServer.Voxel.RegionRouting` 新模块 + `BeaconServer.Client.unregister/1` | 已完成 | 本会话 (`8a6e124`) |
-| A4-bis-cluster A4-bis-3:`RegionRuntime.apply_lease` 接 RegionRouting + Horde startup 移 test_helper | 已完成 | 本会话 |
+| A4-bis-cluster A4-bis-3:`RegionRuntime.apply_lease` 接 RegionRouting + Horde startup 移 test_helper | 已完成 | 本会话 (`c866fde`) |
+| A4-bis-cluster A4-bis-4 段 1:`WorldServer.Voxel.SceneNodeRegistry` 新模块(D8.B join-order round-robin + no-failover) | 已完成 | 本会话 |
 
 测试规模(2026-05-10,prefab 微精度 hotfix 收尾):
 
@@ -57,7 +58,7 @@ A1-1b 1 + watcher hotfix 1 + handoff docs 1 + prefab micro hotfix 2)。
 
 | 阶段 | 状态 | 范围 |
 | --- | --- | --- |
-| A4-bis-cluster | 进行中(A4-bis-1/2/3 ✓ → 3 step 待办) | 真正的多 scene_node 分布式部署。剩余步骤:**A4-bis-4** World 端 `MapLedger` region → scene_node 分配(D8.B join-order)+ `WorldServer.Voxel.SceneNodeRegistry` + `world_sup` / Worker.Interface 改造按 participant 解析对应 scene_node + `MapLedger.region_for_chunk/2`;**A4-bis-5** ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default opts 改为走 RegionRouting + cold-start 走 region resolver;**A4-bis-6** 双 BEAM `:peer` 节点 e2e;**A4-bis-final** 决策稿/handoff 同步。决策来源:用户"MVP 大世界一台机扛不住",从 Phase 6 HA 提前。剩余估时 2.5-4 天。文档:`phase-A4-cross-region-prefab.md` 文末 A4-bis-cluster 段 |
+| A4-bis-cluster | 进行中(A4-bis-1/2/3/4-段1 ✓ → 2.5 step 待办) | 真正的多 scene_node 分布式部署。剩余步骤:**A4-bis-4 段 2** SceneNodeRegistry 接到 `WorldServer.WorldSup` + 订阅 BeaconServer.DistributedRegistry `:scene_server` 事件 + `MapLedger.put_region` 调 `assign_region/2` 持久化 assigned_scene_node + `MapLedger.region_for_chunk/2` 反向索引 API + `world_sup.default_scene_opts_resolver/1` 改按 participant `lookup_assignment` 解析 scene_node;**A4-bis-5** ObjectOwnerLookup / VoxelDamageRouter / ObjectRegistry default opts 改为走 RegionRouting + cold-start 走 region resolver;**A4-bis-6** 双 BEAM `:peer` 节点 e2e;**A4-bis-final** 决策稿/handoff 同步。决策来源:用户"MVP 大世界一台机扛不住",从 Phase 6 HA 提前。剩余估时 2-3.5 天。文档:`phase-A4-cross-region-prefab.md` 文末 A4-bis-cluster 段 |
 | A3 | 未开始 | 阶段 A 子 3:多客户端同世界联调(本地多 tab / 多机 + chunk 订阅一致性 + 移动同步 + 破坏可见性) |
 | 5 | 未开始 | 属性目录 + 温湿度基础模拟 |
 | 测试隔离 | 未开始 | test_helper 加 setup TRUNCATE `voxel_transaction_coordinator_snapshots` / `voxel_chunk_pending_transactions`,避免跨 mix test stale snapshot 让 transaction 路径走 replay-skip |
