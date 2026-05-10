@@ -8,7 +8,14 @@ const DEFAULT_SNAPSHOT_TICK_SECS = 0.1;
 // server sample in reserve without adding the extra 70 ms "slow half-beat"
 // introduced by the previous 220 ms delay.
 export const INTERPOLATION_DELAY_SECS = 0.15;
-export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.25;
+// Server AOI Priority throttles low-priority (far) observers to one
+// snapshot per 5 server ticks = 500 ms (see
+// `apps/scene_server/lib/scene_server/aoi/priority.ex` `delivery_interval/1`).
+// The clamp must cover that gap or remote players visibly stutter:
+// extrapolation freezes after the clamp window, then snaps when the
+// next throttled snapshot arrives. 600 ms = 500 ms throttle + 100 ms
+// jitter headroom.
+export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.6;
 
 interface BufferedSnapshot {
   snapshot: RemoteMoveSnapshot;

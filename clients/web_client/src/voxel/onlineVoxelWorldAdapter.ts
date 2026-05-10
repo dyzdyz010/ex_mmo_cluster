@@ -163,7 +163,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private clientIntentSeq = 1;
   private readonly pendingPrefabIntents = new Map<
     number,
-    { blueprintId: number; blueprintName: string }
+    { blueprintId: number; blueprintName: string; sentAtMs: number }
   >();
   private lastSeedAttemptMs = 0;
   private lastSeedDurationMs: number | null = null;
@@ -442,6 +442,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.pendingPrefabIntents.set(requestId, {
       blueprintId: blueprint.id,
       blueprintName: name,
+      sentAtMs: performance.now(),
     });
     return { ok: true, placed: blueprint.expectedCellCount };
   }
@@ -513,6 +514,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.pendingPrefabIntents.set(requestId, {
       blueprintId: blueprint.id,
       blueprintName: request.prefabName,
+      sentAtMs: performance.now(),
     });
 
     return {
@@ -933,6 +935,22 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     const pendingPrefab = this.pendingPrefabIntents.get(result.requestId);
     if (pendingPrefab) {
       this.pendingPrefabIntents.delete(result.requestId);
+
+      // Phase A4-bis follow-up: surface end-to-end client-side RTT for
+      // prefab intents so we can tell whether the user-perceived
+      // "prefab placement is slow" stall is on the server (long RTT)
+      // or on the client (RTT short, but mesh rebuild blocks the main
+      // thread afterwards). Logged through the same logger every other
+      // voxel observe uses, so it shows up in the existing CLI sink.
+      const elapsedMs = Math.round(performance.now() - pendingPrefab.sentAtMs);
+      this.logger.emit("voxel", "prefab_intent_rtt", {
+        request_id: result.requestId,
+        blueprint_id: pendingPrefab.blueprintId,
+        blueprint_name: pendingPrefab.blueprintName,
+        result_code: result.resultCodeName,
+        elapsed_ms: elapsedMs,
+      });
+
       this.bus.emit("world:voxel-prefab-result", {
         blueprintId: pendingPrefab.blueprintId,
         blueprintName: pendingPrefab.blueprintName,
