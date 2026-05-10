@@ -23,6 +23,14 @@ defmodule WorldServer.Voxel.RegionAssignment do
     :owner_scene_instance_ref,
     :owner_epoch,
     :lease_id,
+    # Phase A4-bis-4 段 2c: scene_node owning hot execution for this
+    # region. Filled in by `MapLedger.put_region/2` from
+    # `WorldServer.Voxel.SceneNodeRegistry.assign_region/2` when a
+    # registry is configured; `nil` for legacy single-`scene_node`
+    # paths or when no scene_nodes were registered at put time
+    # (admin can re-bind by re-issuing put_region after a scene_node
+    # registers).
+    :assigned_scene_node,
     state: :active,
     summary_hash: 0,
     version: 0
@@ -39,6 +47,7 @@ defmodule WorldServer.Voxel.RegionAssignment do
           owner_scene_instance_ref: non_neg_integer(),
           owner_epoch: non_neg_integer(),
           lease_id: non_neg_integer() | nil,
+          assigned_scene_node: node() | nil,
           state: state(),
           summary_hash: non_neg_integer(),
           version: non_neg_integer()
@@ -56,6 +65,7 @@ defmodule WorldServer.Voxel.RegionAssignment do
       owner_scene_instance_ref: fetch!(attrs, :owner_scene_instance_ref),
       owner_epoch: fetch!(attrs, :owner_epoch),
       lease_id: Map.get(attrs, :lease_id),
+      assigned_scene_node: Map.get(attrs, :assigned_scene_node),
       state: Map.get(attrs, :state, :active),
       summary_hash: Map.get(attrs, :summary_hash, 0),
       version: Map.get(attrs, :version, 0)

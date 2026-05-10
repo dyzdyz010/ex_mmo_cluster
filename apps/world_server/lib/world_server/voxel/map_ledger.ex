@@ -137,7 +137,13 @@ defmodule WorldServer.Voxel.MapLedger do
       migrations: %{},
       write_token_store: Keyword.get(opts, :write_token_store),
       persist_fn: persist_fn,
-      scene_invalidator: Keyword.get(opts, :scene_invalidator)
+      scene_invalidator: Keyword.get(opts, :scene_invalidator),
+      # Phase A4-bis-4 段 2c: optional handle to
+      # WorldServer.Voxel.SceneNodeRegistry. When set, `put_region`
+      # asks the registry for a scene_node assignment and stores it on
+      # the RegionAssignment. `nil` (default) keeps legacy behaviour
+      # for tests + single-node setups: assigned_scene_node stays nil.
+      scene_node_registry: Keyword.get(opts, :scene_node_registry)
     }
 
     case run_load(load_fn) do
@@ -175,7 +181,11 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp do_handle_call({:put_region, attrs}, _from, state) do
-    assignment = RegionAssignment.new(attrs)
+    assignment =
+      attrs
+      |> RegionAssignment.new()
+      |> maybe_assign_scene_node(state)
+
     key = assignment.region_id
 
     case validate_region_bounds_available(state, assignment) do
@@ -186,6 +196,7 @@ defmodule WorldServer.Voxel.MapLedger do
             :region_id,
             :owner_scene_instance_ref,
             :owner_epoch,
+            :assigned_scene_node,
             :state
           ])
         end)
@@ -856,6 +867,40 @@ defmodule WorldServer.Voxel.MapLedger do
     case Map.fetch(state.assignments, region_id) do
       {:ok, assignment} -> {:ok, assignment}
       :error -> {:error, :unknown_region}
+    end
+  end
+
+  # Phase A4-bis-4 段 2c: ask SceneNodeRegistry which scene_node should
+  # own this region (D8.B join-order round-robin). When no registry is
+  # configured (legacy / single-node tests) or the caller already
+  # filled `assigned_scene_node` (e.g. seed scripts pinning a node),
+  # we leave the assignment alone.
+  defp maybe_assign_scene_node(%RegionAssignment{} = assignment, %{
+         scene_node_registry: nil
+       }),
+       do: assignment
+
+  defp maybe_assign_scene_node(%RegionAssignment{assigned_scene_node: node} = assignment, _state)
+       when not is_nil(node),
+       do: assignment
+
+  defp maybe_assign_scene_node(%RegionAssignment{} = assignment, %{
+         scene_node_registry: registry
+       }) do
+    case WorldServer.Voxel.SceneNodeRegistry.assign_region(registry, assignment.region_id) do
+      {:ok, scene_node} ->
+        %{assignment | assigned_scene_node: scene_node}
+
+      {:error, :no_scene_nodes} ->
+        # Allow the put_region to succeed with assigned_scene_node = nil
+        # so World can boot before any scene_node arrives. After a
+        # scene_node registers, an admin re-issuing put_region (or a
+        # future auto-rebind sweeper) will fill it in.
+        CliObserve.emit("voxel_region_put_no_scene_nodes", fn ->
+          %{logical_scene_id: assignment.logical_scene_id, region_id: assignment.region_id}
+        end)
+
+        assignment
     end
   end
 
