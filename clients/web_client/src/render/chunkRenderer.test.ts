@@ -1,3 +1,4 @@
+import { BufferGeometry, Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import { MacroWorldSize } from "../voxel/core/constants";
 import { ChunkRenderController } from "./chunkRenderer";
@@ -21,6 +22,28 @@ describe("ChunkRenderController hit-face outline", () => {
     expect(snapshot.position.z).toBeCloseTo((3 + 0.5) * MacroWorldSize);
 
     controller.dispose();
+  });
+
+  it("keeps the previous voxel selection for near-equal chunk seam ray hits", () => {
+    const controller = new ChunkRenderController();
+    const left = new Mesh(new BufferGeometry(), new MeshStandardMaterial());
+    const right = new Mesh(new BufferGeometry(), new MeshStandardMaterial());
+    const camera = new PerspectiveCamera();
+
+    installFakeRaycaster(controller, [
+      [makeTopHit(right, 16, 10)],
+      [makeTopHit(left, 15, 10), makeTopHit(right, 16, 10.1)],
+      [makeTopHit(left, 15, 10), makeTopHit(right, 16, 11)],
+    ]);
+    installChunkMeshes(controller, [left, right]);
+
+    expect(controller.raycastFromCameraCenter(camera)?.occupiedMacro.x).toBe(16);
+    expect(controller.raycastFromCameraCenter(camera)?.occupiedMacro.x).toBe(16);
+    expect(controller.raycastFromCameraCenter(camera)?.occupiedMacro.x).toBe(15);
+
+    controller.dispose();
+    left.material.dispose();
+    right.material.dispose();
   });
 
   it("shows a prefab micro-wire preview at the adjacent placement cells", () => {
@@ -167,3 +190,41 @@ describe("ChunkRenderController hit-face outline", () => {
     );
   });
 });
+
+function installFakeRaycaster(
+  controller: ChunkRenderController,
+  hitBatches: ReturnType<typeof makeTopHit>[][],
+): void {
+  let callIndex = 0;
+  Object.defineProperty(controller, "raycaster", {
+    value: {
+      setFromCamera(): void {},
+      intersectObjects(): ReturnType<typeof makeTopHit>[] {
+        const batch = hitBatches[Math.min(callIndex, hitBatches.length - 1)] ?? [];
+        callIndex += 1;
+        return batch;
+      },
+    },
+  });
+}
+
+function installChunkMeshes(controller: ChunkRenderController, meshes: Mesh[]): void {
+  Object.defineProperty(controller, "chunkMeshes", {
+    value: new Map(meshes.map((mesh, index) => [`test-${index}`, mesh])),
+  });
+}
+
+function makeTopHit(object: Mesh, macroX: number, distance: number) {
+  return {
+    distance,
+    point: new Vector3((macroX + 0.5) * MacroWorldSize, MacroWorldSize, MacroWorldSize / 2),
+    face: {
+      a: 0,
+      b: 1,
+      c: 2,
+      materialIndex: 0,
+      normal: new Vector3(0, 1, 0),
+    },
+    object,
+  };
+}

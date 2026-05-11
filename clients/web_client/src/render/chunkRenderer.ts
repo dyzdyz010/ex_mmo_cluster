@@ -11,6 +11,7 @@ import {
   Vector3,
 } from "three";
 import type { PerspectiveCamera } from "three";
+import type { Intersection } from "three";
 import { buildChunkMeshData, type ChunkMeshBuildData } from "../voxel/meshing/chunkMesher";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import {
@@ -32,6 +33,8 @@ export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 
 const HIT_FACE_OUTLINE_OFFSET = MacroWorldSize * 0.006;
 const HIT_FACE_OUTLINE_SIZE = MacroWorldSize * 1.04;
+const RAYCAST_SURFACE_NUDGE = MacroWorldSize * 0.001;
+const RAYCAST_SEAM_DISTANCE_EPSILON = MacroWorldSize * 0.002;
 const LOCAL_FACE_NORMAL = new Vector3(0, 0, 1);
 
 interface ChunkMeshWorkerSuccess {
@@ -56,6 +59,12 @@ interface PendingChunkMeshBuild {
   id: number;
   key: string;
   startedAtMs: number;
+}
+
+interface RaycastSelectionCandidate {
+  distance: number;
+  key: string;
+  selection: VoxelRaySelection;
 }
 
 export interface VoxelRaySelection {
@@ -123,6 +132,7 @@ export class ChunkRenderController {
   private meshBuildSeq = 1;
   private readonly pendingMeshBuilds = new Map<string, PendingChunkMeshBuild>();
   private readonly completedMeshBuilds: ChunkMeshWorkerResponse[] = [];
+  private lastRaySelection: VoxelRaySelection | null = null;
 
   constructor() {
     this.group.name = "voxel-chunks";
@@ -303,31 +313,17 @@ export class ChunkRenderController {
   raycastFromCameraCenter(camera: PerspectiveCamera): VoxelRaySelection | null {
     const objects = [...this.chunkMeshes.values()];
     if (objects.length === 0) {
+      this.lastRaySelection = null;
       return null;
     }
 
     this.raycaster.setFromCamera(this.ndcCenter, camera);
-    const hit = this.raycaster.intersectObjects(objects, false)[0];
-    if (!hit?.face) {
-      return null;
-    }
-
-    const worldNormal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
-    const faceNormal = macroStepFromSurfaceNormal(worldNormal);
-    const occupiedMacro = macroCoordFromWorldPosition(
-      hit.point.clone().add(worldNormal.clone().multiplyScalar(-0.1)),
-      MacroWorldSize,
+    const selection = selectStableRaySelection(
+      this.raycaster.intersectObjects(objects, false),
+      this.lastRaySelection,
     );
-    const occupiedMicro = microTargetFromWorldPoint(
-      hit.point.clone().add(worldNormal.clone().multiplyScalar(-0.1)),
-    );
-    const adjacentMacro = {
-      x: occupiedMacro.x + faceNormal.x,
-      y: occupiedMacro.y + faceNormal.y,
-      z: occupiedMacro.z + faceNormal.z,
-    };
-    const adjacentMicro = stepMicroTarget(occupiedMicro, faceNormal);
-    return { occupiedMacro, adjacentMacro, faceNormal, occupiedMicro, adjacentMicro };
+    this.lastRaySelection = selection;
+    return selection;
   }
 
   setTargetHighlights(selection: VoxelRaySelection | null): void {
@@ -549,6 +545,92 @@ function parseChunkKey(key: string): FChunkCoord {
 }
 
 function formatCoord(coord: FMacroCoord): string {
+  return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function selectStableRaySelection(
+  hits: readonly Intersection<Mesh<BufferGeometry, MeshStandardMaterial>>[],
+  previous: VoxelRaySelection | null,
+): VoxelRaySelection | null {
+  const candidates = hits
+    .map(raycastCandidateFromHit)
+    .filter((candidate): candidate is RaycastSelectionCandidate => candidate !== null)
+    .sort(compareRaycastCandidates);
+  const nearest = candidates[0];
+  if (!nearest) {
+    return null;
+  }
+
+  const seamCandidates = candidates.filter(
+    (candidate) => candidate.distance - nearest.distance <= RAYCAST_SEAM_DISTANCE_EPSILON,
+  );
+  if (previous) {
+    const previousKey = raySelectionKey(previous);
+    const retained = seamCandidates.find((candidate) => candidate.key === previousKey);
+    if (retained) {
+      return retained.selection;
+    }
+  }
+
+  return seamCandidates[0]?.selection ?? nearest.selection;
+}
+
+function raycastCandidateFromHit(
+  hit: Intersection<Mesh<BufferGeometry, MeshStandardMaterial>>,
+): RaycastSelectionCandidate | null {
+  if (!hit.face) {
+    return null;
+  }
+
+  const worldNormal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+  const faceNormal = macroStepFromSurfaceNormal(worldNormal);
+  if (coordKey(faceNormal) === "0,0,0") {
+    return null;
+  }
+
+  const occupiedPoint = hit.point
+    .clone()
+    .add(worldNormal.clone().multiplyScalar(-RAYCAST_SURFACE_NUDGE));
+  const occupiedMacro = macroCoordFromWorldPosition(occupiedPoint, MacroWorldSize);
+  const occupiedMicro = microTargetFromWorldPoint(occupiedPoint);
+  const adjacentMacro = {
+    x: occupiedMacro.x + faceNormal.x,
+    y: occupiedMacro.y + faceNormal.y,
+    z: occupiedMacro.z + faceNormal.z,
+  };
+  const adjacentMicro = stepMicroTarget(occupiedMicro, faceNormal);
+  const selection = { occupiedMacro, adjacentMacro, faceNormal, occupiedMicro, adjacentMicro };
+  return {
+    distance: hit.distance,
+    key: raySelectionKey(selection),
+    selection,
+  };
+}
+
+function compareRaycastCandidates(
+  a: RaycastSelectionCandidate,
+  b: RaycastSelectionCandidate,
+): number {
+  const distanceDelta = a.distance - b.distance;
+  if (Math.abs(distanceDelta) > RAYCAST_SEAM_DISTANCE_EPSILON) {
+    return distanceDelta;
+  }
+  return a.key.localeCompare(b.key);
+}
+
+function raySelectionKey(selection: VoxelRaySelection): string {
+  return [
+    coordKey(selection.occupiedMacro),
+    coordKey(selection.adjacentMacro),
+    coordKey(selection.faceNormal),
+    selection.occupiedMicro ? coordKey(selection.occupiedMicro.macro) : "",
+    selection.occupiedMicro ? coordKey(selection.occupiedMicro.micro) : "",
+    selection.adjacentMicro ? coordKey(selection.adjacentMicro.macro) : "",
+    selection.adjacentMicro ? coordKey(selection.adjacentMicro.micro) : "",
+  ].join("|");
+}
+
+function coordKey(coord: { x: number; y: number; z: number }): string {
   return `${coord.x},${coord.y},${coord.z}`;
 }
 
