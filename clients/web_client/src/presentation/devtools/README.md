@@ -20,3 +20,6 @@ This directory owns the browser-side CLI surface exposed through
 - CLI commands should call controller/domain APIs instead of reaching into
   renderer or storage internals when an API already exists.
 - Observable output should stay JSON-safe and stable enough for smoke scripts.
+- Scene-region visualization commands (`scene_regions [on|off]`) are render
+  diagnostics only: they may read/toggle browser overlay state, but must not
+  mutate voxel truth or server leases.

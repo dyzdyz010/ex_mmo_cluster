@@ -8,6 +8,9 @@
 - movement 跳跃调试必须能通过 CLI / 日志读取：`jump_pressed`、`input_frame.movement_flags`、`movement_mode`、每帧 `renderedY/deltaY/velocityY`、ack 的 `movement_mode` 与 `correction_distance`，以及 `snapshot.actorDisplay.local.y` 这样的渲染显示高度。
 - voxel 微格调试必须能通过 CLI 读取：`micro_cell` 用于检查 prefab/refined cell
   的内部 micro slot；不要把 micro 暴露成玩家可直接放置/删除的编辑命令。
+- 双 scene owner / 跨边界 prefab 调试必须能通过 CLI 读取：`scene_regions`
+  返回 scene1/scene2 的 owner、chunk 范围和边界；`scene_regions off|on`
+  只切换浏览器可视叠加层，不改变 World / Scene 运行时状态。
 
 边界：
 

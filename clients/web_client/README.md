@@ -190,6 +190,43 @@ VITE_GAME_WS_URL=ws://127.0.0.1:20000/ingame/ws \
 npm run dev
 ```
 
+### 双 scene owner prefab 浏览器演示
+
+Windows 下可以用一条命令启动/复用服务端和 web client，并把 World 侧两个相邻
+region 配置成 scene1/scene2 两个 owner，运行产物默认写入 `.demo/observe/`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dual-scene-demo.ps1 -OpenBrowser
+```
+
+脚本会输出并保存 setup 证据：
+
+- `.demo/observe/dual-scene-setup-<timestamp>.log`
+- `.demo/observe/dual-scene-setup-<timestamp>.json`
+
+默认边界是 chunk `x=1`：scene1 覆盖 chunk `{0,0,0}`，scene2 覆盖
+chunk `{1,0,0}`。脚本会在两个小地块内各铺完整 `16×16` 格可交互服务端地面，
+面积接近 100 平方，便于在默认视野附近测试跨 scene 放置。
+浏览器世界中会显示蓝色 scene1、橙色 scene2 和白色边界柱，用于真实界面测试跨边界
+prefab 摆放。在线 voxel 启动时会自动分别订阅 `{0,0,0}` 与 `{1,0,0}`，半径均为 `0`，
+避免默认半径把未分配邻居 chunk 带入订阅后被 Gate 以 `:unassigned_chunk` 整批拒绝。
+Console 中可用：
+
+```js
+window.__voxelCli.run("scene_regions");
+window.__voxelCli.run("voxel_subscribe 0 0 0 0");
+window.__voxelCli.run("voxel_subscribe 1 0 0 0");
+window.__voxelCli.run("prefab_place_snap builtin_sphere 16 0 8 0 1 0 128 8 68");
+window.__voxelObserve.recent(200);
+window.__voxelCli.run("chunk_versions");
+```
+
+如果服务端和 web client 已经在跑，可复用进程但仍重新写入 scene setup 证据：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dual-scene-demo.ps1 -ReuseServer -ReuseWeb
+```
+
 类型检查（CI / commit 前必跑）：
 
 ```bash
@@ -249,6 +286,9 @@ window.__voxelCli?.run("voxel_probe voxel_rebind 1 all");
 window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
 window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
 window.__voxelCli?.run("chunk_versions");
+window.__voxelCli?.run("scene_regions");
+window.__voxelCli?.run("scene_regions off");
+window.__voxelCli?.run("scene_regions on");
 window.__voxelCli?.run("cell 0 1 0");
 window.__voxelCli?.run("micro_cell 0 1 0 1 2 3");
 window.__voxelCli?.run("select_material wood");
