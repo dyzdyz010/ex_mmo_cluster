@@ -44,10 +44,18 @@ interface EditIntentCall {
   clientIntentSeq: number;
 }
 
+interface SubscribeCall {
+  logicalSceneId: number;
+  centerChunk: { x: number; y: number; z: number };
+  radiusLInf: number;
+  wantSnapshot: boolean;
+}
+
 class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly prefabCalls: PrefabPlaceCall[] = [];
   readonly impactCalls: ImpactCall[] = [];
   readonly editIntentCalls: EditIntentCall[] = [];
+  readonly subscribeCalls: SubscribeCall[] = [];
   available = true;
   nextRequestId = 100;
 
@@ -67,7 +75,13 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
     return this.allocateRequestId();
   }
 
-  sendVoxelChunkSubscribe(): number | null {
+  sendVoxelChunkSubscribe(request: SubscribeCall): number | null {
+    this.subscribeCalls.push({
+      logicalSceneId: request.logicalSceneId,
+      centerChunk: { ...request.centerChunk },
+      radiusLInf: request.radiusLInf,
+      wantSnapshot: request.wantSnapshot,
+    });
     return this.allocateRequestId();
   }
 
@@ -194,6 +208,39 @@ afterEach(() => {
 });
 
 describe("OnlineVoxelWorldAdapter#placePrefab", () => {
+  it("subscribes all configured startup chunks with their exact radii", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: false,
+      primeDemoBlock: false,
+      initialSubscriptions: [
+        { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
+        { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
+      ],
+    });
+
+    adapter.onFrame(0);
+    adapter.onFrame(16);
+
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 1, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+    ]);
+  });
+
   it("does not seed the offline showcase during bootstrap", () => {
     const { adapter } = createAdapter();
 

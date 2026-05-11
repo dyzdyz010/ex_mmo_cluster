@@ -185,6 +185,10 @@ function createVoxelWorldAdapter(
     return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
       logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),
       defaultRadiusLInf: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS, 0),
+      initialSubscriptions: [
+        { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
+        { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
+      ],
       devSeed: import.meta.env.VITE_VOXEL_DEV_SEED !== "0",
       primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK !== "0",
     });

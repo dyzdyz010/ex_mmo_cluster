@@ -140,6 +140,7 @@ export interface OnlineVoxelWorldOptions {
   logicalSceneId?: number;
   defaultCenterChunk?: FChunkCoord;
   defaultRadiusLInf?: number;
+  initialSubscriptions?: readonly { centerChunk: FChunkCoord; radiusLInf?: number }[];
   devSeed?: boolean;
   primeDemoBlock?: boolean;
   sourceSkillId?: number;
@@ -153,6 +154,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private readonly logicalSceneId: number;
   private readonly defaultCenterChunk: FChunkCoord;
   private readonly defaultRadiusLInf: number;
+  private readonly initialSubscriptions: readonly { centerChunk: FChunkCoord; radiusLInf: number }[];
   private readonly devSeed: boolean;
   private readonly primeDemoBlock: boolean;
   private readonly sourceSkillId: number;
@@ -186,6 +188,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   } | null = null;
   private lastDebugProbe: string | null = null;
   private lastError: string | null = null;
+  private initialSubscriptionsSent = false;
   private primeSent = false;
   // Phase 4-bis 0x6C ObjectStateDelta processing.
   private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
@@ -210,6 +213,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.logicalSceneId = options.logicalSceneId ?? 1;
     this.defaultCenterChunk = options.defaultCenterChunk ?? { x: 0, y: 0, z: 0 };
     this.defaultRadiusLInf = options.defaultRadiusLInf ?? 0;
+    this.initialSubscriptions = normalizeInitialSubscriptions(
+      options.initialSubscriptions ?? [
+        { centerChunk: this.defaultCenterChunk, radiusLInf: this.defaultRadiusLInf },
+      ],
+    );
     this.devSeed = options.devSeed ?? true;
     this.primeDemoBlock = options.primeDemoBlock ?? true;
     this.sourceSkillId = options.sourceSkillId ?? 1;
@@ -269,7 +277,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       return;
     }
     if (this.subscriptionState === "idle") {
-      this.subscribeDefaultChunk();
+      this.subscribeInitialChunks();
     }
   }
 
@@ -280,6 +288,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       logicalSceneId: this.logicalSceneId,
       defaultCenterChunk: chunkCoordKey(this.defaultCenterChunk),
       defaultRadiusLInf: this.defaultRadiusLInf,
+      initialSubscriptions: this.initialSubscriptions.map((subscription) => ({
+        centerChunk: chunkCoordKey(subscription.centerChunk),
+        radiusLInf: subscription.radiusLInf,
+      })),
       seedState: this.seedState,
       subscriptionState: this.subscriptionState,
       subscriptionRequestId: this.subscriptionRequestId,
@@ -961,9 +973,25 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     }
   }
 
-  private subscribeDefaultChunk(): void {
-    const requestId = this.subscribeVoxelChunk(this.defaultCenterChunk, this.defaultRadiusLInf);
-    if (requestId !== null) {
+  private subscribeInitialChunks(): void {
+    if (this.initialSubscriptionsSent) {
+      return;
+    }
+
+    this.initialSubscriptionsSent = true;
+    let lastRequestId: number | null = null;
+
+    for (const subscription of this.initialSubscriptions) {
+      const requestId = this.subscribeVoxelChunk(
+        subscription.centerChunk,
+        subscription.radiusLInf,
+      );
+      if (requestId !== null) {
+        lastRequestId = requestId;
+      }
+    }
+
+    if (lastRequestId !== null) {
       this.transport.sendVoxelDebugProbe("voxel_transport");
     }
   }
@@ -1055,4 +1083,13 @@ function seedSummary(payload: Record<string, unknown>): Record<string, unknown> 
     errors: source["errors"] ?? 0,
     maxChunkVersion: source["max_chunk_version"] ?? 0,
   };
+}
+
+function normalizeInitialSubscriptions(
+  subscriptions: readonly { centerChunk: FChunkCoord; radiusLInf?: number }[],
+): readonly { centerChunk: FChunkCoord; radiusLInf: number }[] {
+  return subscriptions.map((subscription) => ({
+    centerChunk: { ...subscription.centerChunk },
+    radiusLInf: Math.max(0, Math.floor(subscription.radiusLInf ?? 0)),
+  }));
 }
