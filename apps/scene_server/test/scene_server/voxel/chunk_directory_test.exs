@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
@@ -25,18 +26,19 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   test "lazily starts chunks and returns snapshot payloads" do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    scene_id = unique_scene_id()
 
     assert {:ok, payload} =
              ChunkDirectory.snapshot_payload(directory, %{
                request_id: 55,
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                center_chunk: {0, 0, 0}
              })
 
     assert {:ok, %{request_id: 55, storage: storage}} =
              Codec.decode_chunk_snapshot_payload(payload)
 
-    assert storage.logical_scene_id == 1
+    assert storage.logical_scene_id == scene_id
     assert storage.chunk_coord == {0, 0, 0}
 
     snapshot = ChunkDirectory.snapshot(directory)
@@ -47,7 +49,8 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
-    lease = lease()
+    scene_id = unique_scene_id()
+    lease = lease(scene_id)
 
     assert {:ok, :inserted} =
              WriteTokenStore.upsert_token(
@@ -63,7 +66,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
             }} =
              ChunkDirectory.apply_intent(directory, %{
                request_id: 90,
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                chunk_coord: {1, 1, 1},
                lease: lease,
                operation: :put_solid_block,
@@ -79,7 +82,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert Storage.macro_header_at(storage, {3, 0, 0}).mode ==
              MacroCellHeader.cell_mode_solid_block()
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {1, 1, 1})
     assert snapshot.chunk_version == 1
 
     directory_snapshot = ChunkDirectory.snapshot(directory)
@@ -90,7 +93,8 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
-    lease = lease()
+    scene_id = unique_scene_id()
+    lease = lease(scene_id)
 
     assert {:ok, :inserted} =
              WriteTokenStore.upsert_token(
@@ -102,7 +106,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
       for x <- 0..2 do
         %{
           request_id: 100 + x,
-          logical_scene_id: 1,
+          logical_scene_id: scene_id,
           chunk_coord: {1, 1, 1},
           lease: lease,
           operation: :put_solid_block,
@@ -122,18 +126,22 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
     assert storage.chunk_version == 1
 
-    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert {:ok, chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {1, 1, 1})
+    assert :ok = ChunkProcess.flush_persistence(chunk_pid)
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {1, 1, 1})
     assert snapshot.chunk_version == 1
   end
 
   test "apply_intent rejects missing leases before starting a chunk" do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    scene_id = unique_scene_id()
 
     assert {:error, :missing_lease} =
              ChunkDirectory.apply_intent(directory, %{
                request_id: 91,
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                chunk_coord: {1, 1, 1},
                operation: :put_solid_block,
                macro: 0,
@@ -147,11 +155,12 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
-    old_lease = lease()
+    scene_id = unique_scene_id()
+    old_lease = lease(scene_id)
     new_lease = %{old_lease | lease_id: 101, owner_scene_instance_ref: 2_000, owner_epoch: 2}
 
     storage =
-      1
+      scene_id
       |> Storage.empty({1, 0, 0})
       |> Storage.put_solid_block({2, 0, 0}, NormalBlockData.new(19, health: 80))
       |> Map.put(:chunk_version, 3)
@@ -166,7 +175,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     assert {:ok, :inserted} =
              ChunkSnapshotStore.put_snapshot(%{
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                region_id: old_lease.region_id,
                chunk_coord: {1, 0, 0},
                lease_id: old_lease.lease_id,
@@ -179,7 +188,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     handoff = %{
       migration_id: "migration-1",
-      logical_scene_id: 1,
+      logical_scene_id: scene_id,
       region_id: old_lease.region_id,
       new_lease: new_lease,
       planned_slices: [
@@ -199,7 +208,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     assert {:ok, chunk_pid} =
              ChunkDirectory.ensure_chunk(directory, %{
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                chunk_coord: {1, 0, 0}
              })
 
@@ -209,7 +218,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert {:ok, prewarmed_payload} =
              ChunkDirectory.snapshot_payload(directory, %{
                request_id: 77,
-               logical_scene_id: 1,
+               logical_scene_id: scene_id,
                chunk_coord: {1, 0, 0}
              })
 
@@ -226,22 +235,24 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     test "returns :not_started when no chunk has been registered for the coord" do
       chunk_sup = start_supervised!(VoxelChunkSup)
       directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
 
-      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 1, {0, 0, 0})
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
     end
 
     test "returns {:ok, pid} for a chunk that was started via snapshot_payload" do
       chunk_sup = start_supervised!(VoxelChunkSup)
       directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
 
       assert {:ok, _payload} =
                ChunkDirectory.snapshot_payload(directory, %{
                  request_id: 1,
-                 logical_scene_id: 1,
+                 logical_scene_id: scene_id,
                  center_chunk: {7, 7, 7}
                })
 
-      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {7, 7, 7})
+      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {7, 7, 7})
       assert is_pid(pid)
       assert Process.alive?(pid)
     end
@@ -249,43 +260,50 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     test "scopes lookup by logical_scene_id (different scene with same coord misses)" do
       chunk_sup = start_supervised!(VoxelChunkSup)
       directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
+      other_scene_id = unique_scene_id()
 
       assert {:ok, _} =
                ChunkDirectory.snapshot_payload(directory, %{
                  request_id: 1,
-                 logical_scene_id: 1,
+                 logical_scene_id: scene_id,
                  center_chunk: {0, 0, 0}
                })
 
-      assert {:ok, _pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {0, 0, 0})
+      assert {:ok, _pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
       # Same coord, different scene → miss
-      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 2, {0, 0, 0})
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, other_scene_id, {0, 0, 0})
     end
 
     test "returns :not_started when the registered chunk pid is dead" do
       chunk_sup = start_supervised!(VoxelChunkSup)
       directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
 
       assert {:ok, _} =
                ChunkDirectory.snapshot_payload(directory, %{
                  request_id: 1,
-                 logical_scene_id: 1,
+                 logical_scene_id: scene_id,
                  center_chunk: {3, 3, 3}
                })
 
-      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, 1, {3, 3, 3})
+      assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {3, 3, 3})
 
       Process.exit(pid, :kill)
       # Allow the EXIT to propagate.
       Process.sleep(20)
 
-      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, 1, {3, 3, 3})
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {3, 3, 3})
     end
   end
 
-  defp lease do
+  defp unique_scene_id do
+    System.unique_integer([:positive, :monotonic]) + 10_000_000
+  end
+
+  defp lease(scene_id) do
     %{
-      logical_scene_id: 1,
+      logical_scene_id: scene_id,
       region_id: 10,
       lease_id: 100,
       owner_scene_instance_ref: 1_000,

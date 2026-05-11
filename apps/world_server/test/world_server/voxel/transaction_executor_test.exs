@@ -454,6 +454,49 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
              |> Enum.filter(&match?({:scene_object_register, _, _}, &1)) == []
     end
 
+    test "Scene-owner participant registers objects through participant_key while preserving lease owners" do
+      coordinator =
+        start_supervised!(
+          {TransactionCoordinator,
+           name: :"coord_#{System.unique_integer([:positive])}",
+           next_object_id_fn: counter_allocator([801, 802])}
+        )
+
+      recorder = start_supervised!({Agent, fn -> [] end}, id: :scene_owner_recorder)
+      scene_owner_key = {:scene_owner, :chunk_directory_a, :scene_a}
+
+      attrs =
+        scene_owner_transaction_attrs("tx-register-scene-owner", scene_owner_key)
+        |> Map.put(:scene_objects, [
+          scene_object_seed(blueprint_id: 81, covered_chunks: [{0, 0, 0}, {2, 0, 0}]),
+          scene_object_seed(blueprint_id: 82, covered_chunks: [{2, 0, 0}])
+        ])
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, "tx-register-scene-owner", attrs)
+
+      assert {:ok, %{decision: :commit}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant: %{scene_owner_key => [recorder: recorder]}
+               )
+
+      assert [{:register_scene_objects, 2, [801, 802]}] =
+               Agent.get(recorder, & &1)
+               |> Enum.filter(&match?({:register_scene_objects, _, _}, &1))
+
+      inflated =
+        Agent.get(recorder, & &1)
+        |> Enum.filter(&match?({:scene_object_register, _, _}, &1))
+        |> Enum.sort_by(&elem(&1, 1))
+
+      assert [
+               {:scene_object_register, 801,
+                %{{10, 100} => [{0, 0, 0}], {20, 200} => [{2, 0, 0}]}},
+               {:scene_object_register, 802, %{{20, 200} => [{2, 0, 0}]}}
+             ] = inflated
+    end
+
     test "single-region degenerate: one participant, one register call with all objects" do
       coordinator =
         start_supervised!(
@@ -614,6 +657,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       # happened between :prepared and commit dispatch).
       assert {:ok, _} =
                TransactionCoordinator.prepare_ack(coordinator, transaction.transaction_id, %{
+                 participant_key: {10, 100},
                  region_id: 10,
                  lease_id: 100,
                  status: :prepared,
@@ -622,6 +666,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
 
       assert {:ok, %BuildTransaction{state: :prepared} = prepared} =
                TransactionCoordinator.prepare_ack(coordinator, transaction.transaction_id, %{
+                 participant_key: {20, 200},
                  region_id: 20,
                  lease_id: 200,
                  status: :prepared,
@@ -674,6 +719,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       # status is anomalous.
       assert {:ok, _} =
                TransactionCoordinator.prepare_ack(coordinator, "tx-resume-mixed", %{
+                 participant_key: {10, 100},
                  region_id: 10,
                  lease_id: 100,
                  status: :prepared,
@@ -682,6 +728,7 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
 
       assert {:ok, prepared} =
                TransactionCoordinator.prepare_ack(coordinator, "tx-resume-mixed", %{
+                 participant_key: {20, 200},
                  region_id: 20,
                  lease_id: 200,
                  status: :prepared,
@@ -782,18 +829,51 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       timeout_at_ms: 1_900_000_000_000,
       participants: [
         %TransactionParticipant{
+          participant_key: {10, 100},
           region_id: 10,
           lease_id: 100,
           owner_scene_instance_ref: 1_000,
           owner_epoch: 1,
-          affected_chunks: [{0, 0, 0}]
+          assigned_scene_node: :scene_a,
+          affected_chunks: [{0, 0, 0}],
+          chunk_owners: %{{0, 0, 0} => {10, 100}}
         },
         %TransactionParticipant{
+          participant_key: {20, 200},
           region_id: 20,
           lease_id: 200,
           owner_scene_instance_ref: 2_000,
           owner_epoch: 1,
-          affected_chunks: [{2, 0, 0}]
+          assigned_scene_node: :scene_b,
+          affected_chunks: [{2, 0, 0}],
+          chunk_owners: %{{2, 0, 0} => {20, 200}}
+        }
+      ]
+    }
+  end
+
+  defp scene_owner_transaction_attrs(transaction_id, scene_owner_key) do
+    %{
+      transaction_id: transaction_id,
+      logical_scene_id: 1,
+      parcel_id: 101,
+      reservation_id: "reservation-#{transaction_id}",
+      intent_hash: "intent-#{transaction_id}",
+      decision_version: 1,
+      timeout_at_ms: 1_900_000_000_000,
+      participants: [
+        %TransactionParticipant{
+          participant_key: scene_owner_key,
+          region_id: 10,
+          lease_id: 100,
+          owner_scene_instance_ref: 1_000,
+          owner_epoch: 1,
+          assigned_scene_node: :scene_a,
+          affected_chunks: [{0, 0, 0}, {2, 0, 0}],
+          chunk_owners: %{
+            {0, 0, 0} => {10, 100},
+            {2, 0, 0} => {20, 200}
+          }
         }
       ]
     }

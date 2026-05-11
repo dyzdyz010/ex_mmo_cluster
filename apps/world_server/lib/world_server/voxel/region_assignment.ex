@@ -26,10 +26,8 @@ defmodule WorldServer.Voxel.RegionAssignment do
     # Phase A4-bis-4 段 2c: scene_node owning hot execution for this
     # region. Filled in by `MapLedger.put_region/2` from
     # `WorldServer.Voxel.SceneNodeRegistry.assign_region/2` when a
-    # registry is configured; `nil` for legacy single-`scene_node`
-    # paths or when no scene_nodes were registered at put time
-    # (admin can re-bind by re-issuing put_region after a scene_node
-    # registers).
+    # registry is configured. Gate-side routing rejects `nil`; an
+    # administrator must re-issue put_region after a scene_node registers.
     :assigned_scene_node,
     state: :active,
     summary_hash: 0,

@@ -39,7 +39,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     def init(attrs) do
       {:ok,
        Map.merge(
-         %{auth_server: nil, scene_server: nil, scene_owner_nodes: %{}, world_server: nil},
+         %{auth_server: nil, scene_server: nil, world_server: nil},
          attrs
        )}
     end
@@ -48,15 +48,6 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     def handle_call(:auth_server, _from, state), do: {:reply, state.auth_server, state}
     def handle_call(:scene_server, _from, state), do: {:reply, state.scene_server, state}
     def handle_call(:world_server, _from, state), do: {:reply, state.world_server, state}
-
-    def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
-      scene_node =
-        Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
-          Map.get(state.scene_owner_nodes, :default) ||
-          state.scene_server
-
-      {:reply, scene_node, state}
-    end
   end
 
   setup do
@@ -115,7 +106,8 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
         bounds_chunk_min: {0, 0, 0},
         bounds_chunk_max: {1, 1, 1},
         owner_scene_instance_ref: owner_ref_a,
-        owner_epoch: 0
+        owner_epoch: 0,
+        assigned_scene_node: node()
       })
 
     {:ok, lease_a} =
@@ -133,7 +125,8 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
         bounds_chunk_min: {1, 0, 0},
         bounds_chunk_max: {2, 1, 1},
         owner_scene_instance_ref: owner_ref_b,
-        owner_epoch: 0
+        owner_epoch: 0,
+        assigned_scene_node: node()
       })
 
     {:ok, lease_b} =

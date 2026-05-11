@@ -32,7 +32,7 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
              )
 
     assert result.logical_scene_id == 77
-    assert result.observe_log == observe_log
+    assert Path.expand(result.observe_log) == Path.expand(observe_log)
     assert result.leases.before_migration.lease_id == 100
     assert result.leases.after_migration.lease_id == 101
     assert result.routes.before_migration.owner_scene_instance_ref == 1_000
@@ -133,7 +133,8 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
                  bounds_chunk_min: {0, 0, 0},
                  bounds_chunk_max: {4, 4, 4},
                  owner_scene_instance_ref: 1_000,
-                 owner_epoch: 0
+                 owner_epoch: 0,
+                 assigned_scene_node: node()
                })
 
       assert {:ok, lease} =

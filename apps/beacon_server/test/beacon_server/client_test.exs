@@ -1,9 +1,16 @@
 defmodule BeaconServer.ClientTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   describe "join_cluster/0" do
     test "returns :error when no cluster peers (non-distributed node)" do
-      assert BeaconServer.Client.join_cluster() == :error
+      log =
+        capture_log([level: :warning], fn ->
+          assert BeaconServer.Client.join_cluster() == :error
+        end)
+
+      assert log == ""
     end
   end
 
@@ -144,5 +151,48 @@ defmodule BeaconServer.ClientTest do
     test "unregister with no prior registration is a no-op returning :ok" do
       assert :ok = BeaconServer.Client.unregister({:never_registered, 0})
     end
+  end
+end
+
+defmodule BeaconServer.StartupBannerTest do
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+
+  test "startup banner is disabled by default in test" do
+    marker = {__MODULE__, make_ref()}
+
+    output =
+      capture_io(fn ->
+        assert :ok = BeaconServer.StartupBanner.print_once(marker: marker)
+      end)
+
+    assert output == ""
+  end
+
+  test "startup banner prints ASCII art once when enabled" do
+    marker = {__MODULE__, make_ref()}
+
+    first =
+      capture_io(fn ->
+        assert :ok =
+                 BeaconServer.StartupBanner.print_once(
+                   enabled?: true,
+                   marker: marker
+                 )
+      end)
+
+    second =
+      capture_io(fn ->
+        assert :ok =
+                 BeaconServer.StartupBanner.print_once(
+                   enabled?: true,
+                   marker: marker
+                 )
+      end)
+
+    assert first =~ "EX MMO CLUSTER"
+    assert first =~ "World / Scene / Gate"
+    assert second == ""
   end
 end

@@ -27,6 +27,8 @@ config :data_service, DataService.Repo,
 # startup failures before ExUnit boots.
 config :libcluster, topologies: []
 
+config :beacon_server, startup_banner_enabled: false
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

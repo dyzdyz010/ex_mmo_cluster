@@ -26,7 +26,15 @@ $env:DEV_AUTO_LOGIN = "true"    # 开放 /ingame/auto_login (生产环境务必�
 
 # ---- 4. Erlang 节点 ----------------------------------------------------------
 $env:ERLANG_COOKIE = "mmo"
-$env:NODE_NAME     = "cluster@127.0.0.1"
+# Windows can reserve TCP 4369 in an excluded port range. Keep all local
+# Erlang nodes on the same non-reserved EPMD port.
+$env:ERL_EPMD_PORT = "43690"
+
+# Default to a short node name. It avoids Erlang parsing the Windows hosts
+# file during local startup, which can print inet_parse warnings when the
+# hosts file has a UTF-8 BOM. Use "cluster@127.0.0.1" only when long names
+# are explicitly needed; start-server.ps1 will switch to --name.
+$env:NODE_NAME     = "cluster"
 
 # ---- 5. 客户端指向服务端 (从上面端口派生, 一般不用改) ------------------------
 $env:BEVY_CLIENT_GATE_ADDR = "127.0.0.1:$($env:GATE_TCP_PORT)"
@@ -67,6 +75,7 @@ Write-Host "  GATE_UDP_PORT                = $env:GATE_UDP_PORT"
 Write-Host "  PHX_SERVER                   = $env:PHX_SERVER"
 Write-Host "  DEV_AUTO_LOGIN               = $env:DEV_AUTO_LOGIN"
 Write-Host "  NODE_NAME                    = $env:NODE_NAME"
+Write-Host "  ERL_EPMD_PORT                = $env:ERL_EPMD_PORT"
 Write-Host "  BEVY_CLIENT_GATE_ADDR        = $env:BEVY_CLIENT_GATE_ADDR"
 Write-Host "  BEVY_CLIENT_AUTH_ADDR        = $env:BEVY_CLIENT_AUTH_ADDR"
 Write-Host "  BEVY_CLIENT_USERNAME         = $env:BEVY_CLIENT_USERNAME"

@@ -3,6 +3,8 @@ defmodule SceneServer.InterfaceAnnounceTest do
   # and `WorldServer.Voxel.SceneNodeRegistry` global names; serialise.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   # `WorldServer.Voxel.SceneNodeRegistry` lives in world_server, but
   # scene_server intentionally does NOT depend on world_server in its
   # mix.exs. We reference it by atom literal here for the same reason
@@ -57,14 +59,19 @@ defmodule SceneServer.InterfaceAnnounceTest do
     world_key: world_key
   } do
     # Don't register `world_key` in BeaconServer — await will time out.
-    assert :ok =
-             SceneServer.Interface.announce_to_world(
-               world_resource: world_key,
-               registry_module: @scene_node_registry_module,
-               registry_name: registry_name,
-               await_timeout_ms: 100,
-               rpc_timeout_ms: 1_000
-             )
+    log =
+      capture_log([level: :warning], fn ->
+        assert :ok =
+                 SceneServer.Interface.announce_to_world(
+                   world_resource: world_key,
+                   registry_module: @scene_node_registry_module,
+                   registry_name: registry_name,
+                   await_timeout_ms: 100,
+                   rpc_timeout_ms: 1_000
+                 )
+      end)
+
+    assert log == ""
 
     snapshot = apply(@scene_node_registry_module, :snapshot, [registry_name])
     assert snapshot.join_order == []

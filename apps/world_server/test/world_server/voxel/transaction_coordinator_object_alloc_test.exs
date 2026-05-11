@@ -230,11 +230,14 @@ defmodule WorldServer.Voxel.TransactionCoordinatorObjectAllocTest do
   defp participants do
     [
       %TransactionParticipant{
+        participant_key: {10, 100},
         region_id: 10,
         lease_id: 100,
         owner_scene_instance_ref: 1_000,
         owner_epoch: 1,
-        affected_chunks: [{0, 0, 0}]
+        assigned_scene_node: :scene_a,
+        affected_chunks: [{0, 0, 0}],
+        chunk_owners: %{{0, 0, 0} => {10, 100}}
       }
     ]
   end

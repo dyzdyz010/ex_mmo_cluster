@@ -4,7 +4,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
 
   Phase 1d turned this module from an in-memory GenServer into a thin wrapper
   around `voxel_chunks` rows. Each `put_snapshot/2` runs inside a single
-  `Repo.transaction/1`:
+  `Repo.transaction/1`. The transaction first takes a per-chunk PostgreSQL
+  advisory transaction lock, then performs the row-level check:
 
       SELECT chunk_version, chunk_hash, data
       FROM voxel_chunks
@@ -135,6 +136,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   end
 
   defp do_put(repo, snapshot) do
+    :ok = lock_snapshot_key(repo, snapshot)
+
     case lock_existing_row(repo, snapshot) do
       nil ->
         insert_row(repo, snapshot)
@@ -142,6 +145,24 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
       %VoxelChunkSnapshot{} = row ->
         compare_and_update(repo, row, snapshot)
     end
+  end
+
+  defp lock_snapshot_key(repo, snapshot) do
+    {x, y, z} = snapshot.chunk_coord
+
+    lock_a =
+      :erlang.phash2({:voxel_chunk_snapshot, snapshot.logical_scene_id, x}, 2_147_483_647)
+
+    lock_b = :erlang.phash2({y, z}, 2_147_483_647)
+
+    _result =
+      Ecto.Adapters.SQL.query!(
+        repo,
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        [lock_a, lock_b]
+      )
+
+    :ok
   end
 
   defp lock_existing_row(repo, snapshot) do

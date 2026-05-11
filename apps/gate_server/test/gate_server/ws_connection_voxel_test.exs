@@ -23,7 +23,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     def init(attrs) do
       {:ok,
        Map.merge(
-         %{auth_server: nil, scene_server: nil, scene_owner_nodes: %{}, world_server: nil},
+         %{auth_server: nil, scene_server: nil, world_server: nil},
          attrs
        )}
     end
@@ -36,16 +36,6 @@ defmodule GateServer.WsConnectionVoxelTest do
     @impl true
     def handle_call(:scene_server, _from, state) do
       {:reply, state.scene_server, state}
-    end
-
-    @impl true
-    def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
-      scene_node =
-        Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
-          Map.get(state.scene_owner_nodes, :default) ||
-          state.scene_server
-
-      {:reply, scene_node, state}
     end
 
     @impl true
@@ -171,7 +161,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: 7_001,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease} =
@@ -254,7 +245,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {2, 3, 4},
                bounds_chunk_max: {3, 4, 5},
                owner_scene_instance_ref: 7001,
-               owner_epoch: 4
+               owner_epoch: 4,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease} =
@@ -450,7 +442,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: 7_001,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease} =
@@ -486,12 +479,9 @@ defmodule GateServer.WsConnectionVoxelTest do
       )
     )
 
-    # Phase 3: prefab goes through World's TransactionCoordinator +
-    # TransactionExecutor → all micro intents land in a single batch commit.
-    # The chunk version bumps once (0 -> 1).
-    # Phase A1-1:timeout 调到 5s 因为 sphere 有 ~248 micro intents,Storage
-    # 的 per-intent normalize! 是 O(macro_count),N² 累计在 1.5s 量级。
-    # Storage.put_micro_blocks/4 batch API 优化是 follow-up step。
+    # Single-chunk prefabs bypass the World transaction coordinator and land
+    # through ChunkDirectory.apply_intents/2. The chunk version bumps once
+    # (0 -> 1), and subscribers receive one compact delta.
     assert_voxel_intent_accepted(
       request_id: 602,
       client_intent_seq: 13,
@@ -513,6 +503,75 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     # No further pushes for this prefab.
     refute_receive {:gate_ws_send, _}, 100
+  end
+
+  test "prefab place intent uses same-owner fast path across multiple chunks" do
+    observe_path = observe_path("ws_prefab_same_owner_fast_path.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    logical_scene_id = 667
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {2, 1, 1},
+               owner_scene_instance_ref: 7_001,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_001,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    anchor = find_cross_chunk_prefab_anchor!()
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(603, 14, logical_scene_id, 8_888,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: anchor,
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_accepted(
+      request_id: 603,
+      client_intent_seq: 14,
+      logical_scene_id: logical_scene_id,
+      result_ref: 1,
+      timeout: 2_000
+    )
+
+    flush_chunk_persistence!(logical_scene_id, {0, 0, 0})
+    flush_chunk_persistence!(logical_scene_id, {1, 0, 0})
+
+    assert {:ok, snap_a} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
+    assert {:ok, snap_b} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {1, 0, 0})
+
+    assert snap_a.chunk_version == 1
+    assert snap_b.chunk_version == 1
+
+    flush_observe_writer()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="ws_voxel_prefab_same_owner_fast_path_applied")
   end
 
   test "Phase A1-1 e2e: sphere prefab lands as 248 micro slots matching BlueprintCatalog mask" do
@@ -552,7 +611,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: 7_002,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease} =
@@ -718,7 +778,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: 7_003,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease} =
@@ -807,21 +868,37 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     # Gate should record one applied (first) and one error (second) for prefab.
     applied_count =
-      Enum.count(gate_log_lines, &String.contains?(&1, "ws_voxel_prefab_place_intent_applied"))
+      Enum.count(
+        gate_log_lines,
+        &observe_line_for?(&1, "ws_voxel_prefab_place_intent_applied", 802, logical_scene_id)
+      )
 
     error_count =
-      Enum.count(gate_log_lines, &String.contains?(&1, "ws_voxel_prefab_place_intent_error"))
+      Enum.count(
+        gate_log_lines,
+        &observe_line_for?(&1, "ws_voxel_prefab_place_intent_error", 803, logical_scene_id)
+      )
 
     fast_path_applied_count =
       Enum.count(
         gate_log_lines,
-        &String.contains?(&1, "ws_voxel_prefab_single_chunk_fast_path_applied")
+        &observe_line_for?(
+          &1,
+          "ws_voxel_prefab_single_chunk_fast_path_applied",
+          802,
+          logical_scene_id
+        )
       )
 
     fast_path_failed_count =
       Enum.count(
         gate_log_lines,
-        &String.contains?(&1, "ws_voxel_prefab_single_chunk_fast_path_failed")
+        &observe_line_for?(
+          &1,
+          "ws_voxel_prefab_single_chunk_fast_path_failed",
+          803,
+          logical_scene_id
+        )
       )
 
     assert applied_count == 1, "expected exactly 1 prefab applied, got #{applied_count}"
@@ -850,6 +927,37 @@ defmodule GateServer.WsConnectionVoxelTest do
       {:ok, content} -> String.split(content, "\n", trim: true)
       {:error, _} -> []
     end
+  end
+
+  defp observe_line_for?(line, event, request_id, logical_scene_id) do
+    String.contains?(line, ~s(event="#{event}")) and
+      String.contains?(line, "request_id: #{request_id}") and
+      String.contains?(line, "logical_scene_id: #{logical_scene_id}")
+  end
+
+  defp find_cross_chunk_prefab_anchor! do
+    candidates = [
+      {124, 8, 8},
+      {120, 8, 8},
+      {126, 16, 24},
+      {124, 16, 24},
+      {120, 24, 32}
+    ]
+
+    Enum.find(candidates, fn anchor ->
+      case SceneServer.Voxel.PrefabRaster.rasterize(1, 2, anchor, 0) do
+        {:ok, cells} ->
+          chunks = cells |> Enum.map(& &1.chunk_coord) |> Enum.uniq()
+          {0, 0, 0} in chunks and {1, 0, 0} in chunks
+
+        _ ->
+          false
+      end
+    end) ||
+      flunk(
+        "no candidate anchor produces a sphere that straddles chunks (0,0,0) and (1,0,0); " <>
+          "调整 candidates / blueprint 半径"
+      )
   end
 
   defp flush_chunk_persistence!(logical_scene_id, chunk_coord) do
@@ -915,17 +1023,20 @@ defmodule GateServer.WsConnectionVoxelTest do
   end
 
   test "prefab place intent rejects when any chunk fails to route" do
+    ensure_map_ledger_started()
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
-    # No FakeInterface started → fetch_world_node fails fast.
-    # Phase A4-2 D5: any per-chunk routing failure rolls up to a single
-    # :no_route_for_chunk reason on the wire (transaction is all-or-nothing,
-    # there's no "partial route" to surface). The underlying
-    # :world_unavailable lands in observe logs for ops.
+    logical_scene_id = 987_650
+
+    # No region is registered for this logical scene. The World node is
+    # reachable, so this verifies route failure classification rather than
+    # world availability.
     WsConnection.receive_frame(
       pid,
-      prefab_place_intent_frame(703, 16, 555, 9_999,
+      prefab_place_intent_frame(703, 16, logical_scene_id, 9_999,
         blueprint_id: 1,
         blueprint_version: 2,
         anchor: {0, 0, 0},
@@ -936,7 +1047,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_voxel_intent_result(
       request_id: 703,
       client_intent_seq: 16,
-      logical_scene_id: 555,
+      logical_scene_id: logical_scene_id,
       reason: ":no_route_for_chunk"
     )
   end
@@ -1660,7 +1771,7 @@ defmodule GateServer.WsConnectionVoxelTest do
          client_intent_seq,
          logical_scene_id,
          parcel_id,
-         opts \\ []
+         opts
        ) do
     {min_x, min_y, min_z, max_x, max_y, max_z} =
       Keyword.get(opts, :bounds, {-1, -1, -1, 1, 1, 1})
@@ -1680,7 +1791,7 @@ defmodule GateServer.WsConnectionVoxelTest do
          client_intent_seq,
          logical_scene_id,
          parcel_id,
-         opts \\ []
+         opts
        ) do
     blueprint_id = Keyword.get(opts, :blueprint_id, 1)
     blueprint_version = Keyword.get(opts, :blueprint_version, 2)
@@ -1811,7 +1922,8 @@ defmodule GateServer.WsConnectionVoxelTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: owner_scene_instance_ref,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: Keyword.get(opts, :assigned_scene_node, node())
              })
 
     assert {:ok, _lease} =

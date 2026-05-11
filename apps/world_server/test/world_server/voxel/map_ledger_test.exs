@@ -17,7 +17,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                bounds_chunk_min: {3, 0, 0},
                bounds_chunk_max: {5, 2, 2},
                owner_scene_instance_ref: 2_000,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     snapshot = MapLedger.snapshot(ledger)
@@ -37,7 +38,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                bounds_chunk_min: {1, 0, 0},
                bounds_chunk_max: {3, 2, 2},
                owner_scene_instance_ref: 1_000,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert updated_assignment.bounds_chunk_min == {1, 0, 0}
@@ -58,6 +60,61 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     assert scene_two_assignment.region_id == 20
   end
 
+  test "bulk routes chunks with current leases for prefab planning" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 1, 1}, 1_000)
+    put_region!(ledger, 20, {2, 0, 0}, {4, 1, 1}, 2_000)
+
+    assert {:ok, lease_a} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, lease_b} =
+             MapLedger.issue_lease(ledger, 20, 2_000,
+               lease_id: 200,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, routes} =
+             MapLedger.route_chunks_with_leases(ledger, 1, [
+               {0, 0, 0},
+               {1, 0, 0},
+               {2, 0, 0}
+             ])
+
+    assert Map.keys(routes) |> Enum.sort() == [{0, 0, 0}, {1, 0, 0}, {2, 0, 0}]
+    assert routes[{0, 0, 0}].assignment.region_id == 10
+    assert routes[{1, 0, 0}].lease.lease_id == lease_a.lease_id
+    assert routes[{2, 0, 0}].assignment.region_id == 20
+    assert routes[{2, 0, 0}].lease.lease_id == lease_b.lease_id
+  end
+
+  test "bulk route fails fast with the unrouted chunk" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {1, 1, 1}, 1_000)
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:error, {{1, 0, 0}, :unassigned_chunk}} =
+             MapLedger.route_chunks_with_leases(ledger, 1, [{0, 0, 0}, {1, 0, 0}])
+  end
+
   test "publishes lease write tokens and fences stale writes after migration" do
     token_store = start_supervised!(WriteTokenStore)
     ledger = start_supervised!({MapLedger, write_token_store: token_store})
@@ -70,7 +127,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {4, 4, 4},
                owner_scene_instance_ref: 1_000,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, lease_v1} =
@@ -358,7 +416,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              MapLedger.mark_prewarmed(ledger, migration_id)
   end
 
-  test "builds deterministic lease-scoped transaction participants" do
+  test "builds deterministic Scene-owner transaction participants with chunk owners" do
     ledger = start_supervised!(MapLedger)
     future_ms = System.system_time(:millisecond) + 60_000
 
@@ -379,25 +437,26 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                expires_at_ms: future_ms
              )
 
-    assert {:ok,
-            [
-              %TransactionParticipant{
-                region_id: 10,
-                lease_id: 100,
-                affected_chunks: [{0, 0, 0}]
-              },
-              %TransactionParticipant{
-                region_id: 20,
-                lease_id: 200,
-                affected_chunks: [{2, 0, 0}, {3, 0, 0}]
-              }
-            ]} =
+    assert {:ok, [participant]} =
              MapLedger.transaction_participants(ledger, 1, [
                {3, 0, 0},
                {0, 0, 0},
                {2, 0, 0},
                {0, 0, 0}
              ])
+
+    assert %TransactionParticipant{
+             participant_key: {:scene_owner, scene_node},
+             assigned_scene_node: scene_node,
+             region_id: 10,
+             lease_id: 100,
+             affected_chunks: [{0, 0, 0}, {2, 0, 0}, {3, 0, 0}],
+             chunk_owners: %{
+               {0, 0, 0} => {10, 100},
+               {2, 0, 0} => {20, 200},
+               {3, 0, 0} => {20, 200}
+             }
+           } = participant
   end
 
   test "invokes scene invalidator for every chunk in affected bounds on cutover" do
@@ -419,7 +478,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {2, 1, 1},
                owner_scene_instance_ref: 1_000,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
 
     assert {:ok, _lease_v1} =
@@ -578,7 +638,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
                bounds_chunk_min: min,
                bounds_chunk_max: max,
                owner_scene_instance_ref: owner_ref,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: node()
              })
   end
 

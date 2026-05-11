@@ -65,6 +65,7 @@ defmodule WorldServer.Voxel.DevSeed do
     owner_ref_opt = Keyword.get(opts, :owner_scene_instance_ref)
     owner_ref = owner_ref_opt || @default_owner_scene_instance_ref
     owner_epoch = Keyword.get(opts, :owner_epoch, @default_owner_epoch)
+    assigned_scene_node = Keyword.get(opts, :assigned_scene_node, node())
     lease_ttl_ms = Keyword.get(opts, :lease_ttl_ms, @default_lease_ttl_ms)
     chunk_directory = Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory)
     seed_terrain? = Keyword.get(opts, :seed_terrain?, true)
@@ -90,7 +91,8 @@ defmodule WorldServer.Voxel.DevSeed do
           bounds_chunk_min: bounds_min,
           bounds_chunk_max: bounds_max,
           owner_scene_instance_ref: owner_ref,
-          owner_epoch: owner_epoch
+          owner_epoch: owner_epoch,
+          assigned_scene_node: assigned_scene_node
         }
 
         with {:ok, {:ok, _assignment}} <- safe_call(fn -> MapLedger.put_region(ledger, attrs) end),

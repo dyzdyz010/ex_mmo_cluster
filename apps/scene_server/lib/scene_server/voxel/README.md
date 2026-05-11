@@ -103,21 +103,24 @@ slot 把 `(slot_x, slot_y, slot_z)` 加到 `anchor_world_micro` 后，再
 让 prefab 自然跨 2~8 个 macros / 1~4 个 chunks，与客户端 boundary-snap
 线框预览像素级一致。所有 cell 共用同一份 `layer_attrs = %{material_id, health: 100}`。
 `group_by_chunk/1` 方便按 chunk 聚合做 per-chunk 事务参与方分发。当前 v2 不支持
-非 0 旋转、跨 region 多 lease 事务（gate dispatch 仍是 single-lease，跨 region
-prefab 在 backlog）。
+非 0 旋转；跨 region / 多 lease 由 Gate + World 按 Scene-owner participant
+分发，Scene 侧仍只接收自己负责的 chunk intents。
 
-Gate 上的 `0x67 PrefabPlaceIntent` 真实路径（Phase 3 起）：先通过 `BlueprintCatalog` +
+Gate 上的 `0x67 PrefabPlaceIntent` 真实路径：先通过 `BlueprintCatalog` +
 `PrefabRaster` 拿到 cell 列表，按 `chunk_coord` 分组成
 `%{chunk_coord => [intent_attrs, ...]}` 一份 intents-by-chunk 计划；通过 World 的
-`MapLedger.route_chunk_with_lease` 解出第一个 chunk 的 lease 与 scene_node，并把同一
-lease 复用到 prefab 跨过的全部 chunk（Phase 3 D6：第一刀只支持单 region 单 lease 多
-chunk）。然后 Gate 远程调 `WorldServer.Voxel.TransactionCoordinator.begin_transaction/3`
-建立事务，并在 Gate 进程内同步运行 `WorldServer.Voxel.TransactionExecutor.execute/4`
-驱动 `BuildTransactionApplier` 跨节点对 `{ChunkDirectory, scene_node}` 走 prepare /
-commit / abort 三相。**任一 chunk 的 prepare 失败或 commit 时 batch apply 失败都会回滚
-全部 fence**：客户端要么收到 `VoxelIntentResult{Accepted, max_chunk_version}`（全部生效），
-要么收到 `VoxelIntentResult{Rejected, reason}` 且 chunk 状态全部回到 prepare 前。**v1
-的 cell-by-cell + 部分写不回滚行为已被替换**。
+`MapLedger.route_chunks_with_leases/3` 一次解出所有 touched chunks 的 assignment +
+lease。Gate 要求每个 assignment 都有 `assigned_scene_node`,然后按具体
+`{ChunkDirectory, scene_node}` 分组成 Scene-owner participants。单 chunk 和同 Scene
+owner 多 chunk 走 Gate/Scene 本地 fast path；真正 split-owner 的计划才远程调
+`WorldServer.Voxel.TransactionCoordinator.begin_transaction/3` 并同步运行
+`WorldServer.Voxel.TransactionExecutor.execute/4`。participant 必须携带
+`participant_key`、`assigned_scene_node` 和每个 affected chunk 的 `chunk_owners`;
+缺失时 World/Gate 直接拒绝,不回退到 lease-only 或 owner-ref 推导。**任一 chunk 的 prepare 失败或
+commit 时 batch apply 失败都会回滚全部 fence**：客户端要么收到
+`VoxelIntentResult{Accepted, max_chunk_version}`（全部生效），要么收到
+`VoxelIntentResult{Rejected, reason}` 且 chunk 状态全部回到 prepare 前。**v1 的
+cell-by-cell + 部分写不回滚行为已被替换**。
 
 **Phase 4：object provenance + part-health 破坏闭环** ——
 `MicroLayer.owner_object_id` / `owner_part_id` 已在 Phase 1c 落地；Phase 4
@@ -255,15 +258,21 @@ ownerObjectId 字段引入 FRefinedCellData 后，加一行 cache hook 即可升
 后续切片会在同一子树下补充紧凑区块增量、A4-bis-cluster 真多 scene_node
 部署、per-region coordinator 切片,以及更完整的迁移回滚。
 
-## Hot Path Note: Single-Chunk Prefab
+## Hot Path Note: Scene-Local Prefab
 
 Gate routes single-chunk prefab placements directly to
 `ChunkDirectory.apply_intents/2` with `reject_occupied: true`. Scene still owns
 the hot chunk state and emits `voxel_intents_applied` / `voxel_intent_rejected`,
 while Gate emits `*_prefab_single_chunk_fast_path_*` observe events. This keeps
 chunk-local all-or-reject semantics but avoids the World two-phase fence write
-that was visible as a 1-3s right-click delay. Multi-chunk or multi-lease prefabs
-still use `TransactionCoordinator` + `BuildTransactionApplier`.
+that was visible as a 1-3s right-click delay.
+
+Gate also keeps same-owner multi-chunk prefabs Scene-local: if every participant
+resolves to the same `{ChunkDirectory, scene_node}`, Gate runs
+`BuildTransactionApplier.prepare/4` + `commit/3` directly through
+`GateServer.Voxel.PrefabLocalTransaction` and emits
+`*_prefab_same_owner_fast_path_*`. Split-owner prefabs still use
+`TransactionCoordinator` + `BuildTransactionApplier`.
 
 `ChunkProcess.apply_intents/2` also batches micro prefab writes by touched macro
 cell. Boundary-snapped prefabs commonly span several macro cells inside one

@@ -63,6 +63,7 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
                owner_epoch: 1,
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {4, 4, 4},
+               assigned_scene_node: node(),
                state: :idle
              )
 
@@ -107,6 +108,7 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
                owner_epoch: 1,
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {4, 1, 1},
+               assigned_scene_node: node(),
                state: :idle
              )
 

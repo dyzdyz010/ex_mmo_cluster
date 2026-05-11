@@ -24,7 +24,7 @@ defmodule SceneServer.Interface do
      — announce to World we exist as a candidate scene_node for
      region assignment (D8.B join-order round-robin).
 
-  Step 3/4 failures (World unavailable / RPC timeout) only `Logger.warning`
+  Step 3/4 failures (World unavailable / RPC timeout) only `Logger.info`
   — they do *not* block scene_server startup. A scene_node is still
   useful for legacy single-region paths even without participating in
   multi-`scene_node` region routing; partial degradation beats
@@ -109,7 +109,7 @@ defmodule SceneServer.Interface do
         announce_via_rpc(world_node, registry_module, registry_name, rpc_timeout_ms)
 
       :timeout ->
-        Logger.warning(
+        Logger.info(
           "scene_server: World unavailable within #{await_timeout_ms}ms; " <>
             "skipping SceneNodeRegistry announcement (degraded: this scene_node " <>
             "won't be picked for new region assignments until restart)"
@@ -135,7 +135,7 @@ defmodule SceneServer.Interface do
         :ok
 
       {:badrpc, reason} ->
-        Logger.warning(
+        Logger.info(
           "scene_server: RPC announce to #{inspect(world_node)} SceneNodeRegistry failed: " <>
             "#{inspect(reason)} (degraded: this scene_node won't be picked for new " <>
             "region assignments until restart)"
@@ -144,7 +144,7 @@ defmodule SceneServer.Interface do
         :ok
 
       other ->
-        Logger.warning(
+        Logger.info(
           "scene_server: unexpected reply from World SceneNodeRegistry RPC: #{inspect(other)}"
         )
 

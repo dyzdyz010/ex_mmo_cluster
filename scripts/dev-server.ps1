@@ -8,7 +8,8 @@
 #   ... -SkipBuild            # skip `mix deps.get` + `mix compile`
 #   ... -SkipMigrate          # skip `mix ecto.migrate`
 #   ... -NoVsDevCmd           # don't source VsDevCmd (assume env already set)
-#   ... -NodeName foo@127.0.0.1 -Cookie mmo
+#   ... -NodeName foo            # short node name (--sname)
+#   ... -NodeName foo@127.0.0.1  # long node name (--name)
 #   ... -GateTcpPort 20002 -GateUdpPort 20003 -AuthPort 20000 -VisualizePort 20001
 
 [CmdletBinding()]
@@ -17,7 +18,7 @@ param(
   [switch]$SkipMigrate,
   [switch]$NoVsDevCmd,
   [switch]$DisableDevAutoLogin,
-  [string]$NodeName = "dev@127.0.0.1",
+  [string]$NodeName = "dev",
   [string]$Cookie = "mmo",
   [int]$GateTcpPort = 20002,
   [int]$GateUdpPort = 20003,
@@ -77,6 +78,16 @@ function Import-VsDevCmdEnv {
   }
 }
 
+function Get-NodeNameArgs {
+  param([string]$Name)
+
+  if ($Name -match "@") {
+    return @("--name", $Name)
+  }
+
+  return @("--sname", $Name)
+}
+
 try {
   if (-not $NoVsDevCmd) {
     $vsDevCmd = Find-VsDevCmd
@@ -93,6 +104,7 @@ try {
   $env:HEX_HTTP_TIMEOUT = "120"
   $env:PHX_SERVER = "true"
   if (-not $DisableDevAutoLogin) { $env:DEV_AUTO_LOGIN = "true" }
+  if (-not $env:ERL_EPMD_PORT) { $env:ERL_EPMD_PORT = "43690" }
 
   $env:GATE_TCP_PORT = "$GateTcpPort"
   $env:GATE_UDP_PORT = "$GateUdpPort"
@@ -124,14 +136,18 @@ try {
   }
 
   Write-Host ""
-  Write-Host "==> Starting iex --name $NodeName --cookie $Cookie -S mix" -ForegroundColor Green
+  $nodeArgs = Get-NodeNameArgs -Name $NodeName
+  Write-Host "==> Starting iex $($nodeArgs -join ' ') --cookie $Cookie -S mix" -ForegroundColor Green
   Write-Host "    gate tcp=$GateTcpPort  udp=$GateUdpPort" -ForegroundColor DarkGray
   Write-Host "    auth http=$AuthPort     visualize http=$VisualizePort" -ForegroundColor DarkGray
+  Write-Host "    epmd port=$env:ERL_EPMD_PORT" -ForegroundColor DarkGray
   Write-Host "    ctrl-c twice to stop."
   Write-Host ""
 
   # Hand the current console off to iex so the user can talk to it interactively.
-  cmd /c "iex --name $NodeName --cookie $Cookie -S mix"
+  $quotedArgs = @($nodeArgs + @("--cookie", $Cookie, "-S", "mix")) |
+    ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }
+  cmd /c "iex $($quotedArgs -join ' ')"
   exit $LASTEXITCODE
 }
 finally {

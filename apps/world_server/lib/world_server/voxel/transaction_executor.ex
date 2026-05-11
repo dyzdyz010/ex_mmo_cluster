@@ -60,7 +60,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     `TransactionCoordinator.begin_transaction/2`.
   - `transaction` — the `BuildTransaction` returned from
     `TransactionCoordinator.begin_transaction/2`.
-  - `intents_by_participant` — `%{ {region_id, lease_id} => intents_by_chunk }`
+  - `intents_by_participant` — `%{ participant_key => intents_by_chunk }`
     where `intents_by_chunk` is `%{chunk_coord => intent_attrs}`. Each
     `intent_attrs` is the `apply_intent` payload (`:lease`, `:operation`,
     `:macro`, `:block`, …) the chunk's prepare/commit will use.
@@ -70,11 +70,9 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   - `:scene_caller` — module exposing `prepare/4`, `commit/3`, `abort/3` with
     the same signature as `SceneServer.Voxel.BuildTransactionApplier`. Defaults
     to that module.
-  - `:scene_opts_by_participant` — **required** map `%{ {region_id, lease_id} =>
+  - `:scene_opts_by_participant` — **required** map `%{ participant_key =>
     keyword_list }` carrying the per-participant scene opts (most importantly
-    `:chunk_directory` for the participant's scene_node). Phase A4-1 replaced
-    the old single `:scene_opts` keyword (no double-path; full multi-region
-    parity from this module's perspective). The executor automatically merges
+    `:chunk_directory` for the participant's scene_node). The executor automatically merges
     in the transaction's `:logical_scene_id` per participant. Single-region
     callers pass a one-entry map.
   - `:now_ms_fun` — 0-arity function returning a monotonic-ish timestamp; used
@@ -282,6 +280,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         end
 
       ack = %{
+        participant_key: participant_key(participant),
         region_id: participant.region_id,
         lease_id: participant.lease_id,
         status: status,
@@ -370,9 +369,10 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   end
 
   # Phase A4-3:scene_objects 已经在 coordinator allocate 阶段按 D6 字典序
-  # 规则带上 owner_region_id / owner_lease_id。这里按 owner participant key
-  # 分组,每组用自己 participant 的 scene_opts 调一次 register_scene_objects;
-  # 单 region 退化情形是单组单调用,行为等价于 Phase 4 旧路径。
+  # 规则带上 owner_region_id / owner_lease_id。这里按 dispatch participant
+  # key 分组,每组用自己 Scene-owner participant 的 scene_opts 调一次
+  # register_scene_objects。一个 Scene-owner participant 可以覆盖多个
+  # lease;object 自身仍保留真实 owner_region_id / owner_lease_id。
   #
   # Phase A4-4 (D7):同时给每个 obj 附加 in-memory `:covered_chunks_by_region`
   # 字段(从 `transaction.participants.affected_chunks` 推算 chunk → participant
@@ -387,36 +387,43 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
       scene_objects when is_list(scene_objects) ->
         if function_exported?(scene_caller, :register_scene_objects, 2) do
-          chunk_to_participant = build_chunk_to_participant_map(transaction)
+          chunk_to_owner = build_chunk_to_owner_map(transaction)
+          chunk_to_dispatch_participant = build_chunk_to_dispatch_participant_map(transaction)
 
           inflated =
             Enum.map(scene_objects, fn obj ->
               Map.put(
                 obj,
                 :covered_chunks_by_region,
-                covered_chunks_by_region_for(obj, chunk_to_participant)
+                covered_chunks_by_region_for(obj, chunk_to_owner)
               )
             end)
 
           inflated
-          |> group_scene_objects_by_owner()
-          |> Enum.each(fn {owner_key, objects} ->
-            case Map.fetch(scene_opts_by_participant, owner_key) do
-              {:ok, opts} ->
-                safely_invoke(fn ->
-                  apply(scene_caller, :register_scene_objects, [
-                    objects,
-                    scene_opts_with_logical_scene_id(opts, transaction)
-                  ])
-                end)
+          |> group_scene_objects_by_dispatch_participant(chunk_to_dispatch_participant)
+          |> Enum.each(fn
+            {{:ok, dispatch_key}, objects} ->
+              case Map.fetch(scene_opts_by_participant, dispatch_key) do
+                {:ok, opts} ->
+                  safely_invoke(fn ->
+                    apply(scene_caller, :register_scene_objects, [
+                      objects,
+                      scene_opts_with_logical_scene_id(opts, transaction)
+                    ])
+                  end)
 
-              :error ->
-                emit("voxel_scene_object_register_owner_unavailable", transaction, %{
-                  owner_region_id: elem(owner_key, 0),
-                  owner_lease_id: elem(owner_key, 1),
-                  object_count: length(objects)
-                })
-            end
+                :error ->
+                  emit("voxel_scene_object_register_participant_unavailable", transaction, %{
+                    participant_key: inspect(dispatch_key),
+                    object_count: length(objects)
+                  })
+              end
+
+            {{:error, reason}, objects} ->
+              emit("voxel_scene_object_register_participant_unavailable", transaction, %{
+                reason: inspect(reason),
+                object_count: length(objects)
+              })
           end)
         end
 
@@ -424,33 +431,58 @@ defmodule WorldServer.Voxel.TransactionExecutor do
     end
   end
 
-  defp group_scene_objects_by_owner(scene_objects) do
+  defp group_scene_objects_by_dispatch_participant(scene_objects, chunk_to_dispatch_participant) do
     Enum.group_by(scene_objects, fn obj ->
-      {Map.fetch!(obj, :owner_region_id), Map.fetch!(obj, :owner_lease_id)}
+      dispatch_participant_key_for(obj, chunk_to_dispatch_participant)
     end)
   end
 
-  # `%{ chunk_coord => {region_id, lease_id} }` reverse map from the
-  # transaction's participants. Each participant carries its `affected_chunks`,
-  # so the union covers every chunk touched by the transaction.
-  defp build_chunk_to_participant_map(transaction) do
+  defp dispatch_participant_key_for(obj, chunk_to_dispatch_participant) do
+    case Map.fetch!(obj, :covered_chunks) |> Enum.sort() do
+      [] ->
+        {:error, :invalid_covered_chunks}
+
+      [first_chunk | _] ->
+        case Map.fetch(chunk_to_dispatch_participant, first_chunk) do
+          {:ok, participant_key} -> {:ok, participant_key}
+          :error -> {:error, {:missing_dispatch_participant, first_chunk}}
+        end
+    end
+  end
+
+  # `%{ chunk_coord => participant_key }` reverse map from the transaction's
+  # participants. This chooses the Scene-owner dispatch target used for
+  # commit-time object registry writes.
+  defp build_chunk_to_dispatch_participant_map(transaction) do
     transaction.participants
     |> Enum.flat_map(fn p ->
-      Enum.map(p.affected_chunks, fn coord -> {coord, {p.region_id, p.lease_id}} end)
+      dispatch_key = participant_key(p)
+
+      Enum.map(p.affected_chunks, fn coord ->
+        {coord, dispatch_key}
+      end)
     end)
     |> Map.new()
   end
 
-  # Group an object's `covered_chunks` by which participant owns each chunk.
-  # Defensive default: a chunk that is not in any participant's
-  # `affected_chunks` (should not happen for committed transactions) falls
-  # back to the object's own owner key so the owner-driven fan-out at
-  # least targets the local region.
-  defp covered_chunks_by_region_for(obj, chunk_to_participant) do
-    fallback_key = {Map.fetch!(obj, :owner_region_id), Map.fetch!(obj, :owner_lease_id)}
+  # `%{ chunk_coord => {region_id, lease_id} }` reverse map from the
+  # transaction's participants. Each participant carries the real
+  # `chunk_owners` map so a Scene-owner participant can still inflate
+  # per-region object ownership correctly.
+  defp build_chunk_to_owner_map(transaction) do
+    transaction.participants
+    |> Enum.flat_map(fn p ->
+      Enum.map(p.affected_chunks, fn coord ->
+        {coord, Map.fetch!(p.chunk_owners, coord)}
+      end)
+    end)
+    |> Map.new()
+  end
 
+  # Group an object's `covered_chunks` by which real lease owns each chunk.
+  defp covered_chunks_by_region_for(obj, chunk_to_owner) do
     Enum.group_by(Map.fetch!(obj, :covered_chunks), fn coord ->
-      Map.get(chunk_to_participant, coord, fallback_key)
+      Map.fetch!(chunk_to_owner, coord)
     end)
   end
 
@@ -533,9 +565,8 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
   # Phase A4-1 helpers ──────────────────────────────────────────────────
 
-  defp participant_key(%{region_id: region_id, lease_id: lease_id}) do
-    {region_id, lease_id}
-  end
+  defp participant_key(%{participant_key: participant_key}) when not is_nil(participant_key),
+    do: participant_key
 
   defp scene_opts_with_logical_scene_id(opts, transaction) when is_list(opts) do
     Keyword.put(opts, :logical_scene_id, transaction.logical_scene_id)
@@ -544,7 +575,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   defp validate_scene_opts_by_participant!(nil, _transaction) do
     raise ArgumentError,
           "TransactionExecutor.execute/4 requires :scene_opts_by_participant " <>
-            "(map keyed by {region_id, lease_id}); legacy :scene_opts was " <>
+            "(map keyed by participant_key); legacy :scene_opts was " <>
             "removed in Phase A4-1"
   end
 
@@ -570,7 +601,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
   defp validate_scene_opts_by_participant!(other, _transaction) do
     raise ArgumentError,
           "TransactionExecutor.execute/4 :scene_opts_by_participant must be a " <>
-            "map keyed by {region_id, lease_id}; got " <> inspect(other)
+            "map keyed by participant_key; got " <> inspect(other)
   end
 
   # Wraps a 0-arity invocation that calls into the scene caller. Normal returns

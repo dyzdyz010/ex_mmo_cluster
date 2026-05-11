@@ -105,7 +105,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
              bounds_chunk_min: {0, 0, 0},
              bounds_chunk_max: {4, 4, 4},
              owner_scene_instance_ref: source_ref,
-             owner_epoch: 0
+             owner_epoch: 0,
+             assigned_scene_node: node()
            }),
          {:ok, lease_v1} <-
            MapLedger.issue_lease(ledger, region_id, source_ref,

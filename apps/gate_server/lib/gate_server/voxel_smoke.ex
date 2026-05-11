@@ -339,7 +339,8 @@ defmodule GateServer.VoxelSmoke do
              bounds_chunk_min: {0, 0, 0},
              bounds_chunk_max: {1, 1, 1},
              owner_scene_instance_ref: @owner_scene_instance_ref,
-             owner_epoch: 0
+             owner_epoch: 0,
+             assigned_scene_node: node()
            }),
          {:ok, lease} <-
            MapLedger.issue_lease(MapLedger, region_id, @owner_scene_instance_ref,

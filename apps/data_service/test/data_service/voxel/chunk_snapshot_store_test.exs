@@ -100,6 +100,48 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
     assert snapshot.data == <<7, 7>>
   end
 
+  test "serializes concurrent inserts for the same missing chunk", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
+    parent = self()
+
+    attrs_v1 =
+      snapshot_attrs(token, chunk_version: 1, chunk_hash: hash("v1"), data: <<"v1">>)
+
+    attrs_v2 =
+      snapshot_attrs(token, chunk_version: 2, chunk_hash: hash("v2"), data: <<"v2">>)
+
+    tasks =
+      for attrs <- [attrs_v1, attrs_v2] do
+        Task.async(fn ->
+          send(parent, {:ready, self()})
+
+          receive do
+            :go -> :ok
+          end
+
+          ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
+        end)
+      end
+
+    assert_receive {:ready, _}
+    assert_receive {:ready, _}
+    Enum.each(tasks, &send(&1.pid, :go))
+
+    results = Task.await_many(tasks, 5_000)
+
+    assert Enum.any?(results, &match?({:ok, :inserted}, &1))
+
+    assert Enum.all?(results, fn
+             {:ok, result} when result in [:inserted, :updated] -> true
+             {:error, :stale_chunk_version} -> true
+             _other -> false
+           end)
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert snapshot.chunk_version == 2
+    assert snapshot.data == <<"v2">>
+  end
+
   test "reads stored snapshots by logical scene chunk", %{token_store: token_store} do
     token = upsert_token(token_store, token())
 

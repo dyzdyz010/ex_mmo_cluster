@@ -5,6 +5,8 @@ defmodule BeaconServer.Application do
 
   @impl true
   def start(_type, _args) do
+    BeaconServer.StartupBanner.print_once()
+
     topologies = cluster_topologies()
 
     children =

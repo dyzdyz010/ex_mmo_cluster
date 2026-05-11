@@ -1,13 +1,13 @@
 defmodule DataInit.TableDef do
   defmodule User.Account do
-    use Memento.Table,
+    use DataInit.MementoTable,
       attributes: [:id, :username, :password, :salt, :email, :phone],
       index: [:email, :username],
       type: :set
   end
 
   defmodule User.Character do
-    use Memento.Table,
+    use DataInit.MementoTable,
       attributes: [
         :id,
         :account,
@@ -25,7 +25,7 @@ defmodule DataInit.TableDef do
   end
 
   defmodule User.AccountSession do
-    use Memento.Table,
+    use DataInit.MementoTable,
       attributes: [
         :id,
         :account_id,

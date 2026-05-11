@@ -98,19 +98,20 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:route_chunk, logical_scene_id, chunk_coord})
   end
 
-  @doc """
-  Phase A4-bis-4 段 2d: returns the scene_node currently assigned to
-  `region_id`, or `:error` when the region is unknown / has no
-  scene_node assigned (e.g. World booted before any scene_node
-  registered). Read-only.
-  """
-  def lookup_region_scene_node(server \\ __MODULE__, region_id) do
-    GenServer.call(server, {:lookup_region_scene_node, region_id})
-  end
-
   @doc "Routes a chunk coordinate and returns both the assignment and current lease."
   def route_chunk_with_lease(server \\ __MODULE__, logical_scene_id, chunk_coord) do
     GenServer.call(server, {:route_chunk_with_lease, logical_scene_id, chunk_coord})
+  end
+
+  @doc """
+  Routes many chunk coordinates and returns each current assignment plus lease.
+
+  This is the batch form Gate uses for prefab placement. It keeps World as the
+  routing source of truth while avoiding one GenServer call per touched chunk.
+  """
+  def route_chunks_with_leases(server \\ __MODULE__, logical_scene_id, chunk_coords)
+      when is_list(chunk_coords) do
+    GenServer.call(server, {:route_chunks_with_leases, logical_scene_id, chunk_coords})
   end
 
   @doc "Validates that a proposed scene write matches the current world lease."
@@ -118,7 +119,12 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:validate_write, normalize_write(attrs)})
   end
 
-  @doc "Builds lease-scoped transaction participants for the affected chunks."
+  @doc """
+  Builds Scene-owner transaction participants for affected chunks.
+
+  Participants are keyed by the assigned Scene node, while each affected chunk
+  records its real `{region_id, lease_id}` owner in `chunk_owners`.
+  """
   def transaction_participants(server \\ __MODULE__, logical_scene_id, affected_chunks) do
     GenServer.call(server, {:transaction_participants, logical_scene_id, affected_chunks})
   end
@@ -148,11 +154,10 @@ defmodule WorldServer.Voxel.MapLedger do
       write_token_store: Keyword.get(opts, :write_token_store),
       persist_fn: persist_fn,
       scene_invalidator: Keyword.get(opts, :scene_invalidator),
-      # Phase A4-bis-4 段 2c: optional handle to
-      # WorldServer.Voxel.SceneNodeRegistry. When set, `put_region`
-      # asks the registry for a scene_node assignment and stores it on
-      # the RegionAssignment. `nil` (default) keeps legacy behaviour
-      # for tests + single-node setups: assigned_scene_node stays nil.
+      # Optional handle to WorldServer.Voxel.SceneNodeRegistry. Production
+      # wiring sets it so put_region stores a concrete Scene owner on the
+      # RegionAssignment. Without a registry, callers must provide
+      # :assigned_scene_node explicitly.
       scene_node_registry: Keyword.get(opts, :scene_node_registry)
     }
 
@@ -191,29 +196,32 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp do_handle_call({:put_region, attrs}, _from, state) do
-    assignment =
-      attrs
-      |> RegionAssignment.new()
-      |> maybe_assign_scene_node(state)
+    with {:ok, assignment} <-
+           attrs
+           |> RegionAssignment.new()
+           |> maybe_assign_scene_node(state),
+         :ok <- validate_region_bounds_available(state, assignment) do
+      key = assignment.region_id
 
-    key = assignment.region_id
+      CliObserve.emit("voxel_region_put", fn ->
+        Map.take(Map.from_struct(assignment), [
+          :logical_scene_id,
+          :region_id,
+          :owner_scene_instance_ref,
+          :owner_epoch,
+          :assigned_scene_node,
+          :state
+        ])
+      end)
 
-    case validate_region_bounds_available(state, assignment) do
-      :ok ->
-        CliObserve.emit("voxel_region_put", fn ->
-          Map.take(Map.from_struct(assignment), [
-            :logical_scene_id,
-            :region_id,
-            :owner_scene_instance_ref,
-            :owner_epoch,
-            :assigned_scene_node,
-            :state
-          ])
-        end)
-
-        {:reply, {:ok, assignment}, put_in(state.assignments[key], assignment)}
+      {:reply, {:ok, assignment}, put_in(state.assignments[key], assignment)}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
       {:error, reason, conflicting_assignment} ->
+        assignment = RegionAssignment.new(attrs)
+
         CliObserve.emit("voxel_region_put_rejected", fn ->
           %{
             reason: reason,
@@ -315,28 +323,28 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, route_chunk_in_state(state, logical_scene_id, chunk_coord), state}
   end
 
-  defp do_handle_call({:lookup_region_scene_node, region_id}, _from, state) do
-    reply =
-      case Map.fetch(state.assignments, region_id) do
-        {:ok, %RegionAssignment{assigned_scene_node: node}} when not is_nil(node) ->
-          {:ok, node}
-
-        {:ok, %RegionAssignment{assigned_scene_node: nil}} ->
-          :error
-
-        :error ->
-          :error
-      end
-
-    {:reply, reply, state}
-  end
-
   defp do_handle_call({:route_chunk_with_lease, logical_scene_id, chunk_coord}, _from, state) do
     reply =
       with {:ok, assignment} <- route_chunk_in_state(state, logical_scene_id, chunk_coord),
            {:ok, lease} <- fetch_region_lease(state, assignment.region_id) do
         {:ok, %{assignment: assignment, lease: lease}}
       end
+
+    {:reply, reply, state}
+  end
+
+  defp do_handle_call({:route_chunks_with_leases, logical_scene_id, chunk_coords}, _from, state) do
+    reply =
+      chunk_coords
+      |> Enum.uniq()
+      |> Enum.reduce_while({:ok, %{}}, fn chunk_coord, {:ok, acc} ->
+        with {:ok, assignment} <- route_chunk_in_state(state, logical_scene_id, chunk_coord),
+             {:ok, lease} <- fetch_region_lease(state, assignment.region_id) do
+          {:cont, {:ok, Map.put(acc, chunk_coord, %{assignment: assignment, lease: lease})}}
+        else
+          {:error, reason} -> {:halt, {:error, {chunk_coord, reason}}}
+        end
+      end)
 
     {:reply, reply, state}
   end
@@ -896,37 +904,35 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
-  # Phase A4-bis-4 段 2c: ask SceneNodeRegistry which scene_node should
-  # own this region (D8.B join-order round-robin). When no registry is
-  # configured (legacy / single-node tests) or the caller already
-  # filled `assigned_scene_node` (e.g. seed scripts pinning a node),
-  # we leave the assignment alone.
-  defp maybe_assign_scene_node(%RegionAssignment{} = assignment, %{
-         scene_node_registry: nil
-       }),
-       do: assignment
-
   defp maybe_assign_scene_node(%RegionAssignment{assigned_scene_node: node} = assignment, _state)
        when not is_nil(node),
-       do: assignment
+       do: {:ok, assignment}
+
+  # Ask SceneNodeRegistry which scene_node should own this region (join-order
+  # round-robin). A region may not be stored without a concrete Scene owner.
+  defp maybe_assign_scene_node(%RegionAssignment{} = assignment, %{
+         scene_node_registry: nil
+       }) do
+    CliObserve.emit("voxel_region_put_no_scene_node_registry", fn ->
+      %{logical_scene_id: assignment.logical_scene_id, region_id: assignment.region_id}
+    end)
+
+    {:error, :scene_node_unassigned}
+  end
 
   defp maybe_assign_scene_node(%RegionAssignment{} = assignment, %{
          scene_node_registry: registry
        }) do
     case WorldServer.Voxel.SceneNodeRegistry.assign_region(registry, assignment.region_id) do
       {:ok, scene_node} ->
-        %{assignment | assigned_scene_node: scene_node}
+        {:ok, %{assignment | assigned_scene_node: scene_node}}
 
       {:error, :no_scene_nodes} ->
-        # Allow the put_region to succeed with assigned_scene_node = nil
-        # so World can boot before any scene_node arrives. After a
-        # scene_node registers, an admin re-issuing put_region (or a
-        # future auto-rebind sweeper) will fill it in.
         CliObserve.emit("voxel_region_put_no_scene_nodes", fn ->
           %{logical_scene_id: assignment.logical_scene_id, region_id: assignment.region_id}
         end)
 
-        assignment
+        {:error, :scene_node_unassigned}
     end
   end
 
@@ -1115,48 +1121,58 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp participants_for_chunks(state, logical_scene_id, affected_chunks) do
-    affected_chunks
-    |> Enum.uniq()
-    |> Enum.reduce_while({:ok, %{}}, fn chunk_coord, {:ok, acc} ->
-      with {:ok, assignment} <- route_chunk_in_state(state, logical_scene_id, chunk_coord),
-           {:ok, lease} <- fetch_region_lease(state, assignment.region_id) do
-        key = {assignment.region_id, lease.lease_id}
-        participant = Map.get(acc, key, participant_from_lease(lease))
+    routes =
+      affected_chunks
+      |> Enum.uniq()
+      |> Enum.reduce_while({:ok, []}, fn chunk_coord, {:ok, acc} ->
+        with {:ok, assignment} <- route_chunk_in_state(state, logical_scene_id, chunk_coord),
+             {:ok, lease} <- fetch_region_lease(state, assignment.region_id),
+             {:ok, scene_node} <- assigned_scene_node(assignment) do
+          {:cont, {:ok, [{chunk_coord, assignment, lease, scene_node} | acc]}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
 
-        participant = %{
-          participant
-          | affected_chunks: [chunk_coord | participant.affected_chunks]
+    with {:ok, routes} <- routes do
+      routes
+      |> Enum.group_by(
+        fn {_coord, _assignment, _lease, scene_node} -> scene_node end,
+        fn {coord, assignment, lease, _scene_node} -> {coord, assignment, lease} end
+      )
+      |> Enum.map(fn {scene_node, entries} ->
+        entries = Enum.sort_by(entries, fn {coord, _assignment, _lease} -> coord end)
+        {_first_coord, _first_assignment, first_lease} = List.first(entries)
+
+        chunk_owners =
+          Map.new(entries, fn {coord, _assignment, lease} ->
+            {coord, {lease.region_id, lease.lease_id}}
+          end)
+
+        %TransactionParticipant{
+          participant_key: {:scene_owner, scene_node},
+          region_id: first_lease.region_id,
+          lease_id: first_lease.lease_id,
+          owner_scene_instance_ref: first_lease.owner_scene_instance_ref,
+          owner_epoch: first_lease.owner_epoch,
+          assigned_scene_node: scene_node,
+          affected_chunks: Enum.map(entries, fn {coord, _assignment, _lease} -> coord end),
+          chunk_owners: chunk_owners
         }
-
-        {:cont, {:ok, Map.put(acc, key, participant)}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, participants_by_key} ->
-        participants =
-          participants_by_key
-          |> Map.values()
-          |> Enum.map(&%{&1 | affected_chunks: Enum.sort(&1.affected_chunks)})
-          |> Enum.sort_by(&{&1.region_id, &1.lease_id})
-
-        {:ok, participants}
-
+      end)
+      |> Enum.sort_by(&{&1.assigned_scene_node, &1.region_id, &1.lease_id})
+      |> then(&{:ok, &1})
+    else
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp participant_from_lease(lease) do
-    %TransactionParticipant{
-      region_id: lease.region_id,
-      lease_id: lease.lease_id,
-      owner_scene_instance_ref: lease.owner_scene_instance_ref,
-      owner_epoch: lease.owner_epoch,
-      affected_chunks: []
-    }
-  end
+  defp assigned_scene_node(%RegionAssignment{assigned_scene_node: scene_node})
+       when not is_nil(scene_node),
+       do: {:ok, scene_node}
+
+  defp assigned_scene_node(%RegionAssignment{}), do: {:error, :scene_node_unassigned}
 
   defp normalize_write(attrs) when is_map(attrs) do
     %{

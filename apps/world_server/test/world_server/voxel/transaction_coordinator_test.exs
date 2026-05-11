@@ -16,6 +16,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :preparing}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-prepared", %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :prepared,
@@ -24,6 +25,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :prepared, participants: participants}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-prepared", %{
+               participant_key: {20, 200},
                region_id: 20,
                lease_id: 200,
                status: :prepared,
@@ -47,6 +49,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :aborting}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-abortable", %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :failed,
@@ -94,6 +97,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :preparing}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-not-ready", %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :prepared,
@@ -116,6 +120,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :preparing}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-replay", %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :prepared,
@@ -180,6 +185,56 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
     end
   end
 
+  test "Scene-owner participant_key drives prepare ack while chunk_owners derive object owner" do
+    participant_key = {:scene_owner, :chunk_directory_a, :scene_a}
+
+    coordinator =
+      start_supervised!(
+        {TransactionCoordinator,
+         name: :"coord_#{System.unique_integer([:positive])}",
+         next_object_id_fn: fn -> {:ok, 9_001} end}
+      )
+
+    attrs =
+      transaction_attrs("tx-scene-owner")
+      |> Map.put(:participants, [
+        %TransactionParticipant{
+          participant_key: participant_key,
+          region_id: 10,
+          lease_id: 100,
+          owner_scene_instance_ref: 1_000,
+          owner_epoch: 1,
+          assigned_scene_node: :scene_a,
+          affected_chunks: [{0, 0, 0}, {2, 0, 0}],
+          chunk_owners: %{
+            {0, 0, 0} => {10, 100},
+            {2, 0, 0} => {20, 200}
+          }
+        }
+      ])
+      |> Map.put(:scene_objects, [
+        scene_object_seed(blueprint_id: 71, covered_chunks: [{2, 0, 0}])
+      ])
+
+    assert {:ok,
+            %BuildTransaction{
+              state: :preparing,
+              participants: [participant],
+              scene_objects: [scene_object]
+            }} = TransactionCoordinator.begin_transaction(coordinator, attrs)
+
+    assert participant.participant_key == participant_key
+    assert scene_object.owner_region_id == 20
+    assert scene_object.owner_lease_id == 200
+
+    assert {:ok, %BuildTransaction{state: :prepared}} =
+             TransactionCoordinator.prepare_ack(coordinator, "tx-scene-owner", %{
+               participant_key: participant_key,
+               status: :prepared,
+               acked_at_ms: 9
+             })
+  end
+
   defp prepare_all!(coordinator, transaction_id) do
     assert {:ok, _transaction} =
              TransactionCoordinator.begin_transaction(
@@ -189,6 +244,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, _transaction} =
              TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :prepared,
@@ -197,6 +253,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
 
     assert {:ok, %BuildTransaction{state: :prepared}} =
              TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
+               participant_key: {20, 200},
                region_id: 20,
                lease_id: 200,
                status: :prepared,
@@ -220,18 +277,24 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
   defp participants do
     [
       %TransactionParticipant{
+        participant_key: {20, 200},
         region_id: 20,
         lease_id: 200,
         owner_scene_instance_ref: 2_000,
         owner_epoch: 1,
-        affected_chunks: [{2, 0, 0}]
+        assigned_scene_node: :scene_b,
+        affected_chunks: [{2, 0, 0}],
+        chunk_owners: %{{2, 0, 0} => {20, 200}}
       },
       %TransactionParticipant{
+        participant_key: {10, 100},
         region_id: 10,
         lease_id: 100,
         owner_scene_instance_ref: 1_000,
         owner_epoch: 1,
-        affected_chunks: [{0, 0, 0}]
+        assigned_scene_node: :scene_a,
+        affected_chunks: [{0, 0, 0}],
+        chunk_owners: %{{0, 0, 0} => {10, 100}}
       }
     ]
   end
@@ -245,5 +308,21 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
         {2, 0, 0} => [%{operation: :put_solid_block, macro: 1}]
       }
     }
+  end
+
+  defp scene_object_seed(overrides) do
+    base = %{
+      blueprint_id: 7,
+      blueprint_version: 1,
+      parcel_id: 13,
+      anchor_world_micro: {0, 0, 0},
+      rotation: 0,
+      owner_actor_id: 1_001,
+      covered_chunks: [{0, 0, 0}],
+      part_states: [%{part_id: 1, health: 80, state_flags: 0}],
+      object_version: 1
+    }
+
+    Map.merge(base, Map.new(overrides))
   end
 end

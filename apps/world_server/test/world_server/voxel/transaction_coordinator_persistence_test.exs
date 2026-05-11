@@ -87,6 +87,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
 
     assert {:ok, %BuildTransaction{state: :aborting}} =
              TransactionCoordinator.prepare_ack(coordinator, "tx-abort-restart", %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :failed,
@@ -240,6 +241,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
 
     assert {:ok, _transaction} =
              TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
+               participant_key: {10, 100},
                region_id: 10,
                lease_id: 100,
                status: :prepared,
@@ -248,6 +250,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
 
     assert {:ok, %BuildTransaction{state: :prepared}} =
              TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
+               participant_key: {20, 200},
                region_id: 20,
                lease_id: 200,
                status: :prepared,
@@ -271,18 +274,24 @@ defmodule WorldServer.Voxel.TransactionCoordinatorPersistenceTest do
   defp participants do
     [
       %TransactionParticipant{
+        participant_key: {20, 200},
         region_id: 20,
         lease_id: 200,
         owner_scene_instance_ref: 2_000,
         owner_epoch: 1,
-        affected_chunks: [{2, 0, 0}]
+        assigned_scene_node: :scene_b,
+        affected_chunks: [{2, 0, 0}],
+        chunk_owners: %{{2, 0, 0} => {20, 200}}
       },
       %TransactionParticipant{
+        participant_key: {10, 100},
         region_id: 10,
         lease_id: 100,
         owner_scene_instance_ref: 1_000,
         owner_epoch: 1,
-        affected_chunks: [{0, 0, 0}]
+        assigned_scene_node: :scene_a,
+        affected_chunks: [{0, 0, 0}],
+        chunk_owners: %{{0, 0, 0} => {10, 100}}
       }
     ]
   end

@@ -38,31 +38,20 @@ defmodule WorldServer.WorldSup do
 
   @doc """
   Resolves `:scene_opts_by_participant` for the
-  `WorldServer.Voxel.TransactionRecoveryWatcher` resume path by looking
-  up **each participant's** scene_node from `MapLedger` (Phase A4-bis-4
-  段 2d).
+  `WorldServer.Voxel.TransactionRecoveryWatcher` resume path by resolving
+  **each participant's** Scene-owner node (Phase A4-bis-4 段 2d).
 
-  Each participant's `region_id` is resolved through
-  `MapLedger.lookup_region_scene_node/2` (which reads the
-  `RegionAssignment.assigned_scene_node` filled in by `put_region` from
-  `SceneNodeRegistry.assign_region/2`). A `chunk_directory` target of
-  `{SceneServer.Voxel.ChunkDirectory, scene_node}` is built per
-  participant — single-BEAM dev / single-`scene_node` deployment ends
-  up with all participants pointing at the same node, multi-`scene_node`
-  deployments naturally route to different nodes.
+  Scene-owner participants carry `assigned_scene_node`. A `chunk_directory`
+  target of `{SceneServer.Voxel.ChunkDirectory, scene_node}` is built per
+  participant key. Missing `assigned_scene_node` is a hard routing error; the
+  resolver does not infer ownership from region or lease fields.
 
   Returns:
 
-  * `{:ok, executor_opts}` — at least one participant resolved, all
-    resolved participants are in the per-participant opts map.
-    Unresolved participants (region not yet assigned to a scene_node)
-    are dropped from the map; the executor will fail those participants
-    individually later. *Open question:* should we instead fail the whole
-    resume here? For now, partial-resolution lets the executor
-    distinguish "per-participant prepare failure" from "world routing
-    failure" in observe.
-  * `{:error, :scene_unavailable}` — *no* participant has an assigned
-    scene_node. Watcher leaves the transaction parked and emits
+  * `{:ok, executor_opts}` — every participant resolved and the map is keyed
+    by `participant_key`.
+  * `{:error, {:scene_unavailable, missing_keys}}` — one or more participants
+    have no assigned scene_node. Watcher leaves the transaction parked and emits
     `voxel_transaction_recovery_scene_opts_unavailable`.
   """
   def default_scene_opts_resolver(participants) when is_list(participants),
@@ -70,40 +59,45 @@ defmodule WorldServer.WorldSup do
 
   @doc """
   Same as `default_scene_opts_resolver/1` but with injectable opts —
-  used by tests that need to point at a per-test isolated MapLedger
-  rather than the production global `WorldServer.Voxel.MapLedger`.
-
-  Opts:
-
-  * `:ledger` — `MapLedger` GenServer name / pid (default
-    `WorldServer.Voxel.MapLedger`).
+  The second argument is retained for call-site convenience in focused tests;
+  resolver behavior is fully driven by participant data.
   """
   def default_scene_opts_resolver(participants, opts) when is_list(participants) do
-    ledger = Keyword.get(opts, :ledger, WorldServer.Voxel.MapLedger)
+    _opts = opts
 
-    pairs =
-      Enum.flat_map(participants, fn participant ->
-        case WorldServer.Voxel.MapLedger.lookup_region_scene_node(
-               ledger,
-               participant.region_id
-             ) do
+    {pairs, missing} =
+      Enum.reduce(participants, {[], []}, fn participant, {pairs, missing} ->
+        case participant_scene_node(participant) do
           {:ok, scene_node} ->
-            [
-              {{participant.region_id, participant.lease_id},
+            pair =
+              {participant_key(participant),
                [chunk_directory: {SceneServer.Voxel.ChunkDirectory, scene_node}]}
-            ]
+
+            {[pair | pairs], missing}
 
           :error ->
-            []
+            {pairs, [participant_key(participant) | missing]}
         end
       end)
 
-    case pairs do
+    case missing do
+      [] when pairs != [] ->
+        {:ok, [scene_opts_by_participant: pairs |> Enum.reverse() |> Map.new()]}
+
       [] ->
-        {:error, :scene_unavailable}
+        {:error, {:scene_unavailable, []}}
 
       _ ->
-        {:ok, [scene_opts_by_participant: Map.new(pairs)]}
+        {:error, {:scene_unavailable, Enum.reverse(missing)}}
     end
   end
+
+  defp participant_scene_node(%{assigned_scene_node: scene_node})
+       when not is_nil(scene_node),
+       do: {:ok, scene_node}
+
+  defp participant_scene_node(_participant), do: :error
+
+  defp participant_key(%{participant_key: participant_key}) when not is_nil(participant_key),
+    do: participant_key
 end

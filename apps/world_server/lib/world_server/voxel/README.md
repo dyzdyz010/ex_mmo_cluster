@@ -25,7 +25,7 @@
   World 只在切换阶段改变路由并发布新的写入令牌。
 - `TransactionParticipant` 和 `BuildTransaction` 描述可恢复的跨区域工作。
   **Phase 3-bis：`BuildTransaction` 加 `intents_by_participant` 字段**
-  （形态 `%{ {region_id, lease_id} => %{chunk_coord => [intent_attrs]} }`，对齐
+  （形态 `%{ participant_key => %{chunk_coord => [intent_attrs]} }`，对齐
   `TransactionExecutor.execute/4` 第三参数）。该字段随 transactions map 一并持久化进
   既有 `voxel_transaction_coordinator_snapshots` 单行 snapshot,coordinator 重启 reload
   后字段完整保留,使 `TransactionRecoveryWatcher` 能直接重发 commit dispatch。
@@ -137,33 +137,40 @@ World 不直接搬运区块内容。
 `part_states` 是 `[%{part_id, health, state_flags}, ...]`（plain map 形态，
 Scene 侧 ObjectRegistry 会归一化为 `%PartState{}` struct）。
 
-**Phase A4 跨 region prefab 多 participant 事务**(2026-05-10 落地):
+**Phase A4 跨 region prefab 多 participant 事务**(2026-05-10 落地，2026-05-11 收口):
 
 - `BuildTransaction.participants` 现在是 N 个 `TransactionParticipant`(每个
-  含 `region_id` / `lease_id` / `affected_chunks`),Gate `build_prefab_plan`
-  按 `(region_id, lease_id)` 分组成 multi-participant。
+  必须含 `participant_key` / `assigned_scene_node` / `affected_chunks` /
+  完整 `chunk_owners`)。
+  Gate `build_prefab_plan` 按具体 Scene owner `{ChunkDirectory, scene_node}`
+  分组成 multi-participant；一个 participant 可以覆盖多个 lease，并用
+  `chunk_owners` 保存每个 chunk 的真实 `{region_id, lease_id}`。
 - `TransactionExecutor.execute/4` 接受 `:scene_opts_by_participant`
-  `%{ {region_id, lease_id} => keyword_list }` 替换原 `:scene_opts`
-  (Phase A4-1,无双路径)。`run_prepare` / `run_commit` / `run_abort` 内按
-  `participant_key` 取对应 scene_opts,自然支持跨 region 不同 chunk_directory
-  / scene_node 的 transaction 路径。
+  `%{ participant_key => keyword_list }`。`run_prepare` / `run_commit` /
+  `run_abort` 内只按 `participant_key` 取对应 scene_opts,自然支持跨 region
+  不同 chunk_directory / scene_node 的 transaction 路径。
+- `MapLedger.route_chunks_with_leases/3` 是 prefab placement 的批量路由入口:
+  Gate 一次拿到所有 touched chunks 的 assignment + lease。若任何 assignment
+  缺 `assigned_scene_node`,Gate 直接拒绝该 intent,不再通过
+  `owner_scene_instance_ref` 推测 Scene server。`MapLedger.put_region/2` 本身也不再
+  存储无 Scene owner 的 region:没有 registry assignment 且调用方未显式传
+  `assigned_scene_node` 时返回 `{:error, :scene_node_unassigned}`。World 仍是路由事实来源;真正
+  split-owner 的计划才进入 `TransactionCoordinator` / `TransactionExecutor`。
 - `register_scene_objects_after_commit/3` 给每个 obj **inflate**
   `:covered_chunks_by_region`(从 `transaction.participants.affected_chunks`
-  反向推算 `chunk → participant_key` map);scene 侧
-  `BuildTransactionApplier.register_scene_objects` 把它写入 `ObjectOwnerLookup`,
-  让 cross-region damage / 0x6C 广播能 cache 命中而不必走 SELECT。
+  + `chunk_owners` 反向推算 `chunk → {region_id, lease_id}` map),同时按
+  首个 covered chunk 的 `participant_key` 分发到正确 Scene-owner participant。
+  这里不再用 participant 自身 `{region_id, lease_id}` 兜底;缺 chunk owner
+  是调用方契约错误。
+  Scene 侧 `BuildTransactionApplier.register_scene_objects` 把
+  `covered_chunks_by_region` 写入 `ObjectOwnerLookup`,让 cross-region damage /
+  0x6C 广播能 cache 命中而不必走 SELECT。
 - `voxel_scene_objects` 加 `owner_region_id` / `owner_lease_id` 列(Phase A4-3,
   D6 字典序首 covered chunk 所在 region 是 owner);**不**持久化
   `covered_chunks_by_region`(动态信息,改运行时 cache,见 ObjectOwnerLookup)。
 - `TransactionRecoveryWatcher.scene_opts_resolver` 改为 1-arity 接 participants
-  list(Phase A4-1),resume 路径在 multi-participant transaction 上自然支持
-  (`intents_by_participant` 已经在 Phase 3-bis-3 起持久化)。
-
-**A4-bis-cluster 子阶段**(决策稿就位 2026-05-10,等启动):真正的多 scene_node
-分布式部署 — `BeaconServer.Client` term key 全量升级、`SceneServer.Voxel
-.RegionRouting` 模块、`MapLedger` 加 region → scene_node 分配策略 + per-chunk
-region resolver、`world_sup` / `Worker.Interface` 改为按 transaction.participants
-解析对应 scene_node。详见 `docs/voxel-server-authority/phase-A4-cross-region-prefab.md`
+  list；resume 只有在所有 participant 都能解析 scene_node 时才继续，缺任一
+  participant 会把事务留在 parked pending-commit 状态，避免半恢复。
 文末 A4-bis-cluster 段。
 
 WorldServer 不保存完整区块真相，也不运行高频体素规则。它只决定拥有者，并发布写入围栏，

@@ -12,6 +12,7 @@ defmodule GateServer.WsConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  alias GateServer.Voxel.PrefabLocalTransaction
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
   alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
@@ -100,7 +101,7 @@ defmodule GateServer.WsConnection do
         {:noreply, new_state}
 
       {:error, reason} ->
-        Logger.error("WS codec decode error: #{inspect(reason)}")
+        Logger.debug("WS codec decode rejected payload: #{inspect(reason)}")
         send_result_error(state, reason, 0)
         {:noreply, state}
     end
@@ -712,14 +713,6 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  defp fetch_scene_node_for_owner(owner_scene_instance_ref) do
-    case safe_call(GateServer.Interface, {:scene_server_for_owner, owner_scene_instance_ref}) do
-      {:ok, nil} -> {:error, :scene_unavailable}
-      {:ok, scene_node} -> {:ok, scene_node}
-      {:error, _reason} -> fetch_scene_node()
-    end
-  end
-
   defp fetch_world_node do
     case safe_call(GateServer.Interface, :world_server) do
       {:ok, nil} -> {:error, :world_unavailable}
@@ -896,6 +889,21 @@ defmodule GateServer.WsConnection do
     end
   end
 
+  defp route_voxel_chunks(logical_scene_id, chunk_coords) do
+    with {:ok, world_node} <- fetch_world_node() do
+      case safe_call(
+             {WorldServer.Voxel.MapLedger, world_node},
+             {:route_chunks_with_leases, logical_scene_id, chunk_coords},
+             @scene_call_timeout
+           ) do
+        {:ok, {:ok, routes}} -> {:ok, routes}
+        {:ok, {:error, _reason}} -> {:error, :no_route_for_chunk}
+        {:ok, _other} -> {:error, :world_unavailable}
+        {:error, _reason} -> {:error, :world_unavailable}
+      end
+    end
+  end
+
   defp apply_voxel_impact_intent(request, state) do
     with :ok <- authorize_voxel_impact_intent(request, state),
          {:ok, target} <- voxel_impact_target(request),
@@ -946,12 +954,11 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  defp fetch_scene_node_for_route(route) do
-    route
-    |> Map.fetch!(:lease)
-    |> Map.fetch!(:owner_scene_instance_ref)
-    |> fetch_scene_node_for_owner()
-  end
+  defp fetch_scene_node_for_route(%{assignment: %{assigned_scene_node: scene_node}})
+       when not is_nil(scene_node),
+       do: {:ok, scene_node}
+
+  defp fetch_scene_node_for_route(_route), do: {:error, :scene_node_unassigned}
 
   defp authorize_voxel_impact_intent(request, state) do
     cond do
@@ -1267,9 +1274,11 @@ defmodule GateServer.WsConnection do
   end
 
   # Single-chunk prefabs stay on the Scene hot path and call
-  # ChunkDirectory.apply_intents/2 directly. Multi-chunk or multi-lease prefabs
-  # still go through World's TransactionCoordinator + TransactionExecutor so
-  # the whole prefab commits atomically across every participant.
+  # ChunkDirectory.apply_intents/2 directly. Multi-chunk prefabs that still
+  # resolve to one concrete Scene chunk-directory owner use a local
+  # prepare/commit/abort runner. Split-owner prefabs still go through World's
+  # TransactionCoordinator + TransactionExecutor so the whole prefab commits
+  # atomically across every participant.
   defp run_prefab_transaction([], _request, _state) do
     {:ok, %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}}
   end
@@ -1290,12 +1299,18 @@ defmodule GateServer.WsConnection do
           )
 
         :error ->
-          with {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
-               {:ok, transaction} <-
-                 coordinator_begin_transaction(coordinator_ref, plan, request),
-               {:ok, executor_result} <-
-                 executor_execute(coordinator_ref, transaction, plan) do
-            finalize_prefab_outcome(executor_result, plan, total)
+          case same_owner_prefab_plan(plan) do
+            {:ok, participants} ->
+              apply_same_owner_prefab_fast_path(participants, plan, request, state, total)
+
+            :error ->
+              with {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
+                   {:ok, transaction} <-
+                     coordinator_begin_transaction(coordinator_ref, plan, request),
+                   {:ok, executor_result} <-
+                     executor_execute(coordinator_ref, transaction, plan) do
+                finalize_prefab_outcome(executor_result, plan, total)
+              end
           end
       end
     else
@@ -1304,10 +1319,10 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  # Phase A4-2:per-chunk routing + multi-participant grouping。每个 chunk
-  # 独立 route_voxel_chunk;按 {region_id, lease_id} 分组成 participants;
-  # 任一 chunk 路由失败 fail-fast 返回 :no_route_for_chunk(D5)。同 lease
-  # 内 scene_node 由 owner_scene_instance_ref 唯一决定,无需一致性校验。
+  # Bulk route chunks through World, then group by concrete Scene owner
+  # `{chunk_directory, assigned_scene_node}`. Each participant still carries
+  # `chunk_owners` so the real `{region_id, lease_id}` owner of every chunk is
+  # preserved for object-owner metadata.
   defp build_prefab_plan(cells, request, state) do
     cells_by_chunk = Enum.group_by(cells, & &1.chunk_coord)
     chunk_coords = Map.keys(cells_by_chunk)
@@ -1332,62 +1347,98 @@ defmodule GateServer.WsConnection do
   end
 
   defp route_all_chunks(logical_scene_id, chunk_coords) do
-    Enum.reduce_while(chunk_coords, {:ok, %{}}, fn coord, {:ok, acc} ->
-      case route_voxel_chunk(logical_scene_id, coord) do
-        {:ok, route} ->
-          {:cont, {:ok, Map.put(acc, coord, route)}}
-
-        {:error, _reason} ->
-          {:halt, {:error, :no_route_for_chunk}}
-      end
-    end)
+    route_voxel_chunks(logical_scene_id, chunk_coords)
   end
 
   defp build_prefab_participants(routes_by_chunk, cells_by_chunk, request) do
-    chunks_by_participant_key =
-      Enum.group_by(
-        routes_by_chunk,
-        fn {_coord, route} ->
-          lease = Map.fetch!(route, :lease)
-          {lease.region_id, lease.lease_id}
-        end,
-        fn {coord, _route} -> coord end
-      )
+    routed_chunks =
+      Enum.reduce_while(routes_by_chunk, {:ok, []}, fn {coord, route}, {:ok, acc} ->
+        case fetch_scene_node_for_route(route) do
+          {:ok, scene_node} ->
+            lease = Map.fetch!(route, :lease)
+            directory = voxel_chunk_directory_module_for({lease.region_id, lease.lease_id})
+            {:cont, {:ok, [{coord, route, scene_node, directory} | acc]}}
 
-    Enum.reduce_while(chunks_by_participant_key, {:ok, []}, fn {key, chunks}, {:ok, acc} ->
-      first_route = Map.fetch!(routes_by_chunk, List.first(chunks))
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
 
-      case fetch_scene_node_for_route(first_route) do
-        {:ok, scene_node} ->
-          lease = Map.fetch!(first_route, :lease)
-          chunks_sorted = Enum.sort(chunks)
+    with {:ok, routed_chunks} <- routed_chunks do
+      chunks_by_owner =
+        Enum.group_by(
+          routed_chunks,
+          fn {_coord, _route, scene_node, directory} -> {directory, scene_node} end,
+          fn {coord, route, _scene_node, _directory} -> {coord, route} end
+        )
 
-          intents_by_chunk =
-            chunks_sorted
-            |> Enum.map(fn chunk_coord ->
-              cells_in_chunk = Map.fetch!(cells_by_chunk, chunk_coord)
-              {chunk_coord, prefab_intents_for_chunk(cells_in_chunk, request, chunk_coord, lease)}
-            end)
-            |> Map.new()
+      chunks_by_owner
+      |> Enum.reduce_while({:ok, []}, fn {{directory, scene_node}, entries}, {:ok, acc} ->
+        chunks = entries |> Enum.map(fn {coord, _route} -> coord end) |> Enum.sort()
 
-          participant = %{
-            participant_key: key,
-            lease: lease,
-            scene_node: scene_node,
-            chunk_coords: chunks_sorted,
-            intents_by_chunk: intents_by_chunk
-          }
+        first_route =
+          entries
+          |> Enum.sort_by(fn {coord, _route} -> coord end)
+          |> List.first()
+          |> elem(1)
 
-          {:cont, {:ok, [participant | acc]}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
+        case build_prefab_participant(
+               {directory, scene_node},
+               chunks,
+               first_route,
+               routes_by_chunk,
+               cells_by_chunk,
+               request
+             ) do
+          {:ok, participant} -> {:cont, {:ok, [participant | acc]}}
+        end
+      end)
+      |> case do
+        {:ok, participants} -> {:ok, Enum.reverse(participants)}
+        {:error, _} = err -> err
       end
-    end)
-    |> case do
-      {:ok, participants} -> {:ok, Enum.reverse(participants)}
-      {:error, _} = err -> err
     end
+  end
+
+  defp build_prefab_participant(
+         {directory, scene_node},
+         chunks,
+         first_route,
+         routes_by_chunk,
+         cells_by_chunk,
+         request
+       ) do
+    lease = Map.fetch!(first_route, :lease)
+    chunks_sorted = Enum.sort(chunks)
+
+    chunk_owners =
+      Map.new(chunks_sorted, fn chunk_coord ->
+        chunk_lease = routes_by_chunk |> Map.fetch!(chunk_coord) |> Map.fetch!(:lease)
+        {chunk_coord, {chunk_lease.region_id, chunk_lease.lease_id}}
+      end)
+
+    intents_by_chunk =
+      chunks_sorted
+      |> Enum.map(fn chunk_coord ->
+        cells_in_chunk = Map.fetch!(cells_by_chunk, chunk_coord)
+        chunk_lease = routes_by_chunk |> Map.fetch!(chunk_coord) |> Map.fetch!(:lease)
+
+        {chunk_coord, prefab_intents_for_chunk(cells_in_chunk, request, chunk_coord, chunk_lease)}
+      end)
+      |> Map.new()
+
+    participant = %{
+      participant_key: {:scene_owner, directory, scene_node},
+      lease: lease,
+      scene_node: scene_node,
+      assigned_scene_node: scene_node,
+      chunk_directory_module: directory,
+      chunk_coords: chunks_sorted,
+      chunk_owners: chunk_owners,
+      intents_by_chunk: intents_by_chunk
+    }
+
+    {:ok, participant}
   end
 
   defp prefab_intents_for_chunk(cells_in_chunk, request, chunk_coord, lease) do
@@ -1414,6 +1465,16 @@ defmodule GateServer.WsConnection do
   end
 
   defp single_chunk_prefab_plan(_plan), do: :error
+
+  defp same_owner_prefab_plan(%{participants: [_ | _] = participants, chunk_coords: chunk_coords})
+       when length(chunk_coords) > 1 do
+    case participants |> Enum.map(&prefab_chunk_directory_ref/1) |> Enum.uniq() do
+      [_single_owner] -> {:ok, participants}
+      _multiple_owners -> :error
+    end
+  end
+
+  defp same_owner_prefab_plan(_plan), do: :error
 
   defp apply_single_chunk_prefab_fast_path(
          participant,
@@ -1491,8 +1552,95 @@ defmodule GateServer.WsConnection do
   end
 
   defp single_chunk_prefab_directory(participant) do
-    module = voxel_chunk_directory_module_for(participant.participant_key)
-    {module, participant.scene_node}
+    prefab_chunk_directory_ref(participant)
+  end
+
+  defp apply_same_owner_prefab_fast_path(participants, plan, request, state, total) do
+    started_at = System.monotonic_time(:millisecond)
+    transaction_id = unique_prefab_transaction_id(request)
+    chunk_directory = prefab_chunk_directory_ref(List.first(participants))
+
+    GateServer.CliObserve.emit("ws_voxel_prefab_same_owner_fast_path_started", fn ->
+      %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        blueprint_id: request.blueprint_id,
+        chunk_count: length(plan.chunk_coords),
+        participant_count: length(participants),
+        cell_count: total,
+        chunk_directory: inspect(chunk_directory)
+      }
+    end)
+
+    case PrefabLocalTransaction.execute(
+           participants,
+           transaction_id,
+           request.logical_scene_id,
+           &prefab_chunk_directory_ref/1
+         ) do
+      {:ok, %{participant_results: participant_results}} ->
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+        max_version = max_chunk_version_from_results(participant_results)
+
+        GateServer.CliObserve.emit("ws_voxel_prefab_same_owner_fast_path_applied", fn ->
+          %{
+            connection_pid: self(),
+            cid: state.cid,
+            request_id: request.request_id,
+            logical_scene_id: request.logical_scene_id,
+            blueprint_id: request.blueprint_id,
+            chunk_count: length(plan.chunk_coords),
+            participant_count: length(participants),
+            cell_count: total,
+            max_chunk_version: max_version,
+            elapsed_ms: elapsed_ms
+          }
+        end)
+
+        {:ok,
+         %{
+           cell_count: total,
+           chunk_count: length(plan.chunk_coords),
+           max_chunk_version: max_version
+         }}
+
+      {:error, %{reason: raw_reason} = error} ->
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+        reason = unwrap_prepare_reason(raw_reason)
+
+        GateServer.CliObserve.emit("ws_voxel_prefab_same_owner_fast_path_failed", fn ->
+          %{
+            connection_pid: self(),
+            cid: state.cid,
+            request_id: request.request_id,
+            logical_scene_id: request.logical_scene_id,
+            blueprint_id: request.blueprint_id,
+            chunk_count: length(plan.chunk_coords),
+            participant_count: length(participants),
+            cell_count: total,
+            reason: inspect(reason),
+            elapsed_ms: elapsed_ms
+          }
+        end)
+
+        {:error,
+         %{
+           reason: reason || Map.get(error, :reason, :prefab_same_owner_fast_path_failed),
+           applied_cell_count: 0,
+           total_cell_count: total
+         }}
+    end
+  end
+
+  defp prefab_chunk_directory_ref(%{chunk_directory_module: module, scene_node: scene_node}) do
+    {module, scene_node}
+  end
+
+  defp prefab_chunk_directory_ref(%{participant_key: participant_key, scene_node: scene_node}) do
+    module = voxel_chunk_directory_module_for(participant_key)
+    {module, scene_node}
   end
 
   defp emit_prefab_routed_observe(request, state, participants, cell_count) do
@@ -1509,11 +1657,13 @@ defmodule GateServer.WsConnection do
         participants:
           Enum.map(participants, fn p ->
             %{
+              participant_key: inspect(p.participant_key),
               region_id: p.lease.region_id,
               lease_id: p.lease.lease_id,
               owner_scene_instance_ref: p.lease.owner_scene_instance_ref,
               owner_epoch: p.lease.owner_epoch,
               scene_node: p.scene_node,
+              chunk_owner_count: map_size(p.chunk_owners),
               chunk_count: length(p.chunk_coords)
             }
           end)
@@ -1550,10 +1700,13 @@ defmodule GateServer.WsConnection do
       participants:
         Enum.map(plan.participants, fn p ->
           %{
+            participant_key: p.participant_key,
             region_id: p.lease.region_id,
             lease_id: p.lease.lease_id,
             owner_scene_instance_ref: p.lease.owner_scene_instance_ref,
             owner_epoch: p.lease.owner_epoch,
+            assigned_scene_node: p.assigned_scene_node,
+            chunk_owners: p.chunk_owners,
             affected_chunks: p.chunk_coords
           }
         end)
@@ -1573,10 +1726,10 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  # Phase A4-2:plan.participants 已经按 {region_id, lease_id} 分组,这里直接
-  # 把每个 participant 的 intents_by_chunk + scene_node 摊成 by-participant
-  # 两份 map 喂给 executor。同 region 单 participant 是退化情形;跨 region 时
-  # 每个 participant 用各自 scene_node 的 ChunkDirectory。
+  # plan.participants 已经按 Scene owner 分组,这里直接把每个 participant 的
+  # intents_by_chunk + scene_node 摊成 by-participant 两份 map 喂给 executor。
+  # 单 Scene-owner participant 可以包含多个 region/lease;chunk_owners 保留
+  # 真实 owner。
   defp executor_execute(coordinator_ref, transaction, plan) do
     intents_by_participant =
       plan.participants
@@ -1586,8 +1739,7 @@ defmodule GateServer.WsConnection do
     scene_opts_by_participant =
       plan.participants
       |> Enum.map(fn p ->
-        module = voxel_chunk_directory_module_for(p.participant_key)
-        {p.participant_key, [chunk_directory: {module, p.scene_node}]}
+        {p.participant_key, [chunk_directory: prefab_chunk_directory_ref(p)]}
       end)
       |> Map.new()
 

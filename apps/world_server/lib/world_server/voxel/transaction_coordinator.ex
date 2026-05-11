@@ -86,8 +86,8 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   @doc """
   Records a participant prepare acknowledgement.
 
-  The acknowledgement must include `:region_id`, `:lease_id`, and `:status`.
-  Accepted statuses are `:prepared`/`:ok` for success and
+  Acknowledgements must include `:participant_key` plus `:status`. Accepted statuses are
+  `:prepared`/`:ok` for success and
   `:failed`/`:rejected`/`:error`/`:aborted` for failure.
   """
   def prepare_ack(transaction_id, ack) when is_map(ack) or is_list(ack) do
@@ -99,7 +99,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
   The server-explicit form keeps the same `transaction_id` matching rules as the
   default-server form, but directs the call to the supplied GenServer. The ack is
-  matched by `{region_id, lease_id}` so stale or unknown participants can be
+  matched by `participant_key` so stale or unknown participants can be
   rejected without consulting Scene directly.
   """
   def prepare_ack(server, transaction_id, ack) when is_map(ack) or is_list(ack) do
@@ -290,7 +290,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   end
 
   defp apply_prepare_ack(transaction, ack) do
-    participant_key = {ack.region_id, ack.lease_id}
+    participant_key = ack.participant_key
 
     case find_participant(transaction.participants, participant_key) do
       nil ->
@@ -467,8 +467,9 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   # Phase 4 (D2 + D3):normalize each scene_object seed and allocate an
   # `object_id` from the sequence. Empty list → no objects to create (e.g.
   # break-only transactions).
-  # Phase A4-3:除了分配 object_id,还按 D6 字典序规则推导 owner participant
-  # (字典序第一个 covered chunk 所在 participant 的 region_id / lease_id)。
+  # Phase A4-3:除了分配 object_id,还按 D6 字典序规则推导 owner lease
+  # (字典序第一个 covered chunk 在 participant.chunk_owners 中记录的
+  # region_id / lease_id)。
   # 任一 covered chunk 不被任何 participant 的 affected_chunks 覆盖时,该 seed
   # 无法选 owner → :scene_object_owner_undeterminable(说明 caller 路由信息
   # 跟 covered_chunks 不一致)。
@@ -503,8 +504,8 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
     end
   end
 
-  # D6:owner 是字典序(`{x, y, z}` ascending)第一个 covered chunk 所在的
-  # participant。同一 prefab 的所有 covered chunks 必须落到 transaction
+  # D6:owner 是字典序(`{x, y, z}` ascending)第一个 covered chunk 的真实
+  # lease owner。同一 prefab 的所有 covered chunks 必须落到 transaction
   # participants 的某一个 affected_chunks(否则 caller 路由信息错位)。
   defp derive_scene_object_owner(normalized_seed, participants) do
     case Enum.sort(normalized_seed.covered_chunks) do
@@ -517,11 +518,17 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
             {:error, :scene_object_owner_undeterminable}
 
           participant ->
-            {:ok,
-             %{
-               owner_region_id: participant.region_id,
-               owner_lease_id: participant.lease_id
-             }}
+            case Map.fetch(participant.chunk_owners, first_chunk) do
+              {:ok, {region_id, lease_id}} ->
+                {:ok,
+                 %{
+                   owner_region_id: region_id,
+                   owner_lease_id: lease_id
+                 }}
+
+              :error ->
+                {:error, {:missing_chunk_owner, first_chunk}}
+            end
         end
     end
   end
@@ -640,7 +647,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
   # Phase 3-bis: optional but typed when present. The shape is the same
   # `intents_by_participant` map `TransactionExecutor.execute/4` consumes:
-  # `%{ {region_id, lease_id} => %{chunk_coord => [intent_attrs, ...]} }`.
+  # `%{ participant_key => %{chunk_coord => [intent_attrs, ...]} }`.
   # The coordinator persists it as part of the transaction so a Watcher
   # restart can replay commit dispatch.
   defp normalize_intents_by_participant(attrs) do
@@ -691,35 +698,52 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   defp normalize_participants(_participants), do: {:error, :invalid_participants}
 
   defp normalize_participant(%TransactionParticipant{} = participant) do
-    {:ok,
-     %{
-       participant
-       | prepare_status: :pending,
-         commit_status: :pending,
-         last_ack_ms: 0,
-         affected_chunks: Enum.sort(participant.affected_chunks || [])
-     }}
+    affected_chunks = Enum.sort(participant.affected_chunks || [])
+
+    with :ok <- require_present(participant.participant_key, :participant_key),
+         :ok <- require_present(participant.assigned_scene_node, :assigned_scene_node),
+         {:ok, chunk_owners} <- normalize_chunk_owners(participant.chunk_owners, affected_chunks) do
+      {:ok,
+       %{
+         participant
+         | prepare_status: :pending,
+           commit_status: :pending,
+           last_ack_ms: 0,
+           affected_chunks: affected_chunks,
+           chunk_owners: chunk_owners
+       }}
+    end
   end
 
   defp normalize_participant(attrs) when is_map(attrs) or is_list(attrs) do
     attrs = attrs_map(attrs)
 
-    with {:ok, region_id} <- required_value(attrs, :region_id),
+    with {:ok, participant_key} <- required_value(attrs, :participant_key),
+         {:ok, region_id} <- required_value(attrs, :region_id),
          {:ok, lease_id} <- required_value(attrs, :lease_id),
          {:ok, owner_scene_instance_ref} <- required_value(attrs, :owner_scene_instance_ref),
          {:ok, owner_epoch} <- required_value(attrs, :owner_epoch),
+         {:ok, assigned_scene_node} <- required_value(attrs, :assigned_scene_node),
+         {:ok, chunk_owners_raw} <- required_value(attrs, :chunk_owners),
          {:ok, affected_chunks} <- required_value(attrs, :affected_chunks) do
-      {:ok,
-       %TransactionParticipant{
-         region_id: region_id,
-         lease_id: lease_id,
-         owner_scene_instance_ref: owner_scene_instance_ref,
-         owner_epoch: owner_epoch,
-         affected_chunks: Enum.sort(affected_chunks),
-         prepare_status: :pending,
-         commit_status: :pending,
-         last_ack_ms: 0
-       }}
+      affected_chunks = Enum.sort(affected_chunks)
+
+      with {:ok, chunk_owners} <- normalize_chunk_owners(chunk_owners_raw, affected_chunks) do
+        {:ok,
+         %TransactionParticipant{
+           participant_key: participant_key,
+           region_id: region_id,
+           lease_id: lease_id,
+           owner_scene_instance_ref: owner_scene_instance_ref,
+           owner_epoch: owner_epoch,
+           assigned_scene_node: assigned_scene_node,
+           affected_chunks: affected_chunks,
+           chunk_owners: chunk_owners,
+           prepare_status: :pending,
+           commit_status: :pending,
+           last_ack_ms: 0
+         }}
+      end
     end
   end
 
@@ -728,14 +752,14 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   defp normalize_prepare_ack(ack) do
     ack = attrs_map(ack)
 
-    with {:ok, region_id} <- required_value(ack, :region_id),
-         {:ok, lease_id} <- required_value(ack, :lease_id),
+    with {:ok, participant_key} <- required_value(ack, :participant_key),
          {:ok, status} <- required_value(ack, :status),
          {:ok, prepare_status} <- normalize_prepare_status(status) do
       {:ok,
        %{
-         region_id: region_id,
-         lease_id: lease_id,
+         participant_key: participant_key,
+         region_id: value(ack, :region_id),
+         lease_id: value(ack, :lease_id),
          prepare_status: prepare_status,
          acked_at_ms: value(ack, :acked_at_ms, now_ms())
        }}
@@ -810,15 +834,69 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
   defp participant_fingerprint(participant) do
     %{
+      participant_key: participant_key(participant),
       region_id: participant.region_id,
       lease_id: participant.lease_id,
       owner_scene_instance_ref: participant.owner_scene_instance_ref,
       owner_epoch: participant.owner_epoch,
+      assigned_scene_node: participant.assigned_scene_node,
+      chunk_owners: participant.chunk_owners,
       affected_chunks: participant.affected_chunks
     }
   end
 
-  defp participant_key(participant), do: {participant.region_id, participant.lease_id}
+  defp participant_key(%{participant_key: participant_key}) when not is_nil(participant_key),
+    do: participant_key
+
+  defp require_present(nil, field), do: {:error, {:missing, field}}
+  defp require_present(_value, _field), do: :ok
+
+  defp normalize_chunk_owners(raw, affected_chunks) when is_map(raw) do
+    with {:ok, normalized} <-
+           Enum.reduce_while(raw, {:ok, %{}}, fn {chunk_coord, owner}, {:ok, acc} ->
+             with {:ok, coord} <- coord_tuple(chunk_coord),
+                  {:ok, owner_key} <- owner_tuple(owner) do
+               {:cont, {:ok, Map.put(acc, coord, owner_key)}}
+             else
+               {:error, reason} -> {:halt, {:error, reason}}
+             end
+           end),
+         :ok <- ensure_chunk_owners_cover_affected(normalized, affected_chunks) do
+      {:ok, normalized}
+    end
+  end
+
+  defp normalize_chunk_owners(_raw, _affected_chunks), do: {:error, :invalid_chunk_owners}
+
+  defp coord_tuple({x, y, z}) when is_integer(x) and is_integer(y) and is_integer(z),
+    do: {:ok, {x, y, z}}
+
+  defp coord_tuple([x, y, z]) when is_integer(x) and is_integer(y) and is_integer(z),
+    do: {:ok, {x, y, z}}
+
+  defp coord_tuple(other), do: {:error, {:invalid_chunk_owner_coord, other}}
+
+  defp owner_tuple({region_id, lease_id}), do: {:ok, {region_id, lease_id}}
+  defp owner_tuple([region_id, lease_id]), do: {:ok, {region_id, lease_id}}
+
+  defp owner_tuple(%{region_id: region_id, lease_id: lease_id}),
+    do: {:ok, {region_id, lease_id}}
+
+  defp owner_tuple(%{"region_id" => region_id, "lease_id" => lease_id}),
+    do: {:ok, {region_id, lease_id}}
+
+  defp owner_tuple(other), do: {:error, {:invalid_chunk_owner, other}}
+
+  defp ensure_chunk_owners_cover_affected(chunk_owners, affected_chunks) do
+    missing =
+      affected_chunks
+      |> Enum.reject(&Map.has_key?(chunk_owners, &1))
+
+    case missing do
+      [] -> :ok
+      _ -> {:error, {:missing_chunk_owners, missing}}
+    end
+  end
 
   defp default_intent_hash(attrs, participants) do
     :erlang.phash2({
@@ -884,6 +962,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
       %{
         transaction_id: transaction.transaction_id,
         decision_version: transaction.decision_version,
+        participant_key: ack.participant_key,
         region_id: ack.region_id,
         lease_id: ack.lease_id,
         prepare_status: ack.prepare_status,

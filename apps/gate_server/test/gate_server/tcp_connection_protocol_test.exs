@@ -1,6 +1,8 @@
 defmodule GateServer.TcpConnectionProtocolTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias DataService.Repo
   alias DataService.Schema.Account
   alias DataService.Schema.Character
@@ -22,7 +24,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     def init(attrs) do
       {:ok,
        Map.merge(
-         %{auth_server: nil, scene_server: nil, scene_owner_nodes: %{}, world_server: nil},
+         %{auth_server: nil, scene_server: nil, world_server: nil},
          attrs
        )}
     end
@@ -40,16 +42,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     @impl true
     def handle_call(:scene_server, _from, state) do
       {:reply, state.scene_server, state}
-    end
-
-    @impl true
-    def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
-      scene_node =
-        Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
-          Map.get(state.scene_owner_nodes, :default) ||
-          state.scene_server
-
-      {:reply, scene_node, state}
     end
 
     @impl true
@@ -999,15 +991,25 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "malformed payload fails closed with generic error reply", %{client: client} do
-    assert :ok = :gen_tcp.send(client, <<0xFF>>)
-    assert {:ok, <<0x80, 0::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+    log =
+      capture_log([level: :warning], fn ->
+        assert :ok = :gen_tcp.send(client, <<0xFF>>)
+        assert {:ok, <<0x80, 0::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+      end)
+
+    assert log == ""
   end
 
   test "tcp_error before scene join terminates cleanly", %{pid: pid, server: server} do
-    monitor = Process.monitor(pid)
-    send(pid, {:tcp_error, server, :econnreset})
+    log =
+      capture_log([level: :warning], fn ->
+        monitor = Process.monitor(pid)
+        send(pid, {:tcp_error, server, :econnreset})
 
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 500
+        assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 500
+      end)
+
+    assert log == ""
   end
 
   defp encode_auth_request(username, code, request_id) do
@@ -1106,7 +1108,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
                bounds_chunk_min: {0, 0, 0},
                bounds_chunk_max: {1, 1, 1},
                owner_scene_instance_ref: owner_scene_instance_ref,
-               owner_epoch: 0
+               owner_epoch: 0,
+               assigned_scene_node: Keyword.get(opts, :assigned_scene_node, node())
              })
 
     assert {:ok, _lease} =

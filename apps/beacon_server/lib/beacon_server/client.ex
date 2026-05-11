@@ -61,7 +61,7 @@ defmodule BeaconServer.Client do
 
         case Node.list() do
           [] ->
-            Logger.warning("No cluster peers found after waiting")
+            Logger.info("No cluster peers found after waiting; continuing in single-node mode")
             :error
 
           nodes ->
@@ -102,15 +102,26 @@ defmodule BeaconServer.Client do
   def register(resource) do
     case Horde.Registry.register(@registry, resource, node()) do
       {:ok, _} ->
-        Logger.info("Registered #{inspect(resource)} in distributed registry")
-        :ok
+        confirm_registered(resource, "Registered #{inspect(resource)} in distributed registry")
 
       {:error, {:already_registered, _}} ->
-        Logger.info("#{inspect(resource)} already registered")
-        :ok
+        confirm_registered(resource, "#{inspect(resource)} already registered")
 
       {:error, reason} ->
         Logger.error("Failed to register #{inspect(resource)}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp confirm_registered(resource, message) do
+    case await(resource, timeout: 1_000, interval: 10) do
+      {:ok, _node} ->
+        Logger.info(message)
+        :ok
+
+      :timeout ->
+        reason = :registration_not_visible
+        Logger.error("Failed to observe #{inspect(resource)} after registration")
         {:error, reason}
     end
   end

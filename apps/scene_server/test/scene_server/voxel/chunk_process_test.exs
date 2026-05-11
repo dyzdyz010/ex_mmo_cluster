@@ -916,7 +916,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     |> Map.merge(Map.new(overrides))
   end
 
-  defp micro_intent_attrs(lease, overrides \\ []) do
+  defp micro_intent_attrs(lease, overrides) do
     %{
       request_id: 70,
       logical_scene_id: lease.logical_scene_id,

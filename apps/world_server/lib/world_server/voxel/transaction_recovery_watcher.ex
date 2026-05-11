@@ -15,9 +15,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
     is present on the transaction (Phase 3-bis). The executor takes the
     `:prepared` fast-path: skip prepare phase, dispatch commit. If the
     resolver is absent or returns `{:error, _}` the transaction stays parked
-    and the watcher emits `voxel_transaction_recovery_pending_commit` (the
-    Phase 3 fallback behaviour) so operators can see what needs manual
-    intervention.
+    and the watcher emits `voxel_transaction_recovery_pending_commit` so
+    operators can see what needs manual intervention.
   - `:committed` and `:aborted` transactions are already final and skipped.
 
   After the sweep the watcher stays alive (idle) so a `Supervisor` can keep it
@@ -30,14 +29,13 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
   (Phase A4-1 changed from 0-arity to 1-arity to match `TransactionExecutor`'s
   per-participant scene_opts API). `executor_opts` is a keyword list passed
   straight to `TransactionExecutor.execute/4` and **must** include
-  `:scene_opts_by_participant` (a map keyed by `{region_id, lease_id}`); it
+  `:scene_opts_by_participant` (a map keyed by `participant_key`); it
   may also include `:scene_caller` and other executor knobs.
 
-  `WorldSup` injects an implementation that locates the current Scene node(s)
-  via `BeaconServer.Client.lookup(:scene_server)` and builds the per-participant
-  map (single-region today, per-region after A4-2). Tests can inject a stub
-  resolver. A `nil` resolver makes the watcher fall back to the Phase 3
-  parked-pending-commit behaviour.
+  `WorldSup` injects an implementation that reads every participant's explicit
+  `assigned_scene_node`, then builds the per-participant map. Tests can inject
+  a stub resolver. A `nil` resolver makes the watcher leave prepared
+  transactions parked for operator intervention.
   """
 
   use GenServer

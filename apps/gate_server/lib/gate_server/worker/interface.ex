@@ -20,11 +20,10 @@ defmodule GateServer.Interface do
   end
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     {:ok,
      %{
        scene_server: nil,
-       scene_owner_nodes: Keyword.get(opts, :scene_owner_nodes, %{}),
        world_server: nil,
        auth_server: nil,
        server_state: :waiting_requirements
@@ -60,7 +59,6 @@ defmodule GateServer.Interface do
      %{
        state
        | scene_server: scene_node,
-         scene_owner_nodes: Map.put_new(state.scene_owner_nodes, :default, scene_node),
          world_server: world_node,
          auth_server: auth_node,
          server_state: :ready
@@ -71,16 +69,6 @@ defmodule GateServer.Interface do
 
   @impl true
   def handle_call(:scene_server, _from, %{scene_server: scene} = state) do
-    {:reply, scene, state}
-  end
-
-  @impl true
-  def handle_call({:scene_server_for_owner, owner_scene_instance_ref}, _from, state) do
-    scene =
-      Map.get(state.scene_owner_nodes, owner_scene_instance_ref) ||
-        Map.get(state.scene_owner_nodes, :default) ||
-        state.scene_server
-
     {:reply, scene, state}
   end
 

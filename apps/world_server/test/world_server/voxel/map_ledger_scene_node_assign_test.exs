@@ -6,11 +6,11 @@ defmodule WorldServer.Voxel.MapLedgerSceneNodeAssignTest do
 
   alias WorldServer.Voxel.{MapLedger, SceneNodeRegistry}
 
-  describe "scene_node_registry not configured (legacy / single-node)" do
-    test "put_region succeeds with assigned_scene_node = nil" do
+  describe "scene_node_registry not configured" do
+    test "put_region rejects missing assigned_scene_node" do
       ledger = start_supervised!({MapLedger, name: __MODULE__.NoRegistry.Ledger})
 
-      assert {:ok, assignment} =
+      assert {:error, :scene_node_unassigned} =
                MapLedger.put_region(ledger, %{
                  logical_scene_id: 1,
                  region_id: 9_001,
@@ -19,8 +19,23 @@ defmodule WorldServer.Voxel.MapLedgerSceneNodeAssignTest do
                  owner_scene_instance_ref: 1,
                  owner_epoch: 0
                })
+    end
 
-      assert assignment.assigned_scene_node == nil
+    test "put_region accepts an explicit assigned_scene_node" do
+      ledger = start_supervised!({MapLedger, name: __MODULE__.ExplicitNoRegistry.Ledger})
+
+      assert {:ok, assignment} =
+               MapLedger.put_region(ledger, %{
+                 logical_scene_id: 1,
+                 region_id: 9_002,
+                 bounds_chunk_min: {0, 0, 0},
+                 bounds_chunk_max: {1, 1, 1},
+                 owner_scene_instance_ref: 1,
+                 owner_epoch: 0,
+                 assigned_scene_node: :explicit@h
+               })
+
+      assert assignment.assigned_scene_node == :explicit@h
     end
   end
 
@@ -38,10 +53,9 @@ defmodule WorldServer.Voxel.MapLedgerSceneNodeAssignTest do
       %{registry: registry, ledger: ledger}
     end
 
-    test "no scene_nodes registered: put_region succeeds with assigned_scene_node = nil",
+    test "no scene_nodes registered: put_region fails instead of leaving an unroutable region",
          %{ledger: ledger} do
-      assert {:ok, assignment} = put_region(ledger, region_id: 9_101)
-      assert assignment.assigned_scene_node == nil
+      assert {:error, :scene_node_unassigned} = put_region(ledger, region_id: 9_101)
     end
 
     test "single scene_node: put_region pins all regions to that node", %{ledger: ledger} do

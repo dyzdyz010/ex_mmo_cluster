@@ -27,8 +27,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
 
   describe "apply_intent / apply_intents — owner provenance refresh (Phase 4 D6)" do
     test "put_micro_block with owner_object_id refreshes ChunkObjectRef[]" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       intent =
         micro_intent_attrs(lease,
@@ -69,8 +70,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
 
     test "apply_intents with multiple owner_object_ids produces sorted ChunkObjectRef[]" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       attrs = [
         micro_intent_attrs(lease,
@@ -94,14 +96,16 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       ]
 
       assert {:ok, _reply} = ChunkProcess.apply_intents(chunk, attrs)
+      assert :ok = ChunkProcess.flush_persistence(chunk)
 
       storage = ChunkProcess.debug_state(chunk).storage
       assert Enum.map(storage.object_refs, & &1.object_id) == [5, 50, 99]
     end
 
     test "break_micro_block prunes cell.object_refs and shrinks ChunkObjectRef[]" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       # Place owner=42 at slots 0 and 1
       attrs = [
@@ -120,6 +124,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       ]
 
       assert {:ok, _reply} = ChunkProcess.apply_intents(chunk, attrs)
+      assert :ok = ChunkProcess.flush_persistence(chunk)
 
       storage_before = ChunkProcess.debug_state(chunk).storage
       assert length(storage_before.object_refs) == 1
@@ -128,7 +133,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       # Break slot 0 → still owner=42 at slot 1, ChunkObjectRef stays but cover_hash changes
       break = %{
         request_id: 3,
-        logical_scene_id: 1,
+        logical_scene_id: scene_id,
         chunk_coord: {1, 1, 1},
         lease: lease,
         operation: :clear_micro_block,
@@ -145,7 +150,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       # Break slot 1 → owner=42 fully gone, ChunkObjectRef[] becomes empty
       break_last = %{
         request_id: 4,
-        logical_scene_id: 1,
+        logical_scene_id: scene_id,
         chunk_coord: {1, 1, 1},
         lease: lease,
         operation: :clear_micro_block,
@@ -162,8 +167,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
 
   describe "ChunkProcess.destroy_part/2 (Phase 4 D8)" do
     test "wipes every micro slot owned by (object_id, part_id)" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       # Place owner=42 part=3 at slots 0,1; owner=42 part=4 at slot 2;
       # owner=99 part=1 at slot 3.
@@ -195,6 +201,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       ]
 
       assert {:ok, _reply} = ChunkProcess.apply_intents(chunk, attrs)
+      assert :ok = ChunkProcess.flush_persistence(chunk)
 
       # Apply lease to the chunk so destroy_part's persist call works
       {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
@@ -218,8 +225,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
 
     test "is a no-op when no matching slots exist" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
 
@@ -229,8 +237,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
 
     test "fully drains the only object → ChunkObjectRef[] becomes empty" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       attrs = [
         micro_intent_attrs(lease,
@@ -242,6 +251,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       ]
 
       assert {:ok, _} = ChunkProcess.apply_intents(chunk, attrs)
+      assert :ok = ChunkProcess.flush_persistence(chunk)
       {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
 
       assert {:ok, %{changed?: true, cleared_count: 1}} =
@@ -254,8 +264,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
 
   describe "ChunkProcess.cleanup_object_refs/2 (Phase 4 D9)" do
     test "drops a stale ChunkObjectRef[] entry by object_id" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       attrs = [
         micro_intent_attrs(lease,
@@ -267,6 +278,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       ]
 
       assert {:ok, _} = ChunkProcess.apply_intents(chunk, attrs)
+      assert :ok = ChunkProcess.flush_persistence(chunk)
       assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
 
       # Sanity: ref present
@@ -279,8 +291,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
 
     test "is idempotent when no stale entry exists" do
-      lease = lease_with_token()
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+      chunk = chunk_for(scene_id)
 
       assert {:ok, _} = GenServer.call(chunk, {:apply_lease, lease})
 
@@ -342,9 +355,17 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
   end
 
-  defp lease_with_token do
+  defp unique_scene_id do
+    System.unique_integer([:positive, :monotonic]) + 20_000_000
+  end
+
+  defp chunk_for(scene_id) do
+    start_supervised!({ChunkProcess, logical_scene_id: scene_id, chunk_coord: {1, 1, 1}})
+  end
+
+  defp lease_with_token(scene_id) do
     lease = %{
-      logical_scene_id: 1,
+      logical_scene_id: scene_id,
       region_id: 10,
       lease_id: 100,
       owner_scene_instance_ref: 1_000,
