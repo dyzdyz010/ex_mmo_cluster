@@ -28,6 +28,7 @@ import type { ObserveLog } from "../observe/logger";
 import type { PrefabRasterCell } from "../voxel/prefab";
 import type { FChunkMesherInputSnapshot } from "../voxel/meshing/types";
 import { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
+import { createVoxelMaterialMosaicTexture } from "./voxelMaterialTexture";
 export { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 
@@ -111,6 +112,7 @@ export class ChunkRenderController {
     metalness: 0.05,
   });
   private readonly chunkMeshes = new Map<string, Mesh<BufferGeometry, MeshStandardMaterial>>();
+  private readonly chunkTexture = createVoxelMaterialMosaicTexture();
   private readonly raycaster = new Raycaster();
   private readonly ndcCenter = new Vector2(0, 0);
   private readonly targetHighlight: LineSegments;
@@ -135,6 +137,7 @@ export class ChunkRenderController {
   private lastRaySelection: VoxelRaySelection | null = null;
 
   constructor() {
+    this.chunkMaterial.map = this.chunkTexture;
     this.group.name = "voxel-chunks";
 
     this.targetHighlight = new LineSegments(
@@ -284,6 +287,7 @@ export class ChunkRenderController {
     geometry.setAttribute("position", new Float32BufferAttribute(meshData.positions, 3));
     geometry.setAttribute("normal", new Float32BufferAttribute(meshData.normals, 3));
     geometry.setAttribute("color", new Float32BufferAttribute(meshData.colors, 3));
+    geometry.setAttribute("uv", new Float32BufferAttribute(meshData.uvs, 2));
     geometry.setIndex(meshData.indices);
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
@@ -434,6 +438,7 @@ export class ChunkRenderController {
     }
     this.meshWorker?.terminate();
     this.clearPrefabPreview();
+    this.chunkTexture.dispose();
     this.chunkMaterial.dispose();
     this.targetHighlight.geometry.dispose();
     (this.targetHighlight.material as LineBasicMaterial).dispose();
