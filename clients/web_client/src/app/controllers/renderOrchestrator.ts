@@ -50,8 +50,6 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
   private prefabPreviewIntentKey = "";
-  private prefabPreviewStableKey = "";
-  private lastPrefabPreviewUpdateMs = -Infinity;
   private readonly debrisRenderer: DebrisRenderer | null;
   private readonly sceneRegionOverlay: SceneRegionOverlay;
 
@@ -111,7 +109,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
     this.chunkRenderer.setTargetHighlights(this.currentSelection);
-    this.updatePrefabPreview(nowMs);
+    this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
     if (this.debrisRenderer !== null) {
       this.debrisRenderer.syncFromSimulation();
@@ -249,19 +247,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     return avatar;
   }
 
-  private updatePrefabPreview(nowMs: number): void {
+  private updatePrefabPreview(): void {
     const selected = this.editPreviewProvider?.getHotbarState().selected;
     if (!this.currentSelection || selected?.kind !== "prefab") {
       this.clearPrefabPreviewIfNeeded();
-      return;
-    }
-
-    const stableKey = prefabPreviewStableKey(this.currentSelection, selected);
-    if (
-      this.sceneHandles.isCameraInteracting() &&
-      stableKey === this.prefabPreviewStableKey &&
-      nowMs - this.lastPrefabPreviewUpdateMs < PREFAB_PREVIEW_INTERACTIVE_INTERVAL_MS
-    ) {
       return;
     }
 
@@ -275,8 +264,6 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     }
     const startedAtMs = performance.now();
     this.prefabPreviewIntentKey = intentKey;
-    this.prefabPreviewStableKey = stableKey;
-    this.lastPrefabPreviewUpdateMs = nowMs;
 
     const boundaryPreview = this.world.previewPrefabBoundarySnap({
       prefabName: selected.prefabName,
@@ -325,7 +312,6 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       return;
     }
     this.prefabPreviewIntentKey = "";
-    this.prefabPreviewStableKey = "";
     this.chunkRenderer.setPrefabPreview(null, null);
   }
 
@@ -354,8 +340,6 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     );
   }
 }
-
-const PREFAB_PREVIEW_INTERACTIVE_INTERVAL_MS = 80;
 
 export function resolveActorDisplayY({
   movementY,
@@ -392,19 +376,6 @@ function prefabPreviewIntentKey(
     editStats.broken,
     editStats.rejected,
     editStats.conflicts,
-  ].join("|");
-}
-
-function prefabPreviewStableKey(
-  selection: VoxelRaySelection,
-  selected: Extract<HotbarEntry, { kind: "prefab" }>,
-): string {
-  return [
-    selected.prefabName,
-    selected.rotation,
-    coordKey(selection.occupiedMacro),
-    coordKey(selection.adjacentMacro),
-    coordKey(selection.faceNormal),
   ].join("|");
 }
 
