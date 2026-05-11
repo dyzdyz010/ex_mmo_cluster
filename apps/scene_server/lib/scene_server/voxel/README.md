@@ -12,14 +12,22 @@
 迁移预热时，它也可以从已持久化快照加载热状态；这个加载路径不反写 DataService，只用于
 让目标 Scene 在 World 切换前准备好区块内存。
 
-`ChunkProcess.apply_intent/2` 是 World 已授权体素意图在 Scene 侧的最小写入路径。当前支持的
-第一个操作是在一个区块内宏单元写入普通实体块。进程先计算候选快照，再带着租约请求
-DataService 持久化；只有持久化通过后，才提交新的热状态并向订阅者推送快照回退消息。
-快照回退消息指还没有实现紧凑 `ChunkDelta` 前，先用完整快照通知订阅者。缺失、过期、
-越界或陈旧的租约都不会改变热区块。
+`ChunkProcess.apply_intent/2` 是 World 已授权体素意图在 Scene 侧的最小写入路径。单意图
+路径仍以持久化通过作为提交条件，然后向订阅者推送对应 `ChunkDelta`；无法表达为
+delta 的操作才回退为完整 `ChunkSnapshot`。缺失、过期、越界或陈旧的租约都不会改变
+热区块。
 
-`ChunkProcess.subscribe/3` 是第一版订阅接口。订阅者会立即拿到当前快照，并在本地区块变化后
-收到完整快照回退推送。这个行为刻意保守，等紧凑 `ChunkDelta` 线格式实现后再替换为增量。
+`ChunkProcess.apply_intents/2` / `commit_transaction/2` 是 prefab 和跨 chunk 事务的热路径。
+它们先更新本进程内的权威 storage，再向订阅者 fan-out 一条按最终 macro 合并后的
+`ChunkDelta`，而不是完整 chunk snapshot。完整 snapshot 持久化被拆到后台 task：热路径只
+等待 DataService 写令牌校验通过，PG row lock / 大 binary 写入属于冷路径。后台任务会 emit
+`voxel_chunk_async_persist_queued`、`voxel_chunk_async_persist_finished` 或
+`voxel_chunk_async_persist_down`；`ChunkProcess.flush_persistence/2` 是 CLI / 测试同步点，用于
+在需要检查 PG 最终状态时等待当前 chunk 的后台持久化完成。
+
+`ChunkProcess.subscribe/3` 是订阅接口。订阅者会立即拿到当前完整 `ChunkSnapshot`，用于
+初始同步 / 重连 / 版本缺口修复；后续正常编辑和 prefab commit 默认通过 `ChunkDelta`
+增量更新。
 
 `SceneServer.Voxel.ChunkDirectory` 把 `{logical_scene_id, chunk_coord}` 解析到热区块进程，
 并在 `SceneServer.VoxelChunkSup` 下按需启动缺失区块。Gate 只有在 World 已经路由区块并提供
@@ -246,3 +254,18 @@ ownerObjectId 字段引入 FRefinedCellData 后，加一行 cache hook 即可升
 
 后续切片会在同一子树下补充紧凑区块增量、A4-bis-cluster 真多 scene_node
 部署、per-region coordinator 切片,以及更完整的迁移回滚。
+
+## Hot Path Note: Single-Chunk Prefab
+
+Gate routes single-chunk prefab placements directly to
+`ChunkDirectory.apply_intents/2` with `reject_occupied: true`. Scene still owns
+the hot chunk state and emits `voxel_intents_applied` / `voxel_intent_rejected`,
+while Gate emits `*_prefab_single_chunk_fast_path_*` observe events. This keeps
+chunk-local all-or-reject semantics but avoids the World two-phase fence write
+that was visible as a 1-3s right-click delay. Multi-chunk or multi-lease prefabs
+still use `TransactionCoordinator` + `BuildTransactionApplier`.
+
+`ChunkProcess.apply_intents/2` also batches micro prefab writes by touched macro
+cell. Boundary-snapped prefabs commonly span several macro cells inside one
+chunk; those are now applied as one `Storage.put_micro_blocks/4` call per macro
+instead of one normalized storage rewrite per micro slot.

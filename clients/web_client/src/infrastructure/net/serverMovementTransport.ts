@@ -138,6 +138,13 @@ export class ServerMovementTransport implements MovementTransport {
     chunkVersion: number;
     chunkHash: number;
   } | null = null;
+  private lastVoxelDelta: {
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    baseChunkVersion: number;
+    newChunkVersion: number;
+    opCount: number;
+  } | null = null;
   private lastVoxelIntentResult: {
     requestId: number;
     clientIntentSeq: number;
@@ -255,12 +262,20 @@ export class ServerMovementTransport implements MovementTransport {
       pendingPrefabRequests: this.pendingVoxelPrefabRequests.size,
       sentVoxelMessageCount: this.sentVoxelMessageCount,
       receivedVoxelSnapshotCount: this.receivedVoxelSnapshotCount,
+      receivedVoxelDeltaCount: this.receivedVoxelDeltaCount,
+      receivedVoxelInvalidateCount: this.receivedVoxelInvalidateCount,
       receivedVoxelIntentResultCount: this.receivedVoxelIntentResultCount,
       receivedVoxelDebugProbeCount: this.receivedVoxelDebugProbeCount,
       lastSnapshot: this.lastVoxelSnapshot
         ? {
             ...this.lastVoxelSnapshot,
             chunkCoord: chunkCoordKey(this.lastVoxelSnapshot.chunkCoord),
+          }
+        : null,
+      lastDelta: this.lastVoxelDelta
+        ? {
+            ...this.lastVoxelDelta,
+            chunkCoord: chunkCoordKey(this.lastVoxelDelta.chunkCoord),
           }
         : null,
       lastIntentResult: this.lastVoxelIntentResult,
@@ -923,6 +938,13 @@ export class ServerMovementTransport implements MovementTransport {
         this.voxelDeltas.push(message);
         this.receivedVoxelDeltaCount += 1;
         this.voxelKnownVersions.set(chunkCoordKey(message.chunkCoord), message.newChunkVersion);
+        this.lastVoxelDelta = {
+          logicalSceneId: message.logicalSceneId,
+          chunkCoord: { ...message.chunkCoord },
+          baseChunkVersion: message.baseChunkVersion,
+          newChunkVersion: message.newChunkVersion,
+          opCount: message.ops.length,
+        };
         this.logger.emit("voxel", "chunk_delta_received", {
           mode: SERVER_TRANSPORT_MODE,
           logical_scene_id: message.logicalSceneId,

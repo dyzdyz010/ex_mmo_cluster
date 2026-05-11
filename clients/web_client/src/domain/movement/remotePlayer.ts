@@ -16,6 +16,7 @@ export const INTERPOLATION_DELAY_SECS = 0.15;
 // next throttled snapshot arrives. 600 ms = 500 ms throttle + 100 ms
 // jitter headroom.
 export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.6;
+const LOW_PRIORITY_EXTRA_JITTER_SECS = 0.05;
 
 interface BufferedSnapshot {
   snapshot: RemoteMoveSnapshot;
@@ -39,6 +40,7 @@ export interface RemoteInterpolationDebug {
 export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
   private lastSampleMode: RemoteMotionSample["mode"] = "empty";
+  private interpolationDelaySecs = INTERPOLATION_DELAY_SECS;
 
   constructor(
     private options: { tickDurationSecs: number } = {
@@ -73,6 +75,7 @@ export class RemotePlayerState {
       snapshot: cloneRemoteMoveSnapshot(snapshot),
       receivedAtSecs,
     });
+    this.interpolationDelaySecs = this.resolveInterpolationDelaySecs(snapshot.deliveryInterval);
     if (this.snapshots.length > MAX_BUFFERED_SNAPSHOTS) {
       this.snapshots.splice(0, this.snapshots.length - MAX_BUFFERED_SNAPSHOTS);
     }
@@ -113,7 +116,7 @@ export class RemotePlayerState {
     const estimatedServerTime =
       latestServerTime +
       Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
-    const playbackServerTime = estimatedServerTime - INTERPOLATION_DELAY_SECS;
+    const playbackServerTime = estimatedServerTime - this.interpolationDelaySecs;
 
     for (let index = 0; index < this.snapshots.length - 1; index += 1) {
       const previous = this.snapshots[index];
@@ -145,13 +148,28 @@ export class RemotePlayerState {
       bufferedSnapshots: this.snapshots.length,
       latestServerTick: this.snapshots.at(-1)?.snapshot.serverTick ?? null,
       lastSampleMode: this.lastSampleMode,
-      interpolationDelaySecs: INTERPOLATION_DELAY_SECS,
+      interpolationDelaySecs: this.interpolationDelaySecs,
       maxExtrapolationSecs: MAX_REMOTE_EXTRAPOLATION_SECS,
     };
   }
 
   private snapshotTimeSecs(serverTick: number): number {
     return serverTick * this.options.tickDurationSecs;
+  }
+
+  private resolveInterpolationDelaySecs(deliveryInterval: number | undefined): number {
+    if (
+      !Number.isFinite(deliveryInterval) ||
+      deliveryInterval === undefined ||
+      deliveryInterval <= 1
+    ) {
+      return INTERPOLATION_DELAY_SECS;
+    }
+
+    const intervalDelay =
+      INTERPOLATION_DELAY_SECS + (deliveryInterval - 1) * this.options.tickDurationSecs;
+    const jitter = deliveryInterval >= 5 ? LOW_PRIORITY_EXTRA_JITTER_SECS : 0;
+    return Math.min(MAX_REMOTE_EXTRAPOLATION_SECS, intervalDelay + jitter);
   }
 }
 

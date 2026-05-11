@@ -75,7 +75,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert_receive {:voxel_chunk_snapshot_payload, updated_payload}
     assert updated_payload != initial_payload
 
-    assert {:ok, %{request_id: 56, storage: decoded_storage}} =
+    assert {:ok, %{request_id: 0, storage: decoded_storage}} =
              Codec.decode_chunk_snapshot_payload(updated_payload)
 
     assert decoded_storage.chunk_version == 1
@@ -188,10 +188,12 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
               changed?: true,
               changed_count: 3,
               skipped_count: 0,
-              persist_result: :inserted,
+              persist_result: :queued,
+              persist_ref: persist_ref,
               snapshot_payload: payload
             }} = ChunkProcess.apply_intents(chunk, attrs)
 
+    assert is_integer(persist_ref)
     assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
     assert storage.chunk_version == 1
 
@@ -200,6 +202,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                MacroCellHeader.cell_mode_solid_block()
     end)
 
+    assert :ok = ChunkProcess.flush_persistence(chunk)
     assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
   end

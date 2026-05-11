@@ -11,20 +11,21 @@ import {
   Vector3,
 } from "three";
 import type { PerspectiveCamera } from "three";
-import { buildChunkMeshData } from "../voxel/meshing/chunkMesher";
+import { buildChunkMeshData, type ChunkMeshBuildData } from "../voxel/meshing/chunkMesher";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import {
   macroCenterWorldPosition,
   macroCoordFromWorldPosition,
   macroStepFromSurfaceNormal,
 } from "../voxel/core/gridUtils";
-import type { FMacroCoord, FMicroCoord } from "../voxel/core/types";
+import type { FChunkCoord, FMacroCoord, FMicroCoord } from "../voxel/core/types";
 import { FullMicroOccupancyMask } from "../voxel/microgrid/governance";
 import { chunkCoordKey } from "../voxel/core/types";
 import { VoxelDirtyFlags } from "../voxel/storage/types";
 import type { WorldStore } from "../voxel/worldStore";
 import type { ObserveLog } from "../observe/logger";
 import type { PrefabRasterCell } from "../voxel/prefab";
+import type { FChunkMesherInputSnapshot } from "../voxel/meshing/types";
 import { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
@@ -32,6 +33,30 @@ export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 const HIT_FACE_OUTLINE_OFFSET = MacroWorldSize * 0.006;
 const HIT_FACE_OUTLINE_SIZE = MacroWorldSize * 1.04;
 const LOCAL_FACE_NORMAL = new Vector3(0, 0, 1);
+
+interface ChunkMeshWorkerSuccess {
+  id: number;
+  key: string;
+  ok: true;
+  meshData: ChunkMeshBuildData;
+  durationMs: number;
+}
+
+interface ChunkMeshWorkerFailure {
+  id: number;
+  key: string;
+  ok: false;
+  reason: string;
+  durationMs: number;
+}
+
+type ChunkMeshWorkerResponse = ChunkMeshWorkerSuccess | ChunkMeshWorkerFailure;
+
+interface PendingChunkMeshBuild {
+  id: number;
+  key: string;
+  startedAtMs: number;
+}
 
 export interface VoxelRaySelection {
   occupiedMacro: FMacroCoord;
@@ -70,6 +95,7 @@ export interface PrefabPreviewSnapshot {
 
 export class ChunkRenderController {
   private readonly group = new Group();
+  private readonly meshWorker = createChunkMeshWorker();
   private readonly chunkMaterial = new MeshStandardMaterial({
     vertexColors: true,
     roughness: 0.82,
@@ -94,6 +120,9 @@ export class ChunkRenderController {
     wireSegmentCount: 0,
   };
   private prefabPreviewKey = "";
+  private meshBuildSeq = 1;
+  private readonly pendingMeshBuilds = new Map<string, PendingChunkMeshBuild>();
+  private readonly completedMeshBuilds: ChunkMeshWorkerResponse[] = [];
 
   constructor() {
     this.group.name = "voxel-chunks";
@@ -109,6 +138,12 @@ export class ChunkRenderController {
     this.prefabPreviewGroup.name = "voxel-prefab-preview";
     this.prefabPreviewGroup.visible = false;
     this.group.add(this.prefabPreviewGroup);
+
+    if (this.meshWorker) {
+      this.meshWorker.onmessage = (event: MessageEvent<ChunkMeshWorkerResponse>) => {
+        this.completedMeshBuilds.push(event.data);
+      };
+    }
   }
 
   attachToScene(parent: Group): void {
@@ -116,6 +151,8 @@ export class ChunkRenderController {
   }
 
   syncDirtyChunks(world: WorldStore, logger: ObserveLog): void {
+    this.applyCompletedMeshBuilds(logger);
+
     const activeKeys = new Set(
       world.listChunks().map((chunk) => chunkCoordKey(chunk.data.chunkCoord)),
     );
@@ -126,6 +163,7 @@ export class ChunkRenderController {
       this.group.remove(mesh);
       mesh.geometry.dispose();
       this.chunkMeshes.delete(key);
+      this.pendingMeshBuilds.delete(key);
     }
 
     for (const chunk of world.listChunks()) {
@@ -137,8 +175,38 @@ export class ChunkRenderController {
       if (!needsRebuild) {
         continue;
       }
+      if (this.pendingMeshBuilds.has(key)) {
+        continue;
+      }
 
       const snapshot = chunk.buildMesherSnapshot();
+      if (this.meshWorker) {
+        const id = this.meshBuildSeq;
+        this.meshBuildSeq += 1;
+        const startedAtMs = Math.round(performance.now());
+        this.pendingMeshBuilds.set(key, { id, key, startedAtMs });
+
+        // The dirty span represented by this snapshot is now in flight. Any
+        // edit that lands while the worker is running will mark the chunk
+        // dirty again and schedule a follow-up build.
+        chunk.consumeDirtyFlags(VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+
+        this.meshWorker.postMessage({
+          id,
+          key,
+          snapshot,
+          solidWorldMacroKeys: collectBoundarySolidMacroKeys(world, snapshot),
+        });
+
+        logger.emit("render", "chunk_rebuild_scheduled", {
+          chunk: key,
+          worker: true,
+          dirty_min: formatCoord(snapshot.dirtyMacroMin),
+          dirty_max: formatCoord(snapshot.dirtyMacroMax),
+        });
+        continue;
+      }
+
       const meshData = buildChunkMeshData(snapshot, {
         isSolidWorldMacroCoord(coord: FMacroCoord): boolean {
           return world.isSolidWorldMacroCoord(coord);
@@ -147,43 +215,89 @@ export class ChunkRenderController {
           return world.isSolidWorldMicroCoord(macro, micro);
         },
       });
-
-      const geometry = new BufferGeometry();
-      geometry.setAttribute("position", new Float32BufferAttribute(meshData.positions, 3));
-      geometry.setAttribute("normal", new Float32BufferAttribute(meshData.normals, 3));
-      geometry.setAttribute("color", new Float32BufferAttribute(meshData.colors, 3));
-      geometry.setIndex(meshData.indices);
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-
-      const mesh =
-        existing ??
-        new Mesh<BufferGeometry, MeshStandardMaterial>(new BufferGeometry(), this.chunkMaterial);
-      mesh.name = `chunk:${key}`;
-      mesh.position.set(
-        chunk.data.chunkCoord.x * VoxelConstants.ChunkSizeX * MacroWorldSize,
-        chunk.data.chunkCoord.y * VoxelConstants.ChunkSizeY * MacroWorldSize,
-        chunk.data.chunkCoord.z * VoxelConstants.ChunkSizeZ * MacroWorldSize,
-      );
-      mesh.frustumCulled = false;
-      mesh.visible = meshData.indices.length > 0;
-      mesh.userData["chunkCoord"] = chunk.data.chunkCoord;
-
-      if (!existing) {
-        this.chunkMeshes.set(key, mesh);
-        this.group.add(mesh);
-      }
-
-      mesh.geometry.dispose();
-      mesh.geometry = geometry;
+      this.applyMeshData(key, chunk.data.chunkCoord, meshData, existing);
       chunk.consumeDirtyFlags();
 
       logger.emit("render", "chunk_rebuilt", {
         chunk: key,
+        worker: false,
         solid_blocks: meshData.solidBlockCount,
         triangles: meshData.triangleCount,
       });
     }
+  }
+
+  private applyCompletedMeshBuilds(logger: ObserveLog): void {
+    if (this.completedMeshBuilds.length === 0) {
+      return;
+    }
+
+    const completed = this.completedMeshBuilds.splice(0, this.completedMeshBuilds.length);
+    for (const message of completed) {
+      const pending = this.pendingMeshBuilds.get(message.key);
+      if (!pending || pending.id !== message.id) {
+        continue;
+      }
+      this.pendingMeshBuilds.delete(message.key);
+
+      if (!message.ok) {
+        logger.emit("render", "chunk_rebuild_failed", {
+          chunk: message.key,
+          worker: true,
+          duration_ms: message.durationMs,
+          reason: message.reason,
+        });
+        continue;
+      }
+
+      const chunkCoord = parseChunkKey(message.key);
+      this.applyMeshData(message.key, chunkCoord, message.meshData);
+
+      logger.emit("render", "chunk_rebuilt", {
+        chunk: message.key,
+        worker: true,
+        worker_duration_ms: message.durationMs,
+        elapsed_ms: Math.round(performance.now()) - pending.startedAtMs,
+        solid_blocks: message.meshData.solidBlockCount,
+        triangles: message.meshData.triangleCount,
+      });
+    }
+  }
+
+  private applyMeshData(
+    key: string,
+    chunkCoord: FChunkCoord,
+    meshData: ChunkMeshBuildData,
+    existing: Mesh<BufferGeometry, MeshStandardMaterial> | undefined = this.chunkMeshes.get(key),
+  ): void {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute("position", new Float32BufferAttribute(meshData.positions, 3));
+    geometry.setAttribute("normal", new Float32BufferAttribute(meshData.normals, 3));
+    geometry.setAttribute("color", new Float32BufferAttribute(meshData.colors, 3));
+    geometry.setIndex(meshData.indices);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    const mesh =
+      existing ??
+      new Mesh<BufferGeometry, MeshStandardMaterial>(new BufferGeometry(), this.chunkMaterial);
+    mesh.name = `chunk:${key}`;
+    mesh.position.set(
+      chunkCoord.x * VoxelConstants.ChunkSizeX * MacroWorldSize,
+      chunkCoord.y * VoxelConstants.ChunkSizeY * MacroWorldSize,
+      chunkCoord.z * VoxelConstants.ChunkSizeZ * MacroWorldSize,
+    );
+    mesh.frustumCulled = false;
+    mesh.visible = meshData.indices.length > 0;
+    mesh.userData["chunkCoord"] = chunkCoord;
+
+    if (!existing) {
+      this.chunkMeshes.set(key, mesh);
+      this.group.add(mesh);
+    }
+
+    mesh.geometry.dispose();
+    mesh.geometry = geometry;
   }
 
   raycastFromCameraCenter(camera: PerspectiveCamera): VoxelRaySelection | null {
@@ -322,6 +436,7 @@ export class ChunkRenderController {
     for (const mesh of this.chunkMeshes.values()) {
       mesh.geometry.dispose();
     }
+    this.meshWorker?.terminate();
     this.clearPrefabPreview();
     this.chunkMaterial.dispose();
     this.targetHighlight.geometry.dispose();
@@ -368,6 +483,73 @@ export class ChunkRenderController {
       wireSegmentCount: positions.length / 6,
     };
   }
+}
+
+function createChunkMeshWorker(): Worker | null {
+  if (typeof Worker === "undefined") {
+    return null;
+  }
+
+  try {
+    return new Worker(new URL("./chunkMeshWorker.ts", import.meta.url), { type: "module" });
+  } catch {
+    return null;
+  }
+}
+
+function collectBoundarySolidMacroKeys(
+  world: WorldStore,
+  snapshot: FChunkMesherInputSnapshot,
+): string[] {
+  const keys: string[] = [];
+  const base = {
+    x: snapshot.chunkCoord.x * VoxelConstants.ChunkSizeX,
+    y: snapshot.chunkCoord.y * VoxelConstants.ChunkSizeY,
+    z: snapshot.chunkCoord.z * VoxelConstants.ChunkSizeZ,
+  };
+  const max = VoxelConstants.ChunkSizeX - 1;
+
+  for (let y = 0; y < VoxelConstants.ChunkSizeY; y += 1) {
+    for (let z = 0; z < VoxelConstants.ChunkSizeZ; z += 1) {
+      pushSolidMacroKey(world, keys, { x: base.x - 1, y: base.y + y, z: base.z + z });
+      pushSolidMacroKey(world, keys, { x: base.x + max + 1, y: base.y + y, z: base.z + z });
+    }
+  }
+
+  for (let x = 0; x < VoxelConstants.ChunkSizeX; x += 1) {
+    for (let z = 0; z < VoxelConstants.ChunkSizeZ; z += 1) {
+      pushSolidMacroKey(world, keys, { x: base.x + x, y: base.y - 1, z: base.z + z });
+      pushSolidMacroKey(world, keys, { x: base.x + x, y: base.y + max + 1, z: base.z + z });
+    }
+  }
+
+  for (let x = 0; x < VoxelConstants.ChunkSizeX; x += 1) {
+    for (let y = 0; y < VoxelConstants.ChunkSizeY; y += 1) {
+      pushSolidMacroKey(world, keys, { x: base.x + x, y: base.y + y, z: base.z - 1 });
+      pushSolidMacroKey(world, keys, { x: base.x + x, y: base.y + y, z: base.z + max + 1 });
+    }
+  }
+
+  return keys;
+}
+
+function pushSolidMacroKey(world: WorldStore, keys: string[], coord: FMacroCoord): void {
+  if (world.isSolidWorldMacroCoord(coord)) {
+    keys.push(formatCoord(coord));
+  }
+}
+
+function parseChunkKey(key: string): FChunkCoord {
+  const [x = "0", y = "0", z = "0"] = key.split(",");
+  return {
+    x: Number.parseInt(x, 10) || 0,
+    y: Number.parseInt(y, 10) || 0,
+    z: Number.parseInt(z, 10) || 0,
+  };
+}
+
+function formatCoord(coord: FMacroCoord): string {
+  return `${coord.x},${coord.y},${coord.z}`;
 }
 
 function makeHitFaceOutlineGeometry(): BufferGeometry {

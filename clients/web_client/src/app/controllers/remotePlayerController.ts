@@ -41,6 +41,7 @@ export interface RemoteEntityDebugSnapshot {
   latestServerTick: number | null;
   bufferedSnapshots: number;
   interpolationMode: "empty" | "interpolated" | "extrapolated";
+  interpolationDelaySecs: number;
   priorityBand: string;
   priorityScore: number | null;
   observerDistance: number | null;
@@ -177,6 +178,7 @@ export class RemotePlayerController implements FrameSubscriber {
         latestServerTick: debug.latestServerTick,
         bufferedSnapshots: debug.bufferedSnapshots,
         interpolationMode: debug.lastSampleMode,
+        interpolationDelaySecs: debug.interpolationDelaySecs,
         priorityBand: entity.lastSnapshot?.priorityBand ?? "unknown",
         priorityScore: entity.lastSnapshot?.priorityScore ?? null,
         observerDistance: entity.lastSnapshot?.observerDistance ?? null,

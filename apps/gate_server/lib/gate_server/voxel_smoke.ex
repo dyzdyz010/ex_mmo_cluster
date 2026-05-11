@@ -7,9 +7,18 @@ defmodule GateServer.VoxelSmoke do
   structured observe logs plus `server_stdio`-formatted state snapshots. It is
   intentionally non-GUI so local automation can validate the runtime even when a
   browser or visual client is unavailable.
+
+  The smoke owns its minimum runtime prerequisites: it starts `:data_service`
+  so `DataService.Repo` is available, then starts or reuses the local World,
+  Scene chunk directory, and Gate interface processes. After mutating a hot
+  chunk it calls `SceneServer.Voxel.ChunkProcess.flush_persistence/2` before
+  reading PostgreSQL, which keeps the CLI assertion aligned with the runtime's
+  async persistence cold path.
   """
 
   alias GateServer.WsConnection
+  alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.Storage
@@ -139,6 +148,7 @@ defmodule GateServer.VoxelSmoke do
     assert_equal!(chunk_update_version(updated), 1, :updated_chunk_not_version_one)
     assert_chunk_update_applied!(updated, logical_scene_id, {0, 0, 0}, {1, 2, 3})
 
+    flush_chunk_persistence!(logical_scene_id, {0, 0, 0})
     stored_v1 = stored_snapshot!(logical_scene_id, {0, 0, 0})
     assert_equal!(stored_v1.chunk_version, 1, :stored_snapshot_not_version_one)
 
@@ -148,6 +158,7 @@ defmodule GateServer.VoxelSmoke do
     assert_equal!(result_v2.result_code, :accepted, :impact_v2_rejected)
     refute_chunk_push!(150)
 
+    flush_chunk_persistence!(logical_scene_id, {0, 0, 0})
     stored_v2 = stored_snapshot!(logical_scene_id, {0, 0, 0})
     assert_equal!(stored_v2.chunk_version, 2, :stored_snapshot_not_version_two)
 
@@ -238,7 +249,8 @@ defmodule GateServer.VoxelSmoke do
     token_store = data_module(:WriteTokenStore)
     snapshot_store = data_module(:ChunkSnapshotStore)
 
-    with :ok <- ensure_loaded(token_store, :data_write_token_store_unavailable),
+    with :ok <- ensure_application_started(:data_service),
+         :ok <- ensure_loaded(token_store, :data_write_token_store_unavailable),
          :ok <- ensure_loaded(snapshot_store, :data_chunk_snapshot_store_unavailable),
          :ok <-
            ensure_named(token_store, fn ->
@@ -272,6 +284,13 @@ defmodule GateServer.VoxelSmoke do
              )
            end) do
       :ok
+    end
+  end
+
+  defp ensure_application_started(app) do
+    case Application.ensure_all_started(app) do
+      {:ok, _started} -> :ok
+      {:error, reason} -> {:error, {app, reason}}
     end
   end
 
@@ -596,6 +615,19 @@ defmodule GateServer.VoxelSmoke do
     case apply(snapshot_store, :get_snapshot, [logical_scene_id, chunk_coord]) do
       {:ok, snapshot} -> snapshot
       {:error, reason} -> raise "missing stored voxel snapshot: #{inspect(reason)}"
+    end
+  end
+
+  defp flush_chunk_persistence!(logical_scene_id, chunk_coord) do
+    case ChunkDirectory.lookup_chunk_pid(ChunkDirectory, logical_scene_id, chunk_coord) do
+      {:ok, pid} ->
+        case ChunkProcess.flush_persistence(pid) do
+          :ok -> :ok
+          other -> raise "failed to flush voxel chunk persistence: #{inspect(other)}"
+        end
+
+      other ->
+        raise "could not lookup hot voxel chunk for persistence flush: #{inspect(other)}"
     end
   end
 

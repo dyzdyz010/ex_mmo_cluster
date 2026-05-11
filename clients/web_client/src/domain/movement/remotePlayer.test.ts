@@ -2,7 +2,11 @@ import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "./remotePlayer";
 import { MovementMode, type RemoteMoveSnapshot } from "./types";
 
-function snapshot(serverTick: number, x: number): RemoteMoveSnapshot {
+function snapshot(
+  serverTick: number,
+  x: number,
+  overrides: Partial<RemoteMoveSnapshot> = {},
+): RemoteMoveSnapshot {
   return {
     cid: 7,
     serverTick,
@@ -10,6 +14,7 @@ function snapshot(serverTick: number, x: number): RemoteMoveSnapshot {
     velocity: new Vector3(100, 0, 0),
     acceleration: new Vector3(),
     movementMode: MovementMode.Grounded,
+    ...overrides,
   };
 }
 
@@ -40,6 +45,16 @@ describe("remotePlayer", () => {
     const sample = state.sampleMotion(1.25);
 
     expect(sample.position.x).toBeCloseTo(20, 4);
+  });
+
+  it("expands interpolation delay for low-priority throttled remote snapshots", () => {
+    const state = new RemotePlayerState();
+    state.pushSnapshot(snapshot(10, 0, { deliveryInterval: 5 }), 0, 1.0);
+    state.pushSnapshot(snapshot(15, 50, { deliveryInterval: 5 }), 0, 1.5);
+
+    const debug = state.debugSnapshot();
+
+    expect(debug.interpolationDelaySecs).toBeCloseTo(0.6, 5);
   });
 
   it("reports interpolation buffer diagnostics for CLI observability", () => {

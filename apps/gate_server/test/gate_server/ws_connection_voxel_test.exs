@@ -7,6 +7,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   alias DataService.Voxel.WriteTokenStore
   alias GateServer.WsConnection
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.Storage
   alias WorldServer.Voxel.MapLedger
@@ -436,7 +437,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent rasterizes sphere and lands as a single batch commit" do
+  test "prefab place intent rasterizes sphere and lands through the single-chunk fast path" do
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
 
@@ -496,16 +497,19 @@ defmodule GateServer.WsConnectionVoxelTest do
       client_intent_seq: 13,
       logical_scene_id: 666,
       result_ref: 1,
-      timeout: 5_000
+      timeout: 1_000
     )
 
-    # The whole batch produces one snapshot fan-out instead of N deltas.
-    assert_receive {:gate_ws_send, snapshot_bin}, 5_000
-    assert <<0x62, snapshot_payload::binary>> = snapshot_bin
-    assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
-    assert snapshot.storage.logical_scene_id == 666
-    assert snapshot.storage.chunk_coord == {0, 0, 0}
-    assert snapshot.storage.chunk_version == 1
+    # The whole batch produces one compact ChunkDelta fan-out instead of a full
+    # chunk snapshot. New joiners still get ChunkSnapshot through subscribe.
+    assert_receive {:gate_ws_send, delta_bin}, 5_000
+    assert <<0x63, delta_payload::binary>> = delta_bin
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.logical_scene_id == 666
+    assert delta.chunk_coord == {0, 0, 0}
+    assert delta.base_chunk_version == 0
+    assert delta.new_chunk_version == 1
+    assert [%{delta_kind: 2, macro_index: 801}] = delta.ops
 
     # No further pushes for this prefab.
     refute_receive {:gate_ws_send, _}, 100
@@ -592,21 +596,19 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     place_elapsed_ms = System.monotonic_time(:millisecond) - place_started_at
 
-    # Pull the snapshot fan-out and decode storage.
-    assert_receive {:gate_ws_send, snapshot_bin}, 5_000
-    assert <<0x62, snapshot_payload::binary>> = snapshot_bin
-    assert {:ok, snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(snapshot_payload)
-    storage = snapshot.storage
-    assert storage.chunk_version == 1
-
     # Macro (1, 2, 3) → linear index 1 + 2*16 + 3*256 = 801.
     macro_index = 1 + 2 * 16 + 3 * 256
-    header = Enum.at(storage.macro_headers, macro_index)
 
-    assert header.mode == MacroCellHeader.cell_mode_refined(),
-           "expected macro #{macro_index} to be in :refined mode, got mode=#{header.mode}"
-
-    refined_cell = Enum.at(storage.refined_cells, header.payload_index)
+    # Pull the hot-path ChunkDelta fan-out and decode the changed refined cell.
+    assert_receive {:gate_ws_send, delta_bin}, 5_000
+    assert <<0x63, delta_payload::binary>> = delta_bin
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.logical_scene_id == logical_scene_id
+    assert delta.chunk_coord == {0, 0, 0}
+    assert delta.base_chunk_version == 0
+    assert delta.new_chunk_version == 1
+    assert [%{delta_kind: 2, macro_index: ^macro_index, payload: refined_payload}] = delta.ops
+    assert {:ok, refined_cell} = SceneVoxelCodec.decode_refined_cell_payload(refined_payload)
     storage_words = refined_cell.occupancy_words
 
     {:ok, sphere} = SceneServer.Voxel.BlueprintCatalog.fetch(1, 2)
@@ -626,7 +628,8 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert storage_slot_count == expected_slot_count
 
-    # Verify chunk-level snapshot was persisted to Postgres.
+    # Verify cold-path snapshot persistence eventually lands in Postgres.
+    flush_chunk_persistence!(logical_scene_id, {0, 0, 0})
     assert {:ok, persisted_row} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
     assert persisted_row.chunk_version == 1
 
@@ -648,12 +651,15 @@ defmodule GateServer.WsConnectionVoxelTest do
     gate_log_lines = read_log_lines(gate_log)
     world_log_lines = read_log_lines(world_log)
 
-    # Spot-check key events on the apply path.
-    assert Enum.any?(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_committed")),
-           "scene log missing voxel_chunk_transaction_committed event"
+    # Spot-check key events on the single-chunk fast apply path.
+    assert Enum.any?(scene_log_lines, &String.contains?(&1, "voxel_intents_applied")),
+           "scene log missing voxel_intents_applied event"
 
-    assert Enum.any?(scene_log_lines, &String.contains?(&1, "voxel_chunk_transaction_prepared")),
-           "scene log missing voxel_chunk_transaction_prepared event"
+    assert Enum.any?(
+             gate_log_lines,
+             &String.contains?(&1, "ws_voxel_prefab_single_chunk_fast_path_applied")
+           ),
+           "gate log missing ws_voxel_prefab_single_chunk_fast_path_applied event"
 
     assert Enum.any?(
              gate_log_lines,
@@ -669,7 +675,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       sphere occupied slots:    #{storage_slot_count}
       catalog occupied slots:   #{expected_slot_count}
       mask pixel-perfect match: #{storage_words == expected_words}
-      chunk_version after place: #{storage.chunk_version}
+      chunk_version after place: #{delta.new_chunk_version}
       persisted to Postgres:    yes (chunk_version=#{persisted_storage.chunk_version})
       observe log root:         #{log_root}
       scene log lines:          #{length(scene_log_lines)}
@@ -791,16 +797,13 @@ defmodule GateServer.WsConnectionVoxelTest do
     scene_log_lines = read_log_lines(scene_log)
     gate_log_lines = read_log_lines(gate_log)
 
-    # Scene should record exactly ONE prepare_failed (second place) and ONE
-    # committed (first place).
-    prepare_failed_lines =
-      Enum.filter(
-        scene_log_lines,
-        &String.contains?(&1, "voxel_chunk_transaction_prepare_failed")
-      )
+    # Scene should record a hot-path rejection (second place), while Gate
+    # records one fast-path success and one fast-path failure.
+    rejected_lines =
+      Enum.filter(scene_log_lines, &String.contains?(&1, "voxel_intent_rejected"))
 
-    assert length(prepare_failed_lines) >= 1,
-           "scene log missing voxel_chunk_transaction_prepare_failed event"
+    assert length(rejected_lines) >= 1,
+           "scene log missing voxel_intent_rejected event"
 
     # Gate should record one applied (first) and one error (second) for prefab.
     applied_count =
@@ -809,8 +812,22 @@ defmodule GateServer.WsConnectionVoxelTest do
     error_count =
       Enum.count(gate_log_lines, &String.contains?(&1, "ws_voxel_prefab_place_intent_error"))
 
+    fast_path_applied_count =
+      Enum.count(
+        gate_log_lines,
+        &String.contains?(&1, "ws_voxel_prefab_single_chunk_fast_path_applied")
+      )
+
+    fast_path_failed_count =
+      Enum.count(
+        gate_log_lines,
+        &String.contains?(&1, "ws_voxel_prefab_single_chunk_fast_path_failed")
+      )
+
     assert applied_count == 1, "expected exactly 1 prefab applied, got #{applied_count}"
     assert error_count == 1, "expected exactly 1 prefab error, got #{error_count}"
+    assert fast_path_applied_count == 1
+    assert fast_path_failed_count == 1
 
     # Smoke summary — visible in mix test output.
     IO.puts("""
@@ -821,7 +838,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       reject elapsed:            #{reject_elapsed_ms} ms
       chunk_version after reject: #{persisted_row.chunk_version} (unchanged)
       observe log root:          #{log_root}
-      scene prepare_failed events: #{length(prepare_failed_lines)}
+      scene rejected events:      #{length(rejected_lines)}
       gate applied events:       #{applied_count}
       gate error events:         #{error_count}
     ─────────────────────────────────────────────────────────────
@@ -833,6 +850,17 @@ defmodule GateServer.WsConnectionVoxelTest do
       {:ok, content} -> String.split(content, "\n", trim: true)
       {:error, _} -> []
     end
+  end
+
+  defp flush_chunk_persistence!(logical_scene_id, chunk_coord) do
+    assert {:ok, chunk_pid} =
+             SceneServer.Voxel.ChunkDirectory.lookup_chunk_pid(
+               SceneServer.Voxel.ChunkDirectory,
+               logical_scene_id,
+               chunk_coord
+             )
+
+    assert :ok = ChunkProcess.flush_persistence(chunk_pid)
   end
 
   defp popcount(word) when is_integer(word) and word >= 0 do

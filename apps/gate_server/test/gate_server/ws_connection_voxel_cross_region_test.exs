@@ -20,6 +20,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   alias GateServer.WsConnection
   alias SceneServer.Combat.VoxelDamageRouter
   alias SceneServer.Voxel.ChunkDirectory
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.ObjectOwnerLookup
@@ -94,7 +95,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
       {WorldServer.Voxel.TransactionCoordinator, name: WorldServer.Voxel.TransactionCoordinator}
     )
 
-    logical_scene_id = 8_888
+    logical_scene_id = System.unique_integer([:positive, :monotonic])
 
     region_a_id = System.unique_integer([:positive, :monotonic])
     region_b_id = System.unique_integer([:positive, :monotonic])
@@ -205,6 +206,11 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
       logical_scene_id: ctx.logical_scene_id,
       timeout: 10_000
     )
+
+    # 两 chunk 的 hot delta 已经 fan-out;冷路径 snapshot persist 在后台,这里
+    # 通过 ChunkProcess flush 明确等待后再查 PG。
+    flush_chunk_persistence!(ctx.chunk_dir_a, ctx.logical_scene_id, {0, 0, 0})
+    flush_chunk_persistence!(ctx.chunk_dir_b, ctx.logical_scene_id, {1, 0, 0})
 
     # 两 chunk 的 storage 都被持久化(走的是各自 ChunkDirectory.Region* 路径)。
     assert {:ok, snap_a} = ChunkSnapshotStore.get_snapshot(ctx.logical_scene_id, {0, 0, 0})
@@ -319,6 +325,13 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     Enum.any?(storage.macro_headers, fn header ->
       header.mode == MacroCellHeader.cell_mode_refined()
     end)
+  end
+
+  defp flush_chunk_persistence!(chunk_directory, logical_scene_id, chunk_coord) do
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.lookup_chunk_pid(chunk_directory, logical_scene_id, chunk_coord)
+
+    assert :ok = ChunkProcess.flush_persistence(chunk_pid)
   end
 
   defp ensure_started!(name, child_spec) do

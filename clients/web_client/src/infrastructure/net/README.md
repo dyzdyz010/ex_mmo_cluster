@@ -26,3 +26,5 @@
 约束：
 
 - 本目录实现 domain 定义的 port (`@domain/movement/transport`)，不能反向让 domain 依赖这里。
+
+`serverMovementTransport.debugSnapshot()` / `voxelDebugSnapshot()` 必须能被 `window.__voxelCli.run("transport")` 直接读取到收发状态。voxel 字段现在包含 `receivedVoxelSnapshotCount`、`receivedVoxelDeltaCount`、`receivedVoxelInvalidateCount`、`receivedVoxelIntentResultCount` 和 `lastDelta`，用于从 CLI 判断 ChunkDelta 是否已到达，而不依赖画面判断。

@@ -388,4 +388,33 @@ Mesh rebuild、大 binary decode 都不能跑在 RAF callback 同步链里。
 
 ## 10. 进度日志
 
-(待落地后填写)
+### 2026-05-10 — 方案 B 第一批落地
+
+- `ChunkProcess.apply_intents/2` / `commit_transaction/2`：prefab / batch commit 热路径改为
+  `ChunkDelta` fan-out。按最终受影响 macro 合并 ops，sphere prefab 从完整 `ChunkSnapshot`
+  推送改成单条 `CellRefined` delta。
+- `ChunkProcess`：batch snapshot PG 持久化后台化，热路径只等待 write-token 校验；新增
+  `voxel_chunk_async_persist_*` observe 事件和 `flush_persistence/2` CLI / 测试同步点。
+- 客户端远端插值：按 server `deliveryInterval` 动态提高 interpolation delay，low priority
+  远端保留 600ms buffer，避免 500ms AOI 节流打到 extrapolation clamp。
+- Web render：chunk mesh rebuild 移入 module worker，主线程只替换 `BufferGeometry`；observe
+  日志可直接看到 schedule / rebuilt / failure。
+- 测试验收：gate prefab e2e 已改为断言 `0x63 ChunkDelta`，并在 flush 后验证 PG snapshot；
+  跨 region prefab 用唯一 logical scene 隔离旧 `region_bounds_overlap`。
+
+2026-05-10 follow-up：实测右键 prefab 仍慢的根因不是 delta fan-out，而是常见单 chunk
+prefab 仍走 World two-phase transaction，`prepare` 阶段同步写
+`voxel_chunk_pending_transactions` fence 会产生约 1s 以上等待。已增加 single-chunk fast
+path：Gate 仍先通过 MapLedger 获取 lease，但若 prefab 只命中一个 chunk，则直接调用
+`ChunkDirectory.apply_intents/2`，并在 intent opts 带 `reject_occupied: true` 保留
+chunk-local all-or-reject 语义；只有 multi-chunk / multi-lease prefab 继续走
+`TransactionCoordinator` + `TransactionExecutor`。
+
+2026-05-10 follow-up 2: real browser right-click boundary-snap prefabs can touch
+several macro cells inside the same chunk. The first single-chunk fast path only
+optimized the one-macro batch case, so the common right-click sphere still fell
+back to 280 per-slot storage normalizations. `ChunkProcess.apply_intents/2` now
+groups micro writes by macro and calls `Storage.put_micro_blocks/4` once per
+touched macro; observed Gate fast-path latency for the same right-click case
+dropped from 1379ms to 38ms, with `ChunkDelta` still delivered and snapshot
+persistence deferred behind the write-token check.

@@ -1266,10 +1266,10 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  # Phase 3: 0x67 prefab now goes through World's TransactionCoordinator +
-  # TransactionExecutor. Cells are grouped by chunk_coord into one batch per
-  # chunk; the whole prefab commits atomically (any chunk's prepare or apply
-  # failure rolls back every fence) or aborts atomically (no partial writes).
+  # Single-chunk prefabs stay on the Scene hot path and call
+  # ChunkDirectory.apply_intents/2 directly. Multi-chunk or multi-lease prefabs
+  # still go through World's TransactionCoordinator + TransactionExecutor so
+  # the whole prefab commits atomically across every participant.
   defp run_prefab_transaction([], _request, _state) do
     {:ok, %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}}
   end
@@ -1277,13 +1277,27 @@ defmodule GateServer.WsConnection do
   defp run_prefab_transaction(cells, request, state) do
     total = length(cells)
 
-    with {:ok, plan} <- build_prefab_plan(cells, request, state),
-         {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
-         {:ok, transaction} <-
-           coordinator_begin_transaction(coordinator_ref, plan, request),
-         {:ok, executor_result} <-
-           executor_execute(coordinator_ref, transaction, plan) do
-      finalize_prefab_outcome(executor_result, plan, total)
+    with {:ok, plan} <- build_prefab_plan(cells, request, state) do
+      case single_chunk_prefab_plan(plan) do
+        {:ok, participant, chunk_coord, intents} ->
+          apply_single_chunk_prefab_fast_path(
+            participant,
+            chunk_coord,
+            intents,
+            request,
+            state,
+            total
+          )
+
+        :error ->
+          with {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
+               {:ok, transaction} <-
+                 coordinator_begin_transaction(coordinator_ref, plan, request),
+               {:ok, executor_result} <-
+                 executor_execute(coordinator_ref, transaction, plan) do
+            finalize_prefab_outcome(executor_result, plan, total)
+          end
+      end
     else
       {:error, reason} ->
         {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: total}}
@@ -1387,9 +1401,98 @@ defmodule GateServer.WsConnection do
         macro: cell.local_macro,
         micro_slot: cell.micro_slot,
         micro_layer: cell.layer_attrs,
-        opts: []
+        opts: [reject_occupied: true, return_snapshot_payload: false]
       }
     end)
+  end
+
+  defp single_chunk_prefab_plan(%{participants: [participant], chunk_coords: [chunk_coord]}) do
+    case Map.fetch(participant.intents_by_chunk, chunk_coord) do
+      {:ok, intents} -> {:ok, participant, chunk_coord, intents}
+      :error -> :error
+    end
+  end
+
+  defp single_chunk_prefab_plan(_plan), do: :error
+
+  defp apply_single_chunk_prefab_fast_path(
+         participant,
+         chunk_coord,
+         intents,
+         request,
+         state,
+         total
+       ) do
+    started_at = System.monotonic_time(:millisecond)
+    chunk_directory = single_chunk_prefab_directory(participant)
+
+    GateServer.CliObserve.emit("ws_voxel_prefab_single_chunk_fast_path_started", fn ->
+      %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        blueprint_id: request.blueprint_id,
+        chunk_coord: chunk_coord,
+        cell_count: total,
+        region_id: participant.lease.region_id,
+        lease_id: participant.lease.lease_id,
+        scene_node: participant.scene_node
+      }
+    end)
+
+    case SceneServer.Voxel.ChunkDirectory.apply_intents(chunk_directory, intents) do
+      {:ok, summary} ->
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+        GateServer.CliObserve.emit("ws_voxel_prefab_single_chunk_fast_path_applied", fn ->
+          %{
+            connection_pid: self(),
+            cid: state.cid,
+            request_id: request.request_id,
+            logical_scene_id: request.logical_scene_id,
+            blueprint_id: request.blueprint_id,
+            chunk_coord: chunk_coord,
+            cell_count: total,
+            changed_count: Map.get(summary, :changed_count, 0),
+            skipped_count: Map.get(summary, :skipped_count, 0),
+            chunk_version: Map.get(summary, :chunk_version, 0),
+            persist_result: Map.get(summary, :persist_result),
+            elapsed_ms: elapsed_ms
+          }
+        end)
+
+        {:ok,
+         %{
+           cell_count: total,
+           chunk_count: 1,
+           max_chunk_version: Map.get(summary, :chunk_version, 0)
+         }}
+
+      {:error, reason} ->
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+        GateServer.CliObserve.emit("ws_voxel_prefab_single_chunk_fast_path_failed", fn ->
+          %{
+            connection_pid: self(),
+            cid: state.cid,
+            request_id: request.request_id,
+            logical_scene_id: request.logical_scene_id,
+            blueprint_id: request.blueprint_id,
+            chunk_coord: chunk_coord,
+            cell_count: total,
+            reason: inspect(reason),
+            elapsed_ms: elapsed_ms
+          }
+        end)
+
+        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: total}}
+    end
+  end
+
+  defp single_chunk_prefab_directory(participant) do
+    module = voxel_chunk_directory_module_for(participant.participant_key)
+    {module, participant.scene_node}
   end
 
   defp emit_prefab_routed_observe(request, state, participants, cell_count) do

@@ -21,7 +21,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   import Bitwise
 
-  @intent_option_keys [:cell_hash, :cell_version, :environment_index, :flags]
+  @intent_option_keys [
+    :cell_hash,
+    :cell_version,
+    :environment_index,
+    :flags,
+    :reject_occupied,
+    :return_snapshot_payload
+  ]
 
   # Wire sentinels for VoxelEditIntent (0x70) optimistic concurrency fields;
   # see docs/2026-04-10-线协议规范.md §13.6.1. Sentinel = "client did not pin a
@@ -113,6 +120,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @doc "Persists the current chunk through DataService's fenced snapshot store."
   def persist(server) do
     GenServer.call(server, :persist)
+  end
+
+  @doc """
+  Blocks until background snapshot persistence tasks currently known by this
+  chunk have finished.
+
+  This is a CLI/test synchronization point for the hot-path split: subscribers
+  can receive deltas before PostgreSQL has accepted the full snapshot.
+  """
+  def flush_persistence(server, timeout \\ 5_000) do
+    GenServer.call(server, :flush_persistence, timeout)
   end
 
   @doc """
@@ -251,6 +269,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
        lease: lease,
        subscribers: %{},
        subscriber_monitors: %{},
+       async_persists: %{},
+       persist_waiters: [],
        pending_fence: pending_fence,
        # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
        # attribution and downstream destroy_part dispatch. Tests inject
@@ -450,7 +470,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 end)
 
                 if reply.changed? do
-                  push_snapshot_fallbacks(next_state, :apply_intents)
+                  push_batch_outcome(state, next_state, intents, :apply_intents)
                 end
 
                 {:reply, {:ok, reply}, next_state}
@@ -502,7 +522,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
         })
 
         if reply.changed? do
-          push_snapshot_fallbacks(next_state, :commit_transaction)
+          push_batch_outcome(state, next_state, intents, :commit_transaction)
         end
 
         {:reply, {:ok, reply}, next_state}
@@ -718,9 +738,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
        storage: state.storage,
        has_lease?: not is_nil(state.lease),
        lease: state.lease,
+       pending_async_persist_count: map_size(state.async_persists),
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers)
      }, state}
+  end
+
+  def handle_call(:flush_persistence, from, state) do
+    if map_size(state.async_persists) == 0 do
+      {:reply, :ok, state}
+    else
+      {:noreply, %{state | persist_waiters: [from | state.persist_waiters]}}
+    end
   end
 
   @impl true
@@ -730,26 +759,63 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @impl true
-  def handle_info({:DOWN, monitor_ref, :process, subscriber, reason}, state) do
-    case Map.get(state.subscriber_monitors, monitor_ref) do
-      ^subscriber ->
-        state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
+  def handle_info({:async_snapshot_persist_finished, ref, result, snapshot_bytes}, state) do
+    {persist_meta, async_persists} = Map.pop(state.async_persists, ref)
 
-        CliObserve.emit("voxel_chunk_unsubscribe", fn ->
-          %{
-            logical_scene_id: state.logical_scene_id,
-            chunk_coord: state.chunk_coord,
-            subscriber: subscriber,
-            reason: inspect(reason),
-            result: :subscriber_down,
-            subscriber_count: map_size(state.subscribers)
-          }
+    if persist_meta do
+      Process.demonitor(persist_meta.monitor_ref, [:flush])
+
+      CliObserve.emit("voxel_chunk_async_persist_finished", fn ->
+        Map.merge(persist_meta.observe, %{result: inspect(result), snapshot_bytes: snapshot_bytes})
+      end)
+    end
+
+    state =
+      %{state | async_persists: async_persists}
+      |> maybe_reply_persist_waiters()
+
+    {:noreply, state}
+  end
+
+  def handle_info({:DOWN, monitor_ref, :process, subscriber, reason}, state) do
+    case async_persist_by_monitor(state, monitor_ref) do
+      {ref, persist_meta} ->
+        async_persists = Map.delete(state.async_persists, ref)
+
+        CliObserve.emit("voxel_chunk_async_persist_down", fn ->
+          Map.merge(persist_meta.observe, %{
+            task_pid: inspect(subscriber),
+            reason: inspect(reason)
+          })
         end)
 
+        state =
+          %{state | async_persists: async_persists}
+          |> maybe_reply_persist_waiters()
+
         {:noreply, state}
 
-      _other ->
-        {:noreply, state}
+      nil ->
+        case Map.get(state.subscriber_monitors, monitor_ref) do
+          ^subscriber ->
+            state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
+
+            CliObserve.emit("voxel_chunk_unsubscribe", fn ->
+              %{
+                logical_scene_id: state.logical_scene_id,
+                chunk_coord: state.chunk_coord,
+                subscriber: subscriber,
+                reason: inspect(reason),
+                result: :subscriber_down,
+                subscriber_count: map_size(state.subscribers)
+              }
+            end)
+
+            {:noreply, state}
+
+          _other ->
+            {:noreply, state}
+        end
     end
   end
 
@@ -820,6 +886,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     with :ok <- validate_batch_scope(state, intents),
          :ok <- validate_batch_preconditions(state, intents),
+         :ok <- validate_apply_batch_occupancy(state, intents),
          {:ok, raw_storage, changed_count, skipped_count} <-
            build_intents_storage(state.storage, intents) do
       # Phase 4 (D6):after every apply rebuild per-cell ObjectCoverRef[] and
@@ -829,18 +896,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
       # the hot apply path semantics.
       next_storage = Storage.refresh_chunk_object_refs(raw_storage)
       request_id = intents |> List.first() |> Map.fetch!(:request_id)
-      snapshot_payload = encode_snapshot_payload(next_storage, request_id)
-      persist_payload = encode_snapshot_payload(next_storage, 0)
+      return_snapshot_payload? = return_snapshot_payload?(intents)
+
+      snapshot_payload =
+        maybe_encode_snapshot_payload(next_storage, request_id, return_snapshot_payload?)
+
       lease = intents |> List.first() |> Map.fetch!(:lease)
 
       if changed_count > 0 do
-        case persist_snapshot(
+        case enqueue_snapshot_persist(
+               state,
                lease,
                state.chunk_coord,
                next_storage,
-               persist_payload
+               snapshot_payload_for_persist(snapshot_payload, return_snapshot_payload?)
              ) do
-          {:ok, persist_result} ->
+          {:ok, persist_result, persist_ref, state_with_task} ->
             reply =
               batch_intent_reply(
                 next_storage,
@@ -848,10 +919,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 persist_result,
                 snapshot_payload,
                 changed_count,
-                skipped_count
+                skipped_count,
+                persist_ref
               )
 
-            next_state = %{state | storage: next_storage, lease: lease}
+            next_state = %{state_with_task | storage: next_storage, lease: lease}
             dispatch_damage_async(next_state, damage_attribution)
 
             {:ok, reply, next_state}
@@ -867,7 +939,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
             :unchanged,
             snapshot_payload,
             changed_count,
-            skipped_count
+            skipped_count,
+            nil
           )
 
         {:ok, reply, %{state | lease: lease}}
@@ -950,7 +1023,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
          persist_result,
          snapshot_payload,
          changed_count,
-         skipped_count
+         skipped_count,
+         persist_ref
        ) do
     %{
       logical_scene_id: storage.logical_scene_id,
@@ -960,6 +1034,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
       changed_count: changed_count,
       skipped_count: skipped_count,
       persist_result: persist_result,
+      persist_ref: persist_ref,
       snapshot_payload: snapshot_payload,
       lease: lease
     }
@@ -1196,9 +1271,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 同 batch 内的内部冲突(2 个 intent 写同一 micro slot)用一个 in-batch
   # claimed-set 跟踪,后到的 intent 也算 occupied。
   defp validate_batch_occupancy(state, intents) do
+    storage = state.storage
+
     intents
     |> Enum.reduce_while({:ok, %{}}, fn intent, {:ok, claimed} ->
-      case validate_intent_occupancy(state, intent, claimed) do
+      case validate_intent_occupancy(storage, intent, claimed) do
         {:ok, next_claimed} -> {:cont, {:ok, next_claimed}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -1209,16 +1286,35 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp validate_apply_batch_occupancy(state, intents) do
+    if Enum.any?(intents, fn intent -> Keyword.get(intent.opts, :reject_occupied, false) end) do
+      validate_batch_occupancy(state, intents)
+    else
+      :ok
+    end
+  end
+
+  defp return_snapshot_payload?(intents) do
+    Enum.all?(intents, fn intent -> Keyword.get(intent.opts, :return_snapshot_payload, true) end)
+  end
+
+  defp maybe_encode_snapshot_payload(storage, request_id, true),
+    do: encode_snapshot_payload(storage, request_id)
+
+  defp maybe_encode_snapshot_payload(_storage, _request_id, false), do: <<>>
+
+  defp snapshot_payload_for_persist(_snapshot_payload, _return_snapshot_payload?), do: nil
+
   defp validate_intent_occupancy(
-         state,
+         storage,
          %{operation: :put_micro_block, macro: macro_index, micro_slot: slot_index},
          claimed
        ) do
     cond do
-      solid_cell?(state.storage, macro_index) ->
+      solid_cell_fast?(storage, macro_index) ->
         {:error, :cannot_micro_edit_solid_macro}
 
-      micro_slot_occupied?(state.storage, macro_index, slot_index) ->
+      micro_slot_occupied_fast?(storage, macro_index, slot_index) ->
         {:error, :micro_slot_already_occupied}
 
       MapSet.member?(Map.get(claimed, macro_index, MapSet.new()), slot_index) ->
@@ -1241,7 +1337,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 暂不 occupancy precheck — Phase A1-2 范围只覆盖 prefab 防覆盖
   # (走 :put_micro_block)。non-micro 路径的 idempotency 行为保持现状,留给
   # 后续 step 收紧。
-  defp validate_intent_occupancy(_state, _intent, claimed), do: {:ok, claimed}
+  defp validate_intent_occupancy(_storage, _intent, claimed), do: {:ok, claimed}
 
   defp validate_loaded_snapshot(state, storage) do
     cond do
@@ -1361,21 +1457,28 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp build_intents_storage(storage, intents) do
     next_version = storage.chunk_version + 1
 
-    case detect_micro_block_batch(intents) do
-      {:batch, macro, pairs} ->
+    case detect_micro_block_batches(storage, intents) do
+      {:micro_batches, groups, changed_count, skipped_count} when changed_count > 0 ->
         # Phase A1-1b fast-path:整 batch 都是 :put_micro_block on same macro
         # (sphere/cylinder/stairs prefab 全套场景)→ 一次 Storage.put_micro_blocks
         # 替代 N 次 put_micro_block,从 O(macro_count × N) 降到 O(macro_count + N)。
         # 实测 sphere 280 slot:1.5s → ~50ms。
+        # Boundary-snapped prefabs can touch several macro cells. Groups keep
+        # the hot path to one storage normalization per touched macro.
         opts =
           [cell_version: next_version, cell_hash: 0]
 
         next_storage =
-          storage
-          |> Storage.put_micro_blocks(macro, pairs, opts)
+          groups
+          |> Enum.reduce(storage, fn {macro, pairs}, acc ->
+            Storage.put_micro_blocks(acc, macro, pairs, opts)
+          end)
           |> bump_chunk_version()
 
-        {:ok, next_storage, length(pairs), 0}
+        {:ok, next_storage, changed_count, skipped_count}
+
+      {:micro_batches, _groups, 0, skipped_count} ->
+        {:ok, storage, 0, skipped_count}
 
       :mixed ->
         {storage, changed_count, skipped_count} =
@@ -1406,25 +1509,46 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # Phase A1-1b detector:返回 `{:batch, macro_index, [{slot, layer_attrs}, ...]}`
   # 当且仅当 intents 列表非空,所有 intent 都是 `:put_micro_block`,target 同一个
   # macro。否则 `:mixed`,fallback 到逐 intent path。
-  defp detect_micro_block_batch([]), do: :mixed
+  defp detect_micro_block_batches(_storage, []), do: :mixed
 
-  defp detect_micro_block_batch([first | _] = intents) do
-    case first do
-      %{operation: :put_micro_block, macro: macro_index} ->
-        if Enum.all?(intents, fn
-             %{operation: :put_micro_block, macro: ^macro_index} -> true
-             _ -> false
-           end) do
-          pairs =
-            Enum.map(intents, fn %{micro_slot: slot, micro_layer: layer} -> {slot, layer} end)
+  defp detect_micro_block_batches(storage, intents) do
+    if Enum.all?(intents, fn intent -> intent.operation == :put_micro_block end) do
+      {groups, order, _claimed, changed_count, skipped_count} =
+        Enum.reduce(intents, {%{}, [], %{}, 0, 0}, fn
+          %{macro: macro_index, micro_slot: slot_index, micro_layer: layer},
+          {groups, order, claimed, changed, skipped} ->
+            macro_claimed = Map.get(claimed, macro_index, MapSet.new())
 
-          {:batch, macro_index, pairs}
-        else
-          :mixed
-        end
+            cond do
+              micro_slot_occupied_fast?(storage, macro_index, slot_index) ->
+                {groups, order, claimed, changed, skipped + 1}
 
-      _ ->
-        :mixed
+              MapSet.member?(macro_claimed, slot_index) ->
+                {groups, order, claimed, changed, skipped + 1}
+
+              true ->
+                order =
+                  if Map.has_key?(groups, macro_index), do: order, else: order ++ [macro_index]
+
+                groups =
+                  Map.update(groups, macro_index, [{slot_index, layer}], fn pairs ->
+                    [{slot_index, layer} | pairs]
+                  end)
+
+                claimed = Map.put(claimed, macro_index, MapSet.put(macro_claimed, slot_index))
+
+                {groups, order, claimed, changed + 1, skipped}
+            end
+        end)
+
+      groups =
+        Enum.map(order, fn macro_index ->
+          {macro_index, groups |> Map.fetch!(macro_index) |> Enum.reverse()}
+        end)
+
+      {:micro_batches, groups, changed_count, skipped_count}
+    else
+      :mixed
     end
   end
 
@@ -1507,6 +1631,49 @@ defmodule SceneServer.Voxel.ChunkProcess do
     else
       {:ok, Storage.clear_micro_block(storage, intent.macro, intent.micro_slot, opts), true}
     end
+  end
+
+  defp macro_header_at_fast(%Storage{macro_headers: headers}, macro_index)
+       when is_integer(macro_index) do
+    Enum.at(headers, macro_index)
+  end
+
+  defp macro_header_at_fast(storage, macro_index) do
+    Storage.macro_header_at(storage, macro_index)
+  end
+
+  defp refined_cell_at_fast(%Storage{refined_cells: refined_cells} = storage, macro_index) do
+    refined_mode = MacroCellHeader.cell_mode_refined()
+
+    case macro_header_at_fast(storage, macro_index) do
+      %{mode: ^refined_mode, payload_index: payload_index} ->
+        Enum.at(refined_cells, payload_index)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp refined_cell_at_fast(storage, macro_index) do
+    Storage.refined_cell_at(storage, macro_index)
+  end
+
+  defp micro_slot_occupied_fast?(storage, macro_index, slot_index) do
+    case refined_cell_at_fast(storage, macro_index) do
+      nil ->
+        false
+
+      %{occupancy_words: words} ->
+        word_idx = div(slot_index, 64)
+        bit_idx = rem(slot_index, 64)
+        word = Enum.at(words, word_idx)
+        band(word, bsl(1, bit_idx)) != 0
+    end
+  end
+
+  defp solid_cell_fast?(storage, macro_index) do
+    macro_header_at_fast(storage, macro_index).mode ==
+      MacroCellHeader.cell_mode_solid_block()
   end
 
   defp micro_slot_occupied?(storage, macro_index, slot_index) do
@@ -1664,6 +1831,103 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp persist_snapshot(lease, chunk_coord, storage, payload) do
+    lease
+    |> build_snapshot_attrs(chunk_coord, storage, payload)
+    |> DataService.Voxel.ChunkSnapshotStore.put_snapshot()
+  end
+
+  defp enqueue_snapshot_persist(_state, nil, _chunk_coord, _storage, _payload) do
+    {:error, :missing_lease}
+  end
+
+  defp enqueue_snapshot_persist(state, lease, chunk_coord, storage, payload) do
+    with :ok <- validate_snapshot_write_token(lease, chunk_coord) do
+      parent = self()
+      ref = System.unique_integer([:positive, :monotonic])
+
+      {:ok, pid} =
+        Task.start_link(fn ->
+          payload = payload || encode_snapshot_payload(storage, 0)
+          snapshot_bytes = byte_size(payload)
+
+          result =
+            lease
+            |> build_snapshot_attrs(chunk_coord, storage, payload)
+            |> safe_persist_snapshot_with_retry(3)
+
+          send(parent, {:async_snapshot_persist_finished, ref, result, snapshot_bytes})
+        end)
+
+      monitor_ref = Process.monitor(pid)
+
+      observe = %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        chunk_version: storage.chunk_version,
+        persist_ref: ref,
+        task_pid: inspect(pid),
+        snapshot_bytes: if(is_binary(payload), do: byte_size(payload), else: :deferred)
+      }
+
+      CliObserve.emit("voxel_chunk_async_persist_queued", fn -> observe end)
+
+      next_state = %{
+        state
+        | async_persists:
+            Map.put(state.async_persists, ref, %{
+              monitor_ref: monitor_ref,
+              observe: observe
+            })
+      }
+
+      {:ok, :queued, ref, next_state}
+    end
+  end
+
+  defp validate_snapshot_write_token(lease, chunk_coord) do
+    attrs =
+      lease
+      |> Map.take([
+        :logical_scene_id,
+        :region_id,
+        :lease_id,
+        :owner_scene_instance_ref,
+        :owner_epoch
+      ])
+      |> Map.put(:chunk_coord, chunk_coord)
+
+    DataService.Voxel.WriteTokenStore.validate_write(attrs)
+  catch
+    :exit, _reason -> {:error, :write_token_store_unavailable}
+  end
+
+  defp safe_persist_snapshot_with_retry(attrs, attempts_left) do
+    persist_snapshot_with_retry(attrs, attempts_left)
+  rescue
+    exception -> {:error, {:exception, Exception.message(exception)}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp persist_snapshot_with_retry(attrs, attempts_left) do
+    case DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = error when reason in [:stale_chunk_version, :chunk_version_conflict] ->
+        error
+
+      {:error, _reason} = error ->
+        if attempts_left > 1 do
+          Process.sleep(25)
+          persist_snapshot_with_retry(attrs, attempts_left - 1)
+        else
+          error
+        end
+    end
+  end
+
+  defp build_snapshot_attrs(lease, chunk_coord, storage, payload) do
     chunk_hash = Codec.chunk_hash(storage)
 
     attrs =
@@ -1685,7 +1949,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
         data: payload
       })
 
-    DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
+    attrs
   end
 
   defp chunk_in_lease_bounds?({cx, cy, cz}, lease) do
@@ -1803,6 +2067,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
     %{state | subscribers: %{}, subscriber_monitors: %{}}
   end
 
+  defp async_persist_by_monitor(state, monitor_ref) do
+    Enum.find(state.async_persists, fn {_ref, meta} -> meta.monitor_ref == monitor_ref end)
+  end
+
+  defp maybe_reply_persist_waiters(
+         %{async_persists: async_persists, persist_waiters: waiters} = state
+       ) do
+    if map_size(async_persists) == 0 and waiters != [] do
+      Enum.each(waiters, &GenServer.reply(&1, :ok))
+      %{state | persist_waiters: []}
+    else
+      state
+    end
+  end
+
   defp push_intent_outcome(state_before, state_after, intent, reason) do
     case build_intent_delta_op(intent, state_after) do
       {:ok, op} ->
@@ -1816,6 +2095,89 @@ defmodule SceneServer.Voxel.ChunkProcess do
       :fallback_to_snapshot ->
         push_snapshot_fallbacks(state_after, reason)
     end
+  end
+
+  defp push_batch_outcome(state_before, state_after, intents, reason) do
+    case build_batch_delta_ops(intents, state_after) do
+      {:ok, ops} when ops != [] ->
+        push_chunk_delta(state_after, state_before.storage.chunk_version, ops, reason)
+
+      {:ok, []} ->
+        :ok
+
+      :fallback_to_snapshot ->
+        push_snapshot_fallbacks(state_after, reason)
+    end
+  end
+
+  defp build_batch_delta_ops(intents, state_after) do
+    intents
+    |> Enum.map(& &1.macro)
+    |> Enum.uniq()
+    |> Enum.reduce_while({:ok, []}, fn macro, {:ok, ops} ->
+      case build_macro_delta_op(macro, state_after) do
+        {:ok, op} -> {:cont, {:ok, [op | ops]}}
+        :fallback_to_snapshot -> {:halt, :fallback_to_snapshot}
+      end
+    end)
+    |> case do
+      {:ok, ops} -> {:ok, Enum.reverse(ops)}
+      :fallback_to_snapshot -> :fallback_to_snapshot
+    end
+  end
+
+  defp build_macro_delta_op(macro, state_after) do
+    macro_index = Types.macro_index_or_coord!(macro)
+    header = Storage.macro_header_at(state_after.storage, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_empty() ->
+        {:ok,
+         %{
+           delta_kind: 0,
+           macro_index: macro_index,
+           cell_version: header.cell_version,
+           cell_hash: header.cell_hash,
+           payload: <<>>
+         }}
+
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        case Storage.normal_block_at(state_after.storage, macro_index) do
+          nil ->
+            :fallback_to_snapshot
+
+          block ->
+            {:ok,
+             %{
+               delta_kind: 1,
+               macro_index: macro_index,
+               cell_version: header.cell_version,
+               cell_hash: header.cell_hash,
+               payload: Codec.encode_normal_block_data(block)
+             }}
+        end
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        case Storage.refined_cell_at(state_after.storage, macro_index) do
+          nil ->
+            :fallback_to_snapshot
+
+          cell ->
+            {:ok,
+             %{
+               delta_kind: 2,
+               macro_index: macro_index,
+               cell_version: header.cell_version,
+               cell_hash: header.cell_hash,
+               payload: Codec.encode_refined_cell_payload(cell)
+             }}
+        end
+
+      true ->
+        :fallback_to_snapshot
+    end
+  rescue
+    _exception in ArgumentError -> :fallback_to_snapshot
   end
 
   defp build_intent_delta_op(%{operation: :put_solid_block} = intent, state_after) do
@@ -1928,8 +2290,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp push_snapshot_fallbacks(state, reason) do
+    payload = encode_snapshot_payload(state.storage, 0)
+
     Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
-      payload = encode_snapshot_payload(state.storage, request_id)
       push_snapshot_fallback(state, subscriber, request_id, payload, reason)
     end)
   end
