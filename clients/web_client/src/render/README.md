@@ -3,8 +3,10 @@
 职责：
 
 - three.js 场景、摄像机和交互控制。
+- 程序化天空、大气雾色、太阳/月亮昼夜循环和客户端侧表现光照；这些只影响浏览器渲染，不改变服务端时间或玩法状态。
 - 渲染器由 `rendererBackend.ts` 统一选择：默认 WebGPU 优先，初始化失败或浏览器能力不足时回退 WebGL。
 - Chunk mesh 的挂载、重建、命中与高亮。
+- Chunk mesh 使用程序化 mosaic material atlas + vertex color 呈现不同方块材质，避免依赖外部贴图资源。
 - Chunk mesh 重建默认走 `chunkMeshWorker.ts` module worker。主线程只接收 mesh data 并替换
   `BufferGeometry`，observe 日志会记录 `chunk_rebuild_scheduled`、`chunk_rebuilt` 和
   `chunk_rebuild_failed`；Worker 不可用时回退同步重建。

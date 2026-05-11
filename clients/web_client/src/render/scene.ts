@@ -1,11 +1,8 @@
 import {
-  AmbientLight,
   Color,
-  DirectionalLight,
   Fog,
   GridHelper,
   Group,
-  HemisphereLight,
   PerspectiveCamera,
   Scene,
   Vector3,
@@ -17,6 +14,7 @@ import {
   type RendererDebugSnapshot,
   type RendererPreference,
 } from "./rendererBackend";
+import { createSkyAtmosphere } from "./skyAtmosphere";
 
 const CAMERA_LOOK_HEIGHT = 145;
 const CAMERA_POSITION_SMOOTHING_HZ = 10;
@@ -60,8 +58,10 @@ export async function createScene(
   renderer.setSize(window.innerWidth, window.innerHeight, false);
 
   const scene = new Scene();
-  scene.background = new Color(0x101922);
-  scene.fog = new Fog(0x101922, 2200, 7800);
+  const sky = createSkyAtmosphere();
+  scene.background = sky.backgroundColor;
+  scene.fog = new Fog(sky.fogColor, 2200, 8600);
+  scene.add(sky.group);
 
   const chunkExtent = VoxelConstants.ChunkSizeInMacros * MacroWorldSize * 2;
   const camera = new PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000);
@@ -83,16 +83,6 @@ export async function createScene(
   let lastPointerClientX = 0;
   let lastPointerClientY = 0;
   let lastCameraInteractionMs = Number.NEGATIVE_INFINITY;
-
-  const ambient = new AmbientLight(0xffffff, 0.25);
-  scene.add(ambient);
-
-  const hemi = new HemisphereLight(0xbfe2ff, 0x11161d, 0.55);
-  scene.add(hemi);
-
-  const sun = new DirectionalLight(0xfff2d1, 1.25);
-  sun.position.set(1.2, 1.8, 0.7).normalize();
-  scene.add(sun);
 
   const baseGrid = new GridHelper(
     chunkExtent * 6,
@@ -228,6 +218,11 @@ export async function createScene(
     currentCameraPosition.lerp(desiredPosition, lerpAlpha);
     camera.position.copy(currentCameraPosition);
     camera.lookAt(currentLookAt);
+    sky.update(dtSecs, currentLookAt);
+    const fog = scene.fog;
+    if (fog instanceof Fog) {
+      fog.color.copy(sky.fogColor);
+    }
   };
 
   const render = () => {
@@ -245,6 +240,7 @@ export async function createScene(
     if (document.pointerLockElement === canvas) {
       document.exitPointerLock();
     }
+    sky.dispose();
     renderer.dispose();
   };
 
