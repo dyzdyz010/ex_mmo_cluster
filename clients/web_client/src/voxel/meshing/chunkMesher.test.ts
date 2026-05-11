@@ -30,6 +30,7 @@ describe("buildChunkMeshData", () => {
     expect(mesh.solidBlockCount).toBe(1);
     expect(mesh.triangleCount).toBe(12);
     expect(Math.max(...mesh.positions)).toBe(MacroWorldSize / VoxelConstants.MicroPerMacro);
+    expect(mesh.uvs).toHaveLength((mesh.positions.length / 3) * 2);
   });
 
   it("culls refined micro faces against occupied micro cells in adjacent macro cells", () => {
@@ -122,7 +123,40 @@ describe("buildChunkMeshData", () => {
 
     expect(hasFullMacroFace(mesh, { x: 1, y: 0, z: 0 })).toBe(true);
   });
+
+  it("assigns different mosaic atlas UV tiles for different block materials", () => {
+    const dirtMesh = buildChunkMeshData(
+      singleSolidBlockSnapshot(VoxelMaterialId.Dirt),
+      { isSolidWorldMacroCoord: () => false },
+    );
+    const stoneMesh = buildChunkMeshData(
+      singleSolidBlockSnapshot(VoxelMaterialId.Stone),
+      { isSolidWorldMacroCoord: () => false },
+    );
+
+    expect(dirtMesh.uvs).toHaveLength((dirtMesh.positions.length / 3) * 2);
+    expect(stoneMesh.uvs).toHaveLength((stoneMesh.positions.length / 3) * 2);
+    expect(dirtMesh.uvs.slice(0, 8)).not.toEqual(stoneMesh.uvs.slice(0, 8));
+  });
 });
+
+function singleSolidBlockSnapshot(materialId: number) {
+  return {
+    chunkCoord: { x: 0, y: 0, z: 0 },
+    dirtyMacroMin: { x: 0, y: 0, z: 0 },
+    dirtyMacroMax: { x: 0, y: 0, z: 0 },
+    dirtyFlags: 0,
+    cells: [
+      {
+        localMacroCoord: { x: 0, y: 0, z: 0 },
+        mode: EVoxelCellMode.SolidBlock,
+        materialId,
+        stateFlags: 0,
+        health: 100,
+      },
+    ],
+  };
+}
 
 function hasFullMacroFace(
   mesh: ReturnType<typeof buildChunkMeshData>,

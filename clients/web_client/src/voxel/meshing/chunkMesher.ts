@@ -1,12 +1,14 @@
 import { MacroWorldSize, VoxelConstants } from "../core/constants";
 import { EVoxelCellMode, type FMacroCoord, type FMicroCoord } from "../core/types";
 import { buildBlockStateView, resolveVoxelVisual } from "../../material/catalog";
+import { materialAtlasFaceUvs } from "../../material/atlas";
 import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "./types";
 
 export interface ChunkMeshBuildData {
   positions: number[];
   normals: number[];
   colors: number[];
+  uvs: number[];
   indices: number[];
   solidBlockCount: number;
   triangleCount: number;
@@ -86,6 +88,7 @@ export function buildChunkMeshData(
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
 
   let solidBlockCount = 0;
@@ -100,6 +103,7 @@ export function buildChunkMeshData(
         positions,
         normals,
         colors,
+        uvs,
         indices,
       );
       continue;
@@ -137,6 +141,7 @@ export function buildChunkMeshData(
       }
 
       const baseVertex = positions.length / 3;
+      const faceUvs = materialAtlasFaceUvs(cell.materialId);
       for (const corner of face.corners) {
         positions.push(
           (cell.localMacroCoord.x + corner[0]) * MacroWorldSize,
@@ -146,6 +151,7 @@ export function buildChunkMeshData(
         normals.push(face.normal.x, face.normal.y, face.normal.z);
         colors.push(visual.displayColor.r, visual.displayColor.g, visual.displayColor.b);
       }
+      uvs.push(...faceUvs);
 
       indices.push(
         baseVertex,
@@ -162,6 +168,7 @@ export function buildChunkMeshData(
     positions,
     normals,
     colors,
+    uvs,
     indices,
     solidBlockCount,
     triangleCount: indices.length / 3,
@@ -176,6 +183,7 @@ function appendRefinedCellMesh(
   positions: number[],
   normals: number[],
   colors: number[],
+  uvs: number[],
   indices: number[],
 ): number {
   const occupancy = cell.microOccupancyMask ?? 0n;
@@ -203,6 +211,7 @@ function appendRefinedCellMesh(
           positions,
           normals,
           colors,
+          uvs,
           indices,
         );
       }
@@ -222,6 +231,7 @@ function appendMicroCube(
   positions: number[],
   normals: number[],
   colors: number[],
+  uvs: number[],
   indices: number[],
 ): void {
   const materialId = cell.microMaterialIds?.[microIndex] ?? cell.materialId;
@@ -244,6 +254,7 @@ function appendMicroCube(
     }
 
     const baseVertex = positions.length / 3;
+    const faceUvs = materialAtlasFaceUvs(materialId);
     for (const corner of face.corners) {
       positions.push(
         (cell.localMacroCoord.x + (micro.x + corner[0]) / VoxelConstants.MicroPerMacro) *
@@ -256,6 +267,7 @@ function appendMicroCube(
       normals.push(face.normal.x, face.normal.y, face.normal.z);
       colors.push(visual.displayColor.r, visual.displayColor.g, visual.displayColor.b);
     }
+    uvs.push(...faceUvs);
 
     indices.push(
       baseVertex,
