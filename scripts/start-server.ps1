@@ -41,6 +41,7 @@ $nodeArgs = Get-NodeNameArgs -NodeName $env:NODE_NAME
 # Detach 模式改用 elixir.bat -S mix run --no-halt 以避开 Windows 下 iex 的
 # ReadConsoleW 崩溃 (stdin 被重定向时 Erlang shell reader 会炸).
 if ($Detach) {
+    $env:EX_MMO_DEV_RELOAD = "0"
     $exe = (Get-Command -CommandType Application -Name elixir -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $exe) { throw "elixir executable not found on PATH." }
     $exeArgs = @($nodeArgs + @("--cookie", $env:ERLANG_COOKIE, "-S", "mix", "run", "--no-halt"))

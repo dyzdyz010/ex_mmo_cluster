@@ -2,48 +2,65 @@ import Config
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
+dev_reload? = System.get_env("EX_MMO_DEV_RELOAD", "1") != "0"
 
 config :auth_server, AuthServerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 20000],
   check_origin: false,
-  code_reloader: true,
+  code_reloader: dev_reload?,
   debug_errors: true,
   secret_key_base: "0RfF0SEZuj/kdiHTSqtQ3bMFQucfbZXWn4AG1XWy7Hd4rKL9C9fOXdhR8iFiMuED",
-  watchers: [
-    esbuild: {Esbuild, :install_and_run, [:auth_server, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:auth_server, ~w(--watch)]}
-  ],
-  live_reload: [
-    web_console_logger: true,
-    patterns: [
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-      ~r"priv/gettext/.*\.po$"E,
-      ~r"lib/auth_server_web/router\.ex$"E,
-      ~r"lib/auth_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
-    ]
-  ]
+  watchers:
+    if(dev_reload?,
+      do: [
+        esbuild: {Esbuild, :install_and_run, [:auth_server, ~w(--sourcemap=inline --watch)]},
+        tailwind: {Tailwind, :install_and_run, [:auth_server, ~w(--watch)]}
+      ],
+      else: []
+    ),
+  live_reload:
+    if(dev_reload?,
+      do: [
+        web_console_logger: true,
+        patterns: [
+          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+          ~r"priv/gettext/.*\.po$"E,
+          ~r"lib/auth_server_web/router\.ex$"E,
+          ~r"lib/auth_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
+        ]
+      ],
+      else: []
+    )
 
 config :auth_server, dev_routes: true
 
 config :visualize_server, VisualizeServerWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 20001],
   check_origin: false,
-  code_reloader: true,
+  code_reloader: dev_reload?,
   debug_errors: true,
   secret_key_base: "cRHn0OH9C34RWALtOr+NCizxbJwJ4oEvmxzGuK8t1sC2MO9OVtTUb598BHSsID3l",
-  watchers: [
-    esbuild: {Esbuild, :install_and_run, [:visualize_server, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:visualize_server, ~w(--watch)]}
-  ],
-  live_reload: [
-    web_console_logger: true,
-    patterns: [
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-      ~r"priv/gettext/.*\.po$"E,
-      ~r"lib/visualize_server_web/router\.ex$"E,
-      ~r"lib/visualize_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
-    ]
-  ]
+  watchers:
+    if(dev_reload?,
+      do: [
+        esbuild: {Esbuild, :install_and_run, [:visualize_server, ~w(--sourcemap=inline --watch)]},
+        tailwind: {Tailwind, :install_and_run, [:visualize_server, ~w(--watch)]}
+      ],
+      else: []
+    ),
+  live_reload:
+    if(dev_reload?,
+      do: [
+        web_console_logger: true,
+        patterns: [
+          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+          ~r"priv/gettext/.*\.po$"E,
+          ~r"lib/visualize_server_web/router\.ex$"E,
+          ~r"lib/visualize_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
+        ]
+      ],
+      else: []
+    )
 
 config :visualize_server, dev_routes: true
 
