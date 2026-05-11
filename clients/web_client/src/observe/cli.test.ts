@@ -17,6 +17,7 @@ describe("voxel CLI help", () => {
     installCli(windowObject, logger, handler);
 
     expect(windowObject.__voxelCli?.help()).toContain("micro_cell <x> <y> <z> <mx> <my> <mz>");
+    expect(windowObject.__voxelCli?.help()).toContain("scene_regions [on|off]");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_place");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_break");
   });

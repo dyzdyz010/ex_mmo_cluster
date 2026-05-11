@@ -4,6 +4,45 @@ import { VoxelConstants } from "../../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 describe("DevToolsCli microgrid boundary", () => {
+  it("exposes scene region overlay diagnostics and visibility control", () => {
+    const setSceneRegionOverlayVisible = vi.fn();
+    const cli = new DevToolsCli({
+      render: {
+        getSceneRegionOverlaySnapshot: vi.fn(() => ({
+          visible: true,
+          boundary: { chunkX: 1, worldX: 1600 },
+          regions: [
+            { label: "scene1", ownerSceneInstanceRef: 1 },
+            { label: "scene2", ownerSceneInstanceRef: 2 },
+          ],
+        })),
+        setSceneRegionOverlayVisible,
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("scene_regions", [])).toMatchObject({
+      ok: true,
+      command: "scene_regions",
+      text: expect.stringContaining("scene1"),
+      data: expect.objectContaining({
+        visible: true,
+        boundary: expect.objectContaining({ chunkX: 1 }),
+      }),
+    });
+
+    expect(cli.executeCliCommand("scene_regions", ["off"])).toMatchObject({
+      ok: true,
+      command: "scene_regions",
+    });
+    expect(setSceneRegionOverlayVisible).toHaveBeenCalledWith(false);
+
+    expect(cli.executeCliCommand("scene_regions", ["on"])).toMatchObject({
+      ok: true,
+      command: "scene_regions",
+    });
+    expect(setSceneRegionOverlayVisible).toHaveBeenCalledWith(true);
+  });
+
   it("inspects micro cells via micro_cell and routes micro_place/micro_break to the edit controller", () => {
     const placeMicroAt = vi.fn(() => true);
     const breakMicroAt = vi.fn(() => true);

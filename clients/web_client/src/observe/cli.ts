@@ -37,6 +37,7 @@ function defaultHelpText(): string {
     "voxel_unsubscribe <cx> <cy> <cz>",
     "voxel_impact <x> <y> <z> [material]",
     "chunk_versions",
+    "scene_regions [on|off]",
     "cell <x> <y> <z>",
     "micro_cell <x> <y> <z> <mx> <my> <mz>",
     "place <x> <y> <z> [material]",

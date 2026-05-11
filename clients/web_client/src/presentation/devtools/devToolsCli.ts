@@ -95,6 +95,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
         });
+      case "scene_regions":
+        return this.cmdSceneRegions(command, args);
       case "cell":
         return this.cmdCell(command, args);
       case "micro_cell":
@@ -201,6 +203,27 @@ export class DevToolsCli implements CliCommandHandler {
     const limit = Number.parseInt(args[0] ?? "12", 10);
     const chunks = this.deps.world.store.chunkSummaries(Number.isFinite(limit) ? limit : 12);
     return this.ok(command, `chunks=${chunks.length}`, chunks);
+  }
+
+  private cmdSceneRegions(command: string, args: string[]): CliCommandResult {
+    const requested = args[0]?.toLowerCase();
+    if (requested === "on" || requested === "1" || requested === "true") {
+      this.deps.render.setSceneRegionOverlayVisible(true);
+    } else if (requested === "off" || requested === "0" || requested === "false") {
+      this.deps.render.setSceneRegionOverlayVisible(false);
+    } else if (requested !== undefined) {
+      return { ok: false, command, text: "usage: scene_regions [on|off]" };
+    }
+
+    const snapshot = this.deps.render.getSceneRegionOverlaySnapshot();
+    const regionText = snapshot.regions
+      .map((region) => formatSceneRegionOverlayLine(region))
+      .join("; ");
+    return this.ok(
+      command,
+      `scene regions ${snapshot.visible ? "visible" : "hidden"}: ${regionText}; boundary chunk x=${snapshot.boundary.chunkX}`,
+      snapshot,
+    );
   }
 
   private cmdVoxelProbe(command: string, args: string[]): CliCommandResult {
@@ -788,4 +811,19 @@ export class DevToolsCli implements CliCommandHandler {
       rejectReason: payload.rejectReason,
     });
   }
+}
+
+function formatSceneRegionOverlayLine(region: {
+  label?: string;
+  ownerSceneInstanceRef?: number;
+  chunkMin?: { x: number; z: number };
+  chunkMax?: { x: number; z: number };
+}): string {
+  const label = region.label ?? "scene";
+  const owner = region.ownerSceneInstanceRef ?? "?";
+  if (!region.chunkMin || !region.chunkMax) {
+    return `${label}=owner${owner}`;
+  }
+
+  return `${label}=owner${owner} chunks x=${region.chunkMin.x}..${region.chunkMax.x - 1} z=${region.chunkMin.z}..${region.chunkMax.z - 1}`;
 }
