@@ -190,7 +190,7 @@ function createVoxelWorldAdapter(
         { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
       ],
       devSeed: import.meta.env.VITE_VOXEL_DEV_SEED !== "0",
-      primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK !== "0",
+      primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK === "1",
     });
   }
 

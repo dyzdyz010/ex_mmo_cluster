@@ -13,6 +13,8 @@ import type {
 } from "../infrastructure/net/voxelProtocol";
 import { OnlineVoxelWorldAdapter, type ServerVoxelTransportPort } from "./onlineVoxelWorldAdapter";
 import { OnlinePrefabBlueprintVersion } from "./onlinePrefabCatalog";
+import { VoxelConstants } from "./core/constants";
+import { ChunkStorage } from "./storage/chunkStorage";
 
 interface PrefabPlaceCall {
   logicalSceneId: number;
@@ -56,6 +58,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly impactCalls: ImpactCall[] = [];
   readonly editIntentCalls: EditIntentCall[] = [];
   readonly subscribeCalls: SubscribeCall[] = [];
+  readonly queuedSnapshots: VoxelChunkSnapshotMessage[] = [];
   available = true;
   nextRequestId = 100;
 
@@ -154,7 +157,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   }
 
   drainVoxelSnapshots(): VoxelChunkSnapshotMessage[] {
-    return [];
+    return this.queuedSnapshots.splice(0, this.queuedSnapshots.length);
   }
 
   drainVoxelDeltas(): VoxelChunkDeltaMessage[] {
@@ -184,6 +187,22 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
     this.nextRequestId += 1;
     return value;
   }
+}
+
+function emptySnapshot(chunkCoord: { x: number; y: number; z: number }): VoxelChunkSnapshotMessage {
+  return {
+    type: "voxel_chunk_snapshot",
+    requestId: 10,
+    logicalSceneId: 7,
+    chunkCoord,
+    schemaVersion: 1,
+    chunkSizeInMacro: VoxelConstants.ChunkSizeInMacros,
+    microResolution: VoxelConstants.MicroPerMacro,
+    chunkVersion: 0,
+    chunkHash: 0,
+    storage: ChunkStorage.createEmpty(chunkCoord).data,
+    refinedCellsWire: [],
+  };
 }
 
 function createAdapter() {
@@ -370,6 +389,40 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     expect(event.accepted).toBe(false);
     expect(event.blueprintId).toBe(1);
     expect(event.reason).toBe("blueprint_collision");
+  });
+});
+
+describe("OnlineVoxelWorldAdapter startup priming", () => {
+  it("does not send a demo priming impact for empty snapshots unless explicitly enabled", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: false,
+    });
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 1, y: 0, z: 0 }));
+    adapter.onFrame(100);
+
+    expect(transport.impactCalls).toHaveLength(0);
+  });
+
+  it("keeps the demo priming fallback available when explicitly enabled", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: false,
+      primeDemoBlock: true,
+    });
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 1, y: 0, z: 0 }));
+    adapter.onFrame(100);
+
+    expect(transport.impactCalls).toHaveLength(1);
+    expect(transport.impactCalls[0]?.impactKind).toBe(1);
   });
 });
 

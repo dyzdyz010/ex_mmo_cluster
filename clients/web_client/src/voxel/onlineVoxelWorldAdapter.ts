@@ -219,7 +219,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       ],
     );
     this.devSeed = options.devSeed ?? true;
-    this.primeDemoBlock = options.primeDemoBlock ?? true;
+    this.primeDemoBlock = options.primeDemoBlock ?? false;
     this.sourceSkillId = options.sourceSkillId ?? 1;
     this.seedState = this.devSeed ? "idle" : "disabled";
 
