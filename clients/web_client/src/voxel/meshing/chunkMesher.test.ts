@@ -1,3 +1,4 @@
+import { materialAtlasFaceUvs } from "../../material/atlas";
 import { VoxelMaterialId } from "../../material/catalog";
 import { MacroWorldSize, VoxelConstants } from "../core/constants";
 import { EVoxelCellMode } from "../core/types";
@@ -138,6 +139,78 @@ describe("buildChunkMeshData", () => {
     expect(stoneMesh.uvs).toHaveLength((stoneMesh.positions.length / 3) * 2);
     expect(dirtMesh.uvs.slice(0, 8)).not.toEqual(stoneMesh.uvs.slice(0, 8));
   });
+
+  it("maps refined micro UVs against the macro cell instead of repeating a full tile per micro cube", () => {
+    const mesh = buildChunkMeshData(
+      {
+        chunkCoord: { x: 0, y: 0, z: 0 },
+        dirtyMacroMin: { x: 0, y: 0, z: 0 },
+        dirtyMacroMax: { x: 0, y: 0, z: 0 },
+        dirtyFlags: 0,
+        cells: [
+          {
+            localMacroCoord: { x: 0, y: 0, z: 0 },
+            mode: EVoxelCellMode.Refined,
+            materialId: VoxelMaterialId.Wood,
+            stateFlags: 0,
+            health: 100,
+            microOccupancyMask: 1n,
+            microMaterialIds: [VoxelMaterialId.Wood],
+            microStateFlags: [0],
+          },
+        ],
+      },
+      { isSolidWorldMacroCoord: () => false },
+    );
+
+    const firstMicroFaceUvs = mesh.uvs.slice(0, 8);
+    const fullMacroFaceUvs = materialAtlasFaceUvs(VoxelMaterialId.Wood);
+    const microUs = [
+      firstMicroFaceUvs[0]!,
+      firstMicroFaceUvs[2]!,
+      firstMicroFaceUvs[4]!,
+      firstMicroFaceUvs[6]!,
+    ];
+    const macroUs = [fullMacroFaceUvs[0]!, fullMacroFaceUvs[2]!, fullMacroFaceUvs[4]!, fullMacroFaceUvs[6]!];
+    const microUWidth = Math.max(...microUs) - Math.min(...microUs);
+    const macroUWidth = Math.max(...macroUs) - Math.min(...macroUs);
+
+    expect(firstMicroFaceUvs).not.toEqual(fullMacroFaceUvs);
+    expect(microUWidth).toBeCloseTo(macroUWidth / VoxelConstants.MicroPerMacro);
+  });
+
+  it("projects non-zero refined micro UVs from macro-local coordinates on each face axis", () => {
+    const micro = { x: 2, y: 3, z: 5 };
+    const microIndex =
+      micro.x +
+      micro.y * VoxelConstants.MicroPerMacro +
+      micro.z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro;
+    const mesh = buildChunkMeshData(
+      {
+        chunkCoord: { x: 0, y: 0, z: 0 },
+        dirtyMacroMin: { x: 0, y: 0, z: 0 },
+        dirtyMacroMax: { x: 0, y: 0, z: 0 },
+        dirtyFlags: 0,
+        cells: [
+          {
+            localMacroCoord: { x: 0, y: 0, z: 0 },
+            mode: EVoxelCellMode.Refined,
+            materialId: VoxelMaterialId.Ice,
+            stateFlags: 0,
+            health: 100,
+            microOccupancyMask: 1n << BigInt(microIndex),
+            microMaterialIds: new Array(VoxelConstants.MicroCountPerMacro).fill(VoxelMaterialId.Ice),
+            microStateFlags: new Array(VoxelConstants.MicroCountPerMacro).fill(0),
+          },
+        ],
+      },
+      { isSolidWorldMacroCoord: () => false },
+    );
+
+    expectUvRangeForNormal(mesh, { x: 1, y: 0, z: 0 }, micro.z, micro.y);
+    expectUvRangeForNormal(mesh, { x: 0, y: 1, z: 0 }, micro.x, micro.z);
+    expectUvRangeForNormal(mesh, { x: 0, y: 0, z: 1 }, micro.x, micro.y);
+  });
 });
 
 function singleSolidBlockSnapshot(materialId: number) {
@@ -196,4 +269,53 @@ function hasFullMacroFace(
   }
 
   return false;
+}
+
+function expectUvRangeForNormal(
+  mesh: ReturnType<typeof buildChunkMeshData>,
+  normal: { x: number; y: number; z: number },
+  expectedUIndex: number,
+  expectedVIndex: number,
+): void {
+  const fullMacroFaceUvs = materialAtlasFaceUvs(VoxelMaterialId.Ice);
+  const macroUs = [fullMacroFaceUvs[0]!, fullMacroFaceUvs[2]!, fullMacroFaceUvs[4]!, fullMacroFaceUvs[6]!];
+  const macroVs = [fullMacroFaceUvs[1]!, fullMacroFaceUvs[3]!, fullMacroFaceUvs[5]!, fullMacroFaceUvs[7]!];
+  const macroUMin = Math.min(...macroUs);
+  const macroVMin = Math.min(...macroVs);
+  const macroUWidth = Math.max(...macroUs) - macroUMin;
+  const macroVWidth = Math.max(...macroVs) - macroVMin;
+  const faceUvs = uvsForNormal(mesh, normal);
+  const faceUs = [faceUvs[0]!, faceUvs[2]!, faceUvs[4]!, faceUvs[6]!];
+  const faceVs = [faceUvs[1]!, faceUvs[3]!, faceUvs[5]!, faceUvs[7]!];
+
+  expect(Math.min(...faceUs)).toBeCloseTo(
+    macroUMin + (macroUWidth * expectedUIndex) / VoxelConstants.MicroPerMacro,
+  );
+  expect(Math.max(...faceUs)).toBeCloseTo(
+    macroUMin + (macroUWidth * (expectedUIndex + 1)) / VoxelConstants.MicroPerMacro,
+  );
+  expect(Math.min(...faceVs)).toBeCloseTo(
+    macroVMin + (macroVWidth * expectedVIndex) / VoxelConstants.MicroPerMacro,
+  );
+  expect(Math.max(...faceVs)).toBeCloseTo(
+    macroVMin + (macroVWidth * (expectedVIndex + 1)) / VoxelConstants.MicroPerMacro,
+  );
+}
+
+function uvsForNormal(
+  mesh: ReturnType<typeof buildChunkMeshData>,
+  normal: { x: number; y: number; z: number },
+): number[] {
+  for (let vertex = 0; vertex < mesh.positions.length / 3; vertex += 4) {
+    const normalOffset = vertex * 3;
+    if (
+      mesh.normals[normalOffset] === normal.x &&
+      mesh.normals[normalOffset + 1] === normal.y &&
+      mesh.normals[normalOffset + 2] === normal.z
+    ) {
+      return mesh.uvs.slice((vertex / 4) * 8, (vertex / 4 + 1) * 8);
+    }
+  }
+
+  throw new Error(`missing face normal ${normal.x},${normal.y},${normal.z}`);
 }

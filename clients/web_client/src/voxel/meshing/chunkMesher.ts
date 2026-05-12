@@ -1,7 +1,7 @@
 import { MacroWorldSize, VoxelConstants } from "../core/constants";
 import { EVoxelCellMode, type FMacroCoord, type FMicroCoord } from "../core/types";
 import { buildBlockStateView, resolveVoxelVisual } from "../../material/catalog";
-import { materialAtlasFaceUvs } from "../../material/atlas";
+import { materialAtlasFaceUvs, materialAtlasFaceUvsForMacroCorners } from "../../material/atlas";
 import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "./types";
 
 export interface ChunkMeshBuildData {
@@ -254,7 +254,17 @@ function appendMicroCube(
     }
 
     const baseVertex = positions.length / 3;
-    const faceUvs = materialAtlasFaceUvs(materialId);
+    const faceUvs = materialAtlasFaceUvsForMacroCorners(
+      materialId,
+      face.normal,
+      face.corners.map(
+        (corner): [number, number, number] => [
+          (micro.x + corner[0]) / VoxelConstants.MicroPerMacro,
+          (micro.y + corner[1]) / VoxelConstants.MicroPerMacro,
+          (micro.z + corner[2]) / VoxelConstants.MicroPerMacro,
+        ],
+      ),
+    );
     for (const corner of face.corners) {
       positions.push(
         (cell.localMacroCoord.x + (micro.x + corner[0]) / VoxelConstants.MicroPerMacro) *
