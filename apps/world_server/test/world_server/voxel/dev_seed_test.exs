@@ -4,6 +4,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.DevSeed
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.SceneNodeRegistry
 
   defmodule FakeChunkDirectory do
     @moduledoc false
@@ -62,6 +63,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
                logical_scene_id: 88,
                region_id: 880_001,
                center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
                seed_terrain?: false
              )
 
@@ -81,6 +83,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
                logical_scene_id: 88,
                region_id: 880_001,
                center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
                seed_terrain?: false
              )
 
@@ -90,6 +93,36 @@ defmodule WorldServer.Voxel.DevSeedTest do
 
     assert {:ok, renewed_route} = MapLedger.route_chunk_with_lease(ledger, 88, {0, 0, 0})
     assert renewed_route.lease.lease_id == renewed.lease_id
+  end
+
+  test "uses the ledger scene node registry when no explicit owner is supplied" do
+    token_store = start_supervised!(WriteTokenStore)
+    registry_name = :"dev_seed_scene_registry_#{System.unique_integer([:positive])}"
+    registry = start_supervised!({SceneNodeRegistry, name: registry_name})
+    scene_node = :"scene_dev_seed_#{System.unique_integer([:positive])}@example"
+    :ok = SceneNodeRegistry.register_scene_node(registry, scene_node)
+
+    ledger_name = :"dev_seed_registry_ledger_#{System.unique_integer([:positive])}"
+
+    ledger =
+      start_supervised!(
+        {MapLedger,
+         name: ledger_name, write_token_store: token_store, scene_node_registry: registry}
+      )
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 89,
+               region_id: 890_001,
+               center_chunk: {0, 0, 0},
+               seed_terrain?: false
+             )
+
+    assert created.status == :created
+    assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 89, {0, 0, 0})
+    assert route.assignment.assigned_scene_node == scene_node
+    assert SceneNodeRegistry.lookup_assignment(registry, 890_001) == {:ok, scene_node}
   end
 
   test "seeds the 16x16 starter platform through chunk_directory.apply_intent" do
@@ -104,6 +137,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
                logical_scene_id: 91,
                region_id: 910_001,
                center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
                chunk_directory: fake_dir
              )
 
@@ -132,5 +166,26 @@ defmodule WorldServer.Voxel.DevSeedTest do
       assert attrs.lease.lease_id == created.lease_id
       assert attrs.block.material_id == 1
     end)
+  end
+
+  test "returns a JSON-safe terrain error when the scene chunk directory is unavailable" do
+    token_store = start_supervised!(WriteTokenStore)
+    ledger_name = :"dev_seed_unavailable_ledger_#{System.unique_integer([:positive])}"
+    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 92,
+               region_id: 920_001,
+               center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
+               chunk_directory: :missing_dev_seed_chunk_directory
+             )
+
+    assert created.terrain.errors == 1
+    assert is_binary(created.terrain.error)
+    assert created.terrain.error =~ "scene_unavailable"
+    assert {:ok, _json} = Jason.encode(created)
   end
 end

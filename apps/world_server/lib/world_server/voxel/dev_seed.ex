@@ -23,6 +23,7 @@ defmodule WorldServer.Voxel.DevSeed do
   """
 
   alias WorldServer.CliObserve
+  alias WorldServer.Voxel.LeaseWriteToken
   alias WorldServer.Voxel.MapLedger
 
   # Chunk size in macros along one axis. Mirrors
@@ -37,6 +38,7 @@ defmodule WorldServer.Voxel.DevSeed do
   @default_owner_scene_instance_ref 1
   @default_owner_epoch 1
   @default_lease_ttl_ms :timer.hours(6)
+  @default_chunk_directory :__dev_seed_default_chunk_directory__
 
   # v1 starter terrain footprint. Chunk (0,0,0) covers world-macro
   # [0,16)×[0,16)×[0,16); the browser renderer treats Y as vertical, so we fill
@@ -65,9 +67,9 @@ defmodule WorldServer.Voxel.DevSeed do
     owner_ref_opt = Keyword.get(opts, :owner_scene_instance_ref)
     owner_ref = owner_ref_opt || @default_owner_scene_instance_ref
     owner_epoch = Keyword.get(opts, :owner_epoch, @default_owner_epoch)
-    assigned_scene_node = Keyword.get(opts, :assigned_scene_node, node())
+    assigned_scene_node = Keyword.get(opts, :assigned_scene_node)
     lease_ttl_ms = Keyword.get(opts, :lease_ttl_ms, @default_lease_ttl_ms)
-    chunk_directory = Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory)
+    chunk_directory = Keyword.get(opts, :chunk_directory, @default_chunk_directory)
     seed_terrain? = Keyword.get(opts, :seed_terrain?, true)
 
     case safe_call(fn ->
@@ -205,6 +207,10 @@ defmodule WorldServer.Voxel.DevSeed do
   defp maybe_seed_terrain(_chunk_directory, _route, false), do: nil
 
   defp maybe_seed_terrain(chunk_directory, route, true) do
+    chunk_directory = chunk_directory_target(route, chunk_directory)
+
+    _ = prepare_scene_lease(chunk_directory, route.lease)
+
     seed_starter_platform(chunk_directory, route)
   catch
     :exit, reason ->
@@ -215,8 +221,51 @@ defmodule WorldServer.Voxel.DevSeed do
         skipped: 0,
         errors: 1,
         max_chunk_version: 0,
-        error: {:scene_unavailable, reason}
+        error: inspect({:scene_unavailable, reason})
       }
+  end
+
+  defp chunk_directory_target(route, @default_chunk_directory) do
+    case route.assignment.assigned_scene_node do
+      nil ->
+        SceneServer.Voxel.ChunkDirectory
+
+      scene_node when scene_node == node() ->
+        SceneServer.Voxel.ChunkDirectory
+
+      scene_node ->
+        {SceneServer.Voxel.ChunkDirectory, scene_node}
+    end
+  end
+
+  defp chunk_directory_target(_route, chunk_directory), do: chunk_directory
+
+  defp prepare_scene_lease({_chunk_directory, scene_node}, lease) when scene_node != node() do
+    token = lease |> LeaseWriteToken.from_lease(lease.owner_epoch) |> LeaseWriteToken.to_map()
+
+    _ = :rpc.call(scene_node, SceneServer.Voxel.RegionRuntime, :apply_lease, [lease], 5_000)
+    _ = :rpc.call(scene_node, DataService.Voxel.WriteTokenStore, :upsert_token, [token], 5_000)
+
+    :ok
+  end
+
+  defp prepare_scene_lease(_chunk_directory, lease) do
+    token = lease |> LeaseWriteToken.from_lease(lease.owner_epoch) |> LeaseWriteToken.to_map()
+
+    _ =
+      safe_prepare_call(fn ->
+        GenServer.call(SceneServer.Voxel.RegionRuntime, {:apply_lease, lease})
+      end)
+
+    _ = safe_prepare_call(fn -> DataService.Voxel.WriteTokenStore.upsert_token(token) end)
+
+    :ok
+  end
+
+  defp safe_prepare_call(fun) when is_function(fun, 0) do
+    fun.()
+  catch
+    :exit, _reason -> :ok
   end
 
   # Seeds the 16×16 stone platform on chunk (0,0,0), y macro 0 with one batched
@@ -267,7 +316,7 @@ defmodule WorldServer.Voxel.DevSeed do
           max_chunk_version: 0,
           attempted: length(intents),
           chunk_coord: Tuple.to_list(chunk_coord),
-          error: reason
+          error: inspect(reason)
         }
     end
   end
