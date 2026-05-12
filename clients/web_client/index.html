@@ -30,6 +30,7 @@
         position: fixed;
         top: 14px;
         left: 14px;
+        z-index: 12;
         font-size: 12px;
         line-height: 1.5;
         pointer-events: none;
@@ -43,6 +44,8 @@
         box-shadow: 0 10px 30px var(--panel-shadow);
         backdrop-filter: blur(10px);
         max-width: min(520px, calc(100vw - 28px));
+        max-height: calc(100vh - 28px);
+        overflow: hidden;
       }
       #reticle {
         position: fixed;
@@ -421,6 +424,25 @@
         height: 3px;
       }
       @media (max-width: 480px) {
+        #hud {
+          top: max(8px, env(safe-area-inset-top));
+          right: 8px;
+          left: 8px;
+          max-width: none;
+          max-height: min(34svh, calc(100svh - 188px - env(safe-area-inset-bottom)));
+          padding: 8px 10px;
+          overflow-x: hidden;
+          overflow-y: auto;
+          border-radius: 8px;
+          font-size: 11px;
+          line-height: 1.35;
+          pointer-events: auto;
+          overscroll-behavior: contain;
+          touch-action: pan-y;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+          -webkit-overflow-scrolling: touch;
+        }
         #hotbar-dock {
           width: min(366px, calc(100vw - 16px));
           bottom: max(12px, env(safe-area-inset-bottom));

@@ -8,6 +8,19 @@ describe("HUD shell layout", () => {
     expect(hudRule).toContain("box-sizing: border-box");
   });
 
+  it("makes the HUD readable and scrollable on touch-sized screens", () => {
+    const mobileRules = indexHtml.slice(indexHtml.indexOf("@media (max-width: 480px)"));
+
+    expect(mobileRules).toContain("#hud");
+    expect(mobileRules).toContain("env(safe-area-inset-top)");
+    expect(mobileRules).toContain("max-height:");
+    expect(mobileRules).toContain("overflow-y: auto");
+    expect(mobileRules).toContain("white-space: pre-wrap");
+    expect(mobileRules).toContain("overflow-wrap: anywhere");
+    expect(mobileRules).toContain("pointer-events: auto");
+    expect(mobileRules).toContain("touch-action: pan-y");
+  });
+
   it("mounts a fixed bottom hotbar dock shell", () => {
     const dockRule = indexHtml.match(/#hotbar-dock\s*\{[^}]*\}/s)?.[0] ?? "";
 

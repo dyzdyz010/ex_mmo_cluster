@@ -4,6 +4,8 @@
 movement、render 或 transport 的真相状态。
 
 - `hudView.ts` 是左上角只读运行态文本，持续显示移动、渲染、体素同步和编辑统计。
+  窄屏移动端由 `index.html` 的 HUD shell 样式负责把该文本限制在安全区域内，
+  使用 `pre-wrap` 换行并允许纵向触摸滚动，避免调试文本覆盖热栏或体素面板。
 - `hotbarDockView.ts` 是底部快捷栏，负责材料 / prefab 选择入口；选择真相仍在
   `WorldEditController`。
 - `voxelDebugPanelView.ts` 是右上角服务器权威体素面板，复用 DevTools CLI 的命令分发，
