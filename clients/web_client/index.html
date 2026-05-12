@@ -425,37 +425,14 @@
       }
       @media (max-width: 480px) {
         #hud {
-          top: max(8px, env(safe-area-inset-top));
-          right: 8px;
-          left: 8px;
-          max-width: none;
-          max-height: min(34svh, calc(100svh - 188px - env(safe-area-inset-bottom)));
-          padding: 8px 10px;
-          overflow-x: hidden;
-          overflow-y: auto;
-          border-radius: 8px;
-          font-size: 11px;
-          line-height: 1.35;
-          pointer-events: auto;
-          overscroll-behavior: contain;
-          touch-action: pan-y;
-          white-space: pre-wrap;
-          overflow-wrap: anywhere;
-          -webkit-overflow-scrolling: touch;
+          display: none;
+        }
+        #voxel-panel {
+          display: none;
         }
         #hotbar-dock {
           width: min(366px, calc(100vw - 16px));
           bottom: max(12px, env(safe-area-inset-bottom));
-        }
-        #voxel-panel {
-          top: auto;
-          right: 8px;
-          bottom: calc(104px + env(safe-area-inset-bottom));
-          left: 8px;
-          width: auto;
-        }
-        .voxel-panel-stats {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
         .hotbar-slots {
           gap: 5px;
