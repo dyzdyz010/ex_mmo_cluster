@@ -423,6 +423,125 @@
         width: 8px;
         height: 3px;
       }
+      #touch-controls {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        display: none;
+        pointer-events: none;
+      }
+      html.is-touch #touch-controls {
+        display: block;
+      }
+      .touch-zone {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        pointer-events: auto;
+        touch-action: none;
+      }
+      .touch-zone--left {
+        left: 0;
+        right: 50%;
+        pointer-events: auto;
+      }
+      .touch-zone--right {
+        left: 50%;
+        right: 0;
+        pointer-events: auto;
+      }
+      .touch-stick {
+        position: fixed;
+        width: 160px;
+        height: 160px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.42);
+        background: rgba(20, 28, 36, 0.32);
+        pointer-events: none;
+        display: none;
+        transform: translate(-50%, -50%);
+      }
+      .touch-stick.is-active {
+        display: block;
+      }
+      .touch-stick--left {
+      }
+      .touch-stick--right {
+      }
+      .touch-stick__nub {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 64px;
+        height: 64px;
+        margin: -32px 0 0 -32px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.78);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
+      }
+      .touch-buttons {
+        position: fixed;
+        right: calc(env(safe-area-inset-right, 0px) + 18px);
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+        display: grid;
+        grid-template-columns: repeat(2, 64px);
+        grid-template-rows: repeat(2, 64px);
+        grid-template-areas:
+          ". jump"
+          "place break";
+        gap: 10px;
+        pointer-events: auto;
+        touch-action: manipulation;
+      }
+      .touch-btn {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.48);
+        background: rgba(8, 15, 22, 0.62);
+        color: #f4faff;
+        font-size: 26px;
+        line-height: 1;
+        padding: 0;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      .touch-btn:active {
+        background: rgba(53, 80, 96, 0.92);
+      }
+      .touch-btn--jump {
+        grid-area: jump;
+      }
+      .touch-btn--place {
+        grid-area: place;
+      }
+      .touch-btn--break {
+        grid-area: break;
+      }
+      .orientation-warning {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.82);
+        color: #eef7fb;
+        font-size: 16px;
+        line-height: 1.4;
+        text-align: center;
+        padding: 24px;
+        pointer-events: auto;
+      }
+      @media (orientation: portrait) {
+        html.is-touch .orientation-warning {
+          display: flex;
+        }
+        html.is-touch .touch-zone,
+        html.is-touch .touch-stick,
+        html.is-touch .touch-buttons {
+          display: none;
+        }
+      }
       @media (max-width: 480px) {
         #hud {
           display: none;
@@ -450,6 +569,20 @@
   </head>
   <body>
     <canvas id="app"></canvas>
+    <div id="touch-controls">
+      <div class="orientation-warning" role="status">
+        <p>请将设备旋转至横屏以游玩</p>
+      </div>
+      <div class="touch-zone touch-zone--left"></div>
+      <div class="touch-zone touch-zone--right"></div>
+      <div class="touch-stick touch-stick--left"><span class="touch-stick__nub"></span></div>
+      <div class="touch-stick touch-stick--right"><span class="touch-stick__nub"></span></div>
+      <div class="touch-buttons">
+        <button class="touch-btn touch-btn--jump" type="button" aria-label="Jump">↑</button>
+        <button class="touch-btn touch-btn--place" type="button" aria-label="Place block">+</button>
+        <button class="touch-btn touch-btn--break" type="button" aria-label="Break block">✕</button>
+      </div>
+    </div>
     <div id="hud"></div>
     <div id="reticle" aria-hidden="true"></div>
     <div id="voxel-panel" aria-live="polite"></div>
