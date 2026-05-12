@@ -1,16 +1,20 @@
-# ex_mmo_cluster — single-server production stack
+# ex_mmo_cluster — production stack
 #
 # Usage on server:
 #   cd /opt/ex_mmo_cluster/deploy
 #   cp .env.example .env   # edit with real secrets + domain
-#   docker compose up -d
+#   set -a; . ./.env; set +a
+#   docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
 #
 # Upgrade (after CI pushes a new image):
 #   docker compose pull
-#   docker compose up -d app
+#   set -a; . ./.env; set +a
+#   docker compose up -d --scale scene=${SCENE_SERVER_COUNT} app scene
 #
-# MVP scope:
-#   - one app container (all umbrella apps in one BEAM node)
+# Scope:
+#   - one app container for edge/world/data services
+#   - N scene containers for scene_server BEAM nodes; configure with
+#     SCENE_SERVER_COUNT and pass it to docker compose via --scale scene=N
 #   - postgres container on internal network only
 #   - HTTP ports bound to 127.0.0.1 only — host-side nginx terminates TLS
 #     and reverse-proxies auth.${DOMAIN} / game.${DOMAIN} to these ports.
@@ -20,7 +24,8 @@
 
 # Pin the project name so container/network/volume names don't depend on the
 # host directory layout (i.e. /opt/ex_mmo_cluster/deploy → would default to
-# "deploy" otherwise). Resulting names: ex_mmo_cluster-app-1, ex_mmo_cluster-postgres-1.
+# "deploy" otherwise). Resulting names: ex_mmo_cluster-app-1,
+# ex_mmo_cluster-scene-1, ex_mmo_cluster-postgres-1.
 name: ex_mmo_cluster
 
 services:
@@ -43,6 +48,7 @@ services:
 
   app:
     image: ${IMAGE_TAG}
+    hostname: app
     restart: unless-stopped
     depends_on:
       postgres:
@@ -52,6 +58,10 @@ services:
       # Override DB host to use the compose service name, not whatever the
       # .env might have set for local dev.
       MMO_DB_HOST: postgres
+      DISABLE_CLUSTER: "false"
+      CLUSTER_MULTICAST_IF: "0.0.0.0"
+      RELEASE_DISTRIBUTION: name
+      RELEASE_NODE: app@app
     ports:
       # HTTP ports — bound to loopback so only host-side nginx can reach them.
       - "127.0.0.1:${AUTH_PORT}:20000"
@@ -60,6 +70,27 @@ services:
       - "${GATE_TCP_PORT}:20002"
       # UDP fast lane for high-frequency movement packets.
       - "${GATE_UDP_PORT}:20003/udp"
+    networks:
+      - internal
+
+  scene:
+    image: ${IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MMO_DB_HOST: postgres
+      DISABLE_CLUSTER: "false"
+      CLUSTER_MULTICAST_IF: "0.0.0.0"
+      RELEASE_DISTRIBUTION: name
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        SCENE_HOST_IP="$$(hostname -i | awk '{print $$1}')"
+        export RELEASE_NODE="scene_$${HOSTNAME}@$${SCENE_HOST_IP}"
+        exec /app/ex_mmo_scene/bin/ex_mmo_scene start
     networks:
       - internal
 
