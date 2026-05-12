@@ -1,0 +1,78 @@
+name: Web Client Publish
+
+# Build the browser client as a standalone static-resource image.
+# The production upgrade script copies /usr/share/nginx/html out of this image
+# into the host-side nginx alias directory.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "clients/web_client/**"
+      - ".github/workflows/web-client-publish.yml"
+      - "deploy/upgrade.sh"
+  workflow_dispatch:
+    inputs:
+      tag_override:
+        description: "Extra tag to publish (optional)"
+        required: false
+        default: ""
+
+concurrency:
+  group: web-client-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ex_mmo_web_client
+
+jobs:
+  build-and-push:
+    name: Build & push web client to Aliyun ACR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USER }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Extract image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAME_SPACE }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.event.inputs.tag_override }},enable=${{ github.event.inputs.tag_override != '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: clients/web_client
+          file: clients/web_client/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=web-client
+          cache-to: type=gha,mode=max,scope=web-client
+          provenance: false
+
+      - name: Print published tags
+        run: |
+          echo "Published web client tags:"
+          echo "${{ steps.meta.outputs.tags }}"

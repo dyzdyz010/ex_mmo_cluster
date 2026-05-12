@@ -7,6 +7,7 @@
 - `docker-compose.yml`：定义 `postgres`、`app` 和可横向扩缩的 `scene` 服务。
 - `.env.example`：部署环境变量模板，包含镜像地址、端口、数据库、集群和 `SCENE_SERVER_COUNT`。
 - `nginx.conf.example`：宿主机 nginx HTTPS 反向代理模板。
+- `upgrade.sh`：日常升级入口；拉取业务镜像，执行 migration，更新 app/scene，并可选替换宿主机静态客户端。
 - `setup_multi_fixture.exs`：本地/临时验收数据准备脚本，不参与容器启动。
 
 ## 运行关系
@@ -31,5 +32,15 @@ docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
 `:scene_server` 注册。每个 `scene` 容器都会启动自己的 `DataService.Repo` 连接池，扩容时要把
 数据库连接预算按 `app + scene_count` 估算，必要时降低 `MMO_DB_POOL_SIZE` 或提高 Postgres 限制。
 
-镜像由 `.github/workflows/docker-publish.yml` 推送到 Aliyun ACR，`IMAGE_TAG` 应填该 workflow
-发布的完整镜像地址。
+业务镜像由 `.github/workflows/docker-publish.yml` 推送到 Aliyun ACR，`IMAGE_TAG` 应填该 workflow
+发布的完整镜像地址。网页客户端由 `.github/workflows/web-client-publish.yml` 单独发布为
+`ex_mmo_web_client` 静态资源镜像；如果 `.env` 配置了 `WEB_CLIENT_IMAGE_TAG`，`upgrade.sh`
+会从该镜像复制 `/usr/share/nginx/html` 到 `WEB_CLIENT_DIST_DIR`，供宿主机 nginx 的 `/client/`
+alias 直接服务。
+
+日常升级优先使用：
+
+```bash
+cd /data/ex_mmo_cluster
+./upgrade.sh
+```

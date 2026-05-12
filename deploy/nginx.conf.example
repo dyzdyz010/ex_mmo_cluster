@@ -39,6 +39,17 @@ server {
     # 客户端上传（注册时可能有头像之类）。按需调整。
     client_max_body_size 4M;
 
+    # Host-side browser client. upgrade.sh replaces this directory from the
+    # WEB_CLIENT_IMAGE_TAG static-resource image when that variable is set.
+    location = /client {
+        return 301 /client/;
+    }
+
+    location /client/ {
+        alias /data/ex_mmo_cluster/web_client/dist/;
+        try_files $uri $uri/ /client/index.html;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:20000;
         proxy_http_version 1.1;
