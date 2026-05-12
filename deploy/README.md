@@ -15,6 +15,10 @@
 `scene` 使用同一镜像内的 `ex_mmo_scene` release，只启动 scene runtime；不要给 `scene`
 绑定宿主机端口，这样才能通过 Compose 扩容多个副本。
 
+生产服务器当前约定部署目录为 `/data/ex_mmo_cluster`。`docker-compose.yml` 内部固定让 release
+监听容器端口 `20000/20001/20002/20003`；`.env` 中的 `AUTH_PORT`、`VISUALIZE_PORT`、
+`GATE_TCP_PORT`、`GATE_UDP_PORT` 是宿主机发布端口，用于兼容已有公网入口或 nginx 配置。
+
 配置 scene server 数量时修改 `.env` 中的 `SCENE_SERVER_COUNT`，并用下面的命令应用。
 `SCENE_SERVER_COUNT` 由 shell 展开，所以需要先把 `.env` 导入当前 shell：
 

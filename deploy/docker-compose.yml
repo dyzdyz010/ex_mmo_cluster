@@ -1,7 +1,7 @@
 # ex_mmo_cluster — production stack
 #
 # Usage on server:
-#   cd /opt/ex_mmo_cluster/deploy
+#   cd /data/ex_mmo_cluster
 #   cp .env.example .env   # edit with real secrets + domain
 #   set -a; . ./.env; set +a
 #   docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
@@ -23,8 +23,7 @@
 #     binary protocol, not HTTP — nginx http module can't proxy it)
 
 # Pin the project name so container/network/volume names don't depend on the
-# host directory layout (i.e. /opt/ex_mmo_cluster/deploy → would default to
-# "deploy" otherwise). Resulting names: ex_mmo_cluster-app-1,
+# host directory layout (i.e. /data/ex_mmo_cluster). Resulting names: ex_mmo_cluster-app-1,
 # ex_mmo_cluster-scene-1, ex_mmo_cluster-postgres-1.
 name: ex_mmo_cluster
 
@@ -58,15 +57,25 @@ services:
       # Override DB host to use the compose service name, not whatever the
       # .env might have set for local dev.
       MMO_DB_HOST: postgres
+      # Keep container listen ports fixed to the image/runtime defaults. The
+      # .env port variables below are host-side published ports, so production
+      # can keep legacy public ports such as 14000/29000 without making the
+      # release listen on those numbers inside the container.
+      AUTH_PORT: "20000"
+      VISUALIZE_PORT: "20001"
+      GATE_TCP_PORT: "20002"
+      GATE_UDP_PORT: "20003"
       DISABLE_CLUSTER: "false"
       CLUSTER_MULTICAST_IF: "0.0.0.0"
       RELEASE_DISTRIBUTION: name
       RELEASE_NODE: app@app
     ports:
-      # HTTP ports — bound to loopback so only host-side nginx can reach them.
+      # Host-side HTTP ports — bound to loopback so only host-side nginx can reach them.
+      # Containers always listen on 20000/20001 (see environment overrides above).
       - "127.0.0.1:${AUTH_PORT}:20000"
       - "127.0.0.1:${VISUALIZE_PORT}:20001"
-      # Plain TCP for the custom binary protocol — exposed directly.
+      # Host-side TCP/UDP ports for the custom game protocols — exposed directly.
+      # Containers always listen on 20002/20003.
       - "${GATE_TCP_PORT}:20002"
       # UDP fast lane for high-frequency movement packets.
       - "${GATE_UDP_PORT}:20003/udp"
