@@ -31,7 +31,7 @@ defmodule GateServer.MixProject do
       {:scene_server, in_umbrella: true, runtime: false},
       {:world_server, in_umbrella: true, runtime: false},
       {:auth_server, in_umbrella: true, only: :test},
-      {:data_service, in_umbrella: true, only: :test}
+      {:data_service, in_umbrella: true}
     ]
   end
 end
