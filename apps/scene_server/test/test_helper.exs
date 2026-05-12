@@ -1,7 +1,7 @@
 # Voxel chunk persistence (`DataService.Voxel.ChunkSnapshotStore`) writes to
-# PostgreSQL via Ecto since Phase 1d. Boot the same Repo + migration setup
-# the data_service test suite uses so scene tests that exercise persist
-# paths can hit a real `voxel_chunks` row.
+# PostgreSQL via Ecto since Phase 1d. Boot data_service so its application owns
+# Repo and token-store processes, then run migrations for scene tests that
+# exercise persist paths against real `voxel_chunks` rows.
 Application.ensure_all_started(:jason)
 Application.ensure_all_started(:postgrex)
 Application.ensure_all_started(:ecto_sql)
@@ -13,10 +13,7 @@ case Ecto.Adapters.Postgres.storage_up(repo_config) do
   {:error, :already_up} -> :ok
 end
 
-case DataService.Repo.start_link() do
-  {:ok, _pid} -> :ok
-  {:error, {:already_started, _pid}} -> :ok
-end
+{:ok, _} = Application.ensure_all_started(:data_service)
 
 migrations_path =
   Path.expand("../../data_service/priv/repo/migrations", __DIR__)

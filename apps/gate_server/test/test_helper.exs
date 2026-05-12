@@ -1,7 +1,7 @@
 # Phase 1d: voxel chunk persistence is real PostgreSQL via
-# `DataService.Voxel.ChunkSnapshotStore`. Boot the same Repo + migration
-# setup the data_service / scene_server test suites use so end-to-end gate
-# tests that round-trip through persist see real `voxel_chunks` rows.
+# `DataService.Voxel.ChunkSnapshotStore`. Prepare storage and migrations while
+# letting `DataService.Application` own `DataService.Repo` startup; gate tests
+# may start auth_server/data_service later and must not race a manual Repo boot.
 Application.ensure_all_started(:jason)
 Application.ensure_all_started(:postgrex)
 Application.ensure_all_started(:ecto_sql)
@@ -11,11 +11,6 @@ repo_config = DataService.Repo.config()
 case Ecto.Adapters.Postgres.storage_up(repo_config) do
   :ok -> :ok
   {:error, :already_up} -> :ok
-end
-
-case DataService.Repo.start_link() do
-  {:ok, _pid} -> :ok
-  {:error, {:already_started, _pid}} -> :ok
 end
 
 migrations_path =
