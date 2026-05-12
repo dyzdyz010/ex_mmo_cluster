@@ -47,13 +47,22 @@ defmodule Cluster.MixProject do
           data_service: :permanent,
           # Game logic
           world_server: :permanent,
-          scene_server: :permanent,
+          scene_server: :load,
           agent_manager: :permanent,
           agent_server: :permanent,
           # Edge
           gate_server: :permanent,
           auth_server: :permanent,
           visualize_server: :permanent
+        ]
+      ],
+      ex_mmo_scene: [
+        include_executables_for: [:unix],
+        include_erts: true,
+        applications: [
+          beacon_server: :permanent,
+          data_service: :permanent,
+          scene_server: :permanent
         ]
       ]
     ]

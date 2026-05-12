@@ -61,8 +61,12 @@ RUN mix compile
 # Root alias `assets.deploy` fans out into both Phoenix apps (see mix.exs).
 RUN mix assets.deploy
 
-# Build the release. Output: _build/prod/rel/ex_mmo_cluster/
-RUN mix release ex_mmo_cluster
+# Build both production releases.
+#
+# - ex_mmo_cluster: edge/world/data release; scene_server code is loaded for
+#   remote calls but the scene runtime is not started here.
+# - ex_mmo_scene: scene-only runtime used by the scalable Compose service.
+RUN mix release ex_mmo_cluster && mix release ex_mmo_scene
 
 # ============================================================================
 # Stage 2 — Runtime: minimal debian-slim + libssl + ncurses (ERTS dep)
@@ -92,6 +96,7 @@ RUN groupadd --system --gid 1000 ex_mmo_cluster \
 WORKDIR /app
 
 COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/ex_mmo_cluster ./
+COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/ex_mmo_scene ./ex_mmo_scene
 
 USER ex_mmo_cluster
 

@@ -47,6 +47,22 @@ config :gate_server,
   tcp_port: String.to_integer(System.get_env("GATE_TCP_PORT", "20002")),
   udp_port: String.to_integer(System.get_env("GATE_UDP_PORT", "20003"))
 
+if System.get_env("CLUSTER_MULTICAST_IF") do
+  config :libcluster,
+    topologies: [
+      mmo_cluster: [
+        strategy: Cluster.Strategy.Gossip,
+        config: [
+          port: String.to_integer(System.get_env("CLUSTER_GOSSIP_PORT", "45892")),
+          if_addr: System.get_env("CLUSTER_IF_ADDR", "0.0.0.0"),
+          multicast_if: System.fetch_env!("CLUSTER_MULTICAST_IF"),
+          multicast_addr: System.get_env("CLUSTER_MULTICAST_ADDR", "230.1.1.251"),
+          multicast_ttl: String.to_integer(System.get_env("CLUSTER_MULTICAST_TTL", "1"))
+        ]
+      ]
+    ]
+end
+
 # ---------------------------------------------------------------------------
 # Production-only: secrets, DB, cluster disable
 # ---------------------------------------------------------------------------
