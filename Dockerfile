@@ -2,9 +2,10 @@
 # -----------------------------------------------------------------------------
 # ex_mmo_cluster — production image
 #
-# Single-container MVP: all maintained umbrella apps packed into one Elixir
-# release (ex_mmo_cluster). Rust NIFs (scene_ops / octree / coordinate_system /
-# movement_engine) are compiled inside the builder stage via Rustler.
+# Production image contains two Elixir releases: ex_mmo_cluster for the
+# edge/world/data control plane and ex_mmo_scene for horizontally scalable scene
+# runtimes. Rust NIFs (scene_ops / octree / coordinate_system / movement_engine)
+# are compiled inside the builder stage via Rustler.
 #
 # Target: linux/amd64 only.
 # -----------------------------------------------------------------------------
@@ -100,8 +101,10 @@ COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/e
 
 USER ex_mmo_cluster
 
-# Defaults that can be overridden by docker-compose env_file / environment.
-# Actual secrets (SECRET_KEY_BASE, DB creds, RELEASE_COOKIE) must be injected.
+# Safe single-node defaults that can be overridden by docker-compose env_file /
+# environment. Production Compose enables clustering for app + scalable scene
+# containers. Actual secrets (SECRET_KEY_BASE, DB creds, RELEASE_COOKIE) must be
+# injected.
 ENV PHX_SERVER=true \
     DISABLE_CLUSTER=true \
     RELEASE_DISTRIBUTION=none \

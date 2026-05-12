@@ -117,9 +117,9 @@ if config_env() == :prod do
 
   # --- Cluster discovery
   #
-  # MVP single-container mode sets DISABLE_CLUSTER=true to neutralize
-  # libcluster gossip (no UDP multicast between containers). Each cluster
-  # component still works locally via :pg / Horde in single-node mode.
+  # Local/single-node mode can set DISABLE_CLUSTER=true to neutralize
+  # libcluster gossip. Production Compose leaves this false so app and scalable
+  # scene containers can discover each other inside the bridge network.
   if System.get_env("DISABLE_CLUSTER") in ["true", "1"] do
     config :libcluster, topologies: []
   end
