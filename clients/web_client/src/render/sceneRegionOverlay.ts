@@ -43,7 +43,8 @@ export interface SceneRegionOverlay {
 }
 
 const CHUNK_WORLD_SIZE = VoxelConstants.ChunkSizeInMacros * MacroWorldSize;
-const DEFAULT_Y = MacroWorldSize + 4;
+const GROUND_HINT_Y = 0.04;
+const MARKER_BASE_Y = MacroWorldSize + 4;
 const DEFAULT_Z_MIN = 0;
 const DEFAULT_Z_MAX = 1;
 
@@ -116,15 +117,15 @@ function createRegionFill(region: SceneRegionOverlayRegion): Mesh<PlaneGeometry,
   const material = new MeshBasicMaterial({
     color: region.color,
     transparent: true,
-    opacity: 0.18,
-    depthTest: false,
+    opacity: 0.08,
+    depthTest: true,
     depthWrite: false,
   });
   const mesh = new Mesh(geometry, material);
   mesh.name = `scene-region-fill-${region.label}`;
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set(centerX, DEFAULT_Y, centerZ);
-  mesh.renderOrder = 20;
+  mesh.position.set(centerX, GROUND_HINT_Y, centerZ);
+  mesh.renderOrder = -5;
   return mesh;
 }
 
@@ -137,12 +138,12 @@ function createRegionBorder(region: SceneRegionOverlayRegion): LineSegments<Edge
     color: region.color,
     transparent: true,
     opacity: 0.9,
-    depthTest: false,
+    depthTest: true,
   });
   const lines = new LineSegments(geometry, material);
   lines.name = `scene-region-border-${region.label}`;
-  lines.position.set(centerX, DEFAULT_Y + 12, centerZ);
-  lines.renderOrder = 21;
+  lines.position.set(centerX, MARKER_BASE_Y + 12, centerZ);
+  lines.renderOrder = 3;
   return lines;
 }
 
@@ -160,12 +161,12 @@ function createBoundaryMarker(
     color: 0xffffff,
     transparent: true,
     opacity: 0.95,
-    depthTest: false,
+    depthTest: true,
   });
   const lines = new LineSegments(geometry, material);
   lines.name = `scene-region-boundary-x${boundaryChunkX}`;
-  lines.position.set(boundaryChunkX * CHUNK_WORLD_SIZE, DEFAULT_Y + 110, (minZ + maxZ) / 2);
-  lines.renderOrder = 22;
+  lines.position.set(boundaryChunkX * CHUNK_WORLD_SIZE, MARKER_BASE_Y + 110, (minZ + maxZ) / 2);
+  lines.renderOrder = 4;
   return lines;
 }
 
