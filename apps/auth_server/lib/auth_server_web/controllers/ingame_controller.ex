@@ -44,7 +44,7 @@ defmodule AuthServerWeb.IngameController do
   end
 
   @doc """
-  Dev-only JSON auto-login. Upserts account+character then returns a signed token.
+  Demo JSON auto-login. Upserts account+character then returns a signed token.
 
   Gated by `config :auth_server, :dev_auto_login`. Responds 403 when disabled.
   """
@@ -59,10 +59,10 @@ defmodule AuthServerWeb.IngameController do
   end
 
   @doc """
-  Dev-only JSON hook that prepares the default server-authoritative voxel lease.
+  Demo JSON hook that prepares the default server-authoritative voxel lease.
 
-  This is intentionally tied to `:dev_auto_login` because it exists for local
-  browser smoke runs, not for production gameplay authority management.
+  This is intentionally tied to `:dev_auto_login` because it exists for browser
+  smoke runs and the shared online demo.
   """
   def voxel_dev_seed(conn, params) do
     if Application.get_env(:auth_server, :dev_auto_login, false) do
