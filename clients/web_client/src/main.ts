@@ -32,12 +32,21 @@ function requireVoxelPanel(): HTMLDivElement {
   return panel;
 }
 
+function requireTouchControls(): HTMLDivElement {
+  const root = document.getElementById("touch-controls");
+  if (!(root instanceof HTMLDivElement)) {
+    throw new Error("#touch-controls element missing or wrong type");
+  }
+  return root;
+}
+
 async function main(): Promise<void> {
   await bootstrap({
     canvas: requireCanvas(),
     hud: requireHud(),
     hotbarDock: requireHotbarDock(),
     voxelPanel: requireVoxelPanel(),
+    touchControls: requireTouchControls(),
   });
 }
 

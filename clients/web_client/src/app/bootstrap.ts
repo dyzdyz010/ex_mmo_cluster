@@ -1,4 +1,8 @@
 import { ObserveLog } from "../observe/logger";
+import {
+  TouchControlsView,
+  type TouchControlsElements,
+} from "../presentation/touch/TouchControlsView";
 import type { MovementTransport } from "@domain/movement/transport";
 import { SimulatedLocalMovementTransport } from "@infra/net/simulatedMovementTransport";
 import { ServerMovementTransport } from "@infra/net/serverMovementTransport";
@@ -40,6 +44,7 @@ export interface BootstrapTargets {
   hud: HTMLDivElement;
   hotbarDock: HTMLDivElement;
   voxelPanel: HTMLDivElement;
+  touchControls: HTMLDivElement;
 }
 
 /**
@@ -54,6 +59,7 @@ export async function bootstrap({
   hud,
   hotbarDock,
   voxelPanel,
+  touchControls,
 }: BootstrapTargets): Promise<AppContext> {
   canvas.tabIndex = 0;
   canvas.focus();
@@ -129,6 +135,35 @@ export async function bootstrap({
   loop.subscribe(voxelDebugPanelView);
   loop.subscribe(diagnostics);
 
+  const isTouchPrimary =
+    window.matchMedia?.("(pointer: coarse)")?.matches === true ||
+    navigator.maxTouchPoints > 0;
+
+  let touchControlsView: TouchControlsView | null = null;
+
+  if (isTouchPrimary) {
+    const elements = resolveTouchControlsElements(touchControls);
+    if (elements) {
+      document.documentElement.classList.add("is-touch");
+      input.setDisableCanvasActions(true);
+      sceneHandles.setDisableCanvasInput(true);
+
+      touchControlsView = new TouchControlsView(elements, {
+        setMovement: (vec) => input.setVirtualMovement(vec),
+        requestJump: (source) => input.requestJump(source),
+        emitBreak: () => eventBus.emit("input:break-block", { source: "touch_button" }),
+        emitPlace: () => eventBus.emit("input:place-block", { source: "touch_button" }),
+        applyCameraYawPitchDelta: (yaw, pitch) =>
+          sceneHandles.applyCameraYawPitchDelta(yaw, pitch),
+      });
+      loop.subscribe(touchControlsView);
+    } else {
+      console.error(
+        "[bootstrap] touch-controls DOM tree incomplete — falling back to desktop input",
+      );
+    }
+  }
+
   bridgeBusToLogger(eventBus, logger);
 
   const rendererSnapshot = render.getRendererDebugSnapshot();
@@ -156,6 +191,8 @@ export async function bootstrap({
     disposed = true;
     loop.stop();
     detachInput();
+    touchControlsView?.dispose();
+    document.documentElement.classList.remove("is-touch");
     voxelDebugPanelView.dispose();
     hotbarDockView.dispose();
     render.dispose();
@@ -163,6 +200,24 @@ export async function bootstrap({
   }
 
   return { eventBus, dispose };
+}
+
+function resolveTouchControlsElements(root: HTMLElement): TouchControlsElements | null {
+  const q = <T extends HTMLElement>(sel: string) => root.querySelector(sel) as T | null;
+  const zoneLeft = q<HTMLElement>(".touch-zone--left");
+  const zoneRight = q<HTMLElement>(".touch-zone--right");
+  const stickLeft = q<HTMLElement>(".touch-stick--left");
+  const stickRight = q<HTMLElement>(".touch-stick--right");
+  const btnJump = q<HTMLElement>(".touch-btn--jump");
+  const btnBreak = q<HTMLElement>(".touch-btn--break");
+  const btnPlace = q<HTMLElement>(".touch-btn--place");
+  if (
+    !zoneLeft || !zoneRight || !stickLeft || !stickRight ||
+    !btnJump || !btnBreak || !btnPlace
+  ) {
+    return null;
+  }
+  return { zoneLeft, zoneRight, stickLeft, stickRight, btnJump, btnBreak, btnPlace };
 }
 
 function createMovementTransport(logger: ObserveLog): MovementTransport {
