@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
@@ -819,6 +820,39 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                )
     end
 
+    test "apply_intent reconciles durable newer snapshot before unpinned writes" do
+      lease = start_snapshot_store()
+
+      chunk =
+        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+      assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 502)
+      assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+      canonical_storage = Storage.empty(1, {1, 1, 1}, chunk_version: 5)
+      put_canonical_snapshot!(lease, canonical_storage)
+
+      assert {:ok, %{chunk_version: 6, persist_result: :updated}} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 intent_attrs(lease, macro: 0, block: NormalBlockData.new(8))
+               )
+
+      assert_receive {:voxel_chunk_snapshot_payload, recovery_payload}
+
+      assert {:ok, %{storage: recovered_storage}} =
+               Codec.decode_chunk_snapshot_payload(recovery_payload)
+
+      assert recovered_storage.chunk_version == 5
+
+      assert_receive {:voxel_chunk_delta_payload, delta_payload}
+      assert {:ok, delta} = Codec.decode_chunk_delta_payload(delta_payload)
+      assert delta.base_chunk_version == 5
+      assert delta.new_chunk_version == 6
+
+      assert ChunkProcess.debug_state(chunk).chunk_version == 6
+    end
+
     test "apply_intent rejects when expected_cell_hash does not match macro header" do
       lease = start_snapshot_store()
 
@@ -928,6 +962,32 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       micro_layer: %{material_id: 1, health: 100}
     }
     |> Map.merge(Map.new(overrides))
+  end
+
+  defp put_canonical_snapshot!(lease, %Storage{} = storage) do
+    payload = Codec.encode_chunk_snapshot_payload(%{request_id: 0, storage: storage})
+
+    attrs =
+      lease
+      |> Map.take([
+        :logical_scene_id,
+        :region_id,
+        :lease_id,
+        :owner_scene_instance_ref,
+        :owner_epoch
+      ])
+      |> Map.merge(%{
+        chunk_coord: storage.chunk_coord,
+        schema_version: storage.schema_version,
+        chunk_size_in_macro: storage.chunk_size_in_macro,
+        micro_resolution: storage.micro_resolution,
+        chunk_version: storage.chunk_version,
+        chunk_hash: Hash.encode64(Codec.chunk_hash(storage)),
+        data: payload
+      })
+
+    assert {:ok, _result} = ChunkSnapshotStore.put_snapshot(attrs)
+    payload
   end
 
   defp assert_eventually(fun, timeout_ms \\ 500) do

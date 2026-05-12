@@ -15,7 +15,12 @@
 `ChunkProcess.apply_intent/2` 是 World 已授权体素意图在 Scene 侧的最小写入路径。单意图
 路径仍以持久化通过作为提交条件，然后向订阅者推送对应 `ChunkDelta`；无法表达为
 delta 的操作才回退为完整 `ChunkSnapshot`。缺失、过期、越界或陈旧的租约都不会改变
-热区块。
+热区块。若单意图持久化时 DataService 返回 `:stale_chunk_version`，这表示当前热
+`ChunkProcess` 落后于持久层，而不是默认等同于玩家操作冲突；进程会从
+DataService 重载 canonical snapshot，向订阅者推送恢复快照，然后基于重载后的
+chunk version 对该 intent 重试一次。显式 `expected_chunk_version` /
+`expected_cell_hash` 仍在重载后按乐观并发语义校验，真正不匹配时才作为 stale intent
+返回。
 
 `ChunkProcess.apply_intents/2` / `commit_transaction/2` 是 prefab 和跨 chunk 事务的热路径。
 它们先更新本进程内的权威 storage，再向订阅者 fan-out 一条按最终 macro 合并后的

@@ -424,7 +424,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 end)
 
                 if reply.changed? do
-                  push_intent_outcome(state, next_state, intent, :apply_intent)
+                  push_intent_outcome(
+                    state,
+                    next_state,
+                    intent,
+                    :apply_intent,
+                    Map.get(reply, :delta_base_version)
+                  )
                 end
 
                 {:reply, {:ok, reply}, next_state}
@@ -822,6 +828,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_info(_message, state), do: {:noreply, state}
 
   defp apply_normalized_intent(state, intent) do
+    apply_normalized_intent(state, intent, true)
+  end
+
+  defp apply_normalized_intent(state, intent, retry_on_persist_stale?) do
     # Phase 4 (D7):collect damage attribution from owner lookups BEFORE
     # the apply clears the slot (post-apply lookup would see the empty
     # slot).
@@ -854,12 +864,77 @@ defmodule SceneServer.Voxel.ChunkProcess do
              next_state}
 
           {:error, reason} ->
-            {:error, reason}
+            maybe_recover_stale_persist(
+              reason,
+              state,
+              intent,
+              retry_on_persist_stale?
+            )
         end
       else
         next_state = %{state | lease: intent.lease}
         {:ok, intent_reply(next_storage, intent, :unchanged, snapshot_payload, false), next_state}
       end
+    end
+  end
+
+  defp maybe_recover_stale_persist(:stale_chunk_version, state, intent, true) do
+    case recover_canonical_snapshot_after_persist_stale(
+           state,
+           intent.lease,
+           :intent_persist_stale
+         ) do
+      {:ok, recovered_state} ->
+        case apply_normalized_intent(recovered_state, intent, false) do
+          {:ok, reply, next_state} ->
+            {:ok, Map.put(reply, :delta_base_version, recovered_state.storage.chunk_version),
+             next_state}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_recover_stale_persist(reason, _state, _intent, _retry_on_persist_stale?),
+    do: {:error, reason}
+
+  defp recover_canonical_snapshot_after_persist_stale(state, lease, reason) do
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(
+           state.logical_scene_id,
+           state.chunk_coord
+         ) do
+      {:ok, snapshot} ->
+        with {:ok, storage} <- decode_prewarm_payload(snapshot.data),
+             :ok <- validate_loaded_snapshot(state, storage) do
+          changed? = state.storage != storage
+          next_state = %{state | storage: storage, lease: lease || state.lease}
+
+          CliObserve.emit("voxel_chunk_persist_stale_recovered", fn ->
+            %{
+              logical_scene_id: next_state.logical_scene_id,
+              chunk_coord: next_state.chunk_coord,
+              previous_chunk_version: state.storage.chunk_version,
+              recovered_chunk_version: next_state.storage.chunk_version,
+              changed?: changed?,
+              reason: reason
+            }
+          end)
+
+          if changed? do
+            push_snapshot_fallbacks(next_state, reason)
+          end
+
+          {:ok, next_state}
+        else
+          {:error, recover_reason} -> {:error, {:persist_stale_recovery_failed, recover_reason}}
+        end
+
+      {:error, recover_reason} ->
+        {:error, {:persist_stale_recovery_failed, recover_reason}}
     end
   end
 
@@ -2082,12 +2157,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  defp push_intent_outcome(state_before, state_after, intent, reason) do
+  defp push_intent_outcome(state_before, state_after, intent, reason, base_version) do
     case build_intent_delta_op(intent, state_after) do
       {:ok, op} ->
         push_chunk_delta(
           state_after,
-          state_before.storage.chunk_version,
+          base_version || state_before.storage.chunk_version,
           [op],
           reason
         )
