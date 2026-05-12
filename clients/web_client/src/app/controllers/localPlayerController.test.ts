@@ -269,4 +269,40 @@ describe("LocalPlayerController", () => {
     expect(samples.some((sample) => sample.movementMode === "airborne")).toBe(true);
     expect(samples.some((sample) => Math.abs(sample.deltaY) > 0)).toBe(true);
   });
+
+  it("merges keyboard and virtual stick axes, clamping to unit length", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.forward = true;
+    input.setVirtualMovement({ x: 0.8, y: 0 });
+
+    const axes = controller.getCombinedMovementAxesForTest();
+    // keyboard forward = 1, stick x = 0.8, stick y = 0 → raw length ≈ 1.28 → clampUnitVec → length 1
+    expect(Math.hypot(axes.strafe, axes.forward)).toBeCloseTo(1);
+    expect(axes.strafe).toBeGreaterThan(0);
+    expect(axes.forward).toBeGreaterThan(0);
+  });
+
+  it("clamps keyboard-only diagonal input to unit length (no diagonal speed boost)", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.forward = true;
+    keys.right = true;
+    // No virtual stick input.
+
+    const axes = controller.getCombinedMovementAxesForTest();
+    expect(Math.hypot(axes.strafe, axes.forward)).toBeCloseTo(1);
+    expect(axes.strafe).toBeCloseTo(Math.SQRT1_2, 4); // 1/√2
+    expect(axes.forward).toBeCloseTo(Math.SQRT1_2, 4);
+  });
 });

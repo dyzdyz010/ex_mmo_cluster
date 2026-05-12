@@ -12,7 +12,9 @@ import {
 } from "@domain/movement/types";
 import {
   buildMovementWorldDirection,
+  clampUnitVec,
   keysToAxes,
+  type MovementAxes,
 } from "@domain/movement/inputDirection";
 import { makeFallbackLocalSpawn } from "../spawn";
 import type { EventBus } from "../../shared/events/eventBus";
@@ -142,6 +144,11 @@ export class LocalPlayerController implements FrameSubscriber {
     return this.prediction.getCurrentSoftPositionError();
   }
 
+  /** Visible for tests. */
+  getCombinedMovementAxesForTest(): MovementAxes {
+    return this.combinedAxes();
+  }
+
   setCameraYawResolver(resolver: () => number): void {
     this.cameraYawResolver = resolver;
   }
@@ -150,11 +157,27 @@ export class LocalPlayerController implements FrameSubscriber {
     this.input.requestJump(source);
   }
 
+  /**
+   * Returns the unit-clamped (strafe, forward) input axes from keyboard + virtual stick.
+   *
+   * Clamping is applied even when the stick is at rest so that diagonal keyboard input
+   * (e.g. W+D) yields the same speed as cardinal input — matching the input-normalization
+   * convention used by UE CMC / Source / Valorant. The local predictor and the server
+   * authority both assume max input magnitude is 1, so this layer is the single place
+   * where that contract is enforced.
+   */
+  private combinedAxes(): MovementAxes {
+    const keyboard = keysToAxes(this.input.getMovementKeys());
+    const stick = this.input.getVirtualMovement();
+    const merged = clampUnitVec({
+      x: keyboard.strafe + stick.x,
+      y: keyboard.forward + stick.y,
+    });
+    return { strafe: merged.x, forward: merged.y };
+  }
+
   private stepFixed(nowMs: number): void {
-    const inputDir = buildMovementWorldDirection(
-      keysToAxes(this.input.getMovementKeys()),
-      this.cameraYawResolver(),
-    );
+    const inputDir = buildMovementWorldDirection(this.combinedAxes(), this.cameraYawResolver());
     if (!this.transport.isReady()) {
       this.emitInputBlockedIfActive(nowMs);
       return;
@@ -190,7 +213,10 @@ export class LocalPlayerController implements FrameSubscriber {
   private emitInputBlockedIfActive(nowMs: number): void {
     const keys = this.input.getMovementKeys();
     const jump = this.input.hasPendingJump();
-    const hasMoveInput = keys.forward || keys.backward || keys.left || keys.right;
+    const stick = this.input.getVirtualMovement();
+    const hasMoveInput =
+      keys.forward || keys.backward || keys.left || keys.right ||
+      stick.x !== 0 || stick.y !== 0;
     if ((!hasMoveInput && !jump) || nowMs - this.lastInputBlockedAtMs < 1_000) {
       return;
     }
@@ -283,10 +309,7 @@ export class LocalPlayerController implements FrameSubscriber {
     }
 
     if (dtMs > 0) {
-      const inputDir = buildMovementWorldDirection(
-        keysToAxes(this.input.getMovementKeys()),
-        this.cameraYawResolver(),
-      );
+      const inputDir = buildMovementWorldDirection(this.combinedAxes(), this.cameraYawResolver());
       const partialFrame: MoveInputFrame = {
         seq: 0,
         clientTick: this.renderSimulationState.tick,
