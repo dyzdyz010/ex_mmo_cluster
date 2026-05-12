@@ -56,6 +56,19 @@ defmodule SceneServer.PlayerCharacter do
     GenServer.start_link(__MODULE__, params, opts)
   end
 
+  @doc false
+  def connection_monitor_ref(connection_pid, node_fun \\ &:erlang.node/1)
+
+  def connection_monitor_ref(connection_pid, node_fun) when is_pid(connection_pid) do
+    if node_fun.(connection_pid) == node() do
+      if Process.alive?(connection_pid), do: Process.monitor(connection_pid), else: nil
+    else
+      Process.monitor(connection_pid)
+    end
+  end
+
+  def connection_monitor_ref(_connection_pid, _node_fun), do: nil
+
   @impl true
   def init({cid, connection_pid, client_timestamp, character_profile}) do
     # :pg.start_link(@scope)
@@ -76,12 +89,7 @@ defmodule SceneServer.PlayerCharacter do
     # up to other players as a stationary "ghost" stuck at spawn —
     # which is exactly the "remote cube doesn't follow you, then
     # appears to follow because you walked back" optical illusion.
-    connection_monitor_ref =
-      if is_pid(connection_pid) and Process.alive?(connection_pid) do
-        Process.monitor(connection_pid)
-      else
-        nil
-      end
+    connection_monitor_ref = connection_monitor_ref(connection_pid)
 
     {:ok,
      %{

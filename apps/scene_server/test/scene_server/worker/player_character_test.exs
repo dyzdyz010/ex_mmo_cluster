@@ -220,6 +220,12 @@ defmodule SceneServer.PlayerCharacterTest do
     assert registered == next_state.aoi_ref
   end
 
+  test "connection monitor setup accepts remote connection pids" do
+    assert is_reference(
+             SceneServer.PlayerCharacter.connection_monitor_ref(self(), fn _pid -> :remote@app end)
+           )
+  end
+
   test "authoritative movement tick preserves correction flags from intent ack path" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
