@@ -128,12 +128,14 @@ export class TouchControlsView implements FrameSubscriber {
     zone.addEventListener("pointermove", onMove);
     zone.addEventListener("pointerup", onEnd);
     zone.addEventListener("pointercancel", onEnd);
+    zone.addEventListener("pointerleave", onEnd);
 
     this.detachers.push(() => {
       zone.removeEventListener("pointerdown", onDown);
       zone.removeEventListener("pointermove", onMove);
       zone.removeEventListener("pointerup", onEnd);
       zone.removeEventListener("pointercancel", onEnd);
+      zone.removeEventListener("pointerleave", onEnd);
     });
   }
 
