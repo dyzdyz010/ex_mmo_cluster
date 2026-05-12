@@ -107,9 +107,10 @@ defmodule SceneServer.Combat.Executor do
 
     {cues, next_visited} =
       Enum.reduce(targets, {[], visited_targets}, fn target, {acc, seen} ->
+        seen_with_target = MapSet.put(seen, target.cid)
         hit_cues = apply_damage_and_collect_cues(cast, effect, anchor_position, target)
-        follow_up_cues = resolve_follow_ups(cast, effect, target, seen)
-        {acc ++ hit_cues ++ follow_up_cues, MapSet.put(seen, target.cid)}
+        follow_up_cues = resolve_follow_ups(cast, effect, target, seen_with_target)
+        {acc ++ hit_cues ++ follow_up_cues, seen_with_target}
       end)
 
     aoe_cue =

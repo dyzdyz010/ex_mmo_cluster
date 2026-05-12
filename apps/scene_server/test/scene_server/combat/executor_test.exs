@@ -105,6 +105,7 @@ defmodule SceneServer.Combat.ExecutorTest do
     assert_receive {:damage_applied, 20_101, 10_000, 4, 12, _}
     assert_receive {:damage_applied, 20_101, 10_000, 4, 10, _}
     assert_receive {:damage_applied, 20_102, 10_000, 4, 8, _}
+    refute_receive {:damage_applied, 20_101, 10_000, 4, 8, _}
   end
 
   defp add_actor(cid, position, notify) do
