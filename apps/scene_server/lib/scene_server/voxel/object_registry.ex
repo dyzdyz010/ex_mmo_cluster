@@ -465,7 +465,7 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   end
 
   defp do_destroy_part(state, scene_id, instance, idx, part_state, opts) do
-    chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    chunk_directory = Keyword.get(opts, :chunk_directory, state.chunk_directory)
     object_id = instance.object_id
     part_id = part_state.part_id
 
@@ -540,7 +540,7 @@ defmodule SceneServer.Voxel.ObjectRegistry do
   end
 
   defp run_destroy_object(state, scene_id, instance, opts) do
-    chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    chunk_directory = Keyword.get(opts, :chunk_directory, state.chunk_directory)
 
     # Defensive belt-and-suspenders:ask every covered chunk to drop any
     # stale ChunkObjectRef[] pointing at the dead object_id. After

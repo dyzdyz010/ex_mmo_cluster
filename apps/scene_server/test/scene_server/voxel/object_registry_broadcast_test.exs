@@ -215,4 +215,14 @@ defmodule FakeChunkDirectory do
       _ -> {:reply, :not_started, state}
     end
   end
+
+  @impl true
+  def handle_call({:destroy_part, _attrs}, _from, state) do
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:cleanup_object_refs, _attrs}, _from, state) do
+    {:reply, :ok, state}
+  end
 end
