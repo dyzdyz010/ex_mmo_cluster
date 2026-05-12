@@ -1,21 +1,39 @@
 import { Vector2 } from "three";
 
-export function buildMovementInputDirection(
-  keys: {
-    forward: boolean;
-    backward: boolean;
-    left: boolean;
-    right: boolean;
-  },
+export interface MovementKeys {
+  forward: boolean;
+  backward: boolean;
+  left: boolean;
+  right: boolean;
+}
+
+export interface MovementAxes {
+  strafe: number;
+  forward: number;
+}
+
+export function keysToAxes(keys: MovementKeys): MovementAxes {
+  return {
+    strafe: Number(keys.right) - Number(keys.left),
+    forward: Number(keys.forward) - Number(keys.backward),
+  };
+}
+
+export function clampUnitVec(v: { x: number; y: number }): { x: number; y: number } {
+  const length = Math.hypot(v.x, v.y);
+  if (length <= 1) {
+    return { x: v.x, y: v.y };
+  }
+  return { x: v.x / length, y: v.y / length };
+}
+
+export function buildMovementWorldDirection(
+  axes: MovementAxes,
   cameraYawRadians = 0,
 ): Vector2 {
-  const strafe = Number(keys.right) - Number(keys.left);
-  const forward = Number(keys.forward) - Number(keys.backward);
   const cosYaw = Math.cos(cameraYawRadians);
   const sinYaw = Math.sin(cameraYawRadians);
-
-  const worldX = strafe * cosYaw + forward * -sinYaw;
-  const worldZ = strafe * -sinYaw + forward * -cosYaw;
-
+  const worldX = axes.strafe * cosYaw + axes.forward * -sinYaw;
+  const worldZ = axes.strafe * -sinYaw + axes.forward * -cosYaw;
   return new Vector2(worldX, worldZ);
 }

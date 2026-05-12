@@ -1,13 +1,9 @@
 import { VoxelMaterialId } from "../../material/catalog";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
+import { clampUnitVec, type MovementKeys } from "../../domain/movement/inputDirection";
 
-export interface MovementKeys {
-  forward: boolean;
-  backward: boolean;
-  left: boolean;
-  right: boolean;
-}
+export type { MovementKeys } from "../../domain/movement/inputDirection";
 
 /**
  * Translates raw keyboard events into domain intents.
@@ -25,6 +21,8 @@ export class InputController {
     right: false,
   };
   private jumpPressed = false;
+  private virtualMovement: { x: number; y: number } = { x: 0, y: 0 };
+  private disableCanvasActions = false;
 
   constructor(private readonly bus: EventBus<AppEvents>) {}
 
@@ -53,6 +51,18 @@ export class InputController {
     return pressed;
   }
 
+  getVirtualMovement(): Readonly<{ x: number; y: number }> {
+    return this.virtualMovement;
+  }
+
+  setVirtualMovement(vec: { x: number; y: number }): void {
+    this.virtualMovement = clampUnitVec(vec);
+  }
+
+  setDisableCanvasActions(flag: boolean): void {
+    this.disableCanvasActions = flag;
+  }
+
   hasPendingJump(): boolean {
     return this.jumpPressed;
   }
@@ -67,6 +77,9 @@ export class InputController {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.disableCanvasActions) {
+      return;
+    }
     switch (event.button) {
       case 0:
         event.preventDefault();

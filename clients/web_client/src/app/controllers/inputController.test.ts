@@ -154,3 +154,46 @@ describe("InputController mouse editing", () => {
     expect(input.consumeJumpPressed()).toBe(true);
   });
 });
+
+describe("InputController virtual movement and canvas disable flag", () => {
+  it("getVirtualMovement returns zero by default", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new InputController(bus);
+    expect(controller.getVirtualMovement()).toEqual({ x: 0, y: 0 });
+  });
+
+  it("setVirtualMovement updates state and clamps to unit length", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new InputController(bus);
+
+    controller.setVirtualMovement({ x: 0.4, y: -0.2 });
+    expect(controller.getVirtualMovement().x).toBeCloseTo(0.4);
+    expect(controller.getVirtualMovement().y).toBeCloseTo(-0.2);
+
+    controller.setVirtualMovement({ x: 3, y: 4 });
+    const clamped = controller.getVirtualMovement();
+    expect(Math.hypot(clamped.x, clamped.y)).toBeCloseTo(1);
+  });
+
+  it("setDisableCanvasActions short-circuits pointerdown break/place emit", () => {
+    const bus = new EventBus<AppEvents>();
+    const controller = new InputController(bus);
+    const target = new FakeWindowTarget();
+    let breakCount = 0;
+    bus.on("input:break-block", () => {
+      breakCount += 1;
+    });
+
+    controller.attach(target as unknown as Window);
+    target.dispatch("pointerdown", pointerDown(0));
+    expect(breakCount).toBe(1);
+
+    controller.setDisableCanvasActions(true);
+    target.dispatch("pointerdown", pointerDown(0));
+    expect(breakCount).toBe(1);
+
+    controller.setDisableCanvasActions(false);
+    target.dispatch("pointerdown", pointerDown(0));
+    expect(breakCount).toBe(2);
+  });
+});

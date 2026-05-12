@@ -10,7 +10,10 @@ import {
   type MoveInputFrame,
   type PredictedMoveState,
 } from "@domain/movement/types";
-import { buildMovementInputDirection } from "@domain/movement/inputDirection";
+import {
+  buildMovementWorldDirection,
+  keysToAxes,
+} from "@domain/movement/inputDirection";
 import { makeFallbackLocalSpawn } from "../spawn";
 import type { EventBus } from "../../shared/events/eventBus";
 import type { AppEvents } from "../../shared/events/events";
@@ -148,8 +151,8 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   private stepFixed(nowMs: number): void {
-    const inputDir = buildMovementInputDirection(
-      this.input.getMovementKeys(),
+    const inputDir = buildMovementWorldDirection(
+      keysToAxes(this.input.getMovementKeys()),
       this.cameraYawResolver(),
     );
     if (!this.transport.isReady()) {
@@ -280,8 +283,8 @@ export class LocalPlayerController implements FrameSubscriber {
     }
 
     if (dtMs > 0) {
-      const inputDir = buildMovementInputDirection(
-        this.input.getMovementKeys(),
+      const inputDir = buildMovementWorldDirection(
+        keysToAxes(this.input.getMovementKeys()),
         this.cameraYawResolver(),
       );
       const partialFrame: MoveInputFrame = {

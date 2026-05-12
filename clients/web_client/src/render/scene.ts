@@ -40,6 +40,8 @@ export interface SceneHandles {
   update: (dtSecs: number) => void;
   render: () => void;
   dispose: () => void;
+  applyCameraYawPitchDelta: (deltaYawRadians: number, deltaPitchRadians: number) => void;
+  setDisableCanvasInput: (flag: boolean) => void;
 }
 
 export interface SceneOptions {
@@ -83,6 +85,23 @@ export async function createScene(
   let lastPointerClientX = 0;
   let lastPointerClientY = 0;
   let lastCameraInteractionMs = Number.NEGATIVE_INFINITY;
+  let disableCanvasInput = false;
+
+  const applyCameraYawPitchDelta = (deltaYawRadians: number, deltaPitchRadians: number): void => {
+    orbitYaw -= deltaYawRadians;
+    orbitPitch = clampCameraOrbitPitch(orbitPitch + deltaPitchRadians);
+    lastCameraInteractionMs = performance.now();
+  };
+
+  const setDisableCanvasInput = (flag: boolean): void => {
+    disableCanvasInput = flag;
+    if (flag) {
+      dragActive = false;
+      if (document.pointerLockElement === canvas) {
+        document.exitPointerLock();
+      }
+    }
+  };
 
   const baseGrid = new GridHelper(
     chunkExtent * 6,
@@ -106,6 +125,9 @@ export async function createScene(
   window.addEventListener("resize", onResize);
 
   const onPointerDown = (event: PointerEvent) => {
+    if (disableCanvasInput) {
+      return;
+    }
     if (event.button !== 0) {
       return;
     }
@@ -131,6 +153,9 @@ export async function createScene(
   };
 
   const onPointerMove = (event: PointerEvent) => {
+    if (disableCanvasInput) {
+      return;
+    }
     const pointerLocked = document.pointerLockElement === canvas;
     if (!pointerLocked && !dragActive) {
       return;
@@ -141,10 +166,11 @@ export async function createScene(
 
     lastPointerClientX = event.clientX;
     lastPointerClientY = event.clientY;
-    lastCameraInteractionMs = performance.now();
 
-    orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
-    orbitPitch = clampCameraOrbitPitch(orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY);
+    applyCameraYawPitchDelta(
+      deltaX * CAMERA_YAW_SENSITIVITY,
+      deltaY * CAMERA_PITCH_SENSITIVITY,
+    );
   };
 
   const onPointerLeave = () => {
@@ -253,6 +279,8 @@ export async function createScene(
     update,
     render,
     dispose,
+    applyCameraYawPitchDelta,
+    setDisableCanvasInput,
   };
 }
 
