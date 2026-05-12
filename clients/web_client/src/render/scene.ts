@@ -21,8 +21,8 @@ const CAMERA_POSITION_SMOOTHING_HZ = 10;
 const CAMERA_TARGET_SMOOTHING_HZ = 12;
 const CAMERA_YAW_SENSITIVITY = 0.005;
 const CAMERA_PITCH_SENSITIVITY = 0.004;
-const CAMERA_MIN_PITCH = 0.2;
-const CAMERA_MAX_PITCH = 1.15;
+export const CAMERA_MIN_PITCH = -Math.PI / 2 + 0.02;
+export const CAMERA_MAX_PITCH = Math.PI / 2 - 0.02;
 const CAMERA_MIN_DISTANCE = 200;
 const CAMERA_MAX_DISTANCE = 800;
 const CAMERA_SNAP_DISTANCE = 700;
@@ -144,11 +144,7 @@ export async function createScene(
     lastCameraInteractionMs = performance.now();
 
     orbitYaw -= deltaX * CAMERA_YAW_SENSITIVITY;
-    orbitPitch = clamp(
-      orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY,
-      CAMERA_MIN_PITCH,
-      CAMERA_MAX_PITCH,
-    );
+    orbitPitch = clampCameraOrbitPitch(orbitPitch + deltaY * CAMERA_PITCH_SENSITIVITY);
   };
 
   const onPointerLeave = () => {
@@ -262,4 +258,8 @@ export async function createScene(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+export function clampCameraOrbitPitch(value: number): number {
+  return clamp(value, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
 }
