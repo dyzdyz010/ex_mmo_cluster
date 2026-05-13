@@ -136,7 +136,7 @@ export async function bootstrap({
   loop.subscribe(diagnostics);
 
   const isTouchPrimary =
-    window.matchMedia?.("(pointer: coarse)")?.matches === true ||
+    window.matchMedia?.("(pointer: coarse)")?.matches === true &&
     navigator.maxTouchPoints > 0;
 
   let touchControlsView: TouchControlsView | null = null;
