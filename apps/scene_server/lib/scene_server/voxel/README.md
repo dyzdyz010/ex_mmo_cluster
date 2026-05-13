@@ -335,3 +335,42 @@ sets[set_count] {
 
 设计与决策点：`docs/plans/2026-05-13-phase1-attribute-set-typed-domain.md`
 （D-1..D-8 全部推荐方案）。Phase 1.3 `TagSet` 走同一节奏独立 commit。
+
+## Phase 1.3: TagSet typed domain (2026-05-13)
+
+`SceneServer.Voxel.TagSet` 把 `Storage.tag_sets` 从 `[term()]` 升级为
+typed set-membership pool。每个 chunk 的 `tag_sets` 池是 chunk-local 复用表，
+`NormalBlockData` / `MicroLayer` 通过 `tag_set_ref: u32`（1-indexed，
+`0 = null`）引用其中一条。
+
+与 Phase 1.2 `AttributeSet` 对称：1-indexed ref、chunk-local id、canonical
+byte-wise pool 排序、`Storage.intern_tag_set/2` API、空池字节等价
+（`chunk_hash` 在 `tag_sets = []` 时仍 byte-stable，未 bump
+`schema_version`，3 个 pinned baseline 同样未变）。
+
+**`TagSet`** —— 一条 `tag_ids: [u32]` 列表（**纯 set membership，不携带 value**；
+要 `(key, value)` 走 `AttributeSet`）。`normalize!/1` 自动升序、拒绝重复 id、
+拒绝 u32 范围外的值、拒绝空集（empty 用 ref=0 表达）。
+`byte_canonical_key/1` 返回 wire 字节序，作为 pool 内排序键。
+
+`tag_id` 在 Phase 1.3 是 chunk-local 扁平 u32（**无 namespace**，T-1 决策）；
+Phase 5 `TagCatalog` 升级时再引入 namespace / merge_rule / name 元数据。
+
+**`Storage.intern_tag_set(storage, set)`** —— 把 set 加入池，返回
+`{storage, tag_set_ref}`。返回的 ref 是**排序后**的稳定 1-indexed 索引；
+结构等价集合（含乱序 `tag_ids` 输入）re-intern 时返回原 ref，池不增长。
+
+**Wire layout (section 0x05)** —— 一旦发出即冻结：
+
+```
+set_count: u32                    (T-4)
+sets[set_count] {
+  tag_count: u16                  (T-3)
+  tag_ids[tag_count]: u32         (T-1 升序无重复)
+}
+```
+
+每条 TagSet wire byte 数 = `2 + 4 × tag_count`，远小于 AttributeSet（不带 value）。
+
+设计与决策点：`docs/plans/2026-05-13-phase1-tag-set-typed-domain.md`
+（T-1..T-4 全部推荐方案）。Phase 1.4 `CatalogPatch` 走同一节奏独立 commit。

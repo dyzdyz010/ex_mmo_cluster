@@ -19,6 +19,7 @@ defmodule SceneServer.Voxel.Codec do
   alias SceneServer.Voxel.ObjectCoverRef
   alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.TagSet
 
   @section_macro_headers 0x01
   @section_normal_blocks 0x02
@@ -110,7 +111,7 @@ defmodule SceneServer.Voxel.Codec do
           decode_refined_cell_pool!(fetch_section!(sections, @section_refined_cells)),
         attribute_sets:
           decode_attribute_set_pool!(fetch_section!(sections, @section_attribute_sets)),
-        tag_sets: decode_empty_pool!(fetch_section!(sections, @section_tag_sets), :tag_sets),
+        tag_sets: decode_tag_set_pool!(fetch_section!(sections, @section_tag_sets)),
         environment_summaries:
           decode_environment_summaries!(fetch_section!(sections, @section_environment_summaries)),
         object_refs: decode_object_refs!(fetch_section!(sections, @section_object_refs))
@@ -804,7 +805,7 @@ defmodule SceneServer.Voxel.Codec do
       encode_environment_pool(storage.environment_summaries),
       encode_object_ref_pool(storage.object_refs),
       encode_attribute_set_pool_for_truth(storage.attribute_sets),
-      encode_empty_pool_for_truth(storage.tag_sets, :tag_sets)
+      encode_tag_set_pool_for_truth(storage.tag_sets)
     ])
   end
 
@@ -835,7 +836,7 @@ defmodule SceneServer.Voxel.Codec do
         @section_attribute_sets,
         encode_attribute_set_pool(storage.attribute_sets)
       ),
-      encode_section(@section_tag_sets, encode_empty_pool_for_wire(storage.tag_sets, :tag_sets)),
+      encode_section(@section_tag_sets, encode_tag_set_pool(storage.tag_sets)),
       encode_section(
         @section_environment_summaries,
         encode_environment_pool(storage.environment_summaries)
@@ -984,20 +985,6 @@ defmodule SceneServer.Voxel.Codec do
     raise ArgumentError, "malformed ChunkDelta ops binary"
   end
 
-  defp encode_empty_pool_for_wire([], _label), do: <<0::unsigned-big-integer-size(32)>>
-
-  defp encode_empty_pool_for_wire(values, label) do
-    raise ArgumentError,
-          "#{label} wire encoding is not implemented in S0, got #{length(values)} entries"
-  end
-
-  defp encode_empty_pool_for_truth([], _label), do: <<0::unsigned-big-integer-size(32)>>
-
-  defp encode_empty_pool_for_truth(values, label) do
-    raise ArgumentError,
-          "#{label} canonical encoding is not implemented in S0, got #{length(values)} entries"
-  end
-
   # ----------------------------------------------------------------------------
   # AttributeSet pool — Phase 1.2 wire form (protocol design §5.4 / D-1..D-8).
   #
@@ -1084,6 +1071,91 @@ defmodule SceneServer.Voxel.Codec do
   defp decode_attribute_sets(data, count, acc) when count > 0 do
     {set, rest} = AttributeSet.decode_for_wire(data)
     decode_attribute_sets(rest, count - 1, [set | acc])
+  end
+
+  # ----------------------------------------------------------------------------
+  # TagSet pool — Phase 1.3 wire form (protocol design §5.4 / T-1..T-4).
+  #
+  # Wire layout:
+  #   set_count: u32                  (T-4)
+  #   sets[set_count] {
+  #     tag_count: u16                (T-3)
+  #     tag_ids[tag_count]: u32       (T-1 flat u32, ascending, no duplicates)
+  #   }
+  #
+  # Empty pool emits exactly `<<0u32>>` — byte-equivalent to the legacy
+  # `encode_empty_pool_for_*` output, so chunk_hash stays byte-stable for any
+  # storage whose `tag_sets` is `[]`. schema_version is NOT bumped (sibling
+  # decision to AttributeSet D-8b): the empty-path bytes match the pre-Phase
+  # 1.3 baseline, so the 3 pinned chunk_hash baselines remain byte-stable.
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Encodes a list of `TagSet` into the TagSets section payload (Phase 1.3 wire
+  form). The empty list emits exactly `<<0u32>>`, byte-equivalent to the
+  legacy empty-pool encoding so chunk_hash stays stable for storages whose
+  `tag_sets` is `[]`.
+  """
+  @spec encode_tag_set_pool([TagSet.t()]) :: binary()
+  def encode_tag_set_pool([]), do: <<0::unsigned-big-integer-size(32)>>
+
+  def encode_tag_set_pool(sets) when is_list(sets) do
+    count = length(sets)
+
+    if count > 0xFFFF_FFFF do
+      raise ArgumentError, "tag_sets count #{count} exceeds u32"
+    end
+
+    IO.iodata_to_binary([
+      <<count::unsigned-big-integer-size(32)>>,
+      Enum.map(sets, &TagSet.encode_for_wire/1)
+    ])
+  end
+
+  # The truth encoder is semantically distinct from the wire encoder (wire
+  # serves the snapshot stream; truth serves chunk_hash) but their byte layout
+  # is intentionally identical at Phase 1.3 — chunk_hash is recomputed by
+  # decoders on receipt, so wire and truth must agree.
+  defp encode_tag_set_pool_for_truth(sets), do: encode_tag_set_pool(sets)
+
+  @doc """
+  Decodes the TagSets section payload back to a list of `TagSet`.
+  Returns `{:ok, sets}` or `{:error, reason}`.
+  """
+  @spec decode_tag_set_pool(binary()) :: {:ok, [TagSet.t()]} | {:error, term()}
+  def decode_tag_set_pool(payload) when is_binary(payload) do
+    {:ok, decode_tag_set_pool!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc """
+  Decodes the TagSets section payload back to a list of `TagSet`.
+  Raises `ArgumentError` on malformed or trailing bytes.
+  """
+  @spec decode_tag_set_pool!(binary()) :: [TagSet.t()]
+  def decode_tag_set_pool!(<<0::unsigned-big-integer-size(32)>>), do: []
+
+  def decode_tag_set_pool!(<<count::unsigned-big-integer-size(32), rest::binary>>) do
+    {sets, leftover} = decode_tag_sets(rest, count, [])
+
+    if leftover != <<>> do
+      raise ArgumentError,
+            "trailing bytes in tag_sets section: #{byte_size(leftover)} bytes"
+    end
+
+    sets
+  end
+
+  def decode_tag_set_pool!(_data),
+    do: raise(ArgumentError, "malformed tag_sets pool section")
+
+  defp decode_tag_sets(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_tag_sets(data, count, acc) when count > 0 do
+    {set, rest} = TagSet.decode_for_wire(data)
+    decode_tag_sets(rest, count - 1, [set | acc])
   end
 
   # ----------------------------------------------------------------------------
@@ -1455,16 +1527,6 @@ defmodule SceneServer.Voxel.Codec do
           cover_hash: cover_hash
         })
     end)
-  end
-
-  defp decode_empty_pool!(<<0::unsigned-big-integer-size(32)>>, _label), do: []
-
-  defp decode_empty_pool!(<<count::unsigned-big-integer-size(32), _rest::binary>>, label) do
-    raise ArgumentError, "#{label} decoding is not implemented in S0, got #{count} entries"
-  end
-
-  defp decode_empty_pool!(_data, label) do
-    raise ArgumentError, "malformed #{label} empty pool section"
   end
 
   defp decode_counted_pool!(
