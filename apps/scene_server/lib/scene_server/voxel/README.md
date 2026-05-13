@@ -984,3 +984,179 @@ ChunkProcess + 多实例 config 注入路径稳定后，再正式注册 temperat
 
 603 voxel baseline + 17 new = **620 tests 0 failures**；3 pinned chunk_hash
 baseline byte-stable。Phase 1-5 全 done。
+
+---
+
+## Phase 6：FieldLayer + 电场 / 温度场 tick + FieldDebugOverlay (2026-05-13, commit c0d8681)
+
+Phase 6 实现"局部场域最小可行"：AABB 区域内密集场值、10 Hz 独立 tick、0x73/0x74 wire
+下发、web_client 调试叠加层。落地后 Phase 1-6 全收口。
+
+设计草案 `docs/plans/2026-05-13-phase6-field-layer-minimum.md`，G-1..G-8 全部推荐方案。
+
+### FieldLayer + FieldRegion 数据结构
+
+**`SceneServer.Voxel.Field.FieldLayer`** —— 密集 f32 binary 数组，宽度固定 4096 cells：
+
+```elixir
+defstruct data: :binary.copy(<<0.0::float-32-little>>, 4096)
+```
+
+API：`new/0`、`get(layer, macro_index) :: float`、`put(layer, macro_index, value) :: layer`、
+`active_cells(layer, aabb, epsilon) :: [{macro_index, value}]`（只返回超出 epsilon 的格）。
+
+`put/3` 用 `binary_part` + 拼接重建 binary，O(chunk_size) 但不需要堆分配整张数组——与
+`FieldTickWorker` 批写入语义匹配（单 tick 内顺序写）。
+
+**`SceneServer.Voxel.Field.FieldRegion`** —— 持有一组 FieldLayer 的 AABB 区域：
+
+```elixir
+defstruct [
+  :region_id, :chunk_coord, :aabb, :field_types, :source_points,
+  tick_count: 0, max_ticks: nil, lease_token: nil, layers: %{}
+]
+```
+
+API：`new/1`（从 opts 构造，自动生成 region_id UUID）、`increment_tick/1`、
+`tick_limit_reached?/1`、`in_aabb?/2`（macro_index 是否落在 AABB 内）、
+`put_layer/3` / `get_layer/2`、`aabb_cell_count/1`（AABB 内格子总数，上限 4096）。
+
+### ElectricField 算法
+
+**`SceneServer.Voxel.Field.ElectricField`** —— BFS/Dijkstra 从 source_points 向 AABB 传播电势：
+
+- 数据结构：`:gb_sets` 做 max-heap（用 `{-potential, idx}` 取反，`:gb_sets.smallest` 即最大势）
+- 路径代价：`1.0 / max(density_raw / 65536.0, 0.001) × @decay_factor(0.1)`
+  （高密度格阻碍传播；density 通过 `Storage.effective_attribute_at` 读取，fallback default 65536）
+- Ionization（电离度）：`|potential| ≥ 50.0` 时每 tick +5，否则每 tick -1，固定范围 0..255
+- 出 AABB 的邻居忽略（不传播到区域外）
+
+`tick(region, storage) :: {:ok, region}` 是每 tick 入口：重算 potential + ionization FieldLayer，
+写回 region。
+
+### TemperatureField 算法
+
+**`SceneServer.Voxel.Field.TemperatureField`** —— 3D 7-stencil 显式扩散 + source_points 再写：
+
+- 扩散系数：`α = min(@base_alpha × tc_float / (default_tc / 65536.0), 0.5)`
+  （从 catalog 读 thermal_conductivity，fallback default 6554 ≈ 0.1 W/m·K；稳定性上限 0.5）
+- 衰减：`β = 0.01` 向 `env_temp = 20.0°C` 的弱衰减（防止无热源区域永远保温）
+- 出 AABB 的邻居视为 `env_temp`（Dirichlet 边界）
+- source_points 在扩散后重新写入，保持热源固定强度
+
+`tick(region, storage) :: {:ok, region}` 是每 tick 入口。
+
+### FieldCodec
+
+**`SceneServer.Voxel.Field.FieldCodec`** —— 0x73 / 0x74 wire codec：
+
+**0x73 FieldRegionSnapshot wire layout（opcode 字节包含在内）**：
+```
+opcode:          u8   = 0x73
+logical_scene_id: u64  big-endian
+cx/cy/cz:        i32 × 3  big-endian
+region_id:       u64  big-endian
+tick_count:      u32  big-endian
+field_mask:      u8   (0x01=temperature / 0x02=electric_potential / 0x04=ionization)
+cell_count:      u16  big-endian
+macro_indices[]: u16  big-endian × cell_count
+temperature[]:   f32  little-endian × cell_count  (若 field_mask & 0x01)
+electric[]:      f32  little-endian × cell_count  (若 field_mask & 0x02)
+ionization[]:    u8 × cell_count                  (若 field_mask & 0x04)
+```
+
+**0x74 FieldRegionDestroyed wire layout（opcode 字节包含在内）**：
+```
+opcode:          u8   = 0x74
+logical_scene_id: u64  big-endian
+cx/cy/cz:        i32 × 3  big-endian
+region_id:       u64  big-endian
+destroy_reason:  u8   (0x00=expired / 0x01=lease_revoked / 0x02=explicit / 0x03=chunk_crash)
+```
+
+总 30 字节固定大小。
+
+API：`encode_snapshot_payload(region, logical_scene_id)`、
+`decode_snapshot_payload!(binary)`、
+`encode_destroyed_payload(region_id, chunk_coord, logical_scene_id, destroy_reason)`。
+
+### FieldTickWorker + FieldTickSupervisor
+
+**`SceneServer.Voxel.Field.FieldTickWorker`** —— per-region GenServer，每区域独立 10 Hz 调度：
+
+- `init/1`：监控 ChunkProcess（`Process.monitor(chunk_pid)`）；调度第一个 tick
+- `handle_info(:tick)`：
+  1. `GenServer.call(chunk_pid, :debug_state, 200)` 取 storage 快照
+  2. 运行 ElectricField / TemperatureField 算法更新 region
+  3. `FieldCodec.encode_snapshot_payload` 编码
+  4. `ChunkProcess.push_field_snapshot_payload` cast 给 ChunkProcess
+  5. emit observe events：`voxel_field_tick_completed` / `voxel_field_snapshot_dispatched`
+  6. `Process.send_after(self(), :tick, @tick_interval_ms)` 调度下一 tick
+- `handle_info({:DOWN, ...})`：chunk 进程死亡 → `{:stop, :normal, state}`，
+  emit `voxel_field_region_destroyed`
+
+**`SceneServer.Voxel.Field.FieldTickSupervisor`** —— `DynamicSupervisor`：
+
+- 注册名 `name: __MODULE__`，挂在 `SceneServer.VoxelSup` children 列表（在 ChunkDirectory 前）
+- `start_worker(opts)` 以 `restart: :temporary` 启动 FieldTickWorker
+  （崩溃区域不自动重建，由上层 ChunkProcess 决策是否重建）
+
+### ChunkProcess 集成
+
+`ChunkProcess` state 新增 `field_regions: %{}` + `field_region_monitors: %{}`：
+
+- **`create_field_region(chunk_pid, region_opts)`**：cast，启动 FieldTickWorker 并监控
+- **`destroy_field_region(chunk_pid, region_id)`**：cast，`GenServer.stop` worker +
+  fan-out 0x74 payload
+- **`push_field_snapshot_payload(chunk_pid, payload)`**：cast，把编码后 payload fan-out 给所有
+  subscribers（`send(pid, {:voxel_field_region_snapshot_payload, payload})`）
+- **`push_field_region_destroyed_payload(chunk_pid, payload)`**：cast，同 fan-out 模式
+- **Lease 变更检测**：`lease_changed?/2` 检测到变更时调 `stop_all_field_workers(state, :lease_revoked)`，
+  对每个活跃区域 fan-out 0x74 payload 给订阅者
+
+### Gate forward 路径
+
+`apps/gate_server/lib/gate_server/worker/tcp_connection.ex` 新增两条 `handle_info`：
+
+```elixir
+def handle_info({:voxel_field_region_snapshot_payload, payload}, %{socket: socket} = state)
+def handle_info({:voxel_field_region_destroyed_payload, payload}, %{socket: socket} = state)
+```
+
+两者均直接调 `send_frame(socket, payload)` 转发（payload 已含 opcode 字节）。
+
+### web_client FieldDebugOverlay
+
+**`clients/web_client/src/voxel/field/fieldProtocol.ts`** —— 0x73/0x74 decoder：
+
+- `decodeFieldRegionSnapshot(buf: ArrayBuffer): FFieldRegionSnapshot | null`
+- `decodeFieldRegionDestroyed(buf: ArrayBuffer): FFieldRegionDestroyed | null`
+- f32 用 `DataView.getFloat32(offset, true)`（little-endian）；u64 = hi × 0x1_0000_0000 + lo
+- `FieldMask`：`{Temperature: 0x01, ElectricPotential: 0x02, Ionization: 0x04}`
+- `DestroyReason`：`{Expired: 0x00, LeaseRevoked: 0x01, Explicit: 0x02, ChunkCrash: 0x03}`
+
+**`clients/web_client/src/voxel/field/fieldDebugOverlay.ts`** —— Three.js 调试叠加层：
+
+- `FieldDebugOverlay` 类，`rootGroup: Group` 挂到 scene 根
+- `Map<number, FieldRegionOverlay>` 管理活跃区域（每区域含温度 / 电势 InstancedMesh + AABB LineSegments）
+- 温度色彩：`COLD_COLOR(0.05, 0.1, 1.0)` → `HOT_COLOR(1, 0.1, 0.05)`，t = (temp−20)/80 clamp [0,1]
+- 电势色彩：`LOW_ELEC_COLOR(0,0,0)` → `HIGH_ELEC_COLOR(1,1,0)`，t = |potential|/100 clamp [0,1]
+- F8 热键切换可见性（`§5.5 硬约束：隐藏默认，dev hotkey only`）
+- `macroIndexToCoord`：x = idx & 0xf，y = (idx >> 4) & 0xf，z = (idx >> 8) & 0xf
+
+**`clients/web_client/src/voxel/field/fieldProtocol.test.ts`** —— 9 条 vitest 测试：
+4 个 snapshot（temperature-only / 三字段 / 截断 null / 零格）+ 5 个 destroyed（4 个 reason × it.each + 截断 null）。
+
+**opcodes.ts 追加**：`EnvironmentUpdated: 0x72`、`FieldRegionSnapshot: 0x73`、`FieldRegionDestroyed: 0x74`
+
+**voxelProtocol.ts 追加**：case `0x73` / `0x74` dispatch + `VoxelFieldRegionSnapshotMessage` /
+`VoxelFieldRegionDestroyedMessage` 接口 + `VoxelServerMessage` union 扩展。
+
+### 测试
+
+- 服务端：6 个新测试文件（`field_layer_test / field_region_test / electric_field_test /
+  temperature_field_test / field_codec_test / field_integration_test`），共 36 新测试 →
+  **656 总 0 failures**；3 个 pinned chunk_hash baseline 字节稳定。
+- web_client：9 个新 vitest → **352 总 0 failures**。
+
+**Phase 1-6 全 done**。
