@@ -139,6 +139,8 @@ export class VoxelDebugPanelView implements FrameSubscriber {
       case "field-overlay":
         this.fieldOverlayToggle?.();
         return { ok: true, command: action, text: "field overlay toggled" };
+      case "field-create":
+        return this.commands.executeCliCommand("voxel_field_create", []);
       default:
         return { ok: false, command: action, text: "unknown voxel panel action" };
     }
@@ -205,6 +207,7 @@ export function renderVoxelDebugPanelHtml(
     renderButton("rebind", "Rebind"),
     renderButton("versions", "Versions"),
     renderButton("field-overlay", "Field"),
+    renderButton("field-create", "+Field"),
     `</div>`,
     `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
     renderNumberInput("subscribeCx", "Sub X", formState.subscribeCx),

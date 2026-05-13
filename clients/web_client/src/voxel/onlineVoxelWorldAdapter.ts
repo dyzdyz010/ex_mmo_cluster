@@ -643,6 +643,40 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return this.fieldDestroyeds.splice(0, this.fieldDestroyeds.length);
   }
 
+  requestDevFieldCreate(cx: number, cy: number, cz: number, maxTicks = 600): void {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/dev_field_create`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        cx,
+        cy,
+        cz,
+        max_ticks: maxTicks,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`dev_field_create_failed:${response.status}`);
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        this.logger.emit("voxel", "dev_field_create_ok", {
+          logical_scene_id: this.logicalSceneId,
+          chunk_coord: `${cx},${cy},${cz}`,
+          region_id: String(payload["region_id"] ?? "unknown"),
+          max_ticks: maxTicks,
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "dev_field_create" });
+      });
+  }
+
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
     this.receivedObjectStateDeltaCount += 1;
     this.objectStateDeltaConsumer.consume(message.delta);

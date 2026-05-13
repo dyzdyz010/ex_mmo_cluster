@@ -1,6 +1,6 @@
 // Phase 6: FieldDebugOverlay — Three.js debug overlay for FieldRegion field values.
 //
-// Hidden by default; toggled with F8. Shows:
+// Hidden by default; toggled with Ctrl+\ (or the "Field" button in the voxel panel). Shows:
 //   - Temperature field: blue (cold) → red (hot) InstancedMesh cubes
 //   - Electric potential: black (low) → yellow (high) InstancedMesh cubes
 //   - Region AABB: LineSegments box wireframe
@@ -113,25 +113,28 @@ export class FieldDebugOverlay {
     let electricMesh: InstancedMesh | null = null;
 
     if (snapshot.fieldMask & FieldMask.Temperature) {
-      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.45, vertexColors: true });
+      // depthTest:false + depthWrite:false so field cells are visible through terrain
+      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.45, vertexColors: true, depthTest: false, depthWrite: false });
       temperatureMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       temperatureMesh.count = 0;
       temperatureMesh.frustumCulled = false;
+      temperatureMesh.renderOrder = 5;
       temperatureMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
       group.add(temperatureMesh);
     }
 
     if (snapshot.fieldMask & FieldMask.ElectricPotential) {
-      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.5, vertexColors: true });
+      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.5, vertexColors: true, depthTest: false, depthWrite: false });
       electricMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       electricMesh.count = 0;
       electricMesh.frustumCulled = false;
+      electricMesh.renderOrder = 5;
       electricMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
       group.add(electricMesh);
     }
 
-    // AABB wireframe placeholder (updated on first snapshot)
-    const aabbWireframe = _makeAabbWireframe(0, 0, 0, 1, 1, 1);
+    // AABB wireframe: covers the full 16x16x16 macro-cell extent of the chunk
+    const aabbWireframe = _makeAabbWireframe(0, 0, 0, 16, 16, 16);
     group.add(aabbWireframe);
 
     return {
@@ -242,8 +245,10 @@ function _makeAabbWireframe(
     (maxZ - minZ) * CELL_SIZE,
   );
   const edges = new EdgesGeometry(boxGeo);
-  const mat = new LineBasicMaterial({ color: 0x00ff88 });
+  boxGeo.dispose();
+  const mat = new LineBasicMaterial({ color: 0x00ff88, depthTest: false });
   const wire = new LineSegments(edges, mat);
+  wire.renderOrder = 5;
   wire.position.set(
     ((minX + maxX) / 2) * CELL_SIZE,
     ((minY + maxY) / 2) * CELL_SIZE,

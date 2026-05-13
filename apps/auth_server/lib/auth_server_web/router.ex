@@ -33,6 +33,7 @@ defmodule AuthServerWeb.Router do
 
     post "/auto_login", IngameController, :auto_login
     post "/voxel/dev_seed", IngameController, :voxel_dev_seed
+    post "/voxel/dev_field_create", IngameController, :voxel_dev_field_create
   end
 
   scope "/ingame", AuthServerWeb do

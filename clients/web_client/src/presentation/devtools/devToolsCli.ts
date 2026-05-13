@@ -48,6 +48,7 @@ interface OnlineVoxelCliWorld extends VoxelWorldAdapter {
   subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf?: number): number | null;
   unsubscribeVoxelChunk(chunk: FChunkCoord): number | null;
   sendVoxelImpactMacro(coord: FMacroCoord, materialId: number): number | null;
+  requestDevFieldCreate(cx: number, cy: number, cz: number, maxTicks?: number): void;
 }
 
 export interface DevToolsDeps {
@@ -91,6 +92,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelUnsubscribe(command, args);
       case "voxel_impact":
         return this.cmdVoxelImpact(command, args);
+      case "voxel_field_create":
+        return this.cmdVoxelFieldCreate(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -296,6 +299,23 @@ export class DevToolsCli implements CliCommandHandler {
       materialId,
       voxel: world.debugSnapshot(),
     });
+  }
+
+  private cmdVoxelFieldCreate(command: string, args: string[]): CliCommandResult {
+    const world = this.deps.world as Partial<OnlineVoxelCliWorld>;
+    if (typeof world.requestDevFieldCreate !== "function") {
+      return { ok: false, command, text: "not available in offline mode" };
+    }
+    const cx = args[0] !== undefined ? (Number.parseInt(args[0], 10) || 0) : 0;
+    const cy = args[1] !== undefined ? (Number.parseInt(args[1], 10) || 0) : 0;
+    const cz = args[2] !== undefined ? (Number.parseInt(args[2], 10) || 0) : 0;
+    const maxTicks = args[3] !== undefined ? (Number.parseInt(args[3], 10) || 600) : 600;
+    world.requestDevFieldCreate(cx, cy, cz, maxTicks);
+    return {
+      ok: true,
+      command,
+      text: `field create request sent for chunk (${cx},${cy},${cz}) max_ticks=${maxTicks}`,
+    };
   }
 
   private cmdCell(command: string, args: string[]): CliCommandResult {

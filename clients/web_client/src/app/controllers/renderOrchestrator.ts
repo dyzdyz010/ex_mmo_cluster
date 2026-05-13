@@ -111,7 +111,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.fieldDebugOverlay = new FieldDebugOverlay();
     this.rootGroup.add(this.fieldDebugOverlay.rootGroup);
     if (import.meta.env.DEV) {
-      (window as Record<string, unknown>).__devFieldOverlay = this.fieldDebugOverlay;
+      (window as unknown as Record<string, unknown>).__devFieldOverlay = this.fieldDebugOverlay;
     }
 
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);

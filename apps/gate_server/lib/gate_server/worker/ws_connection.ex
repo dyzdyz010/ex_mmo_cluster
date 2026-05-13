@@ -273,6 +273,34 @@ defmodule GateServer.WsConnection do
     {:noreply, state}
   end
 
+  # Phase 6: forward 0x73 FieldRegionSnapshot from ChunkProcess fan-out.
+  # Payload already contains the opcode byte — send raw, do NOT go through Codec.
+  def handle_info({:voxel_field_region_snapshot_payload, payload}, state) when is_binary(payload) do
+    GateServer.CliObserve.emit("ws_voxel_field_region_snapshot_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send(state.owner_pid, {:gate_ws_send, payload})
+    {:noreply, state}
+  end
+
+  # Phase 6: forward 0x74 FieldRegionDestroyed from ChunkProcess fan-out.
+  # Payload already contains the opcode byte — send raw, do NOT go through Codec.
+  def handle_info({:voxel_field_region_destroyed_payload, payload}, state) when is_binary(payload) do
+    GateServer.CliObserve.emit("ws_voxel_field_region_destroyed_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send(state.owner_pid, {:gate_ws_send, payload})
+    {:noreply, state}
+  end
+
   @impl true
   def terminate(_reason, state) do
     cleanup_voxel_subscriptions(state)

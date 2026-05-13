@@ -74,6 +74,23 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only: creates a temperature FieldRegion on a chunk so the field debug
+  overlay can be smoke-tested.  Accepts optional JSON params:
+    * `logical_scene_id` (default 1)
+    * `cx`, `cy`, `cz`  chunk coord integers (default 0)
+    * `max_ticks`        (default 600)
+  """
+  def voxel_dev_field_create(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_dev_field_create(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -129,6 +146,48 @@ defmodule AuthServerWeb.IngameController do
         |> json(%{error: "world_server_unavailable"})
     end
   end
+
+  defp do_voxel_dev_field_create(conn, params) do
+    module = Module.concat([SceneServer, Voxel, Field, DevFieldCreate])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    chunk_coord = {parse_int(params["cx"], 0), parse_int(params["cy"], 0), parse_int(params["cz"], 0)}
+    max_ticks = parse_non_negative_int(params["max_ticks"], 600)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <-
+           apply(module, :create_dev_region, [
+             [
+               logical_scene_id: logical_scene_id,
+               chunk_coord: chunk_coord,
+               max_ticks: max_ticks
+             ]
+           ]) do
+      json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel dev field create failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "dev_field_create_failed", reason: inspect(reason)})
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "scene_server_unavailable"})
+    end
+  end
+
+  defp parse_int(value, _fallback) when is_integer(value), do: value
+
+  defp parse_int(value, fallback) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> parsed
+      _other -> fallback
+    end
+  end
+
+  defp parse_int(_value, fallback), do: fallback
 
   defp normalize_username(value) when is_binary(value) do
     trimmed = String.trim(value)
