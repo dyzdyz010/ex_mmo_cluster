@@ -567,3 +567,62 @@ definitions[definition_count] {
 （A-1..A-6 全部推荐方案，用户 2026-05-13 approve）。Phase 1.6a 3 个 pinned
 `chunk_hash` baseline 未触（服务端 storage / codec chunk_hash 路径本 commit
 完全没动），441 voxel tests + 45 new tests = 486 全绿。
+
+## Phase 5.B: TagCatalogSnapshot (2026-05-13)
+
+`SceneServer.Voxel.TagCatalogSnapshot` + `SceneServer.Voxel.TagDefinition`
+是 tag catalog 的**全量快照** wire 通道（opcode `0x6D`），与 Phase 5.A
+`AttributeCatalogSnapshot` (opcode `0x6E`) 对称但更简单：tag 只携带
+`id + name`，无 `value_type / default / min / max / merge_rule / dynamic`
+（Phase 1.3 T-2 决策"不携带 value"——要 value 走 `AttributeSet` /
+`AttributeCatalog`）。增量更新仍走 Phase 1.4 `CatalogPatch` envelope
+（opcode `0x71`，`schema_kind=0x02` tag）。
+
+Phase 1.3 chunk-local `TagSet.tag_ids` 中的每个 u32 元素在 Phase 5.B 之后
+**语义升级**为本模块的 `TagDefinition.id`（catalog 全局 id）；wire 字段不变
+（仍 u32）。
+
+**`TagDefinition`** —— catalog 内单条定义：
+
+| 字段 | wire 类型 | 校验 |
+|------|-----------|------|
+| `id` | u32 | 全局 tag_id |
+| `name` | u16 length-prefixed UTF-8 | 非空 |
+
+`normalize!/1` 强制 `name` 严格 UTF-8 校验、非空、`id` 在 u32 范围。
+
+**`TagCatalogSnapshot`** —— `%{catalog_version: u64, definitions: [...]}`。
+`normalize!/1` 自动按 `id` 升序、拒绝重复 id。`encode_for_wire/1` 顺手再 sort
+一遍，保 wire 字节序唯一。
+
+**Wire layout (opcode 0x6D, payload only, 一旦发出即冻结)**：
+
+```text
+catalog_version: u64
+definition_count: u32
+definitions[definition_count] {
+  id:       u32
+  name_len: u16
+  name:     bytes(name_len)        # UTF-8 非空
+}
+```
+
+字节量估算：空 catalog = `<<0u64, 0u32>>` 共 12 字节；每条 `TagDefinition`
+wire 字节数 = `4 + 2 + name_byte_len`，例如 `name="flammable"`(9B) → 15 B/definition。
+
+**设计决策**（与 Phase 1.3 T-1..T-4 + Phase 5.A A-1..A-2 一致，无新决策点）：
+- T-1 扁平 u32 id，无 namespace
+- T-2 不携带 value
+- A-1 全局 scope
+- A-2 UTF-8 + u16 length prefix
+- definition_count u32 / catalog_version u64 monotonic
+
+**Phase 5.B 边界**（与 Phase 5.C-F 区分）：
+- 本 commit 仅 wire typed module + Elixir codec；**不**集成 gate outbound
+  dispatch、**不**实现 catalog 持久化（DataService schema）、**不**注入
+  第一批 typed tag（flammable / conductive / 等）—— 这些归 Phase 5.C。
+- 客户端 TS decoder（`clients/web_client/src/voxel/`）也推到 Phase 5.C
+  真正下发 catalog 时一并落地。
+
+Phase 1.6a 3 个 pinned `chunk_hash` baseline 未触（服务端 storage / codec
+chunk_hash 路径本 commit 完全没动），486 voxel tests + 34 new tests = 520 全绿。
