@@ -147,15 +147,20 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  # Dispatches to WorldServer (not SceneServer) because the controller runs on
+  # the app node, where SceneServer.Voxel.ChunkDirectory is only loaded — not
+  # registered. WorldServer.Voxel.DevFieldSeed forwards to the scene node via
+  # :rpc.call, mirroring the WorldServer.Voxel.DevSeed pattern used by
+  # voxel_dev_seed.
   defp do_voxel_dev_field_create(conn, params) do
-    module = Module.concat([SceneServer, Voxel, Field, DevFieldCreate])
+    module = Module.concat([WorldServer, Voxel, DevFieldSeed])
     logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
     chunk_coord = {parse_int(params["cx"], 0), parse_int(params["cy"], 0), parse_int(params["cz"], 0)}
     max_ticks = parse_non_negative_int(params["max_ticks"], 600)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
          {:ok, summary} <-
-           apply(module, :create_dev_region, [
+           apply(module, :ensure_default_field, [
              [
                logical_scene_id: logical_scene_id,
                chunk_coord: chunk_coord,
@@ -174,7 +179,7 @@ defmodule AuthServerWeb.IngameController do
       _other ->
         conn
         |> put_status(:service_unavailable)
-        |> json(%{error: "scene_server_unavailable"})
+        |> json(%{error: "world_server_unavailable"})
     end
   end
 
