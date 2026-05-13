@@ -216,10 +216,10 @@ export class FieldDebugOverlay {
   private _bindHotkey(): void {
     if (typeof window === "undefined") return;
     window.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "F8") {
+      if (e.key === "`") {
         e.preventDefault();
         this.toggle();
-        console.info(`[FieldDebugOverlay] ${this.visible ? "shown" : "hidden"} (F8)`);
+        console.info(`[FieldDebugOverlay] ${this.visible ? "shown" : "hidden"} (\`)`);
       }
     });
   }
