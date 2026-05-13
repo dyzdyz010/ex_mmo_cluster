@@ -341,6 +341,37 @@ defmodule GateServer.TcpConnection do
     {:noreply, state}
   end
 
+  # Phase 6: forward 0x73 FieldRegionSnapshot from ChunkProcess fan-out
+  # to the TCP socket. FieldTickWorker encoded the binary (already including
+  # the opcode byte) and ChunkProcess cast it into our mailbox via send/2.
+  # The `{packet, 4}` setting on the socket adds the 4-byte length prefix.
+  def handle_info({:voxel_field_region_snapshot_payload, payload}, %{socket: socket} = state)
+      when is_binary(payload) do
+    GateServer.CliObserve.emit("tcp_voxel_field_region_snapshot_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send_frame(socket, payload)
+    {:noreply, state}
+  end
+
+  # Phase 6: forward 0x74 FieldRegionDestroyed from ChunkProcess fan-out.
+  def handle_info({:voxel_field_region_destroyed_payload, payload}, %{socket: socket} = state)
+      when is_binary(payload) do
+    GateServer.CliObserve.emit("tcp_voxel_field_region_destroyed_forwarded", %{
+      connection_pid: self(),
+      cid: state.cid,
+      bytes: byte_size(payload),
+      subscription_count: map_size(state.voxel_subscriptions)
+    })
+
+    send_frame(socket, payload)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("tcp_receive", fn ->
@@ -2420,6 +2451,13 @@ defmodule GateServer.TcpConnection do
   defp send_encoded(socket, message) do
     {:ok, bin} = GateServer.Codec.encode(message)
     :gen_tcp.send(socket, bin)
+  end
+
+  # Phase 6: forward a pre-encoded payload (opcode byte already prefixed by
+  # the producer) directly. The `{packet, 4}` socket option still adds the
+  # 4-byte big-endian length prefix at the gen_tcp layer.
+  defp send_frame(socket, payload) when is_binary(payload) do
+    :gen_tcp.send(socket, payload)
   end
 
   defp observe_message_summary({:auth_request, username, _token, request_id}) do

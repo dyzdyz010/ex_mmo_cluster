@@ -18,6 +18,10 @@ import {
 } from "../../voxel/storage/types";
 import { decodeTagSetPool, type TagSet } from "../../voxel/tagSet";
 import { decodeObjectStateDelta, type ObjectStateDelta } from "./objectStateDelta";
+import {
+  decodeFieldRegionDestroyed,
+  decodeFieldRegionSnapshot,
+} from "../../voxel/field/fieldProtocol";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
   decodeRefinedCellPayload,
@@ -188,6 +192,16 @@ export interface VoxelCatalogPatchMessage {
   patch: CatalogPatch;
 }
 
+export interface VoxelFieldRegionSnapshotMessage {
+  type: "voxel_field_region_snapshot";
+  snapshot: import("../../voxel/field/fieldProtocol").FFieldRegionSnapshot;
+}
+
+export interface VoxelFieldRegionDestroyedMessage {
+  type: "voxel_field_region_destroyed";
+  destroyed: import("../../voxel/field/fieldProtocol").FFieldRegionDestroyed;
+}
+
 export type VoxelServerMessage =
   | VoxelChunkSnapshotMessage
   | VoxelChunkDeltaMessage
@@ -195,7 +209,9 @@ export type VoxelServerMessage =
   | VoxelIntentResultMessage
   | VoxelDebugProbeMessage
   | VoxelObjectStateDeltaMessage
-  | VoxelCatalogPatchMessage;
+  | VoxelCatalogPatchMessage
+  | VoxelFieldRegionSnapshotMessage
+  | VoxelFieldRegionDestroyedMessage;
 
 export function encodeVoxelDebugProbe(
   requestId: number,
@@ -498,6 +514,10 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
       return decodeObjectStateDeltaMessage(payload);
     case VoxelOpcode.CatalogPatch:
       return decodeCatalogPatchMessage(payload);
+    case VoxelOpcode.FieldRegionSnapshot:
+      return decodeFieldRegionSnapshotMessage(payload);
+    case VoxelOpcode.FieldRegionDestroyed:
+      return decodeFieldRegionDestroyedMessage(payload);
     default:
       return null;
   }
@@ -959,4 +979,22 @@ function decodeResultCodeName(
     default:
       return "unknown";
   }
+}
+
+// Phase 6: FieldRegionSnapshot (0x73) decoder
+function decodeFieldRegionSnapshotMessage(
+  payload: ArrayBuffer,
+): VoxelFieldRegionSnapshotMessage | null {
+  const snapshot = decodeFieldRegionSnapshot(payload);
+  if (!snapshot) return null;
+  return { type: "voxel_field_region_snapshot", snapshot };
+}
+
+// Phase 6: FieldRegionDestroyed (0x74) decoder
+function decodeFieldRegionDestroyedMessage(
+  payload: ArrayBuffer,
+): VoxelFieldRegionDestroyedMessage | null {
+  const destroyed = decodeFieldRegionDestroyed(payload);
+  if (!destroyed) return null;
+  return { type: "voxel_field_region_destroyed", destroyed };
 }

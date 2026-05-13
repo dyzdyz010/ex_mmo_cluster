@@ -14,6 +14,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
+  alias SceneServer.Voxel.Field.FieldCodec
+  alias SceneServer.Voxel.Field.FieldRegion
+  alias SceneServer.Voxel.Field.FieldTickSupervisor
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
@@ -248,6 +251,52 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.cast(server, {:push_object_state_delta_payload, payload})
   end
 
+  @doc """
+  Phase 6: creates a new local FieldRegion bound to this chunk.
+
+  Spawns a `SceneServer.Voxel.Field.FieldTickWorker` under
+  `SceneServer.Voxel.Field.FieldTickSupervisor`. The worker independently
+  schedules 10 Hz ticks and pushes 0x73 FieldRegionSnapshot payloads to
+  this chunk via `push_field_snapshot_payload/2`.
+
+  `attrs` is forwarded to `SceneServer.Voxel.Field.FieldRegion.new/1`
+  with `:region_id` and `:lease_token` populated automatically.
+
+  Returns `{:ok, region_id}` or `{:error, reason}`.
+  """
+  @spec create_field_region(GenServer.server(), map()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def create_field_region(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:create_field_region, attrs})
+  end
+
+  @doc """
+  Phase 6: destroys a FieldRegion by region_id. Stops the worker (if alive)
+  and pushes a 0x74 FieldRegionDestroyed payload to subscribers.
+  """
+  @spec destroy_field_region(GenServer.server(), non_neg_integer()) :: :ok | {:error, term()}
+  def destroy_field_region(server, region_id) when is_integer(region_id) do
+    GenServer.call(server, {:destroy_field_region, region_id})
+  end
+
+  @doc """
+  Phase 6: fan-out a pre-encoded FieldRegionSnapshot (0x73) payload to every
+  subscriber. Called by FieldTickWorker each tick (GenServer.cast).
+  """
+  @spec push_field_snapshot_payload(GenServer.server(), binary()) :: :ok
+  def push_field_snapshot_payload(server, payload) when is_binary(payload) do
+    GenServer.cast(server, {:push_field_snapshot_payload, payload})
+  end
+
+  @doc """
+  Phase 6: fan-out a pre-encoded FieldRegionDestroyed (0x74) payload to every
+  subscriber. Called by FieldTickWorker on expiry / destroy.
+  """
+  @spec push_field_region_destroyed_payload(GenServer.server(), binary()) :: :ok
+  def push_field_region_destroyed_payload(server, payload) when is_binary(payload) do
+    GenServer.cast(server, {:push_field_region_destroyed_payload, payload})
+  end
+
   @doc "Returns process state for CLI/debug inspection."
   def debug_state(server) do
     GenServer.call(server, :debug_state)
@@ -291,7 +340,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
        simulation_tick: simulation_tick,
        # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
        # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
-       simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil)
+       simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
+       # Phase 6: per-region FieldTickWorker tracking.
+       # field_regions:        %{region_id => worker_pid}
+       # field_region_monitors: %{monitor_ref => region_id}
+       field_regions: %{},
+       field_region_monitors: %{}
      }}
   end
 
@@ -380,7 +434,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
       }
     end)
 
-    {:reply, {:ok, lease}, %{state | lease: lease}}
+    # Phase 6: when the lease token changes, all per-region field workers
+    # captured the previous lease — stop them so a fresh leaseholder does
+    # not see stale field state from the prior epoch.
+    next_state =
+      if lease_changed?(state.lease, lease) do
+        stop_all_field_workers(state, :lease_revoked)
+      else
+        state
+      end
+
+    {:reply, {:ok, lease}, %{next_state | lease: lease}}
   end
 
   def handle_call({:load_snapshot, attrs}, _from, state) do
@@ -787,9 +851,105 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  # Phase 6: create a new FieldRegion under FieldTickSupervisor.
+  def handle_call({:create_field_region, attrs}, _from, state) when is_map(attrs) do
+    region_id =
+      Map.get_lazy(attrs, :region_id, fn ->
+        System.unique_integer([:positive, :monotonic])
+      end)
+
+    region_attrs =
+      attrs
+      |> Map.put(:region_id, region_id)
+      |> Map.put_new(:chunk_coord, state.chunk_coord)
+      |> Map.put_new(:lease_token, state.lease)
+
+    try do
+      region = FieldRegion.new(region_attrs)
+
+      chunk_pid = self()
+
+      worker_opts = [
+        region: region,
+        chunk_pid: chunk_pid,
+        storage_fn: build_storage_fn(),
+        logical_scene_id: state.logical_scene_id
+      ]
+
+      case FieldTickSupervisor.start_worker(worker_opts) do
+        {:ok, worker_pid} ->
+          monitor_ref = Process.monitor(worker_pid)
+
+          new_state = %{
+            state
+            | field_regions: Map.put(state.field_regions, region_id, worker_pid),
+              field_region_monitors:
+                Map.put(state.field_region_monitors, monitor_ref, region_id)
+          }
+
+          {:reply, {:ok, region_id}, new_state}
+
+        {:error, reason} ->
+          {:reply, {:error, {:start_worker_failed, reason}}, state}
+      end
+    rescue
+      error -> {:reply, {:error, {:invalid_field_region, Exception.message(error)}}, state}
+    end
+  end
+
+  # Phase 6: destroy a FieldRegion by region_id (explicit caller-initiated).
+  def handle_call({:destroy_field_region, region_id}, _from, state)
+      when is_integer(region_id) do
+    case Map.fetch(state.field_regions, region_id) do
+      :error ->
+        {:reply, {:error, :not_found}, state}
+
+      {:ok, worker_pid} ->
+        destroyed_payload =
+          FieldCodec.encode_destroyed_payload(
+            region_id,
+            state.chunk_coord,
+            state.logical_scene_id,
+            :explicit
+          )
+
+        if Process.alive?(worker_pid) do
+          # Best-effort stop; the {:DOWN, ...} handler will clean monitor maps.
+          try do
+            GenServer.stop(worker_pid, :normal, 1_000)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+
+        new_state =
+          state
+          |> drop_field_region_id(region_id)
+          |> tap(fn _ ->
+            fan_out_field_region_destroyed_payload(state, destroyed_payload)
+          end)
+
+        {:reply, :ok, new_state}
+    end
+  end
+
   @impl true
   def handle_cast({:push_object_state_delta_payload, payload}, state) when is_binary(payload) do
     fan_out_object_state_delta_payload(state, payload)
+    {:noreply, state}
+  end
+
+  # Phase 6: fan out 0x73 FieldRegionSnapshot from FieldTickWorker.
+  def handle_cast({:push_field_snapshot_payload, payload}, state) when is_binary(payload) do
+    fan_out_field_snapshot_payload(state, payload)
+    {:noreply, state}
+  end
+
+  # Phase 6: fan out 0x74 FieldRegionDestroyed from FieldTickWorker (expired
+  # or chunk crash path inside the worker).
+  def handle_cast({:push_field_region_destroyed_payload, payload}, state)
+      when is_binary(payload) do
+    fan_out_field_region_destroyed_payload(state, payload)
     {:noreply, state}
   end
 
@@ -831,25 +991,44 @@ defmodule SceneServer.Voxel.ChunkProcess do
         {:noreply, state}
 
       nil ->
-        case Map.get(state.subscriber_monitors, monitor_ref) do
-          ^subscriber ->
-            state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
+        case Map.get(state.field_region_monitors, monitor_ref) do
+          nil ->
+            case Map.get(state.subscriber_monitors, monitor_ref) do
+              ^subscriber ->
+                state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
 
-            CliObserve.emit("voxel_chunk_unsubscribe", fn ->
+                CliObserve.emit("voxel_chunk_unsubscribe", fn ->
+                  %{
+                    logical_scene_id: state.logical_scene_id,
+                    chunk_coord: state.chunk_coord,
+                    subscriber: subscriber,
+                    reason: inspect(reason),
+                    result: :subscriber_down,
+                    subscriber_count: map_size(state.subscribers)
+                  }
+                end)
+
+                {:noreply, state}
+
+              _other ->
+                {:noreply, state}
+            end
+
+          region_id ->
+            CliObserve.emit("voxel_field_region_worker_down", fn ->
               %{
                 logical_scene_id: state.logical_scene_id,
                 chunk_coord: state.chunk_coord,
-                subscriber: subscriber,
-                reason: inspect(reason),
-                result: :subscriber_down,
-                subscriber_count: map_size(state.subscribers)
+                region_id: region_id,
+                reason: inspect(reason)
               }
             end)
 
-            {:noreply, state}
+            new_state =
+              state
+              |> drop_field_region_monitor(monitor_ref, region_id)
 
-          _other ->
-            {:noreply, state}
+            {:noreply, new_state}
         end
     end
   end
@@ -2610,6 +2789,127 @@ defmodule SceneServer.Voxel.ChunkProcess do
         }
       end)
     end)
+  end
+
+  # Phase 6: fan out a 0x73 FieldRegionSnapshot to every subscriber.
+  defp fan_out_field_snapshot_payload(state, payload) do
+    Enum.each(state.subscribers, fn {subscriber, _opts} ->
+      send(subscriber, {:voxel_field_region_snapshot_payload, payload})
+
+      CliObserve.emit("voxel_field_snapshot_push", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          subscriber: subscriber,
+          byte_size: byte_size(payload)
+        }
+      end)
+    end)
+  end
+
+  # Phase 6: fan out a 0x74 FieldRegionDestroyed to every subscriber.
+  defp fan_out_field_region_destroyed_payload(state, payload) do
+    Enum.each(state.subscribers, fn {subscriber, _opts} ->
+      send(subscriber, {:voxel_field_region_destroyed_payload, payload})
+
+      CliObserve.emit("voxel_field_region_destroyed_push", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          subscriber: subscriber,
+          byte_size: byte_size(payload)
+        }
+      end)
+    end)
+  end
+
+  # Phase 6: closure factory captured by FieldTickWorker. Sends `:debug_state`
+  # to the chunk process to retrieve current storage at tick time.
+  defp build_storage_fn do
+    chunk_pid = self()
+
+    fn ->
+      try do
+        case GenServer.call(chunk_pid, :debug_state, 200) do
+          %{storage: %Storage{} = storage} -> storage
+          _ -> nil
+        end
+      catch
+        :exit, _ -> nil
+      end
+    end
+  end
+
+  # Phase 6: removes (region_id → worker_pid) and the corresponding monitor_ref.
+  defp drop_field_region_id(state, region_id) do
+    {worker_pid, field_regions} = Map.pop(state.field_regions, region_id)
+
+    field_region_monitors =
+      if worker_pid do
+        state.field_region_monitors
+        |> Enum.reject(fn {_ref, rid} -> rid == region_id end)
+        |> Map.new()
+      else
+        state.field_region_monitors
+      end
+
+    %{state | field_regions: field_regions, field_region_monitors: field_region_monitors}
+  end
+
+  # Phase 6: removes by monitor_ref (used in the :DOWN path).
+  defp drop_field_region_monitor(state, monitor_ref, region_id) do
+    monitors = Map.delete(state.field_region_monitors, monitor_ref)
+    regions = Map.delete(state.field_regions, region_id)
+    %{state | field_region_monitors: monitors, field_regions: regions}
+  end
+
+  # Phase 6: compare lease tokens. If region_id / lease_id / owner_scene_instance_ref
+  # / owner_epoch differ we consider it a fresh token; nil → nil never changes.
+  defp lease_changed?(nil, nil), do: false
+  defp lease_changed?(nil, _new), do: true
+  defp lease_changed?(_old, nil), do: true
+
+  defp lease_changed?(old, new) when is_map(old) and is_map(new) do
+    Map.get(old, :region_id) != Map.get(new, :region_id) or
+      Map.get(old, :lease_id) != Map.get(new, :lease_id) or
+      Map.get(old, :owner_scene_instance_ref) != Map.get(new, :owner_scene_instance_ref) or
+      Map.get(old, :owner_epoch) != Map.get(new, :owner_epoch)
+  end
+
+  defp lease_changed?(_old, _new), do: false
+
+  # Phase 6: stop every worker and push 0x74 to subscribers for each region.
+  defp stop_all_field_workers(state, reason) do
+    Enum.each(state.field_regions, fn {region_id, worker_pid} ->
+      if Process.alive?(worker_pid) do
+        try do
+          GenServer.stop(worker_pid, :normal, 1_000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      destroyed_payload =
+        FieldCodec.encode_destroyed_payload(
+          region_id,
+          state.chunk_coord,
+          state.logical_scene_id,
+          reason
+        )
+
+      fan_out_field_region_destroyed_payload(state, destroyed_payload)
+
+      CliObserve.emit("voxel_field_region_destroyed", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          region_id: region_id,
+          destroy_reason: reason
+        }
+      end)
+    end)
+
+    %{state | field_regions: %{}, field_region_monitors: %{}}
   end
 
   # Temporary ChunkDelta fallback: push the full authoritative snapshot until

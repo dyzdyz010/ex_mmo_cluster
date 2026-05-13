@@ -21,6 +21,10 @@ defmodule SceneServer.VoxelSup do
       {SceneServer.Voxel.AttributeCatalog, name: SceneServer.Voxel.AttributeCatalog},
       {SceneServer.Voxel.TagCatalog, name: SceneServer.Voxel.TagCatalog},
       {SceneServer.Voxel.RegionRuntime, name: SceneServer.Voxel.RegionRuntime},
+      # Phase 6: per-region field worker DynamicSupervisor must come up
+      # before ChunkDirectory / ChunkProcess can spawn field workers.
+      {SceneServer.Voxel.Field.FieldTickSupervisor,
+       name: SceneServer.Voxel.Field.FieldTickSupervisor},
       {SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup},
       {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory},
       {SceneServer.Voxel.ObjectRegistry, name: SceneServer.Voxel.ObjectRegistry},
