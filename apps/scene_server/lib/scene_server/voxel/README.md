@@ -374,3 +374,58 @@ sets[set_count] {
 
 设计与决策点：`docs/plans/2026-05-13-phase1-tag-set-typed-domain.md`
 （T-1..T-4 全部推荐方案）。Phase 1.4 `CatalogPatch` 走同一节奏独立 commit。
+
+## Phase 1.4: CatalogPatch envelope (2026-05-13)
+
+`SceneServer.Voxel.CatalogPatch` 是 attribute / tag catalog 的增量变更 wire 通道
+（opcode **`0x71`**），作为 Phase 5 `AttributeCatalogSnapshot` (`0x6E`) /
+`TagCatalogSnapshot` (`0x6D`) 全量快照之外的 incremental delta 载体。
+
+Phase 1.4 只实装 **envelope encode / decode**：payload 字节保持 raw binary，
+Phase 5 引入 `AttributeDefinition` / `TagDefinition` 时再解释 op payload 内容。
+
+opcode 槽位说明：设计草案推荐 `0x6F`，与生产现有 `VoxelDebugProbe` 冲突，
+用户 2026-05-13 改判 `0x71`；voxel 保留段相应扩展到 `0x60..0x7F`。
+
+**Wire layout (opcode 0x71, 一旦发出即冻结)**：
+
+```
+CatalogPatch
+  schema_kind: u8           # 0x01 attribute / 0x02 tag / 0x03..0xFF reserved
+  base_version: u64         # catalog 基线版本
+  new_version: u64          # catalog 新版本（必须 >= base_version）
+  op_count: u16
+  ops[op_count] {
+    op_kind: u8             # 0x01 add / 0x02 remove / 0x03 update / 0x04..0xFF reserved
+    entry_id: u32           # attribute_id / tag_id
+    payload_len: u16        # forward-compat: 让 decoder skip unknown op_kind
+    payload: bytes(payload_len)
+  }
+```
+
+Envelope = 1 + 8 + 8 + 2 = 19 bytes；每条 op header = 1 + 4 + 2 = 7 bytes。
+
+**Forward-compat 规则**：
+
+- 未知 `op_kind`（0x04..0xFF）：decoder **保留** raw payload，`op_kind` 数值
+  原样回填；re-encode 是 byte-identical pass-through，中间路由节点不需要
+  schema 升级即可转发未来 catalog op。
+- 未知 `schema_kind`：decoder 硬错误（`{:error, :unknown_schema_kind}` /
+  `decode_for_wire!/1` raise）。schema_kind 是 envelope-level dispatch tag，
+  未知值意味着协议演进，必须 bump opcode 或更高层处理，不能静默吞掉。
+- `base_version > new_version`：normalize / encode / decode 都拒绝
+  （catalog version 必须单调）。
+
+**Ops 顺序语义**：CatalogPatch ops 是**顺序应用**（不 canonicalize），与
+`AttributeSet` / `TagSet` 池的 byte-wise canonical 排序明确不同。
+
+**Phase 1.4 边界**（与 Phase 5 区分）：
+- 本 commit 只动 scene 侧 envelope；**不**集成 gate codec / 客户端 decoder。
+- payload 内容 Phase 5 落地 `AttributeDefinition` / `TagDefinition` 时再解释。
+- op 形态保持 `%{op_kind, entry_id, payload}` map（P-3 推荐方案）；Phase 5
+  升级为 typed `CatalogPatchOp` struct。
+- envelope **不**含 `transaction_id` / `actor_id` 等 provenance metadata
+  （P-2 推荐最小化方案）。
+
+设计与决策点：`docs/plans/2026-05-13-phase1-catalog-patch-minimum.md`
+（P-1..P-3 全部推荐方案，opcode 实际值由 0x6F 改 0x71）。
