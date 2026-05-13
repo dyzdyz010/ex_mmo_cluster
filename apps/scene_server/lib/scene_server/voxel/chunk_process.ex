@@ -928,6 +928,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end)
     end)
 
+    # Phase 5.F: 将每个 simulator 返回的 env_delta 编码为 EnvironmentUpdated
+    # (opcode 0x72) wire payload 并 fanout 给本 chunk 的 subscribers。Phase 5.F
+    # 本 commit 不修改 storage.environment_summaries(避免影响 chunk_hash baseline
+    # + 现有 chunk_version 语义);simulator writeback 推到 Phase 5.F.runtime。
+    chunk_version = state.storage.chunk_version
+
+    Enum.each(summary.env_deltas, fn {sim_id, env_delta} ->
+      maybe_fan_out_environment_updated_payload(
+        state,
+        sim_id,
+        env_delta,
+        chunk_version,
+        simulation_tick.tick_seq
+      )
+    end)
+
     # Phase 5.E 策略:dirty_bounds 在 tick 后无条件清空(失败 simulator
     # 不阻塞 dirty 清理);失败 simulator 的重试机会 = 下个 tick 自然累积。
     # Phase 5.F 真正温湿度 simulator 落地后,可在此根据 summary.failures
@@ -2516,6 +2532,64 @@ defmodule SceneServer.Voxel.ChunkProcess do
     Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
       push_snapshot_fallback(state, subscriber, request_id, payload, reason)
     end)
+  end
+
+  # Phase 5.F: encode and fan out an EnvironmentUpdated (opcode 0x72) wire
+  # payload to subscribers when a DiffusionSimulator (or similar) returns a
+  # non-empty env_delta with ops. base_chunk_version = new_chunk_version =
+  # current storage chunk_version (Phase 5.F simulator does NOT mutate
+  # storage.environment_summaries in this commit; writeback to canonical
+  # storage推到 Phase 5.F.runtime).
+  defp maybe_fan_out_environment_updated_payload(state, sim_id, env_delta, chunk_version, tick_seq) do
+    cond do
+      not is_map(env_delta) ->
+        :ok
+
+      not Map.has_key?(env_delta, :ops) ->
+        :ok
+
+      env_delta.ops == [] ->
+        :ok
+
+      map_size(state.subscribers) == 0 ->
+        # No subscribers to push to; observe-only counter still emitted below.
+        CliObserve.emit("voxel_environment_updated_skipped", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            tick_seq: tick_seq,
+            simulator_id: sim_id,
+            update_count: length(env_delta.ops),
+            reason: :no_subscribers
+          }
+        end)
+
+      true ->
+        payload =
+          Codec.encode_environment_updated_payload(%{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            base_chunk_version: chunk_version,
+            new_chunk_version: chunk_version,
+            updates: env_delta.ops
+          })
+
+        Enum.each(state.subscribers, fn {subscriber, _opts} ->
+          send(subscriber, {:voxel_environment_updated_payload, payload})
+        end)
+
+        CliObserve.emit("voxel_environment_updated_push", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            tick_seq: tick_seq,
+            simulator_id: sim_id,
+            update_count: length(env_delta.ops),
+            byte_size: byte_size(payload),
+            subscriber_count: map_size(state.subscribers)
+          }
+        end)
+    end
   end
 
   # Phase 4-bis (D1):fan out an already-encoded ObjectStateDelta wire

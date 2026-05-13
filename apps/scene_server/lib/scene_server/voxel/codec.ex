@@ -439,6 +439,243 @@ defmodule SceneServer.Voxel.Codec do
 
   defp decode_object_state_delta_chunks(_, _, _), do: {:error, :invalid_affected_chunks}
 
+  # ---------------------------------------------------------------------------
+  # Phase 5.F — EnvironmentUpdated (opcode 0x72)
+  # ---------------------------------------------------------------------------
+
+  # Forward-compat: only these two bits are defined in Phase 5.F. Other bits
+  # are reserved; encoder rejects them, decoder rejects them with ArgumentError
+  # (与 catalog_patch envelope 同款 "未知 schema_kind 硬错误" 纪律).
+  @env_field_temperature 0x01
+  @env_field_moisture 0x02
+  @env_field_known_mask 0x03
+
+  @doc """
+  Encodes a v1 `EnvironmentUpdated` payload (Phase 5.F, opcode `0x72`).
+
+  Wire layout（一旦发出即冻结）：
+
+      logical_scene_id     u64
+      chunk_coord          i32 cx, i32 cy, i32 cz
+      base_chunk_version   u64
+      new_chunk_version    u64
+      update_count         u16
+      updates[update_count] {
+        macro_index   u16            // 0..4095
+        field_mask    u8             // 0x01 temperature / 0x02 moisture
+        temperature   i16            // 仅 field_mask 含 0x01 时存在
+        moisture      i16            // 仅 field_mask 含 0x02 时存在
+        source_hash   u32            // 输入 hash for replay
+      }
+
+  Order on wire (per-update): macro_index, field_mask, optional temperature,
+  optional moisture, source_hash. `field_mask` 必须仅包含 known bits
+  (`0x01` / `0x02`)；其它 bit 视为 unknown schema kind，encoder / decoder
+  都硬错误（与 Phase 1.4 CatalogPatch envelope 同款纪律）。
+
+  Caller responsibility: `updates` 内 `macro_index` 必须在 `0..4095`，
+  `temperature` / `moisture` 必须落在 i16 范围（`-0x8000..0x7FFF`）。
+  """
+  @spec encode_environment_updated_payload(map()) :: binary()
+  def encode_environment_updated_payload(%{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: {cx, cy, cz},
+        base_chunk_version: base_version,
+        new_chunk_version: new_version,
+        updates: updates
+      })
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and
+             is_integer(cx) and is_integer(cy) and is_integer(cz) and
+             is_integer(base_version) and base_version >= 0 and
+             is_integer(new_version) and new_version >= 0 and
+             is_list(updates) do
+    cond do
+      base_version < 0 or new_version < 0 ->
+        raise ArgumentError, "chunk versions must be non-negative"
+
+      length(updates) > 0xFFFF ->
+        raise ArgumentError, "EnvironmentUpdated update_count exceeds u16 range"
+
+      true ->
+        encoded_updates = Enum.map(updates, &encode_environment_update_op/1)
+
+        IO.iodata_to_binary([
+          <<logical_scene_id::unsigned-big-integer-size(64)>>,
+          <<cx::signed-big-integer-size(32), cy::signed-big-integer-size(32),
+            cz::signed-big-integer-size(32)>>,
+          <<base_version::unsigned-big-integer-size(64)>>,
+          <<new_version::unsigned-big-integer-size(64)>>,
+          <<length(updates)::unsigned-big-integer-size(16)>>,
+          encoded_updates
+        ])
+    end
+  end
+
+  defp encode_environment_update_op(%{macro_index: macro_index, field_mask: field_mask} = op)
+       when is_integer(macro_index) and is_integer(field_mask) do
+    cond do
+      macro_index < 0 or macro_index > 4095 ->
+        raise ArgumentError, "EnvironmentUpdated macro_index out of 0..4095: #{macro_index}"
+
+      field_mask <= 0 or field_mask > 0xFF ->
+        raise ArgumentError, "EnvironmentUpdated field_mask out of 1..255: #{field_mask}"
+
+      Bitwise.band(field_mask, Bitwise.bnot(@env_field_known_mask)) != 0 ->
+        raise ArgumentError,
+              "EnvironmentUpdated unknown field_mask bits in #{Integer.to_string(field_mask, 16)}; only 0x01/0x02 supported"
+
+      true ->
+        source_hash = Map.get(op, :source_hash, 0)
+
+        unless is_integer(source_hash) and source_hash >= 0 and source_hash <= 0xFFFF_FFFF do
+          raise ArgumentError, "EnvironmentUpdated source_hash out of u32: #{inspect(source_hash)}"
+        end
+
+        temperature_segment =
+          if Bitwise.band(field_mask, @env_field_temperature) != 0 do
+            temp = Map.fetch!(op, :temperature)
+            validate_i16!(temp, :temperature)
+            <<temp::signed-big-integer-size(16)>>
+          else
+            <<>>
+          end
+
+        moisture_segment =
+          if Bitwise.band(field_mask, @env_field_moisture) != 0 do
+            moist = Map.fetch!(op, :moisture)
+            validate_i16!(moist, :moisture)
+            <<moist::signed-big-integer-size(16)>>
+          else
+            <<>>
+          end
+
+        IO.iodata_to_binary([
+          <<macro_index::unsigned-big-integer-size(16)>>,
+          <<field_mask::unsigned-integer-size(8)>>,
+          temperature_segment,
+          moisture_segment,
+          <<source_hash::unsigned-big-integer-size(32)>>
+        ])
+    end
+  end
+
+  defp validate_i16!(value, label) when is_integer(value) do
+    if value < -0x8000 or value > 0x7FFF do
+      raise ArgumentError, "EnvironmentUpdated #{label} out of i16 range: #{value}"
+    end
+
+    :ok
+  end
+
+  defp validate_i16!(value, label) do
+    raise ArgumentError, "EnvironmentUpdated #{label} not an integer: #{inspect(value)}"
+  end
+
+  @doc """
+  Decodes a v1 `EnvironmentUpdated` payload (opcode `0x72`), returning
+  `{:ok, decoded}` or `{:error, reason}`.
+  """
+  @spec decode_environment_updated_payload(binary()) :: {:ok, map()} | {:error, term()}
+  def decode_environment_updated_payload(payload) when is_binary(payload) do
+    {:ok, decode_environment_updated_payload!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError, KeyError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc "Decodes a v1 `EnvironmentUpdated` payload or raises `ArgumentError`."
+  @spec decode_environment_updated_payload!(binary()) :: map()
+  def decode_environment_updated_payload!(
+        <<logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
+          cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
+          base_version::unsigned-big-integer-size(64), new_version::unsigned-big-integer-size(64),
+          update_count::unsigned-big-integer-size(16), rest::binary>>
+      ) do
+    {updates, <<>>} = decode_environment_update_ops(rest, update_count, [])
+
+    %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: {cx, cy, cz},
+      base_chunk_version: base_version,
+      new_chunk_version: new_version,
+      updates: updates
+    }
+  end
+
+  def decode_environment_updated_payload!(_payload) do
+    raise ArgumentError, "malformed EnvironmentUpdated payload"
+  end
+
+  defp decode_environment_update_ops(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_environment_update_ops(
+         <<macro_index::unsigned-big-integer-size(16),
+           field_mask::unsigned-integer-size(8), rest::binary>>,
+         n,
+         acc
+       )
+       when n > 0 do
+    cond do
+      field_mask == 0 ->
+        raise ArgumentError, "EnvironmentUpdated field_mask=0 disallowed (no field set)"
+
+      Bitwise.band(field_mask, Bitwise.bnot(@env_field_known_mask)) != 0 ->
+        raise ArgumentError,
+              "EnvironmentUpdated unknown field_mask bits in 0x#{Integer.to_string(field_mask, 16)}; only 0x01/0x02 supported"
+
+      macro_index > 4095 ->
+        raise ArgumentError, "EnvironmentUpdated macro_index out of 0..4095: #{macro_index}"
+
+      true ->
+        {op_fields, rest_after_fields} = decode_env_update_field_values(rest, field_mask, %{})
+
+        case rest_after_fields do
+          <<source_hash::unsigned-big-integer-size(32), tail::binary>> ->
+            op =
+              op_fields
+              |> Map.put(:macro_index, macro_index)
+              |> Map.put(:field_mask, field_mask)
+              |> Map.put(:source_hash, source_hash)
+
+            decode_environment_update_ops(tail, n - 1, [op | acc])
+
+          _ ->
+            raise ArgumentError, "EnvironmentUpdated truncated source_hash"
+        end
+    end
+  end
+
+  defp decode_environment_update_ops(_, _, _) do
+    raise ArgumentError, "EnvironmentUpdated truncated update payload"
+  end
+
+  defp decode_env_update_field_values(rest, field_mask, acc) do
+    {acc, rest} =
+      if Bitwise.band(field_mask, @env_field_temperature) != 0 do
+        case rest do
+          <<temp::signed-big-integer-size(16), tail::binary>> ->
+            {Map.put(acc, :temperature, temp), tail}
+
+          _ ->
+            raise ArgumentError, "EnvironmentUpdated truncated temperature field"
+        end
+      else
+        {acc, rest}
+      end
+
+    if Bitwise.band(field_mask, @env_field_moisture) != 0 do
+      case rest do
+        <<moist::signed-big-integer-size(16), tail::binary>> ->
+          {Map.put(acc, :moisture, moist), tail}
+
+        _ ->
+          raise ArgumentError, "EnvironmentUpdated truncated moisture field"
+      end
+    else
+      {acc, rest}
+    end
+  end
+
   @doc """
   Encodes a v1 `BuildReservationIntent` payload (protocol design 13.4, opcode `0x65`).
 

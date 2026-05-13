@@ -892,3 +892,95 @@ ChunkProcess 仅累计 `cells_updated`，**不应用 env_delta**（直到 Phase 
 5. ChunkProcess 调度器（默认空 simulators / no_dirty skip / dirty+simulator 触发 tick + dirty 清空 + tick_seq 递增 / lease_stale skip / 单 simulator 失败隔离 / 跨 chunk output_hash 决定性）
 
 584 voxel baseline + 19 new = **603 tests 0 failures**；3 pinned chunk_hash baseline byte-stable。
+
+---
+
+## Phase 5.F：温度 / 湿度 diffusion simulator + `EnvironmentUpdated` delta (opcode 0x72)
+
+Phase 5 的最后一站，"能读 + 能算 + 能下发"闭环。落地后 Phase 1-5 全 done，
+Phase 6 FieldLayer 可开工。
+
+### DiffusionSimulator
+
+`SceneServer.Voxel.DiffusionSimulator` 实现 `Simulator` behaviour，参数化
+`attribute_name` (`"temperature"` / `"moisture"`)、`alpha`、`dt`，单一模块支持
+温度 / 湿度（草案 F-2 推荐方案）。
+
+算法：标准 3D 7-stencil 显式扩散（草案 F-1 macro 粒度推荐方案）：
+
+```text
+T'(x,y,z) = T(x,y,z) + α × dt × (
+  T(x-1,y,z) + T(x+1,y,z) +
+  T(x,y-1,z) + T(x,y+1,z) +
+  T(x,y,z-1) + T(x,y,z+1) -
+  6 × T(x,y,z)
+)
+```
+
+实施细节：
+
+- **粒度**：macro 粒度（16³ = 4096 cells/chunk）。
+- **值域**：复用 `MacroEnvironmentSummary.current_temperature /
+  current_moisture` i16 raw delta（相对 catalog default）；simulator 直接在
+  i16 域做扩散；Phase 5.D `effective_attribute_at` 在外侧把 L1 base + L5
+  delta sum 起来。
+- **α / dt**：从 simulator config 取（默认 temperature α=0.05，moisture
+  α=0.02，dt=0.1）。Phase 5.F **不**接 catalog `thermal_conductivity` 动态
+  查询（草案 §2.1：v1 α 从配置；v2 可改 per-cell α from effective attribute）。
+- **边界**：拉模式邻 chunk + Neumann fallback（草案 F-3 推荐）。`env.neighbor_lookup`
+  为 `nil` 或邻 chunk 不可读时退化为绝热（邻居视为同温 → 贡献 0）。
+- **稳定性**：Courant 条件 α × dt × 6 < 1。temperature: 0.05 × 0.1 × 6 = 0.03；
+  moisture: 0.02 × 0.1 × 6 = 0.012。均远小于 1，数值稳定。
+
+`tick/3`（behaviour 入口）从 `state` / `env[:diffusion_config]` 中解析 simulator
+config，默认回退到温度 default 实例。多实例同模块场景下，调用方（ChunkProcess）
+应通过 `SimulationTick` 初始化 state 注入 config（Phase 5.F.runtime 接通）。
+
+`tick/4`（显式 config 版本）是纯函数，方便单测。
+
+### EnvironmentUpdated wire payload (opcode 0x72)
+
+`Codec.encode_environment_updated_payload/1` /
+`Codec.decode_environment_updated_payload!/1` 实现 0x72 wire payload，完整定义
+见 `docs/2026-04-10-线协议规范.md` §0x72 段。Wire 一旦发出即冻结。
+
+### ChunkProcess 集成
+
+`execute_simulation_tick` 在 `SimulationTick.run_tick` 返回后，对每个非空
+`env_delta` 调用 `maybe_fan_out_environment_updated_payload/5`：
+
+- 当 `ops != []` 且本 chunk 有 subscribers 时编码 0x72 payload + `send/2` 给每个
+  subscriber，并 emit `voxel_environment_updated_push`。
+- 空 ops / 无 subscribers 时 emit `voxel_environment_updated_skipped`。
+- Phase 5.F 本 commit **不修改** `storage.environment_summaries` 的 canonical
+  truth —— 仅推 wire delta。`base_chunk_version = new_chunk_version =
+  storage.chunk_version`。`storage.environment_summaries` 的实际写回 + 自动
+  chunk_version bump 推到 Phase 5.F.runtime（避免影响 chunk_hash baseline +
+  现有 chunk_version 语义）。
+
+### 注册策略
+
+`config :scene_server, :voxel_simulators` 保持 Phase 5.E 同款 `[]`（草案 §"step 6
+注意"硬纪律：本 commit 优先保证 603 baseline 不回归）。Phase 5.F.runtime 在确认
+ChunkProcess + 多实例 config 注入路径稳定后，再正式注册 temperature + moisture
+两个 DiffusionSimulator 实例。
+
+### Forward-compat 纪律
+
+- `field_mask` 只接受 `0x01` / `0x02` / `0x03`；其它 bit 位 decoder / encoder
+  都硬错误（与 `0x71 CatalogPatch` envelope 同款"未知 schema_kind 硬错误"）。
+- `field_mask = 0` 视为非法。
+- `source_hash` 是 simulator 输入 hash 的低 32 位（macro_index + cur + 6
+  neighbors + α + dt + attribute_name），同输入 → 同 hash，可幂等回放。
+
+### 测试
+
+- `apps/scene_server/test/scene_server/voxel/diffusion_simulator_test.exs`
+  覆盖 simulator_id 派生 / 单热源 + 6 邻居热量守恒 / 稳态 / 绝热边界 /
+  deterministic / source_hash 区分 / moisture 实例。
+- `apps/scene_server/test/scene_server/voxel/environment_updated_codec_test.exs`
+  覆盖空 / 单 temperature / 单 moisture / 双字段 / 多 updates roundtrip / 字节级
+  golden / forward-compat field_mask 拒绝。
+
+603 voxel baseline + 17 new = **620 tests 0 failures**；3 pinned chunk_hash
+baseline byte-stable。Phase 1-5 全 done。

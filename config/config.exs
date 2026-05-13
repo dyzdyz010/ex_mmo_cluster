@@ -119,8 +119,15 @@ config :libcluster,
 
 # Phase 5.E voxel simulators registry. 每个 ChunkProcess 启动时按本配置
 # 注入低频规则帧 simulator 列表（实现 `SceneServer.Voxel.Simulator`
-# behaviour）。Phase 5.E 默认空列表（框架就绪，未注任何 simulator）；
-# Phase 5.F 接 `SceneServer.Voxel.Simulators.TemperatureDiffusionSimulator`，
+# behaviour）。Phase 5.E 框架就绪，Phase 5.F 提供 `SceneServer.Voxel.DiffusionSimulator`
+# (3D 7-stencil 温度 / 湿度扩散)，但 **Phase 5.F 本 commit 保持空列表**
+# 以保证 603 voxel baseline 不回归（Phase 5.F 草案 §step 6 硬纪律：现有测试
+# 不依赖 simulator 自动启动）。multi-instance config 注入 + 真正启用推到
+# Phase 5.F.runtime；届时本字段会改为类似：
+#     [
+#       {SceneServer.Voxel.DiffusionSimulator, %{attribute_name: "temperature", alpha: 0.05, dt: 0.1}},
+#       {SceneServer.Voxel.DiffusionSimulator, %{attribute_name: "moisture",    alpha: 0.02, dt: 0.1}}
+#     ]
 # Phase 6 追加 FieldLayer tick simulators。
 config :scene_server, :voxel_simulators, []
 
