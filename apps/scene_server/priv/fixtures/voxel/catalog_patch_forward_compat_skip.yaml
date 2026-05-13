@@ -1,0 +1,5 @@
+name: catalog_patch_forward_compat_skip
+kind: catalog_patch
+wire_size: 47
+description: |
+  0x71 CatalogPatch: 3 ops including one with unknown op_kind=0xFE (forward-compat skip).

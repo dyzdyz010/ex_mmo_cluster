@@ -1,0 +1,5 @@
+name: chunk_invalidate_region_removed
+kind: chunk_invalidate
+wire_size: 21
+description: |
+  ChunkInvalidate payload with reason=0x02 (region_removed).

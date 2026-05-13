@@ -1,0 +1,5 @@
+name: catalog_patch_attribute_add
+kind: catalog_patch
+wire_size: 30
+description: |
+  0x71 CatalogPatch: schema_kind=0x01 (attribute), op_kind=0x01 (add) with 4-byte payload.

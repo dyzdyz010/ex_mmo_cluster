@@ -1,0 +1,6 @@
+name: snapshot_environment
+kind: chunk_snapshot
+wire_size: 77947
+chunk_hash: 0x47638D1479AF6A4C
+description: |
+  Chunk carrying one macro_environment_summaries entry (non-default temp/moisture).

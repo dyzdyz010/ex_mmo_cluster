@@ -429,3 +429,38 @@ Envelope = 1 + 8 + 8 + 2 = 19 bytes；每条 op header = 1 + 4 + 2 = 7 bytes。
 
 设计与决策点：`docs/plans/2026-05-13-phase1-catalog-patch-minimum.md`
 （P-1..P-3 全部推荐方案，opcode 实际值由 0x6F 改 0x71）。
+
+## Phase 1.6a: server-side snapshot/delta golden fixtures (2026-05-13)
+
+Phase 1 验收口径"snapshot/delta golden fixtures，覆盖 macro/refined/environment/
+attribute/tag refs"服务端侧落地。fixtures 是 cross-language wire 真相源：
+Phase 1.6b 客户端 TS decoder（独立 commit）会消费同一批 `.golden`。
+
+**fixtures 目录**：`apps/scene_server/priv/fixtures/voxel/`
+
+每条 fixture 由两个文件构成：
+
+- `<name>.golden` —— 纯二进制 payload（无 opcode 前缀），与
+  `Codec.encode_*_payload` / `CatalogPatch.encode_for_wire` 输出字节一致。
+- `<name>.yaml` —— 元数据：`name / kind / wire_size / chunk_hash`（snapshot 类）
+  / `description`。
+
+**fixture 清单（17 条 + chunk_invalidate × 4 + object_state_delta × 3 = 22 条）**：
+
+| 类别 | 数量 | 内容 |
+|------|------|------|
+| snapshot | 8 | empty / macro_only / refined / environment / attribute_pool / tag_pool / object_refs / full |
+| delta | 4 | cell_solid (kind=1) / cell_empty (kind=0) / cell_refined (kind=2) / multi_op |
+| chunk_invalidate | 4 | 一个 reason byte 一条（unspecified / migration_cutover / region_removed / catalog_changed） |
+| object_state_delta | 3 | 一个 state_flags 一条（damaged / part_destroyed / destroyed，D5 单事件语义） |
+| catalog_patch | 3 | attribute_add (0x01/0x01) / tag_remove (0x02/0x02) / forward_compat_skip (含 op_kind=0xFE) |
+
+**生成脚本**：`apps/scene_server/priv/scripts/gen_voxel_golden_fixtures.exs`，
+deterministic（在干净 tree 上重跑必须 byte-identical 输出）。
+
+**验证脚本**：`apps/scene_server/test/scene_server/voxel/golden_fixture_test.exs`
+（32 tests）：每条 fixture 做 decode → re-encode 字节等值；snapshot 类额外校
+验 `Codec.chunk_hash(storage)` 与 `.yaml` 中 `chunk_hash` 字段相等；还保留一条
+"3 个 pinned chunk_hash baseline byte-stable" 回归断言。
+
+Phase 1.6b（客户端 TS decoder 消费同一批 fixture）保留为独立 commit。

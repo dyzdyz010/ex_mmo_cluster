@@ -1,0 +1,6 @@
+name: snapshot_refined
+kind: chunk_snapshot
+wire_size: 78193
+chunk_hash: 0xC6311A4585C79AD8
+description: |
+  One refined macro with multi-layer cell + owner_object_id provenance.

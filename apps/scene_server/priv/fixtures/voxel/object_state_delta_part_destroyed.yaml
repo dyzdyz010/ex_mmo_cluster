@@ -1,0 +1,5 @@
+name: object_state_delta_part_destroyed
+kind: object_state_delta
+wire_size: 58
+description: |
+  0x6C ObjectStateDelta payload with state_flags=0x04 (part_destroyed).

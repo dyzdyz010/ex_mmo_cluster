@@ -1,0 +1,5 @@
+name: delta_multi_op
+kind: chunk_delta
+wire_size: 117
+description: |
+  ChunkDelta with three ops (CellEmpty + CellSolid + CellSolid) to test op stream framing.

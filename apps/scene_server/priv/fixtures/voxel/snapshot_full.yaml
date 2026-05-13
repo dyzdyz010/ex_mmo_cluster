@@ -1,0 +1,6 @@
+name: snapshot_full
+kind: chunk_snapshot
+wire_size: 78291
+chunk_hash: 0xC1383968471F06BB
+description: |
+  All sections populated together: macro + refined + environment + attribute + tag + object_refs.

@@ -1,0 +1,5 @@
+name: delta_cell_solid
+kind: chunk_delta
+wire_size: 71
+description: |
+  ChunkDelta op delta_kind=1 (CellSolid).

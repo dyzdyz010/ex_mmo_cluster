@@ -1,0 +1,6 @@
+name: snapshot_tag_pool
+kind: chunk_snapshot
+wire_size: 77965
+chunk_hash: 0x560FDADD18912E50
+description: |
+  TagSet pool with two sets (4-tag and 3-tag) to exercise section 0x05.

@@ -1,0 +1,5 @@
+name: delta_cell_empty
+kind: chunk_delta
+wire_size: 51
+description: |
+  ChunkDelta op delta_kind=0 (CellEmpty).

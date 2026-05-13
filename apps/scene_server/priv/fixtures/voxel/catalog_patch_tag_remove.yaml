@@ -1,0 +1,5 @@
+name: catalog_patch_tag_remove
+kind: catalog_patch
+wire_size: 26
+description: |
+  0x71 CatalogPatch: schema_kind=0x02 (tag), op_kind=0x02 (remove) with empty payload.
