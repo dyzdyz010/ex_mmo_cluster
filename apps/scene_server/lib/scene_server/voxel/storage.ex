@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Storage do
   validation.
   """
 
+  alias SceneServer.Voxel.AttributeSet
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.DirtyMacroBounds
   alias SceneServer.Voxel.Hash
@@ -57,7 +58,7 @@ defmodule SceneServer.Voxel.Storage do
           refined_cells: [RefinedCellData.t()],
           environment_summaries: [MacroEnvironmentSummary.t()],
           object_refs: [ChunkObjectRef.t()],
-          attribute_sets: [term()],
+          attribute_sets: [AttributeSet.t()],
           tag_sets: [term()],
           dirty_bounds: DirtyMacroBounds.t()
         }
@@ -356,6 +357,60 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   # ----------------------------------------------------------------------------
+  # Phase 1.2 — AttributeSet pool intern API
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Interns an `AttributeSet` into the chunk-local pool and returns
+  `{storage, attribute_set_ref}`.
+
+  `attribute_set_ref` is 1-indexed (0 reserved for "no attribute set",
+  matching `NormalBlockData.attribute_set_ref` / `MicroLayer.attribute_set_ref`
+  null semantics). The ref returned is **stable across canonical sort** —
+  callers should never compute their own ref off `length(storage.attribute_sets)`
+  because `Storage.normalize!` reorders the pool by byte-wise canonical key.
+
+  Re-interning a structurally identical set (same entries after normalize,
+  in any input order) returns the existing ref and leaves the pool unchanged.
+
+  Accepts either a `%AttributeSet{}` struct or a compatible map with
+  `:entries` — the input is normalized internally before lookup.
+  """
+  @spec intern_attribute_set(t(), AttributeSet.t() | map()) :: {t(), pos_integer()}
+  def intern_attribute_set(%__MODULE__{} = storage, %AttributeSet{} = set) do
+    do_intern_attribute_set(storage, AttributeSet.normalize!(set))
+  end
+
+  def intern_attribute_set(%__MODULE__{} = storage, attrs) when is_map(attrs) do
+    do_intern_attribute_set(storage, AttributeSet.normalize!(attrs))
+  end
+
+  defp do_intern_attribute_set(storage, %AttributeSet{} = normalized_set) do
+    storage = normalize!(storage)
+    key = AttributeSet.byte_canonical_key(normalized_set)
+
+    case Enum.find_index(storage.attribute_sets, fn s ->
+           AttributeSet.byte_canonical_key(s) == key
+         end) do
+      nil ->
+        new_pool = storage.attribute_sets ++ [normalized_set]
+        storage = normalize!(%{storage | attribute_sets: new_pool})
+
+        # `normalize!` resorts the pool by canonical key. Look up the final
+        # index post-sort to return the stable ref.
+        index =
+          Enum.find_index(storage.attribute_sets, fn s ->
+            AttributeSet.byte_canonical_key(s) == key
+          end)
+
+        {storage, index + 1}
+
+      idx ->
+        {storage, idx + 1}
+    end
+  end
+
+  # ----------------------------------------------------------------------------
   # Phase 4 — object provenance reverse lookup + chunk-level cover aggregation
   # ----------------------------------------------------------------------------
 
@@ -589,7 +644,7 @@ defmodule SceneServer.Voxel.Storage do
           &ChunkObjectRef.normalize!/1,
           :object_refs
         ),
-      attribute_sets: fetch(attrs, :attribute_sets, []),
+      attribute_sets: normalize_attribute_sets!(fetch(attrs, :attribute_sets, [])),
       tag_sets: fetch(attrs, :tag_sets, []),
       dirty_bounds:
         DirtyMacroBounds.normalize!(fetch(attrs, :dirty_bounds, DirtyMacroBounds.empty()))
@@ -886,6 +941,22 @@ defmodule SceneServer.Voxel.Storage do
 
   defp normalize_list!(values, _normalizer, label) do
     raise ArgumentError, "expected #{label} list, got: #{inspect(values)}"
+  end
+
+  # Phase 1.2: AttributeSet pool normalization — validate each entry, then
+  # sort the pool by byte-wise canonical key (decision D-5a). Pool ordering is
+  # independent of caller insertion order, so chunk_hash is stable.
+  defp normalize_attribute_sets!(values) when is_list(values) do
+    values
+    |> Enum.map(&AttributeSet.normalize!/1)
+    |> Enum.sort_by(&AttributeSet.byte_canonical_key/1)
+  rescue
+    exception in ArgumentError ->
+      raise ArgumentError, "attribute_sets: #{Exception.message(exception)}"
+  end
+
+  defp normalize_attribute_sets!(values) do
+    raise ArgumentError, "expected attribute_sets list, got: #{inspect(values)}"
   end
 
   defp fetch(attrs, key, default) do

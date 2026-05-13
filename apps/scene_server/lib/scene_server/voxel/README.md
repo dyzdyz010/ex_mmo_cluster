@@ -283,3 +283,55 @@ resolves to the same `{ChunkDirectory, scene_node}`, Gate runs
 cell. Boundary-snapped prefabs commonly span several macro cells inside one
 chunk; those are now applied as one `Storage.put_micro_blocks/4` call per macro
 instead of one normalized storage rewrite per micro slot.
+
+## Phase 1.2: AttributeSet typed domain (2026-05-13)
+
+`SceneServer.Voxel.AttributeSet` / `SceneServer.Voxel.AttributeEntry` 把
+`Storage.attribute_sets` 从 `[term()]` 升级为 typed value bag。每个 chunk 的
+`attribute_sets` 池是 chunk-local 复用表，`NormalBlockData` / `MicroLayer` 通过
+`attribute_set_ref: u32`（1-indexed，`0 = null`）引用其中一条。
+
+**`AttributeEntry`** —— 单条 `(key_id, value_type, value)`。`value_type` tagged
+union：
+
+| tag  | 类型     | wire 大小 | 范围                              |
+|------|----------|-----------|-----------------------------------|
+| 0x01 | i16      | 2 B       | -32768..32767                     |
+| 0x02 | u16      | 2 B       | 0..65535                          |
+| 0x03 | fixed32  | 4 B       | Q16.16 定点，约 -32768.0..32767.999 |
+| 0x04 | enum8    | 1 B       | 0..255                            |
+| 0x05 | bitset32 | 4 B       | 0..0xFFFF_FFFF                    |
+
+`key_id` 在 Phase 1.2 是 chunk-local（Phase 5 `AttributeCatalog` 会升级为全局
+命名空间 + name / unit / merge_rule 元数据，pool 字段保持兼容）。
+
+**`AttributeSet`** —— 一条 entries 列表，`normalize!/1` 自动按 `key_id` 升序，
+拒绝重复 key、未知 value_type、value 超范围、空集（empty 用 ref=0 表达）。
+`byte_canonical_key/1` 返回 wire 字节序，作为 pool 内排序键。
+
+**`Storage.intern_attribute_set(storage, set)`** —— 把 set 加入池，返回
+`{storage, ref}`。返回的 ref 是**排序后**的稳定 1-indexed 索引；调用方不应
+基于 `length(attribute_sets)` 自挑 ref，因为 `Storage.normalize!` 按 byte-wise
+canonical 排序整池。结构等价集合（含乱序输入）re-intern 时返回原 ref，池不增长。
+
+**Wire layout (section 0x04)** —— 一旦发出即冻结：
+
+```
+set_count: u32
+sets[set_count] {
+  entry_count: u16
+  entries[entry_count] {
+    key_id:     u32
+    value_type: u8
+    value:      <1|2|4 bytes by tag>
+  }
+}
+```
+
+空池字节序 = `<<0u32>>`，与 Phase 1 前的 `encode_empty_pool_for_*` 输出**byte 等价**，
+所以 `chunk_hash` 在 `attribute_sets = []` 时保持稳定（D-8b：未 bump
+`schema_version`，3 个 pinned baseline `0x0980_DF98_C2DA_1FFC` /
+`0x7B46_B0F3_33B6_3489` / `0x7491_619E_9791_DFB9` byte-stable 已回归验证）。
+
+设计与决策点：`docs/plans/2026-05-13-phase1-attribute-set-typed-domain.md`
+（D-1..D-8 全部推荐方案）。Phase 1.3 `TagSet` 走同一节奏独立 commit。

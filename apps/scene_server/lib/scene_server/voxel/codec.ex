@@ -9,6 +9,7 @@ defmodule SceneServer.Voxel.Codec do
   implementation slices add their structures.
   """
 
+  alias SceneServer.Voxel.AttributeSet
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
@@ -108,7 +109,7 @@ defmodule SceneServer.Voxel.Codec do
         refined_cells:
           decode_refined_cell_pool!(fetch_section!(sections, @section_refined_cells)),
         attribute_sets:
-          decode_empty_pool!(fetch_section!(sections, @section_attribute_sets), :attribute_sets),
+          decode_attribute_set_pool!(fetch_section!(sections, @section_attribute_sets)),
         tag_sets: decode_empty_pool!(fetch_section!(sections, @section_tag_sets), :tag_sets),
         environment_summaries:
           decode_environment_summaries!(fetch_section!(sections, @section_environment_summaries)),
@@ -802,7 +803,7 @@ defmodule SceneServer.Voxel.Codec do
       encode_refined_cell_pool(storage.refined_cells),
       encode_environment_pool(storage.environment_summaries),
       encode_object_ref_pool(storage.object_refs),
-      encode_empty_pool_for_truth(storage.attribute_sets, :attribute_sets),
+      encode_attribute_set_pool_for_truth(storage.attribute_sets),
       encode_empty_pool_for_truth(storage.tag_sets, :tag_sets)
     ])
   end
@@ -832,7 +833,7 @@ defmodule SceneServer.Voxel.Codec do
       encode_section(@section_refined_cells, encode_refined_cell_pool(storage.refined_cells)),
       encode_section(
         @section_attribute_sets,
-        encode_empty_pool_for_wire(storage.attribute_sets, :attribute_sets)
+        encode_attribute_set_pool(storage.attribute_sets)
       ),
       encode_section(@section_tag_sets, encode_empty_pool_for_wire(storage.tag_sets, :tag_sets)),
       encode_section(
@@ -995,6 +996,94 @@ defmodule SceneServer.Voxel.Codec do
   defp encode_empty_pool_for_truth(values, label) do
     raise ArgumentError,
           "#{label} canonical encoding is not implemented in S0, got #{length(values)} entries"
+  end
+
+  # ----------------------------------------------------------------------------
+  # AttributeSet pool — Phase 1.2 wire form (protocol design §5.4 / D-1..D-8).
+  #
+  # Wire layout:
+  #   set_count: u32
+  #   sets[set_count] {
+  #     entry_count: u16
+  #     entries[entry_count] {
+  #       key_id:     u32
+  #       value_type: u8
+  #       value:      <1|2|4 bytes by tag>
+  #     }
+  #   }
+  #
+  # Empty pool emits exactly `<<0u32>>` — byte-equivalent to the legacy
+  # `encode_empty_pool_for_*` output, so chunk_hash stays byte-stable for any
+  # storage whose `attribute_sets` is `[]` (decision D-8b: schema_version is
+  # NOT bumped because the empty-path bytes match the pre-Phase-1.2 baseline).
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Encodes a list of `AttributeSet` into the AttributeSets section payload
+  (Phase 1.2 wire form). The empty list emits exactly `<<0u32>>`,
+  byte-equivalent to the legacy empty-pool encoding so chunk_hash stays stable
+  for storages whose `attribute_sets` is `[]`.
+  """
+  @spec encode_attribute_set_pool([AttributeSet.t()]) :: binary()
+  def encode_attribute_set_pool([]), do: <<0::unsigned-big-integer-size(32)>>
+
+  def encode_attribute_set_pool(sets) when is_list(sets) do
+    count = length(sets)
+
+    if count > 0xFFFF_FFFF do
+      raise ArgumentError, "attribute_sets count #{count} exceeds u32"
+    end
+
+    IO.iodata_to_binary([
+      <<count::unsigned-big-integer-size(32)>>,
+      Enum.map(sets, &AttributeSet.encode_for_wire/1)
+    ])
+  end
+
+  # The truth encoder is semantically distinct from the wire encoder (wire
+  # serves the snapshot stream; truth serves chunk_hash) but their byte layout
+  # is intentionally identical at Phase 1.2 — chunk_hash is recomputed by
+  # decoders on receipt, so wire and truth must agree.
+  defp encode_attribute_set_pool_for_truth(sets), do: encode_attribute_set_pool(sets)
+
+  @doc """
+  Decodes the AttributeSets section payload back to a list of `AttributeSet`.
+  Returns `{:ok, sets}` or `{:error, reason}`.
+  """
+  @spec decode_attribute_set_pool(binary()) :: {:ok, [AttributeSet.t()]} | {:error, term()}
+  def decode_attribute_set_pool(payload) when is_binary(payload) do
+    {:ok, decode_attribute_set_pool!(payload)}
+  rescue
+    exception in [ArgumentError, MatchError] ->
+      {:error, Exception.message(exception)}
+  end
+
+  @doc """
+  Decodes the AttributeSets section payload back to a list of `AttributeSet`.
+  Raises `ArgumentError` on malformed or trailing bytes.
+  """
+  @spec decode_attribute_set_pool!(binary()) :: [AttributeSet.t()]
+  def decode_attribute_set_pool!(<<0::unsigned-big-integer-size(32)>>), do: []
+
+  def decode_attribute_set_pool!(<<count::unsigned-big-integer-size(32), rest::binary>>) do
+    {sets, leftover} = decode_attribute_sets(rest, count, [])
+
+    if leftover != <<>> do
+      raise ArgumentError,
+            "trailing bytes in attribute_sets section: #{byte_size(leftover)} bytes"
+    end
+
+    sets
+  end
+
+  def decode_attribute_set_pool!(_data),
+    do: raise(ArgumentError, "malformed attribute_sets pool section")
+
+  defp decode_attribute_sets(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_attribute_sets(data, count, acc) when count > 0 do
+    {set, rest} = AttributeSet.decode_for_wire(data)
+    decode_attribute_sets(rest, count - 1, [set | acc])
   end
 
   # ----------------------------------------------------------------------------
