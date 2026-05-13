@@ -8,6 +8,8 @@ defmodule SceneServer.Voxel.Storage do
   validation.
   """
 
+  alias SceneServer.Voxel.AttributeCatalog
+  alias SceneServer.Voxel.AttributeEntry
   alias SceneServer.Voxel.AttributeSet
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.DirtyMacroBounds
@@ -463,6 +465,126 @@ defmodule SceneServer.Voxel.Storage do
       idx ->
         {storage, idx + 1}
     end
+  end
+
+  # ----------------------------------------------------------------------------
+  # Phase 5.C — high-level attribute write API
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Phase 5.C 高层 API：按 attribute name 写入 attribute 到 cell 的
+  attribute_set。
+
+  路径：
+    1. `AttributeCatalog.lookup_by_name(name)` → 拿 id + value_type + min/max
+       + merge_rule（缺失 raise `:catalog_miss`）。
+    2. 按 value_type 校验 value 在 `[min_value, max_value]`（fixed32 Q16.16
+       范围按 raw int32 比较）。
+    3. 读取 cell（macro_index_or_coord）的当前 NormalBlockData：
+       - cell 必须是 `:solid` mode（Phase 5.C 简化路径，C-7 选项 1：要求
+         caller 先 `put_solid_block`）。`:empty` / `:refined` 都 raise
+         `:cell_not_solid`。Phase 5.D 接 cell mode 自动转换。
+    4. 读 `block.attribute_set_ref`：
+       - `0` → 构造单 entry 的新 AttributeSet。
+       - 非零 → 取出 pool 中既有 set，**用 key_id 替换** matching entry
+         (override 语义)；其余 entry 保留。
+    5. `intern_attribute_set/2` 拿新 ref（结构等价复用旧 ref）。
+    6. 更新 block.attribute_set_ref → put_solid_block 写回（替换 block，
+       cell_version 由 caller 在 opts 中提供，默认保留旧 header 的 cell_version
+       / cell_hash 因为这是同一 macro 的更新）。
+
+  返回新 storage struct（已 normalize!）。
+
+  **注意**：本 API 写入 NormalBlockData.attribute_set_ref。Phase 5.C 不处理
+  refined cell 的 attribute_set（每条 MicroLayer 各有 attribute_set_ref），
+  那条路径在 Phase 5.D 才会接入。
+
+  `merge_rule` 字段从 catalog 取出但本 commit **不**消费——它在 Phase 5.D 五层
+  effective value 解析时才生效。本 API 始终走"在 attribute_set 内 override
+  同 key_id 的 entry"语义（覆盖性 put），与 wire-level AttributeSet 唯一 key_id
+  约束（每条 set 内 key_id 唯一）保持一致。
+  """
+  @spec put_attribute_for_cell(t(), integer() | term(), String.t(), integer()) :: t()
+  def put_attribute_for_cell(%__MODULE__{} = storage, macro_index_or_coord, attr_name, value)
+      when is_binary(attr_name) and is_integer(value) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+
+    defn =
+      case AttributeCatalog.lookup_by_name(attr_name) do
+        {:ok, _id, defn} ->
+          defn
+
+        {:error, :not_found} ->
+          raise ArgumentError,
+                "put_attribute_for_cell: attribute name #{inspect(attr_name)} not in " <>
+                  "catalog (AttributeCatalog.lookup_by_name → :not_found)"
+      end
+
+    if value < defn.min_value or value > defn.max_value do
+      raise ArgumentError,
+            "put_attribute_for_cell: value #{inspect(value)} out of range " <>
+              "[#{defn.min_value}, #{defn.max_value}] for attribute " <>
+              "#{inspect(attr_name)} (id=#{defn.id})"
+    end
+
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        block = Enum.at(storage.normal_blocks, header.payload_index)
+        new_entry = %AttributeEntry{key_id: defn.id, value_type: defn.value_type, value: value}
+
+        merged_set = merge_entry_into_set(storage, block.attribute_set_ref, new_entry)
+        {storage, new_ref} = intern_attribute_set(storage, merged_set)
+
+        updated_block = %{block | attribute_set_ref: new_ref}
+
+        %{
+          storage
+          | normal_blocks:
+              List.replace_at(storage.normal_blocks, header.payload_index, updated_block)
+        }
+        |> normalize!()
+
+      header.mode == MacroCellHeader.cell_mode_empty() ->
+        raise ArgumentError,
+              "put_attribute_for_cell: macro #{macro_index} is in :empty mode; " <>
+                "Phase 5.C requires caller to put_solid_block first (Phase 5.D 接 " <>
+                "cell mode 自动转换)"
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        raise ArgumentError,
+              "put_attribute_for_cell: macro #{macro_index} is in :refined mode; " <>
+                "Phase 5.C only supports solid cells (refined per-MicroLayer " <>
+                "attribute path 推到 Phase 5.D)"
+
+      true ->
+        raise ArgumentError, "unknown macro mode: #{header.mode}"
+    end
+  end
+
+  # Override semantics: 取出 ref 指向的现有 AttributeSet（ref=0 → 空 entries），
+  # 用 key_id 替换 matching entry，其余 entry 保留；AttributeSet.normalize! 会
+  # 自动 sort + 拒绝重复 key_id。
+  defp merge_entry_into_set(_storage, 0, %AttributeEntry{} = new_entry) do
+    %AttributeSet{entries: [new_entry]}
+  end
+
+  defp merge_entry_into_set(%__MODULE__{} = storage, ref, %AttributeEntry{} = new_entry)
+       when is_integer(ref) and ref > 0 do
+    existing = Enum.at(storage.attribute_sets, ref - 1)
+
+    if is_nil(existing) do
+      raise ArgumentError,
+            "put_attribute_for_cell: attribute_set_ref #{ref} points outside pool " <>
+              "(pool size #{length(storage.attribute_sets)})"
+    end
+
+    other_entries =
+      Enum.reject(existing.entries, fn entry -> entry.key_id == new_entry.key_id end)
+
+    AttributeSet.normalize!(%{entries: [new_entry | other_entries]})
   end
 
   # ----------------------------------------------------------------------------

@@ -626,3 +626,90 @@ wire 字节数 = `4 + 2 + name_byte_len`，例如 `name="flammable"`(9B) → 15 
 
 Phase 1.6a 3 个 pinned `chunk_hash` baseline 未触（服务端 storage / codec
 chunk_hash 路径本 commit 完全没动），486 voxel tests + 34 new tests = 520 全绿。
+
+## Phase 5.C: first batch catalog seed + in-memory runtime (2026-05-13)
+
+把 Phase 5.A / 5.B 的 catalog wire 类型从"空壳"升级为"含第一批真实定义" + 内存
+runtime + Storage 高层写入 API。catalog 持久化（DataService schema）推到 Phase
+5.C.2，当前每次启动从 `priv/catalogs/` 加载。
+
+设计草案 `docs/plans/2026-05-13-phase5c-first-batch-catalog-seed.md`
+C-1..C-8 全部推荐方案（用户 2026-05-13 approve）：
+
+- **C-1** 顺序数字 id：attribute 1..5 / tag 1..8
+- **C-2** fixed32 Q16.16 按表范围
+- **C-3** default 绝对值（temperature default=20.0 °C 等）
+- **C-4** seed 文件 .exs Elixir 字面量格式
+- **C-5** GenServer + private ETS（唯一 writer，避免 race）
+- **C-6** OTP supervision 启动时 `init/1` 加载
+- **C-7** `Storage.put_attribute_for_cell(storage, macro_index, name, value)` 高层 API
+- **C-8** 8 个第一批 tag
+
+**Attribute catalog v1**（5 条）：
+
+| id | name | unit | merge_rule | dynamic | default |
+|----|------|------|------------|---------|---------|
+| 1 | `temperature` | `°C` | add_delta | true | 20.0 |
+| 2 | `humidity` | `%` | add_delta | true | 50.0 |
+| 3 | `moisture` | `kg/m³` | add_delta | true | 0.0 |
+| 4 | `density` | `kg/m³` | material_default | false | 1.0 |
+| 5 | `thermal_conductivity` | `W/(m·K)` | material_default | false | 0.1 |
+
+所有 attribute 用 fixed32 Q16.16；range 与 default 的 raw int32 编码见
+`priv/catalogs/attribute_catalog_v1.exs`。
+
+**Tag catalog v1**（8 条）：`flammable` / `conductive` / `wet` / `frozen` /
+`burning` / `magical` / `structural` / `transparent`（id 1..8）。
+
+**`SceneServer.Voxel.AttributeCatalog`** / **`SceneServer.Voxel.TagCatalog`** —
+GenServer + private ETS（`:protected` + `:named_table` + `read_concurrency: true`）。
+public API：
+
+```elixir
+{:ok, %AttributeDefinition{}} = AttributeCatalog.lookup_by_id(1)
+{:ok, 2, %AttributeDefinition{}} = AttributeCatalog.lookup_by_name("humidity")
+%AttributeCatalogSnapshot{} = AttributeCatalog.current_snapshot()
+1 = AttributeCatalog.catalog_version()
+```
+
+lookup_by_id / lookup_by_name 默认走模块名 singleton（`__MODULE__`）的固定
+表名，旁路 GenServer 直读 ETS；alternate 注册名 / pid 注册（测试 ad-hoc）会
+派生表名 / 经一次 `GenServer.call` 拿到表 atom，行为一致。
+
+**`Storage.put_attribute_for_cell(storage, macro_index_or_coord, attr_name, value)`** —
+按 attribute name 写入到 cell 的 attribute_set（NormalBlockData.attribute_set_ref）。
+路径：
+
+1. `AttributeCatalog.lookup_by_name(name)` → 拿 id + value_type + min/max
+   （catalog miss raise）
+2. 校验 value 在 `[min_value, max_value]`（超范围 raise）
+3. cell 必须 `:solid` mode（**Phase 5.C 选项 1**：caller 必须先
+   `put_solid_block`；`:empty` / `:refined` 都 raise。Phase 5.D 接 cell mode
+   自动转换 + refined per-MicroLayer attribute 路径）
+4. 读 `block.attribute_set_ref`：0 → 构造单 entry 新 set；非零 → 取出 pool
+   既有 set，**用 key_id 替换** matching entry（override 语义），其余保留
+5. `intern_attribute_set/2` 拿新 ref（结构等价复用旧 ref）
+6. 更新 block.attribute_set_ref 写回
+
+`merge_rule` 字段从 catalog 取出但本 commit **不**消费——五层 effective
+value 解析在 Phase 5.D 落地。本 API 始终走"在 attribute_set 内 override 同
+key_id 的 entry"语义，与 wire-level AttributeSet 唯一 key_id 约束保持一致。
+
+**监督树挂入**：`SceneServer.VoxelSup` children 列表第一/二位（在
+RegionRuntime / VoxelChunkSup / ChunkDirectory 之前），确保 ChunkProcess 或
+任何下游 worker 启动前 catalog 已就绪。
+
+**测试**：520 voxel baseline + 40 new tests = 560 全绿。Phase 1.6a 3 个 pinned
+`chunk_hash` baseline 未触（put_attribute_for_cell 改动 normal_blocks /
+attribute_sets 池，但 chunk_hash 在不调用该 API 时 byte-stable；golden_fixture +
+codec tests 完整跑通）。
+
+**Phase 5.C 边界**（与 Phase 5.C.2 / 5.D / 5.E 区分）：
+
+- Catalog 跨进程重启持久化 → Phase 5.C.2（DataService schema）
+- 五层 merge_rule 实施（material default / normal block override / refined
+  micro override / object-part / environment summary）→ Phase 5.D
+- Refined cell 的 per-MicroLayer attribute_set 路径 → Phase 5.D
+- 模拟器 / 规则帧（dirty cell 扩散、`EnvironmentUpdated` delta）→ Phase 5.E / 5.F
+- 客户端 catalog 消费（web_client TS decoder for opcode `0x6E` / `0x6D` +
+  UI）→ Phase 5.D / 5.E 真正下发 catalog 时一并落地

@@ -16,6 +16,10 @@ defmodule SceneServer.VoxelSup do
   @impl true
   def init(_init_arg) do
     children = [
+      # Phase 5.C: typed attribute / tag catalogs must come up before
+      # ChunkProcess / any future worker that resolves catalog ids by name.
+      {SceneServer.Voxel.AttributeCatalog, name: SceneServer.Voxel.AttributeCatalog},
+      {SceneServer.Voxel.TagCatalog, name: SceneServer.Voxel.TagCatalog},
       {SceneServer.Voxel.RegionRuntime, name: SceneServer.Voxel.RegionRuntime},
       {SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup},
       {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory},
