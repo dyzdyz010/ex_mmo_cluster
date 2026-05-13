@@ -182,6 +182,14 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
     return this.queuedObjectStateDeltas.splice(0, this.queuedObjectStateDeltas.length);
   }
 
+  drainVoxelFieldSnapshots() {
+    return [];
+  }
+
+  drainVoxelFieldDestroyeds() {
+    return [];
+  }
+
   private allocateRequestId(): number {
     const value = this.nextRequestId;
     this.nextRequestId += 1;

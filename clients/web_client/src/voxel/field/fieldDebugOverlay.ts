@@ -12,8 +12,8 @@ import {
   BufferGeometry,
   Color,
   EdgesGeometry,
-  Float32BufferAttribute,
   Group,
+  InstancedBufferAttribute,
   InstancedMesh,
   LineBasicMaterial,
   LineSegments,
@@ -117,7 +117,7 @@ export class FieldDebugOverlay {
       temperatureMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       temperatureMesh.count = 0;
       temperatureMesh.frustumCulled = false;
-      temperatureMesh.instanceColor = new Float32BufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
+      temperatureMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
       group.add(temperatureMesh);
     }
 
@@ -126,7 +126,7 @@ export class FieldDebugOverlay {
       electricMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       electricMesh.count = 0;
       electricMesh.frustumCulled = false;
-      electricMesh.instanceColor = new Float32BufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
+      electricMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
       group.add(electricMesh);
     }
 

@@ -8,6 +8,8 @@ import {
   type VoxelChunkInvalidateMessage,
   type VoxelChunkSnapshotMessage,
   type VoxelDebugProbeMessage,
+  type VoxelFieldRegionDestroyedMessage,
+  type VoxelFieldRegionSnapshotMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
   type VoxelObjectStateDeltaMessage,
@@ -134,6 +136,8 @@ export interface ServerVoxelTransportPort {
   drainVoxelIntentResults(): VoxelIntentResultMessage[];
   drainVoxelDebugProbes(): VoxelDebugProbeMessage[];
   drainVoxelObjectStateDeltas(): VoxelObjectStateDeltaMessage[];
+  drainVoxelFieldSnapshots(): VoxelFieldRegionSnapshotMessage[];
+  drainVoxelFieldDestroyeds(): VoxelFieldRegionDestroyedMessage[];
 }
 
 export interface OnlineVoxelWorldOptions {
@@ -202,6 +206,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private receivedObjectStateDeltaCount = 0;
   private dedupedObjectStateDeltaCount = 0;
   private lastObjectStateFrameMs: number | null = null;
+  private readonly fieldSnapshots: VoxelFieldRegionSnapshotMessage[] = [];
+  private readonly fieldDestroyeds: VoxelFieldRegionDestroyedMessage[] = [];
 
   constructor(
     private readonly transport: ServerVoxelTransportPort,
@@ -621,6 +627,20 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const message of this.transport.drainVoxelObjectStateDeltas()) {
       this.applyObjectStateDelta(message);
     }
+    for (const msg of this.transport.drainVoxelFieldSnapshots()) {
+      this.fieldSnapshots.push(msg);
+    }
+    for (const msg of this.transport.drainVoxelFieldDestroyeds()) {
+      this.fieldDestroyeds.push(msg);
+    }
+  }
+
+  drainVoxelFieldSnapshots(): VoxelFieldRegionSnapshotMessage[] {
+    return this.fieldSnapshots.splice(0, this.fieldSnapshots.length);
+  }
+
+  drainVoxelFieldDestroyeds(): VoxelFieldRegionDestroyedMessage[] {
+    return this.fieldDestroyeds.splice(0, this.fieldDestroyeds.length);
   }
 
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
@@ -1065,7 +1085,9 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.drainVoxelSnapshots === "function" &&
     typeof candidate.drainVoxelDeltas === "function" &&
     typeof candidate.drainVoxelInvalidates === "function" &&
-    typeof candidate.drainVoxelObjectStateDeltas === "function"
+    typeof candidate.drainVoxelObjectStateDeltas === "function" &&
+    typeof candidate.drainVoxelFieldSnapshots === "function" &&
+    typeof candidate.drainVoxelFieldDestroyeds === "function"
   );
 }
 

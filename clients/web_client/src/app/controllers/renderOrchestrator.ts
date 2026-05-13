@@ -15,6 +15,8 @@ import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { WorldEditStats } from "../../voxel/worldStore";
 import { DebrisRenderer } from "../../voxel/debrisRenderer";
 import type { DebrisSimulation } from "../../voxel/debrisEffect";
+import { FieldDebugOverlay } from "../../voxel/field/fieldDebugOverlay";
+import type { VoxelFieldRegionDestroyedMessage, VoxelFieldRegionSnapshotMessage } from "../../infrastructure/net/voxelProtocol";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
@@ -22,6 +24,11 @@ import type { HotbarState, HotbarEntry, SelectionProvider } from "./worldEditCon
 
 interface MaybeDebrisProvider {
   getDebrisSimulation?(): DebrisSimulation;
+}
+
+interface MaybeFieldProvider {
+  drainVoxelFieldSnapshots?(): VoxelFieldRegionSnapshotMessage[];
+  drainVoxelFieldDestroyeds?(): VoxelFieldRegionDestroyedMessage[];
 }
 
 interface EditPreviewProvider {
@@ -51,6 +58,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private editPreviewProvider: EditPreviewProvider | null = null;
   private prefabPreviewIntentKey = "";
   private readonly debrisRenderer: DebrisRenderer | null;
+  private readonly fieldDebugOverlay: FieldDebugOverlay;
   private readonly sceneRegionOverlay: SceneRegionOverlay;
 
   constructor(
@@ -100,6 +108,12 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       this.debrisRenderer = null;
     }
 
+    this.fieldDebugOverlay = new FieldDebugOverlay();
+    this.rootGroup.add(this.fieldDebugOverlay.rootGroup);
+    if (import.meta.env.DEV) {
+      (window as Record<string, unknown>).__devFieldOverlay = this.fieldDebugOverlay;
+    }
+
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
   }
 
@@ -114,7 +128,22 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     if (this.debrisRenderer !== null) {
       this.debrisRenderer.syncFromSimulation();
     }
+    this._drainFieldMessages();
     this.sceneHandles.render();
+  }
+
+  private _drainFieldMessages(): void {
+    const fieldProvider = this.world as unknown as MaybeFieldProvider;
+    if (typeof fieldProvider.drainVoxelFieldSnapshots === "function") {
+      for (const msg of fieldProvider.drainVoxelFieldSnapshots()) {
+        this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
+      }
+    }
+    if (typeof fieldProvider.drainVoxelFieldDestroyeds === "function") {
+      for (const msg of fieldProvider.drainVoxelFieldDestroyeds()) {
+        this.fieldDebugOverlay.onRegionDestroyed(msg.destroyed.regionId);
+      }
+    }
   }
 
   getCurrentSelection(): VoxelRaySelection | null {

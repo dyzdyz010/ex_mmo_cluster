@@ -18,6 +18,8 @@ import {
   encodeVoxelPrefabPlaceIntent,
   type VoxelChunkSnapshotMessage,
   type VoxelDebugProbeMessage,
+  type VoxelFieldRegionDestroyedMessage,
+  type VoxelFieldRegionSnapshotMessage,
   type VoxelIntentResultMessage,
   type VoxelKnownChunk,
   type VoxelObjectStateDeltaMessage,
@@ -99,6 +101,8 @@ export class ServerMovementTransport implements MovementTransport {
   private readonly voxelDebugProbes: VoxelDebugProbeMessage[] = [];
   private readonly voxelObjectStateDeltas: VoxelObjectStateDeltaMessage[] = [];
   private receivedVoxelObjectStateDeltaCount = 0;
+  private readonly voxelFieldSnapshots: VoxelFieldRegionSnapshotMessage[] = [];
+  private readonly voxelFieldDestroyeds: VoxelFieldRegionDestroyedMessage[] = [];
   private readonly voxelKnownVersions = new Map<string, number>();
   private readonly sentAtBySeq = new Map<number, number>();
   private spawnPosition: Vector3 | null = null;
@@ -537,6 +541,14 @@ export class ServerMovementTransport implements MovementTransport {
     return this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
   }
 
+  drainVoxelFieldSnapshots(): VoxelFieldRegionSnapshotMessage[] {
+    return this.voxelFieldSnapshots.splice(0, this.voxelFieldSnapshots.length);
+  }
+
+  drainVoxelFieldDestroyeds(): VoxelFieldRegionDestroyedMessage[] {
+    return this.voxelFieldDestroyeds.splice(0, this.voxelFieldDestroyeds.length);
+  }
+
   reset(position: Vector3): void {
     this.lastResetPosition.copy(position);
     this.acknowledgements.splice(0, this.acknowledgements.length);
@@ -897,6 +909,8 @@ export class ServerMovementTransport implements MovementTransport {
       | VoxelDebugProbeMessage
       | VoxelObjectStateDeltaMessage
       | VoxelCatalogPatchMessage
+      | VoxelFieldRegionSnapshotMessage
+      | VoxelFieldRegionDestroyedMessage
       | null = null;
     try {
       message = decodeVoxelServerMessage(data);
@@ -1017,6 +1031,26 @@ export class ServerMovementTransport implements MovementTransport {
           base_version: message.patch.baseVersion.toString(),
           new_version: message.patch.newVersion.toString(),
           op_count: message.patch.ops.length,
+        });
+        return true;
+      case "voxel_field_region_snapshot":
+        this.voxelFieldSnapshots.push(message);
+        this.logger.emit("voxel", "field_region_snapshot_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          region_id: message.snapshot.regionId,
+          chunk_coord: `${message.snapshot.chunkCoord.cx},${message.snapshot.chunkCoord.cy},${message.snapshot.chunkCoord.cz}`,
+          field_mask: `0x${message.snapshot.fieldMask.toString(16)}`,
+          cell_count: message.snapshot.cellCount,
+          tick_count: message.snapshot.tickCount,
+        });
+        return true;
+      case "voxel_field_region_destroyed":
+        this.voxelFieldDestroyeds.push(message);
+        this.logger.emit("voxel", "field_region_destroyed_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          region_id: message.destroyed.regionId,
+          chunk_coord: `${message.destroyed.chunkCoord.cx},${message.destroyed.chunkCoord.cy},${message.destroyed.chunkCoord.cz}`,
+          destroy_reason: message.destroyed.destroyReason,
         });
         return true;
     }

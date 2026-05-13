@@ -178,7 +178,7 @@ describe("decodeFieldRegionDestroyed", () => {
     [DestroyReason.LeaseRevoked, "lease_revoked"],
     [DestroyReason.Explicit, "explicit"],
     [DestroyReason.ChunkCrash, "chunk_crash"],
-  ] as const)("decodes destroy_reason %i", (reason) => {
+  ] as const)("decodes destroy_reason %i", (reason, _label) => {
     const buf = buildDestroyedBuf({
       logicalSceneId: 5,
       cx: -3, cy: 0, cz: 7,
