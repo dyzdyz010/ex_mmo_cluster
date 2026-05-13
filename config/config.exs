@@ -114,6 +114,17 @@ config :libcluster,
   ]
 
 # ===========================================================================
+# SceneServer (Voxel runtime)
+# ===========================================================================
+
+# Phase 5.E voxel simulators registry. 每个 ChunkProcess 启动时按本配置
+# 注入低频规则帧 simulator 列表（实现 `SceneServer.Voxel.Simulator`
+# behaviour）。Phase 5.E 默认空列表（框架就绪，未注任何 simulator）；
+# Phase 5.F 接 `SceneServer.Voxel.Simulators.TemperatureDiffusionSimulator`，
+# Phase 6 追加 FieldLayer tick simulators。
+config :scene_server, :voxel_simulators, []
+
+# ===========================================================================
 # Data Service (Ecto + PostgreSQL)
 # ===========================================================================
 

@@ -13,13 +13,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias DataService.Voxel.ChunkPendingTransactionStore
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.DirtyMacroBounds
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.SimulationTick
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
   import Bitwise
+
+  # Phase 5.E: 10 Hz simulation tick (100ms interval). 见
+  # `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md` E-2。
+  @simulation_tick_interval_ms 100
 
   @intent_option_keys [
     :cell_hash,
@@ -261,6 +267,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     pending_fence = load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
 
+    simulators = resolve_simulators(opts)
+    simulation_tick = SimulationTick.new(simulators)
+    schedule_simulation_tick()
+
     {:ok,
      %{
        logical_scene_id: storage.logical_scene_id,
@@ -276,8 +286,27 @@ defmodule SceneServer.Voxel.ChunkProcess do
        # attribution and downstream destroy_part dispatch. Tests inject
        # stubbed names; production wiring uses module-named singletons.
        object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
-       chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory)
+       chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
+       # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
+       simulation_tick: simulation_tick,
+       # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
+       # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
+       simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil)
      }}
+  end
+
+  defp resolve_simulators(opts) do
+    case Keyword.fetch(opts, :simulators) do
+      {:ok, simulators} when is_list(simulators) ->
+        simulators
+
+      :error ->
+        Application.get_env(:scene_server, :voxel_simulators, [])
+    end
+  end
+
+  defp schedule_simulation_tick do
+    Process.send_after(self(), :simulation_tick, @simulation_tick_interval_ms)
   end
 
   defp load_persisted_fence(logical_scene_id, chunk_coord, lease) do
@@ -825,7 +854,124 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  # Phase 5.E:scene low-frequency simulation tick。每个 chunk 进程在 init
+  # schedule 一次 100ms 计时器；handle 完成后无条件 schedule 下一次（不论本
+  # tick 是否实际跑 simulator）。
+  def handle_info(:simulation_tick, state) do
+    next_state = run_simulation_tick(state)
+    schedule_simulation_tick()
+    {:noreply, next_state}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  # ---------------------------------------------------------------------------
+  # Phase 5.E:simulation tick dispatch
+  # ---------------------------------------------------------------------------
+
+  defp run_simulation_tick(%{simulation_tick: simulation_tick} = state) do
+    cond do
+      lease_stale?(state.lease) ->
+        emit_tick_skipped(state, simulation_tick, :lease_stale)
+        state
+
+      not SimulationTick.any_simulator?(simulation_tick) ->
+        emit_tick_skipped(state, simulation_tick, :no_simulators)
+        state
+
+      DirtyMacroBounds.empty?(state.storage.dirty_bounds) ->
+        emit_tick_skipped(state, simulation_tick, :no_dirty)
+        state
+
+      true ->
+        execute_simulation_tick(state, simulation_tick)
+    end
+  end
+
+  defp execute_simulation_tick(state, simulation_tick) do
+    started_us = System.monotonic_time(:microsecond)
+    dirty_in = state.storage.dirty_bounds
+    input_chunk_hash = Codec.chunk_hash(state.storage)
+    simulator_ids = SimulationTick.simulator_ids(simulation_tick)
+
+    CliObserve.emit("voxel_simulation_tick_started", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        tick_seq: simulation_tick.tick_seq,
+        dirty_min: dirty_in.min_macro,
+        dirty_max: dirty_in.max_macro,
+        reason_flags: dirty_in.reason_flags,
+        simulator_count: length(simulator_ids)
+      }
+    end)
+
+    env = %{
+      chunk_coord: state.chunk_coord,
+      logical_scene_id: state.logical_scene_id,
+      lease_token: state.lease,
+      storage: state.storage,
+      neighbor_lookup: state.simulation_neighbor_lookup
+    }
+
+    {next_sim, summary} = SimulationTick.run_tick(simulation_tick, dirty_in, env)
+
+    Enum.each(summary.failures, fn {sim_id, reason} ->
+      CliObserve.emit("voxel_simulation_simulator_failed", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          tick_seq: simulation_tick.tick_seq,
+          simulator_id: sim_id,
+          reason: inspect(reason)
+        }
+      end)
+    end)
+
+    # Phase 5.E 策略:dirty_bounds 在 tick 后无条件清空(失败 simulator
+    # 不阻塞 dirty 清理);失败 simulator 的重试机会 = 下个 tick 自然累积。
+    # Phase 5.F 真正温湿度 simulator 落地后,可在此根据 summary.failures
+    # 决定是否保留 dirty,但本 commit 先采用最简策略。
+    output_hash =
+      SimulationTick.output_hash(input_chunk_hash, dirty_in, next_sim.tick_seq, simulator_ids)
+
+    next_sim = SimulationTick.put_last_output_hash(next_sim, output_hash)
+    next_storage = Storage.clear_dirty_bounds(state.storage)
+    duration_us = System.monotonic_time(:microsecond) - started_us
+
+    CliObserve.emit("voxel_simulation_tick_completed", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        tick_seq: next_sim.tick_seq,
+        cells_updated: summary.cells_updated,
+        duration_us: duration_us,
+        output_hash: output_hash,
+        failure_count: length(summary.failures)
+      }
+    end)
+
+    %{state | storage: next_storage, simulation_tick: next_sim}
+  end
+
+  defp emit_tick_skipped(state, simulation_tick, reason) do
+    CliObserve.emit("voxel_simulation_tick_skipped", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        tick_seq: simulation_tick.tick_seq,
+        reason: reason
+      }
+    end)
+  end
+
+  defp lease_stale?(nil), do: true
+
+  defp lease_stale?(%{expires_at_ms: expires_at_ms}) when is_integer(expires_at_ms) do
+    expires_at_ms <= System.system_time(:millisecond)
+  end
+
+  defp lease_stale?(_), do: false
 
   defp apply_normalized_intent(state, intent) do
     apply_normalized_intent(state, intent, true)

@@ -128,7 +128,33 @@ defmodule SceneServer.Voxel.Storage do
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         normal_blocks: storage.normal_blocks ++ [block]
     }
+    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
+  end
+
+  # ----------------------------------------------------------------------------
+  # Phase 5.E — dirty tracking helpers
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Public helper to mark a single macro cell dirty with a reason flag.
+
+  Phase 5.E ChunkProcess uses this to fan dirty bits in from non-`Storage`
+  paths (e.g. subscriber set changes, cross-chunk boundary fences, catalog
+  bumps). Storage mutation paths above already self-mark.
+  """
+  @spec mark_macro_dirty(t(), integer() | term(), 0..0xFFFF) :: t()
+  def mark_macro_dirty(%__MODULE__{} = storage, macro_index_or_coord, reason_flag) do
+    %{
+      storage
+      | dirty_bounds: DirtyMacroBounds.add_macro(storage.dirty_bounds, macro_index_or_coord, reason_flag)
+    }
+  end
+
+  @doc "Clears the per-chunk dirty bounds (Phase 5.E tick consumed them)."
+  @spec clear_dirty_bounds(t()) :: t()
+  def clear_dirty_bounds(%__MODULE__{} = storage) do
+    %{storage | dirty_bounds: DirtyMacroBounds.empty()}
   end
 
   @doc """
@@ -153,6 +179,7 @@ defmodule SceneServer.Voxel.Storage do
       )
 
     %{storage | macro_headers: List.replace_at(storage.macro_headers, macro_index, header)}
+    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
   end
 
@@ -545,6 +572,7 @@ defmodule SceneServer.Voxel.Storage do
           | normal_blocks:
               List.replace_at(storage.normal_blocks, header.payload_index, updated_block)
         }
+        |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
         |> normalize!()
 
       header.mode == MacroCellHeader.cell_mode_empty() ->
@@ -1216,6 +1244,7 @@ defmodule SceneServer.Voxel.Storage do
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: storage.refined_cells ++ [cell]
     }
+    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
   end
 
@@ -1235,6 +1264,7 @@ defmodule SceneServer.Voxel.Storage do
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: List.replace_at(storage.refined_cells, payload_index, cell)
     }
+    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
   end
 
@@ -1264,6 +1294,7 @@ defmodule SceneServer.Voxel.Storage do
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: List.replace_at(storage.refined_cells, payload_index, empty_cell)
     }
+    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
   end
 

@@ -794,3 +794,101 @@ Phase 1.6a 3 个 pinned `chunk_hash` baseline 未触（本 commit 只动 storage
 - 模拟器写入 `MacroEnvironmentSummary.current_temperature` → Phase 5.E / 5.F
 - temperature diffusion / `EnvironmentUpdated` delta 下发 → Phase 5.F
 - 客户端消费 effective value（web_client） → Phase 5.F 真正下发时一并落地
+
+## Phase 5.E: scene simulation tick infrastructure
+
+为 Phase 5.F 温湿度 simulator 与 Phase 6 FieldLayer tick 提供 **per-chunk
+低频规则帧调度地基**。本阶段框架就绪，**不注任何具体 simulator**。
+
+实施依据 `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md`
+E-1..E-6 全部推荐方案（用户 2026-05-13 approve）：
+
+- **E-1 per-chunk tick scheduler**：`SimulationTick` state 嵌入 `ChunkProcess`
+  state；每个 chunk 独立一个 100ms 计时器。
+- **E-2 tick interval**：固定 100ms（10 Hz）。
+- **E-3 dirty tracking**：macro cell 粒度 `DirtyMacroBounds` + 4 个 reason
+  flag bit。
+  - `0x01 attribute_write`：cell payload / attribute_set 改动（Storage 内部
+    自动 mark；put_solid_block / put_micro_block(s) / clear_micro_block /
+    clear_macro_cell / put_attribute_for_cell 全部路径覆盖）。
+  - `0x02 chunk_sub_change`：订阅集合变更（**首次订阅不打标**，订阅者拿 full
+    snapshot；订阅状态后续变更才打标。Phase 5.E 暂未在 ChunkProcess 路径
+    自动写入此 bit，simulator 侧也未消费；预留给 Phase 5.F / Phase 6 上层
+    主动 mark）。
+  - `0x04 cross_chunk_boundary`：邻 chunk 边界事件渗透（E-4 pull 模式：simulator
+    通过 `env.neighbor_lookup` 主动读邻区，1 tick 滞后可接受；上层用
+    `Storage.mark_macro_dirty/3` 显式写入此 bit）。
+  - `0x08 catalog_changed`：AttributeCatalog / TagCatalog runtime 版本变化。
+- **E-4 cross-chunk boundary 拉模式**：simulator 在 `env.neighbor_lookup`
+  里主动查邻 chunk；本 commit 默认未配置（`nil`），框架就绪。
+- **E-5 deterministic output_hash**：`SimulationTick.output_hash/4` 输入
+  `(input_chunk_hash, dirty_bounds_truth, tick_seq, simulator_ids)`，
+  xxHash64。同输入 → 同输出，回归验证用。
+- **E-6 配置文件硬编码 simulator 注册**：`config :scene_server,
+  :voxel_simulators, [...]`。Phase 5.E 默认 `[]`。
+
+### 调度路径
+
+```
+ChunkProcess.init
+  → SimulationTick.new(simulators)
+  → schedule_simulation_tick (100ms)
+
+ChunkProcess.handle_info(:simulation_tick, state)
+  1. lease_stale?  → emit voxel_simulation_tick_skipped reason: :lease_stale
+  2. no simulators → emit voxel_simulation_tick_skipped reason: :no_simulators
+  3. dirty empty   → emit voxel_simulation_tick_skipped reason: :no_dirty
+  4. emit voxel_simulation_tick_started
+  5. SimulationTick.run_tick → 依次 simulator.tick/3
+     - 单 simulator 失败 → emit voxel_simulation_simulator_failed
+       （**失败不阻塞其它 simulator**；保留旧 sim state）
+  6. Storage.clear_dirty_bounds（**Phase 5.E 简化策略：失败也无条件清 dirty**，
+     重试机会 = 下个 tick 自然累积新 dirty。Phase 5.F 可按 simulator 失败
+     reason 决定是否保留）
+  7. SimulationTick.output_hash(...) 计算 + 缓存 last_output_hash
+  8. emit voxel_simulation_tick_completed
+  9. schedule_simulation_tick (next 100ms)
+```
+
+### Simulator behaviour
+
+`SceneServer.Voxel.Simulator`：
+
+- `simulator_id() :: atom()` —— 稳定 id，影响 `output_hash`。
+- `tick(state, dirty_bounds, env) :: {:ok, new_state, %{cells_updated, env_delta}} | {:error, atom()}`
+
+`env` map：`chunk_coord` / `logical_scene_id` / `lease_token` / `storage`
+（**只读快照**） / `neighbor_lookup`（pull 模式邻区查询函数或 `nil`）。
+
+`env_delta` 字段 Phase 5.E **暂未定义具体 schema**；Phase 5.F 温湿度
+simulator 用它带回 `environment_summaries` 写回意图。本 commit
+ChunkProcess 仅累计 `cells_updated`，**不应用 env_delta**（直到 Phase 5.F
+确定 schema）。
+
+### Observe events
+
+- `voxel_simulation_tick_started`
+- `voxel_simulation_tick_completed`
+- `voxel_simulation_tick_skipped`（reason: `:lease_stale` / `:no_simulators` / `:no_dirty`）
+- `voxel_simulation_simulator_failed`
+- （Phase 5.F 可追加 `voxel_simulation_boundary_read` 等）
+
+### 边界
+
+- 本 commit **不**接任何具体 simulator（Phase 5.F 工作）。
+- chunk_hash 不受 `dirty_bounds` 影响（已有约束，`codec.ex` § encode_chunk_truth_payload）。
+- 3 个 pinned `chunk_hash` baseline 保持 byte-stable。
+- subscriber 首次订阅不打 `0x02 chunk_sub_change` dirty bit。
+
+### 测试
+
+`apps/scene_server/test/scene_server/voxel/simulation_tick_test.exs` 19 tests
+覆盖：
+
+1. SimulationTick state helpers（new / any_simulator? / simulator_ids）
+2. DirtyMacroBounds helpers（empty? / add_macro / clear / reason_set?）
+3. Storage mutation 自动 mark dirty
+4. output_hash 决定性（同输入同输出 / 不同 dirty / 不同 tick_seq / 不同 simulator_ids 产生不同 hash）
+5. ChunkProcess 调度器（默认空 simulators / no_dirty skip / dirty+simulator 触发 tick + dirty 清空 + tick_seq 递增 / lease_stale skip / 单 simulator 失败隔离 / 跨 chunk output_hash 决定性）
+
+584 voxel baseline + 19 new = **603 tests 0 failures**；3 pinned chunk_hash baseline byte-stable。
