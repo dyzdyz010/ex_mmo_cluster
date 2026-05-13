@@ -190,6 +190,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.editPreviewProvider = provider;
   }
 
+  toggleFieldDebugOverlay(): void {
+    this.fieldDebugOverlay.toggle();
+  }
+
   dispose(): void {
     this.chunkRenderer.dispose();
     this.sceneRegionOverlay.dispose();

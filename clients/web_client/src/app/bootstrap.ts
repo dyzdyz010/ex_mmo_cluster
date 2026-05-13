@@ -120,7 +120,7 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
-  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world);
+  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world, () => render.toggleFieldDebugOverlay());
 
   const loop = new GameLoop();
   loop.subscribe(transportPump);

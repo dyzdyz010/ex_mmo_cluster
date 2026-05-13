@@ -53,6 +53,7 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     private readonly panel: HTMLDivElement,
     private readonly commands: VoxelDebugPanelCommandPort,
     private readonly world: VoxelWorldAdapter,
+    private readonly fieldOverlayToggle?: () => void,
   ) {
     this.panel.addEventListener("click", this.handleClick);
     this.panel.addEventListener("input", this.handleInput);
@@ -135,6 +136,9 @@ export class VoxelDebugPanelView implements FrameSubscriber {
           this.formState.impactZ,
           this.formState.material,
         ]);
+      case "field-overlay":
+        this.fieldOverlayToggle?.();
+        return { ok: true, command: action, text: "field overlay toggled" };
       default:
         return { ok: false, command: action, text: "unknown voxel panel action" };
     }
@@ -200,6 +204,7 @@ export function renderVoxelDebugPanelHtml(
     renderButton("probe", "Probe"),
     renderButton("rebind", "Rebind"),
     renderButton("versions", "Versions"),
+    renderButton("field-overlay", "Field"),
     `</div>`,
     `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
     renderNumberInput("subscribeCx", "Sub X", formState.subscribeCx),

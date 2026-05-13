@@ -216,10 +216,10 @@ export class FieldDebugOverlay {
   private _bindHotkey(): void {
     if (typeof window === "undefined") return;
     window.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "`") {
+      if (e.ctrlKey && e.code === "Backslash") {
         e.preventDefault();
         this.toggle();
-        console.info(`[FieldDebugOverlay] ${this.visible ? "shown" : "hidden"} (\`)`);
+        console.info(`[FieldDebugOverlay] ${this.visible ? "shown" : "hidden"} (Ctrl+\\)`);
       }
     });
   }
