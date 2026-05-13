@@ -268,9 +268,9 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 - **CI**：当前应至少验证 `mix compile`、`mix test`，以及必要的单 app 测试
 - 完整迁移路线图见 `docs/2026-04-07-增量迁移计划.md`
 
-## 客户端策略（2026-04-26 后冻结）
+## 客户端策略（2026-05-13 解冻后）
 
-- **当前唯一在迭代的客户端是 `clients/bevy_client`**（Rust + Bevy 0.18，第三人称 3D 视图）。
-- **`clients/web_client` 已冻结**：从 2026-04-26 起，所有新功能 / bug fix / 重构都**只动 bevy_client**。web_client 仅保留以备紧急回退或参考实现，不再新增改动，也不再为它做协议同步、parity 测试或字节序对齐。
-- 协议层只追加字段、不破坏 wire layout 的纪律仍然适用，但跨客户端 parity 不再是约束——bevy 端可以自由演进。
-- 任何 audit / sweep / 设计文档若涉及"双端同步"，统一缩到只 bevy_client 这一端。
+- **2026-05-13 撤销 2026-04-26 起 `clients/web_client` 冻结纪律。** 体素权威化主线（Phase 1 / 2 / 3 / 5）客户端 decoder / parity 验收口径恢复以 `clients/web_client` 为准；`clients/bevy_client`（Rust + Bevy 0.18，第三人称 3D 视图）保留为参考实现，**不作为主线 parity 测试目标**。
+- 协议层只追加字段、不破坏 wire layout 的纪律仍然适用；**双端 parity 不再强制**，但 `web_client` 是主线验证端，新协议字段需在 `web_client` decoder 上落地并通过 parity / 字节序验收，`bevy_client` 可滞后跟进或暂缓。
+- 任何 audit / sweep / 设计文档若需要"客户端端到端验证"，默认指向 `web_client`；若特别需要参考 `bevy_client` 行为，需在文档中显式标注其参考性质。
+- 完整决策记录：`../TheWorldBook/docs/2026-05-13-解冻-web_client-决策.md`；本仓单页摘要：`docs/2026-05-13-thaw-web-client-policy-change.md`。
