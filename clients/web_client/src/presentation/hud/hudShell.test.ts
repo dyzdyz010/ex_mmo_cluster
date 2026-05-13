@@ -8,11 +8,15 @@ describe("HUD shell layout", () => {
     expect(hudRule).toContain("box-sizing: border-box");
   });
 
-  it("hides the developer HUD and voxel debug panel on touch-sized screens", () => {
-    const mobileRules = indexHtml.slice(indexHtml.indexOf("@media (max-width: 480px)"));
+  it("hides the developer HUD and voxel debug panel under html.is-touch", () => {
+    expect(indexHtml).toMatch(/html\.is-touch\s+#hud[\s\S]*?display:\s*none/);
+    expect(indexHtml).toMatch(/html\.is-touch\s+#voxel-panel[\s\S]*?display:\s*none/);
+  });
 
-    expect(mobileRules).toMatch(/#hud\s*\{[^}]*display:\s*none/);
-    expect(mobileRules).toMatch(/#voxel-panel\s*\{[^}]*display:\s*none/);
+  it("sizes the canvas with dynamic viewport units to avoid iOS Safari 100vh stretch", () => {
+    const appRule = indexHtml.match(/#app\s*\{[^}]*\}/s)?.[0] ?? "";
+    expect(appRule).toMatch(/width:\s*100dvw/);
+    expect(appRule).toMatch(/height:\s*100dvh/);
   });
 
   it("mounts a fixed bottom hotbar dock shell", () => {

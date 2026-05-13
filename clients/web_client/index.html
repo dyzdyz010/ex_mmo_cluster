@@ -22,8 +22,8 @@
         overflow: hidden;
       }
       #app {
-        width: 100vw;
-        height: 100vh;
+        width: 100dvw;
+        height: 100dvh;
         display: block;
       }
       #hud {
@@ -433,6 +433,10 @@
       html.is-touch #touch-controls {
         display: block;
       }
+      html.is-touch #hud,
+      html.is-touch #voxel-panel {
+        display: none;
+      }
       .touch-zone {
         position: absolute;
         top: 0;
@@ -543,12 +547,6 @@
         }
       }
       @media (max-width: 480px) {
-        #hud {
-          display: none;
-        }
-        #voxel-panel {
-          display: none;
-        }
         #hotbar-dock {
           width: min(366px, calc(100vw - 16px));
           bottom: max(12px, env(safe-area-inset-bottom));
