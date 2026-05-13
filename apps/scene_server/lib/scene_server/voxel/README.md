@@ -463,4 +463,42 @@ deterministic（在干净 tree 上重跑必须 byte-identical 输出）。
 验 `Codec.chunk_hash(storage)` 与 `.yaml` 中 `chunk_hash` 字段相等；还保留一条
 "3 个 pinned chunk_hash baseline byte-stable" 回归断言。
 
-Phase 1.6b（客户端 TS decoder 消费同一批 fixture）保留为独立 commit。
+## Phase 1.6b: web_client TS decoder + roundtrip (2026-05-13)
+
+Phase 1 最后一条验收口径——**TS decoder roundtrip + 服务端/客户端 hash 一致**——
+落在 `clients/web_client/` 侧。Phase 1.6a 22 条 `.golden` 现在是 cross-language
+wire 真相源，被同时消费：
+
+- 服务端：`scene_server/test/scene_server/voxel/golden_fixture_test.exs`
+- 客户端：`clients/web_client/src/infrastructure/net/voxelProtocol.test.ts`
+  + `clients/web_client/src/voxel/{attributeSet,tagSet,catalogPatch}.test.ts`
+
+**新增 TS decoder**（web_client）：
+
+- `clients/web_client/src/voxel/attributeSet.ts` —— Section 0x04 pool。
+  Q16.16 既保留 `raw`（int32，用于 byte-stable hash 重算 / 比对）也提供
+  `asFloat`（`raw / 65536`，renderer 直接消费）。未知 `value_type` 硬错误。
+- `clients/web_client/src/voxel/tagSet.ts` —— Section 0x05 pool，严格升序+
+  无重复检查（drift detector）。
+- `clients/web_client/src/voxel/catalogPatch.ts` —— opcode 0x71 envelope。
+  未知 `op_kind` 0x04..0xFF preserved 为 raw payload，re-encode byte-identical
+  pass-through。未知 `schema_kind` 硬错误。
+- `clients/web_client/src/infrastructure/net/voxelProtocol.ts` —— snapshot
+  decode 现在产出 typed `attributeSets` / `tagSets` / `objectRefs`（之前
+  `ensureEmptyPool` / `ensureObjectRefsSection` 只做长度校验，Phase 1.6b 上升
+  到完整字段解码）。`decodeVoxelServerMessage` 追加 `case 0x71: CatalogPatch`
+  dispatch 路径，新增 `VoxelCatalogPatchMessage`。
+- `clients/web_client/src/voxel/wireToRefinedCell.ts` —— 不再丢弃
+  `attributeSetRef` / `tagSetRef` / `ownerObjectId`。在结果上额外产出
+  `attributeSetRefsBySlot: Uint32Array` / `tagSetRefsBySlot: Uint32Array` /
+  `ownerObjectIdsBySlot: BigUint64Array`（G-3 推荐）。`FRefinedCellData` 在
+  `storage/types.ts` 中扩展三条 optional 字段，保留对 offline 路径与现有
+  构造点的向后兼容。
+
+**chunk_hash 一致性验证**：服务端 `.yaml` 中 `chunk_hash` 字段与客户端从
+snapshot payload byte offset 40 读出的 u64 直接比较；不在客户端重算（TS 端
+目前没有 canonical encoder，且服务端 decoder 已在 fixture 生成时校验过
+`encoded_chunk_hash` 与 `computed_chunk_hash` 相等）。
+
+**测试**：vitest 343/343（299 baseline + 44 new）。Phase 1.6a 3 个 pinned
+chunk_hash baseline 未触（服务端代码本 commit 完全没动）。

@@ -8,6 +8,7 @@ import {
 } from "./gateProtocol";
 import {
   decodeVoxelServerMessage,
+  type VoxelCatalogPatchMessage,
   type VoxelChunkDeltaMessage,
   type VoxelChunkInvalidateMessage,
   encodeVoxelChunkSubscribe,
@@ -895,6 +896,7 @@ export class ServerMovementTransport implements MovementTransport {
       | VoxelIntentResultMessage
       | VoxelDebugProbeMessage
       | VoxelObjectStateDeltaMessage
+      | VoxelCatalogPatchMessage
       | null = null;
     try {
       message = decodeVoxelServerMessage(data);
@@ -1003,6 +1005,18 @@ export class ServerMovementTransport implements MovementTransport {
           object_version: message.delta.objectVersion.toString(),
           state_flags: `0x${message.delta.stateFlags.toString(16)}`,
           affected_chunk_count: message.delta.affectedChunks.length,
+        });
+        return true;
+      case "voxel_catalog_patch":
+        // Phase 1.6b: envelope-only forward-compat dispatch. We only log the
+        // arrival here; Phase 5 will land the AttributeDefinition /
+        // TagDefinition typed payload consumers.
+        this.logger.emit("voxel", "catalog_patch_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          schema_kind: `0x${message.patch.schemaKind.toString(16)}`,
+          base_version: message.patch.baseVersion.toString(),
+          new_version: message.patch.newVersion.toString(),
+          op_count: message.patch.ops.length,
         });
         return true;
     }

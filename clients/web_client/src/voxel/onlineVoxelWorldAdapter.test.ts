@@ -202,6 +202,9 @@ function emptySnapshot(chunkCoord: { x: number; y: number; z: number }): VoxelCh
     chunkHash: 0,
     storage: ChunkStorage.createEmpty(chunkCoord).data,
     refinedCellsWire: [],
+    attributeSets: [],
+    tagSets: [],
+    objectRefs: [],
   };
 }
 

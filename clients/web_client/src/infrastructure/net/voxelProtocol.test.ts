@@ -1,5 +1,13 @@
 import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelCellMode } from "../../voxel/core/types";
+import {
+  CATALOG_PATCH_FIXTURES,
+  CHUNK_INVALIDATE_FIXTURES,
+  DELTA_FIXTURES,
+  loadGolden,
+  OBJECT_STATE_DELTA_FIXTURES,
+  SNAPSHOT_FIXTURES,
+} from "../../voxel/fixtures/goldenFixtureLoader";
 import { VoxelDirtyFlags } from "../../voxel/storage/types";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
@@ -423,3 +431,163 @@ function concat(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+// =============================================================================
+// Phase 1.6b: cross-language wire roundtrip against Phase 1.6a server-side
+// golden fixtures. Server-side .golden files store the **payload body** (no
+// leading opcode byte), so we prepend the right opcode for the TS dispatcher
+// in `decodeVoxelServerMessage`.
+//
+// chunk_hash equivalence test: we DO NOT recompute chunk_hash on the client
+// (TS web_client has no canonical encoder today). Instead we read the
+// `encoded_chunk_hash` field that the server placed in the snapshot payload
+// and assert it equals the value pinned in the .yaml sidecar. This is the
+// same `computed_chunk_hash` the server's decoder verified during fixture
+// generation — see
+// apps/scene_server/lib/scene_server/voxel/codec.ex decode_chunk_snapshot_payload!/1
+// (the `chunk hash mismatch` raise guards encode/decode consistency).
+// =============================================================================
+
+function withOpcodePrefix(opcode: number, body: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(1 + body.byteLength);
+  const out = new Uint8Array(buffer);
+  out[0] = opcode;
+  out.set(body, 1);
+  return buffer;
+}
+
+describe("Phase 1.6b golden fixture roundtrip", () => {
+  describe.each(SNAPSHOT_FIXTURES)("snapshot fixture %s", (fixtureName) => {
+    it("decode → field-stable + chunk_hash equals server-side sidecar", () => {
+      const { bytes, meta } = loadGolden(fixtureName);
+      const payload = withOpcodePrefix(VoxelOpcode.ChunkSnapshot, bytes);
+      const message = decodeVoxelServerMessage(payload);
+      expect(message?.type).toBe("voxel_chunk_snapshot");
+      if (message?.type !== "voxel_chunk_snapshot") return;
+
+      // chunk_hash truth source: the server-emitted `encoded_chunk_hash` u64
+      // field that lives at byte offset 40 inside the snapshot payload body
+      // (8 request_id + 8 logical_scene_id + 12 chunk_coord + 2 schema_version
+      // + 1 chunk_size_in_macro + 1 micro_resolution + 8 chunk_version = 40
+      // bytes; chunk_hash is the next u64). The TS dispatcher exposes a
+      // `chunkHash: number` field today which is lossy in the upper 11 bits;
+      // we read the raw bigint here and compare against the .yaml sidecar
+      // value pinned at fixture-generation time. The same value lives at
+      // `decoded.chunk_hash` / `decoded.computed_chunk_hash` on the Elixir
+      // side (see scene_server/test/scene_server/voxel/golden_fixture_test.exs).
+      expect(meta.chunkHash).not.toBeUndefined();
+      if (meta.chunkHash === undefined) return;
+      const bodyView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const wireChunkHashBigInt = bodyView.getBigUint64(40, false);
+      expect(wireChunkHashBigInt).toBe(meta.chunkHash);
+
+      // Structural sanity matches Elixir-side `golden_fixture_test.exs`.
+      expect(message.storage.macroHeaders).toHaveLength(VoxelConstants.MacroCountPerChunk);
+    });
+  });
+
+  describe.each(DELTA_FIXTURES)("delta fixture %s", (fixtureName) => {
+    it("decode succeeds and ops are non-trivial", () => {
+      const { bytes } = loadGolden(fixtureName);
+      const payload = withOpcodePrefix(VoxelOpcode.ChunkDelta, bytes);
+      const message = decodeVoxelServerMessage(payload);
+      expect(message?.type).toBe("voxel_chunk_delta");
+      if (message?.type !== "voxel_chunk_delta") return;
+      expect(message.ops.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe.each(CHUNK_INVALIDATE_FIXTURES)("chunk_invalidate fixture %s", (fixtureName) => {
+    it("decode produces a reason byte and reasonName", () => {
+      const { bytes } = loadGolden(fixtureName);
+      const payload = withOpcodePrefix(VoxelOpcode.ChunkInvalidate, bytes);
+      const message = decodeVoxelServerMessage(payload);
+      expect(message?.type).toBe("voxel_chunk_invalidate");
+      if (message?.type !== "voxel_chunk_invalidate") return;
+      expect(message.reasonName).not.toBe("unknown");
+      // reason byte should land in 0x00..0x03 per the 4 named reasons.
+      expect([0, 1, 2, 3]).toContain(message.reason);
+    });
+  });
+
+  describe.each(OBJECT_STATE_DELTA_FIXTURES)(
+    "object_state_delta fixture %s",
+    (fixtureName) => {
+      it("decode populates header + affected_chunks", () => {
+        const { bytes } = loadGolden(fixtureName);
+        const payload = withOpcodePrefix(VoxelOpcode.ObjectStateDelta, bytes);
+        const message = decodeVoxelServerMessage(payload);
+        expect(message?.type).toBe("voxel_object_state_delta");
+        if (message?.type !== "voxel_object_state_delta") return;
+        expect(message.delta.objectId).toBeGreaterThanOrEqual(0n);
+        expect(message.delta.stateFlags).toBeGreaterThan(0);
+      });
+    },
+  );
+
+  describe.each(CATALOG_PATCH_FIXTURES)(
+    "catalog_patch fixture %s via opcode 0x71",
+    (fixtureName) => {
+      it("decode succeeds and ops match wire op_count", () => {
+        const { bytes } = loadGolden(fixtureName);
+        const payload = withOpcodePrefix(VoxelOpcode.CatalogPatch, bytes);
+        const message = decodeVoxelServerMessage(payload);
+        expect(message?.type).toBe("voxel_catalog_patch");
+        if (message?.type !== "voxel_catalog_patch") return;
+        // schema_kind must be 0x01 attribute or 0x02 tag — unknown values
+        // are rejected at the envelope level (hard error).
+        expect([0x01, 0x02]).toContain(message.patch.schemaKind);
+        expect(message.patch.ops.length).toBeGreaterThan(0);
+      });
+    },
+  );
+
+  // Structural spot-checks that match the Elixir-side golden_fixture_test.exs
+  // assertions, ported to TS to catch a refactor that quietly rewrites the
+  // fixture body while keeping byte counts.
+
+  it("snapshot_attribute_pool carries one AttributeSet covering all 5 value_type tags", () => {
+    const { bytes } = loadGolden("snapshot_attribute_pool");
+    const payload = withOpcodePrefix(VoxelOpcode.ChunkSnapshot, bytes);
+    const message = decodeVoxelServerMessage(payload);
+    if (message?.type !== "voxel_chunk_snapshot") throw new Error("expected snapshot");
+    expect(message.attributeSets).toHaveLength(1);
+    const set = message.attributeSets[0];
+    if (!set) throw new Error("expected set");
+    const types = set.entries.map((e) => e.value.type).sort();
+    expect(types).toEqual([0x01, 0x02, 0x03, 0x04, 0x05]);
+  });
+
+  it("snapshot_tag_pool carries two TagSets", () => {
+    const { bytes } = loadGolden("snapshot_tag_pool");
+    const payload = withOpcodePrefix(VoxelOpcode.ChunkSnapshot, bytes);
+    const message = decodeVoxelServerMessage(payload);
+    if (message?.type !== "voxel_chunk_snapshot") throw new Error("expected snapshot");
+    expect(message.tagSets).toHaveLength(2);
+  });
+
+  it("snapshot_object_refs carries decoded ChunkObjectRef records", () => {
+    const { bytes } = loadGolden("snapshot_object_refs");
+    const payload = withOpcodePrefix(VoxelOpcode.ChunkSnapshot, bytes);
+    const message = decodeVoxelServerMessage(payload);
+    if (message?.type !== "voxel_chunk_snapshot") throw new Error("expected snapshot");
+    expect(message.objectRefs.length).toBeGreaterThan(0);
+    for (const ref of message.objectRefs) {
+      expect(typeof ref.objectId).toBe("bigint");
+      expect(typeof ref.coverHash).toBe("bigint");
+      expect(ref.coveredMacroMin.x).toBeLessThanOrEqual(ref.coveredMacroMax.x);
+      expect(ref.coveredMacroMin.y).toBeLessThanOrEqual(ref.coveredMacroMax.y);
+      expect(ref.coveredMacroMin.z).toBeLessThanOrEqual(ref.coveredMacroMax.z);
+    }
+  });
+
+  it("snapshot_empty carries empty attribute / tag / object_ref sections", () => {
+    const { bytes } = loadGolden("snapshot_empty");
+    const payload = withOpcodePrefix(VoxelOpcode.ChunkSnapshot, bytes);
+    const message = decodeVoxelServerMessage(payload);
+    if (message?.type !== "voxel_chunk_snapshot") throw new Error("expected snapshot");
+    expect(message.attributeSets).toEqual([]);
+    expect(message.tagSets).toEqual([]);
+    expect(message.objectRefs).toEqual([]);
+  });
+});

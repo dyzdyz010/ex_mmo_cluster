@@ -46,6 +46,14 @@ export interface FRefinedCellData {
   microPartIds: number[];
   prefabInstanceIds: number[];
   boundaryCache: number;
+  // Phase 1.6b (G-3 recommended): slot-level provenance fields previously
+  // dropped by the lossy `wireToRefinedCell` adapter. Populated for online-
+  // mode cells (`RefinedCellWireData` → `FRefinedCellData`), absent for
+  // offline-mode cells whose authoring path never produced them. Renderer /
+  // mesher / collision consumers must treat `undefined` as "not available".
+  attributeSetRefsBySlot?: Uint32Array;
+  tagSetRefsBySlot?: Uint32Array;
+  ownerObjectIdsBySlot?: BigUint64Array;
 }
 
 export interface FPrefabInstanceData {

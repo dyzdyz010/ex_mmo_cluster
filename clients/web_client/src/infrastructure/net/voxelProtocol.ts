@@ -1,3 +1,11 @@
+import {
+  decodeAttributeSetPool,
+  type AttributeSet,
+} from "../../voxel/attributeSet";
+import {
+  decodeCatalogPatchPayload,
+  type CatalogPatch,
+} from "../../voxel/catalogPatch";
 import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelCellMode, type FChunkCoord, type FMacroCoord } from "../../voxel/core/types";
 import {
@@ -8,6 +16,7 @@ import {
   type FMacroEnvironmentSummary,
   type FNormalBlockData,
 } from "../../voxel/storage/types";
+import { decodeTagSetPool, type TagSet } from "../../voxel/tagSet";
 import { decodeObjectStateDelta, type ObjectStateDelta } from "./objectStateDelta";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
@@ -35,6 +44,30 @@ export interface VoxelKnownChunk {
   chunkVersion: number;
 }
 
+/**
+ * Phase 1.6b: typed ChunkObjectRef decoded from snapshot section 0x07.
+ *
+ * Mirrors `apps/scene_server/lib/scene_server/voxel/chunk_object_ref.ex`:
+ *
+ *   object_id:        u64
+ *   object_version:   u64
+ *   covered_macro_min: { x, y, z } each u8
+ *   covered_macro_max: { x, y, z } each u8
+ *   cover_hash:       u64
+ *
+ * 30 bytes per record. Was previously length-only validated (FullCompat-OK);
+ * Phase 1.6b lifts it to full field decoding so consumers (audit / explosion
+ * provenance / future prefab rollback queries) can read the structured form
+ * without re-parsing wire bytes.
+ */
+export interface ChunkObjectRef {
+  objectId: bigint;
+  objectVersion: bigint;
+  coveredMacroMin: { x: number; y: number; z: number };
+  coveredMacroMax: { x: number; y: number; z: number };
+  coverHash: bigint;
+}
+
 export interface VoxelChunkSnapshotMessage {
   type: "voxel_chunk_snapshot";
   requestId: number;
@@ -50,6 +83,10 @@ export interface VoxelChunkSnapshotMessage {
   // legacy `storage.refinedCells` (which stays empty in online mode and is
   // owned by browser offline path). 1c will lift this into storage proper.
   refinedCellsWire: RefinedCellWireData[];
+  // Phase 1.6b: typed sections previously dropped at decode time.
+  attributeSets: AttributeSet[];
+  tagSets: TagSet[];
+  objectRefs: ChunkObjectRef[];
 }
 
 export interface VoxelAuthoritativeCell {
@@ -142,13 +179,23 @@ export interface VoxelObjectStateDeltaMessage {
   delta: ObjectStateDelta;
 }
 
+// Phase 1.6b: 0x71 CatalogPatch — envelope-only forward-compat dispatch.
+// Payload `ops[*].payload` bytes are opaque until Phase 5 introduces the
+// AttributeDefinition / TagDefinition typed payloads. The decoder is a
+// byte-stable pass-through (unknown op_kinds are preserved).
+export interface VoxelCatalogPatchMessage {
+  type: "voxel_catalog_patch";
+  patch: CatalogPatch;
+}
+
 export type VoxelServerMessage =
   | VoxelChunkSnapshotMessage
   | VoxelChunkDeltaMessage
   | VoxelChunkInvalidateMessage
   | VoxelIntentResultMessage
   | VoxelDebugProbeMessage
-  | VoxelObjectStateDeltaMessage;
+  | VoxelObjectStateDeltaMessage
+  | VoxelCatalogPatchMessage;
 
 export function encodeVoxelDebugProbe(
   requestId: number,
@@ -449,9 +496,19 @@ export function decodeVoxelServerMessage(payload: ArrayBuffer): VoxelServerMessa
       return decodeDebugProbe(view);
     case VoxelOpcode.ObjectStateDelta:
       return decodeObjectStateDeltaMessage(payload);
+    case VoxelOpcode.CatalogPatch:
+      return decodeCatalogPatchMessage(payload);
     default:
       return null;
   }
+}
+
+function decodeCatalogPatchMessage(payload: ArrayBuffer): VoxelCatalogPatchMessage {
+  // Skip the leading opcode byte; the envelope decoder consumes the body
+  // without the opcode prefix (mirrors decodeObjectStateDeltaMessage above).
+  const body = new DataView(payload, 1);
+  const patch = decodeCatalogPatchPayload(body);
+  return { type: "voxel_catalog_patch", patch };
 }
 
 function decodeObjectStateDeltaMessage(payload: ArrayBuffer): VoxelObjectStateDeltaMessage {
@@ -578,12 +635,18 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
   const refinedCellsWire = decodeRefinedCellPool(
     requireSection(sections, SnapshotSection.RefinedCells),
   );
-  ensureEmptyPool(requireSection(sections, SnapshotSection.AttributeSets), "attribute_sets");
-  ensureEmptyPool(requireSection(sections, SnapshotSection.TagSets), "tag_sets");
+  const attributeSets = decodeAttributeSetPool(
+    requireSection(sections, SnapshotSection.AttributeSets),
+  );
+  const tagSets = decodeTagSetPool(
+    requireSection(sections, SnapshotSection.TagSets),
+  );
   const environmentSummaries = decodeEnvironmentSummaries(
     requireSection(sections, SnapshotSection.EnvironmentSummaries),
   );
-  ensureObjectRefsSection(requireSection(sections, SnapshotSection.ObjectRefs));
+  const objectRefs = decodeObjectRefsSection(
+    requireSection(sections, SnapshotSection.ObjectRefs),
+  );
 
   const max = Math.max(0, chunkSizeInMacro - 1);
   return {
@@ -610,6 +673,9 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
       dirtyFlags: VoxelDirtyFlags.Storage | VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision,
     },
     refinedCellsWire,
+    attributeSets,
+    tagSets,
+    objectRefs,
   };
 }
 
@@ -793,18 +859,49 @@ function decodeEnvironmentSummaries(section: DataView): FMacroEnvironmentSummary
   return summaries;
 }
 
-function ensureEmptyPool(section: DataView, label: string): void {
-  if (section.byteLength !== 4 || section.getUint32(0, false) !== 0) {
-    throw new Error(`unsupported_voxel_${label}_section:${section.byteLength}`);
-  }
-}
-
-function ensureObjectRefsSection(section: DataView): void {
+function decodeObjectRefsSection(section: DataView): ChunkObjectRef[] {
   const count = section.getUint32(0, false);
   const wireSize = 30;
   if (section.byteLength !== 4 + count * wireSize) {
     throw new Error(`invalid_object_ref_section:${section.byteLength}`);
   }
+  // Mirrors decode_object_refs!/1 in apps/scene_server/lib/scene_server/voxel/codec.ex:
+  //   object_id:        u64-be   (8 bytes)
+  //   object_version:   u64-be   (8 bytes)
+  //   covered_macro_min: u8 x, u8 y, u8 z   (3 bytes)
+  //   covered_macro_max: u8 x, u8 y, u8 z   (3 bytes)
+  //   cover_hash:       u64-be   (8 bytes)
+  // Total 30 bytes per record.
+  const refs: ChunkObjectRef[] = [];
+  let offset = 4;
+  for (let i = 0; i < count; i += 1) {
+    const objectId = section.getBigUint64(offset, false);
+    offset += 8;
+    const objectVersion = section.getBigUint64(offset, false);
+    offset += 8;
+    const minX = section.getUint8(offset);
+    offset += 1;
+    const minY = section.getUint8(offset);
+    offset += 1;
+    const minZ = section.getUint8(offset);
+    offset += 1;
+    const maxX = section.getUint8(offset);
+    offset += 1;
+    const maxY = section.getUint8(offset);
+    offset += 1;
+    const maxZ = section.getUint8(offset);
+    offset += 1;
+    const coverHash = section.getBigUint64(offset, false);
+    offset += 8;
+    refs.push({
+      objectId,
+      objectVersion,
+      coveredMacroMin: { x: minX, y: minY, z: minZ },
+      coveredMacroMax: { x: maxX, y: maxY, z: maxZ },
+      coverHash,
+    });
+  }
+  return refs;
 }
 
 function writeChunkCoord(view: DataView, offset: number, coord: FChunkCoord): void {
