@@ -588,6 +588,318 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   # ----------------------------------------------------------------------------
+  # Phase 5.D — effective_attribute_at（5 层 merge_rule 解析，L4 暂不接 → 4 层）
+  # ----------------------------------------------------------------------------
+
+  @merge_override 0x01
+  @merge_add_delta 0x02
+  @merge_max 0x03
+  @merge_min 0x04
+  @merge_material_default 0x05
+
+  @doc """
+  Phase 5.D 高层 API：按 macro cell + attribute 解析 **effective value**，应用
+  4 层 merge_rule（L4 object-part attribute 暂不接，推到 Phase 5.D.2）。
+
+  实施草案 `docs/plans/2026-05-13-phase5d-five-tier-merge-rule.md`
+  D-1..D-5 全部推荐方案（用户 2026-05-13 approve）：
+    * D-1 override 优先级 **L3 > L2 > L1 > L5**（micro > macro override > material default > environment）
+    * D-2 add_delta L1 作为 base，L2/L3/L5 是 delta 累加
+    * D-3 temperature_delta / moisture_delta 字段 + attribute_set 双路径 sum 累加（向后兼容）
+    * D-4 Phase 5.D 暂不接 L4，实际只实施 4 层
+    * D-5 API macro 粒度
+
+  四层数据源：
+    * L1 material_default = `AttributeDefinition.default_value`
+    * L2 normal_block_override:
+        - temperature/moisture: `NormalBlockData.temperature_delta / moisture_delta`
+          + `NormalBlockData.attribute_set_ref` → AttributeSet 中 entry（**sum**）
+        - 其它 attribute: `NormalBlockData.attribute_set_ref` → AttributeSet 中 entry
+    * L3 refined_micro_override: refined_cell.layers[*].attribute_set_ref →
+        AttributeSet 中 entry。多 layer 处理：
+        - `add_delta` / `max` / `min`：聚合所有 layer 的值（sum / max / min）
+        - `override`：取 canonical 序的 first layer 中有该 attribute 的 entry
+    * L4 object_part_attribute：Phase 5.D 暂不接（推到 5.D.2）
+    * L5 environment_summary: `MacroEnvironmentSummary.current_temperature /
+       current_moisture`（仅 temperature / moisture 适用）
+
+  merge_rule 合并语义：
+
+      override:         L3 > L2 > L1 > L5（取最高 priority 层有值的，否则次高，最后 default）
+      add_delta:        L1 + (L2.delta ?? 0) + (L3.delta_sum ?? 0) + (L5.delta ?? 0)
+      max / min:        max/min over available layers (L1, L2, L3, L5)
+      material_default: only L1
+
+  边界：
+    * effective_value 超出 `[min_value, max_value]` → **clip** 到边界（草案 §7 推荐策略）
+    * 未知 attr_name → raise `ArgumentError`
+    * 不合法 `macro_index_or_coord` → raise
+
+  Options:
+    * `:catalog` — AttributeCatalog server name / pid（默认模块名 singleton），
+      用于测试时注入 ad-hoc catalog（含 override / max / min merge_rule 的测试 attribute）。
+
+  Returns：raw int32 value (按 value_type 解释，i16/u16/fixed32/enum8/bitset32 都返回 raw int)。
+  """
+  @spec effective_attribute_at(
+          t(),
+          integer() | term(),
+          String.t() | non_neg_integer(),
+          keyword()
+        ) :: integer()
+  def effective_attribute_at(
+        %__MODULE__{} = storage,
+        macro_index_or_coord,
+        attr_name_or_id,
+        opts \\ []
+      ) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    catalog = Keyword.get(opts, :catalog, AttributeCatalog)
+
+    defn = catalog_lookup!(catalog, attr_name_or_id)
+
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    # 抽取 4 层各自的值（layer 不提供该 attribute 时返回 :not_found）
+    l1 = {:found, defn.default_value}
+    l2 = extract_l2(storage, header, defn)
+    l3 = extract_l3(storage, header, defn)
+    l5 = extract_l5(storage, header, defn)
+
+    effective =
+      case defn.merge_rule do
+        @merge_material_default ->
+          # 仅 L1
+          defn.default_value
+
+        @merge_override ->
+          # L3 > L2 > L1 > L5
+          first_value([l3, l2, l1, l5])
+
+        @merge_add_delta ->
+          # L1 + (L2.delta ?? 0) + (L3.delta_sum ?? 0) + (L5.delta ?? 0)
+          add_delta_layers(l1, l2, l3, l5)
+
+        @merge_max ->
+          # max(available layers)
+          aggregate_min_max([l1, l2, l3, l5], &max/2)
+
+        @merge_min ->
+          # min(available layers)
+          aggregate_min_max([l1, l2, l3, l5], &min/2)
+
+        other ->
+          raise ArgumentError,
+                "effective_attribute_at: unknown merge_rule #{inspect(other)} for attribute " <>
+                  "#{inspect(attr_name_or_id)}"
+      end
+
+    clip_to_range(effective, defn.min_value, defn.max_value)
+  end
+
+  # ---- catalog lookup helpers -------------------------------------------------
+
+  defp catalog_lookup!(catalog, attr_name) when is_binary(attr_name) do
+    case AttributeCatalog.lookup_by_name(catalog, attr_name) do
+      {:ok, _id, defn} ->
+        defn
+
+      {:error, :not_found} ->
+        raise ArgumentError,
+              "effective_attribute_at: attribute name #{inspect(attr_name)} not in catalog " <>
+                "(AttributeCatalog.lookup_by_name → :not_found)"
+    end
+  end
+
+  defp catalog_lookup!(catalog, attr_id) when is_integer(attr_id) and attr_id >= 0 do
+    case AttributeCatalog.lookup_by_id(catalog, attr_id) do
+      {:ok, defn} ->
+        defn
+
+      {:error, :not_found} ->
+        raise ArgumentError,
+              "effective_attribute_at: attribute id #{attr_id} not in catalog " <>
+                "(AttributeCatalog.lookup_by_id → :not_found)"
+    end
+  end
+
+  defp catalog_lookup!(_catalog, other) do
+    raise ArgumentError,
+          "effective_attribute_at: attr_name_or_id must be String or non-negative integer, " <>
+            "got: #{inspect(other)}"
+  end
+
+  # ---- L2 (normal block override) extraction ---------------------------------
+
+  # L2 仅在 solid mode 下生效（refined / empty cell 无 normal_block 路径）。
+  # D-3 (a1): temperature/moisture 的 typed 字段 + attribute_set 中同 attribute
+  # 的 entry **两条 sum 累加**（向后兼容）。
+  defp extract_l2(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        block = Enum.at(storage.normal_blocks, header.payload_index)
+        field_val = extract_normal_block_typed_field(block, defn)
+        set_val = extract_attribute_from_ref(storage, block.attribute_set_ref, defn)
+        combine_l2(field_val, set_val)
+
+      true ->
+        :not_found
+    end
+  end
+
+  # D-3 (a1)：合并 `temperature_delta` / `moisture_delta` 字段值与 attribute_set
+  # 中同 attribute 的 entry —— 两者都生效，**sum 累加**。其余 attribute 仅走
+  # attribute_set 路径。
+  defp combine_l2(:not_found, :not_found), do: :not_found
+  defp combine_l2({:found, v}, :not_found), do: {:found, v}
+  defp combine_l2(:not_found, {:found, v}), do: {:found, v}
+  defp combine_l2({:found, a}, {:found, b}), do: {:found, a + b}
+
+  # 仅 temperature / moisture 有 typed 字段；其他 attribute 返回 :not_found。
+  # 字段值是 i16 raw delta（按 D-3 (a1) 等同于 attribute_set 中 fixed32 delta 的同
+  # 单位 raw int，sum 累加；caller 责任保证两路径单位一致 —— Phase 5.C catalog
+  # temperature/moisture 都是 fixed32 Q16.16，temperature_delta 字段被解释为
+  # Q16.16 raw int32 delta（i16 表示范围内）。
+  defp extract_normal_block_typed_field(block, defn) do
+    case defn.name do
+      "temperature" ->
+        if block.temperature_delta != 0, do: {:found, block.temperature_delta}, else: :not_found
+
+      "moisture" ->
+        if block.moisture_delta != 0, do: {:found, block.moisture_delta}, else: :not_found
+
+      _ ->
+        :not_found
+    end
+  end
+
+  # ---- L3 (refined micro override) extraction --------------------------------
+
+  # 多 layer 处理（草案 §7 风险段）：
+  #   * add_delta：sum 所有 layer 中该 attribute 的 delta（symmetric L1+L3 path）
+  #   * max / min：取所有 layer 中该 attribute 的极值
+  #   * override：取 canonical 序的 first layer with attribute（不累加）
+  #   * material_default：忽略 L3
+  defp extract_l3(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
+    if header.mode == MacroCellHeader.cell_mode_refined() do
+      cell = Enum.at(storage.refined_cells, header.payload_index)
+
+      layer_values =
+        cell.layers
+        |> Enum.flat_map(fn layer ->
+          case extract_attribute_from_ref(storage, layer.attribute_set_ref, defn) do
+            {:found, v} -> [v]
+            :not_found -> []
+          end
+        end)
+
+      case layer_values do
+        [] ->
+          :not_found
+
+        values ->
+          case defn.merge_rule do
+            @merge_add_delta -> {:found, Enum.sum(values)}
+            @merge_max -> {:found, Enum.max(values)}
+            @merge_min -> {:found, Enum.min(values)}
+            # override / material_default：取 first layer with attribute（canonical 序）
+            _ -> {:found, hd(values)}
+          end
+      end
+    else
+      :not_found
+    end
+  end
+
+  # ---- L5 (environment summary) extraction -----------------------------------
+
+  # L5 仅 temperature / moisture 适用（既有 MacroEnvironmentSummary 结构字段：
+  # `current_temperature` / `current_moisture` i16 raw delta）。其它 attribute
+  # 返回 :not_found。
+  defp extract_l5(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
+    no_index = MacroCellHeader.no_index()
+
+    if header.environment_index == no_index do
+      :not_found
+    else
+      summary = Enum.at(storage.environment_summaries, header.environment_index)
+
+      cond do
+        is_nil(summary) ->
+          :not_found
+
+        defn.name == "temperature" ->
+          if summary.current_temperature != 0,
+            do: {:found, summary.current_temperature},
+            else: :not_found
+
+        defn.name == "moisture" ->
+          if summary.current_moisture != 0,
+            do: {:found, summary.current_moisture},
+            else: :not_found
+
+        true ->
+          :not_found
+      end
+    end
+  end
+
+  # ---- AttributeSet entry extraction ------------------------------------------
+
+  # 从指定 attribute_set_ref（1-indexed pool 索引，0 = no set）中按 defn.id 抽取
+  # 对应 entry 的 value。
+  defp extract_attribute_from_ref(_storage, 0, _defn), do: :not_found
+
+  defp extract_attribute_from_ref(%__MODULE__{} = storage, ref, defn)
+       when is_integer(ref) and ref > 0 do
+    case Enum.at(storage.attribute_sets, ref - 1) do
+      nil ->
+        :not_found
+
+      %AttributeSet{entries: entries} ->
+        case Enum.find(entries, fn entry -> entry.key_id == defn.id end) do
+          nil -> :not_found
+          entry -> {:found, entry.value}
+        end
+    end
+  end
+
+  # ---- merge helpers ----------------------------------------------------------
+
+  # 返回 layers 列表中第一个 `{:found, value}` 的 value。layers 顺序即 priority 高到低。
+  # L1 永远是 `{:found, default_value}`，所以列表中至少有一个 :found，结果不会 nil。
+  defp first_value([{:found, v} | _rest]), do: v
+  defp first_value([:not_found | rest]), do: first_value(rest)
+
+  # add_delta：L1 base + 所有 delta layer 累加（:not_found 视为 0）。
+  defp add_delta_layers({:found, base}, l2, l3, l5) do
+    base + delta_or_zero(l2) + delta_or_zero(l3) + delta_or_zero(l5)
+  end
+
+  defp delta_or_zero({:found, v}), do: v
+  defp delta_or_zero(:not_found), do: 0
+
+  # max / min over available layers (L1 always available)。
+  defp aggregate_min_max(layers, reducer) do
+    layers
+    |> Enum.flat_map(fn
+      {:found, v} -> [v]
+      :not_found -> []
+    end)
+    |> Enum.reduce(reducer)
+  end
+
+  # clip 到 [min, max]（草案 §7 风险段当前推荐策略）。
+  defp clip_to_range(value, min_v, max_v) do
+    cond do
+      value < min_v -> min_v
+      value > max_v -> max_v
+      true -> value
+    end
+  end
+
+  # ----------------------------------------------------------------------------
   # Phase 4 — object provenance reverse lookup + chunk-level cover aggregation
   # ----------------------------------------------------------------------------
 

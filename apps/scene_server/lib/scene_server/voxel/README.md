@@ -713,3 +713,84 @@ codec tests 完整跑通）。
 - 模拟器 / 规则帧（dirty cell 扩散、`EnvironmentUpdated` delta）→ Phase 5.E / 5.F
 - 客户端 catalog 消费（web_client TS decoder for opcode `0x6E` / `0x6D` +
   UI）→ Phase 5.D / 5.E 真正下发 catalog 时一并落地
+
+## Phase 5.D: five-tier merge_rule + effective_attribute_at API (2026-05-13)
+
+把"按 cell 解析 effective attribute value"路径接通：下游 simulator
+(Phase 5.E / 5.F) 与 FieldLayer (Phase 6) 通过单一 API 拿到应用所有覆盖后的最终值。
+本 commit 仅实施 4 层（L1/L2/L3/L5）；L4 object-part 推到 Phase 5.D.2 或更晚。
+
+设计草案 `docs/plans/2026-05-13-phase5d-five-tier-merge-rule.md`
+D-1..D-5 全部推荐方案（用户 2026-05-13 approve）：
+
+- **D-1** override 优先级 **L3 > L2 > L1 > L5**（micro > macro override > material default > environment）
+- **D-2** add_delta L1 base + L2/L3/L5 delta 累加
+- **D-3** `temperature_delta` / `moisture_delta` 字段 + attribute_set 双路径 sum 累加（向后兼容）
+- **D-4** Phase 5.D 暂不接 L4 object-part（推到 5.D.2 或更晚）
+- **D-5** API macro 粒度
+
+**四层数据源**：
+
+| 层级 | 来源 | 粒度 |
+|---|---|---|
+| L1 material_default | `AttributeDefinition.default_value` | catalog 全局 |
+| L2 normal_block_override | `NormalBlockData.{temperature,moisture}_delta` 字段 + `NormalBlockData.attribute_set_ref` 指向的 AttributeSet | macro cell（仅 :solid mode） |
+| L3 refined_micro_override | `MicroLayer.attribute_set_ref` 指向的 AttributeSet（多 layer 聚合） | refined micro layer |
+| L4 object_part | 未实施 | — |
+| L5 environment_summary | `MacroEnvironmentSummary.current_{temperature,moisture}`（仅 temperature / moisture 适用） | macro cell 粗粒度 |
+
+**merge_rule 实施（4 层版本）**：
+
+| merge_rule | 实施 |
+|---|---|
+| `override` (0x01) | L3 > L2 > L1 > L5（取最高 priority 层有值的，否则次高，最后 default） |
+| `add_delta` (0x02) | L1 + (L2.delta ?? 0) + (L3.delta_sum ?? 0) + (L5.delta ?? 0) |
+| `max` (0x03) | max([L1, L2, L3, L5] 中所有有值的层) |
+| `min` (0x04) | min([L1, L2, L3, L5] 中所有有值的层) |
+| `material_default` (0x05) | 仅 L1（忽略其他层） |
+
+**L3 refined cell 多 layer 处理（草案 §7）**：
+
+- `add_delta`：sum 所有 layer 中该 attribute 的 delta（与 L1+L3 path 物理直观一致）
+- `max` / `min`：取所有 layer 中该 attribute 的极值
+- `override`：取 canonical 序的 first layer with attribute（**不**累加）
+- `material_default`：忽略 L3
+
+**L2 D-3 (a1) 路径**：当 `NormalBlockData.temperature_delta` / `moisture_delta`
+字段非 0 **且** `attribute_set` 中同 attribute 的 entry 也有 delta 时，**两者
+sum 累加**。其他 attribute 仅走 `attribute_set` 路径（没有 typed 字段）。
+
+**L5 字段语义**：当前 `MacroEnvironmentSummary.current_temperature` /
+`current_moisture` 是 i16 raw delta（向 catalog default 上累加）。L5 仅
+temperature / moisture 适用；其它 attribute L5 永远 `:not_found`。本 commit
+不改 `MacroEnvironmentSummary` 模块，仅读字段。
+
+**边界**：
+
+- effective_value 超出 `[min_value, max_value]` → **clip 到边界**（草案 §7
+  风险段当前推荐策略）
+- 未知 `attr_name` / `attr_id` → raise `ArgumentError`
+- 不合法 `macro_index_or_coord` → raise
+
+**API**：
+
+```elixir
+Storage.effective_attribute_at(storage, macro_index_or_coord, attr_name_or_id, opts \\ [])
+# opts:
+#   :catalog — AttributeCatalog server name / pid（默认模块名 singleton）
+```
+
+返回 raw int value（按 value_type 解释；i16 / u16 / fixed32 / enum8 / bitset32 都返回 raw int）。
+
+**测试**：560 voxel baseline + 24 new effective_attribute_test.exs = 584 全绿。
+Phase 1.6a 3 个 pinned `chunk_hash` baseline 未触（本 commit 只动 storage.ex
+增加 effective_attribute_at + 私有 merge helpers，不动 chunk_hash / wire codec /
+任何 wire 模块；golden_fixture_test.exs 32 tests 全部通过）。
+
+**Phase 5.D 边界**（与 Phase 5.D.2 / 5.E / 5.F 区分）：
+
+- L4 object-part attribute（`PartState` 扩展 / 独立 ObjectPartAttribute table）→ Phase 5.D.2 或更晚
+- Micro slot 粒度 effective API → Phase 5.D.2 或 Phase 6 真正需要时
+- 模拟器写入 `MacroEnvironmentSummary.current_temperature` → Phase 5.E / 5.F
+- temperature diffusion / `EnvironmentUpdated` delta 下发 → Phase 5.F
+- 客户端消费 effective value（web_client） → Phase 5.F 真正下发时一并落地
