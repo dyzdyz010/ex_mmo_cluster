@@ -344,7 +344,7 @@ window.__voxelObserve?.snapshot();
 
 当前建议先看两条正交状态：
 
-1. `voxel_sync=server-authoritative`：体素真相来自服务端；`seedState` / `subscriptionState` / `lastError` 用于定位订阅与 dev seed 问题
+1. `voxel_sync=server-authoritative`：体素真相来自服务端；`subscriptionState` / `lastError` 用于定位订阅与同步问题，`seedState` 只表示旧调试准备请求的后台状态
 2. `movement_transport=...`：movement 网络面，独立判断预测 / ack / reconcile
 
 movement transport 再拆成三类判断：
@@ -362,7 +362,7 @@ movement transport 再拆成三类判断：
 ./scripts/dev-doctor.sh
 ```
 
-它会把配置、端口占用、`/ingame/auto_login`、`/ingame/voxel/dev_seed`
+它会把配置、端口占用、`/ingame/auto_login`、默认区域准备接口
 以及 Vite `/ingame` 代理检查写到 `.demo/observe/dev-doctor.log`。如果
 `AUTH_PORT=20000` 被其他服务占用，可用另一组 20000 号段端口启动：
 

@@ -21,6 +21,7 @@ export GATE_UDP_PORT="${GATE_UDP_PORT:-20003}" # gate_server UDP（movement 快�
 # ---- 2. 服务端开关 -----------------------------------------------------------
 export PHX_SERVER="${PHX_SERVER:-true}"           # 让 Phoenix 真的启 HTTP listener
 export DEV_AUTO_LOGIN="${DEV_AUTO_LOGIN:-true}"   # 开放 /ingame/auto_login（生产环境务必关掉）
+export VOXEL_DEV_REGION_BOOTSTRAP="${VOXEL_DEV_REGION_BOOTSTRAP:-true}" # 服务端启动后准备默认体素区域，浏览器只读取/订阅
 
 # ---- 3. 数据库 ---------------------------------------------------------------
 # 默认 = macOS 上 brew 装的本机 postgres（postgres@:5432，无密码）。
@@ -50,7 +51,7 @@ export VITE_GAME_CLIENT_USERNAME="${VITE_GAME_CLIENT_USERNAME:-${GAME_CLIENT_USE
 export VITE_VOXEL_SYNC="${VITE_VOXEL_SYNC:-online}"                            # online | offline
 export VITE_VOXEL_LOGICAL_SCENE_ID="${VITE_VOXEL_LOGICAL_SCENE_ID:-1}"         # 与 DevSeed 创建的场景一致
 export VITE_VOXEL_SUBSCRIBE_RADIUS="${VITE_VOXEL_SUBSCRIBE_RADIUS:-1}"         # ChunkSubscribe 半径（L_inf）
-export VITE_VOXEL_DEV_SEED="${VITE_VOXEL_DEV_SEED:-1}"                         # 1 = 启动时调 /ingame/voxel/dev_seed
+export VITE_VOXEL_DEV_SEED="${VITE_VOXEL_DEV_SEED:-0}"                         # 1 = 旧调试模式：浏览器启动时主动请求准备默认区域
 export VITE_VOXEL_PRIME_DEMO_BLOCK="${VITE_VOXEL_PRIME_DEMO_BLOCK:-0}"         # 1 = 首份空 chunk 到达后自动放一颗 demo 方块（默认 0：服务端 DevSeed 已经种好平台）
 
 # ---- 8. 打印已生效的配置 -----------------------------------------------------
@@ -67,6 +68,7 @@ echo "  GATE_TCP_PORT                 = ${GATE_TCP_PORT}"
 echo "  GATE_UDP_PORT                 = ${GATE_UDP_PORT}"
 echo "  PHX_SERVER                    = ${PHX_SERVER}"
 echo "  DEV_AUTO_LOGIN                = ${DEV_AUTO_LOGIN}"
+echo "  VOXEL_DEV_REGION_BOOTSTRAP    = ${VOXEL_DEV_REGION_BOOTSTRAP}"
 echo "  NODE_NAME                     = ${NODE_NAME}"
 echo "  GAME_AUTH_BASE_URL            = ${GAME_AUTH_BASE_URL}"
 echo "  GAME_WS_URL                   = ${GAME_WS_URL}"

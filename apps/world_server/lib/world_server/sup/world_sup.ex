@@ -10,30 +10,42 @@ defmodule WorldServer.WorldSup do
   end
 
   def init(_init_arg) do
-    children = [
-      # Phase A4-bis-cluster step 4 (segment 2a → 2c): start
-      # SceneNodeRegistry + SceneNodeMonitor *before* MapLedger so
-      # MapLedger.put_region can consult the registry from its very
-      # first call. SceneNodeRegistry is the state, SceneNodeMonitor
-      # sweeps it on `:nodedown`.
-      {WorldServer.Voxel.SceneNodeRegistry, name: WorldServer.Voxel.SceneNodeRegistry},
-      {WorldServer.Voxel.SceneNodeMonitor,
-       name: WorldServer.Voxel.SceneNodeMonitor, registry: WorldServer.Voxel.SceneNodeRegistry},
-      {WorldServer.Voxel.MapLedger,
-       name: WorldServer.Voxel.MapLedger,
-       write_token_store: DataService.Voxel.WriteTokenStore,
-       scene_node_registry: WorldServer.Voxel.SceneNodeRegistry},
-      {WorldServer.Voxel.TransactionCoordinator,
-       name: WorldServer.Voxel.TransactionCoordinator,
-       persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
-       load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)},
-      {WorldServer.Voxel.TransactionRecoveryWatcher,
-       name: WorldServer.Voxel.TransactionRecoveryWatcher,
-       coordinator: WorldServer.Voxel.TransactionCoordinator,
-       scene_opts_resolver: &__MODULE__.default_scene_opts_resolver/1}
-    ]
+    children =
+      [
+        # Phase A4-bis-cluster step 4 (segment 2a → 2c): start
+        # SceneNodeRegistry + SceneNodeMonitor *before* MapLedger so
+        # MapLedger.put_region can consult the registry from its very
+        # first call. SceneNodeRegistry is the state, SceneNodeMonitor
+        # sweeps it on `:nodedown`.
+        {WorldServer.Voxel.SceneNodeRegistry, name: WorldServer.Voxel.SceneNodeRegistry},
+        {WorldServer.Voxel.SceneNodeMonitor,
+         name: WorldServer.Voxel.SceneNodeMonitor, registry: WorldServer.Voxel.SceneNodeRegistry},
+        {WorldServer.Voxel.MapLedger,
+         name: WorldServer.Voxel.MapLedger,
+         write_token_store: DataService.Voxel.WriteTokenStore,
+         scene_node_registry: WorldServer.Voxel.SceneNodeRegistry},
+        default_region_bootstrapper_child(),
+        {WorldServer.Voxel.TransactionCoordinator,
+         name: WorldServer.Voxel.TransactionCoordinator,
+         persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
+         load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)},
+        {WorldServer.Voxel.TransactionRecoveryWatcher,
+         name: WorldServer.Voxel.TransactionRecoveryWatcher,
+         coordinator: WorldServer.Voxel.TransactionCoordinator,
+         scene_opts_resolver: &__MODULE__.default_scene_opts_resolver/1}
+      ]
+      |> Enum.reject(&is_nil/1)
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp default_region_bootstrapper_child do
+    opts = Application.get_env(:world_server, :default_voxel_region_bootstrap, [])
+
+    if Keyword.get(opts, :enabled?, false) do
+      {WorldServer.Voxel.DefaultRegionBootstrapper,
+       Keyword.put_new(opts, :name, WorldServer.Voxel.DefaultRegionBootstrapper)}
+    end
   end
 
   @doc """

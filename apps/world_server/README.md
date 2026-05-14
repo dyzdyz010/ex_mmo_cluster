@@ -8,13 +8,21 @@
 
 `WorldServer.WorldSup` 当前启动：
 
+- `WorldServer.Voxel.SceneNodeRegistry`
+- `WorldServer.Voxel.SceneNodeMonitor`
 - `WorldServer.Voxel.MapLedger`
+- `WorldServer.Voxel.DefaultRegionBootstrapper`（开发 / demo 配置启用时）
 - `WorldServer.Voxel.TransactionCoordinator`
+- `WorldServer.Voxel.TransactionRecoveryWatcher`
 
 `MapLedger` 拥有体素区域分配、租约签发、向 DataService 发布写入令牌、区块路由，以及
 按租约计算事务参与者的职责。它还保存迁移计划，按“预热、切换、完成”的阶段推进地块
 拥有者变更；迁移预热切片是按区块坐标轴和宽度拆出的连续区块范围，用来让目标 Scene
 分批加载交接数据，避免一次性迁移整个区域。
+
+`DefaultRegionBootstrapper` 把本地 / demo 默认体素区域准备移到服务端生命周期里：
+服务端启动后准备默认区域、续租，Scene 还没注册时重试。浏览器打开后只登录、入场、订阅读取
+格子状态，不再把区域准备作为首屏交互前置步骤。
 
 `TransactionCoordinator` 记录准备确认以及提交 / 放弃决策。WorldServer 仍然不保存完整
 区块真相，也不执行逐帧体素规则；SceneServer 仍然是已租约区域的热执行拥有者。

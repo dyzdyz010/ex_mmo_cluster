@@ -72,10 +72,7 @@ export class HudView implements FrameSubscriber {
       // / :stale_chunk_version etc),客户端 HUD flash 提示用户。
       bus.on("world:voxel-prefab-result", ({ blueprintName, accepted, reason }) => {
         if (!accepted) {
-          this.showFlash(
-            `prefab ${blueprintName} rejected: ${reason}`,
-            FAILURE_FLASH_DURATION_MS,
-          );
+          this.showFlash(`prefab ${blueprintName} rejected: ${reason}`, FAILURE_FLASH_DURATION_MS);
         }
       });
     }
@@ -226,8 +223,6 @@ export function buildRuntimeAlerts(
       alerts.push(
         `VOXEL DEV SEED NOT STARTED: waiting for transport (${voxelConnectionStatus || "unknown"}:${voxelConnectionPhase || "unknown"})`,
       );
-    } else if (seedState && seedState !== "ready" && seedState !== "disabled") {
-      alerts.push(`VOXEL WAITING FOR DEV SEED: ${seedState}`);
     }
 
     if (voxelAvailable === false) {
@@ -236,7 +231,7 @@ export function buildRuntimeAlerts(
       );
     }
 
-    if (subscriptionState && subscriptionState !== "active") {
+    if (subscriptionState === "idle" && voxelAvailable !== false) {
       alerts.push(`VOXEL SUBSCRIPTION NOT ACTIVE: ${subscriptionState}`);
     }
 

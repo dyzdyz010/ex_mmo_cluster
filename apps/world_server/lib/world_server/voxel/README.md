@@ -72,6 +72,9 @@
   partial 信号供运维诊断)。`intents_by_participant` 为空(老 transaction 没带字段)时同样
   退化为 :pending_commit。所有动作幂等,watcher 自身被 supervisor restart 时重放扫描也无副作用。
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
+- `DefaultRegionBootstrapper` 是 World 监督树里的默认区域准备工人。开发 / demo 配置启用时，
+  它在服务端启动后准备默认区域、续发租约，并在 Scene 还没注册时重试。这样浏览器打开页面后
+  只负责登录、入场、订阅读取格子状态，不再负责创建或修复世界。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
   标记预热、切换、完成迁移，并把写入令牌校验结果写入结构化日志，供 CLI 和测试检查。
@@ -79,10 +82,10 @@
   `SceneServer.Voxel.ChunkDirectory` 的 pid/name，runner 会用 `scene_directory_invalidator/1`
   构造一个调用 `ChunkDirectory.invalidate_chunk/2` 的 invalidator 注入到内部启动的
   ledger。两者只在 runner 自己创建 ledger 时生效；调用方自带 `:ledger` 时由调用方决定。
-- `DevSeed` 是本地网页 / CLI 冒烟使用的幂等入口。它只准备默认区域、租约和 DataService 写入令牌，
-  不保存区块真相，也不绕过 Scene；浏览器随后仍要通过 Gate 订阅和提交 intent。已有区域再次 seed
-  时会续发开发租约，并通过 Scene 的批量 intent 路径一次性准备 y=0 的 16×16 起始地面，避免网页
-  长时间运行或刷新后出现“能订阅旧快照、但写入被租约过期拒绝”的假健康状态。
+- `DevSeed` 是本地网页 / CLI 冒烟使用的幂等准备函数。它只准备默认区域、租约和 DataService 写入令牌，
+  不保存区块真相，也不绕过 Scene；默认由 `DefaultRegionBootstrapper` 在服务端生命周期里调用。
+  已有区域再次 seed 时会续发开发租约，并通过 Scene 的批量 intent 路径一次性准备 y=0 的 16×16
+  起始地面，避免长时间运行后出现“能订阅旧快照、但写入被租约过期拒绝”的假健康状态。
 
 `route_chunk_with_lease/3` 是 Gate 向 Scene 请求区块快照前使用的控制面交接函数。它让客户端路径
 先对齐 World 权威，同时仍然把完整区块真相留在 Scene。

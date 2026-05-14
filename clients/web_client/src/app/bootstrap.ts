@@ -120,7 +120,9 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
-  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world, () => render.toggleFieldDebugOverlay());
+  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world, () =>
+    render.toggleFieldDebugOverlay(),
+  );
 
   const loop = new GameLoop();
   loop.subscribe(transportPump);
@@ -136,8 +138,7 @@ export async function bootstrap({
   loop.subscribe(diagnostics);
 
   const isTouchPrimary =
-    window.matchMedia?.("(pointer: coarse)")?.matches === true &&
-    navigator.maxTouchPoints > 0;
+    window.matchMedia?.("(pointer: coarse)")?.matches === true && navigator.maxTouchPoints > 0;
 
   let touchControlsView: TouchControlsView | null = null;
 
@@ -153,8 +154,7 @@ export async function bootstrap({
         requestJump: (source) => input.requestJump(source),
         emitBreak: () => eventBus.emit("input:break-block", { source: "touch_button" }),
         emitPlace: () => eventBus.emit("input:place-block", { source: "touch_button" }),
-        applyCameraYawPitchDelta: (yaw, pitch) =>
-          sceneHandles.applyCameraYawPitchDelta(yaw, pitch),
+        applyCameraYawPitchDelta: (yaw, pitch) => sceneHandles.applyCameraYawPitchDelta(yaw, pitch),
       });
       loop.subscribe(touchControlsView);
     } else {
@@ -211,10 +211,7 @@ function resolveTouchControlsElements(root: HTMLElement): TouchControlsElements 
   const btnJump = q<HTMLElement>(".touch-btn--jump");
   const btnBreak = q<HTMLElement>(".touch-btn--break");
   const btnPlace = q<HTMLElement>(".touch-btn--place");
-  if (
-    !zoneLeft || !zoneRight || !stickLeft || !stickRight ||
-    !btnJump || !btnBreak || !btnPlace
-  ) {
+  if (!zoneLeft || !zoneRight || !stickLeft || !stickRight || !btnJump || !btnBreak || !btnPlace) {
     return null;
   }
   return { zoneLeft, zoneRight, stickLeft, stickRight, btnJump, btnBreak, btnPlace };
@@ -244,7 +241,7 @@ function createVoxelWorldAdapter(
         { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
         { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
       ],
-      devSeed: import.meta.env.VITE_VOXEL_DEV_SEED !== "0",
+      devSeed: import.meta.env.VITE_VOXEL_DEV_SEED === "1",
       primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK === "1",
     });
   }

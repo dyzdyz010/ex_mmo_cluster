@@ -135,6 +135,23 @@ describe("VoxelDebugPanelView", () => {
     expect(html).not.toContain("waiting for dev_seed: idle");
   });
 
+  it("does not show pending region preparation as a blocking sync alert after subscription starts", () => {
+    const html = renderVoxelDebugPanelHtml({
+      mode: "server-authoritative",
+      seedState: "pending",
+      subscriptionState: "requested",
+      transport: {
+        available: true,
+        connectionStatus: "connected",
+        connectionPhase: "ready",
+      },
+    });
+
+    expect(html).not.toContain("waiting for dev_seed");
+    expect(html).not.toContain("dev_seed not started");
+    expect(html).not.toContain("subscription not active: requested");
+  });
+
   it("delegates visible controls to the same command port as the CLI", () => {
     const root = new FakeVoxelPanelRoot();
     const commands = new FakeCommands();

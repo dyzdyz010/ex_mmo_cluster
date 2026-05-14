@@ -133,8 +133,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
       targetWorldMicro: { ...request.targetWorldMicro },
       faceNormal: { ...request.faceNormal },
       materialId: request.materialId,
-      expectedChunkVersion:
-        request.expectedChunkVersion ?? 0xffff_ffff_ffff_ffffn,
+      expectedChunkVersion: request.expectedChunkVersion ?? 0xffff_ffff_ffff_ffffn,
       expectedCellHash: request.expectedCellHash ?? 0xffff_ffff,
       clientIntentSeq: request.clientIntentSeq,
     });
@@ -235,6 +234,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("OnlineVoxelWorldAdapter#placePrefab", () => {
@@ -404,6 +404,40 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
 });
 
 describe("OnlineVoxelWorldAdapter startup priming", () => {
+  it("subscribes to the world as soon as transport is ready while region preparation runs in the background", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const pendingSeed = new Promise<Response>(() => undefined);
+    const fetchSpy = vi.fn(() => pendingSeed);
+    vi.stubGlobal("fetch", fetchSpy);
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: true,
+      primeDemoBlock: false,
+      initialSubscriptions: [{ centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 }],
+    });
+
+    adapter.onFrame(100);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/dev_seed",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+    ]);
+    expect(adapter.debugSnapshot()).toMatchObject({
+      seedState: "pending",
+      subscriptionState: "requested",
+    });
+  });
+
   it("does not send a demo priming impact for empty snapshots unless explicitly enabled", () => {
     const transport = new FakeServerVoxelTransport();
     const bus = new EventBus<AppEvents>();
@@ -475,9 +509,7 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
     // non-zero modulo 8 (otherwise it collapses to a macro origin and the
     // server-side placement diverges from the client wireframe).
     const anchor = call.anchorWorldMicro;
-    expect(
-      anchor.x % 8 !== 0 || anchor.y % 8 !== 0 || anchor.z % 8 !== 0,
-    ).toBe(true);
+    expect(anchor.x % 8 !== 0 || anchor.y % 8 !== 0 || anchor.z % 8 !== 0).toBe(true);
   });
 
   it("returns the preview rejection when boundary snap finds no target", () => {
@@ -565,13 +597,15 @@ describe("OnlineVoxelWorldAdapter#placeMicroBlock / #breakMicroBlock (Phase 1c-5
 });
 
 describe("OnlineVoxelWorldAdapter ObjectStateDelta pipeline (Phase 4-bis-10)", () => {
-  function buildOsd(overrides: Partial<{
-    logicalSceneId: bigint;
-    objectId: bigint;
-    objectVersion: bigint;
-    stateFlags: number;
-    affectedChunks: { x: number; y: number; z: number }[];
-  }> = {}): VoxelObjectStateDeltaMessage {
+  function buildOsd(
+    overrides: Partial<{
+      logicalSceneId: bigint;
+      objectId: bigint;
+      objectVersion: bigint;
+      stateFlags: number;
+      affectedChunks: { x: number; y: number; z: number }[];
+    }> = {},
+  ): VoxelObjectStateDeltaMessage {
     return {
       type: "voxel_object_state_delta",
       delta: {
@@ -598,9 +632,7 @@ describe("OnlineVoxelWorldAdapter ObjectStateDelta pipeline (Phase 4-bis-10)", (
       .clearedSlotCacheForTest()
       .put(100n, { worldX: 12, worldY: 34, worldZ: 56, timestampMs: 0 });
 
-    transport.queuedObjectStateDeltas.push(
-      buildOsd({ stateFlags: 0x02 /* destroyed */ }),
-    );
+    transport.queuedObjectStateDeltas.push(buildOsd({ stateFlags: 0x02 /* destroyed */ }));
 
     adapter.onFrame(0);
 
@@ -643,9 +675,7 @@ describe("OnlineVoxelWorldAdapter ObjectStateDelta pipeline (Phase 4-bis-10)", (
     const events: { source: string }[] = [];
     bus.on("world:object-state-delta", (e) => events.push({ source: e.debrisSource }));
 
-    transport.queuedObjectStateDeltas.push(
-      buildOsd({ stateFlags: 0x04 /* part_destroyed */ }),
-    );
+    transport.queuedObjectStateDeltas.push(buildOsd({ stateFlags: 0x04 /* part_destroyed */ }));
 
     adapter.onFrame(0); // cache empty → retry queued
 
@@ -683,16 +713,12 @@ describe("OnlineVoxelWorldAdapter ObjectStateDelta pipeline (Phase 4-bis-10)", (
       .clearedSlotCacheForTest()
       .put(100n, { worldX: 0, worldY: 0, worldZ: 0, timestampMs: 0 });
 
-    transport.queuedObjectStateDeltas.push(
-      buildOsd({ objectVersion: 5n, stateFlags: 0x02 }),
-    );
+    transport.queuedObjectStateDeltas.push(buildOsd({ objectVersion: 5n, stateFlags: 0x02 }));
     adapter.onFrame(0);
     expect(events).toHaveLength(1);
 
     // Same object_version → dedupe path,no second emit.
-    transport.queuedObjectStateDeltas.push(
-      buildOsd({ objectVersion: 5n, stateFlags: 0x02 }),
-    );
+    transport.queuedObjectStateDeltas.push(buildOsd({ objectVersion: 5n, stateFlags: 0x02 }));
     adapter.onFrame(10);
     expect(events).toHaveLength(1);
   });

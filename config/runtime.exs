@@ -29,6 +29,20 @@ dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
 
 config :auth_server, :dev_auto_login, dev_auto_login?
 
+dev_region_bootstrap_env = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP")
+
+dev_region_bootstrap? =
+  case dev_region_bootstrap_env do
+    nil -> dev_auto_login?
+    value -> value in ["true", "1"]
+  end
+
+config :world_server, :default_voxel_region_bootstrap,
+  enabled?: dev_region_bootstrap?,
+  logical_scene_id: String.to_integer(System.get_env("VOXEL_DEV_REGION_LOGICAL_SCENE_ID", "1")),
+  retry_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_RETRY_MS", "1000")),
+  refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000"))
+
 # ---------------------------------------------------------------------------
 # gate_server listen ports (env-driven so prod container can remap)
 # ---------------------------------------------------------------------------

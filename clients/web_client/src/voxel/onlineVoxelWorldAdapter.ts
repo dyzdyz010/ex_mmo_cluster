@@ -158,7 +158,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private readonly logicalSceneId: number;
   private readonly defaultCenterChunk: FChunkCoord;
   private readonly defaultRadiusLInf: number;
-  private readonly initialSubscriptions: readonly { centerChunk: FChunkCoord; radiusLInf: number }[];
+  private readonly initialSubscriptions: readonly {
+    centerChunk: FChunkCoord;
+    radiusLInf: number;
+  }[];
   private readonly devSeed: boolean;
   private readonly primeDemoBlock: boolean;
   private readonly sourceSkillId: number;
@@ -255,9 +258,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
 
   override bootstrap(): void {
     // Server-authoritative mode must start empty locally. Authoritative
-    // terrain arrives from DevSeed + ChunkSnapshot; seeding the offline
-    // showcase here would make CLI/render observations mix local-only and
-    // server-owned cells.
+    // terrain arrives from server snapshots; seeding the offline showcase here
+    // would make CLI/render observations mix local-only and server-owned cells.
   }
 
   onFrame(nowMs: number): void {
@@ -277,10 +279,6 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     }
     if (this.seedState === "idle" || this.shouldRetrySeed(nowMs)) {
       this.ensureDevSeed(nowMs);
-      return;
-    }
-    if (this.seedState !== "ready") {
-      return;
     }
     if (this.subscriptionState === "idle") {
       this.subscribeInitialChunks();
@@ -957,7 +955,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     // Demo-only fallback for empty servers. Triggered when an authoritative
     // snapshot arrives with zero solid blocks AND the operator has explicitly
     // opted in via `VITE_VOXEL_PRIME_DEMO_BLOCK=1`. Defaults to off because
-    // production demos rely on `WorldServer.Voxel.DevSeed` to seed the
+    // production demos rely on the server to seed the
     // starter terrain server-side; client-side priming is a relic kept only
     // for emergency local debugging when the seed path is unavailable.
     if (this.primeDemoBlock && !this.primeSent && solidBlocks === 0) {
@@ -1036,10 +1034,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     let lastRequestId: number | null = null;
 
     for (const subscription of this.initialSubscriptions) {
-      const requestId = this.subscribeVoxelChunk(
-        subscription.centerChunk,
-        subscription.radiusLInf,
-      );
+      const requestId = this.subscribeVoxelChunk(subscription.centerChunk, subscription.radiusLInf);
       if (requestId !== null) {
         lastRequestId = requestId;
       }

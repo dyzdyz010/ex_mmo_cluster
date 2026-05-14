@@ -167,4 +167,31 @@ describe("HudView", () => {
     );
     expect(alerts.some((alert) => alert.includes("VOXEL WAITING FOR DEV SEED: idle"))).toBe(false);
   });
+
+  it("does not treat pending region preparation as a blocking voxel alert after subscription starts", () => {
+    const alerts = buildRuntimeAlerts(
+      {
+        mode: "server-authoritative",
+        seedState: "pending",
+        subscriptionState: "requested",
+        transport: {
+          available: true,
+          connectionStatus: "connected",
+          connectionPhase: "ready",
+        },
+      },
+      {
+        connectionStatus: "connected",
+        connectionPhase: "ready",
+        webSocketUrl: "ws://127.0.0.1:5173/ingame/ws",
+        authBaseUrl: "",
+      },
+      true,
+      "server-authoritative",
+    );
+
+    expect(alerts.some((alert) => alert.includes("VOXEL WAITING FOR DEV SEED"))).toBe(false);
+    expect(alerts.some((alert) => alert.includes("VOXEL DEV SEED NOT STARTED"))).toBe(false);
+    expect(alerts.some((alert) => alert.includes("VOXEL SUBSCRIPTION NOT ACTIVE"))).toBe(false);
+  });
 });

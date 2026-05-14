@@ -18,6 +18,7 @@ $env:GATE_UDP_PORT = "20003"    # gate_server UDP (movement 快车道)
 # ---- 2. 服务端开关 -----------------------------------------------------------
 $env:PHX_SERVER     = "true"    # 让 Phoenix 真的启 HTTP listener
 $env:DEV_AUTO_LOGIN = "true"    # 开放 /ingame/auto_login (生产环境务必关掉)
+$env:VOXEL_DEV_REGION_BOOTSTRAP = "true"  # 服务端启动后准备默认体素区域, 浏览器只读取/订阅
 
 # ---- 3. 数据库 ---------------------------------------------------------------
 # 默认指向 Docker 容器 yggdrasil-postgres-1 (本机 5432).
@@ -63,7 +64,7 @@ $env:VITE_GAME_CLIENT_USERNAME    = $env:GAME_CLIENT_USERNAME
 $env:VITE_VOXEL_SYNC              = "online"     # online | offline
 $env:VITE_VOXEL_LOGICAL_SCENE_ID  = "1"          # 与 DevSeed 创建的场景一致
 $env:VITE_VOXEL_SUBSCRIBE_RADIUS  = "1"          # ChunkSubscribe 半径 (L_inf)
-$env:VITE_VOXEL_DEV_SEED          = "1"          # 1 = 启动时调 /ingame/voxel/dev_seed
+$env:VITE_VOXEL_DEV_SEED          = "0"          # 1 = 旧调试模式: 浏览器启动时主动请求准备默认区域
 $env:VITE_VOXEL_PRIME_DEMO_BLOCK  = "0"          # 1 = 首份空 chunk 到达后自动放一颗 demo 方块 (默认 0: 服务端 DevSeed 已经种好平台)
 
 # ---- 9. 打印已生效的配置 -----------------------------------------------------
@@ -74,6 +75,7 @@ Write-Host "  GATE_TCP_PORT                = $env:GATE_TCP_PORT"
 Write-Host "  GATE_UDP_PORT                = $env:GATE_UDP_PORT"
 Write-Host "  PHX_SERVER                   = $env:PHX_SERVER"
 Write-Host "  DEV_AUTO_LOGIN               = $env:DEV_AUTO_LOGIN"
+Write-Host "  VOXEL_DEV_REGION_BOOTSTRAP   = $env:VOXEL_DEV_REGION_BOOTSTRAP"
 Write-Host "  NODE_NAME                    = $env:NODE_NAME"
 Write-Host "  ERL_EPMD_PORT                = $env:ERL_EPMD_PORT"
 Write-Host "  BEVY_CLIENT_GATE_ADDR        = $env:BEVY_CLIENT_GATE_ADDR"

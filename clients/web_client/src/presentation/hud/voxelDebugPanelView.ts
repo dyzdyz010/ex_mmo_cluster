@@ -307,8 +307,6 @@ function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {
     alerts.push(
       `dev_seed not started: waiting for transport (${transportStatus || "unknown"}:${transportPhase || "unknown"})`,
     );
-  } else if (seedState && seedState !== "ready" && seedState !== "disabled") {
-    alerts.push(`waiting for dev_seed: ${seedState}`);
   }
 
   if (available === false) {
@@ -317,7 +315,7 @@ function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {
     );
   }
 
-  if (subscriptionState && subscriptionState !== "active") {
+  if (subscriptionState === "idle" && available !== false) {
     alerts.push(`subscription not active: ${subscriptionState}`);
   }
 
