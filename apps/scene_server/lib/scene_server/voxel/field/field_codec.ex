@@ -109,6 +109,18 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     elec_map = Map.new(electric_cells)
     ion_map = Map.new(ionization_cells)
 
+    temp_layer =
+      if has_mask?(field_mask, @field_mask_temperature),
+        do: FieldRegion.get_layer(region, :temperature)
+
+    elec_layer =
+      if has_mask?(field_mask, @field_mask_electric_potential),
+        do: FieldRegion.get_layer(region, :electric_potential)
+
+    ion_layer =
+      if has_mask?(field_mask, @field_mask_ionization),
+        do: FieldRegion.get_layer(region, :ionization)
+
     indices_bin =
       Enum.reduce(all_indices, <<>>, fn idx, acc ->
         <<acc::binary, idx::unsigned-big-integer-size(16)>>
@@ -117,7 +129,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     temp_bin =
       if has_mask?(field_mask, @field_mask_temperature) do
         Enum.reduce(all_indices, <<>>, fn idx, acc ->
-          val = Map.get(temp_map, idx, 0.0)
+          val = Map.get(temp_map, idx, FieldLayer.get(temp_layer, idx))
           <<acc::binary, val::float-32-little>>
         end)
       else
@@ -127,7 +139,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     elec_bin =
       if has_mask?(field_mask, @field_mask_electric_potential) do
         Enum.reduce(all_indices, <<>>, fn idx, acc ->
-          val = Map.get(elec_map, idx, 0.0)
+          val = Map.get(elec_map, idx, FieldLayer.get(elec_layer, idx))
           <<acc::binary, val::float-32-little>>
         end)
       else
@@ -137,7 +149,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     ion_bin =
       if has_mask?(field_mask, @field_mask_ionization) do
         Enum.reduce(all_indices, <<>>, fn idx, acc ->
-          raw = Map.get(ion_map, idx, 0.0)
+          raw = Map.get(ion_map, idx, FieldLayer.get(ion_layer, idx))
           byte = raw |> round() |> max(0) |> min(255)
           <<acc::binary, byte::unsigned-big-integer-size(8)>>
         end)
@@ -149,9 +161,9 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
       cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
       region.region_id::unsigned-big-integer-size(64),
-      region.tick_count::unsigned-big-integer-size(32),
-      field_mask::unsigned-big-integer-size(8), cell_count::unsigned-big-integer-size(16),
-      indices_bin::binary, temp_bin::binary, elec_bin::binary, ion_bin::binary>>
+      region.tick_count::unsigned-big-integer-size(32), field_mask::unsigned-big-integer-size(8),
+      cell_count::unsigned-big-integer-size(16), indices_bin::binary, temp_bin::binary,
+      elec_bin::binary, ion_bin::binary>>
   end
 
   @doc """
@@ -231,7 +243,12 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
           non_neg_integer(),
           atom()
         ) :: binary()
-  def encode_destroyed_payload(region_id, chunk_coord, logical_scene_id, destroy_reason \\ :expired) do
+  def encode_destroyed_payload(
+        region_id,
+        chunk_coord,
+        logical_scene_id,
+        destroy_reason \\ :expired
+      ) do
     {cx, cy, cz} = chunk_coord
     reason_byte = encode_destroy_reason(destroy_reason)
 

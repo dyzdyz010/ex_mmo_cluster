@@ -2793,6 +2793,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # Phase 6: fan out a 0x73 FieldRegionSnapshot to every subscriber.
   defp fan_out_field_snapshot_payload(state, payload) do
+    subscriber_count = map_size(state.subscribers)
+
+    CliObserve.emit("voxel_field_snapshot_fanout", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        subscriber_count: subscriber_count,
+        byte_size: byte_size(payload)
+      }
+    end)
+
     Enum.each(state.subscribers, fn {subscriber, _opts} ->
       send(subscriber, {:voxel_field_region_snapshot_payload, payload})
 
@@ -2809,6 +2820,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # Phase 6: fan out a 0x74 FieldRegionDestroyed to every subscriber.
   defp fan_out_field_region_destroyed_payload(state, payload) do
+    subscriber_count = map_size(state.subscribers)
+
+    CliObserve.emit("voxel_field_region_destroyed_fanout", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        subscriber_count: subscriber_count,
+        byte_size: byte_size(payload)
+      }
+    end)
+
     Enum.each(state.subscribers, fn {subscriber, _opts} ->
       send(subscriber, {:voxel_field_region_destroyed_payload, payload})
 

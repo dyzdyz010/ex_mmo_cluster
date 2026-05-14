@@ -74,7 +74,7 @@ defmodule SceneServer.Voxel.Field.FieldRegion do
       end
     end)
 
-    layers = Map.new(field_types, fn ft -> {ft, FieldLayer.new()} end)
+    layers = Map.new(field_types, fn ft -> {ft, new_layer(ft)} end)
 
     %__MODULE__{
       region_id: Map.fetch!(attrs, :region_id),
@@ -123,6 +123,11 @@ defmodule SceneServer.Voxel.Field.FieldRegion do
   @doc "Returns the FieldLayer for the given field_type (falls back to an empty layer)."
   @spec get_layer(t(), field_type()) :: FieldLayer.t()
   def get_layer(%__MODULE__{layers: layers}, field_type) do
-    Map.get_lazy(layers, field_type, &FieldLayer.new/0)
+    Map.get_lazy(layers, field_type, fn -> new_layer(field_type) end)
   end
+
+  defp new_layer(:temperature),
+    do: FieldLayer.new(baseline: 20, quantization: :integer, threshold: 1)
+
+  defp new_layer(_field_type), do: FieldLayer.new()
 end

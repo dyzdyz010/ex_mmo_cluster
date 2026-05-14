@@ -31,6 +31,9 @@ defmodule SceneServer.Voxel.Field.FieldRegionTest do
       assert Map.has_key?(region.layers, :electric_potential)
       assert Map.has_key?(region.layers, :ionization)
       assert match?(%FieldLayer{}, region.layers.temperature)
+      assert FieldLayer.get(region.layers.temperature, 0) == 20
+      assert FieldLayer.get(region.layers.electric_potential, 0) == 0.0
+      assert FieldLayer.get(region.layers.ionization, 0) == 0.0
     end
 
     test "defaults field_types to [:temperature]" do

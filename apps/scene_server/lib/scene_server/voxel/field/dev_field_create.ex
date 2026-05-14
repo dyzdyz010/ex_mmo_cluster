@@ -10,7 +10,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess}
 
   @default_max_ticks 600
-  @default_source_value 100.0
+  @default_source_value 500.0
 
   @doc """
   Creates a temperature FieldRegion on the named chunk and returns a summary.
@@ -19,7 +19,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     * `:logical_scene_id` (default 1)
     * `:chunk_coord`      `{cx, cy, cz}` (default `{0, 0, 0}`)
     * `:max_ticks`        (default 600 = 60 s at 10 Hz)
-    * `:source_value`     heat-source temperature °C (default 100.0)
+    * `:source_value`     heat-source temperature °C (default 500.0)
   """
   @spec create_dev_region(keyword()) :: {:ok, map()} | {:error, term()}
   def create_dev_region(opts \\ []) do
@@ -34,7 +34,10 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
              chunk_coord: chunk_coord
            }),
          {:ok, region_id} <-
-           ChunkProcess.create_field_region(chunk_pid, build_attrs(chunk_coord, source_value, max_ticks)) do
+           ChunkProcess.create_field_region(
+             chunk_pid,
+             build_attrs(chunk_coord, source_value, max_ticks)
+           ) do
       {cx, cy, cz} = chunk_coord
 
       {:ok,

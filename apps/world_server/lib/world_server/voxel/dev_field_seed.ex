@@ -38,27 +38,64 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     * `:logical_scene_id` (default 1)
     * `:chunk_coord`      `{cx, cy, cz}` (default `{0, 0, 0}`)
     * `:max_ticks`        (default 600 = 60 s at 10 Hz)
-    * `:source_value`     heat-source temperature in °C (default 100.0)
+    * `:source_value`     heat-source temperature in °C (default 500.0)
   """
   @spec ensure_default_field(keyword()) :: {:ok, map()} | {:error, term()}
   def ensure_default_field(opts \\ []) when is_list(opts) do
-    with {:ok, scene_node} <- locate_scene_node(),
-         {:ok, summary} <- invoke_remote(scene_node, opts) do
-      enriched = Map.put(summary, :scene_node, Atom.to_string(scene_node))
+    with {:ok, target_node} <- locate_target_node(),
+         {:ok, summary} <- invoke(target_node, opts) do
+      enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
       emit(enriched)
       {:ok, enriched}
     end
   end
 
-  defp locate_scene_node do
-    case Enum.find(Node.list(), &scene_node?/1) do
-      nil -> {:error, :no_scene_node_available}
-      scene_node -> {:ok, scene_node}
+  # Mirrors WorldServer.Voxel.DevSeed.chunk_directory_target/2: in single-node
+  # dev (Node.list/0 == []) the scene_server runs in the same BEAM as the
+  # controller, so we invoke the scene module locally. In multi-node deploys
+  # we look for a node whose name starts with "scene_" (the convention set
+  # by deploy/docker-compose.yml) and dispatch via :rpc.call.
+  defp locate_target_node do
+    case Node.list() do
+      [] ->
+        {:ok, node()}
+
+      peers ->
+        case Enum.find(peers, &scene_node?/1) do
+          nil -> {:error, :no_scene_node_available}
+          scene_node -> {:ok, scene_node}
+        end
     end
   end
 
   defp scene_node?(node) do
     node |> Atom.to_string() |> String.starts_with?("scene_")
+  end
+
+  defp invoke(target_node, opts) do
+    if target_node == node() do
+      invoke_local(opts)
+    else
+      invoke_remote(target_node, opts)
+    end
+  end
+
+  defp invoke_local(opts) do
+    case Code.ensure_loaded(@scene_module) do
+      {:module, _} ->
+        case apply(@scene_module, :create_dev_region, [opts]) do
+          {:ok, summary} -> {:ok, summary}
+          {:error, _} = err -> err
+          other -> {:error, {:unexpected_response, other}}
+        end
+
+      _other ->
+        {:error, {:scene_module_unavailable, @scene_module}}
+    end
+  rescue
+    error -> {:error, {:scene_module_raised, error}}
+  catch
+    kind, reason -> {:error, {:scene_module_threw, kind, reason}}
   end
 
   defp invoke_remote(scene_node, opts) do

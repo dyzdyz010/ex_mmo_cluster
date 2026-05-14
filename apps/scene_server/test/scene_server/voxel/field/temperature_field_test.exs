@@ -43,9 +43,7 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
              "expected neighbor cell to be heated above env+1; got #{neighbor_val} vs env #{env}"
     end
 
-    test "without sources, layer relaxes toward env_temp (does not blow up to infinity)" do
-      # Initial layer is uniformly 0.0. Without sources, diffusion + decay
-      # should pull each cell upward toward env_temp = 20.0.
+    test "without sources, layer remains ambient and has no active cells" do
       region =
         FieldRegion.new(%{
           region_id: 2,
@@ -62,12 +60,10 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
 
       for x <- 0..3, y <- 0..3, z <- 0..3 do
         val = FieldLayer.get(layer, Types.macro_index!({x, y, z}))
-        # After 50 ticks at β=0.01 with no sources, cells should be moving up
-        # toward env_temp. They will not reach env_temp exactly, but they
-        # must be > 0.0 (initial) and < env_temp (target).
-        assert val > 0.0
-        assert val <= env + 0.01
+        assert val == env
       end
+
+      assert FieldLayer.active_cells(layer, {{0, 0, 0}, {3, 3, 3}}) == []
     end
 
     test "far cells stay close to env_temp after a small number of ticks" do
@@ -94,6 +90,56 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
       # the opposite corner; allow a wide tolerance to avoid false flake.
       assert abs(far - env) < 30.0,
              "expected far cell to be near env (#{env}); got #{far}"
+    end
+
+    test "diffusion keeps temperature layer sparse and integer-valued" do
+      source_idx = Types.macro_index!({3, 3, 3})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 5,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {7, 7, 7}},
+          field_types: [:temperature],
+          source_points: [
+            %{macro_index: source_idx, field_type: :temperature, value: 500.0}
+          ]
+        })
+
+      region = Enum.reduce(1..6, region, fn _, acc -> TemperatureField.tick(acc, nil) end)
+      layer = FieldRegion.get_layer(region, :temperature)
+      active = FieldLayer.active_cells(layer, {{0, 0, 0}, {7, 7, 7}})
+      active_indices = Enum.map(active, &elem(&1, 0))
+
+      assert source_idx in active_indices
+      assert Types.macro_index!({7, 7, 7}) not in active_indices
+      assert length(active) < FieldRegion.aabb_cell_count(region)
+      assert Enum.all?(active, fn {_idx, value} -> value == round(value) end)
+    end
+
+    test "high dev-style source spreads beyond the immediate 6-neighbor shell" do
+      source_idx = Types.macro_index!({3, 3, 3})
+      second_ring_idx = Types.macro_index!({5, 3, 3})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 6,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {7, 7, 7}},
+          field_types: [:temperature],
+          source_points: [
+            %{macro_index: source_idx, field_type: :temperature, value: 500.0}
+          ]
+        })
+
+      region = Enum.reduce(1..8, region, fn _, acc -> TemperatureField.tick(acc, nil) end)
+      layer = FieldRegion.get_layer(region, :temperature)
+
+      active_indices =
+        layer |> FieldLayer.active_cells({{0, 0, 0}, {7, 7, 7}}) |> Enum.map(&elem(&1, 0))
+
+      assert second_ring_idx in active_indices
+      assert FieldLayer.get(layer, second_ring_idx) > TemperatureField.env_temperature()
     end
 
     test "source_points are re-applied each tick (heat sources are maintained)" do

@@ -100,9 +100,12 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
       pos_b = Enum.find_index(decoded.macro_indices, &(&1 == idx_b))
 
       assert_in_delta Enum.at(decoded.temperature_values, pos_a), 80.0, 0.001
+      assert_in_delta Enum.at(decoded.temperature_values, pos_b), 20.0, 0.001
+      assert_in_delta Enum.at(decoded.electric_values, pos_a), 0.0, 0.001
       assert_in_delta Enum.at(decoded.electric_values, pos_b), 120.0, 0.001
       # ionization is rounded to u8 (clamped to 255 max).
       assert Enum.at(decoded.ionization_values, pos_a) == 200
+      assert Enum.at(decoded.ionization_values, pos_b) == 0
     end
 
     test "cell_count matches macro_indices length" do
@@ -119,6 +122,40 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
 
       assert decoded.cell_count == length(decoded.macro_indices)
       assert decoded.cell_count == 0
+    end
+
+    test "temperature baseline cells are not encoded" do
+      idx = Types.macro_index!({0, 0, 0})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 1,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {3, 3, 3}},
+          field_types: [:temperature]
+        })
+
+      temp_layer =
+        region
+        |> FieldRegion.get_layer(:temperature)
+        |> FieldLayer.put(idx, 20.0)
+
+      region = FieldRegion.put_layer(region, :temperature, temp_layer)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(0) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.cell_count == 0
+
+      temp_layer = FieldLayer.put(temp_layer, idx, 100.0)
+      region = FieldRegion.put_layer(region, :temperature, temp_layer)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(0) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.cell_count == 1
+      assert decoded.macro_indices == [idx]
+      assert decoded.temperature_values == [100.0]
     end
 
     test "ionization values are clamped to u8 range [0,255]" do

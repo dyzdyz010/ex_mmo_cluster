@@ -9,7 +9,6 @@
 
 import {
   BoxGeometry,
-  BufferGeometry,
   Color,
   EdgesGeometry,
   Group,
@@ -31,7 +30,13 @@ const HOT_COLOR = new Color(1, 0.1, 0.05); // red
 const COLD_COLOR = new Color(0.05, 0.1, 1.0); // blue
 const HIGH_ELEC_COLOR = new Color(1, 1, 0); // yellow
 const LOW_ELEC_COLOR = new Color(0, 0, 0); // black
-const ENV_TEMP = 20.0;
+// Show only the top-N cells that deviate from the snapshot background.
+// Dense legacy snapshots estimate the background with a median. Sparse server
+// snapshots only contain anomaly cells, so they fall back to the current field
+// environment baseline instead of treating the single anomaly as background.
+const TEMP_ENV_BASELINE = 20;
+const TEMP_TOP_N = 150;
+const TEMP_MIN_DELTA_FROM_BACKGROUND = 1.0;
 
 export interface FieldRegionOverlay {
   regionId: number;
@@ -63,6 +68,7 @@ export class FieldDebugOverlay {
 
   /** Called when a new FieldRegionSnapshot arrives (0x73). */
   onFieldSnapshot(snapshot: FFieldRegionSnapshot): void {
+    const isNew = !this.regions.has(snapshot.regionId);
     let overlay = this.regions.get(snapshot.regionId);
     if (!overlay) {
       overlay = this._createOverlay(snapshot);
@@ -70,6 +76,30 @@ export class FieldDebugOverlay {
       this.rootGroup.add(overlay.group);
     }
     this._updateOverlay(overlay, snapshot);
+    const tempCount = overlay.temperatureMesh?.count ?? 0;
+    const elecCount = overlay.electricMesh?.count ?? 0;
+    let tMin = Infinity;
+    let tMax = -Infinity;
+    let tSum = 0;
+    let nonZeroCount = 0;
+    for (let i = 0; i < snapshot.cellCount; i++) {
+      const v = snapshot.temperatureValues[i];
+      if (v === undefined) continue;
+      if (v < tMin) tMin = v;
+      if (v > tMax) tMax = v;
+      tSum += v;
+      if (Math.abs(v) > 0.0001) nonZeroCount++;
+    }
+    const tAvg = snapshot.cellCount > 0 ? tSum / snapshot.cellCount : 0;
+    console.info(
+      `[FieldDebugOverlay] snapshot region=${snapshot.regionId} ` +
+        `chunk=${snapshot.chunkCoord.cx},${snapshot.chunkCoord.cy},${snapshot.chunkCoord.cz} ` +
+        `tick=${snapshot.tickCount} mask=0x${snapshot.fieldMask.toString(16)} ` +
+        `cells=${snapshot.cellCount} nonzero=${nonZeroCount} ` +
+        `temp_min=${tMin.toFixed(3)} temp_max=${tMax.toFixed(3)} temp_avg=${tAvg.toFixed(3)} ` +
+        `rendered_temp=${tempCount} rendered_elec=${elecCount} ` +
+        `new=${isNew} group_visible=${this.rootGroup.visible} regions_total=${this.regions.size}`,
+    );
   }
 
   /** Called when FieldRegionDestroyed (0x74) arrives. */
@@ -80,6 +110,10 @@ export class FieldDebugOverlay {
       _disposeOverlay(overlay);
       this.regions.delete(regionId);
     }
+    console.info(
+      `[FieldDebugOverlay] destroyed region=${regionId} existed=${overlay !== undefined} ` +
+        `regions_remaining=${this.regions.size}`,
+    );
   }
 
   /** Clear all regions (e.g., on chunk invalidate). */
@@ -94,6 +128,7 @@ export class FieldDebugOverlay {
   toggle(): void {
     this.visible = !this.visible;
     this.rootGroup.visible = this.visible;
+    console.info(`[FieldDebugOverlay] toggle visible=${this.visible} regions=${this.regions.size}`);
   }
 
   isVisible(): boolean {
@@ -113,18 +148,34 @@ export class FieldDebugOverlay {
     let electricMesh: InstancedMesh | null = null;
 
     if (snapshot.fieldMask & FieldMask.Temperature) {
-      // depthTest:false + depthWrite:false so field cells are visible through terrain
-      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.45, vertexColors: true, depthTest: false, depthWrite: false });
+      // depthTest:false + depthWrite:false so field cells are visible through terrain.
+      // Opacity kept low so even when many cells render the scene behind stays readable.
+      const mat = new MeshBasicMaterial({
+        transparent: true,
+        opacity: 0.35,
+        vertexColors: true,
+        depthTest: false,
+        depthWrite: false,
+      });
       temperatureMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       temperatureMesh.count = 0;
       temperatureMesh.frustumCulled = false;
       temperatureMesh.renderOrder = 5;
-      temperatureMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
+      temperatureMesh.instanceColor = new InstancedBufferAttribute(
+        new Float32Array(MAX_CELLS * 3),
+        3,
+      );
       group.add(temperatureMesh);
     }
 
     if (snapshot.fieldMask & FieldMask.ElectricPotential) {
-      const mat = new MeshBasicMaterial({ transparent: true, opacity: 0.5, vertexColors: true, depthTest: false, depthWrite: false });
+      const mat = new MeshBasicMaterial({
+        transparent: true,
+        opacity: 0.18,
+        vertexColors: true,
+        depthTest: false,
+        depthWrite: false,
+      });
       electricMesh = new InstancedMesh(geo, mat, MAX_CELLS);
       electricMesh.count = 0;
       electricMesh.frustumCulled = false;
@@ -148,23 +199,55 @@ export class FieldDebugOverlay {
   }
 
   private _updateOverlay(overlay: FieldRegionOverlay, snapshot: FFieldRegionSnapshot): void {
-    if (overlay.temperatureMesh && (snapshot.fieldMask & FieldMask.Temperature)) {
+    if (overlay.temperatureMesh && snapshot.fieldMask & FieldMask.Temperature) {
       this._syncTemperatureMesh(overlay.temperatureMesh, snapshot);
     }
-    if (overlay.electricMesh && (snapshot.fieldMask & FieldMask.ElectricPotential)) {
+    if (overlay.electricMesh && snapshot.fieldMask & FieldMask.ElectricPotential) {
       this._syncElectricMesh(overlay.electricMesh, snapshot);
     }
   }
 
   private _syncTemperatureMesh(mesh: InstancedMesh, snapshot: FFieldRegionSnapshot): void {
     const { macroIndices, temperatureValues, cellCount } = snapshot;
-    let count = 0;
 
+    // Build (cell index, temperature) pairs, then keep only cells that stand
+    // away from the local background. Sorting 4096 entries is cheap at the
+    // field tick cadence and avoids baking in assumptions about dense vs sparse
+    // server snapshots.
+    const samples: number[] = [];
+    const pairs: { srcIdx: number; temp: number }[] = [];
     for (let i = 0; i < cellCount; i++) {
-      const temp = temperatureValues[i];
-      if (temp === undefined || Math.abs(temp - ENV_TEMP) < 0.5) continue;
+      const v = temperatureValues[i];
+      if (v !== undefined && Number.isFinite(v)) {
+        pairs.push({ srcIdx: i, temp: v });
+        samples.push(v);
+      }
+    }
+    const backgroundTemp = estimateBackgroundTemperature(samples, cellCount);
+    const visiblePairs = pairs
+      .map(({ srcIdx, temp }) => ({
+        srcIdx,
+        temp,
+        deviation: temp - backgroundTemp,
+      }))
+      .filter(({ deviation }) => Math.abs(deviation) >= TEMP_MIN_DELTA_FROM_BACKGROUND);
+    visiblePairs.sort((a, b) => Math.abs(b.deviation) - Math.abs(a.deviation));
+    const topN = visiblePairs.slice(0, Math.min(TEMP_TOP_N, visiblePairs.length));
 
-      const idx = macroIndices[i]!;
+    if (topN.length === 0) {
+      mesh.count = 0;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      return;
+    }
+
+    // Stretch color across displayed absolute deviation. Negative anomalies
+    // skew blue, positive anomalies skew red.
+    const maxAbsDeviation = Math.max(...topN.map(({ deviation }) => Math.abs(deviation)));
+
+    let count = 0;
+    for (const { srcIdx, deviation } of topN) {
+      const idx = macroIndices[srcIdx]!;
       const { x, y, z } = macroIndexToCoord(idx);
 
       this.tmpDummy.position.set(
@@ -175,7 +258,12 @@ export class FieldDebugOverlay {
       this.tmpDummy.updateMatrix();
       mesh.setMatrixAt(count, this.tmpDummy.matrix);
 
-      const t = Math.max(0, Math.min(1, (temp - ENV_TEMP) / 80.0));
+      const t =
+        maxAbsDeviation <= 1e-6
+          ? deviation >= 0
+            ? 1
+            : 0
+          : Math.max(0, Math.min(1, 0.5 + 0.5 * (deviation / maxAbsDeviation)));
       this.tmpColor.copy(COLD_COLOR).lerp(HOT_COLOR, t);
       mesh.setColorAt(count, this.tmpColor);
       count++;
@@ -235,9 +323,20 @@ function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {
   return { x, y, z };
 }
 
+function estimateBackgroundTemperature(samples: number[], cellCount: number): number {
+  if (samples.length === 0) return TEMP_ENV_BASELINE;
+  if (cellCount < MAX_CELLS / 2) return TEMP_ENV_BASELINE;
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)] ?? TEMP_ENV_BASELINE;
+}
+
 function _makeAabbWireframe(
-  minX: number, minY: number, minZ: number,
-  maxX: number, maxY: number, maxZ: number,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
 ): LineSegments {
   const boxGeo = new BoxGeometry(
     (maxX - minX) * CELL_SIZE,

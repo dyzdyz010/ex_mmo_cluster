@@ -1,5 +1,10 @@
 # Phase 6: 局部场最小目标（FieldLayer + 电场 + 温度场 + FieldDebugOverlay）— 设计草案
 
+> 2026-05-14 更新：温度层已从本草案的 dense f32 array 调整为"环境基线
+> 20°C + 整数异常 delta"的稀疏层。0x73 wire 仍保持 f32 绝对值数组，但只下发
+> active/anomaly cell；详见 `apps/scene_server/lib/scene_server/voxel/README.md`
+> 的 Phase 6 段和 `docs/2026-04-10-线协议规范.md` 的 0x73 语义。
+
 状态：G-1..G-8 决策已采用推荐方案，进入 TDD 实现阶段
 日期：2026-05-13
 归属：goal `voxel-authoritative-and-field-minimum` Phase 6

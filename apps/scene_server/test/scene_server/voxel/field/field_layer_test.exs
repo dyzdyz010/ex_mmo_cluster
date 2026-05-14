@@ -2,26 +2,54 @@ defmodule SceneServer.Voxel.Field.FieldLayerTest do
   # Phase 6 局部场最小目标:FieldLayer 单元测试。
   #
   # 覆盖:
-  #   - new/0 产出全 0.0 的 4096-cell binary
-  #   - get/2 在 index 0、1、4095 等关键位置正确读取
+  #   - new/0 产出 baseline 0.0 的空稀疏层
+  #   - new/1 可配置环境 baseline / 整数化 / 异常阈值
   #   - put/3 修改指定 index 不影响其它
-  #   - active_cells/2 只在 AABB 内迭代并跳过 abs(value) <= epsilon
+  #   - active_cells/2 只返回 AABB 内偏离 baseline 的异常 cell
   use ExUnit.Case, async: true
 
   alias SceneServer.Voxel.Field.FieldLayer
 
   describe "new/0" do
-    test "returns 4096 cells of 0.0" do
+    test "returns an empty sparse layer with baseline 0.0" do
       layer = FieldLayer.new()
-      assert byte_size(layer.data) == 4096 * 4
 
       Enum.each([0, 1, 16, 257, 4095], fn idx ->
         assert FieldLayer.get(layer, idx) == 0.0
+        assert FieldLayer.get_delta(layer, idx) == 0.0
       end)
+
+      assert FieldLayer.active_cells(layer, {{0, 0, 0}, {15, 15, 15}}) == []
     end
 
     test "cell_count/0 reports 4096" do
       assert FieldLayer.cell_count() == 4096
+    end
+  end
+
+  describe "new/1" do
+    test "temperature-style layers keep baseline cells out of active cells" do
+      idx = macro_index({1, 1, 1})
+
+      layer =
+        FieldLayer.new(baseline: 20, quantization: :integer, threshold: 1)
+        |> FieldLayer.put(idx, 20.4)
+
+      assert FieldLayer.get(layer, idx) == 20
+      assert FieldLayer.get_delta(layer, idx) == 0
+      assert FieldLayer.active_cells(layer, {{0, 0, 0}, {3, 3, 3}}) == []
+    end
+
+    test "temperature-style layers store integer deviations from baseline" do
+      idx = macro_index({1, 1, 1})
+
+      layer =
+        FieldLayer.new(baseline: 20, quantization: :integer, threshold: 1)
+        |> FieldLayer.put(idx, 42.6)
+
+      assert FieldLayer.get(layer, idx) == 43
+      assert FieldLayer.get_delta(layer, idx) == 23
+      assert FieldLayer.active_cells(layer, {{0, 0, 0}, {3, 3, 3}}) == [{idx, 43}]
     end
   end
 

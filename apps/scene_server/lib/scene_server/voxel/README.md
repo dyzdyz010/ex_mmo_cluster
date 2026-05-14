@@ -989,24 +989,28 @@ baseline byte-stable。Phase 1-5 全 done。
 
 ## Phase 6：FieldLayer + 电场 / 温度场 tick + FieldDebugOverlay (2026-05-13, commit c0d8681)
 
-Phase 6 实现"局部场域最小可行"：AABB 区域内密集场值、10 Hz 独立 tick、0x73/0x74 wire
-下发、web_client 调试叠加层。落地后 Phase 1-6 全收口。
+Phase 6 实现"局部场域最小可行"：AABB 区域内稀疏场值、10 Hz 独立 tick、0x73/0x74 wire
+下发、web_client 调试叠加层。落地后 Phase 1-6 全收口。2026-05-14 起温度层改为
+环境基线 + 整数异常 delta：只有偏离环境温度的 macro cell 进入 layer/overlay。
 
 设计草案 `docs/plans/2026-05-13-phase6-field-layer-minimum.md`，G-1..G-8 全部推荐方案。
 
 ### FieldLayer + FieldRegion 数据结构
 
-**`SceneServer.Voxel.Field.FieldLayer`** —— 密集 f32 binary 数组，宽度固定 4096 cells：
+**`SceneServer.Voxel.Field.FieldLayer`** —— 稀疏 delta map，逻辑宽度固定 4096 cells：
 
 ```elixir
-defstruct data: :binary.copy(<<0.0::float-32-little>>, 4096)
+defstruct values: %{}, baseline: 0.0, threshold: 0.0001, quantization: :float
 ```
 
-API：`new/0`、`get(layer, macro_index) :: float`、`put(layer, macro_index, value) :: layer`、
-`active_cells(layer, aabb, epsilon) :: [{macro_index, value}]`（只返回超出 epsilon 的格）。
+API：`new/0`、`new/1`、`get(layer, macro_index) :: number`、
+`get_delta(layer, macro_index) :: number`、`put(layer, macro_index, value) :: layer`、
+`put_delta(layer, macro_index, delta) :: layer`、
+`active_cells(layer, aabb, epsilon) :: [{macro_index, value}]`（只返回偏离 baseline 的格）。
 
-`put/3` 用 `binary_part` + 拼接重建 binary，O(chunk_size) 但不需要堆分配整张数组——与
-`FieldTickWorker` 批写入语义匹配（单 tick 内顺序写）。
+temperature layer 由 `FieldRegion` 创建为 `baseline: 20, quantization: :integer, threshold: 1`。
+未保存的格子读作 20°C；写入 20°C 或损耗后绝对 delta < 1 的格子会从 layer 删除。电场 /
+电离仍用默认 baseline 0.0 + float delta，保持既有小数势能语义。
 
 **`SceneServer.Voxel.Field.FieldRegion`** —— 持有一组 FieldLayer 的 AABB 区域：
 
@@ -1036,12 +1040,14 @@ API：`new/1`（从 opts 构造，自动生成 region_id UUID）、`increment_ti
 
 ### TemperatureField 算法
 
-**`SceneServer.Voxel.Field.TemperatureField`** —— 3D 7-stencil 显式扩散 + source_points 再写：
+**`SceneServer.Voxel.Field.TemperatureField`** —— 稀疏 3D 7-stencil 显式扩散 + source_points 再写：
 
 - 扩散系数：`α = min(@base_alpha × tc_float / (default_tc / 65536.0), 0.5)`
   （从 catalog 读 thermal_conductivity，fallback default 6554 ≈ 0.1 W/m·K；稳定性上限 0.5）
-- 衰减：`β = 0.01` 向 `env_temp = 20.0°C` 的弱衰减（防止无热源区域永远保温）
-- 出 AABB 的邻居视为 `env_temp`（Dirichlet 边界）
+- 状态：只保存相对 `env_temp = 20°C` 的整数 delta；未保存 cell 即环境温度
+- 计算范围：当前异常 cell、热源 cell 及其 6-邻居 halo；无热源区域不会被背景温度写满
+- 损耗：`round(delta * (1 - β))`，`β = 0.01`；低于 layer threshold 的 cell 自动退出 layer
+- 出 AABB 的邻居视为 delta 0（即环境温度）
 - source_points 在扩散后重新写入，保持热源固定强度
 
 `tick(region, storage) :: {:ok, region}` 是每 tick 入口。
@@ -1064,6 +1070,10 @@ temperature[]:   f32  little-endian × cell_count  (若 field_mask & 0x01)
 electric[]:      f32  little-endian × cell_count  (若 field_mask & 0x02)
 ionization[]:    u8 × cell_count                  (若 field_mask & 0x04)
 ```
+
+`cell_count` 是所有 field active cell 的并集。temperature 的 active cell 指
+`abs(integer_delta_from_20C) >= 1` 的格子；wire 上仍发送绝对温度值（f32 little-endian），
+用于保持 web_client 既有 decoder/overlay 兼容。
 
 **0x74 FieldRegionDestroyed wire layout（opcode 字节包含在内）**：
 ```
