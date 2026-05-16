@@ -1,7 +1,8 @@
 defmodule WorldServer.Voxel.DevFieldSeed do
   @moduledoc """
-  Dev-only cross-node helper: creates a temperature FieldRegion on a chunk so
-  the field debug overlay can be smoke-tested.
+  Dev-only cross-node helper: submits heat actions to the scene-side field
+  runtime so voxel attribute anomaly detection and the field debug overlay can
+  be smoke-tested.
 
   ## Why this lives here
 
@@ -22,8 +23,8 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   Scene-node discovery uses the `scene_*` naming convention set by the
   scene container's release entrypoint (see `deploy/docker-compose.yml`).
   This deliberately avoids requiring a `MapLedger` route to exist, because
-  field creation is independent of the lease/region machinery used by voxel
-  edits.
+  heat field creation starts from a scene-side voxel attribute write and is
+  independent of the lease/region machinery used by normal voxel edits.
   """
 
   alias WorldServer.CliObserve
@@ -32,20 +33,21 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   @scene_module SceneServer.Voxel.Field.DevFieldCreate
 
   @doc """
-  Creates a temperature FieldRegion on the requested chunk.
+  Applies a finite target-temperature heat action at an exact world-macro voxel.
 
-  Options (all optional):
+  Options:
     * `:logical_scene_id` (default 1)
-    * `:chunk_coord`      `{cx, cy, cz}` (default `{0, 0, 0}`)
+    * `:world_macro`      `{x, y, z}`
+    * `:target_temperature_celsius` target voxel temperature (default 800)
     * `:max_ticks`        (default 600 = 60 s at 10 Hz)
-    * `:source_value`     heat-source temperature in °C (default 500.0)
+    * `:radius`           local FieldRegion radius around the source voxel
   """
-  @spec ensure_default_field(keyword()) :: {:ok, map()} | {:error, term()}
-  def ensure_default_field(opts \\ []) when is_list(opts) do
+  @spec ensure_heat_voxel(keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_heat_voxel(opts \\ []) when is_list(opts) do
     with {:ok, target_node} <- locate_target_node(),
-         {:ok, summary} <- invoke(target_node, opts) do
+         {:ok, summary} <- invoke(target_node, :heat_voxel, opts) do
       enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
-      emit(enriched)
+      emit("voxel_dev_heat_voxel_ready", enriched)
       {:ok, enriched}
     end
   end
@@ -72,18 +74,18 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     node |> Atom.to_string() |> String.starts_with?("scene_")
   end
 
-  defp invoke(target_node, opts) do
+  defp invoke(target_node, function, opts) do
     if target_node == node() do
-      invoke_local(opts)
+      invoke_local(function, opts)
     else
-      invoke_remote(target_node, opts)
+      invoke_remote(target_node, function, opts)
     end
   end
 
-  defp invoke_local(opts) do
+  defp invoke_local(function, opts) do
     case Code.ensure_loaded(@scene_module) do
       {:module, _} ->
-        case apply(@scene_module, :create_dev_region, [opts]) do
+        case apply(@scene_module, function, [opts]) do
           {:ok, summary} -> {:ok, summary}
           {:error, _} = err -> err
           other -> {:error, {:unexpected_response, other}}
@@ -98,8 +100,8 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     kind, reason -> {:error, {:scene_module_threw, kind, reason}}
   end
 
-  defp invoke_remote(scene_node, opts) do
-    case :rpc.call(scene_node, @scene_module, :create_dev_region, [opts], @rpc_timeout_ms) do
+  defp invoke_remote(scene_node, function, opts) do
+    case :rpc.call(scene_node, @scene_module, function, [opts], @rpc_timeout_ms) do
       {:badrpc, reason} -> {:error, {:rpc_failed, scene_node, reason}}
       {:ok, summary} -> {:ok, summary}
       {:error, _} = err -> err
@@ -107,7 +109,7 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     end
   end
 
-  defp emit(summary) do
-    CliObserve.emit("voxel_dev_field_create_ready", summary)
+  defp emit(event, summary) do
+    CliObserve.emit(event, summary)
   end
 end

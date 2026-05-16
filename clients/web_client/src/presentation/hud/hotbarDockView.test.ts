@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EVoxelRotation } from "../../voxel/core/types";
-import {
-  HotbarDockView,
-  renderHotbarDockHtml,
-  type HotbarDockEditPort,
-} from "./hotbarDockView";
+import { HotbarDockView, renderHotbarDockHtml, type HotbarDockEditPort } from "./hotbarDockView";
 import type { HotbarEntry, HotbarState } from "../../app/controllers/worldEditController";
 import { VoxelMaterialId } from "../../material/catalog";
 
@@ -70,12 +66,12 @@ class FakeHotbarEdit implements HotbarDockEditPort {
 
 describe("HotbarDockView", () => {
   it("renders the full hotbar with selected state and prefab shape icons", () => {
-    const state = makeHotbarState(4);
+    const state = makeHotbarState(5);
     const html = renderHotbarDockHtml(state);
 
     expect(html.match(/data-hotbar-index=/g)).toHaveLength(state.entries.length);
     expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain('aria-label="5 sphere prefab"');
+    expect(html).toContain('aria-label="6 sphere prefab"');
     expect(html).toContain("hotbar-icon--sphere");
     expect(html).toContain("hotbar-icon--cylinder");
     expect(html).toContain("hotbar-icon--stairs");
@@ -86,15 +82,15 @@ describe("HotbarDockView", () => {
     const edit = new FakeHotbarEdit();
     const view = new HotbarDockView(root as unknown as HTMLDivElement, edit);
 
-    root.clickHotbarIndex(5);
+    root.clickHotbarIndex(6);
 
-    expect(edit.selected).toEqual([5]);
-    expect(root.innerHTML).toContain('aria-label="6 cylinder prefab"');
+    expect(edit.selected).toEqual([6]);
+    expect(root.innerHTML).toContain('aria-label="7 cylinder prefab"');
     expect(root.innerHTML).toContain('aria-pressed="true"');
 
     view.dispose();
     root.clickHotbarIndex(1);
-    expect(edit.selected).toEqual([5]);
+    expect(edit.selected).toEqual([6]);
   });
 
   it("stops dock pointer presses before they reach world editing", () => {
@@ -115,14 +111,25 @@ function makeHotbarState(selectedIndex: number): HotbarState {
     { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
     { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
     { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
-    { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
+    { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
+    {
+      kind: "prefab",
+      label: "sphere",
+      prefabName: "builtin_sphere",
+      rotation: EVoxelRotation.Rot0,
+    },
     {
       kind: "prefab",
       label: "cylinder",
       prefabName: "builtin_cylinder",
       rotation: EVoxelRotation.Rot0,
     },
-    { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
+    {
+      kind: "prefab",
+      label: "stairs",
+      prefabName: "builtin_stairs",
+      rotation: EVoxelRotation.Rot0,
+    },
   ];
 
   return {

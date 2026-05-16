@@ -3,18 +3,16 @@ defmodule SceneServer.Voxel.Field.FieldIntegrationTest do
   # GenServer 与 FieldTickWorker)。
   #
   # 流程对应 spec §7.1 最小验证:
-  #   1. 创建 8x8x8 空 FieldRegion + 一个 (0,0,0) 热源 (temperature = 500.0,
-  #      高于 spec 草案 100.0,因为 base α = 0.1 + β = 0.01 时低源量 10
-  #      ticks 不足以让 (1,0,0) 越过 env+1)
+  #   1. 创建 8x8x8 空 FieldRegion + 一个 (0,0,0) 热源 (temperature = 500.0)
   #   2. 手动 tick 10 次
-  #   3. 断言 (1,0,0) 处温度 > env_temp + 1.0
+  #   3. 断言 (1,0,0) 处温度按真实 10Hz SI 步长轻微上升
   #   4. 断言 (7,7,7) 处温度 < (1,0,0) 且远低于源(远处未被显著加热;
-  #      不要求 ≈ env_temp,因为初始 layer 全 0,β=0.01 衰减只能把它拉到
-  #      约 1.9°C,远未达 env_temp)
+  #      真实 1m voxel 不会在 1 秒内跨 21 个 manhattan hops)
   #   5. 断言 max_ticks 触发后 tick_limit_reached?/1 = true
   use ExUnit.Case, async: true
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, TemperatureField}
+  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Types
 
   test "minimal end-to-end temperature diffusion in an 8x8x8 region" do
@@ -25,7 +23,7 @@ defmodule SceneServer.Voxel.Field.FieldIntegrationTest do
         region_id: 1,
         chunk_coord: {0, 0, 0},
         aabb: {{0, 0, 0}, {7, 7, 7}},
-        field_types: [:temperature],
+        kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
         source_points: [
           %{macro_index: source_idx, field_type: :temperature, value: 500.0}
         ],
@@ -46,15 +44,19 @@ defmodule SceneServer.Voxel.Field.FieldIntegrationTest do
     # Source maintained at 500.0 (re-applied each tick)
     assert FieldLayer.get(layer, source_idx) == 500.0
 
-    # Adjacent cell (1,0,0) heated above env_temp + 1.0
+    # Adjacent cell (1,0,0) is measurably warmer, but real 1m voxels do not
+    # jump by whole degrees over one second with the default material.
     near_val = FieldLayer.get(layer, Types.macro_index!({1, 0, 0}))
 
-    assert near_val > env + 1.0,
-           "expected (1,0,0) temp > env+1 (#{env + 1.0}); got #{near_val}"
+    assert near_val > env,
+           "expected (1,0,0) temp > env (#{env}); got #{near_val}"
+
+    assert near_val < env + 0.02,
+           "expected (1,0,0) to stay within a small physical increment; got #{near_val}"
 
     # Far cell (7,7,7) should remain much cooler than the near cell —
     # heat from (0,0,0) does not propagate 21 manhattan-distance hops in
-    # 10 ticks with α = 0.1 / β = 0.01.
+    # 10 ticks with dt-scaled physical diffusion.
     far_val = FieldLayer.get(layer, Types.macro_index!({7, 7, 7}))
 
     assert far_val < near_val,

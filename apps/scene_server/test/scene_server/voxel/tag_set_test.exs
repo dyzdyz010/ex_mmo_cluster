@@ -101,8 +101,7 @@ defmodule SceneServer.Voxel.TagSetTest do
       bin = TagSet.encode_for_wire(set)
 
       assert bin ==
-               <<0x00, 0x01,
-                 0x00, 0x00, 0x00, 0x2A>>
+               <<0x00, 0x01, 0x00, 0x00, 0x00, 0x2A>>
     end
 
     test "byte-level golden: three-tag set produces stable 14-byte layout" do
@@ -112,10 +111,8 @@ defmodule SceneServer.Voxel.TagSetTest do
       bin = TagSet.encode_for_wire(set)
 
       assert bin ==
-               <<0x00, 0x03,
-                 0x00, 0x00, 0x00, 0x01,
-                 0x00, 0x00, 0x00, 0x05,
-                 0xCA, 0xFE, 0xBA, 0xBE>>
+               <<0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0xCA, 0xFE, 0xBA,
+                 0xBE>>
     end
 
     test "decode_for_wire rejects truncated payload" do

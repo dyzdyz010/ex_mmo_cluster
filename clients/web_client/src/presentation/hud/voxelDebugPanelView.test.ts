@@ -90,6 +90,7 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain("<dd>3</dd>");
     expect(html).toContain('data-voxel-action="rebind"');
     expect(html).toContain('data-voxel-action="impact"');
+    expect(html).toContain('data-voxel-action="heat-selected"');
     expect(html).toContain('data-voxel-input="material"');
     expect(html).toContain("voxel_sync: voxel sync");
   });
@@ -195,6 +196,30 @@ describe("VoxelDebugPanelView", () => {
     root.clickAction("rebind");
 
     expect(commands.calls).toEqual([{ command: "voxel_probe", args: ["voxel_rebind 779 all"] }]);
+
+    view.dispose();
+  });
+
+  it("routes the Heat control to the selected-voxel heat action instead of the old field-create CLI", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    let heatCount = 0;
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      () => {
+        heatCount += 1;
+        return true;
+      },
+    );
+
+    root.clickAction("heat-selected");
+
+    expect(heatCount).toBe(1);
+    expect(commands.calls).toEqual([]);
+    expect(root.innerHTML).toContain("set selected voxel to 800C");
 
     view.dispose();
   });

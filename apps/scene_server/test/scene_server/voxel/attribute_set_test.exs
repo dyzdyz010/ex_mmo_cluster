@@ -192,10 +192,9 @@ defmodule SceneServer.Voxel.AttributeSetTest do
 
     test "decode_for_wire rejects unknown value_type" do
       # entry_count=1, key_id=1 (u32), value_type=0xEE, then 1 byte payload
-      bad = <<1::unsigned-big-integer-size(16),
-              1::unsigned-big-integer-size(32),
-              0xEE::unsigned-integer-size(8),
-              0x00::unsigned-integer-size(8)>>
+      bad =
+        <<1::unsigned-big-integer-size(16), 1::unsigned-big-integer-size(32),
+          0xEE::unsigned-integer-size(8), 0x00::unsigned-integer-size(8)>>
 
       assert_raise ArgumentError, ~r/value_type/i, fn ->
         AttributeSet.decode_for_wire(bad)
@@ -215,10 +214,7 @@ defmodule SceneServer.Voxel.AttributeSetTest do
       bin = AttributeSet.encode_for_wire(set)
 
       assert bin ==
-               <<0x00, 0x01,
-                 0x00, 0x00, 0x00, 0x2A,
-                 0x01,
-                 0xFB, 0x2E>>
+               <<0x00, 0x01, 0x00, 0x00, 0x00, 0x2A, 0x01, 0xFB, 0x2E>>
     end
 
     test "byte-level golden: single enum8 entry produces 8-byte layout" do
@@ -231,10 +227,7 @@ defmodule SceneServer.Voxel.AttributeSetTest do
       bin = AttributeSet.encode_for_wire(set)
 
       assert bin ==
-               <<0x00, 0x01,
-                 0x00, 0x00, 0x00, 0x01,
-                 0x04,
-                 0x07>>
+               <<0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x07>>
     end
 
     test "byte-level golden: single bitset32 entry produces 11-byte layout" do
@@ -247,10 +240,7 @@ defmodule SceneServer.Voxel.AttributeSetTest do
       bin = AttributeSet.encode_for_wire(set)
 
       assert bin ==
-               <<0x00, 0x01,
-                 0x00, 0x00, 0x00, 0x0B,
-                 0x05,
-                 0xCA, 0xFE, 0xBA, 0xBE>>
+               <<0x00, 0x01, 0x00, 0x00, 0x00, 0x0B, 0x05, 0xCA, 0xFE, 0xBA, 0xBE>>
     end
   end
 

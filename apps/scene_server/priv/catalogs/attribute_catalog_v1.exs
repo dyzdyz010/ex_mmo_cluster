@@ -2,7 +2,7 @@
 #
 # 设计草案：docs/plans/2026-05-13-phase5c-first-batch-catalog-seed.md
 # 用户 2026-05-13 approve C-1..C-8 全部推荐方案：
-#   C-1 顺序数字 id (1..5)
+#   C-1 顺序数字 id (1..6)
 #   C-2 fixed32 Q16.16 按表范围
 #   C-3 default 绝对值（物理量直观）
 #   C-4 .exs Elixir 字面量 seed
@@ -88,6 +88,20 @@
       min_value: 0,
       # 500.0 W/(m·K) (银的量级 + 余量)
       max_value: 32_768_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 6,
+      name: "specific_heat_capacity",
+      unit: "J/(kg·K)",
+      value_type: :fixed32,
+      # 1000.0 J/(kg·K) (水 / 普通材料数量级的保守默认)
+      default_value: 65_536_000,
+      # 1.0 J/(kg·K)
+      min_value: 65_536,
+      # 10000.0 J/(kg·K)
+      max_value: 655_360_000,
       merge_rule: :material_default,
       dynamic: false
     }

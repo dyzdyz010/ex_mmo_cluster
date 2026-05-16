@@ -74,8 +74,8 @@ defmodule SceneServer.Voxel.SimulationTick do
       when is_map(env) do
     {next_states, cells_updated, env_deltas, failures} =
       Enum.reduce(simulators, {state.simulator_states, 0, [], []}, fn module,
-                                                                     {acc_states, acc_cells,
-                                                                      acc_deltas, acc_failures} ->
+                                                                      {acc_states, acc_cells,
+                                                                       acc_deltas, acc_failures} ->
         sim_id = simulator_id_or_module(module)
         prev_state = Map.get(acc_states, sim_id)
 

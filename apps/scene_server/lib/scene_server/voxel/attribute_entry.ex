@@ -90,9 +90,10 @@ defmodule SceneServer.Voxel.AttributeEntry do
   raises `ArgumentError` if the value_type tag is unknown.
   """
   @spec decode_from_wire(binary()) :: {t(), binary()}
-  def decode_from_wire(<<key_id::unsigned-big-integer-size(32),
-                         value_type::unsigned-integer-size(8),
-                         rest::binary>>) do
+  def decode_from_wire(
+        <<key_id::unsigned-big-integer-size(32), value_type::unsigned-integer-size(8),
+          rest::binary>>
+      ) do
     validate_value_type!(value_type)
 
     {value, after_value} = decode_value(value_type, rest)
@@ -149,7 +150,8 @@ defmodule SceneServer.Voxel.AttributeEntry do
   defp decode_value(_value_type, _data),
     do: raise(ArgumentError, "AttributeEntry value payload truncated")
 
-  defp validate_key_id!(value) when is_integer(value) and value >= 0 and value <= @max_u32, do: :ok
+  defp validate_key_id!(value) when is_integer(value) and value >= 0 and value <= @max_u32,
+    do: :ok
 
   defp validate_key_id!(other),
     do: raise(ArgumentError, "AttributeEntry key_id must be u32, got: #{inspect(other)}")

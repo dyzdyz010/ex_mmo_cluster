@@ -75,15 +75,21 @@ defmodule AuthServerWeb.IngameController do
   end
 
   @doc """
-  Dev-only: creates a temperature FieldRegion on a chunk so the field debug
-  overlay can be smoke-tested.  Accepts optional JSON params:
+  Dev-only skill hook: writes a target temperature into an exact world-macro voxel.
+  The scene server derives the heat budget from voxel density/specific heat, treats
+  the abnormal temperature as a local field source, and runs the normal
+  FieldRegion kernel path.
+
+  Accepts optional JSON params:
     * `logical_scene_id` (default 1)
-    * `cx`, `cy`, `cz`  chunk coord integers (default 0)
+    * `x`, `y`, `z`      world macro coord integers
+    * `target_temperature_celsius` (default 800)
     * `max_ticks`        (default 600)
+    * `radius`           (default 4)
   """
-  def voxel_dev_field_create(conn, params) do
+  def voxel_dev_heat_voxel(conn, params) do
     if Application.get_env(:auth_server, :dev_auto_login, false) do
-      do_voxel_dev_field_create(conn, params)
+      do_voxel_dev_heat_voxel(conn, params)
     else
       conn
       |> put_status(:forbidden)
@@ -147,34 +153,50 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
-  # Dispatches to WorldServer (not SceneServer) because the controller runs on
-  # the app node, where SceneServer.Voxel.ChunkDirectory is only loaded — not
-  # registered. WorldServer.Voxel.DevFieldSeed forwards to the scene node via
-  # :rpc.call, mirroring the WorldServer.Voxel.DevSeed pattern used by
-  # voxel_dev_seed.
-  defp do_voxel_dev_field_create(conn, params) do
+  defp do_voxel_dev_heat_voxel(conn, params) do
     module = Module.concat([WorldServer, Voxel, DevFieldSeed])
     logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
-    chunk_coord = {parse_int(params["cx"], 0), parse_int(params["cy"], 0), parse_int(params["cz"], 0)}
+
+    world_macro = {
+      parse_int(params["x"], 0),
+      parse_int(params["y"], 0),
+      parse_int(params["z"], 0)
+    }
+
+    thermal_opts =
+      if Map.has_key?(params, "heat_energy_joules") do
+        [heat_energy_joules: parse_non_negative_number(params["heat_energy_joules"], 0.0)]
+      else
+        [
+          target_temperature_celsius:
+            parse_number(
+              params["target_temperature_celsius"] || params["target_temperature"],
+              800.0
+            )
+        ]
+      end
+
     max_ticks = parse_non_negative_int(params["max_ticks"], 600)
+    radius = parse_non_negative_int(params["radius"], 4)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
          {:ok, summary} <-
-           apply(module, :ensure_default_field, [
+           apply(module, :ensure_heat_voxel, [
              [
                logical_scene_id: logical_scene_id,
-               chunk_coord: chunk_coord,
-               max_ticks: max_ticks
-             ]
+               world_macro: world_macro,
+               max_ticks: max_ticks,
+               radius: radius
+             ] ++ thermal_opts
            ]) do
       json(conn, summary)
     else
       {:error, reason} ->
-        Logger.warning("voxel dev field create failed: #{inspect(reason)}")
+        Logger.warning("voxel dev heat voxel failed: #{inspect(reason)}")
 
         conn
         |> put_status(:service_unavailable)
-        |> json(%{error: "dev_field_create_failed", reason: inspect(reason)})
+        |> json(%{error: "dev_heat_voxel_failed", reason: inspect(reason)})
 
       _other ->
         conn
@@ -193,6 +215,15 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp parse_int(_value, fallback), do: fallback
+
+  defp parse_non_negative_number(value, fallback) do
+    value
+    |> parse_number(fallback)
+    |> case do
+      parsed when is_number(parsed) and parsed >= 0 -> parsed
+      _other -> fallback
+    end
+  end
 
   defp normalize_username(value) when is_binary(value) do
     trimmed = String.trim(value)
@@ -216,6 +247,18 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp parse_non_negative_int(_value, fallback), do: fallback
+
+  defp parse_number(value, _fallback) when is_integer(value), do: value * 1.0
+  defp parse_number(value, _fallback) when is_float(value), do: value
+
+  defp parse_number(value, fallback) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> parsed
+      _other -> fallback
+    end
+  end
+
+  defp parse_number(_value, fallback), do: fallback
 
   defp session_claim_options(params, account) do
     []

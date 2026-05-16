@@ -8,17 +8,26 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
+  alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.Types
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
+
+    case start_supervised({AttributeCatalog, []}) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
     :ok
   end
 
@@ -83,6 +92,105 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     assert Storage.macro_header_at(decoded_storage, 0).mode ==
              MacroCellHeader.cell_mode_solid_block()
+  end
+
+  test "add_heat_energy_attribute stores computed temperature on voxel truth and pushes a snapshot" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               {0, 0, 0},
+               NormalBlockData.new(2, health: 50),
+               cell_version: 1
+             )
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 57)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok,
+            %{
+              changed?: true,
+              heat_energy_joules: 80_000.0,
+              previous_temperature: 20.0,
+              temperature_delta: temperature_delta,
+              effective_temperature: effective_temperature,
+              storage: storage
+            }} =
+             ChunkProcess.add_heat_energy_attribute(chunk, %{
+               macro: {0, 0, 0},
+               heat_energy_joules: 80_000
+             })
+
+    assert_in_delta temperature_delta, 0.03750586, 0.000001
+    assert_in_delta effective_temperature, 20.03750586, 0.000001
+    assert storage.chunk_version == 2
+    assert Storage.effective_attribute_at(storage, {0, 0, 0}, "temperature") == 1_313_178
+
+    assert_receive {:voxel_chunk_snapshot_payload, updated_payload}
+    assert updated_payload != initial_payload
+
+    assert {:ok, %{request_id: 0, storage: decoded_storage}} =
+             Codec.decode_chunk_snapshot_payload(updated_payload)
+
+    assert decoded_storage.chunk_version == 2
+    assert Storage.effective_attribute_at(decoded_storage, {0, 0, 0}, "temperature") == 1_313_178
+  end
+
+  test "write_temperature_attribute reports real iron heat budget for an 800C target" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               {0, 0, 0},
+               NormalBlockData.new(5, health: 100),
+               cell_version: 1
+             )
+
+    assert {:ok,
+            %{
+              changed?: true,
+              previous_temperature: 20.0,
+              target_temperature: 800.0,
+              effective_temperature: 800.0,
+              density: 7_870.0,
+              specific_heat_capacity: 449.0,
+              heat_capacity_j_per_k: heat_capacity,
+              heat_energy_joules: heat_energy_joules,
+              storage: storage
+            }} =
+             ChunkProcess.write_temperature_attribute(chunk, %{
+               macro: {0, 0, 0},
+               target_temperature: 800.0
+             })
+
+    assert_in_delta heat_capacity, 3_533_630.0, 0.1
+    assert_in_delta heat_energy_joules, 2_756_231_400.0, 1.0
+    assert Storage.effective_attribute_at(storage, {0, 0, 0}, "temperature") == 52_428_800
+  end
+
+  test "ensure_field_region reuses an active source instead of spawning duplicates" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    source_index = Types.macro_index!({0, 0, 0})
+
+    attrs = %{
+      source_key: {:temperature, source_index},
+      aabb: {{0, 0, 0}, {1, 1, 1}},
+      kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
+      source_points: [%{macro_index: source_index, field_type: :temperature, value: 100.0}],
+      max_ticks: 100
+    }
+
+    assert {:ok, %{created?: true, region_id: region_id}} =
+             ChunkProcess.ensure_field_region(chunk, attrs)
+
+    assert {:ok, %{created?: false, region_id: ^region_id}} =
+             ChunkProcess.ensure_field_region(chunk, attrs)
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 1
+    assert debug.field_source_count == 1
   end
 
   test "apply_intent writes a solid block, increments versions, and persists snapshots" do

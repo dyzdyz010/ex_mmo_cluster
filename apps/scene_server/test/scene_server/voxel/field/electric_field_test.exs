@@ -9,6 +9,7 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
   use ExUnit.Case, async: true
 
   alias SceneServer.Voxel.Field.{ElectricField, FieldLayer, FieldRegion}
+  alias SceneServer.Voxel.Field.Kernels.ElectricPotentialKernel
   alias SceneServer.Voxel.Types
 
   describe "tick/2 with nil storage (uses default density)" do
@@ -18,9 +19,13 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
           region_id: 1,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:electric_potential, :ionization],
+          kernels: [%{id: :electric_potential, module: ElectricPotentialKernel}],
           source_points: [
-            %{macro_index: Types.macro_index!({0, 0, 0}), field_type: :electric_potential, value: 100.0}
+            %{
+              macro_index: Types.macro_index!({0, 0, 0}),
+              field_type: :electric_potential,
+              value: 100.0
+            }
           ]
         })
 
@@ -53,9 +58,13 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
           region_id: 2,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {7, 0, 0}},
-          field_types: [:electric_potential],
+          kernels: [%{id: :electric_potential, module: ElectricPotentialKernel}],
           source_points: [
-            %{macro_index: Types.macro_index!({0, 0, 0}), field_type: :electric_potential, value: 50.0}
+            %{
+              macro_index: Types.macro_index!({0, 0, 0}),
+              field_type: :electric_potential,
+              value: 50.0
+            }
           ]
         })
 
@@ -67,6 +76,7 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
 
       assert near > 0.0
       assert far >= 0.0
+
       assert near > far,
              "expected near (#{near}) to exceed far (#{far})"
     end
@@ -79,9 +89,13 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
           region_id: 3,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:electric_potential, :ionization],
+          kernels: [%{id: :electric_potential, module: ElectricPotentialKernel}],
           source_points: [
-            %{macro_index: Types.macro_index!({0, 0, 0}), field_type: :electric_potential, value: 200.0}
+            %{
+              macro_index: Types.macro_index!({0, 0, 0}),
+              field_type: :electric_potential,
+              value: 200.0
+            }
           ]
         })
 
@@ -99,7 +113,7 @@ defmodule SceneServer.Voxel.Field.ElectricFieldTest do
           region_id: 4,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:electric_potential, :ionization]
+          kernels: [%{id: :electric_potential, module: ElectricPotentialKernel}]
         })
 
       region = ElectricField.tick(region, nil)

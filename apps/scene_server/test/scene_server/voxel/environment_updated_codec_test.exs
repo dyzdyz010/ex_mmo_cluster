@@ -258,5 +258,4 @@ defmodule SceneServer.Voxel.EnvironmentUpdatedCodecTest do
       end
     end
   end
-
 end

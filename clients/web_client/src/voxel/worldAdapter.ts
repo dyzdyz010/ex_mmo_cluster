@@ -19,6 +19,11 @@ export interface VoxelWorldAdapter {
   readonly store: WorldStore;
   bootstrap(): void;
   debugSnapshot(): Record<string, unknown>;
+  requestDevHeatVoxel?(
+    coord: FMacroCoord,
+    targetTemperatureCelsius: number,
+    maxTicks?: number,
+  ): boolean;
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean;
   breakBlock(coord: FMacroCoord): boolean;
   placeMicroBlock(macro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean;

@@ -7,6 +7,7 @@ export const VoxelMaterialId = {
   Stone: 2,
   Wood: 3,
   Ice: 4,
+  Iron: 5,
 } as const;
 
 export interface VoxelMaterialDefinition {
@@ -59,6 +60,13 @@ const MATERIAL_DEFINITIONS: readonly VoxelMaterialDefinition[] = [
     name: "ice",
     baseColorHex: 0xa7d9ff,
     maxHealth: 70,
+    flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.Iron,
+    name: "iron",
+    baseColorHex: 0x8a9099,
+    maxHealth: 220,
     flammable: false,
   },
 ] as const;

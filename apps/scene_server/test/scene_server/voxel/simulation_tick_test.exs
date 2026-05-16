@@ -170,6 +170,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
 
     test "different tick_seq yield different hash" do
       dirty = DirtyMacroBounds.add_macro(DirtyMacroBounds.empty(), 0, 0x01)
+
       assert SimulationTick.output_hash(0, dirty, 1, [:sim_a]) !=
                SimulationTick.output_hash(0, dirty, 2, [:sim_a])
     end
@@ -417,5 +418,4 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       end
     end
   end
-
 end

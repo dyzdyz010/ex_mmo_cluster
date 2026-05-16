@@ -33,6 +33,7 @@ const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
+  { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
@@ -51,6 +52,7 @@ const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
+  { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
@@ -89,6 +91,9 @@ export class WorldEditController {
     );
     this.bus.on("input:place-block", ({ source }) => this.placeAtSelection(source));
     this.bus.on("input:break-block", ({ source }) => this.breakAtSelection(source));
+    this.bus.on("input:heat-selected-voxel", ({ source, targetTemperatureCelsius }) =>
+      this.heatAtSelection(source, targetTemperatureCelsius),
+    );
   }
 
   getSelectedMaterialId(): number {
@@ -129,6 +134,36 @@ export class WorldEditController {
       this.bus.emit("world:edit-rejected", { reason: "break_rejected", source });
     }
     return ok;
+  }
+
+  heatAt(
+    coord: FMacroCoord,
+    targetTemperatureCelsius: number,
+    source: string,
+    maxTicks?: number,
+  ): boolean {
+    if (typeof this.world.requestDevHeatVoxel !== "function") {
+      this.bus.emit("world:edit-rejected", { reason: "heat_not_supported", source });
+      return false;
+    }
+
+    const ok = this.world.requestDevHeatVoxel(coord, targetTemperatureCelsius, maxTicks);
+    if (ok) {
+      this.bus.emit("world:voxel-heated", { coord, targetTemperatureCelsius, source });
+    } else {
+      this.bus.emit("world:edit-rejected", { reason: "heat_rejected", source });
+    }
+    return ok;
+  }
+
+  heatAtSelection(source: string, targetTemperatureCelsius = 800, maxTicks?: number): boolean {
+    const selection = this.selection.getCurrentSelection();
+    if (!selection) {
+      this.bus.emit("world:edit-rejected", { reason: "no_selection", source });
+      this.world.store.editStats.rejected += 1;
+      return false;
+    }
+    return this.heatAt(selection.occupiedMacro, targetTemperatureCelsius, source, maxTicks);
   }
 
   /** Phase 1c-5: scripted micro-grid place driven by the dev CLI. */

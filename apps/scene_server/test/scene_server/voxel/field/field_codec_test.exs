@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   use ExUnit.Case, async: true
 
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion}
+  alias SceneServer.Voxel.Field.Kernels.{ElectricPotentialKernel, TemperatureDiffusionKernel}
   alias SceneServer.Voxel.Types
 
   describe "0x73 FieldRegionSnapshot" do
@@ -13,7 +14,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
           region_id: 42,
           chunk_coord: {1, 2, -3},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:temperature]
+          kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}]
         })
 
       temp_layer =
@@ -51,7 +52,10 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
           region_id: 99,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:temperature, :electric_potential, :ionization]
+          kernels: [
+            %{id: :temperature_diffusion, module: TemperatureDiffusionKernel},
+            %{id: :electric_potential, module: ElectricPotentialKernel}
+          ]
         })
 
       idx_a = Types.macro_index!({0, 0, 0})
@@ -114,7 +118,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
           region_id: 1,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:temperature]
+          kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}]
         })
 
       payload = FieldCodec.encode_snapshot_payload(region, 0)
@@ -132,7 +136,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
           region_id: 1,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {3, 3, 3}},
-          field_types: [:temperature]
+          kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}]
         })
 
       temp_layer =
@@ -164,7 +168,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
           region_id: 1,
           chunk_coord: {0, 0, 0},
           aabb: {{0, 0, 0}, {1, 1, 1}},
-          field_types: [:ionization]
+          kernels: [%{id: :electric_potential, module: ElectricPotentialKernel}]
         })
 
       ion =

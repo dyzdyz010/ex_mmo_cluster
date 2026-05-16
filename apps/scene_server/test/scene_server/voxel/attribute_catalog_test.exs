@@ -16,11 +16,11 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 5 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 6 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
       assert snapshot.catalog_version == 1
-      assert length(snapshot.definitions) == 5
+      assert length(snapshot.definitions) == 6
     end
 
     test "catalog_version returns 1", %{server: server} do
@@ -31,7 +31,7 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == [1, 2, 3, 4, 5]
+      assert ids == [1, 2, 3, 4, 5, 6]
     end
   end
 
@@ -66,6 +66,16 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       assert defn.unit == "W/(m·K)"
       # 0.1 in Q16.16
       assert defn.default_value == 6_554
+    end
+
+    test "returns {:ok, defn} for id 6 (specific_heat_capacity)", %{server: server} do
+      assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, 6)
+      assert defn.name == "specific_heat_capacity"
+      assert defn.unit == "J/(kg·K)"
+      # 1000.0 in Q16.16
+      assert defn.default_value == 65_536_000
+      assert defn.merge_rule == 0x05
+      assert defn.dynamic == false
     end
 
     test "returns {:error, :not_found} for id 999", %{server: server} do
@@ -119,7 +129,7 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
       assert decoded.catalog_version == 1
-      assert length(decoded.definitions) == 5
+      assert length(decoded.definitions) == 6
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)

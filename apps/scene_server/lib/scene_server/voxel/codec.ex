@@ -528,7 +528,8 @@ defmodule SceneServer.Voxel.Codec do
         source_hash = Map.get(op, :source_hash, 0)
 
         unless is_integer(source_hash) and source_hash >= 0 and source_hash <= 0xFFFF_FFFF do
-          raise ArgumentError, "EnvironmentUpdated source_hash out of u32: #{inspect(source_hash)}"
+          raise ArgumentError,
+                "EnvironmentUpdated source_hash out of u32: #{inspect(source_hash)}"
         end
 
         temperature_segment =
@@ -609,8 +610,8 @@ defmodule SceneServer.Voxel.Codec do
   defp decode_environment_update_ops(rest, 0, acc), do: {Enum.reverse(acc), rest}
 
   defp decode_environment_update_ops(
-         <<macro_index::unsigned-big-integer-size(16),
-           field_mask::unsigned-integer-size(8), rest::binary>>,
+         <<macro_index::unsigned-big-integer-size(16), field_mask::unsigned-integer-size(8),
+           rest::binary>>,
          n,
          acc
        )

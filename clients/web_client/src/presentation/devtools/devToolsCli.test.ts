@@ -43,6 +43,46 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(setSceneRegionOverlayVisible).toHaveBeenCalledWith(true);
   });
 
+  it("exposes field overlay diagnostics and visibility control", () => {
+    const setFieldDebugOverlayVisible = vi.fn();
+    const cli = new DevToolsCli({
+      render: {
+        getFieldDebugOverlaySnapshot: vi.fn(() => ({
+          visible: true,
+          regionCount: 2,
+          regions: [
+            {
+              regionId: 7,
+              chunkCoord: { cx: 0, cy: 0, cz: 0 },
+              temperatureCells: 5,
+              electricCells: 0,
+            },
+          ],
+        })),
+        setFieldDebugOverlayVisible,
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      ok: true,
+      command: "field_overlay",
+      text: expect.stringContaining("visible"),
+      data: expect.objectContaining({ visible: true, regionCount: 2 }),
+    });
+
+    expect(cli.executeCliCommand("field_overlay", ["off"])).toMatchObject({
+      ok: true,
+      command: "field_overlay",
+    });
+    expect(setFieldDebugOverlayVisible).toHaveBeenCalledWith(false);
+
+    expect(cli.executeCliCommand("field_overlay", ["on"])).toMatchObject({
+      ok: true,
+      command: "field_overlay",
+    });
+    expect(setFieldDebugOverlayVisible).toHaveBeenCalledWith(true);
+  });
+
   it("inspects micro cells via micro_cell and routes micro_place/micro_break to the edit controller", () => {
     const placeMicroAt = vi.fn(() => true);
     const breakMicroAt = vi.fn(() => true);
@@ -78,6 +118,21 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(breakResult.ok).toBe(true);
     expect(breakResult.command).toBe("micro_break");
     expect(breakMicroAt).toHaveBeenCalledWith({ x: 0, y: 1, z: 2 }, { x: 1, y: 2, z: 3 }, "cli");
+  });
+
+  it("routes voxel_heat to the edit controller with macro coordinates and target temperature", () => {
+    const heatAt = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { heatAt },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_heat", ["3", "4", "5", "800", "120"])).toMatchObject({
+      ok: true,
+      command: "voxel_heat",
+      text: "heat request sent for (3,4,5) to 800C",
+    });
+
+    expect(heatAt).toHaveBeenCalledWith({ x: 3, y: 4, z: 5 }, 800, "cli", 120);
   });
 
   it("exposes prefab sockets and socket snap preview/commit through the CLI observe surface", () => {

@@ -28,9 +28,16 @@
 | A1 | 阶段 A 子 2:客户端可玩 demo 必须线(prefab micro / 防覆盖 / 线框预览 / 跳跃同步 / 破坏技能) | 已完成 | [`phase-A1-playable-client-experience.md`](./phase-A1-playable-client-experience.md) |
 | A4 | 阶段 A 子 4:跨 region prefab 多 participant 事务 + 跨节点 damage / 0x6C owner-driven fan-out(主体) | 已完成 | [`phase-A4-cross-region-prefab.md`](./phase-A4-cross-region-prefab.md) |
 | A4-bis-cluster | A4 子阶段:真正的多 scene_node 分布式部署(BeaconServer term key 升级 + RegionRouting + lease 按 scene_node 分配 + 双 BEAM e2e) | 决策稿就位 | [`phase-A4-cross-region-prefab.md`](./phase-A4-cross-region-prefab.md)(文末专段) |
-| 5 | 属性目录 + 温湿度基础模拟 | 未开始 | — |
+| 5 | 属性目录 + 温湿度基础模拟 | 已完成 | [`2026-05-13-phase5-backlog-and-subphase-decomposition.md`](../plans/2026-05-13-phase5-backlog-and-subphase-decomposition.md) |
+| 6 | 局部场最小目标(FieldLayer + 电场 + 温度场 + FieldDebugOverlay) | 已完成 | [`2026-05-13-体素局部场最小目标-索引.md`](../2026-05-13-体素局部场最小目标-索引.md) |
+| 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D 温度异常入口已完成） | [`2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
+
+Phase 6 已落地；Phase 7.A `FieldKernel` kernel-first 迁移已完成；Phase 7.D 的温度异常入口已把
+`F` / `Heat` 动作接到服务端：先写 voxel `temperature` 属性，再由 `FieldRuntime` 从 voxel truth
+检测异常并创建/复用局部场；web_client 会在 Heat 成功后自动打开 Field overlay。下一步仍是
+Phase 7.B `ConductionPathKernel` v1。
 
 ## 跟踪约定
 

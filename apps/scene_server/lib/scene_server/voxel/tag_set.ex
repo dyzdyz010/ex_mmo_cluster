@@ -151,7 +151,8 @@ defmodule SceneServer.Voxel.TagSet do
     end
   end
 
-  defp validate_tag_id!(value) when is_integer(value) and value >= 0 and value <= @max_u32, do: :ok
+  defp validate_tag_id!(value) when is_integer(value) and value >= 0 and value <= @max_u32,
+    do: :ok
 
   defp validate_tag_id!(other),
     do: raise(ArgumentError, "TagSet tag_id must be u32, got: #{inspect(other)}")

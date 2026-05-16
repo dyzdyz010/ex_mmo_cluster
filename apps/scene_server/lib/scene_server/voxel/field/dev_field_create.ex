@@ -1,69 +1,55 @@
 defmodule SceneServer.Voxel.Field.DevFieldCreate do
   @moduledoc """
-  Dev-only helper: creates a default temperature FieldRegion on a chunk so the
-  field debug overlay can be smoke-tested without a running game session.
+  Dev-only helper for applying heat-skill voxel attribute writes.
 
-  Called from `AuthServerWeb.IngameController.voxel_dev_field_create/2` via
-  dynamic dispatch (same pattern as `WorldServer.Voxel.DevSeed`).
+  Called from `AuthServerWeb.IngameController.voxel_dev_heat_voxel/2` via
+  WorldServer cross-node dispatch.  The request writes a target temperature to the
+  selected voxel; `FieldRuntime` then detects any temperature anomaly from
+  authoritative voxel storage before creating a field region.
   """
 
-  alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess}
+  alias SceneServer.Voxel.Field.FieldRuntime
 
   @default_max_ticks 600
-  @default_source_value 500.0
 
   @doc """
-  Creates a temperature FieldRegion on the named chunk and returns a summary.
+  Applies a skill-like heat action at an exact world-macro voxel.
 
   Options:
     * `:logical_scene_id` (default 1)
-    * `:chunk_coord`      `{cx, cy, cz}` (default `{0, 0, 0}`)
+    * `:world_macro`      `{x, y, z}`
+    * `:target_temperature_celsius` (default 800 °C), converted to the heat
+      budget through voxel material density/specific heat in the write summary
     * `:max_ticks`        (default 600 = 60 s at 10 Hz)
-    * `:source_value`     heat-source temperature °C (default 500.0)
+    * `:radius`           local FieldRegion radius around the source voxel
   """
-  @spec create_dev_region(keyword()) :: {:ok, map()} | {:error, term()}
-  def create_dev_region(opts \\ []) do
-    logical_scene_id = Keyword.get(opts, :logical_scene_id, 1)
-    chunk_coord = Keyword.get(opts, :chunk_coord, {0, 0, 0})
-    max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
-    source_value = Keyword.get(opts, :source_value, @default_source_value)
+  @spec heat_voxel(keyword()) :: {:ok, map()} | {:error, term()}
+  def heat_voxel(opts \\ []) do
+    base_opts = [
+      logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
+      world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
+      max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
+      radius: Keyword.get(opts, :radius, 4)
+    ]
 
-    with {:ok, chunk_pid} <-
-           ChunkDirectory.ensure_chunk(%{
-             logical_scene_id: logical_scene_id,
-             chunk_coord: chunk_coord
-           }),
-         {:ok, region_id} <-
-           ChunkProcess.create_field_region(
-             chunk_pid,
-             build_attrs(chunk_coord, source_value, max_ticks)
-           ) do
-      {cx, cy, cz} = chunk_coord
+    thermal_opts =
+      if Keyword.has_key?(opts, :heat_energy_joules) do
+        [heat_energy_joules: Keyword.fetch!(opts, :heat_energy_joules)]
+      else
+        [
+          target_temperature_celsius:
+            Keyword.get(
+              opts,
+              :target_temperature_celsius,
+              Keyword.get(
+                opts,
+                :target_temperature,
+                FieldRuntime.default_target_temperature_celsius()
+              )
+            )
+        ]
+      end
 
-      {:ok,
-       %{
-         region_id: region_id,
-         logical_scene_id: logical_scene_id,
-         chunk_coord: %{x: cx, y: cy, z: cz},
-         field_types: ["temperature"],
-         max_ticks: max_ticks,
-         source_value: source_value
-       }}
-    end
-  end
-
-  defp build_attrs(chunk_coord, source_value, max_ticks) do
-    # Centre of the chunk (macro index 7 + 7*16 + 7*256 = 1911)
-    centre_index = 7 + 7 * 16 + 7 * 256
-
-    %{
-      chunk_coord: chunk_coord,
-      aabb: {{0, 0, 0}, {15, 15, 15}},
-      field_types: [:temperature],
-      source_points: [
-        %{macro_index: centre_index, field_type: :temperature, value: source_value}
-      ],
-      max_ticks: max_ticks
-    }
+    FieldRuntime.ensure_temperature_anomaly(base_opts ++ thermal_opts)
   end
 end

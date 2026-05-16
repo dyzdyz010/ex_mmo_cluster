@@ -469,6 +469,37 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     expect(transport.impactCalls).toHaveLength(1);
     expect(transport.impactCalls[0]?.impactKind).toBe(1);
   });
+
+  it("posts a selected-voxel target temperature request to the auth dev endpoint", async () => {
+    const { adapter } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ region_id: 42 }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestDevHeatVoxel({ x: 3, y: 4, z: 5 }, 800, 120)).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/dev_heat_voxel",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 3,
+          y: 4,
+          z: 5,
+          target_temperature_celsius: 800,
+          max_ticks: 120,
+        }),
+      }),
+    );
+  });
 });
 
 describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {

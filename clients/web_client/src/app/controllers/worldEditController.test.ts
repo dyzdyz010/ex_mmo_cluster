@@ -18,6 +18,11 @@ class StaticSelectionProvider implements SelectionProvider {
 class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
   override readonly mode = "server-authoritative";
   readonly prefabPlaceCalls: Array<{ name: string; origin: FMacroCoord }> = [];
+  readonly heatCalls: Array<{
+    coord: FMacroCoord;
+    targetTemperatureCelsius: number;
+    maxTicks: number | undefined;
+  }> = [];
 
   override placePrefabBoundarySnap() {
     return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" as const };
@@ -26,6 +31,15 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
   override placePrefab(name: string, origin: FMacroCoord) {
     this.prefabPlaceCalls.push({ name, origin: { ...origin } });
     return { ok: true, placed: 3 };
+  }
+
+  requestDevHeatVoxel(
+    coord: FMacroCoord,
+    targetTemperatureCelsius: number,
+    maxTicks?: number,
+  ): boolean {
+    this.heatCalls.push({ coord: { ...coord }, targetTemperatureCelsius, maxTicks });
+    return true;
   }
 }
 
@@ -64,7 +78,7 @@ describe("WorldEditController selection edits", () => {
     const placedPrefabs: AppEvents["world:prefab-placed"][] = [];
     bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
 
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       bus.emit("input:hotbar-cycle", { direction: 1, source: "test" });
     }
 
@@ -101,7 +115,7 @@ describe("WorldEditController selection edits", () => {
     bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
     bus.on("world:prefab-boundary-snap-fallback", (event) => fallbacks.push(event));
 
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       bus.emit("input:hotbar-cycle", { direction: 1, source: "test" });
     }
 
@@ -130,6 +144,32 @@ describe("WorldEditController selection edits", () => {
         placed: 3,
         source: "mouse_right",
       },
+    ]);
+  });
+
+  it("sets the occupied voxel to an 800C heat target through the server anomaly path", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    const occupiedMacro: FMacroCoord = { x: 6, y: 7, z: 8 };
+    const selection = new StaticSelectionProvider({
+      occupiedMacro,
+      adjacentMacro: { x: 6, y: 8, z: 8 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    });
+    const heated: AppEvents["world:voxel-heated"][] = [];
+    bus.on("world:voxel-heated", (event) => heated.push(event));
+    new WorldEditController(bus, world, selection);
+
+    bus.emit("input:heat-selected-voxel", {
+      source: "keyboard",
+      targetTemperatureCelsius: 800,
+    });
+
+    expect(world.heatCalls).toEqual([
+      { coord: occupiedMacro, targetTemperatureCelsius: 800, maxTicks: undefined },
+    ]);
+    expect(heated).toEqual([
+      { coord: occupiedMacro, targetTemperatureCelsius: 800, source: "keyboard" },
     ]);
   });
 

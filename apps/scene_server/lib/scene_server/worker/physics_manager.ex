@@ -31,8 +31,23 @@ defmodule SceneServer.PhysicsManager do
     GenServer.call(__MODULE__, :get_physics_system_ref)
   end
 
+  @doc "Recreates the shared native physics system reference after a native resource reload."
+  @spec reset_physics_system_ref :: {:ok, reference()}
+  def reset_physics_system_ref() do
+    GenServer.call(__MODULE__, :reset_physics_system_ref)
+  end
+
   @impl true
   def handle_call(:get_physics_system_ref, _from, %{physys_ref: physys_ref} = state) do
     {:reply, {:ok, physys_ref}, state}
+  end
+
+  @impl true
+  def handle_call(:reset_physics_system_ref, _from, _state) do
+    {:ok, physys_ref} = SceneServer.Native.SceneOps.new_physics_system()
+
+    Logger.warning("Physics system reference reset after native resource invalidation.")
+
+    {:reply, {:ok, physys_ref}, %{physys_ref: physys_ref}}
   end
 end

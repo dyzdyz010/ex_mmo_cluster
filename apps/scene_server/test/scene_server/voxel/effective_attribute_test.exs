@@ -41,6 +41,12 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
   @t_default 1_310_720
   # 1.0 in Q16.16
   @density_default 65_536
+  @fixed32_scale 65_536
+  @dirt_material_id 1
+  @stone_material_id 2
+  @wood_material_id 3
+  @ice_material_id 4
+  @iron_material_id 5
 
   setup do
     # production catalog（默认 module-named singleton），加载默认 seed
@@ -230,12 +236,10 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
     id = {AttributeCatalog, name}
 
     pid =
-      start_supervised!(
-        %{
-          id: id,
-          start: {AttributeCatalog, :start_link, [[name: name, seed_path: seed_path]]}
-        }
-      )
+      start_supervised!(%{
+        id: id,
+        start: {AttributeCatalog, :start_link, [[name: name, seed_path: seed_path]]}
+      })
 
     {name, pid, seed_path}
   end
@@ -243,24 +247,74 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
   # ---- material_default merge_rule (D-4 layer ignored; only L1) ---------------
 
   describe "material_default merge_rule" do
-    test "空 cell → effective = L1 default_value (density default 65536)" do
-      storage = solid_chunk(0, material_id: 1)
+    test "known voxel materials resolve physical thermal properties" do
+      expectations = [
+        {@dirt_material_id, 1_600.0, 0.25, 800.0},
+        {@stone_material_id, 2_700.0, 2.5, 790.0},
+        {@wood_material_id, 600.0, 0.13, 1_700.0},
+        {@ice_material_id, 917.0, 2.2, 2_100.0},
+        {@iron_material_id, 7_870.0, 80.0, 449.0}
+      ]
+
+      for {material_id, density, thermal_conductivity, specific_heat_capacity} <- expectations do
+        storage = solid_chunk(0, material_id: material_id)
+
+        assert Storage.effective_attribute_at(storage, 0, "density") == fixed32(density)
+
+        assert Storage.effective_attribute_at(storage, 0, "thermal_conductivity") ==
+                 fixed32(thermal_conductivity)
+
+        assert Storage.effective_attribute_at(storage, 0, "specific_heat_capacity") ==
+                 fixed32(specific_heat_capacity)
+      end
+    end
+
+    test "solid iron resolves real-world material defaults instead of global debug defaults" do
+      storage = solid_chunk(0, material_id: @iron_material_id)
+
+      assert Storage.effective_attribute_at(storage, 0, "density") == fixed32(7_870.0)
+      assert Storage.effective_attribute_at(storage, 0, "thermal_conductivity") == fixed32(80.0)
+
+      assert Storage.effective_attribute_at(storage, 0, "specific_heat_capacity") ==
+               fixed32(449.0)
+    end
+
+    test "normalized hot-path attribute reads match boundary reads" do
+      storage = solid_chunk(0, material_id: @iron_material_id)
+
+      assert Storage.effective_attribute_at_normalized(storage, 0, "density") ==
+               Storage.effective_attribute_at(storage, 0, "density")
+
+      assert Storage.effective_attribute_at_normalized(storage, 0, "thermal_conductivity") ==
+               Storage.effective_attribute_at(storage, 0, "thermal_conductivity")
+
+      assert Storage.effective_attribute_at_normalized(storage, 0, "specific_heat_capacity") ==
+               Storage.effective_attribute_at(storage, 0, "specific_heat_capacity")
+    end
+
+    test "unknown material falls back to catalog default density" do
+      storage = solid_chunk(0, material_id: 99)
       assert Storage.effective_attribute_at(storage, 0, "density") == @density_default
     end
 
-    test "thermal_conductivity 默认值 (material_default) = 6554" do
-      storage = solid_chunk(0, material_id: 1)
+    test "unknown material falls back to catalog default thermal conductivity" do
+      storage = solid_chunk(0, material_id: 99)
       assert Storage.effective_attribute_at(storage, 0, "thermal_conductivity") == 6_554
     end
 
+    test "unknown material falls back to catalog default specific heat capacity" do
+      storage = solid_chunk(0, material_id: 99)
+      assert Storage.effective_attribute_at(storage, 0, "specific_heat_capacity") == 65_536_000
+    end
+
     test "即使 cell 设置了 attribute_set 含 density override，effective 仍 = L1 default" do
-      storage = solid_chunk(0, material_id: 1)
+      storage = solid_chunk(0, material_id: @dirt_material_id)
       # density id=4, value_type fixed32 (0x03)
       {storage, ref} = intern_set(storage, [{4, 0x03, 9_999_999}])
       storage = set_solid_block_attribute_set_ref(storage, 0, ref)
 
       # material_default 忽略 L2/L3/L5
-      assert Storage.effective_attribute_at(storage, 0, "density") == @density_default
+      assert Storage.effective_attribute_at(storage, 0, "density") == fixed32(1_600.0)
     end
   end
 
@@ -279,6 +333,7 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
 
     test "L1 + L2 attribute_set.temperature delta 字段 (sum)" do
       storage = solid_chunk(0, temperature_delta: 7)
+
       # temperature id=1, value_type fixed32; 这里"value" 在 attribute_set 中是 raw int32 delta
       {storage, ref} = intern_set(storage, [{1, 0x03, 11}])
       storage = set_solid_block_attribute_set_ref(storage, 0, ref)
@@ -460,6 +515,7 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
 
     test "effective_value 低于 min_value → clip 到 min_value" do
       storage = solid_chunk(0)
+
       # temperature min = -17_904_824；构造一个巨负 delta（注意 i16 / i32 范围限制）
       # value_type fixed32 raw int32 范围 -0x8000_0000..0x7FFF_FFFF
       # 让 sum = default + (-2_000_000_000) = ~ -1_998_689_280 < min(-17_904_824) → clip 到 min
@@ -595,4 +651,6 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
     }
     |> Storage.normalize!()
   end
+
+  defp fixed32(value), do: round(value * @fixed32_scale)
 end

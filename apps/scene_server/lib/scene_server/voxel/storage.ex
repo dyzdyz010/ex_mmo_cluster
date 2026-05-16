@@ -31,6 +31,40 @@ defmodule SceneServer.Voxel.Storage do
   @macro_header_count 4096
   @max_u32 0xFFFF_FFFF
   @max_u63 9_223_372_036_854_775_807
+  @fixed32_scale 65_536
+
+  @dirt_material_id 1
+  @stone_material_id 2
+  @wood_material_id 3
+  @ice_material_id 4
+  @iron_material_id 5
+  @material_default_attributes %{
+    @dirt_material_id => %{
+      "density" => round(1_600.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.25 * @fixed32_scale),
+      "specific_heat_capacity" => round(800.0 * @fixed32_scale)
+    },
+    @stone_material_id => %{
+      "density" => round(2_700.0 * @fixed32_scale),
+      "thermal_conductivity" => round(2.5 * @fixed32_scale),
+      "specific_heat_capacity" => round(790.0 * @fixed32_scale)
+    },
+    @wood_material_id => %{
+      "density" => round(600.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.13 * @fixed32_scale),
+      "specific_heat_capacity" => round(1_700.0 * @fixed32_scale)
+    },
+    @ice_material_id => %{
+      "density" => round(917.0 * @fixed32_scale),
+      "thermal_conductivity" => round(2.2 * @fixed32_scale),
+      "specific_heat_capacity" => round(2_100.0 * @fixed32_scale)
+    },
+    @iron_material_id => %{
+      "density" => round(7_870.0 * @fixed32_scale),
+      "thermal_conductivity" => round(80.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(449.0 * @fixed32_scale)
+    }
+  }
 
   defstruct schema_version: @schema_version,
             logical_scene_id: 0,
@@ -147,7 +181,8 @@ defmodule SceneServer.Voxel.Storage do
   def mark_macro_dirty(%__MODULE__{} = storage, macro_index_or_coord, reason_flag) do
     %{
       storage
-      | dirty_bounds: DirtyMacroBounds.add_macro(storage.dirty_bounds, macro_index_or_coord, reason_flag)
+      | dirty_bounds:
+          DirtyMacroBounds.add_macro(storage.dirty_bounds, macro_index_or_coord, reason_flag)
     }
   end
 
@@ -522,6 +557,11 @@ defmodule SceneServer.Voxel.Storage do
 
   返回新 storage struct（已 normalize!）。
 
+  Options:
+    * `:cell_version` — replace the macro header cell version after the write.
+    * `:cell_hash` — replace the macro header cell hash after the write.
+    * `:flags` — replace the macro header flags after the write.
+
   **注意**：本 API 写入 NormalBlockData.attribute_set_ref。Phase 5.C 不处理
   refined cell 的 attribute_set（每条 MicroLayer 各有 attribute_set_ref），
   那条路径在 Phase 5.D 才会接入。
@@ -531,8 +571,14 @@ defmodule SceneServer.Voxel.Storage do
   同 key_id 的 entry"语义（覆盖性 put），与 wire-level AttributeSet 唯一 key_id
   约束（每条 set 内 key_id 唯一）保持一致。
   """
-  @spec put_attribute_for_cell(t(), integer() | term(), String.t(), integer()) :: t()
-  def put_attribute_for_cell(%__MODULE__{} = storage, macro_index_or_coord, attr_name, value)
+  @spec put_attribute_for_cell(t(), integer() | term(), String.t(), integer(), keyword()) :: t()
+  def put_attribute_for_cell(
+        %__MODULE__{} = storage,
+        macro_index_or_coord,
+        attr_name,
+        value,
+        opts \\ []
+      )
       when is_binary(attr_name) and is_integer(value) do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
@@ -566,10 +612,12 @@ defmodule SceneServer.Voxel.Storage do
         {storage, new_ref} = intern_attribute_set(storage, merged_set)
 
         updated_block = %{block | attribute_set_ref: new_ref}
+        updated_header = update_macro_header_metadata(header, opts)
 
         %{
           storage
-          | normal_blocks:
+          | macro_headers: List.replace_at(storage.macro_headers, macro_index, updated_header),
+            normal_blocks:
               List.replace_at(storage.normal_blocks, header.payload_index, updated_block)
         }
         |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
@@ -590,6 +638,16 @@ defmodule SceneServer.Voxel.Storage do
       true ->
         raise ArgumentError, "unknown macro mode: #{header.mode}"
     end
+  end
+
+  defp update_macro_header_metadata(%MacroCellHeader{} = header, opts) do
+    %{
+      header
+      | flags: Keyword.get(opts, :flags, header.flags),
+        cell_version: Keyword.get(opts, :cell_version, header.cell_version),
+        cell_hash: Keyword.get(opts, :cell_hash, header.cell_hash)
+    }
+    |> MacroCellHeader.normalize!()
   end
 
   # Override semantics: 取出 ref 指向的现有 AttributeSet（ref=0 → 空 entries），
@@ -682,6 +740,29 @@ defmodule SceneServer.Voxel.Storage do
         opts \\ []
       ) do
     storage = normalize!(storage)
+    effective_attribute_at_normalized(storage, macro_index_or_coord, attr_name_or_id, opts)
+  end
+
+  @doc """
+  Same as `effective_attribute_at/4`, but assumes `storage` is already
+  normalized.
+
+  Field kernels call this inside hot per-cell loops after their tick context has
+  normalized the chunk once. Call `effective_attribute_at/4` at API boundaries
+  where compatible maps or hand-built structs may still need validation.
+  """
+  @spec effective_attribute_at_normalized(
+          t(),
+          integer() | term(),
+          String.t() | non_neg_integer(),
+          keyword()
+        ) :: integer()
+  def effective_attribute_at_normalized(
+        %__MODULE__{} = storage,
+        macro_index_or_coord,
+        attr_name_or_id,
+        opts \\ []
+      ) do
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     catalog = Keyword.get(opts, :catalog, AttributeCatalog)
 
@@ -690,7 +771,8 @@ defmodule SceneServer.Voxel.Storage do
     header = Enum.at(storage.macro_headers, macro_index)
 
     # 抽取 4 层各自的值（layer 不提供该 attribute 时返回 :not_found）
-    l1 = {:found, defn.default_value}
+    material_default = material_default_value(storage, header, defn)
+    l1 = {:found, material_default}
     l2 = extract_l2(storage, header, defn)
     l3 = extract_l3(storage, header, defn)
     l5 = extract_l5(storage, header, defn)
@@ -699,7 +781,7 @@ defmodule SceneServer.Voxel.Storage do
       case defn.merge_rule do
         @merge_material_default ->
           # 仅 L1
-          defn.default_value
+          material_default
 
         @merge_override ->
           # L3 > L2 > L1 > L5
@@ -727,6 +809,33 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   # ---- catalog lookup helpers -------------------------------------------------
+
+  defp material_default_value(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
+    material_id = material_id_for_header(storage, header)
+
+    @material_default_attributes
+    |> Map.get(material_id, %{})
+    |> Map.get(defn.name, defn.default_value)
+  end
+
+  defp material_id_for_header(%__MODULE__{} = storage, %MacroCellHeader{} = header) do
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        case Enum.at(storage.normal_blocks, header.payload_index) do
+          %NormalBlockData{material_id: material_id} -> material_id
+          _other -> nil
+        end
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        case Enum.at(storage.refined_cells, header.payload_index) do
+          %RefinedCellData{layers: [%MicroLayer{material_id: material_id} | _]} -> material_id
+          _other -> nil
+        end
+
+      true ->
+        nil
+    end
+  end
 
   defp catalog_lookup!(catalog, attr_name) when is_binary(attr_name) do
     case AttributeCatalog.lookup_by_name(catalog, attr_name) do

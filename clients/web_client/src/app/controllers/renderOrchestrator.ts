@@ -15,7 +15,10 @@ import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { WorldEditStats } from "../../voxel/worldStore";
 import { DebrisRenderer } from "../../voxel/debrisRenderer";
 import type { DebrisSimulation } from "../../voxel/debrisEffect";
-import { FieldDebugOverlay } from "../../voxel/field/fieldDebugOverlay";
+import {
+  FieldDebugOverlay,
+  type FieldDebugOverlaySnapshot,
+} from "../../voxel/field/fieldDebugOverlay";
 import type { VoxelFieldRegionDestroyedMessage, VoxelFieldRegionSnapshotMessage } from "../../infrastructure/net/voxelProtocol";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
@@ -195,6 +198,18 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   toggleFieldDebugOverlay(): void {
     this.fieldDebugOverlay.toggle();
+  }
+
+  setFieldDebugOverlayVisible(visible: boolean): void {
+    this.fieldDebugOverlay.setVisible(visible);
+  }
+
+  showFieldDebugOverlay(): void {
+    this.fieldDebugOverlay.show();
+  }
+
+  getFieldDebugOverlaySnapshot(): FieldDebugOverlaySnapshot {
+    return this.fieldDebugOverlay.snapshot();
   }
 
   dispose(): void {

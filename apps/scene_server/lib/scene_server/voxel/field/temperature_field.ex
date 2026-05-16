@@ -3,74 +3,121 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
   Phase 6 局部场最小目标:7-stencil 温度场 tick。
 
   每个 tick:
-    1. 温度层只保存相对环境温度的整数 delta;未保存 cell 视为 `@env_temp`。
+    1. 温度层只保存相对环境温度的 float delta;未保存 cell 视为 `@env_temp`。
     2. 只对当前异常 cell、热源 cell 及其 6-邻居 halo 计算扩散,避免把
        背景温度写满整个 chunk。
     3. `new_delta = current_delta + α * (neighbor_avg_delta - current_delta)`,
-       α 由 `Storage.effective_attribute_at(storage, idx, "thermal_conductivity")`
-       (Q16.16 raw int)调制,并 clamp 到 `@alpha_max` 以满足稳定性(简化的
-       Courant 上限)。
-    4. `new_delta = round(new_delta * (1 - β))`(向环境温度损耗);绝对值小于
-       layer threshold 的 cell 自动退出 layer。
-    5. tick 末把 `:temperature` 类型的 source_points 重新写回(热源持续)。
+       α 使用真实 SI 单位显式步进:
+       `thermal_diffusivity * dt / cell_size²`,其中
+       `thermal_diffusivity = thermal_conductivity / (density * specific_heat_capacity)`。
+       结果 clamp 到 `@alpha_max` 以满足显式扩散稳定性。
+    4. 不再使用调试期固定 β 回冷;热量只通过邻接扩散和有限 region 边界向环境流出。
+       绝对值小于 layer threshold 的 cell 自动退出 layer。
+    5. `source_mode: :impulse` 的 source_points 只在下一 tick 注入一次;
+       其他 `:temperature` source_points 在 tick 末重新写回(热源持续)。
   """
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @base_alpha 0.1
   @alpha_max 0.5
-  @beta 0.01
+  @default_dt_seconds 0.1
+  @cell_size_meters 1.0
   @env_temp 20
+  @fixed32_scale 65_536.0
   @default_tc_raw 6_554
-  @default_tc_float @default_tc_raw / 65_536.0
+  @default_density_raw 65_536
+  @default_specific_heat_capacity_raw 65_536_000
+  @min_density_float 0.001
+  @min_specific_heat_capacity_float 0.001
 
   @doc """
   Runs one tick of the temperature field for the given region.
   """
   @spec tick(FieldRegion.t(), Storage.t() | nil) :: FieldRegion.t()
-  def tick(%FieldRegion{} = region, storage) do
-    layer = FieldRegion.get_layer(region, :temperature)
-    candidate_indices = candidate_indices(layer, region)
+  @spec tick(FieldRegion.t(), Storage.t() | nil, keyword()) :: FieldRegion.t()
+  def tick(%FieldRegion{} = region, storage, opts \\ []) do
+    storage = normalize_storage(storage)
+
+    dt_seconds =
+      positive_float(Keyword.get(opts, :dt_seconds, @default_dt_seconds), @default_dt_seconds)
+
+    diffusion_time_scale =
+      positive_float(Keyword.get(opts, :diffusion_time_scale, 1.0), 1.0)
+
+    ambient_loss_per_second =
+      non_negative_float(Keyword.get(opts, :ambient_loss_per_second, 0.0), 0.0)
+
+    cell_size_meters =
+      positive_float(Keyword.get(opts, :cell_size_meters, @cell_size_meters), @cell_size_meters)
+
+    {impulse_sources, persistent_region} = take_temperature_impulses(region)
+
+    layer =
+      region
+      |> FieldRegion.get_layer(:temperature)
+      |> apply_source_points(region, impulse_sources)
+
+    candidate_indices = candidate_indices(layer, persistent_region)
 
     new_layer =
       Enum.reduce(candidate_indices, layer, fn idx, acc ->
         current_delta = FieldLayer.get_delta(layer, idx)
         neighbor_avg_delta = neighbor_avg_delta(layer, region, idx)
 
-        tc_raw = read_thermal_conductivity(storage, idx)
-        tc_float = tc_raw / 65_536.0
-        alpha = min(@base_alpha * (tc_float / @default_tc_float), @alpha_max)
+        alpha = alpha_for(storage, idx, dt_seconds * diffusion_time_scale, cell_size_meters)
 
         new_delta =
-          (current_delta + alpha * (neighbor_avg_delta - current_delta))
-          |> Kernel.*(1.0 - @beta)
-          |> round()
+          current_delta
+          |> Kernel.+(alpha * (neighbor_avg_delta - current_delta))
+          |> apply_ambient_loss(dt_seconds, ambient_loss_per_second)
 
         FieldLayer.put_delta(acc, idx, new_delta)
       end)
 
     # 热源点(temperature)在每 tick 末重写,保证热源持续。
     new_layer =
-      Enum.reduce(region.source_points, new_layer, fn sp, acc ->
-        if sp.field_type == :temperature do
-          coord = Types.macro_coord!(sp.macro_index)
+      apply_source_points(
+        new_layer,
+        persistent_region,
+        persistent_temperature_sources(persistent_region)
+      )
 
-          if FieldRegion.in_aabb?(region, coord) do
-            FieldLayer.put(acc, sp.macro_index, sp.value * 1.0)
-          else
-            acc
-          end
-        else
-          acc
-        end
-      end)
-
-    FieldRegion.put_layer(region, :temperature, new_layer)
+    FieldRegion.put_layer(persistent_region, :temperature, new_layer)
   end
 
   # ---- helpers --------------------------------------------------------------
+
+  defp take_temperature_impulses(%FieldRegion{} = region) do
+    {impulses, rest} =
+      Enum.split_with(region.source_points, fn sp ->
+        sp.field_type == :temperature and source_mode(sp) == :impulse
+      end)
+
+    {impulses, %{region | source_points: rest}}
+  end
+
+  defp persistent_temperature_sources(%FieldRegion{} = region) do
+    Enum.filter(region.source_points, fn sp ->
+      sp.field_type == :temperature and source_mode(sp) != :impulse
+    end)
+  end
+
+  defp apply_source_points(%FieldLayer{} = layer, %FieldRegion{} = region, source_points) do
+    Enum.reduce(source_points, layer, fn sp, acc ->
+      coord = Types.macro_coord!(sp.macro_index)
+
+      if FieldRegion.in_aabb?(region, coord) do
+        FieldLayer.put(acc, sp.macro_index, sp.value * 1.0)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp source_mode(source_point),
+    do: Map.get(source_point, :source_mode, Map.get(source_point, "source_mode", :persistent))
 
   defp candidate_indices(layer, region) do
     active_indices =
@@ -131,15 +178,76 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
     x in 0..15 and y in 0..15 and z in 0..15 and FieldRegion.in_aabb?(region, coord)
   end
 
+  defp alpha_for(storage, macro_index, dt_seconds, cell_size_meters) do
+    tc_float = fixed32_to_float(read_thermal_conductivity(storage, macro_index))
+    density_float = max(fixed32_to_float(read_density(storage, macro_index)), @min_density_float)
+
+    specific_heat_capacity_float =
+      max(
+        fixed32_to_float(read_specific_heat_capacity(storage, macro_index)),
+        @min_specific_heat_capacity_float
+      )
+
+    diffusivity = tc_float / (density_float * specific_heat_capacity_float)
+
+    diffusivity
+    |> Kernel.*(dt_seconds)
+    |> Kernel./(cell_size_meters * cell_size_meters)
+    |> max(0.0)
+    |> min(@alpha_max)
+  end
+
+  defp fixed32_to_float(raw) when is_integer(raw), do: raw / @fixed32_scale
+
+  defp positive_float(value, _fallback) when is_integer(value) and value > 0, do: value * 1.0
+  defp positive_float(value, _fallback) when is_float(value) and value > 0.0, do: value
+  defp positive_float(_value, fallback), do: fallback
+
+  defp non_negative_float(value, _fallback) when is_integer(value) and value >= 0, do: value * 1.0
+  defp non_negative_float(value, _fallback) when is_float(value) and value >= 0.0, do: value
+  defp non_negative_float(_value, fallback), do: fallback
+
+  defp apply_ambient_loss(delta, _dt_seconds, loss_per_second) when loss_per_second <= 0.0,
+    do: delta
+
+  defp apply_ambient_loss(delta, dt_seconds, loss_per_second) do
+    delta * :math.exp(-loss_per_second * dt_seconds)
+  end
+
   defp read_thermal_conductivity(nil, _macro_index), do: @default_tc_raw
 
   defp read_thermal_conductivity(%Storage{} = storage, macro_index) do
-    Storage.effective_attribute_at(storage, macro_index, "thermal_conductivity")
+    Storage.effective_attribute_at_normalized(storage, macro_index, "thermal_conductivity")
   rescue
     _ -> @default_tc_raw
   end
 
   defp read_thermal_conductivity(_other, _macro_index), do: @default_tc_raw
+
+  defp read_density(nil, _macro_index), do: @default_density_raw
+
+  defp read_density(%Storage{} = storage, macro_index) do
+    Storage.effective_attribute_at_normalized(storage, macro_index, "density")
+  rescue
+    _ -> @default_density_raw
+  end
+
+  defp read_density(_other, _macro_index), do: @default_density_raw
+
+  defp read_specific_heat_capacity(nil, _macro_index), do: @default_specific_heat_capacity_raw
+
+  defp read_specific_heat_capacity(%Storage{} = storage, macro_index) do
+    Storage.effective_attribute_at_normalized(storage, macro_index, "specific_heat_capacity")
+  rescue
+    _ -> @default_specific_heat_capacity_raw
+  end
+
+  defp read_specific_heat_capacity(_other, _macro_index), do: @default_specific_heat_capacity_raw
+
+  defp normalize_storage(nil), do: nil
+  defp normalize_storage(%Storage{} = storage), do: storage
+  defp normalize_storage(storage) when is_map(storage), do: Storage.normalize!(storage)
+  defp normalize_storage(_other), do: nil
 
   @doc "Returns the integer environment temperature used by the sparse delta layer."
   @spec env_temperature() :: integer()

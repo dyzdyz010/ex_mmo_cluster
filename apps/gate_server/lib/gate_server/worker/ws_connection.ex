@@ -275,7 +275,8 @@ defmodule GateServer.WsConnection do
 
   # Phase 6: forward 0x73 FieldRegionSnapshot from ChunkProcess fan-out.
   # Payload already contains the opcode byte — send raw, do NOT go through Codec.
-  def handle_info({:voxel_field_region_snapshot_payload, payload}, state) when is_binary(payload) do
+  def handle_info({:voxel_field_region_snapshot_payload, payload}, state)
+      when is_binary(payload) do
     GateServer.CliObserve.emit("ws_voxel_field_region_snapshot_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
@@ -289,7 +290,8 @@ defmodule GateServer.WsConnection do
 
   # Phase 6: forward 0x74 FieldRegionDestroyed from ChunkProcess fan-out.
   # Payload already contains the opcode byte — send raw, do NOT go through Codec.
-  def handle_info({:voxel_field_region_destroyed_payload, payload}, state) when is_binary(payload) do
+  def handle_info({:voxel_field_region_destroyed_payload, payload}, state)
+      when is_binary(payload) do
     GateServer.CliObserve.emit("ws_voxel_field_region_destroyed_forwarded", %{
       connection_pid: self(),
       cid: state.cid,

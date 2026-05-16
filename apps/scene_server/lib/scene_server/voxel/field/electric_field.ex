@@ -42,7 +42,8 @@ defmodule SceneServer.Voxel.Field.ElectricField do
     sources_in_aabb =
       region.source_points
       |> Enum.filter(fn sp ->
-        sp.field_type == :electric_potential and FieldRegion.in_aabb?(region, Types.macro_coord!(sp.macro_index))
+        sp.field_type == :electric_potential and
+          FieldRegion.in_aabb?(region, Types.macro_coord!(sp.macro_index))
       end)
 
     source_map =
@@ -93,7 +94,7 @@ defmodule SceneServer.Voxel.Field.ElectricField do
 
           {new_queue, new_visited} =
             Enum.reduce(neighbors_of(coord, region), {rest_queue, visited}, fn neighbor_coord,
-                                                                                {q_acc, v_acc} ->
+                                                                               {q_acc, v_acc} ->
               neighbor_idx = Types.macro_index!(neighbor_coord)
               density_raw = read_density(storage, neighbor_idx)
               density_float = max(density_raw / 65_536.0, @min_density_float)
@@ -153,7 +154,11 @@ defmodule SceneServer.Voxel.Field.ElectricField do
     )
   end
 
-  defp update_ionization(ionization_layer, potential_layer, {{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
+  defp update_ionization(
+         ionization_layer,
+         potential_layer,
+         {{min_x, min_y, min_z}, {max_x, max_y, max_z}}
+       ) do
     Enum.reduce(
       for(x <- min_x..max_x, y <- min_y..max_y, z <- min_z..max_z, do: {x, y, z}),
       ionization_layer,

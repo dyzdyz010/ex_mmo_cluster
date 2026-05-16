@@ -48,7 +48,6 @@ interface OnlineVoxelCliWorld extends VoxelWorldAdapter {
   subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf?: number): number | null;
   unsubscribeVoxelChunk(chunk: FChunkCoord): number | null;
   sendVoxelImpactMacro(coord: FMacroCoord, materialId: number): number | null;
-  requestDevFieldCreate(cx: number, cy: number, cz: number, maxTicks?: number): void;
 }
 
 export interface DevToolsDeps {
@@ -92,14 +91,16 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelUnsubscribe(command, args);
       case "voxel_impact":
         return this.cmdVoxelImpact(command, args);
-      case "voxel_field_create":
-        return this.cmdVoxelFieldCreate(command, args);
+      case "voxel_heat":
+        return this.cmdVoxelHeat(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
         });
       case "scene_regions":
         return this.cmdSceneRegions(command, args);
+      case "field_overlay":
+        return this.cmdFieldOverlay(command, args);
       case "cell":
         return this.cmdCell(command, args);
       case "micro_cell":
@@ -229,6 +230,29 @@ export class DevToolsCli implements CliCommandHandler {
     );
   }
 
+  private cmdFieldOverlay(command: string, args: string[]): CliCommandResult {
+    const requested = args[0]?.toLowerCase();
+    if (requested === "on" || requested === "1" || requested === "true") {
+      this.deps.render.setFieldDebugOverlayVisible(true);
+    } else if (requested === "off" || requested === "0" || requested === "false") {
+      this.deps.render.setFieldDebugOverlayVisible(false);
+    } else if (requested !== undefined) {
+      return { ok: false, command, text: "usage: field_overlay [on|off]" };
+    }
+
+    const snapshot = this.deps.render.getFieldDebugOverlaySnapshot();
+    const regionText =
+      snapshot.regions.length > 0
+        ? snapshot.regions.map(formatFieldOverlayLine).join("; ")
+        : "no active field regions";
+
+    return this.ok(
+      command,
+      `field overlay ${snapshot.visible ? "visible" : "hidden"}: ${regionText}`,
+      snapshot,
+    );
+  }
+
   private cmdVoxelProbe(command: string, args: string[]): CliCommandResult {
     const world = this.onlineVoxelWorld();
     if (!world) return { ok: false, command, text: "voxel transport unavailable" };
@@ -301,20 +325,53 @@ export class DevToolsCli implements CliCommandHandler {
     });
   }
 
-  private cmdVoxelFieldCreate(command: string, args: string[]): CliCommandResult {
-    const world = this.deps.world as Partial<OnlineVoxelCliWorld>;
-    if (typeof world.requestDevFieldCreate !== "function") {
-      return { ok: false, command, text: "not available in offline mode" };
+  private cmdVoxelHeat(command: string, args: string[]): CliCommandResult {
+    const heatPort = this.deps.edit as Partial<{
+      heatAt: (
+        coord: FMacroCoord,
+        targetTemperatureCelsius: number,
+        source: string,
+        maxTicks?: number,
+      ) => boolean;
+      heatAtSelection: (
+        source: string,
+        targetTemperatureCelsius?: number,
+        maxTicks?: number,
+      ) => boolean;
+    }>;
+    const targetTemperatureCelsius = parseFiniteNumber(args[3], 800);
+    const maxTicks = parsePositiveInt(args[4], 600);
+
+    if (args.length === 0) {
+      if (typeof heatPort.heatAtSelection !== "function") {
+        return { ok: false, command, text: "heat action unavailable" };
+      }
+      const ok = heatPort.heatAtSelection("cli", 800, 600);
+      return {
+        ok,
+        command,
+        text: ok ? "heat request sent for selected voxel to 800C" : "heat selected voxel rejected",
+      };
     }
-    const cx = args[0] !== undefined ? (Number.parseInt(args[0], 10) || 0) : 0;
-    const cy = args[1] !== undefined ? (Number.parseInt(args[1], 10) || 0) : 0;
-    const cz = args[2] !== undefined ? (Number.parseInt(args[2], 10) || 0) : 0;
-    const maxTicks = args[3] !== undefined ? (Number.parseInt(args[3], 10) || 600) : 600;
-    world.requestDevFieldCreate(cx, cy, cz, maxTicks);
+
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return {
+        ok: false,
+        command,
+        text: "usage: voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]",
+      };
+    }
+    if (typeof heatPort.heatAt !== "function") {
+      return { ok: false, command, text: "heat action unavailable" };
+    }
+    const ok = heatPort.heatAt(coord, targetTemperatureCelsius, "cli", maxTicks);
     return {
-      ok: true,
+      ok,
       command,
-      text: `field create request sent for chunk (${cx},${cy},${cz}) max_ticks=${maxTicks}`,
+      text: ok
+        ? `heat request sent for (${formatCoord(coord)}) to ${targetTemperatureCelsius}C`
+        : `heat request rejected for (${formatCoord(coord)})`,
     };
   }
 
@@ -833,6 +890,18 @@ export class DevToolsCli implements CliCommandHandler {
   }
 }
 
+function parseFiniteNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function formatSceneRegionOverlayLine(region: {
   label?: string;
   ownerSceneInstanceRef?: number;
@@ -846,4 +915,14 @@ function formatSceneRegionOverlayLine(region: {
   }
 
   return `${label}=owner${owner} chunks x=${region.chunkMin.x}..${region.chunkMax.x - 1} z=${region.chunkMin.z}..${region.chunkMax.z - 1}`;
+}
+
+function formatFieldOverlayLine(region: {
+  regionId: number;
+  chunkCoord: { cx: number; cy: number; cz: number };
+  temperatureCells: number;
+  electricCells: number;
+}): string {
+  const { cx, cy, cz } = region.chunkCoord;
+  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells}`;
 }

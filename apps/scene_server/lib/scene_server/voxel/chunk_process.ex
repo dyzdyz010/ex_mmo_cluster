@@ -17,6 +17,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Field.FieldCodec
   alias SceneServer.Voxel.Field.FieldRegion
   alias SceneServer.Voxel.Field.FieldTickSupervisor
+  alias SceneServer.Voxel.Field.FieldTickWorker
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
@@ -29,6 +30,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # Phase 5.E: 10 Hz simulation tick (100ms interval). 见
   # `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md` E-2。
   @simulation_tick_interval_ms 100
+  @fixed32_scale 65_536
+  @temperature_attribute_name "temperature"
+  @density_attribute_name "density"
+  @specific_heat_capacity_attribute_name "specific_heat_capacity"
+  @voxel_volume_cubic_meter 1.0
+  @min_density 0.001
+  @min_specific_heat_capacity 0.001
 
   @intent_option_keys [
     :cell_hash,
@@ -96,6 +104,33 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @doc "Places a solid normal block and increments the chunk version."
   def put_solid_block(server, macro_index_or_coord, block, opts \\ []) do
     GenServer.call(server, {:put_solid_block, macro_index_or_coord, block, opts})
+  end
+
+  @doc """
+  Writes a temperature value onto a solid voxel's authoritative attributes.
+
+  This is the server-side effect behind the development heat skill: the request
+  chooses a target voxel and a target Celsius value, but the resulting field is
+  detected later by reading the voxel's effective `temperature` attribute.
+  """
+  @spec write_temperature_attribute(GenServer.server(), map() | keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def write_temperature_attribute(server, attrs) when is_map(attrs) or is_list(attrs) do
+    GenServer.call(server, {:write_temperature_attribute, attrs})
+  end
+
+  @doc """
+  Injects heat energy into a solid voxel's authoritative temperature attribute.
+
+  The request supplies joules, not a target Celsius value.  The chunk computes
+  `ΔT = Q / (density * specific_heat_capacity * volume)` from the voxel's
+  effective material attributes, writes the resulting temperature back to voxel
+  truth, and lets FieldRuntime detect the abnormal value from storage.
+  """
+  @spec add_heat_energy_attribute(GenServer.server(), map() | keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def add_heat_energy_attribute(server, attrs) when is_map(attrs) or is_list(attrs) do
+    GenServer.call(server, {:add_heat_energy_attribute, attrs})
   end
 
   @doc """
@@ -271,6 +306,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc """
+  Creates or reuses a `FieldRegion` for a stable source key.
+
+  The `:source_key` is owned by the caller and should identify the abnormal
+  source at the level where duplicates must collapse, for example
+  `{:temperature, macro_index}`.  While the source's worker is alive, repeated
+  calls return the existing region instead of spawning duplicate field workers.
+  """
+  @spec ensure_field_region(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
+  def ensure_field_region(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:ensure_field_region, attrs})
+  end
+
+  @doc """
   Phase 6: destroys a FieldRegion by region_id. Stops the worker (if alive)
   and pushes a 0x74 FieldRegionDestroyed payload to subscribers.
   """
@@ -344,8 +392,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
        # Phase 6: per-region FieldTickWorker tracking.
        # field_regions:        %{region_id => worker_pid}
        # field_region_monitors: %{monitor_ref => region_id}
+       # field_region_sources: %{source_key => region_id}
+       # field_region_source_keys: %{region_id => source_key}
        field_regions: %{},
-       field_region_monitors: %{}
+       field_region_monitors: %{},
+       field_region_sources: %{},
+       field_region_source_keys: %{}
      }}
   end
 
@@ -741,6 +793,64 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {:reply, {:ok, storage}, next_state}
   end
 
+  def handle_call({:write_temperature_attribute, attrs}, _from, state) do
+    case build_temperature_attribute_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :temperature_attribute_write)
+        end
+
+        CliObserve.emit("voxel_temperature_attribute_written", fn ->
+          %{
+            logical_scene_id: next_storage.logical_scene_id,
+            chunk_coord: next_storage.chunk_coord,
+            chunk_version: next_storage.chunk_version,
+            macro: summary.macro_index,
+            target_temperature: summary.target_temperature,
+            effective_temperature: summary.effective_temperature,
+            changed?: summary.changed?
+          }
+        end)
+
+        {:reply, {:ok, summary}, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:add_heat_energy_attribute, attrs}, _from, state) do
+    case build_heat_energy_attribute_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :heat_energy_attribute_write)
+        end
+
+        CliObserve.emit("voxel_heat_energy_attribute_written", fn ->
+          %{
+            logical_scene_id: next_storage.logical_scene_id,
+            chunk_coord: next_storage.chunk_coord,
+            chunk_version: next_storage.chunk_version,
+            macro: summary.macro_index,
+            heat_energy_joules: summary.heat_energy_joules,
+            previous_temperature: summary.previous_temperature,
+            temperature_delta: summary.temperature_delta,
+            effective_temperature: summary.effective_temperature,
+            changed?: summary.changed?
+          }
+        end)
+
+        {:reply, {:ok, summary}, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:subscribe, subscriber, opts}, _from, state) do
     request_id = Keyword.get(opts, :request_id, 0)
     known_version = Keyword.get(opts, :known_version)
@@ -839,7 +949,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
        lease: state.lease,
        pending_async_persist_count: map_size(state.async_persists),
        subscriber_count: map_size(state.subscribers),
-       subscribers: Map.keys(state.subscribers)
+       subscribers: Map.keys(state.subscribers),
+       field_region_count: map_size(state.field_regions),
+       field_source_count: map_size(state.field_region_sources)
      }, state}
   end
 
@@ -853,47 +965,45 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # Phase 6: create a new FieldRegion under FieldTickSupervisor.
   def handle_call({:create_field_region, attrs}, _from, state) when is_map(attrs) do
-    region_id =
-      Map.get_lazy(attrs, :region_id, fn ->
-        System.unique_integer([:positive, :monotonic])
-      end)
+    case start_field_region(state, attrs, nil) do
+      {:ok, region_id, next_state} -> {:reply, {:ok, region_id}, next_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
-    region_attrs =
-      attrs
-      |> Map.put(:region_id, region_id)
-      |> Map.put_new(:chunk_coord, state.chunk_coord)
-      |> Map.put_new(:lease_token, state.lease)
+  def handle_call({:ensure_field_region, attrs}, _from, state) when is_map(attrs) do
+    case fetch_optional(attrs, [:source_key]) do
+      nil ->
+        {:reply, {:error, :missing_field_source_key}, state}
 
-    try do
-      region = FieldRegion.new(region_attrs)
+      source_key ->
+        case Map.fetch(state.field_region_sources, source_key) do
+          {:ok, region_id} ->
+            case Map.fetch(state.field_regions, region_id) do
+              {:ok, worker_pid} ->
+                if Process.alive?(worker_pid) do
+                  maybe_add_field_source_points(worker_pid, attrs)
 
-      chunk_pid = self()
+                  {:reply,
+                   {:ok,
+                    %{
+                      region_id: region_id,
+                      created?: false,
+                      source_key: source_key
+                    }}, state}
+                else
+                  cleaned_state = drop_field_region_id(state, region_id)
+                  ensure_new_field_source_region(cleaned_state, attrs, source_key)
+                end
 
-      worker_opts = [
-        region: region,
-        chunk_pid: chunk_pid,
-        storage_fn: build_storage_fn(),
-        logical_scene_id: state.logical_scene_id
-      ]
+              :error ->
+                cleaned_state = forget_field_source(state, source_key)
+                ensure_new_field_source_region(cleaned_state, attrs, source_key)
+            end
 
-      case FieldTickSupervisor.start_worker(worker_opts) do
-        {:ok, worker_pid} ->
-          monitor_ref = Process.monitor(worker_pid)
-
-          new_state = %{
-            state
-            | field_regions: Map.put(state.field_regions, region_id, worker_pid),
-              field_region_monitors:
-                Map.put(state.field_region_monitors, monitor_ref, region_id)
-          }
-
-          {:reply, {:ok, region_id}, new_state}
-
-        {:error, reason} ->
-          {:reply, {:error, {:start_worker_failed, reason}}, state}
-      end
-    rescue
-      error -> {:reply, {:error, {:invalid_field_region, Exception.message(error)}}, state}
+          :error ->
+            ensure_new_field_source_region(state, attrs, source_key)
+        end
     end
   end
 
@@ -2118,6 +2228,281 @@ defmodule SceneServer.Voxel.ChunkProcess do
       MacroCellHeader.cell_mode_solid_block()
   end
 
+  defp build_temperature_attribute_storage(%Storage{} = storage, attrs) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_temperature_macro(attrs),
+         {:ok, target_temperature} <- normalize_temperature_target(attrs) do
+      target_raw = celsius_to_fixed32_raw(target_temperature)
+      baseline_raw = celsius_to_fixed32_raw(20.0)
+      attribute_delta_raw = target_raw - baseline_raw
+
+      previous_raw =
+        Storage.effective_attribute_at(storage, macro_index, @temperature_attribute_name)
+
+      previous_temperature = fixed32_raw_to_celsius(previous_raw)
+
+      density =
+        effective_fixed32_float(storage, macro_index, @density_attribute_name, @min_density)
+
+      specific_heat_capacity =
+        effective_fixed32_float(
+          storage,
+          macro_index,
+          @specific_heat_capacity_attribute_name,
+          @min_specific_heat_capacity
+        )
+
+      heat_capacity_j_per_k = density * specific_heat_capacity * @voxel_volume_cubic_meter
+      temperature_delta = target_temperature - previous_temperature
+      heat_energy_joules = temperature_delta * heat_capacity_j_per_k
+
+      cond do
+        not solid_cell?(storage, macro_index) ->
+          {:error, :temperature_target_not_solid}
+
+        previous_raw == target_raw ->
+          {:ok, storage,
+           %{
+             storage: storage,
+             changed?: false,
+             macro_index: macro_index,
+             heat_energy_joules: 0.0,
+             density: density,
+             specific_heat_capacity: specific_heat_capacity,
+             heat_capacity_j_per_k: heat_capacity_j_per_k,
+             previous_temperature: previous_temperature,
+             temperature_delta: 0.0,
+             target_temperature: target_temperature,
+             target_temperature_raw: target_raw,
+             attribute_delta_raw: attribute_delta_raw,
+             effective_temperature: target_temperature,
+             effective_temperature_raw: target_raw,
+             chunk_version: storage.chunk_version
+           }}
+
+        true ->
+          next_version = storage.chunk_version + 1
+
+          opts = [
+            cell_version: next_version,
+            cell_hash:
+              Hash.digest32(
+                inspect({:temperature_attribute, macro_index, attribute_delta_raw, next_version})
+              )
+          ]
+
+          next_storage =
+            storage
+            |> Storage.put_attribute_for_cell(
+              macro_index,
+              @temperature_attribute_name,
+              attribute_delta_raw,
+              opts
+            )
+            |> bump_chunk_version()
+
+          effective_raw =
+            Storage.effective_attribute_at(next_storage, macro_index, @temperature_attribute_name)
+
+          {:ok, next_storage,
+           %{
+             storage: next_storage,
+             changed?: true,
+             macro_index: macro_index,
+             heat_energy_joules: heat_energy_joules,
+             density: density,
+             specific_heat_capacity: specific_heat_capacity,
+             heat_capacity_j_per_k: heat_capacity_j_per_k,
+             previous_temperature: previous_temperature,
+             temperature_delta: temperature_delta,
+             target_temperature: target_temperature,
+             target_temperature_raw: target_raw,
+             attribute_delta_raw: attribute_delta_raw,
+             effective_temperature: fixed32_raw_to_celsius(effective_raw),
+             effective_temperature_raw: effective_raw,
+             chunk_version: next_storage.chunk_version
+           }}
+      end
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_temperature_attribute}
+  end
+
+  defp build_heat_energy_attribute_storage(%Storage{} = storage, attrs) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_temperature_macro(attrs),
+         {:ok, heat_energy_joules} <- normalize_heat_energy_joules(attrs) do
+      cond do
+        not solid_cell?(storage, macro_index) ->
+          {:error, :temperature_target_not_solid}
+
+        true ->
+          previous_raw =
+            Storage.effective_attribute_at(storage, macro_index, @temperature_attribute_name)
+
+          previous_temperature = fixed32_raw_to_celsius(previous_raw)
+
+          density =
+            effective_fixed32_float(storage, macro_index, @density_attribute_name, @min_density)
+
+          specific_heat_capacity =
+            effective_fixed32_float(
+              storage,
+              macro_index,
+              @specific_heat_capacity_attribute_name,
+              @min_specific_heat_capacity
+            )
+
+          heat_capacity_j_per_k =
+            density * specific_heat_capacity * @voxel_volume_cubic_meter
+
+          temperature_delta = heat_energy_joules / heat_capacity_j_per_k
+          target_temperature = previous_temperature + temperature_delta
+          target_raw = celsius_to_fixed32_raw(target_temperature)
+          baseline_raw = celsius_to_fixed32_raw(20.0)
+          attribute_delta_raw = target_raw - baseline_raw
+
+          if target_raw == previous_raw do
+            {:ok, storage,
+             %{
+               storage: storage,
+               changed?: false,
+               macro_index: macro_index,
+               heat_energy_joules: heat_energy_joules,
+               density: density,
+               specific_heat_capacity: specific_heat_capacity,
+               heat_capacity_j_per_k: heat_capacity_j_per_k,
+               previous_temperature: previous_temperature,
+               temperature_delta: 0.0,
+               target_temperature: previous_temperature,
+               target_temperature_raw: previous_raw,
+               attribute_delta_raw: previous_raw - baseline_raw,
+               effective_temperature: previous_temperature,
+               effective_temperature_raw: previous_raw,
+               chunk_version: storage.chunk_version
+             }}
+          else
+            next_version = storage.chunk_version + 1
+
+            opts = [
+              cell_version: next_version,
+              cell_hash:
+                Hash.digest32(
+                  inspect(
+                    {:heat_energy, macro_index, heat_energy_joules, target_raw, next_version}
+                  )
+                )
+            ]
+
+            next_storage =
+              storage
+              |> Storage.put_attribute_for_cell(
+                macro_index,
+                @temperature_attribute_name,
+                attribute_delta_raw,
+                opts
+              )
+              |> bump_chunk_version()
+
+            effective_raw =
+              Storage.effective_attribute_at(
+                next_storage,
+                macro_index,
+                @temperature_attribute_name
+              )
+
+            {:ok, next_storage,
+             %{
+               storage: next_storage,
+               changed?: true,
+               macro_index: macro_index,
+               heat_energy_joules: heat_energy_joules,
+               density: density,
+               specific_heat_capacity: specific_heat_capacity,
+               heat_capacity_j_per_k: heat_capacity_j_per_k,
+               previous_temperature: previous_temperature,
+               temperature_delta: temperature_delta,
+               target_temperature: target_temperature,
+               target_temperature_raw: target_raw,
+               attribute_delta_raw: attribute_delta_raw,
+               effective_temperature: fixed32_raw_to_celsius(effective_raw),
+               effective_temperature_raw: effective_raw,
+               chunk_version: next_storage.chunk_version
+             }}
+          end
+      end
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_heat_energy_attribute}
+  end
+
+  defp normalize_temperature_macro(attrs) do
+    case fetch_optional(attrs, [:macro, :macro_index, :macro_coord, :local_macro]) do
+      nil -> {:error, :missing_temperature_macro}
+      value -> safe_macro_index(value)
+    end
+  end
+
+  defp normalize_temperature_target(attrs) do
+    attrs
+    |> fetch_optional([:target_temperature, :target_temperature_celsius])
+    |> case do
+      nil -> {:error, :missing_target_temperature}
+      value -> normalize_celsius(value)
+    end
+  end
+
+  defp normalize_celsius(value) when is_integer(value), do: {:ok, value * 1.0}
+  defp normalize_celsius(value) when is_float(value), do: {:ok, value}
+
+  defp normalize_celsius(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> {:ok, parsed}
+      _other -> {:error, :invalid_target_temperature}
+    end
+  end
+
+  defp normalize_celsius(_value), do: {:error, :invalid_target_temperature}
+
+  defp normalize_heat_energy_joules(attrs) do
+    attrs
+    |> fetch_optional([:heat_energy_joules, :heat_joules, :energy_joules])
+    |> case do
+      nil -> {:error, :missing_heat_energy_joules}
+      value -> normalize_non_negative_float(value, :invalid_heat_energy_joules)
+    end
+  end
+
+  defp normalize_non_negative_float(value, _error) when is_integer(value) and value >= 0,
+    do: {:ok, value * 1.0}
+
+  defp normalize_non_negative_float(value, _error) when is_float(value) and value >= 0,
+    do: {:ok, value}
+
+  defp normalize_non_negative_float(value, error) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} when parsed >= 0 -> {:ok, parsed}
+      _other -> {:error, error}
+    end
+  end
+
+  defp normalize_non_negative_float(_value, error), do: {:error, error}
+
+  defp attrs_map(attrs) when is_map(attrs), do: attrs
+  defp attrs_map(attrs) when is_list(attrs), do: Map.new(attrs)
+
+  defp celsius_to_fixed32_raw(value), do: round(value * @fixed32_scale)
+  defp fixed32_raw_to_celsius(value), do: value / @fixed32_scale
+
+  defp effective_fixed32_float(%Storage{} = storage, macro_index, attribute_name, min_value) do
+    storage
+    |> Storage.effective_attribute_at(macro_index, attribute_name)
+    |> fixed32_raw_to_celsius()
+    |> max(min_value)
+  end
+
   # Phase 4 (D8) — destroy_part helper. Server-internal cleanup, never via
   # user lease. Persistence still uses the chunk's current state.lease.
   defp destroy_part_in_state(state, attrs) do
@@ -2719,7 +3104,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # current storage chunk_version (Phase 5.F simulator does NOT mutate
   # storage.environment_summaries in this commit; writeback to canonical
   # storage推到 Phase 5.F.runtime).
-  defp maybe_fan_out_environment_updated_payload(state, sim_id, env_delta, chunk_version, tick_seq) do
+  defp maybe_fan_out_environment_updated_payload(
+         state,
+         sim_id,
+         env_delta,
+         chunk_version,
+         tick_seq
+       ) do
     cond do
       not is_map(env_delta) ->
         :ok
@@ -2862,6 +3253,106 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp start_field_region(state, attrs, source_key) do
+    region_id =
+      Map.get_lazy(attrs, :region_id, fn ->
+        System.unique_integer([:positive, :monotonic])
+      end)
+
+    region_attrs =
+      attrs
+      |> Map.delete(:source_key)
+      |> Map.put(:region_id, region_id)
+      |> Map.put_new(:chunk_coord, state.chunk_coord)
+      |> Map.put_new(:lease_token, state.lease)
+
+    try do
+      region = FieldRegion.new(region_attrs)
+      chunk_pid = self()
+
+      worker_opts = [
+        region: region,
+        chunk_pid: chunk_pid,
+        storage_fn: build_storage_fn(),
+        logical_scene_id: state.logical_scene_id
+      ]
+
+      case FieldTickSupervisor.start_worker(worker_opts) do
+        {:ok, worker_pid} ->
+          monitor_ref = Process.monitor(worker_pid)
+
+          next_state =
+            state
+            |> put_field_worker(region_id, worker_pid, monitor_ref)
+            |> put_field_source(region_id, source_key)
+
+          {:ok, region_id, next_state}
+
+        {:error, reason} ->
+          {:error, {:start_worker_failed, reason}}
+      end
+    rescue
+      error -> {:error, {:invalid_field_region, Exception.message(error)}}
+    end
+  end
+
+  defp ensure_new_field_source_region(state, attrs, source_key) do
+    case start_field_region(state, attrs, source_key) do
+      {:ok, region_id, next_state} ->
+        {:reply,
+         {:ok,
+          %{
+            region_id: region_id,
+            created?: true,
+            source_key: source_key
+          }}, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp maybe_add_field_source_points(worker_pid, attrs) do
+    case fetch_optional(attrs, [:source_points]) do
+      source_points when is_list(source_points) and source_points != [] ->
+        FieldTickWorker.add_source_points(worker_pid, source_points)
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp put_field_worker(state, region_id, worker_pid, monitor_ref) do
+    %{
+      state
+      | field_regions: Map.put(state.field_regions, region_id, worker_pid),
+        field_region_monitors: Map.put(state.field_region_monitors, monitor_ref, region_id)
+    }
+  end
+
+  defp put_field_source(state, _region_id, nil), do: state
+
+  defp put_field_source(state, region_id, source_key) do
+    %{
+      state
+      | field_region_sources: Map.put(state.field_region_sources, source_key, region_id),
+        field_region_source_keys: Map.put(state.field_region_source_keys, region_id, source_key)
+    }
+  end
+
+  defp forget_field_source(state, source_key) do
+    {region_id, sources} = Map.pop(state.field_region_sources, source_key)
+
+    source_keys =
+      if is_nil(region_id) do
+        state.field_region_source_keys
+      else
+        Map.delete(state.field_region_source_keys, region_id)
+      end
+
+    %{state | field_region_sources: sources, field_region_source_keys: source_keys}
+  end
+
   # Phase 6: removes (region_id → worker_pid) and the corresponding monitor_ref.
   defp drop_field_region_id(state, region_id) do
     {worker_pid, field_regions} = Map.pop(state.field_regions, region_id)
@@ -2875,14 +3366,44 @@ defmodule SceneServer.Voxel.ChunkProcess do
         state.field_region_monitors
       end
 
-    %{state | field_regions: field_regions, field_region_monitors: field_region_monitors}
+    {source_key, source_keys} = Map.pop(state.field_region_source_keys, region_id)
+
+    sources =
+      if is_nil(source_key) do
+        state.field_region_sources
+      else
+        Map.delete(state.field_region_sources, source_key)
+      end
+
+    %{
+      state
+      | field_regions: field_regions,
+        field_region_monitors: field_region_monitors,
+        field_region_sources: sources,
+        field_region_source_keys: source_keys
+    }
   end
 
   # Phase 6: removes by monitor_ref (used in the :DOWN path).
   defp drop_field_region_monitor(state, monitor_ref, region_id) do
     monitors = Map.delete(state.field_region_monitors, monitor_ref)
     regions = Map.delete(state.field_regions, region_id)
-    %{state | field_region_monitors: monitors, field_regions: regions}
+    {source_key, source_keys} = Map.pop(state.field_region_source_keys, region_id)
+
+    sources =
+      if is_nil(source_key) do
+        state.field_region_sources
+      else
+        Map.delete(state.field_region_sources, source_key)
+      end
+
+    %{
+      state
+      | field_region_monitors: monitors,
+        field_regions: regions,
+        field_region_sources: sources,
+        field_region_source_keys: source_keys
+    }
   end
 
   # Phase 6: compare lease tokens. If region_id / lease_id / owner_scene_instance_ref
@@ -2931,7 +3452,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end)
     end)
 
-    %{state | field_regions: %{}, field_region_monitors: %{}}
+    %{
+      state
+      | field_regions: %{},
+        field_region_monitors: %{},
+        field_region_sources: %{},
+        field_region_source_keys: %{}
+    }
   end
 
   # Temporary ChunkDelta fallback: push the full authoritative snapshot until

@@ -120,8 +120,12 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
-  const voxelDebugPanelView = new VoxelDebugPanelView(voxelPanel, devTools, world, () =>
-    render.toggleFieldDebugOverlay(),
+  const voxelDebugPanelView = new VoxelDebugPanelView(
+    voxelPanel,
+    devTools,
+    world,
+    () => render.toggleFieldDebugOverlay(),
+    () => edit.heatAtSelection("voxel_panel"),
   );
 
   const loop = new GameLoop();
@@ -164,7 +168,7 @@ export async function bootstrap({
     }
   }
 
-  bridgeBusToLogger(eventBus, logger);
+  bridgeBusToLogger(eventBus, logger, render);
 
   const rendererSnapshot = render.getRendererDebugSnapshot();
   logger.emit("boot", "runtime_started", {
@@ -293,7 +297,11 @@ export function resolveRendererPreferenceFrom(
  * That coupling is replaced by a single bridge that translates bus events
  * into ObserveLog entries, so controllers no longer depend on the logger.
  */
-function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
+function bridgeBusToLogger(
+  bus: EventBus<AppEvents>,
+  logger: ObserveLog,
+  render: RenderOrchestrator,
+): void {
   bus.on("movement:reset", ({ start }) => {
     logger.emit("movement", "demo_reset", { start: formatVector(start) });
   });
@@ -443,6 +451,15 @@ function bridgeBusToLogger(bus: EventBus<AppEvents>, logger: ObserveLog): void {
     logger.emit("edit", "break", {
       coord: `${coord.x},${coord.y},${coord.z}`,
       source,
+    });
+  });
+  bus.on("world:voxel-heated", ({ coord, targetTemperatureCelsius, source }) => {
+    render.showFieldDebugOverlay();
+    logger.emit("voxel", "heat_voxel", {
+      coord: formatCoord(coord),
+      target_temperature_celsius: targetTemperatureCelsius,
+      source,
+      field_overlay_visible: true,
     });
   });
   bus.on("world:chunk-subscribed", ({ requestId, logicalSceneId, centerChunk, radiusLInf }) => {

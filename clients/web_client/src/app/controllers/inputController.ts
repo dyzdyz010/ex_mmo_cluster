@@ -5,13 +5,15 @@ import { clampUnitVec, type MovementKeys } from "../../domain/movement/inputDire
 
 export type { MovementKeys } from "../../domain/movement/inputDirection";
 
+const DEFAULT_HEAT_TARGET_CELSIUS = 800;
+
 /**
  * Translates raw keyboard events into domain intents.
  *
  * Continuous state (movement keys) is exposed via a pull-style getter because
  * the simulation reads it on fixed-dt steps; firing events per keydown/keyup
  * would force subscribers to debounce. One-shot actions (material change,
- * place, break) go through the event bus.
+ * place, break, heat) go through the event bus.
  */
 export class InputController {
   private readonly keys: MovementKeys = {
@@ -150,13 +152,17 @@ export class InputController {
       case "Digit5":
       case "Digit6":
       case "Digit7":
+      case "Digit8":
         this.bus.emit("input:hotbar-select", {
           index: Number.parseInt(event.code.slice("Digit".length), 10) - 1,
           source: "keyboard",
         });
         break;
       case "KeyF":
-        this.bus.emit("input:place-block", { source: "keyboard" });
+        this.bus.emit("input:heat-selected-voxel", {
+          source: "keyboard",
+          targetTemperatureCelsius: DEFAULT_HEAT_TARGET_CELSIUS,
+        });
         break;
       case "KeyG":
         this.bus.emit("input:break-block", { source: "keyboard" });

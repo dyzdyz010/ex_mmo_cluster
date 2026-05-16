@@ -645,7 +645,7 @@ C-1..C-8 全部推荐方案（用户 2026-05-13 approve）：
 - **C-7** `Storage.put_attribute_for_cell(storage, macro_index, name, value)` 高层 API
 - **C-8** 8 个第一批 tag
 
-**Attribute catalog v1**（5 条）：
+**Attribute catalog v1**（6 条）：
 
 | id | name | unit | merge_rule | dynamic | default |
 |----|------|------|------------|---------|---------|
@@ -654,9 +654,13 @@ C-1..C-8 全部推荐方案（用户 2026-05-13 approve）：
 | 3 | `moisture` | `kg/m³` | add_delta | true | 0.0 |
 | 4 | `density` | `kg/m³` | material_default | false | 1.0 |
 | 5 | `thermal_conductivity` | `W/(m·K)` | material_default | false | 0.1 |
+| 6 | `specific_heat_capacity` | `J/(kg·K)` | material_default | false | 1000.0 |
 
 所有 attribute 用 fixed32 Q16.16；range 与 default 的 raw int32 编码见
 `priv/catalogs/attribute_catalog_v1.exs`。
+`material_default` 的 catalog default 是无材质/未知材质回退值；已接入的 material-specific
+覆盖包括 dirt、stone、wood、ice、iron，分别提供 density、thermal_conductivity、
+specific_heat_capacity。
 
 **Tag catalog v1**（8 条）：`flammable` / `conductive` / `wet` / `frozen` /
 `burning` / `magical` / `structural` / `transparent`（id 1..8）。
@@ -733,7 +737,7 @@ D-1..D-5 全部推荐方案（用户 2026-05-13 approve）：
 
 | 层级 | 来源 | 粒度 |
 |---|---|---|
-| L1 material_default | `AttributeDefinition.default_value` | catalog 全局 |
+| L1 material_default | material-specific default（缺失时回退 `AttributeDefinition.default_value`） | macro/refined cell material |
 | L2 normal_block_override | `NormalBlockData.{temperature,moisture}_delta` 字段 + `NormalBlockData.attribute_set_ref` 指向的 AttributeSet | macro cell（仅 :solid mode） |
 | L3 refined_micro_override | `MicroLayer.attribute_set_ref` 指向的 AttributeSet（多 layer 聚合） | refined micro layer |
 | L4 object_part | 未实施 | — |
@@ -747,7 +751,7 @@ D-1..D-5 全部推荐方案（用户 2026-05-13 approve）：
 | `add_delta` (0x02) | L1 + (L2.delta ?? 0) + (L3.delta_sum ?? 0) + (L5.delta ?? 0) |
 | `max` (0x03) | max([L1, L2, L3, L5] 中所有有值的层) |
 | `min` (0x04) | min([L1, L2, L3, L5] 中所有有值的层) |
-| `material_default` (0x05) | 仅 L1（忽略其他层） |
+| `material_default` (0x05) | 仅 L1 material-specific default（忽略其他层） |
 
 **L3 refined cell 多 layer 处理（草案 §7）**：
 
@@ -991,7 +995,7 @@ baseline byte-stable。Phase 1-5 全 done。
 
 Phase 6 实现"局部场域最小可行"：AABB 区域内稀疏场值、10 Hz 独立 tick、0x73/0x74 wire
 下发、web_client 调试叠加层。落地后 Phase 1-6 全收口。2026-05-14 起温度层改为
-环境基线 + 整数异常 delta：只有偏离环境温度的 macro cell 进入 layer/overlay。
+环境基线 + float 异常 delta：只有偏离环境温度的 macro cell 进入 layer/overlay。
 
 设计草案 `docs/plans/2026-05-13-phase6-field-layer-minimum.md`，G-1..G-8 全部推荐方案。
 
@@ -1008,8 +1012,8 @@ API：`new/0`、`new/1`、`get(layer, macro_index) :: number`、
 `put_delta(layer, macro_index, delta) :: layer`、
 `active_cells(layer, aabb, epsilon) :: [{macro_index, value}]`（只返回偏离 baseline 的格）。
 
-temperature layer 由 `FieldRegion` 创建为 `baseline: 20, quantization: :integer, threshold: 1`。
-未保存的格子读作 20°C；写入 20°C 或损耗后绝对 delta < 1 的格子会从 layer 删除。电场 /
+temperature layer 由 `FieldRegion` 创建为 `baseline: 20, quantization: :float, threshold: 0.1`。
+未保存的格子读作 20°C；写入 20°C 或损耗后绝对 delta < 0.1 的格子会从 layer 删除。电场 /
 电离仍用默认 baseline 0.0 + float delta，保持既有小数势能语义。
 
 **`SceneServer.Voxel.Field.FieldRegion`** —— 持有一组 FieldLayer 的 AABB 区域：
@@ -1017,11 +1021,11 @@ temperature layer 由 `FieldRegion` 创建为 `baseline: 20, quantization: :inte
 ```elixir
 defstruct [
   :region_id, :chunk_coord, :aabb, :field_types, :source_points,
-  tick_count: 0, max_ticks: nil, lease_token: nil, layers: %{}
+  tick_count: 0, max_ticks: nil, lease_token: nil, kernels: [], layers: %{}
 ]
 ```
 
-API：`new/1`（从 opts 构造，自动生成 region_id UUID）、`increment_tick/1`、
+API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 kernel 派生）、`increment_tick/1`、
 `tick_limit_reached?/1`、`in_aabb?/2`（macro_index 是否落在 AABB 内）、
 `put_layer/3` / `get_layer/2`、`aabb_cell_count/1`（AABB 内格子总数，上限 4096）。
 
@@ -1040,17 +1044,51 @@ API：`new/1`（从 opts 构造，自动生成 region_id UUID）、`increment_ti
 
 ### TemperatureField 算法
 
-**`SceneServer.Voxel.Field.TemperatureField`** —— 稀疏 3D 7-stencil 显式扩散 + source_points 再写：
+**`SceneServer.Voxel.Field.TemperatureField`** —— 稀疏 3D 7-stencil 显式扩散 + source_points：
 
-- 扩散系数：`α = min(@base_alpha × tc_float / (default_tc / 65536.0), 0.5)`
-  （从 catalog 读 thermal_conductivity，fallback default 6554 ≈ 0.1 W/m·K；稳定性上限 0.5）
-- 状态：只保存相对 `env_temp = 20°C` 的整数 delta；未保存 cell 即环境温度
+- 扩散系数：`α = min((thermal_conductivity / (density × specific_heat_capacity)) × dt / cell_size², 0.5)`；
+  默认 `dt = 0.1s`、`cell_size = 1m`。`thermal_conductivity` / `density` /
+  `specific_heat_capacity` 从 `Storage.effective_attribute_at/3` 读取。
+- 已接入的 material-specific 默认物性：dirt、stone、wood、ice、iron；未知材质才回退到
+  attribute catalog 的无材质默认值。`FieldRuntime` 默认使用真实时间尺度
+  (`diffusion_time_scale = 1.0`) 和 `1m` macro voxel，不再用交互倍率压缩热扩散时间。
+- kernel 仍保留 `diffusion_time_scale` / `ambient_loss_per_second` 选项，供后续明确的非物理玩法
+  profile 使用；生产 Heat 入口不启用这些调试期加速/耗散参数。
+- 状态：只保存相对 `env_temp = 20°C` 的 float delta；未保存 cell 即环境温度
 - 计算范围：当前异常 cell、热源 cell 及其 6-邻居 halo；无热源区域不会被背景温度写满
-- 损耗：`round(delta * (1 - β))`，`β = 0.01`；低于 layer threshold 的 cell 自动退出 layer
+- 损耗：默认物理路径不使用调试期固定 `β` 回冷；交互 profile 可显式启用环境耗散。
+  热量还会通过邻接扩散与有限 AABB 边界向环境流出。
+  温度层 threshold 为 0.0001°C，低于 threshold 的 cell 自动退出 layer
 - 出 AABB 的邻居视为 delta 0（即环境温度）
-- source_points 在扩散后重新写入，保持热源固定强度
+- `source_mode: :impulse` 只注入一次，适合技能热量输入；默认 persistent source 在扩散后重新写入，保持持续热源强度
 
 `tick(region, storage) :: {:ok, region}` 是每 tick 入口。
+
+### FieldRuntime 异常入口
+
+**`SceneServer.Voxel.Field.FieldRuntime`** —— 把异常 voxel 属性转成局部场的服务端入口：
+
+- `build_temperature_anomaly/1` 是纯函数：接收 world-macro voxel、`Storage`、radius、max_ticks，
+  从 voxel 的 effective `temperature` 属性读取异常量，再计算 chunk/local macro、
+  source macro_index、初始 AABB 和物性驱动的 kernel-first region attrs；
+- `ensure_temperature_anomaly/1` 调用 `ChunkDirectory.ensure_chunk/1`，先通过
+  `ChunkProcess.write_temperature_attribute/2` 把 heat action 的目标温度（默认 800°C）
+  写入选中 solid voxel 的 `temperature` attribute，并在 summary 中按
+  `density × specific_heat_capacity × volume` 回算所需热量，再由
+  `build_temperature_anomaly/1` 检测异常并调用
+  `ChunkProcess.ensure_field_region/2` 创建或复用 `TemperatureDiffusionKernel` region；
+- `ChunkProcess.ensure_field_region/2` 使用 caller 提供的 `source_key` 做 active source
+  去重；同一 chunk 内同一 `{temperature, macro_index}` 活跃 region 会接收新的 impulse source，
+  不会重复堆叠 FieldRegion；
+- 目标温度与环境基线 `20°C` 的差值低于 `1°C` 时不创建 region，保持常态属性零成本；
+- web_client 的 `F` 键、HUD `Heat` 按钮和 CLI `voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]` 通过
+  `/ingame/voxel/dev_heat_voxel` 提交“加热 voxel”的意图，客户端仍只消费自动下发的
+  0x73/0x74；Heat 成功后 web_client 自动打开 Field overlay，并提供
+  `field_overlay [on|off]` CLI 诊断。
+
+当前切片已经把“Heat -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建局部 FieldRegion -> kernel tick ->
+客户端 overlay 可显示”串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、异常低于阈值后的
+自动销毁、以及 kernel effect 写回 voxel/object truth。
 
 ### FieldCodec
 
@@ -1096,8 +1134,10 @@ API：`encode_snapshot_payload(region, logical_scene_id)`、
 
 - `init/1`：监控 ChunkProcess（`Process.monitor(chunk_pid)`）；调度第一个 tick
 - `handle_info(:tick)`：
-  1. `GenServer.call(chunk_pid, :debug_state, 200)` 取 storage 快照
-  2. 运行 ElectricField / TemperatureField 算法更新 region
+  1. `GenServer.call(chunk_pid, :debug_state, 200)` 取 storage 快照，并在 `KernelContext`
+     中规范化一次
+  2. 按 `region.kernels` 逐个运行 FieldKernel，更新 region；kernel 热路径使用已规范化
+     storage / context API，禁止在每个 cell 的属性读取里重复整块 `Storage.normalize!/1`
   3. `FieldCodec.encode_snapshot_payload` 编码
   4. `ChunkProcess.push_field_snapshot_payload` cast 给 ChunkProcess
   5. emit observe events：`voxel_field_tick_completed` / `voxel_field_snapshot_dispatched`

@@ -137,17 +137,23 @@ defmodule SceneServer.Voxel.DiffusionSimulator do
 
           neighbors = [
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x - 1, y, z}, cur,
-              attribute_name: config.attribute_name),
+              attribute_name: config.attribute_name
+            ),
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x + 1, y, z}, cur,
-              attribute_name: config.attribute_name),
+              attribute_name: config.attribute_name
+            ),
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x, y - 1, z}, cur,
-              attribute_name: config.attribute_name),
+              attribute_name: config.attribute_name
+            ),
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x, y + 1, z}, cur,
-              attribute_name: config.attribute_name),
+              attribute_name: config.attribute_name
+            ),
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x, y, z - 1}, cur,
-              attribute_name: config.attribute_name),
+              attribute_name: config.attribute_name
+            ),
             read_neighbor_value(storage, neighbor_lookup, chunk_coord, {x, y, z + 1}, cur,
-              attribute_name: config.attribute_name)
+              attribute_name: config.attribute_name
+            )
           ]
 
           # Stencil computation in float, rounded back to i16.

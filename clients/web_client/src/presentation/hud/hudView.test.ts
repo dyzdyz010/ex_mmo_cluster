@@ -4,6 +4,8 @@ import type { RemotePlayerController } from "../../app/controllers/remotePlayerC
 import type { RenderOrchestrator } from "../../app/controllers/renderOrchestrator";
 import type { TransportPump } from "../../app/controllers/transportPump";
 import type { WorldEditController } from "../../app/controllers/worldEditController";
+import { EventBus } from "../../shared/events/eventBus";
+import type { AppEvents } from "../../shared/events/events";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 describe("HudView", () => {
@@ -136,6 +138,31 @@ describe("HudView", () => {
     );
   });
 
+  it("tells the user that Heat also enables the field overlay", () => {
+    const hud = { textContent: "" } as HTMLDivElement;
+    const bus = new EventBus<AppEvents>();
+
+    const view = new HudView(
+      hud,
+      minimalWorld() as unknown as VoxelWorldAdapter,
+      minimalTransport() as unknown as TransportPump,
+      minimalLocalPlayer() as unknown as LocalPlayerController,
+      minimalRemotePlayer() as unknown as RemotePlayerController,
+      minimalEdit() as unknown as WorldEditController,
+      minimalRender() as unknown as RenderOrchestrator,
+      bus,
+    );
+
+    bus.emit("world:voxel-heated", {
+      coord: { x: 3, y: 4, z: 5 },
+      targetTemperatureCelsius: 800,
+      source: "test",
+    });
+    view.onFrame(0, 0);
+
+    expect(hud.textContent).toContain("heated 3,4,5 to 800C; field overlay on");
+  });
+
   it("explains that idle dev_seed means transport has not become usable yet", () => {
     const alerts = buildRuntimeAlerts(
       {
@@ -195,3 +222,77 @@ describe("HudView", () => {
     expect(alerts.some((alert) => alert.includes("VOXEL SUBSCRIPTION NOT ACTIVE"))).toBe(false);
   });
 });
+
+function minimalWorld() {
+  return {
+    mode: "offline-local",
+    debugSnapshot: () => ({ mode: "offline-local" }),
+    store: {
+      listChunks: () => [],
+      totalSolidBlocks: () => 0,
+      editStats: { placed: 0, broken: 0, rejected: 0, conflicts: 0 },
+    },
+  };
+}
+
+function minimalTransport() {
+  return {
+    getMode: () => "server-ws",
+    isReady: () => true,
+    debugSnapshot: () => ({ mode: "server-ws", ready: true }),
+  };
+}
+
+function minimalLocalPlayer() {
+  return {
+    getRenderedPosition: () => ({ x: 0, y: 0, z: 0 }),
+    getAuthoritativePosition: () => ({ x: 0, y: 0, z: 0 }),
+    getCurrentState: () => ({
+      tick: 1,
+      seq: 1,
+      movementMode: "grounded",
+      velocity: { x: 0, y: 0, z: 0 },
+    }),
+    getGovernanceStats: () => ({
+      totalCorrections: 0,
+      totalAcks: 0,
+      totalReplays: 0,
+      totalHardSnaps: 0,
+      lastCorrectionDistance: 0,
+    }),
+    getCurrentJitterMs: () => 0,
+    getCurrentSoftPositionError: () => 0,
+  };
+}
+
+function minimalRemotePlayer() {
+  return {
+    getRenderedPosition: () => ({ x: 0, y: 0, z: 0 }),
+    getVisibleEntityIds: () => [],
+  };
+}
+
+function minimalEdit() {
+  return {
+    getSelectedMaterialId: () => 1,
+    getHotbarState: () => ({
+      selectedIndex: 0,
+      selected: { kind: "material", label: "dirt", materialId: 1 },
+      entries: [{ kind: "material", label: "dirt", materialId: 1 }],
+    }),
+  };
+}
+
+function minimalRender() {
+  return {
+    getCurrentSelection: () => null,
+    getRendererDebugSnapshot: () => ({
+      requested: "auto",
+      active: "webgl",
+      renderer: "WebGLRenderer",
+      backend: "WebGLRenderer",
+      webgpuAvailable: false,
+      fallbackReason: "navigator_gpu_unavailable_or_insecure_context",
+    }),
+  };
+}

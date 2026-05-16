@@ -876,7 +876,7 @@ defmodule SceneServer.PlayerCharacter do
     end
 
     if Process.whereis(SceneServer.PlayerManager) do
-      {:ok, _} = GenServer.call(SceneServer.PlayerManager, {:remove_player_index, cid})
+      GenServer.cast(SceneServer.PlayerManager, {:remove_player_index, cid})
       Logger.debug("Player index removed.")
     end
 
@@ -1272,13 +1272,7 @@ defmodule SceneServer.PlayerCharacter do
        do: {:error, :lock_fail}
 
   defp new_character_data_with_retry(cid, name, location, dev_attrs, physys_ref, attempts) do
-    case SceneServer.Native.SceneOps.new_character_data(
-           cid,
-           name,
-           location,
-           dev_attrs,
-           physys_ref
-         ) do
+    case new_character_data_once(cid, name, location, dev_attrs, physys_ref) do
       {:ok, cd_ref} ->
         {:ok, cd_ref}
 
@@ -1290,11 +1284,47 @@ defmodule SceneServer.PlayerCharacter do
         Process.sleep(@lock_retry_sleep_ms)
         new_character_data_with_retry(cid, name, location, dev_attrs, physys_ref, attempts - 1)
 
+      {:error, :native_badarg} ->
+        SceneServer.CliObserve.emit("player_native_physics_reset", %{cid: cid, reason: :badarg})
+
+        with {:ok, refreshed_physys_ref} <- reset_physics_system_ref() do
+          new_character_data_with_retry(
+            cid,
+            name,
+            location,
+            dev_attrs,
+            refreshed_physys_ref,
+            attempts - 1
+          )
+        end
+
       {:error, reason} ->
         {:error, reason}
 
       {:err, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp new_character_data_once(cid, name, location, dev_attrs, physys_ref) do
+    try do
+      SceneServer.Native.SceneOps.new_character_data(
+        cid,
+        name,
+        location,
+        dev_attrs,
+        physys_ref
+      )
+    catch
+      :error, :badarg -> {:error, :native_badarg}
+    end
+  end
+
+  defp reset_physics_system_ref do
+    if Process.whereis(SceneServer.PhysicsManager) do
+      SceneServer.PhysicsManager.reset_physics_system_ref()
+    else
+      SceneServer.Native.SceneOps.new_physics_system()
     end
   end
 

@@ -641,38 +641,47 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return this.fieldDestroyeds.splice(0, this.fieldDestroyeds.length);
   }
 
-  requestDevFieldCreate(cx: number, cy: number, cz: number, maxTicks = 600): void {
-    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/dev_field_create`;
+  requestDevHeatVoxel(coord: FMacroCoord, targetTemperatureCelsius = 800, maxTicks = 600): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/dev_heat_voxel`;
     void fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         logical_scene_id: this.logicalSceneId,
-        cx,
-        cy,
-        cz,
+        x: coord.x,
+        y: coord.y,
+        z: coord.z,
+        target_temperature_celsius: targetTemperatureCelsius,
         max_ticks: maxTicks,
       }),
     })
       .then(async (response) => {
         if (!response.ok) {
-          throw new Error(`dev_field_create_failed:${response.status}`);
+          throw new Error(`dev_heat_voxel_failed:${response.status}`);
         }
         return response.json() as Promise<Record<string, unknown>>;
       })
       .then((payload) => {
-        this.logger.emit("voxel", "dev_field_create_ok", {
+        this.logger.emit("voxel", "dev_heat_voxel_ok", {
           logical_scene_id: this.logicalSceneId,
-          chunk_coord: `${cx},${cy},${cz}`,
-          region_id: String(payload["region_id"] ?? "unknown"),
+          coord: `${coord.x},${coord.y},${coord.z}`,
+          target_temperature_celsius: targetTemperatureCelsius,
+          heat_energy_joules: String(
+            (payload["attribute_write"] as Record<string, unknown> | undefined)?.[
+              "heat_energy_joules"
+            ] ?? "unknown",
+          ),
+          region_id: String(payload["region_id"] ?? "none"),
+          created: String(payload["created"] ?? "unknown"),
           max_ticks: maxTicks,
         });
       })
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
         this.lastError = reason;
-        this.bus.emit("world:voxel-sync-error", { reason, source: "dev_field_create" });
+        this.bus.emit("world:voxel-sync-error", { reason, source: "dev_heat_voxel" });
       });
+    return true;
   }
 
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {

@@ -5,7 +5,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   独立于 ChunkProcess simulation_tick(100ms)、prepare_transaction /
   commit_transaction 链路,自己 schedule 10Hz tick(默认 100ms),持有
   整个 FieldRegion 状态。每 tick:
-    1. 调 algorithm(TemperatureField / ElectricField)更新 layers。
+    1. 调 FieldKernel 更新 layers。
     2. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
     3. `ChunkProcess.push_field_snapshot_payload/2` 把 payload 投到 chunk
        的 cast 通道,由 ChunkProcess fanout 给 subscribers。
@@ -20,11 +20,10 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   alias SceneServer.Voxel.ChunkProcess
 
   alias SceneServer.Voxel.Field.{
-    ElectricField,
     FieldCodec,
     FieldLayer,
     FieldRegion,
-    TemperatureField
+    KernelContext
   }
 
   @default_tick_interval_ms 100
@@ -40,6 +39,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   @spec start_link(opts()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
     GenServer.start_link(__MODULE__, opts)
+  end
+
+  @doc "Queues additional source points onto an active field region."
+  @spec add_source_points(GenServer.server(), [FieldRegion.source_point()]) :: :ok
+  def add_source_points(server, source_points) when is_list(source_points) do
+    GenServer.cast(server, {:add_source_points, source_points})
   end
 
   @impl true
@@ -89,7 +94,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
     region =
       region
-      |> run_field_algorithms(storage)
+      |> run_field_kernels(storage, logical_scene_id, tick_interval_ms)
       |> FieldRegion.increment_tick()
 
     payload = FieldCodec.encode_snapshot_payload(region, logical_scene_id)
@@ -157,16 +162,84 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
   def handle_info(_other, state), do: {:noreply, state}
 
+  @impl true
+  def handle_cast({:add_source_points, source_points}, state) when is_list(source_points) do
+    region = %{
+      state.region
+      | source_points: state.region.source_points ++ source_points
+    }
+
+    {:noreply, %{state | region: region}}
+  end
+
   # ---- helpers --------------------------------------------------------------
 
-  defp run_field_algorithms(region, storage) do
-    Enum.reduce(region.field_types, region, fn field_type, acc ->
-      case field_type do
-        :temperature -> TemperatureField.tick(acc, storage)
-        :electric_potential -> ElectricField.tick(acc, storage)
-        :ionization -> acc
-        _ -> acc
-      end
+  defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms) do
+    Enum.reduce(region.kernels, region, fn kernel_spec, acc ->
+      context = KernelContext.new(acc, logical_scene_id, storage, dt_ms: tick_interval_ms)
+      run_kernel(kernel_spec, acc, context)
+    end)
+  end
+
+  defp run_kernel(%{id: id, module: module, opts: opts}, region, context) do
+    case module.tick(region, context, opts) do
+      {:cont, %FieldRegion{} = next_region, effects} when is_list(effects) ->
+        handle_kernel_effects(id, next_region, effects)
+        next_region
+
+      {:done, %FieldRegion{} = next_region, effects} when is_list(effects) ->
+        handle_kernel_effects(id, next_region, effects)
+        next_region
+
+      other ->
+        emit_kernel_failed(region, id, module, {:invalid_return, other})
+        region
+    end
+  rescue
+    error ->
+      emit_kernel_failed(
+        region,
+        id,
+        module,
+        {:exception, error.__struct__, Exception.message(error)}
+      )
+
+      region
+  catch
+    kind, reason ->
+      emit_kernel_failed(region, id, module, {kind, reason})
+      region
+  end
+
+  defp run_kernel(kernel_spec, region, _context) do
+    emit_kernel_failed(region, :unknown, :unknown, {:invalid_kernel_spec, kernel_spec})
+    region
+  end
+
+  defp handle_kernel_effects(kernel_id, region, effects) do
+    Enum.each(effects, fn
+      {:emit_observe, event, fields} when is_binary(event) and is_map(fields) ->
+        safe_emit(event, fn ->
+          fields
+          |> Map.put_new(:region_id, region.region_id)
+          |> Map.put_new(:chunk_coord, region.chunk_coord)
+          |> Map.put_new(:kernel_id, kernel_id)
+        end)
+
+      _other ->
+        :ok
+    end)
+  end
+
+  defp emit_kernel_failed(region, kernel_id, module, reason) do
+    safe_emit("voxel_field_tick_failed", fn ->
+      %{
+        region_id: region.region_id,
+        chunk_coord: region.chunk_coord,
+        kernel_id: kernel_id,
+        kernel_module: inspect(module),
+        reason: inspect(reason)
+      }
     end)
   end
 

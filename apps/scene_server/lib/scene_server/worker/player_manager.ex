@@ -62,6 +62,11 @@ defmodule SceneServer.PlayerManager do
     {:reply, {:ok, players}, state}
   end
 
+  @impl true
+  def handle_cast({:remove_player_index, cid}, %{players: players} = state) do
+    {:noreply, %{state | players: Map.delete(players, cid)}}
+  end
+
   defp await_player_ready(player_pid, attempts \\ @player_ready_attempts)
 
   defp await_player_ready(_player_pid, 0), do: {:error, :player_not_ready}

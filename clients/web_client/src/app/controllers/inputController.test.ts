@@ -123,6 +123,22 @@ describe("InputController mouse editing", () => {
     ]);
   });
 
+  it("emits a heat action from F instead of using F as a place shortcut", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const placeEvents: AppEvents["input:place-block"][] = [];
+    const heatEvents: AppEvents["input:heat-selected-voxel"][] = [];
+    bus.on("input:place-block", (event) => placeEvents.push(event));
+    bus.on("input:heat-selected-voxel", (event) => heatEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("KeyF"));
+
+    expect(placeEvents).toEqual([]);
+    expect(heatEvents).toEqual([{ source: "keyboard", targetTemperatureCelsius: 800 }]);
+  });
+
   it("tracks Space as a one-shot jump request and consumes it exactly once", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);

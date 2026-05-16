@@ -36,6 +36,8 @@ function defaultHelpText(): string {
     "voxel_subscribe <cx> <cy> <cz> [radius]",
     "voxel_unsubscribe <cx> <cy> <cz>",
     "voxel_impact <x> <y> <z> [material]",
+    "voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]",
+    "field_overlay [on|off]",
     "chunk_versions",
     "scene_regions [on|off]",
     "cell <x> <y> <z>",
