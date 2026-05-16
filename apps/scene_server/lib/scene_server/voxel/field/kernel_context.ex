@@ -4,8 +4,9 @@ defmodule SceneServer.Voxel.Field.KernelContext do
 
   This is intentionally small in Phase 7.A: it snapshots and normalizes the
   current storage once per field tick and exposes only chunk-local tick
-  metadata. Higher-level object queries, cross-chunk reads, and effect dispatch
-  stay outside this compatibility slice.
+  metadata. Higher-level object queries and cross-chunk reads stay outside this
+  compatibility slice; effect dispatch is handed back to the owning
+  `ChunkProcess` instead of being performed by the kernel.
   """
 
   alias SceneServer.Voxel.Field.FieldRegion

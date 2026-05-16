@@ -194,6 +194,95 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert Storage.effective_attribute_at(storage, {0, 0, 0}, "temperature") == 52_428_800
   end
 
+  test "apply_field_effects writes temperature through chunk authority", %{
+    observe_log: observe_log
+  } do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 188)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok,
+            %{
+              applied_count: 1,
+              rejected_count: 0,
+              chunk_version: 2,
+              results: [
+                %{
+                  status: :applied,
+                  action: :write_voxel_attribute,
+                  attribute: :temperature,
+                  macro_index: ^macro_index,
+                  target_value: 120.0,
+                  chunk_version: 2
+                }
+              ]
+            }} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [
+                 {:write_voxel_attribute,
+                  %{
+                    attribute: :temperature,
+                    macro_index: macro_index,
+                    target_temperature_celsius: 120.0
+                  }}
+               ],
+               %{region_id: 701, kernel_id: :test_kernel}
+             )
+
+    assert_receive {:voxel_chunk_snapshot_payload, updated_payload}
+    assert updated_payload != initial_payload
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    assert Storage.effective_attribute_at(storage, macro_index, "temperature") == 7_864_320
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_applied"
+    assert observe_log_text =~ "region_id: 701"
+    assert observe_log_text =~ "kernel_id: :test_kernel"
+  end
+
+  test "apply_field_effects rejects unsupported effects without mutating", %{
+    observe_log: observe_log
+  } do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, {0, 0, 0}, NormalBlockData.new(1))
+
+    assert {:ok,
+            %{
+              applied_count: 0,
+              rejected_count: 1,
+              chunk_version: 1,
+              results: [
+                %{
+                  status: :rejected,
+                  reason: :unsupported_field_effect_action,
+                  action: :ignite
+                }
+              ]
+            }} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [{:ignite, %{macro_index: 0}}],
+               %{region_id: 702, kernel_id: :test_kernel}
+             )
+
+    assert ChunkProcess.debug_state(chunk).chunk_version == 1
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_rejected"
+    assert observe_log_text =~ "reason: :unsupported_field_effect_action"
+  end
+
   test "ensure_field_region reuses an active source and emits source lifecycle observability", %{
     observe_log: observe_log
   } do

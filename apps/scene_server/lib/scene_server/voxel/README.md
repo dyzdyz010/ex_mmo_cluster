@@ -1090,11 +1090,16 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   `voxel_cool` 与 `/ingame/voxel/dev_heat_voxel` 保留为 alias。客户端仍只消费自动下发的
   0x73/0x74；set-temperature 成功后 web_client 自动打开 Field overlay，并提供
   `field_overlay [on|off]` CLI 诊断。
+- Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
+  observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
+  truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；
+  当前只应用温度 attribute 写回，其它 action/attribute 以
+  `voxel_field_effect_rejected` 明确拒绝。
 
 当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
-局部 FieldRegion -> kernel tick -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
+局部 FieldRegion -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
 串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、generic owner/ttl/budget source
-lifecycle，以及 kernel effect 写回 voxel/object truth。
+lifecycle，以及 object / candidate phenomenon effect 写回边界。
 
 ### FieldCodec
 

@@ -134,6 +134,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc """
+  Applies field-kernel effects through this chunk's authoritative truth owner.
+
+  Phase 7.D3 keeps `FieldTickWorker` side-effect free: workers may hand effects
+  to the chunk, but only the chunk process mutates voxel truth or rejects the
+  effect with an observable reason.
+  """
+  @spec apply_field_effects(GenServer.server(), [term()], map()) ::
+          {:ok, map()} | {:error, term()}
+  def apply_field_effects(server, effects, context \\ %{})
+      when is_list(effects) and is_map(context) do
+    GenServer.call(server, {:apply_field_effects, effects, context})
+  end
+
+  @doc """
   Subscribes a process to authoritative chunk updates.
 
   The subscriber is monitored and immediately receives the current snapshot
@@ -861,6 +875,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:apply_field_effects, effects, context}, _from, state) do
+    {results, next_state} =
+      Enum.map_reduce(effects, state, fn effect, acc_state ->
+        apply_field_effect(acc_state, effect, context)
+      end)
+
+    summary = %{
+      applied_count: Enum.count(results, &(&1.status == :applied)),
+      rejected_count: Enum.count(results, &(&1.status == :rejected)),
+      chunk_version: next_state.storage.chunk_version,
+      results: results
+    }
+
+    {:reply, {:ok, summary}, next_state}
   end
 
   def handle_call({:subscribe, subscriber, opts}, _from, state) do
@@ -2436,6 +2466,124 @@ defmodule SceneServer.Voxel.ChunkProcess do
     _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_heat_energy_attribute}
   end
 
+  defp apply_field_effect(state, effect, context) do
+    case normalize_field_effect(effect) do
+      {:ok, :write_voxel_attribute, attrs} ->
+        apply_write_voxel_attribute_effect(state, attrs, context)
+
+      {:ok, action, _attrs} ->
+        result = %{
+          status: :rejected,
+          action: action,
+          reason: :unsupported_field_effect_action
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+
+      {:error, result} ->
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp normalize_field_effect({action, attrs}) when is_map(attrs) or is_list(attrs) do
+    {:ok, normalize_field_effect_action(action), attrs_map(attrs)}
+  end
+
+  defp normalize_field_effect(%{action: action} = attrs) do
+    {:ok, normalize_field_effect_action(action), attrs |> Map.delete(:action) |> attrs_map()}
+  end
+
+  defp normalize_field_effect(%{"action" => action} = attrs) do
+    {:ok, normalize_field_effect_action(action), attrs |> Map.delete("action") |> attrs_map()}
+  end
+
+  defp normalize_field_effect(other) do
+    {:error,
+     %{
+       status: :rejected,
+       action: :unknown,
+       reason: :invalid_field_effect,
+       effect: inspect(other)
+     }}
+  end
+
+  defp normalize_field_effect_action(:write_voxel_attribute), do: :write_voxel_attribute
+  defp normalize_field_effect_action("write_voxel_attribute"), do: :write_voxel_attribute
+  defp normalize_field_effect_action(action) when is_atom(action), do: action
+  defp normalize_field_effect_action(action) when is_binary(action), do: action
+  defp normalize_field_effect_action(_action), do: :unknown
+
+  defp apply_write_voxel_attribute_effect(state, attrs, context) do
+    case normalize_field_effect_attribute(fetch_optional(attrs, [:attribute, :attr, :name])) do
+      :temperature ->
+        attrs =
+          attrs
+          |> maybe_put_effect_alias(:target_temperature, [:target_value, :value])
+          |> maybe_put_effect_alias(:macro, [:macro_index, :local_macro])
+
+        case build_temperature_attribute_storage(state.storage, attrs) do
+          {:ok, next_storage, summary} ->
+            next_state = %{state | storage: next_storage}
+
+            if summary.changed? do
+              push_snapshot_fallbacks(next_state, :field_effect_write)
+            end
+
+            result = %{
+              status: :applied,
+              action: :write_voxel_attribute,
+              attribute: :temperature,
+              macro_index: summary.macro_index,
+              target_value: summary.target_temperature,
+              changed?: summary.changed?,
+              chunk_version: next_storage.chunk_version
+            }
+
+            emit_field_effect_applied(next_state, result, context)
+            {result, next_state}
+
+          {:error, reason} ->
+            result = %{
+              status: :rejected,
+              action: :write_voxel_attribute,
+              attribute: :temperature,
+              reason: reason
+            }
+
+            emit_field_effect_rejected(state, result, context)
+            {result, state}
+        end
+
+      unsupported ->
+        result = %{
+          status: :rejected,
+          action: :write_voxel_attribute,
+          attribute: unsupported || :unknown,
+          reason: :unsupported_field_effect_attribute
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp normalize_field_effect_attribute(:temperature), do: :temperature
+  defp normalize_field_effect_attribute("temperature"), do: :temperature
+  defp normalize_field_effect_attribute(attribute), do: attribute
+
+  defp maybe_put_effect_alias(attrs, key, aliases) do
+    if Map.has_key?(attrs, key) do
+      attrs
+    else
+      case fetch_optional(attrs, aliases) do
+        nil -> attrs
+        value -> Map.put(attrs, key, value)
+      end
+    end
+  end
+
   defp normalize_temperature_macro(attrs) do
     case fetch_optional(attrs, [:macro, :macro_index, :macro_coord, :local_macro]) do
       nil -> {:error, :missing_temperature_macro}
@@ -2768,6 +2916,32 @@ defmodule SceneServer.Voxel.ChunkProcess do
         intent: summarize_intent_attrs(attrs)
       }
     end)
+  end
+
+  defp emit_field_effect_applied(state, result, context) do
+    CliObserve.emit("voxel_field_effect_applied", fn ->
+      field_effect_observe_base(state, context)
+      |> Map.merge(result)
+    end)
+  end
+
+  defp emit_field_effect_rejected(state, result, context) do
+    CliObserve.emit("voxel_field_effect_rejected", fn ->
+      field_effect_observe_base(state, context)
+      |> Map.merge(result)
+    end)
+  end
+
+  defp field_effect_observe_base(state, context) do
+    context = attrs_map(context)
+
+    %{
+      logical_scene_id: state.logical_scene_id,
+      chunk_coord: state.chunk_coord,
+      chunk_version: state.storage.chunk_version,
+      region_id: fetch_optional(context, [:region_id]),
+      kernel_id: fetch_optional(context, [:kernel_id])
+    }
   end
 
   defp summarize_intent_attrs(attrs) when is_map(attrs) do

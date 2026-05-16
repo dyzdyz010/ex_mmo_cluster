@@ -30,7 +30,7 @@
 | A4-bis-cluster | A4 子阶段:真正的多 scene_node 分布式部署(BeaconServer term key 升级 + RegionRouting + lease 按 scene_node 分配 + 双 BEAM e2e) | 决策稿就位 | [`phase-A4-cross-region-prefab.md`](./phase-A4-cross-region-prefab.md)(文末专段) |
 | 5 | 属性目录 + 温湿度基础模拟 | 已完成 | [`2026-05-13-phase5-backlog-and-subphase-decomposition.md`](../plans/2026-05-13-phase5-backlog-and-subphase-decomposition.md) |
 | 6 | 局部场最小目标(FieldLayer + 电场 + 温度场 + FieldDebugOverlay) | 已完成 | [`2026-05-13-体素局部场最小目标-索引.md`](../2026-05-13-体素局部场最小目标-索引.md) |
-| 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；后续推进以 2026-05-16 roadmap 为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) |
+| 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；7.D3 温度 FieldEffect 写回最小闭环已完成；后续推进以 2026-05-16 roadmap 为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) |
 | 8 | 物理现象系统(燃烧 / 结冰 / 结构完整度 / 碳化 / 腐蚀 / 相变) | 设计目标稿 | [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](../plans/2026-05-16-phase8-physical-phenomenon-system-architecture.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
@@ -39,11 +39,12 @@ Phase 6 已落地；Phase 7.A `FieldKernel` kernel-first 迁移已完成；Phase
 `F` / `Heat` / `Cool` / `voxel_temp` 动作接到服务端：先写 voxel `temperature` 属性，再由
 `FieldRuntime` 从 voxel truth 检测异常并创建/复用局部场；web_client 会在 set-temperature 成功后
 自动打开 Field overlay。Phase 7.D2 已为温度路径补上 `FieldSource` runtime 事实、
-source lifecycle observability，以及回到环境阈值内时的 0x74 region cleanup。后续路线图以
+source lifecycle observability，以及回到环境阈值内时的 0x74 region cleanup。Phase 7.D3
+已补上温度 `FieldEffect` 最小写回边界：worker 交付 non-observe effects，`ChunkProcess`
+作为 chunk authority 应用 `write_voxel_attribute(:temperature)` 或明确 reject unsupported effect。后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
-为准：下一步先完成 `FieldEffect` 写回边界，再推进
-材料属性扩展、`ConductionPathKernel` 与电属性扩展。Phase 8 物理现象系统已落设计目标稿，但必须等
-Phase 7.D2 / 7.D3 / 7.E 把 source、effect 和材料属性边界补齐后再进入实现。
+为准：下一步推进材料属性扩展、`ConductionPathKernel` 与电属性扩展。Phase 8 物理现象系统已落设计目标稿，但必须等
+Phase 7.E 把材料属性边界补齐后再进入实现。
 
 ## 跟踪约定
 

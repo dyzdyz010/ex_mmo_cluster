@@ -6,11 +6,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   commit_transaction 链路,自己 schedule 10Hz tick(默认 100ms),持有
   整个 FieldRegion 状态。每 tick:
     1. 调 FieldKernel 更新 layers。
-    2. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
-    3. `ChunkProcess.push_field_snapshot_payload/2` 把 payload 投到 chunk
+    2. 将 non-observe kernel effects 交给 ChunkProcess authority dispatcher。
+    3. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
+    4. `ChunkProcess.push_field_snapshot_payload/2` 把 payload 投到 chunk
        的 cast 通道,由 ChunkProcess fanout 给 subscribers。
-    4. 到 max_ticks 时,push FieldRegionDestroyed(0x74)并 stop。
-    5. 监听绑定 chunk 进程 DOWN → stop。
+    5. 到 max_ticks 时,push FieldRegionDestroyed(0x74)并 stop。
+    6. 监听绑定 chunk 进程 DOWN → stop。
   """
 
   use GenServer
@@ -94,7 +95,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
     region =
       region
-      |> run_field_kernels(storage, logical_scene_id, tick_interval_ms)
+      |> run_field_kernels(storage, logical_scene_id, tick_interval_ms, chunk_pid)
       |> FieldRegion.increment_tick()
 
     payload = FieldCodec.encode_snapshot_payload(region, logical_scene_id)
@@ -174,21 +175,21 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
   # ---- helpers --------------------------------------------------------------
 
-  defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms) do
+  defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms, chunk_pid) do
     Enum.reduce(region.kernels, region, fn kernel_spec, acc ->
       context = KernelContext.new(acc, logical_scene_id, storage, dt_ms: tick_interval_ms)
-      run_kernel(kernel_spec, acc, context)
+      run_kernel(kernel_spec, acc, context, chunk_pid)
     end)
   end
 
-  defp run_kernel(%{id: id, module: module, opts: opts}, region, context) do
+  defp run_kernel(%{id: id, module: module, opts: opts}, region, context, chunk_pid) do
     case module.tick(region, context, opts) do
       {:cont, %FieldRegion{} = next_region, effects} when is_list(effects) ->
-        handle_kernel_effects(id, next_region, effects)
+        handle_kernel_effects(id, next_region, effects, chunk_pid)
         next_region
 
       {:done, %FieldRegion{} = next_region, effects} when is_list(effects) ->
-        handle_kernel_effects(id, next_region, effects)
+        handle_kernel_effects(id, next_region, effects, chunk_pid)
         next_region
 
       other ->
@@ -211,13 +212,19 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       region
   end
 
-  defp run_kernel(kernel_spec, region, _context) do
+  defp run_kernel(kernel_spec, region, _context, _chunk_pid) do
     emit_kernel_failed(region, :unknown, :unknown, {:invalid_kernel_spec, kernel_spec})
     region
   end
 
-  defp handle_kernel_effects(kernel_id, region, effects) do
-    Enum.each(effects, fn
+  defp handle_kernel_effects(kernel_id, region, effects, chunk_pid) do
+    {observe_effects, field_effects} =
+      Enum.split_with(effects, fn
+        {:emit_observe, event, fields} when is_binary(event) and is_map(fields) -> true
+        _other -> false
+      end)
+
+    Enum.each(observe_effects, fn
       {:emit_observe, event, fields} when is_binary(event) and is_map(fields) ->
         safe_emit(event, fn ->
           fields
@@ -225,10 +232,35 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
           |> Map.put_new(:chunk_coord, region.chunk_coord)
           |> Map.put_new(:kernel_id, kernel_id)
         end)
-
-      _other ->
-        :ok
     end)
+
+    dispatch_field_effects(chunk_pid, kernel_id, region, field_effects)
+  end
+
+  defp dispatch_field_effects(_chunk_pid, _kernel_id, _region, []), do: :ok
+
+  defp dispatch_field_effects(chunk_pid, kernel_id, region, effects) do
+    case ChunkProcess.apply_field_effects(chunk_pid, effects, %{
+           region_id: region.region_id,
+           chunk_coord: region.chunk_coord,
+           kernel_id: kernel_id
+         }) do
+      {:ok, _summary} ->
+        :ok
+
+      {:error, reason} ->
+        emit_field_effect_dispatch_failed(region, kernel_id, reason)
+    end
+  rescue
+    error ->
+      emit_field_effect_dispatch_failed(
+        region,
+        kernel_id,
+        {:exception, error.__struct__, Exception.message(error)}
+      )
+  catch
+    kind, reason ->
+      emit_field_effect_dispatch_failed(region, kernel_id, {kind, reason})
   end
 
   defp emit_kernel_failed(region, kernel_id, module, reason) do
@@ -238,6 +270,17 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
         chunk_coord: region.chunk_coord,
         kernel_id: kernel_id,
         kernel_module: inspect(module),
+        reason: inspect(reason)
+      }
+    end)
+  end
+
+  defp emit_field_effect_dispatch_failed(region, kernel_id, reason) do
+    safe_emit("voxel_field_effect_dispatch_failed", fn ->
+      %{
+        region_id: region.region_id,
+        chunk_coord: region.chunk_coord,
+        kernel_id: kernel_id,
         reason: inspect(reason)
       }
     end)

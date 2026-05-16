@@ -249,6 +249,8 @@ registry / ttl / budget / persistent source 仍留给后续扩展。
 
 ### Phase 7.D3：FieldEffect dispatcher + truth 写回
 
+状态：温度 writeback 最小闭环已落地；candidate phenomenon / object effect 仍留后续。
+
 目标：让 field 能产生持久世界结果，但不破坏权威事务边界。
 
 实施要点：
@@ -261,10 +263,21 @@ registry / ttl / budget / persistent source 仍留给后续扩展。
 
 验收：
 
-- 高温达到材料阈值后能产生可追踪 effect。
-- effect 被 versioned write 应用或明确 reject。
-- reject reason 进入结构化日志。
-- 客户端能从 CLI/snapshot 看到持久 attribute 变化，而不只看到 overlay。
+- 温度 `write_voxel_attribute(:temperature)` effect 可由 `FieldTickWorker` 交给
+  `ChunkProcess.apply_field_effects/3`，并通过 chunk authority 写入 voxel truth。
+- unsupported action / unsupported attribute 必须明确 reject，不允许静默丢弃。
+- applied / rejected lifecycle 进入结构化日志：
+  `voxel_field_effect_applied` / `voxel_field_effect_rejected`。
+- 客户端/CLI 后续可从 chunk snapshot 看到持久 attribute 变化，而不只看到 overlay。
+
+已完成最小证据：
+
+- `apps/scene_server/test/scene_server/voxel/chunk_process_test.exs` 覆盖 dispatcher
+  应用温度 effect、触发 snapshot fallback、写入 `temperature` truth，以及 unsupported
+  effect 不变更 chunk_version。
+- `apps/scene_server/test/scene_server/voxel/field/field_tick_worker_kernel_test.exs`
+  覆盖 worker 收到 non-observe effect 后交给 chunk authority；unsupported effect
+  产出 reject observe。
 
 ### Phase 7.E：材料与环境模型扩展
 
@@ -505,3 +518,29 @@ git diff --check
 1. `FieldSource` 仍是温度 source 最小闭环，不是 generic multi-owner source registry。
 2. `FieldEffect` dispatcher 与 truth 写回未完成，是下一步主线。
 3. Phase 8 只进入设计，不实现燃烧、结冰、结构完整度、碳化、腐蚀、相变。
+
+### 2026-05-16：Phase 7.D3 温度 FieldEffect 最小闭环
+
+已完成：
+
+1. `FieldTickWorker` 对 non-observe kernel effects 不再静默丢弃，而是交给
+   `ChunkProcess.apply_field_effects/3`。
+2. `ChunkProcess` 作为 chunk truth owner 应用第一批 effect：
+   `write_voxel_attribute(:temperature)`。
+3. unsupported action / unsupported attribute 明确 reject，并写入
+   `voxel_field_effect_rejected`。
+4. applied path 写入 voxel `temperature` truth，触发 chunk snapshot fallback，并写入
+   `voxel_field_effect_applied`。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/chunk_process_test.exs apps/scene_server/test/scene_server/voxel/field/field_tick_worker_kernel_test.exs
+```
+
+遗留：
+
+1. `ignite_candidate` / `freeze_candidate` / `melt_candidate` 只保留为后续结构化 candidate，
+   目前仍应 reject/defer，不能抢跑 Phase 8。
+2. object/combat/source lifecycle effect 尚未接入。
+3. 仍需补 full umbrella / compile / diff hygiene 后才能提交本 D3 切片。

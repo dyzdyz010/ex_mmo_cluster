@@ -2,8 +2,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   use ExUnit.Case, async: false
 
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.AttributeCatalog
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion, FieldTickWorker}
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
   defmodule FailingKernel do
@@ -35,6 +39,36 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     end
   end
 
+  defmodule WriteTemperatureEffectKernel do
+    @behaviour SceneServer.Voxel.Field.Kernel
+
+    def kernel_id, do: :write_temperature_effect
+    def required_layers(_opts), do: [:temperature]
+
+    def tick(region, _context, opts) do
+      {:cont, region,
+       [
+         {:write_voxel_attribute,
+          %{
+            attribute: :temperature,
+            macro_index: Map.fetch!(opts, :macro_index),
+            target_temperature_celsius: Map.fetch!(opts, :target_temperature_celsius)
+          }}
+       ]}
+    end
+  end
+
+  defmodule UnsupportedEffectKernel do
+    @behaviour SceneServer.Voxel.Field.Kernel
+
+    def kernel_id, do: :unsupported_effect
+    def required_layers(_opts), do: [:temperature]
+
+    def tick(region, _context, opts) do
+      {:cont, region, [{:ignite, %{macro_index: Map.fetch!(opts, :macro_index)}}]}
+    end
+  end
+
   setup do
     previous_log = Application.get_env(:scene_server, :cli_observe_log)
 
@@ -43,6 +77,11 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
     File.rm(path)
     Application.put_env(:scene_server, :cli_observe_log, path)
+
+    case start_supervised({AttributeCatalog, []}) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
 
     on_exit(fn ->
       CliObserve.flush()
@@ -154,6 +193,94 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     snapshot = receive_snapshot!()
     assert_snapshot_temperature(snapshot, source_idx, 798.4, 1.0)
     assert_snapshot_temperature(snapshot, first_ring_idx, 20.26, 0.1)
+  end
+
+  test "non-observe temperature effects are dispatched to chunk truth", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
+
+    region =
+      FieldRegion.new(%{
+        region_id: 104,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :write_temperature_effect,
+            module: WriteTemperatureEffectKernel,
+            opts: %{macro_index: macro_index, target_temperature_celsius: 120.0}
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 1
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    assert Storage.effective_attribute_at(storage, macro_index, "temperature") == 7_864_320
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_applied"
+    assert observe_log_text =~ "kernel_id: :write_temperature_effect"
+  end
+
+  test "unsupported non-observe effects are explicitly rejected", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
+
+    region =
+      FieldRegion.new(%{
+        region_id: 105,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :unsupported_effect,
+            module: UnsupportedEffectKernel,
+            opts: %{macro_index: macro_index}
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 1
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert ChunkProcess.debug_state(chunk).chunk_version == 1
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_rejected"
+    assert observe_log_text =~ "reason: :unsupported_field_effect_action"
   end
 
   test "an explicit empty kernel list is rejected" do
