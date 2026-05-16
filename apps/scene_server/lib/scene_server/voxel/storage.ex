@@ -16,6 +16,7 @@ defmodule SceneServer.Voxel.Storage do
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MacroEnvironmentSummary
+  alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.MicroLayer
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.ObjectCoverRef
@@ -31,41 +32,6 @@ defmodule SceneServer.Voxel.Storage do
   @macro_header_count 4096
   @max_u32 0xFFFF_FFFF
   @max_u63 9_223_372_036_854_775_807
-  @fixed32_scale 65_536
-
-  @dirt_material_id 1
-  @stone_material_id 2
-  @wood_material_id 3
-  @ice_material_id 4
-  @iron_material_id 5
-  @material_default_attributes %{
-    @dirt_material_id => %{
-      "density" => round(1_600.0 * @fixed32_scale),
-      "thermal_conductivity" => round(0.25 * @fixed32_scale),
-      "specific_heat_capacity" => round(800.0 * @fixed32_scale)
-    },
-    @stone_material_id => %{
-      "density" => round(2_700.0 * @fixed32_scale),
-      "thermal_conductivity" => round(2.5 * @fixed32_scale),
-      "specific_heat_capacity" => round(790.0 * @fixed32_scale)
-    },
-    @wood_material_id => %{
-      "density" => round(600.0 * @fixed32_scale),
-      "thermal_conductivity" => round(0.13 * @fixed32_scale),
-      "specific_heat_capacity" => round(1_700.0 * @fixed32_scale)
-    },
-    @ice_material_id => %{
-      "density" => round(917.0 * @fixed32_scale),
-      "thermal_conductivity" => round(2.2 * @fixed32_scale),
-      "specific_heat_capacity" => round(2_100.0 * @fixed32_scale)
-    },
-    @iron_material_id => %{
-      "density" => round(7_870.0 * @fixed32_scale),
-      "thermal_conductivity" => round(80.0 * @fixed32_scale),
-      "specific_heat_capacity" => round(449.0 * @fixed32_scale)
-    }
-  }
-
   defstruct schema_version: @schema_version,
             logical_scene_id: 0,
             chunk_coord: {0, 0, 0},
@@ -813,9 +779,7 @@ defmodule SceneServer.Voxel.Storage do
   defp material_default_value(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
     material_id = material_id_for_header(storage, header)
 
-    @material_default_attributes
-    |> Map.get(material_id, %{})
-    |> Map.get(defn.name, defn.default_value)
+    MaterialCatalog.default_attribute_value(material_id, defn.name, defn.default_value)
   end
 
   defp material_id_for_header(%__MODULE__{} = storage, %MacroCellHeader{} = header) do

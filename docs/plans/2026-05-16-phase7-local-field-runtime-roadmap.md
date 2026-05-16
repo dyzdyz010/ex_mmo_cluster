@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 已落地（2026-05-16）  
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 进行中（2026-05-16）
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -37,7 +37,8 @@
 2. 未完成从持久 voxel truth 扫描或订阅异常属性。
 3. 只完成了“set-temperature 回到环境阈值内”时的主动销毁；基于 active cells、
    source owner、预算、region 扩张/收缩和分片的完整 lifecycle 仍未完成。
-4. kernel effect 还没有统一的结构化结算边界；永久烧毁、冻结、融化、点燃、伤害、属性写回等还没有统一 dispatcher。
+4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` 最小 dispatcher；
+   永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
 5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
 
 结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点；下一步应补 FieldRuntime 的运行时能力，而不是继续堆单点演示。
@@ -281,11 +282,16 @@ registry / ttl / budget / persistent source 仍留给后续扩展。
 
 ### Phase 7.E：材料与环境模型扩展
 
+状态：进行中（2026-05-16）。本阶段先扩展 material_default attribute catalog
+和 material-specific fallback，再让后续 kernel / phenomenon 通过通用属性读取阈值；
+不在本阶段直接实现燃烧、结冰、腐蚀或完整相变状态机。
+
 目标：把 field 结算依赖的物理属性补齐，但避免 schema 膨胀。
 
 实施要点：
 
-1. `MaterialDef` / attribute catalog 扩展：`ignition_temperature`、`melting_point`、`freezing_point`、`boiling_point`、`electric_conductivity`、`dielectric_strength`，可选 `latent_heat`。
+1. `MaterialDef` / attribute catalog 扩展：`ignition_temperature`、`melting_point`、`freezing_point`、`boiling_point`、`electric_conductivity`、`dielectric_strength`。
+   `latent_heat` 暂不进入第一批 seed，等 phase transition energy sink 有明确读写链路后再追加。
 2. runtime voxel state 只保存动态状态：current temperature、moisture、oxygen、ionization、structural integrity、material/state transition result。
 3. 不把“晶体性”“魔法性”等语义直接塞进每个 voxel。优先作为 material/template 派生属性或 source/kernel 参数。
 
@@ -474,18 +480,18 @@ Phase 7+ 不直接承诺：
 下一轮建议直接启动：
 
 ```text
-Phase 7.D3: FieldEffect dispatcher + truth 写回
+Phase 7.E: 材料与环境模型扩展第一批
 ```
 
 最小交付：
 
-1. `FieldEffect` 结构与 dispatcher 边界。
-2. `FieldTickWorker` 不直接写 truth，只把 non-observe effects 交给 dispatcher 或明确 reject。
-3. 第一批只做温度相关 `write_voxel_attribute(:temperature)` / candidate effect 的传递路径。
-4. effect 应用必须经过 version / authority / reject reason 记录，不复用 ad hoc 直写作为通用面。
-5. 服务端测试证明 effect 被应用或明确 reject；observe 能看到 effect lifecycle。
+1. attribute catalog v2 增加 material/default 物性阈值和电属性。
+2. material-specific fallback 从 `Storage` 内联 map 收敛到明确的 material catalog 边界。
+3. `Storage.effective_attribute_at/3` 能按 material_id 解析新增属性，未知材质回退 inert catalog default。
+4. 服务端测试证明 catalog wire 稳定、material-specific fallback 生效、未知材质 fallback 生效。
+5. 文档明确 `latent_heat` 和现象状态机仍后置，避免 schema 膨胀。
 
-完成 D3 后再扩材料物理属性；不要跳到 `ConductionPathKernel` 或燃烧/结冰具体现象实现。
+完成 7.E 第一批后再推进 `ConductionPathKernel`；不要跳过材料属性边界去硬编码 wood/ice/iron 分支。
 
 ---
 
@@ -543,4 +549,16 @@ mix.bat test apps/scene_server/test/scene_server/voxel/chunk_process_test.exs ap
 1. `ignite_candidate` / `freeze_candidate` / `melt_candidate` 只保留为后续结构化 candidate，
    目前仍应 reject/defer，不能抢跑 Phase 8。
 2. object/combat/source lifecycle effect 尚未接入。
-3. 仍需补 full umbrella / compile / diff hygiene 后才能提交本 D3 切片。
+3. Phase 7.E 已开始，下一步先扩 material_default attribute catalog 和 material-specific fallback。
+
+### 2026-05-16：Phase 7.E 材料与环境模型启动
+
+本轮目标：
+
+1. 把材料阈值与电属性作为正式 catalog 属性，而不是硬编码到未来现象系统。
+2. `density` / `thermal_conductivity` / `specific_heat_capacity` 之外，补齐
+   `ignition_temperature`、`melting_point`、`freezing_point`、`boiling_point`、
+   `electric_conductivity`、`dielectric_strength`。
+3. 仅扩 material/default 层，不给每个 voxel 增加“晶体性”“燃烧性”等泛化运行时字段。
+4. 保留 Phase 8 现象系统边界：本阶段只提供可读物性和阈值，不直接执行燃烧、结冰、
+   碳化、腐蚀或完整相变状态机。

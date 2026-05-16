@@ -1,8 +1,8 @@
-# Phase 5.C 第一批 attribute catalog seed (v1).
+# Phase 5.C 第一批 attribute catalog seed file.
 #
 # 设计草案：docs/plans/2026-05-13-phase5c-first-batch-catalog-seed.md
 # 用户 2026-05-13 approve C-1..C-8 全部推荐方案：
-#   C-1 顺序数字 id (1..6)
+#   C-1 顺序数字 id (1..12)
 #   C-2 fixed32 Q16.16 按表范围
 #   C-3 default 绝对值（物理量直观）
 #   C-4 .exs Elixir 字面量 seed
@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 1,
+  catalog_version: 2,
   definitions: [
     %{
       id: 1,
@@ -102,6 +102,82 @@
       min_value: 65_536,
       # 10000.0 J/(kg·K)
       max_value: 655_360_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 7,
+      name: "ignition_temperature",
+      unit: "°C",
+      value_type: :fixed32,
+      # 5000.0 °C (inert / non-flammable fallback)
+      default_value: 327_680_000,
+      # -273.15 °C (aligned with temperature attribute lower bound)
+      min_value: -17_904_824,
+      # 5000.0 °C
+      max_value: 327_680_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 8,
+      name: "melting_point",
+      unit: "°C",
+      value_type: :fixed32,
+      # 5000.0 °C (inert / no-melt fallback)
+      default_value: 327_680_000,
+      min_value: -17_904_824,
+      max_value: 327_680_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 9,
+      name: "freezing_point",
+      unit: "°C",
+      value_type: :fixed32,
+      # absolute-zero sentinel means "no solidification transition for this fallback"
+      default_value: -17_904_824,
+      min_value: -17_904_824,
+      max_value: 327_680_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 10,
+      name: "boiling_point",
+      unit: "°C",
+      value_type: :fixed32,
+      # 5000.0 °C (inert / no-boil fallback)
+      default_value: 327_680_000,
+      min_value: -17_904_824,
+      max_value: 327_680_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 11,
+      name: "electric_conductivity",
+      unit: "MS/m",
+      value_type: :fixed32,
+      # 0.0 MS/m
+      default_value: 0,
+      min_value: 0,
+      # 100.0 MS/m
+      max_value: 6_553_600,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 12,
+      name: "dielectric_strength",
+      unit: "MV/m",
+      value_type: :fixed32,
+      # 3.0 MV/m (air-scale fallback)
+      default_value: 196_608,
+      min_value: 0,
+      # 100.0 MV/m
+      max_value: 6_553_600,
       merge_rule: :material_default,
       dynamic: false
     }

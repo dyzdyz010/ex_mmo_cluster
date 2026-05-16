@@ -9,6 +9,9 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   alias SceneServer.Voxel.AttributeCatalogSnapshot
   alias SceneServer.Voxel.AttributeDefinition
 
+  @absolute_zero_raw -17_904_824
+  @fixed32_scale 65_536
+
   setup do
     name = :"attribute_catalog_#{System.unique_integer([:positive])}"
     pid = start_supervised!({AttributeCatalog, name: name})
@@ -16,22 +19,22 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 6 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 12 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 1
-      assert length(snapshot.definitions) == 6
+      assert snapshot.catalog_version == 2
+      assert length(snapshot.definitions) == 12
     end
 
-    test "catalog_version returns 1", %{server: server} do
-      assert AttributeCatalog.catalog_version(server) == 1
+    test "catalog_version returns 2", %{server: server} do
+      assert AttributeCatalog.catalog_version(server) == 2
     end
 
     test "definitions are sorted by id ascending", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == [1, 2, 3, 4, 5, 6]
+      assert ids == Enum.to_list(1..12)
     end
   end
 
@@ -76,6 +79,29 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       assert defn.default_value == 65_536_000
       assert defn.merge_rule == 0x05
       assert defn.dynamic == false
+    end
+
+    test "returns Phase 7.E material threshold and electrical definitions", %{server: server} do
+      expectations = [
+        {7, "ignition_temperature", "°C", fixed32(5_000.0), @absolute_zero_raw, fixed32(5_000.0)},
+        {8, "melting_point", "°C", fixed32(5_000.0), @absolute_zero_raw, fixed32(5_000.0)},
+        {9, "freezing_point", "°C", @absolute_zero_raw, @absolute_zero_raw, fixed32(5_000.0)},
+        {10, "boiling_point", "°C", fixed32(5_000.0), @absolute_zero_raw, fixed32(5_000.0)},
+        {11, "electric_conductivity", "MS/m", 0, 0, fixed32(100.0)},
+        {12, "dielectric_strength", "MV/m", fixed32(3.0), 0, fixed32(100.0)}
+      ]
+
+      for {id, name, unit, default_value, min_value, max_value} <- expectations do
+        assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, id)
+        assert defn.name == name
+        assert defn.unit == unit
+        assert defn.value_type == 0x03
+        assert defn.default_value == default_value
+        assert defn.min_value == min_value
+        assert defn.max_value == max_value
+        assert defn.merge_rule == 0x05
+        assert defn.dynamic == false
+      end
     end
 
     test "returns {:error, :not_found} for id 999", %{server: server} do
@@ -128,8 +154,8 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       wire = AttributeCatalogSnapshot.encode_for_wire(snapshot)
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 1
-      assert length(decoded.definitions) == 6
+      assert decoded.catalog_version == 2
+      assert length(decoded.definitions) == 12
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)
@@ -144,4 +170,6 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       assert before == after_reload
     end
   end
+
+  defp fixed32(value), do: round(value * @fixed32_scale)
 end

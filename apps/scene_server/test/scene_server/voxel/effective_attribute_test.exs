@@ -41,6 +41,7 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
   @t_default 1_310_720
   # 1.0 in Q16.16
   @density_default 65_536
+  @absolute_zero_raw -17_904_824
   @fixed32_scale 65_536
   @dirt_material_id 1
   @stone_material_id 2
@@ -269,6 +270,54 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
       end
     end
 
+    test "known voxel materials resolve Phase 7.E thresholds and electrical properties" do
+      expectations = [
+        {@dirt_material_id, 5_000.0, 1_100.0, 1_100.0, 2_200.0, 0.01, 10.0},
+        {@stone_material_id, 5_000.0, 1_200.0, 1_200.0, 3_000.0, 0.0, 12.0},
+        {@wood_material_id, 300.0, 5_000.0, @absolute_zero_raw, 5_000.0, 0.0, 10.0},
+        {@ice_material_id, 5_000.0, 0.0, 0.0, 100.0, 0.0, 9.8},
+        {@iron_material_id, 5_000.0, 1_538.0, 1_538.0, 2_862.0, 10.0, 0.0}
+      ]
+
+      for {material_id, ignition, melting, freezing, boiling, electric, dielectric} <-
+            expectations do
+        storage = solid_chunk(0, material_id: material_id)
+
+        assert Storage.effective_attribute_at(storage, 0, "ignition_temperature") ==
+                 fixed32(ignition)
+
+        assert Storage.effective_attribute_at(storage, 0, "melting_point") ==
+                 fixed32(melting)
+
+        assert Storage.effective_attribute_at(storage, 0, "freezing_point") ==
+                 fixed32_or_raw(freezing)
+
+        assert Storage.effective_attribute_at(storage, 0, "boiling_point") ==
+                 fixed32(boiling)
+
+        assert Storage.effective_attribute_at(storage, 0, "electric_conductivity") ==
+                 fixed32(electric)
+
+        assert Storage.effective_attribute_at(storage, 0, "dielectric_strength") ==
+                 fixed32(dielectric)
+      end
+    end
+
+    test "refined cells use their layer material for Phase 7.E defaults" do
+      storage =
+        Storage.new(0, {0, 0, 0})
+        |> refined_chunk_with_layers_into(0, [%{material_id: @wood_material_id}])
+
+      assert Storage.effective_attribute_at(storage, 0, "ignition_temperature") ==
+               fixed32(300.0)
+
+      assert Storage.effective_attribute_at(storage, 0, "melting_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "freezing_point") == @absolute_zero_raw
+      assert Storage.effective_attribute_at(storage, 0, "boiling_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "electric_conductivity") == 0
+      assert Storage.effective_attribute_at(storage, 0, "dielectric_strength") == fixed32(10.0)
+    end
+
     test "solid iron resolves real-world material defaults instead of global debug defaults" do
       storage = solid_chunk(0, material_id: @iron_material_id)
 
@@ -305,6 +354,32 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
     test "unknown material falls back to catalog default specific heat capacity" do
       storage = solid_chunk(0, material_id: 99)
       assert Storage.effective_attribute_at(storage, 0, "specific_heat_capacity") == 65_536_000
+    end
+
+    test "unknown material falls back to inert Phase 7.E catalog defaults" do
+      storage = solid_chunk(0, material_id: 99)
+
+      assert Storage.effective_attribute_at(storage, 0, "ignition_temperature") ==
+               fixed32(5_000.0)
+
+      assert Storage.effective_attribute_at(storage, 0, "melting_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "freezing_point") == @absolute_zero_raw
+      assert Storage.effective_attribute_at(storage, 0, "boiling_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "electric_conductivity") == 0
+      assert Storage.effective_attribute_at(storage, 0, "dielectric_strength") == fixed32(3.0)
+    end
+
+    test "empty cells without material fall back to inert Phase 7.E catalog defaults" do
+      storage = Storage.new(0, {0, 0, 0})
+
+      assert Storage.effective_attribute_at(storage, 0, "ignition_temperature") ==
+               fixed32(5_000.0)
+
+      assert Storage.effective_attribute_at(storage, 0, "melting_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "freezing_point") == @absolute_zero_raw
+      assert Storage.effective_attribute_at(storage, 0, "boiling_point") == fixed32(5_000.0)
+      assert Storage.effective_attribute_at(storage, 0, "electric_conductivity") == 0
+      assert Storage.effective_attribute_at(storage, 0, "dielectric_strength") == fixed32(3.0)
     end
 
     test "即使 cell 设置了 attribute_set 含 density override，effective 仍 = L1 default" do
@@ -653,4 +728,6 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
   end
 
   defp fixed32(value), do: round(value * @fixed32_scale)
+  defp fixed32_or_raw(@absolute_zero_raw), do: @absolute_zero_raw
+  defp fixed32_or_raw(value), do: fixed32(value)
 end
