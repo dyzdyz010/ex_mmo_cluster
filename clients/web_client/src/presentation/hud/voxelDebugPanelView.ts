@@ -54,7 +54,7 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     private readonly commands: VoxelDebugPanelCommandPort,
     private readonly world: VoxelWorldAdapter,
     private readonly fieldOverlayToggle?: () => void,
-    private readonly heatSelectedVoxel?: () => boolean,
+    private readonly setSelectedVoxelTemperature?: (targetTemperatureCelsius: number) => boolean,
   ) {
     this.panel.addEventListener("click", this.handleClick);
     this.panel.addEventListener("input", this.handleInput);
@@ -141,11 +141,19 @@ export class VoxelDebugPanelView implements FrameSubscriber {
         this.fieldOverlayToggle?.();
         return { ok: true, command: action, text: "field overlay toggled" };
       case "heat-selected": {
-        const ok = this.heatSelectedVoxel?.() === true;
+        const ok = this.setSelectedVoxelTemperature?.(800) === true;
         return {
           ok,
           command: action,
           text: ok ? "set selected voxel to 800C" : "heat selected voxel rejected",
+        };
+      }
+      case "cool-selected": {
+        const ok = this.setSelectedVoxelTemperature?.(0) === true;
+        return {
+          ok,
+          command: action,
+          text: ok ? "set selected voxel to 0C" : "cool selected voxel rejected",
         };
       }
       default:
@@ -215,6 +223,7 @@ export function renderVoxelDebugPanelHtml(
     renderButton("versions", "Versions"),
     renderButton("field-overlay", "Field"),
     renderButton("heat-selected", "Heat"),
+    renderButton("cool-selected", "Cool"),
     `</div>`,
     `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
     renderNumberInput("subscribeCx", "Sub X", formState.subscribeCx),

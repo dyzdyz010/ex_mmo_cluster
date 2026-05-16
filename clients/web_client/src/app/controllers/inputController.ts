@@ -159,7 +159,7 @@ export class InputController {
         });
         break;
       case "KeyF":
-        this.bus.emit("input:heat-selected-voxel", {
+        this.bus.emit("input:set-selected-voxel-temperature", {
           source: "keyboard",
           targetTemperatureCelsius: DEFAULT_HEAT_TARGET_CELSIUS,
         });

@@ -470,7 +470,38 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     expect(transport.impactCalls[0]?.impactKind).toBe(1);
   });
 
-  it("posts a selected-voxel target temperature request to the auth dev endpoint", async () => {
+  it("posts a selected-voxel target temperature request to the formal auth endpoint", async () => {
+    const { adapter } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ region_id: 42 }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestSetVoxelTemperature({ x: 3, y: 4, z: 5 }, -20, 120)).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/set_temperature",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 3,
+          y: 4,
+          z: 5,
+          target_temperature_celsius: -20,
+          max_ticks: 120,
+        }),
+      }),
+    );
+  });
+
+  it("keeps requestDevHeatVoxel as an 800C alias over set temperature", async () => {
     const { adapter } = createAdapter();
     const fetchSpy = vi.fn(() =>
       Promise.resolve({
@@ -485,10 +516,8 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     await Promise.resolve();
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://localhost/ingame/voxel/dev_heat_voxel",
+      "http://localhost/ingame/voxel/set_temperature",
       expect.objectContaining({
-        method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify({
           logical_scene_id: 7,
           x: 3,

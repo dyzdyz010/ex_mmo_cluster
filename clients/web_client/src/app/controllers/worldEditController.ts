@@ -92,7 +92,12 @@ export class WorldEditController {
     this.bus.on("input:place-block", ({ source }) => this.placeAtSelection(source));
     this.bus.on("input:break-block", ({ source }) => this.breakAtSelection(source));
     this.bus.on("input:heat-selected-voxel", ({ source, targetTemperatureCelsius }) =>
-      this.heatAtSelection(source, targetTemperatureCelsius),
+      this.setTemperatureAtSelection(source, targetTemperatureCelsius),
+    );
+    this.bus.on(
+      "input:set-selected-voxel-temperature",
+      ({ source, targetTemperatureCelsius, maxTicks }) =>
+        this.setTemperatureAtSelection(source, targetTemperatureCelsius, maxTicks),
     );
   }
 
@@ -136,34 +141,59 @@ export class WorldEditController {
     return ok;
   }
 
-  heatAt(
+  setTemperatureAt(
     coord: FMacroCoord,
     targetTemperatureCelsius: number,
     source: string,
     maxTicks?: number,
   ): boolean {
-    if (typeof this.world.requestDevHeatVoxel !== "function") {
-      this.bus.emit("world:edit-rejected", { reason: "heat_not_supported", source });
+    const request =
+      this.world.requestSetVoxelTemperature?.bind(this.world) ??
+      this.world.requestDevHeatVoxel?.bind(this.world);
+    if (typeof request !== "function") {
+      this.bus.emit("world:edit-rejected", { reason: "set_temperature_not_supported", source });
       return false;
     }
 
-    const ok = this.world.requestDevHeatVoxel(coord, targetTemperatureCelsius, maxTicks);
+    const ok = request(coord, targetTemperatureCelsius, maxTicks);
     if (ok) {
-      this.bus.emit("world:voxel-heated", { coord, targetTemperatureCelsius, source });
+      this.bus.emit("world:voxel-temperature-set", { coord, targetTemperatureCelsius, source });
     } else {
-      this.bus.emit("world:edit-rejected", { reason: "heat_rejected", source });
+      this.bus.emit("world:edit-rejected", { reason: "set_temperature_rejected", source });
     }
     return ok;
   }
 
-  heatAtSelection(source: string, targetTemperatureCelsius = 800, maxTicks?: number): boolean {
+  setTemperatureAtSelection(
+    source: string,
+    targetTemperatureCelsius = 800,
+    maxTicks?: number,
+  ): boolean {
     const selection = this.selection.getCurrentSelection();
     if (!selection) {
       this.bus.emit("world:edit-rejected", { reason: "no_selection", source });
       this.world.store.editStats.rejected += 1;
       return false;
     }
-    return this.heatAt(selection.occupiedMacro, targetTemperatureCelsius, source, maxTicks);
+    return this.setTemperatureAt(
+      selection.occupiedMacro,
+      targetTemperatureCelsius,
+      source,
+      maxTicks,
+    );
+  }
+
+  heatAt(
+    coord: FMacroCoord,
+    targetTemperatureCelsius: number,
+    source: string,
+    maxTicks?: number,
+  ): boolean {
+    return this.setTemperatureAt(coord, targetTemperatureCelsius, source, maxTicks);
+  }
+
+  heatAtSelection(source: string, targetTemperatureCelsius = 800, maxTicks?: number): boolean {
+    return this.setTemperatureAtSelection(source, targetTemperatureCelsius, maxTicks);
   }
 
   /** Phase 1c-5: scripted micro-grid place driven by the dev CLI. */

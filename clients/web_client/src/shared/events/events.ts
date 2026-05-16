@@ -22,6 +22,11 @@ export type AppEvents = {
   "input:place-block": { source: string };
   "input:break-block": { source: string };
   "input:heat-selected-voxel": { source: string; targetTemperatureCelsius: number };
+  "input:set-selected-voxel-temperature": {
+    source: string;
+    targetTemperatureCelsius: number;
+    maxTicks?: number;
+  };
   "input:jump": { source: string };
 
   // Audit B-S1 / B-SRV2: expectedSeq is the server-reported next-input
@@ -86,6 +91,11 @@ export type AppEvents = {
   "world:block-placed": { coord: FMacroCoord; materialId: number; source: string };
   "world:block-broken": { coord: FMacroCoord; source: string };
   "world:voxel-heated": { coord: FMacroCoord; targetTemperatureCelsius: number; source: string };
+  "world:voxel-temperature-set": {
+    coord: FMacroCoord;
+    targetTemperatureCelsius: number;
+    source: string;
+  };
   "world:micro-placed": {
     macro: FMacroCoord;
     micro: FMicroCoord;

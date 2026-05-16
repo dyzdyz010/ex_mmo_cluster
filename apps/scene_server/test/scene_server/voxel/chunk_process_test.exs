@@ -8,9 +8,11 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
+  alias SceneServer.CliObserve
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.Field.FieldCodec
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
@@ -23,12 +25,34 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
 
+    previous_log = Application.get_env(:scene_server, :cli_observe_log)
+
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "scene-chunk-process-#{System.unique_integer([:positive])}.log"
+      )
+
+    File.rm(path)
+    Application.put_env(:scene_server, :cli_observe_log, path)
+
     case start_supervised({AttributeCatalog, []}) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    :ok
+    on_exit(fn ->
+      CliObserve.flush()
+
+      case previous_log do
+        nil -> Application.delete_env(:scene_server, :cli_observe_log)
+        value -> Application.put_env(:scene_server, :cli_observe_log, value)
+      end
+
+      File.rm(path)
+    end)
+
+    {:ok, observe_log: path}
   end
 
   test "builds snapshot payloads from hot chunk truth" do
@@ -170,7 +194,9 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert Storage.effective_attribute_at(storage, {0, 0, 0}, "temperature") == 52_428_800
   end
 
-  test "ensure_field_region reuses an active source instead of spawning duplicates" do
+  test "ensure_field_region reuses an active source and emits source lifecycle observability", %{
+    observe_log: observe_log
+  } do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     source_index = Types.macro_index!({0, 0, 0})
 
@@ -182,15 +208,107 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       max_ticks: 100
     }
 
-    assert {:ok, %{created?: true, region_id: region_id}} =
+    assert {:ok,
+            %{
+              created?: true,
+              region_id: region_id,
+              region_action: :created,
+              source_points_action: :seeded
+            }} =
              ChunkProcess.ensure_field_region(chunk, attrs)
 
-    assert {:ok, %{created?: false, region_id: ^region_id}} =
-             ChunkProcess.ensure_field_region(chunk, attrs)
+    assert {:ok,
+            %{
+              created?: false,
+              region_id: ^region_id,
+              region_action: :reused,
+              source_points_action: :appended
+            }} =
+             ChunkProcess.ensure_field_region(chunk, %{
+               attrs
+               | source_points: [
+                   %{macro_index: source_index, field_type: :temperature, value: 120.0}
+                 ]
+             })
+
+    assert {:ok,
+            %{
+              created?: false,
+              region_id: ^region_id,
+              region_action: :reused,
+              source_points_action: :rejected,
+              source_points_rejection_reason: :missing_source_points
+            }} =
+             ChunkProcess.ensure_field_region(chunk, Map.delete(attrs, :source_points))
 
     debug = ChunkProcess.debug_state(chunk)
     assert debug.field_region_count == 1
     assert debug.field_source_count == 1
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
+    assert observe_log_text =~ "region_action: :created"
+    assert observe_log_text =~ "region_action: :reused"
+    assert observe_log_text =~ "source_points_action: :appended"
+    assert observe_log_text =~ "source_points_action: :rejected"
+    assert observe_log_text =~ "source_points_rejection_reason: :missing_source_points"
+  end
+
+  test "release_field_region_source destroys an active region by source key and releases its source",
+       %{
+         observe_log: observe_log
+       } do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 58)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    source_index = Types.macro_index!({0, 0, 0})
+    source_key = {:temperature, source_index}
+
+    attrs = %{
+      source_key: source_key,
+      aabb: {{0, 0, 0}, {1, 1, 1}},
+      kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
+      source_points: [%{macro_index: source_index, field_type: :temperature, value: 100.0}],
+      max_ticks: 100
+    }
+
+    assert {:ok, %{created?: true, region_id: region_id}} =
+             ChunkProcess.ensure_field_region(chunk, attrs)
+
+    assert {:ok,
+            %{
+              region_id: ^region_id,
+              source_key: ^source_key,
+              region_action: :destroyed,
+              source_action: :released,
+              destroy_reason: :temperature_within_environment_threshold
+            }} =
+             ChunkProcess.release_field_region_source(
+               chunk,
+               source_key,
+               :temperature_within_environment_threshold
+             )
+
+    assert_receive {:voxel_field_region_destroyed_payload, destroyed_payload}
+    destroyed = FieldCodec.decode_destroyed_payload!(destroyed_payload)
+    assert destroyed.region_id == region_id
+    assert destroyed.destroy_reason == :explicit
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 0
+    assert debug.field_source_count == 0
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
+    assert observe_log_text =~ "region_action: :destroyed"
+    assert observe_log_text =~ "source_action: :released"
+    assert observe_log_text =~ "destroy_reason: :temperature_within_environment_threshold"
+    assert observe_log_text =~ ~s(event="voxel_field_region_destroyed_fanout")
   end
 
   test "apply_intent writes a solid block, increments versions, and persists snapshots" do

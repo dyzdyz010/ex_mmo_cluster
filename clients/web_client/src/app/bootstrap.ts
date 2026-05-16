@@ -125,7 +125,8 @@ export async function bootstrap({
     devTools,
     world,
     () => render.toggleFieldDebugOverlay(),
-    () => edit.heatAtSelection("voxel_panel"),
+    (targetTemperatureCelsius) =>
+      edit.setTemperatureAtSelection("voxel_panel", targetTemperatureCelsius),
   );
 
   const loop = new GameLoop();
@@ -453,9 +454,9 @@ function bridgeBusToLogger(
       source,
     });
   });
-  bus.on("world:voxel-heated", ({ coord, targetTemperatureCelsius, source }) => {
+  bus.on("world:voxel-temperature-set", ({ coord, targetTemperatureCelsius, source }) => {
     render.showFieldDebugOverlay();
-    logger.emit("voxel", "heat_voxel", {
+    logger.emit("voxel", "set_temperature", {
       coord: formatCoord(coord),
       target_temperature_celsius: targetTemperatureCelsius,
       source,

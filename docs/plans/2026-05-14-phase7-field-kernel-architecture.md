@@ -4,6 +4,10 @@
 日期：2026-05-14
 归属：goal `voxel-authoritative-and-field-minimum` Phase 7
 
+> 2026-05-16 更新：本文继续作为 FieldKernel / FieldRegion / wire 协议的架构背景与实现细节记录。
+> Phase 7 后续推进顺序、阶段验收和运行时能力边界以
+> `docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md` 为准。
+
 真相源：
 - `docs/plans/2026-05-13-phase6-field-layer-minimum.md`
 - `docs/2026-05-13-体素局部场最小目标-索引.md`
@@ -447,8 +451,10 @@ FieldSource
 
 已落地的温度切片：
 
-- HTTP：`POST /ingame/voxel/dev_heat_voxel`；
-- WorldServer：`WorldServer.Voxel.DevFieldSeed.ensure_heat_voxel/1` 跨节点转发；
+- HTTP：正式入口 `POST /ingame/voxel/set_temperature`；legacy alias
+  `POST /ingame/voxel/dev_heat_voxel` 仍保留；
+- WorldServer：`WorldServer.Voxel.DevFieldSeed.ensure_set_temperature/1` 跨节点转发；
+  `ensure_heat_voxel/1` 为 legacy heat alias；
 - SceneServer：`ChunkProcess.write_temperature_attribute/2` 先把默认 800°C 目标温度写入
   选中 solid voxel 的 `temperature` attribute，再按
   `density × specific_heat_capacity × volume` 在 summary 中回算所需热量；
@@ -460,8 +466,10 @@ FieldSource
 - SceneServer：`ensure_temperature_anomaly/1` 通过 `ChunkProcess.ensure_field_region/2`
   创建或复用 `TemperatureDiffusionKernel` region；同一 chunk 内同一 `{temperature, macro_index}`
   活跃 region 会接收新的 `source_mode: :impulse` source，不会重复堆叠 region；
-- web_client：`F`、HUD `Heat`、CLI `voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]`
-  走同一条 heat action；heat 成功后自动打开 Field overlay，并可用
+- web_client：`F`、HUD `Heat` / `Cool`、CLI
+  `voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]`
+  走同一条 set-temperature action；`voxel_heat` / `voxel_cool` 保留为 alias。
+  set-temperature 成功后自动打开 Field overlay，并可用
   `window.__voxelCli.run("field_overlay")` 读取当前 overlay 状态。
 
 当前温度切片已经不再用请求参数直接作为场源；请求参数只表达目标温度，服务端写 voxel 属性并从属性异常创建

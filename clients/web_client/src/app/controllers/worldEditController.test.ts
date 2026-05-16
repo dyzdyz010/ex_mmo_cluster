@@ -41,6 +41,15 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
     this.heatCalls.push({ coord: { ...coord }, targetTemperatureCelsius, maxTicks });
     return true;
   }
+
+  requestSetVoxelTemperature(
+    coord: FMacroCoord,
+    targetTemperatureCelsius: number,
+    maxTicks?: number,
+  ): boolean {
+    this.heatCalls.push({ coord: { ...coord }, targetTemperatureCelsius, maxTicks });
+    return true;
+  }
 }
 
 describe("WorldEditController selection edits", () => {
@@ -147,7 +156,7 @@ describe("WorldEditController selection edits", () => {
     ]);
   });
 
-  it("sets the occupied voxel to an 800C heat target through the server anomaly path", () => {
+  it("sets the occupied voxel to an 800C target through the server anomaly path", () => {
     const bus = new EventBus<AppEvents>();
     const world = new ServerAuthoritativeWorld();
     const occupiedMacro: FMacroCoord = { x: 6, y: 7, z: 8 };
@@ -156,11 +165,11 @@ describe("WorldEditController selection edits", () => {
       adjacentMacro: { x: 6, y: 8, z: 8 },
       faceNormal: { x: 0, y: 1, z: 0 },
     });
-    const heated: AppEvents["world:voxel-heated"][] = [];
-    bus.on("world:voxel-heated", (event) => heated.push(event));
+    const temperatureSet: AppEvents["world:voxel-temperature-set"][] = [];
+    bus.on("world:voxel-temperature-set", (event) => temperatureSet.push(event));
     new WorldEditController(bus, world, selection);
 
-    bus.emit("input:heat-selected-voxel", {
+    bus.emit("input:set-selected-voxel-temperature", {
       source: "keyboard",
       targetTemperatureCelsius: 800,
     });
@@ -168,8 +177,31 @@ describe("WorldEditController selection edits", () => {
     expect(world.heatCalls).toEqual([
       { coord: occupiedMacro, targetTemperatureCelsius: 800, maxTicks: undefined },
     ]);
-    expect(heated).toEqual([
+    expect(temperatureSet).toEqual([
       { coord: occupiedMacro, targetTemperatureCelsius: 800, source: "keyboard" },
+    ]);
+  });
+
+  it("cools the occupied voxel through the same target-temperature path", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    const occupiedMacro: FMacroCoord = { x: 6, y: 7, z: 8 };
+    const selection = new StaticSelectionProvider({
+      occupiedMacro,
+      adjacentMacro: { x: 6, y: 8, z: 8 },
+      faceNormal: { x: 0, y: 1, z: 0 },
+    });
+    const temperatureSet: AppEvents["world:voxel-temperature-set"][] = [];
+    bus.on("world:voxel-temperature-set", (event) => temperatureSet.push(event));
+    const edit = new WorldEditController(bus, world, selection);
+
+    expect(edit.setTemperatureAtSelection("test", 0, 60)).toBe(true);
+
+    expect(world.heatCalls).toEqual([
+      { coord: occupiedMacro, targetTemperatureCelsius: 0, maxTicks: 60 },
+    ]);
+    expect(temperatureSet).toEqual([
+      { coord: occupiedMacro, targetTemperatureCelsius: 0, source: "test" },
     ]);
   });
 

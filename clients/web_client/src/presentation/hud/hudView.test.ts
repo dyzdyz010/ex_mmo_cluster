@@ -138,7 +138,7 @@ describe("HudView", () => {
     );
   });
 
-  it("tells the user that Heat also enables the field overlay", () => {
+  it("tells the user that set temperature also enables the field overlay", () => {
     const hud = { textContent: "" } as HTMLDivElement;
     const bus = new EventBus<AppEvents>();
 
@@ -153,14 +153,14 @@ describe("HudView", () => {
       bus,
     );
 
-    bus.emit("world:voxel-heated", {
+    bus.emit("world:voxel-temperature-set", {
       coord: { x: 3, y: 4, z: 5 },
       targetTemperatureCelsius: 800,
       source: "test",
     });
     view.onFrame(0, 0);
 
-    expect(hud.textContent).toContain("heated 3,4,5 to 800C; field overlay on");
+    expect(hud.textContent).toContain("set 3,4,5 to 800C; field overlay on");
   });
 
   it("explains that idle dev_seed means transport has not become usable yet", () => {

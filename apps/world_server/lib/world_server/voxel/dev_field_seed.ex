@@ -35,6 +35,9 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   @doc """
   Applies a finite target-temperature heat action at an exact world-macro voxel.
 
+  Legacy alias for `ensure_set_temperature/1` unless `:heat_energy_joules` is
+  explicitly supplied for old heat-energy smoke calls.
+
   Options:
     * `:logical_scene_id` (default 1)
     * `:world_macro`      `{x, y, z}`
@@ -48,6 +51,20 @@ defmodule WorldServer.Voxel.DevFieldSeed do
          {:ok, summary} <- invoke(target_node, :heat_voxel, opts) do
       enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
       emit("voxel_dev_heat_voxel_ready", enriched)
+      {:ok, enriched}
+    end
+  end
+
+  @doc """
+  Sets an exact world-macro voxel temperature through the formal Phase 7.D1
+  SetTemperature/Cool path.
+  """
+  @spec ensure_set_temperature(keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_set_temperature(opts \\ []) when is_list(opts) do
+    with {:ok, target_node} <- locate_target_node(),
+         {:ok, summary} <- invoke(target_node, :set_temperature, opts) do
+      enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
+      emit("voxel_set_temperature_ready", enriched)
       {:ok, enriched}
     end
   end

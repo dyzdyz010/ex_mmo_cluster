@@ -51,9 +51,9 @@ export class HudView implements FrameSubscriber {
       bus.on("world:voxel-sync-error", ({ reason, source }) => {
         this.showFlash(`voxel error: ${source}: ${reason}`, FAILURE_FLASH_DURATION_MS);
       });
-      bus.on("world:voxel-heated", ({ coord, targetTemperatureCelsius }) => {
+      bus.on("world:voxel-temperature-set", ({ coord, targetTemperatureCelsius }) => {
         this.showFlash(
-          `heated ${formatCoord(coord)} to ${targetTemperatureCelsius}C; field overlay on`,
+          `set ${formatCoord(coord)} to ${targetTemperatureCelsius}C; field overlay on`,
         );
       });
       bus.on("movement:input-blocked", ({ reason }) => {
@@ -166,7 +166,7 @@ export class HudView implements FrameSubscriber {
       `reconcile: acks=${stats.totalAcks} corrections=${stats.totalCorrections} replays=${stats.totalReplays} hard_snaps=${stats.totalHardSnaps}`,
       `last_correction=${stats.lastCorrectionDistance.toFixed(2)}  jitter_ms=${this.localPlayer.getCurrentJitterMs().toFixed(2)}  soft=${this.localPlayer.getCurrentSoftPositionError().toFixed(2)}`,
       `edits: placed=${this.world.store.editStats.placed} broken=${this.world.store.editStats.broken} rejected=${this.world.store.editStats.rejected} conflicts=${this.world.store.editStats.conflicts}`,
-      "controls: left click break, right click place, F inject heat, wheel hotbar, ctrl+wheel zoom, WASD move, Space jump, 1-7 select",
+      "controls: left click break, right click place, F set heat, wheel hotbar, ctrl+wheel zoom, WASD move, Space jump, 1-7 select",
       'cli: window.__voxelCli?.run("snapshot")',
     ].join("\n");
   }

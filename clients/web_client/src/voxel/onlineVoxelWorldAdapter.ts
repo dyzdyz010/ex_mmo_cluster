@@ -642,7 +642,15 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   requestDevHeatVoxel(coord: FMacroCoord, targetTemperatureCelsius = 800, maxTicks = 600): boolean {
-    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/dev_heat_voxel`;
+    return this.requestSetVoxelTemperature(coord, targetTemperatureCelsius, maxTicks);
+  }
+
+  requestSetVoxelTemperature(
+    coord: FMacroCoord,
+    targetTemperatureCelsius = 800,
+    maxTicks = 600,
+  ): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/set_temperature`;
     void fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -657,12 +665,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     })
       .then(async (response) => {
         if (!response.ok) {
-          throw new Error(`dev_heat_voxel_failed:${response.status}`);
+          throw new Error(`set_temperature_failed:${response.status}`);
         }
         return response.json() as Promise<Record<string, unknown>>;
       })
       .then((payload) => {
-        this.logger.emit("voxel", "dev_heat_voxel_ok", {
+        this.logger.emit("voxel", "set_temperature_ok", {
           logical_scene_id: this.logicalSceneId,
           coord: `${coord.x},${coord.y},${coord.z}`,
           target_temperature_celsius: targetTemperatureCelsius,
@@ -679,7 +687,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
         this.lastError = reason;
-        this.bus.emit("world:voxel-sync-error", { reason, source: "dev_heat_voxel" });
+        this.bus.emit("world:voxel-sync-error", { reason, source: "set_temperature" });
       });
     return true;
   }

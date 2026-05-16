@@ -1071,8 +1071,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 - `build_temperature_anomaly/1` 是纯函数：接收 world-macro voxel、`Storage`、radius、max_ticks，
   从 voxel 的 effective `temperature` 属性读取异常量，再计算 chunk/local macro、
   source macro_index、初始 AABB 和物性驱动的 kernel-first region attrs；
-- `ensure_temperature_anomaly/1` 调用 `ChunkDirectory.ensure_chunk/1`，先通过
-  `ChunkProcess.write_temperature_attribute/2` 把 heat action 的目标温度（默认 800°C）
+- `ensure_set_temperature/1` / `ensure_temperature_anomaly/1` 调用
+  `ChunkDirectory.ensure_chunk/1`，先通过
+  `ChunkProcess.write_temperature_attribute/2` 把 set-temperature action 的目标温度（Heat alias 默认 800°C）
   写入选中 solid voxel 的 `temperature` attribute，并在 summary 中按
   `density × specific_heat_capacity × volume` 回算所需热量，再由
   `build_temperature_anomaly/1` 检测异常并调用
@@ -1080,15 +1081,20 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 - `ChunkProcess.ensure_field_region/2` 使用 caller 提供的 `source_key` 做 active source
   去重；同一 chunk 内同一 `{temperature, macro_index}` 活跃 region 会接收新的 impulse source，
   不会重复堆叠 FieldRegion；
-- 目标温度与环境基线 `20°C` 的差值低于 `1°C` 时不创建 region，保持常态属性零成本；
-- web_client 的 `F` 键、HUD `Heat` 按钮和 CLI `voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]` 通过
-  `/ingame/voxel/dev_heat_voxel` 提交“加热 voxel”的意图，客户端仍只消费自动下发的
-  0x73/0x74；Heat 成功后 web_client 自动打开 Field overlay，并提供
+- 目标温度与环境基线 `20°C` 的差值低于 `1°C` 时不创建 region；若同一
+  `source_key` 已有活跃 region，则通过 `release_field_region_source/3` 走 0x74
+  destroy fanout 并释放 source，保持常态属性零成本；
+- web_client 的 `F` 键、HUD `Heat` / `Cool` 按钮和 CLI
+  `voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]` 通过
+  `/ingame/voxel/set_temperature` 提交“设置 voxel 目标温度”的意图；`voxel_heat` /
+  `voxel_cool` 与 `/ingame/voxel/dev_heat_voxel` 保留为 alias。客户端仍只消费自动下发的
+  0x73/0x74；set-temperature 成功后 web_client 自动打开 Field overlay，并提供
   `field_overlay [on|off]` CLI 诊断。
 
-当前切片已经把“Heat -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建局部 FieldRegion -> kernel tick ->
-客户端 overlay 可显示”串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、异常低于阈值后的
-自动销毁、以及 kernel effect 写回 voxel/object truth。
+当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
+局部 FieldRegion -> kernel tick -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
+串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、generic owner/ttl/budget source
+lifecycle，以及 kernel effect 写回 voxel/object truth。
 
 ### FieldCodec
 

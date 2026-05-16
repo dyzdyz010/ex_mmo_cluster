@@ -120,10 +120,58 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(breakMicroAt).toHaveBeenCalledWith({ x: 0, y: 1, z: 2 }, { x: 1, y: 2, z: 3 }, "cli");
   });
 
-  it("routes voxel_heat to the edit controller with macro coordinates and target temperature", () => {
-    const heatAt = vi.fn(() => true);
+  it("routes voxel_temp to the edit controller with macro coordinates and target temperature", () => {
+    const setTemperatureAt = vi.fn(() => true);
     const cli = new DevToolsCli({
-      edit: { heatAt },
+      edit: { setTemperatureAt },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_temp", ["3", "4", "5", "-20", "120"])).toMatchObject({
+      ok: true,
+      command: "voxel_temp",
+      text: "temperature request sent for (3,4,5) to -20C",
+    });
+
+    expect(setTemperatureAt).toHaveBeenCalledWith({ x: 3, y: 4, z: 5 }, -20, "cli", 120);
+  });
+
+  it("preserves the edit controller receiver when routing voxel_temp", () => {
+    const edit = {
+      calls: [] as unknown[],
+      setTemperatureAt(
+        coord: unknown,
+        targetTemperatureCelsius: number,
+        source: string,
+        maxTicks?: number,
+      ) {
+        this.calls.push({ coord, targetTemperatureCelsius, source, maxTicks });
+        return true;
+      },
+    };
+    const cli = new DevToolsCli({
+      edit,
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_temp", ["3", "4", "5", "800", "120"])).toMatchObject({
+      ok: true,
+      command: "voxel_temp",
+    });
+
+    expect(edit.calls).toEqual([
+      {
+        coord: { x: 3, y: 4, z: 5 },
+        targetTemperatureCelsius: 800,
+        source: "cli",
+        maxTicks: 120,
+      },
+    ]);
+  });
+
+  it("keeps voxel_heat and voxel_cool as temperature aliases", () => {
+    const setTemperatureAt = vi.fn(() => true);
+    const setTemperatureAtSelection = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { setTemperatureAt, setTemperatureAtSelection },
     } as unknown as DevToolsDeps);
 
     expect(cli.executeCliCommand("voxel_heat", ["3", "4", "5", "800", "120"])).toMatchObject({
@@ -131,8 +179,20 @@ describe("DevToolsCli microgrid boundary", () => {
       command: "voxel_heat",
       text: "heat request sent for (3,4,5) to 800C",
     });
+    expect(cli.executeCliCommand("voxel_cool", ["3", "4", "5", "0", "60"])).toMatchObject({
+      ok: true,
+      command: "voxel_cool",
+      text: "cool request sent for (3,4,5) to 0C",
+    });
+    expect(cli.executeCliCommand("voxel_cool", [])).toMatchObject({
+      ok: true,
+      command: "voxel_cool",
+      text: "cool request sent for selected voxel to 0C",
+    });
 
-    expect(heatAt).toHaveBeenCalledWith({ x: 3, y: 4, z: 5 }, 800, "cli", 120);
+    expect(setTemperatureAt).toHaveBeenNthCalledWith(1, { x: 3, y: 4, z: 5 }, 800, "cli", 120);
+    expect(setTemperatureAt).toHaveBeenNthCalledWith(2, { x: 3, y: 4, z: 5 }, 0, "cli", 60);
+    expect(setTemperatureAtSelection).toHaveBeenCalledWith("cli", 0, 600);
   });
 
   it("exposes prefab sockets and socket snap preview/commit through the CLI observe surface", () => {

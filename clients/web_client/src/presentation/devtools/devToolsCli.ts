@@ -91,8 +91,22 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelUnsubscribe(command, args);
       case "voxel_impact":
         return this.cmdVoxelImpact(command, args);
+      case "voxel_temp":
+        return this.cmdVoxelTemperature(command, args, {
+          defaultTargetTemperatureCelsius: 800,
+          label: "temperature",
+          requireExplicitTarget: true,
+        });
       case "voxel_heat":
-        return this.cmdVoxelHeat(command, args);
+        return this.cmdVoxelTemperature(command, args, {
+          defaultTargetTemperatureCelsius: 800,
+          label: "heat",
+        });
+      case "voxel_cool":
+        return this.cmdVoxelTemperature(command, args, {
+          defaultTargetTemperatureCelsius: 0,
+          label: "cool",
+        });
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -325,8 +339,27 @@ export class DevToolsCli implements CliCommandHandler {
     });
   }
 
-  private cmdVoxelHeat(command: string, args: string[]): CliCommandResult {
-    const heatPort = this.deps.edit as Partial<{
+  private cmdVoxelTemperature(
+    command: string,
+    args: string[],
+    opts: {
+      defaultTargetTemperatureCelsius: number;
+      label: "temperature" | "heat" | "cool";
+      requireExplicitTarget?: boolean;
+    },
+  ): CliCommandResult {
+    const temperaturePort = this.deps.edit as Partial<{
+      setTemperatureAt: (
+        coord: FMacroCoord,
+        targetTemperatureCelsius: number,
+        source: string,
+        maxTicks?: number,
+      ) => boolean;
+      setTemperatureAtSelection: (
+        source: string,
+        targetTemperatureCelsius?: number,
+        maxTicks?: number,
+      ) => boolean;
       heatAt: (
         coord: FMacroCoord,
         targetTemperatureCelsius: number,
@@ -339,39 +372,58 @@ export class DevToolsCli implements CliCommandHandler {
         maxTicks?: number,
       ) => boolean;
     }>;
-    const targetTemperatureCelsius = parseFiniteNumber(args[3], 800);
+    const targetTemperatureCelsius = parseFiniteNumber(
+      args[3],
+      opts.defaultTargetTemperatureCelsius,
+    );
     const maxTicks = parsePositiveInt(args[4], 600);
 
     if (args.length === 0) {
-      if (typeof heatPort.heatAtSelection !== "function") {
-        return { ok: false, command, text: "heat action unavailable" };
+      const setSelection =
+        temperaturePort.setTemperatureAtSelection ?? temperaturePort.heatAtSelection;
+      if (typeof setSelection !== "function") {
+        return { ok: false, command, text: "temperature action unavailable" };
       }
-      const ok = heatPort.heatAtSelection("cli", 800, 600);
+      const ok = setSelection.call(
+        temperaturePort,
+        "cli",
+        opts.defaultTargetTemperatureCelsius,
+        600,
+      );
       return {
         ok,
         command,
-        text: ok ? "heat request sent for selected voxel to 800C" : "heat selected voxel rejected",
+        text: ok
+          ? `${opts.label} request sent for selected voxel to ${opts.defaultTargetTemperatureCelsius}C`
+          : `${opts.label} selected voxel rejected`,
       };
     }
 
     const coord = parseMacroCoord(args);
-    if (!coord) {
+    if (!coord || (opts.requireExplicitTarget === true && !Number.isFinite(Number(args[3])))) {
       return {
         ok: false,
         command,
-        text: "usage: voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]",
+        text: usageForTemperatureCommand(command),
       };
     }
-    if (typeof heatPort.heatAt !== "function") {
-      return { ok: false, command, text: "heat action unavailable" };
+    const setTemperature = temperaturePort.setTemperatureAt ?? temperaturePort.heatAt;
+    if (typeof setTemperature !== "function") {
+      return { ok: false, command, text: "temperature action unavailable" };
     }
-    const ok = heatPort.heatAt(coord, targetTemperatureCelsius, "cli", maxTicks);
+    const ok = setTemperature.call(
+      temperaturePort,
+      coord,
+      targetTemperatureCelsius,
+      "cli",
+      maxTicks,
+    );
     return {
       ok,
       command,
       text: ok
-        ? `heat request sent for (${formatCoord(coord)}) to ${targetTemperatureCelsius}C`
-        : `heat request rejected for (${formatCoord(coord)})`,
+        ? `${opts.label} request sent for (${formatCoord(coord)}) to ${targetTemperatureCelsius}C`
+        : `${opts.label} request rejected for (${formatCoord(coord)})`,
     };
   }
 
@@ -900,6 +952,17 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function usageForTemperatureCommand(command: string): string {
+  switch (command) {
+    case "voxel_temp":
+      return "usage: voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]";
+    case "voxel_cool":
+      return "usage: voxel_cool <x> <y> <z> [target_temperature_celsius] [max_ticks]";
+    default:
+      return "usage: voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]";
+  }
 }
 
 function formatSceneRegionOverlayLine(region: {

@@ -169,6 +169,26 @@ describe("FieldDebugOverlay", () => {
     }
   });
 
+  it("renders formal hot and cold set-temperature snapshots", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeTemperatureSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 1),
+        temperatureValues: Float32Array.of(800, -20),
+      }),
+    );
+
+    const cells = temperatureMeshCells(overlay);
+    expect(cells).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ r: 1, g: 0, b: 0, opacity: 0.62 }),
+        expect.objectContaining({ r: 0.55, g: 0, b: 1, opacity: 0.62 }),
+      ]),
+    );
+  });
+
   it("can be explicitly shown so heat actions are immediately visible", () => {
     const overlay = new FieldDebugOverlay();
 

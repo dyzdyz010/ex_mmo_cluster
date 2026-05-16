@@ -319,6 +319,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc """
+  Releases the active `FieldRegion` tracked under `source_key`.
+
+  Reuses the normal field-destroy stop/fanout path and returns a structured
+  lifecycle summary. Missing source keys become a no-op summary instead of an
+  error so runtime cleanup can call this path unconditionally.
+  """
+  @spec release_field_region_source(GenServer.server(), term(), atom()) :: {:ok, map()}
+  def release_field_region_source(server, source_key, destroy_reason \\ :explicit) do
+    GenServer.call(server, {:release_field_region_source, source_key, destroy_reason})
+  end
+
+  @doc """
   Phase 6: destroys a FieldRegion by region_id. Stops the worker (if alive)
   and pushes a 0x74 FieldRegionDestroyed payload to subscribers.
   """
@@ -982,15 +994,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
             case Map.fetch(state.field_regions, region_id) do
               {:ok, worker_pid} ->
                 if Process.alive?(worker_pid) do
-                  maybe_add_field_source_points(worker_pid, attrs)
+                  source_points_summary = maybe_add_field_source_points(worker_pid, attrs)
 
-                  {:reply,
-                   {:ok,
-                    %{
-                      region_id: region_id,
-                      created?: false,
-                      source_key: source_key
-                    }}, state}
+                  result =
+                    field_source_lifecycle_result(
+                      region_id,
+                      source_key,
+                      false,
+                      :reused,
+                      source_points_summary
+                    )
+
+                  emit_field_source_lifecycle(state, result)
+
+                  {:reply, {:ok, result}, state}
                 else
                   cleaned_state = drop_field_region_id(state, region_id)
                   ensure_new_field_source_region(cleaned_state, attrs, source_key)
@@ -1007,39 +1024,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  def handle_call({:release_field_region_source, source_key, destroy_reason}, _from, state) do
+    {result, next_state} = release_field_region_source_entry(state, source_key, destroy_reason)
+    {:reply, {:ok, result}, next_state}
+  end
+
   # Phase 6: destroy a FieldRegion by region_id (explicit caller-initiated).
   def handle_call({:destroy_field_region, region_id}, _from, state)
       when is_integer(region_id) do
-    case Map.fetch(state.field_regions, region_id) do
-      :error ->
+    case destroy_field_region_entry(state, region_id, :explicit) do
+      {:not_found, _next_state} ->
         {:reply, {:error, :not_found}, state}
 
-      {:ok, worker_pid} ->
-        destroyed_payload =
-          FieldCodec.encode_destroyed_payload(
-            region_id,
-            state.chunk_coord,
-            state.logical_scene_id,
-            :explicit
-          )
-
-        if Process.alive?(worker_pid) do
-          # Best-effort stop; the {:DOWN, ...} handler will clean monitor maps.
-          try do
-            GenServer.stop(worker_pid, :normal, 1_000)
-          catch
-            :exit, _ -> :ok
-          end
-        end
-
-        new_state =
-          state
-          |> drop_field_region_id(region_id)
-          |> tap(fn _ ->
-            fan_out_field_region_destroyed_payload(state, destroyed_payload)
-          end)
-
-        {:reply, :ok, new_state}
+      {:ok, next_state} ->
+        {:reply, :ok, next_state}
     end
   end
 
@@ -3299,13 +3297,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp ensure_new_field_source_region(state, attrs, source_key) do
     case start_field_region(state, attrs, source_key) do
       {:ok, region_id, next_state} ->
-        {:reply,
-         {:ok,
-          %{
-            region_id: region_id,
-            created?: true,
-            source_key: source_key
-          }}, next_state}
+        source_points_summary = seed_field_source_points_summary(attrs)
+
+        result =
+          field_source_lifecycle_result(
+            region_id,
+            source_key,
+            true,
+            :created,
+            source_points_summary
+          )
+
+        emit_field_source_lifecycle(next_state, result)
+
+        {:reply, {:ok, result}, next_state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -3313,13 +3318,200 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp maybe_add_field_source_points(worker_pid, attrs) do
-    case fetch_optional(attrs, [:source_points]) do
-      source_points when is_list(source_points) and source_points != [] ->
+    case Map.fetch(attrs, :source_points) do
+      {:ok, source_points} when is_list(source_points) and source_points != [] ->
         FieldTickWorker.add_source_points(worker_pid, source_points)
+        %{source_points_action: :appended, source_points_count: length(source_points)}
 
-      _other ->
-        :ok
+      {:ok, []} ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :empty_source_points
+        }
+
+      {:ok, _other} ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :invalid_source_points
+        }
+
+      :error ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :missing_source_points
+        }
     end
+  end
+
+  defp seed_field_source_points_summary(attrs) do
+    case Map.fetch(attrs, :source_points) do
+      {:ok, source_points} when is_list(source_points) and source_points != [] ->
+        %{source_points_action: :seeded, source_points_count: length(source_points)}
+
+      {:ok, []} ->
+        %{source_points_action: :none, source_points_count: 0}
+
+      {:ok, _other} ->
+        %{source_points_action: :none, source_points_count: 0}
+
+      :error ->
+        %{source_points_action: :none, source_points_count: 0}
+    end
+  end
+
+  defp release_field_region_source_entry(state, source_key, destroy_reason) do
+    case Map.fetch(state.field_region_sources, source_key) do
+      :error ->
+        result =
+          field_source_cleanup_result(
+            nil,
+            source_key,
+            :noop,
+            :missing,
+            destroy_reason
+          )
+
+        emit_field_source_lifecycle(state, result)
+        {result, state}
+
+      {:ok, region_id} ->
+        case Map.fetch(state.field_regions, region_id) do
+          :error ->
+            next_state = forget_field_source(state, source_key)
+
+            result =
+              field_source_cleanup_result(
+                region_id,
+                source_key,
+                :missing,
+                :released,
+                destroy_reason
+              )
+
+            emit_field_source_lifecycle(next_state, result)
+            {result, next_state}
+
+          {:ok, _worker_pid} ->
+            case destroy_field_region_entry(state, region_id, destroy_reason) do
+              {:ok, next_state} ->
+                result =
+                  field_source_cleanup_result(
+                    region_id,
+                    source_key,
+                    :destroyed,
+                    :released,
+                    destroy_reason
+                  )
+
+                emit_field_source_lifecycle(next_state, result)
+                {result, next_state}
+
+              {:not_found, next_state} ->
+                result =
+                  field_source_cleanup_result(
+                    region_id,
+                    source_key,
+                    :missing,
+                    :released,
+                    destroy_reason
+                  )
+
+                emit_field_source_lifecycle(next_state, result)
+                {result, next_state}
+            end
+        end
+    end
+  end
+
+  defp destroy_field_region_entry(state, region_id, destroy_reason) do
+    case Map.fetch(state.field_regions, region_id) do
+      :error ->
+        {:not_found, state}
+
+      {:ok, worker_pid} ->
+        destroyed_payload =
+          FieldCodec.encode_destroyed_payload(
+            region_id,
+            state.chunk_coord,
+            state.logical_scene_id,
+            field_region_wire_destroy_reason(destroy_reason)
+          )
+
+        if Process.alive?(worker_pid) do
+          # Best-effort stop; the {:DOWN, ...} handler will clean monitor maps.
+          try do
+            GenServer.stop(worker_pid, :normal, 1_000)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+
+        next_state = drop_field_region_id(state, region_id)
+        fan_out_field_region_destroyed_payload(state, destroyed_payload)
+
+        CliObserve.emit("voxel_field_region_destroyed", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            region_id: region_id,
+            destroy_reason: destroy_reason
+          }
+        end)
+
+        {:ok, next_state}
+    end
+  end
+
+  defp field_source_lifecycle_result(
+         region_id,
+         source_key,
+         created?,
+         region_action,
+         source_points_summary
+       ) do
+    source_points_summary =
+      source_points_summary
+      |> Map.put_new(:source_points_action, :none)
+      |> Map.put_new(:source_points_count, 0)
+
+    %{
+      region_id: region_id,
+      source_key: source_key,
+      created?: created?,
+      region_action: region_action
+    }
+    |> Map.merge(source_points_summary)
+  end
+
+  defp field_source_cleanup_result(
+         region_id,
+         source_key,
+         region_action,
+         source_action,
+         destroy_reason
+       ) do
+    %{
+      region_id: region_id,
+      source_key: source_key,
+      region_action: region_action,
+      source_action: source_action,
+      destroy_reason: destroy_reason
+    }
+  end
+
+  defp emit_field_source_lifecycle(state, result) do
+    CliObserve.emit("voxel_field_source_lifecycle", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        field_region_count: map_size(state.field_regions),
+        field_source_count: map_size(state.field_region_sources)
+      }
+      |> Map.merge(result)
+    end)
   end
 
   defp put_field_worker(state, region_id, worker_pid, monitor_ref) do
@@ -3420,6 +3612,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp lease_changed?(_old, _new), do: false
+
+  defp field_region_wire_destroy_reason(:expired), do: :expired
+  defp field_region_wire_destroy_reason(:lease_revoked), do: :lease_revoked
+  defp field_region_wire_destroy_reason(:explicit), do: :explicit
+  defp field_region_wire_destroy_reason(:chunk_crash), do: :chunk_crash
+  defp field_region_wire_destroy_reason(_other), do: :explicit
 
   # Phase 6: stop every worker and push 0x74 to subscribers for each region.
   defp stop_all_field_workers(state, reason) do

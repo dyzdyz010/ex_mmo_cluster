@@ -97,6 +97,22 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only formal SetTemperature/Cool hook.
+
+  Cooling is represented by `target_temperature_celsius` below ambient, never
+  by negative `heat_energy_joules`. `restore_ambient=true` targets 20C.
+  """
+  def voxel_set_temperature(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_set_temperature(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -137,7 +153,7 @@ defmodule AuthServerWeb.IngameController do
     with {:module, ^module} <- Code.ensure_loaded(module),
          {:ok, summary} <-
            apply(module, :ensure_default_region, [[logical_scene_id: logical_scene_id]]) do
-      json(conn, summary)
+      voxel_json(conn, summary)
     else
       {:error, reason} ->
         Logger.warning("voxel dev seed failed: #{inspect(reason)}")
@@ -156,12 +172,7 @@ defmodule AuthServerWeb.IngameController do
   defp do_voxel_dev_heat_voxel(conn, params) do
     module = Module.concat([WorldServer, Voxel, DevFieldSeed])
     logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
-
-    world_macro = {
-      parse_int(params["x"], 0),
-      parse_int(params["y"], 0),
-      parse_int(params["z"], 0)
-    }
+    world_macro = parse_world_macro(params)
 
     thermal_opts =
       if Map.has_key?(params, "heat_energy_joules") do
@@ -189,7 +200,7 @@ defmodule AuthServerWeb.IngameController do
                radius: radius
              ] ++ thermal_opts
            ]) do
-      json(conn, summary)
+      voxel_json(conn, summary)
     else
       {:error, reason} ->
         Logger.warning("voxel dev heat voxel failed: #{inspect(reason)}")
@@ -203,6 +214,56 @@ defmodule AuthServerWeb.IngameController do
         |> put_status(:service_unavailable)
         |> json(%{error: "world_server_unavailable"})
     end
+  end
+
+  defp do_voxel_set_temperature(conn, params) do
+    module = Module.concat([WorldServer, Voxel, DevFieldSeed])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    world_macro = parse_world_macro(params)
+    max_ticks = parse_non_negative_int(params["max_ticks"], 600)
+    radius = parse_non_negative_int(params["radius"], 4)
+
+    target_temperature =
+      if parse_bool(params["restore_ambient"], false) do
+        20.0
+      else
+        parse_number(params["target_temperature_celsius"] || params["target_temperature"], 800.0)
+      end
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <-
+           apply(module, :ensure_set_temperature, [
+             [
+               logical_scene_id: logical_scene_id,
+               world_macro: world_macro,
+               target_temperature_celsius: target_temperature,
+               restore_ambient: parse_bool(params["restore_ambient"], false),
+               max_ticks: max_ticks,
+               radius: radius
+             ]
+           ]) do
+      voxel_json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel set temperature failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "set_temperature_failed", reason: inspect(reason)})
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
+  defp parse_world_macro(params) do
+    {
+      parse_int(params["x"], 0),
+      parse_int(params["y"], 0),
+      parse_int(params["z"], 0)
+    }
   end
 
   defp parse_int(value, _fallback) when is_integer(value), do: value
@@ -259,6 +320,49 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp parse_number(_value, fallback), do: fallback
+
+  defp parse_bool(value, _fallback) when is_boolean(value), do: value
+  defp parse_bool(value, _fallback) when is_integer(value), do: value != 0
+
+  defp parse_bool(value, fallback) when is_binary(value) do
+    case String.downcase(value) do
+      "1" -> true
+      "true" -> true
+      "yes" -> true
+      "0" -> false
+      "false" -> false
+      "no" -> false
+      _other -> fallback
+    end
+  end
+
+  defp parse_bool(_value, fallback), do: fallback
+
+  defp voxel_json(conn, summary), do: json(conn, json_safe(summary))
+
+  defp json_safe(%{} = map) do
+    Map.new(map, fn {key, value} -> {json_safe_key(key), json_safe(value)} end)
+  end
+
+  defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
+
+  defp json_safe(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&json_safe/1)
+  end
+
+  defp json_safe(atom) when is_atom(atom) and atom in [nil, true, false], do: atom
+  defp json_safe(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp json_safe(value) when is_pid(value) or is_reference(value) or is_port(value),
+    do: inspect(value)
+
+  defp json_safe(value), do: value
+
+  defp json_safe_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_safe_key(key) when is_binary(key), do: key
+  defp json_safe_key(key), do: inspect(key)
 
   defp session_claim_options(params, account) do
     []

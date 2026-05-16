@@ -9,6 +9,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   """
 
   alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess, Storage, Types}
+  alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.TemperatureField
 
@@ -30,6 +31,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   @spec ensure_temperature_anomaly(keyword() | map()) :: {:ok, map()} | {:error, term()}
   def ensure_temperature_anomaly(opts \\ []) do
     opts = opts_map(opts)
+    field_source = get_any(opts, [:field_source], nil)
 
     logical_scene_id =
       non_negative_int(get_any(opts, [:logical_scene_id], @default_logical_scene_id))
@@ -51,10 +53,18 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         |> Map.put(:logical_scene_id, logical_scene_id)
         |> Map.put(:world_macro, world_macro)
         |> Map.put(:storage, storage)
+        |> maybe_put(:field_source, field_source)
 
       case build_temperature_anomaly(anomaly_opts) do
         {:ignore, summary} ->
-          {:ok, Map.put(summary, :attribute_write, summarize_attribute_write(write_summary))}
+          {:ok,
+           summary
+           |> Map.put(:field_region_created, false)
+           |> maybe_put(
+             :field_region_cleanup,
+             maybe_cleanup_ignored_field_region(chunk_pid, field_source, summary, opts)
+           )
+           |> Map.put(:attribute_write, summarize_attribute_write(write_summary))}
 
         {:ok, plan} ->
           region_attrs = Map.put(plan.region_attrs, :source_key, plan.source_key)
@@ -72,6 +82,31 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     error -> {:error, {:temperature_anomaly_failed, error}}
   catch
     kind, reason -> {:error, {:temperature_anomaly_failed, kind, reason}}
+  end
+
+  @doc """
+  Sets a voxel's target temperature through the formal Phase 7.D1 temperature
+  path. Cooling is represented only as a lower `:target_temperature_celsius`,
+  never as negative heat energy.
+  """
+  @spec ensure_set_temperature(keyword() | map()) :: {:ok, map()} | {:error, term()}
+  def ensure_set_temperature(opts \\ []) do
+    opts = opts_map(opts)
+    target_temperature = set_temperature_target(opts)
+
+    field_source =
+      opts
+      |> drop_heat_request_keys()
+      |> Map.put(:source_kind, :temperature)
+      |> Map.put(:target_temperature_celsius, target_temperature)
+      |> FieldSource.normalize()
+
+    opts
+    |> drop_heat_request_keys()
+    |> Map.put(:field_source, field_source)
+    |> Map.put(:cleanup_on_ignore, true)
+    |> Map.merge(FieldSource.temperature_runtime_attrs(field_source))
+    |> ensure_temperature_anomaly()
   end
 
   @doc """
@@ -93,6 +128,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     source_index = Types.macro_index!(local_macro)
     target_temperature = voxel_temperature(storage, source_index)
     anomaly_delta = target_temperature - baseline_temperature
+    field_source = get_any(opts, [:field_source], nil)
 
     summary =
       base_summary(
@@ -104,6 +140,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         target_temperature,
         anomaly_delta
       )
+      |> maybe_put_source_summary(field_source)
 
     if abs(anomaly_delta) < @temperature_threshold do
       {:ignore,
@@ -111,20 +148,16 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
        |> Map.put(:created, false)
        |> Map.put(:reason, :temperature_within_environment_threshold)}
     else
-      max_ticks = non_negative_int(get_any(opts, [:max_ticks], @default_max_ticks))
-      radius = non_negative_int(get_any(opts, [:radius], @default_radius))
+      max_ticks = anomaly_max_ticks(opts, field_source)
+      radius = anomaly_radius(opts, field_source)
       aabb = local_aabb_around(local_macro, radius)
+      kernels = anomaly_kernel_specs(field_source)
+      source_key = anomaly_source_key(field_source, source_index)
 
       region_attrs = %{
         chunk_coord: chunk_coord,
         aabb: aabb,
-        kernels: [
-          %{
-            id: :temperature_diffusion,
-            module: TemperatureDiffusionKernel,
-            opts: physical_temperature_kernel_opts()
-          }
-        ],
+        kernels: kernels,
         source_points: [
           %{
             macro_index: source_index,
@@ -142,7 +175,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          chunk_coord: chunk_coord,
          local_macro: local_macro,
          source_index: source_index,
-         source_key: {:temperature, source_index},
+         source_key: source_key,
          region_attrs: region_attrs,
          summary:
            summary
@@ -157,6 +190,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   @doc "Returns the default heat-skill target temperature in Celsius."
   @spec default_target_temperature_celsius() :: float()
   def default_target_temperature_celsius, do: @default_target_temperature_celsius
+
+  @doc "Returns the ambient temperature restored by the formal set-temperature path."
+  @spec ambient_temperature_celsius() :: float()
+  def ambient_temperature_celsius, do: TemperatureField.env_temperature() * 1.0
 
   @doc "Converts a Celsius value into the storage catalog Q16.16 raw value."
   @spec celsius_to_raw(number()) :: integer()
@@ -173,6 +210,50 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       diffusion_time_scale: @temperature_diffusion_time_scale,
       ambient_loss_per_second: @temperature_ambient_loss_per_second,
       cell_size_meters: @temperature_cell_size_meters
+    }
+  end
+
+  defp anomaly_kernel_specs(%FieldSource{} = field_source), do: field_source.kernel_specs
+  defp anomaly_kernel_specs(_field_source), do: [default_temperature_kernel_spec()]
+
+  defp anomaly_source_key(%FieldSource{} = field_source, _source_index),
+    do: field_source.source_key
+
+  defp anomaly_source_key(_field_source, source_index), do: {:temperature, source_index}
+
+  defp anomaly_max_ticks(opts, %FieldSource{} = field_source) do
+    non_negative_int(
+      get_any(
+        opts,
+        [:max_ticks],
+        get_in(field_source.decay_policy || %{}, [:max_ticks]) || @default_max_ticks
+      )
+    )
+  end
+
+  defp anomaly_max_ticks(opts, _field_source) do
+    non_negative_int(get_any(opts, [:max_ticks], @default_max_ticks))
+  end
+
+  defp anomaly_radius(opts, %FieldSource{} = field_source) do
+    non_negative_int(
+      get_any(
+        opts,
+        [:radius],
+        get_in(field_source.decay_policy || %{}, [:field_radius]) || @default_radius
+      )
+    )
+  end
+
+  defp anomaly_radius(opts, _field_source) do
+    non_negative_int(get_any(opts, [:radius], @default_radius))
+  end
+
+  defp default_temperature_kernel_spec do
+    %{
+      id: :temperature_diffusion,
+      module: TemperatureDiffusionKernel,
+      opts: physical_temperature_kernel_opts()
     }
   end
 
@@ -254,6 +335,17 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     end
   end
 
+  defp set_temperature_target(opts) do
+    if restore_ambient?(opts) do
+      ambient_temperature_celsius()
+    else
+      temperature_float(
+        get_any(opts, [:target_temperature, :target_temperature_celsius], nil),
+        @default_target_temperature_celsius
+      )
+    end
+  end
+
   defp write_temperature_request(
          chunk_pid,
          local_macro,
@@ -295,6 +387,45 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     ])
   end
 
+  defp maybe_put_source_summary(summary, %FieldSource{} = field_source) do
+    Map.put(summary, :source, FieldSource.to_summary(field_source))
+  end
+
+  defp maybe_put_source_summary(summary, _field_source), do: summary
+
+  defp maybe_cleanup_ignored_field_region(
+         chunk_pid,
+         %FieldSource{} = field_source,
+         summary,
+         opts
+       ) do
+    if cleanup_on_ignore?(opts) do
+      case ChunkProcess.release_field_region_source(
+             chunk_pid,
+             field_source.source_key,
+             Map.get(summary, :reason, :explicit)
+           ) do
+        {:ok, cleanup_summary} -> cleanup_summary
+        {:error, _reason} -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp maybe_cleanup_ignored_field_region(_chunk_pid, _field_source, _summary, _opts), do: nil
+
+  defp drop_heat_request_keys(opts) do
+    Map.drop(opts, [
+      :heat_energy_joules,
+      "heat_energy_joules",
+      :heat_joules,
+      "heat_joules",
+      :energy_joules,
+      "energy_joules"
+    ])
+  end
+
   defp local_aabb_around({x, y, z}, radius) do
     {{clamp_macro(x - radius), clamp_macro(y - radius), clamp_macro(z - radius)},
      {clamp_macro(x + radius), clamp_macro(y + radius), clamp_macro(z + radius)}}
@@ -306,6 +437,9 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
   defp opts_map(opts) when is_list(opts), do: Map.new(opts)
   defp opts_map(opts) when is_map(opts), do: opts
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp get_any(map, keys, default) do
     Enum.find_value(keys, fn key ->
@@ -370,4 +504,30 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   end
 
   defp temperature_float(_value, fallback), do: fallback
+
+  defp restore_ambient?(opts) do
+    case get_any(opts, [:restore_ambient], false) do
+      true -> true
+      1 -> true
+      "1" -> true
+      "true" -> true
+      "TRUE" -> true
+      "yes" -> true
+      "YES" -> true
+      _other -> false
+    end
+  end
+
+  defp cleanup_on_ignore?(opts) do
+    case get_any(opts, [:cleanup_on_ignore], false) do
+      true -> true
+      1 -> true
+      "1" -> true
+      "true" -> true
+      "TRUE" -> true
+      "yes" -> true
+      "YES" -> true
+      _other -> false
+    end
+  end
 end
