@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 进行中（2026-05-16）
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core 已落地（2026-05-17）
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -29,6 +29,13 @@
 7. Phase 7.D2 温度 source 最小闭环已落地：`FieldSource` 成为 set-temperature
    的 runtime source 事实，`ChunkProcess` 可按 `source_key` 复用或释放活跃
    FieldRegion；目标温度回到环境阈值内时会走 0x74 销毁路径并清理 source。
+8. Phase 7.E 第一批 material/default 物性已落地：
+   `ignition_temperature`、`melting_point`、`freezing_point`、`boiling_point`、
+   `electric_conductivity`、`dielectric_strength` 已能通过
+   `Storage.effective_attribute_at/3` / `_normalized/3` 读取。
+9. Phase 7.B core 已落地：`ConductionPathKernel` 可在 chunk-local AABB 内按
+   `electric_conductivity` / `dielectric_strength` 做 deterministic channel 搜索，
+   并只刷新 `electric_potential` / `ionization` layer，不直接写 voxel/object truth。
 
 仍未完成：
 
@@ -40,6 +47,8 @@
 4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` 最小 dispatcher；
    永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
 5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
+6. 电场仍缺正式 dev/runtime 入口、observe 串联和浏览器 overlay 操作验收；
+   `ConductionPathKernel` 目前是 core kernel + 单元测试级别。
 
 结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点；下一步应补 FieldRuntime 的运行时能力，而不是继续堆单点演示。
 
@@ -305,21 +314,23 @@ registry / ttl / budget / persistent source 仍留给后续扩展。
 
 目标：证明局部场架构不只支持扩散，还支持路径搜索和通道形成。
 
-排序说明：原 Phase 7 文档把它列为下一步。现在建议在 7.D1/7.D2 之后推进；如果要并行，也必须遵守 `FieldSource` 与 `FieldEffect` 边界。
+排序说明：原 Phase 7 文档把它列为下一步。已在 7.E 第一批之后补上 core kernel；
+后续 electric dev/runtime 入口仍必须遵守 `FieldSource` 与 `FieldEffect` 边界。
 
 实施要点：
 
-1. 新增 `ConductionPathKernel`。
+1. 新增 `ConductionPathKernel`。（core 已完成）
 2. 使用 `electric_potential` + `ionization` 表达 v1 channel，不扩展主 wire。
-3. 输入先用 material tags / density fallback，等 Phase 7.C 后切换正式电属性。
+3. 输入使用 Phase 7.E 已落地的 `electric_conductivity` / `dielectric_strength`，
+   不再用 wood/ice/iron 硬编码分支，也不把 density fallback 固化为正式路径。
 4. 搜索必须有 AABB 上限、frontier 上限、tick 时间上限和 deterministic seed。
-5. 增加 electric dev demo 入口，区别于 temperature demo。
+5. 增加 electric dev demo 入口，区别于 temperature demo。（未完成）
 
 验收：
 
-- 同一输入和 seed 产生确定性 channel。
+- 同一输入和 seed 产生确定性 channel。（core 已覆盖）
 - 搜索超预算时截断或延期，不阻塞 worker。
-- channel 通过现有 `0x73` 下发并被 web overlay 显示。
+- channel 通过现有 `0x73` 下发并被 web overlay 显示。（runtime/demo 未完成）
 
 ### Phase 7.C：电属性 catalog 扩展
 
@@ -480,18 +491,16 @@ Phase 7+ 不直接承诺：
 下一轮建议直接启动：
 
 ```text
-Phase 7.E: 材料与环境模型扩展第一批
+Phase 7.B follow-up: electric dev/runtime 入口 + observe/overlay 验收
 ```
 
 最小交付：
 
-1. attribute catalog v2 增加 material/default 物性阈值和电属性。
-2. material-specific fallback 从 `Storage` 内联 map 收敛到明确的 material catalog 边界。
-3. `Storage.effective_attribute_at/3` 能按 material_id 解析新增属性，未知材质回退 inert catalog default。
-4. 服务端测试证明 catalog wire 稳定、material-specific fallback 生效、未知材质 fallback 生效。
-5. 文档明确 `latent_heat` 和现象状态机仍后置，避免 schema 膨胀。
-
-完成 7.E 第一批后再推进 `ConductionPathKernel`；不要跳过材料属性边界去硬编码 wood/ice/iron 分支。
+1. 用正式 source/runtime 入口创建 `ConductionPathKernel` FieldRegion，不从客户端直造任意 region。
+2. CLI 或 dev HTTP 入口能选择 source/target，并能通过 observe 日志看见 channel tick。
+3. 现有 `0x73` overlay 可看到 `electric_potential` / `ionization` channel。
+4. 搜索预算超限、无 source、无 target、target 出 AABB 都有明确 observe 或返回摘要。
+5. 仍不实现 Phase 8 伤害、点燃、击穿破坏或 object/combat 结算。
 
 ---
 
@@ -562,3 +571,30 @@ mix.bat test apps/scene_server/test/scene_server/voxel/chunk_process_test.exs ap
 3. 仅扩 material/default 层，不给每个 voxel 增加“晶体性”“燃烧性”等泛化运行时字段。
 4. 保留 Phase 8 现象系统边界：本阶段只提供可读物性和阈值，不直接执行燃烧、结冰、
    碳化、腐蚀或完整相变状态机。
+
+### 2026-05-17：Phase 7.B ConductionPathKernel core
+
+已完成：
+
+1. 新增 `SceneServer.Voxel.Field.Kernels.ConductionPathKernel`，声明
+   `:electric_potential` / `:ionization` layer，并保持 `FieldKernel.tick/3`
+   side-effect-free。
+2. channel 搜索使用 chunk-local AABB + bounded frontier + deterministic
+   Dijkstra；同成本路径按 macro index 稳定排序。
+3. 路径代价读取 `electric_conductivity` / `dielectric_strength`，并允许既有
+   ionization 降低后续通道成本；测试证明铁路径优先于直接穿过木材的短路径。
+4. channel 只刷新 `electric_potential` / `ionization` layer，不扩展 0x73/0x74 wire，
+   不直接写 voxel/object truth。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs
+```
+
+遗留：
+
+1. 还没有 electric dev/runtime 入口；当前不能从 browser CLI 操作生成电通道。
+2. 还没有浏览器 overlay 实机验收；只是复用现有 0x73 layer 语义。
+3. 还没有 Phase 8 damage/ignite/breakdown 结算；这些必须后续经 FieldEffect / gameplay
+   dispatcher，而不是放进 kernel。

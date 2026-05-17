@@ -1,6 +1,6 @@
 # Phase 7: 局部场传播 Kernel 架构目标
 
-状态：设计目标稿；Phase 7.A kernel-first 迁移已落地；Phase 7.D 温度异常入口已落地；Phase 7.B+ 未进入实现
+状态：设计目标稿；Phase 7.A kernel-first 迁移已落地；Phase 7.D 温度异常入口已落地；Phase 7.E 第一批与 Phase 7.B core 已落地
 日期：2026-05-14
 归属：goal `voxel-authoritative-and-field-minimum` Phase 7
 
@@ -603,16 +603,17 @@ TheWorldBook 机制法则
 
 ### Phase 7.B：ConductionPathKernel v1
 
-- 新增导通路径 kernel；
-- 先使用现有 `density` fallback + `conductive` / `wet` tag；
+- 已新增 `ConductionPathKernel` core；
+- 使用 `electric_conductivity` / `dielectric_strength` 计算路径代价，不再把
+  `density` fallback 或 material tag 当成正式路线；
 - 输出 deterministic channel；
 - channel 写入 `ionization` / `electric_potential`，不扩 wire；
-- 增加 electric dev demo 入口，区别于 temperature demo。
+- electric dev/runtime 入口仍未完成，后续要区别于 temperature demo。
 
 ### Phase 7.C：电属性 catalog 扩展
 
-- 新增 `electric_conductivity`；
-- 新增 `dielectric_strength`；
+- `electric_conductivity` 已在 Phase 7.E 第一批落地；
+- `dielectric_strength` 已在 Phase 7.E 第一批落地；
 - 可选新增 `charge_capacity`；
 - 将 `density` fallback 降级为 legacy fallback；
 - 补 golden fixture / chunk hash 验证。

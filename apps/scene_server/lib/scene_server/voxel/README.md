@@ -1050,6 +1050,24 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 `tick(region, storage) :: {:ok, region}` 是每 tick 入口：重算 potential + ionization FieldLayer，
 写回 region。
 
+### ConductionPathKernel 算法
+
+**`SceneServer.Voxel.Field.Kernels.ConductionPathKernel`** —— Phase 7.B 的材料属性驱动电通道 kernel：
+
+- 输入：`source_points` 中的 `:electric_potential` source，以及 kernel opts 里的
+  `target_macro_index` / `target_local_macro`。
+- 搜索：chunk-local AABB 内 bounded Dijkstra；frontier 默认上限 512，同成本路径按
+  macro index 稳定排序，保证同一输入得到 deterministic channel。
+- 路径代价：通过 `Storage.effective_attribute_at_normalized/3` 读取
+  `electric_conductivity` / `dielectric_strength`；高电导率降低 resistance cost，
+  dielectric strength 参与 breakdown cost，既有 ionization 可降低后续通道成本。
+- 输出：只刷新 region 内 `:electric_potential` / `:ionization` layer，source 到 target
+  电势按路径长度衰减；不产生 `FieldEffect`，不直接写 voxel/object truth。
+- 协议：仍复用 0x73/0x74 的 electric/ionization layer，不扩主 wire。
+
+当前切片只完成 core kernel 与单元测试；还没有 electric dev/runtime 入口、browser overlay
+实机验收，也没有 Phase 8 damage / ignite / breakdown 结算。
+
 ### TemperatureField 算法
 
 **`SceneServer.Voxel.Field.TemperatureField`** —— 稀疏 3D 7-stencil 显式扩散 + source_points：
