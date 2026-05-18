@@ -99,6 +99,9 @@
         top: 14px;
         z-index: 11;
         width: min(344px, calc(100vw - 28px));
+        max-height: calc(100vh - 28px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         color: #eef7fb;
         font-size: 11px;
         pointer-events: auto;
@@ -201,6 +204,12 @@
       .voxel-panel-form--subscribe,
       .voxel-panel-form--impact {
         grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(74px, 0.9fr);
+      }
+      .voxel-panel-form--conduct-endpoints {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(74px, 0.9fr);
+      }
+      .voxel-panel-form--conduct-run {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(104px, 1.2fr);
       }
       .voxel-panel-button {
         min-width: 0;

@@ -144,6 +144,35 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
     end
   end
 
+  test "does not route through empty or low-conductivity ground cells" do
+    source = Types.macro_index!({0, 1, 0})
+    target = Types.macro_index!({3, 1, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 1, 0}, @iron)
+      |> put_solid({3, 1, 0}, @iron)
+      |> put_solid({1, 1, 0}, @dirt)
+      |> put_solid({2, 1, 0}, @dirt)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 19,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 1, 0}, {3, 1, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, updated, []} =
+             ConductionPathKernel.tick(region, context, %{target_macro_index: target})
+
+    assert active_cells(updated, :electric_potential) == []
+    assert active_cells(updated, :ionization) == []
+  end
+
   defp conduction_fixture do
     source = Types.macro_index!({0, 1, 0})
     target = Types.macro_index!({3, 1, 0})
@@ -178,14 +207,14 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
 
     storage =
       Storage.new(7, {0, 0, 0})
-      |> put_solid({0, 1, 0}, @dirt)
-      |> put_solid({3, 1, 0}, @dirt)
+      |> put_solid({0, 1, 0}, @iron)
+      |> put_solid({3, 1, 0}, @iron)
       |> put_solid({1, 1, 0}, @stone)
       |> put_solid({2, 1, 0}, @stone)
-      |> put_solid({0, 0, 0}, @dirt)
-      |> put_solid({1, 0, 0}, @dirt)
-      |> put_solid({2, 0, 0}, @dirt)
-      |> put_solid({3, 0, 0}, @dirt)
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_solid({1, 0, 0}, @iron)
+      |> put_solid({2, 0, 0}, @iron)
+      |> put_solid({3, 0, 0}, @iron)
 
     region =
       FieldRegion.new(%{

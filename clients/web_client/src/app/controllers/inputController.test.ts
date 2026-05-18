@@ -47,12 +47,21 @@ function wheel(deltaY: number, ctrlKey = false): Event {
   } as unknown as Event;
 }
 
-function keyboard(code: string, repeat = false, key = ""): Event {
+function keyboard(
+  code: string,
+  repeat = false,
+  key = "",
+  modifiers: Partial<KeyboardEvent> = {},
+): Event {
   return {
     code,
     key,
     repeat,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
     preventDefault: vi.fn(),
+    ...modifiers,
   } as unknown as Event;
 }
 
@@ -137,6 +146,76 @@ describe("InputController mouse editing", () => {
 
     expect(placeEvents).toEqual([]);
     expect(heatEvents).toEqual([{ source: "keyboard", targetTemperatureCelsius: 800 }]);
+  });
+
+  it("emits a selected-voxel conduction action from E", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const conductionEvents: AppEvents["input:conduct-selected-voxel"][] = [];
+    bus.on("input:conduct-selected-voxel", (event) => conductionEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("KeyE"));
+
+    expect(conductionEvents).toEqual([{ source: "keyboard", sourcePotential: 120, maxTicks: 90 }]);
+  });
+
+  it("emits selected conduction endpoint capture actions from Z and X", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const endpointEvents: AppEvents["input:capture-conduction-endpoint"][] = [];
+    bus.on("input:capture-conduction-endpoint", (event) => endpointEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("KeyZ"));
+    target.dispatch("keydown", keyboard("KeyX"));
+
+    expect(endpointEvents).toEqual([
+      { role: "source", source: "keyboard" },
+      { role: "target", source: "keyboard" },
+    ]);
+  });
+
+  it("emits a panel conduction submit action from C", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const submitEvents: AppEvents["input:submit-conduction"][] = [];
+    bus.on("input:submit-conduction", (event) => submitEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("KeyC"));
+
+    expect(submitEvents).toEqual([{ source: "keyboard" }]);
+  });
+
+  it("treats voxel field shortcuts as plain one-shot key actions", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const heatEvents: AppEvents["input:set-selected-voxel-temperature"][] = [];
+    const conductionEvents: AppEvents["input:conduct-selected-voxel"][] = [];
+    const endpointEvents: AppEvents["input:capture-conduction-endpoint"][] = [];
+    const submitEvents: AppEvents["input:submit-conduction"][] = [];
+    bus.on("input:set-selected-voxel-temperature", (event) => heatEvents.push(event));
+    bus.on("input:conduct-selected-voxel", (event) => conductionEvents.push(event));
+    bus.on("input:capture-conduction-endpoint", (event) => endpointEvents.push(event));
+    bus.on("input:submit-conduction", (event) => submitEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    for (const code of ["KeyF", "KeyE", "KeyZ", "KeyX", "KeyC"]) {
+      target.dispatch("keydown", keyboard(code, true));
+      target.dispatch("keydown", keyboard(code, false, "", { ctrlKey: true }));
+      target.dispatch("keydown", keyboard(code, false, "", { metaKey: true }));
+      target.dispatch("keydown", keyboard(code, false, "", { altKey: true }));
+    }
+
+    expect(heatEvents).toEqual([]);
+    expect(conductionEvents).toEqual([]);
+    expect(endpointEvents).toEqual([]);
+    expect(submitEvents).toEqual([]);
   });
 
   it("tracks Space as a one-shot jump request and consumes it exactly once", () => {

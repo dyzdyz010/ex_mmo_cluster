@@ -27,6 +27,16 @@ export type AppEvents = {
     targetTemperatureCelsius: number;
     maxTicks?: number;
   };
+  "input:conduct-selected-voxel": {
+    source: string;
+    sourcePotential: number;
+    maxTicks?: number;
+  };
+  "input:capture-conduction-endpoint": {
+    role: "source" | "target";
+    source: string;
+  };
+  "input:submit-conduction": { source: string };
   "input:jump": { source: string };
 
   // Audit B-S1 / B-SRV2: expectedSeq is the server-reported next-input
@@ -95,6 +105,20 @@ export type AppEvents = {
     coord: FMacroCoord;
     targetTemperatureCelsius: number;
     source: string;
+  };
+  "world:voxel-conduction-requested": {
+    sourceCoord: FMacroCoord;
+    targetCoord: FMacroCoord;
+    sourcePotential: number;
+    source: string;
+  };
+  "world:voxel-conduction-accepted": {
+    sourceCoord: FMacroCoord;
+    targetCoord: FMacroCoord;
+    sourcePotential: number;
+    source: string;
+    regionId?: string;
+    fieldRegionCreated?: boolean;
   };
   "world:micro-placed": {
     macro: FMacroCoord;

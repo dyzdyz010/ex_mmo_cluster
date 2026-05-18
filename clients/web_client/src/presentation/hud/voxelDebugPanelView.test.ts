@@ -69,10 +69,10 @@ class FakeVoxelPanelRoot {
 }
 
 class FakeCommands implements VoxelDebugPanelCommandPort {
-  readonly calls: Array<{ command: string; args: string[] }> = [];
+  readonly calls: Array<{ command: string; args: string[]; source?: string }> = [];
 
-  executeCliCommand(command: string, args: string[]): CliCommandResult {
-    this.calls.push({ command, args });
+  executeCliCommand(command: string, args: string[], source?: string): CliCommandResult {
+    this.calls.push(source === undefined ? { command, args } : { command, args, source });
     return { ok: true, command, text: `${command} ok`, data: { args } };
   }
 }
@@ -92,6 +92,9 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain('data-voxel-action="impact"');
     expect(html).toContain('data-voxel-action="heat-selected"');
     expect(html).toContain('data-voxel-action="cool-selected"');
+    expect(html).toContain('data-voxel-action="conduct"');
+    expect(html).toContain('data-voxel-action="conduct-source-selection"');
+    expect(html).toContain('data-voxel-input="conductPotential"');
     expect(html).toContain('data-voxel-input="material"');
     expect(html).toContain("voxel_sync: voxel sync");
   });
@@ -222,6 +225,143 @@ describe("VoxelDebugPanelView", () => {
     expect(temperatureTargets).toEqual([800, 0]);
     expect(commands.calls).toEqual([]);
     expect(root.innerHTML).toContain("set selected voxel to 0C");
+
+    view.dispose();
+  });
+
+  it("lets the visible panel capture selected conduction endpoints and run conduct", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    const selections = [
+      { x: 5, y: 1, z: 0 },
+      { x: 8, y: 1, z: 0 },
+    ];
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      undefined,
+      () => selections.shift() ?? null,
+    );
+
+    root.clickAction("conduct-source-selection");
+    root.clickAction("conduct-target-selection");
+    root.inputField("conductPotential", "150");
+    root.inputField("conductTicks", "60");
+    root.clickAction("conduct");
+
+    expect(commands.calls).toEqual([
+      {
+        command: "voxel_conduct",
+        args: ["5", "1", "0", "8", "1", "0", "150", "60"],
+        source: "voxel_panel",
+      },
+    ]);
+    expect(root.innerHTML).toContain("voxel_conduct ok");
+
+    view.dispose();
+  });
+
+  it("lets keyboard shortcuts capture selected conduction endpoints", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    const selections = [
+      { x: 2, y: 1, z: 0 },
+      { x: 6, y: 1, z: 0 },
+    ];
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      undefined,
+      () => selections.shift() ?? null,
+    );
+
+    expect(view.captureConductionEndpoint("source", "keyboard")).toMatchObject({
+      ok: true,
+      command: "conduct-source-selection",
+    });
+    const targetResult = view.captureConductionEndpoint("target", "keyboard");
+    expect(targetResult).toMatchObject({
+      ok: true,
+      command: "conduct-target-selection",
+      text: "target set to 6,1,0",
+    });
+    expect(root.innerHTML).toContain('data-voxel-input="conductTargetX"');
+    expect(root.innerHTML).toContain('value="6"');
+    root.clickAction("conduct");
+
+    expect(commands.calls).toEqual([
+      {
+        command: "voxel_conduct",
+        args: ["2", "1", "0", "6", "1", "0", "120", "90"],
+        source: "voxel_panel",
+      },
+    ]);
+
+    view.dispose();
+  });
+
+  it("uses the aimed conduction pair when conduct coordinates are still blank", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        sourceCoord: { x: 5, y: 0, z: 5 },
+        targetCoord: { x: 5, y: 3, z: 5 },
+      }),
+    );
+
+    root.clickAction("conduct");
+
+    expect(commands.calls).toEqual([
+      {
+        command: "voxel_conduct",
+        args: ["5", "0", "5", "5", "3", "5", "120", "90"],
+        source: "voxel_panel",
+      },
+    ]);
+    expect(root.innerHTML).toContain('value="5"');
+    expect(root.innerHTML).toContain("voxel_conduct ok");
+
+    view.dispose();
+  });
+
+  it("lets keyboard shortcuts submit the current conduction form", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    const view = new VoxelDebugPanelView(root as unknown as HTMLDivElement, commands, makeWorld());
+
+    root.inputField("conductSourceX", "1");
+    root.inputField("conductSourceY", "2");
+    root.inputField("conductSourceZ", "3");
+    root.inputField("conductTargetX", "4");
+    root.inputField("conductTargetY", "5");
+    root.inputField("conductTargetZ", "6");
+    root.inputField("conductPotential", "180");
+    root.inputField("conductTicks", "45");
+
+    expect(view.submitConduction("keyboard")).toMatchObject({
+      ok: true,
+      command: "voxel_conduct",
+    });
+
+    expect(commands.calls).toEqual([
+      {
+        command: "voxel_conduct",
+        args: ["1", "2", "3", "4", "5", "6", "180", "45"],
+        source: "keyboard",
+      },
+    ]);
+    expect(root.innerHTML).toContain("voxel_conduct ok");
 
     view.dispose();
   });

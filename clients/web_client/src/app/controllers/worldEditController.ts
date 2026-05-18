@@ -18,6 +18,15 @@ export interface SelectionProvider {
   getCurrentSelection(): EditSelection | null;
 }
 
+export interface ConductionSelectionPair {
+  sourceCoord: FMacroCoord;
+  targetCoord: FMacroCoord;
+}
+
+type ConductionSelectionResolution =
+  | { ok: true; pair: ConductionSelectionPair }
+  | { ok: false; reason: string };
+
 export type HotbarEntry =
   | { kind: "material"; label: string; materialId: number }
   | { kind: "prefab"; label: string; prefabName: string; rotation: EVoxelRotation };
@@ -99,6 +108,9 @@ export class WorldEditController {
       ({ source, targetTemperatureCelsius, maxTicks }) =>
         this.setTemperatureAtSelection(source, targetTemperatureCelsius, maxTicks),
     );
+    this.bus.on("input:conduct-selected-voxel", ({ source, sourcePotential, maxTicks }) =>
+      this.conductAtSelection(source, sourcePotential, maxTicks),
+    );
   }
 
   getSelectedMaterialId(): number {
@@ -110,6 +122,39 @@ export class WorldEditController {
       entries: this.hotbarEntries.map((entry) => ({ ...entry })),
       selectedIndex: this.selectedHotbarIndex,
       selected: { ...this.hotbarEntries[this.selectedHotbarIndex]! },
+    };
+  }
+
+  getSelectedOccupiedMacro(): FMacroCoord | null {
+    const selection = this.selection.getCurrentSelection();
+    return selection ? { ...selection.occupiedMacro } : null;
+  }
+
+  getSelectedConductionPair(): ConductionSelectionPair | null {
+    const resolution = this.resolveSelectedConductionPair();
+    return resolution.ok ? resolution.pair : null;
+  }
+
+  private resolveSelectedConductionPair(): ConductionSelectionResolution {
+    const selection = this.selection.getCurrentSelection();
+    if (!selection) return { ok: false, reason: "no_selection" };
+
+    const sourceCoord = { ...selection.occupiedMacro };
+    const targetCoord = {
+      x: sourceCoord.x + selection.faceNormal.x * 3,
+      y: sourceCoord.y + selection.faceNormal.y * 3,
+      z: sourceCoord.z + selection.faceNormal.z * 3,
+    };
+    if (!isSameMacroChunk(sourceCoord, targetCoord)) {
+      return { ok: false, reason: "conduction_target_cross_chunk_not_supported" };
+    }
+
+    return {
+      ok: true,
+      pair: {
+        sourceCoord,
+        targetCoord,
+      },
     };
   }
 
@@ -162,6 +207,50 @@ export class WorldEditController {
       this.bus.emit("world:edit-rejected", { reason: "set_temperature_rejected", source });
     }
     return ok;
+  }
+
+  conductBetween(
+    sourceCoord: FMacroCoord,
+    targetCoord: FMacroCoord,
+    sourcePotential: number,
+    source: string,
+    maxTicks?: number,
+  ): boolean {
+    const request = this.world.requestVoxelConductionPath?.bind(this.world);
+    if (typeof request !== "function") {
+      this.bus.emit("world:edit-rejected", { reason: "conduction_path_not_supported", source });
+      return false;
+    }
+
+    const ok = request(sourceCoord, targetCoord, sourcePotential, maxTicks);
+    if (ok) {
+      this.bus.emit("world:voxel-conduction-requested", {
+        sourceCoord,
+        targetCoord,
+        sourcePotential,
+        source,
+      });
+    } else {
+      this.bus.emit("world:edit-rejected", { reason: "conduction_path_rejected", source });
+    }
+    return ok;
+  }
+
+  conductAtSelection(source: string, sourcePotential = 120, maxTicks?: number): boolean {
+    const resolution = this.resolveSelectedConductionPair();
+    if (!resolution.ok) {
+      this.bus.emit("world:edit-rejected", { reason: resolution.reason, source });
+      this.world.store.editStats.rejected += 1;
+      return false;
+    }
+
+    return this.conductBetween(
+      resolution.pair.sourceCoord,
+      resolution.pair.targetCoord,
+      sourcePotential,
+      source,
+      maxTicks,
+    );
   }
 
   setTemperatureAtSelection(
@@ -418,6 +507,18 @@ function hotbarEntriesForWorld(world: VoxelWorldAdapter): HotbarEntry[] {
   const source =
     world.mode === "server-authoritative" ? SERVER_HOTBAR_ENTRIES : OFFLINE_HOTBAR_ENTRIES;
   return source.map((entry) => ({ ...entry }));
+}
+
+function isSameMacroChunk(a: FMacroCoord, b: FMacroCoord): boolean {
+  return (
+    macroChunkCoord(a.x) === macroChunkCoord(b.x) &&
+    macroChunkCoord(a.y) === macroChunkCoord(b.y) &&
+    macroChunkCoord(a.z) === macroChunkCoord(b.z)
+  );
+}
+
+function macroChunkCoord(value: number): number {
+  return Math.floor(value / VoxelConstants.ChunkSizeInMacros);
 }
 
 function worldMicroCoordFromTarget(target: {

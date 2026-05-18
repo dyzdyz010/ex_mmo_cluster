@@ -23,6 +23,12 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
     targetTemperatureCelsius: number;
     maxTicks: number | undefined;
   }> = [];
+  readonly conductionCalls: Array<{
+    source: FMacroCoord;
+    target: FMacroCoord;
+    sourcePotential: number;
+    maxTicks: number | undefined;
+  }> = [];
 
   override placePrefabBoundarySnap() {
     return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" as const };
@@ -48,6 +54,21 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
     maxTicks?: number,
   ): boolean {
     this.heatCalls.push({ coord: { ...coord }, targetTemperatureCelsius, maxTicks });
+    return true;
+  }
+
+  requestVoxelConductionPath(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential: number,
+    maxTicks?: number,
+  ): boolean {
+    this.conductionCalls.push({
+      source: { ...source },
+      target: { ...target },
+      sourcePotential,
+      maxTicks,
+    });
     return true;
   }
 }
@@ -202,6 +223,111 @@ describe("WorldEditController selection edits", () => {
     ]);
     expect(temperatureSet).toEqual([
       { coord: occupiedMacro, targetTemperatureCelsius: 0, source: "test" },
+    ]);
+  });
+
+  it("requests a server-authoritative conduction path and emits a visible field event", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    const edit = new WorldEditController(
+      bus,
+      world,
+      new StaticSelectionProvider({
+        occupiedMacro: { x: 0, y: 1, z: 0 },
+        adjacentMacro: { x: 1, y: 1, z: 0 },
+        faceNormal: { x: 1, y: 0, z: 0 },
+      }),
+    );
+    const conductionEvents: AppEvents["world:voxel-conduction-requested"][] = [];
+    bus.on("world:voxel-conduction-requested", (event) => conductionEvents.push(event));
+
+    expect(edit.conductBetween({ x: 0, y: 1, z: 0 }, { x: 3, y: 1, z: 0 }, 120, "test", 90)).toBe(
+      true,
+    );
+    expect(edit.getSelectedOccupiedMacro()).toEqual({ x: 0, y: 1, z: 0 });
+    expect(edit.getSelectedConductionPair()).toEqual({
+      sourceCoord: { x: 0, y: 1, z: 0 },
+      targetCoord: { x: 3, y: 1, z: 0 },
+    });
+
+    expect(world.conductionCalls).toEqual([
+      {
+        source: { x: 0, y: 1, z: 0 },
+        target: { x: 3, y: 1, z: 0 },
+        sourcePotential: 120,
+        maxTicks: 90,
+      },
+    ]);
+    expect(conductionEvents).toEqual([
+      {
+        sourceCoord: { x: 0, y: 1, z: 0 },
+        targetCoord: { x: 3, y: 1, z: 0 },
+        sourcePotential: 120,
+        source: "test",
+      },
+    ]);
+  });
+
+  it("routes the keyboard selected-conduction intent through the aimed source-target pair", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticSelectionProvider({
+        occupiedMacro: { x: 2, y: 1, z: 0 },
+        adjacentMacro: { x: 3, y: 1, z: 0 },
+        faceNormal: { x: 1, y: 0, z: 0 },
+      }),
+    );
+    const conductionEvents: AppEvents["world:voxel-conduction-requested"][] = [];
+    bus.on("world:voxel-conduction-requested", (event) => conductionEvents.push(event));
+
+    bus.emit("input:conduct-selected-voxel", {
+      source: "keyboard",
+      sourcePotential: 120,
+      maxTicks: 90,
+    });
+
+    expect(world.conductionCalls).toEqual([
+      {
+        source: { x: 2, y: 1, z: 0 },
+        target: { x: 5, y: 1, z: 0 },
+        sourcePotential: 120,
+        maxTicks: 90,
+      },
+    ]);
+    expect(conductionEvents).toEqual([
+      {
+        sourceCoord: { x: 2, y: 1, z: 0 },
+        targetCoord: { x: 5, y: 1, z: 0 },
+        sourcePotential: 120,
+        source: "keyboard",
+      },
+    ]);
+  });
+
+  it("rejects selected conduction when the aimed target would cross a chunk boundary", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    const edit = new WorldEditController(
+      bus,
+      world,
+      new StaticSelectionProvider({
+        occupiedMacro: { x: 14, y: 1, z: 0 },
+        adjacentMacro: { x: 15, y: 1, z: 0 },
+        faceNormal: { x: 1, y: 0, z: 0 },
+      }),
+    );
+    const rejected: AppEvents["world:edit-rejected"][] = [];
+    bus.on("world:edit-rejected", (event) => rejected.push(event));
+
+    expect(edit.getSelectedConductionPair()).toBeNull();
+    expect(edit.conductAtSelection("keyboard", 120, 90)).toBe(false);
+
+    expect(world.conductionCalls).toEqual([]);
+    expect(rejected).toEqual([
+      { reason: "conduction_target_cross_chunk_not_supported", source: "keyboard" },
     ]);
   });
 

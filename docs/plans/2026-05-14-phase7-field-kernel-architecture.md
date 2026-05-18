@@ -1,6 +1,6 @@
 # Phase 7: 局部场传播 Kernel 架构目标
 
-状态：设计目标稿；Phase 7.A kernel-first 迁移已落地；Phase 7.D 温度异常入口已落地；Phase 7.E 第一批与 Phase 7.B core 已落地
+状态：设计目标稿；Phase 7.A kernel-first 迁移已落地；Phase 7.D 温度异常入口已落地；Phase 7.E 第一批与 Phase 7.B core/runtime/web 入口已落地
 日期：2026-05-14
 归属：goal `voxel-authoritative-and-field-minimum` Phase 7
 
@@ -460,12 +460,16 @@ FieldSource
   `density × specific_heat_capacity × volume` 在 summary 中回算所需热量；
 - SceneServer：`SceneServer.Voxel.Field.FieldRuntime.build_temperature_anomaly/1` 从
   `Storage.effective_attribute_at/3` 读取 voxel 当前有效温度，负责 world macro ->
-  chunk/local macro、阈值判断、AABB 估算和 kernel-first attrs；当前 Heat profile 使用
-  `diffusion_time_scale=1.0`、`ambient_loss_per_second=0.0`、`cell_size_meters=1.0`，
-  让 1m macro voxel 按材质热扩散率真实演化，不再把局部异常压缩到调试/玩法时间尺度；
+  chunk/local macro、阈值判断、AABB 估算和 kernel-first attrs；无 `FieldSource` 的底层
+  anomaly builder 仍使用 `diffusion_time_scale=1.0`、`ambient_loss_per_second=0.0`、
+  `cell_size_meters=1.0`，而正式 `SetTemperature` / browser Heat 通过 normalized
+  `FieldSource` 使用 `diffusion_time_scale=20000.0`、`ambient_loss_per_second=0.08`
+  的 observe/gameplay profile，确保局部场在网页客户端可观察时间内动态扩散；
 - SceneServer：`ensure_temperature_anomaly/1` 通过 `ChunkProcess.ensure_field_region/2`
   创建或复用 `TemperatureDiffusionKernel` region；同一 chunk 内同一 `{temperature, macro_index}`
-  活跃 region 会接收新的 `source_mode: :impulse` source，不会重复堆叠 region；
+  活跃 region 会替换为最新 source_points，不会重复堆叠 region；`SetTemperature` / browser
+  Heat 默认使用 `:impulse`，扩散后靠 AABB 边界和 `ambient_loss_per_second` 消散，
+  火把/设备等持续源才显式传 `source_mode: :persistent`；
 - web_client：`F`、HUD `Heat` / `Cool`、CLI
   `voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]`
   走同一条 set-temperature action；`voxel_heat` / `voxel_cool` 保留为 alias。
@@ -473,8 +477,9 @@ FieldSource
   `window.__voxelCli.run("field_overlay")` 读取当前 overlay 状态。
 
 当前温度切片已经不再用请求参数直接作为场源；请求参数只表达目标温度，服务端写 voxel 属性并从属性异常创建
-一次性 impulse 场源。该 impulse 不是持久热源；可见扩散和耗散由 `TemperatureDiffusionKernel`
-的传播 profile 负责。已完成最小 active source 去重和客户端可见闭环。后续需要补完整自动源管理：
+`FieldSource`。browser Heat / `F` 默认是 `:impulse`：source 只注入一次，之后由
+`TemperatureDiffusionKernel` 的 observe/gameplay profile 负责可见扩散和耗散；persistent
+`FieldSource` 保留给后续 object/device owner。已完成最小 active source 去重和客户端可见闭环。后续需要补完整自动源管理：
 扫描/订阅 voxel truth 中的异常属性、异常消退后自动销毁 region、以及 kernel effect 写回 truth。
 
 ---
@@ -608,7 +613,9 @@ TheWorldBook 机制法则
   `density` fallback 或 material tag 当成正式路线；
 - 输出 deterministic channel；
 - channel 写入 `ionization` / `electric_potential`，不扩 wire；
-- electric dev/runtime 入口仍未完成，后续要区别于 temperature demo。
+- electric dev/runtime 入口已通过 `FieldRuntime.ensure_conduction_path/1`、
+  `/ingame/voxel/conduct` 和 web CLI `voxel_conduct` 落地；仍不承担 Phase 8
+  伤害、击穿破坏或 object/combat 结算。
 
 ### Phase 7.C：电属性 catalog 扩展
 
@@ -628,8 +635,9 @@ TheWorldBook 机制法则
 - 已完成：`material_id=1..5` dirt / stone / wood / ice / iron 接入真实世界近似物性；
 - 已完成：TemperatureField 扩散系数从调试归一化参数改为
   `thermal_diffusivity × dt / cell_size²`，并移除固定 `β=0.01` 回冷；
-- 已完成：`ChunkProcess.ensure_field_region/2` 以 `source_key` 复用活跃 FieldRegion，并把后续热量输入追加成
-  `source_mode: :impulse`；
+- 已完成：`ChunkProcess.ensure_field_region/2` 以 `source_key` 复用活跃 FieldRegion，并把后续 SetTemperature
+  输入替换成最新 source_points；browser Heat / `F` 默认 `:impulse`，持续热源显式
+  `source_mode: :persistent`；
 - 已完成：`+Field` UI 改成 `Heat`，不再由按钮直接造任意 FieldRegion；
 - 已完成：`F` 键向当前选中 voxel 设置默认 800°C 目标温度，Heat 成功后自动打开 Field overlay；
 - 已完成：web CLI 增加 `field_overlay [on|off]` 用于读取/切换当前 Field overlay 状态；

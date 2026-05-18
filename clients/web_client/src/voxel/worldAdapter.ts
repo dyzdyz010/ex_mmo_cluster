@@ -29,6 +29,12 @@ export interface VoxelWorldAdapter {
     targetTemperatureCelsius: number,
     maxTicks?: number,
   ): boolean;
+  requestVoxelConductionPath?(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential: number,
+    maxTicks?: number,
+  ): boolean;
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean;
   breakBlock(coord: FMacroCoord): boolean;
   placeMicroBlock(macro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean;

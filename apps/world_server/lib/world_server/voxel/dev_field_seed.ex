@@ -20,17 +20,18 @@ defmodule WorldServer.Voxel.DevFieldSeed do
       the actual `ChunkDirectory` / `ChunkProcess` work happens *on the scene
       node*, where those processes are alive.
 
-  Scene-node discovery uses the `scene_*` naming convention set by the
-  scene container's release entrypoint (see `deploy/docker-compose.yml`).
-  This deliberately avoids requiring a `MapLedger` route to exist, because
-  heat field creation starts from a scene-side voxel attribute write and is
-  independent of the lease/region machinery used by normal voxel edits.
+  Electric conduction must route by `MapLedger.route_chunk_with_lease/3` before
+  dispatch so the created field region lands on the source chunk's current
+  scene owner under that owner's active lease.
   """
 
   alias WorldServer.CliObserve
+  alias WorldServer.Voxel.MapLedger
 
   @rpc_timeout_ms 5_000
-  @scene_module SceneServer.Voxel.Field.DevFieldCreate
+  @default_logical_scene_id 1
+  @default_scene_module SceneServer.Voxel.Field.DevFieldCreate
+  @chunk_size_in_macro 16
 
   @doc """
   Applies a finite target-temperature heat action at an exact world-macro voxel.
@@ -69,6 +70,28 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     end
   end
 
+  @doc """
+  Creates a chunk-local electric conduction field through the scene node.
+
+  The helper deliberately coordinates only the cross-node dispatch. The scene
+  chunk process remains the authority that owns the `FieldRegion` and emits
+  field snapshots to subscribed clients.
+  """
+  @spec ensure_conduction_path(keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_conduction_path(opts \\ []) when is_list(opts) do
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
+    source_world_macro = Keyword.get(opts, :source_world_macro, {0, 0, 0})
+
+    with {:ok, route} <- route_source_chunk(logical_scene_id, source_world_macro, opts),
+         {:ok, target_node} <- target_node_from_route(route),
+         invoke_opts = Keyword.put_new(opts, :lease, route.lease),
+         {:ok, summary} <- invoke(target_node, :conduct_path, invoke_opts) do
+      enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
+      emit("voxel_conduction_path_ready", enriched)
+      {:ok, enriched}
+    end
+  end
+
   # Mirrors WorldServer.Voxel.DevSeed.chunk_directory_target/2: in single-node
   # dev (Node.list/0 == []) the scene_server runs in the same BEAM as the
   # controller, so we invoke the scene module locally. In multi-node deploys
@@ -100,16 +123,18 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   end
 
   defp invoke_local(function, opts) do
-    case Code.ensure_loaded(@scene_module) do
+    scene_module = scene_module(opts)
+
+    case Code.ensure_loaded(scene_module) do
       {:module, _} ->
-        case apply(@scene_module, function, [opts]) do
+        case apply(scene_module, function, [opts]) do
           {:ok, summary} -> {:ok, summary}
           {:error, _} = err -> err
           other -> {:error, {:unexpected_response, other}}
         end
 
       _other ->
-        {:error, {:scene_module_unavailable, @scene_module}}
+        {:error, {:scene_module_unavailable, scene_module}}
     end
   rescue
     error -> {:error, {:scene_module_raised, error}}
@@ -118,11 +143,73 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   end
 
   defp invoke_remote(scene_node, function, opts) do
-    case :rpc.call(scene_node, @scene_module, function, [opts], @rpc_timeout_ms) do
+    scene_module = scene_module(opts)
+
+    case :rpc.call(scene_node, scene_module, function, [opts], @rpc_timeout_ms) do
       {:badrpc, reason} -> {:error, {:rpc_failed, scene_node, reason}}
       {:ok, summary} -> {:ok, summary}
       {:error, _} = err -> err
       other -> {:error, {:unexpected_response, other}}
+    end
+  end
+
+  defp scene_module(opts), do: Keyword.get(opts, :scene_module, @default_scene_module)
+
+  defp route_source_chunk(logical_scene_id, source_world_macro, opts) do
+    ledger = Keyword.get(opts, :ledger, MapLedger)
+    chunk_coord = source_world_macro |> world_macro_coord!() |> chunk_coord_for_world_macro()
+
+    case safe_call(fn ->
+           MapLedger.route_chunk_with_lease(ledger, logical_scene_id, chunk_coord)
+         end) do
+      {:ok, {:ok, route}} -> {:ok, route}
+      {:ok, {:error, reason}} -> {:error, {:source_chunk_route_unavailable, reason}}
+      {:error, reason} -> {:error, {:source_chunk_route_unavailable, reason}}
+    end
+  end
+
+  defp target_node_from_route(%{assignment: assignment}) do
+    case Map.get(assignment, :assigned_scene_node) do
+      nil -> {:ok, node()}
+      scene_node -> {:ok, scene_node}
+    end
+  end
+
+  defp safe_call(fun) when is_function(fun, 0) do
+    {:ok, fun.()}
+  catch
+    :exit, reason -> {:error, {:ledger_unavailable, reason}}
+  end
+
+  defp world_macro_coord!({x, y, z}) when is_integer(x) and is_integer(y) and is_integer(z),
+    do: {x, y, z}
+
+  defp world_macro_coord!([x, y, z]) when is_integer(x) and is_integer(y) and is_integer(z),
+    do: {x, y, z}
+
+  defp world_macro_coord!(%{x: x, y: y, z: z})
+       when is_integer(x) and is_integer(y) and is_integer(z),
+       do: {x, y, z}
+
+  defp world_macro_coord!(%{"x" => x, "y" => y, "z" => z})
+       when is_integer(x) and is_integer(y) and is_integer(z),
+       do: {x, y, z}
+
+  defp world_macro_coord!(_other), do: {0, 0, 0}
+
+  defp chunk_coord_for_world_macro({x, y, z}) do
+    {floor_div(x, @chunk_size_in_macro), floor_div(y, @chunk_size_in_macro),
+     floor_div(z, @chunk_size_in_macro)}
+  end
+
+  defp floor_div(dividend, divisor) do
+    quotient = div(dividend, divisor)
+    remainder = rem(dividend, divisor)
+
+    if remainder != 0 and remainder < 0 do
+      quotient - 1
+    else
+      quotient
     end
   end
 

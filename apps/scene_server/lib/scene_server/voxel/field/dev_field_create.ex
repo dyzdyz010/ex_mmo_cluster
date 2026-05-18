@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   alias SceneServer.Voxel.Field.FieldRuntime
 
   @default_max_ticks 600
+  @default_conduction_max_ticks 120
 
   @doc """
   Applies a skill-like heat action at an exact world-macro voxel.
@@ -64,6 +65,28 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     ]
 
     FieldRuntime.ensure_set_temperature(base_opts ++ thermal_opts)
+  end
+
+  @doc """
+  Creates a chunk-local electric conduction field from a source world-macro
+  voxel to a target world-macro voxel.
+
+  Unlike `set_temperature/1`, this helper does not mutate voxel attributes. It
+  only asks `FieldRuntime` to create a `ConductionPathKernel` region so the
+  normal field snapshot pipeline can expose the electric/ionization layers to
+  the browser field overlay.
+  """
+  @spec conduct_path(keyword()) :: {:ok, map()} | {:error, term()}
+  def conduct_path(opts \\ []) do
+    FieldRuntime.ensure_conduction_path(
+      logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
+      source_world_macro: Keyword.get(opts, :source_world_macro, {0, 0, 0}),
+      target_world_macro: Keyword.get(opts, :target_world_macro, {0, 0, 0}),
+      source_potential: Keyword.get(opts, :source_potential, 120.0),
+      max_ticks: Keyword.get(opts, :max_ticks, @default_conduction_max_ticks),
+      radius: Keyword.get(opts, :radius, 1),
+      max_frontier: Keyword.get(opts, :max_frontier, 512)
+    )
   end
 
   defp legacy_heat_voxel(opts) do

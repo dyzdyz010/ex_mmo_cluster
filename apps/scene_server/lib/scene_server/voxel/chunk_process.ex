@@ -1024,7 +1024,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
             case Map.fetch(state.field_regions, region_id) do
               {:ok, worker_pid} ->
                 if Process.alive?(worker_pid) do
-                  source_points_summary = maybe_add_field_source_points(worker_pid, attrs)
+                  source_points_summary = FieldTickWorker.refresh_region(worker_pid, attrs)
 
                   result =
                     field_source_lifecycle_result(
@@ -3488,35 +3488,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
-    end
-  end
-
-  defp maybe_add_field_source_points(worker_pid, attrs) do
-    case Map.fetch(attrs, :source_points) do
-      {:ok, source_points} when is_list(source_points) and source_points != [] ->
-        FieldTickWorker.add_source_points(worker_pid, source_points)
-        %{source_points_action: :appended, source_points_count: length(source_points)}
-
-      {:ok, []} ->
-        %{
-          source_points_action: :rejected,
-          source_points_count: 0,
-          source_points_rejection_reason: :empty_source_points
-        }
-
-      {:ok, _other} ->
-        %{
-          source_points_action: :rejected,
-          source_points_count: 0,
-          source_points_rejection_reason: :invalid_source_points
-        }
-
-      :error ->
-        %{
-          source_points_action: :rejected,
-          source_points_count: 0,
-          source_points_rejection_reason: :missing_source_points
-        }
     end
   end
 

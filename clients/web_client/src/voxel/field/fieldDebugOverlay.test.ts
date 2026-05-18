@@ -189,6 +189,24 @@ describe("FieldDebugOverlay", () => {
     );
   });
 
+  it("reports temperature strength stats for CLI/debug verification", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeTemperatureSnapshot({
+        cellCount: 3,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 1, CENTER_INDEX + 2),
+        temperatureValues: Float32Array.of(800, 35, 18),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      maxTemperatureCelsius: 800,
+      maxAbsTemperatureDeltaCelsius: 780,
+      averageAbsTemperatureDeltaCelsius: (780 + 15 + 2) / 3,
+    });
+  });
+
   it("can be explicitly shown so heat actions are immediately visible", () => {
     const overlay = new FieldDebugOverlay();
 
@@ -200,6 +218,22 @@ describe("FieldDebugOverlay", () => {
     expect(overlay.isVisible()).toBe(true);
     expect(overlay.rootGroup.visible).toBe(true);
     expect(overlay.snapshot()).toMatchObject({ visible: true, regionCount: 0 });
+  });
+
+  it("renders electric cells without a full-chunk debug wireframe", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricValues: Float32Array.of(120, 60),
+      }),
+    );
+
+    const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+    expect(regionGroup?.children).toHaveLength(1);
+    expect(electricMesh(overlay).count).toBe(2);
   });
 });
 
@@ -222,6 +256,29 @@ function makeTemperatureSnapshot({
     macroIndices,
     temperatureValues,
     electricValues: new Float32Array(0),
+    ionizationValues: new Uint8Array(0),
+  };
+}
+
+function makeElectricSnapshot({
+  cellCount,
+  macroIndices,
+  electricValues,
+}: {
+  cellCount: number;
+  macroIndices: Uint16Array;
+  electricValues: Float32Array;
+}): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 77,
+    tickCount: 1,
+    fieldMask: FieldMask.ElectricPotential,
+    cellCount,
+    macroIndices,
+    temperatureValues: new Float32Array(0),
+    electricValues,
     ionizationValues: new Uint8Array(0),
   };
 }
@@ -258,6 +315,18 @@ function temperatureMeshes(overlay: FieldDebugOverlay): InstancedMesh[] {
 
 function temperatureMeshCount(overlay: FieldDebugOverlay): number {
   return temperatureMeshes(overlay).reduce((sum, mesh) => sum + mesh.count, 0);
+}
+
+function electricMesh(overlay: FieldDebugOverlay): InstancedMesh {
+  const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+  const mesh = regionGroup?.children.find(
+    (child): child is InstancedMesh =>
+      child instanceof InstancedMesh && child.name === "electric-potential",
+  );
+  if (!mesh) {
+    throw new Error("missing electric mesh");
+  }
+  return mesh;
 }
 
 function expectVisibleInstance(mesh: InstancedMesh, index: number): void {

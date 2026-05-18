@@ -1058,15 +1058,21 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   `target_macro_index` / `target_local_macro`。
 - 搜索：chunk-local AABB 内 bounded Dijkstra；frontier 默认上限 512，同成本路径按
   macro index 稳定排序，保证同一输入得到 deterministic channel。
+- 权威预检：`FieldRuntime.ensure_conduction_path/1` 在创建 FieldRegion 前读取 source chunk
+  的当前 `Storage`，用同一套 channel 搜索确认 source/target 和中间路径都是材料上可导电的
+  occupied cell；空 cell、挖掉后的 cell、低导电地面会以
+  `source_not_conductive` / `target_not_conductive` / `no_conductive_path` 拒绝。
 - 路径代价：通过 `Storage.effective_attribute_at_normalized/3` 读取
   `electric_conductivity` / `dielectric_strength`；高电导率降低 resistance cost，
-  dielectric strength 参与 breakdown cost，既有 ionization 可降低后续通道成本。
+  dielectric strength 参与 breakdown cost。当前 material-gated 通道要求
+  `electric_conductivity >= 1.0`，所以 dirt 的微弱漏导不会被当成导线；既有 ionization
+  仍只影响已允许材料路径内的后续通道成本。
 - 输出：只刷新 region 内 `:electric_potential` / `:ionization` layer，source 到 target
   电势按路径长度衰减；不产生 `FieldEffect`，不直接写 voxel/object truth。
 - 协议：仍复用 0x73/0x74 的 electric/ionization layer，不扩主 wire。
 
-当前切片只完成 core kernel 与单元测试；还没有 electric dev/runtime 入口、browser overlay
-实机验收，也没有 Phase 8 damage / ignite / breakdown 结算。
+当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
+breakdown 结算。
 
 ### TemperatureField 算法
 
@@ -1076,17 +1082,20 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   默认 `dt = 0.1s`、`cell_size = 1m`。`thermal_conductivity` / `density` /
   `specific_heat_capacity` 从 `Storage.effective_attribute_at/3` 读取。
 - 已接入的 material-specific 默认物性：dirt、stone、wood、ice、iron；未知材质才回退到
-  attribute catalog 的无材质默认值。`FieldRuntime` 默认使用真实时间尺度
-  (`diffusion_time_scale = 1.0`) 和 `1m` macro voxel，不再用交互倍率压缩热扩散时间。
-- kernel 仍保留 `diffusion_time_scale` / `ambient_loss_per_second` 选项，供后续明确的非物理玩法
-  profile 使用；生产 Heat 入口不启用这些调试期加速/耗散参数。
+  attribute catalog 的无材质默认值。未带 `FieldSource` 的底层 anomaly builder 仍保留
+  真实时间尺度 (`diffusion_time_scale = 1.0`) 和 `1m` macro voxel。
+- `SetTemperature` / browser Heat 入口会先写权威 voxel 温度属性，再用 normalized
+  `FieldSource` 创建局部 observe/gameplay profile
+  (`diffusion_time_scale = 20000.0`, `ambient_loss_per_second = 0.08`)；这个 profile
+  只决定局部 FieldRegion 在用户可观察时间内如何显示/演化，不改变 chunk 上的温度 truth。
 - 状态：只保存相对 `env_temp = 20°C` 的 float delta；未保存 cell 即环境温度
 - 计算范围：当前异常 cell、热源 cell 及其 6-邻居 halo；无热源区域不会被背景温度写满
 - 损耗：默认物理路径不使用调试期固定 `β` 回冷；交互 profile 可显式启用环境耗散。
   热量还会通过邻接扩散与有限 AABB 边界向环境流出。
   温度层 threshold 为 0.0001°C，低于 threshold 的 cell 自动退出 layer
 - 出 AABB 的邻居视为 delta 0（即环境温度）
-- `source_mode: :impulse` 只注入一次，适合技能热量输入；默认 persistent source 在扩散后重新写入，保持持续热源强度
+- `source_mode: :impulse` 只注入一次，适合 `F` / browser Heat 这类技能热量输入；显式
+  `source_mode: :persistent` 会在扩散后重新写入，适合火把、炉子、设备等持续热源。
 
 `tick(region, storage) :: {:ok, region}` 是每 tick 入口。
 
@@ -1105,7 +1114,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   `build_temperature_anomaly/1` 检测异常并调用
   `ChunkProcess.ensure_field_region/2` 创建或复用 `TemperatureDiffusionKernel` region；
 - `ChunkProcess.ensure_field_region/2` 使用 caller 提供的 `source_key` 做 active source
-  去重；同一 chunk 内同一 `{temperature, macro_index}` 活跃 region 会接收新的 impulse source，
+  去重；同一 chunk 内同一 `{temperature, macro_index}` 活跃 region 会替换为最新
+  source_points。`SetTemperature` / browser Heat 默认创建 `:impulse` source，完成一次热扰动后
+  由扩散、AABB 边界和环境耗散自然消散；持续热源需要调用方显式传 `source_mode: :persistent`，
   不会重复堆叠 FieldRegion；
 - 目标温度与环境基线 `20°C` 的差值低于 `1°C` 时不创建 region；若同一
   `source_key` 已有活跃 region，则通过 `release_field_region_source/3` 走 0x74
@@ -1123,7 +1134,7 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   `voxel_field_effect_rejected` 明确拒绝。
 
 当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
-局部 FieldRegion -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
+局部 FieldRegion -> impulse 热扰动可扩散并消散 -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
 串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、generic owner/ttl/budget source
 lifecycle，以及 object / candidate phenomenon effect 写回边界。
 

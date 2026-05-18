@@ -529,7 +529,90 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
       }),
     );
   });
+
+  it("posts a conduction path request to the formal auth endpoint", async () => {
+    const { adapter, bus } = createAdapter();
+    const acceptedEvents: AppEvents["world:voxel-conduction-accepted"][] = [];
+    bus.on("world:voxel-conduction-accepted", (event) => acceptedEvents.push(event));
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ region_id: 43, field_region_created: true }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(
+      adapter.requestVoxelConductionPath({ x: 0, y: 1, z: 0 }, { x: 3, y: 1, z: 0 }, 120, 90),
+    ).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/conduct",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          source_x: 0,
+          source_y: 1,
+          source_z: 0,
+          target_x: 3,
+          target_y: 1,
+          target_z: 0,
+          source_potential: 120,
+          max_ticks: 90,
+        }),
+      }),
+    );
+    expect(acceptedEvents).toEqual([
+      {
+        sourceCoord: { x: 0, y: 1, z: 0 },
+        targetCoord: { x: 3, y: 1, z: 0 },
+        sourcePotential: 120,
+        source: "server",
+        regionId: "43",
+        fieldRegionCreated: true,
+      },
+    ]);
+  });
+
+  it("surfaces structured conduction rejection reasons from the auth endpoint", async () => {
+    const { adapter, bus } = createAdapter();
+    const errorEvents: AppEvents["world:voxel-sync-error"][] = [];
+    bus.on("world:voxel-sync-error", (event) => errorEvents.push(event));
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 422,
+        json: () =>
+          Promise.resolve({
+            error: "voxel_conduct_failed",
+            reason_code: "cross_chunk_conduction_not_supported",
+            reason: "{:conduction_path_failed, :cross_chunk_conduction_not_supported}",
+          }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(
+      adapter.requestVoxelConductionPath({ x: 0, y: 0, z: 0 }, { x: 16, y: 0, z: 0 }, 120, 90),
+    ).toBe(true);
+    await flushAsyncWork();
+
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0]).toMatchObject({
+      source: "conduction_path",
+      reason: expect.stringContaining("cross_chunk_conduction_not_supported"),
+    });
+  });
 });
+
+async function flushAsyncWork(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
   function seedSolidMacroAtOrigin(adapter: OnlineVoxelWorldAdapter): void {

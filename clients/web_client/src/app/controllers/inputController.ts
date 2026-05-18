@@ -6,6 +6,8 @@ import { clampUnitVec, type MovementKeys } from "../../domain/movement/inputDire
 export type { MovementKeys } from "../../domain/movement/inputDirection";
 
 const DEFAULT_HEAT_TARGET_CELSIUS = 800;
+const DEFAULT_CONDUCTION_SOURCE_POTENTIAL = 120;
+const DEFAULT_CONDUCTION_MAX_TICKS = 90;
 
 /**
  * Translates raw keyboard events into domain intents.
@@ -159,10 +161,37 @@ export class InputController {
         });
         break;
       case "KeyF":
+        if (!isPlainOneShotShortcut(event)) break;
         this.bus.emit("input:set-selected-voxel-temperature", {
           source: "keyboard",
           targetTemperatureCelsius: DEFAULT_HEAT_TARGET_CELSIUS,
         });
+        break;
+      case "KeyE":
+        if (!isPlainOneShotShortcut(event)) break;
+        this.bus.emit("input:conduct-selected-voxel", {
+          source: "keyboard",
+          sourcePotential: DEFAULT_CONDUCTION_SOURCE_POTENTIAL,
+          maxTicks: DEFAULT_CONDUCTION_MAX_TICKS,
+        });
+        break;
+      case "KeyZ":
+        if (!isPlainOneShotShortcut(event)) break;
+        this.bus.emit("input:capture-conduction-endpoint", {
+          role: "source",
+          source: "keyboard",
+        });
+        break;
+      case "KeyX":
+        if (!isPlainOneShotShortcut(event)) break;
+        this.bus.emit("input:capture-conduction-endpoint", {
+          role: "target",
+          source: "keyboard",
+        });
+        break;
+      case "KeyC":
+        if (!isPlainOneShotShortcut(event)) break;
+        this.bus.emit("input:submit-conduction", { source: "keyboard" });
         break;
       case "KeyG":
         this.bus.emit("input:break-block", { source: "keyboard" });
@@ -215,4 +244,8 @@ export class InputController {
 
 function isSpaceKey(event: KeyboardEvent): boolean {
   return event.code === "Space" || event.key === " " || event.key === "Spacebar";
+}
+
+function isPlainOneShotShortcut(event: KeyboardEvent): boolean {
+  return !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey;
 }

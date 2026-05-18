@@ -35,6 +35,7 @@ defmodule AuthServerWeb.Router do
     post "/voxel/dev_seed", IngameController, :voxel_dev_seed
     post "/voxel/set_temperature", IngameController, :voxel_set_temperature
     post "/voxel/dev_heat_voxel", IngameController, :voxel_dev_heat_voxel
+    post "/voxel/conduct", IngameController, :voxel_conduct
   end
 
   scope "/ingame", AuthServerWeb do

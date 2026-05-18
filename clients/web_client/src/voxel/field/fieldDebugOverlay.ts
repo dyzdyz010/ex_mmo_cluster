@@ -3,19 +3,15 @@
 // Hidden by default; toggled with Ctrl+\ (or the "Field" button in the voxel panel). Shows:
 //   - Temperature field: ambient transparent / hot red / cold purple InstancedMesh cubes
 //   - Electric potential: black (low) → yellow (high) InstancedMesh cubes
-//   - Region AABB: LineSegments box wireframe
 //
 // §5.5 constraint: hidden by default, dev hotkey only, no production player UX.
 
 import {
   BoxGeometry,
   Color,
-  EdgesGeometry,
   Group,
   InstancedBufferAttribute,
   InstancedMesh,
-  LineBasicMaterial,
-  LineSegments,
   Matrix4,
   MeshBasicMaterial,
   Object3D,
@@ -49,13 +45,25 @@ interface TemperatureMeshBucket {
   mesh: InstancedMesh;
 }
 
+interface TemperatureFieldStats {
+  maxTemperatureCelsius: number | null;
+  maxAbsTemperatureDeltaCelsius: number;
+  averageAbsTemperatureDeltaCelsius: number;
+}
+
+const EMPTY_TEMPERATURE_STATS: TemperatureFieldStats = {
+  maxTemperatureCelsius: null,
+  maxAbsTemperatureDeltaCelsius: 0,
+  averageAbsTemperatureDeltaCelsius: 0,
+};
+
 export interface FieldRegionOverlay {
   regionId: number;
   chunkCoord: { cx: number; cy: number; cz: number };
   group: Group;
   temperatureMeshes: TemperatureMeshBucket[];
   electricMesh: InstancedMesh | null;
-  aabbWireframe: LineSegments | null;
+  temperatureStats: TemperatureFieldStats;
 }
 
 export interface FieldDebugOverlaySnapshot {
@@ -66,6 +74,9 @@ export interface FieldDebugOverlaySnapshot {
     chunkCoord: { cx: number; cy: number; cz: number };
     temperatureCells: number;
     electricCells: number;
+    maxTemperatureCelsius: number | null;
+    maxAbsTemperatureDeltaCelsius: number;
+    averageAbsTemperatureDeltaCelsius: number;
   }>;
 }
 
@@ -179,6 +190,7 @@ export class FieldDebugOverlay {
         chunkCoord: overlay.chunkCoord,
         temperatureCells: temperatureCellCount(overlay),
         electricCells: overlay.electricMesh?.count ?? 0,
+        ...overlay.temperatureStats,
       })),
     };
   }
@@ -219,12 +231,13 @@ export class FieldDebugOverlay {
     if (snapshot.fieldMask & FieldMask.ElectricPotential) {
       const mat = new MeshBasicMaterial({
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.42,
         vertexColors: true,
         depthTest: false,
         depthWrite: false,
       });
       electricMesh = new InstancedMesh(makeCellGeometry(), mat, MAX_CELLS);
+      electricMesh.name = "electric-potential";
       electricMesh.count = 0;
       electricMesh.frustumCulled = false;
       electricMesh.renderOrder = 5;
@@ -233,22 +246,19 @@ export class FieldDebugOverlay {
       group.add(electricMesh);
     }
 
-    // AABB wireframe: covers the full 16x16x16 macro-cell extent of the chunk
-    const aabbWireframe = _makeAabbWireframe(0, 0, 0, 16, 16, 16);
-    group.add(aabbWireframe);
-
     return {
       regionId: snapshot.regionId,
       chunkCoord: snapshot.chunkCoord,
       group,
       temperatureMeshes,
       electricMesh,
-      aabbWireframe,
+      temperatureStats: { ...EMPTY_TEMPERATURE_STATS },
     };
   }
 
   private _updateOverlay(overlay: FieldRegionOverlay, snapshot: FFieldRegionSnapshot): void {
     if (overlay.temperatureMeshes.length > 0 && snapshot.fieldMask & FieldMask.Temperature) {
+      overlay.temperatureStats = summarizeTemperatureField(snapshot);
       this._syncTemperatureMeshes(overlay.temperatureMeshes, snapshot);
     }
     if (overlay.electricMesh && snapshot.fieldMask & FieldMask.ElectricPotential) {
@@ -384,6 +394,37 @@ function estimateBackgroundTemperature(samples: number[], cellCount: number): nu
   return sorted[Math.floor((sorted.length - 1) / 2)] ?? TEMP_ENV_BASELINE;
 }
 
+function summarizeTemperatureField(snapshot: FFieldRegionSnapshot): TemperatureFieldStats {
+  if (snapshot.cellCount <= 0) {
+    return { ...EMPTY_TEMPERATURE_STATS };
+  }
+
+  let maxTemperatureCelsius: number | null = null;
+  let maxAbsTemperatureDeltaCelsius = 0;
+  let absTemperatureDeltaSum = 0;
+  let sampleCount = 0;
+
+  for (let i = 0; i < snapshot.cellCount; i++) {
+    const value = snapshot.temperatureValues[i];
+    if (value === undefined || !Number.isFinite(value)) {
+      continue;
+    }
+
+    maxTemperatureCelsius =
+      maxTemperatureCelsius === null ? value : Math.max(maxTemperatureCelsius, value);
+    const absDelta = Math.abs(value - TEMP_ENV_BASELINE);
+    maxAbsTemperatureDeltaCelsius = Math.max(maxAbsTemperatureDeltaCelsius, absDelta);
+    absTemperatureDeltaSum += absDelta;
+    sampleCount += 1;
+  }
+
+  return {
+    maxTemperatureCelsius,
+    maxAbsTemperatureDeltaCelsius,
+    averageAbsTemperatureDeltaCelsius: sampleCount > 0 ? absTemperatureDeltaSum / sampleCount : 0,
+  };
+}
+
 function makeTemperatureMaterial(kind: "hot" | "cold", opacity: number): MeshBasicMaterial {
   return new MeshBasicMaterial({
     color: kind === "hot" ? TEMP_HOT_COLOR : TEMP_COLD_COLOR,
@@ -443,32 +484,6 @@ function clearUnusedInstances(
   }
 }
 
-function _makeAabbWireframe(
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-): LineSegments {
-  const boxGeo = new BoxGeometry(
-    (maxX - minX) * CELL_SIZE,
-    (maxY - minY) * CELL_SIZE,
-    (maxZ - minZ) * CELL_SIZE,
-  );
-  const edges = new EdgesGeometry(boxGeo);
-  boxGeo.dispose();
-  const mat = new LineBasicMaterial({ color: 0x00ff88, depthTest: false });
-  const wire = new LineSegments(edges, mat);
-  wire.renderOrder = 5;
-  wire.position.set(
-    ((minX + maxX) / 2) * CELL_SIZE,
-    ((minY + maxY) / 2) * CELL_SIZE,
-    ((minZ + maxZ) / 2) * CELL_SIZE,
-  );
-  return wire;
-}
-
 function _disposeOverlay(overlay: FieldRegionOverlay): void {
   for (const bucket of overlay.temperatureMeshes) {
     bucket.mesh.geometry.dispose();
@@ -484,6 +499,4 @@ function _disposeOverlay(overlay: FieldRegionOverlay): void {
   } else {
     (overlay.electricMesh?.material as { dispose?: () => void })?.dispose?.();
   }
-  overlay.aabbWireframe?.geometry.dispose();
-  (overlay.aabbWireframe?.material as { dispose?: () => void })?.dispose?.();
 }

@@ -48,6 +48,23 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     GenServer.cast(server, {:add_source_points, source_points})
   end
 
+  @doc "Replaces the source points on an active field region."
+  @spec replace_source_points(GenServer.server(), [FieldRegion.source_point()]) :: :ok
+  def replace_source_points(server, source_points) when is_list(source_points) do
+    GenServer.cast(server, {:replace_source_points, source_points})
+  end
+
+  @doc """
+  Refreshes an active field region in place.
+
+  This keeps the worker process and region id stable for subscribers while
+  restarting the region lifetime from the latest source request.
+  """
+  @spec refresh_region(GenServer.server(), map()) :: map()
+  def refresh_region(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:refresh_region, attrs})
+  end
+
   @impl true
   def init(opts) do
     region = Keyword.fetch!(opts, :region)
@@ -173,6 +190,32 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     {:noreply, %{state | region: region}}
   end
 
+  def handle_cast({:replace_source_points, source_points}, state) when is_list(source_points) do
+    region = %{state.region | source_points: source_points}
+
+    {:noreply, %{state | region: region}}
+  end
+
+  @impl true
+  def handle_call({:refresh_region, attrs}, _from, state) when is_map(attrs) do
+    {source_points, source_points_summary} = refreshed_source_points(state.region, attrs)
+
+    region_attrs = %{
+      region_id: state.region.region_id,
+      chunk_coord: Map.get(attrs, :chunk_coord, state.region.chunk_coord),
+      aabb: Map.get(attrs, :aabb, state.region.aabb),
+      kernels: Map.get(attrs, :kernels, state.region.kernels),
+      source_points: source_points,
+      max_ticks: Map.get(attrs, :max_ticks, state.region.max_ticks),
+      lease_token: Map.get(attrs, :lease_token, state.region.lease_token)
+    }
+
+    refreshed_region = FieldRegion.new(region_attrs)
+
+    {:reply, Map.put(source_points_summary, :lifetime_action, :refreshed),
+     %{state | region: refreshed_region}}
+  end
+
   # ---- helpers --------------------------------------------------------------
 
   defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms, chunk_pid) do
@@ -180,6 +223,53 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       context = KernelContext.new(acc, logical_scene_id, storage, dt_ms: tick_interval_ms)
       run_kernel(kernel_spec, acc, context, chunk_pid)
     end)
+  end
+
+  defp refreshed_source_points(%FieldRegion{} = region, attrs) do
+    case Map.fetch(attrs, :source_points) do
+      {:ok, source_points} when is_list(source_points) and source_points != [] ->
+        if source_points_mode(attrs) == :replace do
+          {source_points,
+           %{source_points_action: :replaced, source_points_count: length(source_points)}}
+        else
+          next_source_points = region.source_points ++ source_points
+
+          {next_source_points,
+           %{source_points_action: :appended, source_points_count: length(source_points)}}
+        end
+
+      {:ok, []} ->
+        {region.source_points,
+         %{
+           source_points_action: :rejected,
+           source_points_count: 0,
+           source_points_rejection_reason: :empty_source_points
+         }}
+
+      {:ok, _other} ->
+        {region.source_points,
+         %{
+           source_points_action: :rejected,
+           source_points_count: 0,
+           source_points_rejection_reason: :invalid_source_points
+         }}
+
+      :error ->
+        {region.source_points,
+         %{
+           source_points_action: :rejected,
+           source_points_count: 0,
+           source_points_rejection_reason: :missing_source_points
+         }}
+    end
+  end
+
+  defp source_points_mode(attrs) do
+    case Map.get(attrs, :source_points_mode) do
+      :replace -> :replace
+      "replace" -> :replace
+      _other -> :append
+    end
   end
 
   defp run_kernel(%{id: id, module: module, opts: opts}, region, context, chunk_pid) do

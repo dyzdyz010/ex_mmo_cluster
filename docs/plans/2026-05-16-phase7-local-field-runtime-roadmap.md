@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core 已落地（2026-05-17）
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地（2026-05-17）
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -28,14 +28,18 @@
    `voxel_cool` 保留为别名，HUD 暴露 Heat / Cool 入口。
 7. Phase 7.D2 温度 source 最小闭环已落地：`FieldSource` 成为 set-temperature
    的 runtime source 事实，`ChunkProcess` 可按 `source_key` 复用或释放活跃
-   FieldRegion；目标温度回到环境阈值内时会走 0x74 销毁路径并清理 source。
+   FieldRegion；browser Heat / `F` 默认使用 `:impulse`，一次注入后通过扩散、AABB
+   边界和 `ambient_loss_per_second` 消散，`source_mode: :persistent` 保留给火把/设备等持续源。
+   目标温度回到环境阈值内时会走 0x74 销毁路径并清理 source。
 8. Phase 7.E 第一批 material/default 物性已落地：
    `ignition_temperature`、`melting_point`、`freezing_point`、`boiling_point`、
    `electric_conductivity`、`dielectric_strength` 已能通过
    `Storage.effective_attribute_at/3` / `_normalized/3` 读取。
-9. Phase 7.B core 已落地：`ConductionPathKernel` 可在 chunk-local AABB 内按
+9. Phase 7.B 已落地：`ConductionPathKernel` 可在 chunk-local AABB 内按
    `electric_conductivity` / `dielectric_strength` 做 deterministic channel 搜索，
-   并只刷新 `electric_potential` / `ionization` layer，不直接写 voxel/object truth。
+   并只刷新 `electric_potential` / `ionization` layer，不直接写 voxel/object truth；
+   `FieldRuntime.ensure_conduction_path/1`、`POST /ingame/voxel/conduct` 和 web CLI
+   `voxel_conduct` 已提供可操作入口，成功请求会自动打开 Field overlay。
 
 仍未完成：
 
@@ -47,8 +51,7 @@
 4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` 最小 dispatcher；
    永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
 5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
-6. 电场仍缺正式 dev/runtime 入口、observe 串联和浏览器 overlay 操作验收；
-   `ConductionPathKernel` 目前是 core kernel + 单元测试级别。
+6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或跨 chunk field；这些仍是后续阶段，不应塞进当前导电入口。
 
 结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点；下一步应补 FieldRuntime 的运行时能力，而不是继续堆单点演示。
 
@@ -324,13 +327,15 @@ registry / ttl / budget / persistent source 仍留给后续扩展。
 3. 输入使用 Phase 7.E 已落地的 `electric_conductivity` / `dielectric_strength`，
    不再用 wood/ice/iron 硬编码分支，也不把 density fallback 固化为正式路径。
 4. 搜索必须有 AABB 上限、frontier 上限、tick 时间上限和 deterministic seed。
-5. 增加 electric dev demo 入口，区别于 temperature demo。（未完成）
+5. 增加 electric dev/demo runtime 入口，区别于 temperature demo。（已完成：
+   `voxel_conduct` -> `/ingame/voxel/conduct` -> `FieldRuntime.ensure_conduction_path/1`）
 
 验收：
 
 - 同一输入和 seed 产生确定性 channel。（core 已覆盖）
 - 搜索超预算时截断或延期，不阻塞 worker。
-- channel 通过现有 `0x73` 下发并被 web overlay 显示。（runtime/demo 未完成）
+- channel 通过现有 `0x73` 下发并被 web overlay 显示；web 请求成功后自动打开
+  `FieldDebugOverlay`。
 
 ### Phase 7.C：电属性 catalog 扩展
 
@@ -491,16 +496,17 @@ Phase 7+ 不直接承诺：
 下一轮建议直接启动：
 
 ```text
-Phase 7.B follow-up: electric dev/runtime 入口 + observe/overlay 验收
+Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法 effect 边界
 ```
 
 最小交付：
 
-1. 用正式 source/runtime 入口创建 `ConductionPathKernel` FieldRegion，不从客户端直造任意 region。
-2. CLI 或 dev HTTP 入口能选择 source/target，并能通过 observe 日志看见 channel tick。
-3. 现有 `0x73` overlay 可看到 `electric_potential` / `ionization` channel。
-4. 搜索预算超限、无 source、无 target、target 出 AABB 都有明确 observe 或返回摘要。
-5. 仍不实现 Phase 8 伤害、点燃、击穿破坏或 object/combat 结算。
+1. 把 electric source 纳入 generic FieldSource owner / ttl / budget，而不是只靠
+   `{:conduction_path, source_index, target_index}` source key。
+2. 设计跨 chunk field 分片、AOI 降频和网络预算，不把大范围电击塞进单 chunk region。
+3. 为搜索预算超限、无 source、无 target、target 出 AABB 等路径补更细 observe。
+4. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
+   层承接，不能让 `ConductionPathKernel` 直接写 truth。
 
 ---
 
@@ -592,9 +598,35 @@ mix.bat test apps/scene_server/test/scene_server/voxel/chunk_process_test.exs ap
 mix.bat test apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs
 ```
 
+### 2026-05-17：Phase 7.B electric runtime/web 入口
+
+已完成：
+
+1. `SceneServer.Voxel.Field.FieldRuntime.ensure_conduction_path/1` 成为导电路径 runtime
+   入口：按 source/target world-macro 计算同 chunk local AABB，创建或复用
+   `ConductionPathKernel` FieldRegion，source key 为
+   `{:conduction_path, source_index, target_index}`。
+2. `WorldServer.Voxel.DevFieldSeed.ensure_conduction_path/1` 负责跨节点 dispatch，
+   `AuthServerWeb.IngameController.voxel_conduct/2` 暴露
+   `POST /ingame/voxel/conduct`，JSON 响应保持 tuple/atom 安全编码。
+3. web client 新增 `voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]`，
+   通过 `OnlineVoxelWorldAdapter.requestVoxelConductionPath` 调用 HTTP 入口。
+4. `WorldEditController.conductBetween/5` 先 emit
+   `world:voxel-conduction-requested` 记录提交；HTTP 200 后由 adapter emit
+   `world:voxel-conduction-accepted`，bootstrap 再自动打开 `FieldDebugOverlay`，
+   避免把后端拒绝误报成可见 field。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs
+npm test -- src/presentation/devtools/devToolsCli.test.ts src/app/controllers/worldEditController.test.ts src/voxel/onlineVoxelWorldAdapter.test.ts
+```
+
 遗留：
 
-1. 还没有 electric dev/runtime 入口；当前不能从 browser CLI 操作生成电通道。
-2. 还没有浏览器 overlay 实机验收；只是复用现有 0x73 layer 语义。
+1. multi-owner electric source lifecycle、ttl 和 budget 仍未 generic 化；当前导电 source
+   key 只覆盖单 source/target pair。
+2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
 3. 还没有 Phase 8 damage/ignite/breakdown 结算；这些必须后续经 FieldEffect / gameplay
    dispatcher，而不是放进 kernel。

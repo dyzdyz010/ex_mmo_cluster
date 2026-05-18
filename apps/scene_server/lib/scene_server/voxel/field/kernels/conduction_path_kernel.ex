@@ -19,6 +19,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   @default_conductivity 0.0
   @default_dielectric_strength 3.0
   @min_conductivity 0.001
+  @min_channel_conductivity 1.0
   @resistance_weight 4.0
   @breakdown_weight 0.25
   @ionization_bonus_weight 0.01
@@ -32,6 +33,46 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   @impl true
   def required_layers(_opts), do: [:electric_potential, :ionization]
+
+  @doc """
+  Computes the material-conductive channel that `tick/3` would write.
+
+  This pure preflight is used by `FieldRuntime` before a field region is
+  allocated, so gameplay requests fail at the authority boundary instead of
+  creating an empty or misleading electric overlay. The channel is intentionally
+  material-gated: air and low-conductivity ground do not become conductors just
+  because the potential is high.
+  """
+  @spec channel_path(Storage.t(), non_neg_integer(), non_neg_integer(), term(), number(), map()) ::
+          {:ok, [non_neg_integer()]} | {:error, atom()}
+  def channel_path(
+        %Storage{} = storage,
+        source_macro_index,
+        target_macro_index,
+        aabb,
+        source_value,
+        opts \\ %{}
+      )
+      when is_integer(source_macro_index) and is_integer(target_macro_index) and
+             is_number(source_value) do
+    region =
+      FieldRegion.new(%{
+        region_id: 0,
+        chunk_coord: {0, 0, 0},
+        aabb: aabb,
+        kernels: [%{id: :conduction_path, module: __MODULE__}],
+        source_points: [
+          %{macro_index: source_macro_index, field_type: :electric_potential, value: source_value}
+        ]
+      })
+
+    with true <- in_aabb?(region, source_macro_index),
+         true <- in_aabb?(region, target_macro_index) do
+      find_path(region, storage, source_macro_index, target_macro_index, source_value, opts)
+    else
+      _ -> {:error, :target_outside_region}
+    end
+  end
 
   @impl true
   def tick(%FieldRegion{} = region, %KernelContext{} = context, opts) when is_map(opts) do
@@ -57,22 +98,31 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   # ---- channel search -------------------------------------------------------
 
   defp find_path(region, storage, source_macro_index, target_macro_index, source_value, opts) do
-    max_frontier =
-      opts
-      |> integer_opt(:max_frontier, @default_max_frontier)
-      |> max(1)
+    cond do
+      not conductive_cell?(storage, source_macro_index) ->
+        {:error, :source_not_conductive}
 
-    queue = :gb_sets.singleton({0.0, source_macro_index})
-    costs = %{source_macro_index => 0.0}
+      not conductive_cell?(storage, target_macro_index) ->
+        {:error, :target_not_conductive}
 
-    dijkstra(queue, costs, %{}, MapSet.new(), 0, max_frontier, %{
-      region: region,
-      storage: storage,
-      target: target_macro_index,
-      source: source_macro_index,
-      source_strength: abs(source_value * 1.0),
-      ionization_layer: FieldRegion.get_layer(region, :ionization)
-    })
+      true ->
+        max_frontier =
+          opts
+          |> integer_opt(:max_frontier, @default_max_frontier)
+          |> max(1)
+
+        queue = :gb_sets.singleton({0.0, source_macro_index})
+        costs = %{source_macro_index => 0.0}
+
+        dijkstra(queue, costs, %{}, MapSet.new(), 0, max_frontier, %{
+          region: region,
+          storage: storage,
+          target: target_macro_index,
+          source: source_macro_index,
+          source_strength: abs(source_value * 1.0),
+          ionization_layer: FieldRegion.get_layer(region, :ionization)
+        })
+    end
   end
 
   defp dijkstra(queue, _costs, _previous, _settled, _frontier_count, _max_frontier, _env)
@@ -107,6 +157,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
             {queue, costs, previous} =
               current_macro_index
               |> neighbor_indices(env.region)
+              |> Enum.filter(&conductive_cell?(env.storage, &1))
               |> Enum.reduce({queue, costs, previous}, fn neighbor_macro_index,
                                                           {queue_acc, costs_acc, prev_acc} ->
                 step_cost =
@@ -208,6 +259,11 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   end
 
   defp read_attribute(_storage, _macro_index, _attr_name, fallback), do: fallback
+
+  defp conductive_cell?(storage, macro_index) do
+    read_attribute(storage, macro_index, "electric_conductivity", @default_conductivity) >=
+      @min_channel_conductivity
+  end
 
   # ---- layer writes ---------------------------------------------------------
 

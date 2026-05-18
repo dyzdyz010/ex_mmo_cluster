@@ -51,8 +51,8 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                  id: :temperature_diffusion,
                  module: TemperatureDiffusionKernel,
                  opts: %{
-                   diffusion_time_scale: 1.0,
-                   ambient_loss_per_second: 0.0,
+                   diffusion_time_scale: 20_000.0,
+                   ambient_loss_per_second: 0.08,
                    cell_size_meters: 1.0
                  }
                }

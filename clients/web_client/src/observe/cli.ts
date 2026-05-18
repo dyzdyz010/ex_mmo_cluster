@@ -8,7 +8,7 @@ export interface CliCommandResult {
 }
 
 export interface CliCommandHandler {
-  executeCliCommand(command: string, args: string[]): CliCommandResult;
+  executeCliCommand(command: string, args: string[], source?: string): CliCommandResult;
 }
 
 export interface VoxelCli {
@@ -39,6 +39,7 @@ function defaultHelpText(): string {
     "voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]",
     "voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]",
     "voxel_cool <x> <y> <z> [target_temperature_celsius] [max_ticks]",
+    "voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]",
     "field_overlay [on|off]",
     "chunk_versions",
     "scene_regions [on|off]",
@@ -117,7 +118,7 @@ export function installCli(
         return result;
       }
 
-      const result = handler.executeCliCommand(command, args);
+      const result = handler.executeCliCommand(command, args, "cli");
       logger.emit("cli", "command", {
         command,
         ok: result.ok,

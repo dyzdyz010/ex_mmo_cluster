@@ -56,6 +56,9 @@ describe("DevToolsCli microgrid boundary", () => {
               chunkCoord: { cx: 0, cy: 0, cz: 0 },
               temperatureCells: 5,
               electricCells: 0,
+              maxTemperatureCelsius: 800,
+              maxAbsTemperatureDeltaCelsius: 780,
+              averageAbsTemperatureDeltaCelsius: 265.678,
             },
           ],
         })),
@@ -68,6 +71,9 @@ describe("DevToolsCli microgrid boundary", () => {
       command: "field_overlay",
       text: expect.stringContaining("visible"),
       data: expect.objectContaining({ visible: true, regionCount: 2 }),
+    });
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      text: expect.stringContaining("heat=maxT=800.0C maxDelta=780.0C avgDelta=265.7C"),
     });
 
     expect(cli.executeCliCommand("field_overlay", ["off"])).toMatchObject({
@@ -193,6 +199,70 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(setTemperatureAt).toHaveBeenNthCalledWith(1, { x: 3, y: 4, z: 5 }, 800, "cli", 120);
     expect(setTemperatureAt).toHaveBeenNthCalledWith(2, { x: 3, y: 4, z: 5 }, 0, "cli", 60);
     expect(setTemperatureAtSelection).toHaveBeenCalledWith("cli", 0, 600);
+  });
+
+  it("routes voxel_conduct to the edit controller with source, target, potential, and max ticks", () => {
+    const conductBetween = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { conductBetween },
+    } as unknown as DevToolsDeps);
+
+    expect(
+      cli.executeCliCommand("voxel_conduct", ["0", "1", "0", "3", "1", "0", "120", "90"]),
+    ).toMatchObject({
+      ok: true,
+      command: "voxel_conduct",
+      text: "conduction request submitted from (0,1,0) to (3,1,0) at 120V; waiting for server acceptance",
+    });
+
+    expect(conductBetween).toHaveBeenCalledWith(
+      { x: 0, y: 1, z: 0 },
+      { x: 3, y: 1, z: 0 },
+      120,
+      "cli",
+      90,
+    );
+  });
+
+  it("preserves a non-CLI source when routing voxel_conduct", () => {
+    const conductBetween = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { conductBetween },
+    } as unknown as DevToolsDeps);
+
+    expect(
+      cli.executeCliCommand(
+        "voxel_conduct",
+        ["0", "1", "0", "3", "1", "0", "120", "90"],
+        "keyboard",
+      ),
+    ).toMatchObject({
+      ok: true,
+      command: "voxel_conduct",
+      data: expect.objectContaining({ source: "keyboard" }),
+    });
+
+    expect(conductBetween).toHaveBeenCalledWith(
+      { x: 0, y: 1, z: 0 },
+      { x: 3, y: 1, z: 0 },
+      120,
+      "keyboard",
+      90,
+    );
+  });
+
+  it("rejects malformed voxel_conduct commands before touching the edit controller", () => {
+    const conductBetween = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { conductBetween },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_conduct", ["0", "1", "0"])).toMatchObject({
+      ok: false,
+      command: "voxel_conduct",
+      text: "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]",
+    });
+    expect(conductBetween).not.toHaveBeenCalled();
   });
 
   it("exposes prefab sockets and socket snap preview/commit through the CLI observe surface", () => {

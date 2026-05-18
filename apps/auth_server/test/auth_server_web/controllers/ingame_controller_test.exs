@@ -6,6 +6,7 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Types
+  alias WorldServer.Voxel.DevSeed
 
   setup do
     previous_auto_login = Application.get_env(:auth_server, :dev_auto_login, false)
@@ -80,5 +81,208 @@ defmodule AuthServerWeb.IngameControllerTest do
              "source_action" => "released",
              "source_key" => ["temperature", macro_index]
            }
+  end
+
+  test "POST /ingame/voxel/conduct returns JSON-safe conduction region summary", %{conn: conn} do
+    logical_scene_id = 82_000 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    for coord <- [{0, 1, 0}, {3, 1, 0}, {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(5))
+    end
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0,
+        "source_potential" => 120,
+        "max_ticks" => 90,
+        "radius" => 1,
+        "max_frontier" => 64
+      })
+
+    body = json_response(conn, 200)
+    assert body["field_types"] == ["electric_potential", "ionization"]
+    assert body["field_region_created"] == true
+
+    assert body["source_key"] == [
+             "conduction_path",
+             Types.macro_index!({0, 1, 0}),
+             Types.macro_index!({3, 1, 0})
+           ]
+
+    assert body["source_potential"] == 120.0
+    assert body["source_world_macro"] == %{"x" => 0, "y" => 1, "z" => 0}
+    assert body["target_world_macro"] == %{"x" => 3, "y" => 1, "z" => 0}
+  end
+
+  test "POST /ingame/voxel/conduct returns structured input errors for cross-chunk paths",
+       %{conn: conn} do
+    logical_scene_id = 83_000 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 0,
+        "source_z" => 0,
+        "target_x" => 16,
+        "target_y" => 0,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 422)
+    assert body["error"] == "voxel_conduct_failed"
+    assert body["reason_code"] == "cross_chunk_conduction_not_supported"
+  end
+
+  test "POST /ingame/voxel/conduct rejects empty or non-conductive source cells",
+       %{conn: conn} do
+    logical_scene_id = 83_500 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk_pid, {3, 1, 0}, NormalBlockData.new(5))
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 422)
+    assert body["error"] == "voxel_conduct_failed"
+    assert body["reason_code"] == "source_not_conductive"
+  end
+
+  test "POST /ingame/voxel/conduct rejects empty or non-conductive target cells",
+       %{conn: conn} do
+    logical_scene_id = 83_600 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk_pid, {0, 1, 0}, NormalBlockData.new(5))
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 422)
+    assert body["error"] == "voxel_conduct_failed"
+    assert body["reason_code"] == "target_not_conductive"
+  end
+
+  test "POST /ingame/voxel/conduct rejects source and target with no conductive path",
+       %{conn: conn} do
+    logical_scene_id = 83_700 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    for coord <- [{0, 1, 0}, {3, 1, 0}] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(5))
+    end
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 422)
+    assert body["error"] == "voxel_conduct_failed"
+    assert body["reason_code"] == "no_conductive_path"
   end
 end

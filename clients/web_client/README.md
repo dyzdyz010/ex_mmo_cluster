@@ -18,7 +18,14 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
    - 右上角 `Server Voxel` 面板可直接触发 `voxel_sync` / `voxel_probe` / `chunk_versions` /
-     `voxel_subscribe` / `voxel_impact` / `Rebind`，用于不打开控制台的网页验收
+     `voxel_subscribe` / `voxel_impact` / `voxel_conduct` / `Rebind`，用于不打开控制台的网页验收。
+     导电路径操作：直接把准星对准体素并点 `Conduct` 会以准星命中点为 source、
+     沿命中面法线生成同 chunk 内 target；也可以点 `Use Src` / `Use Dst` 手动锁定两端。
+     快捷键：`F` 加热准星体素，`E` 自动创建准星导电路径，`Z` 捕获 source，`X` 捕获 target，
+     `C` 提交当前 Conduct 表单。
+     Conduct 只接受 source、target 与中间路径都是足够导电的占用体素；挖空后的 cell、
+     dirt/普通地面和断开的空气缝会被服务端拒绝。
+     成功后 `Field` overlay 会显示 electric cells。
    - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
    - `window.__voxelObserve.recent()` / `snapshot()` 读取结构化日志
 4. 已有真实 browser movement bridge：
@@ -285,6 +292,8 @@ window.__voxelCli?.run("voxel_probe");
 window.__voxelCli?.run("voxel_probe voxel_rebind 1 all");
 window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
 window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
+window.__voxelCli?.run("voxel_temp 8 0 8 800 300");
+window.__voxelCli?.run("voxel_conduct 0 1 0 3 1 0 120 90");
 window.__voxelCli?.run("chunk_versions");
 window.__voxelCli?.run("scene_regions");
 window.__voxelCli?.run("scene_regions off");

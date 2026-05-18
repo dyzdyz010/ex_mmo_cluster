@@ -113,6 +113,24 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only electric conduction hook.
+
+  Creates a chunk-local `ConductionPathKernel` field from `source_*` to
+  `target_*`. The scene server owns the field region; this controller only
+  normalizes JSON parameters and returns a JSON-safe summary for browser CLI
+  diagnostics.
+  """
+  def voxel_conduct(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_conduct(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -258,6 +276,52 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  defp do_voxel_conduct(conn, params) do
+    module = Module.concat([WorldServer, Voxel, DevFieldSeed])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    source_world_macro = parse_prefixed_world_macro(params, "source")
+    target_world_macro = parse_prefixed_world_macro(params, "target")
+
+    source_potential =
+      parse_non_negative_number(params["source_potential"] || params["potential"], 120.0)
+
+    max_ticks = parse_non_negative_int(params["max_ticks"], 120)
+    radius = parse_non_negative_int(params["radius"], 1)
+    max_frontier = parse_non_negative_int(params["max_frontier"], 512)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <-
+           apply(module, :ensure_conduction_path, [
+             [
+               logical_scene_id: logical_scene_id,
+               source_world_macro: source_world_macro,
+               target_world_macro: target_world_macro,
+               source_potential: source_potential,
+               max_ticks: max_ticks,
+               radius: radius,
+               max_frontier: max_frontier
+             ]
+           ]) do
+      voxel_json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel conduction path failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(voxel_conduct_error_status(reason))
+        |> json(%{
+          error: "voxel_conduct_failed",
+          reason: inspect(reason),
+          reason_code: voxel_conduct_reason_code(reason)
+        })
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
   defp parse_world_macro(params) do
     {
       parse_int(params["x"], 0),
@@ -265,6 +329,52 @@ defmodule AuthServerWeb.IngameController do
       parse_int(params["z"], 0)
     }
   end
+
+  defp parse_prefixed_world_macro(params, prefix) do
+    {
+      parse_int(params["#{prefix}_x"], 0),
+      parse_int(params["#{prefix}_y"], 0),
+      parse_int(params["#{prefix}_z"], 0)
+    }
+  end
+
+  defp voxel_conduct_error_status(
+         {:conduction_path_failed, :cross_chunk_conduction_not_supported}
+       ),
+       do: :unprocessable_entity
+
+  defp voxel_conduct_error_status({:conduction_path_failed, :source_not_conductive}),
+    do: :unprocessable_entity
+
+  defp voxel_conduct_error_status({:conduction_path_failed, :target_not_conductive}),
+    do: :unprocessable_entity
+
+  defp voxel_conduct_error_status({:conduction_path_failed, :no_conductive_path}),
+    do: :unprocessable_entity
+
+  defp voxel_conduct_error_status({:source_chunk_route_unavailable, _reason}),
+    do: :conflict
+
+  defp voxel_conduct_error_status(_reason), do: :service_unavailable
+
+  defp voxel_conduct_reason_code(
+         {:conduction_path_failed, :cross_chunk_conduction_not_supported}
+       ),
+       do: "cross_chunk_conduction_not_supported"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :source_not_conductive}),
+    do: "source_not_conductive"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :target_not_conductive}),
+    do: "target_not_conductive"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :no_conductive_path}),
+    do: "no_conductive_path"
+
+  defp voxel_conduct_reason_code({:source_chunk_route_unavailable, _reason}),
+    do: "source_chunk_route_unavailable"
+
+  defp voxel_conduct_reason_code(_reason), do: "backend_unavailable"
 
   defp parse_int(value, _fallback) when is_integer(value), do: value
 

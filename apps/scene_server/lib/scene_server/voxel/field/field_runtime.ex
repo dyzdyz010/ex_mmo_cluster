@@ -10,12 +10,15 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
   alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess, Storage, Types}
   alias SceneServer.Voxel.Field.FieldSource
+  alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.TemperatureField
 
   @default_logical_scene_id 1
   @default_max_ticks 600
   @default_radius 4
+  @default_conduction_max_frontier 512
+  @default_conduction_source_potential 120.0
   @default_target_temperature_celsius 800.0
   @temperature_diffusion_time_scale 1.0
   @temperature_ambient_loss_per_second 0.0
@@ -98,6 +101,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       opts
       |> drop_heat_request_keys()
       |> Map.put(:source_kind, :temperature)
+      |> Map.put(:source_mode, set_temperature_source_mode(opts))
       |> Map.put(:target_temperature_celsius, target_temperature)
       |> FieldSource.normalize()
 
@@ -108,6 +112,145 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     |> Map.merge(FieldSource.temperature_runtime_attrs(field_source))
     |> ensure_temperature_anomaly()
   end
+
+  @doc """
+  Creates a chunk-local electric conduction field from an explicit source to an
+  explicit target.
+
+  This is a gameplay/debug runtime request, not a voxel-truth mutation: it
+  allocates a `ConductionPathKernel` region owned by the source chunk and leaves
+  material/electric effects inside the field layers for the normal 0x73 field
+  snapshot pipeline.
+  """
+  @spec ensure_conduction_path(keyword() | map()) :: {:ok, map()} | {:error, term()}
+  def ensure_conduction_path(opts \\ []) do
+    opts = opts_map(opts)
+
+    logical_scene_id =
+      non_negative_int(get_any(opts, [:logical_scene_id], @default_logical_scene_id))
+
+    source_world_macro = source_world_macro_coord(opts)
+    target_world_macro = target_world_macro_coord(opts)
+    {source_chunk_coord, source_local_macro} = Types.chunk_and_local_macro!(source_world_macro)
+    {target_chunk_coord, target_local_macro} = Types.chunk_and_local_macro!(target_world_macro)
+
+    if source_chunk_coord != target_chunk_coord do
+      {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}}
+    else
+      source_index = Types.macro_index!(source_local_macro)
+      target_index = Types.macro_index!(target_local_macro)
+      source_potential = conduction_source_potential(opts)
+      max_ticks = non_negative_int(get_any(opts, [:max_ticks], @default_max_ticks))
+      radius = non_negative_int(get_any(opts, [:radius], 1))
+
+      max_frontier =
+        non_negative_int(get_any(opts, [:max_frontier], @default_conduction_max_frontier))
+
+      aabb = local_aabb_between(source_local_macro, target_local_macro, radius)
+      source_key = {:conduction_path, source_index, target_index}
+
+      region_attrs = %{
+        chunk_coord: source_chunk_coord,
+        aabb: aabb,
+        kernels: [
+          %{
+            id: :conduction_path,
+            module: ConductionPathKernel,
+            opts: %{target_macro_index: target_index, max_frontier: max_frontier}
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: source_index,
+            field_type: :electric_potential,
+            value: source_potential
+          }
+        ],
+        max_ticks: max_ticks,
+        source_points_mode: :replace,
+        source_key: source_key
+      }
+
+      summary = %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: coord_map(source_chunk_coord),
+        source_world_macro: coord_map(source_world_macro),
+        target_world_macro: coord_map(target_world_macro),
+        source_local_macro: coord_map(source_local_macro),
+        target_local_macro: coord_map(target_local_macro),
+        source_index: source_index,
+        target_index: target_index,
+        source_key: source_key,
+        field_types: ["electric_potential", "ionization"],
+        source_potential: source_potential,
+        radius: radius,
+        max_ticks: max_ticks,
+        max_frontier: max_frontier
+      }
+
+      with {:ok, chunk_pid} <-
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: source_chunk_coord,
+               lease: get_any(opts, [:lease, :lease_token], nil)
+             }),
+           :ok <-
+             validate_conduction_channel(
+               chunk_pid,
+               source_key,
+               source_index,
+               target_index,
+               aabb,
+               source_potential,
+               max_frontier
+             ),
+           {:ok, field_region} <- ChunkProcess.ensure_field_region(chunk_pid, region_attrs) do
+        {:ok,
+         summary
+         |> Map.put(:created, field_region.created?)
+         |> Map.put(:region_id, field_region.region_id)
+         |> Map.put(:field_region_created, field_region.created?)
+         |> Map.put(:source_points_action, field_region.source_points_action)}
+      end
+    end
+  rescue
+    error -> {:error, {:conduction_path_failed, error}}
+  catch
+    kind, reason -> {:error, {:conduction_path_failed, kind, reason}}
+  end
+
+  defp validate_conduction_channel(
+         chunk_pid,
+         source_key,
+         source_index,
+         target_index,
+         aabb,
+         source_potential,
+         max_frontier
+       ) do
+    %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+
+    case ConductionPathKernel.channel_path(
+           storage,
+           source_index,
+           target_index,
+           aabb,
+           source_potential,
+           %{max_frontier: max_frontier}
+         ) do
+      {:ok, _path} ->
+        :ok
+
+      {:error, reason} ->
+        _ = ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
+        {:error, {:conduction_path_failed, normalize_conduction_reject_reason(reason)}}
+    end
+  end
+
+  defp normalize_conduction_reject_reason(:unreachable), do: :no_conductive_path
+  defp normalize_conduction_reject_reason(:empty_queue), do: :no_conductive_path
+  defp normalize_conduction_reject_reason(:frontier_exhausted), do: :no_conductive_path
+  defp normalize_conduction_reject_reason(reason), do: reason
 
   @doc """
   Builds the deterministic field plan from authoritative voxel storage without
@@ -154,20 +297,22 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       kernels = anomaly_kernel_specs(field_source)
       source_key = anomaly_source_key(field_source, source_index)
 
-      region_attrs = %{
-        chunk_coord: chunk_coord,
-        aabb: aabb,
-        kernels: kernels,
-        source_points: [
-          %{
-            macro_index: source_index,
-            field_type: :temperature,
-            source_mode: :impulse,
-            value: target_temperature
-          }
-        ],
-        max_ticks: max_ticks
-      }
+      region_attrs =
+        %{
+          chunk_coord: chunk_coord,
+          aabb: aabb,
+          kernels: kernels,
+          source_points: [
+            %{
+              macro_index: source_index,
+              field_type: :temperature,
+              source_mode: temperature_source_mode(field_source),
+              value: target_temperature
+            }
+          ],
+          max_ticks: max_ticks
+        }
+        |> maybe_put(:source_points_mode, temperature_source_points_mode(field_source))
 
       {:ok,
        %{
@@ -221,6 +366,12 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
   defp anomaly_source_key(_field_source, source_index), do: {:temperature, source_index}
 
+  defp temperature_source_mode(%FieldSource{} = field_source), do: field_source.source_mode
+  defp temperature_source_mode(_field_source), do: :impulse
+
+  defp temperature_source_points_mode(%FieldSource{}), do: :replace
+  defp temperature_source_points_mode(_field_source), do: nil
+
   defp anomaly_max_ticks(opts, %FieldSource{} = field_source) do
     non_negative_int(
       get_any(
@@ -255,6 +406,16 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       module: TemperatureDiffusionKernel,
       opts: physical_temperature_kernel_opts()
     }
+  end
+
+  defp conduction_source_potential(opts) do
+    non_negative_float(
+      get_any(
+        opts,
+        [:source_potential, :potential, :electric_potential],
+        @default_conduction_source_potential
+      )
+    )
   end
 
   defp base_summary(
@@ -293,6 +454,42 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
       true ->
         {0, 0, 0}
+    end
+  end
+
+  defp source_world_macro_coord(opts) do
+    cond do
+      has_any_key?(opts, [:source_world_macro, :source_macro, :from_world_macro]) ->
+        Types.normalize_world_micro_coord!(
+          get_any(opts, [:source_world_macro, :source_macro, :from_world_macro], nil)
+        )
+
+      has_axis_keys?(opts, [:source_x, :source_y, :source_z]) ->
+        Types.normalize_world_micro_coord!(
+          {get_any(opts, [:source_x], 0), get_any(opts, [:source_y], 0),
+           get_any(opts, [:source_z], 0)}
+        )
+
+      true ->
+        world_macro_coord(opts)
+    end
+  end
+
+  defp target_world_macro_coord(opts) do
+    cond do
+      has_any_key?(opts, [:target_world_macro, :target_macro, :to_world_macro]) ->
+        Types.normalize_world_micro_coord!(
+          get_any(opts, [:target_world_macro, :target_macro, :to_world_macro], nil)
+        )
+
+      has_axis_keys?(opts, [:target_x, :target_y, :target_z]) ->
+        Types.normalize_world_micro_coord!(
+          {get_any(opts, [:target_x], 0), get_any(opts, [:target_y], 0),
+           get_any(opts, [:target_z], 0)}
+        )
+
+      true ->
+        world_macro_coord(opts)
     end
   end
 
@@ -343,6 +540,23 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         get_any(opts, [:target_temperature, :target_temperature_celsius], nil),
         @default_target_temperature_celsius
       )
+    end
+  end
+
+  defp set_temperature_source_mode(opts) do
+    case get_any(opts, [:source_mode], :impulse) do
+      value when value in [:impulse, :persistent] ->
+        value
+
+      value when is_binary(value) ->
+        case String.trim(String.downcase(value)) do
+          "persistent" -> :persistent
+          "impulse" -> :impulse
+          _other -> :impulse
+        end
+
+      _other ->
+        :impulse
     end
   end
 
@@ -429,6 +643,13 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   defp local_aabb_around({x, y, z}, radius) do
     {{clamp_macro(x - radius), clamp_macro(y - radius), clamp_macro(z - radius)},
      {clamp_macro(x + radius), clamp_macro(y + radius), clamp_macro(z + radius)}}
+  end
+
+  defp local_aabb_between({sx, sy, sz}, {tx, ty, tz}, radius) do
+    {{clamp_macro(min(sx, tx) - radius), clamp_macro(min(sy, ty) - radius),
+      clamp_macro(min(sz, tz) - radius)},
+     {clamp_macro(max(sx, tx) + radius), clamp_macro(max(sy, ty) + radius),
+      clamp_macro(max(sz, tz) + radius)}}
   end
 
   defp clamp_macro(value) when value < 0, do: 0

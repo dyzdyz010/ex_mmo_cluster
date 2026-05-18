@@ -195,6 +195,59 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert_snapshot_temperature(snapshot, first_ring_idx, 20.26, 0.1)
   end
 
+  test "reusing a field source refreshes the worker lifetime" do
+    macro_index = Types.macro_index!({3, 3, 3})
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    attrs = %{
+      chunk_coord: {0, 0, 0},
+      aabb: {{0, 0, 0}, {3, 3, 3}},
+      kernels: [
+        %{
+          id: :set_temperature,
+          module: SetTemperatureKernel,
+          opts: %{macro_index: macro_index, value: 10.0}
+        }
+      ],
+      source_points: [
+        %{
+          macro_index: macro_index,
+          field_type: :temperature,
+          source_mode: :persistent,
+          value: 10.0
+        }
+      ],
+      source_points_mode: :replace,
+      source_key: {:temperature, macro_index},
+      max_ticks: 10
+    }
+
+    assert {:ok, first} = ChunkProcess.ensure_field_region(chunk, attrs)
+    worker_pid = field_worker_pid!(chunk, first.region_id)
+
+    :sys.replace_state(worker_pid, fn state ->
+      %{state | region: %{state.region | tick_count: 9, max_ticks: 10}}
+    end)
+
+    refreshed_aabb = {{0, 0, 0}, {5, 5, 5}}
+
+    assert {:ok, second} =
+             ChunkProcess.ensure_field_region(chunk, %{
+               attrs
+               | aabb: refreshed_aabb,
+                 max_ticks: 25
+             })
+
+    assert second.region_id == first.region_id
+    assert second.region_action == :reused
+    assert second.source_points_action == :replaced
+
+    refreshed_state = :sys.get_state(worker_pid)
+    assert refreshed_state.region.tick_count == 0
+    assert refreshed_state.region.max_ticks == 25
+    assert refreshed_state.region.aabb == refreshed_aabb
+  end
+
   test "non-observe temperature effects are dispatched to chunk truth", %{
     observe_log: observe_log
   } do
@@ -308,6 +361,13 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   defp receive_snapshot! do
     assert_receive {:"$gen_cast", {:push_field_snapshot_payload, payload}}, 1_000
     FieldCodec.decode_snapshot_payload!(payload)
+  end
+
+  defp field_worker_pid!(chunk_pid, region_id) do
+    chunk_pid
+    |> :sys.get_state()
+    |> Map.fetch!(:field_regions)
+    |> Map.fetch!(region_id)
   end
 
   defp assert_snapshot_temperature(snapshot, macro_index, expected) do

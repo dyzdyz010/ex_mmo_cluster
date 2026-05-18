@@ -127,6 +127,20 @@ export async function bootstrap({
     () => render.toggleFieldDebugOverlay(),
     (targetTemperatureCelsius) =>
       edit.setTemperatureAtSelection("voxel_panel", targetTemperatureCelsius),
+    () => edit.getSelectedOccupiedMacro(),
+    () => edit.getSelectedConductionPair(),
+  );
+  const unsubscribeConductionEndpointShortcut = eventBus.on(
+    "input:capture-conduction-endpoint",
+    ({ role, source }) => {
+      voxelDebugPanelView.captureConductionEndpoint(role, source);
+    },
+  );
+  const unsubscribeConductionSubmitShortcut = eventBus.on(
+    "input:submit-conduction",
+    ({ source }) => {
+      voxelDebugPanelView.submitConduction(source);
+    },
   );
 
   const loop = new GameLoop();
@@ -195,6 +209,8 @@ export async function bootstrap({
     if (disposed) return;
     disposed = true;
     loop.stop();
+    unsubscribeConductionEndpointShortcut();
+    unsubscribeConductionSubmitShortcut();
     detachInput();
     touchControlsView?.dispose();
     document.documentElement.classList.remove("is-touch");
@@ -463,6 +479,35 @@ function bridgeBusToLogger(
       field_overlay_visible: true,
     });
   });
+  bus.on(
+    "world:voxel-conduction-requested",
+    ({ sourceCoord, targetCoord, sourcePotential, source }) => {
+      logger.emit("voxel", "conduction_path", {
+        source_coord: formatCoord(sourceCoord),
+        target_coord: formatCoord(targetCoord),
+        source_potential: sourcePotential,
+        source,
+        request_state: "submitted",
+        field_overlay_visible: false,
+      });
+    },
+  );
+  bus.on(
+    "world:voxel-conduction-accepted",
+    ({ sourceCoord, targetCoord, sourcePotential, source, regionId, fieldRegionCreated }) => {
+      render.showFieldDebugOverlay();
+      logger.emit("voxel", "conduction_path", {
+        source_coord: formatCoord(sourceCoord),
+        target_coord: formatCoord(targetCoord),
+        source_potential: sourcePotential,
+        source,
+        request_state: "accepted",
+        region_id: regionId ?? "",
+        field_region_created: fieldRegionCreated ?? false,
+        field_overlay_visible: true,
+      });
+    },
+  );
   bus.on("world:chunk-subscribed", ({ requestId, logicalSceneId, centerChunk, radiusLInf }) => {
     logger.emit("voxel", "chunk_subscribed", {
       request_id: requestId,

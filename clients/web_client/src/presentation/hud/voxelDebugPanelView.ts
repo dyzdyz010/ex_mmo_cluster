@@ -1,9 +1,15 @@
 import type { FrameSubscriber } from "../../app/gameLoop";
 import type { CliCommandResult } from "../../observe/cli";
+import type { FMacroCoord } from "../../voxel/core/types";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 export interface VoxelDebugPanelCommandPort {
-  executeCliCommand(command: string, args: string[]): CliCommandResult;
+  executeCliCommand(command: string, args: string[], source?: string): CliCommandResult;
+}
+
+export interface VoxelPanelConductionPair {
+  sourceCoord: FMacroCoord;
+  targetCoord: FMacroCoord;
 }
 
 type VoxelPanelButtonTarget = {
@@ -24,6 +30,14 @@ interface VoxelPanelFormState {
   impactY: string;
   impactZ: string;
   material: string;
+  conductSourceX: string;
+  conductSourceY: string;
+  conductSourceZ: string;
+  conductTargetX: string;
+  conductTargetY: string;
+  conductTargetZ: string;
+  conductPotential: string;
+  conductTicks: string;
 }
 
 const PANEL_REFRESH_INTERVAL_MS = 250;
@@ -37,6 +51,14 @@ const DefaultFormState: VoxelPanelFormState = {
   impactY: "0",
   impactZ: "0",
   material: "1",
+  conductSourceX: "",
+  conductSourceY: "",
+  conductSourceZ: "",
+  conductTargetX: "",
+  conductTargetY: "",
+  conductTargetZ: "",
+  conductPotential: "120",
+  conductTicks: "90",
 };
 
 /**
@@ -55,6 +77,8 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     private readonly world: VoxelWorldAdapter,
     private readonly fieldOverlayToggle?: () => void,
     private readonly setSelectedVoxelTemperature?: (targetTemperatureCelsius: number) => boolean,
+    private readonly selectedVoxel?: () => FMacroCoord | null,
+    private readonly selectedConductionPair?: () => VoxelPanelConductionPair | null,
   ) {
     this.panel.addEventListener("click", this.handleClick);
     this.panel.addEventListener("input", this.handleInput);
@@ -76,6 +100,20 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     this.panel.removeEventListener("input", this.handleInput);
     this.panel.removeEventListener("pointerdown", this.stopWorldEditPointer);
     this.panel.innerHTML = "";
+  }
+
+  captureConductionEndpoint(role: "source" | "target", _source = "keyboard"): CliCommandResult {
+    this.lastResult = this.captureSelectedConductionEndpoint(role);
+    this.renderKey = "";
+    this.renderNow(true);
+    return this.lastResult;
+  }
+
+  submitConduction(source = "keyboard"): CliCommandResult {
+    this.lastResult = this.runConduction(source);
+    this.renderKey = "";
+    this.renderNow(true);
+    return this.lastResult;
   }
 
   private readonly handleClick = (event: MouseEvent): void => {
@@ -156,9 +194,101 @@ export class VoxelDebugPanelView implements FrameSubscriber {
           text: ok ? "set selected voxel to 0C" : "cool selected voxel rejected",
         };
       }
+      case "conduct-source-selection":
+        return this.captureSelectedConductionEndpoint("source");
+      case "conduct-target-selection":
+        return this.captureSelectedConductionEndpoint("target");
+      case "conduct":
+        return this.runConduction("voxel_panel");
       default:
         return { ok: false, command: action, text: "unknown voxel panel action" };
     }
+  }
+
+  private runConduction(source: string): CliCommandResult {
+    const endpointArgs = this.conductionEndpointArgs();
+    if (!endpointArgs) {
+      return {
+        ok: false,
+        command: "conduct",
+        text: "aim at a voxel or fill source/target coordinates",
+      };
+    }
+
+    return this.commands.executeCliCommand(
+      "voxel_conduct",
+      [...endpointArgs, this.formState.conductPotential, this.formState.conductTicks],
+      source,
+    );
+  }
+
+  private conductionEndpointArgs(): string[] | null {
+    const manualArgs = [
+      this.formState.conductSourceX,
+      this.formState.conductSourceY,
+      this.formState.conductSourceZ,
+      this.formState.conductTargetX,
+      this.formState.conductTargetY,
+      this.formState.conductTargetZ,
+    ];
+
+    if (manualArgs.every((value) => value.trim().length > 0)) {
+      return manualArgs;
+    }
+
+    const pair = this.selectedConductionPair?.();
+    if (!pair) return null;
+
+    this.formState = {
+      ...this.formState,
+      conductSourceX: String(pair.sourceCoord.x),
+      conductSourceY: String(pair.sourceCoord.y),
+      conductSourceZ: String(pair.sourceCoord.z),
+      conductTargetX: String(pair.targetCoord.x),
+      conductTargetY: String(pair.targetCoord.y),
+      conductTargetZ: String(pair.targetCoord.z),
+    };
+
+    return [
+      this.formState.conductSourceX,
+      this.formState.conductSourceY,
+      this.formState.conductSourceZ,
+      this.formState.conductTargetX,
+      this.formState.conductTargetY,
+      this.formState.conductTargetZ,
+    ];
+  }
+
+  private captureSelectedConductionEndpoint(role: "source" | "target"): CliCommandResult {
+    const coord = this.selectedVoxel?.();
+    if (!coord) {
+      return {
+        ok: false,
+        command: `conduct-${role}-selection`,
+        text: "no selected voxel",
+      };
+    }
+
+    this.formState = {
+      ...this.formState,
+      ...(role === "source"
+        ? {
+            conductSourceX: String(coord.x),
+            conductSourceY: String(coord.y),
+            conductSourceZ: String(coord.z),
+          }
+        : {
+            conductTargetX: String(coord.x),
+            conductTargetY: String(coord.y),
+            conductTargetZ: String(coord.z),
+          }),
+    };
+
+    return {
+      ok: true,
+      command: `conduct-${role}-selection`,
+      text: `${role} set to ${coord.x},${coord.y},${coord.z}`,
+    };
   }
 
   private logicalSceneId(): number {
@@ -238,6 +368,21 @@ export function renderVoxelDebugPanelHtml(
     renderNumberInput("impactZ", "Z", formState.impactZ),
     renderNumberInput("material", "Mat", formState.material, 1),
     renderButton("impact", "Impact"),
+    `</div>`,
+    `<div class="voxel-panel-form voxel-panel-form--conduct-endpoints">`,
+    renderNumberInput("conductSourceX", "Src X", formState.conductSourceX),
+    renderNumberInput("conductSourceY", "Src Y", formState.conductSourceY),
+    renderNumberInput("conductSourceZ", "Src Z", formState.conductSourceZ),
+    renderButton("conduct-source-selection", "Use Src"),
+    renderNumberInput("conductTargetX", "Dst X", formState.conductTargetX),
+    renderNumberInput("conductTargetY", "Dst Y", formState.conductTargetY),
+    renderNumberInput("conductTargetZ", "Dst Z", formState.conductTargetZ),
+    renderButton("conduct-target-selection", "Use Dst"),
+    `</div>`,
+    `<div class="voxel-panel-form voxel-panel-form--conduct-run">`,
+    renderNumberInput("conductPotential", "V", formState.conductPotential),
+    renderNumberInput("conductTicks", "Ticks", formState.conductTicks, 1),
+    renderButton("conduct", "Conduct"),
     `</div>`,
     `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
     `</section>`,

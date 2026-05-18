@@ -42,8 +42,12 @@ defmodule SceneServer.Voxel.Field.FieldSource do
 
   @default_max_ticks 600
   @default_radius 4
-  @temperature_diffusion_time_scale 1.0
-  @temperature_ambient_loss_per_second 0.0
+  # SetTemperature writes authoritative voxel temperature first. The local
+  # FieldRegion is a gameplay/observe projection, so this profile compresses
+  # physical diffusion into a browser-visible time window without changing the
+  # voxel truth stored on the chunk.
+  @temperature_diffusion_time_scale 20_000.0
+  @temperature_ambient_loss_per_second 0.08
   @temperature_cell_size_meters 1.0
 
   @doc """

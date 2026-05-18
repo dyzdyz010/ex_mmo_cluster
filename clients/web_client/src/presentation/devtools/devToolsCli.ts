@@ -72,7 +72,7 @@ export class DevToolsCli implements CliCommandHandler {
     installCli(target, this.deps.logger, this);
   }
 
-  executeCliCommand(command: string, args: string[]): CliCommandResult {
+  executeCliCommand(command: string, args: string[], source = "cli"): CliCommandResult {
     switch (command) {
       case "snapshot":
         return this.ok(command, this.snapshotText(), this.snapshotData());
@@ -107,6 +107,8 @@ export class DevToolsCli implements CliCommandHandler {
           defaultTargetTemperatureCelsius: 0,
           label: "cool",
         });
+      case "voxel_conduct":
+        return this.cmdVoxelConduction(command, args, source);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -424,6 +426,57 @@ export class DevToolsCli implements CliCommandHandler {
       text: ok
         ? `${opts.label} request sent for (${formatCoord(coord)}) to ${targetTemperatureCelsius}C`
         : `${opts.label} request rejected for (${formatCoord(coord)})`,
+    };
+  }
+
+  private cmdVoxelConduction(command: string, args: string[], source: string): CliCommandResult {
+    const sourceCoord = parseMacroCoord(args.slice(0, 3));
+    const targetCoord = parseMacroCoord(args.slice(3, 6));
+    if (!sourceCoord || !targetCoord) {
+      return {
+        ok: false,
+        command,
+        text: usageForConductionCommand(),
+      };
+    }
+
+    const conductionPort = this.deps.edit as Partial<{
+      conductBetween: (
+        sourceCoord: FMacroCoord,
+        targetCoord: FMacroCoord,
+        sourcePotential: number,
+        source: string,
+        maxTicks?: number,
+      ) => boolean;
+    }>;
+    if (typeof conductionPort.conductBetween !== "function") {
+      return { ok: false, command, text: "conduction action unavailable" };
+    }
+
+    const sourcePotential = parseFiniteNumber(args[6], 120);
+    const maxTicks = parsePositiveInt(args[7], 120);
+    const ok = conductionPort.conductBetween.call(
+      conductionPort,
+      sourceCoord,
+      targetCoord,
+      sourcePotential,
+      source,
+      maxTicks,
+    );
+
+    return {
+      ok,
+      command,
+      text: ok
+        ? `conduction request submitted from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)}) at ${sourcePotential}V; waiting for server acceptance`
+        : `conduction request rejected from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)})`,
+      data: {
+        sourceCoord,
+        targetCoord,
+        sourcePotential,
+        maxTicks,
+        source,
+      },
     };
   }
 
@@ -965,6 +1018,10 @@ function usageForTemperatureCommand(command: string): string {
   }
 }
 
+function usageForConductionCommand(): string {
+  return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]";
+}
+
 function formatSceneRegionOverlayLine(region: {
   label?: string;
   ownerSceneInstanceRef?: number;
@@ -985,7 +1042,62 @@ function formatFieldOverlayLine(region: {
   chunkCoord: { cx: number; cy: number; cz: number };
   temperatureCells: number;
   electricCells: number;
+  maxTemperatureCelsius?: number | null;
+  maxAbsTemperatureDeltaCelsius?: number;
+  averageAbsTemperatureDeltaCelsius?: number;
+  temperatureStats?: {
+    maxTemperatureCelsius: number | null;
+    maxAbsTemperatureDeltaCelsius: number;
+    averageAbsTemperatureDeltaCelsius: number;
+  };
 }): string {
   const { cx, cy, cz } = region.chunkCoord;
-  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells}`;
+  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
+}
+
+function temperatureStatsForFieldRegion(region: {
+  temperatureCells: number;
+  maxTemperatureCelsius?: number | null;
+  maxAbsTemperatureDeltaCelsius?: number;
+  averageAbsTemperatureDeltaCelsius?: number;
+  temperatureStats?: {
+    maxTemperatureCelsius: number | null;
+    maxAbsTemperatureDeltaCelsius: number;
+    averageAbsTemperatureDeltaCelsius: number;
+  };
+}):
+  | {
+      maxTemperatureCelsius: number | null;
+      maxAbsTemperatureDeltaCelsius: number;
+      averageAbsTemperatureDeltaCelsius: number;
+    }
+  | undefined {
+  if (region.temperatureStats) return region.temperatureStats;
+  if (region.temperatureCells <= 0 || region.maxAbsTemperatureDeltaCelsius === undefined) {
+    return undefined;
+  }
+  return {
+    maxTemperatureCelsius: region.maxTemperatureCelsius ?? null,
+    maxAbsTemperatureDeltaCelsius: region.maxAbsTemperatureDeltaCelsius,
+    averageAbsTemperatureDeltaCelsius: region.averageAbsTemperatureDeltaCelsius ?? 0,
+  };
+}
+
+function formatTemperatureFieldStats(
+  stats:
+    | {
+        maxTemperatureCelsius: number | null;
+        maxAbsTemperatureDeltaCelsius: number;
+        averageAbsTemperatureDeltaCelsius: number;
+      }
+    | undefined,
+): string {
+  if (!stats) return "";
+
+  return ` heat=maxT=${formatCelsius(stats.maxTemperatureCelsius)} maxDelta=${formatCelsius(stats.maxAbsTemperatureDeltaCelsius)} avgDelta=${formatCelsius(stats.averageAbsTemperatureDeltaCelsius)}`;
+}
+
+function formatCelsius(value: number | null | undefined): string {
+  const safeValue = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return `${safeValue.toFixed(1)}C`;
 }

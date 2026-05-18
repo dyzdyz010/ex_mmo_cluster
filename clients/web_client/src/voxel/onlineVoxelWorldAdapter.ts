@@ -692,6 +692,64 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return true;
   }
 
+  requestVoxelConductionPath(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential = 120,
+    maxTicks = 120,
+  ): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/conduct`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        source_x: source.x,
+        source_y: source.y,
+        source_z: source.z,
+        target_x: target.x,
+        target_y: target.y,
+        target_z: target.z,
+        source_potential: sourcePotential,
+        max_ticks: maxTicks,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseErrorReason(response, "conduction_path_failed"));
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        const regionId = String(payload["region_id"] ?? "none");
+        const fieldRegionCreated = Boolean(payload["field_region_created"]);
+        this.logger.emit("voxel", "conduction_ok", {
+          logical_scene_id: this.logicalSceneId,
+          source_coord: `${source.x},${source.y},${source.z}`,
+          target_coord: `${target.x},${target.y},${target.z}`,
+          source_potential: sourcePotential,
+          region_id: regionId,
+          created: String(payload["created"] ?? "unknown"),
+          field_region_created: String(fieldRegionCreated),
+          max_ticks: maxTicks,
+        });
+        this.bus.emit("world:voxel-conduction-accepted", {
+          sourceCoord: source,
+          targetCoord: target,
+          sourcePotential,
+          source: "server",
+          regionId,
+          fieldRegionCreated,
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "conduction_path" });
+      });
+    return true;
+  }
+
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
     this.receivedObjectStateDeltaCount += 1;
     this.objectStateDeltaConsumer.consume(message.delta);
@@ -1135,6 +1193,17 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.drainVoxelFieldSnapshots === "function" &&
     typeof candidate.drainVoxelFieldDestroyeds === "function"
   );
+}
+
+async function responseErrorReason(response: Response, prefix: string): Promise<string> {
+  try {
+    const payload = (await response.json()) as Record<string, unknown>;
+    const code = String(payload["reason_code"] ?? payload["error"] ?? "unknown");
+    const reason = String(payload["reason"] ?? "");
+    return `${prefix}:${response.status}:${code}${reason ? `:${reason}` : ""}`;
+  } catch (_error) {
+    return `${prefix}:${response.status}`;
+  }
 }
 
 function seedSummary(payload: Record<string, unknown>): Record<string, unknown> {
