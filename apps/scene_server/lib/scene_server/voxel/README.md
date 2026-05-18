@@ -1062,6 +1062,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   的当前 `Storage`，用同一套 channel 搜索确认 source/target 和中间路径都是材料上可导电的
   occupied cell；空 cell、挖掉后的 cell、低导电地面会以
   `source_not_conductive` / `target_not_conductive` / `no_conductive_path` 拒绝。
+  失败时会写 `voxel_conduction_path_rejected` observe：对外错误码保持兼容，日志额外保留
+  `raw_reason`、更细的 `reject_reason`（如 `:search_budget_exhausted`）以及
+  scene/chunk/source/target 定位字段，方便 CLI 直接判断失败原因。
 - 路径代价：通过 `Storage.effective_attribute_at_normalized/3` 读取
   `electric_conductivity` / `dielectric_strength`；高电导率降低 resistance cost，
   dielectric strength 参与 breakdown cost。当前 material-gated 通道要求
@@ -1139,7 +1142,8 @@ breakdown 结算。
   生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
   `energy_budget_joules`，summary 会回显 normalized source；kernel 仍只演化
   electric/ionization field，不写 voxel/object truth。ttl 到期会走 worker expiry -> source
-  lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。
+  lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。导电预检失败
+  会写结构化 observe，搜索预算耗尽等内部原因不会被外部兼容错误码吞掉。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；

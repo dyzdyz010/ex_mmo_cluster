@@ -11,6 +11,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   alias SceneServer.Voxel.Field.FieldRuntime
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.TemperatureField
+  alias SceneServer.CliObserve
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -39,6 +40,32 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       |> Storage.put_attribute_for_cell(macro_index, "temperature", raw_delta)
 
     {storage, local_macro, macro_index}
+  end
+
+  defp with_observe_log(fun) do
+    previous_log = Application.get_env(:scene_server, :cli_observe_log)
+
+    observe_log =
+      Path.join(
+        System.tmp_dir!(),
+        "scene-field-runtime-#{System.unique_integer([:positive])}.log"
+      )
+
+    File.rm(observe_log)
+    Application.put_env(:scene_server, :cli_observe_log, observe_log)
+
+    try do
+      fun.(observe_log)
+    after
+      CliObserve.flush()
+
+      case previous_log do
+        nil -> Application.delete_env(:scene_server, :cli_observe_log)
+        value -> Application.put_env(:scene_server, :cli_observe_log, value)
+      end
+
+      File.rm(observe_log)
+    end
   end
 
   describe "ensure_temperature_anomaly/1" do
@@ -584,6 +611,46 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       debug = ChunkProcess.debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
+    end
+
+    test "emits detailed observe reason when conduction preflight rejects a channel" do
+      with_observe_log(fn observe_log ->
+        logical_scene_id = 76_800 + System.unique_integer([:positive])
+
+        assert {:ok, chunk_pid} =
+                 ChunkDirectory.ensure_chunk(%{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: {0, 0, 0}
+                 })
+
+        for coord <- [{0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {3, 1, 0}] do
+          assert {:ok, _storage} =
+                   ChunkProcess.put_solid_block(
+                     chunk_pid,
+                     coord,
+                     NormalBlockData.new(@iron_material_id)
+                   )
+        end
+
+        assert {:error, {:conduction_path_failed, :no_conductive_path}} =
+                 FieldRuntime.ensure_conduction_path(
+                   logical_scene_id: logical_scene_id,
+                   source_world_macro: {0, 1, 0},
+                   target_world_macro: {3, 1, 0},
+                   source_potential: 120,
+                   max_ticks: 90,
+                   max_frontier: 1
+                 )
+
+        CliObserve.flush()
+        observe_log_text = File.read!(observe_log)
+
+        assert observe_log_text =~ ~s(event="voxel_conduction_path_rejected")
+        assert observe_log_text =~ "raw_reason: :frontier_exhausted"
+        assert observe_log_text =~ "reject_reason: :search_budget_exhausted"
+        assert observe_log_text =~ "public_reason: :no_conductive_path"
+        assert observe_log_text =~ "max_frontier: 1"
+      end)
     end
   end
 

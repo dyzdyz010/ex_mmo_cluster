@@ -509,7 +509,8 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
 1. 已完成：把 electric source 纳入 `FieldSource` owner / ttl / budget 摘要与
    runtime lifetime，不再只靠 `{:conduction_path, source_index, target_index}` source key。
 2. 设计跨 chunk field 分片、AOI 降频和网络预算，不把大范围电击塞进单 chunk region。
-3. 为搜索预算超限、无 source、无 target、target 出 AABB 等路径补更细 observe。
+3. 已完成：为搜索预算超限等导电预检失败路径补 `voxel_conduction_path_rejected`
+   observe，日志保留 raw reason、对外 reason、scene/chunk/source/target 定位字段。
 4. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
    层承接，不能让 `ConductionPathKernel` 直接写 truth。
 
@@ -536,6 +537,10 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
 4. `POST /ingame/voxel/conduct` 可透传 `source_mode`、`source_owner_kind` /
    `source_owner_id`、`ttl_ticks` 与 `energy_budget_joules`；JSON 响应包含 `source`
    summary，便于 browser/CLI 观察。
+5. 导电预检失败现在会写 `voxel_conduction_path_rejected` observe 事件：例如
+   `max_frontier` 预算耗尽时，HTTP/runtime 仍对外返回兼容的 `:no_conductive_path`，
+   但日志会保留 `raw_reason: :frontier_exhausted` 和
+   `reject_reason: :search_budget_exhausted`，并携带 scene/chunk/source/target 定位字段。
 
 验证证据：
 

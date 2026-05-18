@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   before creating any local field.
   """
 
+  alias SceneServer.CliObserve
   alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess, Storage, Types}
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
@@ -207,7 +208,15 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                target_index,
                aabb,
                source_potential,
-               max_frontier
+               max_frontier,
+               %{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: coord_map(source_chunk_coord),
+                 source_world_macro: coord_map(source_world_macro),
+                 target_world_macro: coord_map(target_world_macro),
+                 source_local_macro: coord_map(source_local_macro),
+                 target_local_macro: coord_map(target_local_macro)
+               }
              ),
            {:ok, field_region} <- ChunkProcess.ensure_field_region(chunk_pid, region_attrs) do
         {:ok,
@@ -231,7 +240,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          target_index,
          aabb,
          source_potential,
-         max_frontier
+         max_frontier,
+         observe_context
        ) do
     %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
 
@@ -247,8 +257,24 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         :ok
 
       {:error, reason} ->
+        public_reason = normalize_conduction_reject_reason(reason)
+
+        emit_conduction_path_rejected(
+          Map.merge(observe_context, %{
+            source_key: source_key,
+            source_index: source_index,
+            target_index: target_index,
+            aabb: aabb,
+            source_potential: source_potential,
+            max_frontier: max_frontier,
+            raw_reason: reason,
+            reject_reason: detailed_conduction_reject_reason(reason),
+            public_reason: public_reason
+          })
+        )
+
         _ = ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
-        {:error, {:conduction_path_failed, normalize_conduction_reject_reason(reason)}}
+        {:error, {:conduction_path_failed, public_reason}}
     end
   end
 
@@ -256,6 +282,13 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   defp normalize_conduction_reject_reason(:empty_queue), do: :no_conductive_path
   defp normalize_conduction_reject_reason(:frontier_exhausted), do: :no_conductive_path
   defp normalize_conduction_reject_reason(reason), do: reason
+
+  defp detailed_conduction_reject_reason(:frontier_exhausted), do: :search_budget_exhausted
+  defp detailed_conduction_reject_reason(reason), do: normalize_conduction_reject_reason(reason)
+
+  defp emit_conduction_path_rejected(fields) do
+    CliObserve.emit("voxel_conduction_path_rejected", fn -> fields end)
+  end
 
   @doc """
   Builds the deterministic field plan from authoritative voxel storage without
