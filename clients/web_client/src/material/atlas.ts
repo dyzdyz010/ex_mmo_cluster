@@ -53,6 +53,10 @@ export function materialAtlasTexelRgba(x: number, y: number): [number, number, n
   const definition = listMaterialDefinitions()[tileIndex] ?? listMaterialDefinitions()[0]!;
   const localX = x % VoxelMaterialAtlasTileSize;
   const localY = y % VoxelMaterialAtlasTileSize;
+  if (definition.name === "power_block") {
+    return powerBlockTexelRgba(localX, localY);
+  }
+
   const brightness = mosaicBrightness(definition.name, localX, localY);
   const tint = mosaicTint(definition.baseColorHex);
   return [
@@ -130,6 +134,29 @@ function mosaicBrightness(name: string, x: number, y: number): number {
     default:
       return [0.8, 0.9, 1.0, 0.86][(coarseX + coarseY) % 4]!;
   }
+}
+
+function powerBlockTexelRgba(x: number, y: number): [number, number, number, number] {
+  const coarseX = Math.floor(x / 4);
+  const coarseY = Math.floor(y / 4);
+  const palette = [
+    [238, 198, 72],
+    [255, 227, 104],
+    [255, 244, 168],
+    [224, 178, 56],
+  ] as const;
+  const color = palette[(coarseX * 5 + coarseY * 3) % palette.length]!;
+  const centerDistance = Math.hypot(x - 7.5, y - 7.5);
+  const centerGlow = Math.max(0, 1 - centerDistance / 8) * 46;
+  const vein = x === y || x + y === VoxelMaterialAtlasTileSize - 1 ? 18 : 0;
+  const fleck = (x * 17 + y * 31) % 29 === 0 ? 32 : 0;
+
+  return [
+    clampByte(color[0] + centerGlow + vein + fleck),
+    clampByte(color[1] + centerGlow + vein + fleck),
+    clampByte(color[2] + centerGlow * 0.45 + Math.floor(vein * 0.35)),
+    255,
+  ];
 }
 
 function mosaicTint(hex: number): { r: number; g: number; b: number } {

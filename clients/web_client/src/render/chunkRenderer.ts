@@ -5,13 +5,12 @@ import {
   LineBasicMaterial,
   LineSegments,
   Mesh,
-  MeshStandardMaterial,
   Raycaster,
   Vector2,
   Vector3,
 } from "three";
 import type { PerspectiveCamera } from "three";
-import type { Intersection } from "three";
+import type { Intersection, MeshStandardMaterial } from "three";
 import { buildChunkMeshData, type ChunkMeshBuildData } from "../voxel/meshing/chunkMesher";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import {
@@ -28,6 +27,7 @@ import type { ObserveLog } from "../observe/logger";
 import type { PrefabRasterCell } from "../voxel/prefab";
 import type { FChunkMesherInputSnapshot } from "../voxel/meshing/types";
 import { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
+import { createVoxelChunkMaterial } from "./voxelChunkMaterial";
 import { createVoxelMaterialMosaicTexture } from "./voxelMaterialTexture";
 export { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
@@ -106,11 +106,7 @@ export interface PrefabPreviewSnapshot {
 export class ChunkRenderController {
   private readonly group = new Group();
   private readonly meshWorker = createChunkMeshWorker();
-  private readonly chunkMaterial = new MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.82,
-    metalness: 0.05,
-  });
+  private readonly chunkMaterial = createVoxelChunkMaterial();
   private readonly chunkMeshes = new Map<string, Mesh<BufferGeometry, MeshStandardMaterial>>();
   private readonly chunkTexture = createVoxelMaterialMosaicTexture();
   private readonly raycaster = new Raycaster();

@@ -73,7 +73,7 @@ const MATERIAL_DEFINITIONS: readonly VoxelMaterialDefinition[] = [
   {
     materialId: VoxelMaterialId.PowerBlock,
     name: "power_block",
-    baseColorHex: 0x2fbf71,
+    baseColorHex: 0xffd866,
     maxHealth: 240,
     flammable: false,
   },
