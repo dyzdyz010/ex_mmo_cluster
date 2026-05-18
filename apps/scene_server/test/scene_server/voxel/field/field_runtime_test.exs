@@ -308,7 +308,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert summary.field_region_created == true
       assert summary.field_types == ["electric_potential", "ionization"]
       assert summary.region_id
-      assert summary.source_key == {:conduction_path, source_index, target_index}
+      assert summary.source_key == {:electric, {:voxel, source_index}, source_index, target_index}
       assert summary.source_index == source_index
       assert summary.target_index == target_index
       assert summary.source_world_macro == %{x: 0, y: 1, z: 0}
@@ -321,6 +321,67 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       debug = ChunkProcess.debug_state(chunk_pid)
       assert debug.field_region_count == 1
       assert debug.field_source_count == 1
+    end
+
+    test "threads electric FieldSource owner ttl and budget into the region summary" do
+      logical_scene_id = 75_250 + System.unique_integer([:positive])
+      source_world_macro = {0, 1, 0}
+      target_world_macro = {3, 1, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      for coord <- [
+            source_world_macro,
+            target_world_macro,
+            {0, 0, 0},
+            {1, 0, 0},
+            {2, 0, 0},
+            {3, 0, 0}
+          ] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   chunk_pid,
+                   coord,
+                   NormalBlockData.new(@iron_material_id)
+                 )
+      end
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 source_potential: 150,
+                 max_ticks: 90,
+                 ttl_ticks: 45,
+                 radius: 1,
+                 max_frontier: 64,
+                 energy_budget_joules: 5_000,
+                 source_mode: :persistent,
+                 owner_ref: %{kind: :device, id: "coil-7"}
+               )
+
+      source_index = Types.macro_index!(source_world_macro)
+      target_index = Types.macro_index!(target_world_macro)
+
+      assert summary.max_ticks == 45
+      assert summary.source_key == {:electric, {:device, "coil-7"}, source_index, target_index}
+      assert summary.source.source_kind == :electric
+      assert summary.source.source_mode == :persistent
+      assert summary.source.owner_ref == %{kind: :device, id: "coil-7"}
+      assert summary.source.source_value == 150.0
+
+      assert summary.source.decay_policy == %{
+               field_radius: 1,
+               max_ticks: 90,
+               ttl_ticks: 45,
+               max_frontier: 64,
+               energy_budget_joules: 5_000.0
+             }
     end
 
     test "reuses the same source-target region and refreshes source points on replay" do

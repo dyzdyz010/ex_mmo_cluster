@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地（2026-05-17）
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle 第一片已落地（2026-05-18）
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -40,11 +40,16 @@
    并只刷新 `electric_potential` / `ionization` layer，不直接写 voxel/object truth；
    `FieldRuntime.ensure_conduction_path/1`、`POST /ingame/voxel/conduct` 和 web CLI
    `voxel_conduct` 已提供可操作入口，成功请求会自动打开 Field overlay。
+10. Phase 7.F 前置第一片已落地：electric conduction 也会正规化为 `FieldSource`，
+    source key 纳入 owner identity，HTTP/runtime 可携带 `owner_ref`、`source_mode`、
+    `ttl_ticks` 与 `energy_budget_joules`；`ttl_ticks` 会约束当前 FieldRegion 的
+    runtime lifetime，但 budget 消耗、owner 存活探测和跨 chunk lifecycle 仍留后续。
 
 仍未完成：
 
-1. `FieldSource` 目前只闭合温度 set-temperature 路径；object / magic / weather /
-   device 等 generic owner、ttl、budget、persistent source 生命周期仍未实现。
+1. `FieldSource` 目前闭合了 temperature 与 electric conduction 的最小 owner/ttl/budget
+   入口；object / magic / weather / device 等 generic persistent source owner 存活探测、
+   budget 消耗和跨 chunk 生命周期仍未实现。
 2. 未完成从持久 voxel truth 扫描或订阅异常属性。
 3. 只完成了“set-temperature 回到环境阈值内”时的主动销毁；基于 active cells、
    source owner、预算、region 扩张/收缩和分片的完整 lifecycle 仍未完成。
@@ -501,8 +506,8 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
 
 最小交付：
 
-1. 把 electric source 纳入 generic FieldSource owner / ttl / budget，而不是只靠
-   `{:conduction_path, source_index, target_index}` source key。
+1. 已完成：把 electric source 纳入 `FieldSource` owner / ttl / budget 摘要与
+   runtime lifetime，不再只靠 `{:conduction_path, source_index, target_index}` source key。
 2. 设计跨 chunk field 分片、AOI 降频和网络预算，不把大范围电击塞进单 chunk region。
 3. 为搜索预算超限、无 source、无 target、target 出 AABB 等路径补更细 observe。
 4. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
@@ -511,6 +516,37 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
 ---
 
 ## 10. 进度日志
+
+### 2026-05-18：Phase 7.F 前置 electric source lifecycle 第一片
+
+已完成：
+
+1. `FieldSource.normalize/1` 新增 `:electric` 专用路径：根据 source/target world-macro
+   派生 chunk/local/index、`ConductionPathKernel` spec、owner-aware source id/key，以及
+   `field_radius`、`max_ticks`、`ttl_ticks`、`max_frontier`、`energy_budget_joules`
+   decay policy。
+2. `FieldRuntime.ensure_conduction_path/1` 改为从 normalized electric `FieldSource`
+   创建/复用 region；默认 voxel owner 的 source key 变为
+   `{:electric, {:voxel, source_index}, source_index, target_index}`，显式 owner 则纳入
+   owner identity，例如 `{:electric, {:device, "coil-7"}, source_index, target_index}`。
+3. `ttl_ticks` 会覆盖当前 conduction FieldRegion 的 `max_ticks`，用于第一版 source
+   lifetime；`energy_budget_joules` 暂作为 source policy/observe 摘要，不在 kernel 内消耗。
+4. `POST /ingame/voxel/conduct` 可透传 `source_mode`、`source_owner_kind` /
+   `source_owner_id`、`ttl_ticks` 与 `energy_budget_joules`；JSON 响应包含 `source`
+   summary，便于 browser/CLI 观察。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/field/field_source_test.exs apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs
+```
+
+遗留：
+
+1. owner 存活探测、budget 消耗、source 自动续租/过期和 source effect 仍未实现。
+2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
+3. Phase 8 damage/ignite/breakdown 结算仍必须经 phenomenon/effect 层，不能放进
+   `ConductionPathKernel`。
 
 ### 2026-05-16：Phase 7.D1 / 7.D2 提交前收口
 
@@ -604,8 +640,8 @@ mix.bat test apps/scene_server/test/scene_server/voxel/field/conduction_path_ker
 
 1. `SceneServer.Voxel.Field.FieldRuntime.ensure_conduction_path/1` 成为导电路径 runtime
    入口：按 source/target world-macro 计算同 chunk local AABB，创建或复用
-   `ConductionPathKernel` FieldRegion，source key 为
-   `{:conduction_path, source_index, target_index}`。
+   `ConductionPathKernel` FieldRegion。2026-05-18 后 source key 已改为 owner-aware
+   electric `FieldSource` key。
 2. `WorldServer.Voxel.DevFieldSeed.ensure_conduction_path/1` 负责跨节点 dispatch，
    `AuthServerWeb.IngameController.voxel_conduct/2` 暴露
    `POST /ingame/voxel/conduct`，JSON 响应保持 tuple/atom 安全编码。
@@ -625,8 +661,8 @@ npm test -- src/presentation/devtools/devToolsCli.test.ts src/app/controllers/wo
 
 遗留：
 
-1. multi-owner electric source lifecycle、ttl 和 budget 仍未 generic 化；当前导电 source
-   key 只覆盖单 source/target pair。
+1. multi-owner electric source key、ttl 和 budget 摘要已 generic 化；owner 存活探测、
+   budget 消耗和自动续租/过期仍未实现。
 2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
 3. 还没有 Phase 8 damage/ignite/breakdown 结算；这些必须后续经 FieldEffect / gameplay
    dispatcher，而不是放进 kernel。

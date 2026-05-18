@@ -405,7 +405,7 @@ Phase 8 第一版不做：
 
 必须先完成：
 
-1. Phase 7.D2：`FieldSource` registry + 生命周期（温度最小闭环已完成，generic owner/ttl/budget 留后续）；
+1. Phase 7.D2 / 7.F 前置：`FieldSource` registry + 生命周期（温度最小闭环已完成，electric owner/ttl/budget 第一片已完成，generic owner 存活探测、budget 消耗与跨 chunk lifecycle 留后续）；
 2. Phase 7.D3：`FieldEffect` dispatcher + truth 写回（温度写回最小闭环已完成，candidate phenomenon / object effect 留后续）；
 3. Phase 7.E：材料与环境模型最小扩展；
 4. CLI / observe / overlay 对 field source、field effect、voxel state writeback 可见；

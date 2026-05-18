@@ -1070,6 +1070,12 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 - 输出：只刷新 region 内 `:electric_potential` / `:ionization` layer，source 到 target
   电势按路径长度衰减；不产生 `FieldEffect`，不直接写 voxel/object truth。
 - 协议：仍复用 0x73/0x74 的 electric/ionization layer，不扩主 wire。
+- Source lifecycle：`FieldRuntime.ensure_conduction_path/1` 会把导电请求正规化为
+  `FieldSource(source_kind: :electric)`；source key 纳入 owner identity，默认 voxel
+  owner 使用 `{:electric, {:voxel, source_index}, source_index, target_index}`，显式
+  device/object/magic owner 可通过 `owner_ref` 区分。同一 owner/source/target 会复用
+  region；`ttl_ticks` 会覆盖本次 region 的 `max_ticks`，`energy_budget_joules` 先作为
+  source policy/observe 摘要保留，实际消耗留给后续 lifecycle/effect slice。
 
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
 breakdown 结算。
@@ -1127,6 +1133,10 @@ breakdown 结算。
   `voxel_cool` 与 `/ingame/voxel/dev_heat_voxel` 保留为 alias。客户端仍只消费自动下发的
   0x73/0x74；set-temperature 成功后 web_client 自动打开 Field overlay，并提供
   `field_overlay [on|off]` CLI 诊断。
+- `ensure_conduction_path/1` 现在与 temperature path 共用 `FieldSource` source/region
+  生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
+  `energy_budget_joules`，summary 会回显 normalized source；kernel 仍只演化
+  electric/ionization field，不写 voxel/object truth。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；
@@ -1135,8 +1145,9 @@ breakdown 结算。
 
 当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
 局部 FieldRegion -> impulse 热扰动可扩散并消散 -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
-串通。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、generic owner/ttl/budget source
-lifecycle，以及 object / candidate phenomenon effect 写回边界。
+串通。electric conduction 已具备 owner-aware source key、ttl lifetime 和 budget policy
+摘要。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、owner 存活探测、budget 消耗、
+跨 chunk/AOI lifecycle，以及 object / candidate phenomenon effect 写回边界。
 
 ### FieldCodec
 

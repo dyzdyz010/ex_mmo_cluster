@@ -118,19 +118,39 @@ defmodule AuthServerWeb.IngameControllerTest do
         "target_z" => 0,
         "source_potential" => 120,
         "max_ticks" => 90,
+        "ttl_ticks" => 45,
         "radius" => 1,
-        "max_frontier" => 64
+        "max_frontier" => 64,
+        "source_mode" => "persistent",
+        "source_owner_kind" => "device",
+        "source_owner_id" => "coil-7",
+        "energy_budget_joules" => 5000
       })
 
     body = json_response(conn, 200)
     assert body["field_types"] == ["electric_potential", "ionization"]
     assert body["field_region_created"] == true
+    assert body["max_ticks"] == 45
 
     assert body["source_key"] == [
-             "conduction_path",
+             "electric",
+             ["device", "coil-7"],
              Types.macro_index!({0, 1, 0}),
              Types.macro_index!({3, 1, 0})
            ]
+
+    assert body["source"]["source_kind"] == "electric"
+    assert body["source"]["source_mode"] == "persistent"
+    assert body["source"]["owner_ref"] == %{"id" => "coil-7", "kind" => "device"}
+    assert body["source"]["source_value"] == 120.0
+
+    assert body["source"]["decay_policy"] == %{
+             "energy_budget_joules" => 5000.0,
+             "field_radius" => 1,
+             "max_frontier" => 64,
+             "max_ticks" => 90,
+             "ttl_ticks" => 45
+           }
 
     assert body["source_potential"] == 120.0
     assert body["source_world_macro"] == %{"x" => 0, "y" => 1, "z" => 0}

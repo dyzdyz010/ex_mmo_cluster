@@ -286,22 +286,33 @@ defmodule AuthServerWeb.IngameController do
       parse_non_negative_number(params["source_potential"] || params["potential"], 120.0)
 
     max_ticks = parse_non_negative_int(params["max_ticks"], 120)
+    ttl_ticks = parse_optional_non_negative_int(params["ttl_ticks"] || params["source_ttl_ticks"])
     radius = parse_non_negative_int(params["radius"], 1)
     max_frontier = parse_non_negative_int(params["max_frontier"], 512)
+    owner_ref = parse_source_owner_ref(params)
+
+    energy_budget_joules =
+      parse_optional_non_negative_number(
+        params["energy_budget_joules"] || params["source_energy_budget_joules"]
+      )
+
+    conduct_opts =
+      [
+        logical_scene_id: logical_scene_id,
+        source_world_macro: source_world_macro,
+        target_world_macro: target_world_macro,
+        source_potential: source_potential,
+        max_ticks: max_ticks,
+        radius: radius,
+        max_frontier: max_frontier
+      ]
+      |> maybe_put(:ttl_ticks, ttl_ticks)
+      |> maybe_put(:source_mode, params["source_mode"])
+      |> maybe_put(:owner_ref, owner_ref)
+      |> maybe_put(:energy_budget_joules, energy_budget_joules)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
-         {:ok, summary} <-
-           apply(module, :ensure_conduction_path, [
-             [
-               logical_scene_id: logical_scene_id,
-               source_world_macro: source_world_macro,
-               target_world_macro: target_world_macro,
-               source_potential: source_potential,
-               max_ticks: max_ticks,
-               radius: radius,
-               max_frontier: max_frontier
-             ]
-           ]) do
+         {:ok, summary} <- apply(module, :ensure_conduction_path, [conduct_opts]) do
       voxel_json(conn, summary)
     else
       {:error, reason} ->
@@ -396,6 +407,17 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  defp parse_optional_non_negative_number(nil), do: nil
+
+  defp parse_optional_non_negative_number(value) do
+    value
+    |> parse_number(nil)
+    |> case do
+      parsed when is_number(parsed) and parsed >= 0 -> parsed
+      _other -> nil
+    end
+  end
+
   defp normalize_username(value) when is_binary(value) do
     trimmed = String.trim(value)
 
@@ -418,6 +440,19 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp parse_non_negative_int(_value, fallback), do: fallback
+
+  defp parse_optional_non_negative_int(nil), do: nil
+  defp parse_optional_non_negative_int(value), do: parse_non_negative_int(value, nil)
+
+  defp parse_source_owner_ref(params) do
+    owner_kind = params["source_owner_kind"] || params["owner_kind"]
+    owner_id = params["source_owner_id"] || params["owner_id"]
+
+    if is_binary(owner_kind) and String.trim(owner_kind) != "" and
+         is_binary(owner_id) and String.trim(owner_id) != "" do
+      %{kind: String.trim(owner_kind), id: String.trim(owner_id)}
+    end
+  end
 
   defp parse_number(value, _fallback) when is_integer(value), do: value * 1.0
   defp parse_number(value, _fallback) when is_float(value), do: value

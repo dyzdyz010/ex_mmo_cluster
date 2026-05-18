@@ -1,6 +1,6 @@
 defmodule SceneServer.Voxel.Field.FieldSource do
   @moduledoc """
-  Minimal Phase 7.D2 runtime source descriptor for local field creation.
+  Phase 7 runtime source descriptor for local field creation.
 
   `FieldSource` is not persistent world truth. It is the normalized runtime
   record that explains why `FieldRuntime` should create or refresh a local
@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   """
 
   alias SceneServer.Voxel.Types
+  alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
 
   @type t :: %__MODULE__{
@@ -49,12 +50,16 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   @temperature_diffusion_time_scale 20_000.0
   @temperature_ambient_loss_per_second 0.08
   @temperature_cell_size_meters 1.0
+  @default_conduction_source_potential 120.0
+  @default_conduction_max_ticks 120
+  @default_conduction_radius 1
+  @default_conduction_max_frontier 512
 
   @doc """
   Normalizes a runtime field source.
 
-  The current minimal slice specializes the default path for temperature voxel
-  sources while still accepting the full Phase 7.D2 field set.
+  The current runtime specializes temperature and electric conduction sources
+  while still accepting generic source descriptors for later owner types.
   """
   @spec normalize(keyword() | map()) :: t()
   def normalize(attrs) when is_list(attrs) or is_map(attrs) do
@@ -62,6 +67,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
 
     case normalize_source_kind(fetch_any(attrs, [:source_kind], :temperature)) do
       :temperature -> normalize_temperature_source(attrs)
+      :electric -> normalize_electric_source(attrs)
       source_kind -> normalize_generic_source(attrs, source_kind)
     end
   end
@@ -136,6 +142,84 @@ defmodule SceneServer.Voxel.Field.FieldSource do
           field_radius: radius,
           max_ticks: max_ticks
         }),
+      lease_token: fetch_any(attrs, [:lease_token], nil),
+      created_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:created_tick], nil)),
+      updated_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:updated_tick], nil))
+    }
+  end
+
+  defp normalize_electric_source(attrs) do
+    logical_scene_id = non_negative_int(fetch_any(attrs, [:logical_scene_id], 1))
+    source_world_macro = electric_source_world_macro_coord(attrs)
+    target_world_macro = electric_target_world_macro_coord(attrs, source_world_macro)
+    {source_chunk_coord, source_local_macro} = Types.chunk_and_local_macro!(source_world_macro)
+    {_target_chunk_coord, target_local_macro} = Types.chunk_and_local_macro!(target_world_macro)
+    source_index = Types.macro_index!(source_local_macro)
+    target_index = Types.macro_index!(target_local_macro)
+    source_potential = non_negative_float(conduction_potential(attrs))
+    max_ticks = non_negative_int(fetch_any(attrs, [:max_ticks], @default_conduction_max_ticks))
+    ttl_ticks = normalize_optional_non_negative_int(fetch_any(attrs, [:ttl_ticks, :ttl], nil))
+    radius = non_negative_int(fetch_any(attrs, [:radius], @default_conduction_radius))
+
+    max_frontier =
+      non_negative_int(fetch_any(attrs, [:max_frontier], @default_conduction_max_frontier))
+
+    energy_budget =
+      normalize_optional_non_negative_float(fetch_any(attrs, [:energy_budget_joules], nil))
+
+    owner_ref =
+      fetch_any(attrs, [:owner_ref], %{
+        kind: :voxel,
+        logical_scene_id: logical_scene_id,
+        world_macro: coord_map(source_world_macro)
+      })
+
+    owner_key = owner_key(owner_ref, source_index)
+
+    %__MODULE__{
+      source_id:
+        fetch_any(
+          attrs,
+          [:source_id],
+          {:electric, logical_scene_id, owner_key, source_world_macro, target_world_macro}
+        ),
+      source_key:
+        fetch_any(attrs, [:source_key], {:electric, owner_key, source_index, target_index}),
+      source_kind: :electric,
+      source_mode: normalize_source_mode(fetch_any(attrs, [:source_mode], :impulse)),
+      owner_ref: owner_ref,
+      location:
+        fetch_any(attrs, [:location], %{
+          source_world_macro: coord_map(source_world_macro),
+          target_world_macro: coord_map(target_world_macro),
+          chunk_coord: coord_map(source_chunk_coord),
+          source_local_macro: coord_map(source_local_macro),
+          target_local_macro: coord_map(target_local_macro),
+          source_index: source_index,
+          target_index: target_index
+        }),
+      target_value: %{world_macro: coord_map(target_world_macro), macro_index: target_index},
+      source_value: source_potential,
+      kernel_specs:
+        fetch_any(attrs, [:kernel_specs], [
+          %{
+            id: :conduction_path,
+            module: ConductionPathKernel,
+            opts: %{target_macro_index: target_index, max_frontier: max_frontier}
+          }
+        ]),
+      decay_policy:
+        fetch_any(
+          attrs,
+          [:decay_policy],
+          %{
+            field_radius: radius,
+            max_ticks: max_ticks,
+            ttl_ticks: ttl_ticks,
+            max_frontier: max_frontier,
+            energy_budget_joules: energy_budget
+          }
+        ),
       lease_token: fetch_any(attrs, [:lease_token], nil),
       created_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:created_tick], nil)),
       updated_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:updated_tick], nil))
@@ -227,6 +311,44 @@ defmodule SceneServer.Voxel.Field.FieldSource do
     end
   end
 
+  defp electric_source_world_macro_coord(attrs) do
+    cond do
+      has_any_key?(attrs, [:source_world_macro, :source_macro, :from_world_macro]) ->
+        attrs
+        |> fetch_any([:source_world_macro, :source_macro, :from_world_macro], {0, 0, 0})
+        |> coord_tuple()
+        |> Types.normalize_world_micro_coord!()
+
+      has_axis_keys?(attrs, [:source_x, :source_y, :source_z]) ->
+        Types.normalize_world_micro_coord!(
+          {fetch_any(attrs, [:source_x], 0), fetch_any(attrs, [:source_y], 0),
+           fetch_any(attrs, [:source_z], 0)}
+        )
+
+      true ->
+        world_macro_coord(attrs)
+    end
+  end
+
+  defp electric_target_world_macro_coord(attrs, fallback) do
+    cond do
+      has_any_key?(attrs, [:target_world_macro, :target_macro, :to_world_macro]) ->
+        attrs
+        |> fetch_any([:target_world_macro, :target_macro, :to_world_macro], fallback)
+        |> coord_tuple()
+        |> Types.normalize_world_micro_coord!()
+
+      has_axis_keys?(attrs, [:target_x, :target_y, :target_z]) ->
+        Types.normalize_world_micro_coord!(
+          {fetch_any(attrs, [:target_x], 0), fetch_any(attrs, [:target_y], 0),
+           fetch_any(attrs, [:target_z], 0)}
+        )
+
+      true ->
+        fallback
+    end
+  end
+
   defp coord_map({x, y, z}), do: %{x: x, y: y, z: z}
 
   defp coord_tuple(%{x: x, y: y, z: z}), do: {x, y, z}
@@ -288,6 +410,9 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   defp normalize_optional_non_negative_int(nil), do: nil
   defp normalize_optional_non_negative_int(value), do: non_negative_int(value)
 
+  defp normalize_optional_non_negative_float(nil), do: nil
+  defp normalize_optional_non_negative_float(value), do: non_negative_float(value)
+
   defp temperature_float(value, _fallback) when is_integer(value), do: value * 1.0
   defp temperature_float(value, _fallback) when is_float(value), do: value
 
@@ -299,4 +424,32 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   end
 
   defp temperature_float(_value, fallback), do: fallback
+
+  defp conduction_potential(attrs) do
+    fetch_any(
+      attrs,
+      [:source_potential, :potential, :electric_potential, :source_value],
+      @default_conduction_source_potential
+    )
+  end
+
+  defp non_negative_float(value) when is_integer(value) and value >= 0, do: value * 1.0
+  defp non_negative_float(value) when is_float(value) and value >= 0, do: value
+
+  defp non_negative_float(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _other -> 0.0
+    end
+  end
+
+  defp non_negative_float(_value), do: 0.0
+
+  defp owner_key(%{kind: kind, id: id}, _source_index), do: {kind, id}
+  defp owner_key(%{"kind" => kind, "id" => id}, _source_index), do: {kind, id}
+  defp owner_key(%{kind: kind, object_id: id}, _source_index), do: {kind, id}
+  defp owner_key(%{"kind" => kind, "object_id" => id}, _source_index), do: {kind, id}
+  defp owner_key(%{kind: :voxel}, source_index), do: {:voxel, source_index}
+  defp owner_key(%{"kind" => "voxel"}, source_index), do: {:voxel, source_index}
+  defp owner_key(_owner_ref, source_index), do: {:voxel, source_index}
 end

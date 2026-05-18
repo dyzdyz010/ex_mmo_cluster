@@ -18,7 +18,6 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   @default_max_ticks 600
   @default_radius 4
   @default_conduction_max_frontier 512
-  @default_conduction_source_potential 120.0
   @default_target_temperature_celsius 800.0
   @temperature_diffusion_time_scale 1.0
   @temperature_ambient_loss_per_second 0.0
@@ -139,26 +138,30 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     else
       source_index = Types.macro_index!(source_local_macro)
       target_index = Types.macro_index!(target_local_macro)
-      source_potential = conduction_source_potential(opts)
-      max_ticks = non_negative_int(get_any(opts, [:max_ticks], @default_max_ticks))
-      radius = non_negative_int(get_any(opts, [:radius], 1))
+
+      field_source =
+        opts
+        |> Map.put(:source_kind, :electric)
+        |> Map.put(:logical_scene_id, logical_scene_id)
+        |> Map.put(:source_world_macro, source_world_macro)
+        |> Map.put(:target_world_macro, target_world_macro)
+        |> FieldSource.normalize()
+
+      decay_policy = field_source.decay_policy || %{}
+      source_potential = field_source.source_value
+      max_ticks = conduction_max_ticks(decay_policy)
+      radius = non_negative_int(get_any(decay_policy, [:field_radius], 1))
 
       max_frontier =
-        non_negative_int(get_any(opts, [:max_frontier], @default_conduction_max_frontier))
+        non_negative_int(get_any(decay_policy, [:max_frontier], @default_conduction_max_frontier))
 
       aabb = local_aabb_between(source_local_macro, target_local_macro, radius)
-      source_key = {:conduction_path, source_index, target_index}
+      source_key = field_source.source_key
 
       region_attrs = %{
         chunk_coord: source_chunk_coord,
         aabb: aabb,
-        kernels: [
-          %{
-            id: :conduction_path,
-            module: ConductionPathKernel,
-            opts: %{target_macro_index: target_index, max_frontier: max_frontier}
-          }
-        ],
+        kernels: field_source.kernel_specs,
         source_points: [
           %{
             macro_index: source_index,
@@ -171,22 +174,24 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         source_key: source_key
       }
 
-      summary = %{
-        logical_scene_id: logical_scene_id,
-        chunk_coord: coord_map(source_chunk_coord),
-        source_world_macro: coord_map(source_world_macro),
-        target_world_macro: coord_map(target_world_macro),
-        source_local_macro: coord_map(source_local_macro),
-        target_local_macro: coord_map(target_local_macro),
-        source_index: source_index,
-        target_index: target_index,
-        source_key: source_key,
-        field_types: ["electric_potential", "ionization"],
-        source_potential: source_potential,
-        radius: radius,
-        max_ticks: max_ticks,
-        max_frontier: max_frontier
-      }
+      summary =
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: coord_map(source_chunk_coord),
+          source_world_macro: coord_map(source_world_macro),
+          target_world_macro: coord_map(target_world_macro),
+          source_local_macro: coord_map(source_local_macro),
+          target_local_macro: coord_map(target_local_macro),
+          source_index: source_index,
+          target_index: target_index,
+          source_key: source_key,
+          field_types: ["electric_potential", "ionization"],
+          source_potential: source_potential,
+          radius: radius,
+          max_ticks: max_ticks,
+          max_frontier: max_frontier
+        }
+        |> maybe_put_source_summary(field_source)
 
       with {:ok, chunk_pid} <-
              ChunkDirectory.ensure_chunk(%{
@@ -408,14 +413,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     }
   end
 
-  defp conduction_source_potential(opts) do
-    non_negative_float(
-      get_any(
-        opts,
-        [:source_potential, :potential, :electric_potential],
-        @default_conduction_source_potential
-      )
-    )
+  defp conduction_max_ticks(decay_policy) do
+    ttl_ticks = Map.get(decay_policy, :ttl_ticks) || Map.get(decay_policy, "ttl_ticks")
+    max_ticks = Map.get(decay_policy, :max_ticks) || Map.get(decay_policy, "max_ticks")
+    non_negative_int(ttl_ticks || max_ticks || @default_max_ticks)
   end
 
   defp base_summary(

@@ -74,11 +74,14 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   Unlike `set_temperature/1`, this helper does not mutate voxel attributes. It
   only asks `FieldRuntime` to create a `ConductionPathKernel` region so the
   normal field snapshot pipeline can expose the electric/ionization layers to
-  the browser field overlay.
+  the browser field overlay. Optional `:owner_ref`, `:source_mode`,
+  `:ttl_ticks`, and `:energy_budget_joules` are forwarded into the normalized
+  electric `FieldSource` so dev/browser requests exercise the same lifecycle
+  boundary as future gameplay sources.
   """
   @spec conduct_path(keyword()) :: {:ok, map()} | {:error, term()}
   def conduct_path(opts \\ []) do
-    FieldRuntime.ensure_conduction_path(
+    [
       logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
       source_world_macro: Keyword.get(opts, :source_world_macro, {0, 0, 0}),
       target_world_macro: Keyword.get(opts, :target_world_macro, {0, 0, 0}),
@@ -86,8 +89,16 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
       max_ticks: Keyword.get(opts, :max_ticks, @default_conduction_max_ticks),
       radius: Keyword.get(opts, :radius, 1),
       max_frontier: Keyword.get(opts, :max_frontier, 512)
-    )
+    ]
+    |> maybe_put(:ttl_ticks, Keyword.get(opts, :ttl_ticks))
+    |> maybe_put(:source_mode, Keyword.get(opts, :source_mode))
+    |> maybe_put(:owner_ref, Keyword.get(opts, :owner_ref))
+    |> maybe_put(:energy_budget_joules, Keyword.get(opts, :energy_budget_joules))
+    |> FieldRuntime.ensure_conduction_path()
   end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp legacy_heat_voxel(opts) do
     base_opts = [
