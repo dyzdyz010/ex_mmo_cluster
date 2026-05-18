@@ -108,7 +108,13 @@ describe("WorldEditController selection edits", () => {
     const placedPrefabs: AppEvents["world:prefab-placed"][] = [];
     bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
 
-    for (let i = 0; i < 5; i += 1) {
+    expect(edit.getHotbarState().entries).toEqual(
+      expect.arrayContaining([
+        { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
+      ]),
+    );
+
+    for (let i = 0; i < 6; i += 1) {
       bus.emit("input:hotbar-cycle", { direction: 1, source: "test" });
     }
 
@@ -145,7 +151,13 @@ describe("WorldEditController selection edits", () => {
     bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
     bus.on("world:prefab-boundary-snap-fallback", (event) => fallbacks.push(event));
 
-    for (let i = 0; i < 5; i += 1) {
+    expect(edit.getHotbarState().entries).toEqual(
+      expect.arrayContaining([
+        { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
+      ]),
+    );
+
+    for (let i = 0; i < 6; i += 1) {
       bus.emit("input:hotbar-cycle", { direction: 1, source: "test" });
     }
 

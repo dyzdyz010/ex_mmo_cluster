@@ -50,7 +50,9 @@ electric conduction 也走 owner-aware `FieldSource`，HTTP/runtime 可携带 `s
 ttl 到期会释放 source 并通过既有 0x74 destroy payload 让客户端看到 field 消失；导电预检失败
 会写 `voxel_conduction_path_rejected` observe，保留预算耗尽等更细失败原因和 source/target
 定位字段；`PowerSource` v1 已让导电请求可声明 DC / AC / pulse、voltage、current limit 和
-frequency，HTTP 与 web CLI 均可透传并在 summary 中回显，但当前仍不做完整电路仿真或能量消耗。
+frequency，HTTP 与 web CLI 均可透传并在 summary 中回显。默认物理来源已收敛到
+`material_id=6` 的 `power_block`：普通 iron 只做导线，未显式传 owner/power 参数时不能凭空供电。
+当前仍不做完整电路仿真或能量消耗。
 后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
 为准：下一步关注 source owner 存活/预算消耗、跨 chunk/AOI 预算与 Phase 8 effect 边界。Phase 8

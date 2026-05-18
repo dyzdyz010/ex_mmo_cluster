@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle 第一片已落地（2026-05-18）
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle 与 physical power block 第一片已落地（2026-05-18）
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -44,6 +44,9 @@
     source key 纳入 owner identity，HTTP/runtime 可携带 `owner_ref`、`source_mode`、
     `ttl_ticks` 与 `energy_budget_joules`；`ttl_ticks` 会约束当前 FieldRegion 的
     runtime lifetime，但 budget 消耗、owner 存活探测和跨 chunk lifecycle 仍留后续。
+11. Physical power block 第一片已落地：`material_id=6` 的 `power_block` 是默认物理电源；
+    未显式传入 device/object/magic owner 或 power 参数时，普通 iron 只做导线，不再能
+    凭空生成电场。`power_block` 默认声明 DC 120V、20A、20_000J supply policy。
 
 仍未完成：
 
@@ -513,12 +516,41 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
    observe，日志保留 raw reason、对外 reason、scene/chunk/source/target 定位字段。
 4. 已完成：新增 `PowerSource` v1 描述，让导电请求可声明 DC / AC / pulse、voltage、
    current limit、frequency 与 energy budget；HTTP 和 web CLI 可操作，但暂不做完整电路仿真。
-5. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
+5. 已完成：新增 `power_block` 材料，默认导电 source 必须来自该真实体素；普通导线材料
+   只能承载电流，不能自己发电。
+6. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
    层承接，不能让 `ConductionPathKernel` 直接写 truth。
 
 ---
 
 ## 10. 进度日志
+
+### 2026-05-18：Phase 7.F 前置 physical power block 第一片
+
+已完成：
+
+1. `SceneServer.Voxel.MaterialCatalog` 新增 append-only `material_id=6` 的 `power_block`，
+   该材料具有导电物性，并声明默认供电策略：DC 120V、20A、20_000J。
+2. `FieldRuntime.ensure_conduction_path/1` 会在 source chunk 的 authoritative
+   `Storage` 中读取源点材料。未显式传入 owner/power 参数时，source 必须是
+   `power_block`；普通 iron 虽然可导电，但会以 `source_not_powered` 拒绝。
+3. 物理电源块的 electric source key 使用
+   `{:electric, {:power_block, source_index}, source_index, target_index}`。如果电源块被挖掉，
+   刷新请求会用同一 source key 释放旧 region，避免残留电场。
+4. web client material catalog / hotbar / CLI material parser 已可选择和放置
+   `power_block`；数字键范围扩到第 9 格，保证新增材料后 prefab 热栏仍可键盘选择。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/material_catalog_test.exs apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs
+npm test -- src/material/catalog.test.ts src/app/controllers/worldEditController.test.ts src/app/controllers/inputController.test.ts
+```
+
+遗留：
+
+1. `power_block` 的 energy budget 仍是 source policy/observe 摘要，尚未随 tick 或负载消耗。
+2. 负载、短路、保险丝、变压器、AC 相位与电热耦合仍属于后续 gameplay/effect slice。
 
 ### 2026-05-18：Phase 7.F 前置 electric source lifecycle 第一片
 

@@ -18,6 +18,14 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @wood_material_id 3
   @ice_material_id 4
   @iron_material_id 5
+  @power_block_material_id 6
+
+  @power_source_defaults %{
+    output_mode: :dc,
+    voltage: 120.0,
+    current_limit_amps: 20.0,
+    energy_budget_joules: 20_000.0
+  }
 
   @material_default_attributes %{
     @dirt_material_id => %{
@@ -74,8 +82,36 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(10.0 * @fixed32_scale),
       "dielectric_strength" => 0
+    },
+    @power_block_material_id => %{
+      "density" => round(7_870.0 * @fixed32_scale),
+      "thermal_conductivity" => round(80.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(449.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_538.0 * @fixed32_scale),
+      "freezing_point" => round(1_538.0 * @fixed32_scale),
+      "boiling_point" => round(2_862.0 * @fixed32_scale),
+      "electric_conductivity" => round(12.0 * @fixed32_scale),
+      "dielectric_strength" => 0
     }
   }
+
+  @doc "Returns the append-only material id for the physical electric power block."
+  @spec power_source_material_id() :: pos_integer()
+  def power_source_material_id, do: @power_block_material_id
+
+  @doc "Returns true when a material id represents a physical power block."
+  @spec power_source_material?(term()) :: boolean()
+  def power_source_material?(material_id), do: material_id == @power_block_material_id
+
+  @doc "Returns the current default supply policy for a physical power block."
+  @spec power_source_defaults() :: %{
+          output_mode: :dc,
+          voltage: float(),
+          current_limit_amps: float(),
+          energy_budget_joules: float()
+        }
+  def power_source_defaults, do: @power_source_defaults
 
   @doc """
   Returns all material-default attributes for a material id.

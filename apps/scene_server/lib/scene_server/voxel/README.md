@@ -665,7 +665,7 @@ C-1..C-8 全部推荐方案（用户 2026-05-13 approve）：
 所有 attribute 用 fixed32 Q16.16；range 与 default 的 raw int32 编码见
 `priv/catalogs/attribute_catalog_v1.exs`。
 `material_default` 的 catalog default 是无材质/未知材质回退值；已接入的 material-specific
-覆盖包括 dirt、stone、wood、ice、iron，分别提供 density、thermal_conductivity、
+覆盖包括 dirt、stone、wood、ice、iron、power_block，分别提供 density、thermal_conductivity、
 specific_heat_capacity、温度阈值（ignition/melting/freezing/boiling）和电属性
 （electric_conductivity / dielectric_strength）。`latent_heat` 暂未进入 catalog；
 等相变能量结算有明确 source/effect 读写链路后再追加。
@@ -1061,7 +1061,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 - 权威预检：`FieldRuntime.ensure_conduction_path/1` 在创建 FieldRegion 前读取 source chunk
   的当前 `Storage`，用同一套 channel 搜索确认 source/target 和中间路径都是材料上可导电的
   occupied cell；空 cell、挖掉后的 cell、低导电地面会以
-  `source_not_conductive` / `target_not_conductive` / `no_conductive_path` 拒绝。
+  `source_not_conductive` / `target_not_conductive` / `no_conductive_path` 拒绝。普通 iron
+  只表示导线；未显式传入 device/object/magic owner 或 power 参数时，source 必须是
+  material_id=6 的 `power_block`，否则以 `source_not_powered` 拒绝，避免“凭空电源”。
   失败时会写 `voxel_conduction_path_rejected` observe：对外错误码保持兼容，日志额外保留
   `raw_reason`、更细的 `reject_reason`（如 `:search_budget_exhausted`）以及
   scene/chunk/source/target 定位字段，方便 CLI 直接判断失败原因。
@@ -1074,8 +1076,8 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   电势按路径长度衰减；不产生 `FieldEffect`，不直接写 voxel/object truth。
 - 协议：仍复用 0x73/0x74 的 electric/ionization layer，不扩主 wire。
 - Source lifecycle：`FieldRuntime.ensure_conduction_path/1` 会把导电请求正规化为
-  `FieldSource(source_kind: :electric)`；source key 纳入 owner identity，默认 voxel
-  owner 使用 `{:electric, {:voxel, source_index}, source_index, target_index}`，显式
+  `FieldSource(source_kind: :electric)`；source key 纳入 owner identity。物理电源块默认使用
+  `{:electric, {:power_block, source_index}, source_index, target_index}`，显式
   device/object/magic owner 可通过 `owner_ref` 区分。同一 owner/source/target 会复用
   region；`ttl_ticks` 会覆盖本次 region 的 `max_ticks`，`energy_budget_joules` 先作为
   source policy/observe 摘要保留，实际消耗留给后续 lifecycle/effect slice。worker 自然到期
@@ -1085,7 +1087,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   `SceneServer.Voxel.Field.PowerSource`，记录供电模式和供电上限：
   `output_mode: :dc | :ac | :pulse`、`voltage`、`current_limit_amps`、`frequency_hz`、
   `energy_budget_joules`。这只是供电事实描述，不是完整电路仿真；AC 当前不模拟相位，预算
-  当前不消耗，负载/短路/保险丝/变压器仍留给后续 gameplay/effect slice。
+  当前不消耗，负载/短路/保险丝/变压器仍留给后续 gameplay/effect slice。`power_block`
+  默认声明 DC 120V、20A、20_000J 的 supply policy；这个 policy 已进入 summary/observe，
+  但还不会被 tick 消耗。
 
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
 breakdown 结算。
@@ -1097,7 +1101,7 @@ breakdown 结算。
 - 扩散系数：`α = min((thermal_conductivity / (density × specific_heat_capacity)) × dt / cell_size², 0.5)`；
   默认 `dt = 0.1s`、`cell_size = 1m`。`thermal_conductivity` / `density` /
   `specific_heat_capacity` 从 `Storage.effective_attribute_at/3` 读取。
-- 已接入的 material-specific 默认物性：dirt、stone、wood、ice、iron；未知材质才回退到
+- 已接入的 material-specific 默认物性：dirt、stone、wood、ice、iron、power_block；未知材质才回退到
   attribute catalog 的无材质默认值。未带 `FieldSource` 的底层 anomaly builder 仍保留
   真实时间尺度 (`diffusion_time_scale = 1.0`) 和 `1m` macro voxel。
 - `SetTemperature` / browser Heat 入口会先写权威 voxel 温度属性，再用 normalized
@@ -1146,7 +1150,8 @@ breakdown 结算。
 - `ensure_conduction_path/1` 现在与 temperature path 共用 `FieldSource` source/region
   生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
   `output_mode`、`voltage`、`current_limit_amps`、`frequency_hz`、`energy_budget_joules`，
-  summary 会回显 normalized source 和 `power_source`；kernel 仍只演化
+  summary 会回显 normalized source 和 `power_source`。未显式传 owner/power 参数时，
+  source cell 必须是 `power_block`；导线材料只负责导通，不负责发电。kernel 仍只演化
   electric/ionization field，不写 voxel/object truth。ttl 到期会走 worker expiry -> source
   lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。导电预检失败
   会写结构化 observe，搜索预算耗尽等内部原因不会被外部兼容错误码吞掉。

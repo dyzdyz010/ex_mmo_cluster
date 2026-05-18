@@ -9,7 +9,18 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   """
 
   alias SceneServer.CliObserve
-  alias SceneServer.Voxel.{ChunkDirectory, ChunkProcess, Storage, Types}
+
+  alias SceneServer.Voxel.{
+    ChunkDirectory,
+    ChunkProcess,
+    MaterialCatalog,
+    MicroLayer,
+    NormalBlockData,
+    RefinedCellData,
+    Storage,
+    Types
+  }
+
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
@@ -140,97 +151,199 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       source_index = Types.macro_index!(source_local_macro)
       target_index = Types.macro_index!(target_local_macro)
 
-      field_source =
-        opts
-        |> Map.put(:source_kind, :electric)
-        |> Map.put(:logical_scene_id, logical_scene_id)
-        |> Map.put(:source_world_macro, source_world_macro)
-        |> Map.put(:target_world_macro, target_world_macro)
-        |> FieldSource.normalize()
-
-      decay_policy = field_source.decay_policy || %{}
-      source_potential = field_source.source_value
-      max_ticks = conduction_max_ticks(decay_policy)
-      radius = non_negative_int(get_any(decay_policy, [:field_radius], 1))
-
-      max_frontier =
-        non_negative_int(get_any(decay_policy, [:max_frontier], @default_conduction_max_frontier))
-
-      aabb = local_aabb_between(source_local_macro, target_local_macro, radius)
-      source_key = field_source.source_key
-
-      region_attrs = %{
-        chunk_coord: source_chunk_coord,
-        aabb: aabb,
-        kernels: field_source.kernel_specs,
-        source_points: [
-          %{
-            macro_index: source_index,
-            field_type: :electric_potential,
-            value: source_potential
-          }
-        ],
-        max_ticks: max_ticks,
-        source_points_mode: :replace,
-        source_key: source_key
-      }
-
-      summary =
-        %{
-          logical_scene_id: logical_scene_id,
-          chunk_coord: coord_map(source_chunk_coord),
-          source_world_macro: coord_map(source_world_macro),
-          target_world_macro: coord_map(target_world_macro),
-          source_local_macro: coord_map(source_local_macro),
-          target_local_macro: coord_map(target_local_macro),
-          source_index: source_index,
-          target_index: target_index,
-          source_key: source_key,
-          field_types: ["electric_potential", "ionization"],
-          source_potential: source_potential,
-          radius: radius,
-          max_ticks: max_ticks,
-          max_frontier: max_frontier
-        }
-        |> maybe_put_source_summary(field_source)
-
       with {:ok, chunk_pid} <-
              ChunkDirectory.ensure_chunk(%{
                logical_scene_id: logical_scene_id,
                chunk_coord: source_chunk_coord,
                lease: get_any(opts, [:lease, :lease_token], nil)
-             }),
-           :ok <-
-             validate_conduction_channel(
-               chunk_pid,
-               source_key,
-               source_index,
-               target_index,
-               aabb,
-               source_potential,
-               max_frontier,
-               %{
-                 logical_scene_id: logical_scene_id,
-                 chunk_coord: coord_map(source_chunk_coord),
-                 source_world_macro: coord_map(source_world_macro),
-                 target_world_macro: coord_map(target_world_macro),
-                 source_local_macro: coord_map(source_local_macro),
-                 target_local_macro: coord_map(target_local_macro)
-               }
-             ),
-           {:ok, field_region} <- ChunkProcess.ensure_field_region(chunk_pid, region_attrs) do
-        {:ok,
-         summary
-         |> Map.put(:created, field_region.created?)
-         |> Map.put(:region_id, field_region.region_id)
-         |> Map.put(:field_region_created, field_region.created?)
-         |> Map.put(:source_points_action, field_region.source_points_action)}
+             }) do
+        %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+
+        {opts, source_powered?} =
+          attach_physical_power_source(
+            opts,
+            logical_scene_id,
+            source_world_macro,
+            source_index,
+            storage
+          )
+
+        field_source =
+          opts
+          |> Map.put(:source_kind, :electric)
+          |> Map.put(:logical_scene_id, logical_scene_id)
+          |> Map.put(:source_world_macro, source_world_macro)
+          |> Map.put(:target_world_macro, target_world_macro)
+          |> FieldSource.normalize()
+
+        decay_policy = field_source.decay_policy || %{}
+        source_potential = field_source.source_value
+        max_ticks = conduction_max_ticks(decay_policy)
+        radius = non_negative_int(get_any(decay_policy, [:field_radius], 1))
+
+        max_frontier =
+          non_negative_int(
+            get_any(decay_policy, [:max_frontier], @default_conduction_max_frontier)
+          )
+
+        aabb = local_aabb_between(source_local_macro, target_local_macro, radius)
+        source_key = field_source.source_key
+
+        region_attrs = %{
+          chunk_coord: source_chunk_coord,
+          aabb: aabb,
+          kernels: field_source.kernel_specs,
+          source_points: [
+            %{
+              macro_index: source_index,
+              field_type: :electric_potential,
+              value: source_potential
+            }
+          ],
+          max_ticks: max_ticks,
+          source_points_mode: :replace,
+          source_key: source_key
+        }
+
+        summary =
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: coord_map(source_chunk_coord),
+            source_world_macro: coord_map(source_world_macro),
+            target_world_macro: coord_map(target_world_macro),
+            source_local_macro: coord_map(source_local_macro),
+            target_local_macro: coord_map(target_local_macro),
+            source_index: source_index,
+            target_index: target_index,
+            source_key: source_key,
+            field_types: ["electric_potential", "ionization"],
+            source_potential: source_potential,
+            radius: radius,
+            max_ticks: max_ticks,
+            max_frontier: max_frontier
+          }
+          |> maybe_put_source_summary(field_source)
+
+        with :ok <-
+               validate_conduction_channel(
+                 chunk_pid,
+                 source_key,
+                 source_index,
+                 target_index,
+                 aabb,
+                 source_potential,
+                 max_frontier,
+                 source_powered?,
+                 %{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: coord_map(source_chunk_coord),
+                   source_world_macro: coord_map(source_world_macro),
+                   target_world_macro: coord_map(target_world_macro),
+                   source_local_macro: coord_map(source_local_macro),
+                   target_local_macro: coord_map(target_local_macro)
+                 }
+               ),
+             {:ok, field_region} <- ChunkProcess.ensure_field_region(chunk_pid, region_attrs) do
+          {:ok,
+           summary
+           |> Map.put(:created, field_region.created?)
+           |> Map.put(:region_id, field_region.region_id)
+           |> Map.put(:field_region_created, field_region.created?)
+           |> Map.put(:source_points_action, field_region.source_points_action)}
+        end
       end
     end
   rescue
     error -> {:error, {:conduction_path_failed, error}}
   catch
     kind, reason -> {:error, {:conduction_path_failed, kind, reason}}
+  end
+
+  defp attach_physical_power_source(
+         opts,
+         logical_scene_id,
+         source_world_macro,
+         source_index,
+         %Storage{} = storage
+       ) do
+    if explicit_power_source?(opts) do
+      {opts, true}
+    else
+      material_id = source_material_id(storage, source_index)
+
+      owner_ref =
+        power_block_owner_ref(logical_scene_id, source_world_macro, source_index, material_id)
+
+      opts = Map.put(opts, :owner_ref, owner_ref)
+
+      if MaterialCatalog.power_source_material?(material_id) do
+        defaults = MaterialCatalog.power_source_defaults()
+
+        opts =
+          opts
+          |> Map.put_new(:source_mode, :persistent)
+          |> Map.put_new(:output_mode, defaults.output_mode)
+          |> Map.put_new(:source_potential, defaults.voltage)
+          |> Map.put_new(:voltage, defaults.voltage)
+          |> Map.put_new(:current_limit_amps, defaults.current_limit_amps)
+          |> Map.put_new(:energy_budget_joules, defaults.energy_budget_joules)
+
+        {opts, true}
+      else
+        {opts, false}
+      end
+    end
+  end
+
+  defp explicit_power_source?(opts) do
+    Enum.any?(
+      explicit_power_source_keys(),
+      fn key ->
+        has_any_key?(opts, [key]) and not is_nil(get_any(opts, [key], nil))
+      end
+    )
+  end
+
+  defp explicit_power_source_keys do
+    [
+      :owner_ref,
+      :output_mode,
+      :power_output_mode,
+      :source_output_mode,
+      :voltage,
+      :source_voltage,
+      :power_voltage,
+      :current_limit_amps,
+      :current_limit,
+      :power_current_limit_amps,
+      :frequency_hz,
+      :power_frequency_hz,
+      :energy_budget_joules,
+      :source_energy_budget_joules
+    ]
+  end
+
+  defp power_block_owner_ref(logical_scene_id, source_world_macro, source_index, material_id) do
+    %{
+      kind: :power_block,
+      id: source_index,
+      logical_scene_id: logical_scene_id,
+      world_macro: coord_map(source_world_macro),
+      material_id: material_id
+    }
+  end
+
+  defp source_material_id(%Storage{} = storage, source_index) do
+    case Storage.normal_block_at(storage, source_index) do
+      %NormalBlockData{material_id: material_id} ->
+        material_id
+
+      _other ->
+        case Storage.refined_cell_at(storage, source_index) do
+          %RefinedCellData{layers: [%MicroLayer{material_id: material_id} | _]} -> material_id
+          _other -> nil
+        end
+    end
   end
 
   defp validate_conduction_channel(
@@ -241,6 +354,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          aabb,
          source_potential,
          max_frontier,
+         source_powered?,
          observe_context
        ) do
     %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
@@ -254,28 +368,66 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
            %{max_frontier: max_frontier}
          ) do
       {:ok, _path} ->
-        :ok
+        if source_powered? do
+          :ok
+        else
+          reject_conduction_channel(
+            chunk_pid,
+            source_key,
+            source_index,
+            target_index,
+            aabb,
+            source_potential,
+            max_frontier,
+            :source_not_powered,
+            observe_context
+          )
+        end
 
       {:error, reason} ->
-        public_reason = normalize_conduction_reject_reason(reason)
-
-        emit_conduction_path_rejected(
-          Map.merge(observe_context, %{
-            source_key: source_key,
-            source_index: source_index,
-            target_index: target_index,
-            aabb: aabb,
-            source_potential: source_potential,
-            max_frontier: max_frontier,
-            raw_reason: reason,
-            reject_reason: detailed_conduction_reject_reason(reason),
-            public_reason: public_reason
-          })
+        reject_conduction_channel(
+          chunk_pid,
+          source_key,
+          source_index,
+          target_index,
+          aabb,
+          source_potential,
+          max_frontier,
+          reason,
+          observe_context
         )
-
-        _ = ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
-        {:error, {:conduction_path_failed, public_reason}}
     end
+  end
+
+  defp reject_conduction_channel(
+         chunk_pid,
+         source_key,
+         source_index,
+         target_index,
+         aabb,
+         source_potential,
+         max_frontier,
+         reason,
+         observe_context
+       ) do
+    public_reason = normalize_conduction_reject_reason(reason)
+
+    emit_conduction_path_rejected(
+      Map.merge(observe_context, %{
+        source_key: source_key,
+        source_index: source_index,
+        target_index: target_index,
+        aabb: aabb,
+        source_potential: source_potential,
+        max_frontier: max_frontier,
+        raw_reason: reason,
+        reject_reason: detailed_conduction_reject_reason(reason),
+        public_reason: public_reason
+      })
+    )
+
+    _ = ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
+    {:error, {:conduction_path_failed, public_reason}}
   end
 
   defp normalize_conduction_reject_reason(:unreachable), do: :no_conductive_path

@@ -43,6 +43,7 @@ const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
   { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
+  { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
@@ -62,6 +63,7 @@ const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
   { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
+  { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",

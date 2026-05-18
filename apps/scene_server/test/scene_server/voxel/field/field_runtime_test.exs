@@ -28,6 +28,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   @fixed32_scale 65_536
   @dirt_material_id 1
   @iron_material_id 5
+  @power_block_material_id 6
 
   defp solid_storage_with_temperature_delta(world_macro, delta_celsius) do
     {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
@@ -290,8 +291,88 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   end
 
   describe "ensure_conduction_path/1" do
-    test "creates a same-chunk ConductionPathKernel region from source to target" do
+    test "creates a same-chunk ConductionPathKernel region from a physical power block" do
       logical_scene_id = 75_000 + System.unique_integer([:positive])
+      source_world_macro = {0, 1, 0}
+      target_world_macro = {3, 1, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      for coord <- [
+            target_world_macro,
+            {0, 0, 0},
+            {1, 0, 0},
+            {2, 0, 0},
+            {3, 0, 0}
+          ] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   chunk_pid,
+                   coord,
+                   NormalBlockData.new(@iron_material_id)
+                 )
+      end
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 max_ticks: 90,
+                 radius: 1,
+                 max_frontier: 64
+               )
+
+      source_index = Types.macro_index!(source_world_macro)
+      target_index = Types.macro_index!(target_world_macro)
+
+      assert summary.created == true
+      assert summary.field_region_created == true
+      assert summary.field_types == ["electric_potential", "ionization"]
+      assert summary.region_id
+
+      assert summary.source_key ==
+               {:electric, {:power_block, source_index}, source_index, target_index}
+
+      assert summary.source_index == source_index
+      assert summary.target_index == target_index
+      assert summary.source_world_macro == %{x: 0, y: 1, z: 0}
+      assert summary.target_world_macro == %{x: 3, y: 1, z: 0}
+      assert summary.source_potential == 120.0
+
+      assert summary.source.owner_ref == %{
+               kind: :power_block,
+               id: source_index,
+               logical_scene_id: logical_scene_id,
+               world_macro: %{x: 0, y: 1, z: 0},
+               material_id: @power_block_material_id
+             }
+
+      assert summary.source.power_source.output_mode == :dc
+      assert summary.source.power_source.current_limit_amps == 20.0
+      assert summary.source.power_source.energy_budget_joules == 20_000.0
+      assert summary.max_ticks == 90
+      assert summary.max_frontier == 64
+      assert summary.source_points_action == :seeded
+
+      debug = ChunkProcess.debug_state(chunk_pid)
+      assert debug.field_region_count == 1
+      assert debug.field_source_count == 1
+    end
+
+    test "rejects a conductive iron source when no physical or explicit power source exists" do
+      logical_scene_id = 75_125 + System.unique_integer([:positive])
       source_world_macro = {0, 1, 0}
       target_world_macro = {3, 1, 0}
 
@@ -317,37 +398,18 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  )
       end
 
-      assert {:ok, summary} =
+      assert {:error, {:conduction_path_failed, :source_not_powered}} =
                FieldRuntime.ensure_conduction_path(
                  logical_scene_id: logical_scene_id,
                  source_world_macro: source_world_macro,
                  target_world_macro: target_world_macro,
                  source_potential: 120,
-                 max_ticks: 90,
-                 radius: 1,
-                 max_frontier: 64
+                 max_ticks: 90
                )
 
-      source_index = Types.macro_index!(source_world_macro)
-      target_index = Types.macro_index!(target_world_macro)
-
-      assert summary.created == true
-      assert summary.field_region_created == true
-      assert summary.field_types == ["electric_potential", "ionization"]
-      assert summary.region_id
-      assert summary.source_key == {:electric, {:voxel, source_index}, source_index, target_index}
-      assert summary.source_index == source_index
-      assert summary.target_index == target_index
-      assert summary.source_world_macro == %{x: 0, y: 1, z: 0}
-      assert summary.target_world_macro == %{x: 3, y: 1, z: 0}
-      assert summary.source_potential == 120.0
-      assert summary.max_ticks == 90
-      assert summary.max_frontier == 64
-      assert summary.source_points_action == :seeded
-
       debug = ChunkProcess.debug_state(chunk_pid)
-      assert debug.field_region_count == 1
-      assert debug.field_source_count == 1
+      assert debug.field_region_count == 0
+      assert debug.field_source_count == 0
     end
 
     test "threads electric FieldSource owner ttl and budget into the region summary" do
@@ -420,7 +482,14 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  chunk_coord: {0, 0, 0}
                })
 
-      for coord <- [{0, 1, 0}, {3, 1, 0}, {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 {0, 1, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      for coord <- [{3, 1, 0}, {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}] do
         assert {:ok, _storage} =
                  ChunkProcess.put_solid_block(
                    chunk_pid,
@@ -508,8 +577,14 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  chunk_coord: {0, 0, 0}
                })
 
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
       for coord <- [
-            source_world_macro,
             target_world_macro,
             {0, 0, 0},
             {1, 0, 0},
@@ -589,7 +664,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                ChunkProcess.put_solid_block(
                  chunk_pid,
                  {0, 1, 0},
-                 NormalBlockData.new(@iron_material_id)
+                 NormalBlockData.new(@power_block_material_id)
                )
 
       assert {:ok, _storage} =
@@ -623,7 +698,14 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                    chunk_coord: {0, 0, 0}
                  })
 
-        for coord <- [{0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {3, 1, 0}] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   chunk_pid,
+                   {0, 1, 0},
+                   NormalBlockData.new(@power_block_material_id)
+                 )
+
+        for coord <- [{1, 1, 0}, {2, 1, 0}, {3, 1, 0}] do
           assert {:ok, _storage} =
                    ChunkProcess.put_solid_block(
                      chunk_pid,

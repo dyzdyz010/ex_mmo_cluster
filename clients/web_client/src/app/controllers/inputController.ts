@@ -155,6 +155,7 @@ export class InputController {
       case "Digit6":
       case "Digit7":
       case "Digit8":
+      case "Digit9":
         this.bus.emit("input:hotbar-select", {
           index: Number.parseInt(event.code.slice("Digit".length), 10) - 1,
           source: "keyboard",

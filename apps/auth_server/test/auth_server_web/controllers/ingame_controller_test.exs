@@ -8,6 +8,9 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.DevSeed
 
+  @iron_material_id 5
+  @power_block_material_id 6
+
   setup do
     previous_auto_login = Application.get_env(:auth_server, :dev_auto_login, false)
     Application.put_env(:auth_server, :dev_auto_login, true)
@@ -104,7 +107,11 @@ defmodule AuthServerWeb.IngameControllerTest do
 
     for coord <- [{0, 1, 0}, {3, 1, 0}, {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}] do
       assert {:ok, _storage} =
-               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(5))
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 coord,
+                 NormalBlockData.new(@iron_material_id)
+               )
     end
 
     conn =
@@ -170,6 +177,51 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["target_world_macro"] == %{"x" => 3, "y" => 1, "z" => 0}
   end
 
+  test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",
+       %{conn: conn} do
+    logical_scene_id = 82_500 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    for coord <- [{0, 1, 0}, {3, 1, 0}, {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 coord,
+                 NormalBlockData.new(@iron_material_id)
+               )
+    end
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 422)
+    assert body["error"] == "voxel_conduct_failed"
+    assert body["reason_code"] == "source_not_powered"
+  end
+
   test "POST /ingame/voxel/conduct returns structured input errors for cross-chunk paths",
        %{conn: conn} do
     logical_scene_id = 83_000 + System.unique_integer([:positive])
@@ -221,7 +273,11 @@ defmodule AuthServerWeb.IngameControllerTest do
              })
 
     assert {:ok, _storage} =
-             ChunkProcess.put_solid_block(chunk_pid, {3, 1, 0}, NormalBlockData.new(5))
+             ChunkProcess.put_solid_block(
+               chunk_pid,
+               {3, 1, 0},
+               NormalBlockData.new(@iron_material_id)
+             )
 
     conn =
       post(conn, ~p"/ingame/voxel/conduct", %{
@@ -260,7 +316,11 @@ defmodule AuthServerWeb.IngameControllerTest do
              })
 
     assert {:ok, _storage} =
-             ChunkProcess.put_solid_block(chunk_pid, {0, 1, 0}, NormalBlockData.new(5))
+             ChunkProcess.put_solid_block(
+               chunk_pid,
+               {0, 1, 0},
+               NormalBlockData.new(@iron_material_id)
+             )
 
     conn =
       post(conn, ~p"/ingame/voxel/conduct", %{
@@ -300,7 +360,13 @@ defmodule AuthServerWeb.IngameControllerTest do
 
     for coord <- [{0, 1, 0}, {3, 1, 0}] do
       assert {:ok, _storage} =
-               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(5))
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 coord,
+                 NormalBlockData.new(
+                   if coord == {0, 1, 0}, do: @power_block_material_id, else: @iron_material_id
+                 )
+               )
     end
 
     conn =

@@ -378,6 +378,9 @@ defmodule AuthServerWeb.IngameController do
   defp voxel_conduct_error_status({:conduction_path_failed, :source_not_conductive}),
     do: :unprocessable_entity
 
+  defp voxel_conduct_error_status({:conduction_path_failed, :source_not_powered}),
+    do: :unprocessable_entity
+
   defp voxel_conduct_error_status({:conduction_path_failed, :target_not_conductive}),
     do: :unprocessable_entity
 
@@ -396,6 +399,9 @@ defmodule AuthServerWeb.IngameController do
 
   defp voxel_conduct_reason_code({:conduction_path_failed, :source_not_conductive}),
     do: "source_not_conductive"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :source_not_powered}),
+    do: "source_not_powered"
 
   defp voxel_conduct_reason_code({:conduction_path_failed, :target_not_conductive}),
     do: "target_not_conductive"

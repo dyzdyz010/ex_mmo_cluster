@@ -132,6 +132,23 @@ describe("InputController mouse editing", () => {
     ]);
   });
 
+  it("emits numeric hotbar selections through the ninth slot", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const selections: AppEvents["input:hotbar-select"][] = [];
+    bus.on("input:hotbar-select", (event) => selections.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("Digit6"));
+    target.dispatch("keydown", keyboard("Digit9"));
+
+    expect(selections).toEqual([
+      { index: 5, source: "keyboard" },
+      { index: 8, source: "keyboard" },
+    ]);
+  });
+
   it("emits a set-temperature heat action from F instead of using F as a place shortcut", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);

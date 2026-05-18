@@ -23,8 +23,8 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
      沿命中面法线生成同 chunk 内 target；也可以点 `Use Src` / `Use Dst` 手动锁定两端。
      快捷键：`F` 加热准星体素，`E` 自动创建准星导电路径，`Z` 捕获 source，`X` 捕获 target，
      `C` 提交当前 Conduct 表单。
-     Conduct 只接受 source、target 与中间路径都是足够导电的占用体素；挖空后的 cell、
-     dirt/普通地面和断开的空气缝会被服务端拒绝。
+     Conduct 只接受真实电源块作为默认 source，target 与中间路径必须是足够导电的占用体素；
+     普通 iron 只做导线，不会自己发电。挖空后的 cell、dirt/普通地面、未放电源块的源点和断开的空气缝会被服务端拒绝。
      成功后 `Field` overlay 会显示 electric cells。
    - `window.__voxelCli.run("<command>")` 作为 CLI 命令入口
    - `window.__voxelObserve.recent()` / `snapshot()` 读取结构化日志
@@ -293,13 +293,20 @@ window.__voxelCli?.run("voxel_probe voxel_rebind 1 all");
 window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
 window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
 window.__voxelCli?.run("voxel_temp 8 0 8 800 300");
-window.__voxelCli?.run("voxel_conduct 0 1 0 3 1 0 120 90 ac 240 12.5 60");
+window.__voxelCli?.run("place 0 1 0 power_block");
+window.__voxelCli?.run("place 0 0 0 iron");
+window.__voxelCli?.run("place 1 0 0 iron");
+window.__voxelCli?.run("place 2 0 0 iron");
+window.__voxelCli?.run("place 3 0 0 iron");
+window.__voxelCli?.run("place 3 1 0 iron");
+window.__voxelCli?.run("voxel_conduct 0 1 0 3 1 0 120 90");
 window.__voxelCli?.run("chunk_versions");
 window.__voxelCli?.run("scene_regions");
 window.__voxelCli?.run("scene_regions off");
 window.__voxelCli?.run("scene_regions on");
 window.__voxelCli?.run("cell 0 1 0");
 window.__voxelCli?.run("micro_cell 0 1 0 1 2 3");
+window.__voxelCli?.run("select_material power_block");
 window.__voxelCli?.run("select_material wood");
 window.__voxelCli?.run("place 0 5 0 2");
 window.__voxelCli?.run("break 0 5 0");
