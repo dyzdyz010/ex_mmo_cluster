@@ -1075,7 +1075,9 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   owner 使用 `{:electric, {:voxel, source_index}, source_index, target_index}`，显式
   device/object/magic owner 可通过 `owner_ref` 区分。同一 owner/source/target 会复用
   region；`ttl_ticks` 会覆盖本次 region 的 `max_ticks`，`energy_budget_joules` 先作为
-  source policy/observe 摘要保留，实际消耗留给后续 lifecycle/effect slice。
+  source policy/observe 摘要保留，实际消耗留给后续 lifecycle/effect slice。worker 自然到期
+  时会释放 active source，并写出 `source_action: :expired` 的 lifecycle observe；客户端
+  仍通过 0x74 destroy payload 看到 field 消失。
 
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
 breakdown 结算。
@@ -1136,7 +1138,8 @@ breakdown 结算。
 - `ensure_conduction_path/1` 现在与 temperature path 共用 `FieldSource` source/region
   生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
   `energy_budget_joules`，summary 会回显 normalized source；kernel 仍只演化
-  electric/ionization field，不写 voxel/object truth。
+  electric/ionization field，不写 voxel/object truth。ttl 到期会走 worker expiry -> source
+  lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；

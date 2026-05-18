@@ -530,7 +530,9 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
    `{:electric, {:voxel, source_index}, source_index, target_index}`，显式 owner 则纳入
    owner identity，例如 `{:electric, {:device, "coil-7"}, source_index, target_index}`。
 3. `ttl_ticks` 会覆盖当前 conduction FieldRegion 的 `max_ticks`，用于第一版 source
-   lifetime；`energy_budget_joules` 暂作为 source policy/observe 摘要，不在 kernel 内消耗。
+   lifetime；worker 自然到期后会释放 active source，并写出 `source_action: :expired`
+   的 `voxel_field_source_lifecycle` observe 事件；客户端仍通过 0x74 destroy payload
+   看到 field 消失。
 4. `POST /ingame/voxel/conduct` 可透传 `source_mode`、`source_owner_kind` /
    `source_owner_id`、`ttl_ticks` 与 `energy_budget_joules`；JSON 响应包含 `source`
    summary，便于 browser/CLI 观察。
@@ -543,7 +545,7 @@ mix.bat test apps/scene_server/test/scene_server/voxel/field/field_source_test.e
 
 遗留：
 
-1. owner 存活探测、budget 消耗、source 自动续租/过期和 source effect 仍未实现。
+1. owner 存活探测、budget 消耗、source 自动续租和 source effect 仍未实现。
 2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
 3. Phase 8 damage/ignite/breakdown 结算仍必须经 phenomenon/effect 层，不能放进
    `ConductionPathKernel`。

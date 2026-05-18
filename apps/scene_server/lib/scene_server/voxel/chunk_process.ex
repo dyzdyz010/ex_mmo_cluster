@@ -1162,9 +1162,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
               }
             end)
 
+            source_key = Map.get(state.field_region_source_keys, region_id)
+
             new_state =
               state
               |> drop_field_region_monitor(monitor_ref, region_id)
+              |> maybe_emit_worker_down_source_lifecycle(region_id, source_key, reason)
 
             {:noreply, new_state}
         end
@@ -3658,6 +3661,30 @@ defmodule SceneServer.Voxel.ChunkProcess do
       |> Map.merge(result)
     end)
   end
+
+  defp maybe_emit_worker_down_source_lifecycle(state, _region_id, nil, _reason), do: state
+
+  defp maybe_emit_worker_down_source_lifecycle(state, region_id, source_key, reason) do
+    destroy_reason = worker_down_destroy_reason(reason)
+
+    result =
+      field_source_cleanup_result(
+        region_id,
+        source_key,
+        destroy_reason,
+        source_action_for_worker_down(destroy_reason),
+        destroy_reason
+      )
+
+    emit_field_source_lifecycle(state, result)
+    state
+  end
+
+  defp worker_down_destroy_reason(:normal), do: :expired
+  defp worker_down_destroy_reason(_reason), do: :worker_down
+
+  defp source_action_for_worker_down(:expired), do: :expired
+  defp source_action_for_worker_down(_reason), do: :released
 
   defp put_field_worker(state, region_id, worker_pid, monitor_ref) do
     %{

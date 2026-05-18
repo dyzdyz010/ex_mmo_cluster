@@ -400,6 +400,47 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert observe_log_text =~ ~s(event="voxel_field_region_destroyed_fanout")
   end
 
+  test "expired field workers release their active source and emit lifecycle observability",
+       %{observe_log: observe_log} do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 59)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    source_index = Types.macro_index!({0, 0, 0})
+    target_index = Types.macro_index!({1, 0, 0})
+    source_key = {:electric, {:device, "coil-7"}, source_index, target_index}
+
+    attrs = %{
+      source_key: source_key,
+      aabb: {{0, 0, 0}, {1, 1, 1}},
+      kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
+      source_points: [%{macro_index: source_index, field_type: :temperature, value: 100.0}],
+      max_ticks: 1
+    }
+
+    assert {:ok, %{created?: true, region_id: region_id}} =
+             ChunkProcess.ensure_field_region(chunk, attrs)
+
+    assert_receive {:voxel_field_region_destroyed_payload, destroyed_payload}, 1_000
+    destroyed = FieldCodec.decode_destroyed_payload!(destroyed_payload)
+    assert destroyed.region_id == region_id
+    assert destroyed.destroy_reason == :expired
+
+    assert_eventually(fn ->
+      debug = ChunkProcess.debug_state(chunk)
+      debug.field_region_count == 0 and debug.field_source_count == 0
+    end)
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
+    assert observe_log_text =~ ~s(source_key: "{:electric, {:device, \\"coil-7\\"})
+    assert observe_log_text =~ "region_action: :expired"
+    assert observe_log_text =~ "source_action: :expired"
+    assert observe_log_text =~ "destroy_reason: :expired"
+  end
+
   test "apply_intent writes a solid block, increments versions, and persists snapshots" do
     lease = start_snapshot_store()
 

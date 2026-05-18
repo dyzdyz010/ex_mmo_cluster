@@ -46,7 +46,8 @@ Phase 7.E 第一批材料物性（电导/击穿强度等）已落地；Phase 7.B
 `ConductionPathKernel` 接入 `FieldRuntime.ensure_conduction_path/1`、`/ingame/voxel/conduct`
 和 web CLI `voxel_conduct`，成功请求会自动打开 Field overlay；Phase 7.F 前置第一片已让
 electric conduction 也走 owner-aware `FieldSource`，HTTP/runtime 可携带 `source_mode`、
-`ttl_ticks` 和 `energy_budget_joules`，其中 ttl 会约束当前 conduction region lifetime。
+`ttl_ticks` 和 `energy_budget_joules`，其中 ttl 会约束当前 conduction region lifetime；
+ttl 到期会释放 source 并通过既有 0x74 destroy payload 让客户端看到 field 消失。
 后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
 为准：下一步关注 source owner 存活/预算消耗、跨 chunk/AOI 预算与 Phase 8 effect 边界。Phase 8
