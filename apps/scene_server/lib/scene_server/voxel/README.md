@@ -1081,6 +1081,11 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   source policy/observe 摘要保留，实际消耗留给后续 lifecycle/effect slice。worker 自然到期
   时会释放 active source，并写出 `source_action: :expired` 的 lifecycle observe；客户端
   仍通过 0x74 destroy payload 看到 field 消失。
+- PowerSource v1：electric `FieldSource` 会附带
+  `SceneServer.Voxel.Field.PowerSource`，记录供电模式和供电上限：
+  `output_mode: :dc | :ac | :pulse`、`voltage`、`current_limit_amps`、`frequency_hz`、
+  `energy_budget_joules`。这只是供电事实描述，不是完整电路仿真；AC 当前不模拟相位，预算
+  当前不消耗，负载/短路/保险丝/变压器仍留给后续 gameplay/effect slice。
 
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
 breakdown 结算。
@@ -1140,7 +1145,8 @@ breakdown 结算。
   `field_overlay [on|off]` CLI 诊断。
 - `ensure_conduction_path/1` 现在与 temperature path 共用 `FieldSource` source/region
   生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
-  `energy_budget_joules`，summary 会回显 normalized source；kernel 仍只演化
+  `output_mode`、`voltage`、`current_limit_amps`、`frequency_hz`、`energy_budget_joules`，
+  summary 会回显 normalized source 和 `power_source`；kernel 仍只演化
   electric/ionization field，不写 voxel/object truth。ttl 到期会走 worker expiry -> source
   lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。导电预检失败
   会写结构化 observe，搜索预算耗尽等内部原因不会被外部兼容错误码吞掉。

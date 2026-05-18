@@ -74,7 +74,7 @@ import type {
   PrefabSocketSnapRequest,
   PrefabSocketSnapResult,
 } from "./prefab";
-import { LocalVoxelWorldAdapter } from "./worldAdapter";
+import { LocalVoxelWorldAdapter, type ElectricPowerSourceRequest } from "./worldAdapter";
 
 export interface ServerVoxelTransportPort {
   canUseServerVoxel(): boolean;
@@ -697,6 +697,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     target: FMacroCoord,
     sourcePotential = 120,
     maxTicks = 120,
+    powerSource?: ElectricPowerSourceRequest,
   ): boolean {
     const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/conduct`;
     void fetch(url, {
@@ -712,6 +713,14 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         target_z: target.z,
         source_potential: sourcePotential,
         max_ticks: maxTicks,
+        ...(powerSource?.outputMode ? { output_mode: powerSource.outputMode } : {}),
+        ...(powerSource?.voltage !== undefined ? { voltage: powerSource.voltage } : {}),
+        ...(powerSource?.currentLimitAmps !== undefined
+          ? { current_limit_amps: powerSource.currentLimitAmps }
+          : {}),
+        ...(powerSource?.frequencyHz !== undefined
+          ? { frequency_hz: powerSource.frequencyHz }
+          : {}),
       }),
     })
       .then(async (response) => {

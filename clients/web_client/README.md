@@ -293,7 +293,7 @@ window.__voxelCli?.run("voxel_probe voxel_rebind 1 all");
 window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
 window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
 window.__voxelCli?.run("voxel_temp 8 0 8 800 300");
-window.__voxelCli?.run("voxel_conduct 0 1 0 3 1 0 120 90");
+window.__voxelCli?.run("voxel_conduct 0 1 0 3 1 0 120 90 ac 240 12.5 60");
 window.__voxelCli?.run("chunk_versions");
 window.__voxelCli?.run("scene_regions");
 window.__voxelCli?.run("scene_regions off");

@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Types
 
   describe "normalize/1" do
@@ -119,6 +120,53 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                max_frontier: 64,
                energy_budget_joules: 5000.0
              }
+    end
+
+    test "normalizes electric power source output mode and limits" do
+      assert Code.ensure_loaded?(PowerSource),
+             "PowerSource module is required before electric fields can distinguish DC, AC, and pulse sources"
+
+      assert function_exported?(PowerSource, :normalize, 1),
+             "PowerSource.normalize/1 is required for Phase 7 electric power source v1"
+
+      source =
+        FieldSource.normalize(%{
+          source_kind: :electric,
+          logical_scene_id: 10,
+          source_world_macro: {0, 1, 0},
+          target_world_macro: {3, 1, 0},
+          output_mode: "ac",
+          voltage: "240",
+          current_limit_amps: "12.5",
+          frequency_hz: "60",
+          energy_budget_joules: "5000",
+          owner_ref: %{kind: :device, id: "generator-1"}
+        })
+
+      assert source.source_value == 240.0
+      assert source.power_source.output_mode == :ac
+      assert source.power_source.voltage == 240.0
+      assert source.power_source.current_limit_amps == 12.5
+      assert source.power_source.frequency_hz == 60.0
+      assert source.power_source.energy_budget_joules == 5000.0
+      assert source.power_source.owner_ref == %{kind: :device, id: "generator-1"}
+
+      assert FieldSource.to_summary(source).power_source == %{
+               owner_ref: %{kind: :device, id: "generator-1"},
+               output_mode: :ac,
+               voltage: 240.0,
+               current_limit_amps: 12.5,
+               frequency_hz: 60.0,
+               energy_budget_joules: 5000.0
+             }
+    end
+
+    test "normalizes electric power source output mode names" do
+      assert PowerSource.normalize(%{output_mode: "dc"}).output_mode == :dc
+      assert PowerSource.normalize(%{output_mode: "ac"}).output_mode == :ac
+      assert PowerSource.normalize(%{output_mode: "pulse"}).output_mode == :pulse
+      assert PowerSource.normalize(%{source_mode: :impulse}).output_mode == :pulse
+      assert PowerSource.normalize(%{source_mode: :persistent}).output_mode == :dc
     end
   end
 end

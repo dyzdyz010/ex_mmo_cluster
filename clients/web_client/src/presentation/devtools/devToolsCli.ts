@@ -9,7 +9,11 @@ import { installCli } from "../../observe/cli";
 import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
 import type { PrefabBoundarySnapPreview, PrefabSocketSnapPreview } from "../../voxel/prefab";
 import type { SerializedWorldSnapshot } from "../../voxel/worldStore";
-import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+import type {
+  ElectricOutputMode,
+  ElectricPowerSourceRequest,
+  VoxelWorldAdapter,
+} from "../../voxel/worldAdapter";
 import type { FChunkCoord, FMacroCoord } from "../../voxel/core/types";
 import type { LocalPlayerController } from "../../app/controllers/localPlayerController";
 import type { RemotePlayerController } from "../../app/controllers/remotePlayerController";
@@ -447,6 +451,7 @@ export class DevToolsCli implements CliCommandHandler {
         sourcePotential: number,
         source: string,
         maxTicks?: number,
+        powerSource?: ElectricPowerSourceRequest,
       ) => boolean;
     }>;
     if (typeof conductionPort.conductBetween !== "function") {
@@ -455,14 +460,34 @@ export class DevToolsCli implements CliCommandHandler {
 
     const sourcePotential = parseFiniteNumber(args[6], 120);
     const maxTicks = parsePositiveInt(args[7], 120);
-    const ok = conductionPort.conductBetween.call(
-      conductionPort,
-      sourceCoord,
-      targetCoord,
-      sourcePotential,
-      source,
-      maxTicks,
-    );
+    const powerSource = parseConductionPowerSource(args.slice(8), sourcePotential);
+    if (powerSource === null) {
+      return {
+        ok: false,
+        command,
+        text: usageForConductionCommand(),
+      };
+    }
+
+    const ok =
+      powerSource === undefined
+        ? conductionPort.conductBetween.call(
+            conductionPort,
+            sourceCoord,
+            targetCoord,
+            sourcePotential,
+            source,
+            maxTicks,
+          )
+        : conductionPort.conductBetween.call(
+            conductionPort,
+            sourceCoord,
+            targetCoord,
+            sourcePotential,
+            source,
+            maxTicks,
+            powerSource,
+          );
 
     return {
       ok,
@@ -476,6 +501,7 @@ export class DevToolsCli implements CliCommandHandler {
         sourcePotential,
         maxTicks,
         source,
+        powerSource,
       },
     };
   }
@@ -1001,10 +1027,51 @@ function parseFiniteNumber(value: string | undefined, fallback: number): number 
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseOptionalFiniteNumber(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseConductionPowerSource(
+  args: string[],
+  sourcePotential: number,
+): ElectricPowerSourceRequest | undefined | null {
+  if (args.length === 0) return undefined;
+
+  const outputMode = parseElectricOutputMode(args[0]);
+  if (!outputMode) return null;
+
+  const powerSource: ElectricPowerSourceRequest = {
+    outputMode,
+    voltage: parseFiniteNumber(args[1], sourcePotential),
+  };
+  const currentLimitAmps = parseOptionalFiniteNumber(args[2]);
+  const frequencyHz = parseOptionalFiniteNumber(args[3]);
+  if (currentLimitAmps !== undefined) {
+    powerSource.currentLimitAmps = currentLimitAmps;
+  }
+  if (frequencyHz !== undefined) {
+    powerSource.frequencyHz = frequencyHz;
+  }
+  return powerSource;
+}
+
+function parseElectricOutputMode(value: string | undefined): ElectricOutputMode | null {
+  switch (value?.toLowerCase()) {
+    case "dc":
+    case "ac":
+    case "pulse":
+      return value.toLowerCase() as ElectricOutputMode;
+    default:
+      return null;
+  }
 }
 
 function usageForTemperatureCommand(command: string): string {
@@ -1019,7 +1086,7 @@ function usageForTemperatureCommand(command: string): string {
 }
 
 function usageForConductionCommand(): string {
-  return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]";
+  return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz]";
 }
 
 function formatSceneRegionOverlayLine(region: {

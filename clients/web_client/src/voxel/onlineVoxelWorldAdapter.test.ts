@@ -543,7 +543,12 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     vi.stubGlobal("fetch", fetchSpy);
 
     expect(
-      adapter.requestVoxelConductionPath({ x: 0, y: 1, z: 0 }, { x: 3, y: 1, z: 0 }, 120, 90),
+      adapter.requestVoxelConductionPath({ x: 0, y: 1, z: 0 }, { x: 3, y: 1, z: 0 }, 120, 90, {
+        outputMode: "ac",
+        voltage: 240,
+        currentLimitAmps: 12.5,
+        frequencyHz: 60,
+      }),
     ).toBe(true);
     await flushAsyncWork();
 
@@ -562,6 +567,10 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
           target_z: 0,
           source_potential: 120,
           max_ticks: 90,
+          output_mode: "ac",
+          voltage: 240,
+          current_limit_amps: 12.5,
+          frequency_hz: 60,
         }),
       }),
     );

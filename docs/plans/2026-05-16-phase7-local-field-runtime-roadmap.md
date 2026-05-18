@@ -511,7 +511,9 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
 2. 设计跨 chunk field 分片、AOI 降频和网络预算，不把大范围电击塞进单 chunk region。
 3. 已完成：为搜索预算超限等导电预检失败路径补 `voxel_conduction_path_rejected`
    observe，日志保留 raw reason、对外 reason、scene/chunk/source/target 定位字段。
-4. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
+4. 已完成：新增 `PowerSource` v1 描述，让导电请求可声明 DC / AC / pulse、voltage、
+   current limit、frequency 与 energy budget；HTTP 和 web CLI 可操作，但暂不做完整电路仿真。
+5. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
    层承接，不能让 `ConductionPathKernel` 直接写 truth。
 
 ---
@@ -541,6 +543,11 @@ Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法
    `max_frontier` 预算耗尽时，HTTP/runtime 仍对外返回兼容的 `:no_conductive_path`，
    但日志会保留 `raw_reason: :frontier_exhausted` 和
    `reject_reason: :search_budget_exhausted`，并携带 scene/chunk/source/target 定位字段。
+6. `SceneServer.Voxel.Field.PowerSource` v1 已落地：electric `FieldSource` 会记录
+   `output_mode: :dc | :ac | :pulse`、`voltage`、`current_limit_amps`、`frequency_hz` 与
+   `energy_budget_joules`；未显式指定时，persistent source 默认按 DC，impulse source 默认按
+   pulse。`/ingame/voxel/conduct` 与 web CLI `voxel_conduct ... [dc|ac|pulse] [voltage]
+   [current_limit_amps] [frequency_hz]` 可透传这些字段，响应 summary 会回显 `power_source`。
 
 验证证据：
 
@@ -550,7 +557,8 @@ mix.bat test apps/scene_server/test/scene_server/voxel/field/field_source_test.e
 
 遗留：
 
-1. owner 存活探测、budget 消耗、source 自动续租和 source effect 仍未实现。
+1. owner 存活探测、budget 消耗、source 自动续租和 source effect 仍未实现；当前
+   `PowerSource` 只描述电源输出，不消耗能量、不结算负载，也不模拟完整 AC 相位。
 2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
 3. Phase 8 damage/ignite/breakdown 结算仍必须经 phenomenon/effect 层，不能放进
    `ConductionPathKernel`。

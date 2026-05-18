@@ -201,14 +201,27 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(setTemperatureAtSelection).toHaveBeenCalledWith("cli", 0, 600);
   });
 
-  it("routes voxel_conduct to the edit controller with source, target, potential, and max ticks", () => {
+  it("routes voxel_conduct to the edit controller with source, target, potential, max ticks, and power source", () => {
     const conductBetween = vi.fn(() => true);
     const cli = new DevToolsCli({
       edit: { conductBetween },
     } as unknown as DevToolsDeps);
 
     expect(
-      cli.executeCliCommand("voxel_conduct", ["0", "1", "0", "3", "1", "0", "120", "90"]),
+      cli.executeCliCommand("voxel_conduct", [
+        "0",
+        "1",
+        "0",
+        "3",
+        "1",
+        "0",
+        "120",
+        "90",
+        "ac",
+        "240",
+        "12.5",
+        "60",
+      ]),
     ).toMatchObject({
       ok: true,
       command: "voxel_conduct",
@@ -221,6 +234,7 @@ describe("DevToolsCli microgrid boundary", () => {
       120,
       "cli",
       90,
+      { outputMode: "ac", voltage: 240, currentLimitAmps: 12.5, frequencyHz: 60 },
     );
   });
 
@@ -260,7 +274,7 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(cli.executeCliCommand("voxel_conduct", ["0", "1", "0"])).toMatchObject({
       ok: false,
       command: "voxel_conduct",
-      text: "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks]",
+      text: "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz]",
     });
     expect(conductBetween).not.toHaveBeenCalled();
   });

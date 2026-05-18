@@ -4,7 +4,7 @@ import type { AppEvents } from "../../shared/events/events";
 import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelRotation, type FMacroCoord, type FMicroCoord } from "../../voxel/core/types";
 import type { FNormalBlockData } from "../../voxel/storage/types";
-import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
+import type { ElectricPowerSourceRequest, VoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 export interface EditSelection {
   occupiedMacro: FMacroCoord;
@@ -215,6 +215,7 @@ export class WorldEditController {
     sourcePotential: number,
     source: string,
     maxTicks?: number,
+    powerSource?: ElectricPowerSourceRequest,
   ): boolean {
     const request = this.world.requestVoxelConductionPath?.bind(this.world);
     if (typeof request !== "function") {
@@ -222,14 +223,18 @@ export class WorldEditController {
       return false;
     }
 
-    const ok = request(sourceCoord, targetCoord, sourcePotential, maxTicks);
+    const ok = request(sourceCoord, targetCoord, sourcePotential, maxTicks, powerSource);
     if (ok) {
-      this.bus.emit("world:voxel-conduction-requested", {
+      const event: AppEvents["world:voxel-conduction-requested"] = {
         sourceCoord,
         targetCoord,
         sourcePotential,
         source,
-      });
+      };
+      if (powerSource !== undefined) {
+        event.powerSource = powerSource;
+      }
+      this.bus.emit("world:voxel-conduction-requested", event);
     } else {
       this.bus.emit("world:edit-rejected", { reason: "conduction_path_rejected", source });
     }

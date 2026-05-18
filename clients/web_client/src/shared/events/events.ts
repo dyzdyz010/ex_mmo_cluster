@@ -111,6 +111,12 @@ export type AppEvents = {
     targetCoord: FMacroCoord;
     sourcePotential: number;
     source: string;
+    powerSource?: {
+      outputMode?: "dc" | "ac" | "pulse";
+      voltage?: number;
+      currentLimitAmps?: number;
+      frequencyHz?: number;
+    };
   };
   "world:voxel-conduction-accepted": {
     sourceCoord: FMacroCoord;

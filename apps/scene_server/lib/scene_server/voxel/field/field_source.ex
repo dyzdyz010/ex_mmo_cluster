@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.Field.PowerSource
 
   @type t :: %__MODULE__{
           source_id: term(),
@@ -20,6 +21,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
           location: term(),
           target_value: term(),
           source_value: term(),
+          power_source: PowerSource.t() | nil,
           kernel_specs: [map()],
           decay_policy: map() | nil,
           lease_token: term(),
@@ -35,6 +37,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
             location: nil,
             target_value: nil,
             source_value: nil,
+            power_source: nil,
             kernel_specs: [],
             decay_policy: nil,
             lease_token: nil,
@@ -74,7 +77,11 @@ defmodule SceneServer.Voxel.Field.FieldSource do
 
   @doc "Returns the summary map exposed by `FieldRuntime` responses."
   @spec to_summary(t()) :: map()
-  def to_summary(%__MODULE__{} = source), do: Map.from_struct(source)
+  def to_summary(%__MODULE__{} = source) do
+    source
+    |> Map.from_struct()
+    |> summarize_power_source()
+  end
 
   @doc """
   Derives the existing `FieldRuntime.ensure_temperature_anomaly/1` attrs from a
@@ -156,16 +163,12 @@ defmodule SceneServer.Voxel.Field.FieldSource do
     {_target_chunk_coord, target_local_macro} = Types.chunk_and_local_macro!(target_world_macro)
     source_index = Types.macro_index!(source_local_macro)
     target_index = Types.macro_index!(target_local_macro)
-    source_potential = non_negative_float(conduction_potential(attrs))
     max_ticks = non_negative_int(fetch_any(attrs, [:max_ticks], @default_conduction_max_ticks))
     ttl_ticks = normalize_optional_non_negative_int(fetch_any(attrs, [:ttl_ticks, :ttl], nil))
     radius = non_negative_int(fetch_any(attrs, [:radius], @default_conduction_radius))
 
     max_frontier =
       non_negative_int(fetch_any(attrs, [:max_frontier], @default_conduction_max_frontier))
-
-    energy_budget =
-      normalize_optional_non_negative_float(fetch_any(attrs, [:energy_budget_joules], nil))
 
     owner_ref =
       fetch_any(attrs, [:owner_ref], %{
@@ -175,6 +178,17 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       })
 
     owner_key = owner_key(owner_ref, source_index)
+    source_mode = normalize_source_mode(fetch_any(attrs, [:source_mode], :impulse))
+
+    power_source =
+      attrs
+      |> Map.put(:owner_ref, owner_ref)
+      |> Map.put(:source_mode, source_mode)
+      |> Map.put_new(:source_potential, conduction_potential(attrs))
+      |> PowerSource.normalize()
+
+    source_potential = power_source.voltage
+    energy_budget = power_source.energy_budget_joules
 
     %__MODULE__{
       source_id:
@@ -186,7 +200,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       source_key:
         fetch_any(attrs, [:source_key], {:electric, owner_key, source_index, target_index}),
       source_kind: :electric,
-      source_mode: normalize_source_mode(fetch_any(attrs, [:source_mode], :impulse)),
+      source_mode: source_mode,
       owner_ref: owner_ref,
       location:
         fetch_any(attrs, [:location], %{
@@ -200,6 +214,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         }),
       target_value: %{world_macro: coord_map(target_world_macro), macro_index: target_index},
       source_value: source_potential,
+      power_source: power_source,
       kernel_specs:
         fetch_any(attrs, [:kernel_specs], [
           %{
@@ -225,6 +240,13 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       updated_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:updated_tick], nil))
     }
   end
+
+  defp summarize_power_source(%{power_source: %PowerSource{} = power_source} = summary) do
+    Map.put(summary, :power_source, PowerSource.to_summary(power_source))
+  end
+
+  defp summarize_power_source(%{power_source: nil} = summary),
+    do: Map.delete(summary, :power_source)
 
   defp normalize_generic_source(attrs, source_kind) do
     %__MODULE__{
@@ -410,9 +432,6 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   defp normalize_optional_non_negative_int(nil), do: nil
   defp normalize_optional_non_negative_int(value), do: non_negative_int(value)
 
-  defp normalize_optional_non_negative_float(nil), do: nil
-  defp normalize_optional_non_negative_float(value), do: non_negative_float(value)
-
   defp temperature_float(value, _fallback) when is_integer(value), do: value * 1.0
   defp temperature_float(value, _fallback) when is_float(value), do: value
 
@@ -432,18 +451,6 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       @default_conduction_source_potential
     )
   end
-
-  defp non_negative_float(value) when is_integer(value) and value >= 0, do: value * 1.0
-  defp non_negative_float(value) when is_float(value) and value >= 0, do: value
-
-  defp non_negative_float(value) when is_binary(value) do
-    case Float.parse(value) do
-      {parsed, ""} when parsed >= 0 -> parsed
-      _other -> 0.0
-    end
-  end
-
-  defp non_negative_float(_value), do: 0.0
 
   defp owner_key(%{kind: kind, id: id}, _source_index), do: {kind, id}
   defp owner_key(%{"kind" => kind, "id" => id}, _source_index), do: {kind, id}

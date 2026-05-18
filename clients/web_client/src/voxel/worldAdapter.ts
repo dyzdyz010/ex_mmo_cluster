@@ -14,6 +14,15 @@ import {
 } from "./prefab";
 import { WorldStore, type SerializedWorldSnapshot } from "./worldStore";
 
+export type ElectricOutputMode = "dc" | "ac" | "pulse";
+
+export interface ElectricPowerSourceRequest {
+  outputMode?: ElectricOutputMode;
+  voltage?: number;
+  currentLimitAmps?: number;
+  frequencyHz?: number;
+}
+
 export interface VoxelWorldAdapter {
   readonly mode: string;
   readonly store: WorldStore;
@@ -34,6 +43,7 @@ export interface VoxelWorldAdapter {
     target: FMacroCoord,
     sourcePotential: number,
     maxTicks?: number,
+    powerSource?: ElectricPowerSourceRequest,
   ): boolean;
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean;
   breakBlock(coord: FMacroCoord): boolean;

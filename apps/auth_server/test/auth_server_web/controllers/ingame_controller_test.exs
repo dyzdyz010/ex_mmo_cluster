@@ -124,6 +124,10 @@ defmodule AuthServerWeb.IngameControllerTest do
         "source_mode" => "persistent",
         "source_owner_kind" => "device",
         "source_owner_id" => "coil-7",
+        "output_mode" => "ac",
+        "voltage" => 240,
+        "current_limit_amps" => 12.5,
+        "frequency_hz" => 60,
         "energy_budget_joules" => 5000
       })
 
@@ -142,7 +146,16 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["source"]["source_kind"] == "electric"
     assert body["source"]["source_mode"] == "persistent"
     assert body["source"]["owner_ref"] == %{"id" => "coil-7", "kind" => "device"}
-    assert body["source"]["source_value"] == 120.0
+    assert body["source"]["source_value"] == 240.0
+
+    assert body["source"]["power_source"] == %{
+             "current_limit_amps" => 12.5,
+             "energy_budget_joules" => 5000.0,
+             "frequency_hz" => 60.0,
+             "output_mode" => "ac",
+             "owner_ref" => %{"id" => "coil-7", "kind" => "device"},
+             "voltage" => 240.0
+           }
 
     assert body["source"]["decay_policy"] == %{
              "energy_budget_joules" => 5000.0,
@@ -152,7 +165,7 @@ defmodule AuthServerWeb.IngameControllerTest do
              "ttl_ticks" => 45
            }
 
-    assert body["source_potential"] == 120.0
+    assert body["source_potential"] == 240.0
     assert body["source_world_macro"] == %{"x" => 0, "y" => 1, "z" => 0}
     assert body["target_world_macro"] == %{"x" => 3, "y" => 1, "z" => 0}
   end

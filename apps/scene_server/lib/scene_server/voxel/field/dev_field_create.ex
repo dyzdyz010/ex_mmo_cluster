@@ -75,9 +75,10 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   only asks `FieldRuntime` to create a `ConductionPathKernel` region so the
   normal field snapshot pipeline can expose the electric/ionization layers to
   the browser field overlay. Optional `:owner_ref`, `:source_mode`,
-  `:ttl_ticks`, and `:energy_budget_joules` are forwarded into the normalized
+  `:ttl_ticks`, `:output_mode`, `:voltage`, `:current_limit_amps`,
+  `:frequency_hz`, and `:energy_budget_joules` are forwarded into the normalized
   electric `FieldSource` so dev/browser requests exercise the same lifecycle
-  boundary as future gameplay sources.
+  and power-source boundary as future gameplay sources.
   """
   @spec conduct_path(keyword()) :: {:ok, map()} | {:error, term()}
   def conduct_path(opts \\ []) do
@@ -93,6 +94,10 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     |> maybe_put(:ttl_ticks, Keyword.get(opts, :ttl_ticks))
     |> maybe_put(:source_mode, Keyword.get(opts, :source_mode))
     |> maybe_put(:owner_ref, Keyword.get(opts, :owner_ref))
+    |> maybe_put(:output_mode, Keyword.get(opts, :output_mode))
+    |> maybe_put(:voltage, Keyword.get(opts, :voltage))
+    |> maybe_put(:current_limit_amps, Keyword.get(opts, :current_limit_amps))
+    |> maybe_put(:frequency_hz, Keyword.get(opts, :frequency_hz))
     |> maybe_put(:energy_budget_joules, Keyword.get(opts, :energy_budget_joules))
     |> FieldRuntime.ensure_conduction_path()
   end

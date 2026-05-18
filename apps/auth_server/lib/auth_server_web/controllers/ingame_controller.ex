@@ -291,6 +291,23 @@ defmodule AuthServerWeb.IngameController do
     max_frontier = parse_non_negative_int(params["max_frontier"], 512)
     owner_ref = parse_source_owner_ref(params)
 
+    output_mode =
+      params["output_mode"] || params["power_output_mode"] || params["source_output_mode"]
+
+    voltage =
+      parse_optional_non_negative_number(
+        params["voltage"] || params["source_voltage"] || params["power_voltage"]
+      )
+
+    current_limit_amps =
+      parse_optional_non_negative_number(
+        params["current_limit_amps"] || params["current_limit"] ||
+          params["power_current_limit_amps"]
+      )
+
+    frequency_hz =
+      parse_optional_non_negative_number(params["frequency_hz"] || params["power_frequency_hz"])
+
     energy_budget_joules =
       parse_optional_non_negative_number(
         params["energy_budget_joules"] || params["source_energy_budget_joules"]
@@ -309,6 +326,10 @@ defmodule AuthServerWeb.IngameController do
       |> maybe_put(:ttl_ticks, ttl_ticks)
       |> maybe_put(:source_mode, params["source_mode"])
       |> maybe_put(:owner_ref, owner_ref)
+      |> maybe_put(:output_mode, output_mode)
+      |> maybe_put(:voltage, voltage)
+      |> maybe_put(:current_limit_amps, current_limit_amps)
+      |> maybe_put(:frequency_hz, frequency_hz)
       |> maybe_put(:energy_budget_joules, energy_budget_joules)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
