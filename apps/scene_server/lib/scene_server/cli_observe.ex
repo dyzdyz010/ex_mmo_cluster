@@ -18,19 +18,22 @@ defmodule SceneServer.CliObserve do
   def emit(event, fields_or_fun) do
     case path() do
       nil -> :ok
-      _path -> emit_enabled(event, fields_or_fun)
+      path -> emit_enabled(path, event, fields_or_fun)
     end
   end
 
-  defp emit_enabled(event, fields_fun) when is_function(fields_fun, 0) and is_binary(event) do
-    emit(event, fields_fun.())
+  defp emit_enabled(path, event, fields_fun)
+       when is_function(fields_fun, 0) and is_binary(event) do
+    emit_enabled(path, event, fields_fun.())
   end
 
-  defp emit_enabled(event, fields) when is_binary(event) and is_map(fields) do
-    writer = ensure_writer(path())
-    GenServer.cast(writer, {:write, event, fields})
+  defp emit_enabled(path, event, fields) when is_binary(event) and is_map(fields) do
+    writer = ensure_writer(path)
+    GenServer.cast(writer, {:write, path, event, fields})
   rescue
     _ -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   defp path do
@@ -57,7 +60,7 @@ defmodule SceneServer.CliObserve do
 
   defp ensure_writer(path) do
     case :persistent_term.get(@writer_key, nil) do
-      %{pid: pid, path: ^path} when is_pid(pid) ->
+      %{pid: pid} when is_pid(pid) ->
         if Process.alive?(pid) do
           pid
         else
@@ -77,7 +80,6 @@ defmodule SceneServer.CliObserve do
         pid
 
       pid ->
-        GenServer.call(pid, {:ensure_path, path})
         :persistent_term.put(@writer_key, %{pid: pid, path: path})
         pid
     end
@@ -98,7 +100,7 @@ defmodule SceneServer.CliObserve do
     end
 
     @impl true
-    def handle_cast({:write, event, fields}, %{path: path} = state) do
+    def handle_cast({:write, path, event, fields}, state) do
       File.mkdir_p!(Path.dirname(path))
 
       line =
@@ -119,6 +121,11 @@ defmodule SceneServer.CliObserve do
       {:noreply, state}
     rescue
       _ -> {:noreply, state}
+    end
+
+    @impl true
+    def handle_cast({:write, event, fields}, %{path: path} = state) do
+      handle_cast({:write, path, event, fields}, state)
     end
 
     defp scrub(fields) do
