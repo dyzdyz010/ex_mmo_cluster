@@ -12,15 +12,13 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   @behaviour SceneServer.Voxel.Field.Kernel
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
+  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext, ParticipantProjection}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @fixed32_scale 65_536.0
   @default_conductivity 0.0
   @default_dielectric_strength 3.0
   @min_conductivity 0.001
-  @min_channel_conductivity 1.0
   @resistance_weight 4.0
   @breakdown_weight 0.25
   @ionization_bonus_weight 0.01
@@ -100,11 +98,13 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   # ---- channel search -------------------------------------------------------
 
   defp find_path(region, storage, source_macro_index, target_macro_index, source_value, opts) do
+    projection = participant_projection(storage, opts)
+
     cond do
-      not conductive_cell?(storage, source_macro_index) ->
+      not conductive_cell?(projection, source_macro_index) ->
         {:error, :source_not_conductive}
 
-      not conductive_cell?(storage, target_macro_index) ->
+      not conductive_cell?(projection, target_macro_index) ->
         {:error, :target_not_conductive}
 
       true ->
@@ -113,14 +113,15 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
           |> integer_opt(:max_frontier, @default_max_frontier)
           |> max(1)
 
-        queue = :gb_sets.singleton({0.0, source_macro_index})
-        costs = %{source_macro_index => 0.0}
+        source_state = {source_macro_index, :source}
+        queue = :gb_sets.singleton({0.0, source_state})
+        costs = %{source_state => 0.0}
 
         dijkstra(queue, costs, %{}, MapSet.new(), 0, max_frontier, %{
           region: region,
-          storage: storage,
+          projection: projection,
           target: target_macro_index,
-          source: source_macro_index,
+          source_state: source_state,
           source_strength: abs(source_value * 1.0),
           ionization_layer: FieldRegion.get_layer(region, :ionization)
         })
@@ -141,43 +142,44 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
         {:error, :frontier_exhausted}
 
       true ->
-        {{current_cost, current_macro_index}, queue} = :gb_sets.take_smallest(queue)
+        {{current_cost, current_state}, queue} = :gb_sets.take_smallest(queue)
+        {current_macro_index, _entry_face} = current_state
 
         cond do
-          MapSet.member?(settled, current_macro_index) ->
+          MapSet.member?(settled, current_state) ->
             dijkstra(queue, costs, previous, settled, frontier_count, max_frontier, env)
 
           current_macro_index == env.target ->
-            {:ok, reconstruct_path(previous, env.source, env.target)}
+            {:ok, reconstruct_path(previous, env.source_state, current_state)}
 
-          current_cost > Map.fetch!(costs, current_macro_index) + @epsilon ->
+          current_cost > Map.fetch!(costs, current_state) + @epsilon ->
             dijkstra(queue, costs, previous, settled, frontier_count, max_frontier, env)
 
           true ->
-            settled = MapSet.put(settled, current_macro_index)
+            settled = MapSet.put(settled, current_state)
 
             {queue, costs, previous} =
-              current_macro_index
-              |> neighbor_indices(env.region)
-              |> Enum.filter(&conductive_cell?(env.storage, &1))
-              |> Enum.reduce({queue, costs, previous}, fn neighbor_macro_index,
+              current_state
+              |> neighbor_states(env.region, env.projection)
+              |> Enum.reduce({queue, costs, previous}, fn {neighbor_macro_index, _entry_face} =
+                                                            neighbor_state,
                                                           {queue_acc, costs_acc, prev_acc} ->
                 step_cost =
                   step_cost(
-                    env.storage,
+                    env.projection,
                     env.ionization_layer,
                     neighbor_macro_index,
                     env.source_strength
                   )
 
                 candidate_cost = current_cost + step_cost
-                known_cost = Map.get(costs_acc, neighbor_macro_index, :infinity)
+                known_cost = Map.get(costs_acc, neighbor_state, :infinity)
 
                 if better_cost?(candidate_cost, known_cost) do
                   {
-                    :gb_sets.add({candidate_cost, neighbor_macro_index}, queue_acc),
-                    Map.put(costs_acc, neighbor_macro_index, candidate_cost),
-                    Map.put(prev_acc, neighbor_macro_index, current_macro_index)
+                    :gb_sets.add({candidate_cost, neighbor_state}, queue_acc),
+                    Map.put(costs_acc, neighbor_state, candidate_cost),
+                    Map.put(prev_acc, neighbor_state, current_state)
                   }
                 else
                   {queue_acc, costs_acc, prev_acc}
@@ -192,17 +194,19 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   defp better_cost?(_candidate, :infinity), do: true
   defp better_cost?(candidate, known), do: candidate + @epsilon < known
 
-  defp reconstruct_path(_previous, source, source), do: [source]
+  defp reconstruct_path(_previous, source_state, source_state), do: [elem(source_state, 0)]
 
-  defp reconstruct_path(previous, source, target) do
-    do_reconstruct_path(target, source, previous, [target])
+  defp reconstruct_path(previous, source_state, target_state) do
+    target_state
+    |> do_reconstruct_path(source_state, previous, [target_state])
+    |> Enum.map(&elem(&1, 0))
   end
 
-  defp do_reconstruct_path(source, source, _previous, acc), do: acc
+  defp do_reconstruct_path(source_state, source_state, _previous, acc), do: acc
 
-  defp do_reconstruct_path(current, source, previous, acc) do
+  defp do_reconstruct_path(current, source_state, previous, acc) do
     case Map.fetch(previous, current) do
-      {:ok, parent} -> do_reconstruct_path(parent, source, previous, [parent | acc])
+      {:ok, parent} -> do_reconstruct_path(parent, source_state, previous, [parent | acc])
       :error -> acc
     end
   end
@@ -214,6 +218,40 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     |> Enum.map(&Types.macro_index!/1)
     |> Enum.sort()
   end
+
+  defp neighbor_states({current_macro_index, entry_face}, region, projection) do
+    current_coord = Types.macro_coord!(current_macro_index)
+
+    current_macro_index
+    |> neighbor_indices(region)
+    |> Enum.flat_map(fn neighbor_macro_index ->
+      neighbor_coord = Types.macro_coord!(neighbor_macro_index)
+      {exit_face, neighbor_entry_face} = shared_faces(current_coord, neighbor_coord)
+
+      if ParticipantProjection.electric_faces_connected?(
+           projection,
+           current_macro_index,
+           entry_face,
+           exit_face
+         ) and
+           ParticipantProjection.electric_face_conductive?(
+             projection,
+             neighbor_macro_index,
+             neighbor_entry_face
+           ) do
+        [{neighbor_macro_index, neighbor_entry_face}]
+      else
+        []
+      end
+    end)
+  end
+
+  defp shared_faces({x, y, z}, {nx, y, z}) when nx == x - 1, do: {:x_neg, :x_pos}
+  defp shared_faces({x, y, z}, {nx, y, z}) when nx == x + 1, do: {:x_pos, :x_neg}
+  defp shared_faces({x, y, z}, {x, ny, z}) when ny == y - 1, do: {:y_neg, :y_pos}
+  defp shared_faces({x, y, z}, {x, ny, z}) when ny == y + 1, do: {:y_pos, :y_neg}
+  defp shared_faces({x, y, z}, {x, y, nz}) when nz == z - 1, do: {:z_neg, :z_pos}
+  defp shared_faces({x, y, z}, {x, y, nz}) when nz == z + 1, do: {:z_pos, :z_neg}
 
   defp neighbors_of({x, y, z}, region) do
     [
@@ -229,12 +267,12 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     end)
   end
 
-  defp step_cost(storage, ionization_layer, macro_index, source_strength) do
+  defp step_cost(projection, ionization_layer, macro_index, source_strength) do
     conductivity =
-      read_attribute(storage, macro_index, "electric_conductivity", @default_conductivity)
+      read_attribute(projection, macro_index, "electric_conductivity", @default_conductivity)
 
     dielectric_strength =
-      read_attribute(storage, macro_index, "dielectric_strength", @default_dielectric_strength)
+      read_attribute(projection, macro_index, "dielectric_strength", @default_dielectric_strength)
 
     resistance_cost = @resistance_weight / max(conductivity, @min_conductivity)
     breakdown_cost = breakdown_cost(dielectric_strength, source_strength)
@@ -253,18 +291,19 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   defp breakdown_cost(dielectric_strength, _source_strength), do: dielectric_strength
 
-  defp read_attribute(%Storage{} = storage, macro_index, attr_name, fallback) do
-    case Storage.effective_attribute_at_normalized(storage, macro_index, attr_name) do
-      value when is_integer(value) -> value / @fixed32_scale
-      _other -> fallback
-    end
+  defp read_attribute(%ParticipantProjection{} = projection, macro_index, attr_name, fallback) do
+    ParticipantProjection.electric_attribute(projection, macro_index, attr_name, fallback)
   end
 
-  defp read_attribute(_storage, _macro_index, _attr_name, fallback), do: fallback
+  defp conductive_cell?(%ParticipantProjection{} = projection, macro_index) do
+    ParticipantProjection.electric_conductive_cell?(projection, macro_index)
+  end
 
-  defp conductive_cell?(storage, macro_index) do
-    read_attribute(storage, macro_index, "electric_conductivity", @default_conductivity) >=
-      @min_channel_conductivity
+  defp participant_projection(storage, opts) do
+    case fetch_opt(opts, :participant_projection, nil) do
+      %ParticipantProjection{} = projection -> projection
+      _other -> ParticipantProjection.build(storage)
+    end
   end
 
   # ---- layer writes ---------------------------------------------------------

@@ -514,3 +514,11 @@ Electric conduction is the first verification path.
 - micro provenance：方便局部破坏、object/part 回写。
 - field kernel 纯度：方便后续热、烟尘、压力、魔法复用。
 
+---
+
+## 16. 进度日志
+
+- 2026-05-19：第一条电场验证切片开始落地。新增 `Field.ParticipantProjection`
+  作为只读投影层，电场可通过它读取 solid/refined macro 的电导面连通。
+  `ConductionPathKernel` 的搜索状态改为携带 entry face，断开的 prefab/refined
+  导体不会再被当作整宏格导体；连通的 refined conductor bridge 仍能导电。

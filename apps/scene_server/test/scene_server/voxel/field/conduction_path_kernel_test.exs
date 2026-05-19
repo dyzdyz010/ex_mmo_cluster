@@ -218,6 +218,65 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
     assert active_cells(updated, :ionization) == []
   end
 
+  test "does not treat a broken refined prefab conductor as a whole conductive macro" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({2, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_broken_refined_conductor({1, 0, 0})
+      |> put_solid({2, 0, 0}, @iron)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 20,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {2, 0, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, updated, []} =
+             ConductionPathKernel.tick(region, context, %{target_macro_index: target})
+
+    assert active_cells(updated, :electric_potential) == []
+    assert active_cells(updated, :ionization) == []
+  end
+
+  test "routes through a connected refined prefab conductor bridge" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({2, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_connected_refined_conductor({1, 0, 0})
+      |> put_solid({2, 0, 0}, @iron)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 21,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {2, 0, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, updated, []} =
+             ConductionPathKernel.tick(region, context, %{target_macro_index: target})
+
+    assert active_cells(updated, :electric_potential) == [
+             {source, 120.0},
+             {Types.macro_index!({1, 0, 0}), 80.0},
+             {target, 40.0}
+           ]
+  end
+
   defp conduction_fixture do
     source = Types.macro_index!({0, 1, 0})
     target = Types.macro_index!({3, 1, 0})
@@ -289,6 +348,45 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
 
   defp put_solid(storage, coord, material_id) do
     Storage.put_solid_block(storage, coord, NormalBlockData.new(material_id))
+  end
+
+  defp put_broken_refined_conductor(storage, coord) do
+    face_slots = [
+      Types.micro_index!({0, 3, 3}),
+      Types.micro_index!({7, 3, 3})
+    ]
+
+    Storage.put_micro_blocks(
+      storage,
+      coord,
+      Enum.map(face_slots, fn slot ->
+        {slot,
+         %{
+           material_id: @iron,
+           health: 100,
+           owner_object_id: 42,
+           owner_part_id: 3
+         }}
+      end)
+    )
+  end
+
+  defp put_connected_refined_conductor(storage, coord) do
+    slots = Enum.map(0..7, &Types.micro_index!({&1, 3, 3}))
+
+    Storage.put_micro_blocks(
+      storage,
+      coord,
+      Enum.map(slots, fn slot ->
+        {slot,
+         %{
+           material_id: @iron,
+           health: 100,
+           owner_object_id: 42,
+           owner_part_id: 3
+         }}
+      end)
+    )
   end
 
   defp active_cells(region, field_type) do
