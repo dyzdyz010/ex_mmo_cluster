@@ -240,3 +240,44 @@ cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/participant_
 ```
 
 Observed after implementation: 6 tests, 0 failures.
+
+### Task 8: Add Runtime Boundary Preflight For Adjacent Chunks
+
+**Files:**
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/field_runtime.ex`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs`
+- Modify: `docs/plans/2026-05-19-prefab-field-participant-projection.md`
+
+- [x] **Step 1: Write failing runtime preflight tests**
+
+Add `FieldRuntime.ensure_conduction_path/1` tests for source `{15, 0, 0}` and
+target `{16, 0, 0}`:
+
+- aligned conductive boundary cells should be observed with `boundary_contacts_count`;
+- non-conductive neighbor boundary cells should reject as `target_not_conductive`;
+- neither case may create a source or target chunk field region.
+
+Observed before implementation: aligned and non-conductive adjacent chunk requests
+both returned the old generic `cross_chunk_conduction_not_supported` path, and no
+boundary-contact observe event was emitted.
+
+- [x] **Step 2: Keep kernel chunk-local and preflight in FieldRuntime**
+
+`FieldRuntime` now handles only direct boundary-neighbor pairs. It reads the source
+chunk, looks up the already-hot target chunk, builds two `ParticipantProjection`
+snapshots, and calls `electric_contact_transfer/8` with opposite boundary faces.
+
+Successful physical contact still returns `cross_chunk_conduction_not_supported`.
+That reason now means "the boundary is physically ready, but cross-chunk field
+regions/search are not enabled yet" rather than "the runtime did not inspect the
+neighbor."
+
+- [x] **Step 3: Run focused tests**
+
+Run:
+
+```powershell
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs --seed 0
+```
+
+Observed after implementation: 23 tests, 0 failures.

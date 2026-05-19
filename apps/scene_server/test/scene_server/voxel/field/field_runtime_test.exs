@@ -639,6 +639,113 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                )
     end
 
+    test "cross-chunk boundary preflight reports aligned contacts without creating a region" do
+      with_observe_log(fn observe_log ->
+        logical_scene_id = 76_050 + System.unique_integer([:positive])
+        source_world_macro = {15, 0, 0}
+        target_world_macro = {16, 0, 0}
+
+        assert {:ok, source_chunk_pid} =
+                 ChunkDirectory.ensure_chunk(%{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: {0, 0, 0}
+                 })
+
+        assert {:ok, target_chunk_pid} =
+                 ChunkDirectory.ensure_chunk(%{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: {1, 0, 0}
+                 })
+
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   source_chunk_pid,
+                   {15, 0, 0},
+                   NormalBlockData.new(@power_block_material_id)
+                 )
+
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   target_chunk_pid,
+                   {0, 0, 0},
+                   NormalBlockData.new(@iron_material_id)
+                 )
+
+        assert {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}} =
+                 FieldRuntime.ensure_conduction_path(
+                   logical_scene_id: logical_scene_id,
+                   source_world_macro: source_world_macro,
+                   target_world_macro: target_world_macro,
+                   max_ticks: 90
+                 )
+
+        assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+        assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+
+        CliObserve.flush()
+        observe_log_text = File.read!(observe_log)
+
+        assert observe_log_text =~ ~s(event="voxel_conduction_path_rejected")
+        assert observe_log_text =~ "raw_reason: :cross_chunk_conduction_not_supported"
+        assert observe_log_text =~ "public_reason: :cross_chunk_conduction_not_supported"
+        assert observe_log_text =~ "boundary_contacts_count: 64"
+        assert observe_log_text =~ "source_exit_face: :x_pos"
+        assert observe_log_text =~ "target_entry_face: :x_neg"
+      end)
+    end
+
+    test "cross-chunk boundary preflight rejects a non-conductive neighbor before region allocation" do
+      with_observe_log(fn observe_log ->
+        logical_scene_id = 76_075 + System.unique_integer([:positive])
+
+        assert {:ok, source_chunk_pid} =
+                 ChunkDirectory.ensure_chunk(%{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: {0, 0, 0}
+                 })
+
+        assert {:ok, target_chunk_pid} =
+                 ChunkDirectory.ensure_chunk(%{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: {1, 0, 0}
+                 })
+
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   source_chunk_pid,
+                   {15, 0, 0},
+                   NormalBlockData.new(@power_block_material_id)
+                 )
+
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   target_chunk_pid,
+                   {0, 0, 0},
+                   NormalBlockData.new(@dirt_material_id)
+                 )
+
+        assert {:error, {:conduction_path_failed, :target_not_conductive}} =
+                 FieldRuntime.ensure_conduction_path(
+                   logical_scene_id: logical_scene_id,
+                   source_world_macro: {15, 0, 0},
+                   target_world_macro: {16, 0, 0},
+                   max_ticks: 90
+                 )
+
+        assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+        assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+
+        CliObserve.flush()
+        observe_log_text = File.read!(observe_log)
+
+        assert observe_log_text =~ ~s(event="voxel_conduction_path_rejected")
+        assert observe_log_text =~ "raw_reason: :target_not_conductive"
+        assert observe_log_text =~ "public_reason: :target_not_conductive"
+        assert observe_log_text =~ "source_exit_face: :x_pos"
+        assert observe_log_text =~ "target_entry_face: :x_neg"
+      end)
+    end
+
     test "rejects conduction when the source voxel has been removed" do
       logical_scene_id = 76_500 + System.unique_integer([:positive])
 

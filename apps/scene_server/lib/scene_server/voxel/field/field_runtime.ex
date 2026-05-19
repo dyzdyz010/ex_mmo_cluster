@@ -24,6 +24,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.Field.ParticipantProjection
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Field.TemperatureField
 
@@ -148,7 +149,16 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     {target_chunk_coord, target_local_macro} = Types.chunk_and_local_macro!(target_world_macro)
 
     if source_chunk_coord != target_chunk_coord do
-      {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}}
+      validate_cross_chunk_conduction_boundary(
+        opts,
+        logical_scene_id,
+        source_world_macro,
+        target_world_macro,
+        source_chunk_coord,
+        source_local_macro,
+        target_chunk_coord,
+        target_local_macro
+      )
     else
       source_index = Types.macro_index!(source_local_macro)
       target_index = Types.macro_index!(target_local_macro)
@@ -372,6 +382,180 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     end
   end
 
+  defp validate_cross_chunk_conduction_boundary(
+         opts,
+         logical_scene_id,
+         source_world_macro,
+         target_world_macro,
+         source_chunk_coord,
+         source_local_macro,
+         target_chunk_coord,
+         target_local_macro
+       ) do
+    case cross_chunk_boundary_faces(
+           source_chunk_coord,
+           source_local_macro,
+           target_chunk_coord,
+           target_local_macro
+         ) do
+      {:ok, source_exit_face, target_entry_face} ->
+        source_index = Types.macro_index!(source_local_macro)
+        target_index = Types.macro_index!(target_local_macro)
+
+        with {:ok, source_chunk_pid} <-
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: source_chunk_coord,
+                 lease: get_any(opts, [:lease, :lease_token], nil)
+               }) do
+          %{storage: %Storage{} = source_storage} = ChunkProcess.debug_state(source_chunk_pid)
+
+          {opts, source_powered?} =
+            attach_physical_power_source(
+              opts,
+              logical_scene_id,
+              source_world_macro,
+              source_index,
+              source_storage
+            )
+
+          field_source =
+            opts
+            |> Map.put(:source_kind, :electric)
+            |> Map.put(:logical_scene_id, logical_scene_id)
+            |> Map.put(:source_world_macro, source_world_macro)
+            |> Map.put(:target_world_macro, target_world_macro)
+            |> FieldSource.normalize()
+
+          base_context = %{
+            logical_scene_id: logical_scene_id,
+            source_world_macro: coord_map(source_world_macro),
+            target_world_macro: coord_map(target_world_macro),
+            source_chunk_coord: coord_map(source_chunk_coord),
+            target_chunk_coord: coord_map(target_chunk_coord),
+            source_local_macro: coord_map(source_local_macro),
+            target_local_macro: coord_map(target_local_macro),
+            source_index: source_index,
+            target_index: target_index,
+            source_key: field_source.source_key,
+            source_potential: field_source.source_value,
+            source_exit_face: source_exit_face,
+            target_entry_face: target_entry_face
+          }
+
+          source_projection = ParticipantProjection.build(source_storage)
+
+          cond do
+            not ParticipantProjection.electric_conductive_cell?(source_projection, source_index) ->
+              reject_cross_chunk_conduction_boundary(:source_not_conductive, base_context)
+
+            not source_powered? ->
+              reject_cross_chunk_conduction_boundary(:source_not_powered, base_context)
+
+            true ->
+              validate_cross_chunk_target_boundary(
+                logical_scene_id,
+                target_chunk_coord,
+                target_index,
+                target_entry_face,
+                source_projection,
+                source_index,
+                source_exit_face,
+                base_context
+              )
+          end
+        end
+
+      :not_direct_boundary_neighbors ->
+        {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}}
+    end
+  end
+
+  defp validate_cross_chunk_target_boundary(
+         logical_scene_id,
+         target_chunk_coord,
+         target_index,
+         target_entry_face,
+         source_projection,
+         source_index,
+         source_exit_face,
+         base_context
+       ) do
+    case ChunkDirectory.lookup_chunk_pid(logical_scene_id, target_chunk_coord) do
+      {:ok, target_chunk_pid} ->
+        %{storage: %Storage{} = target_storage} = ChunkProcess.debug_state(target_chunk_pid)
+        target_projection = ParticipantProjection.build(target_storage)
+
+        contacts =
+          ParticipantProjection.electric_contact_transfer(
+            source_projection,
+            source_index,
+            :source,
+            MapSet.new(),
+            source_exit_face,
+            target_projection,
+            target_index,
+            target_entry_face
+          )
+
+        context = Map.put(base_context, :boundary_contacts_count, MapSet.size(contacts))
+
+        cond do
+          not ParticipantProjection.electric_conductive_cell?(target_projection, target_index) ->
+            reject_cross_chunk_conduction_boundary(:target_not_conductive, context)
+
+          MapSet.size(contacts) == 0 ->
+            reject_cross_chunk_conduction_boundary(
+              :cross_chunk_boundary_contacts_misaligned,
+              context
+            )
+
+          true ->
+            reject_cross_chunk_conduction_boundary(:cross_chunk_conduction_not_supported, context)
+        end
+
+      :not_started ->
+        reject_cross_chunk_conduction_boundary(
+          :target_not_conductive,
+          Map.put(base_context, :boundary_contacts_count, 0)
+        )
+    end
+  end
+
+  defp cross_chunk_boundary_faces(
+         {sx, sy, sz},
+         {source_x, source_y, source_z},
+         {tx, ty, tz},
+         {target_x, target_y, target_z}
+       ) do
+    max_local = Types.chunk_size_in_macro() - 1
+
+    case {tx - sx, ty - sy, tz - sz} do
+      {1, 0, 0} when source_x == max_local and target_x == 0 -> {:ok, :x_pos, :x_neg}
+      {-1, 0, 0} when source_x == 0 and target_x == max_local -> {:ok, :x_neg, :x_pos}
+      {0, 1, 0} when source_y == max_local and target_y == 0 -> {:ok, :y_pos, :y_neg}
+      {0, -1, 0} when source_y == 0 and target_y == max_local -> {:ok, :y_neg, :y_pos}
+      {0, 0, 1} when source_z == max_local and target_z == 0 -> {:ok, :z_pos, :z_neg}
+      {0, 0, -1} when source_z == 0 and target_z == max_local -> {:ok, :z_neg, :z_pos}
+      _other -> :not_direct_boundary_neighbors
+    end
+  end
+
+  defp reject_cross_chunk_conduction_boundary(reason, observe_context) do
+    public_reason = normalize_conduction_reject_reason(reason)
+
+    observe_context
+    |> Map.put_new(:boundary_contacts_count, 0)
+    |> Map.merge(%{
+      raw_reason: reason,
+      reject_reason: detailed_conduction_reject_reason(reason),
+      public_reason: public_reason
+    })
+    |> emit_conduction_path_rejected()
+
+    {:error, {:conduction_path_failed, public_reason}}
+  end
+
   defp validate_conduction_channel(
          chunk_pid,
          source_key,
@@ -534,6 +718,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   defp normalize_conduction_reject_reason(:unreachable), do: :no_conductive_path
   defp normalize_conduction_reject_reason(:empty_queue), do: :no_conductive_path
   defp normalize_conduction_reject_reason(:frontier_exhausted), do: :no_conductive_path
+
+  defp normalize_conduction_reject_reason(:cross_chunk_boundary_contacts_misaligned),
+    do: :no_conductive_path
+
   defp normalize_conduction_reject_reason(reason), do: reason
 
   defp detailed_conduction_reject_reason(:frontier_exhausted), do: :search_budget_exhausted

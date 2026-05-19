@@ -797,6 +797,36 @@ npm test -- src/presentation/devtools/devToolsCli.test.ts src/app/controllers/wo
 
 1. multi-owner electric source key、ttl 和 budget 摘要已 generic 化；owner 存活探测、
    budget 消耗和自动续租/过期仍未实现。
-2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。
+2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。2026-05-19 后，
+   相邻 chunk 的边界导通预检已能读取两侧 projection 并报告边界接触，但仍不创建
+   跨 chunk field region。
 3. 还没有 Phase 8 damage/ignite/breakdown 结算；这些必须后续经 FieldEffect / gameplay
    dispatcher，而不是放进 kernel。
+
+### 2026-05-19：prefab 电场跨 chunk 边界预检
+
+已完成：
+
+1. `FieldRuntime.ensure_conduction_path/1` 对直接相邻的跨 chunk source/target
+   增加边界预检：source 必须位于 source chunk 边界，target 必须位于目标 chunk
+   的相对边界。
+2. 预检读取 source chunk 和已 hot 的 target chunk，分别构建
+   `ParticipantProjection`，并复用 `electric_contact_transfer/8` 判断共享面
+   micro 接触是否重叠。
+3. 通过物理接触预检时仍返回 `cross_chunk_conduction_not_supported`，表示当前
+   runtime 只证明边界已接通，不创建跨 chunk `FieldRegion`。
+4. 失败时返回更贴近业务的原因，例如 `target_not_conductive` 或
+   `no_conductive_path`，并写 `voxel_conduction_path_rejected` observe，包含
+   source/target chunk、本地宏格、边界入面/出面和接触数量。
+
+验证证据：
+
+```powershell
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs --seed 0
+```
+
+遗留：
+
+1. 真正跨 chunk path search、field region 分片、AOI 预算和 snapshot 合流仍未开放。
+2. target chunk 当前只 lookup 已启动 chunk，不为一次被拒绝的跨 chunk 请求主动创建
+   新 chunk。

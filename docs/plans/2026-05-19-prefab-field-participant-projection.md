@@ -497,9 +497,11 @@ field_effect_object_writeback
 语义风险：solid macro 的虚拟 micro 展开只能用于同质普通块。只要出现多材料、多对象、多部件或局部破坏，就必须进入 refined projection。
 
 跨 chunk 风险：prefab 已可能跨 chunk。projection 必须能标记边界不完整，电场等需要邻居连通的场不能只看单 chunk 内部摘要。
-当前已补上跨 projection 的电接触 transfer API，可用同一套 micro 接触坐标比较两个
-chunk 边界宏格；但 runtime 仍未开启跨 chunk 电路搜索，`ConductionPathKernel`
-仍保持 chunk-local。
+当前已补上跨 projection 的电接触 transfer API，并在 `FieldRuntime` 增加相邻
+chunk 边界预检：当 source/target 正好位于两个 chunk 的相邻边界宏格时，runtime
+会读取两侧 hot chunk 的 projection，比较共享面 micro 接触，并把结果写入
+`voxel_conduction_path_rejected` observe。它仍不会创建跨 chunk `FieldRegion`；
+`ConductionPathKernel` 仍保持 chunk-local。
 
 UI 风险：浏览器视觉只能证明现象存在，不能证明权威路径正确。验收必须同时依赖 CLI 和 observe 日志。
 
@@ -542,3 +544,9 @@ Electric conduction is the first verification path.
   `electric_contact_transfer/8`，同一 chunk 内核和未来跨 chunk 搜索可以复用
   同一条“当前组件可达接点 ∩ 邻居入面接点”的边界判定。该切片只建立跨
   projection 接触契约，不解除 runtime 当前的跨 chunk 导电拒绝。
+- 2026-05-19：第五条电场验证切片落地。`FieldRuntime.ensure_conduction_path/1`
+  对相邻 chunk 的边界 source/target 增加导通预检：两侧边界宏格必须都导电，
+  共享面 micro 接触必须重叠；通过预检时仍返回
+  `cross_chunk_conduction_not_supported`，表示物理边界已读通但跨 chunk field
+  region 尚未开放。预检失败会按业务原因返回 `target_not_conductive` 或
+  `no_conductive_path`，并写入 source/target chunk、入面/出面和接触数量。
