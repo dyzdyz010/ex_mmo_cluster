@@ -204,6 +204,7 @@ field-specific section 只放该场会读取的内容。电场不需要读取魔
 ```text
 ElectricProjection
   conductive_face_graph
+  conductive_face_contacts
   conductivity_by_face
   dielectric_strength_by_face
   source_ports[]
@@ -214,11 +215,15 @@ ElectricProjection
 
 `conductive_face_graph` 表示该 macro 六个面之间是否通过内部导电 micro 连通。它不等价于“该 macro 有导电材料”。
 
+`conductive_face_contacts` 表示某个面上具体哪些 micro 槽位暴露为导电接点。两个相邻
+macro 只有在共享面上的接点坐标重叠时才算真正接触；仅仅都碰到同一个宏观面不算连通。
+
 例子：
 
 - 一个铁丝 prefab 只穿过 x- 到 x+，则只允许 x 方向导通。
 - 一个被打断的导线 prefab 即使仍有铁材料，也不能跨断点导通。
 - 一个绝缘外壳包住导体时，外部面不应被误判为可导通。
+- 两段 prefab 导线都贴在同一个共享面，但一段在上角、一段在下角时，不应被误接成一条电路。
 
 ### 7.2 热场投影
 
@@ -526,3 +531,7 @@ Electric conduction is the first verification path.
   `electric_object_refs/2`，电热 `FieldEffect` 在经过 object-backed refined
   conductor 时携带 `object_part_targets`。这一步只保留回写落点元数据，
   不提前实现 object part 受热、血条或破坏结算。
+- 2026-05-19：第三条电场验证切片落地。电场投影新增共享面的 micro
+  接触坐标，`ConductionPathKernel` 的搜索状态从 entry face 进一步扩展为
+  entry face + entry contacts。相邻 refined prefab 导线必须在共享面同一
+  micro 坐标重叠才会连通，错位接触不会再产生虚假的电路。

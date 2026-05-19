@@ -96,6 +96,38 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
            )
   end
 
+  test "reachable electric contacts stay on the component entered through the shared face" do
+    projection =
+      Storage.new(7, {0, 0, 0})
+      |> put_refined_conductor(
+        {0, 0, 0},
+        [Types.micro_index!({0, 1, 1})] ++
+          Enum.map(0..7, &Types.micro_index!({&1, 6, 6}))
+      )
+      |> ParticipantProjection.build()
+
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    assert ParticipantProjection.electric_face_contacts(projection, macro_index, :x_neg) ==
+             MapSet.new([{1, 1}, {6, 6}])
+
+    assert ParticipantProjection.electric_reachable_face_contacts(
+             projection,
+             macro_index,
+             :x_neg,
+             MapSet.new([{1, 1}]),
+             :x_pos
+           ) == MapSet.new()
+
+    assert ParticipantProjection.electric_reachable_face_contacts(
+             projection,
+             macro_index,
+             :x_neg,
+             MapSet.new([{6, 6}]),
+             :x_pos
+           ) == MapSet.new([{6, 6}])
+  end
+
   test "non-conductive refined prefab material does not expose electric faces" do
     projection =
       Storage.new(7, {0, 0, 0})

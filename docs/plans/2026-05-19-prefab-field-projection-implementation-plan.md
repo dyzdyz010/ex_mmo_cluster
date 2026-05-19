@@ -132,3 +132,56 @@ mix test apps/scene_server/test/scene_server/voxel/field/participant_projection_
 ```
 
 Observed after implementation: 16 tests, 0 failures.
+
+### Task 6: Add Micro-Aligned Shared-Face Contact
+
+**Files:**
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/participant_projection.ex`
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/kernels/conduction_path_kernel.ex`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs`
+- Modify: `docs/plans/2026-05-19-prefab-field-participant-projection.md`
+
+- [x] **Step 1: Write failing cross-macro contact tests**
+
+Add tests for two refined x-axis conductor segments in adjacent macro cells:
+
+- misaligned shared-face contacts, such as `{y, z} = {1, 1}` touching
+  `{y, z} = {6, 6}`, must not conduct;
+- aligned shared-face contacts at the same `{y, z}` must conduct.
+
+Observed before implementation: the misaligned test failed because the kernel
+treated any conductive contact on the same macro face as enough for conduction.
+
+- [x] **Step 2: Add face-contact projection**
+
+Extend electric projection with per-face micro contact sets:
+
+- x faces use `{y, z}`;
+- y faces use `{x, z}`;
+- z faces use `{x, y}`.
+
+Solid conductive macro cells expose all 64 contacts on every face. Refined macro
+cells expose only the contacts occupied by conductive micro slots.
+
+- [x] **Step 3: Carry entry contacts through path search**
+
+Change conduction search state from `{macro_index, entry_face}` to
+`{macro_index, entry_face, entry_contacts}`. A neighbor step is valid only when:
+
+- the current macro can reach exit-face contacts from the actual entry contacts;
+- the neighbor exposes overlapping contacts on the opposite shared face.
+
+This preserves component identity inside one macro cell: entering through a
+contact that belongs to an unconnected component cannot exit through a different
+component on the same face.
+
+- [x] **Step 4: Run focused tests**
+
+Run:
+
+```powershell
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs --seed 0
+```
+
+Observed after implementation: 19 tests, 0 failures.

@@ -113,7 +113,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
           |> integer_opt(:max_frontier, @default_max_frontier)
           |> max(1)
 
-        source_state = {source_macro_index, :source}
+        source_state = {source_macro_index, :source, MapSet.new()}
         queue = :gb_sets.singleton({0.0, source_state})
         costs = %{source_state => 0.0}
 
@@ -143,7 +143,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
       true ->
         {{current_cost, current_state}, queue} = :gb_sets.take_smallest(queue)
-        {current_macro_index, _entry_face} = current_state
+        {current_macro_index, _entry_face, _entry_contacts} = current_state
 
         cond do
           MapSet.member?(settled, current_state) ->
@@ -161,7 +161,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
             {queue, costs, previous} =
               current_state
               |> neighbor_states(env.region, env.projection)
-              |> Enum.reduce({queue, costs, previous}, fn {neighbor_macro_index, _entry_face} =
+              |> Enum.reduce({queue, costs, previous}, fn {neighbor_macro_index, _entry_face,
+                                                           _entry_contacts} =
                                                             neighbor_state,
                                                           {queue_acc, costs_acc, prev_acc} ->
                 step_cost =
@@ -219,7 +220,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     |> Enum.sort()
   end
 
-  defp neighbor_states({current_macro_index, entry_face}, region, projection) do
+  defp neighbor_states({current_macro_index, entry_face, entry_contacts}, region, projection) do
     current_coord = Types.macro_coord!(current_macro_index)
 
     current_macro_index
@@ -228,18 +229,26 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
       neighbor_coord = Types.macro_coord!(neighbor_macro_index)
       {exit_face, neighbor_entry_face} = shared_faces(current_coord, neighbor_coord)
 
-      if ParticipantProjection.electric_faces_connected?(
-           projection,
-           current_macro_index,
-           entry_face,
-           exit_face
-         ) and
-           ParticipantProjection.electric_face_conductive?(
-             projection,
-             neighbor_macro_index,
-             neighbor_entry_face
-           ) do
-        [{neighbor_macro_index, neighbor_entry_face}]
+      exit_contacts =
+        ParticipantProjection.electric_reachable_face_contacts(
+          projection,
+          current_macro_index,
+          entry_face,
+          entry_contacts,
+          exit_face
+        )
+
+      neighbor_contacts =
+        ParticipantProjection.electric_face_contacts(
+          projection,
+          neighbor_macro_index,
+          neighbor_entry_face
+        )
+
+      shared_contacts = MapSet.intersection(exit_contacts, neighbor_contacts)
+
+      if MapSet.size(shared_contacts) > 0 do
+        [{neighbor_macro_index, neighbor_entry_face, shared_contacts}]
       else
         []
       end

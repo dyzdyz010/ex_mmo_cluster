@@ -322,6 +322,68 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
            ]
   end
 
+  test "does not connect refined prefab conductors when shared face contacts are misaligned" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({3, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_refined_x_conductor({1, 0, 0}, 1, 1)
+      |> put_refined_x_conductor({2, 0, 0}, 6, 6)
+      |> put_solid({3, 0, 0}, @iron)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 23,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {3, 0, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, updated, []} =
+             ConductionPathKernel.tick(region, context, %{target_macro_index: target})
+
+    assert active_cells(updated, :electric_potential) == []
+    assert active_cells(updated, :ionization) == []
+  end
+
+  test "connects refined prefab conductors when shared face contacts overlap" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({3, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_refined_x_conductor({1, 0, 0}, 3, 3)
+      |> put_refined_x_conductor({2, 0, 0}, 3, 3)
+      |> put_solid({3, 0, 0}, @iron)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 24,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {3, 0, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, updated, []} =
+             ConductionPathKernel.tick(region, context, %{target_macro_index: target})
+
+    assert active_cells(updated, :electric_potential) == [
+             {source, 120.0},
+             {Types.macro_index!({1, 0, 0}), 90.0},
+             {Types.macro_index!({2, 0, 0}), 60.0},
+             {target, 30.0}
+           ]
+  end
+
   defp conduction_fixture do
     source = Types.macro_index!({0, 1, 0})
     target = Types.macro_index!({3, 1, 0})
@@ -417,7 +479,11 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
   end
 
   defp put_connected_refined_conductor(storage, coord) do
-    slots = Enum.map(0..7, &Types.micro_index!({&1, 3, 3}))
+    put_refined_x_conductor(storage, coord, 3, 3)
+  end
+
+  defp put_refined_x_conductor(storage, coord, y, z) do
+    slots = Enum.map(0..7, &Types.micro_index!({&1, y, z}))
 
     Storage.put_micro_blocks(
       storage,
