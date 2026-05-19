@@ -37,6 +37,41 @@ case Horde.Registry.start_link(
   {:error, {:already_started, _pid}} -> :ok
 end
 
+defmodule SceneServer.TestVoxelRuntime do
+  @moduledoc false
+
+  def ensure_started! do
+    ensure_started!(
+      SceneServer.Voxel.Field.FieldTickSupervisor,
+      {SceneServer.Voxel.Field.FieldTickSupervisor,
+       name: SceneServer.Voxel.Field.FieldTickSupervisor}
+    )
+
+    ensure_started!(
+      SceneServer.VoxelChunkSup,
+      {SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup}
+    )
+
+    ensure_started!(
+      SceneServer.Voxel.ChunkDirectory,
+      {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory}
+    )
+  end
+
+  defp ensure_started!(name, child_spec) do
+    case Process.whereis(name) do
+      nil ->
+        case ExUnit.Callbacks.start_supervised(child_spec) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
+  end
+end
+
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto. Bump the
 # default `assert_receive` window so tests waiting on apply→persist→delta
 # round trips don't flake on a real DB INSERT.

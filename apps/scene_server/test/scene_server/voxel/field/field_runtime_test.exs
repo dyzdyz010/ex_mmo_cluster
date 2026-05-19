@@ -22,6 +22,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
+    SceneServer.TestVoxelRuntime.ensure_started!()
+
     :ok
   end
 

@@ -41,6 +41,8 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
+    SceneServer.TestVoxelRuntime.ensure_started!()
+
     on_exit(fn ->
       CliObserve.flush()
 

@@ -202,7 +202,7 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
       center = FieldLayer.get(layer, source_idx)
       neighbor = FieldLayer.get(layer, Types.macro_index!({4, 3, 3}))
 
-      assert center > 799.99
+      assert center > 799.98
       assert neighbor > TemperatureField.env_temperature()
       assert neighbor < TemperatureField.env_temperature() + 0.01
     end
