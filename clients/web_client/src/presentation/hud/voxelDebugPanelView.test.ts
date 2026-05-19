@@ -79,7 +79,7 @@ class FakeCommands implements VoxelDebugPanelCommandPort {
 }
 
 describe("VoxelDebugPanelView", () => {
-  it("renders authoritative voxel state and command buttons", () => {
+  it("renders authoritative voxel status, shortcut guidance, CLI hints, and only pointer-worthy controls", () => {
     const html = renderVoxelDebugPanelHtml(
       makeVoxelSnapshot(),
       undefined,
@@ -91,21 +91,26 @@ describe("VoxelDebugPanelView", () => {
       makeFieldOverlaySnapshot(),
     );
 
-    expect(html).toContain("Server Voxel");
+    expect(html).toContain("Voxel Runtime");
     expect(html).toContain("active");
     expect(html).toContain("<dd>3</dd>");
     expect(html).toContain("voxel-panel-stat--field");
     expect(html).toContain("field=on regions=1 electric=2 smoke=12");
-    expect(html).toContain('data-voxel-action="rebind"');
-    expect(html).toContain('data-voxel-action="impact"');
-    expect(html).toContain('data-voxel-action="heat-selected"');
-    expect(html).toContain('data-voxel-action="cool-selected"');
-    expect(html).toContain('data-voxel-action="conduct"');
-    expect(html).toContain('data-voxel-action="conduct-source-selection"');
-    expect(html).toContain('data-voxel-input="conductPotential"');
-    expect(html).toContain('data-voxel-input="conductOutputMode"');
-    expect(html).toContain('data-voxel-input="conductLoadCurrentAmps"');
-    expect(html).toContain('data-voxel-input="material"');
+    expect(html).toContain("data-voxel-panel-shortcuts");
+    expect(html).toContain("WASD");
+    expect(html).toContain("F");
+    expect(html).toContain("Z / X / C");
+    expect(html).toContain("window.__voxelCli?.run(&quot;snapshot&quot;)");
+    expect(html).toContain("voxel_subscribe");
+    expect(html).toContain('data-voxel-action="field-overlay"');
+    expect(html).toContain('data-voxel-action="guide"');
+    expect(html).toContain('data-voxel-action="subscribe"');
+    expect(html).not.toContain('data-voxel-action="impact"');
+    expect(html).not.toContain('data-voxel-action="heat-selected"');
+    expect(html).not.toContain('data-voxel-action="cool-selected"');
+    expect(html).not.toContain('data-voxel-action="conduct"');
+    expect(html).not.toContain('data-voxel-action="conduct-source-selection"');
+    expect(html).not.toContain('data-voxel-action="probe"');
     expect(html).toContain("voxel_sync: voxel sync");
   });
 
@@ -173,24 +178,51 @@ describe("VoxelDebugPanelView", () => {
     expect(html).not.toContain("subscription not active: requested");
   });
 
-  it("delegates visible controls to the same command port as the CLI", () => {
+  it("keeps the pointer-worthy Subscribe control wired to the same command port as the CLI", () => {
     const root = new FakeVoxelPanelRoot();
     const commands = new FakeCommands();
     const view = new VoxelDebugPanelView(root as unknown as HTMLDivElement, commands, makeWorld());
 
-    root.inputField("impactX", "8");
-    root.inputField("impactY", "16");
-    root.inputField("impactZ", "24");
-    root.inputField("material", "stone");
-    root.clickAction("impact");
+    root.inputField("subscribeCx", "8");
+    root.inputField("subscribeCy", "0");
+    root.inputField("subscribeCz", "24");
+    root.inputField("subscribeRadius", "2");
+    root.clickAction("subscribe");
 
-    expect(commands.calls).toEqual([{ command: "voxel_impact", args: ["8", "16", "24", "stone"] }]);
-    expect(root.innerHTML).toContain("voxel_impact ok");
+    expect(commands.calls).toEqual([{ command: "voxel_subscribe", args: ["8", "0", "24", "2"] }]);
+    expect(root.innerHTML).toContain("voxel_subscribe ok");
     expect(root.pointerDown()).toBe(true);
 
     view.dispose();
     root.clickAction("refresh");
     expect(commands.calls).toHaveLength(1);
+  });
+
+  it("opens the operation guide from the visible panel without hitting the CLI", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    let openCount = 0;
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        openCount += 1;
+      },
+    );
+
+    root.clickAction("guide");
+
+    expect(openCount).toBe(1);
+    expect(commands.calls).toEqual([]);
+    expect(root.innerHTML).toContain("operation guide opened");
+
+    view.dispose();
   });
 
   it("keeps subscribe inputs editable across panel refreshes", () => {
@@ -216,31 +248,6 @@ describe("VoxelDebugPanelView", () => {
     root.clickAction("rebind");
 
     expect(commands.calls).toEqual([{ command: "voxel_probe", args: ["voxel_rebind 779 all"] }]);
-
-    view.dispose();
-  });
-
-  it("routes the Heat and Cool controls to selected-voxel temperature actions", () => {
-    const root = new FakeVoxelPanelRoot();
-    const commands = new FakeCommands();
-    const temperatureTargets: number[] = [];
-    const view = new VoxelDebugPanelView(
-      root as unknown as HTMLDivElement,
-      commands,
-      makeWorld(),
-      undefined,
-      (targetTemperatureCelsius) => {
-        temperatureTargets.push(targetTemperatureCelsius);
-        return true;
-      },
-    );
-
-    root.clickAction("heat-selected");
-    root.clickAction("cool-selected");
-
-    expect(temperatureTargets).toEqual([800, 0]);
-    expect(commands.calls).toEqual([]);
-    expect(root.innerHTML).toContain("set selected voxel to 0C");
 
     view.dispose();
   });
@@ -326,8 +333,8 @@ describe("VoxelDebugPanelView", () => {
       command: "conduct-target-selection",
       text: "target set to 6,1,0",
     });
-    expect(root.innerHTML).toContain('data-voxel-input="conductTargetX"');
-    expect(root.innerHTML).toContain('value="6"');
+    expect(root.innerHTML).toContain("<kbd>source</kbd><span>2,1,0</span>");
+    expect(root.innerHTML).toContain("<kbd>target</kbd><span>6,1,0</span>");
     root.clickAction("conduct");
 
     expect(commands.calls).toEqual([
@@ -366,7 +373,8 @@ describe("VoxelDebugPanelView", () => {
         source: "voxel_panel",
       },
     ]);
-    expect(root.innerHTML).toContain('value="5"');
+    expect(root.innerHTML).toContain("<kbd>source</kbd><span>5,0,5</span>");
+    expect(root.innerHTML).toContain("<kbd>target</kbd><span>5,3,5</span>");
     expect(root.innerHTML).toContain("voxel_conduct ok");
 
     view.dispose();

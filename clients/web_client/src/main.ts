@@ -32,6 +32,22 @@ function requireVoxelPanel(): HTMLDivElement {
   return panel;
 }
 
+function requireOperationGuide(): HTMLDivElement {
+  const guide = document.getElementById("operation-guide");
+  if (!(guide instanceof HTMLDivElement)) {
+    throw new Error("#operation-guide element missing or wrong type");
+  }
+  return guide;
+}
+
+function requireOperationGuideToggle(): HTMLButtonElement {
+  const button = document.getElementById("operation-guide-toggle");
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("#operation-guide-toggle button missing or wrong type");
+  }
+  return button;
+}
+
 function requireTouchControls(): HTMLDivElement {
   const root = document.getElementById("touch-controls");
   if (!(root instanceof HTMLDivElement)) {
@@ -46,6 +62,8 @@ async function main(): Promise<void> {
     hud: requireHud(),
     hotbarDock: requireHotbarDock(),
     voxelPanel: requireVoxelPanel(),
+    operationGuide: requireOperationGuide(),
+    operationGuideToggle: requireOperationGuideToggle(),
     touchControls: requireTouchControls(),
   });
 }

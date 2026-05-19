@@ -8,10 +8,16 @@ movement、render 或 transport 的真相状态。
   使用 `pre-wrap` 换行并允许纵向触摸滚动，避免调试文本覆盖热栏或体素面板。
 - `hotbarDockView.ts` 是底部快捷栏，负责材料 / prefab 选择入口；选择真相仍在
   `WorldEditController`。
-- `voxelDebugPanelView.ts` 是右上角服务器权威体素面板，复用 DevTools CLI 的命令分发，
-  把 `voxel_sync`、`voxel_probe`、`voxel_probe voxel_rebind ...`、`chunk_versions`、
-  `voxel_subscribe` 和 `voxel_impact` 暴露成可点击 UI。`Rebind` 按钮走同一条
-  WebSocket 调试探针路径，便于在迁移 cutover 后从网页直接触发订阅重绑定并用日志验证。
+- `voxelDebugPanelView.ts` 是右上角服务器权威体素观察面。桌面端鼠标主要被视角占用，
+  所以该面板默认展示运行状态、快捷键和 CLI 指令提示；只有 `Field`、`Guide` 和
+  `voxel_subscribe` 这类值得脱出指针的操作保留为可点击控件。其它体素调试能力仍走
+  `window.__voxelCli`、键盘事件或 observe 日志。
+- `operationGuideView.ts` 是操作指南弹框和触屏独立入口，只负责打开、关闭、Esc 退出和阻断世界编辑指针事件。
+  桌面入口在右侧体素面板的 `Guide` 按钮；触屏入口是独立 `?` 按钮，因为移动触屏模式会隐藏右侧面板。
+  具体业务动作仍由右侧体素面板、快捷栏、输入控制器和 CLI/observe 面共同承接。
+- 移动端不复用桌面右侧体素面板；`touch/TouchControlsView.ts` 提供手指友好的独立操作面：
+  双摇杆、Jump、Place、Break，以及 `Field`、`Heat`、`Conduct`、`Sub Aim` 操作条。
+  `Sub Aim` 按当前准星方块所在 chunk 自动执行 `voxel_subscribe`，避免在手机上填写坐标。
 
 当前 UI 优化焦点：
 

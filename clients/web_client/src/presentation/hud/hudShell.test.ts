@@ -37,21 +37,36 @@ describe("HUD shell layout", () => {
     expect(enableRule).toContain("display: block");
   });
 
-  it("provides touch zones, sticks and action buttons inside touch-controls", () => {
+  it("provides touch zones, sticks, action buttons and mobile operation buttons inside touch-controls", () => {
     expect(indexHtml).toMatch(/\.touch-zone--left\s*\{[^}]*pointer-events:\s*auto/s);
     expect(indexHtml).toMatch(/\.touch-zone--right\s*\{[^}]*pointer-events:\s*auto/s);
     expect(indexHtml).toMatch(/\.touch-stick--left\s*\{/);
     expect(indexHtml).toMatch(/\.touch-stick--right\s*\{/);
     expect(indexHtml).toMatch(/\.touch-buttons\s*\{[^}]*pointer-events:\s*auto/s);
+    expect(indexHtml).toMatch(/\.touch-ops\s*\{[^}]*pointer-events:\s*auto/s);
     expect(indexHtml).toMatch(/\.touch-btn--jump\s*\{/);
     expect(indexHtml).toMatch(/\.touch-btn--break\s*\{/);
     expect(indexHtml).toMatch(/\.touch-btn--place\s*\{/);
+    expect(indexHtml).toContain('aria-label="Toggle field overlay"');
+    expect(indexHtml).toContain('aria-label="Heat aimed block"');
+    expect(indexHtml).toContain('aria-label="Conduct aimed path"');
+    expect(indexHtml).toContain('aria-label="Subscribe aimed chunk"');
   });
 
-  it("hides touch sticks/buttons and shows orientation warning in portrait", () => {
+  it("keeps the touch hotbar in one compact row so it does not collide with right thumb buttons", () => {
+    const touchDockRule = indexHtml.match(/html\.is-touch\s+#hotbar-dock\s*\{[^}]*\}/s)?.[0] ?? "";
+    const touchSlotsRule =
+      indexHtml.match(/html\.is-touch\s+\.hotbar-slots\s*\{[^}]*\}/s)?.[0] ?? "";
+
+    expect(touchDockRule).toContain("calc(100vw - 284px)");
+    expect(touchSlotsRule).toMatch(/grid-template-columns:\s*repeat\(9,/);
+  });
+
+  it("hides touch sticks/buttons/operations and shows orientation warning in portrait", () => {
     const portraitBlock = indexHtml.match(/@media \(orientation: portrait\)[^@]*/s)?.[0] ?? "";
     expect(portraitBlock).toMatch(/\.orientation-warning\s*\{[^}]*display:\s*flex/s);
     expect(portraitBlock).toMatch(/\.touch-zone[^{]*\{[^}]*display:\s*none/s);
-    expect(portraitBlock).toMatch(/\.touch-buttons\s*\{[^}]*display:\s*none/s);
+    expect(portraitBlock).toMatch(/\.touch-buttons,[\s\S]*?\.touch-ops\s*\{[^}]*display:\s*none/s);
+    expect(portraitBlock).toMatch(/#hotbar-dock\s*\{[^}]*display:\s*none/s);
   });
 });

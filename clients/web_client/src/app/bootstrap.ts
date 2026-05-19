@@ -19,6 +19,10 @@ import {
 } from "../voxel/onlineVoxelWorldAdapter";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
+import {
+  OperationGuideButtonView,
+  OperationGuideView,
+} from "../presentation/hud/operationGuideView";
 import { VoxelDebugPanelView } from "../presentation/hud/voxelDebugPanelView";
 import { DevToolsCli } from "../presentation/devtools/devToolsCli";
 import { EventBus } from "../shared/events/eventBus";
@@ -29,6 +33,7 @@ import { InputController } from "./controllers/inputController";
 import { LocalPlayerController } from "./controllers/localPlayerController";
 import { RemotePlayerController } from "./controllers/remotePlayerController";
 import { RenderOrchestrator } from "./controllers/renderOrchestrator";
+import { createTouchVoxelOperationPorts } from "./controllers/touchVoxelOperations";
 import { TransportPump } from "./controllers/transportPump";
 import { WorldEditController } from "./controllers/worldEditController";
 import { GameLoop } from "./gameLoop";
@@ -44,6 +49,8 @@ export interface BootstrapTargets {
   hud: HTMLDivElement;
   hotbarDock: HTMLDivElement;
   voxelPanel: HTMLDivElement;
+  operationGuide: HTMLDivElement;
+  operationGuideToggle: HTMLButtonElement;
   touchControls: HTMLDivElement;
 }
 
@@ -59,6 +66,8 @@ export async function bootstrap({
   hud,
   hotbarDock,
   voxelPanel,
+  operationGuide,
+  operationGuideToggle,
   touchControls,
 }: BootstrapTargets): Promise<AppContext> {
   canvas.tabIndex = 0;
@@ -120,6 +129,10 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
+  const operationGuideView = new OperationGuideView(operationGuide);
+  const operationGuideButtonView = new OperationGuideButtonView(operationGuideToggle, () =>
+    operationGuideView.open(),
+  );
   const voxelDebugPanelView = new VoxelDebugPanelView(
     voxelPanel,
     devTools,
@@ -130,6 +143,7 @@ export async function bootstrap({
     () => edit.getSelectedOccupiedMacro(),
     () => edit.getSelectedConductionPair(),
     () => render.getFieldDebugOverlaySnapshot(),
+    () => operationGuideView.open(),
   );
   const unsubscribeConductionEndpointShortcut = eventBus.on(
     "input:capture-conduction-endpoint",
@@ -174,6 +188,14 @@ export async function bootstrap({
         requestJump: (source) => input.requestJump(source),
         emitBreak: () => eventBus.emit("input:break-block", { source: "touch_button" }),
         emitPlace: () => eventBus.emit("input:place-block", { source: "touch_button" }),
+        ...createTouchVoxelOperationPorts({
+          toggleFieldDebugOverlay: () => render.toggleFieldDebugOverlay(),
+          emitAppEvent: (event, payload) => eventBus.emit(event, payload),
+          getSelectedOccupiedMacro: () => edit.getSelectedOccupiedMacro(),
+          executeCliCommand: (command, args, source) =>
+            devTools.executeCliCommand(command, args, source),
+          emitObserve: (category, event, fields) => logger.emit(category, event, fields),
+        }),
         applyCameraYawPitchDelta: (yaw, pitch) => sceneHandles.applyCameraYawPitchDelta(yaw, pitch),
       });
       loop.subscribe(touchControlsView);
@@ -215,6 +237,8 @@ export async function bootstrap({
     detachInput();
     touchControlsView?.dispose();
     document.documentElement.classList.remove("is-touch");
+    operationGuideButtonView.dispose();
+    operationGuideView.dispose();
     voxelDebugPanelView.dispose();
     hotbarDockView.dispose();
     render.dispose();
@@ -233,10 +257,38 @@ function resolveTouchControlsElements(root: HTMLElement): TouchControlsElements 
   const btnJump = q<HTMLElement>(".touch-btn--jump");
   const btnBreak = q<HTMLElement>(".touch-btn--break");
   const btnPlace = q<HTMLElement>(".touch-btn--place");
-  if (!zoneLeft || !zoneRight || !stickLeft || !stickRight || !btnJump || !btnBreak || !btnPlace) {
+  const btnField = q<HTMLElement>(".touch-btn--field");
+  const btnHeat = q<HTMLElement>(".touch-btn--heat");
+  const btnConduct = q<HTMLElement>(".touch-btn--conduct");
+  const btnSubscribe = q<HTMLElement>(".touch-btn--subscribe");
+  if (
+    !zoneLeft ||
+    !zoneRight ||
+    !stickLeft ||
+    !stickRight ||
+    !btnJump ||
+    !btnBreak ||
+    !btnPlace ||
+    !btnField ||
+    !btnHeat ||
+    !btnConduct ||
+    !btnSubscribe
+  ) {
     return null;
   }
-  return { zoneLeft, zoneRight, stickLeft, stickRight, btnJump, btnBreak, btnPlace };
+  return {
+    zoneLeft,
+    zoneRight,
+    stickLeft,
+    stickRight,
+    btnJump,
+    btnBreak,
+    btnPlace,
+    btnField,
+    btnHeat,
+    btnConduct,
+    btnSubscribe,
+  };
 }
 
 function createMovementTransport(logger: ObserveLog): MovementTransport {

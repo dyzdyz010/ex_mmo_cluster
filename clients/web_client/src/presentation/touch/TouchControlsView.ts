@@ -10,6 +10,10 @@ export interface TouchControlsPorts {
   requestJump(source: string): void;
   emitBreak(): void;
   emitPlace(): void;
+  toggleField(): void;
+  emitHeat(): void;
+  emitConduct(): void;
+  subscribeAim(): void;
   applyCameraYawPitchDelta(deltaYawRadians: number, deltaPitchRadians: number): void;
 }
 
@@ -21,6 +25,10 @@ export interface TouchControlsElements {
   btnJump: HTMLElement;
   btnBreak: HTMLElement;
   btnPlace: HTMLElement;
+  btnField: HTMLElement;
+  btnHeat: HTMLElement;
+  btnConduct: HTMLElement;
+  btnSubscribe: HTMLElement;
 }
 
 interface StickState {
@@ -31,8 +39,18 @@ interface StickState {
 }
 
 export class TouchControlsView implements FrameSubscriber {
-  private readonly left: StickState = { pointerId: null, originX: 0, originY: 0, vec: { x: 0, y: 0 } };
-  private readonly right: StickState = { pointerId: null, originX: 0, originY: 0, vec: { x: 0, y: 0 } };
+  private readonly left: StickState = {
+    pointerId: null,
+    originX: 0,
+    originY: 0,
+    vec: { x: 0, y: 0 },
+  };
+  private readonly right: StickState = {
+    pointerId: null,
+    originX: 0,
+    originY: 0,
+    vec: { x: 0, y: 0 },
+  };
   private readonly detachers: Array<() => void> = [];
 
   constructor(
@@ -44,6 +62,10 @@ export class TouchControlsView implements FrameSubscriber {
     this.bindButton(elements.btnJump, () => this.ports.requestJump("touch"));
     this.bindButton(elements.btnBreak, () => this.ports.emitBreak());
     this.bindButton(elements.btnPlace, () => this.ports.emitPlace());
+    this.bindButton(elements.btnField, () => this.ports.toggleField());
+    this.bindButton(elements.btnHeat, () => this.ports.emitHeat());
+    this.bindButton(elements.btnConduct, () => this.ports.emitConduct());
+    this.bindButton(elements.btnSubscribe, () => this.ports.subscribeAim());
   }
 
   onFrame(_nowMs: number, dtMs: number): void {

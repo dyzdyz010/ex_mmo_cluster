@@ -24,7 +24,10 @@ class FakeElement {
   }
   removeEventListener(type: string, fn: EventListener): void {
     const arr = this.listeners.get(type) ?? [];
-    this.listeners.set(type, arr.filter((f) => f !== fn));
+    this.listeners.set(
+      type,
+      arr.filter((f) => f !== fn),
+    );
   }
   fire(type: string, evt: Partial<PointerEvent>): void {
     for (const fn of this.listeners.get(type) ?? []) fn(evt as PointerEvent);
@@ -37,6 +40,10 @@ function makePorts(): TouchControlsPorts {
     requestJump: vi.fn(),
     emitBreak: vi.fn(),
     emitPlace: vi.fn(),
+    toggleField: vi.fn(),
+    emitHeat: vi.fn(),
+    emitConduct: vi.fn(),
+    subscribeAim: vi.fn(),
     applyCameraYawPitchDelta: vi.fn(),
   };
 }
@@ -50,6 +57,10 @@ function makeFakeDom() {
     btnJump: new FakeElement(),
     btnBreak: new FakeElement(),
     btnPlace: new FakeElement(),
+    btnField: new FakeElement(),
+    btnHeat: new FakeElement(),
+    btnConduct: new FakeElement(),
+    btnSubscribe: new FakeElement(),
   };
 }
 
@@ -89,10 +100,20 @@ describe("TouchControlsView", () => {
     const ports = makePorts();
     new TouchControlsView(dom as unknown as ConstructorElements, ports);
 
-    dom.zoneLeft.fire("pointerdown", { pointerId: 1, clientX: 60, clientY: 300, preventDefault: () => undefined });
+    dom.zoneLeft.fire("pointerdown", {
+      pointerId: 1,
+      clientX: 60,
+      clientY: 300,
+      preventDefault: () => undefined,
+    });
     const before = (ports.setMovement as ReturnType<typeof vi.fn>).mock.calls.length;
 
-    dom.zoneLeft.fire("pointerdown", { pointerId: 2, clientX: 10, clientY: 10, preventDefault: () => undefined });
+    dom.zoneLeft.fire("pointerdown", {
+      pointerId: 2,
+      clientX: 10,
+      clientY: 10,
+      preventDefault: () => undefined,
+    });
     expect((ports.setMovement as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before);
   });
 
@@ -101,11 +122,23 @@ describe("TouchControlsView", () => {
     const ports = makePorts();
     const view = new TouchControlsView(dom as unknown as ConstructorElements, ports);
 
-    dom.zoneRight.fire("pointerdown", { pointerId: 5, clientX: 100, clientY: 300, preventDefault: () => undefined });
-    dom.zoneRight.fire("pointermove", { pointerId: 5, clientX: 180, clientY: 300, preventDefault: () => undefined });
+    dom.zoneRight.fire("pointerdown", {
+      pointerId: 5,
+      clientX: 100,
+      clientY: 300,
+      preventDefault: () => undefined,
+    });
+    dom.zoneRight.fire("pointermove", {
+      pointerId: 5,
+      clientX: 180,
+      clientY: 300,
+      preventDefault: () => undefined,
+    });
 
     view.onFrame(0, 100);
-    const [yaw, pitch] = (ports.applyCameraYawPitchDelta as ReturnType<typeof vi.fn>).mock.calls.at(-1) ?? [0, 0];
+    const [yaw, pitch] = (ports.applyCameraYawPitchDelta as ReturnType<typeof vi.fn>).mock.calls.at(
+      -1,
+    ) ?? [0, 0];
     expect(yaw).toBeGreaterThan(0);
     expect(pitch).toBeCloseTo(0);
   });
@@ -114,7 +147,11 @@ describe("TouchControlsView", () => {
     const dom = makeFakeDom();
     const ports = makePorts();
     new TouchControlsView(dom as unknown as ConstructorElements, ports);
-    dom.btnJump.fire("pointerdown", { pointerId: 9, preventDefault: () => undefined, stopPropagation: () => undefined });
+    dom.btnJump.fire("pointerdown", {
+      pointerId: 9,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
     expect(ports.requestJump).toHaveBeenCalledOnce();
   });
 
@@ -123,10 +160,52 @@ describe("TouchControlsView", () => {
     const ports = makePorts();
     new TouchControlsView(dom as unknown as ConstructorElements, ports);
 
-    dom.btnBreak.fire("pointerdown", { pointerId: 10, preventDefault: () => undefined, stopPropagation: () => undefined });
+    dom.btnBreak.fire("pointerdown", {
+      pointerId: 10,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
     expect(ports.emitBreak).toHaveBeenCalledOnce();
 
-    dom.btnPlace.fire("pointerdown", { pointerId: 11, preventDefault: () => undefined, stopPropagation: () => undefined });
+    dom.btnPlace.fire("pointerdown", {
+      pointerId: 11,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
     expect(ports.emitPlace).toHaveBeenCalledOnce();
+  });
+
+  it("mobile operation buttons emit field, heat, conduct, and aim subscribe intents", () => {
+    const dom = makeFakeDom();
+    const ports = makePorts();
+    new TouchControlsView(dom as unknown as ConstructorElements, ports);
+
+    dom.btnField.fire("pointerdown", {
+      pointerId: 12,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
+    expect(ports.toggleField).toHaveBeenCalledOnce();
+
+    dom.btnHeat.fire("pointerdown", {
+      pointerId: 13,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
+    expect(ports.emitHeat).toHaveBeenCalledOnce();
+
+    dom.btnConduct.fire("pointerdown", {
+      pointerId: 14,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
+    expect(ports.emitConduct).toHaveBeenCalledOnce();
+
+    dom.btnSubscribe.fire("pointerdown", {
+      pointerId: 15,
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
+    });
+    expect(ports.subscribeAim).toHaveBeenCalledOnce();
   });
 });

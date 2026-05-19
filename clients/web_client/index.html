@@ -205,20 +205,10 @@
         gap: 6px;
       }
       .voxel-panel-actions {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
-      .voxel-panel-form--subscribe,
-      .voxel-panel-form--impact {
+      .voxel-panel-form--subscribe {
         grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(74px, 0.9fr);
-      }
-      .voxel-panel-form--conduct-endpoints {
-        grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(74px, 0.9fr);
-      }
-      .voxel-panel-form--conduct-run {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(104px, 1.2fr);
-      }
-      .voxel-panel-form--conduct-power {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .voxel-panel-button {
         min-width: 0;
@@ -274,6 +264,76 @@
       .voxel-panel-input select:focus {
         border-color: rgba(196, 232, 255, 0.58);
       }
+      .voxel-panel-guidance {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.09);
+      }
+      .voxel-panel-guidance h3 {
+        margin: 0;
+        color: rgba(238, 247, 251, 0.66);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+      .voxel-panel-guidance p {
+        margin: 0;
+        color: rgba(238, 247, 251, 0.58);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+      .voxel-panel-shortcut {
+        display: grid;
+        grid-template-columns: minmax(76px, 0.82fr) minmax(0, 1.2fr);
+        gap: 7px;
+        align-items: baseline;
+        min-width: 0;
+      }
+      .voxel-panel-shortcut kbd {
+        min-width: 0;
+        padding: 2px 5px;
+        overflow-wrap: anywhere;
+        border: 1px solid rgba(196, 232, 255, 0.14);
+        border-radius: 5px;
+        background: rgba(5, 11, 16, 0.48);
+        color: rgba(255, 232, 150, 0.92);
+        font:
+          700 10px/1.35 "Segoe UI",
+          "Helvetica Neue",
+          sans-serif;
+      }
+      .voxel-panel-shortcut span {
+        min-width: 0;
+        color: rgba(238, 247, 251, 0.72);
+        font-size: 10px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+      .voxel-panel-guidance--cli ul {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .voxel-panel-guidance--cli code {
+        display: block;
+        min-width: 0;
+        padding: 4px 5px;
+        overflow-wrap: anywhere;
+        border: 1px solid rgba(196, 232, 255, 0.1);
+        border-radius: 5px;
+        background: rgba(5, 11, 16, 0.5);
+        color: rgba(195, 229, 255, 0.86);
+        font:
+          10px/1.35 Consolas,
+          "Courier New",
+          monospace;
+      }
       .voxel-panel-result {
         min-height: 28px;
         box-sizing: border-box;
@@ -284,7 +344,7 @@
         background: rgba(18, 28, 35, 0.58);
         color: rgba(238, 247, 251, 0.72);
         text-overflow: ellipsis;
-        white-space: nowrap;
+        white-space: normal;
       }
       .voxel-panel-result.is-ok {
         border-color: rgba(126, 229, 178, 0.28);
@@ -450,12 +510,179 @@
         display: none;
         pointer-events: none;
       }
+      #operation-guide {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        pointer-events: none;
+      }
+      #operation-guide-toggle {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 14px);
+        right: calc(env(safe-area-inset-right, 0px) + 14px);
+        z-index: 13;
+        display: none;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        box-sizing: border-box;
+        border: 1px solid rgba(196, 232, 255, 0.3);
+        border-radius: 50%;
+        background: rgba(8, 15, 22, 0.74);
+        color: rgba(238, 247, 251, 0.94);
+        cursor: pointer;
+        font:
+          700 20px/1 "Segoe UI",
+          "Helvetica Neue",
+          sans-serif;
+        box-shadow: 0 10px 30px var(--panel-shadow);
+        backdrop-filter: blur(10px);
+        touch-action: manipulation;
+      }
+      #operation-guide-toggle:active {
+        transform: translateY(1px);
+      }
+      #operation-guide.is-open {
+        pointer-events: auto;
+      }
+      .operation-guide-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(3, 7, 11, 0.66);
+        backdrop-filter: blur(6px);
+      }
+      .operation-guide-dialog {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: min(720px, calc(100vw - 32px));
+        max-height: min(680px, calc(100vh - 32px));
+        box-sizing: border-box;
+        padding: 18px;
+        overflow: auto;
+        transform: translate(-50%, -50%);
+        border: 1px solid rgba(180, 222, 255, 0.24);
+        border-radius: 8px;
+        background: rgba(8, 15, 22, 0.94);
+        box-shadow: 0 22px 70px rgba(0, 0, 0, 0.56);
+        color: #eef7fb;
+      }
+      .operation-guide-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .operation-guide-kicker {
+        margin: 0 0 4px;
+        color: rgba(164, 210, 238, 0.72);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+      .operation-guide-header h2 {
+        margin: 0;
+        color: rgba(245, 251, 255, 0.96);
+        font-size: 22px;
+        line-height: 1.2;
+      }
+      .operation-guide-close {
+        flex: 0 0 auto;
+        min-width: 70px;
+        height: 32px;
+        box-sizing: border-box;
+        border: 1px solid rgba(196, 232, 255, 0.24);
+        border-radius: 7px;
+        background: rgba(28, 45, 55, 0.82);
+        color: rgba(238, 247, 251, 0.92);
+        cursor: pointer;
+        font: inherit;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          transform 120ms ease;
+      }
+      .operation-guide-close:hover,
+      .operation-guide-close:focus-visible {
+        border-color: rgba(196, 232, 255, 0.66);
+        background: rgba(47, 75, 87, 0.92);
+        outline: none;
+      }
+      .operation-guide-close:active {
+        transform: translateY(1px);
+      }
+      .operation-guide-content {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px 18px;
+      }
+      .operation-guide-touch {
+        display: none;
+      }
+      html.is-touch .operation-guide-desktop {
+        display: none;
+      }
+      html.is-touch .operation-guide-touch {
+        display: grid;
+      }
+      .operation-guide-section {
+        min-width: 0;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .operation-guide-section h3 {
+        margin: 0 0 7px;
+        color: rgba(244, 250, 255, 0.88);
+        font-size: 13px;
+        line-height: 1.3;
+      }
+      .operation-guide-section ul {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0;
+        padding-left: 18px;
+      }
+      .operation-guide-section li {
+        color: rgba(238, 247, 251, 0.76);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .operation-guide-section strong,
+      .operation-guide-section code {
+        color: rgba(255, 232, 150, 0.94);
+        font: inherit;
+        font-weight: 700;
+      }
       html.is-touch #touch-controls {
         display: block;
+      }
+      html.is-touch #operation-guide-toggle {
+        display: grid;
       }
       html.is-touch #hud,
       html.is-touch #voxel-panel {
         display: none;
+      }
+      html.is-touch #hotbar-dock {
+        bottom: max(12px, env(safe-area-inset-bottom));
+        width: min(540px, calc(100vw - 284px));
+      }
+      html.is-touch .hotbar-slots {
+        grid-template-columns: repeat(9, minmax(0, 1fr));
+        gap: 5px;
+        padding: 7px;
+      }
+      html.is-touch .hotbar-slot {
+        height: 50px;
+        grid-template-rows: 10px 22px 10px;
+      }
+      html.is-touch .hotbar-label {
+        font-size: 9px;
       }
       .touch-zone {
         position: absolute;
@@ -542,6 +769,45 @@
       .touch-btn--break {
         grid-area: break;
       }
+      .touch-ops {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 14px);
+        left: calc(env(safe-area-inset-left, 0px) + 14px);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(74px, 1fr));
+        gap: 8px;
+        width: min(184px, calc(52vw - 20px));
+        pointer-events: auto;
+        touch-action: manipulation;
+      }
+      .touch-op {
+        min-width: 0;
+        min-height: 46px;
+        box-sizing: border-box;
+        border: 1px solid rgba(196, 232, 255, 0.26);
+        border-radius: 8px;
+        background: rgba(8, 15, 22, 0.72);
+        color: rgba(238, 247, 251, 0.94);
+        cursor: pointer;
+        font:
+          700 11px/1.15 "Segoe UI",
+          "Helvetica Neue",
+          sans-serif;
+        overflow-wrap: anywhere;
+        padding: 6px 7px;
+        text-align: center;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+      .touch-op:active {
+        border-color: rgba(255, 232, 150, 0.72);
+        background: rgba(47, 75, 87, 0.94);
+        transform: translateY(1px);
+      }
+      .touch-op--primary {
+        border-color: rgba(126, 229, 178, 0.34);
+        background: rgba(30, 65, 56, 0.76);
+      }
       .orientation-warning {
         position: fixed;
         inset: 0;
@@ -562,11 +828,27 @@
         }
         html.is-touch .touch-zone,
         html.is-touch .touch-stick,
-        html.is-touch .touch-buttons {
+        html.is-touch .touch-buttons,
+        html.is-touch .touch-ops {
+          display: none;
+        }
+        html.is-touch #hotbar-dock {
           display: none;
         }
       }
       @media (max-width: 480px) {
+        .operation-guide-dialog {
+          width: calc(100vw - 20px);
+          max-height: calc(100vh - 20px);
+          padding: 14px;
+        }
+        .operation-guide-content {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
+        .operation-guide-header h2 {
+          font-size: 20px;
+        }
         #hotbar-dock {
           width: min(366px, calc(100vw - 16px));
           bottom: max(12px, env(safe-area-inset-bottom));
@@ -600,10 +882,34 @@
         <button class="touch-btn touch-btn--place" type="button" aria-label="Place block">+</button>
         <button class="touch-btn touch-btn--break" type="button" aria-label="Break block">✕</button>
       </div>
+      <div class="touch-ops" aria-label="Mobile voxel operations">
+        <button class="touch-op touch-btn--field" type="button" aria-label="Toggle field overlay">
+          Field
+        </button>
+        <button class="touch-op touch-btn--heat" type="button" aria-label="Heat aimed block">
+          Heat
+        </button>
+        <button
+          class="touch-op touch-btn--conduct touch-op--primary"
+          type="button"
+          aria-label="Conduct aimed path"
+        >
+          Conduct
+        </button>
+        <button
+          class="touch-op touch-btn--subscribe"
+          type="button"
+          aria-label="Subscribe aimed chunk"
+        >
+          Sub Aim
+        </button>
+      </div>
     </div>
     <div id="hud"></div>
     <div id="reticle" aria-hidden="true"></div>
     <div id="voxel-panel" aria-live="polite"></div>
+    <button id="operation-guide-toggle" type="button" aria-label="Open operation guide">?</button>
+    <div id="operation-guide" aria-live="polite"></div>
     <div id="hotbar-dock" aria-live="polite"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

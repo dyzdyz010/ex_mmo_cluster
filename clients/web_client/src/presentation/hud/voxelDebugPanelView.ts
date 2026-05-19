@@ -104,6 +104,7 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     private readonly selectedVoxel?: () => FMacroCoord | null,
     private readonly selectedConductionPair?: () => VoxelPanelConductionPair | null,
     private readonly fieldOverlaySnapshot?: () => VoxelPanelFieldOverlaySnapshot,
+    private readonly openOperationGuide?: () => void,
   ) {
     this.panel.addEventListener("click", this.handleClick);
     this.panel.addEventListener("input", this.handleInput);
@@ -203,6 +204,9 @@ export class VoxelDebugPanelView implements FrameSubscriber {
       case "field-overlay":
         this.fieldOverlayToggle?.();
         return { ok: true, command: action, text: "field overlay toggled" };
+      case "guide":
+        this.openOperationGuide?.();
+        return { ok: true, command: action, text: "operation guide opened" };
       case "heat-selected": {
         const ok = this.setSelectedVoxelTemperature?.(800) === true;
         return {
@@ -395,7 +399,7 @@ export function renderVoxelDebugPanelHtml(
   return [
     `<section class="voxel-panel-surface" aria-label="Server voxel">`,
     `<div class="voxel-panel-header">`,
-    `<span class="voxel-panel-title">Server Voxel</span>`,
+    `<span class="voxel-panel-title">Voxel Runtime</span>`,
     `<span class="voxel-panel-badge${badgeClass}" data-voxel-panel-status>${escapeHtml(summary.subscriptionState)}</span>`,
     `</div>`,
     alertHtml,
@@ -408,14 +412,10 @@ export function renderVoxelDebugPanelHtml(
     renderStat("intent", summary.lastIntent),
     renderStat("field", fieldSummary),
     `</dl>`,
-    `<div class="voxel-panel-actions" role="toolbar" aria-label="Voxel sync actions">`,
-    renderButton("refresh", "Sync"),
-    renderButton("probe", "Probe"),
-    renderButton("rebind", "Rebind"),
-    renderButton("versions", "Versions"),
+    `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
+    `<div class="voxel-panel-actions" role="toolbar" aria-label="Pointer-worthy voxel actions">`,
     renderButton("field-overlay", "Field"),
-    renderButton("heat-selected", "Heat"),
-    renderButton("cool-selected", "Cool"),
+    renderButton("guide", "Guide"),
     `</div>`,
     `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
     renderNumberInput("subscribeCx", "Sub X", formState.subscribeCx),
@@ -424,44 +424,70 @@ export function renderVoxelDebugPanelHtml(
     renderNumberInput("subscribeRadius", "R", formState.subscribeRadius, 0),
     renderButton("subscribe", "Subscribe"),
     `</div>`,
-    `<div class="voxel-panel-form voxel-panel-form--impact">`,
-    renderNumberInput("impactX", "X", formState.impactX),
-    renderNumberInput("impactY", "Y", formState.impactY),
-    renderNumberInput("impactZ", "Z", formState.impactZ),
-    renderNumberInput("material", "Mat", formState.material, 1),
-    renderButton("impact", "Impact"),
-    `</div>`,
-    `<div class="voxel-panel-form voxel-panel-form--conduct-endpoints">`,
-    renderNumberInput("conductSourceX", "Src X", formState.conductSourceX),
-    renderNumberInput("conductSourceY", "Src Y", formState.conductSourceY),
-    renderNumberInput("conductSourceZ", "Src Z", formState.conductSourceZ),
-    renderButton("conduct-source-selection", "Use Src"),
-    renderNumberInput("conductTargetX", "Dst X", formState.conductTargetX),
-    renderNumberInput("conductTargetY", "Dst Y", formState.conductTargetY),
-    renderNumberInput("conductTargetZ", "Dst Z", formState.conductTargetZ),
-    renderButton("conduct-target-selection", "Use Dst"),
-    `</div>`,
-    `<div class="voxel-panel-form voxel-panel-form--conduct-run">`,
-    renderNumberInput("conductPotential", "V", formState.conductPotential),
-    renderNumberInput("conductTicks", "Ticks", formState.conductTicks, 1),
-    renderButton("conduct", "Conduct"),
-    `</div>`,
-    `<div class="voxel-panel-form voxel-panel-form--conduct-power">`,
-    renderSelectInput("conductOutputMode", "Mode", formState.conductOutputMode, [
-      ["", "auto"],
-      ["dc", "DC"],
-      ["ac", "AC"],
-      ["pulse", "Pulse"],
-    ]),
-    renderNumberInput("conductVoltage", "Volt", formState.conductVoltage),
-    renderNumberInput("conductCurrentLimitAmps", "Limit A", formState.conductCurrentLimitAmps),
-    renderNumberInput("conductFrequencyHz", "Hz", formState.conductFrequencyHz),
-    renderNumberInput("conductLoadCurrentAmps", "Load A", formState.conductLoadCurrentAmps),
-    renderNumberInput("conductEnergyBudgetJoules", "Budget J", formState.conductEnergyBudgetJoules),
-    `</div>`,
-    `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
+    renderShortcutGuidance(),
+    renderCliHints(),
+    renderConductionReadout(formState),
     `</section>`,
   ].join("");
+}
+
+function renderShortcutGuidance(): string {
+  return [
+    `<section class="voxel-panel-guidance" data-voxel-panel-shortcuts>`,
+    `<h3>快捷键</h3>`,
+    renderShortcutRow("WASD / Space", "移动 / 跳跃"),
+    renderShortcutRow("Mouse L/R", "破坏 / 放置当前热栏材料"),
+    renderShortcutRow("1-9 / Wheel", "选择热栏材料或 prefab"),
+    renderShortcutRow("F / E", "加热准星方块 / 对准导电"),
+    renderShortcutRow("Z / X / C", "记录电源 / 记录目标 / 执行导电"),
+    `</section>`,
+  ].join("");
+}
+
+function renderShortcutRow(keys: string, text: string): string {
+  return [
+    `<div class="voxel-panel-shortcut">`,
+    `<kbd>${escapeHtml(keys)}</kbd>`,
+    `<span>${escapeHtml(text)}</span>`,
+    `</div>`,
+  ].join("");
+}
+
+function renderCliHints(): string {
+  const commands = [
+    `window.__voxelCli?.run("snapshot")`,
+    `window.__voxelCli?.run("voxel_sync")`,
+    `window.__voxelCli?.run("logs 20")`,
+    `window.__voxelCli?.run("voxel_subscribe 0 0 0 1")`,
+  ];
+  return [
+    `<section class="voxel-panel-guidance voxel-panel-guidance--cli">`,
+    `<h3>程序指令</h3>`,
+    `<p>鼠标被视角占用时，优先用键盘和控制台命令。</p>`,
+    `<ul>`,
+    ...commands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`),
+    `</ul>`,
+    `</section>`,
+  ].join("");
+}
+
+function renderConductionReadout(formState: VoxelPanelFormState): string {
+  return [
+    `<section class="voxel-panel-guidance">`,
+    `<h3>导电状态</h3>`,
+    renderShortcutRow("source", conductionCoordText(formState, "source")),
+    renderShortcutRow("target", conductionCoordText(formState, "target")),
+    renderShortcutRow("power", `${formState.conductPotential}V / ${formState.conductTicks} ticks`),
+    `</section>`,
+  ].join("");
+}
+
+function conductionCoordText(formState: VoxelPanelFormState, role: "source" | "target"): string {
+  const values =
+    role === "source"
+      ? [formState.conductSourceX, formState.conductSourceY, formState.conductSourceZ]
+      : [formState.conductTargetX, formState.conductTargetY, formState.conductTargetZ];
+  return values.every((value) => value.trim().length > 0) ? values.join(",") : "未记录";
 }
 
 function renderStat(label: string, value: string): string {
@@ -497,25 +523,6 @@ function renderNumberInput(
     `<span>${escapeHtml(label)}</span>`,
     `<input type="number"${minAttr} value="${escapeHtml(value)}"`,
     ` data-voxel-input="${field}" aria-label="${escapeHtml(label)}" />`,
-    `</label>`,
-  ].join("");
-}
-
-function renderSelectInput(
-  field: keyof VoxelPanelFormState,
-  label: string,
-  value: string,
-  options: Array<[string, string]>,
-): string {
-  return [
-    `<label class="voxel-panel-input">`,
-    `<span>${escapeHtml(label)}</span>`,
-    `<select data-voxel-input="${field}" aria-label="${escapeHtml(label)}">`,
-    ...options.map(
-      ([optionValue, optionLabel]) =>
-        `<option value="${escapeHtml(optionValue)}"${optionValue === value ? " selected" : ""}>${escapeHtml(optionLabel)}</option>`,
-    ),
-    `</select>`,
     `</label>`,
   ].join("");
 }
