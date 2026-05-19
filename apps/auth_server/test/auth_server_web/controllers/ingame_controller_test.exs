@@ -11,6 +11,12 @@ defmodule AuthServerWeb.IngameControllerTest do
   @iron_material_id 5
   @power_block_material_id 6
 
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:world_server)
+    {:ok, _} = Application.ensure_all_started(:scene_server)
+    :ok
+  end
+
   setup do
     previous_auto_login = Application.get_env(:auth_server, :dev_auto_login, false)
     Application.put_env(:auth_server, :dev_auto_login, true)
