@@ -7,6 +7,7 @@
 
 - `docs/plans/2026-05-14-phase7-field-kernel-architecture.md`
 - `docs/plans/2026-05-16-phase8-physical-phenomenon-system-architecture.md`
+- `docs/plans/2026-05-19-prefab-field-participant-projection.md`
 - `docs/2026-05-13-体素局部场最小目标-索引.md`
 - `docs/voxel-server-authority/README.md`
 
@@ -64,6 +65,8 @@
    焦耳热；永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
 5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
 6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或跨 chunk field；这些仍是后续阶段，不应塞进当前导电入口。
+7. prefab/object 尚未通过统一 field participant projection 进入所有局部场；后续不应让每个 kernel 分别特判 prefab。推进基准见
+   `docs/plans/2026-05-19-prefab-field-participant-projection.md`，电场只作为首条验证路径。
 
 结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟第一片已经够支撑可玩验证；短期不继续扩展跨 chunk 电场、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。这个 UI 阶段只是主线的可操作性闸门，不是路线改道；UI 验收后继续回到 FieldRuntime / source lifecycle / phenomenon effect 的主线深挖。
 
