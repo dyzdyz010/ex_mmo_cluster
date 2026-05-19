@@ -306,6 +306,13 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     end
   end
 
+  defp maybe_put_object_part_targets(attrs, projection, macro_index) do
+    case ParticipantProjection.electric_object_refs(projection, macro_index) do
+      [] -> attrs
+      targets -> Map.put(attrs, :object_part_targets, targets)
+    end
+  end
+
   # ---- layer writes ---------------------------------------------------------
 
   defp write_channel(region, path, source_value, opts) do
@@ -343,6 +350,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   defp conduction_heat_effects(path, source_value, %KernelContext{} = context, opts) do
     if thermal_coupling_enabled?(opts) do
+      projection = participant_projection(context.storage, opts)
       path_length = max(length(path), 1)
       voltage = voltage_for_heat(opts, source_value)
       load_current_amps = load_current_amps_for_heat(opts)
@@ -352,16 +360,19 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
       if heat_energy_joules > 0.0 do
         Enum.map(path, fn macro_index ->
-          {:write_voxel_attribute,
-           %{
-             attribute: :temperature,
-             macro_index: macro_index,
-             heat_energy_joules: heat_energy_joules,
-             source: :electric_conduction,
-             voltage: voltage,
-             load_current_amps: load_current_amps,
-             dt_ms: context.dt_ms
-           }}
+          attrs =
+            %{
+              attribute: :temperature,
+              macro_index: macro_index,
+              heat_energy_joules: heat_energy_joules,
+              source: :electric_conduction,
+              voltage: voltage,
+              load_current_amps: load_current_amps,
+              dt_ms: context.dt_ms
+            }
+            |> maybe_put_object_part_targets(projection, macro_index)
+
+          {:write_voxel_attribute, attrs}
         end)
       else
         []

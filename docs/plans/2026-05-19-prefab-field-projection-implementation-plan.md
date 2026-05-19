@@ -96,3 +96,39 @@ mix compile --warnings-as-errors
 - [x] **Step 3: Update design document progress**
 
 Record that the first electric verification slice has started with projection-backed refined connectivity.
+
+### Task 5: Preserve Object/Part Targets In Electric Heat Effects
+
+**Files:**
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/participant_projection.ex`
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/kernels/conduction_path_kernel.ex`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs`
+
+- [x] **Step 1: Write failing tests**
+
+Add projection and kernel tests proving prefab-backed refined conductors expose
+`%{owner_object_id, owner_part_id}` and Joule heat effects carry that metadata as
+`object_part_targets`.
+
+- [x] **Step 2: Implement projection API**
+
+Expose `ParticipantProjection.electric_object_refs/2` as a JSON-friendly list of
+maps, while keeping the projection itself read-only and derived from micro layer
+provenance.
+
+- [x] **Step 3: Attach targets to effects**
+
+`ConductionPathKernel` keeps emitting `:write_voxel_attribute` effects, but adds
+`object_part_targets` only when the projected macro has object-backed conductor
+parts.
+
+- [x] **Step 4: Run focused tests**
+
+Run:
+
+```powershell
+mix test apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs --seed 0
+```
+
+Observed after implementation: 16 tests, 0 failures.

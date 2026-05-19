@@ -128,6 +128,22 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     end
   end
 
+  @doc "Returns object/part targets carried by the electric projection for a macro cell."
+  @spec electric_object_refs(t(), non_neg_integer()) :: [
+          %{owner_object_id: non_neg_integer(), owner_part_id: non_neg_integer()}
+        ]
+  def electric_object_refs(%__MODULE__{} = projection, macro_index) do
+    case Map.get(projection.entries, macro_index) do
+      %{electric: %{object_refs: object_refs}} ->
+        Enum.map(object_refs, fn {owner_object_id, owner_part_id} ->
+          %{owner_object_id: owner_object_id, owner_part_id: owner_part_id}
+        end)
+
+      _other ->
+        []
+    end
+  end
+
   defp build_entry(storage, %MacroCellHeader{} = header) do
     cond do
       header.mode == MacroCellHeader.cell_mode_solid_block() ->

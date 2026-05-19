@@ -62,6 +62,10 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
              :x_neg,
              :x_pos
            )
+
+    assert ParticipantProjection.electric_object_refs(projection, macro_index) == [
+             %{owner_object_id: 42, owner_part_id: 3}
+           ]
   end
 
   test "connected refined prefab conductor bridges opposite electric faces" do

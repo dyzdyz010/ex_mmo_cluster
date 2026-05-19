@@ -116,6 +116,51 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
            end)
   end
 
+  test "attaches prefab object part targets to Joule heat effects" do
+    source = Types.macro_index!({0, 0, 0})
+    refined_bridge = Types.macro_index!({1, 0, 0})
+    target = Types.macro_index!({2, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_connected_refined_conductor({1, 0, 0})
+      |> put_solid({2, 0, 0}, @iron)
+
+    region =
+      FieldRegion.new(%{
+        region_id: 22,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {2, 0, 0}},
+        kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+        source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+      })
+
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, _updated, effects} =
+             ConductionPathKernel.tick(region, context, %{
+               target_macro_index: target,
+               power_source: %{
+                 output_mode: :dc,
+                 voltage: 120.0,
+                 current_limit_amps: 10.0,
+                 load_current_amps: 6.0
+               },
+               thermal_coupling: %{enabled: true}
+             })
+
+    assert {:write_voxel_attribute,
+            %{
+              macro_index: ^refined_bridge,
+              object_part_targets: [%{owner_object_id: 42, owner_part_id: 3}]
+            }} =
+             Enum.find(effects, fn
+               {:write_voxel_attribute, %{macro_index: ^refined_bridge}} -> true
+               _other -> false
+             end)
+  end
+
   test "uses target_local_macro option" do
     {storage, region, _target} = conduction_fixture()
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
