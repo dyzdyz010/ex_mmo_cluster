@@ -5,6 +5,7 @@ import {
   renderVoxelDebugPanelHtml,
   VoxelDebugPanelView,
   type VoxelDebugPanelCommandPort,
+  type VoxelPanelFieldOverlaySnapshot,
 } from "./voxelDebugPanelView";
 
 class FakeVoxelPanelRoot {
@@ -79,15 +80,22 @@ class FakeCommands implements VoxelDebugPanelCommandPort {
 
 describe("VoxelDebugPanelView", () => {
   it("renders authoritative voxel state and command buttons", () => {
-    const html = renderVoxelDebugPanelHtml(makeVoxelSnapshot(), undefined, {
-      ok: true,
-      command: "voxel_sync",
-      text: "voxel sync",
-    });
+    const html = renderVoxelDebugPanelHtml(
+      makeVoxelSnapshot(),
+      undefined,
+      {
+        ok: true,
+        command: "voxel_sync",
+        text: "voxel sync",
+      },
+      makeFieldOverlaySnapshot(),
+    );
 
     expect(html).toContain("Server Voxel");
     expect(html).toContain("active");
     expect(html).toContain("<dd>3</dd>");
+    expect(html).toContain("voxel-panel-stat--field");
+    expect(html).toContain("field=on regions=1 electric=2 smoke=12");
     expect(html).toContain('data-voxel-action="rebind"');
     expect(html).toContain('data-voxel-action="impact"');
     expect(html).toContain('data-voxel-action="heat-selected"');
@@ -95,8 +103,16 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain('data-voxel-action="conduct"');
     expect(html).toContain('data-voxel-action="conduct-source-selection"');
     expect(html).toContain('data-voxel-input="conductPotential"');
+    expect(html).toContain('data-voxel-input="conductOutputMode"');
+    expect(html).toContain('data-voxel-input="conductLoadCurrentAmps"');
     expect(html).toContain('data-voxel-input="material"');
     expect(html).toContain("voxel_sync: voxel sync");
+  });
+
+  it("summarizes field overlay as inactive when no field snapshot is available", () => {
+    const html = renderVoxelDebugPanelHtml(makeVoxelSnapshot());
+
+    expect(html).toContain("field=off regions=0 electric=0 smoke=0");
   });
 
   it("renders sync failures in the visible panel instead of hiding them in JSON", () => {
@@ -249,12 +265,33 @@ describe("VoxelDebugPanelView", () => {
     root.clickAction("conduct-target-selection");
     root.inputField("conductPotential", "150");
     root.inputField("conductTicks", "60");
+    root.inputField("conductOutputMode", "ac");
+    root.inputField("conductVoltage", "240");
+    root.inputField("conductCurrentLimitAmps", "12.5");
+    root.inputField("conductFrequencyHz", "60");
+    root.inputField("conductLoadCurrentAmps", "6.25");
+    root.inputField("conductEnergyBudgetJoules", "5000");
     root.clickAction("conduct");
 
     expect(commands.calls).toEqual([
       {
         command: "voxel_conduct",
-        args: ["5", "1", "0", "8", "1", "0", "150", "60"],
+        args: [
+          "5",
+          "1",
+          "0",
+          "8",
+          "1",
+          "0",
+          "150",
+          "60",
+          "ac",
+          "240",
+          "12.5",
+          "60",
+          "6.25",
+          "5000",
+        ],
         source: "voxel_panel",
       },
     ]);
@@ -390,5 +427,21 @@ function makeVoxelSnapshot(): Record<string, unknown> {
     transport: {
       receivedVoxelSnapshotCount: 3,
     },
+  };
+}
+
+function makeFieldOverlaySnapshot(): VoxelPanelFieldOverlaySnapshot {
+  return {
+    visible: true,
+    regionCount: 1,
+    regions: [
+      {
+        regionId: 43,
+        chunkCoord: { cx: 0, cy: 0, cz: 0 },
+        temperatureCells: 0,
+        electricCells: 2,
+        smokeParticles: 12,
+      },
+    ],
   };
 }

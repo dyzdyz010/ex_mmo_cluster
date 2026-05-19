@@ -129,6 +129,7 @@ export async function bootstrap({
       edit.setTemperatureAtSelection("voxel_panel", targetTemperatureCelsius),
     () => edit.getSelectedOccupiedMacro(),
     () => edit.getSelectedConductionPair(),
+    () => render.getFieldDebugOverlaySnapshot(),
   );
   const unsubscribeConductionEndpointShortcut = eventBus.on(
     "input:capture-conduction-endpoint",

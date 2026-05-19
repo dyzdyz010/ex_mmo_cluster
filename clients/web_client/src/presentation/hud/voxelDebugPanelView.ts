@@ -38,6 +38,12 @@ interface VoxelPanelFormState {
   conductTargetZ: string;
   conductPotential: string;
   conductTicks: string;
+  conductOutputMode: string;
+  conductVoltage: string;
+  conductCurrentLimitAmps: string;
+  conductFrequencyHz: string;
+  conductLoadCurrentAmps: string;
+  conductEnergyBudgetJoules: string;
 }
 
 const PANEL_REFRESH_INTERVAL_MS = 250;
@@ -59,7 +65,25 @@ const DefaultFormState: VoxelPanelFormState = {
   conductTargetZ: "",
   conductPotential: "120",
   conductTicks: "90",
+  conductOutputMode: "",
+  conductVoltage: "",
+  conductCurrentLimitAmps: "",
+  conductFrequencyHz: "",
+  conductLoadCurrentAmps: "",
+  conductEnergyBudgetJoules: "",
 };
+
+export interface VoxelPanelFieldOverlaySnapshot {
+  visible: boolean;
+  regionCount: number;
+  regions: Array<{
+    regionId?: number;
+    chunkCoord?: { cx: number; cy: number; cz: number };
+    electricCells?: number;
+    smokeParticles?: number;
+    temperatureCells?: number;
+  }>;
+}
 
 /**
  * Visible server-authoritative voxel control surface. It owns only DOM
@@ -79,6 +103,7 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     private readonly setSelectedVoxelTemperature?: (targetTemperatureCelsius: number) => boolean,
     private readonly selectedVoxel?: () => FMacroCoord | null,
     private readonly selectedConductionPair?: () => VoxelPanelConductionPair | null,
+    private readonly fieldOverlaySnapshot?: () => VoxelPanelFieldOverlaySnapshot,
   ) {
     this.panel.addEventListener("click", this.handleClick);
     this.panel.addEventListener("input", this.handleInput);
@@ -217,9 +242,37 @@ export class VoxelDebugPanelView implements FrameSubscriber {
 
     return this.commands.executeCliCommand(
       "voxel_conduct",
-      [...endpointArgs, this.formState.conductPotential, this.formState.conductTicks],
+      [
+        ...endpointArgs,
+        this.formState.conductPotential,
+        this.formState.conductTicks,
+        ...this.conductionPowerArgs(),
+      ],
       source,
     );
+  }
+
+  private conductionPowerArgs(): string[] {
+    const args = [
+      this.formState.conductOutputMode,
+      this.formState.conductVoltage,
+      this.formState.conductCurrentLimitAmps,
+      this.formState.conductFrequencyHz,
+      this.formState.conductLoadCurrentAmps,
+      this.formState.conductEnergyBudgetJoules,
+    ];
+    if (args.every((value) => value.trim().length === 0)) {
+      return [];
+    }
+
+    return [
+      this.formState.conductOutputMode || "dc",
+      this.formState.conductVoltage || this.formState.conductPotential,
+      this.formState.conductCurrentLimitAmps,
+      this.formState.conductFrequencyHz,
+      this.formState.conductLoadCurrentAmps,
+      this.formState.conductEnergyBudgetJoules,
+    ];
   }
 
   private conductionEndpointArgs(): string[] | null {
@@ -299,6 +352,7 @@ export class VoxelDebugPanelView implements FrameSubscriber {
     const snapshot = this.world.debugSnapshot();
     const nextKey = JSON.stringify({
       snapshot: summarizeVoxelSnapshot(snapshot),
+      field: summarizeFieldOverlaySnapshot(this.fieldOverlaySnapshot?.()),
       formState: this.formState,
       lastResult: summarizeResult(this.lastResult),
     });
@@ -307,7 +361,12 @@ export class VoxelDebugPanelView implements FrameSubscriber {
       return;
     }
 
-    this.panel.innerHTML = renderVoxelDebugPanelHtml(snapshot, this.formState, this.lastResult);
+    this.panel.innerHTML = renderVoxelDebugPanelHtml(
+      snapshot,
+      this.formState,
+      this.lastResult,
+      this.fieldOverlaySnapshot?.(),
+    );
     this.renderKey = nextKey;
   }
 }
@@ -316,8 +375,10 @@ export function renderVoxelDebugPanelHtml(
   snapshot: Record<string, unknown>,
   formState: VoxelPanelFormState = DefaultFormState,
   lastResult: CliCommandResult | null = null,
+  fieldOverlaySnapshot?: VoxelPanelFieldOverlaySnapshot,
 ): string {
   const summary = summarizeVoxelSnapshot(snapshot);
+  const fieldSummary = summarizeFieldOverlaySnapshot(fieldOverlaySnapshot);
   const alerts = summarizeVoxelAlerts(snapshot);
   const resultClass = lastResult ? (lastResult.ok ? " is-ok" : " is-error") : "";
   const badgeClass = alerts.length > 0 ? " is-error" : "";
@@ -345,6 +406,7 @@ export function renderVoxelDebugPanelHtml(
     renderStat("chunk", summary.lastChunk),
     renderStat("cells", summary.cells),
     renderStat("intent", summary.lastIntent),
+    renderStat("field", fieldSummary),
     `</dl>`,
     `<div class="voxel-panel-actions" role="toolbar" aria-label="Voxel sync actions">`,
     renderButton("refresh", "Sync"),
@@ -384,14 +446,29 @@ export function renderVoxelDebugPanelHtml(
     renderNumberInput("conductTicks", "Ticks", formState.conductTicks, 1),
     renderButton("conduct", "Conduct"),
     `</div>`,
+    `<div class="voxel-panel-form voxel-panel-form--conduct-power">`,
+    renderSelectInput("conductOutputMode", "Mode", formState.conductOutputMode, [
+      ["", "auto"],
+      ["dc", "DC"],
+      ["ac", "AC"],
+      ["pulse", "Pulse"],
+    ]),
+    renderNumberInput("conductVoltage", "Volt", formState.conductVoltage),
+    renderNumberInput("conductCurrentLimitAmps", "Limit A", formState.conductCurrentLimitAmps),
+    renderNumberInput("conductFrequencyHz", "Hz", formState.conductFrequencyHz),
+    renderNumberInput("conductLoadCurrentAmps", "Load A", formState.conductLoadCurrentAmps),
+    renderNumberInput("conductEnergyBudgetJoules", "Budget J", formState.conductEnergyBudgetJoules),
+    `</div>`,
     `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
     `</section>`,
   ].join("");
 }
 
 function renderStat(label: string, value: string): string {
+  const className =
+    label === "field" ? "voxel-panel-stat voxel-panel-stat--field" : "voxel-panel-stat";
   return [
-    `<div class="voxel-panel-stat">`,
+    `<div class="${className}">`,
     `<dt>${escapeHtml(label)}</dt>`,
     `<dd>${escapeHtml(value)}</dd>`,
     `</div>`,
@@ -424,6 +501,25 @@ function renderNumberInput(
   ].join("");
 }
 
+function renderSelectInput(
+  field: keyof VoxelPanelFormState,
+  label: string,
+  value: string,
+  options: Array<[string, string]>,
+): string {
+  return [
+    `<label class="voxel-panel-input">`,
+    `<span>${escapeHtml(label)}</span>`,
+    `<select data-voxel-input="${field}" aria-label="${escapeHtml(label)}">`,
+    ...options.map(
+      ([optionValue, optionLabel]) =>
+        `<option value="${escapeHtml(optionValue)}"${optionValue === value ? " selected" : ""}>${escapeHtml(optionLabel)}</option>`,
+    ),
+    `</select>`,
+    `</label>`,
+  ].join("");
+}
+
 function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
   const lastSnapshot = objectAt(snapshot, "lastSnapshot");
   const lastIntent = objectAt(snapshot, "lastIntentResult");
@@ -445,6 +541,15 @@ function summarizeVoxelSnapshot(snapshot: Record<string, unknown>) {
     lastIntent: `${intentCode} #${intentRef}`,
     cells: `solid=${totalSolid} refined=${totalRefined}`,
   };
+}
+
+function summarizeFieldOverlaySnapshot(
+  snapshot: VoxelPanelFieldOverlaySnapshot | undefined,
+): string {
+  const regions = snapshot?.regions ?? [];
+  const electricCells = regions.reduce((sum, region) => sum + (region.electricCells ?? 0), 0);
+  const smokeParticles = regions.reduce((sum, region) => sum + (region.smokeParticles ?? 0), 0);
+  return `field=${snapshot?.visible ? "on" : "off"} regions=${snapshot?.regionCount ?? 0} electric=${electricCells} smoke=${smokeParticles}`;
 }
 
 function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {

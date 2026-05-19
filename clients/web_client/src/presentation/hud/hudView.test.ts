@@ -163,6 +163,42 @@ describe("HudView", () => {
     expect(hud.textContent).toContain("set 3,4,5 to 800C; field overlay on");
   });
 
+  it("shows accepted conduction with power and heat smoke context", () => {
+    const hud = { textContent: "" } as HTMLDivElement;
+    const bus = new EventBus<AppEvents>();
+
+    const view = new HudView(
+      hud,
+      minimalWorld() as unknown as VoxelWorldAdapter,
+      minimalTransport() as unknown as TransportPump,
+      minimalLocalPlayer() as unknown as LocalPlayerController,
+      minimalRemotePlayer() as unknown as RemotePlayerController,
+      minimalEdit() as unknown as WorldEditController,
+      minimalRender() as unknown as RenderOrchestrator,
+      bus,
+    );
+
+    bus.emit("world:voxel-conduction-accepted", {
+      sourceCoord: { x: 0, y: 1, z: 0 },
+      targetCoord: { x: 3, y: 1, z: 0 },
+      sourcePotential: 120,
+      source: "test",
+      regionId: "43",
+      fieldRegionCreated: true,
+      powerDraw: {
+        outputMode: "ac",
+        voltage: 240,
+        loadCurrentAmps: 6.25,
+        estimatedTickEnergyJoules: 1500,
+      },
+    });
+    view.onFrame(0, 0);
+
+    expect(hud.textContent).toContain("conduction 0,1,0 -> 3,1,0 accepted");
+    expect(hud.textContent).toContain("region #43");
+    expect(hud.textContent).toContain("ac 240V load=6.25A heat=1500J/tick");
+  });
+
   it("explains that idle dev_seed means transport has not become usable yet", () => {
     const alerts = buildRuntimeAlerts(
       {

@@ -56,6 +56,16 @@ export class HudView implements FrameSubscriber {
           `set ${formatCoord(coord)} to ${targetTemperatureCelsius}C; field overlay on`,
         );
       });
+      bus.on(
+        "world:voxel-conduction-accepted",
+        ({ sourceCoord, targetCoord, regionId, powerDraw }) => {
+          this.showFlash(
+            `conduction ${formatCoord(sourceCoord)} -> ${formatCoord(targetCoord)} accepted; ` +
+              `region #${regionId ?? "n/a"}; ${formatPowerDraw(powerDraw)}`,
+            FAILURE_FLASH_DURATION_MS,
+          );
+        },
+      );
       bus.on("movement:input-blocked", ({ reason }) => {
         this.showFlash(`movement blocked: ${reason}`, FAILURE_FLASH_DURATION_MS);
       });
@@ -264,6 +274,29 @@ export function buildRuntimeAlerts(
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function formatPowerDraw(
+  powerDraw: AppEvents["world:voxel-conduction-accepted"]["powerDraw"],
+): string {
+  if (!powerDraw) {
+    return "power=unknown";
+  }
+  const mode = powerDraw.outputMode ?? "power";
+  const voltage =
+    powerDraw.voltage !== undefined && Number.isFinite(powerDraw.voltage)
+      ? ` ${powerDraw.voltage}V`
+      : "";
+  const load =
+    powerDraw.loadCurrentAmps !== undefined && Number.isFinite(powerDraw.loadCurrentAmps)
+      ? ` load=${powerDraw.loadCurrentAmps}A`
+      : "";
+  const heat =
+    powerDraw.estimatedTickEnergyJoules !== undefined &&
+    Number.isFinite(powerDraw.estimatedTickEnergyJoules)
+      ? ` heat=${powerDraw.estimatedTickEnergyJoules}J/tick`
+      : "";
+  return `${mode}${voltage}${load}${heat}`.trim();
 }
 
 function objectAt(
