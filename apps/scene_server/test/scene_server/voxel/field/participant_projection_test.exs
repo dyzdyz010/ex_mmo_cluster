@@ -128,6 +128,57 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
            ) == MapSet.new([{6, 6}])
   end
 
+  test "electric contact transfer works across chunk boundary projections only when contacts overlap" do
+    source_projection =
+      Storage.new(7, {0, 0, 0})
+      |> put_refined_conductor(
+        {15, 0, 0},
+        Enum.map(0..7, &Types.micro_index!({&1, 3, 3}))
+      )
+      |> ParticipantProjection.build()
+
+    aligned_neighbor_projection =
+      Storage.new(7, {1, 0, 0})
+      |> put_refined_conductor(
+        {0, 0, 0},
+        Enum.map(0..7, &Types.micro_index!({&1, 3, 3}))
+      )
+      |> ParticipantProjection.build()
+
+    misaligned_neighbor_projection =
+      Storage.new(7, {1, 0, 0})
+      |> put_refined_conductor(
+        {0, 0, 0},
+        Enum.map(0..7, &Types.micro_index!({&1, 6, 6}))
+      )
+      |> ParticipantProjection.build()
+
+    source_index = Types.macro_index!({15, 0, 0})
+    neighbor_index = Types.macro_index!({0, 0, 0})
+
+    assert ParticipantProjection.electric_contact_transfer(
+             source_projection,
+             source_index,
+             :source,
+             MapSet.new(),
+             :x_pos,
+             aligned_neighbor_projection,
+             neighbor_index,
+             :x_neg
+           ) == MapSet.new([{3, 3}])
+
+    assert ParticipantProjection.electric_contact_transfer(
+             source_projection,
+             source_index,
+             :source,
+             MapSet.new(),
+             :x_pos,
+             misaligned_neighbor_projection,
+             neighbor_index,
+             :x_neg
+           ) == MapSet.new()
+  end
+
   test "non-conductive refined prefab material does not expose electric faces" do
     projection =
       Storage.new(7, {0, 0, 0})

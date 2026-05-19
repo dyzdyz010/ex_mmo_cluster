@@ -185,3 +185,58 @@ cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/participant_
 ```
 
 Observed after implementation: 19 tests, 0 failures.
+
+### Task 7: Expose Cross-Projection Boundary Contact Transfer
+
+**Files:**
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/participant_projection.ex`
+- Modify: `apps/scene_server/lib/scene_server/voxel/field/kernels/conduction_path_kernel.ex`
+- Modify: `apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs`
+- Modify: `docs/plans/2026-05-19-prefab-field-participant-projection.md`
+
+- [x] **Step 1: Write failing cross-projection transfer tests**
+
+Build two independent chunk projections:
+
+- source chunk `{0, 0, 0}`, local macro `{15, 0, 0}`, `x_pos` refined conductor;
+- neighbor chunk `{1, 0, 0}`, local macro `{0, 0, 0}`, `x_neg` refined conductor.
+
+Aligned contacts at `{y, z} = {3, 3}` must transfer. Misaligned contacts such
+as `{3, 3}` to `{6, 6}` must not transfer.
+
+Observed before implementation: the test failed because `ParticipantProjection`
+had no public API for contact transfer across two projection snapshots.
+
+- [x] **Step 2: Add projection-level transfer API**
+
+Expose `ParticipantProjection.electric_contact_transfer/8`:
+
+```text
+current projection + current macro + entry face/contacts + exit face
+  + neighbor projection + neighbor macro + neighbor entry face
+  -> overlapping contact set
+```
+
+The transfer rule is the same for same-chunk and cross-chunk boundaries:
+
+```text
+reachable contacts on current exit face
+  ∩ neighbor conductive contacts on opposite face
+```
+
+- [x] **Step 3: Make chunk-local kernel reuse the transfer API**
+
+`ConductionPathKernel` still searches only inside one chunk, but its neighbor
+step now calls `electric_contact_transfer/8` with the same projection on both
+sides. Future cross-chunk search can pass two different projections without
+duplicating contact semantics.
+
+- [x] **Step 4: Run focused tests**
+
+Run:
+
+```powershell
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/participant_projection_test.exs --seed 0
+```
+
+Observed after implementation: 6 tests, 0 failures.

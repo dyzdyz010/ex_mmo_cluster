@@ -497,6 +497,9 @@ field_effect_object_writeback
 语义风险：solid macro 的虚拟 micro 展开只能用于同质普通块。只要出现多材料、多对象、多部件或局部破坏，就必须进入 refined projection。
 
 跨 chunk 风险：prefab 已可能跨 chunk。projection 必须能标记边界不完整，电场等需要邻居连通的场不能只看单 chunk 内部摘要。
+当前已补上跨 projection 的电接触 transfer API，可用同一套 micro 接触坐标比较两个
+chunk 边界宏格；但 runtime 仍未开启跨 chunk 电路搜索，`ConductionPathKernel`
+仍保持 chunk-local。
 
 UI 风险：浏览器视觉只能证明现象存在，不能证明权威路径正确。验收必须同时依赖 CLI 和 observe 日志。
 
@@ -535,3 +538,7 @@ Electric conduction is the first verification path.
   接触坐标，`ConductionPathKernel` 的搜索状态从 entry face 进一步扩展为
   entry face + entry contacts。相邻 refined prefab 导线必须在共享面同一
   micro 坐标重叠才会连通，错位接触不会再产生虚假的电路。
+- 2026-05-19：第四条电场验证切片落地。`ParticipantProjection` 新增
+  `electric_contact_transfer/8`，同一 chunk 内核和未来跨 chunk 搜索可以复用
+  同一条“当前组件可达接点 ∩ 邻居入面接点”的边界判定。该切片只建立跨
+  projection 接触契约，不解除 runtime 当前的跨 chunk 导电拒绝。

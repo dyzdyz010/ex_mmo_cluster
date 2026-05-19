@@ -229,23 +229,17 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
       neighbor_coord = Types.macro_coord!(neighbor_macro_index)
       {exit_face, neighbor_entry_face} = shared_faces(current_coord, neighbor_coord)
 
-      exit_contacts =
-        ParticipantProjection.electric_reachable_face_contacts(
+      shared_contacts =
+        ParticipantProjection.electric_contact_transfer(
           projection,
           current_macro_index,
           entry_face,
           entry_contacts,
-          exit_face
-        )
-
-      neighbor_contacts =
-        ParticipantProjection.electric_face_contacts(
+          exit_face,
           projection,
           neighbor_macro_index,
           neighbor_entry_face
         )
-
-      shared_contacts = MapSet.intersection(exit_contacts, neighbor_contacts)
 
       if MapSet.size(shared_contacts) > 0 do
         [{neighbor_macro_index, neighbor_entry_face, shared_contacts}]

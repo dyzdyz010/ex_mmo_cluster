@@ -168,6 +168,48 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
   end
 
   @doc """
+  Returns shared electric contacts that can transfer into a neighboring macro.
+
+  The two macro cells may come from the same projection or from two different
+  chunk projections. This keeps same-chunk and cross-chunk contact semantics on
+  one API: the current cell must be able to reach the outgoing face from the
+  actual entry contacts, and the neighbor must expose overlapping contacts on
+  the opposite incoming face.
+  """
+  @spec electric_contact_transfer(
+          t(),
+          non_neg_integer(),
+          face() | :source,
+          MapSet.t(contact()),
+          face(),
+          t(),
+          non_neg_integer(),
+          face()
+        ) :: MapSet.t(contact())
+  def electric_contact_transfer(
+        %__MODULE__{} = current_projection,
+        current_macro_index,
+        entry_face,
+        entry_contacts,
+        exit_face,
+        %__MODULE__{} = neighbor_projection,
+        neighbor_macro_index,
+        neighbor_entry_face
+      )
+      when exit_face in @faces and neighbor_entry_face in @faces do
+    current_projection
+    |> electric_reachable_face_contacts(
+      current_macro_index,
+      entry_face,
+      entry_contacts,
+      exit_face
+    )
+    |> MapSet.intersection(
+      electric_face_contacts(neighbor_projection, neighbor_macro_index, neighbor_entry_face)
+    )
+  end
+
+  @doc """
   Returns true when electric current can move through a macro cell.
 
   `:source` is a virtual entry face used by source cells. It can exit through
