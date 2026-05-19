@@ -397,6 +397,58 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert observe_log_text =~ "source_points_rejection_reason: :missing_source_points"
   end
 
+  test "ensure_field_region reuses a stable region_id without registering a field source", %{
+    observe_log: observe_log
+  } do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    source_index = Types.macro_index!({0, 0, 0})
+
+    attrs = %{
+      region_id: 91_001,
+      aabb: {{0, 0, 0}, {1, 1, 1}},
+      kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
+      source_points: [%{macro_index: source_index, field_type: :temperature, value: 100.0}],
+      source_points_mode: :replace,
+      max_ticks: 100
+    }
+
+    assert {:ok,
+            %{
+              created?: true,
+              region_id: 91_001,
+              region_action: :created,
+              source_points_action: :seeded
+            }} =
+             ChunkProcess.ensure_field_region(chunk, attrs)
+
+    assert {:ok,
+            %{
+              created?: false,
+              region_id: 91_001,
+              region_action: :reused,
+              source_points_action: :replaced
+            }} =
+             ChunkProcess.ensure_field_region(chunk, %{
+               attrs
+               | source_points: [
+                   %{macro_index: source_index, field_type: :temperature, value: 140.0}
+                 ]
+             })
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 1
+    assert debug.field_source_count == 0
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
+    assert observe_log_text =~ "region_id: 91001"
+    assert observe_log_text =~ "region_action: :created"
+    assert observe_log_text =~ "region_action: :reused"
+    assert observe_log_text =~ "field_source_count: 0"
+  end
+
   test "release_field_region_source destroys an active region by source key and releases its source",
        %{
          observe_log: observe_log

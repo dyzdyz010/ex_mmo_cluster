@@ -52,6 +52,10 @@
     生成焦耳热 `FieldEffect`，由 `ChunkProcess` 写回 voxel 温度 truth；HTTP/Web CLI 可传
     `load_current_amps` 与 `energy_budget_joules`，过载负载会在创建 FieldRegion 前以
     `current_limit_exceeded` 拒绝。
+13. 相邻双 chunk 电场第一切片已落地：`FieldRuntime.ensure_conduction_path/1`
+    对直接相邻、边界接触已导通的 source/target，会协调创建两个 shard region。
+    source chunk 仍保持 `field_source_count=1`，target chunk 只创建稳定复用的 region，
+    不注册新的 source；`ConductionPathKernel` 和 `FieldRegion` 本身仍严格 chunk-local。
 
 仍未完成：
 
@@ -63,12 +67,15 @@
    source owner、预算、region 扩张/收缩和分片的完整 lifecycle 仍未完成。
 4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` dispatcher，导电可通过它写回
    焦耳热；永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
-5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
-6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或跨 chunk field；这些仍是后续阶段，不应塞进当前导电入口。
+5. 跨 chunk field 目前只开放“两个直接相邻 chunk、一次边界跨越、双 shard 协调创建”
+   的最小切片；真正的全地图搜索、merged snapshot、AOI 降频、网络预算和大范围
+   事件 LOD 仍未实现。
+6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或更广义的跨 chunk
+   field orchestration；这些仍是后续阶段，不应塞进当前导电入口。
 7. prefab/object 尚未通过统一 field participant projection 进入所有局部场；后续不应让每个 kernel 分别特判 prefab。推进基准见
    `docs/plans/2026-05-19-prefab-field-participant-projection.md`，电场只作为首条验证路径。
 
-结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟第一片已经够支撑可玩验证；短期不继续扩展跨 chunk 电场、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。这个 UI 阶段只是主线的可操作性闸门，不是路线改道；UI 验收后继续回到 FieldRuntime / source lifecycle / phenomenon effect 的主线深挖。
+结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟，以及相邻双 chunk 的一次跨越导电第一片已经够支撑可玩验证；短期不继续扩展成全地图跨 chunk 搜索、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。这个 UI 阶段只是主线的可操作性闸门，不是路线改道；UI 验收后继续回到 FieldRuntime / source lifecycle / phenomenon effect 的主线深挖。
 
 ---
 
@@ -797,13 +804,13 @@ npm test -- src/presentation/devtools/devToolsCli.test.ts src/app/controllers/wo
 
 1. multi-owner electric source key、ttl 和 budget 摘要已 generic 化；owner 存活探测、
    budget 消耗和自动续租/过期仍未实现。
-2. 跨 chunk conduction、AOI 降频和大范围事件 LOD 仍未实现。2026-05-19 后，
-   相邻 chunk 的边界导通预检已能读取两侧 projection 并报告边界接触，但仍不创建
-   跨 chunk field region。
+2. 跨 chunk conduction 目前只完成相邻双 chunk 的一次边界跨越：runtime 会在
+   source/target 两侧创建协调 shard，但 `ConductionPathKernel` 仍不跨 chunk 搜索，
+   也没有 merged snapshot、AOI 降频和大范围事件 LOD。
 3. 还没有 Phase 8 damage/ignite/breakdown 结算；这些必须后续经 FieldEffect / gameplay
    dispatcher，而不是放进 kernel。
 
-### 2026-05-19：prefab 电场跨 chunk 边界预检
+### 2026-05-19：prefab 电场相邻双 chunk 导电第一切片
 
 已完成：
 
@@ -813,20 +820,26 @@ npm test -- src/presentation/devtools/devToolsCli.test.ts src/app/controllers/wo
 2. 预检读取 source chunk 和已 hot 的 target chunk，分别构建
    `ParticipantProjection`，并复用 `electric_contact_transfer/8` 判断共享面
    micro 接触是否重叠。
-3. 通过物理接触预检时仍返回 `cross_chunk_conduction_not_supported`，表示当前
-   runtime 只证明边界已接通，不创建跨 chunk `FieldRegion`。
-4. 失败时返回更贴近业务的原因，例如 `target_not_conductive` 或
-   `no_conductive_path`，并写 `voxel_conduction_path_rejected` observe，包含
-   source/target chunk、本地宏格、边界入面/出面和接触数量。
+3. 预检与 chunk-local channel 验证都通过时，runtime 会协调创建两个 shard：
+   source chunk 创建带 `source_key` 的 source shard，target chunk 创建仅按稳定
+   `region_id` 复用的 target shard。两侧重复请求会复用各自 shard。
+4. source chunk 保持 `field_region_count=1 field_source_count=1`；target chunk
+   保持 `field_region_count=1 field_source_count=0`，不会因为跨 chunk 投影而产生
+   第二个 source。
+5. 失败时返回更贴近业务的原因，例如 `target_not_conductive` 或
+   `no_conductive_path`；只有非直接相邻跨 chunk 仍返回
+   `cross_chunk_conduction_not_supported`。target shard 创建失败时会回滚本次新建的
+   source shard，避免留下悬挂 source。
 
 验证证据：
 
 ```powershell
-cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs --seed 0
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs --seed 0
 ```
 
 遗留：
 
-1. 真正跨 chunk path search、field region 分片、AOI 预算和 snapshot 合流仍未开放。
-2. target chunk 当前只 lookup 已启动 chunk，不为一次被拒绝的跨 chunk 请求主动创建
-   新 chunk。
+1. 真正跨 chunk path search、跨多 chunk 扩散、field region 分片调度、AOI 预算和
+   snapshot 合流仍未开放。
+2. target chunk 当前只 lookup 已启动 chunk；这条路径不会为了单次跨 chunk 请求去主动
+   启动远端 chunk。

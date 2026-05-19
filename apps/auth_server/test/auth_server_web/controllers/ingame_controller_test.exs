@@ -238,7 +238,7 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["reason_code"] == "source_not_powered"
   end
 
-  test "POST /ingame/voxel/conduct returns structured input errors for cross-chunk paths",
+  test "POST /ingame/voxel/conduct returns 200 for adjacent conductive cross-chunk paths",
        %{conn: conn} do
     logical_scene_id = 83_000 + System.unique_integer([:positive])
 
@@ -252,13 +252,79 @@ defmodule AuthServerWeb.IngameControllerTest do
                seed_terrain?: false
              )
 
+    assert {:ok, source_chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, target_chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {1, 0, 0}
+             })
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               source_chunk_pid,
+               {15, 0, 0},
+               NormalBlockData.new(@power_block_material_id)
+             )
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               target_chunk_pid,
+               {0, 0, 0},
+               NormalBlockData.new(@iron_material_id)
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 15,
+        "source_y" => 0,
+        "source_z" => 0,
+        "target_x" => 16,
+        "target_y" => 0,
+        "target_z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["cross_chunk"] == true
+    assert body["field_region_created"] == true
+
+    assert body["participant_chunks"] == [
+             %{"x" => 0, "y" => 0, "z" => 0},
+             %{"x" => 1, "y" => 0, "z" => 0}
+           ]
+
+    assert body["source_shard"]["chunk_coord"] == %{"x" => 0, "y" => 0, "z" => 0}
+    assert body["target_shard"]["chunk_coord"] == %{"x" => 1, "y" => 0, "z" => 0}
+    assert body["source_shard"]["field_region_created"] == true
+    assert body["target_shard"]["field_region_created"] == true
+  end
+
+  test "POST /ingame/voxel/conduct still rejects non-direct cross-chunk paths",
+       %{conn: conn} do
+    logical_scene_id = 83_050 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {2, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
     conn =
       post(conn, ~p"/ingame/voxel/conduct", %{
         "logical_scene_id" => logical_scene_id,
         "source_x" => 0,
         "source_y" => 0,
         "source_z" => 0,
-        "target_x" => 16,
+        "target_x" => 32,
         "target_y" => 0,
         "target_z" => 0
       })

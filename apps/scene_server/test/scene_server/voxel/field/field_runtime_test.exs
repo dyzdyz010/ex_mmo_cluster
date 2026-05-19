@@ -628,70 +628,249 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert second.source_points_action == :replaced
     end
 
-    test "rejects cross-chunk conduction because ConductionPathKernel is chunk-local" do
+    test "rejects non-direct cross-chunk conduction requests" do
       logical_scene_id = 76_000 + System.unique_integer([:positive])
 
       assert {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}} =
                FieldRuntime.ensure_conduction_path(
                  logical_scene_id: logical_scene_id,
                  source_world_macro: {0, 0, 0},
-                 target_world_macro: {16, 0, 0}
+                 target_world_macro: {32, 0, 0}
                )
     end
 
-    test "cross-chunk boundary preflight reports aligned contacts without creating a region" do
-      with_observe_log(fn observe_log ->
-        logical_scene_id = 76_050 + System.unique_integer([:positive])
-        source_world_macro = {15, 0, 0}
-        target_world_macro = {16, 0, 0}
+    test "rejects adjacent cross-chunk conduction unless both endpoints sit on the shared face" do
+      logical_scene_id = 76_025 + System.unique_integer([:positive])
 
-        assert {:ok, source_chunk_pid} =
-                 ChunkDirectory.ensure_chunk(%{
-                   logical_scene_id: logical_scene_id,
-                   chunk_coord: {0, 0, 0}
-                 })
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
 
-        assert {:ok, target_chunk_pid} =
-                 ChunkDirectory.ensure_chunk(%{
-                   logical_scene_id: logical_scene_id,
-                   chunk_coord: {1, 0, 0}
-                 })
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
 
-        assert {:ok, _storage} =
-                 ChunkProcess.put_solid_block(
-                   source_chunk_pid,
-                   {15, 0, 0},
-                   NormalBlockData.new(@power_block_material_id)
-                 )
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {14, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
 
-        assert {:ok, _storage} =
-                 ChunkProcess.put_solid_block(
-                   target_chunk_pid,
-                   {0, 0, 0},
-                   NormalBlockData.new(@iron_material_id)
-                 )
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {1, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
 
-        assert {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}} =
-                 FieldRuntime.ensure_conduction_path(
-                   logical_scene_id: logical_scene_id,
-                   source_world_macro: source_world_macro,
-                   target_world_macro: target_world_macro,
-                   max_ticks: 90
-                 )
+      assert {:error, {:conduction_path_failed, :no_conductive_path}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {14, 0, 0},
+                 target_world_macro: {17, 0, 0},
+                 max_ticks: 90
+               )
 
-        assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-        assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+    end
 
-        CliObserve.flush()
-        observe_log_text = File.read!(observe_log)
+    test "creates a coordinated cross-chunk conduction field when aligned boundary contacts are conductive" do
+      logical_scene_id = 76_050 + System.unique_integer([:positive])
+      source_world_macro = {15, 0, 0}
+      target_world_macro = {16, 0, 0}
 
-        assert observe_log_text =~ ~s(event="voxel_conduction_path_rejected")
-        assert observe_log_text =~ "raw_reason: :cross_chunk_conduction_not_supported"
-        assert observe_log_text =~ "public_reason: :cross_chunk_conduction_not_supported"
-        assert observe_log_text =~ "boundary_contacts_count: 64"
-        assert observe_log_text =~ "source_exit_face: :x_pos"
-        assert observe_log_text =~ "target_entry_face: :x_neg"
-      end)
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 max_ticks: 90
+               )
+
+      source_index = Types.macro_index!({15, 0, 0})
+      target_index = Types.macro_index!({0, 0, 0})
+
+      assert summary.cross_chunk == true
+      assert summary.created == true
+      assert summary.field_region_created == true
+      assert summary.source_index == source_index
+      assert summary.target_index == target_index
+      assert summary.region_id == summary.source_shard.region_id
+
+      assert summary.participant_chunks == [
+               %{x: 0, y: 0, z: 0},
+               %{x: 1, y: 0, z: 0}
+             ]
+
+      assert summary.source_shard.chunk_coord == %{x: 0, y: 0, z: 0}
+      assert summary.source_shard.field_region_created == true
+      assert summary.source_shard.source_points_action == :seeded
+
+      assert summary.target_shard.chunk_coord == %{x: 1, y: 0, z: 0}
+      assert summary.target_shard.field_region_created == true
+      assert summary.target_shard.source_points_action == :seeded
+
+      assert summary.source_shard.region_id != summary.target_shard.region_id
+
+      source_debug = ChunkProcess.debug_state(source_chunk_pid)
+      assert source_debug.field_region_count == 1
+      assert source_debug.field_source_count == 1
+
+      target_debug = ChunkProcess.debug_state(target_chunk_pid)
+      assert target_debug.field_region_count == 1
+      assert target_debug.field_source_count == 0
+    end
+
+    test "reuses the coordinated cross-chunk conduction field for the same source and target" do
+      logical_scene_id = 76_062 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, first} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert {:ok, second} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert first.cross_chunk == true
+      assert first.field_region_created == true
+      assert second.cross_chunk == true
+      assert second.created == false
+      assert second.field_region_created == false
+      assert second.region_id == first.region_id
+      assert second.source_shard.region_id == first.source_shard.region_id
+      assert second.target_shard.region_id == first.target_shard.region_id
+      assert second.source_shard.field_region_created == false
+      assert second.target_shard.field_region_created == false
+      assert second.source_shard.source_points_action == :replaced
+      assert second.target_shard.source_points_action == :replaced
+
+      source_debug = ChunkProcess.debug_state(source_chunk_pid)
+      assert source_debug.field_region_count == 1
+      assert source_debug.field_source_count == 1
+
+      target_debug = ChunkProcess.debug_state(target_chunk_pid)
+      assert target_debug.field_region_count == 1
+      assert target_debug.field_source_count == 0
+    end
+
+    test "source release cleans up the linked cross-chunk target shard" do
+      logical_scene_id = 76_068 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+
+      assert {:ok, %{region_action: :destroyed, source_action: :released}} =
+               ChunkProcess.release_field_region_source(
+                 source_chunk_pid,
+                 summary.source_key,
+                 :explicit
+               )
+
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "cross-chunk boundary preflight rejects a non-conductive neighbor before region allocation" do
@@ -744,6 +923,130 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
         assert observe_log_text =~ "source_exit_face: :x_pos"
         assert observe_log_text =~ "target_entry_face: :x_neg"
       end)
+    end
+
+    test "cleans up an existing cross-chunk conduction field when the target becomes non-conductive" do
+      logical_scene_id = 76_085 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, first} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert first.cross_chunk == true
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
+      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 1
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@dirt_material_id)
+               )
+
+      assert {:error, {:conduction_path_failed, :target_not_conductive}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+    end
+
+    test "cleans up an existing cross-chunk conduction field when the source block is removed" do
+      logical_scene_id = 76_095 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, first} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert first.cross_chunk == true
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@dirt_material_id)
+               )
+
+      assert {:error, {:conduction_path_failed, :source_not_conductive}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "rejects conduction when the source voxel has been removed" do

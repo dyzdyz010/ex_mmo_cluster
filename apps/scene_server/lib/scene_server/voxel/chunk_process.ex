@@ -420,10 +420,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
        # field_region_monitors: %{monitor_ref => region_id}
        # field_region_sources: %{source_key => region_id}
        # field_region_source_keys: %{region_id => source_key}
+       # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
        field_regions: %{},
        field_region_monitors: %{},
        field_region_sources: %{},
-       field_region_source_keys: %{}
+       field_region_source_keys: %{},
+       field_region_cleanup_links: %{}
      }}
   end
 
@@ -1016,7 +1018,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:ensure_field_region, attrs}, _from, state) when is_map(attrs) do
     case fetch_optional(attrs, [:source_key]) do
       nil ->
-        {:reply, {:error, :missing_field_source_key}, state}
+        case fetch_optional(attrs, [:region_id]) do
+          nil ->
+            {:reply, {:error, :missing_field_source_key}, state}
+
+          region_id ->
+            ensure_stable_field_region(state, attrs, region_id)
+        end
 
       source_key ->
         case Map.fetch(state.field_region_sources, source_key) do
@@ -1035,9 +1043,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
                       source_points_summary
                     )
 
-                  emit_field_source_lifecycle(state, result)
+                  next_state =
+                    put_field_region_cleanup_links(
+                      state,
+                      source_key,
+                      Map.get(attrs, :linked_field_regions)
+                    )
 
-                  {:reply, {:ok, result}, state}
+                  emit_field_source_lifecycle(next_state, result)
+
+                  {:reply, {:ok, result}, next_state}
                 else
                   cleaned_state = drop_field_region_id(state, region_id)
                   ensure_new_field_source_region(cleaned_state, attrs, source_key)
@@ -1163,9 +1178,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
             end)
 
             source_key = Map.get(state.field_region_source_keys, region_id)
+            destroy_reason = worker_down_destroy_reason(reason)
 
             new_state =
               state
+              |> cleanup_linked_field_regions(source_key, destroy_reason)
               |> drop_field_region_monitor(monitor_ref, region_id)
               |> maybe_emit_worker_down_source_lifecycle(region_id, source_key, reason)
 
@@ -3505,6 +3522,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
             state
             |> put_field_worker(region_id, worker_pid, monitor_ref)
             |> put_field_source(region_id, source_key)
+            |> put_field_region_cleanup_links(
+              source_key,
+              Map.get(attrs, :linked_field_regions)
+            )
 
           {:ok, region_id, next_state}
 
@@ -3539,6 +3560,57 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp ensure_stable_field_region(state, attrs, region_id) do
+    case Map.fetch(state.field_regions, region_id) do
+      {:ok, worker_pid} ->
+        if Process.alive?(worker_pid) do
+          source_points_summary = FieldTickWorker.refresh_region(worker_pid, attrs)
+
+          result =
+            field_source_lifecycle_result(
+              region_id,
+              nil,
+              false,
+              :reused,
+              source_points_summary
+            )
+
+          emit_field_source_lifecycle(state, result)
+
+          {:reply, {:ok, result}, state}
+        else
+          cleaned_state = drop_field_region_id(state, region_id)
+          ensure_new_stable_field_region(cleaned_state, attrs, region_id)
+        end
+
+      :error ->
+        ensure_new_stable_field_region(state, attrs, region_id)
+    end
+  end
+
+  defp ensure_new_stable_field_region(state, attrs, region_id) do
+    case start_field_region(state, Map.put(attrs, :region_id, region_id), nil) do
+      {:ok, ^region_id, next_state} ->
+        source_points_summary = seed_field_source_points_summary(attrs)
+
+        result =
+          field_source_lifecycle_result(
+            region_id,
+            nil,
+            true,
+            :created,
+            source_points_summary
+          )
+
+        emit_field_source_lifecycle(next_state, result)
+
+        {:reply, {:ok, result}, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   defp seed_field_source_points_summary(attrs) do
     case Map.fetch(attrs, :source_points) do
       {:ok, source_points} when is_list(source_points) and source_points != [] ->
@@ -3558,6 +3630,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp release_field_region_source_entry(state, source_key, destroy_reason) do
     case Map.fetch(state.field_region_sources, source_key) do
       :error ->
+        next_state =
+          state
+          |> cleanup_linked_field_regions(source_key, destroy_reason)
+          |> forget_field_region_cleanup_links(source_key)
+
         result =
           field_source_cleanup_result(
             nil,
@@ -3567,13 +3644,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
             destroy_reason
           )
 
-        emit_field_source_lifecycle(state, result)
-        {result, state}
+        emit_field_source_lifecycle(next_state, result)
+        {result, next_state}
 
       {:ok, region_id} ->
         case Map.fetch(state.field_regions, region_id) do
           :error ->
-            next_state = forget_field_source(state, source_key)
+            next_state =
+              state
+              |> cleanup_linked_field_regions(source_key, destroy_reason)
+              |> forget_field_source(source_key)
+              |> forget_field_region_cleanup_links(source_key)
 
             result =
               field_source_cleanup_result(
@@ -3642,7 +3723,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
           end
         end
 
-        next_state = drop_field_region_id(state, region_id)
+        source_key = Map.get(state.field_region_source_keys, region_id)
+
+        next_state =
+          state
+          |> cleanup_linked_field_regions(source_key, destroy_reason)
+          |> drop_field_region_id(region_id)
+
         fan_out_field_region_destroyed_payload(state, destroyed_payload)
 
         CliObserve.emit("voxel_field_region_destroyed", fn ->
@@ -3749,6 +3836,110 @@ defmodule SceneServer.Voxel.ChunkProcess do
     }
   end
 
+  defp put_field_region_cleanup_links(state, nil, _links), do: state
+  defp put_field_region_cleanup_links(state, _source_key, nil), do: state
+
+  defp put_field_region_cleanup_links(state, source_key, links) do
+    cleanup_links = normalize_field_region_cleanup_links(links)
+
+    if cleanup_links == [] do
+      state
+    else
+      %{
+        state
+        | field_region_cleanup_links:
+            Map.put(state.field_region_cleanup_links, source_key, cleanup_links)
+      }
+    end
+  end
+
+  defp normalize_field_region_cleanup_links(links) when is_list(links) do
+    links
+    |> Enum.flat_map(&normalize_field_region_cleanup_link/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_field_region_cleanup_links(link) when is_map(link) do
+    normalize_field_region_cleanup_links([link])
+  end
+
+  defp normalize_field_region_cleanup_links(_links), do: []
+
+  defp normalize_field_region_cleanup_link(link) when is_map(link) do
+    region_id = fetch_optional(link, [:region_id])
+    chunk_coord = fetch_optional(link, [:chunk_coord])
+
+    cond do
+      is_integer(region_id) and region_id >= 0 and not is_nil(chunk_coord) ->
+        [%{chunk_coord: Types.normalize_chunk_coord!(chunk_coord), region_id: region_id}]
+
+      true ->
+        []
+    end
+  rescue
+    _error -> []
+  end
+
+  defp normalize_field_region_cleanup_link(_link), do: []
+
+  defp cleanup_linked_field_regions(state, nil, _destroy_reason), do: state
+
+  defp cleanup_linked_field_regions(state, source_key, destroy_reason) do
+    state.field_region_cleanup_links
+    |> Map.get(source_key, [])
+    |> Enum.each(fn %{chunk_coord: chunk_coord, region_id: region_id} ->
+      cleanup_linked_field_region(state, source_key, chunk_coord, region_id, destroy_reason)
+    end)
+
+    state
+  end
+
+  defp cleanup_linked_field_region(state, source_key, chunk_coord, region_id, destroy_reason) do
+    if chunk_coord == state.chunk_coord or is_nil(state.chunk_directory) do
+      :ok
+    else
+      result =
+        try do
+          case SceneServer.Voxel.ChunkDirectory.lookup_chunk_pid(
+                 state.chunk_directory,
+                 state.logical_scene_id,
+                 chunk_coord
+               ) do
+            {:ok, chunk_pid} ->
+              __MODULE__.destroy_field_region(chunk_pid, region_id)
+
+            :not_started ->
+              :not_started
+          end
+        catch
+          :exit, reason -> {:exit, reason}
+        end
+
+      CliObserve.emit("voxel_field_region_cleanup_link", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          source_key: source_key,
+          linked_chunk_coord: chunk_coord,
+          linked_region_id: region_id,
+          destroy_reason: destroy_reason,
+          result: inspect(result)
+        }
+      end)
+
+      :ok
+    end
+  end
+
+  defp forget_field_region_cleanup_links(state, nil), do: state
+
+  defp forget_field_region_cleanup_links(state, source_key) do
+    %{
+      state
+      | field_region_cleanup_links: Map.delete(state.field_region_cleanup_links, source_key)
+    }
+  end
+
   defp forget_field_source(state, source_key) do
     {region_id, sources} = Map.pop(state.field_region_sources, source_key)
 
@@ -3784,12 +3975,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
         Map.delete(state.field_region_sources, source_key)
       end
 
+    cleanup_links =
+      if is_nil(source_key) do
+        state.field_region_cleanup_links
+      else
+        Map.delete(state.field_region_cleanup_links, source_key)
+      end
+
     %{
       state
       | field_regions: field_regions,
         field_region_monitors: field_region_monitors,
         field_region_sources: sources,
-        field_region_source_keys: source_keys
+        field_region_source_keys: source_keys,
+        field_region_cleanup_links: cleanup_links
     }
   end
 
@@ -3806,12 +4005,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
         Map.delete(state.field_region_sources, source_key)
       end
 
+    cleanup_links =
+      if is_nil(source_key) do
+        state.field_region_cleanup_links
+      else
+        Map.delete(state.field_region_cleanup_links, source_key)
+      end
+
     %{
       state
       | field_region_monitors: monitors,
         field_regions: regions,
         field_region_sources: sources,
-        field_region_source_keys: source_keys
+        field_region_source_keys: source_keys,
+        field_region_cleanup_links: cleanup_links
     }
   end
 
@@ -3872,7 +4079,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
       | field_regions: %{},
         field_region_monitors: %{},
         field_region_sources: %{},
-        field_region_source_keys: %{}
+        field_region_source_keys: %{},
+        field_region_cleanup_links: %{}
     }
   end
 

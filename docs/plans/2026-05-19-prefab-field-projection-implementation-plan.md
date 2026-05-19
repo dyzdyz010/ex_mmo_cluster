@@ -241,43 +241,57 @@ cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/participant_
 
 Observed after implementation: 6 tests, 0 failures.
 
-### Task 8: Add Runtime Boundary Preflight For Adjacent Chunks
+### Task 8: Add Adjacent-Chunk Runtime Handoff For Conduction
 
 **Files:**
 - Modify: `apps/scene_server/lib/scene_server/voxel/field/field_runtime.ex`
 - Modify: `apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs`
 - Modify: `docs/plans/2026-05-19-prefab-field-participant-projection.md`
 
-- [x] **Step 1: Write failing runtime preflight tests**
+- [x] **Step 1: Write failing adjacent-chunk runtime tests**
 
 Add `FieldRuntime.ensure_conduction_path/1` tests for source `{15, 0, 0}` and
 target `{16, 0, 0}`:
 
-- aligned conductive boundary cells should be observed with `boundary_contacts_count`;
+- aligned conductive boundary cells should create coordinated source/target shards;
 - non-conductive neighbor boundary cells should reject as `target_not_conductive`;
-- neither case may create a source or target chunk field region.
+- non-direct neighbors should still reject as `cross_chunk_conduction_not_supported`;
+- the target shard must not register a new field source.
 
 Observed before implementation: aligned and non-conductive adjacent chunk requests
 both returned the old generic `cross_chunk_conduction_not_supported` path, and no
-boundary-contact observe event was emitted.
+coordinated cross-chunk shard state was created.
 
-- [x] **Step 2: Keep kernel chunk-local and preflight in FieldRuntime**
+- [x] **Step 2: Keep kernel chunk-local and coordinate the handoff in FieldRuntime**
 
 `FieldRuntime` now handles only direct boundary-neighbor pairs. It reads the source
 chunk, looks up the already-hot target chunk, builds two `ParticipantProjection`
 snapshots, and calls `electric_contact_transfer/8` with opposite boundary faces.
+Both sides still validate with chunk-local `ConductionPathKernel` paths only.
 
-Successful physical contact still returns `cross_chunk_conduction_not_supported`.
-That reason now means "the boundary is physically ready, but cross-chunk field
-regions/search are not enabled yet" rather than "the runtime did not inspect the
-neighbor."
+When both validations pass, runtime creates two shard regions:
+
+- source chunk: `ensure_field_region(..., source_key: ...)`
+- target chunk: `ensure_field_region(..., region_id: stable_hash(...))`
+
+This preserves the existing ownership model:
+
+- `ConductionPathKernel` remains chunk-local
+- `FieldRegion` remains chunk-local
+- source chunk keeps `field_region_count=1 field_source_count=1`
+- target chunk keeps `field_region_count=1 field_source_count=0`
+
+Repeated requests for the same source/target reuse both shards. If target shard
+creation fails after a newly created source shard, runtime rolls the source shard
+back immediately.
 
 - [x] **Step 3: Run focused tests**
 
 Run:
 
 ```powershell
-cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs --seed 0
+cmd /c mix.bat test apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs --seed 0
 ```
 
-Observed after implementation: 23 tests, 0 failures.
+Observed after implementation: `field_runtime_test.exs` 24 tests, 0 failures;
+`ingame_controller_test.exs` 8 tests, 0 failures.

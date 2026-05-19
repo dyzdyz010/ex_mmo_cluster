@@ -128,13 +128,15 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   end
 
   @doc """
-  Creates a chunk-local electric conduction field from an explicit source to an
-  explicit target.
+  Creates an electric conduction field from an explicit source to an explicit
+  target.
 
   This is a gameplay/debug runtime request, not a voxel-truth mutation: it
-  allocates a `ConductionPathKernel` region owned by the source chunk and leaves
+  allocates chunk-local `ConductionPathKernel` regions and leaves
   material/electric effects inside the field layers for the normal 0x73 field
-  snapshot pipeline.
+  snapshot pipeline. Same-chunk requests allocate one source-owned region;
+  adjacent cross-chunk boundary requests coordinate one source shard plus one
+  stable target shard.
   """
   @spec ensure_conduction_path(keyword() | map()) :: {:ok, map()} | {:error, term()}
   def ensure_conduction_path(opts \\ []) do
@@ -369,6 +371,22 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     }
   end
 
+  defp cross_chunk_conduction_source_key(
+         logical_scene_id,
+         source_world_macro,
+         target_world_macro,
+         opts
+       ) do
+    {:electric_cross_chunk, logical_scene_id, source_world_macro, target_world_macro,
+     stable_cross_chunk_owner_key(get_any(opts, [:owner_ref], nil))}
+  end
+
+  defp stable_cross_chunk_owner_key(%{kind: kind, id: id}), do: {kind, id}
+  defp stable_cross_chunk_owner_key(%{"kind" => kind, "id" => id}), do: {kind, id}
+  defp stable_cross_chunk_owner_key(%{kind: kind, object_id: id}), do: {kind, id}
+  defp stable_cross_chunk_owner_key(%{"kind" => kind, "object_id" => id}), do: {kind, id}
+  defp stable_cross_chunk_owner_key(_owner_ref), do: nil
+
   defp source_material_id(%Storage{} = storage, source_index) do
     case Storage.normal_block_at(storage, source_index) do
       %NormalBlockData{material_id: material_id} ->
@@ -392,15 +410,23 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          target_chunk_coord,
          target_local_macro
        ) do
-    case cross_chunk_boundary_faces(
+    case cross_chunk_boundary_handoff(
            source_chunk_coord,
            source_local_macro,
            target_chunk_coord,
            target_local_macro
          ) do
-      {:ok, source_exit_face, target_entry_face} ->
+      {:ok,
+       %{
+         source_exit_face: source_exit_face,
+         target_entry_face: target_entry_face,
+         source_boundary_local_macro: source_boundary_local_macro,
+         target_boundary_local_macro: target_boundary_local_macro
+       }} ->
         source_index = Types.macro_index!(source_local_macro)
         target_index = Types.macro_index!(target_local_macro)
+        source_boundary_index = Types.macro_index!(source_boundary_local_macro)
+        target_boundary_index = Types.macro_index!(target_boundary_local_macro)
 
         with {:ok, source_chunk_pid} <-
                ChunkDirectory.ensure_chunk(%{
@@ -421,14 +447,61 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
           field_source =
             opts
+            |> Map.put(
+              :source_key,
+              cross_chunk_conduction_source_key(
+                logical_scene_id,
+                source_world_macro,
+                target_world_macro,
+                opts
+              )
+            )
             |> Map.put(:source_kind, :electric)
             |> Map.put(:logical_scene_id, logical_scene_id)
             |> Map.put(:source_world_macro, source_world_macro)
             |> Map.put(:target_world_macro, target_world_macro)
             |> FieldSource.normalize()
 
+          decay_policy = field_source.decay_policy || %{}
+          source_potential = field_source.source_value
+          max_ticks = conduction_max_ticks(decay_policy)
+          radius = non_negative_int(get_any(decay_policy, [:field_radius], 1))
+
+          max_frontier =
+            non_negative_int(
+              get_any(decay_policy, [:max_frontier], @default_conduction_max_frontier)
+            )
+
+          source_aabb =
+            local_aabb_between(source_local_macro, source_boundary_local_macro, radius)
+
+          target_aabb =
+            local_aabb_between(target_boundary_local_macro, target_local_macro, radius)
+
+          source_kernel_specs =
+            conduction_kernel_specs_for_target(field_source, source_boundary_index)
+
+          target_kernel_specs =
+            conduction_kernel_specs_for_target(field_source, target_index)
+
+          target_region_id =
+            cross_chunk_target_region_id(
+              logical_scene_id,
+              target_chunk_coord,
+              field_source.source_key
+            )
+
+          cleanup_context = %{
+            source_chunk_pid: source_chunk_pid,
+            source_key: field_source.source_key,
+            logical_scene_id: logical_scene_id,
+            target_chunk_coord: target_chunk_coord,
+            target_region_id: target_region_id
+          }
+
           base_context = %{
             logical_scene_id: logical_scene_id,
+            chunk_coord: coord_map(source_chunk_coord),
             source_world_macro: coord_map(source_world_macro),
             target_world_macro: coord_map(target_world_macro),
             source_chunk_coord: coord_map(source_chunk_coord),
@@ -438,33 +511,193 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
             source_index: source_index,
             target_index: target_index,
             source_key: field_source.source_key,
-            source_potential: field_source.source_value,
+            source_potential: source_potential,
+            source_boundary_local_macro: coord_map(source_boundary_local_macro),
+            target_boundary_local_macro: coord_map(target_boundary_local_macro),
+            source_boundary_index: source_boundary_index,
+            target_boundary_index: target_boundary_index,
             source_exit_face: source_exit_face,
-            target_entry_face: target_entry_face
+            target_entry_face: target_entry_face,
+            cross_chunk: true,
+            participant_chunks: [coord_map(source_chunk_coord), coord_map(target_chunk_coord)]
           }
 
           source_projection = ParticipantProjection.build(source_storage)
 
           cond do
             not ParticipantProjection.electric_conductive_cell?(source_projection, source_index) ->
-              reject_cross_chunk_conduction_boundary(:source_not_conductive, base_context)
+              reject_cross_chunk_conduction_boundary(
+                :source_not_conductive,
+                base_context,
+                cleanup_context
+              )
 
             not source_powered? ->
-              reject_cross_chunk_conduction_boundary(:source_not_powered, base_context)
+              reject_cross_chunk_conduction_boundary(
+                :source_not_powered,
+                base_context,
+                cleanup_context
+              )
 
             true ->
-              validate_cross_chunk_target_boundary(
-                logical_scene_id,
-                target_chunk_coord,
-                target_index,
-                target_entry_face,
-                source_projection,
-                source_index,
-                source_exit_face,
-                base_context
-              )
+              with :ok <-
+                     cleanup_cross_chunk_on_error(
+                       validate_conduction_channel(
+                         source_chunk_pid,
+                         field_source.source_key,
+                         source_index,
+                         source_boundary_index,
+                         source_aabb,
+                         source_potential,
+                         max_frontier,
+                         source_powered?,
+                         Map.merge(base_context, %{
+                           shard: :source,
+                           target_local_macro: coord_map(source_boundary_local_macro),
+                           target_index: source_boundary_index
+                         })
+                       ),
+                       cleanup_context
+                     ),
+                   :ok <-
+                     cleanup_cross_chunk_on_error(
+                       validate_power_source_policy(
+                         source_chunk_pid,
+                         field_source.source_key,
+                         source_index,
+                         source_boundary_index,
+                         source_aabb,
+                         source_potential,
+                         max_frontier,
+                         field_source,
+                         Map.merge(base_context, %{
+                           shard: :source,
+                           target_local_macro: coord_map(source_boundary_local_macro),
+                           target_index: source_boundary_index
+                         })
+                       ),
+                       cleanup_context
+                     ),
+                   {:ok, target_chunk_pid} <-
+                     validate_cross_chunk_target_boundary(
+                       logical_scene_id,
+                       target_chunk_coord,
+                       target_index,
+                       target_local_macro,
+                       target_boundary_index,
+                       target_boundary_local_macro,
+                       target_entry_face,
+                       source_projection,
+                       source_boundary_index,
+                       source_exit_face,
+                       source_potential,
+                       target_aabb,
+                       max_frontier,
+                       base_context,
+                       cleanup_context
+                     ) do
+                source_region_attrs = %{
+                  chunk_coord: source_chunk_coord,
+                  aabb: source_aabb,
+                  kernels: source_kernel_specs,
+                  source_points: [
+                    %{
+                      macro_index: source_index,
+                      field_type: :electric_potential,
+                      value: source_potential
+                    }
+                  ],
+                  max_ticks: max_ticks,
+                  source_points_mode: :replace,
+                  source_key: field_source.source_key,
+                  linked_field_regions: [
+                    %{
+                      chunk_coord: target_chunk_coord,
+                      region_id: target_region_id
+                    }
+                  ]
+                }
+
+                target_region_attrs = %{
+                  region_id: target_region_id,
+                  chunk_coord: target_chunk_coord,
+                  aabb: target_aabb,
+                  kernels: target_kernel_specs,
+                  source_points: [
+                    %{
+                      macro_index: target_boundary_index,
+                      field_type: :electric_potential,
+                      value: source_potential
+                    }
+                  ],
+                  max_ticks: max_ticks,
+                  source_points_mode: :replace
+                }
+
+                case ChunkProcess.ensure_field_region(source_chunk_pid, source_region_attrs) do
+                  {:ok, source_region} ->
+                    case ChunkProcess.ensure_field_region(target_chunk_pid, target_region_attrs) do
+                      {:ok, target_region} ->
+                        {:ok,
+                         coordinated_cross_chunk_summary(
+                           logical_scene_id,
+                           source_chunk_coord,
+                           target_chunk_coord,
+                           source_world_macro,
+                           target_world_macro,
+                           source_local_macro,
+                           target_local_macro,
+                           source_boundary_local_macro,
+                           target_boundary_local_macro,
+                           source_index,
+                           target_index,
+                           source_boundary_index,
+                           target_boundary_index,
+                           source_potential,
+                           radius,
+                           max_ticks,
+                           max_frontier,
+                           field_source,
+                           source_region,
+                           target_region
+                         )}
+
+                      {:error, reason} ->
+                        _ =
+                          ChunkProcess.release_field_region_source(
+                            source_chunk_pid,
+                            field_source.source_key,
+                            :explicit
+                          )
+
+                        _ = destroy_cross_chunk_target_region(cleanup_context)
+                        {:error, {:conduction_path_failed, reason}}
+                    end
+
+                  {:error, reason} ->
+                    {:error, {:conduction_path_failed, reason}}
+                end
+              end
           end
         end
+
+      {:misaligned, source_exit_face, target_entry_face} ->
+        reject_cross_chunk_conduction_boundary(
+          :cross_chunk_boundary_contacts_misaligned,
+          %{
+            logical_scene_id: logical_scene_id,
+            source_world_macro: coord_map(source_world_macro),
+            target_world_macro: coord_map(target_world_macro),
+            source_chunk_coord: coord_map(source_chunk_coord),
+            target_chunk_coord: coord_map(target_chunk_coord),
+            source_local_macro: coord_map(source_local_macro),
+            target_local_macro: coord_map(target_local_macro),
+            source_exit_face: source_exit_face,
+            target_entry_face: target_entry_face,
+            cross_chunk: true,
+            participant_chunks: [coord_map(source_chunk_coord), coord_map(target_chunk_coord)]
+          }
+        )
 
       :not_direct_boundary_neighbors ->
         {:error, {:conduction_path_failed, :cross_chunk_conduction_not_supported}}
@@ -475,11 +708,18 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          logical_scene_id,
          target_chunk_coord,
          target_index,
+         target_local_macro,
+         target_boundary_index,
+         target_boundary_local_macro,
          target_entry_face,
          source_projection,
-         source_index,
+         source_boundary_index,
          source_exit_face,
-         base_context
+         source_potential,
+         target_aabb,
+         max_frontier,
+         base_context,
+         cleanup_context
        ) do
     case ChunkDirectory.lookup_chunk_pid(logical_scene_id, target_chunk_coord) do
       {:ok, target_chunk_pid} ->
@@ -489,40 +729,70 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         contacts =
           ParticipantProjection.electric_contact_transfer(
             source_projection,
-            source_index,
+            source_boundary_index,
             :source,
             MapSet.new(),
             source_exit_face,
             target_projection,
-            target_index,
+            target_boundary_index,
             target_entry_face
           )
 
         context = Map.put(base_context, :boundary_contacts_count, MapSet.size(contacts))
+        cleanup_context = Map.put(cleanup_context, :target_chunk_pid, target_chunk_pid)
 
         cond do
           not ParticipantProjection.electric_conductive_cell?(target_projection, target_index) ->
-            reject_cross_chunk_conduction_boundary(:target_not_conductive, context)
+            reject_cross_chunk_conduction_boundary(
+              :target_not_conductive,
+              context,
+              cleanup_context
+            )
 
           MapSet.size(contacts) == 0 ->
             reject_cross_chunk_conduction_boundary(
               :cross_chunk_boundary_contacts_misaligned,
-              context
+              context,
+              cleanup_context
             )
 
           true ->
-            reject_cross_chunk_conduction_boundary(:cross_chunk_conduction_not_supported, context)
+            case ConductionPathKernel.channel_path(
+                   target_storage,
+                   target_boundary_index,
+                   target_index,
+                   target_aabb,
+                   source_potential,
+                   %{max_frontier: max_frontier}
+                 ) do
+              {:ok, _path} ->
+                {:ok, target_chunk_pid}
+
+              {:error, reason} ->
+                reject_cross_chunk_conduction_boundary(
+                  reason,
+                  Map.merge(context, %{
+                    shard: :target,
+                    source_local_macro: coord_map(target_boundary_local_macro),
+                    source_index: target_boundary_index,
+                    target_local_macro: coord_map(target_local_macro),
+                    target_index: target_index
+                  }),
+                  cleanup_context
+                )
+            end
         end
 
       :not_started ->
         reject_cross_chunk_conduction_boundary(
           :target_not_conductive,
-          Map.put(base_context, :boundary_contacts_count, 0)
+          Map.put(base_context, :boundary_contacts_count, 0),
+          cleanup_context
         )
     end
   end
 
-  defp cross_chunk_boundary_faces(
+  defp cross_chunk_boundary_handoff(
          {sx, sy, sz},
          {source_x, source_y, source_z},
          {tx, ty, tz},
@@ -531,17 +801,98 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     max_local = Types.chunk_size_in_macro() - 1
 
     case {tx - sx, ty - sy, tz - sz} do
-      {1, 0, 0} when source_x == max_local and target_x == 0 -> {:ok, :x_pos, :x_neg}
-      {-1, 0, 0} when source_x == 0 and target_x == max_local -> {:ok, :x_neg, :x_pos}
-      {0, 1, 0} when source_y == max_local and target_y == 0 -> {:ok, :y_pos, :y_neg}
-      {0, -1, 0} when source_y == 0 and target_y == max_local -> {:ok, :y_neg, :y_pos}
-      {0, 0, 1} when source_z == max_local and target_z == 0 -> {:ok, :z_pos, :z_neg}
-      {0, 0, -1} when source_z == 0 and target_z == max_local -> {:ok, :z_neg, :z_pos}
-      _other -> :not_direct_boundary_neighbors
+      {1, 0, 0} ->
+        aligned_cross_chunk_handoff(
+          source_x == max_local and target_x == 0 and source_y == target_y and
+            source_z == target_z,
+          :x_pos,
+          :x_neg,
+          {max_local, source_y, source_z},
+          {0, target_y, target_z}
+        )
+
+      {-1, 0, 0} ->
+        aligned_cross_chunk_handoff(
+          source_x == 0 and target_x == max_local and source_y == target_y and
+            source_z == target_z,
+          :x_neg,
+          :x_pos,
+          {0, source_y, source_z},
+          {max_local, target_y, target_z}
+        )
+
+      {0, 1, 0} ->
+        aligned_cross_chunk_handoff(
+          source_y == max_local and target_y == 0 and source_x == target_x and
+            source_z == target_z,
+          :y_pos,
+          :y_neg,
+          {source_x, max_local, source_z},
+          {target_x, 0, target_z}
+        )
+
+      {0, -1, 0} ->
+        aligned_cross_chunk_handoff(
+          source_y == 0 and target_y == max_local and source_x == target_x and
+            source_z == target_z,
+          :y_neg,
+          :y_pos,
+          {source_x, 0, source_z},
+          {target_x, max_local, target_z}
+        )
+
+      {0, 0, 1} ->
+        aligned_cross_chunk_handoff(
+          source_z == max_local and target_z == 0 and source_x == target_x and
+            source_y == target_y,
+          :z_pos,
+          :z_neg,
+          {source_x, source_y, max_local},
+          {target_x, target_y, 0}
+        )
+
+      {0, 0, -1} ->
+        aligned_cross_chunk_handoff(
+          source_z == 0 and target_z == max_local and source_x == target_x and
+            source_y == target_y,
+          :z_neg,
+          :z_pos,
+          {source_x, source_y, 0},
+          {target_x, target_y, max_local}
+        )
+
+      _other ->
+        :not_direct_boundary_neighbors
     end
   end
 
-  defp reject_cross_chunk_conduction_boundary(reason, observe_context) do
+  defp aligned_cross_chunk_handoff(
+         true,
+         source_exit_face,
+         target_entry_face,
+         source_boundary_local_macro,
+         target_boundary_local_macro
+       ) do
+    {:ok,
+     %{
+       source_exit_face: source_exit_face,
+       target_entry_face: target_entry_face,
+       source_boundary_local_macro: source_boundary_local_macro,
+       target_boundary_local_macro: target_boundary_local_macro
+     }}
+  end
+
+  defp aligned_cross_chunk_handoff(
+         false,
+         source_exit_face,
+         target_entry_face,
+         _source_boundary_local_macro,
+         _target_boundary_local_macro
+       ) do
+    {:misaligned, source_exit_face, target_entry_face}
+  end
+
+  defp reject_cross_chunk_conduction_boundary(reason, observe_context, cleanup_context \\ nil) do
     public_reason = normalize_conduction_reject_reason(reason)
 
     observe_context
@@ -553,8 +904,67 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     })
     |> emit_conduction_path_rejected()
 
+    _ = cleanup_cross_chunk_conduction(cleanup_context, public_reason)
     {:error, {:conduction_path_failed, public_reason}}
   end
+
+  defp cleanup_cross_chunk_on_error(:ok, _cleanup_context), do: :ok
+
+  defp cleanup_cross_chunk_on_error(
+         {:error, {:conduction_path_failed, public_reason}} = error,
+         cleanup_context
+       ) do
+    _ = cleanup_cross_chunk_conduction(cleanup_context, public_reason)
+    error
+  end
+
+  defp cleanup_cross_chunk_on_error(error, cleanup_context) do
+    _ = cleanup_cross_chunk_conduction(cleanup_context, :explicit)
+    error
+  end
+
+  defp cleanup_cross_chunk_conduction(nil, _destroy_reason), do: :ok
+
+  defp cleanup_cross_chunk_conduction(cleanup_context, destroy_reason)
+       when is_map(cleanup_context) do
+    case {Map.get(cleanup_context, :source_chunk_pid), Map.get(cleanup_context, :source_key)} do
+      {source_chunk_pid, source_key} when is_pid(source_chunk_pid) and not is_nil(source_key) ->
+        _ = ChunkProcess.release_field_region_source(source_chunk_pid, source_key, destroy_reason)
+
+      _other ->
+        :ok
+    end
+
+    destroy_cross_chunk_target_region(cleanup_context)
+  end
+
+  defp destroy_cross_chunk_target_region(%{target_region_id: target_region_id} = cleanup_context)
+       when is_integer(target_region_id) do
+    case cross_chunk_target_pid(cleanup_context) do
+      {:ok, target_chunk_pid} ->
+        _ = ChunkProcess.destroy_field_region(target_chunk_pid, target_region_id)
+        :ok
+
+      :not_started ->
+        :ok
+    end
+  end
+
+  defp destroy_cross_chunk_target_region(_cleanup_context), do: :ok
+
+  defp cross_chunk_target_pid(%{target_chunk_pid: target_chunk_pid})
+       when is_pid(target_chunk_pid) do
+    {:ok, target_chunk_pid}
+  end
+
+  defp cross_chunk_target_pid(%{
+         logical_scene_id: logical_scene_id,
+         target_chunk_coord: target_chunk_coord
+       }) do
+    ChunkDirectory.lookup_chunk_pid(logical_scene_id, target_chunk_coord)
+  end
+
+  defp cross_chunk_target_pid(_cleanup_context), do: :not_started
 
   defp validate_conduction_channel(
          chunk_pid,
@@ -1087,6 +1497,107 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   end
 
   defp maybe_put_power_draw_summary(summary, _field_source), do: summary
+
+  defp conduction_kernel_specs_for_target(%FieldSource{kernel_specs: kernel_specs}, target_index) do
+    Enum.map(kernel_specs, fn
+      %{id: :conduction_path, opts: opts} = kernel_spec when is_map(opts) ->
+        %{kernel_spec | opts: Map.put(opts, :target_macro_index, target_index)}
+
+      %{id: :conduction_path} = kernel_spec ->
+        Map.put(kernel_spec, :opts, %{target_macro_index: target_index})
+
+      kernel_spec ->
+        kernel_spec
+    end)
+  end
+
+  defp cross_chunk_target_region_id(logical_scene_id, target_chunk_coord, source_key) do
+    {:ok, hash} =
+      {:ok,
+       :crypto.hash(
+         :sha256,
+         :erlang.term_to_binary(
+           {:cross_chunk_conduction_target_region, logical_scene_id, target_chunk_coord,
+            source_key}
+         )
+       )}
+
+    hash
+    |> binary_part(0, 8)
+    |> :binary.decode_unsigned()
+    |> Kernel.+(1)
+  end
+
+  defp coordinated_cross_chunk_summary(
+         logical_scene_id,
+         source_chunk_coord,
+         target_chunk_coord,
+         source_world_macro,
+         target_world_macro,
+         source_local_macro,
+         target_local_macro,
+         source_boundary_local_macro,
+         target_boundary_local_macro,
+         source_index,
+         target_index,
+         source_boundary_index,
+         target_boundary_index,
+         source_potential,
+         radius,
+         max_ticks,
+         max_frontier,
+         %FieldSource{} = field_source,
+         source_region,
+         target_region
+       ) do
+    field_region_created = source_region.created? or target_region.created?
+
+    %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: coord_map(source_chunk_coord),
+      source_world_macro: coord_map(source_world_macro),
+      target_world_macro: coord_map(target_world_macro),
+      source_local_macro: coord_map(source_local_macro),
+      target_local_macro: coord_map(target_local_macro),
+      source_boundary_local_macro: coord_map(source_boundary_local_macro),
+      target_boundary_local_macro: coord_map(target_boundary_local_macro),
+      source_index: source_index,
+      target_index: target_index,
+      source_boundary_index: source_boundary_index,
+      target_boundary_index: target_boundary_index,
+      source_key: field_source.source_key,
+      field_types: ["electric_potential", "ionization"],
+      source_potential: source_potential,
+      radius: radius,
+      max_ticks: max_ticks,
+      max_frontier: max_frontier,
+      cross_chunk: true,
+      participant_chunks: [coord_map(source_chunk_coord), coord_map(target_chunk_coord)],
+      source_shard: shard_summary(source_region, source_chunk_coord),
+      target_shard: shard_summary(target_region, target_chunk_coord)
+    }
+    |> maybe_put_source_summary(field_source)
+    |> maybe_put_power_draw_summary(field_source)
+    |> Map.put(:created, field_region_created)
+    |> Map.put(:region_id, source_region.region_id)
+    |> Map.put(:field_region_created, field_region_created)
+    |> Map.put(:source_points_action, source_region.source_points_action)
+  end
+
+  defp shard_summary(region_result, chunk_coord) do
+    region_result
+    |> Map.take([
+      :region_id,
+      :source_key,
+      :region_action,
+      :source_points_action,
+      :source_points_count,
+      :source_points_rejection_reason
+    ])
+    |> Map.put(:chunk_coord, coord_map(chunk_coord))
+    |> Map.put(:created, Map.get(region_result, :created?, false))
+    |> Map.put(:field_region_created, Map.get(region_result, :created?, false))
+  end
 
   defp maybe_cleanup_ignored_field_region(
          chunk_pid,
