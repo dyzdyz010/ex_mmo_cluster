@@ -235,6 +235,53 @@ describe("FieldDebugOverlay", () => {
     expect(regionGroup?.children).toHaveLength(1);
     expect(electricMesh(overlay).count).toBe(2);
   });
+
+  it("turns electric heat into smoke particles instead of coloring the block body", () => {
+    const lowHeatOverlay = new FieldDebugOverlay();
+    lowHeatOverlay.setRegionHeatSmokeSource(77, 240);
+    lowHeatOverlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricValues: Float32Array.of(120, 60),
+      }),
+    );
+
+    const highHeatOverlay = new FieldDebugOverlay();
+    highHeatOverlay.setRegionHeatSmokeSource(77, 2400);
+    highHeatOverlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricValues: Float32Array.of(120, 60),
+      }),
+    );
+
+    const lowSmoke = lowHeatOverlay.snapshot().regions[0]?.smokeParticles ?? 0;
+    const highSmoke = highHeatOverlay.snapshot().regions[0]?.smokeParticles ?? 0;
+
+    expect(lowSmoke).toBeGreaterThan(0);
+    expect(highSmoke).toBeGreaterThan(lowSmoke);
+    expect(temperatureMeshesMaybe(highHeatOverlay)).toHaveLength(0);
+  });
+
+  it("lets heat smoke rise and expire as a particle effect", () => {
+    const overlay = new FieldDebugOverlay();
+    overlay.setRegionHeatSmokeSource(77, 2400);
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricValues: Float32Array.of(120),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+
+    overlay.updateSmoke(2500);
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBe(0);
+  });
 });
 
 function makeTemperatureSnapshot({
@@ -311,6 +358,16 @@ function temperatureMeshes(overlay: FieldDebugOverlay): InstancedMesh[] {
     throw new Error("missing temperature meshes");
   }
   return meshes;
+}
+
+function temperatureMeshesMaybe(overlay: FieldDebugOverlay): InstancedMesh[] {
+  const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+  return (
+    regionGroup?.children.filter(
+      (child): child is InstancedMesh =>
+        child instanceof InstancedMesh && child.name.startsWith("temperature-"),
+    ) ?? []
+  );
 }
 
 function temperatureMeshCount(overlay: FieldDebugOverlay): number {

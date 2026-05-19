@@ -3,6 +3,16 @@ import type { AoiPriorityBand, MovementAck, RemoteMoveSnapshot } from "@domain/m
 import type { FChunkCoord, FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
 
+export interface ElectricPowerDraw {
+  outputMode?: "dc" | "ac" | "pulse";
+  voltage?: number;
+  currentLimitAmps?: number;
+  frequencyHz?: number;
+  loadCurrentAmps?: number;
+  estimatedTickEnergyJoules?: number;
+  overCurrent?: boolean;
+}
+
 /**
  * Central event dictionary. Each key names an event; each value is its payload.
  *
@@ -125,6 +135,7 @@ export type AppEvents = {
     source: string;
     regionId?: string;
     fieldRegionCreated?: boolean;
+    powerDraw?: ElectricPowerDraw;
   };
   "world:micro-placed": {
     macro: FMacroCoord;

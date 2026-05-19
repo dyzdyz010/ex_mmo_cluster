@@ -13,6 +13,13 @@ movement、render 或 transport 的真相状态。
   `voxel_subscribe` 和 `voxel_impact` 暴露成可点击 UI。`Rebind` 按钮走同一条
   WebSocket 调试探针路径，便于在迁移 cutover 后从网页直接触发订阅重绑定并用日志验证。
 
+当前 UI 优化焦点：
+
+- 先把已落地的电源块、导电路径、电热写回和热烟状态变成玩家能理解的可见指示。
+- 需要显示的业务状态包括：选中的电源/导线材料、导电 source/target 端点、请求 accepted/rejected、
+  FieldRegion id、电源模式、电压、负载电流、热烟粒子强度。
+- 暂停继续扩展底层物理：跨 chunk 电场、持续能量扣减、材料熔断、伤害结算先不进入本轮。
+
 边界规则：
 
 - 本目录不能直接改 `WorldStore`，写入必须通过 controller、adapter 或 CLI command port。

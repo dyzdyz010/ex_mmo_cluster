@@ -76,7 +76,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   normal field snapshot pipeline can expose the electric/ionization layers to
   the browser field overlay. Optional `:owner_ref`, `:source_mode`,
   `:ttl_ticks`, `:output_mode`, `:voltage`, `:current_limit_amps`,
-  `:frequency_hz`, and `:energy_budget_joules` are forwarded into the normalized
+  `:load_current_amps`, `:frequency_hz`, and `:energy_budget_joules` are forwarded into the normalized
   electric `FieldSource` so dev/browser requests exercise the same lifecycle
   and power-source boundary as future gameplay sources.
   """
@@ -97,6 +97,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     |> maybe_put(:output_mode, Keyword.get(opts, :output_mode))
     |> maybe_put(:voltage, Keyword.get(opts, :voltage))
     |> maybe_put(:current_limit_amps, Keyword.get(opts, :current_limit_amps))
+    |> maybe_put(:load_current_amps, Keyword.get(opts, :load_current_amps))
     |> maybe_put(:frequency_hz, Keyword.get(opts, :frequency_hz))
     |> maybe_put(:energy_budget_joules, Keyword.get(opts, :energy_budget_joules))
     |> FieldRuntime.ensure_conduction_path()

@@ -71,6 +71,51 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
     assert active_cells(first, :ionization) == active_cells(second, :ionization)
   end
 
+  test "emits Joule heat effects for a powered thermal coupling path" do
+    {storage, region, target} = conduction_fixture()
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, _updated, effects} =
+             ConductionPathKernel.tick(region, context, %{
+               target_macro_index: target,
+               power_source: %{
+                 output_mode: :dc,
+                 voltage: 120.0,
+                 current_limit_amps: 10.0,
+                 load_current_amps: 6.0
+               },
+               thermal_coupling: %{enabled: true}
+             })
+
+    assert length(effects) == 6
+
+    heat_cells =
+      Enum.map(effects, fn
+        {:write_voxel_attribute,
+         %{
+           attribute: :temperature,
+           macro_index: macro_index,
+           heat_energy_joules: heat_energy_joules
+         }} ->
+          assert heat_energy_joules > 0.0
+          macro_index
+      end)
+
+    assert heat_cells == [
+             Types.macro_index!({0, 1, 0}),
+             Types.macro_index!({0, 0, 0}),
+             Types.macro_index!({1, 0, 0}),
+             Types.macro_index!({2, 0, 0}),
+             Types.macro_index!({3, 0, 0}),
+             Types.macro_index!({3, 1, 0})
+           ]
+
+    assert Enum.all?(effects, fn
+             {:write_voxel_attribute, %{source: :electric_conduction}} -> true
+             _other -> false
+           end)
+  end
+
   test "uses target_local_macro option" do
     {storage, region, _target} = conduction_fixture()
     context = KernelContext.new(region, 7, storage, dt_ms: 100)

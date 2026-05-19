@@ -39,7 +39,7 @@ function defaultHelpText(): string {
     "voxel_temp <x> <y> <z> <target_temperature_celsius> [max_ticks]",
     "voxel_heat <x> <y> <z> [target_temperature_celsius] [max_ticks]",
     "voxel_cool <x> <y> <z> [target_temperature_celsius] [max_ticks]",
-    "voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz]",
+    "voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]",
     "field_overlay [on|off]",
     "chunk_versions",
     "scene_regions [on|off]",

@@ -473,6 +473,107 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
              }
     end
 
+    test "rejects over-current load before allocating a conduction region" do
+      logical_scene_id = 75_375 + System.unique_integer([:positive])
+      source_world_macro = {0, 1, 0}
+      target_world_macro = {3, 1, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      for coord <- [
+            target_world_macro,
+            {0, 0, 0},
+            {1, 0, 0},
+            {2, 0, 0},
+            {3, 0, 0}
+          ] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   chunk_pid,
+                   coord,
+                   NormalBlockData.new(@iron_material_id)
+                 )
+      end
+
+      assert {:error, {:conduction_path_failed, :current_limit_exceeded}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 max_ticks: 90,
+                 voltage: 120,
+                 current_limit_amps: 5,
+                 load_current_amps: 12,
+                 owner_ref: %{kind: :device, id: "bench-supply"}
+               )
+
+      debug = ChunkProcess.debug_state(chunk_pid)
+      assert debug.field_region_count == 0
+      assert debug.field_source_count == 0
+    end
+
+    test "rejects a conduction request whose first tick exceeds source energy budget" do
+      logical_scene_id = 75_425 + System.unique_integer([:positive])
+      source_world_macro = {0, 1, 0}
+      target_world_macro = {3, 1, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      for coord <- [
+            target_world_macro,
+            {0, 0, 0},
+            {1, 0, 0},
+            {2, 0, 0},
+            {3, 0, 0}
+          ] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(
+                   chunk_pid,
+                   coord,
+                   NormalBlockData.new(@iron_material_id)
+                 )
+      end
+
+      assert {:error, {:conduction_path_failed, :energy_budget_exhausted}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 max_ticks: 90,
+                 voltage: 120,
+                 current_limit_amps: 5,
+                 load_current_amps: 5,
+                 energy_budget_joules: 1,
+                 owner_ref: %{kind: :device, id: "small-cell"}
+               )
+
+      debug = ChunkProcess.debug_state(chunk_pid)
+      assert debug.field_region_count == 0
+      assert debug.field_source_count == 0
+    end
+
     test "reuses the same source-target region and refreshes source points on replay" do
       logical_scene_id = 75_500 + System.unique_integer([:positive])
 

@@ -21,6 +21,8 @@ export interface ElectricPowerSourceRequest {
   voltage?: number;
   currentLimitAmps?: number;
   frequencyHz?: number;
+  loadCurrentAmps?: number;
+  energyBudgetJoules?: number;
 }
 
 export interface VoxelWorldAdapter {

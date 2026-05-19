@@ -21,6 +21,11 @@
   在线 prefab 热栏暴露服务端 v2 catalog 的 `builtin_sphere`、`builtin_cylinder`、`builtin_stairs`(Phase A1-1 起,跟客户端 micro mask 对齐);离线 refined prefab 仍保留在本地适配器里。
 - `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
 - `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
+- `field/` 负责服务端局部场的浏览器可视化：FieldDebugOverlay 显示 field snapshot，
+  `heatSmokeEffect.ts` / `heatSmokeRenderer.ts` 把导电热量转为灰色上升烟粒子。
+  业务边界是“热量出烟，不染方块本体”；烟量按
+  `power_draw.estimated_tick_energy_joules` 缩放，CLI `field_overlay` 会返回
+  `smoke` 粒子数用于非 GUI 验证。
 - `prefab.ts` 负责浏览器本地 Prefab Definition/Instance 编排。当前阶段已按 UE
   `test1` 的 `FPrefabDefinitionData` / `FPrefabInstanceData` 分层建模：
   capture 生成定义，place 生成实例并写入所有覆盖到的 Chunk。内置
@@ -52,8 +57,8 @@
 - `debrisEffect.ts`：`DebrisSimulation` 纯数据状态机。`spawn(samplePoints, kind)`
   对每个采样点产生 `burstSize` 个粒子(默认 8，半球面随机方向 + 中心向外
   push + 切向抖动)；`update(dtMs)` symplectic Euler 重力积分(-9.8 m/s²)
-  + lifetime(默认 0.8s)剔除 + array compaction；全局上限 500 粒子(超出
-  FIFO trim oldest)。
+  - lifetime(默认 0.8s)剔除 + array compaction；全局上限 500 粒子(超出
+    FIFO trim oldest)。
 - `debrisRenderer.ts`：`DebrisRenderer` THREE.InstancedMesh 包装。每帧
   `syncFromSimulation()` 把 `liveParticles()` 的位置写到 `setMatrixAt` +
   `count` + `instanceMatrix.needsUpdate`。粒子立方体边长 = 0.05m ×
@@ -82,6 +87,7 @@
   getDebrisSimulation 时静默 skip。
 
 **已知限制 / 待 Phase 5 升级**：
+
 - ChunkDelta apply 前的 cache hook 没接，production 路径全走 fallback
   (粒子从 chunk 中心点散开，不沿 micro slot 散布)。决策稿档 B 完整效果
   待 Phase 5 把 ownerObjectId 引入 FRefinedCellData 后落地。

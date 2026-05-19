@@ -5,6 +5,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion, FieldTickWorker}
+  alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
@@ -291,6 +292,81 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_field_effect_applied"
     assert observe_log_text =~ "kernel_id: :write_temperature_effect"
+  end
+
+  test "conduction path Joule heat effects are dispatched to chunk truth", %{
+    observe_log: observe_log
+  } do
+    source_index = Types.macro_index!({0, 0, 0})
+    target_index = Types.macro_index!({1, 0, 0})
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, source_index, NormalBlockData.new(5))
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, target_index, NormalBlockData.new(5))
+
+    initial_storage = ChunkProcess.debug_state(chunk).storage
+
+    initial_source_temperature =
+      Storage.effective_attribute_at(initial_storage, source_index, "temperature")
+
+    initial_target_temperature =
+      Storage.effective_attribute_at(initial_storage, target_index, "temperature")
+
+    region =
+      FieldRegion.new(%{
+        region_id: 106,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {1, 0, 0}},
+        kernels: [
+          %{
+            id: :conduction_path,
+            module: ConductionPathKernel,
+            opts: %{
+              target_macro_index: target_index,
+              power_source: %{
+                output_mode: :dc,
+                voltage: 120.0,
+                current_limit_amps: 20.0,
+                load_current_amps: 20.0
+              },
+              thermal_coupling: %{enabled: true, joule_scale: 100_000.0}
+            }
+          }
+        ],
+        source_points: [
+          %{macro_index: source_index, field_type: :electric_potential, value: 120.0}
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+
+    assert Storage.effective_attribute_at(storage, source_index, "temperature") >
+             initial_source_temperature
+
+    assert Storage.effective_attribute_at(storage, target_index, "temperature") >
+             initial_target_temperature
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_applied"
+    assert observe_log_text =~ "kernel_id: :conduction_path"
+    assert observe_log_text =~ "heat_energy_joules:"
   end
 
   test "unsupported non-observe effects are explicitly rejected", %{

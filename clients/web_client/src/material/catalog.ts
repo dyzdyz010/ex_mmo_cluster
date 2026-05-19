@@ -150,9 +150,6 @@ export function resolveVoxelVisual(view: FVoxelBlockStateView): ResolvedVoxelVis
   if (view.freezeCoverage > 0) {
     displayColor.lerp(new Color(0xc7ecff), view.freezeCoverage * 0.55);
   }
-  if (view.heatLevel > 0) {
-    displayColor.lerp(new Color(0xff9a4d), view.heatLevel * 0.25);
-  }
   if (view.burnIntensity > 0) {
     displayColor.lerp(new Color(0xff6433), view.burnIntensity * 0.45);
   }

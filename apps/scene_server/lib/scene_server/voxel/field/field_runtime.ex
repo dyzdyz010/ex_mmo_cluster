@@ -24,6 +24,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Field.TemperatureField
 
   @default_logical_scene_id 1
@@ -35,6 +36,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   @temperature_ambient_loss_per_second 0.0
   @temperature_cell_size_meters 1.0
   @temperature_threshold 1.0
+  @conduction_power_policy_tick_ms 100
   @fixed32_scale 65_536
 
   @doc """
@@ -223,6 +225,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
             max_frontier: max_frontier
           }
           |> maybe_put_source_summary(field_source)
+          |> maybe_put_power_draw_summary(field_source)
 
         with :ok <-
                validate_conduction_channel(
@@ -234,6 +237,25 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                  source_potential,
                  max_frontier,
                  source_powered?,
+                 %{
+                   logical_scene_id: logical_scene_id,
+                   chunk_coord: coord_map(source_chunk_coord),
+                   source_world_macro: coord_map(source_world_macro),
+                   target_world_macro: coord_map(target_world_macro),
+                   source_local_macro: coord_map(source_local_macro),
+                   target_local_macro: coord_map(target_local_macro)
+                 }
+               ),
+             :ok <-
+               validate_power_source_policy(
+                 chunk_pid,
+                 source_key,
+                 source_index,
+                 target_index,
+                 aabb,
+                 source_potential,
+                 max_frontier,
+                 field_source,
                  %{
                    logical_scene_id: logical_scene_id,
                    chunk_coord: coord_map(source_chunk_coord),
@@ -316,6 +338,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       :current_limit_amps,
       :current_limit,
       :power_current_limit_amps,
+      :load_current_amps,
+      :requested_current_amps,
+      :current_amps,
+      :power_load_current_amps,
       :frequency_hz,
       :power_frequency_hz,
       :energy_budget_joules,
@@ -397,6 +423,81 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
           observe_context
         )
     end
+  end
+
+  defp validate_power_source_policy(
+         chunk_pid,
+         source_key,
+         source_index,
+         target_index,
+         aabb,
+         source_potential,
+         max_frontier,
+         %FieldSource{power_source: %PowerSource{} = power_source},
+         observe_context
+       ) do
+    cond do
+      PowerSource.over_current?(power_source) ->
+        reject_conduction_channel(
+          chunk_pid,
+          source_key,
+          source_index,
+          target_index,
+          aabb,
+          source_potential,
+          max_frontier,
+          :current_limit_exceeded,
+          Map.merge(observe_context, power_observe_fields(power_source))
+        )
+
+      energy_budget_exhausted?(power_source) ->
+        reject_conduction_channel(
+          chunk_pid,
+          source_key,
+          source_index,
+          target_index,
+          aabb,
+          source_potential,
+          max_frontier,
+          :energy_budget_exhausted,
+          Map.merge(observe_context, power_observe_fields(power_source))
+        )
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_power_source_policy(
+         _chunk_pid,
+         _source_key,
+         _source_index,
+         _target_index,
+         _aabb,
+         _source_potential,
+         _max_frontier,
+         _field_source,
+         _observe_context
+       ),
+       do: :ok
+
+  defp energy_budget_exhausted?(%PowerSource{energy_budget_joules: budget} = power_source)
+       when is_number(budget) do
+    PowerSource.estimated_tick_energy_joules(power_source, @conduction_power_policy_tick_ms) >
+      budget
+  end
+
+  defp energy_budget_exhausted?(%PowerSource{}), do: false
+
+  defp power_observe_fields(%PowerSource{} = power_source) do
+    %{
+      voltage: power_source.voltage,
+      current_limit_amps: power_source.current_limit_amps,
+      load_current_amps: PowerSource.effective_load_current_amps(power_source),
+      energy_budget_joules: power_source.energy_budget_joules,
+      estimated_tick_energy_joules:
+        PowerSource.estimated_tick_energy_joules(power_source, @conduction_power_policy_tick_ms)
+    }
   end
 
   defp reject_conduction_channel(
@@ -792,6 +893,12 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   end
 
   defp maybe_put_source_summary(summary, _field_source), do: summary
+
+  defp maybe_put_power_draw_summary(summary, %FieldSource{power_source: %PowerSource{} = source}) do
+    Map.put(summary, :power_draw, power_observe_fields(source))
+  end
+
+  defp maybe_put_power_draw_summary(summary, _field_source), do: summary
 
   defp maybe_cleanup_ignored_field_region(
          chunk_pid,

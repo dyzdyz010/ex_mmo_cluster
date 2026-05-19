@@ -19,6 +19,8 @@ import {
 import { MacroWorldSize } from "../core/constants";
 import type { FFieldRegionSnapshot } from "./fieldProtocol";
 import { FieldMask } from "./fieldProtocol";
+import { HeatSmokeSimulation } from "./heatSmokeEffect";
+import { HeatSmokeRenderer } from "./heatSmokeRenderer";
 
 const CELL_SIZE = MacroWorldSize; // 100 world units per macro cell
 const MAX_CELLS = 4096;
@@ -74,6 +76,7 @@ export interface FieldDebugOverlaySnapshot {
     chunkCoord: { cx: number; cy: number; cz: number };
     temperatureCells: number;
     electricCells: number;
+    smokeParticles: number;
     maxTemperatureCelsius: number | null;
     maxAbsTemperatureDeltaCelsius: number;
     averageAbsTemperatureDeltaCelsius: number;
@@ -91,11 +94,14 @@ export class FieldDebugOverlay {
   private readonly tmpDummy = new Object3D();
   private readonly tmpMatrix = new Matrix4();
   private readonly tmpColor = new Color();
+  private readonly heatSmoke = new HeatSmokeSimulation();
+  private readonly heatSmokeRenderer = new HeatSmokeRenderer(this.heatSmoke);
 
   constructor() {
     this.rootGroup = new Group();
     this.rootGroup.visible = false;
     this.rootGroup.name = "FieldDebugOverlay";
+    this.rootGroup.add(this.heatSmokeRenderer.mesh);
     this._bindHotkey();
   }
 
@@ -109,6 +115,7 @@ export class FieldDebugOverlay {
       this.rootGroup.add(overlay.group);
     }
     this._updateOverlay(overlay, snapshot);
+    const smokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(snapshot);
     const tempCount = temperatureCellCount(overlay);
     const elecCount = overlay.electricMesh?.count ?? 0;
     let tMin = Infinity;
@@ -130,7 +137,7 @@ export class FieldDebugOverlay {
         `tick=${snapshot.tickCount} mask=0x${snapshot.fieldMask.toString(16)} ` +
         `cells=${snapshot.cellCount} nonzero=${nonZeroCount} ` +
         `temp_min=${tMin.toFixed(3)} temp_max=${tMax.toFixed(3)} temp_avg=${tAvg.toFixed(3)} ` +
-        `rendered_temp=${tempCount} rendered_elec=${elecCount} ` +
+        `rendered_temp=${tempCount} rendered_elec=${elecCount} smoke_spawned=${smokeSpawned} ` +
         `new=${isNew} group_visible=${this.rootGroup.visible} regions_total=${this.regions.size}`,
     );
   }
@@ -143,6 +150,8 @@ export class FieldDebugOverlay {
       _disposeOverlay(overlay);
       this.regions.delete(regionId);
     }
+    this.heatSmoke.clearRegion(regionId);
+    this.heatSmokeRenderer.syncFromSimulation();
     console.info(
       `[FieldDebugOverlay] destroyed region=${regionId} existed=${overlay !== undefined} ` +
         `regions_remaining=${this.regions.size}`,
@@ -156,6 +165,8 @@ export class FieldDebugOverlay {
       _disposeOverlay(overlay);
     }
     this.regions.clear();
+    this.heatSmoke.reset();
+    this.heatSmokeRenderer.syncFromSimulation();
   }
 
   show(): void {
@@ -190,9 +201,28 @@ export class FieldDebugOverlay {
         chunkCoord: overlay.chunkCoord,
         temperatureCells: temperatureCellCount(overlay),
         electricCells: overlay.electricMesh?.count ?? 0,
+        smokeParticles: this.heatSmoke.activeCount(overlay.regionId),
         ...overlay.temperatureStats,
       })),
     };
+  }
+
+  setRegionHeatSmokeSource(regionId: number | string, heatEnergyJoulesPerTick: number): void {
+    const normalizedRegionId = normalizeRegionId(regionId);
+    if (normalizedRegionId === null) {
+      return;
+    }
+    this.heatSmoke.setRegionHeatSmokeSource(normalizedRegionId, heatEnergyJoulesPerTick);
+  }
+
+  updateSmoke(dtMs: number): void {
+    this.heatSmoke.update(dtMs);
+    this.heatSmokeRenderer.syncFromSimulation();
+  }
+
+  dispose(): void {
+    this.clear();
+    this.heatSmokeRenderer.dispose();
   }
 
   private _createOverlay(snapshot: FFieldRegionSnapshot): FieldRegionOverlay {
@@ -385,6 +415,11 @@ function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {
   const y = (idx >> 4) & 0xf;
   const z = (idx >> 8) & 0xf;
   return { x, y, z };
+}
+
+function normalizeRegionId(regionId: number | string): number | null {
+  const value = typeof regionId === "number" ? regionId : Number.parseInt(regionId, 10);
+  return Number.isFinite(value) ? value : null;
 }
 
 function estimateBackgroundTemperature(samples: number[], cellCount: number): number {

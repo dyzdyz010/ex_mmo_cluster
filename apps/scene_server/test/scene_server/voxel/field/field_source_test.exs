@@ -109,7 +109,20 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                %{
                  id: :conduction_path,
                  module: ConductionPathKernel,
-                 opts: %{target_macro_index: target_index, max_frontier: 64}
+                 opts: %{
+                   target_macro_index: target_index,
+                   max_frontier: 64,
+                   power_source: %{
+                     owner_ref: %{kind: :device, id: "coil-7"},
+                     output_mode: :dc,
+                     voltage: 150.0,
+                     current_limit_amps: nil,
+                     load_current_amps: nil,
+                     frequency_hz: nil,
+                     energy_budget_joules: 5000.0
+                   },
+                   thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
+                 }
                }
              ]
 
@@ -139,6 +152,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
           voltage: "240",
           current_limit_amps: "12.5",
           frequency_hz: "60",
+          load_current_amps: "6.25",
           energy_budget_joules: "5000",
           owner_ref: %{kind: :device, id: "generator-1"}
         })
@@ -147,6 +161,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
       assert source.power_source.output_mode == :ac
       assert source.power_source.voltage == 240.0
       assert source.power_source.current_limit_amps == 12.5
+      assert source.power_source.load_current_amps == 6.25
       assert source.power_source.frequency_hz == 60.0
       assert source.power_source.energy_budget_joules == 5000.0
       assert source.power_source.owner_ref == %{kind: :device, id: "generator-1"}
@@ -156,6 +171,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                output_mode: :ac,
                voltage: 240.0,
                current_limit_amps: 12.5,
+               load_current_amps: 6.25,
                frequency_hz: 60.0,
                energy_budget_joules: 5000.0
              }

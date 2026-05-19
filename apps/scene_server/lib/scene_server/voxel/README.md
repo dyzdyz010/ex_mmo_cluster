@@ -1072,8 +1072,10 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   dielectric strength 参与 breakdown cost。当前 material-gated 通道要求
   `electric_conductivity >= 1.0`，所以 dirt 的微弱漏导不会被当成导线；既有 ionization
   仍只影响已允许材料路径内的后续通道成本。
-- 输出：只刷新 region 内 `:electric_potential` / `:ionization` layer，source 到 target
-  电势按路径长度衰减；不产生 `FieldEffect`，不直接写 voxel/object truth。
+- 输出：刷新 region 内 `:electric_potential` / `:ionization` layer，source 到 target
+  电势按路径长度衰减；当 `PowerSource` 开启热耦合时，会为路径上的导电 cell 生成
+  `write_voxel_attribute(:temperature, heat_energy_joules)` effect，由 `ChunkProcess`
+  作为 chunk authority 写回温度 truth。kernel 仍不直接改 voxel/object truth。
 - 协议：仍复用 0x73/0x74 的 electric/ionization layer，不扩主 wire。
 - Source lifecycle：`FieldRuntime.ensure_conduction_path/1` 会把导电请求正规化为
   `FieldSource(source_kind: :electric)`；source key 纳入 owner identity。物理电源块默认使用
@@ -1085,14 +1087,15 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   仍通过 0x74 destroy payload 看到 field 消失。
 - PowerSource v1：electric `FieldSource` 会附带
   `SceneServer.Voxel.Field.PowerSource`，记录供电模式和供电上限：
-  `output_mode: :dc | :ac | :pulse`、`voltage`、`current_limit_amps`、`frequency_hz`、
-  `energy_budget_joules`。这只是供电事实描述，不是完整电路仿真；AC 当前不模拟相位，预算
-  当前不消耗，负载/短路/保险丝/变压器仍留给后续 gameplay/effect slice。`power_block`
+  `output_mode: :dc | :ac | :pulse`、`voltage`、`current_limit_amps`、`load_current_amps`、
+  `frequency_hz`、`energy_budget_joules`。这不是完整电路仿真；AC 当前不模拟相位，budget
+  当前只做首 tick 预算门槛，不做持续扣减。若声明的负载电流超过电源限流，runtime 会在
+  创建 region 前以 `current_limit_exceeded` 拒绝，并写结构化 observe。`power_block`
   默认声明 DC 120V、20A、20_000J 的 supply policy；这个 policy 已进入 summary/observe，
-  但还不会被 tick 消耗。
+  并驱动导电路径的焦耳热 effect。
 
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
-breakdown 结算。
+breakdown / 熔断破坏结算。
 
 ### TemperatureField 算法
 
@@ -1149,12 +1152,14 @@ breakdown 结算。
   `field_overlay [on|off]` CLI 诊断。
 - `ensure_conduction_path/1` 现在与 temperature path 共用 `FieldSource` source/region
   生命周期入口：HTTP/runtime 可传 `source_mode`、`owner_ref`、`ttl_ticks`、
-  `output_mode`、`voltage`、`current_limit_amps`、`frequency_hz`、`energy_budget_joules`，
-  summary 会回显 normalized source 和 `power_source`。未显式传 owner/power 参数时，
+  `output_mode`、`voltage`、`current_limit_amps`、`load_current_amps`、`frequency_hz`、
+  `energy_budget_joules`，summary 会回显 normalized source、`power_source` 和
+  `power_draw`。未显式传 owner/power 参数时，
   source cell 必须是 `power_block`；导线材料只负责导通，不负责发电。kernel 仍只演化
-  electric/ionization field，不写 voxel/object truth。ttl 到期会走 worker expiry -> source
-  lifecycle cleanup -> 0x74 fanout，避免一次导电来源永久残留在 chunk runtime。导电预检失败
-  会写结构化 observe，搜索预算耗尽等内部原因不会被外部兼容错误码吞掉。
+  electric/ionization field，并通过标准 FieldEffect 把路径焦耳热交给 chunk authority 写回
+  温度 truth；ttl 到期会走 worker expiry -> source lifecycle cleanup -> 0x74 fanout，避免一次
+  导电来源永久残留在 chunk runtime。导电预检失败和电源过载失败都会写结构化 observe，搜索预算
+  耗尽、电流超限等内部原因不会被外部兼容错误码吞掉。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；
@@ -1164,8 +1169,9 @@ breakdown 结算。
 当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
 局部 FieldRegion -> impulse 热扰动可扩散并消散 -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
 串通。electric conduction 已具备 owner-aware source key、ttl lifetime 和 budget policy
-摘要。尚未完成的部分是从持久 voxel truth 扫描/订阅异常属性、owner 存活探测、budget 消耗、
-跨 chunk/AOI lifecycle，以及 object / candidate phenomenon effect 写回边界。
+摘要，并已能把导通电流转换为温度 truth 的焦耳热写回。尚未完成的部分是从持久 voxel truth
+扫描/订阅异常属性、owner 存活探测、budget 持续扣减、跨 chunk/AOI lifecycle，以及 object /
+candidate phenomenon effect 写回边界。
 
 ### FieldCodec
 

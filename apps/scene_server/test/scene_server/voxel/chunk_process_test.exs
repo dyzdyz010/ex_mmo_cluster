@@ -248,6 +248,56 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert observe_log_text =~ "kernel_id: :test_kernel"
   end
 
+  test "apply_field_effects can inject heat energy through chunk authority", %{
+    observe_log: observe_log
+  } do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(5))
+
+    assert {:ok,
+            %{
+              applied_count: 1,
+              rejected_count: 0,
+              chunk_version: 2,
+              results: [
+                %{
+                  status: :applied,
+                  action: :write_voxel_attribute,
+                  attribute: :temperature,
+                  macro_index: ^macro_index,
+                  heat_energy_joules: 3_533_630.0,
+                  temperature_delta: 1.0,
+                  target_value: 21.0,
+                  chunk_version: 2
+                }
+              ]
+            }} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [
+                 {:write_voxel_attribute,
+                  %{
+                    attribute: :temperature,
+                    macro_index: macro_index,
+                    heat_energy_joules: 3_533_630.0
+                  }}
+               ],
+               %{region_id: 703, kernel_id: :test_kernel}
+             )
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    assert Storage.effective_attribute_at(storage, macro_index, "temperature") == 1_376_256
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_field_effect_applied"
+    assert observe_log_text =~ "heat_energy_joules: 3533630.0"
+    assert observe_log_text =~ "region_id: 703"
+  end
+
   test "apply_field_effects rejects unsupported effects without mutating", %{
     observe_log: observe_log
   } do

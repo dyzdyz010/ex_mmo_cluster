@@ -537,7 +537,19 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     const fetchSpy = vi.fn(() =>
       Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ region_id: 43, field_region_created: true }),
+        json: () =>
+          Promise.resolve({
+            region_id: 43,
+            field_region_created: true,
+            power_draw: {
+              output_mode: "ac",
+              voltage: 240,
+              current_limit_amps: 12.5,
+              load_current_amps: 6.25,
+              estimated_tick_energy_joules: 1500,
+              over_current: false,
+            },
+          }),
       }),
     );
     vi.stubGlobal("fetch", fetchSpy);
@@ -548,6 +560,8 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
         voltage: 240,
         currentLimitAmps: 12.5,
         frequencyHz: 60,
+        loadCurrentAmps: 6.25,
+        energyBudgetJoules: 5000,
       }),
     ).toBe(true);
     await flushAsyncWork();
@@ -571,6 +585,8 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
           voltage: 240,
           current_limit_amps: 12.5,
           frequency_hz: 60,
+          load_current_amps: 6.25,
+          energy_budget_joules: 5000,
         }),
       }),
     );
@@ -582,6 +598,14 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
         source: "server",
         regionId: "43",
         fieldRegionCreated: true,
+        powerDraw: {
+          outputMode: "ac",
+          voltage: 240,
+          currentLimitAmps: 12.5,
+          loadCurrentAmps: 6.25,
+          estimatedTickEnergyJoules: 1500,
+          overCurrent: false,
+        },
       },
     ]);
   });

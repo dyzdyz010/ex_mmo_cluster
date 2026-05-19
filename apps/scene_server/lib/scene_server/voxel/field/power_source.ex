@@ -5,7 +5,8 @@ defmodule SceneServer.Voxel.Field.PowerSource do
   `PowerSource` is not a circuit simulator and does not mutate voxel truth. It
   records what kind of supply is driving an electric field request so the
   field runtime can distinguish stable DC, oscillating AC, and one-shot pulse
-  sources before later budget and gameplay-effect slices consume that policy.
+  sources, reject over-current loads at the source boundary, and estimate the
+  tick-scale Joule budget handed to downstream thermal effects.
   """
 
   @type output_mode :: :dc | :ac | :pulse
@@ -15,6 +16,7 @@ defmodule SceneServer.Voxel.Field.PowerSource do
           output_mode: output_mode(),
           voltage: float(),
           current_limit_amps: float() | nil,
+          load_current_amps: float() | nil,
           frequency_hz: float() | nil,
           energy_budget_joules: float() | nil
         }
@@ -23,8 +25,11 @@ defmodule SceneServer.Voxel.Field.PowerSource do
             output_mode: :dc,
             voltage: 120.0,
             current_limit_amps: nil,
+            load_current_amps: nil,
             frequency_hz: nil,
             energy_budget_joules: nil
+
+  @default_load_current_amps 1.0
 
   @doc "Normalizes user/runtime input into a bounded electric power-source descriptor."
   @spec normalize(keyword() | map()) :: t()
@@ -52,6 +57,19 @@ defmodule SceneServer.Voxel.Field.PowerSource do
         normalize_optional_non_negative_float(
           fetch_any(attrs, [:current_limit_amps, :current_limit, :power_current_limit_amps], nil)
         ),
+      load_current_amps:
+        normalize_optional_non_negative_float(
+          fetch_any(
+            attrs,
+            [
+              :load_current_amps,
+              :requested_current_amps,
+              :current_amps,
+              :power_load_current_amps
+            ],
+            nil
+          )
+        ),
       frequency_hz:
         normalize_optional_non_negative_float(
           fetch_any(attrs, [:frequency_hz, :power_frequency_hz], nil)
@@ -66,6 +84,41 @@ defmodule SceneServer.Voxel.Field.PowerSource do
   @doc "Returns a JSON/log-safe summary map."
   @spec to_summary(t()) :: map()
   def to_summary(%__MODULE__{} = source), do: Map.from_struct(source)
+
+  @doc """
+  Returns the current that should be treated as actual load for first-order
+  gameplay power accounting.
+
+  The current limit is a ceiling, not a solved circuit load. Until the runtime
+  has a real resistance network, an explicit requested/load current wins; if it
+  is absent, the path is modeled as drawing at the supply limit, and a bare
+  source falls back to 1A so debug/dev requests remain deterministic.
+  """
+  @spec effective_load_current_amps(t()) :: float()
+  def effective_load_current_amps(%__MODULE__{load_current_amps: value})
+      when is_number(value) and value >= 0,
+      do: value * 1.0
+
+  def effective_load_current_amps(%__MODULE__{current_limit_amps: value})
+      when is_number(value) and value >= 0,
+      do: value * 1.0
+
+  def effective_load_current_amps(%__MODULE__{}), do: @default_load_current_amps
+
+  @doc "True when the requested/effective load exceeds the source current limit."
+  @spec over_current?(t()) :: boolean()
+  def over_current?(%__MODULE__{current_limit_amps: limit} = source)
+      when is_number(limit) and limit >= 0 do
+    effective_load_current_amps(source) > limit
+  end
+
+  def over_current?(%__MODULE__{}), do: false
+
+  @doc "Estimates the source energy draw for one tick in Joules."
+  @spec estimated_tick_energy_joules(t(), pos_integer() | number()) :: float()
+  def estimated_tick_energy_joules(%__MODULE__{} = source, dt_ms) when is_number(dt_ms) do
+    source.voltage * effective_load_current_amps(source) * max(dt_ms, 1) / 1000.0
+  end
 
   defp normalize_output_mode(nil, attrs) do
     case normalize_source_mode(fetch_any(attrs, [:source_mode], :persistent)) do

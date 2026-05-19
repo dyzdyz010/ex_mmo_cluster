@@ -1054,11 +1054,19 @@ function parseConductionPowerSource(
   };
   const currentLimitAmps = parseOptionalFiniteNumber(args[2]);
   const frequencyHz = parseOptionalFiniteNumber(args[3]);
+  const loadCurrentAmps = parseOptionalFiniteNumber(args[4]);
+  const energyBudgetJoules = parseOptionalFiniteNumber(args[5]);
   if (currentLimitAmps !== undefined) {
     powerSource.currentLimitAmps = currentLimitAmps;
   }
   if (frequencyHz !== undefined) {
     powerSource.frequencyHz = frequencyHz;
+  }
+  if (loadCurrentAmps !== undefined) {
+    powerSource.loadCurrentAmps = loadCurrentAmps;
+  }
+  if (energyBudgetJoules !== undefined) {
+    powerSource.energyBudgetJoules = energyBudgetJoules;
   }
   return powerSource;
 }
@@ -1086,7 +1094,7 @@ function usageForTemperatureCommand(command: string): string {
 }
 
 function usageForConductionCommand(): string {
-  return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz]";
+  return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]";
 }
 
 function formatSceneRegionOverlayLine(region: {
@@ -1109,6 +1117,7 @@ function formatFieldOverlayLine(region: {
   chunkCoord: { cx: number; cy: number; cz: number };
   temperatureCells: number;
   electricCells: number;
+  smokeParticles?: number;
   maxTemperatureCelsius?: number | null;
   maxAbsTemperatureDeltaCelsius?: number;
   averageAbsTemperatureDeltaCelsius?: number;
@@ -1119,7 +1128,7 @@ function formatFieldOverlayLine(region: {
   };
 }): string {
   const { cx, cy, cz } = region.chunkCoord;
-  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
+  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells} smoke=${region.smokeParticles ?? 0}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
 }
 
 function temperatureStatsForFieldRegion(region: {

@@ -494,8 +494,20 @@ function bridgeBusToLogger(
   );
   bus.on(
     "world:voxel-conduction-accepted",
-    ({ sourceCoord, targetCoord, sourcePotential, source, regionId, fieldRegionCreated }) => {
+    ({
+      sourceCoord,
+      targetCoord,
+      sourcePotential,
+      source,
+      regionId,
+      fieldRegionCreated,
+      powerDraw,
+    }) => {
       render.showFieldDebugOverlay();
+      const heatEnergyJoulesPerTick = powerDraw?.estimatedTickEnergyJoules;
+      if (regionId !== undefined && heatEnergyJoulesPerTick !== undefined) {
+        render.setFieldHeatSmokeSource(regionId, heatEnergyJoulesPerTick);
+      }
       logger.emit("voxel", "conduction_path", {
         source_coord: formatCoord(sourceCoord),
         target_coord: formatCoord(targetCoord),
@@ -504,6 +516,7 @@ function bridgeBusToLogger(
         request_state: "accepted",
         region_id: regionId ?? "",
         field_region_created: fieldRegionCreated ?? false,
+        heat_smoke_joules_per_tick: heatEnergyJoulesPerTick ?? "",
         field_overlay_visible: true,
       });
     },

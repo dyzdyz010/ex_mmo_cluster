@@ -135,6 +135,7 @@ defmodule AuthServerWeb.IngameControllerTest do
         "voltage" => 240,
         "current_limit_amps" => 12.5,
         "frequency_hz" => 60,
+        "load_current_amps" => 6.25,
         "energy_budget_joules" => 5000
       })
 
@@ -159,8 +160,17 @@ defmodule AuthServerWeb.IngameControllerTest do
              "current_limit_amps" => 12.5,
              "energy_budget_joules" => 5000.0,
              "frequency_hz" => 60.0,
+             "load_current_amps" => 6.25,
              "output_mode" => "ac",
              "owner_ref" => %{"id" => "coil-7", "kind" => "device"},
+             "voltage" => 240.0
+           }
+
+    assert body["power_draw"] == %{
+             "current_limit_amps" => 12.5,
+             "energy_budget_joules" => 5000.0,
+             "estimated_tick_energy_joules" => 150.0,
+             "load_current_amps" => 6.25,
              "voltage" => 240.0
            }
 

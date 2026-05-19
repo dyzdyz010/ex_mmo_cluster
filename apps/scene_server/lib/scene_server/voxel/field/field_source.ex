@@ -57,6 +57,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   @default_conduction_max_ticks 120
   @default_conduction_radius 1
   @default_conduction_max_frontier 512
+  @conduction_heat_response_gain 10_000.0
 
   @doc """
   Normalizes a runtime field source.
@@ -217,11 +218,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       power_source: power_source,
       kernel_specs:
         fetch_any(attrs, [:kernel_specs], [
-          %{
-            id: :conduction_path,
-            module: ConductionPathKernel,
-            opts: %{target_macro_index: target_index, max_frontier: max_frontier}
-          }
+          conduction_kernel_spec(target_index, max_frontier, power_source)
         ]),
       decay_policy:
         fetch_any(
@@ -274,6 +271,22 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         diffusion_time_scale: @temperature_diffusion_time_scale,
         ambient_loss_per_second: @temperature_ambient_loss_per_second,
         cell_size_meters: @temperature_cell_size_meters
+      }
+    }
+  end
+
+  defp conduction_kernel_spec(target_index, max_frontier, %PowerSource{} = power_source) do
+    %{
+      id: :conduction_path,
+      module: ConductionPathKernel,
+      opts: %{
+        target_macro_index: target_index,
+        max_frontier: max_frontier,
+        power_source: PowerSource.to_summary(power_source),
+        thermal_coupling: %{
+          enabled: true,
+          joule_scale: @conduction_heat_response_gain
+        }
       }
     }
   end

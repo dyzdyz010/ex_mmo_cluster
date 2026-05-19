@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle 与 physical power block 第一片已落地（2026-05-18）
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle、physical power block、电热写回与 GUI 热烟可视化第一片已落地（2026-05-19）。当前暂停继续扩展底层物理实现，下一轮聚焦 web client 的 UI 与指示优化。
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -47,21 +47,25 @@
 11. Physical power block 第一片已落地：`material_id=6` 的 `power_block` 是默认物理电源；
     未显式传入 device/object/magic owner 或 power 参数时，普通 iron 只做导线，不再能
     凭空生成电场。`power_block` 默认声明 DC 120V、20A、20_000J supply policy。
+12. Electric-to-thermal 第一片已落地：导电路径会按 `PowerSource` 的 voltage/load current
+    生成焦耳热 `FieldEffect`，由 `ChunkProcess` 写回 voxel 温度 truth；HTTP/Web CLI 可传
+    `load_current_amps` 与 `energy_budget_joules`，过载负载会在创建 FieldRegion 前以
+    `current_limit_exceeded` 拒绝。
 
 仍未完成：
 
 1. `FieldSource` 目前闭合了 temperature 与 electric conduction 的最小 owner/ttl/budget
    入口；object / magic / weather / device 等 generic persistent source owner 存活探测、
-   budget 消耗和跨 chunk 生命周期仍未实现。
+   budget 持续消耗和跨 chunk 生命周期仍未实现。
 2. 未完成从持久 voxel truth 扫描或订阅异常属性。
 3. 只完成了“set-temperature 回到环境阈值内”时的主动销毁；基于 active cells、
    source owner、预算、region 扩张/收缩和分片的完整 lifecycle 仍未完成。
-4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` 最小 dispatcher；
-   永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
+4. kernel effect 已有温度 `write_voxel_attribute(:temperature)` dispatcher，导电可通过它写回
+   焦耳热；永久烧毁、冻结、融化、点燃、伤害、object 写回和 source effect 仍未接入。
 5. 跨 chunk field、AOI 降频、网络预算和大范围事件 LOD 仍是设计约束，不是完整实现。
 6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或跨 chunk field；这些仍是后续阶段，不应塞进当前导电入口。
 
-结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点；下一步应补 FieldRuntime 的运行时能力，而不是继续堆单点演示。
+结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟第一片已经够支撑可玩验证；短期不继续扩展跨 chunk 电场、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。
 
 ---
 
@@ -504,22 +508,18 @@ Phase 7+ 不直接承诺：
 下一轮建议直接启动：
 
 ```text
-Phase 7.F / Phase 8 前置: electric field lifecycle、跨 chunk 预算与玩法 effect 边界
+Web client field UX polish: 电源/导电/发热状态 UI、操作指示与反馈
 ```
 
 最小交付：
 
-1. 已完成：把 electric source 纳入 `FieldSource` owner / ttl / budget 摘要与
-   runtime lifetime，不再只靠 `{:conduction_path, source_index, target_index}` source key。
-2. 设计跨 chunk field 分片、AOI 降频和网络预算，不把大范围电击塞进单 chunk region。
-3. 已完成：为搜索预算超限等导电预检失败路径补 `voxel_conduction_path_rejected`
-   observe，日志保留 raw reason、对外 reason、scene/chunk/source/target 定位字段。
-4. 已完成：新增 `PowerSource` v1 描述，让导电请求可声明 DC / AC / pulse、voltage、
-   current limit、frequency 与 energy budget；HTTP 和 web CLI 可操作，但暂不做完整电路仿真。
-5. 已完成：新增 `power_block` 材料，默认导电 source 必须来自该真实体素；普通导线材料
-   只能承载电流，不能自己发电。
-6. 明确 Phase 8 effect 接口：击穿破坏、伤害、object/combat 结算仍由 phenomenon/effect
-   层承接，不能让 `ConductionPathKernel` 直接写 truth。
+1. 把现有 Heat/Cool/Conduct/Field Overlay 操作整理成玩家能看懂的面板状态，而不是只靠 CLI 文本。
+2. 给电源块、导电路径和热烟增加明确指示：当前选中材料、导电端点、请求是否 accepted、region id、
+   电源模式、电压/负载电流、热烟强度。
+3. 保持非 GUI 验证面：所有 UI 新指示都必须能从 `field_overlay`、observe log 或现有 debug snapshot
+   读到同一业务状态。
+4. 不在这一轮继续做跨 chunk 电场、tick-by-tick 能量扣减、材料熔断、伤害或 Phase 8 phenomenon。
+5. 验收以浏览器可操作为主：打开客户端后能不用记 CLI 参数完成电源块/导线/导电/发热观察流程。
 
 ---
 
@@ -549,8 +549,64 @@ npm test -- src/material/catalog.test.ts src/app/controllers/worldEditController
 
 遗留：
 
-1. `power_block` 的 energy budget 仍是 source policy/observe 摘要，尚未随 tick 或负载消耗。
-2. 负载、短路、保险丝、变压器、AC 相位与电热耦合仍属于后续 gameplay/effect slice。
+1. `power_block` 的 energy budget 已作为首 tick 预算门槛进入 runtime，但仍未随 tick 持续扣减。
+2. 短路、材料熔断破坏、变压器、AC 相位仍属于后续 gameplay/effect slice。
+
+### 2026-05-18：Phase 7.F electric-to-thermal / power fuse 第一片
+
+已完成：
+
+1. `PowerSource` 新增 `load_current_amps`，并提供有效负载电流、过载判断和单 tick 能量估算。
+2. `FieldRuntime.ensure_conduction_path/1` 在通过材料导通预检后、创建 FieldRegion 前检查电源策略：
+   负载电流超过 `current_limit_amps` 会拒绝为 `current_limit_exceeded`，首 tick 估算能量超过
+   `energy_budget_joules` 会拒绝为 `energy_budget_exhausted`。
+3. `ConductionPathKernel` 保持 chunk-local path kernel 边界：它只刷新 electric/ionization layer，
+   并把导电路径上的焦耳热作为 `write_voxel_attribute(:temperature, heat_energy_joules)` effect
+   交给 chunk authority。
+4. `ChunkProcess.apply_field_effects/3` 扩展了温度 effect：同一个
+   `write_voxel_attribute(:temperature)` action 既可设置目标温度，也可按焦耳热增量写回温度 truth。
+5. Web CLI / HTTP 可操作入口扩展到
+   `voxel_conduct ... [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]`，
+   浏览器请求会把负载电流和 energy budget 透传到服务端。
+
+验证证据：
+
+```powershell
+mix.bat test apps/scene_server/test/scene_server/voxel/chunk_process_test.exs apps/scene_server/test/scene_server/voxel/field/conduction_path_kernel_test.exs apps/scene_server/test/scene_server/voxel/field/field_tick_worker_kernel_test.exs apps/scene_server/test/scene_server/voxel/field/field_runtime_test.exs apps/scene_server/test/scene_server/voxel/field/field_source_test.exs apps/auth_server/test/auth_server_web/controllers/ingame_controller_test.exs
+npm test -- src/presentation/devtools/devToolsCli.test.ts src/voxel/onlineVoxelWorldAdapter.test.ts
+```
+
+遗留：
+
+1. energy budget 仍未做 tick-by-tick 持续扣减，也没有持久化 source trip 状态。
+2. 材料过热后的融化、断线、掉落、damage/object 结算仍必须经 Phase 8 phenomenon/effect 边界实现。
+3. 当前 AC 仍只作为 source policy 透传，不模拟相位和频率对热/场的影响。
+
+### 2026-05-19：Phase 7.F 电热 GUI 热烟可视化第一片
+
+已完成：
+
+1. Web 客户端新增 `field/heatSmokeEffect.ts` 与 `field/heatSmokeRenderer.ts`：
+   导电路径的 `power_draw.estimated_tick_energy_joules` 不再表现为方块染色，而是转成
+   Field Overlay 内的灰色上升烟粒子。
+2. `FieldDebugOverlay` 新增 `setRegionHeatSmokeSource/2` 与 `updateSmoke/1`，
+   electric snapshot 到达时按活跃电场单元和焦耳热强度生成烟；`field_overlay` CLI
+   snapshot 会返回每个 region 的 `smokeParticles`，文本输出为 `smoke=N`。
+3. `OnlineVoxelWorldAdapter` 会把 `/ingame/voxel/conduct` 响应里的 `power_draw`
+   归一化到 `world:voxel-conduction-accepted.powerDraw`；bootstrap 在请求 accepted
+   后把 region 热量注册到渲染层，因此后续 field snapshot 才冒烟。
+
+验证证据：
+
+```powershell
+npm test -- src/voxel/field/fieldDebugOverlay.test.ts src/voxel/onlineVoxelWorldAdapter.test.ts src/presentation/devtools/devToolsCli.test.ts
+```
+
+业务边界：
+
+1. 热烟是客户端可视层，不是 voxel truth；温度 truth 仍由服务端 `write_voxel_attribute(:temperature)`
+   写回。
+2. 方块材质颜色不表达这条电热链路，避免把“发热效果”误认为“方块本体状态变色”。
 
 ### 2026-05-18：Phase 7.F 前置 electric source lifecycle 第一片
 

@@ -2523,40 +2523,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
       :temperature ->
         attrs =
           attrs
-          |> maybe_put_effect_alias(:target_temperature, [:target_value, :value])
           |> maybe_put_effect_alias(:macro, [:macro_index, :local_macro])
 
-        case build_temperature_attribute_storage(state.storage, attrs) do
-          {:ok, next_storage, summary} ->
-            next_state = %{state | storage: next_storage}
-
-            if summary.changed? do
-              push_snapshot_fallbacks(next_state, :field_effect_write)
-            end
-
-            result = %{
-              status: :applied,
-              action: :write_voxel_attribute,
-              attribute: :temperature,
-              macro_index: summary.macro_index,
-              target_value: summary.target_temperature,
-              changed?: summary.changed?,
-              chunk_version: next_storage.chunk_version
-            }
-
-            emit_field_effect_applied(next_state, result, context)
-            {result, next_state}
-
-          {:error, reason} ->
-            result = %{
-              status: :rejected,
-              action: :write_voxel_attribute,
-              attribute: :temperature,
-              reason: reason
-            }
-
-            emit_field_effect_rejected(state, result, context)
-            {result, state}
+        if fetch_optional(attrs, [:heat_energy_joules, :heat_joules, :energy_joules]) do
+          apply_heat_energy_attribute_effect(state, attrs, context)
+        else
+          attrs = maybe_put_effect_alias(attrs, :target_temperature, [:target_value, :value])
+          apply_target_temperature_attribute_effect(state, attrs, context)
         end
 
       unsupported ->
@@ -2565,6 +2538,78 @@ defmodule SceneServer.Voxel.ChunkProcess do
           action: :write_voxel_attribute,
           attribute: unsupported || :unknown,
           reason: :unsupported_field_effect_attribute
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_target_temperature_attribute_effect(state, attrs, context) do
+    case build_temperature_attribute_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :field_effect_write)
+        end
+
+        result = %{
+          status: :applied,
+          action: :write_voxel_attribute,
+          attribute: :temperature,
+          macro_index: summary.macro_index,
+          target_value: summary.target_temperature,
+          changed?: summary.changed?,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :write_voxel_attribute,
+          attribute: :temperature,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_heat_energy_attribute_effect(state, attrs, context) do
+    case build_heat_energy_attribute_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :field_effect_write)
+        end
+
+        result = %{
+          status: :applied,
+          action: :write_voxel_attribute,
+          attribute: :temperature,
+          macro_index: summary.macro_index,
+          target_value: summary.target_temperature,
+          heat_energy_joules: summary.heat_energy_joules,
+          temperature_delta: summary.temperature_delta,
+          changed?: summary.changed?,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :write_voxel_attribute,
+          attribute: :temperature,
+          reason: reason
         }
 
         emit_field_effect_rejected(state, result, context)

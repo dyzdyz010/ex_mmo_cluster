@@ -56,6 +56,7 @@ describe("DevToolsCli microgrid boundary", () => {
               chunkCoord: { cx: 0, cy: 0, cz: 0 },
               temperatureCells: 5,
               electricCells: 0,
+              smokeParticles: 12,
               maxTemperatureCelsius: 800,
               maxAbsTemperatureDeltaCelsius: 780,
               averageAbsTemperatureDeltaCelsius: 265.678,
@@ -74,6 +75,9 @@ describe("DevToolsCli microgrid boundary", () => {
     });
     expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
       text: expect.stringContaining("heat=maxT=800.0C maxDelta=780.0C avgDelta=265.7C"),
+    });
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      text: expect.stringContaining("smoke=12"),
     });
 
     expect(cli.executeCliCommand("field_overlay", ["off"])).toMatchObject({
@@ -221,6 +225,8 @@ describe("DevToolsCli microgrid boundary", () => {
         "240",
         "12.5",
         "60",
+        "6.25",
+        "5000",
       ]),
     ).toMatchObject({
       ok: true,
@@ -234,7 +240,14 @@ describe("DevToolsCli microgrid boundary", () => {
       120,
       "cli",
       90,
-      { outputMode: "ac", voltage: 240, currentLimitAmps: 12.5, frequencyHz: 60 },
+      {
+        outputMode: "ac",
+        voltage: 240,
+        currentLimitAmps: 12.5,
+        frequencyHz: 60,
+        loadCurrentAmps: 6.25,
+        energyBudgetJoules: 5000,
+      },
     );
   });
 
@@ -274,7 +287,7 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(cli.executeCliCommand("voxel_conduct", ["0", "1", "0"])).toMatchObject({
       ok: false,
       command: "voxel_conduct",
-      text: "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz]",
+      text: "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]",
     });
     expect(conductBetween).not.toHaveBeenCalled();
   });

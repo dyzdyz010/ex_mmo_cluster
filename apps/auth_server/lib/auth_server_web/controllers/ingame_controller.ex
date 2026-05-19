@@ -305,6 +305,12 @@ defmodule AuthServerWeb.IngameController do
           params["power_current_limit_amps"]
       )
 
+    load_current_amps =
+      parse_optional_non_negative_number(
+        params["load_current_amps"] || params["requested_current_amps"] ||
+          params["current_amps"] || params["power_load_current_amps"]
+      )
+
     frequency_hz =
       parse_optional_non_negative_number(params["frequency_hz"] || params["power_frequency_hz"])
 
@@ -329,6 +335,7 @@ defmodule AuthServerWeb.IngameController do
       |> maybe_put(:output_mode, output_mode)
       |> maybe_put(:voltage, voltage)
       |> maybe_put(:current_limit_amps, current_limit_amps)
+      |> maybe_put(:load_current_amps, load_current_amps)
       |> maybe_put(:frequency_hz, frequency_hz)
       |> maybe_put(:energy_budget_joules, energy_budget_joules)
 
@@ -381,6 +388,12 @@ defmodule AuthServerWeb.IngameController do
   defp voxel_conduct_error_status({:conduction_path_failed, :source_not_powered}),
     do: :unprocessable_entity
 
+  defp voxel_conduct_error_status({:conduction_path_failed, :current_limit_exceeded}),
+    do: :unprocessable_entity
+
+  defp voxel_conduct_error_status({:conduction_path_failed, :energy_budget_exhausted}),
+    do: :unprocessable_entity
+
   defp voxel_conduct_error_status({:conduction_path_failed, :target_not_conductive}),
     do: :unprocessable_entity
 
@@ -402,6 +415,12 @@ defmodule AuthServerWeb.IngameController do
 
   defp voxel_conduct_reason_code({:conduction_path_failed, :source_not_powered}),
     do: "source_not_powered"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :current_limit_exceeded}),
+    do: "current_limit_exceeded"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :energy_budget_exhausted}),
+    do: "energy_budget_exhausted"
 
   defp voxel_conduct_reason_code({:conduction_path_failed, :target_not_conductive}),
     do: "target_not_conductive"

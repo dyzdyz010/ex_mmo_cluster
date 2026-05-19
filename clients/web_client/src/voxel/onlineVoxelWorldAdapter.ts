@@ -1,4 +1,4 @@
-import type { AppEventBus } from "../shared/events/events";
+import type { AppEventBus, ElectricPowerDraw } from "../shared/events/events";
 import { VoxelConstants } from "./core/constants";
 import { chunkCoordKey, type FChunkCoord, type FMacroCoord, type FMicroCoord } from "./core/types";
 import {
@@ -721,6 +721,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         ...(powerSource?.frequencyHz !== undefined
           ? { frequency_hz: powerSource.frequencyHz }
           : {}),
+        ...(powerSource?.loadCurrentAmps !== undefined
+          ? { load_current_amps: powerSource.loadCurrentAmps }
+          : {}),
+        ...(powerSource?.energyBudgetJoules !== undefined
+          ? { energy_budget_joules: powerSource.energyBudgetJoules }
+          : {}),
       }),
     })
       .then(async (response) => {
@@ -732,6 +738,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       .then((payload) => {
         const regionId = String(payload["region_id"] ?? "none");
         const fieldRegionCreated = Boolean(payload["field_region_created"]);
+        const powerDraw = normalizePowerDraw(payload["power_draw"]);
         this.logger.emit("voxel", "conduction_ok", {
           logical_scene_id: this.logicalSceneId,
           source_coord: `${source.x},${source.y},${source.z}`,
@@ -741,6 +748,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
           created: String(payload["created"] ?? "unknown"),
           field_region_created: String(fieldRegionCreated),
           max_ticks: maxTicks,
+          power_draw: JSON.stringify(payload["power_draw"] ?? null),
+          heat_energy_joules_per_tick: String(powerDraw?.estimatedTickEnergyJoules ?? ""),
         });
         this.bus.emit("world:voxel-conduction-accepted", {
           sourceCoord: source,
@@ -749,6 +758,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
           source: "server",
           regionId,
           fieldRegionCreated,
+          ...(powerDraw ? { powerDraw } : {}),
         });
       })
       .catch((error) => {
@@ -1210,7 +1220,7 @@ async function responseErrorReason(response: Response, prefix: string): Promise<
     const code = String(payload["reason_code"] ?? payload["error"] ?? "unknown");
     const reason = String(payload["reason"] ?? "");
     return `${prefix}:${response.status}:${code}${reason ? `:${reason}` : ""}`;
-  } catch (_error) {
+  } catch {
     return `${prefix}:${response.status}`;
   }
 }
@@ -1229,6 +1239,40 @@ function seedSummary(payload: Record<string, unknown>): Record<string, unknown> 
     errors: source["errors"] ?? 0,
     maxChunkVersion: source["max_chunk_version"] ?? 0,
   };
+}
+
+function normalizePowerDraw(value: unknown): ElectricPowerDraw | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  const outputMode = normalizeOutputMode(source["output_mode"]);
+  const voltage = finiteNumber(source["voltage"]);
+  const currentLimitAmps = finiteNumber(source["current_limit_amps"]);
+  const frequencyHz = finiteNumber(source["frequency_hz"]);
+  const loadCurrentAmps = finiteNumber(source["load_current_amps"]);
+  const estimatedTickEnergyJoules = finiteNumber(source["estimated_tick_energy_joules"]);
+  const overCurrent =
+    typeof source["over_current"] === "boolean" ? source["over_current"] : undefined;
+
+  const result: ElectricPowerDraw = {
+    ...(outputMode ? { outputMode } : {}),
+    ...(voltage !== undefined ? { voltage } : {}),
+    ...(currentLimitAmps !== undefined ? { currentLimitAmps } : {}),
+    ...(frequencyHz !== undefined ? { frequencyHz } : {}),
+    ...(loadCurrentAmps !== undefined ? { loadCurrentAmps } : {}),
+    ...(estimatedTickEnergyJoules !== undefined ? { estimatedTickEnergyJoules } : {}),
+    ...(overCurrent !== undefined ? { overCurrent } : {}),
+  };
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeOutputMode(value: unknown): ElectricPowerDraw["outputMode"] | undefined {
+  return value === "dc" || value === "ac" || value === "pulse" ? value : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function normalizeInitialSubscriptions(

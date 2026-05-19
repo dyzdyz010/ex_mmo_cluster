@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildBlockStateView,
   getMaterialDefinition,
   listMaterialDefinitions,
   parseMaterialIdOrName,
+  resolveVoxelVisual,
   VoxelMaterialId,
 } from "./catalog";
 
@@ -17,5 +19,20 @@ describe("voxel material catalog", () => {
       flammable: false,
     });
     expect(listMaterialDefinitions().map((definition) => definition.name)).toContain("power_block");
+  });
+
+  it("does not tint the block body for plain heat", () => {
+    const base = getMaterialDefinition(VoxelMaterialId.Stone);
+    const visual = resolveVoxelVisual(
+      buildBlockStateView({
+        materialId: VoxelMaterialId.Stone,
+        stateFlags: 0,
+        health: base.maxHealth,
+        temperatureDelta: 80,
+        moistureDelta: 0,
+      }),
+    );
+
+    expect(visual.displayColor.getHex()).toBe(base.baseColorHex);
   });
 });

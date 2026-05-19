@@ -19,7 +19,10 @@ import {
   FieldDebugOverlay,
   type FieldDebugOverlaySnapshot,
 } from "../../voxel/field/fieldDebugOverlay";
-import type { VoxelFieldRegionDestroyedMessage, VoxelFieldRegionSnapshotMessage } from "../../infrastructure/net/voxelProtocol";
+import type {
+  VoxelFieldRegionDestroyedMessage,
+  VoxelFieldRegionSnapshotMessage,
+} from "../../infrastructure/net/voxelProtocol";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
 import type { RemotePlayerController } from "./remotePlayerController";
@@ -135,6 +138,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       this.debrisRenderer.syncFromSimulation();
     }
     this._drainFieldMessages();
+    this.fieldDebugOverlay.updateSmoke(dtMs);
     this.sceneHandles.render();
   }
 
@@ -212,9 +216,14 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     return this.fieldDebugOverlay.snapshot();
   }
 
+  setFieldHeatSmokeSource(regionId: number | string, heatEnergyJoulesPerTick: number): void {
+    this.fieldDebugOverlay.setRegionHeatSmokeSource(regionId, heatEnergyJoulesPerTick);
+  }
+
   dispose(): void {
     this.chunkRenderer.dispose();
     this.sceneRegionOverlay.dispose();
+    this.fieldDebugOverlay.dispose();
     this.sceneHandles.dispose();
     this.localAvatar.geometry.dispose();
     this.localAvatar.material.dispose();
@@ -434,7 +443,10 @@ function coordKey(coord: { x: number; y: number; z: number }): string {
   return `${coord.x},${coord.y},${coord.z}`;
 }
 
-function worldMicroCoordFromTarget(target: { macro: FMacroCoord; micro: FMicroCoord }): FMicroCoord {
+function worldMicroCoordFromTarget(target: {
+  macro: FMacroCoord;
+  micro: FMicroCoord;
+}): FMicroCoord {
   return {
     x: target.macro.x * VoxelConstants.MicroPerMacro + target.micro.x,
     y: target.macro.y * VoxelConstants.MicroPerMacro + target.micro.y,

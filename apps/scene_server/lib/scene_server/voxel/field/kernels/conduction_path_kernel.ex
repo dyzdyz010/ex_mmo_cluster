@@ -6,7 +6,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   deterministic, chunk-local channel. It reads `electric_conductivity` and
   `dielectric_strength` through the storage effective-attribute API, refreshes
   `:electric_potential` / `:ionization` layers inside the region AABB, and
-  returns no authoritative voxel or object side effects.
+  when a power source enables thermal coupling emits Joule-heat field effects
+  for the chunk authority to apply to voxel temperature truth.
   """
 
   @behaviour SceneServer.Voxel.Field.Kernel
@@ -89,7 +90,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
              source_value,
              opts
            ) do
-      {:cont, write_channel(region, path, source_value, opts), []}
+      {:cont, write_channel(region, path, source_value, opts),
+       conduction_heat_effects(path, source_value, context, opts)}
     else
       _ -> {:cont, refresh_empty_channel(region), []}
     end
@@ -300,6 +302,36 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     |> FieldRegion.put_layer(:ionization, ionization_layer)
   end
 
+  defp conduction_heat_effects(path, source_value, %KernelContext{} = context, opts) do
+    if thermal_coupling_enabled?(opts) do
+      path_length = max(length(path), 1)
+      voltage = voltage_for_heat(opts, source_value)
+      load_current_amps = load_current_amps_for_heat(opts)
+      joule_scale = thermal_coupling_float_opt(opts, :joule_scale, 1.0)
+      dt_seconds = max(context.dt_ms, 1) / 1000.0
+      heat_energy_joules = voltage * load_current_amps * dt_seconds * joule_scale / path_length
+
+      if heat_energy_joules > 0.0 do
+        Enum.map(path, fn macro_index ->
+          {:write_voxel_attribute,
+           %{
+             attribute: :temperature,
+             macro_index: macro_index,
+             heat_energy_joules: heat_energy_joules,
+             source: :electric_conduction,
+             voltage: voltage,
+             load_current_amps: load_current_amps,
+             dt_ms: context.dt_ms
+           }}
+        end)
+      else
+        []
+      end
+    else
+      []
+    end
+  end
+
   defp refresh_empty_channel(region) do
     region
     |> FieldRegion.put_layer(
@@ -336,6 +368,85 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
       [] -> {:error, :no_source}
     end
   end
+
+  defp thermal_coupling_enabled?(opts) do
+    case fetch_opt(opts, :thermal_coupling, nil) do
+      nil ->
+        false
+
+      false ->
+        false
+
+      %{} = coupling ->
+        fetch_opt(coupling, :enabled, true) not in [false, "false", 0]
+
+      _other ->
+        true
+    end
+  end
+
+  defp voltage_for_heat(opts, source_value) do
+    power_source = map_opt(opts, :power_source)
+
+    power_source
+    |> fetch_opt(:voltage, source_value)
+    |> non_negative_float(abs(source_value * 1.0))
+  end
+
+  defp load_current_amps_for_heat(opts) do
+    power_source = map_opt(opts, :power_source)
+
+    (fetch_opt(power_source, :load_current_amps, nil) ||
+       fetch_opt(power_source, :requested_current_amps, nil) ||
+       fetch_opt(power_source, :current_amps, nil) ||
+       fetch_opt(opts, :load_current_amps, nil) ||
+       fetch_opt(power_source, :current_limit_amps, nil) ||
+       1.0)
+    |> non_negative_float(1.0)
+  end
+
+  defp thermal_coupling_float_opt(opts, key, fallback) do
+    opts
+    |> map_opt(:thermal_coupling)
+    |> fetch_opt(key, fallback)
+    |> non_negative_float(fallback)
+  end
+
+  defp map_opt(opts, key) do
+    case fetch_opt(opts, key, %{}) do
+      %{} = map -> map
+      _other -> %{}
+    end
+  end
+
+  defp fetch_opt(%{} = map, key, default) do
+    cond do
+      Map.has_key?(map, key) ->
+        Map.fetch!(map, key)
+
+      is_atom(key) and Map.has_key?(map, Atom.to_string(key)) ->
+        Map.fetch!(map, Atom.to_string(key))
+
+      true ->
+        default
+    end
+  end
+
+  defp fetch_opt(_other, _key, default), do: default
+
+  defp non_negative_float(value, _fallback) when is_integer(value) and value >= 0,
+    do: value * 1.0
+
+  defp non_negative_float(value, _fallback) when is_float(value) and value >= 0, do: value
+
+  defp non_negative_float(value, fallback) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _other -> fallback
+    end
+  end
+
+  defp non_negative_float(_value, fallback), do: fallback
 
   defp target_macro_index(opts) do
     opts
