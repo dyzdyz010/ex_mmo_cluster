@@ -47,7 +47,7 @@ services:
 
   app:
     image: ${IMAGE_TAG}
-    hostname: app
+    hostname: app.ex-mmo-cluster.internal
     restart: unless-stopped
     depends_on:
       postgres:
@@ -68,7 +68,7 @@ services:
       DISABLE_CLUSTER: "false"
       CLUSTER_MULTICAST_IF: "0.0.0.0"
       RELEASE_DISTRIBUTION: name
-      RELEASE_NODE: app@app
+      RELEASE_NODE: app@app.ex-mmo-cluster.internal
     ports:
       # Host-side HTTP ports — bound to loopback so only host-side nginx can reach them.
       # Containers always listen on 20000/20001 (see environment overrides above).
@@ -80,7 +80,9 @@ services:
       # UDP fast lane for high-frequency movement packets.
       - "${GATE_UDP_PORT}:20003/udp"
     networks:
-      - internal
+      internal:
+        aliases:
+          - app.ex-mmo-cluster.internal
 
   scene:
     image: ${IMAGE_TAG}

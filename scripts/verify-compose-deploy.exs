@@ -12,10 +12,19 @@ defmodule VerifyComposeDeploy do
 
     checks = [
       {"compose defines scene service", contains?(compose, ~r/^  scene:\s*$/m)},
-      {"scene uses published image tag", contains?(compose, ~r/^    image:\s*\$\{IMAGE_TAG\}\s*$/m)},
+      {"scene uses published image tag",
+       contains?(compose, ~r/^    image:\s*\$\{IMAGE_TAG\}\s*$/m)},
       {"scene runs scene-only release", contains?(compose, ~r/ex_mmo_scene/)},
-      {"scene has no host port bindings", not contains?(compose, ~r/^  scene:[\s\S]*?^    ports:/m)},
-      {"env documents SCENE_SERVER_COUNT", contains?(env_example, ~r/^SCENE_SERVER_COUNT=\d+\s*$/m)},
+      {"scene has no host port bindings",
+       not contains?(compose, ~r/^  scene:[\s\S]*?^    ports:/m)},
+      {"app release node is not pinned to Docker short hostname",
+       not contains?(compose, ~r/RELEASE_NODE:\s*app@app\s*$/m)},
+      {"app release node uses a long-name FQDN",
+       contains?(compose, ~r/RELEASE_NODE:\s*app@app\.[a-z0-9-]+\.internal\b/)},
+      {"app FQDN is published as a network alias",
+       contains?(compose, ~r/aliases:\s*\n\s+- app\.[a-z0-9-]+\.internal\b/)},
+      {"env documents SCENE_SERVER_COUNT",
+       contains?(env_example, ~r/^SCENE_SERVER_COUNT=\d+\s*$/m)},
       {"umbrella defines ex_mmo_scene release", contains?(mix, ~r/ex_mmo_scene:\s*\[/)}
     ]
 

@@ -15,6 +15,9 @@
 `app` 使用镜像内的 `ex_mmo_cluster` release，启动 edge/world/data 等控制面与入口服务。
 `scene` 使用同一镜像内的 `ex_mmo_scene` release，只启动 scene runtime；不要给 `scene`
 绑定宿主机端口，这样才能通过 Compose 扩容多个副本。
+`app` 的 BEAM 节点名固定为 `app@app.ex-mmo-cluster.internal`，并通过 Compose 网络 alias
+发布同名地址，避免 Erlang long-name 模式把 Docker 短主机名 `app` 判定为非法 hostname。
+`scene` 节点继续在启动时用容器 IP 生成 long-name，以便同一服务可横向扩容。
 
 生产服务器当前约定部署目录为 `/data/ex_mmo_cluster`。`docker-compose.yml` 内部固定让 release
 监听容器端口 `20000/20001/20002/20003`；`.env` 中的 `AUTH_PORT`、`VISUALIZE_PORT`、
