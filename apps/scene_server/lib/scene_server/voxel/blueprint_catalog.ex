@@ -13,6 +13,10 @@ defmodule SceneServer.Voxel.BlueprintCatalog do
     1. `builtin_sphere`     (material Ice = 4):球体,居中半径 ≈ 3.9 micro
     2. `builtin_cylinder`   (material Stone = 2):z 轴圆柱,半径同上
     3. `builtin_stairs`     (material Wood = 3):y ≤ x 阶梯
+    4. `builtin_conductor_wire_x` (material Iron = 5):2×2 导线贯穿 x 轴
+    5. `builtin_conductor_junction_xz` (material Iron = 5):x/z 平面十字接线节点
+    6. `builtin_power_terminal_x` (material PowerBlock = 6):2×2 电源端子贯穿 x 轴
+    7. `builtin_load_terminal_x` (material LoadBlock = 7):2×2 负载端子贯穿 x 轴
 
   Out of scope for v2:
 
@@ -85,6 +89,28 @@ defmodule SceneServer.Voxel.BlueprintCatalog do
                      z * @micro_resolution * @micro_resolution
                  end)
 
+  @conductor_wire_x_slots (for x <- 0..(@micro_resolution - 1),
+                               y <- 3..4,
+                               z <- 3..4 do
+                             x + y * @micro_resolution +
+                               z * @micro_resolution * @micro_resolution
+                           end)
+
+  @conductor_junction_xz_slots ((for x <- 0..(@micro_resolution - 1),
+                                     y <- 3..4,
+                                     z <- 3..4 do
+                                   x + y * @micro_resolution +
+                                     z * @micro_resolution * @micro_resolution
+                                 end) ++
+                                  (for x <- 3..4,
+                                       y <- 3..4,
+                                       z <- 0..(@micro_resolution - 1) do
+                                     x + y * @micro_resolution +
+                                       z * @micro_resolution * @micro_resolution
+                                   end))
+                               |> Enum.uniq()
+                               |> Enum.sort()
+
   @blueprints %{
     1 => %{
       id: 1,
@@ -106,6 +132,34 @@ defmodule SceneServer.Voxel.BlueprintCatalog do
       version: @blueprint_version,
       material_id: 3,
       occupied_slots: @stairs_slots
+    },
+    4 => %{
+      id: 4,
+      name: "builtin_conductor_wire_x",
+      version: @blueprint_version,
+      material_id: 5,
+      occupied_slots: @conductor_wire_x_slots
+    },
+    5 => %{
+      id: 5,
+      name: "builtin_conductor_junction_xz",
+      version: @blueprint_version,
+      material_id: 5,
+      occupied_slots: @conductor_junction_xz_slots
+    },
+    6 => %{
+      id: 6,
+      name: "builtin_power_terminal_x",
+      version: @blueprint_version,
+      material_id: 6,
+      occupied_slots: @conductor_wire_x_slots
+    },
+    7 => %{
+      id: 7,
+      name: "builtin_load_terminal_x",
+      version: @blueprint_version,
+      material_id: 7,
+      occupied_slots: @conductor_wire_x_slots
     }
   }
 

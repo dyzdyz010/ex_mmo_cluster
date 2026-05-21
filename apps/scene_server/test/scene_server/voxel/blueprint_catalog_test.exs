@@ -13,7 +13,7 @@ defmodule SceneServer.Voxel.BlueprintCatalogTest do
     blueprints = BlueprintCatalog.all()
     ids = Enum.map(blueprints, & &1.id)
 
-    assert ids == [1, 2, 3]
+    assert ids == [1, 2, 3, 4, 5, 6, 7]
 
     Enum.each(blueprints, fn blueprint ->
       assert blueprint.version == @blueprint_version
@@ -55,9 +55,31 @@ defmodule SceneServer.Voxel.BlueprintCatalogTest do
     assert length(blueprint.occupied_slots) == 288
   end
 
+  test "fetch/1 resolves conductive prefab blueprints" do
+    assert {:ok, wire} = BlueprintCatalog.fetch(4)
+    assert wire.name == "builtin_conductor_wire_x"
+    assert wire.material_id == 5
+    assert length(wire.occupied_slots) == 32
+
+    assert {:ok, junction} = BlueprintCatalog.fetch(5)
+    assert junction.name == "builtin_conductor_junction_xz"
+    assert junction.material_id == 5
+    assert length(junction.occupied_slots) == 56
+
+    assert {:ok, terminal} = BlueprintCatalog.fetch(6)
+    assert terminal.name == "builtin_power_terminal_x"
+    assert terminal.material_id == 6
+    assert length(terminal.occupied_slots) == 32
+
+    assert {:ok, load_terminal} = BlueprintCatalog.fetch(7)
+    assert load_terminal.name == "builtin_load_terminal_x"
+    assert load_terminal.material_id == 7
+    assert length(load_terminal.occupied_slots) == 32
+  end
+
   test "fetch/1 rejects unknown blueprint ids" do
     assert {:error, :unknown_blueprint} = BlueprintCatalog.fetch(0)
-    assert {:error, :unknown_blueprint} = BlueprintCatalog.fetch(4)
+    assert {:error, :unknown_blueprint} = BlueprintCatalog.fetch(8)
     assert {:error, :unknown_blueprint} = BlueprintCatalog.fetch(9_999)
   end
 

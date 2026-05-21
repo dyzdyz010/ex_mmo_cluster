@@ -10,6 +10,7 @@ defmodule AuthServerWeb.IngameControllerTest do
 
   @iron_material_id 5
   @power_block_material_id 6
+  @load_block_material_id 7
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:world_server)
@@ -176,7 +177,9 @@ defmodule AuthServerWeb.IngameControllerTest do
              "current_limit_amps" => 12.5,
              "energy_budget_joules" => 5000.0,
              "estimated_tick_energy_joules" => 150.0,
+             "frequency_hz" => 60.0,
              "load_current_amps" => 6.25,
+             "output_mode" => "ac",
              "voltage" => 240.0
            }
 
@@ -191,6 +194,61 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["source_potential"] == 240.0
     assert body["source_world_macro"] == %{"x" => 0, "y" => 1, "z" => 0}
     assert body["target_world_macro"] == %{"x" => 3, "y" => 1, "z" => 0}
+  end
+
+  test "POST /ingame/voxel/auto_circuit refreshes a target-free current field", %{conn: conn} do
+    logical_scene_id = 82_250 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    for {coord, material_id} <- [
+          {{0, 0, 0}, @power_block_material_id},
+          {{1, 0, 0}, @iron_material_id},
+          {{2, 0, 0}, @load_block_material_id}
+        ] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
+    end
+
+    conn =
+      post(conn, ~p"/ingame/voxel/auto_circuit", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0,
+        "max_ticks" => 90
+      })
+
+    body = json_response(conn, 200)
+    assert body["field_types"] == ["electric_potential", "electric_current", "ionization"]
+    assert is_boolean(body["field_region_created"])
+    assert body["source_count"] == 1
+    assert body["load_count"] == 1
+    assert body["waiting_for_load"] == false
+
+    assert body["power_draw"] == %{
+             "current_limit_amps" => 20.0,
+             "energy_budget_joules" => nil,
+             "estimated_tick_energy_joules" => 240.0,
+             "frequency_hz" => nil,
+             "load_current_amps" => 20.0,
+             "output_mode" => "dc",
+             "voltage" => 120.0
+           }
   end
 
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",

@@ -19,6 +19,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @ice_material_id 4
   @iron_material_id 5
   @power_block_material_id 6
+  @electric_load_material_id 7
 
   @power_source_defaults %{
     output_mode: :dc,
@@ -93,6 +94,17 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(12.0 * @fixed32_scale),
       "dielectric_strength" => 0
+    },
+    @electric_load_material_id => %{
+      "density" => round(7_870.0 * @fixed32_scale),
+      "thermal_conductivity" => round(65.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(520.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_450.0 * @fixed32_scale),
+      "freezing_point" => round(1_450.0 * @fixed32_scale),
+      "boiling_point" => round(2_700.0 * @fixed32_scale),
+      "electric_conductivity" => round(8.0 * @fixed32_scale),
+      "dielectric_strength" => 0
     }
   }
 
@@ -103,6 +115,14 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @doc "Returns true when a material id represents a physical power block."
   @spec power_source_material?(term()) :: boolean()
   def power_source_material?(material_id), do: material_id == @power_block_material_id
+
+  @doc "Returns the append-only material id for a physical electric load/sink block."
+  @spec electric_load_material_id() :: pos_integer()
+  def electric_load_material_id, do: @electric_load_material_id
+
+  @doc "Returns true when a material id represents a circuit load/sink."
+  @spec electric_load_material?(term()) :: boolean()
+  def electric_load_material?(material_id), do: material_id == @electric_load_material_id
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{

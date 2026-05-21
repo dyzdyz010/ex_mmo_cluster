@@ -125,7 +125,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert SceneNodeRegistry.lookup_assignment(registry, 890_001) == {:ok, scene_node}
   end
 
-  test "seeds the 16x16 starter platform through chunk_directory.apply_intent" do
+  test "seeds the starter platform and demo circuit through chunk_directory.apply_intent" do
     token_store = start_supervised!(WriteTokenStore)
     ledger_name = :"dev_seed_terrain_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
@@ -145,26 +145,48 @@ defmodule WorldServer.Voxel.DevSeedTest do
     terrain = created.terrain
     assert terrain != nil
     assert terrain.chunk_coord == [0, 0, 0]
-    assert terrain.attempted == 256
-    assert terrain.written == 256
+    assert terrain.attempted == 266
+    assert terrain.platform_attempted == 256
+    assert terrain.demo_circuit_attempted == 10
+    assert terrain.written == 266
     assert terrain.errors == 0
 
     calls = FakeChunkDirectory.calls(fake_dir)
-    assert length(calls) == 256
+    assert length(calls) == 266
 
     macros = calls |> Enum.map(& &1.macro) |> MapSet.new()
 
-    expected_macros =
+    expected_platform_macros =
       for mx <- 0..15, mz <- 0..15, into: MapSet.new(), do: {mx, 0, mz}
 
-    assert macros == expected_macros
+    expected_circuit_materials = %{
+      {6, 1, 6} => 6,
+      {7, 1, 6} => 5,
+      {8, 1, 6} => 7,
+      {9, 1, 6} => 5,
+      {9, 1, 7} => 5,
+      {9, 1, 8} => 5,
+      {8, 1, 8} => 5,
+      {7, 1, 8} => 5,
+      {6, 1, 8} => 5,
+      {6, 1, 7} => 5
+    }
+
+    assert MapSet.subset?(expected_platform_macros, macros)
+    assert MapSet.subset?(expected_circuit_materials |> Map.keys() |> MapSet.new(), macros)
 
     Enum.each(calls, fn attrs ->
       assert attrs.logical_scene_id == 91
       assert attrs.chunk_coord == {0, 0, 0}
       assert attrs.operation == :put_solid_block
       assert attrs.lease.lease_id == created.lease_id
-      assert attrs.block.material_id == 1
+    end)
+
+    calls_by_macro = Map.new(calls, fn attrs -> {attrs.macro, attrs.block.material_id} end)
+    Enum.each(expected_platform_macros, &assert(calls_by_macro[&1] == 1))
+
+    Enum.each(expected_circuit_materials, fn {macro, material_id} ->
+      assert calls_by_macro[macro] == material_id
     end)
   end
 

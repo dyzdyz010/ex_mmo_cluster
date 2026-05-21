@@ -131,6 +131,22 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only automatic circuit hook.
+
+  Creates or refreshes a target-free circuit field on the selected chunk. The
+  scene kernel decides whether current exists from source/load topology.
+  """
+  def voxel_auto_circuit(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_auto_circuit(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -353,6 +369,50 @@ defmodule AuthServerWeb.IngameController do
           reason: inspect(reason),
           reason_code: voxel_conduct_reason_code(reason)
         })
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
+  defp do_voxel_auto_circuit(conn, params) do
+    module = Module.concat([WorldServer, Voxel, DevFieldSeed])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    world_macro = parse_world_macro(params)
+    max_ticks = parse_non_negative_int(params["max_ticks"], 600)
+
+    voltage =
+      parse_optional_non_negative_number(
+        params["voltage"] || params["source_voltage"] || params["source_potential"]
+      )
+
+    current_limit_amps =
+      parse_optional_non_negative_number(
+        params["current_limit_amps"] || params["current_limit"] ||
+          params["power_current_limit_amps"]
+      )
+
+    auto_opts =
+      [
+        logical_scene_id: logical_scene_id,
+        world_macro: world_macro,
+        max_ticks: max_ticks
+      ]
+      |> maybe_put(:voltage, voltage)
+      |> maybe_put(:current_limit_amps, current_limit_amps)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <- apply(module, :ensure_auto_circuit, [auto_opts]) do
+      voxel_json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel auto circuit failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "voxel_auto_circuit_failed", reason: inspect(reason)})
 
       _other ->
         conn

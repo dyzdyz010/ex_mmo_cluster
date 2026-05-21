@@ -10,9 +10,9 @@ defmodule SceneServer.Voxel.Field.FieldRegion do
 
   alias SceneServer.Voxel.Field.FieldLayer
 
-  @field_types [:temperature, :electric_potential, :ionization]
+  @field_types [:temperature, :electric_potential, :electric_current, :ionization]
 
-  @type field_type :: :temperature | :electric_potential | :ionization
+  @type field_type :: :temperature | :electric_potential | :electric_current | :ionization
   @type chunk_coord :: {integer(), integer(), integer()}
   @type local_macro :: {0..15, 0..15, 0..15}
   @type aabb :: {local_macro(), local_macro()}

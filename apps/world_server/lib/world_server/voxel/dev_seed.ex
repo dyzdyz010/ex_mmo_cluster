@@ -14,6 +14,8 @@ defmodule WorldServer.Voxel.DevSeed do
   - 16 × 16 stone platform at chunk `(0, 0, 0)`, y macro layer 0.
   - Platform fills every macro cell `{mx, 0, mz}` for `mx,mz in 0..15`,
     covering browser world X/Z `[0, 128)` and vertical Y `[0, 8)`.
+  - A small source-conductor-load demo circuit sits one macro above the
+    platform so first browser load can verify automatic current overlays.
 
   All writes go through `SceneServer.Voxel.ChunkDirectory.apply_intents/2` —
   the exact same path used by `0x64 VoxelImpactIntent` from clients — using
@@ -46,6 +48,18 @@ defmodule WorldServer.Voxel.DevSeed do
   @platform_chunk {0, 0, 0}
   @platform_y_macro 0
   @platform_material_id 1
+  @demo_circuit_blocks [
+    {{6, 1, 6}, 6},
+    {{7, 1, 6}, 5},
+    {{8, 1, 6}, 7},
+    {{9, 1, 6}, 5},
+    {{9, 1, 7}, 5},
+    {{9, 1, 8}, 5},
+    {{8, 1, 8}, 5},
+    {{7, 1, 8}, 5},
+    {{6, 1, 8}, 5},
+    {{6, 1, 7}, 5}
+  ]
 
   @doc """
   Ensures the default browser-development region has a current lease and that
@@ -279,10 +293,9 @@ defmodule WorldServer.Voxel.DevSeed do
     # through `NormalBlockData.normalize!/1`. We pass the map directly instead
     # of constructing a struct so this module stays decoupled from
     # `SceneServer.Voxel.NormalBlockData`.
-    block = %{material_id: @platform_material_id, health: 100}
     chunk_coord = @platform_chunk
 
-    intents =
+    platform_intents =
       for mx <- 0..(@chunk_size_in_macro - 1),
           mz <- 0..(@chunk_size_in_macro - 1) do
         local_macro = {mx, @platform_y_macro, mz}
@@ -293,9 +306,23 @@ defmodule WorldServer.Voxel.DevSeed do
           lease: lease,
           operation: :put_solid_block,
           macro: local_macro,
-          block: block
+          block: %{material_id: @platform_material_id, health: 100}
         }
       end
+
+    circuit_intents =
+      Enum.map(@demo_circuit_blocks, fn {local_macro, material_id} ->
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: chunk_coord,
+          lease: lease,
+          operation: :put_solid_block,
+          macro: local_macro,
+          block: %{material_id: material_id, health: 100}
+        }
+      end)
+
+    intents = platform_intents ++ circuit_intents
 
     case GenServer.call(chunk_directory, {:apply_intents, intents}, 30_000) do
       {:ok, reply} ->
@@ -305,6 +332,8 @@ defmodule WorldServer.Voxel.DevSeed do
           errors: 0,
           max_chunk_version: Map.get(reply, :chunk_version, 0),
           attempted: length(intents),
+          platform_attempted: length(platform_intents),
+          demo_circuit_attempted: length(circuit_intents),
           chunk_coord: Tuple.to_list(chunk_coord)
         }
 
@@ -315,6 +344,8 @@ defmodule WorldServer.Voxel.DevSeed do
           errors: 1,
           max_chunk_version: 0,
           attempted: length(intents),
+          platform_attempted: length(platform_intents),
+          demo_circuit_attempted: length(circuit_intents),
           chunk_coord: Tuple.to_list(chunk_coord),
           error: inspect(reason)
         }

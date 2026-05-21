@@ -22,6 +22,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   }
 
   alias SceneServer.Voxel.Field.FieldSource
+  alias SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.ParticipantProjection
@@ -125,6 +126,103 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     |> Map.put(:cleanup_on_ignore, true)
     |> Map.merge(FieldSource.temperature_runtime_attrs(field_source))
     |> ensure_temperature_anomaly()
+  end
+
+  @doc """
+  Creates or refreshes a chunk-local automatic circuit field.
+
+  The region is source-owned at the chunk level, not by an explicit target:
+  every tick reads current voxel truth, projects power-source/load/conductor
+  participants, and only writes current when a source-load connected component
+  exists.
+  """
+  @spec ensure_auto_circuit(keyword() | map()) :: {:ok, map()} | {:error, term()}
+  def ensure_auto_circuit(opts \\ []) do
+    opts = opts_map(opts)
+
+    logical_scene_id =
+      non_negative_int(get_any(opts, [:logical_scene_id], @default_logical_scene_id))
+
+    world_macro = world_macro_coord(opts)
+    {chunk_coord, _local_macro} = Types.chunk_and_local_macro!(world_macro)
+    source_key = {:auto_circuit, logical_scene_id, chunk_coord}
+    aabb = full_chunk_aabb()
+    max_ticks = auto_circuit_max_ticks(opts)
+
+    with {:ok, chunk_pid} <-
+           ChunkDirectory.ensure_chunk(%{
+             logical_scene_id: logical_scene_id,
+             chunk_coord: chunk_coord,
+             lease: get_any(opts, [:lease, :lease_token], nil)
+           }) do
+      %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+      projection = ParticipantProjection.build(storage)
+      source_points = auto_circuit_source_points(projection, aabb, opts)
+      load_count = auto_circuit_role_count(projection, aabb, :load)
+      power_source = auto_circuit_power_source(opts)
+
+      base_summary = %{
+        logical_scene_id: logical_scene_id,
+        world_macro: coord_map(world_macro),
+        chunk_coord: coord_map(chunk_coord),
+        source_key: source_key,
+        field_types: ["electric_potential", "electric_current", "ionization"],
+        max_ticks: max_ticks,
+        source_count: length(source_points),
+        load_count: load_count
+      }
+
+      cond do
+        source_points == [] ->
+          {:ok, cleanup} =
+            ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
+
+          {:ok,
+           base_summary
+           |> Map.put(:created, false)
+           |> Map.put(:field_region_created, false)
+           |> Map.put(:reason, :no_power_source)
+           |> Map.put(:field_region_cleanup, cleanup)}
+
+        load_count == 0 ->
+          {:ok, cleanup} =
+            ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
+
+          {:ok,
+           base_summary
+           |> Map.put(:created, false)
+           |> Map.put(:field_region_created, false)
+           |> Map.put(:waiting_for_load, false)
+           |> Map.put(:reason, :no_load)
+           |> Map.put(:field_region_cleanup, cleanup)}
+
+        true ->
+          region_attrs = %{
+            chunk_coord: chunk_coord,
+            aabb: aabb,
+            kernels: [auto_circuit_kernel_spec(opts)],
+            source_points: source_points,
+            max_ticks: max_ticks,
+            source_points_mode: :replace,
+            source_key: source_key
+          }
+
+          with {:ok, field_region} <- ChunkProcess.ensure_field_region(chunk_pid, region_attrs) do
+            {:ok,
+             base_summary
+             |> Map.put(:created, true)
+             |> Map.put(:waiting_for_load, load_count == 0)
+             |> Map.put(:region_id, field_region.region_id)
+             |> Map.put(:field_region_created, field_region.created?)
+             |> Map.put(:source_points_action, field_region.source_points_action)
+             |> Map.put(:power_draw, power_observe_fields(power_source))}
+          end
+      end
+    end
+  rescue
+    error -> {:error, {:auto_circuit_failed, error}}
+  catch
+    kind, reason -> {:error, {:auto_circuit_failed, kind, reason}}
   end
 
   @doc """
@@ -1085,8 +1183,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
 
   defp power_observe_fields(%PowerSource{} = power_source) do
     %{
+      output_mode: power_source.output_mode,
       voltage: power_source.voltage,
       current_limit_amps: power_source.current_limit_amps,
+      frequency_hz: power_source.frequency_hz,
       load_current_amps: PowerSource.effective_load_current_amps(power_source),
       energy_budget_joules: power_source.energy_budget_joules,
       estimated_tick_energy_joules:
@@ -1295,6 +1395,87 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       module: TemperatureDiffusionKernel,
       opts: physical_temperature_kernel_opts()
     }
+  end
+
+  defp auto_circuit_kernel_spec(opts) do
+    %{
+      id: :circuit_current,
+      module: CircuitCurrentKernel,
+      opts: %{
+        current_limit_amps:
+          non_negative_float(
+            get_any(
+              opts,
+              [:current_limit_amps],
+              MaterialCatalog.power_source_defaults().current_limit_amps
+            )
+          )
+      }
+    }
+  end
+
+  defp auto_circuit_power_source(opts) do
+    defaults = MaterialCatalog.power_source_defaults()
+
+    PowerSource.normalize(%{
+      output_mode: :dc,
+      voltage:
+        get_any(
+          opts,
+          [:voltage, :source_voltage, :source_potential],
+          defaults.voltage
+        ),
+      current_limit_amps:
+        get_any(
+          opts,
+          [:current_limit_amps],
+          defaults.current_limit_amps
+        )
+    })
+  end
+
+  defp auto_circuit_max_ticks(opts) do
+    case get_any(opts, [:ttl_ticks, :ttl], nil) do
+      nil -> nil
+      value -> non_negative_int(value)
+    end
+  end
+
+  defp auto_circuit_source_points(projection, aabb, opts) do
+    voltage =
+      non_negative_float(
+        get_any(
+          opts,
+          [:voltage, :source_voltage, :source_potential],
+          MaterialCatalog.power_source_defaults().voltage
+        )
+      )
+
+    aabb
+    |> aabb_macro_indices()
+    |> Enum.filter(&ParticipantProjection.electric_role?(projection, &1, :source))
+    |> Enum.map(fn macro_index ->
+      %{
+        macro_index: macro_index,
+        field_type: :electric_potential,
+        source_mode: :persistent,
+        value: voltage
+      }
+    end)
+  end
+
+  defp auto_circuit_role_count(projection, aabb, role) do
+    aabb
+    |> aabb_macro_indices()
+    |> Enum.count(&ParticipantProjection.electric_role?(projection, &1, role))
+  end
+
+  defp full_chunk_aabb, do: {{0, 0, 0}, {15, 15, 15}}
+
+  defp aabb_macro_indices({{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
+    for x <- min_x..max_x, y <- min_y..max_y, z <- min_z..max_z do
+      Types.macro_index!({x, y, z})
+    end
   end
 
   defp conduction_max_ticks(decay_policy) do

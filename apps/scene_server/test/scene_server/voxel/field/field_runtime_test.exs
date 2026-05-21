@@ -31,6 +31,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   @dirt_material_id 1
   @iron_material_id 5
   @power_block_material_id 6
+  @load_block_material_id 7
 
   defp solid_storage_with_temperature_delta(world_macro, delta_celsius) do
     {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
@@ -873,6 +874,59 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
     end
 
+    test "source lease revoke cleans up the linked cross-chunk target shard" do
+      logical_scene_id = 76_070 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 target_chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert summary.cross_chunk == true
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+
+      assert {:ok, _lease} =
+               ChunkProcess.apply_lease(
+                 source_chunk_pid,
+                 lease(logical_scene_id, region_id: 9, lease_id: 1, owner_epoch: 1)
+               )
+
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+    end
+
     test "cross-chunk boundary preflight rejects a non-conductive neighbor before region allocation" do
       with_observe_log(fn observe_log ->
         logical_scene_id = 76_075 + System.unique_integer([:positive])
@@ -1249,6 +1303,117 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
     end
   end
 
+  describe "ensure_auto_circuit/1" do
+    test "reuses authority-started auto circuit region and emits closed source-load current" do
+      logical_scene_id = 77_000 + System.unique_integer([:positive])
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk_pid, self(), request_id: 770)
+      assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+      for {coord, material_id} <- closed_loop_blocks() do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
+      end
+
+      assert_receive {:voxel_field_region_snapshot_payload, payload}, 1_000
+      assert ChunkProcess.debug_state(chunk_pid).field_region_count == 1
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_auto_circuit(
+                 logical_scene_id: logical_scene_id,
+                 world_macro: {0, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert summary.created == true
+      assert summary.field_region_created == false
+      assert summary.field_types == ["electric_potential", "electric_current", "ionization"]
+      assert summary.max_ticks == nil
+      assert summary.source_count == 1
+      assert summary.load_count == 1
+      assert summary.waiting_for_load == false
+      assert summary.power_draw.output_mode == :dc
+      assert summary.power_draw.voltage == 120.0
+      assert summary.power_draw.current_limit_amps == 20.0
+      assert summary.power_draw.load_current_amps == 20.0
+      assert summary.power_draw.estimated_tick_energy_joules == 240.0
+
+      decoded = FieldCodec.decode_snapshot_payload!(payload)
+
+      assert Bitwise.band(decoded.field_mask, FieldCodec.field_mask_electric_current()) != 0
+
+      assert decoded.macro_indices == closed_loop_macro_indices()
+
+      assert Enum.all?(decoded.electric_current_values, &(&1 > 0.0))
+    end
+
+    test "keeps auto circuit regions topology-bound instead of expiring as a pulse" do
+      logical_scene_id = 77_050 + System.unique_integer([:positive])
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      for {coord, material_id} <- closed_loop_blocks() do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
+      end
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_auto_circuit(
+                 logical_scene_id: logical_scene_id,
+                 world_macro: {0, 0, 0},
+                 max_ticks: 1
+               )
+
+      assert summary.max_ticks == nil
+
+      Process.sleep(250)
+
+      assert ChunkProcess.debug_state(chunk_pid).field_region_count == 1
+    end
+
+    test "does not keep an auto circuit worker alive when no load exists" do
+      logical_scene_id = 77_100 + System.unique_integer([:positive])
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 {0, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_auto_circuit(
+                 logical_scene_id: logical_scene_id,
+                 world_macro: {0, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert summary.created == false
+      assert summary.field_region_created == false
+      assert summary.source_count == 1
+      assert summary.load_count == 0
+      assert summary.waiting_for_load == false
+      assert summary.reason == :no_load
+      assert ChunkProcess.debug_state(chunk_pid).field_region_count == 0
+    end
+  end
+
   describe "build_temperature_anomaly/1" do
     test "builds a kernel-first local temperature field from the voxel stored temperature" do
       world_macro = {-1, 16, 17}
@@ -1495,5 +1660,39 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
     Enum.reduce(1..ticks, region, fn _, acc ->
       TemperatureField.tick(acc, storage, kernel_opts)
     end)
+  end
+
+  defp closed_loop_blocks do
+    [
+      {{0, 0, 0}, @power_block_material_id},
+      {{1, 0, 0}, @iron_material_id},
+      {{2, 0, 0}, @load_block_material_id},
+      {{2, 1, 0}, @iron_material_id},
+      {{2, 2, 0}, @iron_material_id},
+      {{1, 2, 0}, @iron_material_id},
+      {{0, 2, 0}, @iron_material_id},
+      {{0, 1, 0}, @iron_material_id}
+    ]
+  end
+
+  defp closed_loop_macro_indices do
+    closed_loop_blocks()
+    |> Enum.map(fn {coord, _material_id} -> Types.macro_index!(coord) end)
+    |> Enum.sort()
+  end
+
+  defp lease(logical_scene_id, overrides) do
+    base = %{
+      logical_scene_id: logical_scene_id,
+      region_id: 1,
+      lease_id: 1,
+      owner_scene_instance_ref: 1,
+      owner_epoch: 1,
+      bounds_chunk_min: {0, 0, 0},
+      bounds_chunk_max: {0, 0, 0},
+      expires_at_ms: System.system_time(:millisecond) + 60_000
+    }
+
+    Map.merge(base, Map.new(overrides))
   end
 end

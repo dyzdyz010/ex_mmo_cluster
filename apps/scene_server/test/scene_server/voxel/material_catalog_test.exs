@@ -22,4 +22,12 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
              energy_budget_joules: 20_000.0
            }
   end
+
+  test "load block material is append-only and electrically conductive" do
+    material_id = MaterialCatalog.electric_load_material_id()
+
+    assert material_id == 7
+    assert MaterialCatalog.electric_load_material?(material_id)
+    assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
+  end
 end

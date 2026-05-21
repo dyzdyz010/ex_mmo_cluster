@@ -1197,6 +1197,12 @@ breakdown / 熔断破坏结算。
   温度 truth；ttl 到期会走 worker expiry -> source lifecycle cleanup -> 0x74 fanout，避免一次
   导电来源永久残留在 chunk runtime。导电预检失败和电源过载失败都会写结构化 observe，搜索预算
   耗尽、电流超限等内部原因不会被外部兼容错误码吞掉。
+- 自动电路不再把“source 与 load 在同一导电连通分量”当作有效回路。`CircuitComponentAnalysis`
+  先把 solid / refined / prefab 的导电面投影成 segment graph，再取 graph 2-core 作为闭合环路
+  核心；`CircuitCurrentKernel` 只有在 source 与 load 都位于同一个闭环核心上时才写
+  `electric_current` / `electric_potential` / `ionization`。断开闭环上的任意导体后，
+  worker 保留 topology watcher，但下一次 field snapshot 会把三层清零，浏览器 overlay
+  应显示 `currentCells=0`。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；
@@ -1221,7 +1227,7 @@ logical_scene_id: u64  big-endian
 cx/cy/cz:        i32 × 3  big-endian
 region_id:       u64  big-endian
 tick_count:      u32  big-endian
-field_mask:      u8   (0x01=temperature / 0x02=electric_potential / 0x04=ionization)
+field_mask:      u8   (0x01=temperature / 0x02=electric_potential / 0x04=ionization / 0x08=electric_current)
 cell_count:      u16  big-endian
 macro_indices[]: u16  big-endian × cell_count
 temperature[]:   f32  little-endian × cell_count  (若 field_mask & 0x01)

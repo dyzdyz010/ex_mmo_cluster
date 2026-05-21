@@ -1,11 +1,13 @@
 defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
   use ExUnit.Case, async: true
 
-  alias SceneServer.Voxel.{AttributeCatalog, NormalBlockData, Storage, Types}
+  alias SceneServer.Voxel.{AttributeCatalog, BlueprintCatalog, NormalBlockData, Storage, Types}
   alias SceneServer.Voxel.Field.ParticipantProjection
 
   @iron 5
   @wood 3
+  @power_block 6
+  @load_block 7
 
   setup do
     case start_supervised({AttributeCatalog, []}) do
@@ -39,6 +41,28 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
              :source,
              :z_pos
            )
+
+    assert ParticipantProjection.electric_roles(projection, macro_index) ==
+             MapSet.new([:conductor])
+
+    assert ParticipantProjection.electric_role?(projection, macro_index, :conductor)
+  end
+
+  test "power and load solids expose source/load roles without leaking catalog lookups into kernels" do
+    projection =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @power_block)
+      |> put_solid({1, 0, 0}, @load_block)
+      |> ParticipantProjection.build()
+
+    source_index = Types.macro_index!({0, 0, 0})
+    load_index = Types.macro_index!({1, 0, 0})
+
+    assert ParticipantProjection.electric_roles(projection, source_index) ==
+             MapSet.new([:conductor, :source])
+
+    assert ParticipantProjection.electric_roles(projection, load_index) ==
+             MapSet.new([:conductor, :load])
   end
 
   test "broken refined prefab conductor exposes conductive faces but no face bridge" do
@@ -94,6 +118,30 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
              :y_neg,
              :y_pos
            )
+  end
+
+  test "refined component roles stay attached to the component that owns the material" do
+    projection =
+      Storage.new(7, {0, 0, 0})
+      |> put_refined_materials({0, 0, 0}, [
+        {Types.micro_index!({0, 1, 1}), @power_block},
+        {Types.micro_index!({7, 6, 6}), @load_block}
+      ])
+      |> ParticipantProjection.build()
+
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    assert ParticipantProjection.electric_roles(projection, macro_index) ==
+             MapSet.new([:conductor, :load, :source])
+
+    component_roles =
+      projection
+      |> ParticipantProjection.electric_components(macro_index)
+      |> Enum.map(& &1.roles)
+
+    assert MapSet.new([:conductor, :source]) in component_roles
+    assert MapSet.new([:conductor, :load]) in component_roles
+    refute Enum.any?(component_roles, &(&1 == MapSet.new([:conductor, :load, :source])))
   end
 
   test "reachable electric contacts stay on the component entered through the shared face" do
@@ -179,6 +227,45 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
            ) == MapSet.new()
   end
 
+  test "conductive prefab blueprints expose aligned electric contacts" do
+    {:ok, wire} = BlueprintCatalog.fetch(4)
+    {:ok, terminal} = BlueprintCatalog.fetch(6)
+
+    projection =
+      Storage.new(7, {0, 0, 0})
+      |> put_blueprint({0, 0, 0}, terminal)
+      |> put_blueprint({1, 0, 0}, wire)
+      |> ParticipantProjection.build()
+
+    source_index = Types.macro_index!({0, 0, 0})
+    wire_index = Types.macro_index!({1, 0, 0})
+    contacts = MapSet.new([{3, 3}, {3, 4}, {4, 3}, {4, 4}])
+
+    assert ParticipantProjection.electric_contact_transfer(
+             projection,
+             source_index,
+             :source,
+             MapSet.new(),
+             :x_pos,
+             projection,
+             wire_index,
+             :x_neg
+           ) == contacts
+
+    assert ParticipantProjection.electric_attribute(
+             projection,
+             source_index,
+             "electric_conductivity",
+             0.0
+           ) >
+             ParticipantProjection.electric_attribute(
+               projection,
+               wire_index,
+               "electric_conductivity",
+               0.0
+             )
+  end
+
   test "non-conductive refined prefab material does not expose electric faces" do
     projection =
       Storage.new(7, {0, 0, 0})
@@ -218,6 +305,38 @@ defmodule SceneServer.Voxel.Field.ParticipantProjectionTest do
            health: 100,
            owner_object_id: 42,
            owner_part_id: 3
+         }}
+      end)
+    )
+  end
+
+  defp put_refined_materials(storage, coord, slot_materials) do
+    Storage.put_micro_blocks(
+      storage,
+      coord,
+      Enum.map(slot_materials, fn {slot, material_id} ->
+        {slot,
+         %{
+           material_id: material_id,
+           health: 100,
+           owner_object_id: material_id,
+           owner_part_id: 1
+         }}
+      end)
+    )
+  end
+
+  defp put_blueprint(storage, coord, blueprint) do
+    Storage.put_micro_blocks(
+      storage,
+      coord,
+      Enum.map(blueprint.occupied_slots, fn slot ->
+        {slot,
+         %{
+           material_id: blueprint.material_id,
+           health: 100,
+           owner_object_id: blueprint.id,
+           owner_part_id: 1
          }}
       end)
     )

@@ -4,10 +4,53 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   use ExUnit.Case, async: true
 
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion}
-  alias SceneServer.Voxel.Field.Kernels.{ElectricPotentialKernel, TemperatureDiffusionKernel}
+
+  alias SceneServer.Voxel.Field.Kernels.{
+    CircuitCurrentKernel,
+    ElectricPotentialKernel,
+    TemperatureDiffusionKernel
+  }
+
   alias SceneServer.Voxel.Types
 
   describe "0x73 FieldRegionSnapshot" do
+    test "reserves a first-class electric current field mask" do
+      assert FieldCodec.field_mask_electric_current() == 0x08
+    end
+
+    test "roundtrip with electric current as a first-class layer" do
+      idx = Types.macro_index!({1, 0, 0})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 77,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {2, 0, 0}},
+          kernels: [%{id: :circuit_current, module: CircuitCurrentKernel}],
+          source_points: [%{macro_index: 0, field_type: :electric_potential, value: 120.0}]
+        })
+
+      current =
+        region
+        |> FieldRegion.get_layer(:electric_current)
+        |> FieldLayer.put(idx, 4.5)
+
+      region = FieldRegion.put_layer(region, :electric_current, current)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.field_mask ==
+               FieldCodec.field_mask_electric_potential() +
+                 FieldCodec.field_mask_ionization() +
+                 FieldCodec.field_mask_electric_current()
+
+      assert decoded.macro_indices == [idx]
+      assert decoded.electric_values == [0.0]
+      assert_in_delta hd(decoded.electric_current_values), 4.5, 0.001
+      assert decoded.ionization_values == [0]
+    end
+
     test "roundtrip with temperature only" do
       region =
         FieldRegion.new(%{

@@ -668,6 +668,149 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert snapshot.chunk_version == 1
   end
 
+  test "apply_intents automatically starts current for closed source-load loop topology" do
+    lease = start_snapshot_store()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 81)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    attrs = closed_loop_intents(lease, 81)
+
+    assert {:ok, %{changed?: true, changed_count: 8}} = ChunkProcess.apply_intents(chunk, attrs)
+    assert_receive {:voxel_chunk_delta_payload, _delta_payload}, 1_000
+
+    assert_receive {:voxel_field_region_snapshot_payload, field_payload}, 1_000
+    decoded = FieldCodec.decode_snapshot_payload!(field_payload)
+
+    assert Bitwise.band(decoded.field_mask, FieldCodec.field_mask_electric_current()) != 0
+
+    assert decoded.macro_indices == closed_loop_macro_indices()
+
+    assert Enum.all?(decoded.electric_current_values, &(&1 > 0.0))
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 1
+    assert debug.field_source_count == 1
+  end
+
+  test "subscribe rebuilds current overlay for an existing closed source-load loop topology" do
+    storage =
+      Storage.empty(1, {0, 0, 0})
+      |> put_closed_loop_blocks()
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}, storage: storage}
+      )
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 90)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert_receive {:voxel_field_region_snapshot_payload, field_payload}, 1_000
+    decoded = FieldCodec.decode_snapshot_payload!(field_payload)
+
+    assert Bitwise.band(decoded.field_mask, FieldCodec.field_mask_electric_current()) != 0
+    assert Enum.all?(decoded.electric_current_values, &(&1 > 0.0))
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 1
+    assert debug.field_source_count == 1
+  end
+
+  test "apply_intent automatically releases the current field after the load is removed" do
+    lease = start_snapshot_store()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 84)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    attrs = closed_loop_intents(lease, 84)
+
+    assert {:ok, %{changed?: true}} = ChunkProcess.apply_intents(chunk, attrs)
+    assert_receive {:voxel_chunk_delta_payload, _delta_payload}, 1_000
+    assert_receive {:voxel_field_region_snapshot_payload, _field_payload}, 1_000
+    assert ChunkProcess.debug_state(chunk).field_region_count == 1
+
+    assert {:ok, %{changed?: true}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 87, operation: :break_block, macro: {2, 0, 0})
+             )
+
+    assert_receive {:voxel_field_region_destroyed_payload, destroyed_payload}, 1_000
+    decoded = FieldCodec.decode_destroyed_payload!(destroyed_payload)
+    assert decoded.chunk_coord == {1, 1, 1}
+    assert decoded.destroy_reason == :explicit
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 0
+    assert debug.field_source_count == 0
+  end
+
+  test "breaking a closed loop conductor clears current while retaining topology watcher" do
+    lease = start_snapshot_store()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 91)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok, %{changed?: true}} =
+             ChunkProcess.apply_intents(chunk, closed_loop_intents(lease, 91))
+
+    assert_receive {:voxel_chunk_delta_payload, _delta_payload}, 1_000
+
+    assert_receive {:voxel_field_region_snapshot_payload, active_payload}, 1_000
+    active = FieldCodec.decode_snapshot_payload!(active_payload)
+    assert active.macro_indices == closed_loop_macro_indices()
+    assert Enum.all?(active.electric_current_values, &(&1 > 0.0))
+
+    assert {:ok, %{changed?: true}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 99, operation: :break_block, macro: {2, 1, 0})
+             )
+
+    assert_receive {:voxel_field_region_snapshot_payload, cleared_payload}, 1_000
+    cleared = FieldCodec.decode_snapshot_payload!(cleared_payload)
+    assert cleared.macro_indices == []
+    assert cleared.electric_current_values == []
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 1
+    assert debug.field_source_count == 1
+  end
+
+  test "auto circuit refresh coalesces adjacent hot mutations", %{observe_log: observe_log} do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, {3, 0, 0}, NormalBlockData.new(6))
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, {4, 0, 0}, NormalBlockData.new(5))
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, {5, 0, 0}, NormalBlockData.new(7))
+
+    assert_receive {:voxel_field_region_snapshot_payload, _field_payload}, 1_000
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert Regex.scan(~r/event="voxel_auto_circuit_refreshed"/, observe_log_text)
+           |> length() == 1
+  end
+
   test "apply_intent rejects missing leases without mutating or persisting" do
     lease = start_snapshot_store()
 
@@ -1408,6 +1551,43 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       block: NormalBlockData.new(7)
     }
     |> Map.merge(Map.new(overrides))
+  end
+
+  defp closed_loop_intents(lease, first_request_id) do
+    closed_loop_blocks()
+    |> Enum.with_index(first_request_id)
+    |> Enum.map(fn {{coord, material_id}, request_id} ->
+      intent_attrs(lease,
+        request_id: request_id,
+        macro: coord,
+        block: NormalBlockData.new(material_id)
+      )
+    end)
+  end
+
+  defp put_closed_loop_blocks(%Storage{} = storage) do
+    Enum.reduce(closed_loop_blocks(), storage, fn {coord, material_id}, acc ->
+      Storage.put_solid_block(acc, coord, NormalBlockData.new(material_id))
+    end)
+  end
+
+  defp closed_loop_blocks do
+    [
+      {{0, 0, 0}, 6},
+      {{1, 0, 0}, 5},
+      {{2, 0, 0}, 7},
+      {{2, 1, 0}, 5},
+      {{2, 2, 0}, 5},
+      {{1, 2, 0}, 5},
+      {{0, 2, 0}, 5},
+      {{0, 1, 0}, 5}
+    ]
+  end
+
+  defp closed_loop_macro_indices do
+    closed_loop_blocks()
+    |> Enum.map(fn {coord, _material_id} -> Types.macro_index!(coord) end)
+    |> Enum.sort()
   end
 
   defp micro_intent_attrs(lease, overrides) do

@@ -103,6 +103,24 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     |> FieldRuntime.ensure_conduction_path()
   end
 
+  @doc """
+  Creates or refreshes a chunk-local automatic circuit field around a world
+  macro. This is target-free: the kernel reads power/load/conductor topology
+  every tick and emits current only when a valid source-load component exists.
+  """
+  @spec auto_circuit(keyword()) :: {:ok, map()} | {:error, term()}
+  def auto_circuit(opts \\ []) do
+    [
+      logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
+      world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
+      max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks)
+    ]
+    |> maybe_put(:voltage, Keyword.get(opts, :voltage))
+    |> maybe_put(:current_limit_amps, Keyword.get(opts, :current_limit_amps))
+    |> maybe_put(:lease, Keyword.get(opts, :lease))
+    |> FieldRuntime.ensure_auto_circuit()
+  end
+
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 

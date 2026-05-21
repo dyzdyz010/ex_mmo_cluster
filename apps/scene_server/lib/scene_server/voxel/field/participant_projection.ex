@@ -34,9 +34,11 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
 
   @type face :: :x_neg | :x_pos | :y_neg | :y_pos | :z_neg | :z_pos
   @type contact :: {non_neg_integer(), non_neg_integer()}
+  @type electric_role :: :conductor | :source | :load
   @type electric_component :: %{
           faces: MapSet.t(face()),
-          face_contacts: %{optional(face()) => MapSet.t(contact())}
+          face_contacts: %{optional(face()) => MapSet.t(contact())},
+          roles: MapSet.t(electric_role())
         }
   @type entry :: %{
           electric: %{
@@ -46,6 +48,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
             components: [electric_component()],
             conductivity: float(),
             dielectric_strength: float(),
+            roles: MapSet.t(electric_role()),
             object_refs: [{non_neg_integer(), non_neg_integer()}]
           }
         }
@@ -266,6 +269,30 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     end
   end
 
+  @doc "Returns semantic electric roles exposed by a projected macro cell."
+  @spec electric_roles(t(), non_neg_integer()) :: MapSet.t(electric_role())
+  def electric_roles(%__MODULE__{} = projection, macro_index) do
+    case Map.get(projection.entries, macro_index) do
+      %{electric: %{roles: roles}} -> roles
+      _other -> MapSet.new()
+    end
+  end
+
+  @doc "Returns true when a macro cell has a projected electric role."
+  @spec electric_role?(t(), non_neg_integer(), electric_role()) :: boolean()
+  def electric_role?(%__MODULE__{} = projection, macro_index, role)
+      when role in [:conductor, :source, :load] do
+    projection
+    |> electric_roles(macro_index)
+    |> MapSet.member?(role)
+  end
+
+  @doc "Returns conductive electric subcomponents for a projected macro cell."
+  @spec electric_components(t(), non_neg_integer()) :: [electric_component()]
+  def electric_components(%__MODULE__{} = projection, macro_index) do
+    lookup_electric_components(projection, macro_index)
+  end
+
   defp build_entry(storage, %MacroCellHeader{} = header) do
     cond do
       header.mode == MacroCellHeader.cell_mode_solid_block() ->
@@ -293,11 +320,13 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
             [
               %{
                 faces: MapSet.new(@faces),
-                face_contacts: all_face_contacts_by_face()
+                face_contacts: all_face_contacts_by_face(),
+                roles: electric_roles_for_material(material_id)
               }
             ],
             conductivity,
             dielectric_strength,
+            electric_roles_for_material(material_id),
             []
           )
         else
@@ -313,7 +342,12 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     case Enum.at(storage.refined_cells, header.payload_index) do
       %RefinedCellData{} = cell ->
         conductive_slots = conductive_slots(cell.layers)
-        components = conductive_slots |> connected_components() |> Enum.map(&electric_component/1)
+
+        components =
+          conductive_slots
+          |> connected_components()
+          |> Enum.map(&electric_component(&1, cell.layers))
+
         conductive_faces = components |> Enum.map(& &1.faces) |> union_face_sets()
 
         face_connections =
@@ -329,6 +363,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
             components,
             refined_conductivity(cell.layers),
             refined_dielectric_strength(cell.layers),
+            components |> Enum.map(& &1.roles) |> Enum.reduce(MapSet.new(), &MapSet.union/2),
             refined_object_refs(cell.layers)
           )
         else
@@ -347,6 +382,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
          components,
          conductivity,
          dielectric_strength,
+         roles,
          object_refs
        ) do
     %{
@@ -357,6 +393,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
         components: components,
         conductivity: conductivity,
         dielectric_strength: dielectric_strength,
+        roles: roles,
         object_refs: object_refs
       }
     }
@@ -376,7 +413,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     end
   end
 
-  defp electric_components(projection, macro_index) do
+  defp lookup_electric_components(projection, macro_index) do
     case Map.get(projection.entries, macro_index) do
       %{electric: %{components: components}} -> components
       _other -> []
@@ -461,7 +498,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     |> Enum.map(&Types.micro_index!/1)
   end
 
-  defp electric_component(component) do
+  defp electric_component(component, layers) do
     face_contacts =
       Enum.reduce(component, empty_face_contacts(), fn slot, contacts ->
         {x, y, z} = Types.micro_coord!(slot)
@@ -477,7 +514,8 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
 
     %{
       faces: faces_from_contacts(face_contacts),
-      face_contacts: face_contacts
+      face_contacts: face_contacts,
+      roles: component_roles(component, layers)
     }
   end
 
@@ -599,6 +637,37 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     |> Enum.uniq()
     |> Enum.sort()
   end
+
+  defp component_roles(component, layers) do
+    layers
+    |> Enum.filter(&layer_intersects_component?(&1, component))
+    |> Enum.map(fn %MicroLayer{material_id: material_id} ->
+      electric_roles_for_material(material_id)
+    end)
+    |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+  end
+
+  defp layer_intersects_component?(%MicroLayer{} = layer, component) do
+    layer
+    |> layer_slots()
+    |> MapSet.new()
+    |> MapSet.intersection(component)
+    |> MapSet.size()
+    |> Kernel.>(0)
+  end
+
+  defp electric_roles_for_material(material_id) do
+    conductivity = material_float(material_id, "electric_conductivity", 0.0)
+
+    []
+    |> maybe_add_role(conductivity >= @min_channel_conductivity, :conductor)
+    |> maybe_add_role(MaterialCatalog.power_source_material?(material_id), :source)
+    |> maybe_add_role(MaterialCatalog.electric_load_material?(material_id), :load)
+    |> MapSet.new()
+  end
+
+  defp maybe_add_role(roles, true, role), do: [role | roles]
+  defp maybe_add_role(roles, false, _role), do: roles
 
   defp material_float(material_id, attr_name, fallback) do
     material_id
