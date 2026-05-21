@@ -12,7 +12,14 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   @behaviour SceneServer.Voxel.Field.Kernel
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext, ParticipantProjection}
+  alias SceneServer.Voxel.Field.{
+    FieldLayer,
+    FieldRegion,
+    KernelContext,
+    NativeBackend,
+    ParticipantProjection
+  }
+
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -113,19 +120,49 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
           |> integer_opt(:max_frontier, @default_max_frontier)
           |> max(1)
 
-        source_state = {source_macro_index, :source, MapSet.new()}
-        queue = :gb_sets.singleton({0.0, source_state})
-        costs = %{source_state => 0.0}
-
-        dijkstra(queue, costs, %{}, MapSet.new(), 0, max_frontier, %{
-          region: region,
-          projection: projection,
-          target: target_macro_index,
-          source_state: source_state,
-          source_strength: abs(source_value * 1.0),
-          ionization_layer: FieldRegion.get_layer(region, :ionization)
-        })
+        NativeBackend.find_conduction_path(
+          projection,
+          region.aabb,
+          source_macro_index,
+          target_macro_index,
+          source_value,
+          FieldRegion.get_layer(region, :ionization),
+          max_frontier,
+          backend: path_backend(opts),
+          fallback: fn ->
+            elixir_find_path(
+              region,
+              projection,
+              source_macro_index,
+              target_macro_index,
+              source_value,
+              max_frontier
+            )
+          end
+        )
     end
+  end
+
+  defp elixir_find_path(
+         region,
+         projection,
+         source_macro_index,
+         target_macro_index,
+         source_value,
+         max_frontier
+       ) do
+    source_state = {source_macro_index, :source, MapSet.new()}
+    queue = :gb_sets.singleton({0.0, source_state})
+    costs = %{source_state => 0.0}
+
+    dijkstra(queue, costs, %{}, MapSet.new(), 0, max_frontier, %{
+      region: region,
+      projection: projection,
+      target: target_macro_index,
+      source_state: source_state,
+      source_strength: abs(source_value * 1.0),
+      ionization_layer: FieldRegion.get_layer(region, :ionization)
+    })
   end
 
   defp dijkstra(queue, _costs, _previous, _settled, _frontier_count, _max_frontier, _env)
@@ -545,6 +582,13 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     case option(opts, key, default) do
       value when is_number(value) -> value * 1.0
       _other -> default
+    end
+  end
+
+  defp path_backend(opts) do
+    case option(opts, :path_backend, :native) do
+      value when value in [:elixir, "elixir"] -> :elixir
+      _other -> :native
     end
   end
 end

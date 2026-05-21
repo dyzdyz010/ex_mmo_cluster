@@ -248,6 +248,54 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
       assert FieldLayer.get(layer, second_ring_idx) > env + 2.0
     end
 
+    test "native backend matches the Elixir reference for one sparse diffusion tick" do
+      source_idx = Types.macro_index!({3, 3, 3})
+      first_ring_idx = Types.macro_index!({4, 3, 3})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> Storage.put_solid_block(source_idx, NormalBlockData.new(@iron_material_id))
+        |> Storage.put_solid_block(first_ring_idx, NormalBlockData.new(@iron_material_id))
+
+      region =
+        FieldRegion.new(%{
+          region_id: 11,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {7, 7, 7}},
+          kernels: [%{id: :temperature_diffusion, module: TemperatureDiffusionKernel}],
+          source_points: [
+            %{
+              macro_index: source_idx,
+              field_type: :temperature,
+              source_mode: :impulse,
+              value: 800.0
+            }
+          ]
+        })
+
+      native_region =
+        TemperatureField.tick(region, storage,
+          diffusion_time_scale: 20_000.0,
+          ambient_loss_per_second: 0.0
+        )
+
+      elixir_region =
+        TemperatureField.tick(region, storage,
+          diffusion_time_scale: 20_000.0,
+          ambient_loss_per_second: 0.0,
+          temperature_backend: :elixir
+        )
+
+      native_layer = FieldRegion.get_layer(native_region, :temperature)
+      elixir_layer = FieldRegion.get_layer(elixir_region, :temperature)
+
+      assert FieldLayer.active_cells(native_layer, region.aabb, 0) ==
+               FieldLayer.active_cells(elixir_layer, region.aabb, 0)
+
+      assert native_region.source_points == []
+      assert elixir_region.source_points == []
+    end
+
     test "source_points are re-applied each tick (heat sources are maintained)" do
       source_idx = Types.macro_index!({2, 2, 2})
 

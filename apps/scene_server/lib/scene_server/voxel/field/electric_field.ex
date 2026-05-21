@@ -1,19 +1,18 @@
 defmodule SceneServer.Voxel.Field.ElectricField do
   @moduledoc """
-  Phase 6 局部场最小目标:BFS 电场 + ionization tick。
+  Phase 6/7 局部场目标:material-aware 电势传播 + ionization tick。
 
   每个 tick 的语义:
     1. 清空 AABB 内 `:electric_potential` layer。
-    2. 从 source_points 出发,按 Dijkstra 风格(`gb_sets` 当 priority queue)
-       向 6-邻居扩散。
-    3. step_cost = `decay_factor / max(density / 65536.0, 0.001)`,
-       density 取自 `Storage.effective_attribute_at(storage, cell, "density")`
-       (Q16.16 raw int)。
+    2. 从 source_points 出发,只沿 `ParticipantProjection` 证明的导电材料/微格
+       接触扩散。
+    3. step cost 使用 `electric_conductivity` / `dielectric_strength` 与既有
+       ionization 计算,不再走旧的 density fallback。
     4. `:ionization` layer 在 `abs(electric_potential) >= threshold` 时累积,
        否则衰减;clamp 到 `0..255`。
   """
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion}
+  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, NativeBackend, ParticipantProjection}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -21,9 +20,13 @@ defmodule SceneServer.Voxel.Field.ElectricField do
   @ionization_growth 5.0
   @ionization_decay 1.0
   @ionization_max 255.0
-  @decay_factor 0.1
-  @default_density_raw 65_536
-  @min_density_float 0.001
+  @default_conductivity 0.0
+  @default_dielectric_strength 3.0
+  @min_conductivity 0.001
+  @resistance_weight 4.0
+  @breakdown_weight 0.25
+  @ionization_bonus_weight 0.01
+  @min_step_cost 0.05
 
   @doc """
   Runs a single tick of the electric field for the given region. Returns
@@ -31,7 +34,8 @@ defmodule SceneServer.Voxel.Field.ElectricField do
   refreshed.
   """
   @spec tick(FieldRegion.t(), Storage.t() | nil) :: FieldRegion.t()
-  def tick(%FieldRegion{} = region, storage) do
+  @spec tick(FieldRegion.t(), Storage.t() | nil, keyword()) :: FieldRegion.t()
+  def tick(%FieldRegion{} = region, storage, opts \\ []) do
     aabb = region.aabb
 
     potential_layer =
@@ -39,81 +43,151 @@ defmodule SceneServer.Voxel.Field.ElectricField do
       |> FieldRegion.get_layer(:electric_potential)
       |> clear_layer_in_aabb(aabb)
 
-    sources_in_aabb =
-      region.source_points
-      |> Enum.filter(fn sp ->
-        sp.field_type == :electric_potential and
-          FieldRegion.in_aabb?(region, Types.macro_coord!(sp.macro_index))
-      end)
+    ionization_layer = FieldRegion.get_layer(region, :ionization)
+    projection = participant_projection(storage, opts)
 
-    source_map =
-      Enum.reduce(sources_in_aabb, %{}, fn sp, acc ->
-        val = sp.value * 1.0
-        Map.update(acc, sp.macro_index, val, fn prev -> max(prev, val) end)
-      end)
+    fallback = fn ->
+      {:ok, elixir_propagation(region, projection, ionization_layer)}
+    end
 
-    initial_queue =
-      Enum.reduce(source_map, :gb_sets.empty(), fn {idx, val}, acc ->
-        # 使用 {-val, idx} 把 max-heap 模拟成 :gb_sets.take_smallest 的 min-heap。
-        :gb_sets.add({-val, idx}, acc)
-      end)
-
-    final_visited = bfs_propagate(initial_queue, source_map, region, storage)
-
-    potential_layer =
-      Enum.reduce(final_visited, potential_layer, fn {idx, val}, layer ->
-        FieldLayer.put(layer, idx, val)
-      end)
-
-    ionization_layer =
-      region
-      |> FieldRegion.get_layer(:ionization)
-      |> update_ionization(potential_layer, aabb)
+    {:ok, %{potential_cells: potential_cells, ionization_cells: ionization_cells}} =
+      NativeBackend.propagate_electric_potential(
+        region.source_points,
+        aabb,
+        ionization_layer,
+        projection,
+        backend: Keyword.get(opts, :electric_backend, :native),
+        fallback: fallback
+      )
 
     region
-    |> FieldRegion.put_layer(:electric_potential, potential_layer)
-    |> FieldRegion.put_layer(:ionization, ionization_layer)
+    |> FieldRegion.put_layer(:electric_potential, apply_cells(potential_layer, potential_cells))
+    |> FieldRegion.put_layer(
+      :ionization,
+      ionization_layer
+      |> clear_layer_in_aabb(aabb)
+      |> apply_cells(ionization_cells)
+    )
   end
 
   # ---- BFS / Dijkstra propagation -------------------------------------------
 
-  defp bfs_propagate(queue, visited, region, storage) do
+  defp elixir_propagation(region, projection, ionization_layer) do
+    source_map =
+      region.source_points
+      |> source_map(region, projection)
+
+    initial_queue =
+      Enum.reduce(source_map, :gb_sets.empty(), fn {idx, val}, acc ->
+        source_state = {idx, :source, MapSet.new()}
+        :gb_sets.add({-val, source_state}, acc)
+      end)
+
+    visited =
+      source_map
+      |> Enum.map(fn {idx, val} -> {{idx, :source, MapSet.new()}, val} end)
+      |> Map.new()
+
+    final_visited = bfs_propagate(initial_queue, visited, region, projection, ionization_layer)
+    potential_cells = best_potential_by_cell(final_visited)
+
+    %{
+      potential_cells:
+        potential_cells
+        |> Enum.filter(fn {_idx, val} -> val > 0.0 end)
+        |> Enum.sort_by(&elem(&1, 0)),
+      ionization_cells: ionization_cells(ionization_layer, potential_cells, region.aabb)
+    }
+  end
+
+  defp source_map(source_points, region, projection) do
+    source_points
+    |> Enum.filter(fn sp ->
+      sp.field_type == :electric_potential and
+        FieldRegion.in_aabb?(region, Types.macro_coord!(sp.macro_index)) and
+        ParticipantProjection.electric_conductive_cell?(projection, sp.macro_index)
+    end)
+    |> Enum.reduce(%{}, fn sp, acc ->
+      val = sp.value * 1.0
+      Map.update(acc, sp.macro_index, val, fn prev -> max(prev, val) end)
+    end)
+  end
+
+  defp bfs_propagate(queue, visited, region, projection, ionization_layer) do
     case :gb_sets.is_empty(queue) do
       true ->
         visited
 
       false ->
-        {{neg_potential, macro_index}, rest_queue} = :gb_sets.take_smallest(queue)
+        {{neg_potential, current_state}, rest_queue} = :gb_sets.take_smallest(queue)
         current_potential = -neg_potential
 
-        if Map.get(visited, macro_index, 0.0) > current_potential + 0.001 do
-          # 已经找到了更好的路径,跳过这条 stale 入队记录。
-          bfs_propagate(rest_queue, visited, region, storage)
+        if Map.get(visited, current_state, 0.0) > current_potential + 0.001 do
+          bfs_propagate(rest_queue, visited, region, projection, ionization_layer)
         else
-          coord = Types.macro_coord!(macro_index)
-
           {new_queue, new_visited} =
-            Enum.reduce(neighbors_of(coord, region), {rest_queue, visited}, fn neighbor_coord,
-                                                                               {q_acc, v_acc} ->
-              neighbor_idx = Types.macro_index!(neighbor_coord)
-              density_raw = read_density(storage, neighbor_idx)
-              density_float = max(density_raw / 65_536.0, @min_density_float)
-              step_cost = @decay_factor / density_float
-              neighbor_potential = current_potential - step_cost
+            Enum.reduce(
+              neighbor_states(current_state, region, projection),
+              {rest_queue, visited},
+              fn {neighbor_idx, _entry_face, _entry_contacts} =
+                   neighbor_state,
+                 {q_acc, v_acc} ->
+                step_cost =
+                  step_cost(projection, ionization_layer, neighbor_idx, abs(current_potential))
 
-              if neighbor_potential > 0.0 and
-                   neighbor_potential > Map.get(v_acc, neighbor_idx, 0.0) do
-                q2 = :gb_sets.add({-neighbor_potential, neighbor_idx}, q_acc)
-                v2 = Map.put(v_acc, neighbor_idx, neighbor_potential)
-                {q2, v2}
-              else
-                {q_acc, v_acc}
+                neighbor_potential = current_potential - step_cost
+
+                if neighbor_potential > 0.0 and
+                     neighbor_potential > Map.get(v_acc, neighbor_state, 0.0) do
+                  q2 = :gb_sets.add({-neighbor_potential, neighbor_state}, q_acc)
+                  v2 = Map.put(v_acc, neighbor_state, neighbor_potential)
+                  {q2, v2}
+                else
+                  {q_acc, v_acc}
+                end
               end
-            end)
+            )
 
-          bfs_propagate(new_queue, new_visited, region, storage)
+          bfs_propagate(new_queue, new_visited, region, projection, ionization_layer)
         end
     end
+  end
+
+  defp neighbor_states({current_macro_index, entry_face, entry_contacts}, region, projection) do
+    current_coord = Types.macro_coord!(current_macro_index)
+
+    current_macro_index
+    |> neighbor_indices(region)
+    |> Enum.flat_map(fn neighbor_macro_index ->
+      neighbor_coord = Types.macro_coord!(neighbor_macro_index)
+      {exit_face, neighbor_entry_face} = shared_faces(current_coord, neighbor_coord)
+
+      shared_contacts =
+        ParticipantProjection.electric_contact_transfer(
+          projection,
+          current_macro_index,
+          entry_face,
+          entry_contacts,
+          exit_face,
+          projection,
+          neighbor_macro_index,
+          neighbor_entry_face
+        )
+
+      if MapSet.size(shared_contacts) > 0 do
+        [{neighbor_macro_index, neighbor_entry_face, shared_contacts}]
+      else
+        []
+      end
+    end)
+  end
+
+  defp neighbor_indices(macro_index, region) do
+    macro_index
+    |> Types.macro_coord!()
+    |> neighbors_of(region)
+    |> Enum.map(&Types.macro_index!/1)
+    |> Enum.sort()
   end
 
   defp neighbors_of({x, y, z}, region) do
@@ -125,23 +199,77 @@ defmodule SceneServer.Voxel.Field.ElectricField do
       {x, y, z - 1},
       {x, y, z + 1}
     ]
-    |> Enum.filter(fn {nx, ny, nz} ->
-      nx in 0..15 and ny in 0..15 and nz in 0..15 and
-        FieldRegion.in_aabb?(region, {nx, ny, nz})
+    |> Enum.filter(fn {nx, ny, nz} = coord ->
+      nx in 0..15 and ny in 0..15 and nz in 0..15 and FieldRegion.in_aabb?(region, coord)
     end)
   end
 
-  defp read_density(nil, _macro_index), do: @default_density_raw
+  defp shared_faces({x, y, z}, {nx, y, z}) when nx == x - 1, do: {:x_neg, :x_pos}
+  defp shared_faces({x, y, z}, {nx, y, z}) when nx == x + 1, do: {:x_pos, :x_neg}
+  defp shared_faces({x, y, z}, {x, ny, z}) when ny == y - 1, do: {:y_neg, :y_pos}
+  defp shared_faces({x, y, z}, {x, ny, z}) when ny == y + 1, do: {:y_pos, :y_neg}
+  defp shared_faces({x, y, z}, {x, y, nz}) when nz == z - 1, do: {:z_neg, :z_pos}
+  defp shared_faces({x, y, z}, {x, y, nz}) when nz == z + 1, do: {:z_pos, :z_neg}
 
-  defp read_density(%Storage{} = storage, macro_index) do
-    Storage.effective_attribute_at(storage, macro_index, "density")
-  rescue
-    _ -> @default_density_raw
+  defp step_cost(projection, ionization_layer, macro_index, source_strength) do
+    conductivity =
+      ParticipantProjection.electric_attribute(
+        projection,
+        macro_index,
+        "electric_conductivity",
+        @default_conductivity
+      )
+
+    dielectric_strength =
+      ParticipantProjection.electric_attribute(
+        projection,
+        macro_index,
+        "dielectric_strength",
+        @default_dielectric_strength
+      )
+
+    resistance_cost = @resistance_weight / max(conductivity, @min_conductivity)
+    breakdown_cost = breakdown_cost(dielectric_strength, source_strength)
+    ionization_bonus = FieldLayer.get(ionization_layer, macro_index) * @ionization_bonus_weight
+
+    max(@min_step_cost, 1.0 + resistance_cost + breakdown_cost - ionization_bonus)
   end
 
-  defp read_density(_other, _macro_index), do: @default_density_raw
+  defp breakdown_cost(dielectric_strength, source_strength) when source_strength > 0.0 do
+    if source_strength >= dielectric_strength do
+      @breakdown_weight * dielectric_strength / source_strength
+    else
+      @breakdown_weight * (dielectric_strength - source_strength) + dielectric_strength
+    end
+  end
+
+  defp breakdown_cost(dielectric_strength, _source_strength), do: dielectric_strength
+
+  defp best_potential_by_cell(visited) do
+    Enum.reduce(visited, %{}, fn {{macro_index, _entry_face, _entry_contacts}, potential}, acc ->
+      Map.update(acc, macro_index, potential, fn previous -> max(previous, potential) end)
+    end)
+  end
 
   # ---- helpers --------------------------------------------------------------
+
+  defp participant_projection(storage, opts) do
+    case Keyword.get(opts, :participant_projection) do
+      %ParticipantProjection{} = projection -> projection
+      _other -> participant_projection_from_storage(storage)
+    end
+  end
+
+  defp participant_projection_from_storage(%Storage{} = storage),
+    do: ParticipantProjection.build(storage)
+
+  defp participant_projection_from_storage(_other), do: %ParticipantProjection{}
+
+  defp apply_cells(%FieldLayer{} = layer, cells) do
+    Enum.reduce(cells, layer, fn {idx, value}, acc ->
+      FieldLayer.put(acc, idx, value)
+    end)
+  end
 
   defp clear_layer_in_aabb(layer, {{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
     Enum.reduce(
@@ -154,18 +282,17 @@ defmodule SceneServer.Voxel.Field.ElectricField do
     )
   end
 
-  defp update_ionization(
+  defp ionization_cells(
          ionization_layer,
-         potential_layer,
+         potential_cells,
          {{min_x, min_y, min_z}, {max_x, max_y, max_z}}
        ) do
-    Enum.reduce(
+    Enum.flat_map(
       for(x <- min_x..max_x, y <- min_y..max_y, z <- min_z..max_z, do: {x, y, z}),
-      ionization_layer,
-      fn coord, acc ->
+      fn coord ->
         idx = Types.macro_index!(coord)
-        potential = FieldLayer.get(potential_layer, idx)
-        current_ionization = FieldLayer.get(acc, idx)
+        potential = Map.get(potential_cells, idx, 0.0)
+        current_ionization = FieldLayer.get(ionization_layer, idx)
 
         new_ionization =
           if abs(potential) >= @ionization_threshold do
@@ -174,8 +301,13 @@ defmodule SceneServer.Voxel.Field.ElectricField do
             max(current_ionization - @ionization_decay, 0.0)
           end
 
-        FieldLayer.put(acc, idx, new_ionization)
+        if new_ionization > 0.0 do
+          [{idx, new_ionization}]
+        else
+          []
+        end
       end
     )
+    |> Enum.sort_by(&elem(&1, 0))
   end
 end

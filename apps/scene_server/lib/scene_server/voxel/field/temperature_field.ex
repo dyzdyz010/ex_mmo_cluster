@@ -17,7 +17,7 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
        其他 `:temperature` source_points 在 tick 末重新写回(热源持续)。
   """
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion}
+  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, NativeBackend}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -62,19 +62,17 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
     candidate_indices = candidate_indices(layer, persistent_region)
 
     new_layer =
-      Enum.reduce(candidate_indices, layer, fn idx, acc ->
-        current_delta = FieldLayer.get_delta(layer, idx)
-        neighbor_avg_delta = neighbor_avg_delta(layer, region, idx)
-
-        alpha = alpha_for(storage, idx, dt_seconds * diffusion_time_scale, cell_size_meters)
-
-        new_delta =
-          current_delta
-          |> Kernel.+(alpha * (neighbor_avg_delta - current_delta))
-          |> apply_ambient_loss(dt_seconds, ambient_loss_per_second)
-
-        FieldLayer.put_delta(acc, idx, new_delta)
-      end)
+      diffuse_layer(
+        layer,
+        persistent_region,
+        storage,
+        candidate_indices,
+        dt_seconds * diffusion_time_scale,
+        dt_seconds,
+        ambient_loss_per_second,
+        cell_size_meters,
+        Keyword.get(opts, :temperature_backend, :native)
+      )
 
     # 热源点(temperature)在每 tick 末重写,保证热源持续。
     new_layer =
@@ -88,6 +86,83 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
   end
 
   # ---- helpers --------------------------------------------------------------
+
+  defp diffuse_layer(
+         layer,
+         region,
+         storage,
+         candidate_indices,
+         diffusion_seconds,
+         ambient_dt_seconds,
+         ambient_loss_per_second,
+         cell_size_meters,
+         backend
+       ) do
+    fallback = fn ->
+      {:ok,
+       elixir_diffusion_cells(
+         layer,
+         region,
+         storage,
+         candidate_indices,
+         diffusion_seconds,
+         ambient_dt_seconds,
+         ambient_loss_per_second,
+         cell_size_meters
+       )}
+    end
+
+    case NativeBackend.diffuse_temperature(
+           layer,
+           region.aabb,
+           candidate_indices,
+           storage,
+           diffusion_seconds,
+           ambient_dt_seconds,
+           ambient_loss_per_second,
+           cell_size_meters,
+           backend: backend,
+           fallback: fallback
+         ) do
+      {:ok, delta_cells} ->
+        apply_delta_cells(layer, delta_cells)
+
+      {:error, _reason} ->
+        {:ok, delta_cells} = fallback.()
+        apply_delta_cells(layer, delta_cells)
+    end
+  end
+
+  defp elixir_diffusion_cells(
+         layer,
+         region,
+         storage,
+         candidate_indices,
+         diffusion_seconds,
+         ambient_dt_seconds,
+         ambient_loss_per_second,
+         cell_size_meters
+       ) do
+    Enum.map(candidate_indices, fn idx ->
+      current_delta = FieldLayer.get_delta(layer, idx)
+      neighbor_avg_delta = neighbor_avg_delta(layer, region, idx)
+
+      alpha = alpha_for(storage, idx, diffusion_seconds, cell_size_meters)
+
+      new_delta =
+        current_delta
+        |> Kernel.+(alpha * (neighbor_avg_delta - current_delta))
+        |> apply_ambient_loss(ambient_dt_seconds, ambient_loss_per_second)
+
+      {idx, new_delta}
+    end)
+  end
+
+  defp apply_delta_cells(layer, delta_cells) do
+    Enum.reduce(delta_cells, layer, fn {idx, delta}, acc ->
+      FieldLayer.put_delta(acc, idx, delta)
+    end)
+  end
 
   defp take_temperature_impulses(%FieldRegion{} = region) do
     {impulses, rest} =

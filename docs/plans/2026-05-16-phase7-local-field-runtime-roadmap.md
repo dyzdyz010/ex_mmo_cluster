@@ -56,6 +56,23 @@
     对直接相邻、边界接触已导通的 source/target，会协调创建两个 shard region。
     source chunk 仍保持 `field_source_count=1`，target chunk 只创建稳定复用的 region，
     不注册新的 source；`ConductionPathKernel` 和 `FieldRegion` 本身仍严格 chunk-local。
+14. Field 层 native backend boundary 已建立：导电路径搜索的 chunk-local bounded
+    Dijkstra、温度场 sparse 7-stencil 扩散、material-aware electric potential 传播都先接入
+    `SceneServer.Voxel.Field.NativeBackend`；业务 kernel 只提交 Field 事实、AABB、
+    candidate cells / electric projection 和 fallback，native ABI/DTO 编码集中在
+    `NativeBackend.ConductionPathInput` / `NativeBackend.TemperatureDiffusionInput` /
+    `NativeBackend.ElectricPotentialInput`。`SceneServer.Native.FieldKernel` 只是薄 Rustler
+    binding，Rust crate 内按 `conduction_path` / `temperature_diffusion` /
+    `electric_potential` / `grid` 分模块隔离职责。Elixir 仍保留 `path_backend: :elixir` /
+    `temperature_backend: :elixir` / `electric_backend: :elixir` 参考实现，且 authority、
+    FieldLayer 写入、热效应和 observe 不进入 native。后续纯计算 kernel 应复用
+    `NativeBackend`，不要各自扩散成独立 native ownership。
+15. Field native DTO 编码已按 region AABB 裁剪 `ParticipantProjection`：导电路径和
+    material-aware electric potential 传播只把本次 field tick 需要的导电条目送进 Rust，
+    避免局部区域计算携带整块 chunk 的投影图。
+16. 跨 chunk conduction shard 的生命周期清理已覆盖 source release 和 source lease revoke：
+    source chunk 在清空本地 `FieldTickWorker` 前会先执行 linked target shard cleanup，避免
+    lease 变更时留下悬挂 target region。
 
 仍未完成：
 
@@ -74,6 +91,13 @@
    field orchestration；这些仍是后续阶段，不应塞进当前导电入口。
 7. prefab/object 尚未通过统一 field participant projection 进入所有局部场；后续不应让每个 kernel 分别特判 prefab。推进基准见
    `docs/plans/2026-05-19-prefab-field-participant-projection.md`，电场只作为首条验证路径。
+8. `FieldEffect` dispatcher 仍是逐 effect 写回和逐次 snapshot fan-out；下一步需要改为
+   chunk 内 batched mutation，单 tick 只做一次 version bump、一次 fan-out、一次 persist enqueue。
+9. `ChunkProcess` 与 `FieldTickWorker` 仍有同步调用环；后续应把 field tick phase 收回
+   chunk-owned coordinator，或至少改成只读 snapshot/async refresh，避免 tick 与 region refresh
+   互相等待。
+10. Field kernel 缺少 reads/writes/phase/conflict 合同；后续新增 phenomenon/damage/ignite
+    kernel 前，需要先约束同一 region 内的 layer 写入顺序和冲突策略。
 
 结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟，以及相邻双 chunk 的一次跨越导电第一片已经够支撑可玩验证；短期不继续扩展成全地图跨 chunk 搜索、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。这个 UI 阶段只是主线的可操作性闸门，不是路线改道；UI 验收后继续回到 FieldRuntime / source lifecycle / phenomenon effect 的主线深挖。
 

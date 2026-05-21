@@ -71,6 +71,41 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
     assert active_cells(first, :ionization) == active_cells(second, :ionization)
   end
 
+  test "native and elixir path backends produce the same channel cells" do
+    {storage, region, target} = conduction_fixture()
+
+    assert_backend_equivalence(storage, region, target)
+  end
+
+  test "native and elixir path backends agree on refined contact boundaries" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({3, 0, 0})
+
+    connected_storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_refined_x_conductor({1, 0, 0}, 3, 3)
+      |> put_refined_x_conductor({2, 0, 0}, 3, 3)
+      |> put_solid({3, 0, 0}, @iron)
+
+    connected_region =
+      conduction_region(26, source, {{0, 0, 0}, {3, 0, 0}})
+
+    assert_backend_equivalence(connected_storage, connected_region, target)
+
+    misaligned_storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @iron)
+      |> put_refined_x_conductor({1, 0, 0}, 1, 1)
+      |> put_refined_x_conductor({2, 0, 0}, 6, 6)
+      |> put_solid({3, 0, 0}, @iron)
+
+    misaligned_region =
+      conduction_region(27, source, {{0, 0, 0}, {3, 0, 0}})
+
+    assert_backend_equivalence(misaligned_storage, misaligned_region, target)
+  end
+
   test "emits Joule heat effects for a powered thermal coupling path" do
     {storage, region, target} = conduction_fixture()
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
@@ -437,6 +472,38 @@ defmodule SceneServer.Voxel.Field.ConductionPathKernelTest do
       })
 
     {storage, region, target}
+  end
+
+  defp conduction_region(region_id, source, aabb) do
+    FieldRegion.new(%{
+      region_id: region_id,
+      chunk_coord: {0, 0, 0},
+      aabb: aabb,
+      kernels: [%{id: :conduction_path, module: ConductionPathKernel}],
+      source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}]
+    })
+  end
+
+  defp assert_backend_equivalence(storage, region, target) do
+    context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+    assert {:cont, native_region, native_effects} =
+             ConductionPathKernel.tick(region, context, %{
+               target_macro_index: target,
+               path_backend: :native
+             })
+
+    assert {:cont, elixir_region, elixir_effects} =
+             ConductionPathKernel.tick(region, context, %{
+               target_macro_index: target,
+               path_backend: :elixir
+             })
+
+    assert active_cells(native_region, :electric_potential) ==
+             active_cells(elixir_region, :electric_potential)
+
+    assert active_cells(native_region, :ionization) == active_cells(elixir_region, :ionization)
+    assert native_effects == elixir_effects
   end
 
   defp put_stale_channel(region) do

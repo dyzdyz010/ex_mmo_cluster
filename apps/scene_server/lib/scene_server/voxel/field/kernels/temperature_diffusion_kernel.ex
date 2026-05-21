@@ -23,7 +23,8 @@ defmodule SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel do
        diffusion_time_scale: positive_float(get_opt(opts, :diffusion_time_scale, 1.0), 1.0),
        ambient_loss_per_second:
          non_negative_float(get_opt(opts, :ambient_loss_per_second, 0.0), 0.0),
-       cell_size_meters: positive_float(get_opt(opts, :cell_size_meters, 1.0), 1.0)
+       cell_size_meters: positive_float(get_opt(opts, :cell_size_meters, 1.0), 1.0),
+       temperature_backend: get_opt(opts, :temperature_backend, :native)
      ), []}
   end
 

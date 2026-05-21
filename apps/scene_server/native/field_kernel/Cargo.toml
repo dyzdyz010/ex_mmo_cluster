@@ -1,0 +1,13 @@
+[package]
+name = "field_kernel"
+version = "0.1.0"
+authors = []
+edition = "2018"
+
+[lib]
+name = "field_kernel"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "=0.37.3"

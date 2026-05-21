@@ -55,14 +55,18 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   end
 
   @doc """
-  Refreshes an active field region in place.
+  Queues an active field region refresh in place.
 
   This keeps the worker process and region id stable for subscribers while
-  restarting the region lifetime from the latest source request.
+  restarting the region lifetime from the latest source request. The refresh is
+  intentionally asynchronous: `ChunkProcess` must not wait on the worker while
+  the worker may be ticking and reading chunk storage.
   """
   @spec refresh_region(GenServer.server(), map()) :: map()
   def refresh_region(server, attrs) when is_map(attrs) do
-    GenServer.call(server, {:refresh_region, attrs})
+    summary = refresh_source_points_summary(attrs)
+    GenServer.cast(server, {:refresh_region, attrs})
+    Map.put(summary, :lifetime_action, :queued_refresh)
   end
 
   @impl true
@@ -196,8 +200,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     {:noreply, %{state | region: region}}
   end
 
-  @impl true
-  def handle_call({:refresh_region, attrs}, _from, state) when is_map(attrs) do
+  def handle_cast({:refresh_region, attrs}, state) when is_map(attrs) do
     {source_points, source_points_summary} = refreshed_source_points(state.region, attrs)
 
     region_attrs = %{
@@ -212,8 +215,16 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
     refreshed_region = FieldRegion.new(region_attrs)
 
-    {:reply, Map.put(source_points_summary, :lifetime_action, :refreshed),
-     %{state | region: refreshed_region}}
+    safe_emit("voxel_field_region_refresh_queued", fn ->
+      %{
+        region_id: refreshed_region.region_id,
+        chunk_coord: refreshed_region.chunk_coord,
+        max_ticks: refreshed_region.max_ticks
+      }
+      |> Map.merge(source_points_summary)
+    end)
+
+    {:noreply, %{state | region: refreshed_region}}
   end
 
   # ---- helpers --------------------------------------------------------------
@@ -228,39 +239,56 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   defp refreshed_source_points(%FieldRegion{} = region, attrs) do
     case Map.fetch(attrs, :source_points) do
       {:ok, source_points} when is_list(source_points) and source_points != [] ->
-        if source_points_mode(attrs) == :replace do
-          {source_points,
-           %{source_points_action: :replaced, source_points_count: length(source_points)}}
+        summary = refresh_source_points_summary(attrs)
+
+        if Map.get(summary, :source_points_action) == :replaced do
+          {source_points, summary}
         else
           next_source_points = region.source_points ++ source_points
 
-          {next_source_points,
-           %{source_points_action: :appended, source_points_count: length(source_points)}}
+          {next_source_points, summary}
         end
 
       {:ok, []} ->
-        {region.source_points,
-         %{
-           source_points_action: :rejected,
-           source_points_count: 0,
-           source_points_rejection_reason: :empty_source_points
-         }}
+        {region.source_points, refresh_source_points_summary(attrs)}
 
       {:ok, _other} ->
-        {region.source_points,
-         %{
-           source_points_action: :rejected,
-           source_points_count: 0,
-           source_points_rejection_reason: :invalid_source_points
-         }}
+        {region.source_points, refresh_source_points_summary(attrs)}
 
       :error ->
-        {region.source_points,
-         %{
-           source_points_action: :rejected,
-           source_points_count: 0,
-           source_points_rejection_reason: :missing_source_points
-         }}
+        {region.source_points, refresh_source_points_summary(attrs)}
+    end
+  end
+
+  defp refresh_source_points_summary(attrs) do
+    case Map.fetch(attrs, :source_points) do
+      {:ok, source_points} when is_list(source_points) and source_points != [] ->
+        %{
+          source_points_action:
+            if(source_points_mode(attrs) == :replace, do: :replaced, else: :appended),
+          source_points_count: length(source_points)
+        }
+
+      {:ok, []} ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :empty_source_points
+        }
+
+      {:ok, _other} ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :invalid_source_points
+        }
+
+      :error ->
+        %{
+          source_points_action: :rejected,
+          source_points_count: 0,
+          source_points_rejection_reason: :missing_source_points
+        }
     end
   end
 
