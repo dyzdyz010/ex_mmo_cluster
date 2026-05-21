@@ -28,13 +28,21 @@ export interface OnlinePrefabBlueprint {
 }
 
 // 跟服务端 BlueprintCatalog 对齐:
-// id 1 = sphere   (Ice = 4),~248 micro slots
-// id 2 = cylinder (Stone = 2),~336 micro slots
-// id 3 = stairs   (Wood = 3),288 micro slots(y ≤ x rule × 8 z)
+// id 1 = sphere       (Ice = 4),~248 micro slots
+// id 2 = cylinder     (Stone = 2),~336 micro slots
+// id 3 = stairs       (Wood = 3),288 micro slots(y ≤ x rule × 8 z)
+// id 4 = conductor X  (Iron = 5),2×2 wire spanning x
+// id 5 = conductor XZ (Iron = 5),cross-junction spanning x/z
+// id 6 = power X      (PowerBlock = 6),conductive power terminal spanning x
+// id 7 = load X       (LoadBlock = 7),conductive load terminal spanning x
 const ONLINE_PREFAB_CATALOG: Readonly<Record<string, OnlinePrefabBlueprint>> = {
   builtin_sphere: { id: 1, version: BLUEPRINT_VERSION, expectedCellCount: 248 },
   builtin_cylinder: { id: 2, version: BLUEPRINT_VERSION, expectedCellCount: 336 },
   builtin_stairs: { id: 3, version: BLUEPRINT_VERSION, expectedCellCount: 288 },
+  builtin_conductor_wire_x: { id: 4, version: BLUEPRINT_VERSION, expectedCellCount: 32 },
+  builtin_conductor_junction_xz: { id: 5, version: BLUEPRINT_VERSION, expectedCellCount: 56 },
+  builtin_power_terminal_x: { id: 6, version: BLUEPRINT_VERSION, expectedCellCount: 32 },
+  builtin_load_terminal_x: { id: 7, version: BLUEPRINT_VERSION, expectedCellCount: 32 },
 };
 
 export function resolveBlueprint(name: string): OnlinePrefabBlueprint | null {

@@ -44,6 +44,30 @@ const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
   { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
   { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
+  {
+    kind: "prefab",
+    label: "wire-x",
+    prefabName: "builtin_conductor_wire_x",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "wire-xz",
+    prefabName: "builtin_conductor_junction_xz",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "terminal",
+    prefabName: "builtin_power_terminal_x",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "load",
+    prefabName: "builtin_load_terminal_x",
+    rotation: EVoxelRotation.Rot0,
+  },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
@@ -54,9 +78,9 @@ const OFFLINE_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
 ];
 
-// Phase A1-1: server-side BlueprintCatalog v2 跟客户端 sphere/cylinder/stairs
-// 形状对齐(`onlinePrefabCatalog.ts` blueprint_id 1/2/3),hotbar 不再用旧的
-// pillar/floor/cube macro placeholder。两 mode hotbar 统一 prefab 列表。
+// Phase A1-1: server-side BlueprintCatalog v2 跟客户端 micro-mask prefab
+// 形状对齐(`onlinePrefabCatalog.ts`),hotbar 不再用旧的 pillar/floor/cube
+// macro placeholder。两 mode hotbar 统一 prefab 列表。
 const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "dirt", materialId: VoxelMaterialId.Dirt },
   { kind: "material", label: "stone", materialId: VoxelMaterialId.Stone },
@@ -64,6 +88,30 @@ const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
   { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
   { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
+  {
+    kind: "prefab",
+    label: "wire-x",
+    prefabName: "builtin_conductor_wire_x",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "wire-xz",
+    prefabName: "builtin_conductor_junction_xz",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "terminal",
+    prefabName: "builtin_power_terminal_x",
+    rotation: EVoxelRotation.Rot0,
+  },
+  {
+    kind: "prefab",
+    label: "load",
+    prefabName: "builtin_load_terminal_x",
+    rotation: EVoxelRotation.Rot0,
+  },
   { kind: "prefab", label: "sphere", prefabName: "builtin_sphere", rotation: EVoxelRotation.Rot0 },
   {
     kind: "prefab",
@@ -505,8 +553,7 @@ function shouldFallbackToMacroPrefabPlace(rejectReason: string | undefined): boo
   return (
     rejectReason === "no_target_boundary" ||
     rejectReason === "no_contact" ||
-    rejectReason === "empty_prefab" ||
-    rejectReason === "server_authority_not_supported"
+    rejectReason === "empty_prefab"
   );
 }
 

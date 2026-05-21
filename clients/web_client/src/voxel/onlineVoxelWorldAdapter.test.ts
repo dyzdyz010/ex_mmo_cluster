@@ -3,6 +3,7 @@ import { EventBus } from "../shared/events/eventBus";
 import type { AppEvents } from "../shared/events/events";
 import { ObserveLog } from "../observe/logger";
 import { VoxelOpcode } from "../infrastructure/net/opcodes";
+import { VoxelChunkDeltaKind } from "../infrastructure/net/voxelProtocol";
 import type {
   VoxelChunkDeltaMessage,
   VoxelChunkInvalidateMessage,
@@ -59,6 +60,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly editIntentCalls: EditIntentCall[] = [];
   readonly subscribeCalls: SubscribeCall[] = [];
   readonly queuedSnapshots: VoxelChunkSnapshotMessage[] = [];
+  readonly queuedDeltas: VoxelChunkDeltaMessage[] = [];
   available = true;
   nextRequestId = 100;
 
@@ -160,7 +162,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   }
 
   drainVoxelDeltas(): VoxelChunkDeltaMessage[] {
-    return [];
+    return this.queuedDeltas.splice(0, this.queuedDeltas.length);
   }
 
   drainVoxelInvalidates(): VoxelChunkInvalidateMessage[] {
@@ -213,6 +215,14 @@ function emptySnapshot(chunkCoord: { x: number; y: number; z: number }): VoxelCh
     tagSets: [],
     objectRefs: [],
   };
+}
+
+function normalBlockPayload(materialId: number): Uint8Array {
+  const payload = new Uint8Array(20);
+  const view = new DataView(payload.buffer);
+  view.setUint16(0, materialId, false);
+  view.setUint16(6, 100, false);
+  return payload;
 }
 
 function createAdapter() {
@@ -298,6 +308,18 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     expect(call.logicalSceneId).toBe(7);
     expect(call.parcelId).toBe(0);
     expect(call.knownParcelBuildEpoch).toBe(0);
+  });
+
+  it("translates conductive prefab names into server blueprint intents", () => {
+    const { adapter, transport } = createAdapter();
+
+    const result = adapter.placePrefab("builtin_power_terminal_x", { x: 0, y: 1, z: 0 });
+
+    expect(result).toEqual({ ok: true, placed: 32 });
+    expect(transport.prefabCalls).toHaveLength(1);
+    expect(transport.prefabCalls[0]?.blueprintId).toBe(6);
+    expect(transport.prefabCalls[0]?.blueprintVersion).toBe(OnlinePrefabBlueprintVersion);
+    expect(transport.prefabCalls[0]?.anchorWorldMicro).toEqual({ x: 0, y: 8, z: 0 });
   });
 
   it("ignores the rotation argument in v1 and pins rotation to 0", () => {
@@ -610,6 +632,127 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     ]);
   });
 
+  it("posts a target-free automatic circuit refresh to the formal auth endpoint", async () => {
+    const { adapter, bus } = createAdapter();
+    const acceptedEvents: AppEvents["world:voxel-auto-circuit-accepted"][] = [];
+    bus.on("world:voxel-auto-circuit-accepted", (event) => acceptedEvents.push(event));
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            region_id: 44,
+            field_region_created: true,
+            source_count: 1,
+            load_count: 1,
+            power_draw: {
+              output_mode: "dc",
+              voltage: 120,
+              current_limit_amps: 20,
+              load_current_amps: 20,
+              estimated_tick_energy_joules: 240,
+              over_current: false,
+            },
+          }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestVoxelAutoCircuit({ x: 0, y: 1, z: 0 }, 90)).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/auto_circuit",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 0,
+          y: 1,
+          z: 0,
+          max_ticks: 90,
+        }),
+      }),
+    );
+    expect(acceptedEvents).toEqual([
+      {
+        coord: { x: 0, y: 1, z: 0 },
+        source: "server",
+        regionId: "44",
+        fieldRegionCreated: true,
+        sourceCount: 1,
+        loadCount: 1,
+        powerDraw: {
+          outputMode: "dc",
+          voltage: 120,
+          currentLimitAmps: 20,
+          loadCurrentAmps: 20,
+          estimatedTickEnergyJoules: 240,
+          overCurrent: false,
+        },
+      },
+    ]);
+  });
+
+  it("does not impose a client-side lifetime on automatic circuit refreshes", async () => {
+    const { adapter } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ region_id: 44, field_region_created: true }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestVoxelAutoCircuit({ x: 0, y: 1, z: 0 })).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/auto_circuit",
+      expect.objectContaining({
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 0,
+          y: 1,
+          z: 0,
+        }),
+      }),
+    );
+  });
+
+  it("does not post automatic circuit refreshes while applying authoritative chunk deltas", async () => {
+    const { adapter, transport } = createAdapter();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 0, y: 0, z: 0 }));
+    adapter.onFrame(0);
+
+    transport.queuedDeltas.push({
+      type: "voxel_chunk_delta",
+      logicalSceneId: 7,
+      chunkCoord: { x: 0, y: 0, z: 0 },
+      baseChunkVersion: 0,
+      newChunkVersion: 1,
+      ops: [
+        {
+          deltaKind: VoxelChunkDeltaKind.CellSolid,
+          macroIndex: 0,
+          cellVersion: 1,
+          cellHash: 0x1234,
+          payload: normalBlockPayload(5),
+          refinedCell: null,
+        },
+      ],
+    });
+
+    adapter.onFrame(16);
+    await flushAsyncWork();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("surfaces structured conduction rejection reasons from the auth endpoint", async () => {
     const { adapter, bus } = createAdapter();
     const errorEvents: AppEvents["world:voxel-sync-error"][] = [];
@@ -655,7 +798,7 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
     );
   }
 
-  it("sends the wire intent with the boundary-snap micro anchor (not the macro origin)", () => {
+  it("submits the boundary-snap anchor proposal through the authoritative prefab intent", () => {
     const { adapter, transport } = createAdapter();
     seedSolidMacroAtOrigin(adapter);
 
@@ -673,19 +816,15 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
 
     const result = adapter.placePrefabBoundarySnap(request);
     expect(result.ok).toBe(true);
+    expect(result.preview).toMatchObject({ ok: true });
     expect(transport.prefabCalls).toHaveLength(1);
-
-    const [call] = transport.prefabCalls;
-    if (!call) throw new Error("expected one prefab call");
-    expect(call.blueprintId).toBe(1);
-    expect(call.blueprintVersion).toBe(OnlinePrefabBlueprintVersion);
-    expect(call.anchorWorldMicro).toEqual(preview.anchorMicroCoord);
-    // The boundary snap searches around the request anchor and shifts by the
-    // best incoming boundary point, so at least one axis must come out
-    // non-zero modulo 8 (otherwise it collapses to a macro origin and the
-    // server-side placement diverges from the client wireframe).
-    const anchor = call.anchorWorldMicro;
-    expect(anchor.x % 8 !== 0 || anchor.y % 8 !== 0 || anchor.z % 8 !== 0).toBe(true);
+    expect(transport.prefabCalls[0]).toMatchObject({
+      blueprintId: 1,
+      blueprintVersion: OnlinePrefabBlueprintVersion,
+      anchorWorldMicro: preview.anchorMicroCoord,
+      rotation: 0,
+      clientIntentSeq: 1,
+    });
   });
 
   it("returns the preview rejection when boundary snap finds no target", () => {
@@ -702,6 +841,7 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
     const result = adapter.placePrefabBoundarySnap(request);
     expect(result.ok).toBe(false);
     expect(result.rejectReason).toBe("no_target_boundary");
+    expect(result.preview?.rejectReason).toBe("no_target_boundary");
     expect(transport.prefabCalls).toHaveLength(0);
   });
 });

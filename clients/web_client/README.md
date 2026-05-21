@@ -43,7 +43,9 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
 2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和 `PrefabPlaceIntent` v1；多 chunk 自适应订阅与 prefab 跨 chunk 原子事务仍未完成。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
-   `builtin_cylinder`、`builtin_stairs` 使用 refined micro occupancy；`prefab_capture`
+   `builtin_cylinder`、`builtin_stairs`，以及导电测试用的
+   `builtin_conductor_wire_x`、`builtin_conductor_junction_xz`、
+   `builtin_power_terminal_x` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
    Prefab definition 保留 `partDefinitions / microPartIds`，实例化后拍扁为带
    part tag 的 refined micro 数据，供后续魔法和局部破坏按部件语义结算。
@@ -270,7 +272,7 @@ npm run preview # 预览 dist
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
 - `window.__voxelCli.run("voxel_subscribe 0 0 0 0")` 能主动订阅 chunk，`voxel_probe` 能读取服务端 voxel transport 调试串，`voxel_probe voxel_rebind 1 all` 能触发 Gate 订阅重绑定
 - 右键或 `F` 对准星邻接格提交 `VoxelImpactIntent`；选中在线 prefab 时提交 `PrefabPlaceIntent`。服务端 snapshot/delta 回推后，`cell` / `chunks` / HUD 能读到权威变化。
-- 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..7` 可直接选材质或当前模式支持的 builtin prefab。
+- 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..9` 可直接选常用材质和导电 prefab。
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason
 - 本地 fallback 初始出生点会从内置地形表面求角色中心高度，不再使用空中硬编码高度
 
@@ -316,9 +318,10 @@ window.__voxelCli?.run("prefabs");
 window.__voxelCli?.run("prefab_boundary builtin_sphere");
 window.__voxelCli?.run("prefab_capture test 0 0 0 2 2 2");
 window.__voxelCli?.run("prefab_place test 8 5 8 rot90");
-window.__voxelCli?.run("prefab_place builtin_pillar_3 12 1 8");
-window.__voxelCli?.run("prefab_place builtin_floor_3x3 14 1 8");
-window.__voxelCli?.run("prefab_place builtin_cube_2x2x2 16 1 8");
+window.__voxelCli?.run("prefab_place builtin_power_terminal_x 0 1 0");
+window.__voxelCli?.run("prefab_place builtin_conductor_wire_x 1 1 0");
+window.__voxelCli?.run("prefab_place builtin_conductor_junction_xz 2 1 0");
+window.__voxelCli?.run("voxel_conduct 0 1 0 2 1 0 120 90");
 window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8");
 window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8");
 window.__voxelCli?.run("prefab_place builtin_stairs 16 5 8 rot90");
@@ -394,7 +397,10 @@ AUTH_PORT=20010 PORT=5173 ./scripts/start-client.sh
 - `Space`：跳跃；HUD / CLI trace 会记录 `jump_pressed`、`movement_flags`、`player_mode` 和 Y 轴变化，渲染层会把 airborne offset 加到地表显示高度上
 - 默认 server-authoritative 模式：左键 / `G` 对准星命中格提交 break intent；右键 / `F` 在准星邻接格提交 place intent；选中 prefab 时提交 `PrefabPlaceIntent` v1
 - `VITE_VOXEL_SYNC=offline` 模式：左键 / `G` 破坏本地方块；右键 / `F` 放置当前 hotbar 项，prefab 会优先执行 socket-free micro boundary snap
-- 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4` 选择 `Dirt / Stone / Wood / Ice`。server-authoritative 下 `5/6/7` 是 `builtin_pillar_3 / builtin_floor_3x3 / builtin_cube_2x2x2`；offline 下是 `builtin_sphere / builtin_cylinder / builtin_stairs`
+- 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4`
+  选择 `Dirt / Stone / Wood / Ice`，`5/6` 是 `iron / power_block`，`7/8/9`
+  是 `wire-x / wire-xz / terminal` 导电 prefab；其它 prefab 可继续点击底部 dock
+  或用 `select_prefab <name>` 选择。
 
 ## Smoke / 验收脚本
 

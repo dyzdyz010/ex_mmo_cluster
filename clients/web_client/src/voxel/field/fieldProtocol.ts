@@ -7,6 +7,7 @@
 export const FieldMask = {
   Temperature: 0x01,
   ElectricPotential: 0x02,
+  ElectricCurrent: 0x08,
   Ionization: 0x04,
 } as const;
 
@@ -31,6 +32,8 @@ export interface FFieldRegionSnapshot {
   temperatureValues: Float32Array;
   /** Present when fieldMask & 0x02; parallel to macroIndices. */
   electricValues: Float32Array;
+  /** Present when fieldMask & 0x08; parallel to macroIndices. */
+  electricCurrentValues: Float32Array;
   /** Present when fieldMask & 0x04; parallel to macroIndices. */
   ionizationValues: Uint8Array;
 }
@@ -101,6 +104,17 @@ export function decodeFieldRegionSnapshot(buf: ArrayBuffer): FFieldRegionSnapsho
     }
   }
 
+  // electric_current: f32[cellCount] — only if field_mask & 0x08
+  let electricCurrentValues = new Float32Array(0);
+  if (fieldMask & FieldMask.ElectricCurrent) {
+    if (buf.byteLength < offset + cellCount * 4) return null;
+    electricCurrentValues = new Float32Array(cellCount);
+    for (let i = 0; i < cellCount; i++) {
+      electricCurrentValues[i] = view.getFloat32(offset, true);
+      offset += 4;
+    }
+  }
+
   // ionization: u8[cellCount] — only if field_mask & 0x04
   let ionizationValues = new Uint8Array(0);
   if (fieldMask & FieldMask.Ionization) {
@@ -122,6 +136,7 @@ export function decodeFieldRegionSnapshot(buf: ArrayBuffer): FFieldRegionSnapsho
     macroIndices,
     temperatureValues,
     electricValues,
+    electricCurrentValues,
     ionizationValues,
   };
 }

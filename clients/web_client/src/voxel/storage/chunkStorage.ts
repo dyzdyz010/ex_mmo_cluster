@@ -35,6 +35,7 @@ import {
   type FPrefabInstanceData,
 } from "./types";
 import type { FChunkMesherCellSnapshot, FChunkMesherInputSnapshot } from "../meshing/types";
+import { cloneSurfaceAttachment } from "../surfaceAttachment";
 
 export class ChunkStorage {
   readonly data: FChunkStorageData;
@@ -54,6 +55,7 @@ export class ChunkStorage {
       normalBlocks: [],
       refinedCells: [],
       prefabInstances: [],
+      surfaceAttachments: [],
       environmentSummaries: [],
       freeNormalBlockIndices: [],
       freeEnvironmentSummaryIndices: [],
@@ -690,17 +692,9 @@ function cloneChunkStorageData(data: FChunkStorageData): FChunkStorageData {
     chunkCoord: { ...data.chunkCoord },
     macroHeaders: data.macroHeaders.map((header) => ({ ...header })),
     normalBlocks: data.normalBlocks.map(cloneNormalBlock),
-    refinedCells: data.refinedCells.map((cell) =>
-      normalizeRefinedCell({
-        microOccupancyMask: cell.microOccupancyMask,
-        microMaterialIds: [...cell.microMaterialIds],
-        microStateFlags: [...cell.microStateFlags],
-        microPartIds: [...cell.microPartIds],
-        prefabInstanceIds: [...cell.prefabInstanceIds],
-        boundaryCache: cell.boundaryCache,
-      }),
-    ),
+    refinedCells: data.refinedCells.map(cloneRefinedCell),
     prefabInstances: data.prefabInstances.map(clonePrefabInstance),
+    surfaceAttachments: (data.surfaceAttachments ?? []).map(cloneSurfaceAttachment),
     environmentSummaries: data.environmentSummaries.map(cloneEnvironmentSummary),
     freeNormalBlockIndices: [...data.freeNormalBlockIndices],
     freeEnvironmentSummaryIndices: [...data.freeEnvironmentSummaryIndices],
@@ -708,6 +702,24 @@ function cloneChunkStorageData(data: FChunkStorageData): FChunkStorageData {
     dirtyMacroMax: { ...data.dirtyMacroMax },
     dirtyFlags: data.dirtyFlags,
   };
+}
+
+function cloneRefinedCell(cell: FRefinedCellData): FRefinedCellData {
+  return normalizeRefinedCell({
+    microOccupancyMask: cell.microOccupancyMask,
+    microMaterialIds: [...cell.microMaterialIds],
+    microStateFlags: [...cell.microStateFlags],
+    microPartIds: [...cell.microPartIds],
+    prefabInstanceIds: [...cell.prefabInstanceIds],
+    boundaryCache: cell.boundaryCache,
+    ...(cell.attributeSetRefsBySlot
+      ? { attributeSetRefsBySlot: new Uint32Array(cell.attributeSetRefsBySlot) }
+      : {}),
+    ...(cell.tagSetRefsBySlot ? { tagSetRefsBySlot: new Uint32Array(cell.tagSetRefsBySlot) } : {}),
+    ...(cell.ownerObjectIdsBySlot
+      ? { ownerObjectIdsBySlot: new BigUint64Array(cell.ownerObjectIdsBySlot) }
+      : {}),
+  });
 }
 
 function cloneNormalBlock(block: FNormalBlockData): FNormalBlockData {

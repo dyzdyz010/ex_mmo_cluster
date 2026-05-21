@@ -9,6 +9,7 @@ export const VoxelMaterialId = {
   Ice: 4,
   Iron: 5,
   PowerBlock: 6,
+  LoadBlock: 7,
 } as const;
 
 export interface VoxelMaterialDefinition {
@@ -75,6 +76,13 @@ const MATERIAL_DEFINITIONS: readonly VoxelMaterialDefinition[] = [
     name: "power_block",
     baseColorHex: 0xffd866,
     maxHealth: 240,
+    flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.LoadBlock,
+    name: "load_block",
+    baseColorHex: 0x29b6f6,
+    maxHealth: 220,
     flammable: false,
   },
 ] as const;

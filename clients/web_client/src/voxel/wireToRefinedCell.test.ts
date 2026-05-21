@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RefinedCellWireData } from "../infrastructure/net/refinedCellWire";
 import { VoxelConstants } from "./core/constants";
+import { normalizeRefinedCell } from "./microgrid/governance";
 import { wireToRefinedCell } from "./wireToRefinedCell";
 
 const SLOT_COUNT = VoxelConstants.MicroCountPerMacro;
@@ -102,6 +103,33 @@ describe("wireToRefinedCell", () => {
     // Unset slots stay at the fallback values.
     expect(refined.microMaterialIds[1]).toBe(0);
     expect(refined.microPartIds[1]).toBe(-1);
+  });
+
+  it("preserves slot-level owner provenance through refined normalization", () => {
+    const wire: RefinedCellWireData = {
+      occupancyWords: maskWordsForSlots(0, 5),
+      boundaryCache: 0n,
+      layers: [
+        {
+          maskWords: maskWordsForSlots(0, 5),
+          materialId: 17,
+          stateFlags: 0,
+          health: 100,
+          attributeSetRef: 11,
+          tagSetRef: 12,
+          ownerObjectId: 42n,
+          ownerPartId: 3,
+        },
+      ],
+      objectRefs: [],
+    };
+
+    const normalized = normalizeRefinedCell(wireToRefinedCell(wire));
+
+    expect(normalized.attributeSetRefsBySlot?.[0]).toBe(11);
+    expect(normalized.tagSetRefsBySlot?.[5]).toBe(12);
+    expect(normalized.ownerObjectIdsBySlot?.[0]).toBe(42n);
+    expect(normalized.ownerObjectIdsBySlot?.[5]).toBe(42n);
   });
 
   it("narrows boundaryCache to a 32-bit number", () => {

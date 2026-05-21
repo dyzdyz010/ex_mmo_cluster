@@ -1,8 +1,14 @@
 import { VoxelConstants } from "./core/constants";
 import { localMacroInChunk, macroCoordFromLinearIndex } from "./core/gridUtils";
-import { EVoxelCellMode, type FChunkCoord, type FMacroCoord } from "./core/types";
+import { EVoxelCellMode, type FChunkCoord, type FMacroCoord, type FMicroCoord } from "./core/types";
 import { normalizeRefinedCell } from "./microgrid/governance";
 import type { ChunkStorage } from "./storage/chunkStorage";
+import {
+  createSurfaceAttachment,
+  type SurfaceAttachment,
+  type SurfaceAttachmentFace,
+  type SurfaceAttachmentVisibilityPolicy,
+} from "./surfaceAttachment";
 import {
   MACRO_ENV_INDEX_UNSET,
   VoxelDirtyFlags,
@@ -26,12 +32,16 @@ export interface SerializedRefinedCellData {
   microPartIds: number[];
   prefabInstanceIds: number[];
   boundaryCache: number;
+  attributeSetRefsBySlot?: number[];
+  tagSetRefsBySlot?: number[];
+  ownerObjectIdsBySlot?: string[];
 }
 
 export interface SerializedChunkStorageSnapshot {
   chunkCoord: FChunkCoord;
   cells: SerializedWorldCellSnapshot[];
   prefabInstances: FPrefabInstanceData[];
+  surfaceAttachments: SerializedSurfaceAttachment[];
 }
 
 export interface SerializedWorldCellSnapshot {
@@ -46,6 +56,18 @@ export interface SerializedWorldSnapshot {
   version: 1;
   chunks: SerializedChunkStorageSnapshot[];
   editStats: WorldEditStats;
+}
+
+export interface SerializedSurfaceAttachment {
+  id: string;
+  anchorMacro: FMacroCoord;
+  anchorMicro: FMicroCoord;
+  face: SurfaceAttachmentFace;
+  materialId: number;
+  faceMask: string;
+  ownerObjectId: string;
+  ownerPartId: number;
+  visibilityPolicy: SurfaceAttachmentVisibilityPolicy;
 }
 
 interface WorldSnapshotImportTarget {
@@ -64,6 +86,7 @@ export function exportWorldSnapshot(
       chunkCoord: cloneChunkCoord(chunk.data.chunkCoord),
       cells: serializeChunkCells(chunk),
       prefabInstances: chunk.data.prefabInstances.map(clonePrefabInstance),
+      surfaceAttachments: (chunk.data.surfaceAttachments ?? []).map(serializeSurfaceAttachment),
     })),
     editStats: { ...editStats },
   };
@@ -81,6 +104,9 @@ export function importWorldSnapshot(
   for (const chunkSnapshot of snapshot.chunks) {
     const chunk = target.ensureChunk(chunkSnapshot.chunkCoord);
     chunk.data.prefabInstances = chunkSnapshot.prefabInstances.map(clonePrefabInstance);
+    chunk.data.surfaceAttachments = (chunkSnapshot.surfaceAttachments ?? []).map(
+      deserializeSurfaceAttachment,
+    );
     for (const cell of chunkSnapshot.cells) {
       restoreSnapshotCell(chunk, cell);
     }
@@ -118,6 +144,10 @@ function cloneChunkCoord(coord: FChunkCoord): FChunkCoord {
 }
 
 function cloneMacroCoord(coord: FMacroCoord): FMacroCoord {
+  return { x: coord.x, y: coord.y, z: coord.z };
+}
+
+function cloneMicroCoord(coord: FMicroCoord): FMicroCoord {
   return { x: coord.x, y: coord.y, z: coord.z };
 }
 
@@ -202,7 +232,7 @@ function restoreSnapshotCell(chunk: ChunkStorage, cell: SerializedWorldCellSnaps
 
 function serializeRefinedCell(cell: FRefinedCellData): SerializedRefinedCellData {
   const normalized = normalizeRefinedCell(cell);
-  return {
+  const serialized: SerializedRefinedCellData = {
     microOccupancyMask: normalized.microOccupancyMask.toString(),
     microMaterialIds: [...normalized.microMaterialIds],
     microStateFlags: [...normalized.microStateFlags],
@@ -210,6 +240,18 @@ function serializeRefinedCell(cell: FRefinedCellData): SerializedRefinedCellData
     prefabInstanceIds: [...normalized.prefabInstanceIds],
     boundaryCache: normalized.boundaryCache,
   };
+  if (normalized.attributeSetRefsBySlot) {
+    serialized.attributeSetRefsBySlot = [...normalized.attributeSetRefsBySlot];
+  }
+  if (normalized.tagSetRefsBySlot) {
+    serialized.tagSetRefsBySlot = [...normalized.tagSetRefsBySlot];
+  }
+  if (normalized.ownerObjectIdsBySlot) {
+    serialized.ownerObjectIdsBySlot = [...normalized.ownerObjectIdsBySlot].map((value) =>
+      value.toString(),
+    );
+  }
+  return serialized;
 }
 
 function deserializeRefinedCell(cell: SerializedRefinedCellData): FRefinedCellData {
@@ -220,6 +262,13 @@ function deserializeRefinedCell(cell: SerializedRefinedCellData): FRefinedCellDa
     microPartIds: [...cell.microPartIds],
     prefabInstanceIds: [...cell.prefabInstanceIds],
     boundaryCache: cell.boundaryCache,
+    ...(cell.attributeSetRefsBySlot
+      ? { attributeSetRefsBySlot: Uint32Array.from(cell.attributeSetRefsBySlot) }
+      : {}),
+    ...(cell.tagSetRefsBySlot ? { tagSetRefsBySlot: Uint32Array.from(cell.tagSetRefsBySlot) } : {}),
+    ...(cell.ownerObjectIdsBySlot
+      ? { ownerObjectIdsBySlot: BigUint64Array.from(cell.ownerObjectIdsBySlot.map(BigInt)) }
+      : {}),
   });
 }
 
@@ -231,4 +280,34 @@ function cloneEnvironmentSummary(summary: FMacroEnvironmentSummary): FMacroEnvir
     currentMoisture: summary.currentMoisture,
     fieldMask: summary.fieldMask,
   };
+}
+
+function serializeSurfaceAttachment(attachment: SurfaceAttachment): SerializedSurfaceAttachment {
+  return {
+    id: attachment.id,
+    anchorMacro: cloneMacroCoord(attachment.anchorMacro),
+    anchorMicro: cloneMicroCoord(attachment.anchorMicro),
+    face: attachment.face,
+    materialId: attachment.materialId,
+    faceMask: attachment.faceMask.toString(),
+    ownerObjectId: attachment.ownerObjectId.toString(),
+    ownerPartId: attachment.ownerPartId,
+    visibilityPolicy: attachment.visibilityPolicy,
+  };
+}
+
+function deserializeSurfaceAttachment(
+  attachment: SerializedSurfaceAttachment,
+): SurfaceAttachment {
+  return createSurfaceAttachment({
+    id: attachment.id,
+    anchorMacro: cloneMacroCoord(attachment.anchorMacro),
+    anchorMicro: cloneMicroCoord(attachment.anchorMicro),
+    face: attachment.face,
+    materialId: attachment.materialId,
+    faceMask: BigInt(attachment.faceMask),
+    ownerObjectId: BigInt(attachment.ownerObjectId),
+    ownerPartId: attachment.ownerPartId,
+    visibilityPolicy: attachment.visibilityPolicy,
+  });
 }

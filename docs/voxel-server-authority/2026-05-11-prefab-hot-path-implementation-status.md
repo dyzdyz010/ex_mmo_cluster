@@ -46,12 +46,12 @@
 ## Verified
 
 - CLI/server smoke: single-macro sphere prefab placement is about 10-11ms.
-- Browser right-click boundary-snap sphere:
-  - before macro grouping: `ws_voxel_prefab_single_chunk_fast_path_applied`
-    reported `elapsed_ms: 1379`.
-  - after macro grouping: the same right-click path reported `elapsed_ms: 38`.
-  - Browser CLI observed voxel message count increment, intent result receipt,
-    delta receipt, and chunk version `1 -> 2`.
+- Browser aiming still uses the client-local boundary-snap preview so prefab
+  wireframes move at micro-grid precision while the user targets a surface.
+  Online right-click boundary-snap now submits the previewed `anchor_world_micro`
+  as a placement proposal through protocol `0x67`; Scene/Gate still own the
+  result by re-rasterizing blueprint id/version + anchor and committing through
+  the normal chunk transaction path.
 - Occupancy reject still returns `:micro_slot_already_occupied` and leaves the
   persisted chunk version unchanged.
 
@@ -67,14 +67,18 @@
 
 ## Remaining Work
 
-- No known implementation tail remains in the prefab route/participant contract.
+- The prefab route/participant contract supports explicit anchor placement.
+  Browser boundary snap is enabled as a client-proposed explicit anchor, not as
+  client authority: transport failure, occupancy conflicts, stale chunk truth,
+  and all final writes remain owned by the server transaction.
 - Local startup was hardened after validation found two Windows-specific Erlang
   startup hazards: default EPMD port `4369` can be inside an excluded TCP port
   range, and long node names can trigger noisy `hosts` parsing when the Windows
   hosts file starts with a UTF-8 BOM. The server scripts now default to
   `ERL_EPMD_PORT=43690` and short node names.
 - The next useful check is an end-to-end user smoke from a fresh shell:
-  start `scripts/start-server.ps1`, start the web client, place single-chunk and
-  boundary-snapped prefabs through the browser, and verify the CLI observe
-  snapshot reports intent result, delta receipt, chunk version advance, and no
-  server warning spam.
+  start `scripts/start-server.ps1`, start the web client, verify the prefab
+  preview lineframe follows micro-grid surface offsets, then use
+  `prefab_place_snap` and confirm the server accepts the resulting 0x67 intent.
+  The CLI observe snapshot should report intent result, delta receipt, chunk
+  version advance, and no server warning spam.

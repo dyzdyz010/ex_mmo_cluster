@@ -79,13 +79,14 @@ export class HotbarDockView implements FrameSubscriber {
 
 export function renderHotbarDockHtml(state: HotbarState): string {
   const selected = state.selected;
-  const selectedLabel =
-    selected.kind === "prefab" ? `prefab / ${selected.label}` : selected.label;
+  const selectedLabel = selected.kind === "prefab" ? `prefab / ${selected.label}` : selected.label;
 
   return [
     `<div class="hotbar-current">${escapeHtml(`${state.selectedIndex + 1} ${selectedLabel}`)}</div>`,
     `<div class="hotbar-slots" role="toolbar" aria-label="Voxel hotbar">`,
-    ...state.entries.map((entry, index) => renderHotbarSlot(entry, index, index === state.selectedIndex)),
+    ...state.entries.map((entry, index) =>
+      renderHotbarSlot(entry, index, index === state.selectedIndex),
+    ),
     `</div>`,
   ].join("");
 }
@@ -94,7 +95,10 @@ function renderHotbarSlot(entry: HotbarEntry, index: number, selected: boolean):
   const kindLabel = entry.kind === "prefab" ? "prefab" : "material";
   const label = escapeHtml(entry.label);
   const selectedClass = selected ? " is-selected" : "";
-  const icon = entry.kind === "material" ? renderMaterialIcon(entry.materialId) : renderPrefabIcon(entry.label);
+  const icon =
+    entry.kind === "material"
+      ? renderMaterialIcon(entry.materialId)
+      : renderPrefabIcon(entry.label);
 
   return [
     `<button class="hotbar-slot hotbar-slot--${entry.kind}${selectedClass}"`,
@@ -126,6 +130,14 @@ function prefabShapeClass(label: string): string {
       return "hotbar-icon--cylinder";
     case "stairs":
       return "hotbar-icon--stairs";
+    case "wire-x":
+      return "hotbar-icon--conductor";
+    case "wire-xz":
+      return "hotbar-icon--conductor-junction";
+    case "terminal":
+      return "hotbar-icon--power-terminal";
+    case "load":
+      return "hotbar-icon--load-terminal";
     default:
       return "hotbar-icon--prefab-generic";
   }

@@ -16,12 +16,16 @@ function block(materialId: number) {
 }
 
 describe("LocalPrefabRegistry", () => {
-  it("preloads built-in sphere, cylinder, and stairs prefabs", () => {
+  it("preloads built-in shape and conductive prefabs", () => {
     const registry = new LocalPrefabRegistry();
     const prefabs = registry.list();
 
     expect(prefabs.map((prefab) => prefab.name)).toEqual([
+      "builtin_conductor_junction_xz",
+      "builtin_conductor_wire_x",
       "builtin_cylinder",
+      "builtin_load_terminal_x",
+      "builtin_power_terminal_x",
       "builtin_sphere",
       "builtin_stairs",
     ]);
@@ -35,6 +39,17 @@ describe("LocalPrefabRegistry", () => {
       partTags: ["builtin", "sphere", "curved"],
       defaultAffordances: ["break", "freeze", "melt"],
     });
+    expect(registry.get("builtin_conductor_wire_x")?.definition.partDefinitions[0]).toMatchObject({
+      partId: "body",
+      partTags: ["builtin", "conductive", "wire", "x_axis"],
+      defaultAffordances: ["break", "conduct"],
+    });
+    expect(registry.get("builtin_power_terminal_x")?.definition.materialChannels).toEqual([
+      VoxelMaterialId.PowerBlock,
+    ]);
+    expect(registry.get("builtin_load_terminal_x")?.definition.materialChannels).toEqual([
+      VoxelMaterialId.LoadBlock,
+    ]);
   });
 
   it("uses high-resolution micro occupancy for curved built-in prefabs", () => {
@@ -87,6 +102,26 @@ describe("LocalPrefabRegistry", () => {
         }),
       ]),
     );
+  });
+
+  it("builds conductive prefabs with aligned face contacts for connection tests", () => {
+    const registry = new LocalPrefabRegistry();
+    const wire = registry.get("builtin_conductor_wire_x");
+    const junction = registry.get("builtin_conductor_junction_xz");
+    const terminal = registry.get("builtin_power_terminal_x");
+    const load = registry.get("builtin_load_terminal_x");
+
+    expect(countOccupied(wire?.definition.occupancyWords[0] ?? 0n)).toBe(32);
+    expect(countOccupied(junction?.definition.occupancyWords[0] ?? 0n)).toBe(56);
+    expect(countOccupied(terminal?.definition.occupancyWords[0] ?? 0n)).toBe(32);
+    expect(countOccupied(load?.definition.occupancyWords[0] ?? 0n)).toBe(32);
+    expect(wire?.definition.boundaryFaceMasks?.negX).not.toBe(0n);
+    expect(wire?.definition.boundaryFaceMasks?.posX).not.toBe(0n);
+    expect(wire?.definition.boundaryFaceMasks?.negZ).toBe(0n);
+    expect(junction?.definition.boundaryFaceMasks?.posX).not.toBe(0n);
+    expect(junction?.definition.boundaryFaceMasks?.posZ).not.toBe(0n);
+    expect(terminal?.definition.materialChannels).toEqual([VoxelMaterialId.PowerBlock]);
+    expect(load?.definition.materialChannels).toEqual([VoxelMaterialId.LoadBlock]);
   });
 
   it("previews a socket snap with a world micro anchor and affected macro cells", () => {

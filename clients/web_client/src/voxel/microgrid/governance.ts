@@ -37,7 +37,7 @@ export function microMaskBit(coord: FMicroCoord): bigint {
 }
 
 export function normalizeRefinedCell(cell: FRefinedCellData): FRefinedCellData {
-  return {
+  const normalized: FRefinedCellData = {
     microOccupancyMask: cell.microOccupancyMask & FullMicroOccupancyMask,
     microMaterialIds: normalizeNumberSlots(cell.microMaterialIds, 0),
     microStateFlags: normalizeNumberSlots(cell.microStateFlags, 0),
@@ -45,6 +45,16 @@ export function normalizeRefinedCell(cell: FRefinedCellData): FRefinedCellData {
     prefabInstanceIds: [...new Set(cell.prefabInstanceIds)].sort((a, b) => a - b),
     boundaryCache: cell.boundaryCache,
   };
+  if (cell.attributeSetRefsBySlot) {
+    normalized.attributeSetRefsBySlot = normalizeUint32Slots(cell.attributeSetRefsBySlot);
+  }
+  if (cell.tagSetRefsBySlot) {
+    normalized.tagSetRefsBySlot = normalizeUint32Slots(cell.tagSetRefsBySlot);
+  }
+  if (cell.ownerObjectIdsBySlot) {
+    normalized.ownerObjectIdsBySlot = normalizeBigUint64Slots(cell.ownerObjectIdsBySlot);
+  }
+  return normalized;
 }
 
 export function makeRefinedCellFromBlock(block: FNormalBlockData): FRefinedCellData {
@@ -134,6 +144,15 @@ export function clearMicroBlock(
   next.microMaterialIds[index] = 0;
   next.microStateFlags[index] = 0;
   next.microPartIds[index] = -1;
+  if (next.attributeSetRefsBySlot) {
+    next.attributeSetRefsBySlot[index] = 0;
+  }
+  if (next.tagSetRefsBySlot) {
+    next.tagSetRefsBySlot[index] = 0;
+  }
+  if (next.ownerObjectIdsBySlot) {
+    next.ownerObjectIdsBySlot[index] = 0n;
+  }
   return next;
 }
 
@@ -146,5 +165,17 @@ function normalizeNumberSlots(values: number[], fallback: number): number[] {
   for (let index = 0; index < Math.min(values.length, MicroGridSlotCount); index += 1) {
     out[index] = values[index] ?? fallback;
   }
+  return out;
+}
+
+function normalizeUint32Slots(values: Uint32Array): Uint32Array {
+  const out = new Uint32Array(MicroGridSlotCount);
+  out.set(values.subarray(0, Math.min(values.length, MicroGridSlotCount)));
+  return out;
+}
+
+function normalizeBigUint64Slots(values: BigUint64Array): BigUint64Array {
+  const out = new BigUint64Array(MicroGridSlotCount);
+  out.set(values.subarray(0, Math.min(values.length, MicroGridSlotCount)));
   return out;
 }

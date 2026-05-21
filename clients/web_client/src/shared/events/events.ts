@@ -137,6 +137,15 @@ export type AppEvents = {
     fieldRegionCreated?: boolean;
     powerDraw?: ElectricPowerDraw;
   };
+  "world:voxel-auto-circuit-accepted": {
+    coord: FMacroCoord;
+    source: string;
+    regionId?: string;
+    fieldRegionCreated?: boolean;
+    sourceCount?: number;
+    loadCount?: number;
+    powerDraw?: ElectricPowerDraw;
+  };
   "world:micro-placed": {
     macro: FMacroCoord;
     micro: FMicroCoord;

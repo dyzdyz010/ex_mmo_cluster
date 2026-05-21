@@ -6,7 +6,7 @@ import {
 } from "./onlinePrefabCatalog";
 
 describe("onlinePrefabCatalog", () => {
-  it("resolves the three v2 builtin blueprints to their server-side ids", () => {
+  it("resolves the v2 builtin blueprints to their server-side ids", () => {
     expect(resolveBlueprint("builtin_sphere")).toEqual({
       id: 1,
       version: OnlinePrefabBlueprintVersion,
@@ -22,6 +22,26 @@ describe("onlinePrefabCatalog", () => {
       version: OnlinePrefabBlueprintVersion,
       expectedCellCount: 288,
     });
+    expect(resolveBlueprint("builtin_conductor_wire_x")).toEqual({
+      id: 4,
+      version: OnlinePrefabBlueprintVersion,
+      expectedCellCount: 32,
+    });
+    expect(resolveBlueprint("builtin_conductor_junction_xz")).toEqual({
+      id: 5,
+      version: OnlinePrefabBlueprintVersion,
+      expectedCellCount: 56,
+    });
+    expect(resolveBlueprint("builtin_power_terminal_x")).toEqual({
+      id: 6,
+      version: OnlinePrefabBlueprintVersion,
+      expectedCellCount: 32,
+    });
+    expect(resolveBlueprint("builtin_load_terminal_x")).toEqual({
+      id: 7,
+      version: OnlinePrefabBlueprintVersion,
+      expectedCellCount: 32,
+    });
   });
 
   it("returns null for any name not in the v2 catalog", () => {
@@ -35,6 +55,10 @@ describe("onlinePrefabCatalog", () => {
       "builtin_sphere",
       "builtin_cylinder",
       "builtin_stairs",
+      "builtin_conductor_wire_x",
+      "builtin_conductor_junction_xz",
+      "builtin_power_terminal_x",
+      "builtin_load_terminal_x",
     ]);
   });
 

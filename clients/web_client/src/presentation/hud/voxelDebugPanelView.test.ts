@@ -95,14 +95,16 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain("active");
     expect(html).toContain("<dd>3</dd>");
     expect(html).toContain("voxel-panel-stat--field");
-    expect(html).toContain("field=on regions=1 electric=2 smoke=12");
+    expect(html).toContain("field=on regions=1 electric=2 current=0 smoke=12");
     expect(html).toContain("data-voxel-panel-shortcuts");
     expect(html).toContain("WASD");
     expect(html).toContain("F");
     expect(html).toContain("Z / X / C");
     expect(html).toContain("window.__voxelCli?.run(&quot;snapshot&quot;)");
+    expect(html).toContain("voxel_auto_circuit");
     expect(html).toContain("voxel_subscribe");
     expect(html).toContain('data-voxel-action="field-overlay"');
+    expect(html).toContain('data-voxel-action="auto-circuit-selected"');
     expect(html).toContain('data-voxel-action="guide"');
     expect(html).toContain('data-voxel-action="subscribe"');
     expect(html).not.toContain('data-voxel-action="impact"');
@@ -117,7 +119,7 @@ describe("VoxelDebugPanelView", () => {
   it("summarizes field overlay as inactive when no field snapshot is available", () => {
     const html = renderVoxelDebugPanelHtml(makeVoxelSnapshot());
 
-    expect(html).toContain("field=off regions=0 electric=0 smoke=0");
+    expect(html).toContain("field=off regions=0 electric=0 current=0 smoke=0");
   });
 
   it("renders sync failures in the visible panel instead of hiding them in JSON", () => {
@@ -344,6 +346,33 @@ describe("VoxelDebugPanelView", () => {
         source: "voxel_panel",
       },
     ]);
+
+    view.dispose();
+  });
+
+  it("lets the visible panel trigger a manual auto-circuit refresh at the selected voxel", () => {
+    const root = new FakeVoxelPanelRoot();
+    const commands = new FakeCommands();
+    const view = new VoxelDebugPanelView(
+      root as unknown as HTMLDivElement,
+      commands,
+      makeWorld(),
+      undefined,
+      undefined,
+      () => ({ x: 4, y: 12, z: 12 }),
+    );
+
+    root.inputField("conductTicks", "180");
+    root.clickAction("auto-circuit-selected");
+
+    expect(commands.calls).toEqual([
+      {
+        command: "voxel_auto_circuit",
+        args: ["4", "12", "12", "180"],
+        source: "voxel_panel",
+      },
+    ]);
+    expect(root.innerHTML).toContain("voxel_auto_circuit ok");
 
     view.dispose();
   });

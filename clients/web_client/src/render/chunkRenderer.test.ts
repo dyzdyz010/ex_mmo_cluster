@@ -1,6 +1,14 @@
 import { BufferGeometry, Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import { MacroWorldSize } from "../voxel/core/constants";
+import { EVoxelRotation } from "../voxel/core/types";
+import { resolveSelectionOverlayProjection } from "../voxel/overlayTarget";
+import { LocalPrefabRegistry } from "../voxel/prefab";
+import { WorldStore } from "../voxel/worldStore";
+import {
+  buildPrefabRasterMicroWireGeometry,
+  buildPrefabRasterSurfaceOutlineGeometry,
+} from "./prefabPreviewGeometry";
 import { ChunkRenderController } from "./chunkRenderer";
 
 describe("ChunkRenderController hit-face outline", () => {
@@ -15,11 +23,50 @@ describe("ChunkRenderController hit-face outline", () => {
 
     const snapshot = controller.getTargetHighlightSnapshot();
     expect(snapshot.visible).toBe(true);
-    expect(snapshot.kind).toBe("hit-face");
+    expect(snapshot.kind).toBe("macro-cell");
     expect(snapshot.faceNormal).toEqual({ x: 1, y: 0, z: 0 });
-    expect(snapshot.position.x).toBeGreaterThan((1 + 1) * MacroWorldSize);
+    expect(snapshot.occupiedMacro).toEqual({ x: 1, y: 2, z: 3 });
+    expect(snapshot.occupiedMicro).toBeNull();
+    expect(snapshot.position.x).toBeGreaterThan((1 + 0.5) * MacroWorldSize);
+    expect(snapshot.position.x).toBeLessThan((1 + 0.6) * MacroWorldSize);
     expect(snapshot.position.y).toBeCloseTo((2 + 0.5) * MacroWorldSize);
     expect(snapshot.position.z).toBeCloseTo((3 + 0.5) * MacroWorldSize);
+
+    controller.dispose();
+  });
+
+  it("shows a prefab outline when the hit refined micro belongs to a prefab", () => {
+    const controller = new ChunkRenderController();
+    const world = new WorldStore();
+    const registry = new LocalPrefabRegistry();
+    const macro = { x: 1, y: 2, z: 3 };
+    const micro = { x: 0, y: 3, z: 3 };
+    const placed = registry.place("builtin_conductor_wire_x", macro, world, EVoxelRotation.Rot0);
+    expect(placed.ok).toBe(true);
+
+    controller.setTargetHighlights(
+      {
+        occupiedMacro: macro,
+        adjacentMacro: { x: 2, y: 2, z: 3 },
+        faceNormal: { x: 1, y: 0, z: 0 },
+        occupiedMicro: { macro, micro },
+        adjacentMicro: { macro, micro: { x: 3, y: 3, z: 4 } },
+      },
+      world,
+    );
+
+    const snapshot = controller.getTargetHighlightSnapshot();
+    expect(snapshot.kind).toBe("prefab");
+    expect(snapshot.occupiedMicro).toEqual({ macro, micro });
+    const projection = resolveSelectionOverlayProjection(world, { macro, micro }, macro);
+    const surfaceOutline = buildPrefabRasterSurfaceOutlineGeometry(projection.cells);
+    const denseWire = buildPrefabRasterMicroWireGeometry(projection.cells);
+    const targetLineSegments =
+      (
+        controller as unknown as { targetHighlight: { geometry: BufferGeometry } }
+      ).targetHighlight.geometry.getAttribute("position").count / 2;
+    expect(targetLineSegments).toBe(surfaceOutline.wireSegmentCount);
+    expect(surfaceOutline.wireSegmentCount).toBeLessThan(denseWire.wireSegmentCount);
 
     controller.dispose();
   });

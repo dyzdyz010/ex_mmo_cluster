@@ -66,12 +66,16 @@ class FakeHotbarEdit implements HotbarDockEditPort {
 
 describe("HotbarDockView", () => {
   it("renders the full hotbar with selected state and prefab shape icons", () => {
-    const state = makeHotbarState(5);
+    const state = makeHotbarState(6);
     const html = renderHotbarDockHtml(state);
 
     expect(html.match(/data-hotbar-index=/g)).toHaveLength(state.entries.length);
     expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain('aria-label="6 sphere prefab"');
+    expect(html).toContain('aria-label="7 wire-x prefab"');
+    expect(html).toContain("hotbar-icon--conductor");
+    expect(html).toContain("hotbar-icon--conductor-junction");
+    expect(html).toContain("hotbar-icon--power-terminal");
+    expect(html).toContain("hotbar-icon--load-terminal");
     expect(html).toContain("hotbar-icon--sphere");
     expect(html).toContain("hotbar-icon--cylinder");
     expect(html).toContain("hotbar-icon--stairs");
@@ -82,15 +86,15 @@ describe("HotbarDockView", () => {
     const edit = new FakeHotbarEdit();
     const view = new HotbarDockView(root as unknown as HTMLDivElement, edit);
 
-    root.clickHotbarIndex(6);
+    root.clickHotbarIndex(7);
 
-    expect(edit.selected).toEqual([6]);
-    expect(root.innerHTML).toContain('aria-label="7 cylinder prefab"');
+    expect(edit.selected).toEqual([7]);
+    expect(root.innerHTML).toContain('aria-label="8 wire-xz prefab"');
     expect(root.innerHTML).toContain('aria-pressed="true"');
 
     view.dispose();
     root.clickHotbarIndex(1);
-    expect(edit.selected).toEqual([6]);
+    expect(edit.selected).toEqual([7]);
   });
 
   it("stops dock pointer presses before they reach world editing", () => {
@@ -112,6 +116,31 @@ function makeHotbarState(selectedIndex: number): HotbarState {
     { kind: "material", label: "wood", materialId: VoxelMaterialId.Wood },
     { kind: "material", label: "ice", materialId: VoxelMaterialId.Ice },
     { kind: "material", label: "iron", materialId: VoxelMaterialId.Iron },
+    { kind: "material", label: "power_block", materialId: VoxelMaterialId.PowerBlock },
+    {
+      kind: "prefab",
+      label: "wire-x",
+      prefabName: "builtin_conductor_wire_x",
+      rotation: EVoxelRotation.Rot0,
+    },
+    {
+      kind: "prefab",
+      label: "wire-xz",
+      prefabName: "builtin_conductor_junction_xz",
+      rotation: EVoxelRotation.Rot0,
+    },
+    {
+      kind: "prefab",
+      label: "terminal",
+      prefabName: "builtin_power_terminal_x",
+      rotation: EVoxelRotation.Rot0,
+    },
+    {
+      kind: "prefab",
+      label: "load",
+      prefabName: "builtin_load_terminal_x",
+      rotation: EVoxelRotation.Rot0,
+    },
     {
       kind: "prefab",
       label: "sphere",

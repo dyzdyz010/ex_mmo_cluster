@@ -80,6 +80,7 @@ export interface VoxelPanelFieldOverlaySnapshot {
     regionId?: number;
     chunkCoord?: { cx: number; cy: number; cz: number };
     electricCells?: number;
+    currentCells?: number;
     smokeParticles?: number;
     temperatureCells?: number;
   }>;
@@ -227,6 +228,8 @@ export class VoxelDebugPanelView implements FrameSubscriber {
         return this.captureSelectedConductionEndpoint("source");
       case "conduct-target-selection":
         return this.captureSelectedConductionEndpoint("target");
+      case "auto-circuit-selected":
+        return this.runAutoCircuit("voxel_panel");
       case "conduct":
         return this.runConduction("voxel_panel");
       default:
@@ -252,6 +255,23 @@ export class VoxelDebugPanelView implements FrameSubscriber {
         this.formState.conductTicks,
         ...this.conductionPowerArgs(),
       ],
+      source,
+    );
+  }
+
+  private runAutoCircuit(source: string): CliCommandResult {
+    const coord = this.selectedVoxel?.();
+    if (!coord) {
+      return {
+        ok: false,
+        command: "voxel_auto_circuit",
+        text: "no selected voxel",
+      };
+    }
+
+    return this.commands.executeCliCommand(
+      "voxel_auto_circuit",
+      [String(coord.x), String(coord.y), String(coord.z), this.formState.conductTicks],
       source,
     );
   }
@@ -415,6 +435,7 @@ export function renderVoxelDebugPanelHtml(
     `<div class="voxel-panel-result${resultClass}" data-voxel-panel-result>${escapeHtml(resultText)}</div>`,
     `<div class="voxel-panel-actions" role="toolbar" aria-label="Pointer-worthy voxel actions">`,
     renderButton("field-overlay", "Field"),
+    renderButton("auto-circuit-selected", "Circuit"),
     renderButton("guide", "Guide"),
     `</div>`,
     `<div class="voxel-panel-form voxel-panel-form--subscribe">`,
@@ -458,6 +479,7 @@ function renderCliHints(): string {
     `window.__voxelCli?.run("snapshot")`,
     `window.__voxelCli?.run("voxel_sync")`,
     `window.__voxelCli?.run("logs 20")`,
+    `window.__voxelCli?.run("voxel_auto_circuit 4 12 12")`,
     `window.__voxelCli?.run("voxel_subscribe 0 0 0 1")`,
   ];
   return [
@@ -555,8 +577,9 @@ function summarizeFieldOverlaySnapshot(
 ): string {
   const regions = snapshot?.regions ?? [];
   const electricCells = regions.reduce((sum, region) => sum + (region.electricCells ?? 0), 0);
+  const currentCells = regions.reduce((sum, region) => sum + (region.currentCells ?? 0), 0);
   const smokeParticles = regions.reduce((sum, region) => sum + (region.smokeParticles ?? 0), 0);
-  return `field=${snapshot?.visible ? "on" : "off"} regions=${snapshot?.regionCount ?? 0} electric=${electricCells} smoke=${smokeParticles}`;
+  return `field=${snapshot?.visible ? "on" : "off"} regions=${snapshot?.regionCount ?? 0} electric=${electricCells} current=${currentCells} smoke=${smokeParticles}`;
 }
 
 function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {

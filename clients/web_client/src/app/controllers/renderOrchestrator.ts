@@ -1,6 +1,10 @@
 import { BoxGeometry, Group, Mesh, MeshStandardMaterial, RingGeometry, Vector3 } from "three";
 import type { ObserveLog } from "../../observe/logger";
-import { ChunkRenderController, type VoxelRaySelection } from "../../render/chunkRenderer";
+import {
+  ChunkRenderController,
+  type TargetHighlightSnapshot,
+  type VoxelRaySelection,
+} from "../../render/chunkRenderer";
 import type { PrefabPreviewSnapshot } from "../../render/chunkRenderer";
 import type { RendererDebugSnapshot } from "../../render/rendererBackend";
 import type { SceneHandles } from "../../render/scene";
@@ -11,6 +15,11 @@ import {
 } from "../../render/sceneRegionOverlay";
 import { AvatarConstants, VoxelConstants } from "../../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
+import {
+  resolveFieldOverlayProjection,
+  resolveSelectionOverlayProjection,
+} from "../../voxel/overlayTarget";
+import type { VoxelOverlayProjection } from "../../voxel/overlayTarget";
 import type { VoxelWorldAdapter } from "../../voxel/worldAdapter";
 import type { WorldEditStats } from "../../voxel/worldStore";
 import { DebrisRenderer } from "../../voxel/debrisRenderer";
@@ -39,6 +48,24 @@ interface MaybeFieldProvider {
 
 interface EditPreviewProvider {
   getHotbarState(): HotbarState;
+}
+
+export interface TargetOverlaySnapshot {
+  selection: VoxelRaySelection | null;
+  highlight: TargetHighlightSnapshot;
+  projection: {
+    granularity: string;
+    key: string;
+    label: string;
+    macro: FMacroCoord;
+    selectedMicro?: FMicroCoord;
+    ownerObjectId?: string;
+    prefabInstanceId?: number;
+    cellCount: number;
+    occupiedSlots: number;
+    coveredMacroMin: FMacroCoord | null;
+    coveredMacroMax: FMacroCoord | null;
+  } | null;
 }
 
 /**
@@ -115,6 +142,9 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     }
 
     this.fieldDebugOverlay = new FieldDebugOverlay();
+    this.fieldDebugOverlay.setProjector((worldMacro) =>
+      resolveFieldOverlayProjection(this.world.store, worldMacro),
+    );
     this.rootGroup.add(this.fieldDebugOverlay.rootGroup);
     if (import.meta.env.DEV) {
       const dev = window as unknown as Record<string, unknown>;
@@ -131,7 +161,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.updateAvatarTransforms(nowMs / 1000);
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
-    this.chunkRenderer.setTargetHighlights(this.currentSelection);
+    this.chunkRenderer.setTargetHighlights(this.currentSelection, this.world.store);
     this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
     if (this.debrisRenderer !== null) {
@@ -190,6 +220,22 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   getSceneRegionOverlaySnapshot(): SceneRegionOverlaySnapshot {
     return this.sceneRegionOverlay.snapshot();
+  }
+
+  getTargetOverlaySnapshot(): TargetOverlaySnapshot {
+    return {
+      selection: this.currentSelection ? cloneSelection(this.currentSelection) : null,
+      highlight: this.chunkRenderer.getTargetHighlightSnapshot(),
+      projection: this.currentSelection
+        ? serializeOverlayProjection(
+            resolveSelectionOverlayProjection(
+              this.world.store,
+              this.currentSelection.occupiedMicro,
+              this.currentSelection.occupiedMacro,
+            ),
+          )
+        : null,
+    };
   }
 
   setSceneRegionOverlayVisible(visible: boolean): void {
@@ -415,6 +461,88 @@ export function resolveActorDisplayY({
 
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
   return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function cloneSelection(selection: VoxelRaySelection): VoxelRaySelection {
+  return {
+    occupiedMacro: { ...selection.occupiedMacro },
+    adjacentMacro: { ...selection.adjacentMacro },
+    faceNormal: { ...selection.faceNormal },
+    ...(selection.occupiedMicro
+      ? {
+          occupiedMicro: {
+            macro: { ...selection.occupiedMicro.macro },
+            micro: { ...selection.occupiedMicro.micro },
+          },
+        }
+      : {}),
+    ...(selection.adjacentMicro
+      ? {
+          adjacentMicro: {
+            macro: { ...selection.adjacentMicro.macro },
+            micro: { ...selection.adjacentMicro.micro },
+          },
+        }
+      : {}),
+  };
+}
+
+function serializeOverlayProjection(
+  projection: VoxelOverlayProjection,
+): TargetOverlaySnapshot["projection"] {
+  const bounds = projectionBounds(projection);
+  return {
+    granularity: projection.granularity,
+    key: projection.key,
+    label: projection.label,
+    macro: { ...projection.macro },
+    ...(projection.selectedMicro ? { selectedMicro: { ...projection.selectedMicro } } : {}),
+    ...(projection.ownerObjectId ? { ownerObjectId: projection.ownerObjectId } : {}),
+    ...(projection.prefabInstanceId !== undefined
+      ? { prefabInstanceId: projection.prefabInstanceId }
+      : {}),
+    cellCount: projection.cells.length,
+    occupiedSlots: projection.cells.reduce(
+      (sum, cell) => sum + countBits(cell.microOccupancyMask),
+      0,
+    ),
+    coveredMacroMin: bounds ? { ...bounds.min } : null,
+    coveredMacroMax: bounds ? { ...bounds.max } : null,
+  };
+}
+
+function projectionBounds(
+  projection: VoxelOverlayProjection,
+): { min: FMacroCoord; max: FMacroCoord } | null {
+  if (projection.cells.length === 0) {
+    return null;
+  }
+  const first = projection.cells[0]!.macro;
+  return projection.cells.reduce(
+    (acc, cell) => ({
+      min: {
+        x: Math.min(acc.min.x, cell.macro.x),
+        y: Math.min(acc.min.y, cell.macro.y),
+        z: Math.min(acc.min.z, cell.macro.z),
+      },
+      max: {
+        x: Math.max(acc.max.x, cell.macro.x),
+        y: Math.max(acc.max.y, cell.macro.y),
+        z: Math.max(acc.max.z, cell.macro.z),
+      },
+    }),
+    { min: { ...first }, max: { ...first } },
+  );
+}
+
+function countBits(mask: bigint): number {
+  let count = 0;
+  let remaining = mask;
+  while (remaining !== 0n) {
+    remaining &= remaining - 1n;
+    count += 1;
+  }
+  return count;
 }
 
 function prefabPreviewIntentKey(

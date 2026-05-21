@@ -282,6 +282,219 @@ describe("FieldDebugOverlay", () => {
     });
   });
 
+  it("renders electric current as its own overlay layer", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricCurrentValues: Float32Array.of(4.5, 4.5),
+      }),
+    );
+
+    expect(currentMesh(overlay).count).toBe(2);
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      electricCells: 0,
+      currentCells: 2,
+    });
+  });
+
+  it("renders electric current with the warm conduction color family", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(20),
+      }),
+    );
+
+    const colors = currentMeshColors(overlay);
+    expect(colors[0]).toMatchObject({
+      r: expect.closeTo(1, 3),
+      g: expect.closeTo(0.82, 2),
+    });
+    expect(colors[0]!.b).toBeLessThan(0.25);
+  });
+
+  it("spawns smoke from current snapshots even before an accepted request event", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricCurrentValues: Float32Array.of(20, 20),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+  });
+
+  it("clears electric smoke immediately when an active circuit snapshot goes empty", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        electricCurrentValues: Float32Array.of(20, 20),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 0,
+        macroIndices: new Uint16Array(0),
+        electricCurrentValues: new Float32Array(0),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      currentCells: 0,
+      smokeParticles: 0,
+    });
+  });
+
+  it("projects electric current overlay from macro cells onto prefab micro wires", () => {
+    const overlay = new FieldDebugOverlay();
+    const prefabCells: PrefabRasterCell[] = [
+      {
+        macro: { x: 0, y: 0, z: 0 },
+        microOccupancyMask: 0b1111n,
+        microMaterialIds: [],
+        microStateFlags: [],
+        microPartIds: [],
+      },
+    ];
+
+    overlay.setProjector((worldMacro) => ({
+      granularity: "prefab",
+      key: "prefab:current",
+      label: "prefab current",
+      macro: worldMacro,
+      prefabInstanceId: 101,
+      cells: prefabCells.map((cell) => ({ ...cell, macro: worldMacro })),
+    }));
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(4.5),
+      }),
+    );
+
+    const line = currentMicroLines(overlay);
+    const snapshot = overlay.snapshot().regions[0];
+    const surfaceOutline = buildPrefabRasterSurfaceOutlineGeometry(prefabCells);
+    const renderedSegmentCount = line.geometry.getAttribute("position").count / 2;
+
+    expect(currentMesh(overlay).count).toBe(0);
+    expect(line.visible).toBe(true);
+    expect(renderedSegmentCount).toBe(surfaceOutline.wireSegmentCount);
+    expect(snapshot).toMatchObject({
+      currentCells: 4,
+      currentMicroCells: 4,
+      currentMicroGroups: 1,
+    });
+  });
+
+  it("reuses prefab current micro geometry when only field strength changes", () => {
+    const overlay = new FieldDebugOverlay();
+    const prefabCells: PrefabRasterCell[] = [
+      {
+        macro: { x: 0, y: 0, z: 0 },
+        microOccupancyMask: 0b1111n,
+        microMaterialIds: [],
+        microStateFlags: [],
+        microPartIds: [],
+      },
+    ];
+
+    overlay.setProjector((worldMacro) => ({
+      granularity: "prefab",
+      key: "prefab:current-cache",
+      label: "prefab current cache",
+      macro: worldMacro,
+      prefabInstanceId: 102,
+      cells: prefabCells.map((cell) => ({ ...cell, macro: worldMacro })),
+    }));
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(4.5),
+      }),
+    );
+    const firstGeometry = currentMicroLines(overlay).geometry;
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(9),
+      }),
+    );
+
+    expect(currentMicroLines(overlay).geometry).toBe(firstGeometry);
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      currentMicroCells: 4,
+      currentMicroGroups: 1,
+    });
+  });
+
+  it("rebuilds prefab current micro geometry when the projection shape changes", () => {
+    const overlay = new FieldDebugOverlay();
+    let microOccupancyMask = 0b1111n;
+
+    overlay.setProjector((worldMacro) => ({
+      granularity: "prefab",
+      key: "prefab:current-cache",
+      label: "prefab current cache",
+      macro: worldMacro,
+      prefabInstanceId: 102,
+      cells: [
+        {
+          macro: worldMacro,
+          microOccupancyMask,
+          microMaterialIds: [],
+          microStateFlags: [],
+          microPartIds: [],
+        },
+      ],
+    }));
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(4.5),
+      }),
+    );
+    const firstGeometry = currentMicroLines(overlay).geometry;
+
+    microOccupancyMask = 0b111111n;
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(4.5),
+      }),
+    );
+
+    expect(currentMicroLines(overlay).geometry).not.toBe(firstGeometry);
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      currentMicroCells: 6,
+      currentMicroGroups: 1,
+    });
+  });
+
   it("turns electric heat into smoke particles instead of coloring the block body", () => {
     const lowHeatOverlay = new FieldDebugOverlay();
     lowHeatOverlay.setRegionHeatSmokeSource(77, 240);
@@ -349,6 +562,7 @@ function makeTemperatureSnapshot({
     macroIndices,
     temperatureValues,
     electricValues: new Float32Array(0),
+    electricCurrentValues: new Float32Array(0),
     ionizationValues: new Uint8Array(0),
   };
 }
@@ -372,6 +586,31 @@ function makeElectricSnapshot({
     macroIndices,
     temperatureValues: new Float32Array(0),
     electricValues,
+    electricCurrentValues: new Float32Array(0),
+    ionizationValues: new Uint8Array(0),
+  };
+}
+
+function makeCurrentSnapshot({
+  cellCount,
+  macroIndices,
+  electricCurrentValues,
+}: {
+  cellCount: number;
+  macroIndices: Uint16Array;
+  electricCurrentValues: Float32Array;
+}): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 77,
+    tickCount: 1,
+    fieldMask: FieldMask.ElectricCurrent,
+    cellCount,
+    macroIndices,
+    temperatureValues: new Float32Array(0),
+    electricValues: new Float32Array(0),
+    electricCurrentValues,
     ionizationValues: new Uint8Array(0),
   };
 }
@@ -442,6 +681,43 @@ function electricMicroLines(overlay: FieldDebugOverlay): LineSegments {
     throw new Error("missing electric micro lines");
   }
   return lines;
+}
+
+function currentMicroLines(overlay: FieldDebugOverlay): LineSegments {
+  const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+  const lines = regionGroup?.children.find(
+    (child): child is LineSegments =>
+      child instanceof LineSegments && child.name === "electric-current-micro-wire",
+  );
+  if (!lines) {
+    throw new Error("missing current micro lines");
+  }
+  return lines;
+}
+
+function currentMesh(overlay: FieldDebugOverlay): InstancedMesh {
+  const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+  const mesh = regionGroup?.children.find(
+    (child): child is InstancedMesh =>
+      child instanceof InstancedMesh && child.name === "electric-current",
+  );
+  if (!mesh) {
+    throw new Error("missing current mesh");
+  }
+  return mesh;
+}
+
+function currentMeshColors(overlay: FieldDebugOverlay): Array<{ r: number; g: number; b: number }> {
+  const mesh = currentMesh(overlay);
+  const colors = mesh.instanceColor?.array;
+  if (!colors) {
+    throw new Error("missing current instance colors");
+  }
+  return Array.from({ length: mesh.count }, (_value, index) => ({
+    r: Number(colors[index * 3] ?? 0),
+    g: Number(colors[index * 3 + 1] ?? 0),
+    b: Number(colors[index * 3 + 2] ?? 0),
+  }));
 }
 
 function expectVisibleInstance(mesh: InstancedMesh, index: number): void {

@@ -113,6 +113,8 @@ export class DevToolsCli implements CliCommandHandler {
         });
       case "voxel_conduct":
         return this.cmdVoxelConduction(command, args, source);
+      case "voxel_auto_circuit":
+        return this.cmdVoxelAutoCircuit(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -121,6 +123,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdSceneRegions(command, args);
       case "field_overlay":
         return this.cmdFieldOverlay(command, args);
+      case "target_probe":
+        return this.cmdTargetProbe(command);
       case "cell":
         return this.cmdCell(command, args);
       case "micro_cell":
@@ -269,6 +273,25 @@ export class DevToolsCli implements CliCommandHandler {
     return this.ok(
       command,
       `field overlay ${snapshot.visible ? "visible" : "hidden"}: ${regionText}`,
+      snapshot,
+    );
+  }
+
+  private cmdTargetProbe(command: string): CliCommandResult {
+    const snapshot = this.deps.render.getTargetOverlaySnapshot();
+    const projection = snapshot.projection;
+    if (!projection) {
+      return this.ok(command, "target none", snapshot);
+    }
+    const range =
+      projection.coveredMacroMin && projection.coveredMacroMax
+        ? ` macros=${formatCoord(projection.coveredMacroMin)}..${formatCoord(
+            projection.coveredMacroMax,
+          )}`
+        : "";
+    return this.ok(
+      command,
+      `target ${projection.granularity} ${projection.label} slots=${projection.occupiedSlots}${range}`,
       snapshot,
     );
   }
@@ -502,6 +525,35 @@ export class DevToolsCli implements CliCommandHandler {
         maxTicks,
         source,
         powerSource,
+      },
+    };
+  }
+
+  private cmdVoxelAutoCircuit(command: string, args: string[]): CliCommandResult {
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: usageForAutoCircuitCommand() };
+    }
+
+    const autoCircuitPort = this.deps.world as Partial<{
+      requestVoxelAutoCircuit: (coord: FMacroCoord, maxTicks?: number) => boolean;
+    }>;
+    if (typeof autoCircuitPort.requestVoxelAutoCircuit !== "function") {
+      return { ok: false, command, text: "auto circuit action unavailable" };
+    }
+
+    const maxTicks = args[3] === undefined ? undefined : parsePositiveInt(args[3], 600);
+    const ok = autoCircuitPort.requestVoxelAutoCircuit.call(autoCircuitPort, coord, maxTicks);
+    return {
+      ok,
+      command,
+      text: ok
+        ? `auto circuit request submitted for (${formatCoord(coord)})`
+        : `auto circuit request rejected for (${formatCoord(coord)})`,
+      data: {
+        coord,
+        maxTicks: maxTicks ?? null,
+        voxel: this.deps.world.debugSnapshot(),
       },
     };
   }
@@ -1097,6 +1149,10 @@ function usageForConductionCommand(): string {
   return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]";
 }
 
+function usageForAutoCircuitCommand(): string {
+  return "usage: voxel_auto_circuit <x> <y> <z> [max_ticks]";
+}
+
 function formatSceneRegionOverlayLine(region: {
   label?: string;
   ownerSceneInstanceRef?: number;
@@ -1117,7 +1173,12 @@ function formatFieldOverlayLine(region: {
   chunkCoord: { cx: number; cy: number; cz: number };
   temperatureCells: number;
   electricCells: number;
+  currentCells?: number;
   smokeParticles?: number;
+  temperatureMicroCells?: number;
+  electricMicroCells?: number;
+  temperatureMicroGroups?: number;
+  electricMicroGroups?: number;
   maxTemperatureCelsius?: number | null;
   maxAbsTemperatureDeltaCelsius?: number;
   averageAbsTemperatureDeltaCelsius?: number;
@@ -1128,7 +1189,11 @@ function formatFieldOverlayLine(region: {
   };
 }): string {
   const { cx, cy, cz } = region.chunkCoord;
-  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells} smoke=${region.smokeParticles ?? 0}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
+  const micro =
+    (region.temperatureMicroCells ?? 0) > 0 || (region.electricMicroCells ?? 0) > 0
+      ? ` micro=temp:${region.temperatureMicroCells ?? 0}/${region.temperatureMicroGroups ?? 0} electric:${region.electricMicroCells ?? 0}/${region.electricMicroGroups ?? 0}`
+      : "";
+  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells} current=${region.currentCells ?? 0}${micro} smoke=${region.smokeParticles ?? 0}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
 }
 
 function temperatureStatsForFieldRegion(region: {

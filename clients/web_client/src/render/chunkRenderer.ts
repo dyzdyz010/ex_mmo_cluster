@@ -7,9 +7,8 @@ import {
   Mesh,
   Raycaster,
   Vector2,
-  Vector3,
 } from "three";
-import type { PerspectiveCamera } from "three";
+import type { PerspectiveCamera, Vector3 } from "three";
 import type { Intersection, MeshStandardMaterial } from "three";
 import { buildChunkMeshData, type ChunkMeshBuildData } from "../voxel/meshing/chunkMesher";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
@@ -23,20 +22,29 @@ import { FullMicroOccupancyMask } from "../voxel/microgrid/governance";
 import { chunkCoordKey } from "../voxel/core/types";
 import { VoxelDirtyFlags } from "../voxel/storage/types";
 import type { WorldStore } from "../voxel/worldStore";
+import { resolveSelectionOverlayProjection } from "../voxel/overlayTarget";
+import type { VoxelOverlayProjection } from "../voxel/overlayTarget";
 import type { ObserveLog } from "../observe/logger";
 import type { PrefabRasterCell } from "../voxel/prefab";
 import type { FChunkMesherInputSnapshot } from "../voxel/meshing/types";
-import { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
+import {
+  buildPrefabRasterMicroWireGeometry,
+  buildPrefabRasterSurfaceOutlineGeometry,
+} from "./prefabPreviewGeometry";
 import { createVoxelChunkMaterial } from "./voxelChunkMaterial";
 import { createVoxelMaterialMosaicTexture } from "./voxelMaterialTexture";
-export { buildPrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
+export {
+  buildPrefabRasterMicroWireGeometry,
+  buildPrefabRasterSurfaceOutlineGeometry,
+} from "./prefabPreviewGeometry";
 export type { PrefabRasterMicroWireGeometry } from "./prefabPreviewGeometry";
 
 const HIT_FACE_OUTLINE_OFFSET = MacroWorldSize * 0.006;
-const HIT_FACE_OUTLINE_SIZE = MacroWorldSize * 1.04;
+const MACRO_HIT_OUTLINE_SIZE = MacroWorldSize * 1.04;
+const MACRO_HIT_COLOR = 0xfff4a8;
+const PREFAB_HIT_COLOR = 0x67e8f9;
 const RAYCAST_SURFACE_NUDGE = MacroWorldSize * 0.001;
 const RAYCAST_SEAM_DISTANCE_EPSILON = MacroWorldSize * 0.002;
-const LOCAL_FACE_NORMAL = new Vector3(0, 0, 1);
 
 interface ChunkMeshWorkerSuccess {
   id: number;
@@ -83,10 +91,14 @@ export interface MicroCellTarget {
 
 export interface TargetHighlightSnapshot {
   visible: boolean;
-  kind: "none" | "hit-face";
+  kind: "none" | "macro-cell" | "prefab";
   position: { x: number; y: number; z: number };
   faceNormal: FMacroCoord | null;
+  occupiedMacro: FMacroCoord | null;
+  occupiedMicro: MicroCellTarget | null;
 }
+
+type VisibleTargetHighlightKind = Exclude<TargetHighlightSnapshot["kind"], "none">;
 
 export interface PrefabPreviewInput {
   name: string;
@@ -112,7 +124,11 @@ export class ChunkRenderController {
   private readonly raycaster = new Raycaster();
   private readonly ndcCenter = new Vector2(0, 0);
   private readonly targetHighlight: LineSegments;
+  private targetHighlightKind: TargetHighlightSnapshot["kind"] = "none";
+  private targetHighlightGeometryKey = "";
   private targetHighlightFaceNormal: FMacroCoord | null = null;
+  private targetHighlightOccupiedMacro: FMacroCoord | null = null;
+  private targetHighlightOccupiedMicro: MicroCellTarget | null = null;
   private readonly prefabPreviewGroup = new Group();
   private readonly prefabPreviewLineMaterial = new LineBasicMaterial({
     color: 0x67e8f9,
@@ -137,11 +153,11 @@ export class ChunkRenderController {
     this.group.name = "voxel-chunks";
 
     this.targetHighlight = new LineSegments(
-      makeHitFaceOutlineGeometry(),
-      new LineBasicMaterial({ color: 0xfff4a8 }),
+      makeBoxOutlineGeometry(MACRO_HIT_OUTLINE_SIZE),
+      new LineBasicMaterial({ color: MACRO_HIT_COLOR }),
     );
     this.targetHighlight.visible = false;
-    this.targetHighlight.name = "voxel-hit-face-outline";
+    this.targetHighlight.name = "voxel-target-outline";
 
     this.group.add(this.targetHighlight);
     this.prefabPreviewGroup.name = "voxel-prefab-preview";
@@ -326,30 +342,69 @@ export class ChunkRenderController {
     return selection;
   }
 
-  setTargetHighlights(selection: VoxelRaySelection | null): void {
+  setTargetHighlights(selection: VoxelRaySelection | null, world?: WorldStore): void {
     if (!selection) {
       this.targetHighlight.visible = false;
+      this.targetHighlightKind = "none";
       this.targetHighlightFaceNormal = null;
+      this.targetHighlightOccupiedMacro = null;
+      this.targetHighlightOccupiedMicro = null;
       return;
     }
 
-    const pose = hitFaceOutlinePose(selection);
-    this.targetHighlight.position.set(pose.position.x, pose.position.y, pose.position.z);
-    this.targetHighlight.quaternion.setFromUnitVectors(LOCAL_FACE_NORMAL, pose.normalVector);
+    const projection =
+      world && selection.occupiedMicro
+        ? resolveSelectionOverlayProjection(world, selection.occupiedMicro, selection.occupiedMacro)
+        : null;
+    const prefabProjection =
+      projection?.granularity === "prefab" && projection.cells.length > 0 ? projection : null;
+    const selectedMicro =
+      projection?.selectedMicro && selection.occupiedMicro
+        ? {
+            macro: projection.macro,
+            micro: projection.selectedMicro,
+          }
+        : null;
+    const kind: VisibleTargetHighlightKind = prefabProjection ? "prefab" : "macro-cell";
+    this.syncTargetHighlightGeometry(kind, prefabProjection ?? undefined);
+    if (prefabProjection) {
+      this.targetHighlight.position.set(0, 0, 0);
+    } else {
+      const pose = macroCellOutlinePose(selection);
+      this.targetHighlight.position.set(pose.position.x, pose.position.y, pose.position.z);
+    }
+    this.targetHighlight.quaternion.identity();
     this.targetHighlight.visible = true;
+    this.targetHighlightKind = kind;
     this.targetHighlightFaceNormal = { ...selection.faceNormal };
+    this.targetHighlightOccupiedMacro = { ...selection.occupiedMacro };
+    this.targetHighlightOccupiedMicro = selectedMicro
+      ? {
+          macro: { ...selectedMicro.macro },
+          micro: { ...selectedMicro.micro },
+        }
+      : null;
   }
 
   getTargetHighlightSnapshot(): TargetHighlightSnapshot {
     return {
       visible: this.targetHighlight.visible,
-      kind: this.targetHighlight.visible ? "hit-face" : "none",
+      kind: this.targetHighlight.visible ? this.targetHighlightKind : "none",
       position: {
         x: this.targetHighlight.position.x,
         y: this.targetHighlight.position.y,
         z: this.targetHighlight.position.z,
       },
       faceNormal: this.targetHighlightFaceNormal ? { ...this.targetHighlightFaceNormal } : null,
+      occupiedMacro: this.targetHighlightOccupiedMacro
+        ? { ...this.targetHighlightOccupiedMacro }
+        : null,
+      occupiedMicro: this.targetHighlightOccupiedMicro
+        ? {
+            macro: { ...this.targetHighlightOccupiedMicro.macro },
+            micro: { ...this.targetHighlightOccupiedMicro.micro },
+          }
+        : null,
     };
   }
 
@@ -479,6 +534,25 @@ export class ChunkRenderController {
       renderObjectCount: this.prefabPreviewGroup.children.length,
       wireSegmentCount: positions.length / 6,
     };
+  }
+
+  private syncTargetHighlightGeometry(
+    kind: VisibleTargetHighlightKind,
+    projection?: VoxelOverlayProjection,
+  ): void {
+    const geometryKey = targetHighlightGeometryKey(kind, projection);
+    if (geometryKey === this.targetHighlightGeometryKey) {
+      return;
+    }
+
+    this.targetHighlight.geometry.dispose();
+    this.targetHighlight.geometry =
+      kind === "prefab" && projection
+        ? makePrefabTargetOutlineGeometry(projection.cells)
+        : makeBoxOutlineGeometry(MACRO_HIT_OUTLINE_SIZE);
+    const material = this.targetHighlight.material as LineBasicMaterial;
+    material.color.setHex(kind === "prefab" ? PREFAB_HIT_COLOR : MACRO_HIT_COLOR);
+    this.targetHighlightGeometryKey = geometryKey;
   }
 }
 
@@ -635,63 +709,79 @@ function coordKey(coord: { x: number; y: number; z: number }): string {
   return `${coord.x},${coord.y},${coord.z}`;
 }
 
-function makeHitFaceOutlineGeometry(): BufferGeometry {
-  const half = HIT_FACE_OUTLINE_SIZE / 2;
-  const positions = [
-    -half,
-    -half,
-    0,
-    half,
-    -half,
-    0,
-    half,
-    -half,
-    0,
-    half,
-    half,
-    0,
-    half,
-    half,
-    0,
-    -half,
-    half,
-    0,
-    -half,
-    half,
-    0,
-    -half,
-    -half,
-    0,
+function makeBoxOutlineGeometry(size: number): BufferGeometry {
+  const half = size / 2;
+  const corners: Array<[number, number, number]> = [
+    [-half, -half, -half],
+    [half, -half, -half],
+    [half, half, -half],
+    [-half, half, -half],
+    [-half, -half, half],
+    [half, -half, half],
+    [half, half, half],
+    [-half, half, half],
   ];
+  const edges: Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7],
+  ];
+  const positions = edges.flatMap(([fromIndex, toIndex]) => [
+    ...corners[fromIndex]!,
+    ...corners[toIndex]!,
+  ]);
   const geometry = new BufferGeometry();
   geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
   return geometry;
 }
 
-function hitFaceOutlinePose(selection: VoxelRaySelection): {
+function makePrefabTargetOutlineGeometry(cells: readonly PrefabRasterCell[]): BufferGeometry {
+  const wire = buildPrefabRasterSurfaceOutlineGeometry(cells);
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new Float32BufferAttribute(wire.positions, 3));
+  return geometry;
+}
+
+function targetHighlightGeometryKey(
+  kind: VisibleTargetHighlightKind,
+  projection?: VoxelOverlayProjection,
+): string {
+  if (kind !== "prefab" || !projection) {
+    return kind;
+  }
+  return [
+    kind,
+    projection.key,
+    projection.cells
+      .map(
+        (cell) =>
+          `${coordKey(cell.macro)}:${cell.microOccupancyMask.toString(16)}:${cell.microMaterialIds.join(
+            ",",
+          )}:${cell.microStateFlags.join(",")}`,
+      )
+      .join("|"),
+  ].join(":");
+}
+
+function macroCellOutlinePose(selection: VoxelRaySelection): {
   position: { x: number; y: number; z: number };
-  normalVector: Vector3;
 } {
   const blockCenter = macroCenterWorldPosition(selection.occupiedMacro, MacroWorldSize);
-  const normalVector = new Vector3(
-    selection.faceNormal.x,
-    selection.faceNormal.y,
-    selection.faceNormal.z,
-  );
-  if (normalVector.lengthSq() === 0) {
-    normalVector.copy(LOCAL_FACE_NORMAL);
-  } else {
-    normalVector.normalize();
-  }
-
-  const faceDistance = MacroWorldSize / 2 + HIT_FACE_OUTLINE_OFFSET;
   return {
     position: {
-      x: blockCenter.x + normalVector.x * faceDistance,
-      y: blockCenter.y + normalVector.y * faceDistance,
-      z: blockCenter.z + normalVector.z * faceDistance,
+      x: blockCenter.x + selection.faceNormal.x * HIT_FACE_OUTLINE_OFFSET,
+      y: blockCenter.y + selection.faceNormal.y * HIT_FACE_OUTLINE_OFFSET,
+      z: blockCenter.z + selection.faceNormal.z * HIT_FACE_OUTLINE_OFFSET,
     },
-    normalVector,
   };
 }
 

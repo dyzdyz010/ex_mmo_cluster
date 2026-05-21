@@ -21,6 +21,10 @@ import {
   type SerializedWorldSnapshot,
   type WorldEditStats,
 } from "./worldSnapshot";
+import {
+  extractBoundaryFaceMask,
+  type BoundaryFaceName,
+} from "./prefab/boundary";
 import type {
   FChunkStorageData,
   FMacroEnvironmentSummary,
@@ -28,6 +32,13 @@ import type {
   FPrefabInstanceData,
   FRefinedCellData,
 } from "./storage/types";
+import {
+  adjacentMacroForSurfaceAttachment,
+  cloneSurfaceAttachment,
+  isSurfaceAttachmentVisible as evaluateSurfaceAttachmentVisibility,
+  type SurfaceAttachment,
+  type SurfaceAttachmentFace,
+} from "./surfaceAttachment";
 
 export interface ChunkSummary {
   coord: FChunkCoord;
@@ -382,6 +393,54 @@ export class WorldStore {
     return null;
   }
 
+  upsertSurfaceAttachment(attachment: SurfaceAttachment): SurfaceAttachment {
+    const { chunk } = this.resolveChunkAndLocal(attachment.anchorMacro, true);
+    if (!chunk) {
+      throw new Error(`Failed to resolve chunk for surface attachment ${attachment.id}`);
+    }
+    const stored = cloneSurfaceAttachment(attachment);
+    const attachments = (chunk.data.surfaceAttachments ??= []);
+    const existingIndex = attachments.findIndex(
+      (candidate) => candidate.id === stored.id,
+    );
+    if (existingIndex >= 0) {
+      attachments[existingIndex] = stored;
+    } else {
+      attachments.push(stored);
+    }
+    return cloneSurfaceAttachment(stored);
+  }
+
+  listSurfaceAttachments(): SurfaceAttachment[] {
+    return this.listChunks().flatMap((chunk) =>
+      (chunk.data.surfaceAttachments ?? []).map(cloneSurfaceAttachment),
+    );
+  }
+
+  listSurfaceAttachmentsAtWorldMacro(worldMacro: FMacroCoord): SurfaceAttachment[] {
+    const { chunk } = this.resolveChunkAndLocal(worldMacro);
+    if (!chunk) {
+      return [];
+    }
+    return (chunk.data.surfaceAttachments ?? [])
+      .filter((attachment) => sameMacroCoord(attachment.anchorMacro, worldMacro))
+      .map(cloneSurfaceAttachment);
+  }
+
+  getVisibleSurfaceAttachmentsAtWorldMacro(worldMacro: FMacroCoord): SurfaceAttachment[] {
+    return this.listSurfaceAttachmentsAtWorldMacro(worldMacro).filter((attachment) =>
+      this.isSurfaceAttachmentTruthyVisible(attachment),
+    );
+  }
+
+  isSurfaceAttachmentVisible(id: string): boolean {
+    const attachment = this.findSurfaceAttachment(id);
+    if (!attachment) {
+      return false;
+    }
+    return this.isSurfaceAttachmentTruthyVisible(attachment);
+  }
+
   surfaceCenterYAtWorldXZ(
     worldX: number,
     worldZ: number,
@@ -437,4 +496,52 @@ export class WorldStore {
     const chunk = createIfMissing ? this.ensureChunk(chunkCoord) : this.getChunk(chunkCoord);
     return { chunk, localMacro };
   }
+
+  private findSurfaceAttachment(id: string): SurfaceAttachment | null {
+    for (const chunk of this.listChunks()) {
+      const found = (chunk.data.surfaceAttachments ?? []).find(
+        (attachment) => attachment.id === id,
+      );
+      if (found) {
+        return cloneSurfaceAttachment(found);
+      }
+    }
+    return null;
+  }
+
+  private isSurfaceAttachmentTruthyVisible(attachment: SurfaceAttachment): boolean {
+    const neighborMacro = adjacentMacroForSurfaceAttachment(attachment);
+    const neighborFaceMask = extractBoundaryFaceMask(
+      this.getMicroOccupancyMaskWorld(neighborMacro),
+      oppositeBoundaryFaceForSurfaceAttachment(attachment.face),
+    );
+    return evaluateSurfaceAttachmentVisibility(attachment, {
+      neighborOccupied:
+        neighborFaceMask !== 0n &&
+        (attachment.faceMask === 0n || (neighborFaceMask & attachment.faceMask) !== 0n),
+    });
+  }
+}
+
+function oppositeBoundaryFaceForSurfaceAttachment(
+  face: SurfaceAttachmentFace,
+): BoundaryFaceName {
+  switch (face) {
+    case "x_pos":
+      return "negX";
+    case "x_neg":
+      return "posX";
+    case "y_pos":
+      return "negY";
+    case "y_neg":
+      return "posY";
+    case "z_pos":
+      return "negZ";
+    case "z_neg":
+      return "posZ";
+  }
+}
+
+function sameMacroCoord(a: FMacroCoord, b: FMacroCoord): boolean {
+  return a.x === b.x && a.y === b.y && a.z === b.z;
 }

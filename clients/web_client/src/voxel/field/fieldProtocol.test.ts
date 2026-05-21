@@ -18,6 +18,7 @@ function buildSnapshotBuf(opts: {
   macroIndices?: number[];
   temperatureValues?: number[];
   electricValues?: number[];
+  electricCurrentValues?: number[];
   ionizationValues?: number[];
 }): ArrayBuffer {
   const {
@@ -29,6 +30,7 @@ function buildSnapshotBuf(opts: {
     macroIndices = [0, 1],
     temperatureValues = [25.5, 30.0],
     electricValues = [],
+    electricCurrentValues = [],
     ionizationValues = [],
   } = opts;
 
@@ -36,6 +38,7 @@ function buildSnapshotBuf(opts: {
   let size = 1 + 8 + 12 + 8 + 4 + 1 + 2 + cellCount * 2;
   if (fieldMask & FieldMask.Temperature) size += cellCount * 4;
   if (fieldMask & FieldMask.ElectricPotential) size += cellCount * 4;
+  if (fieldMask & FieldMask.ElectricCurrent) size += cellCount * 4;
   if (fieldMask & FieldMask.Ionization) size += cellCount;
 
   const buf = new ArrayBuffer(size);
@@ -62,6 +65,11 @@ function buildSnapshotBuf(opts: {
   }
   if (fieldMask & FieldMask.ElectricPotential) {
     for (const v of electricValues) {
+      view.setFloat32(offset, v, true); offset += 4;
+    }
+  }
+  if (fieldMask & FieldMask.ElectricCurrent) {
+    for (const v of electricCurrentValues) {
       view.setFloat32(offset, v, true); offset += 4;
     }
   }
@@ -111,6 +119,20 @@ function writeU64(view: DataView, offset: number, val: number): void {
 
 // ────────────────────────────────────────────────────────────────────────────
 describe("decodeFieldRegionSnapshot", () => {
+  it("decodes electric current as a first-class field layer", () => {
+    expect((FieldMask as Record<string, number>).ElectricCurrent).toBe(0x08);
+
+    const buf = buildSnapshotBuf({
+      fieldMask: 0x08,
+      macroIndices: [0, 1, 2],
+      electricCurrentValues: [4.5, 4.5, 4.5],
+    });
+
+    const result = decodeFieldRegionSnapshot(buf);
+    expect(result).not.toBeNull();
+    expect(Array.from((result as any).electricCurrentValues)).toEqual([4.5, 4.5, 4.5]);
+  });
+
   it("decodes temperature-only snapshot", () => {
     const buf = buildSnapshotBuf({
       logicalSceneId: 1,
@@ -134,6 +156,7 @@ describe("decodeFieldRegionSnapshot", () => {
     expect(result!.temperatureValues[0]).toBeCloseTo(25.5, 3);
     expect(result!.temperatureValues[1]).toBeCloseTo(100.0, 3);
     expect(result!.electricValues.length).toBe(0);
+    expect(result!.electricCurrentValues.length).toBe(0);
     expect(result!.ionizationValues.length).toBe(0);
   });
 
@@ -152,6 +175,28 @@ describe("decodeFieldRegionSnapshot", () => {
     expect(result!.temperatureValues[2]).toBeCloseTo(80.0, 3);
     expect(result!.electricValues[1]).toBeCloseTo(150.5, 3);
     expect(result!.ionizationValues[2]).toBe(255);
+  });
+
+  it("decodes mixed field payloads in backend wire order", () => {
+    const buf = buildSnapshotBuf({
+      fieldMask:
+        FieldMask.Temperature |
+        FieldMask.ElectricPotential |
+        FieldMask.ElectricCurrent |
+        FieldMask.Ionization,
+      macroIndices: [10, 20],
+      temperatureValues: [21.0, 50.0],
+      electricValues: [100.5, 200.5],
+      electricCurrentValues: [4.5, 9.5],
+      ionizationValues: [12, 34],
+    });
+
+    const result = decodeFieldRegionSnapshot(buf);
+    expect(result).not.toBeNull();
+    expect(Array.from(result!.temperatureValues)).toEqual([21, 50]);
+    expect(Array.from(result!.electricValues)).toEqual([100.5, 200.5]);
+    expect(Array.from(result!.electricCurrentValues)).toEqual([4.5, 9.5]);
+    expect(Array.from(result!.ionizationValues)).toEqual([12, 34]);
   });
 
   it("returns null for truncated buffer", () => {

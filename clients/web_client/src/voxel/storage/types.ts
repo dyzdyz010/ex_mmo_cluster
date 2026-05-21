@@ -8,6 +8,7 @@ import type {
   EVoxelCellMode,
   EVoxelRotation,
 } from "../core/types";
+import type { SurfaceAttachment } from "../surfaceAttachment";
 
 export const VoxelDirtyFlags = {
   None: 0,
@@ -125,6 +126,7 @@ export interface FChunkStorageData {
   normalBlocks: FNormalBlockData[];
   refinedCells: FRefinedCellData[];
   prefabInstances: FPrefabInstanceData[];
+  surfaceAttachments?: SurfaceAttachment[];
   environmentSummaries: FMacroEnvironmentSummary[];
   freeNormalBlockIndices: number[];
   freeEnvironmentSummaryIndices: number[];

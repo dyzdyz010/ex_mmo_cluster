@@ -574,6 +574,26 @@ function bridgeBusToLogger(
       });
     },
   );
+  bus.on(
+    "world:voxel-auto-circuit-accepted",
+    ({ coord, source, regionId, fieldRegionCreated, sourceCount, loadCount, powerDraw }) => {
+      render.showFieldDebugOverlay();
+      const heatEnergyJoulesPerTick = powerDraw?.estimatedTickEnergyJoules;
+      if (regionId !== undefined && heatEnergyJoulesPerTick !== undefined) {
+        render.setFieldHeatSmokeSource(regionId, heatEnergyJoulesPerTick);
+      }
+      logger.emit("voxel", "auto_circuit_accepted", {
+        coord: formatCoord(coord),
+        source,
+        region_id: regionId ?? "",
+        field_region_created: fieldRegionCreated ?? false,
+        source_count: sourceCount ?? "",
+        load_count: loadCount ?? "",
+        heat_smoke_joules_per_tick: heatEnergyJoulesPerTick ?? "",
+        field_overlay_visible: true,
+      });
+    },
+  );
   bus.on("world:chunk-subscribed", ({ requestId, logicalSceneId, centerChunk, radiusLInf }) => {
     logger.emit("voxel", "chunk_subscribed", {
       request_id: requestId,

@@ -3,7 +3,7 @@ import type { FMacroCoord, FMicroCoord } from "../core/types";
 import type { FPrefabBoundaryFaceMasks } from "../storage/types";
 import { microLinearIndex, prefabLinearIndex } from "./math";
 
-type BoundaryFaceName = keyof FPrefabBoundaryFaceMasks;
+export type BoundaryFaceName = keyof FPrefabBoundaryFaceMasks;
 
 export function buildBoundarySignature(occupancyWords: bigint[], bounds: FMacroCoord): number[] {
   const faces = [0, 0, 0, 0, 0, 0];
@@ -59,7 +59,7 @@ export function buildBoundaryFaceMasks(
   return masks;
 }
 
-function extractBoundaryFaceMask(word: bigint, face: BoundaryFaceName): bigint {
+export function extractBoundaryFaceMask(word: bigint, face: BoundaryFaceName): bigint {
   let mask = 0n;
   const max = VoxelConstants.MicroPerMacro - 1;
   for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {

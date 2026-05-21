@@ -429,6 +429,85 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       return { ok: false, placed: 0 };
     }
 
+    const submitted = this.submitPrefabPlaceIntent(name, blueprint, {
+      x: origin.x * VoxelConstants.MicroPerMacro,
+      y: origin.y * VoxelConstants.MicroPerMacro,
+      z: origin.z * VoxelConstants.MicroPerMacro,
+    });
+
+    if (!submitted) {
+      this.rejectServerOnlyEdit("voxel_transport_unavailable");
+      return { ok: false, placed: 0 };
+    }
+
+    return { ok: true, placed: blueprint.expectedCellCount };
+  }
+
+  override placePrefabSocketSnap(_request: PrefabSocketSnapRequest): PrefabSocketSnapResult {
+    this.rejectServerOnlyEdit("prefab_socket_snap_not_supported_by_server");
+    return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" };
+  }
+
+  // Boundary snap is split into two authority layers:
+  //   1. the browser computes an ergonomic anchor proposal from the aimed face
+  //      and the local subscribed voxel truth;
+  //   2. the server owns the final result by re-rasterizing that blueprint +
+  //      anchor through 0x67 and committing it with the chunk transaction path.
+  override placePrefabBoundarySnap(request: PrefabBoundarySnapRequest): PrefabBoundarySnapResult {
+    const preview = this.previewPrefabBoundarySnap(request);
+
+    if (!preview.ok || !preview.anchorMicroCoord) {
+      return {
+        ok: false,
+        placed: 0,
+        conflict: preview.overlapSlots > 0,
+        rejectReason: preview.rejectReason ?? "prefab_boundary_snap_rejected",
+        preview,
+      };
+    }
+
+    const blueprint = resolveBlueprint(request.prefabName);
+    if (!blueprint) {
+      const reason = `unknown_blueprint:${request.prefabName}`;
+      this.rejectServerOnlyEdit(reason);
+      this.bus.emit("world:voxel-sync-error", { reason, source: "prefab_place_snap" });
+      return {
+        ok: false,
+        placed: 0,
+        rejectReason: reason,
+        preview,
+      };
+    }
+
+    const submitted = this.submitPrefabPlaceIntent(
+      request.prefabName,
+      blueprint,
+      preview.anchorMicroCoord,
+    );
+
+    if (submitted) {
+      return {
+        ok: true,
+        placed: preview.incomingOccupiedSlots,
+        instanceId: 0,
+        preview,
+      };
+    }
+
+    this.rejectServerOnlyEdit("voxel_transport_unavailable");
+    return {
+      ok: false,
+      placed: 0,
+      rejectReason: "voxel_transport_unavailable",
+      preview,
+    };
+  }
+
+  private submitPrefabPlaceIntent(
+    blueprintName: string,
+    blueprint: { id: number; version: number },
+    anchorWorldMicro: FMacroCoord,
+  ): boolean {
     const clientIntentSeq = this.clientIntentSeq;
     // v1: rotation is intentionally pinned to 0 on the wire — the server
     // does not yet support arbitrary rotations and the local UI signature
@@ -439,105 +518,23 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       knownParcelBuildEpoch: 0,
       blueprintId: blueprint.id,
       blueprintVersion: blueprint.version,
-      anchorWorldMicro: {
-        x: origin.x * VoxelConstants.MicroPerMacro,
-        y: origin.y * VoxelConstants.MicroPerMacro,
-        z: origin.z * VoxelConstants.MicroPerMacro,
-      },
+      anchorWorldMicro,
       rotation: 0,
       clientIntentSeq,
     });
 
     if (requestId === null) {
-      this.rejectServerOnlyEdit("voxel_transport_unavailable");
-      return { ok: false, placed: 0 };
+      return false;
     }
 
     this.clientIntentSeq += 1;
     this.pendingIntentCount += 1;
     this.pendingPrefabIntents.set(requestId, {
       blueprintId: blueprint.id,
-      blueprintName: name,
+      blueprintName,
       sentAtMs: performance.now(),
     });
-    return { ok: true, placed: blueprint.expectedCellCount };
-  }
-
-  override placePrefabSocketSnap(_request: PrefabSocketSnapRequest): PrefabSocketSnapResult {
-    this.rejectServerOnlyEdit("prefab_socket_snap_not_supported_by_server");
-    return { ok: false, placed: 0, rejectReason: "server_authority_not_supported" };
-  }
-
-  // Phase A1 hotfix(2026-05-09):服务端权威路径下,placePrefabBoundarySnap
-  // 不再无条件 reject。让本地 mirror 跑一次 previewBoundarySnap 算出
-  // micro 精度的 anchor(线框预览同一份计算),再把这个 anchor 通过 0x67
-  // 发给服务器,保证服务端实际放置位置和客户端线框像素级一致。
-  // 之前永远 reject 让 worldEditController fallback 到 macro 原点,导致
-  // wire 上 anchor 被 macro 对齐 → 与线框 (mid-macro) 不符。
-  override placePrefabBoundarySnap(request: PrefabBoundarySnapRequest): PrefabBoundarySnapResult {
-    const preview = this.previewPrefabBoundarySnap(request);
-    if (!preview.ok || !preview.anchorMicroCoord) {
-      const conflict = preview.rejectReason === "micro_overlap";
-      if (conflict) {
-        this.store.markConflict();
-      }
-      return {
-        ok: false,
-        placed: 0,
-        ...(conflict ? { conflict: true } : {}),
-        ...(preview.rejectReason ? { rejectReason: preview.rejectReason } : {}),
-        preview,
-      };
-    }
-
-    const blueprint = resolveBlueprint(request.prefabName);
-    if (!blueprint) {
-      const reason = `unknown_blueprint:${request.prefabName}`;
-      this.rejectServerOnlyEdit(reason);
-      this.bus.emit("world:voxel-sync-error", { reason, source: "prefab_boundary_snap" });
-      return {
-        ok: false,
-        placed: 0,
-        rejectReason: reason,
-        preview,
-      };
-    }
-
-    const clientIntentSeq = this.clientIntentSeq;
-    const requestId = this.transport.sendVoxelPrefabPlaceIntent({
-      logicalSceneId: this.logicalSceneId,
-      parcelId: 0,
-      knownParcelBuildEpoch: 0,
-      blueprintId: blueprint.id,
-      blueprintVersion: blueprint.version,
-      anchorWorldMicro: { ...preview.anchorMicroCoord },
-      rotation: 0,
-      clientIntentSeq,
-    });
-
-    if (requestId === null) {
-      this.rejectServerOnlyEdit("voxel_transport_unavailable");
-      return {
-        ok: false,
-        placed: 0,
-        rejectReason: "voxel_transport_unavailable",
-        preview,
-      };
-    }
-
-    this.clientIntentSeq += 1;
-    this.pendingIntentCount += 1;
-    this.pendingPrefabIntents.set(requestId, {
-      blueprintId: blueprint.id,
-      blueprintName: request.prefabName,
-      sentAtMs: performance.now(),
-    });
-
-    return {
-      ok: true,
-      placed: preview.incomingOccupiedSlots,
-      preview,
-    };
+    return true;
   }
 
   override importSnapshot(
@@ -765,6 +762,61 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         const reason = error instanceof Error ? error.message : String(error);
         this.lastError = reason;
         this.bus.emit("world:voxel-sync-error", { reason, source: "conduction_path" });
+      });
+    return true;
+  }
+
+  requestVoxelAutoCircuit(coord: FMacroCoord, maxTicks?: number): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/auto_circuit`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        x: coord.x,
+        y: coord.y,
+        z: coord.z,
+        ...(maxTicks !== undefined ? { max_ticks: maxTicks } : {}),
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseErrorReason(response, "auto_circuit_failed"));
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        const regionId = String(payload["region_id"] ?? "none");
+        const fieldRegionCreated = Boolean(payload["field_region_created"]);
+        const sourceCount = finiteNumber(payload["source_count"]);
+        const loadCount = finiteNumber(payload["load_count"]);
+        const powerDraw = normalizePowerDraw(payload["power_draw"]);
+        this.logger.emit("voxel", "auto_circuit_ok", {
+          logical_scene_id: this.logicalSceneId,
+          coord: `${coord.x},${coord.y},${coord.z}`,
+          region_id: regionId,
+          created: String(payload["created"] ?? "unknown"),
+          field_region_created: String(fieldRegionCreated),
+          source_count: String(sourceCount ?? "unknown"),
+          load_count: String(loadCount ?? "unknown"),
+          waiting_for_load: String(payload["waiting_for_load"] ?? "unknown"),
+          power_draw: JSON.stringify(payload["power_draw"] ?? null),
+          heat_energy_joules_per_tick: String(powerDraw?.estimatedTickEnergyJoules ?? ""),
+        });
+        this.bus.emit("world:voxel-auto-circuit-accepted", {
+          coord,
+          source: "server",
+          regionId,
+          fieldRegionCreated,
+          ...(sourceCount !== undefined ? { sourceCount } : {}),
+          ...(loadCount !== undefined ? { loadCount } : {}),
+          ...(powerDraw ? { powerDraw } : {}),
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "auto_circuit" });
       });
     return true;
   }

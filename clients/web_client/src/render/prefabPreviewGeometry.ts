@@ -8,6 +8,11 @@ interface MicroGridCorner {
   z: number;
 }
 
+interface EdgeAccumulator {
+  edge: [MicroGridCorner, MicroGridCorner];
+  normalCounts: Map<string, number>;
+}
+
 export interface PrefabRasterMicroWireGeometry {
   positions: number[];
   occupiedSlotCount: number;
@@ -47,6 +52,37 @@ export function buildPrefabRasterMicroWireGeometry(
     positions,
     occupiedSlotCount,
     wireSegmentCount: edges.size,
+  };
+}
+
+export function buildPrefabRasterSurfaceOutlineGeometry(
+  cells: readonly PrefabRasterCell[],
+): PrefabRasterMicroWireGeometry {
+  const occupied = collectOccupiedMicroSlots(cells);
+  const edges = new Map<string, EdgeAccumulator>();
+
+  for (const key of occupied) {
+    const slot = parseMicroGridCornerKey(key);
+    for (const face of exposedFacesForSlot(slot, occupied)) {
+      appendExposedFaceEdges(edges, face.normalKey, face.corners);
+    }
+  }
+
+  const positions: number[] = [];
+  let wireSegmentCount = 0;
+  for (const entry of edges.values()) {
+    const totalFaceCount = [...entry.normalCounts.values()].reduce((sum, count) => sum + count, 0);
+    if (totalFaceCount > 1 && entry.normalCounts.size === 1) {
+      continue;
+    }
+    appendMicroGridEdgeWorldPositions(positions, entry.edge[0], entry.edge[1]);
+    wireSegmentCount += 1;
+  }
+
+  return {
+    positions,
+    occupiedSlotCount: occupied.size,
+    wireSegmentCount,
   };
 }
 
@@ -90,6 +126,141 @@ function appendMicroSlotWireEdges(
   }
 }
 
+function collectOccupiedMicroSlots(cells: readonly PrefabRasterCell[]): Set<string> {
+  const occupied = new Set<string>();
+  for (const cell of cells) {
+    for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
+      for (let y = 0; y < VoxelConstants.MicroPerMacro; y += 1) {
+        for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
+          const index =
+            x +
+            y * VoxelConstants.MicroPerMacro +
+            z * VoxelConstants.MicroPerMacro * VoxelConstants.MicroPerMacro;
+          if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
+            continue;
+          }
+          occupied.add(
+            microGridCornerKey({
+              x: cell.macro.x * VoxelConstants.MicroPerMacro + x,
+              y: cell.macro.y * VoxelConstants.MicroPerMacro + y,
+              z: cell.macro.z * VoxelConstants.MicroPerMacro + z,
+            }),
+          );
+        }
+      }
+    }
+  }
+  return occupied;
+}
+
+function exposedFacesForSlot(
+  slot: MicroGridCorner,
+  occupied: Set<string>,
+): Array<{ normalKey: string; corners: MicroGridCorner[] }> {
+  const { x, y, z } = slot;
+  return [
+    {
+      normalKey: "1,0,0",
+      neighbor: { x: x + 1, y, z },
+      corners: [
+        { x: x + 1, y, z },
+        { x: x + 1, y: y + 1, z },
+        { x: x + 1, y: y + 1, z: z + 1 },
+        { x: x + 1, y, z: z + 1 },
+      ],
+    },
+    {
+      normalKey: "-1,0,0",
+      neighbor: { x: x - 1, y, z },
+      corners: [
+        { x, y, z },
+        { x, y, z: z + 1 },
+        { x, y: y + 1, z: z + 1 },
+        { x, y: y + 1, z },
+      ],
+    },
+    {
+      normalKey: "0,1,0",
+      neighbor: { x, y: y + 1, z },
+      corners: [
+        { x, y: y + 1, z },
+        { x, y: y + 1, z: z + 1 },
+        { x: x + 1, y: y + 1, z: z + 1 },
+        { x: x + 1, y: y + 1, z },
+      ],
+    },
+    {
+      normalKey: "0,-1,0",
+      neighbor: { x, y: y - 1, z },
+      corners: [
+        { x, y, z },
+        { x: x + 1, y, z },
+        { x: x + 1, y, z: z + 1 },
+        { x, y, z: z + 1 },
+      ],
+    },
+    {
+      normalKey: "0,0,1",
+      neighbor: { x, y, z: z + 1 },
+      corners: [
+        { x, y, z: z + 1 },
+        { x: x + 1, y, z: z + 1 },
+        { x: x + 1, y: y + 1, z: z + 1 },
+        { x, y: y + 1, z: z + 1 },
+      ],
+    },
+    {
+      normalKey: "0,0,-1",
+      neighbor: { x, y, z: z - 1 },
+      corners: [
+        { x, y, z },
+        { x, y: y + 1, z },
+        { x: x + 1, y: y + 1, z },
+        { x: x + 1, y, z },
+      ],
+    },
+  ].flatMap((face) =>
+    occupied.has(microGridCornerKey(face.neighbor))
+      ? []
+      : [{ normalKey: face.normalKey, corners: face.corners }],
+  );
+}
+
+function appendExposedFaceEdges(
+  edges: Map<string, EdgeAccumulator>,
+  normalKey: string,
+  corners: MicroGridCorner[],
+): void {
+  const edgeIndices: Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+  ];
+  for (const [fromIndex, toIndex] of edgeIndices) {
+    addCanonicalExposedFaceEdge(edges, corners[fromIndex]!, corners[toIndex]!, normalKey);
+  }
+}
+
+function addCanonicalExposedFaceEdge(
+  edges: Map<string, EdgeAccumulator>,
+  a: MicroGridCorner,
+  b: MicroGridCorner,
+  normalKey: string,
+): void {
+  const [from, to] = compareMicroGridCorners(a, b) <= 0 ? [a, b] : [b, a];
+  const key = `${microGridCornerKey(from)}|${microGridCornerKey(to)}`;
+  const existing = edges.get(key);
+  if (existing) {
+    existing.normalCounts.set(normalKey, (existing.normalCounts.get(normalKey) ?? 0) + 1);
+    return;
+  }
+  edges.set(key, {
+    edge: [from, to],
+    normalCounts: new Map([[normalKey, 1]]),
+  });
+}
+
 function addCanonicalMicroGridEdge(
   edges: Map<string, [MicroGridCorner, MicroGridCorner]>,
   a: MicroGridCorner,
@@ -111,6 +282,15 @@ function compareMicroGridCorners(a: MicroGridCorner, b: MicroGridCorner): number
 
 function microGridCornerKey(corner: MicroGridCorner): string {
   return `${corner.x},${corner.y},${corner.z}`;
+}
+
+function parseMicroGridCornerKey(key: string): MicroGridCorner {
+  const [x = "0", y = "0", z = "0"] = key.split(",");
+  return {
+    x: Number.parseInt(x, 10) || 0,
+    y: Number.parseInt(y, 10) || 0,
+    z: Number.parseInt(z, 10) || 0,
+  };
 }
 
 function appendMicroGridEdgeWorldPositions(

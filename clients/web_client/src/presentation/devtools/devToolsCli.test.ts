@@ -93,6 +93,48 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(setFieldDebugOverlayVisible).toHaveBeenCalledWith(true);
   });
 
+  it("exposes target overlay projection diagnostics", () => {
+    const cli = new DevToolsCli({
+      render: {
+        getTargetOverlaySnapshot: vi.fn(() => ({
+          selection: null,
+          highlight: {
+            visible: true,
+            kind: "prefab",
+            position: { x: 0, y: 0, z: 0 },
+            faceNormal: { x: 1, y: 0, z: 0 },
+            occupiedMacro: { x: 1, y: 2, z: 3 },
+            occupiedMicro: {
+              macro: { x: 1, y: 2, z: 3 },
+              micro: { x: 2, y: 3, z: 4 },
+            },
+          },
+          projection: {
+            granularity: "prefab",
+            key: "prefab:7",
+            label: "prefab 7",
+            macro: { x: 1, y: 2, z: 3 },
+            selectedMicro: { x: 2, y: 3, z: 4 },
+            prefabInstanceId: 7,
+            cellCount: 1,
+            occupiedSlots: 32,
+            coveredMacroMin: { x: 1, y: 2, z: 3 },
+            coveredMacroMax: { x: 1, y: 2, z: 3 },
+          },
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("target_probe", [])).toMatchObject({
+      ok: true,
+      command: "target_probe",
+      text: expect.stringContaining("target prefab"),
+      data: expect.objectContaining({
+        projection: expect.objectContaining({ granularity: "prefab", occupiedSlots: 32 }),
+      }),
+    });
+  });
+
   it("inspects micro cells via micro_cell and routes micro_place/micro_break to the edit controller", () => {
     const placeMicroAt = vi.fn(() => true);
     const breakMicroAt = vi.fn(() => true);
@@ -249,6 +291,33 @@ describe("DevToolsCli microgrid boundary", () => {
         energyBudgetJoules: 5000,
       },
     );
+  });
+
+  it("exposes a manual auto-circuit refresh command for browser verification", () => {
+    const requestVoxelAutoCircuit = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      world: {
+        requestVoxelAutoCircuit,
+        debugSnapshot: vi.fn(() => ({ mode: "server-authoritative" })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_auto_circuit", ["4", "12", "12", "90"])).toMatchObject({
+      ok: true,
+      command: "voxel_auto_circuit",
+      text: "auto circuit request submitted for (4,12,12)",
+      data: expect.objectContaining({
+        coord: { x: 4, y: 12, z: 12 },
+        maxTicks: 90,
+      }),
+    });
+    expect(requestVoxelAutoCircuit).toHaveBeenCalledWith({ x: 4, y: 12, z: 12 }, 90);
+
+    expect(cli.executeCliCommand("voxel_auto_circuit", ["4", "12"])).toMatchObject({
+      ok: false,
+      command: "voxel_auto_circuit",
+      text: "usage: voxel_auto_circuit <x> <y> <z> [max_ticks]",
+    });
   });
 
   it("preserves a non-CLI source when routing voxel_conduct", () => {

@@ -120,7 +120,7 @@ describe("WorldEditController selection edits", () => {
 
     expect(edit.getHotbarState().selected).toMatchObject({
       kind: "prefab",
-      prefabName: "builtin_sphere",
+      prefabName: "builtin_conductor_wire_x",
     });
 
     bus.emit("input:place-block", { source: "mouse_right" });
@@ -128,7 +128,7 @@ describe("WorldEditController selection edits", () => {
     expect(world.store.getNormalBlockWorld(adjacentMacro)).not.toBeNull();
     expect(placedPrefabs).toEqual([
       {
-        name: "builtin_sphere",
+        name: "builtin_conductor_wire_x",
         origin: adjacentMacro,
         placed: 1,
         source: "mouse_right",
@@ -136,7 +136,7 @@ describe("WorldEditController selection edits", () => {
     ]);
   });
 
-  it("uses server-supported prefabs and falls back to a server prefab intent in online mode", () => {
+  it("keeps online right-click prefab placement on the boundary-snap contract", () => {
     const bus = new EventBus<AppEvents>();
     const world = new ServerAuthoritativeWorld();
     const adjacentMacro: FMacroCoord = { x: 8, y: 1, z: 8 };
@@ -148,8 +148,12 @@ describe("WorldEditController selection edits", () => {
     const edit = new WorldEditController(bus, world, selection);
     const placedPrefabs: AppEvents["world:prefab-placed"][] = [];
     const fallbacks: AppEvents["world:prefab-boundary-snap-fallback"][] = [];
+    const rejectedSnaps: AppEvents["world:prefab-boundary-snap-rejected"][] = [];
+    const editRejected: AppEvents["world:edit-rejected"][] = [];
     bus.on("world:prefab-placed", (event) => placedPrefabs.push(event));
     bus.on("world:prefab-boundary-snap-fallback", (event) => fallbacks.push(event));
+    bus.on("world:prefab-boundary-snap-rejected", (event) => rejectedSnaps.push(event));
+    bus.on("world:edit-rejected", (event) => editRejected.push(event));
 
     expect(edit.getHotbarState().entries).toEqual(
       expect.arrayContaining([
@@ -163,29 +167,30 @@ describe("WorldEditController selection edits", () => {
 
     expect(edit.getHotbarState().selected).toMatchObject({
       kind: "prefab",
-      prefabName: "builtin_sphere",
+      prefabName: "builtin_conductor_wire_x",
     });
 
     bus.emit("input:place-block", { source: "mouse_right" });
 
-    expect(world.prefabPlaceCalls).toEqual([{ name: "builtin_sphere", origin: adjacentMacro }]);
-    expect(fallbacks).toEqual([
+    expect(world.prefabPlaceCalls).toEqual([]);
+    expect(fallbacks).toEqual([]);
+    expect(placedPrefabs).toEqual([]);
+    expect(rejectedSnaps).toEqual([
       {
-        prefabId: "builtin_sphere",
+        prefabId: "builtin_conductor_wire_x",
         hitMacro: { x: 8, y: 0, z: 8 },
-        adjacentMacro,
         faceNormal: { x: 0, y: 1, z: 0 },
+        anchorMicroCoord: null,
+        affectedMacroCount: 0,
+        incomingOccupiedSlots: 0,
+        overlapSlots: 0,
+        contactSlots: 0,
         rejectReason: "server_authority_not_supported",
         source: "mouse_right",
       },
     ]);
-    expect(placedPrefabs).toEqual([
-      {
-        name: "builtin_sphere",
-        origin: adjacentMacro,
-        placed: 3,
-        source: "mouse_right",
-      },
+    expect(editRejected).toEqual([
+      { reason: "prefab_boundary_snap_rejected", source: "mouse_right" },
     ]);
   });
 

@@ -53,13 +53,14 @@ describe("HUD shell layout", () => {
     expect(indexHtml).toContain('aria-label="Subscribe aimed chunk"');
   });
 
-  it("keeps the touch hotbar in one compact row so it does not collide with right thumb buttons", () => {
+  it("keeps the touch hotbar in one scrollable row so it does not collide with right thumb buttons", () => {
     const touchDockRule = indexHtml.match(/html\.is-touch\s+#hotbar-dock\s*\{[^}]*\}/s)?.[0] ?? "";
     const touchSlotsRule =
       indexHtml.match(/html\.is-touch\s+\.hotbar-slots\s*\{[^}]*\}/s)?.[0] ?? "";
 
     expect(touchDockRule).toContain("calc(100vw - 284px)");
-    expect(touchSlotsRule).toMatch(/grid-template-columns:\s*repeat\(9,/);
+    expect(touchSlotsRule).toContain("grid-auto-flow: column");
+    expect(touchSlotsRule).toContain("overflow-x: auto");
   });
 
   it("hides touch sticks/buttons/operations and shows orientation warning in portrait", () => {

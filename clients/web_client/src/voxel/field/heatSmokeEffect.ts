@@ -4,6 +4,8 @@ import { FieldMask } from "./fieldProtocol";
 
 export const HEAT_SMOKE_DEFAULTS = {
   joulesPerActiveCellParticle: 240,
+  fallbackCurrentVoltage: 120,
+  fieldTickSeconds: 0.1,
   maxSpawnPerSnapshot: 96,
   maxLiveParticles: 640,
   particleLifetimeMs: 2200,
@@ -43,6 +45,24 @@ interface ActiveElectricCell {
   potential: number;
 }
 
+export interface ElectricEffectCell {
+  localMacro: { x: number; y: number; z: number };
+  worldMacro: { x: number; y: number; z: number };
+  potential: number;
+}
+
+export interface ElectricEffectPoint {
+  x: number;
+  y: number;
+  z: number;
+  potential: number;
+  sizeWorld?: number;
+}
+
+export type ElectricEffectProjector = (
+  cell: ElectricEffectCell,
+) => readonly ElectricEffectPoint[] | null | undefined;
+
 export class HeatSmokeSimulation {
   private readonly particles: HeatSmokeParticle[] = [];
   private readonly regionHeatEnergyJoulesPerTick = new Map<number, number>();
@@ -78,12 +98,17 @@ export class HeatSmokeSimulation {
     this.regionHeatEnergyJoulesPerTick.set(regionId, heatEnergyJoulesPerTick);
   }
 
-  spawnFromElectricSnapshot(snapshot: FFieldRegionSnapshot): number {
-    if (!(snapshot.fieldMask & FieldMask.ElectricPotential)) {
+  spawnFromElectricSnapshot(
+    snapshot: FFieldRegionSnapshot,
+    projector?: ElectricEffectProjector,
+  ): number {
+    if (!(snapshot.fieldMask & (FieldMask.ElectricPotential | FieldMask.ElectricCurrent))) {
       return 0;
     }
 
-    const heatEnergyJoulesPerTick = this.regionHeatEnergyJoulesPerTick.get(snapshot.regionId);
+    const heatEnergyJoulesPerTick =
+      this.regionHeatEnergyJoulesPerTick.get(snapshot.regionId) ??
+      estimateCurrentHeatEnergyJoulesPerTick(snapshot);
     if (!heatEnergyJoulesPerTick || heatEnergyJoulesPerTick <= 0) {
       return 0;
     }
@@ -93,16 +118,19 @@ export class HeatSmokeSimulation {
       return 0;
     }
 
-    const heatScale = heatEnergyJoulesPerTick / this.joulesPerActiveCellParticle;
-    const spawnCount = clampInt(
-      Math.ceil(activeCells.length * heatScale),
-      1,
-      this.maxSpawnPerSnapshot,
+    const points = activeCells.flatMap((cell) =>
+      electricEffectPointsForCell(snapshot, cell, projector),
     );
+    if (points.length === 0) {
+      return 0;
+    }
+
+    const heatScale = heatEnergyJoulesPerTick / this.joulesPerActiveCellParticle;
+    const spawnCount = clampInt(Math.ceil(points.length * heatScale), 1, this.maxSpawnPerSnapshot);
 
     for (let i = 0; i < spawnCount; i++) {
-      const cell = activeCells[i % activeCells.length]!;
-      this.particles.push(this.buildParticle(snapshot, cell, heatScale));
+      const point = points[i % points.length]!;
+      this.particles.push(this.buildParticleFromPoint(snapshot.regionId, point, heatScale));
     }
 
     if (this.particles.length > this.maxLiveParticles) {
@@ -155,6 +183,10 @@ export class HeatSmokeSimulation {
 
   clearRegion(regionId: number): void {
     this.regionHeatEnergyJoulesPerTick.delete(regionId);
+    this.clearRegionParticles(regionId);
+  }
+
+  clearRegionParticles(regionId: number): void {
     let writeIdx = 0;
     for (let readIdx = 0; readIdx < this.particles.length; readIdx++) {
       const particle = this.particles[readIdx]!;
@@ -174,12 +206,11 @@ export class HeatSmokeSimulation {
     this.particles.length = 0;
   }
 
-  private buildParticle(
-    snapshot: FFieldRegionSnapshot,
-    cell: ActiveElectricCell,
+  private buildParticleFromPoint(
+    regionId: number,
+    point: ElectricEffectPoint,
     heatScale: number,
   ): HeatSmokeParticle {
-    const { cx, cy, cz } = snapshot.chunkCoord;
     const jitterX = (this.random() - 0.5) * MacroWorldSize * 0.34;
     const jitterZ = (this.random() - 0.5) * MacroWorldSize * 0.34;
     const driftAngle = this.random() * Math.PI * 2;
@@ -187,33 +218,77 @@ export class HeatSmokeSimulation {
       this.driftSpeedWorldPerSecond * (0.35 + 0.65 * this.random()) * Math.min(2, heatScale);
     const riseSpeed =
       this.riseSpeedWorldPerSecond * (0.75 + 0.5 * this.random()) * Math.min(1.6, heatScale);
-    const potentialScale = Math.max(0.75, Math.min(1.8, Math.abs(cell.potential) / 120));
+    const potentialScale = Math.max(0.75, Math.min(1.8, Math.abs(point.potential) / 120));
 
     return {
-      regionId: snapshot.regionId,
-      x: (cx * 16 + cell.x + 0.5) * MacroWorldSize + jitterX,
-      y: (cy * 16 + cell.y + 0.92) * MacroWorldSize,
-      z: (cz * 16 + cell.z + 0.5) * MacroWorldSize + jitterZ,
+      regionId,
+      x: point.x + jitterX,
+      y: point.y,
+      z: point.z + jitterZ,
       vx: Math.cos(driftAngle) * driftSpeed,
       vy: riseSpeed,
       vz: Math.sin(driftAngle) * driftSpeed,
       ageMs: 0,
       lifetimeMs: this.particleLifetimeMs,
-      sizeWorld: this.particleSizeWorld * potentialScale,
+      sizeWorld: (point.sizeWorld ?? this.particleSizeWorld) * potentialScale,
     };
   }
 }
 
+function electricEffectPointsForCell(
+  snapshot: FFieldRegionSnapshot,
+  cell: ActiveElectricCell,
+  projector?: ElectricEffectProjector,
+): ElectricEffectPoint[] {
+  const worldMacro = {
+    x: snapshot.chunkCoord.cx * 16 + cell.x,
+    y: snapshot.chunkCoord.cy * 16 + cell.y,
+    z: snapshot.chunkCoord.cz * 16 + cell.z,
+  };
+  const projected = projector?.({
+    localMacro: { x: cell.x, y: cell.y, z: cell.z },
+    worldMacro,
+    potential: cell.potential,
+  });
+  if (projected && projected.length > 0) {
+    return [...projected];
+  }
+  return [
+    {
+      x: (worldMacro.x + 0.5) * MacroWorldSize,
+      y: (worldMacro.y + 0.92) * MacroWorldSize,
+      z: (worldMacro.z + 0.5) * MacroWorldSize,
+      potential: cell.potential,
+    },
+  ];
+}
+
 function activeElectricCells(snapshot: FFieldRegionSnapshot): ActiveElectricCell[] {
+  const currentCells = activeElectricCellsFromValues(
+    snapshot,
+    snapshot.electricCurrentValues,
+    0.001,
+  );
+  if (currentCells.length > 0) {
+    return currentCells;
+  }
+  return activeElectricCellsFromValues(snapshot, snapshot.electricValues, 0.5);
+}
+
+function activeElectricCellsFromValues(
+  snapshot: FFieldRegionSnapshot,
+  values: ArrayLike<number>,
+  threshold: number,
+): ActiveElectricCell[] {
   const cells: ActiveElectricCell[] = [];
   for (let i = 0; i < snapshot.cellCount; i++) {
-    const potential = snapshot.electricValues[i];
+    const potential = values[i];
     const macroIndex = snapshot.macroIndices[i];
     if (
       potential === undefined ||
       macroIndex === undefined ||
       !Number.isFinite(potential) ||
-      Math.abs(potential) < 0.5
+      Math.abs(potential) < threshold
     ) {
       continue;
     }
@@ -221,6 +296,26 @@ function activeElectricCells(snapshot: FFieldRegionSnapshot): ActiveElectricCell
     cells.push({ ...coord, potential });
   }
   return cells;
+}
+
+function estimateCurrentHeatEnergyJoulesPerTick(snapshot: FFieldRegionSnapshot): number {
+  if (!(snapshot.fieldMask & FieldMask.ElectricCurrent)) {
+    return 0;
+  }
+
+  let maxCurrentAmps = 0;
+  for (let i = 0; i < snapshot.cellCount; i++) {
+    const current = snapshot.electricCurrentValues[i];
+    if (current !== undefined && Number.isFinite(current)) {
+      maxCurrentAmps = Math.max(maxCurrentAmps, Math.abs(current));
+    }
+  }
+
+  return (
+    maxCurrentAmps *
+    HEAT_SMOKE_DEFAULTS.fallbackCurrentVoltage *
+    HEAT_SMOKE_DEFAULTS.fieldTickSeconds
+  );
 }
 
 function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {

@@ -14,11 +14,35 @@ import { buildBoundaryFaceMasks, buildBoundarySignature } from "./boundary";
 
 export function buildBuiltinPrefabs(): LocalPrefab[] {
   return [
+    buildBuiltinPrefab(
+      "builtin_conductor_wire_x",
+      makeConductorWireXOccupancy(),
+      VoxelMaterialId.Iron,
+      ["builtin", "conductive", "wire", "x_axis"],
+    ),
+    buildBuiltinPrefab(
+      "builtin_conductor_junction_xz",
+      makeConductorJunctionXzOccupancy(),
+      VoxelMaterialId.Iron,
+      ["builtin", "conductive", "junction", "xz_plane"],
+    ),
     buildBuiltinPrefab("builtin_cylinder", makeCylinderOccupancy(), VoxelMaterialId.Stone, [
       "builtin",
       "cylinder",
       "curved",
     ]),
+    buildBuiltinPrefab(
+      "builtin_power_terminal_x",
+      makeConductorWireXOccupancy(),
+      VoxelMaterialId.PowerBlock,
+      ["builtin", "conductive", "power", "terminal", "x_axis"],
+    ),
+    buildBuiltinPrefab(
+      "builtin_load_terminal_x",
+      makeConductorWireXOccupancy(),
+      VoxelMaterialId.LoadBlock,
+      ["builtin", "conductive", "load", "terminal", "x_axis"],
+    ),
     buildBuiltinPrefab("builtin_sphere", makeSphereOccupancy(), VoxelMaterialId.Ice, [
       "builtin",
       "sphere",
@@ -92,6 +116,15 @@ function partIdsFromOccupancy(occupancyWord: bigint, partIndex: number): number[
 }
 
 function builtinAffordances(tags: string[]): string[] {
+  if (tags.includes("power")) {
+    return ["break", "conduct", "power"];
+  }
+  if (tags.includes("load")) {
+    return ["break", "conduct", "load"];
+  }
+  if (tags.includes("conductive")) {
+    return ["break", "conduct"];
+  }
   if (tags.includes("sphere")) {
     return ["break", "freeze", "melt"];
   }
@@ -261,6 +294,30 @@ function makeStairsOccupancy(): bigint {
         if (y <= x) {
           mask |= 1n << BigInt(microLinearIndex({ x, y, z }));
         }
+      }
+    }
+  }
+  return mask;
+}
+
+function makeConductorWireXOccupancy(): bigint {
+  let mask = 0n;
+  for (let x = 0; x < VoxelConstants.MicroPerMacro; x += 1) {
+    for (let y = 3; y <= 4; y += 1) {
+      for (let z = 3; z <= 4; z += 1) {
+        mask |= 1n << BigInt(microLinearIndex({ x, y, z }));
+      }
+    }
+  }
+  return mask;
+}
+
+function makeConductorJunctionXzOccupancy(): bigint {
+  let mask = makeConductorWireXOccupancy();
+  for (let x = 3; x <= 4; x += 1) {
+    for (let y = 3; y <= 4; y += 1) {
+      for (let z = 0; z < VoxelConstants.MicroPerMacro; z += 1) {
+        mask |= 1n << BigInt(microLinearIndex({ x, y, z }));
       }
     }
   }

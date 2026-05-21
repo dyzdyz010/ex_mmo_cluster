@@ -81,7 +81,7 @@
         position: fixed;
         bottom: max(18px, env(safe-area-inset-bottom));
         left: 50%;
-        width: min(560px, calc(100vw - 24px));
+        width: min(760px, calc(100vw - 24px));
         box-sizing: border-box;
         transform: translateX(-50%);
         display: flex;
@@ -370,7 +370,7 @@
       }
       .hotbar-slots {
         display: grid;
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
         gap: 6px;
         width: 100%;
         box-sizing: border-box;
@@ -502,6 +502,72 @@
         bottom: 14px;
         width: 8px;
         height: 3px;
+      }
+      .hotbar-icon--conductor,
+      .hotbar-icon--conductor-junction,
+      .hotbar-icon--power-terminal,
+      .hotbar-icon--load-terminal {
+        position: relative;
+        border: 1px solid rgba(221, 232, 242, 0.48);
+        border-radius: 5px;
+        background: rgba(24, 34, 42, 0.82);
+      }
+      .hotbar-icon--conductor::before,
+      .hotbar-icon--conductor-junction::before,
+      .hotbar-icon--conductor-junction::after,
+      .hotbar-icon--power-terminal::before,
+      .hotbar-icon--load-terminal::before {
+        content: "";
+        position: absolute;
+        background: rgba(190, 205, 216, 0.96);
+        box-shadow: 0 0 8px rgba(197, 227, 255, 0.38);
+      }
+      .hotbar-icon--conductor::before,
+      .hotbar-icon--conductor-junction::before,
+      .hotbar-icon--power-terminal::before,
+      .hotbar-icon--load-terminal::before {
+        left: 2px;
+        right: 2px;
+        top: 9px;
+        height: 4px;
+        border-radius: 3px;
+      }
+      .hotbar-icon--conductor-junction::after {
+        top: 2px;
+        bottom: 2px;
+        left: 9px;
+        width: 4px;
+        border-radius: 3px;
+      }
+      .hotbar-icon--power-terminal {
+        border-color: rgba(255, 216, 102, 0.74);
+        background: rgba(74, 57, 20, 0.72);
+      }
+      .hotbar-icon--power-terminal::after {
+        content: "";
+        position: absolute;
+        right: 2px;
+        top: 2px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #ffd866;
+        box-shadow: 0 0 10px rgba(255, 216, 102, 0.7);
+      }
+      .hotbar-icon--load-terminal {
+        border-color: rgba(41, 182, 246, 0.74);
+        background: rgba(16, 55, 74, 0.72);
+      }
+      .hotbar-icon--load-terminal::after {
+        content: "";
+        position: absolute;
+        right: 2px;
+        top: 2px;
+        width: 6px;
+        height: 6px;
+        border-radius: 2px;
+        background: #29b6f6;
+        box-shadow: 0 0 10px rgba(41, 182, 246, 0.7);
       }
       #touch-controls {
         position: fixed;
@@ -670,11 +736,15 @@
       }
       html.is-touch #hotbar-dock {
         bottom: max(12px, env(safe-area-inset-bottom));
-        width: min(540px, calc(100vw - 284px));
+        width: min(620px, calc(100vw - 284px));
       }
       html.is-touch .hotbar-slots {
-        grid-template-columns: repeat(9, minmax(0, 1fr));
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(42px, 1fr);
+        grid-template-columns: none;
         gap: 5px;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
         padding: 7px;
       }
       html.is-touch .hotbar-slot {
