@@ -31,13 +31,18 @@ defmodule SceneServer.Voxel.PrefabRaster do
   @typedoc """
   One micro-cell write produced by the rasterizer. `layer_attrs` is the
   `MicroLayer.normalize!`-friendly attribute map (currently `material_id` +
-  `health`).
+  `health`, with optional object provenance).
   """
   @type cell :: %{
           chunk_coord: Types.chunk_coord(),
           local_macro: Types.local_macro_coord(),
           micro_slot: 0..511,
-          layer_attrs: %{material_id: 0..0xFFFF, health: 0..0xFFFF}
+          layer_attrs: %{
+            required(:material_id) => 0..0xFFFF,
+            required(:health) => 0..0xFFFF,
+            optional(:owner_object_id) => 0..0x7FFF_FFFF_FFFF_FFFF,
+            optional(:owner_part_id) => 0..0xFFFF_FFFF
+          }
         }
 
   @doc """
@@ -52,6 +57,10 @@ defmodule SceneServer.Voxel.PrefabRaster do
       same units used by `0x67 PrefabPlaceIntent`. Each blueprint slot
       `(lx, ly, lz)` writes to `(anchor + (lx, ly, lz))` in world-micro space.
     * `rotation` – wire byte; only `0` is accepted in v2.
+    * `opts[:owner_object_id]` / `opts[:owner_part_id]` – optional object
+      provenance for real prefab placement. When omitted, the rasterizer keeps
+      the legacy terrain-like layer attrs so pure geometry tests and callers
+      that intentionally do not allocate objects remain compatible.
 
   ## Returns
 
@@ -59,13 +68,22 @@ defmodule SceneServer.Voxel.PrefabRaster do
       multiple macros / chunks when the anchor is not macro-aligned.
     * `{:error, reason}` on resolution / validation failure.
   """
-  @spec rasterize(non_neg_integer(), non_neg_integer(), Types.world_micro_coord(), 0..0xFF) ::
+  @spec rasterize(
+          non_neg_integer(),
+          non_neg_integer(),
+          Types.world_micro_coord(),
+          0..0xFF,
+          keyword()
+        ) ::
           {:ok, [cell()]} | {:error, atom()}
-  def rasterize(blueprint_id, blueprint_version, anchor_world_micro, rotation) do
+  def rasterize(blueprint_id, blueprint_version, anchor_world_micro, rotation, opts \\ []) do
     with {:ok, blueprint} <- BlueprintCatalog.fetch(blueprint_id, blueprint_version),
          :ok <- validate_rotation(rotation),
-         {:ok, anchor} <- normalize_anchor(anchor_world_micro) do
-      layer_attrs = %{material_id: blueprint.material_id, health: 100}
+         {:ok, anchor} <- normalize_anchor(anchor_world_micro),
+         {:ok, owner_attrs} <- normalize_owner_attrs(opts) do
+      layer_attrs =
+        %{material_id: blueprint.material_id, health: 100}
+        |> Map.merge(owner_attrs)
 
       cells =
         Enum.map(blueprint.occupied_slots, fn slot ->
@@ -98,6 +116,39 @@ defmodule SceneServer.Voxel.PrefabRaster do
   end
 
   defp normalize_anchor(_), do: {:error, :invalid_anchor_world_micro}
+
+  defp normalize_owner_attrs(opts) when is_list(opts) do
+    owner_object_id = Keyword.get(opts, :owner_object_id, 0)
+    owner_part_id = Keyword.get(opts, :owner_part_id, 0)
+
+    with {:ok, owner_object_id} <- normalize_owner_object_id(owner_object_id),
+         {:ok, owner_part_id} <- normalize_owner_part_id(owner_part_id) do
+      cond do
+        owner_object_id == 0 and owner_part_id == 0 ->
+          {:ok, %{}}
+
+        owner_object_id == 0 ->
+          {:error, :owner_part_without_object}
+
+        true ->
+          {:ok, %{owner_object_id: owner_object_id, owner_part_id: owner_part_id}}
+      end
+    end
+  end
+
+  defp normalize_owner_attrs(_opts), do: {:error, :invalid_owner_opts}
+
+  defp normalize_owner_object_id(value)
+       when is_integer(value) and value >= 0 and value <= 0x7FFF_FFFF_FFFF_FFFF,
+       do: {:ok, value}
+
+  defp normalize_owner_object_id(_value), do: {:error, :invalid_owner_object_id}
+
+  defp normalize_owner_part_id(value)
+       when is_integer(value) and value >= 0 and value <= 0xFFFF_FFFF,
+       do: {:ok, value}
+
+  defp normalize_owner_part_id(_value), do: {:error, :invalid_owner_part_id}
 
   defp rasterize_slot(slot, {ax, ay, az}, layer_attrs) do
     micro_resolution = Types.micro_resolution()

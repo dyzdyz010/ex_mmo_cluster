@@ -16,6 +16,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.SceneObjectStore
   alias DataService.Voxel.WriteTokenStore
   alias GateServer.WsConnection
   alias SceneServer.Combat.VoxelDamageRouter
@@ -26,6 +27,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   alias SceneServer.Voxel.ObjectOwnerLookup
   alias SceneServer.Voxel.ObjectRegistry
   alias SceneServer.Voxel.PrefabRaster
+  alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.MapLedger
 
   defmodule FakeInterface do
@@ -219,6 +221,15 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     assert non_empty_macro?(storage_b),
            "chunk (1,0,0) 应该有 sphere 占用的 macro(prefab 跨 chunk x 边界),storage 看起来是空"
 
+    assert [object] =
+             ObjectRegistry.list_objects_in_chunk(ObjectRegistry, ctx.logical_scene_id, {0, 0, 0})
+
+    assert object.object_id > 0
+    assert object.covered_chunks == [{0, 0, 0}, {1, 0, 0}]
+    assert Enum.any?(object.part_states, &(&1.part_id == 1))
+    assert {:ok, persisted} = SceneObjectStore.get_object(object.object_id)
+    assert persisted.covered_chunks == object.covered_chunks
+
     # ChunkDirectory.RegionA 应该只持有 chunk (0,0,0) 的 chunk_pid,RegionB
     # 只持有 (1,0,0)(per-region 路由生效);用 lookup_chunk_pid 反向验证。
     assert {:ok, _pid_a_local} =
@@ -234,16 +245,11 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
              ChunkDirectory.lookup_chunk_pid(ctx.chunk_dir_b, ctx.logical_scene_id, {0, 0, 0})
   end
 
-  test "跨 region damage cascade: 攻击 region B 的 chunk → owner 路径不破坏(no-voxel,因 prefab 不分配 scene_object)",
+  test "跨 region damage cascade: 攻击 region B 的 chunk → 通过 prefab owner 路由到 scene_object",
        ctx do
-    # 当前 prefab dispatch 路径**不**为 sphere 分配 scene_object(BuildTransaction
-    # .scene_objects 仅在某些蓝图为空时由 coordinator allocate;sphere 默认是
-    # 纯破坏型 micro 块)。所以 attacking 跨 region chunk 实际命中的是普通 micro
-    # block,Storage.lookup_owner_at 返回 nil → :no_voxel。
-    #
-    # 这条测试主要验证:**跨 region damage 路径不会 crash / 走错 ChunkDirectory**。
-    # 真正的 part_destroyed cascade 跨 region e2e 等 prefab v3 接通 scene_object
-    # 分配后(A4-bis-cluster + Phase 5)再加。
+    # Prefab placement 必须分配真实 scene_object，并把同一 prefab 的所有
+    # micro slots 写上同一个 owner pair。这里从 region B 的 chunk 读持久化
+    # snapshot 反查 owner，再通过 ObjectOwnerLookup 路由到 owning registry。
     anchor = find_cross_chunk_anchor!()
 
     {:ok, pid} = WsConnection.start_link(self())
@@ -269,6 +275,12 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     # 攻击 region B 的 chunk(1,0,0)中 prefab 占用的某个 micro slot。chunk x
     # 边界 = world_micro 128;sphere 跨边界进入 chunk(1,0,0)的占用区在 macro
     # x=16(world_macro 16 = chunk 1 local macro 0)附近。
+    flush_chunk_persistence!(ctx.chunk_dir_a, ctx.logical_scene_id, {0, 0, 0})
+    flush_chunk_persistence!(ctx.chunk_dir_b, ctx.logical_scene_id, {1, 0, 0})
+
+    assert [object] =
+             ObjectRegistry.list_objects_in_chunk(ObjectRegistry, ctx.logical_scene_id, {1, 0, 0})
+
     target_world_micro = damage_target_in_region_b(anchor)
 
     # 直接调 VoxelDamageRouter,不走 wire 0x64 帧(0x64 路径在 ws_connection 中
@@ -276,9 +288,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     # 路由的 damage 路径在 fixture 双 ChunkDirectory 下不 crash)。
     outcome = VoxelDamageRouter.try_apply_damage(ctx.logical_scene_id, target_world_micro, 25)
 
-    # owner_object_id = 0(prefab 不分配 scene_object)→ Storage.lookup_owner_at
-    # 返回 nil → :no_voxel(语义正确,跨 region 路径不 crash)。
-    assert outcome == :no_voxel
+    assert {:applied, %{object_id: object.object_id, part_id: 1}} == outcome
   end
 
   ## Helpers
@@ -308,11 +318,23 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
       )
   end
 
-  defp damage_target_in_region_b(_anchor) do
-    # chunk(1,0,0) 占 world_micro x ∈ [128, 256)。挑一个 sphere 在 region B
-    # 一定会占的 micro slot:macro (16, 1, 1) 的 micro slot 0 → world_micro
-    # (128, 8, 8)。
-    {128, 8, 8}
+  defp damage_target_in_region_b(anchor) do
+    {:ok, cells} = PrefabRaster.rasterize(1, 2, anchor, 0)
+
+    cell =
+      Enum.find(cells, &(&1.chunk_coord == {1, 0, 0})) ||
+        flunk("expected prefab raster to occupy chunk {1,0,0}")
+
+    {local_macro_x, local_macro_y, local_macro_z} = cell.local_macro
+    {local_micro_x, local_micro_y, local_micro_z} = Types.micro_coord!(cell.micro_slot)
+    chunk_size = Types.chunk_size_in_macro()
+    micro = Types.micro_resolution()
+
+    {
+      (chunk_size + local_macro_x) * micro + local_micro_x,
+      local_macro_y * micro + local_micro_y,
+      local_macro_z * micro + local_micro_z
+    }
   end
 
   defp non_empty_macro?(storage) do

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InstancedMesh, MeshBasicMaterial } from "three";
+import { InstancedMesh, LineSegments, MeshBasicMaterial } from "three";
 import { FieldMask, type FFieldRegionSnapshot } from "./fieldProtocol";
 import { FieldDebugOverlay } from "./fieldDebugOverlay";
+import { buildPrefabRasterSurfaceOutlineGeometry } from "../../render/prefabPreviewGeometry";
+import type { PrefabRasterCell } from "../prefab";
 
 const CELL_COUNT = 4096;
 const CENTER_INDEX = 7 + 7 * 16 + 7 * 256;
@@ -232,8 +234,52 @@ describe("FieldDebugOverlay", () => {
     );
 
     const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
-    expect(regionGroup?.children).toHaveLength(1);
+    expect(regionGroup?.children.some((child) => child.name.includes("chunk"))).toBe(false);
     expect(electricMesh(overlay).count).toBe(2);
+  });
+
+  it("projects electric overlay from macro cells onto prefab micro wires", () => {
+    const overlay = new FieldDebugOverlay();
+    const prefabCells: PrefabRasterCell[] = [
+      {
+        macro: { x: 0, y: 0, z: 0 },
+        microOccupancyMask: 0b1111n,
+        microMaterialIds: [],
+        microStateFlags: [],
+        microPartIds: [],
+      },
+    ];
+
+    overlay.setProjector((worldMacro) => ({
+      granularity: "prefab",
+      key: "prefab:test",
+      label: "prefab test",
+      macro: worldMacro,
+      prefabInstanceId: 99,
+      cells: prefabCells.map((cell) => ({ ...cell, macro: worldMacro })),
+    }));
+
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricValues: Float32Array.of(120),
+      }),
+    );
+
+    const line = electricMicroLines(overlay);
+    const snapshot = overlay.snapshot().regions[0];
+    const surfaceOutline = buildPrefabRasterSurfaceOutlineGeometry(prefabCells);
+    const renderedSegmentCount = line.geometry.getAttribute("position").count / 2;
+
+    expect(electricMesh(overlay).count).toBe(0);
+    expect(line.visible).toBe(true);
+    expect(renderedSegmentCount).toBe(surfaceOutline.wireSegmentCount);
+    expect(snapshot).toMatchObject({
+      electricCells: 4,
+      electricMicroCells: 4,
+      electricMicroGroups: 1,
+    });
   });
 
   it("turns electric heat into smoke particles instead of coloring the block body", () => {
@@ -384,6 +430,18 @@ function electricMesh(overlay: FieldDebugOverlay): InstancedMesh {
     throw new Error("missing electric mesh");
   }
   return mesh;
+}
+
+function electricMicroLines(overlay: FieldDebugOverlay): LineSegments {
+  const regionGroup = overlay.rootGroup.getObjectByName("field-region-77");
+  const lines = regionGroup?.children.find(
+    (child): child is LineSegments =>
+      child instanceof LineSegments && child.name === "electric-micro-wire",
+  );
+  if (!lines) {
+    throw new Error("missing electric micro lines");
+  }
+  return lines;
 }
 
 function expectVisibleInstance(mesh: InstancedMesh, index: number): void {

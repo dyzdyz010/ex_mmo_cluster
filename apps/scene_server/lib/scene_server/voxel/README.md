@@ -89,35 +89,44 @@ participant 级 prepare/commit/abort 的薄适配器：
 - SceneServer 只拥有当前已租约区域的热执行状态。
 - DataService 只有在写入令牌匹配当前 World 租约时，才持久化区块真相。
 
-`SceneServer.Voxel.BlueprintCatalog` 是 v1 写死的预制蓝图目录。它把 `blueprint_id`
-映射到固定的宏单元偏移列表 + 单一材质 id，并强制 `blueprint_version` 必须为 1。当前
-v1 catalog 内容：
+`SceneServer.Voxel.BlueprintCatalog` 是服务端权威预制蓝图目录。Phase A1 起它使用
+v2 micro-mask：`blueprint_id` 映射到单 macro 内的 refined micro occupancy + 单一材质
+id，并强制 `blueprint_version` 必须为 2。当前 v2 catalog 内容：
 
 | id | name                | 形状                            | material_id |
 |----|---------------------|---------------------------------|-------------|
-| 1  | builtin_pillar_3    | 沿 y 轴 3 个垂直方块            | 1           |
-| 2  | builtin_floor_3x3   | y=0 平面 3×3 共 9 个方块        | 2           |
-| 3  | builtin_cube_2x2x2  | 2×2×2 共 8 个方块               | 3           |
+| 1  | builtin_sphere      | 8³ micro 球体                   | 4           |
+| 2  | builtin_cylinder    | z 轴圆柱                        | 2           |
+| 3  | builtin_stairs      | y ≤ x 阶梯                      | 3           |
+| 4  | builtin_conductor_wire_x | 2×2 导线贯穿 x 轴          | 5           |
+| 5  | builtin_conductor_junction_xz | x/z 平面接线节点      | 5           |
+| 6  | builtin_power_terminal_x | 2×2 电源端子贯穿 x 轴     | 6           |
 
-`SceneServer.Voxel.PrefabRaster.rasterize/4` 是把蓝图 + 锚点光栅化为
+`SceneServer.Voxel.PrefabRaster.rasterize/4` / `/5` 是把蓝图 + 锚点光栅化为
 `(chunk_coord, local_macro, micro_slot, layer_attrs)` 写入单元的纯函数。
 **Phase A1 hotfix(2026-05-09)起按 world-micro 精度落地**：每个 occupied
 slot 把 `(slot_x, slot_y, slot_z)` 加到 `anchor_world_micro` 后，再
 `floor_div / floor_mod` 拆出该 cell 的 `(chunk_coord, local_macro, micro_slot)`。
 这样 macro-aligned 锚点是退化情形（单 macro / 单 chunk），mid-macro 锚点会
 让 prefab 自然跨 2~8 个 macros / 1~4 个 chunks，与客户端 boundary-snap
-线框预览像素级一致。所有 cell 共用同一份 `layer_attrs = %{material_id, health: 100}`。
+线框预览像素级一致。所有 cell 共用同一份 `layer_attrs`；几何测试和
+terrain-like caller 仍可只带 `%{material_id, health: 100}`，真实 prefab
+placement 必须通过 `/5` 填入同一个 `owner_object_id / owner_part_id`，让
+chunk snapshot、ObjectCoverRef 和前端 overlay 都能从 layer truth 反查
+prefab/object 归属。
 `group_by_chunk/1` 方便按 chunk 聚合做 per-chunk 事务参与方分发。当前 v2 不支持
 非 0 旋转；跨 region / 多 lease 由 Gate + World 按 Scene-owner participant
 分发，Scene 侧仍只接收自己负责的 chunk intents。
 
-Gate 上的 `0x67 PrefabPlaceIntent` 真实路径：先通过 `BlueprintCatalog` +
-`PrefabRaster` 拿到 cell 列表，按 `chunk_coord` 分组成
+Gate 上的 `0x67 PrefabPlaceIntent` 真实路径：先从
+`voxel_scene_object_id_seq` 预分配 `object_id`，再通过 `BlueprintCatalog` +
+`PrefabRaster.rasterize/5` 拿到带 owner provenance 的 cell 列表，按 `chunk_coord` 分组成
 `%{chunk_coord => [intent_attrs, ...]}` 一份 intents-by-chunk 计划；通过 World 的
 `MapLedger.route_chunks_with_leases/3` 一次解出所有 touched chunks 的 assignment +
 lease。Gate 要求每个 assignment 都有 `assigned_scene_node`,然后按具体
 `{ChunkDirectory, scene_node}` 分组成 Scene-owner participants。单 chunk 和同 Scene
-owner 多 chunk 走 Gate/Scene 本地 fast path；真正 split-owner 的计划才远程调
+owner 多 chunk 走 Gate/Scene 本地 fast path，并在 commit 后调用
+`BuildTransactionApplier.register_scene_objects/2` 注册同一个 scene_object；真正 split-owner 的计划才远程调
 `WorldServer.Voxel.TransactionCoordinator.begin_transaction/3` 并同步运行
 `WorldServer.Voxel.TransactionExecutor.execute/4`。participant 必须携带
 `participant_key`、`assigned_scene_node` 和每个 affected chunk 的 `chunk_owners`;
@@ -1037,15 +1046,36 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 `tick_limit_reached?/1`、`in_aabb?/2`（macro_index 是否落在 AABB 内）、
 `put_layer/3` / `get_layer/2`、`aabb_cell_count/1`（AABB 内格子总数，上限 4096）。
 
+### TemperatureField 算法
+
+**`SceneServer.Voxel.Field.TemperatureField`** —— 稀疏 7-stencil 温度扩散：
+
+- Source lifecycle、impulse source 消耗、persistent source 重写、FieldLayer 写回仍由 Elixir
+  持有，避免 native 拥有 authority 或运行时状态。
+- 热扩散候选格的数值计算默认走 Field 层统一 native backend
+  `SceneServer.Voxel.Field.NativeBackend.diffuse_temperature/9`；输入 DTO 由
+  `NativeBackend.TemperatureDiffusionInput` 冻结为当前 sparse deltas、candidate indices、
+  AABB 和热属性表，再进入薄 Rustler binding
+  `SceneServer.Native.FieldKernel.diffuse_temperature/8`。
+- `temperature_backend: :elixir` 保留为等价参考和回滚开关。
+
 ### ElectricField 算法
 
 **`SceneServer.Voxel.Field.ElectricField`** —— BFS/Dijkstra 从 source_points 向 AABB 传播电势：
 
-- 数据结构：`:gb_sets` 做 max-heap（用 `{-potential, idx}` 取反，`:gb_sets.smallest` 即最大势）
-- 路径代价：`1.0 / max(density_raw / 65536.0, 0.001) × @decay_factor(0.1)`
-  （高密度格阻碍传播；density 通过 `Storage.effective_attribute_at` 读取，fallback default 65536）
+- Runtime ownership：source 过滤、AABB layer 清空、FieldLayer 写回仍在 Elixir；纯传播计算默认
+  走 `SceneServer.Voxel.Field.NativeBackend.propagate_electric_potential/5`。
+- 可达性：只沿 `ParticipantProjection` 证明的导电材料/微格接触传播；空格、低导电材料、
+  refined cell 内不连通的 face contact 都不会被当成电势传播路径。
+- 路径代价：使用 `electric_conductivity`、`dielectric_strength` 与当前 `ionization`
+  计算 step cost；不再使用旧的 density fallback。
+- Native DTO 只编码当前 region AABB 内的导电投影条目，避免局部 field tick 因整块
+  projection fan-out 放大 Rustler 调用成本。
 - Ionization（电离度）：`|potential| ≥ 50.0` 时每 tick +5，否则每 tick -1，固定范围 0..255
 - 出 AABB 的邻居忽略（不传播到区域外）
+- `electric_backend: :elixir` 保留为等价参考和回滚开关。该电势传播与
+  `ConductionPathKernel` 共享 material/face-contact 可达性事实，但一个输出全场 potential，
+  一个输出 source 到 target 的单条导电通道。
 
 `tick(region, storage) :: {:ok, region}` 是每 tick 入口：重算 potential + ionization FieldLayer，
 写回 region。
@@ -1057,7 +1087,14 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
 - 输入：`source_points` 中的 `:electric_potential` source，以及 kernel opts 里的
   `target_macro_index` / `target_local_macro`。
 - 搜索：chunk-local AABB 内 bounded Dijkstra；frontier 默认上限 512，同成本路径按
-  macro index 稳定排序，保证同一输入得到 deterministic channel。
+  macro index 稳定排序，保证同一输入得到 deterministic channel。路径搜索默认走 Field
+  层统一 native backend `SceneServer.Voxel.Field.NativeBackend`；业务 kernel 只传
+  `ParticipantProjection`、`FieldLayer` 和 fallback，Rustler DTO 由
+  `NativeBackend.ConductionPathInput` 负责编码。`SceneServer.Native.FieldKernel` 只是薄
+  Rustler binding。`path_backend: :elixir` 保留为等价参考和回滚开关，authority、layer
+  写入、Joule heat effect 和 observe 仍在 Elixir 侧执行。DTO 编码按当前 region AABB
+  裁剪投影条目，避免小区域路径搜索携带整块导电图。其他纯计算 kernel 也应接入这个 Field
+  native backend boundary，而不是各自新建独立 native ownership。
 - 权威预检：`FieldRuntime.ensure_conduction_path/1` 在创建 FieldRegion 前读取 source chunk
   的当前 `Storage`，用同一套 channel 搜索确认 source/target 和中间路径都是材料上可导电的
   occupied cell；空 cell、挖掉后的 cell、低导电地面会以

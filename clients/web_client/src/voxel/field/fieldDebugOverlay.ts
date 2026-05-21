@@ -8,18 +8,27 @@
 
 import {
   BoxGeometry,
+  BufferGeometry,
   Color,
+  Float32BufferAttribute,
   Group,
   InstancedBufferAttribute,
   InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
   Matrix4,
   MeshBasicMaterial,
   Object3D,
 } from "three";
-import { MacroWorldSize } from "../core/constants";
+import { MacroWorldSize, VoxelConstants } from "../core/constants";
+import type { FMacroCoord } from "../core/types";
+import { MICRO_SLOT_COORDS } from "../prefab/math";
+import type { PrefabRasterCell } from "../prefab";
+import type { VoxelOverlayProjection } from "../overlayTarget";
+import { buildPrefabRasterSurfaceOutlineGeometry } from "../../render/prefabPreviewGeometry";
 import type { FFieldRegionSnapshot } from "./fieldProtocol";
 import { FieldMask } from "./fieldProtocol";
-import { HeatSmokeSimulation } from "./heatSmokeEffect";
+import { HeatSmokeSimulation, type ElectricEffectPoint } from "./heatSmokeEffect";
 import { HeatSmokeRenderer } from "./heatSmokeRenderer";
 
 const CELL_SIZE = MacroWorldSize; // 100 world units per macro cell
@@ -32,6 +41,9 @@ const TEMP_FULL_OPACITY_DELTA = 20;
 const TEMP_VISUAL_GAMMA = 0.25;
 const TEMP_MAX_OPACITY = 0.62;
 const TEMP_OPACITY_BUCKETS = [0.08, 0.16, 0.28, 0.42, TEMP_MAX_OPACITY] as const;
+const MICRO_ELECTRIC_COLOR = 0xfacc15;
+const MICRO_TEMP_HOT_COLOR = 0xff4040;
+const MICRO_TEMP_COLD_COLOR = 0x9d4edd;
 // Show only the top-N cells that deviate from the snapshot background.
 // Dense legacy snapshots estimate the background with a median. Sparse server
 // snapshots only contain anomaly cells, so they fall back to the current field
@@ -65,6 +77,13 @@ export interface FieldRegionOverlay {
   group: Group;
   temperatureMeshes: TemperatureMeshBucket[];
   electricMesh: InstancedMesh | null;
+  temperatureHotMicroLines: LineSegments | null;
+  temperatureColdMicroLines: LineSegments | null;
+  electricMicroLines: LineSegments | null;
+  temperatureMicroCells: number;
+  electricMicroCells: number;
+  temperatureMicroGroups: number;
+  electricMicroGroups: number;
   temperatureStats: TemperatureFieldStats;
 }
 
@@ -80,8 +99,14 @@ export interface FieldDebugOverlaySnapshot {
     maxTemperatureCelsius: number | null;
     maxAbsTemperatureDeltaCelsius: number;
     averageAbsTemperatureDeltaCelsius: number;
+    temperatureMicroCells: number;
+    electricMicroCells: number;
+    temperatureMicroGroups: number;
+    electricMicroGroups: number;
   }>;
 }
+
+export type FieldOverlayProjector = (worldMacro: FMacroCoord) => VoxelOverlayProjection;
 
 /**
  * Manages debug overlay meshes for all active FieldRegions.
@@ -96,6 +121,7 @@ export class FieldDebugOverlay {
   private readonly tmpColor = new Color();
   private readonly heatSmoke = new HeatSmokeSimulation();
   private readonly heatSmokeRenderer = new HeatSmokeRenderer(this.heatSmoke);
+  private overlayProjector: FieldOverlayProjector | null = null;
 
   constructor() {
     this.rootGroup = new Group();
@@ -114,10 +140,16 @@ export class FieldDebugOverlay {
       this.regions.set(snapshot.regionId, overlay);
       this.rootGroup.add(overlay.group);
     }
-    this._updateOverlay(overlay, snapshot);
-    const smokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(snapshot);
+    const projector = this.overlayProjector ?? undefined;
+    this._updateOverlay(overlay, snapshot, projector);
+    const smokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(
+      snapshot,
+      projector
+        ? (cell) => electricEffectPointsForProjection(projector(cell.worldMacro), cell.potential)
+        : undefined,
+    );
     const tempCount = temperatureCellCount(overlay);
-    const elecCount = overlay.electricMesh?.count ?? 0;
+    const elecCount = electricCellCount(overlay);
     let tMin = Infinity;
     let tMax = -Infinity;
     let tSum = 0;
@@ -137,7 +169,9 @@ export class FieldDebugOverlay {
         `tick=${snapshot.tickCount} mask=0x${snapshot.fieldMask.toString(16)} ` +
         `cells=${snapshot.cellCount} nonzero=${nonZeroCount} ` +
         `temp_min=${tMin.toFixed(3)} temp_max=${tMax.toFixed(3)} temp_avg=${tAvg.toFixed(3)} ` +
-        `rendered_temp=${tempCount} rendered_elec=${elecCount} smoke_spawned=${smokeSpawned} ` +
+        `rendered_temp=${tempCount} rendered_elec=${elecCount} ` +
+        `micro_temp=${overlay.temperatureMicroCells} micro_elec=${overlay.electricMicroCells} ` +
+        `smoke_spawned=${smokeSpawned} ` +
         `new=${isNew} group_visible=${this.rootGroup.visible} regions_total=${this.regions.size}`,
     );
   }
@@ -192,6 +226,10 @@ export class FieldDebugOverlay {
     return this.visible;
   }
 
+  setProjector(projector: FieldOverlayProjector | null): void {
+    this.overlayProjector = projector;
+  }
+
   snapshot(): FieldDebugOverlaySnapshot {
     return {
       visible: this.visible,
@@ -200,8 +238,12 @@ export class FieldDebugOverlay {
         regionId: overlay.regionId,
         chunkCoord: overlay.chunkCoord,
         temperatureCells: temperatureCellCount(overlay),
-        electricCells: overlay.electricMesh?.count ?? 0,
+        electricCells: electricCellCount(overlay),
         smokeParticles: this.heatSmoke.activeCount(overlay.regionId),
+        temperatureMicroCells: overlay.temperatureMicroCells,
+        electricMicroCells: overlay.electricMicroCells,
+        temperatureMicroGroups: overlay.temperatureMicroGroups,
+        electricMicroGroups: overlay.electricMicroGroups,
         ...overlay.temperatureStats,
       })),
     };
@@ -237,6 +279,9 @@ export class FieldDebugOverlay {
       new BoxGeometry(CELL_SIZE * 0.85, CELL_SIZE * 0.85, CELL_SIZE * 0.85);
     const temperatureMeshes: TemperatureMeshBucket[] = [];
     let electricMesh: InstancedMesh | null = null;
+    let temperatureHotMicroLines: LineSegments | null = null;
+    let temperatureColdMicroLines: LineSegments | null = null;
+    let electricMicroLines: LineSegments | null = null;
 
     if (snapshot.fieldMask & FieldMask.Temperature) {
       // depthTest:false + depthWrite:false so field cells are visible through terrain.
@@ -256,6 +301,15 @@ export class FieldDebugOverlay {
           group.add(mesh);
         }
       }
+      temperatureHotMicroLines = makeMicroLineSegments(
+        "temperature-hot-micro-wire",
+        MICRO_TEMP_HOT_COLOR,
+      );
+      temperatureColdMicroLines = makeMicroLineSegments(
+        "temperature-cold-micro-wire",
+        MICRO_TEMP_COLD_COLOR,
+      );
+      group.add(temperatureHotMicroLines, temperatureColdMicroLines);
     }
 
     if (snapshot.fieldMask & FieldMask.ElectricPotential) {
@@ -274,6 +328,8 @@ export class FieldDebugOverlay {
       electricMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
       initializeHiddenInstances(electricMesh);
       group.add(electricMesh);
+      electricMicroLines = makeMicroLineSegments("electric-micro-wire", MICRO_ELECTRIC_COLOR);
+      group.add(electricMicroLines);
     }
 
     return {
@@ -282,30 +338,45 @@ export class FieldDebugOverlay {
       group,
       temperatureMeshes,
       electricMesh,
+      temperatureHotMicroLines,
+      temperatureColdMicroLines,
+      electricMicroLines,
+      temperatureMicroCells: 0,
+      electricMicroCells: 0,
+      temperatureMicroGroups: 0,
+      electricMicroGroups: 0,
       temperatureStats: { ...EMPTY_TEMPERATURE_STATS },
     };
   }
 
-  private _updateOverlay(overlay: FieldRegionOverlay, snapshot: FFieldRegionSnapshot): void {
+  private _updateOverlay(
+    overlay: FieldRegionOverlay,
+    snapshot: FFieldRegionSnapshot,
+    projector?: FieldOverlayProjector,
+  ): void {
     if (overlay.temperatureMeshes.length > 0 && snapshot.fieldMask & FieldMask.Temperature) {
       overlay.temperatureStats = summarizeTemperatureField(snapshot);
-      this._syncTemperatureMeshes(overlay.temperatureMeshes, snapshot);
+      this._syncTemperatureMeshes(overlay, snapshot, projector);
     }
     if (overlay.electricMesh && snapshot.fieldMask & FieldMask.ElectricPotential) {
-      this._syncElectricMesh(overlay.electricMesh, snapshot);
+      this._syncElectricMesh(overlay, snapshot, projector);
     }
   }
 
   private _syncTemperatureMeshes(
-    buckets: TemperatureMeshBucket[],
+    overlay: FieldRegionOverlay,
     snapshot: FFieldRegionSnapshot,
+    projector?: FieldOverlayProjector,
   ): void {
+    const buckets = overlay.temperatureMeshes;
     const { macroIndices, temperatureValues, cellCount } = snapshot;
     const previousCounts = new Map<InstancedMesh, number>();
     for (const bucket of buckets) {
       previousCounts.set(bucket.mesh, bucket.mesh.count);
       bucket.mesh.count = 0;
     }
+    overlay.temperatureMicroCells = 0;
+    overlay.temperatureMicroGroups = 0;
 
     // Build (cell index, temperature) pairs, then keep only cells that stand
     // away from the local background. Sorting 4096 entries is cheap at the
@@ -336,12 +407,23 @@ export class FieldDebugOverlay {
         clearUnusedInstances(bucket.mesh, 0, previousCounts.get(bucket.mesh) ?? 0);
         bucket.mesh.instanceMatrix.needsUpdate = true;
       }
+      syncMicroLineSegments(overlay.temperatureHotMicroLines, []);
+      syncMicroLineSegments(overlay.temperatureColdMicroLines, []);
       return;
     }
 
+    const hotMicroCells = new Map<string, PrefabRasterCell[]>();
+    const coldMicroCells = new Map<string, PrefabRasterCell[]>();
     for (const { srcIdx, deviation } of topN) {
       const idx = macroIndices[srcIdx]!;
       const { x, y, z } = macroIndexToCoord(idx);
+      const worldMacro = worldMacroFromSnapshot(snapshot, { x, y, z });
+      const projection = projector?.(worldMacro);
+      if (projection && projection.granularity !== "macro") {
+        const target = deviation >= 0 ? hotMicroCells : coldMicroCells;
+        target.set(projection.key, localizeRasterCellsForSnapshot(snapshot, projection.cells));
+        continue;
+      }
       const bucket = temperatureBucketForDeviation(buckets, deviation);
       const mesh = bucket.mesh;
       const count = mesh.count;
@@ -364,12 +446,31 @@ export class FieldDebugOverlay {
       );
       bucket.mesh.instanceMatrix.needsUpdate = true;
     }
+    const hotGeometry = syncMicroLineSegments(
+      overlay.temperatureHotMicroLines,
+      [...hotMicroCells.values()].flat(),
+    );
+    const coldGeometry = syncMicroLineSegments(
+      overlay.temperatureColdMicroLines,
+      [...coldMicroCells.values()].flat(),
+    );
+    overlay.temperatureMicroCells = hotGeometry.occupiedSlotCount + coldGeometry.occupiedSlotCount;
+    overlay.temperatureMicroGroups = hotMicroCells.size + coldMicroCells.size;
   }
 
-  private _syncElectricMesh(mesh: InstancedMesh, snapshot: FFieldRegionSnapshot): void {
+  private _syncElectricMesh(
+    overlay: FieldRegionOverlay,
+    snapshot: FFieldRegionSnapshot,
+    projector?: FieldOverlayProjector,
+  ): void {
+    const mesh = overlay.electricMesh;
+    if (!mesh) {
+      return;
+    }
     const { macroIndices, electricValues, cellCount } = snapshot;
     const previousCount = mesh.count;
     let count = 0;
+    const microCells = new Map<string, PrefabRasterCell[]>();
 
     for (let i = 0; i < cellCount; i++) {
       const potential = electricValues[i];
@@ -377,6 +478,12 @@ export class FieldDebugOverlay {
 
       const idx = macroIndices[i]!;
       const { x, y, z } = macroIndexToCoord(idx);
+      const worldMacro = worldMacroFromSnapshot(snapshot, { x, y, z });
+      const projection = projector?.(worldMacro);
+      if (projection && projection.granularity !== "macro") {
+        microCells.set(projection.key, localizeRasterCellsForSnapshot(snapshot, projection.cells));
+        continue;
+      }
 
       this.tmpDummy.position.set(
         (x + 0.5) * CELL_SIZE,
@@ -396,6 +503,12 @@ export class FieldDebugOverlay {
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    const geometry = syncMicroLineSegments(
+      overlay.electricMicroLines,
+      [...microCells.values()].flat(),
+    );
+    overlay.electricMicroCells = geometry.occupiedSlotCount;
+    overlay.electricMicroGroups = microCells.size;
   }
 
   private _bindHotkey(): void {
@@ -420,6 +533,107 @@ function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {
 function normalizeRegionId(regionId: number | string): number | null {
   const value = typeof regionId === "number" ? regionId : Number.parseInt(regionId, 10);
   return Number.isFinite(value) ? value : null;
+}
+
+function makeMicroLineSegments(name: string, color: number): LineSegments {
+  const material = new LineBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.82,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const lines = new LineSegments(new BufferGeometry(), material);
+  lines.name = name;
+  lines.visible = false;
+  lines.frustumCulled = false;
+  lines.renderOrder = 7;
+  return lines;
+}
+
+function syncMicroLineSegments(
+  lines: LineSegments | null,
+  cells: readonly PrefabRasterCell[],
+): { occupiedSlotCount: number; wireSegmentCount: number } {
+  const geometry =
+    cells.length > 0
+      ? buildPrefabRasterSurfaceOutlineGeometry(cells)
+      : { positions: [], occupiedSlotCount: 0, wireSegmentCount: 0 };
+  if (!lines) {
+    return geometry;
+  }
+
+  lines.geometry.dispose();
+  const next = new BufferGeometry();
+  next.setAttribute("position", new Float32BufferAttribute(geometry.positions, 3));
+  lines.geometry = next;
+  lines.visible = geometry.wireSegmentCount > 0;
+  return geometry;
+}
+
+function localizeRasterCellsForSnapshot(
+  snapshot: FFieldRegionSnapshot,
+  cells: readonly PrefabRasterCell[],
+): PrefabRasterCell[] {
+  const origin = chunkWorldMacroOrigin(snapshot);
+  return cells.map((cell) => ({
+    ...cell,
+    macro: {
+      x: cell.macro.x - origin.x,
+      y: cell.macro.y - origin.y,
+      z: cell.macro.z - origin.z,
+    },
+    microMaterialIds: [...cell.microMaterialIds],
+    microStateFlags: [...cell.microStateFlags],
+    microPartIds: [...cell.microPartIds],
+  }));
+}
+
+function worldMacroFromSnapshot(
+  snapshot: FFieldRegionSnapshot,
+  localMacro: FMacroCoord,
+): FMacroCoord {
+  const origin = chunkWorldMacroOrigin(snapshot);
+  return {
+    x: origin.x + localMacro.x,
+    y: origin.y + localMacro.y,
+    z: origin.z + localMacro.z,
+  };
+}
+
+function chunkWorldMacroOrigin(snapshot: FFieldRegionSnapshot): FMacroCoord {
+  return {
+    x: snapshot.chunkCoord.cx * VoxelConstants.ChunkSizeX,
+    y: snapshot.chunkCoord.cy * VoxelConstants.ChunkSizeY,
+    z: snapshot.chunkCoord.cz * VoxelConstants.ChunkSizeZ,
+  };
+}
+
+function electricEffectPointsForProjection(
+  projection: VoxelOverlayProjection,
+  potential: number,
+): ElectricEffectPoint[] {
+  if (projection.granularity === "macro") {
+    return [];
+  }
+
+  const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
+  const points: ElectricEffectPoint[] = [];
+  for (const cell of projection.cells) {
+    for (const [index, micro] of MICRO_SLOT_COORDS.entries()) {
+      if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
+        continue;
+      }
+      points.push({
+        x: cell.macro.x * MacroWorldSize + (micro.x + 0.5) * microSize,
+        y: cell.macro.y * MacroWorldSize + (micro.y + 0.5) * microSize,
+        z: cell.macro.z * MacroWorldSize + (micro.z + 0.5) * microSize,
+        potential,
+        sizeWorld: microSize * 0.7,
+      });
+    }
+  }
+  return points;
 }
 
 function estimateBackgroundTemperature(samples: number[], cellCount: number): number {
@@ -499,7 +713,14 @@ function temperatureBucketForDeviation(
 }
 
 function temperatureCellCount(overlay: FieldRegionOverlay): number {
-  return overlay.temperatureMeshes.reduce((sum, bucket) => sum + bucket.mesh.count, 0);
+  return (
+    overlay.temperatureMeshes.reduce((sum, bucket) => sum + bucket.mesh.count, 0) +
+    overlay.temperatureMicroCells
+  );
+}
+
+function electricCellCount(overlay: FieldRegionOverlay): number {
+  return (overlay.electricMesh?.count ?? 0) + overlay.electricMicroCells;
 }
 
 function initializeHiddenInstances(mesh: InstancedMesh): void {
@@ -533,5 +754,20 @@ function _disposeOverlay(overlay: FieldRegionOverlay): void {
     overlay.electricMesh?.material.forEach((m) => m.dispose());
   } else {
     (overlay.electricMesh?.material as { dispose?: () => void })?.dispose?.();
+  }
+  disposeLineSegments(overlay.temperatureHotMicroLines);
+  disposeLineSegments(overlay.temperatureColdMicroLines);
+  disposeLineSegments(overlay.electricMicroLines);
+}
+
+function disposeLineSegments(lines: LineSegments | null): void {
+  if (!lines) {
+    return;
+  }
+  lines.geometry.dispose();
+  if (Array.isArray(lines.material)) {
+    lines.material.forEach((m) => m.dispose());
+  } else {
+    lines.material.dispose();
   }
 }

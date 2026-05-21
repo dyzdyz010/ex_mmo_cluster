@@ -31,6 +31,26 @@ defmodule WorldServer.Voxel.TransactionCoordinatorObjectAllocTest do
       assert Enum.at(scene_objects, 1).blueprint_id == 9
     end
 
+    test "preserves a preallocated seed object_id without consuming allocator" do
+      parent = self()
+
+      coordinator =
+        start_coordinator!(
+          next_object_id_fn: fn ->
+            send(parent, :allocator_called)
+            {:ok, 999}
+          end
+        )
+
+      attrs = Map.put(base_attrs(), :scene_objects, [seed_attrs(object_id: 321)])
+
+      assert {:ok, %BuildTransaction{scene_objects: [object]}} =
+               TransactionCoordinator.begin_transaction(coordinator, "tx-preallocated", attrs)
+
+      assert object.object_id == 321
+      refute_receive :allocator_called
+    end
+
     test "preserves all seed fields in the allocated scene_objects entries" do
       coordinator = start_coordinator!(allocator_returning([42]))
 
@@ -59,6 +79,7 @@ defmodule WorldServer.Voxel.TransactionCoordinatorObjectAllocTest do
                TransactionCoordinator.begin_transaction(coordinator, "tx-roundtrip", attrs)
 
       assert obj.object_id == 42
+      assert obj.logical_scene_id == 1
       assert obj.blueprint_id == 7
       assert obj.blueprint_version == 3
       assert obj.parcel_id == 13

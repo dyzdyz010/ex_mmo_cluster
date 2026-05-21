@@ -110,9 +110,12 @@ World 不直接搬运区块内容。
 （已分配 `object_id`、初始 `part_states`、`covered_chunks` 等）。
 
 - `TransactionCoordinator.begin_transaction/2/3` attrs 接受 `:scene_objects`
-  种子列表（无 `object_id`），coordinator 同步从
+  种子列表；默认由 coordinator 同步从
   `voxel_scene_object_id_seq`（Postgres SEQUENCE）取 `next_object_id`
-  逐条分配，写入 `BuildTransaction.scene_objects`。
+  逐条分配，写入 `BuildTransaction.scene_objects`。Gate prefab hot path
+  如果已经为了 layer provenance 预分配了 `object_id`，seed 可以携带该 id；
+  coordinator 会保留它而不是二次分配，并统一补入 transaction 的
+  `logical_scene_id`，避免 micro layer owner 与注册对象分叉。
 - 同 `transaction_id` 的 begin_transaction 二次调用走 replay 路径，**不再
   分配 ID**（避免 sequence 浪费）；`begin_fingerprint` 也不含
   `scene_objects`（allocations 不是 transaction identity 的一部分）。

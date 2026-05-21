@@ -23,6 +23,23 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     end)
   end
 
+  test "rasterizes prefab slots with object provenance when owner opts are provided" do
+    assert {:ok, cells} =
+             PrefabRaster.rasterize(3, @blueprint_version, {0, 0, 0}, 0,
+               owner_object_id: 42,
+               owner_part_id: 1
+             )
+
+    assert cells != []
+
+    Enum.each(cells, fn cell ->
+      assert cell.layer_attrs.owner_object_id == 42
+      assert cell.layer_attrs.owner_part_id == 1
+      assert cell.layer_attrs.material_id == 3
+      assert cell.layer_attrs.health == 100
+    end)
+  end
+
   test "rasterizes cylinder + stairs with their own material ids" do
     assert {:ok, cylinder_cells} = PrefabRaster.rasterize(2, @blueprint_version, {0, 0, 0}, 0)
     assert length(cylinder_cells) == BlueprintCatalog.slot_count(2)
@@ -31,6 +48,20 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     assert {:ok, stairs_cells} = PrefabRaster.rasterize(3, @blueprint_version, {0, 0, 0}, 0)
     assert length(stairs_cells) == BlueprintCatalog.slot_count(3)
     Enum.each(stairs_cells, fn cell -> assert cell.layer_attrs.material_id == 3 end)
+  end
+
+  test "rasterizes conductive wire and power terminal blueprints" do
+    assert {:ok, wire_cells} = PrefabRaster.rasterize(4, @blueprint_version, {0, 0, 0}, 0)
+    assert length(wire_cells) == 32
+    Enum.each(wire_cells, fn cell -> assert cell.layer_attrs.material_id == 5 end)
+
+    assert {:ok, junction_cells} = PrefabRaster.rasterize(5, @blueprint_version, {0, 0, 0}, 0)
+    assert length(junction_cells) == 56
+    Enum.each(junction_cells, fn cell -> assert cell.layer_attrs.material_id == 5 end)
+
+    assert {:ok, terminal_cells} = PrefabRaster.rasterize(6, @blueprint_version, {0, 0, 0}, 0)
+    assert length(terminal_cells) == 32
+    Enum.each(terminal_cells, fn cell -> assert cell.layer_attrs.material_id == 6 end)
   end
 
   test "macro-aligned anchor preserves slot indices and lands on that one macro" do
@@ -237,6 +268,21 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
         slot = x + y * @micro + z * @micro * @micro
         assert slot in stairs.occupied_slots
       end
+    end
+
+    test "conductive prefab contacts expose the intended boundary faces" do
+      {:ok, wire} = BlueprintCatalog.fetch(4, @blueprint_version)
+      {:ok, junction} = BlueprintCatalog.fetch(5, @blueprint_version)
+      {:ok, terminal} = BlueprintCatalog.fetch(6, @blueprint_version)
+
+      assert MapSet.new(Enum.map(wire.occupied_slots, &decode_slot/1)) ==
+               MapSet.new(for x <- 0..7, y <- 3..4, z <- 3..4, do: {x, y, z})
+
+      assert {0, 3, 3} in Enum.map(junction.occupied_slots, &decode_slot/1)
+      assert {7, 3, 3} in Enum.map(junction.occupied_slots, &decode_slot/1)
+      assert {3, 3, 0} in Enum.map(junction.occupied_slots, &decode_slot/1)
+      assert {3, 3, 7} in Enum.map(junction.occupied_slots, &decode_slot/1)
+      assert terminal.occupied_slots == wire.occupied_slots
     end
 
     test "occupancy_words round-trips slot list to 8 × u64 words" do

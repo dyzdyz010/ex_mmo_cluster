@@ -479,13 +479,16 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
         {:ok, []}
 
       seeds when is_list(seeds) ->
+        logical_scene_id = value(attrs, :logical_scene_id)
+
         seeds
         |> Enum.reduce_while({:ok, []}, fn seed, {:ok, acc} ->
           with {:ok, normalized} <- normalize_scene_object_seed(seed),
-               {:ok, object_id} <- run_next_object_id(next_object_id_fn),
+               {:ok, object_id} <- scene_object_id(normalized, next_object_id_fn),
                {:ok, owner} <- derive_scene_object_owner(normalized, participants) do
             entry =
               normalized
+              |> Map.put(:logical_scene_id, logical_scene_id)
               |> Map.put(:object_id, object_id)
               |> Map.merge(owner)
 
@@ -544,6 +547,16 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
 
   defp run_next_object_id(_), do: {:error, :object_id_unavailable}
 
+  defp scene_object_id(%{object_id: object_id}, _next_object_id_fn)
+       when is_integer(object_id) and object_id > 0 and object_id <= 0x7FFF_FFFF_FFFF_FFFF,
+       do: {:ok, object_id}
+
+  defp scene_object_id(%{object_id: _object_id}, _next_object_id_fn),
+    do: {:error, :invalid_object_id}
+
+  defp scene_object_id(_normalized_seed, next_object_id_fn),
+    do: run_next_object_id(next_object_id_fn)
+
   defp normalize_scene_object_seed(seed) when is_map(seed) or is_list(seed) do
     seed = attrs_map(seed)
 
@@ -573,6 +586,7 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
          object_tag_set_ref: value(seed, :object_tag_set_ref, 0),
          object_version: value(seed, :object_version, 1)
        }}
+      |> maybe_put_scene_object_id(value(seed, :object_id))
     else
       {:error, {:missing, key}} -> {:error, {:missing_scene_object_field, key}}
       {:error, reason} -> {:error, reason}
@@ -580,6 +594,17 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
   end
 
   defp normalize_scene_object_seed(_), do: {:error, :invalid_scene_object}
+
+  defp maybe_put_scene_object_id({:ok, normalized}, nil), do: {:ok, normalized}
+
+  defp maybe_put_scene_object_id({:ok, normalized}, object_id)
+       when is_integer(object_id) and object_id > 0 and object_id <= 0x7FFF_FFFF_FFFF_FFFF do
+    {:ok, Map.put(normalized, :object_id, object_id)}
+  end
+
+  defp maybe_put_scene_object_id({:ok, _normalized}, _object_id), do: {:error, :invalid_object_id}
+
+  defp maybe_put_scene_object_id(error, _object_id), do: error
 
   defp normalize_anchor_world_micro({x, y, z})
        when is_integer(x) and is_integer(y) and is_integer(z),

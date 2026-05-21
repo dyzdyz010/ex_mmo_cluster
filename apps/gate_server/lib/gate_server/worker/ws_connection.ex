@@ -19,6 +19,8 @@ defmodule GateServer.WsConnection do
 
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
+  @prefab_owner_part_id 1
+  @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 
   @doc "Starts a browser WebSocket-backed gate session."
   def start_link(owner_pid, opts \\ []) do
@@ -1281,14 +1283,17 @@ defmodule GateServer.WsConnection do
 
   defp apply_voxel_prefab_place_intent(request, state) do
     with :ok <- authorize_voxel_prefab_place_intent(state),
+         {:ok, owner_object_id} <- allocate_prefab_owner_object_id(),
          {:ok, cells} <-
            PrefabRaster.rasterize(
              request.blueprint_id,
              request.blueprint_version,
              request.anchor_world_micro,
-             request.rotation
+             request.rotation,
+             owner_object_id: owner_object_id,
+             owner_part_id: @prefab_owner_part_id
            ) do
-      run_prefab_transaction(cells, request, state)
+      run_prefab_transaction(cells, request, state, owner_object_id)
     else
       {:error, reason} ->
         {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
@@ -1303,24 +1308,43 @@ defmodule GateServer.WsConnection do
     end
   end
 
+  defp allocate_prefab_owner_object_id do
+    case DataService.Voxel.SceneObjectStore.next_object_id() do
+      {:ok, object_id}
+      when is_integer(object_id) and object_id > 0 and object_id <= @max_prefab_owner_object_id ->
+        {:ok, object_id}
+
+      {:ok, _object_id} ->
+        {:error, :invalid_allocated_object_id}
+
+      {:error, _reason} ->
+        {:error, :object_id_unavailable}
+    end
+  rescue
+    _exception -> {:error, :object_id_unavailable}
+  catch
+    :exit, _reason -> {:error, :object_id_unavailable}
+  end
+
   # Single-chunk prefabs stay on the Scene hot path and call
   # ChunkDirectory.apply_intents/2 directly. Multi-chunk prefabs that still
   # resolve to one concrete Scene chunk-directory owner use a local
   # prepare/commit/abort runner. Split-owner prefabs still go through World's
   # TransactionCoordinator + TransactionExecutor so the whole prefab commits
   # atomically across every participant.
-  defp run_prefab_transaction([], _request, _state) do
+  defp run_prefab_transaction([], _request, _state, _owner_object_id) do
     {:ok, %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}}
   end
 
-  defp run_prefab_transaction(cells, request, state) do
+  defp run_prefab_transaction(cells, request, state, owner_object_id) do
     total = length(cells)
 
-    with {:ok, plan} <- build_prefab_plan(cells, request, state) do
+    with {:ok, plan} <- build_prefab_plan(cells, request, state, owner_object_id) do
       case single_chunk_prefab_plan(plan) do
         {:ok, participant, chunk_coord, intents} ->
           apply_single_chunk_prefab_fast_path(
             participant,
+            plan,
             chunk_coord,
             intents,
             request,
@@ -1353,7 +1377,7 @@ defmodule GateServer.WsConnection do
   # `{chunk_directory, assigned_scene_node}`. Each participant still carries
   # `chunk_owners` so the real `{region_id, lease_id}` owner of every chunk is
   # preserved for object-owner metadata.
-  defp build_prefab_plan(cells, request, state) do
+  defp build_prefab_plan(cells, request, state, owner_object_id) do
     cells_by_chunk = Enum.group_by(cells, & &1.chunk_coord)
     chunk_coords = Map.keys(cells_by_chunk)
 
@@ -1364,15 +1388,109 @@ defmodule GateServer.WsConnection do
       coords ->
         with {:ok, routes_by_chunk} <- route_all_chunks(request.logical_scene_id, coords),
              {:ok, participants} <-
-               build_prefab_participants(routes_by_chunk, cells_by_chunk, request) do
+               build_prefab_participants(routes_by_chunk, cells_by_chunk, request),
+             {:ok, scene_object} <-
+               build_prefab_scene_object(
+                 request,
+                 state,
+                 owner_object_id,
+                 coords,
+                 cells,
+                 participants
+               ) do
           emit_prefab_routed_observe(request, state, participants, length(cells))
 
           {:ok,
            %{
              participants: participants,
-             chunk_coords: coords
+             chunk_coords: Enum.sort(coords),
+             scene_object: scene_object,
+             scene_objects: [scene_object]
            }}
         end
+    end
+  end
+
+  defp build_prefab_scene_object(
+         request,
+         state,
+         owner_object_id,
+         chunk_coords,
+         cells,
+         participants
+       ) do
+    covered_chunks = Enum.sort(chunk_coords)
+
+    with {:ok, owner} <- prefab_scene_object_owner(covered_chunks, participants),
+         {:ok, covered_by_region} <- prefab_covered_chunks_by_region(covered_chunks, participants) do
+      {:ok,
+       %{
+         object_id: owner_object_id,
+         logical_scene_id: request.logical_scene_id,
+         parcel_id: Map.get(request, :parcel_id, 0),
+         blueprint_id: request.blueprint_id,
+         blueprint_version: request.blueprint_version,
+         anchor_world_micro: request.anchor_world_micro,
+         rotation: request.rotation,
+         owner_actor_id: state.cid,
+         state_flags: 0,
+         object_attribute_ref: 0,
+         object_tag_set_ref: 0,
+         covered_chunks: covered_chunks,
+         covered_chunks_by_region: covered_by_region,
+         part_states: [
+           %{part_id: @prefab_owner_part_id, health: length(cells), state_flags: 0}
+         ],
+         object_version: 1,
+         owner_region_id: owner.region_id,
+         owner_lease_id: owner.lease_id
+       }}
+    end
+  end
+
+  defp prefab_scene_object_owner([], _participants), do: {:error, :invalid_covered_chunks}
+
+  defp prefab_scene_object_owner(covered_chunks, participants) do
+    first_chunk = covered_chunks |> Enum.sort() |> List.first()
+
+    case Enum.find(participants, fn participant -> first_chunk in participant.chunk_coords end) do
+      nil ->
+        {:error, :scene_object_owner_undeterminable}
+
+      participant ->
+        case Map.fetch(participant.chunk_owners, first_chunk) do
+          {:ok, {region_id, lease_id}} -> {:ok, %{region_id: region_id, lease_id: lease_id}}
+          :error -> {:error, {:missing_chunk_owner, first_chunk}}
+        end
+    end
+  end
+
+  defp prefab_covered_chunks_by_region(covered_chunks, participants) do
+    chunk_to_owner =
+      participants
+      |> Enum.flat_map(fn participant ->
+        Enum.map(participant.chunk_coords, fn coord ->
+          {coord, Map.fetch!(participant.chunk_owners, coord)}
+        end)
+      end)
+      |> Map.new()
+
+    covered_chunks
+    |> Enum.reduce_while({:ok, []}, fn coord, {:ok, acc} ->
+      case Map.fetch(chunk_to_owner, coord) do
+        {:ok, owner} -> {:cont, {:ok, [{coord, owner} | acc]}}
+        :error -> {:halt, {:error, {:missing_chunk_owner, coord}}}
+      end
+    end)
+    |> case do
+      {:ok, pairs} ->
+        {:ok,
+         pairs
+         |> Enum.reverse()
+         |> Enum.group_by(fn {_coord, owner} -> owner end, fn {coord, _owner} -> coord end)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1508,6 +1626,7 @@ defmodule GateServer.WsConnection do
 
   defp apply_single_chunk_prefab_fast_path(
          participant,
+         plan,
          chunk_coord,
          intents,
          request,
@@ -1534,6 +1653,8 @@ defmodule GateServer.WsConnection do
 
     case SceneServer.Voxel.ChunkDirectory.apply_intents(chunk_directory, intents) do
       {:ok, summary} ->
+        register_prefab_scene_object(plan, participant)
+
         elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
         GateServer.CliObserve.emit("ws_voxel_prefab_single_chunk_fast_path_applied", fn ->
@@ -1611,6 +1732,8 @@ defmodule GateServer.WsConnection do
            &prefab_chunk_directory_ref/1
          ) do
       {:ok, %{participant_results: participant_results}} ->
+        register_prefab_scene_object(plan, List.first(participants))
+
         elapsed_ms = System.monotonic_time(:millisecond) - started_at
         max_version = max_chunk_version_from_results(participant_results)
 
@@ -1663,6 +1786,32 @@ defmodule GateServer.WsConnection do
          }}
     end
   end
+
+  defp register_prefab_scene_object(%{scene_object: scene_object}, %{scene_node: scene_node}) do
+    case :rpc.call(
+           scene_node,
+           SceneServer.Voxel.BuildTransactionApplier,
+           :register_scene_objects,
+           [[scene_object], []],
+           5_000
+         ) do
+      :ok ->
+        :ok
+
+      other ->
+        GateServer.CliObserve.emit("ws_voxel_prefab_scene_object_register_failed", fn ->
+          %{
+            object_id: Map.get(scene_object, :object_id),
+            logical_scene_id: Map.get(scene_object, :logical_scene_id),
+            reason: inspect(other)
+          }
+        end)
+
+        :ok
+    end
+  end
+
+  defp register_prefab_scene_object(_plan, _participant), do: :ok
 
   defp prefab_chunk_directory_ref(%{chunk_directory_module: module, scene_node: scene_node}) do
     {module, scene_node}
@@ -1739,7 +1888,8 @@ defmodule GateServer.WsConnection do
             chunk_owners: p.chunk_owners,
             affected_chunks: p.chunk_coords
           }
-        end)
+        end),
+      scene_objects: Map.get(plan, :scene_objects, [])
     }
 
     try do
