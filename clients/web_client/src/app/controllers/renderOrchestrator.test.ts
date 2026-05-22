@@ -16,27 +16,68 @@ import type {
   PrefabRasterCell,
 } from "../../voxel/prefab";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
-import { RenderOrchestrator, resolveActorDisplayY } from "./renderOrchestrator";
+import { RenderOrchestrator } from "./renderOrchestrator";
 
-describe("resolveActorDisplayY", () => {
-  it("adds airborne movement offset above the grounded surface center", () => {
-    expect(
-      resolveActorDisplayY({
-        movementY: 172,
-        movementGroundY: 100,
-        surfaceCenterY: 160,
-      }),
-    ).toBe(232);
+describe("RenderOrchestrator actor display", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it("keeps grounded actors on the surface center when movement y is below the center", () => {
-    expect(
-      resolveActorDisplayY({
-        movementY: 100,
-        movementGroundY: 100,
-        surfaceCenterY: 160,
+  it("does not snap the local actor onto an overhead voxel column", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new LocalVoxelWorldAdapter();
+    const localPosition = new Vector3(50, 185, 50);
+    world.store.setNormalBlockWorld({ x: 0, y: 0, z: 0 }, normalBlock());
+    world.store.setNormalBlockWorld({ x: 0, y: 4, z: 0 }, normalBlock());
+
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      createTestLocalPlayer({
+        renderedPosition: localPosition,
+        authoritativePosition: localPosition,
+        groundY: localPosition.y,
       }),
-    ).toBe(160);
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.onFrame(0, 16);
+
+    expect(render.getActorDisplaySnapshot().local.y).toBe(localPosition.y);
+    render.dispose();
+  });
+
+  it("renders the authoritative actor at its synced 3D height", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new LocalVoxelWorldAdapter();
+    world.store.setNormalBlockWorld({ x: 0, y: 0, z: 0 }, normalBlock());
+    world.store.setNormalBlockWorld({ x: 0, y: 4, z: 0 }, normalBlock());
+    const renderedPosition = new Vector3(50, 185, 50);
+    const authoritativePosition = new Vector3(50, 250, 50);
+
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      createTestLocalPlayer({
+        renderedPosition,
+        authoritativePosition,
+        groundY: renderedPosition.y,
+      }),
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.onFrame(0, 16);
+
+    expect(render.getActorDisplaySnapshot().authority.y).toBe(authoritativePosition.y);
+    render.dispose();
   });
 });
 
@@ -204,12 +245,30 @@ function singleMicroSlotCell(macro: FMacroCoord): PrefabRasterCell {
   };
 }
 
-function createTestLocalPlayer() {
+function createTestLocalPlayer(
+  options: {
+    renderedPosition?: Vector3;
+    authoritativePosition?: Vector3;
+    groundY?: number;
+  } = {},
+) {
+  const renderedPosition = options.renderedPosition ?? new Vector3(0, 0, 0);
+  const authoritativePosition = options.authoritativePosition ?? new Vector3(0, 0, 0);
   return {
-    getRenderedPosition: () => new Vector3(0, 0, 0),
-    getAuthoritativePosition: () => new Vector3(0, 0, 0),
-    getCurrentState: () => ({ groundY: 0 }),
+    getRenderedPosition: () => renderedPosition.clone(),
+    getAuthoritativePosition: () => authoritativePosition.clone(),
+    getCurrentState: () => ({ groundY: options.groundY ?? renderedPosition.y }),
   } as never;
+}
+
+function normalBlock() {
+  return {
+    materialId: VoxelMaterialId.Stone,
+    stateFlags: 0,
+    health: 100,
+    temperatureDelta: 0,
+    moistureDelta: 0,
+  };
 }
 
 function createTestRemotePlayer() {

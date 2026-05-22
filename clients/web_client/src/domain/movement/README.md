@@ -26,6 +26,9 @@
 - 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
   fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
   用来填平 100 ms tick 之间的视觉空档；它不写回 history，也不改变网络发送频率。
+- 渲染层消费 movement 输出的 3D 坐标作为角色显示真相。体素地表查询只用于
+  spawn/teleport 选点，不能在每帧用“当前 x/z 最高 solid block”覆盖
+  movement Y；否则上方桥、天花板或 prefab 会被误判成脚下地面。
 - `ReplayGovernanceStats.totalAcks` 统计所有权威回包；`totalCorrections`
   只统计 replay / snap / status override 等真实校正，不再把 accepted ack
   误报成“拉回”。

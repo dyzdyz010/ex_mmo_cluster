@@ -299,23 +299,9 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   }
 
   private updateAvatarTransforms(nowSecs: number): void {
-    this.groundActorPosition(
-      this.localPlayer.getRenderedPosition(),
-      AvatarConstants.HalfHeightCm,
-      this.localDisplay,
-      this.localPlayer.getCurrentState()?.groundY,
-    );
-    this.groundActorPosition(
-      this.localPlayer.getAuthoritativePosition(),
-      60,
-      this.authorityDisplay,
-    );
-    this.groundActorPosition(
-      this.remotePlayer.getRenderedPosition(),
-      AvatarConstants.HalfHeightCm,
-      this.remoteDisplay,
-      this.remotePlayer.getRenderedGroundY() ?? undefined,
-    );
+    this.localDisplay.copy(this.localPlayer.getRenderedPosition());
+    this.authorityDisplay.copy(this.localPlayer.getAuthoritativePosition());
+    this.remoteDisplay.copy(this.remotePlayer.getRenderedPosition());
     this.syncRemoteAvatarMeshes();
 
     this.localAvatar.position.copy(this.localDisplay);
@@ -350,14 +336,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
     for (const entity of rendered) {
       const avatar = this.ensureRemoteAvatar(entity.cid);
-      const display = new Vector3();
-      this.groundActorPosition(
-        entity.position,
-        AvatarConstants.HalfHeightCm,
-        display,
-        entity.movementGroundY ?? undefined,
-      );
-      avatar.position.copy(display);
+      avatar.position.copy(entity.position);
     }
   }
 
@@ -442,42 +421,6 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.chunkRenderer.setPrefabPreview(null, null);
   }
 
-  private groundActorPosition(
-    position: Vector3,
-    halfHeight: number,
-    out: Vector3,
-    movementGroundY?: number,
-  ): void {
-    const surfaceCenterY = this.world.store.surfaceCenterYAtWorldXZ(
-      position.x,
-      position.z,
-      halfHeight,
-      movementGroundY ?? position.y,
-    );
-    out.set(
-      position.x,
-      movementGroundY === undefined
-        ? surfaceCenterY
-        : resolveActorDisplayY({
-            movementY: position.y,
-            movementGroundY,
-            surfaceCenterY,
-          }),
-      position.z,
-    );
-  }
-}
-
-export function resolveActorDisplayY({
-  movementY,
-  movementGroundY,
-  surfaceCenterY,
-}: {
-  movementY: number;
-  movementGroundY: number;
-  surfaceCenterY: number;
-}): number {
-  return surfaceCenterY + Math.max(0, movementY - movementGroundY);
 }
 
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {

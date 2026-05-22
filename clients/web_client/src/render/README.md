@@ -18,12 +18,16 @@
   `voxel/overlayTarget.ts` 只读投影，不把 prefab/object 身份塞进 Three.js raycast。
 - 选中 prefab 时，render 层只渲染非半透明材质的微格线框 preview；hover 预览会把鼠标命中的 `adjacentMicro` 作为 `anchorMicroCoord` 传给 snap 层，避免全宏格候选搜索。实际写入与精确 snap 仍由 `WorldEditController -> WorldStore` 完成。
 - 本地/远端 avatar 的可视化，以及与调试 HUD 相关的最低限度表现。
-- 本地 avatar 显示高度由地表中心高度加 movement airborne offset 组成，避免
-  Space 跳跃被地表吸附逻辑吞掉视觉反馈。
+- 本地、权威和远端 avatar 的显示坐标直接消费 movement 3D state。
+  render 层不得每帧按体素列最高块重新吸附角色高度；地表查询只允许用于
+  初始 spawn / teleport 选点，否则头顶方块会把玩家显示位置瞬间抬升。
 
 边界：
 
 - render 层不拥有世界真相；它只消费 `voxel/` 和 `movement/` 导出的只读状态。
+- 角色移动的垂直轴由 movement 同步负责；render 层不能再派生第二套
+  `actorY` 真相。`WorldStore.surfaceCenterYAtWorldXZ` 是 spawn helper，
+  不是 per-frame movement resolver。
 - render 层拥有浏览器渲染后端的初始化、回退与诊断信息；业务层只能读取
   `RendererDebugSnapshot`，不能绕过后端工厂直接创建 renderer。
 - Chunk 网格的拓扑来自 `voxel/meshing`，render 不直接改写存储层。
