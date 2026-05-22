@@ -42,7 +42,7 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
   @impl true
   def tick(%FieldRegion{} = region, %KernelContext{} = context, opts) when is_map(opts) do
     projection = participant_projection(context, opts)
-    components = CircuitComponentAnalysis.analyze(region, projection)
+    components = CircuitComponentAnalysis.active_circuit_components(region, projection)
 
     {current_layer, potential_layer, ionization_layer} =
       empty_layers(region)
@@ -63,20 +63,8 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
        ) do
     Enum.reduce(components, {current_layer, potential_layer, ionization_layer}, fn component,
                                                                                    layers ->
-      if active_circuit_component?(component) do
-        write_component(layers, component, projection, opts)
-      else
-        layers
-      end
+      write_component(layers, component, projection, opts)
     end)
-  end
-
-  defp active_circuit_component?(component) do
-    closed_loop_segment_ids = MapSet.new(component.closed_loop_segment_ids)
-
-    component.closed_loop_segment_ids != [] and
-      segment_sets_overlap?(component.source_segment_ids, closed_loop_segment_ids) and
-      segment_sets_overlap?(component.load_segment_ids, closed_loop_segment_ids)
   end
 
   defp write_component(
@@ -118,14 +106,6 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
         put_max(ionization_acc, segment.macro_index, ionization)
       }
     end)
-  end
-
-  defp segment_sets_overlap?(segment_ids, loop_segment_ids) do
-    segment_ids
-    |> MapSet.new()
-    |> MapSet.intersection(loop_segment_ids)
-    |> MapSet.size()
-    |> Kernel.>(0)
   end
 
   defp component_current_amps(component, projection, opts, voltage) do

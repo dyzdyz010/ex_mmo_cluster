@@ -21,7 +21,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     Types
   }
 
-  alias SceneServer.Voxel.Field.FieldSource
+  alias SceneServer.Voxel.Field.{CircuitComponentAnalysis, FieldRegion, FieldSource}
   alias SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
@@ -160,6 +160,16 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       source_points = auto_circuit_source_points(projection, aabb, opts)
       load_count = auto_circuit_role_count(projection, aabb, :load)
       power_source = auto_circuit_power_source(opts)
+      kernel_spec = auto_circuit_kernel_spec(opts)
+
+      topology =
+        auto_circuit_topology_summary(
+          projection,
+          aabb,
+          chunk_coord,
+          source_points,
+          kernel_spec
+        )
 
       base_summary = %{
         logical_scene_id: logical_scene_id,
@@ -169,7 +179,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         field_types: ["electric_potential", "electric_current", "ionization"],
         max_ticks: max_ticks,
         source_count: length(source_points),
-        load_count: load_count
+        load_count: load_count,
+        closed_circuit_count: topology.closed_circuit_count
       }
 
       cond do
@@ -196,11 +207,23 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
            |> Map.put(:reason, :no_load)
            |> Map.put(:field_region_cleanup, cleanup)}
 
+        topology.closed_circuit_count == 0 ->
+          {:ok, cleanup} =
+            ChunkProcess.release_field_region_source(chunk_pid, source_key, :explicit)
+
+          {:ok,
+           base_summary
+           |> Map.put(:created, false)
+           |> Map.put(:field_region_created, false)
+           |> Map.put(:waiting_for_load, false)
+           |> Map.put(:reason, :no_closed_circuit)
+           |> Map.put(:field_region_cleanup, cleanup)}
+
         true ->
           region_attrs = %{
             chunk_coord: chunk_coord,
             aabb: aabb,
-            kernels: [auto_circuit_kernel_spec(opts)],
+            kernels: [kernel_spec],
             source_points: source_points,
             max_ticks: max_ticks,
             source_points_mode: :replace,
@@ -211,7 +234,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
             {:ok,
              base_summary
              |> Map.put(:created, true)
-             |> Map.put(:waiting_for_load, load_count == 0)
+             |> Map.put(:waiting_for_load, false)
              |> Map.put(:region_id, field_region.region_id)
              |> Map.put(:field_region_created, field_region.created?)
              |> Map.put(:source_points_action, field_region.source_points_action)
@@ -1439,6 +1462,29 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       nil -> nil
       value -> non_negative_int(value)
     end
+  end
+
+  defp auto_circuit_topology_summary(
+         projection,
+         aabb,
+         chunk_coord,
+         source_points,
+         kernel_spec
+       ) do
+    region =
+      FieldRegion.new(%{
+        region_id: 0,
+        chunk_coord: chunk_coord,
+        aabb: aabb,
+        kernels: [kernel_spec],
+        source_points: source_points
+      })
+
+    active_components = CircuitComponentAnalysis.active_circuit_components(region, projection)
+
+    %{
+      closed_circuit_count: length(active_components)
+    }
   end
 
   defp auto_circuit_source_points(projection, aabb, opts) do

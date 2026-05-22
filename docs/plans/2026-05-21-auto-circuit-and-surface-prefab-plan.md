@@ -61,6 +61,7 @@ This plan intentionally does not implement full SPICE-like resistance solving, A
 - [x] Expose a web debug endpoint, client adapter refresh path, browser CLI command, and visible panel trigger for server-authoritative edits.
 - [x] Keep it source/load automatic: the user supplies an anchor, not a target.
 - [x] Emit structured accepted/rejected reasons through the field-runtime summary and HTTP error surface.
+- [x] Tighten lifecycle around the same closed-loop predicate as the kernel: open source-load paths return `no_closed_circuit`, and broken loops release the current field instead of keeping an empty watcher.
 
 ## Task 4: Reserve Surface Prefab Boundary
 
@@ -87,3 +88,9 @@ This plan intentionally does not implement full SPICE-like resistance solving, A
 - [x] Run `npm run typecheck`.
 - [x] Run browser smoke once the CLI path exists: place source/wire/load, run auto circuit scan, confirm current appears in overlay and CLI snapshot.
 - [x] Ask separate reviewer subagents for spec compliance and code quality before final claims.
+
+## 2026-05-22 Follow-up: closed topology owns current lifecycle
+
+Root cause found after the first slice: runtime creation only required at least one source and one load, while the kernel required a closed loop core. That split let open source-load paths allocate empty field regions and let broken circuits keep a watcher alive.
+
+Architecture fix: `CircuitComponentAnalysis.active_circuit_components/2` is now the shared topology boundary. Runtime entrypoints, chunk mutation refresh, and `CircuitCurrentKernel` use the same closed source-load predicate, so field lifecycle and field writes agree.

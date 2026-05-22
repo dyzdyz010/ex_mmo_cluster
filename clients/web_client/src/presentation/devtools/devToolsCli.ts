@@ -1174,6 +1174,8 @@ function formatFieldOverlayLine(region: {
   temperatureCells: number;
   electricCells: number;
   currentCells?: number;
+  currentMicroCells?: number;
+  currentMicroGroups?: number;
   smokeParticles?: number;
   temperatureMicroCells?: number;
   electricMicroCells?: number;
@@ -1190,8 +1192,10 @@ function formatFieldOverlayLine(region: {
 }): string {
   const { cx, cy, cz } = region.chunkCoord;
   const micro =
-    (region.temperatureMicroCells ?? 0) > 0 || (region.electricMicroCells ?? 0) > 0
-      ? ` micro=temp:${region.temperatureMicroCells ?? 0}/${region.temperatureMicroGroups ?? 0} electric:${region.electricMicroCells ?? 0}/${region.electricMicroGroups ?? 0}`
+    (region.temperatureMicroCells ?? 0) > 0 ||
+    (region.electricMicroCells ?? 0) > 0 ||
+    (region.currentMicroCells ?? 0) > 0
+      ? ` micro=temp:${region.temperatureMicroCells ?? 0}/${region.temperatureMicroGroups ?? 0} electric:${region.electricMicroCells ?? 0}/${region.electricMicroGroups ?? 0} current:${region.currentMicroCells ?? 0}/${region.currentMicroGroups ?? 0}`
       : "";
   return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells} current=${region.currentCells ?? 0}${micro} smoke=${region.smokeParticles ?? 0}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
 }

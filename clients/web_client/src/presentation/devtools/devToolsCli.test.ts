@@ -56,6 +56,11 @@ describe("DevToolsCli microgrid boundary", () => {
               chunkCoord: { cx: 0, cy: 0, cz: 0 },
               temperatureCells: 5,
               electricCells: 0,
+              currentCells: 11,
+              currentMicroCells: 11,
+              currentMicroGroups: 3,
+              electricMicroCells: 7,
+              electricMicroGroups: 2,
               smokeParticles: 12,
               maxTemperatureCelsius: 800,
               maxAbsTemperatureDeltaCelsius: 780,
@@ -78,6 +83,9 @@ describe("DevToolsCli microgrid boundary", () => {
     });
     expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
       text: expect.stringContaining("smoke=12"),
+    });
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      text: expect.stringContaining("micro=temp:0/0 electric:7/2 current:11/3"),
     });
 
     expect(cli.executeCliCommand("field_overlay", ["off"])).toMatchObject({

@@ -752,7 +752,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.field_source_count == 0
   end
 
-  test "breaking a closed loop conductor clears current while retaining topology watcher" do
+  test "breaking a closed loop conductor destroys the automatic current field" do
     lease = start_snapshot_store()
 
     chunk =
@@ -777,17 +777,18 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
                intent_attrs(lease, request_id: 99, operation: :break_block, macro: {2, 1, 0})
              )
 
-    assert_receive {:voxel_field_region_snapshot_payload, cleared_payload}, 1_000
-    cleared = FieldCodec.decode_snapshot_payload!(cleared_payload)
-    assert cleared.macro_indices == []
-    assert cleared.electric_current_values == []
+    assert_receive {:voxel_field_region_destroyed_payload, destroyed_payload}, 1_000
+    destroyed = FieldCodec.decode_destroyed_payload!(destroyed_payload)
+    assert destroyed.chunk_coord == {1, 1, 1}
+    assert destroyed.destroy_reason == :explicit
 
     debug = ChunkProcess.debug_state(chunk)
-    assert debug.field_region_count == 1
-    assert debug.field_source_count == 1
+    assert debug.field_region_count == 0
+    assert debug.field_source_count == 0
   end
 
-  test "auto circuit refresh coalesces adjacent hot mutations", %{observe_log: observe_log} do
+  test "auto circuit refresh coalesces adjacent open mutations without allocating a field",
+       %{observe_log: observe_log} do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
@@ -802,13 +803,18 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, {5, 0, 0}, NormalBlockData.new(7))
 
-    assert_receive {:voxel_field_region_snapshot_payload, _field_payload}, 1_000
+    refute_receive {:voxel_field_region_snapshot_payload, _field_payload}, 500
+    assert ChunkProcess.debug_state(chunk).field_region_count == 0
+    assert ChunkProcess.debug_state(chunk).field_source_count == 0
 
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
 
     assert Regex.scan(~r/event="voxel_auto_circuit_refreshed"/, observe_log_text)
            |> length() == 1
+
+    assert observe_log_text =~ "action: :released"
+    assert observe_log_text =~ "reason: :no_closed_circuit"
   end
 
   test "apply_intent rejects missing leases without mutating or persisting" do

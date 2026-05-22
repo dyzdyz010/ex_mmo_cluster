@@ -59,6 +59,10 @@ FieldEffect，由 `ChunkProcess` 写回 voxel 温度 truth；HTTP/Web CLI 可透
 `power_draw.estimated_tick_energy_joules` 会注册为 Field Overlay 热烟源，后续 electric field
 snapshot 按热量比例生成灰色上升烟粒子；方块本体不因这条电热链路染色，CLI `field_overlay`
 会返回每个 region 的 `smoke` 粒子数。
+自动电路 current overlay 以 `CircuitComponentAnalysis` 的闭合 source-load 谓词作为 runtime
+准入条件：只有 graph 2-core 中同时包含 power source 与 load 时才创建/保留 current field；
+开路 source-load 会返回 `no_closed_circuit`，断环会释放对应 region/source，而不是保留空
+topology watcher。
 后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
 为准；prefab 接入所有局部场的架构边界以

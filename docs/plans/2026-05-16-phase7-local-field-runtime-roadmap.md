@@ -73,6 +73,11 @@
 16. 跨 chunk conduction shard 的生命周期清理已覆盖 source release 和 source lease revoke：
     source chunk 在清空本地 `FieldTickWorker` 前会先执行 linked target shard cleanup，避免
     lease 变更时留下悬挂 target region。
+17. 自动电路 current overlay 已从“source + load 存在即建 worker”收敛为闭合拓扑准入：
+    `CircuitComponentAnalysis` 暴露统一的 active source-load closed-loop 谓词，
+    `FieldRuntime.ensure_auto_circuit/1`、`ChunkProcess` mutation refresh 和
+    `CircuitCurrentKernel` 共用同一判断。开路 source-load 返回 `no_closed_circuit`，
+    断环会释放 current region/source 并下发 0x74，而不是保留空 FieldRegion。
 
 仍未完成：
 

@@ -14,6 +14,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
+  alias SceneServer.Voxel.Field.CircuitComponentAnalysis
   alias SceneServer.Voxel.Field.FieldCodec
   alias SceneServer.Voxel.Field.FieldRegion
   alias SceneServer.Voxel.Field.FieldTickSupervisor
@@ -3491,9 +3492,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp storage_has_auto_circuit_roles?(%Storage{} = storage) do
     projection = ParticipantProjection.build(storage)
     aabb = auto_circuit_aabb()
+    source_points = auto_circuit_source_points(projection, aabb)
+    load_count = auto_circuit_role_count(projection, aabb, :load)
 
-    auto_circuit_source_points(projection, aabb) != [] and
-      auto_circuit_role_count(projection, aabb, :load) > 0
+    source_points != [] and load_count > 0 and
+      auto_circuit_closed_circuit_count(projection, aabb, storage.chunk_coord, source_points) >
+        0
   end
 
   defp storage_has_auto_circuit_roles?(_storage), do: false
@@ -3505,6 +3509,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
     source_points = auto_circuit_source_points(projection, aabb)
     load_count = auto_circuit_role_count(projection, aabb, :load)
 
+    closed_circuit_count =
+      auto_circuit_closed_circuit_count(projection, aabb, state.chunk_coord, source_points)
+
     cond do
       source_points == [] ->
         {_result, next_state} =
@@ -3514,6 +3521,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           reason: :no_power_source,
           source_count: 0,
           load_count: load_count,
+          closed_circuit_count: closed_circuit_count,
           source_key: source_key
         })
 
@@ -3527,6 +3535,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
           reason: :no_load,
           source_count: length(source_points),
           load_count: 0,
+          closed_circuit_count: closed_circuit_count,
+          source_key: source_key
+        })
+
+        next_state
+
+      closed_circuit_count == 0 ->
+        {_result, next_state} =
+          release_field_region_source_entry(state, source_key, :explicit)
+
+        emit_auto_circuit_refresh(next_state, :released, %{
+          reason: :no_closed_circuit,
+          source_count: length(source_points),
+          load_count: load_count,
+          closed_circuit_count: closed_circuit_count,
           source_key: source_key
         })
 
@@ -3548,6 +3571,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
             emit_auto_circuit_refresh(next_state, :active, %{
               source_count: length(source_points),
               load_count: load_count,
+              closed_circuit_count: closed_circuit_count,
               source_key: source_key,
               region_id: result.region_id,
               field_region_created: result.created?,
@@ -3560,6 +3584,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
             emit_auto_circuit_refresh(next_state, :failed, %{
               source_count: length(source_points),
               load_count: load_count,
+              closed_circuit_count: closed_circuit_count,
               source_key: source_key,
               reason: inspect(reason)
             })
@@ -3600,6 +3625,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
         current_limit_amps: MaterialCatalog.power_source_defaults().current_limit_amps
       }
     }
+  end
+
+  defp auto_circuit_closed_circuit_count(projection, aabb, chunk_coord, source_points) do
+    region =
+      FieldRegion.new(%{
+        region_id: 0,
+        chunk_coord: chunk_coord,
+        aabb: aabb,
+        kernels: [auto_circuit_kernel_spec()],
+        source_points: source_points
+      })
+
+    region
+    |> CircuitComponentAnalysis.active_circuit_components(projection)
+    |> length()
   end
 
   defp auto_circuit_source_points(projection, aabb) do

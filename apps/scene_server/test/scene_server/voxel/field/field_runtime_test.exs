@@ -1412,6 +1412,42 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert summary.reason == :no_load
       assert ChunkProcess.debug_state(chunk_pid).field_region_count == 0
     end
+
+    test "does not allocate an automatic current field for an open source-load path" do
+      logical_scene_id = 77_150 + System.unique_integer([:positive])
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      for {coord, material_id} <- [
+            {{0, 0, 0}, @power_block_material_id},
+            {{1, 0, 0}, @iron_material_id},
+            {{2, 0, 0}, @load_block_material_id}
+          ] do
+        assert {:ok, _storage} =
+                 ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
+      end
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_auto_circuit(
+                 logical_scene_id: logical_scene_id,
+                 world_macro: {0, 0, 0},
+                 max_ticks: 90
+               )
+
+      assert summary.created == false
+      assert summary.field_region_created == false
+      assert summary.source_count == 1
+      assert summary.load_count == 1
+      assert summary.closed_circuit_count == 0
+      assert summary.waiting_for_load == false
+      assert summary.reason == :no_closed_circuit
+      assert ChunkProcess.debug_state(chunk_pid).field_region_count == 0
+      assert ChunkProcess.debug_state(chunk_pid).field_source_count == 0
+    end
   end
 
   describe "build_temperature_anomaly/1" do

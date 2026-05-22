@@ -1201,10 +1201,10 @@ breakdown / 熔断破坏结算。
   耗尽、电流超限等内部原因不会被外部兼容错误码吞掉。
 - 自动电路不再把“source 与 load 在同一导电连通分量”当作有效回路。`CircuitComponentAnalysis`
   先把 solid / refined / prefab 的导电面投影成 segment graph，再取 graph 2-core 作为闭合环路
-  核心；`CircuitCurrentKernel` 只有在 source 与 load 都位于同一个闭环核心上时才写
-  `electric_current` / `electric_potential` / `ionization`。断开闭环上的任意导体后，
-  worker 保留 topology watcher，但下一次 field snapshot 会把三层清零，浏览器 overlay
-  应显示 `currentCells=0`。
+  核心；这个闭合 source-load 谓词是自动电路的 runtime 准入条件，也是
+  `CircuitCurrentKernel` 的写入条件。开路 source-load 路径会以 `:no_closed_circuit`
+  释放或拒绝，不分配空 FieldRegion；断开闭环上的任意导体后，`ChunkProcess`
+  会销毁自动 current region/source 并走 0x74 fanout，浏览器 overlay 应移除该 current region。
 - Phase 7.D3 起，`FieldTickWorker` 不再静默丢弃 non-observe kernel effects：
   observe effect 仍由 worker 写结构化日志，`write_voxel_attribute(:temperature)` 等
   truth effect 通过 `ChunkProcess.apply_field_effects/3` 交回 chunk authority；

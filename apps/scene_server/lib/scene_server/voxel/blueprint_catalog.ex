@@ -20,7 +20,8 @@ defmodule SceneServer.Voxel.BlueprintCatalog do
 
   Out of scope for v2:
 
-    - rotation(callers must always pass `rotation: 0`)
+    - blueprint-local rotated masks(rotation is applied by `PrefabRaster` at
+      placement time)
     - 跨 macro prefab(占用范围 > 1×1×1 macro)
     - parcel build epoch / per-prefab part 多元素
     - 不留 v1 macro-list 兼容(memory:全新未上线系统不留 wrapper)

@@ -49,6 +49,37 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     |> Enum.map(&build_component(&1, segments, adjacency))
   end
 
+  @doc """
+  Returns components whose closed-loop core contains both a power source and a load.
+
+  This is the authoritative topology predicate for automatic circuits. Runtime
+  lifecycle code uses it to decide whether a field region should exist at all,
+  while `CircuitCurrentKernel` uses the same predicate to decide which loop
+  cores receive current.
+  """
+  @spec active_circuit_components(FieldRegion.t(), ParticipantProjection.t()) :: [component()]
+  def active_circuit_components(%FieldRegion{} = region, %ParticipantProjection{} = projection) do
+    region
+    |> analyze(projection)
+    |> Enum.filter(&active_circuit_component?/1)
+  end
+
+  @doc "Returns true when the region contains at least one closed source-load circuit."
+  @spec active_circuit?(FieldRegion.t(), ParticipantProjection.t()) :: boolean()
+  def active_circuit?(%FieldRegion{} = region, %ParticipantProjection{} = projection) do
+    active_circuit_components(region, projection) != []
+  end
+
+  @doc "Returns true when a component's closed-loop core contains source and load segments."
+  @spec active_circuit_component?(component()) :: boolean()
+  def active_circuit_component?(component) when is_map(component) do
+    closed_loop_segment_ids = MapSet.new(component.closed_loop_segment_ids)
+
+    component.closed_loop_segment_ids != [] and
+      segment_sets_overlap?(component.source_segment_ids, closed_loop_segment_ids) and
+      segment_sets_overlap?(component.load_segment_ids, closed_loop_segment_ids)
+  end
+
   defp build_segments(region, projection) do
     region
     |> aabb_macro_indices()
@@ -254,6 +285,14 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     |> Map.get(segment_id, MapSet.new())
     |> MapSet.intersection(remaining)
     |> MapSet.size()
+  end
+
+  defp segment_sets_overlap?(segment_ids, loop_segment_ids) do
+    segment_ids
+    |> MapSet.new()
+    |> MapSet.intersection(loop_segment_ids)
+    |> MapSet.size()
+    |> Kernel.>(0)
   end
 
   defp source_points_for(region, macro_index) do

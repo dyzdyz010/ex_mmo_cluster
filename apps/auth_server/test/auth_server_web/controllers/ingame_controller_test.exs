@@ -218,7 +218,12 @@ defmodule AuthServerWeb.IngameControllerTest do
     for {coord, material_id} <- [
           {{0, 0, 0}, @power_block_material_id},
           {{1, 0, 0}, @iron_material_id},
-          {{2, 0, 0}, @load_block_material_id}
+          {{2, 0, 0}, @load_block_material_id},
+          {{2, 1, 0}, @iron_material_id},
+          {{2, 2, 0}, @iron_material_id},
+          {{1, 2, 0}, @iron_material_id},
+          {{0, 2, 0}, @iron_material_id},
+          {{0, 1, 0}, @iron_material_id}
         ] do
       assert {:ok, _storage} =
                ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
@@ -238,6 +243,7 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert is_boolean(body["field_region_created"])
     assert body["source_count"] == 1
     assert body["load_count"] == 1
+    assert body["closed_circuit_count"] == 1
     assert body["waiting_for_load"] == false
 
     assert body["power_draw"] == %{
@@ -249,6 +255,52 @@ defmodule AuthServerWeb.IngameControllerTest do
              "output_mode" => "dc",
              "voltage" => 120.0
            }
+  end
+
+  test "POST /ingame/voxel/auto_circuit reports no closed circuit for an open source-load path",
+       %{conn: conn} do
+    logical_scene_id = 82_375 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    for {coord, material_id} <- [
+          {{0, 0, 0}, @power_block_material_id},
+          {{1, 0, 0}, @iron_material_id},
+          {{2, 0, 0}, @load_block_material_id}
+        ] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
+    end
+
+    conn =
+      post(conn, ~p"/ingame/voxel/auto_circuit", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0,
+        "max_ticks" => 90
+      })
+
+    body = json_response(conn, 200)
+    assert body["field_region_created"] == false
+    assert body["source_count"] == 1
+    assert body["load_count"] == 1
+    assert body["closed_circuit_count"] == 0
+    assert body["reason"] == "no_closed_circuit"
   end
 
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",

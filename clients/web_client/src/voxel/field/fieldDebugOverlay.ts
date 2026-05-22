@@ -200,6 +200,7 @@ export class FieldDebugOverlay {
         `rendered_temp=${tempCount} rendered_potential=${potentialCount} rendered_current=${currentCount} ` +
         `current_samples=${snapshot.electricCurrentValues.length} ` +
         `micro_temp=${overlay.temperatureMicroCells} micro_potential=${overlay.electricMicroCells} ` +
+        `micro_current=${overlay.currentMicroCells} ` +
         `smoke_spawned=${smokeSpawned} ` +
         `new=${isNew} group_visible=${this.rootGroup.visible} regions_total=${this.regions.size}`,
     );
