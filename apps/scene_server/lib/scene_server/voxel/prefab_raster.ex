@@ -16,9 +16,13 @@ defmodule SceneServer.Voxel.PrefabRaster do
   与客户端线框预览像素级一致。Macro-aligned 锚点是退化情形:所有 cell
   都落在同一个 macro 上、slot 索引等于 blueprint 原 slot。
 
+  Supported in v2:
+
+    - yaw rotation in quarter turns (`0..3`) around the prefab's local 8x8
+      micro footprint, matching the web client's `EVoxelRotation`.
+
   Out of scope for v2:
 
-    - rotation(callers must always pass `rotation: 0`)
     - blueprint 自身大于 8³(目前 `BlueprintCatalog` 仍然 single-macro mask)
     - microgrid 高级特性 / boundary snapping / socket snapping
     - parcel 所有权检查(由 gate dispatch 走 World map ledger)
@@ -56,7 +60,7 @@ defmodule SceneServer.Voxel.PrefabRaster do
     * `anchor_world_micro` – placement origin in world-micro coordinates, the
       same units used by `0x67 PrefabPlaceIntent`. Each blueprint slot
       `(lx, ly, lz)` writes to `(anchor + (lx, ly, lz))` in world-micro space.
-    * `rotation` – wire byte; only `0` is accepted in v2.
+    * `rotation` – wire byte, `0..3` = yaw quarter turns around local Y.
     * `opts[:owner_object_id]` / `opts[:owner_part_id]` – optional object
       provenance for real prefab placement. When omitted, the rasterizer keeps
       the legacy terrain-like layer attrs so pure geometry tests and callers
@@ -78,7 +82,7 @@ defmodule SceneServer.Voxel.PrefabRaster do
           {:ok, [cell()]} | {:error, atom()}
   def rasterize(blueprint_id, blueprint_version, anchor_world_micro, rotation, opts \\ []) do
     with {:ok, blueprint} <- BlueprintCatalog.fetch(blueprint_id, blueprint_version),
-         :ok <- validate_rotation(rotation),
+         {:ok, rotation} <- normalize_rotation(rotation),
          {:ok, anchor} <- normalize_anchor(anchor_world_micro),
          {:ok, owner_attrs} <- normalize_owner_attrs(opts) do
       layer_attrs =
@@ -87,7 +91,9 @@ defmodule SceneServer.Voxel.PrefabRaster do
 
       cells =
         Enum.map(blueprint.occupied_slots, fn slot ->
-          rasterize_slot(slot, anchor, layer_attrs)
+          slot
+          |> rotate_slot(rotation)
+          |> rasterize_slot(anchor, layer_attrs)
         end)
 
       {:ok, cells}
@@ -106,9 +112,9 @@ defmodule SceneServer.Voxel.PrefabRaster do
     Enum.group_by(cells, & &1.chunk_coord)
   end
 
-  defp validate_rotation(0), do: :ok
-  defp validate_rotation(rot) when is_integer(rot), do: {:error, :unsupported_rotation}
-  defp validate_rotation(_rot), do: {:error, :invalid_rotation}
+  defp normalize_rotation(rotation) when rotation in 0..3, do: {:ok, rotation}
+  defp normalize_rotation(rot) when is_integer(rot), do: {:error, :unsupported_rotation}
+  defp normalize_rotation(_rot), do: {:error, :invalid_rotation}
 
   defp normalize_anchor({ax, ay, az})
        when is_integer(ax) and is_integer(ay) and is_integer(az) do
@@ -178,5 +184,24 @@ defmodule SceneServer.Voxel.PrefabRaster do
       micro_slot: Types.micro_index!(local_micro),
       layer_attrs: layer_attrs
     }
+  end
+
+  defp rotate_slot(slot, 0), do: slot
+
+  defp rotate_slot(slot, rotation) do
+    slot
+    |> Types.micro_coord!()
+    |> rotate_micro_coord(rotation)
+    |> Types.micro_index!()
+  end
+
+  defp rotate_micro_coord({x, y, z}, rotation) do
+    max = Types.micro_resolution() - 1
+
+    case rotation do
+      1 -> {max - z, y, x}
+      2 -> {max - x, y, max - z}
+      3 -> {z, y, max - x}
+    end
   end
 end

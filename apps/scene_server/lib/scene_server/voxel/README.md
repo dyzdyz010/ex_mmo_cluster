@@ -101,6 +101,7 @@ id，并强制 `blueprint_version` 必须为 2。当前 v2 catalog 内容：
 | 4  | builtin_conductor_wire_x | 2×2 导线贯穿 x 轴          | 5           |
 | 5  | builtin_conductor_junction_xz | x/z 平面接线节点      | 5           |
 | 6  | builtin_power_terminal_x | 2×2 电源端子贯穿 x 轴     | 6           |
+| 7  | builtin_load_terminal_x  | 2×2 负载端子贯穿 x 轴     | 7           |
 
 `SceneServer.Voxel.PrefabRaster.rasterize/4` / `/5` 是把蓝图 + 锚点光栅化为
 `(chunk_coord, local_macro, micro_slot, layer_attrs)` 写入单元的纯函数。
@@ -114,8 +115,9 @@ terrain-like caller 仍可只带 `%{material_id, health: 100}`，真实 prefab
 placement 必须通过 `/5` 填入同一个 `owner_object_id / owner_part_id`，让
 chunk snapshot、ObjectCoverRef 和前端 overlay 都能从 layer truth 反查
 prefab/object 归属。
-`group_by_chunk/1` 方便按 chunk 聚合做 per-chunk 事务参与方分发。当前 v2 不支持
-非 0 旋转；跨 region / 多 lease 由 Gate + World 按 Scene-owner participant
+`group_by_chunk/1` 方便按 chunk 聚合做 per-chunk 事务参与方分发。当前 v2 支持
+`0..3` yaw quarter-turn 旋转，服务端 rasterize 与网页端 `EVoxelRotation` 使用同一套
+local 8x8 micro footprint 坐标变换；跨 region / 多 lease 由 Gate + World 按 Scene-owner participant
 分发，Scene 侧仍只接收自己负责的 chunk intents。
 
 Gate 上的 `0x67 PrefabPlaceIntent` 真实路径：先从

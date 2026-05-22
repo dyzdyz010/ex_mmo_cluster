@@ -1,6 +1,12 @@
 import type { AppEventBus, ElectricPowerDraw } from "../shared/events/events";
 import { VoxelConstants } from "./core/constants";
-import { chunkCoordKey, type FChunkCoord, type FMacroCoord, type FMicroCoord } from "./core/types";
+import {
+  chunkCoordKey,
+  EVoxelRotation,
+  type FChunkCoord,
+  type FMacroCoord,
+  type FMicroCoord,
+} from "./core/types";
 import {
   decodeNormalBlockDataPayload,
   VoxelChunkDeltaKind,
@@ -65,7 +71,6 @@ import { resolveBlueprint } from "./onlinePrefabCatalog";
 import { macroCoordFromLinearIndex } from "./core/gridUtils";
 import { wireToRefinedCell } from "./wireToRefinedCell";
 import type { ObserveLog } from "../observe/logger";
-import type { EVoxelRotation } from "./core/types";
 import type { FNormalBlockData } from "./storage/types";
 import type {
   LocalPrefab,
@@ -419,7 +424,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   override placePrefab(
     name: string,
     origin: FMacroCoord,
-    _rotation?: EVoxelRotation,
+    rotation: EVoxelRotation = EVoxelRotation.Rot0,
   ): { ok: boolean; placed: number; instanceId?: number; conflict?: boolean } {
     const blueprint = resolveBlueprint(name);
     if (!blueprint) {
@@ -429,11 +434,16 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       return { ok: false, placed: 0 };
     }
 
-    const submitted = this.submitPrefabPlaceIntent(name, blueprint, {
-      x: origin.x * VoxelConstants.MicroPerMacro,
-      y: origin.y * VoxelConstants.MicroPerMacro,
-      z: origin.z * VoxelConstants.MicroPerMacro,
-    });
+    const submitted = this.submitPrefabPlaceIntent(
+      name,
+      blueprint,
+      {
+        x: origin.x * VoxelConstants.MicroPerMacro,
+        y: origin.y * VoxelConstants.MicroPerMacro,
+        z: origin.z * VoxelConstants.MicroPerMacro,
+      },
+      rotation,
+    );
 
     if (!submitted) {
       this.rejectServerOnlyEdit("voxel_transport_unavailable");
@@ -483,6 +493,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       request.prefabName,
       blueprint,
       preview.anchorMicroCoord,
+      request.rotation ?? EVoxelRotation.Rot0,
     );
 
     if (submitted) {
@@ -507,11 +518,9 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     blueprintName: string,
     blueprint: { id: number; version: number },
     anchorWorldMicro: FMacroCoord,
+    rotation: EVoxelRotation = EVoxelRotation.Rot0,
   ): boolean {
     const clientIntentSeq = this.clientIntentSeq;
-    // v1: rotation is intentionally pinned to 0 on the wire — the server
-    // does not yet support arbitrary rotations and the local UI signature
-    // accepts an EVoxelRotation purely for forward-compatibility.
     const requestId = this.transport.sendVoxelPrefabPlaceIntent({
       logicalSceneId: this.logicalSceneId,
       parcelId: 0,
@@ -519,7 +528,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       blueprintId: blueprint.id,
       blueprintVersion: blueprint.version,
       anchorWorldMicro,
-      rotation: 0,
+      rotation,
       clientIntentSeq,
     });
 

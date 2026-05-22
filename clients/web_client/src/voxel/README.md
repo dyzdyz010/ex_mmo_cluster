@@ -20,8 +20,9 @@
   showcase 的本地假数据。
   在线 prefab 热栏暴露服务端 v2 catalog 的 `builtin_sphere`、`builtin_cylinder`、
   `builtin_stairs`，以及导电测试用的 `builtin_conductor_wire_x`、
-  `builtin_conductor_junction_xz`、`builtin_power_terminal_x`(Phase A1-1 起,跟客户端
-  micro mask 对齐);离线 refined prefab 仍保留在本地适配器里。
+  `builtin_conductor_junction_xz`、`builtin_power_terminal_x`、
+  `builtin_load_terminal_x`(Phase A1-1 起,跟客户端 micro mask 对齐);
+  离线 refined prefab 仍保留在本地适配器里。
 - `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
 - `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
 - `field/` 负责服务端局部场的浏览器可视化：FieldDebugOverlay 显示 field snapshot，
@@ -37,7 +38,7 @@
 - `prefab.ts` 负责浏览器本地 Prefab Definition/Instance 编排。当前阶段已按 UE
   `test1` 的 `FPrefabDefinitionData` / `FPrefabInstanceData` 分层建模：
   capture 生成定义，place 生成实例并写入所有覆盖到的 Chunk。内置
-  `builtin_sphere`、`builtin_cylinder`、`builtin_stairs` 以及三种导电 prefab 直接以
+  `builtin_sphere`、`builtin_cylinder`、`builtin_stairs` 以及四种导电/电路 prefab 直接以
   refined micro occupancy 预置；玩家 capture 的普通块模板则落成 full-macro refined
   occupancy，和内置模板共用同一条 micro mesher 入口。
 - Prefab definition 保留 `partDefinitions` 和 `microPartIds`。放置到场景后，
@@ -49,8 +50,9 @@
   计算整数 world micro anchor，再把 prefab micro occupancy rasterize 到受影响的
   macro cells；`ChunkStorage` 只接收事务检查后的 refined union 写入。在线模式下，
   这个 anchor 只是浏览器从当前订阅 truth 算出的“放置提案”：`onlineVoxelWorldAdapter.ts`
-  会通过 0x67 `PrefabPlaceIntent` 把 blueprint id/version + `anchorWorldMicro` 提交给
-  服务端，服务端重新 rasterize 并走 chunk transaction 决定最终是否落地。
+  会通过 0x67 `PrefabPlaceIntent` 把 blueprint id/version + `anchorWorldMicro` +
+  `rotation` 提交给服务端，服务端按同一套 `EVoxelRotation` 语义重新 rasterize
+  并走 chunk transaction 决定最终是否落地。
 - 微格写入 API 只服务 prefab/refined 内部数据治理和后续局部破坏系统，不作为
   玩家可直接放置 micro 方块的编辑入口。CLI 暴露 `micro_cell` 读取检查，以及
   `target_probe`、`prefab_boundary / prefab_snap_preview / prefab_place_snap` 验证目标投影和

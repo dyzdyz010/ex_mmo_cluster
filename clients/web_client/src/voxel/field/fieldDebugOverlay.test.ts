@@ -345,6 +345,7 @@ describe("FieldDebugOverlay", () => {
     );
 
     expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+    expect(currentMesh(overlay).visible).toBe(true);
 
     overlay.onFieldSnapshot(
       makeCurrentSnapshot({
@@ -358,6 +359,36 @@ describe("FieldDebugOverlay", () => {
       currentCells: 0,
       smokeParticles: 0,
     });
+    expect(currentMesh(overlay).count).toBe(0);
+    expect(currentMesh(overlay).visible).toBe(false);
+    expectHiddenInstance(currentMesh(overlay), 0);
+  });
+
+  it("hides electric potential meshes when a field snapshot goes empty", () => {
+    const overlay = new FieldDebugOverlay();
+
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricValues: Float32Array.of(120),
+      }),
+    );
+
+    expect(electricMesh(overlay).count).toBe(1);
+    expect(electricMesh(overlay).visible).toBe(true);
+
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 0,
+        macroIndices: new Uint16Array(0),
+        electricValues: new Float32Array(0),
+      }),
+    );
+
+    expect(electricMesh(overlay).count).toBe(0);
+    expect(electricMesh(overlay).visible).toBe(false);
+    expectHiddenInstance(electricMesh(overlay), 0);
   });
 
   it("projects electric current overlay from macro cells onto prefab micro wires", () => {
@@ -526,6 +557,7 @@ describe("FieldDebugOverlay", () => {
 
   it("lets heat smoke rise and expire as a particle effect", () => {
     const overlay = new FieldDebugOverlay();
+    overlay.show();
     overlay.setRegionHeatSmokeSource(77, 2400);
     overlay.onFieldSnapshot(
       makeElectricSnapshot({
@@ -536,10 +568,80 @@ describe("FieldDebugOverlay", () => {
     );
 
     expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+    expect(smokeMesh(overlay).visible).toBe(true);
 
     overlay.updateSmoke(2500);
 
     expect(overlay.snapshot().regions[0]?.smokeParticles).toBe(0);
+    expect(smokeMesh(overlay).visible).toBe(false);
+  });
+
+  it("does not upload smoke instance matrices on every tiny frame", () => {
+    const overlay = new FieldDebugOverlay();
+    overlay.show();
+    overlay.setRegionHeatSmokeSource(77, 2400);
+    overlay.onFieldSnapshot(
+      makeElectricSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricValues: Float32Array.of(120),
+      }),
+    );
+
+    const mesh = smokeMesh(overlay);
+    const firstVersion = mesh.instanceMatrix.version;
+
+    overlay.updateSmoke(8);
+
+    expect(mesh.instanceMatrix.version).toBe(firstVersion);
+
+    overlay.updateSmoke(42);
+
+    expect(mesh.instanceMatrix.version).toBeGreaterThan(firstVersion);
+  });
+
+  it("spawns one smoke instance per prefab projection instead of per occupied micro slot", () => {
+    const overlay = new FieldDebugOverlay();
+    overlay.show();
+    overlay.setRegionHeatSmokeSource(77, 2400);
+    overlay.setProjector((worldMacro) => ({
+      granularity: "prefab",
+      key: "prefab:single-smoke",
+      label: "prefab single smoke",
+      macro: worldMacro,
+      prefabInstanceId: 501,
+      cells: [
+        {
+          macro: worldMacro,
+          microOccupancyMask: 0xffffffffffffffffffffffffffffffffn,
+          microMaterialIds: [],
+          microStateFlags: [],
+          microPartIds: [],
+        },
+      ],
+    }));
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(20),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBe(1);
+    expect(smokeMesh(overlay).count).toBe(1);
+
+    overlay.onFieldSnapshot(
+      makeCurrentSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        electricCurrentValues: Float32Array.of(20),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBe(1);
+    expect(smokeMesh(overlay).count).toBe(1);
   });
 });
 
@@ -703,6 +805,14 @@ function currentMesh(overlay: FieldDebugOverlay): InstancedMesh {
   );
   if (!mesh) {
     throw new Error("missing current mesh");
+  }
+  return mesh;
+}
+
+function smokeMesh(overlay: FieldDebugOverlay): InstancedMesh {
+  const mesh = overlay.rootGroup.getObjectByName("heat-smoke-particles");
+  if (!(mesh instanceof InstancedMesh)) {
+    throw new Error("missing smoke mesh");
   }
   return mesh;
 }

@@ -190,10 +190,14 @@ defmodule SceneServer.Voxel.PrefabRasterTest do
     end)
   end
 
-  test "rejects unsupported rotation in v2" do
-    assert {:error, :unsupported_rotation} =
-             PrefabRaster.rasterize(1, @blueprint_version, {0, 0, 0}, 1)
+  test "rotates conductive prefab micro occupancy around the local Y axis" do
+    assert {:ok, cells} = PrefabRaster.rasterize(4, @blueprint_version, {0, 0, 0}, 1)
 
+    assert MapSet.new(Enum.map(cells, &decode_slot(&1.micro_slot))) ==
+             MapSet.new(for x <- 3..4, y <- 3..4, z <- 0..7, do: {x, y, z})
+  end
+
+  test "rejects unsupported rotation outside quarter-turn enum values" do
     assert {:error, :unsupported_rotation} =
              PrefabRaster.rasterize(1, @blueprint_version, {0, 0, 0}, 90)
 

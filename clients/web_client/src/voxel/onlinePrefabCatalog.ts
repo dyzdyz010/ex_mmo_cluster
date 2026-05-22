@@ -2,9 +2,9 @@
 //
 // Phase A1-1: server-side BlueprintCatalog 升级到 v2 micro mask 表示,跟
 // 客户端 prefab/definitions.ts 的几何函数(球/圆柱/阶梯)对齐。每个 prefab
-// 占用单 macro 内的若干 micro slots (0..511);wire 上仍只携带 blueprint_id
-// + blueprint_version + anchor_world_micro,服务端按 catalog occupied_slots
-// 展开成 micro `:put_micro_block` intents。
+// 占用单 macro 内的若干 micro slots (0..511);wire 上携带 blueprint_id
+// + blueprint_version + anchor_world_micro + rotation,服务端按同一套 quarter-turn
+// yaw 语义展开成 micro `:put_micro_block` intents。
 //
 // IMPORTANT:
 // - Names that are NOT in this catalog must NOT be sent over the wire.

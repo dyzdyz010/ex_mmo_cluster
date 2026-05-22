@@ -47,6 +47,8 @@ const MICRO_ELECTRIC_COLOR = 0xfacc15;
 const MICRO_CURRENT_COLOR = 0xffd13d;
 const MICRO_TEMP_HOT_COLOR = 0xff4040;
 const MICRO_TEMP_COLD_COLOR = 0x9d4edd;
+const SMOKE_RENDER_SYNC_INTERVAL_MS = 50;
+const PREFAB_SMOKE_MAX_SIZE_WORLD = MacroWorldSize * 0.55;
 // Show only the top-N cells that deviate from the snapshot background.
 // Dense legacy snapshots estimate the background with a median. Sparse server
 // snapshots only contain anomaly cells, so they fall back to the current field
@@ -139,6 +141,7 @@ export class FieldDebugOverlay {
   private readonly tmpColor = new Color();
   private readonly heatSmoke = new HeatSmokeSimulation();
   private readonly heatSmokeRenderer = new HeatSmokeRenderer(this.heatSmoke);
+  private smokeRenderSyncElapsedMs = 0;
   private overlayProjector: FieldOverlayProjector | null = null;
 
   constructor() {
@@ -168,7 +171,9 @@ export class FieldDebugOverlay {
     );
     if (snapshotHasElectricLayer(snapshot) && !snapshotHasActiveElectricEffect(snapshot)) {
       this.heatSmoke.clearRegionParticles(snapshot.regionId);
-      this.heatSmokeRenderer.syncFromSimulation();
+      this.syncSmokeRendererNow();
+    } else if (smokeSpawned > 0 && this.visible) {
+      this.syncSmokeRendererNow();
     }
     const tempCount = temperatureCellCount(overlay);
     const potentialCount = electricCellCount(overlay);
@@ -209,7 +214,7 @@ export class FieldDebugOverlay {
       this.regions.delete(regionId);
     }
     this.heatSmoke.clearRegion(regionId);
-    this.heatSmokeRenderer.syncFromSimulation();
+    this.syncSmokeRendererNow();
     console.info(
       `[FieldDebugOverlay] destroyed region=${regionId} existed=${overlay !== undefined} ` +
         `regions_remaining=${this.regions.size}`,
@@ -218,13 +223,20 @@ export class FieldDebugOverlay {
 
   /** Clear all regions (e.g., on chunk invalidate). */
   clear(): void {
+    this.clearRenderedState();
+    this.heatSmoke.reset();
+    this.syncSmokeRendererNow();
+  }
+
+  /** Release render-only overlay resources without dropping configured heat sources. */
+  clearRenderedState(): void {
     for (const overlay of this.regions.values()) {
       this.rootGroup.remove(overlay.group);
       _disposeOverlay(overlay);
     }
     this.regions.clear();
-    this.heatSmoke.reset();
-    this.heatSmokeRenderer.syncFromSimulation();
+    this.heatSmoke.clearParticles();
+    this.syncSmokeRendererNow();
   }
 
   show(): void {
@@ -238,6 +250,9 @@ export class FieldDebugOverlay {
   setVisible(visible: boolean): void {
     this.visible = visible;
     this.rootGroup.visible = visible;
+    if (visible) {
+      this.syncSmokeRendererNow();
+    }
     console.info(`[FieldDebugOverlay] set visible=${this.visible} regions=${this.regions.size}`);
   }
 
@@ -286,7 +301,16 @@ export class FieldDebugOverlay {
 
   updateSmoke(dtMs: number): void {
     this.heatSmoke.update(dtMs);
-    this.heatSmokeRenderer.syncFromSimulation();
+    const hasRenderableSmoke =
+      this.heatSmoke.liveParticles().length > 0 || this.heatSmokeRenderer.mesh.count > 0;
+    if (!this.visible || !hasRenderableSmoke) {
+      return;
+    }
+
+    this.smokeRenderSyncElapsedMs += dtMs;
+    if (this.smokeRenderSyncElapsedMs >= SMOKE_RENDER_SYNC_INTERVAL_MS) {
+      this.syncSmokeRendererNow();
+    }
   }
 
   dispose(): void {
@@ -323,6 +347,7 @@ export class FieldDebugOverlay {
           const mesh = new InstancedMesh(makeCellGeometry(), mat, MAX_CELLS);
           mesh.name = `temperature-${kind}-${opacity.toFixed(2)}`;
           mesh.count = 0;
+          mesh.visible = false;
           mesh.frustumCulled = false;
           mesh.renderOrder = 5;
           initializeHiddenInstances(mesh);
@@ -352,6 +377,7 @@ export class FieldDebugOverlay {
       electricMesh = new InstancedMesh(makeCellGeometry(), mat, MAX_CELLS);
       electricMesh.name = "electric-potential";
       electricMesh.count = 0;
+      electricMesh.visible = false;
       electricMesh.frustumCulled = false;
       electricMesh.renderOrder = 5;
       electricMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
@@ -372,6 +398,7 @@ export class FieldDebugOverlay {
       currentMesh = new InstancedMesh(makeCellGeometry(), mat, MAX_CELLS);
       currentMesh.name = "electric-current";
       currentMesh.count = 0;
+      currentMesh.visible = false;
       currentMesh.frustumCulled = false;
       currentMesh.renderOrder = 6;
       currentMesh.instanceColor = new InstancedBufferAttribute(new Float32Array(MAX_CELLS * 3), 3);
@@ -465,6 +492,8 @@ export class FieldDebugOverlay {
     if (topN.length === 0) {
       for (const bucket of buckets) {
         clearUnusedInstances(bucket.mesh, 0, previousCounts.get(bucket.mesh) ?? 0);
+        bucket.mesh.count = 0;
+        bucket.mesh.visible = false;
         bucket.mesh.instanceMatrix.needsUpdate = true;
       }
       syncMicroLineSegments(overlay.temperatureHotMicroLines, []);
@@ -504,6 +533,7 @@ export class FieldDebugOverlay {
         bucket.mesh.count,
         previousCounts.get(bucket.mesh) ?? bucket.mesh.count,
       );
+      bucket.mesh.visible = bucket.mesh.count > 0;
       bucket.mesh.instanceMatrix.needsUpdate = true;
     }
     const hotGeometry = syncMicroLineSegments(
@@ -561,6 +591,7 @@ export class FieldDebugOverlay {
 
     clearUnusedInstances(mesh, count, previousCount);
     mesh.count = count;
+    mesh.visible = count > 0;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     const geometry = syncProjectedMicroLineSegments(
@@ -617,6 +648,7 @@ export class FieldDebugOverlay {
 
     clearUnusedInstances(mesh, count, previousCount);
     mesh.count = count;
+    mesh.visible = count > 0;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     const geometry = syncProjectedMicroLineSegments(
@@ -639,6 +671,11 @@ export class FieldDebugOverlay {
         console.info(`[FieldDebugOverlay] ${this.visible ? "shown" : "hidden"} (Ctrl+\\)`);
       }
     });
+  }
+
+  private syncSmokeRendererNow(): void {
+    this.heatSmokeRenderer.syncFromSimulation();
+    this.smokeRenderSyncElapsedMs = 0;
   }
 }
 
@@ -786,6 +823,10 @@ function electricEffectPointsForProjection(
   if (projection.granularity === "macro") {
     return [];
   }
+  if (projection.granularity === "prefab") {
+    const point = prefabSmokePointForProjection(projection, potential);
+    return point ? [point] : [];
+  }
 
   const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
   const points: ElectricEffectPoint[] = [];
@@ -804,6 +845,59 @@ function electricEffectPointsForProjection(
     }
   }
   return points;
+}
+
+function prefabSmokePointForProjection(
+  projection: VoxelOverlayProjection,
+  potential: number,
+): ElectricEffectPoint | null {
+  const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  let occupiedCount = 0;
+
+  for (const cell of projection.cells) {
+    for (const [index, micro] of MICRO_SLOT_COORDS.entries()) {
+      if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
+        continue;
+      }
+      const x = cell.macro.x * MacroWorldSize + (micro.x + 0.5) * microSize;
+      const y = cell.macro.y * MacroWorldSize + (micro.y + 0.5) * microSize;
+      const z = cell.macro.z * MacroWorldSize + (micro.z + 0.5) * microSize;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      minZ = Math.min(minZ, z);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      maxZ = Math.max(maxZ, z);
+      occupiedCount += 1;
+    }
+  }
+
+  if (occupiedCount === 0) {
+    return null;
+  }
+
+  const footprint = Math.max(maxX - minX + microSize, maxZ - minZ + microSize, microSize);
+  const height = Math.max(maxY - minY + microSize, microSize);
+  const sizeWorld = Math.max(
+    microSize * 1.15,
+    Math.min(PREFAB_SMOKE_MAX_SIZE_WORLD, Math.max(footprint, height) * 0.35),
+  );
+
+  return {
+    x: (minX + maxX) * 0.5,
+    y: maxY + microSize * 0.55,
+    z: (minZ + maxZ) * 0.5,
+    potential,
+    sizeWorld,
+    emissionGroupKey: projection.key,
+    maxEmissionsPerSnapshot: 1,
+  };
 }
 
 function snapshotHasElectricLayer(snapshot: FFieldRegionSnapshot): boolean {

@@ -15,6 +15,7 @@ import type {
 import { OnlineVoxelWorldAdapter, type ServerVoxelTransportPort } from "./onlineVoxelWorldAdapter";
 import { OnlinePrefabBlueprintVersion } from "./onlinePrefabCatalog";
 import { VoxelConstants } from "./core/constants";
+import { EVoxelRotation } from "./core/types";
 import { ChunkStorage } from "./storage/chunkStorage";
 
 interface PrefabPlaceCall {
@@ -322,14 +323,14 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     expect(transport.prefabCalls[0]?.anchorWorldMicro).toEqual({ x: 0, y: 8, z: 0 });
   });
 
-  it("ignores the rotation argument in v1 and pins rotation to 0", () => {
+  it("forwards prefab rotation through the authoritative intent", () => {
     const { adapter, transport } = createAdapter();
 
-    adapter.placePrefab("builtin_cylinder", { x: 0, y: 0, z: 0 }, 2);
+    adapter.placePrefab("builtin_cylinder", { x: 0, y: 0, z: 0 }, EVoxelRotation.Rot180);
 
     const [call] = transport.prefabCalls;
     if (!call) throw new Error("expected one prefab call");
-    expect(call.rotation).toBe(0);
+    expect(call.rotation).toBe(EVoxelRotation.Rot180);
     expect(call.blueprintId).toBe(2);
   });
 
@@ -808,6 +809,7 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
       hitMicro: { x: 5, y: 7, z: 5 },
       anchorMicroCoord: { x: 5, y: 8, z: 5 },
       faceNormal: { x: 0, y: 1, z: 0 },
+      rotation: EVoxelRotation.Rot90,
     };
 
     const preview = adapter.previewPrefabBoundarySnap(request);
@@ -822,7 +824,7 @@ describe("OnlineVoxelWorldAdapter#placePrefabBoundarySnap", () => {
       blueprintId: 1,
       blueprintVersion: OnlinePrefabBlueprintVersion,
       anchorWorldMicro: preview.anchorMicroCoord,
-      rotation: 0,
+      rotation: EVoxelRotation.Rot90,
       clientIntentSeq: 1,
     });
   });

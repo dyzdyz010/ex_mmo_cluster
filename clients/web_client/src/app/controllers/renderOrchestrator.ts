@@ -92,6 +92,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private prefabPreviewIntentKey = "";
   private readonly debrisRenderer: DebrisRenderer | null;
   private readonly fieldDebugOverlay: FieldDebugOverlay;
+  private readonly latestFieldSnapshots = new Map<number, VoxelFieldRegionSnapshotMessage>();
   private readonly sceneRegionOverlay: SceneRegionOverlay;
 
   constructor(
@@ -168,20 +169,29 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
       this.debrisRenderer.syncFromSimulation();
     }
     this._drainFieldMessages();
-    this.fieldDebugOverlay.updateSmoke(dtMs);
+    if (this.fieldDebugOverlay.isVisible()) {
+      this.fieldDebugOverlay.updateSmoke(dtMs);
+    }
     this.sceneHandles.render();
   }
 
   private _drainFieldMessages(): void {
     const fieldProvider = this.world as unknown as MaybeFieldProvider;
+    const fieldOverlayVisible = this.fieldDebugOverlay.isVisible();
     if (typeof fieldProvider.drainVoxelFieldSnapshots === "function") {
       for (const msg of fieldProvider.drainVoxelFieldSnapshots()) {
-        this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
+        this.latestFieldSnapshots.set(msg.snapshot.regionId, msg);
+        if (fieldOverlayVisible) {
+          this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
+        }
       }
     }
     if (typeof fieldProvider.drainVoxelFieldDestroyeds === "function") {
       for (const msg of fieldProvider.drainVoxelFieldDestroyeds()) {
-        this.fieldDebugOverlay.onRegionDestroyed(msg.destroyed.regionId);
+        this.latestFieldSnapshots.delete(msg.destroyed.regionId);
+        if (fieldOverlayVisible) {
+          this.fieldDebugOverlay.onRegionDestroyed(msg.destroyed.regionId);
+        }
       }
     }
   }
@@ -247,15 +257,21 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   }
 
   toggleFieldDebugOverlay(): void {
-    this.fieldDebugOverlay.toggle();
+    this.setFieldDebugOverlayVisible(!this.fieldDebugOverlay.isVisible());
   }
 
   setFieldDebugOverlayVisible(visible: boolean): void {
+    const wasVisible = this.fieldDebugOverlay.isVisible();
     this.fieldDebugOverlay.setVisible(visible);
+    if (visible && !wasVisible) {
+      this.materializeFieldDebugOverlay();
+    } else if (!visible && wasVisible) {
+      this.fieldDebugOverlay.clearRenderedState();
+    }
   }
 
   showFieldDebugOverlay(): void {
-    this.fieldDebugOverlay.show();
+    this.setFieldDebugOverlayVisible(true);
   }
 
   getFieldDebugOverlaySnapshot(): FieldDebugOverlaySnapshot {
@@ -313,6 +329,13 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     );
     this.syncRing.rotation.z = nowSecs * 0.25;
     this.sceneHandles.setCameraFollow(this.localDisplay);
+  }
+
+  private materializeFieldDebugOverlay(): void {
+    this.fieldDebugOverlay.clearRenderedState();
+    for (const msg of this.latestFieldSnapshots.values()) {
+      this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
+    }
   }
 
   private syncRemoteAvatarMeshes(): void {

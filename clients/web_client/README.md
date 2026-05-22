@@ -41,11 +41,11 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和 `PrefabPlaceIntent` v1；多 chunk 自适应订阅与 prefab 跨 chunk 原子事务仍未完成。
+2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和带旋转的 `PrefabPlaceIntent` v2；多 chunk 自适应订阅与 prefab 跨 chunk 原子事务仍未完成。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs`，以及导电测试用的
    `builtin_conductor_wire_x`、`builtin_conductor_junction_xz`、
-   `builtin_power_terminal_x` 使用 refined micro occupancy；`prefab_capture`
+   `builtin_power_terminal_x`、`builtin_load_terminal_x` 使用 refined micro occupancy；`prefab_capture`
    生成玩家模板定义，`prefab_place` 生成量化旋转实例并写入 Chunk truth。
    Prefab definition 保留 `partDefinitions / microPartIds`，实例化后拍扁为带
    part tag 的 refined micro 数据，供后续魔法和局部破坏按部件语义结算。
@@ -321,6 +321,7 @@ window.__voxelCli?.run("prefab_place test 8 5 8 rot90");
 window.__voxelCli?.run("prefab_place builtin_power_terminal_x 0 1 0");
 window.__voxelCli?.run("prefab_place builtin_conductor_wire_x 1 1 0");
 window.__voxelCli?.run("prefab_place builtin_conductor_junction_xz 2 1 0");
+window.__voxelCli?.run("prefab_place builtin_load_terminal_x 3 1 0");
 window.__voxelCli?.run("voxel_conduct 0 1 0 2 1 0 120 90");
 window.__voxelCli?.run("prefab_place builtin_sphere 12 5 8");
 window.__voxelCli?.run("prefab_place builtin_cylinder 14 5 8");
@@ -395,11 +396,11 @@ AUTH_PORT=20010 PORT=5173 ./scripts/start-client.sh
 - 镜头：第三人称跟随镜头；左键按住拖拽可旋转视角；`Ctrl+滚轮` 缩放
 - `W/A/S/D`：驱动本地玩家 avatar，**方向相对当前摄像机朝向**；server-ws 与 simulated-local 共用同一套 movement 输入面
 - `Space`：跳跃；HUD / CLI trace 会记录 `jump_pressed`、`movement_flags`、`player_mode` 和 Y 轴变化，渲染层会把 airborne offset 加到地表显示高度上
-- 默认 server-authoritative 模式：左键 / `G` 对准星命中格提交 break intent；右键 / `F` 在准星邻接格提交 place intent；选中 prefab 时提交 `PrefabPlaceIntent` v1
+- 默认 server-authoritative 模式：左键 / `G` 对准星命中格提交 break intent；右键 / `F` 在准星邻接格提交 place intent；选中 prefab 时提交带 `anchorWorldMicro + rotation` 的 `PrefabPlaceIntent` v2
 - `VITE_VOXEL_SYNC=offline` 模式：左键 / `G` 破坏本地方块；右键 / `F` 放置当前 hotbar 项，prefab 会优先执行 socket-free micro boundary snap
 - 底部 dock：点击槽位直接选中当前 hotbar 项；滚轮：切换 hotbar；`1/2/3/4`
   选择 `Dirt / Stone / Wood / Ice`，`5/6` 是 `iron / power_block`，`7/8/9`
-  是 `wire-x / wire-xz / terminal` 导电 prefab；其它 prefab 可继续点击底部 dock
+  是 `wire-x / wire-xz / terminal` 导电 prefab；负载端子和其它 prefab 可继续点击底部 dock
   或用 `select_prefab <name>` 选择。
 
 ## Smoke / 验收脚本

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Group, PerspectiveCamera, Scene } from "three";
+import { Group, PerspectiveCamera, Scene, Vector3 } from "three";
+import type { VoxelFieldRegionSnapshotMessage } from "../../infrastructure/net/voxelProtocol";
 import { VoxelMaterialId } from "../../material/catalog";
 import { ObserveLog } from "../../observe/logger";
 import type { SceneHandles } from "../../render/scene";
@@ -7,6 +8,8 @@ import type { VoxelRaySelection } from "../../render/chunkRenderer";
 import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelRotation } from "../../voxel/core/types";
 import type { FMacroCoord } from "../../voxel/core/types";
+import { FieldMask, type FFieldRegionSnapshot } from "../../voxel/field/fieldProtocol";
+import type { FieldDebugOverlay } from "../../voxel/field/fieldDebugOverlay";
 import type {
   PrefabBoundarySnapPreview,
   PrefabBoundarySnapRequest,
@@ -56,6 +59,18 @@ class ServerAuthoritativePreviewWorld extends LocalVoxelWorldAdapter {
       contactSlots: 1,
       cells: [cell],
     };
+  }
+}
+
+class FieldSnapshotWorld extends LocalVoxelWorldAdapter {
+  readonly fieldSnapshots: VoxelFieldRegionSnapshotMessage[] = [];
+
+  pushFieldSnapshot(snapshot: FFieldRegionSnapshot): void {
+    this.fieldSnapshots.push({ type: "voxel_field_region_snapshot", snapshot });
+  }
+
+  drainVoxelFieldSnapshots(): VoxelFieldRegionSnapshotMessage[] {
+    return this.fieldSnapshots.splice(0, this.fieldSnapshots.length);
   }
 }
 
@@ -132,6 +147,52 @@ describe("RenderOrchestrator prefab preview", () => {
   });
 });
 
+describe("RenderOrchestrator field overlay runtime", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps field overlay render work cold while hidden and materializes the latest snapshot on show", () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new FieldSnapshotWorld();
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      createTestLocalPlayer(),
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+    render.setFieldHeatSmokeSource(77, 2400);
+
+    world.pushFieldSnapshot(makeCurrentFieldSnapshot({ tickCount: 1 }));
+    render.onFrame(0, 16);
+
+    const overlay = fieldOverlayOf(render);
+    expect(overlay.snapshot()).toMatchObject({ visible: false, regionCount: 0 });
+    expect(overlay.rootGroup.getObjectByName("field-region-77")).toBeUndefined();
+
+    world.pushFieldSnapshot(makeCurrentFieldSnapshot({ tickCount: 2 }));
+    render.onFrame(16, 16);
+    expect(overlay.snapshot()).toMatchObject({ visible: false, regionCount: 0 });
+
+    render.setFieldDebugOverlayVisible(true);
+
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      regionId: 77,
+      currentCells: 1,
+    });
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+    expect(overlay.rootGroup.getObjectByName("field-region-77")).toBeDefined();
+
+    render.dispose();
+  });
+});
+
 function singleMicroSlotCell(macro: FMacroCoord): PrefabRasterCell {
   const slotCount = VoxelConstants.MicroPerMacro ** 3;
   return {
@@ -140,6 +201,42 @@ function singleMicroSlotCell(macro: FMacroCoord): PrefabRasterCell {
     microMaterialIds: new Array(slotCount).fill(VoxelMaterialId.Iron),
     microStateFlags: new Array(slotCount).fill(0),
     microPartIds: new Array(slotCount).fill(0),
+  };
+}
+
+function createTestLocalPlayer() {
+  return {
+    getRenderedPosition: () => new Vector3(0, 0, 0),
+    getAuthoritativePosition: () => new Vector3(0, 0, 0),
+    getCurrentState: () => ({ groundY: 0 }),
+  } as never;
+}
+
+function createTestRemotePlayer() {
+  return {
+    getRenderedPosition: () => new Vector3(0, 0, 0),
+    getRenderedEntities: () => [],
+    getRenderedGroundY: () => undefined,
+  } as never;
+}
+
+function fieldOverlayOf(render: RenderOrchestrator): FieldDebugOverlay {
+  return (render as unknown as { fieldDebugOverlay: FieldDebugOverlay }).fieldDebugOverlay;
+}
+
+function makeCurrentFieldSnapshot({ tickCount }: { tickCount: number }): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 77,
+    tickCount,
+    fieldMask: FieldMask.ElectricCurrent,
+    cellCount: 1,
+    macroIndices: Uint16Array.of(7 + 7 * 16 + 7 * 256),
+    temperatureValues: new Float32Array(0),
+    electricValues: new Float32Array(0),
+    electricCurrentValues: Float32Array.of(20),
+    ionizationValues: new Uint8Array(0),
   };
 }
 
