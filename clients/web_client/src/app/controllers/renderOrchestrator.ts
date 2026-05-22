@@ -16,7 +16,7 @@ import {
 import { AvatarConstants, VoxelConstants } from "../../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import {
-  resolveFieldOverlayProjection,
+  createFieldOverlayProjector,
   resolveSelectionOverlayProjection,
 } from "../../voxel/overlayTarget";
 import type { VoxelOverlayProjection } from "../../voxel/overlayTarget";
@@ -143,9 +143,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     }
 
     this.fieldDebugOverlay = new FieldDebugOverlay();
-    this.fieldDebugOverlay.setProjector((worldMacro) =>
-      resolveFieldOverlayProjection(this.world.store, worldMacro),
-    );
+    this.fieldDebugOverlay.setProjector(createFieldOverlayProjector(this.world.store));
     this.rootGroup.add(this.fieldDebugOverlay.rootGroup);
     if (import.meta.env.DEV) {
       const dev = window as unknown as Record<string, unknown>;

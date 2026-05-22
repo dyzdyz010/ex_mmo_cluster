@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EVoxelRotation } from "./core/types";
 import { MicroGridSlotCount } from "./microgrid/governance";
-import { resolveFieldOverlayProjection, resolveSelectionOverlayProjection } from "./overlayTarget";
+import {
+  createFieldOverlayProjector,
+  resolveFieldOverlayProjection,
+  resolveSelectionOverlayProjection,
+} from "./overlayTarget";
 import { LocalPrefabRegistry } from "./prefab";
 import { WorldStore } from "./worldStore";
 
@@ -65,6 +69,29 @@ describe("voxel overlay target projection", () => {
     expect(projection.cells).toHaveLength(1);
     expect(countBits(projection.cells[0]!.microOccupancyMask)).toBeGreaterThan(1);
     expect(countBits(projection.cells[0]!.microOccupancyMask)).toBeLessThan(MicroGridSlotCount);
+  });
+
+  it("creates snapshot-scoped field projectors for repeated overlay projection", () => {
+    const world = new WorldStore();
+    const registry = new LocalPrefabRegistry();
+    const placed = registry.place(
+      "builtin_conductor_junction_xz",
+      { x: 1, y: 2, z: 3 },
+      world,
+      EVoxelRotation.Rot0,
+    );
+    expect(placed.ok).toBe(true);
+
+    const projector = createFieldOverlayProjector(world);
+    const snapshotProjector = projector.createSnapshotProjector?.();
+    expect(snapshotProjector).toBeDefined();
+
+    const first = snapshotProjector!({ x: 1, y: 2, z: 3 });
+    const second = snapshotProjector!({ x: 1, y: 2, z: 3 });
+
+    expect(first).toBe(second);
+    expect(first.granularity).toBe("prefab");
+    expect(first.prefabInstanceId).toBe(placed.instanceId);
   });
 
   it("keeps a normal solid block as a macro field target", () => {

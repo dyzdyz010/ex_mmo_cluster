@@ -20,9 +20,25 @@ export interface VoxelOverlayProjection {
   prefabInstanceId?: number;
 }
 
+export type FieldOverlayProjector = ((worldMacro: FMacroCoord) => VoxelOverlayProjection) & {
+  createSnapshotProjector?: () => (worldMacro: FMacroCoord) => VoxelOverlayProjection;
+};
+
 export interface MicroTargetLike {
   macro: FMacroCoord;
   micro: FMicroCoord;
+}
+
+export function createFieldOverlayProjector(world: WorldStore): FieldOverlayProjector {
+  const projector = ((worldMacro: FMacroCoord) =>
+    resolveFieldOverlayProjection(world, worldMacro)) as FieldOverlayProjector;
+
+  projector.createSnapshotProjector = () => {
+    const cache = new FieldOverlayProjectionSnapshotCache(world);
+    return (worldMacro: FMacroCoord) => cache.resolve(worldMacro);
+  };
+
+  return projector;
 }
 
 export function resolveSelectionOverlayProjection(
@@ -160,6 +176,90 @@ export function macroProjection(macro: FMacroCoord): VoxelOverlayProjection {
   };
 }
 
+class FieldOverlayProjectionSnapshotCache {
+  private readonly projectionByMacro = new Map<string, VoxelOverlayProjection>();
+  private ownerCellsByObjectId: Map<bigint, PrefabRasterCell[]> | null = null;
+  private prefabCellsByInstanceId: Map<number, PrefabRasterCell[]> | null = null;
+
+  constructor(private readonly world: WorldStore) {}
+
+  resolve(macro: FMacroCoord): VoxelOverlayProjection {
+    const key = coordKey(macro);
+    const cached = this.projectionByMacro.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const projection = this.resolveUncached(macro);
+    this.projectionByMacro.set(key, projection);
+    return projection;
+  }
+
+  private resolveUncached(macro: FMacroCoord): VoxelOverlayProjection {
+    const refined = this.world.getRefinedCellWorld(macro);
+    if (!refined) {
+      return macroProjection(macro);
+    }
+
+    const normalized = normalizeRefinedCell(refined);
+    if (normalized.microOccupancyMask === 0n) {
+      return macroProjection(macro);
+    }
+
+    const ownerObjectId = firstOwnerObjectId(normalized);
+    if (ownerObjectId !== null) {
+      const cells = this.ownerObjectCells(ownerObjectId);
+      if (cells.length > 0) {
+        return {
+          granularity: "prefab",
+          key: `owner:${ownerObjectId.toString()}`,
+          label: `object ${ownerObjectId.toString()}`,
+          macro: { ...macro },
+          cells,
+          ownerObjectId: ownerObjectId.toString(),
+        };
+      }
+    }
+
+    const instanceId = normalized.prefabInstanceIds[0];
+    if (instanceId !== undefined) {
+      const cells = this.prefabInstanceCells(instanceId);
+      if (cells.length > 0) {
+        return {
+          granularity: "prefab",
+          key: `prefab:${instanceId}`,
+          label: `prefab ${instanceId}`,
+          macro: { ...macro },
+          cells,
+          prefabInstanceId: instanceId,
+        };
+      }
+    }
+
+    return {
+      granularity: "micro",
+      key: `refined:${coordKey(macro)}`,
+      label: `refined ${coordKey(macro)}`,
+      macro: { ...macro },
+      cells: [rasterCellForMask(macro, normalized.microOccupancyMask, normalized)],
+    };
+  }
+
+  private ownerObjectCells(ownerObjectId: bigint): PrefabRasterCell[] {
+    if (!this.ownerCellsByObjectId) {
+      this.ownerCellsByObjectId = buildOwnerObjectCellIndex(this.world);
+    }
+    return this.ownerCellsByObjectId.get(ownerObjectId) ?? [];
+  }
+
+  private prefabInstanceCells(instanceId: number): PrefabRasterCell[] {
+    if (!this.prefabCellsByInstanceId) {
+      this.prefabCellsByInstanceId = buildPrefabInstanceCellIndex(this.world);
+    }
+    return this.prefabCellsByInstanceId.get(instanceId) ?? [];
+  }
+}
+
 function collectOwnerObjectCells(world: WorldStore, ownerObjectId: bigint): PrefabRasterCell[] {
   const cells: PrefabRasterCell[] = [];
   for (const chunk of world.listChunks()) {
@@ -181,6 +281,106 @@ function collectOwnerObjectCells(world: WorldStore, ownerObjectId: bigint): Pref
     }
   }
   return cells.sort((a, b) => coordKey(a.macro).localeCompare(coordKey(b.macro)));
+}
+
+function buildOwnerObjectCellIndex(world: WorldStore): Map<bigint, PrefabRasterCell[]> {
+  const index = new Map<bigint, PrefabRasterCell[]>();
+
+  for (const chunk of world.listChunks()) {
+    for (const [macroIndex, header] of chunk.data.macroHeaders.entries()) {
+      if (header.mode !== EVoxelCellMode.Refined) {
+        continue;
+      }
+      const refined = chunk.data.refinedCells[header.payloadIndex];
+      if (!refined?.ownerObjectIdsBySlot) {
+        continue;
+      }
+
+      const normalized = normalizeRefinedCell(refined);
+      const masksByOwner = ownerMasksForCell(normalized);
+      if (masksByOwner.size === 0) {
+        continue;
+      }
+
+      const macro = worldMacroFromChunkLocal(chunk.data.chunkCoord, macroIndex);
+      for (const [ownerObjectId, mask] of masksByOwner) {
+        const cell = rasterCellForMask(macro, mask, normalized);
+        const cells = index.get(ownerObjectId);
+        if (cells) {
+          cells.push(cell);
+        } else {
+          index.set(ownerObjectId, [cell]);
+        }
+      }
+    }
+  }
+
+  for (const cells of index.values()) {
+    cells.sort((a, b) => coordKey(a.macro).localeCompare(coordKey(b.macro)));
+  }
+
+  return index;
+}
+
+function ownerMasksForCell(refined: FRefinedCellData): Map<bigint, bigint> {
+  const owners = refined.ownerObjectIdsBySlot;
+  const masksByOwner = new Map<bigint, bigint>();
+  if (!owners) {
+    return masksByOwner;
+  }
+
+  let remaining = refined.microOccupancyMask;
+  while (remaining !== 0n) {
+    const slot = trailingZeros(remaining);
+    const ownerObjectId = owners[slot] ?? 0n;
+    if (ownerObjectId !== 0n) {
+      masksByOwner.set(
+        ownerObjectId,
+        (masksByOwner.get(ownerObjectId) ?? 0n) | (MICRO_SLOT_BITS[slot] ?? 0n),
+      );
+    }
+    remaining &= remaining - 1n;
+  }
+
+  return masksByOwner;
+}
+
+function buildPrefabInstanceCellIndex(world: WorldStore): Map<number, PrefabRasterCell[]> {
+  const index = new Map<number, PrefabRasterCell[]>();
+
+  for (const chunk of world.listChunks()) {
+    for (const [macroIndex, header] of chunk.data.macroHeaders.entries()) {
+      if (header.mode !== EVoxelCellMode.Refined) {
+        continue;
+      }
+      const refined = chunk.data.refinedCells[header.payloadIndex];
+      if (!refined) {
+        continue;
+      }
+
+      const normalized = normalizeRefinedCell(refined);
+      if (normalized.microOccupancyMask === 0n || normalized.prefabInstanceIds.length === 0) {
+        continue;
+      }
+
+      const macro = worldMacroFromChunkLocal(chunk.data.chunkCoord, macroIndex);
+      for (const instanceId of normalized.prefabInstanceIds) {
+        const cell = rasterCellForMask(macro, normalized.microOccupancyMask, normalized);
+        const cells = index.get(instanceId);
+        if (cells) {
+          cells.push(cell);
+        } else {
+          index.set(instanceId, [cell]);
+        }
+      }
+    }
+  }
+
+  for (const cells of index.values()) {
+    cells.sort((a, b) => coordKey(a.macro).localeCompare(coordKey(b.macro)));
+  }
+
+  return index;
 }
 
 function collectPrefabInstanceCells(

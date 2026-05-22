@@ -49,6 +49,7 @@ const MICRO_TEMP_HOT_COLOR = 0xff4040;
 const MICRO_TEMP_COLD_COLOR = 0x9d4edd;
 const SMOKE_RENDER_SYNC_INTERVAL_MS = 50;
 const PREFAB_SMOKE_MAX_SIZE_WORLD = MacroWorldSize * 0.55;
+const ELECTRIC_EFFECT_POINT_CACHE_LIMIT = 512;
 // Show only the top-N cells that deviate from the snapshot background.
 // Dense legacy snapshots estimate the background with a median. Sparse server
 // snapshots only contain anomaly cells, so they fall back to the current field
@@ -68,6 +69,15 @@ interface TemperatureFieldStats {
   maxTemperatureCelsius: number | null;
   maxAbsTemperatureDeltaCelsius: number;
   averageAbsTemperatureDeltaCelsius: number;
+}
+
+interface ElectricEffectPointTemplate {
+  x: number;
+  y: number;
+  z: number;
+  sizeWorld?: number;
+  emissionGroupKey?: string;
+  maxEmissionsPerSnapshot?: number;
 }
 
 interface MicroLineGeometryCache {
@@ -127,6 +137,9 @@ export interface FieldDebugOverlaySnapshot {
 }
 
 export type FieldOverlayProjector = (worldMacro: FMacroCoord) => VoxelOverlayProjection;
+export type SnapshotAwareFieldOverlayProjector = FieldOverlayProjector & {
+  createSnapshotProjector?: () => FieldOverlayProjector;
+};
 
 /**
  * Manages debug overlay meshes for all active FieldRegions.
@@ -141,8 +154,12 @@ export class FieldDebugOverlay {
   private readonly tmpColor = new Color();
   private readonly heatSmoke = new HeatSmokeSimulation();
   private readonly heatSmokeRenderer = new HeatSmokeRenderer(this.heatSmoke);
+  private readonly electricEffectPointCache = new Map<
+    string,
+    readonly ElectricEffectPointTemplate[]
+  >();
   private smokeRenderSyncElapsedMs = 0;
-  private overlayProjector: FieldOverlayProjector | null = null;
+  private overlayProjector: SnapshotAwareFieldOverlayProjector | null = null;
 
   constructor() {
     this.rootGroup = new Group();
@@ -161,12 +178,13 @@ export class FieldDebugOverlay {
       this.regions.set(snapshot.regionId, overlay);
       this.rootGroup.add(overlay.group);
     }
-    const projector = this.overlayProjector ?? undefined;
+    const projector = this.snapshotProjector();
     this._updateOverlay(overlay, snapshot, projector);
     const smokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(
       snapshot,
       projector
-        ? (cell) => electricEffectPointsForProjection(projector(cell.worldMacro), cell.potential)
+        ? (cell) =>
+            this.electricEffectPointsForProjection(projector(cell.worldMacro), cell.potential)
         : undefined,
     );
     if (snapshotHasElectricLayer(snapshot) && !snapshotHasActiveElectricEffect(snapshot)) {
@@ -237,6 +255,7 @@ export class FieldDebugOverlay {
     }
     this.regions.clear();
     this.heatSmoke.clearParticles();
+    this.electricEffectPointCache.clear();
     this.syncSmokeRendererNow();
   }
 
@@ -266,7 +285,7 @@ export class FieldDebugOverlay {
     return this.visible;
   }
 
-  setProjector(projector: FieldOverlayProjector | null): void {
+  setProjector(projector: SnapshotAwareFieldOverlayProjector | null): void {
     this.overlayProjector = projector;
   }
 
@@ -678,6 +697,31 @@ export class FieldDebugOverlay {
     this.heatSmokeRenderer.syncFromSimulation();
     this.smokeRenderSyncElapsedMs = 0;
   }
+
+  private snapshotProjector(): FieldOverlayProjector | undefined {
+    const projector = this.overlayProjector;
+    if (!projector) {
+      return undefined;
+    }
+    return projector.createSnapshotProjector?.() ?? memoizedSnapshotProjector(projector);
+  }
+
+  private electricEffectPointsForProjection(
+    projection: VoxelOverlayProjection,
+    potential: number,
+  ): ElectricEffectPoint[] {
+    const cacheKey = electricEffectProjectionCacheKey(projection);
+    let templates = this.electricEffectPointCache.get(cacheKey);
+    if (!templates) {
+      templates = electricEffectPointTemplatesForProjection(projection);
+      if (this.electricEffectPointCache.size >= ELECTRIC_EFFECT_POINT_CACHE_LIMIT) {
+        this.electricEffectPointCache.clear();
+      }
+      this.electricEffectPointCache.set(cacheKey, templates);
+    }
+
+    return templates.map((template) => ({ ...template, potential }));
+  }
 }
 
 function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {
@@ -817,20 +861,19 @@ function chunkWorldMacroOrigin(snapshot: FFieldRegionSnapshot): FMacroCoord {
   };
 }
 
-function electricEffectPointsForProjection(
+function electricEffectPointTemplatesForProjection(
   projection: VoxelOverlayProjection,
-  potential: number,
-): ElectricEffectPoint[] {
+): ElectricEffectPointTemplate[] {
   if (projection.granularity === "macro") {
     return [];
   }
   if (projection.granularity === "prefab") {
-    const point = prefabSmokePointForProjection(projection, potential);
+    const point = prefabSmokePointForProjection(projection);
     return point ? [point] : [];
   }
 
   const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
-  const points: ElectricEffectPoint[] = [];
+  const points: ElectricEffectPointTemplate[] = [];
   for (const cell of projection.cells) {
     for (const [index, micro] of MICRO_SLOT_COORDS.entries()) {
       if ((cell.microOccupancyMask & (1n << BigInt(index))) === 0n) {
@@ -840,7 +883,6 @@ function electricEffectPointsForProjection(
         x: cell.macro.x * MacroWorldSize + (micro.x + 0.5) * microSize,
         y: cell.macro.y * MacroWorldSize + (micro.y + 0.5) * microSize,
         z: cell.macro.z * MacroWorldSize + (micro.z + 0.5) * microSize,
-        potential,
         sizeWorld: microSize * 0.7,
       });
     }
@@ -850,8 +892,7 @@ function electricEffectPointsForProjection(
 
 function prefabSmokePointForProjection(
   projection: VoxelOverlayProjection,
-  potential: number,
-): ElectricEffectPoint | null {
+): ElectricEffectPointTemplate | null {
   const microSize = MacroWorldSize / VoxelConstants.MicroPerMacro;
   let minX = Infinity;
   let minY = Infinity;
@@ -894,11 +935,32 @@ function prefabSmokePointForProjection(
     x: (minX + maxX) * 0.5,
     y: maxY + microSize * 0.55,
     z: (minZ + maxZ) * 0.5,
-    potential,
     sizeWorld,
     emissionGroupKey: projection.key,
     maxEmissionsPerSnapshot: 1,
   };
+}
+
+function memoizedSnapshotProjector(projector: FieldOverlayProjector): FieldOverlayProjector {
+  const cache = new Map<string, VoxelOverlayProjection>();
+  return (worldMacro) => {
+    const key = coordKey(worldMacro);
+    const cached = cache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const projection = projector(worldMacro);
+    cache.set(key, projection);
+    return projection;
+  };
+}
+
+function electricEffectProjectionCacheKey(projection: VoxelOverlayProjection): string {
+  return `${projection.key}:${projectionGeometrySignature(projection)}`;
+}
+
+function coordKey(coord: FMacroCoord): string {
+  return `${coord.x},${coord.y},${coord.z}`;
 }
 
 function snapshotHasElectricLayer(snapshot: FFieldRegionSnapshot): boolean {
