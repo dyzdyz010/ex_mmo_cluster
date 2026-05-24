@@ -1133,6 +1133,28 @@ API：`new/1`（从 opts 构造，`kernels` 必填且非空，`field_types` 从 
   默认声明 DC 120V、20A、20_000J 的 supply policy；这个 policy 已进入 summary/observe，
   并驱动导电路径的焦耳热 effect。
 
+### ElectricDischargeKernel 算法
+
+**`SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel`** —— 电场介质击穿与瞬时放电 kernel：
+
+- 定位：它不是“雷击技能”实现，而是 `source_kind: :electric` 的另一种物理传播模式。
+  `ConductionPathKernel` 只允许既有导电材料形成通道；`ElectricDischargeKernel` 在 source
+  potential 足够高时允许空 cell / 低导电介质被击穿并形成 ionized channel。
+- 输入：复用 `FieldRuntime.ensure_conduction_path/1` 的 source/target、AABB、`PowerSource`
+  和 `FieldSource` 生命周期；调用方通过 `conduction_mode: :discharge` 选择该模式。HTTP
+  可传 `conduction_mode=discharge`，web CLI 暴露 `voxel_discharge ...`。
+- 权威预检：创建 FieldRegion 前读取 source chunk 的当前 `Storage`，按同一套 discharge
+  path search 判断是否能形成通道。低电势不能穿过完整 dielectric medium，会以
+  `no_discharge_path` 拒绝并释放 source；高电势会读取 `electric_conductivity`、
+  `dielectric_strength` 和已有 `ionization`，计算有效击穿阈值。
+- 输出：刷新 `:electric_potential` / `:ionization` layer。电势沿通道衰减，通道 cell 写入
+  高 ionization；热耦合仍走标准 `write_voxel_attribute(:temperature, heat_energy_joules)`
+  FieldEffect，由 `ChunkProcess` 作为 chunk authority 写回 voxel truth。kernel 不直接写
+  object/combat/damage。
+- 架构边界：`FieldSource` 只描述电源与传播模式，`FieldRuntime` 只做权威预检和 region
+  lifecycle，具体“导体导通”或“介质击穿”由 kernel 负责。后续雷击、线圈击穿、陷阱放电应复用
+  这条电物理链路，而不是新增专用 lightning handler。
+
 当前切片已接入 dev/runtime 入口和 browser overlay 验收；还没有 Phase 8 damage / ignite /
 breakdown / 熔断破坏结算。
 
@@ -1214,9 +1236,9 @@ breakdown / 熔断破坏结算。
 当前切片已经把“SetTemperature/Cool -> 写入 voxel 温度属性 -> 服务端发现温度异常 -> 创建/复用
 局部 FieldRegion -> impulse 热扰动可扩散并消散 -> kernel tick -> 温度 effect 可回写 voxel truth -> 客户端 overlay 可显示 -> 回到环境温度时销毁 region/source”
 串通。electric conduction 已具备 owner-aware source key、ttl lifetime 和 budget policy
-摘要，并已能把导通电流转换为温度 truth 的焦耳热写回。尚未完成的部分是从持久 voxel truth
-扫描/订阅异常属性、owner 存活探测、budget 持续扣减、跨 chunk/AOI lifecycle，以及 object /
-candidate phenomenon effect 写回边界。
+摘要，导体路径与介质击穿路径都能把电场通道转换为温度 truth 的焦耳热写回。尚未完成的部分是从
+持久 voxel truth 扫描/订阅异常属性、owner 存活探测、budget 持续扣减、跨 chunk/AOI lifecycle，
+以及 object / candidate phenomenon effect 写回边界。
 
 ### FieldCodec
 
@@ -1258,18 +1280,20 @@ API：`encode_snapshot_payload(region, logical_scene_id)`、
 
 ### FieldTickWorker + FieldTickSupervisor
 
-**`SceneServer.Voxel.Field.FieldTickWorker`** —— per-region GenServer，每区域独立 10 Hz 调度：
+**`SceneServer.Voxel.Field.FieldTickWorker`** —— per-region GenServer，每区域首帧立即执行，随后独立 10 Hz 调度：
 
-- `init/1`：监控 ChunkProcess（`Process.monitor(chunk_pid)`）；调度第一个 tick
+- `init/1`：监控 ChunkProcess（`Process.monitor(chunk_pid)`）；立即投递第一个 tick，让一次性放电 /
+  加热这类短寿命场域不额外等待 100ms 调度周期
 - `handle_info(:tick)`：
   1. `GenServer.call(chunk_pid, :debug_state, 200)` 取 storage 快照，并在 `KernelContext`
      中规范化一次
   2. 按 `region.kernels` 逐个运行 FieldKernel，更新 region；kernel 热路径使用已规范化
      storage / context API，禁止在每个 cell 的属性读取里重复整块 `Storage.normalize!/1`
   3. `FieldCodec.encode_snapshot_payload` 编码
-  4. `ChunkProcess.push_field_snapshot_payload` cast 给 ChunkProcess
+  4. `ChunkProcess.push_field_snapshot_payload` cast 给 ChunkProcess，让服务端已算出的首帧场域先进入
+     subscriber fan-out；non-observe truth effects 随后交回 ChunkProcess authority 批量应用
   5. emit observe events：`voxel_field_tick_completed` / `voxel_field_snapshot_dispatched`
-  6. `Process.send_after(self(), :tick, @tick_interval_ms)` 调度下一 tick
+  6. 若未到 `max_ticks`，`Process.send_after(self(), :tick, @tick_interval_ms)` 调度下一 tick
 - `handle_info({:DOWN, ...})`：chunk 进程死亡 → `{:stop, :normal, state}`，
   emit `voxel_field_region_destroyed`
 

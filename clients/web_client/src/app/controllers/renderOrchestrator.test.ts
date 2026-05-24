@@ -16,7 +16,7 @@ import type {
   PrefabRasterCell,
 } from "../../voxel/prefab";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
-import { RenderOrchestrator } from "./renderOrchestrator";
+import { RenderOrchestrator, resolveEntityTargetFromCamera } from "./renderOrchestrator";
 
 describe("RenderOrchestrator actor display", () => {
   afterEach(() => {
@@ -85,7 +85,9 @@ class ServerAuthoritativePreviewWorld extends LocalVoxelWorldAdapter {
   override readonly mode = "server-authoritative";
   readonly previewRequests: PrefabBoundarySnapRequest[] = [];
 
-  override previewPrefabBoundarySnap(request: PrefabBoundarySnapRequest): PrefabBoundarySnapPreview {
+  override previewPrefabBoundarySnap(
+    request: PrefabBoundarySnapRequest,
+  ): PrefabBoundarySnapPreview {
     this.previewRequests.push(request);
     const cell = singleMicroSlotCell({ x: 8, y: 1, z: 8 });
     return {
@@ -232,6 +234,122 @@ describe("RenderOrchestrator field overlay runtime", () => {
 
     render.dispose();
   });
+
+  it("waits for a matching server field snapshot before rendering pending discharge lightning", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new FieldSnapshotWorld();
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      createTestLocalPlayer(),
+      createTestRemotePlayer(),
+      new ObserveLog(16),
+    );
+    const sourceCoord = { x: 2, y: 7, z: 4 };
+    const targetCoord = { x: 2, y: 3, z: 4 };
+
+    render.queueLightningBoltOnFieldSnapshot(sourceCoord, targetCoord);
+    render.onFrame(0, 16);
+
+    expect(render.getLightningBoltSnapshot().visibleSegments).toBe(0);
+
+    world.pushFieldSnapshot(makeCurrentFieldSnapshot({ tickCount: 1 }));
+    render.onFrame(16, 16);
+
+    expect(render.getLightningBoltSnapshot().visibleSegments).toBe(0);
+
+    world.pushFieldSnapshot(makeDischargeFieldSnapshot({ sourceCoord, targetCoord, tickCount: 2 }));
+    render.onFrame(32, 16);
+
+    expect(render.getLightningBoltSnapshot().visibleSegments).toBeGreaterThan(0);
+    render.dispose();
+  });
+});
+
+describe("RenderOrchestrator entity targeting", () => {
+  it("selects only a remote entity close to the camera center", () => {
+    const camera = new PerspectiveCamera(70, 1, 1, 5000);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, -1000);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+
+    const target = resolveEntityTargetFromCamera(
+      [remoteEntity(41, new Vector3(900, 0, -800)), remoteEntity(42, new Vector3(0, 0, -800))],
+      camera,
+    );
+
+    expect(target).toMatchObject({
+      entityId: 42,
+      macroCoord: { x: 0, y: 0, z: -8 },
+    });
+  });
+
+  it("does not select an entity outside the crosshair target radius", () => {
+    const camera = new PerspectiveCamera(70, 1, 1, 5000);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, -1000);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+
+    expect(
+      resolveEntityTargetFromCamera([remoteEntity(42, new Vector3(400, 0, -800))], camera),
+    ).toBeNull();
+  });
+
+  it("exposes the local actor as the fallback entity target for single-client testing", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new LocalVoxelWorldAdapter();
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      createTestLocalPlayer({
+        renderedPosition: new Vector3(150, 250, 350),
+        authoritativePosition: new Vector3(150, 250, 350),
+      }),
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.onFrame(0, 16);
+
+    expect(render.getFallbackEntityTarget()).toMatchObject({
+      entityId: -1,
+      macroCoord: { x: 1, y: 2, z: 3 },
+      renderedPosition: { x: 150, y: 250, z: 350 },
+    });
+    expect(render.getTargetOverlaySnapshot().fallbackEntityTarget).toMatchObject({
+      entityId: -1,
+      macroCoord: { x: 1, y: 2, z: 3 },
+    });
+
+    render.dispose();
+  });
+
+  it("materializes lightning line buffers immediately when a strike is spawned", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      new LocalVoxelWorldAdapter(),
+      createTestLocalPlayer(),
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.spawnLightningBolt({ x: 2, y: 7, z: 4 }, { x: 2, y: 3, z: 4 });
+
+    expect(render.getLightningBoltSnapshot().visibleSegments).toBeGreaterThan(0);
+    render.dispose();
+  });
 });
 
 function singleMicroSlotCell(macro: FMacroCoord): PrefabRasterCell {
@@ -279,6 +397,15 @@ function createTestRemotePlayer() {
   } as never;
 }
 
+function remoteEntity(cid: number, position: Vector3) {
+  return {
+    cid,
+    position,
+    movementMode: "walking",
+    movementGroundY: null,
+  } as never;
+}
+
 function fieldOverlayOf(render: RenderOrchestrator): FieldDebugOverlay {
   return (render as unknown as { fieldDebugOverlay: FieldDebugOverlay }).fieldDebugOverlay;
 }
@@ -297,6 +424,34 @@ function makeCurrentFieldSnapshot({ tickCount }: { tickCount: number }): FFieldR
     electricCurrentValues: Float32Array.of(20),
     ionizationValues: new Uint8Array(0),
   };
+}
+
+function makeDischargeFieldSnapshot({
+  sourceCoord,
+  targetCoord,
+  tickCount,
+}: {
+  sourceCoord: FMacroCoord;
+  targetCoord: FMacroCoord;
+  tickCount: number;
+}): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 78,
+    tickCount,
+    fieldMask: FieldMask.ElectricPotential | FieldMask.Ionization,
+    cellCount: 2,
+    macroIndices: Uint16Array.of(macroIndex(sourceCoord), macroIndex(targetCoord)),
+    temperatureValues: new Float32Array(0),
+    electricValues: Float32Array.of(120, 12),
+    electricCurrentValues: new Float32Array(0),
+    ionizationValues: Uint8Array.of(255, 128),
+  };
+}
+
+function macroIndex(coord: FMacroCoord): number {
+  return coord.x + coord.y * 16 + coord.z * 256;
 }
 
 function createTestSceneHandles(): SceneHandles {

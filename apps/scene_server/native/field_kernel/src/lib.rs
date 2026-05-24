@@ -1,4 +1,5 @@
 mod conduction_path;
+mod discharge_path;
 mod electric_potential;
 mod grid;
 mod temperature_diffusion;
@@ -13,6 +14,7 @@ rustler::atoms! {
     target_not_conductive,
     frontier_exhausted,
     unreachable,
+    no_discharge_path,
 }
 
 #[rustler::nif]
@@ -35,6 +37,28 @@ fn find_conduction_path(
         max_frontier,
     )
     .map_err(path_error_atom)
+}
+
+#[rustler::nif]
+fn find_discharge_path(
+    cells: Vec<discharge_path::NativeCell>,
+    aabb: types::Aabb,
+    source_macro_index: u16,
+    target_macro_index: u16,
+    source_value: f64,
+    ionization_cells: Vec<discharge_path::IonizationCell>,
+    max_frontier: u32,
+) -> Result<Vec<u16>, Atom> {
+    discharge_path::find_discharge_path(
+        cells,
+        aabb,
+        source_macro_index,
+        target_macro_index,
+        source_value,
+        ionization_cells,
+        max_frontier,
+    )
+    .map_err(discharge_path_error_atom)
 }
 
 #[rustler::nif]
@@ -76,5 +100,12 @@ fn path_error_atom(error: conduction_path::PathError) -> Atom {
         conduction_path::PathError::TargetNotConductive => target_not_conductive(),
         conduction_path::PathError::FrontierExhausted => frontier_exhausted(),
         conduction_path::PathError::Unreachable => unreachable(),
+    }
+}
+
+fn discharge_path_error_atom(error: discharge_path::DischargePathError) -> Atom {
+    match error {
+        discharge_path::DischargePathError::FrontierExhausted => frontier_exhausted(),
+        discharge_path::DischargePathError::NoDischargePath => no_discharge_path(),
     }
 }

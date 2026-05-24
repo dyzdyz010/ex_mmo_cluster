@@ -15,8 +15,10 @@ import {
 import { WorldStore, type SerializedWorldSnapshot } from "./worldStore";
 
 export type ElectricOutputMode = "dc" | "ac" | "pulse";
+export type ElectricConductionMode = "conductive" | "discharge";
 
 export interface ElectricPowerSourceRequest {
+  conductionMode?: ElectricConductionMode;
   outputMode?: ElectricOutputMode;
   voltage?: number;
   currentLimitAmps?: number;

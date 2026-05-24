@@ -9,6 +9,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
 
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
+  alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
 
@@ -21,6 +22,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
           location: term(),
           target_value: term(),
           source_value: term(),
+          conduction_mode: atom() | nil,
           power_source: PowerSource.t() | nil,
           kernel_specs: [map()],
           decay_policy: map() | nil,
@@ -37,6 +39,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
             location: nil,
             target_value: nil,
             source_value: nil,
+            conduction_mode: nil,
             power_source: nil,
             kernel_specs: [],
             decay_policy: nil,
@@ -171,6 +174,11 @@ defmodule SceneServer.Voxel.Field.FieldSource do
     max_frontier =
       non_negative_int(fetch_any(attrs, [:max_frontier], @default_conduction_max_frontier))
 
+    conduction_mode =
+      normalize_conduction_mode(
+        fetch_any(attrs, [:conduction_mode, :mode, :electric_mode], :conductive)
+      )
+
     owner_ref =
       fetch_any(attrs, [:owner_ref], %{
         kind: :voxel,
@@ -215,10 +223,11 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         }),
       target_value: %{world_macro: coord_map(target_world_macro), macro_index: target_index},
       source_value: source_potential,
+      conduction_mode: conduction_mode,
       power_source: power_source,
       kernel_specs:
         fetch_any(attrs, [:kernel_specs], [
-          conduction_kernel_spec(target_index, max_frontier, power_source)
+          electric_kernel_spec(conduction_mode, target_index, max_frontier, power_source)
         ]),
       decay_policy:
         fetch_any(
@@ -255,6 +264,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       location: fetch_any(attrs, [:location], nil),
       target_value: fetch_any(attrs, [:target_value], nil),
       source_value: fetch_any(attrs, [:source_value], nil),
+      conduction_mode: nil,
       kernel_specs: fetch_any(attrs, [:kernel_specs], []),
       decay_policy: fetch_any(attrs, [:decay_policy], nil),
       lease_token: fetch_any(attrs, [:lease_token], nil),
@@ -291,6 +301,26 @@ defmodule SceneServer.Voxel.Field.FieldSource do
     }
   end
 
+  defp electric_kernel_spec(:discharge, target_index, max_frontier, %PowerSource{} = power_source) do
+    %{
+      id: :electric_discharge,
+      module: ElectricDischargeKernel,
+      opts: %{
+        target_macro_index: target_index,
+        max_frontier: max_frontier,
+        power_source: PowerSource.to_summary(power_source),
+        thermal_coupling: %{
+          enabled: true,
+          joule_scale: @conduction_heat_response_gain
+        }
+      }
+    }
+  end
+
+  defp electric_kernel_spec(_mode, target_index, max_frontier, %PowerSource{} = power_source) do
+    conduction_kernel_spec(target_index, max_frontier, power_source)
+  end
+
   defp normalize_source_kind(value) when is_atom(value), do: value
 
   defp normalize_source_kind(value) when is_binary(value) do
@@ -311,6 +341,24 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   end
 
   defp normalize_source_kind(_value), do: :temperature
+
+  defp normalize_conduction_mode(value) when value in [:conductive, :conduction_path, :discharge],
+    do: if(value == :conduction_path, do: :conductive, else: value)
+
+  defp normalize_conduction_mode(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "conductive" -> :conductive
+      "conduction" -> :conductive
+      "conduction_path" -> :conductive
+      "path" -> :conductive
+      "discharge" -> :discharge
+      "breakdown" -> :discharge
+      "arc" -> :discharge
+      _other -> :conductive
+    end
+  end
+
+  defp normalize_conduction_mode(_value), do: :conductive
 
   defp normalize_source_mode(value) when value in [:impulse, :persistent], do: value
 

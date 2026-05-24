@@ -294,6 +294,95 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   end
 
   describe "ensure_conduction_path/1" do
+    test "creates a same-chunk electric discharge region through dielectric medium" do
+      logical_scene_id = 75_050 + System.unique_integer([:positive])
+      source_world_macro = {0, 0, 0}
+      target_world_macro = {3, 0, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 target_world_macro,
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 source_potential: 120,
+                 max_ticks: 60,
+                 radius: 0,
+                 max_frontier: 32,
+                 conduction_mode: :discharge
+               )
+
+      assert summary.created == true
+      assert summary.field_region_created == true
+      assert summary.conduction_mode == :discharge
+      assert summary.field_types == ["electric_potential", "ionization"]
+
+      debug = ChunkProcess.debug_state(chunk_pid)
+      assert debug.field_region_count == 1
+      assert debug.field_source_count == 1
+    end
+
+    test "rejects low-energy electric discharge before allocating a region" do
+      logical_scene_id = 75_075 + System.unique_integer([:positive])
+      source_world_macro = {0, 0, 0}
+      target_world_macro = {3, 0, 0}
+
+      assert {:ok, chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 source_world_macro,
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk_pid,
+                 target_world_macro,
+                 NormalBlockData.new(@iron_material_id)
+               )
+
+      assert {:error, {:conduction_path_failed, :no_discharge_path}} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: source_world_macro,
+                 target_world_macro: target_world_macro,
+                 source_potential: 2,
+                 max_ticks: 60,
+                 radius: 0,
+                 max_frontier: 32,
+                 conduction_mode: :discharge
+               )
+
+      debug = ChunkProcess.debug_state(chunk_pid)
+      assert debug.field_region_count == 0
+      assert debug.field_source_count == 0
+    end
+
     test "creates a same-chunk ConductionPathKernel region from a physical power block" do
       logical_scene_id = 75_000 + System.unique_integer([:positive])
       source_world_macro = {0, 1, 0}
@@ -752,6 +841,48 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       target_debug = ChunkProcess.debug_state(target_chunk_pid)
       assert target_debug.field_region_count == 1
       assert target_debug.field_source_count == 0
+    end
+
+    test "creates a coordinated cross-chunk discharge field without requiring conductive boundary contact" do
+      logical_scene_id = 76_055 + System.unique_integer([:positive])
+
+      assert {:ok, source_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {0, 0, 0}
+               })
+
+      assert {:ok, target_chunk_pid} =
+               ChunkDirectory.ensure_chunk(%{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: {1, 0, 0}
+               })
+
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 source_chunk_pid,
+                 {15, 0, 0},
+                 NormalBlockData.new(@power_block_material_id)
+               )
+
+      assert {:ok, summary} =
+               FieldRuntime.ensure_conduction_path(
+                 logical_scene_id: logical_scene_id,
+                 source_world_macro: {15, 0, 0},
+                 target_world_macro: {16, 0, 0},
+                 source_potential: 120,
+                 max_ticks: 90,
+                 radius: 1,
+                 max_frontier: 32,
+                 conduction_mode: :discharge
+               )
+
+      assert summary.cross_chunk == true
+      assert summary.conduction_mode == :discharge
+      assert summary.source_shard.field_region_created == true
+      assert summary.target_shard.field_region_created == true
+      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
+      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
     end
 
     test "reuses the coordinated cross-chunk conduction field for the same source and target" do

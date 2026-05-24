@@ -753,6 +753,34 @@ defmodule GateServer.CodecTest do
       assert {:error, :invalid_message} == Codec.decode(<<0x67, 1, 2, 3>>)
     end
 
+    test "decodes voxel field conduct intents" do
+      msg =
+        <<0x75, 1001::64-big, 42::32-big, 7::64-big, 15::64-big-signed, 4::64-big-signed,
+          15::64-big-signed, 15::64-big-signed, 0::64-big-signed, 15::64-big-signed,
+          300.0::float-64, 5::32-big, 1::8, 3::8, 0x003F::16-big, 300.0::float-64, 30.0::float-64,
+          0.0::float-64, 18.0::float-64, 900.0::float-64>>
+
+      assert {:ok, {:voxel_field_conduct_intent, intent}} = Codec.decode(msg)
+      assert intent.request_id == 1001
+      assert intent.client_intent_seq == 42
+      assert intent.logical_scene_id == 7
+      assert intent.source_world_macro == {15, 4, 15}
+      assert intent.target_world_macro == {15, 0, 15}
+      assert intent.source_potential == 300.0
+      assert intent.max_ticks == 5
+      assert intent.conduction_mode == :discharge
+      assert intent.output_mode == :pulse
+      assert intent.voltage == 300.0
+      assert intent.current_limit_amps == 30.0
+      assert intent.frequency_hz == 0.0
+      assert intent.load_current_amps == 18.0
+      assert intent.energy_budget_joules == 900.0
+    end
+
+    test "rejects truncated voxel field conduct intents" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x75, 1001::64-big>>)
+    end
+
     test "decodes voxel debug probe" do
       command = "voxel_transport"
       msg = <<0x6F, 7::64-big, byte_size(command)::16-big, command::binary>>

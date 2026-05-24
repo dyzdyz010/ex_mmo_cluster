@@ -48,6 +48,22 @@ interface EditIntentCall {
   clientIntentSeq: number;
 }
 
+interface FieldConductIntentCall {
+  logicalSceneId: number;
+  sourceWorldMacro: { x: number; y: number; z: number };
+  targetWorldMacro: { x: number; y: number; z: number };
+  sourcePotential: number;
+  maxTicks: number;
+  conductionMode: "conductive" | "discharge";
+  outputMode?: "dc" | "ac" | "pulse";
+  voltage?: number;
+  currentLimitAmps?: number;
+  frequencyHz?: number;
+  loadCurrentAmps?: number;
+  energyBudgetJoules?: number;
+  clientIntentSeq: number;
+}
+
 interface SubscribeCall {
   logicalSceneId: number;
   centerChunk: { x: number; y: number; z: number };
@@ -59,6 +75,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly prefabCalls: PrefabPlaceCall[] = [];
   readonly impactCalls: ImpactCall[] = [];
   readonly editIntentCalls: EditIntentCall[] = [];
+  readonly fieldConductCalls: FieldConductIntentCall[] = [];
   readonly subscribeCalls: SubscribeCall[] = [];
   readonly queuedSnapshots: VoxelChunkSnapshotMessage[] = [];
   readonly queuedDeltas: VoxelChunkDeltaMessage[] = [];
@@ -139,6 +156,16 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
       expectedChunkVersion: request.expectedChunkVersion ?? 0xffff_ffff_ffff_ffffn,
       expectedCellHash: request.expectedCellHash ?? 0xffff_ffff,
       clientIntentSeq: request.clientIntentSeq,
+    });
+    return this.allocateRequestId();
+  }
+
+  sendVoxelFieldConductIntent(request: FieldConductIntentCall): number | null {
+    if (!this.available) return null;
+    this.fieldConductCalls.push({
+      ...request,
+      sourceWorldMacro: { ...request.sourceWorldMacro },
+      targetWorldMacro: { ...request.targetWorldMacro },
     });
     return this.allocateRequestId();
   }
@@ -619,6 +646,7 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
         targetCoord: { x: 3, y: 1, z: 0 },
         sourcePotential: 120,
         source: "server",
+        conductionMode: "conductive",
         regionId: "43",
         fieldRegionCreated: true,
         powerDraw: {
@@ -629,6 +657,44 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
           estimatedTickEnergyJoules: 1500,
           overCurrent: false,
         },
+      },
+    ]);
+  });
+
+  it("sends dielectric-breakdown discharge through the WebSocket field intent path", async () => {
+    const { adapter, transport } = createAdapter();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(
+      adapter.requestVoxelConductionPath({ x: 0, y: 1, z: 0 }, { x: 3, y: 1, z: 0 }, 120, 90, {
+        conductionMode: "discharge",
+        outputMode: "pulse",
+        voltage: 300,
+        currentLimitAmps: 30,
+        frequencyHz: 0,
+        loadCurrentAmps: 18,
+        energyBudgetJoules: 900,
+      }),
+    ).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(transport.fieldConductCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        sourceWorldMacro: { x: 0, y: 1, z: 0 },
+        targetWorldMacro: { x: 3, y: 1, z: 0 },
+        sourcePotential: 120,
+        maxTicks: 90,
+        conductionMode: "discharge",
+        outputMode: "pulse",
+        voltage: 300,
+        currentLimitAmps: 30,
+        frequencyHz: 0,
+        loadCurrentAmps: 18,
+        energyBudgetJoules: 900,
+        clientIntentSeq: 1,
       },
     ]);
   });

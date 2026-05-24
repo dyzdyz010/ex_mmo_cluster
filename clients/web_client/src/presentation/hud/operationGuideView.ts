@@ -124,6 +124,7 @@ export function renderOperationGuideHtml(open: boolean): string {
     ]),
     renderGuideSection("通电流程", [
       `桌面端鼠标主要被视角占用：用 <strong>Z / X / C</strong> 记录电源、记录目标并执行 <strong>Conduct</strong>。`,
+      `准星对准目标时按 <strong>L</strong>：实体优先，没有实体命中时使用准星方块；完全没有命中时使用本地角色作测试目标。`,
       `高级参数走控制台，例如 <code>voxel_conduct ...</code>；需要订阅地块时再脱出指针点 <code>voxel_subscribe</code> 表单。`,
     ]),
     renderGuideSection("观察效果", [

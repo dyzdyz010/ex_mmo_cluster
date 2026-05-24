@@ -59,6 +59,63 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     end
   end
 
+  defmodule SlowTruthEffectKernel do
+    @behaviour SceneServer.Voxel.Field.Kernel
+
+    def kernel_id, do: :slow_truth_effect
+    def required_layers(_opts), do: [:temperature]
+
+    def tick(region, _context, opts) do
+      {:cont, region,
+       [
+         {:write_voxel_attribute,
+          %{
+            attribute: :temperature,
+            macro_index: Map.fetch!(opts, :macro_index),
+            heat_energy_joules: 1.0
+          }}
+       ]}
+    end
+  end
+
+  defmodule BlockingEffectChunk do
+    use GenServer
+
+    def start_link(parent) do
+      GenServer.start_link(__MODULE__, parent)
+    end
+
+    @impl true
+    def init(parent), do: {:ok, %{parent: parent}}
+
+    @impl true
+    def handle_cast({:push_field_snapshot_payload, payload}, state) do
+      send(state.parent, {:blocking_chunk_snapshot, payload})
+      {:noreply, state}
+    end
+
+    def handle_cast({:push_field_region_destroyed_payload, payload}, state) do
+      send(state.parent, {:blocking_chunk_destroyed, payload})
+      {:noreply, state}
+    end
+
+    @impl true
+    def handle_call({:apply_field_effects, _effects, _context}, _from, state) do
+      send(state.parent, :blocking_chunk_effect_call_started)
+
+      receive do
+        :release_blocking_effects -> :ok
+      after
+        1_000 -> :ok
+      end
+
+      send(state.parent, :blocking_chunk_effect_call_finished)
+
+      {:reply, {:ok, %{applied_count: 1, rejected_count: 0, chunk_version: 1, results: []}},
+       state}
+    end
+  end
+
   defmodule UnsupportedEffectKernel do
     @behaviour SceneServer.Voxel.Field.Kernel
 
@@ -162,6 +219,80 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
     snapshot = receive_snapshot!()
     assert_snapshot_temperature(snapshot, macro_index, 22.0)
+  end
+
+  test "new regions dispatch their first snapshot immediately instead of waiting for the tick interval" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    region =
+      FieldRegion.new(%{
+        region_id: 107,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :set_temperature,
+            module: SetTemperatureKernel,
+            opts: %{macro_index: macro_index, value: 321.0}
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, _pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: self(),
+        storage_fn: fn -> nil end,
+        logical_scene_id: 1,
+        tick_interval_ms: 1_000
+      )
+
+    assert_receive {:"$gen_cast", {:push_field_snapshot_payload, payload}}, 50
+    snapshot = FieldCodec.decode_snapshot_payload!(payload)
+
+    assert snapshot.tick_count == 1
+    assert_snapshot_temperature(snapshot, macro_index, 321.0)
+  end
+
+  test "first snapshots are dispatched before slow truth effects are applied" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    chunk = start_supervised!({BlockingEffectChunk, self()})
+
+    region =
+      FieldRegion.new(%{
+        region_id: 108,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :slow_truth_effect,
+            module: SlowTruthEffectKernel,
+            opts: %{macro_index: macro_index}
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> nil end,
+        logical_scene_id: 1,
+        tick_interval_ms: 1_000
+      )
+
+    assert_receive {:blocking_chunk_snapshot, payload}, 50
+    snapshot = FieldCodec.decode_snapshot_payload!(payload)
+    assert snapshot.tick_count == 1
+
+    assert_receive :blocking_chunk_effect_call_started, 50
+    refute_receive :blocking_chunk_effect_call_finished, 0
+
+    send(chunk, :release_blocking_effects)
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
   end
 
   test "temperature kernel opts are applied by the worker dispatch path" do

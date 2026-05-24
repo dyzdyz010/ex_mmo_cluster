@@ -178,6 +178,26 @@ describe("InputController mouse editing", () => {
     expect(conductionEvents).toEqual([{ source: "keyboard", sourcePotential: 120, maxTicks: 90 }]);
   });
 
+  it("emits a short-lived lightning discharge action from L", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const lightningEvents: AppEvents["input:lightning-selected-entity"][] = [];
+    bus.on("input:lightning-selected-entity", (event) => lightningEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", keyboard("KeyL"));
+
+    expect(lightningEvents).toEqual([
+      {
+        source: "keyboard",
+        sourcePotential: 300,
+        maxTicks: 5,
+        verticalOffsetMacros: 4,
+      },
+    ]);
+  });
+
   it("emits selected conduction endpoint capture actions from Z and X", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
@@ -214,15 +234,17 @@ describe("InputController mouse editing", () => {
     const target = new FakeWindowTarget();
     const heatEvents: AppEvents["input:set-selected-voxel-temperature"][] = [];
     const conductionEvents: AppEvents["input:conduct-selected-voxel"][] = [];
+    const lightningEvents: AppEvents["input:lightning-selected-entity"][] = [];
     const endpointEvents: AppEvents["input:capture-conduction-endpoint"][] = [];
     const submitEvents: AppEvents["input:submit-conduction"][] = [];
     bus.on("input:set-selected-voxel-temperature", (event) => heatEvents.push(event));
     bus.on("input:conduct-selected-voxel", (event) => conductionEvents.push(event));
+    bus.on("input:lightning-selected-entity", (event) => lightningEvents.push(event));
     bus.on("input:capture-conduction-endpoint", (event) => endpointEvents.push(event));
     bus.on("input:submit-conduction", (event) => submitEvents.push(event));
 
     input.attach(target as unknown as Window);
-    for (const code of ["KeyF", "KeyE", "KeyZ", "KeyX", "KeyC"]) {
+    for (const code of ["KeyF", "KeyE", "KeyL", "KeyZ", "KeyX", "KeyC"]) {
       target.dispatch("keydown", keyboard(code, true));
       target.dispatch("keydown", keyboard(code, false, "", { ctrlKey: true }));
       target.dispatch("keydown", keyboard(code, false, "", { metaKey: true }));
@@ -231,6 +253,7 @@ describe("InputController mouse editing", () => {
 
     expect(heatEvents).toEqual([]);
     expect(conductionEvents).toEqual([]);
+    expect(lightningEvents).toEqual([]);
     expect(endpointEvents).toEqual([]);
     expect(submitEvents).toEqual([]);
   });

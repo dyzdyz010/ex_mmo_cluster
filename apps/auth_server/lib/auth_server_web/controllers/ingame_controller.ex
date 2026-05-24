@@ -306,6 +306,7 @@ defmodule AuthServerWeb.IngameController do
     radius = parse_non_negative_int(params["radius"], 1)
     max_frontier = parse_non_negative_int(params["max_frontier"], 512)
     owner_ref = parse_source_owner_ref(params)
+    conduction_mode = params["conduction_mode"] || params["mode"] || params["electric_mode"]
 
     output_mode =
       params["output_mode"] || params["power_output_mode"] || params["source_output_mode"]
@@ -346,6 +347,7 @@ defmodule AuthServerWeb.IngameController do
         max_frontier: max_frontier
       ]
       |> maybe_put(:ttl_ticks, ttl_ticks)
+      |> maybe_put(:conduction_mode, conduction_mode)
       |> maybe_put(:source_mode, params["source_mode"])
       |> maybe_put(:owner_ref, owner_ref)
       |> maybe_put(:output_mode, output_mode)
@@ -460,6 +462,9 @@ defmodule AuthServerWeb.IngameController do
   defp voxel_conduct_error_status({:conduction_path_failed, :no_conductive_path}),
     do: :unprocessable_entity
 
+  defp voxel_conduct_error_status({:conduction_path_failed, :no_discharge_path}),
+    do: :unprocessable_entity
+
   defp voxel_conduct_error_status({:source_chunk_route_unavailable, _reason}),
     do: :conflict
 
@@ -487,6 +492,9 @@ defmodule AuthServerWeb.IngameController do
 
   defp voxel_conduct_reason_code({:conduction_path_failed, :no_conductive_path}),
     do: "no_conductive_path"
+
+  defp voxel_conduct_reason_code({:conduction_path_failed, :no_discharge_path}),
+    do: "no_discharge_path"
 
   defp voxel_conduct_reason_code({:source_chunk_route_unavailable, _reason}),
     do: "source_chunk_route_unavailable"

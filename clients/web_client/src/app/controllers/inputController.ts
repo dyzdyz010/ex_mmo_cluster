@@ -8,6 +8,9 @@ export type { MovementKeys } from "../../domain/movement/inputDirection";
 const DEFAULT_HEAT_TARGET_CELSIUS = 800;
 const DEFAULT_CONDUCTION_SOURCE_POTENTIAL = 120;
 const DEFAULT_CONDUCTION_MAX_TICKS = 90;
+const DEFAULT_ENTITY_LIGHTNING_SOURCE_POTENTIAL = 300;
+const DEFAULT_ENTITY_LIGHTNING_MAX_TICKS = 5;
+const DEFAULT_ENTITY_LIGHTNING_VERTICAL_OFFSET_MACROS = 4;
 
 /**
  * Translates raw keyboard events into domain intents.
@@ -174,6 +177,15 @@ export class InputController {
           source: "keyboard",
           sourcePotential: DEFAULT_CONDUCTION_SOURCE_POTENTIAL,
           maxTicks: DEFAULT_CONDUCTION_MAX_TICKS,
+        });
+        break;
+      case "KeyL":
+        if (!isPlainOneShotShortcut(event)) break;
+        this.bus.emit("input:lightning-selected-entity", {
+          source: "keyboard",
+          sourcePotential: DEFAULT_ENTITY_LIGHTNING_SOURCE_POTENTIAL,
+          maxTicks: DEFAULT_ENTITY_LIGHTNING_MAX_TICKS,
+          verticalOffsetMacros: DEFAULT_ENTITY_LIGHTNING_VERTICAL_OFFSET_MACROS,
         });
         break;
       case "KeyZ":

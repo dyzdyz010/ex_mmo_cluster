@@ -10,6 +10,7 @@ import { INTERPOLATION_DELAY_SECS } from "@domain/movement/remotePlayer";
 import type { PrefabBoundarySnapPreview, PrefabSocketSnapPreview } from "../../voxel/prefab";
 import type { SerializedWorldSnapshot } from "../../voxel/worldStore";
 import type {
+  ElectricConductionMode,
   ElectricOutputMode,
   ElectricPowerSourceRequest,
   VoxelWorldAdapter,
@@ -113,6 +114,8 @@ export class DevToolsCli implements CliCommandHandler {
         });
       case "voxel_conduct":
         return this.cmdVoxelConduction(command, args, source);
+      case "voxel_discharge":
+        return this.cmdVoxelConduction(command, args, source, "discharge");
       case "voxel_auto_circuit":
         return this.cmdVoxelAutoCircuit(command, args);
       case "chunk_versions":
@@ -279,9 +282,18 @@ export class DevToolsCli implements CliCommandHandler {
 
   private cmdTargetProbe(command: string): CliCommandResult {
     const snapshot = this.deps.render.getTargetOverlaySnapshot();
+    const entityTarget = snapshot.entityTarget;
+    if (entityTarget) {
+      return this.ok(
+        command,
+        `target entity#${entityTarget.entityId} macro=${formatCoord(entityTarget.macroCoord)}`,
+        snapshot,
+      );
+    }
     const projection = snapshot.projection;
     if (!projection) {
-      return this.ok(command, "target none", snapshot);
+      const fallbackText = formatFallbackEntityTarget(snapshot.fallbackEntityTarget);
+      return this.ok(command, `target none${fallbackText}`, snapshot);
     }
     const range =
       projection.coveredMacroMin && projection.coveredMacroMax
@@ -291,7 +303,7 @@ export class DevToolsCli implements CliCommandHandler {
         : "";
     return this.ok(
       command,
-      `target ${projection.granularity} ${projection.label} slots=${projection.occupiedSlots}${range}`,
+      `target ${projection.granularity} ${projection.label} slots=${projection.occupiedSlots}${range}${formatFallbackEntityTarget(snapshot.fallbackEntityTarget)}`,
       snapshot,
     );
   }
@@ -456,14 +468,19 @@ export class DevToolsCli implements CliCommandHandler {
     };
   }
 
-  private cmdVoxelConduction(command: string, args: string[], source: string): CliCommandResult {
+  private cmdVoxelConduction(
+    command: string,
+    args: string[],
+    source: string,
+    conductionMode?: ElectricConductionMode,
+  ): CliCommandResult {
     const sourceCoord = parseMacroCoord(args.slice(0, 3));
     const targetCoord = parseMacroCoord(args.slice(3, 6));
     if (!sourceCoord || !targetCoord) {
       return {
         ok: false,
         command,
-        text: usageForConductionCommand(),
+        text: usageForConductionCommand(command),
       };
     }
 
@@ -483,12 +500,12 @@ export class DevToolsCli implements CliCommandHandler {
 
     const sourcePotential = parseFiniteNumber(args[6], 120);
     const maxTicks = parsePositiveInt(args[7], 120);
-    const powerSource = parseConductionPowerSource(args.slice(8), sourcePotential);
+    const powerSource = parseConductionPowerSource(args.slice(8), sourcePotential, conductionMode);
     if (powerSource === null) {
       return {
         ok: false,
         command,
-        text: usageForConductionCommand(),
+        text: usageForConductionCommand(command),
       };
     }
 
@@ -512,12 +529,14 @@ export class DevToolsCli implements CliCommandHandler {
             powerSource,
           );
 
+    const label = conductionMode === "discharge" ? "discharge" : "conduction";
+
     return {
       ok,
       command,
       text: ok
-        ? `conduction request submitted from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)}) at ${sourcePotential}V; waiting for server acceptance`
-        : `conduction request rejected from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)})`,
+        ? `${label} request submitted from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)}) at ${sourcePotential}V; waiting for server acceptance`
+        : `${label} request rejected from (${formatCoord(sourceCoord)}) to (${formatCoord(targetCoord)})`,
       data: {
         sourceCoord,
         targetCoord,
@@ -949,6 +968,8 @@ export class DevToolsCli implements CliCommandHandler {
       selectedMaterial: getMaterialDefinition(this.deps.edit.getSelectedMaterialId()),
       hotbar: this.deps.edit.getHotbarState(),
       currentSelection: this.deps.render.getCurrentSelection(),
+      entityTarget: this.deps.render.getTargetOverlaySnapshot().entityTarget,
+      fallbackEntityTarget: this.deps.render.getTargetOverlaySnapshot().fallbackEntityTarget,
       prefabPreview: this.deps.render.getPrefabPreviewSnapshot(),
       actorDisplay: this.deps.render.getActorDisplaySnapshot(),
       player: this.playerData(),
@@ -1094,13 +1115,17 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function parseConductionPowerSource(
   args: string[],
   sourcePotential: number,
+  conductionMode?: ElectricConductionMode,
 ): ElectricPowerSourceRequest | undefined | null {
-  if (args.length === 0) return undefined;
+  if (args.length === 0) {
+    return conductionMode === undefined ? undefined : { conductionMode };
+  }
 
   const outputMode = parseElectricOutputMode(args[0]);
   if (!outputMode) return null;
 
   const powerSource: ElectricPowerSourceRequest = {
+    ...(conductionMode === undefined ? {} : { conductionMode }),
     outputMode,
     voltage: parseFiniteNumber(args[1], sourcePotential),
   };
@@ -1145,7 +1170,11 @@ function usageForTemperatureCommand(command: string): string {
   }
 }
 
-function usageForConductionCommand(): string {
+function usageForConductionCommand(command = "voxel_conduct"): string {
+  if (command === "voxel_discharge") {
+    return "usage: voxel_discharge <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]";
+  }
+
   return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]";
 }
 
@@ -1166,6 +1195,18 @@ function formatSceneRegionOverlayLine(region: {
   }
 
   return `${label}=owner${owner} chunks x=${region.chunkMin.x}..${region.chunkMax.x - 1} z=${region.chunkMin.z}..${region.chunkMax.z - 1}`;
+}
+
+function formatFallbackEntityTarget(
+  target:
+    | {
+        entityId: number;
+        macroCoord: { x: number; y: number; z: number };
+      }
+    | null
+    | undefined,
+): string {
+  return target ? ` action_entity#${target.entityId} macro=${formatCoord(target.macroCoord)}` : "";
 }
 
 function formatFieldOverlayLine(region: {

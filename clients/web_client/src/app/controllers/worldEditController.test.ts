@@ -5,13 +5,36 @@ import type { AppEvents } from "../../shared/events/events";
 import type { FMacroCoord } from "../../voxel/core/types";
 import { VoxelConstants } from "../../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
-import { WorldEditController, type SelectionProvider } from "./worldEditController";
+import {
+  WorldEditController,
+  type EntityTargetProvider,
+  type EntityTargetSelection,
+  type SelectionProvider,
+} from "./worldEditController";
 
 class StaticSelectionProvider implements SelectionProvider {
   constructor(private readonly selection: ReturnType<SelectionProvider["getCurrentSelection"]>) {}
 
   getCurrentSelection(): ReturnType<SelectionProvider["getCurrentSelection"]> {
     return this.selection;
+  }
+}
+
+class StaticEntityTargetProvider extends StaticSelectionProvider implements EntityTargetProvider {
+  constructor(
+    selection: ReturnType<SelectionProvider["getCurrentSelection"]>,
+    private readonly entityTarget: EntityTargetSelection | null,
+    private readonly fallbackEntityTarget: EntityTargetSelection | null = null,
+  ) {
+    super(selection);
+  }
+
+  getCurrentEntityTarget(): EntityTargetSelection | null {
+    return this.entityTarget;
+  }
+
+  getFallbackEntityTarget(): EntityTargetSelection | null {
+    return this.fallbackEntityTarget;
   }
 }
 
@@ -28,6 +51,7 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
     target: FMacroCoord;
     sourcePotential: number;
     maxTicks: number | undefined;
+    powerSource: unknown;
   }> = [];
 
   override placePrefabBoundarySnap() {
@@ -62,12 +86,14 @@ class ServerAuthoritativeWorld extends LocalVoxelWorldAdapter {
     target: FMacroCoord,
     sourcePotential: number,
     maxTicks?: number,
+    powerSource?: unknown,
   ): boolean {
     this.conductionCalls.push({
       source: { ...source },
       target: { ...target },
       sourcePotential,
       maxTicks,
+      powerSource,
     });
     return true;
   }
@@ -273,6 +299,7 @@ describe("WorldEditController selection edits", () => {
         target: { x: 3, y: 1, z: 0 },
         sourcePotential: 120,
         maxTicks: 90,
+        powerSource: undefined,
       },
     ]);
     expect(conductionEvents).toEqual([
@@ -312,6 +339,7 @@ describe("WorldEditController selection edits", () => {
         target: { x: 5, y: 1, z: 0 },
         sourcePotential: 120,
         maxTicks: 90,
+        powerSource: undefined,
       },
     ]);
     expect(conductionEvents).toEqual([
@@ -345,6 +373,187 @@ describe("WorldEditController selection edits", () => {
     expect(world.conductionCalls).toEqual([]);
     expect(rejected).toEqual([
       { reason: "conduction_target_cross_chunk_not_supported", source: "keyboard" },
+    ]);
+  });
+
+  it("rejects lightning discharge when there is no aimed entity, voxel, or fallback target", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticEntityTargetProvider(null, null),
+    );
+    const rejected: AppEvents["world:edit-rejected"][] = [];
+    bus.on("world:edit-rejected", (event) => rejected.push(event));
+
+    bus.emit("input:lightning-selected-entity", {
+      source: "keyboard",
+      sourcePotential: 300,
+      maxTicks: 90,
+      verticalOffsetMacros: 4,
+    });
+
+    expect(world.conductionCalls).toEqual([]);
+    expect(rejected).toEqual([
+      { reason: "lightning_requires_target", source: "keyboard" },
+    ]);
+  });
+
+  it("discharges from a high-potential macro above the aimed entity", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticEntityTargetProvider(null, {
+        entityId: 42,
+        macroCoord: { x: 2, y: 3, z: 4 },
+        renderedPosition: { x: 250, y: 350, z: 450 },
+      }),
+    );
+    const conductionEvents: AppEvents["world:voxel-conduction-requested"][] = [];
+    const lightningEvents: AppEvents["world:lightning-effect-requested"][] = [];
+    bus.on("world:voxel-conduction-requested", (event) => conductionEvents.push(event));
+    bus.on("world:lightning-effect-requested", (event) => lightningEvents.push(event));
+
+    bus.emit("input:lightning-selected-entity", {
+      source: "keyboard",
+      sourcePotential: 300,
+      maxTicks: 90,
+      verticalOffsetMacros: 4,
+    });
+
+    expect(world.conductionCalls).toEqual([
+      {
+        source: { x: 2, y: 7, z: 4 },
+        target: { x: 2, y: 3, z: 4 },
+        sourcePotential: 300,
+        maxTicks: 90,
+        powerSource: {
+          conductionMode: "discharge",
+          outputMode: "pulse",
+          voltage: 300,
+          currentLimitAmps: 30,
+          loadCurrentAmps: 18,
+        },
+      },
+    ]);
+    expect(conductionEvents).toEqual([
+      {
+        sourceCoord: { x: 2, y: 7, z: 4 },
+        targetCoord: { x: 2, y: 3, z: 4 },
+        sourcePotential: 300,
+        source: "keyboard",
+        powerSource: {
+          conductionMode: "discharge",
+          outputMode: "pulse",
+          voltage: 300,
+          currentLimitAmps: 30,
+          loadCurrentAmps: 18,
+        },
+      },
+    ]);
+    expect(lightningEvents).toEqual([]);
+  });
+
+  it("uses the aimed voxel before falling back to the local avatar target", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticEntityTargetProvider(
+        {
+          occupiedMacro: { x: 8, y: 1, z: 6 },
+          adjacentMacro: { x: 8, y: 2, z: 6 },
+          faceNormal: { x: 0, y: 1, z: 0 },
+        },
+        null,
+        {
+          entityId: -1,
+          macroCoord: { x: 1, y: 2, z: 3 },
+          renderedPosition: { x: 150, y: 250, z: 350 },
+        },
+      ),
+    );
+    const lightningEvents: AppEvents["world:lightning-effect-requested"][] = [];
+    bus.on("world:lightning-effect-requested", (event) => lightningEvents.push(event));
+
+    bus.emit("input:lightning-selected-entity", {
+      source: "keyboard",
+      sourcePotential: 300,
+      maxTicks: 90,
+      verticalOffsetMacros: 4,
+    });
+
+    expect(world.conductionCalls).toEqual([
+      expect.objectContaining({
+        source: { x: 8, y: 5, z: 6 },
+        target: { x: 8, y: 1, z: 6 },
+        sourcePotential: 300,
+      }),
+    ]);
+    expect(lightningEvents).toEqual([]);
+  });
+
+  it("uses the local fallback entity target when no remote entity is aimed", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticEntityTargetProvider(null, null, {
+        entityId: -1,
+        macroCoord: { x: 1, y: 2, z: 3 },
+        renderedPosition: { x: 150, y: 250, z: 350 },
+      }),
+    );
+    const lightningEvents: AppEvents["world:lightning-effect-requested"][] = [];
+    bus.on("world:lightning-effect-requested", (event) => lightningEvents.push(event));
+
+    bus.emit("input:lightning-selected-entity", {
+      source: "keyboard",
+      sourcePotential: 300,
+      maxTicks: 90,
+      verticalOffsetMacros: 4,
+    });
+
+    expect(world.conductionCalls).toEqual([
+      expect.objectContaining({
+        source: { x: 1, y: 6, z: 3 },
+        target: { x: 1, y: 2, z: 3 },
+        sourcePotential: 300,
+      }),
+    ]);
+    expect(lightningEvents).toEqual([]);
+  });
+
+  it("rejects entity lightning when the high-potential macro leaves the local chunk", () => {
+    const bus = new EventBus<AppEvents>();
+    const world = new ServerAuthoritativeWorld();
+    new WorldEditController(
+      bus,
+      world,
+      new StaticEntityTargetProvider(null, {
+        entityId: 42,
+        macroCoord: { x: 2, y: VoxelConstants.ChunkSizeInMacros - 2, z: 4 },
+        renderedPosition: { x: 250, y: 1450, z: 450 },
+      }),
+    );
+    const rejected: AppEvents["world:edit-rejected"][] = [];
+    bus.on("world:edit-rejected", (event) => rejected.push(event));
+
+    bus.emit("input:lightning-selected-entity", {
+      source: "keyboard",
+      sourcePotential: 300,
+      maxTicks: 90,
+      verticalOffsetMacros: 4,
+    });
+
+    expect(world.conductionCalls).toEqual([]);
+    expect(rejected).toEqual([
+      { reason: "entity_lightning_target_cross_chunk_not_supported", source: "keyboard" },
     ]);
   });
 

@@ -72,9 +72,11 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   voxel to a target world-macro voxel.
 
   Unlike `set_temperature/1`, this helper does not mutate voxel attributes. It
-  only asks `FieldRuntime` to create a `ConductionPathKernel` region so the
+  only asks `FieldRuntime` to create the selected electric kernel region so the
   normal field snapshot pipeline can expose the electric/ionization layers to
-  the browser field overlay. Optional `:owner_ref`, `:source_mode`,
+  the browser field overlay. Optional `:conduction_mode` selects material
+  conduction (`:conductive`) or dielectric breakdown (`:discharge`) without
+  changing the source lifecycle. Optional `:owner_ref`, `:source_mode`,
   `:ttl_ticks`, `:output_mode`, `:voltage`, `:current_limit_amps`,
   `:load_current_amps`, `:frequency_hz`, and `:energy_budget_joules` are forwarded into the normalized
   electric `FieldSource` so dev/browser requests exercise the same lifecycle
@@ -92,6 +94,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
       max_frontier: Keyword.get(opts, :max_frontier, 512)
     ]
     |> maybe_put(:ttl_ticks, Keyword.get(opts, :ttl_ticks))
+    |> maybe_put(:conduction_mode, Keyword.get(opts, :conduction_mode))
     |> maybe_put(:source_mode, Keyword.get(opts, :source_mode))
     |> maybe_put(:owner_ref, Keyword.get(opts, :owner_ref))
     |> maybe_put(:output_mode, Keyword.get(opts, :output_mode))

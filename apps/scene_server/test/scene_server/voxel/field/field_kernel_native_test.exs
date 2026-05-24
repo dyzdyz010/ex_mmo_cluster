@@ -6,6 +6,7 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
   alias SceneServer.Voxel.Field.NativeBackend.ConductionPathInput
 
   @iron 5
+  @power_block 6
 
   setup do
     case start_supervised({AttributeCatalog, []}) do
@@ -125,6 +126,55 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
     assert Map.fetch!(ionization_cells, source) == 5.0
   end
 
+  test "finds a native dielectric-breakdown path through empty medium" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({3, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @power_block)
+      |> put_solid({3, 0, 0}, @iron)
+
+    assert {:ok, path} =
+             NativeBackend.find_discharge_path(
+               storage,
+               {{0, 0, 0}, {3, 0, 0}},
+               source,
+               target,
+               120.0,
+               FieldLayer.new(),
+               32
+             )
+
+    assert path == [
+             source,
+             Types.macro_index!({1, 0, 0}),
+             Types.macro_index!({2, 0, 0}),
+             target
+           ]
+  end
+
+  test "native dielectric-breakdown path rejects under-threshold potential" do
+    source = Types.macro_index!({0, 0, 0})
+    target = Types.macro_index!({3, 0, 0})
+
+    storage =
+      Storage.new(7, {0, 0, 0})
+      |> put_solid({0, 0, 0}, @power_block)
+      |> put_solid({3, 0, 0}, @iron)
+
+    assert {:error, :no_discharge_path} =
+             NativeBackend.find_discharge_path(
+               storage,
+               {{0, 0, 0}, {3, 0, 0}},
+               source,
+               target,
+               2.0,
+               FieldLayer.new(),
+               32
+             )
+  end
+
   defp conduction_storage do
     Storage.new(7, {0, 0, 0})
     |> put_solid({0, 1, 0})
@@ -136,6 +186,10 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
   end
 
   defp put_solid(storage, coord) do
-    Storage.put_solid_block(storage, coord, NormalBlockData.new(@iron))
+    put_solid(storage, coord, @iron)
+  end
+
+  defp put_solid(storage, coord, material_id) do
+    Storage.put_solid_block(storage, coord, NormalBlockData.new(material_id))
   end
 end

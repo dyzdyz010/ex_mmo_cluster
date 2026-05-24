@@ -3,11 +3,11 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   Phase 6 局部场最小目标:per-region GenServer。
 
   独立于 ChunkProcess simulation_tick(100ms)、prepare_transaction /
-  commit_transaction 链路,自己 schedule 10Hz tick(默认 100ms),持有
-  整个 FieldRegion 状态。每 tick:
+  commit_transaction 链路,新建后立即执行首个 tick,后续自己 schedule
+  10Hz tick(默认 100ms),持有整个 FieldRegion 状态。每 tick:
     1. 调 FieldKernel 更新 layers。
-    2. 将 non-observe kernel effects 交给 ChunkProcess authority dispatcher。
-    3. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
+    2. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
+    3. 将 non-observe kernel effects 交给 ChunkProcess authority dispatcher。
     4. `ChunkProcess.push_field_snapshot_payload/2` 把 payload 投到 chunk
        的 cast 通道,由 ChunkProcess fanout 给 subscribers。
     5. 到 max_ticks 时,push FieldRegionDestroyed(0x74)并 stop。
@@ -88,7 +88,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       }
     end)
 
-    schedule_tick(tick_interval_ms)
+    send(self(), :tick)
 
     {:ok,
      %{
@@ -114,15 +114,29 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     started_us = System.monotonic_time(:microsecond)
     storage = safe_call_storage_fn(storage_fn)
 
-    region =
-      region
-      |> run_field_kernels(storage, logical_scene_id, tick_interval_ms, chunk_pid)
-      |> FieldRegion.increment_tick()
+    {region, effect_batches} =
+      run_field_kernels(region, storage, logical_scene_id, tick_interval_ms)
+
+    region = FieldRegion.increment_tick(region)
 
     payload = FieldCodec.encode_snapshot_payload(region, logical_scene_id)
     cells_updated = count_active_cells(region)
 
     push_snapshot(chunk_pid, payload)
+
+    snapshot_dispatch_us = System.monotonic_time(:microsecond) - started_us
+
+    safe_emit("voxel_field_snapshot_dispatched", fn ->
+      %{
+        region_id: region.region_id,
+        chunk_coord: region.chunk_coord,
+        cell_count: cells_updated,
+        byte_size: byte_size(payload),
+        snapshot_dispatch_us: snapshot_dispatch_us
+      }
+    end)
+
+    dispatch_kernel_effect_batches(chunk_pid, effect_batches)
 
     duration_us = System.monotonic_time(:microsecond) - started_us
 
@@ -131,16 +145,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
         region_id: region.region_id,
         tick_count: region.tick_count,
         cells_updated: cells_updated,
+        snapshot_dispatch_us: snapshot_dispatch_us,
         tick_duration_us: duration_us
-      }
-    end)
-
-    safe_emit("voxel_field_snapshot_dispatched", fn ->
-      %{
-        region_id: region.region_id,
-        chunk_coord: region.chunk_coord,
-        cell_count: cells_updated,
-        byte_size: byte_size(payload)
       }
     end)
 
@@ -229,11 +235,22 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
   # ---- helpers --------------------------------------------------------------
 
-  defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms, chunk_pid) do
-    Enum.reduce(region.kernels, region, fn kernel_spec, acc ->
-      context = KernelContext.new(acc, logical_scene_id, storage, dt_ms: tick_interval_ms)
-      run_kernel(kernel_spec, acc, context, chunk_pid)
-    end)
+  defp run_field_kernels(region, storage, logical_scene_id, tick_interval_ms) do
+    {region, batches} =
+      Enum.reduce(region.kernels, {region, []}, fn kernel_spec, {acc, batches} ->
+        context = KernelContext.new(acc, logical_scene_id, storage, dt_ms: tick_interval_ms)
+        {next_region, batch} = run_kernel(kernel_spec, acc, context)
+
+        batches =
+          case batch do
+            nil -> batches
+            batch -> [batch | batches]
+          end
+
+        {next_region, batches}
+      end)
+
+    {region, Enum.reverse(batches)}
   end
 
   defp refreshed_source_points(%FieldRegion{} = region, attrs) do
@@ -300,19 +317,17 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     end
   end
 
-  defp run_kernel(%{id: id, module: module, opts: opts}, region, context, chunk_pid) do
+  defp run_kernel(%{id: id, module: module, opts: opts}, region, context) do
     case module.tick(region, context, opts) do
       {:cont, %FieldRegion{} = next_region, effects} when is_list(effects) ->
-        handle_kernel_effects(id, next_region, effects, chunk_pid)
-        next_region
+        {next_region, {id, next_region, effects}}
 
       {:done, %FieldRegion{} = next_region, effects} when is_list(effects) ->
-        handle_kernel_effects(id, next_region, effects, chunk_pid)
-        next_region
+        {next_region, {id, next_region, effects}}
 
       other ->
         emit_kernel_failed(region, id, module, {:invalid_return, other})
-        region
+        {region, nil}
     end
   rescue
     error ->
@@ -323,16 +338,24 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
         {:exception, error.__struct__, Exception.message(error)}
       )
 
-      region
+      {region, nil}
   catch
     kind, reason ->
       emit_kernel_failed(region, id, module, {kind, reason})
-      region
+      {region, nil}
   end
 
-  defp run_kernel(kernel_spec, region, _context, _chunk_pid) do
+  defp run_kernel(kernel_spec, region, _context) do
     emit_kernel_failed(region, :unknown, :unknown, {:invalid_kernel_spec, kernel_spec})
-    region
+    {region, nil}
+  end
+
+  defp dispatch_kernel_effect_batches(_chunk_pid, []), do: :ok
+
+  defp dispatch_kernel_effect_batches(chunk_pid, batches) do
+    Enum.each(batches, fn {kernel_id, region, effects} ->
+      handle_kernel_effects(kernel_id, region, effects, chunk_pid)
+    end)
   end
 
   defp handle_kernel_effects(kernel_id, region, effects, chunk_pid) do

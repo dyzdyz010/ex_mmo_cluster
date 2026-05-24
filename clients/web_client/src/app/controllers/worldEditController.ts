@@ -18,6 +18,28 @@ export interface SelectionProvider {
   getCurrentSelection(): EditSelection | null;
 }
 
+export interface EntityTargetSelection {
+  entityId: number;
+  macroCoord: FMacroCoord;
+  renderedPosition: { x: number; y: number; z: number };
+}
+
+export interface EntityTargetProvider {
+  getCurrentEntityTarget(): EntityTargetSelection | null;
+  getFallbackEntityTarget?(): EntityTargetSelection | null;
+}
+
+type LightningTargetSelection =
+  | {
+      targetKind: "entity" | "fallback_entity";
+      entityId: number;
+      macroCoord: FMacroCoord;
+    }
+  | {
+      targetKind: "voxel";
+      macroCoord: FMacroCoord;
+    };
+
 export interface ConductionSelectionPair {
   sourceCoord: FMacroCoord;
   targetCoord: FMacroCoord;
@@ -122,6 +144,10 @@ const SERVER_HOTBAR_ENTRIES: HotbarEntry[] = [
   { kind: "prefab", label: "stairs", prefabName: "builtin_stairs", rotation: EVoxelRotation.Rot0 },
 ];
 
+const DEFAULT_ENTITY_LIGHTNING_VERTICAL_OFFSET_MACROS = 4;
+const DEFAULT_ENTITY_LIGHTNING_CURRENT_LIMIT_AMPS = 30;
+const DEFAULT_ENTITY_LIGHTNING_LOAD_CURRENT_AMPS = 18;
+
 /**
  * Handles material selection, block placement, and block removal. The current
  * camera-centre selection is pulled from a SelectionProvider (the render
@@ -135,7 +161,7 @@ export class WorldEditController {
   constructor(
     private readonly bus: EventBus<AppEvents>,
     private readonly world: VoxelWorldAdapter,
-    private readonly selection: SelectionProvider,
+    private readonly selection: SelectionProvider & Partial<EntityTargetProvider>,
   ) {
     this.hotbarEntries = hotbarEntriesForWorld(world);
     this.bus.on("input:material-selected", ({ materialId }) => {
@@ -160,6 +186,11 @@ export class WorldEditController {
     );
     this.bus.on("input:conduct-selected-voxel", ({ source, sourcePotential, maxTicks }) =>
       this.conductAtSelection(source, sourcePotential, maxTicks),
+    );
+    this.bus.on(
+      "input:lightning-selected-entity",
+      ({ source, sourcePotential, maxTicks, verticalOffsetMacros }) =>
+        this.dischargeAtEntityTarget(source, sourcePotential, maxTicks, verticalOffsetMacros),
     );
   }
 
@@ -306,6 +337,87 @@ export class WorldEditController {
       source,
       maxTicks,
     );
+  }
+
+  dischargeAtEntityTarget(
+    source: string,
+    sourcePotential = 300,
+    maxTicks?: number,
+    verticalOffsetMacros = DEFAULT_ENTITY_LIGHTNING_VERTICAL_OFFSET_MACROS,
+  ): boolean {
+    const target = this.resolveLightningTarget();
+    if (!target) {
+      this.bus.emit("world:edit-rejected", {
+        reason: "lightning_requires_target",
+        source,
+      });
+      this.world.store.editStats.rejected += 1;
+      return false;
+    }
+
+    const offset = Math.max(1, Math.floor(verticalOffsetMacros));
+    const targetCoord = { ...target.macroCoord };
+    const sourceCoord = {
+      x: targetCoord.x,
+      y: targetCoord.y + offset,
+      z: targetCoord.z,
+    };
+
+    if (!isSameMacroChunk(sourceCoord, targetCoord)) {
+      this.bus.emit("world:edit-rejected", {
+        reason: "entity_lightning_target_cross_chunk_not_supported",
+        source,
+      });
+      this.world.store.editStats.rejected += 1;
+      return false;
+    }
+
+    const powerSource: ElectricPowerSourceRequest = {
+      conductionMode: "discharge",
+      outputMode: "pulse",
+      voltage: sourcePotential,
+      currentLimitAmps: DEFAULT_ENTITY_LIGHTNING_CURRENT_LIMIT_AMPS,
+      loadCurrentAmps: DEFAULT_ENTITY_LIGHTNING_LOAD_CURRENT_AMPS,
+    };
+    const ok = this.conductBetween(
+      sourceCoord,
+      targetCoord,
+      sourcePotential,
+      source,
+      maxTicks,
+      powerSource,
+    );
+    return ok;
+  }
+
+  private resolveLightningTarget(): LightningTargetSelection | null {
+    const entityTarget = this.selection.getCurrentEntityTarget?.();
+    if (entityTarget) {
+      return {
+        targetKind: "entity",
+        entityId: entityTarget.entityId,
+        macroCoord: { ...entityTarget.macroCoord },
+      };
+    }
+
+    const voxelSelection = this.selection.getCurrentSelection();
+    if (voxelSelection) {
+      return {
+        targetKind: "voxel",
+        macroCoord: { ...voxelSelection.occupiedMacro },
+      };
+    }
+
+    const fallbackEntityTarget = this.selection.getFallbackEntityTarget?.();
+    if (fallbackEntityTarget) {
+      return {
+        targetKind: "fallback_entity",
+        entityId: fallbackEntityTarget.entityId,
+        macroCoord: { ...fallbackEntityTarget.macroCoord },
+      };
+    }
+
+    return null;
   }
 
   setTemperatureAtSelection(

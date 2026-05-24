@@ -534,12 +534,25 @@ function bridgeBusToLogger(
   });
   bus.on(
     "world:voxel-conduction-requested",
-    ({ sourceCoord, targetCoord, sourcePotential, source }) => {
+    ({ sourceCoord, targetCoord, sourcePotential, source, powerSource }) => {
+      const conductionMode = powerSource?.conductionMode ?? "conductive";
+      if (conductionMode === "discharge") {
+        render.queueLightningBoltOnFieldSnapshot(sourceCoord, targetCoord);
+        logger.emit("voxel", "lightning_waiting_for_field_snapshot", {
+          source_coord: formatCoord(sourceCoord),
+          target_coord: formatCoord(targetCoord),
+          source_potential: sourcePotential,
+          source,
+          authorization: "field_snapshot",
+        });
+      }
       logger.emit("voxel", "conduction_path", {
         source_coord: formatCoord(sourceCoord),
         target_coord: formatCoord(targetCoord),
         source_potential: sourcePotential,
         source,
+        conduction_mode: conductionMode,
+        output_mode: powerSource?.outputMode ?? "",
         request_state: "submitted",
         field_overlay_visible: false,
       });
@@ -552,6 +565,7 @@ function bridgeBusToLogger(
       targetCoord,
       sourcePotential,
       source,
+      conductionMode,
       regionId,
       fieldRegionCreated,
       powerDraw,
@@ -566,6 +580,7 @@ function bridgeBusToLogger(
         target_coord: formatCoord(targetCoord),
         source_potential: sourcePotential,
         source,
+        conduction_mode: conductionMode ?? "conductive",
         request_state: "accepted",
         region_id: regionId ?? "",
         field_region_created: fieldRegionCreated ?? false,

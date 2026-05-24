@@ -14,6 +14,7 @@ import {
   encodeVoxelChunkSubscribe,
   encodeVoxelChunkUnsubscribe,
   encodeVoxelDebugProbe,
+  encodeVoxelFieldConductIntent,
   encodeVoxelImpactIntent,
   encodeVoxelPrefabPlaceIntent,
   type VoxelChunkSnapshotMessage,
@@ -455,6 +456,71 @@ export class ServerMovementTransport implements MovementTransport {
       target_world_micro: `${request.targetWorldMicro.x},${request.targetWorldMicro.y},${request.targetWorldMicro.z}`,
       face_normal: `${request.faceNormal.x},${request.faceNormal.y},${request.faceNormal.z}`,
       material_id: request.materialId,
+    });
+    return requestId;
+  }
+
+  sendVoxelFieldConductIntent(request: {
+    logicalSceneId: number;
+    sourceWorldMacro: FMacroCoord;
+    targetWorldMacro: FMacroCoord;
+    sourcePotential: number;
+    maxTicks: number;
+    conductionMode?: "conductive" | "discharge";
+    outputMode?: "dc" | "ac" | "pulse";
+    voltage?: number;
+    currentLimitAmps?: number;
+    frequencyHz?: number;
+    loadCurrentAmps?: number;
+    energyBudgetJoules?: number;
+    clientIntentSeq: number;
+  }): number | null {
+    if (!this.canUseServerVoxel() || !this.socket) {
+      return this.blockVoxelSend("field_conduct_intent");
+    }
+
+    const requestId = this.nextRequestId();
+    const fieldRequest: Parameters<typeof encodeVoxelFieldConductIntent>[0] = {
+      requestId,
+      clientIntentSeq: request.clientIntentSeq,
+      logicalSceneId: request.logicalSceneId,
+      sourceWorldMacro: request.sourceWorldMacro,
+      targetWorldMacro: request.targetWorldMacro,
+      sourcePotential: request.sourcePotential,
+      maxTicks: request.maxTicks,
+    };
+    if (request.conductionMode !== undefined) {
+      fieldRequest.conductionMode = request.conductionMode;
+    }
+    if (request.outputMode !== undefined) {
+      fieldRequest.outputMode = request.outputMode;
+    }
+    if (request.voltage !== undefined) {
+      fieldRequest.voltage = request.voltage;
+    }
+    if (request.currentLimitAmps !== undefined) {
+      fieldRequest.currentLimitAmps = request.currentLimitAmps;
+    }
+    if (request.frequencyHz !== undefined) {
+      fieldRequest.frequencyHz = request.frequencyHz;
+    }
+    if (request.loadCurrentAmps !== undefined) {
+      fieldRequest.loadCurrentAmps = request.loadCurrentAmps;
+    }
+    if (request.energyBudgetJoules !== undefined) {
+      fieldRequest.energyBudgetJoules = request.energyBudgetJoules;
+    }
+    this.socket.send(encodeVoxelFieldConductIntent(fieldRequest));
+    this.sentVoxelMessageCount += 1;
+    this.logger.emit("voxel", "field_conduct_intent_sent", {
+      request_id: requestId,
+      client_intent_seq: request.clientIntentSeq,
+      logical_scene_id: request.logicalSceneId,
+      source_coord: chunkCoordKey(request.sourceWorldMacro),
+      target_coord: chunkCoordKey(request.targetWorldMacro),
+      conduction_mode: request.conductionMode ?? "conductive",
+      output_mode: request.outputMode ?? "",
+      max_ticks: request.maxTicks,
     });
     return requestId;
   }

@@ -31,6 +31,7 @@ defmodule GateServer.Codec do
   - `0x65` VoxelBuildReservationIntent
   - `0x67` VoxelPrefabPlaceIntent
   - `0x6F` VoxelDebugProbe
+  - `0x75` FieldConductIntent
 
   ### Server → client
 
@@ -85,6 +86,7 @@ defmodule GateServer.Codec do
   @msg_voxel_object_state_delta 0x6C
   @msg_voxel_debug_probe 0x6F
   @msg_voxel_edit_intent 0x70
+  @msg_voxel_field_conduct_intent 0x75
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -351,6 +353,36 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_edit_intent, _rest::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<@msg_voxel_field_conduct_intent, request_id::64-big, client_intent_seq::32-big,
+          logical_scene_id::64-big, sx::64-big-signed, sy::64-big-signed, sz::64-big-signed,
+          tx::64-big-signed, ty::64-big-signed, tz::64-big-signed, source_potential::float-64,
+          max_ticks::32-big, conduction_mode::8, output_mode::8, power_flags::16-big,
+          voltage::float-64, current_limit_amps::float-64, frequency_hz::float-64,
+          load_current_amps::float-64, energy_budget_joules::float-64>>
+      ) do
+    {:ok,
+     {:voxel_field_conduct_intent,
+      %{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        source_world_macro: {sx, sy, sz},
+        target_world_macro: {tx, ty, tz},
+        source_potential: source_potential,
+        max_ticks: max_ticks,
+        conduction_mode: decode_field_conduct_mode(conduction_mode)
+      }
+      |> maybe_put_field_output_mode(power_flags, output_mode)
+      |> maybe_put_field_power(:voltage, power_flags, 0x0002, voltage)
+      |> maybe_put_field_power(:current_limit_amps, power_flags, 0x0004, current_limit_amps)
+      |> maybe_put_field_power(:frequency_hz, power_flags, 0x0008, frequency_hz)
+      |> maybe_put_field_power(:load_current_amps, power_flags, 0x0010, load_current_amps)
+      |> maybe_put_field_power(:energy_budget_joules, power_flags, 0x0020, energy_budget_joules)}}
+  end
+
+  def decode(<<@msg_voxel_field_conduct_intent, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
   def decode(<<type::8, _rest::binary>>) do
@@ -702,6 +734,33 @@ defmodule GateServer.Codec do
 
   defp u8!(v, _f) when is_integer(v) and v in 0..0xFF, do: {:ok, v}
   defp u8!(v, f), do: {:error, {:invalid_field, f, v}}
+
+  defp decode_field_conduct_mode(1), do: :discharge
+  defp decode_field_conduct_mode(_), do: :conductive
+
+  defp decode_field_output_mode(1), do: :dc
+  defp decode_field_output_mode(2), do: :ac
+  defp decode_field_output_mode(3), do: :pulse
+  defp decode_field_output_mode(_), do: nil
+
+  defp maybe_put_field_output_mode(intent, flags, raw_mode) do
+    if Bitwise.band(flags, 0x0001) != 0 do
+      case decode_field_output_mode(raw_mode) do
+        nil -> intent
+        mode -> Map.put(intent, :output_mode, mode)
+      end
+    else
+      intent
+    end
+  end
+
+  defp maybe_put_field_power(intent, key, flags, flag, value) do
+    if Bitwise.band(flags, flag) != 0 do
+      Map.put(intent, key, value)
+    else
+      intent
+    end
+  end
 
   defp u16!(v, _f) when is_integer(v) and v in 0..0xFFFF, do: {:ok, v}
   defp u16!(v, f), do: {:error, {:invalid_field, f, v}}

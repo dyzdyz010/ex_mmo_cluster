@@ -79,7 +79,11 @@ import type {
   PrefabSocketSnapRequest,
   PrefabSocketSnapResult,
 } from "./prefab";
-import { LocalVoxelWorldAdapter, type ElectricPowerSourceRequest } from "./worldAdapter";
+import {
+  LocalVoxelWorldAdapter,
+  type ElectricConductionMode,
+  type ElectricPowerSourceRequest,
+} from "./worldAdapter";
 
 export interface ServerVoxelTransportPort {
   canUseServerVoxel(): boolean;
@@ -120,6 +124,21 @@ export interface ServerVoxelTransportPort {
     expectedCellHash?: number;
     clientIntentSeq: number;
     clientHintHash?: bigint;
+  }): number | null;
+  sendVoxelFieldConductIntent?(request: {
+    logicalSceneId: number;
+    sourceWorldMacro: FMacroCoord;
+    targetWorldMacro: FMacroCoord;
+    sourcePotential: number;
+    maxTicks: number;
+    conductionMode?: ElectricConductionMode;
+    outputMode?: ElectricPowerSourceRequest["outputMode"];
+    voltage?: number;
+    currentLimitAmps?: number;
+    frequencyHz?: number;
+    loadCurrentAmps?: number;
+    energyBudgetJoules?: number;
+    clientIntentSeq: number;
   }): number | null;
   sendVoxelPrefabPlaceIntent(request: {
     logicalSceneId: number;
@@ -705,6 +724,105 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     maxTicks = 120,
     powerSource?: ElectricPowerSourceRequest,
   ): boolean {
+    if (powerSource?.conductionMode === "discharge") {
+      return this.requestVoxelFieldConductionIntent(
+        source,
+        target,
+        sourcePotential,
+        maxTicks,
+        powerSource,
+      );
+    }
+
+    return this.requestVoxelConductionPathViaHttp(
+      source,
+      target,
+      sourcePotential,
+      maxTicks,
+      powerSource,
+    );
+  }
+
+  private requestVoxelFieldConductionIntent(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential: number,
+    maxTicks: number,
+    powerSource: ElectricPowerSourceRequest,
+  ): boolean {
+    const send = this.transport.sendVoxelFieldConductIntent?.bind(this.transport);
+    if (typeof send !== "function") {
+      return this.requestVoxelConductionPathViaHttp(
+        source,
+        target,
+        sourcePotential,
+        maxTicks,
+        powerSource,
+      );
+    }
+
+    const clientIntentSeq = this.clientIntentSeq;
+    const fieldRequest: Parameters<
+      NonNullable<ServerVoxelTransportPort["sendVoxelFieldConductIntent"]>
+    >[0] = {
+      logicalSceneId: this.logicalSceneId,
+      sourceWorldMacro: source,
+      targetWorldMacro: target,
+      sourcePotential,
+      maxTicks,
+      conductionMode: powerSource.conductionMode ?? "discharge",
+      clientIntentSeq,
+    };
+    if (powerSource.outputMode !== undefined) {
+      fieldRequest.outputMode = powerSource.outputMode;
+    }
+    if (powerSource.voltage !== undefined) {
+      fieldRequest.voltage = powerSource.voltage;
+    }
+    if (powerSource.currentLimitAmps !== undefined) {
+      fieldRequest.currentLimitAmps = powerSource.currentLimitAmps;
+    }
+    if (powerSource.frequencyHz !== undefined) {
+      fieldRequest.frequencyHz = powerSource.frequencyHz;
+    }
+    if (powerSource.loadCurrentAmps !== undefined) {
+      fieldRequest.loadCurrentAmps = powerSource.loadCurrentAmps;
+    }
+    if (powerSource.energyBudgetJoules !== undefined) {
+      fieldRequest.energyBudgetJoules = powerSource.energyBudgetJoules;
+    }
+
+    const requestId = send(fieldRequest);
+    if (requestId === null) {
+      this.lastError = "voxel_transport_unavailable";
+      this.bus.emit("world:voxel-sync-error", {
+        reason: this.lastError,
+        source: "field_conduct_intent",
+      });
+      return false;
+    }
+    this.clientIntentSeq += 1;
+    this.pendingIntentCount += 1;
+    this.logger.emit("voxel", "field_conduct_intent_submitted", {
+      request_id: requestId,
+      client_intent_seq: clientIntentSeq,
+      logical_scene_id: this.logicalSceneId,
+      source_coord: `${source.x},${source.y},${source.z}`,
+      target_coord: `${target.x},${target.y},${target.z}`,
+      source_potential: sourcePotential,
+      conduction_mode: powerSource.conductionMode ?? "conductive",
+      max_ticks: maxTicks,
+    });
+    return true;
+  }
+
+  private requestVoxelConductionPathViaHttp(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential: number,
+    maxTicks: number,
+    powerSource?: ElectricPowerSourceRequest,
+  ): boolean {
     const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/conduct`;
     void fetch(url, {
       method: "POST",
@@ -719,6 +837,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         target_z: target.z,
         source_potential: sourcePotential,
         max_ticks: maxTicks,
+        ...(powerSource?.conductionMode ? { conduction_mode: powerSource.conductionMode } : {}),
         ...(powerSource?.outputMode ? { output_mode: powerSource.outputMode } : {}),
         ...(powerSource?.voltage !== undefined ? { voltage: powerSource.voltage } : {}),
         ...(powerSource?.currentLimitAmps !== undefined
@@ -742,30 +861,14 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         return response.json() as Promise<Record<string, unknown>>;
       })
       .then((payload) => {
-        const regionId = String(payload["region_id"] ?? "none");
-        const fieldRegionCreated = Boolean(payload["field_region_created"]);
-        const powerDraw = normalizePowerDraw(payload["power_draw"]);
-        this.logger.emit("voxel", "conduction_ok", {
-          logical_scene_id: this.logicalSceneId,
-          source_coord: `${source.x},${source.y},${source.z}`,
-          target_coord: `${target.x},${target.y},${target.z}`,
-          source_potential: sourcePotential,
-          region_id: regionId,
-          created: String(payload["created"] ?? "unknown"),
-          field_region_created: String(fieldRegionCreated),
-          max_ticks: maxTicks,
-          power_draw: JSON.stringify(payload["power_draw"] ?? null),
-          heat_energy_joules_per_tick: String(powerDraw?.estimatedTickEnergyJoules ?? ""),
-        });
-        this.bus.emit("world:voxel-conduction-accepted", {
-          sourceCoord: source,
-          targetCoord: target,
+        this.acceptVoxelConductionPath(
+          source,
+          target,
           sourcePotential,
-          source: "server",
-          regionId,
-          fieldRegionCreated,
-          ...(powerDraw ? { powerDraw } : {}),
-        });
+          maxTicks,
+          powerSource,
+          payload,
+        );
       })
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
@@ -773,6 +876,45 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         this.bus.emit("world:voxel-sync-error", { reason, source: "conduction_path" });
       });
     return true;
+  }
+
+  private acceptVoxelConductionPath(
+    source: FMacroCoord,
+    target: FMacroCoord,
+    sourcePotential: number,
+    maxTicks: number,
+    powerSource: ElectricPowerSourceRequest | undefined,
+    payload: Record<string, unknown>,
+  ): void {
+    const regionId = String(payload["region_id"] ?? "none");
+    const fieldRegionCreated = Boolean(payload["field_region_created"]);
+    const conductionMode = normalizeConductionMode(
+      payload["conduction_mode"] ?? powerSource?.conductionMode,
+    );
+    const powerDraw = normalizePowerDraw(payload["power_draw"]);
+    this.logger.emit("voxel", "conduction_ok", {
+      logical_scene_id: this.logicalSceneId,
+      source_coord: `${source.x},${source.y},${source.z}`,
+      target_coord: `${target.x},${target.y},${target.z}`,
+      source_potential: sourcePotential,
+      conduction_mode: conductionMode,
+      region_id: regionId,
+      created: String(payload["created"] ?? "unknown"),
+      field_region_created: String(fieldRegionCreated),
+      max_ticks: maxTicks,
+      power_draw: JSON.stringify(payload["power_draw"] ?? null),
+      heat_energy_joules_per_tick: String(powerDraw?.estimatedTickEnergyJoules ?? ""),
+    });
+    this.bus.emit("world:voxel-conduction-accepted", {
+      sourceCoord: source,
+      targetCoord: target,
+      sourcePotential,
+      source: "server",
+      conductionMode,
+      regionId,
+      fieldRegionCreated,
+      ...(powerDraw ? { powerDraw } : {}),
+    });
   }
 
   requestVoxelAutoCircuit(coord: FMacroCoord, maxTicks?: number): boolean {
@@ -1330,6 +1472,10 @@ function normalizePowerDraw(value: unknown): ElectricPowerDraw | undefined {
 
 function normalizeOutputMode(value: unknown): ElectricPowerDraw["outputMode"] | undefined {
   return value === "dc" || value === "ac" || value === "pulse" ? value : undefined;
+}
+
+function normalizeConductionMode(value: unknown): ElectricConductionMode {
+  return value === "discharge" ? "discharge" : "conductive";
 }
 
 function finiteNumber(value: unknown): number | undefined {

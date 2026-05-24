@@ -23,6 +23,7 @@ export const VoxelOpcode = {
   EnvironmentUpdated: 0x72,
   FieldRegionSnapshot: 0x73,
   FieldRegionDestroyed: 0x74,
+  FieldConductIntent: 0x75,
 } as const;
 
 export type VoxelOpcodeValue = (typeof VoxelOpcode)[keyof typeof VoxelOpcode];

@@ -49,6 +49,11 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
   客户端世界坐标换算为区块坐标和区块内坐标，再把带租约的写入请求转交给 Scene；
   Scene 通过 DataService 写入令牌校验并持久化后，Gate 才返回 `VoxelIntentResult`。
   Gate 还会先校验当前连接的有效角色 ID 和服务端技能表，避免未知技能直接写入体素。
+- 场运行时意图 `FieldConductIntent(0x75)` 是交互式导通/放电的低延迟入口。Gate 只
+  解码、校验会话、按源格所在 chunk 查询 World 路由，并把请求转给 Scene 侧
+  `FieldRuntime.ensure_conduction_path/1`；FieldRegion 的创建、tick、快照和销毁仍由
+  Scene/ChunkProcess 拥有。客户端不得用提交成功本身表现闪电，只能等 `0x73`
+  `FieldRegionSnapshot` 到达后表现。
 - `udp_acceptor.ex` 拥有共享 UDP 套接字，但权威判断仍委托给连接层和场景层。
 - `stdio_interface.ex` 只提供观察和轻量控制入口，不能成为第二份运行时事实来源。
   可用命令包括 `snapshot`、`connections`、`players`、`npcs` 和 `voxel`；其中 `voxel`

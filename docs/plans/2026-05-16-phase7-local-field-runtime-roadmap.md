@@ -1,6 +1,6 @@
 # Phase 7+ 局部场运行时架构路线图
 
-状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle、physical power block、电热写回与 GUI 热烟可视化第一片已落地（2026-05-19）。当前暂停继续扩展底层物理实现，下一轮聚焦 web client 的 UI 与指示优化；UI 验收后恢复 Phase 7.F / Phase 8 前置主线深挖。
+状态：后续推进基准文档；Phase 7.D1 / 7.D2 / 7.D3 已落地，Phase 7.E 第一批已落地，Phase 7.B core + runtime/web 入口已落地，Phase 7.F 前置 electric source lifecycle、physical power block、电热写回、GUI 热烟可视化第一片，以及电场介质击穿/放电链路已落地（2026-05-23）。当前电磁方向已覆盖“导体回路”和“高电势击穿介质”两条物理入口；后续回到 source lifecycle、batched effect、damage/ignite/object 写回和 InfoWave/MechanismGraph 对接。
 日期：2026-05-16  
 适用范围：`ex_mmo_cluster` 的 voxel local field / FieldRuntime / material-driven field effects  
 关联文档：
@@ -78,6 +78,14 @@
     `FieldRuntime.ensure_auto_circuit/1`、`ChunkProcess` mutation refresh 和
     `CircuitCurrentKernel` 共用同一判断。开路 source-load 返回 `no_closed_circuit`，
     断环会释放 current region/source 并下发 0x74，而不是保留空 FieldRegion。
+18. 电场介质击穿第一片已落地：`FieldSource(source_kind: :electric)` 现在可声明
+    `conduction_mode: :discharge`，由 `ElectricDischargeKernel` 在 chunk-local AABB 内读取
+    `electric_conductivity`、`dielectric_strength` 和既有 `ionization`，当 source potential
+    足以超过有效击穿阈值时穿过空 cell / 低导电介质形成瞬时 ionized channel。它仍复用
+    `FieldRuntime.ensure_conduction_path/1`、`FieldRegion`、0x73/0x74 snapshot 和标准
+    FieldEffect 热写回；HTTP 入口可传 `conduction_mode=discharge`，web CLI 暴露
+    `voxel_discharge ...`，因此“雷击”不再需要专用效果按钮，而是由电源、电场、介质击穿和
+    焦耳热/后续结算共同涌现。
 
 仍未完成：
 
@@ -92,8 +100,9 @@
 5. 跨 chunk field 目前只开放“两个直接相邻 chunk、一次边界跨越、双 shard 协调创建”
    的最小切片；真正的全地图搜索、merged snapshot、AOI 降频、网络预算和大范围
    事件 LOD 仍未实现。
-6. 电场仍未接入 Phase 8 伤害、击穿破坏、object/combat 结算或更广义的跨 chunk
-   field orchestration；这些仍是后续阶段，不应塞进当前导电入口。
+6. 电场已经能表达导体导通与高电势介质击穿，但仍未接入 Phase 8 伤害、击穿破坏、
+   object/combat 结算或更广义的跨 chunk field orchestration；这些仍是后续阶段，不应塞进
+   当前 `ensure_conduction_path/1` 入口。
 7. prefab/object 尚未通过统一 field participant projection 进入所有局部场；后续不应让每个 kernel 分别特判 prefab。推进基准见
    `docs/plans/2026-05-19-prefab-field-participant-projection.md`，电场只作为首条验证路径。
 8. `FieldEffect` dispatcher 仍是逐 effect 写回和逐次 snapshot fan-out；下一步需要改为
@@ -104,7 +113,7 @@
 10. Field kernel 缺少 reads/writes/phase/conflict 合同；后续新增 phenomenon/damage/ignite
     kernel 前，需要先约束同一 region 内的 layer 写入顺序和冲突策略。
 
-结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟，以及相邻双 chunk 的一次跨越导电第一片已经够支撑可玩验证；短期不继续扩展成全地图跨 chunk 搜索、持续能量扣减或 Phase 8 effect，而是先把 web client 的玩家 UI、状态指示和操作反馈打磨清楚。这个 UI 阶段只是主线的可操作性闸门，不是路线改道；UI 验收后继续回到 FieldRuntime / source lifecycle / phenomenon effect 的主线深挖。
+结论：当前不是“温度按钮 demo”，而是一个可验证的局部场内核起点。底层电源、电热、热烟、自动闭合回路、相邻双 chunk 的一次跨越导电，以及介质击穿放电都已经能支撑电磁方向的可玩验证；短期不扩展成全地图跨 chunk 搜索、持续能量扣减或 Phase 8 effect，而是继续把 FieldRuntime / source lifecycle / phenomenon effect / InfoWave 对接按层推进。
 
 ---
 

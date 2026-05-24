@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
   alias SceneServer.Native.FieldKernel
   alias SceneServer.Voxel.Field.{FieldLayer, ParticipantProjection}
   alias SceneServer.Voxel.Field.NativeBackend.ConductionPathInput
+  alias SceneServer.Voxel.Field.NativeBackend.DischargePathInput
   alias SceneServer.Voxel.Field.NativeBackend.ElectricPotentialInput
   alias SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput
   alias SceneServer.Voxel.Storage
@@ -75,6 +76,62 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
           )
 
         case call_native_conduction_path(request) do
+          {:error, :native_unavailable} -> run_fallback(fallback, :native_unavailable)
+          result -> result
+        end
+    end
+  end
+
+  @doc """
+  Finds a dielectric-breakdown discharge path through a read-only storage snapshot.
+
+  `opts[:backend]` chooses `:native` or `:elixir`; `opts[:fallback]` is invoked
+  for explicit Elixir backend selection or when native code is unavailable.
+  Native domain errors such as `:frontier_exhausted` and `:no_discharge_path`
+  are returned as-is.
+  """
+  @spec find_discharge_path(
+          Storage.t(),
+          aabb(),
+          0..4095,
+          0..4095,
+          number(),
+          FieldLayer.t(),
+          pos_integer(),
+          keyword()
+        ) ::
+          {:ok, [0..4095]}
+          | {:error,
+             :frontier_exhausted | :no_discharge_path | :native_unavailable | :native_disabled}
+  def find_discharge_path(
+        %Storage{} = storage,
+        aabb,
+        source_macro_index,
+        target_macro_index,
+        source_value,
+        %FieldLayer{} = ionization_layer,
+        max_frontier,
+        opts \\ []
+      ) do
+    fallback = Keyword.get(opts, :fallback)
+
+    case backend_opt(Keyword.get(opts, :backend, :native)) do
+      :elixir ->
+        run_fallback(fallback, :native_disabled)
+
+      :native ->
+        request =
+          DischargePathInput.new(
+            storage,
+            aabb,
+            source_macro_index,
+            target_macro_index,
+            source_value,
+            ionization_layer,
+            max_frontier
+          )
+
+        case call_native_discharge_path(request) do
           {:error, :native_unavailable} -> run_fallback(fallback, :native_unavailable)
           result -> result
         end
@@ -183,6 +240,21 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
   defp call_native_conduction_path(%ConductionPathInput{} = request) do
     FieldKernel.find_conduction_path(
       request.entries,
+      request.aabb,
+      request.source_macro_index,
+      request.target_macro_index,
+      request.source_value,
+      request.ionization_cells,
+      request.max_frontier
+    )
+  rescue
+    ErlangError -> {:error, :native_unavailable}
+    UndefinedFunctionError -> {:error, :native_unavailable}
+  end
+
+  defp call_native_discharge_path(%DischargePathInput{} = request) do
+    FieldKernel.find_discharge_path(
+      request.cells,
       request.aabb,
       request.source_macro_index,
       request.target_macro_index,

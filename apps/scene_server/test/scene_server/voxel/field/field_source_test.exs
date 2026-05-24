@@ -3,6 +3,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
 
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
+  alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Types
@@ -133,6 +134,46 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                max_frontier: 64,
                energy_budget_joules: 5000.0
              }
+    end
+
+    test "normalizes dielectric-breakdown electric sources without a lightning-specific source type" do
+      source =
+        FieldSource.normalize(%{
+          source_kind: :electric,
+          conduction_mode: "discharge",
+          logical_scene_id: 9,
+          source_world_macro: {0, 1, 0},
+          target_world_macro: {3, 1, 0},
+          source_potential: "120",
+          max_frontier: 32,
+          owner_ref: %{kind: :device, id: "coil-arc"}
+        })
+
+      target_index = Types.macro_index!({3, 1, 0})
+
+      assert source.source_kind == :electric
+      assert source.conduction_mode == :discharge
+
+      assert source.kernel_specs == [
+               %{
+                 id: :electric_discharge,
+                 module: ElectricDischargeKernel,
+                 opts: %{
+                   target_macro_index: target_index,
+                   max_frontier: 32,
+                   power_source: %{
+                     owner_ref: %{kind: :device, id: "coil-arc"},
+                     output_mode: :pulse,
+                     voltage: 120.0,
+                     current_limit_amps: nil,
+                     load_current_amps: nil,
+                     frequency_hz: nil,
+                     energy_budget_joules: nil
+                   },
+                   thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
+                 }
+               }
+             ]
     end
 
     test "normalizes electric power source output mode and limits" do

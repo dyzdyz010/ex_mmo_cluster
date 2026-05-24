@@ -129,6 +129,11 @@ describe("DevToolsCli microgrid boundary", () => {
             coveredMacroMin: { x: 1, y: 2, z: 3 },
             coveredMacroMax: { x: 1, y: 2, z: 3 },
           },
+          fallbackEntityTarget: {
+            entityId: -1,
+            macroCoord: { x: 4, y: 5, z: 6 },
+            renderedPosition: { x: 450, y: 550, z: 650 },
+          },
         })),
       },
     } as unknown as DevToolsDeps);
@@ -136,9 +141,36 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(cli.executeCliCommand("target_probe", [])).toMatchObject({
       ok: true,
       command: "target_probe",
-      text: expect.stringContaining("target prefab"),
+      text: expect.stringContaining("action_entity#-1 macro=4,5,6"),
       data: expect.objectContaining({
         projection: expect.objectContaining({ granularity: "prefab", occupiedSlots: 32 }),
+      }),
+    });
+  });
+
+  it("reports the current entity target through target_probe", () => {
+    const cli = new DevToolsCli({
+      render: {
+        getTargetOverlaySnapshot: vi.fn(() => ({
+          selection: null,
+          highlight: { visible: false, kind: "none" },
+          projection: null,
+          entityTarget: {
+            entityId: 42,
+            macroCoord: { x: 2, y: 3, z: 4 },
+            renderedPosition: { x: 250, y: 350, z: 450 },
+          },
+          fallbackEntityTarget: null,
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("target_probe", [])).toMatchObject({
+      ok: true,
+      command: "target_probe",
+      text: "target entity#42 macro=2,3,4",
+      data: expect.objectContaining({
+        entityTarget: expect.objectContaining({ entityId: 42 }),
       }),
     });
   });
@@ -298,6 +330,30 @@ describe("DevToolsCli microgrid boundary", () => {
         loadCurrentAmps: 6.25,
         energyBudgetJoules: 5000,
       },
+    );
+  });
+
+  it("routes voxel_discharge through the same conduction port with dielectric-breakdown mode", () => {
+    const conductBetween = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      edit: { conductBetween },
+    } as unknown as DevToolsDeps);
+
+    expect(
+      cli.executeCliCommand("voxel_discharge", ["0", "1", "0", "3", "1", "0", "120", "90"]),
+    ).toMatchObject({
+      ok: true,
+      command: "voxel_discharge",
+      text: "discharge request submitted from (0,1,0) to (3,1,0) at 120V; waiting for server acceptance",
+    });
+
+    expect(conductBetween).toHaveBeenCalledWith(
+      { x: 0, y: 1, z: 0 },
+      { x: 3, y: 1, z: 0 },
+      120,
+      "cli",
+      90,
+      { conductionMode: "discharge" },
     );
   });
 

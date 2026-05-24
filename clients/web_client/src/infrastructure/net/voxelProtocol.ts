@@ -1,11 +1,5 @@
-import {
-  decodeAttributeSetPool,
-  type AttributeSet,
-} from "../../voxel/attributeSet";
-import {
-  decodeCatalogPatchPayload,
-  type CatalogPatch,
-} from "../../voxel/catalogPatch";
+import { decodeAttributeSetPool, type AttributeSet } from "../../voxel/attributeSet";
+import { decodeCatalogPatchPayload, type CatalogPatch } from "../../voxel/catalogPatch";
 import { VoxelConstants } from "../../voxel/core/constants";
 import { EVoxelCellMode, type FChunkCoord, type FMacroCoord } from "../../voxel/core/types";
 import {
@@ -152,7 +146,12 @@ export interface VoxelChunkInvalidateMessage {
   logicalSceneId: number;
   chunkCoord: FChunkCoord;
   reason: number;
-  reasonName: "unspecified" | "migration_cutover" | "region_removed" | "catalog_changed" | "unknown";
+  reasonName:
+    | "unspecified"
+    | "migration_cutover"
+    | "region_removed"
+    | "catalog_changed"
+    | "unknown";
 }
 
 export interface VoxelIntentResultMessage {
@@ -311,6 +310,26 @@ export interface VoxelPrefabKnownCellRef {
   cellHash: number;
 }
 
+const FieldConductModeCode = {
+  conductive: 0,
+  discharge: 1,
+} as const;
+
+const FieldConductOutputModeCode = {
+  dc: 1,
+  ac: 2,
+  pulse: 3,
+} as const;
+
+const FieldConductPowerFlags = {
+  OutputMode: 0x0001,
+  Voltage: 0x0002,
+  CurrentLimitAmps: 0x0004,
+  FrequencyHz: 0x0008,
+  LoadCurrentAmps: 0x0010,
+  EnergyBudgetJoules: 0x0020,
+} as const;
+
 export function encodeVoxelBuildReservationIntent(request: {
   requestId: number;
   clientIntentSeq: number;
@@ -452,6 +471,70 @@ export function encodeVoxelPrefabPlaceIntent(request: {
   return new Uint8Array(buffer);
 }
 
+export function encodeVoxelFieldConductIntent(request: {
+  requestId: number;
+  clientIntentSeq: number;
+  logicalSceneId: number;
+  sourceWorldMacro: FMacroCoord;
+  targetWorldMacro: FMacroCoord;
+  sourcePotential: number;
+  maxTicks: number;
+  conductionMode?: "conductive" | "discharge";
+  outputMode?: "dc" | "ac" | "pulse";
+  voltage?: number;
+  currentLimitAmps?: number;
+  frequencyHz?: number;
+  loadCurrentAmps?: number;
+  energyBudgetJoules?: number;
+}): Uint8Array {
+  const buffer = new ArrayBuffer(125);
+  const view = new DataView(buffer);
+  let offset = 0;
+
+  view.setUint8(offset, VoxelOpcode.FieldConductIntent);
+  offset += 1;
+  writeU64(view, offset, request.requestId);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.clientIntentSeq)), false);
+  offset += 4;
+  writeU64(view, offset, request.logicalSceneId);
+  offset += 8;
+  writeI64(view, offset, request.sourceWorldMacro.x);
+  offset += 8;
+  writeI64(view, offset, request.sourceWorldMacro.y);
+  offset += 8;
+  writeI64(view, offset, request.sourceWorldMacro.z);
+  offset += 8;
+  writeI64(view, offset, request.targetWorldMacro.x);
+  offset += 8;
+  writeI64(view, offset, request.targetWorldMacro.y);
+  offset += 8;
+  writeI64(view, offset, request.targetWorldMacro.z);
+  offset += 8;
+  view.setFloat64(offset, finiteFieldNumber(request.sourcePotential, 120), false);
+  offset += 8;
+  view.setUint32(offset, Math.max(0, Math.trunc(request.maxTicks)), false);
+  offset += 4;
+  view.setUint8(offset, FieldConductModeCode[request.conductionMode ?? "conductive"]);
+  offset += 1;
+  view.setUint8(offset, request.outputMode ? FieldConductOutputModeCode[request.outputMode] : 0);
+  offset += 1;
+
+  const flags = fieldConductPowerFlags(request);
+  view.setUint16(offset, flags, false);
+  offset += 2;
+  view.setFloat64(offset, finiteFieldNumber(request.voltage, 0), false);
+  offset += 8;
+  view.setFloat64(offset, finiteFieldNumber(request.currentLimitAmps, 0), false);
+  offset += 8;
+  view.setFloat64(offset, finiteFieldNumber(request.frequencyHz, 0), false);
+  offset += 8;
+  view.setFloat64(offset, finiteFieldNumber(request.loadCurrentAmps, 0), false);
+  offset += 8;
+  view.setFloat64(offset, finiteFieldNumber(request.energyBudgetJoules, 0), false);
+  return new Uint8Array(buffer);
+}
+
 /**
  * @deprecated Use `encodeVoxelEditIntent` (opcode 0x70) for client-side direct
  * edits. `VoxelImpactIntent` (0x64) is now reserved for the skill/tool-system
@@ -556,9 +639,7 @@ function decodeChunkInvalidate(view: DataView): VoxelChunkInvalidateMessage {
   };
 }
 
-function invalidateReasonName(
-  reason: number,
-): VoxelChunkInvalidateMessage["reasonName"] {
+function invalidateReasonName(reason: number): VoxelChunkInvalidateMessage["reasonName"] {
   switch (reason) {
     case VoxelChunkInvalidateReason.Unspecified:
       return "unspecified";
@@ -658,15 +739,11 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
   const attributeSets = decodeAttributeSetPool(
     requireSection(sections, SnapshotSection.AttributeSets),
   );
-  const tagSets = decodeTagSetPool(
-    requireSection(sections, SnapshotSection.TagSets),
-  );
+  const tagSets = decodeTagSetPool(requireSection(sections, SnapshotSection.TagSets));
   const environmentSummaries = decodeEnvironmentSummaries(
     requireSection(sections, SnapshotSection.EnvironmentSummaries),
   );
-  const objectRefs = decodeObjectRefsSection(
-    requireSection(sections, SnapshotSection.ObjectRefs),
-  );
+  const objectRefs = decodeObjectRefsSection(requireSection(sections, SnapshotSection.ObjectRefs));
 
   const max = Math.max(0, chunkSizeInMacro - 1);
   return {
@@ -928,6 +1005,28 @@ function writeChunkCoord(view: DataView, offset: number, coord: FChunkCoord): vo
   view.setInt32(offset, Math.trunc(coord.x), false);
   view.setInt32(offset + 4, Math.trunc(coord.y), false);
   view.setInt32(offset + 8, Math.trunc(coord.z), false);
+}
+
+function fieldConductPowerFlags(request: {
+  outputMode?: "dc" | "ac" | "pulse";
+  voltage?: number;
+  currentLimitAmps?: number;
+  frequencyHz?: number;
+  loadCurrentAmps?: number;
+  energyBudgetJoules?: number;
+}): number {
+  let flags = 0;
+  if (request.outputMode !== undefined) flags |= FieldConductPowerFlags.OutputMode;
+  if (request.voltage !== undefined) flags |= FieldConductPowerFlags.Voltage;
+  if (request.currentLimitAmps !== undefined) flags |= FieldConductPowerFlags.CurrentLimitAmps;
+  if (request.frequencyHz !== undefined) flags |= FieldConductPowerFlags.FrequencyHz;
+  if (request.loadCurrentAmps !== undefined) flags |= FieldConductPowerFlags.LoadCurrentAmps;
+  if (request.energyBudgetJoules !== undefined) flags |= FieldConductPowerFlags.EnergyBudgetJoules;
+  return flags;
+}
+
+function finiteFieldNumber(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function readChunkCoord(view: DataView, offset: number): FChunkCoord {

@@ -15,6 +15,7 @@ defmodule GateServer.WsConnection do
   alias GateServer.Voxel.PrefabLocalTransaction
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
+  alias SceneServer.Voxel.Field.FieldRuntime
   alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
 
   @scene_call_timeout 15_000
@@ -561,6 +562,61 @@ defmodule GateServer.WsConnection do
 
     send_encoded(state, voxel_edit_intent_result_error(request, :invalid_state))
 
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_field_conduct_intent, request}, %{status: :in_scene} = state) do
+    GateServer.CliObserve.emit("ws_voxel_field_conduct_intent_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      client_intent_seq: request.client_intent_seq,
+      logical_scene_id: request.logical_scene_id,
+      source_world_macro: request.source_world_macro,
+      target_world_macro: request.target_world_macro,
+      conduction_mode: request.conduction_mode
+    })
+
+    case apply_voxel_field_conduct_intent(request, state) do
+      {:ok, summary} ->
+        GateServer.CliObserve.emit("ws_voxel_field_conduct_intent_applied", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          region_id: Map.get(summary, :region_id),
+          field_region_created: Map.get(summary, :field_region_created),
+          conduction_mode: Map.get(summary, :conduction_mode, request.conduction_mode)
+        })
+
+        send_encoded(state, voxel_field_conduct_result_ok(request, summary))
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("ws_voxel_field_conduct_intent_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          reason: inspect(reason)
+        })
+
+        send_encoded(state, voxel_result_error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_field_conduct_intent, request}, state) do
+    GateServer.CliObserve.emit("ws_voxel_field_conduct_intent_dropped_invalid_state", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      status: state.status
+    })
+
+    send_encoded(state, voxel_result_error(request, :invalid_state))
     {:ok, state}
   end
 
@@ -1113,6 +1169,51 @@ defmodule GateServer.WsConnection do
     else
       {:error, :cid_mismatch}
     end
+  end
+
+  defp apply_voxel_field_conduct_intent(request, state) do
+    with :ok <- authorize_voxel_edit_intent(state),
+         {:ok, source_chunk_coord} <- field_conduct_source_chunk(request),
+         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, source_chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      attrs =
+        request
+        |> Map.take([
+          :logical_scene_id,
+          :source_world_macro,
+          :target_world_macro,
+          :source_potential,
+          :max_ticks,
+          :conduction_mode,
+          :output_mode,
+          :voltage,
+          :current_limit_amps,
+          :frequency_hz,
+          :load_current_amps,
+          :energy_budget_joules
+        ])
+        |> Map.put(:owner_ref, {:ws_field_conduct, state.cid, request.client_intent_seq})
+
+      case :rpc.call(
+             scene_node,
+             FieldRuntime,
+             :ensure_conduction_path,
+             [attrs],
+             @scene_call_timeout
+           ) do
+        {:ok, summary} -> {:ok, summary}
+        {:error, reason} -> {:error, reason}
+        {:badrpc, reason} -> {:error, {:scene_unavailable, reason}}
+        other -> {:error, {:unexpected_field_conduct_result, other}}
+      end
+    end
+  end
+
+  defp field_conduct_source_chunk(%{source_world_macro: world_macro}) do
+    {chunk_coord, _local_macro} = Types.chunk_and_local_macro!(world_macro)
+    {:ok, chunk_coord}
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_source_world_macro}
   end
 
   # Decision 3 / Phase 1c: action × target_granularity → Scene operation.
@@ -2054,6 +2155,19 @@ defmodule GateServer.WsConnection do
        result_ref: result.chunk_version,
        authoritative: [],
        reason: "ok"
+     }}
+  end
+
+  defp voxel_field_conduct_result_ok(request, summary) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: request.client_intent_seq,
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: Map.get(summary, :region_id) || 0,
+       authoritative: [],
+       reason: "field_conduct_ok"
      }}
   end
 

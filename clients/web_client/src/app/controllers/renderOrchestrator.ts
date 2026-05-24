@@ -1,4 +1,5 @@
 import { BoxGeometry, Group, Mesh, MeshStandardMaterial, RingGeometry, Vector3 } from "three";
+import type { Camera } from "three";
 import type { ObserveLog } from "../../observe/logger";
 import {
   ChunkRenderController,
@@ -13,8 +14,9 @@ import {
   type SceneRegionOverlay,
   type SceneRegionOverlaySnapshot,
 } from "../../render/sceneRegionOverlay";
-import { AvatarConstants, VoxelConstants } from "../../voxel/core/constants";
+import { AvatarConstants, MacroWorldSize, VoxelConstants } from "../../voxel/core/constants";
 import type { FMacroCoord, FMicroCoord } from "../../voxel/core/types";
+import { macroCoordFromWorldPosition } from "../../voxel/core/gridUtils";
 import {
   createFieldOverlayProjector,
   resolveSelectionOverlayProjection,
@@ -28,14 +30,25 @@ import {
   FieldDebugOverlay,
   type FieldDebugOverlaySnapshot,
 } from "../../voxel/field/fieldDebugOverlay";
+import {
+  LightningBoltRenderer,
+  type LightningBoltRendererSnapshot,
+} from "../../voxel/field/lightningBoltRenderer";
+import { FieldMask, type FFieldRegionSnapshot } from "../../voxel/field/fieldProtocol";
 import type {
   VoxelFieldRegionDestroyedMessage,
   VoxelFieldRegionSnapshotMessage,
 } from "../../infrastructure/net/voxelProtocol";
 import type { FrameSubscriber } from "../gameLoop";
 import type { LocalPlayerController } from "./localPlayerController";
-import type { RemotePlayerController } from "./remotePlayerController";
-import type { HotbarState, HotbarEntry, SelectionProvider } from "./worldEditController";
+import type { RemotePlayerController, RenderedRemoteEntity } from "./remotePlayerController";
+import type {
+  EntityTargetProvider,
+  EntityTargetSelection,
+  HotbarState,
+  HotbarEntry,
+  SelectionProvider,
+} from "./worldEditController";
 
 interface MaybeDebrisProvider {
   getDebrisSimulation?(): DebrisSimulation;
@@ -66,6 +79,15 @@ export interface TargetOverlaySnapshot {
     coveredMacroMin: FMacroCoord | null;
     coveredMacroMax: FMacroCoord | null;
   } | null;
+  entityTarget: EntityTargetSelection | null;
+  fallbackEntityTarget: EntityTargetSelection | null;
+}
+
+const ENTITY_TARGET_NDC_RADIUS = 0.12;
+
+interface PendingSnapshotLightningBolt {
+  sourceCoord: FMacroCoord;
+  targetCoord: FMacroCoord;
 }
 
 /**
@@ -76,7 +98,9 @@ export interface TargetOverlaySnapshot {
  * Exposes the current raycast selection via SelectionProvider so the edit
  * controller never needs to know about the renderer.
  */
-export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
+export class RenderOrchestrator
+  implements FrameSubscriber, SelectionProvider, EntityTargetProvider
+{
   readonly sceneHandles: SceneHandles;
   private readonly rootGroup = new Group();
   private readonly chunkRenderer = new ChunkRenderController();
@@ -92,8 +116,11 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
   private prefabPreviewIntentKey = "";
   private readonly debrisRenderer: DebrisRenderer | null;
   private readonly fieldDebugOverlay: FieldDebugOverlay;
+  private readonly lightningBoltRenderer = new LightningBoltRenderer();
+  private readonly pendingSnapshotLightningBolts = new Map<string, PendingSnapshotLightningBolt>();
   private readonly latestFieldSnapshots = new Map<number, VoxelFieldRegionSnapshotMessage>();
   private readonly sceneRegionOverlay: SceneRegionOverlay;
+  private currentEntityTarget: EntityTargetSelection | null = null;
 
   constructor(
     sceneHandles: SceneHandles,
@@ -145,6 +172,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.fieldDebugOverlay = new FieldDebugOverlay();
     this.fieldDebugOverlay.setProjector(createFieldOverlayProjector(this.world.store));
     this.rootGroup.add(this.fieldDebugOverlay.rootGroup);
+    this.rootGroup.add(this.lightningBoltRenderer.group);
     if (import.meta.env.DEV) {
       const dev = window as unknown as Record<string, unknown>;
       dev.__devFieldOverlay = this.fieldDebugOverlay;
@@ -160,6 +188,10 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.updateAvatarTransforms(nowMs / 1000);
     this.sceneHandles.update(dtSecs);
     this.currentSelection = this.chunkRenderer.raycastFromCameraCenter(this.sceneHandles.camera);
+    this.currentEntityTarget = resolveEntityTargetFromCamera(
+      this.remotePlayer.getRenderedEntities(),
+      this.sceneHandles.camera,
+    );
     this.chunkRenderer.setTargetHighlights(this.currentSelection, this.world.store);
     this.updatePrefabPreview();
     this.chunkRenderer.syncDirtyChunks(this.world.store, this.logger);
@@ -170,6 +202,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     if (this.fieldDebugOverlay.isVisible()) {
       this.fieldDebugOverlay.updateSmoke(dtMs);
     }
+    this.lightningBoltRenderer.update(nowMs);
     this.sceneHandles.render();
   }
 
@@ -179,6 +212,7 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     if (typeof fieldProvider.drainVoxelFieldSnapshots === "function") {
       for (const msg of fieldProvider.drainVoxelFieldSnapshots()) {
         this.latestFieldSnapshots.set(msg.snapshot.regionId, msg);
+        this.materializePendingSnapshotLightning(msg.snapshot);
         if (fieldOverlayVisible) {
           this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
         }
@@ -196,6 +230,18 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
 
   getCurrentSelection(): VoxelRaySelection | null {
     return this.currentSelection;
+  }
+
+  getCurrentEntityTarget(): EntityTargetSelection | null {
+    return this.currentEntityTarget ? cloneEntityTarget(this.currentEntityTarget) : null;
+  }
+
+  getFallbackEntityTarget(): EntityTargetSelection | null {
+    return {
+      entityId: -1,
+      macroCoord: macroCoordFromWorldPosition(this.localDisplay, MacroWorldSize),
+      renderedPosition: vectorSnapshot(this.localDisplay),
+    };
   }
 
   getCameraPosition(): Vector3 {
@@ -243,6 +289,8 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
             ),
           )
         : null,
+      entityTarget: this.currentEntityTarget ? cloneEntityTarget(this.currentEntityTarget) : null,
+      fallbackEntityTarget: this.getFallbackEntityTarget(),
     };
   }
 
@@ -280,10 +328,27 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.fieldDebugOverlay.setRegionHeatSmokeSource(regionId, heatEnergyJoulesPerTick);
   }
 
+  spawnLightningBolt(sourceCoord: FMacroCoord, targetCoord: FMacroCoord): void {
+    this.lightningBoltRenderer.strike(sourceCoord, targetCoord);
+    this.lightningBoltRenderer.update(performance.now());
+  }
+
+  queueLightningBoltOnFieldSnapshot(sourceCoord: FMacroCoord, targetCoord: FMacroCoord): void {
+    this.pendingSnapshotLightningBolts.set(lightningBoltKey(sourceCoord, targetCoord), {
+      sourceCoord: { ...sourceCoord },
+      targetCoord: { ...targetCoord },
+    });
+  }
+
+  getLightningBoltSnapshot(): LightningBoltRendererSnapshot {
+    return this.lightningBoltRenderer.snapshot();
+  }
+
   dispose(): void {
     this.chunkRenderer.dispose();
     this.sceneRegionOverlay.dispose();
     this.fieldDebugOverlay.dispose();
+    this.lightningBoltRenderer.dispose();
     this.sceneHandles.dispose();
     this.localAvatar.geometry.dispose();
     this.localAvatar.material.dispose();
@@ -319,6 +384,27 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.fieldDebugOverlay.clearRenderedState();
     for (const msg of this.latestFieldSnapshots.values()) {
       this.fieldDebugOverlay.onFieldSnapshot(msg.snapshot);
+    }
+  }
+
+  private materializePendingSnapshotLightning(snapshot: FFieldRegionSnapshot): void {
+    if (this.pendingSnapshotLightningBolts.size === 0 || !isDischargeFieldSnapshot(snapshot)) {
+      return;
+    }
+
+    for (const [key, pending] of this.pendingSnapshotLightningBolts) {
+      if (!fieldSnapshotContainsEndpoints(snapshot, pending.sourceCoord, pending.targetCoord)) {
+        continue;
+      }
+      this.pendingSnapshotLightningBolts.delete(key);
+      this.spawnLightningBolt(pending.sourceCoord, pending.targetCoord);
+      this.logger.emit("voxel", "lightning_authorized", {
+        source_coord: coordKey(pending.sourceCoord),
+        target_coord: coordKey(pending.targetCoord),
+        authorization: "field_snapshot",
+        region_id: snapshot.regionId,
+        tick_count: snapshot.tickCount,
+      });
     }
   }
 
@@ -420,11 +506,77 @@ export class RenderOrchestrator implements FrameSubscriber, SelectionProvider {
     this.prefabPreviewIntentKey = "";
     this.chunkRenderer.setPrefabPreview(null, null);
   }
-
 }
+
+export function resolveEntityTargetFromCamera(
+  entities: RenderedRemoteEntity[],
+  camera: Camera,
+): EntityTargetSelection | null {
+  let best: { entity: RenderedRemoteEntity; score: number } | null = null;
+  for (const entity of entities) {
+    const score = entityTargetScore(entity, camera);
+    if (score === null) {
+      continue;
+    }
+    if (!best || score < best.score) {
+      best = { entity, score };
+    }
+  }
+  if (!best) {
+    return null;
+  }
+  return {
+    entityId: best.entity.cid,
+    macroCoord: macroCoordFromWorldPosition(best.entity.position, MacroWorldSize),
+    renderedPosition: vectorSnapshot(best.entity.position),
+  };
+}
+
+function entityTargetScore(entity: RenderedRemoteEntity, camera: Camera): number | null {
+  const center = entity.position;
+  const centerScore = projectedCrosshairDistance(center, camera);
+  const headScore = projectedCrosshairDistance(
+    scratchEntityTargetVector.copy(center).setY(center.y + AvatarConstants.HalfHeightCm),
+    camera,
+  );
+  const feetScore = projectedCrosshairDistance(
+    scratchEntityTargetVector.copy(center).setY(center.y - AvatarConstants.HalfHeightCm),
+    camera,
+  );
+  const score = Math.min(
+    centerScore ?? Number.POSITIVE_INFINITY,
+    headScore ?? Number.POSITIVE_INFINITY,
+    feetScore ?? Number.POSITIVE_INFINITY,
+  );
+  return score <= ENTITY_TARGET_NDC_RADIUS ? score : null;
+}
+
+function projectedCrosshairDistance(position: Vector3, camera: Camera): number | null {
+  scratchProjectedEntityTarget.copy(position).project(camera);
+  if (
+    scratchProjectedEntityTarget.z < -1 ||
+    scratchProjectedEntityTarget.z > 1 ||
+    Math.abs(scratchProjectedEntityTarget.x) > 1 ||
+    Math.abs(scratchProjectedEntityTarget.y) > 1
+  ) {
+    return null;
+  }
+  return Math.hypot(scratchProjectedEntityTarget.x, scratchProjectedEntityTarget.y);
+}
+
+const scratchEntityTargetVector = new Vector3();
+const scratchProjectedEntityTarget = new Vector3();
 
 function vectorSnapshot(vector: Vector3): { x: number; y: number; z: number } {
   return { x: vector.x, y: vector.y, z: vector.z };
+}
+
+function cloneEntityTarget(target: EntityTargetSelection): EntityTargetSelection {
+  return {
+    entityId: target.entityId,
+    macroCoord: { ...target.macroCoord },
+    renderedPosition: { ...target.renderedPosition },
+  };
 }
 
 function cloneSelection(selection: VoxelRaySelection): VoxelRaySelection {
@@ -533,6 +685,68 @@ function prefabPreviewIntentKey(
 
 function coordKey(coord: { x: number; y: number; z: number }): string {
   return `${coord.x},${coord.y},${coord.z}`;
+}
+
+function lightningBoltKey(sourceCoord: FMacroCoord, targetCoord: FMacroCoord): string {
+  return `${coordKey(sourceCoord)}>${coordKey(targetCoord)}`;
+}
+
+function isDischargeFieldSnapshot(snapshot: FFieldRegionSnapshot): boolean {
+  return Boolean(snapshot.fieldMask & (FieldMask.ElectricPotential | FieldMask.Ionization));
+}
+
+function fieldSnapshotContainsEndpoints(
+  snapshot: FFieldRegionSnapshot,
+  sourceCoord: FMacroCoord,
+  targetCoord: FMacroCoord,
+): boolean {
+  const sourceChunk = chunkCoordForMacro(sourceCoord);
+  const targetChunk = chunkCoordForMacro(targetCoord);
+  if (
+    !sameChunk(sourceChunk, snapshot.chunkCoord) ||
+    !sameChunk(targetChunk, snapshot.chunkCoord)
+  ) {
+    return false;
+  }
+  const sourceIndex = macroIndexInChunk(sourceCoord, sourceChunk);
+  const targetIndex = macroIndexInChunk(targetCoord, targetChunk);
+  let hasSource = false;
+  let hasTarget = false;
+  for (const idx of snapshot.macroIndices) {
+    hasSource ||= idx === sourceIndex;
+    hasTarget ||= idx === targetIndex;
+    if (hasSource && hasTarget) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function chunkCoordForMacro(coord: FMacroCoord): { cx: number; cy: number; cz: number } {
+  return {
+    cx: Math.floor(coord.x / VoxelConstants.ChunkSizeX),
+    cy: Math.floor(coord.y / VoxelConstants.ChunkSizeY),
+    cz: Math.floor(coord.z / VoxelConstants.ChunkSizeZ),
+  };
+}
+
+function sameChunk(
+  a: { cx: number; cy: number; cz: number },
+  b: { cx: number; cy: number; cz: number },
+): boolean {
+  return a.cx === b.cx && a.cy === b.cy && a.cz === b.cz;
+}
+
+function macroIndexInChunk(
+  coord: FMacroCoord,
+  chunkCoord: { cx: number; cy: number; cz: number },
+): number {
+  const x = coord.x - chunkCoord.cx * VoxelConstants.ChunkSizeX;
+  const y = coord.y - chunkCoord.cy * VoxelConstants.ChunkSizeY;
+  const z = coord.z - chunkCoord.cz * VoxelConstants.ChunkSizeZ;
+  return (
+    x + y * VoxelConstants.ChunkSizeX + z * VoxelConstants.ChunkSizeX * VoxelConstants.ChunkSizeY
+  );
 }
 
 function worldMicroCoordFromTarget(target: {

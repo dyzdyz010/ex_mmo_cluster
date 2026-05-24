@@ -42,6 +42,12 @@ export type AppEvents = {
     sourcePotential: number;
     maxTicks?: number;
   };
+  "input:lightning-selected-entity": {
+    source: string;
+    sourcePotential: number;
+    maxTicks?: number;
+    verticalOffsetMacros?: number;
+  };
   "input:capture-conduction-endpoint": {
     role: "source" | "target";
     source: string;
@@ -122,17 +128,29 @@ export type AppEvents = {
     sourcePotential: number;
     source: string;
     powerSource?: {
+      conductionMode?: "conductive" | "discharge";
       outputMode?: "dc" | "ac" | "pulse";
       voltage?: number;
       currentLimitAmps?: number;
       frequencyHz?: number;
+      loadCurrentAmps?: number;
+      energyBudgetJoules?: number;
     };
+  };
+  "world:lightning-effect-requested": {
+    targetKind: "entity" | "voxel" | "fallback_entity";
+    entityId?: number;
+    sourceCoord: FMacroCoord;
+    targetCoord: FMacroCoord;
+    sourcePotential: number;
+    source: string;
   };
   "world:voxel-conduction-accepted": {
     sourceCoord: FMacroCoord;
     targetCoord: FMacroCoord;
     sourcePotential: number;
     source: string;
+    conductionMode?: "conductive" | "discharge";
     regionId?: string;
     fieldRegionCreated?: boolean;
     powerDraw?: ElectricPowerDraw;

@@ -24,6 +24,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   alias SceneServer.Voxel.Field.{CircuitComponentAnalysis, FieldRegion, FieldSource}
   alias SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
+  alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.ParticipantProjection
   alias SceneServer.Voxel.Field.PowerSource
@@ -352,6 +353,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
             target_index: target_index,
             source_key: source_key,
             field_types: ["electric_potential", "ionization"],
+            conduction_mode: field_source.conduction_mode || :conductive,
             source_potential: source_potential,
             radius: radius,
             max_ticks: max_ticks,
@@ -370,6 +372,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                  source_potential,
                  max_frontier,
                  source_powered?,
+                 field_source,
                  %{
                    logical_scene_id: logical_scene_id,
                    chunk_coord: coord_map(source_chunk_coord),
@@ -439,7 +442,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
           |> Map.put_new(:source_mode, :persistent)
           |> Map.put_new(:output_mode, defaults.output_mode)
           |> Map.put_new(:source_potential, defaults.voltage)
-          |> Map.put_new(:voltage, defaults.voltage)
+          |> Map.put_new(
+            :voltage,
+            get_any(opts, [:source_potential, :potential], defaults.voltage)
+          )
           |> Map.put_new(:current_limit_amps, defaults.current_limit_amps)
           |> Map.put_new(:energy_budget_joules, defaults.energy_budget_joules)
 
@@ -672,6 +678,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                          source_potential,
                          max_frontier,
                          source_powered?,
+                         field_source,
                          Map.merge(base_context, %{
                            shard: :source,
                            target_local_macro: coord_map(source_boundary_local_macro),
@@ -714,6 +721,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                        source_potential,
                        target_aabb,
                        max_frontier,
+                       field_source,
                        base_context,
                        cleanup_context
                      ) do
@@ -839,6 +847,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          source_potential,
          target_aabb,
          max_frontier,
+         field_source,
          base_context,
          cleanup_context
        ) do
@@ -862,15 +871,21 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
         context = Map.put(base_context, :boundary_contacts_count, MapSet.size(contacts))
         cleanup_context = Map.put(cleanup_context, :target_chunk_pid, target_chunk_pid)
 
+        conductive_boundary_mode? = field_source.conduction_mode != :discharge
+
         cond do
-          not ParticipantProjection.electric_conductive_cell?(target_projection, target_index) ->
+          conductive_boundary_mode? and
+              not ParticipantProjection.electric_conductive_cell?(
+                target_projection,
+                target_index
+              ) ->
             reject_cross_chunk_conduction_boundary(
               :target_not_conductive,
               context,
               cleanup_context
             )
 
-          MapSet.size(contacts) == 0 ->
+          conductive_boundary_mode? and MapSet.size(contacts) == 0 ->
             reject_cross_chunk_conduction_boundary(
               :cross_chunk_boundary_contacts_misaligned,
               context,
@@ -878,13 +893,14 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
             )
 
           true ->
-            case ConductionPathKernel.channel_path(
+            case electric_channel_path(
+                   field_source,
                    target_storage,
                    target_boundary_index,
                    target_index,
                    target_aabb,
                    source_potential,
-                   %{max_frontier: max_frontier}
+                   max_frontier
                  ) do
               {:ok, _path} ->
                 {:ok, target_chunk_pid}
@@ -1096,17 +1112,19 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          source_potential,
          max_frontier,
          source_powered?,
+         field_source,
          observe_context
        ) do
     %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
 
-    case ConductionPathKernel.channel_path(
+    case electric_channel_path(
+           field_source,
            storage,
            source_index,
            target_index,
            aabb,
            source_potential,
-           %{max_frontier: max_frontier}
+           max_frontier
          ) do
       {:ok, _path} ->
         if source_powered? do
@@ -1138,6 +1156,48 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
           observe_context
         )
     end
+  end
+
+  defp electric_channel_path(
+         %FieldSource{conduction_mode: :discharge},
+         %Storage{} = storage,
+         source_index,
+         target_index,
+         aabb,
+         source_potential,
+         max_frontier
+       ) do
+    ElectricDischargeKernel.discharge_path(
+      storage,
+      source_index,
+      target_index,
+      aabb,
+      source_potential,
+      %{
+        max_frontier: max_frontier
+      }
+    )
+  end
+
+  defp electric_channel_path(
+         _field_source,
+         %Storage{} = storage,
+         source_index,
+         target_index,
+         aabb,
+         source_potential,
+         max_frontier
+       ) do
+    ConductionPathKernel.channel_path(
+      storage,
+      source_index,
+      target_index,
+      aabb,
+      source_potential,
+      %{
+        max_frontier: max_frontier
+      }
+    )
   end
 
   defp validate_power_source_policy(
@@ -1251,6 +1311,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   defp normalize_conduction_reject_reason(:unreachable), do: :no_conductive_path
   defp normalize_conduction_reject_reason(:empty_queue), do: :no_conductive_path
   defp normalize_conduction_reject_reason(:frontier_exhausted), do: :no_conductive_path
+  defp normalize_conduction_reject_reason(:no_discharge_path), do: :no_discharge_path
 
   defp normalize_conduction_reject_reason(:cross_chunk_boundary_contacts_misaligned),
     do: :no_conductive_path
@@ -1733,6 +1794,12 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       %{id: :conduction_path} = kernel_spec ->
         Map.put(kernel_spec, :opts, %{target_macro_index: target_index})
 
+      %{id: :electric_discharge, opts: opts} = kernel_spec when is_map(opts) ->
+        %{kernel_spec | opts: Map.put(opts, :target_macro_index, target_index)}
+
+      %{id: :electric_discharge} = kernel_spec ->
+        Map.put(kernel_spec, :opts, %{target_macro_index: target_index})
+
       kernel_spec ->
         kernel_spec
     end)
@@ -1794,6 +1861,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       target_boundary_index: target_boundary_index,
       source_key: field_source.source_key,
       field_types: ["electric_potential", "ionization"],
+      conduction_mode: field_source.conduction_mode || :conductive,
       source_potential: source_potential,
       radius: radius,
       max_ticks: max_ticks,

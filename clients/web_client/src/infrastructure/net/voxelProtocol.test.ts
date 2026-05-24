@@ -15,6 +15,7 @@ import {
   encodeVoxelBuildReservationIntent,
   encodeVoxelChunkSubscribe,
   encodeVoxelDebugProbe,
+  encodeVoxelFieldConductIntent,
   encodeVoxelImpactIntent,
   encodeVoxelPrefabPlaceIntent,
 } from "./voxelProtocol";
@@ -200,6 +201,48 @@ describe("voxel gate protocol", () => {
     expect(view.getUint16(76, false)).toBe(0);
     expect(view.getUint16(78, false)).toBe(0);
     expect(view.getUint32(80, false)).toBe(0);
+  });
+
+  it("encodes voxel field conduct intents for WebSocket field actions", () => {
+    const encoded = encodeVoxelFieldConductIntent({
+      requestId: 0x0102_0304_0506_0708,
+      clientIntentSeq: 0x0a0b_0c0d,
+      logicalSceneId: 0x1112_1314_1516_1718,
+      sourceWorldMacro: { x: 15, y: 4, z: 15 },
+      targetWorldMacro: { x: 15, y: 0, z: 15 },
+      sourcePotential: 300,
+      maxTicks: 5,
+      conductionMode: "discharge",
+      outputMode: "pulse",
+      voltage: 300,
+      currentLimitAmps: 30,
+      frequencyHz: 0,
+      loadCurrentAmps: 18,
+      energyBudgetJoules: 900,
+    });
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    expect(view.getUint8(0)).toBe(VoxelOpcode.FieldConductIntent);
+    expect(Number(view.getBigUint64(1, false))).toBe(0x0102_0304_0506_0708);
+    expect(view.getUint32(9, false)).toBe(0x0a0b_0c0d);
+    expect(Number(view.getBigUint64(13, false))).toBe(0x1112_1314_1516_1718);
+    expect(Number(view.getBigInt64(21, false))).toBe(15);
+    expect(Number(view.getBigInt64(29, false))).toBe(4);
+    expect(Number(view.getBigInt64(37, false))).toBe(15);
+    expect(Number(view.getBigInt64(45, false))).toBe(15);
+    expect(Number(view.getBigInt64(53, false))).toBe(0);
+    expect(Number(view.getBigInt64(61, false))).toBe(15);
+    expect(view.getFloat64(69, false)).toBe(300);
+    expect(view.getUint32(77, false)).toBe(5);
+    expect(view.getUint8(81)).toBe(1);
+    expect(view.getUint8(82)).toBe(3);
+    expect(view.getUint16(83, false)).toBe(0x003f);
+    expect(view.getFloat64(85, false)).toBe(300);
+    expect(view.getFloat64(93, false)).toBe(30);
+    expect(view.getFloat64(101, false)).toBe(0);
+    expect(view.getFloat64(109, false)).toBe(18);
+    expect(view.getFloat64(117, false)).toBe(900);
+    expect(encoded.byteLength).toBe(125);
   });
 
   it("decodes server chunk snapshots into storage truth", () => {
@@ -510,20 +553,17 @@ describe("Phase 1.6b golden fixture roundtrip", () => {
     });
   });
 
-  describe.each(OBJECT_STATE_DELTA_FIXTURES)(
-    "object_state_delta fixture %s",
-    (fixtureName) => {
-      it("decode populates header + affected_chunks", () => {
-        const { bytes } = loadGolden(fixtureName);
-        const payload = withOpcodePrefix(VoxelOpcode.ObjectStateDelta, bytes);
-        const message = decodeVoxelServerMessage(payload);
-        expect(message?.type).toBe("voxel_object_state_delta");
-        if (message?.type !== "voxel_object_state_delta") return;
-        expect(message.delta.objectId).toBeGreaterThanOrEqual(0n);
-        expect(message.delta.stateFlags).toBeGreaterThan(0);
-      });
-    },
-  );
+  describe.each(OBJECT_STATE_DELTA_FIXTURES)("object_state_delta fixture %s", (fixtureName) => {
+    it("decode populates header + affected_chunks", () => {
+      const { bytes } = loadGolden(fixtureName);
+      const payload = withOpcodePrefix(VoxelOpcode.ObjectStateDelta, bytes);
+      const message = decodeVoxelServerMessage(payload);
+      expect(message?.type).toBe("voxel_object_state_delta");
+      if (message?.type !== "voxel_object_state_delta") return;
+      expect(message.delta.objectId).toBeGreaterThanOrEqual(0n);
+      expect(message.delta.stateFlags).toBeGreaterThan(0);
+    });
+  });
 
   describe.each(CATALOG_PATCH_FIXTURES)(
     "catalog_patch fixture %s via opcode 0x71",

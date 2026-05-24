@@ -196,6 +196,63 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["target_world_macro"] == %{"x" => 3, "y" => 1, "z" => 0}
   end
 
+  test "POST /ingame/voxel/conduct can create a dielectric-breakdown discharge path",
+       %{conn: conn} do
+    logical_scene_id = 82_125 + System.unique_integer([:positive])
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk_pid,
+               {0, 1, 0},
+               NormalBlockData.new(@power_block_material_id)
+             )
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk_pid,
+               {3, 1, 0},
+               NormalBlockData.new(@iron_material_id)
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/conduct", %{
+        "logical_scene_id" => logical_scene_id,
+        "source_x" => 0,
+        "source_y" => 1,
+        "source_z" => 0,
+        "target_x" => 3,
+        "target_y" => 1,
+        "target_z" => 0,
+        "source_potential" => 120,
+        "max_ticks" => 90,
+        "radius" => 0,
+        "max_frontier" => 32,
+        "conduction_mode" => "discharge"
+      })
+
+    body = json_response(conn, 200)
+    assert body["field_region_created"] == true
+    assert body["conduction_mode"] == "discharge"
+    assert body["source"]["conduction_mode"] == "discharge"
+    assert body["field_types"] == ["electric_potential", "ionization"]
+  end
+
   test "POST /ingame/voxel/auto_circuit refreshes a target-free current field", %{conn: conn} do
     logical_scene_id = 82_250 + System.unique_integer([:positive])
 
