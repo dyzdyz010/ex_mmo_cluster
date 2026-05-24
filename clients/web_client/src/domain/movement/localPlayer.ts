@@ -12,6 +12,12 @@ import { DEFAULT_MOVEMENT_PROFILE, type MovementProfile } from "./profile";
 import { step } from "./predictor";
 import { reconcile, type ReconcileResult } from "./reconcile";
 import {
+  cloneCollisionSummary,
+  disabledCollisionSummary,
+  type MovementCollisionResolver,
+  type MovementCollisionSummary,
+} from "./collision";
+import {
   MovementFlag,
   makeIdleState,
   type MoveInputFrame,
@@ -27,6 +33,8 @@ export class LocalPredictionRuntime {
   private readonly predictedHistory = new PredictedHistory(256);
   private readonly governanceStats: ReplayGovernanceStats = makeReplayGovernanceStats();
   private smoothedJitterMs = 0;
+  private collisionResolver: MovementCollisionResolver | null = null;
+  private lastCollisionSummary: MovementCollisionSummary | null = null;
 
   constructor(
     private readonly profile: MovementProfile = DEFAULT_MOVEMENT_PROFILE,
@@ -57,6 +65,11 @@ export class LocalPredictionRuntime {
     this.currentState = state;
   }
 
+  setCollisionResolver(resolver: MovementCollisionResolver | null): void {
+    this.collisionResolver = resolver;
+    this.lastCollisionSummary = null;
+  }
+
   buildInputFrame(
     inputDir: Vector2,
     dtMs: number,
@@ -85,7 +98,7 @@ export class LocalPredictionRuntime {
       return null;
     }
     this.inputHistory.push(frame);
-    const next = step(this.currentState, frame, this.profile);
+    const next = this.stepWithCollision(this.currentState, frame, this.profile);
     this.predictedHistory.push(next);
     this.currentState = next;
     return {
@@ -114,6 +127,7 @@ export class LocalPredictionRuntime {
       this.predictedHistory,
       this.profile,
       this.governance,
+      (previous, frame, profile) => this.stepWithCollision(previous, frame, profile),
     );
     if (!result) {
       return null;
@@ -170,6 +184,14 @@ export class LocalPredictionRuntime {
     return this.governance.softPositionError;
   }
 
+  getLastCollisionSummary(): MovementCollisionSummary | null {
+    return this.lastCollisionSummary ? cloneCollisionSummary(this.lastCollisionSummary) : null;
+  }
+
+  predictFrom(state: PredictedMoveState, frame: MoveInputFrame): PredictedMoveState {
+    return this.stepWithCollision(state, frame, this.profile);
+  }
+
   private extendPredictionThrough(authTick: number): void {
     if (!this.currentState) {
       return;
@@ -184,9 +206,27 @@ export class LocalPredictionRuntime {
         speedScale: 1,
         movementFlags: MovementFlag.Brake,
       };
-      const next = step(this.currentState, idleFrame, this.profile);
+      const next = this.stepWithCollision(this.currentState, idleFrame, this.profile);
       this.predictedHistory.push(next);
       this.currentState = next;
     }
+  }
+
+  private stepWithCollision(
+    previous: PredictedMoveState,
+    frame: MoveInputFrame,
+    profile: MovementProfile,
+  ): PredictedMoveState {
+    const proposed = step(previous, frame, profile);
+    const resolver = this.collisionResolver;
+
+    if (!resolver) {
+      this.lastCollisionSummary = disabledCollisionSummary(previous, proposed);
+      return proposed;
+    }
+
+    const resolution = resolver(previous, proposed);
+    this.lastCollisionSummary = cloneCollisionSummary(resolution.summary);
+    return resolution.state;
   }
 }

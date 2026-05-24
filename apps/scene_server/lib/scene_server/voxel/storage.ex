@@ -1042,6 +1042,37 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   @doc """
+  Returns true when a local micro slot is occupied by authoritative voxel truth.
+
+  Empty macro cells are unoccupied. Solid macro cells occupy every one of their
+  512 micro slots. Refined macro cells read their `RefinedCellData`
+  `occupancy_words`.
+  """
+  @spec micro_slot_occupied?(t(), integer() | term(), 0..511) :: boolean()
+  def micro_slot_occupied?(%__MODULE__{} = storage, macro_index_or_coord, micro_slot_index) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    micro_slot_index = micro_slot!(micro_slot_index)
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_empty() ->
+        false
+
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        true
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        storage.refined_cells
+        |> Enum.at(header.payload_index)
+        |> slot_currently_occupied?(micro_slot_index)
+
+      true ->
+        false
+    end
+  end
+
+  @doc """
   Recomputes per-cell `ObjectCoverRef[]` and chunk-level `ChunkObjectRef[]`
   from the current `MicroLayer.owner_object_id` / `owner_part_id` truth.
 

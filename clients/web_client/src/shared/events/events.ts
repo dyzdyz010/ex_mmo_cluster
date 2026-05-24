@@ -79,6 +79,9 @@ export type AppEvents = {
     velocity: Vector3;
     movementFlags: number;
     movementMode: string;
+    collisionStatus: string;
+    collisionOccupiedCount: number;
+    collisionBlockedAxes: string[];
   };
   "movement:input-blocked": {
     reason: string;

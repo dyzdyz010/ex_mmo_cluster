@@ -405,6 +405,33 @@ AUTH_PORT=20010 PORT=5173 ./scripts/start-client.sh
 
 ## Smoke / 验收脚本
 
+### 真实浏览器 movement smoke
+
+优先用这条验证浏览器端 movement 显示高度、跳跃和远端玩家插值链路：
+
+```bash
+node scripts/run_browser_movement_smoke_supervised.js
+```
+
+该 runner 会启动完整服务端、Vite web client 和两个真实 Chromium/Chrome/Edge 标签页，
+再通过 `window.__voxelCli` 验证：
+
+- 头顶放置方块后，本地显示高度和权威高度不会被抬升
+- 单客户端 `jump` 会产生本地 rendered Y、authoritative Y 和 airborne trace
+- 第二个网页客户端能看到第一个客户端的远端 airborne / Y 轴抬升
+
+运行产物写入 `.demo/observe/`，核心文件是
+`browser-movement-smoke-summary.json`。如果脚本找不到浏览器，可设置
+`BROWSER_SMOKE_CHROME_PATH` 指向 Chrome/Edge/Chromium 可执行文件。
+
+兼容 PowerShell 入口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_browser_movement_smoke.ps1
+```
+
+### WebSocket 双客户端协议 smoke
+
 推荐使用新的受监督 runner：
 
 ```bash

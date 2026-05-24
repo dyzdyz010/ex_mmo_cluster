@@ -877,7 +877,7 @@ defmodule GateServer.WsConnection do
   end
 
   defp build_character_profile(_character),
-    do: %{name: "unknown", position: {750.0, 750.0, 100.0}}
+    do: %{name: "unknown", position: {750.0, 750.0, 185.0}}
 
   # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
   # Movement world coords use server Z as vertical. The browser maps this spawn
@@ -886,11 +886,11 @@ defmodule GateServer.WsConnection do
   defp normalize_position(%{} = position) do
     x = map_float(position, ["x", :x], 750.0)
     y = map_float(position, ["y", :y], 750.0)
-    z = map_float(position, ["z", :z], 100.0)
+    z = map_float(position, ["z", :z], 185.0)
     {x, y, z}
   end
 
-  defp normalize_position(_position), do: {750.0, 750.0, 100.0}
+  defp normalize_position(_position), do: {750.0, 750.0, 185.0}
 
   defp map_float(map, keys, default) do
     keys

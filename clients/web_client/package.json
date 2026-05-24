@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
+    "smoke:browser-movement": "node ../../scripts/run_browser_movement_smoke_supervised.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src",

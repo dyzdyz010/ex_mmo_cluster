@@ -100,7 +100,10 @@
 
 ### 下一阶段建议
 
-- [ ] 将本次 Playwright 双客户端跳跃验证固化为可重复脚本，避免后续只靠手工实测。
+- [x] 将本次双客户端跳跃验证固化为可重复脚本，避免后续只靠手工实测。
+  - 入口：`node scripts/run_browser_movement_smoke_supervised.js`
+  - 产物：`.demo/observe/browser-movement-smoke-summary.json`
+  - 覆盖：头顶方块不抬升、本地跳跃显示、远端玩家跳跃显示
 - [ ] 增加桥、天花板、低矮通道、台阶、悬空平台等复杂地形的移动显示回归。
 - [ ] 明确服务端权威体素碰撞/支撑面的长期归属，避免客户端预测和渲染层再次承担地形裁决。
 - [ ] 将 jump / airborne / grounded 的 observe 字段整理成稳定调试契约，便于 CLI 和浏览器自动化共用。

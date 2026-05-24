@@ -17,7 +17,7 @@ defmodule SceneServer.PlayerManagerTest do
     end)
 
     cid = System.unique_integer([:positive])
-    profile = %{name: "native-refresh-#{cid}", position: {750.0, 750.0, 100.0}}
+    profile = %{name: "native-refresh-#{cid}", position: {750.0, 750.0, 185.0}}
 
     assert {:ok, player_pid} =
              GenServer.call(
@@ -38,6 +38,44 @@ defmodule SceneServer.PlayerManagerTest do
         catch
           :exit, _ -> :ok
         end
+      end
+    end)
+  end
+
+  test "add_player replaces an existing cid actor and ignores stale cleanup" do
+    cid = System.unique_integer([:positive])
+    profile = %{name: "replace-#{cid}", position: {750.0, 750.0, 185.0}}
+
+    assert {:ok, first_pid} =
+             GenServer.call(
+               SceneServer.PlayerManager,
+               {:add_player, cid, self(), :os.system_time(:millisecond), profile},
+               8_000
+             )
+
+    first_ref = Process.monitor(first_pid)
+
+    assert {:ok, second_pid} =
+             GenServer.call(
+               SceneServer.PlayerManager,
+               {:add_player, cid, self(), :os.system_time(:millisecond), profile},
+               8_000
+             )
+
+    assert first_pid != second_pid
+    assert_receive {:DOWN, ^first_ref, :process, ^first_pid, :normal}, 2_000
+
+    GenServer.cast(SceneServer.PlayerManager, {:remove_player_index, cid, first_pid})
+    _ = :sys.get_state(SceneServer.PlayerManager)
+
+    assert {:ok, players} = GenServer.call(SceneServer.PlayerManager, :get_all_players)
+    assert players[cid] == second_pid
+
+    on_exit(fn ->
+      try do
+        GenServer.call(second_pid, :exit, 2_000)
+      catch
+        :exit, _ -> :ok
       end
     end)
   end

@@ -30,6 +30,16 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  Routes a read-only collision occupancy query to the owning hot chunk process.
+
+  `ChunkDirectory` owns lookup/startup only. `ChunkProcess` owns the voxel
+  truth and validates the local macro/micro samples.
+  """
+  def collision_query(server \\ __MODULE__, attrs) do
+    GenServer.call(server, {:collision_query, attrs})
+  end
+
+  @doc """
   Subscribes a process to a hot chunk after World has supplied the current lease.
 
   The directory only resolves or starts the chunk. `ChunkProcess` owns the
@@ -217,6 +227,26 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {{:error, reason}, next_state} ->
         {:reply, {:error, reason}, next_state}
     end
+  end
+
+  def handle_call({:collision_query, attrs}, _from, state) do
+    attrs = normalize_attrs(attrs)
+
+    case ensure_chunk_in_state(state, attrs) do
+      {{:ok, chunk_pid}, next_state} ->
+        query_attrs = Map.take(attrs, [:samples])
+
+        case ChunkProcess.collision_query(chunk_pid, query_attrs) do
+          {:ok, result} -> {:reply, {:ok, result}, next_state}
+          {:error, reason} -> {:reply, {:error, reason}, next_state}
+        end
+
+      {{:error, reason}, next_state} ->
+        {:reply, {:error, reason}, next_state}
+    end
+  rescue
+    _exception in [ArgumentError, KeyError] ->
+      {:reply, {:error, :invalid_collision_query}, state}
   end
 
   def handle_call({:subscribe, attrs}, _from, state) do
@@ -517,7 +547,8 @@ defmodule SceneServer.Voxel.ChunkDirectory do
         attrs
         |> Map.get(:chunk_coord, Map.get(attrs, :center_chunk))
         |> coord!(),
-      lease: Map.get(attrs, :lease)
+      lease: Map.get(attrs, :lease),
+      samples: Map.get(attrs, :samples, [])
     }
   end
 

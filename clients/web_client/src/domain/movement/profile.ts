@@ -26,7 +26,7 @@ export const DEFAULT_MOVEMENT_PROFILE: MovementProfile = {
   maxAccel: 3300,
   maxDecel: 3800,
   maxJerk: 24_500,
-  jumpImpulse: 485,
+  jumpImpulse: 900,
   gravity: 980,
   airControl: 0.35,
   airAccel: 1140,

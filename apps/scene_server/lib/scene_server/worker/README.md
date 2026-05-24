@@ -32,3 +32,7 @@ recreate it and re-register the current authoritative movement snapshot rather
 than letting remote observers freeze on stale AOI data. AOI priority decisions
 live in `../aoi/`; AOI workers only apply those decisions to their owned
 subscription state.
+
+`PlayerManager` owns CID session replacement. A reconnect for the same CID
+stops the old `PlayerCharacter` before publishing the new PID, and stale
+terminate cleanup is ignored unless the PID still matches the current index.

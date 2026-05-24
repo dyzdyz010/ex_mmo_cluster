@@ -1,8 +1,11 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
 import { ReplayAction } from "@domain/movement/governance";
-import { step } from "@domain/movement/predictor";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
+import type {
+  MovementCollisionResolver,
+  MovementCollisionSummary,
+} from "@domain/movement/collision";
 import {
   MovementFlag,
   MovementMode,
@@ -42,6 +45,9 @@ export interface MovementFrameTraceSample {
   accumulatorMs: number;
   movementMode: string;
   velocityY: number;
+  collisionStatus: string;
+  collisionOccupiedCount: number;
+  collisionBlockedAxes: string[];
 }
 
 /**
@@ -66,6 +72,7 @@ export class LocalPlayerController implements FrameSubscriber {
   private frameTraceRemaining = 0;
   private renderSimulationState: PredictedMoveState | null = null;
   private lastInputBlockedAtMs = Number.NEGATIVE_INFINITY;
+  private lastCollisionSummary: MovementCollisionSummary | null = null;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -144,6 +151,24 @@ export class LocalPlayerController implements FrameSubscriber {
     return this.prediction.getCurrentSoftPositionError();
   }
 
+  setMovementCollisionResolver(resolver: MovementCollisionResolver | null): void {
+    this.prediction.setCollisionResolver(resolver);
+    this.lastCollisionSummary = null;
+  }
+
+  getLastCollisionSummary(): MovementCollisionSummary | null {
+    const summary = this.lastCollisionSummary ?? this.prediction.getLastCollisionSummary();
+    return summary
+      ? {
+          ...summary,
+          blockedAxes: [...summary.blockedAxes],
+          previousPosition: summary.previousPosition.clone(),
+          proposedPosition: summary.proposedPosition.clone(),
+          resolvedPosition: summary.resolvedPosition.clone(),
+        }
+      : null;
+  }
+
   /** Visible for tests. */
   getCombinedMovementAxesForTest(): MovementAxes {
     return this.combinedAxes();
@@ -192,6 +217,8 @@ export class LocalPlayerController implements FrameSubscriber {
     );
     const predicted = this.prediction.applyLocalInput(frame);
     if (!predicted) return;
+    const collisionSummary = this.prediction.getLastCollisionSummary();
+    this.lastCollisionSummary = collisionSummary;
 
     if (jumpRequested || this.renderSimulationState?.movementMode !== predicted.movementMode) {
       this.syncRenderAnchorTo(predicted);
@@ -207,6 +234,9 @@ export class LocalPlayerController implements FrameSubscriber {
       velocity: predicted.velocity,
       movementFlags: frame.movementFlags,
       movementMode: predicted.movementMode,
+      collisionStatus: collisionSummary?.status ?? "disabled",
+      collisionOccupiedCount: collisionSummary?.occupiedCount ?? 0,
+      collisionBlockedAxes: collisionSummary?.blockedAxes ?? [],
     });
   }
 
@@ -215,8 +245,7 @@ export class LocalPlayerController implements FrameSubscriber {
     const jump = this.input.hasPendingJump();
     const stick = this.input.getVirtualMovement();
     const hasMoveInput =
-      keys.forward || keys.backward || keys.left || keys.right ||
-      stick.x !== 0 || stick.y !== 0;
+      keys.forward || keys.backward || keys.left || keys.right || stick.x !== 0 || stick.y !== 0;
     if ((!hasMoveInput && !jump) || nowMs - this.lastInputBlockedAtMs < 1_000) {
       return;
     }
@@ -318,11 +347,11 @@ export class LocalPlayerController implements FrameSubscriber {
         speedScale: 1,
         movementFlags: inputDir.lengthSq() <= 1.0e-6 ? MovementFlag.Brake : MovementFlag.None,
       };
-      this.renderSimulationState = step(
+      this.renderSimulationState = this.prediction.predictFrom(
         this.renderSimulationState,
         partialFrame,
-        DEFAULT_MOVEMENT_PROFILE,
       );
+      this.lastCollisionSummary = this.prediction.getLastCollisionSummary();
     }
 
     this.renderedPosition.copy(this.renderSimulationState.position).add(this.pendingCorrection);
@@ -356,6 +385,9 @@ export class LocalPlayerController implements FrameSubscriber {
       accumulatorMs: this.fixedStepAccumulatorMs,
       movementMode: this.renderSimulationState?.movementMode ?? MovementMode.Grounded,
       velocityY: this.renderSimulationState?.velocity.y ?? 0,
+      collisionStatus: this.lastCollisionSummary?.status ?? "disabled",
+      collisionOccupiedCount: this.lastCollisionSummary?.occupiedCount ?? 0,
+      collisionBlockedAxes: this.lastCollisionSummary?.blockedAxes ?? [],
     });
     this.lastTracedPosition.copy(this.renderedPosition);
     this.frameTraceRemaining -= 1;
@@ -369,6 +401,7 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativePosition.copy(start);
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
+    this.lastCollisionSummary = null;
     this.renderSimulationState = {
       seq: 0,
       tick: 0,

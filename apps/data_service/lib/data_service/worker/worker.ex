@@ -90,7 +90,7 @@ defmodule DataService.Worker do
       # Movement world coords use server Z as vertical. The browser maps this
       # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered
       # at x/z = 750 in renderer units.
-      position: %{"x" => 750.0, "y" => 750.0, "z" => 100.0},
+      position: %{"x" => 750.0, "y" => 750.0, "z" => 185.0},
       hp: 500,
       sp: 100,
       mp: 100

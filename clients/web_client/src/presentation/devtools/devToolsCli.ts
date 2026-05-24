@@ -211,6 +211,7 @@ export class DevToolsCli implements CliCommandHandler {
             jitterMs: this.deps.localPlayer.getCurrentJitterMs(),
             softPositionError: this.deps.localPlayer.getCurrentSoftPositionError(),
             pendingCorrection: formatVector(this.deps.localPlayer.getPendingCorrection()),
+            collision: this.collisionData(),
           },
           clock: this.deps.remotePlayer.getClockDebugSnapshot(),
           remote: this.deps.remotePlayer.getDebugSnapshot(),
@@ -1040,6 +1041,23 @@ export class DevToolsCli implements CliCommandHandler {
       pendingCorrection: formatVector(this.deps.localPlayer.getPendingCorrection()),
       jitterMs: this.deps.localPlayer.getCurrentJitterMs(),
       softPositionError: this.deps.localPlayer.getCurrentSoftPositionError(),
+      collision: this.collisionData(),
+    };
+  }
+
+  private collisionData(): Record<string, unknown> | null {
+    const summary = this.deps.localPlayer.getLastCollisionSummary();
+    if (!summary) {
+      return null;
+    }
+    return {
+      status: summary.status,
+      sampleCount: summary.sampleCount,
+      occupiedCount: summary.occupiedCount,
+      blockedAxes: summary.blockedAxes,
+      previousPosition: formatVector(summary.previousPosition),
+      proposedPosition: formatVector(summary.proposedPosition),
+      resolvedPosition: formatVector(summary.resolvedPosition),
     };
   }
 

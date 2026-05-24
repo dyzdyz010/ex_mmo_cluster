@@ -25,15 +25,18 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.Combat.Skill
   alias SceneServer.Combat.State, as: CombatState
   alias SceneServer.Combat.VoxelDamageRouter
-  alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State}
+  alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State, VoxelCollision}
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
   #
   # Movement world coords use server Z as vertical. The browser maps this
-  # spawn to x=750,y=100,z=750, above DevSeed's voxel y=0 platform centered at
+  # spawn to x=750,y=185,z=750, above DevSeed's voxel y=0 platform centered at
   # x/z = 750 in renderer units.
-  @default_location {750.0, 750.0, 100.0}
+  # Movement positions are avatar centers. DevSeed's y=0 platform tops out at
+  # z=100 cm, so the 170 cm avatar starts at 100 + half-height.
+  @default_location {750.0, 750.0, 185.0}
+  @legacy_dev_seed_center_location {750.0, 750.0, 100.0}
 
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
@@ -90,19 +93,20 @@ defmodule SceneServer.PlayerCharacter do
     # which is exactly the "remote cube doesn't follow you, then
     # appears to follow because you walked back" optical illusion.
     connection_monitor_ref = connection_monitor_ref(connection_pid)
+    character_profile = normalize_character_profile(cid, character_profile)
 
     {:ok,
      %{
        cid: cid,
-       character_profile: normalize_character_profile(cid, character_profile),
+       character_profile: character_profile,
        connection_pid: connection_pid,
        connection_monitor_ref: connection_monitor_ref,
-       last_location: normalize_character_profile(cid, character_profile).position,
+       last_location: character_profile.position,
        physys_ref: nil,
        aoi_ref: nil,
        character_data_ref: nil,
-       spawn_location: normalize_character_profile(cid, character_profile).position,
-       movement_state: State.idle(normalize_character_profile(cid, character_profile).position),
+       spawn_location: character_profile.position,
+       movement_state: State.idle(character_profile.position),
        movement_profile: Profile.default(),
        combat_profile: CombatProfile.default(),
        combat_state: CombatState.new(CombatProfile.default()),
@@ -634,6 +638,9 @@ defmodule SceneServer.PlayerCharacter do
        ) do
     {next_state, _ack} = Engine.step(cid, movement_state, effective_input, movement_profile)
 
+    {next_state, correction_flags, collision_summary} =
+      resolve_voxel_collision(movement_state, next_state, state)
+
     finalize_and_broadcast(
       next_state,
       effective_input.seq,
@@ -646,7 +653,9 @@ defmodule SceneServer.PlayerCharacter do
       effective_input,
       input_age_ms,
       :single,
-      movement_profile
+      movement_profile,
+      correction_flags,
+      collision_summary
     )
   end
 
@@ -663,8 +672,16 @@ defmodule SceneServer.PlayerCharacter do
          input_age_ms
        ) do
     renumbered = renumber_input_frames(queued, movement_state.tick, movement_profile.fixed_dt_ms)
-    states = Engine.replay(movement_state, renumbered, movement_profile)
-    next_state = List.last(states) || movement_state
+
+    {next_state, correction_flags, collision_summaries} =
+      replay_queued_inputs_with_collision(
+        movement_state,
+        renumbered,
+        movement_profile,
+        state,
+        cid
+      )
+
     last_frame = List.last(renumbered)
 
     finalize_and_broadcast(
@@ -679,7 +696,9 @@ defmodule SceneServer.PlayerCharacter do
       last_frame,
       input_age_ms,
       {:replayed, length(renumbered)},
-      movement_profile
+      movement_profile,
+      correction_flags,
+      summarize_replay_collision(collision_summaries)
     )
   end
 
@@ -695,7 +714,9 @@ defmodule SceneServer.PlayerCharacter do
          last_frame,
          input_age_ms,
          mode,
-         movement_profile
+         movement_profile,
+         correction_flags,
+         collision_summary
        ) do
     with :ok <-
            update_character_movement_with_retry(
@@ -714,7 +735,7 @@ defmodule SceneServer.PlayerCharacter do
           cid,
           authoritative_state,
           last_frame,
-          0,
+          correction_flags,
           movement_profile.fixed_dt_ms
         )
 
@@ -731,8 +752,14 @@ defmodule SceneServer.PlayerCharacter do
         authoritative_position: authoritative_state.position,
         authoritative_velocity: authoritative_state.velocity,
         authoritative_acceleration: authoritative_state.acceleration,
-        movement_mode: authoritative_state.movement_mode
+        movement_mode: authoritative_state.movement_mode,
+        correction_flags: ack.correction_flags,
+        collision_status: Map.get(collision_summary, :status),
+        collision_blocked_axes: Map.get(collision_summary, :blocked_axes, []),
+        collision_occupied_count: Map.get(collision_summary, :occupied_count, 0)
       })
+
+      emit_collision_observe(cid, state.logical_scene_id, authoritative_state, collision_summary)
 
       GenServer.cast(aoi_ref, {:self_move, snapshot})
       GenServer.cast(connection_pid, {:movement_ack, ack})
@@ -755,6 +782,96 @@ defmodule SceneServer.PlayerCharacter do
 
         {:noreply, state}
     end
+  end
+
+  defp replay_queued_inputs_with_collision(
+         anchor_state,
+         frames,
+         movement_profile,
+         player_state,
+         cid
+       ) do
+    Enum.reduce(frames, {anchor_state, 0, []}, fn %InputFrame{} = frame,
+                                                  {current_state, flags_acc, summaries} ->
+      {proposed_state, _ack} = Engine.step(cid, current_state, frame, movement_profile)
+
+      {resolved_state, flags, summary} =
+        resolve_voxel_collision(current_state, proposed_state, player_state)
+
+      {resolved_state, Bitwise.bor(flags_acc, flags), [summary | summaries]}
+    end)
+    |> case do
+      {state, flags, summaries} -> {state, flags, Enum.reverse(summaries)}
+    end
+  end
+
+  defp resolve_voxel_collision(%State{} = previous_state, %State{} = proposed_state, state) do
+    VoxelCollision.resolve(previous_state, proposed_state,
+      logical_scene_id: Map.get(state, :logical_scene_id, 1)
+    )
+  end
+
+  defp summarize_replay_collision([]) do
+    %{
+      status: :skipped,
+      blocked_axes: [],
+      occupied_count: 0,
+      sample_count: 0,
+      correction_flags: 0,
+      replay_count: 0
+    }
+  end
+
+  defp summarize_replay_collision(summaries) do
+    last_summary = List.last(summaries)
+
+    blocked_axes =
+      summaries
+      |> Enum.flat_map(&Map.get(&1, :blocked_axes, []))
+      |> Enum.uniq()
+
+    status =
+      cond do
+        Enum.any?(summaries, &(Map.get(&1, :status) == :resolved)) -> :resolved
+        Enum.any?(summaries, &(Map.get(&1, :status) == :unavailable)) -> :unavailable
+        true -> Map.get(last_summary, :status, :clear)
+      end
+
+    last_summary
+    |> Map.put(:status, status)
+    |> Map.put(:blocked_axes, blocked_axes)
+    |> Map.put(:occupied_count, Enum.sum(Enum.map(summaries, &Map.get(&1, :occupied_count, 0))))
+    |> Map.put(:sample_count, Enum.sum(Enum.map(summaries, &Map.get(&1, :sample_count, 0))))
+    |> Map.put(
+      :correction_flags,
+      Enum.reduce(summaries, 0, fn summary, acc ->
+        Bitwise.bor(acc, Map.get(summary, :correction_flags, 0))
+      end)
+    )
+    |> Map.put(:replay_count, length(summaries))
+  end
+
+  defp emit_collision_observe(_cid, _logical_scene_id, _state, %{status: :clear}), do: :ok
+  defp emit_collision_observe(_cid, _logical_scene_id, _state, %{status: :skipped}), do: :ok
+
+  defp emit_collision_observe(cid, logical_scene_id, authoritative_state, summary) do
+    SceneServer.CliObserve.emit("player_movement_collision", %{
+      cid: cid,
+      logical_scene_id: logical_scene_id,
+      authoritative_tick: authoritative_state.tick,
+      authoritative_position: authoritative_state.position,
+      status: Map.get(summary, :status),
+      reason: Map.get(summary, :reason),
+      previous_position: Map.get(summary, :previous_position),
+      proposed_position: Map.get(summary, :proposed_position),
+      resolved_position: Map.get(summary, :resolved_position),
+      blocked_axes: Map.get(summary, :blocked_axes, []),
+      queried_chunks: Map.get(summary, :queried_chunks, []),
+      sample_count: Map.get(summary, :sample_count, 0),
+      occupied_count: Map.get(summary, :occupied_count, 0),
+      correction_flags: Map.get(summary, :correction_flags, 0),
+      replay_count: Map.get(summary, :replay_count, 1)
+    })
   end
 
   defp renumber_input_frames(frames, base_tick, fixed_dt_ms) do
@@ -876,7 +993,7 @@ defmodule SceneServer.PlayerCharacter do
     end
 
     if Process.whereis(SceneServer.PlayerManager) do
-      GenServer.cast(SceneServer.PlayerManager, {:remove_player_index, cid})
+      GenServer.cast(SceneServer.PlayerManager, {:remove_player_index, cid, self()})
       Logger.debug("Player index removed.")
     end
 
@@ -1004,8 +1121,8 @@ defmodule SceneServer.PlayerCharacter do
     vector_magnitude(velocity) > @stopped_speed_epsilon
   end
 
-  defp input_active?(%InputFrame{input_dir: {x, y}}) do
-    abs(x) > 1.0e-6 or abs(y) > 1.0e-6
+  defp input_active?(%InputFrame{input_dir: {x, y}} = frame) do
+    abs(x) > 1.0e-6 or abs(y) > 1.0e-6 or InputFrame.jumping?(frame)
   end
 
   defp vector_magnitude({x, y, z}) do
@@ -1189,16 +1306,31 @@ defmodule SceneServer.PlayerCharacter do
        when (is_integer(x) or is_float(x)) and (is_integer(y) or is_float(y)) and
               (is_integer(z) or is_float(z)) do
     {x * 1.0, y * 1.0, z * 1.0}
+    |> maybe_migrate_legacy_dev_seed_location()
   end
 
   defp normalize_position(%{} = position) do
     x = map_float(position, ["x", :x], elem(@default_location, 0))
     y = map_float(position, ["y", :y], elem(@default_location, 1))
     z = map_float(position, ["z", :z], elem(@default_location, 2))
+
     {x, y, z}
+    |> maybe_migrate_legacy_dev_seed_location()
   end
 
   defp normalize_position(_position), do: @default_location
+
+  defp maybe_migrate_legacy_dev_seed_location(@legacy_dev_seed_center_location) do
+    SceneServer.CliObserve.emit("player_spawn_position_migrated", %{
+      from: inspect(@legacy_dev_seed_center_location),
+      to: inspect(@default_location),
+      reason: :center_anchor_height
+    })
+
+    @default_location
+  end
+
+  defp maybe_migrate_legacy_dev_seed_location(position), do: position
 
   defp map_float(map, keys, default) do
     keys

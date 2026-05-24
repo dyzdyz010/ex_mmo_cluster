@@ -39,6 +39,20 @@ defmodule SceneServer.PlayerCharacterTest do
     end
   end
 
+  test "init migrates legacy dev seed center height to avatar center spawn" do
+    cid = System.unique_integer([:positive])
+
+    assert {:ok, state, {:continue, {:load, _timestamp}}} =
+             SceneServer.PlayerCharacter.init(
+               {cid, self(), :os.system_time(:millisecond),
+                %{name: "legacy", position: {750.0, 750.0, 100.0}}}
+             )
+
+    assert state.character_profile.position == {750.0, 750.0, 185.0}
+    assert state.spawn_location == {750.0, 750.0, 185.0}
+    assert state.movement_state.position == {750.0, 750.0, 185.0}
+  end
+
   test "movement_input is latched and authoritative tick broadcasts ack + snapshot" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
@@ -389,6 +403,8 @@ defmodule SceneServer.PlayerCharacterTest do
 
     %{
       cid: 42,
+      status: :in_scene,
+      logical_scene_id: 1,
       aoi_ref: aoi_ref,
       connection_pid: connection_pid,
       character_data_ref: character_data_ref,

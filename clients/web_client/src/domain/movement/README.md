@@ -1,5 +1,9 @@
 # Movement (domain)
 
+Note: browser movement positions are avatar centers. Voxel collision keeps
+terrain contact half-open at `surface_top + AvatarConstants.HalfHeightCm`, and
+falling collision resolves the center back to that height.
+
 职责：
 
 - 实现浏览器版 fixed-tick 本地预测、权威 ack 对账、渲染平滑和远端插值。
@@ -16,6 +20,9 @@
 - `history.ts` 拥有输入/预测历史缓冲。预测历史按 `authTick`
   优先对账，并在同 tick / seq 重复写入时使用最新样本，避免旧预测覆盖
   后到的服务端锚点。
+- `collision.ts` 定义浏览器 movement 碰撞端口和 CLI 可读 summary。它不导入
+  voxel storage；`app/voxel` 适配器注入 resolver，让 fixed-step prediction、
+  ack replay 和 render partial step 共用同一套碰撞契约。
 - `predictor.ts` 只负责单步近似运动学积分。
 - `reconcile.ts` 只负责权威对账策略。服务端 ack 的 `authTick` 是
   本机预测/服务器校正的主时间轴；`ackSeq` 只作为兜底索引。历史缺失时

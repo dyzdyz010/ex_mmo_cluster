@@ -5,18 +5,28 @@ actors.
 
 ## Responsibilities
 
-- `Profile` — shared movement tuning parameters
-- `InputFrame` — one sanitized fixed-step input sample
-- `State` — authoritative movement state at a tick
-- `Ack` — controlling-client reconciliation payload
-- `RemoteSnapshot` — AOI broadcast payload for remote observers
-- `Engine` — stable Elixir API over the Rustler movement math
-- `Integrator` — readable Elixir reference implementation for tests/docs
+- `Profile` - shared movement tuning parameters
+- `InputFrame` - one sanitized fixed-step input sample
+- `State` - authoritative movement state at a tick
+- `Ack` - controlling-client reconciliation payload
+- `RemoteSnapshot` - AOI broadcast payload for remote observers
+- `Engine` - stable Elixir API over the Rustler movement math
+- `VoxelCollision` - stateless read-only adapter from movement AABBs to
+  authoritative voxel occupancy queries
+- `Integrator` - readable Elixir reference implementation for tests/docs
 
 ## Authority / reconciliation contract
 
 - `PlayerCharacter` owns the authoritative player movement state. Gate
   connections only forward sanitized input frames and encoded acks.
+- `VoxelCollision` does not own actor or voxel state. It converts the
+  `PlayerCharacter` center-anchor movement state into voxel samples and asks
+  `ChunkDirectory` / `ChunkProcess` for read-only occupancy truth. Ground
+  contact is half-open: a center at `terrain_top + avatar_half_height` is clear,
+  while descending into the terrain resolves back to that center height.
+- `ChunkProcess` remains the only owner of hot voxel storage. Movement receives
+  occupied samples and returns corrected movement state plus
+  `CorrectionFlags.collision_push/0` when terrain blocks replay.
 - `Engine.build_ack_with_intent/5` is the preferred player hot-path ack builder
   when the input frame that produced the state is available. It preserves
   server correction intent such as collision push; `build_ack/4` remains the
@@ -35,7 +45,9 @@ actors.
 - `State.ground_z` is owned by the movement state so an airborne arc can land
   back on the ground height it launched from, independent of current Z.
 - `Profile` owns airborne tuning: `jump_impulse`, `gravity`, `air_control`,
-  `air_accel`, and `max_fall_speed`.
+  `air_accel`, and `max_fall_speed`. The default `jump_impulse=900` gives an
+  apex of roughly 4.1m under `gravity=980`, so players can escape multi-block
+  voxel traps while collision testing.
 
 ## Relationship to actors
 

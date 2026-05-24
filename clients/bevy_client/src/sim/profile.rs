@@ -33,7 +33,7 @@ impl Default for MovementProfile {
             max_jerk: 9_000.0,
             friction: 0.0,
             turn_response: 1.0,
-            jump_impulse: 420.0,
+            jump_impulse: 900.0,
             gravity: 980.0,
             air_control: 0.35,
             air_accel: 420.0,

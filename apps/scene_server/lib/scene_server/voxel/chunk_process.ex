@@ -180,6 +180,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, {:snapshot_payload, request_id})
   end
 
+  @doc """
+  Reads authoritative occupancy for local macro/micro samples in this chunk.
+
+  This is a read-only collision surface. The chunk process owns voxel truth;
+  callers such as movement resolvers only submit local samples and consume the
+  occupied subset returned here.
+  """
+  @spec collision_query(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
+  def collision_query(server, attrs) when is_map(attrs) do
+    GenServer.call(server, {:collision_query, attrs})
+  end
+
   @doc "Persists the current chunk through DataService's fenced snapshot store."
   def persist(server) do
     GenServer.call(server, :persist)
@@ -969,6 +981,30 @@ defmodule SceneServer.Voxel.ChunkProcess do
     payload = encode_snapshot_payload(state.storage, request_id)
 
     {:reply, {:ok, payload}, state}
+  end
+
+  def handle_call({:collision_query, attrs}, _from, state) do
+    case normalize_collision_query(attrs) do
+      {:ok, query} ->
+        occupied =
+          state.storage
+          |> collision_query_hits(query.samples)
+          |> Enum.sort_by(fn hit -> {hit.macro_index, hit.micro_slot} end)
+
+        {:reply,
+         {:ok,
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            chunk_version: state.storage.chunk_version,
+            sample_count: length(query.samples),
+            occupied_count: length(occupied),
+            occupied: occupied
+          }}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:persist, _from, %{lease: nil} = state) do
@@ -4509,6 +4545,90 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp safe_micro_slot(_), do: {:error, :invalid_micro_slot}
+
+  defp normalize_collision_query(attrs) when is_map(attrs) do
+    samples = fetch_optional(attrs, [:samples]) || []
+
+    cond do
+      not is_list(samples) ->
+        {:error, :invalid_collision_query}
+
+      samples == [] ->
+        {:ok, %{samples: []}}
+
+      true ->
+        samples
+        |> Enum.reduce_while({:ok, []}, fn sample, {:ok, acc} ->
+          case normalize_collision_sample(sample) do
+            {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, normalized} ->
+            samples =
+              normalized
+              |> Enum.reverse()
+              |> Enum.uniq_by(fn sample -> {sample.macro_index, sample.micro_slot} end)
+
+            {:ok, %{samples: samples}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp normalize_collision_query(_attrs), do: {:error, :invalid_collision_query}
+
+  defp normalize_collision_sample({macro, micro_slot}) do
+    normalize_collision_sample(%{macro: macro, micro_slot: micro_slot})
+  end
+
+  defp normalize_collision_sample(%{} = attrs) do
+    with macro_value when not is_nil(macro_value) <-
+           fetch_optional(attrs, [:macro, :macro_index, :macro_coord]),
+         {:ok, macro_index} <- safe_macro_index(macro_value),
+         slot when not is_nil(slot) <- fetch_optional(attrs, [:micro_slot, :micro_slot_index]),
+         {:ok, micro_slot} <- safe_micro_slot(slot) do
+      {:ok,
+       %{
+         macro_index: macro_index,
+         macro: Types.macro_coord!(macro_index),
+         micro_slot: micro_slot
+       }}
+    else
+      nil -> {:error, :invalid_collision_sample}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_collision_sample(_sample), do: {:error, :invalid_collision_sample}
+
+  defp collision_query_hits(%Storage{} = storage, samples) do
+    Enum.flat_map(samples, fn sample ->
+      case collision_query_hit(storage, sample) do
+        nil -> []
+        hit -> [hit]
+      end
+    end)
+  end
+
+  defp collision_query_hit(%Storage{} = storage, sample) do
+    header = Storage.macro_header_at(storage, sample.macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        Map.put(sample, :mode, :solid)
+
+      header.mode == MacroCellHeader.cell_mode_refined() and
+          Storage.micro_slot_occupied?(storage, sample.macro_index, sample.micro_slot) ->
+        Map.put(sample, :mode, :refined)
+
+      true ->
+        nil
+    end
+  end
 
   defp safe_normalize_micro_layer(layer) when is_map(layer) do
     {:ok,

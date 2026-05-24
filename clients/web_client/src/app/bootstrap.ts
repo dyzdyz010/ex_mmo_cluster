@@ -17,6 +17,7 @@ import {
   isServerVoxelTransportPort,
   OnlineVoxelWorldAdapter,
 } from "../voxel/onlineVoxelWorldAdapter";
+import { createWorldStoreMovementCollisionResolver } from "../voxel/playerMovementCollision";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
 import {
@@ -88,6 +89,7 @@ export async function bootstrap({
   const detachInput = input.attach(window);
 
   const localPlayer = new LocalPlayerController(eventBus, input, transportPump, initialSpawn);
+  localPlayer.setMovementCollisionResolver(createWorldStoreMovementCollisionResolver(world.store));
   const remotePlayer = new RemotePlayerController(eventBus);
 
   const sceneHandles = await createScene(canvas, {
@@ -377,7 +379,17 @@ function bridgeBusToLogger(
   });
   bus.on(
     "movement:local-step",
-    ({ seq, clientTick, position, velocity, movementFlags, movementMode }) => {
+    ({
+      seq,
+      clientTick,
+      position,
+      velocity,
+      movementFlags,
+      movementMode,
+      collisionStatus,
+      collisionOccupiedCount,
+      collisionBlockedAxes,
+    }) => {
       logger.emit("movement", "input_frame", {
         seq,
         tick: clientTick,
@@ -385,6 +397,9 @@ function bridgeBusToLogger(
         velocity: formatVector(velocity),
         movement_flags: movementFlags,
         movement_mode: movementMode,
+        collision_status: collisionStatus,
+        collision_occupied_count: collisionOccupiedCount,
+        collision_blocked_axes: collisionBlockedAxes.join(","),
       });
     },
   );

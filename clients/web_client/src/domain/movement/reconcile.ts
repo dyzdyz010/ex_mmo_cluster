@@ -9,6 +9,7 @@ import { ReplayAction } from "./governance";
 import type { InputHistory, PredictedHistory } from "./history";
 import type { MovementProfile } from "./profile";
 import { step } from "./predictor";
+import type { MoveInputFrame } from "./types";
 
 export interface ReconcileResult {
   action: ReplayAction;
@@ -17,6 +18,12 @@ export interface ReconcileResult {
   pendingInputs: number;
   correctionDistance: number;
 }
+
+export type MovementStepFunction = (
+  previous: PredictedMoveState,
+  frame: MoveInputFrame,
+  profile: MovementProfile,
+) => PredictedMoveState;
 
 function authoritativeFromAck(ack: MovementAck): PredictedMoveState {
   return {
@@ -39,6 +46,7 @@ export function reconcile(
   predictedHistory: PredictedHistory,
   profile: MovementProfile,
   governance: ReplayGovernance,
+  predictStep: MovementStepFunction = step,
 ): ReconcileResult | null {
   const authoritative = authoritativeFromAck(ack);
 
@@ -80,7 +88,7 @@ export function reconcile(
 
     let replayState = clonePredictedMoveState(authoritative);
     for (const frame of pendingFrames) {
-      replayState = step(replayState, frame, profile);
+      replayState = predictStep(replayState, frame, profile);
       predictedHistory.push(replayState);
     }
 
@@ -146,7 +154,7 @@ export function reconcile(
 
   let replayState = clonePredictedMoveState(authoritative);
   for (const frame of replayFrames) {
-    replayState = step(replayState, frame, profile);
+    replayState = predictStep(replayState, frame, profile);
     predictedHistory.push(replayState);
   }
 

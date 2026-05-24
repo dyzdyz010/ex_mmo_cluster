@@ -76,7 +76,7 @@ defmodule SceneServer.Movement.Profile do
       turn_response: 1.0,
       fixed_dt_ms: 100,
       max_speed_scale: 1.0,
-      jump_impulse: 485.0,
+      jump_impulse: 900.0,
       gravity: 980.0,
       air_control: 0.35,
       air_accel: 1140.0,

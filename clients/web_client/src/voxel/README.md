@@ -13,6 +13,9 @@
 - `storage/` 拥有 Chunk 真相层。
 - `meshing/` 负责把真相层转成几何输入。
 - `worldStore.ts` 拥有多 Chunk 世界级索引、编辑统计，以及世界级读写 API。
+- `playerMovementCollision.ts` 是从 `WorldStore` occupancy 到 movement-domain
+  collision port 的只读适配层。它不拥有 movement 状态；`LocalPlayerController`
+  拥有预测状态，`WorldStore` 拥有 voxel truth。
 - `worldAdapter.ts` 定义 UI / CLI 访问体素世界的端口；`LocalVoxelWorldAdapter` 拥有离线本地 truth。
 - `onlineVoxelWorldAdapter.ts` 是 server-authoritative 适配器：它不让 UI 直接写本地 truth，而是提交服务端 intent、订阅 chunk snapshot，并在 snapshot 到达时一次性替换 `WorldStore` 中对应 chunk。
   在线模式启动时必须保持本地 store 为空，初始地形来自服务端已经准备好的默认区域和后续
