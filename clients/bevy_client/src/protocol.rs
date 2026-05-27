@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn decodes_fast_lane_events() {
         let fast_lane_result = vec![
-            0x87, 0, 0, 0, 0, 0, 0, 0, 12, 0x00, 0x71, 0x49, 0, 6, b't', b'i', b'c', b'k', b'e',
+            0x87, 0, 0, 0, 0, 0, 0, 0, 12, 0x00, 0x4E, 0x23, 0, 6, b't', b'i', b'c', b'k', b'e',
             b't',
         ];
         assert_eq!(
