@@ -79,6 +79,27 @@ defmodule GateServer.CodecTest do
       assert {:ok, {:chat_say, "hello", 42}} == Codec.decode(msg)
     end
 
+    test "decodes scoped chat_say with scope but no client authority payload" do
+      text = "region hello"
+      msg = <<0x0A, 43::64-big, 1::8, byte_size(text)::16-big, text::binary>>
+
+      assert {:ok, {:chat_say_scoped, :region, "region hello", 43}} == Codec.decode(msg)
+    end
+
+    test "rejects malformed scoped chat_say" do
+      assert {:error, :invalid_message} == Codec.decode(<<0x0A, 43::64-big, 1::8>>)
+    end
+
+    test "rejects scoped chat_say with trailing authority-shaped payload" do
+      text = "region hello"
+      frame = <<0x0A, 43::64-big, 1::8, byte_size(text)::16-big, text::binary>>
+
+      assert {:error, :invalid_message} ==
+               Codec.decode(
+                 frame <> <<10::64-big, 0::32-big-signed, 0::32-big-signed, 0::32-big-signed>>
+               )
+    end
+
     test "decodes skill_cast with request_id and skill id" do
       assert {:ok,
               {:skill_cast,

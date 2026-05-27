@@ -111,6 +111,39 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
              MacroCellHeader.cell_mode_solid_block()
   end
 
+  test "final catch-up fails when source persistence is rejected" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    handoff = one_chunk_handoff()
+    old_lease = handoff.old_lease
+
+    source_directory =
+      start_supervised!(
+        {ChunkDirectory, chunk_sup: chunk_sup},
+        id: :source_chunk_directory_rejected
+      )
+
+    target_directory =
+      start_supervised!(
+        {ChunkDirectory, chunk_sup: chunk_sup},
+        id: :target_chunk_directory_rejected
+      )
+
+    assert {:ok, _chunk_pid} =
+             ChunkDirectory.ensure_chunk(source_directory, %{
+               logical_scene_id: 1,
+               chunk_coord: {1, 0, 0},
+               lease: old_lease
+             })
+
+    assert {:error, :migration_source_slice_persist_failed} =
+             MigrationPrewarm.final_catchup_slices(handoff,
+               source_chunk_directory: source_directory,
+               target_chunk_directory: target_directory
+             )
+
+    assert %{chunk_count: 0} = ChunkDirectory.snapshot(target_directory)
+  end
+
   defp handoff do
     %{
       migration_id: "migration-10",

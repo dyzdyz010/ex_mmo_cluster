@@ -4,6 +4,56 @@ import { VoxelConstants } from "../../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 describe("DevToolsCli microgrid boundary", () => {
+  it("routes chat commands through the server transport without client partition authority", () => {
+    const sendChat = vi.fn(() => 77);
+    const cli = new DevToolsCli({
+      transport: {
+        sendChat,
+        debugSnapshot: vi.fn(() => ({ chat: { sentChatMessageCount: 1 } })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("chat", ["region", "hello", "there"])).toMatchObject({
+      ok: true,
+      command: "chat",
+      text: "chat region sent request=77",
+      data: {
+        requestId: 77,
+        scope: "region",
+        textLength: 11,
+      },
+    });
+    expect(sendChat).toHaveBeenCalledWith("region", "hello there");
+
+    expect(cli.executeCliCommand("chat", ["shard-1", "hello"])).toMatchObject({
+      ok: false,
+      command: "chat",
+      text: "usage: chat <world|region|local> <text...>",
+    });
+  });
+
+  it("reports rejected chat sends as failed commands so the HUD keeps the draft", () => {
+    const sendChat = vi.fn(() => null);
+    const cli = new DevToolsCli({
+      transport: {
+        sendChat,
+        debugSnapshot: vi.fn(() => ({ chat: { blockedSendCount: 1 } })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("chat", ["local", "still", "typing"])).toMatchObject({
+      ok: false,
+      command: "chat",
+      text: "chat local rejected",
+      data: {
+        requestId: null,
+        scope: "local",
+        textLength: 12,
+      },
+    });
+    expect(sendChat).toHaveBeenCalledWith("local", "still typing");
+  });
+
   it("exposes scene region overlay diagnostics and visibility control", () => {
     const setSceneRegionOverlayVisible = vi.fn();
     const cli = new DevToolsCli({
@@ -210,6 +260,31 @@ describe("DevToolsCli microgrid boundary", () => {
     expect(breakResult.ok).toBe(true);
     expect(breakResult.command).toBe("micro_break");
     expect(breakMicroAt).toHaveBeenCalledWith({ x: 0, y: 1, z: 2 }, { x: 1, y: 2, z: 3 }, "cli");
+  });
+
+  it("flushes server voxel messages before reading cells from the CLI", () => {
+    let flushed = false;
+    const flushServerMessagesForCli = vi.fn(() => {
+      flushed = true;
+    });
+    const cli = new DevToolsCli({
+      world: {
+        flushServerMessagesForCli,
+        store: {
+          getNormalBlockWorld: vi.fn(() => (flushed ? { materialId: 2 } : null)),
+          getEnvironmentSummaryWorld: vi.fn(() => null),
+        },
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("cell", ["0", "1", "0"])).toMatchObject({
+      ok: true,
+      command: "cell",
+      data: {
+        block: { materialId: 2 },
+      },
+    });
+    expect(flushServerMessagesForCli).toHaveBeenCalledTimes(1);
   });
 
   it("routes voxel_temp to the edit controller with macro coordinates and target temperature", () => {

@@ -15,6 +15,7 @@
   - `SceneServer.VoxelChunkSup`
   - `SceneServer.Voxel.ChunkDirectory`
 - `SceneServer.AoiSup`
+  - `SceneServer.Aoi.RemoteMirrorLedger`
   - `SceneServer.AoiManager`
   - `SceneServer.AoiItemSup`
 - `SceneServer.PlayerSup`
@@ -54,7 +55,11 @@
 - `PlayerCharacter`：一个在线玩家的聚合根。
 - `PlayerManager`：玩家生成和索引门面。
 - `AoiManager`：共享八叉树和索引。
+- `Aoi.RemoteMirrorLedger`：远端 halo ghost/prewarm 需求账本，按逻辑场景和远端块聚合同一份跨 Scene 镜像复制需求，不拥有远端实体真相。
 - `Aoi.AoiItem`：每个角色的 AOI 订阅和广播适配器。
+- `Worker.Aoi.RemoteMirrorRunner`：一次性消费远端 halo 需求分组，触发跨 Scene
+  ghost/prewarm 获取并输出可观测摘要，但不把远端 actor 放入本地 AOI
+  live fan-out。
 
 ### `voxel/`
 

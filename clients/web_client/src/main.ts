@@ -32,6 +32,14 @@ function requireVoxelPanel(): HTMLDivElement {
   return panel;
 }
 
+function requireChatPanel(): HTMLDivElement {
+  const panel = document.getElementById("chat-panel");
+  if (!(panel instanceof HTMLDivElement)) {
+    throw new Error("#chat-panel element missing or wrong type");
+  }
+  return panel;
+}
+
 function requireOperationGuide(): HTMLDivElement {
   const guide = document.getElementById("operation-guide");
   if (!(guide instanceof HTMLDivElement)) {
@@ -61,6 +69,7 @@ async function main(): Promise<void> {
     canvas: requireCanvas(),
     hud: requireHud(),
     hotbarDock: requireHotbarDock(),
+    chatPanel: requireChatPanel(),
     voxelPanel: requireVoxelPanel(),
     operationGuide: requireOperationGuide(),
     operationGuideToggle: requireOperationGuideToggle(),
@@ -82,5 +91,9 @@ main().catch((error: unknown) => {
   const panel = document.getElementById("voxel-panel");
   if (panel instanceof HTMLDivElement) {
     panel.textContent = `Bootstrap failed: ${reason}`;
+  }
+  const chatPanel = document.getElementById("chat-panel");
+  if (chatPanel instanceof HTMLDivElement) {
+    chatPanel.textContent = `Bootstrap failed: ${reason}`;
   }
 });

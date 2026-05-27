@@ -189,6 +189,11 @@ async function main() {
     GATE_TCP_PORT: String(gateTcpPort),
     GATE_UDP_PORT: String(gateUdpPort),
     WS_SMOKE_READY_FILE: readyFile,
+    // ws_smoke_boot.exs only DevSeeds the default voxel region when this is set.
+    // Without a seeded region the dual players enter an unrouted chunk, partition
+    // refresh fails with :unroutable_center, and no partition window reaches Scene
+    // AOI (so B never observes A). Mirrors the browser-movement supervised smoke.
+    WS_SMOKE_PRESEED_VOXEL: '1',
   };
 
   if (process.env.WS_SMOKE_SKIP_DB_SETUP !== '1') {

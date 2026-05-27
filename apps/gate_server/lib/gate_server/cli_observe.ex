@@ -8,27 +8,46 @@ defmodule GateServer.CliObserve do
 
   @writer __MODULE__.Writer
   @writer_key {__MODULE__, :writer}
+  @route_scope :gate_server
 
   @doc "Returns whether gate-side observe logging is enabled."
-  def enabled?, do: not is_nil(path())
+  def enabled?, do: not is_nil(path()) or BeaconServer.CliObserveRoutes.any?(@route_scope)
+
+  @doc "Routes observe events for one logical scene id to a concrete log path."
+  def register_route(logical_scene_id, path) do
+    BeaconServer.CliObserveRoutes.register(@route_scope, logical_scene_id, path)
+  end
+
+  @doc "Removes a logical-scene observe route created by `register_route/2`."
+  def unregister_route(logical_scene_id, token) do
+    BeaconServer.CliObserveRoutes.unregister(@route_scope, logical_scene_id, token)
+  end
 
   @doc "Appends a structured observe event when logging is enabled."
   def emit(event, fields_or_fun \\ %{})
 
   def emit(event, fields_or_fun) do
-    case path() do
-      nil -> :ok
-      _path -> emit_enabled(event, fields_or_fun)
+    if enabled?() do
+      emit_maybe_enabled(event, fields_or_fun)
+    else
+      :ok
     end
   end
 
-  defp emit_enabled(event, fields_fun) when is_function(fields_fun, 0) and is_binary(event) do
-    emit(event, fields_fun.())
+  defp emit_maybe_enabled(event, fields_fun)
+       when is_function(fields_fun, 0) and is_binary(event) do
+    emit_maybe_enabled(event, fields_fun.())
   end
 
-  defp emit_enabled(event, fields) when is_binary(event) and is_map(fields) do
-    writer = ensure_writer(path())
-    GenServer.cast(writer, {:write, event, fields})
+  defp emit_maybe_enabled(event, fields) when is_binary(event) and is_map(fields) do
+    case path_for(fields) do
+      nil ->
+        :ok
+
+      path ->
+        writer = ensure_writer(path)
+        GenServer.cast(writer, {:write, path, event, fields})
+    end
   rescue
     _ -> :ok
   end
@@ -36,6 +55,10 @@ defmodule GateServer.CliObserve do
   defp path do
     Application.get_env(:gate_server, :cli_observe_log) ||
       System.get_env("GATE_SERVER_OBSERVE_LOG")
+  end
+
+  defp path_for(fields) do
+    BeaconServer.CliObserveRoutes.lookup(@route_scope, fields) || path()
   end
 
   @doc "Blocks until the current writer has processed pending observe writes."
@@ -57,28 +80,33 @@ defmodule GateServer.CliObserve do
 
   defp ensure_writer(path) do
     case :persistent_term.get(@writer_key, nil) do
-      %{pid: pid, path: ^path} when is_pid(pid) ->
+      %{pid: pid} when is_pid(pid) ->
         if Process.alive?(pid) do
           pid
         else
-          start_or_refresh_writer(path)
+          start_writer(path)
         end
 
       _other ->
-        start_or_refresh_writer(path)
+        start_writer(path)
     end
   end
 
-  defp start_or_refresh_writer(path) do
+  defp start_writer(path) do
     case Process.whereis(@writer) do
       nil ->
-        {:ok, pid} = GenServer.start_link(@writer, path, name: @writer)
-        :persistent_term.put(@writer_key, %{pid: pid, path: path})
-        pid
+        case GenServer.start_link(@writer, path, name: @writer) do
+          {:ok, pid} ->
+            :persistent_term.put(@writer_key, %{pid: pid})
+            pid
+
+          {:error, {:already_started, pid}} when is_pid(pid) ->
+            :persistent_term.put(@writer_key, %{pid: pid})
+            pid
+        end
 
       pid ->
-        GenServer.call(pid, {:ensure_path, path})
-        :persistent_term.put(@writer_key, %{pid: pid, path: path})
+        :persistent_term.put(@writer_key, %{pid: pid})
         pid
     end
   end
@@ -98,7 +126,22 @@ defmodule GateServer.CliObserve do
     end
 
     @impl true
+    def handle_cast({:write, path, event, fields}, state) do
+      write_line(path, event, fields)
+      {:noreply, state}
+    rescue
+      _ -> {:noreply, state}
+    end
+
+    @impl true
     def handle_cast({:write, event, fields}, %{path: path} = state) do
+      write_line(path, event, fields)
+      {:noreply, state}
+    rescue
+      _ -> {:noreply, state}
+    end
+
+    defp write_line(path, event, fields) do
       File.mkdir_p!(Path.dirname(path))
 
       line =
@@ -110,15 +153,16 @@ defmodule GateServer.CliObserve do
           " event=",
           inspect(event),
           " fields=",
-          inspect(scrub(fields), limit: :infinity, printable_limit: :infinity),
+          inspect(scrub(fields),
+            limit: :infinity,
+            printable_limit: :infinity,
+            charlists: :as_lists
+          ),
           "\n"
         ]
         |> IO.iodata_to_binary()
 
       File.write!(path, line, [:append])
-      {:noreply, state}
-    rescue
-      _ -> {:noreply, state}
     end
 
     defp scrub(fields) do
@@ -128,7 +172,7 @@ defmodule GateServer.CliObserve do
     defp scrub_value(value) when is_pid(value), do: inspect(value)
     defp scrub_value(value) when is_reference(value), do: inspect(value)
     defp scrub_value(value) when is_port(value), do: inspect(value)
-    defp scrub_value(value) when is_tuple(value), do: inspect(value)
+    defp scrub_value(value) when is_tuple(value), do: inspect(value, charlists: :as_lists)
     defp scrub_value(value) when is_map(value), do: scrub(value)
     defp scrub_value(value) when is_list(value), do: Enum.map(value, &scrub_value/1)
     defp scrub_value(value), do: value

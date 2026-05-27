@@ -8,7 +8,14 @@ defmodule Cluster.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      releases: releases()
+      releases: releases(),
+      listeners: [Phoenix.CodeReloader]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [precommit: :test]
     ]
   end
 
@@ -27,6 +34,10 @@ defmodule Cluster.MixProject do
       "assets.deploy": [
         "cmd --app auth_server mix assets.deploy",
         "cmd --app visualize_server mix assets.deploy"
+      ],
+      precommit: [
+        "compile --warnings-as-errors --no-validate-compile-env",
+        "test"
       ]
     ]
   end
@@ -46,6 +57,7 @@ defmodule Cluster.MixProject do
           data_init: :permanent,
           data_service: :permanent,
           # Game logic
+          chat_server: :permanent,
           world_server: :permanent,
           scene_server: :load,
           agent_manager: :permanent,

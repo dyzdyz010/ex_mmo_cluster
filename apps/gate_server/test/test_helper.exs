@@ -21,6 +21,21 @@ migrations_path =
     Ecto.Migrator.run(repo, migrations_path, :up, all: true)
   end)
 
+# Gate tests assert exact CLI observe logs while running after other umbrella
+# apps. Reset process-independent observe routing and fallback env so events
+# from a previous app/test cannot steal scene/world/gate breadcrumbs.
+{:ok, _} = Application.ensure_all_started(:beacon_server)
+:ok = BeaconServer.CliObserveRoutes.clear_all()
+
+Enum.each([:chat_server, :gate_server, :scene_server, :world_server], fn app ->
+  Application.delete_env(app, :cli_observe_log)
+end)
+
+# Many protocol unit tests place the connection directly in `:in_scene`
+# instead of going through the real enter-scene handshake that seeds
+# `partition_context`. Production keeps the fail-closed default.
+Application.put_env(:gate_server, :allow_legacy_voxel_target_without_partition_context, true)
+
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto, so apply
 # paths take O(10ms) per write instead of microseconds for the old in-memory
 # map. Bump the default `assert_receive` window so existing 100ms tests

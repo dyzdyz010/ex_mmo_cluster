@@ -8,7 +8,12 @@
   （`<path>.tmp` → `rename`），下次启动时自动 `binary_to_term/2` 还原 assignments、
   leases、chunk_summaries、migrations。文件路径未给则保持纯内存行为，外层 supervisor /
   application 可决定是否启用。这一版只支持单节点本地文件；多节点 / Postgres 持久化是
-  后续切片（保留同一接口边界即可平滑替换）。
+  后续切片（保留同一接口边界即可平滑替换）。恢复旧快照时，ledger 会在 load 阶段升级仍缺少
+  `MigrationPlan.source_scene_node` 的 legacy migration：`:prewarming` / `:prewarmed` 必须能从
+  当前 source assignment 安全推导源 Scene node；`:cutover` / `:completed` 已经完成路由切换，
+  历史 source node 无法再从当前 assignment 推导时会以
+  `:legacy_source_scene_node_unavailable` sentinel 保留观察记录。其它无法安全补齐的 plan 会让
+  payload 拒绝加载并记录 `voxel_map_ledger_persist_load_failed`。
   另外可传 `scene_invalidator: fn attrs -> result end`（1-arity 函数），`attrs` 形如
   `%{logical_scene_id, chunk_coord, reason}`。在 `cutover_migration/2` 成功之后，ledger 会
   在 `affected_chunk_min .. affected_chunk_max`（半开）内的每一个 chunk_coord 上调用一次
@@ -21,8 +26,24 @@
 - `SceneLease` 是发给某个 Scene 实例的热写入授权；租约过期或纪元不匹配时，Scene 不能写。
 - `LeaseWriteToken` 是从租约派生出的 DataService 写入围栏；DataService 用它拒绝旧拥有者写入。
 - `MigrationPlan` 是 World 拥有的分阶段区域迁移交接状态机。它记录源 / 目标 Scene 引用、
-  新旧租约、受影响区块范围、预热切片和当前迁移阶段。目标 Scene 预热时读取交接载荷；
-  World 只在切换阶段改变路由并发布新的写入令牌。
+  源 / 目标 `assigned_scene_node`、新旧租约、受影响区块范围、预热切片和当前迁移阶段。目标
+  Scene 预热时读取交接载荷；World 只在切换阶段把
+  `{lease_id, owner_epoch, owner_scene_instance_ref, assigned_scene_node}` 作为一个路由身份整体切换，
+  并发布新的写入令牌。
+- `PartitionWindow` 是开放世界分区观察窗口的纯函数读模型。它只把 `MapLedger` 中已有的
+  region assignment / lease 路由结果整理成 near / halo / missing chunk 列表和
+  per-region summary，不拥有状态，不写 DataService，不触发 Scene 订阅或区块变更。
+  near / halo 的水平半径和垂直半径分开表达：`near_radius` / `halo_radius` 控制 x/y 平面，
+  `near_vertical_radius` / `halo_vertical_radius` 控制 z 轴层数；不传垂直半径时仍按旧立方体
+  行为计算，保证已有调用兼容。这个形状先服务地表开放世界，避免普通移动订阅整块无关垂直层。
+  `MapLedger.partition_window/4` 是这个读模型的权威入口，当前作为控制面 / CLI 调试接口使用；
+  它和 `route_window_with_leases/4` 都通过 `RouteIndex` 查询 region，再回到当前 `leases`
+  回填租约真相。
+- `RouteIndex` 是 `MapLedger` 内部的派生空间索引，不是新的路由真相源，也不会持久化。
+  当前实现是按 `logical_scene_id` 分桶的 bucket grid：每个 bucket 只保存候选 `region_id`，
+  命中后仍用 `RegionAssignment.contains_chunk?/2` 做最终判定，并由 `MapLedger` 主表取回
+  当前 assignment / lease。`put_region/2` 或持久化恢复会按 assignments 重建索引；
+  单纯续租、切换 owner epoch、迁移 cutover 不复制 lease 到索引里。
 - `TransactionParticipant` 和 `BuildTransaction` 描述可恢复的跨区域工作。
   **Phase 3-bis：`BuildTransaction` 加 `intents_by_participant` 字段**
   （形态 `%{ participant_key => %{chunk_coord => [intent_attrs]} }`，对齐
@@ -90,11 +111,29 @@
 `route_chunk_with_lease/3` 是 Gate 向 Scene 请求区块快照前使用的控制面交接函数。它让客户端路径
 先对齐 World 权威，同时仍然把完整区块真相留在 Scene。
 
+`partition_window/4` 是 Gate / AOI / 同步预算后续共用的分区窗口合同。调用方给出
+`logical_scene_id`、中心 chunk、`near_radius` / `halo_radius`，可选再给
+`near_vertical_radius` / `halo_vertical_radius` 做开放世界垂直裁剪。World 返回每个候选 chunk
+的 tier、状态（`:assigned` / `:region_without_lease` / `:missing`）、region、lease id、只读
+lease token 和 Scene node。默认垂直半径等于对应水平半径，因此旧调用仍得到原来的 near / halo
+立方体窗口；显式传 `*_vertical_radius: 0` 时，同样水平半径只扫描当前高度层。
+这条路径只读：重复调用不会改变 assignment、lease、migration、chunk truth、订阅关系或
+DataService 行。`mix world_server.partition_observe` 提供无 GUI 冒烟入口，默认写
+`.demo/observe/world-partition-window-<logical_scene_id>.log`，用于对比分区窗口和后续迁移 /
+预热行为。
+
+`route_window_with_leases/4` 是 Gate live subscription 使用的 best-effort 批量路由入口。它返回同一
+near / halo / missing / unleased window 形状，但语义是运行时路由合同：缺 route 或缺 lease 的
+chunk 保留为 skip 候选，不触发 fail-fast，也不建立 Scene 订阅。当前实现走 `RouteIndex`
+bucket grid，而不是对所有 region assignment 做全表扫描；`mix world_server.partition_observe`
+会在 stdout 和 observe log 中输出 `route_index_*` 统计，方便无 GUI 环境确认索引来源、bucket 数、
+entry 数和 region 数。
+
 `begin_migration/4`, `plan_next_migration_slice/2`, `migration_handoff/2`,
 `mark_slice_prewarmed/3`, `mark_prewarmed/2`, `mark_slice_final_caught_up/3`,
 `cutover_migration/2` 和 `complete_migration/2` 是可观测迁移 API。
 `migration_handoff/2` 返回给目标 Scene 的交接载荷，不改变 World 状态；载荷包含
-`migration_id`、逻辑场景和区域 id、当前迁移阶段、源 / 目标 Scene 引用、旧租约、待切换的
+`migration_id`、逻辑场景和区域 id、当前迁移阶段、源 / 目标 Scene 引用与 Scene node、旧租约、待切换的
 新租约、写入令牌版本、受影响区块边界、已规划的预热切片、下一切片索引和总切片数。
 `mark_prewarmed/2` 只在全部预热切片已经规划、并通过 `mark_slice_prewarmed/3` 收到目标 Scene
 逐切片 ACK 后成功；目标 Scene 仍要通过自己的预热适配器读取 DataService 快照并准备热区块，
@@ -102,8 +141,15 @@ World 不直接搬运区块内容。
 `cutover_migration/2` 还要求每个切片都通过 `mark_slice_final_caught_up/3` 提交最终追平 ACK；
 最终追平指源 Scene 已把切换前最后一版热区块写入 DataService，目标 Scene 已重新加载这些
 最新快照。这样预热完成到租约切换之间的写入不会只留在旧 owner 内存里。
+cutover 前 World 会再次校验源 region 的当前 owner / assigned Scene node / lease 是否仍与
+migration plan 捕获的源路由身份一致；若期间发生续租、迁移、owner 漂移或 source node 漂移，
+`cutover_migration/2` 返回 `:migration_source_lease_changed` /
+`:migration_source_owner_changed` / `:migration_source_scene_node_changed`，不会发布新写入令牌，也不会发
+Scene invalidate。
 `migrate_region/4` 保持旧调用方兼容，但内部走同一条“建计划、预热、切换、完成”路径，并保留
-已完成的迁移快照用于观察。
+已完成的迁移快照用于观察。Phase 4 的端到端验收不应使用它替代真实 Scene prewarm / final
+catch-up；`mix gate_server.migration_cutover_observe` 使用显式 staged path 来证明 source / target
+Scene 适配器真的参与了迁移。
 
 **Phase 4：object_id 分配 + scene_objects 持久化** ——
 `BuildTransaction.scene_objects` 字段携带本笔事务要创建的对象实例

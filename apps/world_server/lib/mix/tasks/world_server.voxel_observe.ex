@@ -58,7 +58,9 @@ defmodule Mix.Tasks.WorldServer.VoxelObserve do
       "lease_before=#{result.leases.before_migration.lease_id}",
       "lease_after=#{result.leases.after_migration.lease_id}",
       "route_before_owner=#{result.routes.before_migration.owner_scene_instance_ref}",
+      "route_before_scene_node=#{inspect(result.routes.before_migration.assigned_scene_node)}",
       "route_after_owner=#{result.routes.after_migration.owner_scene_instance_ref}",
+      "route_after_scene_node=#{inspect(result.routes.after_migration.assigned_scene_node)}",
       "stale_world_status=#{status(result.validations.stale_after_migration.world)}",
       "stale_data_service_status=#{status(result.validations.stale_after_migration.data_service)}",
       "observe_log=#{result.observe_log}"

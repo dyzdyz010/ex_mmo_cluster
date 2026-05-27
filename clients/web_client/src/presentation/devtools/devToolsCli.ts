@@ -3,6 +3,8 @@ import {
   listMaterialDefinitions,
   parseMaterialIdOrName,
 } from "../../material/catalog";
+import type { ChatScope } from "../../domain/chat/types";
+import { isChatScope } from "../../domain/chat/types";
 import type { CliCommandHandler, CliCommandResult } from "../../observe/cli";
 import type { ObserveLog } from "../../observe/logger";
 import { installCli } from "../../observe/cli";
@@ -49,6 +51,7 @@ interface WorldStorageLike {
 }
 
 interface OnlineVoxelCliWorld extends VoxelWorldAdapter {
+  flushServerMessagesForCli?(): void;
   requestVoxelDebugProbe(command?: string): number | null;
   subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf?: number): number | null;
   unsubscribeVoxelChunk(chunk: FChunkCoord): number | null;
@@ -197,6 +200,8 @@ export class DevToolsCli implements CliCommandHandler {
         });
       case "remote":
         return this.cmdRemote(command, args);
+      case "chat":
+        return this.cmdChat(command, args);
       case "jump":
         this.deps.localPlayer.requestJump("cli");
         return this.ok(command, "jump queued", this.playerData());
@@ -232,6 +237,7 @@ export class DevToolsCli implements CliCommandHandler {
   }
 
   private cmdChunks(command: string, args: string[]): CliCommandResult {
+    this.flushWorldForCli();
     const limit = Number.parseInt(args[0] ?? "12", 10);
     const chunks = this.deps.world.store.chunkSummaries(Number.isFinite(limit) ? limit : 12);
     return this.ok(command, `chunks=${chunks.length}`, chunks);
@@ -317,6 +323,33 @@ export class DevToolsCli implements CliCommandHandler {
       requestId,
       voxel: world.debugSnapshot(),
     });
+  }
+
+  private cmdChat(command: string, args: string[]): CliCommandResult {
+    const scope = args[0];
+    const text = args.slice(1).join(" ").trim();
+    if (!isChatScope(scope) || text.length === 0) {
+      return { ok: false, command, text: usageForChatCommand() };
+    }
+
+    const chatTransport = this.deps.transport as Partial<{
+      sendChat(scope: ChatScope, text: string): number | null;
+      debugSnapshot(): Record<string, unknown>;
+    }>;
+    if (typeof chatTransport.sendChat !== "function") {
+      return { ok: false, command, text: "chat transport unavailable" };
+    }
+
+    const requestId = chatTransport.sendChat(scope, text);
+    const result = {
+      requestId,
+      scope,
+      textLength: new TextEncoder().encode(text).length,
+      transport: chatTransport.debugSnapshot?.() ?? {},
+    };
+    return requestId === null
+      ? { ok: false, command, text: `chat ${scope} rejected`, data: result }
+      : this.ok(command, `chat ${scope} sent request=${requestId}`, result);
   }
 
   private cmdVoxelSubscribe(command: string, args: string[]): CliCommandResult {
@@ -581,6 +614,7 @@ export class DevToolsCli implements CliCommandHandler {
   private cmdCell(command: string, args: string[]): CliCommandResult {
     const coord = parseMacroCoord(args);
     if (!coord) return { ok: false, command, text: "usage: cell <x> <y> <z>" };
+    this.flushWorldForCli();
     return this.ok(command, `cell ${formatCoord(coord)}`, {
       coord,
       block: this.deps.world.store.getNormalBlockWorld(coord),
@@ -593,6 +627,7 @@ export class DevToolsCli implements CliCommandHandler {
     if (!target) {
       return { ok: false, command, text: "usage: micro_cell <x> <y> <z> <mx> <my> <mz>" };
     }
+    this.flushWorldForCli();
     return this.ok(command, `micro_cell ${formatMicroTarget(target)}`, {
       ...target,
       block: this.deps.world.store.getMicroBlockWorld(target.macro, target.micro),
@@ -943,6 +978,7 @@ export class DevToolsCli implements CliCommandHandler {
   }
 
   private snapshotText(): string {
+    this.flushWorldForCli();
     return [
       this.rendererText(),
       `transport=${this.deps.transport.getMode()}`,
@@ -955,6 +991,11 @@ export class DevToolsCli implements CliCommandHandler {
       `player_authority=${formatVector(this.deps.localPlayer.getAuthoritativePosition())}`,
       `remote_rendered=${formatVector(this.deps.remotePlayer.getRenderedPosition())}`,
     ].join(" ");
+  }
+
+  private flushWorldForCli(): void {
+    const world = this.deps.world as Partial<OnlineVoxelCliWorld> | undefined;
+    world?.flushServerMessagesForCli?.();
   }
 
   private snapshotData(): Record<string, unknown> {
@@ -1194,6 +1235,10 @@ function usageForConductionCommand(command = "voxel_conduct"): string {
   }
 
   return "usage: voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]";
+}
+
+function usageForChatCommand(): string {
+  return "usage: chat <world|region|local> <text...>";
 }
 
 function usageForAutoCircuitCommand(): string {

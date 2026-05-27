@@ -15,6 +15,8 @@ import { decodeObjectStateDelta, type ObjectStateDelta } from "./objectStateDelt
 import {
   decodeFieldRegionDestroyed,
   decodeFieldRegionSnapshot,
+  type FFieldRegionDestroyed,
+  type FFieldRegionSnapshot,
 } from "../../voxel/field/fieldProtocol";
 import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
@@ -193,12 +195,12 @@ export interface VoxelCatalogPatchMessage {
 
 export interface VoxelFieldRegionSnapshotMessage {
   type: "voxel_field_region_snapshot";
-  snapshot: import("../../voxel/field/fieldProtocol").FFieldRegionSnapshot;
+  snapshot: FFieldRegionSnapshot;
 }
 
 export interface VoxelFieldRegionDestroyedMessage {
   type: "voxel_field_region_destroyed";
-  destroyed: import("../../voxel/field/fieldProtocol").FFieldRegionDestroyed;
+  destroyed: FFieldRegionDestroyed;
 }
 
 export type VoxelServerMessage =
@@ -256,6 +258,31 @@ export function encodeVoxelChunkSubscribe(request: {
     writeChunkCoord(view, offset, entry.chunkCoord);
     offset += 12;
     writeU64(view, offset, entry.chunkVersion);
+    offset += 8;
+  }
+  return new Uint8Array(buffer);
+}
+
+export function encodeVoxelChunkAck(request: {
+  requestId: number;
+  logicalSceneId: number;
+  acks: readonly VoxelKnownChunk[];
+}): Uint8Array {
+  const buffer = new ArrayBuffer(1 + 8 + 8 + 2 + request.acks.length * 20);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, VoxelOpcode.VoxelChunkAck);
+  offset += 1;
+  writeU64(view, offset, request.requestId);
+  offset += 8;
+  writeU64(view, offset, request.logicalSceneId);
+  offset += 8;
+  view.setUint16(offset, request.acks.length, false);
+  offset += 2;
+  for (const ack of request.acks) {
+    writeChunkCoord(view, offset, ack.chunkCoord);
+    offset += 12;
+    writeU64(view, offset, ack.chunkVersion);
     offset += 8;
   }
   return new Uint8Array(buffer);

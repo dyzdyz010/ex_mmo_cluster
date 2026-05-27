@@ -31,6 +31,9 @@ defmodule GateServer.VoxelSmokeTest do
     summary_log = File.read!(summary.logs.summary_path)
 
     assert gate_log =~ ~s(event="ws_voxel_chunk_subscribe_received")
+    assert gate_log =~ ~s(event="voxel_subscription_window_planned")
+    assert gate_log =~ "subscribe_count: 1"
+    assert gate_log =~ "pressure: :normal"
     assert gate_log =~ ~s(event="ws_voxel_impact_intent_applied")
     assert scene_log =~ ~s(event="voxel_chunk_snapshot_push")
     assert scene_log =~ ~s(event="voxel_chunk_delta_push")

@@ -1,7 +1,8 @@
 defmodule SceneServer.PlayerCharacterTest do
   use ExUnit.Case, async: false
 
-  alias SceneServer.Movement.{CorrectionFlags, InputFrame, Profile, RemoteSnapshot}
+  alias SceneServer.CliObserve
+  alias SceneServer.Movement.{CorrectionFlags, InputFrame, Profile, RemoteSnapshot, State}
 
   defmodule FakeAoi do
     use GenServer
@@ -117,6 +118,40 @@ defmodule SceneServer.PlayerCharacterTest do
     refute_receive {:aoi_cast, _message}, 50
   end
 
+  test "legacy player chat call is rejected before touching AOI" do
+    observe_log = Path.join(System.tmp_dir!(), "player-chat-legacy-#{unique_id()}.log")
+    previous_log = Application.get_env(:scene_server, :cli_observe_log)
+    Application.put_env(:scene_server, :cli_observe_log, observe_log)
+    File.rm(observe_log)
+
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    state = movement_state(aoi_ref, self())
+
+    try do
+      assert {:reply, {:error, :chat_runtime_required}, returned_state} =
+               SceneServer.PlayerCharacter.handle_call(
+                 {:chat_say, 42, "tester", "legacy scene chat"},
+                 {self(), make_ref()},
+                 state
+               )
+
+      assert returned_state == state
+      refute_receive {:aoi_cast, _message}, 50
+
+      CliObserve.flush()
+      log = File.read!(observe_log)
+      assert log =~ ~s(event="player_chat_legacy_rejected")
+      assert log =~ "chat_runtime_required"
+    after
+      CliObserve.flush()
+
+      case previous_log do
+        nil -> Application.delete_env(:scene_server, :cli_observe_log)
+        value -> Application.put_env(:scene_server, :cli_observe_log, value)
+      end
+    end
+  end
+
   test "queued movement inputs are replayed in a single tick and advance auth_tick" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
@@ -165,6 +200,106 @@ defmodule SceneServer.PlayerCharacterTest do
     assert x > 1.0
   end
 
+  test "queued movement burst resolves voxel collision once over swept movement" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    parent = self()
+    location = {750.0, 750.0, 185.0}
+
+    query_fun = fn attrs ->
+      send(parent, {:collision_query, attrs})
+      {:ok, %{occupied: [], chunk_version: 1}}
+    end
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:last_location, location)
+      |> Map.put(:movement_state, State.idle(location))
+      |> Map.put(:voxel_collision_opts, query_fun: query_fun)
+
+    frames =
+      for seq <- 1..3 do
+        %InputFrame{
+          seq: seq,
+          client_tick: seq,
+          dt_ms: 100,
+          input_dir: {1.0, 0.0},
+          speed_scale: 1.0,
+          movement_flags: 0
+        }
+      end
+
+    state =
+      Enum.reduce(frames, state, fn frame, acc ->
+        {:reply, {:ok, :accepted}, next_state} =
+          SceneServer.PlayerCharacter.handle_call(
+            {:movement_input, frame},
+            {self(), make_ref()},
+            acc
+          )
+
+        next_state
+      end)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert next_state.last_ack_seq == 3
+    assert next_state.movement_state.tick == 3
+    assert_receive {:collision_query, %{chunk_coord: {0, 0, 0}, samples: samples}}
+    assert is_list(samples)
+    refute_receive {:collision_query, _attrs}, 100
+  end
+
+  test "queued stationary inputs do not query voxel collision" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    parent = self()
+    location = {750.0, 750.0, 185.0}
+
+    query_fun = fn attrs ->
+      send(parent, {:collision_query, attrs})
+      {:ok, %{occupied: [], chunk_version: 1}}
+    end
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:last_location, location)
+      |> Map.put(:movement_state, State.idle(location))
+      |> Map.put(:voxel_collision_opts, query_fun: query_fun)
+
+    frames =
+      for seq <- 1..3 do
+        %InputFrame{
+          seq: seq,
+          client_tick: seq,
+          dt_ms: 100,
+          input_dir: {0.0, 0.0},
+          speed_scale: 1.0,
+          movement_flags: 0b10
+        }
+      end
+
+    state =
+      Enum.reduce(frames, state, fn frame, acc ->
+        {:reply, {:ok, :accepted}, next_state} =
+          SceneServer.PlayerCharacter.handle_call(
+            {:movement_input, frame},
+            {self(), make_ref()},
+            acc
+          )
+
+        next_state
+      end)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert next_state.last_ack_seq == 3
+    assert next_state.movement_state.position == location
+    refute_receive {:collision_query, _attrs}, 100
+  end
+
   test "jump input is consumed as one-shot latch after authoritative tick" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
@@ -189,6 +324,65 @@ defmodule SceneServer.PlayerCharacterTest do
     assert {:noreply, next_state} =
              SceneServer.PlayerCharacter.handle_info(:movement_tick, latched_state)
 
+    assert next_state.movement_state.movement_mode == :airborne
+    refute InputFrame.jumping?(next_state.latched_input)
+  end
+
+  test "queued jump remains authoritative when idle frames arrive before tick" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    location = {750.0, 750.0, 185.0}
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:last_location, location)
+      |> Map.put(:movement_state, State.idle(location))
+      |> Map.put(:voxel_collision_opts, query_fun: fn _attrs -> {:ok, %{occupied: []}} end)
+
+    frames = [
+      %InputFrame{
+        seq: 1,
+        client_tick: 1,
+        dt_ms: 100,
+        input_dir: {0.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: Bitwise.bor(InputFrame.jump_flag(), 0b10)
+      },
+      %InputFrame{
+        seq: 2,
+        client_tick: 2,
+        dt_ms: 100,
+        input_dir: {0.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0b10
+      },
+      %InputFrame{
+        seq: 3,
+        client_tick: 3,
+        dt_ms: 100,
+        input_dir: {0.0, 0.0},
+        speed_scale: 1.0,
+        movement_flags: 0b10
+      }
+    ]
+
+    state =
+      Enum.reduce(frames, state, fn frame, acc ->
+        {:reply, {:ok, :accepted}, next_state} =
+          SceneServer.PlayerCharacter.handle_call(
+            {:movement_input, frame},
+            {self(), make_ref()},
+            acc
+          )
+
+        next_state
+      end)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert next_state.last_ack_seq == 3
+    assert next_state.movement_state.tick == 3
     assert next_state.movement_state.movement_mode == :airborne
     refute InputFrame.jumping?(next_state.latched_input)
   end
@@ -227,11 +421,92 @@ defmodule SceneServer.PlayerCharacterTest do
                state
              )
 
+    on_exit(fn -> stop_real_aoi_item(next_state.aoi_ref) end)
+
     refute next_state.aoi_ref == aoi_ref
     assert Process.alive?(next_state.aoi_ref)
 
     [registered] = SceneServer.AoiManager.get_items_with_cids([cid])
     assert registered == next_state.aoi_ref
+  end
+
+  test "partition window update is stored and forwarded to current AOI adapter" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    partition_window = partition_window()
+    state = movement_state(aoi_ref, self())
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_cast({:partition_window, partition_window}, state)
+
+    assert next_state.partition_window_dto == partition_window
+    assert is_integer(next_state.partition_updated_at_ms)
+    assert_receive {:aoi_cast, {:partition_window, ^partition_window}}
+  end
+
+  test "nil partition window update preserves the previous authoritative window" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    partition_window = partition_window()
+
+    state =
+      movement_state(aoi_ref, self())
+      |> Map.put(:partition_window_dto, partition_window)
+      |> Map.put(:partition_updated_at_ms, 123)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_cast({:partition_window, nil}, state)
+
+    assert next_state.partition_window_dto == partition_window
+    assert next_state.partition_updated_at_ms == 123
+    refute_receive {:aoi_cast, {:partition_window, nil}}, 100
+  end
+
+  test "AOI adapter recovery replays the latest partition window" do
+    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
+    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+
+    cid = System.unique_integer([:positive])
+    location = {100.0, 0.0, 0.0}
+    partition_window = partition_window()
+
+    {:ok, aoi_ref} =
+      SceneServer.AoiManager.add_aoi_item(
+        cid,
+        0,
+        location,
+        connection_pid,
+        self(),
+        %{kind: :player, name: "tester"}
+      )
+
+    monitor_ref = Process.monitor(aoi_ref)
+    GenServer.call(aoi_ref, :exit)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^aoi_ref, :normal}, 300
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:cid, cid)
+      |> Map.put(:aoi_monitor_ref, monitor_ref)
+      |> Map.put(:character_profile, %{name: "tester", position: location})
+      |> Map.put(:last_location, location)
+      |> Map.put(:movement_state, SceneServer.Movement.State.idle(location))
+      |> Map.put(:partition_window_dto, partition_window)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(
+               {:DOWN, monitor_ref, :process, aoi_ref, :normal},
+               state
+             )
+
+    on_exit(fn -> stop_real_aoi_item(next_state.aoi_ref) end)
+
+    assert next_state.partition_window_dto == partition_window
+    refute next_state.aoi_ref == aoi_ref
+
+    aoi_state = :sys.get_state(next_state.aoi_ref)
+    assert aoi_state.partition_interest.logical_scene_id == partition_window.logical_scene_id
+    assert aoi_state.partition_interest.near_query_count == 1
+    assert aoi_state.partition_interest.halo_query_count == 1
   end
 
   test "connection monitor setup accepts remote connection pids" do
@@ -431,7 +706,36 @@ defmodule SceneServer.PlayerCharacterTest do
       movement_timer: nil,
       respawn_timer: nil,
       aoi_monitor_ref: nil,
+      partition_window_dto: nil,
+      partition_updated_at_ms: nil,
       character_profile: %{name: "tester", position: location}
+    }
+  end
+
+  defp partition_window do
+    %{
+      logical_scene_id: 7,
+      center_chunk: {0, 0, 0},
+      near_radius: 0,
+      halo_radius: 1,
+      route_entries: [
+        %{
+          chunk_coord: {0, 0, 0},
+          tier: :near,
+          status: :assigned,
+          region_id: 10,
+          lease_id: 100,
+          assigned_scene_node: node()
+        },
+        %{
+          chunk_coord: {1, 0, 0},
+          tier: :halo,
+          status: :assigned,
+          region_id: 20,
+          lease_id: 200,
+          assigned_scene_node: node()
+        }
+      ]
     }
   end
 
@@ -441,4 +745,28 @@ defmodule SceneServer.PlayerCharacterTest do
       pid -> pid
     end
   end
+
+  defp stop_real_aoi_item(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      GenServer.call(pid, :exit)
+      wait_until_dead(pid)
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp wait_until_dead(pid, attempts \\ 40)
+
+  defp wait_until_dead(pid, attempts) when attempts > 0 do
+    if Process.alive?(pid) do
+      Process.sleep(25)
+      wait_until_dead(pid, attempts - 1)
+    else
+      :ok
+    end
+  end
+
+  defp wait_until_dead(_pid, 0), do: :ok
+
+  defp unique_id, do: System.unique_integer([:positive])
 end

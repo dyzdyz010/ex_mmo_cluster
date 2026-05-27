@@ -6,10 +6,12 @@ defmodule SceneServer.Aoi.AoiItem do
 
   - owns that actor's current octree placement
   - refreshes nearby subscribers on a timer
-  - forwards AOI-visible events (enter/leave/move/chat/skill/combat/state)
+  - forwards AOI-visible events (enter/leave/move/skill/combat/state)
 
   `AoiItem` is intentionally not the authority for movement or combat; it is the
-  subscription/broadcast adapter layered on top of authoritative actors.
+  subscription/broadcast adapter layered on top of authoritative actors. MMO chat
+  is owned by `ChatServer.Runtime`; legacy AOI chat casts are rejected with
+  observe events instead of becoming a second chat truth.
   """
 
   use GenServer, restart: :temporary
@@ -17,10 +19,11 @@ defmodule SceneServer.Aoi.AoiItem do
   require Logger
 
   # alias SceneServer.Native.CoordinateSystem
-  alias SceneServer.Aoi.Priority
+  alias SceneServer.Aoi.{PartitionInterest, Priority, RemoteMirrorLedger}
   alias SceneServer.Combat.EffectEvent
   alias SceneServer.Movement.RemoteSnapshot
   alias SceneServer.Native.Octree
+  alias SceneServer.Voxel.Types, as: VoxelTypes
 
   @type vector :: {float(), float(), float()}
 
@@ -30,6 +33,17 @@ defmodule SceneServer.Aoi.AoiItem do
 
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
+  end
+
+  @doc """
+  Replaces the externally supplied partition window for one AOI item.
+
+  The window must come from the server-authoritative partition context.
+  `AoiItem` consumes this DTO and derives its local AOI query plan; it does not
+  call World or Gate to compute ownership.
+  """
+  def update_partition_window(aoi_item, partition_window) when is_pid(aoi_item) do
+    GenServer.cast(aoi_item, {:partition_window, partition_window})
   end
 
   @doc """
@@ -58,7 +72,10 @@ defmodule SceneServer.Aoi.AoiItem do
        location: location,
        subscribees: [],
        interest_radius: 500,
-       aoi_timer: nil
+       partition_interest: nil,
+       partition_routes_by_chunk: %{},
+       aoi_timer: nil,
+       remote_mirror_requests: []
      }, {:continue, {:load, location}}}
   end
 
@@ -123,19 +140,18 @@ defmodule SceneServer.Aoi.AoiItem do
   @impl true
   def handle_cast(
         {:chat_message, from_cid, from_name, text},
-        %{connection_pid: connection_pid} = state
+        state
       ) do
-    GenServer.cast(connection_pid, {:chat_message, from_cid, from_name, text})
+    emit_legacy_chat_rejected(:chat_message, from_cid, from_name, text)
     {:noreply, state}
   end
 
   @impl true
   def handle_cast(
         {:chat_say, from_cid, from_name, text},
-        %{connection_pid: connection_pid} = state
+        state
       ) do
-    GenServer.cast(connection_pid, {:chat_message, from_cid, from_name, text})
-    broadcast_action_chat_message(from_cid, from_name, text, state.subscribees)
+    emit_legacy_chat_rejected(:chat_say, from_cid, from_name, text)
     {:noreply, state}
   end
 
@@ -249,6 +265,85 @@ defmodule SceneServer.Aoi.AoiItem do
     {:noreply, %{state | item_ref: item_ref, location: snapshot.position}}
   end
 
+  @impl true
+  def handle_cast({:partition_window, nil}, %{cid: cid} = state) do
+    SceneServer.CliObserve.emit("aoi_partition_interest_preserved", %{
+      cid: cid,
+      reason: :nil_partition_window,
+      had_partition_interest: not is_nil(state.partition_interest)
+    })
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:partition_window, partition_window}, %{cid: cid} = state) do
+    partition_interest =
+      PartitionInterest.plan(%{
+        cid: cid,
+        local_scene_node: node(),
+        partition_window: partition_window
+      })
+
+    routes_by_chunk = partition_routes_by_chunk(partition_interest)
+    remote_mirror_requests = Map.get(partition_interest, :remote_mirror_requests, [])
+
+    remote_mirror_diff =
+      remote_mirror_request_diff(state.remote_mirror_requests, remote_mirror_requests)
+
+    ledger_summary = RemoteMirrorLedger.replace_requests(cid, remote_mirror_requests)
+
+    pruned_subscribees =
+      refresh_partition_subscribees(state, partition_interest, routes_by_chunk)
+
+    pruned_pids = subscriber_pids(state.subscribees) -- subscriber_pids(pruned_subscribees)
+
+    if pruned_pids != [] do
+      broadcast_action_player_leave(cid, pruned_pids)
+    end
+
+    SceneServer.CliObserve.emit("aoi_partition_interest_applied", fn ->
+      %{
+        cid: cid,
+        logical_scene_id: Map.get(partition_interest, :logical_scene_id),
+        center_chunk: tuple_to_list(Map.get(partition_interest, :center_chunk)),
+        near_query_count: Map.get(partition_interest, :near_query_count, 0),
+        halo_query_count: Map.get(partition_interest, :halo_query_count, 0),
+        skipped_count: Map.get(partition_interest, :skipped_count, 0),
+        missing_count: Map.get(partition_interest, :missing_count, 0),
+        unleased_count: Map.get(partition_interest, :unleased_count, 0),
+        remote_mirror_request_count: length(remote_mirror_requests),
+        remote_mirror_requests: remote_mirror_request_summaries(remote_mirror_requests),
+        remote_mirror_ledger: ledger_summary_for_log(ledger_summary),
+        remote_owner_query_count: remote_owner_query_count(partition_interest),
+        pruned_subscriber_count: length(pruned_pids)
+      }
+    end)
+
+    SceneServer.CliObserve.emit("aoi_remote_mirror_requests_updated", fn ->
+      %{
+        cid: cid,
+        logical_scene_id: Map.get(partition_interest, :logical_scene_id),
+        center_chunk: tuple_to_list(Map.get(partition_interest, :center_chunk)),
+        remote_mirror_request_count: length(remote_mirror_requests),
+        added_count: remote_mirror_diff.added_count,
+        removed_count: remote_mirror_diff.removed_count,
+        retained_count: remote_mirror_diff.retained_count,
+        ledger: ledger_summary_for_log(ledger_summary),
+        requests: remote_mirror_request_summaries(remote_mirror_requests)
+      }
+    end)
+
+    {:noreply,
+     %{
+       state
+       | partition_interest: partition_interest,
+         partition_routes_by_chunk: routes_by_chunk,
+         remote_mirror_requests: remote_mirror_requests,
+         subscribees: pruned_subscribees
+     }}
+  end
+
   # @impl true
   # def handle_call(:get_location, _from, %{movement: movement} = state) do
   #   {:reply, movement.location, state}
@@ -282,7 +377,9 @@ defmodule SceneServer.Aoi.AoiItem do
           item_ref: item,
           subscribees: subscribees,
           actor_kind: actor_kind,
-          actor_name: actor_name
+          actor_name: actor_name,
+          partition_interest: partition_interest,
+          partition_routes_by_chunk: partition_routes_by_chunk
         } = state
       ) do
     # aoi_pids = get_aoi_pids(system, item, 50000.0)
@@ -295,7 +392,9 @@ defmodule SceneServer.Aoi.AoiItem do
         interest_radius,
         subscribees,
         actor_kind,
-        actor_name
+        actor_name,
+        partition_interest,
+        partition_routes_by_chunk
       )
 
     # Logger.debug("Coordinate System: #{inspect(CoordinateSystem.get_system_raw(system), pretty: true)}", ansi_color: :yellow)
@@ -362,6 +461,8 @@ defmodule SceneServer.Aoi.AoiItem do
       Process.cancel_timer(aoi_timer)
       Logger.debug("Timer canceled.")
     end
+
+    RemoteMirrorLedger.clear_requests(cid)
 
     log_termination(reason)
   end
@@ -463,7 +564,9 @@ defmodule SceneServer.Aoi.AoiItem do
           float(),
           [Priority.target()],
           atom(),
-          String.t()
+          String.t(),
+          map() | nil,
+          map()
         ) :: [Priority.target()]
   defp refresh_aoi_players(
          system,
@@ -473,13 +576,25 @@ defmodule SceneServer.Aoi.AoiItem do
          interest_radius,
          subscribees,
          actor_kind,
-         actor_name
+         actor_name,
+         partition_interest,
+         partition_routes_by_chunk
        ) do
-    aoi_targets = get_aoi_targets(system, item, location, interest_radius)
+    aoi_targets =
+      get_aoi_targets(
+        system,
+        item,
+        location,
+        interest_radius,
+        partition_interest,
+        partition_routes_by_chunk
+      )
+
     old_pids = subscriber_pids(subscribees)
     new_pids = subscriber_pids(aoi_targets)
     leave_pids = old_pids -- new_pids
     enter_pids = new_pids -- old_pids
+    partition_counts = partition_target_counts(aoi_targets, partition_interest)
 
     # Logger.debug("旧玩家列表：#{inspect(subscribees, pretty: true)}，新玩家列表：#{inspect(aoi_pids, pretty: true)}")
 
@@ -498,7 +613,11 @@ defmodule SceneServer.Aoi.AoiItem do
       leave_count: length(leave_pids),
       high_priority: count_band(aoi_targets, :high),
       medium_priority: count_band(aoi_targets, :medium),
-      low_priority: count_band(aoi_targets, :low)
+      low_priority: count_band(aoi_targets, :low),
+      partition_near_count: partition_counts.near,
+      partition_halo_count: partition_counts.halo,
+      partition_skipped_count: partition_counts.skipped,
+      partition_remote_owner_skipped_count: partition_counts.remote_owner_skipped
     })
 
     aoi_targets
@@ -508,9 +627,18 @@ defmodule SceneServer.Aoi.AoiItem do
           Octree.Types.octree(),
           Octree.Types.octree_item(),
           vector(),
-          float()
+          float(),
+          map() | nil,
+          map()
         ) :: [Priority.target()]
-  defp get_aoi_targets(system, item, location, distance) do
+  defp get_aoi_targets(
+         system,
+         item,
+         location,
+         distance,
+         partition_interest,
+         partition_routes_by_chunk
+       ) do
     cids = Octree.get_in_bound_except(system, item, {distance, distance, distance})
     # {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
     # data = CoordinateSystem.get_item_raw(item)
@@ -519,6 +647,7 @@ defmodule SceneServer.Aoi.AoiItem do
     cids
     |> SceneServer.AoiManager.get_entries_with_cids()
     |> Priority.build_targets(location, distance)
+    |> apply_partition_interest(partition_interest, partition_routes_by_chunk)
   end
 
   # defp broadcast_action_movement(movement, pids) do
@@ -545,15 +674,19 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @spec broadcast_action_player_move(RemoteSnapshot.t(), [pid() | Priority.target()]) :: :ok
   defp broadcast_action_player_move(%RemoteSnapshot{} = snapshot, subscribers) do
-    {sent, skipped, bands} =
-      Enum.reduce(subscribers, {0, 0, %{}}, fn subscriber, {sent, skipped, bands} ->
+    {sent, skipped, bands, partition_sent} =
+      Enum.reduce(subscribers, {0, 0, %{}, %{}}, fn subscriber,
+                                                    {sent, skipped, bands, partition_sent} ->
         case priority_delivery(snapshot, subscriber) do
           {:send, pid, decorated, band} ->
             GenServer.cast(pid, {:player_move, decorated})
-            {sent + 1, skipped, Map.update(bands, band, 1, &(&1 + 1))}
+            partition_tier = Map.get(subscriber, :partition_tier, :none)
+
+            {sent + 1, skipped, Map.update(bands, band, 1, &(&1 + 1)),
+             Map.update(partition_sent, partition_tier, 1, &(&1 + 1))}
 
           :skip ->
-            {sent, skipped + 1, bands}
+            {sent, skipped + 1, bands, partition_sent}
         end
       end)
 
@@ -565,23 +698,13 @@ defmodule SceneServer.Aoi.AoiItem do
         skipped: skipped,
         high_priority: Map.get(bands, :high, 0),
         medium_priority: Map.get(bands, :medium, 0),
-        low_priority: Map.get(bands, :low, 0)
+        low_priority: Map.get(bands, :low, 0),
+        partition_near_sent: Map.get(partition_sent, :near, 0),
+        partition_halo_sent: Map.get(partition_sent, :halo, 0)
       })
     end
 
     :ok
-  end
-
-  @spec broadcast_action_chat_message(integer(), binary(), binary(), [
-          pid() | Priority.target()
-        ]) :: any()
-  defp broadcast_action_chat_message(cid, from_name, text, subscribers) do
-    subscribers
-    |> subscriber_pids()
-    |> Task.async_stream(fn pid -> GenServer.cast(pid, {:chat_message, cid, from_name, text}) end,
-      timeout: :infinity
-    )
-    |> Enum.to_list()
   end
 
   @spec broadcast_action_skill_event(integer(), integer(), vector(), [
@@ -595,6 +718,16 @@ defmodule SceneServer.Aoi.AoiItem do
       timeout: :infinity
     )
     |> Enum.to_list()
+  end
+
+  defp emit_legacy_chat_rejected(kind, cid, from_name, text) do
+    SceneServer.CliObserve.emit("aoi_chat_legacy_rejected", %{
+      kind: kind,
+      cid: cid,
+      username: from_name,
+      text: text,
+      reason: :chat_runtime_required
+    })
   end
 
   @spec broadcast_action_player_state(
@@ -669,6 +802,129 @@ defmodule SceneServer.Aoi.AoiItem do
     {:send, pid, snapshot, :legacy}
   end
 
+  defp apply_partition_interest(_targets, nil, _routes_by_chunk), do: []
+
+  defp apply_partition_interest(targets, partition_interest, routes_by_chunk)
+       when is_map(partition_interest) and is_map(routes_by_chunk) do
+    targets
+    |> Enum.flat_map(fn target ->
+      chunk_coord = VoxelTypes.chunk_from_world_cm!(target.location)
+
+      case Map.get(routes_by_chunk, chunk_coord) do
+        nil -> []
+        query -> [merge_partition_query(target, query)]
+      end
+    end)
+  end
+
+  defp refresh_partition_subscribees(
+         %{subscribees: subscribees, location: location, interest_radius: interest_radius},
+         partition_interest,
+         routes_by_chunk
+       ) do
+    subscribees
+    |> Enum.map(&Map.get(&1, :cid))
+    |> Enum.reject(&is_nil/1)
+    |> SceneServer.AoiManager.get_entries_with_cids()
+    |> Priority.build_targets(location, interest_radius)
+    |> apply_partition_interest(partition_interest, routes_by_chunk)
+  end
+
+  defp merge_partition_query(target, query) do
+    %{
+      target
+      | priority_band: query.priority_band,
+        delivery_interval: query.delivery_interval
+    }
+    |> Map.merge(%{
+      partition_tier: query.tier,
+      partition_region_id: query.region_id,
+      partition_lease_id: query.lease_id,
+      partition_assigned_scene_node: query.assigned_scene_node,
+      partition_query_scope: query.query_scope
+    })
+  end
+
+  defp partition_target_counts(_targets, nil) do
+    %{near: 0, halo: 0, skipped: 0, remote_owner_skipped: 0}
+  end
+
+  defp partition_target_counts(targets, partition_interest) do
+    %{
+      near: Enum.count(targets, &(&1[:partition_tier] == :near)),
+      halo: Enum.count(targets, &(&1[:partition_tier] == :halo)),
+      skipped: Map.get(partition_interest, :skipped_count, 0),
+      remote_owner_skipped: remote_owner_query_count(partition_interest)
+    }
+  end
+
+  defp partition_routes_by_chunk(partition_interest) do
+    partition_interest
+    |> Map.get(:query_entries, [])
+    |> Enum.filter(&local_owner?/1)
+    |> Map.new(fn entry -> {Map.fetch!(entry, :chunk_coord), entry} end)
+  end
+
+  defp remote_mirror_request_summaries(remote_mirror_requests) do
+    Enum.map(remote_mirror_requests, fn request ->
+      %{
+        cid: request.cid,
+        logical_scene_id: request.logical_scene_id,
+        center_chunk: tuple_to_list(request.center_chunk),
+        requester_scene_node: request.requester_scene_node,
+        owner_scene_node: request.owner_scene_node,
+        chunk_coord: tuple_to_list(request.chunk_coord),
+        tier: request.tier,
+        region_id: request.region_id,
+        lease_id: request.lease_id,
+        assigned_scene_node: request.assigned_scene_node,
+        query_scope: request.query_scope,
+        priority_band: request.priority_band,
+        delivery_interval: request.delivery_interval,
+        request_mode: request.request_mode,
+        request_key: request_key_summary(request.request_key),
+        status: request.status,
+        reason: request.reason
+      }
+    end)
+  end
+
+  defp request_key_summary({owner_scene_node, lease_id, chunk_coord}) do
+    %{
+      owner_scene_node: owner_scene_node,
+      lease_id: lease_id,
+      chunk_coord: tuple_to_list(chunk_coord)
+    }
+  end
+
+  defp ledger_summary_for_log({:error, reason}), do: %{status: :unavailable, reason: reason}
+
+  defp ledger_summary_for_log(summary) when is_map(summary) do
+    Map.put(summary, :status, :updated)
+  end
+
+  defp remote_mirror_request_diff(previous_requests, next_requests) do
+    previous_keys = previous_requests |> Enum.map(& &1.request_key) |> MapSet.new()
+    next_keys = next_requests |> Enum.map(& &1.request_key) |> MapSet.new()
+
+    %{
+      added_count: MapSet.size(MapSet.difference(next_keys, previous_keys)),
+      removed_count: MapSet.size(MapSet.difference(previous_keys, next_keys)),
+      retained_count: MapSet.size(MapSet.intersection(previous_keys, next_keys))
+    }
+  end
+
+  defp remote_owner_query_count(partition_interest) do
+    partition_interest
+    |> Map.get(:query_entries, [])
+    |> Enum.count(&(not local_owner?(&1)))
+  end
+
+  defp local_owner?(%{assigned_scene_node: assigned_scene_node}),
+    do: assigned_scene_node == node()
+
+  defp local_owner?(_entry), do: false
+
   defp subscriber_pids(subscribers) do
     subscribers
     |> Enum.map(&subscriber_pid/1)
@@ -685,4 +941,7 @@ defmodule SceneServer.Aoi.AoiItem do
       _target -> false
     end)
   end
+
+  defp tuple_to_list({x, y, z}), do: [x, y, z]
+  defp tuple_to_list(value), do: value
 end

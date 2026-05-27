@@ -34,7 +34,8 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       )
 
     File.rm(path)
-    Application.put_env(:scene_server, :cli_observe_log, path)
+    Application.delete_env(:scene_server, :cli_observe_log)
+    {:ok, observe_route} = CliObserve.register_route(1, path)
 
     case start_supervised({AttributeCatalog, []}) do
       {:ok, _pid} -> :ok
@@ -44,7 +45,8 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     SceneServer.TestVoxelRuntime.ensure_started!()
 
     on_exit(fn ->
-      CliObserve.flush()
+      CliObserve.flush_path(path)
+      CliObserve.unregister_route(1, observe_route)
 
       case previous_log do
         nil -> Application.delete_env(:scene_server, :cli_observe_log)
@@ -92,6 +94,92 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     assert decoded_storage.chunk_version == 0
     assert ChunkProcess.debug_state(chunk).subscriber_count == 1
+  end
+
+  test "opt-in subscriber receives snapshot envelope while legacy subscriber still receives raw snapshot payload" do
+    lease = lease()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
+
+    legacy_subscriber = start_forwarding_subscriber(:legacy_snapshot)
+    envelope_subscriber = start_forwarding_subscriber(:envelope_snapshot)
+
+    assert {:ok, legacy_payload} =
+             ChunkProcess.subscribe(chunk, legacy_subscriber, request_id: 61)
+
+    assert_receive {:subscriber_message, :legacy_snapshot,
+                    {:voxel_chunk_snapshot_payload, ^legacy_payload}}
+
+    assert {:ok, envelope_payload} =
+             ChunkProcess.subscribe(chunk, envelope_subscriber,
+               request_id: 62,
+               delivery_format: :envelope,
+               tier: :halo
+             )
+
+    assert_receive {:subscriber_message, :envelope_snapshot, {:voxel_delivery_envelope, envelope}}
+
+    assert envelope.frame_kind == :snapshot
+    assert envelope.logical_scene_id == 1
+    assert envelope.chunk_coord == {1, 1, 1}
+    assert envelope.tier == :halo
+    assert envelope.stream_class == :voxel_snapshot
+    assert envelope.server_version == 0
+    assert envelope.chunk_version == 0
+    assert envelope.lease_id == lease.lease_id
+    assert envelope.owner_epoch == lease.owner_epoch
+    assert envelope.byte_size == byte_size(envelope_payload)
+    assert envelope.payload == envelope_payload
+  end
+
+  test "opt-in subscriber receives invalidate envelope while legacy subscriber still receives raw invalidate payload" do
+    lease = lease()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
+
+    legacy_subscriber = start_forwarding_subscriber(:legacy_invalidate)
+    envelope_subscriber = start_forwarding_subscriber(:envelope_invalidate)
+
+    assert {:ok, legacy_payload} =
+             ChunkProcess.subscribe(chunk, legacy_subscriber, request_id: 63)
+
+    assert_receive {:subscriber_message, :legacy_invalidate,
+                    {:voxel_chunk_snapshot_payload, ^legacy_payload}}
+
+    assert {:ok, envelope_payload} =
+             ChunkProcess.subscribe(chunk, envelope_subscriber,
+               request_id: 64,
+               delivery_format: :envelope,
+               tier: :near
+             )
+
+    assert_receive {:subscriber_message, :envelope_invalidate,
+                    {:voxel_delivery_envelope, %{payload: ^envelope_payload}}}
+
+    assert {:ok, %{subscriber_count: 2, reason: 0x02}} =
+             ChunkProcess.invalidate_subscribers(chunk, 0x02)
+
+    assert_receive {:subscriber_message, :legacy_invalidate,
+                    {:voxel_chunk_invalidate_payload, invalidate_payload}}
+
+    assert_receive {:subscriber_message, :envelope_invalidate,
+                    {:voxel_delivery_envelope, envelope}}
+
+    assert envelope.frame_kind == :invalidate
+    assert envelope.logical_scene_id == 1
+    assert envelope.chunk_coord == {1, 1, 1}
+    assert envelope.tier == :near
+    assert envelope.stream_class == :reliable_control
+    assert envelope.server_version == 0
+    assert envelope.lease_id == lease.lease_id
+    assert envelope.owner_epoch == lease.owner_epoch
+    assert envelope.reason == 0x02
+    assert envelope.reason_name == Codec.invalidate_reason_name(0x02)
+    assert envelope.byte_size == byte_size(invalidate_payload)
+    assert envelope.payload == invalidate_payload
+    assert ChunkProcess.debug_state(chunk).subscriber_count == 0
   end
 
   test "put_solid_block pushes a second snapshot fallback payload to subscribers" do
@@ -243,7 +331,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     storage = ChunkProcess.debug_state(chunk).storage
     assert Storage.effective_attribute_at(storage, macro_index, "temperature") == 7_864_320
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_field_effect_applied"
     assert observe_log_text =~ "region_id: 701"
@@ -293,7 +381,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     storage = ChunkProcess.debug_state(chunk).storage
     assert Storage.effective_attribute_at(storage, macro_index, "temperature") == 1_376_256
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_field_effect_applied"
     assert observe_log_text =~ "heat_energy_joules: 3533630.0"
@@ -329,7 +417,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     assert ChunkProcess.debug_state(chunk).chunk_version == 1
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_field_effect_rejected"
     assert observe_log_text =~ "reason: :unsupported_field_effect_action"
@@ -386,7 +474,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.field_region_count == 1
     assert debug.field_source_count == 1
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
 
     assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
@@ -439,7 +527,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.field_region_count == 1
     assert debug.field_source_count == 0
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
 
     assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
@@ -494,7 +582,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.field_region_count == 0
     assert debug.field_source_count == 0
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
 
     assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
@@ -535,7 +623,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       debug.field_region_count == 0 and debug.field_source_count == 0
     end)
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
 
     assert observe_log_text =~ ~s(event="voxel_field_source_lifecycle")
@@ -666,6 +754,43 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert :ok = ChunkProcess.flush_persistence(chunk)
     assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
     assert snapshot.chunk_version == 1
+  end
+
+  test "apply_intents handles a starter-platform-sized solid batch in one chunk version" do
+    lease = start_snapshot_store()
+
+    chunk =
+      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    attrs =
+      for x <- 0..15,
+          z <- 0..15 do
+        intent_attrs(lease,
+          request_id: 200,
+          chunk_coord: {0, 0, 0},
+          macro: {x, 0, z},
+          block: NormalBlockData.new(5)
+        )
+      end
+
+    assert {:ok,
+            %{
+              chunk_version: 1,
+              changed?: true,
+              changed_count: 256,
+              skipped_count: 0,
+              persist_result: :queued,
+              snapshot_payload: payload
+            }} = ChunkProcess.apply_intents(chunk, attrs)
+
+    assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(payload)
+    assert storage.chunk_version == 1
+
+    assert Storage.macro_header_at(storage, {0, 0, 0}).mode ==
+             MacroCellHeader.cell_mode_solid_block()
+
+    assert Storage.macro_header_at(storage, {15, 0, 15}).mode ==
+             MacroCellHeader.cell_mode_solid_block()
   end
 
   test "apply_intents automatically starts current for closed source-load loop topology" do
@@ -807,7 +932,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert ChunkProcess.debug_state(chunk).field_region_count == 0
     assert ChunkProcess.debug_state(chunk).field_source_count == 0
 
-    CliObserve.flush()
+    CliObserve.flush_path(observe_log)
     observe_log_text = File.read!(observe_log)
 
     assert Regex.scan(~r/event="voxel_auto_circuit_refreshed"/, observe_log_text)
@@ -1029,6 +1154,68 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   describe "Phase 1c — :put_micro_block / :clear_micro_block intents" do
+    test "opt-in subscriber receives chunk delta envelope while legacy subscriber still receives raw chunk delta payload" do
+      lease = start_snapshot_store()
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease}
+        )
+
+      legacy_subscriber = start_forwarding_subscriber(:legacy_delta)
+      envelope_subscriber = start_forwarding_subscriber(:envelope_delta)
+
+      assert {:ok, legacy_payload} =
+               ChunkProcess.subscribe(chunk, legacy_subscriber, request_id: 198)
+
+      assert_receive {:subscriber_message, :legacy_delta,
+                      {:voxel_chunk_snapshot_payload, ^legacy_payload}}
+
+      assert {:ok, envelope_payload} =
+               ChunkProcess.subscribe(chunk, envelope_subscriber,
+                 request_id: 199,
+                 delivery_format: :envelope,
+                 tier: :near
+               )
+
+      assert_receive {:subscriber_message, :envelope_delta,
+                      {:voxel_delivery_envelope, %{payload: ^envelope_payload}}}
+
+      assert {:ok, _} =
+               ChunkProcess.apply_intent(
+                 chunk,
+                 micro_intent_attrs(lease,
+                   request_id: 199,
+                   operation: :put_micro_block,
+                   macro: {0, 0, 0},
+                   micro_slot: 5,
+                   micro_layer: %{material_id: 17}
+                 )
+               )
+
+      assert_receive {:subscriber_message, :legacy_delta,
+                      {:voxel_chunk_delta_payload, delta_payload}}
+
+      assert_receive {:subscriber_message, :envelope_delta, {:voxel_delivery_envelope, envelope}}
+
+      assert envelope.frame_kind == :delta
+      assert envelope.logical_scene_id == 1
+      assert envelope.chunk_coord == {1, 1, 1}
+      assert envelope.tier == :near
+      assert envelope.stream_class == :voxel_delta
+      assert envelope.base_server_version == 0
+      assert envelope.server_version == 1
+      assert envelope.chunk_version == 1
+      assert envelope.lease_id == lease.lease_id
+      assert envelope.owner_epoch == lease.owner_epoch
+      assert envelope.byte_size == byte_size(delta_payload)
+      assert envelope.payload == delta_payload
+
+      assert {:ok, delta} = Codec.decode_chunk_delta_payload(delta_payload)
+      assert delta.base_chunk_version == envelope.base_server_version
+      assert delta.new_chunk_version == envelope.server_version
+    end
+
     test "apply_intent :put_micro_block writes a refined slot, bumps versions, persists snapshot" do
       lease = start_snapshot_store()
 
@@ -1544,6 +1731,19 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              )
 
     token
+  end
+
+  defp start_forwarding_subscriber(label) do
+    parent = self()
+    spawn_link(fn -> forward_subscriber_messages(parent, label) end)
+  end
+
+  defp forward_subscriber_messages(parent, label) do
+    receive do
+      message ->
+        send(parent, {:subscriber_message, label, message})
+        forward_subscriber_messages(parent, label)
+    end
   end
 
   defp intent_attrs(lease, overrides \\ []) do

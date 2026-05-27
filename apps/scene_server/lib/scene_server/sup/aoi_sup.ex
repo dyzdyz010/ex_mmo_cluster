@@ -4,6 +4,7 @@ defmodule SceneServer.AoiSup do
 
   Layout:
 
+  - `SceneServer.Aoi.RemoteMirrorLedger` — remote halo mirror/prewarm request ledger
   - `SceneServer.AoiManager` — shared octree/index process
   - `SceneServer.AoiItemSup` — dynamic supervisor for per-actor AOI items
   """
@@ -26,6 +27,7 @@ defmodule SceneServer.AoiSup do
 
   def init(_init_arg) do
     children = [
+      {SceneServer.Aoi.RemoteMirrorLedger, name: SceneServer.Aoi.RemoteMirrorLedger},
       {SceneServer.AoiManager, name: SceneServer.AoiManager},
       {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup}
       # :poolboy.child_spec(:aoi_worker, poolboy_config())

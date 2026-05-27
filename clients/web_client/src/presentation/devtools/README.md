@@ -24,3 +24,7 @@ This directory owns the browser-side CLI surface exposed through
   diagnostics (`field_overlay [on|off]`) are render diagnostics only: they may
   read/toggle browser overlay state, but must not mutate voxel truth or server
   leases.
+- `chat <world|region|local> <text...>` is a server-session command. It may
+  send scope and text through `TransportPump.sendChat()`, but it must never
+  accept client-supplied `region_id`, `chunk_coord`, radius, or position as
+  channel authority.

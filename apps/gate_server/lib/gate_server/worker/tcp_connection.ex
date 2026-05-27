@@ -39,7 +39,20 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
-  alias GateServer.Voxel.PrefabLocalTransaction
+  alias GateServer.{ChatAdapter, ChatScope}
+  alias GateServer.{PartitionRefresh, PartitionRuntime}
+
+  alias GateServer.Voxel.{
+    ChunkVersionLedger,
+    ClientAckLedger,
+    DeliveryEnvelope,
+    DeliveryScheduler,
+    PrefabLocalTransaction,
+    SubscriptionPlanner,
+    SubscriptionRebind,
+    SubscriptionRuntime
+  }
+
   alias SceneServer.Combat.CastRequest
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
@@ -85,7 +98,18 @@ defmodule GateServer.TcpConnection do
        udp_ticket: nil,
        token: nil,
        status: :waiting_auth,
-       voxel_subscriptions: %{}
+       chat_session_joined?: false,
+       chat_context: nil,
+       partition_context: nil,
+       last_partition_refresh: nil,
+       voxel_subscriptions: %{},
+       forwarded_chunk_versions: ChunkVersionLedger.new(),
+       client_ack_versions: ClientAckLedger.new(),
+       voxel_subscription_plan: nil,
+       voxel_delivery: DeliveryScheduler.new(),
+       voxel_delivery_timer_ref: nil,
+       partition_refresh_generation: 0,
+       partition_refresh_pending: nil
      }}
   end
 
@@ -188,7 +212,7 @@ defmodule GateServer.TcpConnection do
       send_encoded(socket, message)
     end
 
-    {:noreply, state}
+    {:noreply, schedule_partition_refresh_after_movement_ack(state, ack)}
   end
 
   @impl true
@@ -287,91 +311,69 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_info({:voxel_chunk_snapshot_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_chunk_snapshot_payload, payload}, state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("voxel_chunk_snapshot_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
+    {:noreply, handle_live_voxel_data(state, :snapshot, payload)}
+  end
 
-    send_encoded(socket, {:voxel_chunk_snapshot_payload, payload})
+  def handle_info({:voxel_chunk_delta_payload, payload}, state)
+      when is_binary(payload) do
+    {:noreply, handle_live_voxel_data(state, :delta, payload)}
+  end
+
+  def handle_info({:voxel_chunk_invalidate_payload, payload}, state)
+      when is_binary(payload) do
+    {:noreply, handle_live_voxel_invalidate(state, payload)}
+  end
+
+  def handle_info(:voxel_delivery_window, state) do
+    scheduler =
+      state
+      |> Map.get(:voxel_delivery)
+      |> DeliveryScheduler.ensure()
+      |> DeliveryScheduler.reset_window()
+
+    {scheduler, actions} = DeliveryScheduler.drain(scheduler)
+
+    state =
+      state
+      |> Map.put(:voxel_delivery, scheduler)
+      |> Map.put(:voxel_delivery_timer_ref, nil)
+      |> send_live_voxel_actions(actions)
+      |> maybe_schedule_voxel_delivery_window()
+
     {:noreply, state}
   end
 
-  def handle_info({:voxel_chunk_delta_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_object_state_delta_payload, payload}, state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("voxel_chunk_delta_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
-
-    send_encoded(socket, {:voxel_chunk_delta_payload, payload})
-    {:noreply, state}
+    {:noreply, handle_live_voxel_data(state, :object_state_delta, payload)}
   end
 
-  def handle_info({:voxel_chunk_invalidate_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_field_region_snapshot_payload, payload}, state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("voxel_chunk_invalidate_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
-
-    send_encoded(socket, {:voxel_chunk_invalidate_payload, payload})
-    {:noreply, state}
+    {:noreply, handle_live_voxel_data(state, :field_region_snapshot, payload)}
   end
 
-  # Phase 4-bis (D7):forward 0x6C ObjectStateDelta from ChunkProcess fan-out
-  # to the TCP socket. ObjectRegistry encoded the binary once;ChunkProcess
-  # cast it into our mailbox via `send/2`;we just prefix the opcode and
-  # write to the socket.
-  def handle_info({:voxel_object_state_delta_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_field_region_destroyed_payload, payload}, state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
-
-    send_encoded(socket, {:voxel_object_state_delta_payload, payload})
-    {:noreply, state}
+    {:noreply, handle_live_voxel_data(state, :field_region_destroyed, payload)}
   end
 
-  # Phase 6: forward 0x73 FieldRegionSnapshot from ChunkProcess fan-out
-  # to the TCP socket. FieldTickWorker encoded the binary (already including
-  # the opcode byte) and ChunkProcess cast it into our mailbox via send/2.
-  # The `{packet, 4}` setting on the socket adds the 4-byte length prefix.
-  def handle_info({:voxel_field_region_snapshot_payload, payload}, %{socket: socket} = state)
-      when is_binary(payload) do
-    GateServer.CliObserve.emit("tcp_voxel_field_region_snapshot_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
-
-    send_frame(socket, payload)
-    {:noreply, state}
+  def handle_info({:voxel_delivery_envelope, envelope}, state) when is_map(envelope) do
+    {:noreply, handle_live_voxel_envelope(state, envelope)}
   end
 
-  # Phase 6: forward 0x74 FieldRegionDestroyed from ChunkProcess fan-out.
-  def handle_info({:voxel_field_region_destroyed_payload, payload}, %{socket: socket} = state)
-      when is_binary(payload) do
-    GateServer.CliObserve.emit("tcp_voxel_field_region_destroyed_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
+  def handle_info({:partition_refresh_completed, generation, auth_tick, result}, state) do
+    case PartitionRefresh.apply_completed(state, generation, auth_tick, result) do
+      {:applied, next_state, event} ->
+        GateServer.CliObserve.emit("gate_partition_refresh_applied", event)
+        {:noreply, next_state}
 
-    send_frame(socket, payload)
-    {:noreply, state}
+      {:ignored, next_state, event} ->
+        GateServer.CliObserve.emit("gate_partition_refresh_dropped", event)
+        {:noreply, next_state}
+    end
   end
 
   @impl true
@@ -406,6 +408,7 @@ defmodule GateServer.TcpConnection do
     Logger.info("Socket #{inspect(state.socket, pretty: true)} closed by peer.")
     GateServer.CliObserve.emit("tcp_closed", %{connection_pid: self(), cid: state.cid})
     cleanup_voxel_subscriptions(state)
+    cleanup_chat_session(state)
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -420,6 +423,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("tcp_error", %{connection_pid: self(), cid: state.cid, reason: err})
 
     cleanup_voxel_subscriptions(state)
+    cleanup_chat_session(state)
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -506,23 +510,22 @@ defmodule GateServer.TcpConnection do
 
   defp dispatch(
          {:chat_say, text, request_id},
-         %{status: :in_scene, scene_ref: spid, cid: cid, auth_username: username, socket: socket} =
+         %{status: :in_scene, cid: cid, auth_username: username, socket: socket} =
            state
        ) do
-    GateServer.CliObserve.emit("chat_received", %{
-      connection_pid: self(),
-      cid: cid,
-      username: username,
-      request_id: request_id,
-      text: text
-    })
+    publish_chat(:world, text, request_id, state, cid, username, socket)
+  end
 
-    case safe_call(spid, {:chat_say, cid, username || "anonymous", text}, @scene_call_timeout) do
-      {:ok, {:ok, _}} -> send_encoded(socket, {:result, :ok, request_id})
-      {:ok, _} -> send_result_error(socket, :server_error, request_id)
-      {:error, reason} -> send_result_error(socket, reason, request_id)
-    end
+  defp dispatch(
+         {:chat_say_scoped, scope, text, request_id},
+         %{status: :in_scene, cid: cid, auth_username: username, socket: socket} =
+           state
+       ) do
+    publish_chat(scope, text, request_id, state, cid, username, socket)
+  end
 
+  defp dispatch({:chat_say_scoped, _scope, _text, request_id}, state) do
+    send_result_error(state.socket, :invalid_state, request_id)
     {:ok, state}
   end
 
@@ -601,14 +604,29 @@ defmodule GateServer.TcpConnection do
 
       send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}, expected_seq})
 
-      {:ok,
-       %{
-         state
-         | scene_ref: ppid,
-           cid: cid,
-           status: :in_scene,
-           agent: with_active_cid(state.agent, cid)
-       }}
+      bootstrap_context = ChatAdapter.context_from_character(character, {x, y, z})
+
+      chat_context =
+        join_chat_session(
+          cid,
+          state.auth_username || "anonymous",
+          bootstrap_context
+        )
+
+      next_state =
+        %{
+          state
+          | scene_ref: ppid,
+            cid: cid,
+            status: :in_scene,
+            chat_session_joined?: not is_nil(chat_context),
+            chat_context: chat_context,
+            partition_context: initial_partition_context(bootstrap_context),
+            agent: with_active_cid(state.agent, cid)
+        }
+        |> refresh_partition_after_movement_ack(partition_bootstrap_ack(cid, {x, y, z}))
+
+      {:ok, next_state}
     else
       {:error, reason} ->
         GateServer.CliObserve.emit("enter_scene_error", %{
@@ -726,6 +744,7 @@ defmodule GateServer.TcpConnection do
           request_id: request.request_id,
           logical_scene_id: request.logical_scene_id,
           chunk_count: result.chunk_count,
+          subscribed_chunk_count: result.subscribed_chunk_count,
           subscription_count: map_size(next_state.voxel_subscriptions)
         })
 
@@ -767,6 +786,32 @@ defmodule GateServer.TcpConnection do
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, state) do
+    send_result_error(state.socket, :invalid_state, request.request_id)
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_chunk_ack, request}, %{status: :in_scene, socket: socket} = state) do
+    {next_state, summary} = record_client_ack_versions(state, request)
+
+    GateServer.CliObserve.emit("voxel_chunk_ack_recorded", fn ->
+      Map.merge(summary, %{
+        connection_pid: self(),
+        cid: state.cid,
+        transport: :tcp,
+        request_id: request.request_id
+      })
+    end)
+
+    if summary.rejected_count == 0 do
+      send_encoded(socket, {:result, :ok, request.request_id})
+    else
+      send_result_error(socket, :client_ack_rejected, request.request_id)
+    end
+
+    {:ok, next_state}
+  end
+
+  defp dispatch({:voxel_chunk_ack, request}, state) do
     send_result_error(state.socket, :invalid_state, request.request_id)
     {:ok, state}
   end
@@ -1044,6 +1089,70 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
+  defp publish_chat(scope, text, request_id, state, cid, username, socket) do
+    case ChatScope.derive(scope, state) do
+      {:ok, chat_target} ->
+        publish_chat_to_target(chat_target, text, request_id, state, cid, username, socket)
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("chat_error", %{
+          connection_pid: self(),
+          cid: cid,
+          request_id: request_id,
+          scope: scope,
+          reason: reason
+        })
+
+        send_result_error(socket, reason, request_id)
+        {:ok, state}
+    end
+  end
+
+  defp publish_chat_to_target(chat_target, text, request_id, state, cid, username, socket) do
+    GateServer.CliObserve.emit("chat_received", %{
+      connection_pid: self(),
+      cid: cid,
+      username: username,
+      request_id: request_id,
+      scope: chat_target.scope,
+      channel: inspect(chat_target.channel),
+      text: text
+    })
+
+    case ChatAdapter.publish(%{
+           cid: state.cid,
+           username: state.auth_username,
+           logical_scene_id: chat_target.logical_scene_id,
+           channel: chat_target.channel,
+           text: text
+         }) do
+      {:ok, summary} ->
+        GateServer.CliObserve.emit("chat_forwarded", %{
+          connection_pid: self(),
+          cid: cid,
+          request_id: request_id,
+          message_id: summary.message_id,
+          scope: chat_target.scope,
+          channel: inspect(summary.channel),
+          recipient_count: summary.recipient_count
+        })
+
+        send_encoded(socket, {:result, :ok, request_id})
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("chat_error", %{
+          connection_pid: self(),
+          cid: cid,
+          request_id: request_id,
+          reason: reason
+        })
+
+        send_result_error(socket, reason, request_id)
+    end
+
+    {:ok, state}
+  end
+
   @spec verify_token(any()) :: any
   defp verify_token(token) do
     case fetch_auth_node() do
@@ -1084,6 +1193,54 @@ defmodule GateServer.TcpConnection do
     end
   end
 
+  defp join_chat_session(cid, username, context) do
+    case ChatAdapter.join(%{
+           cid: cid,
+           username: username,
+           connection_pid: self(),
+           logical_scene_id: context.logical_scene_id,
+           region_id: context.region_id,
+           chunk_coord: context.chunk_coord,
+           location: context.location
+         }) do
+      {:ok, session} ->
+        GateServer.CliObserve.emit("chat_session_joined", %{
+          connection_pid: self(),
+          cid: cid,
+          logical_scene_id: session.logical_scene_id,
+          region_id: session.region_id,
+          chunk_coord: session.chunk_coord
+        })
+
+        Map.take(session, [:logical_scene_id, :region_id, :chunk_coord])
+
+      {:error, reason} ->
+        emit_chat_session_join_failed(cid, reason)
+        nil
+    end
+  end
+
+  defp initial_partition_context(context) do
+    Map.take(context, [:logical_scene_id, :region_id, :chunk_coord])
+  end
+
+  defp partition_bootstrap_ack(cid, location) do
+    %{
+      cid: cid,
+      ack_seq: 0,
+      auth_tick: 0,
+      position: location
+    }
+  end
+
+  defp emit_chat_session_join_failed(cid, reason) do
+    GateServer.CliObserve.emit("chat_session_join_failed", %{
+      connection_pid: self(),
+      cid: cid,
+      reason: reason
+    })
+  end
+
   defp add_player(scene_node, cid, timestamp, character_profile) do
     case safe_call(
            {SceneServer.PlayerManager, scene_node},
@@ -1121,6 +1278,13 @@ defmodule GateServer.TcpConnection do
     _ = safe_call(scene_ref, :exit)
     :ok
   end
+
+  defp cleanup_chat_session(%{chat_session_joined?: true, cid: cid})
+       when is_integer(cid) and cid >= 0 do
+    ChatAdapter.leave(cid)
+  end
+
+  defp cleanup_chat_session(_state), do: :ok
 
   defp cleanup_fast_lane(connection_pid) do
     if Process.whereis(GateServer.FastLaneRegistry) do
@@ -1296,9 +1460,25 @@ defmodule GateServer.TcpConnection do
     end
   end
 
+  defp route_voxel_partition_window(logical_scene_id, center_chunk, radius) do
+    with {:ok, world_node} <- fetch_world_node() do
+      case safe_call(
+             {WorldServer.Voxel.MapLedger, world_node},
+             {:route_window_with_leases, logical_scene_id, center_chunk,
+              [near_radius: 0, halo_radius: radius]},
+             @scene_call_timeout
+           ) do
+        {:ok, %{route_entries: _route_entries} = window} -> {:ok, window}
+        {:ok, _other} -> {:error, :world_unavailable}
+        {:error, _reason} -> {:error, :world_unavailable}
+      end
+    end
+  end
+
   defp apply_voxel_impact_intent(request, state) do
     with :ok <- authorize_voxel_impact_intent(request, state),
          {:ok, target} <- voxel_impact_target(request),
+         :ok <- authorize_voxel_target(state, request.logical_scene_id, target.chunk_coord),
          {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
          {:ok, scene_node} <- fetch_scene_node_for_route(route) do
       lease = Map.fetch!(route, :lease)
@@ -1421,6 +1601,7 @@ defmodule GateServer.TcpConnection do
     with :ok <- authorize_voxel_edit_intent(state),
          {:ok, op} <- voxel_edit_intent_op(request),
          {:ok, target} <- voxel_edit_intent_target(request, op),
+         :ok <- authorize_voxel_target(state, request.logical_scene_id, target.chunk_coord),
          {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
          {:ok, scene_node} <- fetch_scene_node_for_route(route) do
       lease = Map.fetch!(route, :lease)
@@ -1744,7 +1925,8 @@ defmodule GateServer.TcpConnection do
         {:error, :empty_prefab}
 
       coords ->
-        with {:ok, routes_by_chunk} <- route_all_chunks(request.logical_scene_id, coords),
+        with :ok <- authorize_voxel_chunks(state, request.logical_scene_id, coords),
+             {:ok, routes_by_chunk} <- route_all_chunks(request.logical_scene_id, coords),
              {:ok, participants} <-
                build_prefab_participants(routes_by_chunk, cells_by_chunk, request),
              {:ok, scene_object} <-
@@ -2359,21 +2541,21 @@ defmodule GateServer.TcpConnection do
     "prefab-reservation-#{request.request_id}"
   end
 
-  defp emit_voxel_chunk_subscribe_routed(request, state, route) do
-    assignment = Map.fetch!(route, :assignment)
-    lease = Map.fetch!(route, :lease)
-
-    GateServer.CliObserve.emit("voxel_chunk_subscribe_routed", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk,
-      region_id: assignment.region_id,
-      lease_id: lease.lease_id,
-      owner_scene_instance_ref: lease.owner_scene_instance_ref,
-      owner_epoch: lease.owner_epoch
-    })
+  defp emit_voxel_subscription_window_planned(plan, state) do
+    GateServer.CliObserve.emit("voxel_subscription_window_planned", fn ->
+      Map.merge(plan.summary, %{
+        connection_pid: self(),
+        cid: state.cid,
+        subscribe_entries:
+          Enum.map(plan.subscribe_entries, fn entry ->
+            Map.take(entry, [:chunk_coord, :tier, :priority, :region_id, :lease_id])
+          end),
+        skipped_entries:
+          Enum.map(plan.skipped_entries, fn entry ->
+            Map.take(entry, [:chunk_coord, :tier, :status, :reason, :region_id, :lease_id])
+          end)
+      })
+    end)
   end
 
   defp voxel_result_error(request, reason) do
@@ -2432,89 +2614,223 @@ defmodule GateServer.TcpConnection do
   end
 
   defp subscribe_voxel_chunks(request, state) do
-    with :ok <- validate_voxel_subscribe_radius(request.radius_l_inf) do
-      coords = voxel_subscription_coords(request.center_chunk, request.radius_l_inf)
-      known_versions = voxel_known_versions(Map.get(request, :known, []))
+    with :ok <- validate_voxel_subscribe_radius(request.radius_l_inf),
+         :ok <-
+           authorize_voxel_subscribe_window(
+             state,
+             request.logical_scene_id,
+             request.center_chunk,
+             request.radius_l_inf
+           ),
+         {:ok, window} <-
+           route_voxel_partition_window(
+             request.logical_scene_id,
+             request.center_chunk,
+             request.radius_l_inf
+           ),
+         {:ok, plan_state, plan} <- build_voxel_subscription_plan(request, state, window) do
+      emit_voxel_subscription_window_planned(plan, plan_state)
 
-      Enum.reduce_while(coords, {:ok, state, []}, fn chunk_coord, {:ok, acc_state, new_keys} ->
-        case subscribe_voxel_chunk(request, chunk_coord, known_versions, acc_state) do
-          {:ok, next_state, subscription} when is_map(subscription) ->
-            {:cont, {:ok, next_state, [subscription | new_keys]}}
+      with :ok <- validate_subscription_plan_has_center(plan, request.center_chunk) do
+        case SubscriptionRuntime.apply_plan(plan_state, plan,
+               subscriber: self(),
+               send_snapshot?: request.want_snapshot,
+               diff_mode: :additive,
+               reason: :client_chunk_subscribe
+             ) do
+          {:ok, next_state, summary} ->
+            {:ok, next_state,
+             %{
+               chunk_count: plan.summary.requested_chunk_count,
+               subscribed_chunk_count: summary.subscribe_count
+             }}
 
-          {:ok, next_state, nil} ->
-            {:cont, {:ok, next_state, new_keys}}
-
-          {:error, reason} ->
-            rollback_voxel_subscriptions(new_keys)
-            {:halt, {:error, reason}}
+          {:error, _next_state, summary} ->
+            {:error, Map.get(summary, :reason, :voxel_subscription_failed)}
         end
-      end)
-      |> case do
-        {:ok, next_state, _new_keys} ->
-          {:ok, next_state, %{chunk_count: length(coords)}}
-
-        {:error, reason} ->
-          {:error, reason}
       end
     end
   end
 
-  defp subscribe_voxel_chunk(request, chunk_coord, known_versions, state) do
-    with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      emit_voxel_chunk_subscribe_routed(%{request | center_chunk: chunk_coord}, state, route)
-      lease = Map.fetch!(route, :lease)
+  defp authorize_voxel_subscribe_window(state, logical_scene_id, center_chunk, radius_l_inf) do
+    case authoritative_voxel_context(state) do
+      %{logical_scene_id: ^logical_scene_id, chunk_coord: authority_chunk} ->
+        if chunk_linf_distance(authority_chunk, center_chunk) + radius_l_inf <=
+             @max_voxel_subscribe_radius do
+          :ok
+        else
+          {:error, :unauthorized_voxel_target}
+        end
 
-      attrs = %{
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: chunk_coord,
-        subscriber: self(),
-        lease: lease,
-        send_snapshot?: request.want_snapshot,
-        known_version: Map.get(known_versions, chunk_coord)
-      }
+      %{logical_scene_id: _other_scene_id} ->
+        {:error, :unauthorized_voxel_target}
 
-      case safe_call(
-             {SceneServer.Voxel.ChunkDirectory, scene_node},
-             {:subscribe, attrs},
-             @scene_call_timeout
+      nil ->
+        authorize_legacy_voxel_target_without_partition_context()
+    end
+  end
+
+  defp authorize_voxel_target(state, logical_scene_id, chunk_coord) do
+    authorize_voxel_chunks(state, logical_scene_id, [chunk_coord])
+  end
+
+  defp authorize_voxel_chunks(state, logical_scene_id, chunk_coords) do
+    case authoritative_voxel_context(state) do
+      %{logical_scene_id: ^logical_scene_id, chunk_coord: authority_chunk} ->
+        if Enum.all?(
+             chunk_coords,
+             &authorized_voxel_chunk?(state, logical_scene_id, authority_chunk, &1)
            ) do
-        {:ok, {:ok, _payload}} ->
-          key = voxel_subscription_key(request.logical_scene_id, chunk_coord)
-          already_subscribed? = Map.has_key?(state.voxel_subscriptions, key)
+          :ok
+        else
+          {:error, :unauthorized_voxel_target}
+        end
 
-          subscription = %{
-            logical_scene_id: request.logical_scene_id,
-            chunk_coord: chunk_coord,
-            request_id: request.request_id,
-            scene_node: scene_node,
-            region_id: lease.region_id,
-            lease_id: lease.lease_id,
-            owner_scene_instance_ref: lease.owner_scene_instance_ref,
-            owner_epoch: lease.owner_epoch
-          }
+      %{logical_scene_id: _other_scene_id} ->
+        {:error, :unauthorized_voxel_target}
 
-          next_state = put_in(state.voxel_subscriptions[key], subscription)
-          {:ok, next_state, if(already_subscribed?, do: nil, else: subscription)}
+      nil ->
+        authorize_legacy_voxel_target_without_partition_context()
+    end
+  end
 
-        {:ok, {:error, reason}} ->
-          {:error, reason}
+  defp authoritative_voxel_context(%{
+         partition_context: %{
+           logical_scene_id: logical_scene_id,
+           chunk_coord: {_, _, _} = chunk_coord
+         }
+       })
+       when is_integer(logical_scene_id) do
+    %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}
+  end
 
-        {:ok, _other} ->
-          {:error, :scene_unavailable}
+  defp authoritative_voxel_context(%{
+         chat_context: %{logical_scene_id: logical_scene_id, chunk_coord: {_, _, _} = chunk_coord}
+       })
+       when is_integer(logical_scene_id) do
+    %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}
+  end
 
-        {:error, _reason} ->
-          {:error, :scene_unavailable}
+  defp authoritative_voxel_context(_state), do: nil
+
+  defp authorized_voxel_chunk?(state, logical_scene_id, authority_chunk, chunk_coord) do
+    subscribed_voxel_chunk?(state, logical_scene_id, chunk_coord) or
+      chunk_linf_distance(authority_chunk, chunk_coord) <= @max_voxel_subscribe_radius
+  end
+
+  defp subscribed_voxel_chunk?(state, logical_scene_id, chunk_coord) do
+    state
+    |> Map.get(:voxel_subscriptions, %{})
+    |> Map.has_key?({logical_scene_id, chunk_coord})
+  end
+
+  defp chunk_linf_distance({ax, ay, az}, {bx, by, bz}) do
+    Enum.max([abs(ax - bx), abs(ay - by), abs(az - bz)])
+  end
+
+  defp authorize_legacy_voxel_target_without_partition_context do
+    if Application.get_env(
+         :gate_server,
+         :allow_legacy_voxel_target_without_partition_context,
+         false
+       ) do
+      :ok
+    else
+      {:error, :unauthorized_voxel_target}
+    end
+  end
+
+  defp build_voxel_subscription_plan(request, state, window) do
+    {state, _summary} = record_client_known_versions(state, request)
+    known_versions = client_ack_known_versions_for_subscription(state, request.logical_scene_id)
+
+    {:ok, state,
+     SubscriptionPlanner.plan(%{
+       cid: state.cid,
+       request_id: request.request_id,
+       partition_window: window,
+       known_versions: known_versions
+     })}
+  rescue
+    _exception in [ArgumentError, KeyError] -> {:error, :invalid_subscription_window}
+  end
+
+  defp validate_subscription_plan_has_center(plan, center_chunk) do
+    if Enum.any?(plan.subscribe_entries, &(&1.chunk_coord == center_chunk)) do
+      :ok
+    else
+      plan.skipped_entries
+      |> Enum.find(&(&1.chunk_coord == center_chunk))
+      |> case do
+        %{reason: :missing_lease} -> {:error, :region_without_lease}
+        %{reason: :missing_route} -> {:error, :unassigned_chunk}
+        _other -> {:error, :unassigned_chunk}
       end
     end
+  end
+
+  defp record_client_known_versions(state, request) do
+    known = Map.get(request, :known, [])
+
+    if known == [] do
+      {state, empty_client_ack_summary(request.logical_scene_id)}
+    else
+      {next_state, summary} =
+        record_client_ack_versions(state, Map.put(request, :acks, voxel_known_versions(known)))
+
+      GateServer.CliObserve.emit("voxel_client_known_versions_recorded", fn ->
+        Map.merge(summary, %{
+          connection_pid: self(),
+          cid: state.cid,
+          transport: :tcp,
+          request_id: request.request_id
+        })
+      end)
+
+      {next_state, summary}
+    end
+  end
+
+  defp record_client_ack_versions(state, request) do
+    ledger = Map.get(state, :client_ack_versions, ClientAckLedger.new())
+    forwarded = Map.get(state, :forwarded_chunk_versions, ChunkVersionLedger.new())
+
+    {next_ledger, summary} =
+      ClientAckLedger.record_known_versions(
+        ledger,
+        forwarded,
+        request.logical_scene_id,
+        Map.get(request, :acks, [])
+      )
+
+    {Map.put(state, :client_ack_versions, next_ledger), summary}
+  end
+
+  defp client_ack_known_versions_for_subscription(state, logical_scene_id) do
+    state
+    |> Map.get(:client_ack_versions, ClientAckLedger.new())
+    |> ClientAckLedger.known_versions(logical_scene_id)
+    |> Map.drop(
+      DeliveryScheduler.resync_required_chunks(Map.get(state, :voxel_delivery), logical_scene_id)
+    )
+  end
+
+  defp empty_client_ack_summary(logical_scene_id) do
+    %{
+      status: :empty,
+      logical_scene_id: logical_scene_id,
+      accepted_count: 0,
+      rejected_count: 0,
+      ack_count: 0,
+      events: []
+    }
   end
 
   defp unsubscribe_voxel_chunks(request, state) do
     Enum.reduce(request.chunks, {0, state}, fn chunk_coord, {count, acc_state} ->
       case unsubscribe_voxel_chunk(request.logical_scene_id, chunk_coord, acc_state) do
         {:ok, next_state} -> {count + 1, next_state}
-        :not_subscribed -> {count, acc_state}
+        {:purged, next_state} -> {count, next_state}
       end
     end)
   end
@@ -2524,21 +2840,25 @@ defmodule GateServer.TcpConnection do
 
     case Map.pop(state.voxel_subscriptions, key) do
       {nil, _subscriptions} ->
-        :not_subscribed
+        {:purged,
+         state
+         |> clear_queued_voxel_delivery(logical_scene_id, chunk_coord)
+         |> clear_forwarded_chunk_version(logical_scene_id, chunk_coord)}
 
       {subscription, subscriptions} ->
         scene_unsubscribe(subscription)
-        {:ok, %{state | voxel_subscriptions: subscriptions}}
+
+        {:ok,
+         state
+         |> Map.put(:voxel_subscriptions, subscriptions)
+         |> clear_queued_voxel_delivery(logical_scene_id, chunk_coord)
+         |> clear_forwarded_chunk_version(logical_scene_id, chunk_coord)}
     end
   end
 
   defp cleanup_voxel_subscriptions(%{voxel_subscriptions: subscriptions}) do
     Enum.each(subscriptions, fn {_key, subscription} -> scene_unsubscribe(subscription) end)
     :ok
-  end
-
-  defp rollback_voxel_subscriptions(subscriptions) do
-    Enum.each(subscriptions, &scene_unsubscribe/1)
   end
 
   defp scene_unsubscribe(%{
@@ -2562,14 +2882,6 @@ defmodule GateServer.TcpConnection do
        do: :ok
 
   defp validate_voxel_subscribe_radius(_radius), do: {:error, :voxel_subscribe_radius_too_large}
-
-  defp voxel_subscription_coords({cx, cy, cz}, radius) do
-    for x <- (cx - radius)..(cx + radius),
-        y <- (cy - radius)..(cy + radius),
-        z <- (cz - radius)..(cz + radius) do
-      {x, y, z}
-    end
-  end
 
   defp voxel_known_versions(known) do
     Map.new(known, fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
@@ -2599,15 +2911,25 @@ defmodule GateServer.TcpConnection do
   end
 
   defp send_encoded(socket, message) do
-    {:ok, bin} = GateServer.Codec.encode(message)
-    :gen_tcp.send(socket, bin)
+    case GateServer.Codec.encode(message) do
+      {:ok, bin} -> safe_tcp_send(socket, bin)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_tcp_send(socket, iodata) do
+    :gen_tcp.send(socket, iodata)
+  rescue
+    error -> {:error, {error.__struct__, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   # Phase 6: forward a pre-encoded payload (opcode byte already prefixed by
   # the producer) directly. The `{packet, 4}` socket option still adds the
   # 4-byte big-endian length prefix at the gen_tcp layer.
   defp send_frame(socket, payload) when is_binary(payload) do
-    :gen_tcp.send(socket, payload)
+    safe_tcp_send(socket, payload)
   end
 
   defp observe_message_summary({:auth_request, username, _token, request_id}) do
@@ -2635,16 +2957,45 @@ defmodule GateServer.TcpConnection do
   defp observe_message_summary(message), do: message
 
   defp voxel_debug_result("voxel_transport", state) do
+    plan = state.voxel_subscription_plan || %{}
+    partition_context = Map.get(state, :partition_context) || %{}
+    chat_context = Map.get(state, :chat_context) || %{}
+    last_partition_refresh = Map.get(state, :last_partition_refresh) || %{}
+
     [
       "voxel_sync=server-authoritative",
       "voxel_truth_source=server",
       "connection_status=#{state.status}",
       "cid=#{state.cid}",
       "scene_attached=#{not is_nil(state.scene_ref)}",
+      "partition_context_region_id=#{Map.get(partition_context, :region_id, :none)}",
+      "partition_context_chunk_coord=#{inspect(Map.get(partition_context, :chunk_coord))}",
+      "chat_context_region_id=#{Map.get(chat_context, :region_id, :none)}",
+      "chat_context_chunk_coord=#{inspect(Map.get(chat_context, :chunk_coord))}",
+      "last_partition_refresh_status=#{Map.get(last_partition_refresh, :status, :none)}",
+      "last_partition_refresh_boundary=#{Map.get(last_partition_refresh, :boundary_kind, :none)}",
+      "last_partition_refresh_reason=#{inspect(Map.get(last_partition_refresh, :reason))}",
+      "last_partition_refresh_auth_tick=#{Map.get(last_partition_refresh, :auth_tick, :none)}",
+      "partition_refresh_generation=#{Map.get(state, :partition_refresh_generation, 0)}",
+      "partition_refresh_pending_status=#{Map.get(Map.get(state, :partition_refresh_pending) || %{}, :status, :none)}",
+      "partition_refresh_pending_generation=#{Map.get(Map.get(state, :partition_refresh_pending) || %{}, :generation, :none)}",
+      "partition_refresh_pending_auth_tick=#{Map.get(Map.get(state, :partition_refresh_pending) || %{}, :auth_tick, :none)}",
       "voxel_subscription_count=#{map_size(state.voxel_subscriptions)}",
       "voxel_subscriptions=#{inspect(state.voxel_subscriptions |> Map.keys() |> Enum.take(16))}",
       "voxel_subscription_routes=#{inspect(voxel_subscription_debug(state.voxel_subscriptions))}",
-      "confirmed_chunk_versions={}",
+      "voxel_subscription_plan_pressure=#{Map.get(plan, :pressure, :none)}",
+      "voxel_subscription_plan_center_chunk=#{inspect(Map.get(plan, :center_chunk))}",
+      "voxel_subscription_plan_near_radius=#{Map.get(plan, :near_radius, :none)}",
+      "voxel_subscription_plan_halo_radius=#{Map.get(plan, :halo_radius, :none)}",
+      "voxel_subscription_plan_near_vertical_radius=#{Map.get(plan, :near_vertical_radius, :none)}",
+      "voxel_subscription_plan_halo_vertical_radius=#{Map.get(plan, :halo_vertical_radius, :none)}",
+      "voxel_subscription_plan_subscribe_count=#{Map.get(plan, :subscribe_count, 0)}",
+      "voxel_subscription_plan_skipped_count=#{Map.get(plan, :skipped_count, 0)}",
+      "voxel_subscription_plan_missing_count=#{Map.get(plan, :missing_chunk_count, 0)}",
+      "voxel_subscription_plan_unleased_count=#{Map.get(plan, :unleased_chunk_count, 0)}",
+      "forwarded_chunk_versions=#{ChunkVersionLedger.format_debug(Map.get(state, :forwarded_chunk_versions))}",
+      "client_ack_versions=#{ClientAckLedger.format_debug(Map.get(state, :client_ack_versions))}",
+      voxel_delivery_debug(Map.get(state, :voxel_delivery)),
       "inflight_intent_count=0",
       "voxel_codec_endian=big",
       "micro_resolution=8"
@@ -2659,6 +3010,19 @@ defmodule GateServer.TcpConnection do
       "voxel_debug=unknown_command"
     ]
     |> Enum.join("\n")
+  end
+
+  defp refresh_partition_after_movement_ack(state, ack) do
+    case PartitionRuntime.refresh_after_movement_ack(state, ack) do
+      {:ok, next_state, _outcome} -> next_state
+      {:error, next_state, _outcome} -> next_state
+    end
+  end
+
+  defp schedule_partition_refresh_after_movement_ack(state, ack) do
+    {:ok, next_state, event} = PartitionRefresh.schedule(state, ack, owner: self())
+    GateServer.CliObserve.emit("gate_partition_refresh_scheduled", event)
+    next_state
   end
 
   defp voxel_subscription_debug(subscriptions) do
@@ -2720,5 +3084,636 @@ defmodule GateServer.TcpConnection do
     {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
      snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
      snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
+  end
+
+  defp voxel_delivery_debug(scheduler) do
+    summary = DeliveryScheduler.summary(scheduler)
+
+    [
+      "voxel_delivery_window_bytes_used=#{summary.window_bytes_used}",
+      "voxel_delivery_max_window_bytes=#{summary.max_window_bytes}",
+      "voxel_delivery_queue_count=#{summary.queued_count}",
+      "voxel_delivery_queued_bytes=#{summary.queued_bytes}",
+      "voxel_delivery_deferred_count=#{summary.deferred_count}",
+      "voxel_delivery_sent_count=#{summary.sent_count}",
+      "voxel_delivery_control_sent_count=#{summary.control_sent_count}",
+      "voxel_delivery_event_sent_count=#{summary.event_sent_count}",
+      "voxel_delivery_dropped_count=#{summary.dropped_count}",
+      "voxel_delivery_pruned_count=#{summary.pruned_count}",
+      "voxel_delivery_resync_required_count=#{summary.resync_required_count}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp handle_live_voxel_data(state, frame_kind, payload) do
+    scheduler = DeliveryScheduler.ensure(Map.get(state, :voxel_delivery))
+    {scheduler, action} = DeliveryScheduler.offer(scheduler, frame_kind, payload)
+
+    state =
+      state
+      |> Map.put(:voxel_delivery, scheduler)
+      |> emit_voxel_delivery_scheduled(action)
+
+    case action.action do
+      :send_now ->
+        state
+        |> send_live_voxel_action(action)
+        |> maybe_schedule_voxel_delivery_window()
+
+      _queued_or_dropped ->
+        maybe_schedule_voxel_delivery_window(state)
+    end
+  end
+
+  defp handle_live_voxel_envelope(state, envelope) do
+    scheduler = DeliveryScheduler.ensure(Map.get(state, :voxel_delivery))
+
+    {scheduler, action} =
+      offer_live_voxel_envelope_with_connection_guard(state, scheduler, envelope)
+
+    state =
+      state
+      |> Map.put(:voxel_delivery, scheduler)
+      |> emit_voxel_delivery_scheduled(action)
+
+    case action.action do
+      :send_now ->
+        state
+        |> send_live_voxel_action(action)
+        |> maybe_schedule_voxel_delivery_window()
+
+      _queued_or_dropped ->
+        maybe_schedule_voxel_delivery_window(state)
+    end
+  end
+
+  defp offer_live_voxel_envelope_with_connection_guard(state, scheduler, envelope) do
+    case DeliveryEnvelope.normalize(envelope) do
+      {:ok, frame} ->
+        case validate_live_voxel_envelope_for_connection(state, frame) do
+          :ok ->
+            DeliveryScheduler.offer_frame(scheduler, frame)
+
+          {:error, reason, attrs} ->
+            DeliveryScheduler.reject_envelope(
+              scheduler,
+              frame
+              |> Map.put(:reason, reason)
+              |> Map.merge(attrs)
+            )
+        end
+
+      {:error, frame} ->
+        DeliveryScheduler.reject_envelope(scheduler, frame)
+    end
+  end
+
+  defp validate_live_voxel_envelope_for_connection(
+         state,
+         %{frame_kind: :object_state_delta} = frame
+       ) do
+    active_subscriptions =
+      frame.affected_chunks
+      |> Enum.map(fn chunk_coord ->
+        subscription_for_envelope_chunk(state, frame.logical_scene_id, chunk_coord)
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    case active_subscriptions do
+      [] ->
+        {:error, :subscription_not_found, %{affected_chunks: frame.affected_chunks}}
+
+      subscriptions ->
+        validate_envelope_subscription_set(frame, subscriptions)
+    end
+  end
+
+  defp validate_live_voxel_envelope_for_connection(state, frame) do
+    subscription =
+      subscription_for_envelope_chunk(state, frame.logical_scene_id, frame.chunk_coord)
+
+    if is_nil(subscription) do
+      {:error, :subscription_not_found, %{}}
+    else
+      validate_envelope_subscription(frame, subscription)
+    end
+  end
+
+  defp validate_envelope_subscription_set(frame, subscriptions) do
+    Enum.reduce_while(subscriptions, :ok, fn subscription, :ok ->
+      case validate_envelope_subscription(frame, subscription) do
+        :ok -> {:cont, :ok}
+        {:error, reason, attrs} -> {:halt, {:error, reason, attrs}}
+      end
+    end)
+  end
+
+  defp validate_envelope_subscription(frame, subscription) do
+    cond do
+      Map.get(subscription, :lease_id) != frame.lease_id ->
+        {:error, :lease_id_mismatch,
+         %{expected_lease_id: Map.get(subscription, :lease_id), envelope_lease_id: frame.lease_id}}
+
+      Map.get(subscription, :owner_epoch) != frame.owner_epoch ->
+        {:error, :owner_epoch_mismatch,
+         %{
+           expected_owner_epoch: Map.get(subscription, :owner_epoch),
+           envelope_owner_epoch: frame.owner_epoch
+         }}
+
+      Map.has_key?(frame, :region_id) and not envelope_region_matches?(subscription, frame) ->
+        {:error, :region_id_mismatch,
+         %{
+           expected_region_id: Map.get(subscription, :region_id),
+           envelope_region_id: frame.region_id
+         }}
+
+      envelope_requires_tier_match?(frame) and not envelope_tier_matches?(subscription, frame) ->
+        {:error, :tier_mismatch,
+         %{expected_tier: Map.get(subscription, :tier), envelope_tier: frame.tier}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp subscription_for_envelope_chunk(state, logical_scene_id, chunk_coord) do
+    state
+    |> Map.get(:voxel_subscriptions, %{})
+    |> Map.get({logical_scene_id, chunk_coord})
+  end
+
+  defp envelope_region_matches?(subscription, frame) do
+    region_id = Map.get(subscription, :region_id)
+    is_nil(region_id) or region_id == frame.region_id
+  end
+
+  defp envelope_requires_tier_match?(%{frame_kind: frame_kind})
+       when frame_kind in [:invalidate, :field_region_destroyed],
+       do: false
+
+  defp envelope_requires_tier_match?(_frame), do: true
+
+  defp envelope_tier_matches?(subscription, frame) do
+    tier = Map.get(subscription, :tier)
+    is_nil(tier) or tier == frame.tier
+  end
+
+  defp handle_live_voxel_invalidate(state, payload) do
+    scheduler = DeliveryScheduler.ensure(Map.get(state, :voxel_delivery))
+    {scheduler, action} = DeliveryScheduler.offer(scheduler, :invalidate, payload)
+
+    state =
+      state
+      |> Map.put(:voxel_delivery, scheduler)
+      |> emit_voxel_delivery_scheduled(action)
+
+    case send_encoded(state.socket, {:voxel_chunk_invalidate_payload, payload}) do
+      :ok ->
+        {state, invalidate_event} = clear_forwarded_chunk_version(state, payload)
+        {state, ack_event} = clear_client_ack_version(state, payload)
+        state = clear_delivered_invalidate_resync(state, action)
+
+        GateServer.CliObserve.emit(
+          "voxel_chunk_invalidate_forwarded",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              bytes: byte_size(payload),
+              subscription_count: map_size(state.voxel_subscriptions),
+              pruned_delivery_count: Map.get(action, :pruned_count, 0)
+            },
+            chunk_version_observe(invalidate_event)
+          )
+        )
+
+        GateServer.CliObserve.emit(
+          "voxel_client_ack_invalidate_cleared",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              transport: :tcp
+            },
+            client_ack_observe(ack_event)
+          )
+        )
+
+        state
+        |> maybe_rebind_cutover_invalidate(invalidate_event)
+        |> maybe_schedule_voxel_delivery_window()
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :invalidate, payload, reason)
+        maybe_schedule_voxel_delivery_window(state)
+    end
+  end
+
+  defp clear_delivered_invalidate_resync(
+         state,
+         %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}
+       ) do
+    scheduler =
+      state
+      |> Map.get(:voxel_delivery)
+      |> DeliveryScheduler.ensure()
+      |> DeliveryScheduler.clear_resync_required(logical_scene_id, chunk_coord)
+
+    Map.put(state, :voxel_delivery, scheduler)
+  end
+
+  defp clear_delivered_invalidate_resync(state, _action), do: state
+
+  defp maybe_rebind_cutover_invalidate(state, invalidate_event) do
+    case SubscriptionRebind.apply_cutover_invalidation(state, invalidate_event,
+           route_fun: &route_voxel_chunk/2,
+           subscriber: self(),
+           connection_pid: self()
+         ) do
+      {:ok, next_state, _summary} -> next_state
+      {:error, next_state, _summary} -> next_state
+    end
+  end
+
+  defp send_live_voxel_actions(state, actions) do
+    Enum.reduce(actions, state, fn action, acc_state ->
+      acc_state
+      |> emit_voxel_delivery_scheduled(action)
+      |> send_live_voxel_action(action)
+    end)
+  end
+
+  defp send_live_voxel_action(state, %{frame_kind: :invalidate, payload: payload} = action) do
+    case send_encoded(state.socket, {:voxel_chunk_invalidate_payload, payload}) do
+      :ok ->
+        {state, invalidate_event} = clear_forwarded_chunk_version_from_action(state, action)
+        {state, ack_event} = clear_client_ack_version_from_action(state, action)
+        state = clear_delivered_invalidate_resync(state, action)
+
+        GateServer.CliObserve.emit(
+          "voxel_chunk_invalidate_forwarded",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              bytes: byte_size(payload),
+              subscription_count: map_size(state.voxel_subscriptions),
+              pruned_delivery_count: Map.get(action, :pruned_count, 0)
+            },
+            chunk_version_observe(invalidate_event)
+          )
+        )
+
+        GateServer.CliObserve.emit(
+          "voxel_client_ack_invalidate_cleared",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              transport: :tcp
+            },
+            client_ack_observe(ack_event)
+          )
+        )
+
+        maybe_rebind_cutover_invalidate(state, invalidate_event)
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :invalidate, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(state, %{frame_kind: :snapshot, payload: payload}) do
+    case send_encoded(state.socket, {:voxel_chunk_snapshot_payload, payload}) do
+      :ok ->
+        {state, version_event} = record_forwarded_chunk_version(state, :snapshot, payload)
+
+        GateServer.CliObserve.emit(
+          "voxel_chunk_snapshot_forwarded",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              bytes: byte_size(payload),
+              subscription_count: map_size(state.voxel_subscriptions)
+            },
+            chunk_version_observe(version_event)
+          )
+        )
+
+        state
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :snapshot, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(state, %{frame_kind: :delta, payload: payload}) do
+    case send_encoded(state.socket, {:voxel_chunk_delta_payload, payload}) do
+      :ok ->
+        {state, version_event} = record_forwarded_chunk_version(state, :delta, payload)
+
+        GateServer.CliObserve.emit(
+          "voxel_chunk_delta_forwarded",
+          Map.merge(
+            %{
+              connection_pid: self(),
+              cid: state.cid,
+              bytes: byte_size(payload),
+              subscription_count: map_size(state.voxel_subscriptions)
+            },
+            chunk_version_observe(version_event)
+          )
+        )
+
+        state
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :delta, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(state, %{frame_kind: :object_state_delta, payload: payload}) do
+    case send_encoded(state.socket, {:voxel_object_state_delta_payload, payload}) do
+      :ok ->
+        GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload),
+          subscription_count: map_size(state.voxel_subscriptions)
+        })
+
+        state
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :object_state_delta, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(state, %{frame_kind: :field_region_snapshot, payload: payload}) do
+    case send_frame(state.socket, payload) do
+      :ok ->
+        GateServer.CliObserve.emit("tcp_voxel_field_region_snapshot_forwarded", %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload),
+          subscription_count: map_size(state.voxel_subscriptions)
+        })
+
+        state
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :field_region_snapshot, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(
+         state,
+         %{frame_kind: :field_region_destroyed, payload: payload} = action
+       ) do
+    case send_frame(state.socket, payload) do
+      :ok ->
+        GateServer.CliObserve.emit("tcp_voxel_field_region_destroyed_forwarded", %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload),
+          subscription_count: map_size(state.voxel_subscriptions),
+          pruned_delivery_count: Map.get(action, :pruned_count, 0)
+        })
+
+        state
+
+      {:error, reason} ->
+        emit_voxel_delivery_send_failed(state, :field_region_destroyed, payload, reason)
+        state
+    end
+  end
+
+  defp send_live_voxel_action(state, _action), do: state
+
+  defp maybe_schedule_voxel_delivery_window(state) do
+    scheduler = DeliveryScheduler.ensure(Map.get(state, :voxel_delivery))
+    state = Map.put(state, :voxel_delivery, scheduler)
+
+    if DeliveryScheduler.queued?(scheduler) and is_nil(Map.get(state, :voxel_delivery_timer_ref)) do
+      ref =
+        Process.send_after(
+          self(),
+          :voxel_delivery_window,
+          DeliveryScheduler.window_interval_ms(scheduler)
+        )
+
+      Map.put(state, :voxel_delivery_timer_ref, ref)
+    else
+      state
+    end
+  end
+
+  defp clear_queued_voxel_delivery(state, logical_scene_id, chunk_coord) do
+    scheduler =
+      state
+      |> Map.get(:voxel_delivery)
+      |> DeliveryScheduler.ensure()
+      |> DeliveryScheduler.prune_chunks(logical_scene_id, [chunk_coord])
+
+    Map.put(state, :voxel_delivery, scheduler)
+  end
+
+  defp emit_voxel_delivery_scheduled(state, action) do
+    GateServer.CliObserve.emit("voxel_live_delivery_scheduled", fn ->
+      action
+      |> voxel_delivery_action_observe()
+      |> Map.merge(%{
+        connection_pid: self(),
+        cid: state.cid,
+        transport: :tcp,
+        subscription_count: map_size(state.voxel_subscriptions),
+        delivery_summary: DeliveryScheduler.summary(Map.get(state, :voxel_delivery))
+      })
+    end)
+
+    state
+  end
+
+  defp emit_voxel_delivery_send_failed(state, frame_kind, payload, reason) do
+    GateServer.CliObserve.emit("voxel_live_delivery_send_failed", %{
+      connection_pid: self(),
+      cid: state.cid,
+      transport: :tcp,
+      frame_kind: frame_kind,
+      bytes: byte_size(payload),
+      reason: reason
+    })
+  end
+
+  defp voxel_delivery_action_observe(action) do
+    Map.take(action, [
+      :action,
+      :status,
+      :frame_kind,
+      :logical_scene_id,
+      :chunk_coord,
+      :object_id,
+      :object_version,
+      :affected_chunks,
+      :region_id,
+      :tick_count,
+      :destroy_reason,
+      :base_chunk_version,
+      :chunk_version,
+      :tier,
+      :stream_class,
+      :byte_size,
+      :server_version,
+      :lease_id,
+      :owner_epoch,
+      :metadata_source,
+      :payload_decode_used,
+      :bytes,
+      :reason,
+      :reason_name,
+      :expected_byte_size,
+      :actual_byte_size,
+      :dropped_count,
+      :pruned_count
+    ])
+  end
+
+  defp record_forwarded_chunk_version(state, frame_kind, payload) do
+    ledger = Map.get(state, :forwarded_chunk_versions, ChunkVersionLedger.new())
+
+    case ChunkVersionLedger.record_payload(ledger, frame_kind, payload) do
+      {:ok, next_ledger, event} ->
+        {Map.put(state, :forwarded_chunk_versions, next_ledger), event}
+
+      {:error, next_ledger, event} ->
+        {Map.put(state, :forwarded_chunk_versions, next_ledger), event}
+    end
+  end
+
+  defp clear_forwarded_chunk_version(state, payload) do
+    ledger = Map.get(state, :forwarded_chunk_versions, ChunkVersionLedger.new())
+
+    case ChunkVersionLedger.clear_invalidate_payload(ledger, payload) do
+      {:ok, next_ledger, event} ->
+        {Map.put(state, :forwarded_chunk_versions, next_ledger), event}
+
+      {:error, next_ledger, event} ->
+        {Map.put(state, :forwarded_chunk_versions, next_ledger), event}
+    end
+  end
+
+  defp clear_forwarded_chunk_version(state, logical_scene_id, chunk_coord) do
+    ledger = Map.get(state, :forwarded_chunk_versions, ChunkVersionLedger.new())
+
+    Map.put(
+      state,
+      :forwarded_chunk_versions,
+      ChunkVersionLedger.clear_chunk(ledger, logical_scene_id, chunk_coord)
+    )
+  end
+
+  defp clear_forwarded_chunk_version_from_action(
+         state,
+         %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord} = action
+       ) do
+    ledger = Map.get(state, :forwarded_chunk_versions, ChunkVersionLedger.new())
+
+    previous_version =
+      Map.get(ChunkVersionLedger.known_versions(ledger, logical_scene_id), chunk_coord)
+
+    event = %{
+      status: if(is_nil(previous_version), do: :not_cached, else: :cleared),
+      frame_kind: :invalidate,
+      logical_scene_id: logical_scene_id,
+      chunk_coord: chunk_coord,
+      previous_version: previous_version,
+      reason: Map.get(action, :reason),
+      reason_name: Map.get(action, :reason_name)
+    }
+
+    {Map.put(
+       state,
+       :forwarded_chunk_versions,
+       ChunkVersionLedger.clear_chunk(ledger, logical_scene_id, chunk_coord)
+     ), event}
+  end
+
+  defp clear_client_ack_version(state, payload) do
+    ledger = Map.get(state, :client_ack_versions, ClientAckLedger.new())
+
+    case ClientAckLedger.clear_invalidate_payload(ledger, payload) do
+      {:ok, next_ledger, event} ->
+        {Map.put(state, :client_ack_versions, next_ledger), event}
+
+      {:error, next_ledger, event} ->
+        {Map.put(state, :client_ack_versions, next_ledger), event}
+    end
+  end
+
+  defp clear_client_ack_version_from_action(
+         state,
+         %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord} = action
+       ) do
+    ledger = Map.get(state, :client_ack_versions, ClientAckLedger.new())
+
+    previous_ack_version =
+      Map.get(ClientAckLedger.known_versions(ledger, logical_scene_id), chunk_coord)
+
+    event = %{
+      status: if(is_nil(previous_ack_version), do: :not_acked, else: :cleared),
+      frame_kind: :invalidate,
+      logical_scene_id: logical_scene_id,
+      chunk_coord: chunk_coord,
+      previous_ack_version: previous_ack_version,
+      reason: Map.get(action, :reason),
+      reason_name: Map.get(action, :reason_name)
+    }
+
+    {Map.put(
+       state,
+       :client_ack_versions,
+       ClientAckLedger.clear_chunk(ledger, logical_scene_id, chunk_coord)
+     ), event}
+  end
+
+  defp client_ack_observe(%{status: :decode_failed} = event) do
+    Map.take(event, [:status, :frame_kind, :reason])
+  end
+
+  defp client_ack_observe(event) when is_map(event) do
+    Map.take(event, [
+      :status,
+      :frame_kind,
+      :logical_scene_id,
+      :chunk_coord,
+      :previous_ack_version,
+      :reason,
+      :reason_name
+    ])
+  end
+
+  defp chunk_version_observe(%{status: :decode_failed} = event) do
+    Map.take(event, [:status, :frame_kind, :reason])
+  end
+
+  defp chunk_version_observe(event) when is_map(event) do
+    Map.take(event, [
+      :status,
+      :frame_kind,
+      :logical_scene_id,
+      :chunk_coord,
+      :previous_version,
+      :base_chunk_version,
+      :chunk_version,
+      :reason,
+      :reason_name
+    ])
   end
 end

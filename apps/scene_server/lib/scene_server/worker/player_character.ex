@@ -19,13 +19,23 @@ defmodule SceneServer.PlayerCharacter do
   require Logger
 
   alias SceneServer.AoiManager
+  alias SceneServer.Aoi.AoiItem
   alias SceneServer.Combat.CastRequest
   alias SceneServer.Combat.Executor, as: CombatExecutor
   alias SceneServer.Combat.Profile, as: CombatProfile
   alias SceneServer.Combat.Skill
   alias SceneServer.Combat.State, as: CombatState
   alias SceneServer.Combat.VoxelDamageRouter
-  alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State, VoxelCollision}
+
+  alias SceneServer.Movement.{
+    CorrectionFlags,
+    Engine,
+    InputFrame,
+    Profile,
+    RemoteSnapshot,
+    State,
+    VoxelCollision
+  }
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
@@ -57,6 +67,16 @@ defmodule SceneServer.PlayerCharacter do
   """
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
+  end
+
+  @doc """
+  Updates the player authority with the latest server-authoritative partition window.
+
+  `PlayerCharacter` keeps the DTO so a rebuilt AOI adapter can receive the same
+  partition context before it resumes live subscription refreshes.
+  """
+  def update_partition_window(player_character, partition_window) when is_pid(player_character) do
+    GenServer.cast(player_character, {:partition_window, partition_window})
   end
 
   @doc false
@@ -120,6 +140,8 @@ defmodule SceneServer.PlayerCharacter do
        old_timestamp: nil,
        net_delay: 0,
        skill_casts: %{},
+       partition_window_dto: nil,
+       partition_updated_at_ms: nil,
        movement_timer: nil,
        aoi_monitor_ref: nil,
        respawn_timer: nil,
@@ -271,47 +293,28 @@ defmodule SceneServer.PlayerCharacter do
   def handle_call(
         {:movement_input, %InputFrame{} = frame},
         _from,
-        %{
-          cid: cid,
-          combat_state: combat_state,
-          movement_profile: movement_profile,
-          latched_input: latched_input,
-          input_queue: input_queue,
-          last_input_seq: last_input_seq,
-          last_client_tick: last_client_tick,
-          last_input_received_at_ms: last_input_received_at_ms
-        } = state
+        state
       ) do
-    with :ok <- ensure_alive(combat_state),
-         {:ok, sanitized_frame, now_ms} <-
-           sanitize_input_frame(
-             frame,
-             movement_profile,
-             last_input_seq,
-             last_client_tick,
-             last_input_received_at_ms
-           ) do
-      {:reply, {:ok, :accepted},
-       %{
-         state
-         | latched_input: merge_latched_input(latched_input, sanitized_frame, movement_profile),
-           input_queue: enqueue_input(input_queue, sanitized_frame),
-           last_input_seq: sanitized_frame.seq,
-           last_client_tick: sanitized_frame.client_tick,
-           last_input_received_at_ms: now_ms
-       }}
-    else
-      {:error, reason} ->
-        SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
-        {:reply, {:error, reason}, state}
+    case accept_movement_input_frame(frame, state) do
+      {:ok, next_state} ->
+        {:reply, {:ok, :accepted}, next_state}
+
+      {:error, reason, next_state} ->
+        emit_movement_input_error(next_state, reason)
+        {:reply, {:error, reason}, next_state}
     end
   end
 
   @impl true
-  def handle_call({:chat_say, cid, username, text}, _from, %{aoi_ref: aoi_ref} = state) do
-    SceneServer.CliObserve.emit("player_chat", %{cid: cid, username: username, text: text})
-    GenServer.cast(aoi_ref, {:chat_say, cid, username, text})
-    {:reply, {:ok, :sent}, state}
+  def handle_call({:chat_say, cid, username, text}, _from, state) do
+    SceneServer.CliObserve.emit("player_chat_legacy_rejected", %{
+      cid: cid,
+      username: username,
+      text: text,
+      reason: :chat_runtime_required
+    })
+
+    {:reply, {:error, :chat_runtime_required}, state}
   end
 
   @impl true
@@ -439,6 +442,49 @@ defmodule SceneServer.PlayerCharacter do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  @impl true
+  def handle_cast({:movement_input, %InputFrame{} = frame}, state) do
+    case accept_movement_input_frame(frame, state) do
+      {:ok, next_state} ->
+        {:noreply, next_state}
+
+      {:error, reason, next_state} ->
+        emit_movement_input_error(next_state, reason)
+        {:noreply, next_state}
+    end
+  end
+
+  @impl true
+  def handle_cast({:partition_window, nil}, %{cid: cid} = state) do
+    SceneServer.CliObserve.emit("player_partition_window_preserved", %{
+      cid: cid,
+      reason: :nil_partition_window,
+      had_partition_window: not is_nil(state.partition_window_dto)
+    })
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:partition_window, partition_window}, %{cid: cid, aoi_ref: aoi_ref} = state) do
+    updated_at_ms = System.monotonic_time(:millisecond)
+    apply_partition_window_to_aoi(aoi_ref, partition_window)
+
+    SceneServer.CliObserve.emit("player_partition_window_updated", fn ->
+      Map.merge(
+        %{cid: cid, updated_at_ms: updated_at_ms},
+        partition_window_summary(partition_window)
+      )
+    end)
+
+    {:noreply,
+     %{
+       state
+       | partition_window_dto: partition_window,
+         partition_updated_at_ms: updated_at_ms
+     }}
   end
 
   @impl true
@@ -791,34 +837,55 @@ defmodule SceneServer.PlayerCharacter do
          player_state,
          cid
        ) do
-    Enum.reduce(frames, {anchor_state, 0, []}, fn %InputFrame{} = frame,
-                                                  {current_state, flags_acc, summaries} ->
-      {proposed_state, _ack} = Engine.step(cid, current_state, frame, movement_profile)
+    proposed_state =
+      Enum.reduce(frames, anchor_state, fn %InputFrame{} = frame, current_state ->
+        {proposed_state, _ack} = Engine.step(cid, current_state, frame, movement_profile)
+        proposed_state
+      end)
 
-      {resolved_state, flags, summary} =
-        resolve_voxel_collision(current_state, proposed_state, player_state)
+    {resolved_state, flags, summary} =
+      resolve_voxel_collision(anchor_state, proposed_state, player_state)
 
-      {resolved_state, Bitwise.bor(flags_acc, flags), [summary | summaries]}
-    end)
-    |> case do
-      {state, flags, summaries} -> {state, flags, Enum.reverse(summaries)}
-    end
+    {resolved_state, flags, [Map.put(summary, :replay_count, length(frames))]}
+  end
+
+  defp resolve_voxel_collision(
+         %State{position: position} = previous_state,
+         %State{position: position} = proposed_state,
+         state
+       ) do
+    {proposed_state, CorrectionFlags.none(),
+     stationary_collision_summary(
+       previous_state,
+       proposed_state,
+       Map.get(state, :logical_scene_id, 1)
+     )}
   end
 
   defp resolve_voxel_collision(%State{} = previous_state, %State{} = proposed_state, state) do
-    VoxelCollision.resolve(previous_state, proposed_state,
-      logical_scene_id: Map.get(state, :logical_scene_id, 1)
-    )
+    opts =
+      state
+      |> Map.get(:voxel_collision_opts, [])
+      |> Keyword.put(:logical_scene_id, Map.get(state, :logical_scene_id, 1))
+
+    VoxelCollision.resolve(previous_state, proposed_state, opts)
   end
 
-  defp summarize_replay_collision([]) do
+  defp stationary_collision_summary(previous_state, proposed_state, logical_scene_id) do
     %{
+      enabled?: true,
       status: :skipped,
-      blocked_axes: [],
-      occupied_count: 0,
+      reason: :stationary,
+      logical_scene_id: logical_scene_id,
+      tick: proposed_state.tick,
+      previous_position: previous_state.position,
+      proposed_position: proposed_state.position,
+      resolved_position: proposed_state.position,
+      queried_chunks: [],
       sample_count: 0,
-      correction_flags: 0,
-      replay_count: 0
+      occupied_count: 0,
+      blocked_axes: [],
+      correction_flags: CorrectionFlags.none()
     }
   end
 
@@ -837,6 +904,11 @@ defmodule SceneServer.PlayerCharacter do
         true -> Map.get(last_summary, :status, :clear)
       end
 
+    replay_count =
+      summaries
+      |> Enum.map(&Map.get(&1, :replay_count, 1))
+      |> Enum.sum()
+
     last_summary
     |> Map.put(:status, status)
     |> Map.put(:blocked_axes, blocked_axes)
@@ -848,7 +920,7 @@ defmodule SceneServer.PlayerCharacter do
         Bitwise.bor(acc, Map.get(summary, :correction_flags, 0))
       end)
     )
-    |> Map.put(:replay_count, length(summaries))
+    |> Map.put(:replay_count, replay_count)
   end
 
   defp emit_collision_observe(_cid, _logical_scene_id, _state, %{status: :clear}), do: :ok
@@ -921,7 +993,6 @@ defmodule SceneServer.PlayerCharacter do
          ) do
       {:ok, aoi_ref} ->
         monitor_ref = Process.monitor(aoi_ref)
-        send(aoi_ref, :get_aoi_tick)
         broadcast_current_aoi_state(aoi_ref, state)
         {:ok, %{state | aoi_ref: aoi_ref, aoi_monitor_ref: monitor_ref}}
 
@@ -931,6 +1002,8 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp broadcast_current_aoi_state(aoi_ref, state) do
+    replay_partition_window(aoi_ref, state)
+
     GenServer.cast(
       aoi_ref,
       {:player_state, state.cid, state.combat_state.hp, state.combat_state.max_hp,
@@ -943,9 +1016,77 @@ defmodule SceneServer.PlayerCharacter do
     )
   end
 
+  defp replay_partition_window(aoi_ref, %{partition_window_dto: partition_window})
+       when not is_nil(partition_window) do
+    apply_partition_window_to_aoi(aoi_ref, partition_window)
+  end
+
+  defp replay_partition_window(_aoi_ref, _state), do: :ok
+
+  defp apply_partition_window_to_aoi(aoi_ref, partition_window) when is_pid(aoi_ref) do
+    AoiItem.update_partition_window(aoi_ref, partition_window)
+  end
+
+  defp apply_partition_window_to_aoi(_aoi_ref, _partition_window), do: :ok
+
+  defp partition_window_summary(nil) do
+    %{
+      logical_scene_id: nil,
+      center_chunk: nil,
+      route_count: 0
+    }
+  end
+
+  defp partition_window_summary(partition_window) when is_map(partition_window) do
+    %{
+      logical_scene_id: Map.get(partition_window, :logical_scene_id),
+      center_chunk: Map.get(partition_window, :center_chunk),
+      route_count: length(Map.get(partition_window, :route_entries, []))
+    }
+  end
+
   defp character_name(%{character_profile: %{name: name}}) when is_binary(name), do: name
   defp character_name(%{character_profile: %{"name" => name}}) when is_binary(name), do: name
   defp character_name(%{cid: cid}), do: "player-#{cid}"
+
+  defp accept_movement_input_frame(
+         %InputFrame{} = frame,
+         %{
+           combat_state: combat_state,
+           movement_profile: movement_profile,
+           latched_input: latched_input,
+           input_queue: input_queue,
+           last_input_seq: last_input_seq,
+           last_client_tick: last_client_tick,
+           last_input_received_at_ms: last_input_received_at_ms
+         } = state
+       ) do
+    with :ok <- ensure_alive(combat_state),
+         {:ok, sanitized_frame, now_ms} <-
+           sanitize_input_frame(
+             frame,
+             movement_profile,
+             last_input_seq,
+             last_client_tick,
+             last_input_received_at_ms
+           ) do
+      {:ok,
+       %{
+         state
+         | latched_input: merge_latched_input(latched_input, sanitized_frame, movement_profile),
+           input_queue: enqueue_input(input_queue, sanitized_frame),
+           last_input_seq: sanitized_frame.seq,
+           last_client_tick: sanitized_frame.client_tick,
+           last_input_received_at_ms: now_ms
+       }}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp emit_movement_input_error(%{cid: cid}, reason) do
+    SceneServer.CliObserve.emit("player_movement_error", %{cid: cid, reason: reason})
+  end
 
   defp enqueue_input(queue, %InputFrame{} = frame) do
     case queue ++ [frame] do

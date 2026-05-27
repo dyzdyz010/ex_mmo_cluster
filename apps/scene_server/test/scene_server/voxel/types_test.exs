@@ -31,6 +31,12 @@ defmodule SceneServer.Voxel.TypesTest do
     assert Types.chunk_and_local_macro!({0, 15, 16}) == {{0, 0, 1}, {0, 15, 0}}
   end
 
+  test "converts authoritative world centimeters to chunk coordinates" do
+    assert Types.chunk_from_world_cm!({0.0, 1599.9, 1600.0}) == {0, 0, 1}
+    assert Types.chunk_from_world_cm!({1_600, 3_200, 4_799.9}) == {1, 2, 2}
+    assert Types.chunk_from_world_cm!({-0.1, -1_600.0, -1_600.1}) == {-1, -1, -2}
+  end
+
   test "normalizes macro and micro index boundaries" do
     assert Types.macro_index!({0, 0, 0}) == 0
     assert Types.macro_index!({15, 15, 15}) == 4095

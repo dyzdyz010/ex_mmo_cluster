@@ -6,34 +6,55 @@ defmodule SceneServer.CliObserve do
   automation and E2E inspection without coupling to a larger telemetry system.
   """
 
-  @writer __MODULE__.Writer
-  @writer_key {__MODULE__, :writer}
+  alias SceneServer.CliObserve.Manager
+
+  @route_scope :scene_server
 
   @doc "Returns whether scene-side observe logging is enabled."
-  def enabled?, do: not is_nil(path())
+  def enabled?, do: not is_nil(path()) or BeaconServer.CliObserveRoutes.any?(@route_scope)
+
+  @doc "Routes observe events for one logical scene id to a concrete log path."
+  def register_route(logical_scene_id, path) do
+    BeaconServer.CliObserveRoutes.register(@route_scope, logical_scene_id, path)
+  end
+
+  @doc "Removes a logical-scene observe route created by `register_route/2`."
+  def unregister_route(logical_scene_id, token) do
+    BeaconServer.CliObserveRoutes.unregister(@route_scope, logical_scene_id, token)
+  end
 
   @doc "Appends a structured observe event when logging is enabled."
   def emit(event, fields_or_fun \\ %{})
 
   def emit(event, fields_or_fun) do
-    case path() do
-      nil -> :ok
-      path -> emit_enabled(path, event, fields_or_fun)
+    if enabled?() do
+      emit_maybe_enabled(event, fields_or_fun)
+    else
+      :ok
     end
   end
 
-  defp emit_enabled(path, event, fields_fun)
+  defp emit_maybe_enabled(event, fields_fun)
        when is_function(fields_fun, 0) and is_binary(event) do
-    emit_enabled(path, event, fields_fun.())
+    emit_maybe_enabled(event, fields_fun.())
   end
 
-  defp emit_enabled(path, event, fields) when is_binary(event) and is_map(fields) do
-    writer = ensure_writer(path)
-    GenServer.cast(writer, {:write, path, event, fields})
+  defp emit_maybe_enabled(event, fields) when is_binary(event) and is_map(fields) do
+    case path_for(fields) do
+      nil -> :ok
+      path -> emit_enabled(path, event, fields)
+    end
   rescue
     _ -> :ok
   catch
     :exit, _reason -> :ok
+  end
+
+  defp emit_enabled(path, event, fields) when is_binary(event) and is_map(fields) do
+    case ensure_writer(path) do
+      writer when is_pid(writer) -> GenServer.cast(writer, {:write, event, fields})
+      _other -> :ok
+    end
   end
 
   defp path do
@@ -41,17 +62,48 @@ defmodule SceneServer.CliObserve do
       System.get_env("SCENE_SERVER_OBSERVE_LOG")
   end
 
+  defp path_for(fields) do
+    BeaconServer.CliObserveRoutes.lookup(@route_scope, fields) || path()
+  end
+
   @doc "Blocks until the current writer has processed pending observe writes."
   def flush(timeout \\ 5_000) do
-    case Process.whereis(@writer) do
+    case path() do
       nil ->
         :ok
 
-      pid when is_pid(pid) ->
-        if Process.alive?(pid) do
-          _state = :sys.get_state(pid, timeout)
-        end
+      path ->
+        do_flush_path(path, timeout)
+    end
+  end
 
+  @doc "Blocks until the writer for `path` has processed pending observe writes."
+  def flush_path(path, timeout \\ 5_000) when is_binary(path) do
+    do_flush_path(path, timeout)
+  end
+
+  @doc false
+  def writer_pid(path \\ path()) do
+    if is_binary(path), do: Manager.writer_pid(path)
+  end
+
+  @doc false
+  def writer_count(path) when is_binary(path) do
+    Manager.writer_count(path)
+  end
+
+  @doc false
+  def stop_writer(path) when is_binary(path) do
+    Manager.stop_writer(path)
+  end
+
+  defp do_flush_path(path, timeout) do
+    case writer_pid(path) do
+      nil ->
+        :ok
+
+      pid ->
+        _state = :sys.get_state(pid, timeout)
         :ok
     end
   catch
@@ -59,48 +111,27 @@ defmodule SceneServer.CliObserve do
   end
 
   defp ensure_writer(path) do
-    case :persistent_term.get(@writer_key, nil) do
-      %{pid: pid} when is_pid(pid) ->
-        if Process.alive?(pid) do
-          pid
-        else
-          start_or_refresh_writer(path)
-        end
-
-      _other ->
-        start_or_refresh_writer(path)
-    end
-  end
-
-  defp start_or_refresh_writer(path) do
-    case Process.whereis(@writer) do
-      nil ->
-        {:ok, pid} = GenServer.start_link(@writer, path, name: @writer)
-        :persistent_term.put(@writer_key, %{pid: pid, path: path})
-        pid
-
-      pid ->
-        :persistent_term.put(@writer_key, %{pid: pid, path: path})
-        pid
-    end
+    Manager.ensure_writer(path)
   end
 
   defmodule Writer do
     @moduledoc false
     use GenServer
 
+    @idle_timeout_ms 5_000
+
     @impl true
     def init(path) do
-      {:ok, %{path: path}}
+      {:ok, %{path: path}, @idle_timeout_ms}
     end
 
     @impl true
     def handle_call({:ensure_path, path}, _from, state) do
-      {:reply, :ok, %{state | path: path}}
+      {:reply, :ok, %{state | path: path}, @idle_timeout_ms}
     end
 
     @impl true
-    def handle_cast({:write, path, event, fields}, state) do
+    def handle_cast({:write, event, fields}, %{path: path} = state) do
       File.mkdir_p!(Path.dirname(path))
 
       line =
@@ -118,14 +149,19 @@ defmodule SceneServer.CliObserve do
         |> IO.iodata_to_binary()
 
       File.write!(path, line, [:append])
-      {:noreply, state}
+      {:noreply, state, @idle_timeout_ms}
     rescue
-      _ -> {:noreply, state}
+      _ -> {:noreply, state, @idle_timeout_ms}
     end
 
     @impl true
-    def handle_cast({:write, event, fields}, %{path: path} = state) do
-      handle_cast({:write, path, event, fields}, state)
+    def handle_cast({:write, path, event, fields}, state) do
+      handle_cast({:write, event, fields}, %{state | path: path})
+    end
+
+    @impl true
+    def handle_info(:timeout, state) do
+      {:stop, :normal, state}
     end
 
     defp scrub(fields) do

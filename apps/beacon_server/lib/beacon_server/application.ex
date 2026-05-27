@@ -12,6 +12,7 @@ defmodule BeaconServer.Application do
     children =
       []
       |> maybe_add_cluster_supervisor(topologies)
+      |> maybe_add_cli_observe_routes()
       |> maybe_add_registry()
 
     opts = [strategy: :one_for_one, name: BeaconServer.Supervisor]
@@ -22,6 +23,10 @@ defmodule BeaconServer.Application do
 
   defp maybe_add_cluster_supervisor(children, topologies) do
     children ++ [{Cluster.Supervisor, [topologies, [name: BeaconServer.ClusterSupervisor]]}]
+  end
+
+  defp maybe_add_cli_observe_routes(children) do
+    children ++ [{BeaconServer.CliObserveRoutes, []}]
   end
 
   defp maybe_add_registry(children) do

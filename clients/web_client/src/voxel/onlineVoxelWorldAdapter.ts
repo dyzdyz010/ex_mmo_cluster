@@ -101,6 +101,10 @@ export interface ServerVoxelTransportPort {
     logicalSceneId: number;
     chunks: readonly FChunkCoord[];
   }): number | null;
+  sendVoxelChunkAck(request: {
+    logicalSceneId: number;
+    acks: readonly VoxelKnownChunk[];
+  }): number | null;
   sendVoxelImpactIntent(request: {
     logicalSceneId: number;
     sourceSkillId: number;
@@ -221,6 +225,14 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastError: string | null = null;
   private initialSubscriptionsSent = false;
   private primeSent = false;
+  private appliedChunkAckCount = 0;
+  private lastAppliedChunkAck: {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    chunkVersion: number;
+    source: "snapshot" | "delta";
+  } | null = null;
   // Phase 4-bis 0x6C ObjectStateDelta processing.
   private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
   private readonly clearedSlotCache: ClearedSlotCache;
@@ -309,6 +321,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     }
   }
 
+  flushServerMessagesForCli(): void {
+    this.drainVoxelMessages();
+  }
+
   override debugSnapshot(): Record<string, unknown> {
     return {
       ...super.debugSnapshot(),
@@ -339,6 +355,13 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastIntentResult: this.lastIntentResult,
       lastDebugProbe: this.lastDebugProbe,
       lastError: this.lastError,
+      appliedChunkAckCount: this.appliedChunkAckCount,
+      lastAppliedChunkAck: this.lastAppliedChunkAck
+        ? {
+            ...this.lastAppliedChunkAck,
+            chunkCoord: chunkCoordKey(this.lastAppliedChunkAck.chunkCoord),
+          }
+        : null,
       lastSeedDurationMs: this.lastSeedDurationMs,
       lastSeedSummary: this.lastSeedSummary,
       objectStateDeltas: {
@@ -1136,6 +1159,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.store.invalidateChunkAuthority(invalidate.chunkCoord);
     this.store.removeChunk(invalidate.chunkCoord);
     this.subscriptionState = "idle";
+    this.initialSubscriptionsSent = false;
 
     this.bus.emit("world:chunk-invalidated", {
       logicalSceneId: invalidate.logicalSceneId,
@@ -1207,6 +1231,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       opCount: delta.ops.length,
       appliedOps,
     });
+    this.ackAppliedChunk(delta.logicalSceneId, delta.chunkCoord, delta.newChunkVersion, "delta");
   }
 
   private applySnapshot(snapshot: VoxelChunkSnapshotMessage): void {
@@ -1248,6 +1273,12 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       chunkHash: snapshot.chunkHash,
       solidBlocks,
     });
+    this.ackAppliedChunk(
+      snapshot.logicalSceneId,
+      snapshot.chunkCoord,
+      snapshot.chunkVersion,
+      "snapshot",
+    );
 
     // Demo-only fallback for empty servers. Triggered when an authoritative
     // snapshot arrives with zero solid blocks AND the operator has explicitly
@@ -1397,6 +1428,46 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     this.lastError = reason;
     this.store.editStats.rejected += 1;
   }
+
+  private ackAppliedChunk(
+    logicalSceneId: number,
+    chunkCoord: FChunkCoord,
+    chunkVersion: number,
+    source: "snapshot" | "delta",
+  ): void {
+    const requestId = this.transport.sendVoxelChunkAck({
+      logicalSceneId,
+      acks: [{ chunkCoord, chunkVersion }],
+    });
+
+    if (requestId === null) {
+      this.lastError = "chunk_ack_blocked";
+      this.logger.emit("voxel", "chunk_ack_blocked", {
+        logical_scene_id: logicalSceneId,
+        chunk_coord: chunkCoordKey(chunkCoord),
+        chunk_version: chunkVersion,
+        source,
+      });
+      return;
+    }
+
+    this.appliedChunkAckCount += 1;
+    this.lastAppliedChunkAck = {
+      requestId,
+      logicalSceneId,
+      chunkCoord: { ...chunkCoord },
+      chunkVersion,
+      source,
+    };
+    this.logger.emit("voxel", "chunk_ack_applied", {
+      request_id: requestId,
+      logical_scene_id: logicalSceneId,
+      chunk_coord: chunkCoordKey(chunkCoord),
+      chunk_version: chunkVersion,
+      source,
+      applied_ack_count: this.appliedChunkAckCount,
+    });
+  }
 }
 
 export function isServerVoxelTransportPort(value: unknown): value is ServerVoxelTransportPort {
@@ -1406,6 +1477,7 @@ export function isServerVoxelTransportPort(value: unknown): value is ServerVoxel
     typeof candidate.getAuthBaseUrl === "function" &&
     typeof candidate.voxelDebugSnapshot === "function" &&
     typeof candidate.sendVoxelChunkSubscribe === "function" &&
+    typeof candidate.sendVoxelChunkAck === "function" &&
     typeof candidate.sendVoxelImpactIntent === "function" &&
     typeof candidate.sendVoxelPrefabPlaceIntent === "function" &&
     typeof candidate.drainVoxelSnapshots === "function" &&

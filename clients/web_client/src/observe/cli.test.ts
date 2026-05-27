@@ -19,9 +19,8 @@ describe("voxel CLI help", () => {
     expect(windowObject.__voxelCli?.help()).toContain("micro_cell <x> <y> <z> <mx> <my> <mz>");
     expect(windowObject.__voxelCli?.help()).toContain("scene_regions [on|off]");
     expect(windowObject.__voxelCli?.help()).toContain("target_probe");
-    expect(windowObject.__voxelCli?.help()).toContain(
-      "voxel_auto_circuit <x> <y> <z> [max_ticks]",
-    );
+    expect(windowObject.__voxelCli?.help()).toContain("chat <world|region|local> <text...>");
+    expect(windowObject.__voxelCli?.help()).toContain("voxel_auto_circuit <x> <y> <z> [max_ticks]");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_place");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_break");
   });

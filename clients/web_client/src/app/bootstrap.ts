@@ -12,6 +12,7 @@ import {
   normalizeRendererPreference,
   type RendererPreference,
 } from "../render/rendererBackend";
+import type { MovementCollisionResolver } from "@domain/movement/collision";
 import { LocalVoxelWorldAdapter, type VoxelWorldAdapter } from "../voxel/worldAdapter";
 import {
   isServerVoxelTransportPort,
@@ -20,6 +21,7 @@ import {
 import { createWorldStoreMovementCollisionResolver } from "../voxel/playerMovementCollision";
 import { HudView } from "../presentation/hud/hudView";
 import { HotbarDockView } from "../presentation/hud/hotbarDockView";
+import { ChatPanelView } from "../presentation/hud/chatPanelView";
 import {
   OperationGuideButtonView,
   OperationGuideView,
@@ -49,6 +51,7 @@ export interface BootstrapTargets {
   canvas: HTMLCanvasElement;
   hud: HTMLDivElement;
   hotbarDock: HTMLDivElement;
+  chatPanel: HTMLDivElement;
   voxelPanel: HTMLDivElement;
   operationGuide: HTMLDivElement;
   operationGuideToggle: HTMLButtonElement;
@@ -66,6 +69,7 @@ export async function bootstrap({
   canvas,
   hud,
   hotbarDock,
+  chatPanel,
   voxelPanel,
   operationGuide,
   operationGuideToggle,
@@ -89,7 +93,7 @@ export async function bootstrap({
   const detachInput = input.attach(window);
 
   const localPlayer = new LocalPlayerController(eventBus, input, transportPump, initialSpawn);
-  localPlayer.setMovementCollisionResolver(createWorldStoreMovementCollisionResolver(world.store));
+  localPlayer.setMovementCollisionResolver(resolveMovementCollisionResolver(world));
   const remotePlayer = new RemotePlayerController(eventBus);
 
   const sceneHandles = await createScene(canvas, {
@@ -131,6 +135,10 @@ export async function bootstrap({
     storage: window.localStorage,
   });
   devTools.install(window);
+  const chatPanelView = new ChatPanelView(chatPanel, devTools);
+  const unsubscribeChatPanel = eventBus.on("chat:message-received", (message) => {
+    chatPanelView.appendMessage(message);
+  });
   const operationGuideView = new OperationGuideView(operationGuide);
   const operationGuideButtonView = new OperationGuideButtonView(operationGuideToggle, () =>
     operationGuideView.open(),
@@ -236,11 +244,13 @@ export async function bootstrap({
     loop.stop();
     unsubscribeConductionEndpointShortcut();
     unsubscribeConductionSubmitShortcut();
+    unsubscribeChatPanel();
     detachInput();
     touchControlsView?.dispose();
     document.documentElement.classList.remove("is-touch");
     operationGuideButtonView.dispose();
     operationGuideView.dispose();
+    chatPanelView.dispose();
     voxelDebugPanelView.dispose();
     hotbarDockView.dispose();
     render.dispose();
@@ -350,6 +360,16 @@ function parsePositiveIntEnv(value: string | undefined, fallback: number): numbe
 export function resolveRendererPreference(): RendererPreference {
   const queryPreference = new URLSearchParams(window.location.search).get("renderer");
   return resolveRendererPreferenceFrom(queryPreference, import.meta.env.VITE_RENDER_BACKEND);
+}
+
+export function resolveMovementCollisionResolver(
+  world: VoxelWorldAdapter,
+): MovementCollisionResolver | null {
+  if (world.mode === "server-authoritative") {
+    return null;
+  }
+
+  return createWorldStoreMovementCollisionResolver(world.store);
 }
 
 export function resolveRendererPreferenceFrom(

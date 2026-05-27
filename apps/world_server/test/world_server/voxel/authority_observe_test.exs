@@ -28,7 +28,9 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
                logical_scene_id: 77,
                observe_log: observe_log,
                ledger: ledger,
-               write_token_store: token_store
+               write_token_store: token_store,
+               source_scene_node: :scene_a@local,
+               target_scene_node: :scene_b@local
              )
 
     assert result.logical_scene_id == 77
@@ -36,14 +38,18 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
     assert result.leases.before_migration.lease_id == 100
     assert result.leases.after_migration.lease_id == 101
     assert result.routes.before_migration.owner_scene_instance_ref == 1_000
+    assert result.routes.before_migration.assigned_scene_node == :scene_a@local
     assert result.routes.after_migration.owner_scene_instance_ref == 2_000
+    assert result.routes.after_migration.assigned_scene_node == :scene_b@local
     assert result.migration.plan.state == :prewarming
     assert result.migration.plan.source_scene_instance_ref == 1_000
     assert result.migration.plan.target_scene_instance_ref == 2_000
+    assert result.migration.plan.target_scene_node == :scene_b@local
     assert result.migration.slice.bounds_chunk_min == [0, 0, 0]
     assert result.migration.slice.bounds_chunk_max == [2, 4, 4]
     assert result.migration.handoff.old_lease.lease_id == 100
     assert result.migration.handoff.new_lease.lease_id == 101
+    assert result.migration.handoff.target_scene_node == :scene_b@local
     assert length(result.migration.acked_slices) == 2
     assert Enum.all?(result.migration.acked_slices, &(&1.state == :prewarmed))
     assert length(result.migration.final_catchup_slices) == 2

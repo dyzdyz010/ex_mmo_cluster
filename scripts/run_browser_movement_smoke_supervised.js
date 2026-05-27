@@ -73,6 +73,7 @@ const summary = {
     overheadBlockCommitted: false,
     overheadBlockDidNotLiftLocal: false,
     overheadBlockDidNotLiftAuthority: false,
+    overheadBlockCleaned: false,
     localJumpRenderedRise: false,
     localJumpAuthorityRise: false,
     localJumpAirborneTrace: false,
@@ -337,6 +338,10 @@ class CdpPage {
     await this.send("Page.enable");
   }
 
+  async bringToFront() {
+    await this.send("Page.bringToFront");
+  }
+
   close() {
     try {
       this.socket?.close();
@@ -464,12 +469,30 @@ function chunkForMacro(valueMacro) {
   return floorDiv(valueMacro, 16);
 }
 
+function chunkKey(coord) {
+  return `${coord.x},${coord.y},${coord.z}`;
+}
+
 function snapshotPositions(snapshotResult) {
   const data = snapshotResult.data || {};
+  const player = data.player || {};
   const actorDisplay = data.actorDisplay || {};
-  const local = parseVector(actorDisplay.local);
-  const authority = parseVector(actorDisplay.authority);
+  const local = parseVector(player.renderedPosition) || parseVector(actorDisplay.local);
+  const authority = parseVector(player.authoritativePosition) || parseVector(actorDisplay.authority);
   return { local, authority };
+}
+
+function sceneSpawnApplied(positions) {
+  return (
+    positions.local &&
+    positions.authority &&
+    positions.local.x > 0 &&
+    positions.local.y > 100 &&
+    positions.local.z > 0 &&
+    Math.abs(positions.local.x - positions.authority.x) <= 1 &&
+    Math.abs(positions.local.y - positions.authority.y) <= 1 &&
+    Math.abs(positions.local.z - positions.authority.z) <= 1
+  );
 }
 
 function remoteEntity(playersResult, cid) {
@@ -497,6 +520,29 @@ async function waitForTransportReady(page, label) {
   return movement;
 }
 
+async function waitForSceneSpawnApplied(page, label) {
+  return waitForCli(
+    page,
+    "snapshot",
+    (result) => sceneSpawnApplied(snapshotPositions(result)),
+    `${label} scene spawn applied`,
+    20_000,
+  );
+}
+
+async function waitForAuthoritativeChunk(page, chunk, label) {
+  const expectedKey = chunkKey(chunk);
+  return waitForCli(
+    page,
+    "chunks 64",
+    (result) =>
+      Array.isArray(result?.data) &&
+      result.data.some((entry) => entry?.key === expectedKey && entry.solidBlocks > 0),
+    label,
+    15_000,
+  );
+}
+
 async function runOverheadBlockCheck(page) {
   const beforeSnapshot = await page.cli("snapshot");
   const before = snapshotPositions(beforeSnapshot);
@@ -516,7 +562,11 @@ async function runOverheadBlockCheck(page) {
   };
 
   await page.cli(`voxel_subscribe ${chunk.x} ${chunk.y} ${chunk.z} 0`);
-  await sleep(500);
+  const subscriptionReadyResult = await waitForAuthoritativeChunk(
+    page,
+    chunk,
+    "overhead block authoritative chunk",
+  );
   const placeResult = await page.cli(`place ${macro.x} ${macro.y} ${macro.z} stone`);
 
   let cellResult = null;
@@ -557,11 +607,32 @@ async function runOverheadBlockCheck(page) {
     after,
     localDeltaY,
     authorityDeltaY,
+    subscriptionReadyResult,
     passed: blockCommitted && localStable && authorityStable,
   };
 
   if (!summary.overheadBlock.passed) {
     throw new Error(`overhead block check failed: ${JSON.stringify(summary.overheadBlock)}`);
+  }
+
+  const cleanupBreakResult = await page.cli(`break ${macro.x} ${macro.y} ${macro.z}`);
+  const cleanupCellResult = await waitForCli(
+    page,
+    `cell ${macro.x} ${macro.y} ${macro.z}`,
+    (result) => result?.data?.block === null,
+    "overhead block cleanup commit",
+    8_000,
+  );
+  summary.assertions.overheadBlockCleaned =
+    cleanupBreakResult?.data?.ok === true && cleanupCellResult?.data?.block === null;
+  summary.overheadBlock.cleanup = {
+    breakResult: cleanupBreakResult,
+    cellResult: cleanupCellResult,
+    passed: summary.assertions.overheadBlockCleaned,
+  };
+
+  if (!summary.overheadBlock.cleanup.passed) {
+    throw new Error(`overhead block cleanup failed: ${JSON.stringify(summary.overheadBlock)}`);
   }
 }
 
@@ -637,6 +708,36 @@ async function sampleLocalJump(page) {
   }
 }
 
+async function triggerJumpAndWaitForLocalDispatch(page, label) {
+  const beforeResult = await page.cli("player");
+  const beforePredicted = beforeResult.data?.predicted || {};
+  const beforeSeq = Number(beforePredicted.seq ?? 0);
+  const beforeTick = Number(beforePredicted.tick ?? 0);
+
+  const jumpResult = await page.cli("jump");
+  const dispatchedResult = await waitForCli(
+    page,
+    "player",
+    (result) => {
+      const predicted = result?.data?.predicted;
+      if (!predicted) {
+        return false;
+      }
+      const seq = Number(predicted.seq ?? 0);
+      const tick = Number(predicted.tick ?? 0);
+      return seq > beforeSeq && tick > beforeTick && predicted.movementMode === "airborne";
+    },
+    `${label} jump input dispatched`,
+    5_000,
+  );
+
+  return {
+    before: beforeResult.data,
+    jumpResult,
+    dispatched: dispatchedResult.data,
+  };
+}
+
 async function waitForRemoteGround(page, cid) {
   return waitForCli(
     page,
@@ -654,6 +755,7 @@ async function waitForRemoteGround(page, cid) {
 }
 
 async function sampleRemoteJump(pageA, pageB, cidA) {
+  await pageB.bringToFront();
   const startResult = await waitForRemoteGround(pageB, cidA);
   const startEntity = remoteEntity(startResult, cidA);
   if (!startEntity) {
@@ -664,7 +766,9 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
     throw new Error(`remote entity ${cidA} missing rendered position`);
   }
 
-  await pageA.cli("jump");
+  await pageA.bringToFront();
+  const dispatch = await triggerJumpAndWaitForLocalDispatch(pageA, `subject ${cidA}`);
+  await pageB.bringToFront();
   const samples = [];
   let lostSamples = 0;
   for (let i = 0; i < 30; i++) {
@@ -699,6 +803,7 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
   summary.remoteJump = {
     subjectCid: cidA,
     startPosition,
+    dispatch,
     maxY,
     rise,
     lostSamples,
@@ -741,6 +846,7 @@ async function main() {
     GATE_TCP_PORT: String(gateTcpPort),
     GATE_UDP_PORT: String(gateUdpPort),
     WS_SMOKE_READY_FILE: readyFile,
+    WS_SMOKE_PRESEED_VOXEL: "1",
   };
 
   if (process.env.BROWSER_SMOKE_SKIP_DB_SETUP !== "1") {
@@ -784,7 +890,7 @@ async function main() {
           VITE_INGAME_PROXY_TARGET: `http://127.0.0.1:${authPort}`,
           VITE_GAME_WS_URL: `ws://127.0.0.1:${authPort}/ingame/ws`,
           VITE_RENDER_BACKEND: "webgl",
-          VITE_VOXEL_DEV_SEED: "1",
+          VITE_VOXEL_DEV_SEED: "0",
           VITE_VOXEL_SUBSCRIBE_RADIUS: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -810,7 +916,11 @@ async function main() {
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
       "--disable-dev-shm-usage",
+      "--disable-renderer-backgrounding",
+      "--disable-features=CalculateNativeWinOcclusion",
       "--use-angle=swiftshader",
       "--window-size=1280,900",
     ];
@@ -828,14 +938,20 @@ async function main() {
     const url = `http://127.0.0.1:${vitePort}/?renderer=webgl&browser_movement_smoke=1`;
     summary.browser.url = url;
     const wsA = await createChromeTarget(chromePort, `${url}&tab=A`);
-    const wsB = await createChromeTarget(chromePort, `${url}&tab=B`);
     pageA = new CdpPage("A", wsA, consoleA);
-    pageB = new CdpPage("B", wsB, consoleB);
     await pageA.connect();
-    await pageB.connect();
+    await pageA.bringToFront();
 
     const movementA = await waitForTransportReady(pageA, "A");
+    await waitForSceneSpawnApplied(pageA, "A");
+
+    const wsB = await createChromeTarget(chromePort, `${url}&tab=B`);
+    pageB = new CdpPage("B", wsB, consoleB);
+    await pageB.connect();
+    await pageB.bringToFront();
+
     const movementB = await waitForTransportReady(pageB, "B");
+    await waitForSceneSpawnApplied(pageB, "B");
     await waitForCli(
       pageB,
       "players",
@@ -845,6 +961,7 @@ async function main() {
     );
     summary.assertions.remoteEnterObserved = true;
 
+    await pageA.bringToFront();
     await runOverheadBlockCheck(pageA);
     await sampleLocalJump(pageA);
     await sampleRemoteJump(pageA, pageB, movementA.cid);

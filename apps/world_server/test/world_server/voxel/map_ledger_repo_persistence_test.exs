@@ -15,7 +15,9 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
   alias DataService.Repo
   alias DataService.Voxel.MapLedgerStore
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.MigrationPlan
   alias WorldServer.Voxel.RegionAssignment
+  alias WorldServer.CliObserve
 
   setup_all do
     Application.ensure_all_started(:jason)
@@ -131,7 +133,208 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
     revived_snapshot = MapLedger.snapshot(revived)
     revived_plan = revived_snapshot.migrations[plan.migration_id]
     assert revived_plan.target_scene_instance_ref == 1200
+    assert revived_plan.target_scene_node == node()
     assert revived_plan.state == :prewarming
+  end
+
+  test "MapLedger upgrades legacy migration plans without source scene node from Postgres" do
+    persist = MapLedgerStore.persist_fn(Repo)
+    load = MapLedgerStore.load_fn(Repo)
+
+    ledger =
+      start_supervised!({MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :first_repo_legacy_migration
+      )
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger,
+               logical_scene_id: 12,
+               region_id: 120,
+               owner_scene_instance_ref: 1200,
+               owner_epoch: 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {4, 1, 1},
+               assigned_scene_node: :repo_legacy_source@local,
+               state: :idle
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 120, 1200,
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000
+             )
+
+    assert {:ok, plan} =
+             MapLedger.begin_migration(ledger, 120, 1300,
+               owner_epoch: 2,
+               target_scene_node: :repo_legacy_target@local
+             )
+
+    snapshot = MapLedger.snapshot(ledger)
+    legacy_plan = legacy_plan_without_source_scene_node(snapshot.migrations[plan.migration_id])
+
+    payload =
+      snapshot
+      |> Map.take([:assignments, :leases, :chunk_summaries, :migrations])
+      |> put_in([:migrations, plan.migration_id], legacy_plan)
+
+    assert :ok = MapLedgerStore.save_state(Repo, payload)
+    stop_supervised!(:first_repo_legacy_migration)
+
+    revived =
+      start_supervised!(
+        {MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :revived_repo_legacy_migration
+      )
+
+    assert {:ok, handoff} = MapLedger.migration_handoff(revived, plan.migration_id)
+    assert handoff.source_scene_node == :repo_legacy_source@local
+    assert handoff.target_scene_node == :repo_legacy_target@local
+  end
+
+  test "MapLedger restores completed legacy migration plans without source scene node from Postgres" do
+    persist = MapLedgerStore.persist_fn(Repo)
+    load = MapLedgerStore.load_fn(Repo)
+
+    ledger =
+      start_supervised!({MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :first_repo_completed_legacy
+      )
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger,
+               logical_scene_id: 12,
+               region_id: 121,
+               owner_scene_instance_ref: 1210,
+               owner_epoch: 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: :repo_completed_source@local,
+               state: :idle
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 121, 1210,
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000
+             )
+
+    assert {:ok, plan} =
+             MapLedger.begin_migration(ledger, 121, 1310,
+               owner_epoch: 2,
+               target_scene_node: :repo_completed_target@local
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, plan.migration_id)
+
+    assert {:ok, _plan, _slice} =
+             MapLedger.mark_slice_prewarmed(ledger, plan.migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 1310
+             })
+
+    assert {:ok, _plan} = MapLedger.mark_prewarmed(ledger, plan.migration_id)
+
+    assert {:ok, _plan, _slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, plan.migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 1310
+             })
+
+    assert {:ok, _plan} = MapLedger.cutover_migration(ledger, plan.migration_id)
+    assert {:ok, _plan} = MapLedger.complete_migration(ledger, plan.migration_id)
+
+    snapshot = MapLedger.snapshot(ledger)
+    legacy_plan = legacy_plan_without_source_scene_node(snapshot.migrations[plan.migration_id])
+
+    payload =
+      snapshot
+      |> Map.take([:assignments, :leases, :chunk_summaries, :migrations])
+      |> put_in([:migrations, plan.migration_id], legacy_plan)
+
+    assert :ok = MapLedgerStore.save_state(Repo, payload)
+    stop_supervised!(:first_repo_completed_legacy)
+
+    revived =
+      start_supervised!(
+        {MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :revived_repo_completed_legacy
+      )
+
+    assert {:ok, handoff} = MapLedger.migration_handoff(revived, plan.migration_id)
+    assert handoff.state == :completed
+    assert handoff.source_scene_node == :legacy_source_scene_node_unavailable
+    assert handoff.target_scene_node == :repo_completed_target@local
+  end
+
+  test "MapLedger rejects unsafe active legacy migration plans from Postgres with observe reason" do
+    persist = MapLedgerStore.persist_fn(Repo)
+    load = MapLedgerStore.load_fn(Repo)
+
+    observe_log =
+      Path.join(System.tmp_dir!(), "world-map-ledger-repo-legacy-reject-#{unique_id()}.log")
+
+    previous_observe_log = Application.fetch_env(:world_server, :cli_observe_log)
+    Application.put_env(:world_server, :cli_observe_log, observe_log)
+    on_exit(fn -> restore_env(:world_server, previous_observe_log) end)
+
+    ledger =
+      start_supervised!({MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :first_repo_unsafe_legacy
+      )
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger,
+               logical_scene_id: 12,
+               region_id: 122,
+               owner_scene_instance_ref: 1220,
+               owner_epoch: 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {4, 1, 1},
+               assigned_scene_node: :repo_unsafe_source@local,
+               state: :idle
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 122, 1220,
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000
+             )
+
+    assert {:ok, plan} =
+             MapLedger.begin_migration(ledger, 122, 1320,
+               owner_epoch: 2,
+               target_scene_node: :repo_unsafe_target@local
+             )
+
+    snapshot = MapLedger.snapshot(ledger)
+    legacy_plan = legacy_plan_without_source_scene_node(snapshot.migrations[plan.migration_id])
+    drifted_assignment = %{snapshot.assignments[122] | owner_scene_instance_ref: 999}
+
+    payload =
+      snapshot
+      |> Map.take([:assignments, :leases, :chunk_summaries, :migrations])
+      |> put_in([:assignments, 122], drifted_assignment)
+      |> put_in([:migrations, plan.migration_id], legacy_plan)
+
+    assert :ok = MapLedgerStore.save_state(Repo, payload)
+    stop_supervised!(:first_repo_unsafe_legacy)
+
+    revived =
+      start_supervised!(
+        {MapLedger, [persist_fn: persist, load_fn: load]},
+        id: :revived_repo_unsafe_legacy
+      )
+
+    CliObserve.flush()
+
+    snapshot_after = MapLedger.snapshot(revived)
+    assert snapshot_after.assignments == %{}
+    assert snapshot_after.migrations == %{}
+
+    log = File.read!(observe_log)
+    assert log =~ ~s(event="voxel_map_ledger_persist_load_failed")
+    assert log =~ "legacy_migration_source_scene_node_unavailable"
   end
 
   test "missing snapshot row leaves the ledger empty without raising" do
@@ -148,4 +351,16 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
     assert snapshot.leases == %{}
     assert snapshot.migrations == %{}
   end
+
+  defp legacy_plan_without_source_scene_node(%MigrationPlan{} = plan) do
+    plan
+    |> Map.from_struct()
+    |> Map.delete(:source_scene_node)
+    |> Map.put(:__struct__, MigrationPlan)
+  end
+
+  defp unique_id, do: System.unique_integer([:positive, :monotonic])
+
+  defp restore_env(app, {:ok, value}), do: Application.put_env(app, :cli_observe_log, value)
+  defp restore_env(app, :error), do: Application.delete_env(app, :cli_observe_log)
 end

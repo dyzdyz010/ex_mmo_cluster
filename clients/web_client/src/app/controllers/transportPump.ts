@@ -1,4 +1,5 @@
 import type { Vector3 } from "three";
+import type { ChatMessage, ChatScope } from "@domain/chat/types";
 import type { MoveInputFrame } from "@domain/movement/types";
 import type { MovementTransport } from "@domain/movement/transport";
 import type { EventBus } from "../../shared/events/eventBus";
@@ -38,6 +39,13 @@ export class TransportPump implements FrameSubscriber {
     this.transport.sendInput(frame, nowMs);
   }
 
+  sendChat(scope: ChatScope, text: string): number | null {
+    if (!isChatTransport(this.transport)) {
+      return null;
+    }
+    return this.transport.sendChat(scope, text);
+  }
+
   reset(position: Vector3): void {
     this.transport.reset(position);
     this.publishModeIfChanged();
@@ -71,6 +79,11 @@ export class TransportPump implements FrameSubscriber {
     for (const sample of result.timeSyncSamples ?? []) {
       this.bus.emit("transport:time-sync", sample);
     }
+    if (isChatTransport(this.transport)) {
+      for (const message of this.transport.drainChatMessages()) {
+        this.bus.emit("chat:message-received", message);
+      }
+    }
   }
 
   private publishModeIfChanged(): void {
@@ -80,4 +93,18 @@ export class TransportPump implements FrameSubscriber {
       this.bus.emit("transport:mode-changed", { mode: current });
     }
   }
+}
+
+interface ChatTransport {
+  sendChat(scope: ChatScope, text: string): number | null;
+  drainChatMessages(): ChatMessage[];
+}
+
+function isChatTransport(
+  transport: MovementTransport,
+): transport is MovementTransport & ChatTransport {
+  const candidate = transport as Partial<ChatTransport>;
+  return (
+    typeof candidate.sendChat === "function" && typeof candidate.drainChatMessages === "function"
+  );
 }

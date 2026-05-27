@@ -63,9 +63,14 @@ defmodule SceneServer.AoiManager do
   end
 
   @spec update_item_location(integer(), {float(), float(), float()}) :: :ok
-  @doc "Updates the manager-side location cache for one AOI item."
+  @doc """
+  Updates the manager-side location cache for one AOI item.
+
+  The call is synchronous so a movement handler that has returned has already
+  published the location used by later partition-window prune decisions.
+  """
   def update_item_location(cid, location) do
-    GenServer.cast(__MODULE__, {:update_item_location, cid, location})
+    GenServer.call(__MODULE__, {:update_item_location, cid, location})
   end
 
   @spec get_nearby_actor_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
@@ -171,7 +176,7 @@ defmodule SceneServer.AoiManager do
   end
 
   @impl true
-  def handle_cast({:update_item_location, cid, location}, %{aois: aois} = state) do
+  def handle_call({:update_item_location, cid, location}, _from, %{aois: aois} = state) do
     next_aois =
       Map.update(aois, cid, nil, fn
         nil -> nil
@@ -180,7 +185,7 @@ defmodule SceneServer.AoiManager do
       |> Enum.reject(fn {_cid, entry} -> is_nil(entry) end)
       |> Map.new()
 
-    {:noreply, %{state | aois: next_aois}}
+    {:reply, :ok, %{state | aois: next_aois}}
   end
 
   # Internal functions

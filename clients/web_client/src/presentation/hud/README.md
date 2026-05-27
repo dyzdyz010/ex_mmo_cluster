@@ -8,6 +8,10 @@ movement、render 或 transport 的真相状态。
   使用 `pre-wrap` 换行并允许纵向触摸滚动，避免调试文本覆盖热栏或体素面板。
 - `hotbarDockView.ts` 是底部快捷栏，负责材料 / prefab 选择入口；选择真相仍在
   `WorldEditController`。
+- `chatPanelView.ts` 是左下角世界聊天入口。它只保存当前输入框、scope 选择和最近
+  下行消息；发送走 `DevToolsCli` 的 `chat` 命令，接收走 `chat:message-received`
+  事件。客户端只能选择 `world` / `region` / `local` scope，不能携带 region/chunk
+  权威字段。
 - `voxelDebugPanelView.ts` 是右上角服务器权威体素观察面。桌面端鼠标主要被视角占用，
   所以该面板默认展示运行状态、快捷键和 CLI 指令提示；只有 `Field`、`Guide` 和
   `voxel_subscribe` 这类值得脱出指针的操作保留为可点击控件。其它体素调试能力仍走
@@ -31,3 +35,5 @@ movement、render 或 transport 的真相状态。
 - 本目录不能直接改 `WorldStore`，写入必须通过 controller、adapter 或 CLI command port。
 - 面板点击、快捷栏点击都要阻断 canvas 世界编辑指针事件，避免 UI 操作同时触发放置 / 破坏。
 - 新增可见控件时，要同步保留 CLI / observe 可验证入口，不能只提供 GUI。
+- 聊天面板不能复用体素面板的状态或 World/Render 入口；聊天频道真相在服务器，
+  浏览器只负责提交 scope 和展示服务器下发消息。

@@ -5,9 +5,15 @@ import {
   type MovementAck,
   type RemoteMoveSnapshot,
 } from "@domain/movement/types";
+import type { ChatMessage, ChatScope } from "@domain/chat/types";
 
-export interface AuthOkMessage {
-  type: "auth_ok";
+export interface ResultOkMessage {
+  type: "result_ok";
+  requestId: number;
+}
+
+export interface ResultErrorMessage {
+  type: "result_error";
   requestId: number;
 }
 
@@ -56,6 +62,10 @@ export interface PlayerStateMessage {
   alive: boolean;
 }
 
+export interface ChatMessageFrame extends ChatMessage {
+  type: "chat_message";
+}
+
 export interface TimeSyncReplyMessage {
   type: "time_sync_reply";
   requestId: number;
@@ -76,7 +86,8 @@ export interface KnownUnhandledDownlinkMessage {
 }
 
 export type ServerGateMessage =
-  | AuthOkMessage
+  | ResultOkMessage
+  | ResultErrorMessage
   | EnterSceneOkMessage
   | EnterSceneErrorMessage
   | MovementAckMessage
@@ -84,6 +95,7 @@ export type ServerGateMessage =
   | PlayerEnterMessage
   | PlayerLeaveMessage
   | PlayerStateMessage
+  | ChatMessageFrame
   | TimeSyncReplyMessage
   | HeartbeatReplyMessage
   | KnownUnhandledDownlinkMessage;
@@ -125,6 +137,23 @@ export function encodeHeartbeat(timestampMs: number): Uint8Array {
   return new Uint8Array(buffer);
 }
 
+export function encodeChatSayScoped(requestId: number, scope: ChatScope, text: string): Uint8Array {
+  const textBytes = encoder.encode(text);
+  const buffer = new ArrayBuffer(1 + 8 + 1 + 2 + textBytes.length);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, 0x0a);
+  offset += 1;
+  writeU64(view, offset, requestId);
+  offset += 8;
+  view.setUint8(offset, encodeChatScope(scope));
+  offset += 1;
+  view.setUint16(offset, textBytes.length, false);
+  offset += 2;
+  new Uint8Array(buffer, offset, textBytes.length).set(textBytes);
+  return new Uint8Array(buffer);
+}
+
 export function encodeMovementInput(frame: {
   seq: number;
   clientTick: number;
@@ -163,27 +192,32 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
   const msgType = view.getUint8(0);
   switch (msgType) {
     case 0x80: {
+      if (!hasBytes(view, 10)) return null;
       const requestId = readU64(view, 1);
       const ok = view.getUint8(9) === 0;
-      return ok ? { type: "auth_ok", requestId } : null;
+      return ok ? { type: "result_ok", requestId } : { type: "result_error", requestId };
     }
     case 0x81:
+      if (!hasBytes(view, 33)) return null;
       return {
         type: "player_enter",
         cid: readI64(view, 1),
         position: readServerVec3AsBrowserVec3(view, 9),
       };
     case 0x82:
+      if (!hasBytes(view, 9)) return null;
       return {
         type: "player_leave",
         cid: readI64(view, 1),
       };
     case 0x84: {
+      if (!hasBytes(view, 10)) return null;
       const requestId = readU64(view, 1);
       const ok = view.getUint8(9) === 0;
       if (!ok) {
         return { type: "enter_scene_error", requestId };
       }
+      if (!hasBytes(view, 38)) return null;
       // Layout (audit B-S1 / B-SRV2): packet_id(8) + ok(1) + vec3(24) +
       // expected_seq(u32 BE). Total body = 37; with msg_type the frame is
       // 38 bytes.
@@ -195,6 +229,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       };
     }
     case 0x8b:
+      if (!hasBytes(view, 104)) return null;
       // Layout (audit B-M2 + Phase A1-4): + trailing fixed_dt_ms u16 BE at
       // body offset 93 + ground_z f64 BE at body offset 95. Frame layout:
       //   [0]  opcode (1)
@@ -227,6 +262,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
         },
       };
     case 0x83:
+      if (!hasBytes(view, 86)) return null;
       return {
         type: "player_move",
         snapshot: {
@@ -240,6 +276,7 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
         },
       };
     case 0x85:
+      if (!hasBytes(view, 33)) return null;
       return {
         type: "time_sync_reply",
         requestId: readU64(view, 1),
@@ -249,6 +286,8 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       };
     case 0x86:
       return { type: "heartbeat_reply" };
+    case 0x89:
+      return decodeChatMessage(view);
     case 0x8c:
       if (view.byteLength !== 14) {
         return null;
@@ -270,6 +309,18 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
 }
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function encodeChatScope(scope: ChatScope): number {
+  switch (scope) {
+    case "region":
+      return 1;
+    case "local":
+      return 2;
+    default:
+      return 0;
+  }
+}
 
 function writeU64(view: DataView, offset: number, value: number): void {
   const big = BigInt(Math.max(0, Math.trunc(value)));
@@ -287,6 +338,45 @@ function readU64(view: DataView, offset: number): number {
 
 function readI64(view: DataView, offset: number): number {
   return Number(view.getBigInt64(offset, false));
+}
+
+function hasBytes(view: DataView, byteLength: number): boolean {
+  return view.byteLength >= byteLength;
+}
+
+function readPrefixedString(view: DataView, offset: number): [string, number] | null {
+  if (view.byteLength < offset + 2) {
+    return null;
+  }
+  const length = view.getUint16(offset, false);
+  const start = offset + 2;
+  const end = start + length;
+  if (view.byteLength < end) {
+    return null;
+  }
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + start, length);
+  return [decoder.decode(bytes), end];
+}
+
+function decodeChatMessage(view: DataView): ChatMessageFrame | null {
+  if (view.byteLength < 1 + 8 + 2) {
+    return null;
+  }
+  const cid = readI64(view, 1);
+  const usernameResult = readPrefixedString(view, 9);
+  if (!usernameResult) {
+    return null;
+  }
+  const [username, textOffset] = usernameResult;
+  const textResult = readPrefixedString(view, textOffset);
+  if (!textResult) {
+    return null;
+  }
+  const [text, end] = textResult;
+  if (end !== view.byteLength) {
+    return null;
+  }
+  return { type: "chat_message", cid, username, text };
 }
 
 function readVec3(view: DataView, offset: number): Vector3 {
@@ -315,10 +405,7 @@ function decodeMovementMode(raw: number): MovementMode {
   }
 }
 
-function decodeAoiPriority(
-  view: DataView,
-  offset: number,
-): Partial<RemoteMoveSnapshot> {
+function decodeAoiPriority(view: DataView, offset: number): Partial<RemoteMoveSnapshot> {
   if (view.byteLength < offset + 11) {
     return {};
   }
@@ -348,8 +435,6 @@ function knownUnhandledDownlinkName(opcode: number): string | null {
       return "fast_lane_result";
     case 0x88:
       return "fast_lane_attached";
-    case 0x89:
-      return "chat_message";
     case 0x8a:
       return "skill_event";
     case 0x8d:

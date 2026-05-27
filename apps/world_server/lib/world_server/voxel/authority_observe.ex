@@ -88,6 +88,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
     chunk_coord = Keyword.get(opts, :chunk_coord, @default_chunk_coord)
     source_ref = Keyword.get(opts, :source_scene_instance_ref, @default_source_scene_instance_ref)
     target_ref = Keyword.get(opts, :target_scene_instance_ref, @default_target_scene_instance_ref)
+    source_scene_node = Keyword.get(opts, :source_scene_node, node())
+    target_scene_node = Keyword.get(opts, :target_scene_node, source_scene_node)
     future_ms = System.system_time(:millisecond) + @lease_ttl_ms
     migration_id = "authority-#{logical_scene_id}-region-#{region_id}"
 
@@ -95,6 +97,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
       logical_scene_id: logical_scene_id,
       region_id: region_id,
       chunk_coord: coord_list(chunk_coord),
+      source_scene_node: source_scene_node,
+      target_scene_node: target_scene_node,
       observe_log: observe_log
     })
 
@@ -106,7 +110,7 @@ defmodule WorldServer.Voxel.AuthorityObserve do
              bounds_chunk_max: {4, 4, 4},
              owner_scene_instance_ref: source_ref,
              owner_epoch: 0,
-             assigned_scene_node: node()
+             assigned_scene_node: source_scene_node
            }),
          {:ok, lease_v1} <-
            MapLedger.issue_lease(ledger, region_id, source_ref,
@@ -131,6 +135,7 @@ defmodule WorldServer.Voxel.AuthorityObserve do
              owner_epoch: 2,
              expires_at_ms: future_ms,
              token_version: 2,
+             target_scene_node: target_scene_node,
              slice_width: 2
            ),
          {:ok, migration_slices} <- plan_all_migration_slices(ledger, migration_id),
@@ -499,6 +504,7 @@ defmodule WorldServer.Voxel.AuthorityObserve do
       region_id: assignment.region_id,
       lease_id: assignment.lease_id,
       owner_scene_instance_ref: assignment.owner_scene_instance_ref,
+      assigned_scene_node: assignment.assigned_scene_node,
       owner_epoch: assignment.owner_epoch,
       state: assignment.state,
       bounds_chunk_min: coord_list(assignment.bounds_chunk_min),
@@ -527,6 +533,7 @@ defmodule WorldServer.Voxel.AuthorityObserve do
       state: handoff.state,
       source_scene_instance_ref: handoff.source_scene_instance_ref,
       target_scene_instance_ref: handoff.target_scene_instance_ref,
+      target_scene_node: handoff.target_scene_node,
       old_lease: lease_summary(handoff.old_lease),
       new_lease: lease_summary(handoff.new_lease),
       token_version: handoff.token_version,

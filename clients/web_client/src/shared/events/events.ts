@@ -1,4 +1,5 @@
 import type { Vector3 } from "three";
+import type { ChatMessage } from "../../domain/chat/types";
 import type { AoiPriorityBand, MovementAck, RemoteMoveSnapshot } from "@domain/movement/types";
 import type { FChunkCoord, FMacroCoord, FMicroCoord } from "../../voxel/core/types";
 import type { EventBus, ReadonlyEventBus } from "./eventBus";
@@ -70,6 +71,7 @@ export type AppEvents = {
     serverRecvTs: number;
     serverSendTs: number;
   };
+  "chat:message-received": ChatMessage;
 
   "movement:reset": { start: Vector3 };
   "movement:local-step": {

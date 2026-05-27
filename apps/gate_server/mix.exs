@@ -28,6 +28,7 @@ defmodule GateServer.MixProject do
     [
       {:observer_cli, "~> 1.7"},
       {:beacon_server, in_umbrella: true},
+      {:chat_server, in_umbrella: true, runtime: false},
       {:scene_server, in_umbrella: true, runtime: false},
       {:world_server, in_umbrella: true, runtime: false},
       {:auth_server, in_umbrella: true, only: :test},

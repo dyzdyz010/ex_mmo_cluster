@@ -71,14 +71,21 @@ interface SubscribeCall {
   wantSnapshot: boolean;
 }
 
+interface ChunkAckCall {
+  logicalSceneId: number;
+  acks: { chunkCoord: { x: number; y: number; z: number }; chunkVersion: number }[];
+}
+
 class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly prefabCalls: PrefabPlaceCall[] = [];
   readonly impactCalls: ImpactCall[] = [];
   readonly editIntentCalls: EditIntentCall[] = [];
   readonly fieldConductCalls: FieldConductIntentCall[] = [];
   readonly subscribeCalls: SubscribeCall[] = [];
+  readonly chunkAckCalls: ChunkAckCall[] = [];
   readonly queuedSnapshots: VoxelChunkSnapshotMessage[] = [];
   readonly queuedDeltas: VoxelChunkDeltaMessage[] = [];
+  readonly queuedInvalidates: VoxelChunkInvalidateMessage[] = [];
   available = true;
   nextRequestId = 100;
 
@@ -109,6 +116,18 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   }
 
   sendVoxelChunkUnsubscribe(): number | null {
+    return this.allocateRequestId();
+  }
+
+  sendVoxelChunkAck(request: ChunkAckCall): number | null {
+    if (!this.available) return null;
+    this.chunkAckCalls.push({
+      logicalSceneId: request.logicalSceneId,
+      acks: request.acks.map((ack) => ({
+        chunkCoord: { ...ack.chunkCoord },
+        chunkVersion: ack.chunkVersion,
+      })),
+    });
     return this.allocateRequestId();
   }
 
@@ -194,7 +213,7 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   }
 
   drainVoxelInvalidates(): VoxelChunkInvalidateMessage[] {
-    return [];
+    return this.queuedInvalidates.splice(0, this.queuedInvalidates.length);
   }
 
   drainVoxelIntentResults(): VoxelIntentResultMessage[] {
@@ -226,7 +245,10 @@ class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   }
 }
 
-function emptySnapshot(chunkCoord: { x: number; y: number; z: number }): VoxelChunkSnapshotMessage {
+function emptySnapshot(
+  chunkCoord: { x: number; y: number; z: number },
+  chunkVersion = 0,
+): VoxelChunkSnapshotMessage {
   return {
     type: "voxel_chunk_snapshot",
     requestId: 10,
@@ -235,7 +257,7 @@ function emptySnapshot(chunkCoord: { x: number; y: number; z: number }): VoxelCh
     schemaVersion: 1,
     chunkSizeInMacro: VoxelConstants.ChunkSizeInMacros,
     microResolution: VoxelConstants.MicroPerMacro,
-    chunkVersion: 0,
+    chunkVersion,
     chunkHash: 0,
     storage: ChunkStorage.createEmpty(chunkCoord).data,
     refinedCellsWire: [],
@@ -309,6 +331,43 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     ]);
   });
 
+  it("resubscribes startup chunks after a server invalidate removes local authority", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: false,
+      primeDemoBlock: false,
+      initialSubscriptions: [{ centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 }],
+    });
+
+    adapter.onFrame(0);
+    transport.queuedInvalidates.push({
+      type: "voxel_chunk_invalidate",
+      logicalSceneId: 7,
+      chunkCoord: { x: 0, y: 0, z: 0 },
+      reason: 1,
+      reasonName: "migration_cutover",
+    });
+    adapter.onFrame(16);
+
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+    ]);
+  });
+
   it("does not seed the offline showcase during bootstrap", () => {
     const { adapter } = createAdapter();
 
@@ -316,6 +375,85 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
 
     expect(adapter.store.totalSolidBlocks()).toBe(0);
     expect(adapter.store.listChunks()).toHaveLength(0);
+  });
+
+  it("ACKs chunk snapshots only after applying them to the local authoritative store", () => {
+    const { adapter, transport } = createAdapter();
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 2, y: 0, z: -1 }, 42));
+    adapter.onFrame(100);
+
+    expect(adapter.store.getChunkAuthorityMetadata({ x: 2, y: 0, z: -1 })).toMatchObject({
+      chunkVersion: 42,
+    });
+    expect(transport.chunkAckCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        acks: [{ chunkCoord: { x: 2, y: 0, z: -1 }, chunkVersion: 42 }],
+      },
+    ]);
+    expect(adapter.debugSnapshot()).toMatchObject({
+      appliedChunkAckCount: 1,
+      lastAppliedChunkAck: {
+        logicalSceneId: 7,
+        chunkCoord: "2,0,-1",
+        chunkVersion: 42,
+        source: "snapshot",
+      },
+    });
+  });
+
+  it("ACKs chunk deltas after the base-version guard applies the new version", () => {
+    const { adapter, transport } = createAdapter();
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 0, y: 0, z: 0 }, 0));
+    adapter.onFrame(100);
+    transport.queuedDeltas.push({
+      type: "voxel_chunk_delta",
+      logicalSceneId: 7,
+      chunkCoord: { x: 0, y: 0, z: 0 },
+      baseChunkVersion: 0,
+      newChunkVersion: 1,
+      ops: [],
+    });
+    adapter.onFrame(116);
+
+    expect(adapter.store.getChunkAuthorityMetadata({ x: 0, y: 0, z: 0 })).toMatchObject({
+      chunkVersion: 1,
+    });
+    expect(transport.chunkAckCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        acks: [{ chunkCoord: { x: 0, y: 0, z: 0 }, chunkVersion: 0 }],
+      },
+      {
+        logicalSceneId: 7,
+        acks: [{ chunkCoord: { x: 0, y: 0, z: 0 }, chunkVersion: 1 }],
+      },
+    ]);
+  });
+
+  it("does not ACK stale chunk deltas that fail the local base-version guard", () => {
+    const { adapter, transport } = createAdapter();
+
+    transport.queuedSnapshots.push(emptySnapshot({ x: 0, y: 0, z: 0 }, 0));
+    adapter.onFrame(100);
+    transport.queuedDeltas.push({
+      type: "voxel_chunk_delta",
+      logicalSceneId: 7,
+      chunkCoord: { x: 0, y: 0, z: 0 },
+      baseChunkVersion: 99,
+      newChunkVersion: 100,
+      ops: [],
+    });
+    adapter.onFrame(116);
+
+    expect(transport.chunkAckCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        acks: [{ chunkCoord: { x: 0, y: 0, z: 0 }, chunkVersion: 0 }],
+      },
+    ]);
   });
 
   it("translates a known blueprint name into the expected prefab place intent", () => {

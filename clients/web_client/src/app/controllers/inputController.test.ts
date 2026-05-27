@@ -65,6 +65,15 @@ function keyboard(
   } as unknown as Event;
 }
 
+function editableKeyboard(code: string, tagName = "INPUT"): Event {
+  return keyboard(code, false, "", {
+    target: {
+      tagName,
+      isContentEditable: false,
+    } as unknown as EventTarget,
+  });
+}
+
 describe("InputController mouse editing", () => {
   it("emits break intent from left mouse and place intent from right mouse", () => {
     const bus = new EventBus<AppEvents>();
@@ -147,6 +156,35 @@ describe("InputController mouse editing", () => {
       { index: 5, source: "keyboard" },
       { index: 8, source: "keyboard" },
     ]);
+  });
+
+  it("ignores keyboard controls that originate from editable UI targets", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const target = new FakeWindowTarget();
+    const selections: AppEvents["input:hotbar-select"][] = [];
+    const jumps: AppEvents["input:jump"][] = [];
+    const breakEvents: AppEvents["input:break-block"][] = [];
+    bus.on("input:hotbar-select", (event) => selections.push(event));
+    bus.on("input:jump", (event) => jumps.push(event));
+    bus.on("input:break-block", (event) => breakEvents.push(event));
+
+    input.attach(target as unknown as Window);
+    target.dispatch("keydown", editableKeyboard("KeyW"));
+    target.dispatch("keydown", editableKeyboard("Digit6"));
+    target.dispatch("keydown", editableKeyboard("Space", "TEXTAREA"));
+    target.dispatch("keydown", editableKeyboard("KeyG"));
+
+    expect(input.getMovementKeys()).toEqual({
+      forward: false,
+      backward: false,
+      left: false,
+      right: false,
+    });
+    expect(input.consumeJumpPressed()).toBe(false);
+    expect(selections).toEqual([]);
+    expect(jumps).toEqual([]);
+    expect(breakEvents).toEqual([]);
   });
 
   it("emits a set-temperature heat action from F instead of using F as a place shortcut", () => {

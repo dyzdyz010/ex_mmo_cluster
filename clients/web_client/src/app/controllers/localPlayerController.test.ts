@@ -206,6 +206,70 @@ describe("LocalPlayerController", () => {
     expect(controller.getPendingCorrection().length()).toBe(0);
   });
 
+  it("extrapolates authoritative render position between low-frequency server acks", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump, new Vector3(0, 0, 0));
+
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ackSeq: 0,
+        authTick: 0,
+        position: new Vector3(0, 0, 0),
+        velocity: new Vector3(100, 0, 0),
+        acceleration: new Vector3(0, 0, 0),
+        movementMode: MovementMode.Grounded,
+        correctionFlags: CorrectionFlag.None,
+        serverFixedDtMs: 100,
+        groundY: 0,
+      },
+      sentAtMs: performance.now(),
+    });
+
+    const estimated = controller.getAuthoritativeRenderPosition(performance.now() + 250);
+
+    expect(controller.getAuthoritativePosition().x).toBe(0);
+    expect(estimated.x).toBeGreaterThan(20);
+    expect(estimated.x).toBeLessThan(30);
+  });
+
+  it("does not pin the authoritative render marker to an idle ack while local motion has started", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump, new Vector3(0, 0, 0));
+
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ackSeq: 0,
+        authTick: 0,
+        position: new Vector3(0, 0, 0),
+        velocity: new Vector3(0, 0, 0),
+        acceleration: new Vector3(0, 0, 0),
+        movementMode: MovementMode.Grounded,
+        correctionFlags: CorrectionFlag.None,
+        serverFixedDtMs: 100,
+        groundY: 0,
+      },
+      sentAtMs: performance.now(),
+    });
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.right = true;
+    for (let frame = 0; frame < 4; frame += 1) {
+      controller.onFrame((frame + 1) * 16, 16);
+    }
+
+    const rendered = controller.getRenderedPosition().clone();
+    const estimated = controller.getAuthoritativeRenderPosition(performance.now() + 64);
+
+    expect(rendered.x).toBeGreaterThan(0);
+    expect(estimated.x).toBeCloseTo(rendered.x, 5);
+  });
+
   it("sends one jump flag on the next fixed movement frame", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
@@ -221,6 +285,25 @@ describe("LocalPlayerController", () => {
     expect(transport.sentInputs).toHaveLength(2);
     expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
     expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+  });
+
+  it("does not replay a whole jump arc in one frame after a long tab pause", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    input.requestJump("test");
+
+    controller.onFrame(2_000, 2_000);
+    controller.onFrame(2_100, 100);
+
+    expect(transport.sentInputs).toHaveLength(2);
+    expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
+    expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+    expect(transport.sentInputs[0]?.clientTick).toBe(1);
+    expect(transport.sentInputs[1]?.clientTick).toBe(2);
   });
 
   it("emits an observable blocked-input event when controls are used before transport is ready", () => {

@@ -133,6 +133,145 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert snapshot.chunk_version == 1
   end
 
+  test "collision_query reports a stalled chunk without crashing the directory" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+
+    directory =
+      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, collision_query_timeout_ms: 10})
+
+    scene_id = unique_scene_id()
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(directory, %{
+               logical_scene_id: scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    :ok = :sys.suspend(chunk_pid)
+
+    try do
+      assert {:error, {:chunk_unavailable, {:timeout, :collision_query}}} =
+               ChunkDirectory.collision_query(directory, %{
+                 logical_scene_id: scene_id,
+                 chunk_coord: {0, 0, 0},
+                 samples: []
+               })
+
+      assert Process.alive?(directory)
+      assert {:ok, ^chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
+    after
+      _ = :sys.resume(chunk_pid)
+    end
+  end
+
+  test "apply_intents reports a stalled lease apply without crashing the directory" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+
+    directory =
+      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, chunk_call_timeout_ms: 10})
+
+    scene_id = unique_scene_id()
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(directory, %{
+               logical_scene_id: scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    :ok = :sys.suspend(chunk_pid)
+
+    try do
+      assert {:error, {:chunk_unavailable, {:timeout, :apply_lease}}} =
+               ChunkDirectory.apply_intents(directory, [
+                 %{
+                   logical_scene_id: scene_id,
+                   chunk_coord: {0, 0, 0},
+                   lease: lease(scene_id),
+                   operation: :put_solid_block,
+                   macro: {0, 0, 0},
+                   block: NormalBlockData.new(1)
+                 }
+               ])
+
+      assert Process.alive?(directory)
+      assert {:ok, ^chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
+    after
+      _ = :sys.resume(chunk_pid)
+    end
+  end
+
+  test "subscribe preserves per-subscriber delivery mode across later chunk updates" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+    scene_id = unique_scene_id()
+    lease = lease(scene_id)
+
+    assert {:ok, :inserted} =
+             WriteTokenStore.upsert_token(
+               WriteTokenStore,
+               Map.put(lease, :token_version, 1)
+             )
+
+    legacy_subscriber = start_forwarding_subscriber(:legacy_directory)
+    envelope_subscriber = start_forwarding_subscriber(:envelope_directory)
+
+    assert {:ok, legacy_payload} =
+             ChunkDirectory.subscribe(directory, %{
+               request_id: 501,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               subscriber: legacy_subscriber
+             })
+
+    assert_receive {:subscriber_message, :legacy_directory,
+                    {:voxel_chunk_snapshot_payload, ^legacy_payload}}
+
+    assert {:ok, envelope_payload} =
+             ChunkDirectory.subscribe(directory, %{
+               request_id: 502,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               subscriber: envelope_subscriber,
+               delivery_format: :envelope,
+               tier: :halo
+             })
+
+    assert_receive {:subscriber_message, :envelope_directory,
+                    {:voxel_delivery_envelope, %{payload: ^envelope_payload}}}
+
+    assert {:ok, %{chunk_version: 1, persist_result: :inserted}} =
+             ChunkDirectory.apply_intent(directory, %{
+               request_id: 503,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               operation: :put_solid_block,
+               macro: {3, 0, 0},
+               block: NormalBlockData.new(11, health: 40)
+             })
+
+    assert_receive {:subscriber_message, :legacy_directory,
+                    {:voxel_chunk_delta_payload, delta_payload}}
+
+    assert_receive {:subscriber_message, :envelope_directory,
+                    {:voxel_delivery_envelope, envelope}}
+
+    assert envelope.frame_kind == :delta
+    assert envelope.logical_scene_id == scene_id
+    assert envelope.chunk_coord == {1, 1, 1}
+    assert envelope.tier == :halo
+    assert envelope.stream_class == :voxel_delta
+    assert envelope.base_server_version == 0
+    assert envelope.server_version == 1
+    assert envelope.lease_id == lease.lease_id
+    assert envelope.owner_epoch == lease.owner_epoch
+    assert envelope.byte_size == byte_size(delta_payload)
+    assert envelope.payload == delta_payload
+  end
+
   test "apply_intent rejects missing leases before starting a chunk" do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
@@ -312,5 +451,18 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
       bounds_chunk_max: {4, 4, 4},
       expires_at_ms: System.system_time(:millisecond) + 60_000
     }
+  end
+
+  defp start_forwarding_subscriber(label) do
+    parent = self()
+    spawn_link(fn -> forward_subscriber_messages(parent, label) end)
+  end
+
+  defp forward_subscriber_messages(parent, label) do
+    receive do
+      message ->
+        send(parent, {:subscriber_message, label, message})
+        forward_subscriber_messages(parent, label)
+    end
   end
 end

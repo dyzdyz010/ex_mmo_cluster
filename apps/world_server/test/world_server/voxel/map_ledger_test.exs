@@ -46,6 +46,13 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     assert {:error, :unassigned_chunk} = MapLedger.route_chunk(ledger, 1, {0, 0, 0})
     assert {:ok, routed_assignment} = MapLedger.route_chunk(ledger, 1, {2, 0, 0})
     assert routed_assignment.region_id == 10
+
+    assert %{
+             strategy: :scene_bucket_grid_v1,
+             scene_count: 1,
+             region_count: 1,
+             scenes: [%{logical_scene_id: 1, region_ids: [10]}]
+           } = MapLedger.route_index_stats(ledger)
   end
 
   test "allows overlapping active bounds across logical scenes" do
@@ -113,6 +120,265 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
     assert {:error, {{1, 0, 0}, :unassigned_chunk}} =
              MapLedger.route_chunks_with_leases(ledger, 1, [{0, 0, 0}, {1, 0, 0}])
+  end
+
+  test "builds a read-only partition window across adjacent routed regions" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 1, 1}, 1_000)
+    put_region!(ledger, 20, {2, 0, 0}, {4, 1, 1}, 2_000)
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 20, 2_000,
+               lease_id: 200,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    snapshot_before = MapLedger.snapshot(ledger)
+
+    window =
+      MapLedger.partition_window(ledger, 1, {1, 0, 0},
+        near_radius: 0,
+        halo_radius: 1
+      )
+
+    snapshot_after = MapLedger.snapshot(ledger)
+
+    assert snapshot_after == snapshot_before
+    assert window.logical_scene_id == 1
+    assert window.center_chunk == {1, 0, 0}
+    assert window.near_chunks == [{1, 0, 0}]
+    assert {2, 0, 0} in window.halo_chunks
+    assert length(window.route_entries) == 27
+    assert length(window.missing_chunks) == 24
+
+    assert [
+             %{
+               chunk_coord: {1, 0, 0},
+               tier: :near,
+               status: :assigned,
+               region_id: 10,
+               lease_id: 100,
+               assigned_scene_node: assigned_scene_node
+             }
+           ] = Enum.filter(window.route_entries, &(&1.chunk_coord == {1, 0, 0}))
+
+    assert is_atom(assigned_scene_node)
+
+    assert [
+             %{
+               chunk_coord: {2, 0, 0},
+               tier: :halo,
+               status: :assigned,
+               region_id: 20,
+               lease_id: 200
+             }
+           ] = Enum.filter(window.route_entries, &(&1.chunk_coord == {2, 0, 0}))
+
+    assert window.region_summaries == [
+             %{
+               region_id: 10,
+               near_count: 1,
+               halo_count: 1,
+               lease_id: 100,
+               assigned_scene_node: node()
+             },
+             %{
+               region_id: 20,
+               near_count: 0,
+               halo_count: 1,
+               lease_id: 200,
+               assigned_scene_node: node()
+             }
+           ]
+  end
+
+  test "builds vertically clipped partition windows for open-world interest" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, -1, 0}, {2, 2, 1}, 1_000)
+    put_region!(ledger, 20, {2, -1, 0}, {3, 2, 1}, 2_000)
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 20, 2_000,
+               lease_id: 200,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    window =
+      MapLedger.partition_window(ledger, 1, {1, 0, 0},
+        near_radius: 0,
+        halo_radius: 1,
+        near_vertical_radius: 0,
+        halo_vertical_radius: 0
+      )
+
+    assert window.near_chunks == [{1, 0, 0}]
+    assert length(window.halo_chunks) == 8
+    assert length(window.route_entries) == 9
+    assert window.missing_chunks == []
+
+    assert Enum.all?(window.route_entries, fn entry ->
+             {_x, _y, z} = entry.chunk_coord
+             z == 0 and entry.status == :assigned
+           end)
+
+    assert {2, 1, 0} in window.halo_chunks
+    refute {1, 0, 1} in window.near_chunks
+    refute {1, 0, 1} in window.halo_chunks
+  end
+
+  test "builds a best-effort live route window with lease tokens" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {1, 1, 1}, 1_000)
+    put_region!(ledger, 20, {-1, 0, 0}, {0, 1, 1}, 2_000)
+
+    assert {:ok, lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    snapshot_before = MapLedger.snapshot(ledger)
+
+    window =
+      MapLedger.route_window_with_leases(ledger, 1, {0, 0, 0},
+        near_radius: 0,
+        halo_radius: 1
+      )
+
+    assert MapLedger.snapshot(ledger) == snapshot_before
+
+    assert [
+             %{
+               chunk_coord: {0, 0, 0},
+               tier: :near,
+               status: :assigned,
+               region_id: 10,
+               lease_id: 100,
+               lease: ^lease,
+               assigned_scene_node: assigned_scene_node
+             }
+           ] = Enum.filter(window.route_entries, &(&1.chunk_coord == {0, 0, 0}))
+
+    assert is_atom(assigned_scene_node)
+
+    assert [
+             %{
+               chunk_coord: {-1, 0, 0},
+               tier: :halo,
+               status: :region_without_lease,
+               region_id: 20,
+               lease_id: nil,
+               lease: nil,
+               assigned_scene_node: unleased_scene_node
+             }
+           ] = Enum.filter(window.route_entries, &(&1.chunk_coord == {-1, 0, 0}))
+
+    assert is_atom(unleased_scene_node)
+  end
+
+  test "refreshes the route index when a region moves to new bounds" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    put_region!(ledger, 10, {0, 0, 0}, {2, 1, 1}, 1_000)
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert {:ok, %{assignment: before_assignment, lease: before_lease}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {1, 0, 0})
+
+    assert before_assignment.region_id == 10
+    assert before_lease.lease_id == 100
+
+    assert {:ok, _updated_assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {4, 0, 0},
+               bounds_chunk_max: {6, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 1,
+               lease_id: 100,
+               assigned_scene_node: node()
+             })
+
+    assert {:error, :unassigned_chunk} = MapLedger.route_chunk(ledger, 1, {1, 0, 0})
+
+    assert {:ok, %{assignment: moved_assignment, lease: moved_lease}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {4, 0, 0})
+
+    assert moved_assignment.region_id == 10
+    assert moved_assignment.bounds_chunk_min == {4, 0, 0}
+    assert moved_lease.lease_id == 100
+  end
+
+  test "returns missing and unleased chunks without mutating ledger state" do
+    ledger = start_supervised!(MapLedger)
+
+    put_region!(ledger, 10, {0, 0, 0}, {1, 1, 1}, 1_000)
+    snapshot_before = MapLedger.snapshot(ledger)
+
+    window =
+      MapLedger.partition_window(ledger, 1, {0, 0, 0},
+        near_radius: 0,
+        halo_radius: 1
+      )
+
+    snapshot_after = MapLedger.snapshot(ledger)
+
+    assert snapshot_after == snapshot_before
+    assert length(window.missing_chunks) == 26
+
+    assert [
+             %{
+               chunk_coord: {0, 0, 0},
+               tier: :near,
+               status: :region_without_lease,
+               region_id: 10,
+               lease_id: nil,
+               assigned_scene_node: assigned_scene_node
+             }
+           ] = Enum.filter(window.route_entries, &(&1.chunk_coord == {0, 0, 0}))
+
+    assert is_atom(assigned_scene_node)
+
+    assert window.region_summaries == [
+             %{
+               region_id: 10,
+               near_count: 1,
+               halo_count: 0,
+               lease_id: nil,
+               assigned_scene_node: node()
+             }
+           ]
   end
 
   test "publishes lease write tokens and fences stale writes after migration" do
@@ -338,6 +604,23 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     assert assignment_after.lease_id == 101
     assert routed_after.lease_id == 101
     assert routed_after.owner_scene_instance_ref == 2_000
+
+    cutover_window =
+      MapLedger.route_window_with_leases(ledger, 1, {1, 0, 0},
+        near_radius: 0,
+        halo_radius: 0
+      )
+
+    assert [
+             %{
+               chunk_coord: {1, 0, 0},
+               status: :assigned,
+               region_id: 10,
+               lease_id: 101,
+               lease: ^routed_after
+             }
+           ] = cutover_window.route_entries
+
     assert :ok = MapLedger.validate_write(ledger, write_attrs(routed_after, {1, 0, 0}))
 
     assert {:ok, completed_plan} = MapLedger.complete_migration(ledger, migration_id)
@@ -345,6 +628,316 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
     snapshot = MapLedger.snapshot(ledger)
     assert snapshot.migrations[migration_id].state == :completed
+  end
+
+  test "cutover switches the route lease and assigned scene node as one identity" do
+    ledger = start_supervised!(MapLedger)
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-cross-node-cutover"
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0,
+               assigned_scene_node: :scene_a@local
+             })
+
+    assert {:ok, source_lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               target_scene_node: :scene_b@local
+             )
+
+    assert plan.target_scene_node == :scene_b@local
+
+    assert {:ok, %{assignment: before_assignment, lease: before_lease}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {0, 0, 0})
+
+    assert before_assignment.assigned_scene_node == :scene_a@local
+    assert before_lease.lease_id == source_lease.lease_id
+
+    assert {:ok, handoff} = MapLedger.migration_handoff(ledger, migration_id)
+    assert handoff.target_scene_node == :scene_b@local
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked_slice} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _final_plan, _final_slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, cutover_plan} = MapLedger.cutover_migration(ledger, migration_id)
+    assert cutover_plan.target_scene_node == :scene_b@local
+
+    assert {:ok, %{assignment: after_assignment, lease: after_lease}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {0, 0, 0})
+
+    assert after_assignment.assigned_scene_node == :scene_b@local
+    assert after_assignment.owner_scene_instance_ref == 2_000
+    assert after_assignment.owner_epoch == 2
+    assert after_assignment.lease_id == 101
+    assert after_lease.owner_scene_instance_ref == 2_000
+    assert after_lease.owner_epoch == 2
+    assert after_lease.lease_id == 101
+
+    window =
+      MapLedger.route_window_with_leases(ledger, 1, {0, 0, 0},
+        near_radius: 0,
+        halo_radius: 0
+      )
+
+    assert [%{assigned_scene_node: :scene_b@local, lease_id: 101}] = window.route_entries
+  end
+
+  test "cutover rejects source lease drift without invalidating subscribers" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      :ok
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-source-drift"
+
+    put_region!(ledger, 10, {0, 0, 0}, {1, 1, 1}, 1_000)
+
+    assert {:ok, _source_lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               target_scene_node: :scene_b@local
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked_slice} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _plan, _final_slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _drift_lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 150,
+               owner_epoch: 3,
+               expires_at_ms: future_ms,
+               token_version: 3
+             )
+
+    assert {:error, :migration_source_lease_changed} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert Agent.get(recorder, & &1) == []
+
+    assert {:ok, %{assignment: assignment_after, lease: lease_after}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {0, 0, 0})
+
+    assert assignment_after.owner_scene_instance_ref == 1_000
+    assert assignment_after.assigned_scene_node == node()
+    assert lease_after.lease_id == 150
+    assert lease_after.owner_scene_instance_ref == 1_000
+  end
+
+  test "cutover rejects source scene-node drift without invalidating subscribers" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      :ok
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-source-node-drift"
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0,
+               assigned_scene_node: :scene_a@local
+             })
+
+    assert {:ok, _source_lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               target_scene_node: :scene_b@local
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked_slice} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _plan, _final_slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _drift_assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 1,
+               lease_id: 100,
+               assigned_scene_node: :scene_c@local
+             })
+
+    assert {:error, :migration_source_scene_node_changed} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert Agent.get(recorder, & &1) == []
+
+    assert {:ok, %{assignment: assignment_after, lease: lease_after}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {0, 0, 0})
+
+    assert assignment_after.owner_scene_instance_ref == 1_000
+    assert assignment_after.assigned_scene_node == :scene_c@local
+    assert lease_after.lease_id == 100
+    assert lease_after.owner_scene_instance_ref == 1_000
+  end
+
+  test "cutover rejects source owner drift without invalidating subscribers" do
+    {:ok, recorder} = Agent.start_link(fn -> [] end)
+
+    invalidator = fn attrs ->
+      Agent.update(recorder, fn calls -> [attrs | calls] end)
+      :ok
+    end
+
+    ledger = start_supervised!({MapLedger, scene_invalidator: invalidator})
+    future_ms = System.system_time(:millisecond) + 60_000
+    migration_id = "migration-source-owner-drift"
+
+    put_region!(ledger, 10, {0, 0, 0}, {1, 1, 1}, 1_000)
+
+    assert {:ok, _source_lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms,
+               token_version: 1
+             )
+
+    assert {:ok, _plan} =
+             MapLedger.begin_migration(ledger, 10, 2_000,
+               migration_id: migration_id,
+               lease_id: 101,
+               owner_epoch: 2,
+               expires_at_ms: future_ms,
+               token_version: 2,
+               target_scene_node: :scene_b@local
+             )
+
+    assert {:ok, slice} = MapLedger.plan_next_migration_slice(ledger, migration_id)
+
+    assert {:ok, _plan, _acked_slice} =
+             MapLedger.mark_slice_prewarmed(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _prewarmed_plan} = MapLedger.mark_prewarmed(ledger, migration_id)
+
+    assert {:ok, _plan, _final_slice} =
+             MapLedger.mark_slice_final_caught_up(ledger, migration_id, %{
+               slice_id: slice.slice_id,
+               scene_ref: 2_000
+             })
+
+    assert {:ok, _drift_assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_500,
+               owner_epoch: 1,
+               lease_id: 100,
+               assigned_scene_node: node()
+             })
+
+    assert {:error, :migration_source_owner_changed} =
+             MapLedger.cutover_migration(ledger, migration_id)
+
+    assert Agent.get(recorder, & &1) == []
+
+    assert {:ok, %{assignment: assignment_after, lease: lease_after}} =
+             MapLedger.route_chunk_with_lease(ledger, 1, {0, 0, 0})
+
+    assert assignment_after.owner_scene_instance_ref == 1_500
+    assert lease_after.lease_id == 100
+    assert lease_after.owner_scene_instance_ref == 1_000
   end
 
   test "rejects final catch-up ack before migration is prewarmed" do

@@ -72,6 +72,7 @@ function defaultHelpText(): string {
     "aoi",
     "remote <cid>",
     "jump",
+    "chat <world|region|local> <text...>",
     "transport",
     "reconcile_stats",
     "sync_stats",

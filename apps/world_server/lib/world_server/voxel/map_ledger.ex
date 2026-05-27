@@ -14,12 +14,15 @@ defmodule WorldServer.Voxel.MapLedger do
   alias WorldServer.CliObserve
   alias WorldServer.Voxel.LeaseWriteToken
   alias WorldServer.Voxel.MigrationPlan
+  alias WorldServer.Voxel.PartitionWindow
   alias WorldServer.Voxel.RegionAssignment
+  alias WorldServer.Voxel.RouteIndex
   alias WorldServer.Voxel.SceneLease
   alias WorldServer.Voxel.TransactionParticipant
 
   @default_lease_ttl_ms :timer.minutes(5)
   @migration_cutover_reason 0x01
+  @legacy_source_scene_node_unavailable :legacy_source_scene_node_unavailable
 
   @doc "Starts the map ledger."
   def start_link(opts \\ []) do
@@ -114,6 +117,28 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:route_chunks_with_leases, logical_scene_id, chunk_coords})
   end
 
+  @doc """
+  Builds a best-effort routed window for live Gate subscription planning.
+
+  Unlike `route_chunks_with_leases/3`, missing or unleased chunks remain in the
+  returned window with explicit status. The current implementation shares the
+  same read-only projection as `partition_window/4`; the public boundary exists
+  so a future indexed route table can replace it without changing Gate.
+  """
+  def route_window_with_leases(server \\ __MODULE__, logical_scene_id, center_chunk, opts \\ []) do
+    GenServer.call(server, {:route_window_with_leases, logical_scene_id, center_chunk, opts})
+  end
+
+  @doc "Returns operational stats for the derived route index."
+  def route_index_stats(server \\ __MODULE__) do
+    GenServer.call(server, :route_index_stats)
+  end
+
+  @doc "Builds a read-only partition interest window around one center chunk."
+  def partition_window(server \\ __MODULE__, logical_scene_id, center_chunk, opts \\ []) do
+    GenServer.call(server, {:partition_window, logical_scene_id, center_chunk, opts})
+  end
+
   @doc "Validates that a proposed scene write matches the current world lease."
   def validate_write(server \\ __MODULE__, attrs) do
     GenServer.call(server, {:validate_write, normalize_write(attrs)})
@@ -151,6 +176,7 @@ defmodule WorldServer.Voxel.MapLedger do
       leases: %{},
       chunk_summaries: %{},
       migrations: %{},
+      route_index: empty_route_index(),
       write_token_store: Keyword.get(opts, :write_token_store),
       persist_fn: persist_fn,
       scene_invalidator: Keyword.get(opts, :scene_invalidator),
@@ -163,7 +189,7 @@ defmodule WorldServer.Voxel.MapLedger do
 
     case run_load(load_fn) do
       {:ok, restored} ->
-        {:ok, Map.merge(base, restored)}
+        {:ok, base |> Map.merge(restored) |> rebuild_route_index()}
 
       {:error, reason} ->
         CliObserve.emit("voxel_map_ledger_persist_load_failed", fn ->
@@ -201,8 +227,6 @@ defmodule WorldServer.Voxel.MapLedger do
            |> RegionAssignment.new()
            |> maybe_assign_scene_node(state),
          :ok <- validate_region_bounds_available(state, assignment) do
-      key = assignment.region_id
-
       CliObserve.emit("voxel_region_put", fn ->
         Map.take(Map.from_struct(assignment), [
           :logical_scene_id,
@@ -214,7 +238,7 @@ defmodule WorldServer.Voxel.MapLedger do
         ])
       end)
 
-      {:reply, {:ok, assignment}, put_in(state.assignments[key], assignment)}
+      {:reply, {:ok, assignment}, put_assignment_in_state(state, assignment)}
     else
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -349,6 +373,22 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, state}
   end
 
+  defp do_handle_call(
+         {:route_window_with_leases, logical_scene_id, center_chunk, opts},
+         _from,
+         state
+       ) do
+    {:reply, partition_window_in_state(state, logical_scene_id, center_chunk, opts), state}
+  end
+
+  defp do_handle_call(:route_index_stats, _from, state) do
+    {:reply, RouteIndex.stats(state.route_index), state}
+  end
+
+  defp do_handle_call({:partition_window, logical_scene_id, center_chunk, opts}, _from, state) do
+    {:reply, partition_window_in_state(state, logical_scene_id, center_chunk, opts), state}
+  end
+
   defp do_handle_call({:validate_write, write}, _from, state) do
     {:reply, validate_write_in_state(state, write), state}
   end
@@ -389,7 +429,7 @@ defmodule WorldServer.Voxel.MapLedger do
       :ok ->
         next_state =
           state
-          |> put_in([:assignments, next_assignment.region_id], next_assignment)
+          |> put_assignment_in_state(next_assignment)
           |> put_in([:leases, next_assignment.region_id], lease)
 
         CliObserve.emit("voxel_lease_issued", fn ->
@@ -537,6 +577,7 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp begin_migration_in_state(state, region_id, target_scene_instance_ref, opts) do
     with {:ok, assignment} <- fetch_region_assignment(state, region_id),
+         {:ok, target_scene_node} <- migration_target_scene_node(assignment, opts),
          :ok <- ensure_no_active_migration(state, region_id) do
       old_lease = Map.get(state.leases, region_id)
       now_ms = now_ms()
@@ -552,6 +593,7 @@ defmodule WorldServer.Voxel.MapLedger do
       target_assignment = %{
         assignment
         | owner_scene_instance_ref: target_scene_instance_ref,
+          assigned_scene_node: target_scene_node,
           owner_epoch: owner_epoch,
           lease_id: lease_id,
           state: :active,
@@ -566,7 +608,9 @@ defmodule WorldServer.Voxel.MapLedger do
           logical_scene_id: assignment.logical_scene_id,
           region_id: assignment.region_id,
           source_scene_instance_ref: assignment.owner_scene_instance_ref,
+          source_scene_node: assignment.assigned_scene_node,
           target_scene_instance_ref: target_scene_instance_ref,
+          target_scene_node: target_scene_node,
           old_lease: old_lease,
           new_lease: new_lease,
           affected_chunk_min: Keyword.get(opts, :affected_chunk_min, assignment.bounds_chunk_min),
@@ -601,6 +645,7 @@ defmodule WorldServer.Voxel.MapLedger do
           state: next_plan.state,
           source_scene_instance_ref: next_plan.source_scene_instance_ref,
           target_scene_instance_ref: next_plan.target_scene_instance_ref,
+          target_scene_node: next_plan.target_scene_node,
           slice: MigrationPlan.slice_summary(slice)
         }
       end)
@@ -627,6 +672,7 @@ defmodule WorldServer.Voxel.MapLedger do
           state: next_plan.state,
           source_scene_instance_ref: next_plan.source_scene_instance_ref,
           target_scene_instance_ref: next_plan.target_scene_instance_ref,
+          target_scene_node: next_plan.target_scene_node,
           slice: MigrationPlan.slice_summary(slice),
           prewarm_ack_count: map_size(next_plan.prewarm_acks),
           total_slices: next_plan.total_slices
@@ -656,6 +702,7 @@ defmodule WorldServer.Voxel.MapLedger do
           state: next_plan.state,
           source_scene_instance_ref: next_plan.source_scene_instance_ref,
           target_scene_instance_ref: next_plan.target_scene_instance_ref,
+          target_scene_node: next_plan.target_scene_node,
           slice: MigrationPlan.slice_summary(slice),
           final_catchup_ack_count: map_size(next_plan.final_catchup_acks),
           total_slices: next_plan.total_slices
@@ -745,6 +792,7 @@ defmodule WorldServer.Voxel.MapLedger do
         region_id: plan.region_id,
         source_scene_instance_ref: plan.source_scene_instance_ref,
         target_scene_instance_ref: plan.target_scene_instance_ref,
+        target_scene_node: plan.target_scene_node,
         reason: @migration_cutover_reason,
         chunk_count: length(chunk_coords),
         ok_count: ok_count,
@@ -837,6 +885,7 @@ defmodule WorldServer.Voxel.MapLedger do
     %{
       assignment
       | owner_scene_instance_ref: plan.target_scene_instance_ref,
+        assigned_scene_node: plan.target_scene_node,
         owner_epoch: plan.new_lease.owner_epoch,
         lease_id: plan.new_lease.lease_id,
         state: :active,
@@ -856,6 +905,9 @@ defmodule WorldServer.Voxel.MapLedger do
     cond do
       assignment.owner_scene_instance_ref != plan.source_scene_instance_ref ->
         {:error, :migration_source_owner_changed}
+
+      assignment.assigned_scene_node != plan.source_scene_node ->
+        {:error, :migration_source_scene_node_changed}
 
       not is_nil(plan.old_lease) and assignment.lease_id != plan.old_lease.lease_id ->
         {:error, :migration_source_lease_changed}
@@ -999,6 +1051,7 @@ defmodule WorldServer.Voxel.MapLedger do
         region_id: lease.region_id,
         source_scene_instance_ref: plan.source_scene_instance_ref,
         owner_scene_instance_ref: lease.owner_scene_instance_ref,
+        assigned_scene_node: plan.target_scene_node,
         owner_epoch: lease.owner_epoch,
         lease_id: lease.lease_id,
         affected_chunk_bounds: %{
@@ -1016,7 +1069,9 @@ defmodule WorldServer.Voxel.MapLedger do
       region_id: handoff.region_id,
       state: handoff.state,
       source_scene_instance_ref: handoff.source_scene_instance_ref,
+      source_scene_node: handoff.source_scene_node,
       target_scene_instance_ref: handoff.target_scene_instance_ref,
+      target_scene_node: handoff.target_scene_node,
       old_lease: lease_summary(handoff.old_lease),
       new_lease: lease_summary(handoff.new_lease),
       token_version: handoff.token_version,
@@ -1075,13 +1130,13 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp route_chunk_in_state(state, logical_scene_id, chunk_coord) do
-    state.assignments
-    |> Map.values()
-    |> Enum.filter(&(&1.logical_scene_id == logical_scene_id and &1.state == :active))
-    |> Enum.find(&RegionAssignment.contains_chunk?(&1, chunk_coord))
-    |> case do
-      nil -> {:error, :unassigned_chunk}
-      assignment -> {:ok, assignment}
+    with {:ok, indexed_assignment} <-
+           RouteIndex.route_chunk(state.route_index, logical_scene_id, chunk_coord),
+         {:ok, assignment} <- fetch_region_assignment(state, indexed_assignment.region_id) do
+      {:ok, assignment}
+    else
+      {:error, :unknown_region} -> {:error, :unassigned_chunk}
+      {:error, :unassigned_chunk} -> {:error, :unassigned_chunk}
     end
   end
 
@@ -1091,6 +1146,46 @@ defmodule WorldServer.Voxel.MapLedger do
          {:ok, lease} <- fetch_region_lease(state, assignment.region_id),
          :ok <- validate_write_identity(lease, write) do
       :ok
+    end
+  end
+
+  defp partition_window_in_state(state, logical_scene_id, center_chunk, opts) do
+    window = PartitionWindow.build(logical_scene_id, center_chunk, opts)
+
+    routes =
+      window.near_chunks
+      |> Kernel.++(window.halo_chunks)
+      |> Map.new(fn chunk_coord ->
+        {chunk_coord, partition_window_route(state, logical_scene_id, chunk_coord)}
+      end)
+
+    PartitionWindow.attach_routes(window, routes)
+  end
+
+  defp partition_window_route(state, logical_scene_id, chunk_coord) do
+    case route_chunk_in_state(state, logical_scene_id, chunk_coord) do
+      {:ok, assignment} ->
+        case fetch_region_lease(state, assignment.region_id) do
+          {:ok, lease} ->
+            %{
+              status: :assigned,
+              region_id: assignment.region_id,
+              lease_id: lease.lease_id,
+              lease: lease,
+              assigned_scene_node: assignment.assigned_scene_node
+            }
+
+          {:error, :region_without_lease} ->
+            %{
+              status: :region_without_lease,
+              region_id: assignment.region_id,
+              lease_id: nil,
+              assigned_scene_node: assignment.assigned_scene_node
+            }
+        end
+
+      {:error, :unassigned_chunk} ->
+        %{status: :missing}
     end
   end
 
@@ -1174,6 +1269,14 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp assigned_scene_node(%RegionAssignment{}), do: {:error, :scene_node_unassigned}
 
+  defp migration_target_scene_node(%RegionAssignment{} = assignment, opts) do
+    case Keyword.get(opts, :target_scene_node, assignment.assigned_scene_node) do
+      nil -> {:error, :target_scene_node_unassigned}
+      scene_node when is_atom(scene_node) -> {:ok, scene_node}
+      _other -> {:error, :invalid_target_scene_node}
+    end
+  end
+
   defp normalize_write(attrs) when is_map(attrs) do
     %{
       logical_scene_id: Map.fetch!(attrs, :logical_scene_id),
@@ -1204,6 +1307,49 @@ defmodule WorldServer.Voxel.MapLedger do
   defp maybe_persist_state(%{persist_fn: persist_fn} = state) when is_function(persist_fn, 1) do
     payload = Map.take(state, [:assignments, :leases, :chunk_summaries, :migrations])
     persist_fn.(payload)
+  end
+
+  defp put_assignment_in_state(state, %RegionAssignment{} = assignment) do
+    previous_assignment = Map.get(state.assignments, assignment.region_id)
+
+    state
+    |> put_in([:assignments, assignment.region_id], assignment)
+    |> maybe_rebuild_route_index(previous_assignment, assignment)
+  end
+
+  defp maybe_rebuild_route_index(state, previous_assignment, next_assignment) do
+    if route_index_shape(previous_assignment) == route_index_shape(next_assignment) do
+      state
+    else
+      rebuild_route_index(state)
+    end
+  end
+
+  defp route_index_shape(nil), do: nil
+
+  defp route_index_shape(%RegionAssignment{} = assignment) do
+    {
+      assignment.logical_scene_id,
+      assignment.bounds_chunk_min,
+      assignment.bounds_chunk_max,
+      assignment.state
+    }
+  end
+
+  defp rebuild_route_index(%{assignments: assignments} = state) do
+    case RouteIndex.build(assignments) do
+      {:ok, route_index} ->
+        %{state | route_index: route_index}
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_route_index_rebuild_failed", fn -> %{reason: inspect(reason)} end)
+        %{state | route_index: empty_route_index()}
+    end
+  end
+
+  defp empty_route_index do
+    {:ok, route_index} = RouteIndex.build([])
+    route_index
   end
 
   defp run_load(nil), do: {:ok, %{}}
@@ -1264,9 +1410,114 @@ defmodule WorldServer.Voxel.MapLedger do
         {:error, :unexpected_value_shape}
 
       true ->
-        {:ok, payload}
+        upgrade_persisted_payload(payload)
     end
   end
 
   defp validate_persisted_payload(_other), do: {:error, :unexpected_payload_shape}
+
+  defp upgrade_persisted_payload(payload) do
+    assignments = Map.get(payload, :assignments, %{})
+    migrations = Map.get(payload, :migrations, %{})
+
+    with {:ok, upgraded_migrations} <- upgrade_persisted_migrations(migrations, assignments) do
+      {:ok, Map.put(payload, :migrations, upgraded_migrations)}
+    end
+  end
+
+  defp upgrade_persisted_migrations(migrations, assignments) do
+    Enum.reduce_while(migrations, {:ok, %{}}, fn {migration_id, plan}, {:ok, acc} ->
+      case upgrade_persisted_migration_plan(migration_id, plan, assignments) do
+        {:ok, upgraded_plan} ->
+          {:cont, {:ok, Map.put(acc, migration_id, upgraded_plan)}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp upgrade_persisted_migration_plan(migration_id, %MigrationPlan{} = plan, assignments) do
+    migration_id
+    |> migration_plan_map(plan)
+    |> restore_persisted_migration_plan(migration_id, assignments)
+  end
+
+  defp upgrade_persisted_migration_plan(migration_id, plan, assignments) when is_map(plan) do
+    plan
+    |> Map.delete(:__struct__)
+    |> restore_persisted_migration_plan(migration_id, assignments)
+  end
+
+  defp upgrade_persisted_migration_plan(migration_id, _plan, _assignments) do
+    {:error, {:invalid_persisted_migration_plan, migration_id}}
+  end
+
+  defp restore_persisted_migration_plan(plan_map, migration_id, assignments) do
+    with {:ok, source_scene_node} <-
+           persisted_source_scene_node(plan_map, migration_id, assignments),
+         {:ok, target_scene_node} <-
+           persisted_target_scene_node(plan_map, migration_id, assignments) do
+      plan_attrs =
+        plan_map
+        |> Map.put_new(:migration_id, migration_id)
+        |> Map.put(:source_scene_node, source_scene_node)
+        |> Map.put(:target_scene_node, target_scene_node)
+        |> Map.take(migration_plan_keys())
+
+      {:ok, struct(MigrationPlan, plan_attrs)}
+    end
+  end
+
+  defp migration_plan_map(migration_id, plan) do
+    plan
+    |> Map.from_struct()
+    |> Map.put_new(:migration_id, migration_id)
+  end
+
+  defp persisted_source_scene_node(%{source_scene_node: node}, _migration_id, _assignments)
+       when not is_nil(node),
+       do: {:ok, node}
+
+  defp persisted_source_scene_node(%{state: state}, _migration_id, _assignments)
+       when state in [:cutover, :completed],
+       do: {:ok, @legacy_source_scene_node_unavailable}
+
+  defp persisted_source_scene_node(plan_map, migration_id, assignments) do
+    region_id = Map.get(plan_map, :region_id)
+    source_ref = Map.get(plan_map, :source_scene_instance_ref)
+
+    case Map.get(assignments, region_id) do
+      %RegionAssignment{owner_scene_instance_ref: ^source_ref, assigned_scene_node: node}
+      when not is_nil(node) ->
+        {:ok, node}
+
+      _other ->
+        {:error, {:legacy_migration_source_scene_node_unavailable, migration_id}}
+    end
+  end
+
+  defp persisted_target_scene_node(%{target_scene_node: node}, _migration_id, _assignments)
+       when not is_nil(node),
+       do: {:ok, node}
+
+  defp persisted_target_scene_node(plan_map, migration_id, assignments) do
+    region_id = Map.get(plan_map, :region_id)
+    target_ref = Map.get(plan_map, :target_scene_instance_ref)
+
+    case Map.get(assignments, region_id) do
+      %RegionAssignment{owner_scene_instance_ref: ^target_ref, assigned_scene_node: node}
+      when not is_nil(node) ->
+        {:ok, node}
+
+      _other ->
+        {:error, {:legacy_migration_target_scene_node_unavailable, migration_id}}
+    end
+  end
+
+  defp migration_plan_keys do
+    MigrationPlan.__struct__()
+    |> Map.from_struct()
+    |> Map.keys()
+  end
 end

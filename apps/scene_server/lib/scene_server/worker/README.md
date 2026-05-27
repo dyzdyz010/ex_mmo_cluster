@@ -19,6 +19,9 @@ state.
   - shared spatial index and CID → actor lookup
 - `aoi/aoi_item.ex`
   - per-actor AOI broadcast adapter and priority fan-out executor
+- `aoi/remote_mirror_runner.ex`
+  - one-pass remote halo ghost/prewarm worker; consumes ledger groups and emits
+    summaries without inserting remote actors into live AOI fan-out
 - `../aoi/priority.ex`
   - pure AOI priority/cadence policy used by `aoi_item.ex`
 
@@ -29,9 +32,23 @@ logic should live in sibling directories such as `movement/`, `combat/`, and
 `npc/`. `PlayerCharacter` is the player authority; `Aoi.AoiItem` is an adapter
 for subscription/fan-out only. If an AOI item dies, the player authority must
 recreate it and re-register the current authoritative movement snapshot rather
-than letting remote observers freeze on stale AOI data. AOI priority decisions
-live in `../aoi/`; AOI workers only apply those decisions to their owned
-subscription state.
+than letting remote observers freeze on stale AOI data. The same recovery path
+also replays the latest server-authoritative partition window so the rebuilt
+AOI adapter does not fall back to radius-only visibility for one or more ticks.
+AOI priority, partition-interest decisions, and the remote-demand ledger live
+in `../aoi/`; AOI workers only apply those decisions to owned runtime state or
+consume the ledger through bounded worker passes. `RemoteMirrorRunner` is
+deliberately one-pass and owns no long-lived truth: it asks an injected fetch or
+prewarm adapter for ghost/prewarm summaries, emits observe events, and reports
+`live_fanout_count: 0` so remote halo data cannot silently become local
+subscription truth.
+
+Chat delivery is not a worker/AOI responsibility. `PlayerCharacter` rejects the
+legacy `{:chat_say, ...}` call with `:chat_runtime_required` and emits
+`player_chat_legacy_rejected`; `Aoi.AoiItem` rejects legacy chat casts with
+`aoi_chat_legacy_rejected`. Gate-owned chat intents must go through
+`ChatServer.Runtime` so world/region/local delivery follows the same partition
+context as voxel subscriptions.
 
 `PlayerManager` owns CID session replacement. A reconnect for the same CID
 stops the old `PlayerCharacter` before publishing the new PID, and stale

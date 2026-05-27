@@ -6,7 +6,12 @@ defmodule GateServer.TcpConnectionProtocolTest do
   alias DataService.Repo
   alias DataService.Schema.Account
   alias DataService.Schema.Character
+  alias GateServer.ChatAdapter
+  alias GateServer.Voxel.{ChunkVersionLedger, ClientAckLedger, DeliveryScheduler}
+  alias SceneServer.Movement.Ack
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
+  alias SceneServer.Voxel.Storage
+  alias WorldServer.Voxel.AuthorityObserve
   alias WorldServer.Voxel.MapLedger
 
   defmodule FakeInterface do
@@ -24,7 +29,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     def init(attrs) do
       {:ok,
        Map.merge(
-         %{auth_server: nil, scene_server: nil, world_server: nil},
+         %{auth_server: nil, chat_server: nil, scene_server: nil, world_server: nil},
          attrs
        )}
     end
@@ -47,6 +52,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     @impl true
     def handle_call(:world_server, _from, state) do
       {:reply, state.world_server, state}
+    end
+
+    @impl true
+    def handle_call(:chat_server, _from, state) do
+      {:reply, state.chat_server, state}
     end
   end
 
@@ -178,6 +188,30 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
   end
 
+  defmodule ChatCollector do
+    use GenServer
+
+    def child_spec(opts) do
+      %{
+        id: {__MODULE__, Keyword.fetch!(opts, :tag)},
+        start: {__MODULE__, :start_link, [opts]}
+      }
+    end
+
+    def start_link(opts) do
+      GenServer.start_link(__MODULE__, Map.new(opts))
+    end
+
+    @impl true
+    def init(opts), do: {:ok, opts}
+
+    @impl true
+    def handle_cast(message, %{owner: owner, tag: tag} = state) do
+      send(owner, {:chat_collector, tag, message})
+      {:noreply, state}
+    end
+  end
+
   defmodule FakeAuthInterface do
     use GenServer
 
@@ -199,10 +233,14 @@ defmodule GateServer.TcpConnectionProtocolTest do
   setup_all do
     _ = Application.stop(:gate_server)
     _ = Application.stop(:scene_server)
+    _ = Application.stop(:chat_server)
     ensure_name_available(GateServer.Interface)
     ensure_name_available(SceneServer.PlayerManager)
     ensure_name_available(GateServer.FastLaneRegistry)
     ensure_name_available(GateServer.UdpAcceptor)
+    ensure_name_available(ChatServer.Runtime)
+    ensure_name_available(ChatServer.RuntimeDirectory)
+    ensure_name_available(ChatServer.RuntimeShardSup)
     {:ok, _} = Application.ensure_all_started(:auth_server)
     Application.ensure_all_started(:jason)
     Application.ensure_all_started(:postgrex)
@@ -234,6 +272,18 @@ defmodule GateServer.TcpConnectionProtocolTest do
       )
 
     _ = start_supervised({GateServer.UdpAcceptor, name: GateServer.UdpAcceptor, port: 0})
+
+    _ =
+      start_supervised(
+        {DynamicSupervisor, strategy: :one_for_one, name: ChatServer.RuntimeShardSup}
+      )
+
+    _ =
+      start_supervised(
+        {ChatServer.RuntimeDirectory,
+         name: ChatServer.RuntimeDirectory, runtime_supervisor: ChatServer.RuntimeShardSup}
+      )
+
     _ = start_supervised(FakeInterface)
     _ = start_supervised(FakePlayerManager)
     :ok
@@ -242,10 +292,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
   setup do
     ensure_repo_started()
     ensure_dispatcher_sup()
+    previous_gate_observe_log = Application.fetch_env(:gate_server, :cli_observe_log)
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
-    FakeInterface.set(auth_server: nil, scene_server: nil, world_server: nil)
+    FakeInterface.set(auth_server: nil, chat_server: nil, scene_server: nil, world_server: nil)
 
     FakePlayerManager.set(
       add_player_result: :ok,
@@ -266,6 +317,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
       _ = :gen_tcp.close(client)
       _ = :gen_tcp.close(server)
       if Process.alive?(pid), do: Process.exit(pid, :kill)
+      restore_env(:gate_server, previous_gate_observe_log)
     end)
 
     {:ok, client: client, server: server, pid: pid}
@@ -505,7 +557,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, <<0x80, 84::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
   end
 
-  test "chat in_scene is forwarded to player process and acked", %{client: client} do
+  test "chat in_scene is delivered by Chat runtime and not Scene AOI", %{client: client} do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
     FakePlayerManager.set(notify: self())
@@ -523,7 +575,227 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert :ok = :gen_tcp.send(client, encode_chat_say(87, "hello world"))
     assert {:ok, <<0x80, 87::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
-    assert_receive {:chat_say, 42, "tester", "hello world"}, 500
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 11::16-big, "hello world">>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    refute_receive {:chat_say, 42, "tester", "hello world"}, 100
+  end
+
+  test "chat uses server-side character logical scene and does not cross-talk to default scene",
+       %{client: client, pid: pid} do
+    assert {:ok, _} =
+             ChatAdapter.join(%{
+               cid: 99,
+               username: "default-scene",
+               connection_pid: self(),
+               logical_scene_id: 1,
+               region_id: 10,
+               chunk_coord: {0, 0, 0},
+               location: {0.0, 0.0, 0.0}
+             })
+
+    insert_account_and_character("tester", 42,
+      position: %{"x" => 10.0, "y" => 20.0, "z" => 30.0, "logical_scene_id" => 77}
+    )
+
+    FakeInterface.set(auth_server: node(), scene_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 188))
+    assert {:ok, <<0x80, 188::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 189))
+    assert {:ok, <<0x84, 189::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert %{chat_context: %{logical_scene_id: 77}} = :sys.get_state(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chat_say(190, "scene-77"))
+    assert {:ok, <<0x80, 190::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 8::16-big, "scene-77">>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    refute_receive {:"$gen_cast", {:chat_message, 42, "tester", "scene-77"}}, 100
+  end
+
+  test "scoped region chat over tcp is routed from server partition context",
+       %{client: client, pid: pid} do
+    logical_scene_id = unique_id()
+    context = %{logical_scene_id: logical_scene_id, region_id: 77, chunk_coord: {0, 0, 0}}
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | status: :in_scene,
+          cid: 42,
+          auth_username: "tester",
+          chat_session_joined?: true,
+          chat_context: context,
+          partition_context: context
+      }
+    end)
+
+    same_region = start_supervised!({ChatCollector, owner: self(), tag: :same_region})
+    other_region = start_supervised!({ChatCollector, owner: self(), tag: :other_region})
+
+    join_chat_session(pid, 42, "tester", logical_scene_id, 77, {0, 0, 0})
+    join_chat_session(same_region, 43, "nearby", logical_scene_id, 77, {1, 0, 0})
+    join_chat_session(other_region, 44, "far", logical_scene_id, 88, {4, 0, 0})
+
+    assert :ok = :gen_tcp.send(client, encode_scoped_chat_say(193, :region, "region-tcp"))
+    assert {:ok, <<0x80, 193::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 10::16-big, "region-tcp">>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert_receive {:chat_collector, :same_region, {:chat_message, 42, "tester", "region-tcp"}}
+
+    refute_receive {:chat_collector, :other_region, {:chat_message, 42, "tester", "region-tcp"}},
+                   100
+  end
+
+  test "scoped local chat over tcp uses server candidates and exact chunk radius",
+       %{client: client, pid: pid} do
+    logical_scene_id = unique_id()
+
+    context = %{
+      logical_scene_id: logical_scene_id,
+      region_id: 77,
+      chunk_coord: {0, 0, 0},
+      candidate_region_ids: [77],
+      candidate_region_radius: 1
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | status: :in_scene,
+          cid: 42,
+          auth_username: "tester",
+          chat_session_joined?: true,
+          chat_context: context,
+          partition_context: context
+      }
+    end)
+
+    nearby = start_supervised!({ChatCollector, owner: self(), tag: :nearby})
+    far_chunk = start_supervised!({ChatCollector, owner: self(), tag: :far_chunk})
+    other_region = start_supervised!({ChatCollector, owner: self(), tag: :other_region})
+
+    join_chat_session(pid, 42, "tester", logical_scene_id, 77, {0, 0, 0})
+    join_chat_session(nearby, 43, "nearby", logical_scene_id, 77, {1, 0, 0})
+    join_chat_session(far_chunk, 44, "far-chunk", logical_scene_id, 77, {9, 0, 0})
+    join_chat_session(other_region, 45, "near-other-region", logical_scene_id, 88, {1, 0, 0})
+
+    assert :ok = :gen_tcp.send(client, encode_scoped_chat_say(194, :local, "local-tcp"))
+    assert {:ok, <<0x80, 194::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 9::16-big, "local-tcp">>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert_receive {:chat_collector, :nearby, {:chat_message, 42, "tester", "local-tcp"}}
+
+    refute_receive {:chat_collector, :far_chunk, {:chat_message, 42, "tester", "local-tcp"}},
+                   100
+
+    refute_receive {:chat_collector, :other_region, {:chat_message, 42, "tester", "local-tcp"}},
+                   100
+  end
+
+  test "scoped local chat over tcp falls back when candidate radius is too small",
+       %{client: client, pid: pid} do
+    previous_radius = Application.fetch_env(:gate_server, :local_chat_radius)
+    Application.put_env(:gate_server, :local_chat_radius, 4)
+
+    try do
+      logical_scene_id = unique_id()
+
+      context = %{
+        logical_scene_id: logical_scene_id,
+        region_id: 77,
+        chunk_coord: {0, 0, 0},
+        candidate_region_ids: [77],
+        candidate_region_radius: 1
+      }
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | status: :in_scene,
+            cid: 42,
+            auth_username: "tester",
+            chat_session_joined?: true,
+            chat_context: context,
+            partition_context: context
+        }
+      end)
+
+      cross_region_near =
+        start_supervised!({ChatCollector, owner: self(), tag: :cross_region})
+
+      join_chat_session(pid, 42, "tester", logical_scene_id, 77, {0, 0, 0})
+
+      join_chat_session(
+        cross_region_near,
+        43,
+        "near-cross-region",
+        logical_scene_id,
+        88,
+        {2, 0, 0}
+      )
+
+      assert :ok = :gen_tcp.send(client, encode_scoped_chat_say(195, :local, "fallback-tcp"))
+      assert {:ok, <<0x80, 195::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+      assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 12::16-big, "fallback-tcp">>} =
+               :gen_tcp.recv(client, 0, 500)
+
+      assert_receive {:chat_collector, :cross_region,
+                      {:chat_message, 42, "tester", "fallback-tcp"}}
+    after
+      restore_local_chat_radius(previous_radius)
+    end
+  end
+
+  test "enter_scene seeds partition and chat region from World route instead of stale character metadata",
+       %{client: client, pid: pid} do
+    ensure_map_ledger_started()
+    logical_scene_id = unique_id()
+    region_id = unique_id()
+    put_partition_region(logical_scene_id, region_id, {0, 0, 0}, {1, 1, 1}, 90_001)
+
+    insert_account_and_character("tester", 42,
+      position: %{
+        "x" => 100.0,
+        "y" => 100.0,
+        "z" => 100.0,
+        "logical_scene_id" => logical_scene_id,
+        "region_id" => 999_999
+      }
+    )
+
+    FakeInterface.set(auth_server: node(), scene_server: node(), world_server: node())
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims()
+      |> AuthServer.AuthWorker.issue_token()
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 191))
+    assert {:ok, <<0x80, 191::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 192))
+    assert {:ok, <<0x84, 192::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    state_after_enter = :sys.get_state(pid)
+    assert state_after_enter.partition_context.region_id == region_id
+    assert state_after_enter.chat_context.region_id == region_id
+    refute state_after_enter.partition_context.region_id == 999_999
   end
 
   test "chat_message cast is encoded to the client socket", %{client: client, pid: pid} do
@@ -696,6 +968,307 @@ defmodule GateServer.TcpConnectionProtocolTest do
              :gen_udp.recv(udp_client, 0, 500)
 
     :gen_udp.close(udp_client)
+  end
+
+  test "movement_ack sends client ACK before refreshing partition and chat presence", %{
+    client: client,
+    pid: pid
+  } do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+    logical_scene_id = unique_id()
+    source_region_id = unique_id()
+    target_region_id = unique_id()
+
+    put_partition_region(logical_scene_id, source_region_id, {0, 0, 0}, {1, 1, 1}, 91_001)
+    put_partition_region(logical_scene_id, target_region_id, {1, 0, 0}, {2, 1, 1}, 91_002)
+
+    FakeInterface.set(world_server: node(), chat_server: node())
+
+    assert {:ok, _session} =
+             ChatAdapter.join(%{
+               cid: 42,
+               username: "tester",
+               connection_pid: pid,
+               logical_scene_id: logical_scene_id,
+               region_id: source_region_id,
+               chunk_coord: {0, 0, 0},
+               location: {0.0, 0.0, 0.0}
+             })
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        chat_session_joined?: true,
+        chat_context: %{
+          logical_scene_id: logical_scene_id,
+          region_id: source_region_id,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_context: %{
+          logical_scene_id: logical_scene_id,
+          region_id: source_region_id,
+          chunk_coord: {0, 0, 0}
+        }
+      })
+    end)
+
+    GenServer.cast(
+      pid,
+      {:movement_ack,
+       ack(%{
+         cid: 42,
+         ack_seq: 314,
+         auth_tick: 2718,
+         position: {1_650.0, 50.0, 0.0}
+       })}
+    )
+
+    assert {:ok,
+            <<0x8B, 314::32-big, 2718::32-big, 42::64-big, 1_650.0::float-64-big,
+              50.0::float-64-big, _z::float-64-big, _::binary>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    wait_until(fn ->
+      match?(
+        %{chat_context: %{region_id: ^target_region_id, chunk_coord: {1, 0, 0}}},
+        :sys.get_state(pid)
+      )
+    end)
+
+    refreshed_state = :sys.get_state(pid)
+
+    assert %{chat_context: %{region_id: ^target_region_id, chunk_coord: {1, 0, 0}}} =
+             refreshed_state
+
+    assert %{partition_context: %{region_id: ^target_region_id, chunk_coord: {1, 0, 0}}} =
+             refreshed_state
+
+    assert %{last_partition_refresh: %{subscription_apply_status: :ok}} = refreshed_state
+    refute Map.has_key?(refreshed_state, :partition_refresh_pending)
+    assert Map.has_key?(refreshed_state.voxel_subscriptions, {logical_scene_id, {1, 0, 0}})
+    assert refreshed_state.voxel_subscription_plan.subscribe_count >= 1
+
+    snapshot = ChatServer.RuntimeDirectory.snapshot(ChatServer.RuntimeDirectory)
+
+    assert %{runtime_pid: runtime_pid} =
+             Enum.find(snapshot.shards, &(&1.logical_scene_id == logical_scene_id))
+
+    assert %{sessions: [%{region_id: ^target_region_id, chunk_coord: {1, 0, 0}} | _]} =
+             ChatServer.Runtime.snapshot(runtime_pid)
+  end
+
+  test "movement_ack leaves tcp connection responsive while partition refresh is pending", %{
+    client: client,
+    pid: pid
+  } do
+    parent = self()
+    refresh_fun = blocking_partition_refresh_fun(parent)
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        chat_session_joined?: true,
+        chat_context: %{
+          logical_scene_id: 701,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_context: %{
+          logical_scene_id: 701,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_refresh_fun: refresh_fun
+      })
+    end)
+
+    GenServer.cast(
+      pid,
+      {:movement_ack,
+       ack(%{
+         cid: 42,
+         ack_seq: 515,
+         auth_tick: 3_101,
+         position: {1_650.0, 50.0, 0.0}
+       })}
+    )
+
+    assert_receive {:partition_refresh_started, refresh_pid, ^pid, ^pid}, 500
+
+    assert {:ok,
+            <<0x8B, 515::32-big, 3101::32-big, 42::64-big, 1_650.0::float-64-big,
+              50.0::float-64-big, _z::float-64-big, _::binary>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    pending_state = :sys.get_state(pid)
+    assert pending_state.partition_context.region_id == 10
+    assert pending_state.partition_refresh_pending.generation == 1
+    assert pending_state.partition_refresh_pending.status == :pending
+    assert pending_state.partition_refresh_pending.auth_tick == 3_101
+
+    assert :ok = :gen_tcp.send(client, encode_debug_probe(516, "voxel_transport"))
+
+    assert {:ok, <<0x6F, 516::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert debug_result =~ "partition_refresh_generation=1"
+    assert debug_result =~ "partition_refresh_pending_status=pending"
+    assert debug_result =~ "partition_refresh_pending_generation=1"
+    assert debug_result =~ "partition_refresh_pending_auth_tick=3101"
+
+    send(refresh_pid, :release_partition_refresh)
+  end
+
+  test "partition refresh completion with mismatched auth_tick is dropped by tcp owner process",
+       %{
+         pid: pid
+       } do
+    parent = self()
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        partition_refresh_generation: 1,
+        partition_refresh_pending: %{status: :pending, generation: 1, auth_tick: 4_101},
+        partition_context: %{
+          logical_scene_id: 701,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        chat_context: %{
+          logical_scene_id: 701,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_refresh_apply_fun: fn current_state, _decision, _opts ->
+          send(parent, :mismatched_auth_tick_apply_called)
+          {:ok, current_state, %{status: :applied_by_wrong_tick}}
+        end
+      })
+    end)
+
+    send(
+      pid,
+      {:partition_refresh_completed, 1, 4_100,
+       {:ok,
+        %{
+          kind: :last_refresh,
+          status: :ok,
+          outcome: %{status: :updated, boundary_kind: :region, region_id: 20}
+        }}}
+    )
+
+    Process.sleep(50)
+    refute_received :mismatched_auth_tick_apply_called
+
+    state = :sys.get_state(pid)
+    assert state.partition_refresh_pending.auth_tick == 4_101
+    assert state.last_partition_refresh == nil
+  end
+
+  test "scoped region chat after movement boundary uses refreshed chat context", %{
+    client: client,
+    pid: pid
+  } do
+    ensure_map_ledger_started()
+    logical_scene_id = unique_id()
+    source_region_id = unique_id()
+    target_region_id = unique_id()
+
+    put_partition_region(logical_scene_id, source_region_id, {0, 0, 0}, {1, 1, 1}, 92_001)
+    put_partition_region(logical_scene_id, target_region_id, {1, 0, 0}, {2, 1, 1}, 92_002)
+
+    FakeInterface.set(world_server: node(), chat_server: node(), scene_server: nil)
+
+    target_peer = start_supervised!({ChatCollector, owner: self(), tag: :target_region})
+    source_peer = start_supervised!({ChatCollector, owner: self(), tag: :source_region})
+
+    join_chat_session(pid, 42, "tester", logical_scene_id, source_region_id, {0, 0, 0})
+
+    join_chat_session(
+      target_peer,
+      43,
+      "target-peer",
+      logical_scene_id,
+      target_region_id,
+      {1, 0, 0}
+    )
+
+    join_chat_session(
+      source_peer,
+      44,
+      "source-peer",
+      logical_scene_id,
+      source_region_id,
+      {0, 0, 0}
+    )
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        auth_username: "tester",
+        chat_session_joined?: true,
+        chat_context: %{
+          logical_scene_id: logical_scene_id,
+          region_id: source_region_id,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_context: %{
+          logical_scene_id: logical_scene_id,
+          region_id: source_region_id,
+          chunk_coord: {0, 0, 0}
+        }
+      })
+    end)
+
+    GenServer.cast(
+      pid,
+      {:movement_ack,
+       ack(%{
+         cid: 42,
+         ack_seq: 414,
+         auth_tick: 3718,
+         position: {1_650.0, 50.0, 0.0}
+       })}
+    )
+
+    assert {:ok,
+            <<0x8B, 414::32-big, 3718::32-big, 42::64-big, 1_650.0::float-64-big,
+              50.0::float-64-big, _z::float-64-big, _::binary>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    wait_until(fn ->
+      match?(
+        %{chat_context: %{region_id: ^target_region_id, chunk_coord: {1, 0, 0}}},
+        :sys.get_state(pid)
+      )
+    end)
+
+    assert %{chat_context: %{region_id: ^target_region_id, chunk_coord: {1, 0, 0}}} =
+             :sys.get_state(pid)
+
+    assert :ok =
+             :gen_tcp.send(
+               client,
+               encode_scoped_chat_say(196, :region, "after-boundary-region")
+             )
+
+    assert {:ok, <<0x80, 196::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert {:ok, <<0x89, 42::64-big, 6::16-big, "tester", 21::16-big, "after-boundary-region">>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert_receive {:chat_collector, :target_region,
+                    {:chat_message, 42, "tester", "after-boundary-region"}}
+
+    refute_receive {:chat_collector, :source_region,
+                    {:chat_message, 42, "tester", "after-boundary-region"}},
+                   100
   end
 
   test "attached udp peer receives player_move downlink over udp instead of tcp", %{
@@ -946,7 +1519,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     monitor = Process.monitor(pid)
     assert :ok = :gen_tcp.close(client)
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 500
+    assert_receive {:DOWN, ^monitor, :process, ^pid, reason}, 500
+    assert reason in [:normal, :noproc]
 
     wait_until(fn -> GateServer.FastLaneRegistry.session_for_connection(pid) == nil end)
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
@@ -958,6 +1532,10 @@ defmodule GateServer.TcpConnectionProtocolTest do
     client: client,
     pid: pid
   } do
+    observe_path = observe_path("tcp_chunk_subscribe_scene_envelope.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
     ensure_map_ledger_started()
     ensure_scene_voxel_started()
     put_voxel_region(881, region_id: System.unique_integer([:positive, :monotonic]))
@@ -975,6 +1553,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
     assert Map.has_key?(subscriptions, {881, {0, 0, 0}})
 
+    assert ChunkVersionLedger.known_versions(:sys.get_state(pid).forwarded_chunk_versions, 881) ==
+             %{{0, 0, 0} => 0}
+
     assert :ok = :gen_tcp.send(client, encode_voxel_impact(202, 301, 881, {8, 16, 24}))
 
     assert {:ok,
@@ -988,6 +1569,890 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert delta.base_chunk_version == 0
     assert delta.new_chunk_version == 1
     assert [%{delta_kind: 1, cell_version: 1}] = delta.ops
+
+    assert ChunkVersionLedger.known_versions(:sys.get_state(pid).forwarded_chunk_versions, 881) ==
+             %{{0, 0, 0} => 1}
+
+    GateServer.CliObserve.flush()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_live_delivery_scheduled")
+    assert observe_log =~ "frame_kind: :delta"
+    assert observe_log =~ "metadata_source: :envelope"
+    assert observe_log =~ "payload_decode_used: false"
+
+    assert :ok = :gen_tcp.send(client, encode_debug_probe(203, "voxel_transport"))
+
+    assert {:ok, <<0x6F, 203::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert debug_result =~ "forwarded_chunk_versions=[{881, {0, 0, 0}, 1}]"
+  end
+
+  test "voxel chunk ACK over tcp records retained client versions", %{
+    client: client,
+    pid: pid
+  } do
+    put_connection_in_scene(pid)
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :forwarded_chunk_versions,
+        ChunkVersionLedger.new()
+        |> ChunkVersionLedger.record_version!(893, {0, 0, 0}, 7)
+      )
+    end)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_ack(206, 893, [{{0, 0, 0}, 7}]))
+    assert {:ok, <<0x80, 206::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert ClientAckLedger.known_versions(:sys.get_state(pid).client_ack_versions, 893) ==
+             %{{0, 0, 0} => 7}
+
+    assert :ok = :gen_tcp.send(client, encode_debug_probe(207, "voxel_transport"))
+
+    assert {:ok, <<0x6F, 207::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert debug_result =~ "client_ack_versions=[{893, {0, 0, 0}, 7}]"
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_ack(208, 893, [{{0, 0, 0}, 8}]))
+    assert {:ok, <<0x80, 208::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert ClientAckLedger.known_versions(:sys.get_state(pid).client_ack_versions, 893) ==
+             %{{0, 0, 0} => 7}
+  end
+
+  test "migration cutover invalidate automatically rebinds tcp voxel subscriptions", %{
+    client: client,
+    pid: pid
+  } do
+    logical_scene_id = unique_id()
+    observe_path = observe_path("tcp_chunk_subscribe_auto_rebind.log")
+    File.rm(observe_path)
+
+    {:ok, gate_route} = GateServer.CliObserve.register_route(logical_scene_id, observe_path)
+    {:ok, world_route} = WorldServer.CliObserve.register_route(logical_scene_id, observe_path)
+    {:ok, scene_route} = SceneServer.CliObserve.register_route(logical_scene_id, observe_path)
+
+    on_exit(fn ->
+      GateServer.CliObserve.flush()
+      WorldServer.CliObserve.flush()
+      SceneServer.CliObserve.flush_path(observe_path)
+      configure_map_ledger_scene_invalidator(nil)
+      GateServer.CliObserve.unregister_route(logical_scene_id, gate_route)
+      WorldServer.CliObserve.unregister_route(logical_scene_id, world_route)
+      SceneServer.CliObserve.unregister_route(logical_scene_id, scene_route)
+    end)
+
+    ensure_scene_voxel_started()
+
+    ensure_map_ledger_started(
+      scene_invalidator:
+        AuthorityObserve.scene_directory_invalidator(SceneServer.Voxel.ChunkDirectory)
+    )
+
+    region_id = unique_id()
+    put_voxel_region(logical_scene_id, region_id: region_id, owner_scene_instance_ref: 7_101)
+
+    FakeInterface.set(scene_server: node(), world_server: node())
+    put_connection_in_scene(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(211, logical_scene_id, {0, 0, 0}))
+
+    assert {:ok, <<0x62, initial_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.request_id == 211
+
+    assert {:ok, lease_v2} =
+             MapLedger.migrate_region(MapLedger, region_id, 8_101,
+               lease_id: 91_881,
+               owner_epoch: 2,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: unique_id(),
+               target_scene_node: node()
+             )
+
+    assert {:ok, <<0x69, invalidate_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, invalidate} = SceneVoxelCodec.decode_chunk_invalidate_payload(invalidate_payload)
+    assert invalidate.reason_name == :migration_cutover
+    assert invalidate.logical_scene_id == logical_scene_id
+    assert invalidate.chunk_coord == {0, 0, 0}
+
+    assert {:ok, <<0x62, rebound_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, rebound} = SceneVoxelCodec.decode_chunk_snapshot_payload(rebound_payload)
+    assert rebound.request_id == 211
+
+    assert %{voxel_subscriptions: subscriptions_after} = :sys.get_state(pid)
+
+    assert %{
+             region_id: ^region_id,
+             lease_id: 91_881,
+             owner_scene_instance_ref: 8_101,
+             owner_epoch: 2
+           } = Map.fetch!(subscriptions_after, {logical_scene_id, {0, 0, 0}})
+
+    assert lease_v2.lease_id == 91_881
+
+    GateServer.CliObserve.flush()
+    WorldServer.CliObserve.flush()
+    SceneServer.CliObserve.flush_path(observe_path)
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_migration_cutover_invalidate_emitted")
+    assert observe_log =~ ~s(event="voxel_chunk_invalidate_forwarded")
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_requested")
+    assert observe_log =~ ~s(reason: :migration_cutover_invalidate)
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_subscribed_new")
+    assert observe_log =~ ~s(event="voxel_subscription_rebind_completed")
+  end
+
+  test "voxel chunk invalidate clears the forwarded version cache over tcp", %{
+    client: client,
+    pid: pid
+  } do
+    put_connection_in_scene(pid)
+
+    forwarded =
+      ChunkVersionLedger.new()
+      |> ChunkVersionLedger.record_version!(882, {0, 0, 0}, 7)
+
+    {client_acks, %{status: :ok}} =
+      ClientAckLedger.record_known_versions(ClientAckLedger.new(), forwarded, 882, [
+        {{0, 0, 0}, 7}
+      ])
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        forwarded_chunk_versions: forwarded,
+        client_ack_versions: client_acks
+      })
+    end)
+
+    payload =
+      SceneVoxelCodec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 882,
+        chunk_coord: {0, 0, 0},
+        reason: 0x01
+      })
+
+    send(pid, {:voxel_chunk_invalidate_payload, payload})
+
+    assert {:ok, <<0x69, ^payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert ChunkVersionLedger.known_versions(:sys.get_state(pid).forwarded_chunk_versions, 882) ==
+             %{}
+
+    assert ClientAckLedger.known_versions(:sys.get_state(pid).client_ack_versions, 882) == %{}
+  end
+
+  test "tcp live voxel delivery queues over-budget snapshots without advancing forwarded versions",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(886, {0, 0, 0}, 1)
+    second_payload = snapshot_payload(886, {1, 0, 0}, 1)
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(second_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_chunk_snapshot_payload, second_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    state = :sys.get_state(pid)
+
+    assert ChunkVersionLedger.known_versions(state.forwarded_chunk_versions, 886) ==
+             %{{0, 0, 0} => 1}
+
+    assert DeliveryScheduler.summary(state.voxel_delivery).queued_count == 1
+
+    assert :ok = :gen_tcp.send(client, encode_debug_probe(205, "voxel_transport"))
+
+    assert {:ok, <<0x6F, 205::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert debug_result =~ "voxel_delivery_queue_count=1"
+    assert debug_result =~ "voxel_delivery_deferred_count=1"
+  end
+
+  test "tcp live voxel delivery drains queued data on the real scheduler timer",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(888, {0, 0, 0}, 1)
+    second_payload = snapshot_payload(888, {1, 0, 0}, 1)
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(second_payload) + 128,
+          window_interval_ms: 20
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_chunk_snapshot_payload, second_payload})
+    assert {:ok, <<0x62, ^second_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    state = :sys.get_state(pid)
+
+    assert ChunkVersionLedger.known_versions(state.forwarded_chunk_versions, 888) == %{
+             {0, 0, 0} => 1,
+             {1, 0, 0} => 1
+           }
+
+    assert DeliveryScheduler.summary(state.voxel_delivery).queued_count == 0
+    assert state.voxel_delivery_timer_ref == nil
+  end
+
+  test "tcp object state deltas bypass field backlog as event traffic",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(889, {0, 0, 0}, 1)
+    field_payload = field_region_snapshot_payload(889, {0, 0, 0}, 44, 3)
+
+    object_payload =
+      object_state_delta_payload(889,
+        object_id: 501,
+        object_version: 2,
+        affected_chunks: [{0, 0, 0}]
+      )
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(field_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_field_region_snapshot_payload, field_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 1
+
+    send(pid, {:voxel_object_state_delta_payload, object_payload})
+    assert {:ok, <<0x6C, ^object_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 1
+  end
+
+  test "tcp delivery envelopes enter the same live voxel send window",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(892, {0, 0, 0}, 1)
+    opaque_field_payload = <<1, 2, 3>>
+
+    :sys.replace_state(pid, fn state ->
+      state
+      |> put_voxel_test_subscription(892, {0, 0, 0}, lease_id: 101, owner_epoch: 2)
+      |> Map.put(
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(opaque_field_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_delivery_envelope, field_region_envelope(892, opaque_field_payload)})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 1
+
+    send(pid, :voxel_delivery_window)
+    assert {:ok, ^opaque_field_payload} = :gen_tcp.recv(client, 0, 500)
+  end
+
+  test "tcp delivery invalidate envelopes forward and clear retained chunk ledgers",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    payload =
+      SceneVoxelCodec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 893,
+        chunk_coord: {0, 0, 0},
+        reason: 0x01
+      })
+
+    :sys.replace_state(pid, fn state ->
+      state
+      |> put_voxel_test_subscription(893, {0, 0, 0}, lease_id: 101, owner_epoch: 2)
+      |> Map.put(
+        :forwarded_chunk_versions,
+        ChunkVersionLedger.new()
+        |> ChunkVersionLedger.record_version!(893, {0, 0, 0}, 7)
+      )
+      |> Map.put(
+        :client_ack_versions,
+        record_test_client_ack(893, {0, 0, 0}, 7)
+      )
+    end)
+
+    send(pid, {:voxel_delivery_envelope, invalidate_envelope(893, payload)})
+
+    assert {:ok, <<0x69, ^payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    state = :sys.get_state(pid)
+    assert ChunkVersionLedger.known_versions(state.forwarded_chunk_versions, 893) == %{}
+    assert ClientAckLedger.known_versions(state.client_ack_versions, 893) == %{}
+    assert DeliveryScheduler.summary(state.voxel_delivery).control_sent_count == 1
+  end
+
+  test "tcp rejects delivery envelopes whose lease no longer matches the subscription",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    :sys.replace_state(pid, fn state ->
+      put_voxel_test_subscription(state, 894, {0, 0, 0}, lease_id: 101, owner_epoch: 2)
+    end)
+
+    payload = <<1, 2, 3>>
+
+    send(
+      pid,
+      {:voxel_delivery_envelope,
+       field_region_envelope(894, payload, lease_id: 999, owner_epoch: 2)}
+    )
+
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    summary = DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery)
+    assert summary.queued_count == 0
+    assert summary.dropped_count == 1
+  end
+
+  test "tcp rejects delivery envelopes whose owner epoch no longer matches the subscription",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    :sys.replace_state(pid, fn state ->
+      put_voxel_test_subscription(state, 895, {0, 0, 0}, lease_id: 101, owner_epoch: 2)
+    end)
+
+    payload = <<1, 2, 3>>
+
+    send(
+      pid,
+      {:voxel_delivery_envelope,
+       field_region_envelope(895, payload, lease_id: 101, owner_epoch: 9)}
+    )
+
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    summary = DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery)
+    assert summary.queued_count == 0
+    assert summary.dropped_count == 1
+  end
+
+  test "tcp rejects delivery envelopes whose region no longer matches the subscription",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    :sys.replace_state(pid, fn state ->
+      put_voxel_test_subscription(state, 896, {0, 0, 0},
+        region_id: 45,
+        lease_id: 101,
+        owner_epoch: 2
+      )
+    end)
+
+    payload = <<1, 2, 3>>
+
+    send(
+      pid,
+      {:voxel_delivery_envelope,
+       field_region_envelope(896, payload, lease_id: 101, owner_epoch: 2)}
+    )
+
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    summary = DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery)
+    assert summary.queued_count == 0
+    assert summary.dropped_count == 1
+  end
+
+  test "tcp field region snapshots are queued and destroyed messages prune them",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(890, {0, 0, 0}, 1)
+    field_payload = field_region_snapshot_payload(890, {0, 0, 0}, 44, 3)
+    destroyed_payload = field_region_destroyed_payload(890, {0, 0, 0}, 44)
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(field_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_field_region_snapshot_payload, field_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    send(pid, {:voxel_field_region_destroyed_payload, destroyed_payload})
+    assert {:ok, ^destroyed_payload} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, :voxel_delivery_window)
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 0
+  end
+
+  test "tcp malformed field region destroyed is rejected and does not prune queued snapshots",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(891, {0, 0, 0}, 1)
+    field_payload = field_region_snapshot_payload(891, {0, 0, 0}, 44, 3)
+    malformed_destroyed_payload = field_region_destroyed_payload(891, {0, 0, 0}, 44) <> <<0xFF>>
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(field_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_field_region_snapshot_payload, field_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    send(pid, {:voxel_field_region_destroyed_payload, malformed_destroyed_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 1
+
+    send(pid, :voxel_delivery_window)
+    assert {:ok, ^field_payload} = :gen_tcp.recv(client, 0, 500)
+  end
+
+  test "tcp chunk invalidate bypasses budget and drops queued live data for the same chunk",
+       %{
+         client: client,
+         pid: pid
+       } do
+    put_connection_in_scene(pid)
+
+    first_payload = snapshot_payload(887, {0, 0, 0}, 1)
+
+    queued_payload =
+      SceneVoxelCodec.encode_chunk_delta_payload(%{
+        logical_scene_id: 887,
+        chunk_coord: {0, 0, 0},
+        base_chunk_version: 1,
+        new_chunk_version: 2,
+        ops: []
+      })
+
+    invalidate_payload =
+      SceneVoxelCodec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 887,
+        chunk_coord: {0, 0, 0},
+        reason: 0x01
+      })
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :voxel_delivery,
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(queued_payload) + 128,
+          window_interval_ms: 1_000
+        )
+      )
+    end)
+
+    send(pid, {:voxel_chunk_snapshot_payload, first_payload})
+    assert {:ok, <<0x62, ^first_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, {:voxel_chunk_delta_payload, queued_payload})
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    send(pid, {:voxel_chunk_invalidate_payload, invalidate_payload})
+    assert {:ok, <<0x69, ^invalidate_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+    send(pid, :voxel_delivery_window)
+    assert {:error, :timeout} = :gen_tcp.recv(client, 0, 50)
+
+    state = :sys.get_state(pid)
+    assert DeliveryScheduler.summary(state.voxel_delivery).queued_count == 0
+    assert ChunkVersionLedger.known_versions(state.forwarded_chunk_versions, 887) == %{}
+  end
+
+  test "tcp chunk invalidate logs forwarded only after socket send succeeds", %{
+    pid: pid
+  } do
+    observe_path = observe_path("tcp_invalidate_send_failure.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    put_connection_in_scene(pid)
+
+    payload =
+      SceneVoxelCodec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: 892,
+        chunk_coord: {0, 0, 0},
+        reason: 0x01
+      })
+
+    :sys.replace_state(pid, fn state ->
+      forwarded =
+        ChunkVersionLedger.new()
+        |> ChunkVersionLedger.record_version!(892, {0, 0, 0}, 7)
+
+      {client_acks, %{status: :ok}} =
+        ClientAckLedger.record_known_versions(ClientAckLedger.new(), forwarded, 892, [
+          {{0, 0, 0}, 7}
+        ])
+
+      %{
+        state
+        | socket: :not_a_tcp_socket,
+          forwarded_chunk_versions: forwarded,
+          client_ack_versions: client_acks,
+          voxel_delivery: %{
+            DeliveryScheduler.new()
+            | resync_required_chunks: MapSet.new([{892, {0, 0, 0}}])
+          }
+      }
+    end)
+
+    send(pid, {:voxel_chunk_invalidate_payload, payload})
+
+    eventually(fn ->
+      log = File.read!(observe_path)
+      assert log =~ ~s(event="voxel_live_delivery_send_failed")
+      refute log =~ ~s(event="voxel_chunk_invalidate_forwarded")
+    end)
+
+    assert ChunkVersionLedger.known_versions(:sys.get_state(pid).forwarded_chunk_versions, 892) ==
+             %{{0, 0, 0} => 7}
+
+    assert ClientAckLedger.known_versions(:sys.get_state(pid).client_ack_versions, 892) ==
+             %{{0, 0, 0} => 7}
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).resync_required_count ==
+             1
+  end
+
+  test "voxel chunk unsubscribe clears the forwarded version cache over tcp", %{
+    client: client,
+    pid: pid
+  } do
+    state =
+      :sys.replace_state(pid, fn state ->
+        Map.merge(state, %{
+          status: :in_scene,
+          cid: 42,
+          forwarded_chunk_versions:
+            ChunkVersionLedger.new()
+            |> ChunkVersionLedger.record_version!(884, {0, 0, 0}, 7),
+          voxel_subscriptions: %{
+            {884, {0, 0, 0}} => %{
+              logical_scene_id: 884,
+              chunk_coord: {0, 0, 0},
+              scene_node: node()
+            }
+          }
+        })
+      end)
+
+    assert ChunkVersionLedger.known_versions(state.forwarded_chunk_versions, 884) ==
+             %{{0, 0, 0} => 7}
+
+    first_payload = snapshot_payload(884, {0, 0, 0}, 8)
+
+    queued_payload =
+      SceneVoxelCodec.encode_chunk_delta_payload(%{
+        logical_scene_id: 884,
+        chunk_coord: {0, 0, 0},
+        base_chunk_version: 8,
+        new_chunk_version: 9,
+        ops: []
+      })
+
+    :sys.replace_state(pid, fn state ->
+      scheduler =
+        DeliveryScheduler.new(
+          max_window_bytes: byte_size(first_payload) + 1,
+          max_queue_items: 8,
+          max_queue_bytes: byte_size(first_payload) + byte_size(queued_payload) + 128,
+          window_interval_ms: 1_000
+        )
+
+      {scheduler, %{action: :send_now}} =
+        DeliveryScheduler.offer(scheduler, :snapshot, first_payload)
+
+      {scheduler, %{action: :queued}} =
+        DeliveryScheduler.offer(scheduler, :delta, queued_payload)
+
+      Map.put(state, :voxel_delivery, scheduler)
+    end)
+
+    assert DeliveryScheduler.summary(:sys.get_state(pid).voxel_delivery).queued_count == 1
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_unsubscribe(204, 884, [{0, 0, 0}]))
+
+    assert {:ok, <<0x80, 204::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    next_state = :sys.get_state(pid)
+
+    assert ChunkVersionLedger.known_versions(next_state.forwarded_chunk_versions, 884) ==
+             %{}
+
+    assert DeliveryScheduler.summary(next_state.voxel_delivery).queued_count == 0
+  end
+
+  test "malformed voxel payloads still forward unchanged and keep tcp cache unchanged", %{
+    client: client,
+    pid: pid
+  } do
+    observe_path = observe_path("tcp_malformed_voxel_forwarding.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    put_connection_in_scene(pid)
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(
+        state,
+        :forwarded_chunk_versions,
+        ChunkVersionLedger.new()
+        |> ChunkVersionLedger.record_version!(885, {0, 0, 0}, 7)
+      )
+    end)
+
+    expected = %{{0, 0, 0} => 7}
+
+    for {opcode, message} <- [
+          {0x62, {:voxel_chunk_snapshot_payload, <<1, 2, 3>>}},
+          {0x63, {:voxel_chunk_delta_payload, <<4, 5, 6>>}},
+          {0x69, {:voxel_chunk_invalidate_payload, <<7, 8, 9>>}}
+        ] do
+      send(pid, message)
+      assert {:ok, <<^opcode, _payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+
+      assert ChunkVersionLedger.known_versions(:sys.get_state(pid).forwarded_chunk_versions, 885) ==
+               expected
+    end
+
+    GateServer.CliObserve.flush()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ "status: :decode_failed"
+    assert observe_log =~ "frame_kind: :snapshot"
+    assert observe_log =~ "frame_kind: :delta"
+    assert observe_log =~ "frame_kind: :invalidate"
+  end
+
+  test "voxel subscription over tcp skips missing halo chunks", %{
+    client: client,
+    pid: pid
+  } do
+    observe_path = observe_path("tcp_chunk_subscribe_partition_window.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+    put_voxel_region(882, region_id: System.unique_integer([:positive, :monotonic]))
+
+    FakeInterface.set(scene_server: node(), world_server: node())
+    put_connection_in_scene(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(211, 882, {0, 0, 0}, 1))
+
+    assert {:ok, <<0x62, initial_payload::binary>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.request_id == 211
+    assert initial.storage.logical_scene_id == 882
+    assert initial.storage.chunk_coord == {0, 0, 0}
+
+    assert %{voxel_subscriptions: subscriptions, voxel_subscription_plan: plan} =
+             :sys.get_state(pid)
+
+    assert Map.keys(subscriptions) == [{882, {0, 0, 0}}]
+    assert plan.subscribe_count == 1
+    assert plan.missing_chunk_count == 26
+
+    GateServer.CliObserve.flush()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_subscription_window_planned")
+    assert observe_log =~ "requested_chunk_count: 27"
+    assert observe_log =~ "near_radius: 0"
+    assert observe_log =~ "halo_radius: 1"
+    assert observe_log =~ "near_vertical_radius: 0"
+    assert observe_log =~ "halo_vertical_radius: 1"
+    assert observe_log =~ "subscribe_count: 1"
+    assert observe_log =~ "subscribed_chunk_count: 1"
+    assert observe_log =~ "missing_chunk_count: 26"
+
+    assert :ok = :gen_tcp.send(client, encode_debug_probe(213, "voxel_transport"))
+
+    assert {:ok, <<0x6F, 213::64-big, debug_len::16-big, debug_result::binary-size(debug_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert debug_result =~ "voxel_subscription_plan_center_chunk={0, 0, 0}"
+    assert debug_result =~ "voxel_subscription_plan_near_radius=0"
+    assert debug_result =~ "voxel_subscription_plan_halo_radius=1"
+    assert debug_result =~ "voxel_subscription_plan_near_vertical_radius=0"
+    assert debug_result =~ "voxel_subscription_plan_halo_vertical_radius=1"
+  end
+
+  test "voxel subscription over tcp rejects a client scene outside the authoritative partition context",
+       %{
+         client: client,
+         pid: pid
+       } do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    allowed_scene_id = unique_id()
+    forged_scene_id = unique_id()
+    allowed_region_id = unique_id()
+    forged_region_id = unique_id()
+
+    put_partition_region(allowed_scene_id, allowed_region_id, {0, 0, 0}, {1, 1, 1}, 80_001)
+    put_partition_region(forged_scene_id, forged_region_id, {0, 0, 0}, {1, 1, 1}, 80_002)
+
+    FakeInterface.set(scene_server: node(), world_server: node())
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | status: :in_scene,
+          cid: 42,
+          partition_context: %{
+            logical_scene_id: allowed_scene_id,
+            region_id: allowed_region_id,
+            chunk_coord: {0, 0, 0}
+          }
+      }
+    end)
+
+    _ = :sys.get_state(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(214, forged_scene_id, {0, 0, 0}))
+
+    assert {:ok,
+            <<0x68, 214::64-big, 0::32-big, got_scene_id::64-big, 2::8, 0::64-big, 0::16-big,
+              reason_len::16-big, reason::binary-size(reason_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert got_scene_id == forged_scene_id
+    assert reason == ":unauthorized_voxel_target"
+  end
+
+  test "missing center subscription over tcp still logs the plan", %{
+    client: client,
+    pid: pid
+  } do
+    observe_path = observe_path("tcp_chunk_subscribe_missing_center_plan.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    ensure_map_ledger_started()
+    FakeInterface.set(scene_server: node(), world_server: node())
+    put_connection_in_scene(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(212, 883, {1234, 0, 0}, 0))
+
+    assert {:ok,
+            <<0x68, 212::64-big, 0::32-big, 883::64-big, 2::8, 0::64-big, 0::16-big,
+              reason_len::16-big, reason::binary-size(reason_len)>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert reason == ":unassigned_chunk"
+
+    GateServer.CliObserve.flush()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_subscription_window_planned")
+    assert observe_log =~ "requested_chunk_count: 1"
+    assert observe_log =~ "missing_chunk_count: 1"
+    assert observe_log =~ "skipped_count: 1"
   end
 
   test "malformed payload fails closed with generic error reply", %{client: client} do
@@ -1041,6 +2506,21 @@ defmodule GateServer.TcpConnectionProtocolTest do
     <<0x08, request_id::64-big, byte_size(text)::16-big, text::binary>>
   end
 
+  defp encode_scoped_chat_say(request_id, scope, text) do
+    <<0x0A, request_id::64-big, encode_chat_scope(scope)::8, byte_size(text)::16-big,
+      text::binary>>
+  end
+
+  defp encode_chat_scope(:world), do: 0
+  defp encode_chat_scope(:region), do: 1
+  defp encode_chat_scope(:local), do: 2
+
+  defp restore_local_chat_radius({:ok, value}),
+    do: Application.put_env(:gate_server, :local_chat_radius, value)
+
+  defp restore_local_chat_radius(:error),
+    do: Application.delete_env(:gate_server, :local_chat_radius)
+
   defp encode_skill_cast(request_id, skill_id) do
     <<0x09, request_id::64-big, skill_id::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
       0.0::float-64-big, 0.0::float-64-big>>
@@ -1050,14 +2530,126 @@ defmodule GateServer.TcpConnectionProtocolTest do
     <<0x07, request_id::64-big, byte_size(ticket)::16-big, ticket::binary>>
   end
 
-  defp encode_chunk_subscribe(request_id, logical_scene_id, {cx, cy, cz}) do
+  defp encode_chunk_subscribe(request_id, logical_scene_id, {cx, cy, cz}, radius \\ 0) do
     <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,
-      cz::32-big-signed, 0::8, 1::8, 0::16-big>>
+      cz::32-big-signed, radius::8, 1::8, 0::16-big>>
+  end
+
+  defp encode_chunk_unsubscribe(request_id, logical_scene_id, chunks) do
+    coords =
+      Enum.map(chunks, fn {cx, cy, cz} ->
+        <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed>>
+      end)
+
+    [<<0x61, request_id::64-big, logical_scene_id::64-big, length(chunks)::16-big>>, coords]
+  end
+
+  defp encode_debug_probe(request_id, command) do
+    <<0x6F, request_id::64-big, byte_size(command)::16-big, command::binary>>
+  end
+
+  defp encode_chunk_ack(request_id, logical_scene_id, acks) do
+    [
+      <<0x76, request_id::64-big, logical_scene_id::64-big, length(acks)::16-big>>,
+      Enum.map(acks, fn {{cx, cy, cz}, chunk_version} ->
+        <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, chunk_version::64-big>>
+      end)
+    ]
   end
 
   defp encode_voxel_impact(request_id, client_intent_seq, logical_scene_id, {x, y, z}) do
     <<0x64, request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big, 1::32-big,
       x::64-big-signed, y::64-big-signed, z::64-big-signed, 2::16-big, 0::64-big>>
+  end
+
+  defp snapshot_payload(logical_scene_id, chunk_coord, chunk_version) do
+    storage = Storage.empty(logical_scene_id, chunk_coord, chunk_version: chunk_version)
+    SceneVoxelCodec.encode_chunk_snapshot_payload(%{request_id: 101, storage: storage})
+  end
+
+  defp object_state_delta_payload(logical_scene_id, opts) do
+    SceneVoxelCodec.encode_voxel_object_state_delta_payload(%{
+      logical_scene_id: logical_scene_id,
+      object_id: Keyword.fetch!(opts, :object_id),
+      object_version: Keyword.fetch!(opts, :object_version),
+      state_flags: Keyword.get(opts, :state_flags, 0x01),
+      affected_chunks: Keyword.fetch!(opts, :affected_chunks)
+    })
+  end
+
+  defp field_region_snapshot_payload(logical_scene_id, {cx, cy, cz}, region_id, tick_count) do
+    <<0x73, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed, cz::32-big-signed,
+      region_id::64-big, tick_count::32-big, 0::8, 0::16-big>>
+  end
+
+  defp field_region_envelope(logical_scene_id, payload, opts \\ []) do
+    %{
+      frame_kind: :field_region_snapshot,
+      logical_scene_id: logical_scene_id,
+      chunk_coord: {0, 0, 0},
+      region_id: 44,
+      tick_count: 3,
+      tier: :halo,
+      stream_class: :field_state,
+      byte_size: byte_size(payload),
+      server_version: 12,
+      lease_id: Keyword.get(opts, :lease_id, 101),
+      owner_epoch: Keyword.get(opts, :owner_epoch, 2),
+      payload: payload
+    }
+  end
+
+  defp invalidate_envelope(logical_scene_id, payload) do
+    %{
+      frame_kind: :invalidate,
+      logical_scene_id: logical_scene_id,
+      chunk_coord: {0, 0, 0},
+      tier: :near,
+      stream_class: :reliable_control,
+      byte_size: byte_size(payload),
+      server_version: 8,
+      lease_id: 101,
+      owner_epoch: 2,
+      reason: 0x01,
+      reason_name: :lease_revoked,
+      payload: payload
+    }
+  end
+
+  defp put_voxel_test_subscription(state, logical_scene_id, chunk_coord, opts) do
+    Map.update!(state, :voxel_subscriptions, fn subscriptions ->
+      Map.put(subscriptions, {logical_scene_id, chunk_coord}, %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: chunk_coord,
+        region_id: Keyword.get(opts, :region_id, 44),
+        lease_id: Keyword.fetch!(opts, :lease_id),
+        owner_epoch: Keyword.fetch!(opts, :owner_epoch),
+        tier: Keyword.get(opts, :tier, :halo),
+        scene_node: node()
+      })
+    end)
+  end
+
+  defp record_test_client_ack(logical_scene_id, chunk_coord, version) do
+    forwarded =
+      ChunkVersionLedger.new()
+      |> ChunkVersionLedger.record_version!(logical_scene_id, chunk_coord, version)
+
+    {:ok, ledger, _event} =
+      ClientAckLedger.record_ack(
+        ClientAckLedger.new(),
+        forwarded,
+        logical_scene_id,
+        chunk_coord,
+        version
+      )
+
+    ledger
+  end
+
+  defp field_region_destroyed_payload(logical_scene_id, {cx, cy, cz}, region_id) do
+    <<0x74, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed, cz::32-big-signed,
+      region_id::64-big, 0::8>>
   end
 
   defp put_connection_in_scene(pid) do
@@ -1066,7 +2658,43 @@ defmodule GateServer.TcpConnectionProtocolTest do
     :ok
   end
 
-  defp ensure_map_ledger_started do
+  defp join_chat_session(connection_pid, cid, username, logical_scene_id, region_id, chunk_coord) do
+    assert {:ok, _} =
+             ChatAdapter.join(%{
+               cid: cid,
+               username: username,
+               connection_pid: connection_pid,
+               logical_scene_id: logical_scene_id,
+               region_id: region_id,
+               chunk_coord: chunk_coord,
+               location: {0.0, 0.0, 0.0}
+             })
+  end
+
+  defp eventually(fun, attempts \\ 20)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    fun.()
+  rescue
+    error in [ExUnit.AssertionError, File.Error] ->
+      if attempts == 1 do
+        reraise error, __STACKTRACE__
+      else
+        Process.sleep(10)
+        eventually(fun, attempts - 1)
+      end
+  end
+
+  defp observe_path(name) do
+    dir = Path.expand("../../../../.demo/observe", __DIR__)
+    File.mkdir_p!(dir)
+    Path.join(dir, name)
+  end
+
+  defp restore_env(app, {:ok, value}), do: Application.put_env(app, :cli_observe_log, value)
+  defp restore_env(app, :error), do: Application.delete_env(app, :cli_observe_log)
+
+  defp ensure_map_ledger_started(opts \\ []) do
     ensure_data_voxel_started()
 
     case Process.whereis(MapLedger) do
@@ -1078,10 +2706,28 @@ defmodule GateServer.TcpConnectionProtocolTest do
       _pid ->
         :ok
     end
+
+    configure_map_ledger_scene_invalidator(Keyword.get(opts, :scene_invalidator))
+  end
+
+  defp configure_map_ledger_scene_invalidator(invalidator)
+       when is_nil(invalidator) or is_function(invalidator, 1) do
+    case Process.whereis(MapLedger) do
+      nil ->
+        :ok
+
+      pid ->
+        :sys.replace_state(pid, fn state -> %{state | scene_invalidator: invalidator} end)
+        :ok
+    end
   end
 
   defp ensure_scene_voxel_started do
     ensure_data_voxel_started()
+
+    if is_nil(Process.whereis(SceneServer.CliObserve.Manager)) do
+      start_supervised!({SceneServer.CliObserve.Manager, []})
+    end
 
     if is_nil(Process.whereis(SceneServer.VoxelChunkSup)) do
       start_supervised!({SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup})
@@ -1119,6 +2765,79 @@ defmodule GateServer.TcpConnectionProtocolTest do
                expires_at_ms: System.system_time(:millisecond) + 60_000,
                token_version: System.unique_integer([:positive, :monotonic])
              )
+  end
+
+  defp put_partition_region(logical_scene_id, region_id, bounds_min, bounds_max, owner_ref) do
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: bounds_min,
+               bounds_chunk_max: bounds_max,
+               owner_scene_instance_ref: owner_ref,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, owner_ref,
+               lease_id: unique_id(),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: unique_id()
+             )
+  end
+
+  defp ack(overrides) do
+    attrs =
+      Map.merge(
+        %{
+          cid: 42,
+          ack_seq: 1,
+          auth_tick: 1,
+          position: {0.0, 0.0, 0.0},
+          velocity: {0.0, 0.0, 0.0},
+          acceleration: {0.0, 0.0, 0.0},
+          movement_mode: :grounded,
+          correction_flags: 0,
+          fixed_dt_ms: 50,
+          ground_z: 0.0
+        },
+        overrides
+      )
+
+    struct!(Ack, attrs)
+  end
+
+  defp blocking_partition_refresh_fun(parent) do
+    fn _state, ack, opts ->
+      connection_pid = Keyword.fetch!(opts, :connection_pid)
+      subscriber = Keyword.fetch!(opts, :subscriber)
+      send(parent, {:partition_refresh_started, self(), connection_pid, subscriber})
+
+      receive do
+        :release_partition_refresh ->
+          outcome = %{
+            status: :updated,
+            cid: ack.cid,
+            logical_scene_id: 701,
+            boundary_kind: :region,
+            previous_region_id: 10,
+            region_id: 20,
+            previous_chunk_coord: {0, 0, 0},
+            chunk_coord: {1, 0, 0},
+            auth_tick: ack.auth_tick,
+            ack_seq: ack.ack_seq,
+            subscription_apply_status: :ok
+          }
+
+          {:ok, %{kind: :last_refresh, outcome: outcome, status: :ok}}
+      end
+    end
+  end
+
+  defp unique_id do
+    System.unique_integer([:positive, :monotonic])
   end
 
   defp ensure_data_voxel_started do
@@ -1189,7 +2908,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
   end
 
-  defp insert_account_and_character(username, cid) do
+  defp insert_account_and_character(username, cid, opts \\ []) do
+    position = Keyword.get(opts, :position, %{"x" => 10.0, "y" => 20.0, "z" => 30.0})
+
     {:ok, account} =
       Repo.insert(%Account{
         id: System.unique_integer([:positive]),
@@ -1203,7 +2924,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
         id: cid,
         account: account.id,
         name: "#{username}-character-#{cid}",
-        position: %{"x" => 10.0, "y" => 20.0, "z" => 30.0}
+        position: position
       })
   end
 end

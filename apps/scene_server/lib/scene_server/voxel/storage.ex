@@ -132,6 +132,52 @@ defmodule SceneServer.Voxel.Storage do
     |> normalize!()
   end
 
+  @doc "Puts multiple solid normal blocks and normalizes the chunk once."
+  @spec put_solid_blocks(t(), [{integer() | term(), NormalBlockData.t() | map(), keyword()}]) ::
+          t()
+  def put_solid_blocks(%__MODULE__{} = storage, entries) when is_list(entries) do
+    storage = normalize!(storage)
+    base_payload_index = length(storage.normal_blocks)
+
+    {macro_headers, blocks, dirty_bounds} =
+      entries
+      |> Enum.with_index()
+      |> Enum.reduce(
+        {storage.macro_headers, [], storage.dirty_bounds},
+        fn {{macro_index_or_coord, block, opts}, offset}, {headers, acc_blocks, dirty} ->
+          macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+          block = NormalBlockData.normalize!(block)
+          payload_index = base_payload_index + offset
+
+          header =
+            MacroCellHeader.solid(payload_index,
+              flags: Keyword.get(opts, :flags, 0),
+              environment_index:
+                Keyword.get(opts, :environment_index, MacroCellHeader.no_index()),
+              cell_version: Keyword.get(opts, :cell_version, 0),
+              cell_hash: Keyword.get(opts, :cell_hash, 0)
+            )
+
+          dirty =
+            DirtyMacroBounds.add_macro(
+              dirty,
+              macro_index,
+              DirtyMacroBounds.reason_attribute_write()
+            )
+
+          {List.replace_at(headers, macro_index, header), [block | acc_blocks], dirty}
+        end
+      )
+
+    %{
+      storage
+      | macro_headers: macro_headers,
+        normal_blocks: storage.normal_blocks ++ Enum.reverse(blocks),
+        dirty_bounds: dirty_bounds
+    }
+    |> normalize!()
+  end
+
   # ----------------------------------------------------------------------------
   # Phase 5.E — dirty tracking helpers
   # ----------------------------------------------------------------------------

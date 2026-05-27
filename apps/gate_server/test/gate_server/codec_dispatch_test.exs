@@ -76,6 +76,27 @@ defmodule GateServer.CodecDispatchTest do
       assert {:ok, {:skill_cast, %{skill_id: 1, request_id: 12, target_kind: :auto}}} =
                Codec.decode(msg)
     end
+
+    test "voxel chunk ACK is in codec range and carries acknowledged versions" do
+      msg =
+        <<0x76, 13::64-big, 77::64-big, 2::16-big, 1::32-big-signed, 2::32-big-signed,
+          3::32-big-signed, 5::64-big, -1::32-big-signed, 0::32-big-signed, 0::32-big-signed,
+          9::64-big>>
+
+      <<type::8, _::binary>> = msg
+      assert type >= 0x01 and type <= 0x7F
+
+      assert {:ok,
+              {:voxel_chunk_ack,
+               %{
+                 request_id: 13,
+                 logical_scene_id: 77,
+                 acks: [
+                   %{chunk_coord: {1, 2, 3}, chunk_version: 5},
+                   %{chunk_coord: {-1, 0, 0}, chunk_version: 9}
+                 ]
+               }}} = Codec.decode(msg)
+    end
   end
 
   describe "server response encoding for codec dispatch" do

@@ -37,6 +37,15 @@ case Horde.Registry.start_link(
   {:error, {:already_started, _pid}} -> :ok
 end
 
+# CliObserve was refactored into a supervised `SceneServer.CliObserve.Manager`
+# owned by `SceneServer.Supervisor` (see application.ex). Boot the scene
+# application here so the manager and its supervision contract are live: under
+# `mix test --no-start` the application root never starts, so every observe
+# writer lookup returns nil and the supervision-contract tests cannot find
+# `SceneServer.Supervisor`. `ensure_all_started/1` is idempotent, so the
+# per-test `TestVoxelRuntime` starts below still succeed.
+{:ok, _} = Application.ensure_all_started(:scene_server)
+
 defmodule SceneServer.TestVoxelRuntime do
   @moduledoc false
 

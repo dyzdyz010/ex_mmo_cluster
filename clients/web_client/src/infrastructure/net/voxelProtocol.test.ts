@@ -13,6 +13,7 @@ import { VoxelIntentResult, VoxelOpcode } from "./opcodes";
 import {
   decodeVoxelServerMessage,
   encodeVoxelBuildReservationIntent,
+  encodeVoxelChunkAck,
   encodeVoxelChunkSubscribe,
   encodeVoxelDebugProbe,
   encodeVoxelFieldConductIntent,
@@ -52,6 +53,25 @@ describe("voxel gate protocol", () => {
     expect(view.getInt32(33, false)).toBe(1);
     expect(view.getInt32(41, false)).toBe(-2);
     expect(Number(view.getBigUint64(45, false))).toBe(99);
+  });
+
+  it("encodes chunk ACKs with applied chunk versions", () => {
+    const encoded = encodeVoxelChunkAck({
+      requestId: 11,
+      logicalSceneId: 3,
+      acks: [{ chunkCoord: { x: -2, y: 4, z: 9 }, chunkVersion: 123 }],
+    });
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    expect(encoded.byteLength).toBe(39);
+    expect(view.getUint8(0)).toBe(VoxelOpcode.VoxelChunkAck);
+    expect(Number(view.getBigUint64(1, false))).toBe(11);
+    expect(Number(view.getBigUint64(9, false))).toBe(3);
+    expect(view.getUint16(17, false)).toBe(1);
+    expect(view.getInt32(19, false)).toBe(-2);
+    expect(view.getInt32(23, false)).toBe(4);
+    expect(view.getInt32(27, false)).toBe(9);
+    expect(Number(view.getBigUint64(31, false))).toBe(123);
   });
 
   it("encodes voxel impact intents without swapping voxel axes", () => {

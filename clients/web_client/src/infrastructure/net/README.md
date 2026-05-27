@@ -7,17 +7,29 @@
 
 结构：
 
-- `opcodes.ts` / `gateProtocol.ts` — movement 纯 codec，把线格式映射到 `@domain/movement/types` 里的契约类型。
-- `voxelProtocol.ts` — server-authoritative voxel S1 codec，负责编码 `ChunkSubscribe` / `VoxelImpactIntent` / `FieldConductIntent` / `VoxelDebugProbe`，解码 `ChunkSnapshot` / `VoxelIntentResult` / `VoxelDebugProbe`。
+- `opcodes.ts` / `gateProtocol.ts` — Gate 纯 codec，把线格式映射到 domain
+  契约类型。movement 使用 `@domain/movement/types`；聊天使用
+  `@domain/chat/types`。`ChatSayScoped(0x0A)` 只编码 `request_id + scope +
+text`，不接受客户端 region/chunk/radius/location。
+- `voxelProtocol.ts` — server-authoritative voxel S1 codec，负责编码 `ChunkSubscribe` / `VoxelChunkAck` / `VoxelImpactIntent` / `FieldConductIntent` / `VoxelDebugProbe`，解码 `ChunkSnapshot` / `VoxelIntentResult` / `VoxelDebugProbe`。
 - `simulatedMovementTransport.ts` — 离线仿真适配器，本地输入按顺序立即合成 ack；不再生成装饰性远端 actor，避免把本地 fallback 误看成真实 NPC/AOI。
-- `serverMovementTransport.ts` — 真实 WebSocket 适配器；握手失败或 ready 前断开时保持 `server-ws` 但标记 `connectionStatus=disconnected`，把原因写进 observe/HUD/CLI；同一个 socket 也提供薄 voxel transport port，供网页体素同步层复用。HTTP auth/dev_seed 默认走 Vite `/ingame` 同源代理；WebSocket 默认读取 `VITE_GAME_WS_URL`（兼容旧的 `VITE_WS_URL`），未配置时走当前 host 的 `/ingame/ws`。
+- `serverMovementTransport.ts` — 真实 WebSocket 适配器；握手失败或 ready
+  前断开时保持 `server-ws` 但标记 `connectionStatus=disconnected`，把原因写进
+  observe/HUD/CLI；同一个 socket 也提供薄 voxel transport port 和 scoped chat
+  port，供网页体素同步层与聊天面板复用。HTTP auth/dev_seed 默认走 Vite
+  `/ingame` 同源代理；WebSocket 默认读取 `VITE_GAME_WS_URL`（兼容旧的
+  `VITE_WS_URL`），未配置时走当前 host 的 `/ingame/ws`。
 
 当前阶段：
 
 - movement 已接入真实浏览器 transport：`auth_server /ingame/ws` -> `AuthServerWeb.GameWebSocket` -> `GateServer.WsConnection`。
 - `clients/web_client` 默认使用 `server-ws`；可通过 `VITE_MOVEMENT_TRANSPORT=simulated` 强制使用 simulated-local。
+- scoped chat 已接入同一条 WebSocket session：`window.__voxelCli.run("chat region hello")`
+  和左下角聊天面板都会发送 `0x0A`，下行 `ChatMessage(0x89)` 会进入
+  `chat:message-received`、observe 日志和 transport debug snapshot。
 - movement 协议当前会解码 `MovementAck` / `PlayerMove` 的 `movement_mode`，并把服务端坐标 `(x,y,z)` 转成浏览器坐标 `(x,z,y)`；跳跃的竖直轴在浏览器中是 `Vector3.y`。`PlayerState(0x8C)` 会进入 observe/CLI 快照；其他已知但浏览器暂未消费的下行帧会记录为 `known_downlink_unhandled`，不应被记为 `message_ignored`。
-- 体素协议 `0x60..0x75` 已接入 S1：`ChunkSubscribe -> ChunkSnapshot/ChunkDelta`、`VoxelImpactIntent -> VoxelIntentResult`、break sentinel、`PrefabPlaceIntent` v1、`VoxelDebugProbe` 和 `FieldConductIntent(0x75)`。
+- 体素协议 `0x60..0x76` 已接入 S1：`ChunkSubscribe -> ChunkSnapshot/ChunkDelta -> VoxelChunkAck`、`VoxelImpactIntent -> VoxelIntentResult`、break sentinel、`PrefabPlaceIntent` v1、`VoxelDebugProbe` 和 `FieldConductIntent(0x75)`。
+  `VoxelChunkAck(0x76)` 只在 `OnlineVoxelWorldAdapter` 把 snapshot/delta 应用到本地权威缓存之后发送，不能把“收到下行包”直接当成 ACK。
   放电类 field action 默认走已连接的 WebSocket intent 通道；客户端提交后只登记待表现请求，必须收到服务端 `FieldRegionSnapshot(0x73)` 后才渲染闪电。
   当前 canonical 设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`：
   `SceneServer.Voxel.*` 持有 hot chunk truth，voxel payload 统一 big-endian，
@@ -28,4 +40,10 @@
 
 - 本目录实现 domain 定义的 port (`@domain/movement/transport`)，不能反向让 domain 依赖这里。
 
-`serverMovementTransport.debugSnapshot()` / `voxelDebugSnapshot()` 必须能被 `window.__voxelCli.run("transport")` 直接读取到收发状态。voxel 字段现在包含 `receivedVoxelSnapshotCount`、`receivedVoxelDeltaCount`、`receivedVoxelInvalidateCount`、`receivedVoxelIntentResultCount` 和 `lastDelta`，用于从 CLI 判断 ChunkDelta 是否已到达，而不依赖画面判断。
+`serverMovementTransport.debugSnapshot()` / `voxelDebugSnapshot()` /
+`chatDebugSnapshot()` 必须能被 `window.__voxelCli.run("transport")` 直接读取到
+收发状态。chat 字段包含发送/接收计数、最后发送 scope、最后下行消息和阻塞原因；
+voxel 字段现在包含 `receivedVoxelSnapshotCount`、`receivedVoxelDeltaCount`、
+`receivedVoxelInvalidateCount`、`receivedVoxelIntentResultCount`、
+`sentVoxelChunkAckCount`、`lastChunkAck` 和 `lastDelta`，
+用于从 CLI 判断消息是否已到达，而不依赖画面判断。

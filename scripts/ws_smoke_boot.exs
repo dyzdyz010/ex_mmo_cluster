@@ -14,7 +14,10 @@ gate_udp_port = env_int.("GATE_UDP_PORT", 20_003)
 Application.put_env(
   :auth_server,
   AuthServerWeb.Endpoint,
-  Keyword.merge(endpoint, server: true, http: [ip: {127, 0, 0, 1}, port: auth_port])
+  Keyword.merge(endpoint,
+    server: true,
+    http: [ip: {127, 0, 0, 1}, port: auth_port]
+  )
 )
 
 visualize_endpoint = Application.get_env(:visualize_server, VisualizeServerWeb.Endpoint, [])
@@ -41,6 +44,7 @@ Enum.each(
     :scene_server,
     :world_server,
     :auth_server,
+    :chat_server,
     :gate_server
   ],
   fn app ->
@@ -86,9 +90,19 @@ interface_ready? = fn ->
   end
 end
 
-case wait_until.(interface_ready?, 10_000) do
+case wait_until.(interface_ready?, 60_000) do
   :ok -> IO.puts("interfaces ready")
   :timeout -> raise "timed out waiting for smoke interfaces"
+end
+
+if System.get_env("WS_SMOKE_PRESEED_VOXEL") == "1" do
+  case WorldServer.Voxel.DevSeed.ensure_default_region(assigned_scene_node: node()) do
+    {:ok, summary} ->
+      IO.puts("voxel dev seed ready #{inspect(summary)}")
+
+    {:error, reason} ->
+      raise "failed to preseed smoke voxel region: #{inspect(reason)}"
+  end
 end
 
 case System.get_env("WS_SMOKE_READY_FILE") do

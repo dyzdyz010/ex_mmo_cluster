@@ -24,6 +24,7 @@ export const VoxelOpcode = {
   FieldRegionSnapshot: 0x73,
   FieldRegionDestroyed: 0x74,
   FieldConductIntent: 0x75,
+  VoxelChunkAck: 0x76,
 } as const;
 
 export type VoxelOpcodeValue = (typeof VoxelOpcode)[keyof typeof VoxelOpcode];

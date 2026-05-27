@@ -11,6 +11,7 @@ defmodule SceneServer.Voxel.Types do
   alias SceneServer.Voxel.AabbI64
 
   @chunk_size_in_macro 16
+  @centimeters_per_macro 100
   @micro_resolution 8
   @macro_cell_count @chunk_size_in_macro * @chunk_size_in_macro * @chunk_size_in_macro
   @micro_cell_count @micro_resolution * @micro_resolution * @micro_resolution
@@ -28,6 +29,10 @@ defmodule SceneServer.Voxel.Types do
   @doc "Returns the v1 macro edge length per chunk."
   @spec chunk_size_in_macro() :: 16
   def chunk_size_in_macro, do: @chunk_size_in_macro
+
+  @doc "Returns the v1 centimeter edge length per macro voxel."
+  @spec centimeters_per_macro() :: 100
+  def centimeters_per_macro, do: @centimeters_per_macro
 
   @doc "Returns the v1 micro edge length per macro cell."
   @spec micro_resolution() :: 8
@@ -216,6 +221,27 @@ defmodule SceneServer.Voxel.Types do
      floor_mod(world_macro_axis, @chunk_size_in_macro)}
   end
 
+  @doc """
+  Converts authoritative world-centimeter coordinates to a chunk coordinate.
+
+  Movement positions are expressed in centimeters. Voxel ownership is expressed
+  in macro cells, where one macro cell is 100 cm and one chunk spans 16 macros.
+  Negative coordinates use floor division, matching `chunk_and_local_macro!/1`.
+  """
+  @spec chunk_from_world_cm!({number(), number(), number()} | [number()]) :: chunk_coord()
+  def chunk_from_world_cm!(world_cm_coord) do
+    {x, y, z} = numeric_coord_tuple!(world_cm_coord, :world_cm_coord)
+
+    {chunk_coord, _local_macro} =
+      chunk_and_local_macro!({
+        cm_axis_to_macro(x),
+        cm_axis_to_macro(y),
+        cm_axis_to_macro(z)
+      })
+
+    chunk_coord
+  end
+
   @doc "Integer floor division, rounding toward negative infinity."
   @spec floor_div(integer(), pos_integer()) :: integer()
   def floor_div(dividend, divisor)
@@ -282,6 +308,25 @@ defmodule SceneServer.Voxel.Types do
 
   defp coord_tuple!(value, label, _map_keys) do
     raise ArgumentError, "expected #{label} as {x, y, z}, got: #{inspect(value)}"
+  end
+
+  defp numeric_coord_tuple!({x, y, z}, label), do: validate_numeric_tuple!({x, y, z}, label)
+  defp numeric_coord_tuple!([x, y, z], label), do: validate_numeric_tuple!({x, y, z}, label)
+
+  defp numeric_coord_tuple!(value, label) do
+    raise ArgumentError, "expected #{label} as {x, y, z}, got: #{inspect(value)}"
+  end
+
+  defp validate_numeric_tuple!({x, y, z}, label) do
+    unless is_number(x) and is_number(y) and is_number(z) do
+      raise ArgumentError, "expected #{label} numeric coordinate, got: #{inspect({x, y, z})}"
+    end
+
+    {x, y, z}
+  end
+
+  defp cm_axis_to_macro(value) when is_number(value) do
+    floor(value / @centimeters_per_macro)
   end
 
   defp fetch_tuple!(attrs, [x_key, y_key, z_key]) do

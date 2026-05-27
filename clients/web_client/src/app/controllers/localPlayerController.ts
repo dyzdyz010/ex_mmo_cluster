@@ -28,6 +28,10 @@ import type { TransportPump } from "./transportPump";
 
 const LOCAL_RENDER_SMOOTHING_RATE_HZ = 15;
 const LOCAL_VISUAL_HARD_SNAP_DISTANCE = 256;
+const MAX_MOVEMENT_FRAME_DT_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
+const AUTHORITY_RENDER_EXTRAPOLATION_MAX_SECS = 1.5;
+const AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE = 1;
+const AUTHORITY_RENDER_IDLE_EPSILON_SQ = 1.0e-6;
 
 export interface MovementFrameTraceSample {
   frame: number;
@@ -65,9 +69,16 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly renderedPosition = new Vector3();
   private readonly pendingCorrection = new Vector3();
   private readonly authoritativePosition = new Vector3();
+  private readonly authoritativeVelocity = new Vector3();
+  private readonly authoritativeAcceleration = new Vector3();
+  private readonly authoritativeRenderPosition = new Vector3();
+  private readonly authoritativeRenderVelocity = new Vector3();
+  private readonly authoritativeRenderAcceleration = new Vector3();
   private readonly lastTracedPosition = new Vector3();
   private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
+  private lastAuthorityAtMs: number | null = null;
+  private lastAuthorityRenderAtMs: number | null = null;
   private cameraYawResolver: () => number = () => 0;
   private frameTraceRemaining = 0;
   private renderSimulationState: PredictedMoveState | null = null;
@@ -93,16 +104,17 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   onFrame(nowMs: number, dtMs: number): void {
+    const movementDtMs = Math.min(Math.max(0, dtMs), MAX_MOVEMENT_FRAME_DT_MS);
     let fixedSteps = 0;
-    this.fixedStepAccumulatorMs += dtMs;
+    this.fixedStepAccumulatorMs += movementDtMs;
     while (this.fixedStepAccumulatorMs >= DEFAULT_MOVEMENT_PROFILE.fixedDtMs) {
       this.fixedStepAccumulatorMs -= DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
       this.stepFixed(nowMs);
       fixedSteps += 1;
     }
-    this.dampenPendingCorrection(dtMs / 1000);
-    this.advanceRenderedPrediction(dtMs);
-    this.captureFrameTrace(nowMs, dtMs, fixedSteps);
+    this.dampenPendingCorrection(movementDtMs / 1000);
+    this.advanceRenderedPrediction(movementDtMs);
+    this.captureFrameTrace(nowMs, movementDtMs, fixedSteps);
   }
 
   getRenderedPosition(): Vector3 {
@@ -111,6 +123,37 @@ export class LocalPlayerController implements FrameSubscriber {
 
   getAuthoritativePosition(): Vector3 {
     return this.authoritativePosition;
+  }
+
+  getAuthoritativeRenderPosition(nowMs: number): Vector3 {
+    if (this.lastAuthorityRenderAtMs === null) {
+      return this.renderedPosition.clone();
+    }
+
+    const dtSecs = Math.min(
+      Math.max(0, (nowMs - this.lastAuthorityRenderAtMs) / 1000),
+      AUTHORITY_RENDER_EXTRAPOLATION_MAX_SECS,
+    );
+    const estimated = this.authoritativeRenderPosition
+      .clone()
+      .add(this.authoritativeRenderVelocity.clone().multiplyScalar(dtSecs))
+      .add(this.authoritativeRenderAcceleration.clone().multiplyScalar(0.5 * dtSecs * dtSecs));
+    const idleAuthority =
+      this.authoritativeRenderVelocity.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ &&
+      this.authoritativeRenderAcceleration.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ;
+    const localAxes = this.combinedAxes();
+    const localInputActive =
+      Math.hypot(localAxes.strafe, localAxes.forward) > 1.0e-6 || this.input.hasPendingJump();
+
+    if (
+      idleAuthority &&
+      localInputActive &&
+      estimated.distanceTo(this.renderedPosition) > AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE
+    ) {
+      return this.renderedPosition.clone();
+    }
+
+    return estimated;
   }
 
   getPendingCorrection(): Vector3 {
@@ -265,6 +308,13 @@ export class LocalPlayerController implements FrameSubscriber {
     if (!result) return;
 
     this.authoritativePosition.copy(ack.position);
+    this.authoritativeVelocity.copy(ack.velocity);
+    this.authoritativeAcceleration.copy(ack.acceleration);
+    this.lastAuthorityAtMs = nowMs;
+    this.authoritativeRenderPosition.copy(result.latestState.position);
+    this.authoritativeRenderVelocity.copy(result.latestState.velocity);
+    this.authoritativeRenderAcceleration.copy(result.latestState.acceleration);
+    this.lastAuthorityRenderAtMs = nowMs;
     if (result.action === ReplayAction.Accepted) {
       this.syncAcceptedAnchor(result.latestState);
     } else {
@@ -399,6 +449,13 @@ export class LocalPlayerController implements FrameSubscriber {
     this.renderedPosition.copy(start);
     this.pendingCorrection.set(0, 0, 0);
     this.authoritativePosition.copy(start);
+    this.authoritativeVelocity.set(0, 0, 0);
+    this.authoritativeAcceleration.set(0, 0, 0);
+    this.authoritativeRenderPosition.copy(start);
+    this.authoritativeRenderVelocity.set(0, 0, 0);
+    this.authoritativeRenderAcceleration.set(0, 0, 0);
+    this.lastAuthorityAtMs = null;
+    this.lastAuthorityRenderAtMs = null;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
     this.lastCollisionSummary = null;

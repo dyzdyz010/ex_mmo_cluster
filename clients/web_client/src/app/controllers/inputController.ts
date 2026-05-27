@@ -113,6 +113,10 @@ export class InputController {
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (isEditableEventTarget(event.target)) {
+      return;
+    }
+
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -227,6 +231,10 @@ export class InputController {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    if (isEditableEventTarget(event.target)) {
+      return;
+    }
+
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -261,4 +269,18 @@ function isSpaceKey(event: KeyboardEvent): boolean {
 
 function isPlainOneShotShortcut(event: KeyboardEvent): boolean {
   return !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  const candidate = target as
+    | (EventTarget & { tagName?: string; isContentEditable?: boolean })
+    | null;
+  if (!candidate) {
+    return false;
+  }
+  if (candidate.isContentEditable) {
+    return true;
+  }
+  const tagName = candidate.tagName?.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }

@@ -60,7 +60,7 @@ defmodule GateServer.VoxelSmoke do
     paths = resolve_paths(opts, logical_scene_id)
     reset_log_files(paths)
 
-    with_observe_logs(paths, fn ->
+    with_observe_logs(paths, logical_scene_id, fn ->
       Process.put(@started_key, [])
       Process.put(@ws_pid_key, nil)
       Process.put(@deferred_chunk_updates_key, [])
@@ -87,7 +87,7 @@ defmodule GateServer.VoxelSmoke do
             Keyword.get(opts, :cid, 42)
           )
 
-        flush_observe_logs()
+        flush_observe_logs(paths)
         write_summary(paths.summary_path, summary)
         append_stdio(paths.stdio_log, "voxel_smoke_completed", summary_for_stdio(summary))
 
@@ -100,11 +100,11 @@ defmodule GateServer.VoxelSmoke do
           }
 
           append_stdio(paths.stdio_log, "voxel_smoke_failed", failure)
-          flush_observe_logs()
+          flush_observe_logs(paths)
           {:error, failure}
       after
         stop_ws(Process.get(@ws_pid_key))
-        flush_observe_logs()
+        flush_observe_logs(paths)
         cleanup_started(Process.get(@started_key, []))
         Process.delete(@started_key)
         Process.delete(@ws_pid_key)
@@ -222,7 +222,7 @@ defmodule GateServer.VoxelSmoke do
     end)
   end
 
-  defp with_observe_logs(paths, fun) do
+  defp with_observe_logs(paths, logical_scene_id, fun) do
     previous = %{
       gate: Application.fetch_env(:gate_server, :cli_observe_log),
       scene: Application.fetch_env(:scene_server, :cli_observe_log),
@@ -230,11 +230,17 @@ defmodule GateServer.VoxelSmoke do
     }
 
     try do
-      Application.put_env(:gate_server, :cli_observe_log, paths.gate_observe_log)
-      Application.put_env(:scene_server, :cli_observe_log, paths.scene_observe_log)
-      Application.put_env(:world_server, :cli_observe_log, paths.world_observe_log)
+      Application.delete_env(:gate_server, :cli_observe_log)
+      Application.delete_env(:scene_server, :cli_observe_log)
+      Application.delete_env(:world_server, :cli_observe_log)
 
-      fun.()
+      routes = register_observe_routes(paths, logical_scene_id)
+
+      try do
+        fun.()
+      after
+        unregister_observe_routes(routes, logical_scene_id)
+      end
     after
       restore_env(:gate_server, :cli_observe_log, previous.gate)
       restore_env(:scene_server, :cli_observe_log, previous.scene)
@@ -274,6 +280,13 @@ defmodule GateServer.VoxelSmoke do
                name: SceneServer.Voxel.ChunkDirectory,
                chunk_sup: SceneServer.VoxelChunkSup
              )
+           end),
+         # Scene-side observe events are written by the supervised
+         # `SceneServer.CliObserve.Manager`. Without it the scene observe log is
+         # never created and the E2E smoke's `scene_observe_log` read fails.
+         :ok <-
+           ensure_named(SceneServer.CliObserve.Manager, fn ->
+             SceneServer.CliObserve.Manager.start_link([])
            end),
          :ok <-
            ensure_named(GateServer.Interface, fn ->
@@ -684,9 +697,29 @@ defmodule GateServer.VoxelSmoke do
     File.write!(path, "\n", [:append])
   end
 
-  defp flush_observe_logs do
+  defp register_observe_routes(paths, logical_scene_id) do
+    [
+      {GateServer.CliObserve, paths.gate_observe_log},
+      {SceneServer.CliObserve, paths.scene_observe_log},
+      {WorldServer.CliObserve, paths.world_observe_log}
+    ]
+    |> Enum.flat_map(fn {observe_module, path} ->
+      case observe_module.register_route(logical_scene_id, path) do
+        {:ok, token} -> [{observe_module, token}]
+        {:error, _reason} -> []
+      end
+    end)
+  end
+
+  defp unregister_observe_routes(routes, logical_scene_id) do
+    Enum.each(routes, fn {observe_module, token} ->
+      observe_module.unregister_route(logical_scene_id, token)
+    end)
+  end
+
+  defp flush_observe_logs(paths) do
     GateServer.CliObserve.flush()
-    SceneServer.CliObserve.flush()
+    SceneServer.CliObserve.flush_path(paths.scene_observe_log)
     WorldServer.CliObserve.flush()
   end
 

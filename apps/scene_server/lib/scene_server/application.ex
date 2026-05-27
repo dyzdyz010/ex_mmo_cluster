@@ -27,6 +27,7 @@ defmodule SceneServer.Application do
       [
         # Starts a worker by calling: SceneServer.Worker.start_link(arg)
         # {SceneServer.Worker, arg}
+        {SceneServer.CliObserve.Manager, []},
         interface_child(),
         {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
         {SceneServer.VoxelSup, name: SceneServer.VoxelSup},

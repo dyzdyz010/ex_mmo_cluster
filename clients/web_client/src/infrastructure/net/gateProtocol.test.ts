@@ -1,5 +1,5 @@
 import { Vector2, Vector3 } from "three";
-import { decodeServerMessage, encodeMovementInput } from "./gateProtocol";
+import { decodeServerMessage, encodeChatSayScoped, encodeMovementInput } from "./gateProtocol";
 import {
   AoiPriorityBand,
   CorrectionFlag,
@@ -15,6 +15,44 @@ function writeVec3(view: DataView, offset: number, x: number, y: number, z: numb
 }
 
 describe("gate movement protocol", () => {
+  it("encodes scoped chat with only request id, scope, and text", () => {
+    const encoded = encodeChatSayScoped(43, "region", "region hello");
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    expect(view.getUint8(0)).toBe(0x0a);
+    expect(view.getBigUint64(1, false)).toBe(43n);
+    expect(view.getUint8(9)).toBe(1);
+    expect(view.getUint16(10, false)).toBe(12);
+    expect(new TextDecoder().decode(encoded.slice(12))).toBe("region hello");
+    expect(encoded.byteLength).toBe(1 + 8 + 1 + 2 + 12);
+  });
+
+  it("decodes chat messages as first-class server frames", () => {
+    const username = new TextEncoder().encode("tester");
+    const text = new TextEncoder().encode("hello world");
+    const buffer = new ArrayBuffer(1 + 8 + 2 + username.length + 2 + text.length);
+    const view = new DataView(buffer);
+    let offset = 0;
+    view.setUint8(offset, 0x89);
+    offset += 1;
+    view.setBigInt64(offset, 42n, false);
+    offset += 8;
+    view.setUint16(offset, username.length, false);
+    offset += 2;
+    new Uint8Array(buffer, offset, username.length).set(username);
+    offset += username.length;
+    view.setUint16(offset, text.length, false);
+    offset += 2;
+    new Uint8Array(buffer, offset, text.length).set(text);
+
+    expect(decodeServerMessage(buffer)).toEqual({
+      type: "chat_message",
+      cid: 42,
+      username: "tester",
+      text: "hello world",
+    });
+  });
+
   it("encodes jump as movement flag bit 0x04 while preserving brake bit 0x02", () => {
     const frame: MoveInputFrame = {
       seq: 1,
@@ -82,6 +120,32 @@ describe("gate movement protocol", () => {
     expect(message.position.x).toBe(100);
     expect(message.position.y).toBe(90);
     expect(message.position.z).toBe(200);
+  });
+
+  it("decodes generic result errors instead of dropping them", () => {
+    const buffer = new ArrayBuffer(10);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x80);
+    view.setBigUint64(1, 99n, false);
+    view.setUint8(9, 1);
+
+    expect(decodeServerMessage(buffer)).toEqual({
+      type: "result_error",
+      requestId: 99,
+    });
+  });
+
+  it("decodes generic result success frames without hard-coding auth semantics", () => {
+    const buffer = new ArrayBuffer(10);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x80);
+    view.setBigUint64(1, 99n, false);
+    view.setUint8(9, 0);
+
+    expect(decodeServerMessage(buffer)).toEqual({
+      type: "result_ok",
+      requestId: 99,
+    });
   });
 
   it("decodes remote snapshot movement mode from the wire", () => {
@@ -200,5 +264,13 @@ describe("gate movement protocol", () => {
       name: "actor_identity",
       byteLength: 4,
     });
+  });
+
+  it("returns null instead of throwing when known fixed-length frames are truncated", () => {
+    for (const opcode of [0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x8b, 0x8c]) {
+      const frame = new Uint8Array([opcode, 0, 1, 2]).buffer;
+      expect(() => decodeServerMessage(frame)).not.toThrow();
+      expect(decodeServerMessage(frame)).toBeNull();
+    }
   });
 });

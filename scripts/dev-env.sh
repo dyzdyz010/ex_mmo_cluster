@@ -36,8 +36,8 @@ export NODE_NAME="${NODE_NAME:-cluster@127.0.0.1}"
 export GAME_AUTH_BASE_URL="${GAME_AUTH_BASE_URL:-http://127.0.0.1:${AUTH_PORT}}"
 export GAME_WS_URL="${GAME_WS_URL:-ws://127.0.0.1:${AUTH_PORT}/ingame/ws}"
 
-# ---- 6. 客户端默认用户名 ----------------------------------------------------
-# web_client 进游戏时用这个名字走 /ingame/auto_login；不显式覆盖 = "alice"。
+# ---- 6. 非网页客户端默认用户名 ----------------------------------------------
+# bevy_client / CLI 仍可用这个基础名；web_client 默认每个页面自动生成用户名。
 export GAME_CLIENT_USERNAME="${GAME_CLIENT_USERNAME:-alice}"
 
 # ---- 7. web_client 默认运行模式（demo 用，跑 vite 时直接被 import.meta.env 读）
@@ -47,7 +47,11 @@ export GAME_CLIENT_USERNAME="${GAME_CLIENT_USERNAME:-alice}"
 export VITE_MOVEMENT_TRANSPORT="${VITE_MOVEMENT_TRANSPORT:-server}"            # server | simulated
 export VITE_INGAME_PROXY_TARGET="${VITE_INGAME_PROXY_TARGET:-${GAME_AUTH_BASE_URL}}"
 export VITE_GAME_WS_URL="${VITE_GAME_WS_URL:-${GAME_WS_URL}}"
-export VITE_GAME_CLIENT_USERNAME="${VITE_GAME_CLIENT_USERNAME:-${GAME_CLIENT_USERNAME}}"
+# Do not export VITE_GAME_CLIENT_USERNAME by default. The web client generates
+# a fresh dev username per page load so multiple tabs do not fight over one cid.
+# Export VITE_GAME_CLIENT_USERNAME manually only when a fixed web identity is
+# required.
+unset VITE_GAME_CLIENT_USERNAME
 export VITE_VOXEL_SYNC="${VITE_VOXEL_SYNC:-online}"                            # online | offline
 export VITE_VOXEL_LOGICAL_SCENE_ID="${VITE_VOXEL_LOGICAL_SCENE_ID:-1}"         # 与 DevSeed 创建的场景一致
 export VITE_VOXEL_SUBSCRIBE_RADIUS="${VITE_VOXEL_SUBSCRIBE_RADIUS:-1}"         # ChunkSubscribe 半径（L_inf）
@@ -76,7 +80,7 @@ echo "  GAME_CLIENT_USERNAME          = ${GAME_CLIENT_USERNAME}"
 echo "  VITE_MOVEMENT_TRANSPORT       = ${VITE_MOVEMENT_TRANSPORT}"
 echo "  VITE_INGAME_PROXY_TARGET      = ${VITE_INGAME_PROXY_TARGET}"
 echo "  VITE_GAME_WS_URL              = ${VITE_GAME_WS_URL}"
-echo "  VITE_GAME_CLIENT_USERNAME     = ${VITE_GAME_CLIENT_USERNAME}"
+echo "  VITE_GAME_CLIENT_USERNAME     = <auto per web page load>"
 echo "  VITE_VOXEL_SYNC               = ${VITE_VOXEL_SYNC}"
 echo "  VITE_VOXEL_LOGICAL_SCENE_ID   = ${VITE_VOXEL_LOGICAL_SCENE_ID}"
 echo "  VITE_VOXEL_SUBSCRIBE_RADIUS   = ${VITE_VOXEL_SUBSCRIBE_RADIUS}"

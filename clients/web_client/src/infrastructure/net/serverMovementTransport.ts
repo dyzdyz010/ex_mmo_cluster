@@ -2,6 +2,7 @@ import { Vector3 } from "three";
 import {
   encodeAuthRequest,
   decodeServerMessage,
+  encodeChatSayScoped,
   encodeEnterScene,
   encodeHeartbeat,
   encodeMovementInput,
@@ -11,6 +12,7 @@ import {
   type VoxelCatalogPatchMessage,
   type VoxelChunkDeltaMessage,
   type VoxelChunkInvalidateMessage,
+  encodeVoxelChunkAck,
   encodeVoxelChunkSubscribe,
   encodeVoxelChunkUnsubscribe,
   encodeVoxelDebugProbe,
@@ -34,6 +36,7 @@ import {
   EXPECTED_CHUNK_VERSION_UNSPECIFIED,
 } from "./voxelEditIntent";
 import type { ObserveLog } from "../../observe/logger";
+import type { ChatMessage, ChatScope } from "@domain/chat/types";
 import type { MoveInputFrame, RemoteMoveSnapshot } from "@domain/movement/types";
 import type {
   MovementTransport,
@@ -49,8 +52,10 @@ interface AutoLoginResponse {
 }
 
 const SERVER_TRANSPORT_MODE = "server-ws";
-const AUTO_LOGIN_TIMEOUT_MS = 5_000;
-const HANDSHAKE_TIMEOUT_MS = 8_000;
+const DEFAULT_AUTO_LOGIN_TIMEOUT_MS = 15_000;
+const MIN_AUTO_LOGIN_TIMEOUT_MS = 1_000;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+const MIN_HANDSHAKE_TIMEOUT_MS = 1_000;
 
 /**
  * Connection lifecycle as observed by the rest of the app.
@@ -87,6 +92,7 @@ export class ServerMovementTransport implements MovementTransport {
   private readonly remoteSnapshots: RemoteMoveSnapshot[] = [];
   private readonly remoteEntityEnters: { cid: number; position: Vector3 }[] = [];
   private readonly remoteEntityLeaves: number[] = [];
+  private readonly chatMessages: ChatMessage[] = [];
   private readonly timeSyncSamples: {
     requestId: number;
     clientSendTs: number;
@@ -117,12 +123,29 @@ export class ServerMovementTransport implements MovementTransport {
   private sentInputCount = 0;
   private receivedMessageCount = 0;
   private receivedAckCount = 0;
+  private receivedResultErrorCount = 0;
+  private lastResultError: {
+    requestId: number;
+    phase: ConnectionPhase;
+    inFlightMovement: boolean;
+  } | null = null;
   private receivedRemoteSnapshotCount = 0;
   private droppedSelfLoopSnapshotCount = 0;
   private lastAckSeq: number | null = null;
   private lastRemoteTickByCid = new Map<number, number>();
   private receivedPlayerStateCount = 0;
   private lastPlayerState: { cid: number; hp: number; maxHp: number; alive: boolean } | null = null;
+  private sentChatMessageCount = 0;
+  private receivedChatMessageCount = 0;
+  private lastChatSend: { requestId: number; scope: ChatScope; textLength: number } | null = null;
+  private readonly pendingChatRequests = new Map<
+    number,
+    { scope: ChatScope; textLength: number }
+  >();
+  private lastAcceptedChatSend: { requestId: number; scope: ChatScope } | null = null;
+  private lastChatMessage: ChatMessage | null = null;
+  private blockedChatSendCount = 0;
+  private lastBlockedChatSend: { scope: ChatScope; reason: string } | null = null;
   private lastTimeSyncOffsetMs: number | null = null;
   private lastError: string | null = null;
   private blockedInputCount = 0;
@@ -134,6 +157,7 @@ export class ServerMovementTransport implements MovementTransport {
   private lastAutoLoginDurationMs: number | null = null;
   private lastReadyDurationMs: number | null = null;
   private sentVoxelMessageCount = 0;
+  private sentVoxelChunkAckCount = 0;
   private receivedVoxelSnapshotCount = 0;
   private receivedVoxelIntentResultCount = 0;
   private receivedVoxelDebugProbeCount = 0;
@@ -150,6 +174,12 @@ export class ServerMovementTransport implements MovementTransport {
     baseChunkVersion: number;
     newChunkVersion: number;
     opCount: number;
+  } | null = null;
+  private lastVoxelChunkAck: {
+    requestId: number;
+    logicalSceneId: number;
+    ackCount: number;
+    acks: string[];
   } | null = null;
   private lastVoxelIntentResult: {
     requestId: number;
@@ -177,6 +207,8 @@ export class ServerMovementTransport implements MovementTransport {
     private readonly authBaseUrl: string = resolveAuthBaseUrl(),
     private readonly webSocketUrl: string = resolveGameWsUrl(),
     username: string = resolveDefaultUsername(),
+    private readonly autoLoginTimeoutMs: number = resolveAutoLoginTimeoutMs(),
+    private readonly handshakeTimeoutMs: number = resolveHandshakeTimeoutMs(),
   ) {
     this.username = username;
     void this.bootstrap();
@@ -212,6 +244,8 @@ export class ServerMovementTransport implements MovementTransport {
       sentInputCount: this.sentInputCount,
       receivedMessageCount: this.receivedMessageCount,
       receivedAckCount: this.receivedAckCount,
+      receivedResultErrorCount: this.receivedResultErrorCount,
+      lastResultError: this.lastResultError,
       receivedRemoteSnapshotCount: this.receivedRemoteSnapshotCount,
       droppedSelfLoopSnapshotCount: this.droppedSelfLoopSnapshotCount,
       lastAckSeq: this.lastAckSeq,
@@ -233,6 +267,7 @@ export class ServerMovementTransport implements MovementTransport {
       blockedInputCount: this.blockedInputCount,
       lastBlockedInputReason: this.lastBlockedInputReason,
       lastBlockedInputSeq: this.lastBlockedInputSeq,
+      chat: this.chatDebugSnapshot(),
       authBaseUrl: this.authBaseUrl,
       webSocketUrl: this.webSocketUrl,
       voxel: this.voxelDebugSnapshot(),
@@ -251,6 +286,57 @@ export class ServerMovementTransport implements MovementTransport {
     return this.authBaseUrl;
   }
 
+  chatDebugSnapshot(): Record<string, unknown> {
+    return {
+      available: this.canUseServerChat(),
+      queuedMessages: this.chatMessages.length,
+      sentChatMessageCount: this.sentChatMessageCount,
+      receivedChatMessageCount: this.receivedChatMessageCount,
+      lastSend: this.lastChatSend,
+      pendingSends: this.pendingChatRequests.size,
+      lastAccepted: this.lastAcceptedChatSend,
+      lastMessage: this.lastChatMessage,
+      blockedSendCount: this.blockedChatSendCount,
+      lastBlockedSend: this.lastBlockedChatSend,
+    };
+  }
+
+  sendChat(scope: ChatScope, text: string): number | null {
+    const normalizedText = text.trim();
+    if (normalizedText.length === 0) {
+      return this.blockChatSend(scope, "empty_text");
+    }
+
+    if (!this.canUseServerChat() || !this.socket) {
+      return this.blockChatSend(scope, this.unavailableReason());
+    }
+
+    const requestId = this.nextRequestId();
+    const encoded = encodeChatSayScoped(requestId, scope, normalizedText);
+    this.socket.send(encoded);
+    this.sentChatMessageCount += 1;
+    this.lastChatSend = {
+      requestId,
+      scope,
+      textLength: encoded.byteLength - (1 + 8 + 1 + 2),
+    };
+    this.pendingChatRequests.set(requestId, {
+      scope,
+      textLength: this.lastChatSend.textLength,
+    });
+    this.logger.emit("chat", "chat_scoped_sent", {
+      mode: this.mode,
+      request_id: requestId,
+      scope,
+      text_length: this.lastChatSend.textLength,
+    });
+    return requestId;
+  }
+
+  drainChatMessages(): ChatMessage[] {
+    return this.chatMessages.splice(0, this.chatMessages.length);
+  }
+
   voxelDebugSnapshot(): Record<string, unknown> {
     return {
       available: this.canUseServerVoxel(),
@@ -267,6 +353,7 @@ export class ServerMovementTransport implements MovementTransport {
       knownChunks: this.voxelKnownVersions.size,
       pendingPrefabRequests: this.pendingVoxelPrefabRequests.size,
       sentVoxelMessageCount: this.sentVoxelMessageCount,
+      sentVoxelChunkAckCount: this.sentVoxelChunkAckCount,
       receivedVoxelSnapshotCount: this.receivedVoxelSnapshotCount,
       receivedVoxelDeltaCount: this.receivedVoxelDeltaCount,
       receivedVoxelInvalidateCount: this.receivedVoxelInvalidateCount,
@@ -284,6 +371,7 @@ export class ServerMovementTransport implements MovementTransport {
             chunkCoord: chunkCoordKey(this.lastVoxelDelta.chunkCoord),
           }
         : null,
+      lastChunkAck: this.lastVoxelChunkAck,
       lastIntentResult: this.lastVoxelIntentResult,
       lastPrefabRequest: this.lastVoxelPrefabRequest,
       lastError: this.lastVoxelError,
@@ -363,6 +451,46 @@ export class ServerMovementTransport implements MovementTransport {
       request_id: requestId,
       logical_scene_id: request.logicalSceneId,
       chunk_count: request.chunks.length,
+    });
+    return requestId;
+  }
+
+  sendVoxelChunkAck(request: {
+    logicalSceneId: number;
+    acks: readonly VoxelKnownChunk[];
+  }): number | null {
+    if (request.acks.length === 0) {
+      this.lastVoxelError = "chunk_ack_empty";
+      return null;
+    }
+
+    if (!this.canUseServerVoxel() || !this.socket) {
+      return this.blockVoxelSend("chunk_ack");
+    }
+
+    const requestId = this.nextRequestId();
+    this.socket.send(
+      encodeVoxelChunkAck({
+        requestId,
+        logicalSceneId: request.logicalSceneId,
+        acks: request.acks,
+      }),
+    );
+    this.sentVoxelMessageCount += 1;
+    this.sentVoxelChunkAckCount += 1;
+    this.lastVoxelChunkAck = {
+      requestId,
+      logicalSceneId: request.logicalSceneId,
+      ackCount: request.acks.length,
+      acks: request.acks.map((ack) => `${chunkCoordKey(ack.chunkCoord)}@${ack.chunkVersion}`),
+    };
+    this.logger.emit("voxel", "chunk_ack_sent", {
+      request_id: requestId,
+      logical_scene_id: request.logicalSceneId,
+      ack_count: request.acks.length,
+      chunks: JSON.stringify(
+        request.acks.map((ack) => `${chunkCoordKey(ack.chunkCoord)}@${ack.chunkVersion}`),
+      ),
     });
     return requestId;
   }
@@ -713,7 +841,7 @@ export class ServerMovementTransport implements MovementTransport {
 
   private async autoLogin(): Promise<AutoLoginResponse> {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), AUTO_LOGIN_TIMEOUT_MS);
+    const timer = window.setTimeout(() => controller.abort(), this.autoLoginTimeoutMs);
     const startedAtMs = performance.now();
     let response: Response;
 
@@ -726,7 +854,7 @@ export class ServerMovementTransport implements MovementTransport {
       });
     } catch (error) {
       if (isAbortError(error)) {
-        throw new Error(`auto_login_timeout:${AUTO_LOGIN_TIMEOUT_MS}ms`);
+        throw new Error(`auto_login_timeout:${this.autoLoginTimeoutMs}ms`);
       }
       throw error;
     } finally {
@@ -799,7 +927,21 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     this.receivedMessageCount += 1;
-    const message = decodeServerMessage(data);
+    let message: ReturnType<typeof decodeServerMessage>;
+    try {
+      message = decodeServerMessage(data);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const opcode = data.byteLength > 0 ? new DataView(data).getUint8(0) : null;
+      this.lastError = `message_decode_failed:${reason}`;
+      this.logger.emit("transport", "message_decode_failed", {
+        mode: SERVER_TRANSPORT_MODE,
+        opcode: opcode ?? -1,
+        bytes: data.byteLength,
+        reason,
+      });
+      return;
+    }
     if (!message) {
       if (this.handleVoxelMessage(data)) {
         return;
@@ -816,7 +958,7 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     switch (message.type) {
-      case "auth_ok":
+      case "result_ok":
         if (message.requestId === this.authRequestId && this.socket && this.cid !== null) {
           this.connectionPhase = "enter_scene";
           this.phaseStartedAtMs = performance.now();
@@ -828,8 +970,59 @@ export class ServerMovementTransport implements MovementTransport {
             cid: this.cid,
             enter_scene_request_id: this.enterSceneRequestId,
           });
+        } else if (this.pendingChatRequests.has(message.requestId)) {
+          this.recordChatAccepted(message.requestId);
         }
         break;
+      case "result_error": {
+        const inFlightMovement = this.sentAtBySeq.has(message.requestId);
+        const maxInFlightSeq = inFlightMovement ? maxNumberKey(this.sentAtBySeq) : null;
+        this.receivedResultErrorCount += 1;
+        this.lastResultError = {
+          requestId: message.requestId,
+          phase: this.connectionPhase,
+          inFlightMovement,
+        };
+        this.lastError = `result_error:${message.requestId}`;
+        this.logger.emit("transport", "result_error", {
+          mode: SERVER_TRANSPORT_MODE,
+          request_id: message.requestId,
+          phase: this.connectionPhase,
+          in_flight_movement: inFlightMovement,
+          received_count: this.receivedResultErrorCount,
+        });
+
+        if (message.requestId === this.authRequestId && this.connectionPhase === "auth_request") {
+          this.markDisconnected(`auth_result_error:${message.requestId}`);
+          break;
+        }
+
+        if (this.pendingChatRequests.has(message.requestId)) {
+          const pending = this.pendingChatRequests.get(message.requestId);
+          this.pendingChatRequests.delete(message.requestId);
+          this.logger.emit("chat", "chat_scoped_rejected", {
+            mode: SERVER_TRANSPORT_MODE,
+            request_id: message.requestId,
+            scope: pending?.scope ?? "unknown",
+          });
+          break;
+        }
+
+        if (inFlightMovement) {
+          this.sentAtBySeq.delete(message.requestId);
+          if (maxInFlightSeq !== null && message.requestId < maxInFlightSeq) {
+            this.logger.emit("transport", "movement_result_error_superseded", {
+              mode: SERVER_TRANSPORT_MODE,
+              request_id: message.requestId,
+              max_in_flight_seq: maxInFlightSeq,
+            });
+            break;
+          }
+
+          this.markDisconnected(`movement_result_error:${message.requestId}`);
+        }
+        break;
+      }
       case "enter_scene_ok":
         if (message.requestId === this.enterSceneRequestId) {
           this.ready = true;
@@ -953,6 +1146,26 @@ export class ServerMovementTransport implements MovementTransport {
           max_hp: message.maxHp,
           alive: message.alive,
           received_count: this.receivedPlayerStateCount,
+        });
+        break;
+      case "chat_message":
+        this.chatMessages.push({
+          cid: message.cid,
+          username: message.username,
+          text: message.text,
+        });
+        this.receivedChatMessageCount += 1;
+        this.lastChatMessage = {
+          cid: message.cid,
+          username: message.username,
+          text: message.text,
+        };
+        this.logger.emit("chat", "chat_message_received", {
+          mode: SERVER_TRANSPORT_MODE,
+          cid: message.cid,
+          username: message.username,
+          text_length: new TextEncoder().encode(message.text).length,
+          received_count: this.receivedChatMessageCount,
         });
         break;
       case "known_unhandled_downlink":
@@ -1144,6 +1357,14 @@ export class ServerMovementTransport implements MovementTransport {
     return "unknown";
   }
 
+  private canUseServerChat(): boolean {
+    return (
+      this.connectionStatus === "connected" &&
+      this.ready &&
+      this.socket?.readyState === WebSocket.OPEN
+    );
+  }
+
   private recordBlockedInput(frame: MoveInputFrame, nowMs: number, reason: string): void {
     this.blockedInputCount += 1;
     this.lastBlockedInputReason = reason;
@@ -1182,6 +1403,35 @@ export class ServerMovementTransport implements MovementTransport {
     return null;
   }
 
+  private blockChatSend(scope: ChatScope, reason: string): null {
+    this.blockedChatSendCount += 1;
+    this.lastBlockedChatSend = { scope, reason };
+    this.logger.emit("chat", "send_blocked", {
+      scope,
+      reason,
+      blocked_count: this.blockedChatSendCount,
+      connection_status: this.connectionStatus,
+      connection_lost_reason: this.connectionLostReason ?? "",
+      socket_state: this.socket?.readyState ?? -1,
+    });
+    return null;
+  }
+
+  private recordChatAccepted(requestId: number): void {
+    const pending = this.pendingChatRequests.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingChatRequests.delete(requestId);
+    this.lastAcceptedChatSend = { requestId, scope: pending.scope };
+    this.logger.emit("chat", "chat_scoped_accepted", {
+      mode: SERVER_TRANSPORT_MODE,
+      request_id: requestId,
+      scope: pending.scope,
+      text_length: pending.textLength,
+    });
+  }
+
   private nextRequestId(): number {
     const current = this.requestId;
     this.requestId += 1;
@@ -1198,8 +1448,8 @@ export class ServerMovementTransport implements MovementTransport {
   private startHandshakeTimer(phase: ConnectionPhase): void {
     this.clearHandshakeTimer();
     this.handshakeTimer = window.setTimeout(() => {
-      this.markDisconnected(`${phase}_timeout:${HANDSHAKE_TIMEOUT_MS}ms`);
-    }, HANDSHAKE_TIMEOUT_MS);
+      this.markDisconnected(`${phase}_timeout:${this.handshakeTimeoutMs}ms`);
+    }, this.handshakeTimeoutMs);
   }
 
   private clearHandshakeTimer(): void {
@@ -1253,14 +1503,21 @@ export class ServerMovementTransport implements MovementTransport {
     this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
     this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
     this.remoteEntityLeaves.splice(0, this.remoteEntityLeaves.length);
+    this.chatMessages.splice(0, this.chatMessages.length);
     this.timeSyncSamples.splice(0, this.timeSyncSamples.length);
     this.voxelSnapshots.splice(0, this.voxelSnapshots.length);
     this.voxelIntentResults.splice(0, this.voxelIntentResults.length);
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
+    this.voxelDeltas.splice(0, this.voxelDeltas.length);
+    this.voxelInvalidates.splice(0, this.voxelInvalidates.length);
     this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
+    this.voxelFieldSnapshots.splice(0, this.voxelFieldSnapshots.length);
+    this.voxelFieldDestroyeds.splice(0, this.voxelFieldDestroyeds.length);
     this.pendingVoxelPrefabRequests.clear();
+    this.pendingChatRequests.clear();
     this.sentAtBySeq.clear();
     this.lastPlayerState = null;
+    this.lastChatMessage = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
   }
@@ -1333,6 +1590,26 @@ export function resolveGameWsUrl(
   return url.toString();
 }
 
+export function resolveAutoLoginTimeoutMs(
+  env: Record<string, string | undefined> = import.meta.env,
+): number {
+  return resolveTimeoutMs(
+    firstNonBlank(env.VITE_GAME_AUTO_LOGIN_TIMEOUT_MS),
+    DEFAULT_AUTO_LOGIN_TIMEOUT_MS,
+    MIN_AUTO_LOGIN_TIMEOUT_MS,
+  );
+}
+
+export function resolveHandshakeTimeoutMs(
+  env: Record<string, string | undefined> = import.meta.env,
+): number {
+  return resolveTimeoutMs(
+    firstNonBlank(env.VITE_GAME_HANDSHAKE_TIMEOUT_MS),
+    DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    MIN_HANDSHAKE_TIMEOUT_MS,
+  );
+}
+
 function firstNonBlank(...values: Array<string | undefined>): string | null {
   for (const value of values) {
     if (value && value.trim() !== "") {
@@ -1340,6 +1617,33 @@ function firstNonBlank(...values: Array<string | undefined>): string | null {
     }
   }
   return null;
+}
+
+function resolveTimeoutMs(
+  configured: string | null,
+  fallbackMs: number,
+  minimumMs: number,
+): number {
+  if (!configured) {
+    return fallbackMs;
+  }
+
+  const parsed = Number(configured);
+  if (!Number.isFinite(parsed) || parsed < minimumMs) {
+    return fallbackMs;
+  }
+
+  return Math.round(parsed);
+}
+
+function maxNumberKey(map: Map<number, unknown>): number | null {
+  let max: number | null = null;
+  for (const key of map.keys()) {
+    if (max === null || key > max) {
+      max = key;
+    }
+  }
+  return max;
 }
 
 function isAbortError(error: unknown): boolean {

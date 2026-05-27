@@ -43,7 +43,7 @@ $env:BEVY_CLIENT_AUTH_ADDR = "http://127.0.0.1:$($env:AUTH_PORT)"
 $env:GAME_AUTH_BASE_URL = "http://127.0.0.1:$($env:AUTH_PORT)"
 $env:GAME_WS_URL        = "ws://127.0.0.1:$($env:AUTH_PORT)/ingame/ws"
 
-# ---- 6. 客户端默认用户名 (基础名, 自动生成会拼成 <name>_<4hex>) --------------
+# ---- 6. 非网页客户端默认用户名 (基础名, 自动生成会拼成 <name>_<4hex>) --------
 # 显式 -Username bob    → 直接用 "bob"
 # 不带 -Username         → 自动生成 "alice_4f2a" 之类, 多开零碰撞
 $env:BEVY_CLIENT_USERNAME = "alice"
@@ -60,7 +60,11 @@ $env:HEX_HTTP_TIMEOUT     = "120"
 $env:VITE_MOVEMENT_TRANSPORT      = "server"     # server | simulated
 $env:VITE_INGAME_PROXY_TARGET     = $env:GAME_AUTH_BASE_URL
 $env:VITE_GAME_WS_URL             = $env:GAME_WS_URL
-$env:VITE_GAME_CLIENT_USERNAME    = $env:GAME_CLIENT_USERNAME
+# Do not set VITE_GAME_CLIENT_USERNAME by default. The web client generates a
+# fresh dev username per page load so multiple tabs do not fight over one cid.
+# Set VITE_GAME_CLIENT_USERNAME manually after loading this file only when a
+# fixed web identity is required.
+Remove-Item Env:\VITE_GAME_CLIENT_USERNAME -ErrorAction SilentlyContinue
 $env:VITE_VOXEL_SYNC              = "online"     # online | offline
 $env:VITE_VOXEL_LOGICAL_SCENE_ID  = "1"          # 与 DevSeed 创建的场景一致
 $env:VITE_VOXEL_SUBSCRIBE_RADIUS  = "1"          # ChunkSubscribe 半径 (L_inf)
@@ -87,7 +91,7 @@ Write-Host "  GAME_CLIENT_USERNAME         = $env:GAME_CLIENT_USERNAME"
 Write-Host "  VITE_MOVEMENT_TRANSPORT      = $env:VITE_MOVEMENT_TRANSPORT"
 Write-Host "  VITE_INGAME_PROXY_TARGET     = $env:VITE_INGAME_PROXY_TARGET"
 Write-Host "  VITE_GAME_WS_URL             = $env:VITE_GAME_WS_URL"
-Write-Host "  VITE_GAME_CLIENT_USERNAME    = $env:VITE_GAME_CLIENT_USERNAME"
+Write-Host "  VITE_GAME_CLIENT_USERNAME    = <auto per web page load>"
 Write-Host "  VITE_VOXEL_SYNC              = $env:VITE_VOXEL_SYNC"
 Write-Host "  VITE_VOXEL_LOGICAL_SCENE_ID  = $env:VITE_VOXEL_LOGICAL_SCENE_ID"
 Write-Host "  VITE_VOXEL_SUBSCRIBE_RADIUS  = $env:VITE_VOXEL_SUBSCRIBE_RADIUS"

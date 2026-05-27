@@ -79,6 +79,37 @@ describe("RenderOrchestrator actor display", () => {
     expect(render.getActorDisplaySnapshot().authority.y).toBe(authoritativePosition.y);
     render.dispose();
   });
+
+  it("smooths authority display jumps between server movement acks", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new LocalVoxelWorldAdapter();
+    const renderedPosition = new Vector3(50, 185, 50);
+    let authoritativePosition = new Vector3(50, 185, 50);
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      {
+        getRenderedPosition: () => renderedPosition.clone(),
+        getAuthoritativePosition: () => authoritativePosition.clone(),
+        getAuthoritativeRenderPosition: () => authoritativePosition.clone(),
+        getCurrentState: () => ({ groundY: renderedPosition.y }),
+      } as never,
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.onFrame(0, 16);
+    authoritativePosition = new Vector3(50, 285, 50);
+    render.onFrame(16, 16);
+
+    const displayedY = render.getActorDisplaySnapshot().authority.y;
+    expect(displayedY).toBeGreaterThan(185);
+    expect(displayedY).toBeLessThan(285);
+    render.dispose();
+  });
 });
 
 class ServerAuthoritativePreviewWorld extends LocalVoxelWorldAdapter {
@@ -375,6 +406,7 @@ function createTestLocalPlayer(
   return {
     getRenderedPosition: () => renderedPosition.clone(),
     getAuthoritativePosition: () => authoritativePosition.clone(),
+    getAuthoritativeRenderPosition: () => authoritativePosition.clone(),
     getCurrentState: () => ({ groundY: options.groundY ?? renderedPosition.y }),
   } as never;
 }

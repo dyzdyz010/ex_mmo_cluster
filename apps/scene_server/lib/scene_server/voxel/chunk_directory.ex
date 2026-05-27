@@ -13,6 +13,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkProcess
 
+  @chunk_call_timeout_ms 15_000
+  @collision_query_timeout_ms 1_000
+  @collision_directory_call_timeout_ms @collision_query_timeout_ms + 250
+
   @doc "Starts the chunk directory."
   def start_link(opts \\ []) do
     {server_opts, init_opts} = Keyword.split(opts, [:name])
@@ -35,8 +39,12 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   `ChunkDirectory` owns lookup/startup only. `ChunkProcess` owns the voxel
   truth and validates the local macro/micro samples.
   """
-  def collision_query(server \\ __MODULE__, attrs) do
-    GenServer.call(server, {:collision_query, attrs})
+  def collision_query(
+        server \\ __MODULE__,
+        attrs,
+        timeout \\ @collision_directory_call_timeout_ms
+      ) do
+    GenServer.call(server, {:collision_query, attrs}, timeout)
   end
 
   @doc """
@@ -203,6 +211,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     {:ok,
      %{
        chunk_sup: Keyword.get(opts, :chunk_sup, SceneServer.VoxelChunkSup),
+       chunk_call_timeout_ms: Keyword.get(opts, :chunk_call_timeout_ms, @chunk_call_timeout_ms),
+       collision_query_timeout_ms:
+         Keyword.get(opts, :collision_query_timeout_ms, @collision_query_timeout_ms),
        chunks: %{}
      }}
   end
@@ -236,7 +247,13 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {{:ok, chunk_pid}, next_state} ->
         query_attrs = Map.take(attrs, [:samples])
 
-        case ChunkProcess.collision_query(chunk_pid, query_attrs) do
+        case safe_chunk_call(:collision_query, fn ->
+               ChunkProcess.collision_query(
+                 chunk_pid,
+                 query_attrs,
+                 state.collision_query_timeout_ms
+               )
+             end) do
           {:ok, result} -> {:reply, {:ok, result}, next_state}
           {:error, reason} -> {:reply, {:error, reason}, next_state}
         end
@@ -257,7 +274,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
         opts = [
           request_id: attrs.request_id,
           send_snapshot?: attrs.send_snapshot?,
-          known_version: attrs.known_version
+          known_version: attrs.known_version,
+          delivery_format: attrs.delivery_format,
+          tier: attrs.tier
         ]
 
         case ChunkProcess.subscribe(chunk_pid, attrs.subscriber, opts) do
@@ -494,8 +513,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     case Map.get(state.chunks, key) do
       pid when is_pid(pid) ->
         if Process.alive?(pid) do
-          maybe_apply_chunk_lease(pid, Map.get(attrs, :lease))
-          {{:ok, pid}, state}
+          case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+            :ok -> {{:ok, pid}, state}
+            {:error, reason} -> {{:error, reason}, state}
+          end
         else
           start_chunk(state, key, attrs)
         end
@@ -532,11 +553,27 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
-  defp maybe_apply_chunk_lease(_pid, nil), do: :ok
+  defp maybe_apply_chunk_lease(_pid, nil, _timeout_ms), do: :ok
 
-  defp maybe_apply_chunk_lease(pid, lease) do
-    _ = ChunkProcess.apply_lease(pid, lease)
-    :ok
+  defp maybe_apply_chunk_lease(pid, lease, timeout_ms) do
+    case safe_chunk_call(:apply_lease, fn -> ChunkProcess.apply_lease(pid, lease, timeout_ms) end) do
+      {:ok, _lease} -> :ok
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_chunk_call(operation, fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error, {:chunk_unavailable, {exception.__struct__, Exception.message(exception)}}}
+  catch
+    :exit, {:timeout, _call} ->
+      {:error, {:chunk_unavailable, {:timeout, operation}}}
+
+    :exit, reason ->
+      {:error, {:chunk_unavailable, reason}}
   end
 
   defp normalize_attrs(attrs) when is_map(attrs) do
@@ -559,9 +596,24 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     Map.merge(attrs, %{
       subscriber: Map.get(raw_attrs, :subscriber, self()),
       send_snapshot?: Map.get(raw_attrs, :send_snapshot?, true),
-      known_version: Map.get(raw_attrs, :known_version)
+      known_version: Map.get(raw_attrs, :known_version),
+      delivery_format: normalize_delivery_format(raw_attrs),
+      tier: normalize_delivery_tier(Map.get(raw_attrs, :tier))
     })
   end
+
+  defp normalize_delivery_format(%{delivery_format: format}) when format in [:raw, :envelope],
+    do: format
+
+  defp normalize_delivery_format(%{delivery_format: "envelope"}), do: :envelope
+  defp normalize_delivery_format(%{delivery_format: "raw"}), do: :raw
+  defp normalize_delivery_format(%{delivery_envelope?: true}), do: :envelope
+  defp normalize_delivery_format(_attrs), do: :raw
+
+  defp normalize_delivery_tier(tier) when tier in [:near, :halo], do: tier
+  defp normalize_delivery_tier("near"), do: :near
+  defp normalize_delivery_tier("halo"), do: :halo
+  defp normalize_delivery_tier(_tier), do: :near
 
   defp normalize_unsubscribe_attrs(attrs) when is_map(attrs) do
     {:ok,

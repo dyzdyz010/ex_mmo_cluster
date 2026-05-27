@@ -25,6 +25,7 @@ defmodule GateServer.Codec do
   - `0x05` AuthRequest
   - `0x08` ChatSay
   - `0x09` SkillCast
+  - `0x0A` ChatSayScoped
   - `0x60` Voxel ChunkSubscribe
   - `0x61` Voxel ChunkUnsubscribe
   - `0x64` VoxelImpactIntent
@@ -32,6 +33,7 @@ defmodule GateServer.Codec do
   - `0x67` VoxelPrefabPlaceIntent
   - `0x6F` VoxelDebugProbe
   - `0x75` FieldConductIntent
+  - `0x76` VoxelChunkAck
 
   ### Server → client
 
@@ -72,6 +74,7 @@ defmodule GateServer.Codec do
   @msg_fast_lane_attach 0x07
   @msg_chat_say 0x08
   @msg_skill_cast 0x09
+  @msg_chat_say_scoped 0x0A
   @msg_voxel_chunk_subscribe 0x60
   @msg_voxel_chunk_unsubscribe 0x61
   @msg_voxel_chunk_snapshot 0x62
@@ -87,6 +90,7 @@ defmodule GateServer.Codec do
   @msg_voxel_debug_probe 0x6F
   @msg_voxel_edit_intent 0x70
   @msg_voxel_field_conduct_intent 0x75
+  @msg_voxel_chunk_ack 0x76
 
   # ── Server → Client message types ──
   @msg_result 0x80
@@ -201,6 +205,16 @@ defmodule GateServer.Codec do
 
   def decode(<<@msg_chat_say, _rest::binary>>), do: {:error, :invalid_message}
 
+  # ChatSayScoped: 1 + 8 + 1 + 2 + text
+  def decode(
+        <<@msg_chat_say_scoped, request_id::64-big, scope::8, tlen::16-big,
+          text::binary-size(tlen)>>
+      ) do
+    {:ok, {:chat_say_scoped, decode_chat_scope(scope), text, request_id}}
+  end
+
+  def decode(<<@msg_chat_say_scoped, _rest::binary>>), do: {:error, :invalid_message}
+
   # SkillCast: 1 + 8 + 2 + 1 + 8 + 24
   def decode(
         <<@msg_skill_cast, request_id::64-big, skill_id::16-big, target_kind::8,
@@ -267,6 +281,29 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_chunk_unsubscribe, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelChunkAck:
+  # 1 + request_id:u64 + logical_scene_id:u64 + ack_count:u16 +
+  # (chunk_coord:i32x3 + chunk_version:u64)[]
+  def decode(
+        <<@msg_voxel_chunk_ack, request_id::64-big, logical_scene_id::64-big, ack_count::16-big,
+          rest::binary>>
+      ) do
+    with {:ok, acks, <<>>} <- decode_voxel_known_chunks(rest, ack_count, []) do
+      {:ok,
+       {:voxel_chunk_ack,
+        %{
+          request_id: request_id,
+          logical_scene_id: logical_scene_id,
+          acks: acks
+        }}}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_message}
+    end
+  end
+
+  def decode(<<@msg_voxel_chunk_ack, _rest::binary>>), do: {:error, :invalid_message}
 
   # VoxelImpactIntent:
   # 1 + request_id:u64 + client_intent_seq:u32 + logical_scene_id:u64 +
@@ -860,6 +897,11 @@ defmodule GateServer.Codec do
 
   defp decode_bool(0), do: false
   defp decode_bool(_), do: true
+
+  defp decode_chat_scope(0), do: :world
+  defp decode_chat_scope(1), do: :region
+  defp decode_chat_scope(2), do: :local
+  defp decode_chat_scope(value), do: {:unknown, value}
 
   defp encode_actor_kind(:player), do: 0
   defp encode_actor_kind(:npc), do: 1

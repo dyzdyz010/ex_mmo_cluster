@@ -36,6 +36,10 @@ defmodule AuthServerWeb.GameWebSocket do
     {:push, {:binary, IO.iodata_to_binary(payload)}, state}
   end
 
+  def handle_info({:gate_ws_close, reason}, state) do
+    {:stop, reason, state}
+  end
+
   def handle_info(_message, state) do
     {:ok, state}
   end

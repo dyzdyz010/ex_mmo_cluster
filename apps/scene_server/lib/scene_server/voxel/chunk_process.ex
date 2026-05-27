@@ -65,8 +65,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @doc "Applies the current region lease used for DataService writes."
-  def apply_lease(server, lease) do
-    GenServer.call(server, {:apply_lease, normalize_lease(lease)})
+  def apply_lease(server, lease, timeout \\ 5_000) do
+    GenServer.call(server, {:apply_lease, normalize_lease(lease)}, timeout)
   end
 
   @doc """
@@ -156,8 +156,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   Subscribes a process to authoritative chunk updates.
 
   The subscriber is monitored and immediately receives the current snapshot
-  payload as `{:voxel_chunk_snapshot_payload, payload}`. This message is a
-  temporary snapshot fallback until the scene chunk delta format lands.
+  payload. Legacy subscribers receive `{:voxel_chunk_snapshot_payload, payload}`;
+  callers that pass `delivery_format: :envelope` receive
+  `{:voxel_delivery_envelope, envelope}` with server-authoritative lease and
+  chunk metadata.
   Pass `send_snapshot?: false`, or a matching `known_version`, to establish the
   subscription without re-sending a snapshot the caller already has.
   """
@@ -187,9 +189,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   callers such as movement resolvers only submit local samples and consume the
   occupied subset returned here.
   """
-  @spec collision_query(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
-  def collision_query(server, attrs) when is_map(attrs) do
-    GenServer.call(server, {:collision_query, attrs})
+  @spec collision_query(GenServer.server(), map(), timeout()) :: {:ok, map()} | {:error, term()}
+  def collision_query(server, attrs, timeout \\ 5_000) when is_map(attrs) do
+    GenServer.call(server, {:collision_query, attrs}, timeout)
   end
 
   @doc "Persists the current chunk through DataService's fenced snapshot store."
@@ -800,8 +802,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     subscriber_count = map_size(state.subscribers)
 
-    Enum.each(state.subscribers, fn {subscriber, _opts} ->
-      send(subscriber, {:voxel_chunk_invalidate_payload, payload})
+    Enum.each(state.subscribers, fn {subscriber, subscriber_state} ->
+      push_chunk_invalidate(state, subscriber, subscriber_state, payload, reason)
     end)
 
     next_state = clear_subscriptions(state)
@@ -926,7 +928,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
     request_id = Keyword.get(opts, :request_id, 0)
     known_version = Keyword.get(opts, :known_version)
     send_snapshot? = Keyword.get(opts, :send_snapshot?, true)
-    {state, monitor_ref} = put_subscriber(state, subscriber, request_id)
+    delivery_opts = normalize_subscriber_delivery_opts(opts)
+
+    {state, monitor_ref, subscriber_state} =
+      put_subscriber(state, subscriber, request_id, delivery_opts)
+
     state = maybe_schedule_auto_circuit_refresh_for_subscriber(state)
     payload = encode_snapshot_payload(state.storage, request_id)
     snapshot_sent? = send_snapshot? and known_version != state.storage.chunk_version
@@ -940,13 +946,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
         monitor_ref: monitor_ref,
         request_id: request_id,
         known_version: known_version,
+        delivery_format: subscriber_state.delivery_format,
+        tier: subscriber_state.tier,
         snapshot_sent?: snapshot_sent?,
         subscriber_count: map_size(state.subscribers)
       }
     end)
 
     if snapshot_sent? do
-      push_snapshot_fallback(state, subscriber, request_id, payload, :subscribe)
+      push_snapshot_fallback(state, subscriber, subscriber_state, payload, :subscribe)
     end
 
     {:reply, {:ok, payload}, state}
@@ -2052,6 +2060,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp build_intents_storage(storage, intents) do
     next_version = storage.chunk_version + 1
 
+    case detect_solid_block_batch(storage, intents, next_version) do
+      {:solid_batch, entries, changed_count, skipped_count} when changed_count > 0 ->
+        next_storage =
+          storage
+          |> Storage.put_solid_blocks(entries)
+          |> bump_chunk_version()
+
+        {:ok, next_storage, changed_count, skipped_count}
+
+      {:solid_batch, _entries, 0, skipped_count} ->
+        {:ok, storage, 0, skipped_count}
+
+      :mixed ->
+        build_mixed_or_micro_intents_storage(storage, intents, next_version)
+    end
+  rescue
+    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp build_mixed_or_micro_intents_storage(storage, intents, next_version) do
     case detect_micro_block_batches(storage, intents) do
       {:micro_batches, groups, changed_count, skipped_count} when changed_count > 0 ->
         # Phase A1-1b fast-path:整 batch 都是 :put_micro_block on same macro
@@ -2097,8 +2125,41 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
         {:ok, storage, changed_count, skipped_count}
     end
-  rescue
-    _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp detect_solid_block_batch(storage, intents, next_version) do
+    if Enum.all?(intents, fn intent -> intent.operation == :put_solid_block end) do
+      Enum.reduce_while(intents, {[], MapSet.new(), 0, 0}, fn intent,
+                                                              {entries, seen, changed, skipped} ->
+        if MapSet.member?(seen, intent.macro) do
+          {:halt, :mixed}
+        else
+          block = intent.block
+
+          opts =
+            intent.opts
+            |> Keyword.put_new(:cell_version, next_version)
+            |> Keyword.put_new_lazy(:cell_hash, fn -> Hash.digest32(inspect(block)) end)
+
+          seen = MapSet.put(seen, intent.macro)
+
+          if solid_block_matches?(storage, intent.macro, block) do
+            {:cont, {entries, seen, changed, skipped + 1}}
+          else
+            {:cont, {[{intent.macro, block, opts} | entries], seen, changed + 1, skipped}}
+          end
+        end
+      end)
+      |> case do
+        :mixed ->
+          :mixed
+
+        {entries, _seen, changed_count, skipped_count} ->
+          {:solid_batch, Enum.reverse(entries), changed_count, skipped_count}
+      end
+    else
+      :mixed
+    end
   end
 
   # Phase A1-1b detector:返回 `{:batch, macro_index, [{slot, layer_attrs}, ...]}`
@@ -3068,7 +3129,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     %{storage | chunk_version: storage.chunk_version + 1}
   end
 
-  defp put_subscriber(state, subscriber, request_id) do
+  defp put_subscriber(state, subscriber, request_id, delivery_opts) do
     state =
       case Map.fetch(state.subscribers, subscriber) do
         {:ok, %{monitor_ref: monitor_ref}} ->
@@ -3081,7 +3142,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end
 
     monitor_ref = Process.monitor(subscriber)
-    subscriber_state = %{monitor_ref: monitor_ref, request_id: request_id}
+
+    subscriber_state =
+      %{
+        monitor_ref: monitor_ref,
+        request_id: request_id,
+        delivery_format: delivery_opts.delivery_format,
+        tier: delivery_opts.tier
+      }
 
     state = %{
       state
@@ -3089,8 +3157,34 @@ defmodule SceneServer.Voxel.ChunkProcess do
         subscriber_monitors: Map.put(state.subscriber_monitors, monitor_ref, subscriber)
     }
 
-    {state, monitor_ref}
+    {state, monitor_ref, subscriber_state}
   end
+
+  defp normalize_subscriber_delivery_opts(opts) do
+    %{
+      delivery_format: normalize_subscriber_delivery_format(opts),
+      tier: normalize_subscriber_tier(Keyword.get(opts, :tier))
+    }
+  end
+
+  defp normalize_subscriber_delivery_format(opts) do
+    cond do
+      Keyword.get(opts, :delivery_format) in [:raw, :envelope] ->
+        Keyword.fetch!(opts, :delivery_format)
+
+      Keyword.get(opts, :delivery_format) == "envelope" or
+          Keyword.get(opts, :delivery_envelope?) == true ->
+        :envelope
+
+      true ->
+        :raw
+    end
+  end
+
+  defp normalize_subscriber_tier(tier) when tier in [:near, :halo], do: tier
+  defp normalize_subscriber_tier("near"), do: :near
+  defp normalize_subscriber_tier("halo"), do: :halo
+  defp normalize_subscriber_tier(_tier), do: :near
 
   defp drop_subscriber(state, subscriber) do
     case Map.pop(state.subscribers, subscriber) do
@@ -3329,8 +3423,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
         ops: ops
       })
 
-    Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
-      send(subscriber, {:voxel_chunk_delta_payload, delta_payload})
+    Enum.each(state.subscribers, fn {subscriber, subscriber_state} ->
+      push_chunk_delta_payload(state, subscriber, subscriber_state, delta_payload, base_version)
 
       CliObserve.emit("voxel_chunk_delta_push", fn ->
         %{
@@ -3340,7 +3434,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
           new_chunk_version: state.storage.chunk_version,
           op_count: length(ops),
           subscriber: subscriber,
-          request_id: request_id,
+          request_id: subscriber_state.request_id,
+          delivery_format: subscriber_state.delivery_format,
+          tier: subscriber_state.tier,
           reason: reason,
           byte_size: byte_size(delta_payload)
         }
@@ -3351,8 +3447,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp push_snapshot_fallbacks(state, reason) do
     payload = encode_snapshot_payload(state.storage, 0)
 
-    Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
-      push_snapshot_fallback(state, subscriber, request_id, payload, reason)
+    Enum.each(state.subscribers, fn {subscriber, subscriber_state} ->
+      push_snapshot_fallback(state, subscriber, subscriber_state, payload, reason)
     end)
   end
 
@@ -4384,8 +4480,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # Temporary ChunkDelta fallback: push the full authoritative snapshot until
   # the scene/gate delta wire contract is available.
-  defp push_snapshot_fallback(state, subscriber, request_id, payload, reason) do
-    send(subscriber, {:voxel_chunk_snapshot_payload, payload})
+  defp push_snapshot_fallback(state, subscriber, subscriber_state, payload, reason) do
+    push_chunk_snapshot(state, subscriber, subscriber_state, payload)
 
     CliObserve.emit("voxel_chunk_snapshot_push", fn ->
       %{
@@ -4393,13 +4489,96 @@ defmodule SceneServer.Voxel.ChunkProcess do
         chunk_coord: state.chunk_coord,
         chunk_version: state.storage.chunk_version,
         subscriber: subscriber,
-        request_id: request_id,
+        request_id: subscriber_state.request_id,
+        delivery_format: subscriber_state.delivery_format,
+        tier: subscriber_state.tier,
         reason: reason,
         byte_size: byte_size(payload),
         fallback: :snapshot_until_chunk_delta
       }
     end)
   end
+
+  defp push_chunk_snapshot(state, subscriber, subscriber_state, payload) do
+    case delivery_format_for(state, subscriber_state) do
+      :envelope ->
+        envelope =
+          chunk_delivery_envelope(state, subscriber_state, :snapshot, payload, %{
+            chunk_version: state.storage.chunk_version
+          })
+
+        send(subscriber, {:voxel_delivery_envelope, envelope})
+
+      :raw ->
+        send(subscriber, {:voxel_chunk_snapshot_payload, payload})
+    end
+  end
+
+  defp push_chunk_delta_payload(state, subscriber, subscriber_state, payload, base_version) do
+    case delivery_format_for(state, subscriber_state) do
+      :envelope ->
+        envelope =
+          chunk_delivery_envelope(state, subscriber_state, :delta, payload, %{
+            base_server_version: base_version,
+            base_chunk_version: base_version,
+            chunk_version: state.storage.chunk_version
+          })
+
+        send(subscriber, {:voxel_delivery_envelope, envelope})
+
+      :raw ->
+        send(subscriber, {:voxel_chunk_delta_payload, payload})
+    end
+  end
+
+  defp push_chunk_invalidate(state, subscriber, subscriber_state, payload, reason) do
+    case delivery_format_for(state, subscriber_state) do
+      :envelope ->
+        envelope =
+          chunk_delivery_envelope(state, subscriber_state, :invalidate, payload, %{
+            reason: reason,
+            reason_name: Codec.invalidate_reason_name(reason)
+          })
+
+        send(subscriber, {:voxel_delivery_envelope, envelope})
+
+      :raw ->
+        send(subscriber, {:voxel_chunk_invalidate_payload, payload})
+    end
+  end
+
+  defp delivery_format_for(%{lease: lease}, %{delivery_format: :envelope}) when is_map(lease),
+    do: :envelope
+
+  defp delivery_format_for(_state, _subscriber_state), do: :raw
+
+  defp chunk_delivery_envelope(state, subscriber_state, frame_kind, payload, extra) do
+    lease = state.lease
+
+    %{
+      frame_kind: frame_kind,
+      logical_scene_id: state.logical_scene_id,
+      chunk_coord: state.chunk_coord,
+      tier: subscriber_state.tier,
+      stream_class: stream_class_for_frame_kind(frame_kind),
+      byte_size: byte_size(payload),
+      server_version: state.storage.chunk_version,
+      lease_id: lease.lease_id,
+      owner_epoch: lease.owner_epoch,
+      payload: payload
+    }
+    |> Map.merge(extra)
+    |> maybe_put_region_id(lease)
+  end
+
+  defp stream_class_for_frame_kind(:snapshot), do: :voxel_snapshot
+  defp stream_class_for_frame_kind(:delta), do: :voxel_delta
+  defp stream_class_for_frame_kind(:invalidate), do: :reliable_control
+
+  defp maybe_put_region_id(envelope, %{region_id: region_id}) when not is_nil(region_id),
+    do: Map.put(envelope, :region_id, region_id)
+
+  defp maybe_put_region_id(envelope, _lease), do: envelope
 
   defp encode_snapshot_payload(%Storage{} = storage, request_id) do
     Codec.encode_chunk_snapshot_payload(%{request_id: request_id, storage: storage})

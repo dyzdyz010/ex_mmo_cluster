@@ -14,7 +14,22 @@ defmodule WorldServer.CliObserve.Writer do
   end
 
   @impl true
+  def handle_cast({:write, path, event, fields}, state) do
+    write_line(path, event, fields)
+    {:noreply, state}
+  rescue
+    _ -> {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:write, event, fields}, %{path: path} = state) do
+    write_line(path, event, fields)
+    {:noreply, state}
+  rescue
+    _ -> {:noreply, state}
+  end
+
+  defp write_line(path, event, fields) do
     File.mkdir_p!(Path.dirname(path))
 
     line =
@@ -32,9 +47,6 @@ defmodule WorldServer.CliObserve.Writer do
       |> IO.iodata_to_binary()
 
     File.write!(path, line, [:append])
-    {:noreply, state}
-  rescue
-    _ -> {:noreply, state}
   end
 
   defp scrub(fields) do
