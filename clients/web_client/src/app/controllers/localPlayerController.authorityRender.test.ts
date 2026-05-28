@@ -41,6 +41,7 @@ function makeMovingAck(velocityX: number): MovementAck {
   return {
     ackSeq: 1,
     authTick: 1,
+    serverSendMs: 0,
     position: new Vector3(0, 0, 0),
     velocity: new Vector3(velocityX, 0, 0),
     acceleration: new Vector3(0, 0, 0),

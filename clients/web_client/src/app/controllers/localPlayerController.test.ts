@@ -148,6 +148,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: acceptedState!.seq,
         authTick: acceptedState!.tick,
+        serverSendMs: 0,
         position: acceptedState!.position.clone(),
         velocity: acceptedState!.velocity.clone(),
         acceleration: acceptedState!.acceleration.clone(),
@@ -189,6 +190,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: firstInput!.seq,
         authTick: firstInput!.clientTick,
+        serverSendMs: 0,
         position: firstAuthoritative.position.clone(),
         velocity: firstAuthoritative.velocity.clone(),
         acceleration: firstAuthoritative.acceleration.clone(),
@@ -217,6 +219,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: 0,
         authTick: 0,
+        serverSendMs: 0,
         position: new Vector3(0, 0, 0),
         velocity: new Vector3(100, 0, 0),
         acceleration: new Vector3(0, 0, 0),
@@ -246,6 +249,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: 0,
         authTick: 0,
+        serverSendMs: 0,
         position: new Vector3(0, 0, 0),
         velocity: new Vector3(0, 0, 0),
         acceleration: new Vector3(0, 0, 0),

@@ -35,6 +35,7 @@ function ack({
   return {
     ackSeq,
     authTick,
+    serverSendMs: 0,
     position: new Vector3(x, 0, 0),
     velocity: new Vector3(),
     acceleration: new Vector3(),
