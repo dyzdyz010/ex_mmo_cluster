@@ -114,6 +114,18 @@ defmodule GateServer.Codec do
   @status_ok 0x00
   @status_error 0x01
 
+  # ── Protocol versioning (Pillar 1.1) ──
+  # PROTOCOL_VERSION 在 enter-scene 握手回传，客户端 fail-fast 断言一致。
+  # MOVEMENT_WIRE_SCHEMA 是热点帧（movement/player_move/ack）的逐帧 schema 守卫。
+  @protocol_version 1
+  @movement_wire_schema 1
+
+  @doc "当前线协议版本（握手协商）。"
+  def protocol_version, do: @protocol_version
+
+  @doc "当前移动热点帧 wire schema 版本。"
+  def movement_wire_schema, do: @movement_wire_schema
+
   # ═══════════════════════════════════════════════════════════
   # Decode: binary → structured tuple
   # ═══════════════════════════════════════════════════════════
