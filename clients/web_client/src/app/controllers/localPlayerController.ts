@@ -324,6 +324,10 @@ export class LocalPlayerController implements FrameSubscriber {
       {
         cid: 0,
         serverTick: ack.authTick,
+        // Pillar 1.1: pass through the server-send wall-clock so the
+        // authority render buffer carries the same field the rest of the
+        // interpolation pipeline expects.
+        serverSendMs: ack.serverSendMs,
         position: ack.position,
         velocity: ack.velocity,
         acceleration: ack.acceleration,

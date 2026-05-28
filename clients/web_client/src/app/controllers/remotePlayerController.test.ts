@@ -12,6 +12,7 @@ function remoteSnapshot(
   return {
     cid: 42,
     serverTick: 7,
+    serverSendMs: 0,
     position: new Vector3(1, 2, 3),
     velocity: new Vector3(0, 10, 0),
     acceleration: new Vector3(0, -9, 0),

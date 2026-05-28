@@ -10,6 +10,7 @@ function snapshot(
   return {
     cid: 7,
     serverTick,
+    serverSendMs: 0,
     position: new Vector3(x, 0, 0),
     velocity: new Vector3(100, 0, 0),
     acceleration: new Vector3(),

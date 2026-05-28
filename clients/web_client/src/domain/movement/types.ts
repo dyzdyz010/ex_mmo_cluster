@@ -54,6 +54,10 @@ export interface PredictedMoveState {
 export interface MovementAck {
   ackSeq: number;
   authTick: number;
+  // Pillar 1.1: wall-clock send timestamp (ms) injected by the server at
+  // the send site. Stored here; consumed by the interpolation time-axis in
+  // pillar 1.3.
+  serverSendMs: number;
   position: Vector3;
   velocity: Vector3;
   acceleration: Vector3;
@@ -72,6 +76,10 @@ export interface MovementAck {
 export interface RemoteMoveSnapshot {
   cid: number;
   serverTick: number;
+  // Pillar 1.1: wall-clock send timestamp (ms) injected by the server at
+  // the send site. Stored here; consumed by the interpolation time-axis in
+  // pillar 1.3.
+  serverSendMs: number;
   position: Vector3;
   velocity: Vector3;
   acceleration: Vector3;
@@ -121,6 +129,7 @@ export function cloneMovementAck(ack: MovementAck): MovementAck {
   const cloned: MovementAck = {
     ackSeq: ack.ackSeq,
     authTick: ack.authTick,
+    serverSendMs: ack.serverSendMs,
     position: ack.position.clone(),
     velocity: ack.velocity.clone(),
     acceleration: ack.acceleration.clone(),
@@ -136,6 +145,7 @@ export function cloneRemoteMoveSnapshot(snapshot: RemoteMoveSnapshot): RemoteMov
   const cloned: RemoteMoveSnapshot = {
     cid: snapshot.cid,
     serverTick: snapshot.serverTick,
+    serverSendMs: snapshot.serverSendMs,
     position: snapshot.position.clone(),
     velocity: snapshot.velocity.clone(),
     acceleration: snapshot.acceleration.clone(),
