@@ -435,6 +435,92 @@ describe("server movement transport result errors", () => {
   });
 });
 
+// ── Pillar 1.1 integration: protocol_version mismatch fail-fast ──────────────
+// Verifies that an enter_scene_ok frame carrying a mismatched protocol_version
+// causes the transport to enter the disconnected state and set ready=false,
+// rather than silently accepting the session and producing corrupt decodes on
+// every subsequent message.
+describe("server movement transport protocol version guard", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("window", {
+      location: viteDevLocation,
+      setTimeout: vi.fn(() => 1),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ token: "dev-token", cid: 42, username: "tester" }),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("disconnects immediately when enter_scene_ok carries an unexpected protocol_version", async () => {
+    const emit = vi.fn();
+    const logger = { emit } as unknown as ObserveLog;
+    const transport = new ServerMovementTransport(
+      logger,
+      "http://127.0.0.1:20000",
+      "ws://127.0.0.1:20000/ingame/ws",
+      "tester",
+    );
+    await flushAsync();
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    // Complete the auth handshake so we reach the enter_scene phase.
+    socket?.open();
+    socket?.message(resultFrame(1, true)); // auth ok
+
+    // Build a 40-byte enter_scene_ok frame (0x84) with protocol_version = 99
+    // instead of the expected PROTOCOL_VERSION (1), placed at byte offset 38.
+    //
+    // Layout (Pillar 1.1 wire spec):
+    //   [0]     opcode         u8  = 0x84
+    //   [1..8]  packet_id      u64 (bigEndian)
+    //   [9]     status         u8  = 0x00 (ok)
+    //   [10..17] x             f64
+    //   [18..25] y             f64
+    //   [26..33] z             f64
+    //   [34..37] expected_seq  u32
+    //   [38..39] protocol_version u16 = 99  ← mismatch
+    const buffer = new ArrayBuffer(40);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x84);
+    view.setBigUint64(1, BigInt(2), false); // packet_id matches enter_scene request_id
+    view.setUint8(9, 0);
+    view.setFloat64(10, 0, false);
+    view.setFloat64(18, 0, false);
+    view.setFloat64(26, 0, false);
+    view.setUint32(34, 1, false);
+    view.setUint16(38, 99, false); // mismatched protocol_version
+
+    socket?.message(buffer);
+
+    // The transport must fail-fast: enter disconnected state with ready=false.
+    expect(transport.debugSnapshot()).toMatchObject({
+      connectionStatus: "disconnected",
+      ready: false,
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "transport",
+      "connection_lost",
+      expect.objectContaining({
+        reason: expect.stringContaining("protocol_version_mismatch"),
+      }),
+    );
+  });
+});
+
 describe("server movement transport runtime config", () => {
   it("honors explicit VITE_GAME_* endpoint overrides", () => {
     const env = {
