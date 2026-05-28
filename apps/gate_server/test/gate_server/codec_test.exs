@@ -919,28 +919,30 @@ defmodule GateServer.CodecTest do
       assert <<0x82, 100::64-big>> == bin
     end
 
-    test "encodes player_move" do
+    test "encodes player_move (compact, schema v1 + server_send_ms)" do
       {:ok, bin} =
         Codec.encode(
-          {:player_move, 55, 9, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :airborne}
+          {:player_move, 55, 9, 1_700_000_000_123, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
+           {0.1, 0.2, 0.3}, :airborne}
         )
 
-      assert <<0x83, 55::64-big, 9::32-big, 1.0::float-64-big, 2.0::float-64-big,
-               3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 1::8>> == bin
+      assert <<0x83, 1, 55::64-big, 9::32-big, 1_700_000_000_123::64-big, 1.0::float-64-big,
+               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
+               6.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
+               1::8>> == bin
     end
 
-    test "encodes player_move with AOI priority metadata" do
+    test "encodes player_move with AOI priority metadata (schema v1 + server_send_ms)" do
       {:ok, bin} =
         Codec.encode(
-          {:player_move, 55, 9, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :grounded,
-           :medium, 0.75, 125.5, 2}
+          {:player_move, 55, 9, 1_700_000_000_123, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
+           {0.1, 0.2, 0.3}, :grounded, :medium, 0.75, 125.5, 2}
         )
 
-      assert <<0x83, 55::64-big, 9::32-big, 1.0::float-64-big, 2.0::float-64-big,
-               3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 1::8,
-               0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
+      assert <<0x83, 1, 55::64-big, 9::32-big, 1_700_000_000_123::64-big, 1.0::float-64-big,
+               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
+               6.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8,
+               1::8, 0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
     end
   end
 
@@ -1171,10 +1173,11 @@ defmodule GateServer.CodecTest do
 
       {:ok, move} =
         Codec.encode(
-          {:player_move, 1, 1, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded}
+          {:player_move, 1, 1, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded}
         )
 
-      assert byte_size(move) == 86
+      # schema v1: opcode(1) + schema(1) + cid(8) + server_tick(4) + server_send_ms(8) + 9*f64(72) + mode(1) = 95
+      assert byte_size(move) == 95
     end
   end
 end
