@@ -21,16 +21,38 @@ defmodule GateServer.CodecTest do
                }}} == Codec.decode(msg)
     end
 
-    test "rejects movement input with unknown schema version" do
+    test "decodes movement input with zero direction (schema v1)" do
       msg =
-        <<0x01, 9, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
-          1.25::float-32-big, 3::16-big>>
+        <<0x01, 1, 1::32-big, 500::32-big, 33::16-big, 0.0::float-32-big, 0.0::float-32-big,
+          1.0::float-32-big, 2::16-big>>
+
+      assert {:ok,
+              {:movement_input,
+               %{
+                 seq: 1,
+                 client_tick: 500,
+                 dt_ms: 33,
+                 input_dir: {+0.0, +0.0},
+                 speed_scale: 1.0,
+                 movement_flags: 2
+               }}} == Codec.decode(msg)
+    end
+
+    test "rejects movement input with unknown schema version" do
+      # schema byte is explicitly 9 (≠ @movement_wire_schema 1); the trailing
+      # 24 bytes are payload-sized filler so length is sufficient and only the
+      # schema mismatch triggers the rejection.
+      msg = <<0x01, 9, 0::size(24)-unit(8)>>
 
       assert {:error, :unsupported_schema} = Codec.decode(msg)
     end
 
-    test "rejects truncated movement input" do
+    test "rejects truncated movement input (schema present but payload short)" do
       assert {:error, :invalid_message} = Codec.decode(<<0x01, 1, 55::32-big>>)
+    end
+
+    test "rejects truncated movement input (opcode only, schema byte missing)" do
+      assert {:error, :invalid_message} = Codec.decode(<<0x01>>)
     end
   end
 
@@ -899,6 +921,16 @@ defmodule GateServer.CodecTest do
                5.5::float-64-big, 6.5::float-64-big, 0.1::float-64-big, 0.2::float-64-big,
                0.3::float-64-big, 0::8, 3::32-big, 100::16-big, 3.5::float-64-big>> == bin
     end
+
+    test "rejects movement_ack with negative server_send_ms (no ArgumentError, clean error tuple)" do
+      # server_send_ms is encoded as ::64-big (unsigned); a negative value must
+      # fail the guard and fall through to the encode/1 fallback, not raise.
+      assert {:error, :unknown_message} =
+               Codec.encode(
+                 {:movement_ack, 10, 77, -1, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3},
+                  :grounded, 3, 100, 3.5}
+               )
+    end
   end
 
   describe "encode broadcast messages" do
@@ -938,6 +970,22 @@ defmodule GateServer.CodecTest do
                2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
                6.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8,
                1::8, 0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
+    end
+
+    test "rejects player_move with negative server_send_ms (no ArgumentError, clean error tuple)" do
+      # server_send_ms is encoded as ::64-big (unsigned); a negative value must
+      # fail the guard and fall through to the encode/1 fallback, not raise.
+      assert {:error, :unknown_message} =
+               Codec.encode(
+                 {:player_move, 55, 9, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3},
+                  :airborne}
+               )
+
+      assert {:error, :unknown_message} =
+               Codec.encode(
+                 {:player_move, 55, 9, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3},
+                  :grounded, :medium, 0.75, 125.5, 2}
+               )
     end
   end
 

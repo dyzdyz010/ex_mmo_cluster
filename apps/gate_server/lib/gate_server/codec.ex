@@ -121,9 +121,11 @@ defmodule GateServer.Codec do
   @movement_wire_schema 1
 
   @doc "当前线协议版本（握手协商）。"
+  @spec protocol_version() :: pos_integer()
   def protocol_version, do: @protocol_version
 
   @doc "当前移动热点帧 wire schema 版本。"
+  @spec movement_wire_schema() :: pos_integer()
   def movement_wire_schema, do: @movement_wire_schema
 
   # ═══════════════════════════════════════════════════════════
@@ -498,8 +500,8 @@ defmodule GateServer.Codec do
         {:movement_ack, ack_seq, auth_tick, server_send_ms, cid, {px, py, pz}, {vx, vy, vz},
          {ax, ay, az}, movement_mode, correction_flags, fixed_dt_ms, ground_z}
       )
-      when is_integer(server_send_ms) and is_integer(fixed_dt_ms) and fixed_dt_ms > 0 and
-             is_float(ground_z) do
+      when is_integer(server_send_ms) and server_send_ms >= 0 and is_integer(fixed_dt_ms) and
+             fixed_dt_ms > 0 and is_float(ground_z) do
     {:ok,
      <<@msg_movement_ack, @movement_wire_schema, ack_seq::32-big, auth_tick::32-big,
        server_send_ms::64-big, cid::64-big, px::float-64-big, py::float-64-big, pz::float-64-big,
@@ -523,7 +525,8 @@ defmodule GateServer.Codec do
         {:player_move, cid, server_tick, server_send_ms, {x, y, z}, {vx, vy, vz}, {ax, ay, az},
          movement_mode, priority_band, priority_score, observer_distance, delivery_interval}
       )
-      when is_integer(server_send_ms) and is_integer(delivery_interval) and delivery_interval > 0 do
+      when is_integer(server_send_ms) and server_send_ms >= 0 and is_integer(delivery_interval) and
+             delivery_interval > 0 do
     {:ok,
      <<@msg_player_move, @movement_wire_schema, cid::64-big, server_tick::32-big,
        server_send_ms::64-big, x::float-64-big, y::float-64-big, z::float-64-big,
@@ -537,7 +540,7 @@ defmodule GateServer.Codec do
         {:player_move, cid, server_tick, server_send_ms, {x, y, z}, {vx, vy, vz}, {ax, ay, az},
          movement_mode}
       )
-      when is_integer(server_send_ms) do
+      when is_integer(server_send_ms) and server_send_ms >= 0 do
     {:ok,
      <<@msg_player_move, @movement_wire_schema, cid::64-big, server_tick::32-big,
        server_send_ms::64-big, x::float-64-big, y::float-64-big, z::float-64-big,
