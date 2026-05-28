@@ -524,7 +524,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_movement_input(73, 100, {1.0, 0.0}))
 
     assert {:ok,
-            <<0x8B, 1, 73::32-big, _auth_tick::32-big, server_send_ms_ack1::64-big, 42::64-big,
+            <<0x8B, 1, 73::32-big, 100::32-big, server_send_ms_ack1::64-big, 42::64-big,
               8.0::float-64-big, 9.0::float-64-big, 10.0::float-64-big, _::binary>>} =
              :gen_tcp.recv(client, 0, 500)
 
@@ -966,7 +966,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x8B, 1, 114::32-big, _auth_tick_udp::32-big, server_send_ms_udp::64-big,
+             <<0x8B, 1, 114::32-big, 200::32-big, server_send_ms_udp::64-big,
                42::64-big, 17.0::float-64-big, 18.0::float-64-big, 19.0::float-64-big,
                _::binary>>}} = :gen_udp.recv(udp_client, 0, 500)
 
