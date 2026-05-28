@@ -208,6 +208,7 @@ defmodule GateServer.WsConnection do
 
   def handle_cast({:player_move, snapshot}, state) do
     snapshot = normalize_remote_snapshot(snapshot)
+    server_send_ms = :os.system_time(:millisecond)
 
     GateServer.CliObserve.emit("ws_player_move_push", fn ->
       %{
@@ -220,16 +221,19 @@ defmodule GateServer.WsConnection do
       }
     end)
 
-    send_encoded(state, player_move_message(snapshot))
+    send_encoded(state, player_move_message(snapshot, server_send_ms))
 
     {:noreply, state}
   end
 
   def handle_cast({:movement_ack, ack}, state) do
+    server_send_ms = :os.system_time(:millisecond)
+
     send_encoded(
       state,
-      {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
-       ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms, ack.ground_z}
+      {:movement_ack, ack.ack_seq, ack.auth_tick, server_send_ms, ack.cid, ack.position,
+       ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms,
+       ack.ground_z}
     )
 
     {:noreply, schedule_partition_refresh_after_movement_ack(state, ack)}
@@ -3049,15 +3053,16 @@ defmodule GateServer.WsConnection do
            priority_score: nil,
            observer_distance: nil,
            delivery_interval: nil
-         } = snapshot
+         } = snapshot,
+         server_send_ms
        ) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode}
+    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
+     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode}
   end
 
-  defp player_move_message(%RemoteSnapshot{} = snapshot) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
+  defp player_move_message(%RemoteSnapshot{} = snapshot, server_send_ms) do
+    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
+     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
      snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
   end
 

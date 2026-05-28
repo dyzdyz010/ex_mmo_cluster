@@ -181,8 +181,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert_receive {:gate_ws_send, iodata}, 500
 
-    assert <<0x8B, 315::32-big, 2719::32-big, 42::64-big, 1_650.0::float-64-big,
-             50.0::float-64-big, _z::float-64-big, _::binary>> = IO.iodata_to_binary(iodata)
+    assert <<0x8B, 1, 315::32-big, 2719::32-big, _server_send_ms_315::64-big, 42::64-big,
+             1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big,
+             _::binary>> = IO.iodata_to_binary(iodata)
 
     wait_until(fn ->
       match?(
@@ -245,8 +246,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert_receive {:gate_ws_send, iodata}, 500
 
-    assert <<0x8B, 415::32-big, 3001::32-big, 42::64-big, 1_650.0::float-64-big,
-             50.0::float-64-big, _z::float-64-big, _::binary>> = IO.iodata_to_binary(iodata)
+    assert <<0x8B, 1, 415::32-big, 3001::32-big, _server_send_ms_415::64-big, 42::64-big,
+             1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big,
+             _::binary>> = IO.iodata_to_binary(iodata)
 
     pending_state = :sys.get_state(pid)
     assert pending_state.partition_context.region_id == 10
@@ -3504,7 +3506,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   end
 
   defp movement_input_frame(seq) do
-    <<0x01, seq::32-big, seq::32-big, 50::16-big, 0.0::float-32-big, 0.0::float-32-big,
+    <<0x01, 1, seq::32-big, seq::32-big, 50::16-big, 0.0::float-32-big, 0.0::float-32-big,
       0.0::float-32-big, 0::16-big>>
   end
 

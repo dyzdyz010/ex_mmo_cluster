@@ -15,7 +15,7 @@ defmodule GateServer.CodecDispatchTest do
   describe "protocol routing by first byte" do
     test "movement input message (0x01) is in codec range" do
       msg =
-        <<0x01, 9::32-big, 100::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 1, 9::32-big, 100::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 0::16-big>>
 
       <<type::8, _::binary>> = msg
@@ -103,8 +103,8 @@ defmodule GateServer.CodecDispatchTest do
     test "movement_ack encodes correctly for send back" do
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 9, 12, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}, :grounded,
-           0, 100, 3.0}
+          {:movement_ack, 9, 12, 1_700_000_000_000, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
+           {0.0, 0.0, 0.0}, :grounded, 0, 100, 3.0}
         )
 
       <<type::8, _::binary>> = bin
@@ -115,7 +115,7 @@ defmodule GateServer.CodecDispatchTest do
       {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 7, {100.0, 200.0, 90.0}, 42})
 
       <<type::8, packet_id::64, status::8, x::float-64-big, y::float-64-big, z::float-64-big,
-        expected_seq::32-big>> = bin
+        expected_seq::32-big, _protocol_version::16-big>> = bin
 
       assert type == 0x84
       assert packet_id == 7
@@ -153,18 +153,19 @@ defmodule GateServer.CodecDispatchTest do
   describe "end-to-end codec flow" do
     test "movement input and ack preserve sequencing metadata" do
       client_msg =
-        <<0x01, 73::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 1, 73::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 0::16-big>>
 
       assert {:ok, {:movement_input, %{seq: 73, client_tick: 1000}}} = Codec.decode(client_msg)
 
       {:ok, response} =
         Codec.encode(
-          {:movement_ack, 73, 1000, 42, {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
-           :grounded, 0, 100, 90.0}
+          {:movement_ack, 73, 1000, 1_700_000_000_000, 42, {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0}, :grounded, 0, 100, 90.0}
         )
 
-      assert <<0x8B, 73::32-big, 1000::32-big, 42::64-big, _::binary>> = response
+      assert <<0x8B, 1, 73::32-big, 1000::32-big, _server_send_ms::64-big, 42::64-big,
+               _::binary>> = response
     end
 
     test "auth flow echoes request_id in result" do

@@ -154,6 +154,7 @@ defmodule GateServer.TcpConnection do
   def handle_cast({:player_move, snapshot}, %{socket: socket} = state) do
     snapshot = normalize_remote_snapshot(snapshot)
     {udp_peer, state} = resolve_udp_peer(state)
+    server_send_ms = :os.system_time(:millisecond)
 
     if udp_peer do
       GateServer.CliObserve.emit("player_move_push_udp", fn ->
@@ -169,7 +170,7 @@ defmodule GateServer.TcpConnection do
         }
       end)
 
-      GateServer.UdpAcceptor.send_to_peer(udp_peer, player_move_message(snapshot))
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, player_move_message(snapshot, server_send_ms))
     else
       GateServer.CliObserve.emit("player_move_push_tcp", fn ->
         %{
@@ -183,7 +184,7 @@ defmodule GateServer.TcpConnection do
         }
       end)
 
-      send_encoded(socket, player_move_message(snapshot))
+      send_encoded(socket, player_move_message(snapshot, server_send_ms))
     end
 
     {:noreply, state}
@@ -202,9 +203,12 @@ defmodule GateServer.TcpConnection do
       }
     end)
 
+    server_send_ms = :os.system_time(:millisecond)
+
     message =
-      {:movement_ack, ack.ack_seq, ack.auth_tick, ack.cid, ack.position, ack.velocity,
-       ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms, ack.ground_z}
+      {:movement_ack, ack.ack_seq, ack.auth_tick, server_send_ms, ack.cid, ack.position,
+       ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms,
+       ack.ground_z}
 
     if udp_peer do
       GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
@@ -3074,15 +3078,16 @@ defmodule GateServer.TcpConnection do
            priority_score: nil,
            observer_distance: nil,
            delivery_interval: nil
-         } = snapshot
+         } = snapshot,
+         server_send_ms
        ) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode}
+    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
+     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode}
   end
 
-  defp player_move_message(%RemoteSnapshot{} = snapshot) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
+  defp player_move_message(%RemoteSnapshot{} = snapshot, server_send_ms) do
+    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
+     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
      snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
   end
 
