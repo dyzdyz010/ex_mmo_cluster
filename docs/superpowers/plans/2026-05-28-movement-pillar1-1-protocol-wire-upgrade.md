@@ -49,6 +49,8 @@
 **服务端（Elixir）**
 - `apps/gate_server/lib/gate_server/codec.ex` — 常量 + 全部 encode/decode 改动（核心）
 - `apps/gate_server/lib/gate_server/worker/tcp_connection.ex` — `player_move`/`movement_ack` 发送处注入 `server_send_ms`；`enter_scene` 成功帧带 `protocol_version`
+- `apps/gate_server/lib/gate_server/worker/udp_acceptor.ex` — UDP 直回 ack 发送处注入 `server_send_ms`（**实测发现的第二发送端，原 plan 遗漏**）
+- `apps/gate_server/lib/gate_server/worker/ws_connection.ex` — WebSocket 发送处注入 `server_send_ms` + `player_move_message/2`（**第三发送端，原 plan 遗漏**）
 - `apps/gate_server/test/gate_server/codec_test.exs` — codec 单元测试
 - `apps/gate_server/test/gate_server/tcp_connection_protocol_test.exs` — 握手/movement e2e 测试
 
@@ -398,9 +400,11 @@ git commit -m "feat(codec): enter_scene_result carries protocol_version (pillar 
 
 ---
 
-## Phase 2：服务端注入 server_send_ms（tcp_connection）
+## Phase 2：服务端注入 server_send_ms（tcp / udp / ws 三发送端）
 
-### Task 6：player_move / movement_ack 发送处注入 server_send_ms
+> **实测修正（2026-05-28）**：`movement_ack`/`player_move` 实际有**三个平行发送端**——`tcp_connection.ex`、`udp_acceptor.ex`（UDP 直回 ack）、`ws_connection.ex`（WebSocket）。原 plan 只列了 tcp_connection，导致 Phase 1 改完 codec 后全量 suite 留下 23 个失败（udp/ws 发送端未同步 + 多个测试 fixture 断言旧 layout）。**三端必须同步注入**（udp 只有 movement_ack、无 player_move），且验证**必须跑全量 `mix test --no-start`**，不能只跑单个 codec 测试文件。详见 memory `ex-mmo-three-parallel-send-paths`。
+
+### Task 6：player_move / movement_ack 发送处注入 server_send_ms（三发送端）
 
 **Files:**
 - Modify: `apps/gate_server/lib/gate_server/worker/tcp_connection.ex:193-211`（movement_ack handle_cast）
