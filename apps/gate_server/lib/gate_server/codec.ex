@@ -491,22 +491,21 @@ defmodule GateServer.Codec do
     {:ok, <<@msg_enter_scene_result, packet_id::64-big, @status_error>>}
   end
 
-  # ── Movement ack ──
-  # Audit B-M2: trailing fixed_dt_ms (u16 BE) lets the client detect when
-  # its own MovementProfile.fixed_dt_ms has drifted from the server's
-  # authoritative value. Drift would silently accumulate prediction error
-  # over hundreds of replay frames; surfacing it lets the client log and
-  # downgrade gracefully.
+  # ── Movement ack (schema v1 + server_send_ms) ──
+  # server_send_ms: wall-clock 发送时刻（ms），客户端据此对齐时间轴（pillar 1.3 消费）。
+  # 末尾 fixed_dt_ms (B-M2) 与 ground_z (Phase A1-4) 保留。
   def encode(
-        {:movement_ack, ack_seq, auth_tick, cid, {px, py, pz}, {vx, vy, vz}, {ax, ay, az},
-         movement_mode, correction_flags, fixed_dt_ms, ground_z}
+        {:movement_ack, ack_seq, auth_tick, server_send_ms, cid, {px, py, pz}, {vx, vy, vz},
+         {ax, ay, az}, movement_mode, correction_flags, fixed_dt_ms, ground_z}
       )
-      when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 and is_float(ground_z) do
+      when is_integer(server_send_ms) and is_integer(fixed_dt_ms) and fixed_dt_ms > 0 and
+             is_float(ground_z) do
     {:ok,
-     <<@msg_movement_ack, ack_seq::32-big, auth_tick::32-big, cid::64-big, px::float-64-big,
-       py::float-64-big, pz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
-       ax::float-64-big, ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
-       correction_flags::32-big, fixed_dt_ms::16-big, ground_z::float-64-big>>}
+     <<@msg_movement_ack, @movement_wire_schema, ack_seq::32-big, auth_tick::32-big,
+       server_send_ms::64-big, cid::64-big, px::float-64-big, py::float-64-big, pz::float-64-big,
+       vx::float-64-big, vy::float-64-big, vz::float-64-big, ax::float-64-big, ay::float-64-big,
+       az::float-64-big, encode_movement_mode(movement_mode), correction_flags::32-big,
+       fixed_dt_ms::16-big, ground_z::float-64-big>>}
   end
 
   # ── Broadcast: player enter ──

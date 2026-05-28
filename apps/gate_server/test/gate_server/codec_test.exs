@@ -889,20 +889,17 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode movement_ack" do
-    test "encodes movement ack with authority fields + ground_z (Phase A1-4)" do
-      # Audit B-M2: trailing fixed_dt_ms u16 BE.
-      # Phase A1-4: trailing ground_z f64 BE (jump arc 落地高度回传给 client)。
+    test "encodes movement ack with schema_version + server_send_ms + ground_z" do
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 10, 77, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3},
-           :grounded, 3, 100, 3.5}
+          {:movement_ack, 10, 77, 1_700_000_000_123, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5},
+           {0.1, 0.2, 0.3}, :grounded, 3, 100, 3.5}
         )
 
-      assert <<0x8B, 10::32-big, 77::32-big, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
-               3.5::float-64-big, 4.5::float-64-big, 5.5::float-64-big, 6.5::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 3::32-big,
-               100::16-big, 3.5::float-64-big>> ==
-               bin
+      assert <<0x8B, 1, 10::32-big, 77::32-big, 1_700_000_000_123::64-big, 42::64-big,
+               1.5::float-64-big, 2.5::float-64-big, 3.5::float-64-big, 4.5::float-64-big,
+               5.5::float-64-big, 6.5::float-64-big, 0.1::float-64-big, 0.2::float-64-big,
+               0.3::float-64-big, 0::8, 3::32-big, 100::16-big, 3.5::float-64-big>> == bin
     end
   end
 
