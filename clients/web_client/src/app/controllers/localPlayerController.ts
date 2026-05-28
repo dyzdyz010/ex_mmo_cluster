@@ -1,5 +1,6 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
+import { RemotePlayerState } from "@domain/movement/remotePlayer";
 import { ReplayAction } from "@domain/movement/governance";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 import type {
@@ -29,7 +30,8 @@ import type { TransportPump } from "./transportPump";
 const LOCAL_RENDER_SMOOTHING_RATE_HZ = 15;
 const LOCAL_VISUAL_HARD_SNAP_DISTANCE = 256;
 const MAX_MOVEMENT_FRAME_DT_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
-const AUTHORITY_RENDER_EXTRAPOLATION_MAX_SECS = 1.5;
+// 起步瞬间(权威仍 idle 但本地已起步)的 fallback 阈值:权威静止且灰色方块偏离
+// 本地超过此距离时，让灰色方块贴合本地预测，避免 RTT 窗口内的视觉拉开。
 const AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE = 1;
 const AUTHORITY_RENDER_IDLE_EPSILON_SQ = 1.0e-6;
 
@@ -71,14 +73,15 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly authoritativePosition = new Vector3();
   private readonly authoritativeVelocity = new Vector3();
   private readonly authoritativeAcceleration = new Vector3();
-  private readonly authoritativeRenderPosition = new Vector3();
-  private readonly authoritativeRenderVelocity = new Vector3();
-  private readonly authoritativeRenderAcceleration = new Vector3();
+  // Authority(灰色权威方块)渲染复用与"显示其他玩家"完全相同的插值管线:
+  // 服务端 tick 时间轴 + Hermite 插值 + 限幅外推(0.6s)。喂入 ack 的原始权威态。
+  // 取代原先自制的 1.5s 无约束运动学外推 —— 那套在 ack 流抖动/中断时会按旧速度
+  // 失控前冲(最多 maxSpeed×1.5s=9m),表现为"服务端方块越拉越远/异常快"。
+  private authorityRender = new RemotePlayerState();
   private readonly lastTracedPosition = new Vector3();
   private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
   private lastAuthorityAtMs: number | null = null;
-  private lastAuthorityRenderAtMs: number | null = null;
   private cameraYawResolver: () => number = () => 0;
   private frameTraceRemaining = 0;
   private renderSimulationState: PredictedMoveState | null = null;
@@ -126,34 +129,34 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   getAuthoritativeRenderPosition(nowMs: number): Vector3 {
-    if (this.lastAuthorityRenderAtMs === null) {
+    // 与远端玩家同一套采样:在缓冲的服务端权威快照之间 Hermite 插值,超出最新
+    // 快照后按限幅(0.6s)外推。时间基准来自服务端 tick,ack 抖动也不会失控。
+    const sample = this.authorityRender.sampleMotion(nowMs / 1000);
+    if (sample.mode === "empty") {
+      // 尚未收到任何权威快照:让灰色方块贴合本地预测,避免停在原点。
       return this.renderedPosition.clone();
     }
 
-    const dtSecs = Math.min(
-      Math.max(0, (nowMs - this.lastAuthorityRenderAtMs) / 1000),
-      AUTHORITY_RENDER_EXTRAPOLATION_MAX_SECS,
-    );
-    const estimated = this.authoritativeRenderPosition
-      .clone()
-      .add(this.authoritativeRenderVelocity.clone().multiplyScalar(dtSecs))
-      .add(this.authoritativeRenderAcceleration.clone().multiplyScalar(0.5 * dtSecs * dtSecs));
+    // 起步瞬间的 idle fallback:最近一次权威 ack 仍静止(服务端尚未反映本地已
+    // 起步的移动),而本地已有输入并已偏离权威 —— 让灰色方块跟随本地预测,避免
+    // RTT 窗口内权威静止造成的视觉拉开。这是"忠实显示权威"的唯一例外,且仅在
+    // 权威确实静止时触发;ack 中断但权威在移动时不命中,仍走上面的限幅采样。
     const idleAuthority =
-      this.authoritativeRenderVelocity.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ &&
-      this.authoritativeRenderAcceleration.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ;
-    const localAxes = this.combinedAxes();
-    const localInputActive =
-      Math.hypot(localAxes.strafe, localAxes.forward) > 1.0e-6 || this.input.hasPendingJump();
-
-    if (
-      idleAuthority &&
-      localInputActive &&
-      estimated.distanceTo(this.renderedPosition) > AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE
-    ) {
-      return this.renderedPosition.clone();
+      this.authoritativeVelocity.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ &&
+      this.authoritativeAcceleration.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ;
+    if (idleAuthority) {
+      const localAxes = this.combinedAxes();
+      const localInputActive =
+        Math.hypot(localAxes.strafe, localAxes.forward) > 1.0e-6 || this.input.hasPendingJump();
+      if (
+        localInputActive &&
+        sample.position.distanceTo(this.renderedPosition) > AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE
+      ) {
+        return this.renderedPosition.clone();
+      }
     }
 
-    return estimated;
+    return sample.position;
   }
 
   getPendingCorrection(): Vector3 {
@@ -311,10 +314,24 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativeVelocity.copy(ack.velocity);
     this.authoritativeAcceleration.copy(ack.acceleration);
     this.lastAuthorityAtMs = nowMs;
-    this.authoritativeRenderPosition.copy(result.latestState.position);
-    this.authoritativeRenderVelocity.copy(result.latestState.velocity);
-    this.authoritativeRenderAcceleration.copy(result.latestState.acceleration);
-    this.lastAuthorityRenderAtMs = nowMs;
+    // 把服务端原始权威态喂进插值缓冲(serverTick=authTick,使用 ack 真实的
+    // position/velocity/acceleration,而非 reconcile 后的客户端预测态),让灰色
+    // 方块忠实呈现服务端轨迹,并由限幅插值/外推统一管理时间基准。
+    this.authorityRender.setTickDurationSecs(
+      (ack.serverFixedDtMs || DEFAULT_MOVEMENT_PROFILE.fixedDtMs) / 1000,
+    );
+    this.authorityRender.pushSnapshot(
+      {
+        cid: 0,
+        serverTick: ack.authTick,
+        position: ack.position,
+        velocity: ack.velocity,
+        acceleration: ack.acceleration,
+        movementMode: ack.movementMode,
+      },
+      ack.correctionFlags,
+      nowMs / 1000,
+    );
     if (result.action === ReplayAction.Accepted) {
       this.syncAcceptedAnchor(result.latestState);
     } else {
@@ -451,11 +468,8 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativePosition.copy(start);
     this.authoritativeVelocity.set(0, 0, 0);
     this.authoritativeAcceleration.set(0, 0, 0);
-    this.authoritativeRenderPosition.copy(start);
-    this.authoritativeRenderVelocity.set(0, 0, 0);
-    this.authoritativeRenderAcceleration.set(0, 0, 0);
+    this.authorityRender = new RemotePlayerState();
     this.lastAuthorityAtMs = null;
-    this.lastAuthorityRenderAtMs = null;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
     this.lastCollisionSummary = null;
