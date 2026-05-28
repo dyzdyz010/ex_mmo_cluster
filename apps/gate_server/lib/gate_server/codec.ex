@@ -147,9 +147,9 @@ defmodule GateServer.Codec do
   """
   @spec decode(binary()) :: {:ok, tuple()} | {:error, atom()}
 
-  # MovementInput: 1 + 4 + 4 + 2 + 4 + 4 + 4 + 2 = 25 bytes
+  # MovementInput (schema v1): 1 + 1 + 4 + 4 + 2 + 4 + 4 + 4 + 2 = 26 bytes
   def decode(
-        <<@msg_movement, seq::32-big, client_tick::32-big, dt_ms::16-big,
+        <<@msg_movement, @movement_wire_schema, seq::32-big, client_tick::32-big, dt_ms::16-big,
           input_dir_x::float-32-big, input_dir_y::float-32-big, speed_scale::float-32-big,
           movement_flags::16-big>>
       ) do
@@ -164,6 +164,9 @@ defmodule GateServer.Codec do
         movement_flags: movement_flags
       }}}
   end
+
+  def decode(<<@msg_movement, schema, _rest::binary>>) when schema != @movement_wire_schema,
+    do: {:error, :unsupported_schema}
 
   def decode(<<@msg_movement, _rest::binary>>), do: {:error, :invalid_message}
 

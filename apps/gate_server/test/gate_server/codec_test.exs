@@ -4,9 +4,9 @@ defmodule GateServer.CodecTest do
   alias GateServer.Codec
 
   describe "decode movement input" do
-    test "decodes movement input with all fields" do
+    test "decodes movement input with all fields (schema v1)" do
       msg =
-        <<0x01, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
+        <<0x01, 1, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
           1.25::float-32-big, 3::16-big>>
 
       assert {:ok,
@@ -21,21 +21,16 @@ defmodule GateServer.CodecTest do
                }}} == Codec.decode(msg)
     end
 
-    test "decodes movement input with zero direction" do
+    test "rejects movement input with unknown schema version" do
       msg =
-        <<0x01, 1::32-big, 500::32-big, 33::16-big, 0.0::float-32-big, 0.0::float-32-big,
-          1.0::float-32-big, 2::16-big>>
+        <<0x01, 9, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
+          1.25::float-32-big, 3::16-big>>
 
-      assert {:ok,
-              {:movement_input,
-               %{
-                 seq: 1,
-                 client_tick: 500,
-                 dt_ms: 33,
-                 input_dir: {+0.0, +0.0},
-                 speed_scale: 1.0,
-                 movement_flags: 2
-               }}} == Codec.decode(msg)
+      assert {:error, :unsupported_schema} = Codec.decode(msg)
+    end
+
+    test "rejects truncated movement input" do
+      assert {:error, :invalid_message} = Codec.decode(<<0x01, 1, 55::32-big>>)
     end
   end
 
@@ -852,8 +847,8 @@ defmodule GateServer.CodecTest do
       assert {:error, :invalid_message} == Codec.decode(<<>>)
     end
 
-    test "returns invalid_message for old movement layout" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x01, 42::64-big>>)
+    test "returns unsupported_schema for movement with unknown schema byte" do
+      assert {:error, :unsupported_schema} == Codec.decode(<<0x01, 42::64-big>>)
     end
 
     test "returns invalid_message for old enter_scene layout" do
@@ -1150,9 +1145,9 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode → decode roundtrip" do
-    test "movement input roundtrip from client perspective" do
+    test "movement input roundtrip from client perspective (schema v1)" do
       client_msg =
-        <<0x01, 9::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 1, 9::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 2::16-big>>
 
       assert {:ok,
