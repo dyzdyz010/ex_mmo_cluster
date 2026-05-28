@@ -517,7 +517,8 @@ function resultFrame(requestId: number, ok: boolean): ArrayBuffer {
 }
 
 function enterSceneOkFrame(requestId: number): ArrayBuffer {
-  const buffer = new ArrayBuffer(38);
+  // Pillar 1.1: 40-byte layout with trailing protocol_version u16.
+  const buffer = new ArrayBuffer(40);
   const view = new DataView(buffer);
   view.setUint8(0, 0x84);
   view.setBigUint64(1, BigInt(requestId), false);
@@ -526,6 +527,7 @@ function enterSceneOkFrame(requestId: number): ArrayBuffer {
   view.setFloat64(18, 0, false);
   view.setFloat64(26, 0, false);
   view.setUint32(34, 1, false);
+  view.setUint16(38, 1, false); // protocol_version = 1
   return buffer;
 }
 

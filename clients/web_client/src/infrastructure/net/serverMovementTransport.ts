@@ -7,6 +7,7 @@ import {
   encodeHeartbeat,
   encodeMovementInput,
 } from "./gateProtocol";
+import { PROTOCOL_VERSION } from "./protocolVersion";
 import {
   decodeVoxelServerMessage,
   type VoxelCatalogPatchMessage,
@@ -1025,6 +1026,19 @@ export class ServerMovementTransport implements MovementTransport {
       }
       case "enter_scene_ok":
         if (message.requestId === this.enterSceneRequestId) {
+          // Pillar 1.1: fail-fast if the server's wire protocol version does
+          // not match what this client was compiled against. A mismatch means
+          // the server was upgraded without a matching client deploy, which
+          // would cause silent decode errors on every subsequent message.
+          if (message.protocolVersion !== PROTOCOL_VERSION) {
+            console.error(
+              `[gate] protocol_version mismatch: server=${message.protocolVersion} client=${PROTOCOL_VERSION}`,
+            );
+            this.markDisconnected(
+              `protocol_version_mismatch:server=${message.protocolVersion}:client=${PROTOCOL_VERSION}`,
+            );
+            break;
+          }
           this.ready = true;
           this.connectionStatus = "connected";
           this.connectionPhase = "ready";
@@ -1041,6 +1055,7 @@ export class ServerMovementTransport implements MovementTransport {
             mode: SERVER_TRANSPORT_MODE,
             position: `${message.position.x.toFixed(1)},${message.position.y.toFixed(1)},${message.position.z.toFixed(1)}`,
             expected_seq: message.expectedSeq,
+            protocol_version: message.protocolVersion,
             ready_ms: this.lastReadyDurationMs ?? -1,
           });
         }
