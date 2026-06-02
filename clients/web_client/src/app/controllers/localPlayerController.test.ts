@@ -134,6 +134,18 @@ describe("LocalPlayerController", () => {
     expect(Math.max(...samples.map((sample) => sample.localAuthorityRenderDistance))).toBeLessThan(
       0.001,
     );
+    expect(samples.every((sample) => Number.isFinite(sample.localAuthorityProjectedDistance))).toBe(
+      true,
+    );
+    expect(
+      Math.max(...samples.map((sample) => sample.localAuthorityProjectedDistance)),
+    ).toBeLessThan(0.001);
+    expect(samples.every((sample) => Number.isFinite(sample.localAuthorityDisplayDistance))).toBe(
+      true,
+    );
+    expect(Math.max(...samples.map((sample) => sample.localAuthorityDisplayDistance))).toBeLessThan(
+      0.001,
+    );
   });
 
   it("does not rewind the render phase when an accepted ack has no correction", () => {

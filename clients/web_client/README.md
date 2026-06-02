@@ -428,12 +428,17 @@ node scripts/run_browser_movement_smoke_supervised.js
 - clock soak verdict 会持续采样远端实体，断言远端插值使用 `server_state_ms`
   权威状态时间轴，或在 `server_state_ms` 快照节奏缺失/异常时，明确暴露
   `serverStateTimelineHealthy=false` 并降级到 `server_tick` 时间轴；正常
-  `server_state_ms` 样本仍要求 TimeSync 样本继续增长。本地灰色 authority render
-  是调试"服务器是否已确认我的移动"的标记，按 ack 到达节奏和 `server_tick`
-  采样，不跟随远端实体的 wall-clock TimeSync 播放轴。
-- long movement verdict 会用 `frame_trace` 逐帧比较本地位移、最新权威位移和灰色
-  authority render 位移，并记录 `effectiveHz`、`localAuthorityRenderDistance`、
-  `deltaDistanceDiff` 等指标，防止只看 1s 快照时漏掉服务端方块漂移。
+  `server_state_ms` 样本仍要求 TimeSync 样本继续增长。原始 `authorityRender`
+  是调试"服务器最后一条 ACK 确认到哪里"的标记，按 ack 到达节奏和
+  `server_tick` 采样，不跟随远端实体的 wall-clock TimeSync 播放轴；画面里可见的
+  灰色本地服务端方块使用已经过 reconcile 的当前帧投影位置。
+- long movement verdict 会用 `frame_trace` 逐帧比较本地位移、最新权威位移、
+  原始 `authorityRender` 位移和当前帧权威投影位移，并记录 `effectiveHz`、
+  `localAuthorityDisplayDistance`、`localAuthorityProjectedDistance`、
+  `localAuthorityRenderDistance`、`deltaDistanceDiff` 等指标。
+  `localAuthorityDisplayDistance` 是玩家看到的显示距离；
+  `localAuthorityProjectedDistance` 是未平滑投影和本地显示之间的纠正平滑量；
+  `localAuthorityRenderDistance` 是低频 ACK 调试距离。
 
 运行产物写入 `.demo/observe/`，核心文件是
 `browser-movement-smoke-summary.json`。如果脚本找不到浏览器，可设置
@@ -457,8 +462,9 @@ immediate control、movement bounded-FIFO、field latest-only 和 bulk voxel lan
 `AUTH_GAME_WS_REALTIME_MAX_QUEUE`，只丢最旧 movement 帧，体素 chunk snapshot/delta
 继续限速排队。低带宽或闲置输入稀疏时，远端实体可能显示
 `interpolationTimeAxis=server_tick` 且 `serverStateTimelineHealthy=false`；这是显式降级，
-不是静默回退。本地 authority render 正常情况下也会显示 `server_tick`，因为它按本机
-ack 收到时间校验服务器确认路径，不代表远端 TimeSync 降级。
+不是静默回退。原始本地 `authorityRender` 正常情况下也会显示 `server_tick`，因为它按本机
+ack 收到时间校验服务器确认路径，不代表远端 TimeSync 降级；可见服务端方块另走
+当前帧权威投影，不用这个低频调试位置。
 需要模拟服务端移动快照丢失时，可设置
 `BROWSER_MOVEMENT_NET_DROP_SERVER_MOVE_PERCENT=20` 与
 `BROWSER_MOVEMENT_NET_DROP_SEED=17`；代理只丢完整的 server->client `PlayerMove(0x83)`

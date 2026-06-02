@@ -364,7 +364,7 @@ export class RenderOrchestrator
 
   private updateAvatarTransforms(nowMs: number, dtSecs: number): void {
     this.localDisplay.copy(this.localPlayer.getRenderedPosition());
-    this.authorityDisplay.copy(this.localPlayer.getAuthoritativeRenderPosition(nowMs));
+    this.authorityDisplay.copy(this.localPlayer.getAuthoritativeDisplayPosition());
     this.remoteDisplay.copy(this.remotePlayer.getRenderedPosition());
     this.syncRemoteAvatarMeshes();
 

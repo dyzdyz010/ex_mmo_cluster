@@ -95,6 +95,8 @@ describe("RenderOrchestrator actor display", () => {
         getRenderedPosition: () => renderedPosition.clone(),
         getAuthoritativePosition: () => authoritativePosition.clone(),
         getAuthoritativeRenderPosition: () => authoritativePosition.clone(),
+        getAuthoritativeProjectedPosition: () => authoritativePosition.clone(),
+        getAuthoritativeDisplayPosition: () => authoritativePosition.clone(),
         getCurrentState: () => ({ groundY: renderedPosition.y }),
       } as never,
       createTestRemotePlayer(),
@@ -107,6 +109,39 @@ describe("RenderOrchestrator actor display", () => {
 
     const displayedY = render.getActorDisplaySnapshot().authority.y;
     expect(displayedY).toBe(285);
+    render.dispose();
+  });
+
+  it("renders the visible authority marker from the smoothed authoritative display target", () => {
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const world = new LocalVoxelWorldAdapter();
+    const renderedPosition = new Vector3(100, 185, 50);
+    const rawAckPosition = new Vector3(40, 185, 50);
+    const projectedPosition = new Vector3(98, 185, 50);
+    const displayPosition = new Vector3(100, 185, 50);
+    const render = new RenderOrchestrator(
+      createTestSceneHandles(),
+      world,
+      {
+        getRenderedPosition: () => renderedPosition.clone(),
+        getAuthoritativePosition: () => rawAckPosition.clone(),
+        getAuthoritativeRenderPosition: () => rawAckPosition.clone(),
+        getAuthoritativeProjectedPosition: () => projectedPosition.clone(),
+        getAuthoritativeDisplayPosition: () => displayPosition.clone(),
+        getCurrentState: () => ({ groundY: renderedPosition.y }),
+      } as never,
+      createTestRemotePlayer(),
+      new ObserveLog(8),
+    );
+
+    render.onFrame(0, 16);
+
+    const actorDisplay = render.getActorDisplaySnapshot();
+    expect(actorDisplay.authority.x).toBe(displayPosition.x);
+    expect(Math.abs(actorDisplay.local.x - actorDisplay.authority.x)).toBeLessThanOrEqual(1);
     render.dispose();
   });
 });
@@ -406,6 +441,8 @@ function createTestLocalPlayer(
     getRenderedPosition: () => renderedPosition.clone(),
     getAuthoritativePosition: () => authoritativePosition.clone(),
     getAuthoritativeRenderPosition: () => authoritativePosition.clone(),
+    getAuthoritativeProjectedPosition: () => authoritativePosition.clone(),
+    getAuthoritativeDisplayPosition: () => authoritativePosition.clone(),
     getCurrentState: () => ({ groundY: options.groundY ?? renderedPosition.y }),
   } as never;
 }

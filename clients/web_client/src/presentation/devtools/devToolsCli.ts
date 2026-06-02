@@ -1058,14 +1058,32 @@ export class DevToolsCli implements CliCommandHandler {
     const authorityRenderDeltaValues = trace.samples.map(
       (sample) => sample.authorityRenderDeltaDistance,
     );
+    const authorityProjectedDeltaValues = trace.samples.map(
+      (sample) => sample.authorityProjectedDeltaDistance,
+    );
+    const authorityDisplayDeltaValues = trace.samples.map(
+      (sample) => sample.authorityDisplayDeltaDistance,
+    );
     const localAuthorityDistanceValues = trace.samples.map(
       (sample) => sample.localAuthorityDistance,
     );
     const localAuthorityRenderDistanceValues = trace.samples.map(
       (sample) => sample.localAuthorityRenderDistance,
     );
+    const localAuthorityProjectedDistanceValues = trace.samples.map(
+      (sample) => sample.localAuthorityProjectedDistance,
+    );
+    const localAuthorityDisplayDistanceValues = trace.samples.map(
+      (sample) => sample.localAuthorityDisplayDistance,
+    );
     const authorityRenderAuthorityDistanceValues = trace.samples.map(
       (sample) => sample.authorityRenderAuthorityDistance,
+    );
+    const authorityProjectedAuthorityDistanceValues = trace.samples.map(
+      (sample) => sample.authorityProjectedAuthorityDistance,
+    );
+    const authorityDisplayAuthorityDistanceValues = trace.samples.map(
+      (sample) => sample.authorityDisplayAuthorityDistance,
     );
     return {
       active: trace.active,
@@ -1074,9 +1092,17 @@ export class DevToolsCli implements CliCommandHandler {
       deltaDistance: summarizeSeries(deltaValues),
       authorityDeltaDistance: summarizeSeries(authorityDeltaValues),
       authorityRenderDeltaDistance: summarizeSeries(authorityRenderDeltaValues),
+      authorityProjectedDeltaDistance: summarizeSeries(authorityProjectedDeltaValues),
+      authorityDisplayDeltaDistance: summarizeSeries(authorityDisplayDeltaValues),
       localAuthorityDistance: summarizeSeries(localAuthorityDistanceValues),
       localAuthorityRenderDistance: summarizeSeries(localAuthorityRenderDistanceValues),
+      localAuthorityProjectedDistance: summarizeSeries(localAuthorityProjectedDistanceValues),
+      localAuthorityDisplayDistance: summarizeSeries(localAuthorityDisplayDistanceValues),
       authorityRenderAuthorityDistance: summarizeSeries(authorityRenderAuthorityDistanceValues),
+      authorityProjectedAuthorityDistance: summarizeSeries(
+        authorityProjectedAuthorityDistanceValues,
+      ),
+      authorityDisplayAuthorityDistance: summarizeSeries(authorityDisplayAuthorityDistanceValues),
       samples: trace.samples,
     };
   }

@@ -54,6 +54,12 @@ export interface MovementFrameTraceSample {
   authorityRenderX: number;
   authorityRenderY: number;
   authorityRenderZ: number;
+  authorityProjectedX: number;
+  authorityProjectedY: number;
+  authorityProjectedZ: number;
+  authorityDisplayX: number;
+  authorityDisplayY: number;
+  authorityDisplayZ: number;
   deltaX: number;
   deltaY: number;
   deltaZ: number;
@@ -66,12 +72,28 @@ export interface MovementFrameTraceSample {
   authorityRenderDeltaY: number;
   authorityRenderDeltaZ: number;
   authorityRenderDeltaDistance: number;
+  authorityProjectedDeltaX: number;
+  authorityProjectedDeltaY: number;
+  authorityProjectedDeltaZ: number;
+  authorityProjectedDeltaDistance: number;
+  authorityDisplayDeltaX: number;
+  authorityDisplayDeltaY: number;
+  authorityDisplayDeltaZ: number;
+  authorityDisplayDeltaDistance: number;
   localAuthorityDistance: number;
   localAuthorityHorizontalDistance: number;
   localAuthorityRenderDistance: number;
   localAuthorityRenderHorizontalDistance: number;
+  localAuthorityProjectedDistance: number;
+  localAuthorityProjectedHorizontalDistance: number;
+  localAuthorityDisplayDistance: number;
+  localAuthorityDisplayHorizontalDistance: number;
   authorityRenderAuthorityDistance: number;
   authorityRenderAuthorityHorizontalDistance: number;
+  authorityProjectedAuthorityDistance: number;
+  authorityProjectedAuthorityHorizontalDistance: number;
+  authorityDisplayAuthorityDistance: number;
+  authorityDisplayAuthorityHorizontalDistance: number;
   pendingCorrectionDistance: number;
   accumulatorMs: number;
   movementMode: string;
@@ -98,15 +120,17 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly authoritativePosition = new Vector3();
   private readonly authoritativeVelocity = new Vector3();
   private readonly authoritativeAcceleration = new Vector3();
-  // Authority(灰色权威方块)渲染复用 RemotePlayerState 的 Hermite 插值和限幅外推,
-  // 但本地权威标记按 ack 到达节奏采样,不使用远端玩家的 wall-clock TimeSync 播放轴。
-  // 它的职责是调试"服务器是否已经确认我的移动",不是观赏远端实体;使用全局时钟偏移
-  // 会把偶发 TimeSync 偏差放大成几十米的稳定显示滞后。
+  // Raw authority debug marker: ack cadence + server_tick sampling. The visible
+  // local server cube uses getAuthoritativeProjectedPosition(), while this raw
+  // path stays available in CLI/frame_trace to show how far the last server ack
+  // is from the current replayed projection.
   private authorityRender = new RemotePlayerState({ interpolationDelaySecs: 0 });
   private readonly serverClock = new ServerClockEstimator();
   private readonly lastTracedPosition = new Vector3();
   private readonly lastTracedAuthorityPosition = new Vector3();
   private readonly lastTracedAuthorityRenderPosition = new Vector3();
+  private readonly lastTracedAuthorityProjectedPosition = new Vector3();
+  private readonly lastTracedAuthorityDisplayPosition = new Vector3();
   private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
   private lastAuthorityAtMs: number | null = null;
@@ -161,9 +185,15 @@ export class LocalPlayerController implements FrameSubscriber {
     return this.authoritativePosition;
   }
 
+  getAuthoritativeProjectedPosition(): Vector3 {
+    return (this.renderSimulationState?.position ?? this.renderedPosition).clone();
+  }
+
+  getAuthoritativeDisplayPosition(): Vector3 {
+    return this.renderedPosition.clone();
+  }
+
   getAuthoritativeRenderPosition(nowMs: number): Vector3 {
-    // 本地权威标记使用 server_tick + ack received-time 采样。远端玩家仍使用
-    // TimeSync;这里故意不传 clock,避免本地调试标记被 wall-clock 偏差拖到旧快照。
     const sample = this.authorityRender.sampleMotion(nowMs / 1000);
     if (sample.mode === "empty") {
       // 尚未收到任何权威快照:让灰色方块贴合本地预测,避免停在原点。
@@ -236,6 +266,8 @@ export class LocalPlayerController implements FrameSubscriber {
     this.lastTracedAuthorityRenderPosition.copy(
       this.getAuthoritativeRenderPosition(performance.now()),
     );
+    this.lastTracedAuthorityProjectedPosition.copy(this.getAuthoritativeProjectedPosition());
+    this.lastTracedAuthorityDisplayPosition.copy(this.getAuthoritativeDisplayPosition());
   }
 
   clearFrameTrace(): void {
@@ -543,6 +575,8 @@ export class LocalPlayerController implements FrameSubscriber {
     }
 
     const authorityRenderPosition = this.getAuthoritativeRenderPosition(nowMs);
+    const authorityProjectedPosition = this.getAuthoritativeProjectedPosition();
+    const authorityDisplayPosition = this.getAuthoritativeDisplayPosition();
     const deltaX = this.renderedPosition.x - this.lastTracedPosition.x;
     const deltaY = this.renderedPosition.y - this.lastTracedPosition.y;
     const deltaZ = this.renderedPosition.z - this.lastTracedPosition.z;
@@ -555,6 +589,18 @@ export class LocalPlayerController implements FrameSubscriber {
       authorityRenderPosition.y - this.lastTracedAuthorityRenderPosition.y;
     const authorityRenderDeltaZ =
       authorityRenderPosition.z - this.lastTracedAuthorityRenderPosition.z;
+    const authorityProjectedDeltaX =
+      authorityProjectedPosition.x - this.lastTracedAuthorityProjectedPosition.x;
+    const authorityProjectedDeltaY =
+      authorityProjectedPosition.y - this.lastTracedAuthorityProjectedPosition.y;
+    const authorityProjectedDeltaZ =
+      authorityProjectedPosition.z - this.lastTracedAuthorityProjectedPosition.z;
+    const authorityDisplayDeltaX =
+      authorityDisplayPosition.x - this.lastTracedAuthorityDisplayPosition.x;
+    const authorityDisplayDeltaY =
+      authorityDisplayPosition.y - this.lastTracedAuthorityDisplayPosition.y;
+    const authorityDisplayDeltaZ =
+      authorityDisplayPosition.z - this.lastTracedAuthorityDisplayPosition.z;
     this.frameTraceSamples.push({
       frame: this.frameTraceSamples.length + 1,
       nowMs,
@@ -572,6 +618,12 @@ export class LocalPlayerController implements FrameSubscriber {
       authorityRenderX: authorityRenderPosition.x,
       authorityRenderY: authorityRenderPosition.y,
       authorityRenderZ: authorityRenderPosition.z,
+      authorityProjectedX: authorityProjectedPosition.x,
+      authorityProjectedY: authorityProjectedPosition.y,
+      authorityProjectedZ: authorityProjectedPosition.z,
+      authorityDisplayX: authorityDisplayPosition.x,
+      authorityDisplayY: authorityDisplayPosition.y,
+      authorityDisplayZ: authorityDisplayPosition.z,
       deltaX,
       deltaY,
       deltaZ,
@@ -588,6 +640,22 @@ export class LocalPlayerController implements FrameSubscriber {
         authorityRenderDeltaY,
         authorityRenderDeltaZ,
       ),
+      authorityProjectedDeltaX,
+      authorityProjectedDeltaY,
+      authorityProjectedDeltaZ,
+      authorityProjectedDeltaDistance: Math.hypot(
+        authorityProjectedDeltaX,
+        authorityProjectedDeltaY,
+        authorityProjectedDeltaZ,
+      ),
+      authorityDisplayDeltaX,
+      authorityDisplayDeltaY,
+      authorityDisplayDeltaZ,
+      authorityDisplayDeltaDistance: Math.hypot(
+        authorityDisplayDeltaX,
+        authorityDisplayDeltaY,
+        authorityDisplayDeltaZ,
+      ),
       localAuthorityDistance: this.renderedPosition.distanceTo(this.authoritativePosition),
       localAuthorityHorizontalDistance: Math.hypot(
         this.renderedPosition.x - this.authoritativePosition.x,
@@ -598,12 +666,38 @@ export class LocalPlayerController implements FrameSubscriber {
         this.renderedPosition.x - authorityRenderPosition.x,
         this.renderedPosition.z - authorityRenderPosition.z,
       ),
+      localAuthorityProjectedDistance: this.renderedPosition.distanceTo(
+        authorityProjectedPosition,
+      ),
+      localAuthorityProjectedHorizontalDistance: Math.hypot(
+        this.renderedPosition.x - authorityProjectedPosition.x,
+        this.renderedPosition.z - authorityProjectedPosition.z,
+      ),
+      localAuthorityDisplayDistance: this.renderedPosition.distanceTo(authorityDisplayPosition),
+      localAuthorityDisplayHorizontalDistance: Math.hypot(
+        this.renderedPosition.x - authorityDisplayPosition.x,
+        this.renderedPosition.z - authorityDisplayPosition.z,
+      ),
       authorityRenderAuthorityDistance: authorityRenderPosition.distanceTo(
         this.authoritativePosition,
       ),
       authorityRenderAuthorityHorizontalDistance: Math.hypot(
         authorityRenderPosition.x - this.authoritativePosition.x,
         authorityRenderPosition.z - this.authoritativePosition.z,
+      ),
+      authorityProjectedAuthorityDistance: authorityProjectedPosition.distanceTo(
+        this.authoritativePosition,
+      ),
+      authorityProjectedAuthorityHorizontalDistance: Math.hypot(
+        authorityProjectedPosition.x - this.authoritativePosition.x,
+        authorityProjectedPosition.z - this.authoritativePosition.z,
+      ),
+      authorityDisplayAuthorityDistance: authorityDisplayPosition.distanceTo(
+        this.authoritativePosition,
+      ),
+      authorityDisplayAuthorityHorizontalDistance: Math.hypot(
+        authorityDisplayPosition.x - this.authoritativePosition.x,
+        authorityDisplayPosition.z - this.authoritativePosition.z,
       ),
       pendingCorrectionDistance: this.pendingCorrection.length(),
       accumulatorMs: this.fixedStepAccumulatorMs,
@@ -616,6 +710,8 @@ export class LocalPlayerController implements FrameSubscriber {
     this.lastTracedPosition.copy(this.renderedPosition);
     this.lastTracedAuthorityPosition.copy(this.authoritativePosition);
     this.lastTracedAuthorityRenderPosition.copy(authorityRenderPosition);
+    this.lastTracedAuthorityProjectedPosition.copy(authorityProjectedPosition);
+    this.lastTracedAuthorityDisplayPosition.copy(authorityDisplayPosition);
     this.frameTraceRemaining -= 1;
   }
 
@@ -633,6 +729,8 @@ export class LocalPlayerController implements FrameSubscriber {
     this.lastTracedPosition.copy(start);
     this.lastTracedAuthorityPosition.copy(start);
     this.lastTracedAuthorityRenderPosition.copy(start);
+    this.lastTracedAuthorityProjectedPosition.copy(start);
+    this.lastTracedAuthorityDisplayPosition.copy(start);
     this.lastCollisionSummary = null;
     this.lastSentInputWasIdle = false;
     this.lastSentIdleInputAtMs = Number.NEGATIVE_INFINITY;

@@ -1443,7 +1443,11 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
     (sample) =>
       finiteNumber(sample?.deltaDistance) !== null &&
       finiteNumber(sample?.authorityRenderDeltaDistance) !== null &&
-      finiteNumber(sample?.localAuthorityRenderDistance) !== null,
+      finiteNumber(sample?.authorityProjectedDeltaDistance) !== null &&
+      finiteNumber(sample?.authorityDisplayDeltaDistance) !== null &&
+      finiteNumber(sample?.localAuthorityRenderDistance) !== null &&
+      finiteNumber(sample?.localAuthorityProjectedDistance) !== null &&
+      finiteNumber(sample?.localAuthorityDisplayDistance) !== null,
   );
   const localDeltaDistances = completeSamples.map((sample) => finiteNumber(sample.deltaDistance));
   const authorityDeltaDistances = completeSamples.map((sample) =>
@@ -1452,12 +1456,32 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   const authorityRenderDeltaDistances = completeSamples.map((sample) =>
     finiteNumber(sample.authorityRenderDeltaDistance),
   );
+  const authorityProjectedDeltaDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityProjectedDeltaDistance),
+  );
+  const authorityDisplayDeltaDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityDisplayDeltaDistance),
+  );
   const deltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = finiteNumber(sample.deltaDistance);
     const authorityRenderDelta = finiteNumber(sample.authorityRenderDeltaDistance);
     return localDelta === null || authorityRenderDelta === null
       ? null
       : Math.abs(localDelta - authorityRenderDelta);
+  });
+  const projectedDeltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = finiteNumber(sample.deltaDistance);
+    const authorityProjectedDelta = finiteNumber(sample.authorityProjectedDeltaDistance);
+    return localDelta === null || authorityProjectedDelta === null
+      ? null
+      : Math.abs(localDelta - authorityProjectedDelta);
+  });
+  const displayDeltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = finiteNumber(sample.deltaDistance);
+    const authorityDisplayDelta = finiteNumber(sample.authorityDisplayDeltaDistance);
+    return localDelta === null || authorityDisplayDelta === null
+      ? null
+      : Math.abs(localDelta - authorityDisplayDelta);
   });
   const horizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = horizontalDeltaDistance(sample, "");
@@ -1466,18 +1490,50 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
       ? null
       : Math.abs(localDelta - authorityRenderDelta);
   });
+  const projectedHorizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = horizontalDeltaDistance(sample, "");
+    const authorityProjectedDelta = horizontalDeltaDistance(sample, "authorityProjected");
+    return localDelta === null || authorityProjectedDelta === null
+      ? null
+      : Math.abs(localDelta - authorityProjectedDelta);
+  });
+  const displayHorizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = horizontalDeltaDistance(sample, "");
+    const authorityDisplayDelta = horizontalDeltaDistance(sample, "authorityDisplay");
+    return localDelta === null || authorityDisplayDelta === null
+      ? null
+      : Math.abs(localDelta - authorityDisplayDelta);
+  });
   const localAuthorityDistances = completeSamples.map((sample) =>
     finiteNumber(sample.localAuthorityDistance),
   );
   const localAuthorityRenderDistances = completeSamples.map((sample) =>
     finiteNumber(sample.localAuthorityRenderDistance),
   );
+  const localAuthorityProjectedDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.localAuthorityProjectedDistance),
+  );
+  const localAuthorityDisplayDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.localAuthorityDisplayDistance),
+  );
   const authorityRenderAuthorityDistances = completeSamples.map((sample) =>
     finiteNumber(sample.authorityRenderAuthorityDistance),
   );
+  const authorityProjectedAuthorityDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityProjectedAuthorityDistance),
+  );
+  const authorityDisplayAuthorityDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityDisplayAuthorityDistance),
+  );
   const deltaDiffSummary = summarizeNumbers(deltaDistanceDiffs);
+  const projectedDeltaDiffSummary = summarizeNumbers(projectedDeltaDistanceDiffs);
+  const displayDeltaDiffSummary = summarizeNumbers(displayDeltaDistanceDiffs);
   const horizontalDeltaDiffSummary = summarizeNumbers(horizontalDeltaDistanceDiffs);
+  const projectedHorizontalDeltaDiffSummary = summarizeNumbers(projectedHorizontalDeltaDistanceDiffs);
+  const displayHorizontalDeltaDiffSummary = summarizeNumbers(displayHorizontalDeltaDistanceDiffs);
   const localAuthorityRenderSummary = summarizeNumbers(localAuthorityRenderDistances);
+  const localAuthorityProjectedSummary = summarizeNumbers(localAuthorityProjectedDistances);
+  const localAuthorityDisplaySummary = summarizeNumbers(localAuthorityDisplayDistances);
   const minComparedSamples = Math.max(30, Math.floor(durationMs / 250));
   const maxDeltaDistanceDiffCm = Math.max(
     50,
@@ -1495,17 +1551,25 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
     120,
     Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "600"),
   );
+  const maxLocalAuthorityDisplayDistanceCm = Math.max(
+    2,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "5"),
+  );
+  const maxLocalAuthorityDisplayDistanceP95Cm = Math.max(
+    1,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "2"),
+  );
   const assertions = {
     samplesCaptured: completeSamples.length >= minComparedSamples,
     deltaDiffBounded:
-      (deltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
-      (deltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
+      (displayDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
+      (displayDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
     horizontalDeltaDiffBounded:
-      (horizontalDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
-      (horizontalDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
+      (displayHorizontalDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
+      (displayHorizontalDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
     displayDistanceBounded:
-      (localAuthorityRenderSummary?.max ?? Infinity) <= maxLocalAuthorityRenderDistanceCm &&
-      (localAuthorityRenderSummary?.p95 ?? Infinity) <= maxLocalAuthorityRenderDistanceP95Cm,
+      (localAuthorityDisplaySummary?.max ?? Infinity) <= maxLocalAuthorityDisplayDistanceCm &&
+      (localAuthorityDisplaySummary?.p95 ?? Infinity) <= maxLocalAuthorityDisplayDistanceP95Cm,
   };
   return {
     targetHz,
@@ -1521,15 +1585,27 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
       maxDeltaDistanceDiffP95Cm,
       maxLocalAuthorityRenderDistanceCm,
       maxLocalAuthorityRenderDistanceP95Cm,
+      maxLocalAuthorityDisplayDistanceCm,
+      maxLocalAuthorityDisplayDistanceP95Cm,
     },
     localDeltaDistance: summarizeNumbers(localDeltaDistances),
     authorityDeltaDistance: summarizeNumbers(authorityDeltaDistances),
     authorityRenderDeltaDistance: summarizeNumbers(authorityRenderDeltaDistances),
-    deltaDistanceDiff: deltaDiffSummary,
-    horizontalDeltaDistanceDiff: horizontalDeltaDiffSummary,
+    authorityProjectedDeltaDistance: summarizeNumbers(authorityProjectedDeltaDistances),
+    authorityDisplayDeltaDistance: summarizeNumbers(authorityDisplayDeltaDistances),
+    deltaDistanceDiff: displayDeltaDiffSummary,
+    horizontalDeltaDistanceDiff: displayHorizontalDeltaDiffSummary,
+    rawAuthorityRenderDeltaDistanceDiff: deltaDiffSummary,
+    rawAuthorityRenderHorizontalDeltaDistanceDiff: horizontalDeltaDiffSummary,
+    projectedDeltaDistanceDiff: projectedDeltaDiffSummary,
+    projectedHorizontalDeltaDistanceDiff: projectedHorizontalDeltaDiffSummary,
     localAuthorityDistance: summarizeNumbers(localAuthorityDistances),
     localAuthorityRenderDistance: localAuthorityRenderSummary,
+    localAuthorityProjectedDistance: localAuthorityProjectedSummary,
+    localAuthorityDisplayDistance: localAuthorityDisplaySummary,
     authorityRenderAuthorityDistance: summarizeNumbers(authorityRenderAuthorityDistances),
+    authorityProjectedAuthorityDistance: summarizeNumbers(authorityProjectedAuthorityDistances),
+    authorityDisplayAuthorityDistance: summarizeNumbers(authorityDisplayAuthorityDistances),
     assertions,
     passed: Object.values(assertions).every(Boolean),
   };
@@ -1604,10 +1680,20 @@ async function runLongContinuousMovement(page) {
       deltaDistance: frameTrace.data?.deltaDistance ?? null,
       authorityDeltaDistance: frameTrace.data?.authorityDeltaDistance ?? null,
       authorityRenderDeltaDistance: frameTrace.data?.authorityRenderDeltaDistance ?? null,
+      authorityProjectedDeltaDistance:
+        frameTrace.data?.authorityProjectedDeltaDistance ?? null,
+      authorityDisplayDeltaDistance: frameTrace.data?.authorityDisplayDeltaDistance ?? null,
       localAuthorityDistance: frameTrace.data?.localAuthorityDistance ?? null,
       localAuthorityRenderDistance: frameTrace.data?.localAuthorityRenderDistance ?? null,
+      localAuthorityProjectedDistance:
+        frameTrace.data?.localAuthorityProjectedDistance ?? null,
+      localAuthorityDisplayDistance: frameTrace.data?.localAuthorityDisplayDistance ?? null,
       authorityRenderAuthorityDistance:
         frameTrace.data?.authorityRenderAuthorityDistance ?? null,
+      authorityProjectedAuthorityDistance:
+        frameTrace.data?.authorityProjectedAuthorityDistance ?? null,
+      authorityDisplayAuthorityDistance:
+        frameTrace.data?.authorityDisplayAuthorityDistance ?? null,
       recentSamples: (frameTrace.data?.samples || []).slice(-40),
     },
   };
