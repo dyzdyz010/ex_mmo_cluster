@@ -625,6 +625,27 @@ export class ChunkStorage {
     return count;
   }
 
+  hasRenderableCells(): boolean {
+    for (let index = 0; index < this.data.macroHeaders.length; index += 1) {
+      const header = this.data.macroHeaders[index];
+      if (!header) {
+        continue;
+      }
+      if (header.mode === EVoxelCellMode.SolidBlock) {
+        const block = this.data.normalBlocks[header.payloadIndex];
+        if (block && block.materialId !== 0) {
+          return true;
+        }
+      } else if (header.mode === EVoxelCellMode.Refined) {
+        const refined = this.data.refinedCells[header.payloadIndex];
+        if (refined && refined.microOccupancyMask !== 0n) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   countStateFlag(flag: number): number {
     let count = 0;
     for (let index = 0; index < this.data.macroHeaders.length; index += 1) {

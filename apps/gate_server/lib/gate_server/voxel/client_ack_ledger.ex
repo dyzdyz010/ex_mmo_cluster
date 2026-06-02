@@ -23,7 +23,9 @@ defmodule GateServer.Voxel.ClientAckLedger do
   Records one client ACK when it does not exceed the version Gate forwarded.
 
   ACKs ahead of the forwarded ledger are rejected. Duplicate ACKs are accepted
-  as idempotent. Stale ACKs never move the known client version backwards.
+  as idempotent. Stale ACKs and ACKs for chunks whose forwarded cache has
+  already been pruned are ignored rather than promoted into reusable known
+  versions.
   """
   @spec record_ack(
           t() | nil,
@@ -40,8 +42,30 @@ defmodule GateServer.Voxel.ClientAckLedger do
     previous_ack_version = Map.get(ack_ledger, key)
 
     cond do
+      previous_ack_version == ack_version ->
+        {:ok, ack_ledger,
+         event(
+           :duplicate_ack,
+           logical_scene_id,
+           chunk_coord,
+           previous_ack_version,
+           forwarded_version,
+           ack_version
+         )}
+
+      is_integer(previous_ack_version) and ack_version < previous_ack_version ->
+        {:ok, ack_ledger,
+         event(
+           :stale_ack,
+           logical_scene_id,
+           chunk_coord,
+           previous_ack_version,
+           forwarded_version,
+           ack_version
+         )}
+
       is_nil(forwarded_version) ->
-        {:error, ack_ledger,
+        {:ok, ack_ledger,
          event(
            :ack_without_forwarded,
            logical_scene_id,
@@ -55,28 +79,6 @@ defmodule GateServer.Voxel.ClientAckLedger do
         {:error, ack_ledger,
          event(
            :ack_ahead_of_forwarded,
-           logical_scene_id,
-           chunk_coord,
-           previous_ack_version,
-           forwarded_version,
-           ack_version
-         )}
-
-      previous_ack_version == ack_version ->
-        {:ok, ack_ledger,
-         event(
-           :duplicate_ack,
-           logical_scene_id,
-           chunk_coord,
-           previous_ack_version,
-           forwarded_version,
-           ack_version
-         )}
-
-      is_integer(previous_ack_version) and ack_version < previous_ack_version ->
-        {:error, ack_ledger,
-         event(
-           :stale_ack,
            logical_scene_id,
            chunk_coord,
            previous_ack_version,
@@ -127,13 +129,15 @@ defmodule GateServer.Voxel.ClientAckLedger do
 
     events = Enum.reverse(events)
     accepted_count = Enum.count(events, &accepted_status?/1)
-    rejected_count = length(events) - accepted_count
+    ignored_count = Enum.count(events, &ignored_status?/1)
+    rejected_count = length(events) - accepted_count - ignored_count
 
     {ledger,
      %{
-       status: batch_status(length(events), accepted_count, rejected_count),
+       status: batch_status(length(events), accepted_count, ignored_count, rejected_count),
        logical_scene_id: non_negative_integer!(logical_scene_id, :logical_scene_id),
        accepted_count: accepted_count,
+       ignored_count: ignored_count,
        rejected_count: rejected_count,
        ack_count: length(events),
        events: events
@@ -273,10 +277,14 @@ defmodule GateServer.Voxel.ClientAckLedger do
     status in [:ack_recorded, :duplicate_ack]
   end
 
-  defp batch_status(0, _accepted_count, _rejected_count), do: :empty
-  defp batch_status(_total, _accepted_count, 0), do: :ok
-  defp batch_status(total, 0, total), do: :rejected
-  defp batch_status(_total, _accepted_count, _rejected_count), do: :partial
+  defp ignored_status?(%{status: status}) do
+    status in [:ack_without_forwarded, :stale_ack]
+  end
+
+  defp batch_status(0, _accepted_count, _ignored_count, _rejected_count), do: :empty
+  defp batch_status(_total, _accepted_count, _ignored_count, 0), do: :ok
+  defp batch_status(total, 0, 0, total), do: :rejected
+  defp batch_status(_total, _accepted_count, _ignored_count, _rejected_count), do: :partial
 
   defp key!(logical_scene_id, chunk_coord) do
     {non_negative_integer!(logical_scene_id, :logical_scene_id), coord!(chunk_coord)}

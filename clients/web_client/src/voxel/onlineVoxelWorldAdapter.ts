@@ -35,7 +35,17 @@ import { MacroWorldSize } from "./core/constants";
 // Phase 4-bis Step 4-bis-10 timing / sampling constants.
 const OBJECT_STATE_DELTA_RETRY_DELAY_MS = 100;
 const MOVEMENT_PREWARM_RETRY_DELAY_MS = 750;
+const MOVEMENT_PREWARM_FLUSH_INTERVAL_MS = 100;
+const MOVEMENT_PREWARM_MAX_SUBSCRIPTIONS_PER_FLUSH = 1;
+const MOVEMENT_PREWARM_MAX_QUEUE_ITEMS = 128;
 const CHUNK_SUBSCRIPTION_PENDING_RETRY_DELAY_MS = 10_000;
+
+type PendingChunkAck = {
+  logicalSceneId: number;
+  chunkCoord: FChunkCoord;
+  chunkVersion: number;
+  source: "snapshot" | "delta";
+};
 
 const DEBRIS_SAMPLE_LIMITS: Record<ObjectStateFlagName, number> = {
   destroyed: 20,
@@ -231,6 +241,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     string,
     { coord: FChunkCoord; requestId: number; sentAtMs: number; source: string }
   >();
+  private readonly pendingMovementPrewarmQueue = new Map<
+    string,
+    { coord: FChunkCoord; queuedAtMs: number; source: string }
+  >();
+  private lastMovementPrewarmFlushMs = -MOVEMENT_PREWARM_FLUSH_INTERVAL_MS;
   private readonly pendingChunkSubscriptions = new Map<
     string,
     { coord: FChunkCoord; requestId: number; sentAtMs: number; source: string }
@@ -249,6 +264,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     chunkVersion: number;
     source: "snapshot" | "delta";
   } | null = null;
+  private readonly pendingChunkAcks = new Map<string, PendingChunkAck>();
   // Phase 4-bis 0x6C ObjectStateDelta processing.
   private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
   private readonly clearedSlotCache: ClearedSlotCache;
@@ -335,6 +351,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     if (this.subscriptionState === "idle") {
       this.subscribeInitialChunks();
     }
+    this.flushMovementPrewarmQueue(nowMs);
   }
 
   flushServerMessagesForCli(): void {
@@ -374,6 +391,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       movementPrewarm: {
         pendingCount: this.movementPrewarmRequests.size,
         pendingChunks: [...this.movementPrewarmRequests.values()].map((request) =>
+          chunkCoordKey(request.coord),
+        ),
+        queuedCount: this.pendingMovementPrewarmQueue.size,
+        queuedChunks: [...this.pendingMovementPrewarmQueue.values()].map((request) =>
           chunkCoordKey(request.coord),
         ),
         pendingSubscriptionCount: this.pendingChunkSubscriptions.size,
@@ -672,7 +693,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
 
     const nowMs = Math.round(performance.now());
     const seen = new Set<string>();
-    let sent = 0;
+    let queued = 0;
 
     for (const chunk of chunks) {
       const chunkCoord = { ...chunk };
@@ -696,33 +717,119 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         continue;
       }
 
-      const requestId = this.subscribeVoxelChunk(chunkCoord, 0, source);
-      if (requestId === null) {
+      if (this.pendingMovementPrewarmQueue.has(key)) {
         continue;
       }
 
+      this.enqueueMovementPrewarm(chunkCoord, nowMs, source);
+      queued += 1;
+    }
+
+    return queued;
+  }
+
+  private enqueueMovementPrewarm(chunkCoord: FChunkCoord, queuedAtMs: number, source: string): void {
+    const key = chunkCoordKey(chunkCoord);
+
+    if (this.pendingMovementPrewarmQueue.size >= MOVEMENT_PREWARM_MAX_QUEUE_ITEMS) {
+      const oldestKey = this.pendingMovementPrewarmQueue.keys().next().value as string | undefined;
+      if (oldestKey !== undefined) {
+        this.pendingMovementPrewarmQueue.delete(oldestKey);
+        this.logger.emit("voxel", "movement_prewarm_queue_pruned", {
+          dropped_chunk: oldestKey,
+          queued_count: this.pendingMovementPrewarmQueue.size,
+        });
+      }
+    }
+
+    const request = {
+      coord: { ...chunkCoord },
+      queuedAtMs,
+      source,
+    };
+
+    if (source === "collision_query") {
+      this.pendingMovementPrewarmQueue.delete(key);
+      const prioritizedQueue = new Map([
+        [key, request],
+        ...this.pendingMovementPrewarmQueue,
+      ]);
+      this.pendingMovementPrewarmQueue.clear();
+      for (const [queuedKey, queuedRequest] of prioritizedQueue) {
+        this.pendingMovementPrewarmQueue.set(queuedKey, queuedRequest);
+      }
+      return;
+    }
+
+    this.pendingMovementPrewarmQueue.set(key, request);
+  }
+
+  private flushMovementPrewarmQueue(nowMs: number): void {
+    if (this.pendingMovementPrewarmQueue.size === 0) {
+      return;
+    }
+    const hasCollisionQuery = [...this.pendingMovementPrewarmQueue.values()].some(
+      (queued) => queued.source === "collision_query",
+    );
+    if (
+      !hasCollisionQuery &&
+      nowMs - this.lastMovementPrewarmFlushMs < MOVEMENT_PREWARM_FLUSH_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.lastMovementPrewarmFlushMs = nowMs;
+    let sent = 0;
+
+    for (const [key, queued] of this.pendingMovementPrewarmQueue) {
+      if (sent >= MOVEMENT_PREWARM_MAX_SUBSCRIPTIONS_PER_FLUSH) {
+        break;
+      }
+
+      const chunkCoord = { ...queued.coord };
+
+      if (this.store.getChunkAuthorityMetadata(chunkCoord)) {
+        this.clearPendingChunkRequest(chunkCoord);
+        continue;
+      }
+
+      if (this.hasActivePendingChunkSubscription(chunkCoord, nowMs)) {
+        this.pendingMovementPrewarmQueue.delete(key);
+        continue;
+      }
+
+      const pending = this.movementPrewarmRequests.get(key);
+      if (pending && nowMs - pending.sentAtMs < MOVEMENT_PREWARM_RETRY_DELAY_MS) {
+        this.pendingMovementPrewarmQueue.delete(key);
+        continue;
+      }
+
+      const requestId = this.subscribeVoxelChunk(chunkCoord, 0, queued.source);
+      if (requestId === null) {
+        return;
+      }
+
+      this.pendingMovementPrewarmQueue.delete(key);
       this.movementPrewarmRequests.set(key, {
         coord: chunkCoord,
         requestId,
         sentAtMs: nowMs,
-        source,
+        source: queued.source,
       });
       this.lastMovementPrewarm = {
         requestId,
         logicalSceneId: this.logicalSceneId,
         chunkCoord,
-        source,
+        source: queued.source,
       };
       this.bus.emit("world:chunk-prewarm-requested", {
         requestId,
         logicalSceneId: this.logicalSceneId,
         chunkCoord,
-        source,
+        source: queued.source,
       });
       sent += 1;
     }
-
-    return sent;
   }
 
   unsubscribeVoxelChunk(chunk: FChunkCoord): number | null {
@@ -785,6 +892,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     for (const msg of this.transport.drainVoxelFieldDestroyeds()) {
       this.fieldDestroyeds.push(msg);
     }
+    this.flushPendingChunkAcks();
   }
 
   drainVoxelFieldSnapshots(): VoxelFieldRegionSnapshotMessage[] {
@@ -1280,6 +1388,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private clearPendingChunkRequest(chunkCoord: FChunkCoord): void {
     const key = chunkCoordKey(chunkCoord);
     this.movementPrewarmRequests.delete(key);
+    this.pendingMovementPrewarmQueue.delete(key);
     this.pendingChunkSubscriptions.delete(key);
   }
 
@@ -1585,36 +1694,76 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     chunkVersion: number,
     source: "snapshot" | "delta",
   ): void {
+    this.pendingChunkAcks.set(`${logicalSceneId}:${chunkCoordKey(chunkCoord)}`, {
+      logicalSceneId,
+      chunkCoord: { ...chunkCoord },
+      chunkVersion,
+      source,
+    });
+  }
+
+  private flushPendingChunkAcks(): void {
+    if (this.pendingChunkAcks.size === 0) {
+      return;
+    }
+
+    const pending = [...this.pendingChunkAcks.values()];
+    this.pendingChunkAcks.clear();
+
+    const byScene = new Map<number, PendingChunkAck[]>();
+    for (const ack of pending) {
+      const sceneAcks = byScene.get(ack.logicalSceneId);
+      if (sceneAcks) {
+        sceneAcks.push(ack);
+      } else {
+        byScene.set(ack.logicalSceneId, [ack]);
+      }
+    }
+
+    for (const [logicalSceneId, acks] of byScene) {
+      this.flushPendingChunkAckGroup(logicalSceneId, acks);
+    }
+  }
+
+  private flushPendingChunkAckGroup(logicalSceneId: number, acks: PendingChunkAck[]): void {
     const requestId = this.transport.sendVoxelChunkAck({
       logicalSceneId,
-      acks: [{ chunkCoord, chunkVersion }],
+      acks: acks.map((ack) => ({
+        chunkCoord: ack.chunkCoord,
+        chunkVersion: ack.chunkVersion,
+      })),
     });
 
     if (requestId === null) {
       this.lastError = "chunk_ack_blocked";
       this.logger.emit("voxel", "chunk_ack_blocked", {
         logical_scene_id: logicalSceneId,
-        chunk_coord: chunkCoordKey(chunkCoord),
-        chunk_version: chunkVersion,
-        source,
+        ack_count: acks.length,
+        chunks: JSON.stringify(
+          acks.map((ack) => `${chunkCoordKey(ack.chunkCoord)}@${ack.chunkVersion}`),
+        ),
+        sources: JSON.stringify(acks.map((ack) => ack.source)),
       });
       return;
     }
 
-    this.appliedChunkAckCount += 1;
+    const lastAck = acks[acks.length - 1]!;
+    this.appliedChunkAckCount += acks.length;
     this.lastAppliedChunkAck = {
       requestId,
       logicalSceneId,
-      chunkCoord: { ...chunkCoord },
-      chunkVersion,
-      source,
+      chunkCoord: { ...lastAck.chunkCoord },
+      chunkVersion: lastAck.chunkVersion,
+      source: lastAck.source,
     };
     this.logger.emit("voxel", "chunk_ack_applied", {
       request_id: requestId,
       logical_scene_id: logicalSceneId,
-      chunk_coord: chunkCoordKey(chunkCoord),
-      chunk_version: chunkVersion,
-      source,
+      ack_count: acks.length,
+      chunks: JSON.stringify(
+        acks.map((ack) => `${chunkCoordKey(ack.chunkCoord)}@${ack.chunkVersion}`),
+      ),
+      sources: JSON.stringify(acks.map((ack) => ack.source)),
       applied_ack_count: this.appliedChunkAckCount,
     });
   }

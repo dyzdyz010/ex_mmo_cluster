@@ -15,15 +15,18 @@ defmodule GateServer.Voxel.DeliveryScheduler do
   alias GateServer.Voxel.DeliveryEnvelope
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
   @default_max_window_bytes 64 * 1_024
+  @default_max_window_items 32
   @default_max_queue_items 64
   @default_max_queue_bytes 1_024 * 1_024
   @default_window_interval_ms 50
 
   defstruct max_window_bytes: @default_max_window_bytes,
+            max_window_items: @default_max_window_items,
             max_queue_items: @default_max_queue_items,
             max_queue_bytes: @default_max_queue_bytes,
             window_interval_ms: @default_window_interval_ms,
             window_bytes_used: 0,
+            window_items_used: 0,
             queue: [],
             queued_bytes: 0,
             sent_count: 0,
@@ -53,6 +56,11 @@ defmodule GateServer.Voxel.DeliveryScheduler do
         non_negative_integer!(
           Map.get(opts, :max_window_bytes, @default_max_window_bytes),
           :max_window_bytes
+        ),
+      max_window_items:
+        non_negative_integer!(
+          Map.get(opts, :max_window_items, @default_max_window_items),
+          :max_window_items
         ),
       max_queue_items:
         non_negative_integer!(
@@ -233,7 +241,9 @@ defmodule GateServer.Voxel.DeliveryScheduler do
   end
 
   @doc "Resets the per-window byte counter before a drain attempt."
-  def reset_window(scheduler), do: %{ensure(scheduler) | window_bytes_used: 0}
+  def reset_window(scheduler) do
+    %{ensure(scheduler) | window_bytes_used: 0, window_items_used: 0}
+  end
 
   @doc """
   Drains queued frames in FIFO order until the data budget is exhausted.
@@ -315,8 +325,10 @@ defmodule GateServer.Voxel.DeliveryScheduler do
 
     %{
       max_window_bytes: scheduler.max_window_bytes,
+      max_window_items: scheduler.max_window_items,
       window_interval_ms: scheduler.window_interval_ms,
       window_bytes_used: scheduler.window_bytes_used,
+      window_items_used: scheduler.window_items_used,
       max_queue_items: scheduler.max_queue_items,
       max_queue_bytes: scheduler.max_queue_bytes,
       queued_count: length(scheduler.queue),
@@ -415,6 +427,7 @@ defmodule GateServer.Voxel.DeliveryScheduler do
           %{
             scheduler
             | window_bytes_used: scheduler.window_bytes_used + frame.bytes,
+              window_items_used: scheduler.window_items_used + 1,
               sent_count: scheduler.sent_count + 1,
               oversize_count: scheduler.oversize_count + if(status == :oversize, do: 1, else: 0)
           }
@@ -484,6 +497,7 @@ defmodule GateServer.Voxel.DeliveryScheduler do
       scheduler = %{
         scheduler
         | window_bytes_used: scheduler.window_bytes_used + frame.bytes,
+          window_items_used: scheduler.window_items_used + 1,
           sent_count: scheduler.sent_count + 1,
           oversize_count: scheduler.oversize_count + if(status == :oversize, do: 1, else: 0)
       }
@@ -502,8 +516,12 @@ defmodule GateServer.Voxel.DeliveryScheduler do
   defp can_send_now?(scheduler, bytes) do
     remaining = scheduler.max_window_bytes - scheduler.window_bytes_used
 
-    bytes <= remaining or
-      (scheduler.window_bytes_used == 0 and bytes > scheduler.max_window_bytes)
+    item_allowed =
+      scheduler.max_window_items > 0 and scheduler.window_items_used < scheduler.max_window_items
+
+    item_allowed and
+      (bytes <= remaining or
+         (scheduler.window_bytes_used == 0 and bytes > scheduler.max_window_bytes))
   end
 
   defp queue_bytes(queue) do

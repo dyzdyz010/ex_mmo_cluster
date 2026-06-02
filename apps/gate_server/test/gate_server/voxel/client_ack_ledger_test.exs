@@ -24,6 +24,21 @@ defmodule GateServer.Voxel.ClientAckLedgerTest do
     assert ClientAckLedger.known_versions(ledger, 77) == %{{1, 2, 3} => 5}
   end
 
+  test "ignores ACKs whose forwarded cache entry was already pruned" do
+    assert {:ok, ledger, event} =
+             ClientAckLedger.record_ack(
+               ClientAckLedger.new(),
+               ChunkVersionLedger.new(),
+               77,
+               {1, 2, 3},
+               0
+             )
+
+    assert event.status == :ack_without_forwarded
+    assert event.forwarded_version == nil
+    assert ClientAckLedger.known_versions(ledger, 77) == %{}
+  end
+
   test "duplicate and stale ACKs do not move the acknowledged version backwards" do
     forwarded =
       ChunkVersionLedger.new()
@@ -38,7 +53,7 @@ defmodule GateServer.Voxel.ClientAckLedgerTest do
     assert duplicate_event.status == :duplicate_ack
     assert same_ledger == ledger
 
-    assert {:error, stale_ledger, stale_event} =
+    assert {:ok, stale_ledger, stale_event} =
              ClientAckLedger.record_ack(ledger, forwarded, 77, {1, 2, 3}, 7)
 
     assert stale_event.status == :stale_ack
@@ -82,6 +97,7 @@ defmodule GateServer.Voxel.ClientAckLedgerTest do
 
     assert summary.status == :partial
     assert summary.accepted_count == 1
+    assert summary.ignored_count == 0
     assert summary.rejected_count == 1
     assert Enum.map(summary.events, & &1.status) == [:ack_recorded, :ack_ahead_of_forwarded]
     assert ClientAckLedger.known_versions(ledger, 77) == %{{1, 2, 3} => 5}

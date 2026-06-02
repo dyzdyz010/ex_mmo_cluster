@@ -294,6 +294,57 @@ describe("voxel gate protocol", () => {
     );
   });
 
+  it("decodes compact empty chunk snapshots without full section payloads", () => {
+    const payload = buildCompactEmptySnapshotFrame();
+    const view = new DataView(payload);
+    expect(payload.byteLength).toBe(51);
+    expect(view.getUint16(49, false)).toBe(0);
+
+    const message = decodeVoxelServerMessage(payload);
+
+    expect(message?.type).toBe("voxel_chunk_snapshot");
+    if (message?.type !== "voxel_chunk_snapshot") return;
+    expect(message.requestId).toBe(99);
+    expect(message.chunkCoord).toEqual({ x: -1, y: 0, z: 2 });
+    expect(message.chunkVersion).toBe(7);
+    expect(message.storage.macroHeaders).toHaveLength(VoxelConstants.MacroCountPerChunk);
+    expect(message.storage.macroHeaders[0]).toMatchObject({
+      mode: EVoxelCellMode.Empty,
+      flags: 0,
+      payloadIndex: 0xffff_ffff,
+      environmentIndex: 0xffff,
+      cellVersion: 0,
+      cellHash: 0,
+    });
+    expect(message.storage.normalBlocks).toEqual([]);
+    expect(message.storage.environmentSummaries).toEqual([]);
+    expect(message.refinedCellsWire).toEqual([]);
+    expect(message.attributeSets).toEqual([]);
+    expect(message.tagSets).toEqual([]);
+    expect(message.objectRefs).toEqual([]);
+  });
+
+  it("decodes sparse macro header chunk snapshots", () => {
+    const payload = buildSparseSnapshotFrame();
+    const message = decodeVoxelServerMessage(payload);
+
+    expect(message?.type).toBe("voxel_chunk_snapshot");
+    if (message?.type !== "voxel_chunk_snapshot") return;
+    expect(message.storage.macroHeaders).toHaveLength(VoxelConstants.MacroCountPerChunk);
+    expect(message.storage.normalBlocks).toHaveLength(1);
+    expect(message.storage.macroHeaders[0]).toMatchObject({
+      mode: EVoxelCellMode.Empty,
+      payloadIndex: 0xffff_ffff,
+    });
+    expect(message.storage.macroHeaders[801]).toMatchObject({
+      mode: EVoxelCellMode.SolidBlock,
+      payloadIndex: 0,
+      environmentIndex: 0xffff,
+      cellVersion: 13,
+      cellHash: 14,
+    });
+  });
+
   it("decodes voxel intent results with result code names", () => {
     const reason = new TextEncoder().encode("ok");
     const buffer = new ArrayBuffer(1 + 8 + 4 + 8 + 1 + 8 + 2 + 2 + reason.length);
@@ -437,6 +488,74 @@ function buildSnapshotFrame(): ArrayBuffer {
   return buffer;
 }
 
+function buildSparseSnapshotFrame(): ArrayBuffer {
+  const sections = [
+    section(0x08, sparseMacroHeadersSection()),
+    section(0x02, normalBlocksSection()),
+    section(0x03, emptyPoolSection()),
+    section(0x04, emptyPoolSection()),
+    section(0x05, emptyPoolSection()),
+    section(0x06, emptyPoolSection()),
+    section(0x07, emptyPoolSection()),
+  ];
+  const sectionsBytes = concat(sections);
+  const buffer = new ArrayBuffer(1 + 8 + 8 + 12 + 2 + 1 + 1 + 8 + 8 + 2 + sectionsBytes.length);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, VoxelOpcode.ChunkSnapshot);
+  offset += 1;
+  view.setBigUint64(offset, 42n, false);
+  offset += 8;
+  view.setBigUint64(offset, 5n, false);
+  offset += 8;
+  view.setInt32(offset, 0, false);
+  view.setInt32(offset + 4, 0, false);
+  view.setInt32(offset + 8, 0, false);
+  offset += 12;
+  view.setUint16(offset, 1, false);
+  offset += 2;
+  view.setUint8(offset, VoxelConstants.ChunkSizeInMacros);
+  offset += 1;
+  view.setUint8(offset, VoxelConstants.MicroPerMacro);
+  offset += 1;
+  view.setBigUint64(offset, 77n, false);
+  offset += 8;
+  view.setBigUint64(offset, 88n, false);
+  offset += 8;
+  view.setUint16(offset, sections.length, false);
+  offset += 2;
+  new Uint8Array(buffer, offset).set(sectionsBytes);
+  return buffer;
+}
+
+function buildCompactEmptySnapshotFrame(): ArrayBuffer {
+  const buffer = new ArrayBuffer(1 + 8 + 8 + 12 + 2 + 1 + 1 + 8 + 8 + 2);
+  const view = new DataView(buffer);
+  let offset = 0;
+  view.setUint8(offset, VoxelOpcode.ChunkSnapshot);
+  offset += 1;
+  view.setBigUint64(offset, 99n, false);
+  offset += 8;
+  view.setBigUint64(offset, 42n, false);
+  offset += 8;
+  view.setInt32(offset, -1, false);
+  view.setInt32(offset + 4, 0, false);
+  view.setInt32(offset + 8, 2, false);
+  offset += 12;
+  view.setUint16(offset, 1, false);
+  offset += 2;
+  view.setUint8(offset, VoxelConstants.ChunkSizeInMacros);
+  offset += 1;
+  view.setUint8(offset, VoxelConstants.MicroPerMacro);
+  offset += 1;
+  view.setBigUint64(offset, 7n, false);
+  offset += 8;
+  view.setBigUint64(offset, 0x0980_df98_c2da_1ffcn, false);
+  offset += 8;
+  view.setUint16(offset, 0, false);
+  return buffer;
+}
+
 function macroHeadersSection(): Uint8Array {
   const buffer = new ArrayBuffer(VoxelConstants.MacroCountPerChunk * 19);
   const view = new DataView(buffer);
@@ -452,6 +571,21 @@ function macroHeadersSection(): Uint8Array {
   view.setUint32(solidOffset + 7, 0xffff_ffff, false);
   view.setUint32(solidOffset + 11, 13, false);
   view.setUint32(solidOffset + 15, 14, false);
+  return new Uint8Array(buffer);
+}
+
+function sparseMacroHeadersSection(): Uint8Array {
+  const buffer = new ArrayBuffer(2 + 2 + 19);
+  const view = new DataView(buffer);
+  view.setUint16(0, 1, false);
+  view.setUint16(2, 801, false);
+  const headerOffset = 4;
+  view.setUint8(headerOffset, EVoxelCellMode.SolidBlock);
+  view.setUint16(headerOffset + 1, 7, false);
+  view.setUint32(headerOffset + 3, 0, false);
+  view.setUint32(headerOffset + 7, 0xffff_ffff, false);
+  view.setUint32(headerOffset + 11, 13, false);
+  view.setUint32(headerOffset + 15, 14, false);
   return new Uint8Array(buffer);
 }
 

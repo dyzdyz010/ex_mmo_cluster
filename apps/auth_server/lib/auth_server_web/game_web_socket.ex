@@ -47,7 +47,7 @@ defmodule AuthServerWeb.GameWebSocket do
         {:ok, enqueue_bulk_payload(state, payload)}
 
       realtime_payload?(payload) ->
-        {:ok, enqueue_realtime_payload(state, payload)}
+        push_or_enqueue_realtime_payload(state, payload)
 
       visual_latest_payload?(payload) ->
         {:ok, enqueue_visual_latest_payload(state, payload)}
@@ -175,6 +175,15 @@ defmodule AuthServerWeb.GameWebSocket do
     |> Map.update!(:gate_ws_bulk_queue, &:queue.in(payload, &1))
     |> Map.update!(:gate_ws_bulk_queue_bytes, &(&1 + byte_size(payload)))
     |> schedule_bulk_drain(@default_bulk_drain_interval_ms)
+  end
+
+  defp push_or_enqueue_realtime_payload(state, payload) do
+    state = ensure_outbound_state(state)
+
+    case realtime_initial_drain_interval_ms() do
+      0 -> {:push, {:binary, payload}, state}
+      _delay_ms -> {:ok, enqueue_realtime_payload(state, payload)}
+    end
   end
 
   defp enqueue_realtime_payload(state, payload) do

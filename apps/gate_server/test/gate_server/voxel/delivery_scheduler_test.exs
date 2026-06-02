@@ -352,6 +352,43 @@ defmodule GateServer.Voxel.DeliverySchedulerTest do
     assert summary.window_bytes_used == byte_size(first_payload)
   end
 
+  test "queues tiny voxel frames once the per-window frame budget is exhausted" do
+    first_payload = snapshot_payload(7, {0, 0, 0}, 1)
+    second_payload = snapshot_payload(7, {1, 0, 0}, 1)
+    third_payload = snapshot_payload(7, {2, 0, 0}, 1)
+
+    scheduler =
+      DeliveryScheduler.new(
+        max_window_bytes: 1_000_000,
+        max_window_items: 2,
+        max_queue_items: 8,
+        max_queue_bytes:
+          byte_size(first_payload) + byte_size(second_payload) + byte_size(third_payload) + 128
+      )
+
+    {scheduler, %{action: :send_now}} =
+      DeliveryScheduler.offer(scheduler, :snapshot, first_payload)
+
+    {scheduler, %{action: :send_now}} =
+      DeliveryScheduler.offer(scheduler, :snapshot, second_payload)
+
+    assert {scheduler, %{action: :queued, frame_kind: :snapshot, logical_scene_id: 7}} =
+             DeliveryScheduler.offer(scheduler, :snapshot, third_payload)
+
+    summary = DeliveryScheduler.summary(scheduler)
+    assert summary.queued_count == 1
+    assert summary.sent_count == 2
+    assert summary.window_items_used == 2
+    assert summary.window_bytes_used == byte_size(first_payload) + byte_size(second_payload)
+
+    assert {scheduler, [%{action: :send_now, payload: ^third_payload}]} =
+             scheduler
+             |> DeliveryScheduler.reset_window()
+             |> DeliveryScheduler.drain()
+
+    assert DeliveryScheduler.summary(scheduler).window_items_used == 1
+  end
+
   test "drains queued frames after the delivery window resets" do
     first_payload = snapshot_payload(7, {0, 0, 0}, 1)
 

@@ -2825,6 +2825,7 @@ defmodule GateServer.TcpConnection do
       status: :empty,
       logical_scene_id: logical_scene_id,
       accepted_count: 0,
+      ignored_count: 0,
       rejected_count: 0,
       ack_count: 0,
       events: []
@@ -3106,7 +3107,9 @@ defmodule GateServer.TcpConnection do
 
     [
       "voxel_delivery_window_bytes_used=#{summary.window_bytes_used}",
+      "voxel_delivery_window_items_used=#{summary.window_items_used}",
       "voxel_delivery_max_window_bytes=#{summary.max_window_bytes}",
+      "voxel_delivery_max_window_items=#{summary.max_window_items}",
       "voxel_delivery_queue_count=#{summary.queued_count}",
       "voxel_delivery_queued_bytes=#{summary.queued_bytes}",
       "voxel_delivery_deferred_count=#{summary.deferred_count}",

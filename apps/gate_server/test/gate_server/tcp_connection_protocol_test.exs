@@ -1636,6 +1636,18 @@ defmodule GateServer.TcpConnectionProtocolTest do
              %{{0, 0, 0} => 7}
   end
 
+  test "voxel chunk ACK over tcp ignores chunks with no forwarded cache entry", %{
+    client: client,
+    pid: pid
+  } do
+    put_connection_in_scene(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_chunk_ack(209, 893, [{{0, 0, 0}, 0}]))
+    assert {:ok, <<0x80, 209::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert ClientAckLedger.known_versions(:sys.get_state(pid).client_ack_versions, 893) == %{}
+  end
+
   test "migration cutover invalidate automatically rebinds tcp voxel subscriptions", %{
     client: client,
     pid: pid

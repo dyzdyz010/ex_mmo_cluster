@@ -80,7 +80,7 @@ describe("RenderOrchestrator actor display", () => {
     render.dispose();
   });
 
-  it("smooths authority display jumps between server movement acks", () => {
+  it("renders the local authority marker at the controller target without extra display lag", () => {
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -106,8 +106,7 @@ describe("RenderOrchestrator actor display", () => {
     render.onFrame(16, 16);
 
     const displayedY = render.getActorDisplaySnapshot().authority.y;
-    expect(displayedY).toBeGreaterThan(185);
-    expect(displayedY).toBeLessThan(285);
+    expect(displayedY).toBe(285);
     render.dispose();
   });
 });

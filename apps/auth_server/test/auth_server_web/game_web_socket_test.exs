@@ -1,24 +1,44 @@
 defmodule AuthServerWeb.GameWebSocketTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
-  test "pushes realtime gate iodata as one binary websocket frame" do
-    assert {:push, {:binary, <<0x6D, 1, 2, 3>>}, %{}} =
+  setup do
+    env_names = [
+      "AUTH_GAME_WS_REALTIME_DRAIN_INTERVAL_MS",
+      "AUTH_GAME_WS_REALTIME_MAX_QUEUE"
+    ]
+
+    previous = Map.new(env_names, &{&1, System.get_env(&1)})
+    Enum.each(env_names, &System.delete_env/1)
+
+    on_exit(fn -> restore_env(previous) end)
+    :ok
+  end
+
+  test "pushes movement acks immediately as binary websocket frames" do
+    ack = <<0x8B, 1, 0, 0, 0, 1>>
+
+    assert {:push, {:binary, ^ack}, state} =
              AuthServerWeb.GameWebSocket.handle_info(
-               {:gate_ws_send, [<<0x6D>>, <<1, 2, 3>>]},
+               {:gate_ws_send, [<<0x8B>>, <<1, 0, 0, 0, 1>>]},
                %{}
              )
+
+    assert :queue.is_empty(state.gate_ws_realtime_queue)
+    assert state.gate_ws_realtime_drain_ref == nil
   end
 
   test "queues bulk voxel frames so later realtime frames can bypass them" do
+    ack = <<0x8B, 1, 0, 0, 0, 9>>
+
     assert {:ok, state} =
              AuthServerWeb.GameWebSocket.handle_info(
                {:gate_ws_send, [<<0x62>>, <<1, 2, 3>>]},
                %{}
              )
 
-    assert {:push, {:binary, <<0x6D, 9, 8, 7>>}, state} =
+    assert {:push, {:binary, ^ack}, state} =
              AuthServerWeb.GameWebSocket.handle_info(
-               {:gate_ws_send, [<<0x6D>>, <<9, 8, 7>>]},
+               {:gate_ws_send, ack},
                state
              )
 
@@ -28,27 +48,21 @@ defmodule AuthServerWeb.GameWebSocketTest do
     assert {:ok, _state} = AuthServerWeb.GameWebSocket.handle_info(:gate_ws_bulk_drain, state)
   end
 
-  test "preserves movement acks as ordered realtime payloads under normal load" do
+  test "preserves movement acks as ordered immediate realtime payloads under normal load" do
     first_ack = <<0x8B, 1, 0, 0, 0, 1>>
     second_ack = <<0x8B, 1, 0, 0, 0, 2>>
 
-    assert {:ok, state} =
+    assert {:push, {:binary, ^first_ack}, state} =
              AuthServerWeb.GameWebSocket.handle_info(
                {:gate_ws_send, first_ack},
                %{}
              )
 
-    assert {:ok, state} =
+    assert {:push, {:binary, ^second_ack}, state} =
              AuthServerWeb.GameWebSocket.handle_info(
                {:gate_ws_send, second_ack},
                state
              )
-
-    assert {:push, {:binary, ^first_ack}, state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
-
-    assert {:push, {:binary, ^second_ack}, state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
 
     assert {:ok, _state} = AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
   end
@@ -58,42 +72,40 @@ defmodule AuthServerWeb.GameWebSocketTest do
     second_ack = <<0x8B, 1, 0, 0, 0, 2>>
     third_ack = <<0x8B, 1, 0, 0, 0, 3>>
 
-    previous = System.get_env("AUTH_GAME_WS_REALTIME_MAX_QUEUE")
-    System.put_env("AUTH_GAME_WS_REALTIME_MAX_QUEUE", "2")
+    with_env(
+      %{
+        "AUTH_GAME_WS_REALTIME_DRAIN_INTERVAL_MS" => "1",
+        "AUTH_GAME_WS_REALTIME_MAX_QUEUE" => "2"
+      },
+      fn ->
+        assert {:ok, state} =
+                 AuthServerWeb.GameWebSocket.handle_info(
+                   {:gate_ws_send, first_ack},
+                   %{}
+                 )
 
-    try do
-      assert {:ok, state} =
-               AuthServerWeb.GameWebSocket.handle_info(
-                 {:gate_ws_send, first_ack},
-                 %{}
-               )
+        assert {:ok, state} =
+                 AuthServerWeb.GameWebSocket.handle_info(
+                   {:gate_ws_send, second_ack},
+                   state
+                 )
 
-      assert {:ok, state} =
-               AuthServerWeb.GameWebSocket.handle_info(
-                 {:gate_ws_send, second_ack},
-                 state
-               )
+        assert {:ok, state} =
+                 AuthServerWeb.GameWebSocket.handle_info(
+                   {:gate_ws_send, third_ack},
+                   state
+                 )
 
-      assert {:ok, state} =
-               AuthServerWeb.GameWebSocket.handle_info(
-                 {:gate_ws_send, third_ack},
-                 state
-               )
+        assert {:push, {:binary, ^second_ack}, state} =
+                 AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
 
-      assert {:push, {:binary, ^second_ack}, state} =
-               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
+        assert {:push, {:binary, ^third_ack}, state} =
+                 AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
 
-      assert {:push, {:binary, ^third_ack}, state} =
-               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
-
-      assert {:ok, _state} =
-               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
-    after
-      case previous do
-        nil -> System.delete_env("AUTH_GAME_WS_REALTIME_MAX_QUEUE")
-        value -> System.put_env("AUTH_GAME_WS_REALTIME_MAX_QUEUE", value)
+        assert {:ok, _state} =
+                 AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
       end
-    end
+    )
   end
 
   test "coalesces field region snapshots by region identity on the visual lane" do
@@ -119,7 +131,7 @@ defmodule AuthServerWeb.GameWebSocketTest do
     assert {:ok, _state} = AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
   end
 
-  test "movement acks drain before queued field region snapshots" do
+  test "movement acks push before queued field region snapshots" do
     key = <<1::64, 0::32-signed, 0::32-signed, 0::32-signed, 44::64>>
     snapshot = <<0x73>> <> key <> <<1::32, 0::8, 0::16>>
     ack = <<0x8B, 1, 0, 0, 0, 1>>
@@ -130,44 +142,43 @@ defmodule AuthServerWeb.GameWebSocketTest do
                %{}
              )
 
-    assert {:ok, state} =
+    assert {:push, {:binary, ^ack}, state} =
              AuthServerWeb.GameWebSocket.handle_info(
                {:gate_ws_send, ack},
                state
              )
-
-    assert {:push, {:binary, ^ack}, state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
 
     assert {:push, {:binary, ^snapshot}, _state} =
              AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
   end
 
-  test "queued field region snapshots wait when a movement ack is ready" do
+  test "queued field region snapshots wait when a delayed movement ack is ready" do
     key = <<1::64, 0::32-signed, 0::32-signed, 0::32-signed, 44::64>>
     snapshot = <<0x73>> <> key <> <<1::32, 0::8, 0::16>>
     ack = <<0x8B, 1, 0, 0, 0, 1>>
 
-    assert {:ok, state} =
-             AuthServerWeb.GameWebSocket.handle_info(
-               {:gate_ws_send, snapshot},
-               %{}
-             )
+    with_env(%{"AUTH_GAME_WS_REALTIME_DRAIN_INTERVAL_MS" => "1"}, fn ->
+      assert {:ok, state} =
+               AuthServerWeb.GameWebSocket.handle_info(
+                 {:gate_ws_send, snapshot},
+                 %{}
+               )
 
-    assert {:ok, state} =
-             AuthServerWeb.GameWebSocket.handle_info(
-               {:gate_ws_send, ack},
-               state
-             )
+      assert {:ok, state} =
+               AuthServerWeb.GameWebSocket.handle_info(
+                 {:gate_ws_send, ack},
+                 state
+               )
 
-    assert {:ok, state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
+      assert {:ok, state} =
+               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
 
-    assert {:push, {:binary, ^ack}, state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
+      assert {:push, {:binary, ^ack}, state} =
+               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_realtime_drain, state)
 
-    assert {:push, {:binary, ^snapshot}, _state} =
-             AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
+      assert {:push, {:binary, ^snapshot}, _state} =
+               AuthServerWeb.GameWebSocket.handle_info(:gate_ws_visual_drain, state)
+    end)
   end
 
   test "schedules bulk drain for initialized websocket state" do
@@ -182,14 +193,16 @@ defmodule AuthServerWeb.GameWebSocketTest do
   end
 
   test "schedules realtime drain for initialized websocket state" do
-    assert {:ok, state} =
-             AuthServerWeb.GameWebSocket.handle_info(
-               {:gate_ws_send, <<0x8B, 1, 0, 0, 0, 1>>},
-               %{connection_pid: self()}
-             )
+    with_env(%{"AUTH_GAME_WS_REALTIME_DRAIN_INTERVAL_MS" => "1"}, fn ->
+      assert {:ok, state} =
+               AuthServerWeb.GameWebSocket.handle_info(
+                 {:gate_ws_send, <<0x8B, 1, 0, 0, 0, 1>>},
+                 %{connection_pid: self()}
+               )
 
-    assert is_reference(state.gate_ws_realtime_drain_ref)
-    assert_receive :gate_ws_realtime_drain, 50
+      assert is_reference(state.gate_ws_realtime_drain_ref)
+      assert_receive :gate_ws_realtime_drain, 50
+    end)
   end
 
   test "schedules visual drain for initialized websocket state" do
@@ -204,5 +217,23 @@ defmodule AuthServerWeb.GameWebSocketTest do
 
     assert is_reference(state.gate_ws_visual_drain_ref)
     assert_receive :gate_ws_visual_drain, 350
+  end
+
+  defp with_env(overrides, fun) do
+    previous = Map.new(Map.keys(overrides), &{&1, System.get_env(&1)})
+    Enum.each(overrides, fn {name, value} -> System.put_env(name, value) end)
+
+    try do
+      fun.()
+    after
+      restore_env(previous)
+    end
+  end
+
+  defp restore_env(previous) do
+    Enum.each(previous, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
   end
 end

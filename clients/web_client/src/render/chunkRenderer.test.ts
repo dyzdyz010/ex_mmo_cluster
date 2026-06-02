@@ -1,17 +1,58 @@
 import { BufferGeometry, Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { VoxelMaterialId } from "../material/catalog";
 import { MacroWorldSize } from "../voxel/core/constants";
 import { EVoxelRotation } from "../voxel/core/types";
 import { resolveSelectionOverlayProjection } from "../voxel/overlayTarget";
 import { LocalPrefabRegistry } from "../voxel/prefab";
+import { VoxelDirtyFlags } from "../voxel/storage/types";
 import { WorldStore } from "../voxel/worldStore";
+import type { ObserveLog } from "../observe/logger";
 import {
   buildPrefabRasterMicroWireGeometry,
   buildPrefabRasterSurfaceOutlineGeometry,
 } from "./prefabPreviewGeometry";
 import { ChunkRenderController } from "./chunkRenderer";
 
+function block(materialId: number) {
+  return {
+    materialId,
+    stateFlags: 0,
+    health: 100,
+    temperatureDelta: 0,
+    moistureDelta: 0,
+  };
+}
+
 describe("ChunkRenderController hit-face outline", () => {
+  it("skips mesh rebuilds for empty authoritative chunks", () => {
+    const controller = new ChunkRenderController();
+    const world = new WorldStore();
+    const chunk = world.ensureChunk({ x: 0, y: 0, z: 0 });
+    const logger = { emit: vi.fn() } as unknown as ObserveLog;
+
+    expect(chunk.trySetNormalBlock({ x: 0, y: 0, z: 0 }, block(VoxelMaterialId.Stone))).toBe(
+      true,
+    );
+    expect(chunk.tryClearMacroCell({ x: 0, y: 0, z: 0 })).toBe(true);
+    expect(chunk.hasRenderableCells()).toBe(false);
+
+    controller.syncDirtyChunks(world, logger);
+
+    expect(chunkMeshCount(controller)).toBe(0);
+    expect(pendingMeshBuildCount(controller)).toBe(0);
+    expect(chunk.data.dirtyFlags & (VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision)).toBe(0);
+    expect((logger.emit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+
+    controller.syncDirtyChunks(world, logger);
+
+    expect(chunkMeshCount(controller)).toBe(0);
+    expect(pendingMeshBuildCount(controller)).toBe(0);
+    expect((logger.emit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+
+    controller.dispose();
+  });
+
   it("shows one outline on the hit face instead of break/place block boxes", () => {
     const controller = new ChunkRenderController();
 
@@ -259,6 +300,15 @@ function installChunkMeshes(controller: ChunkRenderController, meshes: Mesh[]): 
   Object.defineProperty(controller, "chunkMeshes", {
     value: new Map(meshes.map((mesh, index) => [`test-${index}`, mesh])),
   });
+}
+
+function chunkMeshCount(controller: ChunkRenderController): number {
+  return (controller as unknown as { chunkMeshes: Map<string, unknown> }).chunkMeshes.size;
+}
+
+function pendingMeshBuildCount(controller: ChunkRenderController): number {
+  return (controller as unknown as { pendingMeshBuilds: Map<string, unknown> }).pendingMeshBuilds
+    .size;
 }
 
 function makeTopHit(object: Mesh, macroX: number, distance: number) {

@@ -48,7 +48,7 @@ describe("player movement voxel collision", () => {
     expect(result.state.position.x).toBe(750);
   });
 
-  it("fails open when online prediction lacks authoritative voxel chunk data", () => {
+  it("holds prediction when online movement lacks authoritative voxel chunk data", () => {
     const world = new WorldStore();
     world.setNormalBlockWorld({ x: 9, y: 1, z: 7 }, stoneBlock());
 
@@ -65,7 +65,7 @@ describe("player movement voxel collision", () => {
     expect(result.summary.status).toBe("authority_unavailable");
     expect(result.summary.occupiedCount).toBe(0);
     expect(result.summary.blockedAxes).toEqual([]);
-    expect(result.state.position.x).toBe(900);
+    expect(result.state.position.x).toBe(750);
   });
 
   it("prewarms nearby authoritative chunks without treating them as required for this collision", () => {

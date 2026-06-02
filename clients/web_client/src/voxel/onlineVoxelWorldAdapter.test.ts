@@ -288,7 +288,7 @@ function normalBlockPayload(materialId: number): Uint8Array {
   return payload;
 }
 
-function createAdapter() {
+function createAdapter(options: ConstructorParameters<typeof OnlineVoxelWorldAdapter>[3] = {}) {
   const transport = new FakeServerVoxelTransport();
   const bus = new EventBus<AppEvents>();
   const logger = new ObserveLog();
@@ -296,6 +296,7 @@ function createAdapter() {
     logicalSceneId: 7,
     devSeed: false,
     primeDemoBlock: false,
+    ...options,
   });
   return { adapter, transport, bus, logger };
 }
@@ -382,7 +383,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
   });
 
   it("prewarms movement chunks once, skips known authority, and emits an observable event", () => {
-    const { adapter, transport, bus } = createAdapter();
+    const { adapter, transport, bus } = createAdapter({ initialSubscriptions: [] });
     adapter.store.replaceChunkStorage(ChunkStorage.createEmpty({ x: 1, y: 0, z: 0 }).data, {
       requestId: 1,
       logicalSceneId: 7,
@@ -409,6 +410,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
       "movement_collision",
     );
     const duplicateSent = prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision");
+    adapter.onFrame(Math.round(performance.now()) + 100);
 
     expect(sent).toBe(1);
     expect(duplicateSent).toBe(0);
@@ -426,6 +428,61 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
         chunkCoord: { x: 2, y: 0, z: 0 },
         source: "movement_collision",
       },
+    ]);
+  });
+
+  it("paces movement prewarm subscriptions so terrain catch-up cannot burst ahead of movement", () => {
+    const { adapter, transport } = createAdapter({ initialSubscriptions: [] });
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    const queued = prewarm!.call(
+      adapter,
+      [
+        { x: -3, y: 0, z: -3 },
+        { x: -3, y: 0, z: -2 },
+        { x: -3, y: 0, z: -1 },
+      ],
+      "movement_prewarm",
+    );
+    const startMs = Math.round(performance.now());
+
+    expect(queued).toBe(3);
+    expect(transport.subscribeCalls).toEqual([]);
+
+    adapter.onFrame(startMs + 100);
+    adapter.onFrame(startMs + 150);
+    adapter.onFrame(startMs + 200);
+
+    expect(transport.subscribeCalls.map((call) => call.centerChunk)).toEqual([
+      { x: -3, y: 0, z: -3 },
+      { x: -3, y: 0, z: -2 },
+    ]);
+  });
+
+  it("prioritizes strict collision chunk requests over queued movement prewarm", () => {
+    const { adapter, transport } = createAdapter({ initialSubscriptions: [] });
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    expect(prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_prewarm")).toBe(1);
+    adapter.onFrame(100);
+    expect(prewarm!.call(adapter, [{ x: 3, y: 0, z: 0 }], "movement_prewarm")).toBe(1);
+    expect(prewarm!.call(adapter, [{ x: 4, y: 0, z: 0 }], "collision_query")).toBe(1);
+
+    adapter.onFrame(101);
+
+    expect(transport.subscribeCalls.map((call) => call.centerChunk)).toEqual([
+      { x: 2, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+    ]);
+
+    adapter.onFrame(201);
+
+    expect(transport.subscribeCalls.map((call) => call.centerChunk)).toEqual([
+      { x: 2, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+      { x: 3, y: 0, z: 0 },
     ]);
   });
 
@@ -476,11 +533,12 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
   });
 
   it("allows movement prewarm to resend after an invalidate clears the pending request", () => {
-    const { adapter, transport } = createAdapter();
+    const { adapter, transport } = createAdapter({ initialSubscriptions: [] });
     const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
     expect(prewarm).toBeTypeOf("function");
 
     expect(prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision")).toBe(1);
+    adapter.onFrame(Math.round(performance.now()) + 100);
     transport.queuedInvalidates.push({
       type: "voxel_chunk_invalidate",
       logicalSceneId: 7,
@@ -492,6 +550,7 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
     adapter.flushServerMessagesForCli();
 
     expect(prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision")).toBe(1);
+    adapter.onFrame(Math.round(performance.now()) + 1_000);
     expect(transport.subscribeCalls.map((call) => call.centerChunk)).toEqual([
       { x: 2, y: 0, z: 0 },
       { x: 2, y: 0, z: 0 },
@@ -531,6 +590,52 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
         source: "snapshot",
       },
     });
+  });
+
+  it("batches chunk ACKs for snapshots drained in the same frame", () => {
+    const { adapter, transport } = createAdapter();
+
+    transport.queuedSnapshots.push(
+      emptySnapshot({ x: 2, y: 0, z: -1 }, 42),
+      emptySnapshot({ x: 3, y: 0, z: -1 }, 43),
+    );
+    adapter.onFrame(100);
+
+    expect(transport.chunkAckCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        acks: [
+          { chunkCoord: { x: 2, y: 0, z: -1 }, chunkVersion: 42 },
+          { chunkCoord: { x: 3, y: 0, z: -1 }, chunkVersion: 43 },
+        ],
+      },
+    ]);
+    expect(adapter.debugSnapshot()).toMatchObject({
+      appliedChunkAckCount: 2,
+      lastAppliedChunkAck: {
+        logicalSceneId: 7,
+        chunkCoord: "3,0,-1",
+        chunkVersion: 43,
+        source: "snapshot",
+      },
+    });
+  });
+
+  it("coalesces multiple pending ACKs for the same chunk to the latest version", () => {
+    const { adapter, transport } = createAdapter();
+
+    transport.queuedSnapshots.push(
+      emptySnapshot({ x: 2, y: 0, z: -1 }, 41),
+      emptySnapshot({ x: 2, y: 0, z: -1 }, 42),
+    );
+    adapter.onFrame(100);
+
+    expect(transport.chunkAckCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        acks: [{ chunkCoord: { x: 2, y: 0, z: -1 }, chunkVersion: 42 }],
+      },
+    ]);
   });
 
   it("ACKs chunk deltas after the base-version guard applies the new version", () => {

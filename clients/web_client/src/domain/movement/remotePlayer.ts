@@ -25,6 +25,11 @@ interface BufferedSnapshot {
   receivedAtSecs: number;
 }
 
+interface RemotePlayerStateOptions {
+  tickDurationSecs?: number;
+  interpolationDelaySecs?: number;
+}
+
 export interface RemoteSampleClock {
   localWallClockMs?: number;
   serverClockOffsetMs?: number | null;
@@ -56,6 +61,8 @@ export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
   private lastSampleMode: RemoteMotionSample["mode"] = "empty";
   private interpolationDelaySecs = INTERPOLATION_DELAY_SECS;
+  private tickDurationSecs = DEFAULT_SNAPSHOT_TICK_SECS;
+  private baseInterpolationDelaySecs = INTERPOLATION_DELAY_SECS;
   private timeAxisMode: RemoteInterpolationDebug["timeAxisMode"] = "server_tick";
   private lastPlaybackServerTimeMs: number | null = null;
   private lastPlaybackTimeAxisMode: RemoteInterpolationDebug["timeAxisMode"] | null = null;
@@ -63,15 +70,25 @@ export class RemotePlayerState {
   private serverTickDiscontinuityCount = 0;
   private playbackTimeRegressionCount = 0;
 
-  constructor(
-    private options: { tickDurationSecs: number } = {
-      tickDurationSecs: DEFAULT_SNAPSHOT_TICK_SECS,
-    },
-  ) {}
+  constructor(options: RemotePlayerStateOptions = {}) {
+    if (Number.isFinite(options.tickDurationSecs) && Number(options.tickDurationSecs) > 0) {
+      this.tickDurationSecs = Number(options.tickDurationSecs);
+    }
+    if (
+      Number.isFinite(options.interpolationDelaySecs) &&
+      Number(options.interpolationDelaySecs) >= 0
+    ) {
+      this.baseInterpolationDelaySecs = Math.min(
+        Number(options.interpolationDelaySecs),
+        MAX_REMOTE_EXTRAPOLATION_SECS,
+      );
+      this.interpolationDelaySecs = this.baseInterpolationDelaySecs;
+    }
+  }
 
   setTickDurationSecs(tickDurationSecs: number): void {
     if (Number.isFinite(tickDurationSecs) && tickDurationSecs > 0) {
-      this.options = { tickDurationSecs };
+      this.tickDurationSecs = tickDurationSecs;
       this.serverStateTimelineHealthy = this.computeServerStateTimelineHealthy();
     }
   }
@@ -212,7 +229,7 @@ export class RemotePlayerState {
     if (mode === "server_state_ms") {
       return snapshot.serverStateMs / 1000;
     }
-    return snapshot.serverTick * this.options.tickDurationSecs;
+    return snapshot.serverTick * this.tickDurationSecs;
   }
 
   private resolveInterpolationDelaySecs(deliveryInterval: number | undefined): number {
@@ -221,11 +238,11 @@ export class RemotePlayerState {
       deliveryInterval === undefined ||
       deliveryInterval <= 1
     ) {
-      return INTERPOLATION_DELAY_SECS;
+      return this.baseInterpolationDelaySecs;
     }
 
     const intervalDelay =
-      INTERPOLATION_DELAY_SECS + (deliveryInterval - 1) * this.options.tickDurationSecs;
+      this.baseInterpolationDelaySecs + (deliveryInterval - 1) * this.tickDurationSecs;
     const jitter = deliveryInterval >= 5 ? LOW_PRIORITY_EXTRA_JITTER_SECS : 0;
     return Math.min(MAX_REMOTE_EXTRAPOLATION_SECS, intervalDelay + jitter);
   }
@@ -238,7 +255,7 @@ export class RemotePlayerState {
         continue;
       }
 
-      const tickDeltaSecs = (next.serverTick - previous.serverTick) * this.options.tickDurationSecs;
+      const tickDeltaSecs = (next.serverTick - previous.serverTick) * this.tickDurationSecs;
       const stateDeltaSecs = (next.serverStateMs - previous.serverStateMs) / 1000;
       if (!Number.isFinite(tickDeltaSecs) || !Number.isFinite(stateDeltaSecs)) {
         return false;

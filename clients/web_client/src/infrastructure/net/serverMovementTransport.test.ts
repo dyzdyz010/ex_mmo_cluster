@@ -382,6 +382,66 @@ describe("server movement transport result errors", () => {
     );
   });
 
+  it("does not treat a voxel control result_error as a movement rejection when ids collide", async () => {
+    const emit = vi.fn();
+    const logger = { emit } as unknown as ObserveLog;
+    const transport = new ServerMovementTransport(
+      logger,
+      "http://127.0.0.1:20000",
+      "ws://127.0.0.1:20000/ingame/ws",
+      "tester",
+    );
+    await flushAsync();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    socket?.message(resultFrame(1, true));
+    socket?.message(enterSceneOkFrame(2));
+
+    transport.sendInput(
+      {
+        seq: 3,
+        clientTick: 3,
+        dtMs: 50,
+        inputDir: new Vector2(1, 0),
+        speedScale: 1,
+        movementFlags: 0,
+      },
+      1_000,
+    );
+    const requestId = transport.sendVoxelChunkAck({
+      logicalSceneId: 7,
+      acks: [{ chunkCoord: { x: 6, y: 0, z: -2 }, chunkVersion: 0 }],
+    });
+    expect(requestId).toBe(3);
+
+    socket?.message(resultFrame(3, false));
+
+    expect(transport.debugSnapshot()).toMatchObject({
+      connectionStatus: "connected",
+      connectionPhase: "ready",
+      receivedResultErrorCount: 1,
+      lastResultError: expect.objectContaining({ requestId: 3, inFlightMovement: true }),
+    });
+    expect(transport.voxelDebugSnapshot()).toMatchObject({
+      lastError: "control_result_error:chunk_ack:3",
+      pendingControlRequests: 0,
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "voxel",
+      "control_result_error",
+      expect.objectContaining({
+        request_id: 3,
+        source: "chunk_ack",
+        in_flight_movement: true,
+      }),
+    );
+    expect(emit).not.toHaveBeenCalledWith(
+      "transport",
+      "connection_lost",
+      expect.objectContaining({ reason: "movement_result_error:3" }),
+    );
+  });
+
   it("keeps the connection when the server rejects a superseded movement input", async () => {
     const emit = vi.fn();
     const logger = { emit } as unknown as ObserveLog;

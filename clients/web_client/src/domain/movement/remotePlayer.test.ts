@@ -49,6 +49,18 @@ describe("remotePlayer", () => {
     expect(sample.position.x).toBeCloseTo(20, 4);
   });
 
+  it("allows local authority markers to opt out of the remote interpolation delay", () => {
+    const state = new RemotePlayerState({ interpolationDelaySecs: 0 });
+    state.pushSnapshot(snapshot(10, 0), 0, 1.0);
+    state.pushSnapshot(snapshot(11, 10), 0, 1.1);
+    state.pushSnapshot(snapshot(12, 20), 0, 1.2);
+
+    const sample = state.sampleMotion(1.2);
+
+    expect(sample.position.x).toBeCloseTo(20, 4);
+    expect(state.debugSnapshot().interpolationDelaySecs).toBe(0);
+  });
+
   it("uses server_state_ms plus clock offset as the interpolation timeline", () => {
     const state = new RemotePlayerState();
     state.pushSnapshot(

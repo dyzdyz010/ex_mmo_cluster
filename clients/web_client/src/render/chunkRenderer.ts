@@ -146,6 +146,7 @@ export class ChunkRenderController {
   private meshBuildSeq = 1;
   private readonly pendingMeshBuilds = new Map<string, PendingChunkMeshBuild>();
   private readonly completedMeshBuilds: ChunkMeshWorkerResponse[] = [];
+  private readonly emptyChunkMeshKeys = new Set<string>();
   private lastRaySelection: VoxelRaySelection | null = null;
 
   constructor() {
@@ -189,20 +190,41 @@ export class ChunkRenderController {
       mesh.geometry.dispose();
       this.chunkMeshes.delete(key);
       this.pendingMeshBuilds.delete(key);
+      this.emptyChunkMeshKeys.delete(key);
+    }
+    for (const key of [...this.emptyChunkMeshKeys]) {
+      if (!activeKeys.has(key)) {
+        this.emptyChunkMeshKeys.delete(key);
+      }
     }
 
     for (const chunk of world.listChunks()) {
       const key = chunkCoordKey(chunk.data.chunkCoord);
       const existing = this.chunkMeshes.get(key);
-      const needsRebuild =
-        !existing ||
+      const meshDirty =
         (chunk.data.dirtyFlags & (VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision)) !== 0;
+      if (!existing && this.emptyChunkMeshKeys.has(key) && !meshDirty) {
+        continue;
+      }
+
+      const needsRebuild =
+        !existing || meshDirty;
       if (!needsRebuild) {
         continue;
       }
       if (this.pendingMeshBuilds.has(key)) {
         continue;
       }
+      if (!chunk.hasRenderableCells()) {
+        if (existing) {
+          this.removeChunkMesh(key, existing);
+        }
+        this.pendingMeshBuilds.delete(key);
+        this.emptyChunkMeshKeys.add(key);
+        chunk.consumeDirtyFlags(VoxelDirtyFlags.Mesh | VoxelDirtyFlags.Collision);
+        continue;
+      }
+      this.emptyChunkMeshKeys.delete(key);
 
       const snapshot = chunk.buildMesherSnapshot();
       if (this.meshWorker) {
@@ -324,6 +346,15 @@ export class ChunkRenderController {
 
     mesh.geometry.dispose();
     mesh.geometry = geometry;
+  }
+
+  private removeChunkMesh(
+    key: string,
+    mesh: Mesh<BufferGeometry, MeshStandardMaterial> = this.chunkMeshes.get(key)!,
+  ): void {
+    this.group.remove(mesh);
+    mesh.geometry.dispose();
+    this.chunkMeshes.delete(key);
   }
 
   raycastFromCameraCenter(camera: PerspectiveCamera): VoxelRaySelection | null {

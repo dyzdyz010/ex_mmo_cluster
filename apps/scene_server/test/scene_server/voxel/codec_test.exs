@@ -39,7 +39,10 @@ defmodule SceneServer.Voxel.CodecTest do
              -1::signed-big-integer-size(32), 0::signed-big-integer-size(32),
              2::signed-big-integer-size(32), 1::unsigned-big-integer-size(16),
              16::unsigned-integer-size(8), 8::unsigned-integer-size(8),
-             7::unsigned-big-integer-size(64), _rest::binary>> = payload
+             7::unsigned-big-integer-size(64), _chunk_hash::unsigned-big-integer-size(64),
+             0::unsigned-big-integer-size(16)>> = payload
+
+    assert byte_size(payload) == 50
 
     assert {:ok, snapshot} = Codec.decode_chunk_snapshot_payload(payload)
     assert snapshot.request_id == 99
@@ -71,6 +74,13 @@ defmodule SceneServer.Voxel.CodecTest do
       )
 
     payload = Codec.encode_chunk_snapshot_payload(%{request_id: 123, storage: storage})
+
+    assert <<_header::binary-size(48), 7::unsigned-big-integer-size(16), 0x08,
+             23::unsigned-big-integer-size(32), 1::unsigned-big-integer-size(16),
+             4095::unsigned-big-integer-size(16), _macro_header::binary-size(19),
+             _sections::binary>> = payload
+
+    assert byte_size(payload) < 500
 
     assert {:ok, snapshot} = Codec.decode_chunk_snapshot_payload(payload)
     decoded_storage = snapshot.storage

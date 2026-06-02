@@ -43,7 +43,8 @@ import { WorldEditController } from "./controllers/worldEditController";
 import { GameLoop } from "./gameLoop";
 import { resolveInitialLocalSpawn } from "./spawn";
 
-const MOVEMENT_AUTHORITY_PREWARM_MARGIN_CM = 400;
+const DEFAULT_SERVER_VOXEL_SUBSCRIBE_RADIUS = 1;
+const MOVEMENT_AUTHORITY_PREWARM_MARGIN_CM = 3_200;
 
 export interface AppContext {
   readonly eventBus: EventBus<AppEvents>;
@@ -173,10 +174,10 @@ export async function bootstrap({
 
   const loop = new GameLoop();
   loop.subscribe(transportPump);
+  loop.subscribe(localPlayer);
   if (isFrameDrivenVoxelWorld(world)) {
     loop.subscribe(world);
   }
-  loop.subscribe(localPlayer);
   loop.subscribe(remotePlayer);
   loop.subscribe(render);
   loop.subscribe(hudView);
@@ -325,7 +326,7 @@ function createVoxelWorldAdapter(
   if (isServerVoxelTransportPort(transport)) {
     const defaultRadiusLInf = parsePositiveIntEnv(
       import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS,
-      0,
+      DEFAULT_SERVER_VOXEL_SUBSCRIBE_RADIUS,
     );
     return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
       logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),

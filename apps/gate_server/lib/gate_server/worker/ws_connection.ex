@@ -548,6 +548,8 @@ defmodule GateServer.WsConnection do
       center_chunk: request.center_chunk
     })
 
+    state = drain_pending_movement_inputs(state)
+
     case subscribe_voxel_chunks(request, state) do
       {:ok, next_state, result} ->
         GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_ok", %{
@@ -560,7 +562,7 @@ defmodule GateServer.WsConnection do
           subscription_count: map_size(next_state.voxel_subscriptions)
         })
 
-        {:ok, next_state}
+        {:ok, drain_pending_movement_inputs(next_state)}
 
       {:error, reason} ->
         GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_error", %{
@@ -571,7 +573,7 @@ defmodule GateServer.WsConnection do
         })
 
         send_encoded(state, voxel_result_error(request, reason))
-        {:ok, state}
+        {:ok, drain_pending_movement_inputs(state)}
     end
   end
 
@@ -2744,6 +2746,7 @@ defmodule GateServer.WsConnection do
       status: :empty,
       logical_scene_id: logical_scene_id,
       accepted_count: 0,
+      ignored_count: 0,
       rejected_count: 0,
       ack_count: 0,
       events: []
@@ -3110,7 +3113,9 @@ defmodule GateServer.WsConnection do
 
     [
       "voxel_delivery_window_bytes_used=#{summary.window_bytes_used}",
+      "voxel_delivery_window_items_used=#{summary.window_items_used}",
       "voxel_delivery_max_window_bytes=#{summary.max_window_bytes}",
+      "voxel_delivery_max_window_items=#{summary.max_window_items}",
       "voxel_delivery_queue_count=#{summary.queued_count}",
       "voxel_delivery_queued_bytes=#{summary.queued_bytes}",
       "voxel_delivery_deferred_count=#{summary.deferred_count}",

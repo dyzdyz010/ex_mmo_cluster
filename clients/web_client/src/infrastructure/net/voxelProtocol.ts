@@ -37,6 +37,7 @@ const SnapshotSection = {
   TagSets: 0x05,
   EnvironmentSummaries: 0x06,
   ObjectRefs: 0x07,
+  SparseMacroHeaders: 0x08,
 } as const;
 
 export interface VoxelKnownChunk {
@@ -758,19 +759,28 @@ function decodeChunkSnapshot(view: DataView): VoxelChunkSnapshotMessage {
   offset += 2;
 
   const sections = readSections(view, offset, sectionCount);
-  const macroHeaders = decodeMacroHeaders(requireSection(sections, SnapshotSection.MacroHeaders));
-  const normalBlocks = decodeNormalBlocks(requireSection(sections, SnapshotSection.NormalBlocks));
-  const refinedCellsWire = decodeRefinedCellPool(
-    requireSection(sections, SnapshotSection.RefinedCells),
-  );
-  const attributeSets = decodeAttributeSetPool(
-    requireSection(sections, SnapshotSection.AttributeSets),
-  );
-  const tagSets = decodeTagSetPool(requireSection(sections, SnapshotSection.TagSets));
-  const environmentSummaries = decodeEnvironmentSummaries(
-    requireSection(sections, SnapshotSection.EnvironmentSummaries),
-  );
-  const objectRefs = decodeObjectRefsSection(requireSection(sections, SnapshotSection.ObjectRefs));
+  const compactEmpty = sectionCount === 0;
+  const macroHeaders = compactEmpty
+    ? buildEmptyMacroHeaders()
+    : decodeSnapshotMacroHeaders(sections);
+  const normalBlocks = compactEmpty
+    ? []
+    : decodeNormalBlocks(requireSection(sections, SnapshotSection.NormalBlocks));
+  const refinedCellsWire = compactEmpty
+    ? []
+    : decodeRefinedCellPool(requireSection(sections, SnapshotSection.RefinedCells));
+  const attributeSets = compactEmpty
+    ? []
+    : decodeAttributeSetPool(requireSection(sections, SnapshotSection.AttributeSets));
+  const tagSets = compactEmpty
+    ? []
+    : decodeTagSetPool(requireSection(sections, SnapshotSection.TagSets));
+  const environmentSummaries = compactEmpty
+    ? []
+    : decodeEnvironmentSummaries(requireSection(sections, SnapshotSection.EnvironmentSummaries));
+  const objectRefs = compactEmpty
+    ? []
+    : decodeObjectRefsSection(requireSection(sections, SnapshotSection.ObjectRefs));
 
   const max = Math.max(0, chunkSizeInMacro - 1);
   return {
@@ -902,6 +912,32 @@ function requireSection(sections: Map<number, DataView>, sectionType: number): D
   return section;
 }
 
+function buildEmptyMacroHeaders(): FMacroCellHeader[] {
+  return Array.from({ length: VoxelConstants.MacroCountPerChunk }, () => ({
+    mode: EVoxelCellMode.Empty,
+    flags: 0,
+    payloadIndex: SERVER_ENV_INDEX_UNSET,
+    environmentIndex: MACRO_ENV_INDEX_UNSET,
+    cellVersion: 0,
+    cellHash: 0,
+  }));
+}
+
+function decodeSnapshotMacroHeaders(sections: Map<number, DataView>): FMacroCellHeader[] {
+  const full = sections.get(SnapshotSection.MacroHeaders);
+  const sparse = sections.get(SnapshotSection.SparseMacroHeaders);
+  if (full && sparse) {
+    throw new Error("duplicate_voxel_snapshot_macro_headers");
+  }
+  if (full) {
+    return decodeMacroHeaders(full);
+  }
+  if (sparse) {
+    return decodeSparseMacroHeaders(sparse);
+  }
+  throw new Error("missing_voxel_snapshot_macro_headers");
+}
+
 function decodeMacroHeaders(section: DataView): FMacroCellHeader[] {
   const wireSize = 19;
   const expectedLength = VoxelConstants.MacroCountPerChunk * wireSize;
@@ -910,18 +946,51 @@ function decodeMacroHeaders(section: DataView): FMacroCellHeader[] {
   }
   const headers: FMacroCellHeader[] = [];
   for (let offset = 0; offset < section.byteLength; offset += wireSize) {
-    const environmentIndex = section.getUint32(offset + 7, false);
-    headers.push({
-      mode: decodeCellMode(section.getUint8(offset)),
-      flags: section.getUint16(offset + 1, false),
-      payloadIndex: section.getUint32(offset + 3, false),
-      environmentIndex:
-        environmentIndex === SERVER_ENV_INDEX_UNSET ? MACRO_ENV_INDEX_UNSET : environmentIndex,
-      cellVersion: section.getUint32(offset + 11, false),
-      cellHash: section.getUint32(offset + 15, false),
-    });
+    headers.push(readMacroHeaderAt(section, offset));
   }
   return headers;
+}
+
+function decodeSparseMacroHeaders(section: DataView): FMacroCellHeader[] {
+  const wireSize = 2 + 19;
+  if (section.byteLength < 2) {
+    throw new Error(`invalid_sparse_macro_header_section:${section.byteLength}`);
+  }
+  const count = section.getUint16(0, false);
+  if (section.byteLength !== 2 + count * wireSize) {
+    throw new Error(`invalid_sparse_macro_header_section:${section.byteLength}`);
+  }
+
+  const headers = buildEmptyMacroHeaders();
+  const seen = new Set<number>();
+  let offset = 2;
+  for (let entryIndex = 0; entryIndex < count; entryIndex += 1) {
+    const macroIndex = section.getUint16(offset, false);
+    offset += 2;
+    if (macroIndex >= VoxelConstants.MacroCountPerChunk) {
+      throw new Error(`sparse_macro_header_index_out_of_range:${macroIndex}`);
+    }
+    if (seen.has(macroIndex)) {
+      throw new Error(`duplicate_sparse_macro_header:${macroIndex}`);
+    }
+    seen.add(macroIndex);
+    headers[macroIndex] = readMacroHeaderAt(section, offset);
+    offset += 19;
+  }
+  return headers;
+}
+
+function readMacroHeaderAt(section: DataView, offset: number): FMacroCellHeader {
+  const environmentIndex = section.getUint32(offset + 7, false);
+  return {
+    mode: decodeCellMode(section.getUint8(offset)),
+    flags: section.getUint16(offset + 1, false),
+    payloadIndex: section.getUint32(offset + 3, false),
+    environmentIndex:
+      environmentIndex === SERVER_ENV_INDEX_UNSET ? MACRO_ENV_INDEX_UNSET : environmentIndex,
+    cellVersion: section.getUint32(offset + 11, false),
+    cellHash: section.getUint32(offset + 15, false),
+  };
 }
 
 function decodeNormalBlocks(section: DataView): FNormalBlockData[] {

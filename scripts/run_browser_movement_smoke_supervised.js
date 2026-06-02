@@ -649,6 +649,33 @@ async function waitForAuthoritativeChunk(page, chunk, label) {
   );
 }
 
+function resolveInitialVoxelSubscribeRadius() {
+  const parsed = Number.parseInt(
+    process.env.BROWSER_SMOKE_VOXEL_SUBSCRIBE_RADIUS ||
+      process.env.VITE_VOXEL_SUBSCRIBE_RADIUS ||
+      "1",
+    10,
+  );
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 1;
+}
+
+function expectedInitialAuthoritativeChunks() {
+  const radius = resolveInitialVoxelSubscribeRadius();
+  const width = radius * 2 + 1;
+  return width * width * width;
+}
+
+async function waitForInitialAuthoritativeCoverage(page, label) {
+  const expected = expectedInitialAuthoritativeChunks();
+  return waitForCli(
+    page,
+    "snapshot",
+    (result) => Number(result?.data?.chunks ?? 0) >= expected,
+    label,
+    60_000,
+  );
+}
+
 async function runOverheadBlockCheck(page) {
   const beforeSnapshot = await page.cli("snapshot");
   const before = snapshotPositions(beforeSnapshot);
@@ -1222,7 +1249,12 @@ function resolveClockSoakDurationMs() {
 }
 
 function resolveLongMovementDurationMs() {
-  const raw = Number.parseInt(process.env.BROWSER_MOVEMENT_LONG_RUN_MS || "30000", 10);
+  const raw = Number.parseInt(
+    process.env.BROWSER_MOVEMENT_LONG_RUN_MS ||
+      process.env.BROWSER_MOVEMENT_LONG_DURATION_MS ||
+      "30000",
+    10,
+  );
   if (!Number.isFinite(raw)) {
     return 30_000;
   }
@@ -1519,6 +1551,12 @@ async function runLongContinuousMovement(page) {
     : 1_000;
   const keyConfig = longMovementKeyConfig();
   await page.bringToFront();
+  await waitForAuthoritativeChunk(
+    page,
+    { x: 0, y: 0, z: 0 },
+    "long movement starting authoritative chunk",
+  );
+  await waitForInitialAuthoritativeCoverage(page, "long movement initial authoritative coverage");
   await page.cli("frame_trace_clear");
   await page.cli(`frame_trace_start ${Math.ceil(durationMs / 16) + 120}`);
 
@@ -1685,7 +1723,7 @@ async function main() {
           VITE_GAME_WS_URL: `ws://127.0.0.1:${wsProxyPort ?? authPort}/ingame/ws`,
           VITE_RENDER_BACKEND: "webgl",
           VITE_VOXEL_DEV_SEED: "0",
-          VITE_VOXEL_SUBSCRIBE_RADIUS: "0",
+          VITE_VOXEL_SUBSCRIBE_RADIUS: String(resolveInitialVoxelSubscribeRadius()),
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

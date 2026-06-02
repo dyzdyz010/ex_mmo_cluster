@@ -61,6 +61,7 @@ const MIN_HANDSHAKE_TIMEOUT_MS = 1_000;
 const TIME_SYNC_INTERVAL_MS = 1_000;
 const RECONNECT_INITIAL_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 15_000;
+const MAX_PENDING_VOXEL_CONTROL_REQUESTS = 512;
 
 /**
  * Connection lifecycle as observed by the rest of the app.
@@ -199,6 +200,7 @@ export class ServerMovementTransport implements MovementTransport {
     reason: string;
   } | null = null;
   private readonly pendingVoxelPrefabRequests = new Set<number>();
+  private readonly pendingVoxelControlRequests = new Map<number, string>();
   private lastVoxelPrefabRequest: {
     requestId: number;
     clientIntentSeq: number;
@@ -366,6 +368,7 @@ export class ServerMovementTransport implements MovementTransport {
       queuedDebugProbes: this.voxelDebugProbes.length,
       knownChunks: this.voxelKnownVersions.size,
       pendingPrefabRequests: this.pendingVoxelPrefabRequests.size,
+      pendingControlRequests: this.pendingVoxelControlRequests.size,
       sentVoxelMessageCount: this.sentVoxelMessageCount,
       sentVoxelChunkAckCount: this.sentVoxelChunkAckCount,
       receivedVoxelSnapshotCount: this.receivedVoxelSnapshotCount,
@@ -401,6 +404,7 @@ export class ServerMovementTransport implements MovementTransport {
 
     const requestId = this.nextRequestId();
     this.socket.send(encodeVoxelDebugProbe(requestId, command));
+    this.rememberVoxelControlRequest(requestId, "debug_probe");
     this.sentVoxelMessageCount += 1;
     this.logger.emit("voxel", "debug_probe_sent", {
       request_id: requestId,
@@ -422,6 +426,7 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     const requestId = this.nextRequestId();
+    this.rememberVoxelControlRequest(requestId, "chunk_subscribe");
     this.socket.send(
       encodeVoxelChunkSubscribe({
         requestId,
@@ -453,6 +458,7 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     const requestId = this.nextRequestId();
+    this.rememberVoxelControlRequest(requestId, "chunk_unsubscribe");
     this.socket.send(
       encodeVoxelChunkUnsubscribe({
         requestId,
@@ -483,6 +489,7 @@ export class ServerMovementTransport implements MovementTransport {
     }
 
     const requestId = this.nextRequestId();
+    this.rememberVoxelControlRequest(requestId, "chunk_ack");
     this.socket.send(
       encodeVoxelChunkAck({
         requestId,
@@ -769,6 +776,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelDebugProbes.splice(0, this.voxelDebugProbes.length);
     this.voxelObjectStateDeltas.splice(0, this.voxelObjectStateDeltas.length);
     this.pendingVoxelPrefabRequests.clear();
+    this.pendingVoxelControlRequests.clear();
     this.lastPlayerState = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
@@ -1043,6 +1051,19 @@ export class ServerMovementTransport implements MovementTransport {
             mode: SERVER_TRANSPORT_MODE,
             request_id: message.requestId,
             scope: pending?.scope ?? "unknown",
+          });
+          break;
+        }
+
+        const voxelControlSource = this.pendingVoxelControlRequests.get(message.requestId);
+        if (voxelControlSource) {
+          this.pendingVoxelControlRequests.delete(message.requestId);
+          this.lastVoxelError = `control_result_error:${voxelControlSource}:${message.requestId}`;
+          this.logger.emit("voxel", "control_result_error", {
+            mode: SERVER_TRANSPORT_MODE,
+            request_id: message.requestId,
+            source: voxelControlSource,
+            in_flight_movement: inFlightMovement,
           });
           break;
         }
@@ -1487,6 +1508,17 @@ export class ServerMovementTransport implements MovementTransport {
     });
   }
 
+  private rememberVoxelControlRequest(requestId: number, source: string): void {
+    this.pendingVoxelControlRequests.set(requestId, source);
+    while (this.pendingVoxelControlRequests.size > MAX_PENDING_VOXEL_CONTROL_REQUESTS) {
+      const oldest = this.pendingVoxelControlRequests.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.pendingVoxelControlRequests.delete(oldest);
+    }
+  }
+
   private nextRequestId(): number {
     const current = this.requestId;
     this.requestId += 1;
@@ -1623,6 +1655,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.voxelFieldSnapshots.splice(0, this.voxelFieldSnapshots.length);
     this.voxelFieldDestroyeds.splice(0, this.voxelFieldDestroyeds.length);
     this.pendingVoxelPrefabRequests.clear();
+    this.pendingVoxelControlRequests.clear();
     this.pendingChatRequests.clear();
     this.sentAtBySeq.clear();
     this.lastPlayerState = null;

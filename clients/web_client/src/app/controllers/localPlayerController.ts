@@ -102,7 +102,7 @@ export class LocalPlayerController implements FrameSubscriber {
   // 但本地权威标记按 ack 到达节奏采样,不使用远端玩家的 wall-clock TimeSync 播放轴。
   // 它的职责是调试"服务器是否已经确认我的移动",不是观赏远端实体;使用全局时钟偏移
   // 会把偶发 TimeSync 偏差放大成几十米的稳定显示滞后。
-  private authorityRender = new RemotePlayerState();
+  private authorityRender = new RemotePlayerState({ interpolationDelaySecs: 0 });
   private readonly serverClock = new ServerClockEstimator();
   private readonly lastTracedPosition = new Vector3();
   private readonly lastTracedAuthorityPosition = new Vector3();
@@ -627,7 +627,7 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativePosition.copy(start);
     this.authoritativeVelocity.set(0, 0, 0);
     this.authoritativeAcceleration.set(0, 0, 0);
-    this.authorityRender = new RemotePlayerState();
+    this.authorityRender = new RemotePlayerState({ interpolationDelaySecs: 0 });
     this.lastAuthorityAtMs = null;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);

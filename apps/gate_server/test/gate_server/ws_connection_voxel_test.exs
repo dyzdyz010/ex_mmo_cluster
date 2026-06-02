@@ -516,6 +516,27 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
+  test "chunk subscribe drains pending movement input before route lookup" do
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+    parent = self()
+
+    :sys.replace_state(pid, fn state -> %{state | scene_ref: parent} end)
+
+    :sys.suspend(pid)
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(910, 100, {0, 0, 0}))
+    WsConnection.receive_frame(pid, movement_input_frame(19))
+    :sys.resume(pid)
+
+    assert_receive {:"$gen_cast", {:movement_input, %{seq: 19}}}, 500
+
+    assert_voxel_intent_result(
+      request_id: 910,
+      logical_scene_id: 100,
+      reason: ":world_unavailable"
+    )
+  end
+
   test "chunk subscribe returns world route failure reason before scene snapshot" do
     observe_path = observe_path("ws_chunk_subscribe_missing_center_plan.log")
     File.rm(observe_path)
@@ -1121,6 +1142,45 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     refute_receive {:gate_ws_send, <<0x62, _payload::binary>>}, 50
     assert Map.has_key?(:sys.get_state(pid).voxel_subscriptions, {790, {0, 0, 0}})
+  end
+
+  test "websocket late chunk ACK after ordinary unsubscribe is ignored without result error" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    logical_scene_id = unique_id()
+    chunk_coord = {0, 0, 0}
+
+    put_voxel_region(logical_scene_id, region_id: System.unique_integer([:positive, :monotonic]))
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(31, logical_scene_id, chunk_coord))
+
+    assert_receive {:gate_ws_send, <<0x62, initial_payload::binary>>}
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.storage.chunk_version == 0
+
+    WsConnection.receive_frame(pid, chunk_unsubscribe_frame(32, logical_scene_id, [chunk_coord]))
+    assert_receive {:gate_ws_send, <<0x80, 32::64-big, 0x00>>}
+
+    assert ChunkVersionLedger.known_versions(
+             :sys.get_state(pid).forwarded_chunk_versions,
+             logical_scene_id
+           ) ==
+             %{}
+
+    WsConnection.receive_frame(pid, chunk_ack_frame(33, logical_scene_id, [{chunk_coord, 0}]))
+    assert_receive {:gate_ws_send, <<0x80, 33::64-big, 0x00>>}
+
+    assert ClientAckLedger.known_versions(
+             :sys.get_state(pid).client_ack_versions,
+             logical_scene_id
+           ) ==
+             %{}
   end
 
   test "websocket resync-required chunks do not reuse retained ACK after unsubscribe" do

@@ -28,6 +28,7 @@ defmodule SceneServer.Voxel.Codec do
   @section_tag_sets 0x05
   @section_environment_summaries 0x06
   @section_object_refs 0x07
+  @section_sparse_macro_headers 0x08
 
   @snapshot_sections [
     @section_macro_headers,
@@ -36,7 +37,8 @@ defmodule SceneServer.Voxel.Codec do
     @section_attribute_sets,
     @section_tag_sets,
     @section_environment_summaries,
-    @section_object_refs
+    @section_object_refs,
+    @section_sparse_macro_headers
   ]
 
   @macro_header_wire_size 19
@@ -56,7 +58,7 @@ defmodule SceneServer.Voxel.Codec do
     %{request_id: request_id, storage: storage} = normalize_snapshot_input!(storage_or_snapshot)
     chunk_hash = chunk_hash(storage)
     {cx, cy, cz} = storage.chunk_coord
-    sections = encode_snapshot_sections(storage)
+    sections = encode_snapshot_sections_for(storage)
 
     IO.iodata_to_binary([
       <<request_id::unsigned-big-integer-size(64)>>,
@@ -98,25 +100,16 @@ defmodule SceneServer.Voxel.Codec do
     {sections, <<>>} = decode_sections(rest, section_count, %{})
 
     storage =
-      %Storage{
-        schema_version: schema_version,
-        logical_scene_id: logical_scene_id,
-        chunk_coord: {cx, cy, cz},
-        chunk_size_in_macro: chunk_size_in_macro,
-        micro_resolution: micro_resolution,
-        chunk_version: chunk_version,
-        macro_headers: decode_macro_headers!(fetch_section!(sections, @section_macro_headers)),
-        normal_blocks: decode_normal_blocks!(fetch_section!(sections, @section_normal_blocks)),
-        refined_cells:
-          decode_refined_cell_pool!(fetch_section!(sections, @section_refined_cells)),
-        attribute_sets:
-          decode_attribute_set_pool!(fetch_section!(sections, @section_attribute_sets)),
-        tag_sets: decode_tag_set_pool!(fetch_section!(sections, @section_tag_sets)),
-        environment_summaries:
-          decode_environment_summaries!(fetch_section!(sections, @section_environment_summaries)),
-        object_refs: decode_object_refs!(fetch_section!(sections, @section_object_refs))
-      }
-      |> Storage.normalize!()
+      decode_chunk_snapshot_storage!(
+        section_count,
+        sections,
+        logical_scene_id,
+        {cx, cy, cz},
+        schema_version,
+        chunk_size_in_macro,
+        micro_resolution,
+        chunk_version
+      )
 
     computed_chunk_hash = chunk_hash(storage)
 
@@ -1065,9 +1058,24 @@ defmodule SceneServer.Voxel.Codec do
     %{request_id: request_id, storage: storage}
   end
 
+  defp encode_snapshot_sections_for(storage) do
+    if empty_snapshot_storage?(storage), do: [], else: encode_snapshot_sections(storage)
+  end
+
+  defp empty_snapshot_storage?(%Storage{} = storage) do
+    empty_header = MacroCellHeader.empty()
+
+    storage.normal_blocks == [] and storage.refined_cells == [] and
+      storage.attribute_sets == [] and storage.tag_sets == [] and
+      storage.environment_summaries == [] and storage.object_refs == [] and
+      Enum.all?(storage.macro_headers, fn header ->
+        MacroCellHeader.normalize!(header) == empty_header
+      end)
+  end
+
   defp encode_snapshot_sections(storage) do
     [
-      encode_section(@section_macro_headers, encode_macro_headers(storage.macro_headers)),
+      encode_macro_header_section(storage.macro_headers),
       encode_section(@section_normal_blocks, encode_normal_block_pool(storage.normal_blocks)),
       encode_section(@section_refined_cells, encode_refined_cell_pool(storage.refined_cells)),
       encode_section(
@@ -1083,6 +1091,39 @@ defmodule SceneServer.Voxel.Codec do
     ]
   end
 
+  defp encode_macro_header_section(headers) do
+    sparse_entries = sparse_macro_header_entries(headers)
+    sparse_size = 2 + length(sparse_entries) * (2 + @macro_header_wire_size)
+    full_size = Storage.macro_header_count() * @macro_header_wire_size
+
+    if sparse_size < full_size do
+      encode_section(@section_sparse_macro_headers, encode_sparse_macro_headers(sparse_entries))
+    else
+      encode_section(@section_macro_headers, encode_macro_headers(headers))
+    end
+  end
+
+  defp sparse_macro_header_entries(headers) do
+    empty_header = MacroCellHeader.empty()
+
+    headers
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {header, index} ->
+      header = MacroCellHeader.normalize!(header)
+
+      if header == empty_header, do: [], else: [{index, header}]
+    end)
+  end
+
+  defp encode_sparse_macro_headers(entries) do
+    [
+      <<length(entries)::unsigned-big-integer-size(16)>>,
+      Enum.map(entries, fn {index, header} ->
+        [<<index::unsigned-big-integer-size(16)>>, encode_macro_header(header)]
+      end)
+    ]
+  end
+
   defp encode_section(section_type, section_data) do
     section_data = IO.iodata_to_binary(section_data)
 
@@ -1094,15 +1135,17 @@ defmodule SceneServer.Voxel.Codec do
   end
 
   defp encode_macro_headers(headers) do
-    Enum.map(headers, fn header ->
-      header = MacroCellHeader.normalize!(header)
+    Enum.map(headers, &encode_macro_header/1)
+  end
 
-      <<header.mode::unsigned-integer-size(8), header.flags::unsigned-big-integer-size(16),
-        header.payload_index::unsigned-big-integer-size(32),
-        header.environment_index::unsigned-big-integer-size(32),
-        header.cell_version::unsigned-big-integer-size(32),
-        header.cell_hash::unsigned-big-integer-size(32)>>
-    end)
+  defp encode_macro_header(header) do
+    header = MacroCellHeader.normalize!(header)
+
+    <<header.mode::unsigned-integer-size(8), header.flags::unsigned-big-integer-size(16),
+      header.payload_index::unsigned-big-integer-size(32),
+      header.environment_index::unsigned-big-integer-size(32),
+      header.cell_version::unsigned-big-integer-size(32),
+      header.cell_hash::unsigned-big-integer-size(32)>>
   end
 
   defp encode_macro_header_truth(headers) do
@@ -1658,6 +1701,74 @@ defmodule SceneServer.Voxel.Codec do
     {[w0, w1, w2, w3, w4, w5, w6, w7], rest}
   end
 
+  defp decode_chunk_snapshot_storage!(
+         0,
+         sections,
+         logical_scene_id,
+         chunk_coord,
+         schema_version,
+         chunk_size_in_macro,
+         micro_resolution,
+         chunk_version
+       )
+       when map_size(sections) == 0 do
+    Storage.empty(logical_scene_id, chunk_coord,
+      schema_version: schema_version,
+      chunk_size_in_macro: chunk_size_in_macro,
+      micro_resolution: micro_resolution,
+      chunk_version: chunk_version
+    )
+  end
+
+  defp decode_chunk_snapshot_storage!(
+         _section_count,
+         sections,
+         logical_scene_id,
+         chunk_coord,
+         schema_version,
+         chunk_size_in_macro,
+         micro_resolution,
+         chunk_version
+       ) do
+    %Storage{
+      schema_version: schema_version,
+      logical_scene_id: logical_scene_id,
+      chunk_coord: chunk_coord,
+      chunk_size_in_macro: chunk_size_in_macro,
+      micro_resolution: micro_resolution,
+      chunk_version: chunk_version,
+      macro_headers: decode_snapshot_macro_headers!(sections),
+      normal_blocks: decode_normal_blocks!(fetch_section!(sections, @section_normal_blocks)),
+      refined_cells: decode_refined_cell_pool!(fetch_section!(sections, @section_refined_cells)),
+      attribute_sets:
+        decode_attribute_set_pool!(fetch_section!(sections, @section_attribute_sets)),
+      tag_sets: decode_tag_set_pool!(fetch_section!(sections, @section_tag_sets)),
+      environment_summaries:
+        decode_environment_summaries!(fetch_section!(sections, @section_environment_summaries)),
+      object_refs: decode_object_refs!(fetch_section!(sections, @section_object_refs))
+    }
+    |> Storage.normalize!()
+  end
+
+  defp decode_snapshot_macro_headers!(sections) do
+    has_full? = Map.has_key?(sections, @section_macro_headers)
+    has_sparse? = Map.has_key?(sections, @section_sparse_macro_headers)
+
+    case {has_full?, has_sparse?} do
+      {true, false} ->
+        decode_macro_headers!(Map.fetch!(sections, @section_macro_headers))
+
+      {false, true} ->
+        decode_sparse_macro_headers!(Map.fetch!(sections, @section_sparse_macro_headers))
+
+      {true, true} ->
+        raise ArgumentError, "snapshot cannot contain both full and sparse macro headers"
+
+      {false, false} ->
+        raise ArgumentError, "missing snapshot macro header section"
+    end
+  end
+
   defp decode_sections(rest, 0, acc), do: {acc, rest}
 
   defp decode_sections(
@@ -1697,20 +1808,67 @@ defmodule SceneServer.Voxel.Codec do
             "MacroHeaders section must be #{expected_size} bytes, got #{byte_size(data)}"
     end
 
-    for <<mode::unsigned-integer-size(8), flags::unsigned-big-integer-size(16),
-          payload_index::unsigned-big-integer-size(32),
-          environment_index::unsigned-big-integer-size(32),
-          cell_version::unsigned-big-integer-size(32),
-          cell_hash::unsigned-big-integer-size(32) <- data>> do
-      MacroCellHeader.normalize!(%{
-        mode: mode,
-        flags: flags,
-        payload_index: payload_index,
-        environment_index: environment_index,
-        cell_version: cell_version,
-        cell_hash: cell_hash
-      })
+    for <<header_data::binary-size(@macro_header_wire_size) <- data>> do
+      decode_macro_header!(header_data)
     end
+  end
+
+  defp decode_macro_header!(
+         <<mode::unsigned-integer-size(8), flags::unsigned-big-integer-size(16),
+           payload_index::unsigned-big-integer-size(32),
+           environment_index::unsigned-big-integer-size(32),
+           cell_version::unsigned-big-integer-size(32), cell_hash::unsigned-big-integer-size(32)>>
+       ) do
+    MacroCellHeader.normalize!(%{
+      mode: mode,
+      flags: flags,
+      payload_index: payload_index,
+      environment_index: environment_index,
+      cell_version: cell_version,
+      cell_hash: cell_hash
+    })
+  end
+
+  defp decode_sparse_macro_headers!(
+         <<count::unsigned-big-integer-size(16),
+           entries::binary-size(count * (2 + @macro_header_wire_size))>>
+       ) do
+    if count == 0 do
+      Storage.empty_macro_headers()
+    else
+      decode_sparse_macro_header_entries!(entries, count)
+    end
+  end
+
+  defp decode_sparse_macro_headers!(_data) do
+    raise ArgumentError, "malformed SparseMacroHeaders section"
+  end
+
+  defp decode_sparse_macro_header_entries!(entries, count) do
+    {headers, _seen} =
+      Enum.reduce(0..(count - 1), {Storage.empty_macro_headers(), MapSet.new()}, fn index,
+                                                                                    {headers,
+                                                                                     seen} ->
+        offset = index * (2 + @macro_header_wire_size)
+
+        <<macro_index::unsigned-big-integer-size(16),
+          header_data::binary-size(@macro_header_wire_size)>> =
+          binary_part(entries, offset, 2 + @macro_header_wire_size)
+
+        cond do
+          macro_index >= Storage.macro_header_count() ->
+            raise ArgumentError, "sparse macro header index out of range: #{macro_index}"
+
+          MapSet.member?(seen, macro_index) ->
+            raise ArgumentError, "duplicate sparse macro header index #{macro_index}"
+
+          true ->
+            header = decode_macro_header!(header_data)
+            {List.replace_at(headers, macro_index, header), MapSet.put(seen, macro_index)}
+        end
+      end)
+
+    headers
   end
 
   defp decode_normal_blocks!(data) do

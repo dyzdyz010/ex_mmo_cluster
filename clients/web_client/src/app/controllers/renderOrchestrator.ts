@@ -84,9 +84,6 @@ export interface TargetOverlaySnapshot {
 }
 
 const ENTITY_TARGET_NDC_RADIUS = 0.12;
-const AUTHORITY_DISPLAY_SMOOTHING_RATE_HZ = 18;
-const AUTHORITY_DISPLAY_HARD_SNAP_DISTANCE_CM = 5_000;
-
 interface PendingSnapshotLightningBolt {
   sourceCoord: FMacroCoord;
   targetCoord: FMacroCoord;
@@ -113,7 +110,6 @@ export class RenderOrchestrator
   private readonly localDisplay = new Vector3();
   private readonly authorityDisplay = new Vector3();
   private readonly remoteDisplay = new Vector3();
-  private authorityDisplayInitialized = false;
   private currentSelection: VoxelRaySelection | null = null;
   private editPreviewProvider: EditPreviewProvider | null = null;
   private prefabPreviewIntentKey = "";
@@ -368,7 +364,7 @@ export class RenderOrchestrator
 
   private updateAvatarTransforms(nowMs: number, dtSecs: number): void {
     this.localDisplay.copy(this.localPlayer.getRenderedPosition());
-    this.updateAuthorityDisplay(this.localPlayer.getAuthoritativeRenderPosition(nowMs), dtSecs);
+    this.authorityDisplay.copy(this.localPlayer.getAuthoritativeRenderPosition(nowMs));
     this.remoteDisplay.copy(this.remotePlayer.getRenderedPosition());
     this.syncRemoteAvatarMeshes();
 
@@ -381,27 +377,6 @@ export class RenderOrchestrator
     );
     this.syncRing.rotation.z = (nowMs / 1000) * 0.25;
     this.sceneHandles.setCameraFollow(this.localDisplay);
-  }
-
-  private updateAuthorityDisplay(authorityTarget: Vector3, dtSecs: number): void {
-    if (!this.authorityDisplayInitialized) {
-      this.authorityDisplay.copy(authorityTarget);
-      this.authorityDisplayInitialized = true;
-      return;
-    }
-
-    const distance = this.authorityDisplay.distanceTo(authorityTarget);
-    if (distance > AUTHORITY_DISPLAY_HARD_SNAP_DISTANCE_CM) {
-      this.authorityDisplay.copy(authorityTarget);
-      return;
-    }
-
-    const safeDtSecs = Number.isFinite(dtSecs) ? Math.max(0, dtSecs) : 0;
-    const alpha = 1 - Math.exp(-AUTHORITY_DISPLAY_SMOOTHING_RATE_HZ * safeDtSecs);
-    this.authorityDisplay.lerp(authorityTarget, alpha);
-    if (this.authorityDisplay.distanceToSquared(authorityTarget) < 0.01) {
-      this.authorityDisplay.copy(authorityTarget);
-    }
   }
 
   private materializeFieldDebugOverlay(): void {

@@ -97,12 +97,12 @@ function resolveWorldStoreMovementCollision(
     if (missingChunks.length > 0) {
       requestAuthoritativeChunks(config, missingChunks, "collision_query");
       return {
-        state: clonePredictedMoveState(proposed),
+        state: clonePredictedMoveState(previous),
         summary: makeSummary(
           "authority_unavailable",
           previous,
           proposed,
-          proposed,
+          previous,
           sampleCount,
           0,
           [],
