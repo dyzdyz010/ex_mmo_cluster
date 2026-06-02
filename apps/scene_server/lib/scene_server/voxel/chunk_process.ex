@@ -4785,28 +4785,48 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_collision_sample(_sample), do: {:error, :invalid_collision_sample}
 
   defp collision_query_hits(%Storage{} = storage, samples) do
+    index = collision_query_index(storage)
+
     Enum.flat_map(samples, fn sample ->
-      case collision_query_hit(storage, sample) do
+      case collision_query_hit(index, sample) do
         nil -> []
         hit -> [hit]
       end
     end)
   end
 
-  defp collision_query_hit(%Storage{} = storage, sample) do
-    header = Storage.macro_header_at(storage, sample.macro_index)
+  defp collision_query_index(%Storage{} = storage) do
+    %{
+      macro_headers: List.to_tuple(storage.macro_headers),
+      refined_cells: List.to_tuple(storage.refined_cells),
+      solid_mode: MacroCellHeader.cell_mode_solid_block(),
+      refined_mode: MacroCellHeader.cell_mode_refined()
+    }
+  end
+
+  defp collision_query_hit(index, sample) do
+    header = elem(index.macro_headers, sample.macro_index)
 
     cond do
-      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+      header.mode == index.solid_mode ->
         Map.put(sample, :mode, :solid)
 
-      header.mode == MacroCellHeader.cell_mode_refined() and
-          Storage.micro_slot_occupied?(storage, sample.macro_index, sample.micro_slot) ->
+      header.mode == index.refined_mode and
+          collision_query_micro_slot_occupied?(index, header.payload_index, sample.micro_slot) ->
         Map.put(sample, :mode, :refined)
 
       true ->
         nil
     end
+  end
+
+  defp collision_query_micro_slot_occupied?(index, payload_index, micro_slot) do
+    refined_cell = elem(index.refined_cells, payload_index)
+    word_idx = div(micro_slot, 64)
+    bit_idx = rem(micro_slot, 64)
+    word = Enum.at(refined_cell.occupancy_words, word_idx)
+
+    band(word, bsl(1, bit_idx)) != 0
   end
 
   defp safe_normalize_micro_layer(layer) when is_map(layer) do

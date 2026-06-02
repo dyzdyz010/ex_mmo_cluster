@@ -7,7 +7,10 @@ defmodule WorldServer.Voxel.DevSeed do
   server-authoritative voxels on the first subscription instead of an empty
   chunk. Chunk truth remains owned by `SceneServer.Voxel.ChunkProcess`; the
   browser can subscribe or submit intents through Gate without a GUI-only
-  setup step.
+  setup step. The default region is intentionally wider than the starter
+  terrain so browser long-run movement can keep routing partition updates and
+  empty authoritative voxel subscriptions instead of drifting after leaving the
+  first platform.
 
   Starter terrain layout (all values fixed for v1):
 
@@ -35,8 +38,8 @@ defmodule WorldServer.Voxel.DevSeed do
 
   @default_logical_scene_id 1
   @default_region_id 1_000_001
-  @default_bounds_min {-2, -2, -2}
-  @default_bounds_max {3, 3, 3}
+  @default_bounds_min {-32, -32, -32}
+  @default_bounds_max {33, 33, 33}
   @default_owner_scene_instance_ref 1
   @default_owner_epoch 1
   @default_lease_ttl_ms :timer.hours(6)
@@ -44,21 +47,35 @@ defmodule WorldServer.Voxel.DevSeed do
 
   # v1 starter terrain footprint. Chunk (0,0,0) covers world-macro
   # [0,16)×[0,16)×[0,16); the browser renderer treats Y as vertical, so we fill
-  # the bottom slab (y-macro 0) with stone.
+  # the bottom slab (y-macro 0) with stone. The demo circuit intentionally stays
+  # away from the default avatar spawn around {7, 1, 7}; otherwise authoritative
+  # collision treats the spawn volume as occupied and long movement appears stuck.
   @platform_chunk {0, 0, 0}
   @platform_y_macro 0
   @platform_material_id 1
   @demo_circuit_blocks [
-    {{6, 1, 6}, 6},
-    {{7, 1, 6}, 5},
-    {{8, 1, 6}, 7},
-    {{9, 1, 6}, 5},
-    {{9, 1, 7}, 5},
-    {{9, 1, 8}, 5},
-    {{8, 1, 8}, 5},
-    {{7, 1, 8}, 5},
-    {{6, 1, 8}, 5},
-    {{6, 1, 7}, 5}
+    {{1, 1, 12}, 6},
+    {{2, 1, 12}, 5},
+    {{3, 1, 12}, 7},
+    {{4, 1, 12}, 5},
+    {{4, 1, 13}, 5},
+    {{4, 1, 14}, 5},
+    {{3, 1, 14}, 5},
+    {{2, 1, 14}, 5},
+    {{1, 1, 14}, 5},
+    {{1, 1, 13}, 5}
+  ]
+  @legacy_spawn_blocking_demo_circuit_macros [
+    {6, 1, 6},
+    {7, 1, 6},
+    {8, 1, 6},
+    {9, 1, 6},
+    {9, 1, 7},
+    {9, 1, 8},
+    {8, 1, 8},
+    {7, 1, 8},
+    {6, 1, 8},
+    {6, 1, 7}
   ]
 
   @doc """
@@ -93,7 +110,11 @@ defmodule WorldServer.Voxel.DevSeed do
         renew_existing_route(
           ledger,
           route,
+          region_id,
+          bounds_min,
+          bounds_max,
           owner_ref_opt,
+          assigned_scene_node,
           lease_ttl_ms,
           center_chunk,
           chunk_directory,
@@ -140,7 +161,11 @@ defmodule WorldServer.Voxel.DevSeed do
   defp renew_existing_route(
          ledger,
          route,
+         desired_region_id,
+         desired_bounds_min,
+         desired_bounds_max,
          owner_ref_opt,
+         assigned_scene_node,
          lease_ttl_ms,
          center_chunk,
          chunk_directory,
@@ -150,7 +175,17 @@ defmodule WorldServer.Voxel.DevSeed do
     region_id = route.assignment.region_id
     logical_scene_id = route.assignment.logical_scene_id
 
-    with {:ok, {:ok, _lease}} <-
+    with {:ok, _route} <-
+           ensure_existing_region_shape(
+             ledger,
+             route,
+             desired_region_id,
+             desired_bounds_min,
+             desired_bounds_max,
+             owner_ref,
+             assigned_scene_node
+           ),
+         {:ok, {:ok, _lease}} <-
            safe_call(fn ->
              MapLedger.issue_lease(ledger, region_id, owner_ref, ttl_ms: lease_ttl_ms)
            end),
@@ -168,6 +203,50 @@ defmodule WorldServer.Voxel.DevSeed do
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected_seed_renewal_result, other}}
+    end
+  end
+
+  defp ensure_existing_region_shape(
+         ledger,
+         route,
+         desired_region_id,
+         desired_bounds_min,
+         desired_bounds_max,
+         owner_ref,
+         assigned_scene_node
+       ) do
+    assignment = route.assignment
+    desired_scene_node = assigned_scene_node || assignment.assigned_scene_node
+
+    cond do
+      assignment.region_id != desired_region_id ->
+        {:ok, route}
+
+      assignment.bounds_chunk_min == desired_bounds_min and
+        assignment.bounds_chunk_max == desired_bounds_max and
+          assignment.assigned_scene_node == desired_scene_node ->
+        {:ok, route}
+
+      true ->
+        attrs = %{
+          logical_scene_id: assignment.logical_scene_id,
+          region_id: assignment.region_id,
+          bounds_chunk_min: desired_bounds_min,
+          bounds_chunk_max: desired_bounds_max,
+          owner_scene_instance_ref: owner_ref,
+          owner_epoch: assignment.owner_epoch,
+          assigned_scene_node: desired_scene_node,
+          state: assignment.state,
+          summary_hash: assignment.summary_hash,
+          version: assignment.version
+        }
+
+        case safe_call(fn -> MapLedger.put_region(ledger, attrs) end) do
+          {:ok, {:ok, upgraded_assignment}} -> {:ok, %{route | assignment: upgraded_assignment}}
+          {:ok, {:error, reason}} -> {:error, reason}
+          {:error, reason} -> {:error, reason}
+          other -> {:error, {:unexpected_seed_region_upgrade_result, other}}
+        end
     end
   end
 
@@ -322,7 +401,18 @@ defmodule WorldServer.Voxel.DevSeed do
         }
       end)
 
-    intents = platform_intents ++ circuit_intents
+    cleanup_intents =
+      Enum.map(@legacy_spawn_blocking_demo_circuit_macros, fn local_macro ->
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: chunk_coord,
+          lease: lease,
+          operation: :break_block,
+          macro: local_macro
+        }
+      end)
+
+    intents = cleanup_intents ++ platform_intents ++ circuit_intents
 
     case GenServer.call(chunk_directory, {:apply_intents, intents}, 30_000) do
       {:ok, reply} ->
@@ -332,6 +422,7 @@ defmodule WorldServer.Voxel.DevSeed do
           errors: 0,
           max_chunk_version: Map.get(reply, :chunk_version, 0),
           attempted: length(intents),
+          cleanup_attempted: length(cleanup_intents),
           platform_attempted: length(platform_intents),
           demo_circuit_attempted: length(circuit_intents),
           chunk_coord: Tuple.to_list(chunk_coord)
@@ -344,6 +435,7 @@ defmodule WorldServer.Voxel.DevSeed do
           errors: 1,
           max_chunk_version: 0,
           attempted: length(intents),
+          cleanup_attempted: length(cleanup_intents),
           platform_attempted: length(platform_intents),
           demo_circuit_attempted: length(circuit_intents),
           chunk_coord: Tuple.to_list(chunk_coord),

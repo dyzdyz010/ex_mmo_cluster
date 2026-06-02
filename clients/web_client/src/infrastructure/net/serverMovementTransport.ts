@@ -6,6 +6,7 @@ import {
   encodeEnterScene,
   encodeHeartbeat,
   encodeMovementInput,
+  encodeTimeSync,
 } from "./gateProtocol";
 import { PROTOCOL_VERSION } from "./protocolVersion";
 import {
@@ -57,6 +58,9 @@ const DEFAULT_AUTO_LOGIN_TIMEOUT_MS = 15_000;
 const MIN_AUTO_LOGIN_TIMEOUT_MS = 1_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
 const MIN_HANDSHAKE_TIMEOUT_MS = 1_000;
+const TIME_SYNC_INTERVAL_MS = 1_000;
+const RECONNECT_INITIAL_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 15_000;
 
 /**
  * Connection lifecycle as observed by the rest of the app.
@@ -148,6 +152,7 @@ export class ServerMovementTransport implements MovementTransport {
   private blockedChatSendCount = 0;
   private lastBlockedChatSend: { scope: ChatScope; reason: string } | null = null;
   private lastTimeSyncOffsetMs: number | null = null;
+  private lastTimeSyncSentAtMs = Number.NEGATIVE_INFINITY;
   private lastError: string | null = null;
   private blockedInputCount = 0;
   private lastBlockedInputReason: string | null = null;
@@ -157,6 +162,9 @@ export class ServerMovementTransport implements MovementTransport {
   private phaseStartedAtMs: number | null = null;
   private lastAutoLoginDurationMs: number | null = null;
   private lastReadyDurationMs: number | null = null;
+  private lastTickAtMs = 0;
+  private reconnectAttemptCount = 0;
+  private nextReconnectAtMs = Number.POSITIVE_INFINITY;
   private sentVoxelMessageCount = 0;
   private sentVoxelChunkAckCount = 0;
   private receivedVoxelSnapshotCount = 0;
@@ -265,6 +273,11 @@ export class ServerMovementTransport implements MovementTransport {
           : Math.round(performance.now() - this.phaseStartedAtMs),
       lastAutoLoginDurationMs: this.lastAutoLoginDurationMs,
       lastReadyDurationMs: this.lastReadyDurationMs,
+      reconnectAttemptCount: this.reconnectAttemptCount,
+      nextReconnectInMs:
+        this.connectionStatus === "disconnected" && Number.isFinite(this.nextReconnectAtMs)
+          ? Math.max(0, Math.round(this.nextReconnectAtMs - this.lastTickAtMs))
+          : null,
       blockedInputCount: this.blockedInputCount,
       lastBlockedInputReason: this.lastBlockedInputReason,
       lastBlockedInputSeq: this.lastBlockedInputSeq,
@@ -777,7 +790,11 @@ export class ServerMovementTransport implements MovementTransport {
     });
   }
 
-  tick(_nowMs: number, _dtMs: number): MovementTransportTickResult {
+  tick(nowMs: number, _dtMs: number): MovementTransportTickResult {
+    this.lastTickAtMs = nowMs;
+    this.maybeReconnect(nowMs);
+    this.maybeSendTimeSync(nowMs);
+
     const acknowledgements = this.acknowledgements.splice(0, this.acknowledgements.length);
     const remoteSnapshots = this.remoteSnapshots.splice(0, this.remoteSnapshots.length);
     const remoteEntityEnters = this.remoteEntityEnters.splice(0, this.remoteEntityEnters.length);
@@ -802,6 +819,26 @@ export class ServerMovementTransport implements MovementTransport {
     };
   }
 
+  private maybeSendTimeSync(nowMs: number): void {
+    if (!this.isReady() || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    if (nowMs - this.lastTimeSyncSentAtMs < TIME_SYNC_INTERVAL_MS) {
+      return;
+    }
+
+    const requestId = this.nextRequestId();
+    const clientSendTs = Date.now();
+    this.socket.send(encodeTimeSync(requestId, clientSendTs));
+    this.lastTimeSyncSentAtMs = nowMs;
+    this.logger.emit("transport", "time_sync_sent", {
+      mode: SERVER_TRANSPORT_MODE,
+      request_id: requestId,
+      client_send_ts: clientSendTs,
+    });
+  }
+
   private async bootstrap(): Promise<void> {
     if (this.connecting) {
       return;
@@ -815,6 +852,7 @@ export class ServerMovementTransport implements MovementTransport {
     this.lastAutoLoginDurationMs = null;
     this.lastReadyDurationMs = null;
     this.connectionLostReason = null;
+    this.lastTimeSyncSentAtMs = Number.NEGATIVE_INFINITY;
     this.logger.emit("transport", "bootstrap_start", {
       mode: SERVER_TRANSPORT_MODE,
       url: this.webSocketUrl,
@@ -1048,6 +1086,8 @@ export class ServerMovementTransport implements MovementTransport {
               ? null
               : Math.round(this.phaseStartedAtMs - this.bootstrapStartedAtMs);
           this.connectionLostReason = null;
+          this.reconnectAttemptCount = 0;
+          this.nextReconnectAtMs = Number.POSITIVE_INFINITY;
           this.clearHandshakeTimer();
           this.spawnPosition = message.position;
           this.spawnExpectedSeq = message.expectedSeq;
@@ -1474,6 +1514,24 @@ export class ServerMovementTransport implements MovementTransport {
     }
   }
 
+  private maybeReconnect(nowMs: number): void {
+    if (
+      this.connectionStatus !== "disconnected" ||
+      this.connecting ||
+      !Number.isFinite(this.nextReconnectAtMs) ||
+      nowMs < this.nextReconnectAtMs
+    ) {
+      return;
+    }
+
+    this.logger.emit("transport", "reconnect_start", {
+      mode: SERVER_TRANSPORT_MODE,
+      attempt: this.reconnectAttemptCount,
+      reason: this.connectionLostReason ?? "unknown",
+    });
+    void this.bootstrap();
+  }
+
   private markDisconnected(reason: string): void {
     if (this.connectionStatus === "disconnected") {
       return;
@@ -1507,8 +1565,44 @@ export class ServerMovementTransport implements MovementTransport {
     this.connectionStatus = "disconnected";
     this.connectionPhase = "disconnected";
     this.connectionLostReason = reason;
+    if (this.canReconnect(reason)) {
+      this.scheduleReconnect(reason);
+    } else {
+      this.reconnectAttemptCount = 0;
+      this.nextReconnectAtMs = Number.POSITIVE_INFINITY;
+      this.logger.emit("transport", "reconnect_suppressed", {
+        mode: SERVER_TRANSPORT_MODE,
+        reason,
+      });
+    }
     this.logger.emit("transport", "connection_lost", {
       mode: SERVER_TRANSPORT_MODE,
+      reason,
+    });
+  }
+
+  private canReconnect(reason: string): boolean {
+    return (
+      reason.startsWith("socket_closed:") ||
+      reason.startsWith("bootstrap_error:") ||
+      reason.startsWith("socket_connect_timeout:") ||
+      reason.startsWith("auth_request_timeout:") ||
+      reason.startsWith("enter_scene_timeout:")
+    );
+  }
+
+  private scheduleReconnect(reason: string): void {
+    this.reconnectAttemptCount += 1;
+    const delayMs = Math.min(
+      RECONNECT_INITIAL_DELAY_MS * 2 ** Math.max(0, this.reconnectAttemptCount - 1),
+      RECONNECT_MAX_DELAY_MS,
+    );
+    this.nextReconnectAtMs = this.lastTickAtMs + delayMs;
+    this.logger.emit("transport", "reconnect_scheduled", {
+      mode: SERVER_TRANSPORT_MODE,
+      attempt: this.reconnectAttemptCount,
+      delay_ms: delayMs,
+      next_reconnect_in_ms: Math.max(0, Math.round(this.nextReconnectAtMs - this.lastTickAtMs)),
       reason,
     });
   }

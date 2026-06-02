@@ -15,7 +15,7 @@ import type {
 import { OnlineVoxelWorldAdapter, type ServerVoxelTransportPort } from "./onlineVoxelWorldAdapter";
 import { OnlinePrefabBlueprintVersion } from "./onlinePrefabCatalog";
 import { VoxelConstants } from "./core/constants";
-import { EVoxelRotation } from "./core/types";
+import { EVoxelRotation, type FChunkCoord } from "./core/types";
 import { ChunkStorage } from "./storage/chunkStorage";
 
 interface PrefabPlaceCall {
@@ -75,6 +75,19 @@ interface ChunkAckCall {
   logicalSceneId: number;
   acks: { chunkCoord: { x: number; y: number; z: number }; chunkVersion: number }[];
 }
+
+type MovementChunkPrewarmCapable = {
+  prewarmAuthoritativeChunks(chunks: readonly FChunkCoord[], source?: string): number;
+};
+
+type PrewarmEventMap = {
+  "world:chunk-prewarm-requested": {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    source: string;
+  };
+};
 
 class FakeServerVoxelTransport implements ServerVoxelTransportPort {
   readonly prefabCalls: PrefabPlaceCall[] = [];
@@ -365,6 +378,123 @@ describe("OnlineVoxelWorldAdapter#placePrefab", () => {
         radiusLInf: 0,
         wantSnapshot: true,
       },
+    ]);
+  });
+
+  it("prewarms movement chunks once, skips known authority, and emits an observable event", () => {
+    const { adapter, transport, bus } = createAdapter();
+    adapter.store.replaceChunkStorage(ChunkStorage.createEmpty({ x: 1, y: 0, z: 0 }).data, {
+      requestId: 1,
+      logicalSceneId: 7,
+      schemaVersion: 1,
+      chunkVersion: 1,
+      chunkHash: 1,
+      receivedAtMs: 1,
+    });
+    const events: PrewarmEventMap["world:chunk-prewarm-requested"][] = [];
+    (bus as EventBus<AppEvents & PrewarmEventMap>).on("world:chunk-prewarm-requested", (event) =>
+      events.push(event),
+    );
+
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    const sent = prewarm!.call(
+      adapter,
+      [
+        { x: 1, y: 0, z: 0 },
+        { x: 2, y: 0, z: 0 },
+        { x: 2, y: 0, z: 0 },
+      ],
+      "movement_collision",
+    );
+    const duplicateSent = prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision");
+
+    expect(sent).toBe(1);
+    expect(duplicateSent).toBe(0);
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 2, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+    ]);
+    expect(events).toMatchObject([
+      {
+        logicalSceneId: 7,
+        chunkCoord: { x: 2, y: 0, z: 0 },
+        source: "movement_collision",
+      },
+    ]);
+  });
+
+  it("does not duplicate a movement prewarm while the startup chunk subscription is in flight", () => {
+    const transport = new FakeServerVoxelTransport();
+    const bus = new EventBus<AppEvents>();
+    const logger = new ObserveLog();
+    const adapter = new OnlineVoxelWorldAdapter(transport, bus, logger, {
+      logicalSceneId: 7,
+      devSeed: false,
+      primeDemoBlock: false,
+      initialSubscriptions: [{ centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 }],
+    });
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    adapter.onFrame(0);
+    const sent = prewarm!.call(adapter, [{ x: 0, y: 0, z: 0 }], "collision_query");
+
+    expect(sent).toBe(0);
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 0,
+        wantSnapshot: true,
+      },
+    ]);
+  });
+
+  it("does not duplicate a movement prewarm covered by an in-flight radius subscription", () => {
+    const { adapter, transport } = createAdapter();
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    adapter.subscribeVoxelChunk({ x: 0, y: 0, z: 0 }, 1);
+    const sent = prewarm!.call(adapter, [{ x: 1, y: 0, z: 0 }], "movement_prewarm");
+
+    expect(sent).toBe(0);
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 0, y: 0, z: 0 },
+        radiusLInf: 1,
+        wantSnapshot: true,
+      },
+    ]);
+  });
+
+  it("allows movement prewarm to resend after an invalidate clears the pending request", () => {
+    const { adapter, transport } = createAdapter();
+    const prewarm = (adapter as Partial<MovementChunkPrewarmCapable>).prewarmAuthoritativeChunks;
+    expect(prewarm).toBeTypeOf("function");
+
+    expect(prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision")).toBe(1);
+    transport.queuedInvalidates.push({
+      type: "voxel_chunk_invalidate",
+      logicalSceneId: 7,
+      chunkCoord: { x: 2, y: 0, z: 0 },
+      reason: 1,
+      reasonName: "unknown",
+    });
+
+    adapter.flushServerMessagesForCli();
+
+    expect(prewarm!.call(adapter, [{ x: 2, y: 0, z: 0 }], "movement_collision")).toBe(1);
+    expect(transport.subscribeCalls.map((call) => call.centerChunk)).toEqual([
+      { x: 2, y: 0, z: 0 },
+      { x: 2, y: 0, z: 0 },
     ]);
   });
 

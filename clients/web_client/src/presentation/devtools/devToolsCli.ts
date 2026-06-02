@@ -719,7 +719,7 @@ export class DevToolsCli implements CliCommandHandler {
 
   private cmdFrameTraceStart(command: string, args: string[]): CliCommandResult {
     const frames = Number.parseInt(args[0] ?? "240", 10);
-    const safeFrames = Number.isFinite(frames) ? Math.max(1, Math.min(frames, 600)) : 240;
+    const safeFrames = Number.isFinite(frames) ? Math.max(1, Math.min(frames, 5_000)) : 240;
     this.deps.localPlayer.startFrameTrace(safeFrames);
     return this.ok(command, `frame trace started for ${safeFrames} frames`, {
       frames: safeFrames,
@@ -1054,11 +1054,29 @@ export class DevToolsCli implements CliCommandHandler {
     const trace = this.deps.localPlayer.getFrameTrace();
     const dtValues = trace.samples.map((sample) => sample.dtMs);
     const deltaValues = trace.samples.map((sample) => sample.deltaDistance);
+    const authorityDeltaValues = trace.samples.map((sample) => sample.authorityDeltaDistance);
+    const authorityRenderDeltaValues = trace.samples.map(
+      (sample) => sample.authorityRenderDeltaDistance,
+    );
+    const localAuthorityDistanceValues = trace.samples.map(
+      (sample) => sample.localAuthorityDistance,
+    );
+    const localAuthorityRenderDistanceValues = trace.samples.map(
+      (sample) => sample.localAuthorityRenderDistance,
+    );
+    const authorityRenderAuthorityDistanceValues = trace.samples.map(
+      (sample) => sample.authorityRenderAuthorityDistance,
+    );
     return {
       active: trace.active,
       frameCount: trace.samples.length,
       dtMs: summarizeSeries(dtValues),
       deltaDistance: summarizeSeries(deltaValues),
+      authorityDeltaDistance: summarizeSeries(authorityDeltaValues),
+      authorityRenderDeltaDistance: summarizeSeries(authorityRenderDeltaValues),
+      localAuthorityDistance: summarizeSeries(localAuthorityDistanceValues),
+      localAuthorityRenderDistance: summarizeSeries(localAuthorityRenderDistanceValues),
+      authorityRenderAuthorityDistance: summarizeSeries(authorityRenderAuthorityDistanceValues),
       samples: trace.samples,
     };
   }
@@ -1079,6 +1097,7 @@ export class DevToolsCli implements CliCommandHandler {
         : null,
       renderedPosition: formatVector(this.deps.localPlayer.getRenderedPosition()),
       authoritativePosition: formatVector(this.deps.localPlayer.getAuthoritativePosition()),
+      authorityRender: this.deps.localPlayer.getAuthorityRenderDebugSnapshot(),
       pendingCorrection: formatVector(this.deps.localPlayer.getPendingCorrection()),
       jitterMs: this.deps.localPlayer.getCurrentJitterMs(),
       softPositionError: this.deps.localPlayer.getCurrentSoftPositionError(),

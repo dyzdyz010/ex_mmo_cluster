@@ -37,6 +37,7 @@ export class DiagnosticsController implements FrameSubscriber {
       player_authority: formatVector(this.localPlayer.getAuthoritativePosition()),
       player_mode: this.localPlayer.getCurrentState()?.movementMode ?? "unknown",
       player_velocity: formatVector(this.localPlayer.getCurrentState()?.velocity ?? zeroVector()),
+      authority_render: JSON.stringify(this.localPlayer.getAuthorityRenderDebugSnapshot()),
       remote_rendered: formatVector(this.remotePlayer.getRenderedPosition()),
       remote_mode: this.remotePlayer.getCurrentMovementMode(),
       remote_count: this.remotePlayer.getVisibleEntityIds().length,

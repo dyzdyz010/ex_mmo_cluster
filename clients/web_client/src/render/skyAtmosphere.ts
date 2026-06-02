@@ -1,7 +1,6 @@
 import {
   AmbientLight,
   BackSide,
-  BufferAttribute,
   Color,
   DirectionalLight,
   Float32BufferAttribute,
@@ -12,6 +11,7 @@ import {
   SphereGeometry,
   Vector3,
 } from "three";
+import type { BufferAttribute } from "three";
 
 const SKY_RADIUS = 9000;
 const DAY_NIGHT_CYCLE_SECONDS = 180;
@@ -68,7 +68,11 @@ export function createSkyAtmosphere(): SkyAtmosphere {
     group.position.copy(center);
     timeOfDay = (timeOfDay + Math.max(0, dtSecs) / DAY_NIGHT_CYCLE_SECONDS) % 1;
     const phase = timeOfDay * Math.PI * 2;
-    const sunDirection = new Vector3(Math.cos(phase) * 0.35, Math.sin(phase), Math.cos(phase) * 0.82);
+    const sunDirection = new Vector3(
+      Math.cos(phase) * 0.35,
+      Math.sin(phase),
+      Math.cos(phase) * 0.82,
+    );
     if (sunDirection.lengthSq() === 0) {
       sunDirection.set(0, 1, 0);
     }
@@ -79,7 +83,10 @@ export function createSkyAtmosphere(): SkyAtmosphere {
     const dayAmount = smoothstep(-0.08, 0.45, sunAltitude);
     const twilightAmount = 1 - Math.min(1, Math.abs(sunAltitude) / 0.32);
 
-    const top = mixColors(0x10172b, 0x5fb4ff, dayAmount).lerp(new Color(0xff935f), twilightAmount * 0.22);
+    const top = mixColors(0x10172b, 0x5fb4ff, dayAmount).lerp(
+      new Color(0xff935f),
+      twilightAmount * 0.22,
+    );
     const horizon = mixColors(0x1b2742, 0xc7e9ff, dayAmount).lerp(
       new Color(0xffb36b),
       twilightAmount * 0.55,
@@ -130,7 +137,12 @@ export function createSkyAtmosphere(): SkyAtmosphere {
   };
 }
 
-function writeSkyDomeColors(geometry: SphereGeometry, top: Color, horizon: Color, bottom: Color): void {
+function writeSkyDomeColors(
+  geometry: SphereGeometry,
+  top: Color,
+  horizon: Color,
+  bottom: Color,
+): void {
   const position = geometry.getAttribute("position") as BufferAttribute;
   let color = geometry.getAttribute("color") as BufferAttribute | undefined;
   if (!color) {
@@ -141,7 +153,8 @@ function writeSkyDomeColors(geometry: SphereGeometry, top: Color, horizon: Color
   for (let i = 0; i < position.count; i += 1) {
     const normalizedY = position.getY(i) / SKY_RADIUS;
     const t = (normalizedY + 1) / 2;
-    const mixed = t < 0.5 ? bottom.clone().lerp(horizon, t * 2) : horizon.clone().lerp(top, (t - 0.5) * 2);
+    const mixed =
+      t < 0.5 ? bottom.clone().lerp(horizon, t * 2) : horizon.clone().lerp(top, (t - 0.5) * 2);
     color.setXYZ(i, mixed.r, mixed.g, mixed.b);
   }
   color.needsUpdate = true;

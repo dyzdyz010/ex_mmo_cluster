@@ -61,6 +61,8 @@ defmodule SceneServer.PlayerCharacter do
   # expected to hold 0-2 frames. Burst handling and minor jitter are expected
   # to produce up to ~4 frames.
   @max_input_queue 8
+  @idle_remote_snapshot_interval_ms 500
+  @movement_collision_query_timeout_ms 50
 
   @doc """
   Starts one authoritative player character process.
@@ -114,6 +116,13 @@ defmodule SceneServer.PlayerCharacter do
     # appears to follow because you walked back" optical illusion.
     connection_monitor_ref = connection_monitor_ref(connection_pid)
     character_profile = normalize_character_profile(cid, character_profile)
+    movement_profile = Profile.default()
+    movement_epoch_ms = :os.system_time(:millisecond)
+
+    movement_state =
+      character_profile.position
+      |> State.idle()
+      |> stamp_movement_state(movement_epoch_ms, movement_profile.fixed_dt_ms)
 
     {:ok,
      %{
@@ -126,8 +135,9 @@ defmodule SceneServer.PlayerCharacter do
        aoi_ref: nil,
        character_data_ref: nil,
        spawn_location: character_profile.position,
-       movement_state: State.idle(character_profile.position),
-       movement_profile: Profile.default(),
+       movement_state: movement_state,
+       movement_profile: movement_profile,
+       movement_epoch_ms: movement_epoch_ms,
        combat_profile: CombatProfile.default(),
        combat_state: CombatState.new(CombatProfile.default()),
        latched_input: idle_input_frame(Profile.default().fixed_dt_ms),
@@ -143,6 +153,7 @@ defmodule SceneServer.PlayerCharacter do
        partition_window_dto: nil,
        partition_updated_at_ms: nil,
        movement_timer: nil,
+       last_remote_snapshot_sent_at_ms: System.monotonic_time(:millisecond),
        aoi_monitor_ref: nil,
        respawn_timer: nil,
        # Phase A1-5:scene_id 用于把 skill cast 的 target_position lookup
@@ -622,7 +633,7 @@ defmodule SceneServer.PlayerCharacter do
             ack =
               Engine.build_ack(
                 cid,
-                movement_state,
+                stamp_movement_state(movement_state, state),
                 effective_input.seq,
                 movement_profile.fixed_dt_ms
               )
@@ -774,7 +785,11 @@ defmodule SceneServer.PlayerCharacter do
            ),
          {:ok, authoritative_location} <-
            get_character_location_with_retry(cd_ref, physys_ref, next_state.position) do
-      authoritative_state = %{next_state | position: authoritative_location} |> refresh_ground_z()
+      authoritative_state =
+        next_state
+        |> Map.put(:position, authoritative_location)
+        |> refresh_ground_z()
+        |> stamp_movement_state(state)
 
       ack =
         Engine.build_ack_with_intent(
@@ -810,6 +825,8 @@ defmodule SceneServer.PlayerCharacter do
       GenServer.cast(aoi_ref, {:self_move, snapshot})
       GenServer.cast(connection_pid, {:movement_ack, ack})
 
+      last_snapshot_sent_at_ms = System.monotonic_time(:millisecond)
+
       {:noreply,
        %{
          state
@@ -817,7 +834,8 @@ defmodule SceneServer.PlayerCharacter do
            last_location: authoritative_location,
            last_ack_seq: ack_seq,
            latched_input: clear_one_shot_flags(last_frame)
-       }}
+       }
+       |> Map.put(:last_remote_snapshot_sent_at_ms, last_snapshot_sent_at_ms)}
     else
       {:error, reason} ->
         SceneServer.CliObserve.emit("player_movement_error", %{
@@ -837,16 +855,20 @@ defmodule SceneServer.PlayerCharacter do
          player_state,
          cid
        ) do
-    proposed_state =
-      Enum.reduce(frames, anchor_state, fn %InputFrame{} = frame, current_state ->
+    {resolved_state, flags, summaries} =
+      Enum.reduce(frames, {anchor_state, CorrectionFlags.none(), []}, fn %InputFrame{} = frame,
+                                                                         {current_state, flags,
+                                                                          summaries} ->
         {proposed_state, _ack} = Engine.step(cid, current_state, frame, movement_profile)
-        proposed_state
+
+        {resolved_state, step_flags, summary} =
+          resolve_voxel_collision(current_state, proposed_state, player_state)
+
+        {resolved_state, CorrectionFlags.combine([flags, step_flags]),
+         [Map.put(summary, :replay_count, 1) | summaries]}
       end)
 
-    {resolved_state, flags, summary} =
-      resolve_voxel_collision(anchor_state, proposed_state, player_state)
-
-    {resolved_state, flags, [Map.put(summary, :replay_count, length(frames))]}
+    {resolved_state, flags, Enum.reverse(summaries)}
   end
 
   defp resolve_voxel_collision(
@@ -866,6 +888,7 @@ defmodule SceneServer.PlayerCharacter do
     opts =
       state
       |> Map.get(:voxel_collision_opts, [])
+      |> Keyword.put_new(:query_timeout_ms, @movement_collision_query_timeout_ms)
       |> Keyword.put(:logical_scene_id, Map.get(state, :logical_scene_id, 1))
 
     VoxelCollision.resolve(previous_state, proposed_state, opts)
@@ -1232,12 +1255,14 @@ defmodule SceneServer.PlayerCharacter do
          state
        )
        when vx != 0.0 or vy != 0.0 or vz != 0.0 or ax != 0.0 or ay != 0.0 or az != 0.0 do
-    zeroed_state = %State{
-      movement_state
-      | velocity: {0.0, 0.0, 0.0},
-        acceleration: {0.0, 0.0, 0.0},
-        ground_z: elem(movement_state.position, 2)
-    }
+    zeroed_state =
+      %State{
+        movement_state
+        | velocity: {0.0, 0.0, 0.0},
+          acceleration: {0.0, 0.0, 0.0},
+          ground_z: elem(movement_state.position, 2)
+      }
+      |> stamp_movement_state(state)
 
     _ =
       update_character_movement_with_retry(
@@ -1251,11 +1276,68 @@ defmodule SceneServer.PlayerCharacter do
     snapshot = RemoteSnapshot.from_state(cid, zeroed_state)
     GenServer.cast(aoi_ref, {:self_move, snapshot})
 
-    {:noreply, %{state | movement_state: zeroed_state, last_location: zeroed_state.position}}
+    {:noreply,
+     state
+     |> Map.put(:movement_state, zeroed_state)
+     |> Map.put(:last_location, zeroed_state.position)
+     |> Map.put(:last_remote_snapshot_sent_at_ms, System.monotonic_time(:millisecond))}
   end
 
-  defp flush_stop_snapshot_if_needed(_aoi_ref, _cd_ref, _physys_ref, _cid, _movement_state, state) do
-    {:noreply, state}
+  defp flush_stop_snapshot_if_needed(aoi_ref, _cd_ref, _physys_ref, cid, movement_state, state) do
+    maybe_broadcast_idle_snapshot(aoi_ref, cid, movement_state, state)
+  end
+
+  defp maybe_broadcast_idle_snapshot(aoi_ref, cid, %State{} = movement_state, state) do
+    now_ms = System.monotonic_time(:millisecond)
+    last_sent_at_ms = Map.get(state, :last_remote_snapshot_sent_at_ms, 0)
+
+    if idle_remote_snapshot_due?(last_sent_at_ms, now_ms) do
+      heartbeat_state =
+        movement_state
+        |> advance_idle_movement_time(state)
+        |> refresh_ground_z()
+
+      snapshot = RemoteSnapshot.from_state(cid, heartbeat_state)
+
+      SceneServer.CliObserve.emit("player_movement_idle_snapshot", %{
+        cid: cid,
+        server_tick: heartbeat_state.tick,
+        server_state_ms: heartbeat_state.server_state_ms,
+        position: heartbeat_state.position,
+        movement_mode: heartbeat_state.movement_mode
+      })
+
+      GenServer.cast(aoi_ref, {:self_move, snapshot})
+
+      {:noreply,
+       state
+       |> Map.put(:movement_state, heartbeat_state)
+       |> Map.put(:last_location, heartbeat_state.position)
+       |> Map.put(:last_remote_snapshot_sent_at_ms, now_ms)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp idle_remote_snapshot_due?(last_sent_at_ms, _now_ms) when not is_integer(last_sent_at_ms),
+    do: true
+
+  defp idle_remote_snapshot_due?(last_sent_at_ms, now_ms) do
+    now_ms - last_sent_at_ms >= @idle_remote_snapshot_interval_ms
+  end
+
+  defp advance_idle_movement_time(
+         %State{} = movement_state,
+         %{movement_profile: %{fixed_dt_ms: fixed_dt_ms}} = actor_state
+       )
+       when is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
+    epoch_ms = movement_epoch_ms(movement_state, actor_state, fixed_dt_ms)
+    elapsed_ticks = max(0, div(max(0, :os.system_time(:millisecond) - epoch_ms), fixed_dt_ms))
+    next_tick = max(movement_state.tick + 1, elapsed_ticks)
+
+    movement_state
+    |> Map.put(:tick, next_tick)
+    |> stamp_movement_state(epoch_ms, fixed_dt_ms)
   end
 
   defp movement_active?(%State{velocity: velocity}) do
@@ -1384,14 +1466,16 @@ defmodule SceneServer.PlayerCharacter do
        ) do
     respawned_combat_state = CombatState.respawn(combat_state)
 
-    respawned_movement_state = %{
-      movement_state
-      | position: spawn_location,
-        velocity: {0.0, 0.0, 0.0},
-        acceleration: {0.0, 0.0, 0.0},
-        movement_mode: :grounded,
-        ground_z: elem(spawn_location, 2)
-    }
+    respawned_movement_state =
+      %{
+        movement_state
+        | position: spawn_location,
+          velocity: {0.0, 0.0, 0.0},
+          acceleration: {0.0, 0.0, 0.0},
+          movement_mode: :grounded,
+          ground_z: elem(spawn_location, 2)
+      }
+      |> stamp_movement_state(state)
 
     :ok =
       update_character_movement_with_retry(
@@ -1404,6 +1488,7 @@ defmodule SceneServer.PlayerCharacter do
 
     snapshot = RemoteSnapshot.from_state(cid, respawned_movement_state)
     GenServer.cast(aoi_ref, {:self_move, snapshot})
+    last_snapshot_sent_at_ms = System.monotonic_time(:millisecond)
 
     GenServer.cast(
       aoi_ref,
@@ -1411,16 +1496,58 @@ defmodule SceneServer.PlayerCharacter do
        respawned_combat_state.alive}
     )
 
-    {:noreply,
-     %{
-       state
-       | combat_state: respawned_combat_state,
-         movement_state: respawned_movement_state,
-         latched_input: idle_input_frame(movement_profile.fixed_dt_ms),
-         last_location: spawn_location,
-         skill_casts: %{},
-         respawn_timer: nil
-     }}
+    next_state =
+      %{
+        state
+        | combat_state: respawned_combat_state,
+          movement_state: respawned_movement_state,
+          latched_input: idle_input_frame(movement_profile.fixed_dt_ms),
+          last_location: spawn_location,
+          skill_casts: %{},
+          respawn_timer: nil
+      }
+      |> Map.put(:last_remote_snapshot_sent_at_ms, last_snapshot_sent_at_ms)
+
+    {:noreply, next_state}
+  end
+
+  defp stamp_movement_state(
+         %State{} = movement_state,
+         %{movement_epoch_ms: epoch_ms, movement_profile: %{fixed_dt_ms: fixed_dt_ms}}
+       ) do
+    stamp_movement_state(movement_state, epoch_ms, fixed_dt_ms)
+  end
+
+  defp stamp_movement_state(
+         %State{} = movement_state,
+         %{movement_profile: %{fixed_dt_ms: fixed_dt_ms}} = actor_state
+       ) do
+    epoch_ms = movement_epoch_ms(movement_state, actor_state, fixed_dt_ms)
+
+    stamp_movement_state(movement_state, epoch_ms, fixed_dt_ms)
+  end
+
+  defp movement_epoch_ms(%State{} = movement_state, actor_state, fixed_dt_ms) do
+    previous_state_ms = Map.get(movement_state, :server_state_ms, 0)
+
+    cond do
+      is_integer(previous_state_ms) and previous_state_ms > 0 ->
+        previous_state_ms - movement_state.tick * fixed_dt_ms
+
+      match?(%State{}, Map.get(actor_state, :movement_state)) and
+        is_integer(Map.get(actor_state.movement_state, :server_state_ms, 0)) and
+          Map.get(actor_state.movement_state, :server_state_ms, 0) > 0 ->
+        actor_state.movement_state.server_state_ms -
+          actor_state.movement_state.tick * fixed_dt_ms
+
+      true ->
+        :os.system_time(:millisecond) - movement_state.tick * fixed_dt_ms
+    end
+  end
+
+  defp stamp_movement_state(%State{} = movement_state, epoch_ms, fixed_dt_ms)
+       when is_integer(epoch_ms) and is_integer(fixed_dt_ms) and fixed_dt_ms > 0 do
+    Map.put(movement_state, :server_state_ms, epoch_ms + movement_state.tick * fixed_dt_ms)
   end
 
   defp refresh_ground_z(%State{movement_mode: :grounded, position: position} = movement_state) do

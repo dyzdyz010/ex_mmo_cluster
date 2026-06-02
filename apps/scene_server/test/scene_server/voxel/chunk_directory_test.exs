@@ -164,6 +164,41 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     end
   end
 
+  test "collision_query honors a per-request timeout override" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    scene_id = unique_scene_id()
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(directory, %{
+               logical_scene_id: scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    :ok = :sys.suspend(chunk_pid)
+
+    try do
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, {:chunk_unavailable, {:timeout, :collision_query}}} =
+               ChunkDirectory.collision_query(
+                 directory,
+                 %{
+                   logical_scene_id: scene_id,
+                   chunk_coord: {0, 0, 0},
+                   samples: [],
+                   collision_query_timeout_ms: 10
+                 },
+                 200
+               )
+
+      assert System.monotonic_time(:millisecond) - started < 200
+      assert Process.alive?(directory)
+    after
+      _ = :sys.resume(chunk_pid)
+    end
+  end
+
   test "apply_intents reports a stalled lease apply without crashing the directory" do
     chunk_sup = start_supervised!(VoxelChunkSup)
 

@@ -1,12 +1,4 @@
-import {
-  Color,
-  Fog,
-  GridHelper,
-  Group,
-  PerspectiveCamera,
-  Scene,
-  Vector3,
-} from "three";
+import { Fog, GridHelper, Group, PerspectiveCamera, Scene, Vector3 } from "three";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import {
   createRendererBackend,
@@ -167,10 +159,7 @@ export async function createScene(
     lastPointerClientX = event.clientX;
     lastPointerClientY = event.clientY;
 
-    applyCameraYawPitchDelta(
-      deltaX * CAMERA_YAW_SENSITIVITY,
-      deltaY * CAMERA_PITCH_SENSITIVITY,
-    );
+    applyCameraYawPitchDelta(deltaX * CAMERA_YAW_SENSITIVITY, deltaY * CAMERA_PITCH_SENSITIVITY);
   };
 
   const onPointerLeave = () => {

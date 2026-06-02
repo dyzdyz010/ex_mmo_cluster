@@ -524,8 +524,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_movement_input(73, 100, {1.0, 0.0}))
 
     assert {:ok,
-            <<0x8B, 1, 73::32-big, 100::32-big, server_send_ms_ack1::64-big, 42::64-big,
-              8.0::float-64-big, 9.0::float-64-big, 10.0::float-64-big, _::binary>>} =
+            <<0x8B, 2, 73::32-big, 100::32-big, _server_state_ms_ack1::64-big,
+              server_send_ms_ack1::64-big, 42::64-big, 8.0::float-64-big, 9.0::float-64-big,
+              10.0::float-64-big, _::binary>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert server_send_ms_ack1 > 0
@@ -966,9 +967,10 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x8B, 1, 114::32-big, 200::32-big, server_send_ms_udp::64-big,
-               42::64-big, 17.0::float-64-big, 18.0::float-64-big, 19.0::float-64-big,
-               _::binary>>}} = :gen_udp.recv(udp_client, 0, 500)
+             <<0x8B, 2, 114::32-big, 200::32-big, _server_state_ms_udp::64-big,
+               server_send_ms_udp::64-big, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
+               19.0::float-64-big, _::binary>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
 
     assert server_send_ms_udp > 0
 
@@ -1031,8 +1033,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     )
 
     assert {:ok,
-            <<0x8B, 1, 314::32-big, 2718::32-big, _server_send_ms_314::64-big, 42::64-big,
-              1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big, _::binary>>} =
+            <<0x8B, 2, 314::32-big, 2718::32-big, _server_state_ms_314::64-big,
+              _server_send_ms_314::64-big, 42::64-big, 1_650.0::float-64-big, 50.0::float-64-big,
+              _z::float-64-big, _::binary>>} =
              :gen_tcp.recv(client, 0, 500)
 
     wait_until(fn ->
@@ -1104,8 +1107,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert_receive {:partition_refresh_started, refresh_pid, ^pid, ^pid}, 500
 
     assert {:ok,
-            <<0x8B, 1, 515::32-big, 3101::32-big, _server_send_ms_515::64-big, 42::64-big,
-              1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big, _::binary>>} =
+            <<0x8B, 2, 515::32-big, 3101::32-big, _server_state_ms_515::64-big,
+              _server_send_ms_515::64-big, 42::64-big, 1_650.0::float-64-big, 50.0::float-64-big,
+              _z::float-64-big, _::binary>>} =
              :gen_tcp.recv(client, 0, 500)
 
     pending_state = :sys.get_state(pid)
@@ -1243,8 +1247,9 @@ defmodule GateServer.TcpConnectionProtocolTest do
     )
 
     assert {:ok,
-            <<0x8B, 1, 414::32-big, 3718::32-big, _server_send_ms_414::64-big, 42::64-big,
-              1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big, _::binary>>} =
+            <<0x8B, 2, 414::32-big, 3718::32-big, _server_state_ms_414::64-big,
+              _server_send_ms_414::64-big, 42::64-big, 1_650.0::float-64-big, 50.0::float-64-big,
+              _z::float-64-big, _::binary>>} =
              :gen_tcp.recv(client, 0, 500)
 
     wait_until(fn ->
@@ -1326,10 +1331,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,
-             <<0x83, 1, 77::64-big, 9::32-big, _server_send_ms_pm1::64-big, 11.0::float-64-big,
-               12.0::float-64-big, 13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big,
-               3.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
-               0::8>>}} = :gen_udp.recv(udp_client, 0, 500)
+             <<0x83, 2, 77::64-big, 9::32-big, _server_state_ms_pm1::64-big,
+               _server_send_ms_pm1::64-big, 11.0::float-64-big, 12.0::float-64-big,
+               13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>}} =
+             :gen_udp.recv(udp_client, 0, 500)
 
     assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
 
@@ -1415,10 +1421,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             {{127, 0, 0, 1}, ^port2,
-             <<0x83, 1, 77::64-big, 10::32-big, _server_send_ms_pm2::64-big, 21.0::float-64-big,
-               22.0::float-64-big, 23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big,
-               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-               0::8>>}} = :gen_udp.recv(udp_client2, 0, 500)
+             <<0x83, 2, 77::64-big, 10::32-big, _server_state_ms_pm2::64-big,
+               _server_send_ms_pm2::64-big, 21.0::float-64-big, 22.0::float-64-big,
+               23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
+               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>}} =
+             :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
     assert %{udp_peer: {{127, 0, 0, 1}, ^client2_port}} = :sys.get_state(pid)
@@ -1479,10 +1486,11 @@ defmodule GateServer.TcpConnectionProtocolTest do
     )
 
     assert {:ok,
-            <<0x83, 1, 88::64-big, 3::32-big, _server_send_ms_pm3::64-big, 31.0::float-64-big,
-              32.0::float-64-big, 33.0::float-64-big, +0.0::float-64-big, 1.0::float-64-big,
-              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-              0::8>>} = :gen_tcp.recv(client, 0, 500)
+            <<0x83, 2, 88::64-big, 3::32-big, _server_state_ms_pm3::64-big,
+              _server_send_ms_pm3::64-big, 31.0::float-64-big, 32.0::float-64-big,
+              33.0::float-64-big, +0.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big,
+              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>} =
+             :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
     :gen_udp.close(udp_client)
@@ -2499,7 +2507,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
          speed_scale \\ 1.0,
          movement_flags \\ 0
        ) do
-    <<0x01, 1, seq::32-big, client_tick::32-big, dt_ms::16-big, dir_x::float-32-big,
+    <<0x01, 2, seq::32-big, client_tick::32-big, dt_ms::16-big, dir_x::float-32-big,
       dir_y::float-32-big, speed_scale::float-32-big, movement_flags::16-big>>
   end
 

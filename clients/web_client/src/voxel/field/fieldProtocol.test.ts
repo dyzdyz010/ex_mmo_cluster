@@ -11,7 +11,9 @@ import {
 // Helper: build a FieldRegionSnapshot binary matching field_codec.ex layout.
 function buildSnapshotBuf(opts: {
   logicalSceneId?: number;
-  cx?: number; cy?: number; cz?: number;
+  cx?: number;
+  cy?: number;
+  cz?: number;
   regionId?: number;
   tickCount?: number;
   fieldMask?: number;
@@ -23,7 +25,9 @@ function buildSnapshotBuf(opts: {
 }): ArrayBuffer {
   const {
     logicalSceneId = 1,
-    cx = 0, cy = 0, cz = 0,
+    cx = 0,
+    cy = 0,
+    cz = 0,
     regionId = 42,
     tickCount = 5,
     fieldMask = FieldMask.Temperature,
@@ -45,37 +49,51 @@ function buildSnapshotBuf(opts: {
   const view = new DataView(buf);
   let offset = 0;
 
-  view.setUint8(offset, 0x73); offset += 1;
-  writeU64(view, offset, logicalSceneId); offset += 8;
-  view.setInt32(offset, cx, false); offset += 4;
-  view.setInt32(offset, cy, false); offset += 4;
-  view.setInt32(offset, cz, false); offset += 4;
-  writeU64(view, offset, regionId); offset += 8;
-  view.setUint32(offset, tickCount, false); offset += 4;
-  view.setUint8(offset, fieldMask); offset += 1;
-  view.setUint16(offset, cellCount, false); offset += 2;
+  view.setUint8(offset, 0x73);
+  offset += 1;
+  writeU64(view, offset, logicalSceneId);
+  offset += 8;
+  view.setInt32(offset, cx, false);
+  offset += 4;
+  view.setInt32(offset, cy, false);
+  offset += 4;
+  view.setInt32(offset, cz, false);
+  offset += 4;
+  writeU64(view, offset, regionId);
+  offset += 8;
+  view.setUint32(offset, tickCount, false);
+  offset += 4;
+  view.setUint8(offset, fieldMask);
+  offset += 1;
+  view.setUint16(offset, cellCount, false);
+  offset += 2;
 
   for (const idx of macroIndices) {
-    view.setUint16(offset, idx, false); offset += 2;
+    view.setUint16(offset, idx, false);
+    offset += 2;
   }
   if (fieldMask & FieldMask.Temperature) {
     for (const v of temperatureValues) {
-      view.setFloat32(offset, v, true); offset += 4; // little-endian
+      view.setFloat32(offset, v, true);
+      offset += 4; // little-endian
     }
   }
   if (fieldMask & FieldMask.ElectricPotential) {
     for (const v of electricValues) {
-      view.setFloat32(offset, v, true); offset += 4;
+      view.setFloat32(offset, v, true);
+      offset += 4;
     }
   }
   if (fieldMask & FieldMask.ElectricCurrent) {
     for (const v of electricCurrentValues) {
-      view.setFloat32(offset, v, true); offset += 4;
+      view.setFloat32(offset, v, true);
+      offset += 4;
     }
   }
   if (fieldMask & FieldMask.Ionization) {
     for (const v of ionizationValues) {
-      view.setUint8(offset, v); offset += 1;
+      view.setUint8(offset, v);
+      offset += 1;
     }
   }
 
@@ -84,13 +102,17 @@ function buildSnapshotBuf(opts: {
 
 function buildDestroyedBuf(opts: {
   logicalSceneId?: number;
-  cx?: number; cy?: number; cz?: number;
+  cx?: number;
+  cy?: number;
+  cz?: number;
   regionId?: number;
   destroyReason?: number;
 }): ArrayBuffer {
   const {
     logicalSceneId = 1,
-    cx = 0, cy = 0, cz = 0,
+    cx = 0,
+    cy = 0,
+    cz = 0,
     regionId = 42,
     destroyReason = DestroyReason.Expired,
   } = opts;
@@ -99,12 +121,18 @@ function buildDestroyedBuf(opts: {
   const view = new DataView(buf);
   let offset = 0;
 
-  view.setUint8(offset, 0x74); offset += 1;
-  writeU64(view, offset, logicalSceneId); offset += 8;
-  view.setInt32(offset, cx, false); offset += 4;
-  view.setInt32(offset, cy, false); offset += 4;
-  view.setInt32(offset, cz, false); offset += 4;
-  writeU64(view, offset, regionId); offset += 8;
+  view.setUint8(offset, 0x74);
+  offset += 1;
+  writeU64(view, offset, logicalSceneId);
+  offset += 8;
+  view.setInt32(offset, cx, false);
+  offset += 4;
+  view.setInt32(offset, cy, false);
+  offset += 4;
+  view.setInt32(offset, cz, false);
+  offset += 4;
+  writeU64(view, offset, regionId);
+  offset += 8;
   view.setUint8(offset, destroyReason);
 
   return buf;
@@ -130,13 +158,15 @@ describe("decodeFieldRegionSnapshot", () => {
 
     const result = decodeFieldRegionSnapshot(buf);
     expect(result).not.toBeNull();
-    expect(Array.from((result as any).electricCurrentValues)).toEqual([4.5, 4.5, 4.5]);
+    expect(Array.from(result!.electricCurrentValues)).toEqual([4.5, 4.5, 4.5]);
   });
 
   it("decodes temperature-only snapshot", () => {
     const buf = buildSnapshotBuf({
       logicalSceneId: 1,
-      cx: 2, cy: -1, cz: 3,
+      cx: 2,
+      cy: -1,
+      cz: 3,
       regionId: 99,
       tickCount: 10,
       fieldMask: FieldMask.Temperature,
@@ -226,7 +256,9 @@ describe("decodeFieldRegionDestroyed", () => {
   ] as const)("decodes destroy_reason %i", (reason, _label) => {
     const buf = buildDestroyedBuf({
       logicalSceneId: 5,
-      cx: -3, cy: 0, cz: 7,
+      cx: -3,
+      cy: 0,
+      cz: 7,
       regionId: 1234,
       destroyReason: reason,
     });

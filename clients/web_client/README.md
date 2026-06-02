@@ -217,8 +217,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dual-scene-d
 chunk `{1,0,0}`。脚本会在两个小地块内各铺完整 `16×16` 格可交互服务端地面，
 面积接近 100 平方，便于在默认视野附近测试跨 scene 放置。
 浏览器世界中会显示蓝色 scene1、橙色 scene2 和白色边界柱，用于真实界面测试跨边界
-prefab 摆放。在线 voxel 启动时会自动分别订阅 `{0,0,0}` 与 `{1,0,0}`，半径均为 `0`，
-避免默认半径把未分配邻居 chunk 带入订阅后被 Gate 以 `:unassigned_chunk` 整批拒绝。
+prefab 摆放。在线 voxel 启动时只订阅配置的中心窗口：默认中心 `{0,0,0}`、半径
+`VITE_VOXEL_SUBSCRIBE_RADIUS`（smoke 默认 `0`）。边界附近的额外 chunk 由移动预测
+prewarm 或显式 `voxel_subscribe` 请求，避免启动期固定订阅未分配邻居 chunk。
 Console 中可用：
 
 ```js
@@ -339,7 +340,7 @@ window.__voxelCli?.run("players");
 window.__voxelCli?.run("reconcile_stats");
 window.__voxelCli?.run("edit_stats");
 window.__voxelCli?.run("frame_trace_start 300");
-window.__voxelCli?.run("frame_trace");
+window.__voxelCli?.run("frame_trace"); // includes local / authority / authorityRender displacement
 window.__voxelCli?.run("frame_trace_clear");
 ```
 
@@ -418,11 +419,67 @@ node scripts/run_browser_movement_smoke_supervised.js
 
 - 头顶放置方块后，本地显示高度和权威高度不会被抬升
 - 单客户端 `jump` 会产生本地 rendered Y、authoritative Y 和 airborne trace
-- 第二个网页客户端能看到第一个客户端的远端 airborne / Y 轴抬升
+- 第二个网页客户端能看到第一个客户端的远端 airborne / Y 轴抬升，并检查首个
+  airborne 样本不超过当前网络条件下的延迟预算
+- 远端跳跃期间 server tick 必须推进，近距离远端样本必须保持 high priority 且
+  `deliveryInterval=1`，用于验证 realtime movement lane 没被 bulk voxel 流量拖慢
+- WebSocket 代理会主动断开两个标签的已建连接，验证双方自动重连、重新进入 scene，
+  且第二个网页客户端能继续看到第一个客户端
+- clock soak verdict 会持续采样远端实体，断言远端插值使用 `server_state_ms`
+  权威状态时间轴，或在 `server_state_ms` 快照节奏缺失/异常时，明确暴露
+  `serverStateTimelineHealthy=false` 并降级到 `server_tick` 时间轴；正常
+  `server_state_ms` 样本仍要求 TimeSync 样本继续增长。本地灰色 authority render
+  是调试"服务器是否已确认我的移动"的标记，按 ack 到达节奏和 `server_tick`
+  采样，不跟随远端实体的 wall-clock TimeSync 播放轴。
+- long movement verdict 会用 `frame_trace` 逐帧比较本地位移、最新权威位移和灰色
+  authority render 位移，并记录 `effectiveHz`、`localAuthorityRenderDistance`、
+  `deltaDistanceDiff` 等指标，防止只看 1s 快照时漏掉服务端方块漂移。
 
 运行产物写入 `.demo/observe/`，核心文件是
 `browser-movement-smoke-summary.json`。如果脚本找不到浏览器，可设置
 `BROWSER_SMOKE_CHROME_PATH` 指向 Chrome/Edge/Chromium 可执行文件。
+默认 clock soak 时长为 6 秒；需要长时验收时可设置
+`BROWSER_MOVEMENT_CLOCK_SOAK_MS=15000` 或更高（上限 60 秒）。
+当前长时验收口径已覆盖 `BROWSER_MOVEMENT_CLOCK_SOAK_MS=60000`、
+`BROWSER_MOVEMENT_RECONNECT_CYCLES=5`、40ms 基础延迟、0..40ms 抖动与
+32KB/s WebSocket 限速。
+需要模拟抖动或低带宽网络时，可设置 `BROWSER_MOVEMENT_NET_DELAY_MS`、
+`BROWSER_MOVEMENT_NET_JITTER_MS` 与 `BROWSER_MOVEMENT_NET_BYTES_PER_SEC`；
+runner 会让浏览器连接本地 WebSocket network-emulation proxy，再由 proxy
+转发到真实 auth/gate 服务，summary 会记录 `networkEmulation` 与 clock soak
+verdict。该代理按顺序延迟字节流，不随机丢弃 TCP 分片，避免把 WebSocket
+协议流人为破坏成无效帧；默认 reconnect smoke 也会使用同一个代理执行两轮
+已建连接闪断。若只想关闭断链重连验收，可设置
+`BROWSER_MOVEMENT_RECONNECT_SMOKE=0`；若需要调整闪断轮数，可设置
+`BROWSER_MOVEMENT_RECONNECT_CYCLES=1..5`。浏览器 bridge 的服务端发送侧已经把消息分成
+immediate control、movement bounded-FIFO、field latest-only 和 bulk voxel lanes：
+正常负载下保留 movement ack / remote move 的连续样本；32KB/s 下若实时队列超过
+`AUTH_GAME_WS_REALTIME_MAX_QUEUE`，只丢最旧 movement 帧，体素 chunk snapshot/delta
+继续限速排队。低带宽或闲置输入稀疏时，远端实体可能显示
+`interpolationTimeAxis=server_tick` 且 `serverStateTimelineHealthy=false`；这是显式降级，
+不是静默回退。本地 authority render 正常情况下也会显示 `server_tick`，因为它按本机
+ack 收到时间校验服务器确认路径，不代表远端 TimeSync 降级。
+需要模拟服务端移动快照丢失时，可设置
+`BROWSER_MOVEMENT_NET_DROP_SERVER_MOVE_PERCENT=20` 与
+`BROWSER_MOVEMENT_NET_DROP_SEED=17`；代理只丢完整的 server->client `PlayerMove(0x83)`
+WebSocket binary frame，不破坏握手、TimeSync、ack 或体素帧。当前 20% seeded
+frame-loss 验收口径为：40ms 基础延迟、0..40ms 抖动、32768 B/s、两轮 reconnect
+和 15s clock soak；本地样本实际丢弃约 19% 的移动帧（7/36 到 7/37），远端首个
+airborne 样本仍低于当前 1620ms 延迟预算。server-authoritative 模式下，本地预测
+现在会读取已同步且带权威 metadata 的 voxel chunk 作为只读碰撞缓存；缺失权威
+chunk 时 fail-open，并在 CLI / summary 里显示 `authority_unavailable`，避免用
+不可信本地空洞阻挡玩家。预测碰撞现在还会按移动 AABB 做权威 chunk 预取：strict
+碰撞覆盖区缺权威数据时立即请求对应 chunk，strict 区已满足时再按 400cm 水平边界余量
+预取邻近 chunk；在线 adapter 会跳过已权威 chunk，并把 startup / 手动订阅 /
+movement prewarm 的 in-flight chunk 订阅合并去重，半径订阅覆盖的邻居 chunk 也不会再
+被 movement prewarm 重复请求。snapshot / invalidate 会清理 pending 状态；未收到权威
+数据的 pending 订阅保留 10s 后才允许重试。CLI / observe 可通过
+`voxel_sync.movementPrewarm`、`voxel_sync.movementPrewarm.pendingSubscriptionChunks`
+与 `voxel.chunk_prewarm_requested` 看到预取状态。启动订阅不再固定请求 `{1,0,0}`；
+需要扩大初始权威窗口时调 `VITE_VOXEL_SUBSCRIBE_RADIUS`，需要跨分区边界时让移动预取
+或手动 `voxel_subscribe` 按实际位置请求。
+远端跳跃延迟预算默认随网络仿真条件扩展；需要临时收紧或放宽验收时，可设置
+`BROWSER_MOVEMENT_REMOTE_JUMP_MAX_AIRBORNE_MS`。
 
 兼容 PowerShell 入口：
 

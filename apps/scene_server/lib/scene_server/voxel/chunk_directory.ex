@@ -247,11 +247,14 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {{:ok, chunk_pid}, next_state} ->
         query_attrs = Map.take(attrs, [:samples])
 
+        collision_query_timeout_ms =
+          collision_query_timeout_ms(attrs, state.collision_query_timeout_ms)
+
         case safe_chunk_call(:collision_query, fn ->
                ChunkProcess.collision_query(
                  chunk_pid,
                  query_attrs,
-                 state.collision_query_timeout_ms
+                 collision_query_timeout_ms
                )
              end) do
           {:ok, result} -> {:reply, {:ok, result}, next_state}
@@ -585,9 +588,17 @@ defmodule SceneServer.Voxel.ChunkDirectory do
         |> Map.get(:chunk_coord, Map.get(attrs, :center_chunk))
         |> coord!(),
       lease: Map.get(attrs, :lease),
-      samples: Map.get(attrs, :samples, [])
+      samples: Map.get(attrs, :samples, []),
+      collision_query_timeout_ms: Map.get(attrs, :collision_query_timeout_ms)
     }
   end
+
+  defp collision_query_timeout_ms(%{collision_query_timeout_ms: timeout_ms}, default_timeout_ms)
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    min(timeout_ms, default_timeout_ms)
+  end
+
+  defp collision_query_timeout_ms(_attrs, default_timeout_ms), do: default_timeout_ms
 
   defp normalize_subscribe_attrs(attrs) when is_map(attrs) do
     raw_attrs = attrs

@@ -86,8 +86,158 @@ defmodule SceneServer.PlayerCharacterTest do
     assert_receive {:connection_cast, {:movement_ack, ack}}
     assert snapshot.cid == 42
     assert snapshot.server_tick == 1
+    assert snapshot.server_state_ms == ack.server_state_ms
+    assert snapshot.server_state_ms > 0
     assert snapshot.position == ack.position
     assert next_state.last_location == ack.position
+  end
+
+  test "movement state time advances by the authoritative fixed tick, not send time" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+
+    first_frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    second_frame = %{first_frame | seq: 2, client_tick: 2}
+
+    assert {:reply, {:ok, :accepted}, state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, first_frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, state} = SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = first_snapshot}}
+    assert_receive {:connection_cast, {:movement_ack, first_ack}}
+
+    assert {:reply, {:ok, :accepted}, state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, second_frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, _state} = SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = second_snapshot}}
+    assert_receive {:connection_cast, {:movement_ack, second_ack}}
+
+    assert first_snapshot.server_state_ms == first_ack.server_state_ms
+    assert second_snapshot.server_state_ms == second_ack.server_state_ms
+
+    assert second_ack.server_state_ms - first_ack.server_state_ms ==
+             state.movement_profile.fixed_dt_ms
+  end
+
+  test "idle movement tick publishes a fresh AOI snapshot when the remote timeline is stale" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+
+    stale_movement_state = %{
+      State.idle({1.0, 2.0, 3.0})
+      | tick: 10,
+        server_state_ms: :os.system_time(:millisecond) - 5_000
+    }
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:movement_state, stale_movement_state)
+      |> Map.put(:last_location, stale_movement_state.position)
+      |> Map.put(:last_remote_snapshot_sent_at_ms, System.monotonic_time(:millisecond) - 10_000)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = snapshot}}, 300
+    assert snapshot.cid == 42
+    assert snapshot.position == stale_movement_state.position
+    assert snapshot.movement_mode == :grounded
+    assert snapshot.server_tick > stale_movement_state.tick
+    assert snapshot.server_state_ms > stale_movement_state.server_state_ms
+    assert next_state.movement_state.tick == snapshot.server_tick
+    assert next_state.movement_state.server_state_ms == snapshot.server_state_ms
+    assert next_state.last_remote_snapshot_sent_at_ms > state.last_remote_snapshot_sent_at_ms
+    refute_receive {:connection_cast, {:movement_ack, _ack}}, 100
+  end
+
+  test "single movement tick ignores spoofed client_tick when assigning auth tick" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 9_999,
+      dt_ms: 250,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:reply, {:ok, :accepted}, latched_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, latched_state)
+
+    assert next_state.movement_state.tick == 1
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = snapshot}}
+    assert_receive {:connection_cast, {:movement_ack, ack}}
+    assert snapshot.server_tick == 1
+    assert ack.auth_tick == 1
+    assert ack.ack_seq == 1
+  end
+
+  test "queued replay ignores spoofed client_tick sequence when assigning auth ticks" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+
+    frames =
+      for seq <- 1..3 do
+        %InputFrame{
+          seq: seq,
+          client_tick: 10_000 + seq,
+          dt_ms: 250,
+          input_dir: {1.0, 0.0},
+          speed_scale: 1.0,
+          movement_flags: 0
+        }
+      end
+
+    state =
+      Enum.reduce(frames, state, fn frame, acc ->
+        {:reply, {:ok, :accepted}, next_state} =
+          SceneServer.PlayerCharacter.handle_call(
+            {:movement_input, frame},
+            {self(), make_ref()},
+            acc
+          )
+
+        next_state
+      end)
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert next_state.movement_state.tick == 3
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = snapshot}}
+    assert_receive {:connection_cast, {:movement_ack, ack}}
+    assert snapshot.server_tick == 3
+    assert ack.auth_tick == 3
+    assert ack.ack_seq == 3
   end
 
   test "stale movement_input is rejected before touching AOI" do
@@ -200,7 +350,7 @@ defmodule SceneServer.PlayerCharacterTest do
     assert x > 1.0
   end
 
-  test "queued movement burst resolves voxel collision once over swept movement" do
+  test "queued movement burst resolves voxel collision after each replayed step" do
     {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
     parent = self()
@@ -246,6 +396,10 @@ defmodule SceneServer.PlayerCharacterTest do
 
     assert next_state.last_ack_seq == 3
     assert next_state.movement_state.tick == 3
+    assert_receive {:collision_query, %{chunk_coord: {0, 0, 0}, samples: samples}}
+    assert is_list(samples)
+    assert_receive {:collision_query, %{chunk_coord: {0, 0, 0}, samples: samples}}
+    assert is_list(samples)
     assert_receive {:collision_query, %{chunk_coord: {0, 0, 0}, samples: samples}}
     assert is_list(samples)
     refute_receive {:collision_query, _attrs}, 100
@@ -704,6 +858,7 @@ defmodule SceneServer.PlayerCharacterTest do
       last_client_tick: 0,
       last_input_received_at_ms: System.monotonic_time(:millisecond) - 100,
       movement_timer: nil,
+      last_remote_snapshot_sent_at_ms: System.monotonic_time(:millisecond),
       respawn_timer: nil,
       aoi_monitor_ref: nil,
       partition_window_dto: nil,

@@ -1086,6 +1086,8 @@ mod tests {
                 ServerMessage::MovementAck {
                     ack_seq: 1,
                     auth_tick: 1,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     cid: 42,
                     location: [7.0, 8.0, 9.0],
                     velocity: [4.0, 0.0, 0.0],
@@ -1112,6 +1114,8 @@ mod tests {
                 ServerMessage::PlayerMove {
                     cid: 77,
                     server_tick: 1,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     location: [11.0, 12.0, 13.0],
                     velocity: [1.0, 0.0, 0.0],
                     acceleration: [0.0, 0.0, 0.0],
@@ -1352,6 +1356,8 @@ mod tests {
                 ServerMessage::MovementAck {
                     ack_seq: 10,
                     auth_tick: 1,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     cid: 42,
                     location: [4.0, 5.0, 6.0],
                     velocity: [0.0, 0.0, 0.0],
@@ -1380,6 +1386,8 @@ mod tests {
                 ServerMessage::MovementAck {
                     ack_seq: 9,
                     auth_tick: 1,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     cid: 42,
                     location: [1.0, 2.0, 3.0],
                     velocity: [0.0, 0.0, 0.0],
@@ -1420,6 +1428,8 @@ mod tests {
                 ServerMessage::MovementAck {
                     ack_seq: 10,
                     auth_tick: 1,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     cid: 42,
                     location: [4.0, 5.0, 6.0],
                     velocity: [1.0, 0.0, 0.0],
@@ -1445,6 +1455,8 @@ mod tests {
                 ServerMessage::MovementAck {
                     ack_seq: 10,
                     auth_tick: 2,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     cid: 42,
                     location: [4.5, 5.0, 6.0],
                     velocity: [0.5, 0.0, 0.0],
@@ -1479,6 +1491,8 @@ mod tests {
                 ServerMessage::PlayerMove {
                     cid: 77,
                     server_tick: 3,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     location: [7.0, 8.0, 9.0],
                     velocity: [1.0, 0.0, 0.0],
                     acceleration: [0.0, 0.0, 0.0],
@@ -1504,6 +1518,8 @@ mod tests {
                 ServerMessage::PlayerMove {
                     cid: 77,
                     server_tick: 2,
+                    server_state_ms: 0,
+                    server_send_ms: 0,
                     location: [1.0, 2.0, 3.0],
                     velocity: [0.0, 0.0, 0.0],
                     acceleration: [0.0, 0.0, 0.0],

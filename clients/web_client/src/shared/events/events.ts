@@ -182,6 +182,12 @@ export type AppEvents = {
     centerChunk: FChunkCoord;
     radiusLInf: number;
   };
+  "world:chunk-prewarm-requested": {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    source: string;
+  };
   "world:chunk-snapshot-applied": {
     requestId: number;
     logicalSceneId: number;

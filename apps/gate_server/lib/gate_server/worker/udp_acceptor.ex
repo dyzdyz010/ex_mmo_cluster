@@ -149,14 +149,15 @@ defmodule GateServer.UdpAcceptor do
             })
 
             server_send_ms = :os.system_time(:millisecond)
+            server_state_ms = movement_state_ms(ack)
 
             send_udp(
               socket,
               ip,
               port,
-              {:movement_ack, ack.ack_seq, ack.auth_tick, server_send_ms, ack.cid, ack.position,
-               ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
-               ack.fixed_dt_ms, ack.ground_z}
+              {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms,
+               ack.cid, ack.position, ack.velocity, ack.acceleration, ack.movement_mode,
+               ack.correction_flags, ack.fixed_dt_ms, ack.ground_z}
             )
 
           {:error, reason} ->
@@ -190,6 +191,13 @@ defmodule GateServer.UdpAcceptor do
       GenServer.call(connection_pid, message, @connection_call_timeout)
     catch
       :exit, reason -> {:error, reason}
+    end
+  end
+
+  defp movement_state_ms(%{} = movement_payload) do
+    case Map.get(movement_payload, :server_state_ms, 0) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> 0
     end
   end
 end

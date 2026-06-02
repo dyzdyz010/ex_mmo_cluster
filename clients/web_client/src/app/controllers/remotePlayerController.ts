@@ -1,5 +1,6 @@
 import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "@domain/movement/remotePlayer";
+import { ServerClockEstimator, type ServerClockDebugSnapshot } from "@domain/movement/serverClock";
 import {
   cloneRemoteMoveSnapshot,
   MovementMode,
@@ -39,9 +40,25 @@ export interface RemoteEntityDebugSnapshot {
   enteredAtMs: number;
   lastSnapshotAtMs: number | null;
   latestServerTick: number | null;
+  latestServerStateMs: number | null;
+  latestServerSendMs: number | null;
   bufferedSnapshots: number;
   interpolationMode: "empty" | "interpolated" | "extrapolated";
   interpolationDelaySecs: number;
+  interpolationTimeAxis: "server_tick" | "server_state_ms";
+  serverStateTimelineHealthy: boolean;
+  serverSendTimelineHealthy: boolean;
+  playbackServerTimeMs: number | null;
+  serverClockOffsetMs: number | null;
+  rawServerClockOffsetMs: number | null;
+  timeSyncRttMs: number | null;
+  timeSyncSmoothedRttMs: number | null;
+  timeSyncOffsetJitterMs: number;
+  timeSyncOffsetJumpCount: number;
+  timeSyncRejectedOffsetSampleCount: number;
+  timeSyncSampleCount: number;
+  serverTickDiscontinuityCount: number;
+  playbackTimeRegressionCount: number;
   priorityBand: string;
   priorityScore: number | null;
   observerDistance: number | null;
@@ -60,8 +77,7 @@ export class RemotePlayerController implements FrameSubscriber {
   private readonly renderedPosition = DEFAULT_REMOTE_POSITION.clone();
   private primaryCid: number | null = null;
   private tickDurationSecs = 0.1;
-  private serverClockOffsetMs: number | null = null;
-  private timeSyncRttMs: number | null = null;
+  private readonly serverClock = new ServerClockEstimator();
 
   constructor(private readonly bus: EventBus<AppEvents>) {
     this.bus.on("transport:snapshot-delivered", ({ snapshot }) => {
@@ -70,7 +86,7 @@ export class RemotePlayerController implements FrameSubscriber {
       entity.state.pushSnapshot(snapshot, 0, performance.now() / 1000);
       entity.hasSnapshots = true;
       entity.movementMode = snapshot.movementMode;
-      if (entity.movementGroundY === null || snapshot.movementMode === MovementMode.Grounded) {
+      if (snapshot.movementMode === MovementMode.Grounded) {
         entity.movementGroundY = snapshot.position.y;
       }
       if (isFirstSnapshot) {
@@ -122,22 +138,21 @@ export class RemotePlayerController implements FrameSubscriber {
       this.primaryCid = null;
     });
     this.bus.on("transport:time-sync", (sample) => {
-      const clientRecvTs = Date.now();
-      this.timeSyncRttMs =
-        clientRecvTs - sample.clientSendTs - (sample.serverSendTs - sample.serverRecvTs);
-      this.serverClockOffsetMs =
-        (sample.serverRecvTs - sample.clientSendTs + sample.serverSendTs - clientRecvTs) / 2;
+      this.serverClock.observe(sample);
     });
   }
 
   onFrame(nowMs: number, _dtMs: number): void {
     const nowSecs = nowMs / 1000;
+    const clock = this.serverClock.sampleClock(Date.now());
     for (const entity of this.entities.values()) {
       if (!entity.hasSnapshots) {
         continue;
       }
-      const sample = entity.state.sampleMotion(nowSecs);
-      entity.renderedPosition.copy(sample.position);
+      const sample = entity.state.sampleMotion(nowSecs, clock);
+      const rendered = clampRemoteMotionToKnownGround(entity, sample);
+      entity.renderedPosition.copy(rendered.position);
+      entity.movementMode = rendered.movementMode;
     }
     const primary = this.primaryEntity();
     this.renderedPosition.copy(primary?.renderedPosition ?? DEFAULT_REMOTE_POSITION);
@@ -165,6 +180,7 @@ export class RemotePlayerController implements FrameSubscriber {
   }
 
   getDebugSnapshot(): RemoteEntityDebugSnapshot[] {
+    const clock = this.serverClock.debugSnapshot();
     return Array.from(this.entities.entries()).map(([cid, entity]) => {
       const debug = entity.state.debugSnapshot();
       return {
@@ -176,9 +192,25 @@ export class RemotePlayerController implements FrameSubscriber {
         enteredAtMs: entity.enteredAtMs,
         lastSnapshotAtMs: entity.lastSnapshotAtMs,
         latestServerTick: debug.latestServerTick,
+        latestServerStateMs: debug.latestServerStateMs,
+        latestServerSendMs: debug.latestServerSendMs,
         bufferedSnapshots: debug.bufferedSnapshots,
         interpolationMode: debug.lastSampleMode,
         interpolationDelaySecs: debug.interpolationDelaySecs,
+        interpolationTimeAxis: debug.timeAxisMode,
+        serverStateTimelineHealthy: debug.serverStateTimelineHealthy,
+        serverSendTimelineHealthy: debug.serverSendTimelineHealthy,
+        playbackServerTimeMs: debug.lastPlaybackServerTimeMs,
+        serverClockOffsetMs: clock.serverClockOffsetMs,
+        rawServerClockOffsetMs: clock.rawServerClockOffsetMs,
+        timeSyncRttMs: clock.timeSyncRttMs,
+        timeSyncSmoothedRttMs: clock.timeSyncSmoothedRttMs,
+        timeSyncOffsetJitterMs: clock.timeSyncOffsetJitterMs,
+        timeSyncOffsetJumpCount: clock.timeSyncOffsetJumpCount,
+        timeSyncRejectedOffsetSampleCount: clock.timeSyncRejectedOffsetSampleCount,
+        timeSyncSampleCount: clock.timeSyncSampleCount,
+        serverTickDiscontinuityCount: debug.serverTickDiscontinuityCount,
+        playbackTimeRegressionCount: debug.playbackTimeRegressionCount,
         priorityBand: entity.lastSnapshot?.priorityBand ?? "unknown",
         priorityScore: entity.lastSnapshot?.priorityScore ?? null,
         observerDistance: entity.lastSnapshot?.observerDistance ?? null,
@@ -187,11 +219,8 @@ export class RemotePlayerController implements FrameSubscriber {
     });
   }
 
-  getClockDebugSnapshot(): { serverClockOffsetMs: number | null; timeSyncRttMs: number | null } {
-    return {
-      serverClockOffsetMs: this.serverClockOffsetMs,
-      timeSyncRttMs: this.timeSyncRttMs,
-    };
+  getClockDebugSnapshot(): ServerClockDebugSnapshot {
+    return this.serverClock.debugSnapshot();
   }
 
   getCurrentMovementMode(): MovementModeValue {
@@ -227,4 +256,23 @@ export class RemotePlayerController implements FrameSubscriber {
 
 function formatVector(vector: Vector3): string {
   return `${vector.x.toFixed(1)},${vector.y.toFixed(1)},${vector.z.toFixed(1)}`;
+}
+
+function clampRemoteMotionToKnownGround(
+  entity: RemoteEntityRuntime,
+  sample: { position: Vector3; velocity: Vector3 },
+): { position: Vector3; movementMode: MovementModeValue } {
+  const position = sample.position.clone();
+  const snapshotMode = entity.lastSnapshot?.movementMode ?? entity.movementMode;
+  const groundY = entity.movementGroundY;
+  if (
+    groundY !== null &&
+    snapshotMode === MovementMode.Airborne &&
+    position.y <= groundY &&
+    sample.velocity.y <= 0
+  ) {
+    position.y = groundY;
+    return { position, movementMode: MovementMode.Grounded };
+  }
+  return { position, movementMode: snapshotMode };
 }

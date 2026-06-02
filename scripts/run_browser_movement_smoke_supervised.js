@@ -2,6 +2,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
 const { spawn, spawnSync, execFileSync } = require("node:child_process");
+const { buildClockSoakVerdict } = require("./browser_movement_clock_assertions");
+const {
+  resolveNetworkEmulationConfig,
+  resolveNetworkTimeoutMs,
+  startWebSocketDelayProxy,
+} = require("./browser_movement_network_emulation");
+const {
+  buildReconnectStressVerdict,
+  resolveReconnectCycleCount,
+} = require("./browser_movement_reconnect_assertions");
+const {
+  buildRemoteGroundSettledVerdict,
+  buildRemoteJumpVerdict,
+} = require("./browser_movement_remote_jump_assertions");
 
 if (typeof WebSocket !== "function") {
   throw new Error("browser movement smoke requires Node.js 22+ with global WebSocket");
@@ -26,7 +40,10 @@ const browserOut = path.join(observeDir, "browser-movement-smoke.browser.out.log
 const browserErr = path.join(observeDir, "browser-movement-smoke.browser.err.log");
 const consoleA = path.join(observeDir, "browser-movement-smoke.A.console.log");
 const consoleB = path.join(observeDir, "browser-movement-smoke.B.console.log");
+const gateObserve = path.join(observeDir, "browser-movement-smoke.gate-observe.log");
+const sceneObserve = path.join(observeDir, "browser-movement-smoke.scene-observe.log");
 const readyFile = path.join(observeDir, `browser-movement-smoke-${runId}.ready`);
+let activeWsProxy = null;
 
 for (const filename of [
   summaryFile,
@@ -40,6 +57,8 @@ for (const filename of [
   browserErr,
   consoleA,
   consoleB,
+  gateObserve,
+  sceneObserve,
   readyFile,
 ]) {
   fs.writeFileSync(filename, "");
@@ -59,6 +78,8 @@ const summary = {
     browserErr: path.relative(root, browserErr),
     consoleA: path.relative(root, consoleA),
     consoleB: path.relative(root, consoleB),
+    gateObserve: path.relative(root, gateObserve),
+    sceneObserve: path.relative(root, sceneObserve),
   },
   ports: {},
   browser: {},
@@ -66,10 +87,17 @@ const summary = {
   overheadBlock: null,
   localJump: null,
   remoteJump: null,
+  reconnect: null,
+  clockSoak: null,
+  longMovement: null,
+  networkEmulation: null,
   assertions: {
     tabAReady: false,
     tabBReady: false,
     remoteEnterObserved: false,
+    reconnectDisconnected: false,
+    reconnectReady: false,
+    reconnectRemoteVisible: false,
     overheadBlockCommitted: false,
     overheadBlockDidNotLiftLocal: false,
     overheadBlockDidNotLiftAuthority: false,
@@ -81,6 +109,21 @@ const summary = {
     remoteJumpVisible: false,
     remoteJumpAirborne: false,
     remoteJumpRise: false,
+    remoteJumpLatency: false,
+    remoteJumpTickProgress: false,
+    remoteJumpRealtimeLane: false,
+    clockSoakAuthorityServerSend: false,
+    clockSoakRemoteServerSend: false,
+    clockSoakAuthorityAcceptedTimeline: false,
+    clockSoakRemoteAcceptedTimeline: false,
+    clockSoakTimeSyncProgressed: false,
+    longMovementContinuous: false,
+    longMovementAuthorityMoved: false,
+    longMovementAuthorityBounded: false,
+    longMovementAckHealthy: false,
+    longMovementNoRouteErrors: false,
+    longMovementNotBlocked: false,
+    longMovementFrameDisplacement: false,
   },
 };
 
@@ -96,6 +139,9 @@ function writeSummary(extra = {}) {
 function fail(code, message, detail) {
   summary.status = "failed";
   summary.failure = { code, message, detail };
+  if (summary.networkEmulation && activeWsProxy && typeof activeWsProxy.getStats === "function") {
+    summary.networkEmulation.proxyStats = activeWsProxy.getStats();
+  }
   writeSummary();
   if (detail !== undefined) {
     console.error(message, JSON.stringify(detail, null, 2));
@@ -425,7 +471,8 @@ function formatException(details) {
 }
 
 async function waitForCli(page, command, predicate, label, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
+  const effectiveTimeoutMs = resolveNetworkTimeoutMs(timeoutMs, summary.networkEmulation);
+  const deadline = Date.now() + effectiveTimeoutMs;
   let last = null;
   while (Date.now() < deadline) {
     try {
@@ -480,6 +527,65 @@ function snapshotPositions(snapshotResult) {
   const local = parseVector(player.renderedPosition) || parseVector(actorDisplay.local);
   const authority = parseVector(player.authoritativePosition) || parseVector(actorDisplay.authority);
   return { local, authority };
+}
+
+function vectorDistance(a, b) {
+  if (!a || !b) {
+    return null;
+  }
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function horizontalDistance(a, b) {
+  if (!a || !b) {
+    return null;
+  }
+  return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function percentile(sortedValues, percentileValue) {
+  if (sortedValues.length === 0) {
+    return null;
+  }
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil((percentileValue / 100) * sortedValues.length) - 1),
+  );
+  return sortedValues[index];
+}
+
+function summarizeNumbers(values) {
+  const finiteValues = values.map(finiteNumber).filter((value) => value !== null);
+  if (finiteValues.length === 0) {
+    return null;
+  }
+  const sorted = [...finiteValues].sort((a, b) => a - b);
+  const sum = finiteValues.reduce((total, value) => total + value, 0);
+  return {
+    count: finiteValues.length,
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    mean: sum / finiteValues.length,
+    p50: percentile(sorted, 50),
+    p95: percentile(sorted, 95),
+    p99: percentile(sorted, 99),
+  };
+}
+
+function horizontalDeltaDistance(sample, prefix) {
+  const deltaXKey = prefix ? `${prefix}DeltaX` : "deltaX";
+  const deltaZKey = prefix ? `${prefix}DeltaZ` : "deltaZ";
+  const deltaX = finiteNumber(sample?.[deltaXKey]);
+  const deltaZ = finiteNumber(sample?.[deltaZKey]);
+  if (deltaX === null || deltaZ === null) {
+    return null;
+  }
+  return Math.hypot(deltaX, deltaZ);
 }
 
 function sceneSpawnApplied(positions) {
@@ -754,10 +860,83 @@ async function waitForRemoteGround(page, cid) {
   );
 }
 
+async function waitForRemoteGroundSettled(page, cid) {
+  const startedAt = Date.now();
+  const samples = [];
+  let latestVerdict = null;
+  const result = await waitForCli(
+    page,
+    "players",
+    (playersResult) => {
+      const sample = remoteGroundSample(remoteEntity(playersResult, cid), Date.now() - startedAt);
+      samples.push(sample);
+      latestVerdict = buildRemoteGroundSettledVerdict(samples, {
+        requiredDurationMs: 750,
+        maxServerSendAgeMs: 2_000,
+      });
+      return latestVerdict.passed;
+    },
+    `remote ${cid} grounded and settled`,
+    15_000,
+  );
+
+  return {
+    result,
+    verdict: latestVerdict,
+    samples,
+  };
+}
+
+function remoteGroundSample(entity, tMs) {
+  if (!entity) {
+    return { tMs, visible: false };
+  }
+  const position = parseVector(entity.renderedPosition);
+  const latestServerSendMs = Number(entity.latestServerSendMs);
+  return {
+    tMs,
+    visible: true,
+    y: position?.y ?? null,
+    movementMode: entity.movementMode,
+    latestServerTick: entity.latestServerTick ?? null,
+    latestServerSendAgeMs: Number.isFinite(latestServerSendMs)
+      ? Math.max(0, Date.now() - latestServerSendMs)
+      : null,
+    priorityBand: entity.priorityBand ?? null,
+    deliveryInterval: entity.deliveryInterval ?? null,
+  };
+}
+
+async function waitForLocalGroundSettled(page, label) {
+  return waitForCli(
+    page,
+    "player",
+    (result) => {
+      const data = result?.data;
+      const predicted = data?.predicted;
+      const rendered = parseVector(data?.renderedPosition);
+      const authority = parseVector(data?.authoritativePosition);
+      const groundY = Number(predicted?.groundY ?? authority?.y ?? rendered?.y);
+      return (
+        predicted?.movementMode === "grounded" &&
+        rendered !== null &&
+        authority !== null &&
+        Math.abs(rendered.y - groundY) <= 8 &&
+        Math.abs(authority.y - groundY) <= 8
+      );
+    },
+    `${label} local authority grounded`,
+    20_000,
+  );
+}
+
 async function sampleRemoteJump(pageA, pageB, cidA) {
+  await pageA.bringToFront();
+  const localGroundedResult = await waitForLocalGroundSettled(pageA, `subject ${cidA}`);
   await pageB.bringToFront();
-  const startResult = await waitForRemoteGround(pageB, cidA);
-  const startEntity = remoteEntity(startResult, cidA);
+  await waitForRemoteGround(pageB, cidA);
+  const settled = await waitForRemoteGroundSettled(pageB, cidA);
+  const startEntity = remoteEntity(settled.result, cidA);
   if (!startEntity) {
     throw new Error(`remote entity ${cidA} not visible before jump`);
   }
@@ -788,35 +967,615 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
       movementMode: entity.movementMode,
       movementGroundY: entity.movementGroundY ?? null,
       latestServerTick: entity.latestServerTick ?? null,
+      priorityBand: entity.priorityBand ?? null,
+      priorityScore: entity.priorityScore ?? null,
+      observerDistance: entity.observerDistance ?? null,
+      deliveryInterval: entity.deliveryInterval ?? null,
       interpolationMode: entity.interpolationMode ?? null,
     });
   }
 
-  const visibleSamples = samples.filter((sample) => sample.visible && Number.isFinite(sample.y));
-  const maxY = Math.max(...visibleSamples.map((sample) => sample.y));
-  const airborneSamples = visibleSamples.filter((sample) => sample.movementMode === "airborne");
-  const rise = maxY - startPosition.y;
+  const verdict = buildRemoteJumpVerdict(samples, {
+    startY: startPosition.y,
+    networkEmulation: summary.networkEmulation,
+  });
 
-  summary.assertions.remoteJumpVisible = lostSamples === 0 && visibleSamples.length > 0;
-  summary.assertions.remoteJumpAirborne = airborneSamples.length > 0;
-  summary.assertions.remoteJumpRise = rise >= 25;
+  summary.assertions.remoteJumpVisible = !verdict.failures.includes("remote_jump_visible");
+  summary.assertions.remoteJumpAirborne = !verdict.failures.includes("remote_jump_airborne");
+  summary.assertions.remoteJumpRise = !verdict.failures.includes("remote_jump_rise");
+  summary.assertions.remoteJumpLatency = !verdict.failures.includes("remote_jump_latency");
+  summary.assertions.remoteJumpTickProgress = !verdict.failures.includes(
+    "remote_jump_tick_progress",
+  );
+  summary.assertions.remoteJumpRealtimeLane = !verdict.failures.includes(
+    "remote_jump_realtime_lane",
+  );
   summary.remoteJump = {
     subjectCid: cidA,
+    localGroundedBeforeJump: localGroundedResult.data ?? null,
+    remoteGroundSettledBeforeJump: settled.verdict,
     startPosition,
     dispatch,
-    maxY,
-    rise,
+    maxY: verdict.maxY,
+    rise: verdict.rise,
     lostSamples,
-    airborneSamples: airborneSamples.length,
+    airborneSamples: verdict.airborneSamples,
+    firstAirborneMs: verdict.firstAirborneMs,
+    latencyBudgetMs: verdict.latencyBudgetMs,
+    serverTickProgress: verdict.serverTickProgress,
+    highPrioritySamples: verdict.highPrioritySamples,
+    maxDeliveryInterval: verdict.maxDeliveryInterval,
+    failures: verdict.failures,
     samples,
-    passed:
-      summary.assertions.remoteJumpVisible &&
-      summary.assertions.remoteJumpAirborne &&
-      summary.assertions.remoteJumpRise,
+    passed: verdict.passed,
   };
 
   if (!summary.remoteJump.passed) {
     throw new Error(`remote jump check failed: ${JSON.stringify(summary.remoteJump)}`);
+  }
+}
+
+async function runReconnectCheck(pageA, pageB, cidA, wsProxy, cycleCount) {
+  if (!wsProxy || typeof wsProxy.dropConnections !== "function") {
+    throw new Error("reconnect check requires the WebSocket proxy");
+  }
+
+  const cycles = [];
+  for (let cycle = 1; cycle <= cycleCount; cycle += 1) {
+    await pageA.bringToFront();
+    const beforeAResult = await pageA.cli("transport");
+    const beforeBResult = await pageB.cli("transport");
+    const beforeA = beforeAResult.data?.movementTransport ?? null;
+    const beforeB = beforeBResult.data?.movementTransport ?? null;
+
+    const droppedSocketCount = wsProxy.dropConnections();
+    const disconnectedAResult = await waitForCli(
+      pageA,
+      "transport",
+      (result) => {
+        const transport = result?.data?.movementTransport;
+        return (
+          transport?.connectionStatus === "disconnected" &&
+          Number(transport.reconnectAttemptCount ?? 0) >= 1
+        );
+      },
+      `A transport disconnects under network flash ${cycle}`,
+      20_000,
+    );
+    const disconnectedBResult = await waitForCli(
+      pageB,
+      "transport",
+      (result) => {
+        const transport = result?.data?.movementTransport;
+        return (
+          transport?.connectionStatus === "disconnected" &&
+          Number(transport.reconnectAttemptCount ?? 0) >= 1
+        );
+      },
+      `B transport disconnects under network flash ${cycle}`,
+      20_000,
+    );
+
+    await pageA.bringToFront();
+    const readyAResult = await waitForCli(
+      pageA,
+      "transport",
+      (result) => {
+        const transport = result?.data?.movementTransport;
+        return (
+          transport?.ready === true &&
+          transport?.connectionStatus === "connected" &&
+          transport?.connectionPhase === "ready"
+        );
+      },
+      `A transport reconnects after network flash ${cycle}`,
+      60_000,
+    );
+    await waitForSceneSpawnApplied(pageA, `A reconnect scene spawn ${cycle}`);
+    await pageB.bringToFront();
+    const readyBResult = await waitForCli(
+      pageB,
+      "transport",
+      (result) => {
+        const transport = result?.data?.movementTransport;
+        return (
+          transport?.ready === true &&
+          transport?.connectionStatus === "connected" &&
+          transport?.connectionPhase === "ready"
+        );
+      },
+      `B transport reconnects after network flash ${cycle}`,
+      60_000,
+    );
+    await waitForSceneSpawnApplied(pageB, `B reconnect scene spawn ${cycle}`);
+
+    await pageB.bringToFront();
+    const remoteVisibleResult = await waitForCli(
+      pageB,
+      "players",
+      (result) => remoteEntity(result, cidA) !== null,
+      `B observes A after reconnect ${cycle}`,
+      30_000,
+    );
+
+    cycles.push({
+      cycle,
+      droppedSocketCount,
+      before: {
+        A: beforeA,
+        B: beforeB,
+      },
+      disconnected: {
+        A: disconnectedAResult.data?.movementTransport ?? null,
+        B: disconnectedBResult.data?.movementTransport ?? null,
+      },
+      ready: {
+        A: readyAResult.data?.movementTransport ?? null,
+        B: readyBResult.data?.movementTransport ?? null,
+      },
+      remoteVisible: remoteEntity(remoteVisibleResult, cidA),
+    });
+  }
+
+  const verdict = buildReconnectStressVerdict(cycles);
+  const lastCycle = cycles[cycles.length - 1] ?? {};
+  summary.assertions.reconnectDisconnected =
+    !verdict.failures.includes("reconnect_a_disconnect") &&
+    !verdict.failures.includes("reconnect_b_disconnect");
+  summary.assertions.reconnectReady =
+    !verdict.failures.includes("reconnect_a_ready") &&
+    !verdict.failures.includes("reconnect_b_ready");
+  summary.assertions.reconnectRemoteVisible =
+    !verdict.failures.includes("reconnect_remote_visible");
+  summary.reconnect = {
+    subjectCid: cidA,
+    cycleCount: verdict.cycleCount,
+    droppedSocketCount: cycles.reduce(
+      (sum, cycle) => sum + Number(cycle.droppedSocketCount || 0),
+      0,
+    ),
+    failures: verdict.failures,
+    cycles,
+    before: lastCycle.before ?? null,
+    disconnected: lastCycle.disconnected ?? null,
+    ready: lastCycle.ready ?? null,
+    remoteVisible: lastCycle.remoteVisible ?? null,
+    passed: verdict.passed,
+  };
+
+  if (!summary.reconnect.passed) {
+    throw new Error(`reconnect check failed: ${JSON.stringify(summary.reconnect)}`);
+  }
+}
+
+async function runClockSoak(pageA, pageB) {
+  const durationMs = resolveClockSoakDurationMs();
+  const samples = [];
+  const startedMs = Date.now();
+  const intervalMs = 1_000;
+
+  do {
+    samples.push(await collectClockSoakSample(pageA, "A", startedMs));
+    samples.push(await collectClockSoakSample(pageB, "B", startedMs));
+    await sleep(intervalMs);
+  } while (Date.now() - startedMs < durationMs);
+
+  const minSamples = Math.max(2, Math.min(4, Math.floor(samples.length / 2)));
+  const verdict = buildClockSoakVerdict(samples, {
+    minSamples,
+    minTimeSyncSampleProgress: durationMs >= 2_000 ? 1 : 0,
+    maxPlaybackRegressionDelta: 4,
+  });
+
+  summary.assertions.clockSoakAuthorityServerState =
+    verdict.authority.serverStateSamples >= verdict.thresholds.minSamples;
+  summary.assertions.clockSoakRemoteServerState =
+    verdict.remote.serverStateSamples >= verdict.thresholds.minSamples;
+  summary.assertions.clockSoakAuthorityServerSend =
+    summary.assertions.clockSoakAuthorityServerState;
+  summary.assertions.clockSoakRemoteServerSend = summary.assertions.clockSoakRemoteServerState;
+  summary.assertions.clockSoakAuthorityAcceptedTimeline =
+    verdict.authority.timelineSamples >= verdict.thresholds.minSamples;
+  summary.assertions.clockSoakRemoteAcceptedTimeline =
+    verdict.remote.timelineSamples >= verdict.thresholds.minSamples;
+  summary.assertions.clockSoakTimeSyncProgressed =
+    (!verdict.authority.timeSyncProgressRequired ||
+      verdict.authority.timeSyncSampleProgress >= verdict.thresholds.minTimeSyncSampleProgress) &&
+    (!verdict.remote.timeSyncProgressRequired ||
+      verdict.remote.timeSyncSampleProgress >= verdict.thresholds.minTimeSyncSampleProgress);
+  summary.clockSoak = {
+    durationMs,
+    passed: verdict.passed,
+    verdict,
+    recentSamples: samples.slice(-8),
+  };
+
+  if (!verdict.passed) {
+    throw new Error(`clock soak failed: ${JSON.stringify(summary.clockSoak)}`);
+  }
+}
+
+async function collectClockSoakSample(page, label, startedMs) {
+  const player = await page.cli("player");
+  const players = await page.cli("players");
+  return {
+    label,
+    tMs: Date.now() - startedMs,
+    player: {
+      authorityRender: player.data?.authorityRender ?? null,
+    },
+    players: {
+      remote: {
+        clock: players.data?.remote?.clock ?? null,
+        entities: players.data?.remote?.entities ?? [],
+      },
+    },
+  };
+}
+
+function resolveClockSoakDurationMs() {
+  const raw = Number.parseInt(process.env.BROWSER_MOVEMENT_CLOCK_SOAK_MS || "6000", 10);
+  if (!Number.isFinite(raw)) {
+    return 6_000;
+  }
+  return Math.max(1_000, Math.min(raw, 60_000));
+}
+
+function resolveLongMovementDurationMs() {
+  const raw = Number.parseInt(process.env.BROWSER_MOVEMENT_LONG_RUN_MS || "30000", 10);
+  if (!Number.isFinite(raw)) {
+    return 30_000;
+  }
+  return Math.max(5_000, Math.min(raw, 180_000));
+}
+
+function longMovementKeyConfig(code = process.env.BROWSER_MOVEMENT_LONG_KEY || "KeyD") {
+  const configs = {
+    KeyA: { code: "KeyA", key: "a", windowsVirtualKeyCode: 65 },
+    KeyD: { code: "KeyD", key: "d", windowsVirtualKeyCode: 68 },
+    KeyS: { code: "KeyS", key: "s", windowsVirtualKeyCode: 83 },
+    KeyW: { code: "KeyW", key: "w", windowsVirtualKeyCode: 87 },
+  };
+  return configs[code] || configs.KeyA;
+}
+
+async function setMovementKey(page, keyConfig, pressed) {
+  await page.send("Input.dispatchKeyEvent", {
+    type: pressed ? "keyDown" : "keyUp",
+    key: keyConfig.key,
+    code: keyConfig.code,
+    windowsVirtualKeyCode: keyConfig.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: keyConfig.windowsVirtualKeyCode,
+    autoRepeat: pressed,
+  });
+}
+
+function compactLongMovementSnapshot(snapshotResult, tMs) {
+  const data = snapshotResult.data || {};
+  const positions = snapshotPositions(snapshotResult);
+  const player = data.player || {};
+  const transport = data.transportState?.movementTransport || {};
+  const voxelTransport = transport.voxel || {};
+  const collision = player.collision || null;
+  const actorDisplay = data.actorDisplay || {};
+  const displayAuthority = parseVector(actorDisplay.authority);
+  return {
+    tMs,
+    local: positions.local,
+    authority: positions.authority,
+    displayAuthority,
+    localAuthorityDistanceCm: vectorDistance(positions.local, positions.authority),
+    localAuthorityHorizontalCm: horizontalDistance(positions.local, positions.authority),
+    localDisplayAuthorityDistanceCm: vectorDistance(positions.local, displayAuthority),
+    chunks: data.chunks ?? null,
+    solidBlocks: data.solidBlocks ?? null,
+    collisionStatus: collision?.status ?? null,
+    collisionBlockedAxes: collision?.blockedAxes ?? [],
+    collisionOccupiedCount: collision?.occupiedCount ?? null,
+    sentInputCount: transport.sentInputCount ?? null,
+    receivedAckCount: transport.receivedAckCount ?? null,
+    lastAckSeq: transport.lastAckSeq ?? null,
+    queuedAcks: transport.queuedAcks ?? null,
+    transportLastError: transport.lastError ?? null,
+    voxelLastError: voxelTransport.lastError ?? data.voxel?.lastError ?? null,
+    pendingSubscriptions: data.voxel?.pendingSubscriptions ?? null,
+    knownAuthoritativeChunks:
+      data.voxel?.authoritativeChunks ?? data.voxel?.knownAuthoritativeChunks ?? null,
+  };
+}
+
+function buildLongMovementVerdict(samples, options) {
+  const first = samples[0] || {};
+  const last = samples[samples.length - 1] || {};
+  const durationMs = options.durationMs;
+  const sampleIntervalMs = options.sampleIntervalMs;
+  const localHorizontalCm = horizontalDistance(first.local, last.local) ?? 0;
+  const authorityHorizontalCm = horizontalDistance(first.authority, last.authority) ?? 0;
+  const maxLocalAuthorityDistanceCm = Math.max(
+    0,
+    ...samples
+      .map((sample) => sample.localAuthorityDistanceCm)
+      .filter((value) => Number.isFinite(value)),
+  );
+  const maxLocalAuthorityDisplayDistanceCm = Math.max(
+    0,
+    ...samples
+      .map((sample) => sample.localDisplayAuthorityDistanceCm)
+      .filter((value) => Number.isFinite(value)),
+  );
+  const startAckCount = Number(first.receivedAckCount ?? 0);
+  const endAckCount = Number(last.receivedAckCount ?? 0);
+  const ackDelta = Math.max(0, endAckCount - startAckCount);
+  const minAckDelta = Math.max(8, Math.floor(durationMs / 1000));
+  const noRouteError = samples.every((sample) => {
+    const errorText = `${sample.transportLastError ?? ""} ${sample.voxelLastError ?? ""}`;
+    return !/unassigned_chunk|unauthorized_voxel_target/.test(errorText);
+  });
+  const routeErrorSamples = samples.filter((sample) => {
+    const errorText = `${sample.transportLastError ?? ""} ${sample.voxelLastError ?? ""}`;
+    return /unassigned_chunk|unauthorized_voxel_target/.test(errorText);
+  });
+  const lateBlockedSamples = samples.filter(
+    (sample) => sample.tMs >= 2_000 && sample.collisionStatus === "resolved",
+  );
+  const lateAuthorityUnavailableSamples = samples.filter(
+    (sample) => sample.tMs >= 5_000 && sample.collisionStatus === "authority_unavailable",
+  );
+  const stuckWindows = [];
+  const windowMs = 5_000;
+  const minWindowMoveCm = 150;
+  for (let i = 0; i < samples.length; i += 1) {
+    const start = samples[i];
+    if (!start.local) {
+      continue;
+    }
+    const end = samples.find(
+      (candidate) => candidate.tMs >= start.tMs + windowMs && candidate.local,
+    );
+    if (!end) {
+      continue;
+    }
+    const moved = horizontalDistance(start.local, end.local) ?? 0;
+    if (moved < minWindowMoveCm) {
+      stuckWindows.push({ fromMs: start.tMs, toMs: end.tMs, moved });
+    }
+  }
+
+  const minLocalHorizontalCm = Math.max(2_000, Math.floor(durationMs * 0.12));
+  const minAuthorityHorizontalCm = Math.max(1_500, Math.floor(durationMs * 0.08));
+  const maxAuthorityDistanceCm = 1_200;
+
+  const assertions = {
+    continuous: localHorizontalCm >= minLocalHorizontalCm && stuckWindows.length === 0,
+    authorityMoved: authorityHorizontalCm >= minAuthorityHorizontalCm,
+    authorityBounded: maxLocalAuthorityDistanceCm <= maxAuthorityDistanceCm,
+    ackHealthy: ackDelta >= minAckDelta,
+    noRouteErrors: noRouteError,
+    notBlocked: lateBlockedSamples.length === 0 && lateAuthorityUnavailableSamples.length <= 1,
+  };
+  return {
+    key: options.key,
+    durationMs,
+    sampleIntervalMs,
+    thresholds: {
+      minAckDelta,
+      minLocalHorizontalCm,
+      minAuthorityHorizontalCm,
+      maxAuthorityDistanceCm,
+      minWindowMoveCm,
+      windowMs,
+    },
+    localHorizontalCm,
+    authorityHorizontalCm,
+    maxLocalAuthorityDistanceCm,
+    maxLocalAuthorityDisplayDistanceCm,
+    ackDelta,
+    startAckCount,
+    endAckCount,
+    routeErrorSamples,
+    lateBlockedSamples,
+    lateAuthorityUnavailableSamples,
+    stuckWindows,
+    assertions,
+    passed: Object.values(assertions).every(Boolean),
+  };
+}
+
+function buildFrameDisplacementVerdict(frameTraceData, options) {
+  const samples = Array.isArray(frameTraceData?.samples) ? frameTraceData.samples : [];
+  const targetHz = 60;
+  const durationMs = options.durationMs;
+  const warmupMs = Math.max(
+    0,
+    Number.parseInt(process.env.BROWSER_MOVEMENT_FRAME_WARMUP_MS || "5000", 10),
+  );
+  const firstTimedSample = samples.find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
+  const lastTimedSample =
+    [...samples].reverse().find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
+  const traceDurationMs =
+    firstTimedSample && lastTimedSample
+      ? Math.max(0, Number(lastTimedSample.nowMs) - Number(firstTimedSample.nowMs))
+      : 0;
+  const effectiveHz =
+    traceDurationMs > 0 && samples.length > 1
+      ? ((samples.length - 1) * 1000) / traceDurationMs
+      : null;
+  const firstNowMs = firstTimedSample ? Number(firstTimedSample.nowMs) : null;
+  const comparedSamples = samples.filter((sample) => {
+    if (firstNowMs === null || !Number.isFinite(Number(sample?.nowMs))) {
+      return true;
+    }
+    return Number(sample.nowMs) - firstNowMs >= warmupMs;
+  });
+  const completeSamples = comparedSamples.filter(
+    (sample) =>
+      finiteNumber(sample?.deltaDistance) !== null &&
+      finiteNumber(sample?.authorityRenderDeltaDistance) !== null &&
+      finiteNumber(sample?.localAuthorityRenderDistance) !== null,
+  );
+  const localDeltaDistances = completeSamples.map((sample) => finiteNumber(sample.deltaDistance));
+  const authorityDeltaDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityDeltaDistance),
+  );
+  const authorityRenderDeltaDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityRenderDeltaDistance),
+  );
+  const deltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = finiteNumber(sample.deltaDistance);
+    const authorityRenderDelta = finiteNumber(sample.authorityRenderDeltaDistance);
+    return localDelta === null || authorityRenderDelta === null
+      ? null
+      : Math.abs(localDelta - authorityRenderDelta);
+  });
+  const horizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
+    const localDelta = horizontalDeltaDistance(sample, "");
+    const authorityRenderDelta = horizontalDeltaDistance(sample, "authorityRender");
+    return localDelta === null || authorityRenderDelta === null
+      ? null
+      : Math.abs(localDelta - authorityRenderDelta);
+  });
+  const localAuthorityDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.localAuthorityDistance),
+  );
+  const localAuthorityRenderDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.localAuthorityRenderDistance),
+  );
+  const authorityRenderAuthorityDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.authorityRenderAuthorityDistance),
+  );
+  const deltaDiffSummary = summarizeNumbers(deltaDistanceDiffs);
+  const horizontalDeltaDiffSummary = summarizeNumbers(horizontalDeltaDistanceDiffs);
+  const localAuthorityRenderSummary = summarizeNumbers(localAuthorityRenderDistances);
+  const minComparedSamples = Math.max(30, Math.floor(durationMs / 250));
+  const maxDeltaDistanceDiffCm = Math.max(
+    50,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DELTA_DIFF_CM || "500"),
+  );
+  const maxDeltaDistanceDiffP95Cm = Math.max(
+    20,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DELTA_DIFF_CM || "180"),
+  );
+  const maxLocalAuthorityRenderDistanceCm = Math.max(
+    200,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "1200"),
+  );
+  const maxLocalAuthorityRenderDistanceP95Cm = Math.max(
+    120,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "600"),
+  );
+  const assertions = {
+    samplesCaptured: completeSamples.length >= minComparedSamples,
+    deltaDiffBounded:
+      (deltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
+      (deltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
+    horizontalDeltaDiffBounded:
+      (horizontalDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
+      (horizontalDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
+    displayDistanceBounded:
+      (localAuthorityRenderSummary?.max ?? Infinity) <= maxLocalAuthorityRenderDistanceCm &&
+      (localAuthorityRenderSummary?.p95 ?? Infinity) <= maxLocalAuthorityRenderDistanceP95Cm,
+  };
+  return {
+    targetHz,
+    effectiveHz,
+    warmupMs,
+    traceDurationMs,
+    rawFrameCount: samples.length,
+    comparedFrameCount: comparedSamples.length,
+    completeFrameCount: completeSamples.length,
+    thresholds: {
+      minComparedSamples,
+      maxDeltaDistanceDiffCm,
+      maxDeltaDistanceDiffP95Cm,
+      maxLocalAuthorityRenderDistanceCm,
+      maxLocalAuthorityRenderDistanceP95Cm,
+    },
+    localDeltaDistance: summarizeNumbers(localDeltaDistances),
+    authorityDeltaDistance: summarizeNumbers(authorityDeltaDistances),
+    authorityRenderDeltaDistance: summarizeNumbers(authorityRenderDeltaDistances),
+    deltaDistanceDiff: deltaDiffSummary,
+    horizontalDeltaDistanceDiff: horizontalDeltaDiffSummary,
+    localAuthorityDistance: summarizeNumbers(localAuthorityDistances),
+    localAuthorityRenderDistance: localAuthorityRenderSummary,
+    authorityRenderAuthorityDistance: summarizeNumbers(authorityRenderAuthorityDistances),
+    assertions,
+    passed: Object.values(assertions).every(Boolean),
+  };
+}
+
+async function runLongContinuousMovement(page) {
+  if (process.env.BROWSER_MOVEMENT_LONG_RUN === "0") {
+    summary.longMovement = { skipped: true, reason: "BROWSER_MOVEMENT_LONG_RUN=0" };
+    return;
+  }
+
+  const durationMs = resolveLongMovementDurationMs();
+  const rawSampleIntervalMs = Number.parseInt(
+    process.env.BROWSER_MOVEMENT_LONG_SAMPLE_MS || "1000",
+    10,
+  );
+  const sampleIntervalMs = Number.isFinite(rawSampleIntervalMs)
+    ? Math.max(250, Math.min(rawSampleIntervalMs, 2_000))
+    : 1_000;
+  const keyConfig = longMovementKeyConfig();
+  await page.bringToFront();
+  await page.cli("frame_trace_clear");
+  await page.cli(`frame_trace_start ${Math.ceil(durationMs / 16) + 120}`);
+
+  const samples = [];
+  const startedMs = Date.now();
+  samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), 0));
+  await setMovementKey(page, keyConfig, true);
+  try {
+    while (Date.now() - startedMs < durationMs) {
+      await sleep(sampleIntervalMs);
+      samples.push(
+        compactLongMovementSnapshot(await page.cli("snapshot"), Date.now() - startedMs),
+      );
+    }
+  } finally {
+    await setMovementKey(page, keyConfig, false);
+  }
+
+  await sleep(500);
+  samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), Date.now() - startedMs));
+  const frameTrace = await page.cli("frame_trace");
+  const verdict = buildLongMovementVerdict(samples, {
+    key: keyConfig.code,
+    durationMs,
+    sampleIntervalMs,
+  });
+  const frameDisplacement = buildFrameDisplacementVerdict(frameTrace.data, { durationMs });
+
+  summary.assertions.longMovementContinuous = verdict.assertions.continuous;
+  summary.assertions.longMovementAuthorityMoved = verdict.assertions.authorityMoved;
+  summary.assertions.longMovementAuthorityBounded = verdict.assertions.authorityBounded;
+  summary.assertions.longMovementAckHealthy = verdict.assertions.ackHealthy;
+  summary.assertions.longMovementNoRouteErrors = verdict.assertions.noRouteErrors;
+  summary.assertions.longMovementNotBlocked = verdict.assertions.notBlocked;
+  summary.assertions.longMovementFrameDisplacement = frameDisplacement.passed;
+  summary.longMovement = {
+    ...verdict,
+    passed: verdict.passed && frameDisplacement.passed,
+    firstSample: samples[0] ?? null,
+    lastSample: samples[samples.length - 1] ?? null,
+    samples,
+    frameDisplacement,
+    frameTrace: {
+      frameCount: frameTrace.data?.frameCount ?? null,
+      deltaDistance: frameTrace.data?.deltaDistance ?? null,
+      authorityDeltaDistance: frameTrace.data?.authorityDeltaDistance ?? null,
+      authorityRenderDeltaDistance: frameTrace.data?.authorityRenderDeltaDistance ?? null,
+      localAuthorityDistance: frameTrace.data?.localAuthorityDistance ?? null,
+      localAuthorityRenderDistance: frameTrace.data?.localAuthorityRenderDistance ?? null,
+      authorityRenderAuthorityDistance:
+        frameTrace.data?.authorityRenderAuthorityDistance ?? null,
+      recentSamples: (frameTrace.data?.samples || []).slice(-40),
+    },
+  };
+
+  if (!summary.longMovement.passed) {
+    throw new Error(`long continuous movement failed: ${JSON.stringify(summary.longMovement)}`);
   }
 }
 
@@ -827,6 +1586,12 @@ async function main() {
   const gateUdpPort = await getFreeTcpPort();
   const vitePort = await getFreeTcpPort();
   const chromePort = await getFreeTcpPort();
+  const networkEmulation = resolveNetworkEmulationConfig(process.env);
+  const reconnectSmokeEnabled = process.env.BROWSER_MOVEMENT_RECONNECT_SMOKE !== "0";
+  const reconnectCycleCount = reconnectSmokeEnabled ? resolveReconnectCycleCount(process.env) : 0;
+  const useWsProxy = networkEmulation.enabled || reconnectSmokeEnabled;
+  const wsProxyPort = useWsProxy ? await getFreeTcpPort() : null;
+  const longOnly = process.env.BROWSER_MOVEMENT_LONG_ONLY === "1";
   const mixEnv = process.env.BROWSER_SMOKE_MIX_ENV || "dev";
 
   Object.assign(summary.ports, {
@@ -836,7 +1601,20 @@ async function main() {
     gateUdpPort,
     vitePort,
     chromePort,
+    ...(wsProxyPort === null ? {} : { wsProxyPort }),
   });
+  summary.networkEmulation = {
+    ...networkEmulation,
+    reconnectSmokeEnabled,
+    reconnectCycleCount,
+    longOnly,
+    transport:
+      wsProxyPort === null
+        ? "direct"
+        : networkEmulation.enabled
+          ? "websocket-netem-proxy"
+          : "websocket-drop-proxy",
+  };
 
   const bootEnv = {
     ...process.env,
@@ -845,8 +1623,13 @@ async function main() {
     VISUALIZE_PORT: String(visualizePort),
     GATE_TCP_PORT: String(gateTcpPort),
     GATE_UDP_PORT: String(gateUdpPort),
+    GATE_SERVER_OBSERVE_LOG: gateObserve,
+    SCENE_SERVER_OBSERVE_LOG: sceneObserve,
     WS_SMOKE_READY_FILE: readyFile,
     WS_SMOKE_PRESEED_VOXEL: "1",
+    ...(networkEmulation.bytesPerSecond > 0
+      ? { AUTH_GAME_WS_BULK_BYTES_PER_SEC: String(networkEmulation.bytesPerSecond) }
+      : {}),
   };
 
   if (process.env.BROWSER_SMOKE_SKIP_DB_SETUP !== "1") {
@@ -873,10 +1656,21 @@ async function main() {
   let chrome = null;
   let pageA = null;
   let pageB = null;
+  let wsProxy = null;
 
   try {
     await waitForFile(readyFile, boot, 60_000);
     await waitForHttpReady(`http://127.0.0.1:${authPort}`, 60_000);
+    if (useWsProxy) {
+      wsProxy = await startWebSocketDelayProxy({
+        listenHost: "127.0.0.1",
+        listenPort: wsProxyPort,
+        upstreamHost: "127.0.0.1",
+        upstreamPort: authPort,
+        config: networkEmulation,
+      });
+      activeWsProxy = wsProxy;
+    }
 
     vite = spawn(
       process.platform === "win32" ? "cmd.exe" : "npm",
@@ -888,7 +1682,7 @@ async function main() {
         env: {
           ...process.env,
           VITE_INGAME_PROXY_TARGET: `http://127.0.0.1:${authPort}`,
-          VITE_GAME_WS_URL: `ws://127.0.0.1:${authPort}/ingame/ws`,
+          VITE_GAME_WS_URL: `ws://127.0.0.1:${wsProxyPort ?? authPort}/ingame/ws`,
           VITE_RENDER_BACKEND: "webgl",
           VITE_VOXEL_DEV_SEED: "0",
           VITE_VOXEL_SUBSCRIBE_RADIUS: "0",
@@ -945,6 +1739,20 @@ async function main() {
     const movementA = await waitForTransportReady(pageA, "A");
     await waitForSceneSpawnApplied(pageA, "A");
 
+    if (longOnly) {
+      await runLongContinuousMovement(pageA);
+
+      summary.status = "ok";
+      summary.tabs.A = { ...summary.tabs.A, finalTransport: (await pageA.cli("transport")).data };
+      summary.tabs.A.finalObserve = await pageA.evaluate("window.__voxelObserve?.recent(80) ?? []");
+      if (wsProxy && typeof wsProxy.getStats === "function") {
+        summary.networkEmulation.proxyStats = wsProxy.getStats();
+      }
+      writeSummary();
+      process.stdout.write(`summary=${path.relative(root, summaryFile)}\n`);
+      return;
+    }
+
     const wsB = await createChromeTarget(chromePort, `${url}&tab=B`);
     pageB = new CdpPage("B", wsB, consoleB);
     await pageB.connect();
@@ -961,16 +1769,24 @@ async function main() {
     );
     summary.assertions.remoteEnterObserved = true;
 
+    if (reconnectSmokeEnabled) {
+      await runReconnectCheck(pageA, pageB, movementA.cid, wsProxy, reconnectCycleCount);
+    }
     await pageA.bringToFront();
     await runOverheadBlockCheck(pageA);
     await sampleLocalJump(pageA);
     await sampleRemoteJump(pageA, pageB, movementA.cid);
+    await runClockSoak(pageA, pageB);
+    await runLongContinuousMovement(pageA);
 
     summary.status = "ok";
     summary.tabs.A = { ...summary.tabs.A, finalTransport: (await pageA.cli("transport")).data };
     summary.tabs.B = { ...summary.tabs.B, finalTransport: (await pageB.cli("transport")).data };
     summary.tabs.A.finalObserve = await pageA.evaluate("window.__voxelObserve?.recent(80) ?? []");
     summary.tabs.B.finalObserve = await pageB.evaluate("window.__voxelObserve?.recent(80) ?? []");
+    if (wsProxy && typeof wsProxy.getStats === "function") {
+      summary.networkEmulation.proxyStats = wsProxy.getStats();
+    }
     writeSummary();
     process.stdout.write(`summary=${path.relative(root, summaryFile)}\n`);
   } finally {
@@ -979,6 +1795,11 @@ async function main() {
     killTree(chrome);
     killTree(vite);
     killTree(boot);
+    if (summary.networkEmulation && wsProxy && typeof wsProxy.getStats === "function") {
+      summary.networkEmulation.proxyStats = wsProxy.getStats();
+    }
+    await wsProxy?.close();
+    activeWsProxy = null;
   }
 }
 

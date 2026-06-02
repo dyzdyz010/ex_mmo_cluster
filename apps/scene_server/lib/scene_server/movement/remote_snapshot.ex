@@ -13,6 +13,7 @@ defmodule SceneServer.Movement.RemoteSnapshot do
   defstruct [
     :cid,
     :server_tick,
+    :server_state_ms,
     :position,
     :velocity,
     :acceleration,
@@ -27,6 +28,7 @@ defmodule SceneServer.Movement.RemoteSnapshot do
   @type t :: %__MODULE__{
           cid: integer(),
           server_tick: non_neg_integer(),
+          server_state_ms: non_neg_integer(),
           position: vector(),
           velocity: vector(),
           acceleration: vector(),
@@ -45,6 +47,7 @@ defmodule SceneServer.Movement.RemoteSnapshot do
     %__MODULE__{
       cid: cid,
       server_tick: state.tick,
+      server_state_ms: Map.get(state, :server_state_ms, 0),
       position: state.position,
       velocity: state.velocity,
       acceleration: state.acceleration,

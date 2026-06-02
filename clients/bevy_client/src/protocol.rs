@@ -3,6 +3,7 @@
 use std::fmt;
 
 pub type NetVec3 = [f64; 3];
+const MOVEMENT_WIRE_SCHEMA: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Actor identity kind sent over the wire for remote-entity classification.
@@ -88,6 +89,8 @@ pub enum ServerMessage {
     MovementAck {
         ack_seq: u32,
         auth_tick: u32,
+        server_state_ms: u64,
+        server_send_ms: u64,
         cid: i64,
         location: NetVec3,
         velocity: NetVec3,
@@ -119,6 +122,8 @@ pub enum ServerMessage {
     PlayerMove {
         cid: i64,
         server_tick: u32,
+        server_state_ms: u64,
+        server_send_ms: u64,
         location: NetVec3,
         velocity: NetVec3,
         acceleration: NetVec3,
@@ -217,18 +222,22 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
     match msg_type {
         0x80 => decode_result(body),
         0x8B => {
-            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 + 2 = 95 (audit B-M2 added u16).
-            require_body_len(body, 95, "MovementAck")?;
+            // schema + ack_seq + auth_tick + server_state_ms + server_send_ms + cid
+            // + pos + vel + accel + mode + flags + fixed_dt_ms + ground_z = 120.
+            require_body_len(body, 120, "MovementAck")?;
+            require_movement_schema(body, "MovementAck")?;
             Ok(ServerMessage::MovementAck {
-                ack_seq: read_u32(body, 0)?,
-                auth_tick: read_u32(body, 4)?,
-                cid: read_i64(body, 8)?,
-                location: read_vec3(body, 16)?,
-                velocity: read_vec3(body, 40)?,
-                acceleration: read_vec3(body, 64)?,
-                movement_mode: read_u8(body, 88)?,
-                correction_flags: read_u32(body, 89)?,
-                server_fixed_dt_ms: read_u16(body, 93)?,
+                ack_seq: read_u32(body, 1)?,
+                auth_tick: read_u32(body, 5)?,
+                server_state_ms: read_u64(body, 9)?,
+                server_send_ms: read_u64(body, 17)?,
+                cid: read_i64(body, 25)?,
+                location: read_vec3(body, 33)?,
+                velocity: read_vec3(body, 57)?,
+                acceleration: read_vec3(body, 81)?,
+                movement_mode: read_u8(body, 105)?,
+                correction_flags: read_u32(body, 106)?,
+                server_fixed_dt_ms: read_u16(body, 110)?,
             })
         }
         0x81 => {
@@ -246,15 +255,18 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
             })
         }
         0x83 => {
-            // 8 + 4 + 24 + 24 + 24 + 1 = 85
-            require_body_len(body, 85, "PlayerMove")?;
+            // schema + cid + tick + server_state_ms + server_send_ms + pos + vel + accel + mode = 102.
+            require_body_len(body, 102, "PlayerMove")?;
+            require_movement_schema(body, "PlayerMove")?;
             Ok(ServerMessage::PlayerMove {
-                cid: read_i64(body, 0)?,
-                server_tick: read_u32(body, 8)?,
-                location: read_vec3(body, 12)?,
-                velocity: read_vec3(body, 36)?,
-                acceleration: read_vec3(body, 60)?,
-                movement_mode: read_u8(body, 84)?,
+                cid: read_i64(body, 1)?,
+                server_tick: read_u32(body, 9)?,
+                server_state_ms: read_u64(body, 13)?,
+                server_send_ms: read_u64(body, 21)?,
+                location: read_vec3(body, 29)?,
+                velocity: read_vec3(body, 53)?,
+                acceleration: read_vec3(body, 77)?,
+                movement_mode: read_u8(body, 101)?,
             })
         }
         0x84 => {
@@ -449,6 +461,7 @@ pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
             movement_flags,
         } => {
             let mut payload = vec![0x01];
+            payload.push(MOVEMENT_WIRE_SCHEMA);
             payload.extend_from_slice(&seq.to_be_bytes());
             payload.extend_from_slice(&client_tick.to_be_bytes());
             payload.extend_from_slice(&dt_ms.to_be_bytes());
@@ -526,6 +539,16 @@ fn require_body_len(body: &[u8], expected_min: usize, msg_kind: &str) -> Result<
             "{msg_kind} body too short: {} < {}",
             body.len(),
             expected_min
+        )));
+    }
+    Ok(())
+}
+
+fn require_movement_schema(body: &[u8], msg_kind: &str) -> Result<(), ProtocolError> {
+    let schema = read_u8(body, 0)?;
+    if schema != MOVEMENT_WIRE_SCHEMA {
+        return Err(ProtocolError(format!(
+            "{msg_kind} unsupported movement schema: {schema}"
         )));
     }
     Ok(())
@@ -680,8 +703,9 @@ mod tests {
             movement_flags: 2,
         });
 
-        assert_eq!(u32::from_be_bytes(frame[0..4].try_into().unwrap()), 25);
+        assert_eq!(u32::from_be_bytes(frame[0..4].try_into().unwrap()), 26);
         assert_eq!(frame[4], 0x01);
+        assert_eq!(frame[5], MOVEMENT_WIRE_SCHEMA);
     }
 
     #[test]
@@ -812,9 +836,11 @@ mod tests {
     #[test]
     fn decodes_movement_ack() {
         let payload = {
-            let mut bytes = vec![0x8B];
+            let mut bytes = vec![0x8B, MOVEMENT_WIRE_SCHEMA];
             bytes.extend_from_slice(&7_u32.to_be_bytes());
             bytes.extend_from_slice(&11_u32.to_be_bytes());
+            bytes.extend_from_slice(&1_780_000_000_100_u64.to_be_bytes());
+            bytes.extend_from_slice(&1_780_000_000_123_u64.to_be_bytes());
             bytes.extend_from_slice(&42_i64.to_be_bytes());
             bytes.extend_from_slice(&1.0_f64.to_be_bytes());
             bytes.extend_from_slice(&2.0_f64.to_be_bytes());
@@ -829,6 +855,7 @@ mod tests {
             bytes.extend_from_slice(&3_u32.to_be_bytes());
             // Audit B-M2: trailing fixed_dt_ms u16 BE.
             bytes.extend_from_slice(&100_u16.to_be_bytes());
+            bytes.extend_from_slice(&3.0_f64.to_be_bytes());
             bytes
         };
 
@@ -837,6 +864,8 @@ mod tests {
             ServerMessage::MovementAck {
                 ack_seq: 7,
                 auth_tick: 11,
+                server_state_ms: 1_780_000_000_100,
+                server_send_ms: 1_780_000_000_123,
                 cid: 42,
                 location: [1.0, 2.0, 3.0],
                 velocity: [4.0, 5.0, 6.0],
@@ -850,19 +879,23 @@ mod tests {
 
     #[test]
     fn decodes_player_move_snapshot() {
-        let payload = vec![
-            0x83, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 7, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0,
-            0, 0, 0, 0, 0x40, 0x08, 0, 0, 0, 0, 0, 0, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0, 0x40, 0x04, 0,
-            0, 0, 0, 0, 0, 0x40, 0x0c, 0, 0, 0, 0, 0, 0, 0x3f, 0xb9, 0x99, 0x99, 0x99, 0x99, 0x99,
-            0x9a, 0x3f, 0xc9, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a, 0x3f, 0xd3, 0x33, 0x33, 0x33,
-            0x33, 0x33, 0x33, 1,
-        ];
+        let mut payload = vec![0x83, MOVEMENT_WIRE_SCHEMA];
+        payload.extend_from_slice(&42_i64.to_be_bytes());
+        payload.extend_from_slice(&7_u32.to_be_bytes());
+        payload.extend_from_slice(&1_780_000_000_100_u64.to_be_bytes());
+        payload.extend_from_slice(&1_780_000_000_123_u64.to_be_bytes());
+        for value in [1.0_f64, 2.0, 3.0, 1.5, 2.5, 3.5, 0.1, 0.2, 0.3] {
+            payload.extend_from_slice(&value.to_be_bytes());
+        }
+        payload.push(1);
 
         assert_eq!(
             decode_server_payload(&payload).unwrap(),
             ServerMessage::PlayerMove {
                 cid: 42,
                 server_tick: 7,
+                server_state_ms: 1_780_000_000_100,
+                server_send_ms: 1_780_000_000_123,
                 location: [1.0, 2.0, 3.0],
                 velocity: [1.5, 2.5, 3.5],
                 acceleration: [0.1, 0.2, 0.3],

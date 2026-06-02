@@ -15,7 +15,7 @@ defmodule GateServer.CodecDispatchTest do
   describe "protocol routing by first byte" do
     test "movement input message (0x01) is in codec range" do
       msg =
-        <<0x01, 1, 9::32-big, 100::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 2, 9::32-big, 100::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 0::16-big>>
 
       <<type::8, _::binary>> = msg
@@ -103,8 +103,8 @@ defmodule GateServer.CodecDispatchTest do
     test "movement_ack encodes correctly for send back" do
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 9, 12, 1_700_000_000_000, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
-           {0.0, 0.0, 0.0}, :grounded, 0, 100, 3.0}
+          {:movement_ack, 9, 12, 1_700_000_000_000, 1_700_000_000_010, 42, {1.0, 2.0, 3.0},
+           {4.0, 5.0, 6.0}, {0.0, 0.0, 0.0}, :grounded, 0, 100, 3.0}
         )
 
       <<type::8, _::binary>> = bin
@@ -153,19 +153,19 @@ defmodule GateServer.CodecDispatchTest do
   describe "end-to-end codec flow" do
     test "movement input and ack preserve sequencing metadata" do
       client_msg =
-        <<0x01, 1, 73::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 2, 73::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 0::16-big>>
 
       assert {:ok, {:movement_input, %{seq: 73, client_tick: 1000}}} = Codec.decode(client_msg)
 
       {:ok, response} =
         Codec.encode(
-          {:movement_ack, 73, 1000, 1_700_000_000_000, 42, {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0},
-           {0.0, 0.0, 0.0}, :grounded, 0, 100, 90.0}
+          {:movement_ack, 73, 1000, 1_700_000_000_000, 1_700_000_000_010, 42,
+           {100.0, 200.0, 90.0}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0, 100, 90.0}
         )
 
-      assert <<0x8B, 1, 73::32-big, 1000::32-big, _server_send_ms::64-big, 42::64-big,
-               _::binary>> = response
+      assert <<0x8B, 2, 73::32-big, 1000::32-big, _server_state_ms::64-big,
+               _server_send_ms::64-big, 42::64-big, _::binary>> = response
     end
 
     test "auth flow echoes request_id in result" do

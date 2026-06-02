@@ -32,6 +32,7 @@ export class LocalPredictionRuntime {
   private readonly inputHistory = new InputHistory(128);
   private readonly predictedHistory = new PredictedHistory(256);
   private readonly governanceStats: ReplayGovernanceStats = makeReplayGovernanceStats();
+  private smoothedRttMs: number | null = null;
   private smoothedJitterMs = 0;
   private collisionResolver: MovementCollisionResolver | null = null;
   private lastCollisionSummary: MovementCollisionSummary | null = null;
@@ -58,6 +59,7 @@ export class LocalPredictionRuntime {
     this.inputHistory.clear();
     this.predictedHistory.clear();
     Object.assign(this.governanceStats, makeReplayGovernanceStats());
+    this.smoothedRttMs = null;
     this.smoothedJitterMs = 0;
 
     const state = makeIdleState(position);
@@ -145,12 +147,20 @@ export class LocalPredictionRuntime {
   }
 
   observeRtt(rttMs: number): void {
-    const delta = Math.abs(rttMs - this.smoothedJitterMs);
-    this.smoothedJitterMs =
-      this.smoothedJitterMs === 0 ? 0 : this.smoothedJitterMs * 0.85 + delta * 0.15;
-    if (this.smoothedJitterMs === 0) {
-      this.smoothedJitterMs = Math.max(0, delta * 0.15);
+    if (!Number.isFinite(rttMs)) {
+      return;
     }
+
+    const sample = Math.max(0, rttMs);
+    if (this.smoothedRttMs === null) {
+      this.smoothedRttMs = sample;
+      this.smoothedJitterMs = 0;
+      return;
+    }
+
+    const delta = Math.abs(sample - this.smoothedRttMs);
+    this.smoothedRttMs = this.smoothedRttMs * 0.85 + sample * 0.15;
+    this.smoothedJitterMs = this.smoothedJitterMs * 0.85 + delta * 0.15;
   }
 
   getCurrentState(): PredictedMoveState | null {

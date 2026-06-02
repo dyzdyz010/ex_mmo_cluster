@@ -1,12 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const protocol = require("./ws_dual_protocol");
 
 if (typeof WebSocket !== "function") {
   throw new Error("ws_dual_smoke requires Node.js 22+ with the global WebSocket API");
 }
-
-const enc = new TextEncoder();
-const dec = new TextDecoder();
 
 const root = path.resolve(__dirname, "..");
 const observeDir =
@@ -20,22 +18,16 @@ const timeoutMs = Number(process.env.WS_SMOKE_TIMEOUT_MS || 30_000);
 
 fs.mkdirSync(observeDir, { recursive: true });
 
-const MovementFlag = {
-  None: 0,
-  Brake: 1 << 1,
-  Jump: 1 << 2,
-};
-
 const framePlan = [
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "move-1" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "move-2" },
-  { dx: 1, dy: 0, flags: MovementFlag.Jump, label: "jump" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-1" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-2" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-3" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-4" },
-  { dx: 1, dy: 0, flags: MovementFlag.None, label: "air-5" },
-  { dx: 0, dy: 0, flags: MovementFlag.Brake, label: "stop" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "move-1" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "move-2" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.Jump, label: "jump" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "air-1" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "air-2" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "air-3" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "air-4" },
+  { dx: 1, dy: 0, flags: protocol.MovementFlag.None, label: "air-5" },
+  { dx: 0, dy: 0, flags: protocol.MovementFlag.Brake, label: "stop" },
 ];
 
 const summary = {
@@ -90,169 +82,12 @@ function fail(code, message, detail) {
   process.exit(code);
 }
 
-function writeU64(view, offset, value) {
-  view.setBigUint64(offset, BigInt(value), false);
-}
-
-function writeI64(view, offset, value) {
-  view.setBigInt64(offset, BigInt(value), false);
-}
-
-function encodeAuth(requestId, username, token) {
-  const usernameBytes = enc.encode(username);
-  const tokenBytes = enc.encode(token);
-  const buffer = new ArrayBuffer(1 + 8 + 2 + usernameBytes.length + 2 + tokenBytes.length);
-  const view = new DataView(buffer);
-  let offset = 0;
-  view.setUint8(offset++, 0x05);
-  writeU64(view, offset, requestId);
-  offset += 8;
-  view.setUint16(offset, usernameBytes.length, false);
-  offset += 2;
-  new Uint8Array(buffer, offset, usernameBytes.length).set(usernameBytes);
-  offset += usernameBytes.length;
-  view.setUint16(offset, tokenBytes.length, false);
-  offset += 2;
-  new Uint8Array(buffer, offset, tokenBytes.length).set(tokenBytes);
-  return new Uint8Array(buffer);
-}
-
-function encodeEnterScene(requestId, cid) {
-  const buffer = new ArrayBuffer(17);
-  const view = new DataView(buffer);
-  view.setUint8(0, 0x02);
-  writeU64(view, 1, requestId);
-  writeI64(view, 9, cid);
-  return new Uint8Array(buffer);
-}
-
-function encodeMove({ seq, clientTick, dx, dy, flags }) {
-  const buffer = new ArrayBuffer(25);
-  const view = new DataView(buffer);
-  let offset = 0;
-  view.setUint8(offset++, 0x01);
-  view.setUint32(offset, seq, false);
-  offset += 4;
-  view.setUint32(offset, clientTick, false);
-  offset += 4;
-  view.setUint16(offset, 100, false);
-  offset += 2;
-  view.setFloat32(offset, dx, false);
-  offset += 4;
-  view.setFloat32(offset, dy, false);
-  offset += 4;
-  view.setFloat32(offset, 1, false);
-  offset += 4;
-  view.setUint16(offset, flags, false);
-  return new Uint8Array(buffer);
-}
-
 function vec3(view, offset) {
   return {
     x: view.getFloat64(offset, false),
     y: view.getFloat64(offset + 8, false),
     z: view.getFloat64(offset + 16, false),
   };
-}
-
-function formatVec3(position) {
-  return `${position.x.toFixed(1)},${position.y.toFixed(1)},${position.z.toFixed(1)}`;
-}
-
-function decodeMovementMode(raw) {
-  if (raw === 1) return "airborne";
-  if (raw === 2) return "disabled";
-  if (raw === 3) return "scripted";
-  return "grounded";
-}
-
-function decodePriorityBand(raw) {
-  if (raw === 1) return "medium";
-  if (raw === 2) return "low";
-  return "high";
-}
-
-function decodeAoiPriority(view, offset) {
-  if (view.byteLength < offset + 11) {
-    return null;
-  }
-
-  return {
-    band: decodePriorityBand(view.getUint8(offset)),
-    score: view.getFloat32(offset + 1, false),
-    distance: view.getFloat32(offset + 5, false),
-    interval: view.getUint16(offset + 9, false),
-  };
-}
-
-function decodeEnterScene(view) {
-  return {
-    requestId: Number(view.getBigUint64(1, false)),
-    ok: view.getUint8(9) === 0,
-    position: vec3(view, 10),
-    expectedSeq: view.byteLength >= 38 ? view.getUint32(34, false) : 1,
-  };
-}
-
-function decodeMovementAck(view) {
-  return {
-    ackSeq: view.getUint32(1, false),
-    authTick: view.getUint32(5, false),
-    cid: Number(view.getBigInt64(9, false)),
-    position: vec3(view, 17),
-    movementMode: decodeMovementMode(view.getUint8(89)),
-    correctionFlags: view.getUint32(90, false),
-    fixedDtMs: view.getUint16(94, false),
-  };
-}
-
-function decodePlayerMove(view) {
-  return {
-    cid: Number(view.getBigInt64(1, false)),
-    serverTick: view.getUint32(9, false),
-    position: vec3(view, 13),
-    movementMode: decodeMovementMode(view.getUint8(85)),
-    priority: decodeAoiPriority(view, 86),
-  };
-}
-
-function decodePlayerState(view) {
-  return {
-    cid: Number(view.getBigInt64(1, false)),
-    hp: view.getUint16(9, false),
-    maxHp: view.getUint16(11, false),
-    alive: view.getUint8(13) !== 0,
-  };
-}
-
-function decodeActorIdentity(view) {
-  const nameLength = view.byteLength >= 12 ? view.getUint16(10, false) : 0;
-  const name =
-    view.byteLength >= 12 + nameLength
-      ? dec.decode(new Uint8Array(view.buffer, view.byteOffset + 12, nameLength))
-      : "";
-  return {
-    cid: Number(view.getBigInt64(1, false)),
-    actorKind: decodeActorKind(view.getUint8(9)),
-    name,
-  };
-}
-
-function decodeActorKind(raw) {
-  if (raw === 1) return "npc";
-  if (raw === 2) return "monster";
-  if (raw === 3) return "object";
-  return "player";
-}
-
-function knownDownlinkName(msgType) {
-  if (msgType === 0x87) return "fast_lane_result";
-  if (msgType === 0x88) return "fast_lane_attached";
-  if (msgType === 0x89) return "chat_message";
-  if (msgType === 0x8a) return "skill_event";
-  if (msgType === 0x8d) return "combat_hit";
-  if (msgType === 0x8f) return "effect_event";
-  return null;
 }
 
 function recordDownlink(name) {
@@ -289,7 +124,7 @@ function connect(label, login, hooks) {
 
   state.socket.onopen = () => {
     console.log(label, "open");
-    state.socket.send(encodeAuth(authRequestId, login.username, login.token));
+    state.socket.send(protocol.encodeAuth(authRequestId, login.username, login.token));
   };
 
   state.socket.onmessage = (event) => {
@@ -301,9 +136,9 @@ function connect(label, login, hooks) {
       const ok = view.getUint8(9) === 0;
       if (requestId === authRequestId && ok) {
         console.log(label, "auth_ok");
-        state.socket.send(encodeEnterScene(enterSceneRequestId, login.cid));
+        state.socket.send(protocol.encodeEnterScene(enterSceneRequestId, login.cid));
       } else if (!ok) {
-        fail(11, `${label}_auth_failed`, { requestId });
+        fail(11, `${label}_result_error`, { requestId });
       }
       return;
     }
@@ -311,7 +146,7 @@ function connect(label, login, hooks) {
     if (msgType === 0x81) {
       const cid = Number(view.getBigInt64(1, false));
       const position = vec3(view, 9);
-      console.log(label, "player_enter", cid, formatVec3(position));
+      console.log(label, "player_enter", cid, protocol.formatVec3(position));
       hooks.onPlayerEnter?.(state, { cid, position });
       return;
     }
@@ -322,7 +157,7 @@ function connect(label, login, hooks) {
     }
 
     if (msgType === 0x84) {
-      const enter = decodeEnterScene(view);
+      const enter = protocol.decodeEnterScene(view);
       if (!enter.ok) {
         fail(12, `${label}_enter_scene_failed`, enter);
       }
@@ -333,7 +168,7 @@ function connect(label, login, hooks) {
       console.log(
         label,
         "enter_scene",
-        formatVec3(enter.position),
+        protocol.formatVec3(enter.position),
         `expected_seq=${enter.expectedSeq}`,
       );
       hooks.onEnterScene(state, enter);
@@ -341,21 +176,21 @@ function connect(label, login, hooks) {
     }
 
     if (msgType === 0x8b) {
-      const ack = decodeMovementAck(view);
+      const ack = protocol.decodeMovementAck(view);
       console.log(
         label,
         "movement_ack",
         ack.ackSeq,
         `tick=${ack.authTick}`,
         `mode=${ack.movementMode}`,
-        formatVec3(ack.position),
+        protocol.formatVec3(ack.position),
       );
       hooks.onMovementAck(state, ack);
       return;
     }
 
     if (msgType === 0x83) {
-      const move = decodePlayerMove(view);
+      const move = protocol.decodePlayerMove(view);
       const priorityText = move.priority
         ? `priority=${move.priority.band}:${move.priority.score.toFixed(3)}:${move.priority.distance.toFixed(1)}:${move.priority.interval}`
         : "priority=missing";
@@ -365,7 +200,7 @@ function connect(label, login, hooks) {
         move.cid,
         `tick=${move.serverTick}`,
         `mode=${move.movementMode}`,
-        formatVec3(move.position),
+        protocol.formatVec3(move.position),
         priorityText,
       );
       hooks.onPlayerMove(state, move);
@@ -373,7 +208,7 @@ function connect(label, login, hooks) {
     }
 
     if (msgType === 0x8c && view.byteLength === 14) {
-      const state = decodePlayerState(view);
+      const state = protocol.decodePlayerState(view);
       recordDownlink("player_state");
       console.log(
         label,
@@ -386,7 +221,7 @@ function connect(label, login, hooks) {
     }
 
     if (msgType === 0x8e) {
-      const identity = decodeActorIdentity(view);
+      const identity = protocol.decodeActorIdentity(view);
       recordDownlink("actor_identity");
       console.log(
         label,
@@ -398,7 +233,7 @@ function connect(label, login, hooks) {
       return;
     }
 
-    const knownName = knownDownlinkName(msgType);
+    const knownName = protocol.knownDownlinkName(msgType);
     if (knownName) {
       recordDownlink(knownName);
       console.log(label, "known_downlink_unhandled", knownName, `opcode=${msgType}`, `bytes=${view.byteLength}`);
@@ -497,7 +332,7 @@ async function main() {
       flags: plan.flags,
     };
     nextSeq += 1;
-    socketA.socket.send(encodeMove(frame));
+    socketA.socket.send(protocol.encodeMove(frame));
     summary.sentFrames.push({ ...frame, label: plan.label });
     console.log("A", "movement_input", frame.seq, plan.label, `flags=${frame.flags}`);
   };

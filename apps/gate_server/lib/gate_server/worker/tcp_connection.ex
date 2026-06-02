@@ -204,11 +204,12 @@ defmodule GateServer.TcpConnection do
     end)
 
     server_send_ms = :os.system_time(:millisecond)
+    server_state_ms = movement_state_ms(ack)
 
     message =
-      {:movement_ack, ack.ack_seq, ack.auth_tick, server_send_ms, ack.cid, ack.position,
-       ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms,
-       ack.ground_z}
+      {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms, ack.cid,
+       ack.position, ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
+       ack.fixed_dt_ms, ack.ground_z}
 
     if udp_peer do
       GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
@@ -3081,14 +3082,23 @@ defmodule GateServer.TcpConnection do
          } = snapshot,
          server_send_ms
        ) do
-    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
-     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode}
+    {:player_move, snapshot.cid, snapshot.server_tick, movement_state_ms(snapshot),
+     server_send_ms, snapshot.position, snapshot.velocity, snapshot.acceleration,
+     snapshot.movement_mode}
   end
 
   defp player_move_message(%RemoteSnapshot{} = snapshot, server_send_ms) do
-    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
-     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
-     snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
+    {:player_move, snapshot.cid, snapshot.server_tick, movement_state_ms(snapshot),
+     server_send_ms, snapshot.position, snapshot.velocity, snapshot.acceleration,
+     snapshot.movement_mode, snapshot.priority_band, snapshot.priority_score,
+     snapshot.observer_distance, snapshot.delivery_interval}
+  end
+
+  defp movement_state_ms(%{} = movement_payload) do
+    case Map.get(movement_payload, :server_state_ms, 0) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> 0
+    end
   end
 
   defp voxel_delivery_debug(scheduler) do

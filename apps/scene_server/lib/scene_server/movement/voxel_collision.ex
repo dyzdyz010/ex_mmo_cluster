@@ -163,6 +163,7 @@ defmodule SceneServer.Movement.VoxelCollision do
       height_cm: Keyword.get(opts, :height_cm, @default_height_cm) * 1.0,
       half_height_cm: Keyword.get(opts, :height_cm, @default_height_cm) * 0.5,
       max_samples: Keyword.get(opts, :max_samples, @default_max_samples),
+      query_timeout_ms: Keyword.get(opts, :query_timeout_ms),
       query_fun: Keyword.get(opts, :query_fun, &default_collision_query/1)
     }
   end
@@ -181,7 +182,13 @@ defmodule SceneServer.Movement.VoxelCollision do
   end
 
   defp default_collision_query(attrs) do
-    ChunkDirectory.collision_query(attrs)
+    timeout_ms = Map.get(attrs, :collision_query_timeout_ms)
+
+    if is_integer(timeout_ms) and timeout_ms > 0 do
+      ChunkDirectory.collision_query(ChunkDirectory, attrs, timeout_ms + 25)
+    else
+      ChunkDirectory.collision_query(ChunkDirectory, attrs)
+    end
   end
 
   defp query_occupied_boxes(samples_by_chunk, config) do
@@ -193,6 +200,13 @@ defmodule SceneServer.Movement.VoxelCollision do
         chunk_coord: chunk,
         samples: samples
       }
+
+      attrs =
+        if is_integer(config.query_timeout_ms) and config.query_timeout_ms > 0 do
+          Map.put(attrs, :collision_query_timeout_ms, config.query_timeout_ms)
+        else
+          attrs
+        end
 
       case safe_query(config.query_fun, attrs) do
         {:ok, result} ->

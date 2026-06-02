@@ -31,6 +31,7 @@ import { DevToolsCli } from "../presentation/devtools/devToolsCli";
 import { EventBus } from "../shared/events/eventBus";
 import type { AppEvents } from "../shared/events/events";
 import { formatCoord, formatVector } from "../shared/runtimeFormat";
+import type { FChunkCoord } from "../voxel/core/types";
 import { DiagnosticsController } from "./controllers/diagnosticsController";
 import { InputController } from "./controllers/inputController";
 import { LocalPlayerController } from "./controllers/localPlayerController";
@@ -41,6 +42,8 @@ import { TransportPump } from "./controllers/transportPump";
 import { WorldEditController } from "./controllers/worldEditController";
 import { GameLoop } from "./gameLoop";
 import { resolveInitialLocalSpawn } from "./spawn";
+
+const MOVEMENT_AUTHORITY_PREWARM_MARGIN_CM = 400;
 
 export interface AppContext {
   readonly eventBus: EventBus<AppEvents>;
@@ -320,13 +323,14 @@ function createVoxelWorldAdapter(
   }
 
   if (isServerVoxelTransportPort(transport)) {
+    const defaultRadiusLInf = parsePositiveIntEnv(
+      import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS,
+      0,
+    );
     return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
       logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),
-      defaultRadiusLInf: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS, 0),
-      initialSubscriptions: [
-        { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
-        { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
-      ],
+      defaultRadiusLInf,
+      initialSubscriptions: resolveInitialVoxelSubscriptions({ x: 0, y: 0, z: 0 }, defaultRadiusLInf),
       devSeed: import.meta.env.VITE_VOXEL_DEV_SEED === "1",
       primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK === "1",
     });
@@ -357,6 +361,18 @@ function parsePositiveIntEnv(value: string | undefined, fallback: number): numbe
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+export function resolveInitialVoxelSubscriptions(
+  centerChunk: FChunkCoord,
+  radiusLInf: number,
+): readonly { centerChunk: FChunkCoord; radiusLInf: number }[] {
+  return [
+    {
+      centerChunk: { ...centerChunk },
+      radiusLInf: Math.max(0, Math.trunc(radiusLInf)),
+    },
+  ];
+}
+
 export function resolveRendererPreference(): RendererPreference {
   const queryPreference = new URLSearchParams(window.location.search).get("renderer");
   return resolveRendererPreferenceFrom(queryPreference, import.meta.env.VITE_RENDER_BACKEND);
@@ -366,10 +382,37 @@ export function resolveMovementCollisionResolver(
   world: VoxelWorldAdapter,
 ): MovementCollisionResolver | null {
   if (world.mode === "server-authoritative") {
-    return null;
+    const prewarmer = isMovementAuthoritativeChunkPrewarmer(world) ? world : null;
+    return createWorldStoreMovementCollisionResolver(world.store, {
+      requireAuthoritativeChunks: true,
+      authorityPrewarmMarginCm: MOVEMENT_AUTHORITY_PREWARM_MARGIN_CM,
+      ...(prewarmer
+        ? {
+            requestAuthoritativeChunks: (
+              chunks: readonly FChunkCoord[],
+              reason: "collision_query" | "movement_prewarm",
+            ) => {
+              prewarmer.prewarmAuthoritativeChunks(chunks, reason);
+            },
+          }
+        : {}),
+    });
   }
 
   return createWorldStoreMovementCollisionResolver(world.store);
+}
+
+interface MovementAuthoritativeChunkPrewarmer {
+  prewarmAuthoritativeChunks(chunks: readonly FChunkCoord[], source?: string): number;
+}
+
+function isMovementAuthoritativeChunkPrewarmer(
+  world: VoxelWorldAdapter,
+): world is VoxelWorldAdapter & MovementAuthoritativeChunkPrewarmer {
+  return (
+    typeof (world as Partial<MovementAuthoritativeChunkPrewarmer>)
+      .prewarmAuthoritativeChunks === "function"
+  );
 }
 
 export function resolveRendererPreferenceFrom(
@@ -650,6 +693,14 @@ function bridgeBusToLogger(
       logical_scene_id: logicalSceneId,
       center_chunk: formatCoord(centerChunk),
       radius_l_inf: radiusLInf,
+    });
+  });
+  bus.on("world:chunk-prewarm-requested", ({ requestId, logicalSceneId, chunkCoord, source }) => {
+    logger.emit("voxel", "chunk_prewarm_requested", {
+      request_id: requestId,
+      logical_scene_id: logicalSceneId,
+      chunk_coord: formatCoord(chunkCoord),
+      source,
     });
   });
   bus.on(

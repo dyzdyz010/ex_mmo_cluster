@@ -34,6 +34,8 @@ import { MacroWorldSize } from "./core/constants";
 
 // Phase 4-bis Step 4-bis-10 timing / sampling constants.
 const OBJECT_STATE_DELTA_RETRY_DELAY_MS = 100;
+const MOVEMENT_PREWARM_RETRY_DELAY_MS = 750;
+const CHUNK_SUBSCRIPTION_PENDING_RETRY_DELAY_MS = 10_000;
 
 const DEBRIS_SAMPLE_LIMITS: Record<ObjectStateFlagName, number> = {
   destroyed: 20,
@@ -225,6 +227,20 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastError: string | null = null;
   private initialSubscriptionsSent = false;
   private primeSent = false;
+  private readonly movementPrewarmRequests = new Map<
+    string,
+    { coord: FChunkCoord; requestId: number; sentAtMs: number; source: string }
+  >();
+  private readonly pendingChunkSubscriptions = new Map<
+    string,
+    { coord: FChunkCoord; requestId: number; sentAtMs: number; source: string }
+  >();
+  private lastMovementPrewarm: {
+    requestId: number;
+    logicalSceneId: number;
+    chunkCoord: FChunkCoord;
+    source: string;
+  } | null = null;
   private appliedChunkAckCount = 0;
   private lastAppliedChunkAck: {
     requestId: number;
@@ -355,6 +371,22 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastIntentResult: this.lastIntentResult,
       lastDebugProbe: this.lastDebugProbe,
       lastError: this.lastError,
+      movementPrewarm: {
+        pendingCount: this.movementPrewarmRequests.size,
+        pendingChunks: [...this.movementPrewarmRequests.values()].map((request) =>
+          chunkCoordKey(request.coord),
+        ),
+        pendingSubscriptionCount: this.pendingChunkSubscriptions.size,
+        pendingSubscriptionChunks: [...this.pendingChunkSubscriptions.values()].map((request) =>
+          chunkCoordKey(request.coord),
+        ),
+        last: this.lastMovementPrewarm
+          ? {
+              ...this.lastMovementPrewarm,
+              chunkCoord: chunkCoordKey(this.lastMovementPrewarm.chunkCoord),
+            }
+          : null,
+      },
       appliedChunkAckCount: this.appliedChunkAckCount,
       lastAppliedChunkAck: this.lastAppliedChunkAck
         ? {
@@ -598,7 +630,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return this.transport.sendVoxelDebugProbe(command);
   }
 
-  subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf: number = 0): number | null {
+  subscribeVoxelChunk(
+    centerChunk: FChunkCoord,
+    radiusLInf: number = 0,
+    source = "manual",
+  ): number | null {
     const requestId = this.transport.sendVoxelChunkSubscribe({
       logicalSceneId: this.logicalSceneId,
       centerChunk,
@@ -607,6 +643,13 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       known: this.knownChunkVersions(),
     });
     if (requestId !== null) {
+      this.trackPendingChunkSubscription(
+        centerChunk,
+        radiusLInf,
+        requestId,
+        Math.round(performance.now()),
+        source,
+      );
       this.subscriptionState = "requested";
       this.subscriptionRequestId = requestId;
       this.bus.emit("world:chunk-subscribed", {
@@ -617,6 +660,69 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       });
     }
     return requestId;
+  }
+
+  prewarmAuthoritativeChunks(
+    chunks: readonly FChunkCoord[],
+    source = "movement_collision",
+  ): number {
+    if (chunks.length === 0 || !this.transport.canUseServerVoxel()) {
+      return 0;
+    }
+
+    const nowMs = Math.round(performance.now());
+    const seen = new Set<string>();
+    let sent = 0;
+
+    for (const chunk of chunks) {
+      const chunkCoord = { ...chunk };
+      const key = chunkCoordKey(chunkCoord);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+
+      if (this.store.getChunkAuthorityMetadata(chunkCoord)) {
+        this.clearPendingChunkRequest(chunkCoord);
+        continue;
+      }
+
+      if (this.hasActivePendingChunkSubscription(chunkCoord, nowMs)) {
+        continue;
+      }
+
+      const pending = this.movementPrewarmRequests.get(key);
+      if (pending && nowMs - pending.sentAtMs < MOVEMENT_PREWARM_RETRY_DELAY_MS) {
+        continue;
+      }
+
+      const requestId = this.subscribeVoxelChunk(chunkCoord, 0, source);
+      if (requestId === null) {
+        continue;
+      }
+
+      this.movementPrewarmRequests.set(key, {
+        coord: chunkCoord,
+        requestId,
+        sentAtMs: nowMs,
+        source,
+      });
+      this.lastMovementPrewarm = {
+        requestId,
+        logicalSceneId: this.logicalSceneId,
+        chunkCoord,
+        source,
+      };
+      this.bus.emit("world:chunk-prewarm-requested", {
+        requestId,
+        logicalSceneId: this.logicalSceneId,
+        chunkCoord,
+        source,
+      });
+      sent += 1;
+    }
+
+    return sent;
   }
 
   unsubscribeVoxelChunk(chunk: FChunkCoord): number | null {
@@ -1139,6 +1245,44 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return this.lastObjectStateFrameMs ?? Math.round(performance.now());
   }
 
+  private trackPendingChunkSubscription(
+    centerChunk: FChunkCoord,
+    radiusLInf: number,
+    requestId: number,
+    sentAtMs: number,
+    source: string,
+  ): void {
+    for (const coord of chunksCoveredBySubscription(centerChunk, radiusLInf)) {
+      this.pendingChunkSubscriptions.set(chunkCoordKey(coord), {
+        coord,
+        requestId,
+        sentAtMs,
+        source,
+      });
+    }
+  }
+
+  private hasActivePendingChunkSubscription(chunkCoord: FChunkCoord, nowMs: number): boolean {
+    const key = chunkCoordKey(chunkCoord);
+    const pending = this.pendingChunkSubscriptions.get(key);
+    if (!pending) {
+      return false;
+    }
+
+    if (nowMs - pending.sentAtMs >= CHUNK_SUBSCRIPTION_PENDING_RETRY_DELAY_MS) {
+      this.pendingChunkSubscriptions.delete(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  private clearPendingChunkRequest(chunkCoord: FChunkCoord): void {
+    const key = chunkCoordKey(chunkCoord);
+    this.movementPrewarmRequests.delete(key);
+    this.pendingChunkSubscriptions.delete(key);
+  }
+
   // Phase 4-bis Step 4-bis-12 production hook:RenderOrchestrator picks
   // this up via duck typing to wire the DebrisRenderer InstancedMesh into
   // the scene root group.
@@ -1156,6 +1300,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   }
 
   private applyInvalidate(invalidate: VoxelChunkInvalidateMessage): void {
+    this.clearPendingChunkRequest(invalidate.chunkCoord);
     this.store.invalidateChunkAuthority(invalidate.chunkCoord);
     this.store.removeChunk(invalidate.chunkCoord);
     this.subscriptionState = "idle";
@@ -1256,6 +1401,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       receivedAtMs: Math.round(performance.now()),
     });
     const solidBlocks = chunk.countSolidBlocks();
+    this.clearPendingChunkRequest(snapshot.chunkCoord);
     this.lastSnapshot = {
       requestId: snapshot.requestId,
       logicalSceneId: snapshot.logicalSceneId,
@@ -1362,7 +1508,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     let lastRequestId: number | null = null;
 
     for (const subscription of this.initialSubscriptions) {
-      const requestId = this.subscribeVoxelChunk(subscription.centerChunk, subscription.radiusLInf);
+      const requestId = this.subscribeVoxelChunk(
+        subscription.centerChunk,
+        subscription.radiusLInf,
+        "startup",
+      );
       if (requestId !== null) {
         lastRequestId = requestId;
       }
@@ -1561,4 +1711,19 @@ function normalizeInitialSubscriptions(
     centerChunk: { ...subscription.centerChunk },
     radiusLInf: Math.max(0, Math.floor(subscription.radiusLInf ?? 0)),
   }));
+}
+
+function chunksCoveredBySubscription(centerChunk: FChunkCoord, radiusLInf: number): FChunkCoord[] {
+  const radius = Math.max(0, Math.trunc(radiusLInf));
+  const chunks: FChunkCoord[] = [];
+
+  for (let x = centerChunk.x - radius; x <= centerChunk.x + radius; x += 1) {
+    for (let y = centerChunk.y - radius; y <= centerChunk.y + radius; y += 1) {
+      for (let z = centerChunk.z - radius; z <= centerChunk.z + radius; z += 1) {
+        chunks.push({ x, y, z });
+      }
+    }
+  }
+
+  return chunks;
 }

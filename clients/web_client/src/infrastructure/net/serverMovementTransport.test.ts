@@ -10,6 +10,7 @@ import {
   ServerMovementTransport,
 } from "./serverMovementTransport";
 import { VoxelOpcode } from "./opcodes";
+import { PROTOCOL_VERSION } from "./protocolVersion";
 
 const viteDevLocation = {
   protocol: "http:",
@@ -435,6 +436,145 @@ describe("server movement transport result errors", () => {
   });
 });
 
+describe("server movement transport time sync", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("window", {
+      location: viteDevLocation,
+      setTimeout: vi.fn(() => 1),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ token: "dev-token", cid: 42, username: "tester" }),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("sends periodic time-sync requests once the scene session is ready", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_123);
+    const logger = { emit: vi.fn() } as unknown as ObserveLog;
+    const transport = new ServerMovementTransport(
+      logger,
+      "http://127.0.0.1:20000",
+      "ws://127.0.0.1:20000/ingame/ws",
+      "tester",
+    );
+    await flushAsync();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    socket?.message(resultFrame(1, true));
+    socket?.message(enterSceneOkFrame(2));
+
+    transport.tick(1_000, 16);
+    transport.tick(1_500, 16);
+
+    expect(socket?.sent).toHaveLength(3);
+    const encoded = socket?.sent[2] as Uint8Array;
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+    expect(view.getUint8(0)).toBe(0x03);
+    expect(view.getBigUint64(1, false)).toBe(3n);
+    expect(view.getBigUint64(9, false)).toBe(1_700_000_000_123n);
+    expect(logger.emit).toHaveBeenCalledWith(
+      "transport",
+      "time_sync_sent",
+      expect.objectContaining({ request_id: 3 }),
+    );
+  });
+});
+
+describe("server movement transport reconnect", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("window", {
+      location: viteDevLocation,
+      setTimeout: vi.fn(() => 1),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ token: "dev-token", cid: 42, username: "tester" }),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("re-enters the scene after a transient socket close without page reload", async () => {
+    const emit = vi.fn();
+    const logger = { emit } as unknown as ObserveLog;
+    const transport = new ServerMovementTransport(
+      logger,
+      "http://127.0.0.1:20000",
+      "ws://127.0.0.1:20000/ingame/ws",
+      "tester",
+    );
+    await flushAsync();
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.open();
+    firstSocket?.message(resultFrame(1, true));
+    firstSocket?.message(enterSceneOkFrame(2));
+    transport.tick(0, 16);
+
+    firstSocket?.closeWith(1006, "network_lost");
+
+    transport.tick(999, 16);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(transport.debugSnapshot()).toMatchObject({
+      connectionStatus: "disconnected",
+      ready: false,
+      reconnectAttemptCount: 1,
+    });
+
+    transport.tick(1_000, 16);
+    await flushAsync();
+    const secondSocket = FakeWebSocket.instances[1];
+    expect(secondSocket).toBeDefined();
+    secondSocket?.open();
+    const authRequestId = requestIdFromSentFrame(secondSocket?.sent[0]);
+    secondSocket?.message(resultFrame(authRequestId, true));
+    const enterSceneRequestId = requestIdFromSentFrame(secondSocket?.sent[1]);
+    secondSocket?.message(enterSceneOkFrame(enterSceneRequestId));
+
+    const result = transport.tick(1_100, 16);
+    expect(result.spawn).toMatchObject({ expectedSeq: 1 });
+    expect(transport.debugSnapshot()).toMatchObject({
+      connectionStatus: "connected",
+      connectionPhase: "ready",
+      ready: true,
+      reconnectAttemptCount: 0,
+      connectionLostReason: null,
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "transport",
+      "reconnect_scheduled",
+      expect.objectContaining({ attempt: 1, delay_ms: 1_000 }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "transport",
+      "reconnect_start",
+      expect.objectContaining({ attempt: 1 }),
+    );
+  });
+});
+
 // ── Pillar 1.1 integration: protocol_version mismatch fail-fast ──────────────
 // Verifies that an enter_scene_ok frame carrying a mismatched protocol_version
 // causes the transport to enter the disconnected state and set ready=false,
@@ -510,10 +650,19 @@ describe("server movement transport protocol version guard", () => {
     expect(transport.debugSnapshot()).toMatchObject({
       connectionStatus: "disconnected",
       ready: false,
+      reconnectAttemptCount: 0,
+      nextReconnectInMs: null,
     });
     expect(emit).toHaveBeenCalledWith(
       "transport",
       "connection_lost",
+      expect.objectContaining({
+        reason: expect.stringContaining("protocol_version_mismatch"),
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "transport",
+      "reconnect_suppressed",
       expect.objectContaining({
         reason: expect.stringContaining("protocol_version_mismatch"),
       }),
@@ -558,14 +707,18 @@ describe("server movement transport runtime config", () => {
     expect(resolveAutoLoginTimeoutMs({})).toBe(15_000);
     expect(resolveAutoLoginTimeoutMs({ VITE_GAME_AUTO_LOGIN_TIMEOUT_MS: "12000" })).toBe(12_000);
     expect(resolveAutoLoginTimeoutMs({ VITE_GAME_AUTO_LOGIN_TIMEOUT_MS: "250" })).toBe(15_000);
-    expect(resolveAutoLoginTimeoutMs({ VITE_GAME_AUTO_LOGIN_TIMEOUT_MS: "not-a-number" })).toBe(15_000);
+    expect(resolveAutoLoginTimeoutMs({ VITE_GAME_AUTO_LOGIN_TIMEOUT_MS: "not-a-number" })).toBe(
+      15_000,
+    );
   });
 
   it("keeps WebSocket handshakes tolerant of cold browser networking", () => {
     expect(resolveHandshakeTimeoutMs({})).toBe(20_000);
     expect(resolveHandshakeTimeoutMs({ VITE_GAME_HANDSHAKE_TIMEOUT_MS: "18000" })).toBe(18_000);
     expect(resolveHandshakeTimeoutMs({ VITE_GAME_HANDSHAKE_TIMEOUT_MS: "250" })).toBe(20_000);
-    expect(resolveHandshakeTimeoutMs({ VITE_GAME_HANDSHAKE_TIMEOUT_MS: "not-a-number" })).toBe(20_000);
+    expect(resolveHandshakeTimeoutMs({ VITE_GAME_HANDSHAKE_TIMEOUT_MS: "not-a-number" })).toBe(
+      20_000,
+    );
   });
 
   // Phase A4-bis follow-up: dev auto_login maps username → cid 1:1, so
@@ -602,6 +755,15 @@ function resultFrame(requestId: number, ok: boolean): ArrayBuffer {
   return buffer;
 }
 
+function requestIdFromSentFrame(frame: unknown): number {
+  if (!(frame instanceof Uint8Array)) {
+    throw new Error("expected binary client frame");
+  }
+
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  return Number(view.getBigUint64(1, false));
+}
+
 function enterSceneOkFrame(requestId: number): ArrayBuffer {
   // Pillar 1.1: 40-byte layout with trailing protocol_version u16.
   const buffer = new ArrayBuffer(40);
@@ -613,7 +775,7 @@ function enterSceneOkFrame(requestId: number): ArrayBuffer {
   view.setFloat64(18, 0, false);
   view.setFloat64(26, 0, false);
   view.setUint32(34, 1, false);
-  view.setUint16(38, 1, false); // protocol_version = 1
+  view.setUint16(38, PROTOCOL_VERSION, false);
   return buffer;
 }
 

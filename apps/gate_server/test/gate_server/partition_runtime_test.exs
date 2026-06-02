@@ -110,6 +110,48 @@ defmodule GateServer.PartitionRuntimeTest do
     assert next_state.last_partition_refresh.status == :updated
   end
 
+  test "movement ack positions are converted to voxel Y-up chunks before partition routing" do
+    parent = self()
+    lease = lease(20, 200)
+
+    window =
+      PartitionWindow.build(1, {-5, 0, 5}, near_radius: 0, halo_radius: 0)
+      |> PartitionWindow.attach_routes(%{
+        {-5, 0, 5} => assigned_route(20, lease)
+      })
+
+    state =
+      state(%{
+        partition_context: %{logical_scene_id: 1, chunk_coord: {-4, 0, 4}, region_id: 20},
+        chat_context: %{logical_scene_id: 1, chunk_coord: {-4, 0, 4}, region_id: 20},
+        voxel_subscriptions: %{
+          {1, {-4, 0, 4}} => %{logical_scene_id: 1, chunk_coord: {-4, 0, 4}}
+        }
+      })
+
+    assert {:ok, next_state, outcome} =
+             PartitionRuntime.refresh_after_movement_ack(
+               state,
+               ack(position: {-6_500.0, 8_100.0, 185.0}, auth_tick: 900),
+               route_window_fun: fn logical_scene_id, center_chunk, radius ->
+                 send(parent, {:world_window_requested, logical_scene_id, center_chunk, radius})
+                 {:ok, window}
+               end,
+               chat_refresh_fun: fn presence ->
+                 send(parent, {:chat_presence_refreshed, presence})
+                 {:ok, presence}
+               end,
+               subscription_apply_fun: &subscription_apply_ok/2
+             )
+
+    assert_receive {:world_window_requested, 1, {-5, 0, 5}, 1}
+    assert_receive {:chat_presence_refreshed, %{chunk_coord: {-5, 0, 5}}}
+
+    assert outcome.status == :updated
+    assert next_state.partition_context.chunk_coord == {-5, 0, 5}
+    assert next_state.chat_context.chunk_coord == {-5, 0, 5}
+  end
+
   test "region boundary movement applies the subscription plan after Chat presence succeeds" do
     parent = self()
     lease = lease(20, 200)
@@ -1023,7 +1065,7 @@ defmodule GateServer.PartitionRuntimeTest do
        subscribe_count: length(diff.subscribe_chunks),
        unsubscribe_count: length(diff.unsubscribe_chunks),
        retained_count: length(diff.retained_chunks)
-      }}
+     }}
   end
 
   defp maybe_start_fake_local_map_ledger(reply) do

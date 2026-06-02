@@ -27,6 +27,9 @@ actors.
 - `ChunkProcess` remains the only owner of hot voxel storage. Movement receives
   occupied samples and returns corrected movement state plus
   `CorrectionFlags.collision_push/0` when terrain blocks replay.
+- Queued player input replay resolves collision after each server replayed
+  fixed step. The corrected state from one step feeds the next step, so bursty
+  input delivery cannot turn several fixed steps into one long collision sweep.
 - `Engine.build_ack_with_intent/5` is the preferred player hot-path ack builder
   when the input frame that produced the state is available. It preserves
   server correction intent such as collision push; `build_ack/4` remains the
@@ -34,9 +37,36 @@ actors.
 - `Ack.auth_tick` is the client reconciliation timeline. `ack_seq` identifies
   the last accepted input command, but clients should anchor replay to
   `auth_tick` first and use `ack_seq` only as a fallback lookup.
+- `State.tick` is server-owned. `client_tick` is accepted only as input
+  metadata and ordering guard; `PlayerCharacter` renumbers both single-frame
+  and queued replay inputs before calling `Engine`, so spoofed client ticks do
+  not enter authoritative state.
 - `RemoteSnapshot` is created from authoritative actor state. AOI workers may
   add observer-specific priority metadata before fan-out; movement actors do
   not own observer priority.
+
+## Time-base contract
+
+- `server_tick` / `auth_tick` are authoritative sequence numbers, not wall-clock
+  time. They remain the ordering and reconciliation keys.
+- Scene stamps `server_state_ms` on authoritative movement state from the
+  server-owned tick and fixed dt. Gate senders attach `server_send_ms` at the
+  TCP/UDP/WS send site for `PlayerMove` and `MovementAck`. The web client sends
+  periodic TimeSync requests, then uses `server_state_ms + serverClockOffsetMs`
+  to drive remote interpolation. `server_send_ms` is kept for transport latency
+  / queue diagnostics only. If a local test or offline transport has no
+  state-time anchor, or if adjacent `server_state_ms` deltas no longer match the
+  authoritative tick deltas, remote interpolation falls back to the
+  tick-duration timeline and marks `serverStateTimelineHealthy=false` in debug
+  snapshots.
+- The local authority-render marker is a debug view of "has the server confirmed
+  my movement yet", so it samples authoritative ack snapshots on the
+  `server_tick` + ack received-time axis instead of the remote wall-clock
+  TimeSync axis. This prevents TimeSync skew from presenting a stale local
+  authority cube as if the server had drifted away.
+- Remote interpolation and local authority-render diagnostics expose the active
+  time axis and last playback server time so CLI/devtools snapshots can show
+  whether rendering is using `server_state_ms` or an explicit tick path.
 
 ## Jump / airborne contract
 

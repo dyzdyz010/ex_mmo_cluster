@@ -181,9 +181,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert_receive {:gate_ws_send, iodata}, 500
 
-    assert <<0x8B, 1, 315::32-big, 2719::32-big, _server_send_ms_315::64-big, 42::64-big,
-             1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big,
-             _::binary>> = IO.iodata_to_binary(iodata)
+    assert <<0x8B, 2, 315::32-big, 2719::32-big, _server_state_ms_315::64-big,
+             _server_send_ms_315::64-big, 42::64-big, 1_650.0::float-64-big, 50.0::float-64-big,
+             _z::float-64-big, _::binary>> = IO.iodata_to_binary(iodata)
 
     wait_until(fn ->
       match?(
@@ -246,9 +246,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     assert_receive {:gate_ws_send, iodata}, 500
 
-    assert <<0x8B, 1, 415::32-big, 3001::32-big, _server_send_ms_415::64-big, 42::64-big,
-             1_650.0::float-64-big, 50.0::float-64-big, _z::float-64-big,
-             _::binary>> = IO.iodata_to_binary(iodata)
+    assert <<0x8B, 2, 415::32-big, 3001::32-big, _server_state_ms_415::64-big,
+             _server_send_ms_415::64-big, 42::64-big, 1_650.0::float-64-big, 50.0::float-64-big,
+             _z::float-64-big, _::binary>> = IO.iodata_to_binary(iodata)
 
     pending_state = :sys.get_state(pid)
     assert pending_state.partition_context.region_id == 10
@@ -1359,6 +1359,41 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     send(pid, :voxel_delivery_window)
     assert_receive {:gate_ws_send, ^opaque_field_payload}
+  end
+
+  test "queued voxel delivery window drains pending movement input before bulk sends" do
+    parent = self()
+    {:ok, pid} = WsConnection.start_link(self())
+
+    payload = snapshot_payload(793, {0, 0, 0}, 1)
+
+    :sys.replace_state(pid, fn state ->
+      scheduler =
+        payload
+        |> queued_snapshot_scheduler()
+
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        scene_ref: parent,
+        voxel_delivery: scheduler
+      })
+    end)
+
+    :sys.suspend(pid)
+    send(pid, :voxel_delivery_window)
+    WsConnection.receive_frame(pid, movement_input_frame(18))
+    :sys.resume(pid)
+
+    first_message =
+      receive do
+        message -> message
+      after
+        500 -> flunk("expected movement input or voxel delivery message")
+      end
+
+    assert {:"$gen_cast", {:movement_input, %{seq: 18}}} = first_message
+    assert_receive {:gate_ws_send, <<0x62, ^payload::binary>>}, 500
   end
 
   test "websocket delivery invalidate envelopes forward and clear retained chunk ledgers" do
@@ -3084,6 +3119,20 @@ defmodule GateServer.WsConnectionVoxelTest do
     SceneVoxelCodec.encode_chunk_snapshot_payload(%{request_id: 101, storage: storage})
   end
 
+  defp queued_snapshot_scheduler(payload) do
+    scheduler =
+      DeliveryScheduler.new(
+        max_window_bytes: byte_size(payload),
+        max_queue_items: 8,
+        max_queue_bytes: byte_size(payload) + 128,
+        window_interval_ms: 1_000
+      )
+
+    scheduler = %{scheduler | window_bytes_used: byte_size(payload)}
+    {scheduler, %{action: :queued}} = DeliveryScheduler.offer(scheduler, :snapshot, payload)
+    scheduler
+  end
+
   defp object_state_delta_payload(logical_scene_id, opts) do
     SceneVoxelCodec.encode_voxel_object_state_delta_payload(%{
       logical_scene_id: logical_scene_id,
@@ -3506,7 +3555,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   end
 
   defp movement_input_frame(seq) do
-    <<0x01, 1, seq::32-big, seq::32-big, 50::16-big, 0.0::float-32-big, 0.0::float-32-big,
+    <<0x01, 2, seq::32-big, seq::32-big, 50::16-big, 0.0::float-32-big, 0.0::float-32-big,
       0.0::float-32-big, 0::16-big>>
   end
 

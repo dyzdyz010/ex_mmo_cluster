@@ -2,6 +2,8 @@
 
 > 上游：`docs/2026-05-28-移动同步现状调研与重构方向.md`（现状调研 + 四支柱总纲 + codex 评审）。
 > 本 spec 是四支柱分阶段重构的**第一阶段（地基）**的可实现设计。方向：CONSOLIDATE+COMPLETE——保留客户端预测栈（CSP/reconciliation/interpolation），重构服务端 authority substrate。
+>
+> 2026-06-01 状态：1.1 wire 升级已落地；1.2 server-owned tick 已用伪造 `client_tick` 测试保护；1.3 web client 已周期性发送 TimeSync，offset 已 EWMA 平滑，远端插值已消费 `server_state_ms + serverClockOffsetMs`，本地 authority render 改为 `server_tick + ack received-time` 调试标记，`server_send_ms` 退为发送链路诊断；G5 jitter estimator 已修复；debug/observe 已暴露 offset jitter、offset jump、tick discontinuity、playback regression 和 `serverStateTimelineHealthy`。浏览器 smoke 已内置可配置 clock soak verdict，并支持 WebSocket network-emulation proxy 注入双向延迟/抖动/限速；本轮 40ms + 0..40ms jitter + 32768 B/s、5 轮 WS 闪断与 60s clock soak 已通过，clock soak 覆盖远端 `server_state_ms` 样本、0 playback regression，long movement verdict 另以逐帧位移差约束本地灰色 authority render。32KB/s 压测暴露的单 WebSocket 体素/movement 队头阻塞已通过服务端发送分流缓解：movement ack / remote move 走 bounded-FIFO realtime lane，field overlay 走 latest-only visual lane，chunk snapshot/delta 走 bulk pacing lane。Web client 已支持 transient socket close 自动重连，browser smoke 默认通过 WebSocket drop proxy 执行两轮已建连接闪断并验证双方重新 ready、远端玩家继续可见；远端跳跃 smoke 现在也断言首个 airborne 样本不超过当前网络条件下的延迟预算，并要求远端 server tick 推进、近距离样本保持 high priority 且 `deliveryInterval=1`。同日补充的 server->client `PlayerMove(0x83)` frame-loss smoke 使用 20% seeded 丢帧、40ms + 0..40ms jitter、32768 B/s、两轮 reconnect 与 15s clock soak，本地样本实际丢弃约 19% 的移动帧（7/36 到 7/37），远端首个 airborne 仍低于当前 1620ms 延迟预算；远端客户端也已在快照长时间缺失时把 stale airborne 外推钳制到已知地面，避免其他玩家在画面里穿地。随后补上服务端 queued replay 逐帧体素碰撞：3 帧 burst 现在触发 3 次 `VoxelCollision.resolve`，不会把网络抖动合成一段长扫掠。server-authoritative web runtime 现在会在本地预测中读取带权威 metadata 的 voxel mirror；缺失权威 chunk 时 fail-open 并暴露 `authority_unavailable`，同时立即请求缺失 strict chunk；strict 区满足后按 400cm 水平边界余量预取邻近 chunk。startup / 手动订阅 / movement prewarm 共享 in-flight chunk subscription 去重，半径订阅覆盖的邻居 chunk 不再重复请求，snapshot / invalidate 会清理 pending，未返回数据的 pending 10s 后才允许重试；启动订阅不再硬编码邻居 chunk，而是中心 chunk + `VITE_VOXEL_SUBSCRIBE_RADIUS`。最新 smoke 的本地 collision 诊断为 `clear` 而不是旧的 `disabled`。更底层真实网络包丢失、scene 级统一 tick、完整碰撞 truth 统一、AOI / handoff 级 chunk 预取策略与 lag compensation 仍是后续更高保真验收。
 
 ---
 
@@ -19,7 +21,7 @@
 
 ### 1.2 目标（G1–G5）
 - **G1 协议契约健壮化**：消除"固定 offset 靠注释解码"的脆弱性，加协议版本守卫。
-- **G2 wall-clock 时间基**：`PlayerMove(0x83)` / `MovementAck(0x8b)` 携带"服务器发送时间"。
+- **G2 state-time 时间基**：`PlayerMove(0x83)` / `MovementAck(0x8b)` 携带"服务器权威状态时间"，发送时间仅用于链路诊断。
 - **G3 server authoritative tick**：统一单帧/replay 两路径让 `movement_state.tick` server-owned 单调递增；`client_tick` 降为只读元数据。
 - **G4 客户端时间轴对齐**：把已算出却闲置的 `serverClockOffsetMs` 接入远端插值时间轴。
 - **G5 jitter estimator 修复**：改用 `|rtt − smoothedRtt|` 的 EWMA。
@@ -69,7 +71,7 @@
 
 | 决策 | 选择 | 理由 |
 |---|---|---|
-| **A 时间基** | **混合：`server_tick`（权威序号）+ `server_send_ms`（wall-clock 锚点）** | 序号用于和解/去重/碰撞顺序；wall-clock 解决"计数器当时间"；与现架构最兼容（均为追加字段）。 |
+| **A 时间基** | **混合：`server_tick`（权威序号）+ `server_state_ms`（权威状态时间锚点）+ `server_send_ms`（发送链路诊断）** | 序号用于和解/去重/碰撞顺序；state-time 解决"计数器当时间"并避免发送排队污染仿真时间；send-time 只用于观测链路延迟。 |
 | **B 协议契约** | **握手协商版本 + 热点帧 1 字节 schema version + decode 长度自校验** | 热路径开销最小（+1B），兼顾运行时错位保护。 |
 | **C server tick 归属** | **per-player server-owned 单调递增**（scene 级统一 tick 留支柱 2） | 符合分阶段；最小改动堵泄漏、统一两路径。 |
 
@@ -85,9 +87,9 @@
 
 > **第一版收口（无迁移债）**：热点帧直接定为目标布局（含 `schema_version`），**不保留旧 layout、不实现新旧 schema 并存的过渡窗口**。`protocol_version` 的作用是握手时**双端版本一致性断言**（不一致即 fail-fast 拒绝连接，杜绝静默错位）与为支柱 2/3/4 演进留的 version 锚点——**不是兼容层**。靠注释对齐 offset 的旧解码路径一并删除替换。后续支柱再加字段才走"追加 + version bump"。
 
-### G2 wall-clock 时间基
-1. `PlayerMove(0x83)` 与 `MovementAck(0x8b)` **追加** `server_send_ms`（u64，毫秒）字段于 payload 末尾。
-2. 时间源：服务端统一用 `System.os_time(:millisecond)`（wall-clock）作为 `server_send_ms`；与 `server_tick` 一起发出。（monotonic 仅用于本地间隔测量，不上线。）
+### G2 state-time 时间基
+1. `PlayerMove(0x83)` 与 `MovementAck(0x8b)` **追加** `server_state_ms`（u64，毫秒）与 `server_send_ms`（u64，毫秒）字段。
+2. 时间源：Scene 以 `movement_epoch_ms + movement_state.tick * fixed_dt_ms` 生成 `server_state_ms`，确保状态时间随仿真 tick 等距递增；Gate 在 TCP/UDP/WS 发送边缘生成 `server_send_ms`，仅用于延迟、排队和 QoS 诊断。（monotonic 仅用于本地间隔测量，不上线。）
 3. `time_sync(0x85)` 维持现有请求-回复三时间戳；本阶段强化：客户端周期探测（频率 plan 定，建议 1–2s）+ offset 用 EWMA 平滑。
 
 ### G3 server authoritative tick
@@ -97,10 +99,10 @@
 4. integrator 层：保持 `grounded_step` 接口，但确保其 `tick` 输入恒为 server 分配值（通过上层 renumber 保证；不改 NIF 算法）。
 
 ### G4 客户端时间轴对齐
-1. 远端插值：`RemotePlayerState` 的时间轴从 `serverTick × tickDuration` 改为**基于 `server_send_ms`**——客户端用 `localArrival + clockOffset` 将快照锚定到统一 server 时间轴，`server_tick` 退为序号（去重/排序，保留 `pushSnapshot:70` 的单调过滤）。
-2. `serverClockOffsetMs` 从 `remotePlayerController` 接入 `RemotePlayerState.sampleMotion` 的时间换算（消除 2.2 的断路）。
-3. 本地和解：reconcile 的权威态时间锚定改用 `authTick` + `server_send_ms` 一致化（保持 `reconcile.ts` 现有 replay 算法不变，仅校正时间对齐）。
-4. interpolation delay 与 `deliveryInterval` 自适应（`remotePlayer.ts:160-173`）保留；其上限与 `server_send_ms` 抖动联动（plan 调参）。
+1. 远端插值：`RemotePlayerState` 的时间轴从 `serverTick × tickDuration` 改为**优先基于 `server_state_ms`**——客户端用 `localArrival + clockOffset` 将快照锚定到统一 server 状态时间轴，`server_tick` 退为序号（去重/排序，保留 `pushSnapshot:70` 的单调过滤）。当本地测试/旧离线快照缺失状态时间，或相邻 `server_state_ms` 间隔不再匹配 tick 间隔时，运行时会显式标记 `serverStateTimelineHealthy=false` 并用 `server_tick` 维持可视化单调性；这是诊断可见的安全降级，不是旧协议兼容层。
+2. `serverClockOffsetMs` 从共享 `ServerClockEstimator` 接入远端实体的 `RemotePlayerState.sampleMotion` 时间换算（消除 2.2 的断路）。本地 authority render 不走 wall-clock TimeSync：它是调试"服务器是否已确认我的移动"的本地标记，按 `server_tick + ack received-time` 采样 ack 原始权威态，避免 TimeSync 偏差把灰色服务端方块稳定拖到旧快照。
+3. 本地和解：reconcile 的权威态仍以 `auth_tick` / `ack_seq` 作为顺序真相；可视化 authority render 保留 RemotePlayerState 的 Hermite 插值和 0.6s 限幅外推，但时间轴与远端玩家分离，replay 算法本身保持不变。
+4. interpolation delay 与 `deliveryInterval` 自适应（`remotePlayer.ts:160-173`）保留；其上限与 `server_state_ms` 抖动联动（plan 调参）。
 
 ### G5 jitter estimator 修复
 - `localPlayer.ts:147-153`：引入 `smoothedRtt`（EWMA），`jitter = EWMA(|rtt − smoothedRtt|)`；`softPositionError` 据此自适应（保留 `governance.ts` 上限 8cm）。
@@ -113,8 +115,8 @@
 |---|---|---|
 | 握手帧 | 新增 `protocol_version(u16)` | enter-scene/auth 完成后 |
 | `Movement(0x01)` | `msg_type` 后插 `schema_version(u8)` | layout 变更，双端同步 |
-| `PlayerMove(0x83)` | 插 `schema_version(u8)` + 末尾追加 `server_send_ms(u64)` | layout 变更 + 追加 |
-| `MovementAck(0x8b)` | 插 `schema_version(u8)` + 末尾追加 `server_send_ms(u64)` | layout 变更 + 追加 |
+| `PlayerMove(0x83)` | 插 `schema_version(u8)` + 追加 `server_state_ms(u64)` / `server_send_ms(u64)` | layout 变更 + 追加 |
+| `MovementAck(0x8b)` | 插 `schema_version(u8)` + 追加 `server_state_ms(u64)` / `server_send_ms(u64)` | layout 变更 + 追加 |
 | `time_sync(0x85)` | 不变（强化使用频率/平滑，非 wire 变更） | |
 
 > 精确字节偏移在 plan 阶段连同 codec 实现钉死，并同步更新 `docs/2026-04-10-线协议规范.md`（线协议单一真相源）。
@@ -125,7 +127,7 @@
 
 **服务端（Elixir）**：
 - `apps/gate_server/lib/gate_server/codec.ex`（编解码 + schema_version + 长度校验）
-- `apps/scene_server/lib/scene_server/worker/player_character.ex`（单帧路径 renumber 统一、ack/snapshot 盖 `server_send_ms`）
+- `apps/scene_server/lib/scene_server/worker/player_character.ex`（单帧路径 renumber 统一、ack/snapshot 盖 `server_state_ms`）
 - `apps/scene_server/lib/scene_server/movement/{engine.ex,ack.ex,remote_snapshot.ex,state.ex}`（tick 语义、ack/snapshot 字段）
 - 握手/接入路径（`gate_server` 连接建立、enter-scene）+ `time_sync` 处理点
 
@@ -133,10 +135,10 @@
 - `apps/scene_server/native/movement_core/src/integrator.rs`（确保 tick 输入为 server 值；不改算法）
 
 **客户端（TS, `clients/web_client/src`）**：
-- `infrastructure/net/gateProtocol.ts`（schema_version + 长度校验 + 解析 `server_send_ms`）
+- `infrastructure/net/gateProtocol.ts`（schema_version + 长度校验 + 解析 `server_state_ms` / `server_send_ms`）
 - `infrastructure/net/serverMovementTransport.ts`（time_sync 频率/平滑、offset 暴露）
-- `domain/movement/remotePlayer.ts`（时间轴改 wall-clock）、`localPlayer.ts`（jitter 修复 + 和解时间对齐）
-- `app/controllers/remotePlayerController.ts`（offset 接入插值）
+- `domain/movement/remotePlayer.ts`（时间轴改 wall-clock）、`domain/movement/serverClock.ts`（TimeSync offset 平滑）、`localPlayer.ts`（jitter 修复）
+- `app/controllers/remotePlayerController.ts` 与 `app/controllers/localPlayerController.ts`（offset 接入远端插值；本地 authority render 按 ack received-time 采样）
 
 **参考实现（滞后跟进，非 parity 目标）**：`clients/bevy_client`、`movement_core` 共享算法保持 bit-exact。
 
@@ -153,11 +155,11 @@
 
 **门槛（沿用 + 新增）**：
 - 沿用既有：`total_hard_snaps = 0`、`drift ≤ 8u`。
-- 新增：插值时间轴跳变计数 = 0；tick 序列断点 = 0；伪造 `client_tick` 注入测试下权威 tick 不受影响。
+- 新增：插值时间轴跳变计数受限；tick 序列断点可观测；伪造 `client_tick` 注入测试下权威 tick 不受影响；clock soak verdict 要求 remote entity 使用 `server_state_ms` 时间轴，或在 `serverStateTimelineHealthy=false` 时使用显式 `server_tick` 降级；正常 `server_state_ms` 样本仍要求 TimeSync 样本持续增长。本地 authority render 预期使用 `server_tick + ack received-time`，long movement verdict 另用逐帧 `local / authority / authorityRender` 位移差约束灰色服务端方块漂移。
 
 **验证入口**（复用现有 + 扩展）：
 - `powershell scripts\e2e-stdio-movement.ps1`、`scripts\e2e-live-movement.ps1`（drift/reconcile）。
-- `node scripts/run_browser_movement_smoke_supervised.js`（浏览器双客户端）。
+- `node scripts/run_browser_movement_smoke_supervised.js`（浏览器双客户端 + 多轮断线重连 + 远端 airborne 延迟预算 + realtime lane 质量 + clock soak；默认通过 WS drop proxy 断开已建连接两轮，`BROWSER_MOVEMENT_RECONNECT_SMOKE=0` 可关闭，`BROWSER_MOVEMENT_RECONNECT_CYCLES=1..5` 可调轮数；`BROWSER_MOVEMENT_REMOTE_JUMP_MAX_AIRBORNE_MS` 可覆盖远端跳跃延迟预算；`BROWSER_MOVEMENT_CLOCK_SOAK_MS` 可拉长到 60s；`BROWSER_MOVEMENT_NET_DELAY_MS` / `BROWSER_MOVEMENT_NET_JITTER_MS` / `BROWSER_MOVEMENT_NET_BYTES_PER_SEC` 启用 WS network-emulation proxy）。
 - 服务端 stdio：`player_state <cid>` 扩展时间/tick 字段；observe 写 `.demo/observe/`。
 
 ---
@@ -167,7 +169,7 @@
 | 风险 | 缓解 |
 |---|---|
 | 热点帧 layout 变更（第一版无兼容层） | web_client 与服务端同步发布；`protocol_version` 握手做版本一致性断言（不一致 fail-fast）；bevy_client 作为参考实现滞后跟进 |
-| `server_send_ms` 新时间轴质量需验证（不保留旧路径回退） | observe 对比新旧时间轴 drift 仅作**开发期验证手段**；不达标则合入前修正，**不**保留旧 `serverTick × dt` 路径作运行时回退 |
+| `server_state_ms` 新时间轴质量需验证 | observe/CLI 暴露 `serverStateTimelineHealthy`、active time axis 和 playback regression；正常流量优先用状态时间，缺失状态时间或状态时间间隔异常时显式降级到 tick timeline，避免播放时间倒退 |
 | time_sync 频率提升带来额外流量 | 频率可配；仅 RTT 探测，载荷极小 |
 | 与体素权威化主线（Phase 7）并行的协议冲突 | 协议变更集中在 movement 消息，避开 voxel snapshot/delta；变更前在线协议规范文档登记 |
 
@@ -182,7 +184,7 @@
 
 ## 10. 交付定义（Definition of Done）
 1. 协议握手版本协商 + 热点帧 schema_version + decode 长度自校验落地，双端通过。
-2. `PlayerMove`/`Ack` 携带 `server_send_ms`；客户端插值时间轴改用 wall-clock + clock offset。
+2. `PlayerMove`/`Ack` 携带 `server_state_ms` / `server_send_ms`；客户端插值时间轴改用状态时间 + clock offset。
 3. 单帧/replay 两路径 tick 统一为 server-owned，`client_tick` 注入测试不污染权威 tick。
 4. jitter estimator 修正，softError 自适应在稳定/抖动网络下表现合理。
 5. 全部门槛通过（§7），observe 产物可复现；线协议规范 + README 已回写。

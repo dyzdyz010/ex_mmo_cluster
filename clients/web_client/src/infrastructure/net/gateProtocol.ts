@@ -141,6 +141,15 @@ export function encodeHeartbeat(timestampMs: number): Uint8Array {
   return new Uint8Array(buffer);
 }
 
+export function encodeTimeSync(requestId: number, clientSendTs: number): Uint8Array {
+  const buffer = new ArrayBuffer(1 + 8 + 8);
+  const view = new DataView(buffer);
+  view.setUint8(0, 0x03);
+  writeU64(view, 1, requestId);
+  writeU64(view, 9, clientSendTs);
+  return new Uint8Array(buffer);
+}
+
 export function encodeChatSayScoped(requestId: number, scope: ChatScope, text: string): Uint8Array {
   const textBytes = encoder.encode(text);
   const buffer = new ArrayBuffer(1 + 8 + 1 + 2 + textBytes.length);
@@ -238,67 +247,71 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       };
     }
     case 0x8b:
-      if (!hasBytes(view, 113)) return null;
+      if (!hasBytes(view, 121)) return null;
       if (view.getUint8(1) !== MOVEMENT_WIRE_SCHEMA) return null;
-      // Pillar 1.1 layout (113 bytes):
+      // Movement schema v2 layout (121 bytes):
       //   [0]   opcode (1)
       //   [1]   schema_version u8 (1)
       //   [2]   ack_seq u32 (4)
       //   [6]   auth_tick u32 (4)
-      //   [10]  server_send_ms u64 (8)
-      //   [18]  cid i64 (8)
-      //   [26]  position vec3 f64×3 (24)
-      //   [50]  velocity vec3 f64×3 (24)
-      //   [74]  acceleration vec3 f64×3 (24)
-      //   [98]  movement_mode u8 (1)
-      //   [99]  correction_flags u32 (4)
-      //   [103] fixed_dt_ms u16 (2)
-      //   [105] ground_z f64 (8)
-      // Total: 113 bytes
+      //   [10]  server_state_ms u64 (8)
+      //   [18]  server_send_ms u64 (8)
+      //   [26]  cid i64 (8)
+      //   [34]  position vec3 f64×3 (24)
+      //   [58]  velocity vec3 f64×3 (24)
+      //   [82]  acceleration vec3 f64×3 (24)
+      //   [106] movement_mode u8 (1)
+      //   [107] correction_flags u32 (4)
+      //   [111] fixed_dt_ms u16 (2)
+      //   [113] ground_z f64 (8)
+      // Total: 121 bytes
       return {
         type: "movement_ack",
         ack: {
           ackSeq: view.getUint32(2, false),
           authTick: view.getUint32(6, false),
-          serverSendMs: Number(view.getBigUint64(10, false)),
-          position: readServerVec3AsBrowserVec3(view, 26),
-          velocity: readServerVec3AsBrowserVec3(view, 50),
-          acceleration: readServerVec3AsBrowserVec3(view, 74),
-          movementMode: decodeMovementMode(view.getUint8(98)),
-          correctionFlags: view.getUint32(99, false),
-          serverFixedDtMs: view.getUint16(103, false),
+          serverStateMs: Number(view.getBigUint64(10, false)),
+          serverSendMs: Number(view.getBigUint64(18, false)),
+          position: readServerVec3AsBrowserVec3(view, 34),
+          velocity: readServerVec3AsBrowserVec3(view, 58),
+          acceleration: readServerVec3AsBrowserVec3(view, 82),
+          movementMode: decodeMovementMode(view.getUint8(106)),
+          correctionFlags: view.getUint32(107, false),
+          serverFixedDtMs: view.getUint16(111, false),
           // Phase A1-4: server's launch z (ground level for the current
           // airborne arc). Server maps z → browser y in readServerVec3AsBrowserVec3,
           // so we mirror the same convention here for groundY.
-          groundY: view.getFloat64(105, false),
+          groundY: view.getFloat64(113, false),
         },
       };
     case 0x83:
-      if (!hasBytes(view, 95)) return null;
+      if (!hasBytes(view, 103)) return null;
       if (view.getUint8(1) !== MOVEMENT_WIRE_SCHEMA) return null;
-      // Pillar 1.1 layout (compact 95B / complete 106B):
+      // Movement schema v2 layout (compact 103B / complete 114B):
       //   [0]  opcode (1)
       //   [1]  schema_version u8 (1)
       //   [2]  cid u64 (8)
       //   [10] server_tick u32 (4)
-      //   [14] server_send_ms u64 (8)
-      //   [22] pos vec3 f64×3 (24)
-      //   [46] vel vec3 f64×3 (24)
-      //   [70] accel vec3 f64×3 (24)
-      //   [94] movement_mode u8 (1)
-      //  [95+] optional: priority_band u8, priority_score f32,
+      //   [14] server_state_ms u64 (8)
+      //   [22] server_send_ms u64 (8)
+      //   [30] pos vec3 f64×3 (24)
+      //   [54] vel vec3 f64×3 (24)
+      //   [78] accel vec3 f64×3 (24)
+      //   [102] movement_mode u8 (1)
+      //  [103+] optional: priority_band u8, priority_score f32,
       //         observer_distance f32, delivery_interval u16 (11 bytes)
       return {
         type: "player_move",
         snapshot: {
           cid: readI64(view, 2),
           serverTick: view.getUint32(10, false),
-          serverSendMs: Number(view.getBigUint64(14, false)),
-          position: readServerVec3AsBrowserVec3(view, 22),
-          velocity: readServerVec3AsBrowserVec3(view, 46),
-          acceleration: readServerVec3AsBrowserVec3(view, 70),
-          movementMode: decodeMovementMode(view.getUint8(94)),
-          ...decodeAoiPriority(view, 95),
+          serverStateMs: Number(view.getBigUint64(14, false)),
+          serverSendMs: Number(view.getBigUint64(22, false)),
+          position: readServerVec3AsBrowserVec3(view, 30),
+          velocity: readServerVec3AsBrowserVec3(view, 54),
+          acceleration: readServerVec3AsBrowserVec3(view, 78),
+          movementMode: decodeMovementMode(view.getUint8(102)),
+          ...decodeAoiPriority(view, 103),
         },
       };
     case 0x85:

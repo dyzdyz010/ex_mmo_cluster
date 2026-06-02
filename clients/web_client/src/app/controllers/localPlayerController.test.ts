@@ -125,6 +125,15 @@ describe("LocalPlayerController", () => {
     }
 
     expect(maxAdjacentDrop).toBeLessThan(0.35);
+
+    const finalSample = samples[samples.length - 1];
+    expect(finalSample?.localX).toBeCloseTo(finalSample?.renderedX ?? 0, 5);
+    expect(finalSample?.authorityX).toBeCloseTo(controller.getAuthoritativePosition().x, 5);
+    expect(samples.some((sample) => sample.authorityRenderDeltaDistance > 0)).toBe(true);
+    expect(Math.max(...samples.map((sample) => sample.localAuthorityDistance))).toBeGreaterThan(0);
+    expect(Math.max(...samples.map((sample) => sample.localAuthorityRenderDistance))).toBeLessThan(
+      0.001,
+    );
   });
 
   it("does not rewind the render phase when an accepted ack has no correction", () => {
@@ -148,6 +157,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: acceptedState!.seq,
         authTick: acceptedState!.tick,
+        serverStateMs: 0,
         serverSendMs: 0,
         position: acceptedState!.position.clone(),
         velocity: acceptedState!.velocity.clone(),
@@ -190,6 +200,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: firstInput!.seq,
         authTick: firstInput!.clientTick,
+        serverStateMs: 0,
         serverSendMs: 0,
         position: firstAuthoritative.position.clone(),
         velocity: firstAuthoritative.velocity.clone(),
@@ -219,6 +230,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: 0,
         authTick: 0,
+        serverStateMs: 0,
         serverSendMs: 0,
         position: new Vector3(0, 0, 0),
         velocity: new Vector3(100, 0, 0),
@@ -249,6 +261,7 @@ describe("LocalPlayerController", () => {
       ack: {
         ackSeq: 0,
         authTick: 0,
+        serverStateMs: 0,
         serverSendMs: 0,
         position: new Vector3(0, 0, 0),
         velocity: new Vector3(0, 0, 0),
@@ -288,6 +301,26 @@ describe("LocalPlayerController", () => {
 
     expect(transport.sentInputs).toHaveLength(2);
     expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
+    expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+  });
+
+  it("coalesces repeated idle movement frames between keepalives", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    for (let frame = 0; frame < 10; frame += 1) {
+      controller.onFrame((frame + 1) * 100, 100);
+    }
+
+    expect(transport.sentInputs).toHaveLength(1);
+    expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Brake);
+
+    controller.onFrame(5_100, 100);
+
+    expect(transport.sentInputs).toHaveLength(2);
     expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
   });
 
@@ -355,6 +388,10 @@ describe("LocalPlayerController", () => {
     expect(samples.some((sample) => sample.renderedY !== startY)).toBe(true);
     expect(samples.some((sample) => sample.movementMode === "airborne")).toBe(true);
     expect(samples.some((sample) => Math.abs(sample.deltaY) > 0)).toBe(true);
+    expect(samples.some((sample) => Math.abs(sample.authorityRenderDeltaY) > 0)).toBe(true);
+    expect(samples.every((sample) => Number.isFinite(sample.localAuthorityRenderDistance))).toBe(
+      true,
+    );
   });
 
   it("merges keyboard and virtual stick axes, clamping to unit length", () => {

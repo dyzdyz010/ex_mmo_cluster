@@ -4,9 +4,9 @@ defmodule GateServer.CodecTest do
   alias GateServer.Codec
 
   describe "decode movement input" do
-    test "decodes movement input with all fields (schema v1)" do
+    test "decodes movement input with all fields (schema v2)" do
       msg =
-        <<0x01, 1, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
+        <<0x01, 2, 55::32-big, 1000::32-big, 100::16-big, 1.0::float-32-big, 0.5::float-32-big,
           1.25::float-32-big, 3::16-big>>
 
       assert {:ok,
@@ -21,9 +21,9 @@ defmodule GateServer.CodecTest do
                }}} == Codec.decode(msg)
     end
 
-    test "decodes movement input with zero direction (schema v1)" do
+    test "decodes movement input with zero direction (schema v2)" do
       msg =
-        <<0x01, 1, 1::32-big, 500::32-big, 33::16-big, 0.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 2, 1::32-big, 500::32-big, 33::16-big, 0.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 2::16-big>>
 
       assert {:ok,
@@ -39,7 +39,7 @@ defmodule GateServer.CodecTest do
     end
 
     test "rejects movement input with unknown schema version" do
-      # schema byte is explicitly 9 (≠ @movement_wire_schema 1); the trailing
+      # schema byte is explicitly 9 (≠ @movement_wire_schema 2); the trailing
       # 24 bytes are payload-sized filler so length is sufficient and only the
       # schema mismatch triggers the rejection.
       msg = <<0x01, 9, 0::size(24)-unit(8)>>
@@ -48,7 +48,7 @@ defmodule GateServer.CodecTest do
     end
 
     test "rejects truncated movement input (schema present but payload short)" do
-      assert {:error, :invalid_message} = Codec.decode(<<0x01, 1, 55::32-big>>)
+      assert {:error, :invalid_message} = Codec.decode(<<0x01, 2, 55::32-big>>)
     end
 
     test "rejects truncated movement input (opcode only, schema byte missing)" do
@@ -899,7 +899,7 @@ defmodule GateServer.CodecTest do
       {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 12, {10.0, 20.0, 30.0}, 1})
 
       assert <<0x84, 12::64-big, 0x00, 10.0::float-64-big, 20.0::float-64-big, 30.0::float-64-big,
-               1::32-big, 1::16-big>> == bin
+               1::32-big, 2::16-big>> == bin
     end
 
     test "encodes error" do
@@ -909,17 +909,18 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode movement_ack" do
-    test "encodes movement ack with schema_version + server_send_ms + ground_z" do
+    test "encodes movement ack with schema_version + server_state_ms + server_send_ms + ground_z" do
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 10, 77, 1_700_000_000_123, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5},
-           {0.1, 0.2, 0.3}, :grounded, 3, 100, 3.5}
+          {:movement_ack, 10, 77, 1_700_000_000_100, 1_700_000_000_123, 42, {1.5, 2.5, 3.5},
+           {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3}, :grounded, 3, 100, 3.5}
         )
 
-      assert <<0x8B, 1, 10::32-big, 77::32-big, 1_700_000_000_123::64-big, 42::64-big,
-               1.5::float-64-big, 2.5::float-64-big, 3.5::float-64-big, 4.5::float-64-big,
-               5.5::float-64-big, 6.5::float-64-big, 0.1::float-64-big, 0.2::float-64-big,
-               0.3::float-64-big, 0::8, 3::32-big, 100::16-big, 3.5::float-64-big>> == bin
+      assert <<0x8B, 2, 10::32-big, 77::32-big, 1_700_000_000_100::64-big,
+               1_700_000_000_123::64-big, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
+               3.5::float-64-big, 4.5::float-64-big, 5.5::float-64-big, 6.5::float-64-big,
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 3::32-big,
+               100::16-big, 3.5::float-64-big>> == bin
     end
 
     test "rejects movement_ack with negative server_send_ms (no ArgumentError, clean error tuple)" do
@@ -927,8 +928,8 @@ defmodule GateServer.CodecTest do
       # fail the guard and fall through to the encode/1 fallback, not raise.
       assert {:error, :unknown_message} =
                Codec.encode(
-                 {:movement_ack, 10, 77, -1, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3},
-                  :grounded, 3, 100, 3.5}
+                 {:movement_ack, 10, 77, 1_700_000_000_100, -1, 42, {1.5, 2.5, 3.5},
+                  {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3}, :grounded, 3, 100, 3.5}
                )
     end
   end
@@ -946,30 +947,31 @@ defmodule GateServer.CodecTest do
       assert <<0x82, 100::64-big>> == bin
     end
 
-    test "encodes player_move (compact, schema v1 + server_send_ms)" do
+    test "encodes player_move (compact, schema v2 + server_state_ms + server_send_ms)" do
       {:ok, bin} =
         Codec.encode(
-          {:player_move, 55, 9, 1_700_000_000_123, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
-           {0.1, 0.2, 0.3}, :airborne}
+          {:player_move, 55, 9, 1_700_000_000_100, 1_700_000_000_123, {1.0, 2.0, 3.0},
+           {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :airborne}
         )
 
-      assert <<0x83, 1, 55::64-big, 9::32-big, 1_700_000_000_123::64-big, 1.0::float-64-big,
-               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
-               6.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
-               1::8>> == bin
+      assert <<0x83, 2, 55::64-big, 9::32-big, 1_700_000_000_100::64-big,
+               1_700_000_000_123::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+               4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big, 0.1::float-64-big,
+               0.2::float-64-big, 0.3::float-64-big, 1::8>> == bin
     end
 
-    test "encodes player_move with AOI priority metadata (schema v1 + server_send_ms)" do
+    test "encodes player_move with AOI priority metadata (schema v2 + server_state_ms + server_send_ms)" do
       {:ok, bin} =
         Codec.encode(
-          {:player_move, 55, 9, 1_700_000_000_123, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
-           {0.1, 0.2, 0.3}, :grounded, :medium, 0.75, 125.5, 2}
+          {:player_move, 55, 9, 1_700_000_000_100, 1_700_000_000_123, {1.0, 2.0, 3.0},
+           {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :grounded, :medium, 0.75, 125.5, 2}
         )
 
-      assert <<0x83, 1, 55::64-big, 9::32-big, 1_700_000_000_123::64-big, 1.0::float-64-big,
-               2.0::float-64-big, 3.0::float-64-big, 4.0::float-64-big, 5.0::float-64-big,
-               6.0::float-64-big, 0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8,
-               1::8, 0.75::float-32-big, 125.5::float-32-big, 2::16-big>> == bin
+      assert <<0x83, 2, 55::64-big, 9::32-big, 1_700_000_000_100::64-big,
+               1_700_000_000_123::64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
+               4.0::float-64-big, 5.0::float-64-big, 6.0::float-64-big, 0.1::float-64-big,
+               0.2::float-64-big, 0.3::float-64-big, 0::8, 1::8, 0.75::float-32-big,
+               125.5::float-32-big, 2::16-big>> == bin
     end
 
     test "rejects player_move with negative server_send_ms (no ArgumentError, clean error tuple)" do
@@ -977,14 +979,14 @@ defmodule GateServer.CodecTest do
       # fail the guard and fall through to the encode/1 fallback, not raise.
       assert {:error, :unknown_message} =
                Codec.encode(
-                 {:player_move, 55, 9, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3},
-                  :airborne}
+                 {:player_move, 55, 9, 1_700_000_000_100, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
+                  {0.1, 0.2, 0.3}, :airborne}
                )
 
       assert {:error, :unknown_message} =
                Codec.encode(
-                 {:player_move, 55, 9, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3},
-                  :grounded, :medium, 0.75, 125.5, 2}
+                 {:player_move, 55, 9, 1_700_000_000_100, -1, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
+                  {0.1, 0.2, 0.3}, :grounded, :medium, 0.75, 125.5, 2}
                )
     end
   end
@@ -1190,9 +1192,9 @@ defmodule GateServer.CodecTest do
   end
 
   describe "encode → decode roundtrip" do
-    test "movement input roundtrip from client perspective (schema v1)" do
+    test "movement input roundtrip from client perspective (schema v2)" do
       client_msg =
-        <<0x01, 1, 9::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 2, 9::32-big, 1000::32-big, 33::16-big, 1.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 2::16-big>>
 
       assert {:ok,
@@ -1216,11 +1218,11 @@ defmodule GateServer.CodecTest do
 
       {:ok, move} =
         Codec.encode(
-          {:player_move, 1, 1, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded}
+          {:player_move, 1, 1, 0, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded}
         )
 
-      # schema v1: opcode(1) + schema(1) + cid(8) + server_tick(4) + server_send_ms(8) + 9*f64(72) + mode(1) = 95
-      assert byte_size(move) == 95
+      # schema v2: opcode(1) + schema(1) + cid(8) + tick(4) + state_ms(8) + send_ms(8) + 9*f64(72) + mode(1) = 103
+      assert byte_size(move) == 103
     end
   end
 end

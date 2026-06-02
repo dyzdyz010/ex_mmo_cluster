@@ -1,5 +1,10 @@
 import { Vector2, Vector3 } from "three";
-import { decodeServerMessage, encodeChatSayScoped, encodeMovementInput } from "./gateProtocol";
+import {
+  decodeServerMessage,
+  encodeChatSayScoped,
+  encodeMovementInput,
+  encodeTimeSync,
+} from "./gateProtocol";
 import {
   AoiPriorityBand,
   CorrectionFlag,
@@ -7,7 +12,7 @@ import {
   MovementMode,
   type MoveInputFrame,
 } from "@domain/movement/types";
-import { MOVEMENT_WIRE_SCHEMA } from "./protocolVersion";
+import { MOVEMENT_WIRE_SCHEMA, PROTOCOL_VERSION } from "./protocolVersion";
 
 function writeVec3(view: DataView, offset: number, x: number, y: number, z: number): void {
   view.setFloat64(offset, x, false);
@@ -16,6 +21,15 @@ function writeVec3(view: DataView, offset: number, x: number, y: number, z: numb
 }
 
 describe("gate movement protocol", () => {
+  it("encodes time sync requests with request id and client wall-clock timestamp", () => {
+    const encoded = encodeTimeSync(77, 1_700_000_000_123);
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+
+    expect(view.getUint8(0)).toBe(0x03);
+    expect(view.getBigUint64(1, false)).toBe(77n);
+    expect(view.getBigUint64(9, false)).toBe(1_700_000_000_123n);
+  });
+
   it("encodes scoped chat with only request id, scope, and text", () => {
     const encoded = encodeChatSayScoped(43, "region", "region hello");
     const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
@@ -71,26 +85,28 @@ describe("gate movement protocol", () => {
   });
 
   it("decodes movement ack mode and correction flags from the wire", () => {
-    // Pillar 1.1 layout (113 bytes):
-    //   [0]  opcode, [1] schema_version=1, [2] ack_seq u32, [6] auth_tick u32,
-    //   [10] server_send_ms u64, [18] cid i64, [26] pos, [50] vel, [74] accel,
-    //   [98] mode, [99] flags u32, [103] fixed_dt_ms u16, [105] ground_z f64
-    const buffer = new ArrayBuffer(113);
+    // Movement schema v2 layout (121 bytes):
+    //   [0] opcode, [1] schema_version, [2] ack_seq, [6] auth_tick,
+    //   [10] server_state_ms, [18] server_send_ms, [26] cid,
+    //   [34] pos, [58] vel, [82] accel, [106] mode,
+    //   [107] flags, [111] fixed_dt_ms, [113] ground_z.
+    const buffer = new ArrayBuffer(121);
     const view = new DataView(buffer);
     view.setUint8(0, 0x8b);
-    view.setUint8(1, 1); // schema_version
+    view.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     view.setUint32(2, 10, false); // ack_seq
     view.setUint32(6, 11, false); // auth_tick
-    view.setBigUint64(10, 0n, false); // server_send_ms
-    view.setBigInt64(18, 42n, false); // cid
-    writeVec3(view, 26, 1, 2, 3); // pos
-    writeVec3(view, 50, 4, 5, 6); // vel
-    writeVec3(view, 74, 7, 8, 9); // accel
-    view.setUint8(98, 1); // movement_mode airborne
-    view.setUint32(99, CorrectionFlag.StatusOverride, false); // correction_flags
-    view.setUint16(103, 100, false); // fixed_dt_ms
-    // ground_z at 105 (server z → browser y after vec3 swap)
-    view.setFloat64(105, 7.5, false);
+    view.setBigUint64(10, 1_700_000_000_000n, false); // server_state_ms
+    view.setBigUint64(18, 1_700_000_000_020n, false); // server_send_ms
+    view.setBigInt64(26, 42n, false); // cid
+    writeVec3(view, 34, 1, 2, 3); // pos
+    writeVec3(view, 58, 4, 5, 6); // vel
+    writeVec3(view, 82, 7, 8, 9); // accel
+    view.setUint8(106, 1); // movement_mode airborne
+    view.setUint32(107, CorrectionFlag.StatusOverride, false); // correction_flags
+    view.setUint16(111, 100, false); // fixed_dt_ms
+    // ground_z at 113 (server z → browser y after vec3 swap)
+    view.setFloat64(113, 7.5, false);
 
     const message = decodeServerMessage(buffer);
 
@@ -98,6 +114,8 @@ describe("gate movement protocol", () => {
     if (message?.type !== "movement_ack") return;
     expect(message.ack.movementMode).toBe(MovementMode.Airborne);
     expect(message.ack.correctionFlags).toBe(CorrectionFlag.StatusOverride);
+    expect(message.ack.serverStateMs).toBe(1_700_000_000_000);
+    expect(message.ack.serverSendMs).toBe(1_700_000_000_020);
     expect(message.ack.position).toEqual(new Vector3(1, 3, 2));
     expect(message.ack.serverFixedDtMs).toBe(100);
     expect(message.ack.groundY).toBe(7.5);
@@ -113,7 +131,7 @@ describe("gate movement protocol", () => {
     view.setUint8(9, 0); // ok
     writeVec3(view, 10, 100, 200, 90);
     view.setUint32(34, 42, false); // expected_seq
-    view.setUint16(38, 1, false); // protocol_version
+    view.setUint16(38, PROTOCOL_VERSION, false);
 
     const message = decodeServerMessage(buffer);
     expect(message?.type).toBe("enter_scene_ok");
@@ -153,48 +171,53 @@ describe("gate movement protocol", () => {
   });
 
   it("decodes remote snapshot movement mode from the wire", () => {
-    // Pillar 1.1 layout (compact 95B):
-    //   [0] opcode, [1] schema=1, [2] cid u64, [10] server_tick u32,
-    //   [14] server_send_ms u64, [22] pos, [46] vel, [70] accel, [94] mode
-    const buffer = new ArrayBuffer(95);
+    // Movement schema v2 layout (compact 103B):
+    //   [0] opcode, [1] schema, [2] cid, [10] server_tick,
+    //   [14] server_state_ms, [22] server_send_ms,
+    //   [30] pos, [54] vel, [78] accel, [102] mode.
+    const buffer = new ArrayBuffer(103);
     const view = new DataView(buffer);
     view.setUint8(0, 0x83);
-    view.setUint8(1, 1); // schema_version
+    view.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     view.setBigInt64(2, 42n, false); // cid
     view.setUint32(10, 7, false); // server_tick
-    view.setBigUint64(14, 0n, false); // server_send_ms
-    writeVec3(view, 22, 1, 2, 3); // pos
-    writeVec3(view, 46, 4, 5, 6); // vel
-    writeVec3(view, 70, 7, 8, 9); // accel
-    view.setUint8(94, 1); // movement_mode airborne
+    view.setBigUint64(14, 1_700_000_000_000n, false); // server_state_ms
+    view.setBigUint64(22, 1_700_000_000_020n, false); // server_send_ms
+    writeVec3(view, 30, 1, 2, 3); // pos
+    writeVec3(view, 54, 4, 5, 6); // vel
+    writeVec3(view, 78, 7, 8, 9); // accel
+    view.setUint8(102, 1); // movement_mode airborne
 
     const message = decodeServerMessage(buffer);
 
     expect(message?.type).toBe("player_move");
     if (message?.type !== "player_move") return;
     expect(message.snapshot.movementMode).toBe(MovementMode.Airborne);
+    expect(message.snapshot.serverStateMs).toBe(1_700_000_000_000);
+    expect(message.snapshot.serverSendMs).toBe(1_700_000_000_020);
   });
 
   it("decodes optional AOI priority metadata on remote snapshots", () => {
-    // Pillar 1.1 complete layout (106B):
-    //   [0] opcode, [1] schema=1, [2] cid, [10] tick, [14] send_ms,
-    //   [22] pos, [46] vel, [70] accel, [94] mode,
-    //   [95] priority_band, [96] priority_score f32, [100] obs_dist f32, [104] delivery_interval u16
-    const buffer = new ArrayBuffer(106);
+    // Movement schema v2 complete layout (114B):
+    //   [0] opcode, [1] schema, [2] cid, [10] tick, [14] state_ms, [22] send_ms,
+    //   [30] pos, [54] vel, [78] accel, [102] mode,
+    //   [103] priority_band, [104] priority_score, [108] obs_dist, [112] delivery_interval.
+    const buffer = new ArrayBuffer(114);
     const view = new DataView(buffer);
     view.setUint8(0, 0x83);
-    view.setUint8(1, 1); // schema_version
+    view.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     view.setBigInt64(2, 42n, false); // cid
     view.setUint32(10, 7, false); // server_tick
-    view.setBigUint64(14, 0n, false); // server_send_ms
-    writeVec3(view, 22, 1, 2, 3); // pos
-    writeVec3(view, 46, 4, 5, 6); // vel
-    writeVec3(view, 70, 7, 8, 9); // accel
-    view.setUint8(94, 0); // grounded
-    view.setUint8(95, 1); // priority_band medium
-    view.setFloat32(96, 0.75, false);
-    view.setFloat32(100, 125.5, false);
-    view.setUint16(104, 2, false);
+    view.setBigUint64(14, 1_700_000_000_000n, false); // server_state_ms
+    view.setBigUint64(22, 1_700_000_000_020n, false); // server_send_ms
+    writeVec3(view, 30, 1, 2, 3); // pos
+    writeVec3(view, 54, 4, 5, 6); // vel
+    writeVec3(view, 78, 7, 8, 9); // accel
+    view.setUint8(102, 0); // grounded
+    view.setUint8(103, 1); // priority_band medium
+    view.setFloat32(104, 0.75, false);
+    view.setFloat32(108, 125.5, false);
+    view.setUint16(112, 2, false);
 
     const message = decodeServerMessage(buffer);
 
@@ -306,31 +329,33 @@ describe("gate movement protocol", () => {
     expect(view.getUint32(2, false)).toBe(55);
   });
 
-  // ── Task 9: decode player_move schema v1 + server_send_ms ──
-  it("decodes player_move with schema_version + server_send_ms (compact, 95 bytes)", () => {
-    const buf = new ArrayBuffer(95);
+  // ── Task 9: decode player_move schema v2 + server_state_ms + server_send_ms ──
+  it("decodes player_move with schema_version + server_state_ms + server_send_ms (compact, 103 bytes)", () => {
+    const buf = new ArrayBuffer(103);
     const v = new DataView(buf);
     v.setUint8(0, 0x83);
-    v.setUint8(1, 1); // schema
+    v.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     v.setBigUint64(2, 55n, false); // cid
     v.setUint32(10, 9, false); // server_tick
-    v.setBigUint64(14, 1_700_000_000_123n, false); // server_send_ms
-    v.setFloat64(22, 1.0, false); // x
-    v.setFloat64(30, 2.0, false); // y (server) -> z (browser)
-    v.setFloat64(38, 3.0, false); // z (server) -> y (browser)
-    v.setFloat64(46, 0, false);
+    v.setBigUint64(14, 1_700_000_000_100n, false); // server_state_ms
+    v.setBigUint64(22, 1_700_000_000_123n, false); // server_send_ms
+    v.setFloat64(30, 1.0, false); // x
+    v.setFloat64(38, 2.0, false); // y (server) -> z (browser)
+    v.setFloat64(46, 3.0, false); // z (server) -> y (browser)
     v.setFloat64(54, 0, false);
     v.setFloat64(62, 0, false);
     v.setFloat64(70, 0, false);
     v.setFloat64(78, 0, false);
     v.setFloat64(86, 0, false);
-    v.setUint8(94, 1); // movement_mode airborne
+    v.setFloat64(94, 0, false);
+    v.setUint8(102, 1); // movement_mode airborne
 
     const msg = decodeServerMessage(buf);
     expect(msg?.type).toBe("player_move");
     if (msg?.type === "player_move") {
       expect(msg.snapshot.cid).toBe(55);
       expect(msg.snapshot.serverTick).toBe(9);
+      expect(msg.snapshot.serverStateMs).toBe(1_700_000_000_100);
       expect(msg.snapshot.serverSendMs).toBe(1_700_000_000_123);
       expect(msg.snapshot.position.x).toBeCloseTo(1.0);
       expect(msg.snapshot.position.y).toBeCloseTo(3.0); // server z -> browser y
@@ -338,20 +363,21 @@ describe("gate movement protocol", () => {
     }
   });
 
-  it("decodes player_move with AOI priority metadata (complete, 106 bytes) schema v1", () => {
-    const buf = new ArrayBuffer(106);
+  it("decodes player_move with AOI priority metadata (complete, 114 bytes) schema v2", () => {
+    const buf = new ArrayBuffer(114);
     const v = new DataView(buf);
     v.setUint8(0, 0x83);
-    v.setUint8(1, 1); // schema
+    v.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     v.setBigUint64(2, 42n, false); // cid
     v.setUint32(10, 7, false); // server_tick
-    v.setBigUint64(14, 1_700_000_000_000n, false); // server_send_ms
-    // pos, vel, accel at 22, 46, 70 — leave 0
-    v.setUint8(94, 0); // grounded
-    v.setUint8(95, 1); // priority_band medium
-    v.setFloat32(96, 0.75, false);
-    v.setFloat32(100, 125.5, false);
-    v.setUint16(104, 2, false);
+    v.setBigUint64(14, 1_700_000_000_000n, false); // server_state_ms
+    v.setBigUint64(22, 1_700_000_000_020n, false); // server_send_ms
+    // pos, vel, accel at 30, 54, 78 — leave 0
+    v.setUint8(102, 0); // grounded
+    v.setUint8(103, 1); // priority_band medium
+    v.setFloat32(104, 0.75, false);
+    v.setFloat32(108, 125.5, false);
+    v.setUint16(112, 2, false);
 
     const msg = decodeServerMessage(buf);
     expect(msg?.type).toBe("player_move");
@@ -364,37 +390,39 @@ describe("gate movement protocol", () => {
   });
 
   it("rejects player_move with unknown schema version", () => {
-    const buf = new ArrayBuffer(95);
+    const buf = new ArrayBuffer(103);
     const v = new DataView(buf);
     v.setUint8(0, 0x83);
     v.setUint8(1, 9); // bad schema
     expect(decodeServerMessage(buf)).toBeNull();
   });
 
-  // ── Task 10: decode movement_ack schema v1 + server_send_ms ──
-  it("decodes movement_ack with schema_version + server_send_ms (113 bytes)", () => {
-    const buf = new ArrayBuffer(113);
+  // ── Task 10: decode movement_ack schema v2 + server_state_ms + server_send_ms ──
+  it("decodes movement_ack with schema_version + server_state_ms + server_send_ms (121 bytes)", () => {
+    const buf = new ArrayBuffer(121);
     const v = new DataView(buf);
     v.setUint8(0, 0x8b);
-    v.setUint8(1, 1); // schema
+    v.setUint8(1, MOVEMENT_WIRE_SCHEMA);
     v.setUint32(2, 10, false); // ack_seq
     v.setUint32(6, 77, false); // auth_tick
-    v.setBigUint64(10, 1_700_000_000_123n, false); // server_send_ms
-    v.setBigUint64(18, 42n, false); // cid
-    v.setFloat64(26, 1.5, false); // px
-    v.setFloat64(34, 2.5, false); // py
-    v.setFloat64(42, 3.5, false); // pz
-    // vel(50..73), accel(74..97) leave 0
-    v.setUint8(98, 0); // movement_mode grounded
-    v.setUint32(99, 3, false); // correction_flags
-    v.setUint16(103, 100, false); // fixed_dt_ms
-    v.setFloat64(105, 3.5, false); // ground_z
+    v.setBigUint64(10, 1_700_000_000_100n, false); // server_state_ms
+    v.setBigUint64(18, 1_700_000_000_123n, false); // server_send_ms
+    v.setBigUint64(26, 42n, false); // cid
+    v.setFloat64(34, 1.5, false); // px
+    v.setFloat64(42, 2.5, false); // py
+    v.setFloat64(50, 3.5, false); // pz
+    // vel(58..81), accel(82..105) leave 0
+    v.setUint8(106, 0); // movement_mode grounded
+    v.setUint32(107, 3, false); // correction_flags
+    v.setUint16(111, 100, false); // fixed_dt_ms
+    v.setFloat64(113, 3.5, false); // ground_z
 
     const msg = decodeServerMessage(buf);
     expect(msg?.type).toBe("movement_ack");
     if (msg?.type === "movement_ack") {
       expect(msg.ack.ackSeq).toBe(10);
       expect(msg.ack.authTick).toBe(77);
+      expect(msg.ack.serverStateMs).toBe(1_700_000_000_100);
       expect(msg.ack.serverSendMs).toBe(1_700_000_000_123);
       expect(msg.ack.correctionFlags).toBe(3);
       expect(msg.ack.serverFixedDtMs).toBe(100);
@@ -403,7 +431,7 @@ describe("gate movement protocol", () => {
   });
 
   it("rejects movement_ack with unknown schema version", () => {
-    const buf = new ArrayBuffer(113);
+    const buf = new ArrayBuffer(121);
     const v = new DataView(buf);
     v.setUint8(0, 0x8b);
     v.setUint8(1, 9); // bad schema
@@ -421,13 +449,13 @@ describe("gate movement protocol", () => {
     v.setFloat64(18, 20.0, false); // y(server)
     v.setFloat64(26, 30.0, false); // z(server)
     v.setUint32(34, 1, false); // expected_seq
-    v.setUint16(38, 1, false); // protocol_version
+    v.setUint16(38, PROTOCOL_VERSION, false);
 
     const msg = decodeServerMessage(buf);
     expect(msg?.type).toBe("enter_scene_ok");
     if (msg?.type === "enter_scene_ok") {
       expect(msg.expectedSeq).toBe(1);
-      expect(msg.protocolVersion).toBe(1);
+      expect(msg.protocolVersion).toBe(PROTOCOL_VERSION);
     }
   });
 });

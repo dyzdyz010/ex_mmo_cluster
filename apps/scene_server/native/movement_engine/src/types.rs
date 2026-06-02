@@ -20,6 +20,7 @@ pub struct MovementState {
     pub acceleration: Vec3,
     pub movement_mode: Atom,
     pub ground_z: f64,
+    pub server_state_ms: u64,
     pub tick: u32,
 }
 
@@ -112,7 +113,8 @@ impl MovementState {
     /// Build the Elixir-facing struct from a core state. The core's `seq`
     /// field is dropped on purpose: `SceneServer.Movement.State` has no
     /// `:seq` key, and adding one would break every pattern match in the
-    /// server actor path.
+    /// server actor path. `server_state_ms` is owned by Scene's actor layer
+    /// after integration, so native math returns the struct-default zero.
     pub fn from_core(core: &movement_core::MovementState) -> Self {
         Self {
             position: array_to_vec3(core.position),
@@ -120,6 +122,7 @@ impl MovementState {
             acceleration: array_to_vec3(core.acceleration),
             movement_mode: mode_to_atom(core.movement_mode),
             ground_z: core.ground_z,
+            server_state_ms: 0,
             tick: core.tick,
         }
     }

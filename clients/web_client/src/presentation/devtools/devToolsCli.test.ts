@@ -4,6 +4,27 @@ import { VoxelConstants } from "../../voxel/core/constants";
 import { LocalVoxelWorldAdapter } from "../../voxel/worldAdapter";
 
 describe("DevToolsCli microgrid boundary", () => {
+  it("allows long frame traces for 60-second movement displacement checks", () => {
+    const startFrameTrace = vi.fn();
+    const cli = new DevToolsCli({
+      localPlayer: {
+        startFrameTrace,
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("frame_trace_start", ["4000"])).toMatchObject({
+      ok: true,
+      data: { frames: 4000 },
+    });
+    expect(startFrameTrace).toHaveBeenLastCalledWith(4000);
+
+    expect(cli.executeCliCommand("frame_trace_start", ["9000"])).toMatchObject({
+      ok: true,
+      data: { frames: 5000 },
+    });
+    expect(startFrameTrace).toHaveBeenLastCalledWith(5000);
+  });
+
   it("routes chat commands through the server transport without client partition authority", () => {
     const sendChat = vi.fn(() => 77);
     const cli = new DevToolsCli({

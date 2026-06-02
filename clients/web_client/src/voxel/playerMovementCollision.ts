@@ -10,8 +10,8 @@ import {
   type PredictedMoveState,
 } from "@domain/movement/types";
 import { AvatarConstants, MacroWorldSize, VoxelConstants } from "./core/constants";
-import { macroCoordFromMicro, positiveModulo } from "./core/gridUtils";
-import type { FMicroCoord } from "./core/types";
+import { chunkCoordFromMacro, macroCoordFromMicro, positiveModulo } from "./core/gridUtils";
+import { chunkCoordKey, type FChunkCoord, type FMicroCoord } from "./core/types";
 import { microMaskBit } from "./microgrid/governance";
 import type { WorldStore } from "./worldStore";
 
@@ -24,12 +24,23 @@ interface CollisionConfig {
   radiusCm: number;
   halfHeightCm: number;
   maxSamples: number;
+  requireAuthoritativeChunks: boolean;
+  authorityPrewarmMarginCm: number;
+  requestAuthoritativeChunks:
+    | ((chunks: readonly FChunkCoord[], reason: "collision_query" | "movement_prewarm") => void)
+    | undefined;
 }
 
 interface MovementCollisionOptions {
   radiusCm?: number;
   heightCm?: number;
   maxSamples?: number;
+  requireAuthoritativeChunks?: boolean;
+  authorityPrewarmMarginCm?: number;
+  requestAuthoritativeChunks?: (
+    chunks: readonly FChunkCoord[],
+    reason: "collision_query" | "movement_prewarm",
+  ) => void;
 }
 
 const DEFAULT_MAX_SAMPLES = 4_096;
@@ -44,6 +55,9 @@ export function createWorldStoreMovementCollisionResolver(
     radiusCm: options.radiusCm ?? AvatarConstants.CapsuleRadiusCm,
     halfHeightCm: (options.heightCm ?? AvatarConstants.HeightCm) / 2,
     maxSamples: options.maxSamples ?? DEFAULT_MAX_SAMPLES,
+    requireAuthoritativeChunks: options.requireAuthoritativeChunks ?? false,
+    authorityPrewarmMarginCm: Math.max(0, options.authorityPrewarmMarginCm ?? 0),
+    requestAuthoritativeChunks: options.requestAuthoritativeChunks,
   };
 
   return (previous, proposed) =>
@@ -76,6 +90,26 @@ function resolveWorldStoreMovementCollision(
         [],
       ),
     };
+  }
+
+  if (config.requireAuthoritativeChunks) {
+    const missingChunks = missingAuthoritativeChunks(store, microAabb);
+    if (missingChunks.length > 0) {
+      requestAuthoritativeChunks(config, missingChunks, "collision_query");
+      return {
+        state: clonePredictedMoveState(proposed),
+        summary: makeSummary(
+          "authority_unavailable",
+          previous,
+          proposed,
+          proposed,
+          sampleCount,
+          0,
+          [],
+        ),
+      };
+    }
+    prewarmNearbyAuthoritativeChunks(store, queryAabb, config);
   }
 
   const occupiedBoxes = queryOccupiedMicroBoxes(store, microAabb);
@@ -237,6 +271,64 @@ function queryOccupiedMicroBoxes(store: WorldStore, aabb: Aabb): Aabb[] {
   return boxes;
 }
 
+function missingAuthoritativeChunks(store: WorldStore, aabb: Aabb): FChunkCoord[] {
+  const chunks = coveredChunkCoords(aabb);
+  return chunks.filter((chunk) => store.getChunkAuthorityMetadata(chunk) === null);
+}
+
+function prewarmNearbyAuthoritativeChunks(
+  store: WorldStore,
+  queryAabb: Aabb,
+  config: CollisionConfig,
+): void {
+  if (config.authorityPrewarmMarginCm <= 0 || !config.requestAuthoritativeChunks) {
+    return;
+  }
+
+  const prewarmAabb = expandHorizontalAabb(queryAabb, config.authorityPrewarmMarginCm);
+  const missingChunks = missingAuthoritativeChunks(store, movementAabbToWorldMicro(prewarmAabb));
+  requestAuthoritativeChunks(config, missingChunks, "movement_prewarm");
+}
+
+function requestAuthoritativeChunks(
+  config: CollisionConfig,
+  chunks: readonly FChunkCoord[],
+  reason: "collision_query" | "movement_prewarm",
+): void {
+  if (chunks.length === 0 || !config.requestAuthoritativeChunks) {
+    return;
+  }
+  config.requestAuthoritativeChunks(chunks, reason);
+}
+
+function coveredChunkCoords(aabb: Aabb): FChunkCoord[] {
+  if (aabb.max.x <= aabb.min.x || aabb.max.y <= aabb.min.y || aabb.max.z <= aabb.min.z) {
+    return [];
+  }
+
+  const minMacro = macroCoordFromMicro({
+    x: aabb.min.x,
+    y: aabb.min.y,
+    z: aabb.min.z,
+  });
+  const maxMacro = macroCoordFromMicro({
+    x: aabb.max.x - 1,
+    y: aabb.max.y - 1,
+    z: aabb.max.z - 1,
+  });
+
+  const byKey = new Map<string, FChunkCoord>();
+  for (let x = minMacro.x; x <= maxMacro.x; x += 1) {
+    for (let y = minMacro.y; y <= maxMacro.y; y += 1) {
+      for (let z = minMacro.z; z <= maxMacro.z; z += 1) {
+        const chunk = chunkCoordFromMacro({ x, y, z });
+        byKey.set(chunkCoordKey(chunk), chunk);
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
 function isWorldMicroOccupied(store: WorldStore, worldMicro: FMicroCoord): boolean {
   const worldMacro = macroCoordFromMicro(worldMicro);
   const localMicro = {
@@ -332,6 +424,20 @@ function unionAabb(a: Aabb, b: Aabb): Aabb {
       Math.max(a.max.y, b.max.y),
       Math.max(a.max.z, b.max.z),
     ),
+  };
+}
+
+function expandHorizontalAabb(aabb: Aabb, marginCm: number): Aabb {
+  if (marginCm <= 0) {
+    return {
+      min: aabb.min.clone(),
+      max: aabb.max.clone(),
+    };
+  }
+
+  return {
+    min: new Vector3(aabb.min.x - marginCm, aabb.min.y, aabb.min.z - marginCm),
+    max: new Vector3(aabb.max.x + marginCm, aabb.max.y, aabb.max.z + marginCm),
   };
 }
 

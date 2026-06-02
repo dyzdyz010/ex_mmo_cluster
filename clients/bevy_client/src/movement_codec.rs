@@ -143,6 +143,7 @@ pub fn remote_move_snapshot_from_server(message: &ServerMessage) -> Option<Remot
             velocity,
             acceleration,
             movement_mode,
+            ..
         } => Some(
             WireRemoteMoveSnapshot {
                 cid: *cid,
@@ -216,6 +217,8 @@ mod tests {
         let snapshot = remote_move_snapshot_from_server(&ServerMessage::PlayerMove {
             cid: 42,
             server_tick: 7,
+            server_state_ms: 0,
+            server_send_ms: 0,
             location: [1.0, 2.0, 3.0],
             velocity: [4.0, 5.0, 6.0],
             acceleration: [0.1, 0.2, 0.3],

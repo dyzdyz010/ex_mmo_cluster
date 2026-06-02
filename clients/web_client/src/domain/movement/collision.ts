@@ -2,7 +2,12 @@ import type { Vector3 } from "three";
 import type { PredictedMoveState } from "./types";
 
 export type MovementCollisionAxis = "x" | "y" | "z";
-export type MovementCollisionStatus = "disabled" | "clear" | "resolved" | "sample_budget_exceeded";
+export type MovementCollisionStatus =
+  | "disabled"
+  | "authority_unavailable"
+  | "clear"
+  | "resolved"
+  | "sample_budget_exceeded";
 
 export interface MovementCollisionSummary {
   status: MovementCollisionStatus;

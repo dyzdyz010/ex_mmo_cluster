@@ -85,8 +85,9 @@ export class SimulatedLocalMovementTransport implements MovementTransport {
         ack: {
           ackSeq: frame.seq,
           authTick: frame.clientTick,
-          // Pillar 1.1: simulated transport uses local wall-clock as a
-          // stand-in; the real value is injected by the server send site.
+          // Simulated transport has no server queue, so state time and send
+          // time share the same local wall-clock stand-in.
+          serverStateMs: Date.now(),
           serverSendMs: Date.now(),
           position: correctedPosition,
           velocity: correctedVelocity,

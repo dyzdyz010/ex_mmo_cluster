@@ -1,6 +1,7 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
 import { RemotePlayerState } from "@domain/movement/remotePlayer";
+import { ServerClockEstimator, type ServerClockDebugSnapshot } from "@domain/movement/serverClock";
 import { ReplayAction } from "@domain/movement/governance";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 import type {
@@ -34,19 +35,43 @@ const MAX_MOVEMENT_FRAME_DT_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
 // 本地超过此距离时，让灰色方块贴合本地预测，避免 RTT 窗口内的视觉拉开。
 const AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE = 1;
 const AUTHORITY_RENDER_IDLE_EPSILON_SQ = 1.0e-6;
+const IDLE_INPUT_KEEPALIVE_MS = 5_000;
 
 export interface MovementFrameTraceSample {
   frame: number;
   nowMs: number;
   dtMs: number;
   fixedSteps: number;
+  localX: number;
+  localY: number;
+  localZ: number;
   renderedX: number;
   renderedY: number;
   renderedZ: number;
+  authorityX: number;
+  authorityY: number;
+  authorityZ: number;
+  authorityRenderX: number;
+  authorityRenderY: number;
+  authorityRenderZ: number;
   deltaX: number;
   deltaY: number;
   deltaZ: number;
   deltaDistance: number;
+  authorityDeltaX: number;
+  authorityDeltaY: number;
+  authorityDeltaZ: number;
+  authorityDeltaDistance: number;
+  authorityRenderDeltaX: number;
+  authorityRenderDeltaY: number;
+  authorityRenderDeltaZ: number;
+  authorityRenderDeltaDistance: number;
+  localAuthorityDistance: number;
+  localAuthorityHorizontalDistance: number;
+  localAuthorityRenderDistance: number;
+  localAuthorityRenderHorizontalDistance: number;
+  authorityRenderAuthorityDistance: number;
+  authorityRenderAuthorityHorizontalDistance: number;
   pendingCorrectionDistance: number;
   accumulatorMs: number;
   movementMode: string;
@@ -73,12 +98,15 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly authoritativePosition = new Vector3();
   private readonly authoritativeVelocity = new Vector3();
   private readonly authoritativeAcceleration = new Vector3();
-  // Authority(灰色权威方块)渲染复用与"显示其他玩家"完全相同的插值管线:
-  // 服务端 tick 时间轴 + Hermite 插值 + 限幅外推(0.6s)。喂入 ack 的原始权威态。
-  // 取代原先自制的 1.5s 无约束运动学外推 —— 那套在 ack 流抖动/中断时会按旧速度
-  // 失控前冲(最多 maxSpeed×1.5s=9m),表现为"服务端方块越拉越远/异常快"。
+  // Authority(灰色权威方块)渲染复用 RemotePlayerState 的 Hermite 插值和限幅外推,
+  // 但本地权威标记按 ack 到达节奏采样,不使用远端玩家的 wall-clock TimeSync 播放轴。
+  // 它的职责是调试"服务器是否已经确认我的移动",不是观赏远端实体;使用全局时钟偏移
+  // 会把偶发 TimeSync 偏差放大成几十米的稳定显示滞后。
   private authorityRender = new RemotePlayerState();
+  private readonly serverClock = new ServerClockEstimator();
   private readonly lastTracedPosition = new Vector3();
+  private readonly lastTracedAuthorityPosition = new Vector3();
+  private readonly lastTracedAuthorityRenderPosition = new Vector3();
   private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
   private lastAuthorityAtMs: number | null = null;
@@ -87,6 +115,8 @@ export class LocalPlayerController implements FrameSubscriber {
   private renderSimulationState: PredictedMoveState | null = null;
   private lastInputBlockedAtMs = Number.NEGATIVE_INFINITY;
   private lastCollisionSummary: MovementCollisionSummary | null = null;
+  private lastSentInputWasIdle = false;
+  private lastSentIdleInputAtMs = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly bus: EventBus<AppEvents>,
@@ -103,6 +133,9 @@ export class LocalPlayerController implements FrameSubscriber {
     );
     this.bus.on("transport:ack-delivered", ({ ack, sentAtMs }) => {
       this.consumeAuthority(performance.now(), ack, sentAtMs);
+    });
+    this.bus.on("transport:time-sync", (sample) => {
+      this.serverClock.observe(sample);
     });
   }
 
@@ -129,8 +162,8 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   getAuthoritativeRenderPosition(nowMs: number): Vector3 {
-    // 与远端玩家同一套采样:在缓冲的服务端权威快照之间 Hermite 插值,超出最新
-    // 快照后按限幅(0.6s)外推。时间基准来自服务端 tick,ack 抖动也不会失控。
+    // 本地权威标记使用 server_tick + ack received-time 采样。远端玩家仍使用
+    // TimeSync;这里故意不传 clock,避免本地调试标记被 wall-clock 偏差拖到旧快照。
     const sample = this.authorityRender.sampleMotion(nowMs / 1000);
     if (sample.mode === "empty") {
       // 尚未收到任何权威快照:让灰色方块贴合本地预测,避免停在原点。
@@ -159,6 +192,38 @@ export class LocalPlayerController implements FrameSubscriber {
     return sample.position;
   }
 
+  getAuthorityRenderDebugSnapshot(): ServerClockDebugSnapshot & {
+    latestServerTick: number | null;
+    latestServerStateMs: number | null;
+    latestServerSendMs: number | null;
+    bufferedSnapshots: number;
+    interpolationMode: "empty" | "interpolated" | "extrapolated";
+    interpolationDelaySecs: number;
+    interpolationTimeAxis: "server_tick" | "server_state_ms";
+    serverStateTimelineHealthy: boolean;
+    serverSendTimelineHealthy: boolean;
+    playbackServerTimeMs: number | null;
+    serverTickDiscontinuityCount: number;
+    playbackTimeRegressionCount: number;
+  } {
+    const debug = this.authorityRender.debugSnapshot();
+    return {
+      latestServerTick: debug.latestServerTick,
+      latestServerStateMs: debug.latestServerStateMs,
+      latestServerSendMs: debug.latestServerSendMs,
+      bufferedSnapshots: debug.bufferedSnapshots,
+      interpolationMode: debug.lastSampleMode,
+      interpolationDelaySecs: debug.interpolationDelaySecs,
+      interpolationTimeAxis: debug.timeAxisMode,
+      serverStateTimelineHealthy: debug.serverStateTimelineHealthy,
+      serverSendTimelineHealthy: debug.serverSendTimelineHealthy,
+      playbackServerTimeMs: debug.lastPlaybackServerTimeMs,
+      serverTickDiscontinuityCount: debug.serverTickDiscontinuityCount,
+      playbackTimeRegressionCount: debug.playbackTimeRegressionCount,
+      ...this.serverClock.debugSnapshot(),
+    };
+  }
+
   getPendingCorrection(): Vector3 {
     return this.pendingCorrection;
   }
@@ -167,6 +232,10 @@ export class LocalPlayerController implements FrameSubscriber {
     this.frameTraceSamples.length = 0;
     this.frameTraceRemaining = Math.max(1, Math.floor(maxFrames));
     this.lastTracedPosition.copy(this.renderedPosition);
+    this.lastTracedAuthorityPosition.copy(this.authoritativePosition);
+    this.lastTracedAuthorityRenderPosition.copy(
+      this.getAuthoritativeRenderPosition(performance.now()),
+    );
   }
 
   clearFrameTrace(): void {
@@ -271,7 +340,9 @@ export class LocalPlayerController implements FrameSubscriber {
     } else {
       this.renderAnchor.copy(predicted.position);
     }
-    this.transport.sendInput(frame, nowMs);
+    if (this.shouldSendInputFrame(frame, predicted, nowMs)) {
+      this.transport.sendInput(frame, nowMs);
+    }
 
     this.bus.emit("movement:local-step", {
       seq: frame.seq,
@@ -304,6 +375,39 @@ export class LocalPlayerController implements FrameSubscriber {
     });
   }
 
+  private shouldSendInputFrame(
+    frame: MoveInputFrame,
+    predicted: PredictedMoveState,
+    nowMs: number,
+  ): boolean {
+    const idle = this.isNetworkIdleFrame(frame, predicted);
+
+    if (!idle) {
+      this.lastSentInputWasIdle = false;
+      return true;
+    }
+
+    if (
+      !this.lastSentInputWasIdle ||
+      nowMs - this.lastSentIdleInputAtMs >= IDLE_INPUT_KEEPALIVE_MS
+    ) {
+      this.lastSentInputWasIdle = true;
+      this.lastSentIdleInputAtMs = nowMs;
+      return true;
+    }
+
+    return false;
+  }
+
+  private isNetworkIdleFrame(frame: MoveInputFrame, predicted: PredictedMoveState): boolean {
+    return (
+      frame.inputDir.lengthSq() <= 1.0e-6 &&
+      (frame.movementFlags & MovementFlag.Jump) === 0 &&
+      predicted.movementMode === MovementMode.Grounded &&
+      predicted.velocity.lengthSq() <= 1.0e-6
+    );
+  }
+
   private consumeAuthority(nowMs: number, ack: MovementAck, sentAtMs: number): void {
     const rttMs = Math.max(0, nowMs - sentAtMs);
     this.prediction.observeRtt(rttMs);
@@ -327,6 +431,7 @@ export class LocalPlayerController implements FrameSubscriber {
         // Pillar 1.1: pass through the server-send wall-clock so the
         // authority render buffer carries the same field the rest of the
         // interpolation pipeline expects.
+        serverStateMs: ack.serverStateMs,
         serverSendMs: ack.serverSendMs,
         position: ack.position,
         velocity: ack.velocity,
@@ -437,21 +542,69 @@ export class LocalPlayerController implements FrameSubscriber {
       return;
     }
 
+    const authorityRenderPosition = this.getAuthoritativeRenderPosition(nowMs);
     const deltaX = this.renderedPosition.x - this.lastTracedPosition.x;
     const deltaY = this.renderedPosition.y - this.lastTracedPosition.y;
     const deltaZ = this.renderedPosition.z - this.lastTracedPosition.z;
+    const authorityDeltaX = this.authoritativePosition.x - this.lastTracedAuthorityPosition.x;
+    const authorityDeltaY = this.authoritativePosition.y - this.lastTracedAuthorityPosition.y;
+    const authorityDeltaZ = this.authoritativePosition.z - this.lastTracedAuthorityPosition.z;
+    const authorityRenderDeltaX =
+      authorityRenderPosition.x - this.lastTracedAuthorityRenderPosition.x;
+    const authorityRenderDeltaY =
+      authorityRenderPosition.y - this.lastTracedAuthorityRenderPosition.y;
+    const authorityRenderDeltaZ =
+      authorityRenderPosition.z - this.lastTracedAuthorityRenderPosition.z;
     this.frameTraceSamples.push({
       frame: this.frameTraceSamples.length + 1,
       nowMs,
       dtMs,
       fixedSteps,
+      localX: this.renderedPosition.x,
+      localY: this.renderedPosition.y,
+      localZ: this.renderedPosition.z,
       renderedX: this.renderedPosition.x,
       renderedY: this.renderedPosition.y,
       renderedZ: this.renderedPosition.z,
+      authorityX: this.authoritativePosition.x,
+      authorityY: this.authoritativePosition.y,
+      authorityZ: this.authoritativePosition.z,
+      authorityRenderX: authorityRenderPosition.x,
+      authorityRenderY: authorityRenderPosition.y,
+      authorityRenderZ: authorityRenderPosition.z,
       deltaX,
       deltaY,
       deltaZ,
       deltaDistance: Math.hypot(deltaX, deltaY, deltaZ),
+      authorityDeltaX,
+      authorityDeltaY,
+      authorityDeltaZ,
+      authorityDeltaDistance: Math.hypot(authorityDeltaX, authorityDeltaY, authorityDeltaZ),
+      authorityRenderDeltaX,
+      authorityRenderDeltaY,
+      authorityRenderDeltaZ,
+      authorityRenderDeltaDistance: Math.hypot(
+        authorityRenderDeltaX,
+        authorityRenderDeltaY,
+        authorityRenderDeltaZ,
+      ),
+      localAuthorityDistance: this.renderedPosition.distanceTo(this.authoritativePosition),
+      localAuthorityHorizontalDistance: Math.hypot(
+        this.renderedPosition.x - this.authoritativePosition.x,
+        this.renderedPosition.z - this.authoritativePosition.z,
+      ),
+      localAuthorityRenderDistance: this.renderedPosition.distanceTo(authorityRenderPosition),
+      localAuthorityRenderHorizontalDistance: Math.hypot(
+        this.renderedPosition.x - authorityRenderPosition.x,
+        this.renderedPosition.z - authorityRenderPosition.z,
+      ),
+      authorityRenderAuthorityDistance: authorityRenderPosition.distanceTo(
+        this.authoritativePosition,
+      ),
+      authorityRenderAuthorityHorizontalDistance: Math.hypot(
+        authorityRenderPosition.x - this.authoritativePosition.x,
+        authorityRenderPosition.z - this.authoritativePosition.z,
+      ),
       pendingCorrectionDistance: this.pendingCorrection.length(),
       accumulatorMs: this.fixedStepAccumulatorMs,
       movementMode: this.renderSimulationState?.movementMode ?? MovementMode.Grounded,
@@ -461,6 +614,8 @@ export class LocalPlayerController implements FrameSubscriber {
       collisionBlockedAxes: this.lastCollisionSummary?.blockedAxes ?? [],
     });
     this.lastTracedPosition.copy(this.renderedPosition);
+    this.lastTracedAuthorityPosition.copy(this.authoritativePosition);
+    this.lastTracedAuthorityRenderPosition.copy(authorityRenderPosition);
     this.frameTraceRemaining -= 1;
   }
 
@@ -476,7 +631,11 @@ export class LocalPlayerController implements FrameSubscriber {
     this.lastAuthorityAtMs = null;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
+    this.lastTracedAuthorityPosition.copy(start);
+    this.lastTracedAuthorityRenderPosition.copy(start);
     this.lastCollisionSummary = null;
+    this.lastSentInputWasIdle = false;
+    this.lastSentIdleInputAtMs = Number.NEGATIVE_INFINITY;
     this.renderSimulationState = {
       seq: 0,
       tick: 0,

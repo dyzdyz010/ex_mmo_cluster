@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MacroWorldSize, VoxelConstants } from "../voxel/core/constants";
 import { createDualSceneDemoOverlay } from "./sceneRegionOverlay";
-import { LineBasicMaterial, MeshBasicMaterial } from "three";
+import { MeshBasicMaterial, type LineBasicMaterial } from "three";
 
 describe("scene region overlay", () => {
   it("builds visible scene1/scene2 regions with a boundary at chunk x=1", () => {

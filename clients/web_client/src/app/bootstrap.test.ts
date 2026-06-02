@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { LocalVoxelWorldAdapter } from "../voxel/worldAdapter";
-import { resolveMovementCollisionResolver, resolveRendererPreferenceFrom } from "./bootstrap";
+import {
+  resolveInitialVoxelSubscriptions,
+  resolveMovementCollisionResolver,
+  resolveRendererPreferenceFrom,
+} from "./bootstrap";
 
 describe("resolveRendererPreferenceFrom", () => {
   it("defaults to explicit WebGPU preference", () => {
@@ -25,10 +29,18 @@ describe("resolveMovementCollisionResolver", () => {
     expect(resolveMovementCollisionResolver(world)).not.toBeNull();
   });
 
-  it("does not let server-authoritative prediction use the mirrored client voxel store", () => {
+  it("uses the server-authoritative voxel mirror for local prediction collision", () => {
     const world = new ServerAuthoritativeWorld();
 
-    expect(resolveMovementCollisionResolver(world)).toBeNull();
+    expect(resolveMovementCollisionResolver(world)).not.toBeNull();
+  });
+});
+
+describe("resolveInitialVoxelSubscriptions", () => {
+  it("uses the configured center radius instead of hard-coding a neighbor chunk", () => {
+    expect(resolveInitialVoxelSubscriptions({ x: 0, y: 0, z: 0 }, 2)).toEqual([
+      { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 2 },
+    ]);
   });
 });
 

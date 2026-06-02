@@ -6,7 +6,7 @@ defmodule GateServer.CodecEdgeCasesTest do
   describe "decode edge cases" do
     test "movement input with extreme float values" do
       msg =
-        <<0x01, 1, 1::32-big, 0::32-big, 16::16-big, 1.0::float-32-big, -1.0::float-32-big,
+        <<0x01, 2, 1::32-big, 0::32-big, 16::16-big, 1.0::float-32-big, -1.0::float-32-big,
           2.0::float-32-big, 3::16-big>>
 
       {:ok, {:movement_input, %{input_dir: {x, y}, speed_scale: speed_scale}}} = Codec.decode(msg)
@@ -58,16 +58,16 @@ defmodule GateServer.CodecEdgeCasesTest do
     end
 
     test "movement_ack binary size is correct" do
-      # Pillar 1.1: 1(opcode) + 1(schema) + 4(ack_seq) + 4(auth_tick) + 8(server_send_ms) +
-      #              8(cid) + 24(pos) + 24(vel) + 24(accel) + 1(mode) + 4(flags) + 2(fixed_dt) +
-      #              8(ground_z) = 113 bytes
+      # Movement schema v2: 1(opcode) + 1(schema) + 4(ack_seq) + 4(auth_tick) +
+      # 8(server_state_ms) + 8(server_send_ms) + 8(cid) + 24(pos) + 24(vel) +
+      # 24(accel) + 1(mode) + 4(flags) + 2(fixed_dt) + 8(ground_z) = 121 bytes.
       {:ok, bin} =
         Codec.encode(
-          {:movement_ack, 0, 0, 1_700_000_000_000, 42, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0},
-           {7.0, 8.0, 9.0}, :grounded, 0, 100, 3.0}
+          {:movement_ack, 0, 0, 1_700_000_000_000, 1_700_000_000_010, 42, {1.0, 2.0, 3.0},
+           {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, :grounded, 0, 100, 3.0}
         )
 
-      assert byte_size(bin) == 113
+      assert byte_size(bin) == 121
     end
 
     test "redesigned time_sync_reply binary size is correct" do
@@ -79,7 +79,7 @@ defmodule GateServer.CodecEdgeCasesTest do
   describe "protocol completeness" do
     test "every request-response client message can be decoded in new format" do
       messages = [
-        <<0x01, 1, 1::32-big, 0::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
+        <<0x01, 2, 1::32-big, 0::32-big, 16::16-big, 0.0::float-32-big, 0.0::float-32-big,
           1.0::float-32-big, 0::16-big>>,
         <<0x02, 2::64-big, 0::64-big>>,
         <<0x03, 3::64-big, 4::64-big>>,
@@ -104,14 +104,14 @@ defmodule GateServer.CodecEdgeCasesTest do
         {:enter_scene_result, :error, 0},
         {:player_enter, 0, {0.0, 0.0, 0.0}},
         {:player_leave, 0},
-        {:player_move, 0, 1, 1_700_000_000_000, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
-         :grounded},
+        {:player_move, 0, 1, 1_700_000_000_000, 1_700_000_000_010, {0.0, 0.0, 0.0},
+         {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded},
         {:time_sync_reply, 0, 1000, 1100, 1200},
         {:heartbeat_reply, 0},
         {:fast_lane_result, :ok, 0, 20003, "ticket"},
         {:fast_lane_attached, :ok, 0},
-        {:movement_ack, 0, 0, 1_700_000_000_000, 0, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0}, :grounded, 0, 100, 0.0},
+        {:movement_ack, 0, 0, 1_700_000_000_000, 1_700_000_000_010, 0, {0.0, 0.0, 0.0},
+         {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded, 0, 100, 0.0},
         {:chat_message, 0, "npc", "hi"},
         {:skill_event, 0, 1, {0.0, 0.0, 0.0}},
         {:effect_event, 0, 1, :projectile, {0.0, 0.0, 0.0}, nil, {0.0, 0.0, 0.0}, 0.0, 100}

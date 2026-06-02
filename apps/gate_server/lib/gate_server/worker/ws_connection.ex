@@ -37,6 +37,7 @@ defmodule GateServer.WsConnection do
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
   @partition_bootstrap_retry_delay_ms 500
   @partition_bootstrap_retry_max_attempts 60
+  @max_priority_movement_input_drain 16
 
   @doc "Starts a browser WebSocket-backed gate session."
   def start_link(owner_pid, opts \\ []) do
@@ -117,24 +118,7 @@ defmodule GateServer.WsConnection do
 
   @impl true
   def handle_cast({:ws_frame, data}, state) do
-    GateServer.CliObserve.emit("ws_receive", fn ->
-      %{connection_pid: self(), bytes: byte_size(data), status: state.status}
-    end)
-
-    case GateServer.Codec.decode(data) do
-      {:ok, msg} ->
-        GateServer.CliObserve.emit("ws_decoded", fn ->
-          %{connection_pid: self(), message: observe_message_summary(msg)}
-        end)
-
-        {:ok, new_state} = dispatch(msg, state)
-        {:noreply, new_state}
-
-      {:error, reason} ->
-        Logger.debug("WS codec decode rejected payload: #{inspect(reason)}")
-        send_result_error(state, reason, 0)
-        {:noreply, state}
-    end
+    {:noreply, handle_ws_frame_payload(data, state)}
   end
 
   def handle_cast({:ws_closed, reason}, state) do
@@ -228,12 +212,13 @@ defmodule GateServer.WsConnection do
 
   def handle_cast({:movement_ack, ack}, state) do
     server_send_ms = :os.system_time(:millisecond)
+    server_state_ms = movement_state_ms(ack)
 
     send_encoded(
       state,
-      {:movement_ack, ack.ack_seq, ack.auth_tick, server_send_ms, ack.cid, ack.position,
-       ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags, ack.fixed_dt_ms,
-       ack.ground_z}
+      {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms, ack.cid,
+       ack.position, ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
+       ack.fixed_dt_ms, ack.ground_z}
     )
 
     {:noreply, schedule_partition_refresh_after_movement_ack(state, ack)}
@@ -277,6 +262,42 @@ defmodule GateServer.WsConnection do
     {:noreply, state}
   end
 
+  defp handle_ws_frame_payload(data, state) do
+    GateServer.CliObserve.emit("ws_receive", fn ->
+      %{connection_pid: self(), bytes: byte_size(data), status: state.status}
+    end)
+
+    case GateServer.Codec.decode(data) do
+      {:ok, msg} ->
+        GateServer.CliObserve.emit("ws_decoded", fn ->
+          %{connection_pid: self(), message: observe_message_summary(msg)}
+        end)
+
+        {:ok, new_state} = dispatch(msg, state)
+        new_state
+
+      {:error, reason} ->
+        Logger.debug("WS codec decode rejected payload: #{inspect(reason)}")
+        send_result_error(state, reason, 0)
+        state
+    end
+  end
+
+  defp drain_pending_movement_inputs(state, limit \\ @max_priority_movement_input_drain)
+  defp drain_pending_movement_inputs(state, limit) when limit <= 0, do: state
+
+  defp drain_pending_movement_inputs(state, limit) do
+    receive do
+      {:"$gen_cast", {:ws_frame, <<0x01, _rest::binary>> = data}} ->
+        data
+        |> handle_ws_frame_payload(state)
+        |> drain_pending_movement_inputs(limit - 1)
+    after
+      0 ->
+        state
+    end
+  end
+
   @impl true
   def handle_info(
         {:DOWN, monitor_ref, :process, scene_ref, reason},
@@ -309,18 +330,23 @@ defmodule GateServer.WsConnection do
   end
 
   def handle_info({:voxel_chunk_snapshot_payload, payload}, state) when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_data(state, :snapshot, payload)}
   end
 
   def handle_info({:voxel_chunk_delta_payload, payload}, state) when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_data(state, :delta, payload)}
   end
 
   def handle_info({:voxel_chunk_invalidate_payload, payload}, state) when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_invalidate(state, payload)}
   end
 
   def handle_info(:voxel_delivery_window, state) do
+    state = drain_pending_movement_inputs(state)
+
     scheduler =
       state
       |> Map.get(:voxel_delivery)
@@ -340,20 +366,24 @@ defmodule GateServer.WsConnection do
   end
 
   def handle_info({:voxel_object_state_delta_payload, payload}, state) when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_data(state, :object_state_delta, payload)}
   end
 
   def handle_info({:voxel_field_region_snapshot_payload, payload}, state)
       when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_data(state, :field_region_snapshot, payload)}
   end
 
   def handle_info({:voxel_field_region_destroyed_payload, payload}, state)
       when is_binary(payload) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_data(state, :field_region_destroyed, payload)}
   end
 
   def handle_info({:voxel_delivery_envelope, envelope}, state) when is_map(envelope) do
+    state = drain_pending_movement_inputs(state)
     {:noreply, handle_live_voxel_envelope(state, envelope)}
   end
 
@@ -3056,14 +3086,23 @@ defmodule GateServer.WsConnection do
          } = snapshot,
          server_send_ms
        ) do
-    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
-     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode}
+    {:player_move, snapshot.cid, snapshot.server_tick, movement_state_ms(snapshot),
+     server_send_ms, snapshot.position, snapshot.velocity, snapshot.acceleration,
+     snapshot.movement_mode}
   end
 
   defp player_move_message(%RemoteSnapshot{} = snapshot, server_send_ms) do
-    {:player_move, snapshot.cid, snapshot.server_tick, server_send_ms, snapshot.position,
-     snapshot.velocity, snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
-     snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
+    {:player_move, snapshot.cid, snapshot.server_tick, movement_state_ms(snapshot),
+     server_send_ms, snapshot.position, snapshot.velocity, snapshot.acceleration,
+     snapshot.movement_mode, snapshot.priority_band, snapshot.priority_score,
+     snapshot.observer_distance, snapshot.delivery_interval}
+  end
+
+  defp movement_state_ms(%{} = movement_payload) do
+    case Map.get(movement_payload, :server_state_ms, 0) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> 0
+    end
   end
 
   defp voxel_delivery_debug(scheduler) do

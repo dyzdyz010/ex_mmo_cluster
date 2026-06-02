@@ -4,9 +4,11 @@ defmodule GateServer.PartitionRuntime do
 
   Connection workers send movement ACKs immediately, then ask this module to
   refresh the server-side region context when the authoritative movement result
-  crosses a chunk boundary. World remains the route and lease authority, Chat
-  owns channel presence, and Scene AOI consumes the same World partition window
-  through the attached player actor.
+  crosses a chunk boundary. Scene movement positions are server-Z-up; this
+  runtime converts them to voxel Y-up world coordinates before routing. World
+  remains the route and lease authority, Chat owns channel presence, and Scene
+  AOI consumes the same World partition window through the attached player
+  actor.
   """
 
   alias GateServer.{ChatAdapter, PartitionContext}
@@ -47,7 +49,7 @@ defmodule GateServer.PartitionRuntime do
     previous_context = previous_context(state)
 
     with {:ok, previous_context} <- ensure_previous_context(previous_context),
-         {:ok, location} <- fetch_location(ack_map),
+         {:ok, location} <- fetch_voxel_location(ack_map),
          logical_scene_id when is_integer(logical_scene_id) <-
            Map.get(previous_context, :logical_scene_id),
          chunk_coord <- Types.chunk_from_world_cm!(location) do
@@ -248,7 +250,7 @@ defmodule GateServer.PartitionRuntime do
     previous_context = previous_context(state)
 
     with {:ok, previous_context} <- ensure_previous_context(previous_context),
-         {:ok, location} <- fetch_location(ack_map),
+         {:ok, location} <- fetch_voxel_location(ack_map),
          logical_scene_id when is_integer(logical_scene_id) <-
            Map.get(previous_context, :logical_scene_id),
          chunk_coord <- Types.chunk_from_world_cm!(location) do
@@ -630,6 +632,12 @@ defmodule GateServer.PartitionRuntime do
        do: {:ok, context}
 
   defp ensure_previous_context(_context), do: {:error, :missing_partition_context}
+
+  defp fetch_voxel_location(ack_map) do
+    with {:ok, {x, movement_horizontal_y, movement_vertical_z}} <- fetch_location(ack_map) do
+      {:ok, {x, movement_vertical_z, movement_horizontal_y}}
+    end
+  end
 
   defp fetch_location(%{position: {x, y, z}}) when is_number(x) and is_number(y) and is_number(z),
     do: {:ok, {x, y, z}}

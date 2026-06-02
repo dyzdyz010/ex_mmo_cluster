@@ -17,10 +17,17 @@ export const INTERPOLATION_DELAY_SECS = 0.15;
 // jitter headroom.
 export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.6;
 const LOW_PRIORITY_EXTRA_JITTER_SECS = 0.05;
+const MIN_SERVER_SEND_TICK_RATIO = 0.5;
+const MAX_SERVER_SEND_TICK_RATIO = 2.5;
 
 interface BufferedSnapshot {
   snapshot: RemoteMoveSnapshot;
   receivedAtSecs: number;
+}
+
+export interface RemoteSampleClock {
+  localWallClockMs?: number;
+  serverClockOffsetMs?: number | null;
 }
 
 export interface RemoteMotionSample {
@@ -32,15 +39,29 @@ export interface RemoteMotionSample {
 export interface RemoteInterpolationDebug {
   bufferedSnapshots: number;
   latestServerTick: number | null;
+  latestServerStateMs: number | null;
+  latestServerSendMs: number | null;
   lastSampleMode: "empty" | "interpolated" | "extrapolated";
   interpolationDelaySecs: number;
   maxExtrapolationSecs: number;
+  timeAxisMode: "server_tick" | "server_state_ms";
+  serverStateTimelineHealthy: boolean;
+  serverSendTimelineHealthy: boolean;
+  lastPlaybackServerTimeMs: number | null;
+  serverTickDiscontinuityCount: number;
+  playbackTimeRegressionCount: number;
 }
 
 export class RemotePlayerState {
   private readonly snapshots: BufferedSnapshot[] = [];
   private lastSampleMode: RemoteMotionSample["mode"] = "empty";
   private interpolationDelaySecs = INTERPOLATION_DELAY_SECS;
+  private timeAxisMode: RemoteInterpolationDebug["timeAxisMode"] = "server_tick";
+  private lastPlaybackServerTimeMs: number | null = null;
+  private lastPlaybackTimeAxisMode: RemoteInterpolationDebug["timeAxisMode"] | null = null;
+  private serverStateTimelineHealthy = true;
+  private serverTickDiscontinuityCount = 0;
+  private playbackTimeRegressionCount = 0;
 
   constructor(
     private options: { tickDurationSecs: number } = {
@@ -51,6 +72,7 @@ export class RemotePlayerState {
   setTickDurationSecs(tickDurationSecs: number): void {
     if (Number.isFinite(tickDurationSecs) && tickDurationSecs > 0) {
       this.options = { tickDurationSecs };
+      this.serverStateTimelineHealthy = this.computeServerStateTimelineHealthy();
     }
   }
 
@@ -66,9 +88,19 @@ export class RemotePlayerState {
       this.snapshots.splice(0, this.snapshots.length);
     }
 
-    const latestTick = this.snapshots.at(-1)?.snapshot.serverTick ?? -1;
+    const latest = this.snapshots.at(-1)?.snapshot;
+    const latestTick = latest?.serverTick ?? -1;
     if (snapshot.serverTick <= latestTick) {
       return;
+    }
+    if (latest) {
+      const expectedDelta = Math.max(
+        1,
+        Math.trunc(latest.deliveryInterval ?? snapshot.deliveryInterval ?? 1),
+      );
+      if (snapshot.serverTick !== latest.serverTick + expectedDelta) {
+        this.serverTickDiscontinuityCount += 1;
+      }
     }
 
     this.snapshots.push({
@@ -79,17 +111,23 @@ export class RemotePlayerState {
     if (this.snapshots.length > MAX_BUFFERED_SNAPSHOTS) {
       this.snapshots.splice(0, this.snapshots.length - MAX_BUFFERED_SNAPSHOTS);
     }
+    this.serverStateTimelineHealthy = this.computeServerStateTimelineHealthy();
   }
 
-  sampleMotion(nowSecs: number): RemoteMotionSample {
+  sampleMotion(nowSecs: number, clock: RemoteSampleClock = {}): RemoteMotionSample {
     if (this.snapshots.length === 0) {
       this.lastSampleMode = "empty";
+      this.timeAxisMode = "server_tick";
+      this.lastPlaybackServerTimeMs = null;
+      this.lastPlaybackTimeAxisMode = null;
       return {
         position: new Vector3(),
         velocity: new Vector3(),
         mode: "empty",
       };
     }
+
+    const timeline = this.resolveTimeline(nowSecs, clock);
 
     if (this.snapshots.length === 1) {
       const only = this.snapshots[0];
@@ -101,7 +139,7 @@ export class RemotePlayerState {
           mode: "empty",
         };
       }
-      const sample = extrapolateSingle(only, nowSecs);
+      const sample = extrapolateSingle(only, nowSecs, extrapolationPlaybackTime(timeline));
       this.lastSampleMode = sample.mode;
       return sample;
     }
@@ -112,11 +150,15 @@ export class RemotePlayerState {
       return { position: new Vector3(), velocity: new Vector3(), mode: "empty" };
     }
 
-    const latestServerTime = this.snapshotTimeSecs(latest.snapshot.serverTick);
-    const estimatedServerTime =
-      latestServerTime +
-      Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
-    const playbackServerTime = estimatedServerTime - this.interpolationDelaySecs;
+    const first = this.snapshots[0];
+    if (first) {
+      const firstTime = this.snapshotTimeSecs(first.snapshot, timeline.mode);
+      if (timeline.playbackServerTime <= firstTime) {
+        const sample = holdSnapshot(first);
+        this.lastSampleMode = sample.mode;
+        return sample;
+      }
+    }
 
     for (let index = 0; index < this.snapshots.length - 1; index += 1) {
       const previous = this.snapshots[index];
@@ -124,37 +166,53 @@ export class RemotePlayerState {
       if (!previous || !next) {
         continue;
       }
-      const previousTime = this.snapshotTimeSecs(previous.snapshot.serverTick);
-      const nextTime = this.snapshotTimeSecs(next.snapshot.serverTick);
-      if (playbackServerTime >= previousTime && playbackServerTime <= nextTime) {
+      const previousTime = this.snapshotTimeSecs(previous.snapshot, timeline.mode);
+      const nextTime = this.snapshotTimeSecs(next.snapshot, timeline.mode);
+      if (timeline.playbackServerTime >= previousTime && timeline.playbackServerTime <= nextTime) {
         const sample = interpolatePair(
           previous,
           next,
-          playbackServerTime,
-          this.options.tickDurationSecs,
+          timeline.playbackServerTime,
+          previousTime,
+          nextTime,
         );
         this.lastSampleMode = sample.mode;
         return sample;
       }
     }
 
-    const sample = extrapolateSingle(latest, nowSecs);
+    const sample = extrapolateSingle(latest, nowSecs, extrapolationPlaybackTime(timeline));
     this.lastSampleMode = sample.mode;
     return sample;
   }
 
   debugSnapshot(): RemoteInterpolationDebug {
+    const latest = this.snapshots.at(-1)?.snapshot;
     return {
       bufferedSnapshots: this.snapshots.length,
-      latestServerTick: this.snapshots.at(-1)?.snapshot.serverTick ?? null,
+      latestServerTick: latest?.serverTick ?? null,
+      latestServerStateMs: latest?.serverStateMs ?? null,
+      latestServerSendMs: latest?.serverSendMs ?? null,
       lastSampleMode: this.lastSampleMode,
       interpolationDelaySecs: this.interpolationDelaySecs,
       maxExtrapolationSecs: MAX_REMOTE_EXTRAPOLATION_SECS,
+      timeAxisMode: this.timeAxisMode,
+      serverStateTimelineHealthy: this.serverStateTimelineHealthy,
+      serverSendTimelineHealthy: this.serverStateTimelineHealthy,
+      lastPlaybackServerTimeMs: this.lastPlaybackServerTimeMs,
+      serverTickDiscontinuityCount: this.serverTickDiscontinuityCount,
+      playbackTimeRegressionCount: this.playbackTimeRegressionCount,
     };
   }
 
-  private snapshotTimeSecs(serverTick: number): number {
-    return serverTick * this.options.tickDurationSecs;
+  private snapshotTimeSecs(
+    snapshot: RemoteMoveSnapshot,
+    mode: RemoteInterpolationDebug["timeAxisMode"],
+  ): number {
+    if (mode === "server_state_ms") {
+      return snapshot.serverStateMs / 1000;
+    }
+    return snapshot.serverTick * this.options.tickDurationSecs;
   }
 
   private resolveInterpolationDelaySecs(deliveryInterval: number | undefined): number {
@@ -171,16 +229,108 @@ export class RemotePlayerState {
     const jitter = deliveryInterval >= 5 ? LOW_PRIORITY_EXTRA_JITTER_SECS : 0;
     return Math.min(MAX_REMOTE_EXTRAPOLATION_SECS, intervalDelay + jitter);
   }
+
+  private computeServerStateTimelineHealthy(): boolean {
+    for (let index = 1; index < this.snapshots.length; index += 1) {
+      const previous = this.snapshots[index - 1]?.snapshot;
+      const next = this.snapshots[index]?.snapshot;
+      if (!previous || !next) {
+        continue;
+      }
+
+      const tickDeltaSecs = (next.serverTick - previous.serverTick) * this.options.tickDurationSecs;
+      const stateDeltaSecs = (next.serverStateMs - previous.serverStateMs) / 1000;
+      if (!Number.isFinite(tickDeltaSecs) || !Number.isFinite(stateDeltaSecs)) {
+        return false;
+      }
+      if (tickDeltaSecs <= 0 || stateDeltaSecs <= 0) {
+        return false;
+      }
+
+      const ratio = stateDeltaSecs / tickDeltaSecs;
+      if (ratio < MIN_SERVER_SEND_TICK_RATIO || ratio > MAX_SERVER_SEND_TICK_RATIO) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private resolveTimeline(
+    nowSecs: number,
+    clock: RemoteSampleClock,
+  ): {
+    mode: RemoteInterpolationDebug["timeAxisMode"];
+    playbackServerTime: number;
+  } {
+    const canUseServerStateMs =
+      Number.isFinite(clock.localWallClockMs) &&
+      Number.isFinite(clock.serverClockOffsetMs) &&
+      this.serverStateTimelineHealthy &&
+      this.snapshots.every(
+        (entry) =>
+          Number.isFinite(entry.snapshot.serverStateMs) && entry.snapshot.serverStateMs > 0,
+      );
+
+    if (canUseServerStateMs) {
+      const serverNowSecs =
+        ((clock.localWallClockMs as number) + (clock.serverClockOffsetMs as number)) / 1000;
+      const playbackServerTime = this.monotonicPlaybackServerTime(
+        "server_state_ms",
+        serverNowSecs - this.interpolationDelaySecs,
+      );
+      this.timeAxisMode = "server_state_ms";
+      return { mode: "server_state_ms", playbackServerTime };
+    }
+
+    const latest = this.snapshots.at(-1);
+    const latestServerTime =
+      latest === undefined ? 0 : this.snapshotTimeSecs(latest.snapshot, "server_tick");
+    const estimatedServerTime =
+      latest === undefined
+        ? 0
+        : latestServerTime +
+          Math.min(Math.max(nowSecs - latest.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
+    const playbackServerTime = estimatedServerTime - this.interpolationDelaySecs;
+    this.timeAxisMode = "server_tick";
+    return {
+      mode: "server_tick",
+      playbackServerTime: this.monotonicPlaybackServerTime("server_tick", playbackServerTime),
+    };
+  }
+
+  private monotonicPlaybackServerTime(
+    mode: RemoteInterpolationDebug["timeAxisMode"],
+    playbackServerTime: number,
+  ): number {
+    const playbackServerTimeMs = playbackServerTime * 1000;
+    if (
+      this.lastPlaybackTimeAxisMode === mode &&
+      this.lastPlaybackServerTimeMs !== null &&
+      playbackServerTimeMs + 1 < this.lastPlaybackServerTimeMs
+    ) {
+      return this.lastPlaybackServerTimeMs / 1000;
+    }
+    this.lastPlaybackServerTimeMs = playbackServerTimeMs;
+    this.lastPlaybackTimeAxisMode = mode;
+    return playbackServerTime;
+  }
+}
+
+function extrapolationPlaybackTime(timeline: {
+  mode: RemoteInterpolationDebug["timeAxisMode"];
+  playbackServerTime: number;
+}): number | undefined {
+  return timeline.mode === "server_state_ms" ? timeline.playbackServerTime : undefined;
 }
 
 function interpolatePair(
   previous: BufferedSnapshot,
   next: BufferedSnapshot,
   playbackServerTime: number,
-  tickDurationSecs: number,
+  previousTime: number,
+  nextTime: number,
 ): RemoteMotionSample {
-  const previousTime = previous.snapshot.serverTick * tickDurationSecs;
-  const nextTime = next.snapshot.serverTick * tickDurationSecs;
   const duration = Math.max(nextTime - previousTime, 1e-6);
   const t = Math.min(1, Math.max(0, (playbackServerTime - previousTime) / duration));
 
@@ -196,8 +346,20 @@ function interpolatePair(
   return { position, velocity, mode: "interpolated" };
 }
 
-function extrapolateSingle(entry: BufferedSnapshot, nowSecs: number): RemoteMotionSample {
-  const dt = Math.min(Math.max(nowSecs - entry.receivedAtSecs, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
+function extrapolateSingle(
+  entry: BufferedSnapshot,
+  nowSecs: number,
+  playbackServerTime?: number,
+): RemoteMotionSample {
+  const snapshotTime =
+    playbackServerTime === undefined || entry.snapshot.serverStateMs <= 0
+      ? entry.receivedAtSecs
+      : entry.snapshot.serverStateMs / 1000;
+  const rawDt =
+    playbackServerTime === undefined
+      ? nowSecs - entry.receivedAtSecs
+      : playbackServerTime - snapshotTime;
+  const dt = Math.min(Math.max(rawDt, 0), MAX_REMOTE_EXTRAPOLATION_SECS);
   return {
     position: entry.snapshot.position
       .clone()
@@ -206,6 +368,14 @@ function extrapolateSingle(entry: BufferedSnapshot, nowSecs: number): RemoteMoti
     velocity: entry.snapshot.velocity
       .clone()
       .add(entry.snapshot.acceleration.clone().multiplyScalar(dt)),
+    mode: "extrapolated",
+  };
+}
+
+function holdSnapshot(entry: BufferedSnapshot): RemoteMotionSample {
+  return {
+    position: entry.snapshot.position.clone(),
+    velocity: entry.snapshot.velocity.clone(),
     mode: "extrapolated",
   };
 }

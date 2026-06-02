@@ -70,8 +70,8 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert created.status == :created
     assert created.logical_scene_id == 88
     assert created.region_id == 880_001
-    assert created.bounds_chunk_min == [-2, -2, -2]
-    assert created.bounds_chunk_max == [3, 3, 3]
+    assert created.bounds_chunk_min == [-32, -32, -32]
+    assert created.bounds_chunk_max == [33, 33, 33]
 
     assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 88, {0, 0, 0})
     assert route.assignment.region_id == 880_001
@@ -93,6 +93,70 @@ defmodule WorldServer.Voxel.DevSeedTest do
 
     assert {:ok, renewed_route} = MapLedger.route_chunk_with_lease(ledger, 88, {0, 0, 0})
     assert renewed_route.lease.lease_id == renewed.lease_id
+  end
+
+  test "browser dev region covers long continuous movement routes" do
+    token_store = start_supervised!(WriteTokenStore)
+    ledger_name = :"dev_seed_long_movement_ledger_#{System.unique_integer([:positive])}"
+    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 93,
+               region_id: 930_001,
+               center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert created.status == :created
+
+    for chunk <- [{24, 0, -24}, {-24, 0, 24}, {0, 24, -24}, {0, -24, 24}] do
+      assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 93, chunk)
+      assert route.assignment.region_id == 930_001
+      assert route.lease.lease_id == created.lease_id
+    end
+  end
+
+  test "renews and widens an existing narrow browser dev region" do
+    token_store = start_supervised!(WriteTokenStore)
+    ledger_name = :"dev_seed_existing_long_movement_ledger_#{System.unique_integer([:positive])}"
+    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+
+    assert {:ok, _narrow} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 94,
+               region_id: 940_001,
+               bounds_chunk_min: {-2, -2, -2},
+               bounds_chunk_max: {3, 3, 3},
+               owner_scene_instance_ref: 1,
+               owner_epoch: 1,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} = MapLedger.issue_lease(ledger, 940_001, 1)
+
+    assert {:error, :unassigned_chunk} =
+             MapLedger.route_chunk_with_lease(ledger, 94, {-24, 0, 24})
+
+    assert {:ok, renewed} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 94,
+               region_id: 940_001,
+               center_chunk: {0, 0, 0},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert renewed.status == :renewed
+    assert renewed.bounds_chunk_min == [-32, -32, -32]
+    assert renewed.bounds_chunk_max == [33, 33, 33]
+
+    assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 94, {-24, 0, 24})
+    assert route.assignment.region_id == 940_001
+    assert route.lease.lease_id == renewed.lease_id
   end
 
   test "uses the ledger scene node registry when no explicit owner is supplied" do
@@ -145,14 +209,15 @@ defmodule WorldServer.Voxel.DevSeedTest do
     terrain = created.terrain
     assert terrain != nil
     assert terrain.chunk_coord == [0, 0, 0]
-    assert terrain.attempted == 266
+    assert terrain.attempted == 276
+    assert terrain.cleanup_attempted == 10
     assert terrain.platform_attempted == 256
     assert terrain.demo_circuit_attempted == 10
-    assert terrain.written == 266
+    assert terrain.written == 276
     assert terrain.errors == 0
 
     calls = FakeChunkDirectory.calls(fake_dir)
-    assert length(calls) == 266
+    assert length(calls) == 276
 
     macros = calls |> Enum.map(& &1.macro) |> MapSet.new()
 
@@ -160,29 +225,57 @@ defmodule WorldServer.Voxel.DevSeedTest do
       for mx <- 0..15, mz <- 0..15, into: MapSet.new(), do: {mx, 0, mz}
 
     expected_circuit_materials = %{
-      {6, 1, 6} => 6,
-      {7, 1, 6} => 5,
-      {8, 1, 6} => 7,
-      {9, 1, 6} => 5,
-      {9, 1, 7} => 5,
-      {9, 1, 8} => 5,
-      {8, 1, 8} => 5,
-      {7, 1, 8} => 5,
-      {6, 1, 8} => 5,
-      {6, 1, 7} => 5
+      {1, 1, 12} => 6,
+      {2, 1, 12} => 5,
+      {3, 1, 12} => 7,
+      {4, 1, 12} => 5,
+      {4, 1, 13} => 5,
+      {4, 1, 14} => 5,
+      {3, 1, 14} => 5,
+      {2, 1, 14} => 5,
+      {1, 1, 14} => 5,
+      {1, 1, 13} => 5
     }
+
+    legacy_spawn_blocking_macros =
+      MapSet.new([
+        {6, 1, 6},
+        {7, 1, 6},
+        {8, 1, 6},
+        {9, 1, 6},
+        {9, 1, 7},
+        {9, 1, 8},
+        {8, 1, 8},
+        {7, 1, 8},
+        {6, 1, 8},
+        {6, 1, 7}
+      ])
 
     assert MapSet.subset?(expected_platform_macros, macros)
     assert MapSet.subset?(expected_circuit_materials |> Map.keys() |> MapSet.new(), macros)
 
+    assert MapSet.disjoint?(
+             expected_circuit_materials |> Map.keys() |> MapSet.new(),
+             legacy_spawn_blocking_macros
+           )
+
     Enum.each(calls, fn attrs ->
       assert attrs.logical_scene_id == 91
       assert attrs.chunk_coord == {0, 0, 0}
-      assert attrs.operation == :put_solid_block
       assert attrs.lease.lease_id == created.lease_id
     end)
 
-    calls_by_macro = Map.new(calls, fn attrs -> {attrs.macro, attrs.block.material_id} end)
+    cleanup_calls =
+      calls
+      |> Enum.filter(&(&1.operation == :break_block))
+      |> Enum.map(& &1.macro)
+      |> MapSet.new()
+
+    assert cleanup_calls == legacy_spawn_blocking_macros
+
+    solid_calls = Enum.filter(calls, &(&1.operation == :put_solid_block))
+
+    calls_by_macro = Map.new(solid_calls, fn attrs -> {attrs.macro, attrs.block.material_id} end)
     Enum.each(expected_platform_macros, &assert(calls_by_macro[&1] == 1))
 
     Enum.each(expected_circuit_materials, fn {macro, material_id} ->
