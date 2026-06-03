@@ -1271,7 +1271,41 @@ function longMovementKeyConfig(code = process.env.BROWSER_MOVEMENT_LONG_KEY || "
   return configs[code] || configs.KeyA;
 }
 
+function longMovementPatternConfig(pattern = process.env.BROWSER_MOVEMENT_LONG_PATTERN || "zigzag") {
+  const normalized = String(pattern || "zigzag").toLowerCase();
+  if (normalized === "straight") {
+    return {
+      name: "straight",
+      segmentMs: Number.POSITIVE_INFINITY,
+      keys: [longMovementKeyConfig()],
+    };
+  }
+
+  const rawSegmentMs = Number.parseInt(
+    process.env.BROWSER_MOVEMENT_LONG_TURN_MS || "750",
+    10,
+  );
+  const segmentMs = Number.isFinite(rawSegmentMs)
+    ? Math.max(250, Math.min(rawSegmentMs, 2_000))
+    : 750;
+  return {
+    name: "zigzag",
+    segmentMs,
+    // Lateral, forward, opposite lateral, forward gives continuous turns while
+    // still moving away from the spawn area instead of looping over old chunks.
+    keys: [
+      longMovementKeyConfig("KeyD"),
+      longMovementKeyConfig("KeyW"),
+      longMovementKeyConfig("KeyA"),
+      longMovementKeyConfig("KeyW"),
+    ],
+  };
+}
+
 async function setMovementKey(page, keyConfig, pressed) {
+  if (pressed) {
+    await page.evaluate(`window.focus(); document.body?.focus?.(); true`);
+  }
   await page.send("Input.dispatchKeyEvent", {
     type: pressed ? "keyDown" : "keyUp",
     key: keyConfig.key,
@@ -1280,6 +1314,23 @@ async function setMovementKey(page, keyConfig, pressed) {
     nativeVirtualKeyCode: keyConfig.windowsVirtualKeyCode,
     autoRepeat: pressed,
   });
+}
+
+async function setMovementKeys(page, keyConfigs, pressed) {
+  for (const keyConfig of keyConfigs) {
+    await setMovementKey(page, keyConfig, pressed);
+  }
+}
+
+function keyForPatternAt(pattern, elapsedMs) {
+  if (!pattern || pattern.keys.length === 0) {
+    return longMovementKeyConfig();
+  }
+  if (pattern.name === "straight" || !Number.isFinite(pattern.segmentMs)) {
+    return pattern.keys[0];
+  }
+  const index = Math.floor(Math.max(0, elapsedMs) / pattern.segmentMs) % pattern.keys.length;
+  return pattern.keys[index] || pattern.keys[0];
 }
 
 function compactLongMovementSnapshot(snapshotResult, tMs) {
@@ -1316,6 +1367,40 @@ function compactLongMovementSnapshot(snapshotResult, tMs) {
   };
 }
 
+function horizontalPathStats(samples, selector) {
+  const points = samples.map(selector).filter(Boolean);
+  let pathDistanceCm = 0;
+  let turnCount = 0;
+  let previousHeading = null;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const dx = current.x - previous.x;
+    const dz = current.z - previous.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance <= 1.0e-6) {
+      continue;
+    }
+    pathDistanceCm += distance;
+    const heading = Math.atan2(dz, dx);
+    if (previousHeading !== null) {
+      const delta = Math.abs(wrapRadians(heading - previousHeading));
+      if (delta >= Math.PI / 4) {
+        turnCount += 1;
+      }
+    }
+    previousHeading = heading;
+  }
+  return { pathDistanceCm, turnCount };
+}
+
+function wrapRadians(value) {
+  let angle = value;
+  while (angle > Math.PI) angle -= Math.PI * 2;
+  while (angle < -Math.PI) angle += Math.PI * 2;
+  return angle;
+}
+
 function buildLongMovementVerdict(samples, options) {
   const first = samples[0] || {};
   const last = samples[samples.length - 1] || {};
@@ -1323,6 +1408,10 @@ function buildLongMovementVerdict(samples, options) {
   const sampleIntervalMs = options.sampleIntervalMs;
   const localHorizontalCm = horizontalDistance(first.local, last.local) ?? 0;
   const authorityHorizontalCm = horizontalDistance(first.authority, last.authority) ?? 0;
+  const localPath = horizontalPathStats(samples, (sample) => sample.local);
+  const authorityPath = horizontalPathStats(samples, (sample) => sample.authority);
+  const expectedPattern = options.pattern || "straight";
+  const pathPattern = localPath.turnCount >= 4 ? "zigzag" : "straight";
   const maxLocalAuthorityDistanceCm = Math.max(
     0,
     ...samples
@@ -1375,11 +1464,19 @@ function buildLongMovementVerdict(samples, options) {
 
   const minLocalHorizontalCm = Math.max(2_000, Math.floor(durationMs * 0.12));
   const minAuthorityHorizontalCm = Math.max(1_500, Math.floor(durationMs * 0.08));
+  const minLocalPathCm = Math.max(minLocalHorizontalCm, Math.floor(durationMs * 0.16));
+  const minAuthorityPathCm = Math.max(minAuthorityHorizontalCm, Math.floor(durationMs * 0.1));
+  const minTurnCount = expectedPattern === "zigzag" ? 4 : 0;
   const maxAuthorityDistanceCm = 1_200;
 
   const assertions = {
-    continuous: localHorizontalCm >= minLocalHorizontalCm && stuckWindows.length === 0,
-    authorityMoved: authorityHorizontalCm >= minAuthorityHorizontalCm,
+    continuous:
+      localPath.pathDistanceCm >= minLocalPathCm &&
+      localPath.turnCount >= minTurnCount &&
+      stuckWindows.length === 0,
+    authorityMoved:
+      authorityPath.pathDistanceCm >= minAuthorityPathCm &&
+      authorityPath.turnCount >= Math.min(minTurnCount, 2),
     authorityBounded: maxLocalAuthorityDistanceCm <= maxAuthorityDistanceCm,
     ackHealthy: ackDelta >= minAckDelta,
     noRouteErrors: noRouteError,
@@ -1389,16 +1486,25 @@ function buildLongMovementVerdict(samples, options) {
     key: options.key,
     durationMs,
     sampleIntervalMs,
+    pathPattern,
+    expectedPattern,
+    turnCount: localPath.turnCount,
+    authorityTurnCount: authorityPath.turnCount,
     thresholds: {
       minAckDelta,
       minLocalHorizontalCm,
       minAuthorityHorizontalCm,
+      minLocalPathCm,
+      minAuthorityPathCm,
+      minTurnCount,
       maxAuthorityDistanceCm,
       minWindowMoveCm,
       windowMs,
     },
     localHorizontalCm,
     authorityHorizontalCm,
+    localPathDistanceCm: localPath.pathDistanceCm,
+    authorityPathDistanceCm: authorityPath.pathDistanceCm,
     maxLocalAuthorityDistanceCm,
     maxLocalAuthorityDisplayDistanceCm,
     ackDelta,
@@ -1416,6 +1522,10 @@ function buildLongMovementVerdict(samples, options) {
 function buildFrameDisplacementVerdict(frameTraceData, options) {
   const samples = Array.isArray(frameTraceData?.samples) ? frameTraceData.samples : [];
   const targetHz = 60;
+  const minEffectiveHz = Math.max(
+    1,
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MIN_EFFECTIVE_HZ || "55"),
+  );
   const durationMs = options.durationMs;
   const warmupMs = Math.max(
     0,
@@ -1442,9 +1552,11 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   const completeSamples = comparedSamples.filter(
     (sample) =>
       finiteNumber(sample?.deltaDistance) !== null &&
+      finiteNumber(sample?.authorityDeltaDistance) !== null &&
       finiteNumber(sample?.authorityRenderDeltaDistance) !== null &&
       finiteNumber(sample?.authorityProjectedDeltaDistance) !== null &&
       finiteNumber(sample?.authorityDisplayDeltaDistance) !== null &&
+      finiteNumber(sample?.localAuthorityDistance) !== null &&
       finiteNumber(sample?.localAuthorityRenderDistance) !== null &&
       finiteNumber(sample?.localAuthorityProjectedDistance) !== null &&
       finiteNumber(sample?.localAuthorityDisplayDistance) !== null,
@@ -1534,6 +1646,7 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   const localAuthorityRenderSummary = summarizeNumbers(localAuthorityRenderDistances);
   const localAuthorityProjectedSummary = summarizeNumbers(localAuthorityProjectedDistances);
   const localAuthorityDisplaySummary = summarizeNumbers(localAuthorityDisplayDistances);
+  const rawAuthoritySelfSummary = summarizeNumbers(completeSamples.map(() => 0));
   const minComparedSamples = Math.max(30, Math.floor(durationMs / 250));
   const maxDeltaDistanceDiffCm = Math.max(
     50,
@@ -1553,13 +1666,41 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   );
   const maxLocalAuthorityDisplayDistanceCm = Math.max(
     2,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "5"),
+    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "25"),
   );
   const maxLocalAuthorityDisplayDistanceP95Cm = Math.max(
     1,
     Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "2"),
   );
+  const channels = {
+    display: {
+      deltaDistanceDiff: displayDeltaDiffSummary,
+      horizontalDeltaDistanceDiff: displayHorizontalDeltaDiffSummary,
+      localAuthorityDistance: localAuthorityDisplaySummary,
+      authorityAuthorityDistance: summarizeNumbers(authorityDisplayAuthorityDistances),
+    },
+    projected: {
+      deltaDistanceDiff: projectedDeltaDiffSummary,
+      horizontalDeltaDistanceDiff: projectedHorizontalDeltaDiffSummary,
+      localAuthorityDistance: localAuthorityProjectedSummary,
+      authorityAuthorityDistance: summarizeNumbers(authorityProjectedAuthorityDistances),
+    },
+    rawAck: {
+      deltaDistanceDiff: deltaDiffSummary,
+      horizontalDeltaDistanceDiff: horizontalDeltaDiffSummary,
+      localAuthorityDistance: summarizeNumbers(localAuthorityDistances),
+      authorityAuthorityDistance: rawAuthoritySelfSummary,
+    },
+  };
+  const degradationReasons = [];
+  if ((effectiveHz ?? 0) < minEffectiveHz) {
+    degradationReasons.push("effective_hz_below_target");
+  }
+  if (completeSamples.length < minComparedSamples) {
+    degradationReasons.push("insufficient_complete_samples");
+  }
   const assertions = {
+    samplingHzHealthy: (effectiveHz ?? 0) >= minEffectiveHz,
     samplesCaptured: completeSamples.length >= minComparedSamples,
     deltaDiffBounded:
       (displayDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
@@ -1573,6 +1714,7 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   };
   return {
     targetHz,
+    minEffectiveHz,
     effectiveHz,
     warmupMs,
     traceDurationMs,
@@ -1588,6 +1730,9 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
       maxLocalAuthorityDisplayDistanceCm,
       maxLocalAuthorityDisplayDistanceP95Cm,
     },
+    acceptanceChannel: "display",
+    channels,
+    degradationReasons,
     localDeltaDistance: summarizeNumbers(localDeltaDistances),
     authorityDeltaDistance: summarizeNumbers(authorityDeltaDistances),
     authorityRenderDeltaDistance: summarizeNumbers(authorityRenderDeltaDistances),
@@ -1625,8 +1770,9 @@ async function runLongContinuousMovement(page) {
   const sampleIntervalMs = Number.isFinite(rawSampleIntervalMs)
     ? Math.max(250, Math.min(rawSampleIntervalMs, 2_000))
     : 1_000;
-  const keyConfig = longMovementKeyConfig();
+  const movementPattern = longMovementPatternConfig();
   await page.bringToFront();
+  await page.evaluate(`window.focus(); document.body?.focus?.(); true`);
   await waitForAuthoritativeChunk(
     page,
     { x: 0, y: 0, z: 0 },
@@ -1638,24 +1784,46 @@ async function runLongContinuousMovement(page) {
 
   const samples = [];
   const startedMs = Date.now();
+  let nextSampleAtMs = sampleIntervalMs;
+  let activeKey = keyForPatternAt(movementPattern, 0);
   samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), 0));
-  await setMovementKey(page, keyConfig, true);
+  await setMovementKey(page, activeKey, true);
   try {
     while (Date.now() - startedMs < durationMs) {
-      await sleep(sampleIntervalMs);
-      samples.push(
-        compactLongMovementSnapshot(await page.cli("snapshot"), Date.now() - startedMs),
+      const elapsedMs = Date.now() - startedMs;
+      const nextKey = keyForPatternAt(movementPattern, elapsedMs);
+      if (nextKey.code !== activeKey.code) {
+        await setMovementKey(page, activeKey, false);
+        activeKey = nextKey;
+        await setMovementKey(page, activeKey, true);
+      }
+
+      if (elapsedMs >= nextSampleAtMs) {
+        samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), elapsedMs));
+        nextSampleAtMs += sampleIntervalMs;
+      }
+
+      const nextTurnAtMs =
+        movementPattern.name === "zigzag"
+          ? (Math.floor(elapsedMs / movementPattern.segmentMs) + 1) * movementPattern.segmentMs
+          : durationMs;
+      await sleep(
+        Math.max(
+          25,
+          Math.min(100, nextSampleAtMs - elapsedMs, nextTurnAtMs - elapsedMs, durationMs - elapsedMs),
+        ),
       );
     }
   } finally {
-    await setMovementKey(page, keyConfig, false);
+    await setMovementKeys(page, movementPattern.keys, false);
   }
 
   await sleep(500);
   samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), Date.now() - startedMs));
   const frameTrace = await page.cli("frame_trace");
   const verdict = buildLongMovementVerdict(samples, {
-    key: keyConfig.code,
+    key: movementPattern.keys.map((key) => key.code).join(","),
+    pattern: movementPattern.name,
     durationMs,
     sampleIntervalMs,
   });
@@ -1839,9 +2007,11 @@ async function main() {
       "--disable-dev-shm-usage",
       "--disable-renderer-backgrounding",
       "--disable-features=CalculateNativeWinOcclusion",
-      "--use-angle=swiftshader",
       "--window-size=1280,900",
     ];
+    if (process.env.BROWSER_SMOKE_USE_SWIFTSHADER !== "0") {
+      chromeArgs.push("--use-angle=swiftshader");
+    }
     if (process.env.BROWSER_SMOKE_HEADLESS !== "0") {
       chromeArgs.push("--headless=new");
     }

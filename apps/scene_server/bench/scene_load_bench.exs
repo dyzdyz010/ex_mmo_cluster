@@ -3,8 +3,9 @@
 # Simulates N independent entities stepping one authoritative tick each via
 # `MovementEngine.step/3`, and reports total wall time + per-entity latency
 # percentiles. Goal: quantify whether a single shard can sustain the MMO target
-# of 1000 entities at 10 Hz (100 ms tick) and how we compare to the published
-# Amazon New World "500 players in one shard" parity point.
+# of 1000 entities at the current authoritative movement cadence and how we
+# compare to the published Amazon New World "500 players in one shard" parity
+# point.
 #
 # Run with:
 #   cd apps/scene_server
@@ -29,10 +30,19 @@ ticks =
   end
 
 profile = Profile.default()
+fixed_dt_ms = profile.fixed_dt_ms
+target_hz = 1000.0 / fixed_dt_ms
 
 IO.puts("=== Scene-scale movement load ===")
-IO.puts("entities=#{entities} ticks=#{ticks} (tick = 100ms authoritative step)")
-IO.puts("target at 10 Hz: total wall <= 100 ms per tick for all entities")
+
+IO.puts(
+  "entities=#{entities} ticks=#{ticks} (tick = #{fixed_dt_ms}ms authoritative step, #{Float.round(target_hz, 1)} Hz)"
+)
+
+IO.puts(
+  "target at #{Float.round(target_hz, 1)} Hz: total wall <= #{fixed_dt_ms} ms per tick for all entities"
+)
+
 IO.puts("")
 
 # Seed N entities at small position offsets so they don't all trace the same
@@ -56,7 +66,7 @@ input_for = fn entity_id, seq ->
   %InputFrame{
     seq: seq,
     client_tick: seq,
-    dt_ms: 100,
+    dt_ms: fixed_dt_ms,
     input_dir: {dx, dy},
     speed_scale: 1.0,
     movement_flags: 0
@@ -114,13 +124,17 @@ IO.puts("  avg = #{Float.round(avg_tick, 1)} us")
 IO.puts("  max = #{max_tick} us")
 IO.puts("  total (#{ticks} ticks) = #{total_us} us")
 
-budget_us = 100_000
+budget_us = fixed_dt_ms * 1_000
 utilization_avg = avg_tick / budget_us * 100
 utilization_max = max_tick / budget_us * 100
 IO.puts("")
-IO.puts("--- 10 Hz budget utilization (100 ms = 100_000 us per tick) ---")
-IO.puts("  avg tick = #{Float.round(utilization_avg, 2)}% of 100ms budget")
-IO.puts("  max tick = #{Float.round(utilization_max, 2)}% of 100ms budget")
+
+IO.puts(
+  "--- #{Float.round(target_hz, 1)} Hz budget utilization (#{fixed_dt_ms} ms = #{budget_us} us per tick) ---"
+)
+
+IO.puts("  avg tick = #{Float.round(utilization_avg, 2)}% of #{fixed_dt_ms}ms budget")
+IO.puts("  max tick = #{Float.round(utilization_max, 2)}% of #{fixed_dt_ms}ms budget")
 
 headroom_entities =
   if avg_tick > 0 do

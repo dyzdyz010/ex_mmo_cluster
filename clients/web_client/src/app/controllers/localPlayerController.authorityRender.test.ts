@@ -3,25 +3,9 @@ import { Vector3 } from "three";
 import { LocalPlayerController } from "./localPlayerController";
 import { EventBus } from "../../shared/events/eventBus";
 import { MovementMode, CorrectionFlag, type MovementAck } from "@domain/movement/types";
-import { MAX_REMOTE_EXTRAPOLATION_SECS } from "@domain/movement/remotePlayer";
+import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 
-/**
- * 回归测试（bug: 服务端/权威方块匀速时越拉越远、异常快）。
- *
- * 根因：authority 方块（authorityAvatar）的渲染原先走 LocalPlayerController 自制的
- * 无约束运动学外推（pos + v·dt + ½a·dt²，dt = now − 最近 ack 到达时刻，上限 1.5s、
- * 无 maxSpeed 钳制）。一旦后端 ack 流抖动/中断（dt 增大），authority 方块就按旧速度
- * 持续前冲，最多漂移 maxSpeed × 1.5s = 900cm（9 米），而 local 方块静止/正常 —— 即
- * "匀速也越拉越远"。
- *
- * 修复：authority 渲染改用 RemotePlayerState 管线
- * （服务端 tick + ack 到达时间轴 + Hermite 插值 + 限幅 0.6s 外推），喂入 ack
- * 原始权威态。本地调试标记不使用远端玩家的 wall-clock TimeSync 播放轴，否则
- * 偶发时钟偏差会把灰色服务端方块稳定拖到旧快照。
- *
- * 本测试锁死修复后的契约：ack 中断时外推被限幅在 maxSpeed × 0.6s = 360cm 内，
- * 不允许退回到无约束的 1.5s/900cm 失控。
- */
+const AUTHORITY_PROJECTION_CLAMP_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs * 2;
 
 function makeStillInput() {
   return {
@@ -51,7 +35,7 @@ function makeMovingAck(velocityX: number): MovementAck {
     movementMode: MovementMode.Grounded,
     groundY: 0,
     correctionFlags: CorrectionFlag.Teleport,
-    serverFixedDtMs: 100,
+    serverFixedDtMs: DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
   };
 }
 
@@ -72,11 +56,11 @@ function makeAuthorityAck(
     movementMode: MovementMode.Grounded,
     groundY: 0,
     correctionFlags: authTick === 1_000 ? CorrectionFlag.Teleport : CorrectionFlag.None,
-    serverFixedDtMs: 100,
+    serverFixedDtMs: DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
   };
 }
 
-describe("LocalPlayerController authority-render 外推限幅（回归：服务端方块不再越拉越远）", () => {
+describe("LocalPlayerController latest-ack authority projection", () => {
   let now = 0;
 
   beforeEach(() => {
@@ -88,7 +72,7 @@ describe("LocalPlayerController authority-render 外推限幅（回归：服务�
     vi.restoreAllMocks();
   });
 
-  it("ack 流中断时 authority 外推被限幅在 maxSpeed×0.6s=360cm 内（不再无约束冲 9 米）", () => {
+  it("clamps authority projection to roughly 2 server fixed ticks", () => {
     const bus = new EventBus<Record<string, unknown>>();
     const ctrl = new LocalPlayerController(
       bus as never,
@@ -107,27 +91,25 @@ describe("LocalPlayerController authority-render 外推限幅（回归：服务�
     // local 方块：没有持续输入 → 静止。
     expect(ctrl.getRenderedPosition().x).toBeCloseTo(0, 1);
 
-    const samples = [0, 100, 500, 600, 1000, 1500, 3000].map((delayMs) => ({
+    const samples = [0, 8, 16, 32, 64, 250].map((delayMs) => ({
       delayMs,
-      authorityX: ctrl.getAuthoritativeRenderPosition(ackArrivalMs + delayMs).x,
+      authorityX: ctrl.getAuthoritativeProjectedPosition(ackArrivalMs + delayMs).x,
     }));
 
     const at = (ms: number) => samples.find((s) => s.delayMs === ms)!.authorityX;
 
-    // 0.6s 之内线性外推
-    expect(at(100)).toBeCloseTo(60, 0);
-    expect(at(600)).toBeCloseTo(360, 0);
-    // 0.6s 之后封顶，不再继续前冲（关键：旧实现这里会冲到 600/900cm）
-    expect(at(1000)).toBeCloseTo(360, 0);
-    expect(at(3000)).toBeCloseTo(360, 0);
+    expect(at(8)).toBeCloseTo(4.8, 4);
+    expect(at(16)).toBeCloseTo(9.6, 4);
+    expect(at(32)).toBeCloseTo(19.2, 4);
+    expect(at(64)).toBeCloseTo(19.2, 4);
+    expect(at(250)).toBeCloseTo(19.2, 4);
 
-    // 回归保护：authority 最大漂移绝不能超过 maxSpeed × MAX_REMOTE_EXTRAPOLATION_SECS。
-    const cap = 600 * MAX_REMOTE_EXTRAPOLATION_SECS; // 360cm
+    const cap = 600 * (AUTHORITY_PROJECTION_CLAMP_MS / 1000);
     const maxDrift = Math.max(...samples.map((s) => s.authorityX));
     expect(maxDrift).toBeLessThanOrEqual(cap + 1e-6);
   });
 
-  it("稳态 ack 准时（100ms 内）时 authority 外推量很小（≤60cm，半拍量级）", () => {
+  it("uses ack acceleration in the projected authority sample", () => {
     const bus = new EventBus<Record<string, unknown>>();
     const ctrl = new LocalPlayerController(
       bus as never,
@@ -136,14 +118,19 @@ describe("LocalPlayerController authority-render 外推限幅（回归：服务�
       new Vector3(0, 0, 0),
     );
     const ackArrivalMs = now;
-    bus.emit("transport:ack-delivered", { ack: makeMovingAck(600), sentAtMs: ackArrivalMs });
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ...makeMovingAck(0),
+        acceleration: new Vector3(1_000, 0, 0),
+      },
+      sentAtMs: ackArrivalMs,
+    });
 
-    expect(ctrl.getAuthoritativeRenderPosition(ackArrivalMs + 100).x).toBeLessThanOrEqual(60.001);
+    expect(ctrl.getAuthoritativeProjectedPosition(ackArrivalMs + 16).x).toBeCloseTo(0.128, 4);
   });
 
-  it("authority render ignores TimeSync wall-clock skew for the local debug marker", () => {
-    now = 10_000;
-    vi.spyOn(Date, "now").mockReturnValue(1_995_000);
+  it("projects local authority on the synced server_state_ms clock when TimeSync is available", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_999_700);
     const bus = new EventBus<Record<string, unknown>>();
     const ctrl = new LocalPlayerController(
       bus as never,
@@ -154,7 +141,7 @@ describe("LocalPlayerController authority-render 外推限幅（回归：服务�
 
     bus.emit("transport:time-sync", {
       requestId: 1,
-      clientSendTs: 1_995_000,
+      clientSendTs: 1_999_600,
       serverRecvTs: 2_000_100,
       serverSendTs: 2_000_200,
     });
@@ -162,18 +149,36 @@ describe("LocalPlayerController authority-render 外推限幅（回归：服务�
       ack: makeAuthorityAck(1_000, 2_000_000, 0, 600),
       sentAtMs: now,
     });
-    now = 10_100;
+
+    expect(ctrl.getAuthoritativeProjectedPosition(now).x).toBeCloseTo(120, 4);
+    expect(ctrl.getAuthorityRenderDebugSnapshot()).toMatchObject({
+      interpolationTimeAxis: "server_state_ms",
+      playbackServerTimeMs: 2_000_200,
+      serverClockOffsetMs: 500,
+    });
+  });
+
+  it("keeps raw authoritative ack position separate from projected authority", () => {
+    now = 10_000;
+    const bus = new EventBus<Record<string, unknown>>();
+    const ctrl = new LocalPlayerController(
+      bus as never,
+      makeStillInput() as never,
+      makeReadyTransport() as never,
+      new Vector3(0, 0, 0),
+    );
+
     bus.emit("transport:ack-delivered", {
-      ack: makeAuthorityAck(1_001, 2_000_100, 60, 600),
+      ack: makeAuthorityAck(1_000, 2_000_000, 0, 600),
       sentAtMs: now,
     });
-
     now = 10_250;
 
-    expect(ctrl.getAuthoritativeRenderPosition(now).x).toBeCloseTo(150, 4);
+    expect(ctrl.getAuthoritativePosition().x).toBe(0);
+    expect(ctrl.getAuthoritativeProjectedPosition(now).x).toBeGreaterThan(0);
     expect(ctrl.getAuthorityRenderDebugSnapshot()).toMatchObject({
-      interpolationDelaySecs: 0,
-      interpolationTimeAxis: "server_tick",
+      bufferedSnapshots: 1,
+      interpolationMode: "extrapolated",
     });
   });
 });

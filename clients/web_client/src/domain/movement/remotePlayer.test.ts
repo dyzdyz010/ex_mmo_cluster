@@ -2,6 +2,8 @@ import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "./remotePlayer";
 import { MovementMode, type RemoteMoveSnapshot } from "./types";
 
+const LEGACY_TICK_SECS = 0.1;
+
 function snapshot(
   serverTick: number,
   x: number,
@@ -20,13 +22,17 @@ function snapshot(
   };
 }
 
+function legacyTickState(options: ConstructorParameters<typeof RemotePlayerState>[0] = {}) {
+  return new RemotePlayerState({ tickDurationSecs: LEGACY_TICK_SECS, ...options });
+}
+
 describe("remotePlayer", () => {
   it("keeps the interpolation delay at the 150 ms baseline", () => {
     expect(INTERPOLATION_DELAY_SECS).toBeCloseTo(0.15, 5);
   });
 
   it("replays the 150 ms delayed historical snapshot instead of lagging an extra 70 ms", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(10, 0), 0, 1.0);
     state.pushSnapshot(snapshot(11, 10), 0, 1.1);
     state.pushSnapshot(snapshot(12, 20), 0, 1.2);
@@ -49,8 +55,18 @@ describe("remotePlayer", () => {
     expect(sample.position.x).toBeCloseTo(20, 4);
   });
 
-  it("allows local authority markers to opt out of the remote interpolation delay", () => {
+  it("defaults the server_tick timeline to the current movement fixed tick", () => {
     const state = new RemotePlayerState({ interpolationDelaySecs: 0 });
+    state.pushSnapshot(snapshot(1_000, 0), 0, 1.0);
+    state.pushSnapshot(snapshot(1_001, 16), 0, 1.016);
+
+    const sample = state.sampleMotion(1.016);
+
+    expect(sample.position.x).toBeCloseTo(16, 4);
+  });
+
+  it("allows local authority markers to opt out of the remote interpolation delay", () => {
+    const state = legacyTickState({ interpolationDelaySecs: 0 });
     state.pushSnapshot(snapshot(10, 0), 0, 1.0);
     state.pushSnapshot(snapshot(11, 10), 0, 1.1);
     state.pushSnapshot(snapshot(12, 20), 0, 1.2);
@@ -62,7 +78,7 @@ describe("remotePlayer", () => {
   });
 
   it("uses server_state_ms plus clock offset as the interpolation timeline", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(
       snapshot(1_000, 0, { serverStateMs: 2_000_000, serverSendMs: 2_000_020 }),
       0,
@@ -87,7 +103,7 @@ describe("remotePlayer", () => {
   });
 
   it("keeps the state timeline when send timestamps are distorted by delivery backlog", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(
       snapshot(10, 0, { serverStateMs: 2_000_000, serverSendMs: 2_000_500 }),
       0,
@@ -112,7 +128,7 @@ describe("remotePlayer", () => {
   });
 
   it("falls back to server_tick when server_state_ms is missing from old/offline snapshots", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(10, 0, { serverSendMs: 2_000_000 }), 0, 1.0);
     state.pushSnapshot(snapshot(18, 80, { serverSendMs: 2_000_060 }), 0, 1.06);
 
@@ -128,7 +144,7 @@ describe("remotePlayer", () => {
   });
 
   it("holds the earliest wall-clock snapshot when playback is before the buffer", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(1_000, 0, { serverStateMs: 2_000_000 }), 0, 1.0);
     state.pushSnapshot(snapshot(1_001, 100, { serverStateMs: 2_000_100 }), 0, 1.1);
 
@@ -147,11 +163,11 @@ describe("remotePlayer", () => {
 
     const debug = state.debugSnapshot();
 
-    expect(debug.interpolationDelaySecs).toBeCloseTo(0.6, 5);
+    expect(debug.interpolationDelaySecs).toBeCloseTo(0.25, 5);
   });
 
   it("reports interpolation buffer diagnostics for CLI observability", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(10, 0), 0, 1.0);
     state.pushSnapshot(snapshot(11, 10), 0, 1.1);
 
@@ -165,7 +181,7 @@ describe("remotePlayer", () => {
   });
 
   it("counts server tick discontinuities for observe diagnostics", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(10, 0), 0, 1.0);
     state.pushSnapshot(snapshot(12, 20), 0, 1.2);
 
@@ -173,7 +189,7 @@ describe("remotePlayer", () => {
   });
 
   it("keeps server_state_ms playback monotonic when clock offset moves backward", () => {
-    const state = new RemotePlayerState();
+    const state = legacyTickState();
     state.pushSnapshot(snapshot(10, 0, { serverStateMs: 2_000_000 }), 0, 1.0);
     state.pushSnapshot(snapshot(11, 10, { serverStateMs: 2_000_100 }), 0, 1.1);
 

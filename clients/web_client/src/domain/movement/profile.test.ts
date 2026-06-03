@@ -5,10 +5,10 @@ describe("DEFAULT_MOVEMENT_PROFILE", () => {
     // 必须跟 apps/scene_server/lib/scene_server/movement/profile.ex
     // 跟 apps/scene_server/native/movement_core/src/profile.rs 三处保持一致。
     // 任何一处不同步都会让 client predict / server authoritative 跑出
-    // 跟 fixed_dt_ms 同周期的 reconcile snap(每 100ms 一次玩家被向前/
+    // 跟 fixed_dt_ms 同周期的 reconcile snap(每 16ms 一次玩家被向前/
     // 向后拽),用户体感 = "网络延迟"。
     expect(DEFAULT_MOVEMENT_PROFILE).toEqual({
-      fixedDtMs: 100,
+      fixedDtMs: 16,
       maxSpeed: 600,
       maxAccel: 3300,
       maxDecel: 3800,

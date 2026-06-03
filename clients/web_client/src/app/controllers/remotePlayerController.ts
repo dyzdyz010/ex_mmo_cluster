@@ -1,6 +1,7 @@
 import { Vector3 } from "three";
 import { INTERPOLATION_DELAY_SECS, RemotePlayerState } from "@domain/movement/remotePlayer";
 import { ServerClockEstimator, type ServerClockDebugSnapshot } from "@domain/movement/serverClock";
+import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
 import {
   cloneRemoteMoveSnapshot,
   MovementMode,
@@ -76,7 +77,7 @@ export class RemotePlayerController implements FrameSubscriber {
   private readonly entities = new Map<number, RemoteEntityRuntime>();
   private readonly renderedPosition = DEFAULT_REMOTE_POSITION.clone();
   private primaryCid: number | null = null;
-  private tickDurationSecs = 0.1;
+  private tickDurationSecs = DEFAULT_MOVEMENT_PROFILE.fixedDtMs / 1000;
   private readonly serverClock = new ServerClockEstimator();
 
   constructor(private readonly bus: EventBus<AppEvents>) {

@@ -362,9 +362,9 @@ export class RenderOrchestrator
     this.syncRing.material.dispose();
   }
 
-  private updateAvatarTransforms(nowMs: number, dtSecs: number): void {
+  private updateAvatarTransforms(nowMs: number, _dtSecs: number): void {
     this.localDisplay.copy(this.localPlayer.getRenderedPosition());
-    this.authorityDisplay.copy(this.localPlayer.getAuthoritativeDisplayPosition());
+    this.authorityDisplay.copy(this.localPlayer.getAuthoritativeDisplayPosition(nowMs));
     this.remoteDisplay.copy(this.remotePlayer.getRenderedPosition());
     this.syncRemoteAvatarMeshes();
 

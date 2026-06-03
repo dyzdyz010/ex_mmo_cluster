@@ -15,10 +15,9 @@ defmodule SceneServer.MovementSmokeTest do
 
   Validates:
 
-  1. Steady 10Hz input → all seqs acked in monotonic auth_tick order.
+  1. Steady fixed-tick input → all seqs acked in monotonic auth_tick order.
   2. Burst (3 inputs at once) → one replay tick advances auth_tick by 3.
-  3. Input gap up to 1s → server keeps moving with held direction
-     (no 300ms-timeout rubber-band).
+  3. Short browser-scheduling input gap → server keeps moving with held direction.
   4. Explicit stop → a final zero-velocity snapshot is broadcast.
 
   Tagged `:smoke` so it is skipped by default; run with:
@@ -33,6 +32,8 @@ defmodule SceneServer.MovementSmokeTest do
 
   alias SceneServer.AoiManager
   alias SceneServer.Movement.{InputFrame, Profile, RemoteSnapshot}
+
+  @fixed_dt_ms Profile.default().fixed_dt_ms
 
   setup_all do
     # Bring up only what the movement path needs. Works under either `mix test`
@@ -85,11 +86,11 @@ defmodule SceneServer.MovementSmokeTest do
   end
 
   # ------------------------------------------------------------------------
-  # Scenario 1: steady 10Hz input stream
+  # Scenario 1: steady fixed-tick input stream
   # ------------------------------------------------------------------------
 
-  test "steady 10Hz input progression produces monotonic acks", ctx do
-    send_moves(ctx.player, east(), 1..10, inter_ms: 100)
+  test "steady fixed-tick input progression produces monotonic acks", ctx do
+    send_moves(ctx.player, east(), 1..10, inter_ms: ctx.profile.fixed_dt_ms)
 
     acks = collect_acks_until_seq(10, 5_000)
 
@@ -115,7 +116,7 @@ defmodule SceneServer.MovementSmokeTest do
     [baseline] = collect_acks(1, 1_500)
     base_tick = baseline.auth_tick
 
-    # Now send 3 inputs back-to-back, all within the same 100ms window.
+    # Now send 3 inputs back-to-back, all within the same fixed-tick window.
     send_moves(ctx.player, east(), 2..4, inter_ms: 0)
 
     # The real wall-clock timer may split these inputs across ticks on a busy
@@ -133,19 +134,21 @@ defmodule SceneServer.MovementSmokeTest do
   # Scenario 3: input gap — server holds direction instead of decelerating
   # ------------------------------------------------------------------------
 
-  test "a 700ms input gap during motion does not rubber-band to stop", ctx do
+  test "a short input gap during motion does not rubber-band to stop", ctx do
     # Warm up: reach steady velocity by sending 5 eastward inputs.
-    send_moves(ctx.player, east(), 1..5, inter_ms: 100)
+    send_moves(ctx.player, east(), 1..5, inter_ms: ctx.profile.fixed_dt_ms)
     warm_acks = collect_acks(5, 2_000)
     moving_ack = List.last(warm_acks)
     {vx0, _vy0, _vz0} = moving_ack.velocity
 
-    assert vx0 > 100.0,
+    min_warm_velocity = ctx.profile.max_speed * 0.1
+
+    assert vx0 > min_warm_velocity,
            "expected meaningful eastward velocity after warm-up, got #{vx0}"
 
-    # Now stop sending inputs for 700ms (well past the old 300ms timeout, under
-    # our new 2000ms hold window).
-    Process.sleep(700)
+    # Now stop sending inputs briefly. This is below the 20 fixed-tick hold
+    # window, so it models browser scheduling jitter, not a dropped connection.
+    Process.sleep(ctx.profile.fixed_dt_ms * 10)
 
     # Drain any ticks that fired during the gap and take the last one.
     gap_acks = collect_acks_for_ms(50)
@@ -205,7 +208,7 @@ defmodule SceneServer.MovementSmokeTest do
     _ = :sys.get_state(observer_aoi)
 
     # Move east briefly, then send an explicit stop.
-    send_moves(ctx.player, east(), 1..5, inter_ms: 100)
+    send_moves(ctx.player, east(), 1..5, inter_ms: ctx.profile.fixed_dt_ms)
     _ = collect_acks(5, 2_000)
 
     send_stop(ctx.player, 6)
@@ -241,21 +244,20 @@ defmodule SceneServer.MovementSmokeTest do
 
     # 1. 一帧 grounded(零位移)拿 baseline ack.ground_z=initial_z。
     {:ok, :accepted} = call_input(ctx.player, grounded_idle_frame(1))
-    Process.sleep(110)
+    Process.sleep(@fixed_dt_ms * 7)
 
     # 2. 跳跃帧:input_dir 不动,Jump flag 置位。
     {:ok, :accepted} = send_jump(ctx.player, 2)
-    Process.sleep(110)
+    Process.sleep(@fixed_dt_ms * 7)
 
-    # 3. 跳跃 arc 演进:再 6 帧 grounded(零位移)跨越 600ms,让 server 把
-    # airborne arc 跑出来(jump apex ~1.2m,落地 ~500ms 量级)。
+    # 3. 跳跃 arc 演进:再 6 帧 grounded(零位移),让 server 把 airborne arc 跑出来。
     Enum.each(3..8, fn seq ->
       {:ok, :accepted} = call_input(ctx.player, grounded_idle_frame(seq))
-      Process.sleep(110)
+      Process.sleep(@fixed_dt_ms * 7)
     end)
 
     acks = collect_acks_for_ms(200) ++ collect_acks(0, 0)
-    # 至少要拿到 6 个 ack(ack 速率 = 100ms/tick,8 帧 input 跨 ~800ms)。
+    # 至少要拿到 6 个 ack, 覆盖 jump 输入和后续 arc。
     assert length(acks) >= 6,
            "expected at least 6 acks across the jump arc, got #{length(acks)}"
 
@@ -309,7 +311,7 @@ defmodule SceneServer.MovementSmokeTest do
     %InputFrame{
       seq: seq,
       client_tick: seq,
-      dt_ms: 100,
+      dt_ms: @fixed_dt_ms,
       input_dir: {0.0, 0.0},
       speed_scale: 1.0,
       movement_flags: 0
@@ -333,7 +335,7 @@ defmodule SceneServer.MovementSmokeTest do
       frame = %InputFrame{
         seq: seq,
         client_tick: seq,
-        dt_ms: 100,
+        dt_ms: @fixed_dt_ms,
         input_dir: {dx * 1.0, dy * 1.0},
         speed_scale: 1.0,
         movement_flags: 0
@@ -348,7 +350,7 @@ defmodule SceneServer.MovementSmokeTest do
     frame = %InputFrame{
       seq: seq,
       client_tick: seq,
-      dt_ms: 100,
+      dt_ms: @fixed_dt_ms,
       input_dir: {0.0, 0.0},
       speed_scale: 1.0,
       movement_flags: 0b10
@@ -361,7 +363,7 @@ defmodule SceneServer.MovementSmokeTest do
     frame = %InputFrame{
       seq: seq,
       client_tick: seq,
-      dt_ms: 100,
+      dt_ms: @fixed_dt_ms,
       input_dir: dir,
       speed_scale: 1.0,
       # 0b100 = MOVEMENT_FLAG_JUMP (input_frame.ex @jump_flag)

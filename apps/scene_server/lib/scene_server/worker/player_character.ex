@@ -50,16 +50,16 @@ defmodule SceneServer.PlayerCharacter do
 
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
-  # Hold the last direction for up to 2s of silence before assuming the client
+  # Hold the last direction for a short local-jitter window before assuming the client
   # really wants to stop. The client sends an explicit stop frame on key release
-  # (see bevy_client movement_sender + should_send_stop_sync), so the only
-  # reason to zero-direction here is a connection that quietly dropped.
+  # (web client idle coalescing still sends a brake frame), so the only reason
+  # to zero-direction here is a connection that quietly dropped.
   @input_hold_timeout_multiplier 20
   @stopped_speed_epsilon 1.0
   # Cap on how many client input frames we replay in one wall-clock tick. In
-  # normal play the client sends at 10Hz matching our fixed_dt, so the queue is
-  # expected to hold 0-2 frames. Burst handling and minor jitter are expected
-  # to produce up to ~4 frames.
+  # normal play the client sends one frame per fixed tick; browser scheduling
+  # can still batch a few frames, so the queue allows a small jitter burst
+  # without replaying an unbounded backlog.
   @max_input_queue 8
   @idle_remote_snapshot_interval_ms 500
   @movement_collision_query_timeout_ms 50

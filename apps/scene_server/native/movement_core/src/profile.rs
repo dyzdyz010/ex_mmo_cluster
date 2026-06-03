@@ -31,7 +31,7 @@ impl Default for MovementProfile {
             max_jerk: 24_500.0,
             friction: 0.0,
             turn_response: 1.0,
-            fixed_dt_ms: 100,
+            fixed_dt_ms: 16,
             max_speed_scale: 1.0,
             // Demo escape jump. At gravity=980, apex ~= 900^2 / 1960 = 413 cm.
             jump_impulse: 900.0,
@@ -57,7 +57,7 @@ mod tests {
         assert_eq!(p.max_jerk, 24_500.0);
         assert_eq!(p.friction, 0.0);
         assert_eq!(p.turn_response, 1.0);
-        assert_eq!(p.fixed_dt_ms, 100);
+        assert_eq!(p.fixed_dt_ms, 16);
         assert_eq!(p.max_speed_scale, 1.0);
         assert_eq!(p.jump_impulse, 900.0);
         assert_eq!(p.gravity, 980.0);

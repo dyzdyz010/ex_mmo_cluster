@@ -26,6 +26,10 @@ defmodule SceneServer.Movement.IntegratorTest do
     assert px > 0.0
   end
 
+  test "default movement profile runs at 16ms fixed dt" do
+    assert Profile.default().fixed_dt_ms == 16
+  end
+
   test "engine returns authoritative ack with seq and tick" do
     state = State.idle({0.0, 0.0, 0.0})
 

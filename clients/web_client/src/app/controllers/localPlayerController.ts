@@ -1,6 +1,5 @@
 import { Vector3 } from "three";
 import { LocalPredictionRuntime } from "@domain/movement/localPlayer";
-import { RemotePlayerState } from "@domain/movement/remotePlayer";
 import { ServerClockEstimator, type ServerClockDebugSnapshot } from "@domain/movement/serverClock";
 import { ReplayAction } from "@domain/movement/governance";
 import { DEFAULT_MOVEMENT_PROFILE } from "@domain/movement/profile";
@@ -30,11 +29,10 @@ import type { TransportPump } from "./transportPump";
 
 const LOCAL_RENDER_SMOOTHING_RATE_HZ = 15;
 const LOCAL_VISUAL_HARD_SNAP_DISTANCE = 256;
-const MAX_MOVEMENT_FRAME_DT_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
-// 起步瞬间(权威仍 idle 但本地已起步)的 fallback 阈值:权威静止且灰色方块偏离
-// 本地超过此距离时，让灰色方块贴合本地预测，避免 RTT 窗口内的视觉拉开。
-const AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE = 1;
-const AUTHORITY_RENDER_IDLE_EPSILON_SQ = 1.0e-6;
+const MAX_FIXED_CATCH_UP_TICKS = 4;
+const MAX_RENDER_PARTIAL_DT_MS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
+const MAX_AUTHORITATIVE_PROJECTION_TICKS = 2;
+const MAX_AUTHORITATIVE_CLOCK_PROJECTION_MS = 250;
 const IDLE_INPUT_KEEPALIVE_MS = 5_000;
 
 export interface MovementFrameTraceSample {
@@ -107,10 +105,12 @@ export interface MovementFrameTraceSample {
  * Owns local-player prediction, reconciliation, and the render-anchor buffer
  * that visually damps corrections so the player never teleports on screen.
  *
- * Logic stays on a 100 ms fixed step for input/authority parity, but render
- * samples are advanced every frame by replaying the in-progress remainder
- * against the latest predicted anchor. This fills the 10 Hz gaps without
- * changing transport cadence.
+ * Logic stays on a 16 ms fixed step for input/authority parity, while render
+ * samples replay only the in-progress accumulator remainder from the latest
+ * fixed state. Raw authoritative ack and ack projection stay available for
+ * trace diagnostics; the visible gray marker follows the current ack-replayed
+ * prediction target so it remains an independent server-corrected display
+ * channel without showing a stale raw-packet ghost.
  */
 export class LocalPlayerController implements FrameSubscriber {
   private readonly prediction = new LocalPredictionRuntime();
@@ -120,11 +120,6 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly authoritativePosition = new Vector3();
   private readonly authoritativeVelocity = new Vector3();
   private readonly authoritativeAcceleration = new Vector3();
-  // Raw authority debug marker: ack cadence + server_tick sampling. The visible
-  // local server cube uses getAuthoritativeProjectedPosition(), while this raw
-  // path stays available in CLI/frame_trace to show how far the last server ack
-  // is from the current replayed projection.
-  private authorityRender = new RemotePlayerState({ interpolationDelaySecs: 0 });
   private readonly serverClock = new ServerClockEstimator();
   private readonly lastTracedPosition = new Vector3();
   private readonly lastTracedAuthorityPosition = new Vector3();
@@ -134,6 +129,10 @@ export class LocalPlayerController implements FrameSubscriber {
   private readonly frameTraceSamples: MovementFrameTraceSample[] = [];
   private fixedStepAccumulatorMs = 0;
   private lastAuthorityAtMs: number | null = null;
+  private lastAuthorityTick: number | null = null;
+  private lastAuthorityServerStateMs: number | null = null;
+  private lastAuthorityServerSendMs: number | null = null;
+  private lastAuthorityFixedDtMs = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
   private cameraYawResolver: () => number = () => 0;
   private frameTraceRemaining = 0;
   private renderSimulationState: PredictedMoveState | null = null;
@@ -164,17 +163,21 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   onFrame(nowMs: number, dtMs: number): void {
-    const movementDtMs = Math.min(Math.max(0, dtMs), MAX_MOVEMENT_FRAME_DT_MS);
+    const frameDtMs = Math.max(0, dtMs);
     let fixedSteps = 0;
-    this.fixedStepAccumulatorMs += movementDtMs;
-    while (this.fixedStepAccumulatorMs >= DEFAULT_MOVEMENT_PROFILE.fixedDtMs) {
+    this.fixedStepAccumulatorMs += frameDtMs;
+    while (
+      this.fixedStepAccumulatorMs >= DEFAULT_MOVEMENT_PROFILE.fixedDtMs &&
+      fixedSteps < MAX_FIXED_CATCH_UP_TICKS
+    ) {
       this.fixedStepAccumulatorMs -= DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
       this.stepFixed(nowMs);
       fixedSteps += 1;
     }
-    this.dampenPendingCorrection(movementDtMs / 1000);
-    this.advanceRenderedPrediction(movementDtMs);
-    this.captureFrameTrace(nowMs, movementDtMs, fixedSteps);
+    const renderPartialDtMs = Math.min(this.fixedStepAccumulatorMs, MAX_RENDER_PARTIAL_DT_MS);
+    this.dampenPendingCorrection(frameDtMs / 1000);
+    this.advanceRenderedPrediction(renderPartialDtMs);
+    this.captureFrameTrace(nowMs, renderPartialDtMs, fixedSteps);
   }
 
   getRenderedPosition(): Vector3 {
@@ -185,41 +188,25 @@ export class LocalPlayerController implements FrameSubscriber {
     return this.authoritativePosition;
   }
 
-  getAuthoritativeProjectedPosition(): Vector3 {
-    return (this.renderSimulationState?.position ?? this.renderedPosition).clone();
-  }
-
-  getAuthoritativeDisplayPosition(): Vector3 {
-    return this.renderedPosition.clone();
-  }
-
-  getAuthoritativeRenderPosition(nowMs: number): Vector3 {
-    const sample = this.authorityRender.sampleMotion(nowMs / 1000);
-    if (sample.mode === "empty") {
-      // 尚未收到任何权威快照:让灰色方块贴合本地预测,避免停在原点。
+  getAuthoritativeProjectedPosition(nowMs: number = performance.now()): Vector3 {
+    if (this.lastAuthorityAtMs === null) {
       return this.renderedPosition.clone();
     }
 
-    // 起步瞬间的 idle fallback:最近一次权威 ack 仍静止(服务端尚未反映本地已
-    // 起步的移动),而本地已有输入并已偏离权威 —— 让灰色方块跟随本地预测,避免
-    // RTT 窗口内权威静止造成的视觉拉开。这是"忠实显示权威"的唯一例外,且仅在
-    // 权威确实静止时触发;ack 中断但权威在移动时不命中,仍走上面的限幅采样。
-    const idleAuthority =
-      this.authoritativeVelocity.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ &&
-      this.authoritativeAcceleration.lengthSq() <= AUTHORITY_RENDER_IDLE_EPSILON_SQ;
-    if (idleAuthority) {
-      const localAxes = this.combinedAxes();
-      const localInputActive =
-        Math.hypot(localAxes.strafe, localAxes.forward) > 1.0e-6 || this.input.hasPendingJump();
-      if (
-        localInputActive &&
-        sample.position.distanceTo(this.renderedPosition) > AUTHORITY_RENDER_IDLE_FALLBACK_DISTANCE
-      ) {
-        return this.renderedPosition.clone();
-      }
-    }
+    const dtSecs = this.resolveAuthoritativeProjection(nowMs).dtMs / 1000;
 
-    return sample.position;
+    return this.authoritativePosition
+      .clone()
+      .add(this.authoritativeVelocity.clone().multiplyScalar(dtSecs))
+      .add(this.authoritativeAcceleration.clone().multiplyScalar(0.5 * dtSecs * dtSecs));
+  }
+
+  getAuthoritativeDisplayPosition(nowMs: number = performance.now()): Vector3 {
+    return this.renderSimulationState?.position.clone() ?? this.getAuthoritativeProjectedPosition(nowMs);
+  }
+
+  getAuthoritativeRenderPosition(nowMs: number): Vector3 {
+    return this.getAuthoritativeDisplayPosition(nowMs);
   }
 
   getAuthorityRenderDebugSnapshot(): ServerClockDebugSnapshot & {
@@ -236,20 +223,20 @@ export class LocalPlayerController implements FrameSubscriber {
     serverTickDiscontinuityCount: number;
     playbackTimeRegressionCount: number;
   } {
-    const debug = this.authorityRender.debugSnapshot();
+    const projection = this.resolveAuthoritativeProjection(performance.now());
     return {
-      latestServerTick: debug.latestServerTick,
-      latestServerStateMs: debug.latestServerStateMs,
-      latestServerSendMs: debug.latestServerSendMs,
-      bufferedSnapshots: debug.bufferedSnapshots,
-      interpolationMode: debug.lastSampleMode,
-      interpolationDelaySecs: debug.interpolationDelaySecs,
-      interpolationTimeAxis: debug.timeAxisMode,
-      serverStateTimelineHealthy: debug.serverStateTimelineHealthy,
-      serverSendTimelineHealthy: debug.serverSendTimelineHealthy,
-      playbackServerTimeMs: debug.lastPlaybackServerTimeMs,
-      serverTickDiscontinuityCount: debug.serverTickDiscontinuityCount,
-      playbackTimeRegressionCount: debug.playbackTimeRegressionCount,
+      latestServerTick: this.lastAuthorityTick,
+      latestServerStateMs: this.lastAuthorityServerStateMs,
+      latestServerSendMs: this.lastAuthorityServerSendMs,
+      bufferedSnapshots: this.lastAuthorityAtMs === null ? 0 : 1,
+      interpolationMode: this.lastAuthorityAtMs === null ? "empty" : "extrapolated",
+      interpolationDelaySecs: 0,
+      interpolationTimeAxis: projection.timeAxis,
+      serverStateTimelineHealthy: this.lastAuthorityAtMs !== null,
+      serverSendTimelineHealthy: this.lastAuthorityAtMs !== null,
+      playbackServerTimeMs: projection.playbackServerTimeMs,
+      serverTickDiscontinuityCount: 0,
+      playbackTimeRegressionCount: 0,
       ...this.serverClock.debugSnapshot(),
     };
   }
@@ -263,11 +250,10 @@ export class LocalPlayerController implements FrameSubscriber {
     this.frameTraceRemaining = Math.max(1, Math.floor(maxFrames));
     this.lastTracedPosition.copy(this.renderedPosition);
     this.lastTracedAuthorityPosition.copy(this.authoritativePosition);
-    this.lastTracedAuthorityRenderPosition.copy(
-      this.getAuthoritativeRenderPosition(performance.now()),
-    );
-    this.lastTracedAuthorityProjectedPosition.copy(this.getAuthoritativeProjectedPosition());
-    this.lastTracedAuthorityDisplayPosition.copy(this.getAuthoritativeDisplayPosition());
+    const nowMs = performance.now();
+    this.lastTracedAuthorityRenderPosition.copy(this.getAuthoritativeRenderPosition(nowMs));
+    this.lastTracedAuthorityProjectedPosition.copy(this.getAuthoritativeProjectedPosition(nowMs));
+    this.lastTracedAuthorityDisplayPosition.copy(this.getAuthoritativeDisplayPosition(nowMs));
   }
 
   clearFrameTrace(): void {
@@ -450,28 +436,12 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativeVelocity.copy(ack.velocity);
     this.authoritativeAcceleration.copy(ack.acceleration);
     this.lastAuthorityAtMs = nowMs;
-    // 把服务端原始权威态喂进插值缓冲(serverTick=authTick,使用 ack 真实的
-    // position/velocity/acceleration,而非 reconcile 后的客户端预测态),让灰色
-    // 方块忠实呈现服务端轨迹,并由限幅插值/外推统一管理时间基准。
-    this.authorityRender.setTickDurationSecs(
-      (ack.serverFixedDtMs || DEFAULT_MOVEMENT_PROFILE.fixedDtMs) / 1000,
-    );
-    this.authorityRender.pushSnapshot(
-      {
-        cid: 0,
-        serverTick: ack.authTick,
-        // Pillar 1.1: pass through the server-send wall-clock so the
-        // authority render buffer carries the same field the rest of the
-        // interpolation pipeline expects.
-        serverStateMs: ack.serverStateMs,
-        serverSendMs: ack.serverSendMs,
-        position: ack.position,
-        velocity: ack.velocity,
-        acceleration: ack.acceleration,
-        movementMode: ack.movementMode,
-      },
-      ack.correctionFlags,
-      nowMs / 1000,
+    this.lastAuthorityTick = ack.authTick;
+    this.lastAuthorityServerStateMs = ack.serverStateMs;
+    this.lastAuthorityServerSendMs = ack.serverSendMs;
+    this.lastAuthorityFixedDtMs = Math.max(
+      1,
+      ack.serverFixedDtMs || DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
     );
     if (result.action === ReplayAction.Accepted) {
       this.syncAcceptedAnchor(result.latestState);
@@ -533,11 +503,9 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   private advanceRenderedPrediction(dtMs: number): void {
-    if (!this.renderSimulationState) {
-      const anchorState = this.prediction.peekCurrentState();
-      if (anchorState) {
-        this.renderSimulationState = clonePredictedMoveState(anchorState);
-      }
+    const anchorState = this.prediction.peekCurrentState();
+    if (anchorState) {
+      this.renderSimulationState = clonePredictedMoveState(anchorState);
     }
 
     if (!this.renderSimulationState) {
@@ -565,6 +533,55 @@ export class LocalPlayerController implements FrameSubscriber {
     this.renderedPosition.copy(this.renderSimulationState.position).add(this.pendingCorrection);
   }
 
+  private resolveAuthoritativeProjection(nowMs: number): {
+    dtMs: number;
+    timeAxis: "server_tick" | "server_state_ms";
+    playbackServerTimeMs: number | null;
+  } {
+    if (this.lastAuthorityAtMs === null) {
+      return { dtMs: 0, timeAxis: "server_tick", playbackServerTimeMs: null };
+    }
+
+    const fixedDtMs = Math.max(1, this.lastAuthorityFixedDtMs);
+    const fallbackDtMs = Math.min(
+      Math.max(0, nowMs - this.lastAuthorityAtMs),
+      fixedDtMs * MAX_AUTHORITATIVE_PROJECTION_TICKS,
+    );
+    const fallbackPlaybackServerTimeMs =
+      this.lastAuthorityServerStateMs === null
+        ? null
+        : this.lastAuthorityServerStateMs + fallbackDtMs;
+
+    const clock = this.serverClock.sampleClock(Date.now());
+    if (
+      this.lastAuthorityServerStateMs !== null &&
+      this.lastAuthorityServerStateMs > 0 &&
+      clock.serverClockOffsetMs !== null &&
+      Number.isFinite(clock.serverClockOffsetMs)
+    ) {
+      const serverNowMs = clock.localWallClockMs + clock.serverClockOffsetMs;
+      const maxProjectionMs = Math.max(
+        fixedDtMs * MAX_AUTHORITATIVE_PROJECTION_TICKS,
+        MAX_AUTHORITATIVE_CLOCK_PROJECTION_MS,
+      );
+      const dtMs = Math.min(
+        Math.max(0, serverNowMs - this.lastAuthorityServerStateMs),
+        maxProjectionMs,
+      );
+      return {
+        dtMs,
+        timeAxis: "server_state_ms",
+        playbackServerTimeMs: this.lastAuthorityServerStateMs + dtMs,
+      };
+    }
+
+    return {
+      dtMs: fallbackDtMs,
+      timeAxis: "server_tick",
+      playbackServerTimeMs: fallbackPlaybackServerTimeMs,
+    };
+  }
+
   private syncRenderedPositionToAnchor(): void {
     this.renderedPosition.copy(this.renderAnchor).add(this.pendingCorrection);
   }
@@ -574,9 +591,9 @@ export class LocalPlayerController implements FrameSubscriber {
       return;
     }
 
+    const authorityProjectedPosition = this.getAuthoritativeProjectedPosition(nowMs);
     const authorityRenderPosition = this.getAuthoritativeRenderPosition(nowMs);
-    const authorityProjectedPosition = this.getAuthoritativeProjectedPosition();
-    const authorityDisplayPosition = this.getAuthoritativeDisplayPosition();
+    const authorityDisplayPosition = this.getAuthoritativeDisplayPosition(nowMs);
     const deltaX = this.renderedPosition.x - this.lastTracedPosition.x;
     const deltaY = this.renderedPosition.y - this.lastTracedPosition.y;
     const deltaZ = this.renderedPosition.z - this.lastTracedPosition.z;
@@ -723,8 +740,11 @@ export class LocalPlayerController implements FrameSubscriber {
     this.authoritativePosition.copy(start);
     this.authoritativeVelocity.set(0, 0, 0);
     this.authoritativeAcceleration.set(0, 0, 0);
-    this.authorityRender = new RemotePlayerState({ interpolationDelaySecs: 0 });
     this.lastAuthorityAtMs = null;
+    this.lastAuthorityTick = null;
+    this.lastAuthorityServerStateMs = null;
+    this.lastAuthorityServerSendMs = null;
+    this.lastAuthorityFixedDtMs = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
     this.lastTracedAuthorityPosition.copy(start);

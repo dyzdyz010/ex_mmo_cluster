@@ -54,7 +54,7 @@ describe("LocalPlayerController", () => {
     expect(controller.getCurrentState()).toMatchObject({ groundY: 123 });
   });
 
-  it("advances the rendered local position before the first 100 ms fixed step lands", () => {
+  it("advances the rendered local position before the first 16 ms fixed step lands", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
     const transport = new FakeMovementTransport();
@@ -66,10 +66,44 @@ describe("LocalPlayerController", () => {
 
     const start = controller.getRenderedPosition().clone();
 
-    controller.onFrame(16, 16);
+    controller.onFrame(8, 8);
 
     expect(controller.getRenderedPosition().x).toBeGreaterThan(start.x);
     expect(transport.sentInputs).toHaveLength(0);
+  });
+
+  it("catches up fixed inputs during a 33 ms browser frame instead of slowing movement", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.right = true;
+
+    controller.onFrame(33, 33);
+
+    expect(transport.sentInputs.map((frame) => frame.clientTick)).toEqual([1, 2]);
+  });
+
+  it("keeps hitch overflow in the fixed accumulator instead of dropping movement time", () => {
+    const bus = new EventBus<AppEvents>();
+    const input = new InputController(bus);
+    const transport = new FakeMovementTransport();
+    const pump = new TransportPump(transport, bus);
+    const controller = new LocalPlayerController(bus, input, pump);
+
+    const keys = input.getMovementKeys() as MovementKeys;
+    keys.right = true;
+
+    controller.onFrame(100, 100);
+    expect(transport.sentInputs.map((frame) => frame.clientTick)).toEqual([1, 2, 3, 4]);
+
+    controller.onFrame(116, 16);
+    expect(transport.sentInputs.map((frame) => frame.clientTick)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
   });
 
   it("treats camera forward as movement forward", () => {
@@ -176,7 +210,7 @@ describe("LocalPlayerController", () => {
         acceleration: acceptedState!.acceleration.clone(),
         movementMode: MovementMode.Grounded,
         correctionFlags: CorrectionFlag.None,
-        serverFixedDtMs: 100,
+        serverFixedDtMs: 16,
         groundY: acceptedState!.groundY,
       },
       sentAtMs: performance.now(),
@@ -219,7 +253,7 @@ describe("LocalPlayerController", () => {
         acceleration: firstAuthoritative.acceleration.clone(),
         movementMode: firstAuthoritative.movementMode,
         correctionFlags: CorrectionFlag.None,
-        serverFixedDtMs: 100,
+        serverFixedDtMs: 16,
         groundY: firstAuthoritative.groundY,
       },
       sentAtMs: performance.now(),
@@ -231,7 +265,7 @@ describe("LocalPlayerController", () => {
     expect(controller.getPendingCorrection().length()).toBe(0);
   });
 
-  it("extrapolates authoritative render position between low-frequency server acks", () => {
+  it("uses a 2-tick latest-ack projection fallback before TimeSync is available", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
     const transport = new FakeMovementTransport();
@@ -249,42 +283,24 @@ describe("LocalPlayerController", () => {
         acceleration: new Vector3(0, 0, 0),
         movementMode: MovementMode.Grounded,
         correctionFlags: CorrectionFlag.None,
-        serverFixedDtMs: 100,
+        serverFixedDtMs: 16,
         groundY: 0,
       },
       sentAtMs: performance.now(),
     });
 
-    const estimated = controller.getAuthoritativeRenderPosition(performance.now() + 250);
+    const estimated = controller.getAuthoritativeProjectedPosition(performance.now() + 250);
 
     expect(controller.getAuthoritativePosition().x).toBe(0);
-    expect(estimated.x).toBeGreaterThan(20);
-    expect(estimated.x).toBeLessThan(30);
+    expect(estimated.x).toBeCloseTo(3.2, 4);
   });
 
-  it("does not pin the authoritative render marker to an idle ack while local motion has started", () => {
+  it("falls back to the rendered local position before the first ack arrives", () => {
     const bus = new EventBus<AppEvents>();
     const input = new InputController(bus);
     const transport = new FakeMovementTransport();
     const pump = new TransportPump(transport, bus);
     const controller = new LocalPlayerController(bus, input, pump, new Vector3(0, 0, 0));
-
-    bus.emit("transport:ack-delivered", {
-      ack: {
-        ackSeq: 0,
-        authTick: 0,
-        serverStateMs: 0,
-        serverSendMs: 0,
-        position: new Vector3(0, 0, 0),
-        velocity: new Vector3(0, 0, 0),
-        acceleration: new Vector3(0, 0, 0),
-        movementMode: MovementMode.Grounded,
-        correctionFlags: CorrectionFlag.None,
-        serverFixedDtMs: 100,
-        groundY: 0,
-      },
-      sentAtMs: performance.now(),
-    });
 
     const keys = input.getMovementKeys() as MovementKeys;
     keys.right = true;
@@ -293,7 +309,7 @@ describe("LocalPlayerController", () => {
     }
 
     const rendered = controller.getRenderedPosition().clone();
-    const estimated = controller.getAuthoritativeRenderPosition(performance.now() + 64);
+    const estimated = controller.getAuthoritativeProjectedPosition(performance.now() + 64);
 
     expect(rendered.x).toBeGreaterThan(0);
     expect(estimated.x).toBeCloseTo(rendered.x, 5);
@@ -311,9 +327,11 @@ describe("LocalPlayerController", () => {
     controller.onFrame(100, 100);
     controller.onFrame(200, 100);
 
-    expect(transport.sentInputs).toHaveLength(2);
+    expect(transport.sentInputs).toHaveLength(8);
     expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
-    expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+    expect(transport.sentInputs.slice(1).every((frame) => frame.movementFlags === MovementFlag.Brake)).toBe(
+      true,
+    );
   });
 
   it("coalesces repeated idle movement frames between keepalives", () => {
@@ -348,11 +366,13 @@ describe("LocalPlayerController", () => {
     controller.onFrame(2_000, 2_000);
     controller.onFrame(2_100, 100);
 
-    expect(transport.sentInputs).toHaveLength(2);
+    expect(transport.sentInputs).toHaveLength(8);
     expect(transport.sentInputs[0]?.movementFlags).toBe(MovementFlag.Jump | MovementFlag.Brake);
-    expect(transport.sentInputs[1]?.movementFlags).toBe(MovementFlag.Brake);
+    expect(transport.sentInputs.slice(1).every((frame) => frame.movementFlags === MovementFlag.Brake)).toBe(
+      true,
+    );
     expect(transport.sentInputs[0]?.clientTick).toBe(1);
-    expect(transport.sentInputs[1]?.clientTick).toBe(2);
+    expect(transport.sentInputs.at(-1)?.clientTick).toBe(8);
   });
 
   it("emits an observable blocked-input event when controls are used before transport is ready", () => {

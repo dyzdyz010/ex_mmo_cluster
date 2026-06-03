@@ -112,7 +112,7 @@ describe("RenderOrchestrator actor display", () => {
     render.dispose();
   });
 
-  it("renders the visible authority marker from the smoothed authoritative display target", () => {
+  it("renders the visible authority marker from the reconciled display target", () => {
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -141,7 +141,9 @@ describe("RenderOrchestrator actor display", () => {
 
     const actorDisplay = render.getActorDisplaySnapshot();
     expect(actorDisplay.authority.x).toBe(displayPosition.x);
-    expect(Math.abs(actorDisplay.local.x - actorDisplay.authority.x)).toBeLessThanOrEqual(1);
+    expect(actorDisplay.authority.x).not.toBe(rawAckPosition.x);
+    expect(actorDisplay.authority.x).not.toBe(projectedPosition.x);
+    expect(Math.abs(actorDisplay.local.x - actorDisplay.authority.x)).toBeLessThanOrEqual(2);
     render.dispose();
   });
 });

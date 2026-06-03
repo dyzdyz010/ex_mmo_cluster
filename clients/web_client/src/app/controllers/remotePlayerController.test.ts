@@ -119,7 +119,7 @@ describe("RemotePlayerController", () => {
     });
     bus.emit("transport:snapshot-delivered", {
       snapshot: remoteSnapshot(MovementMode.Grounded, {
-        serverTick: 1_001,
+        serverTick: 1_006,
         serverStateMs: 2_000_100,
         serverSendMs: 2_000_120,
         position: new Vector3(100, 0, 0),

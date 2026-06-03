@@ -1,21 +1,22 @@
 import { Vector3 } from "three";
+import { DEFAULT_MOVEMENT_PROFILE } from "./profile";
 import { CorrectionFlag, cloneRemoteMoveSnapshot, type RemoteMoveSnapshot } from "./types";
 
 const MAX_BUFFERED_SNAPSHOTS = 32;
-const DEFAULT_SNAPSHOT_TICK_SECS = 0.1;
+const DEFAULT_SNAPSHOT_TICK_SECS = DEFAULT_MOVEMENT_PROFILE.fixedDtMs / 1000;
 // Follow the 150 ms Bernier/Source baseline documented in
-// docs/2026-04-20-movement-reference-audit.md. This keeps one full 100 ms
-// server sample in reserve without adding the extra 70 ms "slow half-beat"
-// introduced by the previous 220 ms delay.
+// docs/2026-04-20-movement-reference-audit.md. Local authority markers do not
+// use this delayed remote-player buffer.
 export const INTERPOLATION_DELAY_SECS = 0.15;
 // Server AOI Priority throttles low-priority (far) observers to one
-// snapshot per 5 server ticks = 500 ms (see
+// snapshot per 5 server ticks (see
 // `apps/scene_server/lib/scene_server/aoi/priority.ex` `delivery_interval/1`).
 // The clamp must cover that gap or remote players visibly stutter:
 // extrapolation freezes after the clamp window, then snaps when the
-// next throttled snapshot arrives. 600 ms = 500 ms throttle + 100 ms
-// jitter headroom.
-export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.6;
+// next throttled snapshot arrives. At the current 16 ms fixed tick, the low
+// priority gap is about 80 ms, so a 250 ms cap leaves headroom without adding
+// another half-second of stale remote motion.
+export const MAX_REMOTE_EXTRAPOLATION_SECS = 0.25;
 const LOW_PRIORITY_EXTRA_JITTER_SECS = 0.05;
 const MIN_SERVER_SEND_TICK_RATIO = 0.5;
 const MAX_SERVER_SEND_TICK_RATIO = 2.5;

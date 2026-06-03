@@ -32,7 +32,14 @@ falling collision resolves the center back to that height.
   `app/controllers/remotePlayerController.ts` 按 `cid` 管理。
 - 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
   fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
-  用来填平 100 ms tick 之间的视觉空档；它不写回 history，也不改变网络发送频率。
+  用来填平 16 ms tick (约 62.5Hz) 之间的视觉空档；它不写回 history，也不改变网络发送频率。
+- 本地灰色 server-authority cube 不是远端玩家插值对象，也不是原始 ACK
+  位置。屏幕上显示的是当前 ack-replay 后的预测目标（不含本地视觉
+  correction smoothing），也就是独立于 raw ACK 的 server-corrected
+  display channel。raw ack 位置和 latest-ack projection 仍保留给
+  CLI/trace 做 reconcile / latency 诊断；latest-ack projection 在
+  TimeSync 可用时按 `server_state_ms + serverClockOffsetMs` 计算，
+  TimeSync 尚未建立时退回最多 2 个 `serverFixedDtMs` 的短窗口投影。
 - 渲染层消费 movement 输出的 3D 坐标作为角色显示真相。体素地表查询只用于
   spawn/teleport 选点，不能在每帧用“当前 x/z 最高 solid block”覆盖
   movement Y；否则上方桥、天花板或 prefab 会被误判成脚下地面。
@@ -40,8 +47,8 @@ falling collision resolves the center back to that height.
   只统计 replay / snap / status override 等真实校正，不再把 accepted ack
   误报成“拉回”。
 - `remotePlayer.ts` 当前采用 **150 ms 插值延迟 + 250 ms 封顶外推**：
-  150 ms 保证 100 ms 服务端快照至少保留一帧历史缓冲，同时不额外拖出
-  220 ms 的远端钝感。tick 时长默认 100 ms，但会接受服务端 ack 回传的
+  150 ms 仍保留给远端实体吸收网络抖动/优先级节流，不额外拖出
+  220 ms 的远端钝感。tick 时长默认 16 ms (约 62.5Hz)，但会接受服务端 ack 回传的
   `serverFixedDtMs`，避免远端插值时间轴与服务端固定步长漂移。
 - `transport.ts` 定义 `MovementTransport` port；domain 只依赖接口，具体适配器由 composition root 注入。
 - `inputDirection.ts` 把按键状态映射成单位输入方向，纯函数、无副作用。
