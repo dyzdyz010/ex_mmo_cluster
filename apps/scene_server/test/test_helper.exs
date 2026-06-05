@@ -81,6 +81,48 @@ defmodule SceneServer.TestVoxelRuntime do
   end
 end
 
+defmodule SceneServer.TestAoiRuntime do
+  @moduledoc """
+  Boots the AOI index runtime for tests that exercise AOI registration / items.
+
+  S1 重构后,AOI 的进程身份/句柄所有权落在 `SceneServer.Aoi.IndexHeir` +
+  `SceneServer.Aoi.IndexStore`(权威八叉树句柄 + CID 索引 ETS 表),`SceneServer.AoiManager`
+  退化为无状态 facade(不再是进程)。`mix test` 下整个 `:scene_server` application 已经
+  启动(见上),这三者通常已在 `AoiSup` 子树里跑着,本 helper 因此一般是 whereis 命中的
+  no-op;但显式列出可读、可在 `--no-start` 场景下补齐。heir 必须先于 store。
+  """
+
+  def ensure_started! do
+    ensure_started!(
+      SceneServer.Aoi.IndexHeir,
+      {SceneServer.Aoi.IndexHeir, name: SceneServer.Aoi.IndexHeir}
+    )
+
+    ensure_started!(
+      SceneServer.Aoi.IndexStore,
+      {SceneServer.Aoi.IndexStore, name: SceneServer.Aoi.IndexStore}
+    )
+
+    ensure_started!(
+      SceneServer.AoiItemSup,
+      {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup}
+    )
+  end
+
+  defp ensure_started!(name, child_spec) do
+    case Process.whereis(name) do
+      nil ->
+        case ExUnit.Callbacks.start_supervised(child_spec) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
+  end
+end
+
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto. Bump the
 # default `assert_receive` window so tests waiting on apply→persist→delta
 # round trips don't flake on a real DB INSERT.

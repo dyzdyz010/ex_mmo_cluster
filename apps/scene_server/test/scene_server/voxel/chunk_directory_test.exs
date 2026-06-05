@@ -20,12 +20,26 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
+
+    # 阶段3.1：每个测试用隔离的 chunk 进程身份注册表，避免 facade.snapshot
+    # 的 Registry 扫描串到全局单例 / 其它测试的 chunk。directory 经
+    # `directory/1` helper 注入该注册表。
+    registry_name = :"chunk_directory_test_registry_#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: registry_name})
+    Process.put(:chunk_registry, registry_name)
+
     :ok
+  end
+
+  # 在显式 `chunk_sup` 之外注入隔离注册表，统一 facade 的进程身份解析视图。
+  defp directory(opts) do
+    opts = Keyword.put_new(opts, :chunk_registry, Process.get(:chunk_registry))
+    start_supervised!({ChunkDirectory, opts})
   end
 
   test "lazily starts chunks and returns snapshot payloads" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
     scene_id = unique_scene_id()
 
     assert {:ok, payload} =
@@ -47,7 +61,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "apply_intent starts a chunk, writes through the lease fence, and persists" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
 
     scene_id = unique_scene_id()
     lease = lease(scene_id)
@@ -91,7 +105,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "apply_intents batches same-chunk writes through one persisted snapshot" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
 
     scene_id = unique_scene_id()
     lease = lease(scene_id)
@@ -137,7 +151,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
 
     directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, collision_query_timeout_ms: 10})
+      directory(chunk_sup: chunk_sup, collision_query_timeout_ms: 10)
 
     scene_id = unique_scene_id()
 
@@ -166,7 +180,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "collision_query honors a per-request timeout override" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
     scene_id = unique_scene_id()
 
     assert {:ok, chunk_pid} =
@@ -203,7 +217,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
 
     directory =
-      start_supervised!({ChunkDirectory, chunk_sup: chunk_sup, chunk_call_timeout_ms: 10})
+      directory(chunk_sup: chunk_sup, chunk_call_timeout_ms: 10)
 
     scene_id = unique_scene_id()
 
@@ -237,7 +251,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "subscribe preserves per-subscriber delivery mode across later chunk updates" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
 
     scene_id = unique_scene_id()
     lease = lease(scene_id)
@@ -309,7 +323,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "apply_intent rejects missing leases before starting a chunk" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
     scene_id = unique_scene_id()
 
     assert {:error, :missing_lease} =
@@ -327,7 +341,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   test "prewarm_handoff loads persisted snapshots into target chunks without rewriting" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = directory(chunk_sup: chunk_sup)
 
     scene_id = unique_scene_id()
     old_lease = lease(scene_id)
@@ -408,7 +422,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   describe "lookup_chunk_pid/3 (Phase 4-bis D1)" do
     test "returns :not_started when no chunk has been registered for the coord" do
       chunk_sup = start_supervised!(VoxelChunkSup)
-      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      directory = directory(chunk_sup: chunk_sup)
       scene_id = unique_scene_id()
 
       assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
@@ -416,7 +430,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     test "returns {:ok, pid} for a chunk that was started via snapshot_payload" do
       chunk_sup = start_supervised!(VoxelChunkSup)
-      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      directory = directory(chunk_sup: chunk_sup)
       scene_id = unique_scene_id()
 
       assert {:ok, _payload} =
@@ -433,7 +447,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     test "scopes lookup by logical_scene_id (different scene with same coord misses)" do
       chunk_sup = start_supervised!(VoxelChunkSup)
-      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      directory = directory(chunk_sup: chunk_sup)
       scene_id = unique_scene_id()
       other_scene_id = unique_scene_id()
 
@@ -451,7 +465,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     test "returns :not_started when the registered chunk pid is dead" do
       chunk_sup = start_supervised!(VoxelChunkSup)
-      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      directory = directory(chunk_sup: chunk_sup)
       scene_id = unique_scene_id()
 
       assert {:ok, _} =
@@ -463,9 +477,18 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
       assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {3, 3, 3})
 
-      Process.exit(pid, :kill)
-      # Allow the EXIT to propagate.
-      Process.sleep(20)
+      # 阶段3.1：经监督树终止该权威进程，使它**不**按 :transient 重启回同一身份槽位
+      # （直接 `Process.exit(pid, :kill)` 是异常退出，会触发重启并注册新 pid，无法
+      # 观察到"已死但仍注册"的窗口）。terminate_child 后进程不再重启，注册表对该死
+      # 条目的摘除仍是异步的，因此用轮询等到 facade 解析为 :not_started——验证 facade
+      # 主动过滤死 pid 的契约，而不是把死 / 残留条目泄漏给调用方。
+      ref = Process.monitor(pid)
+      :ok = DynamicSupervisor.terminate_child(chunk_sup, pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      wait_until(fn ->
+        ChunkDirectory.lookup_chunk_pid(directory, scene_id, {3, 3, 3}) == :not_started
+      end)
 
       assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {3, 3, 3})
     end
@@ -474,6 +497,21 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   defp unique_scene_id do
     System.unique_integer([:positive, :monotonic]) + 10_000_000
   end
+
+  # 轮询等待 `fun` 为真，替代固定 sleep 后立即断言（注册表死条目摘除 / 监督树
+  # 重建是异步的，固定窗口会 flaky）。
+  defp wait_until(fun, attempts \\ 100)
+
+  defp wait_until(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp wait_until(_fun, 0), do: flunk("condition not met before timeout")
 
   defp lease(scene_id) do
     %{

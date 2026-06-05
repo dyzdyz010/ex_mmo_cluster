@@ -170,6 +170,19 @@ defmodule Mix.Tasks.GateServer.PartitionSubscriptionObserve do
   end
 
   defp ensure_scene_voxel_started do
+    # 阶段3.1：chunk 进程身份注册表必须早于 VoxelChunkSup / ChunkDirectory。
+    chunk_registry =
+      case Process.whereis(SceneServer.Voxel.ChunkRegistry) do
+        nil ->
+          {:ok, pid} =
+            Registry.start_link(keys: :unique, name: SceneServer.Voxel.ChunkRegistry)
+
+          {:started, pid}
+
+        pid ->
+          {:existing, pid}
+      end
+
     chunk_sup =
       case Process.whereis(SceneServer.VoxelChunkSup) do
         nil ->
@@ -195,7 +208,7 @@ defmodule Mix.Tasks.GateServer.PartitionSubscriptionObserve do
           {:existing, pid}
       end
 
-    %{chunk_sup: chunk_sup, chunk_directory: chunk_directory}
+    %{chunk_registry: chunk_registry, chunk_sup: chunk_sup, chunk_directory: chunk_directory}
   end
 
   defp ensure_data_service_started do
@@ -218,8 +231,13 @@ defmodule Mix.Tasks.GateServer.PartitionSubscriptionObserve do
     stop_scene_voxel_started(%{chunk_directory: :stopped, chunk_sup: chunk_sup})
   end
 
-  defp stop_scene_voxel_started(%{chunk_sup: {:started, pid}}) do
+  defp stop_scene_voxel_started(%{chunk_sup: {:started, pid}} = started) do
     if Process.alive?(pid), do: DynamicSupervisor.stop(pid)
+    stop_scene_voxel_started(Map.put(started, :chunk_sup, :stopped))
+  end
+
+  defp stop_scene_voxel_started(%{chunk_registry: {:started, pid}}) do
+    if Process.alive?(pid), do: Process.exit(pid, :normal)
   end
 
   defp stop_scene_voxel_started(_started), do: :ok

@@ -1,53 +1,83 @@
 defmodule SceneServer.AoiManager do
   @moduledoc """
-  Central AOI index and lookup service for active actors.
+  Stateless facade for AOI registration and lookup.
 
-  `AoiManager` owns the octree plus the mapping from CID to AOI item/actor PID.
-  Player and NPC actors both register through this module, which is why combat
-  targeting can stay actor-agnostic.
+  ## 从单点 GenServer 到无状态 facade(S1)
+
+  历史上 `AoiManager` 是一个 GenServer,在 `init/1` 里创建八叉树句柄,并在自己的 state 里
+  同时持有八叉树句柄和一份与八叉树平行的 `aois` CID map。这造成两个根因缺陷:
+
+  1. **句柄孤儿化**:管理者崩溃重启会创建一棵全新空树,存活 `AoiItem` 仍持旧句柄 →
+     AOI 视图脑裂。
+  2. **双真相源 + 热路径串行**:`aois` map 是第二真相源;每次 `self_move` 同步
+     `GenServer.call` 串行到单进程。
+
+  现在 `AoiManager` **不再是进程**,而是一个无状态模块 facade:
+
+  - 八叉树句柄的所有权移交给极简、近乎不崩的 `SceneServer.Aoi.IndexStore`(由
+    `SceneServer.Aoi.IndexHeir` 做 ETS heir,跨重启复用同一句柄,重启从权威 hydrate)。
+  - CID 索引的唯一真相源是 `SceneServer.Aoi.IndexStore` 拥有的 `:scene_aoi_entries` ETS
+    表;`AoiManager` 不再保留任何平行 map。
+  - 所有读写经无状态的 `SceneServer.Aoi.Index` 直接落 ETS / 八叉树 NIF,**没有任何
+    GenServer.call 到单点**。
+
+  Player 与 NPC actor 仍然通过本模块注册;combat targeting 仍然 actor-agnostic。
   """
 
-  use GenServer
+  alias SceneServer.Aoi.Index
 
-  require Logger
-
-  alias SceneServer.Native.CoordinateSystem
-  alias SceneServer.Native.Octree
-
-  # APIs
-
-  @doc "Starts the shared AOI index process."
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, [], opts)
-  end
+  @type vector :: {float(), float(), float()}
 
   @spec add_aoi_item(
           integer(),
           integer(),
-          {float(), float(), float()},
+          vector(),
           pid(),
           pid(),
           %{kind: atom(), name: String.t()}
         ) ::
           {:ok, pid()} | {:err, any()}
-  @doc "Registers one actor in the AOI system and returns its dedicated AOI item PID."
+  @doc """
+  Registers one actor in the AOI system and returns its dedicated AOI item PID.
+
+  Spawns the `AoiItem` under `SceneServer.AoiItemSup` and writes the CID index
+  entry into the authoritative ETS table. The AOI item reads the shared octree
+  handle from `SceneServer.Aoi.Index` itself, so it never receives a stale
+  handle that could be orphaned by a restart.
+  """
   def add_aoi_item(cid, client_timestamp, location, connection_pid, actor_pid, actor_meta) do
-    GenServer.call(
-      __MODULE__,
-      {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid, actor_meta}
-    )
+    case DynamicSupervisor.start_child(
+           SceneServer.AoiItemSup,
+           {SceneServer.Aoi.AoiItem,
+            {cid, client_timestamp, location, connection_pid, actor_pid, actor_meta}}
+         ) do
+      {:ok, apid} ->
+        Index.put_entry(%{
+          cid: cid,
+          aoi_pid: apid,
+          actor_pid: actor_pid,
+          actor_meta: actor_meta,
+          location: location
+        })
+
+        {:ok, apid}
+
+      {:error, reason} ->
+        {:err, reason}
+    end
   end
 
-  @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
+  @spec remove_aoi_item(integer()) :: {:ok, any()}
   @doc "Removes an actor from the AOI index by CID."
   def remove_aoi_item(cid) do
-    GenServer.call(__MODULE__, {:remove_aoi_item, cid})
+    Index.delete_entry(cid)
+    {:ok, ""}
   end
 
   @spec get_items_with_cids([integer()]) :: [pid()]
   @doc "Resolves AOI item PIDs for the provided CIDs."
   def get_items_with_cids(cids) do
-    GenServer.call(__MODULE__, {:get_items_with_cids, cids})
+    Index.item_pids(cids)
   end
 
   @spec get_entries_with_cids([integer()]) :: [map()]
@@ -55,146 +85,34 @@ defmodule SceneServer.AoiManager do
   Resolves AOI entries for the provided CIDs.
 
   Entries include `:cid`, `:aoi_pid`, actor metadata, and the latest AOI
-  location. This is the read side used by priority sync; `AoiManager` owns the
-  CID index while each `AoiItem` owns its process-local subscription list.
+  location. This is the read side used by priority sync; the entry index is the
+  single CID truth source while each `AoiItem` owns its process-local
+  subscription list.
   """
   def get_entries_with_cids(cids) do
-    GenServer.call(__MODULE__, {:get_entries_with_cids, cids})
+    Index.fetch_entries(cids)
   end
 
-  @spec update_item_location(integer(), {float(), float(), float()}) :: :ok
+  @spec update_item_location(integer(), vector()) :: :ok
   @doc """
-  Updates the manager-side location cache for one AOI item.
+  Updates the cached location for one AOI item.
 
-  The call is synchronous so a movement handler that has returned has already
-  published the location used by later partition-window prune decisions.
+  This is the `self_move` hot path. It is an atomic, concurrent `:ets`
+  write — it does **not** serialize through any single process anymore.
   """
   def update_item_location(cid, location) do
-    GenServer.call(__MODULE__, {:update_item_location, cid, location})
+    Index.update_location(cid, location)
   end
 
-  @spec get_nearby_actor_pids({float(), float(), float()}, float(), [integer()]) :: [pid()]
+  @spec get_nearby_actor_pids(vector(), float(), [integer()]) :: [pid()]
   @doc "Returns nearby actor PIDs around a location, excluding specified CIDs."
   def get_nearby_actor_pids(location, radius, exclude_cids \\ []) do
-    GenServer.call(__MODULE__, {:get_nearby_actor_pids, location, radius, exclude_cids})
+    Index.nearby_actor_pids(location, radius, exclude_cids)
   end
 
   @spec get_actor_pid(integer()) :: pid() | nil
   @doc "Resolves an authoritative actor PID by CID."
   def get_actor_pid(cid) do
-    GenServer.call(__MODULE__, {:get_actor_pid, cid})
-  end
-
-  @impl true
-  def init(_init_arg) do
-    Logger.debug("Aoi process created.")
-    system = create_system()
-    {:ok, %{coordinate_system: system, aois: %{}}}
-  end
-
-  @impl true
-  def handle_call(
-        {:add_aoi_item, cid, client_timestamp, location, connection_pid, actor_pid, actor_meta},
-        _from,
-        %{coordinate_system: system, aois: aois} = state
-      ) do
-    {:ok, apid} =
-      DynamicSupervisor.start_child(
-        SceneServer.AoiItemSup,
-        {SceneServer.Aoi.AoiItem,
-         {cid, client_timestamp, location, connection_pid, actor_pid, actor_meta, system}}
-      )
-
-    new_aois =
-      aois
-      |> Map.put(cid, %{
-        cid: cid,
-        aoi_pid: apid,
-        actor_pid: actor_pid,
-        actor_meta: actor_meta,
-        location: location
-      })
-
-    {:reply, {:ok, apid}, %{state | aois: new_aois}}
-  end
-
-  @impl true
-  def handle_call({:remove_aoi_item, cid}, _from, %{aois: aois} = state) do
-    new_aois = aois |> Map.delete(cid)
-    {:reply, {:ok, ""}, %{state | aois: new_aois}}
-  end
-
-  @impl true
-  def handle_call({:get_items_with_cids, cids}, _from, %{aois: aois} = state) do
-    items =
-      for {k, %{aoi_pid: aoi_pid}} <- aois, cid <- cids, k == cid, do: aoi_pid
-
-    {:reply, items, state}
-  end
-
-  @impl true
-  def handle_call({:get_entries_with_cids, cids}, _from, %{aois: aois} = state) do
-    entries =
-      cids
-      |> Enum.map(&Map.get(aois, &1))
-      |> Enum.reject(&is_nil/1)
-
-    {:reply, entries, state}
-  end
-
-  @impl true
-  def handle_call({:get_actor_pid, cid}, _from, %{aois: aois} = state) do
-    actor_pid =
-      case Map.get(aois, cid) do
-        %{actor_pid: pid} -> pid
-        _ -> nil
-      end
-
-    {:reply, actor_pid, state}
-  end
-
-  @impl true
-  def handle_call(
-        {:get_nearby_actor_pids, location, radius, exclude_cids},
-        _from,
-        %{coordinate_system: system, aois: aois} = state
-      ) do
-    cids = Octree.get_in_bound(system, location, {radius, radius, radius})
-
-    actor_pids =
-      cids
-      |> Enum.reject(&(&1 in exclude_cids))
-      |> Enum.map(fn cid ->
-        case Map.get(aois, cid) do
-          %{actor_pid: actor_pid} -> actor_pid
-          _ -> nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-
-    {:reply, actor_pids, state}
-  end
-
-  @impl true
-  def handle_call({:update_item_location, cid, location}, _from, %{aois: aois} = state) do
-    next_aois =
-      Map.update(aois, cid, nil, fn
-        nil -> nil
-        entry -> %{entry | location: location}
-      end)
-      |> Enum.reject(fn {_cid, entry} -> is_nil(entry) end)
-      |> Map.new()
-
-    {:reply, :ok, %{state | aois: next_aois}}
-  end
-
-  # Internal functions
-
-  @spec create_system() :: SceneServer.Native.CoordinateSystem.Types.coordinate_system()
-  defp create_system() do
-    # {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 5)
-    system = Octree.new_tree({0.0, 0.0, 0.0}, {5000.0, 5000.0, 5000.0})
-
-    system
+    Index.actor_pid(cid)
   end
 end

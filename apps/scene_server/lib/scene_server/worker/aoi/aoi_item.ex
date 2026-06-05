@@ -55,11 +55,16 @@ defmodule SceneServer.Aoi.AoiItem do
 
   @impl true
   @spec init(
-          {integer(), integer(), vector(), pid(), pid(), %{kind: atom(), name: String.t()},
-           Octree.Types.octree()}
+          {integer(), integer(), vector(), pid(), pid(), %{kind: atom(), name: String.t()}}
         ) ::
           {:ok, map(), {:continue, {:load, any}}}
-  def init({cid, _client_timestamp, location, connection_pid, player_pid, actor_meta, system}) do
+  def init({cid, _client_timestamp, location, connection_pid, player_pid, actor_meta}) do
+    # 八叉树句柄从权威存储 SceneServer.Aoi.Index 取(由 IndexStore 持有 / 跨重启 hydrate)。
+    # 不再由 AoiManager 在 add 时把句柄塞进来——那样 AoiManager 重启造新树会让这里持有的
+    # 旧句柄孤儿化。现在所有 AoiItem 共享同一棵权威八叉树句柄,IndexStore 重启复用同一
+    # 句柄,本进程的 system_ref 永不悬空。
+    system = SceneServer.Aoi.Index.octree()
+
     {:ok,
      %{
        cid: cid,
@@ -259,7 +264,9 @@ defmodule SceneServer.Aoi.AoiItem do
         } = state
       ) do
     {:ok, item_ref} = replace_item(cid, snapshot.position, system, item)
-    SceneServer.AoiManager.update_item_location(cid, snapshot.position)
+    # 热路径:位置写入走 Index 的原子并发 ETS 写,不再同步 GenServer.call 到单点管理者。
+    # 八叉树 add/remove 直接落本进程持有的共享句柄(进程无关、可并发)。
+    SceneServer.Aoi.Index.update_location(cid, snapshot.position)
     broadcast_action_player_move(snapshot, subscribees)
 
     {:noreply, %{state | item_ref: item_ref, location: snapshot.position}}
@@ -454,7 +461,7 @@ defmodule SceneServer.Aoi.AoiItem do
       false -> Logger.debug("AOI system item already absent during terminate.")
     end
 
-    {:ok, _} = GenServer.call(SceneServer.AoiManager, {:remove_aoi_item, cid})
+    {:ok, _} = SceneServer.AoiManager.remove_aoi_item(cid)
     Logger.debug("Aoi index removed.")
 
     if aoi_timer != nil do
@@ -640,12 +647,9 @@ defmodule SceneServer.Aoi.AoiItem do
          partition_routes_by_chunk
        ) do
     cids = Octree.get_in_bound_except(system, item, {distance, distance, distance})
-    # {:ok, cids} = CoordinateSystem.get_cids_within_distance_from_system(system, item, distance)
-    # data = CoordinateSystem.get_item_raw(item)
-    # Logger.debug("#{inspect(data, pretty: true)}")
-
+    # AOI tick 热读路径:直接走 Index 的 ETS 读,不经任何单点同步 call。
     cids
-    |> SceneServer.AoiManager.get_entries_with_cids()
+    |> SceneServer.Aoi.Index.fetch_entries()
     |> Priority.build_targets(location, distance)
     |> apply_partition_interest(partition_interest, partition_routes_by_chunk)
   end
@@ -825,7 +829,7 @@ defmodule SceneServer.Aoi.AoiItem do
     subscribees
     |> Enum.map(&Map.get(&1, :cid))
     |> Enum.reject(&is_nil/1)
-    |> SceneServer.AoiManager.get_entries_with_cids()
+    |> SceneServer.Aoi.Index.fetch_entries()
     |> Priority.build_targets(location, interest_radius)
     |> apply_partition_interest(partition_interest, routes_by_chunk)
   end

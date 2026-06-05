@@ -225,5 +225,39 @@ Scene 侧 ObjectRegistry 会归一化为 `%PartState{}` struct）。
   participant 会把事务留在 parked pending-commit 状态，避免半恢复。
 文末 A4-bis-cluster 段。
 
+**Phase 3 / S1：SceneNodeRegistry region 归属落库（cluster-discovery-4，2026-06-04）**：
+
+- `SceneNodeRegistry` 现在把 `join_order` / `region_assignments` /
+  `round_robin_cursor` 落 Postgres，复用 `MapLedgerStore` /
+  `TransactionCoordinatorStore` 同款单行 snapshot facility
+  （`DataService.Voxel.SceneNodeRegistryStore` →
+  `voxel_scene_node_registry_snapshots`）。**库这一行是 region 归属的真相源**，
+  注册表 GenServer 的内存态退化为从该行 hydrate 出来的派生只读缓存。
+  - `init/1` 跑 `load_fn` 从库 hydrate；空表 → 空默认（全新部署的正常路径），
+    损坏 / 形状异常的行 → 退化为空默认并 emit
+    `voxel_scene_node_registry_hydrate_failed`（保留坏行供排查，绝不静默当成权威，
+    也绝不因坏行 crash 注册表）。删除了「内存是唯一真相」的旧假设，没有迁移层。
+  - 每次 `register_scene_node` / `unregister_scene_node` / `assign_region` /
+    `reconcile_live_nodes` 突变都在回复前 upsert 库；persist 失败不回滚内存缓存，
+    只 emit `voxel_scene_node_registry_persist_failed`（下次成功突变或重启 hydrate
+    会自然对齐），语义对齐 `MapLedger` / `TransactionCoordinator`。
+  - scene_node / 注册表崩溃重启后，region 归属从库 hydrate，不丢；round-robin 游标
+    也随快照恢复，重启后继续轮转而不是从头开始。
+  - 不传 `persist_fn` / `load_fn`（聚焦单测）时纯内存运行；生产路径 `WorldSup` 注入
+    `SceneNodeRegistryStore.persist_fn/load_fn(DataService.Repo)`。
+- `SceneNodeMonitor` 修了 announce 与 monitor 建立之间的时序竞态：采用
+  **establish-then-reconcile** 两段式。
+  - `init/1` 先 `:net_kernel.monitor_nodes(true)` 把监控建立起来（此后任何
+    `:nodedown` 都被 VM 排进邮箱，不会丢），再用 `handle_continue/2` 读
+    `Node.list/0` 并调 `SceneNodeRegistry.reconcile_live_nodes/2`，把那些在监控建立
+    *之前* 就已掉线、`:nodedown` 无法追溯覆盖的注册项（典型：World 重启后从
+    Postgres hydrate 出来的陈旧条目）扫掉。
+  - 先建立监控、再读 live 集合的顺序保证：在两步之间掉线的节点由排队的
+    `:nodedown` 兜住，而不是从 reconcile 缝里漏过；`unregister` 与 `reconcile` 都幂等，
+    不会重复注销。单 BEAM（`:nonode@nohost`）下 `monitor_nodes` 返回 `:ignored`，
+    monitor 走 reconcile 无操作分支，保留同节点 dev/test 的 hydrate 条目。
+  - reconcile 仅退出轮转（不自动改派被扫节点的既有 region 归属，对齐
+    `unregister_scene_node/2` 的 D8.B MVP 语义；自动 failover 是 Phase 6 HA 范围）。
+
 WorldServer 不保存完整区块真相，也不运行高频体素规则。它只决定拥有者，并发布写入围栏，
 防止迁移后的旧 Scene 进程继续写入。

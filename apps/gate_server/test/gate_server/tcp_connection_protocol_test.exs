@@ -212,24 +212,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
   end
 
-  defmodule FakeAuthInterface do
-    use GenServer
-
-    def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, Map.new(opts), name: AuthServer.Interface)
-    end
-
-    @impl true
-    def init(attrs) do
-      {:ok, Map.merge(%{data_service: nil}, attrs)}
-    end
-
-    @impl true
-    def handle_call(:data_service, _from, state) do
-      {:reply, state.data_service, state}
-    end
-  end
-
   setup_all do
     _ = Application.stop(:gate_server)
     _ = Application.stop(:scene_server)
@@ -263,8 +245,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
         Ecto.Migrator.run(repo, migrations_path, :up, all: true)
       end)
 
-    ensure_dispatcher_sup()
-
     _ =
       start_supervised(
         {GateServer.FastLaneRegistry,
@@ -291,7 +271,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
   setup do
     ensure_repo_started()
-    ensure_dispatcher_sup()
     previous_gate_observe_log = Application.fetch_env(:gate_server, :cli_observe_log)
 
     Repo.delete_all(Character)
@@ -448,10 +427,16 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 43))
     assert {:ok, <<0x80, 43::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
 
-    _ = start_supervised(FakeAuthInterface)
+    # 模拟身份/数据后端不可用:把 auth 节点解析指向一个不可达节点。新架构下 character
+    # authorization 经 :rpc.call(auth_node, AuthServer.AuthWorker, :fetch_authorized_character, ...)
+    # 触达持有 data_service 的后端,不可达 → :badrpc → gate 映射为 :auth_unavailable →
+    # enter-scene 必须 fail closed(错误响应),而非放行带角色数据的成功响应。
+    # (旧版用 FakeAuthInterface 让 AuthServer.Interface 的 :data_service 解析返回 nil;Accounts
+    #  改为同 BEAM 直调 DataService.Worker 后该解析已不在授权路径上,故改为让后端 rpc 不可达。)
+    FakeInterface.set(auth_server: :"data_unavailable@127.0.0.1", scene_server: node())
 
     assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 44))
-    assert {:ok, <<0x84, 44::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+    assert {:ok, <<0x84, 44::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 1000)
     assert %{status: :authenticated, scene_ref: nil} = :sys.get_state(pid)
   end
 
@@ -2754,6 +2739,16 @@ defmodule GateServer.TcpConnectionProtocolTest do
       start_supervised!({SceneServer.CliObserve.Manager, []})
     end
 
+    # 阶段3.1：`mix test --no-start` 下 :scene_server application 不启动，全局
+    # chunk 进程身份注册表需在此显式拉起，否则 ChunkDirectory 经 ChunkRegistry.lookup
+    # 解析 pid 时会 `unknown registry`。必须早于 VoxelChunkSup。
+    if is_nil(Process.whereis(SceneServer.Voxel.ChunkRegistry)) do
+      start_supervised!(
+        {Registry, keys: :unique, name: SceneServer.Voxel.ChunkRegistry},
+        id: SceneServer.Voxel.ChunkRegistry
+      )
+    end
+
     if is_nil(Process.whereis(SceneServer.VoxelChunkSup)) do
       start_supervised!({SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup})
     end
@@ -2886,15 +2881,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     end
 
     wait_until(fn -> is_pid(Process.whereis(DataService.Repo)) end, 100)
-  end
-
-  defp ensure_dispatcher_sup do
-    case DataService.DispatcherSup.start_link(name: DataService.DispatcherSup) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    wait_until(fn -> is_pid(Process.whereis(DataService.Dispatcher)) end, 100)
   end
 
   defp ensure_name_available(name) do

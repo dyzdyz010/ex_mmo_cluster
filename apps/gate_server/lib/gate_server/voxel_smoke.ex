@@ -270,6 +270,11 @@ defmodule GateServer.VoxelSmoke do
            ensure_named(MapLedger, fn ->
              MapLedger.start_link(name: MapLedger, write_token_store: token_store)
            end),
+         # 阶段3.1：chunk 进程身份注册表必须早于 VoxelChunkSup / ChunkDirectory。
+         :ok <-
+           ensure_named(SceneServer.Voxel.ChunkRegistry, fn ->
+             Registry.start_link(keys: :unique, name: SceneServer.Voxel.ChunkRegistry)
+           end),
          :ok <-
            ensure_named(SceneServer.VoxelChunkSup, fn ->
              SceneServer.VoxelChunkSup.start_link(name: SceneServer.VoxelChunkSup)

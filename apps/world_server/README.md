@@ -8,8 +8,11 @@
 
 `WorldServer.WorldSup` 当前启动：
 
-- `WorldServer.Voxel.SceneNodeRegistry`
-- `WorldServer.Voxel.SceneNodeMonitor`
+- `WorldServer.Voxel.SceneNodeRegistry`（region 归属落 Postgres，进程内为派生只读缓存；
+  重启从 `DataService.Voxel.SceneNodeRegistryStore` hydrate，不丢归属）
+- `WorldServer.Voxel.SceneNodeMonitor`（establish-then-reconcile：先建立
+  `:net_kernel.monitor_nodes`，再用 `Node.list/0` reconcile 掉线但仍在册的 scene_node，
+  修 announce 与 monitor 建立的时序竞态）
 - `WorldServer.Voxel.MapLedger`
 - `WorldServer.Voxel.DefaultRegionBootstrapper`（开发 / demo 配置启用时）
 - `WorldServer.Voxel.TransactionCoordinator`

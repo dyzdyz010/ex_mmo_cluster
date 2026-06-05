@@ -39,7 +39,8 @@ defmodule SceneServer.MovementSmokeTest do
     # Bring up only what the movement path needs. Works under either `mix test`
     # (full app already running) or `mix test --no-start` (nothing started).
     ensure_started(SceneServer.PhysicsManager, {SceneServer.PhysicsSup, name: PhysicsSupSmoke})
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiSup, name: AoiSupSmoke})
+    # S1 后用 IndexStore 做 AOI 子树探针(AoiManager 已是无状态 facade,不再是进程)。
+    ensure_started(SceneServer.Aoi.IndexStore, {SceneServer.AoiSup, name: AoiSupSmoke})
     ensure_started(SceneServer.PlayerManager, {SceneServer.PlayerSup, name: PlayerSupSmoke})
     :ok
   end

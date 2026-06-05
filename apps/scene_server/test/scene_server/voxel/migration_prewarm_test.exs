@@ -21,9 +21,28 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
     :ok
   end
 
+  # 阶段3.1：每个 ChunkDirectory 用隔离的进程身份注册表。否则 facade.snapshot 会扫到
+  # 全局单例里其它测试残留的 chunk（导致 chunk_count 偏大），且同一测试里的 source /
+  # target 两个 directory（代表两个独立 Scene 节点）会经全局注册表互相看到对方的
+  # chunk，破坏迁移 drain 的隔离语义。
+  defp isolated_registry!(label) do
+    name = :"migration_prewarm_test_registry_#{label}_#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: name}, id: {:registry, name})
+    name
+  end
+
+  defp isolated_directory!(chunk_sup, label) do
+    registry = isolated_registry!(label)
+
+    start_supervised!(
+      {ChunkDirectory, chunk_sup: chunk_sup, chunk_registry: registry},
+      id: label
+    )
+  end
+
   test "prewarms handoff slices and returns world-ready ACK payloads" do
     chunk_sup = start_supervised!(VoxelChunkSup)
-    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    directory = isolated_directory!(chunk_sup, :prewarm_directory)
 
     assert {:ok, %{acks: [ack_0, ack_1]}} =
              MigrationPrewarm.prewarm_slices(handoff(), chunk_directory: directory)
@@ -51,17 +70,8 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
     handoff = one_chunk_handoff()
     old_lease = handoff.old_lease
 
-    source_directory =
-      start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup},
-        id: :source_chunk_directory
-      )
-
-    target_directory =
-      start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup},
-        id: :target_chunk_directory
-      )
+    source_directory = isolated_directory!(chunk_sup, :source_chunk_directory)
+    target_directory = isolated_directory!(chunk_sup, :target_chunk_directory)
 
     assert {:ok, :inserted} =
              WriteTokenStore.upsert_token(
@@ -116,17 +126,8 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
     handoff = one_chunk_handoff()
     old_lease = handoff.old_lease
 
-    source_directory =
-      start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup},
-        id: :source_chunk_directory_rejected
-      )
-
-    target_directory =
-      start_supervised!(
-        {ChunkDirectory, chunk_sup: chunk_sup},
-        id: :target_chunk_directory_rejected
-      )
+    source_directory = isolated_directory!(chunk_sup, :source_chunk_directory_rejected)
+    target_directory = isolated_directory!(chunk_sup, :target_chunk_directory_rejected)
 
     assert {:ok, _chunk_pid} =
              ChunkDirectory.ensure_chunk(source_directory, %{

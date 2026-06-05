@@ -576,16 +576,33 @@ defmodule Mix.Tasks.GateServer.MigrationCutoverObserve do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    {:ok, chunk_sup} = SceneServer.VoxelChunkSup.start_link([])
+    # 阶段3.1：用两套独立 (Registry + VoxelChunkSup + ChunkDirectory) 模拟
+    # source / target 两个 scene_node 的隔离权威域。同 {scene_id, coord} 在
+    # 各自注册表里互不冲突，正确还原跨节点迁移的双权威隔离。
+    {:ok, _source_registry} =
+      Registry.start_link(keys: :unique, name: __MODULE__.SourceChunkRegistry)
+
+    {:ok, _target_registry} =
+      Registry.start_link(keys: :unique, name: __MODULE__.TargetChunkRegistry)
+
+    {:ok, source_chunk_sup} = SceneServer.VoxelChunkSup.start_link([])
+    {:ok, target_chunk_sup} = SceneServer.VoxelChunkSup.start_link([])
 
     {:ok, source_chunk_directory} =
-      ChunkDirectory.start_link(chunk_sup: chunk_sup)
+      ChunkDirectory.start_link(
+        chunk_sup: source_chunk_sup,
+        chunk_registry: __MODULE__.SourceChunkRegistry
+      )
 
     {:ok, target_chunk_directory} =
-      ChunkDirectory.start_link(chunk_sup: chunk_sup)
+      ChunkDirectory.start_link(
+        chunk_sup: target_chunk_sup,
+        chunk_registry: __MODULE__.TargetChunkRegistry
+      )
 
     %{
-      chunk_sup: chunk_sup,
+      source_chunk_sup: source_chunk_sup,
+      target_chunk_sup: target_chunk_sup,
       source_chunk_directory: source_chunk_directory,
       target_chunk_directory: target_chunk_directory
     }
@@ -620,10 +637,18 @@ defmodule Mix.Tasks.GateServer.MigrationCutoverObserve do
     stop_scene_voxel_started(%{started | target_chunk_directory: :stopped})
   end
 
-  defp stop_scene_voxel_started(%{chunk_sup: pid}) when is_pid(pid) do
+  defp stop_scene_voxel_started(%{source_chunk_sup: pid} = started) when is_pid(pid) do
     ref = Process.monitor(pid)
     DynamicSupervisor.stop(pid)
     assert_down(ref)
+    stop_scene_voxel_started(%{started | source_chunk_sup: :stopped})
+  end
+
+  defp stop_scene_voxel_started(%{target_chunk_sup: pid} = started) when is_pid(pid) do
+    ref = Process.monitor(pid)
+    DynamicSupervisor.stop(pid)
+    assert_down(ref)
+    stop_scene_voxel_started(%{started | target_chunk_sup: :stopped})
   end
 
   defp stop_scene_voxel_started(_started), do: :ok

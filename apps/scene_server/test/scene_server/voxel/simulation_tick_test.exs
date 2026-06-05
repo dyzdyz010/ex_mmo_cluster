@@ -62,7 +62,12 @@ defmodule SceneServer.Voxel.SimulationTickTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
-    :ok
+
+    # 阶段3.1：每个测试用隔离的 chunk 进程身份注册表。ChunkProcess 经 via-tuple
+    # 注册进它指定的 :chunk_registry；不隔离时所有测试都注册进全局单例的同一身份
+    # 槽位（如 {1, {0,0,0}}），跨测试的拆除竞态 / 同测试内复用同身份会撞
+    # {:already_started}。隔离后每个进程身份只属于本测试，互不串扰。
+    %{chunk_registry: start_isolated_chunk_registry!()}
   end
 
   describe "SimulationTick state helpers" do
@@ -184,9 +189,11 @@ defmodule SceneServer.Voxel.SimulationTickTest do
   end
 
   describe "ChunkProcess simulation tick scheduling" do
-    test "ChunkProcess starts with tick_seq=0 + no simulators by default" do
+    test "ChunkProcess starts with tick_seq=0 + no simulators by default", %{
+      chunk_registry: registry
+    } do
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+        start_chunk!([logical_scene_id: 1, chunk_coord: {0, 0, 0}], registry)
 
       sim_state = simulation_tick_state(chunk)
       assert sim_state.tick_seq == 0
@@ -194,9 +201,11 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       refute SimulationTick.any_simulator?(sim_state)
     end
 
-    test "default empty simulators path → tick skipped, dirty_bounds untouched" do
+    test "default empty simulators path → tick skipped, dirty_bounds untouched", %{
+      chunk_registry: registry
+    } do
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+        start_chunk!([logical_scene_id: 1, chunk_coord: {0, 0, 0}], registry)
 
       # 写入一个 cell → dirty 应该被打上
       {:ok, _} =
@@ -215,14 +224,18 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       assert simulation_tick_state(chunk).tick_seq == 0
     end
 
-    test "no_dirty skip path → tick increments not, dirty stays empty" do
+    test "no_dirty skip path → tick increments not, dirty stays empty", %{
+      chunk_registry: registry
+    } do
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: valid_lease(),
-           simulators: [SuccessSimulator]}
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: valid_lease(),
+            simulators: [SuccessSimulator]
+          ],
+          registry
         )
 
       assert DirtyMacroBounds.empty?(debug_storage(chunk).dirty_bounds)
@@ -231,16 +244,20 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       assert simulation_tick_state(chunk).tick_seq == 0
     end
 
-    test "dirty + simulator → tick runs, dirty cleared, tick_seq increments" do
+    test "dirty + simulator → tick runs, dirty cleared, tick_seq increments", %{
+      chunk_registry: registry
+    } do
       :persistent_term.put({__MODULE__, :tick_observer}, self())
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: valid_lease(),
-           simulators: [SuccessSimulator]}
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: valid_lease(),
+            simulators: [SuccessSimulator]
+          ],
+          registry
         )
 
       _ = ChunkProcess.put_solid_block(chunk, {3, 4, 5}, NormalBlockData.new(7))
@@ -273,7 +290,9 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       :persistent_term.erase({__MODULE__, :tick_observer})
     end
 
-    test "lease_stale skip path → expired lease causes :lease_stale skip" do
+    test "lease_stale skip path → expired lease causes :lease_stale skip", %{
+      chunk_registry: registry
+    } do
       expired_lease = %{
         logical_scene_id: 1,
         region_id: 10,
@@ -286,12 +305,14 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       }
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: expired_lease,
-           simulators: [SuccessSimulator]}
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: expired_lease,
+            simulators: [SuccessSimulator]
+          ],
+          registry
         )
 
       # 触发 dirty:lease 仍 stale,即使 dirty 也应该 skip
@@ -306,16 +327,19 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       assert simulation_tick_state(chunk).tick_seq == 0
     end
 
-    test "simulator failure isolation → dirty cleared, tick_seq increments, other simulator runs" do
+    test "simulator failure isolation → dirty cleared, tick_seq increments, other simulator runs",
+         %{chunk_registry: registry} do
       :persistent_term.put({__MODULE__, :tick_observer}, self())
 
       chunk =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: valid_lease(),
-           simulators: [FailSimulator, SuccessSimulator]}
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: valid_lease(),
+            simulators: [FailSimulator, SuccessSimulator]
+          ],
+          registry
         )
 
       _ = ChunkProcess.put_solid_block(chunk, {0, 0, 0}, NormalBlockData.new(7))
@@ -335,27 +359,36 @@ defmodule SceneServer.Voxel.SimulationTickTest do
       :persistent_term.erase({__MODULE__, :tick_observer})
     end
 
-    test "output_hash determinism across runs with same input" do
+    test "output_hash determinism across runs with same input", %{chunk_registry: registry} do
       :persistent_term.put({__MODULE__, :tick_observer}, self())
 
-      # 两个独立 chunk,相同初始 storage + 相同写入 + 相同 simulator → 相同 output_hash
+      # 两个独立 chunk,相同初始 storage + 相同写入 + 相同 simulator → 相同 output_hash。
+      # 阶段3.1：两个进程是**同一身份** {1, {0,0,0}}，注册表 :unique 保证同一表里只能有
+      # 一个权威。这里它们代表"同一身份在两次独立运行中"的对照，因此分别注册进**两张**
+      # 隔离注册表，使二者得以共存做确定性对照（而非互相去重）。
+      registry2 = start_isolated_chunk_registry!()
+
       chunk1 =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: valid_lease(),
-           simulators: [SuccessSimulator]},
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: valid_lease(),
+            simulators: [SuccessSimulator]
+          ],
+          registry,
           id: :chunk1
         )
 
       chunk2 =
-        start_supervised!(
-          {ChunkProcess,
-           logical_scene_id: 1,
-           chunk_coord: {0, 0, 0},
-           lease: valid_lease(),
-           simulators: [SuccessSimulator]},
+        start_chunk!(
+          [
+            logical_scene_id: 1,
+            chunk_coord: {0, 0, 0},
+            lease: valid_lease(),
+            simulators: [SuccessSimulator]
+          ],
+          registry2,
           id: :chunk2
         )
 
@@ -379,6 +412,20 @@ defmodule SceneServer.Voxel.SimulationTickTest do
   # ---------------------------------------------------------------------------
   # helpers
   # ---------------------------------------------------------------------------
+
+  defp start_isolated_chunk_registry! do
+    name = :"simulation_tick_test_registry_#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: name}, id: {:registry, name})
+    name
+  end
+
+  # 在隔离注册表里 start_supervised 一个 ChunkProcess，避免全局单例身份槽位冲突。
+  defp start_chunk!(chunk_opts, registry, supervised_opts \\ []) do
+    start_supervised!(
+      {ChunkProcess, Keyword.put(chunk_opts, :chunk_registry, registry)},
+      supervised_opts
+    )
+  end
 
   defp valid_lease do
     %{

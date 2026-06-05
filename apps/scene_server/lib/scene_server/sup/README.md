@@ -13,7 +13,10 @@
   - `SceneServer.VoxelChunkSup`
   - `SceneServer.Voxel.ChunkDirectory`
 - `AoiSup`
-  - `SceneServer.AoiManager`
+  - `SceneServer.Aoi.RemoteMirrorLedger`
+  - `SceneServer.Aoi.IndexHeir`（AOI 索引 ETS 表的 heir，必须先于 IndexStore 启动）
+  - `SceneServer.Aoi.IndexStore`（八叉树句柄 + CID 索引 ETS 表的权威 owner；替代旧的单点
+    `AoiManager` GenServer，`AoiManager` 现为无状态 facade，不进监督树）
   - `SceneServer.AoiItemSup`
 - `PlayerSup`
   - `SceneServer.PlayerCharacterSup`

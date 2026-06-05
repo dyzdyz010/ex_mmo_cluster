@@ -3451,6 +3451,18 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({SceneServer.CliObserve.Manager, []})
     end
 
+    # 阶段3.1：ChunkProcess 经 `SceneServer.Voxel.ChunkRegistry`（Registry :unique）
+    # 注册进程身份；ChunkDirectory 默认经它解析 pid。`mix test --no-start` 下
+    # :scene_server application 不启动，全局注册表需在此显式拉起，否则
+    # ChunkRegistry.lookup 会 `unknown registry` 崩 ChunkDirectory。必须早于
+    # VoxelChunkSup（chunk 启动即注册）。
+    if is_nil(Process.whereis(SceneServer.Voxel.ChunkRegistry)) do
+      start_supervised!(
+        {Registry, keys: :unique, name: SceneServer.Voxel.ChunkRegistry},
+        id: SceneServer.Voxel.ChunkRegistry
+      )
+    end
+
     if is_nil(Process.whereis(SceneServer.VoxelChunkSup)) do
       start_supervised!({SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup})
     end

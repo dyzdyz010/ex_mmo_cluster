@@ -109,6 +109,18 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
       chunk_sup_module = Module.concat(["SceneServer", "VoxelChunkSup"])
 
       token_store = start_supervised!(WriteTokenStore)
+
+      # 阶段3.1：ChunkProcess 经 SceneServer.Voxel.ChunkRegistry 注册进程身份，
+      # ChunkDirectory 默认经它解析 pid。world_server 测试 BEAM 不启动
+      # :scene_server application，需显式拉起该注册表，否则 ChunkRegistry.lookup
+      # 会 `unknown registry`，subscribe 被 rescue 成 {:error, :invalid_voxel_subscription}。
+      chunk_registry_module = Module.concat(["SceneServer", "Voxel", "ChunkRegistry"])
+
+      start_supervised!(
+        {Registry, keys: :unique, name: chunk_registry_module},
+        id: chunk_registry_module
+      )
+
       chunk_sup = start_supervised!(chunk_sup_module)
 
       directory =

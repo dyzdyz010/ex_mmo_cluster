@@ -57,8 +57,7 @@ defmodule SceneServer.Combat.ExecutorTest do
   end
 
   setup do
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
-    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    SceneServer.TestAoiRuntime.ensure_started!()
     :ok
   end
 
@@ -128,13 +127,6 @@ defmodule SceneServer.Combat.ExecutorTest do
       )
 
     %{actor_pid: actor_pid, aoi_pid: aoi_pid}
-  end
-
-  defp ensure_started(name, spec) do
-    case Process.whereis(name) do
-      nil -> start_supervised!(spec)
-      pid -> pid
-    end
   end
 
   defp exit_aoi_item(pid) when is_pid(pid) do

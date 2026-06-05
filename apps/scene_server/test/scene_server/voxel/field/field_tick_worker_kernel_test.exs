@@ -143,6 +143,18 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
     SceneServer.TestVoxelRuntime.ensure_started!()
 
+    # 阶段3.1：每个测试用隔离的 chunk 进程身份注册表，避免全局单例 {1, {0,0,0}}
+    # 身份槽位在全量 mix test 中被跨文件 / 跨测试拆除竞态串扰成 {:already_started}。
+    chunk_registry =
+      :"field_tick_worker_kernel_test_registry_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Registry, keys: :unique, name: chunk_registry},
+      id: {:registry, chunk_registry}
+    )
+
+    Process.put(:chunk_registry, chunk_registry)
+
     on_exit(fn ->
       CliObserve.flush()
 
@@ -154,7 +166,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
       File.rm(path)
     end)
 
-    {:ok, observe_log: path}
+    {:ok, observe_log: path, chunk_registry: chunk_registry}
   end
 
   test "kernel failures are isolated and later kernels still update the snapshot", %{
@@ -331,7 +343,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
   test "reusing a field source refreshes the worker lifetime" do
     macro_index = Types.macro_index!({3, 3, 3})
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     attrs = %{
       chunk_coord: {0, 0, 0},
@@ -386,7 +398,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log: observe_log
   } do
     macro_index = Types.macro_index!({0, 0, 0})
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
@@ -432,7 +444,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     source_index = Types.macro_index!({0, 0, 0})
     target_index = Types.macro_index!({1, 0, 0})
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, source_index, NormalBlockData.new(5))
@@ -506,7 +518,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log: observe_log
   } do
     macro_index = Types.macro_index!({0, 0, 0})
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))

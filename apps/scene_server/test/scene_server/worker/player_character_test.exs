@@ -542,8 +542,7 @@ defmodule SceneServer.PlayerCharacterTest do
   end
 
   test "AOI adapter DOWN is rebuilt and registered again" do
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
-    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    SceneServer.TestAoiRuntime.ensure_started!()
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
 
     cid = System.unique_integer([:positive])
@@ -615,8 +614,7 @@ defmodule SceneServer.PlayerCharacterTest do
   end
 
   test "AOI adapter recovery replays the latest partition window" do
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
-    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    SceneServer.TestAoiRuntime.ensure_started!()
     {:ok, connection_pid} = start_supervised({FakeConnection, self()})
 
     cid = System.unique_integer([:positive])
@@ -892,13 +890,6 @@ defmodule SceneServer.PlayerCharacterTest do
         }
       ]
     }
-  end
-
-  defp ensure_started(name, spec) do
-    case Process.whereis(name) do
-      nil -> start_supervised!(spec)
-      pid -> pid
-    end
   end
 
   defp stop_real_aoi_item(pid) when is_pid(pid) do

@@ -12,8 +12,7 @@ defmodule SceneServer.AoiItemTest do
     )
 
     SceneServer.Aoi.RemoteMirrorLedger.reset()
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiManager, name: SceneServer.AoiManager})
-    ensure_started(SceneServer.AoiItemSup, {SceneServer.AoiItemSup, name: SceneServer.AoiItemSup})
+    SceneServer.TestAoiRuntime.ensure_started!()
     :ok
   end
 

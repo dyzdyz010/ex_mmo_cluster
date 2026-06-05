@@ -1,17 +1,36 @@
 defmodule SceneServer.Voxel.ChunkDirectory do
   @moduledoc """
-  Scene-side directory for hot voxel chunk processes.
+  Scene-side **无状态 facade**，把 Gate/World 侧调用路由到权威 chunk 进程。
 
   The directory gives Gate/World-facing code a stable API for resolving a chunk
   by `{logical_scene_id, chunk_coord}`. It starts chunk processes lazily under
   `SceneServer.VoxelChunkSup` and exposes snapshot payload reads for the first
   server-authoritative subscription path.
+
+  ## 进程身份不在这里（阶段3.1）
+
+  本进程**不再持有 chunk 进程表**。chunk 的进程身份（"谁是
+  `{logical_scene_id, chunk_coord}` 的权威"）唯一真相源是
+  `SceneServer.Voxel.ChunkRegistry`（`Registry` `:unique`）：
+
+  * `ensure_chunk` 先 `ChunkRegistry.lookup/2`；未注册时经
+    `VoxelChunkSup.start_chunk` 启动，via-tuple 注册保证去重——并发/重复
+    启动会拿到 `{:error, {:already_started, pid}}`，facade 直接复用该 pid。
+  * 所有 lookup（`lookup_chunk_pid` / `unsubscribe` / 事务路由 / 迁移持久化）
+    都经注册表解析，**不读本进程状态**。
+  * facade 进程崩溃重启**不会**产生第二个权威进程：权威进程独立挂在
+    `VoxelChunkSup` 下，由注册表裁决单主，与 facade 生命周期解耦。
+
+  facade 自身仍是一个 GenServer：它 monitor 它启动的 chunk 进程，chunk 崩溃
+  时发 `voxel_chunk_directory_chunk_down` observe 事件供 World/运维观测。它
+  **不**缓存 pid，因此 monitor 仅用于事件，不影响路由正确性。
   """
 
   use GenServer
 
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkProcess
+  alias SceneServer.Voxel.ChunkRegistry
 
   @chunk_call_timeout_ms 15_000
   @collision_query_timeout_ms 1_000
@@ -211,10 +230,14 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     {:ok,
      %{
        chunk_sup: Keyword.get(opts, :chunk_sup, SceneServer.VoxelChunkSup),
+       # 阶段3.1：进程身份注册表名。facade 经它解析 pid，自己不持进程表。
+       chunk_registry: Keyword.get(opts, :chunk_registry, ChunkRegistry.default_name()),
        chunk_call_timeout_ms: Keyword.get(opts, :chunk_call_timeout_ms, @chunk_call_timeout_ms),
        collision_query_timeout_ms:
          Keyword.get(opts, :collision_query_timeout_ms, @collision_query_timeout_ms),
-       chunks: %{}
+       # monitor_ref => {logical_scene_id, chunk_coord}。仅用于崩溃 observe，
+       # 不参与路由（路由唯一真相源是注册表）。
+       chunk_monitors: %{}
      }}
   end
 
@@ -298,19 +321,15 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   def handle_call({:unsubscribe, attrs}, _from, state) do
     case normalize_unsubscribe_attrs(attrs) do
       {:ok, attrs} ->
-        key = {attrs.logical_scene_id, attrs.chunk_coord}
-
         reply =
-          case Map.get(state.chunks, key) do
-            pid when is_pid(pid) ->
-              if Process.alive?(pid) do
-                ChunkProcess.unsubscribe(pid, attrs.subscriber)
-              else
-                :ok
-              end
-
-            _other ->
-              :ok
+          case ChunkRegistry.lookup(
+                 attrs.logical_scene_id,
+                 attrs.chunk_coord,
+                 state.chunk_registry
+               ) do
+            {:ok, pid} -> ChunkProcess.unsubscribe(pid, attrs.subscriber)
+            # 注册表无此 chunk → 调用方本就未经本 facade 订阅，幂等返回 :ok。
+            :not_started -> :ok
           end
 
         {:reply, reply, state}
@@ -488,51 +507,80 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   def handle_call({:lookup_chunk_pid, logical_scene_id, chunk_coord}, _from, state) do
-    case Map.get(state.chunks, {logical_scene_id, chunk_coord}) do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid) do
-          {:reply, {:ok, pid}, state}
-        else
-          {:reply, :not_started, state}
-        end
+    # 阶段3.1：facade 绝不把死 pid 返回给调用方。注册表对死条目的摘除是异步的
+    # （Registry 收到被监控进程 :DOWN 后才删），存在一个"已死但仍注册"的窗口。
+    # 这里主动校验 alive：死 pid 视同 :not_started，调用方据此走 re-subscribe /
+    # 重新解析，等监督树按 :transient 重启出新权威进程后再解析到活的 pid。
+    reply =
+      case ChunkRegistry.lookup(logical_scene_id, chunk_coord, state.chunk_registry) do
+        {:ok, pid} ->
+          if Process.alive?(pid), do: {:ok, pid}, else: :not_started
 
-      _ ->
-        {:reply, :not_started, state}
-    end
+        :not_started ->
+          :not_started
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call(:snapshot, _from, state) do
+    # 阶段3.1：debug 视图从注册表枚举，不读 facade 自身状态（无进程表）。
     chunks =
-      Map.new(state.chunks, fn {key, pid} ->
+      state.chunk_registry
+      |> Registry.select([{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+      |> Map.new(fn {key, pid} ->
         {key, %{pid: inspect(pid), alive?: Process.alive?(pid)}}
       end)
 
-    {:reply, %{chunk_count: map_size(state.chunks), chunks: chunks}, state}
+    {:reply, %{chunk_count: map_size(chunks), chunks: chunks}, state}
   end
 
-  defp ensure_chunk_in_state(state, attrs) do
-    key = {attrs.logical_scene_id, attrs.chunk_coord}
+  @impl true
+  def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
+    # 阶段3.1：facade monitor 到它启动过的 chunk 崩溃。这里**只发 observe**，
+    # 不做路由修复——权威进程由 VoxelChunkSup 按 :transient 重启并经注册表
+    # 重新登记单主，facade 下次 lookup 自然解析到新 pid。
+    case Map.pop(state.chunk_monitors, monitor_ref) do
+      {nil, _monitors} ->
+        {:noreply, state}
 
-    case Map.get(state.chunks, key) do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid) do
-          case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
-            :ok -> {{:ok, pid}, state}
-            {:error, reason} -> {{:error, reason}, state}
-          end
-        else
-          start_chunk(state, key, attrs)
-        end
+      {{logical_scene_id, chunk_coord}, monitors} ->
+        CliObserve.emit("voxel_chunk_directory_chunk_down", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            pid: inspect(pid),
+            reason: inspect(reason)
+          }
+        end)
 
-      _other ->
-        start_chunk(state, key, attrs)
+        {:noreply, %{state | chunk_monitors: monitors}}
     end
   end
 
-  defp start_chunk(state, key, attrs) do
+  def handle_info(_message, state), do: {:noreply, state}
+
+  # 阶段3.1：先经注册表解析权威 pid；未注册才启动。注册表是唯一真相源，
+  # facade 不缓存 pid。
+  defp ensure_chunk_in_state(state, attrs) do
+    case ChunkRegistry.lookup(attrs.logical_scene_id, attrs.chunk_coord, state.chunk_registry) do
+      {:ok, pid} ->
+        case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+          :ok -> {{:ok, pid}, state}
+          {:error, reason} -> {{:error, reason}, state}
+        end
+
+      :not_started ->
+        start_chunk(state, attrs)
+    end
+  end
+
+  defp start_chunk(state, attrs) do
     chunk_opts = [
       logical_scene_id: attrs.logical_scene_id,
-      chunk_coord: attrs.chunk_coord
+      chunk_coord: attrs.chunk_coord,
+      # 把注册表名透传给 ChunkProcess，使其 via-tuple 注册进同一张表。
+      chunk_registry: state.chunk_registry
     ]
 
     chunk_opts =
@@ -543,17 +591,38 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
     case SceneServer.VoxelChunkSup.start_chunk(state.chunk_sup, chunk_opts) do
       {:ok, pid} ->
+        next_state = monitor_chunk(state, pid, attrs)
+
         CliObserve.emit("voxel_chunk_started", %{
           logical_scene_id: attrs.logical_scene_id,
           chunk_coord: attrs.chunk_coord,
           pid: pid
         })
 
-        {{:ok, pid}, put_in(state.chunks[key], pid)}
+        # 启动后若调用方带了 lease（与 init 用的可能不同 / init 走未授权态），
+        # 在此 apply 一次确保进入授权态。
+        case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+          :ok -> {{:ok, pid}, next_state}
+          {:error, reason} -> {{:error, reason}, next_state}
+        end
+
+      # 并发 / 重启竞态：另一路已经把同 key 的权威进程注册了。注册表去重，
+      # facade 复用既有 pid，绝不产生第二个权威。
+      {:error, {:already_started, pid}} ->
+        case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+          :ok -> {{:ok, pid}, state}
+          {:error, reason} -> {{:error, reason}, state}
+        end
 
       {:error, reason} ->
         {{:error, reason}, state}
     end
+  end
+
+  defp monitor_chunk(state, pid, attrs) do
+    monitor_ref = Process.monitor(pid)
+    key = {attrs.logical_scene_id, attrs.chunk_coord}
+    %{state | chunk_monitors: Map.put(state.chunk_monitors, monitor_ref, key)}
   end
 
   defp maybe_apply_chunk_lease(_pid, nil, _timeout_ms), do: :ok
@@ -752,18 +821,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   defp persist_source_chunk(state, handoff, chunk_coord) do
-    key = {handoff.logical_scene_id, chunk_coord}
-
-    case Map.get(state.chunks, key) do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid) do
-          persist_live_source_chunk(pid, handoff, chunk_coord)
-        else
-          %{chunk_coord: chunk_coord, status: :not_hot}
-        end
-
-      _other ->
-        %{chunk_coord: chunk_coord, status: :not_hot}
+    case ChunkRegistry.lookup(handoff.logical_scene_id, chunk_coord, state.chunk_registry) do
+      {:ok, pid} -> persist_live_source_chunk(pid, handoff, chunk_coord)
+      :not_started -> %{chunk_coord: chunk_coord, status: :not_hot}
     end
   end
 
@@ -967,13 +1027,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
-  defp fetch_chunk_pid(state, {_logical_scene_id, _chunk_coord} = key) do
-    case Map.get(state.chunks, key) do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :chunk_not_started}
-
-      _other ->
-        {:error, :chunk_not_started}
+  defp fetch_chunk_pid(state, {logical_scene_id, chunk_coord}) do
+    case ChunkRegistry.lookup(logical_scene_id, chunk_coord, state.chunk_registry) do
+      {:ok, pid} -> {:ok, pid}
+      :not_started -> {:error, :chunk_not_started}
     end
   end
 

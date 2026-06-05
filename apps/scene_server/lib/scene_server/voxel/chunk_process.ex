@@ -6,12 +6,45 @@ defmodule SceneServer.Voxel.ChunkProcess do
   It can build snapshot payloads for subscribers and persist snapshots through
   DataService, which re-checks the world-issued write token before accepting the
   write.
+
+  ## 进程身份与状态所有权（阶段3.1）
+
+  本进程是 `{logical_scene_id, chunk_coord}` 的**唯一权威**，其身份注册进
+  `SceneServer.Voxel.ChunkRegistry`（`Registry` `:unique`）。via-tuple 写进
+  child_spec 的 `start` 参数，监督树重启天然去重——同 key 不会有第二个权威。
+
+  状态所有权边界：
+
+  * **ChunkProcess 拥有** voxel 真相（`storage`）、当前 lease、订阅者集合、
+    异步持久化任务、per-region field worker 与 pending 事务 fence。
+  * **ChunkDirectory 只是无状态 facade**：经注册表解析 pid 后转发调用，自身
+    不持有任何 chunk 状态（无进程表）。
+  * **ChunkSnapshotStore（DataService）是崩溃恢复的权威存储**：`init` 在
+    lease 有效时无条件从它 hydrate，不再用 `Storage.empty` 兜底。
+
+  ## init hydrate 不变式（阶段3.1）
+
+  进程重启（崩溃恢复或监督树重建）后，`init` 的不变式是：
+
+  1. 携带有效 lease 启动 → 无条件 `ChunkSnapshotStore.get_snapshot/2`：
+     * `:loaded` —— 从持久化恢复 storage；
+     * `:never_persisted` —— `:snapshot_not_found` 视为全新 chunk，用空
+       storage（这是**唯一**允许空 storage 的合法分支）；
+     * hydrate 失败（DB 不可达 / payload 损坏）→ 进入 `degraded` 态而非
+       空跑，避免崩溃恢复静默丢数据。
+  2. 不带 lease 启动 → `unauthorized` 态，不 hydrate、不持 lease，等待 World
+     下发 lease 后才进入授权模拟。
+
+  init 不再无条件 schedule 模拟 tick：只有授权（持有效 lease 且非 degraded）
+  时才 schedule。
   """
 
-  use GenServer
+  use GenServer, restart: :transient
 
   alias DataService.Voxel.ChunkPendingTransactionStore
+  alias DataService.Voxel.ChunkSnapshotStore
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.ChunkRegistry
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
   alias SceneServer.Voxel.Field.CircuitComponentAnalysis
@@ -58,10 +91,46 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @expected_chunk_version_unspecified 0xFFFF_FFFF_FFFF_FFFF
   @expected_cell_hash_unspecified 0xFFFF_FFFF
 
-  @doc "Starts one chunk process."
+  @doc """
+  Returns the child spec used by `SceneServer.VoxelChunkSup`.
+
+  阶段3.1：把进程身份 via-tuple（`ChunkRegistry.via/3`）写进 `start` 参数的
+  name，使监督树重启天然去重。`restart: :transient`（来自 `use GenServer`）
+  让正常退出 / lease 撤销不触发重启，崩溃才重启并经 `init` 从权威存储 hydrate。
+  """
+  def child_spec(opts) when is_list(opts) do
+    # id 保持模块名：DynamicSupervisor 忽略 child id（去重由 ChunkRegistry
+    # via-tuple 负责），而 ExUnit `start_supervised!/stop_supervised!(ChunkProcess)`
+    # 仍按模块名解析。进程身份单主由注册表裁决，不依赖 child id。
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :transient,
+      type: :worker
+    }
+  end
+
+  @doc """
+  Starts one chunk process registered under its `{logical_scene_id, chunk_coord}`
+  identity in `ChunkRegistry`.
+
+  调用方一般不直接显式传 `:name`：身份 via-tuple 由 `:logical_scene_id` /
+  `:chunk_coord` 推导。测试可传 `:chunk_registry` 指向隔离的 Registry。显式
+  `:name`（向后兼容旧的具名启动）仍被尊重，但默认走注册化身份。
+  """
   def start_link(opts) when is_list(opts) do
-    {server_opts, init_opts} = Keyword.split(opts, [:name])
-    GenServer.start_link(__MODULE__, init_opts, server_opts)
+    {explicit_name, init_opts} = Keyword.pop(opts, :name)
+    init_opts = Keyword.delete(init_opts, :chunk_registry)
+
+    name = explicit_name || identity_name(opts)
+    GenServer.start_link(__MODULE__, init_opts, name: name)
+  end
+
+  defp identity_name(opts) do
+    logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
+    chunk_coord = coord!(Keyword.fetch!(opts, :chunk_coord))
+    registry = Keyword.get(opts, :chunk_registry, ChunkRegistry.default_name())
+    ChunkRegistry.via(logical_scene_id, chunk_coord, registry)
   end
 
   @doc "Applies the current region lease used for DataService writes."
@@ -398,56 +467,221 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @impl true
   def init(opts) do
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
-    chunk_coord = Keyword.fetch!(opts, :chunk_coord)
-
-    storage =
-      opts
-      |> Keyword.get(:storage, Storage.empty(logical_scene_id, chunk_coord))
-      |> Storage.normalize!()
+    chunk_coord = coord!(Keyword.fetch!(opts, :chunk_coord))
 
     lease = normalize_optional_lease(Keyword.get(opts, :lease))
 
-    pending_fence = load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
+    # 阶段3.1 hydrate 不变式：lease 有效时无条件从权威存储 hydrate，区分
+    # :loaded / :never_persisted；不再用 Storage.empty 作崩溃恢复的默认兜底。
+    # 测试可通过 :storage 直接注入 hot storage，跳过 hydrate（仅测试构造用）。
+    case resolve_init_storage(opts, logical_scene_id, chunk_coord, lease) do
+      {:ok, storage, hydrate_status, mode} ->
+        pending_fence =
+          load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
 
-    simulators = resolve_simulators(opts)
-    simulation_tick = SimulationTick.new(simulators)
-    schedule_simulation_tick()
+        simulators = resolve_simulators(opts)
+        simulation_tick = SimulationTick.new(simulators)
 
-    {:ok,
-     %{
-       logical_scene_id: storage.logical_scene_id,
-       chunk_coord: storage.chunk_coord,
-       storage: storage,
-       lease: lease,
-       subscribers: %{},
-       subscriber_monitors: %{},
-       async_persists: %{},
-       persist_waiters: [],
-       pending_fence: pending_fence,
-       # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
-       # attribution and downstream destroy_part dispatch. Tests inject
-       # stubbed names; production wiring uses module-named singletons.
-       object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
-       chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
-       # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
-       simulation_tick: simulation_tick,
-       # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
-       # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
-       simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
-       # Phase 6: per-region FieldTickWorker tracking.
-       # field_regions:        %{region_id => worker_pid}
-       # field_region_monitors: %{monitor_ref => region_id}
-       # field_region_sources: %{source_key => region_id}
-       # field_region_source_keys: %{region_id => source_key}
-       # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
-       field_regions: %{},
-       field_region_monitors: %{},
-       field_region_sources: %{},
-       field_region_source_keys: %{},
-       field_region_cleanup_links: %{},
-       auto_circuit_refresh_pending?: false
-     }}
+        state =
+          %{
+            logical_scene_id: storage.logical_scene_id,
+            chunk_coord: storage.chunk_coord,
+            storage: storage,
+            lease: lease,
+            # 阶段3.1：进程授权态。
+            # :authorized   —— 持有效 lease 且 hydrate 成功，可模拟/接受授权写。
+            # :unauthorized —— 无 lease，等待 World 下发 lease。
+            # :degraded     —— hydrate 失败，禁止空跑（保留崩溃前的持久化语义）。
+            mode: mode,
+            hydrate_status: hydrate_status,
+            subscribers: %{},
+            subscriber_monitors: %{},
+            async_persists: %{},
+            persist_waiters: [],
+            pending_fence: pending_fence,
+            # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
+            # attribution and downstream destroy_part dispatch. Tests inject
+            # stubbed names; production wiring uses module-named singletons.
+            object_registry:
+              Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
+            chunk_directory:
+              Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
+            # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
+            simulation_tick: simulation_tick,
+            # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
+            # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
+            simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
+            # Phase 6: per-region FieldTickWorker tracking.
+            # field_regions:        %{region_id => worker_pid}
+            # field_region_monitors: %{monitor_ref => region_id}
+            # field_region_sources: %{source_key => region_id}
+            # field_region_source_keys: %{region_id => source_key}
+            # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
+            field_regions: %{},
+            field_region_monitors: %{},
+            field_region_sources: %{},
+            field_region_source_keys: %{},
+            field_region_cleanup_links: %{},
+            auto_circuit_refresh_pending?: false
+          }
+
+        emit_init_hydrated(state)
+
+        # 阶段3.1：只有授权态才 schedule 模拟 tick。未授权 / degraded 不空跑。
+        maybe_schedule_simulation_tick(state)
+
+        {:ok, state}
+
+      {:error, reason} ->
+        # hydrate 失败且无法降级处理（极端情况）——让监督树按 transient 重启
+        # 预算重试；耗尽后整棵 chunk 子树重启，World 经 observe 裁决该 coord。
+        emit_init_hydrate_failed(logical_scene_id, chunk_coord, reason)
+        {:stop, {:hydrate_failed, reason}}
+    end
   end
+
+  # 阶段3.1：决定 init 时的 storage 来源 + 授权态。
+  #
+  # 1. 显式 `:storage`（仅测试构造）→ 直接采用，授权态由 lease 决定。
+  # 2. 携带有效 lease → 从 ChunkSnapshotStore hydrate：
+  #    * {:ok, snapshot}            → :loaded
+  #    * :snapshot_not_found        → :never_persisted（合法空 storage，全新 chunk）
+  #    * 其它错误（DB 不可达/损坏）  → :degraded（保留空 storage 但禁止模拟/写）
+  # 3. 无 lease → :unauthorized，空 storage 占位，等 World 下发 lease。
+  defp resolve_init_storage(opts, logical_scene_id, chunk_coord, lease) do
+    case Keyword.fetch(opts, :storage) do
+      {:ok, injected} ->
+        storage = Storage.normalize!(injected)
+        mode = if is_nil(lease), do: :unauthorized, else: :authorized
+        {:ok, storage, :injected, mode}
+
+      :error ->
+        hydrate_init_storage(logical_scene_id, chunk_coord, lease)
+    end
+  end
+
+  defp hydrate_init_storage(logical_scene_id, chunk_coord, nil) do
+    # 无 lease：不读权威存储（无 token 也无权 hydrate），进未授权态占位。
+    {:ok, Storage.empty(logical_scene_id, chunk_coord), :unauthorized, :unauthorized}
+  end
+
+  defp hydrate_init_storage(logical_scene_id, chunk_coord, _lease) do
+    case safe_get_snapshot(logical_scene_id, chunk_coord) do
+      {:ok, snapshot} ->
+        case decode_prewarm_payload(snapshot.data) do
+          {:ok, storage} ->
+            {:ok, Storage.normalize!(storage), :loaded, :authorized}
+
+          {:error, decode_reason} ->
+            # 持久化行存在但 payload 损坏 → degraded，绝不静默用空 storage 服务。
+            {:ok, Storage.empty(logical_scene_id, chunk_coord),
+             {:degraded, {:snapshot_decode_failed, decode_reason}}, :degraded}
+        end
+
+      {:error, :snapshot_not_found} ->
+        # 从未持久化过：合法的全新 chunk，空 storage 是正确初值。
+        {:ok, Storage.empty(logical_scene_id, chunk_coord), :never_persisted, :authorized}
+
+      {:error, reason} ->
+        # DB 不可达等 → degraded，等待恢复后由后续 apply_lease 重新 hydrate。
+        {:ok, Storage.empty(logical_scene_id, chunk_coord), {:degraded, reason}, :degraded}
+    end
+  end
+
+  defp safe_get_snapshot(logical_scene_id, chunk_coord) do
+    ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord)
+  rescue
+    exception -> {:error, {:hydrate_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:hydrate_exit, reason}}
+  end
+
+  defp maybe_schedule_simulation_tick(%{mode: :authorized}), do: schedule_simulation_tick()
+  defp maybe_schedule_simulation_tick(_state), do: :ok
+
+  defp emit_init_hydrated(state) do
+    CliObserve.emit("voxel_chunk_init_hydrated", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        chunk_version: state.storage.chunk_version,
+        mode: state.mode,
+        hydrate_status: inspect(state.hydrate_status),
+        has_lease?: not is_nil(state.lease)
+      }
+    end)
+  end
+
+  defp emit_init_hydrate_failed(logical_scene_id, chunk_coord, reason) do
+    CliObserve.emit("voxel_chunk_init_hydrate_failed", fn ->
+      %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: chunk_coord,
+        reason: inspect(reason)
+      }
+    end)
+  end
+
+  # 阶段3.1：apply_lease 后把 chunk 推进到授权态。
+  #
+  # * 已是 :authorized（init 时即带 lease 成功 hydrate）→ 仅刷新 lease。
+  # * :unauthorized / :degraded → 现在有了 lease，从权威存储重新 hydrate：
+  #   - hydrate 成功（:loaded / :never_persisted）→ 转 :authorized 并补 tick；
+  #   - 再次失败 → 保持 :degraded，不空跑（等下一次 lease/恢复重试）。
+  defp authorize_with_lease(%{mode: :authorized} = state, lease) do
+    %{state | lease: lease}
+  end
+
+  defp authorize_with_lease(state, lease) do
+    case hydrate_init_storage(state.logical_scene_id, state.chunk_coord, lease) do
+      {:ok, storage, hydrate_status, :authorized} ->
+        next_state = %{
+          state
+          | storage: storage,
+            lease: lease,
+            mode: :authorized,
+            hydrate_status: hydrate_status
+        }
+
+        CliObserve.emit("voxel_chunk_authorized", fn ->
+          %{
+            logical_scene_id: next_state.logical_scene_id,
+            chunk_coord: next_state.chunk_coord,
+            chunk_version: next_state.storage.chunk_version,
+            hydrate_status: inspect(hydrate_status),
+            previous_mode: state.mode
+          }
+        end)
+
+        # 授权后补一次模拟 tick scheduling（init 未授权时未 schedule）。
+        schedule_simulation_tick()
+        next_state
+
+      {:ok, _storage, hydrate_status, :degraded} ->
+        CliObserve.emit("voxel_chunk_still_degraded", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            hydrate_status: inspect(hydrate_status),
+            previous_mode: state.mode
+          }
+        end)
+
+        %{state | lease: lease, mode: :degraded, hydrate_status: hydrate_status}
+    end
+  end
+
+  # 阶段3.1：授权写路径（apply_intent/apply_intents/commit）成功落账即意味着
+  # World 授予了权威。把通过直接 ChunkProcess API（绕过 facade.apply_lease）
+  # 进来的写也提升为 :authorized，使后续模拟 tick 能跑。degraded 不在此提升
+  # （它必须先重新 hydrate 成功，由 apply_lease 路径裁决）。
+  defp promote_authorized_on_write(%{mode: :unauthorized} = state) do
+    # 未授权进程在此首次拿到授权写：转 :authorized 并补 schedule 模拟 tick。
+    schedule_simulation_tick()
+    %{state | mode: :authorized}
+  end
+
+  defp promote_authorized_on_write(state), do: state
 
   defp resolve_simulators(opts) do
     case Keyword.fetch(opts, :simulators) do
@@ -530,7 +764,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
         region_id: lease.region_id,
         lease_id: lease.lease_id,
         owner_scene_instance_ref: lease.owner_scene_instance_ref,
-        owner_epoch: lease.owner_epoch
+        owner_epoch: lease.owner_epoch,
+        previous_mode: state.mode
       }
     end)
 
@@ -544,7 +779,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
         state
       end
 
-    {:reply, {:ok, lease}, %{next_state | lease: lease}}
+    # 阶段3.1：World 下发 lease 时，未授权 / degraded 的 chunk 在此完成
+    # hydrate 并转入授权态。degraded（hydrate 曾失败）也在拿到 lease 后重试
+    # 从权威存储恢复，避免一直空跑。授权后补 schedule 模拟 tick。
+    next_state = authorize_with_lease(next_state, lease)
+
+    {:reply, {:ok, lease}, next_state}
   end
 
   def handle_call({:load_snapshot, attrs}, _from, state) do
@@ -1051,6 +1291,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
        storage: state.storage,
        has_lease?: not is_nil(state.lease),
        lease: state.lease,
+       # 阶段3.1：暴露授权态 + hydrate 结果供 CLI/测试断言。
+       mode: state.mode,
+       hydrate_status: state.hydrate_status,
        pending_async_persist_count: map_size(state.async_persists),
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers),
@@ -1231,12 +1474,80 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  @impl true
+  def terminate(reason, state) do
+    # 阶段3.1：退出时主动清理，让崩溃/下线对外可观测、可重路由。
+    #
+    # 1. 给所有订阅者推 ChunkInvalidate，使它们 re-subscribe 到重启后的新权威
+    #    进程（注册表保证同 key 只会有一个新进程接管），而不是把 delta 推到
+    #    已死的旧 pid。
+    # 2. 停掉本进程拥有的 field worker（它们捕获了旧 lease）。
+    # 3. 上报 observe：facade（ChunkDirectory）monitor 也会收到 :DOWN，这里
+    #    额外把退出原因落进 observe，供 World 裁决该 coord 是否不可用。
+    #
+    # lease 的释放是隐式的：lease 由 World 持有 / epoch 栅栏裁决，进程退出后
+    # 对应 storage 不再被本进程写；这里不去主动 DataService 释放（避免把写
+    # token 失效误判成数据丢失）。重启后的 init 会用同一 lease 重新 hydrate。
+    _ =
+      try do
+        invalidate_subscribers_on_terminate(state)
+      catch
+        _kind, _err -> :ok
+      end
+
+    _ =
+      try do
+        stop_all_field_workers(state, :chunk_crash)
+      catch
+        _kind, _err -> :ok
+      end
+
+    CliObserve.emit("voxel_chunk_terminated", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        chunk_version: state.storage.chunk_version,
+        mode: state.mode,
+        subscriber_count: map_size(state.subscribers),
+        reason: inspect(reason)
+      }
+    end)
+
+    :ok
+  end
+
+  defp invalidate_subscribers_on_terminate(%{subscribers: subscribers} = state)
+       when map_size(subscribers) == 0,
+       do: state
+
+  defp invalidate_subscribers_on_terminate(state) do
+    # ChunkInvalidate reason 0x00 = generic; 订阅者据此 re-subscribe。
+    payload =
+      Codec.encode_chunk_invalidate_payload(%{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        reason: 0x00
+      })
+
+    Enum.each(state.subscribers, fn {subscriber, subscriber_state} ->
+      push_chunk_invalidate(state, subscriber, subscriber_state, payload, 0x00)
+    end)
+
+    state
+  end
+
   # ---------------------------------------------------------------------------
   # Phase 5.E:simulation tick dispatch
   # ---------------------------------------------------------------------------
 
   defp run_simulation_tick(%{simulation_tick: simulation_tick} = state) do
     cond do
+      # 阶段3.1：未授权 / degraded 的 chunk 不模拟（degraded 持空 storage，
+      # 模拟会把错误的初值往订阅者推）。
+      state.mode != :authorized ->
+        emit_tick_skipped(state, simulation_tick, {:not_authorized, state.mode})
+        state
+
       lease_stale?(state.lease) ->
         emit_tick_skipped(state, simulation_tick, :lease_stale)
         state
@@ -1385,7 +1696,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
                persist_payload
              ) do
           {:ok, persist_result} ->
-            next_state = %{state | storage: next_storage, lease: intent.lease}
+            next_state =
+              %{state | storage: next_storage, lease: intent.lease}
+              |> promote_authorized_on_write()
+
             dispatch_damage_async(next_state, damage_attribution)
 
             {:ok, intent_reply(next_storage, intent, persist_result, snapshot_payload, true),
@@ -1400,7 +1714,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
             )
         end
       else
-        next_state = %{state | lease: intent.lease}
+        next_state = %{state | lease: intent.lease} |> promote_authorized_on_write()
         {:ok, intent_reply(next_storage, intent, :unchanged, snapshot_payload, false), next_state}
       end
     end
@@ -1526,7 +1840,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 persist_ref
               )
 
-            next_state = %{state_with_task | storage: next_storage, lease: lease}
+            next_state =
+              %{state_with_task | storage: next_storage, lease: lease}
+              |> promote_authorized_on_write()
+
             dispatch_damage_async(next_state, damage_attribution)
 
             {:ok, reply, next_state}
@@ -1546,7 +1863,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
             nil
           )
 
-        {:ok, reply, %{state | lease: lease}}
+        {:ok, reply, %{state | lease: lease} |> promote_authorized_on_write()}
       end
     end
   end

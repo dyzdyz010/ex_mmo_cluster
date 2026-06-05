@@ -19,23 +19,20 @@ defmodule SceneServer.Npc.ManagerTest do
     end
   end
 
+  # `AoiManager` 现在是无状态 facade 模块,NPC actor 通过 `aoi_manager.add_aoi_item/6`
+  # 调用注入的模块 seam。替身用一个简单模块即可,返回一个能接收 cast 的 sink 进程作为
+  # aoi_ref(NPC actor 会向它 cast `:player_state` 等)。
   defmodule FakeAoiManager do
-    use GenServer
-
-    def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    def add_aoi_item(_cid, _ts, _pos, _conn, _actor, _meta) do
+      sink = spawn(fn -> sink_loop() end)
+      {:ok, sink}
     end
 
-    @impl true
-    def init(_opts), do: {:ok, %{}}
-
-    @impl true
-    def handle_call({:add_aoi_item, _cid, _ts, _pos, _conn, _actor, _meta}, _from, state) do
-      {:reply, {:ok, self()}, state}
+    defp sink_loop do
+      receive do
+        _ -> sink_loop()
+      end
     end
-
-    @impl true
-    def handle_cast(_msg, state), do: {:noreply, state}
   end
 
   setup do
@@ -50,7 +47,6 @@ defmodule SceneServer.Npc.ManagerTest do
     )
 
     ensure_started(FakePlayerRegistry, {FakePlayerRegistry, []})
-    ensure_started(FakeAoiManager, {FakeAoiManager, []})
     :ok
   end
 

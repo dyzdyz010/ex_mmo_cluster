@@ -168,4 +168,53 @@ defmodule WorldServer.Voxel.SceneNodeRegistryTest do
       assert {:ok, :a@h} = SceneNodeRegistry.lookup_assignment(name, 1)
     end
   end
+
+  # Phase 3 / S1: the announce/monitor timing-race sweep. SceneNodeMonitor calls
+  # reconcile_live_nodes/2 on (re)start to drop entries that disconnected before
+  # `:net_kernel.monitor_nodes` was established (e.g. stale rows hydrated from
+  # Postgres). Region assignments for swept nodes are intentionally preserved.
+  describe "reconcile_live_nodes/2" do
+    test "drops registered nodes not in the live set, keeps the live ones", %{name: name} do
+      :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :b@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :c@h)
+
+      assert {:ok, swept} = SceneNodeRegistry.reconcile_live_nodes(name, [:b@h])
+      assert Enum.sort(swept) == [:a@h, :c@h]
+
+      assert %{join_order: [:b@h]} = SceneNodeRegistry.snapshot(name)
+    end
+
+    test "is a no-op when every registered node is live", %{name: name} do
+      :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :b@h)
+
+      assert {:ok, []} = SceneNodeRegistry.reconcile_live_nodes(name, [:a@h, :b@h, :extra@h])
+      assert %{join_order: [:a@h, :b@h]} = SceneNodeRegistry.snapshot(name)
+    end
+
+    test "preserves region assignments for swept (no auto-failover)", %{name: name} do
+      :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :b@h)
+      assert {:ok, :a@h} = SceneNodeRegistry.assign_region(name, 1)
+      assert {:ok, :b@h} = SceneNodeRegistry.assign_region(name, 2)
+
+      assert {:ok, [:a@h]} = SceneNodeRegistry.reconcile_live_nodes(name, [:b@h])
+
+      # a@h's frozen assignment survives even though it left the rotation.
+      assert {:ok, :a@h} = SceneNodeRegistry.lookup_assignment(name, 1)
+      assert {:ok, :b@h} = SceneNodeRegistry.lookup_assignment(name, 2)
+      # New regions only route to live nodes now.
+      assert {:ok, :b@h} = SceneNodeRegistry.assign_region(name, 3)
+    end
+
+    test "empty live set sweeps everything", %{name: name} do
+      :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :b@h)
+
+      assert {:ok, swept} = SceneNodeRegistry.reconcile_live_nodes(name, [])
+      assert Enum.sort(swept) == [:a@h, :b@h]
+      assert %{join_order: []} = SceneNodeRegistry.snapshot(name)
+    end
+  end
 end

@@ -15,9 +15,19 @@ defmodule WorldServer.WorldSup do
         # Phase A4-bis-cluster step 4 (segment 2a → 2c): start
         # SceneNodeRegistry + SceneNodeMonitor *before* MapLedger so
         # MapLedger.put_region can consult the registry from its very
-        # first call. SceneNodeRegistry is the state, SceneNodeMonitor
-        # sweeps it on `:nodedown`.
-        {WorldServer.Voxel.SceneNodeRegistry, name: WorldServer.Voxel.SceneNodeRegistry},
+        # first call.
+        #
+        # Phase 3 / S1 (process identity registration): region ownership is
+        # durable. SceneNodeRegistry hydrates `join_order` / `region_assignments`
+        # from Postgres on (re)start through
+        # `DataService.Voxel.SceneNodeRegistryStore`, and SceneNodeMonitor then
+        # reconciles those hydrated entries against the live node set before
+        # taking over `:nodedown` sweeping. The Postgres row is the source of
+        # truth; the GenServer state is a derived cache.
+        {WorldServer.Voxel.SceneNodeRegistry,
+         name: WorldServer.Voxel.SceneNodeRegistry,
+         persist_fn: DataService.Voxel.SceneNodeRegistryStore.persist_fn(DataService.Repo),
+         load_fn: DataService.Voxel.SceneNodeRegistryStore.load_fn(DataService.Repo)},
         {WorldServer.Voxel.SceneNodeMonitor,
          name: WorldServer.Voxel.SceneNodeMonitor, registry: WorldServer.Voxel.SceneNodeRegistry},
         {WorldServer.Voxel.MapLedger,

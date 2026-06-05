@@ -69,11 +69,17 @@ defmodule SceneServer.Npc.Actor do
         :spawn_aoi,
         %{profile: profile, combat_state: combat_state, aoi_manager: aoi_manager} = state
       ) do
+    # `aoi_manager` 是注入式模块 seam,默认 `SceneServer.AoiManager`(现为无状态 facade)。
+    # 不再用 GenServer.call——AoiManager 已不是进程。测试可注入实现了 `add_aoi_item/6` 的
+    # 替身模块。
     {:ok, aoi_ref} =
-      GenServer.call(
-        aoi_manager,
-        {:add_aoi_item, profile.npc_id, System.system_time(:millisecond), profile.spawn_position,
-         self(), self(), %{kind: :npc, name: profile.name}}
+      aoi_manager.add_aoi_item(
+        profile.npc_id,
+        System.system_time(:millisecond),
+        profile.spawn_position,
+        self(),
+        self(),
+        %{kind: :npc, name: profile.name}
       )
 
     GenServer.cast(

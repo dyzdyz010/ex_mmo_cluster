@@ -44,6 +44,21 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     SceneServer.TestVoxelRuntime.ensure_started!()
 
+    # 阶段3.1：每个测试用隔离的 chunk 进程身份注册表。ChunkProcess 经 via-tuple
+    # 注册进它指定的 :chunk_registry；不隔离时所有测试都注册进全局单例的同一身份
+    # 槽位（如 {1, {0,0,0}}），跨测试 / 跨文件的拆除竞态会撞 {:already_started}。
+    # 隔离后每个进程身份只属于本测试，全量 mix test 不再因排序串扰而 flaky。
+    chunk_registry =
+      :"chunk_process_test_registry_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Registry, keys: :unique, name: chunk_registry},
+      id: {:registry, chunk_registry}
+    )
+
+    # 让 `start_chunk!/1` 无需把 registry 穿过每个 test 签名即可拿到本测试的隔离表。
+    Process.put(:chunk_registry, chunk_registry)
+
     on_exit(fn ->
       CliObserve.flush_path(path)
       CliObserve.unregister_route(1, observe_route)
@@ -56,11 +71,11 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       File.rm(path)
     end)
 
-    {:ok, observe_log: path}
+    {:ok, observe_log: path, chunk_registry: chunk_registry}
   end
 
   test "builds snapshot payloads from hot chunk truth" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, storage} =
              ChunkProcess.put_solid_block(
@@ -84,7 +99,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "subscribe immediately sends the current snapshot payload" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, payload} = ChunkProcess.subscribe(chunk, self(), request_id: 55)
     assert_receive {:voxel_chunk_snapshot_payload, ^payload}
@@ -100,7 +115,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = lease()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
 
     legacy_subscriber = start_forwarding_subscriber(:legacy_snapshot)
     envelope_subscriber = start_forwarding_subscriber(:envelope_snapshot)
@@ -137,7 +152,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = lease()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
 
     legacy_subscriber = start_forwarding_subscriber(:legacy_invalidate)
     envelope_subscriber = start_forwarding_subscriber(:envelope_invalidate)
@@ -183,7 +198,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "put_solid_block pushes a second snapshot fallback payload to subscribers" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 56)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -209,7 +224,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "add_heat_energy_attribute stores computed temperature on voxel truth and pushes a snapshot" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -252,7 +267,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "write_temperature_attribute reports real iron heat budget for an 800C target" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -287,7 +302,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   test "apply_field_effects writes temperature through chunk authority", %{
     observe_log: observe_log
   } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     macro_index = Types.macro_index!({0, 0, 0})
 
     assert {:ok, _storage} =
@@ -341,7 +356,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   test "apply_field_effects can inject heat energy through chunk authority", %{
     observe_log: observe_log
   } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     macro_index = Types.macro_index!({0, 0, 0})
 
     assert {:ok, _storage} =
@@ -391,7 +406,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   test "apply_field_effects rejects unsupported effects without mutating", %{
     observe_log: observe_log
   } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, {0, 0, 0}, NormalBlockData.new(1))
@@ -426,7 +441,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   test "ensure_field_region reuses an active source and emits source lifecycle observability", %{
     observe_log: observe_log
   } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     source_index = Types.macro_index!({0, 0, 0})
 
     attrs = %{
@@ -488,7 +503,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   test "ensure_field_region reuses a stable region_id without registering a field source", %{
     observe_log: observe_log
   } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     source_index = Types.macro_index!({0, 0, 0})
 
     attrs = %{
@@ -541,7 +556,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
        %{
          observe_log: observe_log
        } do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 58)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
 
@@ -594,7 +609,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   test "expired field workers release their active source and emit lifecycle observability",
        %{observe_log: observe_log} do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 59)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
 
@@ -637,7 +652,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok,
             %{
@@ -687,7 +702,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     block = NormalBlockData.new(7)
 
@@ -724,7 +739,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     attrs =
       for x <- 0..2 do
@@ -760,7 +775,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     attrs =
       for x <- 0..15,
@@ -797,7 +812,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 81)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -828,7 +843,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     chunk =
       start_supervised!(
-        {ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}, storage: storage}
+        {ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}, storage: storage}
       )
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 90)
@@ -849,7 +864,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 84)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -881,7 +896,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 91)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -914,7 +929,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   test "auto circuit refresh coalesces adjacent open mutations without allocating a field",
        %{observe_log: observe_log} do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -946,7 +961,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     attrs = lease |> intent_attrs() |> Map.delete(:lease)
 
@@ -962,7 +977,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     _lease = start_snapshot_store(expired_lease)
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:error, :lease_expired} =
              ChunkProcess.apply_intent(chunk, intent_attrs(expired_lease))
@@ -990,7 +1005,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              )
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:error, :lease_id_mismatch} =
              ChunkProcess.apply_intent(chunk, intent_attrs(stale_lease))
@@ -1005,7 +1020,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = start_snapshot_store()
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 88)
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -1032,7 +1047,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "invalidate_subscribers pushes a ChunkInvalidate payload and drops every subscriber" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self())
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -1052,7 +1067,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "unsubscribe stops future snapshot fallback pushes" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
     assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self())
     assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -1072,7 +1087,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   end
 
   test "dead subscribers are removed by monitor cleanup" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     parent = self()
 
     subscriber =
@@ -1112,7 +1127,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              )
 
     chunk =
-      start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
+      start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, 0, NormalBlockData.new(7), cell_version: 1)
@@ -1144,7 +1159,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
     chunk =
       start_supervised!(
-        {ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease_v1}
+        {ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease_v1}
       )
 
     assert {:ok, _storage} =
@@ -1159,7 +1174,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
       chunk =
         start_supervised!(
-          {ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease}
+          {ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease}
         )
 
       legacy_subscriber = start_forwarding_subscriber(:legacy_delta)
@@ -1220,7 +1235,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1, persist_result: :inserted}} =
                ChunkProcess.apply_intent(
@@ -1254,7 +1269,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -1283,7 +1298,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       put = fn slot, mat ->
         ChunkProcess.apply_intent(
@@ -1335,7 +1350,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 0, changed?: false, persist_result: :unchanged}} =
                ChunkProcess.apply_intent(
@@ -1352,7 +1367,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -1389,7 +1404,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       for bad <- [-1, 512, 1024] do
         assert {:error, :invalid_micro_slot} =
@@ -1409,7 +1424,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       attrs =
         micro_intent_attrs(lease,
@@ -1426,7 +1441,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 200)
       assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -1461,7 +1476,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -1498,7 +1513,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       put = fn slot, mat ->
         ChunkProcess.apply_intent(
@@ -1544,7 +1559,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -1571,7 +1586,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -1594,7 +1609,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       # Bump current chunk_version to 1 first.
       assert {:ok, _} =
@@ -1620,7 +1635,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 502)
       assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
@@ -1653,7 +1668,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, _} =
                ChunkProcess.apply_intent(
@@ -1676,7 +1691,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:ok, %{chunk_version: 1}} =
                ChunkProcess.apply_intent(
@@ -1693,7 +1708,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
       lease = start_snapshot_store()
 
       chunk =
-        start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+        start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {1, 1, 1}})
 
       assert {:error, :invalid_expected_chunk_version} =
                ChunkProcess.apply_intent(

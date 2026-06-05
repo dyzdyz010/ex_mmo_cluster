@@ -14,12 +14,23 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
+
+    # 阶段3.1：隔离 chunk 进程身份注册表，避免全局单例 {1, {0,0,0}} 槽位跨测试串扰。
+    chunk_registry =
+      :"chunk_process_object_state_delta_push_test_registry_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Registry, keys: :unique, name: chunk_registry},
+      id: {:registry, chunk_registry}
+    )
+
+    Process.put(:chunk_registry, chunk_registry)
     :ok
   end
 
   describe "push_object_state_delta_payload/2 cast (Phase 4-bis D1)" do
     test "is a no-op when the chunk has no subscribers" do
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+      chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
       payload = sample_payload()
 
@@ -32,7 +43,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
     end
 
     test "delivers the payload to a single subscriber" do
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+      chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
       assert {:ok, _snapshot_payload} =
                ChunkProcess.subscribe(chunk, self(), request_id: 55)
@@ -49,7 +60,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
     end
 
     test "delivers the same payload to multiple subscribers" do
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+      chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
       parent = self()
 
@@ -108,7 +119,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
     end
 
     test "rejects non-binary payloads at the public API boundary" do
-      chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+      chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
 
       assert_raise FunctionClauseError, fn ->
         ChunkProcess.push_object_state_delta_payload(chunk, %{not: :a_binary})

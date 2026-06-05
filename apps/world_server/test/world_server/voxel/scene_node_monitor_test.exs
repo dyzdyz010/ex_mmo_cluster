@@ -82,4 +82,62 @@ defmodule WorldServer.Voxel.SceneNodeMonitorTest do
 
     assert Process.alive?(GenServer.whereis(monitor))
   end
+
+  # Phase 3 / S1: establish-then-reconcile timing-race fix. On (re)start the
+  # monitor reconciles the registry's hydrated `join_order` against the live
+  # node set before taking over `:nodedown` sweeping. Under the non-distributed
+  # test BEAM (`:nonode@nohost`), `:net_kernel.monitor_nodes/1` returns
+  # `:ignored`, so the monitor takes the single-BEAM no-op reconcile branch and
+  # must leave pre-populated (e.g. Postgres-hydrated) entries intact — the
+  # scene_node there *is* this same node, so it is not stale.
+  describe "establish-then-reconcile on startup" do
+    test "single-BEAM: pre-populated registry entries are preserved across monitor start" do
+      registry_name = Module.concat([__MODULE__, :reconcile_single_beam, Registry])
+      monitor_name = Module.concat([__MODULE__, :reconcile_single_beam, Monitor])
+
+      # 本测试自起一对 registry/monitor（验证"已水合 entries → 启动 monitor 不被
+      # reconcile 覆盖"），与文件级 `setup` 起的那对不同名。两次 start_supervised
+      # 默认 child id 都是模块名会撞 {:already_started}，因此给本 body 的子进程显式
+      # 唯一 id。
+      start_supervised!({SceneNodeRegistry, name: registry_name}, id: registry_name)
+      :ok = SceneNodeRegistry.register_scene_node(registry_name, :scene1@h)
+      :ok = SceneNodeRegistry.register_scene_node(registry_name, :scene2@h)
+
+      # Start the monitor *after* the registry already holds entries (mirrors a
+      # restart that hydrated from Postgres before the monitor came up).
+      monitor =
+        start_supervised!({SceneNodeMonitor, name: monitor_name, registry: registry_name},
+          id: monitor_name
+        )
+
+      # Flush handle_continue(:reconcile_live_nodes, ...) deterministically.
+      sync(monitor)
+
+      assert Process.alive?(GenServer.whereis(monitor))
+      # Non-distributed BEAM → reconcile is a no-op, hydrated entries untouched.
+      assert %{join_order: [:scene1@h, :scene2@h]} = SceneNodeRegistry.snapshot(registry_name)
+    end
+
+    test "monitor still sweeps :nodedown after the reconcile continue completes" do
+      registry_name = Module.concat([__MODULE__, :reconcile_then_down, Registry])
+      monitor_name = Module.concat([__MODULE__, :reconcile_then_down, Monitor])
+
+      # 同上：本 body 自起的 registry/monitor 需显式唯一 child id，避免与文件级
+      # setup 起的默认模块 id 撞 {:already_started}。
+      start_supervised!({SceneNodeRegistry, name: registry_name}, id: registry_name)
+      :ok = SceneNodeRegistry.register_scene_node(registry_name, :scene1@h)
+
+      monitor =
+        start_supervised!({SceneNodeMonitor, name: monitor_name, registry: registry_name},
+          id: monitor_name
+        )
+
+      # Let the startup continue run, then deliver a nodedown like the real VM.
+      sync(monitor)
+      send(monitor, {:nodedown, :scene1@h})
+      sync(monitor)
+
+      assert %{join_order: []} = SceneNodeRegistry.snapshot(registry_name)
+    end
+  end
 end

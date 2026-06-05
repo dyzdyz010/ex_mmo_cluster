@@ -5,7 +5,9 @@ defmodule SceneServer.PlayerManagerTest do
 
   setup do
     ensure_started(SceneServer.PhysicsManager, {SceneServer.PhysicsSup, name: PhysicsSupTest})
-    ensure_started(SceneServer.AoiManager, {SceneServer.AoiSup, name: AoiSupTest})
+    # S1 后 AOI 的稳定锚点是 IndexStore(AoiManager 已是无状态 facade,不再是进程),
+    # 用它做 "AOI 子树是否已起" 的探针,避免重复启动 AoiSup 造成具名 ETS 表冲突。
+    ensure_started(SceneServer.Aoi.IndexStore, {SceneServer.AoiSup, name: AoiSupTest})
     ensure_started(SceneServer.PlayerManager, {SceneServer.PlayerSup, name: PlayerSupTest})
 
     :ok

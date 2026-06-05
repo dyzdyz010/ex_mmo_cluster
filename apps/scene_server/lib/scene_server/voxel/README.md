@@ -12,6 +12,39 @@
 迁移预热时，它也可以从已持久化快照加载热状态；这个加载路径不反写 DataService，只用于
 让目标 Scene 在 World 切换前准备好区块内存。
 
+## 进程身份注册化与重启 hydrate（阶段3.1 / S1）
+
+**谁是 `{logical_scene_id, chunk_coord}` 的权威**这一进程身份，唯一真相源是
+`SceneServer.Voxel.ChunkRegistry`（`Registry` `:unique`，挂在 `VoxelSup` 下，
+早于 `VoxelChunkSup` / `ChunkDirectory` 启动）。状态所有权边界：
+
+- **ChunkProcess 拥有** voxel 真相（`storage`）、lease、订阅者、异步持久化、
+  field worker、事务 fence。via-tuple（`ChunkRegistry.via/3`）写进 child_spec
+  的 `start` 参数，监督树重启天然去重——同 key 第二次 `start_child` 得到
+  `{:error, {:already_started, pid}}`，绝不会出现两个权威进程。
+- **ChunkDirectory 是无状态 facade**：不再持有进程表，所有 lookup/路由都经
+  注册表解析（删掉了旧的 `state.chunks` 并行真相源）。facade 崩溃重启不会产
+  生第二个权威：权威进程独立挂在 `VoxelChunkSup` 下，由注册表裁决单主。
+- **ChunkSnapshotStore 是崩溃恢复的权威存储**。
+
+**init hydrate 不变式**：进程（崩溃恢复 / 监督树重建）启动时——
+
+1. 携有效 lease → 无条件 `ChunkSnapshotStore.get_snapshot/2`：
+   - `:loaded` 从持久化恢复；`:never_persisted`（`:snapshot_not_found`）是合法
+     全新 chunk，空 storage 是正确初值；
+   - hydrate 失败（DB 不可达 / payload 损坏）→ 进 `:degraded` 态，**不**用空
+     storage 静默服务（避免崩溃恢复静默丢数据）。已删除旧的 `Storage.empty`
+     默认兜底。
+2. 无 lease → `:unauthorized` 态，不读权威存储、不持 lease、不 schedule 模拟
+   tick，等 World 下发 lease（`apply_lease/2`）后才 hydrate 并转 `:authorized`。
+
+`mode`（`:authorized` / `:unauthorized` / `:degraded`）与 `hydrate_status` 经
+`debug_state/1` 暴露供 CLI/测试断言。`restart: :transient` + `VoxelChunkSup`
+显式 `max_restarts/max_seconds`：单 coord 反复崩溃（如 hydrate 永久失败）耗尽
+预算后整棵 chunk 子树重启，`ChunkProcess.terminate/2` 已上报
+`voxel_chunk_terminated` observe（并给订阅者推 ChunkInvalidate 触发 re-subscribe），
+facade 的 `voxel_chunk_directory_chunk_down` 供 World 裁决该 coord 不可用。
+
 `ChunkProcess.apply_intent/2` 是 World 已授权体素意图在 Scene 侧的最小写入路径。单意图
 路径仍以持久化通过作为提交条件，然后向订阅者推送对应 `ChunkDelta`；无法表达为
 delta 的操作才回退为完整 `ChunkSnapshot`。缺失、过期、越界或陈旧的租约都不会改变
@@ -38,11 +71,15 @@ chunk version 对该 intent 重试一次。显式 `expected_chunk_version` /
 `lease_id` / `owner_epoch` 等权威元数据，并使用订阅自己的 `tier`；订阅者状态不镜像 lease
 真相。Field / object fan-out 仍保持 raw tuple，等待独立 envelope 迁移。
 
-`SceneServer.Voxel.ChunkDirectory` 把 `{logical_scene_id, chunk_coord}` 解析到热区块进程，
-并在 `SceneServer.VoxelChunkSup` 下按需启动缺失区块。Gate 只有在 World 已经路由区块并提供
-当前租约之后，才会用它执行只读的 `ChunkSubscribe -> ChunkSnapshot` 路径。面向 World / Gate
-的代码也可以用 `ChunkDirectory.apply_intent/2` 把已带租约的写入意图路由到拥有者区块，
-但调用者本身不拥有区块真相。
+`SceneServer.Voxel.ChunkDirectory` 是把 `{logical_scene_id, chunk_coord}` 路由到
+权威区块进程的**无状态 facade**：它经 `ChunkRegistry.lookup/3` 解析 pid，未注册
+时在 `SceneServer.VoxelChunkSup` 下按需启动缺失区块（via-tuple 注册保证去重，并发
+启动撞 `{:error, {:already_started, pid}}` 时复用既有 pid）。它**不缓存 pid**，仅
+monitor 自己启动过的 chunk 用于发 `voxel_chunk_directory_chunk_down` 事件；路由正确
+性完全依赖注册表。Gate 只有在 World 已经路由区块并提供当前租约之后，才会用它执行
+只读的 `ChunkSubscribe -> ChunkSnapshot` 路径。面向 World / Gate 的代码也可以用
+`ChunkDirectory.apply_intent/2` 把已带租约的写入意图路由到拥有者区块，但调用者本身
+不拥有区块真相。
 
 `ChunkDirectory.prewarm_handoff/2` 消费 World 生成的迁移交接载荷。它按预热切片读取
 DataService 中已有的区块快照，加载到目标 Scene 的热区块进程；没有快照的区块会以空区块
@@ -196,8 +233,10 @@ cell-by-cell + 部分写不回滚行为已被替换**。
   pass-through。
 - `PartState.flag_part_destroyed` = 0x04（与 `flag_damaged` 0x01 /
   `flag_destroyed` 0x02 配合，对齐 protocol §9 三段 state_flags 语义）。
-- `ChunkDirectory.lookup_chunk_pid/3`：read-only，不 lazy-start，**只**返回
-  已注册且 alive 的 ChunkProcess pid。给 ObjectRegistry dispatch 路径用。
+- `ChunkDirectory.lookup_chunk_pid/3`：read-only，不 lazy-start，经
+  `ChunkRegistry.lookup/3` 返回已注册的权威 ChunkProcess pid（pid 死亡由
+  `Registry` 自身 monitor 自动摘除，因此返回的恒为 alive pid 或 `:not_started`）。
+  给 ObjectRegistry dispatch 路径用。
 - `ChunkProcess.push_object_state_delta_payload/2`：GenServer.cast 公共 API，
   接收已 encoded binary payload，handle_cast 调
   `fan_out_object_state_delta_payload`（私有）→
