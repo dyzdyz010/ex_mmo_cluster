@@ -35,6 +35,26 @@ const MAX_AUTHORITATIVE_PROJECTION_TICKS = 2;
 const MAX_AUTHORITATIVE_CLOCK_PROJECTION_MS = 250;
 const IDLE_INPUT_KEEPALIVE_MS = 5_000;
 
+interface AuthorityLatencyDiagnostics {
+  ackSeq: number | null;
+  authTick: number | null;
+  inputSeqGap: number | null;
+  lastAckRttMs: number | null;
+  lastAckPendingInputs: number | null;
+  lastAckReplayedFrames: number | null;
+  serverStateAgeMs: number | null;
+  serverSendAgeMs: number | null;
+  sceneAckAgeMs: number | null;
+  browserApplyDelayMs: number | null;
+  gateSendDelayMs: number | null;
+  sceneInputAgeMs: number | null;
+  sceneQueueLen: number | null;
+  sceneReplayCount: number | null;
+  sceneDroppedInputCount: number | null;
+  sceneMailboxLen: number | null;
+  sceneTickDriftMs: number | null;
+}
+
 export interface MovementFrameTraceSample {
   frame: number;
   nowMs: number;
@@ -99,6 +119,23 @@ export interface MovementFrameTraceSample {
   collisionStatus: string;
   collisionOccupiedCount: number;
   collisionBlockedAxes: string[];
+  ackSeq: number | null;
+  authTick: number | null;
+  inputSeqGap: number | null;
+  lastAckRttMs: number | null;
+  lastAckPendingInputs: number | null;
+  lastAckReplayedFrames: number | null;
+  serverStateAgeMs: number | null;
+  serverSendAgeMs: number | null;
+  sceneAckAgeMs: number | null;
+  browserApplyDelayMs: number | null;
+  gateSendDelayMs: number | null;
+  sceneInputAgeMs: number | null;
+  sceneQueueLen: number | null;
+  sceneReplayCount: number | null;
+  sceneDroppedInputCount: number | null;
+  sceneMailboxLen: number | null;
+  sceneTickDriftMs: number | null;
 }
 
 /**
@@ -108,9 +145,8 @@ export interface MovementFrameTraceSample {
  * Logic stays on a 16 ms fixed step for input/authority parity, while render
  * samples replay only the in-progress accumulator remainder from the latest
  * fixed state. Raw authoritative ack and ack projection stay available for
- * trace diagnostics; the visible gray marker follows the current ack-replayed
- * prediction target so it remains an independent server-corrected display
- * channel without showing a stale raw-packet ghost.
+ * trace diagnostics; the visible gray marker follows the current server
+ * projection so it remains independent from local visual correction damping.
  */
 export class LocalPlayerController implements FrameSubscriber {
   private readonly prediction = new LocalPredictionRuntime();
@@ -132,6 +168,8 @@ export class LocalPlayerController implements FrameSubscriber {
   private lastAuthorityTick: number | null = null;
   private lastAuthorityServerStateMs: number | null = null;
   private lastAuthorityServerSendMs: number | null = null;
+  private lastAuthorityDiagnostics: AuthorityLatencyDiagnostics =
+    emptyAuthorityLatencyDiagnostics();
   private lastAuthorityFixedDtMs = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
   private cameraYawResolver: () => number = () => 0;
   private frameTraceRemaining = 0;
@@ -154,8 +192,9 @@ export class LocalPlayerController implements FrameSubscriber {
     this.bus.on("transport:spawn", ({ position, expectedSeq }) =>
       this.resetTo(position, expectedSeq),
     );
-    this.bus.on("transport:ack-delivered", ({ ack, sentAtMs }) => {
-      this.consumeAuthority(performance.now(), ack, sentAtMs);
+    this.bus.on("transport:ack-delivered", ({ ack, sentAtMs, receivedAtMs }) => {
+      const nowMs = performance.now();
+      this.consumeAuthority(nowMs, ack, sentAtMs, receivedAtMs ?? nowMs);
     });
     this.bus.on("transport:time-sync", (sample) => {
       this.serverClock.observe(sample);
@@ -202,7 +241,7 @@ export class LocalPlayerController implements FrameSubscriber {
   }
 
   getAuthoritativeDisplayPosition(nowMs: number = performance.now()): Vector3 {
-    return this.renderSimulationState?.position.clone() ?? this.getAuthoritativeProjectedPosition(nowMs);
+    return this.getAuthoritativeProjectedPosition(nowMs);
   }
 
   getAuthoritativeRenderPosition(nowMs: number): Vector3 {
@@ -213,6 +252,7 @@ export class LocalPlayerController implements FrameSubscriber {
     latestServerTick: number | null;
     latestServerStateMs: number | null;
     latestServerSendMs: number | null;
+    latency: AuthorityLatencyDiagnostics;
     bufferedSnapshots: number;
     interpolationMode: "empty" | "interpolated" | "extrapolated";
     interpolationDelaySecs: number;
@@ -228,6 +268,7 @@ export class LocalPlayerController implements FrameSubscriber {
       latestServerTick: this.lastAuthorityTick,
       latestServerStateMs: this.lastAuthorityServerStateMs,
       latestServerSendMs: this.lastAuthorityServerSendMs,
+      latency: { ...this.lastAuthorityDiagnostics },
       bufferedSnapshots: this.lastAuthorityAtMs === null ? 0 : 1,
       interpolationMode: this.lastAuthorityAtMs === null ? "empty" : "extrapolated",
       interpolationDelaySecs: 0,
@@ -313,6 +354,12 @@ export class LocalPlayerController implements FrameSubscriber {
 
   requestJump(source = "cli"): void {
     this.input.requestJump(source);
+  }
+
+  setVirtualMovement(vec: { x: number; y: number }): { x: number; y: number } {
+    this.input.setVirtualMovement(vec);
+    const current = this.input.getVirtualMovement();
+    return { x: current.x, y: current.y };
   }
 
   /**
@@ -426,7 +473,12 @@ export class LocalPlayerController implements FrameSubscriber {
     );
   }
 
-  private consumeAuthority(nowMs: number, ack: MovementAck, sentAtMs: number): void {
+  private consumeAuthority(
+    nowMs: number,
+    ack: MovementAck,
+    sentAtMs: number,
+    receivedAtMs: number,
+  ): void {
     const rttMs = Math.max(0, nowMs - sentAtMs);
     this.prediction.observeRtt(rttMs);
     const result = this.prediction.applyAck(ack);
@@ -448,6 +500,15 @@ export class LocalPlayerController implements FrameSubscriber {
     } else {
       this.syncRenderAnchorTo(result.latestState);
     }
+    const diagnostics = this.buildAuthorityLatencyDiagnostics(
+      nowMs,
+      ack,
+      sentAtMs,
+      receivedAtMs,
+      result.pendingInputs,
+      result.replayedFrames,
+    );
+    this.lastAuthorityDiagnostics = diagnostics;
 
     this.bus.emit("movement:authority-applied", {
       action: result.action,
@@ -457,11 +518,65 @@ export class LocalPlayerController implements FrameSubscriber {
       pendingInputs: result.pendingInputs,
       replayedFrames: result.replayedFrames,
       rttMs,
+      lastAckRttMs: rttMs,
+      inputSeqGap: diagnostics.inputSeqGap ?? 0,
       movementMode: ack.movementMode,
       velocity: ack.velocity,
       serverFixedDtMs: ack.serverFixedDtMs,
       fixedDtDriftMs: ack.serverFixedDtMs - DEFAULT_MOVEMENT_PROFILE.fixedDtMs,
+      serverStateAgeMs: diagnostics.serverStateAgeMs,
+      serverSendAgeMs: diagnostics.serverSendAgeMs,
+      sceneAckAgeMs: diagnostics.sceneAckAgeMs,
+      browserApplyDelayMs: diagnostics.browserApplyDelayMs ?? 0,
+      gateSendDelayMs: diagnostics.gateSendDelayMs,
+      sceneInputAgeMs: diagnostics.sceneInputAgeMs,
+      sceneQueueLen: diagnostics.sceneQueueLen,
+      sceneReplayCount: diagnostics.sceneReplayCount,
+      sceneDroppedInputCount: diagnostics.sceneDroppedInputCount,
+      sceneMailboxLen: diagnostics.sceneMailboxLen,
+      sceneTickDriftMs: diagnostics.sceneTickDriftMs,
     });
+  }
+
+  private buildAuthorityLatencyDiagnostics(
+    nowMs: number,
+    ack: MovementAck,
+    sentAtMs: number,
+    receivedAtMs: number,
+    pendingInputs: number,
+    replayedFrames: number,
+  ): AuthorityLatencyDiagnostics {
+    const localWallNowMs = Date.now();
+    const clock = this.serverClock.sampleClock(localWallNowMs);
+    const estimatedServerNowMs =
+      clock.serverClockOffsetMs === null
+        ? localWallNowMs
+        : localWallNowMs + clock.serverClockOffsetMs;
+    const sceneAckMs = finiteOptional(ack.sceneAckMs);
+    const serverSendMs = finiteOptional(ack.serverSendMs);
+    return {
+      ackSeq: ack.ackSeq,
+      authTick: ack.authTick,
+      inputSeqGap: Math.max(0, pendingInputs),
+      lastAckRttMs: Math.max(0, nowMs - sentAtMs),
+      lastAckPendingInputs: Math.max(0, pendingInputs),
+      lastAckReplayedFrames: Math.max(0, replayedFrames),
+      serverStateAgeMs: timestampAgeMs(estimatedServerNowMs, ack.serverStateMs),
+      serverSendAgeMs: timestampAgeMs(estimatedServerNowMs, serverSendMs),
+      sceneAckAgeMs: timestampAgeMs(estimatedServerNowMs, sceneAckMs),
+      browserApplyDelayMs: Math.max(0, nowMs - receivedAtMs),
+      gateSendDelayMs:
+        finiteOptional(ack.gateSendDelayMs) ??
+        (serverSendMs === null || sceneAckMs === null
+          ? null
+          : Math.max(0, serverSendMs - sceneAckMs)),
+      sceneInputAgeMs: finiteOptional(ack.sceneInputAgeMs),
+      sceneQueueLen: finiteOptional(ack.sceneQueueLen),
+      sceneReplayCount: finiteOptional(ack.sceneReplayCount),
+      sceneDroppedInputCount: finiteOptional(ack.sceneDroppedInputCount),
+      sceneMailboxLen: finiteOptional(ack.sceneMailboxLen),
+      sceneTickDriftMs: finiteOptional(ack.sceneTickDriftMs),
+    };
   }
 
   private syncRenderAnchorTo(nextAnchorState: PredictedMoveState): void {
@@ -683,9 +798,7 @@ export class LocalPlayerController implements FrameSubscriber {
         this.renderedPosition.x - authorityRenderPosition.x,
         this.renderedPosition.z - authorityRenderPosition.z,
       ),
-      localAuthorityProjectedDistance: this.renderedPosition.distanceTo(
-        authorityProjectedPosition,
-      ),
+      localAuthorityProjectedDistance: this.renderedPosition.distanceTo(authorityProjectedPosition),
       localAuthorityProjectedHorizontalDistance: Math.hypot(
         this.renderedPosition.x - authorityProjectedPosition.x,
         this.renderedPosition.z - authorityProjectedPosition.z,
@@ -723,6 +836,7 @@ export class LocalPlayerController implements FrameSubscriber {
       collisionStatus: this.lastCollisionSummary?.status ?? "disabled",
       collisionOccupiedCount: this.lastCollisionSummary?.occupiedCount ?? 0,
       collisionBlockedAxes: this.lastCollisionSummary?.blockedAxes ?? [],
+      ...this.lastAuthorityDiagnostics,
     });
     this.lastTracedPosition.copy(this.renderedPosition);
     this.lastTracedAuthorityPosition.copy(this.authoritativePosition);
@@ -744,6 +858,7 @@ export class LocalPlayerController implements FrameSubscriber {
     this.lastAuthorityTick = null;
     this.lastAuthorityServerStateMs = null;
     this.lastAuthorityServerSendMs = null;
+    this.lastAuthorityDiagnostics = emptyAuthorityLatencyDiagnostics();
     this.lastAuthorityFixedDtMs = DEFAULT_MOVEMENT_PROFILE.fixedDtMs;
     this.fixedStepAccumulatorMs = 0;
     this.lastTracedPosition.copy(start);
@@ -766,6 +881,39 @@ export class LocalPlayerController implements FrameSubscriber {
     this.syncRenderedPositionToAnchor();
     this.bus.emit("movement:reset", { start });
   }
+}
+
+function emptyAuthorityLatencyDiagnostics(): AuthorityLatencyDiagnostics {
+  return {
+    ackSeq: null,
+    authTick: null,
+    inputSeqGap: null,
+    lastAckRttMs: null,
+    lastAckPendingInputs: null,
+    lastAckReplayedFrames: null,
+    serverStateAgeMs: null,
+    serverSendAgeMs: null,
+    sceneAckAgeMs: null,
+    browserApplyDelayMs: null,
+    gateSendDelayMs: null,
+    sceneInputAgeMs: null,
+    sceneQueueLen: null,
+    sceneReplayCount: null,
+    sceneDroppedInputCount: null,
+    sceneMailboxLen: null,
+    sceneTickDriftMs: null,
+  };
+}
+
+function finiteOptional(value: number | undefined): number | null {
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+function timestampAgeMs(estimatedServerNowMs: number, timestampMs: number | null): number | null {
+  if (timestampMs === null || !Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return null;
+  }
+  return Math.max(0, estimatedServerNowMs - timestampMs);
 }
 
 function clonePredictedMoveState(state: Readonly<PredictedMoveState>): PredictedMoveState {

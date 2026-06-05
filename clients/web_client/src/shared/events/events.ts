@@ -61,7 +61,7 @@ export type AppEvents = {
   // movement input.
   "transport:spawn": { position: Vector3; expectedSeq: number };
   "transport:mode-changed": { mode: string };
-  "transport:ack-delivered": { ack: MovementAck; sentAtMs: number };
+  "transport:ack-delivered": { ack: MovementAck; sentAtMs: number; receivedAtMs?: number };
   "transport:snapshot-delivered": { snapshot: RemoteMoveSnapshot };
   "transport:entity-entered": { cid: number; position: Vector3 };
   "transport:entity-left": { cid: number };
@@ -103,10 +103,23 @@ export type AppEvents = {
     pendingInputs: number;
     replayedFrames: number;
     rttMs: number;
+    lastAckRttMs: number;
+    inputSeqGap: number;
     movementMode: string;
     velocity: Vector3;
     serverFixedDtMs: number;
     fixedDtDriftMs: number;
+    serverStateAgeMs: number | null;
+    serverSendAgeMs: number | null;
+    sceneAckAgeMs: number | null;
+    browserApplyDelayMs: number;
+    gateSendDelayMs: number | null;
+    sceneInputAgeMs: number | null;
+    sceneQueueLen: number | null;
+    sceneReplayCount: number | null;
+    sceneDroppedInputCount: number | null;
+    sceneMailboxLen: number | null;
+    sceneTickDriftMs: number | null;
   };
   "movement:remote-snapshot-ingested": {
     cid: number;

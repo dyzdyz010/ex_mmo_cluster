@@ -4,6 +4,7 @@ import type { MoveInputFrame, MovementAck, RemoteMoveSnapshot } from "./types";
 export interface PendingMovementAck {
   ack: MovementAck;
   sentAtMs: number;
+  receivedAtMs?: number;
 }
 
 export interface SpawnInfo {

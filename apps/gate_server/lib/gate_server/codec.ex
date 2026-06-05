@@ -499,6 +499,23 @@ defmodule GateServer.Codec do
   # 末尾 fixed_dt_ms (B-M2) 与 ground_z (Phase A1-4) 保留。
   def encode(
         {:movement_ack, ack_seq, auth_tick, server_state_ms, server_send_ms, cid, {px, py, pz},
+         {vx, vy, vz}, {ax, ay, az}, movement_mode, correction_flags, fixed_dt_ms, ground_z,
+         diagnostics}
+      )
+      when is_integer(server_state_ms) and server_state_ms >= 0 and is_integer(server_send_ms) and
+             server_send_ms >= 0 and is_integer(fixed_dt_ms) and fixed_dt_ms > 0 and
+             is_float(ground_z) and is_map(diagnostics) do
+    {:ok,
+     <<@msg_movement_ack, @movement_wire_schema, ack_seq::32-big, auth_tick::32-big,
+       server_state_ms::64-big, server_send_ms::64-big, cid::64-big, px::float-64-big,
+       py::float-64-big, pz::float-64-big, vx::float-64-big, vy::float-64-big, vz::float-64-big,
+       ax::float-64-big, ay::float-64-big, az::float-64-big, encode_movement_mode(movement_mode),
+       correction_flags::32-big, fixed_dt_ms::16-big, ground_z::float-64-big,
+       encode_movement_ack_diagnostics(diagnostics)::binary>>}
+  end
+
+  def encode(
+        {:movement_ack, ack_seq, auth_tick, server_state_ms, server_send_ms, cid, {px, py, pz},
          {vx, vy, vz}, {ax, ay, az}, movement_mode, correction_flags, fixed_dt_ms, ground_z}
       )
       when is_integer(server_state_ms) and server_state_ms >= 0 and is_integer(server_send_ms) and
@@ -726,6 +743,39 @@ defmodule GateServer.Codec do
   def encode(_) do
     {:error, :unknown_message}
   end
+
+  defp encode_movement_ack_diagnostics(%{} = diagnostics) do
+    <<uint_field(diagnostics, :scene_ack_ms, 64)::64-big,
+      uint_field(diagnostics, :scene_input_age_ms, 32)::32-big,
+      uint_field(diagnostics, :scene_queue_len, 16)::16-big,
+      uint_field(diagnostics, :scene_replay_count, 16)::16-big,
+      uint_field(diagnostics, :scene_mailbox_len, 16)::16-big,
+      int32_field(diagnostics, :scene_tick_drift_ms)::signed-32-big,
+      uint_field(diagnostics, :gate_send_delay_ms, 32)::32-big,
+      uint_field(diagnostics, :scene_dropped_input_count, 16)::16-big>>
+  end
+
+  defp uint_field(map, key, bits) do
+    max_value = Bitwise.bsl(1, bits) - 1
+
+    map
+    |> Map.get(key, 0)
+    |> normalize_integer()
+    |> clamp_integer(0, max_value)
+  end
+
+  defp int32_field(map, key) do
+    map
+    |> Map.get(key, 0)
+    |> normalize_integer()
+    |> clamp_integer(-0x8000_0000, 0x7FFF_FFFF)
+  end
+
+  defp normalize_integer(value) when is_integer(value), do: value
+  defp normalize_integer(value) when is_float(value), do: round(value)
+  defp normalize_integer(_value), do: 0
+
+  defp clamp_integer(value, min, max), do: value |> Kernel.max(min) |> Kernel.min(max)
 
   @doc """
   Phase 4:decodes a 0x6C `ObjectStateDelta` payload **(without the opcode

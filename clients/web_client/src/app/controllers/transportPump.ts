@@ -62,10 +62,16 @@ export class TransportPump implements FrameSubscriber {
       });
     }
     for (const delivered of result.acknowledgements) {
-      this.bus.emit("transport:ack-delivered", {
+      const payload = {
         ack: delivered.ack,
         sentAtMs: delivered.sentAtMs,
-      });
+      };
+      this.bus.emit(
+        "transport:ack-delivered",
+        delivered.receivedAtMs === undefined
+          ? payload
+          : { ...payload, receivedAtMs: delivered.receivedAtMs },
+      );
     }
     for (const snapshot of result.remoteSnapshots) {
       this.bus.emit("transport:snapshot-delivered", { snapshot });

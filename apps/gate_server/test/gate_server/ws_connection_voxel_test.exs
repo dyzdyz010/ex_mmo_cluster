@@ -269,6 +269,68 @@ defmodule GateServer.WsConnectionVoxelTest do
     send(refresh_pid, :release_partition_refresh)
   end
 
+  test "movement ack fast sender writes while WS connection mailbox is suspended" do
+    parent = self()
+    {:ok, pid} = WsConnection.start_link(parent)
+
+    refresh_fun = blocking_partition_refresh_fun(parent)
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        status: :in_scene,
+        cid: 42,
+        chat_session_joined?: true,
+        chat_context: %{
+          logical_scene_id: 700,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_context: %{
+          logical_scene_id: 700,
+          region_id: 10,
+          chunk_coord: {0, 0, 0}
+        },
+        partition_refresh_fun: refresh_fun
+      })
+    end)
+
+    movement_ack_pid = :sys.get_state(pid).movement_ack_pid
+    outbound_pid = :sys.get_state(pid).outbound_pid
+    assert is_pid(movement_ack_pid)
+    assert is_pid(outbound_pid)
+    refute movement_ack_pid == pid
+    refute outbound_pid == pid
+
+    :ok = :sys.suspend(pid)
+
+    try do
+      GenServer.cast(
+        movement_ack_pid,
+        {:movement_ack,
+         ack(%{
+           cid: 42,
+           ack_seq: 516,
+           auth_tick: 3_101,
+           position: {1_700.0, 50.0, 0.0}
+         })}
+      )
+
+      assert_receive {:gate_ws_send, iodata}, 500
+
+      assert <<0x8B, 2, 516::32-big, 3101::32-big, _server_state_ms::64-big,
+               _server_send_ms::64-big, 42::64-big, 1_700.0::float-64-big, 50.0::float-64-big,
+               _z::float-64-big, _::binary>> =
+               IO.iodata_to_binary(iodata)
+
+      refute_receive {:partition_refresh_started, _refresh_pid, ^pid, ^pid}, 50
+    after
+      :ok = :sys.resume(pid)
+    end
+
+    assert_receive {:partition_refresh_started, refresh_pid, ^pid, ^pid}, 500
+    send(refresh_pid, :release_partition_refresh)
+  end
+
   test "movement input dispatch does not block AOI downlinks" do
     scene_ref = blocking_movement_scene_ref(self())
     on_exit(fn -> send(scene_ref, :release_movement_call) end)
@@ -285,7 +347,8 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     WsConnection.receive_frame(pid, movement_input_frame(18))
 
-    assert_receive {:scene_movement_cast_received, 18}, 100
+    wait_until(fn -> SceneServer.PlayerCharacter.pending_movement_input_count(scene_ref) == 1 end)
+    refute_receive {:scene_movement_cast_received, 18}, 50
 
     GenServer.cast(pid, {:player_enter, 99, {10.0, 20.0, 30.0}})
 
@@ -528,7 +591,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     WsConnection.receive_frame(pid, movement_input_frame(19))
     :sys.resume(pid)
 
-    assert_receive {:"$gen_cast", {:movement_input, %{seq: 19}}}, 500
+    wait_until(fn -> SceneServer.PlayerCharacter.pending_movement_input_count(parent) == 1 end)
 
     assert_voxel_intent_result(
       request_id: 910,
@@ -1452,8 +1515,8 @@ defmodule GateServer.WsConnectionVoxelTest do
         500 -> flunk("expected movement input or voxel delivery message")
       end
 
-    assert {:"$gen_cast", {:movement_input, %{seq: 18}}} = first_message
-    assert_receive {:gate_ws_send, <<0x62, ^payload::binary>>}, 500
+    assert {:gate_ws_send, <<0x62, ^payload::binary>>} = first_message
+    assert SceneServer.PlayerCharacter.pending_movement_input_count(parent) == 1
   end
 
   test "websocket delivery invalidate envelopes forward and clear retained chunk ledgers" do

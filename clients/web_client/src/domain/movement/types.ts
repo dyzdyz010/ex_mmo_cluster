@@ -74,6 +74,17 @@ export interface MovementAck {
   // interval (ms) echoed in every ack. Used to detect MovementProfile
   // drift before it accumulates into prediction error.
   serverFixedDtMs: number;
+  // Optional latency diagnostics tail. Older 121-byte ACK frames omit these;
+  // newer frames append them so the client can split ACK age into Scene/Gate/
+  // browser-apply segments without changing movement authority semantics.
+  sceneAckMs?: number;
+  sceneInputAgeMs?: number;
+  sceneQueueLen?: number;
+  sceneReplayCount?: number;
+  sceneDroppedInputCount?: number;
+  sceneMailboxLen?: number;
+  sceneTickDriftMs?: number;
+  gateSendDelayMs?: number;
 }
 
 export interface RemoteMoveSnapshot {
@@ -145,6 +156,16 @@ export function cloneMovementAck(ack: MovementAck): MovementAck {
     serverFixedDtMs: ack.serverFixedDtMs,
     groundY: ack.groundY,
   };
+  if (ack.sceneAckMs !== undefined) cloned.sceneAckMs = ack.sceneAckMs;
+  if (ack.sceneInputAgeMs !== undefined) cloned.sceneInputAgeMs = ack.sceneInputAgeMs;
+  if (ack.sceneQueueLen !== undefined) cloned.sceneQueueLen = ack.sceneQueueLen;
+  if (ack.sceneReplayCount !== undefined) cloned.sceneReplayCount = ack.sceneReplayCount;
+  if (ack.sceneDroppedInputCount !== undefined) {
+    cloned.sceneDroppedInputCount = ack.sceneDroppedInputCount;
+  }
+  if (ack.sceneMailboxLen !== undefined) cloned.sceneMailboxLen = ack.sceneMailboxLen;
+  if (ack.sceneTickDriftMs !== undefined) cloned.sceneTickDriftMs = ack.sceneTickDriftMs;
+  if (ack.gateSendDelayMs !== undefined) cloned.gateSendDelayMs = ack.gateSendDelayMs;
   return cloned;
 }
 

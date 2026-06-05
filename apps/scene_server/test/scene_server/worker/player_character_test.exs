@@ -40,6 +40,23 @@ defmodule SceneServer.PlayerCharacterTest do
     end
   end
 
+  defmodule FakeAckConnection do
+    use GenServer
+
+    def start_link(notify_pid) do
+      GenServer.start_link(__MODULE__, notify_pid)
+    end
+
+    @impl true
+    def init(notify_pid), do: {:ok, notify_pid}
+
+    @impl true
+    def handle_cast(message, notify_pid) do
+      send(notify_pid, {:movement_ack_cast, message})
+      {:noreply, notify_pid}
+    end
+  end
+
   test "init migrates legacy dev seed center height to avatar center spawn" do
     cid = System.unique_integer([:positive])
 
@@ -89,7 +106,113 @@ defmodule SceneServer.PlayerCharacterTest do
     assert snapshot.server_state_ms == ack.server_state_ms
     assert snapshot.server_state_ms > 0
     assert snapshot.position == ack.position
+    assert is_integer(ack.scene_ack_ms)
+    assert ack.scene_ack_ms > 0
+    assert is_integer(ack.scene_input_age_ms)
+    assert ack.scene_input_age_ms >= 0
+    assert ack.scene_queue_len == 1
+    assert ack.scene_replay_count == 1
+    assert is_integer(ack.scene_mailbox_len)
+    assert ack.scene_mailbox_len >= 0
+    assert is_integer(ack.scene_tick_drift_ms)
     assert next_state.last_location == ack.position
+  end
+
+  test "buffered movement input drains on authority tick without actor mailbox casts" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    state = movement_state(aoi_ref, connection_pid)
+
+    frames =
+      for seq <- 1..12 do
+        %InputFrame{
+          seq: seq,
+          client_tick: seq,
+          dt_ms: 16,
+          input_dir: {1.0, 0.0},
+          speed_scale: 1.0,
+          movement_flags: 0
+        }
+      end
+
+    Enum.each(frames, fn frame ->
+      assert :accepted = SceneServer.PlayerCharacter.submit_movement_input(self(), frame)
+    end)
+
+    refute_receive {:movement_input, _frame}, 20
+
+    assert {:noreply, next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, state)
+
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{} = snapshot}}
+    assert_receive {:connection_cast, {:movement_ack, ack}}
+    assert snapshot.cid == 42
+    assert ack.ack_seq == 12
+    assert ack.scene_queue_len == 8
+    assert ack.scene_replay_count == 8
+    assert ack.scene_dropped_input_count == 4
+    assert next_state.last_ack_seq == 12
+  end
+
+  test "submit_movement_input rejects dead player pids without leaving buffered input" do
+    pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    ref = Process.monitor(pid)
+    send(pid, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 16,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:error, :invalid_player} =
+             SceneServer.PlayerCharacter.submit_movement_input(pid, frame)
+
+    assert SceneServer.PlayerCharacter.pending_movement_input_count(pid) == 0
+  end
+
+  test "movement ack can use a dedicated fast path without rerouting AOI snapshots" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+    {:ok, connection_pid} = start_supervised({FakeConnection, self()})
+    {:ok, movement_ack_pid} = start_supervised({FakeAckConnection, self()})
+
+    state =
+      movement_state(aoi_ref, connection_pid)
+      |> Map.put(:movement_ack_pid, movement_ack_pid)
+
+    frame = %InputFrame{
+      seq: 1,
+      client_tick: 1,
+      dt_ms: 100,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:reply, {:ok, :accepted}, latched_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert {:noreply, _next_state} =
+             SceneServer.PlayerCharacter.handle_info(:movement_tick, latched_state)
+
+    assert_receive {:aoi_cast, {:self_move, %RemoteSnapshot{}}}
+    assert_receive {:movement_ack_cast, {:movement_ack, ack}}
+    assert ack.ack_seq == 1
+    refute_receive {:connection_cast, {:movement_ack, _}}, 20
   end
 
   test "movement state time advances by the authoritative fixed tick, not send time" do
@@ -238,6 +361,10 @@ defmodule SceneServer.PlayerCharacterTest do
     assert snapshot.server_tick == 3
     assert ack.auth_tick == 3
     assert ack.ack_seq == 3
+    assert ack.scene_queue_len == 3
+    assert ack.scene_replay_count == 3
+    assert is_integer(ack.scene_input_age_ms)
+    assert is_integer(ack.scene_mailbox_len)
   end
 
   test "stale movement_input is rejected before touching AOI" do
@@ -265,6 +392,35 @@ defmodule SceneServer.PlayerCharacterTest do
              )
 
     assert returned_state.last_input_seq == 5
+    refute_receive {:aoi_cast, _message}, 50
+  end
+
+  test "far future movement_input is rejected before poisoning the expected seq" do
+    {:ok, aoi_ref} = start_supervised({FakeAoi, self()})
+
+    state =
+      movement_state(aoi_ref, self())
+      |> Map.put(:last_input_seq, 5)
+      |> Map.put(:last_client_tick, 5)
+
+    frame = %InputFrame{
+      seq: 100_000,
+      client_tick: 100_000,
+      dt_ms: 100,
+      input_dir: {1.0, 0.0},
+      speed_scale: 1.0,
+      movement_flags: 0
+    }
+
+    assert {:reply, {:error, :input_seq_too_far}, returned_state} =
+             SceneServer.PlayerCharacter.handle_call(
+               {:movement_input, frame},
+               {self(), make_ref()},
+               state
+             )
+
+    assert returned_state.last_input_seq == 5
+    assert returned_state.last_client_tick == 5
     refute_receive {:aoi_cast, _message}, 50
   end
 
@@ -834,6 +990,7 @@ defmodule SceneServer.PlayerCharacterTest do
       logical_scene_id: 1,
       aoi_ref: aoi_ref,
       connection_pid: connection_pid,
+      movement_ack_pid: connection_pid,
       character_data_ref: character_data_ref,
       physys_ref: physys_ref,
       spawn_location: location,

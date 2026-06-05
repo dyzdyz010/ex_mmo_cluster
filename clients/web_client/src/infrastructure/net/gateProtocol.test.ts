@@ -121,6 +121,51 @@ describe("gate movement protocol", () => {
     expect(message.ack.groundY).toBe(7.5);
   });
 
+  it("decodes optional movement ack latency diagnostics tail", () => {
+    // Base movement_ack is 121 bytes. The optional diagnostics tail is 28 bytes:
+    // scene_ack_ms:u64, scene_input_age_ms:u32, scene_queue_len:u16,
+    // scene_replay_count:u16, scene_mailbox_len:u16,
+    // scene_tick_drift_ms:i32, gate_send_delay_ms:u32,
+    // scene_dropped_input_count:u16.
+    const buffer = new ArrayBuffer(149);
+    const view = new DataView(buffer);
+    view.setUint8(0, 0x8b);
+    view.setUint8(1, MOVEMENT_WIRE_SCHEMA);
+    view.setUint32(2, 10, false);
+    view.setUint32(6, 11, false);
+    view.setBigUint64(10, 1_700_000_000_000n, false);
+    view.setBigUint64(18, 1_700_000_000_020n, false);
+    view.setBigInt64(26, 42n, false);
+    writeVec3(view, 34, 1, 2, 3);
+    writeVec3(view, 58, 4, 5, 6);
+    writeVec3(view, 82, 7, 8, 9);
+    view.setUint8(106, 0);
+    view.setUint32(107, CorrectionFlag.None, false);
+    view.setUint16(111, 16, false);
+    view.setFloat64(113, 7.5, false);
+    view.setBigUint64(121, 1_700_000_000_018n, false);
+    view.setUint32(129, 17, false);
+    view.setUint16(133, 4, false);
+    view.setUint16(135, 4, false);
+    view.setUint16(137, 2, false);
+    view.setInt32(139, -3, false);
+    view.setUint32(143, 5, false);
+    view.setUint16(147, 4, false);
+
+    const message = decodeServerMessage(buffer);
+
+    expect(message?.type).toBe("movement_ack");
+    if (message?.type !== "movement_ack") return;
+    expect(message.ack.sceneAckMs).toBe(1_700_000_000_018);
+    expect(message.ack.sceneInputAgeMs).toBe(17);
+    expect(message.ack.sceneQueueLen).toBe(4);
+    expect(message.ack.sceneReplayCount).toBe(4);
+    expect(message.ack.sceneDroppedInputCount).toBe(4);
+    expect(message.ack.sceneMailboxLen).toBe(2);
+    expect(message.ack.sceneTickDriftMs).toBe(-3);
+    expect(message.ack.gateSendDelayMs).toBe(5);
+  });
+
   it("decodes enter_scene_ok with expectedSeq", () => {
     // Pillar 1.1: packet_id(8) + ok(1) + vec3(24) + expected_seq(u32) +
     // protocol_version(u16). Total frame = 40 bytes.

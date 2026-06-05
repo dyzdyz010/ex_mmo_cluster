@@ -494,6 +494,45 @@ describe("server movement transport result errors", () => {
       expect.objectContaining({ request_id: 10, max_in_flight_seq: 11 }),
     );
   });
+
+  it("treats movement ACKs as cumulative confirmation for in-flight inputs", async () => {
+    const logger = { emit: vi.fn() } as unknown as ObserveLog;
+    const transport = new ServerMovementTransport(
+      logger,
+      "http://127.0.0.1:20000",
+      "ws://127.0.0.1:20000/ingame/ws",
+      "tester",
+    );
+    await flushAsync();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    socket?.message(resultFrame(1, true));
+    socket?.message(enterSceneOkFrame(2));
+
+    for (const seq of [10, 11, 12]) {
+      transport.sendInput(
+        {
+          seq,
+          clientTick: seq,
+          dtMs: 50,
+          inputDir: new Vector2(1, 0),
+          speedScale: 1,
+          movementFlags: 0,
+        },
+        1_000 + seq,
+      );
+    }
+
+    socket?.message(movementAckFrame(12));
+
+    expect(transport.debugSnapshot()).toMatchObject({
+      movement: expect.objectContaining({
+        pendingMoveCount: 0,
+        oldestUnackedSeq: null,
+        lastAckSeq: 12,
+      }),
+    });
+  });
 });
 
 describe("server movement transport time sync", () => {
@@ -836,6 +875,32 @@ function enterSceneOkFrame(requestId: number): ArrayBuffer {
   view.setFloat64(26, 0, false);
   view.setUint32(34, 1, false);
   view.setUint16(38, PROTOCOL_VERSION, false);
+  return buffer;
+}
+
+function movementAckFrame(ackSeq: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(121);
+  const view = new DataView(buffer);
+  view.setUint8(0, 0x8b);
+  view.setUint8(1, 2);
+  view.setUint32(2, ackSeq, false);
+  view.setUint32(6, ackSeq, false);
+  view.setBigUint64(10, 1_700_000_000_000n, false);
+  view.setBigUint64(18, 1_700_000_000_020n, false);
+  view.setBigInt64(26, 42n, false);
+  view.setFloat64(34, 0, false);
+  view.setFloat64(42, 0, false);
+  view.setFloat64(50, 0, false);
+  view.setFloat64(58, 0, false);
+  view.setFloat64(66, 0, false);
+  view.setFloat64(74, 0, false);
+  view.setFloat64(82, 0, false);
+  view.setFloat64(90, 0, false);
+  view.setFloat64(98, 0, false);
+  view.setUint8(106, 0);
+  view.setUint32(107, 0, false);
+  view.setUint16(111, 16, false);
+  view.setFloat64(113, 0, false);
   return buffer;
 }
 

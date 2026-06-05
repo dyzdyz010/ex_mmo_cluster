@@ -331,7 +331,10 @@ function createVoxelWorldAdapter(
     return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
       logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),
       defaultRadiusLInf,
-      initialSubscriptions: resolveInitialVoxelSubscriptions({ x: 0, y: 0, z: 0 }, defaultRadiusLInf),
+      initialSubscriptions: resolveInitialVoxelSubscriptions(
+        { x: 0, y: 0, z: 0 },
+        defaultRadiusLInf,
+      ),
       devSeed: import.meta.env.VITE_VOXEL_DEV_SEED === "1",
       primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK === "1",
     });
@@ -411,8 +414,8 @@ function isMovementAuthoritativeChunkPrewarmer(
   world: VoxelWorldAdapter,
 ): world is VoxelWorldAdapter & MovementAuthoritativeChunkPrewarmer {
   return (
-    typeof (world as Partial<MovementAuthoritativeChunkPrewarmer>)
-      .prewarmAuthoritativeChunks === "function"
+    typeof (world as Partial<MovementAuthoritativeChunkPrewarmer>).prewarmAuthoritativeChunks ===
+    "function"
   );
 }
 
@@ -480,6 +483,18 @@ function bridgeBusToLogger(
       rtt_ms: payload.rttMs.toFixed(1),
       server_fixed_dt_ms: payload.serverFixedDtMs,
       fixed_dt_drift_ms: payload.fixedDtDriftMs,
+      input_seq_gap: payload.inputSeqGap,
+      server_state_age_ms: payload.serverStateAgeMs ?? -1,
+      server_send_age_ms: payload.serverSendAgeMs ?? -1,
+      scene_ack_age_ms: payload.sceneAckAgeMs ?? -1,
+      browser_apply_delay_ms: payload.browserApplyDelayMs,
+      gate_send_delay_ms: payload.gateSendDelayMs ?? -1,
+      scene_input_age_ms: payload.sceneInputAgeMs ?? -1,
+      scene_queue_len: payload.sceneQueueLen ?? -1,
+      scene_replay_count: payload.sceneReplayCount ?? -1,
+      scene_dropped_input_count: payload.sceneDroppedInputCount ?? -1,
+      scene_mailbox_len: payload.sceneMailboxLen ?? -1,
+      scene_tick_drift_ms: payload.sceneTickDriftMs ?? -1,
     });
   });
   bus.on("movement:remote-snapshot-ingested", (payload) => {

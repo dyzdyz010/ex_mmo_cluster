@@ -489,7 +489,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "request-id-aware movement returns authoritative location after scene join", %{
-    client: client
+    client: client,
+    pid: pid
   } do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
@@ -507,6 +508,22 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok, <<0x84, 72::64-big, 0x00, _::binary>>} = :gen_tcp.recv(client, 0, 500)
 
     assert :ok = :gen_tcp.send(client, encode_movement_input(73, 100, {1.0, 0.0}))
+
+    scene_ref = :sys.get_state(pid).scene_ref
+    wait_until(fn -> SceneServer.PlayerCharacter.pending_movement_input_count(scene_ref) == 1 end)
+
+    GenServer.cast(
+      pid,
+      {:movement_ack,
+       ack(%{
+         cid: 42,
+         ack_seq: 73,
+         auth_tick: 100,
+         position: {8.0, 9.0, 10.0},
+         fixed_dt_ms: 100,
+         ground_z: 10.0
+       })}
+    )
 
     assert {:ok,
             <<0x8B, 2, 73::32-big, 100::32-big, _server_state_ms_ack1::64-big,
@@ -910,7 +927,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   test "attached udp peer can send movement uplink and receive movement_ack", %{
-    client: client
+    client: client,
+    pid: pid
   } do
     insert_account_and_character("tester", 42)
     FakeInterface.set(auth_server: node(), scene_server: node())
@@ -949,6 +967,22 @@ defmodule GateServer.TcpConnectionProtocolTest do
     movement = encode_movement_input(114, 200, {1.0, 0.0})
 
     assert :ok = :gen_udp.send(udp_client, {127, 0, 0, 1}, udp_port, movement)
+
+    scene_ref = :sys.get_state(pid).scene_ref
+    wait_until(fn -> SceneServer.PlayerCharacter.pending_movement_input_count(scene_ref) == 1 end)
+
+    GenServer.cast(
+      pid,
+      {:movement_ack,
+       ack(%{
+         cid: 42,
+         ack_seq: 114,
+         auth_tick: 200,
+         position: {17.0, 18.0, 19.0},
+         fixed_dt_ms: 100,
+         ground_z: 19.0
+       })}
+    )
 
     assert {:ok,
             {{127, 0, 0, 1}, _port,

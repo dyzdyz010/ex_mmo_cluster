@@ -33,13 +33,13 @@ export interface ReplayGovernanceStats {
 }
 
 export const DEFAULT_REPLAY_GOVERNANCE: ReplayGovernance = {
-  softPositionError: 2,
+  softPositionError: 8,
   hardSnapDistance: 256,
   maxReplayFrames: 32,
   maxPendingInputs: 64,
-  baseSoftPositionError: 2,
-  maxSoftPositionError: 8,
-  jitterFactor: 0.02,
+  baseSoftPositionError: 8,
+  maxSoftPositionError: 32,
+  jitterFactor: 0.06,
 };
 
 export function makeReplayGovernanceStats(): ReplayGovernanceStats {

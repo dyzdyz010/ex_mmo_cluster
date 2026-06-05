@@ -64,8 +64,10 @@ describe("player movement voxel collision", () => {
 
     expect(result.summary.status).toBe("authority_unavailable");
     expect(result.summary.occupiedCount).toBe(0);
-    expect(result.summary.blockedAxes).toEqual([]);
+    expect(result.summary.blockedAxes).toEqual(["x"]);
     expect(result.state.position.x).toBe(750);
+    expect(result.state.velocity.x).toBe(0);
+    expect(result.state.acceleration.x).toBe(0);
   });
 
   it("prewarms nearby authoritative chunks without treating them as required for this collision", () => {
@@ -93,7 +95,7 @@ describe("player movement voxel collision", () => {
     expect(requestedChunks).not.toContainEqual({ x: 0, y: 0, z: 0 });
   });
 
-  it("requests the missing strict authoritative chunks before failing open", () => {
+  it("requests the missing strict authoritative chunks while holding position", () => {
     const world = new WorldStore();
     const requestedChunks: FChunkCoord[] = [];
 
@@ -106,11 +108,13 @@ describe("player movement voxel collision", () => {
       requestAuthoritativeChunks: (chunks: readonly FChunkCoord[]) => void;
     });
     const previous = stateAt(new Vector3(750, 185, 750));
-    const proposed = stateAt(new Vector3(750, 185, 750));
+    const proposed = stateAt(new Vector3(780, 185, 750));
 
     const result = resolver(previous, proposed);
 
     expect(result.summary.status).toBe("authority_unavailable");
+    expect(result.summary.blockedAxes).toEqual(["x"]);
+    expect(result.state.position.x).toBe(750);
     expect(requestedChunks).toContainEqual({ x: 0, y: 0, z: 0 });
   });
 

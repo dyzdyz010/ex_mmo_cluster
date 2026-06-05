@@ -23,13 +23,14 @@ export function formatMicroTarget(target: { macro: FMacroCoord; micro: FMicroCoo
 }
 
 export function summarizeSeries(
-  values: number[],
+  values: Array<number | null | undefined>,
 ): { min: number; max: number; mean: number } | null {
-  if (values.length === 0) {
+  const finiteValues = values.filter((value): value is number => Number.isFinite(value));
+  if (finiteValues.length === 0) {
     return null;
   }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const min = Math.min(...finiteValues);
+  const max = Math.max(...finiteValues);
+  const mean = finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length;
   return { min, max, mean };
 }

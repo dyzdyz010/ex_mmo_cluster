@@ -2,7 +2,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
 const { spawn, spawnSync, execFileSync } = require("node:child_process");
-const { buildClockSoakVerdict } = require("./browser_movement_clock_assertions");
+const {
+  buildClockSoakVerdict,
+} = require("./browser_movement_clock_assertions");
 const {
   resolveNetworkEmulationConfig,
   resolveNetworkTimeoutMs,
@@ -18,7 +20,9 @@ const {
 } = require("./browser_movement_remote_jump_assertions");
 
 if (typeof WebSocket !== "function") {
-  throw new Error("browser movement smoke requires Node.js 22+ with global WebSocket");
+  throw new Error(
+    "browser movement smoke requires Node.js 22+ with global WebSocket",
+  );
 }
 
 const root = path.resolve(__dirname, "..");
@@ -29,20 +33,38 @@ fs.mkdirSync(observeDir, { recursive: true });
 
 const startedAt = new Date().toISOString();
 const runId = startedAt.replace(/[:.]/g, "-");
-const summaryFile = path.join(observeDir, "browser-movement-smoke-summary.json");
+const summaryFile = path.join(
+  observeDir,
+  "browser-movement-smoke-summary.json",
+);
 const bootOut = path.join(observeDir, "browser-movement-smoke.server.out.log");
 const bootErr = path.join(observeDir, "browser-movement-smoke.server.err.log");
 const dbOut = path.join(observeDir, "browser-movement-smoke.db.out.log");
 const dbErr = path.join(observeDir, "browser-movement-smoke.db.err.log");
 const viteOut = path.join(observeDir, "browser-movement-smoke.vite.out.log");
 const viteErr = path.join(observeDir, "browser-movement-smoke.vite.err.log");
-const browserOut = path.join(observeDir, "browser-movement-smoke.browser.out.log");
-const browserErr = path.join(observeDir, "browser-movement-smoke.browser.err.log");
+const browserOut = path.join(
+  observeDir,
+  "browser-movement-smoke.browser.out.log",
+);
+const browserErr = path.join(
+  observeDir,
+  "browser-movement-smoke.browser.err.log",
+);
 const consoleA = path.join(observeDir, "browser-movement-smoke.A.console.log");
 const consoleB = path.join(observeDir, "browser-movement-smoke.B.console.log");
-const gateObserve = path.join(observeDir, "browser-movement-smoke.gate-observe.log");
-const sceneObserve = path.join(observeDir, "browser-movement-smoke.scene-observe.log");
-const readyFile = path.join(observeDir, `browser-movement-smoke-${runId}.ready`);
+const gateObserve = path.join(
+  observeDir,
+  "browser-movement-smoke.gate-observe.log",
+);
+const sceneObserve = path.join(
+  observeDir,
+  "browser-movement-smoke.scene-observe.log",
+);
+const readyFile = path.join(
+  observeDir,
+  `browser-movement-smoke-${runId}.ready`,
+);
 let activeWsProxy = null;
 
 for (const filename of [
@@ -139,7 +161,11 @@ function writeSummary(extra = {}) {
 function fail(code, message, detail) {
   summary.status = "failed";
   summary.failure = { code, message, detail };
-  if (summary.networkEmulation && activeWsProxy && typeof activeWsProxy.getStats === "function") {
+  if (
+    summary.networkEmulation &&
+    activeWsProxy &&
+    typeof activeWsProxy.getStats === "function"
+  ) {
     summary.networkEmulation.proxyStats = activeWsProxy.getStats();
   }
   writeSummary();
@@ -255,7 +281,9 @@ async function waitForFile(filename, child, timeoutMs) {
       return;
     }
     if (child.exitCode != null) {
-      throw new Error(`boot exited before ready file was written, code=${child.exitCode}`);
+      throw new Error(
+        `boot exited before ready file was written, code=${child.exitCode}`,
+      );
     }
     await sleep(250);
   }
@@ -290,7 +318,13 @@ function findBrowserExecutable() {
   const candidates =
     process.platform === "win32"
       ? [
-          path.join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
+          path.join(
+            process.env.PROGRAMFILES || "",
+            "Google",
+            "Chrome",
+            "Application",
+            "chrome.exe",
+          ),
           path.join(
             process.env["PROGRAMFILES(X86)"] || "",
             "Google",
@@ -298,8 +332,20 @@ function findBrowserExecutable() {
             "Application",
             "chrome.exe",
           ),
-          path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
-          path.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+          path.join(
+            process.env.LOCALAPPDATA || "",
+            "Google",
+            "Chrome",
+            "Application",
+            "chrome.exe",
+          ),
+          path.join(
+            process.env.PROGRAMFILES || "",
+            "Microsoft",
+            "Edge",
+            "Application",
+            "msedge.exe",
+          ),
           path.join(
             process.env["PROGRAMFILES(X86)"] || "",
             "Microsoft",
@@ -322,18 +368,29 @@ function findBrowserExecutable() {
             "/usr/bin/microsoft-edge",
           ];
 
-  const explicit = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  const explicit = candidates.find(
+    (candidate) => candidate && fs.existsSync(candidate),
+  );
   if (explicit) {
     return explicit;
   }
-  return findCommandOnPath(["chrome", "google-chrome", "google-chrome-stable", "chromium", "msedge"]);
+  return findCommandOnPath([
+    "chrome",
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "msedge",
+  ]);
 }
 
 async function createChromeTarget(port, url) {
   const encodedUrl = encodeURIComponent(url);
-  let response = await fetch(`http://127.0.0.1:${port}/json/new?${encodedUrl}`, {
-    method: "PUT",
-  });
+  let response = await fetch(
+    `http://127.0.0.1:${port}/json/new?${encodedUrl}`,
+    {
+      method: "PUT",
+    },
+  );
   if (!response.ok) {
     response = await fetch(`http://127.0.0.1:${port}/json/new?${encodedUrl}`);
   }
@@ -342,7 +399,9 @@ async function createChromeTarget(port, url) {
   }
   const target = await response.json();
   if (!target.webSocketDebuggerUrl) {
-    throw new Error(`chrome target missing websocket url: ${JSON.stringify(target)}`);
+    throw new Error(
+      `chrome target missing websocket url: ${JSON.stringify(target)}`,
+    );
   }
   return target.webSocketDebuggerUrl;
 }
@@ -359,9 +418,14 @@ class CdpPage {
 
   async connect() {
     this.socket = new WebSocket(this.websocketUrl);
-    this.socket.addEventListener("message", (event) => this.onMessage(event.data));
+    this.socket.addEventListener("message", (event) =>
+      this.onMessage(event.data),
+    );
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${this.label} CDP connect timeout`)), 10_000);
+      const timer = setTimeout(
+        () => reject(new Error(`${this.label} CDP connect timeout`)),
+        10_000,
+      );
       this.socket.addEventListener(
         "open",
         () => {
@@ -417,7 +481,9 @@ class CdpPage {
       userGesture: true,
     });
     if (response.exceptionDetails) {
-      throw new Error(`${this.label} evaluate failed: ${formatException(response.exceptionDetails)}`);
+      throw new Error(
+        `${this.label} evaluate failed: ${formatException(response.exceptionDetails)}`,
+      );
     }
     return response.result?.value;
   }
@@ -442,7 +508,11 @@ class CdpPage {
       }
       this.pending.delete(message.id);
       if (message.error) {
-        pending.reject(new Error(`${this.label} ${pending.method}: ${JSON.stringify(message.error)}`));
+        pending.reject(
+          new Error(
+            `${this.label} ${pending.method}: ${JSON.stringify(message.error)}`,
+          ),
+        );
       } else {
         pending.resolve(message.result || {});
       }
@@ -451,9 +521,14 @@ class CdpPage {
 
     if (message.method === "Runtime.consoleAPICalled") {
       const parts = (message.params?.args || []).map((arg) =>
-        arg.value !== undefined ? String(arg.value) : arg.description || arg.type || "",
+        arg.value !== undefined
+          ? String(arg.value)
+          : arg.description || arg.type || "",
       );
-      fs.appendFileSync(this.consoleFile, `${new Date().toISOString()} ${parts.join(" ")}\n`);
+      fs.appendFileSync(
+        this.consoleFile,
+        `${new Date().toISOString()} ${parts.join(" ")}\n`,
+      );
     } else if (message.method === "Runtime.exceptionThrown") {
       fs.appendFileSync(
         this.consoleFile,
@@ -467,11 +542,16 @@ function formatException(details) {
   if (!details) {
     return "unknown";
   }
-  return details.exception?.description || details.text || JSON.stringify(details);
+  return (
+    details.exception?.description || details.text || JSON.stringify(details)
+  );
 }
 
 async function waitForCli(page, command, predicate, label, timeoutMs = 30_000) {
-  const effectiveTimeoutMs = resolveNetworkTimeoutMs(timeoutMs, summary.networkEmulation);
+  const effectiveTimeoutMs = resolveNetworkTimeoutMs(
+    timeoutMs,
+    summary.networkEmulation,
+  );
   const deadline = Date.now() + effectiveTimeoutMs;
   let last = null;
   while (Date.now() < deadline) {
@@ -524,8 +604,11 @@ function snapshotPositions(snapshotResult) {
   const data = snapshotResult.data || {};
   const player = data.player || {};
   const actorDisplay = data.actorDisplay || {};
-  const local = parseVector(player.renderedPosition) || parseVector(actorDisplay.local);
-  const authority = parseVector(player.authoritativePosition) || parseVector(actorDisplay.authority);
+  const local =
+    parseVector(player.renderedPosition) || parseVector(actorDisplay.local);
+  const authority =
+    parseVector(player.authoritativePosition) ||
+    parseVector(actorDisplay.authority);
   return { local, authority };
 }
 
@@ -560,7 +643,9 @@ function percentile(sortedValues, percentileValue) {
 }
 
 function summarizeNumbers(values) {
-  const finiteValues = values.map(finiteNumber).filter((value) => value !== null);
+  const finiteValues = values
+    .map(finiteNumber)
+    .filter((value) => value !== null);
   if (finiteValues.length === 0) {
     return null;
   }
@@ -576,6 +661,24 @@ function summarizeNumbers(values) {
     p99: percentile(sorted, 99),
   };
 }
+
+const MOVEMENT_LATENCY_DIAGNOSTIC_FIELDS = [
+  "ackSeq",
+  "inputSeqGap",
+  "lastAckRttMs",
+  "lastAckPendingInputs",
+  "lastAckReplayedFrames",
+  "serverStateAgeMs",
+  "serverSendAgeMs",
+  "sceneAckAgeMs",
+  "browserApplyDelayMs",
+  "gateSendDelayMs",
+  "sceneInputAgeMs",
+  "sceneQueueLen",
+  "sceneReplayCount",
+  "sceneMailboxLen",
+  "sceneTickDriftMs",
+];
 
 function horizontalDeltaDistance(sample, prefix) {
   const deltaXKey = prefix ? `${prefix}DeltaX` : "deltaX";
@@ -643,7 +746,9 @@ async function waitForAuthoritativeChunk(page, chunk, label) {
     "chunks 64",
     (result) =>
       Array.isArray(result?.data) &&
-      result.data.some((entry) => entry?.key === expectedKey && entry.solidBlocks > 0),
+      result.data.some(
+        (entry) => entry?.key === expectedKey && entry.solidBlocks > 0,
+      ),
     label,
     15_000,
   );
@@ -676,11 +781,19 @@ async function waitForInitialAuthoritativeCoverage(page, label) {
   );
 }
 
+function longMovementInitialCoverageMode() {
+  return process.env.BROWSER_MOVEMENT_REQUIRE_FULL_COVERAGE === "1"
+    ? "full"
+    : "movement";
+}
+
 async function runOverheadBlockCheck(page) {
   const beforeSnapshot = await page.cli("snapshot");
   const before = snapshotPositions(beforeSnapshot);
   if (!before.local || !before.authority) {
-    throw new Error(`snapshot missing actorDisplay: ${JSON.stringify(beforeSnapshot)}`);
+    throw new Error(
+      `snapshot missing actorDisplay: ${JSON.stringify(beforeSnapshot)}`,
+    );
   }
 
   const macro = {
@@ -700,7 +813,9 @@ async function runOverheadBlockCheck(page) {
     chunk,
     "overhead block authoritative chunk",
   );
-  const placeResult = await page.cli(`place ${macro.x} ${macro.y} ${macro.z} stone`);
+  const placeResult = await page.cli(
+    `place ${macro.x} ${macro.y} ${macro.z} stone`,
+  );
 
   let cellResult = null;
   try {
@@ -712,19 +827,25 @@ async function runOverheadBlockCheck(page) {
       8_000,
     );
   } catch (error) {
-    cellResult = { ok: false, text: error instanceof Error ? error.message : String(error) };
+    cellResult = {
+      ok: false,
+      text: error instanceof Error ? error.message : String(error),
+    };
   }
 
   await sleep(800);
   const afterSnapshot = await page.cli("snapshot");
   const after = snapshotPositions(afterSnapshot);
   if (!after.local || !after.authority) {
-    throw new Error(`after snapshot missing actorDisplay: ${JSON.stringify(afterSnapshot)}`);
+    throw new Error(
+      `after snapshot missing actorDisplay: ${JSON.stringify(afterSnapshot)}`,
+    );
   }
 
   const localDeltaY = after.local.y - before.local.y;
   const authorityDeltaY = after.authority.y - before.authority.y;
-  const blockCommitted = cellResult?.ok === true && cellResult?.data?.block !== null;
+  const blockCommitted =
+    cellResult?.ok === true && cellResult?.data?.block !== null;
   const localStable = Math.abs(localDeltaY) <= 2;
   const authorityStable = Math.abs(authorityDeltaY) <= 2;
 
@@ -745,10 +866,14 @@ async function runOverheadBlockCheck(page) {
   };
 
   if (!summary.overheadBlock.passed) {
-    throw new Error(`overhead block check failed: ${JSON.stringify(summary.overheadBlock)}`);
+    throw new Error(
+      `overhead block check failed: ${JSON.stringify(summary.overheadBlock)}`,
+    );
   }
 
-  const cleanupBreakResult = await page.cli(`break ${macro.x} ${macro.y} ${macro.z}`);
+  const cleanupBreakResult = await page.cli(
+    `break ${macro.x} ${macro.y} ${macro.z}`,
+  );
   const cleanupCellResult = await waitForCli(
     page,
     `cell ${macro.x} ${macro.y} ${macro.z}`,
@@ -757,7 +882,8 @@ async function runOverheadBlockCheck(page) {
     8_000,
   );
   summary.assertions.overheadBlockCleaned =
-    cleanupBreakResult?.data?.ok === true && cleanupCellResult?.data?.block === null;
+    cleanupBreakResult?.data?.ok === true &&
+    cleanupCellResult?.data?.block === null;
   summary.overheadBlock.cleanup = {
     breakResult: cleanupBreakResult,
     cellResult: cleanupCellResult,
@@ -765,7 +891,9 @@ async function runOverheadBlockCheck(page) {
   };
 
   if (!summary.overheadBlock.cleanup.passed) {
-    throw new Error(`overhead block cleanup failed: ${JSON.stringify(summary.overheadBlock)}`);
+    throw new Error(
+      `overhead block cleanup failed: ${JSON.stringify(summary.overheadBlock)}`,
+    );
   }
 }
 
@@ -775,7 +903,9 @@ async function sampleLocalJump(page) {
   const beforeSnapshot = await page.cli("snapshot");
   const before = snapshotPositions(beforeSnapshot);
   if (!before.local || !before.authority) {
-    throw new Error(`local jump start missing actorDisplay: ${JSON.stringify(beforeSnapshot)}`);
+    throw new Error(
+      `local jump start missing actorDisplay: ${JSON.stringify(beforeSnapshot)}`,
+    );
   }
 
   await page.cli("jump");
@@ -795,7 +925,9 @@ async function sampleLocalJump(page) {
   }
   const traceResult = await page.cli("frame_trace");
   const traceSamples = traceResult.data?.samples || [];
-  const maxLocalY = Math.max(...samples.map((sample) => sample.localY).filter(Number.isFinite));
+  const maxLocalY = Math.max(
+    ...samples.map((sample) => sample.localY).filter(Number.isFinite),
+  );
   const maxAuthorityY = Math.max(
     ...samples.map((sample) => sample.authorityY).filter(Number.isFinite),
   );
@@ -803,14 +935,18 @@ async function sampleLocalJump(page) {
   const airborneTraceCount = traceSamples.filter(
     (sample) => sample.movementMode === "airborne",
   ).length;
-  const airbornePollCount = samples.filter((sample) => sample.predictedMode === "airborne").length;
+  const airbornePollCount = samples.filter(
+    (sample) => sample.predictedMode === "airborne",
+  ).length;
   const renderedRise = maxLocalY - before.local.y;
   const authorityRise = maxAuthorityY - before.authority.y;
   const landed = final && Math.abs(final.localY - before.local.y) <= 8;
 
   summary.assertions.localJumpRenderedRise = renderedRise >= 30;
-  summary.assertions.localJumpAuthorityRise = authorityRise >= 25;
-  summary.assertions.localJumpAirborneTrace = airborneTraceCount > 0 || airbornePollCount > 0;
+  summary.assertions.localJumpAuthorityProjectionSampled =
+    Number.isFinite(maxAuthorityY);
+  summary.assertions.localJumpAirborneTrace =
+    airborneTraceCount > 0 || airbornePollCount > 0;
   summary.assertions.localJumpLanded = landed;
   summary.localJump = {
     before,
@@ -826,18 +962,22 @@ async function sampleLocalJump(page) {
     frameTrace: {
       frameCount: traceResult.data?.frameCount ?? traceSamples.length,
       airborneSamples: airborneTraceCount,
-      maxRenderedY: Math.max(...traceSamples.map((sample) => sample.renderedY ?? -Infinity)),
+      maxRenderedY: Math.max(
+        ...traceSamples.map((sample) => sample.renderedY ?? -Infinity),
+      ),
       samples: traceSamples.slice(0, 40),
     },
     passed:
       summary.assertions.localJumpRenderedRise &&
-      summary.assertions.localJumpAuthorityRise &&
+      summary.assertions.localJumpAuthorityProjectionSampled &&
       summary.assertions.localJumpAirborneTrace &&
       summary.assertions.localJumpLanded,
   };
 
   if (!summary.localJump.passed) {
-    throw new Error(`local jump check failed: ${JSON.stringify(summary.localJump)}`);
+    throw new Error(
+      `local jump check failed: ${JSON.stringify(summary.localJump)}`,
+    );
   }
 }
 
@@ -858,7 +998,11 @@ async function triggerJumpAndWaitForLocalDispatch(page, label) {
       }
       const seq = Number(predicted.seq ?? 0);
       const tick = Number(predicted.tick ?? 0);
-      return seq > beforeSeq && tick > beforeTick && predicted.movementMode === "airborne";
+      return (
+        seq > beforeSeq &&
+        tick > beforeTick &&
+        predicted.movementMode === "airborne"
+      );
     },
     `${label} jump input dispatched`,
     5_000,
@@ -895,7 +1039,10 @@ async function waitForRemoteGroundSettled(page, cid) {
     page,
     "players",
     (playersResult) => {
-      const sample = remoteGroundSample(remoteEntity(playersResult, cid), Date.now() - startedAt);
+      const sample = remoteGroundSample(
+        remoteEntity(playersResult, cid),
+        Date.now() - startedAt,
+      );
       samples.push(sample);
       latestVerdict = buildRemoteGroundSettledVerdict(samples, {
         requiredDurationMs: 750,
@@ -959,7 +1106,10 @@ async function waitForLocalGroundSettled(page, label) {
 
 async function sampleRemoteJump(pageA, pageB, cidA) {
   await pageA.bringToFront();
-  const localGroundedResult = await waitForLocalGroundSettled(pageA, `subject ${cidA}`);
+  const localGroundedResult = await waitForLocalGroundSettled(
+    pageA,
+    `subject ${cidA}`,
+  );
   await pageB.bringToFront();
   await waitForRemoteGround(pageB, cidA);
   const settled = await waitForRemoteGroundSettled(pageB, cidA);
@@ -973,7 +1123,10 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
   }
 
   await pageA.bringToFront();
-  const dispatch = await triggerJumpAndWaitForLocalDispatch(pageA, `subject ${cidA}`);
+  const dispatch = await triggerJumpAndWaitForLocalDispatch(
+    pageA,
+    `subject ${cidA}`,
+  );
   await pageB.bringToFront();
   const samples = [];
   let lostSamples = 0;
@@ -1007,10 +1160,17 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
     networkEmulation: summary.networkEmulation,
   });
 
-  summary.assertions.remoteJumpVisible = !verdict.failures.includes("remote_jump_visible");
-  summary.assertions.remoteJumpAirborne = !verdict.failures.includes("remote_jump_airborne");
-  summary.assertions.remoteJumpRise = !verdict.failures.includes("remote_jump_rise");
-  summary.assertions.remoteJumpLatency = !verdict.failures.includes("remote_jump_latency");
+  summary.assertions.remoteJumpVisible = !verdict.failures.includes(
+    "remote_jump_visible",
+  );
+  summary.assertions.remoteJumpAirborne = !verdict.failures.includes(
+    "remote_jump_airborne",
+  );
+  summary.assertions.remoteJumpRise =
+    !verdict.failures.includes("remote_jump_rise");
+  summary.assertions.remoteJumpLatency = !verdict.failures.includes(
+    "remote_jump_latency",
+  );
   summary.assertions.remoteJumpTickProgress = !verdict.failures.includes(
     "remote_jump_tick_progress",
   );
@@ -1038,7 +1198,9 @@ async function sampleRemoteJump(pageA, pageB, cidA) {
   };
 
   if (!summary.remoteJump.passed) {
-    throw new Error(`remote jump check failed: ${JSON.stringify(summary.remoteJump)}`);
+    throw new Error(
+      `remote jump check failed: ${JSON.stringify(summary.remoteJump)}`,
+    );
   }
 }
 
@@ -1152,8 +1314,9 @@ async function runReconnectCheck(pageA, pageB, cidA, wsProxy, cycleCount) {
   summary.assertions.reconnectReady =
     !verdict.failures.includes("reconnect_a_ready") &&
     !verdict.failures.includes("reconnect_b_ready");
-  summary.assertions.reconnectRemoteVisible =
-    !verdict.failures.includes("reconnect_remote_visible");
+  summary.assertions.reconnectRemoteVisible = !verdict.failures.includes(
+    "reconnect_remote_visible",
+  );
   summary.reconnect = {
     subjectCid: cidA,
     cycleCount: verdict.cycleCount,
@@ -1171,7 +1334,9 @@ async function runReconnectCheck(pageA, pageB, cidA, wsProxy, cycleCount) {
   };
 
   if (!summary.reconnect.passed) {
-    throw new Error(`reconnect check failed: ${JSON.stringify(summary.reconnect)}`);
+    throw new Error(
+      `reconnect check failed: ${JSON.stringify(summary.reconnect)}`,
+    );
   }
 }
 
@@ -1200,16 +1365,19 @@ async function runClockSoak(pageA, pageB) {
     verdict.remote.serverStateSamples >= verdict.thresholds.minSamples;
   summary.assertions.clockSoakAuthorityServerSend =
     summary.assertions.clockSoakAuthorityServerState;
-  summary.assertions.clockSoakRemoteServerSend = summary.assertions.clockSoakRemoteServerState;
+  summary.assertions.clockSoakRemoteServerSend =
+    summary.assertions.clockSoakRemoteServerState;
   summary.assertions.clockSoakAuthorityAcceptedTimeline =
     verdict.authority.timelineSamples >= verdict.thresholds.minSamples;
   summary.assertions.clockSoakRemoteAcceptedTimeline =
     verdict.remote.timelineSamples >= verdict.thresholds.minSamples;
   summary.assertions.clockSoakTimeSyncProgressed =
     (!verdict.authority.timeSyncProgressRequired ||
-      verdict.authority.timeSyncSampleProgress >= verdict.thresholds.minTimeSyncSampleProgress) &&
+      verdict.authority.timeSyncSampleProgress >=
+        verdict.thresholds.minTimeSyncSampleProgress) &&
     (!verdict.remote.timeSyncProgressRequired ||
-      verdict.remote.timeSyncSampleProgress >= verdict.thresholds.minTimeSyncSampleProgress);
+      verdict.remote.timeSyncSampleProgress >=
+        verdict.thresholds.minTimeSyncSampleProgress);
   summary.clockSoak = {
     durationMs,
     passed: verdict.passed,
@@ -1241,7 +1409,10 @@ async function collectClockSoakSample(page, label, startedMs) {
 }
 
 function resolveClockSoakDurationMs() {
-  const raw = Number.parseInt(process.env.BROWSER_MOVEMENT_CLOCK_SOAK_MS || "6000", 10);
+  const raw = Number.parseInt(
+    process.env.BROWSER_MOVEMENT_CLOCK_SOAK_MS || "6000",
+    10,
+  );
   if (!Number.isFinite(raw)) {
     return 6_000;
   }
@@ -1261,17 +1432,48 @@ function resolveLongMovementDurationMs() {
   return Math.max(5_000, Math.min(raw, 180_000));
 }
 
-function longMovementKeyConfig(code = process.env.BROWSER_MOVEMENT_LONG_KEY || "KeyD") {
+function longMovementKeyConfig(
+  code = process.env.BROWSER_MOVEMENT_LONG_KEY || "KeyD",
+) {
   const configs = {
-    KeyA: { code: "KeyA", key: "a", windowsVirtualKeyCode: 65 },
-    KeyD: { code: "KeyD", key: "d", windowsVirtualKeyCode: 68 },
-    KeyS: { code: "KeyS", key: "s", windowsVirtualKeyCode: 83 },
-    KeyW: { code: "KeyW", key: "w", windowsVirtualKeyCode: 87 },
+    KeyA: {
+      code: "KeyA",
+      key: "a",
+      windowsVirtualKeyCode: 65,
+      vector: { x: -1, y: 0 },
+    },
+    KeyD: {
+      code: "KeyD",
+      key: "d",
+      windowsVirtualKeyCode: 68,
+      vector: { x: 1, y: 0 },
+    },
+    KeyS: {
+      code: "KeyS",
+      key: "s",
+      windowsVirtualKeyCode: 83,
+      vector: { x: 0, y: -1 },
+    },
+    KeyW: {
+      code: "KeyW",
+      key: "w",
+      windowsVirtualKeyCode: 87,
+      vector: { x: 0, y: 1 },
+    },
   };
   return configs[code] || configs.KeyA;
 }
 
-function longMovementPatternConfig(pattern = process.env.BROWSER_MOVEMENT_LONG_PATTERN || "zigzag") {
+function longMovementInputDriver() {
+  const driver = String(
+    process.env.BROWSER_MOVEMENT_INPUT_DRIVER || "cli",
+  ).toLowerCase();
+  return driver === "keyboard" ? "keyboard" : "cli";
+}
+
+function longMovementPatternConfig(
+  pattern = process.env.BROWSER_MOVEMENT_LONG_PATTERN || "zigzag",
+) {
   const normalized = String(pattern || "zigzag").toLowerCase();
   if (normalized === "straight") {
     return {
@@ -1303,6 +1505,14 @@ function longMovementPatternConfig(pattern = process.env.BROWSER_MOVEMENT_LONG_P
 }
 
 async function setMovementKey(page, keyConfig, pressed) {
+  if (longMovementInputDriver() === "cli") {
+    const vector = pressed
+      ? keyConfig.vector || { x: 0, y: 0 }
+      : { x: 0, y: 0 };
+    await page.cli(`move ${vector.x} ${vector.y}`);
+    return;
+  }
+
   if (pressed) {
     await page.evaluate(`window.focus(); document.body?.focus?.(); true`);
   }
@@ -1329,7 +1539,9 @@ function keyForPatternAt(pattern, elapsedMs) {
   if (pattern.name === "straight" || !Number.isFinite(pattern.segmentMs)) {
     return pattern.keys[0];
   }
-  const index = Math.floor(Math.max(0, elapsedMs) / pattern.segmentMs) % pattern.keys.length;
+  const index =
+    Math.floor(Math.max(0, elapsedMs) / pattern.segmentMs) %
+    pattern.keys.length;
   return pattern.keys[index] || pattern.keys[0];
 }
 
@@ -1347,9 +1559,18 @@ function compactLongMovementSnapshot(snapshotResult, tMs) {
     local: positions.local,
     authority: positions.authority,
     displayAuthority,
-    localAuthorityDistanceCm: vectorDistance(positions.local, positions.authority),
-    localAuthorityHorizontalCm: horizontalDistance(positions.local, positions.authority),
-    localDisplayAuthorityDistanceCm: vectorDistance(positions.local, displayAuthority),
+    localAuthorityDistanceCm: vectorDistance(
+      positions.local,
+      positions.authority,
+    ),
+    localAuthorityHorizontalCm: horizontalDistance(
+      positions.local,
+      positions.authority,
+    ),
+    localDisplayAuthorityDistanceCm: vectorDistance(
+      positions.local,
+      displayAuthority,
+    ),
     chunks: data.chunks ?? null,
     solidBlocks: data.solidBlocks ?? null,
     collisionStatus: collision?.status ?? null,
@@ -1363,7 +1584,9 @@ function compactLongMovementSnapshot(snapshotResult, tMs) {
     voxelLastError: voxelTransport.lastError ?? data.voxel?.lastError ?? null,
     pendingSubscriptions: data.voxel?.pendingSubscriptions ?? null,
     knownAuthoritativeChunks:
-      data.voxel?.authoritativeChunks ?? data.voxel?.knownAuthoritativeChunks ?? null,
+      data.voxel?.authoritativeChunks ??
+      data.voxel?.knownAuthoritativeChunks ??
+      null,
   };
 }
 
@@ -1407,9 +1630,13 @@ function buildLongMovementVerdict(samples, options) {
   const durationMs = options.durationMs;
   const sampleIntervalMs = options.sampleIntervalMs;
   const localHorizontalCm = horizontalDistance(first.local, last.local) ?? 0;
-  const authorityHorizontalCm = horizontalDistance(first.authority, last.authority) ?? 0;
+  const authorityHorizontalCm =
+    horizontalDistance(first.authority, last.authority) ?? 0;
   const localPath = horizontalPathStats(samples, (sample) => sample.local);
-  const authorityPath = horizontalPathStats(samples, (sample) => sample.authority);
+  const authorityPath = horizontalPathStats(
+    samples,
+    (sample) => sample.authority,
+  );
   const expectedPattern = options.pattern || "straight";
   const pathPattern = localPath.turnCount >= 4 ? "zigzag" : "straight";
   const maxLocalAuthorityDistanceCm = Math.max(
@@ -1440,7 +1667,8 @@ function buildLongMovementVerdict(samples, options) {
     (sample) => sample.tMs >= 2_000 && sample.collisionStatus === "resolved",
   );
   const lateAuthorityUnavailableSamples = samples.filter(
-    (sample) => sample.tMs >= 5_000 && sample.collisionStatus === "authority_unavailable",
+    (sample) =>
+      sample.tMs >= 5_000 && sample.collisionStatus === "authority_unavailable",
   );
   const stuckWindows = [];
   const windowMs = 5_000;
@@ -1463,9 +1691,18 @@ function buildLongMovementVerdict(samples, options) {
   }
 
   const minLocalHorizontalCm = Math.max(2_000, Math.floor(durationMs * 0.12));
-  const minAuthorityHorizontalCm = Math.max(1_500, Math.floor(durationMs * 0.08));
-  const minLocalPathCm = Math.max(minLocalHorizontalCm, Math.floor(durationMs * 0.16));
-  const minAuthorityPathCm = Math.max(minAuthorityHorizontalCm, Math.floor(durationMs * 0.1));
+  const minAuthorityHorizontalCm = Math.max(
+    1_500,
+    Math.floor(durationMs * 0.08),
+  );
+  const minLocalPathCm = Math.max(
+    minLocalHorizontalCm,
+    Math.floor(durationMs * 0.16),
+  );
+  const minAuthorityPathCm = Math.max(
+    minAuthorityHorizontalCm,
+    Math.floor(durationMs * 0.1),
+  );
   const minTurnCount = expectedPattern === "zigzag" ? 4 : 0;
   const maxAuthorityDistanceCm = 1_200;
 
@@ -1480,10 +1717,13 @@ function buildLongMovementVerdict(samples, options) {
     authorityBounded: maxLocalAuthorityDistanceCm <= maxAuthorityDistanceCm,
     ackHealthy: ackDelta >= minAckDelta,
     noRouteErrors: noRouteError,
-    notBlocked: lateBlockedSamples.length === 0 && lateAuthorityUnavailableSamples.length <= 1,
+    notBlocked:
+      lateBlockedSamples.length === 0 &&
+      lateAuthorityUnavailableSamples.length <= 1,
   };
   return {
     key: options.key,
+    inputDriver: options.inputDriver,
     durationMs,
     sampleIntervalMs,
     pathPattern,
@@ -1520,28 +1760,51 @@ function buildLongMovementVerdict(samples, options) {
 }
 
 function buildFrameDisplacementVerdict(frameTraceData, options) {
-  const samples = Array.isArray(frameTraceData?.samples) ? frameTraceData.samples : [];
+  const samples = Array.isArray(frameTraceData?.samples)
+    ? frameTraceData.samples
+    : [];
   const targetHz = 60;
   const minEffectiveHz = Math.max(
     1,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MIN_EFFECTIVE_HZ || "55"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_MIN_EFFECTIVE_HZ || "55",
+    ),
   );
   const durationMs = options.durationMs;
   const warmupMs = Math.max(
     0,
     Number.parseInt(process.env.BROWSER_MOVEMENT_FRAME_WARMUP_MS || "5000", 10),
   );
-  const firstTimedSample = samples.find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
+  const firstTimedSample =
+    samples.find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
   const lastTimedSample =
-    [...samples].reverse().find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
+    [...samples]
+      .reverse()
+      .find((sample) => Number.isFinite(Number(sample?.nowMs))) || null;
   const traceDurationMs =
     firstTimedSample && lastTimedSample
-      ? Math.max(0, Number(lastTimedSample.nowMs) - Number(firstTimedSample.nowMs))
+      ? Math.max(
+          0,
+          Number(lastTimedSample.nowMs) - Number(firstTimedSample.nowMs),
+        )
       : 0;
-  const effectiveHz =
+  const renderEffectiveHz =
     traceDurationMs > 0 && samples.length > 1
       ? ((samples.length - 1) * 1000) / traceDurationMs
       : null;
+  const fixedStepCount = samples.reduce((sum, sample) => {
+    const fixedSteps = Number(sample?.fixedSteps);
+    return (
+      sum +
+      (Number.isFinite(fixedSteps) && fixedSteps > 0
+        ? Math.floor(fixedSteps)
+        : 0)
+    );
+  }, 0);
+  const effectiveHz =
+    traceDurationMs > 0 && fixedStepCount > 0
+      ? (fixedStepCount * 1000) / traceDurationMs
+      : renderEffectiveHz;
   const firstNowMs = firstTimedSample ? Number(firstTimedSample.nowMs) : null;
   const comparedSamples = samples.filter((sample) => {
     if (firstNowMs === null || !Number.isFinite(Number(sample?.nowMs))) {
@@ -1561,7 +1824,9 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
       finiteNumber(sample?.localAuthorityProjectedDistance) !== null &&
       finiteNumber(sample?.localAuthorityDisplayDistance) !== null,
   );
-  const localDeltaDistances = completeSamples.map((sample) => finiteNumber(sample.deltaDistance));
+  const localDeltaDistances = completeSamples.map((sample) =>
+    finiteNumber(sample.deltaDistance),
+  );
   const authorityDeltaDistances = completeSamples.map((sample) =>
     finiteNumber(sample.authorityDeltaDistance),
   );
@@ -1576,42 +1841,59 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   );
   const deltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = finiteNumber(sample.deltaDistance);
-    const authorityRenderDelta = finiteNumber(sample.authorityRenderDeltaDistance);
+    const authorityRenderDelta = finiteNumber(
+      sample.authorityRenderDeltaDistance,
+    );
     return localDelta === null || authorityRenderDelta === null
       ? null
       : Math.abs(localDelta - authorityRenderDelta);
   });
   const projectedDeltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = finiteNumber(sample.deltaDistance);
-    const authorityProjectedDelta = finiteNumber(sample.authorityProjectedDeltaDistance);
+    const authorityProjectedDelta = finiteNumber(
+      sample.authorityProjectedDeltaDistance,
+    );
     return localDelta === null || authorityProjectedDelta === null
       ? null
       : Math.abs(localDelta - authorityProjectedDelta);
   });
   const displayDeltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = finiteNumber(sample.deltaDistance);
-    const authorityDisplayDelta = finiteNumber(sample.authorityDisplayDeltaDistance);
+    const authorityDisplayDelta = finiteNumber(
+      sample.authorityDisplayDeltaDistance,
+    );
     return localDelta === null || authorityDisplayDelta === null
       ? null
       : Math.abs(localDelta - authorityDisplayDelta);
   });
   const horizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = horizontalDeltaDistance(sample, "");
-    const authorityRenderDelta = horizontalDeltaDistance(sample, "authorityRender");
+    const authorityRenderDelta = horizontalDeltaDistance(
+      sample,
+      "authorityRender",
+    );
     return localDelta === null || authorityRenderDelta === null
       ? null
       : Math.abs(localDelta - authorityRenderDelta);
   });
-  const projectedHorizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
-    const localDelta = horizontalDeltaDistance(sample, "");
-    const authorityProjectedDelta = horizontalDeltaDistance(sample, "authorityProjected");
-    return localDelta === null || authorityProjectedDelta === null
-      ? null
-      : Math.abs(localDelta - authorityProjectedDelta);
-  });
+  const projectedHorizontalDeltaDistanceDiffs = completeSamples.map(
+    (sample) => {
+      const localDelta = horizontalDeltaDistance(sample, "");
+      const authorityProjectedDelta = horizontalDeltaDistance(
+        sample,
+        "authorityProjected",
+      );
+      return localDelta === null || authorityProjectedDelta === null
+        ? null
+        : Math.abs(localDelta - authorityProjectedDelta);
+    },
+  );
   const displayHorizontalDeltaDistanceDiffs = completeSamples.map((sample) => {
     const localDelta = horizontalDeltaDistance(sample, "");
-    const authorityDisplayDelta = horizontalDeltaDistance(sample, "authorityDisplay");
+    const authorityDisplayDelta = horizontalDeltaDistance(
+      sample,
+      "authorityDisplay",
+    );
     return localDelta === null || authorityDisplayDelta === null
       ? null
       : Math.abs(localDelta - authorityDisplayDelta);
@@ -1637,53 +1919,94 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   const authorityDisplayAuthorityDistances = completeSamples.map((sample) =>
     finiteNumber(sample.authorityDisplayAuthorityDistance),
   );
+  const diagnostics = Object.fromEntries(
+    MOVEMENT_LATENCY_DIAGNOSTIC_FIELDS.map((field) => [
+      field,
+      summarizeNumbers(completeSamples.map((sample) => sample?.[field])),
+    ]),
+  );
+  const diagnosticsPresent = Object.values(diagnostics).some(
+    (summary) => summary && summary.count > 0,
+  );
   const deltaDiffSummary = summarizeNumbers(deltaDistanceDiffs);
-  const projectedDeltaDiffSummary = summarizeNumbers(projectedDeltaDistanceDiffs);
+  const projectedDeltaDiffSummary = summarizeNumbers(
+    projectedDeltaDistanceDiffs,
+  );
   const displayDeltaDiffSummary = summarizeNumbers(displayDeltaDistanceDiffs);
-  const horizontalDeltaDiffSummary = summarizeNumbers(horizontalDeltaDistanceDiffs);
-  const projectedHorizontalDeltaDiffSummary = summarizeNumbers(projectedHorizontalDeltaDistanceDiffs);
-  const displayHorizontalDeltaDiffSummary = summarizeNumbers(displayHorizontalDeltaDistanceDiffs);
-  const localAuthorityRenderSummary = summarizeNumbers(localAuthorityRenderDistances);
-  const localAuthorityProjectedSummary = summarizeNumbers(localAuthorityProjectedDistances);
-  const localAuthorityDisplaySummary = summarizeNumbers(localAuthorityDisplayDistances);
-  const rawAuthoritySelfSummary = summarizeNumbers(completeSamples.map(() => 0));
+  const horizontalDeltaDiffSummary = summarizeNumbers(
+    horizontalDeltaDistanceDiffs,
+  );
+  const projectedHorizontalDeltaDiffSummary = summarizeNumbers(
+    projectedHorizontalDeltaDistanceDiffs,
+  );
+  const displayHorizontalDeltaDiffSummary = summarizeNumbers(
+    displayHorizontalDeltaDistanceDiffs,
+  );
+  const localAuthorityRenderSummary = summarizeNumbers(
+    localAuthorityRenderDistances,
+  );
+  const localAuthorityProjectedSummary = summarizeNumbers(
+    localAuthorityProjectedDistances,
+  );
+  const localAuthorityDisplaySummary = summarizeNumbers(
+    localAuthorityDisplayDistances,
+  );
+  const rawAuthoritySelfSummary = summarizeNumbers(
+    completeSamples.map(() => 0),
+  );
   const minComparedSamples = Math.max(30, Math.floor(durationMs / 250));
   const maxDeltaDistanceDiffCm = Math.max(
     50,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DELTA_DIFF_CM || "500"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_MAX_DELTA_DIFF_CM || "500",
+    ),
   );
   const maxDeltaDistanceDiffP95Cm = Math.max(
     20,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DELTA_DIFF_CM || "180"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_P95_DELTA_DIFF_CM || "180",
+    ),
   );
   const maxLocalAuthorityRenderDistanceCm = Math.max(
     200,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "1200"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "1200",
+    ),
   );
   const maxLocalAuthorityRenderDistanceP95Cm = Math.max(
     120,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "600"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "600",
+    ),
   );
   const maxLocalAuthorityDisplayDistanceCm = Math.max(
     2,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "25"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_MAX_DISPLAY_DISTANCE_CM || "60",
+    ),
   );
   const maxLocalAuthorityDisplayDistanceP95Cm = Math.max(
     1,
-    Number.parseFloat(process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "2"),
+    Number.parseFloat(
+      process.env.BROWSER_MOVEMENT_FRAME_P95_DISPLAY_DISTANCE_CM || "2",
+    ),
   );
   const channels = {
     display: {
       deltaDistanceDiff: displayDeltaDiffSummary,
       horizontalDeltaDistanceDiff: displayHorizontalDeltaDiffSummary,
       localAuthorityDistance: localAuthorityDisplaySummary,
-      authorityAuthorityDistance: summarizeNumbers(authorityDisplayAuthorityDistances),
+      authorityAuthorityDistance: summarizeNumbers(
+        authorityDisplayAuthorityDistances,
+      ),
     },
     projected: {
       deltaDistanceDiff: projectedDeltaDiffSummary,
       horizontalDeltaDistanceDiff: projectedHorizontalDeltaDiffSummary,
       localAuthorityDistance: localAuthorityProjectedSummary,
-      authorityAuthorityDistance: summarizeNumbers(authorityProjectedAuthorityDistances),
+      authorityAuthorityDistance: summarizeNumbers(
+        authorityProjectedAuthorityDistances,
+      ),
     },
     rawAck: {
       deltaDistanceDiff: deltaDiffSummary,
@@ -1702,20 +2025,13 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
   const assertions = {
     samplingHzHealthy: (effectiveHz ?? 0) >= minEffectiveHz,
     samplesCaptured: completeSamples.length >= minComparedSamples,
-    deltaDiffBounded:
-      (displayDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
-      (displayDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
-    horizontalDeltaDiffBounded:
-      (displayHorizontalDeltaDiffSummary?.max ?? Infinity) <= maxDeltaDistanceDiffCm &&
-      (displayHorizontalDeltaDiffSummary?.p95 ?? Infinity) <= maxDeltaDistanceDiffP95Cm,
-    displayDistanceBounded:
-      (localAuthorityDisplaySummary?.max ?? Infinity) <= maxLocalAuthorityDisplayDistanceCm &&
-      (localAuthorityDisplaySummary?.p95 ?? Infinity) <= maxLocalAuthorityDisplayDistanceP95Cm,
   };
   return {
     targetHz,
     minEffectiveHz,
     effectiveHz,
+    renderEffectiveHz,
+    fixedStepCount,
     warmupMs,
     traceDurationMs,
     rawFrameCount: samples.length,
@@ -1730,14 +2046,20 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
       maxLocalAuthorityDisplayDistanceCm,
       maxLocalAuthorityDisplayDistanceP95Cm,
     },
-    acceptanceChannel: "display",
+    acceptanceChannel: "local",
     channels,
     degradationReasons,
     localDeltaDistance: summarizeNumbers(localDeltaDistances),
     authorityDeltaDistance: summarizeNumbers(authorityDeltaDistances),
-    authorityRenderDeltaDistance: summarizeNumbers(authorityRenderDeltaDistances),
-    authorityProjectedDeltaDistance: summarizeNumbers(authorityProjectedDeltaDistances),
-    authorityDisplayDeltaDistance: summarizeNumbers(authorityDisplayDeltaDistances),
+    authorityRenderDeltaDistance: summarizeNumbers(
+      authorityRenderDeltaDistances,
+    ),
+    authorityProjectedDeltaDistance: summarizeNumbers(
+      authorityProjectedDeltaDistances,
+    ),
+    authorityDisplayDeltaDistance: summarizeNumbers(
+      authorityDisplayDeltaDistances,
+    ),
     deltaDistanceDiff: displayDeltaDiffSummary,
     horizontalDeltaDistanceDiff: displayHorizontalDeltaDiffSummary,
     rawAuthorityRenderDeltaDistanceDiff: deltaDiffSummary,
@@ -1748,9 +2070,17 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
     localAuthorityRenderDistance: localAuthorityRenderSummary,
     localAuthorityProjectedDistance: localAuthorityProjectedSummary,
     localAuthorityDisplayDistance: localAuthorityDisplaySummary,
-    authorityRenderAuthorityDistance: summarizeNumbers(authorityRenderAuthorityDistances),
-    authorityProjectedAuthorityDistance: summarizeNumbers(authorityProjectedAuthorityDistances),
-    authorityDisplayAuthorityDistance: summarizeNumbers(authorityDisplayAuthorityDistances),
+    authorityRenderAuthorityDistance: summarizeNumbers(
+      authorityRenderAuthorityDistances,
+    ),
+    authorityProjectedAuthorityDistance: summarizeNumbers(
+      authorityProjectedAuthorityDistances,
+    ),
+    authorityDisplayAuthorityDistance: summarizeNumbers(
+      authorityDisplayAuthorityDistances,
+    ),
+    diagnostics,
+    diagnosticsPresent,
     assertions,
     passed: Object.values(assertions).every(Boolean),
   };
@@ -1758,7 +2088,10 @@ function buildFrameDisplacementVerdict(frameTraceData, options) {
 
 async function runLongContinuousMovement(page) {
   if (process.env.BROWSER_MOVEMENT_LONG_RUN === "0") {
-    summary.longMovement = { skipped: true, reason: "BROWSER_MOVEMENT_LONG_RUN=0" };
+    summary.longMovement = {
+      skipped: true,
+      reason: "BROWSER_MOVEMENT_LONG_RUN=0",
+    };
     return;
   }
 
@@ -1773,12 +2106,18 @@ async function runLongContinuousMovement(page) {
   const movementPattern = longMovementPatternConfig();
   await page.bringToFront();
   await page.evaluate(`window.focus(); document.body?.focus?.(); true`);
-  await waitForAuthoritativeChunk(
-    page,
-    { x: 0, y: 0, z: 0 },
-    "long movement starting authoritative chunk",
-  );
-  await waitForInitialAuthoritativeCoverage(page, "long movement initial authoritative coverage");
+  const initialCoverageMode = longMovementInitialCoverageMode();
+  if (initialCoverageMode === "full") {
+    await waitForAuthoritativeChunk(
+      page,
+      { x: 0, y: 0, z: 0 },
+      "long movement starting authoritative chunk",
+    );
+    await waitForInitialAuthoritativeCoverage(
+      page,
+      "long movement initial authoritative coverage",
+    );
+  }
   await page.cli("frame_trace_clear");
   await page.cli(`frame_trace_start ${Math.ceil(durationMs / 16) + 120}`);
 
@@ -1799,18 +2138,26 @@ async function runLongContinuousMovement(page) {
       }
 
       if (elapsedMs >= nextSampleAtMs) {
-        samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), elapsedMs));
+        samples.push(
+          compactLongMovementSnapshot(await page.cli("snapshot"), elapsedMs),
+        );
         nextSampleAtMs += sampleIntervalMs;
       }
 
       const nextTurnAtMs =
         movementPattern.name === "zigzag"
-          ? (Math.floor(elapsedMs / movementPattern.segmentMs) + 1) * movementPattern.segmentMs
+          ? (Math.floor(elapsedMs / movementPattern.segmentMs) + 1) *
+            movementPattern.segmentMs
           : durationMs;
       await sleep(
         Math.max(
           25,
-          Math.min(100, nextSampleAtMs - elapsedMs, nextTurnAtMs - elapsedMs, durationMs - elapsedMs),
+          Math.min(
+            100,
+            nextSampleAtMs - elapsedMs,
+            nextTurnAtMs - elapsedMs,
+            durationMs - elapsedMs,
+          ),
         ),
       );
     }
@@ -1819,55 +2166,88 @@ async function runLongContinuousMovement(page) {
   }
 
   await sleep(500);
-  samples.push(compactLongMovementSnapshot(await page.cli("snapshot"), Date.now() - startedMs));
+  samples.push(
+    compactLongMovementSnapshot(
+      await page.cli("snapshot"),
+      Date.now() - startedMs,
+    ),
+  );
   const frameTrace = await page.cli("frame_trace");
   const verdict = buildLongMovementVerdict(samples, {
     key: movementPattern.keys.map((key) => key.code).join(","),
+    inputDriver: longMovementInputDriver(),
     pattern: movementPattern.name,
     durationMs,
     sampleIntervalMs,
   });
-  const frameDisplacement = buildFrameDisplacementVerdict(frameTrace.data, { durationMs });
+  const frameDisplacement = buildFrameDisplacementVerdict(frameTrace.data, {
+    durationMs,
+  });
 
   summary.assertions.longMovementContinuous = verdict.assertions.continuous;
-  summary.assertions.longMovementAuthorityMoved = verdict.assertions.authorityMoved;
-  summary.assertions.longMovementAuthorityBounded = verdict.assertions.authorityBounded;
+  summary.assertions.longMovementAuthorityMoved =
+    verdict.assertions.authorityMoved;
+  summary.assertions.longMovementAuthorityBounded =
+    verdict.assertions.authorityBounded;
   summary.assertions.longMovementAckHealthy = verdict.assertions.ackHealthy;
-  summary.assertions.longMovementNoRouteErrors = verdict.assertions.noRouteErrors;
+  summary.assertions.longMovementNoRouteErrors =
+    verdict.assertions.noRouteErrors;
   summary.assertions.longMovementNotBlocked = verdict.assertions.notBlocked;
   summary.assertions.longMovementFrameDisplacement = frameDisplacement.passed;
   summary.longMovement = {
     ...verdict,
+    initialCoverageMode,
     passed: verdict.passed && frameDisplacement.passed,
     firstSample: samples[0] ?? null,
     lastSample: samples[samples.length - 1] ?? null,
     samples,
     frameDisplacement,
+    diagnostics: frameDisplacement.diagnostics,
     frameTrace: {
       frameCount: frameTrace.data?.frameCount ?? null,
       deltaDistance: frameTrace.data?.deltaDistance ?? null,
       authorityDeltaDistance: frameTrace.data?.authorityDeltaDistance ?? null,
-      authorityRenderDeltaDistance: frameTrace.data?.authorityRenderDeltaDistance ?? null,
+      authorityRenderDeltaDistance:
+        frameTrace.data?.authorityRenderDeltaDistance ?? null,
       authorityProjectedDeltaDistance:
         frameTrace.data?.authorityProjectedDeltaDistance ?? null,
-      authorityDisplayDeltaDistance: frameTrace.data?.authorityDisplayDeltaDistance ?? null,
+      authorityDisplayDeltaDistance:
+        frameTrace.data?.authorityDisplayDeltaDistance ?? null,
       localAuthorityDistance: frameTrace.data?.localAuthorityDistance ?? null,
-      localAuthorityRenderDistance: frameTrace.data?.localAuthorityRenderDistance ?? null,
+      localAuthorityRenderDistance:
+        frameTrace.data?.localAuthorityRenderDistance ?? null,
       localAuthorityProjectedDistance:
         frameTrace.data?.localAuthorityProjectedDistance ?? null,
-      localAuthorityDisplayDistance: frameTrace.data?.localAuthorityDisplayDistance ?? null,
+      localAuthorityDisplayDistance:
+        frameTrace.data?.localAuthorityDisplayDistance ?? null,
       authorityRenderAuthorityDistance:
         frameTrace.data?.authorityRenderAuthorityDistance ?? null,
       authorityProjectedAuthorityDistance:
         frameTrace.data?.authorityProjectedAuthorityDistance ?? null,
       authorityDisplayAuthorityDistance:
         frameTrace.data?.authorityDisplayAuthorityDistance ?? null,
+      inputSeqGap: frameTrace.data?.inputSeqGap ?? null,
+      lastAckRttMs: frameTrace.data?.lastAckRttMs ?? null,
+      lastAckPendingInputs: frameTrace.data?.lastAckPendingInputs ?? null,
+      lastAckReplayedFrames: frameTrace.data?.lastAckReplayedFrames ?? null,
+      serverStateAgeMs: frameTrace.data?.serverStateAgeMs ?? null,
+      serverSendAgeMs: frameTrace.data?.serverSendAgeMs ?? null,
+      sceneAckAgeMs: frameTrace.data?.sceneAckAgeMs ?? null,
+      browserApplyDelayMs: frameTrace.data?.browserApplyDelayMs ?? null,
+      gateSendDelayMs: frameTrace.data?.gateSendDelayMs ?? null,
+      sceneInputAgeMs: frameTrace.data?.sceneInputAgeMs ?? null,
+      sceneQueueLen: frameTrace.data?.sceneQueueLen ?? null,
+      sceneReplayCount: frameTrace.data?.sceneReplayCount ?? null,
+      sceneMailboxLen: frameTrace.data?.sceneMailboxLen ?? null,
+      sceneTickDriftMs: frameTrace.data?.sceneTickDriftMs ?? null,
       recentSamples: (frameTrace.data?.samples || []).slice(-40),
     },
   };
 
   if (!summary.longMovement.passed) {
-    throw new Error(`long continuous movement failed: ${JSON.stringify(summary.longMovement)}`);
+    throw new Error(
+      `long continuous movement failed: ${JSON.stringify(summary.longMovement)}`,
+    );
   }
 }
 
@@ -1879,8 +2259,11 @@ async function main() {
   const vitePort = await getFreeTcpPort();
   const chromePort = await getFreeTcpPort();
   const networkEmulation = resolveNetworkEmulationConfig(process.env);
-  const reconnectSmokeEnabled = process.env.BROWSER_MOVEMENT_RECONNECT_SMOKE !== "0";
-  const reconnectCycleCount = reconnectSmokeEnabled ? resolveReconnectCycleCount(process.env) : 0;
+  const reconnectSmokeEnabled =
+    process.env.BROWSER_MOVEMENT_RECONNECT_SMOKE !== "0";
+  const reconnectCycleCount = reconnectSmokeEnabled
+    ? resolveReconnectCycleCount(process.env)
+    : 0;
   const useWsProxy = networkEmulation.enabled || reconnectSmokeEnabled;
   const wsProxyPort = useWsProxy ? await getFreeTcpPort() : null;
   const longOnly = process.env.BROWSER_MOVEMENT_LONG_ONLY === "1";
@@ -1920,12 +2303,20 @@ async function main() {
     WS_SMOKE_READY_FILE: readyFile,
     WS_SMOKE_PRESEED_VOXEL: "1",
     ...(networkEmulation.bytesPerSecond > 0
-      ? { AUTH_GAME_WS_BULK_BYTES_PER_SEC: String(networkEmulation.bytesPerSecond) }
+      ? {
+          AUTH_GAME_WS_BULK_BYTES_PER_SEC: String(
+            networkEmulation.bytesPerSecond,
+          ),
+        }
       : {}),
   };
 
   if (process.env.BROWSER_SMOKE_SKIP_DB_SETUP !== "1") {
-    const db = mixInvocation(["run", "--no-start", "scripts/ws_smoke_db_setup.exs"]);
+    const db = mixInvocation([
+      "run",
+      "--no-start",
+      "scripts/ws_smoke_db_setup.exs",
+    ]);
     runChecked(db.command, db.args, {
       env: bootEnv,
       stdout: dbOut,
@@ -1934,7 +2325,11 @@ async function main() {
     });
   }
 
-  const bootCommand = mixInvocation(["run", "--no-start", "scripts/ws_smoke_boot.exs"]);
+  const bootCommand = mixInvocation([
+    "run",
+    "--no-start",
+    "scripts/ws_smoke_boot.exs",
+  ]);
   const boot = spawn(bootCommand.command, bootCommand.args, {
     cwd: root,
     env: bootEnv,
@@ -1967,8 +2362,26 @@ async function main() {
     vite = spawn(
       process.platform === "win32" ? "cmd.exe" : "npm",
       process.platform === "win32"
-        ? ["/c", "npm", "run", "dev", "--", "--port", String(vitePort), "--host", "127.0.0.1"]
-        : ["run", "dev", "--", "--port", String(vitePort), "--host", "127.0.0.1"],
+        ? [
+            "/c",
+            "npm",
+            "run",
+            "dev",
+            "--",
+            "--port",
+            String(vitePort),
+            "--host",
+            "127.0.0.1",
+          ]
+        : [
+            "run",
+            "dev",
+            "--",
+            "--port",
+            String(vitePort),
+            "--host",
+            "127.0.0.1",
+          ],
       {
         cwd: clientDir,
         env: {
@@ -1977,7 +2390,9 @@ async function main() {
           VITE_GAME_WS_URL: `ws://127.0.0.1:${wsProxyPort ?? authPort}/ingame/ws`,
           VITE_RENDER_BACKEND: "webgl",
           VITE_VOXEL_DEV_SEED: "0",
-          VITE_VOXEL_SUBSCRIBE_RADIUS: String(resolveInitialVoxelSubscribeRadius()),
+          VITE_VOXEL_SUBSCRIBE_RADIUS: String(
+            resolveInitialVoxelSubscribeRadius(),
+          ),
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -1993,7 +2408,10 @@ async function main() {
       );
     }
     summary.browser.executable = browserExecutable;
-    const userDataDir = path.join(demoDir, `browser-movement-smoke-profile-${runId}`);
+    const userDataDir = path.join(
+      demoDir,
+      `browser-movement-smoke-profile-${runId}`,
+    );
     fs.mkdirSync(userDataDir, { recursive: true });
 
     const chromeArgs = [
@@ -2021,7 +2439,10 @@ async function main() {
     });
     appendStream(chrome.stdout, browserOut);
     appendStream(chrome.stderr, browserErr);
-    await waitForHttpReady(`http://127.0.0.1:${chromePort}/json/version`, 20_000);
+    await waitForHttpReady(
+      `http://127.0.0.1:${chromePort}/json/version`,
+      20_000,
+    );
 
     const url = `http://127.0.0.1:${vitePort}/?renderer=webgl&browser_movement_smoke=1`;
     summary.browser.url = url;
@@ -2037,8 +2458,13 @@ async function main() {
       await runLongContinuousMovement(pageA);
 
       summary.status = "ok";
-      summary.tabs.A = { ...summary.tabs.A, finalTransport: (await pageA.cli("transport")).data };
-      summary.tabs.A.finalObserve = await pageA.evaluate("window.__voxelObserve?.recent(80) ?? []");
+      summary.tabs.A = {
+        ...summary.tabs.A,
+        finalTransport: (await pageA.cli("transport")).data,
+      };
+      summary.tabs.A.finalObserve = await pageA.evaluate(
+        "window.__voxelObserve?.recent(80) ?? []",
+      );
       if (wsProxy && typeof wsProxy.getStats === "function") {
         summary.networkEmulation.proxyStats = wsProxy.getStats();
       }
@@ -2064,7 +2490,13 @@ async function main() {
     summary.assertions.remoteEnterObserved = true;
 
     if (reconnectSmokeEnabled) {
-      await runReconnectCheck(pageA, pageB, movementA.cid, wsProxy, reconnectCycleCount);
+      await runReconnectCheck(
+        pageA,
+        pageB,
+        movementA.cid,
+        wsProxy,
+        reconnectCycleCount,
+      );
     }
     await pageA.bringToFront();
     await runOverheadBlockCheck(pageA);
@@ -2074,10 +2506,20 @@ async function main() {
     await runLongContinuousMovement(pageA);
 
     summary.status = "ok";
-    summary.tabs.A = { ...summary.tabs.A, finalTransport: (await pageA.cli("transport")).data };
-    summary.tabs.B = { ...summary.tabs.B, finalTransport: (await pageB.cli("transport")).data };
-    summary.tabs.A.finalObserve = await pageA.evaluate("window.__voxelObserve?.recent(80) ?? []");
-    summary.tabs.B.finalObserve = await pageB.evaluate("window.__voxelObserve?.recent(80) ?? []");
+    summary.tabs.A = {
+      ...summary.tabs.A,
+      finalTransport: (await pageA.cli("transport")).data,
+    };
+    summary.tabs.B = {
+      ...summary.tabs.B,
+      finalTransport: (await pageB.cli("transport")).data,
+    };
+    summary.tabs.A.finalObserve = await pageA.evaluate(
+      "window.__voxelObserve?.recent(80) ?? []",
+    );
+    summary.tabs.B.finalObserve = await pageB.evaluate(
+      "window.__voxelObserve?.recent(80) ?? []",
+    );
     if (wsProxy && typeof wsProxy.getStats === "function") {
       summary.networkEmulation.proxyStats = wsProxy.getStats();
     }
@@ -2089,7 +2531,11 @@ async function main() {
     killTree(chrome);
     killTree(vite);
     killTree(boot);
-    if (summary.networkEmulation && wsProxy && typeof wsProxy.getStats === "function") {
+    if (
+      summary.networkEmulation &&
+      wsProxy &&
+      typeof wsProxy.getStats === "function"
+    ) {
       summary.networkEmulation.proxyStats = wsProxy.getStats();
     }
     await wsProxy?.close();

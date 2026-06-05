@@ -39,7 +39,9 @@ describe("movement predictor jump", () => {
     let state = makeIdleState(new Vector3(0, 90, 0));
     state = step(state, frame(1, MovementFlag.Jump));
 
-    for (let seq = 2; seq <= 20; seq += 1) {
+    // jumpImpulse=900 / gravity=980 / dt=16ms ⇒ 升顶约 57 帧、落回原地约 115 帧。
+    // 原先只跑 20 帧(0.32s)远不足以让跳跃落地,与物理参数不一致;跑足够帧数。
+    for (let seq = 2; seq <= 140; seq += 1) {
       state = step(state, frame(seq, MovementFlag.None));
     }
 

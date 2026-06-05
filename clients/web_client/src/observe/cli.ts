@@ -71,6 +71,7 @@ function defaultHelpText(): string {
     "players",
     "aoi",
     "remote <cid>",
+    "move <strafe:-1..1> <forward:-1..1>",
     "jump",
     "chat <world|region|local> <text...>",
     "transport",

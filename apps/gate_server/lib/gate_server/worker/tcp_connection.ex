@@ -205,11 +205,23 @@ defmodule GateServer.TcpConnection do
 
     server_send_ms = :os.system_time(:millisecond)
     server_state_ms = movement_state_ms(ack)
+    diagnostics = movement_ack_diagnostics(ack, server_send_ms)
 
     message =
       {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms, ack.cid,
        ack.position, ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
-       ack.fixed_dt_ms, ack.ground_z}
+       ack.fixed_dt_ms, ack.ground_z, diagnostics}
+
+    GateServer.CliObserve.emit("movement_ack_push_diagnostics", fn ->
+      Map.merge(diagnostics, %{
+        connection_pid: self(),
+        ack_seq: ack.ack_seq,
+        auth_tick: ack.auth_tick,
+        transport: if(udp_peer, do: :udp, else: :tcp),
+        server_state_ms: server_state_ms,
+        server_send_ms: server_send_ms
+      })
+    end)
 
     if udp_peer do
       GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
@@ -488,9 +500,6 @@ defmodule GateServer.TcpConnection do
     end)
 
     case accept_movement_input(spid, frame) do
-      {:ok, ack} ->
-        GenServer.cast(self(), {:movement_ack, ack})
-
       :accepted ->
         GateServer.CliObserve.emit("tcp_movement_accepted", fn ->
           %{connection_pid: self(), seq: frame.seq, client_tick: frame.client_tick}
@@ -1426,12 +1435,10 @@ defmodule GateServer.TcpConnection do
   defp with_active_cid(auth_context, _cid), do: auth_context
 
   defp accept_movement_input(spid, frame) do
-    case safe_call(spid, {:movement_input, frame}) do
-      {:ok, {:ok, :accepted}} -> :accepted
-      {:ok, {:ok, ack}} -> {:ok, ack}
-      {:ok, {:error, reason}} -> {:error, reason}
+    case SceneServer.PlayerCharacter.submit_movement_input(spid, frame) do
+      :accepted -> :accepted
       {:error, reason} -> {:error, reason}
-      {:ok, _other} -> {:error, :scene_unavailable}
+      _other -> {:error, :scene_unavailable}
     end
   end
 
@@ -3098,6 +3105,36 @@ defmodule GateServer.TcpConnection do
   defp movement_state_ms(%{} = movement_payload) do
     case Map.get(movement_payload, :server_state_ms, 0) do
       value when is_integer(value) and value >= 0 -> value
+      _ -> 0
+    end
+  end
+
+  defp movement_ack_diagnostics(%{} = ack, server_send_ms) do
+    scene_ack_ms = diagnostic_integer(ack, :scene_ack_ms)
+
+    %{
+      scene_ack_ms: scene_ack_ms,
+      scene_input_age_ms: diagnostic_integer(ack, :scene_input_age_ms),
+      scene_queue_len: diagnostic_integer(ack, :scene_queue_len),
+      scene_replay_count: diagnostic_integer(ack, :scene_replay_count),
+      scene_dropped_input_count: diagnostic_integer(ack, :scene_dropped_input_count),
+      scene_mailbox_len: diagnostic_integer(ack, :scene_mailbox_len),
+      scene_tick_drift_ms: diagnostic_integer(ack, :scene_tick_drift_ms),
+      gate_send_delay_ms: gate_send_delay_ms(server_send_ms, scene_ack_ms)
+    }
+  end
+
+  defp gate_send_delay_ms(server_send_ms, scene_ack_ms)
+       when is_integer(server_send_ms) and is_integer(scene_ack_ms) and scene_ack_ms > 0 do
+    max(server_send_ms - scene_ack_ms, 0)
+  end
+
+  defp gate_send_delay_ms(_server_send_ms, _scene_ack_ms), do: 0
+
+  defp diagnostic_integer(map, key) do
+    case Map.get(map, key, 0) do
+      value when is_integer(value) -> value
+      value when is_float(value) -> round(value)
       _ -> 0
     end
   end

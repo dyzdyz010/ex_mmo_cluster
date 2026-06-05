@@ -53,3 +53,18 @@ context as voxel subscriptions.
 `PlayerManager` owns CID session replacement. A reconnect for the same CID
 stops the old `PlayerCharacter` before publishing the new PID, and stale
 terminate cleanup is ignored unless the PID still matches the current index.
+
+`PlayerCharacter` may receive a dedicated `movement_ack_pid` from Gate on
+session start. It still owns authoritative movement simulation and AOI snapshot
+publication; the extra pid only selects where local-player movement ACKs are
+cast so the browser can receive reconciliation data without waiting behind
+Gate's voxel/bulk downlink queue.
+
+Network-origin movement input must enter `PlayerCharacter` through
+`SceneServer.PlayerCharacter.submit_movement_input/2`, which writes to the
+shared movement input buffer. `PlayerCharacter` drains that buffer from
+`:movement_tick` and then runs the existing authoritative replay, collision,
+AOI snapshot, and ACK flow. Gate workers must not use per-frame `GenServer.call`
+or `GenServer.cast` into the player actor for normal movement input because that
+puts input traffic in the same FIFO mailbox as the fixed tick and can delay
+local authority ACKs under continuous 60Hz input.

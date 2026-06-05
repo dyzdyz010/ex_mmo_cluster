@@ -11,7 +11,10 @@ defmodule SceneServer.PlayerCharacter do
 
   Compared with `SceneServer.Npc.Actor`, this module also mediates network-origin
   input and time sync concerns because player actors are driven by a remote
-  client.
+  client. Network ingress writes movement frames into an ETS input buffer through
+  `submit_movement_input/2`; the actor drains that buffer only from its
+  authoritative fixed tick so high-frequency client input cannot starve the tick
+  in the GenServer mailbox.
   """
 
   use GenServer, restart: :temporary
@@ -28,6 +31,7 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.Combat.VoxelDamageRouter
 
   alias SceneServer.Movement.{
+    Ack,
     CorrectionFlags,
     Engine,
     InputFrame,
@@ -61,8 +65,13 @@ defmodule SceneServer.PlayerCharacter do
   # can still batch a few frames, so the queue allows a small jitter burst
   # without replaying an unbounded backlog.
   @max_input_queue 8
+  @max_buffered_movement_inputs 64
+  # Wide enough for browser idle coalescing and local-only fixed ticks; still
+  # rejects impossible far-future sequence poisoning.
+  @max_forward_input_seq_gap 4_096
   @idle_remote_snapshot_interval_ms 500
   @movement_collision_query_timeout_ms 50
+  @movement_input_buffer_table Module.concat(__MODULE__, MovementInputBuffer)
 
   @doc """
   Starts one authoritative player character process.
@@ -70,6 +79,50 @@ defmodule SceneServer.PlayerCharacter do
   def start_link(params, opts \\ []) do
     GenServer.start_link(__MODULE__, params, opts)
   end
+
+  @doc """
+  Buffers a network-origin movement frame outside the player actor mailbox.
+
+  The authoritative actor still validates and simulates the frame on its fixed
+  movement tick. This function is intentionally non-blocking so Gate workers can
+  ingest 60Hz input without turning the player actor mailbox into the input
+  queue.
+  """
+  def submit_movement_input(player_character, %InputFrame{} = frame)
+      when is_pid(player_character) do
+    cond do
+      node(player_character) != node() ->
+        :rpc.cast(node(player_character), __MODULE__, :submit_movement_input, [
+          player_character,
+          frame
+        ])
+
+        :accepted
+
+      Process.alive?(player_character) ->
+        table = ensure_movement_input_buffer_table()
+        received_at_ms = System.monotonic_time(:millisecond)
+        :ets.insert(table, {{player_character, frame.seq}, frame, received_at_ms})
+        prune_buffered_movement_inputs(player_character)
+        :accepted
+
+      true ->
+        {:error, :invalid_player}
+    end
+  catch
+    :error, reason -> {:error, reason}
+  end
+
+  def submit_movement_input(_player_character, %InputFrame{}), do: {:error, :invalid_player}
+
+  @doc false
+  def pending_movement_input_count(player_character) when is_pid(player_character) do
+    player_character
+    |> buffered_movement_input_entries()
+    |> length()
+  end
+
+  def pending_movement_input_count(_player_character), do: 0
 
   @doc """
   Updates the player authority with the latest server-authoritative partition window.
@@ -115,6 +168,7 @@ defmodule SceneServer.PlayerCharacter do
     # which is exactly the "remote cube doesn't follow you, then
     # appears to follow because you walked back" optical illusion.
     connection_monitor_ref = connection_monitor_ref(connection_pid)
+    movement_ack_pid = movement_ack_pid_from_profile(character_profile, connection_pid)
     character_profile = normalize_character_profile(cid, character_profile)
     movement_profile = Profile.default()
     movement_epoch_ms = :os.system_time(:millisecond)
@@ -129,6 +183,7 @@ defmodule SceneServer.PlayerCharacter do
        cid: cid,
        character_profile: character_profile,
        connection_pid: connection_pid,
+       movement_ack_pid: movement_ack_pid,
        connection_monitor_ref: connection_monitor_ref,
        last_location: character_profile.position,
        physys_ref: nil,
@@ -146,6 +201,7 @@ defmodule SceneServer.PlayerCharacter do
        last_ack_seq: 0,
        last_client_tick: 0,
        last_input_received_at_ms: System.monotonic_time(:millisecond),
+       movement_input_dropped_count: 0,
        status: :in_scene,
        old_timestamp: nil,
        net_delay: 0,
@@ -562,30 +618,30 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   @impl true
-  def handle_info(
-        :movement_tick,
-        %{
-          cid: cid,
-          connection_pid: connection_pid,
-          aoi_ref: _aoi_ref,
-          character_data_ref: cd_ref,
-          physys_ref: physys_ref,
-          combat_state: combat_state,
-          movement_state: movement_state,
-          movement_profile: movement_profile,
-          latched_input: latched_input,
-          input_queue: input_queue,
-          last_ack_seq: last_ack_seq,
-          last_input_received_at_ms: last_input_received_at_ms
-        } = state
-      ) do
+  def handle_info(:movement_tick, state) do
     state =
       case ensure_aoi_runtime(state) do
         {:ok, next_state} -> next_state
         {:error, _reason} -> state
       end
 
-    aoi_ref = state.aoi_ref
+    state = drain_buffered_movement_inputs(state)
+
+    %{
+      cid: cid,
+      connection_pid: connection_pid,
+      aoi_ref: aoi_ref,
+      character_data_ref: cd_ref,
+      physys_ref: physys_ref,
+      combat_state: combat_state,
+      movement_state: movement_state,
+      movement_profile: movement_profile,
+      latched_input: latched_input,
+      input_queue: input_queue,
+      last_ack_seq: last_ack_seq,
+      last_input_received_at_ms: last_input_received_at_ms
+    } = state
+
     movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
     now_ms = System.monotonic_time(:millisecond)
 
@@ -630,13 +686,25 @@ defmodule SceneServer.PlayerCharacter do
             )
 
           effective_input.seq > last_ack_seq ->
+            authoritative_state = stamp_movement_state(movement_state, state)
+
+            diagnostics =
+              movement_tick_diagnostics(
+                0,
+                0,
+                now_ms - last_input_received_at_ms,
+                authoritative_state,
+                0
+              )
+
             ack =
               Engine.build_ack(
                 cid,
-                stamp_movement_state(movement_state, state),
+                authoritative_state,
                 effective_input.seq,
                 movement_profile.fixed_dt_ms
               )
+              |> enrich_ack_diagnostics(diagnostics)
 
             SceneServer.CliObserve.emit("player_movement_idle_ack", %{
               cid: cid,
@@ -646,17 +714,24 @@ defmodule SceneServer.PlayerCharacter do
               input_age_ms: now_ms - last_input_received_at_ms,
               authoritative_tick: movement_state.tick,
               authoritative_position: movement_state.position,
-              authoritative_velocity: movement_state.velocity
+              authoritative_velocity: movement_state.velocity,
+              scene_ack_ms: ack.scene_ack_ms,
+              scene_queue_len: ack.scene_queue_len,
+              scene_replay_count: ack.scene_replay_count,
+              scene_dropped_input_count: ack.scene_dropped_input_count,
+              scene_mailbox_len: ack.scene_mailbox_len,
+              scene_tick_drift_ms: ack.scene_tick_drift_ms
             })
 
-            GenServer.cast(connection_pid, {:movement_ack, ack})
+            GenServer.cast(movement_ack_pid(state, connection_pid), {:movement_ack, ack})
 
             {:noreply,
              %{
                state
                | last_ack_seq: effective_input.seq,
                  movement_timer: movement_timer,
-                 latched_input: effective_input
+                 latched_input: effective_input,
+                 movement_input_dropped_count: 0
              }}
 
           true ->
@@ -710,6 +785,8 @@ defmodule SceneServer.PlayerCharacter do
       effective_input,
       input_age_ms,
       :single,
+      1,
+      1,
       movement_profile,
       correction_flags,
       collision_summary
@@ -753,6 +830,8 @@ defmodule SceneServer.PlayerCharacter do
       last_frame,
       input_age_ms,
       {:replayed, length(renumbered)},
+      length(queued),
+      length(renumbered),
       movement_profile,
       correction_flags,
       summarize_replay_collision(collision_summaries)
@@ -771,6 +850,8 @@ defmodule SceneServer.PlayerCharacter do
          last_frame,
          input_age_ms,
          mode,
+         queue_len,
+         replay_count,
          movement_profile,
          correction_flags,
          collision_summary
@@ -799,6 +880,15 @@ defmodule SceneServer.PlayerCharacter do
           correction_flags,
           movement_profile.fixed_dt_ms
         )
+        |> enrich_ack_diagnostics(
+          movement_tick_diagnostics(
+            queue_len,
+            replay_count,
+            input_age_ms,
+            authoritative_state,
+            Map.get(state, :movement_input_dropped_count, 0)
+          )
+        )
 
       snapshot = RemoteSnapshot.from_state(cid, authoritative_state)
 
@@ -815,6 +905,13 @@ defmodule SceneServer.PlayerCharacter do
         authoritative_acceleration: authoritative_state.acceleration,
         movement_mode: authoritative_state.movement_mode,
         correction_flags: ack.correction_flags,
+        scene_ack_ms: ack.scene_ack_ms,
+        scene_input_age_ms: ack.scene_input_age_ms,
+        scene_queue_len: ack.scene_queue_len,
+        scene_replay_count: ack.scene_replay_count,
+        scene_dropped_input_count: ack.scene_dropped_input_count,
+        scene_mailbox_len: ack.scene_mailbox_len,
+        scene_tick_drift_ms: ack.scene_tick_drift_ms,
         collision_status: Map.get(collision_summary, :status),
         collision_blocked_axes: Map.get(collision_summary, :blocked_axes, []),
         collision_occupied_count: Map.get(collision_summary, :occupied_count, 0)
@@ -823,7 +920,7 @@ defmodule SceneServer.PlayerCharacter do
       emit_collision_observe(cid, state.logical_scene_id, authoritative_state, collision_summary)
 
       GenServer.cast(aoi_ref, {:self_move, snapshot})
-      GenServer.cast(connection_pid, {:movement_ack, ack})
+      GenServer.cast(movement_ack_pid(state, connection_pid), {:movement_ack, ack})
 
       last_snapshot_sent_at_ms = System.monotonic_time(:millisecond)
 
@@ -833,7 +930,8 @@ defmodule SceneServer.PlayerCharacter do
          | movement_state: authoritative_state,
            last_location: authoritative_location,
            last_ack_seq: ack_seq,
-           latched_input: clear_one_shot_flags(last_frame)
+           latched_input: clear_one_shot_flags(last_frame),
+           movement_input_dropped_count: 0
        }
        |> Map.put(:last_remote_snapshot_sent_at_ms, last_snapshot_sent_at_ms)}
     else
@@ -847,6 +945,55 @@ defmodule SceneServer.PlayerCharacter do
         {:noreply, state}
     end
   end
+
+  defp movement_tick_diagnostics(
+         queue_len,
+         replay_count,
+         input_age_ms,
+         authoritative_state,
+         dropped_input_count
+       ) do
+    scene_ack_ms = :os.system_time(:millisecond)
+
+    %{
+      scene_ack_ms: scene_ack_ms,
+      scene_input_age_ms: non_negative_int(input_age_ms),
+      scene_queue_len: non_negative_int(queue_len),
+      scene_replay_count: non_negative_int(replay_count),
+      scene_dropped_input_count: non_negative_int(dropped_input_count),
+      scene_mailbox_len: movement_mailbox_len(),
+      scene_tick_drift_ms:
+        scene_ack_ms - Map.get(authoritative_state, :server_state_ms, scene_ack_ms)
+    }
+  end
+
+  defp enrich_ack_diagnostics(%Ack{} = ack, diagnostics) when is_map(diagnostics) do
+    struct(ack, diagnostics)
+  end
+
+  defp movement_mailbox_len do
+    case Process.info(self(), :message_queue_len) do
+      {:message_queue_len, len} when is_integer(len) and len >= 0 -> len
+      _ -> 0
+    end
+  end
+
+  defp non_negative_int(value) when is_integer(value), do: max(value, 0)
+  defp non_negative_int(value) when is_float(value), do: value |> round() |> max(0)
+  defp non_negative_int(_value), do: 0
+
+  defp movement_ack_pid_from_profile(%{} = character_profile, fallback_pid) do
+    case Map.get(character_profile, :movement_ack_pid) ||
+           Map.get(character_profile, "movement_ack_pid") do
+      pid when is_pid(pid) -> pid
+      _ -> fallback_pid
+    end
+  end
+
+  defp movement_ack_pid_from_profile(_character_profile, fallback_pid), do: fallback_pid
+
+  defp movement_ack_pid(%{movement_ack_pid: pid}, _connection_pid) when is_pid(pid), do: pid
+  defp movement_ack_pid(_state, connection_pid), do: connection_pid
 
   defp replay_queued_inputs_with_collision(
          anchor_state,
@@ -1072,6 +1219,103 @@ defmodule SceneServer.PlayerCharacter do
   defp character_name(%{character_profile: %{"name" => name}}) when is_binary(name), do: name
   defp character_name(%{cid: cid}), do: "player-#{cid}"
 
+  defp drain_buffered_movement_inputs(state) do
+    entries = take_buffered_movement_inputs(self())
+    initial_queue_len = length(Map.get(state, :input_queue, []))
+
+    {next_state, accepted_count} =
+      Enum.reduce(entries, {state, 0}, fn {%InputFrame{} = frame, received_at_ms},
+                                          {next_state, accepted_count} ->
+        case accept_movement_input_frame(frame, next_state, received_at_ms) do
+          {:ok, accepted_state} ->
+            {accepted_state, accepted_count + 1}
+
+          {:error, reason, rejected_state} ->
+            emit_movement_input_error(rejected_state, reason)
+            {rejected_state, accepted_count}
+        end
+      end)
+
+    final_queue_len = length(Map.get(next_state, :input_queue, []))
+    dropped_count = max(initial_queue_len + accepted_count - final_queue_len, 0)
+
+    Map.put(next_state, :movement_input_dropped_count, dropped_count)
+  end
+
+  defp take_buffered_movement_inputs(player_character) when is_pid(player_character) do
+    entries = buffered_movement_input_entries(player_character)
+    table = ensure_movement_input_buffer_table()
+
+    Enum.each(entries, fn {seq, _frame, _received_at_ms} ->
+      :ets.delete(table, {player_character, seq})
+    end)
+
+    Enum.map(entries, fn {_seq, frame, received_at_ms} -> {frame, received_at_ms} end)
+  end
+
+  defp take_buffered_movement_inputs(_player_character), do: []
+
+  defp buffered_movement_input_entries(player_character) when is_pid(player_character) do
+    table = ensure_movement_input_buffer_table()
+
+    table
+    |> :ets.select([{{{player_character, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}])
+    |> Enum.sort_by(fn {seq, _frame, _received_at_ms} -> seq end)
+  end
+
+  defp buffered_movement_input_entries(_player_character), do: []
+
+  defp prune_buffered_movement_inputs(player_character) when is_pid(player_character) do
+    entries = buffered_movement_input_entries(player_character)
+    overflow_count = length(entries) - @max_buffered_movement_inputs
+
+    if overflow_count > 0 do
+      table = ensure_movement_input_buffer_table()
+
+      entries
+      |> Enum.take(overflow_count)
+      |> Enum.each(fn {seq, _frame, _received_at_ms} ->
+        :ets.delete(table, {player_character, seq})
+      end)
+    end
+  end
+
+  defp prune_buffered_movement_inputs(_player_character), do: :ok
+
+  defp clear_movement_input_buffer(player_character) when is_pid(player_character) do
+    player_character
+    |> buffered_movement_input_entries()
+    |> Enum.each(fn {seq, _frame, _received_at_ms} ->
+      :ets.delete(@movement_input_buffer_table, {player_character, seq})
+    end)
+  end
+
+  defp clear_movement_input_buffer(_player_character), do: :ok
+
+  defp ensure_movement_input_buffer_table do
+    case :ets.whereis(@movement_input_buffer_table) do
+      :undefined ->
+        :ets.new(@movement_input_buffer_table, [
+          :named_table,
+          :ordered_set,
+          :public,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+      table ->
+        table
+    end
+  catch
+    :error, :badarg -> @movement_input_buffer_table
+  end
+
+  defp accept_movement_input_frame(
+         %InputFrame{} = frame,
+         state
+       ),
+       do: accept_movement_input_frame(frame, state, System.monotonic_time(:millisecond))
+
   defp accept_movement_input_frame(
          %InputFrame{} = frame,
          %{
@@ -1082,7 +1326,8 @@ defmodule SceneServer.PlayerCharacter do
            last_input_seq: last_input_seq,
            last_client_tick: last_client_tick,
            last_input_received_at_ms: last_input_received_at_ms
-         } = state
+         } = state,
+         received_at_ms
        ) do
     with :ok <- ensure_alive(combat_state),
          {:ok, sanitized_frame, now_ms} <-
@@ -1091,7 +1336,8 @@ defmodule SceneServer.PlayerCharacter do
              movement_profile,
              last_input_seq,
              last_client_tick,
-             last_input_received_at_ms
+             last_input_received_at_ms,
+             received_at_ms
            ) do
       {:ok,
        %{
@@ -1138,6 +1384,8 @@ defmodule SceneServer.PlayerCharacter do
     if movement_timer != nil do
       Process.cancel_timer(movement_timer)
     end
+
+    clear_movement_input_buffer(self())
 
     if respawn_timer != nil do
       Process.cancel_timer(respawn_timer)
@@ -1626,7 +1874,8 @@ defmodule SceneServer.PlayerCharacter do
          %Profile{} = profile,
          last_input_seq,
          last_client_tick,
-         _last_input_received_at_ms
+         _last_input_received_at_ms,
+         received_at_ms
        ) do
     cond do
       frame.seq <= last_input_seq ->
@@ -1635,8 +1884,11 @@ defmodule SceneServer.PlayerCharacter do
       frame.client_tick <= last_client_tick ->
         {:error, :stale_client_tick}
 
+      frame.seq > last_input_seq + @max_forward_input_seq_gap ->
+        {:error, :input_seq_too_far}
+
       true ->
-        now_ms = System.monotonic_time(:millisecond)
+        now_ms = movement_input_received_at_ms(received_at_ms)
 
         sanitized_frame = %InputFrame{
           frame
@@ -1647,6 +1899,12 @@ defmodule SceneServer.PlayerCharacter do
         {:ok, sanitized_frame, now_ms}
     end
   end
+
+  defp movement_input_received_at_ms(received_at_ms)
+       when is_integer(received_at_ms) and received_at_ms > 0,
+       do: received_at_ms
+
+  defp movement_input_received_at_ms(_received_at_ms), do: System.monotonic_time(:millisecond)
 
   defp clamp_speed_scale(scale, _max_scale) when scale < 0.0, do: 0.0
   defp clamp_speed_scale(scale, max_scale) when scale > max_scale, do: max_scale

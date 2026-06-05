@@ -56,6 +56,47 @@ defmodule GateServer.CodecTest do
     end
   end
 
+  describe "encode movement ack diagnostics" do
+    test "encodes optional latency diagnostics tail without changing the base ack layout" do
+      {:ok, encoded} =
+        Codec.encode(
+          {:movement_ack, 10, 11, 1_700_000_000_000, 1_700_000_000_020, 42, {1.0, 2.0, 3.0},
+           {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}, :grounded, 0, 16, 7.5,
+           %{
+             scene_ack_ms: 1_700_000_000_018,
+             scene_input_age_ms: 17,
+             scene_queue_len: 4,
+             scene_replay_count: 4,
+             scene_mailbox_len: 2,
+             scene_tick_drift_ms: -3,
+             gate_send_delay_ms: 5,
+             scene_dropped_input_count: 4
+           }}
+        )
+
+      assert byte_size(encoded) == 149
+
+      assert <<
+               0x8B,
+               2,
+               10::32-big,
+               11::32-big,
+               1_700_000_000_000::64-big,
+               1_700_000_000_020::64-big,
+               42::64-big,
+               _base_payload::binary-size(87),
+               1_700_000_000_018::64-big,
+               17::32-big,
+               4::16-big,
+               4::16-big,
+               2::16-big,
+               -3::signed-32-big,
+               5::32-big,
+               4::16-big
+             >> = encoded
+    end
+  end
+
   describe "decode enter_scene" do
     test "decodes enter_scene with request_id" do
       msg = <<0x02, 77::64-big, 12345::64-big>>

@@ -72,15 +72,21 @@ defmodule GateServer.WsConnection do
   def init(owner_pid) when is_pid(owner_pid) do
     ensure_pg_scope_started()
     :pg.join(@scope, @topic, self())
+    outbound_pid = start_ws_outbound_writer(owner_pid, self())
+    movement_ack_pid = start_movement_ack_sender(outbound_pid, self())
 
     GateServer.CliObserve.emit("ws_connection_init", %{
       connection_pid: self(),
-      owner_pid: owner_pid
+      owner_pid: owner_pid,
+      outbound_pid: outbound_pid,
+      movement_ack_pid: movement_ack_pid
     })
 
     {:ok,
      %{
        owner_pid: owner_pid,
+       outbound_pid: outbound_pid,
+       movement_ack_pid: movement_ack_pid,
        cid: -1,
        agent: nil,
        auth_claims: nil,
@@ -211,15 +217,7 @@ defmodule GateServer.WsConnection do
   end
 
   def handle_cast({:movement_ack, ack}, state) do
-    server_send_ms = :os.system_time(:millisecond)
-    server_state_ms = movement_state_ms(ack)
-
-    send_encoded(
-      state,
-      {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms, ack.cid,
-       ack.position, ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
-       ack.fixed_dt_ms, ack.ground_z}
-    )
+    send_movement_ack_payload(state.outbound_pid, self(), ack, "ws_movement_ack_push", false)
 
     {:noreply, schedule_partition_refresh_after_movement_ack(state, ack)}
   end
@@ -412,8 +410,14 @@ defmodule GateServer.WsConnection do
 
   def handle_info({:partition_bootstrap_retry, _ack, _attempt}, state), do: {:noreply, state}
 
+  def handle_info({:movement_ack_fast_path_sent, ack}, state) do
+    {:noreply, schedule_partition_refresh_after_movement_ack(state, ack)}
+  end
+
   @impl true
   def terminate(_reason, state) do
+    cleanup_movement_ack_sender(Map.get(state, :movement_ack_pid))
+    cleanup_ws_outbound_writer(Map.get(state, :outbound_pid))
     cleanup_scene_monitor(state.scene_monitor_ref)
     cleanup_voxel_subscriptions(state)
     cleanup_chat_session(state)
@@ -450,7 +454,14 @@ defmodule GateServer.WsConnection do
     with :ok <- authorize_cid(claims, cid),
          {:ok, character} <- fetch_authorized_character(claims, cid),
          {:ok, scene_node} <- fetch_scene_node(),
-         {:ok, ppid} <- add_player(scene_node, cid, timestamp, build_character_profile(character)),
+         {:ok, ppid} <-
+           add_player(
+             scene_node,
+             cid,
+             timestamp,
+             build_character_profile(character),
+             state.movement_ack_pid
+           ),
          {:ok, {x, y, z}} <- fetch_player_location(ppid),
          {:ok, expected_seq} <- fetch_next_input_seq(ppid) do
       send_encoded(state, {:enter_scene_result, :ok, request_id, {x, y, z}, expected_seq})
@@ -1002,7 +1013,17 @@ defmodule GateServer.WsConnection do
     {:ok, iodata} = GateServer.Codec.encode(message)
     # This GenServer's concrete transport boundary is the WebSocket owner
     # handoff; lower-level network write acks are outside this process today.
-    send(state.owner_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
+    send_ws_payload(state, iodata)
+  end
+
+  defp send_ws_payload(%{outbound_pid: outbound_pid}, payload) when is_pid(outbound_pid) do
+    send(outbound_pid, {:gate_ws_send, IO.iodata_to_binary(payload)})
+    :ok
+  end
+
+  defp send_ws_payload(%{owner_pid: owner_pid}, payload) when is_pid(owner_pid) do
+    send(owner_pid, {:gate_ws_send, IO.iodata_to_binary(payload)})
+    :ok
   end
 
   defp verify_token(token) do
@@ -1092,7 +1113,9 @@ defmodule GateServer.WsConnection do
     })
   end
 
-  defp add_player(scene_node, cid, timestamp, character_profile) do
+  defp add_player(scene_node, cid, timestamp, character_profile, movement_ack_pid) do
+    character_profile = Map.put(character_profile, :movement_ack_pid, movement_ack_pid)
+
     case safe_call(
            {SceneServer.PlayerManager, scene_node},
            {:add_player, cid, self(), timestamp, character_profile},
@@ -1260,11 +1283,10 @@ defmodule GateServer.WsConnection do
 
   defp accept_movement_input(spid, frame) do
     try do
-      # Browser movement input must not block this connection's downlink path.
-      # The scene actor owns validation/simulation and sends movement_ack on its
-      # authoritative tick; this worker only forwards the input into that actor.
-      GenServer.cast(spid, {:movement_input, frame})
-      :accepted
+      # Browser movement input must not block this connection's downlink path or
+      # flood the player actor mailbox. The scene actor drains this buffer on
+      # its authoritative fixed tick and sends movement_ack from that tick.
+      SceneServer.PlayerCharacter.submit_movement_input(spid, frame)
     catch
       :exit, reason -> {:error, reason}
     end
@@ -3108,6 +3130,114 @@ defmodule GateServer.WsConnection do
     end
   end
 
+  defp start_ws_outbound_writer(owner_pid, connection_pid) do
+    spawn_link(fn -> ws_outbound_writer_loop(owner_pid, connection_pid) end)
+  end
+
+  defp ws_outbound_writer_loop(owner_pid, connection_pid) do
+    receive do
+      {:gate_ws_send, payload} ->
+        send(owner_pid, {:gate_ws_send, payload})
+        ws_outbound_writer_loop(owner_pid, connection_pid)
+
+      {:shutdown, from_pid} when from_pid == connection_pid ->
+        :ok
+
+      _other ->
+        ws_outbound_writer_loop(owner_pid, connection_pid)
+    end
+  end
+
+  defp cleanup_ws_outbound_writer(pid) when is_pid(pid), do: send(pid, {:shutdown, self()})
+  defp cleanup_ws_outbound_writer(_pid), do: :ok
+
+  defp start_movement_ack_sender(outbound_pid, connection_pid) do
+    spawn_link(fn -> movement_ack_sender_loop(outbound_pid, connection_pid) end)
+  end
+
+  defp movement_ack_sender_loop(outbound_pid, connection_pid) do
+    receive do
+      {:"$gen_cast", {:movement_ack, ack}} ->
+        send_movement_ack_payload(
+          outbound_pid,
+          connection_pid,
+          ack,
+          "ws_movement_ack_fast_push",
+          true
+        )
+
+        send(connection_pid, {:movement_ack_fast_path_sent, ack})
+        movement_ack_sender_loop(outbound_pid, connection_pid)
+
+      {:shutdown, from_pid} when from_pid == connection_pid ->
+        :ok
+
+      _other ->
+        movement_ack_sender_loop(outbound_pid, connection_pid)
+    end
+  end
+
+  defp cleanup_movement_ack_sender(pid) when is_pid(pid), do: send(pid, {:shutdown, self()})
+  defp cleanup_movement_ack_sender(_pid), do: :ok
+
+  defp send_movement_ack_payload(outbound_pid, connection_pid, ack, event_name, fast_path) do
+    server_send_ms = :os.system_time(:millisecond)
+    server_state_ms = movement_state_ms(ack)
+    diagnostics = movement_ack_diagnostics(ack, server_send_ms)
+
+    GateServer.CliObserve.emit(event_name, fn ->
+      Map.merge(diagnostics, %{
+        connection_pid: connection_pid,
+        sender_pid: self(),
+        fast_path: fast_path,
+        ack_seq: ack.ack_seq,
+        auth_tick: ack.auth_tick,
+        server_state_ms: server_state_ms,
+        server_send_ms: server_send_ms
+      })
+    end)
+
+    {:ok, iodata} =
+      GateServer.Codec.encode(
+        {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms, ack.cid,
+         ack.position, ack.velocity, ack.acceleration, ack.movement_mode, ack.correction_flags,
+         ack.fixed_dt_ms, ack.ground_z, diagnostics}
+      )
+
+    send(outbound_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
+    :ok
+  end
+
+  defp movement_ack_diagnostics(%{} = ack, server_send_ms) do
+    scene_ack_ms = diagnostic_integer(ack, :scene_ack_ms)
+
+    %{
+      scene_ack_ms: scene_ack_ms,
+      scene_input_age_ms: diagnostic_integer(ack, :scene_input_age_ms),
+      scene_queue_len: diagnostic_integer(ack, :scene_queue_len),
+      scene_replay_count: diagnostic_integer(ack, :scene_replay_count),
+      scene_dropped_input_count: diagnostic_integer(ack, :scene_dropped_input_count),
+      scene_mailbox_len: diagnostic_integer(ack, :scene_mailbox_len),
+      scene_tick_drift_ms: diagnostic_integer(ack, :scene_tick_drift_ms),
+      gate_send_delay_ms: gate_send_delay_ms(server_send_ms, scene_ack_ms)
+    }
+  end
+
+  defp gate_send_delay_ms(server_send_ms, scene_ack_ms)
+       when is_integer(server_send_ms) and is_integer(scene_ack_ms) and scene_ack_ms > 0 do
+    max(server_send_ms - scene_ack_ms, 0)
+  end
+
+  defp gate_send_delay_ms(_server_send_ms, _scene_ack_ms), do: 0
+
+  defp diagnostic_integer(map, key) do
+    case Map.get(map, key, 0) do
+      value when is_integer(value) -> value
+      value when is_float(value) -> round(value)
+      _ -> 0
+    end
+  end
+
   defp voxel_delivery_debug(scheduler) do
     summary = DeliveryScheduler.summary(scheduler)
 
@@ -3452,7 +3582,7 @@ defmodule GateServer.WsConnection do
   end
 
   defp send_live_voxel_action(state, %{frame_kind: :field_region_snapshot, payload: payload}) do
-    send(state.owner_pid, {:gate_ws_send, payload})
+    send_ws_payload(state, payload)
 
     GateServer.CliObserve.emit("ws_voxel_field_region_snapshot_forwarded", %{
       connection_pid: self(),
@@ -3468,7 +3598,7 @@ defmodule GateServer.WsConnection do
          state,
          %{frame_kind: :field_region_destroyed, payload: payload} = action
        ) do
-    send(state.owner_pid, {:gate_ws_send, payload})
+    send_ws_payload(state, payload)
 
     GateServer.CliObserve.emit("ws_voxel_field_region_destroyed_forwarded", %{
       connection_pid: self(),

@@ -265,9 +265,8 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
       //   [111] fixed_dt_ms u16 (2)
       //   [113] ground_z f64 (8)
       // Total: 121 bytes
-      return {
-        type: "movement_ack",
-        ack: {
+      {
+        const ack: MovementAck = {
           ackSeq: view.getUint32(2, false),
           authTick: view.getUint32(6, false),
           serverStateMs: Number(view.getBigUint64(10, false)),
@@ -282,8 +281,24 @@ export function decodeServerMessage(payload: ArrayBuffer): ServerGateMessage | n
           // airborne arc). Server maps z → browser y in readServerVec3AsBrowserVec3,
           // so we mirror the same convention here for groundY.
           groundY: view.getFloat64(113, false),
-        },
-      };
+        };
+        if (hasBytes(view, 147)) {
+          ack.sceneAckMs = Number(view.getBigUint64(121, false));
+          ack.sceneInputAgeMs = view.getUint32(129, false);
+          ack.sceneQueueLen = view.getUint16(133, false);
+          ack.sceneReplayCount = view.getUint16(135, false);
+          ack.sceneMailboxLen = view.getUint16(137, false);
+          ack.sceneTickDriftMs = view.getInt32(139, false);
+          ack.gateSendDelayMs = view.getUint32(143, false);
+        }
+        if (hasBytes(view, 149)) {
+          ack.sceneDroppedInputCount = view.getUint16(147, false);
+        }
+        return {
+          type: "movement_ack",
+          ack,
+        };
+      }
     case 0x83:
       if (!hasBytes(view, 103)) return null;
       if (view.getUint8(1) !== MOVEMENT_WIRE_SCHEMA) return null;

@@ -16,7 +16,9 @@
 - `tcp_connection.ex`
   - 每个 TCP 客户端的协议和会话进程
 - `ws_connection.ex`
-  - 每个浏览器 WebSocket 客户端的协议和会话进程
+  - 每个浏览器 WebSocket 客户端的协议和会话进程；为本地移动 ACK 启动一个
+    linked 高优先级发送进程，避免 ACK 被体素快照/批量下行消息堵在同一个
+    GenServer 邮箱后面
 - `udp_acceptor.ex`
   - UDP 快速通道的共享收发进程
 - `fast_lane_registry.ex`
@@ -35,3 +37,15 @@ Scene 区块订阅者。
 体素冲击意图也要先校验连接角色和服务端技能表，再经过 World 路由，最后由 Scene 带租约
 执行写入并通过 DataService 持久化。这样 Gate 可以被观察为路由器和协议适配器，而不会
 变成体素权威。
+
+浏览器本地玩家移动 ACK 使用同一条 WebSocket 传输和同一个 `0x8B` 二进制协议，
+但发送路径从 `ws_connection.ex` 的普通会话邮箱拆到 linked ACK sender。ACK sender
+只负责编码并把二进制帧交给 WebSocket owner；分区刷新、聊天区域更新和体素订阅维护仍
+回到 `WsConnection` 会话进程异步执行。这样 ACK 不被 bulk/voxel 下行阻塞，同时 Gate
+仍保持协议适配和订阅协调职责，不拥有移动权威状态。
+
+移动输入上行也必须保持同样边界。`tcp_connection.ex`、`ws_connection.ex` 和 UDP
+快速通道只能调用 `SceneServer.PlayerCharacter.submit_movement_input/2` 把输入写入
+Scene 的移动输入缓冲；不能对 player actor 做每帧同步 call 或 cast。权威 tick、输入
+重放、碰撞、AOI 快照和 `movement_ack` 仍全部由 Scene 的 `PlayerCharacter` 执行。
+这个边界保证本地 60Hz 连续输入不会把 actor 邮箱变成输入队列，从而拖慢服务端 ACK。

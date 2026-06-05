@@ -202,6 +202,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdRemote(command, args);
       case "chat":
         return this.cmdChat(command, args);
+      case "move":
+        return this.cmdMove(command, args);
       case "jump":
         this.deps.localPlayer.requestJump("cli");
         return this.ok(command, "jump queued", this.playerData());
@@ -241,6 +243,25 @@ export class DevToolsCli implements CliCommandHandler {
     const limit = Number.parseInt(args[0] ?? "12", 10);
     const chunks = this.deps.world.store.chunkSummaries(Number.isFinite(limit) ? limit : 12);
     return this.ok(command, `chunks=${chunks.length}`, chunks);
+  }
+
+  private cmdMove(command: string, args: string[]): CliCommandResult {
+    const strafe = Number.parseFloat(args[0] ?? "0");
+    const forward = Number.parseFloat(args[1] ?? "0");
+
+    if (!Number.isFinite(strafe) || !Number.isFinite(forward)) {
+      return { ok: false, command, text: "usage: move <strafe:-1..1> <forward:-1..1>" };
+    }
+
+    const movement = this.deps.localPlayer.setVirtualMovement({ x: strafe, y: forward });
+    return this.ok(
+      command,
+      `move strafe=${movement.x.toFixed(3)} forward=${movement.y.toFixed(3)}`,
+      {
+        strafe: movement.x,
+        forward: movement.y,
+      },
+    );
   }
 
   private cmdSceneRegions(command: string, args: string[]): CliCommandResult {
@@ -1085,6 +1106,24 @@ export class DevToolsCli implements CliCommandHandler {
     const authorityDisplayAuthorityDistanceValues = trace.samples.map(
       (sample) => sample.authorityDisplayAuthorityDistance,
     );
+    const ackSeqValues = trace.samples.map((sample) => sample.ackSeq);
+    const inputSeqGapValues = trace.samples.map((sample) => sample.inputSeqGap);
+    const lastAckRttValues = trace.samples.map((sample) => sample.lastAckRttMs);
+    const lastAckPendingInputValues = trace.samples.map((sample) => sample.lastAckPendingInputs);
+    const lastAckReplayedFrameValues = trace.samples.map((sample) => sample.lastAckReplayedFrames);
+    const serverStateAgeValues = trace.samples.map((sample) => sample.serverStateAgeMs);
+    const serverSendAgeValues = trace.samples.map((sample) => sample.serverSendAgeMs);
+    const sceneAckAgeValues = trace.samples.map((sample) => sample.sceneAckAgeMs);
+    const browserApplyDelayValues = trace.samples.map((sample) => sample.browserApplyDelayMs);
+    const gateSendDelayValues = trace.samples.map((sample) => sample.gateSendDelayMs);
+    const sceneInputAgeValues = trace.samples.map((sample) => sample.sceneInputAgeMs);
+    const sceneQueueLenValues = trace.samples.map((sample) => sample.sceneQueueLen);
+    const sceneReplayCountValues = trace.samples.map((sample) => sample.sceneReplayCount);
+    const sceneDroppedInputCountValues = trace.samples.map(
+      (sample) => sample.sceneDroppedInputCount,
+    );
+    const sceneMailboxLenValues = trace.samples.map((sample) => sample.sceneMailboxLen);
+    const sceneTickDriftValues = trace.samples.map((sample) => sample.sceneTickDriftMs);
     return {
       active: trace.active,
       frameCount: trace.samples.length,
@@ -1103,6 +1142,22 @@ export class DevToolsCli implements CliCommandHandler {
         authorityProjectedAuthorityDistanceValues,
       ),
       authorityDisplayAuthorityDistance: summarizeSeries(authorityDisplayAuthorityDistanceValues),
+      ackSeq: summarizeSeries(ackSeqValues),
+      inputSeqGap: summarizeSeries(inputSeqGapValues),
+      lastAckRttMs: summarizeSeries(lastAckRttValues),
+      lastAckPendingInputs: summarizeSeries(lastAckPendingInputValues),
+      lastAckReplayedFrames: summarizeSeries(lastAckReplayedFrameValues),
+      serverStateAgeMs: summarizeSeries(serverStateAgeValues),
+      serverSendAgeMs: summarizeSeries(serverSendAgeValues),
+      sceneAckAgeMs: summarizeSeries(sceneAckAgeValues),
+      browserApplyDelayMs: summarizeSeries(browserApplyDelayValues),
+      gateSendDelayMs: summarizeSeries(gateSendDelayValues),
+      sceneInputAgeMs: summarizeSeries(sceneInputAgeValues),
+      sceneQueueLen: summarizeSeries(sceneQueueLenValues),
+      sceneReplayCount: summarizeSeries(sceneReplayCountValues),
+      sceneDroppedInputCount: summarizeSeries(sceneDroppedInputCountValues),
+      sceneMailboxLen: summarizeSeries(sceneMailboxLenValues),
+      sceneTickDriftMs: summarizeSeries(sceneTickDriftValues),
       samples: trace.samples,
     };
   }

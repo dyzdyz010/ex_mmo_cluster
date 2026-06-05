@@ -181,4 +181,95 @@ describe("LocalPlayerController latest-ack authority projection", () => {
       interpolationMode: "extrapolated",
     });
   });
+
+  it("keeps the server-corrected display marker independent from local visual correction", () => {
+    const bus = new EventBus<Record<string, unknown>>();
+    const ctrl = new LocalPlayerController(
+      bus as never,
+      makeStillInput() as never,
+      makeReadyTransport() as never,
+      new Vector3(120, 0, 0),
+    );
+
+    bus.emit("transport:ack-delivered", {
+      ack: {
+        ...makeAuthorityAck(1, 2_000_000, 0, 0),
+        correctionFlags: CorrectionFlag.Teleport,
+      },
+      sentAtMs: now,
+      receivedAtMs: now,
+    });
+
+    expect(ctrl.getPendingCorrection().length()).toBeGreaterThan(0);
+    expect(ctrl.getAuthoritativePosition().x).toBe(0);
+    expect(ctrl.getAuthoritativeProjectedPosition(now).x).toBe(0);
+    expect(ctrl.getRenderedPosition().x).toBeCloseTo(120, 5);
+    expect(ctrl.getAuthoritativeDisplayPosition(now).x).toBeCloseTo(0, 5);
+  });
+
+  it("records ack latency diagnostics in authority events and frame traces", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_200);
+    const bus = new EventBus<Record<string, unknown>>();
+    const authorityEvents: unknown[] = [];
+    bus.on("movement:authority-applied", (payload) => authorityEvents.push(payload));
+    const ctrl = new LocalPlayerController(
+      bus as never,
+      makeStillInput() as never,
+      makeReadyTransport() as never,
+      new Vector3(0, 0, 0),
+    );
+
+    const ack = {
+      ...makeAuthorityAck(1, 1_700_000_000_160, 0, 0),
+      serverSendMs: 1_700_000_000_190,
+      sceneAckMs: 1_700_000_000_184,
+      sceneInputAgeMs: 12,
+      sceneQueueLen: 3,
+      sceneReplayCount: 3,
+      sceneMailboxLen: 2,
+      sceneTickDriftMs: -4,
+      gateSendDelayMs: 6,
+      correctionFlags: CorrectionFlag.Teleport,
+    } as MovementAck;
+
+    bus.emit("transport:ack-delivered", {
+      ack,
+      sentAtMs: now - 40,
+      receivedAtMs: now - 10,
+    });
+    ctrl.startFrameTrace(1);
+    ctrl.onFrame(now + 16, 16);
+
+    const eventPayload = authorityEvents.at(-1) as Record<string, unknown>;
+    expect(eventPayload).toMatchObject({
+      ackSeq: 1,
+      lastAckRttMs: 40,
+      serverStateAgeMs: 40,
+      serverSendAgeMs: 10,
+      sceneAckAgeMs: 16,
+      browserApplyDelayMs: 10,
+      gateSendDelayMs: 6,
+      sceneInputAgeMs: 12,
+      sceneQueueLen: 3,
+      sceneReplayCount: 3,
+      sceneMailboxLen: 2,
+      sceneTickDriftMs: -4,
+    });
+
+    const sample = ctrl.getFrameTrace().samples[0] as unknown as Record<string, unknown>;
+    expect(sample).toMatchObject({
+      ackSeq: 1,
+      lastAckRttMs: 40,
+      serverStateAgeMs: 40,
+      serverSendAgeMs: 10,
+      sceneAckAgeMs: 16,
+      browserApplyDelayMs: 10,
+      gateSendDelayMs: 6,
+      sceneInputAgeMs: 12,
+      sceneQueueLen: 3,
+      sceneReplayCount: 3,
+      sceneMailboxLen: 2,
+      sceneTickDriftMs: -4,
+    });
+  });
 });

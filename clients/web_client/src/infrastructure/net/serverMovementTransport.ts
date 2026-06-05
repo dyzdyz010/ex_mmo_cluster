@@ -138,6 +138,9 @@ export class ServerMovementTransport implements MovementTransport {
   private receivedRemoteSnapshotCount = 0;
   private droppedSelfLoopSnapshotCount = 0;
   private lastAckSeq: number | null = null;
+  private highestSentSeq: number | null = null;
+  private lastAckReceivedAtMs: number | null = null;
+  private lastAckDiagnostics: Record<string, unknown> | null = null;
   private lastRemoteTickByCid = new Map<number, number>();
   private receivedPlayerStateCount = 0;
   private lastPlayerState: { cid: number; hp: number; maxHp: number; alive: boolean } | null = null;
@@ -260,6 +263,7 @@ export class ServerMovementTransport implements MovementTransport {
       receivedRemoteSnapshotCount: this.receivedRemoteSnapshotCount,
       droppedSelfLoopSnapshotCount: this.droppedSelfLoopSnapshotCount,
       lastAckSeq: this.lastAckSeq,
+      movement: this.movementDebugSnapshot(),
       lastRemoteTickByCid: Object.fromEntries(this.lastRemoteTickByCid),
       receivedPlayerStateCount: this.receivedPlayerStateCount,
       lastPlayerState: this.lastPlayerState,
@@ -314,6 +318,29 @@ export class ServerMovementTransport implements MovementTransport {
       lastMessage: this.lastChatMessage,
       blockedSendCount: this.blockedChatSendCount,
       lastBlockedSend: this.lastBlockedChatSend,
+    };
+  }
+
+  private movementDebugSnapshot(): Record<string, unknown> {
+    const inFlightSeqs = [...this.sentAtBySeq.keys()];
+    const oldestUnackedSeq = inFlightSeqs.length > 0 ? Math.min(...inFlightSeqs) : null;
+    const clientInputSeqGap =
+      this.highestSentSeq !== null && this.lastAckSeq !== null
+        ? Math.max(0, this.highestSentSeq - this.lastAckSeq)
+        : null;
+    return {
+      highestSentSeq: this.highestSentSeq,
+      oldestUnackedSeq,
+      pendingMoveCount: this.sentAtBySeq.size,
+      clientInputSeqGap,
+      wsBufferedAmount: this.socket?.bufferedAmount ?? null,
+      queuedAcks: this.acknowledgements.length,
+      lastAckSeq: this.lastAckSeq,
+      lastAckReceivedAgeMs:
+        this.lastAckReceivedAtMs === null
+          ? null
+          : Math.max(0, Math.round(performance.now() - this.lastAckReceivedAtMs)),
+      lastAckDiagnostics: this.lastAckDiagnostics,
     };
   }
 
@@ -780,6 +807,9 @@ export class ServerMovementTransport implements MovementTransport {
     this.lastPlayerState = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
+    this.highestSentSeq = null;
+    this.lastAckReceivedAtMs = null;
+    this.lastAckDiagnostics = null;
   }
 
   sendInput(frame: MoveInputFrame, nowMs: number): void {
@@ -790,6 +820,8 @@ export class ServerMovementTransport implements MovementTransport {
 
     this.socket.send(encodeMovementInput(frame));
     this.sentAtBySeq.set(frame.seq, nowMs);
+    this.highestSentSeq =
+      this.highestSentSeq === null ? frame.seq : Math.max(this.highestSentSeq, frame.seq);
     this.sentInputCount += 1;
     this.logger.emit("transport", "movement_sent", {
       seq: frame.seq,
@@ -1129,13 +1161,33 @@ export class ServerMovementTransport implements MovementTransport {
         this.markDisconnected(`enter_scene_error:${message.requestId}`);
         break;
       case "movement_ack":
-        this.acknowledgements.push({
-          ack: message.ack,
-          sentAtMs: this.sentAtBySeq.get(message.ack.ackSeq) ?? performance.now(),
-        });
-        this.sentAtBySeq.delete(message.ack.ackSeq);
-        this.receivedAckCount += 1;
-        this.lastAckSeq = message.ack.ackSeq;
+        {
+          const receivedAtMs = performance.now();
+          const sentAtMs = this.sentAtBySeq.get(message.ack.ackSeq) ?? receivedAtMs;
+          this.acknowledgements.push({
+            ack: message.ack,
+            sentAtMs,
+            receivedAtMs,
+          });
+          this.lastAckReceivedAtMs = receivedAtMs;
+          this.lastAckDiagnostics = {
+            ackSeq: message.ack.ackSeq,
+            authTick: message.ack.authTick,
+            serverStateMs: message.ack.serverStateMs,
+            serverSendMs: message.ack.serverSendMs,
+            sceneAckMs: message.ack.sceneAckMs ?? null,
+            sceneInputAgeMs: message.ack.sceneInputAgeMs ?? null,
+            sceneQueueLen: message.ack.sceneQueueLen ?? null,
+            sceneReplayCount: message.ack.sceneReplayCount ?? null,
+            sceneDroppedInputCount: message.ack.sceneDroppedInputCount ?? null,
+            sceneMailboxLen: message.ack.sceneMailboxLen ?? null,
+            sceneTickDriftMs: message.ack.sceneTickDriftMs ?? null,
+            gateSendDelayMs: message.ack.gateSendDelayMs ?? null,
+          };
+          this.dropSentThroughSeq(message.ack.ackSeq);
+          this.receivedAckCount += 1;
+          this.lastAckSeq = message.ack.ackSeq;
+        }
         break;
       case "player_move":
         // Defense-in-depth: AOI broadcast on the server side is supposed to
@@ -1662,6 +1714,14 @@ export class ServerMovementTransport implements MovementTransport {
     this.lastChatMessage = null;
     this.spawnPosition = null;
     this.spawnExpectedSeq = null;
+  }
+
+  private dropSentThroughSeq(ackSeq: number): void {
+    for (const seq of this.sentAtBySeq.keys()) {
+      if (seq <= ackSeq) {
+        this.sentAtBySeq.delete(seq);
+      }
+    }
   }
 }
 

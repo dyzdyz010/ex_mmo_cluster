@@ -96,16 +96,17 @@ function resolveWorldStoreMovementCollision(
     const missingChunks = missingAuthoritativeChunks(store, microAabb);
     if (missingChunks.length > 0) {
       requestAuthoritativeChunks(config, missingChunks, "collision_query");
+      const authorityHold = holdAtPreviousPosition(previous, proposed);
       return {
-        state: clonePredictedMoveState(previous),
+        state: authorityHold.state,
         summary: makeSummary(
           "authority_unavailable",
           previous,
           proposed,
-          previous,
+          authorityHold.state,
           sampleCount,
           0,
-          [],
+          authorityHold.blockedAxes,
         ),
       };
     }
@@ -134,6 +135,35 @@ function resolveWorldStoreMovementCollision(
       blockedAxes,
     ),
   };
+}
+
+function holdAtPreviousPosition(
+  previous: PredictedMoveState,
+  proposed: PredictedMoveState,
+): { state: PredictedMoveState; blockedAxes: MovementCollisionAxis[] } {
+  const state = clonePredictedMoveState(proposed);
+  state.position.copy(previous.position);
+  state.movementMode = previous.movementMode;
+  state.groundY = previous.groundY;
+
+  const blockedAxes: MovementCollisionAxis[] = [];
+  if (Math.abs(proposed.position.x - previous.position.x) > EPSILON) {
+    state.velocity.x = 0;
+    state.acceleration.x = 0;
+    blockedAxes.push("x");
+  }
+  if (Math.abs(proposed.position.y - previous.position.y) > EPSILON) {
+    state.velocity.y = 0;
+    state.acceleration.y = 0;
+    blockedAxes.push("y");
+  }
+  if (Math.abs(proposed.position.z - previous.position.z) > EPSILON) {
+    state.velocity.z = 0;
+    state.acceleration.z = 0;
+    blockedAxes.push("z");
+  }
+
+  return { state, blockedAxes };
 }
 
 function resolveAgainstBoxes(

@@ -33,11 +33,10 @@ falling collision resolves the center back to that height.
 - 浏览器 app 层的 `app/controllers/localPlayerController.ts` 会在 domain
   fixed-tick anchor 之上再做一层 **per-frame partial-step render prediction**，
   用来填平 16 ms tick (约 62.5Hz) 之间的视觉空档；它不写回 history，也不改变网络发送频率。
-- 本地灰色 server-authority cube 不是远端玩家插值对象，也不是原始 ACK
-  位置。屏幕上显示的是当前 ack-replay 后的预测目标（不含本地视觉
-  correction smoothing），也就是独立于 raw ACK 的 server-corrected
-  display channel。raw ack 位置和 latest-ack projection 仍保留给
-  CLI/trace 做 reconcile / latency 诊断；latest-ack projection 在
+- 本地灰色 server-authority cube 不是远端玩家插值对象，也不是本地视觉平滑
+  后的位置。屏幕上显示的是 latest-ack projection，用来独立对照本地预测
+  与服务端权威轨迹；raw ack 位置仍保留给 CLI/trace 做 reconcile / latency
+  诊断；latest-ack projection 在
   TimeSync 可用时按 `server_state_ms + serverClockOffsetMs` 计算，
   TimeSync 尚未建立时退回最多 2 个 `serverFixedDtMs` 的短窗口投影。
 - 渲染层消费 movement 输出的 3D 坐标作为角色显示真相。体素地表查询只用于
@@ -46,6 +45,9 @@ falling collision resolves the center back to that height.
 - `ReplayGovernanceStats.totalAcks` 统计所有权威回包；`totalCorrections`
   只统计 replay / snap / status override 等真实校正，不再把 accepted ack
   误报成“拉回”。
+- online movement 要求权威 chunk 后才按本地 voxel resolver 前进。严格查询缺
+  chunk 时会请求缺失 chunk 并停在上一帧安全位置，避免 fail-open 穿模后再被
+  服务端拉回。
 - `remotePlayer.ts` 当前采用 **150 ms 插值延迟 + 250 ms 封顶外推**：
   150 ms 仍保留给远端实体吸收网络抖动/优先级节流，不额外拖出
   220 ms 的远端钝感。tick 时长默认 16 ms (约 62.5Hz)，但会接受服务端 ack 回传的

@@ -53,6 +53,32 @@ describe("DevToolsCli microgrid boundary", () => {
     });
   });
 
+  it("drives movement through the CLI virtual movement vector", () => {
+    const setVirtualMovement = vi.fn(() => ({ x: 0.6, y: 0.8 }));
+    const cli = new DevToolsCli({
+      localPlayer: {
+        setVirtualMovement,
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("move", ["3", "4"])).toMatchObject({
+      ok: true,
+      command: "move",
+      text: "move strafe=0.600 forward=0.800",
+      data: {
+        strafe: 0.6,
+        forward: 0.8,
+      },
+    });
+    expect(setVirtualMovement).toHaveBeenCalledWith({ x: 3, y: 4 });
+
+    expect(cli.executeCliCommand("move", ["bad", "1"])).toMatchObject({
+      ok: false,
+      command: "move",
+      text: "usage: move <strafe:-1..1> <forward:-1..1>",
+    });
+  });
+
   it("reports rejected chat sends as failed commands so the HUD keeps the draft", () => {
     const sendChat = vi.fn(() => null);
     const cli = new DevToolsCli({

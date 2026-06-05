@@ -150,6 +150,7 @@ defmodule GateServer.UdpAcceptor do
 
             server_send_ms = :os.system_time(:millisecond)
             server_state_ms = movement_state_ms(ack)
+            diagnostics = movement_ack_diagnostics(ack, server_send_ms)
 
             send_udp(
               socket,
@@ -157,7 +158,7 @@ defmodule GateServer.UdpAcceptor do
               port,
               {:movement_ack, ack.ack_seq, ack.auth_tick, server_state_ms, server_send_ms,
                ack.cid, ack.position, ack.velocity, ack.acceleration, ack.movement_mode,
-               ack.correction_flags, ack.fixed_dt_ms, ack.ground_z}
+               ack.correction_flags, ack.fixed_dt_ms, ack.ground_z, diagnostics}
             )
 
           {:error, reason} ->
@@ -197,6 +198,36 @@ defmodule GateServer.UdpAcceptor do
   defp movement_state_ms(%{} = movement_payload) do
     case Map.get(movement_payload, :server_state_ms, 0) do
       value when is_integer(value) and value >= 0 -> value
+      _ -> 0
+    end
+  end
+
+  defp movement_ack_diagnostics(%{} = ack, server_send_ms) do
+    scene_ack_ms = diagnostic_integer(ack, :scene_ack_ms)
+
+    %{
+      scene_ack_ms: scene_ack_ms,
+      scene_input_age_ms: diagnostic_integer(ack, :scene_input_age_ms),
+      scene_queue_len: diagnostic_integer(ack, :scene_queue_len),
+      scene_replay_count: diagnostic_integer(ack, :scene_replay_count),
+      scene_dropped_input_count: diagnostic_integer(ack, :scene_dropped_input_count),
+      scene_mailbox_len: diagnostic_integer(ack, :scene_mailbox_len),
+      scene_tick_drift_ms: diagnostic_integer(ack, :scene_tick_drift_ms),
+      gate_send_delay_ms: gate_send_delay_ms(server_send_ms, scene_ack_ms)
+    }
+  end
+
+  defp gate_send_delay_ms(server_send_ms, scene_ack_ms)
+       when is_integer(server_send_ms) and is_integer(scene_ack_ms) and scene_ack_ms > 0 do
+    max(server_send_ms - scene_ack_ms, 0)
+  end
+
+  defp gate_send_delay_ms(_server_send_ms, _scene_ack_ms), do: 0
+
+  defp diagnostic_integer(map, key) do
+    case Map.get(map, key, 0) do
+      value when is_integer(value) -> value
+      value when is_float(value) -> round(value)
       _ -> 0
     end
   end

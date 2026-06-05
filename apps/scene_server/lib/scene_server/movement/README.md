@@ -59,12 +59,12 @@ actors.
   authoritative tick deltas, remote interpolation falls back to the
   tick-duration timeline and marks `serverStateTimelineHealthy=false` in debug
   snapshots.
-- The visible local authority-render marker follows the current ack-replayed
-  prediction target, excluding local visual correction smoothing. Raw ack
-  position and latest-ack projection remain separate CLI/trace diagnostics:
-  latest-ack projection uses `server_state_ms` on the synced server clock when
-  TimeSync is available, and falls back to a short arrival-time projection of
-  roughly two `fixed_dt_ms` steps before TimeSync is ready.
+- The visible local authority-render marker follows the latest-ack projection,
+  not the local visual correction smoothing path. Raw ack position remains a
+  separate CLI/trace diagnostic. Latest-ack projection uses `server_state_ms`
+  on the synced server clock when TimeSync is available, and falls back to a
+  short arrival-time projection of roughly two `fixed_dt_ms` steps before
+  TimeSync is ready.
 - Remote interpolation and local authority-render diagnostics expose the active
   time axis and last playback server time so CLI/devtools snapshots can show
   whether rendering is using `server_state_ms` or an explicit tick path.
