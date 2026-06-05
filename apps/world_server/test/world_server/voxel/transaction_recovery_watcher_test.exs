@@ -10,8 +10,9 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
     def commit(participant, transaction_id, opts) do
       log(opts, {:commit, participant.region_id, transaction_id})
 
+      # 阶段4 / world-2pc-3 契约#3:durable-ack 必须显式 `durable?: true`。
       case Map.get(Keyword.get(opts, :commit_responses, %{}), participant.region_id) do
-        nil -> {:ok, %{committed_chunks: []}}
+        nil -> {:ok, %{committed_chunks: [], durable?: true}}
         response -> response
       end
     end
@@ -30,6 +31,28 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
         {:ok, agent} -> Agent.update(agent, &(&1 ++ [event]))
         :error -> :ok
       end
+    end
+  end
+
+  # 故障注入③专用:commit response 由一个 0-arity 函数动态产出,可在多轮
+  # re-投递间改变(第一次失败、第二次成功),用于验证"重投递直至成功"。
+  defmodule DynamicStubSceneCaller do
+    def commit(participant, transaction_id, opts) do
+      case Keyword.fetch(opts, :recorder) do
+        {:ok, agent} -> Agent.update(agent, &(&1 ++ [{:commit, participant.region_id, transaction_id}]))
+        :error -> :ok
+      end
+
+      case Keyword.get(opts, :dynamic_commit_response) do
+        nil -> {:ok, %{committed_chunks: [], durable?: true}}
+        fun when is_function(fun, 0) -> fun.()
+      end
+    end
+
+    def abort(_participant, _transaction_id, _opts), do: :ok
+
+    def prepare(_participant, _transaction_id, _intents, _opts) do
+      raise "DynamicStubSceneCaller.prepare must not be invoked on resume"
     end
   end
 
@@ -53,8 +76,9 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       assert summary.resume_partial == 0
       assert summary.resume_failed == 0
 
+      # 阶段4 / world-2pc-4:aborted 事务被裁出活跃集,只在 decision_index 留归档。
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-preparing"].state == :aborted
+      refute Map.has_key?(snapshot.transactions, "tx-preparing")
       assert snapshot.decision_index["tx-preparing"].decision == :abort
     end
 
@@ -82,7 +106,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       assert summary.pending_commit == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-aborting"].state == :aborted
+      refute Map.has_key?(snapshot.transactions, "tx-aborting")
+      assert snapshot.decision_index["tx-aborting"].decision == :abort
     end
 
     test "leaves :prepared transactions parked and counts pending_commit" do
@@ -102,13 +127,11 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       refute Map.has_key?(snapshot.decision_index, "tx-prepared")
     end
 
-    test "skips already-finalized :committed and :aborted transactions" do
+    test "skips already-finalized :committed and :aborted transactions (now archived out of active)" do
       coordinator = start_supervised!(TransactionCoordinator)
 
-      prepare_all!(coordinator, "tx-committed")
-
-      assert {:ok, _} =
-               TransactionCoordinator.commit_decision(coordinator, "tx-committed", 1)
+      # 阶段4 / world-2pc-3:到 :committed 需 commit_decision + 全 durable-ack。
+      commit_all!(coordinator, "tx-committed")
 
       assert {:ok, _} =
                TransactionCoordinator.begin_transaction(
@@ -121,12 +144,16 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
-      assert summary.finalized == 2
+      # 终态事务都已被裁出活跃集 → sweep 看不到它们 → 0 个动作。
+      assert summary.finalized == 0
       assert summary.aborted == 0
+      assert summary.resumed_commit == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-committed"].state == :committed
-      assert snapshot.transactions["tx-already-aborted"].state == :aborted
+      refute Map.has_key?(snapshot.transactions, "tx-committed")
+      refute Map.has_key?(snapshot.transactions, "tx-already-aborted")
+      assert snapshot.decision_index["tx-committed"].decision == :commit
+      assert snapshot.decision_index["tx-already-aborted"].decision == :abort
     end
 
     test "mixed in-flight transactions are swept in one pass" do
@@ -141,19 +168,29 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       prepare_all!(coordinator, "tx-mixed-prepared")
       prepare_all!(coordinator, "tx-mixed-committed")
 
+      # tx-mixed-committed 全 durable → :committed → 裁出活跃集。
       assert {:ok, _} =
                TransactionCoordinator.commit_decision(coordinator, "tx-mixed-committed", 1)
 
+      assert {:ok, _} =
+               TransactionCoordinator.commit_durable_ack(coordinator, "tx-mixed-committed", {10, 100})
+
+      assert {:ok, _} =
+               TransactionCoordinator.commit_durable_ack(coordinator, "tx-mixed-committed", {20, 200})
+
       summary = TransactionRecoveryWatcher.recover(coordinator)
 
+      # preparing → abort;prepared(无 resolver)→ pending_commit;committed 已裁出。
       assert summary.aborted == 1
       assert summary.pending_commit == 1
-      assert summary.finalized == 1
+      assert summary.finalized == 0
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-mixed-preparing"].state == :aborted
+      refute Map.has_key?(snapshot.transactions, "tx-mixed-preparing")
+      assert snapshot.decision_index["tx-mixed-preparing"].decision == :abort
       assert snapshot.transactions["tx-mixed-prepared"].state == :prepared
-      assert snapshot.transactions["tx-mixed-committed"].state == :committed
+      refute Map.has_key?(snapshot.transactions, "tx-mixed-committed")
+      assert snapshot.decision_index["tx-mixed-committed"].decision == :commit
     end
 
     test "sweeping an empty coordinator is a no-op" do
@@ -168,7 +205,9 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
                abort_failed: 0,
                resumed_commit: 0,
                resume_partial: 0,
-               resume_failed: 0
+               resume_failed: 0,
+               resume_dispatched: 0,
+               skipped_healthy: 0
              }
     end
   end
@@ -213,8 +252,10 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       calls = Agent.get(recorder, & &1)
       assert Enum.count(calls, &match?({:commit, _, "tx-resume"}, &1)) == 2
 
+      # 阶段4 / world-2pc-4:committed 事务被裁出活跃集,只在 decision_index 留归档。
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-resume"].state == :committed
+      refute Map.has_key?(snapshot.transactions, "tx-resume")
+      assert snapshot.decision_index["tx-resume"].decision == :commit
     end
 
     test "resolver errors keep the transaction parked and emit unavailable" do
@@ -294,7 +335,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       refute Enum.any?(calls_b, &match?({:prepare, _, _, _}, &1))
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-a4-6-multi-resume"].state == :committed
+      refute Map.has_key?(snapshot.transactions, "tx-a4-6-multi-resume")
+      assert snapshot.decision_index["tx-a4-6-multi-resume"].decision == :commit
     end
 
     test "partial commit failures bubble up as resume_partial" do
@@ -318,11 +360,105 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       assert summary.resume_partial == 1
       assert summary.resumed_commit == 0
 
-      # Coordinator still reaches :committed state because the decision is
-      # already past prepare; per-participant commit failures are surfaced
-      # via observe but do not roll back the transaction.
+      # 阶段4 / world-2pc-3 契约变更:participant 20 的 commit 失败 → 它没
+      # durable-ack,事务**停在 :committing**(已决,绝不 abort),等下一轮 reaper
+      # 重投递。participant 10 已 durable;只差 20。
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-resume-partial"].state == :committed
+      tx = snapshot.transactions["tx-resume-partial"]
+      assert tx.state == :committing
+      assert tx.commit_acks[{10, 100}] == :durable
+      assert tx.commit_acks[{20, 200}] == :pending
+    end
+
+    test "re-dispatching after a transient commit failure reaches :committed (re-投递 not abort)" do
+      # 故障注入③:participant commit 失败时事务不被误记 committed、不 abort,
+      # 重投递直至成功。这里第一轮 20 失败 → :committing;第二轮 20 成功 →
+      # :committed。
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+      prepare_all!(coordinator, "tx-redeliver", with_intents: true)
+
+      # Agent 控制 participant 20 第一次失败、第二次成功。
+      attempt = start_supervised!({Agent, fn -> 0 end}, id: :attempt_counter)
+
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p ->
+            response =
+              if p.region_id == 20 do
+                fn ->
+                  n = Agent.get_and_update(attempt, fn n -> {n, n + 1} end)
+                  if n == 0,
+                    do: {:error, :transient_commit_fail},
+                    else: {:ok, %{committed_chunks: [], durable?: true}}
+                end
+              else
+                nil
+              end
+
+            {{p.region_id, p.lease_id},
+             [recorder: recorder, dynamic_commit_response: response]}
+          end)
+
+        {:ok, scene_caller: DynamicStubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
+      end
+
+      # 第一轮:20 失败 → :committing。
+      summary1 = TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+      assert summary1.resume_partial == 1
+
+      snapshot1 = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot1.transactions["tx-redeliver"].state == :committing
+      refute Map.has_key?(snapshot1.decision_index, "tx-redeliver")
+
+      # 第二轮重投递:20 成功 → :committed,绝不 abort。
+      summary2 = TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+      assert summary2.resumed_commit == 1
+
+      snapshot2 = TransactionCoordinator.snapshot(coordinator)
+      refute Map.has_key?(snapshot2.transactions, "tx-redeliver")
+      assert snapshot2.decision_index["tx-redeliver"].decision == :commit
+    end
+
+    test "B1 故障注入:无-intent 事务到 :committing 后 reaper 仍能续推到 :committed(不被空-intent guard 永久停泊)" do
+      # 裂缝 B1:`:committing`(已决 commit)事务 resume 时**绝不**能被
+      # `intents_by_participant == %{}` guard 拦截。break-only / 无 intent 的事务
+      # 到 :committing 时 intents 天然为空;commit 重投递不靠 intents(靠 chunk 上
+      # 已存在的 prepared fence)。若被拦下,重启后无 driver、reaper 又拒绝续推 →
+      # 已决 commit 事务永久停泊(liveness 缺口)。
+      #
+      # 这里构造一笔**无 intents_by_participant** 的事务,推进到 :committing(模拟
+      # driver 崩在 durable-ack 全部回来之前),然后用一个**没有 driver_supervisor**
+      # 的 recover(纯 reaper / 重启续推路径)验证它能被续推到 :committed,而不是
+      # 停在 :pending_commit。
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      # prepare_all! 默认不带 intents → intents_by_participant 为空。
+      prepare_all!(coordinator, "tx-no-intent-committing")
+
+      # 进入 :committing(commit 已决,绝不可逆),但尚未任何 durable-ack。
+      assert {:ok, %BuildTransaction{state: :committing, intents_by_participant: %{}}} =
+               TransactionCoordinator.commit_decision(coordinator, "tx-no-intent-committing", 1)
+
+      resolver = fn participants ->
+        scene_opts_by_participant =
+          Map.new(participants, fn p -> {{p.region_id, p.lease_id}, [recorder: recorder]} end)
+
+        {:ok, scene_caller: StubSceneCaller, scene_opts_by_participant: scene_opts_by_participant}
+      end
+
+      # reaper / 重启续推(无 driver_supervisor → 同步 resume)。修复前:
+      # :committing + 空 intents → :pending_commit(永久停泊);修复后:resume 续推
+      # commit(commit 重投递不需要 intents),全 durable → :committed。
+      summary = TransactionRecoveryWatcher.recover(coordinator, scene_opts_resolver: resolver)
+
+      assert summary.resumed_commit == 1
+      assert summary.pending_commit == 0
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      refute Map.has_key?(snapshot.transactions, "tx-no-intent-committing")
+      assert snapshot.decision_index["tx-no-intent-committing"].decision == :commit
     end
   end
 
@@ -341,12 +477,13 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
 
       _watcher =
         start_supervised!(
-          {TransactionRecoveryWatcher, coordinator: coordinator},
+          {TransactionRecoveryWatcher, coordinator: coordinator, reaper_enabled?: false},
           id: :recovery_watcher_init_watcher
         )
 
       snapshot = TransactionCoordinator.snapshot(coordinator)
-      assert snapshot.transactions["tx-supervised-preparing"].state == :aborted
+      refute Map.has_key?(snapshot.transactions, "tx-supervised-preparing")
+      assert snapshot.decision_index["tx-supervised-preparing"].decision == :abort
     end
   end
 
@@ -382,6 +519,14 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
                status: :prepared,
                acked_at_ms: 2
              })
+  end
+
+  # 把事务一路推到 :committed(prepare_all + commit_decision + 全 durable-ack)。
+  defp commit_all!(coordinator, transaction_id) do
+    prepare_all!(coordinator, transaction_id)
+    assert {:ok, _} = TransactionCoordinator.commit_decision(coordinator, transaction_id, 1)
+    assert {:ok, _} = TransactionCoordinator.commit_durable_ack(coordinator, transaction_id, {10, 100})
+    assert {:ok, _} = TransactionCoordinator.commit_durable_ack(coordinator, transaction_id, {20, 200})
   end
 
   defp transaction_attrs(transaction_id) do

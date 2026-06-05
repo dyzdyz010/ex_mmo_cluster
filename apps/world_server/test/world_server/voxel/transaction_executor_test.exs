@@ -20,7 +20,14 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     def commit(participant, transaction_id, opts) do
       log_call(opts, {:commit, participant.region_id, transaction_id})
       maybe_sleep(opts, :commit_sleeps_ms, participant.region_id)
-      {:ok, %{committed_chunks: []}}
+      maybe_raise(opts, :commit_raises, participant.region_id)
+
+      # 阶段4 / world-2pc-3 契约#3:scene commit/3 的 durable-ack 必须显式携带
+      # `durable?: true`(对齐 SceneServer.Voxel.BuildTransactionApplier.commit/3)。
+      # 测试可经 `:commit_responses` 注入 `{:ok, %{durable?: false}}`(模拟 persist
+      # 在途、尚未 durable)或 `{:error, _}` 来覆盖非 durable / 失败重投递路径。
+      Keyword.get(opts, :commit_responses, %{})
+      |> Map.get(participant.region_id, {:ok, %{committed_chunks: [], durable?: true}})
     end
 
     def abort(participant, transaction_id, opts) do
@@ -192,11 +199,12 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
                scene_opts_by_participant: uniform_opts(recorder: recorder)
              )
 
+    # 阶段4 / world-2pc-4:committed 事务被裁出活跃集,只在 decision_index 留归档。
     snapshot = TransactionCoordinator.snapshot(coordinator)
-    assert snapshot.transactions["tx-replay"].state == :committed
+    refute Map.has_key?(snapshot.transactions, "tx-replay")
     assert snapshot.decision_index["tx-replay"].decision == :commit
 
-    # Replaying begin_transaction returns the existing transaction with the
+    # Replaying begin_transaction returns the archived committed view with the
     # same decision_version, and another execute call must not change the
     # recorded decision.
     {:ok, replay_transaction} =
@@ -258,9 +266,13 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
              _ -> false
            end)
 
+    # 阶段4 / world-2pc-4:aborted 事务被裁出活跃集,只在 decision_index 留归档。
+    # participant 终态从 executor 返回的(已 aborted)transaction 读。
     snapshot = TransactionCoordinator.snapshot(coordinator)
-    persisted = snapshot.transactions["tx-prepare-timeout"]
+    refute Map.has_key?(snapshot.transactions, "tx-prepare-timeout")
+    assert snapshot.decision_index["tx-prepare-timeout"].decision == :abort
 
+    persisted = result.transaction
     assert persisted.state == :aborted
 
     region_20_status =
@@ -338,9 +350,12 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
              )
     end
 
+    # 阶段4 / world-2pc-4:aborted 事务被裁出活跃集,只在 decision_index 留归档。
     snapshot = TransactionCoordinator.snapshot(coordinator)
-    persisted = snapshot.transactions["tx-overall-timeout"]
+    refute Map.has_key?(snapshot.transactions, "tx-overall-timeout")
+    assert snapshot.decision_index["tx-overall-timeout"].decision == :abort
 
+    persisted = result.transaction
     assert persisted.state == :aborted
 
     for participant <- persisted.participants do
@@ -759,6 +774,124 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
       # carrying the same prepare-time error.
       assert {_failed_p, {:error, :prepare_failed_before_resume}} =
                Enum.find(results, fn {p, _} -> p.region_id == 20 end)
+    end
+  end
+
+  describe "阶段4 / world-2pc-3 :committing resume + B2 跨侧幂等" do
+    test "B2 崩溃窗口:scene-durable-but-world-pending,重投递幂等 durable-ack → :committed" do
+      # 裂缝 B2 的 world 侧闭环:崩溃窗口下 scene 已 durable(fence 删、hot swap)、
+      # 但 world 尚未记该 participant 的 durable-ack(commit_acks 仍 :pending)。
+      # 恢复后 world 走 :committing fast-path 重投递 commit;scene 对**已提交事务**
+      # 幂等回 {:ok, durable?: true}。world 必须把这次幂等 durable-ack 喂进
+      # coordinator,使事务最终 :committed,而不是永久卡 :committing。
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      # 推进到 :committing,并让 region 10 已 durable(模拟崩溃前 10 已确认,
+      # 20 的 durable-ack 尚未记上 → 这正是 B2 的崩溃窗口)。
+      {:ok, _} = TransactionCoordinator.begin_transaction(coordinator, transaction_attrs("tx-b2"))
+
+      assert {:ok, _} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-b2", %{
+                 participant_key: {10, 100},
+                 region_id: 10,
+                 lease_id: 100,
+                 status: :prepared,
+                 acked_at_ms: 1
+               })
+
+      assert {:ok, _} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-b2", %{
+                 participant_key: {20, 200},
+                 region_id: 20,
+                 lease_id: 200,
+                 status: :prepared,
+                 acked_at_ms: 2
+               })
+
+      assert {:ok, %BuildTransaction{state: :committing}} =
+               TransactionCoordinator.commit_decision(coordinator, "tx-b2", 1)
+
+      # region 10 已 durable;只差 region 20。
+      assert {:ok, %BuildTransaction{state: :committing} = committing} =
+               TransactionCoordinator.commit_durable_ack(coordinator, "tx-b2", {10, 100})
+
+      assert committing.commit_acks[{10, 100}] == :durable
+      assert committing.commit_acks[{20, 200}] == :pending
+
+      # scene 对 region 20 的重投递幂等回 durable-ack(模拟 chunk_process 的
+      # {:ok, durable?: true, idempotent?: true});region 10 已 durable,executor
+      # 的 :committing fast-path 不会再 dispatch 它。
+      commit_responses = %{20 => {:ok, %{committed_chunks: [], durable?: true, idempotent?: true}}}
+
+      assert {:ok, %{decision: :commit, committed?: true, transaction: final}} =
+               TransactionExecutor.execute(coordinator, committing, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant:
+                   uniform_opts(recorder: recorder, commit_responses: commit_responses)
+               )
+
+      assert final.state == :committed
+
+      # 只对 region 20 重投递了 commit(region 10 已 durable,prebaked 跳过)。
+      calls = Agent.get(recorder, & &1)
+      assert Enum.count(calls, &match?({:commit, 20, _}, &1)) == 1
+      refute Enum.any?(calls, &match?({:commit, 10, _}, &1))
+
+      # 事务真正 :committed,裁出活跃集,decision_index 留 commit 归档。
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      refute Map.has_key?(snapshot.transactions, "tx-b2")
+      assert snapshot.decision_index["tx-b2"].decision == :commit
+    end
+
+    test "B3 契约:scene 回 {:ok, durable?: false} 不被当 durable-ack(事务留在 :committing)" do
+      # 裂缝 B3:world 显式校验 durable?: true 才喂 commit_durable_ack。
+      # scene 回 {:ok, durable?: false}(commit 收到但 persist 在途、尚未 durable)
+      # 时 world 绝不能误标 durable(否则丢 durable barrier → 误 :committed → 丢写)。
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, transaction_attrs("tx-b3-nondurable"))
+
+      assert {:ok, _} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-b3-nondurable", %{
+                 participant_key: {10, 100},
+                 region_id: 10,
+                 lease_id: 100,
+                 status: :prepared,
+                 acked_at_ms: 1
+               })
+
+      assert {:ok, prepared} =
+               TransactionCoordinator.prepare_ack(coordinator, "tx-b3-nondurable", %{
+                 participant_key: {20, 200},
+                 region_id: 20,
+                 lease_id: 200,
+                 status: :prepared,
+                 acked_at_ms: 2
+               })
+
+      _ = transaction
+
+      # region 20 回非 durable(persist 在途);region 10 durable。
+      commit_responses = %{20 => {:ok, %{committed_chunks: [], durable?: false}}}
+
+      assert {:ok, %{decision: :commit, committed?: false, transaction: still_committing}} =
+               TransactionExecutor.execute(coordinator, prepared, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant:
+                   uniform_opts(recorder: recorder, commit_responses: commit_responses)
+               )
+
+      # 事务**不**到 :committed:region 20 未 durable → 不喂 ack → 留 :committing。
+      assert still_committing.state == :committing
+      assert still_committing.commit_acks[{10, 100}] == :durable
+      assert still_committing.commit_acks[{20, 200}] == :pending
+
+      # 绝不 abort 已决事务。
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions["tx-b3-nondurable"].state == :committing
     end
   end
 

@@ -973,10 +973,18 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   defp normalize_prepare_transaction_attrs(_attrs), do: {:error, :invalid_voxel_intent}
 
   defp collect_prepare_opts(attrs) do
-    case Map.get(attrs, :decision_version) do
-      version when is_integer(version) and version >= 0 -> [decision_version: version]
-      _ -> []
-    end
+    []
+    |> maybe_prepend_opt(:decision_version, Map.get(attrs, :decision_version), fn v ->
+      is_integer(v) and v >= 0
+    end)
+    # 阶段4 (2.2)：透传 coordinator 下发的 fence TTL deadline（绝对毫秒）。
+    |> maybe_prepend_opt(:fence_deadline_ms, Map.get(attrs, :fence_deadline_ms), fn v ->
+      is_integer(v) and v > 0
+    end)
+  end
+
+  defp maybe_prepend_opt(opts, key, value, valid?) do
+    if valid?.(value), do: [{key, value} | opts], else: opts
   end
 
   defp normalize_apply_intents_targets(attrs_list, first_attrs) do

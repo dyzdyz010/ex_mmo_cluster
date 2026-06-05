@@ -68,6 +68,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md` E-2。
   @simulation_tick_interval_ms 100
   @auto_circuit_refresh_debounce_ms 50
+
+  # 阶段4 (2.2 world-2pc-6) prepared fence TTL 兜底参数。
+  #
+  # 统一 2PC 契约 #4：prepared fence 带基于 coordinator deadline 的 TTL。
+  # 主路径是 World driver/reaper 主动清理孤儿事务；这里的 TTL 仅作兜底，
+  # 处理 coordinator/driver 整体死亡导致 fence 永远收不到 commit/abort 的情况。
+  #
+  # * `@fence_ttl_check_interval_ms` —— chunk 周期检查 fence 是否过期的节拍。
+  # * `@default_fence_ttl_ms` —— 当 coordinator 未在 prepare 时显式下发
+  #   `:fence_deadline_ms` 时，相对 `fenced_at_ms` 的默认存活时长。取一个
+  #   明显大于正常事务往返（prepare→decision→commit）的保守值，避免误杀
+  #   仍在进行中的事务。
+  @fence_ttl_check_interval_ms 1_000
+  @default_fence_ttl_ms 30_000
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
   @density_attribute_name "density"
@@ -499,6 +513,25 @@ defmodule SceneServer.Voxel.ChunkProcess do
             async_persists: %{},
             persist_waiters: [],
             pending_fence: pending_fence,
+            # 阶段4 (4.5 voxel-storage-3) commit durable join：
+            # %{persist_ref => commit_ack_meta}。一个 commit 在拿到 async
+            # persist_ref 后不立即删 fence / 不立即 reply，而是登记到此处，
+            # 等 `:async_snapshot_persist_finished` 成功（且 DB chunk_version
+            # 已 >= 本次 commit version）才删 fence + reply {:ok}（durable-ack），
+            # 失败 / Task :DOWN 则保留 fence + reply {:error, :persist_failed}。
+            pending_commit_acks: %{},
+            # 阶段4 (4.5 voxel-storage-3 / world-2pc 跨侧幂等)：本 chunk **最近一次
+            # durable 提交**的 `%{transaction_id => commit_version}`。崩溃窗口
+            # （scene 已 durable：fence 删、hot swap，但 world 尚未记该 participant
+            # 的 durable-ack）下，world 重投递 commit 时 fence 已不在，普通路径会回
+            # {:error, :transaction_not_prepared} → world 误判非 durable → 事务永久
+            # :committing、reaper 无限重投递、scene 永远 {:error} → 跨侧 liveness 死锁。
+            # 记录已 durable 的 (transaction_id, version) 后，对**已提交事务**的 commit
+            # 重投递可幂等回 {:ok, durable?: true}，让 world 收到 durable-ack 闭环。
+            # 持久化恢复无需带它：fence 已删意味着 DB 快照 chunk_version 已 >= commit
+            # version，进程重启后 hydrate 自带最新版本，下面 commit 幂等路径会用 DB
+            # 版本兜底确认。
+            last_durable_commits: %{},
             # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
             # attribution and downstream destroy_part dispatch. Tests inject
             # stubbed names; production wiring uses module-named singletons.
@@ -529,6 +562,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
         # 阶段3.1：只有授权态才 schedule 模拟 tick。未授权 / degraded 不空跑。
         maybe_schedule_simulation_tick(state)
+
+        # 阶段4 (2.2)：无条件 schedule prepared fence TTL 周期检查。即便重启后
+        # 从 DB reload 回一个 fence（load_persisted_fence），它的 deadline 也能
+        # 在 coordinator/driver 死亡时被本兜底路径作废。计时器很轻（无 fence 时
+        # 直接跳过），始终开启可避免“授权态切换”窗口里漏检。
+        schedule_fence_ttl_check()
 
         {:ok, state}
 
@@ -697,15 +736,25 @@ defmodule SceneServer.Voxel.ChunkProcess do
     Process.send_after(self(), :simulation_tick, @simulation_tick_interval_ms)
   end
 
+  # 阶段4 (2.2)：prepared fence TTL 周期检查节拍。
+  defp schedule_fence_ttl_check do
+    Process.send_after(self(), :check_pending_fence_ttl, @fence_ttl_check_interval_ms)
+  end
+
   defp load_persisted_fence(logical_scene_id, chunk_coord, lease) do
     case ChunkPendingTransactionStore.get_fence(logical_scene_id, chunk_coord) do
       {:ok, persisted} ->
         if lease_matches_persisted?(lease, persisted) do
+          # 阶段4 (2.2)：DB fence 行不带 deadline 列（持久化层是对侧文件，不扩
+          # schema）。Scene 重启后原 coordinator deadline 已不可知，用
+          # `fenced_at_ms + @default_fence_ttl_ms` 保守重建一个兜底 deadline，
+          # 让孤儿事务最终能被本地 TTL 作废（主路径仍是 World reaper）。
           %{
             transaction_id: persisted.transaction_id,
             decision_version: persisted.decision_version,
             intents: persisted.intents,
-            fenced_at_ms: persisted.fenced_at_ms
+            fenced_at_ms: persisted.fenced_at_ms,
+            deadline_ms: persisted.fenced_at_ms + @default_fence_ttl_ms
           }
         else
           # Lease changed (epoch bumped, or chunk transferred to another
@@ -951,9 +1000,41 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  def handle_call({:commit_transaction, transaction_id}, _from, state) do
+  # 阶段4 (4.5 voxel-storage-3) commit durable join。
+  #
+  # 统一 2PC 契约 #3（commit durable barrier）：participant 收到 commit 后必须
+  # **先把快照持久化到 DB、确认 DB chunk_version >= 本次 commit version**，才返回
+  # durable-ack 并删 fence；persist 完成前不得删 fence、不得 reply {:ok}。
+  #
+  # 因此 commit 分两步：
+  #   1. 在本 handle_call 里把 intents build 成 candidate storage 并 enqueue
+  #      async persist，拿到 persist_ref。**hot storage 此刻不推进**（candidate
+  #      只活在 ack 里）；fence **不删**、pending_fence **不清**、from **不 reply**
+  #      ——登记进 pending_commit_acks 后 {:noreply}。
+  #   2. `:async_snapshot_persist_finished` 成功时（且 DB 版本已 >= commit
+  #      version）才 swap hot=candidate + 删 fence + reply {:ok, durable-ack}；
+  #      失败 / Task :DOWN 则 hot 保持 commit 前版本 + 保留 fence + reply
+  #      {:error, :persist_failed}，由 coordinator 重投递 commit（幂等重建）。
+  #
+  # 无变更（changed_count == 0）的 commit 没有 persist 需要等待，本身即 durable，
+  # 直接同步删 fence + reply。
+  def handle_call({:commit_transaction, transaction_id}, from, state) do
     case commit_transaction_in_state(state, transaction_id) do
-      {:ok, reply, next_state, intents} ->
+      {:durable_pending, ack, next_state} ->
+        # 候选 storage 已就绪、async persist 已 enqueue；登记 durable-ack 等待，
+        # fence / pending_fence 保留，from 暂不 reply。
+        ack = %{ack | from: from}
+        pending_commit_acks = Map.put(next_state.pending_commit_acks, ack.persist_ref, ack)
+        {:noreply, %{next_state | pending_commit_acks: pending_commit_acks}}
+
+      {:committed_noop, reply, next_state, intents} ->
+        # 无变更 commit：无 persist 需要等待，已 durable。同步释放 fence。
+        next_state = finalize_committed_noop(next_state, transaction_id)
+        # 记录已 durable 提交,供后续重投递做幂等(no-op commit 的 version 即当前
+        # hot chunk_version,DB 已是该版本或为空)。
+        next_state =
+          record_durable_commit(next_state, transaction_id, next_state.storage.chunk_version)
+
         next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
 
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
@@ -963,14 +1044,39 @@ defmodule SceneServer.Voxel.ChunkProcess do
           changed_count: reply.changed_count,
           skipped_count: reply.skipped_count,
           intent_count: length(intents),
-          persist_result: reply.persist_result
+          persist_result: reply.persist_result,
+          durable?: true
         })
 
-        if reply.changed? do
-          push_batch_outcome(state, next_state, intents, :commit_transaction)
-        end
+        {:reply, {:ok, Map.put(reply, :durable?, true)}, next_state}
 
-        {:reply, {:ok, reply}, next_state}
+      # 阶段4 / world-2pc 跨侧幂等(B2)：该事务已 durable 提交过(fence 已释放)。
+      # world 重投递 commit 时幂等回 {:ok, durable?: true}，闭合 durable-ack，
+      # 避免“scene 已 durable but world pending”崩溃窗口里的永久 stranding。
+      {:committed_idempotent, commit_version} ->
+        emit_transaction_event(
+          state,
+          transaction_id,
+          "voxel_chunk_transaction_commit_idempotent",
+          %{
+            durable?: true,
+            durable_chunk_version: commit_version
+          }
+        )
+
+        {:reply,
+         {:ok,
+          %{
+            changed?: false,
+            changed_count: 0,
+            skipped_count: 0,
+            chunk_version: commit_version,
+            snapshot_payload: <<>>,
+            persist_result: :durable,
+            durable?: true,
+            durable_chunk_version: commit_version,
+            idempotent?: true
+          }}, state}
 
       {:error, reason} ->
         emit_transaction_event(state, transaction_id, "voxel_chunk_transaction_commit_failed", %{
@@ -1295,6 +1401,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
        mode: state.mode,
        hydrate_status: state.hydrate_status,
        pending_async_persist_count: map_size(state.async_persists),
+       # 阶段4 (4.5)：暴露 in-flight commit durable-ack 等待数 + 当前 fence 摘要，
+       # 供 CLI / 故障注入测试断言 durable join 与 fence TTL 行为。
+       pending_commit_ack_count: map_size(state.pending_commit_acks),
+       pending_fence: pending_fence_summary(state.pending_fence),
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers),
        field_region_count: map_size(state.field_regions),
@@ -1384,8 +1494,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end)
     end
 
+    # 阶段4 (4.5)②：durable join。若该 ref 是某个 commit 的 durable-ack 等待点，
+    # 在此根据 persist result 决定删 fence + reply {:ok}（成功）还是保留 fence
+    # + reply {:error, :persist_failed}（失败）。
     state =
       %{state | async_persists: async_persists}
+      |> resolve_pending_commit_ack(ref, result)
       |> maybe_reply_persist_waiters()
 
     {:noreply, state}
@@ -1408,8 +1522,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
           })
         end)
 
+        # 阶段4 (4.5)③：unlinked persist Task :DOWN —— 持久化未确认完成。若该 ref
+        # 是某个 commit 的 durable-ack 等待点，reply {:error, :persist_failed}
+        # 并保留 fence（决定权交回 coordinator 重投递），绝不挂起 caller。
         state =
           %{state | async_persists: async_persists}
+          |> resolve_pending_commit_ack(ref, {:error, {:persist_task_down, reason}})
           |> maybe_reply_persist_waiters()
 
         {:noreply, state}
@@ -1469,6 +1587,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_info(:simulation_tick, state) do
     next_state = run_simulation_tick(state)
     schedule_simulation_tick()
+    {:noreply, next_state}
+  end
+
+  # 阶段4 (2.2 world-2pc-6)：prepared fence TTL 兜底。周期检查 in-memory fence
+  # 是否已过 deadline。过期且没有 in-flight commit（pending_commit_acks 空表示
+  # 该事务还没进入 commit 的 durable 等待）时，主动作废孤儿 fence：删 DB 行 +
+  # 清 pending_fence + 报 observe。这是 coordinator/driver 整体死亡的兜底；
+  # 主路径仍是 World reaper 显式 abort。
+  def handle_info(:check_pending_fence_ttl, state) do
+    next_state = maybe_void_expired_fence(state)
+    schedule_fence_ttl_check()
     {:noreply, next_state}
   end
 
@@ -1670,6 +1799,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
     apply_normalized_intent(state, intent, true)
   end
 
+  # ad-hoc 单 intent 直写路径（`apply_intent/2`，非事务）。保持**同步持久化 +
+  # durable-on-reply** 语义不变：`apply_intent/2` 的调用方依赖 reply 已落库
+  # （`persist_result` 为 `:inserted`/`:updated`）。
+  #
+  # 阶段4 (4.5) 的“单/批统一 enqueue + 单 join 点”针对的是**事务 commit** 路径
+  # （见 `commit_prepared_intents/3`）：commit 不论 1 个还是 N 个 intent，都走
+  # `enqueue_snapshot_persist` + `:async_snapshot_persist_finished` 这同一条
+  # durable join；本 ad-hoc 直写路径不进 2PC，不改其同步契约。
   defp apply_normalized_intent(state, intent, retry_on_persist_stale?) do
     # Phase 4 (D7):collect damage attribution from owner lookups BEFORE
     # the apply clears the slot (post-apply lookup would see the empty
@@ -1982,6 +2119,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
              :ok <- validate_batch_occupancy(state, normalized),
              {:ok, owner_lease} <- fetch_fence_owner_lease(normalized) do
           fenced_at_ms = now_ms()
+          # 阶段4 (2.2)：fence TTL 的 deadline。优先取 coordinator 在 prepare
+          # 时下发的绝对 `:fence_deadline_ms`（基于 coordinator deadline）；
+          # 未下发时用 `fenced_at_ms + @default_fence_ttl_ms` 兜底。注意：DB
+          # fence 行不持久化 deadline（对侧 schema 不扩列），deadline 只活在
+          # in-memory pending_fence；Scene 重启后从 fenced_at_ms 保守重建。
+          deadline_ms = fence_deadline_ms(opts, fenced_at_ms)
 
           fence_attrs = %{
             logical_scene_id: state.logical_scene_id,
@@ -2002,7 +2145,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
                 transaction_id: transaction_id,
                 decision_version: decision_version,
                 intents: normalized,
-                fenced_at_ms: fenced_at_ms
+                fenced_at_ms: fenced_at_ms,
+                deadline_ms: deadline_ms
               }
 
               {:ok, fence_summary(fence), %{state | pending_fence: fence}}
@@ -2011,6 +2155,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
               {:error, persist_fence_reason(reason)}
           end
         end
+    end
+  end
+
+  # 阶段4 (2.2)：解析 prepare opts 里的 fence deadline。coordinator 传绝对
+  # 毫秒时间戳 `:fence_deadline_ms`（与本进程 `System.system_time(:millisecond)`
+  # 同一时钟域）；缺省 / 非法值回落到默认 TTL。
+  defp fence_deadline_ms(opts, fenced_at_ms) do
+    case Keyword.get(opts, :fence_deadline_ms) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> fenced_at_ms + @default_fence_ttl_ms
     end
   end
 
@@ -2026,21 +2180,262 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp commit_transaction_in_state(state, transaction_id) do
     case state.pending_fence do
       %{transaction_id: ^transaction_id, intents: intents} ->
-        case apply_normalized_intents(state, intents) do
-          {:ok, reply, next_state_after_apply} ->
-            delete_persisted_fence(state, transaction_id, :commit)
-            {:ok, reply, %{next_state_after_apply | pending_fence: nil}, intents}
+        commit_prepared_intents(state, transaction_id, intents)
+
+      %{transaction_id: holder} ->
+        # 另一个事务正持有 fence。但若**本** transaction_id 已 durable 提交过
+        # （fence 已释放、随后别的事务又 prepare 占住 fence），重投递仍应幂等回
+        # durable，而不是误报“被别人占用”。先查已提交记录。
+        case already_durably_committed(state, transaction_id) do
+          {:ok, commit_version} ->
+            {:committed_idempotent, commit_version}
+
+          :error ->
+            {:error, {:chunk_fence_owned_by_another_transaction, holder}}
+        end
+
+      nil ->
+        # 阶段4 / world-2pc 跨侧幂等(B2)：fence 不在了。两种情况：
+        #   1. 本事务**已 durable 提交**(scene 端已 fence 删 + hot swap，但 world
+        #      可能尚未记下该 participant 的 durable-ack) → world 重投递 commit。
+        #      此时必须**幂等回 durable**，让 world 收到 durable-ack 闭环，否则跨侧
+        #      liveness 死锁。
+        #   2. 从未 prepare 过该事务 → 真正的 :transaction_not_prepared。
+        case already_durably_committed(state, transaction_id) do
+          {:ok, commit_version} ->
+            {:committed_idempotent, commit_version}
+
+          :error ->
+            {:error, :transaction_not_prepared}
+        end
+    end
+  end
+
+  # 该 transaction_id 是否已被本 chunk durable 提交过(在 last_durable_commits 里)。
+  defp already_durably_committed(state, transaction_id) do
+    case Map.fetch(state.last_durable_commits, transaction_id) do
+      {:ok, commit_version} -> {:ok, commit_version}
+      :error -> :error
+    end
+  end
+
+  # 记录一笔已 durable 提交的事务,供后续 commit 重投递做幂等 durable-ack。
+  defp record_durable_commit(state, transaction_id, commit_version) do
+    %{
+      state
+      | last_durable_commits: Map.put(state.last_durable_commits, transaction_id, commit_version)
+    }
+  end
+
+  # 阶段4 (4.5)：commit 的 durable barrier 核心。
+  #
+  # 关键不变式：在 durable-ack 之前**绝不推进 hot `state.storage`**。candidate
+  # storage 只活在 pending_commit_ack 里，durable 成功才 swap 进 state。这样：
+  #   * persist 失败 → hot 仍是 commit 前版本 → coordinator 重投递 commit 时
+  #     重新 build 出同一 candidate（同一目标 version），重新 enqueue persist，
+  #     天然幂等且不会出现“hot 已变但 DB 没跟上、重投递又判无变更跳过持久化”
+  #     的丢库窗口。
+  #   * persist 成功 → swap hot=candidate，删 fence，reply durable-ack。
+  defp commit_prepared_intents(state, transaction_id, intents) do
+    with :ok <- validate_batch_scope(state, intents),
+         :ok <- validate_batch_preconditions(state, intents),
+         :ok <- validate_apply_batch_occupancy(state, intents),
+         {:ok, raw_storage, changed_count, skipped_count} <-
+           build_intents_storage(state.storage, intents) do
+      candidate_storage = Storage.refresh_chunk_object_refs(raw_storage)
+      request_id = intents |> List.first() |> Map.fetch!(:request_id)
+      return_snapshot_payload? = return_snapshot_payload?(intents)
+
+      snapshot_payload =
+        maybe_encode_snapshot_payload(candidate_storage, request_id, return_snapshot_payload?)
+
+      lease = intents |> List.first() |> Map.fetch!(:lease)
+
+      if changed_count > 0 do
+        # 注意：enqueue 持久化的是 candidate_storage（带新 version），但
+        # state.storage 维持不变（仍是 commit 前版本）。
+        case enqueue_snapshot_persist(
+               state,
+               lease,
+               state.chunk_coord,
+               candidate_storage,
+               snapshot_payload_for_persist(snapshot_payload, return_snapshot_payload?)
+             ) do
+          {:ok, persist_result, persist_ref, state_with_task} ->
+            reply =
+              batch_intent_reply(
+                candidate_storage,
+                lease,
+                persist_result,
+                snapshot_payload,
+                changed_count,
+                skipped_count,
+                persist_ref
+              )
+
+            ack = %{
+              from: nil,
+              persist_ref: persist_ref,
+              transaction_id: transaction_id,
+              commit_version: candidate_storage.chunk_version,
+              # candidate / damage 在 durable 成功时才落地到 hot state。
+              candidate_storage: candidate_storage,
+              lease: lease,
+              damage_attribution: collect_damage_attribution(state.storage, intents),
+              reply: reply,
+              intents: intents,
+              # state_before 仅用于 durable 成功后的 delta 推送基线。
+              state_before: state
+            }
+
+            {:durable_pending, ack, state_with_task}
 
           {:error, reason} ->
             {:error, reason}
         end
+      else
+        # changed_count == 0：无 persist，本身 durable（DB 已是该状态或本就为空）。
+        # 交回 handle_call 同步释放 fence，hot storage 不变。
+        reply =
+          batch_intent_reply(
+            candidate_storage,
+            lease,
+            :unchanged,
+            snapshot_payload,
+            changed_count,
+            skipped_count,
+            nil
+          )
 
-      %{transaction_id: holder} ->
-        {:error, {:chunk_fence_owned_by_another_transaction, holder}}
-
-      nil ->
-        {:error, :transaction_not_prepared}
+        {:committed_noop, reply, state, intents}
+      end
+    else
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  # 阶段4 (4.5)：无变更 commit 的 fence 释放（同步路径，已 durable）。
+  defp finalize_committed_noop(state, transaction_id) do
+    delete_persisted_fence(state, transaction_id, :commit)
+    %{state | pending_fence: nil}
+  end
+
+  # 阶段4 (4.5)②③：durable join 的收口。给定刚完成 / 刚 DOWN 的 persist ref 与
+  # 其 result，若该 ref 对应一个等待 durable-ack 的 commit，则按成功/失败分流：
+  #
+  # * 成功（`{:ok, _}`）：再做契约 #3④ 的屏障校验——确认 DB chunk_version 已
+  #   >= 本次 commit version，确认通过才删 fence + reply {:ok, durable-ack}；
+  #   屏障校验失败（DB 落后 / 不可达）按失败处理，保留 fence。
+  # * 失败（`{:error, _}` / Task :DOWN）：**保留 fence + pending_fence**，
+  #   reply {:error, :persist_failed}，决定权交回 coordinator 重投递 commit。
+  #
+  # 非 commit ack 的普通 ref（如直写 apply_intent 的 async persist）此处无对应
+  # 条目，原样返回 state。
+  defp resolve_pending_commit_ack(state, ref, result) do
+    case Map.pop(state.pending_commit_acks, ref) do
+      {nil, _acks} ->
+        state
+
+      {ack, remaining_acks} ->
+        state = %{state | pending_commit_acks: remaining_acks}
+
+        case commit_persist_durable?(state, result, ack) do
+          :ok -> finalize_committed_durable(state, ack)
+          {:error, reason} -> finalize_committed_failed(state, ack, reason)
+        end
+    end
+  end
+
+  # 契约 #3④：删 fence 前确认 DB chunk_version >= 本次 commit version。persist
+  # 已回 {:ok}（store 内部已用版本围栏拒绝 stale），这里再独立读回一次 DB 版本
+  # 做强校验，避免误把“尚未落库”的状态当 durable。
+  defp commit_persist_durable?(_state, {:error, reason}, _ack) do
+    {:error, {:persist_failed, reason}}
+  end
+
+  defp commit_persist_durable?(state, {:ok, _put_result}, ack) do
+    case safe_get_snapshot(state.logical_scene_id, state.chunk_coord) do
+      {:ok, snapshot} ->
+        if snapshot.chunk_version >= ack.commit_version do
+          :ok
+        else
+          {:error,
+           {:durable_barrier_unmet,
+            %{db_version: snapshot.chunk_version, commit_version: ack.commit_version}}}
+        end
+
+      {:error, reason} ->
+        {:error, {:durable_barrier_check_failed, reason}}
+    end
+  end
+
+  # durable 成功：swap hot=candidate + 删 fence + 清 pending_fence + 推 commit
+  # delta + emit committed + reply {:ok, durable-ack}。durable-ack 携带
+  # `durable?: true` 与 `durable_chunk_version`，供 world 侧做全-participant
+  # durable barrier。
+  #
+  # 关键：hot `state.storage` 在此刻（durable 成功）才推进到 candidate；在此之前
+  # hot 一直是 commit 前版本（见 commit_prepared_intents 的不变式说明）。
+  defp finalize_committed_durable(state, ack) do
+    transaction_id = ack.transaction_id
+    state_before = ack.state_before
+    reply = ack.reply
+
+    # swap hot=candidate + 刷新 lease（commit 用的是 fence owner lease）。
+    state =
+      %{state | storage: ack.candidate_storage, lease: ack.lease}
+      |> promote_authorized_on_write()
+
+    # damage attribution 推迟到 durable 成功才 dispatch（与写一致落地）。
+    dispatch_damage_async(state, ack.damage_attribution)
+
+    state = finalize_committed_noop(state, transaction_id)
+    # 记录已 durable 提交,供后续 commit 重投递做幂等 durable-ack(B2 跨侧幂等)。
+    state = record_durable_commit(state, transaction_id, ack.commit_version)
+    state = maybe_schedule_auto_circuit_refresh(state, reply.changed?)
+
+    emit_transaction_event(state, transaction_id, "voxel_chunk_transaction_committed", %{
+      chunk_version: state.storage.chunk_version,
+      snapshot_bytes: byte_size(reply.snapshot_payload),
+      changed?: reply.changed?,
+      changed_count: reply.changed_count,
+      skipped_count: reply.skipped_count,
+      intent_count: length(ack.intents),
+      persist_result: reply.persist_result,
+      durable?: true,
+      durable_chunk_version: ack.commit_version
+    })
+
+    if reply.changed? do
+      push_batch_outcome(state_before, state, ack.intents, :commit_transaction)
+    end
+
+    durable_reply =
+      reply
+      |> Map.put(:durable?, true)
+      |> Map.put(:durable_chunk_version, ack.commit_version)
+      |> Map.put(:persist_result, :durable)
+
+    GenServer.reply(ack.from, {:ok, durable_reply})
+
+    state
+  end
+
+  # durable 失败：保留 fence（pending_fence 不动）+ hot storage 维持 commit 前
+  # 版本（candidate 从未 swap 进 state）+ reply {:error, :persist_failed}。
+  # fence 仍在 → 后续除该事务外的 apply 仍被拒；coordinator 重投递 commit 时
+  # commit_prepared_intents 会以**未变的 pre-commit storage** 为基重新 build 出
+  # 同一 candidate（同一目标 version）+ 重新 enqueue persist，天然幂等；DB 版本
+  # 围栏保证不会回退。
+  defp finalize_committed_failed(state, ack, reason) do
+    emit_transaction_event(state, ack.transaction_id, "voxel_chunk_transaction_commit_not_durable", %{
+      commit_version: ack.commit_version,
+      reason: inspect(reason)
+    })
+
+    GenServer.reply(ack.from, {:error, :persist_failed})
+
+    state
   end
 
   defp abort_transaction_in_state(state, transaction_id) do
@@ -2052,6 +2447,52 @@ defmodule SceneServer.Voxel.ChunkProcess do
       _other ->
         {false, state}
     end
+  end
+
+  # 阶段4 (2.2)：TTL 兜底——检查并作废过期 prepared fence。
+  defp maybe_void_expired_fence(%{pending_fence: nil} = state), do: state
+
+  defp maybe_void_expired_fence(%{pending_fence: fence} = state) do
+    cond do
+      # 已进入 commit 的 durable 等待（pending_commit_acks 里有该事务的 ref）
+      # 不能被 TTL 作废——决定已记录，正在重投递持久化（契约 #2 决定不可逆）。
+      commit_in_flight?(state, fence.transaction_id) ->
+        state
+
+      not is_integer(Map.get(fence, :deadline_ms)) ->
+        # 无 deadline 的旧 fence（理论上不该出现）——跳过，交给 World reaper。
+        state
+
+      now_ms() < fence.deadline_ms ->
+        state
+
+      true ->
+        void_expired_fence(state, fence)
+    end
+  end
+
+  defp commit_in_flight?(state, transaction_id) do
+    Enum.any?(state.pending_commit_acks, fn {_ref, ack} ->
+      ack.transaction_id == transaction_id
+    end)
+  end
+
+  defp void_expired_fence(state, fence) do
+    delete_persisted_fence(state, fence.transaction_id, :ttl_expired)
+
+    CliObserve.emit("voxel_chunk_pending_transaction_ttl_expired", fn ->
+      %{
+        logical_scene_id: state.logical_scene_id,
+        chunk_coord: state.chunk_coord,
+        transaction_id: fence.transaction_id,
+        decision_version: Map.get(fence, :decision_version),
+        fenced_at_ms: Map.get(fence, :fenced_at_ms),
+        deadline_ms: fence.deadline_ms,
+        now_ms: now_ms()
+      }
+    end)
+
+    %{state | pending_fence: nil}
   end
 
   defp delete_persisted_fence(state, transaction_id, reason) do
@@ -2090,6 +2531,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
     }
   end
 
+  # 阶段4：debug_state 用的 fence 摘要（含 deadline_ms，供 TTL 测试断言）。
+  defp pending_fence_summary(nil), do: nil
+
+  defp pending_fence_summary(fence) do
+    %{
+      transaction_id: fence.transaction_id,
+      decision_version: Map.get(fence, :decision_version),
+      intent_count: length(fence.intents),
+      fenced_at_ms: Map.get(fence, :fenced_at_ms),
+      deadline_ms: Map.get(fence, :deadline_ms)
+    }
+  end
+
   defp emit_transaction_event(state, transaction_id, event, payload) when is_map(payload) do
     CliObserve.emit(event, fn ->
       Map.merge(
@@ -2104,6 +2558,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp now_ms, do: System.system_time(:millisecond)
+
+  # 阶段4 (4.5)：async persist 的故障注入 seam（仅供故障注入测试）。
+  # 读 `:scene_server, :voxel_persist_fault`，默认 nil（生产路径无任何效果）。
+  # 取值：`:crash` | `{:result, term()}`。
+  defp persist_fault_hook do
+    Application.get_env(:scene_server, :voxel_persist_fault)
+  end
 
   defp validate_intent_scope(state, intent) do
     cond do
@@ -3256,17 +3717,35 @@ defmodule SceneServer.Voxel.ChunkProcess do
       parent = self()
       ref = System.unique_integer([:positive, :monotonic])
 
+      # 阶段4 (4.5)③：unlinked Task + monitor，使 persist 不与 chunk 共命运。
+      # persist 内部 DB 异常被 `safe_persist_snapshot_with_retry` 兜住正常 send
+      # finished；若 Task 本身意外崩溃（如被 kill），chunk 不会因 link 一起死，
+      # 而是收到 :DOWN，在 DOWN 分支把对应 commit ack reply error（保留 fence）。
+      persist_fault = persist_fault_hook()
+
       {:ok, pid} =
-        Task.start_link(fn ->
+        Task.start(fn ->
           payload = payload || encode_snapshot_payload(storage, 0)
           snapshot_bytes = byte_size(payload)
 
-          result =
-            lease
-            |> build_snapshot_attrs(chunk_coord, storage, payload)
-            |> safe_persist_snapshot_with_retry(3)
+          # 故障注入测试 seam（仅测试态、默认 nil）。生产路径完全不受影响。
+          #   :crash —— Task 不发 finished 直接退出（模拟 persist Task :DOWN）。
+          #   {:result, r} —— 跳过真实 DB 写，强制 persist 结果（如 {:error, _}）。
+          case persist_fault do
+            :crash ->
+              exit({:injected_persist_crash, ref})
 
-          send(parent, {:async_snapshot_persist_finished, ref, result, snapshot_bytes})
+            {:result, forced_result} ->
+              send(parent, {:async_snapshot_persist_finished, ref, forced_result, snapshot_bytes})
+
+            _ ->
+              result =
+                lease
+                |> build_snapshot_attrs(chunk_coord, storage, payload)
+                |> safe_persist_snapshot_with_retry(3)
+
+              send(parent, {:async_snapshot_persist_finished, ref, result, snapshot_bytes})
+          end
         end)
 
       monitor_ref = Process.monitor(pid)

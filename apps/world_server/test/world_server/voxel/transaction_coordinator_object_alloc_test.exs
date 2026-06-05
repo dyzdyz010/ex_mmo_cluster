@@ -207,7 +207,12 @@ defmodule WorldServer.Voxel.TransactionCoordinatorObjectAllocTest do
   end
 
   defp start_coordinator!(opts \\ []) do
-    opts = Keyword.put_new(opts, :next_object_id_fn, fn -> {:ok, 1} end)
+    opts =
+      opts
+      |> Keyword.put_new(:next_object_id_fn, fn -> {:ok, 1} end)
+      # 这些测试 base_attrs 用 timeout_at_ms: 0(stale),关掉内生 deadline 调度,
+      # 避免事务被自动 abort——本组只测 object_id 分配 / replay,不测 liveness。
+      |> Keyword.put_new(:deadline_scheduling?, false)
 
     start_supervised!(
       {TransactionCoordinator,

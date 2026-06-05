@@ -70,20 +70,129 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
     assert TransactionCoordinator.snapshot(coordinator) == snapshot
   end
 
-  test "commit decision is idempotent for the same decision version" do
+  test "commit decision records :committing and is idempotent for the same decision version" do
+    # 阶段4 / world-2pc-3 契约变更:commit_decision 记录决策后只进 :committing
+    # (**已决不可逆**),要等全 participant durable-ack 才到 :committed。
     coordinator = start_supervised!(TransactionCoordinator)
 
     prepare_all!(coordinator, "tx-commit")
 
-    assert {:ok, %BuildTransaction{state: :committed} = committed} =
+    assert {:ok, %BuildTransaction{state: :committing, commit_acks: acks} = committing} =
              TransactionCoordinator.commit_decision(coordinator, "tx-commit", 1)
+
+    # 全 participant 初始 :pending。
+    assert Enum.all?(acks, fn {_key, status} -> status == :pending end)
 
     snapshot = TransactionCoordinator.snapshot(coordinator)
 
-    assert {:ok, ^committed} =
+    # 同 decision_version 再 commit_decision 幂等(返回 :committing 视图,
+    # 不重置)。
+    assert {:ok, ^committing} =
              TransactionCoordinator.commit_decision(coordinator, "tx-commit", 1)
 
     assert TransactionCoordinator.snapshot(coordinator) == snapshot
+  end
+
+  test "transaction reaches :committed only after every participant durable-acks" do
+    coordinator = start_supervised!(TransactionCoordinator)
+
+    prepare_all!(coordinator, "tx-durable")
+
+    assert {:ok, %BuildTransaction{state: :committing}} =
+             TransactionCoordinator.commit_decision(coordinator, "tx-durable", 1)
+
+    # 第一个 participant durable-ack 后,事务仍 :committing(还差一个)。
+    assert {:ok, %BuildTransaction{state: :committing}} =
+             TransactionCoordinator.commit_durable_ack(coordinator, "tx-durable", {10, 100})
+
+    # 第二个(最后一个)durable-ack 后,事务推进到 :committed。
+    assert {:ok, %BuildTransaction{state: :committed, participants: participants}} =
+             TransactionCoordinator.commit_durable_ack(coordinator, "tx-durable", {20, 200})
+
+    assert Enum.all?(participants, &(&1.commit_status == :committed))
+
+    # 终态后从活跃集裁出,但 decision_index 留归档(幂等重放靠它)。
+    snapshot = TransactionCoordinator.snapshot(coordinator)
+    refute Map.has_key?(snapshot.transactions, "tx-durable")
+    assert snapshot.decision_index["tx-durable"].decision == :commit
+
+    # 已 committed 再 durable-ack 幂等成功。
+    assert {:ok, _} =
+             TransactionCoordinator.commit_durable_ack(coordinator, "tx-durable", {10, 100})
+  end
+
+  test "abort_decision on a decided-commit transaction is rejected (契约#2)" do
+    coordinator = start_supervised!(TransactionCoordinator)
+
+    prepare_all!(coordinator, "tx-no-abort-after-commit")
+
+    assert {:ok, %BuildTransaction{state: :committing}} =
+             TransactionCoordinator.commit_decision(coordinator, "tx-no-abort-after-commit", 1)
+
+    # 已决 commit 后绝不能 abort。
+    assert {:error, {:already_decided, :commit}} =
+             TransactionCoordinator.abort_decision(coordinator, "tx-no-abort-after-commit", 1)
+
+    # 即便只有部分 participant durable,abort 仍被拒。
+    assert {:ok, _} =
+             TransactionCoordinator.commit_durable_ack(
+               coordinator,
+               "tx-no-abort-after-commit",
+               {10, 100}
+             )
+
+    assert {:error, {:already_decided, :commit}} =
+             TransactionCoordinator.abort_decision(coordinator, "tx-no-abort-after-commit", 1)
+  end
+
+  test "deadline sweep aborts a stuck :preparing transaction" do
+    # deadline_scheduling?: false 让自动 per-deadline timer 不抢跑,只测手动 sweep。
+    coordinator =
+      start_supervised!(
+        {TransactionCoordinator,
+         name: :"coord_sweep_prep_#{System.unique_integer([:positive])}",
+         deadline_scheduling?: false}
+      )
+
+    # timeout 已过(过去时间戳)→ sweep 立刻自我 abort。
+    attrs =
+      transaction_attrs("tx-stuck-preparing")
+      |> Map.put(:timeout_at_ms, 1)
+
+    assert {:ok, %BuildTransaction{state: :preparing}} =
+             TransactionCoordinator.begin_transaction(coordinator, attrs)
+
+    assert [{"tx-stuck-preparing", :advanced_to_abort}] =
+             TransactionCoordinator.sweep_deadlines(coordinator)
+
+    snapshot = TransactionCoordinator.snapshot(coordinator)
+    refute Map.has_key?(snapshot.transactions, "tx-stuck-preparing")
+    assert snapshot.decision_index["tx-stuck-preparing"].decision == :abort
+  end
+
+  test "deadline sweep flags a stuck :prepared transaction for resume (does not abort)" do
+    coordinator =
+      start_supervised!(
+        {TransactionCoordinator,
+         name: :"coord_sweep_prepared_#{System.unique_integer([:positive])}",
+         deadline_scheduling?: false}
+      )
+
+    attrs =
+      transaction_attrs("tx-stuck-prepared")
+      |> Map.put(:timeout_at_ms, 1)
+
+    assert {:ok, _} = TransactionCoordinator.begin_transaction(coordinator, attrs)
+    assert {:ok, _} = ack_prepared(coordinator, "tx-stuck-prepared", {10, 100})
+    assert {:ok, _} = ack_prepared(coordinator, "tx-stuck-prepared", {20, 200})
+
+    assert [{"tx-stuck-prepared", :flagged_for_resume}] =
+             TransactionCoordinator.sweep_deadlines(coordinator)
+
+    # prepared 事务**不被 abort**,仍在活跃集等 driver/reaper 续推。
+    snapshot = TransactionCoordinator.snapshot(coordinator)
+    assert snapshot.transactions["tx-stuck-prepared"].state == :prepared
+    refute Map.has_key?(snapshot.decision_index, "tx-stuck-prepared")
   end
 
   test "commit before every participant prepared is rejected" do
@@ -233,6 +342,16 @@ defmodule WorldServer.Voxel.TransactionCoordinatorTest do
                status: :prepared,
                acked_at_ms: 9
              })
+  end
+
+  defp ack_prepared(coordinator, transaction_id, {region_id, lease_id} = participant_key) do
+    TransactionCoordinator.prepare_ack(coordinator, transaction_id, %{
+      participant_key: participant_key,
+      region_id: region_id,
+      lease_id: lease_id,
+      status: :prepared,
+      acked_at_ms: 1
+    })
   end
 
   defp prepare_all!(coordinator, transaction_id) do

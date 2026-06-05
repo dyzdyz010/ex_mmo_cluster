@@ -1,8 +1,8 @@
-# Phase 3: TransactionCoordinator persists through Postgres
+# TransactionCoordinator persists through Postgres
 # (DataService.Voxel.TransactionCoordinatorStore). Boot the same Repo +
 # migration setup the data_service test suite uses so coordinator
-# persistence tests can hit a real `voxel_transaction_coordinator_snapshots`
-# row.
+# persistence tests can hit real `voxel_transaction_coordinator_rows` rows
+# (阶段4 / world-2pc-4 行级增量持久化,取代旧的单行 snapshot 表)。
 Application.ensure_all_started(:jason)
 Application.ensure_all_started(:postgrex)
 Application.ensure_all_started(:ecto_sql)

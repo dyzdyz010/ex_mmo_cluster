@@ -12,6 +12,11 @@ defmodule WorldServer.WorldSup do
   def init(_init_arg) do
     children =
       [
+        # 阶段4 / world-2pc-1:per-transaction driver 的进程身份注册表。driver 以
+        # `{:transaction_driver, transaction_id}` 注册(`:unique`),via-tuple 进
+        # start 参数,重启天然去重——boot sweep 和运行期 reaper 不会对同一笔事务
+        # 拉起两个 driver。
+        {Registry, keys: :unique, name: WorldServer.Voxel.TransactionDriverRegistry},
         # Phase A4-bis-cluster step 4 (segment 2a → 2c): start
         # SceneNodeRegistry + SceneNodeMonitor *before* MapLedger so
         # MapLedger.put_region can consult the registry from its very
@@ -37,11 +42,19 @@ defmodule WorldServer.WorldSup do
         default_region_bootstrapper_child(),
         {WorldServer.Voxel.TransactionCoordinator,
          name: WorldServer.Voxel.TransactionCoordinator,
-         persist_fn: DataService.Voxel.TransactionCoordinatorStore.persist_fn(DataService.Repo),
+         persist_rows_fn:
+           DataService.Voxel.TransactionCoordinatorStore.persist_rows_fn(DataService.Repo),
          load_fn: DataService.Voxel.TransactionCoordinatorStore.load_fn(DataService.Repo)},
+        # 阶段4 / world-2pc-1:per-transaction driver 受监督进程的 DynamicSupervisor。
+        # driver 崩溃由它重启,driver init 从 coordinator 持久状态续推。
+        {WorldServer.Voxel.TransactionDriverSupervisor,
+         name: WorldServer.Voxel.TransactionDriverSupervisor},
+        # 阶段4 / world-2pc-2:boot sweep + 运行期周期 reaper + fence 对账。
+        # scene_opts_resolver 既给 watcher resume 用,也给 driver dispatch 用。
         {WorldServer.Voxel.TransactionRecoveryWatcher,
          name: WorldServer.Voxel.TransactionRecoveryWatcher,
          coordinator: WorldServer.Voxel.TransactionCoordinator,
+         driver_supervisor: WorldServer.Voxel.TransactionDriverSupervisor,
          scene_opts_resolver: &__MODULE__.default_scene_opts_resolver/1}
       ]
       |> Enum.reject(&is_nil/1)

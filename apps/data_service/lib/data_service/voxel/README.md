@@ -29,9 +29,25 @@ batch 的 `:erlang.term_to_binary/1` blob，反序列化用 `[:safe]` 模式。
 **Phase 3 / S1：`DataService.Voxel.SceneNodeRegistryStore`** 走
 `voxel_scene_node_registry_snapshots` 单行 snapshot 表，是
 `WorldServer.Voxel.SceneNodeRegistry` 的**权威**持久化后端（进程身份注册化，
-cluster-discovery-4）。它和 `MapLedgerStore` / `TransactionCoordinatorStore`
-共用同一套单行 term-blob facility（固定 `id`、`payload` 为 `:erlang.term_to_binary/1`、
-upsert 写、`[:safe]` 读、单行替换语义）。
+cluster-discovery-4）。它和 `MapLedgerStore` 共用同一套单行 term-blob facility
+（固定 `id`、`payload` 为 `:erlang.term_to_binary/1`、upsert 写、`[:safe]` 读、
+单行替换语义）。
+
+**阶段4 / world-2pc-4：`DataService.Voxel.TransactionCoordinatorStore`** 升级为
+**行级增量持久化**,走 `voxel_transaction_coordinator_rows` 新表(主键
+`transaction_id`,`:erlang.term_to_binary/1` 编码),取代旧的单行全量
+`voxel_transaction_coordinator_snapshots`(由 `20260605000001` 迁移 drop,无迁移债):
+
+- `persist_rows/3` 只 upsert **变更过的事务行** + 删除被裁剪的行(一个
+  `insert_all` + 一个 `delete_all`),写代价随单回合变更量而非历史总量;终态
+  事务被协调者裁出活跃集后,行收敛成只带决策归档的轻量历史行(`transaction` /
+  `begin_fingerprint` 为 nil)。
+- `load_state/1` 扫全表把每行重建回协调者四张 map
+  (`transactions` / `begin_fingerprints` / `decisions` / `decision_index`),
+  形状与旧单行 snapshot 完全一致,协调者 `init` 无需感知存储切换。
+- `persist_rows_fn/1`(2-arity)/ `load_fn/1` 绑定 `repo` 注入协调者启动选项;
+  坏行用 `[:safe]` 解码失败时跳过 + `Logger.warning`,不让单行损坏拖垮整体
+  hydrate(对齐 SceneNodeRegistryStore 的"坏行不静默当权威、也不 crash"纪律)。
 
 - 接受 key：`join_order`（`node()` 列表）、`region_assignments`
   （`%{region_id => node()}`）、`round_robin_cursor`（非负整数）。其它形状一律

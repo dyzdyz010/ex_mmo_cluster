@@ -259,5 +259,46 @@ Scene 侧 ObjectRegistry 会归一化为 `%PartState{}` struct）。
   - reconcile 仅退出轮转（不自动改派被扫节点的既有 region 归属，对齐
     `unregister_scene_node/2` 的 D8.B MVP 语义；自动 failover 是 Phase 6 HA 范围）。
 
+**阶段4 / S4：2PC liveness 闭环(world 侧,2026-06-05)** ——
+把"推进到终态"与"故障检测"变成协调权威的**内生职责**,并加上 commit durable
+barrier、状态裁剪与行级增量持久化:
+
+- **world-2pc-1 编排所有权收回 world**:`TransactionDriverSupervisor`(`:one_for_one`
+  DynamicSupervisor)+ per-transaction `TransactionDriver`(`restart: :transient`,
+  via-tuple 注册 `TransactionDriverRegistry` 去重)。driver 负责把一笔事务从当前
+  状态推到终态;崩溃由监督树重启,重启后从 `TransactionCoordinator.fetch_active/2`
+  读**持久状态**续推,不依赖发起方 gate 进程存活。`TransactionRecoveryWatcher`
+  配了 `:driver_supervisor` 时,`:prepared` / `:committing` 的 resume 通过
+  `TransactionDriverSupervisor.ensure_driver/2` 拉起 driver 异步续推;未配(单测)
+  则同步跑 executor。
+  > gate 发起侧(`tcp_connection.ex`)属 movement-sync WIP,本阶段跳过。
+
+- **world-2pc-2 恢复升级**:`TransactionCoordinator` 内建 deadline 调度(begin 时按
+  `timeout_at_ms` `send_after`,周期 `@sweep_interval_ms` sweep 兜底)消费
+  `timeout_at_ms`——卡 `:preparing` 过期 → 自我 abort;卡 `:prepared` 过期 → emit
+  `:flagged_for_resume` 交回 reaper/driver(coordinator 无 scene caller)。
+  `TransactionRecoveryWatcher` 从 one-shot 升级为 **boot sweep + 运行期周期 reaper
+  (`@reaper_interval_ms`,既调 `sweep_deadlines/1` 又跑 `recover/2`)+ 独立 fence
+  对账**(`:fence_snapshot_fn` 提供持久 fence 快照,孤儿 fence —— coordinator 活跃集
+  已无对应事务 —— 上报 `voxel_transaction_recovery_orphan_fence`;scene 侧 fence TTL
+  是另一支柱的兜底,这里只做 world 侧对账观测,不跨 app 删 scene fence)。
+
+- **world-2pc-3 commit_ack 对称**:`BuildTransaction` 加 `:committing` 中间态与
+  `commit_acks` 账本。`commit_decision` 记录决策后只进 `:committing`(**已决,契约#2:
+  绝不 abort**);`TransactionExecutor.run_commit` 先记 decision、再 dispatch commit,
+  participant `commit/3` 回 `{:ok}` = durable-ack(契约#3),executor 用
+  `commit_durable_ack/3` 逐个回报,**全 durable** 时 coordinator 才把事务推到
+  `:committed`。commit 失败的 participant **不 abort、持续重投递**(executor 结果带
+  `committed?: false`,reaper/driver 下一轮重投递);scene_objects 仅在真正 `:committed`
+  后才注册。`intents_by_participant` 早在 Phase 3-bis 已随事务持久化,`:committing`
+  resume 用 `derive_prepare_results_from_committing_state/1` 只对未 durable 的
+  participant 重投递。
+
+- **world-2pc-4 状态裁剪 + 增量持久化**:活跃工作集(`transactions` /
+  `begin_fingerprints`)与历史(`decision_index` 轻量归档 + 有界 `decisions` 窗口)
+  物理分离,终态事务移出活跃 map 避免无界增长;持久化从单行全量 snapshot 改为
+  `voxel_transaction_coordinator_rows` 行级增量(仅写变更事务行 + 删裁剪行)+ 异步
+  flush。详见 `DataService.Voxel.TransactionCoordinatorStore`。
+
 WorldServer 不保存完整区块真相，也不运行高频体素规则。它只决定拥有者，并发布写入围栏，
 防止迁移后的旧 Scene 进程继续写入。

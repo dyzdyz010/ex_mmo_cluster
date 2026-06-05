@@ -18,12 +18,25 @@ defmodule WorldServer.Voxel.TransactionExecutor do
      when prepare succeeded, `:failed` otherwise — including timeout, exit, and
      `{:error, _}` returns).
   3. Read the resulting transaction state from the coordinator. If it reached
-     `:prepared`, dispatch `commit/3` on every Scene participant (also in
-     parallel, with `:commit_timeout_ms`) and record the coordinator's commit
-     decision. Otherwise (the coordinator moved to `:aborting` because of a
-     failure ack, or any other unexpected state), dispatch `abort/3` on the
-     participants that did manage to prepare (with `:abort_timeout_ms`) and
-     record the coordinator's abort decision.
+     `:prepared`, **record the commit decision first** (coordinator → `:committing`,
+     **已决不可逆**), then dispatch `commit/3` on every Scene participant (also in
+     parallel, with `:commit_timeout_ms`). 阶段4 / world-2pc-3 **durable barrier**:
+     a participant's `commit/3` returning `{:ok, _}` is its **durable-ack**
+     (scene side persisted to DB, confirmed `chunk_version >= commit version`,
+     deleted its fence before replying); the executor feeds each durable-ack
+     back to the coordinator via `commit_durable_ack/3`. The transaction only
+     reaches `:committed` once **every** participant durable-acks. commit
+     failures are **never** turned into an abort (契约#2): they leave the
+     transaction in `:committing` to be re-dispatched by a driver/reaper.
+     Otherwise (the coordinator moved to `:aborting` because of a failure ack,
+     or any other unexpected state), dispatch `abort/3` on the participants that
+     did manage to prepare (with `:abort_timeout_ms`) and record the
+     coordinator's abort decision.
+
+  Result shape adds `committed?: boolean()` — `true` only when every participant
+  durable-acked this pass (`:committed`); `false` when the transaction is still
+  `:committing` (some participant commit failed and must be re-dispatched) or on
+  abort.
 
   Failure modes that map to `:failed` ack with a structured reason:
 
@@ -121,6 +134,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
          %{
            transaction: transaction,
            decision: replay_decision(already_decided),
+           committed?: already_decided == :committed,
            participant_results: [],
            prepare_results: []
          }}
@@ -138,6 +152,27 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         })
 
         prepare_results = derive_prepare_results_from_prepared_state(transaction)
+
+        run_commit(
+          coordinator,
+          transaction,
+          prepare_results,
+          scene_caller,
+          scene_opts_by_participant,
+          commit_timeout,
+          deadline
+        )
+
+      :committing ->
+        # 阶段4 / world-2pc-3 :committing fast-path:commit decision 已记录
+        # (**已决,不可逆**)但还没全 durable-ack。这是 driver/reaper 崩溃续推
+        # 的典型场景。只对 commit_acks 仍 :pending 的 participant **重投递**
+        # commit,绝不 abort 已决事务(契约#2)。
+        emit("voxel_transaction_executor_committing_resume", transaction, %{
+          pending_acks: count_pending_acks(transaction)
+        })
+
+        prepare_results = derive_prepare_results_from_committing_state(transaction)
 
         run_commit(
           coordinator,
@@ -211,6 +246,23 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         :pending -> {participant, {:error, :prepare_status_pending_at_resume}}
       end
     end)
+  end
+
+  # 阶段4 / world-2pc-3:`:committing` resume 的 prepare_results。已经 durable-ack
+  # 的 participant 不再 dispatch commit(prebaked 成 `{:ok, %{already_durable?:
+  # true}}`),只对仍 :pending 的 participant 重投递 commit。这让重投递只打到
+  # 还没 durable 的 participant,避免对已落库的 chunk 重复 commit。
+  defp derive_prepare_results_from_committing_state(transaction) do
+    Enum.map(transaction.participants, fn participant ->
+      case Map.get(transaction.commit_acks, participant_key(participant), :pending) do
+        :durable -> {participant, {:already_durable, %{}}}
+        :pending -> {participant, {:ok, %{resumed?: true}}}
+      end
+    end)
+  end
+
+  defp count_pending_acks(%{commit_acks: acks}) do
+    Enum.count(acks, fn {_key, status} -> status == :pending end)
   end
 
   defp replay_decision(:committed), do: :commit
@@ -306,6 +358,18 @@ defmodule WorldServer.Voxel.TransactionExecutor do
          commit_timeout,
          deadline
        ) do
+    # 阶段4 / world-2pc-3:**先记 commit decision**(→ :committing,**已决不可
+    # 逆**),再 dispatch commit。decision 先落让 driver 崩在 dispatch 中途时,
+    # 重启能走 :committing fast-path 续推,而不会被误判成可 abort。
+    {:ok, committing} =
+      TransactionCoordinator.commit_decision(
+        coordinator,
+        transaction.transaction_id,
+        transaction.decision_version
+      )
+
+    # to_run:本轮要 dispatch commit 的 participant(prepare ok 且尚未 durable);
+    # prebaked:不 dispatch 的(prepare 前置失败 / :committing resume 里已 durable)。
     {to_run, prebaked} =
       Enum.split_with(prepare_results, fn
         {_participant, {:ok, _summary}} -> true
@@ -318,8 +382,8 @@ defmodule WorldServer.Voxel.TransactionExecutor do
       safely_invoke(fn ->
         apply(scene_caller, :commit, [
           participant,
-          transaction.transaction_id,
-          scene_opts_with_logical_scene_id(scene_opts, transaction)
+          committing.transaction_id,
+          scene_opts_with_logical_scene_id(scene_opts, committing)
         ])
       end)
     end
@@ -334,6 +398,48 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         {participant, normalize_dispatch_outcome(stream_outcome)}
       end)
 
+    # 阶段4 / world-2pc-3 durable barrier:participant 的 `commit/3` 返回
+    # `{:ok, _}` **就是** durable-ack(对齐契约#3:scene 侧已 persist + 确认
+    # chunk_version >= commit version + 删 fence 后才回 {:ok})。逐个回报给
+    # coordinator,全 durable 时 coordinator 自己把事务推到 :committed。
+    # commit 失败的 participant **不** ack、**不** abort,留待重投递(契约#2)。
+    #
+    # 捕获每次 durable-ack 回的事务视图:完成那次返回 :committed struct(此后
+    # 事务已被裁出活跃集,snapshot 查不到),所以用这个返回值判终态,而不是再
+    # 去 snapshot fetch。`{:ok, :committed}` 原子(事务已被并发归档)也视为已
+    # committed。
+    {final_transaction, committed_via_atom?} =
+      Enum.reduce(commit_results, {committing, false}, fn
+        # 阶段4 / world-2pc-3 契约#3:**只有 `{:ok, %{durable?: true}}` 才是
+        # durable-ack**。participant 的 commit/3 必须 persist 落库 + 确认
+        # `chunk_version >= commit version` + 删 fence 后才回 durable?: true;此时
+        # 才喂 commit_durable_ack 推进 durable barrier。
+        {participant, {:ok, %{durable?: true}}}, {acc, committed?} ->
+          case TransactionCoordinator.commit_durable_ack(
+                 coordinator,
+                 committing.transaction_id,
+                 participant_key(participant)
+               ) do
+            {:ok, %BuildTransaction{} = view} -> {view, committed?}
+            {:ok, :committed} -> {acc, true}
+            _other -> {acc, committed?}
+          end
+
+        # `{:ok, %{durable?: false}}`:scene 已收到 commit 但**尚未 durable**(persist
+        # 在途 / DB 落后)。**不**喂 ack(丢 durable barrier 会误把事务标 :committed
+        # → 可能丢写),留待 driver/reaper 重投递,直到 participant 回 durable?: true。
+        {_participant, {:ok, %{durable?: false}}}, acc_tuple ->
+          acc_tuple
+
+        # 防御:commit/3 回了 {:ok, _} 但没带 durable? 字段(非法/旧形态)——保守
+        # 当作**未** durable,不喂 ack,交给重投递。绝不把未知形态当 durable barrier。
+        {_participant, {:ok, _ambiguous}}, acc_tuple ->
+          acc_tuple
+
+        {_participant, {:error, _reason}}, acc_tuple ->
+          acc_tuple
+      end)
+
     prebaked_results =
       Enum.map(prebaked, fn {participant, prepare_result} ->
         {participant, prepare_result}
@@ -341,32 +447,61 @@ defmodule WorldServer.Voxel.TransactionExecutor do
 
     participant_results = commit_results ++ prebaked_results
 
-    {:ok, transaction} =
-      TransactionCoordinator.commit_decision(
-        coordinator,
-        transaction.transaction_id,
-        transaction.decision_version
-      )
+    effective_state =
+      if committed_via_atom?, do: :committed, else: final_transaction.state
 
-    # Phase 4 (D5):after coordinator records the commit decision, register
-    # all scene_objects allocated at begin_transaction with the Scene-side
-    # ObjectRegistry. This is the last write of the commit phase;
-    # failures are non-blocking (registry can re-load from SceneObjectStore
-    # if it misses an upsert; rows are persisted by ObjectRegistry itself).
-    register_scene_objects_after_commit(scene_caller, transaction, scene_opts_by_participant)
+    case effective_state do
+      :committed ->
+        # final_transaction 可能仍是 :committing struct(并发归档场景),把 state
+        # 校正成 :committed 用于注册 / 回值;scene_objects 字段不变。
+        committed_transaction = %{final_transaction | state: :committed}
 
-    emit("voxel_transaction_executor_committed", transaction, %{
-      participant_count: length(participant_results)
-    })
+        # Phase 4 (D5):事务真正 committed(全 durable)后,才注册 scene_objects。
+        # 失败非阻塞(registry 可从 SceneObjectStore 重载)。
+        register_scene_objects_after_commit(
+          scene_caller,
+          committed_transaction,
+          scene_opts_by_participant
+        )
 
-    {:ok,
-     %{
-       transaction: transaction,
-       decision: :commit,
-       participant_results: participant_results,
-       prepare_results: prepare_results
-     }}
+        emit("voxel_transaction_executor_committed", committed_transaction, %{
+          participant_count: length(participant_results)
+        })
+
+        {:ok,
+         %{
+           transaction: committed_transaction,
+           decision: :commit,
+           committed?: true,
+           participant_results: participant_results,
+           prepare_results: prepare_results
+         }}
+
+      _still_committing ->
+        # 还有 participant 没 durable-ack:事务**已决 commit**,但尚未 committed。
+        # 不 abort、不注册 scene_objects(等真正 committed)。返回 committed?: false,
+        # 让 driver/reaper 后续重投递剩余 participant。
+        emit("voxel_transaction_executor_commit_pending_durable", final_transaction, %{
+          pending_acks: count_pending_durable_acks(final_transaction),
+          participant_count: length(participant_results)
+        })
+
+        {:ok,
+         %{
+           transaction: final_transaction,
+           decision: :commit,
+           committed?: false,
+           participant_results: participant_results,
+           prepare_results: prepare_results
+         }}
+    end
   end
+
+  defp count_pending_durable_acks(%{commit_acks: acks}) do
+    Enum.count(acks, fn {_key, status} -> status == :pending end)
+  end
+
+  defp count_pending_durable_acks(_), do: 0
 
   # Phase A4-3:scene_objects 已经在 coordinator allocate 阶段按 D6 字典序
   # 规则带上 owner_region_id / owner_lease_id。这里按 dispatch participant
@@ -548,6 +683,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
      %{
        transaction: transaction,
        decision: :abort,
+       committed?: false,
        participant_results: participant_results,
        prepare_results: prepare_results
      }}

@@ -51,6 +51,11 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   - `:chunk_directory` — override the default directory module/pid for tests.
   - `:decision_version` — coordinator's `decision_version`, propagated into
     the persisted fence row for diagnostics. Defaults to 0.
+  - `:fence_deadline_ms` — 阶段4 (2.2 world-2pc-6)：coordinator deadline 对应的
+    绝对毫秒时间戳（与 participant 进程 `System.system_time(:millisecond)` 同一
+    时钟域），透传给每个 chunk 的 prepared fence 作为 TTL。缺省时 participant
+    侧用默认 TTL 兜底。主路径仍是 World reaper 显式 abort 孤儿事务，这只是
+    coordinator/driver 整体死亡时的兜底。
 
   Returns `{:ok, summaries}` when every chunk fence was acquired (or already
   held by the same `transaction_id`). On the first per-chunk failure, all
@@ -61,6 +66,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
     chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
     logical_scene_id = fetch_logical_scene_id!(opts)
     decision_version = fetch_decision_version(opts)
+    fence_deadline_ms = fetch_fence_deadline_ms(opts)
 
     case validate_intents_cover_chunks(participant, intents_by_chunk) do
       :ok ->
@@ -79,7 +85,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
           transaction_id,
           intents_by_chunk,
           logical_scene_id,
-          decision_version
+          decision_version,
+          fence_deadline_ms
         )
 
       {:error, reason} = error ->
@@ -101,6 +108,18 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   Optional `opts`:
 
   - `:chunk_directory` — override the default directory module/pid for tests.
+
+  阶段4 (4.5 voxel-storage-3) commit durable join：每个 chunk 的
+  `ChunkProcess.commit_transaction/2` 只有在快照**已持久化到 DB**（DB
+  chunk_version >= 本次 commit version）后才返回 `{:ok, summary}`，summary 携带
+  `durable?: true` 与 `durable_chunk_version`。本函数把所有 chunk 的 durable 确认
+  聚合成返回值里的 `durable?`（全 chunk durable 才为 true），供 World coordinator
+  做**全-participant durable barrier**（统一 2PC 契约 #3：全 participant durable-ack
+  才把事务标 :committed）。
+
+  失败（任一 chunk persist 未确认 / 超时 / Task 崩溃）surface 为
+  `{:error, {:commit_failed, chunk_coord, reason}}`；按契约 #2，coordinator 在已决
+  事务上**不得 abort**，只能持续重投递 commit，直至全 participant durable-ack。
   """
   def commit(participant, transaction_id, opts)
       when is_binary(transaction_id) and is_list(opts) do
@@ -128,11 +147,15 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
     case error do
       nil ->
+        committed = Enum.reverse(results)
+        all_durable? = Enum.all?(committed, fn {_coord, summary} -> durable_summary?(summary) end)
+
         emit_event("voxel_transaction_participant_committed", participant, transaction_id, %{
-          chunk_count: length(results)
+          chunk_count: length(results),
+          durable?: all_durable?
         })
 
-        {:ok, %{committed_chunks: Enum.reverse(results)}}
+        {:ok, %{committed_chunks: committed, durable?: all_durable?}}
 
       {chunk_coord, reason} ->
         emit_event("voxel_transaction_participant_commit_failed", participant, transaction_id, %{
@@ -269,7 +292,8 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
          transaction_id,
          intents_by_chunk,
          logical_scene_id,
-         decision_version
+         decision_version,
+         fence_deadline_ms
        ) do
     {summaries, error} =
       Enum.reduce_while(
@@ -285,12 +309,14 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
               |> Map.put_new(:chunk_coord, chunk_coord)
             end)
 
-          attrs = %{
-            logical_scene_id: logical_scene_id,
-            chunk_coord: chunk_coord,
-            intents: intents,
-            decision_version: decision_version
-          }
+          attrs =
+            %{
+              logical_scene_id: logical_scene_id,
+              chunk_coord: chunk_coord,
+              intents: intents,
+              decision_version: decision_version
+            }
+            |> maybe_put_fence_deadline(fence_deadline_ms)
 
           case ChunkDirectory.prepare_transaction(chunk_directory, transaction_id, attrs) do
             {:ok, summary} ->
@@ -376,6 +402,26 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
       _ -> 0
     end
   end
+
+  # 阶段4 (2.2)：取 coordinator 下发的 fence TTL deadline（绝对毫秒）。无 / 非法
+  # 时返回 nil，participant 侧用默认 TTL 兜底。
+  defp fetch_fence_deadline_ms(opts) do
+    case Keyword.get(opts, :fence_deadline_ms) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> nil
+    end
+  end
+
+  defp maybe_put_fence_deadline(attrs, nil), do: attrs
+
+  defp maybe_put_fence_deadline(attrs, deadline_ms) when is_integer(deadline_ms) do
+    Map.put(attrs, :fence_deadline_ms, deadline_ms)
+  end
+
+  # 阶段4 (4.5)：chunk commit summary 是否携带 durable 确认。changed commit 经
+  # durable join 后 summary.durable? == true；no-op commit 同样标 durable?。
+  defp durable_summary?(summary) when is_map(summary), do: Map.get(summary, :durable?) == true
+  defp durable_summary?(_summary), do: false
 
   defp emit_event(event, participant, transaction_id, payload) do
     CliObserve.emit(event, fn ->
