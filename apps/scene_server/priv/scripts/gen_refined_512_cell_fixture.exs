@@ -155,7 +155,7 @@ defmodule SectionScan do
   end
 end
 
-<<_::binary-size(header_bytes), sections_blob::binary>> = snapshot
+<<_::binary-size(^header_bytes), sections_blob::binary>> = snapshot
 section_payload = SectionScan.find!(sections_blob, 0x03)
 
 elixir_path = "test/fixtures/voxel/refined_512_cell_v1.bin"

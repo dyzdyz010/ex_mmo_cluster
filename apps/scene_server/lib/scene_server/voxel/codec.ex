@@ -1948,7 +1948,7 @@ defmodule SceneServer.Voxel.Codec do
   defp decode_fixed_items(<<>>, _item_size, _decoder, acc), do: Enum.reverse(acc)
 
   defp decode_fixed_items(data, item_size, decoder, acc) do
-    <<item_data::binary-size(item_size), rest::binary>> = data
+    <<item_data::binary-size(^item_size), rest::binary>> = data
     decode_fixed_items(rest, item_size, decoder, [decoder.(item_data) | acc])
   end
 

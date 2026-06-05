@@ -117,7 +117,7 @@ defmodule SceneServer.Voxel.TagSet do
               "got #{byte_size(rest)}"
     end
 
-    <<tag_id_bytes::binary-size(expected), after_tags::binary>> = rest
+    <<tag_id_bytes::binary-size(^expected), after_tags::binary>> = rest
     tag_ids = decode_tag_ids(tag_id_bytes, [])
 
     # Trust wire content order; rely on producer canonicalization. Decoded

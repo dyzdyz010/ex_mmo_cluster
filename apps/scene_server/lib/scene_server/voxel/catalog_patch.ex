@@ -311,7 +311,7 @@ defmodule SceneServer.Voxel.CatalogPatch do
     if byte_size(rest) < payload_len do
       {:error, :truncated}
     else
-      <<payload::binary-size(payload_len), tail::binary>> = rest
+      <<payload::binary-size(^payload_len), tail::binary>> = rest
 
       op = %{op_kind: op_kind, entry_id: entry_id, payload: payload}
       decode_ops(tail, remaining - 1, [op | acc])

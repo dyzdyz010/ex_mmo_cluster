@@ -210,13 +210,13 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         rest::binary
       >>) do
     indices_size = cell_count * 2
-    <<indices_bin::binary-size(indices_size), rest2::binary>> = rest
+    <<indices_bin::binary-size(^indices_size), rest2::binary>> = rest
     macro_indices = for <<idx::unsigned-big-integer-size(16) <- indices_bin>>, do: idx
 
     {temperature_values, rest3} =
       if has_mask?(field_mask, @field_mask_temperature) do
         temp_size = cell_count * 4
-        <<temp_bin::binary-size(temp_size), r::binary>> = rest2
+        <<temp_bin::binary-size(^temp_size), r::binary>> = rest2
         vals = for <<v::float-32-little <- temp_bin>>, do: v
         {vals, r}
       else
@@ -226,7 +226,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     {electric_values, rest4} =
       if has_mask?(field_mask, @field_mask_electric_potential) do
         elec_size = cell_count * 4
-        <<elec_bin::binary-size(elec_size), r::binary>> = rest3
+        <<elec_bin::binary-size(^elec_size), r::binary>> = rest3
         vals = for <<v::float-32-little <- elec_bin>>, do: v
         {vals, r}
       else
@@ -236,7 +236,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     {electric_current_values, rest5} =
       if has_mask?(field_mask, @field_mask_electric_current) do
         current_size = cell_count * 4
-        <<current_bin::binary-size(current_size), r::binary>> = rest4
+        <<current_bin::binary-size(^current_size), r::binary>> = rest4
         vals = for <<v::float-32-little <- current_bin>>, do: v
         {vals, r}
       else
@@ -246,7 +246,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     {ionization_values, _rest6} =
       if has_mask?(field_mask, @field_mask_ionization) do
         ion_size = cell_count
-        <<ion_bin::binary-size(ion_size), r::binary>> = rest5
+        <<ion_bin::binary-size(^ion_size), r::binary>> = rest5
         vals = for <<v::unsigned-big-integer-size(8) <- ion_bin>>, do: v
         {vals, r}
       else

@@ -237,14 +237,14 @@ defmodule SceneServer.Voxel.AttributeDefinition do
           rest1::binary>>
       ) do
     case rest1 do
-      <<name::binary-size(name_len), unit_len::unsigned-big-integer-size(16), rest2::binary>> ->
+      <<name::binary-size(^name_len), unit_len::unsigned-big-integer-size(16), rest2::binary>> ->
         case rest2 do
-          <<unit::binary-size(unit_len), value_type::unsigned-integer-size(8), rest3::binary>> ->
+          <<unit::binary-size(^unit_len), value_type::unsigned-integer-size(8), rest3::binary>> ->
             validate_value_type!(value_type)
             n = value_payload_size(value_type)
 
             case rest3 do
-              <<default_raw::binary-size(n), min_raw::binary-size(n), max_raw::binary-size(n),
+              <<default_raw::binary-size(^n), min_raw::binary-size(^n), max_raw::binary-size(^n),
                 merge_rule::unsigned-integer-size(8), dynamic_u8::unsigned-integer-size(8),
                 rest4::binary>> ->
                 default_value = decode_typed_value(value_type, default_raw)

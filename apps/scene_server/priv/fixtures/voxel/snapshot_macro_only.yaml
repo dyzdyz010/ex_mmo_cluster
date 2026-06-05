@@ -1,6 +1,6 @@
 name: snapshot_macro_only
 kind: chunk_snapshot
-wire_size: 78113
+wire_size: 480
 chunk_hash: 0x990292803C9BFBCC
 description: |
   3x3 platform of solid blocks (material 11) at y=0.

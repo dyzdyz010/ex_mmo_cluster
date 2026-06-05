@@ -1,6 +1,6 @@
 name: snapshot_object_refs
 kind: chunk_snapshot
-wire_size: 78207
+wire_size: 406
 chunk_hash: 0x16A604F696EFE419
 description: |
   Chunk-level object_refs section populated via refresh_chunk_object_refs after object-owned refined writes.

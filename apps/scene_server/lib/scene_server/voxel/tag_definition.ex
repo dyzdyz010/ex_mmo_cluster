@@ -114,7 +114,7 @@ defmodule SceneServer.Voxel.TagDefinition do
           rest1::binary>>
       ) do
     case rest1 do
-      <<name::binary-size(name_len), rest2::binary>> ->
+      <<name::binary-size(^name_len), rest2::binary>> ->
         # Re-run normalize to enforce non-empty / UTF-8 at the wire boundary;
         # catches out-of-band wire tampering or future drift.
         defn = normalize!(%{id: id, name: name})

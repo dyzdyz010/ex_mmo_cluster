@@ -1,6 +1,6 @@
 name: snapshot_attribute_pool
 kind: chunk_snapshot
-wire_size: 77973
+wire_size: 151
 chunk_hash: 0x01FC549D7AF86A3E
 description: |
   AttributeSet pool with one set covering all 5 value_type tags (0x01..0x05).

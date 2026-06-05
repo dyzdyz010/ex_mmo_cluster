@@ -1,6 +1,6 @@
 name: snapshot_empty
 kind: chunk_snapshot
-wire_size: 77933
+wire_size: 50
 chunk_hash: 0xE70921CDF143C5EE
 description: |
   Empty chunk: 4096 empty macro headers, all payload sections empty.
