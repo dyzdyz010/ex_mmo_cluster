@@ -43,6 +43,9 @@ defmodule SceneServer.VoxelSup do
       # 阶段3.1：chunk 进程身份注册表。必须早于 VoxelChunkSup / ChunkDirectory，
       # 以便 ChunkProcess 在 start_link 时即可经 via-tuple 注册去重。
       {Registry, keys: :unique, name: SceneServer.Voxel.ChunkRegistry},
+      # 阶段5.2 (voxel-storage-1)：有界 write-behind 持久化池。必须早于任何 chunk
+      # 启动（chunk 首个 persist 即 checkout worker），对 DB 写施背压。
+      SceneServer.Voxel.ChunkPersistPool,
       {SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup},
       {SceneServer.Voxel.ChunkDirectory, name: SceneServer.Voxel.ChunkDirectory},
       {SceneServer.Voxel.ObjectRegistry, name: SceneServer.Voxel.ObjectRegistry},

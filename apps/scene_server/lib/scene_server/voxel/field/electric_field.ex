@@ -12,21 +12,24 @@ defmodule SceneServer.Voxel.Field.ElectricField do
        否则衰减;clamp 到 `0..255`。
   """
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, NativeBackend, ParticipantProjection}
+  alias SceneServer.Voxel.Field.{Constants, FieldLayer, FieldRegion, NativeBackend, ParticipantProjection}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @ionization_threshold 50.0
-  @ionization_growth 5.0
-  @ionization_decay 1.0
-  @ionization_max 255.0
-  @default_conductivity 0.0
-  @default_dielectric_strength 3.0
-  @min_conductivity 0.001
-  @resistance_weight 4.0
-  @breakdown_weight 0.25
-  @ionization_bonus_weight 0.01
-  @min_step_cost 0.05
+  # 物理常量唯一真相源:native/field_kernel/src/field_constants.rs
+  # (经 SceneServer.Voxel.Field.Constants 在编译期烘焙;不要在此硬编码副本)。
+  @ionization_threshold Constants.ionization_threshold()
+  @ionization_growth Constants.ionization_growth()
+  @ionization_decay Constants.ionization_decay()
+  @ionization_max Constants.ionization_max()
+  @default_conductivity Constants.default_conductivity()
+  @default_dielectric_strength Constants.default_dielectric_strength()
+  @min_conductivity Constants.min_conductivity()
+  @resistance_weight Constants.resistance_weight()
+  @breakdown_weight Constants.breakdown_weight()
+  @ionization_bonus_weight Constants.ionization_bonus_weight()
+  @min_step_cost Constants.min_step_cost()
+  @stale_epsilon Constants.stale_epsilon()
 
   @doc """
   Runs a single tick of the electric field for the given region. Returns
@@ -122,7 +125,7 @@ defmodule SceneServer.Voxel.Field.ElectricField do
         {{neg_potential, current_state}, rest_queue} = :gb_sets.take_smallest(queue)
         current_potential = -neg_potential
 
-        if Map.get(visited, current_state, 0.0) > current_potential + 0.001 do
+        if Map.get(visited, current_state, 0.0) > current_potential + @stale_epsilon do
           bfs_propagate(rest_queue, visited, region, projection, ionization_layer)
         else
           {new_queue, new_visited} =

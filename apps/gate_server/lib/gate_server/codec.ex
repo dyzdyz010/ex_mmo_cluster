@@ -128,6 +128,57 @@ defmodule GateServer.Codec do
   @spec movement_wire_schema() :: pos_integer()
   def movement_wire_schema, do: @movement_wire_schema
 
+  # ── 可解码 message-type 枚举（handler 完备性真相源, S6/6.2）──
+  #
+  # 这是 `decode/1` 能成功返回 `{:ok, {tag, ...}}` 的 client→server 消息全集的
+  # **唯一真相源**：opcode → decode 元组首元素 tag。连接进程（TCP/WS/UDP）的
+  # dispatch 子句集合必须覆盖这里的每一个 tag（除按传输豁免的少数项），否则
+  # 视为 handler 漂移。`GateServer.CodecHandlerCompletenessTest` 以此做可执行门禁。
+  #
+  # 维护纪律：在 `decode/1` 新增一条能产出 `{:ok, {tag, ...}}` 的子句时，
+  # **必须**在此追加 `{@msg_*, :tag}`，否则完备性测试会因 codec 与枚举不一致而报红。
+  @decodable_message_types [
+    {@msg_movement, :movement_input},
+    {@msg_enter_scene, :enter_scene},
+    {@msg_time_sync, :time_sync},
+    {@msg_heartbeat, :heartbeat},
+    {@msg_auth_request, :auth_request},
+    {@msg_fast_lane_request, :fast_lane_request},
+    {@msg_fast_lane_attach, :fast_lane_attach},
+    {@msg_chat_say, :chat_say},
+    {@msg_skill_cast, :skill_cast},
+    {@msg_chat_say_scoped, :chat_say_scoped},
+    {@msg_voxel_chunk_subscribe, :voxel_chunk_subscribe},
+    {@msg_voxel_chunk_unsubscribe, :voxel_chunk_unsubscribe},
+    {@msg_voxel_chunk_ack, :voxel_chunk_ack},
+    {@msg_voxel_impact_intent, :voxel_impact_intent},
+    {@msg_voxel_build_reservation_intent, :voxel_build_reservation_intent},
+    {@msg_voxel_prefab_place_intent, :voxel_prefab_place_intent},
+    {@msg_voxel_debug_probe, :voxel_debug_probe},
+    {@msg_voxel_edit_intent, :voxel_edit_intent},
+    {@msg_voxel_field_conduct_intent, :voxel_field_conduct_intent}
+  ]
+
+  @doc """
+  返回所有 `decode/1` 可成功解码的 client→server message-type，作为
+  `{opcode, tag}` 列表。
+
+  这是 handler 完备性断言（S6/6.2）的真相源：连接进程 dispatch 集合必须覆盖
+  其中每个 `tag`（除按传输豁免的少数项）。`tag` 是 `decode/1` 返回元组
+  `{:ok, {tag, ...}}` 的首元素。
+  """
+  @spec decodable_message_types() :: [{0..255, atom()}]
+  def decodable_message_types, do: @decodable_message_types
+
+  @doc """
+  返回所有可解码 message-type 的 dispatch tag（`decode/1` 元组首元素）集合。
+
+  连接进程的 dispatch 子句必须为这里的每个 tag 提供显式子句（传输豁免见
+  `GateServer.CodecHandlerCompletenessTest`）。
+  """
+  @spec decodable_message_tags() :: [atom()]
+  def decodable_message_tags, do: Enum.map(@decodable_message_types, &elem(&1, 1))
+
   # ═══════════════════════════════════════════════════════════
   # Decode: binary → structured tuple
   # ═══════════════════════════════════════════════════════════

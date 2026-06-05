@@ -7,11 +7,13 @@ defmodule SceneServer.Voxel.Field.NativeBackend.DischargePathInput do
   electric attributes needed by the read-only native solver.
   """
 
+  alias SceneServer.Voxel.Field.Constants
   alias SceneServer.Voxel.Field.FieldLayer
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @fixed32_scale 65_536.0
+  # fixed-32 → float 换算比例,真相源:field_constants.rs(FIXED32_SCALE)。
+  @fixed32_scale Constants.fixed32_scale()
 
   defstruct cells: [],
             aabb: {{0, 0, 0}, {0, 0, 0}},

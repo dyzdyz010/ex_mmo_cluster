@@ -147,38 +147,12 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert snapshot.chunk_version == 1
   end
 
-  test "collision_query reports a stalled chunk without crashing the directory" do
-    chunk_sup = start_supervised!(VoxelChunkSup)
-
-    directory =
-      directory(chunk_sup: chunk_sup, collision_query_timeout_ms: 10)
-
-    scene_id = unique_scene_id()
-
-    assert {:ok, chunk_pid} =
-             ChunkDirectory.ensure_chunk(directory, %{
-               logical_scene_id: scene_id,
-               chunk_coord: {0, 0, 0}
-             })
-
-    :ok = :sys.suspend(chunk_pid)
-
-    try do
-      assert {:error, {:chunk_unavailable, {:timeout, :collision_query}}} =
-               ChunkDirectory.collision_query(directory, %{
-                 logical_scene_id: scene_id,
-                 chunk_coord: {0, 0, 0},
-                 samples: []
-               })
-
-      assert Process.alive?(directory)
-      assert {:ok, ^chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
-    after
-      _ = :sys.resume(chunk_pid)
-    end
-  end
-
-  test "collision_query honors a per-request timeout override" do
+  # 阶段5.2 (voxel-storage-1)：collision_query 改走 ChunkOccupancyTable 的 per-chunk
+  # ETS 只读快照（读写分离）。本测试验证**读不阻塞写**的核心不变式——把 chunk 进程
+  # 整个挂起（模拟落方块写正占住 mailbox / 慢写），碰撞读仍从已发布的 ETS 快照成功
+  # 返回，完全不触达被挂起的 chunk mailbox（旧实现此处会 head-of-line block 直到
+  # 超时）。
+  test "collision_query reads the ETS snapshot without blocking on a stalled chunk" do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = directory(chunk_sup: chunk_sup)
     scene_id = unique_scene_id()
@@ -189,28 +163,54 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
                chunk_coord: {0, 0, 0}
              })
 
+    # chunk init 已发布首帧 occupancy 快照到 ETS。挂起 chunk 进程模拟“写占住 mailbox”。
     :ok = :sys.suspend(chunk_pid)
 
     try do
       started = System.monotonic_time(:millisecond)
 
-      assert {:error, {:chunk_unavailable, {:timeout, :collision_query}}} =
-               ChunkDirectory.collision_query(
-                 directory,
-                 %{
-                   logical_scene_id: scene_id,
-                   chunk_coord: {0, 0, 0},
-                   samples: [],
-                   collision_query_timeout_ms: 10
-                 },
-                 200
-               )
+      # 读路径直读 ETS 快照，不经被挂起的 chunk mailbox —— 立即成功返回（不超时）。
+      assert {:ok, %{occupied: [], occupied_count: 0, sample_count: 0}} =
+               ChunkDirectory.collision_query(directory, %{
+                 logical_scene_id: scene_id,
+                 chunk_coord: {0, 0, 0},
+                 samples: []
+               })
 
+      # 读用时远小于任何 chunk call 超时，证明没有 head-of-line block。
       assert System.monotonic_time(:millisecond) - started < 200
       assert Process.alive?(directory)
+      assert {:ok, ^chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
     after
       _ = :sys.resume(chunk_pid)
     end
+  end
+
+  # 阶段5.2：chunk 未 hot（无任何已发布快照）时，collision_query 经 facade ensure
+  # 冷启 chunk 后直达一次，并由 chunk init 发布首帧快照，后续即纯 ETS 直读。
+  test "collision_query cold-starts a chunk and then serves from the ETS snapshot" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = directory(chunk_sup: chunk_sup)
+    scene_id = unique_scene_id()
+
+    # 该 coord 尚未 hot：第一次查询走冷路径（ensure + 直达），返回空占用。
+    assert {:ok, %{occupied: [], sample_count: 0}} =
+             ChunkDirectory.collision_query(directory, %{
+               logical_scene_id: scene_id,
+               chunk_coord: {0, 0, 0},
+               samples: []
+             })
+
+    # 冷路径已 hot 化该 chunk，后续查询走纯 ETS 直读。
+    assert {:ok, pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {0, 0, 0})
+    assert is_pid(pid)
+
+    assert {:ok, %{occupied: [], sample_count: 0}} =
+             ChunkDirectory.collision_query(directory, %{
+               logical_scene_id: scene_id,
+               chunk_coord: {0, 0, 0},
+               samples: []
+             })
   end
 
   test "apply_intents reports a stalled lease apply without crashing the directory" do

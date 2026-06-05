@@ -8,13 +8,16 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
   material facts.
   """
 
+  alias SceneServer.Voxel.Field.Constants
   alias SceneServer.Voxel.Field.FieldLayer
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @default_tc_raw 6_554
-  @default_density_raw 65_536
-  @default_specific_heat_capacity_raw 65_536_000
+  # 缺省热物性 raw 与温度扩散 native kernel 同源,真相源:
+  # native/field_kernel/src/field_constants.rs(经 Constants 编译期烘焙)。
+  @default_tc_raw Constants.default_tc_raw()
+  @default_density_raw Constants.default_density_raw()
+  @default_specific_heat_capacity_raw Constants.default_specific_heat_capacity_raw()
 
   defstruct cells: [],
             candidates: [],

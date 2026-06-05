@@ -15,6 +15,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{
+    Constants,
     FieldLayer,
     FieldRegion,
     KernelContext,
@@ -25,19 +26,22 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @fixed32_scale 65_536.0
-  @default_conductivity 0.0
-  @default_dielectric_strength 3.0
-  @min_conductivity 0.001
-  @conductive_cost_weight 0.5
-  @dielectric_cost_weight 1.0
-  @ionization_threshold_weight 0.05
-  @ionization_cost_weight 0.01
-  @min_step_cost 0.05
+  # 共享物理常量唯一真相源:native/field_kernel/src/field_constants.rs
+  # (经 SceneServer.Voxel.Field.Constants 在编译期烘焙)。
+  @fixed32_scale Constants.fixed32_scale()
+  @default_conductivity Constants.default_conductivity()
+  @default_dielectric_strength Constants.default_dielectric_strength()
+  @min_conductivity Constants.min_conductivity()
+  @conductive_cost_weight Constants.conductive_cost_weight()
+  @dielectric_cost_weight Constants.dielectric_cost_weight()
+  @ionization_threshold_weight Constants.ionization_threshold_weight()
+  @ionization_cost_weight Constants.ionization_cost_weight()
+  @min_step_cost Constants.min_step_cost()
+  @epsilon Constants.epsilon()
+  # kernel 本地常量(无 Rust 副本,不属共享集):
   @default_channel_ionization 240.0
   @default_temperature_rise_celsius 180.0
   @default_max_frontier 512
-  @epsilon 0.000001
 
   @impl true
   def kernel_id, do: :electric_discharge

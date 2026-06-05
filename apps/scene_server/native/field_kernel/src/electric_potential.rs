@@ -4,6 +4,14 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use crate::grid;
 use crate::types::{Aabb, Coord};
 
+// ionization tick 演化 + step-cost 权重 + settle 容差来自 field 物理常量唯一真相源
+// (见 field_constants.rs)。
+use crate::field_constants::{
+    BREAKDOWN_WEIGHT, DEFAULT_CONDUCTIVITY, DEFAULT_DIELECTRIC_STRENGTH, IONIZATION_BONUS_WEIGHT,
+    IONIZATION_DECAY, IONIZATION_GROWTH, IONIZATION_MAX, IONIZATION_THRESHOLD, MIN_CONDUCTIVITY,
+    MIN_STEP_COST, RESISTANCE_WEIGHT, STALE_EPSILON,
+};
+
 pub(crate) type Source = (u16, f64);
 pub(crate) type FaceContacts = (u64, u64, u64, u64, u64, u64);
 pub(crate) type NativeComponent = (u8, FaceContacts);
@@ -12,6 +20,7 @@ pub(crate) type IonizationCell = (u16, f64);
 pub(crate) type PotentialCell = (u16, f64);
 pub(crate) type ElectricPropagationResult = (Vec<PotentialCell>, Vec<IonizationCell>);
 
+// FACE_* / FACE_COUNT 是纯 Rust 内部的网格面编码,没有 Elixir 副本,保留本地定义。
 const FACE_X_NEG: u8 = 0;
 const FACE_X_POS: u8 = 1;
 const FACE_Y_NEG: u8 = 2;
@@ -20,19 +29,6 @@ const FACE_Z_NEG: u8 = 4;
 const FACE_Z_POS: u8 = 5;
 const FACE_SOURCE: u8 = 6;
 const FACE_COUNT: usize = 6;
-
-const IONIZATION_THRESHOLD: f64 = 50.0;
-const IONIZATION_GROWTH: f64 = 5.0;
-const IONIZATION_DECAY: f64 = 1.0;
-const IONIZATION_MAX: f64 = 255.0;
-const DEFAULT_CONDUCTIVITY: f64 = 0.0;
-const DEFAULT_DIELECTRIC_STRENGTH: f64 = 3.0;
-const MIN_CONDUCTIVITY: f64 = 0.001;
-const RESISTANCE_WEIGHT: f64 = 4.0;
-const BREAKDOWN_WEIGHT: f64 = 0.25;
-const IONIZATION_BONUS_WEIGHT: f64 = 0.01;
-const MIN_STEP_COST: f64 = 0.05;
-const STALE_EPSILON: f64 = 0.001;
 
 #[derive(Debug, Clone)]
 struct Component {

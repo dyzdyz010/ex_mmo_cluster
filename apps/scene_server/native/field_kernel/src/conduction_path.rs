@@ -4,11 +4,18 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use crate::grid;
 use crate::types::{Aabb, Coord};
 
+// 物理 step-cost 权重 + 数值容差来自 field 物理常量唯一真相源(见 field_constants.rs)。
+use crate::field_constants::{
+    BREAKDOWN_WEIGHT, DEFAULT_CONDUCTIVITY, DEFAULT_DIELECTRIC_STRENGTH, EPSILON,
+    IONIZATION_BONUS_WEIGHT, MIN_CONDUCTIVITY, MIN_STEP_COST, RESISTANCE_WEIGHT,
+};
+
 pub(crate) type FaceContacts = (u64, u64, u64, u64, u64, u64);
 pub(crate) type NativeComponent = (u8, FaceContacts);
 pub(crate) type NativeEntry = (u16, f64, f64, Vec<NativeComponent>);
 pub(crate) type IonizationCell = (u16, f64);
 
+// FACE_* / FACE_COUNT 是纯 Rust 内部的网格面编码,没有 Elixir 副本,保留本地定义。
 const FACE_X_NEG: u8 = 0;
 const FACE_X_POS: u8 = 1;
 const FACE_Y_NEG: u8 = 2;
@@ -17,15 +24,6 @@ const FACE_Z_NEG: u8 = 4;
 const FACE_Z_POS: u8 = 5;
 const FACE_SOURCE: u8 = 6;
 const FACE_COUNT: usize = 6;
-
-const DEFAULT_CONDUCTIVITY: f64 = 0.0;
-const DEFAULT_DIELECTRIC_STRENGTH: f64 = 3.0;
-const MIN_CONDUCTIVITY: f64 = 0.001;
-const RESISTANCE_WEIGHT: f64 = 4.0;
-const BREAKDOWN_WEIGHT: f64 = 0.25;
-const IONIZATION_BONUS_WEIGHT: f64 = 0.01;
-const MIN_STEP_COST: f64 = 0.05;
-const EPSILON: f64 = 0.000001;
 
 #[derive(Debug, Clone)]
 struct Component {

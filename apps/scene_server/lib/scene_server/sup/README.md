@@ -10,8 +10,13 @@
   - `SceneServer.PhysicsManager`
 - `VoxelSup`
   - `SceneServer.Voxel.RegionRuntime`
+  - `SceneServer.Voxel.ChunkRegistry`（chunk 进程身份注册表，`Registry` `:unique`；
+    必须早于 `VoxelChunkSup` / `ChunkDirectory`）
+  - `SceneServer.Voxel.ChunkPersistPool`（阶段5.2：有界 write-behind 持久化池，
+    poolboy；对 DB 写施背压，必须早于任何 chunk 启动）
   - `SceneServer.VoxelChunkSup`
-  - `SceneServer.Voxel.ChunkDirectory`
+  - `SceneServer.Voxel.ChunkDirectory`（无状态 facade；热路径已 Registry 直达 +
+    碰撞读走 `ChunkOccupancyTable` ETS 快照，facade 只承载生命周期串行操作）
 - `AoiSup`
   - `SceneServer.Aoi.RemoteMirrorLedger`
   - `SceneServer.Aoi.IndexHeir`（AOI 索引 ETS 表的 heir，必须先于 IndexStore 启动）

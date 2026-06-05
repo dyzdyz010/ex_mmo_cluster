@@ -49,3 +49,25 @@ Scene 区块订阅者。
 Scene 的移动输入缓冲；不能对 player actor 做每帧同步 call 或 cast。权威 tick、输入
 重放、碰撞、AOI 快照和 `movement_ack` 仍全部由 Scene 的 `PlayerCharacter` 执行。
 这个边界保证本地 60Hz 连续输入不会把 actor 邮箱变成输入队列，从而拖慢服务端 ACK。
+
+## Handler 完备性门禁（S6 / 6.2）
+
+`GateServer.Codec.decode/1` 能解码的 client→server message-type 集合，与各连接进程
+`dispatch/2` 的 handler 集合，必须保持一致；历史上靠人工同步极易漂移（某类型 codec
+能解但某端无 handler，被 catch-all 静默吞成 `:unknown_message`）。
+
+真相源为 `GateServer.Codec.decodable_message_tags/0`（codec.ex 内 `@decodable_message_types`
+枚举，对齐 `decode/1` 全部产出 `{:ok, {tag, ...}}` 的子句）。门禁
+`GateServer.CodecHandlerCompletenessTest` 静态扫描 `tcp_connection.ex` / `ws_connection.ex`
+的 `dispatch/2` 子句头，断言每个可解码 tag（除传输豁免与已登记的已知漂移）都有显式
+handler；任何**新增、未登记**的缺失立即报红。
+
+维护纪律：
+
+- `decode/1` 新增能产出 `{:ok, {tag, ...}}` 的子句时，**必须**在 codec.ex 的
+  `@decodable_message_types` 追加 `{@msg_*, :tag}`，否则门禁报红。
+- 当前已知漂移（登记在测试的 `@tcp_known_drift` / `@ws_known_drift`，归 6.1 修复）：
+  `:voxel_field_conduct_intent`(0x75) WS 有 / TCP 缺；`:skill_cast`(0x09) TCP 有 / WS 缺。
+- `:fast_lane_attach`(0x07) 为 UDP 专属握手，对 TCP/WS 永久豁免（在 `UdpAcceptor` 处理）。
+- 6.1 ConnectionCore 收口补齐 handler 后，须从对应 `*_known_drift` 删除该 tag，
+  门禁才回到对它的"全覆盖"语义。**本批（6.2）只立门禁，不改这两个连接文件的逻辑。**

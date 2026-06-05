@@ -19,6 +19,7 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
 
   alias SceneServer.Voxel.Field.{
     CircuitComponentAnalysis,
+    Constants,
     FieldLayer,
     FieldRegion,
     KernelContext,
@@ -28,7 +29,9 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
   alias SceneServer.Voxel.MaterialCatalog
 
   @default_current_limit_amps MaterialCatalog.power_source_defaults().current_limit_amps
-  @min_conductivity 0.001
+  # 共享物理常量唯一真相源:native/field_kernel/src/field_constants.rs(MIN_CONDUCTIVITY)。
+  @min_conductivity Constants.min_conductivity()
+  # kernel 本地 ionization overlay 常量(此 kernel 不触 native,无 Rust 副本):
   @base_ionization 32.0
   @current_ionization_scale 12.0
   @potential_ionization_scale 0.1

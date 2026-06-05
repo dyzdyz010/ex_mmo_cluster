@@ -24,11 +24,41 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   facade 自身仍是一个 GenServer：它 monitor 它启动的 chunk 进程，chunk 崩溃
   时发 `voxel_chunk_directory_chunk_down` observe 事件供 World/运维观测。它
   **不**缓存 pid，因此 monitor 仅用于事件，不影响路由正确性。
+
+  ## 热路径 Registry 直达（阶段5.2 voxel-storage-1）
+
+  落方块 / 碰撞查询 / 事务等**热路径**原本都经本 facade 的**单一 GenServer 串行
+  mailbox** 路由（`apply_intent` 写与 `collision_query` 读在同一条 mailbox 上
+  head-of-line 互相阻塞）。阶段3 把 facade 无状态化后，路由不再依赖 facade 自身
+  状态，于是热路径可以**绕过 facade 的串行 mailbox**：
+
+  * `apply_intent_direct/2` / `apply_intents_direct/2` / `prepare_transaction_direct/4`
+    / `commit_transaction_direct/3` / `abort_transaction_direct/3`：先经
+    `ChunkRegistry.lookup` 拿到已注册的**活** chunk pid（`Process.alive?` 过滤死
+    pid，保持阶段3 语义），**直达 `ChunkProcess`**——不经 facade GenServer.call。
+    未注册 / 死 pid 时回退到 facade 的 `ensure_*`（串行 lane 启动 + apply lease），
+    保证冷启动仍严格串行、不破坏阶段3 单主与 2.4 驱逐复核。
+  * `collision_query/3`（碰撞读）走 `ChunkOccupancyTable` 的 **per-chunk ETS 只读
+    occupancy 快照**：读路径完全不经 facade、也不经 chunk 的 GenServer.call——读不
+    阻塞写、写不阻塞读（读写数据结构层分离）。chunk 未 hot（无发布快照）时回退到
+    经 facade ensure 的直达慢路（首帧之后即纯 ETS 直读）。
+
+  facade 自身的 `ensure/驱逐/订阅/迁移持久化` 等**生命周期串行操作**仍走 GenServer
+  mailbox（它们需要与驱逐复核在同一 lane 串行，规避 TOCTOU），不在直达范围内。
+
+  ### 兼容性
+
+  直达仍经 `ChunkRegistry`（同节点单主唯一权威），不产生第二权威；阶段4 的 2PC
+  durable barrier 由 `ChunkProcess` 内部承载，事务直达只是少一跳路由、语义不变；
+  阶段2.4 驱逐把“注册项摘除 + terminate”收口在 facade 串行 lane，直达前的
+  `Process.alive?` + 注册表 lookup 保证**绝不**直达到一个正在被驱逐/已死的 chunk
+  （命中死 pid 即回退 ensure，由串行 lane 冷启新权威）。
   """
 
   use GenServer
 
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.ChunkOccupancyTable
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.ChunkRegistry
 
@@ -67,19 +97,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     GenServer.call(server, {:snapshot_payload, attrs})
   end
 
-  @doc """
-  Routes a read-only collision occupancy query to the owning hot chunk process.
-
-  `ChunkDirectory` owns lookup/startup only. `ChunkProcess` owns the voxel
-  truth and validates the local macro/micro samples.
-  """
-  def collision_query(
-        server \\ __MODULE__,
-        attrs,
-        timeout \\ @collision_directory_call_timeout_ms
-      ) do
-    GenServer.call(server, {:collision_query, attrs}, timeout)
-  end
+  # 阶段5.2 (voxel-storage-1)：`collision_query/3` 已从“经 facade 串行 mailbox 路由
+  # 到 chunk GenServer.call”改为“经 ChunkOccupancyTable 的 per-chunk ETS 只读快照
+  # 直读”（读写分离，读不阻塞写）。定义见本模块下方“热路径 Registry 直达 API”段。
 
   @doc """
   Subscribes a process to a hot chunk after World has supplied the current lease.
@@ -240,6 +260,284 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     GenServer.call(server, :snapshot)
   end
 
+  # ===========================================================================
+  # 阶段5.2 (voxel-storage-1) 热路径 Registry 直达 API
+  #
+  # 这些函数把热路径调用从“经 facade 单一 GenServer 串行 mailbox 两跳”降到“经
+  # Registry 解析活 pid 后直达 ChunkProcess 一跳”。未注册 / 死 pid 时回退到 facade
+  # 的 ensure_* 串行 lane（冷启动 + apply lease）。
+  #
+  # `opts`：
+  #   * `:server`         —— facade 回退服务器（默认 `__MODULE__` 单例）。
+  #   * `:chunk_registry` —— 进程身份注册表名（默认 `ChunkRegistry.default_name()`；
+  #                          测试隔离注册表经此注入，与 `:server` 配对）。
+  # ===========================================================================
+
+  @doc """
+  碰撞 occupancy 查询（阶段5.2 读写分离）：优先经 `ChunkOccupancyTable` 的 per-chunk
+  ETS 只读快照直读，**完全不经任何进程 mailbox**（读不阻塞写）。
+
+  chunk 未 hot（无发布快照）时回退到经 facade `ensure_chunk` 的直达慢路：启动 chunk
+  → 直接 `ChunkProcess.collision_query`，并由 chunk 发布首帧快照，此后即纯 ETS 直读。
+
+  返回与 `ChunkProcess.collision_query/3` 一致的 `{:ok, result}` / `{:error, reason}`。
+  """
+  def collision_query(
+        server \\ __MODULE__,
+        attrs,
+        timeout \\ @collision_directory_call_timeout_ms
+      ) do
+    attrs = normalize_attrs(attrs)
+
+    case ChunkOccupancyTable.normalize_samples(attrs.samples) do
+      {:ok, samples} ->
+        case ChunkOccupancyTable.read_snapshot(attrs.logical_scene_id, attrs.chunk_coord) do
+          {:ok, snapshot} ->
+            # 纯 ETS 直读 + 读者进程内纯函数解析。无 mailbox、无 GenServer.call。
+            {:ok, ChunkOccupancyTable.query(snapshot, samples)}
+
+          :not_published ->
+            # chunk 未 hot：回退经 facade ensure 的直达慢路（首帧后即纯 ETS 直读）。
+            collision_query_cold(server, attrs, timeout)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    _exception in [ArgumentError, KeyError] ->
+      {:error, :invalid_collision_query}
+  end
+
+  # chunk 未 hot 的冷路径：经 facade ensure_chunk（串行 lane 启动 chunk），再直达
+  # ChunkProcess.collision_query。chunk 启动时 init 已发布首帧快照，故后续同 coord
+  # 的查询走纯 ETS 直读。这条慢路只在“某 coord 第一次被查询”时命中一次。
+  defp collision_query_cold(server, attrs, timeout) do
+    ensure_attrs = Map.take(attrs, [:logical_scene_id, :chunk_coord, :lease])
+
+    case ensure_chunk(server, ensure_attrs) do
+      {:ok, chunk_pid} ->
+        query_attrs = Map.take(attrs, [:samples])
+
+        chunk_timeout =
+          case attrs.collision_query_timeout_ms do
+            t when is_integer(t) and t > 0 -> t
+            _ -> timeout
+          end
+
+        safe_direct_chunk_call(:collision_query, fn ->
+          ChunkProcess.collision_query(chunk_pid, query_attrs, chunk_timeout)
+        end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  阶段5.2 直达版 `apply_intent/2`：已 hot 的 chunk 经 Registry 解析活 pid 后直达
+  `ChunkProcess.apply_intent/2`，不经 facade 串行 mailbox。未注册 / 死 pid 回退
+  facade `apply_intent/2`（串行 ensure + apply lease + 写）。
+  """
+  def apply_intent_direct(attrs, opts \\ []) when is_list(opts) do
+    {server, registry} = direct_targets(opts)
+
+    case normalize_apply_intent_attrs(attrs) do
+      {:ok, attrs} ->
+        route_direct(
+          server,
+          registry,
+          attrs.logical_scene_id,
+          attrs.chunk_coord,
+          fn pid ->
+            reply = ChunkProcess.apply_intent(pid, attrs)
+            emit_apply_intent_result(attrs, reply)
+            reply
+          end,
+          fn -> apply_intent(server, attrs) end
+        )
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  阶段5.2 直达版 `apply_intents/2`：同 chunk 批量写直达 `ChunkProcess.apply_intents/2`。
+  """
+  def apply_intents_direct(attrs_list, opts \\ []) when is_list(attrs_list) and is_list(opts) do
+    {server, registry} = direct_targets(opts)
+
+    case normalize_apply_intents_attrs(attrs_list) do
+      {:ok, route_attrs, normalized_attrs} ->
+        route_direct(
+          server,
+          registry,
+          route_attrs.logical_scene_id,
+          route_attrs.chunk_coord,
+          fn pid ->
+            reply = ChunkProcess.apply_intents(pid, attrs_list)
+            emit_apply_intents_result(route_attrs, normalized_attrs, reply)
+            reply
+          end,
+          fn -> apply_intents(server, attrs_list) end
+        )
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc "阶段5.2 直达版 `prepare_transaction/3`。"
+  def prepare_transaction_direct(transaction_id, attrs, opts \\ [])
+      when is_binary(transaction_id) and is_list(opts) do
+    {server, registry} = direct_targets(opts)
+
+    case normalize_prepare_transaction_attrs(attrs) do
+      {:ok, route_attrs, intents, prepare_opts} ->
+        route_direct(
+          server,
+          registry,
+          route_attrs.logical_scene_id,
+          route_attrs.chunk_coord,
+          fn pid ->
+            ChunkProcess.prepare_transaction(pid, transaction_id, intents, prepare_opts)
+          end,
+          fn -> prepare_transaction(server, transaction_id, attrs) end
+        )
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  阶段5.2 直达版 `commit_transaction/3`：直达 `ChunkProcess.commit_transaction/2`。
+
+  注意：commit 直达**不**自己启动 chunk（commit 只对已 prepared 的 hot chunk 有意义）；
+  注册表无此 chunk 时回退 facade `commit_transaction/3`，由其语义裁决
+  （`:transaction_not_prepared` / 跨侧幂等 durable）。
+  """
+  def commit_transaction_direct(transaction_id, attrs, opts \\ [])
+      when is_binary(transaction_id) and is_list(opts) do
+    {server, registry} = direct_targets(opts)
+
+    case normalize_chunk_key(attrs) do
+      {:ok, {logical_scene_id, chunk_coord}} ->
+        case lookup_alive_pid(registry, logical_scene_id, chunk_coord) do
+          {:ok, pid} -> ChunkProcess.commit_transaction(pid, transaction_id)
+          :not_started -> commit_transaction(server, transaction_id, attrs)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc "阶段5.2 直达版 `abort_transaction/3`。注册表无此 chunk 时幂等 `:ok`。"
+  def abort_transaction_direct(transaction_id, attrs, opts \\ [])
+      when is_binary(transaction_id) and is_list(opts) do
+    {server, registry} = direct_targets(opts)
+
+    case normalize_chunk_key(attrs) do
+      {:ok, {logical_scene_id, chunk_coord}} ->
+        case lookup_alive_pid(registry, logical_scene_id, chunk_coord) do
+          {:ok, pid} -> ChunkProcess.abort_transaction(pid, transaction_id)
+          # 注册表无此 chunk → 没有 fence 可释放，幂等 :ok（与 facade abort 语义一致）。
+          :not_started -> :ok
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp direct_targets(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    registry = resolve_direct_registry(opts, server)
+    {server, registry}
+  end
+
+  @doc """
+  解析直达 API 应使用的进程身份注册表名。
+
+  优先级：
+    1. 显式 `:chunk_registry` opt（测试隔离 / 调用方已知配对时直接给）；
+    2. 否则**从 `:server`（facade）自身解析**——facade 是自己注册表名的唯一真相源。
+       这保证 per-region / 跨 scene_node 部署下，直达 lookup 用的是该 region facade
+       真正配对的注册表，而不是盲目默认全局名（后者会让直达永远落空 / 抛
+       `unknown registry`）。
+    3. 默认单例（`:server == __MODULE__` 且未给 registry）直接用全局默认名，不发
+       多余 call。
+
+  facade 解析失败（未起 / 超时 / 名字未知）时回退全局默认名；最终 `lookup_alive_pid`
+  仍会把不可解析的注册表当 `:not_started` 回退 facade，语义安全。
+  """
+  @spec resolve_direct_registry(keyword(), GenServer.server()) :: module()
+  def resolve_direct_registry(opts, server) do
+    case Keyword.fetch(opts, :chunk_registry) do
+      {:ok, registry} ->
+        registry
+
+      :error ->
+        registry_for_server(server)
+    end
+  end
+
+  defp registry_for_server(__MODULE__), do: ChunkRegistry.default_name()
+
+  defp registry_for_server(server) do
+    GenServer.call(server, :chunk_registry)
+  rescue
+    _exception -> ChunkRegistry.default_name()
+  catch
+    :exit, _reason -> ChunkRegistry.default_name()
+  end
+
+  # 直达路由核心：解析活 pid → 直达 `direct_fun`；未注册 / 死 pid → 回退 `fallback_fun`
+  # （经 facade 串行 lane）。`Process.alive?` 过滤保持阶段3 死 pid 语义，确保绝不
+  # 直达正在被驱逐 / 已死的 chunk。
+  defp route_direct(_server, registry, logical_scene_id, chunk_coord, direct_fun, fallback_fun) do
+    case lookup_alive_pid(registry, logical_scene_id, chunk_coord) do
+      {:ok, pid} -> direct_fun.(pid)
+      :not_started -> fallback_fun.()
+    end
+  end
+
+  # 注册表解析 + alive 过滤。死 pid（驱逐 :DOWN 异步摘除窗口）视同 :not_started。
+  #
+  # 阶段5.2 跨 region 回退契约：直达 lookup 命中的注册表**可能根本没在本节点启动**
+  # （例如跨 region/跨 scene_node 的 chunk，其权威注册表在另一台 scene 上；或测试隔离
+  # 下只起了 per-region 注册表而没起全局默认表）。此时 `Registry.lookup` 会
+  # 抛 `ArgumentError: unknown registry: ...`。按直达路径的语义，“注册表在本地不可解析”
+  # 等同于“此 chunk 在本地不 hot” → 必须当作 `:not_started` 回退到 facade 串行 lane，
+  # 由 facade 用自己 state 里的（正确的 per-region）注册表裁决，而不是把异常冒泡上去
+  # 把整个 transaction participant 打挂。这条是跨 region 直达回退的关键防线。
+  defp lookup_alive_pid(registry, logical_scene_id, chunk_coord) do
+    case ChunkRegistry.lookup(logical_scene_id, chunk_coord, registry) do
+      {:ok, pid} ->
+        if Process.alive?(pid), do: {:ok, pid}, else: :not_started
+
+      :not_started ->
+        :not_started
+    end
+  rescue
+    ArgumentError -> :not_started
+  end
+
+  defp safe_direct_chunk_call(operation, fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error, {:chunk_unavailable, {exception.__struct__, Exception.message(exception)}}}
+  catch
+    :exit, {:timeout, _call} ->
+      {:error, {:chunk_unavailable, {:timeout, operation}}}
+
+    :exit, reason ->
+      {:error, {:chunk_unavailable, reason}}
+  end
+
   @impl true
   def init(opts) do
     {:ok,
@@ -282,34 +580,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     end
   end
 
-  def handle_call({:collision_query, attrs}, _from, state) do
-    attrs = normalize_attrs(attrs)
-
-    case ensure_chunk_in_state(state, attrs) do
-      {{:ok, chunk_pid}, next_state} ->
-        query_attrs = Map.take(attrs, [:samples])
-
-        collision_query_timeout_ms =
-          collision_query_timeout_ms(attrs, state.collision_query_timeout_ms)
-
-        case safe_chunk_call(:collision_query, fn ->
-               ChunkProcess.collision_query(
-                 chunk_pid,
-                 query_attrs,
-                 collision_query_timeout_ms
-               )
-             end) do
-          {:ok, result} -> {:reply, {:ok, result}, next_state}
-          {:error, reason} -> {:reply, {:error, reason}, next_state}
-        end
-
-      {{:error, reason}, next_state} ->
-        {:reply, {:error, reason}, next_state}
-    end
-  rescue
-    _exception in [ArgumentError, KeyError] ->
-      {:reply, {:error, :invalid_collision_query}, state}
-  end
+  # 阶段5.2：原 `handle_call({:collision_query, ...})` 串行路由已移除。碰撞读改走
+  # `collision_query/3` 的 ETS 直读（读写分离），冷路径经 `ensure_chunk` + 直达
+  # `ChunkProcess.collision_query`，均不再经本 GenServer 的 collision mailbox。
 
   def handle_call({:subscribe, attrs}, _from, state) do
     attrs = normalize_subscribe_attrs(attrs)
@@ -540,6 +813,13 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       end
 
     {:reply, reply, state}
+  end
+
+  # 阶段5.2 跨 region 直达：直达 API 需要知道“本 facade 配对的进程身份注册表名”，
+  # 才能在 per-region/隔离部署下解析对的注册表（而不是盲目默认全局名）。facade 是
+  # 自己注册表名的唯一真相源，故经此暴露。
+  def handle_call(:chunk_registry, _from, state) do
+    {:reply, state.chunk_registry, state}
   end
 
   def handle_call(:snapshot, _from, state) do
@@ -860,13 +1140,6 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       collision_query_timeout_ms: Map.get(attrs, :collision_query_timeout_ms)
     }
   end
-
-  defp collision_query_timeout_ms(%{collision_query_timeout_ms: timeout_ms}, default_timeout_ms)
-       when is_integer(timeout_ms) and timeout_ms > 0 do
-    min(timeout_ms, default_timeout_ms)
-  end
-
-  defp collision_query_timeout_ms(_attrs, default_timeout_ms), do: default_timeout_ms
 
   defp normalize_subscribe_attrs(attrs) when is_map(attrs) do
     raw_attrs = attrs

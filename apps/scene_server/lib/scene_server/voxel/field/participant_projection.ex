@@ -14,6 +14,7 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     * empty/non-conductive cells expose no electric faces.
   """
 
+  alias SceneServer.Voxel.Field.Constants
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.MicroLayer
@@ -24,7 +25,8 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
 
   import Bitwise
 
-  @fixed32_scale 65_536.0
+  # fixed-32 → float 换算比例,真相源:field_constants.rs(FIXED32_SCALE)。
+  @fixed32_scale Constants.fixed32_scale()
   @min_channel_conductivity 1.0
   @faces [:x_neg, :x_pos, :y_neg, :y_pos, :z_neg, :z_pos]
 

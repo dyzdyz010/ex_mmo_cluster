@@ -1,6 +1,8 @@
 mod conduction_path;
 mod discharge_path;
 mod electric_potential;
+// field_constants:Field 物理权重常量的唯一真相源(Elixir/Rust 双端共享,见模块注释)。
+mod field_constants;
 mod grid;
 mod temperature_diffusion;
 mod types;

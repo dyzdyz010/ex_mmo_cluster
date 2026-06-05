@@ -13,6 +13,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{
+    Constants,
     FieldLayer,
     FieldRegion,
     KernelContext,
@@ -23,16 +24,19 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @default_conductivity 0.0
-  @default_dielectric_strength 3.0
-  @min_conductivity 0.001
-  @resistance_weight 4.0
-  @breakdown_weight 0.25
-  @ionization_bonus_weight 0.01
-  @min_step_cost 0.05
+  # 共享物理常量唯一真相源:native/field_kernel/src/field_constants.rs
+  # (经 SceneServer.Voxel.Field.Constants 在编译期烘焙)。
+  @default_conductivity Constants.default_conductivity()
+  @default_dielectric_strength Constants.default_dielectric_strength()
+  @min_conductivity Constants.min_conductivity()
+  @resistance_weight Constants.resistance_weight()
+  @breakdown_weight Constants.breakdown_weight()
+  @ionization_bonus_weight Constants.ionization_bonus_weight()
+  @min_step_cost Constants.min_step_cost()
+  @epsilon Constants.epsilon()
+  # kernel 本地常量(无 Rust 副本,不属共享集):
   @default_channel_ionization 220.0
   @default_max_frontier 512
-  @epsilon 0.000001
 
   @impl true
   def kernel_id, do: :conduction_path

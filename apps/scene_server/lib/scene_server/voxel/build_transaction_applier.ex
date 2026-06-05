@@ -64,6 +64,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   def prepare(participant, transaction_id, intents_by_chunk, opts)
       when is_binary(transaction_id) and is_map(intents_by_chunk) and is_list(opts) do
     chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    direct_opts = direct_opts(opts, chunk_directory)
     logical_scene_id = fetch_logical_scene_id!(opts)
     decision_version = fetch_decision_version(opts)
     fence_deadline_ms = fetch_fence_deadline_ms(opts)
@@ -80,7 +81,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
         )
 
         prepare_chunks(
-          chunk_directory,
+          direct_opts,
           participant,
           transaction_id,
           intents_by_chunk,
@@ -124,6 +125,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   def commit(participant, transaction_id, opts)
       when is_binary(transaction_id) and is_list(opts) do
     chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    direct_opts = direct_opts(opts, chunk_directory)
     logical_scene_id = fetch_logical_scene_id!(opts)
 
     {results, error} =
@@ -132,7 +134,10 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
           nil ->
             attrs = %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}
 
-            case ChunkDirectory.commit_transaction(chunk_directory, transaction_id, attrs) do
+            # 阶段5.2：commit 直达已 hot chunk（少一跳 facade 串行）；durable barrier
+            # 仍由 ChunkProcess 内部承载，跨侧幂等语义不变（注册表无此 chunk 时回退
+            # facade，由其裁决 :transaction_not_prepared / 已 durable 幂等）。
+            case ChunkDirectory.commit_transaction_direct(transaction_id, attrs, direct_opts) do
               {:ok, summary} ->
                 {[{chunk_coord, summary} | acc], nil}
 
@@ -180,13 +185,15 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   def abort(participant, transaction_id, opts)
       when is_binary(transaction_id) and is_list(opts) do
     chunk_directory = Keyword.get(opts, :chunk_directory, ChunkDirectory)
+    direct_opts = direct_opts(opts, chunk_directory)
     logical_scene_id = fetch_logical_scene_id!(opts)
 
     Enum.each(participant.affected_chunks, fn chunk_coord ->
-      ChunkDirectory.abort_transaction(chunk_directory, transaction_id, %{
-        logical_scene_id: logical_scene_id,
-        chunk_coord: chunk_coord
-      })
+      ChunkDirectory.abort_transaction_direct(
+        transaction_id,
+        %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord},
+        direct_opts
+      )
     end)
 
     emit_event("voxel_transaction_participant_aborted", participant, transaction_id, %{
@@ -287,7 +294,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   end
 
   defp prepare_chunks(
-         chunk_directory,
+         direct_opts,
          participant,
          transaction_id,
          intents_by_chunk,
@@ -318,7 +325,9 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
             }
             |> maybe_put_fence_deadline(fence_deadline_ms)
 
-          case ChunkDirectory.prepare_transaction(chunk_directory, transaction_id, attrs) do
+          # 阶段5.2：prepare 直达（已 hot 时少一跳 facade 串行；未注册时回退 facade
+          # ensure + prepare，冷启 chunk 与 fence 持久化语义不变）。
+          case ChunkDirectory.prepare_transaction_direct(transaction_id, attrs, direct_opts) do
             {:ok, summary} ->
               {:cont, {[{chunk_coord, summary} | acc], nil}}
 
@@ -338,7 +347,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
 
       {failed_chunk, reason} ->
         rollback_prepared(
-          chunk_directory,
+          direct_opts,
           participant,
           transaction_id,
           summaries,
@@ -356,18 +365,36 @@ defmodule SceneServer.Voxel.BuildTransactionApplier do
   end
 
   defp rollback_prepared(
-         chunk_directory,
+         direct_opts,
          _participant,
          transaction_id,
          prepared,
          logical_scene_id
        ) do
     Enum.each(prepared, fn {chunk_coord, _summary} ->
-      ChunkDirectory.abort_transaction(chunk_directory, transaction_id, %{
-        logical_scene_id: logical_scene_id,
-        chunk_coord: chunk_coord
-      })
+      ChunkDirectory.abort_transaction_direct(
+        transaction_id,
+        %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord},
+        direct_opts
+      )
     end)
+  end
+
+  # 阶段5.2：把 facade server + 注册表名打包给直达 API。production 单例两者皆默认；
+  # 测试隔离 / 跨 region 部署经 `:chunk_directory` 注入 per-region facade。
+  #
+  # 跨 region 关键：调用方（PrefabLocalTransaction / World executor）通常只给
+  # `:chunk_directory`（= 该 region 的 ChunkDirectory.Region*），**不**给 `:chunk_registry`。
+  # 此前这里盲目默认全局 `ChunkRegistry.default_name()`，导致直达 lookup 解析到一个
+  # 在本节点根本没启动的全局注册表，`Registry.lookup` 抛 `unknown registry` 把
+  # participant 打挂。改为：若调用方给了 `:chunk_registry` 就用；否则**从 facade 自身
+  # 解析**它配对的 per-region 注册表（facade 是自己注册表名的唯一真相源）。
+  defp direct_opts(opts, chunk_directory) do
+    # 只把调用方真正给了的 `:chunk_registry` 透传下去（给了就用，没给就让
+    # facade 自解析 per-region 注册表）；不要塞一个 nil 进去覆盖自解析。
+    registry_opts = Keyword.take(opts, [:chunk_registry])
+    registry = ChunkDirectory.resolve_direct_registry(registry_opts, chunk_directory)
+    [server: chunk_directory, chunk_registry: registry]
   end
 
   defp validate_intents_cover_chunks(participant, intents) do

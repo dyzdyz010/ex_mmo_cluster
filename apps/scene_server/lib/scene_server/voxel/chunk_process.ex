@@ -71,6 +71,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias DataService.Voxel.ChunkPendingTransactionStore
   alias DataService.Voxel.ChunkSnapshotStore
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.ChunkOccupancyTable
+  alias SceneServer.Voxel.ChunkPersistPool
   alias SceneServer.Voxel.ChunkRegistry
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
@@ -642,8 +644,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
             lifecycle_check_interval_ms:
               Keyword.get(opts, :lifecycle_check_interval_ms, @lifecycle_check_interval_ms),
             idle_evict_silence_ms:
-              Keyword.get(opts, :idle_evict_silence_ms, @idle_evict_silence_ms)
+              Keyword.get(opts, :idle_evict_silence_ms, @idle_evict_silence_ms),
+            # 阶段5.2 (voxel-storage-1)：per-chunk 只读 occupancy 快照表名。chunk
+            # 进程是唯一写者，在此建表并随每次授权写发布当前 storage 投影；移动碰撞
+            # 读路径经 `ChunkOccupancyTable.read_snapshot/2` 直读这张表，不经本进程
+            # mailbox（读写分离，落方块写不再 head-of-line block 碰撞读）。
+            occupancy_table:
+              ChunkOccupancyTable.ensure_table(storage.logical_scene_id, storage.chunk_coord)
           }
+
+        # 阶段5.2：发布初始 occupancy 快照，使 hydrate 出的 storage 立即可被碰撞读
+        # 直读（无需等第一次写）。
+        ChunkOccupancyTable.publish(state.occupancy_table, state.storage)
 
         emit_init_hydrated(state)
 
@@ -876,11 +888,32 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 阶段2.4：写路径收尾——刷新活动时间戳 + 按需 arm 模拟 tick。任何把 storage
   # 改 dirty 的授权写都应在 reply 前走它，使空闲态新产生的 dirty 能拉起一个
   # tick，而不依赖已被移除的 100ms 空转 timer。
+  #
+  # 阶段5.2 (voxel-storage-1)：同一收尾点**原子发布** occupancy 快照到 per-chunk
+  # ETS 表。所有授权写路径（apply_intent/intents、commit、put_solid_block、field
+  # effect、temperature/heat 等）都经本函数，因此 occupancy 读快照与权威 storage
+  # 在每次写后即时收敛一致——读路径直读这张表，无需触达本进程 mailbox。
   defp post_write_lifecycle(state) do
+    publish_occupancy_snapshot(state)
+
     state
     |> mark_activity()
     |> maybe_arm_simulation_tick()
   end
+
+  # 阶段5.2：把当前 storage 的 occupancy 投影发布到 per-chunk ETS 表（一次
+  # `:ets.insert`，O(1)）。table 缺失（极端：init 未建成 / 已 terminate）时静默跳过
+  # ——读路径会回退到经 facade 的 ensure+直达慢路。
+  defp publish_occupancy_snapshot(%{occupancy_table: table, storage: storage})
+       when not is_nil(table) do
+    ChunkOccupancyTable.publish(table, storage)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  # occupancy_table 为 nil / 缺失（极端：init 未建成）—— 静默跳过，读路径走 ensure 兜底。
+  defp publish_occupancy_snapshot(_state), do: :ok
 
   defp load_persisted_fence(logical_scene_id, chunk_coord, lease) do
     case ChunkPendingTransactionStore.get_fence(logical_scene_id, chunk_coord) do
@@ -1878,6 +1911,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
     _ =
       try do
         stop_all_field_workers(state, :chunk_crash)
+      catch
+        _kind, _err -> :ok
+      end
+
+    # 阶段5.2：删 per-chunk occupancy 表（兜底；`:public` 无 heir 表在进程退出时
+    # 也会被 ETS 自动回收）。删表后读路径对该 coord 读到 `:not_published`，回退到
+    # 经 facade ensure（重启后新权威进程会重建表并重新发布），不会读到陈旧快照。
+    _ =
+      try do
+        if state[:occupancy_table], do: ChunkOccupancyTable.delete_table(state.occupancy_table)
       catch
         _kind, _err -> :ok
       end
@@ -4143,10 +4186,16 @@ defmodule SceneServer.Voxel.ChunkProcess do
               send(parent, {:async_snapshot_persist_finished, ref, forced_result, snapshot_bytes})
 
             _ ->
+              attrs = build_snapshot_attrs(lease, chunk_coord, storage, payload)
+
+              # 阶段5.2 (voxel-storage-1)：DB 写经有界 write-behind pool（poolboy）
+              # checkout worker 后再写——并发 persist 写数被池大小钳死，对 DB 施背压
+              # （高速写在 Task 层排队等 worker，不无界冲击 Postgres 连接池）。池满
+              # 超时 / 未启动的降级语义见 ChunkPersistPool.transaction/1。
               result =
-                lease
-                |> build_snapshot_attrs(chunk_coord, storage, payload)
-                |> safe_persist_snapshot_with_retry(3)
+                ChunkPersistPool.transaction(fn ->
+                  safe_persist_snapshot_with_retry(attrs, 3)
+                end)
 
               send(parent, {:async_snapshot_persist_finished, ref, result, snapshot_bytes})
           end

@@ -17,20 +17,23 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
        其他 `:temperature` source_points 在 tick 末重新写回(热源持续)。
   """
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, NativeBackend}
+  alias SceneServer.Voxel.Field.{Constants, FieldLayer, FieldRegion, NativeBackend}
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
-  @alpha_max 0.5
+  # 共享物理常量唯一真相源:native/field_kernel/src/field_constants.rs
+  # (经 SceneServer.Voxel.Field.Constants 在编译期烘焙)。
+  @alpha_max Constants.temperature_alpha_max()
+  @fixed32_scale Constants.fixed32_scale()
+  @default_tc_raw Constants.default_tc_raw()
+  @default_density_raw Constants.default_density_raw()
+  @default_specific_heat_capacity_raw Constants.default_specific_heat_capacity_raw()
+  @min_density_float Constants.min_density_float()
+  @min_specific_heat_capacity_float Constants.min_specific_heat_capacity_float()
+  # kernel 本地常量(无 Rust 副本:dt/cell_size 以参数传入 native,env_temp 仅 Elixir 基线):
   @default_dt_seconds 0.1
   @cell_size_meters 1.0
   @env_temp 20
-  @fixed32_scale 65_536.0
-  @default_tc_raw 6_554
-  @default_density_raw 65_536
-  @default_specific_heat_capacity_raw 65_536_000
-  @min_density_float 0.001
-  @min_specific_heat_capacity_float 0.001
 
   @doc """
   Runs one tick of the temperature field for the given region.

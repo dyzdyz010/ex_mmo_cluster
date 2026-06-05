@@ -4,18 +4,15 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use crate::grid;
 use crate::types::Aabb;
 
+// 介质击穿 step-cost 权重 + 数值容差来自 field 物理常量唯一真相源(见 field_constants.rs)。
+use crate::field_constants::{
+    CONDUCTIVE_COST_WEIGHT, DEFAULT_CONDUCTIVITY, DEFAULT_DIELECTRIC_STRENGTH,
+    DIELECTRIC_COST_WEIGHT, EPSILON, IONIZATION_COST_WEIGHT, IONIZATION_THRESHOLD_WEIGHT,
+    MIN_CONDUCTIVITY, MIN_STEP_COST,
+};
+
 pub(crate) type NativeCell = (u16, f64, f64);
 pub(crate) type IonizationCell = (u16, f64);
-
-const DEFAULT_CONDUCTIVITY: f64 = 0.0;
-const DEFAULT_DIELECTRIC_STRENGTH: f64 = 3.0;
-const MIN_CONDUCTIVITY: f64 = 0.001;
-const CONDUCTIVE_COST_WEIGHT: f64 = 0.5;
-const DIELECTRIC_COST_WEIGHT: f64 = 1.0;
-const IONIZATION_THRESHOLD_WEIGHT: f64 = 0.05;
-const IONIZATION_COST_WEIGHT: f64 = 0.01;
-const MIN_STEP_COST: f64 = 0.05;
-const EPSILON: f64 = 0.000001;
 
 #[derive(Debug, Clone, Copy)]
 struct Cell {

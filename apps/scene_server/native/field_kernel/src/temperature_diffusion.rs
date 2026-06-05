@@ -3,16 +3,14 @@ use std::collections::HashMap;
 use crate::grid;
 use crate::types::Aabb;
 
+// 温度扩散常量来自 field 物理常量唯一真相源(见 field_constants.rs)。
+use crate::field_constants::{
+    DEFAULT_DENSITY_RAW, DEFAULT_SPECIFIC_HEAT_CAPACITY_RAW, DEFAULT_TC_RAW, FIXED32_SCALE,
+    MIN_DENSITY_FLOAT, MIN_SPECIFIC_HEAT_CAPACITY_FLOAT, TEMPERATURE_ALPHA_MAX,
+};
+
 pub(crate) type TemperatureCell = (u16, f64);
 pub(crate) type ThermalProperties = (u16, i64, i64, i64);
-
-const TEMPERATURE_ALPHA_MAX: f64 = 0.5;
-const FIXED32_SCALE: f64 = 65_536.0;
-const DEFAULT_TC_RAW: i64 = 6_554;
-const DEFAULT_DENSITY_RAW: i64 = 65_536;
-const DEFAULT_SPECIFIC_HEAT_CAPACITY_RAW: i64 = 65_536_000;
-const MIN_DENSITY_FLOAT: f64 = 0.001;
-const MIN_SPECIFIC_HEAT_CAPACITY_FLOAT: f64 = 0.001;
 
 pub(crate) fn diffuse_temperature(
     cells: Vec<TemperatureCell>,
