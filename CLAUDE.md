@@ -10,7 +10,7 @@
 - **运行时版本**：见 `.tool-versions`（Erlang 28.3.1，Elixir 1.19.5-otp-28）
 - **Web 框架**：Phoenix 1.8（`auth_server`、`visualize_server`，均由 `mix phx.new` 1.8 模板生成后迁移业务逻辑）
 - **HTTP 适配器**：Bandit 1.5（Phoenix 1.8 默认）
-- **数据库**：PostgreSQL via Ecto（主路径），Mnesia via Memento（遗留、迁移中）
+- **数据库**：PostgreSQL via Ecto（唯一持久化路径；旧 Mnesia/Memento 链路已彻底移除）
 - **序列化**：自定义二进制 codec（`GateServer.Codec`，见 `docs/2026-04-10-线协议规范.md`），以及 JSON（Jason）
 - **原生扩展**：Rust via Rustler 0.37.3（物理使用 `rapier3d-f64`，空间索引使用 octree）
 - **集群组件**：`libcluster`（节点发现）、`Horde`（分布式注册与 supervisor）、`DNSCluster`（Phoenix 1.8 默认 DNS 基础集群，与 libcluster 并存）
@@ -31,13 +31,11 @@ ex_mmo_cluster/                    # Umbrella 根目录
     ├── agent_manager/            # agent_server 协调层
     ├── scene_server/             # 场景逻辑、物理、AOI、Rust NIF
     ├── world_server/             # 世界层协调逻辑
+    ├── chat_server/              # 聊天运行时
     ├── beacon_server/            # 集群服务发现（libcluster + Horde）
     ├── auth_server/              # 用户认证（Phoenix Web 应用）
     ├── visualize_server/         # 游戏状态可视化（Phoenix LiveView）
-    ├── data_init/                # 数据初始化与旧 Mnesia 表定义
-    ├── data_service/             # 数据服务（PostgreSQL / Ecto）
-    ├── data_store/               # 旧 Mnesia 存储节点
-    └── data_contact/             # 旧数据集群协调节点
+    └── data_service/             # 数据服务（PostgreSQL / Ecto，唯一持久化路径）
 ```
 
 ## 架构分层
@@ -74,14 +72,8 @@ cd apps/gate_server && mix test --no-start
 cd apps/data_service && mix test --no-start
 cd apps/beacon_server && mix test --no-start
 
-# 初始化遗留 Mnesia 数据库
-mix db_initialize
-
 # 运行 PostgreSQL 迁移
 mix ecto.migrate -r DataService.Repo
-
-# 将数据从 Mnesia 迁移到 PostgreSQL
-mix migrate_to_pg
 
 # 启动一个集群节点（交互式）
 iex --name <node_name> --cookie mmo -S mix
@@ -175,9 +167,9 @@ Schema 位于 `apps/data_service/lib/data_service/schema/`：
 
 Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
-### Mnesia（遗留路径，正在退出）
+### Mnesia（已彻底移除）
 
-旧表定义仍保留在 `apps/data_init/lib/table_def.ex` 中，主要用于 `mix migrate_to_pg`。`data_store` 与 `data_contact` 仍依赖 Mnesia，但当前 `data_service` 的主要 worker 路径已经切到 PostgreSQL。
+旧 Mnesia/Memento 链路（`data_init` / `data_store` / `data_contact` 三个 app、`mix db_initialize`、`mix migrate_to_pg`）已全部物理删除。数据层现在唯一持久化路径为 PostgreSQL/Ecto（`data_service`）。
 
 ## Rust 原生扩展
 
@@ -224,8 +216,8 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 
 - 测试框架：ExUnit
 - 单 app 测试通常使用 `cd apps/<app> && mix test --no-start`
-- 含数据库测试的应用（如 `data_service`）需要 PostgreSQL
-- 涉及集群的应用（如 `data_contact`、`data_store`）需要分布式 Erlang 环境
+- 含数据库测试的应用（如 `data_service`、`auth_server`、`gate_server`）需要 PostgreSQL
+- 涉及集群的应用（如 `beacon_server`）需要分布式 Erlang 环境
 - CI 配置位于 `.github/workflows/ci.yml`
 
 | App | 测试数 | 说明 |
@@ -247,11 +239,10 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 | `dns_cluster` | ~> 0.2 | Phoenix 1.8 默认 DNS 集群 |
 | `ecto_sql` | ~> 3.12 | PostgreSQL 数据访问 |
 | `postgrex` | 锁定 0.22.0 | PostgreSQL 驱动 |
-| `memento` | 0.3.2 | Mnesia 包装层（遗留） |
 | `rustler` | ~> 0.37.3 | Elixir ↔ Rust NIF 桥接 |
 | `libcluster` | ~> 3.4 | 集群自动发现 |
 | `horde` | ~> 0.9 | 分布式 registry / supervisor |
-| `poolboy` | 1.5 | worker pool 管理（data_service） |
+| `poolboy` | 1.5 | worker pool 管理（scene_server） |
 | `bcrypt_elixir` | 3.x | 密码哈希（auth_server） |
 | `jason` | 1.4 | JSON 编解码 |
 
@@ -260,7 +251,7 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 - 这是一个 umbrella 项目，修改前必须先判断影响的是哪个 app
 - 跨 app 通信主要通过 Interface 模块和稳定公共 API，尽量不要绕过这些边界
 - `scene_server` 带 Rust NIF，修改原生代码时要考虑 Rustler 0.37.3 API 与 Rust 编译链
-- **数据层现状**：`data_service` 主路径已经是 PostgreSQL / Ecto；`data_init` / `data_store` / `data_contact` 主要是遗留兼容
+- **数据层现状**：数据层唯一持久化路径为 `data_service`（PostgreSQL / Ecto）；旧 Mnesia 三件套（`data_init` / `data_store` / `data_contact`）已彻底移除
 - **服务发现现状**：所有 Interface 模块都应通过 `BeaconServer.Client` 做发现，不要硬编码节点名
 - 项目使用分布式 Erlang，涉及多节点行为时要考虑 node name 与 cookie
 - 客户端协议已经切到自定义二进制 codec（`GateServer.Codec`），线格式见 `docs/2026-04-10-线协议规范.md`

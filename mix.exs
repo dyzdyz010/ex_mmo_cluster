@@ -43,8 +43,9 @@ defmodule Cluster.MixProject do
   end
 
   # Release definitions. MVP ships a single container/node that bundles
-  # all maintained umbrella apps. Legacy Mnesia cluster apps
-  # (data_store, data_contact) are intentionally excluded.
+  # all maintained umbrella apps. The data layer is fully on PostgreSQL/Ecto
+  # (data_service); the legacy Mnesia apps (data_store, data_contact,
+  # data_init) have been removed entirely.
   defp releases do
     [
       ex_mmo_cluster: [
@@ -54,7 +55,6 @@ defmodule Cluster.MixProject do
           # Infra / discovery
           beacon_server: :permanent,
           # Data layer
-          data_init: :permanent,
           data_service: :permanent,
           # Game logic
           chat_server: :permanent,

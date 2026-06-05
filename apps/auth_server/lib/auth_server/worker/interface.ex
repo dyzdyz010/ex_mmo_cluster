@@ -4,12 +4,14 @@ defmodule AuthServer.Interface do
 
   The auth runtime uses this process to:
 
-  - register itself for cluster discovery
-  - resolve the current `data_service` node used by `AuthServer.Accounts`
+  - register `:auth_server` for cluster discovery (gate/runtime resolve auth
+    through this entry)
+  - expose the current `data_service` node for diagnostics
 
   In the single-container MVP `data_service` lives in the same BEAM, so the
-  resolved node is just `node()`. The legacy `data_contact` (Mnesia routing)
-  handshake has been removed — that whole layer is excluded from the release.
+  resolved node is just `node()`. Account/character access is performed by
+  `AuthServer.Accounts` directly against the co-located `DataService` layer
+  (PostgreSQL/Ecto), not through this process.
   """
 
   use GenServer

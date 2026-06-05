@@ -5,9 +5,6 @@ import_config("../../../config/config.exs")
 db_port = String.to_integer(System.get_env("MMO_DB_PORT", "5432"))
 db_pool_size = String.to_integer(System.get_env("MMO_DB_POOL_SIZE", "10"))
 
-config :mnesia,
-  dir: ~c"priv/.mnesia/#{Mix.env()}/#{node()}"
-
 config :data_service,
   service_id: 1,
   use_ecto: true,

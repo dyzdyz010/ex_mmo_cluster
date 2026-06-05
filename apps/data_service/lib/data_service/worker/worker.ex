@@ -1,6 +1,5 @@
 defmodule DataService.Worker do
   use GenServer
-  require Logger
 
   alias DataService.Repo
   alias DataService.Schema.Account
@@ -15,38 +14,60 @@ defmodule DataService.Worker do
     {:ok, %{}}
   end
 
-  ############ CRUD methods ####################
+  ############ Stateless public API ####################
+  #
+  # 这些操作本质上是无状态的 Ecto 调用：Repo 自带连接池负责并发，
+  # 不需要再叠一层串行 GenServer。`AuthServer.Accounts` 直接在同
+  # 一个 BEAM 内调用这些函数（auth 与 data_service 同节点共存），
+  # 历史上的 `DataService.Dispatcher` + poolboy 中间层已删除。
+  #
+  # 下面的 GenServer `handle_call/3` 仅为既有 `DataService.WorkerTest`
+  # 与潜在的进程内串行需求保留，全部委托到这里的纯函数实现。
 
-  @impl true
-  def handle_call({:account_by_email, email}, _from, state) do
-    account = Repo.get_by(Account, email: email)
-    {:reply, {:ok, account}, state}
+  @spec account_by_email(String.t()) :: {:ok, Account.t() | nil}
+  def account_by_email(email) do
+    {:ok, Repo.get_by(Account, email: email)}
   end
 
-  @impl true
-  def handle_call({:account_by_username, username}, _from, state) do
-    account = Repo.get_by(Account, username: username)
-    {:reply, {:ok, account}, state}
+  @spec account_by_username(String.t()) :: {:ok, Account.t() | nil}
+  def account_by_username(username) do
+    {:ok, Repo.get_by(Account, username: username)}
   end
 
-  @impl true
-  def handle_call({:character_owned_by_account, account_id, cid}, _from, state) do
-    character = Repo.get_by(Character, id: cid, account: account_id)
-    {:reply, {:ok, character}, state}
+  @spec character_owned_by_account(integer(), integer()) :: {:ok, Character.t() | nil}
+  def character_owned_by_account(account_id, cid) do
+    {:ok, Repo.get_by(Character, id: cid, account: account_id)}
   end
 
-  @impl true
-  def handle_call({:register_account, username, password, email, phone}, _from, state) do
-    acc = register_account(username, password, email, phone)
-    {:reply, acc, state}
+  @spec register_account(String.t(), String.t(), String.t(), String.t()) ::
+          Account.t() | {:err, term()}
+  def register_account(username, password, email, phone) do
+    <<uid::64>> = DataService.UidGenerator.generate()
+
+    case DataService.DbOps.UserAccount.check_duplicate_ecto(username, email, phone) do
+      {:duplicate, duplicate_list} ->
+        {:err, {:duplicate, duplicate_list}}
+
+      :ok ->
+        {:ok, hashed_password, salt} = hash_password(password)
+
+        case Repo.insert(%Account{
+               id: uid,
+               username: username,
+               password: hashed_password,
+               salt: salt,
+               email: email,
+               phone: phone
+             }) do
+          {:ok, account} -> account
+          {:error, changeset} -> {:err, {:insert_failed, changeset}}
+        end
+    end
   end
 
-  @impl true
-  def handle_call({:upsert_dev_account, username}, _from, state) do
-    {:reply, upsert_dev_account(username), state}
-  end
-
-  defp upsert_dev_account(username) do
+  @spec upsert_dev_account(String.t()) ::
+          {:ok, %{account: Account.t(), character: Character.t()}} | {:error, term()}
+  def upsert_dev_account(username) do
     with %Account{} = account <-
            Repo.get_by(Account, username: username) || insert_dev_account(username),
          %Character{} = character <-
@@ -57,6 +78,35 @@ defmodule DataService.Worker do
       {:error, _} = error -> error
     end
   end
+
+  ############ GenServer CRUD callbacks (delegate to public API) ####
+
+  @impl true
+  def handle_call({:account_by_email, email}, _from, state) do
+    {:reply, account_by_email(email), state}
+  end
+
+  @impl true
+  def handle_call({:account_by_username, username}, _from, state) do
+    {:reply, account_by_username(username), state}
+  end
+
+  @impl true
+  def handle_call({:character_owned_by_account, account_id, cid}, _from, state) do
+    {:reply, character_owned_by_account(account_id, cid), state}
+  end
+
+  @impl true
+  def handle_call({:register_account, username, password, email, phone}, _from, state) do
+    {:reply, register_account(username, password, email, phone), state}
+  end
+
+  @impl true
+  def handle_call({:upsert_dev_account, username}, _from, state) do
+    {:reply, upsert_dev_account(username), state}
+  end
+
+  ############ Private helpers ####################
 
   defp insert_dev_account(username) do
     <<uid::64>> = DataService.UidGenerator.generate()
@@ -99,30 +149,6 @@ defmodule DataService.Worker do
     |> case do
       {:ok, character} -> character
       {:error, changeset} -> {:error, {:insert_character_failed, changeset}}
-    end
-  end
-
-  defp register_account(username, password, email, phone) do
-    <<uid::64>> = DataService.UidGenerator.generate()
-
-    case DataService.DbOps.UserAccount.check_duplicate_ecto(username, email, phone) do
-      {:duplicate, duplicate_list} ->
-        {:err, {:duplicate, duplicate_list}}
-
-      :ok ->
-        {:ok, hashed_password, salt} = hash_password(password)
-
-        case Repo.insert(%Account{
-               id: uid,
-               username: username,
-               password: hashed_password,
-               salt: salt,
-               email: email,
-               phone: phone
-             }) do
-          {:ok, account} -> account
-          {:error, changeset} -> {:err, {:insert_failed, changeset}}
-        end
     end
   end
 

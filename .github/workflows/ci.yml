@@ -41,13 +41,11 @@ jobs:
         run: mix deps.get
 
       - name: Compile shared dependencies
-        run: |
-          mix deps.compile
-          cd apps/data_init && mix compile
+        run: mix deps.compile
 
       - name: Compile maintained apps (warnings as errors)
         run: |
-          # Apps with no legacy Mnesia deps — strict compilation
+          # Strict compilation for every umbrella app.
           # scene_server compiled in its dedicated Rust-backed test job
           strict_apps=(
             apps/beacon_server

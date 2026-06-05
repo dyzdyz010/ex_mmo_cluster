@@ -39,7 +39,6 @@ Application.put_env(:gate_server, :udp_port, gate_udp_port)
 Enum.each(
   [
     :data_service,
-    :data_init,
     :beacon_server,
     :scene_server,
     :world_server,

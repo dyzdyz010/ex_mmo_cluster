@@ -13,7 +13,9 @@ defmodule DataService.Application do
       [
         DataService.Repo,
         interface_child(),
-        {DataService.DispatcherSup, name: DataService.DispatcherSup},
+        # NOTE: 旧的 DataService.DispatcherSup（Dispatcher GenServer + poolboy
+        # worker 池）已删除。账号/角色访问现在由 DataService.Worker 的无状态
+        # 函数直接走 Ecto 连接池，不再需要在其上叠加冗余串行层与第二个池。
         {DataService.UidGenerator, name: DataService.UidGenerator},
         {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore}
       ]

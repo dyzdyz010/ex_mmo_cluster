@@ -3,19 +3,24 @@ defmodule AuthServer.Accounts do
   Auth-owned accessors for account and character ownership data.
 
   The gate server should not talk to `data_service` directly for identity
-  decisions. Instead, auth owns the boundary and can resolve account/character
-  lookups through the current data source.
+  decisions. Instead, auth owns the boundary and resolves account/character
+  lookups through the co-located `data_service` data layer.
 
-  In production-like flows this module prefers the auth interface's discovered
-  `data_service` node. In tests and local single-node runs it can fall back to a
-  locally registered `DataService.Dispatcher` so the authorization path remains
-  exercisable without a full cluster.
+  `auth_server` and `data_service` always run in the same BEAM (see the MVP
+  `ex_mmo_cluster` release and `AuthServer.Interface`), so these accessors call
+  `DataService.Worker`'s stateless functions directly. The historical
+  `DataService.Dispatcher` GenServer (a redundant serial layer stacked on top of
+  Ecto's own connection pool) has been removed.
+
+  All `DataService.Worker.*` accessors are plain Ecto calls; the only failure we
+  translate here is an unexpected crash, surfaced as `:data_service_unavailable`
+  so callers keep their existing error contract.
   """
 
   @spec find_by_username(binary()) :: {:ok, struct() | nil} | {:error, atom()}
   @doc "Looks up an account by username through the auth-owned data-service boundary."
   def find_by_username(username) when is_binary(username) do
-    dispatch_to_data_service({:account_by_username, username})
+    guard(fn -> DataService.Worker.account_by_username(username) end)
   end
 
   @spec character_owned_by_account?(integer(), integer()) ::
@@ -23,7 +28,7 @@ defmodule AuthServer.Accounts do
   @doc "Returns the character when it is owned by the given account ID."
   def character_owned_by_account?(account_id, cid)
       when is_integer(account_id) and is_integer(cid) do
-    dispatch_to_data_service({:character_owned_by_account, account_id, cid})
+    guard(fn -> DataService.Worker.character_owned_by_account(account_id, cid) end)
   end
 
   def character_owned_by_account?(_account_id, _cid), do: {:error, :invalid_account}
@@ -36,47 +41,24 @@ defmodule AuthServer.Accounts do
   Reuses existing rows when present. Returns the resolved account + character.
   """
   def upsert_dev(username) when is_binary(username) do
-    dispatch_to_data_service({:upsert_dev_account, username})
+    guard(fn -> DataService.Worker.upsert_dev_account(username) end)
   end
 
   def upsert_dev(_username), do: {:error, :invalid_username}
 
-  defp dispatch_to_data_service(message) do
-    case data_service_target() do
-      {:error, _reason} = error ->
-        error
-
-      target ->
-        try do
-          GenServer.call(target, message)
-        catch
-          :exit, _reason -> {:error, :data_service_unavailable}
-        end
-    end
-  end
-
-  defp data_service_target do
-    cond do
-      Process.whereis(AuthServer.Interface) != nil ->
-        case safe_call(AuthServer.Interface, :data_service) do
-          {:ok, nil} -> {:error, :data_service_unavailable}
-          {:ok, node} -> {DataService.Dispatcher, node}
-          {:error, _reason} -> {:error, :data_service_unavailable}
-        end
-
-      Process.whereis(DataService.Dispatcher) != nil ->
-        DataService.Dispatcher
-
-      true ->
-        {:error, :data_service_unavailable}
-    end
-  end
-
-  defp safe_call(server, message) do
-    try do
-      {:ok, GenServer.call(server, message)}
-    catch
-      :exit, reason -> {:error, reason}
-    end
+  # Runs `fun` and normalizes any process/DB failure (e.g. the Repo not being
+  # started, or the connection pool being unavailable) into the stable
+  # `{:error, :data_service_unavailable}` contract callers already handle.
+  #
+  # Both failure shapes must be covered to actually fail closed: Ecto *raises*
+  # (e.g. `RuntimeError` "could not lookup Ecto repo ... because it was not
+  # started", `DBConnection.ConnectionError`) for an unavailable Repo/connection,
+  # while a pool/connection process going down surfaces as an `:exit`.
+  defp guard(fun) do
+    fun.()
+  rescue
+    _error -> {:error, :data_service_unavailable}
+  catch
+    :exit, _reason -> {:error, :data_service_unavailable}
   end
 end

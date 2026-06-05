@@ -68,7 +68,6 @@ defmodule AuthServer.MixProject do
       {:websock_adapter, "~> 0.5"},
       {:bcrypt_elixir, "~> 3.0"},
       {:libcluster, "~> 3.4"},
-      {:data_init, in_umbrella: true},
       {:data_service, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       # Dev voxel endpoints are auth routes backed by co-located world/scene apps
