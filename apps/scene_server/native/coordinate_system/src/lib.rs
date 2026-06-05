@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 use bucket::Bucket;
 use coordinate_system::CoordinateSystem;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::{Atom, ResourceArc};
 
 use item::{Item};
@@ -108,6 +107,15 @@ mod atoms {
 
 rustler::init!("Elixir.SceneServer.Native.CoordinateSystem");
 
+// 调度约定(scene-rust-1):
+// 该 crate 是旧坐标系实现(逐步被 octree 取代)。重路径只有两类:
+//   1) 范围/距离查询(items_within_distance_for_item):扫描整个轴上的桶 → DirtyCpu;
+//   2) 整结构深克隆的 *_raw debug dump(SortedSet / CoordinateSystem 全量) → DirtyCpu。
+// 其余都是单实体的构造 / 有界 sorted 插入删除 / 纯算术,保留普通 NIF,避免 dirty
+// 调度切换开销。本 crate 已移除 rayon(见各处注释):dirty 线程上再开 rayon 池是反模式,
+// 且这里的并行维度(3 条轴 / 少量桶)收益不抵开销。
+
+// new_item:构造单个 Item,轻量 → 普通 NIF。
 #[rustler::nif]
 fn new_item(cid: i64, coord: Vector) -> (Atom, ItemArc) {
     let new_item: ItemArc = ResourceArc::new(ItemResource(Mutex::new(Item::new_item(
@@ -118,6 +126,7 @@ fn new_item(cid: i64, coord: Vector) -> (Atom, ItemArc) {
     (atoms::ok(), new_item)
 }
 
+// update_item_coord:更新单个 item 的坐标,纯写入 → 普通 NIF。
 #[rustler::nif]
 fn update_item_coord(itref: ResourceArc<ItemResource>, coord: Vector) -> Result<Atom, Atom> {
     let mut it = match itref.0.try_lock() {
@@ -128,6 +137,7 @@ fn update_item_coord(itref: ResourceArc<ItemResource>, coord: Vector) -> Result<
     Ok(atoms::ok())
 }
 
+// get_item_raw:克隆单个 item,轻量 → 普通 NIF。
 #[rustler::nif]
 fn get_item_raw(itref: ResourceArc<ItemResource>) -> Result<Item, Atom> {
     let it = match itref.0.try_lock() {
@@ -138,6 +148,7 @@ fn get_item_raw(itref: ResourceArc<ItemResource>) -> Result<Item, Atom> {
     Ok(it.clone())
 }
 
+// new_bucket:构造空 bucket,轻量 → 普通 NIF。
 #[rustler::nif]
 fn new_bucket() -> (Atom, BucketArc) {
     let new_bucket = ResourceArc::new(BucketResource(Mutex::new(Bucket {
@@ -146,6 +157,7 @@ fn new_bucket() -> (Atom, BucketArc) {
     (atoms::ok(), new_bucket)
 }
 
+// add_item_to_bucket:向单个 bucket 做一次有界 sorted 插入(桶容量上限固定),轻量 → 普通 NIF。
 #[rustler::nif]
 fn add_item_to_bucket(
     bkref: ResourceArc<BucketResource>,
@@ -162,6 +174,7 @@ fn add_item_to_bucket(
     Ok(atoms::ok())
 }
 
+// get_bucket_raw:克隆单个 bucket(容量有界),轻量 → 普通 NIF。
 #[rustler::nif]
 fn get_bucket_raw(bkref: ResourceArc<BucketResource>) -> Result<Bucket, Atom> {
     let bk = match bkref.0.try_lock() {
@@ -172,6 +185,7 @@ fn get_bucket_raw(bkref: ResourceArc<BucketResource>) -> Result<Bucket, Atom> {
     Ok(bk.clone())
 }
 
+// new_set:构造空 SortedSet,轻量 → 普通 NIF。
 #[rustler::nif]
 fn new_set(set_capacity: usize, bucket_capacity: usize) -> (Atom, SortedSetArc) {
     let initial_set_capacity: usize = (set_capacity / bucket_capacity) + 1;
@@ -186,6 +200,7 @@ fn new_set(set_capacity: usize, bucket_capacity: usize) -> (Atom, SortedSetArc) 
     (atoms::ok(), resource)
 }
 
+// add_item_to_set:一次 sorted-set 插入(二分定位 + 桶内有界 shift),轻量 → 普通 NIF。
 #[rustler::nif]
 fn add_item_to_set(
     ssref: ResourceArc<SortedSetResource>,
@@ -202,7 +217,8 @@ fn add_item_to_set(
     Ok(atoms::ok())
 }
 
-#[rustler::nif]
+// get_set_raw:深克隆整个 SortedSet(可含全量元素)用于 debug dump,O(N) → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn get_set_raw(ssref: ResourceArc<SortedSetResource>) -> Result<SortedSet, Atom> {
     // OwnedEnv::send_and_clear(&mut self, recipient, closure)
     let ss = match ssref.0.try_lock() {
@@ -213,6 +229,7 @@ fn get_set_raw(ssref: ResourceArc<SortedSetResource>) -> Result<SortedSet, Atom>
     Ok(ss.clone())
 }
 
+// new_system:构造空 CoordinateSystem(3 个空 SortedSet),轻量 → 普通 NIF。
 #[rustler::nif]
 fn new_system(set_capacity: usize, bucket_capacity: usize) -> (Atom, CoordinateSystemArc) {
     let initial_set_capacity: usize = (set_capacity / bucket_capacity) + 1;
@@ -229,6 +246,7 @@ fn new_system(set_capacity: usize, bucket_capacity: usize) -> (Atom, CoordinateS
     (atoms::ok(), resource)
 }
 
+// add_item_to_system:对 3 条轴各做一次有界 sorted 插入(单实体),不扫描全量 → 普通 NIF。
 #[rustler::nif]
 fn add_item_to_system(
     csref: ResourceArc<CoordinateSystemResource>,
@@ -253,6 +271,7 @@ fn add_item_to_system(
     // Ok(ResourceArc::new(ItemResource(Mutex::new(it))))
 }
 
+// remove_item_from_system:对 3 条轴各做一次有界删除(单实体) → 普通 NIF。
 #[rustler::nif]
 fn remove_item_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
@@ -277,6 +296,7 @@ fn remove_item_from_system(
     }
 }
 
+// update_item_from_system:remove+add 各 3 轴(单实体,有界) → 普通 NIF。
 #[rustler::nif]
 fn update_item_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
@@ -327,7 +347,8 @@ fn update_item_from_system(
 //     }
 // }
 
-#[rustler::nif]
+// get_cids_within_distance_from_system:范围/距离查询,需扫描各轴上落在距离内的桶 → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn get_cids_within_distance_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
     itemref: ResourceArc<ItemResource>,
@@ -348,10 +369,12 @@ fn get_cids_within_distance_from_system(
 
     let items = cs.items_within_distance_for_item(&item, distance);
 
-    Ok(items.par_iter().map(|it| it.cid).collect())
+    // scene-rust-1:移除 rayon,结果集顺序映射。
+    Ok(items.iter().map(|it| it.cid).collect())
 }
 
-#[rustler::nif]
+// get_items_within_distance_from_system:同上范围查询,且返回完整 Item 集合 → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn get_items_within_distance_from_system(
     csref: ResourceArc<CoordinateSystemResource>,
     itemref: ResourceArc<ItemResource>,
@@ -372,10 +395,12 @@ fn get_items_within_distance_from_system(
 
     let items = cs.items_within_distance_for_item(&item, distance);
 
-    Ok(items.par_iter().map(|&&it| it).collect())
+    // scene-rust-1:移除 rayon,结果集顺序映射(解两层引用得到 Item 值)。
+    Ok(items.iter().map(|&&it| it).collect())
 }
 
-#[rustler::nif]
+// get_system_raw:深克隆整个 CoordinateSystem(3 轴全量元素)用于 debug dump,O(N) → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn get_system_raw(csref: ResourceArc<CoordinateSystemResource>) -> Result<CoordinateSystem, Atom> {
     let resource = &*csref;
     // OwnedEnv::send_and_clear(&mut self, recipient, closure)
@@ -388,6 +413,7 @@ fn get_system_raw(csref: ResourceArc<CoordinateSystemResource>) -> Result<Coordi
 }
 
 
+// calculate_coordinate:纯线性外推算术(几次乘加),亚微秒级 → 普通 NIF。
 #[rustler::nif]
 fn calculate_coordinate(old_timestamp: i64, new_timestamp: i64, location: Vector, velocity: Vector) -> Vector {
     let new_coord = calc::calculate_coordinate(old_timestamp, new_timestamp, location, velocity);

@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use rustler::NifStruct;
 
 use crate::{
@@ -34,19 +33,21 @@ impl CoordinateSystem {
     }
 
     pub fn add(&mut self, item: &Item) -> AddResult {
-        let mut jobs: Vec<SetAddResult> = Vec::with_capacity(3);
-
-        self.axes
-            .par_iter_mut()
+        // scene-rust-1:移除 rayon。这里只对固定 3 条轴(X/Y/Z)做插入,
+        // 并行 3 个元素的收益远小于线程池调度开销;且该方法在 dirty scheduler
+        // 线程上被调用,不应再开 rayon 线程池。改为顺序迭代,语义等价。
+        let jobs: Vec<SetAddResult> = self
+            .axes
+            .iter_mut()
             .enumerate()
             .map(|(idx, ss)| {
-                return ss.add(Item {
+                ss.add(Item {
                     cid: item.cid,
                     coord: item.coord.clone(),
                     order_type: OrderAxis::axis_by_index(idx),
-                });
+                })
             })
-            .collect_into_vec(&mut jobs);
+            .collect();
 
         // println!("插入X、Y、Z轴。");
 
@@ -61,19 +62,19 @@ impl CoordinateSystem {
     }
 
     pub fn remove(&mut self, item: &mut Item) -> RemoveResult {
-        let mut jobs: Vec<SetRemoveResult> = Vec::with_capacity(3);
-
-        self.axes
-            .par_iter_mut()
+        // scene-rust-1:同 add,移除 rayon,固定 3 轴顺序迭代。
+        let jobs: Vec<SetRemoveResult> = self
+            .axes
+            .iter_mut()
             .enumerate()
             .map(|(idx, ss)| {
-                return ss.remove(&Item {
+                ss.remove(&Item {
                     cid: item.cid,
                     coord: item.coord.clone(),
                     order_type: OrderAxis::axis_by_index(idx),
-                });
+                })
             })
-            .collect_into_vec(&mut jobs);
+            .collect();
 
         let result = match (jobs[0], jobs[1], jobs[2]) {
             (
@@ -119,7 +120,8 @@ impl CoordinateSystem {
     // }
 
     pub fn items_within_distance_for_item<'a>(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
-        let mut items: Vec<&Item> = self.axes.par_iter().map(|set|
+        // scene-rust-1:移除 rayon,3 轴顺序迭代后合并去重。
+        let mut items: Vec<&Item> = self.axes.iter().map(|set|
             set.items_within_distance_for_item(item, distance)
         ).flat_map(|a| a.to_vec()).collect();
 

@@ -17,7 +17,13 @@ rustler::atoms! {
     no_discharge_path,
 }
 
-#[rustler::nif]
+// 调度约定(scene-rust-1):field_kernel 的全部 NIF 都是体素场上的图/网格算法
+// (Dijkstra、BFS、温度扩散迭代、电势传播),输入规模由 macro grid 决定,
+// 单次耗时极易 >1ms,且全部 CPU-bound、无 I/O,必须一律标 `schedule = "DirtyCpu"`,
+// 否则会长时间占用 BEAM 普通调度器线程,破坏调度公平性与软实时性。
+
+// find_conduction_path:BinaryHeap + HashMap 实现的 Dijkstra 最短导电路径搜索 → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn find_conduction_path(
     entries: Vec<conduction_path::NativeEntry>,
     aabb: types::Aabb,
@@ -39,7 +45,8 @@ fn find_conduction_path(
     .map_err(path_error_atom)
 }
 
-#[rustler::nif]
+// find_discharge_path:在体素场上做放电路径搜索(图遍历) → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn find_discharge_path(
     cells: Vec<discharge_path::NativeCell>,
     aabb: types::Aabb,
@@ -61,7 +68,8 @@ fn find_discharge_path(
     .map_err(discharge_path_error_atom)
 }
 
-#[rustler::nif]
+// diffuse_temperature:逐 candidate 做邻居平均的温度扩散迭代,规模随候选集线性增长 → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn diffuse_temperature(
     cells: Vec<temperature_diffusion::TemperatureCell>,
     candidates: Vec<u16>,
@@ -84,7 +92,8 @@ fn diffuse_temperature(
     )
 }
 
-#[rustler::nif]
+// propagate_electric_potential:在体素场上传播电势 + 计算电离(图传播 + BinaryHeap) → DirtyCpu。
+#[rustler::nif(schedule = "DirtyCpu")]
 fn propagate_electric_potential(
     sources: Vec<electric_potential::Source>,
     entries: Vec<electric_potential::NativeEntry>,

@@ -149,20 +149,10 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
 
   defp empty_layers(region) do
     {
-      region |> FieldRegion.get_layer(:electric_current) |> clear_layer_in_aabb(region.aabb),
-      region |> FieldRegion.get_layer(:electric_potential) |> clear_layer_in_aabb(region.aabb),
-      region |> FieldRegion.get_layer(:ionization) |> clear_layer_in_aabb(region.aabb)
+      region |> FieldRegion.get_layer(:electric_current) |> FieldLayer.clear_in_aabb(region.aabb),
+      region |> FieldRegion.get_layer(:electric_potential) |> FieldLayer.clear_in_aabb(region.aabb),
+      region |> FieldRegion.get_layer(:ionization) |> FieldLayer.clear_in_aabb(region.aabb)
     }
-  end
-
-  defp clear_layer_in_aabb(layer, {{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
-    Enum.reduce(
-      for(x <- min_x..max_x, y <- min_y..max_y, z <- min_z..max_z, do: {x, y, z}),
-      layer,
-      fn coord, acc ->
-        FieldLayer.put(acc, SceneServer.Voxel.Types.macro_index!(coord), 0.0)
-      end
-    )
   end
 
   defp bfs_distances(graph, source_segment_ids) do

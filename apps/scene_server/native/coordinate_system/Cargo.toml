@@ -11,4 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.37.3"
-rayon = "1.5.3"
+# rayon 已移除(scene-rust-1):本 crate 的 NIF 在 BEAM dirty scheduler 线程上执行,
+# 在 dirty 线程上再开 rayon 线程池是反模式;且原并行维度(3 条轴 / 少量桶)收益不抵
+# 调度开销。所有原 par_iter / par_iter_mut 已改为顺序 iter,语义等价。

@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 use std::{convert::TryInto, sync::Arc};
 
@@ -35,40 +35,47 @@ impl OctreeNode {
     }
 
     pub fn insert(&self, item: OctreeItem) {
-        // print!("objects: {:#?}", self);
-        // print!("开始插入");
-        let read_node_data = self.data.read();
+        // TOCTOU 修复(scene-rust-3):
+        // 旧实现是「读锁判断 → 释放读锁 → 重新拿写锁修改」,在两次加锁之间
+        // 其它进程可能向同一节点插入对象,导致超容量或重复分裂(check-then-act 竞态)。
+        // 这里改用 parking_lot 的 upgradable_read:同一时刻只允许一个 upgradable 读者,
+        // 因此「判断」与「升级为写锁后的修改」之间不存在窗口,check-then-act 在同一把
+        // 锁的生命周期内原子完成。普通共享读者(get/remove 的 read 锁)仍可并发,不影响读性能。
+        let upgradable = self.data.upgradable_read();
 
-        // 如果当前节点没有子节点并且未达到容量限制，直接将对象添加到当前节点的对象列表中
-        if read_node_data.children.is_none()
-            && read_node_data.objects.len() < read_node_data.capacity
-        {
-            // print!("插入本级");
-            drop(read_node_data);
-            // let mut write_node_data = self.data.upgradable_read();
-            let mut write_node_data = self.data.write();
-            (*write_node_data).objects.push(item);
-        } else {
-            // 如果当前节点没有子节点，进行分裂操作
-            if read_node_data.children.is_none() {
-                // print!("分裂");
-                drop(read_node_data);
-                self.split();
+        // 情况一:当前节点没有子节点且未达容量上限 —— 原子升级为写锁后直接落本级。
+        if upgradable.children.is_none() && upgradable.objects.len() < upgradable.capacity {
+            let mut write_node_data = RwLockUpgradableReadGuard::upgrade(upgradable);
+            write_node_data.objects.push(item);
+            return;
+        }
+
+        // 情况二:需要下沉到子节点。
+        // 若当前还是叶子(无子节点),先在同一把写锁内完成分裂(check-then-act 原子化),
+        // 避免「判断无子节点 → 释放锁 → split」之间被其它进程抢先分裂。
+        let child = {
+            let mut write_node_data = RwLockUpgradableReadGuard::upgrade(upgradable);
+            if write_node_data.children.is_none() {
+                Self::split_locked(&mut write_node_data);
             }
 
-            // print!("插入下级");
-            // let write_node_data = self.data.write();
-            let read_node_data = self.data.read();
-            // 将对象插入到合适的子节点中
-            if let Some(children) = &read_node_data.children {
-                for child in children.iter() {
-                    if child.is_inside(&item) {
-                        // drop(write_node_data);
-                        child.insert(item.clone());
-                        return;
-                    }
-                }
-            }
+            // 仍持写锁,挑选第一个能容纳该 item 的子节点。
+            // OctreeNode 是 Arc 背书,clone 仅增加引用计数(廉价),
+            // clone 出来后即可释放父锁,再去递归插入子节点(子节点用它自己的锁)。
+            write_node_data
+                .children
+                .as_ref()
+                .and_then(|children| {
+                    children
+                        .iter()
+                        .find(|child| child.is_inside(&item))
+                        .cloned()
+                })
+            // write_node_data 在此作用域结束时释放父节点写锁
+        };
+
+        if let Some(child) = child {
+            child.insert(item);
         }
     }
 
@@ -164,9 +171,10 @@ impl OctreeNode {
         }
     }
 
-    fn split(&self) {
-        let mut self_data = self.data.write();
-
+    /// 在调用方已持有写锁的前提下完成分裂。
+    /// 抽出 `split_locked` 是为了让 `insert` 能在 upgradable_read → write 的同一把锁内
+    /// 原子完成「判断叶子 + 分裂」,消除 TOCTOU 窗口(scene-rust-3)。
+    fn split_locked(self_data: &mut RwLockWriteGuard<'_, OctreeNodeData>) {
         let mut children: Vec<OctreeNode> = Vec::with_capacity(8);
         let child_half_size = [
             (*self_data).boundary.half_size[0] / 2.0,

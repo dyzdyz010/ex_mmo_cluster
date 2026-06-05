@@ -125,6 +125,36 @@ defmodule SceneServer.Voxel.Field.FieldLayer do
     |> Enum.map(fn {macro_index, delta} -> {macro_index, layer.baseline + delta} end)
   end
 
+  @doc """
+  Resets every cell inside `aabb` back to `baseline` (sparse semantics: drops the
+  stored deltas for the macro indices contained in `aabb`).
+
+  Semantically equivalent to calling `put(layer, idx, baseline)` for every `idx`
+  in `aabb`, but its cost is proportional to the number of currently non-baseline
+  cells, not to the AABB volume — it never materialises the 4096-cell
+  "write-then-delete" churn that per-cell `put(_, idx, 0.0)` produced against the
+  sparse delta store.
+
+  `aabb` is `{{min_x, min_y, min_z}, {max_x, max_y, max_z}}`, each axis `0..15`,
+  inclusive on both ends.
+  """
+  @spec clear_in_aabb(t(), {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}}) :: t()
+  def clear_in_aabb(
+        %__MODULE__{values: values} = layer,
+        {{min_x, min_y, min_z}, {max_x, max_y, max_z}}
+      ) do
+    kept =
+      values
+      |> Enum.reject(fn {macro_index, _delta} ->
+        {x, y, z} = Types.macro_coord!(macro_index)
+
+        x >= min_x and x <= max_x and y >= min_y and y <= max_y and z >= min_z and z <= max_z
+      end)
+      |> Map.new()
+
+    %{layer | values: kept}
+  end
+
   defp quantize(value, :float), do: value * 1.0
   defp quantize(value, :integer), do: round(value)
 

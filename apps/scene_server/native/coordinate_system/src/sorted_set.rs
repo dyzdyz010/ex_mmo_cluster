@@ -1,6 +1,5 @@
 use std::cmp::min;
 
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use rustler::NifStruct;
 
 use crate::{
@@ -169,13 +168,16 @@ impl<'a> SortedSet {
     // }
 
     pub fn items_within_distance_for_item(&'a self, item: &Item, distance: f64) -> Vec<&'a Item> {
-        let items: Vec<&Item> = self.buckets.par_iter().filter_map(|buck| {
+        // scene-rust-1:移除 rayon。该方法被 dirty scheduler 线程上的 NIF 调用,
+        // 在 dirty 线程上再开 rayon 线程池属于反模式;且单个 SortedSet 桶数通常很少,
+        // 并行收益被线程切换/调度开销抵消。改为顺序迭代,语义完全等价。
+        let items: Vec<&Item> = self.buckets.iter().filter_map(|buck| {
             if buck.data.len() == 0 {
                 return None;
             } else if buck.data.first().unwrap().distance(item) > distance && buck.data.last().unwrap().distance(item) > distance {
                 return None;
             } else {
-                let result: Vec<&Item> = buck.data.par_iter().filter(|&it| {
+                let result: Vec<&Item> = buck.data.iter().filter(|&it| {
                     item.distance(it) <= distance
                 }).collect();
                 return Some(result);

@@ -136,5 +136,97 @@ defmodule SceneServer.Voxel.Field.FieldLayerTest do
     end
   end
 
+  describe "clear_in_aabb/2" do
+    test "drops deltas inside the AABB and keeps those outside" do
+      inside1 = macro_index({1, 1, 1})
+      inside2 = macro_index({3, 3, 3})
+      outside = macro_index({5, 5, 5})
+
+      layer =
+        FieldLayer.new()
+        |> FieldLayer.put(inside1, 5.0)
+        |> FieldLayer.put(inside2, -8.0)
+        |> FieldLayer.put(outside, 999.0)
+
+      cleared = FieldLayer.clear_in_aabb(layer, {{0, 0, 0}, {3, 3, 3}})
+
+      assert FieldLayer.get(cleared, inside1) == 0.0
+      assert FieldLayer.get(cleared, inside2) == 0.0
+      assert FieldLayer.get(cleared, outside) == 999.0
+
+      # Sparse semantics: cleared cells are *removed* from values, not stored as 0 deltas.
+      refute Map.has_key?(cleared.values, inside1)
+      refute Map.has_key?(cleared.values, inside2)
+      assert Map.has_key?(cleared.values, outside)
+    end
+
+    test "full-chunk clear is equivalent to per-cell put(0.0) on a baseline-0 layer" do
+      indices = [macro_index({0, 0, 0}), macro_index({2, 1, 0}), macro_index({7, 8, 9}), macro_index({15, 15, 15})]
+      layer = Enum.reduce(indices, FieldLayer.new(), fn idx, acc -> FieldLayer.put(acc, idx, idx + 1.0) end)
+      aabb = {{0, 0, 0}, {15, 15, 15}}
+
+      via_api = FieldLayer.clear_in_aabb(layer, aabb)
+
+      via_per_cell =
+        for(x <- 0..15, y <- 0..15, z <- 0..15, do: macro_index({x, y, z}))
+        |> Enum.reduce(layer, fn idx, acc -> FieldLayer.put(acc, idx, 0.0) end)
+
+      assert via_api.values == via_per_cell.values
+      assert via_api.values == %{}
+    end
+
+    test "sub-AABB clear matches per-cell put(0.0) over that sub-AABB" do
+      indices = [macro_index({1, 1, 1}), macro_index({2, 2, 2}), macro_index({5, 5, 5}), macro_index({0, 3, 1})]
+      layer = Enum.reduce(indices, FieldLayer.new(), fn idx, acc -> FieldLayer.put(acc, idx, 3.0) end)
+      aabb = {{0, 0, 0}, {3, 3, 3}}
+
+      via_api = FieldLayer.clear_in_aabb(layer, aabb)
+
+      via_per_cell =
+        for(x <- 0..3, y <- 0..3, z <- 0..3, do: macro_index({x, y, z}))
+        |> Enum.reduce(layer, fn idx, acc -> FieldLayer.put(acc, idx, 0.0) end)
+
+      assert via_api.values == via_per_cell.values
+      # outside cell survives
+      assert FieldLayer.get(via_api, macro_index({5, 5, 5})) == 3.0
+    end
+
+    test "resets cells back to baseline for a non-zero-baseline layer" do
+      idx = macro_index({1, 1, 1})
+
+      layer =
+        FieldLayer.new(baseline: 20, quantization: :integer, threshold: 1)
+        |> FieldLayer.put(idx, 42.0)
+
+      cleared = FieldLayer.clear_in_aabb(layer, {{0, 0, 0}, {3, 3, 3}})
+
+      assert FieldLayer.get(cleared, idx) == 20
+      refute Map.has_key?(cleared.values, idx)
+    end
+
+    test "empty layer stays empty" do
+      layer = FieldLayer.new()
+      assert FieldLayer.clear_in_aabb(layer, {{0, 0, 0}, {15, 15, 15}}).values == %{}
+    end
+
+    test "on a non-zero-baseline layer, clear (reset to baseline) differs from per-cell put(0.0)" do
+      # 固化设计意图:clear_in_aabb 是"重置回 baseline",不是"写绝对 0"。当前无 baseline≠0
+      # 的活跃调用点,但此负向测试防止未来有人把它当作 put(0.0) 的同义词复用。
+      idx = macro_index({1, 1, 1})
+      base = FieldLayer.new(baseline: 20, quantization: :integer, threshold: 1) |> FieldLayer.put(idx, 42.0)
+      aabb = {{0, 0, 0}, {3, 3, 3}}
+
+      via_clear = FieldLayer.clear_in_aabb(base, aabb)
+
+      via_put0 =
+        for(x <- 0..3, y <- 0..3, z <- 0..3, do: macro_index({x, y, z}))
+        |> Enum.reduce(base, fn i, acc -> FieldLayer.put(acc, i, 0.0) end)
+
+      assert FieldLayer.get(via_clear, idx) == 20
+      assert FieldLayer.get(via_put0, idx) == 0
+      refute via_clear.values == via_put0.values
+    end
+  end
+
   defp macro_index(coord), do: SceneServer.Voxel.Types.macro_index!(coord)
 end
