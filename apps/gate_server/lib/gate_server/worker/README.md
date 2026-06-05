@@ -6,6 +6,11 @@
 
 - `interface.ex`
   - 服务发现，以及下游 `scene_server`、`world_server`、`auth_server` 节点查找
+  - 该进程是 Gate 对下游服务位置视图的 **authority**；连接进程只读不写。
+  - 硬依赖 `scene_server` 缺失时，不再硬匹配 `await` 而崩溃重启（cluster-discovery-3）：
+    采用**有界重试 + 指数退避**解析依赖，耗尽尝试预算后进入受控的 `:degraded` 态
+    （进程存活、发 `gate_interface_degraded` observe 事件、继续应答查询），
+    恢复通过 `retry_dependencies/1` 显式触发，而不是依赖监督树重启当重试。
 - `tcp_acceptor.ex`
   - 接收新的 TCP 套接字
 - `tcp_connection.ex`
