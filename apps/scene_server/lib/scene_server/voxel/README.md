@@ -45,7 +45,90 @@
 `voxel_chunk_terminated` observe（并给订阅者推 ChunkInvalidate 触发 re-subscribe），
 facade 的 `voxel_chunk_directory_chunk_down` 供 World 裁决该 coord 不可用。
 
+## 空闲驱逐 + 按需 tick（阶段2.4 / voxel-storage-4）
+
+在阶段3 的 `:transient` + `terminate` + 注册化身份之上，解决“chunk 进程永不
+回收 + 永久 10Hz 空转 timer → 进程数与常驻 Storage 随玩家探索无界增长”。
+
+- **按需 tick**：模拟 tick 不再无条件每 100ms 重排。`ChunkProcess` 仅在
+  `(已授权 + 有 simulator + dirty_bounds 非空 + lease 未失效)` 时 arm 一个 tick
+  （`maybe_arm_simulation_tick/1`，`tick_armed?` 去重）；写入路径
+  （`apply_intent` / `commit` / `put_solid_block` / field effect 等）产生 dirty
+  时显式补 arm。tick 跑完清 dirty 后回到**零 timer 空闲态**。`tick_skipped`
+  observe 降级为采样聚合（`@tick_skip_sample_n`），不再空转刷日志。
+- **唯一常驻低频 timer**：lease 心跳 + prepared fence TTL + 空闲驱逐静默检查
+  共用一个 `lifecycle_check_interval_ms`（默认 1s）节拍，**不是** 10Hz。
+- **驱逐显式状态机**：`ChunkProcess` 维护 `last_activity_ms`（订阅 / 授权写 /
+  lease 应用 / 事务 / field region 都刷新它）。`idle_evict_candidate?/1` 判定空
+  闲（无订阅 + 无 field region + 无 pending fence / commit / async persist + 非
+  在跑模拟 + lease 失效或未持有 + 静默窗口已过）时，向 `ChunkDirectory` facade
+  `cast {:request_evict, key, self()}`。
+- **退场所有权归 facade（规避驱逐-ensure TOCTOU）**：`ChunkProcess` **不自停**。
+  `ChunkDirectory.handle_cast({:request_evict, ...})` 在 facade 单点串行 mailbox
+  里（与 `ensure_chunk` / `subscribe` 同 lane）复核：经注册表确认请求方仍是该
+  key 的权威，再同步 `ChunkProcess.confirm_evict/1` 让 chunk 在自身 mailbox 里
+  重评空闲并**先 persist 再** `VoxelChunkSup.terminate_chunk/2`
+  （`DynamicSupervisor.terminate_child`，`:transient` 计划内终止不重启，注册项
+  随 `:DOWN` 由 Registry 摘除）。复核窗口内 chunk 又变活跃（刚来的订阅 / 写 /
+  lease）→ `confirm_evict` 回 `{:cancel, _}`，facade 取消驱逐、进程复用。
+- **驱逐前 persist 的权威性**：`confirm_evict` 持有效 token 时真正落库
+  （`{:ok, :persisted}`）；token 已过期 / 区域 token 不在视为 `authority_lapsed`
+  放行驱逐（权威写路径是 durable-on-reply，最后一次有效写早已 durable）；DB 瞬时
+  故障 → `{:cancel, {:persist_failed, _}}` 不丢状态、下一节拍重试。被驱逐的 chunk
+  下次 `ensure_chunk` 冷启并经阶段3 路径从持久化 hydrate。
+
+## 体素数据结构 + normalize 收口（阶段2.5 / voxel-storage-6）
+
+解决“每改一格全量 `normalize!`（4096 header ×10+ 趟）+ `refresh_chunk_object_refs`
+全扫（O(headers × `Enum.at`)）+ 两次全量 snapshot encode；canonical 用 List 做 4096
+元素随机写（O(n)）”这一热路径根因。
+
+**内存表示与线序/hash 序解耦（最高风险约束）** —— `Storage.macro_headers` /
+`refined_cells` 这两个**公共字段始终是 canonical 有序 list**（macro_index 升序 /
+payload_index 升序），它们是 codec wire layout 与 `chunk_hash` 字节序的**唯一真相
+投影**。`Codec.encode_*` / `encode_chunk_truth_payload` / `chunk_hash` 永远只遍历
+这两个 list（顺序不变、字节不变），因此换底层加速结构对 wire/hash **零字节漂移**
+（32 个 golden fixture + web_client parity + 3 条 pinned chunk_hash baseline 全部
+逐字节保持）。`storage_accel_test.exs` 用“强制无 accel 路径 vs accel 路径逐字节
+对照”守门。
+
+- **`accel` 私有派生加速索引**（不进 wire / 不进 hash）：`headers_array` 是定长
+  4096 的 Erlang `:array`（macro_index 随机读 O(1)），`refined_by_payload` 是
+  `payload_index => RefinedCellData` 的 map（refined cell 随机读 O(1)）。二者
+  **永远从 canonical list 派生**，`normalize!` / `trust_transform!` / `ensure_accel`
+  出口构建/刷新；同内容 storage 的 accel 确定相等，故 storage 结构 `==` 语义不变。
+  `Storage.fetch_macro_header/2` / `fetch_refined_cell/2` 是 O(1) accessor，热路径
+  （`ChunkProcess` 的 `macro_header_at_fast` / `refined_cell_at_fast` / 碰撞查询）
+  全部改走它们，消除原 `Enum.at` O(n) 与碰撞查询每次 `List.to_tuple` 的 O(n) 重建。
+- **边界 normalize 与内部 trusted transform 分离**：`normalize!`（全量校验 +
+  canonical 排序，O(4096 + pools)）**只在边界**发生一次——decode / 外部注入 /
+  `new` / 公共写 API 入口。内部受信局部变更走 `trust_transform!/2`：mutator 以
+  已归一化子结构局部改写 list 并报告触碰的 macro_index，本函数只合并 dirty +
+  增量重建 accel，**不重扫 4096 header**。
+- **object_refs 增量化绑定 `DirtyMacroBounds`**：`refresh_chunk_object_refs_incremental/1`
+  只重算 dirty AABB 内 refined macro 的 `cell.object_refs`，再重聚合 chunk-level
+  `ChunkObjectRef[]`（内层 payload→cell 查找用 accel map 的 O(1) 替代旧 O(n)
+  `Enum.at`）。`ChunkProcess` 的 `apply_intent` 单意图 / batch apply 路径改用增量
+  refresh（单格改动 = 1 个 dirty macro，不再触发 4096 趟）；它与全量
+  `refresh_chunk_object_refs/1` 在 dirty 集覆盖全部变更时**结构等价**（Storage 写
+  API 已保证每次改动 mark dirty）。事务 commit 的 durable barrier 路径
+  （`commit_prepared_intents/3`）保守保留**全量** refresh 作为正确性锚点。
+  增量 refresh **不消费/清空** `dirty_bounds`——它与阶段2.4 的按需 tick 共享同一份
+  dirty（tick 在 `execute_simulation_tick` 后才 `clear_dirty_bounds`）。
+- **热路径砍掉一次全量 encode**：单意图原本对同一 storage 全量 encode 两次（reply
+  payload `request_id=intent.request_id`；persist payload `request_id=0`），body
+  （sections + chunk_hash，占载荷绝大部分）完全相同。`encode_snapshot_payloads_dual/2`
+  只 encode 一次，再纯字节拼接 8 字节 `request_id` 头得到两份**逐字节等价**载荷
+  （ChunkSnapshot wire 首字段即 `request_id::u64`，splice 零漂移）。全量 encode /
+  full `chunk_hash` 现仅在**真正需要**时发生（snapshot 首帧 / persist / 周期）。
+
+**chunk_hash 仍是“全量 over canonical 序”而非真滚动增量** —— xxHash64 over 完整
+canonical 载荷不可在不改变 hash 值的前提下做可组合的滚动增量；为严守“`chunk_hash`
+字节序绝不漂移”，本阶段不改 hash 算法，只把**何时计算**收敛到按需（hot path 产 delta
++ bump version，不每格算 hash）。这是经评估后对“滚动增量”一项的安全落地口径。
+
 `ChunkProcess.apply_intent/2` 是 World 已授权体素意图在 Scene 侧的最小写入路径。单意图
+路径仍以持久化通过作为提交条件，然后向订阅者推送对应 `ChunkDelta`；无法表达为
 路径仍以持久化通过作为提交条件，然后向订阅者推送对应 `ChunkDelta`；无法表达为
 delta 的操作才回退为完整 `ChunkSnapshot`。缺失、过期、越界或陈旧的租约都不会改变
 热区块。若单意图持久化时 DataService 返回 `:stale_chunk_version`，这表示当前热

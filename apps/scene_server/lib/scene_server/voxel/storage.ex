@@ -32,6 +32,24 @@ defmodule SceneServer.Voxel.Storage do
   @macro_header_count 4096
   @max_u32 0xFFFF_FFFF
   @max_u63 9_223_372_036_854_775_807
+
+  # 阶段2.5（voxel-storage-6）—— 内存表示与线序/hash 序解耦。
+  #
+  # `macro_headers` / `refined_cells` 这两个 **公共字段始终是 canonical 有序
+  # list**（macro_index 升序 / payload_index 升序），它们是 codec wire layout 与
+  # `chunk_hash` 字节序的唯一真相投影 —— encode/hash 永远只遍历这两个 list，
+  # 因此换底层加速结构对 wire/hash **零字节漂移**（见 §wire_hash_invariance）。
+  #
+  # `accel` 是一个**私有派生加速索引**（不进 wire、不进 hash、不参与结构相等
+  # 语义——见 `Map.delete(:accel)` 的归一化处理）：
+  #
+  #   * `headers_array` —— Erlang `:array`（定长 4096），把 macro_index 随机读
+  #     从 list `Enum.at` 的 O(n) 降到 O(1)；
+  #   * `refined_by_payload` —— `map` `payload_index => RefinedCellData`，把
+  #     refined cell 随机读从 O(n) 降到 O(1)。
+  #
+  # accel 在 `normalize!`（边界全量校验）与 `trust_transform!`（内部局部可信
+  # 变换）出口构建/刷新；它**永远从 canonical list 派生**，二者天然一致。
   defstruct schema_version: @schema_version,
             logical_scene_id: 0,
             chunk_coord: {0, 0, 0},
@@ -46,7 +64,8 @@ defmodule SceneServer.Voxel.Storage do
             object_refs: [],
             attribute_sets: [],
             tag_sets: [],
-            dirty_bounds: %DirtyMacroBounds{}
+            dirty_bounds: %DirtyMacroBounds{},
+            accel: nil
 
   @type t :: %__MODULE__{
           schema_version: 1,
@@ -63,7 +82,19 @@ defmodule SceneServer.Voxel.Storage do
           object_refs: [ChunkObjectRef.t()],
           attribute_sets: [AttributeSet.t()],
           tag_sets: [TagSet.t()],
-          dirty_bounds: DirtyMacroBounds.t()
+          dirty_bounds: DirtyMacroBounds.t(),
+          accel: accel() | nil
+        }
+
+  @typedoc """
+  私有派生加速索引（不进 wire / 不进 hash / 不参与结构相等语义）。
+
+  `headers_array` 是定长 4096 的 Erlang `:array`，`refined_by_payload` 是
+  `payload_index => RefinedCellData` 的 map。二者永远从 canonical list 派生。
+  """
+  @type accel :: %{
+          headers_array: :array.array(),
+          refined_by_payload: %{non_neg_integer() => RefinedCellData.t()}
         }
 
   @doc "Returns the only schema version supported by this S0 codec."
@@ -107,6 +138,76 @@ defmodule SceneServer.Voxel.Storage do
     List.duplicate(MacroCellHeader.empty(), @macro_header_count)
   end
 
+  # ----------------------------------------------------------------------------
+  # 阶段2.5 — 加速索引（accel）构建与 O(1) 随机访问 accessor
+  #
+  # accel 是从 canonical list 派生的私有索引，wire/hash **不**消费它。所有热路径
+  # 随机读经下面的 accessor 走 `:array` / `map` 的 O(1) 访问；外部仍可继续以 list
+  # 读 `storage.macro_headers` / `storage.refined_cells`（兼容既有调用方/测试），
+  # 但那是 O(n) 慢路。
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  确保 `accel` 加速索引已就绪并与 canonical list 一致。
+
+  幂等：已有 accel 时直接返回。供热路径在拿到 storage 后一次性建好索引，后续
+  随机读全部 O(1)。`normalize!` / `trust_transform!` 出口已自动调用本函数。
+  """
+  @spec ensure_accel(t()) :: t()
+  def ensure_accel(%__MODULE__{accel: %{}} = storage), do: storage
+
+  def ensure_accel(%__MODULE__{} = storage) do
+    %{storage | accel: build_accel(storage.macro_headers, storage.refined_cells)}
+  end
+
+  # 从 canonical list 派生 accel。headers list 长度恒为 4096（normalize 保证），
+  # refined list 顺序即 payload_index 升序（pool append 语义）。
+  defp build_accel(macro_headers, refined_cells) do
+    %{
+      headers_array: :array.from_list(macro_headers),
+      refined_by_payload: refined_by_payload_map(refined_cells)
+    }
+  end
+
+  defp refined_by_payload_map(refined_cells) do
+    refined_cells
+    |> Enum.with_index()
+    |> Map.new(fn {cell, payload_index} -> {payload_index, cell} end)
+  end
+
+  @doc """
+  O(1) 读取 macro_index 处的 `MacroCellHeader`（经 accel `:array`）。
+
+  storage 未建 accel 时回退 list `Enum.at`（O(n)）——调用方若在热循环里反复读，
+  应先 `ensure_accel/1`。
+  """
+  @spec fetch_macro_header(t(), 0..4095) :: MacroCellHeader.t()
+  def fetch_macro_header(%__MODULE__{accel: %{headers_array: arr}}, macro_index)
+      when is_integer(macro_index) do
+    :array.get(macro_index, arr)
+  end
+
+  def fetch_macro_header(%__MODULE__{macro_headers: headers}, macro_index)
+      when is_integer(macro_index) do
+    Enum.at(headers, macro_index)
+  end
+
+  @doc """
+  O(1) 读取 `payload_index` 处的 `RefinedCellData`（经 accel map），无则 `nil`。
+
+  storage 未建 accel 时回退 list `Enum.at`（O(n)）。
+  """
+  @spec fetch_refined_cell(t(), non_neg_integer()) :: RefinedCellData.t() | nil
+  def fetch_refined_cell(%__MODULE__{accel: %{refined_by_payload: by_payload}}, payload_index)
+      when is_integer(payload_index) do
+    Map.get(by_payload, payload_index)
+  end
+
+  def fetch_refined_cell(%__MODULE__{refined_cells: refined_cells}, payload_index)
+      when is_integer(payload_index) do
+    Enum.at(refined_cells, payload_index)
+  end
+
   @doc "Puts a solid normal block at a local macro coord or macro index."
   @spec put_solid_block(t(), integer() | term(), NormalBlockData.t() | map(), keyword()) :: t()
   def put_solid_block(%__MODULE__{} = storage, macro_index_or_coord, block, opts \\ []) do
@@ -123,13 +224,30 @@ defmodule SceneServer.Voxel.Storage do
         cell_hash: Keyword.get(opts, :cell_hash, 0)
       )
 
+    # 阶段2.5:入口已 normalize!（全量校验 + 建 accel）；本地写只替换一个已
+    # normalize 的 header + append 一个已 normalize 的 block(都不触发 pool 重排,
+    # macro/payload 顺序不变),用轻量 finalize（mark dirty + 刷 accel）替代出口
+    # 全量 normalize! —— 输出逐字段等价,但不再重扫 4096 header。
     %{
       storage
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         normal_blocks: storage.normal_blocks ++ [block]
     }
-    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
-    |> normalize!()
+    |> finalize_local_write([macro_index], DirtyMacroBounds.reason_attribute_write())
+  end
+
+  # 阶段2.5:受信局部写的统一 finalize —— mark dirty(touched macro 集)+ 刷新 accel。
+  # 调用前提:① storage 入口已 normalize!(全量校验 + accel 已建一次);② 本次只
+  # 局部改写了 touched macro 对应的 header / payload,且改动的子结构已各自 normalize;
+  # ③ 未触发 attribute_sets/tag_sets pool 的 canonical 重排(那条路径仍走 normalize!)。
+  # 满足上述前提时,本 finalize 与出口 `normalize!()` 的输出逐字段一致,但 O(变更量)。
+  defp finalize_local_write(%__MODULE__{} = storage, touched_macros, reason_flag) do
+    dirty =
+      Enum.reduce(touched_macros, storage.dirty_bounds, fn macro_index, acc ->
+        DirtyMacroBounds.add_macro(acc, macro_index, reason_flag)
+      end)
+
+    refresh_accel(%{storage | dirty_bounds: dirty})
   end
 
   @doc "Puts multiple solid normal blocks and normalizes the chunk once."
@@ -169,13 +287,15 @@ defmodule SceneServer.Voxel.Storage do
         end
       )
 
+    # 阶段2.5:batch 内已逐格 normalize header/block 并累加 dirty;出口只刷 accel
+    # （未碰 attribute/tag pool,顺序不变），替代全量 normalize! 的 4096 趟重扫。
     %{
       storage
       | macro_headers: macro_headers,
         normal_blocks: storage.normal_blocks ++ Enum.reverse(blocks),
         dirty_bounds: dirty_bounds
     }
-    |> normalize!()
+    |> refresh_accel()
   end
 
   # ----------------------------------------------------------------------------
@@ -225,9 +345,9 @@ defmodule SceneServer.Voxel.Storage do
         cell_hash: Keyword.get(opts, :cell_hash, 0)
       )
 
+    # 阶段2.5:仅替换一个已 normalize 的 empty header(未碰 pool/顺序),轻量 finalize。
     %{storage | macro_headers: List.replace_at(storage.macro_headers, macro_index, header)}
-    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
-    |> normalize!()
+    |> finalize_local_write([macro_index], DirtyMacroBounds.reason_attribute_write())
   end
 
   @doc """
@@ -267,7 +387,8 @@ defmodule SceneServer.Voxel.Storage do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     micro_slot_index = micro_slot!(micro_slot_index)
-    header = Enum.at(storage.macro_headers, macro_index)
+    # 阶段2.5:入口 normalize! 已建 accel,随机读 O(1)。
+    header = fetch_macro_header(storage, macro_index)
 
     cond do
       header.mode == MacroCellHeader.cell_mode_solid_block() ->
@@ -281,7 +402,7 @@ defmodule SceneServer.Voxel.Storage do
         append_refined_cell(storage, macro_index, new_cell, opts)
 
       header.mode == MacroCellHeader.cell_mode_refined() ->
-        cell = Enum.at(storage.refined_cells, header.payload_index)
+        cell = fetch_refined_cell(storage, header.payload_index)
         updated_cell = upsert_micro_slot(cell, micro_slot_index, layer_attrs, opts)
         replace_refined_cell(storage, macro_index, header.payload_index, updated_cell, opts)
 
@@ -328,7 +449,8 @@ defmodule SceneServer.Voxel.Storage do
         storage
 
       _ ->
-        header = Enum.at(storage.macro_headers, macro_index)
+        # 阶段2.5:入口 normalize! 已建 accel,随机读 O(1)。
+        header = fetch_macro_header(storage, macro_index)
 
         cond do
           header.mode == MacroCellHeader.cell_mode_solid_block() ->
@@ -342,7 +464,7 @@ defmodule SceneServer.Voxel.Storage do
             append_refined_cell(storage, macro_index, new_cell, opts)
 
           header.mode == MacroCellHeader.cell_mode_refined() ->
-            cell = Enum.at(storage.refined_cells, header.payload_index)
+            cell = fetch_refined_cell(storage, header.payload_index)
             updated_cell = upsert_micro_slots(cell, pairs, opts)
             replace_refined_cell(storage, macro_index, header.payload_index, updated_cell, opts)
 
@@ -372,7 +494,8 @@ defmodule SceneServer.Voxel.Storage do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     micro_slot_index = micro_slot!(micro_slot_index)
-    header = Enum.at(storage.macro_headers, macro_index)
+    # 阶段2.5:入口 normalize! 已建 accel,随机读 O(1)。
+    header = fetch_macro_header(storage, macro_index)
 
     cond do
       header.mode == MacroCellHeader.cell_mode_empty() ->
@@ -385,7 +508,7 @@ defmodule SceneServer.Voxel.Storage do
               "Phase 1c v1 only supports empty ↔ refined transitions"
 
       header.mode == MacroCellHeader.cell_mode_refined() ->
-        cell = Enum.at(storage.refined_cells, header.payload_index)
+        cell = fetch_refined_cell(storage, header.payload_index)
         updated_cell = remove_micro_slot(cell, micro_slot_index)
 
         if refined_cell_empty?(updated_cell) do
@@ -406,7 +529,8 @@ defmodule SceneServer.Voxel.Storage do
     header = macro_header_at(storage, macro_index_or_coord)
 
     if header.mode == MacroCellHeader.cell_mode_refined() do
-      Enum.at(storage.refined_cells, header.payload_index)
+      # 阶段2.5:O(1) 经 accel map,替代 O(n) Enum.at。
+      fetch_refined_cell(storage, header.payload_index)
     else
       nil
     end
@@ -417,7 +541,8 @@ defmodule SceneServer.Voxel.Storage do
   def macro_header_at(%__MODULE__{} = storage, macro_index_or_coord) do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
-    Enum.at(storage.macro_headers, macro_index)
+    # 阶段2.5:O(1) 经 accel :array,替代 O(n) Enum.at。
+    fetch_macro_header(storage, macro_index)
   end
 
   @doc "Reads the normal-block payload for a solid macro cell, or nil."
@@ -780,7 +905,8 @@ defmodule SceneServer.Voxel.Storage do
 
     defn = catalog_lookup!(catalog, attr_name_or_id)
 
-    header = Enum.at(storage.macro_headers, macro_index)
+    # 阶段2.5:field kernel 热循环逐格读 → 经 accel O(1)(storage 已 normalize)。
+    header = fetch_macro_header(storage, macro_index)
 
     # 抽取 4 层各自的值（layer 不提供该 attribute 时返回 :not_found）
     material_default = material_default_value(storage, header, defn)
@@ -837,7 +963,7 @@ defmodule SceneServer.Voxel.Storage do
         end
 
       header.mode == MacroCellHeader.cell_mode_refined() ->
-        case Enum.at(storage.refined_cells, header.payload_index) do
+        case fetch_refined_cell(storage, header.payload_index) do
           %RefinedCellData{layers: [%MicroLayer{material_id: material_id} | _]} -> material_id
           _other -> nil
         end
@@ -930,7 +1056,7 @@ defmodule SceneServer.Voxel.Storage do
   #   * material_default：忽略 L3
   defp extract_l3(%__MODULE__{} = storage, %MacroCellHeader{} = header, defn) do
     if header.mode == MacroCellHeader.cell_mode_refined() do
-      cell = Enum.at(storage.refined_cells, header.payload_index)
+      cell = fetch_refined_cell(storage, header.payload_index)
 
       layer_values =
         cell.layers
@@ -1069,10 +1195,10 @@ defmodule SceneServer.Voxel.Storage do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     micro_slot_index = micro_slot!(micro_slot_index)
-    header = Enum.at(storage.macro_headers, macro_index)
+    header = fetch_macro_header(storage, macro_index)
 
     if header.mode == MacroCellHeader.cell_mode_refined() do
-      cell = Enum.at(storage.refined_cells, header.payload_index)
+      cell = fetch_refined_cell(storage, header.payload_index)
       bit_mask = single_bit_mask(micro_slot_index)
 
       Enum.find_value(cell.layers, fn layer ->
@@ -1099,7 +1225,7 @@ defmodule SceneServer.Voxel.Storage do
     storage = normalize!(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     micro_slot_index = micro_slot!(micro_slot_index)
-    header = Enum.at(storage.macro_headers, macro_index)
+    header = fetch_macro_header(storage, macro_index)
 
     cond do
       header.mode == MacroCellHeader.cell_mode_empty() ->
@@ -1109,8 +1235,8 @@ defmodule SceneServer.Voxel.Storage do
         true
 
       header.mode == MacroCellHeader.cell_mode_refined() ->
-        storage.refined_cells
-        |> Enum.at(header.payload_index)
+        storage
+        |> fetch_refined_cell(header.payload_index)
         |> slot_currently_occupied?(micro_slot_index)
 
       true ->
@@ -1142,12 +1268,78 @@ defmodule SceneServer.Voxel.Storage do
         %{cell | object_refs: derive_cell_object_refs(cell.layers)}
       end)
 
-    storage = %{storage | refined_cells: new_refined_cells}
+    storage = refresh_accel(%{storage | refined_cells: new_refined_cells})
 
     # Step 2: aggregate chunk-level ChunkObjectRef[] across refined cells.
     new_chunk_refs = derive_chunk_object_refs(storage)
 
     %{storage | object_refs: new_chunk_refs}
+  end
+
+  @doc """
+  阶段2.5 增量重算 object_refs —— 只在 `dirty_bounds` 圈定的 dirty macro 集合内
+  重建 per-cell `ObjectCoverRef[]`，再整体重聚合 chunk-level `ChunkObjectRef[]`。
+
+  根因修复：原 `refresh_chunk_object_refs/1` 每次提交全量重扫 4096 header（且内层
+  `Enum.at(refined_cells, payload_index)` 是 O(n) 线性扫）。本变体把 per-cell 重算
+  收敛到 dirty macro（热路径单格改动 = O(1) refined cell 重算），并用 accel map
+  做 O(1) payload→cell 查找。
+
+  语义与全量 `refresh_chunk_object_refs/1` 在 dirty 集覆盖所有真实变更时**等价**：
+  调用方（`trust_transform!` 路径）保证每次改动都 mark dirty。`dirty_bounds` 为空
+  时 per-cell 不动，仅重聚合 chunk-level（廉价，保证与 cell 真相一致）。
+
+  **不**消费 / 清空 `dirty_bounds`（persist / tick 路径另行 clear）。
+  """
+  @spec refresh_chunk_object_refs_incremental(t()) :: t()
+  def refresh_chunk_object_refs_incremental(%__MODULE__{} = storage) do
+    storage = ensure_accel(storage)
+    dirty = storage.dirty_bounds
+
+    storage =
+      if DirtyMacroBounds.empty?(dirty) do
+        storage
+      else
+        recompute_dirty_cell_object_refs(storage, dirty)
+      end
+
+    %{storage | object_refs: derive_chunk_object_refs(storage)}
+  end
+
+  # 只对 dirty AABB 内、且处于 refined mode 的 macro 重建其 cell.object_refs。
+  defp recompute_dirty_cell_object_refs(%__MODULE__{} = storage, %DirtyMacroBounds{} = dirty) do
+    refined_mode = MacroCellHeader.cell_mode_refined()
+    {min_x, min_y, min_z} = dirty.min_macro
+    {max_x, max_y, max_z} = dirty.max_macro
+
+    # 收集 dirty 区间内 refined header 的 payload_index → 新 object_refs。
+    updates =
+      for z <- min_z..(max_z - 1)//1,
+          y <- min_y..(max_y - 1)//1,
+          x <- min_x..(max_x - 1)//1,
+          macro_index = Types.macro_index!({x, y, z}),
+          header = fetch_macro_header(storage, macro_index),
+          header.mode == refined_mode,
+          into: %{} do
+        cell = fetch_refined_cell(storage, header.payload_index)
+        {header.payload_index, derive_cell_object_refs(cell.layers)}
+      end
+
+    if updates == %{} do
+      storage
+    else
+      new_refined_cells =
+        storage.refined_cells
+        |> Enum.with_index()
+        |> Enum.map(fn {cell, payload_index} ->
+          case Map.fetch(updates, payload_index) do
+            {:ok, object_refs} -> %{cell | object_refs: object_refs}
+            :error -> cell
+          end
+        end)
+
+      refresh_accel(%{storage | refined_cells: new_refined_cells})
+    end
   end
 
   defp derive_cell_object_refs(layers) do
@@ -1170,13 +1362,20 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   defp derive_chunk_object_refs(storage) do
+    storage = ensure_accel(storage)
+    refined_mode = MacroCellHeader.cell_mode_refined()
+
     # %{object_id => %{macro_index => or'd mask_words across all parts}}
+    #
+    # 阶段2.5:内层 `Enum.at(refined_cells, payload_index)` O(n) 线性扫已换成
+    # accel map 的 O(1) `fetch_refined_cell/2`。外层仍单趟扫 headers（O(4096)
+    # 一次,非 ×Enum.at),只对 refined header 取 cell。
     aggregated =
       storage.macro_headers
       |> Enum.with_index()
       |> Enum.reduce(%{}, fn {header, macro_index}, acc ->
-        if header.mode == MacroCellHeader.cell_mode_refined() do
-          cell = Enum.at(storage.refined_cells, header.payload_index)
+        if header.mode == refined_mode do
+          cell = fetch_refined_cell(storage, header.payload_index)
 
           Enum.reduce(cell.object_refs, acc, fn ref, inner_acc ->
             inner_acc
@@ -1253,7 +1452,17 @@ defmodule SceneServer.Voxel.Storage do
     |> Enum.any?(fn {a, b} -> band(a, b) != 0 end)
   end
 
-  @doc "Normalizes a chunk storage struct or compatible map."
+  @doc """
+  边界归一化（full validation）—— 对 storage 结构或兼容 map 做**全量**字段校验
+  与 canonical 排序，并重建 accel 加速索引。
+
+  阶段2.5 收口纪律：`normalize!`（全量、O(4096 headers + pools)）**只在边界**
+  发生一次——`decode` / 外部注入 / `new` / 公共 API 入口。内部局部变更应走
+  `trust_transform!/3`（只校验改动的格），不再每改一格全量重扫。
+
+  `accel`（派生加速索引）在出口由 canonical list 重建，因此输入中携带的任何
+  `accel` 都被忽略——它永远不是真相源。
+  """
   @spec normalize!(t() | map()) :: t()
   def normalize!(%__MODULE__{} = storage) do
     storage
@@ -1266,6 +1475,13 @@ defmodule SceneServer.Voxel.Storage do
       attrs
       |> fetch(:macro_headers, empty_macro_headers())
       |> normalize_macro_headers!()
+
+    refined_cells =
+      normalize_list!(
+        fetch(attrs, :refined_cells, []),
+        &RefinedCellData.normalize!/1,
+        :refined_cells
+      )
 
     %__MODULE__{
       schema_version:
@@ -1293,12 +1509,7 @@ defmodule SceneServer.Voxel.Storage do
           &NormalBlockData.normalize!/1,
           :normal_blocks
         ),
-      refined_cells:
-        normalize_list!(
-          fetch(attrs, :refined_cells, []),
-          &RefinedCellData.normalize!/1,
-          :refined_cells
-        ),
+      refined_cells: refined_cells,
       environment_summaries:
         normalize_list!(
           fetch(attrs, :environment_summaries, []),
@@ -1314,8 +1525,57 @@ defmodule SceneServer.Voxel.Storage do
       attribute_sets: normalize_attribute_sets!(fetch(attrs, :attribute_sets, [])),
       tag_sets: normalize_tag_sets!(fetch(attrs, :tag_sets, [])),
       dirty_bounds:
-        DirtyMacroBounds.normalize!(fetch(attrs, :dirty_bounds, DirtyMacroBounds.empty()))
+        DirtyMacroBounds.normalize!(fetch(attrs, :dirty_bounds, DirtyMacroBounds.empty())),
+      accel: build_accel(macro_headers, refined_cells)
     }
+  end
+
+  # ----------------------------------------------------------------------------
+  # 阶段2.5 — trusted transform（内部局部可信变换）
+  #
+  # 区别于 `normalize!` 的全量校验：`trust_transform!` 接收一个 mutator，mutator
+  # 已经在受信内部以**已归一化的子结构**（`MacroCellHeader` / `RefinedCellData`
+  # 都各自 normalize 过）局部改写 macro_headers / refined_cells / pools，并报告
+  # 它**触碰过的 macro_index 集合**。本函数只：
+  #
+  #   1. 不重扫 4096 header（信任 mutator 维持其余格不变）；
+  #   2. 用 canonical list 增量重建 accel（O(变更量)，list→array/map 仍 O(n) 但
+  #      只发生一次，不是每改一格一趟）；
+  #   3. 把触碰的 macro 并进 dirty_bounds（绑定后续增量 object_refs / persist）。
+  #
+  # 它**不**改变 macro_headers / refined_cells 的顺序（保持 macro_index / payload
+  # 升序），所以 wire/hash 零漂移。
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  内部可信局部变换。`fun` 接收当前 storage，返回
+  `{next_storage, touched_macro_indices, reason_flag}`：
+
+    * `next_storage` —— 已局部改写 canonical list 的 storage（子结构需已
+      normalize；本函数不再全量校验）；
+    * `touched_macro_indices` —— 本次改动触碰的 macro_index 列表（用于 dirty
+      bounds 增量与后续增量 object_refs）；
+    * `reason_flag` —— `DirtyMacroBounds` reason bit。
+
+  出口刷新 accel + 合并 dirty bounds。复杂度 O(变更量 + 一次 list→accel 派生)，
+  **不是** N×全量 normalize。
+  """
+  @spec trust_transform!(t(), (t() -> {t(), [non_neg_integer()], 0..0xFFFF})) :: t()
+  def trust_transform!(%__MODULE__{} = storage, fun) when is_function(fun, 1) do
+    {next, touched, reason_flag} = fun.(storage)
+
+    dirty =
+      Enum.reduce(touched, next.dirty_bounds, fn macro_index, acc ->
+        DirtyMacroBounds.add_macro(acc, macro_index, reason_flag)
+      end)
+
+    %{next | dirty_bounds: dirty}
+    |> refresh_accel()
+  end
+
+  # 从当前 canonical list 重派生 accel（强制刷新，丢弃旧 accel）。
+  defp refresh_accel(%__MODULE__{} = storage) do
+    %{storage | accel: build_accel(storage.macro_headers, storage.refined_cells)}
   end
 
   # ----------------------------------------------------------------------------
@@ -1389,17 +1649,17 @@ defmodule SceneServer.Voxel.Storage do
         cell_hash: Keyword.get(opts, :cell_hash, 0)
       )
 
+    # 阶段2.5:header / cell 都已 normalize,append 不改 pool 顺序,轻量 finalize。
     %{
       storage
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: storage.refined_cells ++ [cell]
     }
-    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
-    |> normalize!()
+    |> finalize_local_write([macro_index], DirtyMacroBounds.reason_attribute_write())
   end
 
   defp replace_refined_cell(storage, macro_index, payload_index, cell, opts) do
-    header_now = Enum.at(storage.macro_headers, macro_index)
+    header_now = fetch_macro_header(storage, macro_index)
 
     header =
       MacroCellHeader.refined(payload_index,
@@ -1409,20 +1669,20 @@ defmodule SceneServer.Voxel.Storage do
         cell_hash: Keyword.get(opts, :cell_hash, header_now.cell_hash)
       )
 
+    # 阶段2.5:header / cell 都已 normalize,replace_at 不改 pool 顺序,轻量 finalize。
     %{
       storage
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: List.replace_at(storage.refined_cells, payload_index, cell)
     }
-    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
-    |> normalize!()
+    |> finalize_local_write([macro_index], DirtyMacroBounds.reason_attribute_write())
   end
 
   defp downgrade_refined_to_empty(storage, macro_index, payload_index, opts) do
     # Match `clear_macro_cell/3`'s compaction policy: leave the orphaned
     # RefinedCellData in the pool (an empty-but-valid cell) and just flip
     # the macro header back to empty mode.
-    header_now = Enum.at(storage.macro_headers, macro_index)
+    header_now = fetch_macro_header(storage, macro_index)
 
     header =
       MacroCellHeader.empty(
@@ -1439,13 +1699,14 @@ defmodule SceneServer.Voxel.Storage do
         boundary_cache: 0
       )
 
+    # 阶段2.5:header 置 empty、cell 置空(都已 normalize),replace_at 不改顺序,
+    # 轻量 finalize 替代全量 normalize!。
     %{
       storage
       | macro_headers: List.replace_at(storage.macro_headers, macro_index, header),
         refined_cells: List.replace_at(storage.refined_cells, payload_index, empty_cell)
     }
-    |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
-    |> normalize!()
+    |> finalize_local_write([macro_index], DirtyMacroBounds.reason_attribute_write())
   end
 
   # Phase A1-1b:batch 版本。Pre-existing cell + N 个新 (slot, layer_attrs)

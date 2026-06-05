@@ -36,9 +36,24 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   @collision_query_timeout_ms 1_000
   @collision_directory_call_timeout_ms @collision_query_timeout_ms + 250
 
+  # MAJOR 1：驱逐 terminate_child 后等 Registry 摘除死 pid 注册项的轮询上限。
+  # Registry 在被注册进程 :DOWN 后才删条目（异步窗口）；通常一两次轮询即清掉。
+  # 上限保证 Registry 异常时不无限阻塞 facade 串行 lane（约 200ms 兜底退出）。
+  @evict_cleanup_poll_attempts 40
+  @evict_cleanup_poll_sleep_ms 5
+
   @doc "Starts the chunk directory."
   def start_link(opts \\ []) do
     {server_opts, init_opts} = Keyword.split(opts, [:name])
+    # 阶段2.4：把 facade 的可路由身份透传进 init，供启动的 chunk 用作
+    # request_evict 的回址。有具名（全局单例 / 测试显式命名）则用名字（重启后
+    # 仍可解析）；否则用启动者给的 :directory_ref 或回退到自身 pid。
+    init_opts =
+      case Keyword.get(server_opts, :name) do
+        nil -> init_opts
+        name -> Keyword.put_new(init_opts, :directory_ref, name)
+      end
+
     GenServer.start_link(__MODULE__, init_opts, server_opts)
   end
 
@@ -235,6 +250,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
        chunk_call_timeout_ms: Keyword.get(opts, :chunk_call_timeout_ms, @chunk_call_timeout_ms),
        collision_query_timeout_ms:
          Keyword.get(opts, :collision_query_timeout_ms, @collision_query_timeout_ms),
+       # 阶段2.4：facade 的可路由回址，透传给启动的 chunk 作 request_evict 回址。
+       # 优先用具名身份（start_link 注入的 :directory_ref，重启后仍可解析），
+       # 回退到自身 pid（匿名 facade，进程在生命周期内稳定）。
+       directory_ref: Keyword.get(opts, :directory_ref, self()),
        # monitor_ref => {logical_scene_id, chunk_coord}。仅用于崩溃 observe，
        # 不参与路由（路由唯一真相源是注册表）。
        chunk_monitors: %{}
@@ -535,6 +554,129 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     {:reply, %{chunk_count: map_size(chunks), chunks: chunks}, state}
   end
 
+  # 阶段2.4 空闲驱逐：退场所有权在 facade。chunk 进入空闲态后 cast
+  # {:request_evict, key, chunk_pid} 给本 facade；本回调在 facade 的**单点串行
+  # mailbox** 里复核 + 退场，与 `ensure_chunk` / `subscribe` 在同一 lane，规避
+  # “驱逐复核 → 真正终止”窗口里挤进 ensure 的 TOCTOU：
+  #
+  #   1. 经注册表重新解析 key 的当前权威 pid；与请求方 pid 不一致（已重启 /
+  #      已被别的路径替换）→ 丢弃请求（陈旧）。
+  #   2. 同步 `ChunkProcess.confirm_evict/1`：在 chunk 自身 mailbox 里再次确认
+  #      仍空闲并**先 persist**。这一步把“请求驱逐”之后可能到达 chunk 的活动
+  #      （刚来的订阅/写/lease）收口——chunk 复核会回 {:cancel, _}。
+  #   3. {:ok, :evicting} → `VoxelChunkSup.terminate_chunk`（:transient 计划内
+  #      终止不重启），注册项随 :DOWN 由 Registry 摘除；本回调持有期间没有任何
+  #      ensure/subscribe 能交错，因此终止与下一次 ensure 严格串行。
+  #   4. {:cancel, _} → 取消，进程复用。
+  @impl true
+  def handle_cast({:request_evict, {logical_scene_id, chunk_coord} = key, chunk_pid}, state) do
+    case ChunkRegistry.lookup(logical_scene_id, chunk_coord, state.chunk_registry) do
+      {:ok, ^chunk_pid} ->
+        evict_confirmed_chunk(state, key, chunk_pid)
+
+      # 注册表已无此 key 或已是别的 pid（重启 / 替换）—— 陈旧请求，丢弃。
+      _other ->
+        CliObserve.emit("voxel_chunk_directory_evict_stale", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            requested_pid: inspect(chunk_pid)
+          }
+        end)
+
+        {:noreply, state}
+    end
+  end
+
+  def handle_cast(_message, state), do: {:noreply, state}
+
+  defp evict_confirmed_chunk(state, {logical_scene_id, chunk_coord} = key, chunk_pid) do
+    case safe_chunk_call(:confirm_evict, fn -> ChunkProcess.confirm_evict(chunk_pid) end) do
+      {:ok, :evicting} ->
+        # `DynamicSupervisor.terminate_child/2` 同步返回时进程已死，但 `Registry`
+        # 对该死 pid 的注册项摘除是**异步**的（Registry 收到被监控进程 :DOWN 后
+        # 才删）。MAJOR 1：若就此返回，下一次 `ensure_chunk` 在这个异步窗口里
+        # 经注册表命中的就是刚死的 pid，lease=nil 时会把死 pid 直接交给调用方
+        # （field_runtime 温度异常 / auto_circuit 都走 lease=nil），调用方对死 pid
+        # 操作即报错。
+        #
+        # 把 :DOWN 清理纳入 facade 的串行 lane：terminate 后**同步轮询**直到
+        # 注册表对该 key 不再解析到这个 pid（被摘除，或已是别的新 pid）才返回。
+        # 本 handle_cast 持有期间没有任何 ensure/subscribe 能交错（facade 是单点
+        # 串行 mailbox），因此“终止 + 注册项清理 + 下一次 ensure”严格串行，彻底
+        # 消除死 pid 窗口。
+        _ = SceneServer.VoxelChunkSup.terminate_chunk(state.chunk_sup, chunk_pid)
+        wait_registry_entry_cleared(state, key, chunk_pid)
+
+        CliObserve.emit("voxel_chunk_directory_evicted", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            pid: inspect(chunk_pid)
+          }
+        end)
+
+        {:noreply, state}
+
+      {:cancel, reason} ->
+        CliObserve.emit("voxel_chunk_directory_evict_cancelled", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            pid: inspect(chunk_pid),
+            reason: inspect(reason)
+          }
+        end)
+
+        {:noreply, state}
+
+      {:error, reason} ->
+        # confirm_evict 调用本身失败（chunk 正在退出 / 超时）—— 不强杀，下一个
+        # chunk 生命周期节拍若仍空闲会重新请求。
+        CliObserve.emit("voxel_chunk_directory_evict_cancelled", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            pid: inspect(chunk_pid),
+            reason: inspect(reason)
+          }
+        end)
+
+        {:noreply, state}
+    end
+  end
+
+  # MAJOR 1：terminate_child 同步返回后，同步等 Registry 摘除该死 pid 的注册项。
+  # Registry 监控被注册进程，进程 :DOWN 后才删条目——这是个异步窗口。这里在
+  # facade 串行 lane 里短暂轮询，直到 lookup 不再解析到这个被驱逐的 pid：
+  #
+  #   * `:not_started`        —— 注册项已摘除，干净退场（最常见）。
+  #   * `{:ok, other_pid}`    —— 已被别的路径换上新权威 pid，同样视为“旧 pid 已
+  #                              不再是真相”，返回（极少见，但语义安全）。
+  #   * `{:ok, ^chunk_pid}`   —— 注册项仍指向死 pid，继续等。
+  #
+  # 轮询有上限（@evict_cleanup_poll_attempts 次 × @evict_cleanup_poll_sleep_ms），
+  # 避免 Registry 异常时无限阻塞 facade。超时仅记 observe——ensure_chunk_in_state
+  # 侧的 Process.alive? 兜底仍会把残留死 pid 当 :not_started 处理。
+  defp wait_registry_entry_cleared(state, key, chunk_pid) do
+    wait_registry_entry_cleared(state, key, chunk_pid, @evict_cleanup_poll_attempts)
+  end
+
+  defp wait_registry_entry_cleared(_state, _key, _chunk_pid, 0) do
+    :ok
+  end
+
+  defp wait_registry_entry_cleared(state, {logical_scene_id, chunk_coord} = key, chunk_pid, attempts) do
+    case ChunkRegistry.lookup(logical_scene_id, chunk_coord, state.chunk_registry) do
+      {:ok, ^chunk_pid} ->
+        Process.sleep(@evict_cleanup_poll_sleep_ms)
+        wait_registry_entry_cleared(state, key, chunk_pid, attempts - 1)
+
+      _cleared_or_replaced ->
+        :ok
+    end
+  end
+
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     # 阶段3.1：facade monitor 到它启动过的 chunk 崩溃。这里**只发 observe**，
@@ -562,12 +704,24 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   # 阶段3.1：先经注册表解析权威 pid；未注册才启动。注册表是唯一真相源，
   # facade 不缓存 pid。
+  #
+  # MAJOR 1 兜底：命中已注册 pid 时与 `lookup_chunk_pid`（约 L530）一致做
+  # `Process.alive?` 校验。驱逐 terminate_child 同步返回后进程已死，但 Registry
+  # 经 :DOWN 异步摘除注册项存在窗口；此窗口内命中的死 pid 绝不能交给调用方
+  # （lease=nil 路径会直接返回死 pid → 调用方操作报错）。死 pid 视同 :not_started
+  # 走 start_chunk。主防线是驱逐路径的 wait_registry_entry_cleared（把清理纳入
+  # facade 串行 lane），这里是第二道防线，覆盖任何残留窗口。
   defp ensure_chunk_in_state(state, attrs) do
     case ChunkRegistry.lookup(attrs.logical_scene_id, attrs.chunk_coord, state.chunk_registry) do
       {:ok, pid} ->
-        case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
-          :ok -> {{:ok, pid}, state}
-          {:error, reason} -> {{:error, reason}, state}
+        if Process.alive?(pid) do
+          case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+            :ok -> {{:ok, pid}, state}
+            {:error, reason} -> {{:error, reason}, state}
+          end
+        else
+          # 命中死 pid（驱逐 :DOWN 异步摘除窗口）——当作未启动，冷启新权威进程。
+          start_chunk(state, attrs)
         end
 
       :not_started ->
@@ -580,7 +734,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       logical_scene_id: attrs.logical_scene_id,
       chunk_coord: attrs.chunk_coord,
       # 把注册表名透传给 ChunkProcess，使其 via-tuple 注册进同一张表。
-      chunk_registry: state.chunk_registry
+      chunk_registry: state.chunk_registry,
+      # 阶段2.4：把本 facade 的回址透传给 chunk，作空闲驱逐 request_evict 的
+      # 目标。隔离测试里 facade 非全局单例，必须显式透传才能路由对。
+      chunk_directory: state.directory_ref
     ]
 
     chunk_opts =
@@ -608,14 +765,56 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
       # 并发 / 重启竞态：另一路已经把同 key 的权威进程注册了。注册表去重，
       # facade 复用既有 pid，绝不产生第二个权威。
+      #
+      # MAJOR 1：via-tuple start 在 Registry 尚未清理死 pid 注册项时会回
+      # `{:already_started, 死pid}`（ensure 命中死 pid 后冷启时正撞这个窗口）。
+      # 复用前先 `Process.alive?` 校验：活的就复用；死的则同步等 Registry 摘除
+      # 后重试一次 start（此时注册项已清，能真正起一个新权威进程）。
       {:error, {:already_started, pid}} ->
-        case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
-          :ok -> {{:ok, pid}, state}
-          {:error, reason} -> {{:error, reason}, state}
+        if Process.alive?(pid) do
+          case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+            :ok -> {{:ok, pid}, state}
+            {:error, reason} -> {{:error, reason}, state}
+          end
+        else
+          restart_chunk_after_dead_registration(state, attrs, pid)
         end
 
       {:error, reason} ->
         {{:error, reason}, state}
+    end
+  end
+
+  # MAJOR 1：via-tuple start 撞上“死 pid 仍注册”窗口（{:already_started, 死pid}）。
+  # 同步等 Registry 摘除该死 pid 的注册项，再重试一次 start_chunk。等待与驱逐
+  # 路径共用 wait_registry_entry_cleared，统一收口在 facade 串行 lane。
+  defp restart_chunk_after_dead_registration(state, attrs, dead_pid) do
+    key = {attrs.logical_scene_id, attrs.chunk_coord}
+    wait_registry_entry_cleared(state, key, dead_pid)
+
+    CliObserve.emit("voxel_chunk_restart_after_dead_registration", fn ->
+      %{
+        logical_scene_id: attrs.logical_scene_id,
+        chunk_coord: attrs.chunk_coord,
+        dead_pid: inspect(dead_pid)
+      }
+    end)
+
+    # 注册项已清，再解析一次：可能已有别的路径起了新权威（复用），否则自己冷启。
+    case ChunkRegistry.lookup(attrs.logical_scene_id, attrs.chunk_coord, state.chunk_registry) do
+      {:ok, pid} ->
+        if Process.alive?(pid) do
+          case maybe_apply_chunk_lease(pid, Map.get(attrs, :lease), state.chunk_call_timeout_ms) do
+            :ok -> {{:ok, pid}, state}
+            {:error, reason} -> {{:error, reason}, state}
+          end
+        else
+          # 仍是死 pid（Registry 异常未摘除）——直接报错，避免把死 pid 交给调用方。
+          {{:error, {:chunk_registration_stale, inspect(pid)}}, state}
+        end
+
+      :not_started ->
+        start_chunk(state, attrs)
     end
   end
 

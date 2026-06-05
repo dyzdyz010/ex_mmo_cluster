@@ -37,6 +37,33 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   init 不再无条件 schedule 模拟 tick：只有授权（持有效 lease 且非 degraded）
   时才 schedule。
+
+  ## 空闲驱逐 + 按需 tick（阶段2.4 voxel-storage-4）
+
+  在阶段3 的 `:transient` + `terminate` + 注册化身份之上，本进程不再永久
+  10Hz 空转，也不再永不回收：
+
+  * **按需 tick**：模拟 tick 不再无条件每 100ms 重排。仅当
+    `(有 simulator 且 dirty_bounds 非空)` 时 arm 下一个 tick；空闲态零 timer。
+    写入路径（intent / commit / put_solid_block / field effect 等）产生 dirty
+    时通过 `maybe_arm_simulation_tick/1` 显式补排一次。`init` 仅在已授权且
+    “有 simulator 且 dirty” 时才 arm（全新空 chunk 不空转）。
+  * **生命周期低频 timer**：lease 心跳 / 驱逐静默检查走独立的
+    `@lifecycle_check_interval_ms`（默认 1s）节拍，**不是** 10Hz。
+  * **驱逐显式状态机**：进程维护 `last_activity_ms`，任何外部活动（订阅 /
+    授权写 / lease 应用 / 事务 / field region）刷新它。`:lifecycle_check`
+    判定 chunk 空闲（无订阅 + 无 field region + 无 pending fence/commit +
+    lease 失效或未持有 + 静默窗口已过）时，向 **ChunkDirectory facade**
+    `cast {:request_evict, key, self()}`。
+  * **退场所有权归 facade**：进程**不**自停。由 `ChunkDirectory` 在其单点
+    串行 mailbox 里复核（与 `ensure_chunk` 同 lane，规避驱逐-ensure TOCTOU）：
+    复核时若 chunk 又有订阅 / lease / fence 则取消驱逐；否则 **先 persist
+    再 `DynamicSupervisor.terminate_child`**，注册项随进程退出由 Registry 摘除。
+    facade 复核通过 `confirm_evict/1` 同步问 chunk“此刻是否仍空闲”，把
+    “请求驱逐”与“真正终止”之间可能挤进来的活动窗口收口在 chunk 自身 mailbox。
+
+  `tick_skipped` observe 不再每次空转刷日志：按 `@tick_skip_sample_n` 采样 +
+  聚合计数，避免污染观测流。
   """
 
   use GenServer, restart: :transient
@@ -66,8 +93,27 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # Phase 5.E: 10 Hz simulation tick (100ms interval). 见
   # `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md` E-2。
+  #
+  # 阶段2.4：tick 改“按需 arm”。这仍是单次 tick 的间隔，但不再无条件每 100ms
+  # 重排——只有 `(有 simulator 且 dirty)` 时才存在 timer（见
+  # `maybe_arm_simulation_tick/1`）。空闲态下没有任何模拟 timer。
   @simulation_tick_interval_ms 100
   @auto_circuit_refresh_debounce_ms 50
+
+  # 阶段2.4 空闲驱逐 + 生命周期低频节拍。
+  #
+  # * `@lifecycle_check_interval_ms` —— lease 心跳 / 空闲驱逐检查的独立低频
+  #   timer 间隔（**不是** 10Hz）。无 fence / 无订阅时它也只是廉价地刷一下
+  #   时间戳并判断静默窗口，远比 100ms 空转便宜。
+  # * `@idle_evict_silence_ms` —— chunk 进入“可驱逐候选”所需的最小静默时长：
+  #   最近一次外部活动距今超过它，且其它驱逐前置条件全部满足，才向 facade
+  #   请求驱逐。取一个明显大于正常订阅抖动 / 短暂离开视野的保守值。
+  @lifecycle_check_interval_ms 1_000
+  @idle_evict_silence_ms 30_000
+
+  # 阶段2.4：tick_skipped observe 采样。空转态（按需 tick 后基本不再触发，但
+  # 保留兜底）只对每第 N 次 skip 发一条聚合 observe，避免刷日志。
+  @tick_skip_sample_n 100
 
   # 阶段4 (2.2 world-2pc-6) prepared fence TTL 兜底参数。
   #
@@ -75,12 +121,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 主路径是 World driver/reaper 主动清理孤儿事务；这里的 TTL 仅作兜底，
   # 处理 coordinator/driver 整体死亡导致 fence 永远收不到 commit/abort 的情况。
   #
-  # * `@fence_ttl_check_interval_ms` —— chunk 周期检查 fence 是否过期的节拍。
+  # 阶段2.4：fence 过期的周期检查节拍已并入 `@lifecycle_check_interval_ms`
+  # （同一个低频 timer 承载 fence TTL + lease 心跳 + 空闲驱逐），不再单独排程。
+  #
   # * `@default_fence_ttl_ms` —— 当 coordinator 未在 prepare 时显式下发
   #   `:fence_deadline_ms` 时，相对 `fenced_at_ms` 的默认存活时长。取一个
   #   明显大于正常事务往返（prepare→decision→commit）的保守值，避免误杀
   #   仍在进行中的事务。
-  @fence_ttl_check_interval_ms 1_000
   @default_fence_ttl_ms 30_000
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
@@ -478,6 +525,29 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, :debug_state)
   end
 
+  @doc """
+  阶段2.4 空闲驱逐复核：由 `ChunkDirectory` 在收到本进程 `request_evict` 后
+  同步调用，问 chunk“此刻是否仍空闲、可以被终止”。
+
+  在 chunk 自身 mailbox 里重新评估驱逐前置条件（无订阅 / 无 field region /
+  无 pending fence|commit / lease 失效或未持有 / 静默窗口仍过）。这一步把
+  “请求驱逐 → 真正终止”之间可能挤进来的活动（如刚到达的订阅 / 写 / lease）
+  收口在串行 mailbox 内：
+
+  * `{:ok, :evicting}` —— 仍空闲，且**已先把当前 storage 持久化**（持有效
+    lease 时）；facade 据此 `terminate_child`。
+  * `{:cancel, reason}` —— 复核期间又活跃（或持久化失败），facade 取消本次
+    驱逐，进程复用。
+
+  持久化失败按 `{:cancel, {:persist_failed, _}}` 处理：宁可让进程多活一轮，
+  也不在未落库时丢掉热状态。
+  """
+  @spec confirm_evict(GenServer.server()) ::
+          {:ok, :evicting} | {:cancel, term()}
+  def confirm_evict(server) do
+    GenServer.call(server, :confirm_evict)
+  end
+
   @impl true
   def init(opts) do
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
@@ -555,19 +625,41 @@ defmodule SceneServer.Voxel.ChunkProcess do
             field_region_sources: %{},
             field_region_source_keys: %{},
             field_region_cleanup_links: %{},
-            auto_circuit_refresh_pending?: false
+            auto_circuit_refresh_pending?: false,
+            # 阶段2.4 空闲驱逐状态机。
+            # last_activity_ms —— 最近一次外部活动时间戳；驱逐静默窗口的基线。
+            # tick_armed?      —— 当前是否已有一个 in-flight 模拟 tick timer。
+            #                     按需 tick 用它去重，避免重复 send_after 叠加。
+            # tick_skip_count  —— tick_skipped 采样聚合计数。
+            # evict_requested? —— 已向 facade 发过 request_evict，等复核结果，
+            #                     避免重复请求刷 facade mailbox。
+            last_activity_ms: now_ms(),
+            tick_armed?: false,
+            tick_skip_count: 0,
+            evict_requested?: false,
+            # 阶段2.4：驱逐节拍 / 静默窗口可由 opts 覆盖（测试用短窗口；生产用
+            # 默认保守值）。运行期常量，进 state 便于 handle_info 直接取。
+            lifecycle_check_interval_ms:
+              Keyword.get(opts, :lifecycle_check_interval_ms, @lifecycle_check_interval_ms),
+            idle_evict_silence_ms:
+              Keyword.get(opts, :idle_evict_silence_ms, @idle_evict_silence_ms)
           }
 
         emit_init_hydrated(state)
 
-        # 阶段3.1：只有授权态才 schedule 模拟 tick。未授权 / degraded 不空跑。
-        maybe_schedule_simulation_tick(state)
+        # 阶段2.4：init 不再无条件起 100ms 空转 timer。仅在已授权且“有
+        # simulator 且 dirty”时 arm 一次模拟 tick；全新空 chunk / 未授权 /
+        # degraded 都进入零 timer 空闲态。
+        state = maybe_arm_simulation_tick(state)
 
         # 阶段4 (2.2)：无条件 schedule prepared fence TTL 周期检查。即便重启后
         # 从 DB reload 回一个 fence（load_persisted_fence），它的 deadline 也能
         # 在 coordinator/driver 死亡时被本兜底路径作废。计时器很轻（无 fence 时
         # 直接跳过），始终开启可避免“授权态切换”窗口里漏检。
-        schedule_fence_ttl_check()
+        #
+        # 阶段2.4：该低频 timer 同时承载 lease 心跳 + 空闲驱逐静默检查
+        # （见 handle_info(:check_pending_fence_ttl)），是 chunk 唯一常驻 timer。
+        schedule_fence_ttl_check(state)
 
         {:ok, state}
 
@@ -635,8 +727,31 @@ defmodule SceneServer.Voxel.ChunkProcess do
     :exit, reason -> {:error, {:hydrate_exit, reason}}
   end
 
-  defp maybe_schedule_simulation_tick(%{mode: :authorized}), do: schedule_simulation_tick()
-  defp maybe_schedule_simulation_tick(_state), do: :ok
+  # 阶段2.4：按需 arm 模拟 tick。仅当 (授权 + 有 simulator + dirty) 且当前没有
+  # in-flight tick timer 时，才 send_after 一个 tick 并置 tick_armed?。空闲态
+  # （未授权 / 无 simulator / 无 dirty）零 timer。tick_armed? 去重，保证同一
+  # 时刻最多只有一个模拟 timer，避免写入路径与 tick handler 重复叠加。
+  defp maybe_arm_simulation_tick(%{tick_armed?: true} = state), do: state
+
+  defp maybe_arm_simulation_tick(%{mode: :authorized} = state) do
+    if simulation_due?(state) do
+      schedule_simulation_tick()
+      %{state | tick_armed?: true}
+    else
+      state
+    end
+  end
+
+  defp maybe_arm_simulation_tick(state), do: state
+
+  # tick 实际有事可做的判定：有注册 simulator、dirty_bounds 非空、且 lease
+  # 未失效。lease 失效时即便 dirty 也不该 arm（tick 只会 skip:lease_stale），
+  # 让 lease-stale 的空闲 chunk 能停 timer 并进入可驱逐态，而不是永久空转。
+  defp simulation_due?(%{simulation_tick: simulation_tick, storage: storage} = state) do
+    SimulationTick.any_simulator?(simulation_tick) and
+      not DirtyMacroBounds.empty?(storage.dirty_bounds) and
+      not lease_stale?(state.lease)
+  end
 
   defp emit_init_hydrated(state) do
     CliObserve.emit("voxel_chunk_init_hydrated", fn ->
@@ -663,12 +778,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # 阶段3.1：apply_lease 后把 chunk 推进到授权态。
   #
-  # * 已是 :authorized（init 时即带 lease 成功 hydrate）→ 仅刷新 lease。
+  # * 已是 :authorized（init 时即带 lease 成功 hydrate）→ 刷新 lease 并**按需
+  #   re-arm 模拟 tick**。
   # * :unauthorized / :degraded → 现在有了 lease，从权威存储重新 hydrate：
   #   - hydrate 成功（:loaded / :never_persisted）→ 转 :authorized 并补 tick；
   #   - 再次失败 → 保持 :degraded，不空跑（等下一次 lease/恢复重试）。
+  #
+  # 阶段2.4 liveness 修复（MAJOR 2）：已授权 chunk 的 lease 真正失效后
+  # （expires_at_ms 过期 → lease_stale? → simulation_due? 停 arm、tick_armed?
+  # 归零），World 续发新 lease 时必须 re-arm。否则 dirty+simulator 的 chunk 在
+  # lease 续期后模拟永久停滞（simulation_due? 重新为真但没有任何路径把它拉起来），
+  # 直到下一次写才恢复。maybe_arm_simulation_tick 由 tick_armed? 去重，故仍在
+  # 跑的 chunk 续期是廉价 no-op；只有“停了的 due”会真正补排一个 tick。
   defp authorize_with_lease(%{mode: :authorized} = state, lease) do
-    %{state | lease: lease}
+    maybe_arm_simulation_tick(%{state | lease: lease})
   end
 
   defp authorize_with_lease(state, lease) do
@@ -692,9 +815,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
           }
         end)
 
-        # 授权后补一次模拟 tick scheduling（init 未授权时未 schedule）。
-        schedule_simulation_tick()
-        next_state
+        # 阶段2.4：授权后按需 arm 一次模拟 tick（仅当有 simulator 且 dirty）。
+        maybe_arm_simulation_tick(next_state)
 
       {:ok, _storage, hydrate_status, :degraded} ->
         CliObserve.emit("voxel_chunk_still_degraded", fn ->
@@ -715,8 +837,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 进来的写也提升为 :authorized，使后续模拟 tick 能跑。degraded 不在此提升
   # （它必须先重新 hydrate 成功，由 apply_lease 路径裁决）。
   defp promote_authorized_on_write(%{mode: :unauthorized} = state) do
-    # 未授权进程在此首次拿到授权写：转 :authorized 并补 schedule 模拟 tick。
-    schedule_simulation_tick()
+    # 未授权进程在此首次拿到授权写：转 :authorized。模拟 tick 的按需 arm 由
+    # 写路径末尾的 mark_activity/maybe_arm 统一负责，这里不直接 schedule。
     %{state | mode: :authorized}
   end
 
@@ -736,9 +858,28 @@ defmodule SceneServer.Voxel.ChunkProcess do
     Process.send_after(self(), :simulation_tick, @simulation_tick_interval_ms)
   end
 
-  # 阶段4 (2.2)：prepared fence TTL 周期检查节拍。
-  defp schedule_fence_ttl_check do
-    Process.send_after(self(), :check_pending_fence_ttl, @fence_ttl_check_interval_ms)
+  # 阶段4 (2.2) + 阶段2.4：低频生命周期节拍（fence TTL + lease 心跳 + 空闲
+  # 驱逐静默检查共用）。这是 chunk 的唯一常驻 timer。间隔可由 state 覆盖（测试
+  # 短窗口）；init 首次排程时 state 已就绪，故统一从 state 取。
+  defp schedule_fence_ttl_check(state) do
+    Process.send_after(self(), :check_pending_fence_ttl, state.lifecycle_check_interval_ms)
+    state
+  end
+
+  # 阶段2.4：刷新最近活动时间戳，并清掉“已请求驱逐”标记。任何外部触达
+  # （订阅 / 授权写 / lease 应用 / 事务 / field region）都视为活动，重置静默
+  # 窗口，使刚刚还活跃的 chunk 不会在下一个生命周期节拍被误驱。
+  defp mark_activity(state) do
+    %{state | last_activity_ms: now_ms(), evict_requested?: false}
+  end
+
+  # 阶段2.4：写路径收尾——刷新活动时间戳 + 按需 arm 模拟 tick。任何把 storage
+  # 改 dirty 的授权写都应在 reply 前走它，使空闲态新产生的 dirty 能拉起一个
+  # tick，而不依赖已被移除的 100ms 空转 timer。
+  defp post_write_lifecycle(state) do
+    state
+    |> mark_activity()
+    |> maybe_arm_simulation_tick()
   end
 
   defp load_persisted_fence(logical_scene_id, chunk_coord, lease) do
@@ -831,7 +972,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
     # 阶段3.1：World 下发 lease 时，未授权 / degraded 的 chunk 在此完成
     # hydrate 并转入授权态。degraded（hydrate 曾失败）也在拿到 lease 后重试
     # 从权威存储恢复，避免一直空跑。授权后补 schedule 模拟 tick。
-    next_state = authorize_with_lease(next_state, lease)
+    # 阶段2.4：应用 lease 是外部活动，刷新静默窗口；持有效 lease 的 chunk
+    # 不应被空闲驱逐误杀。
+    # 阶段2.4 liveness（MAJOR 2）：续期是“lease 续期使 simulation_due? 重新为真”
+    # 的关键触发点。authorize_with_lease 的各分支已按需 arm；这里在 mark_activity
+    # 之后再 maybe_arm 一次兜底，确保无论走 :authorized 续期还是 degraded→authorized
+    # 重新 hydrate，dirty+simulator 的 chunk 在续期后都能恢复 tick（tick_armed?
+    # 去重，仍在跑的是 no-op）。
+    next_state =
+      next_state
+      |> authorize_with_lease(lease)
+      |> mark_activity()
+      |> maybe_arm_simulation_tick()
 
     {:reply, {:ok, lease}, next_state}
   end
@@ -890,7 +1042,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:ok, intent} ->
             case apply_normalized_intent(state, intent) do
               {:ok, reply, next_state} ->
-                next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+                next_state =
+                  next_state
+                  |> maybe_schedule_auto_circuit_refresh(reply.changed?)
+                  |> post_write_lifecycle()
 
                 CliObserve.emit("voxel_intent_applied", fn ->
                   %{
@@ -943,7 +1098,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:ok, intents} ->
             case apply_normalized_intents(state, intents) do
               {:ok, reply, next_state} ->
-                next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+                next_state =
+                  next_state
+                  |> maybe_schedule_auto_circuit_refresh(reply.changed?)
+                  |> post_write_lifecycle()
 
                 CliObserve.emit("voxel_intents_applied", fn ->
                   %{
@@ -982,6 +1140,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:prepare_transaction, transaction_id, intents, opts}, _from, state) do
     case prepare_transaction_in_state(state, transaction_id, intents, opts) do
       {:ok, summary, next_state} ->
+        # 阶段2.4：持有 fence 的 chunk 一定不空闲（驱逐判定也会因 pending_fence
+        # 非空直接拒绝），这里刷一次活动时间戳兜底。
+        next_state = mark_activity(next_state)
+
         emit_transaction_event(
           next_state,
           transaction_id,
@@ -1023,9 +1185,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:durable_pending, ack, next_state} ->
         # 候选 storage 已就绪、async persist 已 enqueue；登记 durable-ack 等待，
         # fence / pending_fence 保留，from 暂不 reply。
+        # 阶段2.4：in-flight commit 是活动，刷新静默窗口（pending_commit_acks
+        # 非空也会在驱逐判定里直接阻止驱逐，这里额外刷时间戳兜底）。
         ack = %{ack | from: from}
         pending_commit_acks = Map.put(next_state.pending_commit_acks, ack.persist_ref, ack)
-        {:noreply, %{next_state | pending_commit_acks: pending_commit_acks}}
+        next_state = mark_activity(%{next_state | pending_commit_acks: pending_commit_acks})
+        {:noreply, next_state}
 
       {:committed_noop, reply, next_state, intents} ->
         # 无变更 commit：无 persist 需要等待，已 durable。同步释放 fence。
@@ -1035,7 +1200,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
         next_state =
           record_durable_commit(next_state, transaction_id, next_state.storage.chunk_version)
 
-        next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+        next_state =
+          next_state
+          |> maybe_schedule_auto_circuit_refresh(reply.changed?)
+          |> post_write_lifecycle()
 
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
           chunk_version: next_state.storage.chunk_version,
@@ -1190,6 +1358,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     next_state =
       %{state | storage: storage}
       |> maybe_schedule_auto_circuit_refresh(true)
+      |> post_write_lifecycle()
 
     push_snapshot_fallbacks(next_state, :put_solid_block)
 
@@ -1199,7 +1368,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:write_temperature_attribute, attrs}, _from, state) do
     case build_temperature_attribute_storage(state.storage, attrs) do
       {:ok, next_storage, summary} ->
-        next_state = %{state | storage: next_storage}
+        next_state = post_write_lifecycle(%{state | storage: next_storage})
 
         if summary.changed? do
           push_snapshot_fallbacks(next_state, :temperature_attribute_write)
@@ -1227,7 +1396,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:add_heat_energy_attribute, attrs}, _from, state) do
     case build_heat_energy_attribute_storage(state.storage, attrs) do
       {:ok, next_storage, summary} ->
-        next_state = %{state | storage: next_storage}
+        next_state = post_write_lifecycle(%{state | storage: next_storage})
 
         if summary.changed? do
           push_snapshot_fallbacks(next_state, :heat_energy_attribute_write)
@@ -1260,6 +1429,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
         apply_field_effect(acc_state, effect, context)
       end)
 
+    # 阶段2.4：field kernel writeback 可能改 dirty —— 刷活动 + 按需 arm tick。
+    next_state = post_write_lifecycle(next_state)
+
     summary = %{
       applied_count: Enum.count(results, &(&1.status == :applied)),
       rejected_count: Enum.count(results, &(&1.status == :rejected)),
@@ -1279,7 +1451,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {state, monitor_ref, subscriber_state} =
       put_subscriber(state, subscriber, request_id, delivery_opts)
 
-    state = maybe_schedule_auto_circuit_refresh_for_subscriber(state)
+    # 阶段2.4：新增订阅是活动，刷新静默窗口。有订阅的 chunk 也会在驱逐判定里
+    # 因 subscribers 非空被直接保护。
+    state =
+      state
+      |> maybe_schedule_auto_circuit_refresh_for_subscriber()
+      |> mark_activity()
+
     payload = encode_snapshot_payload(state.storage, request_id)
     snapshot_sent? = send_snapshot? and known_version != state.storage.chunk_version
 
@@ -1408,8 +1586,65 @@ defmodule SceneServer.Voxel.ChunkProcess do
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers),
        field_region_count: map_size(state.field_regions),
-       field_source_count: map_size(state.field_region_sources)
+       field_source_count: map_size(state.field_region_sources),
+       # 阶段2.4：暴露按需 tick / 空闲驱逐状态供 CLI / 故障注入测试断言
+       # （“空闲态零 timer” = tick_armed? false 且无 dirty）。
+       tick_armed?: state.tick_armed?,
+       last_activity_ms: state.last_activity_ms,
+       evict_requested?: state.evict_requested?,
+       idle_evict_candidate?: idle_evict_candidate?(state)
      }, state}
+  end
+
+  # 阶段2.4：facade 复核驱逐。在 chunk 自身 mailbox 里重新评估空闲条件，仍空闲
+  # 则先 persist 再回 {:ok, :evicting}（让 facade terminate_child）。复核期间又
+  # 活跃（订阅/写/lease 进来刷新了静默窗口或落了 fence）→ {:cancel, reason}。
+  def handle_call(:confirm_evict, _from, state) do
+    cond do
+      not idle_evict_candidate?(state) ->
+        # 复核窗口内又活跃了 —— 取消驱逐，进程复用。清掉 evict_requested?
+        # 让下一轮重新评估。
+        CliObserve.emit("voxel_chunk_evict_cancelled", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            reason: :became_active,
+            subscriber_count: map_size(state.subscribers),
+            field_region_count: map_size(state.field_regions),
+            has_pending_fence?: not is_nil(state.pending_fence)
+          }
+        end)
+
+        {:reply, {:cancel, :became_active}, %{state | evict_requested?: false}}
+
+      true ->
+        case persist_before_evict(state) do
+          {:ok, persist_kind} ->
+            CliObserve.emit("voxel_chunk_evict_confirmed", fn ->
+              %{
+                logical_scene_id: state.logical_scene_id,
+                chunk_coord: state.chunk_coord,
+                chunk_version: state.storage.chunk_version,
+                persist_kind: persist_kind,
+                silence_ms: now_ms() - state.last_activity_ms
+              }
+            end)
+
+            {:reply, {:ok, :evicting}, state}
+
+          {:error, reason} ->
+            # 未落库不丢热状态：取消本次驱逐，下一轮再试。
+            CliObserve.emit("voxel_chunk_evict_cancelled", fn ->
+              %{
+                logical_scene_id: state.logical_scene_id,
+                chunk_coord: state.chunk_coord,
+                reason: {:persist_failed, reason}
+              }
+            end)
+
+            {:reply, {:cancel, {:persist_failed, reason}}, %{state | evict_requested?: false}}
+        end
+    end
   end
 
   def handle_call(:flush_persistence, from, state) do
@@ -1423,7 +1658,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # Phase 6: create a new FieldRegion under FieldTickSupervisor.
   def handle_call({:create_field_region, attrs}, _from, state) when is_map(attrs) do
     case start_field_region(state, attrs, nil) do
-      {:ok, region_id, next_state} -> {:reply, {:ok, region_id}, next_state}
+      # 阶段2.4：持有 field region 的 chunk 永不空闲（驱逐判定亦会因
+      # field_regions 非空保护），刷一次活动时间戳兜底。
+      {:ok, region_id, next_state} -> {:reply, {:ok, region_id}, mark_activity(next_state)}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -1436,12 +1673,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
             {:reply, {:error, :missing_field_source_key}, state}
 
           region_id ->
+            # field_regions 非空已保护此 chunk 不被空闲驱逐；这里沿用既有返回。
             ensure_stable_field_region(state, attrs, region_id)
         end
 
       source_key ->
         {result, next_state} = ensure_field_source_region_in_state(state, attrs, source_key)
-        {:reply, result, next_state}
+        {:reply, result, mark_activity(next_state)}
     end
   end
 
@@ -1581,12 +1819,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  # Phase 5.E:scene low-frequency simulation tick。每个 chunk 进程在 init
-  # schedule 一次 100ms 计时器；handle 完成后无条件 schedule 下一次（不论本
-  # tick 是否实际跑 simulator）。
+  # Phase 5.E + 阶段2.4：按需 simulation tick。本 tick 触发说明上一次 arm 的
+  # timer 到点了——先清 tick_armed?（in-flight timer 已消费），跑一次 tick，
+  # 再 **按需** 重新 arm：只有跑完后仍 `(有 simulator 且 dirty)` 时才排下一个。
+  # 一旦 dirty 清空（execute_simulation_tick 会清 dirty_bounds），就回到零 timer
+  # 空闲态，不再 100ms 空转。
   def handle_info(:simulation_tick, state) do
-    next_state = run_simulation_tick(state)
-    schedule_simulation_tick()
+    next_state =
+      %{state | tick_armed?: false}
+      |> run_simulation_tick()
+      |> maybe_arm_simulation_tick()
+
     {:noreply, next_state}
   end
 
@@ -1595,9 +1838,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 该事务还没进入 commit 的 durable 等待）时，主动作废孤儿 fence：删 DB 行 +
   # 清 pending_fence + 报 observe。这是 coordinator/driver 整体死亡的兜底；
   # 主路径仍是 World reaper 显式 abort。
+  #
+  # 阶段2.4：复用这个低频节拍承载 lease 心跳 + 空闲驱逐静默检查。先作废过期
+  # fence（避免 fence 把空闲 chunk 钉住不让驱逐），再判断是否进入可驱逐态并向
+  # facade 请求驱逐。两件事都很廉价（空闲态几乎是几次 map_size + 时间比较）。
   def handle_info(:check_pending_fence_ttl, state) do
-    next_state = maybe_void_expired_fence(state)
-    schedule_fence_ttl_check()
+    next_state =
+      state
+      |> maybe_void_expired_fence()
+      |> maybe_request_eviction()
+      |> schedule_fence_ttl_check()
+
     {:noreply, next_state}
   end
 
@@ -1674,23 +1925,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
       # 阶段3.1：未授权 / degraded 的 chunk 不模拟（degraded 持空 storage，
       # 模拟会把错误的初值往订阅者推）。
       state.mode != :authorized ->
-        emit_tick_skipped(state, simulation_tick, {:not_authorized, state.mode})
-        state
+        record_tick_skip(state, simulation_tick, {:not_authorized, state.mode})
 
       lease_stale?(state.lease) ->
-        emit_tick_skipped(state, simulation_tick, :lease_stale)
-        state
+        record_tick_skip(state, simulation_tick, :lease_stale)
 
       not SimulationTick.any_simulator?(simulation_tick) ->
-        emit_tick_skipped(state, simulation_tick, :no_simulators)
-        state
+        record_tick_skip(state, simulation_tick, :no_simulators)
 
       DirtyMacroBounds.empty?(state.storage.dirty_bounds) ->
-        emit_tick_skipped(state, simulation_tick, :no_dirty)
-        state
+        record_tick_skip(state, simulation_tick, :no_dirty)
 
       true ->
-        execute_simulation_tick(state, simulation_tick)
+        # 实际执行 tick —— 重置 skip 计数（连续 skip 段结束）。
+        state
+        |> execute_simulation_tick(simulation_tick)
+        |> Map.put(:tick_skip_count, 0)
     end
   end
 
@@ -1776,15 +2026,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
     %{state | storage: next_storage, simulation_tick: next_sim}
   end
 
-  defp emit_tick_skipped(state, simulation_tick, reason) do
-    CliObserve.emit("voxel_simulation_tick_skipped", fn ->
-      %{
-        logical_scene_id: state.logical_scene_id,
-        chunk_coord: state.chunk_coord,
-        tick_seq: simulation_tick.tick_seq,
-        reason: reason
-      }
-    end)
+  # 阶段2.4：tick_skipped 采样降级。按需 tick 落地后，skip 基本只在 arm→fire
+  # 之间状态翻转（如刚 degraded / lease 刚过期）的边缘出现，但仍保留兜底计数。
+  # 只在每第 N 次 skip 发一条聚合 observe（含累计 skip 计数），避免空转刷日志。
+  defp record_tick_skip(state, simulation_tick, reason) do
+    skip_count = state.tick_skip_count + 1
+
+    if rem(skip_count, @tick_skip_sample_n) == 1 do
+      CliObserve.emit("voxel_simulation_tick_skipped", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          tick_seq: simulation_tick.tick_seq,
+          reason: reason,
+          skip_count: skip_count,
+          sampled_every: @tick_skip_sample_n
+        }
+      end)
+    end
+
+    %{state | tick_skip_count: skip_count}
   end
 
   defp lease_stale?(nil), do: true
@@ -1819,11 +2080,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
       # Phase 4 (D6):rebuild ChunkObjectRef[] from layer truth so
       # single-intent flows (apply_intent/2 direct path) keep object
       # provenance摘要 in sync.
+      #
+      # 阶段2.5(voxel-storage-6):单格改动用**增量** refresh —— 只重算
+      # `dirty_bounds` 圈定的 dirty macro 的 cell.object_refs(单 intent = 1 个
+      # macro),不再每次全量重扫 4096 header。`build_intent_storage` 经 Storage
+      # 写 API 已 mark dirty,dirty 集覆盖本次唯一变更,与全量 refresh 等价。
       next_storage =
-        if changed?, do: Storage.refresh_chunk_object_refs(raw_storage), else: raw_storage
+        if changed?,
+          do: Storage.refresh_chunk_object_refs_incremental(raw_storage),
+          else: raw_storage
 
-      snapshot_payload = encode_snapshot_payload(next_storage, intent.request_id)
-      persist_payload = encode_snapshot_payload(next_storage, 0)
+      # 阶段2.5:同一 storage 只全量 encode 一次,request_id 头字节拼接出 reply
+      # 与 persist 两份载荷(逐字节等价于原双 encode)。
+      {snapshot_payload, persist_payload} =
+        encode_snapshot_payloads_dual(next_storage, intent.request_id)
 
       if changed? do
         case persist_snapshot(
@@ -1944,11 +2214,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
          {:ok, raw_storage, changed_count, skipped_count} <-
            build_intents_storage(state.storage, intents) do
       # Phase 4 (D6):after every apply rebuild per-cell ObjectCoverRef[] and
-      # chunk-level ChunkObjectRef[] from the new MicroLayer truth. The
-      # refresh is idempotent and cheap (4096 macro headers, sparse refined
-      # cells), and keeps owner provenance摘要 in sync without touching
-      # the hot apply path semantics.
-      next_storage = Storage.refresh_chunk_object_refs(raw_storage)
+      # chunk-level ChunkObjectRef[] from the new MicroLayer truth.
+      #
+      # 阶段2.5(voxel-storage-6):改用**增量** refresh —— 只重算 dirty AABB 内
+      # 的 refined cell.object_refs(prefab batch 落在有界 macro 区间),再整体重
+      # 聚合 chunk-level refs。`build_intents_storage` 经 Storage 写 API 已把每个
+      # 触碰 macro mark 进 dirty_bounds,dirty 集覆盖全部变更,与全量 refresh 等价。
+      next_storage = Storage.refresh_chunk_object_refs_incremental(raw_storage)
       request_id = intents |> List.first() |> Map.fetch!(:request_id)
       return_snapshot_payload? = return_snapshot_payload?(intents)
 
@@ -2392,7 +2664,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
     state = finalize_committed_noop(state, transaction_id)
     # 记录已 durable 提交,供后续 commit 重投递做幂等 durable-ack(B2 跨侧幂等)。
     state = record_durable_commit(state, transaction_id, ack.commit_version)
-    state = maybe_schedule_auto_circuit_refresh(state, reply.changed?)
+
+    # 阶段2.4：durable swap 后热 storage 可能带新 dirty —— 刷活动 + 按需 arm。
+    state =
+      state
+      |> maybe_schedule_auto_circuit_refresh(reply.changed?)
+      |> post_write_lifecycle()
 
     emit_transaction_event(state, transaction_id, "voxel_chunk_transaction_committed", %{
       chunk_version: state.storage.chunk_version,
@@ -2442,12 +2719,131 @@ defmodule SceneServer.Voxel.ChunkProcess do
     case state.pending_fence do
       %{transaction_id: ^transaction_id} ->
         delete_persisted_fence(state, transaction_id, :abort)
-        {true, %{state | pending_fence: nil}}
+        # abort 释放 fence 后 chunk 可能立即变空闲；abort 本身是 World 触达，
+        # 算活动，刷新静默窗口避免“刚 abort 就被同一节拍误驱”。
+        {true, mark_activity(%{state | pending_fence: nil})}
 
       _other ->
         {false, state}
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # 阶段2.4：空闲驱逐状态机
+  # ---------------------------------------------------------------------------
+
+  # 是否满足“可被空闲驱逐”的全部前置条件。这是 chunk 侧的唯一真相判定，
+  # 同时被 maybe_request_eviction（请求侧）与 confirm_evict（facade 复核侧）
+  # 复用，保证两侧用同一套条件，避免请求/复核口径漂移。
+  #
+  # 驱逐前置（全部满足才算空闲）：
+  #   1. 无订阅者（subscribers 空）——还有人看就不能回收；
+  #   2. 无 field region（field_regions 空）——本地场仍在跑就不能回收；
+  #   3. 无 pending fence（未持有事务栅栏）——事务进行中不能回收；
+  #   4. 无 in-flight commit durable-ack（pending_commit_acks 空）——commit
+  #      还在等持久化确认不能回收；
+  #   5. 无在途异步 persist（async_persists 空）——避免把正在落库的状态拖走；
+  #   6. 非在跑模拟（not simulation_active?）——有 simulator 且 dirty（tick 已
+  #      arm，正持续 tick）属于“活跃 chunk”，不被误驱；
+  #   7. lease 失效或未持有（lease_stale?）——仍持有效 lease 说明 World 认为
+  #      该 coord 归本节点权威，热着更划算，不主动回收；
+  #   8. 静默窗口已过（距 last_activity_ms 超过 idle_evict_silence_ms）。
+  #
+  # 注意：degraded / unauthorized 态天然满足 1-6（无订阅/无写/不模拟），且
+  # lease 失效或未持有，静默后也会被回收——这正是我们想要的（坏 coord 不空占
+  # 进程）。
+  defp idle_evict_candidate?(state) do
+    map_size(state.subscribers) == 0 and
+      map_size(state.field_regions) == 0 and
+      is_nil(state.pending_fence) and
+      map_size(state.pending_commit_acks) == 0 and
+      map_size(state.async_persists) == 0 and
+      not simulation_active?(state) and
+      lease_stale?(state.lease) and
+      now_ms() - state.last_activity_ms >= state.idle_evict_silence_ms
+  end
+
+  # 是否正在跑模拟：有 in-flight tick（tick_armed?）或仍 (有 simulator 且
+  # dirty)。dirty 清空且 tick 停 arm 后回到“可被回收”态——这正是按需 tick 的
+  # 收敛点。
+  defp simulation_active?(state) do
+    state.tick_armed? or simulation_due?(state)
+  end
+
+  # 生命周期节拍里判断是否请求驱逐。满足空闲条件且尚未请求过 → cast
+  # {:request_evict, key, self()} 给 facade，由 facade 单点串行复核 + 退场。
+  # 进程**不自停**：退场所有权归 facade（DynamicSupervisor.terminate_child +
+  # 删注册项），避免与监督树/注册表竞争。
+  defp maybe_request_eviction(%{evict_requested?: true} = state), do: state
+
+  defp maybe_request_eviction(state) do
+    if idle_evict_candidate?(state) do
+      request_eviction_from_directory(state)
+
+      CliObserve.emit("voxel_chunk_evict_requested", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          chunk_version: state.storage.chunk_version,
+          mode: state.mode,
+          silence_ms: now_ms() - state.last_activity_ms
+        }
+      end)
+
+      %{state | evict_requested?: true}
+    else
+      state
+    end
+  end
+
+  defp request_eviction_from_directory(state) do
+    key = {state.logical_scene_id, state.chunk_coord}
+    # facade 可能正在重启（崩溃窗口）；cast 到死名/死 pid 会抛 —— 吞掉，下一个
+    # 生命周期节拍会重试（evict_requested? 仍为 false，因为本次未置位）。
+    try do
+      GenServer.cast(state.chunk_directory, {:request_evict, key, self()})
+    catch
+      _kind, _err -> :ok
+    end
+  end
+
+  # 驱逐前持久化：尽力把当前 storage 落库，确保驱逐不丢热状态。返回：
+  #
+  #   * `{:ok, :persisted}`       —— 成功落库（token 有效）。
+  #   * `{:ok, :no_lease}`        —— 无 lease（unauthorized / 从未授权）：没有
+  #     可写 token，也没有需要落库的权威增量，直接放行。
+  #   * `{:ok, :authority_lapsed}` —— lease 已失去权威（token 过期 / 区域 token
+  #     不在）。这是 stale-lease chunk 被驱逐的正常路径：**权威写路径
+  #     （apply_intent/commit）是 durable-on-reply**，所以最后一次有效写早已落库；
+  #     此刻热状态相对 DB 没有未落库的**权威**增量（put_solid_block 之类的非
+  #     权威 dev/test 直写不算）。授权已交回 World，放行驱逐。
+  #   * `{:error, reason}`        —— 其它失败（DB 不可达等瞬时故障）→ 取消驱逐，
+  #     下一轮再试，绝不在瞬时故障下丢状态。
+  defp persist_before_evict(%{lease: nil}), do: {:ok, :no_lease}
+
+  defp persist_before_evict(state) do
+    payload = encode_snapshot_payload(state.storage, 0)
+
+    case persist_snapshot(state.lease, state.chunk_coord, state.storage, payload) do
+      {:ok, _result} -> {:ok, :persisted}
+      :ok -> {:ok, :persisted}
+      {:error, reason} -> classify_evict_persist_error(reason)
+      other -> {:error, {:unexpected_persist_result, other}}
+    end
+  rescue
+    exception -> {:error, {:persist_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:persist_exit, reason}}
+  end
+
+  # 权威已失效（lease 过期 / 区域 token 不在）→ 视为 authority_lapsed，放行驱逐
+  # （最后一次权威写早已 durable）。其余视为瞬时失败 → 取消驱逐重试。
+  defp classify_evict_persist_error(reason)
+       when reason in [:lease_expired, :unknown_region_token, :missing_lease, :stale_token] do
+    {:ok, :authority_lapsed}
+  end
+
+  defp classify_evict_persist_error(reason), do: {:error, reason}
 
   # 阶段4 (2.2)：TTL 兜底——检查并作废过期 prepared fence。
   defp maybe_void_expired_fence(%{pending_fence: nil} = state), do: state
@@ -3067,21 +3463,25 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  defp macro_header_at_fast(%Storage{macro_headers: headers}, macro_index)
+  # 阶段2.5:热路径随机读统一经 Storage accel(:array / map)做 O(1) 访问。
+  # `Storage.fetch_macro_header/2` / `fetch_refined_cell/2` 在 accel 已建时是 O(1),
+  # 未建时回退 list Enum.at(O(n))——所以这里要求 storage 已 ensure_accel(apply/
+  # commit 路径已建,见 build_intent_storage / commit candidate)。
+  defp macro_header_at_fast(%Storage{} = storage, macro_index)
        when is_integer(macro_index) do
-    Enum.at(headers, macro_index)
+    Storage.fetch_macro_header(storage, macro_index)
   end
 
   defp macro_header_at_fast(storage, macro_index) do
     Storage.macro_header_at(storage, macro_index)
   end
 
-  defp refined_cell_at_fast(%Storage{refined_cells: refined_cells} = storage, macro_index) do
+  defp refined_cell_at_fast(%Storage{} = storage, macro_index) do
     refined_mode = MacroCellHeader.cell_mode_refined()
 
     case macro_header_at_fast(storage, macro_index) do
       %{mode: ^refined_mode, payload_index: payload_index} ->
-        Enum.at(refined_cells, payload_index)
+        Storage.fetch_refined_cell(storage, payload_index)
 
       _ ->
         nil
@@ -3625,11 +4025,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp collect_part_target_slots(storage, object_id, part_id) do
+    # 阶段2.5:内层 payload→cell 查找经 accel map O(1)(替代旧 O(n) Enum.at)。
+    # 外层仍需单趟扫 headers 定位含该 object/part 的 refined macro。
+    storage = Storage.ensure_accel(storage)
+
     storage.macro_headers
     |> Enum.with_index()
     |> Enum.flat_map(fn {header, macro_idx} ->
       if header.mode == MacroCellHeader.cell_mode_refined() do
-        cell = Enum.at(storage.refined_cells, header.payload_index)
+        cell = Storage.fetch_refined_cell(storage, header.payload_index)
 
         cell.layers
         |> Enum.filter(fn layer ->
@@ -5380,6 +5784,28 @@ defmodule SceneServer.Voxel.ChunkProcess do
     Codec.encode_chunk_snapshot_payload(%{request_id: request_id, storage: storage})
   end
 
+  # 阶段2.5(voxel-storage-6):单意图热路径原本对**同一 storage** 全量 encode
+  # 两次(reply payload request_id=intent.request_id;persist payload
+  # request_id=0)——body(sections + chunk_hash,占载荷绝大部分)完全相同,只有
+  # 头 8 字节 request_id 不同。这里只 encode 一次,再纯字节拼接 request_id 头,
+  # 得到两份**逐字节**与原双 encode 一致的载荷,把热路径全量 encode 砍半。
+  #
+  # 依据 ChunkSnapshot wire layout(Codec.encode_chunk_snapshot_payload):首字段
+  # 即 `request_id::unsigned-big-integer-size(64)`,故替换前 8 字节零漂移。
+  defp encode_snapshot_payloads_dual(%Storage{} = storage, request_id) do
+    persist_payload = encode_snapshot_payload(storage, 0)
+
+    reply_payload =
+      if request_id == 0 do
+        persist_payload
+      else
+        <<_old_request_id::unsigned-big-integer-size(64), rest::binary>> = persist_payload
+        <<request_id::unsigned-big-integer-size(64), rest::binary>>
+      end
+
+    {reply_payload, persist_payload}
+  end
+
   defp normalize_apply_intent(attrs) when is_map(attrs) do
     intent_attrs = fetch_optional(attrs, [:intent]) || attrs
 
@@ -5591,17 +6017,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
+  # 阶段2.5:碰撞查询不再每次 `List.to_tuple` 重建 O(n) 索引——直接复用 Storage
+  # 维护的 accel(:array headers + map refined),`fetch_macro_header/2` /
+  # `fetch_refined_cell/2` 均 O(1)。`ensure_accel/1` 幂等,storage 已建则零成本。
   defp collision_query_index(%Storage{} = storage) do
     %{
-      macro_headers: List.to_tuple(storage.macro_headers),
-      refined_cells: List.to_tuple(storage.refined_cells),
+      storage: Storage.ensure_accel(storage),
       solid_mode: MacroCellHeader.cell_mode_solid_block(),
       refined_mode: MacroCellHeader.cell_mode_refined()
     }
   end
 
   defp collision_query_hit(index, sample) do
-    header = elem(index.macro_headers, sample.macro_index)
+    header = Storage.fetch_macro_header(index.storage, sample.macro_index)
 
     cond do
       header.mode == index.solid_mode ->
@@ -5617,7 +6045,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp collision_query_micro_slot_occupied?(index, payload_index, micro_slot) do
-    refined_cell = elem(index.refined_cells, payload_index)
+    refined_cell = Storage.fetch_refined_cell(index.storage, payload_index)
     word_idx = div(micro_slot, 64)
     bit_idx = rem(micro_slot, 64)
     word = Enum.at(refined_cell.occupancy_words, word_idx)

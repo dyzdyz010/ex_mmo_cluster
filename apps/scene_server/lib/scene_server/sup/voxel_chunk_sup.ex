@@ -45,6 +45,23 @@ defmodule SceneServer.VoxelChunkSup do
     DynamicSupervisor.start_child(supervisor, {SceneServer.Voxel.ChunkProcess, opts})
   end
 
+  @doc """
+  终止一个 `SceneServer.Voxel.ChunkProcess` 子进程（阶段2.4 空闲驱逐退场）。
+
+  退场所有权归 `ChunkDirectory` facade：facade 复核 chunk 仍空闲并完成
+  persist 后，调用本函数 `DynamicSupervisor.terminate_child/2`。因为
+  `ChunkProcess` 是 `:transient`，被 supervisor 主动终止（`:shutdown`）
+  **不会重启**——这正是驱逐想要的：进程退出 + 注册项由 `Registry` 随
+  `:DOWN` 摘除，下次 `ensure_chunk` 再按需冷启并从持久化 hydrate。
+
+  与崩溃路径的区别：崩溃是异常退出（reason != :normal/:shutdown），
+  `:transient` 会重启并 hydrate；驱逐是 supervisor 计划内终止，不重启。
+  """
+  @spec terminate_chunk(Supervisor.supervisor(), pid()) :: :ok | {:error, :not_found}
+  def terminate_chunk(supervisor \\ __MODULE__, chunk_pid) when is_pid(chunk_pid) do
+    DynamicSupervisor.terminate_child(supervisor, chunk_pid)
+  end
+
   @impl true
   def init(_init_arg) do
     DynamicSupervisor.init(
