@@ -7,7 +7,9 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion, FieldTickWorker}
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.CombustionKernel
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -512,6 +514,70 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert observe_log_text =~ "voxel_field_effect_applied"
     assert observe_log_text =~ "kernel_id: :conduction_path"
     assert observe_log_text =~ "heat_energy_joules:"
+  end
+
+  test "combustion effects are dispatched to chunk truth and leave residue", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               macro_index,
+               NormalBlockData.new(MaterialCatalog.wood_material_id())
+             )
+
+    region =
+      FieldRegion.new(%{
+        region_id: 109,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{
+              profile: %{initial_fuel_mass_kg_per_m3: 1.0, burn_rate_kg_per_m3_second: 1000.0}
+            }
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: macro_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 700.0
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    assert Storage.normal_block_at(storage, macro_index).material_id == MaterialCatalog.charcoal_material_id()
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "voxel_combustion_extinguished"
+    assert observe_log_text =~ "transform_voxel_material"
   end
 
   test "unsupported non-observe effects are explicitly rejected", %{

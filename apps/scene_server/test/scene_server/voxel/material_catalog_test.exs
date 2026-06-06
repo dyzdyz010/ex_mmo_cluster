@@ -30,4 +30,33 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
     assert MaterialCatalog.electric_load_material?(material_id)
     assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
   end
+
+  test "combustion residue materials are append-only and inert or reusable fuel" do
+    assert MaterialCatalog.ash_material_id() == 8
+    assert MaterialCatalog.charcoal_material_id() == 9
+
+    refute MaterialCatalog.combustible_material?(MaterialCatalog.ash_material_id())
+    assert MaterialCatalog.combustible_material?(MaterialCatalog.charcoal_material_id())
+
+    assert MaterialCatalog.default_attribute_value(
+             MaterialCatalog.ash_material_id(),
+             "ignition_temperature",
+             0
+           ) == 327_680_000
+
+    assert MaterialCatalog.default_attribute_value(
+             MaterialCatalog.charcoal_material_id(),
+             "ignition_temperature",
+             0
+           ) > 0
+  end
+
+  test "wood combustion profile burns into charcoal before charcoal burns into ash" do
+    wood_profile = MaterialCatalog.combustion_profile(MaterialCatalog.wood_material_id())
+    charcoal_profile = MaterialCatalog.combustion_profile(MaterialCatalog.charcoal_material_id())
+
+    assert wood_profile.residue == {:material, MaterialCatalog.charcoal_material_id()}
+    assert charcoal_profile.residue == {:material, MaterialCatalog.ash_material_id()}
+    assert wood_profile.ignition_temperature_celsius < charcoal_profile.ignition_temperature_celsius
+  end
 end

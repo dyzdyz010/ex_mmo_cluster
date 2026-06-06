@@ -13,6 +13,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   alias SceneServer.Voxel.Field.TemperatureField
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.CombustionKernel
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -1752,8 +1753,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  radius: 4
                })
 
-      [kernel_spec] = plan.region_attrs.kernels
+      [kernel_spec, combustion_spec] = plan.region_attrs.kernels
       region = FieldRegion.new(Map.put(plan.region_attrs, :region_id, 99))
+
+      assert combustion_spec == %{id: :combustion, module: CombustionKernel, opts: %{}}
 
       assert plan.summary.source.source_mode == :impulse
 

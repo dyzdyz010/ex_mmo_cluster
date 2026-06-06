@@ -19,22 +19,22 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 12 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 19 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 2
-      assert length(snapshot.definitions) == 12
+      assert snapshot.catalog_version == 3
+      assert length(snapshot.definitions) == 19
     end
 
-    test "catalog_version returns 2", %{server: server} do
-      assert AttributeCatalog.catalog_version(server) == 2
+    test "catalog_version returns 3", %{server: server} do
+      assert AttributeCatalog.catalog_version(server) == 3
     end
 
     test "definitions are sorted by id ascending", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == Enum.to_list(1..12)
+      assert ids == Enum.to_list(1..19)
     end
   end
 
@@ -104,6 +104,30 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       end
     end
 
+    test "returns Phase 8 combustion runtime attributes", %{server: server} do
+      expectations = [
+        {13, "fuel_mass", "kg/m³", 0, 0, fixed32(2_000.0), 0x03},
+        {14, "oxygen", "%", fixed32(100.0), 0, fixed32(100.0), 0x03},
+        {15, "combustion_stage", "stage", 0, 0, 4, 0x04},
+        {16, "combustion_progress", "%", 0, 0, fixed32(100.0), 0x03},
+        {17, "smoke_density", "%", 0, 0, fixed32(100.0), 0x03},
+        {18, "carbonization", "%", 0, 0, fixed32(100.0), 0x03},
+        {19, "structural_integrity", "%", fixed32(100.0), 0, fixed32(100.0), 0x03}
+      ]
+
+      for {id, name, unit, default_value, min_value, max_value, value_type} <- expectations do
+        assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, id)
+        assert defn.name == name
+        assert defn.unit == unit
+        assert defn.value_type == value_type
+        assert defn.default_value == default_value
+        assert defn.min_value == min_value
+        assert defn.max_value == max_value
+        assert defn.merge_rule == 0x01
+        assert defn.dynamic == true
+      end
+    end
+
     test "returns {:error, :not_found} for id 999", %{server: server} do
       assert {:error, :not_found} = AttributeCatalog.lookup_by_id(server, 999)
     end
@@ -154,8 +178,8 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       wire = AttributeCatalogSnapshot.encode_for_wire(snapshot)
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 2
-      assert length(decoded.definitions) == 12
+      assert decoded.catalog_version == 3
+      assert length(decoded.definitions) == 19
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)

@@ -6,6 +6,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
+  alias SceneServer.Voxel.Phenomenon.CombustionKernel
   alias SceneServer.Voxel.Types
 
   describe "normalize/1" do
@@ -58,6 +59,11 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                    ambient_loss_per_second: 0.08,
                    cell_size_meters: 1.0
                  }
+               },
+               %{
+                 id: :combustion,
+                 module: CombustionKernel,
+                 opts: %{}
                }
              ]
 

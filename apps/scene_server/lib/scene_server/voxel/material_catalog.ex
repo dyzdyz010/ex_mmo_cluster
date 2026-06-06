@@ -20,6 +20,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @iron_material_id 5
   @power_block_material_id 6
   @electric_load_material_id 7
+  @ash_material_id 8
+  @charcoal_material_id 9
 
   @power_source_defaults %{
     output_mode: :dc,
@@ -105,8 +107,79 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => round(2_700.0 * @fixed32_scale),
       "electric_conductivity" => round(8.0 * @fixed32_scale),
       "dielectric_strength" => 0
+    },
+    @ash_material_id => %{
+      "density" => round(700.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.18 * @fixed32_scale),
+      "specific_heat_capacity" => round(800.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_100.0 * @fixed32_scale),
+      "freezing_point" => round(1_100.0 * @fixed32_scale),
+      "boiling_point" => round(2_200.0 * @fixed32_scale),
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(5.0 * @fixed32_scale)
+    },
+    @charcoal_material_id => %{
+      "density" => round(250.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.08 * @fixed32_scale),
+      "specific_heat_capacity" => round(710.0 * @fixed32_scale),
+      "ignition_temperature" => round(420.0 * @fixed32_scale),
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => round(0.02 * @fixed32_scale),
+      "dielectric_strength" => round(8.0 * @fixed32_scale)
     }
   }
+
+  @combustion_profiles %{
+    @wood_material_id => %{
+      material_name: :wood,
+      ignition_temperature_celsius: 300.0,
+      preheat_margin_celsius: 40.0,
+      max_moisture_kg_per_m3: 180.0,
+      min_oxygen_percent: 8.0,
+      initial_fuel_mass_kg_per_m3: 45.0,
+      burn_rate_kg_per_m3_second: 18.0,
+      smolder_progress_percent: 72.0,
+      smolder_heat_source_celsius: 360.0,
+      heat_source_celsius: 680.0,
+      oxygen_consumption_percent_per_kg: 0.28,
+      smoke_yield_percent_per_kg: 1.1,
+      carbonization_yield_percent_per_kg: 1.6,
+      structural_loss_percent_per_kg: 1.4,
+      residue: {:material, @charcoal_material_id}
+    },
+    @charcoal_material_id => %{
+      material_name: :charcoal,
+      ignition_temperature_celsius: 420.0,
+      preheat_margin_celsius: 60.0,
+      max_moisture_kg_per_m3: 80.0,
+      min_oxygen_percent: 5.0,
+      initial_fuel_mass_kg_per_m3: 18.0,
+      burn_rate_kg_per_m3_second: 12.0,
+      smolder_progress_percent: 60.0,
+      smolder_heat_source_celsius: 460.0,
+      heat_source_celsius: 780.0,
+      oxygen_consumption_percent_per_kg: 0.35,
+      smoke_yield_percent_per_kg: 0.45,
+      carbonization_yield_percent_per_kg: 0.2,
+      structural_loss_percent_per_kg: 2.0,
+      residue: {:material, @ash_material_id}
+    }
+  }
+
+  @doc "Returns the append-only material id for ordinary wood."
+  @spec wood_material_id() :: pos_integer()
+  def wood_material_id, do: @wood_material_id
+
+  @doc "Returns the append-only material id for inert ash left by combustion."
+  @spec ash_material_id() :: pos_integer()
+  def ash_material_id, do: @ash_material_id
+
+  @doc "Returns the append-only material id for charcoal left by oxygen-limited wood combustion."
+  @spec charcoal_material_id() :: pos_integer()
+  def charcoal_material_id, do: @charcoal_material_id
 
   @doc "Returns the append-only material id for the physical electric power block."
   @spec power_source_material_id() :: pos_integer()
@@ -123,6 +196,22 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @doc "Returns true when a material id represents a circuit load/sink."
   @spec electric_load_material?(term()) :: boolean()
   def electric_load_material?(material_id), do: material_id == @electric_load_material_id
+
+  @doc "Returns true when a material has a combustion profile."
+  @spec combustible_material?(term()) :: boolean()
+  def combustible_material?(material_id), do: is_map(combustion_profile(material_id))
+
+  @doc """
+  Returns the static combustion profile for a material id, or `nil` for inert
+  materials. Runtime burn state remains in voxel attributes; only material-level
+  thresholds and outcome policy live here.
+  """
+  @spec combustion_profile(term()) :: map() | nil
+  def combustion_profile(material_id) when is_integer(material_id) do
+    Map.get(@combustion_profiles, material_id)
+  end
+
+  def combustion_profile(_material_id), do: nil
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{

@@ -71,6 +71,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias DataService.Voxel.ChunkPendingTransactionStore
   alias DataService.Voxel.ChunkSnapshotStore
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkOccupancyTable
   alias SceneServer.Voxel.ChunkPersistPool
   alias SceneServer.Voxel.ChunkRegistry
@@ -3794,6 +3795,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :write_voxel_attribute, attrs} ->
         apply_write_voxel_attribute_effect(state, attrs, context)
 
+      {:ok, :transform_voxel_material, attrs} ->
+        apply_transform_voxel_material_effect(state, attrs, context)
+
+      {:ok, :clear_voxel_cell, attrs} ->
+        apply_clear_voxel_cell_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -3834,6 +3841,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp normalize_field_effect_action(:write_voxel_attribute), do: :write_voxel_attribute
   defp normalize_field_effect_action("write_voxel_attribute"), do: :write_voxel_attribute
+  defp normalize_field_effect_action(:transform_voxel_material), do: :transform_voxel_material
+  defp normalize_field_effect_action("transform_voxel_material"), do: :transform_voxel_material
+  defp normalize_field_effect_action(:clear_voxel_cell), do: :clear_voxel_cell
+  defp normalize_field_effect_action("clear_voxel_cell"), do: :clear_voxel_cell
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -3852,12 +3863,117 @@ defmodule SceneServer.Voxel.ChunkProcess do
           apply_target_temperature_attribute_effect(state, attrs, context)
         end
 
-      unsupported ->
+      attribute ->
+        apply_generic_voxel_attribute_effect(state, attrs, context, attribute)
+    end
+  end
+
+  defp apply_generic_voxel_attribute_effect(state, attrs, context, nil) do
+    result = %{
+      status: :rejected,
+      action: :write_voxel_attribute,
+      attribute: :unknown,
+      reason: :missing_field_effect_attribute
+    }
+
+    emit_field_effect_rejected(state, result, context)
+    {result, state}
+  end
+
+  defp apply_generic_voxel_attribute_effect(state, attrs, context, attribute) do
+    case build_voxel_attribute_storage(state.storage, attrs, attribute) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :field_effect_write)
+        end
+
+        result = %{
+          status: :applied,
+          action: :write_voxel_attribute,
+          attribute: summary.attribute,
+          macro_index: summary.macro_index,
+          target_value_raw: summary.target_value_raw,
+          changed?: summary.changed?,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
         result = %{
           status: :rejected,
           action: :write_voxel_attribute,
-          attribute: unsupported || :unknown,
-          reason: :unsupported_field_effect_attribute
+          attribute: attribute || :unknown,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_transform_voxel_material_effect(state, attrs, context) do
+    case build_transform_voxel_material_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :field_effect_write)
+        end
+
+        result = %{
+          status: :applied,
+          action: :transform_voxel_material,
+          macro_index: summary.macro_index,
+          previous_material_id: summary.previous_material_id,
+          material_id: summary.material_id,
+          changed?: summary.changed?,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :transform_voxel_material,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_clear_voxel_cell_effect(state, attrs, context) do
+    case build_clear_voxel_cell_storage(state.storage, attrs) do
+      {:ok, next_storage, summary} ->
+        next_state = %{state | storage: next_storage}
+
+        if summary.changed? do
+          push_snapshot_fallbacks(next_state, :field_effect_write)
+        end
+
+        result = %{
+          status: :applied,
+          action: :clear_voxel_cell,
+          macro_index: summary.macro_index,
+          changed?: summary.changed?,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :clear_voxel_cell,
+          reason: reason
         }
 
         emit_field_effect_rejected(state, result, context)
@@ -3937,9 +4053,275 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp build_voxel_attribute_storage(%Storage{} = storage, attrs, attribute) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_effect_macro(attrs),
+         {:ok, attribute_name, defn} <- normalize_effect_attribute_definition(attribute),
+         {:ok, raw_value} <- normalize_field_effect_attribute_value(attrs, defn) do
+      cond do
+        not solid_cell?(storage, macro_index) ->
+          {:error, :attribute_target_not_solid}
+
+        true ->
+          previous_raw = Storage.effective_attribute_at(storage, macro_index, attribute_name)
+
+          if previous_raw == raw_value do
+            {:ok, storage,
+             %{
+               storage: storage,
+               changed?: false,
+               macro_index: macro_index,
+               attribute: attribute_name,
+               previous_value_raw: previous_raw,
+               target_value_raw: raw_value,
+               chunk_version: storage.chunk_version
+             }}
+          else
+            next_version = storage.chunk_version + 1
+
+            opts = [
+              cell_version: next_version,
+              cell_hash:
+                Hash.digest32(
+                  inspect({:voxel_attribute, macro_index, attribute_name, raw_value, next_version})
+                )
+            ]
+
+            next_storage =
+              storage
+              |> Storage.put_attribute_for_cell(macro_index, attribute_name, raw_value, opts)
+              |> bump_chunk_version()
+
+            {:ok, next_storage,
+             %{
+               storage: next_storage,
+               changed?: true,
+               macro_index: macro_index,
+               attribute: attribute_name,
+               previous_value_raw: previous_raw,
+               target_value_raw: raw_value,
+               chunk_version: next_storage.chunk_version
+             }}
+          end
+      end
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_voxel_attribute}
+  end
+
+  defp build_transform_voxel_material_storage(%Storage{} = storage, attrs) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_effect_macro(attrs),
+         {:ok, material_id} <- normalize_effect_material_id(attrs) do
+      cond do
+        not solid_cell?(storage, macro_index) ->
+          {:error, :material_target_not_solid}
+
+        true ->
+          previous_block = Storage.normal_block_at(storage, macro_index)
+
+          reset_attributes? =
+            fetch_optional(attrs, [:reset_attributes?, :reset_attributes, :clear_attributes]) !=
+              false
+
+          if previous_block.material_id == material_id and not reset_attributes? do
+            {:ok, storage,
+             %{
+               storage: storage,
+               changed?: false,
+               macro_index: macro_index,
+               previous_material_id: previous_block.material_id,
+               material_id: material_id,
+               chunk_version: storage.chunk_version
+             }}
+          else
+            next_version = storage.chunk_version + 1
+
+            updated_block =
+              if reset_attributes? do
+                NormalBlockData.new(material_id,
+                  state_flags: previous_block.state_flags,
+                  health: previous_block.health,
+                  tag_set_ref: previous_block.tag_set_ref
+                )
+              else
+                %{previous_block | material_id: material_id}
+              end
+
+            opts = [
+              cell_version: next_version,
+              cell_hash:
+                Hash.digest32(
+                  inspect(
+                    {:transform_voxel_material, macro_index, previous_block.material_id,
+                     material_id, reset_attributes?, next_version}
+                  )
+                )
+            ]
+
+            next_storage =
+              storage
+              |> Storage.put_solid_block(macro_index, updated_block, opts)
+              |> bump_chunk_version()
+
+            {:ok, next_storage,
+             %{
+               storage: next_storage,
+               changed?: true,
+               macro_index: macro_index,
+               previous_material_id: previous_block.material_id,
+               material_id: material_id,
+               chunk_version: next_storage.chunk_version
+             }}
+          end
+      end
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_material_transform}
+  end
+
+  defp build_clear_voxel_cell_storage(%Storage{} = storage, attrs) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_effect_macro(attrs) do
+      if empty_cell?(storage, macro_index) do
+        {:ok, storage,
+         %{
+           storage: storage,
+           changed?: false,
+           macro_index: macro_index,
+           chunk_version: storage.chunk_version
+         }}
+      else
+        next_version = storage.chunk_version + 1
+
+        opts = [
+          cell_version: next_version,
+          cell_hash: Hash.digest32(inspect({:clear_voxel_cell, macro_index, next_version}))
+        ]
+
+        next_storage =
+          storage
+          |> Storage.clear_macro_cell(macro_index, opts)
+          |> bump_chunk_version()
+
+        {:ok, next_storage,
+         %{
+           storage: next_storage,
+           changed?: true,
+           macro_index: macro_index,
+           chunk_version: next_storage.chunk_version
+         }}
+      end
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_clear_voxel_cell}
+  end
+
   defp normalize_field_effect_attribute(:temperature), do: :temperature
   defp normalize_field_effect_attribute("temperature"), do: :temperature
+  defp normalize_field_effect_attribute(attribute) when is_atom(attribute), do: Atom.to_string(attribute)
   defp normalize_field_effect_attribute(attribute), do: attribute
+
+  defp normalize_effect_macro(attrs) do
+    case fetch_optional(attrs, [:macro, :macro_index, :macro_coord, :local_macro]) do
+      nil -> {:error, :missing_field_effect_macro}
+      value -> safe_macro_index(value)
+    end
+  end
+
+  defp normalize_effect_attribute_definition(attribute) when is_binary(attribute) do
+    case AttributeCatalog.lookup_by_name(attribute) do
+      {:ok, _id, defn} -> {:ok, attribute, defn}
+      {:error, :not_found} -> {:error, :unknown_voxel_attribute}
+    end
+  end
+
+  defp normalize_effect_attribute_definition(attribute) when is_atom(attribute) do
+    attribute
+    |> Atom.to_string()
+    |> normalize_effect_attribute_definition()
+  end
+
+  defp normalize_effect_attribute_definition(_attribute), do: {:error, :invalid_voxel_attribute}
+
+  defp normalize_field_effect_attribute_value(attrs, defn) do
+    value =
+      fetch_optional(attrs, [:raw_value, :value_raw, :raw]) ||
+        fetch_optional(attrs, [:target_value, :value])
+
+    cond do
+      is_nil(value) ->
+        {:error, :missing_attribute_value}
+
+      fetch_optional(attrs, [:raw_value, :value_raw, :raw]) != nil ->
+        normalize_raw_attribute_value(value, defn)
+
+      defn.value_type == 0x03 ->
+        normalize_fixed32_attribute_value(value, defn)
+
+      true ->
+        normalize_raw_attribute_value(value, defn)
+    end
+  end
+
+  defp normalize_fixed32_attribute_value(value, defn) when is_integer(value) do
+    normalize_raw_attribute_value(round(value * @fixed32_scale), defn)
+  end
+
+  defp normalize_fixed32_attribute_value(value, defn) when is_float(value) do
+    normalize_raw_attribute_value(round(value * @fixed32_scale), defn)
+  end
+
+  defp normalize_fixed32_attribute_value(value, defn) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> normalize_fixed32_attribute_value(parsed, defn)
+      _other -> {:error, :invalid_attribute_value}
+    end
+  end
+
+  defp normalize_fixed32_attribute_value(_value, _defn), do: {:error, :invalid_attribute_value}
+
+  defp normalize_raw_attribute_value(value, defn) when is_integer(value) do
+    if value >= defn.min_value and value <= defn.max_value do
+      {:ok, value}
+    else
+      {:error, :attribute_value_out_of_range}
+    end
+  end
+
+  defp normalize_raw_attribute_value(value, defn) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> normalize_raw_attribute_value(parsed, defn)
+      _other -> {:error, :invalid_attribute_value}
+    end
+  end
+
+  defp normalize_raw_attribute_value(:idle, %{name: "combustion_stage"} = defn),
+    do: normalize_raw_attribute_value(0, defn)
+
+  defp normalize_raw_attribute_value(:preheat, %{name: "combustion_stage"} = defn),
+    do: normalize_raw_attribute_value(1, defn)
+
+  defp normalize_raw_attribute_value(:burning, %{name: "combustion_stage"} = defn),
+    do: normalize_raw_attribute_value(2, defn)
+
+  defp normalize_raw_attribute_value(:smoldering, %{name: "combustion_stage"} = defn),
+    do: normalize_raw_attribute_value(3, defn)
+
+  defp normalize_raw_attribute_value(:extinguished, %{name: "combustion_stage"} = defn),
+    do: normalize_raw_attribute_value(4, defn)
+
+  defp normalize_raw_attribute_value(_value, _defn), do: {:error, :invalid_attribute_value}
+
+  defp normalize_effect_material_id(attrs) do
+    case fetch_optional(attrs, [:material_id, :target_material_id]) do
+      value when is_integer(value) and value > 0 and value <= 0xFFFF -> {:ok, value}
+      _other -> {:error, :invalid_material_id}
+    end
+  end
 
   defp maybe_put_effect_alias(attrs, key, aliases) do
     if Map.has_key?(attrs, key) do

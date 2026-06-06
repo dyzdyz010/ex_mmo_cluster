@@ -2,7 +2,7 @@
 #
 # 设计草案：docs/plans/2026-05-13-phase5c-first-batch-catalog-seed.md
 # 用户 2026-05-13 approve C-1..C-8 全部推荐方案：
-#   C-1 顺序数字 id (1..12)
+#   C-1 顺序数字 id (1..19)
 #   C-2 fixed32 Q16.16 按表范围
 #   C-3 default 绝对值（物理量直观）
 #   C-4 .exs Elixir 字面量 seed
@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 2,
+  catalog_version: 3,
   definitions: [
     %{
       id: 1,
@@ -180,6 +180,88 @@
       max_value: 6_553_600,
       merge_rule: :material_default,
       dynamic: false
+    },
+    %{
+      id: 13,
+      name: "fuel_mass",
+      unit: "kg/m³",
+      value_type: :fixed32,
+      # 0.0 kg/m³
+      default_value: 0,
+      min_value: 0,
+      # 2000.0 kg/m³
+      max_value: 131_072_000,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 14,
+      name: "oxygen",
+      unit: "%",
+      value_type: :fixed32,
+      # 100.0%
+      default_value: 6_553_600,
+      min_value: 0,
+      # 100.0%
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 15,
+      name: "combustion_stage",
+      unit: "stage",
+      value_type: :enum8,
+      # 0 idle, 1 preheat, 2 burning, 3 smoldering, 4 extinguished
+      default_value: 0,
+      min_value: 0,
+      max_value: 4,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 16,
+      name: "combustion_progress",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 17,
+      name: "smoke_density",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 18,
+      name: "carbonization",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 19,
+      name: "structural_integrity",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 6_553_600,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
     }
   ]
 }

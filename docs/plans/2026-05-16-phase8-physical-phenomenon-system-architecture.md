@@ -353,6 +353,16 @@ thermal_expansion_coefficient
 - 燃料耗尽后 material_state 进入 charred / ash；
 - observe 可见 ignition / burning / extinguished。
 
+2026-06-06 首片进展：
+
+- 已落 `SceneServer.Voxel.Phenomenon` 边界：燃烧规则读取 voxel truth、temperature
+  field 和 `MaterialCatalog`，只输出结构化 effect；
+- attribute catalog v3 已追加 `fuel_mass`、`oxygen`、`combustion_stage`、
+  `combustion_progress`、`smoke_density`、`carbonization`、`structural_integrity`；
+- material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
+- 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
+- `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
+
 ### Phase 8.C：Freezing / phase change minimum
 
 目标：用水分和低温证明降温链路不是 heat-only。

@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
+  alias SceneServer.Voxel.Phenomenon.CombustionKernel
 
   @type t :: %__MODULE__{
           source_id: term(),
@@ -147,7 +148,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         }),
       target_value: target_value,
       source_value: source_value,
-      kernel_specs: fetch_any(attrs, [:kernel_specs], [temperature_kernel_spec()]),
+      kernel_specs: fetch_any(attrs, [:kernel_specs], temperature_kernel_specs()),
       decay_policy:
         fetch_any(attrs, [:decay_policy], %{
           field_radius: radius,
@@ -283,6 +284,17 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         cell_size_meters: @temperature_cell_size_meters
       }
     }
+  end
+
+  defp temperature_kernel_specs do
+    [
+      temperature_kernel_spec(),
+      %{
+        id: :combustion,
+        module: CombustionKernel,
+        opts: %{}
+      }
+    ]
   end
 
   defp conduction_kernel_spec(target_index, max_frontier, %PowerSource{} = power_source) do
