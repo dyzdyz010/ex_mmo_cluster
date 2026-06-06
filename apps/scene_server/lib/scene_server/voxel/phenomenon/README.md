@@ -19,6 +19,11 @@ charcoal, or a cell clear effect for materials that burn away completely. The
 initial material set intentionally covers three outcomes: wood becomes
 charcoal, cloth becomes ash, and dry grass burns away.
 
+Burning also reduces structural integrity. When a voxel crosses its material
+failure threshold, combustion emits a `voxel_structural_collapse_candidate`
+observe event. The event is only a bridge for later object/collapse systems;
+the phenomenon rule still leaves truth writes to `ChunkProcess`.
+
 Combustion heat is fed back into the existing temperature field as a persistent
 heat source. Heat propagation remains owned by the field runtime; combustion
 only decides whether a heated material changes state and which structured

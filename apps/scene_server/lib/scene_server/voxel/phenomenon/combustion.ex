@@ -269,6 +269,29 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     fuel_after = max(fuel_before - burned_fuel, 0.0)
     progress_percent = burn_progress_percent(fuel_after, initial_fuel)
 
+    oxygen_after =
+      clamp_percent(
+        oxygen_before -
+          burned_fuel * get_opt(profile, :oxygen_consumption_percent_per_kg, 0.2)
+      )
+
+    smoke_after =
+      clamp_percent(
+        smoke_before + burned_fuel * get_opt(profile, :smoke_yield_percent_per_kg, 0.6)
+      )
+
+    carbon_after =
+      clamp_percent(
+        carbon_before +
+          burned_fuel * get_opt(profile, :carbonization_yield_percent_per_kg, 1.0)
+      )
+
+    integrity_after =
+      clamp_percent(
+        integrity_before -
+          burned_fuel * get_opt(profile, :structural_loss_percent_per_kg, 1.0)
+      )
+
     next_stage =
       cond do
         fuel_after <= 0.001 or progress_percent >= 99.9 -> @stage_extinguished
@@ -282,12 +305,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         Effect.write_voxel_attribute(
           macro_index,
           :oxygen,
-          fixed32(
-            clamp_percent(
-              oxygen_before -
-                burned_fuel * get_opt(profile, :oxygen_consumption_percent_per_kg, 0.2)
-            )
-          )
+          fixed32(oxygen_after)
         ),
         Effect.write_voxel_attribute(macro_index, :combustion_stage, next_stage),
         Effect.write_voxel_attribute(
@@ -298,31 +316,17 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         Effect.write_voxel_attribute(
           macro_index,
           :smoke_density,
-          fixed32(
-            clamp_percent(
-              smoke_before + burned_fuel * get_opt(profile, :smoke_yield_percent_per_kg, 0.6)
-            )
-          )
+          fixed32(smoke_after)
         ),
         Effect.write_voxel_attribute(
           macro_index,
           :carbonization,
-          fixed32(
-            clamp_percent(
-              carbon_before +
-                burned_fuel * get_opt(profile, :carbonization_yield_percent_per_kg, 1.0)
-            )
-          )
+          fixed32(carbon_after)
         ),
         Effect.write_voxel_attribute(
           macro_index,
           :structural_integrity,
-          fixed32(
-            clamp_percent(
-              integrity_before -
-                burned_fuel * get_opt(profile, :structural_loss_percent_per_kg, 1.0)
-            )
-          )
+          fixed32(integrity_after)
         ),
         Effect.emit_observe(observe_event(next_stage, previous_stage), %{
           macro_index: macro_index,
@@ -334,7 +338,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           fuel_after_kg_per_m3: fuel_after,
           progress_percent: progress_percent
         })
-      ] ++ residue_effects(macro_index, profile, next_stage)
+      ] ++
+        structural_failure_effects(
+          macro_index,
+          material_id,
+          integrity_before,
+          integrity_after,
+          profile
+        ) ++ residue_effects(macro_index, profile, next_stage)
 
     %{
       macro_index: macro_index,
@@ -451,6 +462,31 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   end
 
   defp residue_effects(_macro_index, _profile, _stage), do: []
+
+  defp structural_failure_effects(
+         macro_index,
+         material_id,
+         integrity_before,
+         integrity_after,
+         profile
+       ) do
+    threshold = get_opt(profile, :structural_failure_threshold_percent, 15.0)
+
+    if integrity_before > threshold and integrity_after <= threshold do
+      [
+        Effect.emit_observe("voxel_structural_collapse_candidate", %{
+          macro_index: macro_index,
+          material_id: material_id,
+          reason: :combustion_integrity_loss,
+          structural_integrity_before_percent: integrity_before,
+          structural_integrity_after_percent: integrity_after,
+          structural_failure_threshold_percent: threshold
+        })
+      ]
+    else
+      []
+    end
+  end
 
   defp observe_event(@stage_extinguished, _previous_stage), do: "voxel_combustion_extinguished"
 

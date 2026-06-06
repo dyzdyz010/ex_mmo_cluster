@@ -115,6 +115,39 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     refute moisture_raw(effects)
   end
 
+  test "combustion emits a collapse candidate only when integrity crosses the material threshold" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    profile = %{
+      initial_fuel_mass_kg_per_m3: 100.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      structural_loss_percent_per_kg: 80.0,
+      structural_failure_threshold_percent: 50.0
+    }
+
+    assert %{stage: :burning, effects: effects} =
+             Combustion.evaluate(storage, macro_index, 500.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    assert structural_integrity_raw(effects) < fixed32(50.0)
+    assert observe_event?(effects, "voxel_structural_collapse_candidate")
+
+    already_failed_storage =
+      storage
+      |> put_attribute(macro_index, "structural_integrity", 40.0)
+
+    assert %{effects: already_failed_effects} =
+             Combustion.evaluate(already_failed_storage, macro_index, 500.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    refute observe_event?(already_failed_effects, "voxel_structural_collapse_candidate")
+  end
+
   test "top-level tick delta controls fuel consumption" do
     macro_index = Types.macro_index!({0, 0, 0})
     storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
@@ -254,6 +287,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     end)
   end
 
+  defp observe_event?(effects, event) do
+    Enum.any?(effects, fn
+      {:emit_observe, ^event, _fields} -> true
+      _other -> false
+    end)
+  end
+
   defp fuel_mass_raw(effects) do
     Enum.find_value(effects, fn
       {:write_voxel_attribute, %{attribute: :fuel_mass, raw_value: raw_value}} -> raw_value
@@ -265,6 +305,16 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     Enum.find_value(effects, fn
       {:write_voxel_attribute, %{attribute: :moisture, raw_value: raw_value}} -> raw_value
       _other -> nil
+    end)
+  end
+
+  defp structural_integrity_raw(effects) do
+    Enum.find_value(effects, fn
+      {:write_voxel_attribute, %{attribute: :structural_integrity, raw_value: raw_value}} ->
+        raw_value
+
+      _other ->
+        nil
     end)
   end
 

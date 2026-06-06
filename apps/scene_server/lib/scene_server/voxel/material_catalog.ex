@@ -173,6 +173,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       smoke_yield_percent_per_kg: 1.1,
       carbonization_yield_percent_per_kg: 1.6,
       structural_loss_percent_per_kg: 1.4,
+      structural_failure_threshold_percent: 15.0,
       residue: {:material, @charcoal_material_id}
     },
     @charcoal_material_id => %{
@@ -191,6 +192,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       smoke_yield_percent_per_kg: 0.45,
       carbonization_yield_percent_per_kg: 0.2,
       structural_loss_percent_per_kg: 2.0,
+      structural_failure_threshold_percent: 10.0,
       residue: {:material, @ash_material_id}
     },
     @dry_grass_material_id => %{
@@ -209,6 +211,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       smoke_yield_percent_per_kg: 0.8,
       carbonization_yield_percent_per_kg: 0.3,
       structural_loss_percent_per_kg: 1.0,
+      structural_failure_threshold_percent: 5.0,
       residue: :clear
     },
     @cloth_material_id => %{
@@ -227,6 +230,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       smoke_yield_percent_per_kg: 1.4,
       carbonization_yield_percent_per_kg: 0.5,
       structural_loss_percent_per_kg: 1.8,
+      structural_failure_threshold_percent: 10.0,
       residue: {:material, @ash_material_id}
     }
   }

@@ -368,6 +368,9 @@ thermal_expansion_coefficient
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。
+- 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
+  `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
+  坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
 - 当前首片以 voxel truth 中的 `combustion_stage` / `combustion_progress` 等属性承载
   燃烧实例状态；独立 `PhenomenonInstance` 生命周期仍是 Phase 8 后续收口项，不能把
   本片误读为完整现象实例系统已经完成。
