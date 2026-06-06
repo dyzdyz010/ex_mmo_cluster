@@ -78,6 +78,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           opts
           |> get_opt(:profile, nil)
           |> normalize_profile(MaterialCatalog.combustion_profile(block.material_id))
+          |> merge_runtime_profile_opts(opts)
 
         if is_nil(profile) do
           :ignore
@@ -409,6 +410,21 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   defp normalize_profile(profile, nil) when is_map(profile), do: profile
   defp normalize_profile(profile, fallback) when is_map(profile), do: Map.merge(fallback, profile)
   defp normalize_profile(_profile, fallback), do: fallback
+
+  defp merge_runtime_profile_opts(nil, _opts), do: nil
+
+  defp merge_runtime_profile_opts(profile, opts) do
+    Map.merge(profile, runtime_profile_opts(opts))
+  end
+
+  defp runtime_profile_opts(opts) do
+    opts
+    |> get_opt(:dt_seconds, nil)
+    |> case do
+      value when is_number(value) and value > 0.0 -> %{dt_seconds: value}
+      _other -> %{}
+    end
+  end
 
   defp opts_map(opts) when is_map(opts), do: opts
   defp opts_map(opts) when is_list(opts), do: Map.new(opts)

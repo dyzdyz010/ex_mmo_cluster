@@ -362,6 +362,9 @@ thermal_expansion_coefficient
 - material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
 - 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
+- 当前首片以 voxel truth 中的 `combustion_stage` / `combustion_progress` 等属性承载
+  燃烧实例状态；独立 `PhenomenonInstance` 生命周期仍是 Phase 8 后续收口项，不能把
+  本片误读为完整现象实例系统已经完成。
 
 ### Phase 8.C：Freezing / phase change minimum
 
