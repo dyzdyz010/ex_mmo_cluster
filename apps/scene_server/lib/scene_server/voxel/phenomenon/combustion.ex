@@ -62,7 +62,9 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   """
   @spec evaluate(Storage.t() | nil, non_neg_integer(), number(), map() | keyword()) ::
           result() | :ignore
-  def evaluate(%Storage{} = storage, macro_index, temperature_celsius, opts \\ %{})
+  def evaluate(storage, macro_index, temperature_celsius, opts \\ %{})
+
+  def evaluate(%Storage{} = storage, macro_index, temperature_celsius, opts)
       when is_integer(macro_index) and is_number(temperature_celsius) do
     storage = Storage.ensure_accel(storage)
     opts = opts_map(opts)
@@ -117,7 +119,13 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
       temperature_celsius >= preheat_temperature and
           previous_stage in [@stage_idle, @stage_preheat] ->
-        preheat(macro_index, material_id, temperature_celsius, ignition_temperature, previous_stage)
+        preheat(
+          macro_index,
+          material_id,
+          temperature_celsius,
+          ignition_temperature,
+          previous_stage
+        )
 
       previous_stage in [@stage_burning, @stage_smoldering] ->
         extinguish(macro_index, material_id, :temperature_or_environment_dropped)
@@ -127,7 +135,13 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     end
   end
 
-  defp preheat(macro_index, material_id, temperature_celsius, ignition_temperature, previous_stage) do
+  defp preheat(
+         macro_index,
+         material_id,
+         temperature_celsius,
+         ignition_temperature,
+         previous_stage
+       ) do
     effects =
       if previous_stage == @stage_preheat do
         []
@@ -204,7 +218,11 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           )
         ),
         Effect.write_voxel_attribute(macro_index, :combustion_stage, next_stage),
-        Effect.write_voxel_attribute(macro_index, :combustion_progress, fixed32(progress_percent)),
+        Effect.write_voxel_attribute(
+          macro_index,
+          :combustion_progress,
+          fixed32(progress_percent)
+        ),
         Effect.write_voxel_attribute(
           macro_index,
           :smoke_density,
@@ -280,6 +298,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
   defp burn_severity(temperature_celsius, moisture, oxygen, profile) do
     ignition = get_opt(profile, :ignition_temperature_celsius, 300.0)
+
     heat_factor =
       clamp((temperature_celsius - ignition) / max(ignition * 0.35, 100.0), 0.25, 2.0)
 
@@ -397,11 +416,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
   defp get_opt(map, key, default) when is_map(map) do
     cond do
-      Map.has_key?(map, key) -> Map.fetch!(map, key)
+      Map.has_key?(map, key) ->
+        Map.fetch!(map, key)
+
       is_atom(key) and Map.has_key?(map, Atom.to_string(key)) ->
         Map.fetch!(map, Atom.to_string(key))
 
-      true -> default
+      true ->
+        default
     end
   end
 

@@ -37,7 +37,8 @@ defmodule SceneServer.Voxel.Phenomenon.Effect do
 
   @doc "Builds a cell clear effect for materials that burn away completely."
   @spec clear_voxel_cell(non_neg_integer(), map()) :: t()
-  def clear_voxel_cell(macro_index, attrs \\ %{}) when is_integer(macro_index) and is_map(attrs) do
+  def clear_voxel_cell(macro_index, attrs \\ %{})
+      when is_integer(macro_index) and is_map(attrs) do
     {:clear_voxel_cell, Map.put(attrs, :macro_index, macro_index)}
   end
 

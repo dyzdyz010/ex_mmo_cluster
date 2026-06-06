@@ -42,7 +42,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
     next_region = %{
       region
-      | source_points: non_combustion_source_points(region.source_points) ++ combustion_source_points
+      | source_points:
+          non_combustion_source_points(region.source_points) ++ combustion_source_points
     }
 
     effects = Enum.flat_map(results, & &1.effects)

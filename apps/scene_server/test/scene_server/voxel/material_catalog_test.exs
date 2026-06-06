@@ -57,6 +57,8 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
 
     assert wood_profile.residue == {:material, MaterialCatalog.charcoal_material_id()}
     assert charcoal_profile.residue == {:material, MaterialCatalog.ash_material_id()}
-    assert wood_profile.ignition_temperature_celsius < charcoal_profile.ignition_temperature_celsius
+
+    assert wood_profile.ignition_temperature_celsius <
+             charcoal_profile.ignition_temperature_celsius
   end
 end

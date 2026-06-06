@@ -2749,10 +2749,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 同一 candidate（同一目标 version）+ 重新 enqueue persist，天然幂等；DB 版本
   # 围栏保证不会回退。
   defp finalize_committed_failed(state, ack, reason) do
-    emit_transaction_event(state, ack.transaction_id, "voxel_chunk_transaction_commit_not_durable", %{
-      commit_version: ack.commit_version,
-      reason: inspect(reason)
-    })
+    emit_transaction_event(
+      state,
+      ack.transaction_id,
+      "voxel_chunk_transaction_commit_not_durable",
+      %{
+        commit_version: ack.commit_version,
+        reason: inspect(reason)
+      }
+    )
 
     GenServer.reply(ack.from, {:error, :persist_failed})
 
@@ -2842,6 +2847,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp request_eviction_from_directory(state) do
     key = {state.logical_scene_id, state.chunk_coord}
+
     # facade 可能正在重启（崩溃窗口）；cast 到死名/死 pid 会抛 —— 吞掉，下一个
     # 生命周期节拍会重试（evict_requested? 仍为 false，因为本次未置位）。
     try do
@@ -3868,7 +3874,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  defp apply_generic_voxel_attribute_effect(state, attrs, context, nil) do
+  defp apply_generic_voxel_attribute_effect(state, _attrs, context, nil) do
     result = %{
       status: :rejected,
       action: :write_voxel_attribute,
@@ -4084,7 +4090,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
               cell_version: next_version,
               cell_hash:
                 Hash.digest32(
-                  inspect({:voxel_attribute, macro_index, attribute_name, raw_value, next_version})
+                  inspect(
+                    {:voxel_attribute, macro_index, attribute_name, raw_value, next_version}
+                  )
                 )
             ]
 
@@ -4222,7 +4230,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp normalize_field_effect_attribute(:temperature), do: :temperature
   defp normalize_field_effect_attribute("temperature"), do: :temperature
-  defp normalize_field_effect_attribute(attribute) when is_atom(attribute), do: Atom.to_string(attribute)
+
+  defp normalize_field_effect_attribute(attribute) when is_atom(attribute),
+    do: Atom.to_string(attribute)
+
   defp normalize_field_effect_attribute(attribute), do: attribute
 
   defp normalize_effect_macro(attrs) do

@@ -25,7 +25,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
              Combustion.evaluate(storage, macro_index, 275.0)
 
     assert {:write_voxel_attribute,
-            %{attribute: :combustion_stage, macro_index: ^macro_index, raw_value: 1}} in effects
+            %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 1}} in effects
 
     assert observe_event?(effects, "voxel_combustion_preheated", :preheat)
   end
@@ -46,7 +46,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
            }
 
     assert {:write_voxel_attribute,
-            %{attribute: :combustion_stage, macro_index: ^macro_index, raw_value: 2}} in effects
+            %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 2}} in effects
 
     assert Enum.any?(effects, fn
              {:write_voxel_attribute, %{attribute: :fuel_mass, raw_value: raw_value}} ->
@@ -70,7 +70,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
 
     assert {:transform_voxel_material,
             %{
-              macro_index: ^macro_index,
+              macro_index: macro_index,
               material_id: 9,
               reason: :combustion_exhausted,
               reset_attributes?: true
@@ -92,7 +92,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
                }
              )
 
-    assert {:clear_voxel_cell, %{macro_index: ^macro_index, reason: :combustion_exhausted}} in effects
+    assert {:clear_voxel_cell, %{macro_index: macro_index, reason: :combustion_exhausted}} in effects
   end
 
   defp storage_with_material(macro_index, material_id) do

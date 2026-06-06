@@ -345,7 +345,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
   test "reusing a field source refreshes the worker lifetime" do
     macro_index = Types.macro_index!({3, 3, 3})
-    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
 
     attrs = %{
       chunk_coord: {0, 0, 0},
@@ -400,7 +405,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log: observe_log
   } do
     macro_index = Types.macro_index!({0, 0, 0})
-    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
@@ -446,7 +456,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     source_index = Types.macro_index!({0, 0, 0})
     target_index = Types.macro_index!({1, 0, 0})
-    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, source_index, NormalBlockData.new(5))
@@ -520,7 +535,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log: observe_log
   } do
     macro_index = Types.macro_index!({0, 0, 0})
-    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -572,7 +592,9 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
 
     storage = ChunkProcess.debug_state(chunk).storage
-    assert Storage.normal_block_at(storage, macro_index).material_id == MaterialCatalog.charcoal_material_id()
+
+    assert Storage.normal_block_at(storage, macro_index).material_id ==
+             MaterialCatalog.charcoal_material_id()
 
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
@@ -584,7 +606,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log: observe_log
   } do
     macro_index = Types.macro_index!({0, 0, 0})
-    chunk = start_supervised!({ChunkProcess, chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
