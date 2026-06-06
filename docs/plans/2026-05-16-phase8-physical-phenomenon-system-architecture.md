@@ -361,6 +361,9 @@ thermal_expansion_coefficient
   `combustion_progress`、`smoke_density`、`carbonization`、`structural_integrity`；
 - material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
 - material catalog 已追加 dry grass / cloth 两类可燃材料，分别覆盖烧光消失和燃尽成灰；
+- material combustion profile 已开始使用 `combustion_heat_j_per_kg` /
+  `heat_release_efficiency`：燃烧 heat source 不再只是固定温度，而是按本 tick
+  fuel 消耗释放的焦耳热除以 voxel 热容换算，再受材料明火/阴燃热源上限约束；
 - 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
 - `/ingame/voxel/set_temperature` / `dev_heat_voxel` 已改为先经 World
   `MapLedger.route_chunk_with_lease` 路由 source chunk，再把 lease 透传给 Scene
@@ -379,7 +382,8 @@ thermal_expansion_coefficient
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。
 - 低剩余燃料会从 burning 进入 smoldering，并输出 `voxel_combustion_smoldering`
-  observe；smoldering 使用材料 profile 中更低的持续 heat source，而不是继续按明火热源表现。
+  observe；smoldering 使用材料 profile 中更低的 heat-source cap 与释放比例，而不是继续按
+  明火热源表现。
 - 氧气低于材料维持阈值时，高温不会启动自持燃烧；木材会走 oxygen-limited
   carbonization，写回 `carbonization` / `structural_integrity`，碳化越过材料阈值后
   通过 Chunk authority 转为 charcoal。

@@ -18,6 +18,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   @stage_burning 2
   @stage_smoldering 3
   @stage_extinguished 4
+  @voxel_volume_cubic_meter 1.0
+  @min_heat_capacity_j_per_k 0.001
 
   @typedoc "Combustion evaluation result for one macro cell."
   @type result :: %{
@@ -313,6 +315,16 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         true -> @stage_burning
       end
 
+    heat_output =
+      heat_source_output(
+        storage,
+        macro_index,
+        temperature_celsius,
+        burned_fuel,
+        next_stage,
+        profile
+      )
+
     effects =
       [
         Effect.write_voxel_attribute(macro_index, :fuel_mass, fixed32(fuel_after)),
@@ -350,7 +362,12 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           temperature_celsius: temperature_celsius,
           fuel_before_kg_per_m3: fuel_before,
           fuel_after_kg_per_m3: fuel_after,
-          progress_percent: progress_percent
+          burned_fuel_kg_per_m3: burned_fuel,
+          progress_percent: progress_percent,
+          combustion_heat_j_per_kg: combustion_heat_j_per_kg(profile),
+          heat_release_efficiency: heat_release_efficiency(next_stage, profile),
+          released_heat_energy_joules: heat_output.released_heat_energy_joules,
+          heat_source_celsius: heat_output.source_temperature_celsius
         })
       ] ++
         structural_failure_effects(
@@ -366,7 +383,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       material_id: material_id,
       stage: stage_name(next_stage),
       effects: effects,
-      heat_source_points: heat_source_points(macro_index, next_stage, profile)
+      heat_source_points: heat_source_points(macro_index, next_stage, profile, heat_output)
     }
   end
 
@@ -520,30 +537,131 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
   defp burn_progress_percent(_fuel_after, _initial_fuel), do: 100.0
 
-  defp heat_source_points(_macro_index, @stage_extinguished, _profile), do: []
+  defp heat_source_points(_macro_index, @stage_extinguished, _profile, _heat_output), do: []
 
-  defp heat_source_points(macro_index, @stage_smoldering, profile) do
+  defp heat_source_points(macro_index, @stage_smoldering, profile, heat_output) do
     [
       %{
         macro_index: macro_index,
         field_type: :temperature,
         source_mode: :persistent,
         source_kind: :combustion,
-        value: get_opt(profile, :smolder_heat_source_celsius, 350.0)
+        value: heat_output.source_temperature_celsius,
+        heat_source_delta_celsius: heat_output.heat_source_delta_celsius,
+        released_heat_energy_joules: heat_output.released_heat_energy_joules,
+        combustion_heat_j_per_kg: combustion_heat_j_per_kg(profile),
+        heat_release_efficiency: heat_release_efficiency(@stage_smoldering, profile)
       }
     ]
   end
 
-  defp heat_source_points(macro_index, _stage, profile) do
+  defp heat_source_points(macro_index, _stage, profile, heat_output) do
     [
       %{
         macro_index: macro_index,
         field_type: :temperature,
         source_mode: :persistent,
         source_kind: :combustion,
-        value: get_opt(profile, :heat_source_celsius, 650.0)
+        value: heat_output.source_temperature_celsius,
+        heat_source_delta_celsius: heat_output.heat_source_delta_celsius,
+        released_heat_energy_joules: heat_output.released_heat_energy_joules,
+        combustion_heat_j_per_kg: combustion_heat_j_per_kg(profile),
+        heat_release_efficiency: heat_release_efficiency(:burning, profile)
       }
     ]
+  end
+
+  defp heat_source_output(
+         _storage,
+         _macro_index,
+         _temperature_celsius,
+         burned_fuel_kg_per_m3,
+         @stage_extinguished,
+         profile
+       ) do
+    %{
+      released_heat_energy_joules:
+        released_heat_energy_joules(burned_fuel_kg_per_m3, @stage_extinguished, profile),
+      source_temperature_celsius: nil,
+      heat_source_delta_celsius: nil
+    }
+  end
+
+  defp heat_source_output(
+         storage,
+         macro_index,
+         temperature_celsius,
+         burned_fuel_kg_per_m3,
+         next_stage,
+         profile
+       ) do
+    released_heat_energy_joules =
+      released_heat_energy_joules(burned_fuel_kg_per_m3, next_stage, profile)
+
+    heat_capacity_j_per_k = heat_capacity_j_per_k(storage, macro_index, profile)
+
+    uncapped_temperature =
+      temperature_celsius + released_heat_energy_joules / heat_capacity_j_per_k
+
+    source_temperature_celsius =
+      uncapped_temperature
+      |> min(heat_source_cap_celsius(next_stage, profile))
+
+    %{
+      released_heat_energy_joules: released_heat_energy_joules,
+      source_temperature_celsius: source_temperature_celsius,
+      heat_source_delta_celsius: source_temperature_celsius - temperature_celsius
+    }
+  end
+
+  defp released_heat_energy_joules(burned_fuel_kg_per_m3, next_stage, profile) do
+    burned_fuel_kg_per_m3 *
+      @voxel_volume_cubic_meter *
+      combustion_heat_j_per_kg(profile) *
+      heat_release_efficiency(next_stage, profile)
+  end
+
+  defp heat_source_cap_celsius(@stage_smoldering, profile) do
+    get_opt(profile, :smolder_heat_source_celsius, 350.0)
+  end
+
+  defp heat_source_cap_celsius(_stage, profile) do
+    get_opt(profile, :heat_source_celsius, 650.0)
+  end
+
+  defp combustion_heat_j_per_kg(profile) do
+    profile
+    |> get_opt(:combustion_heat_j_per_kg, 16_000_000.0)
+    |> non_negative_float(16_000_000.0)
+  end
+
+  defp heat_release_efficiency(@stage_smoldering, profile) do
+    heat_release_efficiency(:burning, profile) *
+      non_negative_float(get_opt(profile, :smolder_heat_release_fraction, 0.35), 0.35)
+  end
+
+  defp heat_release_efficiency(_stage, profile) do
+    profile
+    |> get_opt(:heat_release_efficiency, 1.0)
+    |> non_negative_float(1.0)
+  end
+
+  defp heat_capacity_j_per_k(storage, macro_index, profile) do
+    density =
+      storage
+      |> read_float(macro_index, "density", get_opt(profile, :density_kg_per_m3, 1.0))
+      |> max(0.001)
+
+    specific_heat_capacity =
+      storage
+      |> read_float(
+        macro_index,
+        "specific_heat_capacity",
+        get_opt(profile, :specific_heat_capacity_j_per_kg_k, 1.0)
+      )
+      |> max(0.001)
+
+    max(density * specific_heat_capacity * @voxel_volume_cubic_meter, @min_heat_capacity_j_per_k)
   end
 
   defp residue_effects(macro_index, profile, @stage_extinguished) do
@@ -646,6 +764,13 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   defp fixed32(value), do: round(value * @fixed32_scale)
 
   defp clamp_percent(value), do: clamp(value, 0.0, @percent_max)
+
+  defp non_negative_float(value, _fallback) when is_integer(value) and value >= 0 do
+    value * 1.0
+  end
+
+  defp non_negative_float(value, _fallback) when is_float(value) and value >= 0.0, do: value
+  defp non_negative_float(_value, fallback), do: fallback
 
   defp clamp(value, min_value, max_value) do
     value

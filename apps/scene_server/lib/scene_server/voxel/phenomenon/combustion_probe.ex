@@ -136,6 +136,9 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
       min_oxygen_percent: Map.get(profile, :min_oxygen_percent),
       initial_fuel_mass_kg_per_m3: Map.get(profile, :initial_fuel_mass_kg_per_m3),
       burn_rate_kg_per_m3_second: Map.get(profile, :burn_rate_kg_per_m3_second),
+      combustion_heat_j_per_kg: Map.get(profile, :combustion_heat_j_per_kg),
+      heat_release_efficiency: Map.get(profile, :heat_release_efficiency),
+      smolder_heat_release_fraction: Map.get(profile, :smolder_heat_release_fraction),
       smolder_progress_percent: Map.get(profile, :smolder_progress_percent),
       residue: residue_summary(Map.get(profile, :residue)),
       oxygen_limited_residue: residue_summary(Map.get(profile, :oxygen_limited_residue))

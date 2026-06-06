@@ -861,11 +861,17 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     refute observe_log_text =~ "voxel_combustion_ignited"
   end
 
-  test "combustion heat diffuses and ignites adjacent combustible material", %{
+  test "high-energy combustion heat diffuses and ignites adjacent combustible material", %{
     observe_log: observe_log
   } do
     source_index = Types.macro_index!({0, 0, 0})
     target_index = Types.macro_index!({1, 0, 0})
+
+    volatile_profile = %{
+      combustion_heat_j_per_kg: 3_000_000_000.0,
+      heat_release_efficiency: 1.0,
+      heat_source_celsius: 2_500.0
+    }
 
     chunk =
       start_supervised!(
@@ -896,7 +902,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
           %{
             id: :combustion,
             module: CombustionKernel,
-            opts: %{}
+            opts: %{profile: volatile_profile}
           }
         ],
         source_points: [

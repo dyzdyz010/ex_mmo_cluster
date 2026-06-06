@@ -39,13 +39,16 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert %{stage: :burning, effects: effects, heat_source_points: [source_point]} =
              Combustion.evaluate(storage, macro_index, 500.0)
 
-    assert source_point == %{
+    assert %{
              macro_index: macro_index,
              field_type: :temperature,
              source_mode: :persistent,
              source_kind: :combustion,
-             value: 680.0
-           }
+             value: source_value
+           } = source_point
+
+    assert source_value > 500.0
+    assert source_value <= 680.0
 
     assert {:write_voxel_attribute,
             %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 2}} in effects
@@ -59,6 +62,66 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
            end)
 
     assert observe_event?(effects, "voxel_combustion_ignited", :burning)
+  end
+
+  test "combustion heat source is derived from released fuel energy and voxel heat capacity" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    profile = %{
+      initial_fuel_mass_kg_per_m3: 10.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      combustion_heat_j_per_kg: 1_000_000.0,
+      heat_release_efficiency: 1.0,
+      heat_source_celsius: 1_000.0
+    }
+
+    assert %{effects: effects, heat_source_points: [source_point]} =
+             Combustion.evaluate(storage, macro_index, 405.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    expected_delta = 1_000_000.0 / (600.0 * 1_700.0)
+    expected_source = 405.0 + expected_delta
+
+    assert_in_delta source_point.value, expected_source, 0.000001
+    assert Map.fetch!(source_point, :released_heat_energy_joules) == 1_000_000.0
+    assert_in_delta Map.fetch!(source_point, :heat_source_delta_celsius), expected_delta, 0.000001
+
+    assert observe_fields =
+             observe_event_fields(effects, "voxel_combustion_ignited", :burning)
+
+    assert observe_fields.burned_fuel_kg_per_m3 == 1.0
+    assert observe_fields.combustion_heat_j_per_kg == 1_000_000.0
+    assert observe_fields.released_heat_energy_joules == 1_000_000.0
+    assert_in_delta observe_fields.heat_source_celsius, expected_source, 0.000001
+  end
+
+  test "combustion heat source respects the material heat source cap" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    profile = %{
+      initial_fuel_mass_kg_per_m3: 10.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      combustion_heat_j_per_kg: 1_000_000.0,
+      heat_release_efficiency: 1.0,
+      heat_source_celsius: 405.5
+    }
+
+    assert %{heat_source_points: [source_point]} =
+             Combustion.evaluate(storage, macro_index, 405.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    assert source_point.value == 405.5
+    assert Map.fetch!(source_point, :heat_source_delta_celsius) == 0.5
   end
 
   test "wet wood dries under high heat before ignition can start" do
@@ -241,13 +304,15 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert {:write_voxel_attribute,
             %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 3}} in effects
 
-    assert source_point == %{
-             macro_index: macro_index,
+    assert %{
+             macro_index: ^macro_index,
              field_type: :temperature,
              source_mode: :persistent,
              source_kind: :combustion,
              value: 320.0
-           }
+           } = source_point
+
+    assert Map.fetch!(source_point, :released_heat_energy_joules) > 0.0
 
     assert observe_event?(effects, "voxel_combustion_smoldering", :smoldering)
   end
@@ -304,6 +369,11 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
               reset_attributes?: true
             }} in effects
 
+    assert observe_fields =
+             observe_event_fields(effects, "voxel_combustion_extinguished", :extinguished)
+
+    assert observe_fields.released_heat_energy_joules > 0.0
+    assert is_nil(observe_fields.heat_source_celsius)
     assert observe_event?(effects, "voxel_combustion_extinguished", :extinguished)
   end
 
@@ -371,6 +441,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     Enum.any?(effects, fn
       {:emit_observe, ^event, _fields} -> true
       _other -> false
+    end)
+  end
+
+  defp observe_event_fields(effects, event, stage) do
+    Enum.find_value(effects, fn
+      {:emit_observe, ^event, %{stage: ^stage} = fields} -> fields
+      _other -> nil
     end)
   end
 

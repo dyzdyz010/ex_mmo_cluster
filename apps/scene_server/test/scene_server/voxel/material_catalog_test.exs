@@ -60,6 +60,10 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
 
     assert wood_profile.ignition_temperature_celsius <
              charcoal_profile.ignition_temperature_celsius
+
+    assert wood_profile.combustion_heat_j_per_kg > 0.0
+    assert charcoal_profile.combustion_heat_j_per_kg > wood_profile.combustion_heat_j_per_kg
+    assert wood_profile.heat_release_efficiency > 0.0
   end
 
   test "combustion catalog includes burn-away and ash-producing materials" do
@@ -73,6 +77,8 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
 
     assert dry_grass_profile.residue == :clear
     assert cloth_profile.residue == {:material, MaterialCatalog.ash_material_id()}
+    assert dry_grass_profile.combustion_heat_j_per_kg > 0.0
+    assert cloth_profile.combustion_heat_j_per_kg > 0.0
 
     assert dry_grass_profile.ignition_temperature_celsius <
              MaterialCatalog.combustion_profile(MaterialCatalog.wood_material_id()).ignition_temperature_celsius

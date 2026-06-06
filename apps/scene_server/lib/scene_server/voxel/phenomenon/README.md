@@ -16,7 +16,7 @@ not ignite immediately: high heat first emits a moisture writeback, and later
 ticks may ignite only after chunk authority exposes the dried voxel truth.
 Stage changes are observable: preheat, ignition, burning, smoldering, and
 extinguish transitions have distinct state writebacks, and smoldering uses a
-lower persistent heat source than active flame.
+lower persistent heat source cap than active flame.
 Burn residue is expressed as either a material transition, such as wood to
 charcoal, or a cell clear effect for materials that burn away completely. The
 initial material set intentionally covers three outcomes: wood becomes
@@ -33,9 +33,12 @@ carbonization crosses the material residue threshold; no combustion heat source
 is emitted for this carbonization path.
 
 Combustion heat is fed back into the existing temperature field as a persistent
-heat source. Heat propagation remains owned by the field runtime; combustion
-only decides whether a heated material changes state and which structured
-effects should be sent back to chunk authority.
+heat source. The source temperature is derived from the fuel mass burned during
+the current tick, the material `combustion_heat_j_per_kg`, release efficiency,
+and the voxel heat capacity, then capped by the material heat-source limit for
+the current stage. Heat propagation remains owned by the field runtime;
+combustion only decides whether a heated material changes state and which
+structured effects should be sent back to chunk authority.
 
 Once a material enters burning or smoldering, the combustion kernel refreshes a
 stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
