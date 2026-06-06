@@ -3,6 +3,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.AttributeCatalog
+  alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion, FieldTickWorker}
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
@@ -848,6 +849,100 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert observe_log_text =~ "write_voxel_attribute"
   end
 
+  test "combustion heat hands off across a chunk boundary and ignites the neighbor", %{
+    observe_log: observe_log,
+    chunk_registry: chunk_registry
+  } do
+    logical_scene_id = 81_000 + System.unique_integer([:positive])
+    source_index = Types.macro_index!({15, 0, 0})
+    target_index = Types.macro_index!({0, 0, 0})
+    directory = :"field_tick_worker_kernel_test_directory_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {ChunkDirectory, [name: directory, chunk_registry: chunk_registry]},
+      id: {:chunk_directory, directory}
+    )
+
+    assert {:ok, source_chunk} =
+             ChunkDirectory.ensure_chunk(directory, %{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, target_chunk} =
+             ChunkDirectory.ensure_chunk(directory, %{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {1, 0, 0}
+             })
+
+    for {chunk, macro_index} <- [{source_chunk, source_index}, {target_chunk, target_index}] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk,
+                 macro_index,
+                 NormalBlockData.new(MaterialCatalog.cloth_material_id())
+               )
+    end
+
+    region =
+      FieldRegion.new(%{
+        region_id: 114,
+        chunk_coord: {0, 0, 0},
+        aabb: {{15, 0, 0}, {15, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{boundary_max_ticks: 5}
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: source_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 1_000.0
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: source_chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(source_chunk).storage end,
+        logical_scene_id: logical_scene_id,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert :ok =
+             eventually(fn ->
+               target_storage = ChunkProcess.debug_state(target_chunk).storage
+
+               Storage.effective_attribute_at(target_storage, target_index, "combustion_stage") ==
+                 Combustion.stage_burning()
+             end)
+
+    assert ChunkProcess.debug_state(target_chunk).field_region_count >= 1
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert observe_log_text =~ "voxel_field_region_handoff_applied"
+    assert observe_log_text =~ "reason: :combustion_boundary_heat"
+    assert observe_log_text =~ ~s(target_chunk_coord: "{1, 0, 0}")
+    assert observe_log_text =~ "voxel_combustion_ignited"
+  end
+
   test "wet combustible material dries on one field tick before later ignition", %{
     observe_log: observe_log
   } do
@@ -1032,6 +1127,27 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
     index = Enum.find_index(snapshot.macro_indices, &(&1 == macro_index))
     assert_in_delta Enum.at(snapshot.temperature_values, index), expected, delta
+  end
+
+  defp eventually(fun, timeout_ms \\ 1_000) when is_function(fun, 0) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    poll = fn poll ->
+      if fun.() do
+        :ok
+      else
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          receive do
+          after
+            10 -> poll.(poll)
+          end
+        end
+      end
+    end
+
+    poll.(poll)
   end
 
   defp fixed32(value), do: round(value * 65_536)

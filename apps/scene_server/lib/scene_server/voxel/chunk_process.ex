@@ -3807,6 +3807,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :clear_voxel_cell, attrs} ->
         apply_clear_voxel_cell_effect(state, attrs, context)
 
+      {:ok, :ensure_field_region, attrs} ->
+        apply_ensure_field_region_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -3851,6 +3854,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_field_effect_action("transform_voxel_material"), do: :transform_voxel_material
   defp normalize_field_effect_action(:clear_voxel_cell), do: :clear_voxel_cell
   defp normalize_field_effect_action("clear_voxel_cell"), do: :clear_voxel_cell
+  defp normalize_field_effect_action(:ensure_field_region), do: :ensure_field_region
+  defp normalize_field_effect_action("ensure_field_region"), do: :ensure_field_region
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -3986,6 +3991,256 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
         emit_field_effect_rejected(state, result, context)
         {result, state}
+    end
+  end
+
+  defp apply_ensure_field_region_effect(state, attrs, context) do
+    case normalize_ensure_field_region_effect_attrs(state, attrs) do
+      {:ok, %{target_chunk_coord: target_chunk_coord} = request} ->
+        if target_chunk_coord == state.chunk_coord do
+          apply_local_field_region_effect(state, request, context)
+        else
+          queue_remote_field_region_effect(state, request, context)
+        end
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :ensure_field_region,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp normalize_ensure_field_region_effect_attrs(state, attrs) do
+    attrs = attrs_map(attrs)
+    target_chunk_coord_value = fetch_optional(attrs, [:target_chunk_coord, :chunk_coord])
+    source_key = fetch_optional(attrs, [:source_key])
+    aabb_value = fetch_optional(attrs, [:aabb])
+    kernels = fetch_optional(attrs, [:kernels])
+    source_points = fetch_optional(attrs, [:source_points])
+
+    cond do
+      is_nil(target_chunk_coord_value) ->
+        {:error, :missing_target_chunk_coord}
+
+      is_nil(source_key) ->
+        {:error, :missing_field_source_key}
+
+      is_nil(aabb_value) ->
+        {:error, :missing_field_region_aabb}
+
+      not (is_list(kernels) and kernels != []) ->
+        {:error, :missing_field_region_kernels}
+
+      not (is_list(source_points) and source_points != []) ->
+        {:error, :missing_field_region_source_points}
+
+      true ->
+        with {:ok, target_chunk_coord} <- safe_chunk_coord(target_chunk_coord_value),
+             {:ok, aabb} <- normalize_field_region_aabb(aabb_value),
+             {:ok, region_id} <-
+               normalize_optional_field_region_id(fetch_optional(attrs, [:region_id])) do
+          region_attrs =
+            %{
+              chunk_coord: target_chunk_coord,
+              aabb: aabb,
+              kernels: kernels,
+              source_points: source_points,
+              max_ticks: fetch_optional(attrs, [:max_ticks]),
+              source_points_mode: fetch_optional(attrs, [:source_points_mode]),
+              source_key: source_key,
+              lease_token: fetch_optional(attrs, [:lease_token]) || state.lease,
+              linked_field_regions: fetch_optional(attrs, [:linked_field_regions])
+            }
+            |> maybe_put_optional(:region_id, region_id)
+            |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+            |> Map.new()
+
+          {:ok,
+           %{
+             target_chunk_coord: target_chunk_coord,
+             source_key: source_key,
+             reason: fetch_optional(attrs, [:reason]) || :field_region_handoff,
+             region_attrs: region_attrs
+           }}
+        end
+    end
+  rescue
+    _error -> {:error, :invalid_ensure_field_region_effect}
+  end
+
+  defp normalize_field_region_aabb({{min_x, min_y, min_z}, {max_x, max_y, max_z}} = aabb)
+       when is_integer(min_x) and is_integer(min_y) and is_integer(min_z) and
+              is_integer(max_x) and is_integer(max_y) and is_integer(max_z) do
+    cond do
+      macro_axis?(min_x) and macro_axis?(min_y) and macro_axis?(min_z) and
+        macro_axis?(max_x) and macro_axis?(max_y) and macro_axis?(max_z) and
+        min_x <= max_x and min_y <= max_y and min_z <= max_z ->
+        {:ok, aabb}
+
+      true ->
+        {:error, :invalid_field_region_aabb}
+    end
+  end
+
+  defp normalize_field_region_aabb(_aabb), do: {:error, :invalid_field_region_aabb}
+
+  defp macro_axis?(value), do: value in 0..15
+
+  defp normalize_optional_field_region_id(nil), do: {:ok, nil}
+
+  defp normalize_optional_field_region_id(region_id)
+       when is_integer(region_id) and region_id >= 0,
+       do: {:ok, region_id}
+
+  defp normalize_optional_field_region_id(_region_id), do: {:error, :invalid_field_region_id}
+
+  defp maybe_put_optional(map, _key, nil), do: map
+  defp maybe_put_optional(map, key, value), do: Map.put(map, key, value)
+
+  defp apply_local_field_region_effect(state, request, context) do
+    source_key = request.source_key
+
+    case ensure_field_source_region_in_state(state, request.region_attrs, source_key) do
+      {{:ok, field_region}, next_state} ->
+        result =
+          %{
+            status: :applied,
+            action: :ensure_field_region,
+            dispatch: :local,
+            target_chunk_coord: request.target_chunk_coord,
+            source_key: source_key,
+            reason: request.reason
+          }
+          |> Map.merge(field_region)
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {{:error, reason}, next_state} ->
+        result = %{
+          status: :rejected,
+          action: :ensure_field_region,
+          dispatch: :local,
+          target_chunk_coord: request.target_chunk_coord,
+          source_key: source_key,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(next_state, result, context)
+        {result, next_state}
+    end
+  end
+
+  defp queue_remote_field_region_effect(state, request, context) do
+    directory = state.chunk_directory
+    logical_scene_id = state.logical_scene_id
+    source_chunk_coord = state.chunk_coord
+    target_chunk_coord = request.target_chunk_coord
+    source_key = request.source_key
+    reason = request.reason
+    region_attrs = request.region_attrs
+    observe_context = field_effect_observe_base(state, context)
+
+    result = %{
+      status: :applied,
+      action: :ensure_field_region,
+      dispatch: :queued_remote,
+      target_chunk_coord: target_chunk_coord,
+      source_key: source_key,
+      reason: reason
+    }
+
+    emit_field_effect_applied(state, result, context)
+
+    Task.start(fn ->
+      dispatch_remote_field_region_effect(
+        directory,
+        logical_scene_id,
+        source_chunk_coord,
+        target_chunk_coord,
+        region_attrs,
+        source_key,
+        reason,
+        observe_context
+      )
+    end)
+
+    {result, state}
+  end
+
+  defp dispatch_remote_field_region_effect(
+         nil,
+         logical_scene_id,
+         source_chunk_coord,
+         target_chunk_coord,
+         _region_attrs,
+         source_key,
+         reason,
+         observe_context
+       ) do
+    emit_field_region_handoff_rejected(observe_context, %{
+      logical_scene_id: logical_scene_id,
+      source_chunk_coord: source_chunk_coord,
+      target_chunk_coord: target_chunk_coord,
+      source_key: source_key,
+      reason: reason,
+      reject_reason: :missing_chunk_directory
+    })
+  end
+
+  defp dispatch_remote_field_region_effect(
+         directory,
+         logical_scene_id,
+         source_chunk_coord,
+         target_chunk_coord,
+         region_attrs,
+         source_key,
+         reason,
+         observe_context
+       ) do
+    result =
+      try do
+        with {:ok, target_chunk_pid} <-
+               SceneServer.Voxel.ChunkDirectory.ensure_chunk(directory, %{
+                 logical_scene_id: logical_scene_id,
+                 chunk_coord: target_chunk_coord
+               }),
+             {:ok, field_region} <- __MODULE__.ensure_field_region(target_chunk_pid, region_attrs) do
+          {:ok, field_region}
+        end
+      rescue
+        error -> {:error, {:exception, error.__struct__, Exception.message(error)}}
+      catch
+        kind, caught_reason -> {:error, {kind, caught_reason}}
+      end
+
+    case result do
+      {:ok, field_region} ->
+        emit_field_region_handoff_applied(observe_context, %{
+          logical_scene_id: logical_scene_id,
+          source_chunk_coord: source_chunk_coord,
+          target_chunk_coord: target_chunk_coord,
+          source_key: source_key,
+          reason: reason,
+          region_id: field_region.region_id,
+          field_region_created: field_region.created?,
+          source_points_action: Map.get(field_region, :source_points_action)
+        })
+
+      {:error, handoff_reason} ->
+        emit_field_region_handoff_rejected(observe_context, %{
+          logical_scene_id: logical_scene_id,
+          source_chunk_coord: source_chunk_coord,
+          target_chunk_coord: target_chunk_coord,
+          source_key: source_key,
+          reason: reason,
+          reject_reason: handoff_reason
+        })
     end
   end
 
@@ -4719,6 +4974,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp emit_field_effect_rejected(state, result, context) do
     CliObserve.emit("voxel_field_effect_rejected", fn ->
       field_effect_observe_base(state, context)
+      |> Map.merge(result)
+    end)
+  end
+
+  defp emit_field_region_handoff_applied(observe_context, result) do
+    CliObserve.emit("voxel_field_region_handoff_applied", fn ->
+      attrs_map(observe_context)
+      |> Map.merge(result)
+    end)
+  end
+
+  defp emit_field_region_handoff_rejected(observe_context, result) do
+    CliObserve.emit("voxel_field_region_handoff_rejected", fn ->
+      attrs_map(observe_context)
       |> Map.merge(result)
     end)
   end

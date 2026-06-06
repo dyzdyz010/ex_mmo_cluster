@@ -10,9 +10,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
+  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
+
+  @default_boundary_radius 4
+  @default_boundary_max_ticks 60
 
   @impl true
   def kernel_id, do: :combustion
@@ -46,7 +50,9 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
           non_combustion_source_points(region.source_points) ++ combustion_source_points
     }
 
-    effects = Enum.flat_map(results, & &1.effects)
+    effects =
+      Enum.flat_map(results, & &1.effects) ++
+        boundary_heat_effects(region, combustion_source_points, context, opts_map(opts))
 
     {:cont, next_region, effects}
   end
@@ -105,6 +111,144 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     end)
   end
 
+  defp boundary_heat_effects(
+         %FieldRegion{} = region,
+         source_points,
+         %KernelContext{} = context,
+         opts
+       ) do
+    source_points
+    |> Enum.filter(fn source_point ->
+      field_type(source_point) == :temperature and
+        source_kind(source_point) in [:combustion, "combustion"]
+    end)
+    |> Enum.flat_map(fn source_point ->
+      source_point.macro_index
+      |> Types.macro_coord!()
+      |> boundary_targets(region.chunk_coord)
+      |> Enum.map(fn {target_chunk_coord, target_local_macro, face} ->
+        target_macro_index = Types.macro_index!(target_local_macro)
+
+        {:ensure_field_region,
+         %{
+           target_chunk_coord: target_chunk_coord,
+           aabb: local_aabb_around(target_local_macro, boundary_radius(opts)),
+           kernels: boundary_kernel_specs(region, opts),
+           source_points: [
+             %{
+               macro_index: target_macro_index,
+               field_type: :temperature,
+               source_mode: :persistent,
+               source_kind: :combustion_boundary,
+               value: source_point.value * 1.0
+             }
+           ],
+           source_points_mode: :replace,
+           source_key:
+             boundary_source_key(
+               context.logical_scene_id,
+               region.chunk_coord,
+               source_point.macro_index,
+               target_chunk_coord,
+               target_macro_index
+             ),
+           max_ticks: boundary_max_ticks(opts),
+           reason: :combustion_boundary_heat,
+           source_chunk_coord: region.chunk_coord,
+           source_macro_index: source_point.macro_index,
+           source_world_macro:
+             world_macro_coord(region.chunk_coord, Types.macro_coord!(source_point.macro_index)),
+           target_macro_index: target_macro_index,
+           target_world_macro: world_macro_coord(target_chunk_coord, target_local_macro),
+           boundary_face: face,
+           source_value: source_point.value * 1.0
+         }}
+      end)
+    end)
+  end
+
+  defp boundary_targets({x, y, z}, {cx, cy, cz}) do
+    max_local = Types.chunk_size_in_macro() - 1
+
+    []
+    |> maybe_boundary_target(x == 0, {cx - 1, cy, cz}, {max_local, y, z}, :x_neg)
+    |> maybe_boundary_target(x == max_local, {cx + 1, cy, cz}, {0, y, z}, :x_pos)
+    |> maybe_boundary_target(y == 0, {cx, cy - 1, cz}, {x, max_local, z}, :y_neg)
+    |> maybe_boundary_target(y == max_local, {cx, cy + 1, cz}, {x, 0, z}, :y_pos)
+    |> maybe_boundary_target(z == 0, {cx, cy, cz - 1}, {x, y, max_local}, :z_neg)
+    |> maybe_boundary_target(z == max_local, {cx, cy, cz + 1}, {x, y, 0}, :z_pos)
+  end
+
+  defp maybe_boundary_target(acc, true, target_chunk_coord, target_local_macro, face) do
+    [{target_chunk_coord, target_local_macro, face} | acc]
+  end
+
+  defp maybe_boundary_target(acc, false, _target_chunk_coord, _target_local_macro, _face),
+    do: acc
+
+  defp boundary_kernel_specs(%FieldRegion{} = region, opts) do
+    [
+      temperature_kernel_spec(region),
+      %{
+        id: :combustion,
+        module: __MODULE__,
+        opts:
+          Map.drop(opts, [
+            :boundary_radius,
+            "boundary_radius",
+            :boundary_max_ticks,
+            "boundary_max_ticks"
+          ])
+      }
+    ]
+  end
+
+  defp temperature_kernel_spec(%FieldRegion{} = region) do
+    Enum.find(region.kernels, fn
+      %{id: :temperature_diffusion} -> true
+      %{module: TemperatureDiffusionKernel} -> true
+      _other -> false
+    end) ||
+      %{
+        id: :temperature_diffusion,
+        module: TemperatureDiffusionKernel,
+        opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0, cell_size_meters: 1.0}
+      }
+  end
+
+  defp boundary_source_key(
+         logical_scene_id,
+         source_chunk_coord,
+         source_macro_index,
+         target_chunk_coord,
+         target_macro_index
+       ) do
+    {:combustion_boundary_heat, logical_scene_id, source_chunk_coord, source_macro_index,
+     target_chunk_coord, target_macro_index}
+  end
+
+  defp local_aabb_around({x, y, z}, radius) do
+    {{clamp_macro(x - radius), clamp_macro(y - radius), clamp_macro(z - radius)},
+     {clamp_macro(x + radius), clamp_macro(y + radius), clamp_macro(z + radius)}}
+  end
+
+  defp clamp_macro(value) when value < 0, do: 0
+  defp clamp_macro(value) when value > 15, do: 15
+  defp clamp_macro(value), do: value
+
+  defp world_macro_coord({cx, cy, cz}, {x, y, z}) do
+    size = Types.chunk_size_in_macro()
+    {cx * size + x, cy * size + y, cz * size + z}
+  end
+
+  defp boundary_radius(opts) do
+    non_negative_int(get_opt(opts, :boundary_radius, @default_boundary_radius))
+  end
+
+  defp boundary_max_ticks(opts) do
+    non_negative_int(get_opt(opts, :boundary_max_ticks, @default_boundary_max_ticks))
+  end
+
   defp field_type(source_point) do
     Map.get(source_point, :field_type, Map.get(source_point, "field_type"))
   end
@@ -115,4 +259,16 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
   defp opts_map(opts) when is_map(opts), do: opts
   defp opts_map(_opts), do: %{}
+
+  defp get_opt(opts, key, default) do
+    cond do
+      Map.has_key?(opts, key) -> Map.fetch!(opts, key)
+      Map.has_key?(opts, Atom.to_string(key)) -> Map.fetch!(opts, Atom.to_string(key))
+      true -> default
+    end
+  end
+
+  defp non_negative_int(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative_int(value) when is_float(value) and value >= 0.0, do: trunc(value)
+  defp non_negative_int(_value), do: 0
 end

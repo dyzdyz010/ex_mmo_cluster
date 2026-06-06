@@ -33,3 +33,11 @@ Combustion heat is fed back into the existing temperature field as a persistent
 heat source. Heat propagation remains owned by the field runtime; combustion
 only decides whether a heated material changes state and which structured
 effects should be sent back to chunk authority.
+
+When a combustion heat source reaches a chunk face, the combustion kernel emits
+an `ensure_field_region` handoff instead of directly mutating the neighbor. The
+source `ChunkProcess` queues that handoff through `ChunkDirectory`; the target
+chunk accepts or rejects it as its own authority, starts a local temperature
+region, and then runs the same material-driven combustion rules. This keeps
+cross-chunk fire spread in the field/source lifecycle rather than adding
+neighbor writes to the material state machine.

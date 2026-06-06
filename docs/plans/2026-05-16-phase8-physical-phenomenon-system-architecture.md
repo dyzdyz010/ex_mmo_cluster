@@ -364,7 +364,10 @@ thermal_expansion_coefficient
 - 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
 - 同一地块内已验证燃烧产生的持续 heat source 可经 temperature diffusion 在后续 tick
-  点燃邻近可燃材料；跨地块火势传播仍是后续项。
+  点燃邻近可燃材料。
+- 跨 chunk face 的火势传播已接入：边界燃烧源输出 `ensure_field_region` effect，
+  源 chunk 只负责队列化交接，目标 chunk 经自己的 authority 启动 temperature/combustion
+  region 并决定目标材料是否点燃；跨节点 lease boundary 事件仍是后续项。
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。
