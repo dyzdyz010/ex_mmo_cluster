@@ -118,6 +118,19 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       temperature_celsius >= ignition_temperature and can_sustain?(moisture, oxygen, profile) ->
         burn(storage, macro_index, material_id, temperature_celsius, profile, previous_stage)
 
+      temperature_celsius >= drying_temperature(ignition_temperature, profile) and
+        moisture > get_opt(profile, :max_moisture_kg_per_m3, 150.0) and
+          previous_stage in [@stage_idle, @stage_preheat, @stage_extinguished] ->
+        dry(
+          macro_index,
+          material_id,
+          temperature_celsius,
+          ignition_temperature,
+          moisture,
+          profile,
+          previous_stage
+        )
+
       temperature_celsius >= preheat_temperature and
           previous_stage in [@stage_idle, @stage_preheat] ->
         preheat(
@@ -134,6 +147,57 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       true ->
         :ignore
     end
+  end
+
+  defp dry(
+         macro_index,
+         material_id,
+         temperature_celsius,
+         ignition_temperature,
+         moisture_before,
+         profile,
+         previous_stage
+       ) do
+    dt_seconds = get_opt(profile, :dt_seconds, 0.1)
+    drying_temperature = drying_temperature(ignition_temperature, profile)
+    drying_rate = get_opt(profile, :drying_rate_kg_per_m3_second, 25.0)
+
+    heat_factor =
+      clamp(
+        (temperature_celsius - drying_temperature) /
+          max(ignition_temperature - drying_temperature, 1.0),
+        0.25,
+        2.0
+      )
+
+    moisture_after =
+      moisture_before
+      |> Kernel.-(drying_rate * dt_seconds * heat_factor)
+      |> max(0.0)
+
+    effects =
+      [
+        Effect.write_voxel_attribute(macro_index, :moisture, fixed32(moisture_after)),
+        Effect.emit_observe("voxel_combustion_dried", %{
+          macro_index: macro_index,
+          material_id: material_id,
+          stage: :preheat,
+          previous_stage: stage_name(previous_stage),
+          temperature_celsius: temperature_celsius,
+          drying_temperature_celsius: drying_temperature,
+          ignition_temperature_celsius: ignition_temperature,
+          moisture_before_kg_per_m3: moisture_before,
+          moisture_after_kg_per_m3: moisture_after
+        })
+      ] ++ preheat_stage_effects(macro_index, previous_stage)
+
+    %{
+      macro_index: macro_index,
+      material_id: material_id,
+      stage: :preheat,
+      effects: effects,
+      heat_source_points: []
+    }
   end
 
   defp preheat(
@@ -171,6 +235,13 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       }
     end
   end
+
+  defp preheat_stage_effects(macro_index, previous_stage)
+       when previous_stage in [@stage_idle, @stage_extinguished] do
+    [Effect.write_voxel_attribute(macro_index, :combustion_stage, @stage_preheat)]
+  end
+
+  defp preheat_stage_effects(_macro_index, _previous_stage), do: []
 
   defp burn(storage, macro_index, material_id, temperature_celsius, profile, previous_stage) do
     dt_seconds = get_opt(profile, :dt_seconds, 0.1)
@@ -295,6 +366,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   defp can_sustain?(moisture, oxygen, profile) do
     moisture <= get_opt(profile, :max_moisture_kg_per_m3, 150.0) and
       oxygen >= get_opt(profile, :min_oxygen_percent, 8.0)
+  end
+
+  defp drying_temperature(ignition_temperature, profile) do
+    get_opt(
+      profile,
+      :drying_temperature_celsius,
+      max(60.0, ignition_temperature - get_opt(profile, :preheat_margin_celsius, 40.0) * 2.0)
+    )
   end
 
   defp burn_severity(temperature_celsius, moisture, oxygen, profile) do

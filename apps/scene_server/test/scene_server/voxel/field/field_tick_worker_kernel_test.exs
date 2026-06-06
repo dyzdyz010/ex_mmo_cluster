@@ -679,6 +679,97 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert observe_log_text =~ "write_voxel_attribute"
   end
 
+  test "wet combustible material dries on one field tick before later ignition", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               macro_index,
+               NormalBlockData.new(MaterialCatalog.wood_material_id())
+             )
+
+    assert {:ok, _summary} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [
+                 {:write_voxel_attribute,
+                  %{
+                    macro_index: macro_index,
+                    attribute: :moisture,
+                    raw_value: fixed32(240.0)
+                  }}
+               ],
+               %{kernel_id: :test_setup}
+             )
+
+    region =
+      FieldRegion.new(%{
+        region_id: 111,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{
+              profile: %{
+                drying_rate_kg_per_m3_second: 400.0,
+                initial_fuel_mass_kg_per_m3: 10.0,
+                burn_rate_kg_per_m3_second: 1.0
+              }
+            }
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: macro_index,
+            field_type: :temperature,
+            source_mode: :persistent,
+            value: 700.0
+          }
+        ],
+        max_ticks: 2
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert Storage.effective_attribute_at(storage, macro_index, "moisture") < fixed32(180.0)
+
+    assert Storage.effective_attribute_at(storage, macro_index, "combustion_stage") ==
+             Combustion.stage_burning()
+
+    assert observe_log_text =~ "voxel_combustion_dried"
+    assert observe_log_text =~ "voxel_combustion_ignited"
+  end
+
   test "unsupported non-observe effects are explicitly rejected", %{
     observe_log: observe_log
   } do
@@ -773,4 +864,6 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     index = Enum.find_index(snapshot.macro_indices, &(&1 == macro_index))
     assert_in_delta Enum.at(snapshot.temperature_values, index), expected, delta
   end
+
+  defp fixed32(value), do: round(value * 65_536)
 end

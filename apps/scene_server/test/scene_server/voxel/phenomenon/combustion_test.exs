@@ -61,6 +61,60 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert observe_event?(effects, "voxel_combustion_ignited", :burning)
   end
 
+  test "wet wood dries under high heat before ignition can start" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      macro_index
+      |> storage_with_material(MaterialCatalog.wood_material_id())
+      |> put_attribute(macro_index, "moisture", 240.0)
+
+    profile = %{drying_rate_kg_per_m3_second: 30.0}
+
+    assert %{stage: :preheat, effects: drying_effects, heat_source_points: []} =
+             Combustion.evaluate(storage, macro_index, 500.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    assert moisture_raw(drying_effects) == fixed32(180.0)
+    assert observe_event?(drying_effects, "voxel_combustion_dried", :preheat)
+    refute observe_event?(drying_effects, "voxel_combustion_ignited", :burning)
+    refute fuel_mass_raw(drying_effects)
+
+    dried_storage =
+      Storage.put_attribute_for_cell(storage, macro_index, "moisture", fixed32(180.0))
+
+    assert %{stage: :burning, heat_source_points: [_source_point]} =
+             Combustion.evaluate(dried_storage, macro_index, 500.0,
+               dt_seconds: 0.1,
+               profile: profile
+             )
+  end
+
+  test "active combustion extinguishes instead of staying burning when moisture exceeds sustain threshold" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      macro_index
+      |> storage_with_material(MaterialCatalog.wood_material_id())
+      |> put_attribute(macro_index, "moisture", 240.0)
+      |> Storage.put_attribute_for_cell(
+        macro_index,
+        "combustion_stage",
+        Combustion.stage_burning()
+      )
+
+    assert %{stage: :extinguished, effects: effects, heat_source_points: []} =
+             Combustion.evaluate(storage, macro_index, 500.0)
+
+    assert {:write_voxel_attribute,
+            %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 4}} in effects
+
+    assert observe_event?(effects, "voxel_combustion_extinguished", :extinguished)
+    refute moisture_raw(effects)
+  end
+
   test "top-level tick delta controls fuel consumption" do
     macro_index = Types.macro_index!({0, 0, 0})
     storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
@@ -189,6 +243,10 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     |> Storage.put_solid_block(macro_index, NormalBlockData.new(material_id))
   end
 
+  defp put_attribute(storage, macro_index, attribute, value) do
+    Storage.put_attribute_for_cell(storage, macro_index, attribute, fixed32(value))
+  end
+
   defp observe_event?(effects, event, stage) do
     Enum.any?(effects, fn
       {:emit_observe, ^event, %{stage: ^stage}} -> true
@@ -202,4 +260,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
       _other -> nil
     end)
   end
+
+  defp moisture_raw(effects) do
+    Enum.find_value(effects, fn
+      {:write_voxel_attribute, %{attribute: :moisture, raw_value: raw_value}} -> raw_value
+      _other -> nil
+    end)
+  end
+
+  defp fixed32(value), do: round(value * 65_536)
 end

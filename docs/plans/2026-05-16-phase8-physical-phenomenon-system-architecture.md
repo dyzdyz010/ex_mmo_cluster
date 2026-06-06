@@ -365,6 +365,9 @@ thermal_expansion_coefficient
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
 - 同一地块内已验证燃烧产生的持续 heat source 可经 temperature diffusion 在后续 tick
   点燃邻近可燃材料；跨地块火势传播仍是后续项。
+- 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
+  写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
+  才能进入 ignition / burning。
 - 当前首片以 voxel truth 中的 `combustion_stage` / `combustion_progress` 等属性承载
   燃烧实例状态；独立 `PhenomenonInstance` 生命周期仍是 Phase 8 后续收口项，不能把
   本片误读为完整现象实例系统已经完成。

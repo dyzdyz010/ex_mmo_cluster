@@ -10,12 +10,14 @@ Boundary:
 - `ChunkProcess` remains the authority that accepts or rejects truth writes.
 
 Combustion is the first implementation slice. It uses material ignition
-thresholds plus dynamic voxel attributes for fuel, oxygen, stage, smoke,
-carbonization, and structural integrity. Burn residue is expressed as either a
-material transition, such as wood to charcoal, or a cell clear effect for
-materials that burn away completely. The initial material set intentionally
-covers three outcomes: wood becomes charcoal, cloth becomes ash, and dry grass
-burns away.
+thresholds plus dynamic voxel attributes for moisture, fuel, oxygen, stage,
+smoke, carbonization, and structural integrity. Wet combustible materials do
+not ignite immediately: high heat first emits a moisture writeback, and later
+ticks may ignite only after chunk authority exposes the dried voxel truth.
+Burn residue is expressed as either a material transition, such as wood to
+charcoal, or a cell clear effect for materials that burn away completely. The
+initial material set intentionally covers three outcomes: wood becomes
+charcoal, cloth becomes ash, and dry grass burns away.
 
 Combustion heat is fed back into the existing temperature field as a persistent
 heat source. Heat propagation remains owned by the field runtime; combustion
