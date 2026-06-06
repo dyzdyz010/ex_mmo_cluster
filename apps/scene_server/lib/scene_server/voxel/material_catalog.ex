@@ -22,6 +22,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @electric_load_material_id 7
   @ash_material_id 8
   @charcoal_material_id 9
+  @dry_grass_material_id 10
+  @cloth_material_id 11
 
   @power_source_defaults %{
     output_mode: :dc,
@@ -129,6 +131,28 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => round(0.02 * @fixed32_scale),
       "dielectric_strength" => round(8.0 * @fixed32_scale)
+    },
+    @dry_grass_material_id => %{
+      "density" => round(90.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.04 * @fixed32_scale),
+      "specific_heat_capacity" => round(1_400.0 * @fixed32_scale),
+      "ignition_temperature" => round(160.0 * @fixed32_scale),
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(7.0 * @fixed32_scale)
+    },
+    @cloth_material_id => %{
+      "density" => round(300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.08 * @fixed32_scale),
+      "specific_heat_capacity" => round(1_300.0 * @fixed32_scale),
+      "ignition_temperature" => round(180.0 * @fixed32_scale),
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(7.5 * @fixed32_scale)
     }
   }
 
@@ -166,6 +190,40 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       carbonization_yield_percent_per_kg: 0.2,
       structural_loss_percent_per_kg: 2.0,
       residue: {:material, @ash_material_id}
+    },
+    @dry_grass_material_id => %{
+      material_name: :dry_grass,
+      ignition_temperature_celsius: 160.0,
+      preheat_margin_celsius: 30.0,
+      max_moisture_kg_per_m3: 45.0,
+      min_oxygen_percent: 10.0,
+      initial_fuel_mass_kg_per_m3: 2.0,
+      burn_rate_kg_per_m3_second: 1.2,
+      smolder_progress_percent: 80.0,
+      smolder_heat_source_celsius: 320.0,
+      heat_source_celsius: 640.0,
+      oxygen_consumption_percent_per_kg: 0.18,
+      smoke_yield_percent_per_kg: 0.8,
+      carbonization_yield_percent_per_kg: 0.3,
+      structural_loss_percent_per_kg: 1.0,
+      residue: :clear
+    },
+    @cloth_material_id => %{
+      material_name: :cloth,
+      ignition_temperature_celsius: 180.0,
+      preheat_margin_celsius: 35.0,
+      max_moisture_kg_per_m3: 95.0,
+      min_oxygen_percent: 8.0,
+      initial_fuel_mass_kg_per_m3: 5.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      smolder_progress_percent: 68.0,
+      smolder_heat_source_celsius: 420.0,
+      heat_source_celsius: 2_500.0,
+      oxygen_consumption_percent_per_kg: 0.22,
+      smoke_yield_percent_per_kg: 1.4,
+      carbonization_yield_percent_per_kg: 0.5,
+      structural_loss_percent_per_kg: 1.8,
+      residue: {:material, @ash_material_id}
     }
   }
 
@@ -180,6 +238,14 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @doc "Returns the append-only material id for charcoal left by oxygen-limited wood combustion."
   @spec charcoal_material_id() :: pos_integer()
   def charcoal_material_id, do: @charcoal_material_id
+
+  @doc "Returns the append-only material id for dry grass that burns away completely."
+  @spec dry_grass_material_id() :: pos_integer()
+  def dry_grass_material_id, do: @dry_grass_material_id
+
+  @doc "Returns the append-only material id for cloth that burns down into ash."
+  @spec cloth_material_id() :: pos_integer()
+  def cloth_material_id, do: @cloth_material_id
 
   @doc "Returns the append-only material id for the physical electric power block."
   @spec power_source_material_id() :: pos_integer()

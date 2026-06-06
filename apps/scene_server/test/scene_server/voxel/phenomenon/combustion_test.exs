@@ -156,6 +156,33 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert {:clear_voxel_cell, %{macro_index: macro_index, reason: :combustion_exhausted}} in effects
   end
 
+  test "dry grass uses its default profile to burn away completely" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.dry_grass_material_id())
+
+    assert %{stage: :extinguished, effects: effects} =
+             Combustion.evaluate(storage, macro_index, 700.0, dt_seconds: 5.0)
+
+    assert {:clear_voxel_cell, %{macro_index: macro_index, reason: :combustion_exhausted}} in effects
+  end
+
+  test "cloth uses its default profile to leave ash" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.cloth_material_id())
+    ash_material_id = MaterialCatalog.ash_material_id()
+
+    assert %{stage: :extinguished, effects: effects} =
+             Combustion.evaluate(storage, macro_index, 900.0, dt_seconds: 10.0)
+
+    assert {:transform_voxel_material,
+            %{
+              macro_index: macro_index,
+              material_id: ash_material_id,
+              reason: :combustion_exhausted,
+              reset_attributes?: true
+            }} in effects
+  end
+
   defp storage_with_material(macro_index, material_id) do
     1
     |> Storage.empty({0, 0, 0})

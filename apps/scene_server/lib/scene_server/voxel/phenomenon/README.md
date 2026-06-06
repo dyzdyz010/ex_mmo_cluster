@@ -13,4 +13,11 @@ Combustion is the first implementation slice. It uses material ignition
 thresholds plus dynamic voxel attributes for fuel, oxygen, stage, smoke,
 carbonization, and structural integrity. Burn residue is expressed as either a
 material transition, such as wood to charcoal, or a cell clear effect for
-materials that burn away completely.
+materials that burn away completely. The initial material set intentionally
+covers three outcomes: wood becomes charcoal, cloth becomes ash, and dry grass
+burns away.
+
+Combustion heat is fed back into the existing temperature field as a persistent
+heat source. Heat propagation remains owned by the field runtime; combustion
+only decides whether a heated material changes state and which structured
+effects should be sent back to chunk authority.

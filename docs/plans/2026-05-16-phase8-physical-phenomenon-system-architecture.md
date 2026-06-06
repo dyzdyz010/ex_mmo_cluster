@@ -360,8 +360,11 @@ thermal_expansion_coefficient
 - attribute catalog v3 已追加 `fuel_mass`、`oxygen`、`combustion_stage`、
   `combustion_progress`、`smoke_density`、`carbonization`、`structural_integrity`；
 - material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
+- material catalog 已追加 dry grass / cloth 两类可燃材料，分别覆盖烧光消失和燃尽成灰；
 - 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
+- 同一地块内已验证燃烧产生的持续 heat source 可经 temperature diffusion 在后续 tick
+  点燃邻近可燃材料；跨地块火势传播仍是后续项。
 - 当前首片以 voxel truth 中的 `combustion_stage` / `combustion_progress` 等属性承载
   燃烧实例状态；独立 `PhenomenonInstance` 生命周期仍是 Phase 8 后续收口项，不能把
   本片误读为完整现象实例系统已经完成。

@@ -9,6 +9,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Phenomenon.CombustionKernel
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -600,6 +601,82 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_combustion_extinguished"
     assert observe_log_text =~ "transform_voxel_material"
+  end
+
+  test "combustion heat diffuses and ignites adjacent combustible material", %{
+    observe_log: observe_log
+  } do
+    source_index = Types.macro_index!({0, 0, 0})
+    target_index = Types.macro_index!({1, 0, 0})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
+
+    for macro_index <- [source_index, target_index] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(
+                 chunk,
+                 macro_index,
+                 NormalBlockData.new(MaterialCatalog.cloth_material_id())
+               )
+    end
+
+    region =
+      FieldRegion.new(%{
+        region_id: 110,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {1, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 100_000_000.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{}
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: source_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 1_000.0
+          }
+        ],
+        max_ticks: 3
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 3_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert Storage.effective_attribute_at(storage, source_index, "combustion_stage") ==
+             Combustion.stage_burning()
+
+    assert Storage.effective_attribute_at(storage, target_index, "combustion_stage") ==
+             Combustion.stage_burning(),
+           observe_log_text
+
+    assert observe_log_text =~ "voxel_combustion_ignited"
+    assert observe_log_text =~ "write_voxel_attribute"
   end
 
   test "unsupported non-observe effects are explicitly rejected", %{
