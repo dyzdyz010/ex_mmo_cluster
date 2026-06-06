@@ -4044,6 +4044,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
              {:ok, aabb} <- normalize_field_region_aabb(aabb_value),
              {:ok, region_id} <-
                normalize_optional_field_region_id(fetch_optional(attrs, [:region_id])) do
+          lease_token =
+            field_region_effect_lease_token(
+              state,
+              target_chunk_coord,
+              fetch_optional(attrs, [:lease_token])
+            )
+
           region_attrs =
             %{
               chunk_coord: target_chunk_coord,
@@ -4053,9 +4060,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
               max_ticks: fetch_optional(attrs, [:max_ticks]),
               source_points_mode: fetch_optional(attrs, [:source_points_mode]),
               source_key: source_key,
-              lease_token: fetch_optional(attrs, [:lease_token]) || state.lease,
               linked_field_regions: fetch_optional(attrs, [:linked_field_regions])
             }
+            |> maybe_put_optional(:lease_token, lease_token)
             |> maybe_put_optional(:region_id, region_id)
             |> Enum.reject(fn {_key, value} -> is_nil(value) end)
             |> Map.new()
@@ -4072,6 +4079,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
   rescue
     _error -> {:error, :invalid_ensure_field_region_effect}
   end
+
+  defp field_region_effect_lease_token(_state, _target_chunk_coord, explicit_lease)
+       when not is_nil(explicit_lease) do
+    explicit_lease
+  end
+
+  defp field_region_effect_lease_token(state, target_chunk_coord, nil)
+       when target_chunk_coord == state.chunk_coord do
+    state.lease
+  end
+
+  defp field_region_effect_lease_token(_state, _target_chunk_coord, nil), do: nil
 
   defp normalize_field_region_aabb({{min_x, min_y, min_z}, {max_x, max_y, max_z}} = aabb)
        when is_integer(min_x) and is_integer(min_y) and is_integer(min_z) and

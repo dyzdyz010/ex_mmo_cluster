@@ -951,6 +951,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     source_index = Types.macro_index!({15, 0, 0})
     target_index = Types.macro_index!({0, 0, 0})
     directory = :"field_tick_worker_kernel_test_directory_#{System.unique_integer([:positive])}"
+    source_lease = lease(logical_scene_id, region_id: 81_010, lease_id: 1)
+    target_lease = lease(logical_scene_id, region_id: 81_011, lease_id: 2)
 
     start_supervised!(
       {ChunkDirectory, [name: directory, chunk_registry: chunk_registry]},
@@ -960,13 +962,15 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert {:ok, source_chunk} =
              ChunkDirectory.ensure_chunk(directory, %{
                logical_scene_id: logical_scene_id,
-               chunk_coord: {0, 0, 0}
+               chunk_coord: {0, 0, 0},
+               lease: source_lease
              })
 
     assert {:ok, target_chunk} =
              ChunkDirectory.ensure_chunk(directory, %{
                logical_scene_id: logical_scene_id,
-               chunk_coord: {1, 0, 0}
+               chunk_coord: {1, 0, 0},
+               lease: target_lease
              })
 
     for {chunk, macro_index} <- [{source_chunk, source_index}, {target_chunk, target_index}] do
@@ -1030,6 +1034,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
              )
 
     assert ChunkProcess.debug_state(target_chunk).field_region_count >= 1
+    assert target_field_region_lease_token(target_chunk) == target_lease
 
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
@@ -1213,6 +1218,17 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     |> Map.fetch!(region_id)
   end
 
+  defp target_field_region_lease_token(chunk_pid) do
+    chunk_pid
+    |> :sys.get_state()
+    |> Map.fetch!(:field_regions)
+    |> Map.values()
+    |> List.first()
+    |> :sys.get_state()
+    |> Map.fetch!(:region)
+    |> Map.fetch!(:lease_token)
+  end
+
   defp assert_snapshot_temperature(snapshot, macro_index, expected) do
     assert_snapshot_temperature(snapshot, macro_index, expected, 0.001)
   end
@@ -1245,6 +1261,22 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     end
 
     poll.(poll)
+  end
+
+  defp lease(logical_scene_id, overrides) do
+    Map.merge(
+      %{
+        logical_scene_id: logical_scene_id,
+        region_id: 1,
+        lease_id: 1,
+        owner_scene_instance_ref: 1_000,
+        owner_epoch: 1,
+        bounds_chunk_min: {0, 0, 0},
+        bounds_chunk_max: {1, 0, 0},
+        expires_at_ms: System.system_time(:millisecond) + 60_000
+      },
+      Map.new(overrides)
+    )
   end
 
   defp fixed32(value), do: round(value * 65_536)

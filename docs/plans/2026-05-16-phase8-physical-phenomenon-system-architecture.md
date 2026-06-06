@@ -377,7 +377,8 @@ thermal_expansion_coefficient
   FieldRegion source lifecycle，不另起平行 GenServer。
 - 跨 chunk face 的火势传播已接入：边界燃烧源输出 `ensure_field_region` effect，
   源 chunk 只负责队列化交接，目标 chunk 经自己的 authority 启动 temperature/combustion
-  region 并决定目标材料是否点燃；跨节点 lease boundary 事件仍是后续项。
+  region 并决定目标材料是否点燃；remote handoff 已避免把 source lease 带入 target
+  FieldRegion，目标 region 会捕获目标 chunk 当前 lease。跨节点 lease boundary 事件仍是后续项。
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。

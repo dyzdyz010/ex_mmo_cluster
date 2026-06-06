@@ -52,7 +52,9 @@ source `ChunkProcess` queues that handoff through `ChunkDirectory`; the target
 chunk accepts or rejects it as its own authority, starts a local temperature
 region, and then runs the same material-driven combustion rules. This keeps
 cross-chunk fire spread in the field/source lifecycle rather than adding
-neighbor writes to the material state machine.
+neighbor writes to the material state machine. Remote handoff requests do not
+inherit the source chunk lease; the target chunk stamps its own current lease
+onto the FieldRegion it owns.
 
 `CombustionProbe` is the read-only debug boundary for this subsystem. It reads
 the target chunk's authoritative storage and reports material id/name,
