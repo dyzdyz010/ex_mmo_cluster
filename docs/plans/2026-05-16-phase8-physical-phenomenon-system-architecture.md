@@ -368,6 +368,10 @@ thermal_expansion_coefficient
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
 - 同一地块内已验证燃烧产生的持续 heat source 可经 temperature diffusion 在后续 tick
   点燃邻近可燃材料。
+- 燃烧已补最小自持生命周期：burning / smoldering 会创建或刷新稳定
+  `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}` FieldSource，
+  触发它的外部 heat impulse 到期后仍可继续消耗 fuel / oxygen 并产热；这复用现有
+  FieldRegion source lifecycle，不另起平行 GenServer。
 - 跨 chunk face 的火势传播已接入：边界燃烧源输出 `ensure_field_region` effect，
   源 chunk 只负责队列化交接，目标 chunk 经自己的 authority 启动 temperature/combustion
   region 并决定目标材料是否点燃；跨节点 lease boundary 事件仍是后续项。

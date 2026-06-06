@@ -17,6 +17,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
   @default_boundary_radius 4
   @default_boundary_max_ticks 60
+  @default_owner_radius 4
+  @default_owner_max_ticks 30
 
   @impl true
   def kernel_id, do: :combustion
@@ -43,15 +45,28 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
       |> Enum.reject(&(&1 == :ignore))
 
     combustion_source_points = Enum.flat_map(results, & &1.heat_source_points)
+    owner_handoff? = owner_handoff_after_tick?(region)
 
     next_region = %{
       region
       | source_points:
-          non_combustion_source_points(region.source_points) ++ combustion_source_points
+          non_combustion_source_points(region.source_points) ++
+            retained_combustion_source_points(
+              region.source_points,
+              combustion_source_points,
+              owner_handoff?
+            )
     }
 
     effects =
       Enum.flat_map(results, & &1.effects) ++
+        combustion_owner_effects(
+          region,
+          combustion_source_points,
+          context,
+          opts_map(opts),
+          owner_handoff?
+        ) ++
         boundary_heat_effects(region, combustion_source_points, context, opts_map(opts))
 
     {:cont, next_region, effects}
@@ -111,6 +126,25 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     end)
   end
 
+  defp retained_combustion_source_points(_existing_source_points, next_source_points, false) do
+    next_source_points
+  end
+
+  defp retained_combustion_source_points(existing_source_points, next_source_points, true) do
+    owned_indices =
+      existing_source_points
+      |> Enum.filter(fn source_point ->
+        field_type(source_point) == :temperature and
+          source_kind(source_point) in [:combustion, "combustion"]
+      end)
+      |> Enum.map(& &1.macro_index)
+      |> MapSet.new()
+
+    Enum.filter(next_source_points, fn source_point ->
+      MapSet.member?(owned_indices, source_point.macro_index)
+    end)
+  end
+
   defp boundary_heat_effects(
          %FieldRegion{} = region,
          source_points,
@@ -167,6 +201,61 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     end)
   end
 
+  defp combustion_owner_effects(
+         %FieldRegion{} = region,
+         source_points,
+         %KernelContext{} = context,
+         opts,
+         true
+       ) do
+    source_points
+    |> Enum.filter(fn source_point ->
+      field_type(source_point) == :temperature and
+        source_kind(source_point) in [:combustion, "combustion"]
+    end)
+    |> Enum.map(fn source_point ->
+      source_macro = Types.macro_coord!(source_point.macro_index)
+
+      {:ensure_field_region,
+       %{
+         target_chunk_coord: region.chunk_coord,
+         aabb: local_aabb_around(source_macro, owner_radius(opts)),
+         kernels: owner_kernel_specs(region, opts),
+         source_points: [
+           %{
+             macro_index: source_point.macro_index,
+             field_type: :temperature,
+             source_mode: :persistent,
+             source_kind: :combustion,
+             value: source_point.value * 1.0
+           }
+         ],
+         source_points_mode: :replace,
+         source_key:
+           combustion_owner_source_key(
+             context.logical_scene_id,
+             region.chunk_coord,
+             source_point.macro_index
+           ),
+         max_ticks: owner_max_ticks(opts),
+         reason: :combustion_self_heat,
+         source_chunk_coord: region.chunk_coord,
+         source_macro_index: source_point.macro_index,
+         source_world_macro: world_macro_coord(region.chunk_coord, source_macro),
+         source_value: source_point.value * 1.0
+       }}
+    end)
+  end
+
+  defp combustion_owner_effects(
+         %FieldRegion{},
+         _source_points,
+         %KernelContext{},
+         _opts,
+         false
+       ),
+       do: []
+
   defp boundary_targets({x, y, z}, {cx, cy, cz}) do
     max_local = Types.chunk_size_in_macro() - 1
 
@@ -203,6 +292,23 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     ]
   end
 
+  defp owner_kernel_specs(%FieldRegion{} = region, opts) do
+    [
+      temperature_kernel_spec(region),
+      %{
+        id: :combustion,
+        module: __MODULE__,
+        opts:
+          Map.drop(opts, [
+            :owner_radius,
+            "owner_radius",
+            :owner_max_ticks,
+            "owner_max_ticks"
+          ])
+      }
+    ]
+  end
+
   defp temperature_kernel_spec(%FieldRegion{} = region) do
     Enum.find(region.kernels, fn
       %{id: :temperature_diffusion} -> true
@@ -227,6 +333,10 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
      target_chunk_coord, target_macro_index}
   end
 
+  defp combustion_owner_source_key(logical_scene_id, chunk_coord, macro_index) do
+    {:combustion_instance, logical_scene_id, chunk_coord, macro_index}
+  end
+
   defp local_aabb_around({x, y, z}, radius) do
     {{clamp_macro(x - radius), clamp_macro(y - radius), clamp_macro(z - radius)},
      {clamp_macro(x + radius), clamp_macro(y + radius), clamp_macro(z + radius)}}
@@ -247,6 +357,20 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
   defp boundary_max_ticks(opts) do
     non_negative_int(get_opt(opts, :boundary_max_ticks, @default_boundary_max_ticks))
+  end
+
+  defp owner_handoff_after_tick?(%FieldRegion{max_ticks: nil}), do: false
+
+  defp owner_handoff_after_tick?(%FieldRegion{tick_count: tick_count, max_ticks: max_ticks}) do
+    is_integer(max_ticks) and max_ticks >= 0 and tick_count + 1 >= max_ticks
+  end
+
+  defp owner_radius(opts) do
+    non_negative_int(get_opt(opts, :owner_radius, @default_owner_radius))
+  end
+
+  defp owner_max_ticks(opts) do
+    non_negative_int(get_opt(opts, :owner_max_ticks, @default_owner_max_ticks))
   end
 
   defp field_type(source_point) do

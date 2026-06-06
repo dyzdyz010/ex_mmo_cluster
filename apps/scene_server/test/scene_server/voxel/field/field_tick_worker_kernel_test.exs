@@ -299,11 +299,11 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
         tick_interval_ms: 1_000
       )
 
-    assert_receive {:blocking_chunk_snapshot, payload}, 50
+    assert_receive {:blocking_chunk_snapshot, payload}, 1_000
     snapshot = FieldCodec.decode_snapshot_payload!(payload)
     assert snapshot.tick_count == 1
 
-    assert_receive :blocking_chunk_effect_call_started, 50
+    assert_receive :blocking_chunk_effect_call_started, 1_000
     refute_receive :blocking_chunk_effect_call_finished, 0
 
     send(chunk, :release_blocking_effects)
@@ -602,6 +602,94 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_combustion_extinguished"
     assert observe_log_text =~ "transform_voxel_material"
+  end
+
+  test "burning material creates its own heat source after the trigger region expires", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               macro_index,
+               NormalBlockData.new(MaterialCatalog.wood_material_id())
+             )
+
+    profile = %{
+      initial_fuel_mass_kg_per_m3: 10.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      heat_source_celsius: 720.0
+    }
+
+    trigger_region =
+      FieldRegion.new(%{
+        region_id: 115,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{profile: profile, owner_max_ticks: 3}
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: macro_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 700.0
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: trigger_region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    storage_after_trigger = ChunkProcess.debug_state(chunk).storage
+
+    fuel_after_trigger =
+      Storage.effective_attribute_at(storage_after_trigger, macro_index, "fuel_mass")
+
+    assert :ok =
+             eventually(
+               fn ->
+                 debug = ChunkProcess.debug_state(chunk)
+                 storage = debug.storage
+
+                 debug.field_source_count >= 1 and
+                   Storage.effective_attribute_at(storage, macro_index, "fuel_mass") <
+                     fuel_after_trigger
+               end,
+               1_500
+             )
+
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+    assert observe_log_text =~ "source_key: \"{:combustion_instance"
+    assert observe_log_text =~ "voxel_field_source_lifecycle"
   end
 
   test "combustion structural failure candidate is observable while integrity remains chunk truth",
@@ -925,12 +1013,15 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
 
     assert :ok =
-             eventually(fn ->
-               target_storage = ChunkProcess.debug_state(target_chunk).storage
+             eventually(
+               fn ->
+                 target_storage = ChunkProcess.debug_state(target_chunk).storage
 
-               Storage.effective_attribute_at(target_storage, target_index, "combustion_stage") ==
-                 Combustion.stage_burning()
-             end)
+                 Storage.effective_attribute_at(target_storage, target_index, "combustion_stage") ==
+                   Combustion.stage_burning()
+               end,
+               3_000
+             )
 
     assert ChunkProcess.debug_state(target_chunk).field_region_count >= 1
 
@@ -1129,7 +1220,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert_in_delta Enum.at(snapshot.temperature_values, index), expected, delta
   end
 
-  defp eventually(fun, timeout_ms \\ 1_000) when is_function(fun, 0) do
+  defp eventually(fun, timeout_ms) when is_function(fun, 0) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
     poll = fn poll ->

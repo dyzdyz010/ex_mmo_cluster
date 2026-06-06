@@ -37,6 +37,12 @@ heat source. Heat propagation remains owned by the field runtime; combustion
 only decides whether a heated material changes state and which structured
 effects should be sent back to chunk authority.
 
+Once a material enters burning or smoldering, the combustion kernel refreshes a
+stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
+field source on the owning chunk. This gives the fire its own FieldRegion
+lifecycle after the trigger heat impulse expires while still reusing source-key
+dedupe, worker supervision, and `ChunkProcess` authority for every truth write.
+
 When a combustion heat source reaches a chunk face, the combustion kernel emits
 an `ensure_field_region` handoff instead of directly mutating the neighbor. The
 source `ChunkProcess` queues that handoff through `ChunkDirectory`; the target
