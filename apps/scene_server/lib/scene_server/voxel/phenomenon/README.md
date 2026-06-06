@@ -14,6 +14,9 @@ thresholds plus dynamic voxel attributes for moisture, fuel, oxygen, stage,
 smoke, carbonization, and structural integrity. Wet combustible materials do
 not ignite immediately: high heat first emits a moisture writeback, and later
 ticks may ignite only after chunk authority exposes the dried voxel truth.
+Stage changes are observable: preheat, ignition, burning, smoldering, and
+extinguish transitions have distinct state writebacks, and smoldering uses a
+lower persistent heat source than active flame.
 Burn residue is expressed as either a material transition, such as wood to
 charcoal, or a cell clear effect for materials that burn away completely. The
 initial material set intentionally covers three outcomes: wood becomes

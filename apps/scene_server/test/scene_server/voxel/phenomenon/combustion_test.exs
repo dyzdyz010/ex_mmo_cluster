@@ -206,6 +206,52 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert fuel_mass_raw(long_tick_effects) < fuel_mass_raw(short_tick_effects)
   end
 
+  test "low remaining fuel transitions from burning to smoldering with a lower heat source" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      macro_index
+      |> storage_with_material(MaterialCatalog.wood_material_id())
+      |> put_attribute(macro_index, "fuel_mass", 3.0)
+      |> Storage.put_attribute_for_cell(
+        macro_index,
+        "combustion_stage",
+        Combustion.stage_burning()
+      )
+
+    profile = %{
+      ignition_temperature_celsius: 100.0,
+      initial_fuel_mass_kg_per_m3: 10.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      smolder_progress_percent: 70.0,
+      heat_source_celsius: 800.0,
+      smolder_heat_source_celsius: 320.0
+    }
+
+    assert %{
+             stage: :smoldering,
+             effects: effects,
+             heat_source_points: [source_point]
+           } =
+             Combustion.evaluate(storage, macro_index, 500.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    assert {:write_voxel_attribute,
+            %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 3}} in effects
+
+    assert source_point == %{
+             macro_index: macro_index,
+             field_type: :temperature,
+             source_mode: :persistent,
+             source_kind: :combustion,
+             value: 320.0
+           }
+
+    assert observe_event?(effects, "voxel_combustion_smoldering", :smoldering)
+  end
+
   test "combustion kernel threads tick delta into fuel consumption" do
     macro_index = Types.macro_index!({0, 0, 0})
     storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())

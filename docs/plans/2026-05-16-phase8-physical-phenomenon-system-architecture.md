@@ -371,6 +371,8 @@ thermal_expansion_coefficient
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。
+- 低剩余燃料会从 burning 进入 smoldering，并输出 `voxel_combustion_smoldering`
+  observe；smoldering 使用材料 profile 中更低的持续 heat source，而不是继续按明火热源表现。
 - 氧气低于材料维持阈值时，高温不会启动自持燃烧；木材会走 oxygen-limited
   carbonization，写回 `carbonization` / `structural_integrity`，碳化越过材料阈值后
   通过 Chunk authority 转为 charcoal。

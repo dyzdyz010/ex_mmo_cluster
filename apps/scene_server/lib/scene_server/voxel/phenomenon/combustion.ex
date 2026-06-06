@@ -622,6 +622,11 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     "voxel_combustion_ignited"
   end
 
+  defp observe_event(@stage_smoldering, previous_stage)
+       when previous_stage != @stage_smoldering do
+    "voxel_combustion_smoldering"
+  end
+
   defp observe_event(_next_stage, _previous_stage), do: "voxel_combustion_burning"
 
   defp read_float(storage, macro_index, attr_name, fallback) do
