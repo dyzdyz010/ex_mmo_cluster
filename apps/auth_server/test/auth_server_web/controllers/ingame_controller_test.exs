@@ -6,6 +6,7 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Phenomenon.Effect
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -433,6 +434,77 @@ defmodule AuthServerWeb.IngameControllerTest do
            }
   end
 
+  test "POST set_temperature can ignite wood and combustion_probe reads the live burn state",
+       %{conn: conn} do
+    logical_scene_id = 82_475 + System.unique_integer([:positive])
+    world_macro = {0, 0, 0}
+    macro_index = Types.macro_index!(world_macro)
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    chunk_pid =
+      put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+        {world_macro, MaterialCatalog.wood_material_id()}
+      ])
+
+    heat_conn =
+      post(conn, ~p"/ingame/voxel/set_temperature", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0,
+        "target_temperature_celsius" => 800,
+        "radius" => 1,
+        "max_ticks" => 10
+      })
+
+    heat_body = json_response(heat_conn, 200)
+    assert heat_body["target_temperature"] == 800.0
+
+    assert "Elixir.SceneServer.Voxel.Phenomenon.CombustionKernel" in Enum.map(
+             heat_body["source"]["kernel_specs"],
+             & &1["module"]
+           )
+
+    assert_eventually(fn ->
+      chunk_pid
+      |> ChunkProcess.debug_state()
+      |> Map.fetch!(:storage)
+      |> Storage.effective_attribute_at(macro_index, "combustion_stage")
+      |> Kernel.==(Combustion.stage_burning())
+    end)
+
+    probe_conn =
+      heat_conn
+      |> recycle()
+      |> post(~p"/ingame/voxel/combustion_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(probe_conn, 200)
+    assert body["combustion_stage"] == "burning"
+    assert body["active_combustion"] == true
+    assert body["material_name"] == "wood"
+    assert body["profile"]["combustion_heat_j_per_kg"] == 16_000_000.0
+    assert body["profile"]["heat_release_efficiency"] == 0.35
+
+    attrs = body["attributes"]
+    assert attrs["fuel_mass_kg_per_m3"] < 45.0
+    assert attrs["oxygen_percent"] < 100.0
+    assert attrs["combustion_progress_percent"] > 0.0
+  end
+
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",
        %{conn: conn} do
     logical_scene_id = 82_500 + System.unique_integer([:positive])
@@ -734,6 +806,26 @@ defmodule AuthServerWeb.IngameControllerTest do
              })
 
     chunk_pid
+  end
+
+  defp assert_eventually(fun, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    assert_eventually(fun, deadline, timeout_ms)
+  end
+
+  defp assert_eventually(fun, deadline, timeout_ms) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("condition did not become true within #{timeout_ms}ms")
+      else
+        receive do
+        after
+          10 -> assert_eventually(fun, deadline, timeout_ms)
+        end
+      end
+    end
   end
 
   defp fixed32(value), do: round(value * 65_536)

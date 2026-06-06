@@ -392,6 +392,9 @@ thermal_expansion_coefficient
   `voxel_combustion <x> <y> <z>` 会回读目标 chunk authority 中的材料、阶段、
   fuel / oxygen、smoke、carbonization、structural_integrity 和残留策略，避免只能通过
   overlay 间接判断燃烧状态。
+- HTTP 端到端验收已覆盖 `set_temperature -> field tick combustion -> combustion_probe`：
+  授权 chunk 中的木材被高温入口点燃后，probe 能读到 burning、fuel/oxygen/progress
+  变化以及材料热值 profile。
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
