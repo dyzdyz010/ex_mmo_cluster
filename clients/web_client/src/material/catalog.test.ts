@@ -21,6 +21,25 @@ describe("voxel material catalog", () => {
     expect(listMaterialDefinitions().map((definition) => definition.name)).toContain("power_block");
   });
 
+  it("exposes combustion materials by server material id and name", () => {
+    expect(VoxelMaterialId.Ash).toBe(8);
+    expect(VoxelMaterialId.Charcoal).toBe(9);
+    expect(VoxelMaterialId.DryGrass).toBe(10);
+    expect(VoxelMaterialId.Cloth).toBe(11);
+
+    expect(parseMaterialIdOrName("ash")).toBe(VoxelMaterialId.Ash);
+    expect(parseMaterialIdOrName("charcoal")).toBe(VoxelMaterialId.Charcoal);
+    expect(parseMaterialIdOrName("dry_grass")).toBe(VoxelMaterialId.DryGrass);
+    expect(parseMaterialIdOrName("cloth")).toBe(VoxelMaterialId.Cloth);
+    expect(parseMaterialIdOrName("10")).toBe(VoxelMaterialId.DryGrass);
+
+    expect(getMaterialDefinition(VoxelMaterialId.Charcoal)).toMatchObject({
+      materialId: VoxelMaterialId.Charcoal,
+      name: "charcoal",
+      flammable: true,
+    });
+  });
+
   it("does not tint the block body for plain heat", () => {
     const base = getMaterialDefinition(VoxelMaterialId.Stone);
     const visual = resolveVoxelVisual(

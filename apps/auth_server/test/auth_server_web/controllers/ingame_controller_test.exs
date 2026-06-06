@@ -4,9 +4,12 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.ChunkProcess
+  alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.Effect
   alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.DevSeed
+  alias WorldServer.Voxel.MapLedger
 
   @iron_material_id 5
   @power_block_material_id 6
@@ -65,8 +68,9 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert hot["source"]["source_mode"] == "impulse"
     assert hot["source"]["source_key"] == ["temperature", macro_index]
 
-    assert [%{"module" => kernel_module}] = hot["source"]["kernel_specs"]
-    assert is_binary(kernel_module)
+    kernel_modules = Enum.map(hot["source"]["kernel_specs"], & &1["module"])
+    assert "Elixir.SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel" in kernel_modules
+    assert "Elixir.SceneServer.Voxel.Phenomenon.CombustionKernel" in kernel_modules
 
     ambient_conn =
       hot_conn
@@ -266,25 +270,16 @@ defmodule AuthServerWeb.IngameControllerTest do
                seed_terrain?: false
              )
 
-    assert {:ok, chunk_pid} =
-             ChunkDirectory.ensure_chunk(%{
-               logical_scene_id: logical_scene_id,
-               chunk_coord: {0, 0, 0}
-             })
-
-    for {coord, material_id} <- [
-          {{0, 0, 0}, @power_block_material_id},
-          {{1, 0, 0}, @iron_material_id},
-          {{2, 0, 0}, @load_block_material_id},
-          {{2, 1, 0}, @iron_material_id},
-          {{2, 2, 0}, @iron_material_id},
-          {{1, 2, 0}, @iron_material_id},
-          {{0, 2, 0}, @iron_material_id},
-          {{0, 1, 0}, @iron_material_id}
-        ] do
-      assert {:ok, _storage} =
-               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
-    end
+    put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+      {{0, 0, 0}, @power_block_material_id},
+      {{1, 0, 0}, @iron_material_id},
+      {{2, 0, 0}, @load_block_material_id},
+      {{2, 1, 0}, @iron_material_id},
+      {{2, 2, 0}, @iron_material_id},
+      {{1, 2, 0}, @iron_material_id},
+      {{0, 2, 0}, @iron_material_id},
+      {{0, 1, 0}, @iron_material_id}
+    ])
 
     conn =
       post(conn, ~p"/ingame/voxel/auto_circuit", %{
@@ -328,20 +323,11 @@ defmodule AuthServerWeb.IngameControllerTest do
                seed_terrain?: false
              )
 
-    assert {:ok, chunk_pid} =
-             ChunkDirectory.ensure_chunk(%{
-               logical_scene_id: logical_scene_id,
-               chunk_coord: {0, 0, 0}
-             })
-
-    for {coord, material_id} <- [
-          {{0, 0, 0}, @power_block_material_id},
-          {{1, 0, 0}, @iron_material_id},
-          {{2, 0, 0}, @load_block_material_id}
-        ] do
-      assert {:ok, _storage} =
-               ChunkProcess.put_solid_block(chunk_pid, coord, NormalBlockData.new(material_id))
-    end
+    put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+      {{0, 0, 0}, @power_block_material_id},
+      {{1, 0, 0}, @iron_material_id},
+      {{2, 0, 0}, @load_block_material_id}
+    ])
 
     conn =
       post(conn, ~p"/ingame/voxel/auto_circuit", %{
@@ -358,6 +344,81 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["load_count"] == 1
     assert body["closed_circuit_count"] == 0
     assert body["reason"] == "no_closed_circuit"
+  end
+
+  test "POST /ingame/voxel/combustion_probe returns authoritative material burn state",
+       %{conn: conn} do
+    logical_scene_id = 82_425 + System.unique_integer([:positive])
+    world_macro = {0, 0, 0}
+    macro_index = Types.macro_index!(world_macro)
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    chunk_pid =
+      put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+        {world_macro, MaterialCatalog.wood_material_id()}
+      ])
+
+    assert {:ok, %{changed?: true}} =
+             ChunkProcess.write_temperature_attribute(chunk_pid, %{
+               macro: world_macro,
+               target_temperature: 680.0
+             })
+
+    assert {:ok, %{rejected_count: 0}} =
+             ChunkProcess.apply_field_effects(
+               chunk_pid,
+               [
+                 Effect.write_voxel_attribute(macro_index, :fuel_mass, fixed32(12.5)),
+                 Effect.write_voxel_attribute(macro_index, :oxygen, fixed32(44.0)),
+                 Effect.write_voxel_attribute(macro_index, :combustion_stage, 2),
+                 Effect.write_voxel_attribute(macro_index, :combustion_progress, fixed32(56.0)),
+                 Effect.write_voxel_attribute(macro_index, :smoke_density, fixed32(7.0)),
+                 Effect.write_voxel_attribute(macro_index, :carbonization, fixed32(18.0)),
+                 Effect.write_voxel_attribute(macro_index, :structural_integrity, fixed32(82.0))
+               ],
+               %{source: :combustion_probe_test}
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/combustion_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["cell_mode"] == "solid"
+    assert body["material_id"] == MaterialCatalog.wood_material_id()
+    assert body["material_name"] == "wood"
+    assert body["combustible"] == true
+    assert body["combustion_stage"] == "burning"
+    assert body["combustion_stage_raw"] == 2
+    assert body["active_combustion"] == true
+    assert body["world_macro"] == %{"x" => 0, "y" => 0, "z" => 0}
+    assert body["scene_node"] == Atom.to_string(node())
+
+    attrs = body["attributes"]
+    assert_in_delta attrs["temperature_celsius"], 680.0, 0.001
+    assert_in_delta attrs["fuel_mass_kg_per_m3"], 12.5, 0.001
+    assert_in_delta attrs["oxygen_percent"], 44.0, 0.001
+    assert_in_delta attrs["smoke_density_percent"], 7.0, 0.001
+    assert_in_delta attrs["carbonization_percent"], 18.0, 0.001
+    assert_in_delta attrs["structural_integrity_percent"], 82.0, 0.001
+
+    assert body["profile"]["residue"] == %{
+             "type" => "material",
+             "material_id" => MaterialCatalog.charcoal_material_id()
+           }
   end
 
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",
@@ -633,4 +694,35 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["error"] == "voxel_conduct_failed"
     assert body["reason_code"] == "no_conductive_path"
   end
+
+  defp put_authorized_blocks!(logical_scene_id, chunk_coord, entries) do
+    assert {:ok, %{lease: lease}} =
+             MapLedger.route_chunk_with_lease(logical_scene_id, chunk_coord)
+
+    intents =
+      Enum.map(entries, fn {macro, material_id} ->
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: chunk_coord,
+          lease: lease,
+          operation: :put_solid_block,
+          macro: macro,
+          block: NormalBlockData.new(material_id)
+        }
+      end)
+
+    assert {:ok, %{changed_count: changed_count}} = ChunkDirectory.apply_intents(intents)
+    assert changed_count == length(entries)
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: chunk_coord,
+               lease: lease
+             })
+
+    chunk_pid
+  end
+
+  defp fixed32(value), do: round(value * 65_536)
 end

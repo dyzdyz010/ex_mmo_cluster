@@ -121,6 +121,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelConduction(command, args, source, "discharge");
       case "voxel_auto_circuit":
         return this.cmdVoxelAutoCircuit(command, args);
+      case "voxel_combustion":
+        return this.cmdVoxelCombustion(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -627,6 +629,33 @@ export class DevToolsCli implements CliCommandHandler {
       data: {
         coord,
         maxTicks: maxTicks ?? null,
+        voxel: this.deps.world.debugSnapshot(),
+      },
+    };
+  }
+
+  private cmdVoxelCombustion(command: string, args: string[]): CliCommandResult {
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: usageForCombustionCommand() };
+    }
+
+    const combustionPort = this.deps.world as Partial<{
+      requestVoxelCombustionProbe: (coord: FMacroCoord) => boolean;
+    }>;
+    if (typeof combustionPort.requestVoxelCombustionProbe !== "function") {
+      return { ok: false, command, text: "combustion probe unavailable" };
+    }
+
+    const ok = combustionPort.requestVoxelCombustionProbe.call(combustionPort, coord);
+    return {
+      ok,
+      command,
+      text: ok
+        ? `combustion probe submitted for (${formatCoord(coord)})`
+        : `combustion probe rejected for (${formatCoord(coord)})`,
+      data: {
+        coord,
         voxel: this.deps.world.debugSnapshot(),
       },
     };
@@ -1343,6 +1372,10 @@ function usageForChatCommand(): string {
 
 function usageForAutoCircuitCommand(): string {
   return "usage: voxel_auto_circuit <x> <y> <z> [max_ticks]";
+}
+
+function usageForCombustionCommand(): string {
+  return "usage: voxel_combustion <x> <y> <z>";
 }
 
 function formatSceneRegionOverlayLine(region: {

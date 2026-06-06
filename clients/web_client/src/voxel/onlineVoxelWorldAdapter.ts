@@ -217,6 +217,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastSeedAttemptMs = 0;
   private lastSeedDurationMs: number | null = null;
   private lastSeedSummary: Record<string, unknown> | null = null;
+  private lastCombustionProbe: Record<string, unknown> | null = null;
   private lastSnapshot: {
     requestId: number;
     logicalSceneId: number;
@@ -417,6 +418,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         : null,
       lastSeedDurationMs: this.lastSeedDurationMs,
       lastSeedSummary: this.lastSeedSummary,
+      lastCombustionProbe: this.lastCombustionProbe,
       objectStateDeltas: {
         received: this.receivedObjectStateDeltaCount,
         deduped: this.dedupedObjectStateDeltaCount,
@@ -728,7 +730,11 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return queued;
   }
 
-  private enqueueMovementPrewarm(chunkCoord: FChunkCoord, queuedAtMs: number, source: string): void {
+  private enqueueMovementPrewarm(
+    chunkCoord: FChunkCoord,
+    queuedAtMs: number,
+    source: string,
+  ): void {
     const key = chunkCoordKey(chunkCoord);
 
     if (this.pendingMovementPrewarmQueue.size >= MOVEMENT_PREWARM_MAX_QUEUE_ITEMS) {
@@ -750,10 +756,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
 
     if (source === "collision_query") {
       this.pendingMovementPrewarmQueue.delete(key);
-      const prioritizedQueue = new Map([
-        [key, request],
-        ...this.pendingMovementPrewarmQueue,
-      ]);
+      const prioritizedQueue = new Map([[key, request], ...this.pendingMovementPrewarmQueue]);
       this.pendingMovementPrewarmQueue.clear();
       for (const [queuedKey, queuedRequest] of prioritizedQueue) {
         this.pendingMovementPrewarmQueue.set(queuedKey, queuedRequest);
@@ -1205,6 +1208,48 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
         const reason = error instanceof Error ? error.message : String(error);
         this.lastError = reason;
         this.bus.emit("world:voxel-sync-error", { reason, source: "auto_circuit" });
+      });
+    return true;
+  }
+
+  requestVoxelCombustionProbe(coord: FMacroCoord): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/combustion_probe`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        x: coord.x,
+        y: coord.y,
+        z: coord.z,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseErrorReason(response, "combustion_probe_failed"));
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        const summary = combustionProbeSummary(payload);
+        this.lastCombustionProbe = summary;
+        this.lastError = null;
+        this.logger.emit("voxel", "combustion_probe_ok", {
+          logical_scene_id: this.logicalSceneId,
+          coord: `${coord.x},${coord.y},${coord.z}`,
+          material_id: String(summary["materialId"] ?? ""),
+          material_name: String(summary["materialName"] ?? ""),
+          combustible: Boolean(summary["combustible"]),
+          stage: String(summary["stage"] ?? "unknown"),
+          stage_raw: String(summary["stageRaw"] ?? ""),
+          attributes: JSON.stringify(summary["attributes"] ?? {}),
+          profile: JSON.stringify(summary["profile"] ?? null),
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "combustion_probe" });
       });
     return true;
   }
@@ -1812,6 +1857,26 @@ function seedSummary(payload: Record<string, unknown>): Record<string, unknown> 
     skipped: source["skipped"] ?? 0,
     errors: source["errors"] ?? 0,
     maxChunkVersion: source["max_chunk_version"] ?? 0,
+  };
+}
+
+function combustionProbeSummary(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    logicalSceneId: payload["logical_scene_id"],
+    worldMacro: payload["world_macro"],
+    chunkCoord: payload["chunk_coord"],
+    localMacro: payload["local_macro"],
+    macroIndex: payload["macro_index"],
+    cellMode: payload["cell_mode"],
+    materialId: payload["material_id"],
+    materialName: payload["material_name"],
+    combustible: payload["combustible"],
+    stage: payload["combustion_stage"],
+    stageRaw: payload["combustion_stage_raw"],
+    activeCombustion: payload["active_combustion"],
+    attributes: payload["attributes"],
+    profile: payload["profile"],
+    sceneNode: payload["scene_node"],
   };
 }
 

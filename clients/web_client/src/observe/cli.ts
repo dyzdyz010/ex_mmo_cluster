@@ -42,6 +42,7 @@ function defaultHelpText(): string {
     "voxel_conduct <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]",
     "voxel_discharge <sx> <sy> <sz> <tx> <ty> <tz> [source_potential] [max_ticks] [dc|ac|pulse] [voltage] [current_limit_amps] [frequency_hz] [load_current_amps] [energy_budget_joules]",
     "voxel_auto_circuit <x> <y> <z> [max_ticks]",
+    "voxel_combustion <x> <y> <z>",
     "field_overlay [on|off]",
     "target_probe",
     "chunk_versions",

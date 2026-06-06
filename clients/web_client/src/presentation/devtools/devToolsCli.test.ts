@@ -506,6 +506,38 @@ describe("DevToolsCli microgrid boundary", () => {
     });
   });
 
+  it("routes voxel_combustion to a read-only world probe", () => {
+    const requestVoxelCombustionProbe = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      world: {
+        requestVoxelCombustionProbe,
+        debugSnapshot: vi.fn(() => ({
+          mode: "server-authoritative",
+          lastCombustionProbe: { stage: "burning" },
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_combustion", ["4", "12", "12"])).toMatchObject({
+      ok: true,
+      command: "voxel_combustion",
+      text: "combustion probe submitted for (4,12,12)",
+      data: expect.objectContaining({
+        coord: { x: 4, y: 12, z: 12 },
+        voxel: expect.objectContaining({
+          lastCombustionProbe: { stage: "burning" },
+        }),
+      }),
+    });
+    expect(requestVoxelCombustionProbe).toHaveBeenCalledWith({ x: 4, y: 12, z: 12 });
+
+    expect(cli.executeCliCommand("voxel_combustion", ["4", "12"])).toMatchObject({
+      ok: false,
+      command: "voxel_combustion",
+      text: "usage: voxel_combustion <x> <y> <z>",
+    });
+  });
+
   it("preserves a non-CLI source when routing voxel_conduct", () => {
     const conductBetween = vi.fn(() => true);
     const cli = new DevToolsCli({

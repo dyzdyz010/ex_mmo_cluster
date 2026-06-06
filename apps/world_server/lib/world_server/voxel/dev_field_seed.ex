@@ -111,6 +111,28 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     end
   end
 
+  @doc """
+  Reads a voxel's combustion truth from the scene node that owns its chunk.
+
+  This is a dev/debug observation path. WorldServer only routes the request;
+  the scene-side chunk remains the authority for material and dynamic
+  combustion attributes.
+  """
+  @spec ensure_combustion_probe(keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_combustion_probe(opts \\ []) when is_list(opts) do
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
+    world_macro = Keyword.get(opts, :world_macro, {0, 0, 0})
+
+    with {:ok, route} <- route_source_chunk(logical_scene_id, world_macro, opts),
+         {:ok, target_node} <- target_node_from_route(route),
+         invoke_opts = Keyword.put_new(opts, :lease, route.lease),
+         {:ok, summary} <- invoke(target_node, :combustion_probe, invoke_opts) do
+      enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
+      emit("voxel_combustion_probe_ready", enriched)
+      {:ok, enriched}
+    end
+  end
+
   # Mirrors WorldServer.Voxel.DevSeed.chunk_directory_target/2: in single-node
   # dev (Node.list/0 == []) the scene_server runs in the same BEAM as the
   # controller, so we invoke the scene module locally. In multi-node deploys

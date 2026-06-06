@@ -44,3 +44,11 @@ chunk accepts or rejects it as its own authority, starts a local temperature
 region, and then runs the same material-driven combustion rules. This keeps
 cross-chunk fire spread in the field/source lifecycle rather than adding
 neighbor writes to the material state machine.
+
+`CombustionProbe` is the read-only debug boundary for this subsystem. It reads
+the target chunk's authoritative storage and reports material id/name,
+combustible profile, stage, fuel, oxygen, smoke, carbonization, structural
+integrity, and residue policy. The probe never evaluates new combustion effects
+and never creates field regions; browser and HTTP dev tools use it to observe
+the state machine instead of duplicating combustion rules outside this
+directory.

@@ -10,6 +10,10 @@ export const VoxelMaterialId = {
   Iron: 5,
   PowerBlock: 6,
   LoadBlock: 7,
+  Ash: 8,
+  Charcoal: 9,
+  DryGrass: 10,
+  Cloth: 11,
 } as const;
 
 export interface VoxelMaterialDefinition {
@@ -84,6 +88,34 @@ const MATERIAL_DEFINITIONS: readonly VoxelMaterialDefinition[] = [
     baseColorHex: 0x29b6f6,
     maxHealth: 220,
     flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.Ash,
+    name: "ash",
+    baseColorHex: 0x78736a,
+    maxHealth: 30,
+    flammable: false,
+  },
+  {
+    materialId: VoxelMaterialId.Charcoal,
+    name: "charcoal",
+    baseColorHex: 0x24211d,
+    maxHealth: 55,
+    flammable: true,
+  },
+  {
+    materialId: VoxelMaterialId.DryGrass,
+    name: "dry_grass",
+    baseColorHex: 0xb8a244,
+    maxHealth: 25,
+    flammable: true,
+  },
+  {
+    materialId: VoxelMaterialId.Cloth,
+    name: "cloth",
+    baseColorHex: 0xb84a5a,
+    maxHealth: 45,
+    flammable: true,
   },
 ] as const;
 

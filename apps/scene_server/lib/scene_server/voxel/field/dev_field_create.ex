@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   """
 
   alias SceneServer.Voxel.Field.FieldRuntime
+  alias SceneServer.Voxel.Phenomenon.CombustionProbe
 
   @default_max_ticks 600
   @default_conduction_max_ticks 120
@@ -122,6 +123,17 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
     |> maybe_put(:current_limit_amps, Keyword.get(opts, :current_limit_amps))
     |> maybe_put(:lease, Keyword.get(opts, :lease))
     |> FieldRuntime.ensure_auto_circuit()
+  end
+
+  @doc """
+  Reads the authoritative combustion state of one world-macro voxel.
+
+  This is a pure observation helper for browser/dev CLI diagnostics. It does
+  not create a field region or mutate voxel truth.
+  """
+  @spec combustion_probe(keyword()) :: {:ok, map()} | {:error, term()}
+  def combustion_probe(opts \\ []) do
+    CombustionProbe.probe(opts)
   end
 
   defp maybe_put(opts, _key, nil), do: opts

@@ -376,6 +376,10 @@ thermal_expansion_coefficient
 - 氧气低于材料维持阈值时，高温不会启动自持燃烧；木材会走 oxygen-limited
   carbonization，写回 `carbonization` / `structural_integrity`，碳化越过材料阈值后
   通过 Chunk authority 转为 charcoal。
+- 已补只读燃烧真值查询入口：`/ingame/voxel/combustion_probe` 与浏览器 CLI
+  `voxel_combustion <x> <y> <z>` 会回读目标 chunk authority 中的材料、阶段、
+  fuel / oxygen、smoke、carbonization、structural_integrity 和残留策略，避免只能通过
+  overlay 间接判断燃烧状态。
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。

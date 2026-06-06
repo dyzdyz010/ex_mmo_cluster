@@ -1161,6 +1161,77 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     );
   });
 
+  it("posts a combustion probe and stores the latest authoritative burn truth", async () => {
+    const { adapter, logger } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            logical_scene_id: 7,
+            world_macro: { x: 3, y: 4, z: 5 },
+            chunk_coord: { x: 0, y: 0, z: 0 },
+            local_macro: { x: 3, y: 4, z: 5 },
+            macro_index: 1091,
+            cell_mode: "solid",
+            material_id: 3,
+            material_name: "wood",
+            combustible: true,
+            combustion_stage: "burning",
+            combustion_stage_raw: 2,
+            active_combustion: true,
+            attributes: {
+              fuel_mass_kg_per_m3: 12.5,
+              oxygen_percent: 44,
+              smoke_density_percent: 7,
+            },
+            profile: {
+              residue: { type: "material", material_id: 9 },
+            },
+            scene_node: "nonode@nohost",
+          }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestVoxelCombustionProbe({ x: 3, y: 4, z: 5 })).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/combustion_probe",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 3,
+          y: 4,
+          z: 5,
+        }),
+      }),
+    );
+    expect(adapter.debugSnapshot().lastCombustionProbe).toMatchObject({
+      materialId: 3,
+      materialName: "wood",
+      combustible: true,
+      stage: "burning",
+      stageRaw: 2,
+      activeCombustion: true,
+    });
+    expect(logger.recent(1)[0]).toMatchObject({
+      category: "voxel",
+      event: "combustion_probe_ok",
+      fields: expect.objectContaining({
+        coord: "3,4,5",
+        material_id: "3",
+        material_name: "wood",
+        combustible: true,
+        stage: "burning",
+        stage_raw: "2",
+      }),
+    });
+  });
+
   it("does not post automatic circuit refreshes while applying authoritative chunk deltas", async () => {
     const { adapter, transport } = createAdapter();
     const fetchSpy = vi.fn();
