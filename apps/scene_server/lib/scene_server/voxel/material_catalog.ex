@@ -174,6 +174,10 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       carbonization_yield_percent_per_kg: 1.6,
       structural_loss_percent_per_kg: 1.4,
       structural_failure_threshold_percent: 15.0,
+      oxygen_limited_carbonization_percent_per_second: 16.0,
+      oxygen_limited_structural_loss_percent_per_second: 8.0,
+      oxygen_limited_residue_threshold_percent: 80.0,
+      oxygen_limited_residue: {:material, @charcoal_material_id},
       residue: {:material, @charcoal_material_id}
     },
     @charcoal_material_id => %{

@@ -368,6 +368,9 @@ thermal_expansion_coefficient
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
   写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
   才能进入 ignition / burning。
+- 氧气低于材料维持阈值时，高温不会启动自持燃烧；木材会走 oxygen-limited
+  carbonization，写回 `carbonization` / `structural_integrity`，碳化越过材料阈值后
+  通过 Chunk authority 转为 charcoal。
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。

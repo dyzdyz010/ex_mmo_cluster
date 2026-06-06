@@ -118,6 +118,20 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       temperature_celsius >= ignition_temperature and can_sustain?(moisture, oxygen, profile) ->
         burn(storage, macro_index, material_id, temperature_celsius, profile, previous_stage)
 
+      temperature_celsius >= carbonization_temperature(ignition_temperature, profile) and
+        moisture <= get_opt(profile, :max_moisture_kg_per_m3, 150.0) and
+        oxygen < get_opt(profile, :min_oxygen_percent, 8.0) and
+          previous_stage in [@stage_idle, @stage_preheat, @stage_extinguished] ->
+        carbonize(
+          storage,
+          macro_index,
+          material_id,
+          temperature_celsius,
+          oxygen,
+          profile,
+          previous_stage
+        )
+
       temperature_celsius >= drying_temperature(ignition_temperature, profile) and
         moisture > get_opt(profile, :max_moisture_kg_per_m3, 150.0) and
           previous_stage in [@stage_idle, @stage_preheat, @stage_extinguished] ->
@@ -356,6 +370,87 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     }
   end
 
+  defp carbonize(
+         storage,
+         macro_index,
+         material_id,
+         temperature_celsius,
+         oxygen,
+         profile,
+         previous_stage
+       ) do
+    dt_seconds = get_opt(profile, :dt_seconds, 0.1)
+    ignition_temperature = get_opt(profile, :ignition_temperature_celsius, 300.0)
+    carbonization_temperature = carbonization_temperature(ignition_temperature, profile)
+    oxygen_min = get_opt(profile, :min_oxygen_percent, 8.0)
+    carbon_before = read_float(storage, macro_index, "carbonization", 0.0)
+    integrity_before = read_float(storage, macro_index, "structural_integrity", @percent_max)
+
+    heat_factor =
+      clamp(
+        (temperature_celsius - carbonization_temperature) /
+          max(ignition_temperature - carbonization_temperature, 1.0),
+        0.25,
+        2.0
+      )
+
+    oxygen_deficit_factor = clamp((oxygen_min - oxygen) / max(oxygen_min, 1.0), 0.25, 1.0)
+
+    carbon_after =
+      clamp_percent(
+        carbon_before +
+          get_opt(profile, :oxygen_limited_carbonization_percent_per_second, 8.0) *
+            dt_seconds * heat_factor * oxygen_deficit_factor
+      )
+
+    integrity_after =
+      clamp_percent(
+        integrity_before -
+          get_opt(profile, :oxygen_limited_structural_loss_percent_per_second, 4.0) *
+            dt_seconds * heat_factor
+      )
+
+    effects =
+      [
+        Effect.write_voxel_attribute(macro_index, :carbonization, fixed32(carbon_after)),
+        Effect.write_voxel_attribute(
+          macro_index,
+          :structural_integrity,
+          fixed32(integrity_after)
+        ),
+        Effect.emit_observe("voxel_combustion_carbonized", %{
+          macro_index: macro_index,
+          material_id: material_id,
+          stage: :preheat,
+          previous_stage: stage_name(previous_stage),
+          temperature_celsius: temperature_celsius,
+          oxygen_percent: oxygen,
+          min_oxygen_percent: oxygen_min,
+          carbonization_temperature_celsius: carbonization_temperature,
+          carbonization_before_percent: carbon_before,
+          carbonization_after_percent: carbon_after,
+          structural_integrity_before_percent: integrity_before,
+          structural_integrity_after_percent: integrity_after
+        })
+      ] ++
+        preheat_stage_effects(macro_index, previous_stage) ++
+        structural_failure_effects(
+          macro_index,
+          material_id,
+          integrity_before,
+          integrity_after,
+          profile
+        ) ++ oxygen_limited_residue_effects(macro_index, profile, carbon_before, carbon_after)
+
+    %{
+      macro_index: macro_index,
+      material_id: material_id,
+      stage: :preheat,
+      effects: effects,
+      heat_source_points: []
+    }
+  end
+
   defp extinguish(macro_index, material_id, reason) do
     %{
       macro_index: macro_index,
@@ -384,6 +479,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       profile,
       :drying_temperature_celsius,
       max(60.0, ignition_temperature - get_opt(profile, :preheat_margin_celsius, 40.0) * 2.0)
+    )
+  end
+
+  defp carbonization_temperature(ignition_temperature, profile) do
+    get_opt(
+      profile,
+      :oxygen_limited_carbonization_temperature_celsius,
+      max(80.0, ignition_temperature - get_opt(profile, :preheat_margin_celsius, 40.0))
     )
   end
 
@@ -462,6 +565,30 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   end
 
   defp residue_effects(_macro_index, _profile, _stage), do: []
+
+  defp oxygen_limited_residue_effects(macro_index, profile, carbon_before, carbon_after) do
+    threshold = get_opt(profile, :oxygen_limited_residue_threshold_percent, 85.0)
+
+    if carbon_before < threshold and carbon_after >= threshold do
+      case get_opt(profile, :oxygen_limited_residue, nil) do
+        {:material, material_id} when is_integer(material_id) and material_id > 0 ->
+          [
+            Effect.transform_voxel_material(macro_index, material_id, %{
+              reason: :oxygen_limited_carbonization,
+              reset_attributes?: true
+            })
+          ]
+
+        :clear ->
+          [Effect.clear_voxel_cell(macro_index, %{reason: :oxygen_limited_carbonization})]
+
+        _other ->
+          []
+      end
+    else
+      []
+    end
+  end
 
   defp structural_failure_effects(
          macro_index,

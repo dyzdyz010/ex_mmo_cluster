@@ -3936,6 +3936,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           macro_index: summary.macro_index,
           previous_material_id: summary.previous_material_id,
           material_id: summary.material_id,
+          reason: fetch_optional(attrs, [:reason]),
           changed?: summary.changed?,
           chunk_version: next_storage.chunk_version
         }
@@ -3968,6 +3969,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           status: :applied,
           action: :clear_voxel_cell,
           macro_index: summary.macro_index,
+          reason: fetch_optional(attrs, [:reason]),
           changed?: summary.changed?,
           chunk_version: next_storage.chunk_version
         }

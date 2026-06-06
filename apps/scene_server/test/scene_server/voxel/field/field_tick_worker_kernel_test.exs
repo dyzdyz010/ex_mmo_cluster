@@ -681,6 +681,97 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert observe_log_text =~ "voxel_field_effect_applied"
   end
 
+  test "low oxygen heat carbonizes wood into charcoal through chunk authority", %{
+    observe_log: observe_log
+  } do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
+      )
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(
+               chunk,
+               macro_index,
+               NormalBlockData.new(MaterialCatalog.wood_material_id())
+             )
+
+    assert {:ok, _summary} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [
+                 {:write_voxel_attribute,
+                  %{
+                    macro_index: macro_index,
+                    attribute: :oxygen,
+                    raw_value: fixed32(2.0)
+                  }}
+               ],
+               %{kernel_id: :test_setup}
+             )
+
+    region =
+      FieldRegion.new(%{
+        region_id: 113,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{
+              profile: %{
+                oxygen_limited_carbonization_percent_per_second: 1_000.0,
+                oxygen_limited_structural_loss_percent_per_second: 1.0,
+                oxygen_limited_residue_threshold_percent: 50.0,
+                oxygen_limited_residue: {:material, MaterialCatalog.charcoal_material_id()}
+              }
+            }
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: macro_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 700.0
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert Storage.normal_block_at(storage, macro_index).material_id ==
+             MaterialCatalog.charcoal_material_id()
+
+    assert observe_log_text =~ "voxel_combustion_carbonized"
+    assert observe_log_text =~ "oxygen_limited_carbonization"
+    refute observe_log_text =~ "voxel_combustion_ignited"
+  end
+
   test "combustion heat diffuses and ignites adjacent combustible material", %{
     observe_log: observe_log
   } do

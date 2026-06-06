@@ -92,6 +92,40 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
              )
   end
 
+  test "low oxygen high heat carbonizes wood into charcoal without ignition heat source" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      macro_index
+      |> storage_with_material(MaterialCatalog.wood_material_id())
+      |> put_attribute(macro_index, "oxygen", 2.0)
+
+    profile = %{
+      oxygen_limited_carbonization_percent_per_second: 100.0,
+      oxygen_limited_structural_loss_percent_per_second: 1.0,
+      oxygen_limited_residue_threshold_percent: 50.0,
+      oxygen_limited_residue: {:material, MaterialCatalog.charcoal_material_id()}
+    }
+
+    assert %{stage: :preheat, effects: effects, heat_source_points: []} =
+             Combustion.evaluate(storage, macro_index, 500.0,
+               dt_seconds: 1.0,
+               profile: profile
+             )
+
+    assert carbonization_raw(effects) >= fixed32(50.0)
+    assert observe_event?(effects, "voxel_combustion_carbonized", :preheat)
+    refute observe_event?(effects, "voxel_combustion_ignited", :burning)
+
+    assert {:transform_voxel_material,
+            %{
+              macro_index: macro_index,
+              material_id: 9,
+              reason: :oxygen_limited_carbonization,
+              reset_attributes?: true
+            }} in effects
+  end
+
   test "active combustion extinguishes instead of staying burning when moisture exceeds sustain threshold" do
     macro_index = Types.macro_index!({0, 0, 0})
 
@@ -304,6 +338,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
   defp moisture_raw(effects) do
     Enum.find_value(effects, fn
       {:write_voxel_attribute, %{attribute: :moisture, raw_value: raw_value}} -> raw_value
+      _other -> nil
+    end)
+  end
+
+  defp carbonization_raw(effects) do
+    Enum.find_value(effects, fn
+      {:write_voxel_attribute, %{attribute: :carbonization, raw_value: raw_value}} -> raw_value
       _other -> nil
     end)
   end

@@ -24,6 +24,11 @@ failure threshold, combustion emits a `voxel_structural_collapse_candidate`
 observe event. The event is only a bridge for later object/collapse systems;
 the phenomenon rule still leaves truth writes to `ChunkProcess`.
 
+Oxygen-limited high heat can carbonize combustible material without starting a
+self-sustaining flame. Wood uses this path to turn into charcoal when its
+carbonization crosses the material residue threshold; no combustion heat source
+is emitted for this carbonization path.
+
 Combustion heat is fed back into the existing temperature field as a persistent
 heat source. Heat propagation remains owned by the field runtime; combustion
 only decides whether a heated material changes state and which structured
