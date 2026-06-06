@@ -362,6 +362,9 @@ thermal_expansion_coefficient
 - material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
 - material catalog 已追加 dry grass / cloth 两类可燃材料，分别覆盖烧光消失和燃尽成灰；
 - 默认 temperature `FieldSource` 会同时运行 temperature diffusion 与 combustion kernel；
+- `/ingame/voxel/set_temperature` / `dev_heat_voxel` 已改为先经 World
+  `MapLedger.route_chunk_with_lease` 路由 source chunk，再把 lease 透传给 Scene
+  `FieldRuntime`，避免高温燃烧入口在 region / 多 scene 下写到非 owner chunk；
 - `ChunkProcess` 已支持普通属性写回、材料转化和烧尽清空三类 phenomenon writeback。
 - 同一地块内已验证燃烧产生的持续 heat source 可经 temperature diffusion 在后续 tick
   点燃邻近可燃材料。

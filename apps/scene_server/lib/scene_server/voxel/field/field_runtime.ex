@@ -63,7 +63,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
     with {:ok, chunk_pid} <-
            ChunkDirectory.ensure_chunk(%{
              logical_scene_id: logical_scene_id,
-             chunk_coord: chunk_coord
+             chunk_coord: chunk_coord,
+             lease: get_any(opts, [:lease, :lease_token], nil)
            }),
          {:ok, %{storage: %Storage{} = storage} = write_summary} <-
            write_temperature_request(chunk_pid, local_macro, heat_request) do

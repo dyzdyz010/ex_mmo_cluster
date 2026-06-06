@@ -20,9 +20,10 @@ defmodule WorldServer.Voxel.DevFieldSeed do
       the actual `ChunkDirectory` / `ChunkProcess` work happens *on the scene
       node*, where those processes are alive.
 
-  Electric conduction must route by `MapLedger.route_chunk_with_lease/3` before
-  dispatch so the created field region lands on the source chunk's current
-  scene owner under that owner's active lease.
+  Temperature and electric field requests must route by
+  `MapLedger.route_chunk_with_lease/3` before dispatch so the created field
+  region lands on the source chunk's current scene owner under that owner's
+  active lease.
   """
 
   alias WorldServer.CliObserve
@@ -48,8 +49,13 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   """
   @spec ensure_heat_voxel(keyword()) :: {:ok, map()} | {:error, term()}
   def ensure_heat_voxel(opts \\ []) when is_list(opts) do
-    with {:ok, target_node} <- locate_target_node(),
-         {:ok, summary} <- invoke(target_node, :heat_voxel, opts) do
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
+    world_macro = Keyword.get(opts, :world_macro, {0, 0, 0})
+
+    with {:ok, route} <- route_source_chunk(logical_scene_id, world_macro, opts),
+         {:ok, target_node} <- target_node_from_route(route),
+         invoke_opts = Keyword.put_new(opts, :lease, route.lease),
+         {:ok, summary} <- invoke(target_node, :heat_voxel, invoke_opts) do
       enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
       emit("voxel_dev_heat_voxel_ready", enriched)
       {:ok, enriched}
@@ -62,8 +68,13 @@ defmodule WorldServer.Voxel.DevFieldSeed do
   """
   @spec ensure_set_temperature(keyword()) :: {:ok, map()} | {:error, term()}
   def ensure_set_temperature(opts \\ []) when is_list(opts) do
-    with {:ok, target_node} <- locate_target_node(),
-         {:ok, summary} <- invoke(target_node, :set_temperature, opts) do
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
+    world_macro = Keyword.get(opts, :world_macro, {0, 0, 0})
+
+    with {:ok, route} <- route_source_chunk(logical_scene_id, world_macro, opts),
+         {:ok, target_node} <- target_node_from_route(route),
+         invoke_opts = Keyword.put_new(opts, :lease, route.lease),
+         {:ok, summary} <- invoke(target_node, :set_temperature, invoke_opts) do
       enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
       emit("voxel_set_temperature_ready", enriched)
       {:ok, enriched}
@@ -131,28 +142,6 @@ defmodule WorldServer.Voxel.DevFieldSeed do
       emit("voxel_combustion_probe_ready", enriched)
       {:ok, enriched}
     end
-  end
-
-  # Mirrors WorldServer.Voxel.DevSeed.chunk_directory_target/2: in single-node
-  # dev (Node.list/0 == []) the scene_server runs in the same BEAM as the
-  # controller, so we invoke the scene module locally. In multi-node deploys
-  # we look for a node whose name starts with "scene_" (the convention set
-  # by deploy/docker-compose.yml) and dispatch via :rpc.call.
-  defp locate_target_node do
-    case Node.list() do
-      [] ->
-        {:ok, node()}
-
-      peers ->
-        case Enum.find(peers, &scene_node?/1) do
-          nil -> {:error, :no_scene_node_available}
-          scene_node -> {:ok, scene_node}
-        end
-    end
-  end
-
-  defp scene_node?(node) do
-    node |> Atom.to_string() |> String.starts_with?("scene_")
   end
 
   defp invoke(target_node, function, opts) do

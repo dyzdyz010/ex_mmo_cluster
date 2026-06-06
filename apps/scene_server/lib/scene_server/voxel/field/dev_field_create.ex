@@ -44,12 +44,15 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   """
   @spec set_temperature(keyword()) :: {:ok, map()} | {:error, term()}
   def set_temperature(opts \\ []) do
-    base_opts = [
-      logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
-      world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
-      max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
-      radius: Keyword.get(opts, :radius, 4)
-    ]
+    base_opts =
+      [
+        logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
+        world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
+        max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
+        radius: Keyword.get(opts, :radius, 4)
+      ]
+      |> maybe_put(:lease, Keyword.get(opts, :lease))
+      |> maybe_put(:lease_token, Keyword.get(opts, :lease_token))
 
     thermal_opts = [
       target_temperature_celsius:
@@ -140,12 +143,15 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp legacy_heat_voxel(opts) do
-    base_opts = [
-      logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
-      world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
-      max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
-      radius: Keyword.get(opts, :radius, 4)
-    ]
+    base_opts =
+      [
+        logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
+        world_macro: Keyword.get(opts, :world_macro, {0, 0, 0}),
+        max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
+        radius: Keyword.get(opts, :radius, 4)
+      ]
+      |> maybe_put(:lease, Keyword.get(opts, :lease))
+      |> maybe_put(:lease_token, Keyword.get(opts, :lease_token))
 
     thermal_opts = [heat_energy_joules: Keyword.fetch!(opts, :heat_energy_joules)]
 

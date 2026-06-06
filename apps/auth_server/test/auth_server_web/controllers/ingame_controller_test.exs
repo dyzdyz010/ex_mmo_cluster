@@ -7,6 +7,7 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Phenomenon.Effect
+  alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.DevSeed
   alias WorldServer.Voxel.MapLedger
@@ -43,14 +44,17 @@ defmodule AuthServerWeb.IngameControllerTest do
     world_macro = {0, 0, 0}
     macro_index = Types.macro_index!(world_macro)
 
-    assert {:ok, chunk_pid} =
-             ChunkDirectory.ensure_chunk(%{
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
                logical_scene_id: logical_scene_id,
-               chunk_coord: {0, 0, 0}
-             })
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
 
-    assert {:ok, _storage} =
-             ChunkProcess.put_solid_block(chunk_pid, world_macro, NormalBlockData.new(1))
+    chunk_pid = put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [{world_macro, 1}])
 
     hot_conn =
       post(conn, ~p"/ingame/voxel/set_temperature", %{
@@ -64,6 +68,7 @@ defmodule AuthServerWeb.IngameControllerTest do
 
     hot = json_response(hot_conn, 200)
     assert hot["target_temperature"] == 800.0
+    assert hot["scene_node"] == Atom.to_string(node())
     assert hot["source"]["source_kind"] == "temperature"
     assert hot["source"]["source_mode"] == "impulse"
     assert hot["source"]["source_key"] == ["temperature", macro_index]
@@ -87,6 +92,13 @@ defmodule AuthServerWeb.IngameControllerTest do
     ambient = json_response(ambient_conn, 200)
     assert ambient["target_temperature"] == 20.0
     assert ambient["field_region_created"] == false
+
+    assert Storage.effective_attribute_at(
+             ChunkProcess.debug_state(chunk_pid).storage,
+             macro_index,
+             "temperature"
+           ) ==
+             1_310_720
 
     assert ambient["field_region_cleanup"] == %{
              "destroy_reason" => "temperature_within_environment_threshold",
