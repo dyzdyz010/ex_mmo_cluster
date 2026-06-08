@@ -53,6 +53,13 @@ owning `FieldRegion` has an active oxygen deficit at the target cell, the
 combustion decision reads that field value before falling back to storage, so
 oxygen-poor heat drives carbonization instead of a normal flame.
 
+Combustion moisture is field-aware as well. Wet materials still dry through
+authoritative voxel `moisture` writebacks, but the removed water becomes a
+`:moisture` field source. If the owning `FieldRegion` has active moisture at
+the target cell, the combustion decision reads that value before falling back
+to storage, so a humid or recently dried hot zone delays ignition through the
+same phenomenon boundary.
+
 Once a material enters burning or smoldering, the combustion kernel refreshes a
 stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
 field source on the owning chunk. This gives the fire its own FieldRegion

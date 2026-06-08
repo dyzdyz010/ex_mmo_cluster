@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
 
   alias SceneServer.Voxel.Field.Kernels.{
+    MoistureDiffusionKernel,
     OxygenDiffusionKernel,
     SmokeDiffusionKernel,
     TemperatureDiffusionKernel
@@ -311,7 +312,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
           ])
       },
       smoke_kernel_spec(region),
-      oxygen_kernel_spec(region)
+      oxygen_kernel_spec(region),
+      moisture_kernel_spec(region)
     ]
   end
 
@@ -330,7 +332,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
           ])
       },
       smoke_kernel_spec(region),
-      oxygen_kernel_spec(region)
+      oxygen_kernel_spec(region),
+      moisture_kernel_spec(region)
     ]
   end
 
@@ -370,6 +373,19 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
         id: :oxygen_diffusion,
         module: OxygenDiffusionKernel,
         opts: %{diffusion_alpha: 0.12, decay_per_second: 0.04}
+      }
+  end
+
+  defp moisture_kernel_spec(%FieldRegion{} = region) do
+    Enum.find(region.kernels, fn
+      %{id: :moisture_diffusion} -> true
+      %{module: MoistureDiffusionKernel} -> true
+      _other -> false
+    end) ||
+      %{
+        id: :moisture_diffusion,
+        module: MoistureDiffusionKernel,
+        opts: %{diffusion_alpha: 0.10, decay_per_second: 0.06}
       }
   end
 
@@ -435,6 +451,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
   defp field_environment(%FieldRegion{} = region, macro_index) do
     %{}
     |> maybe_put_field_value(region, :oxygen, macro_index, :oxygen_percent)
+    |> maybe_put_field_value(region, :moisture, macro_index, :moisture_kg_per_m3)
   end
 
   defp maybe_put_field_value(environment, %FieldRegion{} = region, field_type, macro_index, key) do

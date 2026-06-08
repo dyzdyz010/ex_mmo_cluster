@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   alias SceneServer.Voxel.Field.Kernels.{
     CircuitCurrentKernel,
     ElectricPotentialKernel,
+    MoistureDiffusionKernel,
     OxygenDiffusionKernel,
     SmokeDiffusionKernel,
     TemperatureDiffusionKernel
@@ -26,6 +27,10 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
 
     test "reserves a first-class oxygen field mask" do
       assert FieldCodec.field_mask_oxygen() == 0x20
+    end
+
+    test "reserves a first-class moisture field mask" do
+      assert FieldCodec.field_mask_moisture() == 0x40
     end
 
     test "roundtrip with electric current as a first-class layer" do
@@ -158,6 +163,38 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
       assert decoded.electric_current_values == []
       assert decoded.ionization_values == []
       assert decoded.smoke_density_values == []
+    end
+
+    test "roundtrip with moisture as a first-class layer" do
+      idx = Types.macro_index!({2, 2, 1})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 90,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {3, 3, 2}},
+          kernels: [%{id: :moisture_diffusion, module: MoistureDiffusionKernel}]
+        })
+
+      moisture_layer =
+        region
+        |> FieldRegion.get_layer(:moisture)
+        |> FieldLayer.put(idx, 180.25)
+
+      region = FieldRegion.put_layer(region, :moisture, moisture_layer)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.field_mask == FieldCodec.field_mask_moisture()
+      assert decoded.macro_indices == [idx]
+      assert_in_delta hd(decoded.moisture_values), 180.25, 0.001
+      assert decoded.temperature_values == []
+      assert decoded.electric_values == []
+      assert decoded.electric_current_values == []
+      assert decoded.ionization_values == []
+      assert decoded.smoke_density_values == []
+      assert decoded.oxygen_values == []
     end
 
     test "roundtrip with all three field types" do

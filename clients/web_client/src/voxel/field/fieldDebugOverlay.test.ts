@@ -668,6 +668,7 @@ function makeTemperatureSnapshot({
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
     oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
   };
 }
 
@@ -694,6 +695,7 @@ function makeElectricSnapshot({
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
     oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
   };
 }
 
@@ -720,6 +722,7 @@ function makeCurrentSnapshot({
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
     oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
   };
 }
 

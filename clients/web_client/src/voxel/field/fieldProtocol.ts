@@ -11,6 +11,7 @@ export const FieldMask = {
   Ionization: 0x04,
   SmokeDensity: 0x10,
   Oxygen: 0x20,
+  Moisture: 0x40,
 } as const;
 
 export const DestroyReason = {
@@ -42,6 +43,8 @@ export interface FFieldRegionSnapshot {
   smokeDensityValues: Float32Array;
   /** Present when fieldMask & 0x20; parallel to macroIndices. */
   oxygenValues: Float32Array;
+  /** Present when fieldMask & 0x40; parallel to macroIndices. */
+  moistureValues: Float32Array;
 }
 
 export interface FFieldRegionDestroyed {
@@ -154,6 +157,17 @@ export function decodeFieldRegionSnapshot(buf: ArrayBuffer): FFieldRegionSnapsho
     }
   }
 
+  // moisture: f32[cellCount] — only if field_mask & 0x40
+  let moistureValues = new Float32Array(0);
+  if (fieldMask & FieldMask.Moisture) {
+    if (buf.byteLength < offset + cellCount * 4) return null;
+    moistureValues = new Float32Array(cellCount);
+    for (let i = 0; i < cellCount; i++) {
+      moistureValues[i] = view.getFloat32(offset, true);
+      offset += 4;
+    }
+  }
+
   return {
     logicalSceneId,
     chunkCoord: { cx, cy, cz },
@@ -168,6 +182,7 @@ export function decodeFieldRegionSnapshot(buf: ArrayBuffer): FFieldRegionSnapsho
     ionizationValues,
     smokeDensityValues,
     oxygenValues,
+    moistureValues,
   };
 }
 

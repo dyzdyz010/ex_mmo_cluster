@@ -47,5 +47,6 @@ function makeCurrentSnapshot(): FFieldRegionSnapshot {
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
     oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
   };
 }

@@ -6,8 +6,8 @@ defmodule SceneServer.Voxel.Field.ScalarField do
   only the `FieldLayer` inside the provided `FieldRegion`, consumes impulse
   source points for the selected field type, and leaves voxel truth writes to
   phenomenon/chunk effects. It is intentionally lightweight; the first use is
-  smoke density and oxygen, and later bounded scalar media such as moisture can
-  reuse the same mechanics without adding per-phenomenon diffusion loops.
+  smoke density, oxygen, and moisture without adding per-phenomenon diffusion
+  loops.
   """
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion}
@@ -28,7 +28,7 @@ defmodule SceneServer.Voxel.Field.ScalarField do
   """
   @spec tick(FieldRegion.t(), FieldRegion.field_type(), keyword() | map()) :: FieldRegion.t()
   def tick(%FieldRegion{} = region, field_type, opts \\ [])
-      when field_type in [:smoke_density, :oxygen] do
+      when field_type in [:smoke_density, :oxygen, :moisture] do
     opts = opts_map(opts)
 
     diffusion_alpha =

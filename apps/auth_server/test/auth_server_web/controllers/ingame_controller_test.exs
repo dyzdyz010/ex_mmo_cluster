@@ -79,6 +79,7 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert "Elixir.SceneServer.Voxel.Phenomenon.CombustionKernel" in kernel_modules
     assert "Elixir.SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel" in kernel_modules
     assert "Elixir.SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel" in kernel_modules
+    assert "Elixir.SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel" in kernel_modules
 
     ambient_conn =
       hot_conn
@@ -484,6 +485,11 @@ defmodule AuthServerWeb.IngameControllerTest do
            )
 
     assert "Elixir.SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel" in Enum.map(
+             heat_body["source"]["kernel_specs"],
+             & &1["module"]
+           )
+
+    assert "Elixir.SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel" in Enum.map(
              heat_body["source"]["kernel_specs"],
              & &1["module"]
            )

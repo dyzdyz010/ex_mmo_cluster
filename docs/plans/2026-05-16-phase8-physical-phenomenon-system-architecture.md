@@ -384,13 +384,17 @@ thermal_expansion_coefficient
   恢复，`FieldCodec` 与 web client 0x73 协议使用 mask bit `0x20` 发布 f32 oxygen
   数组。燃烧判定在目标格有 active oxygen field deficit 时会优先使用场值，因此低氧热环境
   会走 carbonization 而不是普通 ignition。
+- 湿度也已进入一等场层：湿材料受热时仍通过 `moisture` 写回保留材料真值，但被蒸发/带走的
+  水分会输出 `:moisture` field source；`MoistureDiffusionKernel` 负责水汽扩散和衰减，
+  `FieldCodec` 与 web client 0x73 协议使用 mask bit `0x40` 发布 f32 moisture 数组。
+  燃烧判定在目标格有 active moisture field 时会优先使用场值，因此潮湿/水汽环境会先延迟点燃。
 - 跨 chunk face 的火势传播已接入：边界燃烧源输出 `ensure_field_region` effect，
   源 chunk 只负责队列化交接，目标 chunk 经自己的 authority 启动 temperature/combustion
   region 并决定目标材料是否点燃；remote handoff 已避免把 source lease 带入 target
   FieldRegion，目标 region 会捕获目标 chunk 当前 lease。跨节点 lease boundary 事件仍是后续项。
 - 湿材料不会在高温下被阈值式直接点燃；combustion kernel 会先输出 moisture
-  写回和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度低于材料阈值后
-  才能进入 ignition / burning。
+  写回、水汽 field source 和 `voxel_combustion_dried` observe，后续 tick 读取 Chunk 权威湿度
+  或 active moisture field 低于材料阈值后才能进入 ignition / burning。
 - 低剩余燃料会从 burning 进入 smoldering，并输出 `voxel_combustion_smoldering`
   observe；smoldering 使用材料 profile 中更低的 heat-source cap 与释放比例，而不是继续按
   明火热源表现。
@@ -412,8 +416,8 @@ thermal_expansion_coefficient
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
-- 当前实例账本仍是 chunk-local in-memory；烟雾和氧气也还只是 chunk-local 标量扩散，
-  尚未实现 moisture 场、真实气流/压力、烟雾/氧气跨 chunk handoff、snapshot 持久化、
+- 当前实例账本仍是 chunk-local in-memory；烟雾、氧气和湿度也还只是 chunk-local 标量扩散，
+  尚未实现凝结/冻结/沸腾状态机、真实气流/压力、烟雾/氧气/水汽跨 chunk handoff、snapshot 持久化、
   跨节点边界事件或 object / prefab 生命周期，不能把本片误读为完整现象实例系统已经完成。
 
 ### Phase 8.C：Freezing / phase change minimum

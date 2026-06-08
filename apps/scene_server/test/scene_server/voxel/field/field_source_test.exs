@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
@@ -81,6 +82,14 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                  opts: %{
                    diffusion_alpha: 0.12,
                    decay_per_second: 0.04
+                 }
+               },
+               %{
+                 id: :moisture_diffusion,
+                 module: MoistureDiffusionKernel,
+                 opts: %{
+                   diffusion_alpha: 0.1,
+                   decay_per_second: 0.06
                  }
                }
              ]

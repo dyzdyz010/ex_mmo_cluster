@@ -195,13 +195,34 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
 
     profile = %{drying_rate_kg_per_m3_second: 30.0}
 
-    assert %{stage: :preheat, effects: drying_effects, heat_source_points: []} =
+    assert %{
+             stage: :preheat,
+             effects: drying_effects,
+             heat_source_points: [],
+             field_source_points: field_source_points
+           } =
              Combustion.evaluate(storage, macro_index, 500.0,
                dt_seconds: 1.0,
                profile: profile
              )
 
     assert moisture_raw(drying_effects) == fixed32(180.0)
+
+    assert Enum.any?(field_source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :moisture,
+               source_mode: :impulse,
+               source_kind: :combustion,
+               value: 60.0,
+               moisture_released_kg_per_m3: 60.0
+             } ->
+               true
+
+             _other ->
+               false
+           end)
+
     assert observe_event?(drying_effects, "voxel_combustion_dried", :preheat)
     refute observe_event?(drying_effects, "voxel_combustion_ignited", :burning)
     refute fuel_mass_raw(drying_effects)
@@ -214,6 +235,58 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
                dt_seconds: 0.1,
                profile: profile
              )
+  end
+
+  test "combustion kernel reads active moisture field values before ignition" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    region =
+      %{
+        region_id: 1,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{id: :combustion, module: CombustionKernel, opts: %{}},
+          %{
+            id: :moisture_diffusion,
+            module: SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel
+          }
+        ]
+      }
+      |> FieldRegion.new()
+      |> FieldRegion.put_layer(
+        :temperature,
+        FieldLayer.put(FieldLayer.new(), macro_index, 500.0)
+      )
+      |> FieldRegion.put_layer(
+        :moisture,
+        FieldLayer.put(FieldLayer.new(), macro_index, 240.0)
+      )
+
+    assert {:cont, next_region, effects} =
+             CombustionKernel.tick(
+               region,
+               KernelContext.new(region, 1, storage, dt_ms: 1000),
+               %{}
+             )
+
+    assert observe_event?(effects, "voxel_combustion_dried", :preheat)
+    refute observe_event?(effects, "voxel_combustion_ignited", :burning)
+
+    assert Enum.any?(next_region.source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :moisture,
+               source_kind: :combustion,
+               value: value
+             }
+             when value > 0.0 ->
+               true
+
+             _other ->
+               false
+           end)
   end
 
   test "low oxygen high heat carbonizes wood into charcoal without ignition heat source" do

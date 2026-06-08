@@ -218,6 +218,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       |> Kernel.-(drying_rate * dt_seconds * heat_factor)
       |> max(0.0)
 
+    moisture_source_points = moisture_source_points(macro_index, moisture_before, moisture_after)
+
     effects =
       [
         Effect.write_voxel_attribute(macro_index, :moisture, fixed32(moisture_after)),
@@ -240,7 +242,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       stage: :preheat,
       effects: effects,
       heat_source_points: [],
-      field_source_points: []
+      field_source_points: moisture_source_points
     }
   end
 
@@ -735,6 +737,28 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         oxygen_before_percent: oxygen_before,
         oxygen_after_percent: oxygen_after,
         oxygen_consumed_percent: oxygen_before - oxygen_after
+      }
+    ]
+  end
+
+  defp moisture_source_points(_macro_index, moisture_before, moisture_after)
+       when moisture_after >= moisture_before do
+    []
+  end
+
+  defp moisture_source_points(macro_index, moisture_before, moisture_after) do
+    moisture_released = moisture_before - moisture_after
+
+    [
+      %{
+        macro_index: macro_index,
+        field_type: :moisture,
+        source_mode: :impulse,
+        source_kind: :combustion,
+        value: moisture_released,
+        moisture_before_kg_per_m3: moisture_before,
+        moisture_after_kg_per_m3: moisture_after,
+        moisture_released_kg_per_m3: moisture_released
       }
     ]
   end

@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
@@ -63,6 +64,8 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   @smoke_decay_per_second 0.08
   @oxygen_diffusion_alpha 0.12
   @oxygen_decay_per_second 0.04
+  @moisture_diffusion_alpha 0.10
+  @moisture_decay_per_second 0.06
   @default_conduction_source_potential 120.0
   @default_conduction_max_ticks 120
   @default_conduction_radius 1
@@ -314,6 +317,14 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         opts: %{
           diffusion_alpha: @oxygen_diffusion_alpha,
           decay_per_second: @oxygen_decay_per_second
+        }
+      },
+      %{
+        id: :moisture_diffusion,
+        module: MoistureDiffusionKernel,
+        opts: %{
+          diffusion_alpha: @moisture_diffusion_alpha,
+          decay_per_second: @moisture_decay_per_second
         }
       }
     ]

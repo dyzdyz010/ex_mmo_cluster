@@ -6,7 +6,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     * opcode `0x74` `FieldRegionDestroyed`(S→C)
 
   Wire 字节序统一:数值字段大端,floats(temperature / electric_potential / electric_current /
-  smoke_density / oxygen) little-endian f32(与 FieldLayer 存储一致)。Payload **包含** opcode byte:
+  smoke_density / oxygen / moisture) little-endian f32(与 FieldLayer 存储一致)。Payload **包含** opcode byte:
   下游 transport(tcp_connection)直接写 socket;`{packet, 4}` 在
   gen_tcp 层补 4 字节长度前缀。
 
@@ -19,7 +19,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       i32  chunk_z            (big)
       u64  region_id          (big)
       u32  tick_count         (big)
-      u8   field_mask         (bit0 = temperature, bit1 = electric_potential, bit2 = ionization, bit3 = electric_current, bit4 = smoke_density, bit5 = oxygen)
+      u8   field_mask         (bit0 = temperature, bit1 = electric_potential, bit2 = ionization, bit3 = electric_current, bit4 = smoke_density, bit5 = oxygen, bit6 = moisture)
       u16  cell_count         (big)
       [u16; cell_count] macro_indices              (big endian)
       [f32 le; cell_count] temperature_values      (iff bit0 set)
@@ -28,6 +28,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       [u8;    cell_count] ionization_values        (iff bit2 set)
       [f32 le; cell_count] smoke_density_values    (iff bit4 set)
       [f32 le; cell_count] oxygen_values           (iff bit5 set)
+      [f32 le; cell_count] moisture_values         (iff bit6 set)
 
   FieldRegionDestroyed 结构:
 
@@ -53,6 +54,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   @field_mask_electric_current 0x08
   @field_mask_smoke_density 0x10
   @field_mask_oxygen 0x20
+  @field_mask_moisture 0x40
 
   @destroy_reason_expired 0x00
   @destroy_reason_lease_revoked 0x01
@@ -72,6 +74,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   def field_mask_electric_current, do: @field_mask_electric_current
   def field_mask_smoke_density, do: @field_mask_smoke_density
   def field_mask_oxygen, do: @field_mask_oxygen
+  def field_mask_moisture, do: @field_mask_moisture
 
   # ---- FieldRegionSnapshot (0x73) -------------------------------------------
 
@@ -127,13 +130,21 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         []
       end
 
+    moisture_cells =
+      if has_mask?(field_mask, @field_mask_moisture) do
+        collect_cells(region, :moisture)
+      else
+        []
+      end
+
     all_indices =
       (Enum.map(temperature_cells, &elem(&1, 0)) ++
          Enum.map(electric_cells, &elem(&1, 0)) ++
          Enum.map(current_cells, &elem(&1, 0)) ++
          Enum.map(ionization_cells, &elem(&1, 0)) ++
          Enum.map(smoke_cells, &elem(&1, 0)) ++
-         Enum.map(oxygen_cells, &elem(&1, 0)))
+         Enum.map(oxygen_cells, &elem(&1, 0)) ++
+         Enum.map(moisture_cells, &elem(&1, 0)))
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -144,6 +155,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     ion_map = Map.new(ionization_cells)
     smoke_map = Map.new(smoke_cells)
     oxygen_map = Map.new(oxygen_cells)
+    moisture_map = Map.new(moisture_cells)
 
     temp_layer =
       if has_mask?(field_mask, @field_mask_temperature),
@@ -168,6 +180,10 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     oxygen_layer =
       if has_mask?(field_mask, @field_mask_oxygen),
         do: FieldRegion.get_layer(region, :oxygen)
+
+    moisture_layer =
+      if has_mask?(field_mask, @field_mask_moisture),
+        do: FieldRegion.get_layer(region, :moisture)
 
     indices_bin =
       Enum.reduce(all_indices, <<>>, fn idx, acc ->
@@ -235,6 +251,16 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         <<>>
       end
 
+    moisture_bin =
+      if has_mask?(field_mask, @field_mask_moisture) do
+        Enum.reduce(all_indices, <<>>, fn idx, acc ->
+          val = Map.get(moisture_map, idx, FieldLayer.get(moisture_layer, idx))
+          <<acc::binary, val::float-32-little>>
+        end)
+      else
+        <<>>
+      end
+
     <<@opcode_snapshot::unsigned-big-integer-size(8),
       logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
       cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
@@ -242,7 +268,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       region.tick_count::unsigned-big-integer-size(32), field_mask::unsigned-big-integer-size(8),
       cell_count::unsigned-big-integer-size(16), indices_bin::binary, temp_bin::binary,
       elec_bin::binary, current_bin::binary, ion_bin::binary, smoke_bin::binary,
-      oxygen_bin::binary>>
+      oxygen_bin::binary, moisture_bin::binary>>
   end
 
   @doc """
@@ -316,7 +342,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {[], rest6}
       end
 
-    {oxygen_values, _rest8} =
+    {oxygen_values, rest8} =
       if has_mask?(field_mask, @field_mask_oxygen) do
         oxygen_size = cell_count * 4
         <<oxygen_bin::binary-size(^oxygen_size), r::binary>> = rest7
@@ -324,6 +350,16 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {vals, r}
       else
         {[], rest7}
+      end
+
+    {moisture_values, _rest9} =
+      if has_mask?(field_mask, @field_mask_moisture) do
+        moisture_size = cell_count * 4
+        <<moisture_bin::binary-size(^moisture_size), r::binary>> = rest8
+        vals = for <<v::float-32-little <- moisture_bin>>, do: v
+        {vals, r}
+      else
+        {[], rest8}
       end
 
     %{
@@ -340,7 +376,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       electric_current_values: electric_current_values,
       ionization_values: ionization_values,
       smoke_density_values: smoke_density_values,
-      oxygen_values: oxygen_values
+      oxygen_values: oxygen_values,
+      moisture_values: moisture_values
     }
   end
 
@@ -402,6 +439,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       :ionization, acc -> bor(acc, @field_mask_ionization)
       :smoke_density, acc -> bor(acc, @field_mask_smoke_density)
       :oxygen, acc -> bor(acc, @field_mask_oxygen)
+      :moisture, acc -> bor(acc, @field_mask_moisture)
       _, acc -> acc
     end)
   end
