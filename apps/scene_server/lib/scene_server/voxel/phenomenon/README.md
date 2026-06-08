@@ -88,3 +88,11 @@ integrity, residue policy, and the active chunk-local phenomenon instance when
 one exists. The probe never evaluates new combustion effects and never creates
 field regions; browser and HTTP dev tools use it to observe the state machine
 instead of duplicating combustion rules outside this directory.
+
+`PhaseChangeProbe` follows the same boundary for contained-moisture phase
+state. It reports material id/name, `phase_state` (`stable`, `frozen`,
+`boiling`, or `vapor`), temperature, moisture, structural integrity, the
+contained-water thresholds used by the rule, and any active chunk-local
+`phase_change` instance. Vaporized cells can therefore remain observable even
+after the active instance has completed, while the probe still performs no
+state transition and creates no field region.

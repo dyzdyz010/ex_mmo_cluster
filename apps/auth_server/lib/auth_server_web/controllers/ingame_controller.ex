@@ -164,6 +164,24 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc """
+  Dev-only readback hook for one voxel's authoritative contained-water phase
+  truth.
+
+  The scene chunk remains the source of material, phase_state, temperature,
+  moisture, structural integrity, and chunk-local phase-change instance. The
+  controller only parses JSON coordinates and serializes the returned summary.
+  """
+  def voxel_phase_change_probe(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_phase_change_probe(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
   defp do_auto_login(conn, params) do
     username = params["username"] |> normalize_username()
 
@@ -461,6 +479,35 @@ defmodule AuthServerWeb.IngameController do
         conn
         |> put_status(:service_unavailable)
         |> json(%{error: "voxel_combustion_probe_failed", reason: inspect(reason)})
+
+      _other ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
+  defp do_voxel_phase_change_probe(conn, params) do
+    module = Module.concat([WorldServer, Voxel, DevFieldSeed])
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    world_macro = parse_world_macro(params)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         {:ok, summary} <-
+           apply(module, :ensure_phase_change_probe, [
+             [
+               logical_scene_id: logical_scene_id,
+               world_macro: world_macro
+             ]
+           ]) do
+      voxel_json(conn, summary)
+    else
+      {:error, reason} ->
+        Logger.warning("voxel phase change probe failed: #{inspect(reason)}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "voxel_phase_change_probe_failed", reason: inspect(reason)})
 
       _other ->
         conn

@@ -442,6 +442,9 @@ thermal_expansion_coefficient
 - 已落 `ThermalKernelSpecs` 共享内核 bundle：默认 `set_temperature` 温度源、燃烧
   owner heat region 和 combustion boundary heat region 都通过同一套
   temperature/combustion/phase-change/smoke/oxygen/moisture 链路运行；
+- 已补只读相变真值查询入口：`/ingame/voxel/phase_change_probe` 与浏览器 CLI
+  `voxel_phase <x> <y> <z>` 会回读目标 chunk authority 中的材料、`phase_state`、
+  温度、含水量、结构完整度、contained-water 阈值和 active `phase_change` instance；
 - 当前只覆盖“材料中水分”的冻结和沸腾，不覆盖铁/石/泥等材料本体熔化、凝固、潜热守恒或
   可视化冰层模型。
 

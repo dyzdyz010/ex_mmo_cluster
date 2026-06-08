@@ -123,6 +123,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelAutoCircuit(command, args);
       case "voxel_combustion":
         return this.cmdVoxelCombustion(command, args);
+      case "voxel_phase":
+        return this.cmdVoxelPhase(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -654,6 +656,33 @@ export class DevToolsCli implements CliCommandHandler {
       text: ok
         ? `combustion probe submitted for (${formatCoord(coord)})`
         : `combustion probe rejected for (${formatCoord(coord)})`,
+      data: {
+        coord,
+        voxel: this.deps.world.debugSnapshot(),
+      },
+    };
+  }
+
+  private cmdVoxelPhase(command: string, args: string[]): CliCommandResult {
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: usageForPhaseCommand() };
+    }
+
+    const phasePort = this.deps.world as Partial<{
+      requestVoxelPhaseChangeProbe: (coord: FMacroCoord) => boolean;
+    }>;
+    if (typeof phasePort.requestVoxelPhaseChangeProbe !== "function") {
+      return { ok: false, command, text: "phase change probe unavailable" };
+    }
+
+    const ok = phasePort.requestVoxelPhaseChangeProbe.call(phasePort, coord);
+    return {
+      ok,
+      command,
+      text: ok
+        ? `phase change probe submitted for (${formatCoord(coord)})`
+        : `phase change probe rejected for (${formatCoord(coord)})`,
       data: {
         coord,
         voxel: this.deps.world.debugSnapshot(),
@@ -1376,6 +1405,10 @@ function usageForAutoCircuitCommand(): string {
 
 function usageForCombustionCommand(): string {
   return "usage: voxel_combustion <x> <y> <z>";
+}
+
+function usageForPhaseCommand(): string {
+  return "usage: voxel_phase <x> <y> <z>";
 }
 
 function formatSceneRegionOverlayLine(region: {

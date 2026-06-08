@@ -218,6 +218,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastSeedDurationMs: number | null = null;
   private lastSeedSummary: Record<string, unknown> | null = null;
   private lastCombustionProbe: Record<string, unknown> | null = null;
+  private lastPhaseChangeProbe: Record<string, unknown> | null = null;
   private lastSnapshot: {
     requestId: number;
     logicalSceneId: number;
@@ -419,6 +420,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastSeedDurationMs: this.lastSeedDurationMs,
       lastSeedSummary: this.lastSeedSummary,
       lastCombustionProbe: this.lastCombustionProbe,
+      lastPhaseChangeProbe: this.lastPhaseChangeProbe,
       objectStateDeltas: {
         received: this.receivedObjectStateDeltaCount,
         deduped: this.dedupedObjectStateDeltaCount,
@@ -1254,6 +1256,49 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return true;
   }
 
+  requestVoxelPhaseChangeProbe(coord: FMacroCoord): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/phase_change_probe`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        x: coord.x,
+        y: coord.y,
+        z: coord.z,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseErrorReason(response, "phase_change_probe_failed"));
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        const summary = phaseChangeProbeSummary(payload);
+        this.lastPhaseChangeProbe = summary;
+        this.lastError = null;
+        this.logger.emit("voxel", "phase_change_probe_ok", {
+          logical_scene_id: this.logicalSceneId,
+          coord: `${coord.x},${coord.y},${coord.z}`,
+          material_id: String(summary["materialId"] ?? ""),
+          material_name: String(summary["materialName"] ?? ""),
+          phase_state: String(summary["phaseState"] ?? "unknown"),
+          phase_state_raw: String(summary["phaseStateRaw"] ?? ""),
+          active_phase_change: Boolean(summary["activePhaseChange"]),
+          active_phase_change_instance: Boolean(summary["activePhaseChangeInstance"]),
+          attributes: JSON.stringify(summary["attributes"] ?? {}),
+          thresholds: JSON.stringify(summary["thresholds"] ?? {}),
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "phase_change_probe" });
+      });
+    return true;
+  }
+
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
     this.receivedObjectStateDeltaCount += 1;
     this.objectStateDeltaConsumer.consume(message.delta);
@@ -1876,6 +1921,27 @@ function combustionProbeSummary(payload: Record<string, unknown>): Record<string
     activeCombustion: payload["active_combustion"],
     attributes: payload["attributes"],
     profile: payload["profile"],
+    sceneNode: payload["scene_node"],
+  };
+}
+
+function phaseChangeProbeSummary(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    logicalSceneId: payload["logical_scene_id"],
+    worldMacro: payload["world_macro"],
+    chunkCoord: payload["chunk_coord"],
+    localMacro: payload["local_macro"],
+    macroIndex: payload["macro_index"],
+    cellMode: payload["cell_mode"],
+    materialId: payload["material_id"],
+    materialName: payload["material_name"],
+    phaseState: payload["phase_state"],
+    phaseStateRaw: payload["phase_state_raw"],
+    activePhaseChange: payload["active_phase_change"],
+    activePhaseChangeInstance: payload["active_phase_change_instance"],
+    attributes: payload["attributes"],
+    thresholds: payload["thresholds"],
+    phenomenonInstance: payload["phenomenon_instance"],
     sceneNode: payload["scene_node"],
   };
 }

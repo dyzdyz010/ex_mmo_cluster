@@ -538,6 +538,38 @@ describe("DevToolsCli microgrid boundary", () => {
     });
   });
 
+  it("routes voxel_phase to a read-only world phase-change probe", () => {
+    const requestVoxelPhaseChangeProbe = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      world: {
+        requestVoxelPhaseChangeProbe,
+        debugSnapshot: vi.fn(() => ({
+          mode: "server-authoritative",
+          lastPhaseChangeProbe: { phaseState: "frozen" },
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_phase", ["4", "12", "12"])).toMatchObject({
+      ok: true,
+      command: "voxel_phase",
+      text: "phase change probe submitted for (4,12,12)",
+      data: expect.objectContaining({
+        coord: { x: 4, y: 12, z: 12 },
+        voxel: expect.objectContaining({
+          lastPhaseChangeProbe: { phaseState: "frozen" },
+        }),
+      }),
+    });
+    expect(requestVoxelPhaseChangeProbe).toHaveBeenCalledWith({ x: 4, y: 12, z: 12 });
+
+    expect(cli.executeCliCommand("voxel_phase", ["4", "12"])).toMatchObject({
+      ok: false,
+      command: "voxel_phase",
+      text: "usage: voxel_phase <x> <y> <z>",
+    });
+  });
+
   it("preserves a non-CLI source when routing voxel_conduct", () => {
     const conductBetween = vi.fn(() => true);
     const cli = new DevToolsCli({

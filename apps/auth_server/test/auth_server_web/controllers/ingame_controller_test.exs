@@ -543,6 +543,82 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert attrs["combustion_progress_percent"] > 0.0
   end
 
+  test "POST /ingame/voxel/phase_change_probe returns authoritative contained-water state",
+       %{conn: conn} do
+    logical_scene_id = 82_485 + System.unique_integer([:positive])
+    world_macro = {0, 0, 0}
+    macro_index = Types.macro_index!(world_macro)
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    chunk_pid =
+      put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+        {world_macro, MaterialCatalog.wood_material_id()}
+      ])
+
+    assert {:ok, %{changed?: true}} =
+             ChunkProcess.write_temperature_attribute(chunk_pid, %{
+               macro: world_macro,
+               target_temperature: -12.0
+             })
+
+    assert {:ok, %{rejected_count: 0}} =
+             ChunkProcess.apply_field_effects(
+               chunk_pid,
+               [
+                 Effect.write_voxel_attribute(macro_index, :moisture, fixed32(38.0)),
+                 Effect.write_voxel_attribute(macro_index, :phase_state, 1),
+                 Effect.write_voxel_attribute(macro_index, :structural_integrity, fixed32(88.0)),
+                 Effect.upsert_phenomenon_instance(:phase_change, macro_index, %{
+                   material_id: MaterialCatalog.wood_material_id(),
+                   stage: :frozen,
+                   previous_stage: :stable,
+                   temperature_celsius: -12.0,
+                   moisture_kg_per_m3: 38.0
+                 })
+               ],
+               %{source: :phase_change_probe_test}
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/phase_change_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["cell_mode"] == "solid"
+    assert body["material_id"] == MaterialCatalog.wood_material_id()
+    assert body["material_name"] == "wood"
+    assert body["phase_state"] == "frozen"
+    assert body["phase_state_raw"] == 1
+    assert body["active_phase_change"] == true
+    assert body["active_phase_change_instance"] == true
+    assert body["scene_node"] == Atom.to_string(node())
+    assert body["world_macro"] == %{"x" => 0, "y" => 0, "z" => 0}
+
+    attrs = body["attributes"]
+    assert_in_delta attrs["temperature_celsius"], -12.0, 0.001
+    assert_in_delta attrs["moisture_kg_per_m3"], 38.0, 0.001
+    assert_in_delta attrs["structural_integrity_percent"], 88.0, 0.001
+
+    instance = body["phenomenon_instance"]
+    assert instance["kind"] == "phase_change"
+    assert instance["status"] == "active"
+    assert instance["stage"] == "frozen"
+    assert instance["macro_index"] == macro_index
+  end
+
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",
        %{conn: conn} do
     logical_scene_id = 82_500 + System.unique_integer([:positive])
