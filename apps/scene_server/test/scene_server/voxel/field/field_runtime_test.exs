@@ -14,6 +14,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Phenomenon.CombustionKernel
+  alias SceneServer.Voxel.Phenomenon.PhaseChangeKernel
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
 
@@ -1753,12 +1754,13 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  radius: 4
                })
 
-      [kernel_spec, combustion_spec, smoke_spec, oxygen_spec, moisture_spec] =
+      [kernel_spec, combustion_spec, phase_change_spec, smoke_spec, oxygen_spec, moisture_spec] =
         plan.region_attrs.kernels
 
       region = FieldRegion.new(Map.put(plan.region_attrs, :region_id, 99))
 
       assert combustion_spec == %{id: :combustion, module: CombustionKernel, opts: %{}}
+      assert phase_change_spec == %{id: :phase_change, module: PhaseChangeKernel, opts: %{}}
       assert smoke_spec.id == :smoke_diffusion
       assert oxygen_spec.id == :oxygen_diffusion
       assert moisture_spec.id == :moisture_diffusion

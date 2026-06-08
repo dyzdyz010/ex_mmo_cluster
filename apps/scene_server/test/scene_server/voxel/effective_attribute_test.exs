@@ -382,6 +382,14 @@ defmodule SceneServer.Voxel.EffectiveAttributeTest do
       assert Storage.effective_attribute_at(storage, 0, "dielectric_strength") == fixed32(3.0)
     end
 
+    test "phase_state is stable by default and can be overridden as voxel truth" do
+      storage = solid_chunk(0, material_id: @wood_material_id)
+      assert Storage.effective_attribute_at(storage, 0, "phase_state") == 0
+
+      frozen_storage = Storage.put_attribute_for_cell(storage, 0, "phase_state", 1)
+      assert Storage.effective_attribute_at(frozen_storage, 0, "phase_state") == 1
+    end
+
     test "即使 cell 设置了 attribute_set 含 density override，effective 仍 = L1 default" do
       storage = solid_chunk(0, material_id: @dirt_material_id)
       # density id=4, value_type fixed32 (0x03)

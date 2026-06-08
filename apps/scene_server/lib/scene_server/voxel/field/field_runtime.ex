@@ -1483,13 +1483,17 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
   end
 
   defp field_type_names(kernels) when is_list(kernels) do
-    kernels
-    |> Enum.flat_map(fn
-      %{module: module, opts: opts} -> kernel_required_layers(module, opts)
-      %{module: module} -> kernel_required_layers(module, %{})
-      _other -> []
-    end)
-    |> Enum.uniq()
+    required =
+      kernels
+      |> Enum.flat_map(fn
+        %{module: module, opts: opts} -> kernel_required_layers(module, opts)
+        %{module: module} -> kernel_required_layers(module, %{})
+        _other -> []
+      end)
+      |> MapSet.new()
+
+    FieldRegion.known_field_types()
+    |> Enum.filter(&MapSet.member?(required, &1))
     |> Enum.map(&Atom.to_string/1)
   end
 

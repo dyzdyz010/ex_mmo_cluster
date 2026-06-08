@@ -9,14 +9,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
   @behaviour SceneServer.Voxel.Field.Kernel
 
-  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
-
-  alias SceneServer.Voxel.Field.Kernels.{
-    MoistureDiffusionKernel,
-    OxygenDiffusionKernel,
-    SmokeDiffusionKernel,
-    TemperatureDiffusionKernel
-  }
+  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext, ThermalKernelSpecs}
 
   alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Storage
@@ -298,95 +291,29 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     do: acc
 
   defp boundary_kernel_specs(%FieldRegion{} = region, opts) do
-    [
-      temperature_kernel_spec(region),
-      %{
-        id: :combustion,
-        module: __MODULE__,
-        opts:
-          Map.drop(opts, [
-            :boundary_radius,
-            "boundary_radius",
-            :boundary_max_ticks,
-            "boundary_max_ticks"
-          ])
-      },
-      smoke_kernel_spec(region),
-      oxygen_kernel_spec(region),
-      moisture_kernel_spec(region)
-    ]
+    ThermalKernelSpecs.inherit_region_specs(region,
+      combustion_module: __MODULE__,
+      combustion_opts:
+        Map.drop(opts, [
+          :boundary_radius,
+          "boundary_radius",
+          :boundary_max_ticks,
+          "boundary_max_ticks"
+        ])
+    )
   end
 
   defp owner_kernel_specs(%FieldRegion{} = region, opts) do
-    [
-      temperature_kernel_spec(region),
-      %{
-        id: :combustion,
-        module: __MODULE__,
-        opts:
-          Map.drop(opts, [
-            :owner_radius,
-            "owner_radius",
-            :owner_max_ticks,
-            "owner_max_ticks"
-          ])
-      },
-      smoke_kernel_spec(region),
-      oxygen_kernel_spec(region),
-      moisture_kernel_spec(region)
-    ]
-  end
-
-  defp temperature_kernel_spec(%FieldRegion{} = region) do
-    Enum.find(region.kernels, fn
-      %{id: :temperature_diffusion} -> true
-      %{module: TemperatureDiffusionKernel} -> true
-      _other -> false
-    end) ||
-      %{
-        id: :temperature_diffusion,
-        module: TemperatureDiffusionKernel,
-        opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0, cell_size_meters: 1.0}
-      }
-  end
-
-  defp smoke_kernel_spec(%FieldRegion{} = region) do
-    Enum.find(region.kernels, fn
-      %{id: :smoke_diffusion} -> true
-      %{module: SmokeDiffusionKernel} -> true
-      _other -> false
-    end) ||
-      %{
-        id: :smoke_diffusion,
-        module: SmokeDiffusionKernel,
-        opts: %{diffusion_alpha: 0.18, decay_per_second: 0.08}
-      }
-  end
-
-  defp oxygen_kernel_spec(%FieldRegion{} = region) do
-    Enum.find(region.kernels, fn
-      %{id: :oxygen_diffusion} -> true
-      %{module: OxygenDiffusionKernel} -> true
-      _other -> false
-    end) ||
-      %{
-        id: :oxygen_diffusion,
-        module: OxygenDiffusionKernel,
-        opts: %{diffusion_alpha: 0.12, decay_per_second: 0.04}
-      }
-  end
-
-  defp moisture_kernel_spec(%FieldRegion{} = region) do
-    Enum.find(region.kernels, fn
-      %{id: :moisture_diffusion} -> true
-      %{module: MoistureDiffusionKernel} -> true
-      _other -> false
-    end) ||
-      %{
-        id: :moisture_diffusion,
-        module: MoistureDiffusionKernel,
-        opts: %{diffusion_alpha: 0.10, decay_per_second: 0.06}
-      }
+    ThermalKernelSpecs.inherit_region_specs(region,
+      combustion_module: __MODULE__,
+      combustion_opts:
+        Map.drop(opts, [
+          :owner_radius,
+          "owner_radius",
+          :owner_max_ticks,
+          "owner_max_ticks"
+        ])
+    )
   end
 
   defp boundary_source_key(

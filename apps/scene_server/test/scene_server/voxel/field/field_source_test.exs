@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Phenomenon.CombustionKernel
+  alias SceneServer.Voxel.Phenomenon.PhaseChangeKernel
   alias SceneServer.Voxel.Types
 
   describe "normalize/1" do
@@ -66,6 +67,11 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                %{
                  id: :combustion,
                  module: CombustionKernel,
+                 opts: %{}
+               },
+               %{
+                 id: :phase_change,
+                 module: PhaseChangeKernel,
                  opts: %{}
                },
                %{

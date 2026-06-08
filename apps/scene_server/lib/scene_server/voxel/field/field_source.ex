@@ -10,12 +10,8 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
-  alias SceneServer.Voxel.Field.Kernels.MoistureDiffusionKernel
-  alias SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel
-  alias SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel
-  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
-  alias SceneServer.Voxel.Phenomenon.CombustionKernel
+  alias SceneServer.Voxel.Field.ThermalKernelSpecs
 
   @type t :: %__MODULE__{
           source_id: term(),
@@ -57,15 +53,6 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   # FieldRegion is a gameplay/observe projection, so this profile compresses
   # physical diffusion into a browser-visible time window without changing the
   # voxel truth stored on the chunk.
-  @temperature_diffusion_time_scale 20_000.0
-  @temperature_ambient_loss_per_second 0.08
-  @temperature_cell_size_meters 1.0
-  @smoke_diffusion_alpha 0.18
-  @smoke_decay_per_second 0.08
-  @oxygen_diffusion_alpha 0.12
-  @oxygen_decay_per_second 0.04
-  @moisture_diffusion_alpha 0.10
-  @moisture_decay_per_second 0.06
   @default_conduction_source_potential 120.0
   @default_conduction_max_ticks 120
   @default_conduction_radius 1
@@ -157,7 +144,8 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         }),
       target_value: target_value,
       source_value: source_value,
-      kernel_specs: fetch_any(attrs, [:kernel_specs], temperature_kernel_specs()),
+      kernel_specs:
+        fetch_any(attrs, [:kernel_specs], ThermalKernelSpecs.temperature_source_specs()),
       decay_policy:
         fetch_any(attrs, [:decay_policy], %{
           field_radius: radius,
@@ -281,53 +269,6 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       created_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:created_tick], nil)),
       updated_tick: normalize_optional_non_negative_int(fetch_any(attrs, [:updated_tick], nil))
     }
-  end
-
-  defp temperature_kernel_spec do
-    %{
-      id: :temperature_diffusion,
-      module: TemperatureDiffusionKernel,
-      opts: %{
-        diffusion_time_scale: @temperature_diffusion_time_scale,
-        ambient_loss_per_second: @temperature_ambient_loss_per_second,
-        cell_size_meters: @temperature_cell_size_meters
-      }
-    }
-  end
-
-  defp temperature_kernel_specs do
-    [
-      temperature_kernel_spec(),
-      %{
-        id: :combustion,
-        module: CombustionKernel,
-        opts: %{}
-      },
-      %{
-        id: :smoke_diffusion,
-        module: SmokeDiffusionKernel,
-        opts: %{
-          diffusion_alpha: @smoke_diffusion_alpha,
-          decay_per_second: @smoke_decay_per_second
-        }
-      },
-      %{
-        id: :oxygen_diffusion,
-        module: OxygenDiffusionKernel,
-        opts: %{
-          diffusion_alpha: @oxygen_diffusion_alpha,
-          decay_per_second: @oxygen_decay_per_second
-        }
-      },
-      %{
-        id: :moisture_diffusion,
-        module: MoistureDiffusionKernel,
-        opts: %{
-          diffusion_alpha: @moisture_diffusion_alpha,
-          decay_per_second: @moisture_decay_per_second
-        }
-      }
-    ]
   end
 
   defp conduction_kernel_spec(target_index, max_frontier, %PowerSource{} = power_source) do

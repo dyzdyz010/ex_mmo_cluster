@@ -417,8 +417,9 @@ thermal_expansion_coefficient
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
 - 当前实例账本仍是 chunk-local in-memory；烟雾、氧气和湿度也还只是 chunk-local 标量扩散，
-  尚未实现凝结/冻结/沸腾状态机、真实气流/压力、烟雾/氧气/水汽跨 chunk handoff、snapshot 持久化、
-  跨节点边界事件或 object / prefab 生命周期，不能把本片误读为完整现象实例系统已经完成。
+  已补含水冻结/沸腾的最小状态机，但尚未实现凝结、材料本体熔化/凝固、真实气流/压力、
+  烟雾/氧气/水汽跨 chunk handoff、snapshot 持久化、跨节点边界事件或 object / prefab 生命周期，
+  不能把本片误读为完整现象实例系统已经完成。
 
 ### Phase 8.C：Freezing / phase change minimum
 
@@ -430,6 +431,19 @@ thermal_expansion_coefficient
 - 写回 frozen / ice state；
 - 结构膨胀压力作为 effect 暂存或写入 structural stress；
 - web overlay 能看到 cold field + frozen state。
+
+2026-06-08 首片进展：
+
+- attribute catalog v4 追加 `phase_state`，用 0 stable / 1 frozen / 2 boiling /
+  3 vapor 保存单格含水相态；
+- 已落 `SceneServer.Voxel.Phenomenon.PhaseChange` 纯规则：低温含水格写回 frozen
+  state 并降低 `structural_integrity`；高温含水格降低 `moisture`，写回 boiling /
+  vapor state，并释放 `:moisture` field source；
+- 已落 `ThermalKernelSpecs` 共享内核 bundle：默认 `set_temperature` 温度源、燃烧
+  owner heat region 和 combustion boundary heat region 都通过同一套
+  temperature/combustion/phase-change/smoke/oxygen/moisture 链路运行；
+- 当前只覆盖“材料中水分”的冻结和沸腾，不覆盖铁/石/泥等材料本体熔化、凝固、潜热守恒或
+  可视化冰层模型。
 
 ### Phase 8.D：Structural integrity
 

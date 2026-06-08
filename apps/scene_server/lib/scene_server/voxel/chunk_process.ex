@@ -4691,6 +4691,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_raw_attribute_value(:extinguished, %{name: "combustion_stage"} = defn),
     do: normalize_raw_attribute_value(4, defn)
 
+  defp normalize_raw_attribute_value(:stable, %{name: "phase_state"} = defn),
+    do: normalize_raw_attribute_value(0, defn)
+
+  defp normalize_raw_attribute_value(:frozen, %{name: "phase_state"} = defn),
+    do: normalize_raw_attribute_value(1, defn)
+
+  defp normalize_raw_attribute_value(:boiling, %{name: "phase_state"} = defn),
+    do: normalize_raw_attribute_value(2, defn)
+
+  defp normalize_raw_attribute_value(:vapor, %{name: "phase_state"} = defn),
+    do: normalize_raw_attribute_value(3, defn)
+
   defp normalize_raw_attribute_value(_value, _defn), do: {:error, :invalid_attribute_value}
 
   defp normalize_effect_material_id(attrs) do
