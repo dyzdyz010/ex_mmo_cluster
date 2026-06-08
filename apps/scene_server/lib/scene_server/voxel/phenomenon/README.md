@@ -24,10 +24,13 @@ charcoal, cloth becomes ash, and dry grass burns away.
 
 Structural integrity changes now go through the shared `StructuralIntegrity`
 effect boundary. Combustion and freezing both use this boundary to write the
-authoritative `structural_integrity` attribute and to emit a single
+authoritative `structural_integrity` attribute, to emit a single
 `voxel_structural_collapse_candidate` observe event when a voxel crosses its
-failure threshold. The event is only a bridge for later object/collapse
-systems; the phenomenon rule still leaves truth writes to `ChunkProcess`.
+failure threshold, and to produce an `:apply_structural_damage` effect. The
+effect is still routed through `ChunkProcess`: the chunk authority resolves
+owner refs in the failed macro and applies damage to prefab/object parts
+through the existing `ObjectRegistry` boundary. Phenomenon rules still do not
+mutate object truth directly.
 
 Oxygen-limited high heat can carbonize combustible material without starting a
 self-sustaining flame. Wood uses this path to turn into charcoal when its

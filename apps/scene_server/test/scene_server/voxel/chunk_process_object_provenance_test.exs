@@ -15,7 +15,9 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
   alias SceneServer.Voxel.ChunkObjectRef
   alias SceneServer.Voxel.ObjectRegistry
   alias SceneServer.Voxel.PartState
+  alias SceneServer.Voxel.Phenomenon.StructuralIntegrity
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.Types
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
@@ -301,6 +303,85 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     end
   end
 
+  describe "physical structural failure to object damage bridge (Phase 8.D)" do
+    test "structural failure at an owned macro damages the owning prefab part" do
+      scene_id = unique_scene_id()
+      lease = lease_with_token(scene_id)
+
+      registry =
+        start_supervised!(
+          {ObjectRegistry,
+           name: :"structural_damage_registry_#{System.unique_integer([:positive])}"}
+        )
+
+      chunk =
+        start_supervised!(
+          {ChunkProcess,
+           logical_scene_id: scene_id, chunk_coord: {1, 1, 1}, object_registry: registry}
+        )
+
+      assert :ok =
+               ObjectRegistry.upsert_object(
+                 registry,
+                 instance_attrs(
+                   object_id: 42,
+                   logical_scene_id: scene_id,
+                   covered_chunks: [{1, 1, 1}],
+                   part_states: [%{part_id: 3, health: 5, state_flags: 0}]
+                 )
+               )
+
+      attrs = [
+        micro_intent_attrs(lease,
+          request_id: 1,
+          macro: {0, 0, 0},
+          micro_slot: 0,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        ),
+        micro_intent_attrs(lease,
+          request_id: 2,
+          macro: {0, 0, 0},
+          micro_slot: 1,
+          micro_layer: %{material_id: 1, owner_object_id: 42, owner_part_id: 3}
+        )
+      ]
+
+      assert {:ok, _reply} = ChunkProcess.apply_intents(chunk, attrs)
+
+      macro_index = Types.macro_index!({0, 0, 0})
+
+      structural_damage_effects =
+        StructuralIntegrity.damage_effects(macro_index, 1, 16.0, 13.0,
+          reason: :phase_change_freeze_stress,
+          threshold_percent: 15.0,
+          context: %{stage: :frozen}
+        )
+        |> field_effects_only()
+        |> Enum.filter(fn
+          {:apply_structural_damage, _attrs} -> true
+          _other -> false
+        end)
+
+      assert [_effect] = structural_damage_effects
+
+      assert {:ok, %{rejected_count: 0}} =
+               ChunkProcess.apply_field_effects(chunk, structural_damage_effects, %{
+                 kernel_id: :phase_change
+               })
+
+      assert :ok =
+               eventually(fn ->
+                 case ObjectRegistry.lookup_object(registry, scene_id, 42) do
+                   %{part_states: [%PartState{health: 3} = part]} ->
+                     PartState.damaged?(part)
+
+                   _other ->
+                     false
+                 end
+               end)
+    end
+  end
+
   describe "BuildTransactionApplier.register_scene_objects/2 (Phase 4 D5)" do
     test "upserts every scene_object into the ObjectRegistry" do
       registry =
@@ -415,5 +496,24 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       owner_lease_id: 100
     }
     |> Map.merge(Map.new(overrides))
+  end
+
+  defp field_effects_only(effects) do
+    Enum.reject(effects, fn
+      {:emit_observe, _event, _fields} -> true
+      _other -> false
+    end)
+  end
+
+  defp eventually(fun, attempts \\ 30)
+  defp eventually(_fun, 0), do: {:error, :timeout}
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
   end
 end

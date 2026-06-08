@@ -2336,6 +2336,40 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp accumulate_intent_damage(_intent, acc, _storage), do: acc
 
+  defp collect_structural_damage_attribution(%Storage{object_refs: []}, _macro_index), do: %{}
+
+  defp collect_structural_damage_attribution(storage, macro_index) do
+    case Storage.refined_cell_at(storage, macro_index) do
+      nil ->
+        %{}
+
+      cell ->
+        Enum.reduce(cell.layers, %{}, fn layer, acc ->
+          oid = layer.owner_object_id
+          pid = layer.owner_part_id
+          damage = mask_damage_count(layer.mask_words)
+
+          if oid > 0 and damage > 0 do
+            Map.update(acc, {oid, pid}, damage, &(&1 + damage))
+          else
+            acc
+          end
+        end)
+    end
+  end
+
+  defp mask_damage_count(mask_words) when is_list(mask_words) do
+    Enum.reduce(mask_words, 0, fn word, total -> total + bit_count(word) end)
+  end
+
+  defp mask_damage_count(_mask_words), do: 0
+
+  defp bit_count(word) when is_integer(word) and word > 0, do: bit_count(word, 0)
+  defp bit_count(_word), do: 0
+
+  defp bit_count(0, count), do: count
+  defp bit_count(word, count), do: bit_count(word &&& word - 1, count + 1)
+
   defp dispatch_damage_async(_state, attribution) when map_size(attribution) == 0, do: :ok
 
   defp dispatch_damage_async(%{object_registry: nil}, _attribution), do: :ok
@@ -3798,6 +3832,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :clear_voxel_cell, attrs} ->
         apply_clear_voxel_cell_effect(state, attrs, context)
 
+      {:ok, :apply_structural_damage, attrs} ->
+        apply_structural_damage_effect(state, attrs, context)
+
       {:ok, :ensure_field_region, attrs} ->
         apply_ensure_field_region_effect(state, attrs, context)
 
@@ -3851,6 +3888,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_field_effect_action("transform_voxel_material"), do: :transform_voxel_material
   defp normalize_field_effect_action(:clear_voxel_cell), do: :clear_voxel_cell
   defp normalize_field_effect_action("clear_voxel_cell"), do: :clear_voxel_cell
+  defp normalize_field_effect_action(:apply_structural_damage), do: :apply_structural_damage
+  defp normalize_field_effect_action("apply_structural_damage"), do: :apply_structural_damage
   defp normalize_field_effect_action(:ensure_field_region), do: :ensure_field_region
   defp normalize_field_effect_action("ensure_field_region"), do: :ensure_field_region
   defp normalize_field_effect_action(:upsert_phenomenon_instance), do: :upsert_phenomenon_instance
@@ -3994,6 +4033,39 @@ defmodule SceneServer.Voxel.ChunkProcess do
         result = %{
           status: :rejected,
           action: :clear_voxel_cell,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_structural_damage_effect(state, attrs, context) do
+    case normalize_effect_macro(attrs) do
+      {:ok, macro_index} ->
+        attribution = collect_structural_damage_attribution(state.storage, macro_index)
+        dispatch_damage_async(state, attribution)
+
+        damage_count =
+          Enum.reduce(attribution, 0, fn {_owner, count}, total -> total + count end)
+
+        result = %{
+          status: :applied,
+          action: :apply_structural_damage,
+          macro_index: macro_index,
+          reason: fetch_optional(attrs, [:reason]),
+          damaged_owner_count: map_size(attribution),
+          damage_count: damage_count
+        }
+
+        emit_field_effect_applied(state, result, context)
+        {result, state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :apply_structural_damage,
           reason: reason
         }
 

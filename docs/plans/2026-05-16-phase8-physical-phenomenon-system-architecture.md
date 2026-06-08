@@ -417,7 +417,9 @@ thermal_expansion_coefficient
   `SceneServer.Voxel.Phenomenon.StructuralIntegrity` effect 边界：燃烧、低氧碳化和
   冻结都会经同一规则写回 `structural_integrity`，并只在跨过阈值时产生一次
   `voxel_structural_collapse_candidate` observe，作为 object / prefab 坍塌结算的
-  前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
+  前置入口；同时会产出 `apply_structural_damage` effect，由 `ChunkProcess` 读取
+  owner micro-slot 覆盖并转交既有 `ObjectRegistry.accumulate_damage`，field kernel
+  和 phenomenon 仍不直接修改 object truth。
 - 当前实例账本仍是 chunk-local in-memory；烟雾、氧气和湿度也还只是 chunk-local 标量扩散，
   已补含水冻结/沸腾的最小状态机，但尚未实现凝结、材料本体熔化/凝固、真实气流/压力、
   烟雾/氧气/水汽跨 chunk handoff、snapshot 持久化、跨节点边界事件或 object / prefab 生命周期，
@@ -465,7 +467,10 @@ thermal_expansion_coefficient
 - 已落共享 `StructuralIntegrity` effect 边界，负责百分比裁剪、`structural_integrity`
   truth 写回，以及阈值穿越时的 `voxel_structural_collapse_candidate` observe；
 - 燃烧、低氧碳化和冻结已接入同一结构损伤边界，避免每个现象各自维护坍塌候选语义；
-- 当前仍只是 collapse candidate，不做 object / prefab 真实坍塌、稳定性重算或战斗伤害结算。
+- `ChunkProcess` 已能处理 `apply_structural_damage` effect：它从失败 macro 的
+  owner refs 聚合 `(object_id, part_id) => micro-slot count`，再复用
+  `ObjectRegistry.accumulate_damage` 进入现有 part-health / part-destroy cascade；
+- 当前仍不做结构稳定性重算、裂纹传播、debris 生成或玩家战斗伤害结算。
 
 ### Phase 8.E：Corrosion / carbonization expansion
 

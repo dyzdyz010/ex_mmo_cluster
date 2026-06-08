@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.Phenomenon.Effect do
           | {:write_voxel_attribute, map()}
           | {:transform_voxel_material, map()}
           | {:clear_voxel_cell, map()}
+          | {:apply_structural_damage, map()}
           | {:upsert_phenomenon_instance, map()}
           | {:complete_phenomenon_instance, map()}
 
@@ -42,6 +43,18 @@ defmodule SceneServer.Voxel.Phenomenon.Effect do
   def clear_voxel_cell(macro_index, attrs \\ %{})
       when is_integer(macro_index) and is_map(attrs) do
     {:clear_voxel_cell, Map.put(attrs, :macro_index, macro_index)}
+  end
+
+  @doc """
+  Builds an object-boundary structural damage effect for one macro cell.
+
+  The owning `ChunkProcess` resolves voxel owner refs and routes damage to
+  `ObjectRegistry`; phenomenon rules never mutate object truth directly.
+  """
+  @spec apply_structural_damage(non_neg_integer(), map()) :: t()
+  def apply_structural_damage(macro_index, attrs \\ %{})
+      when is_integer(macro_index) and is_map(attrs) do
+    {:apply_structural_damage, Map.put(attrs, :macro_index, macro_index)}
   end
 
   @doc "Builds an authority-owned phenomenon instance upsert effect."

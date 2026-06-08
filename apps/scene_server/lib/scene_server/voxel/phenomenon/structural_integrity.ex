@@ -4,9 +4,9 @@ defmodule SceneServer.Voxel.Phenomenon.StructuralIntegrity do
 
   Combustion, freezing, corrosion, pressure, and later object damage can all
   reduce the same `structural_integrity` voxel truth. This module owns the
-  common percent clamping, authority writeback effect, and collapse-candidate
-  observe event so individual phenomenon rules do not each invent their own
-  failure threshold semantics.
+  common percent clamping, authority writeback effect, object-boundary damage
+  effect, and collapse-candidate observe event so individual phenomenon rules
+  do not each invent their own failure threshold semantics.
   """
 
   alias SceneServer.Voxel.Phenomenon.Effect
@@ -26,8 +26,11 @@ defmodule SceneServer.Voxel.Phenomenon.StructuralIntegrity do
   The returned effects always include an authoritative `structural_integrity`
   attribute write. A `voxel_structural_collapse_candidate` observe effect is
   added only when the value crosses from above the configured threshold to at
-  or below it. Already-failed cells therefore do not repeatedly emit collapse
-  candidates on every tick.
+  or below it. The same threshold crossing also emits an
+  `:apply_structural_damage` effect, which the owning `ChunkProcess` may route
+  to prefab/object part health through the normal object authority boundary.
+  Already-failed cells therefore do not repeatedly emit collapse candidates on
+  every tick.
 
   Options:
     * `:reason` - source reason atom/string, defaults to `:structural_integrity_loss`.
@@ -84,7 +87,10 @@ defmodule SceneServer.Voxel.Phenomenon.StructuralIntegrity do
         }
         |> Map.merge(context)
 
-      [Effect.emit_observe("voxel_structural_collapse_candidate", fields)]
+      [
+        Effect.emit_observe("voxel_structural_collapse_candidate", fields),
+        Effect.apply_structural_damage(macro_index, fields)
+      ]
     else
       []
     end

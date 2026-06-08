@@ -34,6 +34,20 @@ defmodule SceneServer.Voxel.Phenomenon.StructuralIntegrityTest do
     assert fields.structural_integrity_after_percent == 48.0
     assert fields.structural_failure_threshold_percent == 50.0
 
+    assert {:apply_structural_damage, damage_fields} =
+             Enum.find(effects, fn
+               {:apply_structural_damage, _fields} -> true
+               _other -> false
+             end)
+
+    assert damage_fields.reason == :combustion_integrity_loss
+    assert damage_fields.stage == :burning
+    assert damage_fields.macro_index == macro_index
+    assert damage_fields.material_id == 3
+    assert damage_fields.structural_integrity_before_percent == 52.0
+    assert damage_fields.structural_integrity_after_percent == 48.0
+    assert damage_fields.structural_failure_threshold_percent == 50.0
+
     already_failed =
       StructuralIntegrity.damage_effects(macro_index, 3, 40.0, 35.0,
         reason: :combustion_integrity_loss,
@@ -42,6 +56,11 @@ defmodule SceneServer.Voxel.Phenomenon.StructuralIntegrityTest do
 
     refute Enum.any?(already_failed, fn
              {:emit_observe, "voxel_structural_collapse_candidate", _fields} -> true
+             _other -> false
+           end)
+
+    refute Enum.any?(already_failed, fn
+             {:apply_structural_damage, _fields} -> true
              _other -> false
            end)
   end
