@@ -20,7 +20,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
     Types
   }
 
-  alias SceneServer.Voxel.Phenomenon.Combustion
+  alias SceneServer.Voxel.Phenomenon.{Combustion, Instance}
 
   @default_logical_scene_id 1
   @fixed32_scale 65_536
@@ -52,12 +52,14 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
              chunk_coord: chunk_coord,
              lease: get_any(opts, [:lease, :lease_token], nil)
            }) do
-      %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+      debug_state = ChunkProcess.debug_state(chunk_pid)
+      %{storage: %Storage{} = storage} = debug_state
       storage = Storage.ensure_accel(storage)
       header = Storage.macro_header_at(storage, macro_index)
       material_id = material_id_at(storage, macro_index)
       profile = MaterialCatalog.combustion_profile(material_id)
       stage_raw = read_int(storage, macro_index, "combustion_stage", Combustion.stage_idle())
+      instance = active_instance_summary(debug_state, logical_scene_id, chunk_coord, macro_index)
 
       {:ok,
        %{
@@ -73,6 +75,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
          combustion_stage: Combustion.stage_name(stage_raw),
          combustion_stage_raw: stage_raw,
          active_combustion: active_combustion_stage?(stage_raw),
+         active_combustion_instance: not is_nil(instance),
+         phenomenon_instance: instance,
          attributes: combustion_attributes(storage, macro_index),
          profile: profile_summary(profile)
        }}
@@ -164,6 +168,12 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
       Combustion.stage_burning(),
       Combustion.stage_smoldering()
     ]
+  end
+
+  defp active_instance_summary(debug_state, logical_scene_id, chunk_coord, macro_index) do
+    instances = Map.get(debug_state, :phenomenon_instances, %{})
+    id = Instance.key(logical_scene_id, chunk_coord, :combustion, macro_index)
+    Map.get(instances, inspect(id))
   end
 
   defp read_float(storage, macro_index, attr_name, fallback) do

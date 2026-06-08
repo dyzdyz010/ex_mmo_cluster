@@ -88,6 +88,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.Phenomenon.Instance, as: PhenomenonInstance
   alias SceneServer.Voxel.SimulationTick
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -628,6 +629,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
             field_region_sources: %{},
             field_region_source_keys: %{},
             field_region_cleanup_links: %{},
+            # Phase 8: authority-owned physical phenomenon instances. Field
+            # workers advance phenomena via effects; the chunk keeps lifecycle
+            # records beside voxel truth.
+            phenomenon_instances: %{},
             auto_circuit_refresh_pending?: false,
             # 阶段2.4 空闲驱逐状态机。
             # last_activity_ms —— 最近一次外部活动时间戳；驱逐静默窗口的基线。
@@ -675,12 +680,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
         schedule_fence_ttl_check(state)
 
         {:ok, state}
-
-      {:error, reason} ->
-        # hydrate 失败且无法降级处理（极端情况）——让监督树按 transient 重启
-        # 预算重试；耗尽后整棵 chunk 子树重启，World 经 observe 裁决该 coord。
-        emit_init_hydrate_failed(logical_scene_id, chunk_coord, reason)
-        {:stop, {:hydrate_failed, reason}}
     end
   end
 
@@ -775,16 +774,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
         mode: state.mode,
         hydrate_status: inspect(state.hydrate_status),
         has_lease?: not is_nil(state.lease)
-      }
-    end)
-  end
-
-  defp emit_init_hydrate_failed(logical_scene_id, chunk_coord, reason) do
-    CliObserve.emit("voxel_chunk_init_hydrate_failed", fn ->
-      %{
-        logical_scene_id: logical_scene_id,
-        chunk_coord: chunk_coord,
-        reason: inspect(reason)
       }
     end)
   end
@@ -1621,6 +1610,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
        subscribers: Map.keys(state.subscribers),
        field_region_count: map_size(state.field_regions),
        field_source_count: map_size(state.field_region_sources),
+       phenomenon_instance_count: map_size(state.phenomenon_instances),
+       phenomenon_instances: phenomenon_instance_summaries(state.phenomenon_instances),
        # 阶段2.4：暴露按需 tick / 空闲驱逐状态供 CLI / 故障注入测试断言
        # （“空闲态零 timer” = tick_armed? false 且无 dirty）。
        tick_armed?: state.tick_armed?,
@@ -3810,6 +3801,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :ensure_field_region, attrs} ->
         apply_ensure_field_region_effect(state, attrs, context)
 
+      {:ok, :upsert_phenomenon_instance, attrs} ->
+        apply_upsert_phenomenon_instance_effect(state, attrs, context)
+
+      {:ok, :complete_phenomenon_instance, attrs} ->
+        apply_complete_phenomenon_instance_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -3856,6 +3853,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_field_effect_action("clear_voxel_cell"), do: :clear_voxel_cell
   defp normalize_field_effect_action(:ensure_field_region), do: :ensure_field_region
   defp normalize_field_effect_action("ensure_field_region"), do: :ensure_field_region
+  defp normalize_field_effect_action(:upsert_phenomenon_instance), do: :upsert_phenomenon_instance
+
+  defp normalize_field_effect_action("upsert_phenomenon_instance"),
+    do: :upsert_phenomenon_instance
+
+  defp normalize_field_effect_action(:complete_phenomenon_instance),
+    do: :complete_phenomenon_instance
+
+  defp normalize_field_effect_action("complete_phenomenon_instance"),
+    do: :complete_phenomenon_instance
+
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -3986,6 +3994,88 @@ defmodule SceneServer.Voxel.ChunkProcess do
         result = %{
           status: :rejected,
           action: :clear_voxel_cell,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_upsert_phenomenon_instance_effect(state, attrs, context) do
+    case normalize_phenomenon_instance_effect_attrs(state, attrs) do
+      {:ok, instance_attrs} ->
+        existing = Map.get(state.phenomenon_instances, instance_attrs.id)
+        instance = PhenomenonInstance.upsert(existing, instance_attrs)
+
+        next_state = %{
+          state
+          | phenomenon_instances: Map.put(state.phenomenon_instances, instance.id, instance)
+        }
+
+        result = %{
+          status: :applied,
+          action: :upsert_phenomenon_instance,
+          instance_id: inspect(instance.id),
+          kind: instance.kind,
+          macro_index: instance.macro_index,
+          material_id: instance.material_id,
+          stage: instance.stage,
+          changed?: existing != instance,
+          active_instance_count: map_size(next_state.phenomenon_instances)
+        }
+
+        emit_phenomenon_instance_upserted(next_state, instance, context)
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :upsert_phenomenon_instance,
+          reason: reason
+        }
+
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp apply_complete_phenomenon_instance_effect(state, attrs, context) do
+    case normalize_phenomenon_instance_effect_attrs(state, attrs) do
+      {:ok, instance_attrs} ->
+        existing = Map.get(state.phenomenon_instances, instance_attrs.id)
+        completed = PhenomenonInstance.complete(existing, instance_attrs)
+
+        next_state = %{
+          state
+          | phenomenon_instances: Map.delete(state.phenomenon_instances, completed.id)
+        }
+
+        result = %{
+          status: :applied,
+          action: :complete_phenomenon_instance,
+          instance_id: inspect(completed.id),
+          kind: completed.kind,
+          macro_index: completed.macro_index,
+          material_id: completed.material_id,
+          stage: completed.stage,
+          reason: completed.reason,
+          changed?: not is_nil(existing),
+          active_instance_count: map_size(next_state.phenomenon_instances)
+        }
+
+        if existing do
+          emit_phenomenon_instance_completed(next_state, completed, context)
+        end
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+
+      {:error, reason} ->
+        result = %{
+          status: :rejected,
+          action: :complete_phenomenon_instance,
           reason: reason
         }
 
@@ -4610,6 +4700,97 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  defp normalize_phenomenon_instance_effect_attrs(state, attrs) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_effect_macro(attrs),
+         {:ok, kind} <- normalize_phenomenon_kind(fetch_optional(attrs, [:kind, :definition_id])),
+         {:ok, material_id} <- normalize_optional_phenomenon_material_id(attrs) do
+      id =
+        PhenomenonInstance.key(
+          state.logical_scene_id,
+          state.chunk_coord,
+          kind,
+          macro_index
+        )
+
+      {:ok,
+       %{
+         id: id,
+         kind: kind,
+         macro_index: macro_index,
+         material_id: material_id,
+         stage: fetch_optional(attrs, [:stage]),
+         previous_stage: fetch_optional(attrs, [:previous_stage]),
+         reason: fetch_optional(attrs, [:reason]),
+         now_ms: now_ms(),
+         chunk_version: state.storage.chunk_version,
+         metadata: phenomenon_instance_metadata(state, attrs, id, kind, macro_index)
+       }}
+    end
+  end
+
+  defp normalize_phenomenon_kind(nil), do: {:error, :missing_phenomenon_kind}
+  defp normalize_phenomenon_kind(kind) when is_atom(kind), do: {:ok, kind}
+
+  defp normalize_phenomenon_kind(kind) when is_binary(kind) do
+    case String.trim(kind) do
+      "" -> {:error, :invalid_phenomenon_kind}
+      normalized -> {:ok, normalized}
+    end
+  end
+
+  defp normalize_phenomenon_kind(_kind), do: {:error, :invalid_phenomenon_kind}
+
+  defp normalize_optional_phenomenon_material_id(attrs) do
+    case fetch_optional(attrs, [:material_id, :target_material_id]) do
+      nil -> {:ok, nil}
+      value when is_integer(value) and value > 0 and value <= 0xFFFF -> {:ok, value}
+      _other -> {:error, :invalid_material_id}
+    end
+  end
+
+  defp phenomenon_instance_metadata(state, attrs, id, kind, macro_index) do
+    explicit_metadata =
+      case fetch_optional(attrs, [:metadata]) do
+        metadata when is_map(metadata) -> metadata
+        _other -> %{}
+      end
+
+    derived_metadata =
+      attrs
+      |> Map.take([
+        :progress_percent,
+        :heat_source_celsius,
+        :released_heat_energy_joules,
+        :source_refs
+      ])
+      |> maybe_put_default_combustion_source_refs(state, id, kind, macro_index)
+
+    Map.merge(explicit_metadata, derived_metadata)
+  end
+
+  defp maybe_put_default_combustion_source_refs(metadata, state, _id, :combustion, macro_index) do
+    Map.put_new(metadata, :source_refs, [
+      %{
+        kind: :field_source,
+        source_key: {:combustion_instance, state.logical_scene_id, state.chunk_coord, macro_index}
+      }
+    ])
+  end
+
+  defp maybe_put_default_combustion_source_refs(metadata, state, _id, "combustion", macro_index) do
+    Map.put_new(metadata, :source_refs, [
+      %{
+        kind: :field_source,
+        source_key: {:combustion_instance, state.logical_scene_id, state.chunk_coord, macro_index}
+      }
+    ])
+  end
+
+  defp maybe_put_default_combustion_source_refs(metadata, _state, _id, _kind, _macro_index),
+    do: metadata
+
   defp maybe_put_effect_alias(attrs, key, aliases) do
     if Map.has_key?(attrs, key) do
       attrs
@@ -4997,6 +5178,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
+  defp emit_phenomenon_instance_upserted(state, %PhenomenonInstance{} = instance, context) do
+    CliObserve.emit("voxel_phenomenon_instance_upserted", fn ->
+      field_effect_observe_base(state, context)
+      |> Map.merge(PhenomenonInstance.summary(instance))
+    end)
+  end
+
+  defp emit_phenomenon_instance_completed(state, %PhenomenonInstance{} = instance, context) do
+    CliObserve.emit("voxel_phenomenon_instance_completed", fn ->
+      field_effect_observe_base(state, context)
+      |> Map.merge(PhenomenonInstance.summary(instance))
+    end)
+  end
+
   defp emit_field_region_handoff_applied(observe_context, result) do
     CliObserve.emit("voxel_field_region_handoff_applied", fn ->
       attrs_map(observe_context)
@@ -5021,6 +5216,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
       region_id: fetch_optional(context, [:region_id]),
       kernel_id: fetch_optional(context, [:kernel_id])
     }
+  end
+
+  defp phenomenon_instance_summaries(instances) when is_map(instances) do
+    Map.new(instances, fn {id, instance} ->
+      {inspect(id), PhenomenonInstance.summary(instance)}
+    end)
   end
 
   defp summarize_intent_attrs(attrs) when is_map(attrs) do

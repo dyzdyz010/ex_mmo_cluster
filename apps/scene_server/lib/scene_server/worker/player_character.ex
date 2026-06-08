@@ -1430,9 +1430,6 @@ defmodule SceneServer.PlayerCharacter do
 
       {:err, reason} ->
         {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

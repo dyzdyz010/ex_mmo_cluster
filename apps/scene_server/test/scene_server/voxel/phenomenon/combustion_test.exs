@@ -64,6 +64,30 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert observe_event?(effects, "voxel_combustion_ignited", :burning)
   end
 
+  test "ignition emits an authority-owned combustion instance upsert" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    wood_material_id = MaterialCatalog.wood_material_id()
+    storage = storage_with_material(macro_index, wood_material_id)
+
+    assert %{stage: :burning, effects: effects} =
+             Combustion.evaluate(storage, macro_index, 500.0)
+
+    assert Enum.any?(effects, fn
+             {:upsert_phenomenon_instance,
+              %{
+                kind: :combustion,
+                macro_index: ^macro_index,
+                material_id: ^wood_material_id,
+                stage: :burning,
+                previous_stage: :idle
+              }} ->
+               true
+
+             _other ->
+               false
+           end)
+  end
+
   test "combustion heat source is derived from released fuel energy and voxel heat capacity" do
     macro_index = Types.macro_index!({0, 0, 0})
 
@@ -374,6 +398,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
 
     assert observe_fields.released_heat_energy_joules > 0.0
     assert is_nil(observe_fields.heat_source_celsius)
+    assert Enum.any?(effects, &match?({:complete_phenomenon_instance, %{kind: :combustion}}, &1))
     assert observe_event?(effects, "voxel_combustion_extinguished", :extinguished)
   end
 

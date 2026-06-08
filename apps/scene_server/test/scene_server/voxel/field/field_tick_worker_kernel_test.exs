@@ -593,14 +593,18 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
 
-    storage = ChunkProcess.debug_state(chunk).storage
+    debug = ChunkProcess.debug_state(chunk)
+    storage = debug.storage
 
     assert Storage.normal_block_at(storage, macro_index).material_id ==
              MaterialCatalog.charcoal_material_id()
 
+    assert debug.phenomenon_instance_count == 0
+
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_combustion_extinguished"
+    assert observe_log_text =~ "voxel_phenomenon_instance_completed"
     assert observe_log_text =~ "transform_voxel_material"
   end
 
@@ -680,15 +684,24 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
                  storage = debug.storage
 
                  debug.field_source_count >= 1 and
+                   debug.phenomenon_instance_count == 1 and
                    Storage.effective_attribute_at(storage, macro_index, "fuel_mass") <
                      fuel_after_trigger
                end,
                1_500
              )
 
+    debug = ChunkProcess.debug_state(chunk)
+
+    assert [%{kind: :combustion, macro_index: ^macro_index, status: :active} = instance] =
+             Map.values(debug.phenomenon_instances)
+
+    assert instance.metadata.source_refs != []
+
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "source_key: \"{:combustion_instance"
+    assert observe_log_text =~ "voxel_phenomenon_instance_upserted"
     assert observe_log_text =~ "voxel_field_source_lifecycle"
   end
 

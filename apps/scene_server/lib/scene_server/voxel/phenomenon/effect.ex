@@ -12,6 +12,8 @@ defmodule SceneServer.Voxel.Phenomenon.Effect do
           | {:write_voxel_attribute, map()}
           | {:transform_voxel_material, map()}
           | {:clear_voxel_cell, map()}
+          | {:upsert_phenomenon_instance, map()}
+          | {:complete_phenomenon_instance, map()}
 
   @doc "Builds a raw attribute write effect for a single macro cell."
   @spec write_voxel_attribute(non_neg_integer(), atom() | String.t(), integer(), map()) :: t()
@@ -40,6 +42,26 @@ defmodule SceneServer.Voxel.Phenomenon.Effect do
   def clear_voxel_cell(macro_index, attrs \\ %{})
       when is_integer(macro_index) and is_map(attrs) do
     {:clear_voxel_cell, Map.put(attrs, :macro_index, macro_index)}
+  end
+
+  @doc "Builds an authority-owned phenomenon instance upsert effect."
+  @spec upsert_phenomenon_instance(atom() | String.t(), non_neg_integer(), map()) :: t()
+  def upsert_phenomenon_instance(kind, macro_index, attrs \\ %{})
+      when (is_atom(kind) or is_binary(kind)) and is_integer(macro_index) and is_map(attrs) do
+    {:upsert_phenomenon_instance,
+     attrs
+     |> Map.put(:kind, kind)
+     |> Map.put(:macro_index, macro_index)}
+  end
+
+  @doc "Builds an authority-owned phenomenon instance completion effect."
+  @spec complete_phenomenon_instance(atom() | String.t(), non_neg_integer(), map()) :: t()
+  def complete_phenomenon_instance(kind, macro_index, attrs \\ %{})
+      when (is_atom(kind) or is_binary(kind)) and is_integer(macro_index) and is_map(attrs) do
+    {:complete_phenomenon_instance,
+     attrs
+     |> Map.put(:kind, kind)
+     |> Map.put(:macro_index, macro_index)}
   end
 
   @doc "Builds an observe-only event effect."

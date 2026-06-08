@@ -417,6 +417,8 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert body["combustion_stage"] == "burning"
     assert body["combustion_stage_raw"] == 2
     assert body["active_combustion"] == true
+    assert body["active_combustion_instance"] == false
+    assert body["phenomenon_instance"] == nil
     assert body["world_macro"] == %{"x" => 0, "y" => 0, "z" => 0}
     assert body["scene_node"] == Atom.to_string(node())
 
@@ -495,9 +497,21 @@ defmodule AuthServerWeb.IngameControllerTest do
     body = json_response(probe_conn, 200)
     assert body["combustion_stage"] == "burning"
     assert body["active_combustion"] == true
+    assert body["active_combustion_instance"] == true
     assert body["material_name"] == "wood"
     assert body["profile"]["combustion_heat_j_per_kg"] == 16_000_000.0
     assert body["profile"]["heat_release_efficiency"] == 0.35
+
+    instance = body["phenomenon_instance"]
+    assert instance["kind"] == "combustion"
+    assert instance["status"] == "active"
+    assert instance["stage"] == "burning"
+    assert instance["macro_index"] == macro_index
+
+    assert [%{"kind" => "field_source", "source_key" => source_key}] =
+             instance["metadata"]["source_refs"]
+
+    assert source_key =~ "{:combustion_instance"
 
     attrs = body["attributes"]
     assert attrs["fuel_mass_kg_per_m3"] < 45.0

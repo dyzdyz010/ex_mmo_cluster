@@ -376,7 +376,16 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           integrity_before,
           integrity_after,
           profile
-        ) ++ residue_effects(macro_index, profile, next_stage)
+        ) ++
+        combustion_instance_effects(
+          macro_index,
+          material_id,
+          next_stage,
+          previous_stage,
+          progress_percent,
+          heat_output
+        ) ++
+        residue_effects(macro_index, profile, next_stage)
 
     %{
       macro_index: macro_index,
@@ -475,6 +484,11 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       stage: :extinguished,
       effects: [
         Effect.write_voxel_attribute(macro_index, :combustion_stage, @stage_extinguished),
+        Effect.complete_phenomenon_instance(:combustion, macro_index, %{
+          material_id: material_id,
+          stage: :extinguished,
+          reason: reason
+        }),
         Effect.emit_observe("voxel_combustion_extinguished", %{
           macro_index: macro_index,
           material_id: material_id,
@@ -536,6 +550,62 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   end
 
   defp burn_progress_percent(_fuel_after, _initial_fuel), do: 100.0
+
+  defp combustion_instance_effects(
+         macro_index,
+         material_id,
+         @stage_extinguished,
+         previous_stage,
+         progress_percent,
+         heat_output
+       ) do
+    maybe_start_effects =
+      if previous_stage in [@stage_idle, @stage_preheat] do
+        [
+          Effect.upsert_phenomenon_instance(:combustion, macro_index, %{
+            material_id: material_id,
+            stage: :burning,
+            previous_stage: stage_name(previous_stage),
+            progress_percent: progress_percent,
+            released_heat_energy_joules: heat_output.released_heat_energy_joules
+          })
+        ]
+      else
+        []
+      end
+
+    maybe_start_effects ++
+      [
+        Effect.complete_phenomenon_instance(:combustion, macro_index, %{
+          material_id: material_id,
+          stage: :extinguished,
+          previous_stage: stage_name(previous_stage),
+          reason: :fuel_exhausted,
+          progress_percent: progress_percent,
+          released_heat_energy_joules: heat_output.released_heat_energy_joules
+        })
+      ]
+  end
+
+  defp combustion_instance_effects(
+         macro_index,
+         material_id,
+         next_stage,
+         previous_stage,
+         progress_percent,
+         heat_output
+       ) do
+    [
+      Effect.upsert_phenomenon_instance(:combustion, macro_index, %{
+        material_id: material_id,
+        stage: stage_name(next_stage),
+        previous_stage: stage_name(previous_stage),
+        progress_percent: progress_percent,
+        heat_source_celsius: heat_output.source_temperature_celsius,
+        released_heat_energy_joules: heat_output.released_heat_energy_joules
+      })
+    ]
+  end
 
   defp heat_source_points(_macro_index, @stage_extinguished, _profile, _heat_output), do: []
 

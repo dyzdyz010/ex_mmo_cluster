@@ -110,15 +110,15 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
 
       token_store = start_supervised!(WriteTokenStore)
 
-      # 阶段3.1：ChunkProcess 经 SceneServer.Voxel.ChunkRegistry 注册进程身份，
-      # ChunkDirectory 默认经它解析 pid。world_server 测试 BEAM 不启动
-      # :scene_server application，需显式拉起该注册表，否则 ChunkRegistry.lookup
-      # 会 `unknown registry`，subscribe 被 rescue 成 {:error, :invalid_voxel_subscription}。
-      chunk_registry_module = Module.concat(["SceneServer", "Voxel", "ChunkRegistry"])
+      # 阶段3.1：ChunkProcess 经 Registry 注册进程身份。这里使用隔离 registry，
+      # 避免 world_server 测试和已启动的 scene_server application 或其它测试共享
+      # 全局 SceneServer.Voxel.ChunkRegistry 身份槽。
+      chunk_registry =
+        :"authority_observe_chunk_registry_#{System.unique_integer([:positive])}"
 
       start_supervised!(
-        {Registry, keys: :unique, name: chunk_registry_module},
-        id: chunk_registry_module
+        {Registry, keys: :unique, name: chunk_registry},
+        id: {:registry, chunk_registry}
       )
 
       chunk_sup = start_supervised!(chunk_sup_module)
@@ -126,7 +126,9 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
       directory =
         start_supervised!(
           {directory_module,
-           chunk_sup: chunk_sup, snapshot_store: DataService.Voxel.ChunkSnapshotStore}
+           chunk_sup: chunk_sup,
+           chunk_registry: chunk_registry,
+           snapshot_store: DataService.Voxel.ChunkSnapshotStore}
         )
 
       invalidator = WorldServer.Voxel.AuthorityObserve.scene_directory_invalidator(directory)

@@ -395,12 +395,16 @@ thermal_expansion_coefficient
 - HTTP 端到端验收已覆盖 `set_temperature -> field tick combustion -> combustion_probe`：
   授权 chunk 中的木材被高温入口点燃后，probe 能读到 burning、fuel/oxygen/progress
   变化以及材料热值 profile。
+- 已补 chunk-local `PhenomenonInstance` 最小账本：燃烧规则输出
+  `upsert_phenomenon_instance` / `complete_phenomenon_instance` effect，
+  `ChunkProcess` 作为 authority 维护活动实例，`combustion_probe` 可直接返回活动火焰的
+  instance id、stage、更新时间和 field source 引用，不再只能从 voxel attribute 推断
+  “火是否还活着”。
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
-- 当前首片以 voxel truth 中的 `combustion_stage` / `combustion_progress` 等属性承载
-  燃烧实例状态；独立 `PhenomenonInstance` 生命周期仍是 Phase 8 后续收口项，不能把
-  本片误读为完整现象实例系统已经完成。
+- 当前实例账本仍是 chunk-local in-memory：尚未进入 snapshot 持久化、跨节点边界事件或
+  object / prefab 生命周期，不能把本片误读为完整现象实例系统已经完成。
 
 ### Phase 8.C：Freezing / phase change minimum
 

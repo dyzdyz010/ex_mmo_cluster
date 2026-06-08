@@ -45,6 +45,11 @@ stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
 field source on the owning chunk. This gives the fire its own FieldRegion
 lifecycle after the trigger heat impulse expires while still reusing source-key
 dedupe, worker supervision, and `ChunkProcess` authority for every truth write.
+The same tick also emits `upsert_phenomenon_instance` or
+`complete_phenomenon_instance` effects. `ChunkProcess` owns the chunk-local
+instance ledger, so tools can distinguish an active fire from a voxel that only
+has historical combustion attributes. The ledger is intentionally in-memory for
+this slice; durable/cross-node instance recovery remains a later Phase 8 concern.
 
 When a combustion heat source reaches a chunk face, the combustion kernel emits
 an `ensure_field_region` handoff instead of directly mutating the neighbor. The
@@ -59,7 +64,7 @@ onto the FieldRegion it owns.
 `CombustionProbe` is the read-only debug boundary for this subsystem. It reads
 the target chunk's authoritative storage and reports material id/name,
 combustible profile, stage, fuel, oxygen, smoke, carbonization, structural
-integrity, and residue policy. The probe never evaluates new combustion effects
-and never creates field regions; browser and HTTP dev tools use it to observe
-the state machine instead of duplicating combustion rules outside this
-directory.
+integrity, residue policy, and the active chunk-local phenomenon instance when
+one exists. The probe never evaluates new combustion effects and never creates
+field regions; browser and HTTP dev tools use it to observe the state machine
+instead of duplicating combustion rules outside this directory.

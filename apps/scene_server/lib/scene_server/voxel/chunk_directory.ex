@@ -437,7 +437,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   @doc "阶段5.2 直达版 `abort_transaction/3`。注册表无此 chunk 时幂等 `:ok`。"
   def abort_transaction_direct(transaction_id, attrs, opts \\ [])
       when is_binary(transaction_id) and is_list(opts) do
-    {server, registry} = direct_targets(opts)
+    {_server, registry} = direct_targets(opts)
 
     case normalize_chunk_key(attrs) do
       {:ok, {logical_scene_id, chunk_coord}} ->
@@ -946,7 +946,12 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     :ok
   end
 
-  defp wait_registry_entry_cleared(state, {logical_scene_id, chunk_coord} = key, chunk_pid, attempts) do
+  defp wait_registry_entry_cleared(
+         state,
+         {logical_scene_id, chunk_coord} = key,
+         chunk_pid,
+         attempts
+       ) do
     case ChunkRegistry.lookup(logical_scene_id, chunk_coord, state.chunk_registry) do
       {:ok, ^chunk_pid} ->
         Process.sleep(@evict_cleanup_poll_sleep_ms)
