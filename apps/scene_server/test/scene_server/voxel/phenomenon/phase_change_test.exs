@@ -54,6 +54,36 @@ defmodule SceneServer.Voxel.Phenomenon.PhaseChangeTest do
            end)
   end
 
+  test "freezing structural damage uses the shared collapse candidate boundary" do
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    storage =
+      macro_index
+      |> storage_with_material(MaterialCatalog.wood_material_id())
+      |> put_attribute(macro_index, "moisture", 25.0)
+      |> put_attribute(macro_index, "structural_integrity", 16.0)
+
+    assert %{stage: :frozen, effects: effects} =
+             PhaseChange.evaluate(storage, macro_index, -10.0,
+               freeze_stress_loss_percent: 3.0,
+               structural_failure_threshold_percent: 15.0
+             )
+
+    assert structural_integrity_raw(effects) == fixed32(13.0)
+
+    assert {:emit_observe, "voxel_structural_collapse_candidate", fields} =
+             Enum.find(effects, fn
+               {:emit_observe, "voxel_structural_collapse_candidate", _fields} -> true
+               _other -> false
+             end)
+
+    assert fields.reason == :phase_change_freeze_stress
+    assert fields.stage == :frozen
+    assert fields.structural_integrity_before_percent == 16.0
+    assert fields.structural_integrity_after_percent == 13.0
+    assert fields.structural_failure_threshold_percent == 15.0
+  end
+
   test "hot wet material boils moisture into a local vapor field source" do
     macro_index = Types.macro_index!({0, 0, 0})
 

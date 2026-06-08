@@ -8,7 +8,7 @@ defmodule SceneServer.Voxel.Phenomenon.PhaseChange do
   solidification are intentionally left to a later rule set.
   """
 
-  alias SceneServer.Voxel.Phenomenon.Effect
+  alias SceneServer.Voxel.Phenomenon.{Effect, StructuralIntegrity}
   alias SceneServer.Voxel.Storage
 
   @fixed32_scale 65_536
@@ -140,11 +140,6 @@ defmodule SceneServer.Voxel.Phenomenon.PhaseChange do
     effects =
       [
         Effect.write_voxel_attribute(macro_index, :phase_state, @phase_frozen),
-        Effect.write_voxel_attribute(
-          macro_index,
-          :structural_integrity,
-          fixed32(integrity_after)
-        ),
         Effect.upsert_phenomenon_instance(:phase_change, macro_index, %{
           material_id: material_id,
           stage: :frozen,
@@ -163,7 +158,21 @@ defmodule SceneServer.Voxel.Phenomenon.PhaseChange do
           structural_integrity_before_percent: integrity_before,
           structural_integrity_after_percent: integrity_after
         })
-      ]
+      ] ++
+        StructuralIntegrity.damage_effects(
+          macro_index,
+          material_id,
+          integrity_before,
+          integrity_after,
+          reason: :phase_change_freeze_stress,
+          threshold_percent:
+            get_opt(
+              opts,
+              :structural_failure_threshold_percent,
+              StructuralIntegrity.default_failure_threshold_percent()
+            ),
+          context: %{stage: :frozen}
+        )
 
     %{
       macro_index: macro_index,

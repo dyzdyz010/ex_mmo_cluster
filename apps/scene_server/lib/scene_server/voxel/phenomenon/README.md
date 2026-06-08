@@ -22,10 +22,12 @@ charcoal, or a cell clear effect for materials that burn away completely. The
 initial material set intentionally covers three outcomes: wood becomes
 charcoal, cloth becomes ash, and dry grass burns away.
 
-Burning also reduces structural integrity. When a voxel crosses its material
-failure threshold, combustion emits a `voxel_structural_collapse_candidate`
-observe event. The event is only a bridge for later object/collapse systems;
-the phenomenon rule still leaves truth writes to `ChunkProcess`.
+Structural integrity changes now go through the shared `StructuralIntegrity`
+effect boundary. Combustion and freezing both use this boundary to write the
+authoritative `structural_integrity` attribute and to emit a single
+`voxel_structural_collapse_candidate` observe event when a voxel crosses its
+failure threshold. The event is only a bridge for later object/collapse
+systems; the phenomenon rule still leaves truth writes to `ChunkProcess`.
 
 Oxygen-limited high heat can carbonize combustible material without starting a
 self-sustaining flame. Wood uses this path to turn into charcoal when its

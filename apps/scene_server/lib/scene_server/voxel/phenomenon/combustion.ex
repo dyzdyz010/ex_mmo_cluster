@@ -8,7 +8,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   """
 
   alias SceneServer.Voxel.MaterialCatalog
-  alias SceneServer.Voxel.Phenomenon.Effect
+  alias SceneServer.Voxel.Phenomenon.{Effect, StructuralIntegrity}
   alias SceneServer.Voxel.Storage
 
   @fixed32_scale 65_536
@@ -400,11 +400,6 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           :carbonization,
           fixed32(carbon_after)
         ),
-        Effect.write_voxel_attribute(
-          macro_index,
-          :structural_integrity,
-          fixed32(integrity_after)
-        ),
         Effect.emit_observe(observe_event(next_stage, previous_stage), %{
           macro_index: macro_index,
           material_id: material_id,
@@ -427,12 +422,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           smoke_delta_percent: max(smoke_after - smoke_before, 0.0)
         })
       ] ++
-        structural_failure_effects(
+        structural_damage_effects(
           macro_index,
           material_id,
           integrity_before,
           integrity_after,
-          profile
+          profile,
+          :combustion_integrity_loss,
+          %{stage: stage_name(next_stage)}
         ) ++
         combustion_instance_effects(
           macro_index,
@@ -497,11 +494,6 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     effects =
       [
         Effect.write_voxel_attribute(macro_index, :carbonization, fixed32(carbon_after)),
-        Effect.write_voxel_attribute(
-          macro_index,
-          :structural_integrity,
-          fixed32(integrity_after)
-        ),
         Effect.emit_observe("voxel_combustion_carbonized", %{
           macro_index: macro_index,
           material_id: material_id,
@@ -518,12 +510,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         })
       ] ++
         preheat_stage_effects(macro_index, previous_stage) ++
-        structural_failure_effects(
+        structural_damage_effects(
           macro_index,
           material_id,
           integrity_before,
           integrity_after,
-          profile
+          profile,
+          :oxygen_limited_carbonization,
+          %{stage: :preheat}
         ) ++ oxygen_limited_residue_effects(macro_index, profile, carbon_before, carbon_after)
 
     %{
@@ -900,29 +894,29 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     end
   end
 
-  defp structural_failure_effects(
+  defp structural_damage_effects(
          macro_index,
          material_id,
          integrity_before,
          integrity_after,
-         profile
+         profile,
+         reason,
+         context
        ) do
-    threshold = get_opt(profile, :structural_failure_threshold_percent, 15.0)
-
-    if integrity_before > threshold and integrity_after <= threshold do
-      [
-        Effect.emit_observe("voxel_structural_collapse_candidate", %{
-          macro_index: macro_index,
-          material_id: material_id,
-          reason: :combustion_integrity_loss,
-          structural_integrity_before_percent: integrity_before,
-          structural_integrity_after_percent: integrity_after,
-          structural_failure_threshold_percent: threshold
-        })
-      ]
-    else
-      []
-    end
+    StructuralIntegrity.damage_effects(
+      macro_index,
+      material_id,
+      integrity_before,
+      integrity_after,
+      reason: reason,
+      threshold_percent:
+        get_opt(
+          profile,
+          :structural_failure_threshold_percent,
+          StructuralIntegrity.default_failure_threshold_percent()
+        ),
+      context: context
+    )
   end
 
   defp observe_event(@stage_extinguished, _previous_stage), do: "voxel_combustion_extinguished"
