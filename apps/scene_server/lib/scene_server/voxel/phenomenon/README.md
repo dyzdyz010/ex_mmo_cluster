@@ -47,6 +47,12 @@ source and evolves the browser-visible smoke plume through the regular
 `FieldRegionSnapshot` pipeline instead of hiding smoke inside per-voxel
 attributes.
 
+Combustion oxygen is also field-aware. Burning still writes per-voxel oxygen
+truth, but it now emits an `:oxygen` field source for the consumed air. If the
+owning `FieldRegion` has an active oxygen deficit at the target cell, the
+combustion decision reads that field value before falling back to storage, so
+oxygen-poor heat drives carbonization instead of a normal flame.
+
 Once a material enters burning or smoldering, the combustion kernel refreshes a
 stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
 field source on the owning chunk. This gives the fire its own FieldRegion

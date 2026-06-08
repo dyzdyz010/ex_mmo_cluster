@@ -22,6 +22,8 @@ Current first-class layers:
 - `ionization`: u8 wire values derived from the ionization layer.
 - `smoke_density`: f32 percent-density values produced by combustion and
   diffused by `SmokeDiffusionKernel`.
+- `oxygen`: f32 percent-availability values with a 100% ambient baseline,
+  consumed by combustion and restored by `OxygenDiffusionKernel`.
 
 Smoke is intentionally a field layer rather than only a voxel attribute. The
 combustion phenomenon still writes per-voxel `smoke_density` as local truth for
@@ -29,3 +31,9 @@ debug probes and later material reactions, but visible plume spread is owned by
 `SmokeDiffusionKernel` and published with field mask bit `0x10`. This keeps
 combustion decisions in `Voxel.Phenomenon` while keeping continuous movement of
 smoke inside the field runtime.
+
+Oxygen follows the same scalar-field boundary. Combustion writes local
+`oxygen` attributes for authoritative history, emits low-oxygen field source
+points while burning, and reads active oxygen-field deficits when deciding
+whether a heated material can ignite or must carbonize. `OxygenDiffusionKernel`
+publishes this layer with field mask bit `0x20`.

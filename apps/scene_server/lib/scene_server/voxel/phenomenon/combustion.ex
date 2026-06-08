@@ -77,6 +77,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         :ignore
 
       block ->
+        environment = normalize_environment(get_opt(opts, :environment, %{}))
+
         profile =
           opts
           |> get_opt(:profile, nil)
@@ -91,7 +93,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
             macro_index,
             block.material_id,
             temperature_celsius * 1.0,
-            profile
+            profile,
+            environment
           )
         end
     end
@@ -101,7 +104,14 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
   def evaluate(_storage, _macro_index, _temperature_celsius, _opts), do: :ignore
 
-  defp evaluate_profile(storage, macro_index, material_id, temperature_celsius, profile) do
+  defp evaluate_profile(
+         storage,
+         macro_index,
+         material_id,
+         temperature_celsius,
+         profile,
+         environment
+       ) do
     ignition_temperature =
       read_float(
         storage,
@@ -110,8 +120,16 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         get_opt(profile, :ignition_temperature_celsius, 5_000.0)
       )
 
-    moisture = read_float(storage, macro_index, "moisture", 0.0)
-    oxygen = read_float(storage, macro_index, "oxygen", @percent_max)
+    moisture =
+      read_environment_float(environment, :moisture_kg_per_m3, fn ->
+        read_float(storage, macro_index, "moisture", 0.0)
+      end)
+
+    oxygen =
+      read_environment_float(environment, :oxygen_percent, fn ->
+        read_float(storage, macro_index, "oxygen", @percent_max)
+      end)
+
     previous_stage = read_int(storage, macro_index, "combustion_stage", @stage_idle)
 
     preheat_temperature =
@@ -119,7 +137,15 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
     cond do
       temperature_celsius >= ignition_temperature and can_sustain?(moisture, oxygen, profile) ->
-        burn(storage, macro_index, material_id, temperature_celsius, profile, previous_stage)
+        burn(
+          storage,
+          macro_index,
+          material_id,
+          temperature_celsius,
+          profile,
+          previous_stage,
+          %{moisture_kg_per_m3: moisture, oxygen_percent: oxygen}
+        )
 
       temperature_celsius >= carbonization_temperature(ignition_temperature, profile) and
         moisture <= get_opt(profile, :max_moisture_kg_per_m3, 150.0) and
@@ -262,7 +288,15 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
   defp preheat_stage_effects(_macro_index, _previous_stage), do: []
 
-  defp burn(storage, macro_index, material_id, temperature_celsius, profile, previous_stage) do
+  defp burn(
+         storage,
+         macro_index,
+         material_id,
+         temperature_celsius,
+         profile,
+         previous_stage,
+         environment
+       ) do
     dt_seconds = get_opt(profile, :dt_seconds, 0.1)
     initial_fuel = get_opt(profile, :initial_fuel_mass_kg_per_m3, 1.0)
 
@@ -271,11 +305,19 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       |> read_float(macro_index, "fuel_mass", 0.0)
       |> initial_fuel_if_needed(previous_stage, initial_fuel)
 
-    oxygen_before = read_float(storage, macro_index, "oxygen", @percent_max)
+    oxygen_before =
+      read_environment_float(environment, :oxygen_percent, fn ->
+        read_float(storage, macro_index, "oxygen", @percent_max)
+      end)
+
     smoke_before = read_float(storage, macro_index, "smoke_density", 0.0)
     carbon_before = read_float(storage, macro_index, "carbonization", 0.0)
     integrity_before = read_float(storage, macro_index, "structural_integrity", @percent_max)
-    moisture = read_float(storage, macro_index, "moisture", 0.0)
+
+    moisture =
+      read_environment_float(environment, :moisture_kg_per_m3, fn ->
+        read_float(storage, macro_index, "moisture", 0.0)
+      end)
 
     burned_fuel =
       fuel_before
@@ -330,6 +372,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
 
     heat_source_points = heat_source_points(macro_index, next_stage, profile, heat_output)
     smoke_source_points = smoke_source_points(macro_index, smoke_before, smoke_after, burned_fuel)
+    oxygen_source_points = oxygen_source_points(macro_index, oxygen_before, oxygen_after)
 
     effects =
       [
@@ -374,6 +417,9 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           heat_release_efficiency: heat_release_efficiency(next_stage, profile),
           released_heat_energy_joules: heat_output.released_heat_energy_joules,
           heat_source_celsius: heat_output.source_temperature_celsius,
+          oxygen_before_percent: oxygen_before,
+          oxygen_after_percent: oxygen_after,
+          oxygen_consumed_percent: max(oxygen_before - oxygen_after, 0.0),
           smoke_before_percent: smoke_before,
           smoke_after_percent: smoke_after,
           smoke_delta_percent: max(smoke_after - smoke_before, 0.0)
@@ -402,7 +448,7 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       stage: stage_name(next_stage),
       effects: effects,
       heat_source_points: heat_source_points,
-      field_source_points: heat_source_points ++ smoke_source_points
+      field_source_points: heat_source_points ++ smoke_source_points ++ oxygen_source_points
     }
   end
 
@@ -673,6 +719,26 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     ]
   end
 
+  defp oxygen_source_points(_macro_index, oxygen_before, oxygen_after)
+       when oxygen_after >= oxygen_before do
+    []
+  end
+
+  defp oxygen_source_points(macro_index, oxygen_before, oxygen_after) do
+    [
+      %{
+        macro_index: macro_index,
+        field_type: :oxygen,
+        source_mode: :impulse,
+        source_kind: :combustion,
+        value: oxygen_after,
+        oxygen_before_percent: oxygen_before,
+        oxygen_after_percent: oxygen_after,
+        oxygen_consumed_percent: oxygen_before - oxygen_after
+      }
+    ]
+  end
+
   defp heat_source_output(
          _storage,
          _macro_index,
@@ -903,6 +969,16 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   defp opts_map(opts) when is_map(opts), do: opts
   defp opts_map(opts) when is_list(opts), do: Map.new(opts)
   defp opts_map(_opts), do: %{}
+
+  defp normalize_environment(environment) when is_map(environment), do: environment
+  defp normalize_environment(_environment), do: %{}
+
+  defp read_environment_float(environment, key, fallback_fun) when is_function(fallback_fun, 0) do
+    case get_opt(environment, key, nil) do
+      value when is_number(value) -> value * 1.0
+      _other -> fallback_fun.()
+    end
+  end
 
   defp get_opt(map, key, default) when is_map(map) do
     cond do

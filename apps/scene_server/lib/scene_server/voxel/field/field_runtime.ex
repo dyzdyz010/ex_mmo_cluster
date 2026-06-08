@@ -1399,7 +1399,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          summary:
            summary
            |> Map.put(:created, true)
-           |> Map.put(:field_types, ["temperature"])
+           |> Map.put(:field_types, field_type_names(kernels))
            |> Map.put(:radius, radius)
            |> Map.put(:max_ticks, max_ticks)
        }}
@@ -1481,6 +1481,29 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
       opts: physical_temperature_kernel_opts()
     }
   end
+
+  defp field_type_names(kernels) when is_list(kernels) do
+    kernels
+    |> Enum.flat_map(fn
+      %{module: module, opts: opts} -> kernel_required_layers(module, opts)
+      %{module: module} -> kernel_required_layers(module, %{})
+      _other -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.map(&Atom.to_string/1)
+  end
+
+  defp kernel_required_layers(module, opts) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :required_layers, 1) do
+      module.required_layers(opts_map(opts))
+    else
+      []
+    end
+  rescue
+    _exception -> []
+  end
+
+  defp kernel_required_layers(_module, _opts), do: []
 
   defp auto_circuit_kernel_spec(opts) do
     %{

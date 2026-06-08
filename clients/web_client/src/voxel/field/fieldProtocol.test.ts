@@ -23,6 +23,7 @@ function buildSnapshotBuf(opts: {
   electricCurrentValues?: number[];
   ionizationValues?: number[];
   smokeDensityValues?: number[];
+  oxygenValues?: number[];
 }): ArrayBuffer {
   const {
     logicalSceneId = 1,
@@ -38,6 +39,7 @@ function buildSnapshotBuf(opts: {
     electricCurrentValues = [],
     ionizationValues = [],
     smokeDensityValues = [],
+    oxygenValues = [],
   } = opts;
 
   const cellCount = macroIndices.length;
@@ -47,6 +49,7 @@ function buildSnapshotBuf(opts: {
   if (fieldMask & FieldMask.ElectricCurrent) size += cellCount * 4;
   if (fieldMask & FieldMask.Ionization) size += cellCount;
   if (fieldMask & FieldMask.SmokeDensity) size += cellCount * 4;
+  if (fieldMask & FieldMask.Oxygen) size += cellCount * 4;
 
   const buf = new ArrayBuffer(size);
   const view = new DataView(buf);
@@ -101,6 +104,12 @@ function buildSnapshotBuf(opts: {
   }
   if (fieldMask & FieldMask.SmokeDensity) {
     for (const v of smokeDensityValues) {
+      view.setFloat32(offset, v, true);
+      offset += 4;
+    }
+  }
+  if (fieldMask & FieldMask.Oxygen) {
+    for (const v of oxygenValues) {
       view.setFloat32(offset, v, true);
       offset += 4;
     }
@@ -184,6 +193,20 @@ describe("decodeFieldRegionSnapshot", () => {
     expect(Array.from(result!.smokeDensityValues)).toEqual([12.5, 40.25]);
   });
 
+  it("decodes oxygen as a first-class field layer", () => {
+    expect((FieldMask as Record<string, number>).Oxygen).toBe(0x20);
+
+    const buf = buildSnapshotBuf({
+      fieldMask: FieldMask.Oxygen,
+      macroIndices: [2, 3],
+      oxygenValues: [99.5, 72.25],
+    });
+
+    const result = decodeFieldRegionSnapshot(buf);
+    expect(result).not.toBeNull();
+    expect(Array.from(result!.oxygenValues)).toEqual([99.5, 72.25]);
+  });
+
   it("decodes temperature-only snapshot", () => {
     const buf = buildSnapshotBuf({
       logicalSceneId: 1,
@@ -237,13 +260,15 @@ describe("decodeFieldRegionSnapshot", () => {
         FieldMask.ElectricPotential |
         FieldMask.ElectricCurrent |
         FieldMask.Ionization |
-        FieldMask.SmokeDensity,
+        FieldMask.SmokeDensity |
+        FieldMask.Oxygen,
       macroIndices: [10, 20],
       temperatureValues: [21.0, 50.0],
       electricValues: [100.5, 200.5],
       electricCurrentValues: [4.5, 9.5],
       ionizationValues: [12, 34],
       smokeDensityValues: [3.25, 8.5],
+      oxygenValues: [98.0, 75.5],
     });
 
     const result = decodeFieldRegionSnapshot(buf);
@@ -253,6 +278,7 @@ describe("decodeFieldRegionSnapshot", () => {
     expect(Array.from(result!.electricCurrentValues)).toEqual([4.5, 9.5]);
     expect(Array.from(result!.ionizationValues)).toEqual([12, 34]);
     expect(Array.from(result!.smokeDensityValues)).toEqual([3.25, 8.5]);
+    expect(Array.from(result!.oxygenValues)).toEqual([98, 75.5]);
   });
 
   it("returns null for truncated buffer", () => {

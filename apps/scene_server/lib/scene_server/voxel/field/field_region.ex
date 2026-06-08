@@ -15,11 +15,17 @@ defmodule SceneServer.Voxel.Field.FieldRegion do
     :electric_potential,
     :electric_current,
     :ionization,
-    :smoke_density
+    :smoke_density,
+    :oxygen
   ]
 
   @type field_type ::
-          :temperature | :electric_potential | :electric_current | :ionization | :smoke_density
+          :temperature
+          | :electric_potential
+          | :electric_current
+          | :ionization
+          | :smoke_density
+          | :oxygen
   @type chunk_coord :: {integer(), integer(), integer()}
   @type local_macro :: {0..15, 0..15, 0..15}
   @type aabb :: {local_macro(), local_macro()}
@@ -155,6 +161,9 @@ defmodule SceneServer.Voxel.Field.FieldRegion do
 
   defp new_layer(:smoke_density),
     do: FieldLayer.new(baseline: 0.0, quantization: :float, threshold: 0.01)
+
+  defp new_layer(:oxygen),
+    do: FieldLayer.new(baseline: 100.0, quantization: :float, threshold: 0.01)
 
   defp new_layer(_field_type), do: FieldLayer.new()
 

@@ -10,7 +10,13 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
-  alias SceneServer.Voxel.Field.Kernels.{SmokeDiffusionKernel, TemperatureDiffusionKernel}
+
+  alias SceneServer.Voxel.Field.Kernels.{
+    OxygenDiffusionKernel,
+    SmokeDiffusionKernel,
+    TemperatureDiffusionKernel
+  }
+
   alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -39,7 +45,10 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
           storage,
           macro_index,
           FieldLayer.get(temperature_layer, macro_index),
-          Map.put(opts_map(opts), :dt_seconds, max(context.dt_ms, 1) / 1000.0)
+          opts
+          |> opts_map()
+          |> Map.put(:dt_seconds, max(context.dt_ms, 1) / 1000.0)
+          |> Map.put(:environment, field_environment(region, macro_index))
         )
       end)
       |> Enum.reject(&(&1 == :ignore))
@@ -301,7 +310,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
             "boundary_max_ticks"
           ])
       },
-      smoke_kernel_spec(region)
+      smoke_kernel_spec(region),
+      oxygen_kernel_spec(region)
     ]
   end
 
@@ -319,7 +329,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
             "owner_max_ticks"
           ])
       },
-      smoke_kernel_spec(region)
+      smoke_kernel_spec(region),
+      oxygen_kernel_spec(region)
     ]
   end
 
@@ -346,6 +357,19 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
         id: :smoke_diffusion,
         module: SmokeDiffusionKernel,
         opts: %{diffusion_alpha: 0.18, decay_per_second: 0.08}
+      }
+  end
+
+  defp oxygen_kernel_spec(%FieldRegion{} = region) do
+    Enum.find(region.kernels, fn
+      %{id: :oxygen_diffusion} -> true
+      %{module: OxygenDiffusionKernel} -> true
+      _other -> false
+    end) ||
+      %{
+        id: :oxygen_diffusion,
+        module: OxygenDiffusionKernel,
+        opts: %{diffusion_alpha: 0.12, decay_per_second: 0.04}
       }
   end
 
@@ -406,6 +430,25 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
 
   defp source_kind(source_point) do
     Map.get(source_point, :source_kind, Map.get(source_point, "source_kind"))
+  end
+
+  defp field_environment(%FieldRegion{} = region, macro_index) do
+    %{}
+    |> maybe_put_field_value(region, :oxygen, macro_index, :oxygen_percent)
+  end
+
+  defp maybe_put_field_value(environment, %FieldRegion{} = region, field_type, macro_index, key) do
+    if field_type in region.field_types do
+      layer = FieldRegion.get_layer(region, field_type)
+
+      if abs(FieldLayer.get_delta(layer, macro_index)) >= layer.threshold do
+        Map.put(environment, key, FieldLayer.get(layer, macro_index))
+      else
+        environment
+      end
+    else
+      environment
+    end
   end
 
   defp opts_map(opts) when is_map(opts), do: opts

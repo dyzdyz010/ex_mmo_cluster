@@ -6,7 +6,7 @@ defmodule SceneServer.Voxel.Field.ScalarField do
   only the `FieldLayer` inside the provided `FieldRegion`, consumes impulse
   source points for the selected field type, and leaves voxel truth writes to
   phenomenon/chunk effects. It is intentionally lightweight; the first use is
-  smoke density, and later bounded scalar media such as oxygen or moisture can
+  smoke density and oxygen, and later bounded scalar media such as moisture can
   reuse the same mechanics without adding per-phenomenon diffusion loops.
   """
 
@@ -28,7 +28,7 @@ defmodule SceneServer.Voxel.Field.ScalarField do
   """
   @spec tick(FieldRegion.t(), FieldRegion.field_type(), keyword() | map()) :: FieldRegion.t()
   def tick(%FieldRegion{} = region, field_type, opts \\ [])
-      when field_type in [:smoke_density] do
+      when field_type in [:smoke_density, :oxygen] do
     opts = opts_map(opts)
 
     diffusion_alpha =
@@ -94,7 +94,7 @@ defmodule SceneServer.Voxel.Field.ScalarField do
 
       current
       |> Kernel.+(diffusion_alpha * (neighbor_avg - current))
-      |> apply_decay(decay_per_second, dt_seconds)
+      |> apply_decay(layer.baseline, decay_per_second, dt_seconds)
       |> clamp(min_value, max_value)
       |> then(&FieldLayer.put(acc, idx, &1))
     end)
@@ -207,11 +207,11 @@ defmodule SceneServer.Voxel.Field.ScalarField do
 
   defp in_region?(_macro_index, _region), do: false
 
-  defp apply_decay(value, decay_per_second, _dt_seconds) when decay_per_second <= 0.0,
+  defp apply_decay(value, _baseline, decay_per_second, _dt_seconds) when decay_per_second <= 0.0,
     do: value
 
-  defp apply_decay(value, decay_per_second, dt_seconds) do
-    value * :math.exp(-decay_per_second * dt_seconds)
+  defp apply_decay(value, baseline, decay_per_second, dt_seconds) do
+    baseline + (value - baseline) * :math.exp(-decay_per_second * dt_seconds)
   end
 
   defp field_type(source_point) do

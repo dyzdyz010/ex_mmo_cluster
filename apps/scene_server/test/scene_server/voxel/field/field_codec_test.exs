@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   alias SceneServer.Voxel.Field.Kernels.{
     CircuitCurrentKernel,
     ElectricPotentialKernel,
+    OxygenDiffusionKernel,
     SmokeDiffusionKernel,
     TemperatureDiffusionKernel
   }
@@ -21,6 +22,10 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
 
     test "reserves a first-class smoke density field mask" do
       assert FieldCodec.field_mask_smoke_density() == 0x10
+    end
+
+    test "reserves a first-class oxygen field mask" do
+      assert FieldCodec.field_mask_oxygen() == 0x20
     end
 
     test "roundtrip with electric current as a first-class layer" do
@@ -122,6 +127,37 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
       assert decoded.electric_values == []
       assert decoded.electric_current_values == []
       assert decoded.ionization_values == []
+    end
+
+    test "roundtrip with oxygen as a first-class layer" do
+      idx = Types.macro_index!({2, 1, 1})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 89,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {3, 2, 2}},
+          kernels: [%{id: :oxygen_diffusion, module: OxygenDiffusionKernel}]
+        })
+
+      oxygen_layer =
+        region
+        |> FieldRegion.get_layer(:oxygen)
+        |> FieldLayer.put(idx, 73.5)
+
+      region = FieldRegion.put_layer(region, :oxygen, oxygen_layer)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.field_mask == FieldCodec.field_mask_oxygen()
+      assert decoded.macro_indices == [idx]
+      assert_in_delta hd(decoded.oxygen_values), 73.5, 0.001
+      assert decoded.temperature_values == []
+      assert decoded.electric_values == []
+      assert decoded.electric_current_values == []
+      assert decoded.ionization_values == []
+      assert decoded.smoke_density_values == []
     end
 
     test "roundtrip with all three field types" do

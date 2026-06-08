@@ -71,6 +71,22 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
                false
            end)
 
+    assert Enum.any?(field_source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :oxygen,
+               source_mode: :impulse,
+               source_kind: :combustion,
+               value: oxygen_after,
+               oxygen_consumed_percent: oxygen_consumed
+             }
+             when oxygen_after < 100.0 and oxygen_consumed > 0.0 ->
+               true
+
+             _other ->
+               false
+           end)
+
     assert {:write_voxel_attribute,
             %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 2}} in effects
 
@@ -446,6 +462,51 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
              _other ->
                false
            end)
+
+    assert Enum.any?(next_region.source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :oxygen,
+               source_kind: :combustion,
+               value: value
+             }
+             when value < 100.0 ->
+               true
+
+             _other ->
+               false
+           end)
+  end
+
+  test "combustion kernel reads oxygen field values when deciding ignition versus carbonization" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    region =
+      %{
+        region_id: 1,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [
+          %{id: :combustion, module: CombustionKernel, opts: %{}},
+          %{id: :oxygen_diffusion, module: SceneServer.Voxel.Field.Kernels.OxygenDiffusionKernel}
+        ]
+      }
+      |> FieldRegion.new()
+      |> FieldRegion.put_layer(
+        :temperature,
+        FieldLayer.put(FieldLayer.new(), macro_index, 500.0)
+      )
+      |> FieldRegion.put_layer(
+        :oxygen,
+        FieldLayer.put(FieldLayer.new(baseline: 100.0), macro_index, 2.0)
+      )
+
+    assert {:cont, _next_region, effects} =
+             CombustionKernel.tick(region, KernelContext.new(region, 1, storage, dt_ms: 100), %{})
+
+    assert observe_event?(effects, "voxel_combustion_carbonized", :preheat)
+    refute observe_event?(effects, "voxel_combustion_ignited", :burning)
   end
 
   test "fuel exhaustion turns wood into charcoal" do
