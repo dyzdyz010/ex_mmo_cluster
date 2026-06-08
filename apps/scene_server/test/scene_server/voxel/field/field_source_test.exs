@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Phenomenon.CombustionKernel
@@ -64,6 +65,14 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                  id: :combustion,
                  module: CombustionKernel,
                  opts: %{}
+               },
+               %{
+                 id: :smoke_diffusion,
+                 module: SmokeDiffusionKernel,
+                 opts: %{
+                   diffusion_alpha: 0.18,
+                   decay_per_second: 0.08
+                 }
                }
              ]
 

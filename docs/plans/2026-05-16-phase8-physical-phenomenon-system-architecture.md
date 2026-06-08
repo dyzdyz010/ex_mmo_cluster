@@ -375,6 +375,10 @@ thermal_expansion_coefficient
   `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}` FieldSource，
   触发它的外部 heat impulse 到期后仍可继续消耗 fuel / oxygen 并产热；这复用现有
   FieldRegion source lifecycle，不另起平行 GenServer。
+- 烟雾已进入一等场层：燃烧仍写回 voxel `smoke_density` 作为本地真值，但同时输出
+  `:smoke_density` field source；`SmokeDiffusionKernel` 负责烟雾扩散/衰减，
+  `FieldCodec` 与 web client 0x73 协议使用 mask bit `0x10` 发布 f32 smoke density
+  数组。烟雾表现因此进入 FieldRuntime，而不是只停在单格属性上。
 - 跨 chunk face 的火势传播已接入：边界燃烧源输出 `ensure_field_region` effect，
   源 chunk 只负责队列化交接，目标 chunk 经自己的 authority 启动 temperature/combustion
   region 并决定目标材料是否点燃；remote handoff 已避免把 source lease 带入 target
@@ -403,8 +407,9 @@ thermal_expansion_coefficient
 - 燃烧导致 `structural_integrity` 跌破材料阈值时会产生
   `voxel_structural_collapse_candidate` observe，作为 Phase 8.D object / prefab
   坍塌结算的前置入口；当前仍不直接修改 object truth 或执行真实坍塌。
-- 当前实例账本仍是 chunk-local in-memory：尚未进入 snapshot 持久化、跨节点边界事件或
-  object / prefab 生命周期，不能把本片误读为完整现象实例系统已经完成。
+- 当前实例账本仍是 chunk-local in-memory；烟雾也还只是 chunk-local 标量扩散，尚未实现
+  oxygen / moisture 场、真实气流/压力、烟雾跨 chunk handoff、snapshot 持久化、
+  跨节点边界事件或 object / prefab 生命周期，不能把本片误读为完整现象实例系统已经完成。
 
 ### Phase 8.C：Freezing / phase change minimum
 

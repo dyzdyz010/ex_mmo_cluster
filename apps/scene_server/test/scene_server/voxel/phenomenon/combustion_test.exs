@@ -36,7 +36,12 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     macro_index = Types.macro_index!({0, 0, 0})
     storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
 
-    assert %{stage: :burning, effects: effects, heat_source_points: [source_point]} =
+    assert %{
+             stage: :burning,
+             effects: effects,
+             heat_source_points: [source_point],
+             field_source_points: field_source_points
+           } =
              Combustion.evaluate(storage, macro_index, 500.0)
 
     assert %{
@@ -49,6 +54,22 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
 
     assert source_value > 500.0
     assert source_value <= 680.0
+
+    assert Enum.any?(field_source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :smoke_density,
+               source_mode: :impulse,
+               source_kind: :combustion,
+               value: smoke_value,
+               smoke_delta_percent: smoke_delta
+             }
+             when smoke_value > 0.0 and smoke_delta > 0.0 ->
+               true
+
+             _other ->
+               false
+           end)
 
     assert {:write_voxel_attribute,
             %{attribute: :combustion_stage, macro_index: macro_index, raw_value: 2}} in effects
@@ -374,6 +395,57 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
              })
 
     assert fuel_mass_raw(long_tick_effects) < fuel_mass_raw(short_tick_effects)
+  end
+
+  test "combustion kernel keeps heat and smoke sources inside the field source lifecycle" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, MaterialCatalog.wood_material_id())
+
+    profile = %{
+      initial_fuel_mass_kg_per_m3: 10.0,
+      burn_rate_kg_per_m3_second: 1.0,
+      smoke_yield_percent_per_kg: 8.0
+    }
+
+    region =
+      %{
+        region_id: 1,
+        chunk_coord: {0, 0, 0},
+        aabb: {{0, 0, 0}, {0, 0, 0}},
+        kernels: [%{id: :combustion, module: CombustionKernel, opts: %{profile: profile}}]
+      }
+      |> FieldRegion.new()
+      |> FieldRegion.put_layer(
+        :temperature,
+        FieldLayer.put(FieldLayer.new(), macro_index, 500.0)
+      )
+
+    assert {:cont, next_region, _effects} =
+             CombustionKernel.tick(region, KernelContext.new(region, 1, storage, dt_ms: 1000), %{
+               profile: profile
+             })
+
+    assert Enum.any?(next_region.source_points, fn
+             %{macro_index: ^macro_index, field_type: :temperature, source_kind: :combustion} ->
+               true
+
+             _other ->
+               false
+           end)
+
+    assert Enum.any?(next_region.source_points, fn
+             %{
+               macro_index: ^macro_index,
+               field_type: :smoke_density,
+               source_kind: :combustion,
+               value: value
+             }
+             when value > 0.0 ->
+               true
+
+             _other ->
+               false
+           end)
   end
 
   test "fuel exhaustion turns wood into charcoal" do

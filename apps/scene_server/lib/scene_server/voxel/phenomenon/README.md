@@ -40,6 +40,13 @@ the current stage. Heat propagation remains owned by the field runtime;
 combustion only decides whether a heated material changes state and which
 structured effects should be sent back to chunk authority.
 
+Combustion smoke now follows the same boundary. Burning still writes the local
+voxel `smoke_density` attribute for probes and later material reactions, but it
+also emits a `:smoke_density` field source. `SmokeDiffusionKernel` consumes that
+source and evolves the browser-visible smoke plume through the regular
+`FieldRegionSnapshot` pipeline instead of hiding smoke inside per-voxel
+attributes.
+
 Once a material enters burning or smoldering, the combustion kernel refreshes a
 stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
 field source on the owning chunk. This gives the fire its own FieldRegion

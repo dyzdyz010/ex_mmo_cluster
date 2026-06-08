@@ -5,8 +5,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     * opcode `0x73` `FieldRegionSnapshot`(S→C)
     * opcode `0x74` `FieldRegionDestroyed`(S→C)
 
-  Wire 字节序统一:数值字段大端,floats(temperature / electric_potential / electric_current)
-  little-endian f32(与 FieldLayer 存储一致)。Payload **包含** opcode byte:
+  Wire 字节序统一:数值字段大端,floats(temperature / electric_potential / electric_current /
+  smoke_density) little-endian f32(与 FieldLayer 存储一致)。Payload **包含** opcode byte:
   下游 transport(tcp_connection)直接写 socket;`{packet, 4}` 在
   gen_tcp 层补 4 字节长度前缀。
 
@@ -19,13 +19,14 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       i32  chunk_z            (big)
       u64  region_id          (big)
       u32  tick_count         (big)
-      u8   field_mask         (bit0 = temperature, bit1 = electric_potential, bit2 = ionization, bit3 = electric_current)
+      u8   field_mask         (bit0 = temperature, bit1 = electric_potential, bit2 = ionization, bit3 = electric_current, bit4 = smoke_density)
       u16  cell_count         (big)
       [u16; cell_count] macro_indices              (big endian)
       [f32 le; cell_count] temperature_values      (iff bit0 set)
       [f32 le; cell_count] electric_potential_values (iff bit1 set)
       [f32 le; cell_count] electric_current_values (iff bit3 set)
       [u8;    cell_count] ionization_values        (iff bit2 set)
+      [f32 le; cell_count] smoke_density_values    (iff bit4 set)
 
   FieldRegionDestroyed 结构:
 
@@ -49,6 +50,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   @field_mask_electric_potential 0x02
   @field_mask_ionization 0x04
   @field_mask_electric_current 0x08
+  @field_mask_smoke_density 0x10
 
   @destroy_reason_expired 0x00
   @destroy_reason_lease_revoked 0x01
@@ -66,6 +68,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   def field_mask_electric_potential, do: @field_mask_electric_potential
   def field_mask_ionization, do: @field_mask_ionization
   def field_mask_electric_current, do: @field_mask_electric_current
+  def field_mask_smoke_density, do: @field_mask_smoke_density
 
   # ---- FieldRegionSnapshot (0x73) -------------------------------------------
 
@@ -107,11 +110,19 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         []
       end
 
+    smoke_cells =
+      if has_mask?(field_mask, @field_mask_smoke_density) do
+        collect_cells(region, :smoke_density)
+      else
+        []
+      end
+
     all_indices =
       (Enum.map(temperature_cells, &elem(&1, 0)) ++
          Enum.map(electric_cells, &elem(&1, 0)) ++
          Enum.map(current_cells, &elem(&1, 0)) ++
-         Enum.map(ionization_cells, &elem(&1, 0)))
+         Enum.map(ionization_cells, &elem(&1, 0)) ++
+         Enum.map(smoke_cells, &elem(&1, 0)))
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -120,6 +131,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     elec_map = Map.new(electric_cells)
     current_map = Map.new(current_cells)
     ion_map = Map.new(ionization_cells)
+    smoke_map = Map.new(smoke_cells)
 
     temp_layer =
       if has_mask?(field_mask, @field_mask_temperature),
@@ -136,6 +148,10 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     ion_layer =
       if has_mask?(field_mask, @field_mask_ionization),
         do: FieldRegion.get_layer(region, :ionization)
+
+    smoke_layer =
+      if has_mask?(field_mask, @field_mask_smoke_density),
+        do: FieldRegion.get_layer(region, :smoke_density)
 
     indices_bin =
       Enum.reduce(all_indices, <<>>, fn idx, acc ->
@@ -183,13 +199,23 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         <<>>
       end
 
+    smoke_bin =
+      if has_mask?(field_mask, @field_mask_smoke_density) do
+        Enum.reduce(all_indices, <<>>, fn idx, acc ->
+          val = Map.get(smoke_map, idx, FieldLayer.get(smoke_layer, idx))
+          <<acc::binary, val::float-32-little>>
+        end)
+      else
+        <<>>
+      end
+
     <<@opcode_snapshot::unsigned-big-integer-size(8),
       logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
       cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
       region.region_id::unsigned-big-integer-size(64),
       region.tick_count::unsigned-big-integer-size(32), field_mask::unsigned-big-integer-size(8),
       cell_count::unsigned-big-integer-size(16), indices_bin::binary, temp_bin::binary,
-      elec_bin::binary, current_bin::binary, ion_bin::binary>>
+      elec_bin::binary, current_bin::binary, ion_bin::binary, smoke_bin::binary>>
   end
 
   @doc """
@@ -243,7 +269,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {[], rest4}
       end
 
-    {ionization_values, _rest6} =
+    {ionization_values, rest6} =
       if has_mask?(field_mask, @field_mask_ionization) do
         ion_size = cell_count
         <<ion_bin::binary-size(^ion_size), r::binary>> = rest5
@@ -251,6 +277,16 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {vals, r}
       else
         {[], rest5}
+      end
+
+    {smoke_density_values, _rest7} =
+      if has_mask?(field_mask, @field_mask_smoke_density) do
+        smoke_size = cell_count * 4
+        <<smoke_bin::binary-size(^smoke_size), r::binary>> = rest6
+        vals = for <<v::float-32-little <- smoke_bin>>, do: v
+        {vals, r}
+      else
+        {[], rest6}
       end
 
     %{
@@ -265,7 +301,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       temperature_values: temperature_values,
       electric_values: electric_values,
       electric_current_values: electric_current_values,
-      ionization_values: ionization_values
+      ionization_values: ionization_values,
+      smoke_density_values: smoke_density_values
     }
   end
 
@@ -325,6 +362,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       :electric_potential, acc -> bor(acc, @field_mask_electric_potential)
       :electric_current, acc -> bor(acc, @field_mask_electric_current)
       :ionization, acc -> bor(acc, @field_mask_ionization)
+      :smoke_density, acc -> bor(acc, @field_mask_smoke_density)
       _, acc -> acc
     end)
   end

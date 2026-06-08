@@ -15,13 +15,16 @@ describe("HeatSmokeSimulation", () => {
         return null;
       }
 
-      return Array.from({ length: 32 }, (_value, index): ElectricEffectPoint => ({
-        x: 10 + index,
-        y: 20,
-        z: 30,
-        potential: cell.potential,
-        sizeWorld: 8,
-      }));
+      return Array.from(
+        { length: 32 },
+        (_value, index): ElectricEffectPoint => ({
+          x: 10 + index,
+          y: 20,
+          z: 30,
+          potential: cell.potential,
+          sizeWorld: 8,
+        }),
+      );
     });
 
     expect(spawned).toBe(4);
@@ -42,5 +45,6 @@ function makeCurrentSnapshot(): FFieldRegionSnapshot {
     electricValues: new Float32Array(0),
     electricCurrentValues: Float32Array.of(20, 20),
     ionizationValues: new Uint8Array(0),
+    smokeDensityValues: new Float32Array(0),
   };
 }

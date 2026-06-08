@@ -1753,10 +1753,11 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  radius: 4
                })
 
-      [kernel_spec, combustion_spec] = plan.region_attrs.kernels
+      [kernel_spec, combustion_spec, smoke_spec] = plan.region_attrs.kernels
       region = FieldRegion.new(Map.put(plan.region_attrs, :region_id, 99))
 
       assert combustion_spec == %{id: :combustion, module: CombustionKernel, opts: %{}}
+      assert smoke_spec.id == :smoke_diffusion
 
       assert plan.summary.source.source_mode == :impulse
 

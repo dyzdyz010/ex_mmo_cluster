@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.SmokeDiffusionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Phenomenon.CombustionKernel
@@ -57,6 +58,8 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   @temperature_diffusion_time_scale 20_000.0
   @temperature_ambient_loss_per_second 0.08
   @temperature_cell_size_meters 1.0
+  @smoke_diffusion_alpha 0.18
+  @smoke_decay_per_second 0.08
   @default_conduction_source_potential 120.0
   @default_conduction_max_ticks 120
   @default_conduction_radius 1
@@ -293,6 +296,14 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         id: :combustion,
         module: CombustionKernel,
         opts: %{}
+      },
+      %{
+        id: :smoke_diffusion,
+        module: SmokeDiffusionKernel,
+        opts: %{
+          diffusion_alpha: @smoke_diffusion_alpha,
+          decay_per_second: @smoke_decay_per_second
+        }
       }
     ]
   end

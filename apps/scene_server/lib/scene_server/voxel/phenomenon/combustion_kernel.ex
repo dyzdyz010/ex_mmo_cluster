@@ -10,7 +10,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext}
-  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
+  alias SceneServer.Voxel.Field.Kernels.{SmokeDiffusionKernel, TemperatureDiffusionKernel}
   alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
@@ -44,7 +44,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
       end)
       |> Enum.reject(&(&1 == :ignore))
 
-    combustion_source_points = Enum.flat_map(results, & &1.heat_source_points)
+    combustion_source_points = Enum.flat_map(results, &combustion_field_source_points/1)
+    heat_source_points = Enum.filter(combustion_source_points, &(field_type(&1) == :temperature))
     owner_handoff? = owner_handoff_after_tick?(region)
 
     next_region = %{
@@ -62,12 +63,12 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
       Enum.flat_map(results, & &1.effects) ++
         combustion_owner_effects(
           region,
-          combustion_source_points,
+          heat_source_points,
           context,
           opts_map(opts),
           owner_handoff?
         ) ++
-        boundary_heat_effects(region, combustion_source_points, context, opts_map(opts))
+        boundary_heat_effects(region, heat_source_points, context, opts_map(opts))
 
     {:cont, next_region, effects}
   end
@@ -119,10 +120,21 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
     _exception in [ArgumentError, FunctionClauseError] -> Combustion.stage_idle()
   end
 
+  defp combustion_field_source_points(%{field_source_points: field_source_points})
+       when is_list(field_source_points) do
+    field_source_points
+  end
+
+  defp combustion_field_source_points(%{heat_source_points: heat_source_points})
+       when is_list(heat_source_points) do
+    heat_source_points
+  end
+
+  defp combustion_field_source_points(_result), do: []
+
   defp non_combustion_source_points(source_points) do
     Enum.reject(source_points, fn source_point ->
-      field_type(source_point) == :temperature and
-        source_kind(source_point) in [:combustion, "combustion"]
+      source_kind(source_point) in [:combustion, "combustion"]
     end)
   end
 
@@ -288,7 +300,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
             :boundary_max_ticks,
             "boundary_max_ticks"
           ])
-      }
+      },
+      smoke_kernel_spec(region)
     ]
   end
 
@@ -305,7 +318,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
             :owner_max_ticks,
             "owner_max_ticks"
           ])
-      }
+      },
+      smoke_kernel_spec(region)
     ]
   end
 
@@ -319,6 +333,19 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionKernel do
         id: :temperature_diffusion,
         module: TemperatureDiffusionKernel,
         opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0, cell_size_meters: 1.0}
+      }
+  end
+
+  defp smoke_kernel_spec(%FieldRegion{} = region) do
+    Enum.find(region.kernels, fn
+      %{id: :smoke_diffusion} -> true
+      %{module: SmokeDiffusionKernel} -> true
+      _other -> false
+    end) ||
+      %{
+        id: :smoke_diffusion,
+        module: SmokeDiffusionKernel,
+        opts: %{diffusion_alpha: 0.18, decay_per_second: 0.08}
       }
   end
 

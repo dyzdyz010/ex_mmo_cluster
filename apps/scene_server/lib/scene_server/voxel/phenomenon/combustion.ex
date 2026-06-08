@@ -27,7 +27,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           material_id: non_neg_integer(),
           stage: atom(),
           effects: [Effect.t()],
-          heat_source_points: [map()]
+          heat_source_points: [map()],
+          field_source_points: [map()]
         }
 
   @doc "Returns the enum value for the idle/non-combusting stage."
@@ -212,7 +213,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       material_id: material_id,
       stage: :preheat,
       effects: effects,
-      heat_source_points: []
+      heat_source_points: [],
+      field_source_points: []
     }
   end
 
@@ -247,7 +249,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         material_id: material_id,
         stage: :preheat,
         effects: effects,
-        heat_source_points: []
+        heat_source_points: [],
+        field_source_points: []
       }
     end
   end
@@ -325,6 +328,9 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         profile
       )
 
+    heat_source_points = heat_source_points(macro_index, next_stage, profile, heat_output)
+    smoke_source_points = smoke_source_points(macro_index, smoke_before, smoke_after, burned_fuel)
+
     effects =
       [
         Effect.write_voxel_attribute(macro_index, :fuel_mass, fixed32(fuel_after)),
@@ -367,7 +373,10 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           combustion_heat_j_per_kg: combustion_heat_j_per_kg(profile),
           heat_release_efficiency: heat_release_efficiency(next_stage, profile),
           released_heat_energy_joules: heat_output.released_heat_energy_joules,
-          heat_source_celsius: heat_output.source_temperature_celsius
+          heat_source_celsius: heat_output.source_temperature_celsius,
+          smoke_before_percent: smoke_before,
+          smoke_after_percent: smoke_after,
+          smoke_delta_percent: max(smoke_after - smoke_before, 0.0)
         })
       ] ++
         structural_failure_effects(
@@ -392,7 +401,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       material_id: material_id,
       stage: stage_name(next_stage),
       effects: effects,
-      heat_source_points: heat_source_points(macro_index, next_stage, profile, heat_output)
+      heat_source_points: heat_source_points,
+      field_source_points: heat_source_points ++ smoke_source_points
     }
   end
 
@@ -473,7 +483,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
       material_id: material_id,
       stage: :preheat,
       effects: effects,
-      heat_source_points: []
+      heat_source_points: [],
+      field_source_points: []
     }
   end
 
@@ -496,7 +507,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
           stage: :extinguished
         })
       ],
-      heat_source_points: []
+      heat_source_points: [],
+      field_source_points: []
     }
   end
 
@@ -637,6 +649,26 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         released_heat_energy_joules: heat_output.released_heat_energy_joules,
         combustion_heat_j_per_kg: combustion_heat_j_per_kg(profile),
         heat_release_efficiency: heat_release_efficiency(:burning, profile)
+      }
+    ]
+  end
+
+  defp smoke_source_points(_macro_index, smoke_before, smoke_after, _burned_fuel)
+       when smoke_after <= smoke_before do
+    []
+  end
+
+  defp smoke_source_points(macro_index, smoke_before, smoke_after, burned_fuel) do
+    [
+      %{
+        macro_index: macro_index,
+        field_type: :smoke_density,
+        source_mode: :impulse,
+        source_kind: :combustion,
+        value: smoke_after,
+        smoke_density_percent: smoke_after,
+        smoke_delta_percent: smoke_after - smoke_before,
+        burned_fuel_kg_per_m3: burned_fuel
       }
     ]
   end

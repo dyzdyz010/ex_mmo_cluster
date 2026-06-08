@@ -493,6 +493,7 @@ function makeCurrentFieldSnapshot({ tickCount }: { tickCount: number }): FFieldR
     electricValues: new Float32Array(0),
     electricCurrentValues: Float32Array.of(20),
     ionizationValues: new Uint8Array(0),
+    smokeDensityValues: new Float32Array(0),
   };
 }
 
@@ -517,6 +518,7 @@ function makeDischargeFieldSnapshot({
     electricValues: Float32Array.of(120, 12),
     electricCurrentValues: new Float32Array(0),
     ionizationValues: Uint8Array.of(255, 128),
+    smokeDensityValues: new Float32Array(0),
   };
 }
 
