@@ -272,6 +272,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   setup do
     ensure_repo_started()
     previous_gate_observe_log = Application.fetch_env(:gate_server, :cli_observe_log)
+    stop_named(MapLedger)
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
@@ -296,6 +297,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
       _ = :gen_tcp.close(client)
       _ = :gen_tcp.close(server)
       if Process.alive?(pid), do: Process.exit(pid, :kill)
+      stop_named(MapLedger)
       restore_env(:gate_server, previous_gate_observe_log)
     end)
 
@@ -2738,20 +2740,49 @@ defmodule GateServer.TcpConnectionProtocolTest do
   defp restore_env(app, {:ok, value}), do: Application.put_env(app, :cli_observe_log, value)
   defp restore_env(app, :error), do: Application.delete_env(app, :cli_observe_log)
 
+  defp stop_named(name) do
+    case Process.whereis(name) do
+      nil ->
+        :ok
+
+      pid ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :shutdown)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+        :ok
+    end
+  end
+
   defp ensure_map_ledger_started(opts \\ []) do
     ensure_data_voxel_started()
 
     case Process.whereis(MapLedger) do
       nil ->
-        start_supervised!(
-          {MapLedger, name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore}
-        )
+        ensure_map_ledger_child_started()
 
       _pid ->
         :ok
     end
 
     configure_map_ledger_scene_invalidator(Keyword.get(opts, :scene_invalidator))
+  end
+
+  defp ensure_map_ledger_child_started do
+    {MapLedger, name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore}
+    |> start_supervised()
+    |> case do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, {:shutdown, {:failed_to_start_child, _id, {:already_started, _pid}}}} ->
+        :ok
+
+      {:error, reason} ->
+        flunk("failed to start test MapLedger: #{inspect(reason)}")
+    end
   end
 
   defp configure_map_ledger_scene_invalidator(invalidator)

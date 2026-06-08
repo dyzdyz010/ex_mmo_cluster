@@ -125,6 +125,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelCombustion(command, args);
       case "voxel_phase":
         return this.cmdVoxelPhase(command, args);
+      case "voxel_object":
+        return this.cmdVoxelObject(command, args);
       case "chunk_versions":
         return this.ok(command, "authoritative chunk versions", {
           chunks: this.deps.world.store.authoritativeChunkSummaries(128),
@@ -684,6 +686,35 @@ export class DevToolsCli implements CliCommandHandler {
         ? `phase change probe submitted for (${formatCoord(coord)})`
         : `phase change probe rejected for (${formatCoord(coord)})`,
       data: {
+        coord,
+        voxel: this.deps.world.debugSnapshot(),
+      },
+    };
+  }
+
+  private cmdVoxelObject(command: string, args: string[]): CliCommandResult {
+    const objectId = parsePositiveInt(args[0], -1);
+    const coord = parseMacroCoord(args.slice(1, 4));
+    if (objectId < 0 || !coord) {
+      return { ok: false, command, text: usageForObjectCommand() };
+    }
+
+    const objectPort = this.deps.world as Partial<{
+      requestVoxelObjectProbe: (objectId: number, coord: FMacroCoord) => boolean;
+    }>;
+    if (typeof objectPort.requestVoxelObjectProbe !== "function") {
+      return { ok: false, command, text: "object probe unavailable" };
+    }
+
+    const ok = objectPort.requestVoxelObjectProbe.call(objectPort, objectId, coord);
+    return {
+      ok,
+      command,
+      text: ok
+        ? `object probe submitted for object ${objectId} at (${formatCoord(coord)})`
+        : `object probe rejected for object ${objectId} at (${formatCoord(coord)})`,
+      data: {
+        objectId,
         coord,
         voxel: this.deps.world.debugSnapshot(),
       },
@@ -1409,6 +1440,10 @@ function usageForCombustionCommand(): string {
 
 function usageForPhaseCommand(): string {
   return "usage: voxel_phase <x> <y> <z>";
+}
+
+function usageForObjectCommand(): string {
+  return "usage: voxel_object <object_id> <x> <y> <z>";
 }
 
 function formatSceneRegionOverlayLine(region: {

@@ -570,6 +570,39 @@ describe("DevToolsCli microgrid boundary", () => {
     });
   });
 
+  it("routes voxel_object to a read-only object physical-state probe", () => {
+    const requestVoxelObjectProbe = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      world: {
+        requestVoxelObjectProbe,
+        debugSnapshot: vi.fn(() => ({
+          mode: "server-authoritative",
+          lastObjectProbe: { objectId: 42, damagedPartCount: 1 },
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_object", ["42", "4", "12", "12"])).toMatchObject({
+      ok: true,
+      command: "voxel_object",
+      text: "object probe submitted for object 42 at (4,12,12)",
+      data: expect.objectContaining({
+        objectId: 42,
+        coord: { x: 4, y: 12, z: 12 },
+        voxel: expect.objectContaining({
+          lastObjectProbe: { objectId: 42, damagedPartCount: 1 },
+        }),
+      }),
+    });
+    expect(requestVoxelObjectProbe).toHaveBeenCalledWith(42, { x: 4, y: 12, z: 12 });
+
+    expect(cli.executeCliCommand("voxel_object", ["42", "4", "12"])).toMatchObject({
+      ok: false,
+      command: "voxel_object",
+      text: "usage: voxel_object <object_id> <x> <y> <z>",
+    });
+  });
+
   it("preserves a non-CLI source when routing voxel_conduct", () => {
     const conductBetween = vi.fn(() => true);
     const cli = new DevToolsCli({

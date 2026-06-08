@@ -56,6 +56,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   setup do
     old_observe_log = Application.get_env(:gate_server, :cli_observe_log)
     stop_named(GateServer.Interface)
+    stop_named(MapLedger)
     ensure_repo_started()
 
     # Phase 1d: clear the shared `voxel_chunks` table + WriteTokenStore state
@@ -69,6 +70,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     on_exit(fn ->
       GateServer.CliObserve.flush()
       stop_named(GateServer.Interface)
+      stop_named(MapLedger)
 
       if is_nil(old_observe_log) do
         Application.delete_env(:gate_server, :cli_observe_log)
@@ -3484,15 +3486,31 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     case Process.whereis(MapLedger) do
       nil ->
-        start_supervised!(
-          {MapLedger, [name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore]}
-        )
+        ensure_map_ledger_child_started()
 
       _pid ->
         :ok
     end
 
     configure_map_ledger_scene_invalidator(Keyword.get(opts, :scene_invalidator))
+  end
+
+  defp ensure_map_ledger_child_started do
+    {MapLedger, [name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore]}
+    |> start_supervised()
+    |> case do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, {:shutdown, {:failed_to_start_child, _id, {:already_started, _pid}}}} ->
+        :ok
+
+      {:error, reason} ->
+        flunk("failed to start test MapLedger: #{inspect(reason)}")
+    end
   end
 
   defp configure_map_ledger_scene_invalidator(invalidator)

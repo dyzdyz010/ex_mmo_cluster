@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   """
 
   alias SceneServer.Voxel.Field.FieldRuntime
+  alias SceneServer.Voxel.ObjectPhysicalProbe
   alias SceneServer.Voxel.Phenomenon.{CombustionProbe, PhaseChangeProbe}
 
   @default_max_ticks 600
@@ -149,6 +150,17 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   @spec phase_change_probe(keyword()) :: {:ok, map()} | {:error, term()}
   def phase_change_probe(opts \\ []) do
     PhaseChangeProbe.probe(opts)
+  end
+
+  @doc """
+  Reads one scene object's authoritative physical part-health state.
+
+  This is a pure observation helper for browser/dev CLI diagnostics. It does
+  not create a field region, evaluate a phenomenon, or mutate object truth.
+  """
+  @spec object_probe(keyword()) :: {:ok, map()} | {:error, term()}
+  def object_probe(opts \\ []) do
+    ObjectPhysicalProbe.probe(opts)
   end
 
   defp maybe_put(opts, _key, nil), do: opts

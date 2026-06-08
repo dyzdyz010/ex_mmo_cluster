@@ -141,7 +141,9 @@ defmodule Mix.Tasks.GateServerMigrationCutoverObserveTest do
 
     assert output =~ "gate_migration_cutover_rebind=ok"
     assert output =~ "logical_scene_id=#{logical_scene_id}"
-    assert DynamicSupervisor.which_children(existing_sup) == before_children
+
+    assert existing_sup |> DynamicSupervisor.which_children() |> MapSet.new() ==
+             MapSet.new(before_children)
   end
 
   test "chooses fresh token versions when the global token store already has the smoke region" do

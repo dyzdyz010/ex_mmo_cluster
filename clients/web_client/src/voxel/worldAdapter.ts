@@ -52,6 +52,7 @@ export interface VoxelWorldAdapter {
   requestVoxelAutoCircuit?(coord: FMacroCoord, maxTicks?: number): boolean;
   requestVoxelCombustionProbe?(coord: FMacroCoord): boolean;
   requestVoxelPhaseChangeProbe?(coord: FMacroCoord): boolean;
+  requestVoxelObjectProbe?(objectId: number, coord: FMacroCoord): boolean;
   placeBlock(coord: FMacroCoord, block: FNormalBlockData): boolean;
   breakBlock(coord: FMacroCoord): boolean;
   placeMicroBlock(macro: FMacroCoord, micro: FMicroCoord, block: FNormalBlockData): boolean;

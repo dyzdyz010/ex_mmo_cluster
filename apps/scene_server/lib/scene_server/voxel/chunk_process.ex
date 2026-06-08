@@ -6073,6 +6073,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
         region: region,
         chunk_pid: chunk_pid,
         storage_fn: build_storage_fn(),
+        initial_storage: state.storage,
         logical_scene_id: state.logical_scene_id
       ]
 

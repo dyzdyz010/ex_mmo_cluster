@@ -167,6 +167,29 @@ defmodule WorldServer.Voxel.DevFieldSeed do
     end
   end
 
+  @doc """
+  Reads one scene object's physical part-health truth from the scene node
+  selected by `:world_macro`.
+
+  This is a dev/debug observation path. WorldServer only routes the request;
+  the scene-side `ObjectRegistry` remains the authority for object and part
+  state.
+  """
+  @spec ensure_object_probe(keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_object_probe(opts \\ []) when is_list(opts) do
+    logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
+    world_macro = Keyword.get(opts, :world_macro, {0, 0, 0})
+
+    with {:ok, route} <- route_source_chunk(logical_scene_id, world_macro, opts),
+         {:ok, target_node} <- target_node_from_route(route),
+         invoke_opts = Keyword.put_new(opts, :lease, route.lease),
+         {:ok, summary} <- invoke(target_node, :object_probe, invoke_opts) do
+      enriched = Map.put(summary, :scene_node, Atom.to_string(target_node))
+      emit("voxel_object_probe_ready", enriched)
+      {:ok, enriched}
+    end
+  end
+
   defp invoke(target_node, function, opts) do
     if target_node == node() do
       invoke_local(function, opts)

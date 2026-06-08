@@ -33,6 +33,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
           region: FieldRegion.t(),
           chunk_pid: pid(),
           storage_fn: (-> any()),
+          initial_storage: any(),
           logical_scene_id: non_neg_integer(),
           tick_interval_ms: pos_integer()
         ]
@@ -74,6 +75,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     region = Keyword.fetch!(opts, :region)
     chunk_pid = Keyword.fetch!(opts, :chunk_pid)
     storage_fn = Keyword.fetch!(opts, :storage_fn)
+    initial_storage = Keyword.get(opts, :initial_storage)
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     tick_interval_ms = Keyword.get(opts, :tick_interval_ms, @default_tick_interval_ms)
 
@@ -96,6 +98,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
        chunk_pid: chunk_pid,
        chunk_monitor: chunk_monitor,
        storage_fn: storage_fn,
+       initial_storage: initial_storage,
        logical_scene_id: logical_scene_id,
        tick_interval_ms: tick_interval_ms
      }}
@@ -107,12 +110,13 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       region: region,
       chunk_pid: chunk_pid,
       storage_fn: storage_fn,
+      initial_storage: initial_storage,
       logical_scene_id: logical_scene_id,
       tick_interval_ms: tick_interval_ms
     } = state
 
     started_us = System.monotonic_time(:microsecond)
-    storage = safe_call_storage_fn(storage_fn)
+    storage = initial_storage || safe_call_storage_fn(storage_fn)
 
     {region, effect_batches} =
       run_field_kernels(region, storage, logical_scene_id, tick_interval_ms)
@@ -172,7 +176,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       {:stop, :normal, %{state | region: region}}
     else
       schedule_tick(tick_interval_ms)
-      {:noreply, %{state | region: region}}
+      {:noreply, %{state | region: region, initial_storage: nil}}
     end
   end
 

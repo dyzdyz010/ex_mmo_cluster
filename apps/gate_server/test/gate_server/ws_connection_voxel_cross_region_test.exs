@@ -57,6 +57,9 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     Repo.delete_all(VoxelChunkSnapshot)
     DataService.Voxel.SceneObjectStore.reset()
     stop_named(GateServer.Interface)
+    stop_named(MapLedger)
+    stop_named(ObjectOwnerLookup)
+    stop_named(ObjectRegistry)
 
     ensure_started!(WriteTokenStore, {WriteTokenStore, name: WriteTokenStore})
 
@@ -68,6 +71,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     chunk_sup_b = SceneServer.VoxelChunkSup.RegionB
     chunk_dir_a = ChunkDirectory.RegionA
     chunk_dir_b = ChunkDirectory.RegionB
+
     # 阶段3.1：两 region 各有独立的 chunk 进程身份注册表（对齐"两个 region 在两
     # 个 scene_node 上"的隔离语义）。`mix test --no-start` 下全局
     # SceneServer.Voxel.ChunkRegistry 不启动，必须显式拉起每个 region 自己的表，
@@ -89,12 +93,14 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     start_supervised!({SceneServer.VoxelChunkSup, name: chunk_sup_b}, id: chunk_sup_b)
 
     start_supervised!(
-      {ChunkDirectory, name: chunk_dir_a, chunk_sup: chunk_sup_a, chunk_registry: chunk_registry_a},
+      {ChunkDirectory,
+       name: chunk_dir_a, chunk_sup: chunk_sup_a, chunk_registry: chunk_registry_a},
       id: chunk_dir_a
     )
 
     start_supervised!(
-      {ChunkDirectory, name: chunk_dir_b, chunk_sup: chunk_sup_b, chunk_registry: chunk_registry_b},
+      {ChunkDirectory,
+       name: chunk_dir_b, chunk_sup: chunk_sup_b, chunk_registry: chunk_registry_b},
       id: chunk_dir_b
     )
 
@@ -177,6 +183,9 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     on_exit(fn ->
       Application.delete_env(:gate_server, :voxel_chunk_directory_resolver)
       stop_named(GateServer.Interface)
+      stop_named(MapLedger)
+      stop_named(ObjectOwnerLookup)
+      stop_named(ObjectRegistry)
     end)
 
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
@@ -368,7 +377,19 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
 
   defp ensure_started!(name, child_spec) do
     if is_nil(Process.whereis(name)) do
-      start_supervised!(child_spec, id: name)
+      case start_supervised(child_spec, id: name) do
+        {:ok, _pid} ->
+          :ok
+
+        {:error, {:already_started, _pid}} ->
+          :ok
+
+        {:error, {:shutdown, {:failed_to_start_child, _id, {:already_started, _pid}}}} ->
+          :ok
+
+        {:error, reason} ->
+          flunk("failed to start #{inspect(name)}: #{inspect(reason)}")
+      end
     end
 
     :ok

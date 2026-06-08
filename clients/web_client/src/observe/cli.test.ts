@@ -23,6 +23,7 @@ describe("voxel CLI help", () => {
     expect(windowObject.__voxelCli?.help()).toContain("voxel_auto_circuit <x> <y> <z> [max_ticks]");
     expect(windowObject.__voxelCli?.help()).toContain("voxel_combustion <x> <y> <z>");
     expect(windowObject.__voxelCli?.help()).toContain("voxel_phase <x> <y> <z>");
+    expect(windowObject.__voxelCli?.help()).toContain("voxel_object <object_id> <x> <y> <z>");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_place");
     expect(windowObject.__voxelCli?.help()).not.toContain("micro_break");
   });

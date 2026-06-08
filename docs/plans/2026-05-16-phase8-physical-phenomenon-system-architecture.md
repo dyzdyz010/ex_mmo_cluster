@@ -420,6 +420,10 @@ thermal_expansion_coefficient
   前置入口；同时会产出 `apply_structural_damage` effect，由 `ChunkProcess` 读取
   owner micro-slot 覆盖并转交既有 `ObjectRegistry.accumulate_damage`，field kernel
   和 phenomenon 仍不直接修改 object truth。
+- 已补对象物理状态只读查询入口：`/ingame/voxel/object_probe` 与浏览器 CLI
+  `voxel_object <object_id> <x> <y> <z>` 会按给定坐标路由到 scene owner，再回读
+  `ObjectRegistry` 中的对象版本、覆盖 chunk、对象 flags、part health、damaged /
+  destroyed 状态和 part 计数，用于验收结构损伤是否进入 prefab/object 账本。
 - 当前实例账本仍是 chunk-local in-memory；烟雾、氧气和湿度也还只是 chunk-local 标量扩散，
   已补含水冻结/沸腾的最小状态机，但尚未实现凝结、材料本体熔化/凝固、真实气流/压力、
   烟雾/氧气/水汽跨 chunk handoff、snapshot 持久化、跨节点边界事件或 object / prefab 生命周期，
@@ -470,6 +474,9 @@ thermal_expansion_coefficient
 - `ChunkProcess` 已能处理 `apply_structural_damage` effect：它从失败 macro 的
   owner refs 聚合 `(object_id, part_id) => micro-slot count`，再复用
   `ObjectRegistry.accumulate_damage` 进入现有 part-health / part-destroy cascade；
+- `/ingame/voxel/object_probe` 和 `voxel_object <object_id> <x> <y> <z>` 已能只读回查
+  对象/部件当前健康、damaged/destroyed flags 和对象版本，用于端到端确认结构损伤
+  已落入对象账本；
 - 当前仍不做结构稳定性重算、裂纹传播、debris 生成或玩家战斗伤害结算。
 
 ### Phase 8.E：Corrosion / carbonization expansion

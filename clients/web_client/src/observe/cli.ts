@@ -44,6 +44,7 @@ function defaultHelpText(): string {
     "voxel_auto_circuit <x> <y> <z> [max_ticks]",
     "voxel_combustion <x> <y> <z>",
     "voxel_phase <x> <y> <z>",
+    "voxel_object <object_id> <x> <y> <z>",
     "field_overlay [on|off]",
     "target_probe",
     "chunk_versions",

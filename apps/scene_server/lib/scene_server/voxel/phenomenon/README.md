@@ -101,3 +101,11 @@ contained-water thresholds used by the rule, and any active chunk-local
 `phase_change` instance. Vaporized cells can therefore remain observable even
 after the active instance has completed, while the probe still performs no
 state transition and creates no field region.
+
+`ObjectPhysicalProbe` is the read-only object-side check for phenomenon-driven
+structural damage. World routing still selects a scene node by route
+coordinate, but the probe itself reads only `ObjectRegistry` and serializes the
+current object version, covered chunks, object flags, and part health/damaged/
+destroyed state. It is deliberately outside phenomenon rule evaluation:
+combustion, carbonization, and phase change may emit structured damage
+effects, but only chunk/object authority changes object truth.

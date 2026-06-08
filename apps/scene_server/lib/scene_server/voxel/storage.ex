@@ -525,7 +525,7 @@ defmodule SceneServer.Voxel.Storage do
   @doc "Reads the RefinedCellData payload for a refined macro cell, or nil."
   @spec refined_cell_at(t(), integer() | term()) :: RefinedCellData.t() | nil
   def refined_cell_at(%__MODULE__{} = storage, macro_index_or_coord) do
-    storage = normalize!(storage)
+    storage = ensure_accel(storage)
     header = macro_header_at(storage, macro_index_or_coord)
 
     if header.mode == MacroCellHeader.cell_mode_refined() do
@@ -539,7 +539,7 @@ defmodule SceneServer.Voxel.Storage do
   @doc "Reads one macro header by local macro coord or macro index."
   @spec macro_header_at(t(), integer() | term()) :: MacroCellHeader.t()
   def macro_header_at(%__MODULE__{} = storage, macro_index_or_coord) do
-    storage = normalize!(storage)
+    storage = ensure_accel(storage)
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
     # 阶段2.5:O(1) 经 accel :array,替代 O(n) Enum.at。
     fetch_macro_header(storage, macro_index)
@@ -548,7 +548,7 @@ defmodule SceneServer.Voxel.Storage do
   @doc "Reads the normal-block payload for a solid macro cell, or nil."
   @spec normal_block_at(t(), integer() | term()) :: NormalBlockData.t() | nil
   def normal_block_at(%__MODULE__{} = storage, macro_index_or_coord) do
-    storage = normalize!(storage)
+    storage = ensure_accel(storage)
     header = macro_header_at(storage, macro_index_or_coord)
 
     if header.mode == MacroCellHeader.cell_mode_solid_block() do

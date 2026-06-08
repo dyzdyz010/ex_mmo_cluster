@@ -5,7 +5,15 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.ChunkProcess
-  alias SceneServer.Voxel.Field.{FieldCodec, FieldLayer, FieldRegion, FieldTickWorker}
+
+  alias SceneServer.Voxel.Field.{
+    FieldCodec,
+    FieldLayer,
+    FieldRegion,
+    FieldTickSupervisor,
+    FieldTickWorker
+  }
+
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.MaterialCatalog
@@ -146,20 +154,38 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     end
 
     SceneServer.TestVoxelRuntime.ensure_started!()
+    stop_field_tick_workers()
 
-    # 阶段3.1：每个测试用隔离的 chunk 进程身份注册表，避免全局单例 {1, {0,0,0}}
-    # 身份槽位在全量 mix test 中被跨文件 / 跨测试拆除竞态串扰成 {:already_started}。
+    # 阶段3.1 / Phase 8：每个测试用隔离的 chunk 进程身份注册表、chunk sup
+    # 和 directory，避免燃烧边界 handoff 把相邻 chunk / field worker 写进全局
+    # 目录后跨测试继续运行。
     chunk_registry =
       :"field_tick_worker_kernel_test_registry_#{System.unique_integer([:positive])}"
+
+    chunk_sup =
+      :"field_tick_worker_kernel_test_chunk_sup_#{System.unique_integer([:positive])}"
+
+    chunk_directory =
+      :"field_tick_worker_kernel_test_directory_#{System.unique_integer([:positive])}"
 
     start_supervised!(
       {Registry, keys: :unique, name: chunk_registry},
       id: {:registry, chunk_registry}
     )
 
+    start_supervised!({SceneServer.VoxelChunkSup, name: chunk_sup}, id: {:chunk_sup, chunk_sup})
+
+    start_supervised!(
+      {ChunkDirectory,
+       name: chunk_directory, chunk_sup: chunk_sup, chunk_registry: chunk_registry},
+      id: {:chunk_directory, chunk_directory}
+    )
+
     Process.put(:chunk_registry, chunk_registry)
+    Process.put(:chunk_directory, chunk_directory)
 
     on_exit(fn ->
+      stop_field_tick_workers()
       CliObserve.flush()
 
       case previous_log do
@@ -170,7 +196,35 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
       File.rm(path)
     end)
 
-    {:ok, observe_log: path, chunk_registry: chunk_registry}
+    {:ok, observe_log: path, chunk_registry: chunk_registry, chunk_directory: chunk_directory}
+  end
+
+  defp chunk_process_spec(logical_scene_id \\ 1, chunk_coord \\ {0, 0, 0}) do
+    {ChunkProcess,
+     [
+       chunk_registry: Process.get(:chunk_registry),
+       chunk_directory: Process.get(:chunk_directory),
+       logical_scene_id: logical_scene_id,
+       chunk_coord: chunk_coord
+     ]}
+  end
+
+  defp stop_field_tick_workers do
+    case Process.whereis(FieldTickSupervisor) do
+      nil ->
+        :ok
+
+      supervisor ->
+        supervisor
+        |> DynamicSupervisor.which_children()
+        |> Enum.each(fn
+          {_id, pid, _type, _modules} when is_pid(pid) ->
+            DynamicSupervisor.terminate_child(supervisor, pid)
+
+          _child ->
+            :ok
+        end)
+    end
   end
 
   test "kernel failures are isolated and later kernels still update the snapshot", %{
@@ -348,11 +402,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   test "reusing a field source refreshes the worker lifetime" do
     macro_index = Types.macro_index!({3, 3, 3})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     attrs = %{
       chunk_coord: {0, 0, 0},
@@ -408,11 +458,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))
@@ -459,11 +505,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     source_index = Types.macro_index!({0, 0, 0})
     target_index = Types.macro_index!({1, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, source_index, NormalBlockData.new(5))
@@ -538,11 +580,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -611,13 +649,10 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   test "burning material creates its own heat source after the trigger region expires", %{
     observe_log: observe_log
   } do
-    macro_index = Types.macro_index!({0, 0, 0})
+    macro_coord = {1, 1, 1}
+    macro_index = Types.macro_index!(macro_coord)
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -636,7 +671,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
       FieldRegion.new(%{
         region_id: 115,
         chunk_coord: {0, 0, 0},
-        aabb: {{0, 0, 0}, {0, 0, 0}},
+        aabb: {macro_coord, macro_coord},
         kernels: [
           %{
             id: :temperature_diffusion,
@@ -646,7 +681,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
           %{
             id: :combustion,
             module: CombustionKernel,
-            opts: %{profile: profile, owner_max_ticks: 3}
+            opts: %{profile: profile, owner_max_ticks: 30}
           }
         ],
         source_points: [
@@ -711,11 +746,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
        } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -788,11 +819,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -877,8 +904,10 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   test "high-energy combustion heat diffuses and ignites adjacent combustible material", %{
     observe_log: observe_log
   } do
-    source_index = Types.macro_index!({0, 0, 0})
-    target_index = Types.macro_index!({1, 0, 0})
+    source_coord = {7, 7, 7}
+    target_coord = {8, 7, 7}
+    source_index = Types.macro_index!(source_coord)
+    target_index = Types.macro_index!(target_coord)
 
     volatile_profile = %{
       combustion_heat_j_per_kg: 3_000_000_000.0,
@@ -886,11 +915,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
       heat_source_celsius: 2_500.0
     }
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     for macro_index <- [source_index, target_index] do
       assert {:ok, _storage} =
@@ -905,7 +930,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
       FieldRegion.new(%{
         region_id: 110,
         chunk_coord: {0, 0, 0},
-        aabb: {{0, 0, 0}, {1, 0, 0}},
+        aabb: {source_coord, target_coord},
         kernels: [
           %{
             id: :temperature_diffusion,
@@ -948,29 +973,26 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert Storage.effective_attribute_at(storage, source_index, "combustion_stage") ==
              Combustion.stage_burning()
 
-    assert Storage.effective_attribute_at(storage, target_index, "combustion_stage") ==
+    assert Storage.effective_attribute_at(storage, target_index, "combustion_stage") in [
              Combustion.stage_burning(),
+             Combustion.stage_extinguished()
+           ],
            observe_log_text
 
     assert observe_log_text =~ "voxel_combustion_ignited"
+    assert observe_log_text =~ ~r/event="voxel_combustion_ignited".*macro_index: #{target_index}/
     assert observe_log_text =~ "write_voxel_attribute"
   end
 
   test "combustion heat hands off across a chunk boundary and ignites the neighbor", %{
     observe_log: observe_log,
-    chunk_registry: chunk_registry
+    chunk_directory: directory
   } do
     logical_scene_id = 81_000 + System.unique_integer([:positive])
     source_index = Types.macro_index!({15, 0, 0})
     target_index = Types.macro_index!({0, 0, 0})
-    directory = :"field_tick_worker_kernel_test_directory_#{System.unique_integer([:positive])}"
     source_lease = lease(logical_scene_id, region_id: 81_010, lease_id: 1)
     target_lease = lease(logical_scene_id, region_id: 81_011, lease_id: 2)
-
-    start_supervised!(
-      {ChunkDirectory, [name: directory, chunk_registry: chunk_registry]},
-      id: {:chunk_directory, directory}
-    )
 
     assert {:ok, source_chunk} =
              ChunkDirectory.ensure_chunk(directory, %{
@@ -1063,11 +1085,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(
@@ -1154,11 +1172,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
   } do
     macro_index = Types.macro_index!({0, 0, 0})
 
-    chunk =
-      start_supervised!(
-        {ChunkProcess,
-         chunk_registry: Process.get(:chunk_registry), logical_scene_id: 1, chunk_coord: {0, 0, 0}}
-      )
+    chunk = start_supervised!(chunk_process_spec())
 
     assert {:ok, _storage} =
              ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(1))

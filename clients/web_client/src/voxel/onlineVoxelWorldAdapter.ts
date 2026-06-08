@@ -219,6 +219,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastSeedSummary: Record<string, unknown> | null = null;
   private lastCombustionProbe: Record<string, unknown> | null = null;
   private lastPhaseChangeProbe: Record<string, unknown> | null = null;
+  private lastObjectProbe: Record<string, unknown> | null = null;
   private lastSnapshot: {
     requestId: number;
     logicalSceneId: number;
@@ -421,6 +422,7 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       lastSeedSummary: this.lastSeedSummary,
       lastCombustionProbe: this.lastCombustionProbe,
       lastPhaseChangeProbe: this.lastPhaseChangeProbe,
+      lastObjectProbe: this.lastObjectProbe,
       objectStateDeltas: {
         received: this.receivedObjectStateDeltaCount,
         deduped: this.dedupedObjectStateDeltaCount,
@@ -1299,6 +1301,48 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     return true;
   }
 
+  requestVoxelObjectProbe(objectId: number, coord: FMacroCoord): boolean {
+    const url = `${this.transport.getAuthBaseUrl()}/ingame/voxel/object_probe`;
+    void fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        logical_scene_id: this.logicalSceneId,
+        object_id: objectId,
+        x: coord.x,
+        y: coord.y,
+        z: coord.z,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await responseErrorReason(response, "object_probe_failed"));
+        }
+        return response.json() as Promise<Record<string, unknown>>;
+      })
+      .then((payload) => {
+        const summary = objectProbeSummary(payload);
+        this.lastObjectProbe = summary;
+        this.lastError = null;
+        this.logger.emit("voxel", "object_probe_ok", {
+          logical_scene_id: this.logicalSceneId,
+          coord: `${coord.x},${coord.y},${coord.z}`,
+          object_id: String(summary["objectId"] ?? objectId),
+          object_found: Boolean(summary["objectFound"]),
+          object_version: String(summary["objectVersion"] ?? ""),
+          damaged_part_count: String(summary["damagedPartCount"] ?? 0),
+          destroyed_part_count: String(summary["destroyedPartCount"] ?? 0),
+          part_states: JSON.stringify(summary["partStates"] ?? []),
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastError = reason;
+        this.bus.emit("world:voxel-sync-error", { reason, source: "object_probe" });
+      });
+    return true;
+  }
+
   private applyObjectStateDelta(message: VoxelObjectStateDeltaMessage): void {
     this.receivedObjectStateDeltaCount += 1;
     this.objectStateDeltaConsumer.consume(message.delta);
@@ -1944,6 +1988,48 @@ function phaseChangeProbeSummary(payload: Record<string, unknown>): Record<strin
     phenomenonInstance: payload["phenomenon_instance"],
     sceneNode: payload["scene_node"],
   };
+}
+
+function objectProbeSummary(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    logicalSceneId: payload["logical_scene_id"],
+    objectFound: payload["object_found"],
+    objectId: payload["object_id"],
+    blueprintId: payload["blueprint_id"],
+    blueprintVersion: payload["blueprint_version"],
+    objectVersion: payload["object_version"],
+    stateFlags: payload["state_flags"],
+    ownerActorId: payload["owner_actor_id"],
+    ownerRegionId: payload["owner_region_id"],
+    ownerLeaseId: payload["owner_lease_id"],
+    anchorWorldMicro: payload["anchor_world_micro"],
+    coveredChunks: payload["covered_chunks"],
+    partStates: objectPartStateSummaries(payload["part_states"]),
+    damagedPartCount: payload["damaged_part_count"],
+    destroyedPartCount: payload["destroyed_part_count"],
+    routeWorldMacro: payload["route_world_macro"],
+    routeChunkCoord: payload["route_chunk_coord"],
+    routeLocalMacro: payload["route_local_macro"],
+    sceneNode: payload["scene_node"],
+  };
+}
+
+function objectPartStateSummaries(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is Record<string, unknown> => {
+      return !!item && typeof item === "object" && !Array.isArray(item);
+    })
+    .map((part) => ({
+      partId: part["part_id"],
+      health: part["health"],
+      stateFlags: part["state_flags"],
+      damaged: part["damaged"],
+      destroyed: part["destroyed"],
+    }));
 }
 
 function normalizePowerDraw(value: unknown): ElectricPowerDraw | undefined {

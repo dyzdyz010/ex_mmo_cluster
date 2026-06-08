@@ -6,8 +6,11 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
+  alias SceneServer.Voxel.ObjectRegistry
+  alias SceneServer.Voxel.PartState
   alias SceneServer.Voxel.Phenomenon.Combustion
   alias SceneServer.Voxel.Phenomenon.Effect
+  alias SceneServer.Voxel.Phenomenon.StructuralIntegrity
   alias SceneServer.Voxel.Storage
   alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.DevSeed
@@ -619,6 +622,111 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert instance["macro_index"] == macro_index
   end
 
+  test "POST /ingame/voxel/object_probe returns phenomenon-driven object part damage",
+       %{conn: conn} do
+    logical_scene_id = 82_495 + System.unique_integer([:positive])
+    world_macro = {0, 0, 0}
+    macro_index = Types.macro_index!(world_macro)
+
+    assert :ok = ObjectRegistry.reset(ObjectRegistry)
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    assert {:ok, route} = MapLedger.route_chunk_with_lease(logical_scene_id, {0, 0, 0})
+    lease = route.lease
+    chunk_pid = put_owned_micro_slots!(lease, world_macro, 42, 3, 2)
+
+    assert :ok =
+             ObjectRegistry.upsert_object(
+               ObjectRegistry,
+               object_instance_attrs(
+                 object_id: 42,
+                 logical_scene_id: logical_scene_id,
+                 covered_chunks: [{0, 0, 0}],
+                 part_states: [%{part_id: 3, health: 5, state_flags: 0}],
+                 owner_region_id: route.assignment.region_id,
+                 owner_lease_id: route.lease.lease_id
+               )
+             )
+
+    structural_effects =
+      StructuralIntegrity.damage_effects(
+        macro_index,
+        MaterialCatalog.wood_material_id(),
+        16.0,
+        13.0,
+        reason: :combustion_heat_stress,
+        threshold_percent: 15.0,
+        context: %{stage: :burning}
+      )
+      |> Enum.reject(fn
+        {:emit_observe, _event, _fields} -> true
+        _other -> false
+      end)
+      |> Enum.filter(fn
+        {:apply_structural_damage, _attrs} -> true
+        _other -> false
+      end)
+
+    assert [_effect] = structural_effects
+
+    assert {:ok, %{rejected_count: 0}} =
+             ChunkProcess.apply_field_effects(chunk_pid, structural_effects, %{
+               kernel_id: :combustion
+             })
+
+    assert_eventually(fn ->
+      case ObjectRegistry.lookup_object(ObjectRegistry, logical_scene_id, 42) do
+        %{part_states: [%PartState{part_id: 3, health: 3} = part]} ->
+          PartState.damaged?(part)
+
+        _other ->
+          false
+      end
+    end)
+
+    conn =
+      post(conn, ~p"/ingame/voxel/object_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "object_id" => 42,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["object_found"] == true
+    assert body["logical_scene_id"] == logical_scene_id
+    assert body["object_id"] == 42
+    assert body["object_version"] == 2
+    assert Bitwise.band(body["state_flags"], PartState.flag_damaged()) != 0
+    assert body["covered_chunks"] == [%{"x" => 0, "y" => 0, "z" => 0}]
+    assert body["damaged_part_count"] == 1
+    assert body["destroyed_part_count"] == 0
+    assert body["scene_node"] == Atom.to_string(node())
+    assert body["route_world_macro"] == %{"x" => 0, "y" => 0, "z" => 0}
+
+    assert [
+             %{
+               "part_id" => 3,
+               "health" => 3,
+               "state_flags" => flags,
+               "damaged" => true,
+               "destroyed" => false
+             }
+           ] = body["part_states"]
+
+    assert Bitwise.band(flags, PartState.flag_damaged()) != 0
+  end
+
   test "POST /ingame/voxel/conduct rejects a plain conductor without a power block",
        %{conn: conn} do
     logical_scene_id = 82_500 + System.unique_integer([:positive])
@@ -920,6 +1028,63 @@ defmodule AuthServerWeb.IngameControllerTest do
              })
 
     chunk_pid
+  end
+
+  defp put_owned_micro_slots!(lease, world_macro, object_id, part_id, count) do
+    intents =
+      0..(count - 1)
+      |> Enum.map(fn micro_slot ->
+        %{
+          request_id: 10_000 + micro_slot,
+          logical_scene_id: lease.logical_scene_id,
+          chunk_coord: {0, 0, 0},
+          lease: lease,
+          operation: :put_micro_block,
+          macro: world_macro,
+          micro_slot: micro_slot,
+          micro_layer: %{
+            material_id: MaterialCatalog.wood_material_id(),
+            health: 100,
+            owner_object_id: object_id,
+            owner_part_id: part_id
+          }
+        }
+      end)
+
+    assert {:ok, %{changed_count: ^count}} = ChunkDirectory.apply_intents(intents)
+
+    assert {:ok, chunk_pid} =
+             ChunkDirectory.ensure_chunk(%{
+               logical_scene_id: lease.logical_scene_id,
+               chunk_coord: {0, 0, 0},
+               lease: lease
+             })
+
+    chunk_pid
+  end
+
+  defp object_instance_attrs(overrides) do
+    %{
+      object_id: 42,
+      logical_scene_id: 1,
+      parcel_id: 13,
+      blueprint_id: 7,
+      blueprint_version: 2,
+      anchor_world_micro: {0, 0, 0},
+      rotation: 0,
+      owner_actor_id: 1_001,
+      state_flags: 0,
+      object_attribute_ref: 0,
+      object_tag_set_ref: 0,
+      covered_chunks: [{0, 0, 0}],
+      part_states: [
+        %{part_id: 1, health: 80, state_flags: 0}
+      ],
+      object_version: 1,
+      owner_region_id: 1,
+      owner_lease_id: 100
+    }
+    |> Map.merge(Map.new(overrides))
   end
 
   defp assert_eventually(fun, timeout_ms \\ 2_000) do

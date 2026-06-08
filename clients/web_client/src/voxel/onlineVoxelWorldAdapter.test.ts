@@ -1309,6 +1309,83 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     });
   });
 
+  it("posts an object probe and stores the latest authoritative part damage truth", async () => {
+    const { adapter, logger } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            logical_scene_id: 7,
+            object_found: true,
+            object_id: 42,
+            blueprint_id: 7,
+            object_version: 2,
+            state_flags: 0,
+            covered_chunks: [{ x: 0, y: 0, z: 0 }],
+            part_states: [
+              {
+                part_id: 3,
+                health: 3,
+                state_flags: 1,
+                damaged: true,
+                destroyed: false,
+              },
+            ],
+            damaged_part_count: 1,
+            destroyed_part_count: 0,
+            route_world_macro: { x: 3, y: 4, z: 5 },
+            scene_node: "nonode@nohost",
+          }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestVoxelObjectProbe(42, { x: 3, y: 4, z: 5 })).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/object_probe",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          object_id: 42,
+          x: 3,
+          y: 4,
+          z: 5,
+        }),
+      }),
+    );
+    expect(adapter.debugSnapshot().lastObjectProbe).toMatchObject({
+      objectFound: true,
+      objectId: 42,
+      objectVersion: 2,
+      damagedPartCount: 1,
+      destroyedPartCount: 0,
+      partStates: [
+        expect.objectContaining({
+          partId: 3,
+          health: 3,
+          damaged: true,
+          destroyed: false,
+        }),
+      ],
+    });
+    expect(logger.recent(1)[0]).toMatchObject({
+      category: "voxel",
+      event: "object_probe_ok",
+      fields: expect.objectContaining({
+        coord: "3,4,5",
+        object_id: "42",
+        object_found: true,
+        damaged_part_count: "1",
+        destroyed_part_count: "0",
+      }),
+    });
+  });
+
   it("does not post automatic circuit refreshes while applying authoritative chunk deltas", async () => {
     const { adapter, transport } = createAdapter();
     const fetchSpy = vi.fn();
