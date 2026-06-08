@@ -62,6 +62,12 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
   @doc """
   Evaluates combustion for one solid macro cell at the current field
   temperature. Returns `:ignore` when the cell is inert or unchanged.
+
+  Runtime `:profile` values only override an existing material combustion
+  profile; they cannot make inert materials combustible. Use
+  `:profile_overrides` keyed by material id when a test or scripted field
+  region needs material-specific tuning without erasing per-material residue
+  policy.
   """
   @spec evaluate(Storage.t() | nil, non_neg_integer(), number(), map() | keyword()) ::
           result() | :ignore
@@ -80,9 +86,8 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
         environment = normalize_environment(get_opt(opts, :environment, %{}))
 
         profile =
-          opts
-          |> get_opt(:profile, nil)
-          |> normalize_profile(MaterialCatalog.combustion_profile(block.material_id))
+          block.material_id
+          |> resolve_profile(opts)
           |> merge_runtime_profile_opts(opts)
 
         if is_nil(profile) do
@@ -964,10 +969,44 @@ defmodule SceneServer.Voxel.Phenomenon.Combustion do
     |> min(max_value)
   end
 
-  defp normalize_profile(nil, fallback), do: fallback
-  defp normalize_profile(profile, nil) when is_map(profile), do: profile
-  defp normalize_profile(profile, fallback) when is_map(profile), do: Map.merge(fallback, profile)
-  defp normalize_profile(_profile, fallback), do: fallback
+  defp resolve_profile(material_id, opts) do
+    material_id
+    |> MaterialCatalog.combustion_profile()
+    |> merge_profile_override(get_opt(opts, :profile, nil))
+    |> merge_profile_override(material_profile_override(opts, material_id))
+  end
+
+  defp merge_profile_override(nil, _override), do: nil
+
+  defp merge_profile_override(profile, override) when is_map(profile) and is_map(override) do
+    Map.merge(profile, override)
+  end
+
+  defp merge_profile_override(profile, _override), do: profile
+
+  defp material_profile_override(opts, material_id) do
+    opts
+    |> get_opt(:profile_overrides, %{})
+    |> opts_map()
+    |> find_material_profile_override(material_id)
+  end
+
+  defp find_material_profile_override(overrides, material_id) when is_map(overrides) do
+    string_material_id = to_string(material_id)
+
+    cond do
+      Map.has_key?(overrides, material_id) ->
+        Map.fetch!(overrides, material_id)
+
+      Map.has_key?(overrides, string_material_id) ->
+        Map.fetch!(overrides, string_material_id)
+
+      true ->
+        nil
+    end
+  end
+
+  defp find_material_profile_override(_overrides, _material_id), do: nil
 
   defp merge_runtime_profile_opts(nil, _opts), do: nil
 

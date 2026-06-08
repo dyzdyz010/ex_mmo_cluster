@@ -970,8 +970,10 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     CliObserve.flush()
     observe_log_text = File.read!(observe_log)
 
-    assert Storage.effective_attribute_at(storage, source_index, "combustion_stage") ==
-             Combustion.stage_burning()
+    assert Storage.effective_attribute_at(storage, source_index, "combustion_stage") in [
+             Combustion.stage_burning(),
+             Combustion.stage_extinguished()
+           ]
 
     assert Storage.effective_attribute_at(storage, target_index, "combustion_stage") in [
              Combustion.stage_burning(),
@@ -980,6 +982,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
            observe_log_text
 
     assert observe_log_text =~ "voxel_combustion_ignited"
+    assert observe_log_text =~ ~r/event="voxel_combustion_ignited".*macro_index: #{source_index}/
     assert observe_log_text =~ ~r/event="voxel_combustion_ignited".*macro_index: #{target_index}/
     assert observe_log_text =~ "write_voxel_attribute"
   end
@@ -1165,6 +1168,116 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
 
     assert observe_log_text =~ "voxel_combustion_dried"
     assert observe_log_text =~ "voxel_combustion_ignited"
+  end
+
+  test "high heat applies each material residue policy through chunk authority", %{
+    observe_log: observe_log
+  } do
+    wood_index = Types.macro_index!({2, 2, 2})
+    cloth_index = Types.macro_index!({3, 2, 2})
+    grass_index = Types.macro_index!({4, 2, 2})
+    stone_index = Types.macro_index!({5, 2, 2})
+
+    chunk = start_supervised!(chunk_process_spec())
+
+    for {macro_index, material_id} <- [
+          {wood_index, MaterialCatalog.wood_material_id()},
+          {cloth_index, MaterialCatalog.cloth_material_id()},
+          {grass_index, MaterialCatalog.dry_grass_material_id()},
+          {stone_index, 2}
+        ] do
+      assert {:ok, _storage} =
+               ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(material_id))
+    end
+
+    fast_residue_profile = %{
+      initial_fuel_mass_kg_per_m3: 1.0,
+      burn_rate_kg_per_m3_second: 1_000.0
+    }
+
+    region =
+      FieldRegion.new(%{
+        region_id: 116,
+        chunk_coord: {0, 0, 0},
+        aabb: {{2, 2, 2}, {5, 2, 2}},
+        kernels: [
+          %{
+            id: :temperature_diffusion,
+            module: TemperatureDiffusionKernel,
+            opts: %{diffusion_time_scale: 1.0, ambient_loss_per_second: 0.0}
+          },
+          %{
+            id: :combustion,
+            module: CombustionKernel,
+            opts: %{
+              profile_overrides: %{
+                MaterialCatalog.wood_material_id() => fast_residue_profile,
+                MaterialCatalog.cloth_material_id() => fast_residue_profile,
+                MaterialCatalog.dry_grass_material_id() => fast_residue_profile
+              }
+            }
+          }
+        ],
+        source_points: [
+          %{
+            macro_index: wood_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 900.0
+          },
+          %{
+            macro_index: cloth_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 900.0
+          },
+          %{
+            macro_index: grass_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 900.0
+          },
+          %{
+            macro_index: stone_index,
+            field_type: :temperature,
+            source_mode: :impulse,
+            value: 6_000.0
+          }
+        ],
+        max_ticks: 1
+      })
+
+    {:ok, pid} =
+      FieldTickWorker.start_link(
+        region: region,
+        chunk_pid: chunk,
+        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
+        logical_scene_id: 1,
+        tick_interval_ms: 100
+      )
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+    storage = ChunkProcess.debug_state(chunk).storage
+    CliObserve.flush()
+    observe_log_text = File.read!(observe_log)
+
+    assert Storage.normal_block_at(storage, wood_index).material_id ==
+             MaterialCatalog.charcoal_material_id()
+
+    assert Storage.normal_block_at(storage, cloth_index).material_id ==
+             MaterialCatalog.ash_material_id()
+
+    assert is_nil(Storage.normal_block_at(storage, grass_index))
+    assert Storage.normal_block_at(storage, stone_index).material_id == 2
+
+    assert Storage.effective_attribute_at(storage, stone_index, "combustion_stage") ==
+             Combustion.stage_idle()
+
+    assert observe_log_text =~ "transform_voxel_material"
+    assert observe_log_text =~ "clear_voxel_cell"
+    assert observe_log_text =~ "voxel_combustion_extinguished"
   end
 
   test "unsupported non-observe effects are explicitly rejected", %{

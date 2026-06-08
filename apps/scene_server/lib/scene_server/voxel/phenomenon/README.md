@@ -22,6 +22,14 @@ charcoal, or a cell clear effect for materials that burn away completely. The
 initial material set intentionally covers three outcomes: wood becomes
 charcoal, cloth becomes ash, and dry grass burns away.
 
+Combustion profiles are material-bound. A runtime `profile` option may tune an
+existing combustible material for a specific field region, but it does not make
+stone, dirt, or other inert materials combustible. Tests and scripted dev
+regions that need different fast-forward settings per material should pass
+`profile_overrides` keyed by material id; the base `MaterialCatalog` profile
+continues to supply ignition thresholds, fuel policy, and residue behavior
+unless that material-specific override explicitly changes them.
+
 Structural integrity changes now go through the shared `StructuralIntegrity`
 effect boundary. Combustion and freezing both use this boundary to write the
 authoritative `structural_integrity` attribute, to emit a single

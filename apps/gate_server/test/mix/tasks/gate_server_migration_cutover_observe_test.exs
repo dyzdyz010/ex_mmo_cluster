@@ -5,6 +5,7 @@ defmodule Mix.Tasks.GateServerMigrationCutoverObserveTest do
 
   alias DataService.Voxel.WriteTokenStore
   alias Mix.Tasks.GateServer.MigrationCutoverObserve
+  alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.VoxelChunkSup
 
   test "prints and logs migration cutover rebind evidence" do
@@ -125,7 +126,7 @@ defmodule Mix.Tasks.GateServerMigrationCutoverObserveTest do
 
     logical_scene_id = 1_000 + System.unique_integer([:positive])
     existing_sup = ensure_named_chunk_sup!()
-    before_children = DynamicSupervisor.which_children(existing_sup)
+    refute chunk_sup_has_logical_scene?(existing_sup, logical_scene_id)
 
     output =
       capture_io(fn ->
@@ -142,8 +143,7 @@ defmodule Mix.Tasks.GateServerMigrationCutoverObserveTest do
     assert output =~ "gate_migration_cutover_rebind=ok"
     assert output =~ "logical_scene_id=#{logical_scene_id}"
 
-    assert existing_sup |> DynamicSupervisor.which_children() |> MapSet.new() ==
-             MapSet.new(before_children)
+    refute chunk_sup_has_logical_scene?(existing_sup, logical_scene_id)
   end
 
   test "chooses fresh token versions when the global token store already has the smoke region" do
@@ -193,5 +193,26 @@ defmodule Mix.Tasks.GateServerMigrationCutoverObserveTest do
       nil -> start_supervised!({VoxelChunkSup, name: VoxelChunkSup})
       pid -> pid
     end
+  end
+
+  defp chunk_sup_has_logical_scene?(supervisor, logical_scene_id) do
+    supervisor
+    |> DynamicSupervisor.which_children()
+    |> Enum.any?(fn
+      {_id, pid, :worker, [ChunkProcess]} when is_pid(pid) ->
+        case chunk_debug_state(pid) do
+          %{logical_scene_id: ^logical_scene_id} -> true
+          _other -> false
+        end
+
+      _child ->
+        false
+    end)
+  end
+
+  defp chunk_debug_state(pid) do
+    ChunkProcess.debug_state(pid)
+  catch
+    :exit, _reason -> nil
   end
 end

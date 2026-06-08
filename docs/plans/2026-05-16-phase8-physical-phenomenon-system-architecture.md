@@ -361,6 +361,9 @@ thermal_expansion_coefficient
   `combustion_progress`、`smoke_density`、`carbonization`、`structural_integrity`；
 - material catalog 已追加 ash / charcoal，并定义 wood -> charcoal -> ash 的默认燃烧链；
 - material catalog 已追加 dry grass / cloth 两类可燃材料，分别覆盖烧光消失和燃尽成灰；
+- combustion profile 已收口为 material-bound：运行时 `profile` 只能覆盖已有可燃材料的参数，
+  不能把 stone / dirt 等惰性材料临时变成可燃物；同一高温区域内需要快进不同材料时使用
+  `profile_overrides` 按 material id 调参，仍保留各自的燃点、燃料、残留策略；
 - material combustion profile 已开始使用 `combustion_heat_j_per_kg` /
   `heat_release_efficiency`：燃烧 heat source 不再只是固定温度，而是按本 tick
   fuel 消耗释放的焦耳热除以 voxel 热容换算，再受材料明火/阴燃热源上限约束；

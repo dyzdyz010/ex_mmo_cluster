@@ -101,6 +101,21 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
     assert observe_event?(effects, "voxel_combustion_ignited", :burning)
   end
 
+  test "profile overrides cannot make inert material combustible" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    storage = storage_with_material(macro_index, 2)
+
+    assert :ignore =
+             Combustion.evaluate(storage, macro_index, 6_000.0,
+               profile: %{
+                 ignition_temperature_celsius: 100.0,
+                 initial_fuel_mass_kg_per_m3: 1.0,
+                 burn_rate_kg_per_m3_second: 1_000.0,
+                 residue: :clear
+               }
+             )
+  end
+
   test "ignition emits an authority-owned combustion instance upsert" do
     macro_index = Types.macro_index!({0, 0, 0})
     wood_material_id = MaterialCatalog.wood_material_id()
