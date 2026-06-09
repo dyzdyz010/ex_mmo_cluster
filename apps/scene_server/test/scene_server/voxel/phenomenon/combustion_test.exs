@@ -116,6 +116,29 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionTest do
              )
   end
 
+  test "material profile overrides preserve per-material residue under a shared region profile" do
+    macro_index = Types.macro_index!({0, 0, 0})
+    dry_grass_material_id = MaterialCatalog.dry_grass_material_id()
+    storage = storage_with_material(macro_index, dry_grass_material_id)
+
+    assert %{stage: :extinguished, effects: effects} =
+             Combustion.evaluate(storage, macro_index, 700.0,
+               dt_seconds: 1.0,
+               profile: %{
+                 initial_fuel_mass_kg_per_m3: 10.0,
+                 burn_rate_kg_per_m3_second: 0.01
+               },
+               profile_overrides: %{
+                 dry_grass_material_id => %{
+                   initial_fuel_mass_kg_per_m3: 1.0,
+                   burn_rate_kg_per_m3_second: 1_000.0
+                 }
+               }
+             )
+
+    assert {:clear_voxel_cell, %{macro_index: macro_index, reason: :combustion_exhausted}} in effects
+  end
+
   test "ignition emits an authority-owned combustion instance upsert" do
     macro_index = Types.macro_index!({0, 0, 0})
     wood_material_id = MaterialCatalog.wood_material_id()

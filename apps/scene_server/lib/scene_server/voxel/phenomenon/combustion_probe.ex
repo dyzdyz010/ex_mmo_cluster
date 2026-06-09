@@ -70,7 +70,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
          macro_index: macro_index,
          cell_mode: cell_mode_name(header),
          material_id: material_id,
-         material_name: profile_material_name(profile),
+         material_name: material_name(material_id, profile),
          combustible: is_map(profile),
          combustion_stage: Combustion.stage_name(stage_raw),
          combustion_stage_raw: stage_raw,
@@ -126,8 +126,8 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbe do
     end
   end
 
-  defp profile_material_name(nil), do: nil
-  defp profile_material_name(profile), do: Map.get(profile, :material_name)
+  defp material_name(_material_id, %{material_name: name}), do: name
+  defp material_name(material_id, _profile), do: MaterialCatalog.material_name(material_id)
 
   defp profile_summary(nil), do: nil
 

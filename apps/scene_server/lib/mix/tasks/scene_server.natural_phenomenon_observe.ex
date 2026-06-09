@@ -647,11 +647,12 @@ defmodule Mix.Tasks.SceneServer.NaturalPhenomenonObserve do
   defp combustion_spread_cells(source_world_macro, source_material_name) do
     x_direction = spread_x_direction(source_world_macro)
     y_direction = spread_y_direction(source_world_macro)
+    z_direction = spread_z_direction(source_world_macro)
 
     [
       %{role: :source, offset: {0, 0, 0}, initial_material: source_material_name},
       %{role: :fast_fuel, offset: {x_direction, 0, 0}, initial_material: "dry_grass"},
-      %{role: :ash_fuel, offset: {2 * x_direction, 0, 0}, initial_material: "cloth"},
+      %{role: :ash_fuel, offset: {0, 0, z_direction}, initial_material: "cloth"},
       %{role: :inert_control, offset: {3 * x_direction, 0, 0}, initial_material: "stone"},
       %{
         role: :char_fuel,
@@ -675,6 +676,11 @@ defmodule Mix.Tasks.SceneServer.NaturalPhenomenonObserve do
     if local_y <= 14, do: 1, else: -1
   end
 
+  defp spread_z_direction(world_macro) do
+    {_chunk_coord, {_local_x, _local_y, local_z}} = Types.chunk_and_local_macro!(world_macro)
+    if local_z <= 14, do: 1, else: -1
+  end
+
   defp offset_world_macro({x, y, z}, {x_offset, y_offset, z_offset}) do
     {x + x_offset, y + y_offset, z + z_offset}
   end
@@ -695,6 +701,10 @@ defmodule Mix.Tasks.SceneServer.NaturalPhenomenonObserve do
           oxygen_limited_residue_threshold_percent: 35.0
         },
         profile_overrides: %{
+          MaterialCatalog.dry_grass_material_id() => %{
+            initial_fuel_mass_kg_per_m3: 1.0,
+            burn_rate_kg_per_m3_second: 200.0
+          },
           MaterialCatalog.charcoal_material_id() => %{
             ignition_temperature_celsius: 5_000.0
           }

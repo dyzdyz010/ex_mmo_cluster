@@ -87,7 +87,7 @@ defmodule Mix.Tasks.SceneServerNaturalPhenomenonObserveTest do
             "--target-temperature",
             "1000",
             "--max-ticks",
-            "8"
+            "24"
           ])
         end)
 

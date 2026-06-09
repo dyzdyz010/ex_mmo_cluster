@@ -34,7 +34,9 @@
   业务边界是“局部场出烟，不染方块本体”；电热烟量按
   `power_draw.estimated_tick_energy_joules` 缩放，燃烧烟量来自服务端 `smoke_density`
   层，CLI `field_overlay` 会返回 `smoke`、`smokeField` 与 `oxygen` 统计用于
-  非 GUI 验证。
+  非 GUI 验证。完整浏览器链路可用
+  `node scripts/run_browser_combustion_field_smoke_supervised.js` 验证：它通过真实
+  WebSocket 场域快照驱动 `field_overlay`，不接受只看到 temperature 的假阳性。
 - `overlayTarget.ts` 是只读目标投影层：输入来自 raycast selection 或 field macro cell。
   selection 命中会优先解析为最小 prefab/object 单位，没有 prefab/object 归属时退回宏格；
   render 层再把 prefab projection 转成贴合实际 occupancy 的外露表面边界线。field overlay

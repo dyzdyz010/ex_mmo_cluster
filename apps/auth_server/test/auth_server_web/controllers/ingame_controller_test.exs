@@ -444,6 +444,42 @@ defmodule AuthServerWeb.IngameControllerTest do
            }
   end
 
+  test "POST /ingame/voxel/combustion_probe names inert materials without inventing a profile",
+       %{conn: conn} do
+    logical_scene_id = 82_465 + System.unique_integer([:positive])
+    world_macro = {1, 0, 0}
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    _chunk_pid = put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [{world_macro, 2}])
+
+    conn =
+      post(conn, ~p"/ingame/voxel/combustion_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 1,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["cell_mode"] == "solid"
+    assert body["material_id"] == 2
+    assert body["material_name"] == "stone"
+    assert body["combustible"] == false
+    assert body["profile"] == nil
+    assert body["combustion_stage"] == "idle"
+    assert body["active_combustion"] == false
+    assert body["active_combustion_instance"] == false
+  end
+
   test "POST set_temperature can ignite wood and combustion_probe reads the live burn state",
        %{conn: conn} do
     logical_scene_id = 82_475 + System.unique_integer([:positive])

@@ -31,6 +31,16 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
     assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
   end
 
+  test "material ids expose stable catalog names even when they have no phenomenon profile" do
+    assert MaterialCatalog.material_name(1) == :dirt
+    assert MaterialCatalog.material_name(2) == :stone
+    assert MaterialCatalog.material_name(MaterialCatalog.wood_material_id()) == :wood
+    assert MaterialCatalog.material_name(MaterialCatalog.ash_material_id()) == :ash
+    assert MaterialCatalog.material_name(MaterialCatalog.dry_grass_material_id()) == :dry_grass
+    assert MaterialCatalog.material_name(999_999) == nil
+    assert MaterialCatalog.material_name(nil) == nil
+  end
+
   test "iron declares corrosion response without becoming a combustion material" do
     iron_material_id = 5
 

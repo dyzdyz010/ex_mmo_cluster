@@ -25,6 +25,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @dry_grass_material_id 10
   @cloth_material_id 11
 
+  @material_names %{
+    @dirt_material_id => :dirt,
+    @stone_material_id => :stone,
+    @wood_material_id => :wood,
+    @ice_material_id => :ice,
+    @iron_material_id => :iron,
+    @power_block_material_id => :power_block,
+    @electric_load_material_id => :electric_load,
+    @ash_material_id => :ash,
+    @charcoal_material_id => :charcoal,
+    @dry_grass_material_id => :dry_grass,
+    @cloth_material_id => :cloth
+  }
+
   @power_source_defaults %{
     output_mode: :dc,
     voltage: 120.0,
@@ -249,7 +263,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       drying_rate_kg_per_m3_second: 45.0,
       min_oxygen_percent: 10.0,
       initial_fuel_mass_kg_per_m3: 2.0,
-      burn_rate_kg_per_m3_second: 1.2,
+      burn_rate_kg_per_m3_second: 35.0,
       combustion_heat_j_per_kg: 15_000_000.0,
       heat_release_efficiency: 0.55,
       smolder_heat_release_fraction: 0.25,
@@ -322,6 +336,13 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @doc "Returns true when a material id represents a circuit load/sink."
   @spec electric_load_material?(term()) :: boolean()
   def electric_load_material?(material_id), do: material_id == @electric_load_material_id
+
+  @doc "Returns the stable catalog name for a material id, or nil for unknown ids."
+  @spec material_name(term()) :: atom() | nil
+  def material_name(material_id) when is_integer(material_id),
+    do: Map.get(@material_names, material_id)
+
+  def material_name(_material_id), do: nil
 
   @doc "Returns true when a material has a combustion profile."
   @spec combustible_material?(term()) :: boolean()

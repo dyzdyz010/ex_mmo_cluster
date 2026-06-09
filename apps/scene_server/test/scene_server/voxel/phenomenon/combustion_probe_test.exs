@@ -146,7 +146,7 @@ defmodule SceneServer.Voxel.Phenomenon.CombustionProbeTest do
 
     assert summary.material_id == stone_material_id
     assert summary.combustible == false
-    assert summary.material_name == nil
+    assert summary.material_name == :stone
     assert summary.profile == nil
     assert summary.combustion_stage == :idle
     assert summary.active_combustion == false
