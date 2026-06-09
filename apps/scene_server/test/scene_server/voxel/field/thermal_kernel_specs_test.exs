@@ -28,6 +28,26 @@ defmodule SceneServer.Voxel.Field.ThermalKernelSpecsTest do
     assert region.field_types == [:temperature, :smoke_density, :oxygen, :moisture]
   end
 
+  test "temperature sources can carry combustion tuning without changing the shared chain" do
+    specs =
+      ThermalKernelSpecs.temperature_source_specs(
+        combustion_opts: %{profile: %{heat_source_celsius: 1_200.0}}
+      )
+
+    assert Enum.map(specs, & &1.id) == [
+             :temperature_diffusion,
+             :combustion,
+             :phase_change,
+             :smoke_diffusion,
+             :oxygen_diffusion,
+             :moisture_diffusion
+           ]
+
+    assert Enum.find(specs, &(&1.id == :combustion)).opts == %{
+             profile: %{heat_source_celsius: 1_200.0}
+           }
+  end
+
   test "combustion handoffs inherit diffusion specs and replace combustion opts deliberately" do
     region =
       FieldRegion.new(%{

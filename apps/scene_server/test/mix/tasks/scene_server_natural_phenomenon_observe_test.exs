@@ -60,6 +60,68 @@ defmodule Mix.Tasks.SceneServerNaturalPhenomenonObserveTest do
     end
   end
 
+  test "prints and logs a CLI-observable multi-material combustion spread smoke" do
+    observe_log =
+      Path.join(
+        System.tmp_dir!(),
+        "scene-combustion-spread-observe-#{System.unique_integer([:positive])}.log"
+      )
+
+    logical_scene_id = 86_300 + System.unique_integer([:positive])
+    previous_log = Application.get_env(:scene_server, :cli_observe_log)
+
+    try do
+      File.rm(observe_log)
+
+      output =
+        capture_io(fn ->
+          Mix.Tasks.SceneServer.NaturalPhenomenonObserve.run([
+            "--scenario",
+            "spread",
+            "--observe-log",
+            observe_log,
+            "--logical-scene-id",
+            Integer.to_string(logical_scene_id),
+            "--coord",
+            "0,0,0",
+            "--target-temperature",
+            "1000",
+            "--max-ticks",
+            "8"
+          ])
+        end)
+
+      assert output =~ "scene_natural_phenomenon_observe=ok"
+      assert output =~ "phenomenon=combustion"
+      assert output =~ "scenario=spread"
+      assert output =~ "logical_scene_id=#{logical_scene_id}"
+      assert output =~ "spread_cell_count=5"
+      assert output =~ ~r/spread_ignited_count=[4-9]/
+      assert output =~ ~r/spread_residue_count=[4-9]/
+      assert output =~ "spread_inert_count=1"
+      assert output =~ "fast_fuel:dry_grass->empty"
+      assert output =~ "ash_fuel:cloth->ash"
+      assert output =~ "inert_control:stone->stone"
+      assert output =~ "char_fuel:wood->charcoal"
+      assert output =~ "observe_log=#{observe_log}"
+
+      CliObserve.flush_path(observe_log)
+      log = File.read!(observe_log)
+      assert log =~ ~s(event="scene_natural_phenomenon_smoke_completed")
+      assert log =~ ~s(event="scene_combustion_spread_cell_observed")
+      assert log =~ ~s(event="voxel_combustion_ignited")
+      assert log =~ "spread_residue_count:"
+      assert log =~ "spread_inert_count: 1"
+    after
+      CliObserve.flush()
+
+      case previous_log do
+        nil -> Application.delete_env(:scene_server, :cli_observe_log)
+        value -> Application.put_env(:scene_server, :cli_observe_log, value)
+      end
+    end
+  end
+
   test "prints and logs a CLI-observable corrosion smoke" do
     observe_log =
       Path.join(

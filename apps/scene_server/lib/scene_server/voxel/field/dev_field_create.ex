@@ -52,6 +52,9 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
         max_ticks: Keyword.get(opts, :max_ticks, @default_max_ticks),
         radius: Keyword.get(opts, :radius, 4)
       ]
+      |> maybe_put(:kernel_specs, Keyword.get(opts, :kernel_specs))
+      |> maybe_put(:source_mode, Keyword.get(opts, :source_mode))
+      |> maybe_put(:source_key, Keyword.get(opts, :source_key))
       |> maybe_put(:lease, Keyword.get(opts, :lease))
       |> maybe_put(:lease_token, Keyword.get(opts, :lease_token))
 

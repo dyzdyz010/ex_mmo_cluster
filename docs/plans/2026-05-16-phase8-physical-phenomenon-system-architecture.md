@@ -413,6 +413,12 @@ thermal_expansion_coefficient
   输出阶段、燃料、烟雾、碳化和结构完整度摘要，并把 `voxel_combustion_ignited`
   / `voxel_field_effect_applied` / `scene_natural_phenomenon_smoke_completed`
   写入 observe log。
+- `mix scene_server.natural_phenomenon_observe --scenario spread` 已覆盖多材料火场验收：
+  同一场景会放置 source wood、dry_grass、cloth、stone，以及一个低氧 wood 分支，
+  仍经正式 `set_temperature` 和共享 thermal kernel chain 触发高温扩散，最后用只读
+  probe 汇总每个格子的阶段、当前材料/空格、残留结果和惰性控制组；该入口用于验证
+  “火从一种可燃材料扩散到相邻可燃材料，干草烧光、布料成灰、低氧木材成木炭，
+  同时石头不被临时点燃”。
 - HTTP 端到端验收已覆盖 `set_temperature -> field tick combustion -> combustion_probe`：
   授权 chunk 中的木材被高温入口点燃后，probe 能读到 burning、fuel/oxygen/progress
   变化以及材料热值 profile。

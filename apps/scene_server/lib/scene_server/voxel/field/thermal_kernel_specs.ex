@@ -33,6 +33,7 @@ defmodule SceneServer.Voxel.Field.ThermalKernelSpecs do
   @spec temperature_source_specs(keyword() | map()) :: [map()]
   def temperature_source_specs(opts \\ %{}) do
     opts = opts_map(opts)
+    combustion_opts = opts_map(get_opt(opts, :combustion_opts, %{}))
 
     [
       temperature_spec(%{
@@ -51,7 +52,7 @@ defmodule SceneServer.Voxel.Field.ThermalKernelSpecs do
         cell_size_meters:
           float_opt(opts, :temperature_cell_size_meters, @source_temperature_cell_size_meters)
       }),
-      combustion_spec(get_opt(opts, :combustion_module, CombustionKernel), %{}),
+      combustion_spec(get_opt(opts, :combustion_module, CombustionKernel), combustion_opts),
       phase_change_spec(%{}),
       smoke_spec(%{
         diffusion_alpha: float_opt(opts, :smoke_diffusion_alpha, @smoke_diffusion_alpha),
