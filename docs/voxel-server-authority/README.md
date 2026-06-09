@@ -31,7 +31,7 @@
 | 5 | 属性目录 + 温湿度基础模拟 | 已完成 | [`2026-05-13-phase5-backlog-and-subphase-decomposition.md`](../plans/2026-05-13-phase5-backlog-and-subphase-decomposition.md) |
 | 6 | 局部场最小目标(FieldLayer + 电场 + 温度场 + FieldDebugOverlay) | 已完成 | [`2026-05-13-体素局部场最小目标-索引.md`](../2026-05-13-体素局部场最小目标-索引.md) |
 | 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；7.D3 温度 FieldEffect 写回最小闭环已完成；7.E 第一批材料物性已完成；7.B ConductionPathKernel core/runtime/web 入口已完成；prefab 接入所有局部场的 projection 设计已就位；后续推进以 2026-05-16 roadmap 与 2026-05-19 prefab projection 设计为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) / [`2026-05-19-prefab-field-participant-projection.md`](../plans/2026-05-19-prefab-field-participant-projection.md) |
-| 8 | 物理现象系统(燃烧 / 结冰 / 结构完整度 / 碳化 / 腐蚀 / 相变) | 进行中（燃烧、含水相变、结构损伤首片已可运行；腐蚀、材料本体相变、跨 chunk 环境场、持久实例仍未完成） | [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](../plans/2026-05-16-phase8-physical-phenomenon-system-architecture.md) |
+| 8 | 物理现象系统(燃烧 / 结冰 / 结构完整度 / 碳化 / 腐蚀 / 相变) | 进行中（燃烧、含水相变、结构损伤、腐蚀首片已可运行；材料本体相变、跨 chunk 环境场、持久实例仍未完成） | [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](../plans/2026-05-16-phase8-physical-phenomenon-system-architecture.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 
@@ -68,6 +68,9 @@ Phase 8 combustion 已进入可运行第一段：不同材料按 `ignition_tempe
 热扩散和跨 chunk face 的火势交接都走 temperature field + chunk authority，不由燃烧规则直接写邻居。
 `mix scene_server.natural_phenomenon_observe` 已提供非 GUI 验收入口，可从 stdout 和 observe log
 直接确认高温入口、燃烧阶段、燃料/烟雾/碳化/结构属性写回与只读燃烧 probe。
+Phase 8.E 腐蚀首片已进入可运行状态：潮湿且有化学浓度的金属 voxel 会写回表面状态、
+腐蚀进度、结构完整度下降和导电性衰减；干燥化学暴露只标记 exposed 表面，石头等无腐蚀
+profile 的材料不会被误处理。当前化学浓度仍是 voxel attribute，不是跨 chunk 扩散 field。
 后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
 为准；prefab 接入所有局部场的架构边界以

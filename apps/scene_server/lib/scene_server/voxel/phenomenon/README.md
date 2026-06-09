@@ -73,6 +73,17 @@ the target cell, the combustion decision reads that value before falling back
 to storage, so a humid or recently dried hot zone delays ignition through the
 same phenomenon boundary.
 
+Corrosion follows the same authority boundary for the Phase 8.E chemical
+surface-state slice. `Corrosion` reads voxel `moisture`,
+`chemical_concentration`, material `corrosion_resistance`, and a material
+corrosion profile, then returns effects for `surface_state`, `corrosion`,
+`structural_integrity`, and degraded `electric_conductivity`. Chemical exposure
+without enough moisture only marks the surface as exposed; active corrosion
+requires both moisture and chemical concentration to exceed the material
+thresholds. `chemical_concentration` is intentionally a dynamic voxel attribute
+in this first slice, not a transported chemical field or cross-chunk acid-cloud
+runtime.
+
 Once a material enters burning or smoldering, the combustion kernel refreshes a
 stable `{:combustion_instance, logical_scene_id, chunk_coord, macro_index}`
 field source on the owning chunk. This gives the fire its own FieldRegion

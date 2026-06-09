@@ -1,6 +1,6 @@
 # Phase 8: 物理现象系统架构目标
 
-状态：进行中；Phase 8.B/8.C/8.D 已有可运行首片，Phase 8.E 与完整生命周期仍未完成
+状态：进行中；Phase 8.B/8.C/8.D 与 Phase 8.E 腐蚀首片已有可运行切片，完整生命周期仍未完成
 日期：2026-05-16  
 归属：goal `voxel-authoritative-and-field-minimum` Phase 8  
 
@@ -496,6 +496,20 @@ thermal_expansion_coefficient
 - corrosion 可由 moisture + chemical source 触发；
 - carbonization 可由 oxygen-limited combustion 触发；
 - material/state 派生属性影响后续 field 和 phenomenon 判断。
+
+2026-06-09 首片进展：
+
+- attribute catalog v5 追加 `corrosion_resistance`、`chemical_concentration`、
+  `corrosion` 与 `surface_state`；`electric_conductivity` 改为保留材料默认基线但
+  允许运行态覆盖，供腐蚀降低导电性；
+- 金属材料目录新增腐蚀 profile，潮湿度、化学浓度、材料抗蚀性、腐蚀速度、结构损伤
+  和导电衰减都从 material profile 读取，不在按钮或 kernel 里写死；
+- `Corrosion` 作为纯现象规则只产出结构化 effects：表面暴露、腐蚀进度、结构完整度、
+  导电性退化、observe 事件和腐蚀实例 upsert；`ChunkProcess` 仍是唯一持久写回边界；
+- `CorrosionKernel` 已接入 FieldRegion worker，可在局部 AABB 内扫描受化学暴露的金属
+  voxel 并通过 chunk authority 写回；
+- 当前仍是首片：`chemical_concentration` 是动态 voxel truth，不是跨 chunk 扩散的化学
+  field；暂不做酸云传输、材料剥落/碎片、雨水冲刷、视觉粒子或完整金属疲劳生命周期。
 
 ---
 

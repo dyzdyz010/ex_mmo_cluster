@@ -2,7 +2,7 @@
 #
 # 设计草案：docs/plans/2026-05-13-phase5c-first-batch-catalog-seed.md
 # 用户 2026-05-13 approve C-1..C-8 全部推荐方案：
-#   C-1 顺序数字 id (1..20)
+#   C-1 顺序数字 id (1..24)
 #   C-2 fixed32 Q16.16 按表范围
 #   C-3 default 绝对值（物理量直观）
 #   C-4 .exs Elixir 字面量 seed
@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 4,
+  catalog_version: 5,
   definitions: [
     %{
       id: 1,
@@ -165,8 +165,8 @@
       min_value: 0,
       # 100.0 MS/m
       max_value: 6_553_600,
-      merge_rule: :material_default,
-      dynamic: false
+      merge_rule: :override,
+      dynamic: true
     },
     %{
       id: 12,
@@ -269,6 +269,52 @@
       unit: "phase",
       value_type: :enum8,
       # 0 stable, 1 frozen, 2 boiling, 3 vapor
+      default_value: 0,
+      min_value: 0,
+      max_value: 3,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 21,
+      name: "corrosion_resistance",
+      unit: "%",
+      value_type: :fixed32,
+      # 100.0%
+      default_value: 6_553_600,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    %{
+      id: 22,
+      name: "chemical_concentration",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 23,
+      name: "corrosion",
+      unit: "%",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      max_value: 6_553_600,
+      merge_rule: :override,
+      dynamic: true
+    },
+    %{
+      id: 24,
+      name: "surface_state",
+      unit: "surface",
+      value_type: :enum8,
+      # 0 clean, 1 exposed, 2 corroding, 3 weakened
       default_value: 0,
       min_value: 0,
       max_value: 3,

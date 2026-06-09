@@ -19,22 +19,22 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 20 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 24 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 4
-      assert length(snapshot.definitions) == 20
+      assert snapshot.catalog_version == 5
+      assert length(snapshot.definitions) == 24
     end
 
-    test "catalog_version returns 4", %{server: server} do
-      assert AttributeCatalog.catalog_version(server) == 4
+    test "catalog_version returns 5", %{server: server} do
+      assert AttributeCatalog.catalog_version(server) == 5
     end
 
     test "definitions are sorted by id ascending", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == Enum.to_list(1..20)
+      assert ids == Enum.to_list(1..24)
     end
   end
 
@@ -87,7 +87,6 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
         {8, "melting_point", "°C", fixed32(5_000.0), @absolute_zero_raw, fixed32(5_000.0)},
         {9, "freezing_point", "°C", @absolute_zero_raw, @absolute_zero_raw, fixed32(5_000.0)},
         {10, "boiling_point", "°C", fixed32(5_000.0), @absolute_zero_raw, fixed32(5_000.0)},
-        {11, "electric_conductivity", "MS/m", 0, 0, fixed32(100.0)},
         {12, "dielectric_strength", "MV/m", fixed32(3.0), 0, fixed32(100.0)}
       ]
 
@@ -102,6 +101,20 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
         assert defn.merge_rule == 0x05
         assert defn.dynamic == false
       end
+    end
+
+    test "electric conductivity keeps material defaults but allows corrosion state override", %{
+      server: server
+    } do
+      assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, 11)
+      assert defn.name == "electric_conductivity"
+      assert defn.unit == "MS/m"
+      assert defn.value_type == 0x03
+      assert defn.default_value == 0
+      assert defn.min_value == 0
+      assert defn.max_value == fixed32(100.0)
+      assert defn.merge_rule == 0x01
+      assert defn.dynamic == true
     end
 
     test "returns Phase 8 combustion runtime attributes", %{server: server} do
@@ -126,6 +139,30 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
         assert defn.max_value == max_value
         assert defn.merge_rule == 0x01
         assert defn.dynamic == true
+      end
+    end
+
+    test "returns Phase 8 corrosion runtime and material-response attributes", %{
+      server: server
+    } do
+      expectations = [
+        {21, "corrosion_resistance", "%", fixed32(100.0), 0, fixed32(100.0), 0x03, 0x05, false},
+        {22, "chemical_concentration", "%", 0, 0, fixed32(100.0), 0x03, 0x01, true},
+        {23, "corrosion", "%", 0, 0, fixed32(100.0), 0x03, 0x01, true},
+        {24, "surface_state", "surface", 0, 0, 3, 0x04, 0x01, true}
+      ]
+
+      for {id, name, unit, default_value, min_value, max_value, value_type, merge_rule, dynamic} <-
+            expectations do
+        assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, id)
+        assert defn.name == name
+        assert defn.unit == unit
+        assert defn.value_type == value_type
+        assert defn.default_value == default_value
+        assert defn.min_value == min_value
+        assert defn.max_value == max_value
+        assert defn.merge_rule == merge_rule
+        assert defn.dynamic == dynamic
       end
     end
 
@@ -179,8 +216,8 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       wire = AttributeCatalogSnapshot.encode_for_wire(snapshot)
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 4
-      assert length(decoded.definitions) == 20
+      assert decoded.catalog_version == 5
+      assert length(decoded.definitions) == 24
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)

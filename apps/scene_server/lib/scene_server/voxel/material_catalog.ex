@@ -86,6 +86,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_538.0 * @fixed32_scale),
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(10.0 * @fixed32_scale),
+      "corrosion_resistance" => round(35.0 * @fixed32_scale),
       "dielectric_strength" => 0
     },
     @power_block_material_id => %{
@@ -97,6 +98,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_538.0 * @fixed32_scale),
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(12.0 * @fixed32_scale),
+      "corrosion_resistance" => round(30.0 * @fixed32_scale),
       "dielectric_strength" => 0
     },
     @electric_load_material_id => %{
@@ -108,6 +110,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_450.0 * @fixed32_scale),
       "boiling_point" => round(2_700.0 * @fixed32_scale),
       "electric_conductivity" => round(8.0 * @fixed32_scale),
+      "corrosion_resistance" => round(45.0 * @fixed32_scale),
       "dielectric_strength" => 0
     },
     @ash_material_id => %{
@@ -153,6 +156,39 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
       "dielectric_strength" => round(7.5 * @fixed32_scale)
+    }
+  }
+
+  @corrosion_profiles %{
+    @iron_material_id => %{
+      material_name: :iron,
+      moisture_threshold_kg_per_m3: 25.0,
+      chemical_threshold_percent: 10.0,
+      corrosion_rate_percent_per_second: 8.0,
+      weakened_threshold_percent: 60.0,
+      structural_loss_percent_per_corrosion_percent: 0.35,
+      structural_failure_threshold_percent: 35.0,
+      electric_conductivity_loss_percent_per_corrosion_percent: 1.8
+    },
+    @power_block_material_id => %{
+      material_name: :power_block,
+      moisture_threshold_kg_per_m3: 20.0,
+      chemical_threshold_percent: 8.0,
+      corrosion_rate_percent_per_second: 9.5,
+      weakened_threshold_percent: 55.0,
+      structural_loss_percent_per_corrosion_percent: 0.4,
+      structural_failure_threshold_percent: 30.0,
+      electric_conductivity_loss_percent_per_corrosion_percent: 2.2
+    },
+    @electric_load_material_id => %{
+      material_name: :electric_load,
+      moisture_threshold_kg_per_m3: 25.0,
+      chemical_threshold_percent: 10.0,
+      corrosion_rate_percent_per_second: 6.5,
+      weakened_threshold_percent: 62.0,
+      structural_loss_percent_per_corrosion_percent: 0.3,
+      structural_failure_threshold_percent: 35.0,
+      electric_conductivity_loss_percent_per_corrosion_percent: 1.5
     }
   }
 
@@ -290,6 +326,21 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @doc "Returns true when a material has a combustion profile."
   @spec combustible_material?(term()) :: boolean()
   def combustible_material?(material_id), do: is_map(combustion_profile(material_id))
+
+  @doc "Returns true when a material has a corrosion response profile."
+  @spec corrodible_material?(term()) :: boolean()
+  def corrodible_material?(material_id), do: is_map(corrosion_profile(material_id))
+
+  @doc """
+  Returns the static corrosion profile for a material id, or `nil` for inert
+  materials. Runtime corrosion progress remains in dynamic voxel attributes.
+  """
+  @spec corrosion_profile(term()) :: map() | nil
+  def corrosion_profile(material_id) when is_integer(material_id) do
+    Map.get(@corrosion_profiles, material_id)
+  end
+
+  def corrosion_profile(_material_id), do: nil
 
   @doc """
   Returns the static combustion profile for a material id, or `nil` for inert

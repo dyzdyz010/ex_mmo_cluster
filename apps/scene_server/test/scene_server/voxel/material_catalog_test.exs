@@ -31,6 +31,25 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
     assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
   end
 
+  test "iron declares corrosion response without becoming a combustion material" do
+    iron_material_id = 5
+
+    refute MaterialCatalog.combustible_material?(iron_material_id)
+
+    assert MaterialCatalog.default_attribute_value(
+             iron_material_id,
+             "corrosion_resistance",
+             0
+           ) == round(35.0 * 65_536)
+
+    assert %{material_name: :iron} = profile = MaterialCatalog.corrosion_profile(iron_material_id)
+    assert profile.moisture_threshold_kg_per_m3 > 0.0
+    assert profile.chemical_threshold_percent > 0.0
+    assert profile.corrosion_rate_percent_per_second > 0.0
+    assert profile.structural_failure_threshold_percent > 0.0
+    assert profile.electric_conductivity_loss_percent_per_corrosion_percent > 0.0
+  end
+
   test "combustion residue materials are append-only and inert or reusable fuel" do
     assert MaterialCatalog.ash_material_id() == 8
     assert MaterialCatalog.charcoal_material_id() == 9
