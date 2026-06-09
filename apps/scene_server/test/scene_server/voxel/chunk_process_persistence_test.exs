@@ -24,6 +24,11 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     WriteTokenStore.reset(WriteTokenStore)
+
+    chunk_registry = :"#{__MODULE__}.ChunkRegistry.#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: chunk_registry})
+    Process.put(:chunk_registry, chunk_registry)
+
     :ok
   end
 
@@ -148,7 +153,7 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
 
       # Stop and start a fresh chunk process with the same lease — simulates
       # a Scene-side process restart while the row stays in DB.
-      stop_supervised!(ChunkProcess)
+      stop_chunk!()
       reborn = boot_chunk(lease)
 
       # The fence is in memory again, so the same transaction id can commit.
@@ -170,7 +175,7 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
                  intent_attrs(old_lease)
                ])
 
-      stop_supervised!(ChunkProcess)
+      stop_chunk!()
 
       # Lease bumped epoch — the persisted fence is now an orphan.
       new_lease = lease(owner_epoch: 2)
@@ -194,7 +199,12 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
       # Boot ChunkProcess without a lease — init load should drop the orphan.
       chunk =
         start_supervised!(
-          {ChunkProcess, [logical_scene_id: @logical_scene_id, chunk_coord: @chunk_coord]}
+          {ChunkProcess,
+           [
+             logical_scene_id: @logical_scene_id,
+             chunk_coord: @chunk_coord,
+             chunk_registry: chunk_registry!()
+           ]}
         )
 
       refute ChunkProcess.debug_state(chunk).has_lease?
@@ -232,8 +242,36 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
   defp boot_chunk(lease) do
     start_supervised!({
       ChunkProcess,
-      [logical_scene_id: @logical_scene_id, chunk_coord: @chunk_coord, lease: lease]
+      [
+        logical_scene_id: @logical_scene_id,
+        chunk_coord: @chunk_coord,
+        lease: lease,
+        chunk_registry: chunk_registry!()
+      ]
     })
+  end
+
+  defp stop_chunk! do
+    stop_supervised!(ChunkProcess)
+    wait_for_unregistered_chunk()
+  end
+
+  defp wait_for_unregistered_chunk(attempts \\ 20)
+  defp wait_for_unregistered_chunk(0), do: :ok
+
+  defp wait_for_unregistered_chunk(attempts) do
+    case Registry.lookup(chunk_registry!(), {@logical_scene_id, @chunk_coord}) do
+      [] ->
+        :ok
+
+      _entries ->
+        Process.sleep(10)
+        wait_for_unregistered_chunk(attempts - 1)
+    end
+  end
+
+  defp chunk_registry! do
+    Process.get(:chunk_registry) || raise "missing chunk registry"
   end
 
   defp intent_attrs(lease) do

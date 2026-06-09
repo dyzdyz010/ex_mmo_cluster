@@ -297,6 +297,7 @@ window.__voxelCli?.run("voxel_subscribe 0 0 0 0");
 window.__voxelCli?.run("voxel_impact 0 0 0 dirt");
 window.__voxelCli?.run("voxel_temp 8 0 8 800 300");
 window.__voxelCli?.run("voxel_phase 8 0 8");
+window.__voxelCli?.run("voxel_corrosion 8 0 8");
 window.__voxelCli?.run("place 0 1 0 power_block");
 window.__voxelCli?.run("place 0 0 0 iron");
 window.__voxelCli?.run("place 1 0 0 iron");

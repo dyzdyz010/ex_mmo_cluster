@@ -9,6 +9,7 @@ defmodule AuthServerWeb.IngameControllerTest do
   alias SceneServer.Voxel.ObjectRegistry
   alias SceneServer.Voxel.PartState
   alias SceneServer.Voxel.Phenomenon.Combustion
+  alias SceneServer.Voxel.Phenomenon.Corrosion
   alias SceneServer.Voxel.Phenomenon.Effect
   alias SceneServer.Voxel.Phenomenon.StructuralIntegrity
   alias SceneServer.Voxel.Storage
@@ -544,6 +545,103 @@ defmodule AuthServerWeb.IngameControllerTest do
     assert attrs["fuel_mass_kg_per_m3"] < 45.0
     assert attrs["oxygen_percent"] < 100.0
     assert attrs["combustion_progress_percent"] > 0.0
+  end
+
+  test "POST /ingame/voxel/corrosion_probe returns authoritative material corrosion state",
+       %{conn: conn} do
+    logical_scene_id = 82_480 + System.unique_integer([:positive])
+    world_macro = {0, 0, 0}
+    macro_index = Types.macro_index!(world_macro)
+
+    assert {:ok, _route_summary} =
+             DevSeed.ensure_default_region(
+               logical_scene_id: logical_scene_id,
+               region_id: logical_scene_id * 1_000 + 1,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               assigned_scene_node: node(),
+               seed_terrain?: false
+             )
+
+    chunk_pid =
+      put_authorized_blocks!(logical_scene_id, {0, 0, 0}, [
+        {world_macro, @iron_material_id}
+      ])
+
+    assert {:ok, %{rejected_count: 0}} =
+             ChunkProcess.apply_field_effects(
+               chunk_pid,
+               [
+                 Effect.write_voxel_attribute(macro_index, :moisture, fixed32(120.0)),
+                 Effect.write_voxel_attribute(
+                   macro_index,
+                   :chemical_concentration,
+                   fixed32(45.0)
+                 ),
+                 Effect.write_voxel_attribute(
+                   macro_index,
+                   :surface_state,
+                   Corrosion.surface_corroding()
+                 ),
+                 Effect.write_voxel_attribute(macro_index, :corrosion, fixed32(14.25)),
+                 Effect.write_voxel_attribute(
+                   macro_index,
+                   :structural_integrity,
+                   fixed32(94.25)
+                 ),
+                 Effect.write_voxel_attribute(
+                   macro_index,
+                   :electric_conductivity,
+                   fixed32(7.75)
+                 ),
+                 Effect.upsert_phenomenon_instance(:corrosion, macro_index, %{
+                   material_id: @iron_material_id,
+                   stage: :corroding,
+                   previous_stage: :exposed,
+                   corrosion_after_percent: 14.25
+                 })
+               ],
+               %{source: :corrosion_probe_test}
+             )
+
+    conn =
+      post(conn, ~p"/ingame/voxel/corrosion_probe", %{
+        "logical_scene_id" => logical_scene_id,
+        "x" => 0,
+        "y" => 0,
+        "z" => 0
+      })
+
+    body = json_response(conn, 200)
+    assert body["cell_mode"] == "solid"
+    assert body["material_id"] == @iron_material_id
+    assert body["material_name"] == "iron"
+    assert body["corrodible"] == true
+    assert body["surface_state"] == "corroding"
+    assert body["surface_state_raw"] == Corrosion.surface_corroding()
+    assert body["active_corrosion"] == true
+    assert body["active_corrosion_instance"] == true
+    assert body["scene_node"] == Atom.to_string(node())
+    assert body["world_macro"] == %{"x" => 0, "y" => 0, "z" => 0}
+
+    attrs = body["attributes"]
+    assert_in_delta attrs["moisture_kg_per_m3"], 120.0, 0.001
+    assert_in_delta attrs["chemical_concentration_percent"], 45.0, 0.001
+    assert_in_delta attrs["corrosion_percent"], 14.25, 0.001
+    assert_in_delta attrs["corrosion_resistance_percent"], 35.0, 0.001
+    assert_in_delta attrs["structural_integrity_percent"], 94.25, 0.001
+    assert_in_delta attrs["electric_conductivity_ms_per_m"], 7.75, 0.001
+
+    assert body["profile"]["material_name"] == "iron"
+    assert body["profile"]["moisture_threshold_kg_per_m3"] > 0.0
+    assert body["profile"]["chemical_threshold_percent"] > 0.0
+    assert body["profile"]["corrosion_rate_percent_per_second"] > 0.0
+
+    instance = body["phenomenon_instance"]
+    assert instance["kind"] == "corrosion"
+    assert instance["status"] == "active"
+    assert instance["stage"] == "corroding"
+    assert instance["macro_index"] == macro_index
   end
 
   test "POST /ingame/voxel/phase_change_probe returns authoritative contained-water state",

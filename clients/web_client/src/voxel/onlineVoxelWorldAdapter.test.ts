@@ -1232,6 +1232,91 @@ describe("OnlineVoxelWorldAdapter startup priming", () => {
     });
   });
 
+  it("posts a corrosion probe and stores the latest authoritative material corrosion truth", async () => {
+    const { adapter, logger } = createAdapter();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            logical_scene_id: 7,
+            world_macro: { x: 3, y: 4, z: 5 },
+            chunk_coord: { x: 0, y: 0, z: 0 },
+            local_macro: { x: 3, y: 4, z: 5 },
+            macro_index: 837,
+            cell_mode: "solid",
+            material_id: 5,
+            material_name: "iron",
+            corrodible: true,
+            surface_state: "corroding",
+            surface_state_raw: 2,
+            active_corrosion: true,
+            active_corrosion_instance: true,
+            attributes: {
+              moisture_kg_per_m3: 120,
+              chemical_concentration_percent: 45,
+              corrosion_percent: 14.25,
+              corrosion_resistance_percent: 35,
+              structural_integrity_percent: 94.25,
+              electric_conductivity_ms_per_m: 7.75,
+            },
+            profile: {
+              material_name: "iron",
+              moisture_threshold_kg_per_m3: 20,
+              chemical_threshold_percent: 1,
+              corrosion_rate_percent_per_second: 2.5,
+            },
+            phenomenon_instance: {
+              kind: "corrosion",
+              status: "active",
+              stage: "corroding",
+            },
+            scene_node: "nonode@nohost",
+          }),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect(adapter.requestVoxelCorrosionProbe({ x: 3, y: 4, z: 5 })).toBe(true);
+    await flushAsyncWork();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost/ingame/voxel/corrosion_probe",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          logical_scene_id: 7,
+          x: 3,
+          y: 4,
+          z: 5,
+        }),
+      }),
+    );
+    expect(adapter.debugSnapshot().lastCorrosionProbe).toMatchObject({
+      materialId: 5,
+      materialName: "iron",
+      corrodible: true,
+      surfaceState: "corroding",
+      surfaceStateRaw: 2,
+      activeCorrosion: true,
+      activeCorrosionInstance: true,
+    });
+    expect(logger.recent(1)[0]).toMatchObject({
+      category: "voxel",
+      event: "corrosion_probe_ok",
+      fields: expect.objectContaining({
+        coord: "3,4,5",
+        material_id: "5",
+        material_name: "iron",
+        corrodible: true,
+        surface_state: "corroding",
+        surface_state_raw: "2",
+        active_corrosion: true,
+      }),
+    });
+  });
+
   it("posts a phase-change probe and stores the latest authoritative phase truth", async () => {
     const { adapter, logger } = createAdapter();
     const fetchSpy = vi.fn(() =>

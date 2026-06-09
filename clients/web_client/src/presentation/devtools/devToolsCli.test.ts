@@ -538,6 +538,38 @@ describe("DevToolsCli microgrid boundary", () => {
     });
   });
 
+  it("routes voxel_corrosion to a read-only world corrosion probe", () => {
+    const requestVoxelCorrosionProbe = vi.fn(() => true);
+    const cli = new DevToolsCli({
+      world: {
+        requestVoxelCorrosionProbe,
+        debugSnapshot: vi.fn(() => ({
+          mode: "server-authoritative",
+          lastCorrosionProbe: { surfaceState: "corroding" },
+        })),
+      },
+    } as unknown as DevToolsDeps);
+
+    expect(cli.executeCliCommand("voxel_corrosion", ["4", "12", "12"])).toMatchObject({
+      ok: true,
+      command: "voxel_corrosion",
+      text: "corrosion probe submitted for (4,12,12)",
+      data: expect.objectContaining({
+        coord: { x: 4, y: 12, z: 12 },
+        voxel: expect.objectContaining({
+          lastCorrosionProbe: { surfaceState: "corroding" },
+        }),
+      }),
+    });
+    expect(requestVoxelCorrosionProbe).toHaveBeenCalledWith({ x: 4, y: 12, z: 12 });
+
+    expect(cli.executeCliCommand("voxel_corrosion", ["4", "12"])).toMatchObject({
+      ok: false,
+      command: "voxel_corrosion",
+      text: "usage: voxel_corrosion <x> <y> <z>",
+    });
+  });
+
   it("routes voxel_phase to a read-only world phase-change probe", () => {
     const requestVoxelPhaseChangeProbe = vi.fn(() => true);
     const cli = new DevToolsCli({

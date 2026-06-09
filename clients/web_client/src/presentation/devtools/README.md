@@ -24,11 +24,11 @@ This directory owns the browser-side CLI surface exposed through
   diagnostics (`field_overlay [on|off]`) are render diagnostics only: they may
   read/toggle browser overlay state, but must not mutate voxel truth or server
   leases.
-- Voxel phenomenon readback commands (`voxel_combustion`, `voxel_phase`,
-  `voxel_object`) are diagnostic adapters. They submit read-only requests to
-  the online world adapter and report the latest server-authoritative summary;
-  they must not duplicate scene-side combustion, phase-change, or object
-  damage rules.
+- Voxel phenomenon readback commands (`voxel_combustion`, `voxel_corrosion`,
+  `voxel_phase`, `voxel_object`) are diagnostic adapters. They submit
+  read-only requests to the online world adapter and report the latest
+  server-authoritative summary; they must not duplicate scene-side combustion,
+  corrosion, phase-change, or object damage rules.
 - `chat <world|region|local> <text...>` is a server-session command. It may
   send scope and text through `TransportPump.sendChat()`, but it must never
   accept client-supplied `region_id`, `chunk_coord`, radius, or position as

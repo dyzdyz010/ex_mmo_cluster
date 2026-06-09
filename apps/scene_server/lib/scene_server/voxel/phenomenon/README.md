@@ -120,7 +120,8 @@ resistance, structural integrity, electric conductivity, and any active
 chunk-local corrosion instance. The probe does not evaluate corrosion and does
 not create field regions; `scene_server.natural_phenomenon_observe
 --phenomenon corrosion` uses it after driving the corrosion kernel through the
-normal field worker/effect dispatcher path.
+normal field worker/effect dispatcher path, while browser and HTTP dev tools
+use it to observe corrosion truth without duplicating corrosion rules.
 
 `PhaseChangeProbe` follows the same boundary for contained-moisture phase
 state. It reports material id/name, `phase_state` (`stable`, `frozen`,

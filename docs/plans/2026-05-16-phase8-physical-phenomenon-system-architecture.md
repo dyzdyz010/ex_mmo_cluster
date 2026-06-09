@@ -512,6 +512,8 @@ thermal_expansion_coefficient
   --phenomenon corrosion` 会放置金属、写入潮湿与化学浓度、运行腐蚀 kernel，随后通过
   只读 probe 输出表面状态、腐蚀进度、结构完整度与导电性摘要，并在 observe log 中留下
   `voxel_corrosion_advanced`；
+- 已补浏览器/HTTP 只读入口：`voxel_corrosion <x> <y> <z>` 通过
+  `/ingame/voxel/corrosion_probe` 路由到目标 chunk 的 scene owner，读取同一份腐蚀 truth；
 - 当前仍是首片：`chemical_concentration` 是动态 voxel truth，不是跨 chunk 扩散的化学
   field；暂不做酸云传输、材料剥落/碎片、雨水冲刷、视觉粒子或完整金属疲劳生命周期。
 

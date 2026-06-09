@@ -71,8 +71,9 @@ Phase 8 combustion 已进入可运行第一段：不同材料按 `ignition_tempe
 Phase 8.E 腐蚀首片已进入可运行状态：潮湿且有化学浓度的金属 voxel 会写回表面状态、
 腐蚀进度、结构完整度下降和导电性衰减；干燥化学暴露只标记 exposed 表面，石头等无腐蚀
 profile 的材料不会被误处理。`mix scene_server.natural_phenomenon_observe --phenomenon
-corrosion` 已提供非 GUI 验收入口，可从 stdout 和 observe log 直接确认腐蚀路径。当前化学
-浓度仍是 voxel attribute，不是跨 chunk 扩散 field。
+corrosion` 和浏览器 CLI `voxel_corrosion <x> <y> <z>` 已提供验收入口，可从 stdout、
+observe log 或 HTTP 读回摘要直接确认腐蚀路径。当前化学浓度仍是 voxel attribute，不是
+跨 chunk 扩散 field。
 后续路线图以
 [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
 为准；prefab 接入所有局部场的架构边界以

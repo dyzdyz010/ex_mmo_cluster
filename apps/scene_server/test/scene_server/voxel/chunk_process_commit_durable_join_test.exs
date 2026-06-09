@@ -39,6 +39,10 @@ defmodule SceneServer.Voxel.ChunkProcessCommitDurableJoinTest do
     WriteTokenStore.reset(WriteTokenStore)
     Application.delete_env(:scene_server, :voxel_persist_fault)
 
+    chunk_registry = :"#{__MODULE__}.ChunkRegistry.#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: chunk_registry})
+    Process.put(:chunk_registry, chunk_registry)
+
     on_exit(fn -> Application.delete_env(:scene_server, :voxel_persist_fault) end)
 
     :ok
@@ -73,7 +77,7 @@ defmodule SceneServer.Voxel.ChunkProcessCommitDurableJoinTest do
 
       # kill 进程并重启，hydrate（阶段3）不应丢失已提交写。
       committed_version = persisted.chunk_version
-      stop_supervised!(ChunkProcess)
+      stop_chunk!()
 
       reborn = boot_chunk(lease)
       reborn_state = ChunkProcess.debug_state(reborn)
@@ -347,8 +351,36 @@ defmodule SceneServer.Voxel.ChunkProcessCommitDurableJoinTest do
   defp boot_chunk(lease) do
     start_supervised!({
       ChunkProcess,
-      [logical_scene_id: @logical_scene_id, chunk_coord: @chunk_coord, lease: lease]
+      [
+        logical_scene_id: @logical_scene_id,
+        chunk_coord: @chunk_coord,
+        lease: lease,
+        chunk_registry: chunk_registry!()
+      ]
     })
+  end
+
+  defp stop_chunk! do
+    stop_supervised!(ChunkProcess)
+    wait_for_unregistered_chunk()
+  end
+
+  defp wait_for_unregistered_chunk(attempts \\ 20)
+  defp wait_for_unregistered_chunk(0), do: :ok
+
+  defp wait_for_unregistered_chunk(attempts) do
+    case Registry.lookup(chunk_registry!(), {@logical_scene_id, @chunk_coord}) do
+      [] ->
+        :ok
+
+      _entries ->
+        Process.sleep(10)
+        wait_for_unregistered_chunk(attempts - 1)
+    end
+  end
+
+  defp chunk_registry! do
+    Process.get(:chunk_registry) || raise "missing chunk registry"
   end
 
   defp intent_attrs(lease) do

@@ -123,6 +123,8 @@ export class DevToolsCli implements CliCommandHandler {
         return this.cmdVoxelAutoCircuit(command, args);
       case "voxel_combustion":
         return this.cmdVoxelCombustion(command, args);
+      case "voxel_corrosion":
+        return this.cmdVoxelCorrosion(command, args);
       case "voxel_phase":
         return this.cmdVoxelPhase(command, args);
       case "voxel_object":
@@ -658,6 +660,33 @@ export class DevToolsCli implements CliCommandHandler {
       text: ok
         ? `combustion probe submitted for (${formatCoord(coord)})`
         : `combustion probe rejected for (${formatCoord(coord)})`,
+      data: {
+        coord,
+        voxel: this.deps.world.debugSnapshot(),
+      },
+    };
+  }
+
+  private cmdVoxelCorrosion(command: string, args: string[]): CliCommandResult {
+    const coord = parseMacroCoord(args);
+    if (!coord) {
+      return { ok: false, command, text: usageForCorrosionCommand() };
+    }
+
+    const corrosionPort = this.deps.world as Partial<{
+      requestVoxelCorrosionProbe: (coord: FMacroCoord) => boolean;
+    }>;
+    if (typeof corrosionPort.requestVoxelCorrosionProbe !== "function") {
+      return { ok: false, command, text: "corrosion probe unavailable" };
+    }
+
+    const ok = corrosionPort.requestVoxelCorrosionProbe.call(corrosionPort, coord);
+    return {
+      ok,
+      command,
+      text: ok
+        ? `corrosion probe submitted for (${formatCoord(coord)})`
+        : `corrosion probe rejected for (${formatCoord(coord)})`,
       data: {
         coord,
         voxel: this.deps.world.debugSnapshot(),
@@ -1436,6 +1465,10 @@ function usageForAutoCircuitCommand(): string {
 
 function usageForCombustionCommand(): string {
   return "usage: voxel_combustion <x> <y> <z>";
+}
+
+function usageForCorrosionCommand(): string {
+  return "usage: voxel_corrosion <x> <y> <z>";
 }
 
 function usageForPhaseCommand(): string {

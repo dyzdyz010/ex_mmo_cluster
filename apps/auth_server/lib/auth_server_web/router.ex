@@ -38,6 +38,7 @@ defmodule AuthServerWeb.Router do
     post "/voxel/conduct", IngameController, :voxel_conduct
     post "/voxel/auto_circuit", IngameController, :voxel_auto_circuit
     post "/voxel/combustion_probe", IngameController, :voxel_combustion_probe
+    post "/voxel/corrosion_probe", IngameController, :voxel_corrosion_probe
     post "/voxel/phase_change_probe", IngameController, :voxel_phase_change_probe
     post "/voxel/object_probe", IngameController, :voxel_object_probe
   end
