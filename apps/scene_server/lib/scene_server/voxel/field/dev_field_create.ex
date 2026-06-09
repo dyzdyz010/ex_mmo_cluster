@@ -11,7 +11,7 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
 
   alias SceneServer.Voxel.Field.FieldRuntime
   alias SceneServer.Voxel.ObjectPhysicalProbe
-  alias SceneServer.Voxel.Phenomenon.{CombustionProbe, PhaseChangeProbe}
+  alias SceneServer.Voxel.Phenomenon.{CombustionProbe, CorrosionProbe, PhaseChangeProbe}
 
   @default_max_ticks 600
   @default_conduction_max_ticks 120
@@ -150,6 +150,17 @@ defmodule SceneServer.Voxel.Field.DevFieldCreate do
   @spec phase_change_probe(keyword()) :: {:ok, map()} | {:error, term()}
   def phase_change_probe(opts \\ []) do
     PhaseChangeProbe.probe(opts)
+  end
+
+  @doc """
+  Reads the authoritative corrosion state of one world-macro voxel.
+
+  This is a pure observation helper for browser/dev CLI diagnostics. It does
+  not create a field region, evaluate corrosion, or mutate voxel truth.
+  """
+  @spec corrosion_probe(keyword()) :: {:ok, map()} | {:error, term()}
+  def corrosion_probe(opts \\ []) do
+    CorrosionProbe.probe(opts)
   end
 
   @doc """

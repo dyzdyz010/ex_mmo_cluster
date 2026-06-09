@@ -113,6 +113,15 @@ one exists. The probe never evaluates new combustion effects and never creates
 field regions; browser and HTTP dev tools use it to observe the state machine
 instead of duplicating combustion rules outside this directory.
 
+`CorrosionProbe` follows the same read-only boundary for material corrosion. It
+reports material id/name, whether the material has a corrosion profile, current
+surface state, moisture, chemical concentration, corrosion progress, corrosion
+resistance, structural integrity, electric conductivity, and any active
+chunk-local corrosion instance. The probe does not evaluate corrosion and does
+not create field regions; `scene_server.natural_phenomenon_observe
+--phenomenon corrosion` uses it after driving the corrosion kernel through the
+normal field worker/effect dispatcher path.
+
 `PhaseChangeProbe` follows the same boundary for contained-moisture phase
 state. It reports material id/name, `phase_state` (`stable`, `frozen`,
 `boiling`, or `vapor`), temperature, moisture, structural integrity, the

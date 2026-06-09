@@ -368,11 +368,24 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     end)
   end
 
-  defp flush_chunk_persistence!(chunk_directory, logical_scene_id, chunk_coord) do
-    assert {:ok, chunk_pid} =
-             ChunkDirectory.lookup_chunk_pid(chunk_directory, logical_scene_id, chunk_coord)
+  defp flush_chunk_persistence!(chunk_directory, logical_scene_id, chunk_coord, attempts \\ 100)
 
-    assert :ok = ChunkProcess.flush_persistence(chunk_pid)
+  defp flush_chunk_persistence!(_chunk_directory, logical_scene_id, chunk_coord, 0) do
+    flunk("chunk #{inspect(chunk_coord)} in scene #{logical_scene_id} did not start before flush")
+  end
+
+  defp flush_chunk_persistence!(chunk_directory, logical_scene_id, chunk_coord, attempts) do
+    case ChunkDirectory.lookup_chunk_pid(chunk_directory, logical_scene_id, chunk_coord) do
+      {:ok, chunk_pid} ->
+        assert :ok = ChunkProcess.flush_persistence(chunk_pid)
+
+      :not_started ->
+        receive do
+        after
+          10 ->
+            flush_chunk_persistence!(chunk_directory, logical_scene_id, chunk_coord, attempts - 1)
+        end
+    end
   end
 
   defp ensure_started!(name, child_spec) do

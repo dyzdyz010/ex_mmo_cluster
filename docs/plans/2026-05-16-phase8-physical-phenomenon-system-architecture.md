@@ -508,6 +508,10 @@ thermal_expansion_coefficient
   导电性退化、observe 事件和腐蚀实例 upsert；`ChunkProcess` 仍是唯一持久写回边界；
 - `CorrosionKernel` 已接入 FieldRegion worker，可在局部 AABB 内扫描受化学暴露的金属
   voxel 并通过 chunk authority 写回；
+- 已补 scene 侧非 GUI 验收 smoke：`mix scene_server.natural_phenomenon_observe
+  --phenomenon corrosion` 会放置金属、写入潮湿与化学浓度、运行腐蚀 kernel，随后通过
+  只读 probe 输出表面状态、腐蚀进度、结构完整度与导电性摘要，并在 observe log 中留下
+  `voxel_corrosion_advanced`；
 - 当前仍是首片：`chemical_concentration` 是动态 voxel truth，不是跨 chunk 扩散的化学
   field；暂不做酸云传输、材料剥落/碎片、雨水冲刷、视觉粒子或完整金属疲劳生命周期。
 
