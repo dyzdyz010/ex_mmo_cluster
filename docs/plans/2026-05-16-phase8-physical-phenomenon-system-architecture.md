@@ -1,6 +1,6 @@
 # Phase 8: 物理现象系统架构目标
 
-状态：设计目标稿；等待 Phase 7.D2 / 7.D3 局部场运行时补完后进入实现  
+状态：进行中；Phase 8.B/8.C/8.D 已有可运行首片，Phase 8.E 与完整生命周期仍未完成
 日期：2026-05-16  
 归属：goal `voxel-authoritative-and-field-minimum` Phase 8  
 
@@ -408,6 +408,11 @@ thermal_expansion_coefficient
   `voxel_combustion <x> <y> <z>` 会回读目标 chunk authority 中的材料、阶段、
   fuel / oxygen、smoke、carbonization、structural_integrity 和残留策略，避免只能通过
   overlay 间接判断燃烧状态。
+- 已补 scene 侧非 GUI 验收 smoke：`mix scene_server.natural_phenomenon_observe`
+  会放置可燃材料，经正式 `set_temperature` 入口触发高温，再用只读燃烧 probe
+  输出阶段、燃料、烟雾、碳化和结构完整度摘要，并把 `voxel_combustion_ignited`
+  / `voxel_field_effect_applied` / `scene_natural_phenomenon_smoke_completed`
+  写入 observe log。
 - HTTP 端到端验收已覆盖 `set_temperature -> field tick combustion -> combustion_probe`：
   授权 chunk 中的木材被高温入口点燃后，probe 能读到 burning、fuel/oxygen/progress
   变化以及材料热值 profile。
