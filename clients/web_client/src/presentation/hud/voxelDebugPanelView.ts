@@ -82,6 +82,8 @@ export interface VoxelPanelFieldOverlaySnapshot {
     electricCells?: number;
     currentCells?: number;
     smokeParticles?: number;
+    smokeDensityCells?: number;
+    maxOxygenDeficitPercent?: number;
     temperatureCells?: number;
   }>;
 }
@@ -579,7 +581,15 @@ function summarizeFieldOverlaySnapshot(
   const electricCells = regions.reduce((sum, region) => sum + (region.electricCells ?? 0), 0);
   const currentCells = regions.reduce((sum, region) => sum + (region.currentCells ?? 0), 0);
   const smokeParticles = regions.reduce((sum, region) => sum + (region.smokeParticles ?? 0), 0);
-  return `field=${snapshot?.visible ? "on" : "off"} regions=${snapshot?.regionCount ?? 0} electric=${electricCells} current=${currentCells} smoke=${smokeParticles}`;
+  const smokeDensityCells = regions.reduce(
+    (sum, region) => sum + (region.smokeDensityCells ?? 0),
+    0,
+  );
+  const maxOxygenDeficit = regions.reduce(
+    (max, region) => Math.max(max, region.maxOxygenDeficitPercent ?? 0),
+    0,
+  );
+  return `field=${snapshot?.visible ? "on" : "off"} regions=${snapshot?.regionCount ?? 0} electric=${electricCells} current=${currentCells} smoke=${smokeParticles} smokeField=${smokeDensityCells} oxygenDeficit=${maxOxygenDeficit.toFixed(1)}%`;
 }
 
 function summarizeVoxelAlerts(snapshot: Record<string, unknown>): string[] {

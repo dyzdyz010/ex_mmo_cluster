@@ -95,7 +95,9 @@ describe("VoxelDebugPanelView", () => {
     expect(html).toContain("active");
     expect(html).toContain("<dd>3</dd>");
     expect(html).toContain("voxel-panel-stat--field");
-    expect(html).toContain("field=on regions=1 electric=2 current=0 smoke=12");
+    expect(html).toContain(
+      "field=on regions=1 electric=2 current=0 smoke=12 smokeField=3 oxygenDeficit=28.5%",
+    );
     expect(html).toContain("data-voxel-panel-shortcuts");
     expect(html).toContain("WASD");
     expect(html).toContain("F");
@@ -119,7 +121,9 @@ describe("VoxelDebugPanelView", () => {
   it("summarizes field overlay as inactive when no field snapshot is available", () => {
     const html = renderVoxelDebugPanelHtml(makeVoxelSnapshot());
 
-    expect(html).toContain("field=off regions=0 electric=0 current=0 smoke=0");
+    expect(html).toContain(
+      "field=off regions=0 electric=0 current=0 smoke=0 smokeField=0 oxygenDeficit=0.0%",
+    );
   });
 
   it("renders sync failures in the visible panel instead of hiding them in JSON", () => {
@@ -478,6 +482,8 @@ function makeFieldOverlaySnapshot(): VoxelPanelFieldOverlaySnapshot {
         temperatureCells: 0,
         electricCells: 2,
         smokeParticles: 12,
+        smokeDensityCells: 3,
+        maxOxygenDeficitPercent: 28.5,
       },
     ],
   };

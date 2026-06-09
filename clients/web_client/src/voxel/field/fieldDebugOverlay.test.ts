@@ -333,6 +333,64 @@ describe("FieldDebugOverlay", () => {
     expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
   });
 
+  it("spawns smoke from server smoke-density snapshots and exposes oxygen depletion stats", () => {
+    const overlay = new FieldDebugOverlay();
+    overlay.show();
+
+    overlay.onFieldSnapshot(
+      makeCombustionFieldSnapshot({
+        cellCount: 2,
+        macroIndices: Uint16Array.of(CENTER_INDEX, CENTER_INDEX + 16),
+        smokeDensityValues: Float32Array.of(45, 15),
+        oxygenValues: Float32Array.of(72, 88),
+      }),
+    );
+
+    const region = overlay.snapshot().regions[0];
+    expect(region).toMatchObject({
+      smokeDensityCells: 2,
+      maxSmokeDensityPercent: 45,
+      averageSmokeDensityPercent: 30,
+      oxygenCells: 2,
+      minOxygenPercent: 72,
+      maxOxygenDeficitPercent: 28,
+      averageOxygenDeficitPercent: 20,
+    });
+    expect(region?.smokeParticles).toBeGreaterThan(0);
+    expect(smokeMesh(overlay).visible).toBe(true);
+  });
+
+  it("clears server smoke particles when the smoke-density field goes empty", () => {
+    const overlay = new FieldDebugOverlay();
+    overlay.show();
+
+    overlay.onFieldSnapshot(
+      makeCombustionFieldSnapshot({
+        cellCount: 1,
+        macroIndices: Uint16Array.of(CENTER_INDEX),
+        smokeDensityValues: Float32Array.of(45),
+        oxygenValues: Float32Array.of(72),
+      }),
+    );
+    expect(overlay.snapshot().regions[0]?.smokeParticles).toBeGreaterThan(0);
+
+    overlay.onFieldSnapshot(
+      makeCombustionFieldSnapshot({
+        cellCount: 0,
+        macroIndices: new Uint16Array(0),
+        smokeDensityValues: new Float32Array(0),
+        oxygenValues: new Float32Array(0),
+      }),
+    );
+
+    expect(overlay.snapshot().regions[0]).toMatchObject({
+      smokeParticles: 0,
+      smokeDensityCells: 0,
+      oxygenCells: 0,
+    });
+    expect(smokeMesh(overlay).visible).toBe(false);
+  });
+
   it("clears electric smoke immediately when an active circuit snapshot goes empty", () => {
     const overlay = new FieldDebugOverlay();
 
@@ -722,6 +780,35 @@ function makeCurrentSnapshot({
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
     oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
+  };
+}
+
+function makeCombustionFieldSnapshot({
+  cellCount,
+  macroIndices,
+  smokeDensityValues,
+  oxygenValues,
+}: {
+  cellCount: number;
+  macroIndices: Uint16Array;
+  smokeDensityValues: Float32Array;
+  oxygenValues: Float32Array;
+}): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 77,
+    tickCount: 1,
+    fieldMask: FieldMask.SmokeDensity | FieldMask.Oxygen,
+    cellCount,
+    macroIndices,
+    temperatureValues: new Float32Array(0),
+    electricValues: new Float32Array(0),
+    electricCurrentValues: new Float32Array(0),
+    ionizationValues: new Uint8Array(0),
+    smokeDensityValues,
+    oxygenValues,
     moistureValues: new Float32Array(0),
   };
 }

@@ -646,6 +646,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert observe_log_text =~ "region_action: :expired"
     assert observe_log_text =~ "source_action: :expired"
     assert observe_log_text =~ "destroy_reason: :expired"
+    refute observe_log_text =~ "region_action: :worker_down"
   end
 
   test "apply_intent writes a solid block, increments versions, and persists snapshots" do

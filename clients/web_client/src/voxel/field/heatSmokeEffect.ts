@@ -62,13 +62,43 @@ export interface ElectricEffectPoint {
   maxEmissionsPerSnapshot?: number;
 }
 
+export interface SmokeDensityEffectCell {
+  localMacro: { x: number; y: number; z: number };
+  worldMacro: { x: number; y: number; z: number };
+  smokeDensityPercent: number;
+}
+
+export interface SmokeDensityEffectPoint {
+  x: number;
+  y: number;
+  z: number;
+  smokeDensityPercent: number;
+  sizeWorld?: number;
+  emissionGroupKey?: string;
+  maxEmissionsPerSnapshot?: number;
+}
+
 export type ElectricEffectProjector = (
   cell: ElectricEffectCell,
 ) => readonly ElectricEffectPoint[] | null | undefined;
 
-interface ElectricEffectPointGroup {
+export type SmokeDensityEffectProjector = (
+  cell: SmokeDensityEffectCell,
+) => readonly SmokeDensityEffectPoint[] | null | undefined;
+
+interface HeatSmokeSourcePoint {
+  x: number;
+  y: number;
+  z: number;
+  intensity: number;
+  sizeWorld?: number;
+  emissionGroupKey?: string;
+  maxEmissionsPerSnapshot?: number;
+}
+
+interface HeatSmokePointGroup {
   key: string;
-  points: ElectricEffectPoint[];
+  points: HeatSmokeSourcePoint[];
   maxEmissionsPerSnapshot: number | null;
 }
 
@@ -132,20 +162,34 @@ export class HeatSmokeSimulation {
       return 0;
     }
 
-    const pointCount = pointGroups.reduce((sum, group) => sum + groupSpawnWeight(group), 0);
     const heatScale = heatEnergyJoulesPerTick / this.joulesPerActiveCellParticle;
-    const spawnCount = clampInt(Math.ceil(pointCount * heatScale), 1, this.maxSpawnPerSnapshot);
-    const points = fairEffectPointSample(pointGroups, spawnCount);
+    return this.spawnFromPointGroups(snapshot.regionId, pointGroups, heatScale);
+  }
 
-    for (const point of points) {
-      this.upsertParticleFromPoint(snapshot.regionId, point, heatScale);
+  spawnFromSmokeDensitySnapshot(
+    snapshot: FFieldRegionSnapshot,
+    projector?: SmokeDensityEffectProjector,
+  ): number {
+    if (!(snapshot.fieldMask & FieldMask.SmokeDensity)) {
+      return 0;
     }
 
-    if (this.particles.length > this.maxLiveParticles) {
-      this.particles.splice(0, this.particles.length - this.maxLiveParticles);
+    const activeCells = activeSmokeDensityCells(snapshot);
+    if (activeCells.length === 0) {
+      return 0;
     }
 
-    return points.length;
+    const pointGroups = smokeDensityEffectPointGroupsForSnapshot(snapshot, activeCells, projector);
+    if (pointGroups.length === 0) {
+      return 0;
+    }
+
+    const maxDensityPercent = activeCells.reduce(
+      (max, cell) => Math.max(max, cell.smokeDensityPercent),
+      0,
+    );
+    const densityScale = Math.max(1, Math.min(4, maxDensityPercent / 20));
+    return this.spawnFromPointGroups(snapshot.regionId, pointGroups, densityScale);
   }
 
   update(dtMs: number): void {
@@ -220,7 +264,7 @@ export class HeatSmokeSimulation {
 
   private buildParticleFromPoint(
     regionId: number,
-    point: ElectricEffectPoint,
+    point: HeatSmokeSourcePoint,
     heatScale: number,
   ): HeatSmokeParticle {
     const jitterX = (this.random() - 0.5) * MacroWorldSize * 0.34;
@@ -230,7 +274,7 @@ export class HeatSmokeSimulation {
       this.driftSpeedWorldPerSecond * (0.35 + 0.65 * this.random()) * Math.min(2, heatScale);
     const riseSpeed =
       this.riseSpeedWorldPerSecond * (0.75 + 0.5 * this.random()) * Math.min(1.6, heatScale);
-    const potentialScale = Math.max(0.75, Math.min(1.8, Math.abs(point.potential) / 120));
+    const intensityScale = Math.max(0.75, Math.min(1.8, Math.abs(point.intensity) / 120));
 
     const particle: HeatSmokeParticle = {
       regionId,
@@ -242,7 +286,7 @@ export class HeatSmokeSimulation {
       vz: Math.sin(driftAngle) * driftSpeed,
       ageMs: 0,
       lifetimeMs: this.particleLifetimeMs,
-      sizeWorld: (point.sizeWorld ?? this.particleSizeWorld) * potentialScale,
+      sizeWorld: (point.sizeWorld ?? this.particleSizeWorld) * intensityScale,
     };
     if (point.emissionGroupKey) {
       particle.emissionGroupKey = point.emissionGroupKey;
@@ -252,7 +296,7 @@ export class HeatSmokeSimulation {
 
   private upsertParticleFromPoint(
     regionId: number,
-    point: ElectricEffectPoint,
+    point: HeatSmokeSourcePoint,
     heatScale: number,
   ): void {
     const next = this.buildParticleFromPoint(regionId, point, heatScale);
@@ -269,14 +313,34 @@ export class HeatSmokeSimulation {
 
     this.particles.push(next);
   }
+
+  private spawnFromPointGroups(
+    regionId: number,
+    pointGroups: readonly HeatSmokePointGroup[],
+    heatScale: number,
+  ): number {
+    const pointCount = pointGroups.reduce((sum, group) => sum + groupSpawnWeight(group), 0);
+    const spawnCount = clampInt(Math.ceil(pointCount * heatScale), 1, this.maxSpawnPerSnapshot);
+    const points = fairEffectPointSample(pointGroups, spawnCount);
+
+    for (const point of points) {
+      this.upsertParticleFromPoint(regionId, point, heatScale);
+    }
+
+    if (this.particles.length > this.maxLiveParticles) {
+      this.particles.splice(0, this.particles.length - this.maxLiveParticles);
+    }
+
+    return points.length;
+  }
 }
 
 function electricEffectPointGroupsForSnapshot(
   snapshot: FFieldRegionSnapshot,
   activeCells: readonly ActiveElectricCell[],
   projector?: ElectricEffectProjector,
-): ElectricEffectPointGroup[] {
-  const groupsByKey = new Map<string, ElectricEffectPointGroup>();
+): HeatSmokePointGroup[] {
+  const groupsByKey = new Map<string, HeatSmokePointGroup>();
   for (const cell of activeCells) {
     const group = electricEffectPointGroupForCell(snapshot, cell, projector);
     if (!group) {
@@ -291,7 +355,7 @@ function electricEffectPointGroupForCell(
   snapshot: FFieldRegionSnapshot,
   cell: ActiveElectricCell,
   projector?: ElectricEffectProjector,
-): ElectricEffectPointGroup | null {
+): HeatSmokePointGroup | null {
   const worldMacro = {
     x: snapshot.chunkCoord.cx * 16 + cell.x,
     y: snapshot.chunkCoord.cy * 16 + cell.y,
@@ -304,7 +368,7 @@ function electricEffectPointGroupForCell(
     potential: cell.potential,
   });
   if (projected && projected.length > 0) {
-    return normalizeEffectPointGroup(macroKey, projected);
+    return normalizeElectricEffectPointGroup(macroKey, projected);
   }
   return {
     key: macroKey,
@@ -313,17 +377,66 @@ function electricEffectPointGroupForCell(
         x: (worldMacro.x + 0.5) * MacroWorldSize,
         y: (worldMacro.y + 0.92) * MacroWorldSize,
         z: (worldMacro.z + 0.5) * MacroWorldSize,
-        potential: cell.potential,
+        intensity: Math.abs(cell.potential),
       },
     ],
     maxEmissionsPerSnapshot: null,
   };
 }
 
-function normalizeEffectPointGroup(
+function smokeDensityEffectPointGroupsForSnapshot(
+  snapshot: FFieldRegionSnapshot,
+  activeCells: readonly ActiveSmokeDensityCell[],
+  projector?: SmokeDensityEffectProjector,
+): HeatSmokePointGroup[] {
+  const groupsByKey = new Map<string, HeatSmokePointGroup>();
+  for (const cell of activeCells) {
+    const group = smokeDensityEffectPointGroupForCell(snapshot, cell, projector);
+    if (!group) {
+      continue;
+    }
+    mergeEffectPointGroup(groupsByKey, group);
+  }
+  return [...groupsByKey.values()];
+}
+
+function smokeDensityEffectPointGroupForCell(
+  snapshot: FFieldRegionSnapshot,
+  cell: ActiveSmokeDensityCell,
+  projector?: SmokeDensityEffectProjector,
+): HeatSmokePointGroup | null {
+  const worldMacro = {
+    x: snapshot.chunkCoord.cx * 16 + cell.x,
+    y: snapshot.chunkCoord.cy * 16 + cell.y,
+    z: snapshot.chunkCoord.cz * 16 + cell.z,
+  };
+  const macroKey = `smoke:${worldMacro.x},${worldMacro.y},${worldMacro.z}`;
+  const projected = projector?.({
+    localMacro: { x: cell.x, y: cell.y, z: cell.z },
+    worldMacro,
+    smokeDensityPercent: cell.smokeDensityPercent,
+  });
+  if (projected && projected.length > 0) {
+    return normalizeSmokeDensityEffectPointGroup(macroKey, projected);
+  }
+  return {
+    key: macroKey,
+    points: [
+      {
+        x: (worldMacro.x + 0.5) * MacroWorldSize,
+        y: (worldMacro.y + 0.92) * MacroWorldSize,
+        z: (worldMacro.z + 0.5) * MacroWorldSize,
+        intensity: cell.smokeDensityPercent * 3,
+      },
+    ],
+    maxEmissionsPerSnapshot: null,
+  };
+}
+
+function normalizeElectricEffectPointGroup(
   fallbackKey: string,
   points: readonly ElectricEffectPoint[],
-): ElectricEffectPointGroup | null {
+): HeatSmokePointGroup | null {
   const usablePoints = points.filter(
     (point) =>
       Number.isFinite(point.x) &&
@@ -337,14 +450,83 @@ function normalizeEffectPointGroup(
 
   return {
     key: usablePoints.find((point) => point.emissionGroupKey)?.emissionGroupKey ?? fallbackKey,
-    points: [...usablePoints],
+    points: usablePoints.map((point) =>
+      heatSmokeSourcePoint({
+        x: point.x,
+        y: point.y,
+        z: point.z,
+        intensity: Math.abs(point.potential),
+        sizeWorld: point.sizeWorld,
+        emissionGroupKey: point.emissionGroupKey,
+        maxEmissionsPerSnapshot: point.maxEmissionsPerSnapshot,
+      }),
+    ),
     maxEmissionsPerSnapshot: minimumEmissionCap(usablePoints),
   };
 }
 
+function normalizeSmokeDensityEffectPointGroup(
+  fallbackKey: string,
+  points: readonly SmokeDensityEffectPoint[],
+): HeatSmokePointGroup | null {
+  const usablePoints = points.filter(
+    (point) =>
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      Number.isFinite(point.z) &&
+      Number.isFinite(point.smokeDensityPercent),
+  );
+  if (usablePoints.length === 0) {
+    return null;
+  }
+
+  return {
+    key: usablePoints.find((point) => point.emissionGroupKey)?.emissionGroupKey ?? fallbackKey,
+    points: usablePoints.map((point) =>
+      heatSmokeSourcePoint({
+        x: point.x,
+        y: point.y,
+        z: point.z,
+        intensity: point.smokeDensityPercent * 3,
+        sizeWorld: point.sizeWorld,
+        emissionGroupKey: point.emissionGroupKey,
+        maxEmissionsPerSnapshot: point.maxEmissionsPerSnapshot,
+      }),
+    ),
+    maxEmissionsPerSnapshot: minimumEmissionCap(usablePoints),
+  };
+}
+
+function heatSmokeSourcePoint(input: {
+  x: number;
+  y: number;
+  z: number;
+  intensity: number;
+  sizeWorld: number | undefined;
+  emissionGroupKey: string | undefined;
+  maxEmissionsPerSnapshot: number | undefined;
+}): HeatSmokeSourcePoint {
+  const point: HeatSmokeSourcePoint = {
+    x: input.x,
+    y: input.y,
+    z: input.z,
+    intensity: input.intensity,
+  };
+  if (input.sizeWorld !== undefined) {
+    point.sizeWorld = input.sizeWorld;
+  }
+  if (input.emissionGroupKey !== undefined) {
+    point.emissionGroupKey = input.emissionGroupKey;
+  }
+  if (input.maxEmissionsPerSnapshot !== undefined) {
+    point.maxEmissionsPerSnapshot = input.maxEmissionsPerSnapshot;
+  }
+  return point;
+}
+
 function mergeEffectPointGroup(
-  groupsByKey: Map<string, ElectricEffectPointGroup>,
-  next: ElectricEffectPointGroup,
+  groupsByKey: Map<string, HeatSmokePointGroup>,
+  next: HeatSmokePointGroup,
 ): void {
   const existing = groupsByKey.get(next.key);
   if (!existing) {
@@ -359,7 +541,9 @@ function mergeEffectPointGroup(
   );
 }
 
-function minimumEmissionCap(points: readonly ElectricEffectPoint[]): number | null {
+function minimumEmissionCap(
+  points: readonly { maxEmissionsPerSnapshot?: number }[],
+): number | null {
   let cap: number | null = null;
   for (const point of points) {
     const pointCap = point.maxEmissionsPerSnapshot;
@@ -382,7 +566,7 @@ function mergeEmissionCaps(left: number | null, right: number | null): number | 
   return Math.min(left, right);
 }
 
-function groupSpawnWeight(group: ElectricEffectPointGroup): number {
+function groupSpawnWeight(group: HeatSmokePointGroup): number {
   if (group.maxEmissionsPerSnapshot === null) {
     return group.points.length;
   }
@@ -390,9 +574,9 @@ function groupSpawnWeight(group: ElectricEffectPointGroup): number {
 }
 
 function fairEffectPointSample(
-  pointGroups: readonly ElectricEffectPointGroup[],
+  pointGroups: readonly HeatSmokePointGroup[],
   spawnCount: number,
-): ElectricEffectPoint[] {
+): HeatSmokeSourcePoint[] {
   const groups = pointGroups.filter(
     (group) => group.points.length > 0 && groupSpawnCapacity(group) > 0,
   );
@@ -400,7 +584,7 @@ function fairEffectPointSample(
     return [];
   }
 
-  const selected: ElectricEffectPoint[] = [];
+  const selected: HeatSmokeSourcePoint[] = [];
   const emissionsByGroup = new Array(groups.length).fill(0) as number[];
   const targetCount = Math.min(spawnCount, totalSpawnCapacity(groups));
   const order = fairGroupOrder(groups.length, targetCount);
@@ -429,11 +613,11 @@ function fairEffectPointSample(
   return selected;
 }
 
-function groupSpawnCapacity(group: ElectricEffectPointGroup): number {
+function groupSpawnCapacity(group: HeatSmokePointGroup): number {
   return group.maxEmissionsPerSnapshot ?? Number.POSITIVE_INFINITY;
 }
 
-function totalSpawnCapacity(groups: readonly ElectricEffectPointGroup[]): number {
+function totalSpawnCapacity(groups: readonly HeatSmokePointGroup[]): number {
   let total = 0;
   for (const group of groups) {
     const capacity = groupSpawnCapacity(group);
@@ -453,6 +637,32 @@ function fairGroupOrder(groupCount: number, spawnCount: number): number[] {
   return Array.from({ length: spawnCount }, (_value, index) =>
     Math.min(groupCount - 1, Math.floor(((index + 0.5) * groupCount) / spawnCount)),
   );
+}
+
+interface ActiveSmokeDensityCell {
+  x: number;
+  y: number;
+  z: number;
+  smokeDensityPercent: number;
+}
+
+function activeSmokeDensityCells(snapshot: FFieldRegionSnapshot): ActiveSmokeDensityCell[] {
+  const cells: ActiveSmokeDensityCell[] = [];
+  for (let i = 0; i < snapshot.cellCount; i++) {
+    const smokeDensityPercent = snapshot.smokeDensityValues[i];
+    const macroIndex = snapshot.macroIndices[i];
+    if (
+      smokeDensityPercent === undefined ||
+      macroIndex === undefined ||
+      !Number.isFinite(smokeDensityPercent) ||
+      smokeDensityPercent < 0.1
+    ) {
+      continue;
+    }
+    const coord = macroIndexToCoord(macroIndex);
+    cells.push({ ...coord, smokeDensityPercent });
+  }
+  return cells;
 }
 
 function activeElectricCells(snapshot: FFieldRegionSnapshot): ActiveElectricCell[] {

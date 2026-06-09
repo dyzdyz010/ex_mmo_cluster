@@ -28,7 +28,11 @@ import type { VoxelOverlayProjection } from "../overlayTarget";
 import { buildPrefabRasterSurfaceOutlineGeometry } from "../../render/prefabPreviewGeometry";
 import type { FFieldRegionSnapshot } from "./fieldProtocol";
 import { FieldMask } from "./fieldProtocol";
-import { HeatSmokeSimulation, type ElectricEffectPoint } from "./heatSmokeEffect";
+import {
+  HeatSmokeSimulation,
+  type ElectricEffectPoint,
+  type SmokeDensityEffectPoint,
+} from "./heatSmokeEffect";
 import { HeatSmokeRenderer } from "./heatSmokeRenderer";
 
 const CELL_SIZE = MacroWorldSize; // 100 world units per macro cell
@@ -71,6 +75,19 @@ interface TemperatureFieldStats {
   averageAbsTemperatureDeltaCelsius: number;
 }
 
+interface SmokeDensityFieldStats {
+  smokeDensityCells: number;
+  maxSmokeDensityPercent: number;
+  averageSmokeDensityPercent: number;
+}
+
+interface OxygenFieldStats {
+  oxygenCells: number;
+  minOxygenPercent: number | null;
+  maxOxygenDeficitPercent: number;
+  averageOxygenDeficitPercent: number;
+}
+
 interface ElectricEffectPointTemplate {
   x: number;
   y: number;
@@ -90,6 +107,19 @@ const EMPTY_TEMPERATURE_STATS: TemperatureFieldStats = {
   maxTemperatureCelsius: null,
   maxAbsTemperatureDeltaCelsius: 0,
   averageAbsTemperatureDeltaCelsius: 0,
+};
+
+const EMPTY_SMOKE_DENSITY_STATS: SmokeDensityFieldStats = {
+  smokeDensityCells: 0,
+  maxSmokeDensityPercent: 0,
+  averageSmokeDensityPercent: 0,
+};
+
+const EMPTY_OXYGEN_STATS: OxygenFieldStats = {
+  oxygenCells: 0,
+  minOxygenPercent: null,
+  maxOxygenDeficitPercent: 0,
+  averageOxygenDeficitPercent: 0,
 };
 
 export interface FieldRegionOverlay {
@@ -112,6 +142,8 @@ export interface FieldRegionOverlay {
   electricMicroLineCache: MicroLineGeometryCache;
   currentMicroLineCache: MicroLineGeometryCache;
   temperatureStats: TemperatureFieldStats;
+  smokeDensityStats: SmokeDensityFieldStats;
+  oxygenStats: OxygenFieldStats;
 }
 
 export interface FieldDebugOverlaySnapshot {
@@ -129,6 +161,13 @@ export interface FieldDebugOverlaySnapshot {
     maxTemperatureCelsius: number | null;
     maxAbsTemperatureDeltaCelsius: number;
     averageAbsTemperatureDeltaCelsius: number;
+    smokeDensityCells: number;
+    maxSmokeDensityPercent: number;
+    averageSmokeDensityPercent: number;
+    oxygenCells: number;
+    minOxygenPercent: number | null;
+    maxOxygenDeficitPercent: number;
+    averageOxygenDeficitPercent: number;
     temperatureMicroCells: number;
     electricMicroCells: number;
     temperatureMicroGroups: number;
@@ -180,14 +219,30 @@ export class FieldDebugOverlay {
     }
     const projector = this.snapshotProjector();
     this._updateOverlay(overlay, snapshot, projector);
-    const smokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(
+    const electricSmokeSpawned = this.heatSmoke.spawnFromElectricSnapshot(
       snapshot,
       projector
         ? (cell) =>
             this.electricEffectPointsForProjection(projector(cell.worldMacro), cell.potential)
         : undefined,
     );
-    if (snapshotHasElectricLayer(snapshot) && !snapshotHasActiveElectricEffect(snapshot)) {
+    const fieldSmokeSpawned = this.heatSmoke.spawnFromSmokeDensitySnapshot(
+      snapshot,
+      projector
+        ? (cell) =>
+            this.smokeDensityEffectPointsForProjection(
+              projector(cell.worldMacro),
+              cell.smokeDensityPercent,
+            )
+        : undefined,
+    );
+    const hasSmokeSourceLayer =
+      snapshotHasElectricLayer(snapshot) || snapshotHasSmokeDensityLayer(snapshot);
+    const hasActiveSmokeSource =
+      (snapshotHasElectricLayer(snapshot) && snapshotHasActiveElectricEffect(snapshot)) ||
+      (snapshotHasSmokeDensityLayer(snapshot) && snapshotHasActiveSmokeDensity(snapshot));
+    const smokeSpawned = electricSmokeSpawned + fieldSmokeSpawned;
+    if (hasSmokeSourceLayer && !hasActiveSmokeSource) {
       this.heatSmoke.clearRegionParticles(snapshot.regionId);
       this.syncSmokeRendererNow();
     } else if (smokeSpawned > 0 && this.visible) {
@@ -219,7 +274,10 @@ export class FieldDebugOverlay {
         `current_samples=${snapshot.electricCurrentValues.length} ` +
         `micro_temp=${overlay.temperatureMicroCells} micro_potential=${overlay.electricMicroCells} ` +
         `micro_current=${overlay.currentMicroCells} ` +
-        `smoke_spawned=${smokeSpawned} ` +
+        `smoke_spawned=${smokeSpawned} smoke_density_cells=${overlay.smokeDensityStats.smokeDensityCells} ` +
+        `max_smoke_density=${overlay.smokeDensityStats.maxSmokeDensityPercent.toFixed(3)} ` +
+        `oxygen_cells=${overlay.oxygenStats.oxygenCells} ` +
+        `max_oxygen_deficit=${overlay.oxygenStats.maxOxygenDeficitPercent.toFixed(3)} ` +
         `new=${isNew} group_visible=${this.rootGroup.visible} regions_total=${this.regions.size}`,
     );
   }
@@ -307,6 +365,8 @@ export class FieldDebugOverlay {
         temperatureMicroGroups: overlay.temperatureMicroGroups,
         electricMicroGroups: overlay.electricMicroGroups,
         ...overlay.temperatureStats,
+        ...overlay.smokeDensityStats,
+        ...overlay.oxygenStats,
       })),
     };
   }
@@ -448,6 +508,8 @@ export class FieldDebugOverlay {
       electricMicroLineCache: emptyMicroLineGeometryCache(),
       currentMicroLineCache: emptyMicroLineGeometryCache(),
       temperatureStats: { ...EMPTY_TEMPERATURE_STATS },
+      smokeDensityStats: { ...EMPTY_SMOKE_DENSITY_STATS },
+      oxygenStats: { ...EMPTY_OXYGEN_STATS },
     };
   }
 
@@ -467,6 +529,12 @@ export class FieldDebugOverlay {
     }
     if (overlay.currentMesh && snapshot.fieldMask & FieldMask.ElectricCurrent) {
       this._syncCurrentMesh(overlay, snapshot, projector);
+    }
+    if (snapshot.fieldMask & FieldMask.SmokeDensity) {
+      overlay.smokeDensityStats = summarizeSmokeDensityField(snapshot);
+    }
+    if (snapshot.fieldMask & FieldMask.Oxygen) {
+      overlay.oxygenStats = summarizeOxygenField(snapshot);
     }
   }
 
@@ -722,6 +790,23 @@ export class FieldDebugOverlay {
 
     return templates.map((template) => ({ ...template, potential }));
   }
+
+  private smokeDensityEffectPointsForProjection(
+    projection: VoxelOverlayProjection,
+    smokeDensityPercent: number,
+  ): SmokeDensityEffectPoint[] {
+    const cacheKey = electricEffectProjectionCacheKey(projection);
+    let templates = this.electricEffectPointCache.get(cacheKey);
+    if (!templates) {
+      templates = electricEffectPointTemplatesForProjection(projection);
+      if (this.electricEffectPointCache.size >= ELECTRIC_EFFECT_POINT_CACHE_LIMIT) {
+        this.electricEffectPointCache.clear();
+      }
+      this.electricEffectPointCache.set(cacheKey, templates);
+    }
+
+    return templates.map((template) => ({ ...template, smokeDensityPercent }));
+  }
 }
 
 function macroIndexToCoord(idx: number): { x: number; y: number; z: number } {
@@ -967,11 +1052,19 @@ function snapshotHasElectricLayer(snapshot: FFieldRegionSnapshot): boolean {
   return Boolean(snapshot.fieldMask & (FieldMask.ElectricPotential | FieldMask.ElectricCurrent));
 }
 
+function snapshotHasSmokeDensityLayer(snapshot: FFieldRegionSnapshot): boolean {
+  return Boolean(snapshot.fieldMask & FieldMask.SmokeDensity);
+}
+
 function snapshotHasActiveElectricEffect(snapshot: FFieldRegionSnapshot): boolean {
   return (
     valuesHaveActiveSample(snapshot.electricCurrentValues, snapshot.cellCount, 0.001) ||
     valuesHaveActiveSample(snapshot.electricValues, snapshot.cellCount, 0.5)
   );
+}
+
+function snapshotHasActiveSmokeDensity(snapshot: FFieldRegionSnapshot): boolean {
+  return valuesHaveActiveSample(snapshot.smokeDensityValues, snapshot.cellCount, 0.1);
 }
 
 function valuesHaveActiveSample(
@@ -1023,6 +1116,64 @@ function summarizeTemperatureField(snapshot: FFieldRegionSnapshot): TemperatureF
     maxTemperatureCelsius,
     maxAbsTemperatureDeltaCelsius,
     averageAbsTemperatureDeltaCelsius: sampleCount > 0 ? absTemperatureDeltaSum / sampleCount : 0,
+  };
+}
+
+function summarizeSmokeDensityField(snapshot: FFieldRegionSnapshot): SmokeDensityFieldStats {
+  if (snapshot.cellCount <= 0) {
+    return { ...EMPTY_SMOKE_DENSITY_STATS };
+  }
+
+  let smokeDensityCells = 0;
+  let maxSmokeDensityPercent = 0;
+  let smokeDensitySum = 0;
+
+  for (let i = 0; i < snapshot.cellCount; i++) {
+    const value = snapshot.smokeDensityValues[i];
+    if (value === undefined || !Number.isFinite(value) || value < 0.1) {
+      continue;
+    }
+
+    smokeDensityCells += 1;
+    maxSmokeDensityPercent = Math.max(maxSmokeDensityPercent, value);
+    smokeDensitySum += value;
+  }
+
+  return {
+    smokeDensityCells,
+    maxSmokeDensityPercent,
+    averageSmokeDensityPercent: smokeDensityCells > 0 ? smokeDensitySum / smokeDensityCells : 0,
+  };
+}
+
+function summarizeOxygenField(snapshot: FFieldRegionSnapshot): OxygenFieldStats {
+  if (snapshot.cellCount <= 0) {
+    return { ...EMPTY_OXYGEN_STATS };
+  }
+
+  let oxygenCells = 0;
+  let minOxygenPercent: number | null = null;
+  let maxOxygenDeficitPercent = 0;
+  let oxygenDeficitSum = 0;
+
+  for (let i = 0; i < snapshot.cellCount; i++) {
+    const value = snapshot.oxygenValues[i];
+    if (value === undefined || !Number.isFinite(value)) {
+      continue;
+    }
+
+    oxygenCells += 1;
+    minOxygenPercent = minOxygenPercent === null ? value : Math.min(minOxygenPercent, value);
+    const deficit = Math.max(0, 100 - value);
+    maxOxygenDeficitPercent = Math.max(maxOxygenDeficitPercent, deficit);
+    oxygenDeficitSum += deficit;
+  }
+
+  return {
+    oxygenCells,
+    minOxygenPercent,
+    maxOxygenDeficitPercent,
+    averageOxygenDeficitPercent: oxygenCells > 0 ? oxygenDeficitSum / oxygenCells : 0,
   };
 }
 

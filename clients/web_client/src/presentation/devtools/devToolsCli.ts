@@ -1515,6 +1515,13 @@ function formatFieldOverlayLine(region: {
   currentMicroCells?: number;
   currentMicroGroups?: number;
   smokeParticles?: number;
+  smokeDensityCells?: number;
+  maxSmokeDensityPercent?: number;
+  averageSmokeDensityPercent?: number;
+  oxygenCells?: number;
+  minOxygenPercent?: number | null;
+  maxOxygenDeficitPercent?: number;
+  averageOxygenDeficitPercent?: number;
   temperatureMicroCells?: number;
   electricMicroCells?: number;
   temperatureMicroGroups?: number;
@@ -1535,7 +1542,14 @@ function formatFieldOverlayLine(region: {
     (region.currentMicroCells ?? 0) > 0
       ? ` micro=temp:${region.temperatureMicroCells ?? 0}/${region.temperatureMicroGroups ?? 0} electric:${region.electricMicroCells ?? 0}/${region.electricMicroGroups ?? 0} current:${region.currentMicroCells ?? 0}/${region.currentMicroGroups ?? 0}`
       : "";
-  return `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} electric=${region.electricCells} current=${region.currentCells ?? 0}${micro} smoke=${region.smokeParticles ?? 0}${formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))}`;
+  return (
+    `region#${region.regionId}@${cx},${cy},${cz} temp=${region.temperatureCells} ` +
+    `electric=${region.electricCells} current=${region.currentCells ?? 0}${micro} ` +
+    `smoke=${region.smokeParticles ?? 0}` +
+    formatSmokeFieldStats(region) +
+    formatOxygenFieldStats(region) +
+    formatTemperatureFieldStats(temperatureStatsForFieldRegion(region))
+  );
 }
 
 function temperatureStatsForFieldRegion(region: {
@@ -1580,7 +1594,35 @@ function formatTemperatureFieldStats(
   return ` heat=maxT=${formatCelsius(stats.maxTemperatureCelsius)} maxDelta=${formatCelsius(stats.maxAbsTemperatureDeltaCelsius)} avgDelta=${formatCelsius(stats.averageAbsTemperatureDeltaCelsius)}`;
 }
 
+function formatSmokeFieldStats(region: {
+  smokeDensityCells?: number;
+  maxSmokeDensityPercent?: number;
+  averageSmokeDensityPercent?: number;
+}): string {
+  const cells = region.smokeDensityCells ?? 0;
+  if (cells <= 0) return "";
+
+  return ` smokeField=cells:${cells} max:${formatPercent(region.maxSmokeDensityPercent)} avg:${formatPercent(region.averageSmokeDensityPercent)}`;
+}
+
+function formatOxygenFieldStats(region: {
+  oxygenCells?: number;
+  minOxygenPercent?: number | null;
+  maxOxygenDeficitPercent?: number;
+  averageOxygenDeficitPercent?: number;
+}): string {
+  const cells = region.oxygenCells ?? 0;
+  if (cells <= 0) return "";
+
+  return ` oxygen=cells:${cells} min:${formatPercent(region.minOxygenPercent)} maxDeficit:${formatPercent(region.maxOxygenDeficitPercent)} avgDeficit:${formatPercent(region.averageOxygenDeficitPercent)}`;
+}
+
 function formatCelsius(value: number | null | undefined): string {
   const safeValue = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return `${safeValue.toFixed(1)}C`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  const safeValue = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return `${safeValue.toFixed(1)}%`;
 }

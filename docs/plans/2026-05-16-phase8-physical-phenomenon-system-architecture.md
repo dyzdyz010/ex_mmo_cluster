@@ -387,6 +387,10 @@ thermal_expansion_coefficient
   恢复，`FieldCodec` 与 web client 0x73 协议使用 mask bit `0x20` 发布 f32 oxygen
   数组。燃烧判定在目标格有 active oxygen field deficit 时会优先使用场值，因此低氧热环境
   会走 carbonization 而不是普通 ignition。
+- web client 的 Field Overlay 已直接消费 0x73 `smoke_density` / `oxygen` 层：
+  服务端燃烧烟雾会复用现有 `HeatSmokeSimulation` / `HeatSmokeRenderer` 粒子预算显示，
+  `field_overlay` CLI 与 HUD 摘要会输出 `smokeField`、最大烟雾密度和 oxygen deficit，
+  但客户端仍不判断材料燃烧、残留或氧气判定，只消费服务端 field snapshot。
 - 湿度也已进入一等场层：湿材料受热时仍通过 `moisture` 写回保留材料真值，但被蒸发/带走的
   水分会输出 `:moisture` field source；`MoistureDiffusionKernel` 负责水汽扩散和衰减，
   `FieldCodec` 与 web client 0x73 协议使用 mask bit `0x40` 发布 f32 moisture 数组。

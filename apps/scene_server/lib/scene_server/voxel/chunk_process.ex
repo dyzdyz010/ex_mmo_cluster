@@ -1741,6 +1741,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # or chunk crash path inside the worker).
   def handle_cast({:push_field_region_destroyed_payload, payload}, state)
       when is_binary(payload) do
+    state = release_field_region_from_destroyed_payload(state, payload)
     fan_out_field_region_destroyed_payload(state, payload)
     {:noreply, state}
   end
@@ -5806,6 +5807,55 @@ defmodule SceneServer.Voxel.ChunkProcess do
       end)
     end)
   end
+
+  defp release_field_region_from_destroyed_payload(state, payload) do
+    case decode_field_region_destroyed_payload(payload) do
+      %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: chunk_coord,
+        region_id: region_id,
+        destroy_reason: destroy_reason
+      }
+      when logical_scene_id == state.logical_scene_id and chunk_coord == state.chunk_coord ->
+        release_worker_destroyed_field_region(state, region_id, destroy_reason)
+
+      _other ->
+        state
+    end
+  end
+
+  defp decode_field_region_destroyed_payload(payload) do
+    FieldCodec.decode_destroyed_payload!(payload)
+  rescue
+    _error -> nil
+  end
+
+  defp release_worker_destroyed_field_region(state, region_id, destroy_reason) do
+    source_key = Map.get(state.field_region_source_keys, region_id)
+
+    next_state =
+      state
+      |> cleanup_linked_field_regions(source_key, destroy_reason)
+      |> drop_field_region_id(region_id)
+
+    if source_key do
+      result =
+        field_source_cleanup_result(
+          region_id,
+          source_key,
+          region_action_for_worker_destroyed(destroy_reason),
+          source_action_for_worker_down(destroy_reason),
+          destroy_reason
+        )
+
+      emit_field_source_lifecycle(next_state, result)
+    end
+
+    next_state
+  end
+
+  defp region_action_for_worker_destroyed(:expired), do: :expired
+  defp region_action_for_worker_destroyed(reason), do: reason
 
   defp maybe_schedule_auto_circuit_refresh(state, true) do
     if Map.get(state, :auto_circuit_refresh_pending?, false) do

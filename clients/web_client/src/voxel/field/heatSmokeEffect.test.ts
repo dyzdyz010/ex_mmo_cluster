@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FieldMask, type FFieldRegionSnapshot } from "./fieldProtocol";
-import { HeatSmokeSimulation, type ElectricEffectPoint } from "./heatSmokeEffect";
+import {
+  HeatSmokeSimulation,
+  type ElectricEffectPoint,
+  type SmokeDensityEffectPoint,
+} from "./heatSmokeEffect";
 
 describe("HeatSmokeSimulation", () => {
   it("does not let dense prefab projections starve later macro current cells", () => {
@@ -30,6 +34,35 @@ describe("HeatSmokeSimulation", () => {
     expect(spawned).toBe(4);
     expect(simulation.liveParticles().some((particle) => particle.x === 150)).toBe(true);
   });
+
+  it("spawns bounded smoke particles from server smoke-density snapshots", () => {
+    const simulation = new HeatSmokeSimulation({
+      maxSpawnPerSnapshot: 3,
+      maxLiveParticles: 32,
+      random: () => 0.5,
+    });
+
+    const spawned = simulation.spawnFromSmokeDensitySnapshot(makeSmokeDensitySnapshot(), (cell) => {
+      if (cell.localMacro.x !== 0) {
+        return null;
+      }
+
+      return Array.from(
+        { length: 16 },
+        (_value, index): SmokeDensityEffectPoint => ({
+          x: 20 + index,
+          y: 40,
+          z: 60,
+          smokeDensityPercent: cell.smokeDensityPercent,
+          sizeWorld: 8,
+        }),
+      );
+    });
+
+    expect(spawned).toBe(3);
+    expect(simulation.activeCount()).toBe(3);
+    expect(simulation.liveParticles().some((particle) => particle.x === 150)).toBe(true);
+  });
 });
 
 function makeCurrentSnapshot(): FFieldRegionSnapshot {
@@ -46,6 +79,25 @@ function makeCurrentSnapshot(): FFieldRegionSnapshot {
     electricCurrentValues: Float32Array.of(20, 20),
     ionizationValues: new Uint8Array(0),
     smokeDensityValues: new Float32Array(0),
+    oxygenValues: new Float32Array(0),
+    moistureValues: new Float32Array(0),
+  };
+}
+
+function makeSmokeDensitySnapshot(): FFieldRegionSnapshot {
+  return {
+    logicalSceneId: 1,
+    chunkCoord: { cx: 0, cy: 0, cz: 0 },
+    regionId: 77,
+    tickCount: 1,
+    fieldMask: FieldMask.SmokeDensity,
+    cellCount: 2,
+    macroIndices: Uint16Array.of(0, 1),
+    temperatureValues: new Float32Array(0),
+    electricValues: new Float32Array(0),
+    electricCurrentValues: new Float32Array(0),
+    ionizationValues: new Uint8Array(0),
+    smokeDensityValues: Float32Array.of(45, 35),
     oxygenValues: new Float32Array(0),
     moistureValues: new Float32Array(0),
   };

@@ -29,10 +29,12 @@
 - `worldSnapshot.ts` 负责本地 snapshot import/export，用字符串化 bigint 保存 refined micro occupancy，供 CLI 存档、导入导出和 e2e 回归使用。
 - `worldShowcase.ts` 只负责生成浏览器本地演示地形；它通过 `WorldStore` 公开写入口落地数据，不直接拥有世界状态。
 - `field/` 负责服务端局部场的浏览器可视化：FieldDebugOverlay 显示 field snapshot，
-  `heatSmokeEffect.ts` / `heatSmokeRenderer.ts` 把导电热量转为灰色上升烟粒子。
-  业务边界是“热量出烟，不染方块本体”；烟量按
-  `power_draw.estimated_tick_energy_joules` 缩放，CLI `field_overlay` 会返回
-  `smoke` 粒子数用于非 GUI 验证。
+  包括温度、电势、导电电流、烟雾密度和氧气。`heatSmokeEffect.ts` /
+  `heatSmokeRenderer.ts` 把导电热量和服务端燃烧烟雾转为灰色上升烟粒子。
+  业务边界是“局部场出烟，不染方块本体”；电热烟量按
+  `power_draw.estimated_tick_energy_joules` 缩放，燃烧烟量来自服务端 `smoke_density`
+  层，CLI `field_overlay` 会返回 `smoke`、`smokeField` 与 `oxygen` 统计用于
+  非 GUI 验证。
 - `overlayTarget.ts` 是只读目标投影层：输入来自 raycast selection 或 field macro cell。
   selection 命中会优先解析为最小 prefab/object 单位，没有 prefab/object 归属时退回宏格；
   render 层再把 prefab projection 转成贴合实际 occupancy 的外露表面边界线。field overlay

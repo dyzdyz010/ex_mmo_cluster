@@ -159,6 +159,13 @@ describe("DevToolsCli microgrid boundary", () => {
               electricMicroCells: 7,
               electricMicroGroups: 2,
               smokeParticles: 12,
+              smokeDensityCells: 4,
+              maxSmokeDensityPercent: 42,
+              averageSmokeDensityPercent: 18.25,
+              oxygenCells: 4,
+              minOxygenPercent: 71.5,
+              maxOxygenDeficitPercent: 28.5,
+              averageOxygenDeficitPercent: 11.75,
               maxTemperatureCelsius: 800,
               maxAbsTemperatureDeltaCelsius: 780,
               averageAbsTemperatureDeltaCelsius: 265.678,
@@ -180,6 +187,12 @@ describe("DevToolsCli microgrid boundary", () => {
     });
     expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
       text: expect.stringContaining("smoke=12"),
+    });
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      text: expect.stringContaining("smokeField=cells:4 max:42.0% avg:18.3%"),
+    });
+    expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
+      text: expect.stringContaining("oxygen=cells:4 min:71.5% maxDeficit:28.5% avgDeficit:11.8%"),
     });
     expect(cli.executeCliCommand("field_overlay", [])).toMatchObject({
       text: expect.stringContaining("micro=temp:0/0 electric:7/2 current:11/3"),
