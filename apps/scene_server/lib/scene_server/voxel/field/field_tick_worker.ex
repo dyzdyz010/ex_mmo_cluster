@@ -3,8 +3,10 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
   Phase 6 局部场最小目标:per-region GenServer。
 
   独立于 ChunkProcess simulation_tick(100ms)、prepare_transaction /
-  commit_transaction 链路,新建后立即执行首个 tick,后续自己 schedule
-  10Hz tick(默认 100ms),持有整个 FieldRegion 状态。每 tick:
+  commit_transaction 链路,持有整个 FieldRegion 状态。**调度由节点级
+  `SceneServer.Voxel.Field.SimRuntime` 统一驱动**(梯队2 step2.6,NIF-1/5):本 worker
+  init 后经 `handle_continue(:subscribe)` 订阅 SimRuntime,由其单一 clock + CPU 预算每拍
+  调 `:run_tick`(不再自 `send_after`)。每 tick:
     1. 调 FieldKernel 更新 layers。
     2. 调 FieldCodec.encode_snapshot_payload/2 编出 0x73 wire。
     3. 将 non-observe kernel effects 交给 ChunkProcess authority dispatcher。
@@ -24,7 +26,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     FieldCodec,
     FieldLayer,
     FieldRegion,
-    KernelContext
+    KernelContext,
+    SimRuntime
   }
 
   @default_tick_interval_ms 100
@@ -34,7 +37,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
           chunk_pid: pid(),
           storage_fn: (-> any()),
           logical_scene_id: non_neg_integer(),
-          tick_interval_ms: pos_integer()
+          tick_interval_ms: pos_integer(),
+          sim_runtime: GenServer.server()
         ]
 
   @spec start_link(opts()) :: GenServer.on_start()
@@ -76,6 +80,7 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     storage_fn = Keyword.fetch!(opts, :storage_fn)
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     tick_interval_ms = Keyword.get(opts, :tick_interval_ms, @default_tick_interval_ms)
+    sim_runtime = Keyword.get(opts, :sim_runtime, SimRuntime)
 
     chunk_monitor = Process.monitor(chunk_pid)
 
@@ -88,8 +93,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
       }
     end)
 
-    send(self(), :tick)
-
+    # 梯队2 step2.6:不再自 send(:tick);订阅 SimRuntime 放 handle_continue,避免 init 期与
+    # ensure_field_region → ChunkProcess.get_storage 回调链死锁,且 SimRuntime 缺失即显式 crash。
     {:ok,
      %{
        region: region,
@@ -97,12 +102,19 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
        chunk_monitor: chunk_monitor,
        storage_fn: storage_fn,
        logical_scene_id: logical_scene_id,
-       tick_interval_ms: tick_interval_ms
-     }}
+       tick_interval_ms: tick_interval_ms,
+       sim_runtime: sim_runtime
+     }, {:continue, :subscribe}}
   end
 
   @impl true
-  def handle_info(:tick, state) do
+  def handle_continue(:subscribe, state) do
+    SimRuntime.subscribe(state.sim_runtime, self())
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call(:run_tick, _from, state) do
     %{
       region: region,
       chunk_pid: chunk_pid,
@@ -169,13 +181,14 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
         }
       end)
 
-      {:stop, :normal, %{state | region: region}}
+      {:stop, :normal, :ok, %{state | region: region}}
     else
-      schedule_tick(tick_interval_ms)
-      {:noreply, %{state | region: region}}
+      # 梯队2 step2.6:不再 schedule_tick;下一拍由 SimRuntime clock 驱动。
+      {:reply, :ok, %{state | region: region}}
     end
   end
 
+  @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{chunk_monitor: ref} = state) do
     safe_emit("voxel_field_region_destroyed", fn ->
       %{
@@ -434,10 +447,6 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
         length(FieldLayer.active_cells(layer, region.aabb))
       end)
     )
-  end
-
-  defp schedule_tick(interval_ms) do
-    Process.send_after(self(), :tick, interval_ms)
   end
 
   defp safe_call_storage_fn(fun) when is_function(fun, 0) do

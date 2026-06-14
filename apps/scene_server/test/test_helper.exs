@@ -47,6 +47,12 @@ defmodule SceneServer.TestVoxelRuntime do
   @moduledoc false
 
   def ensure_started! do
+    # 梯队2 step2.6:SimRuntime 必须在 FieldTickSupervisor 之前起(worker subscribe 它)。
+    ensure_started!(
+      SceneServer.Voxel.Field.SimRuntime,
+      {SceneServer.Voxel.Field.SimRuntime, name: SceneServer.Voxel.Field.SimRuntime}
+    )
+
     ensure_started!(
       SceneServer.Voxel.Field.FieldTickSupervisor,
       {SceneServer.Voxel.Field.FieldTickSupervisor,

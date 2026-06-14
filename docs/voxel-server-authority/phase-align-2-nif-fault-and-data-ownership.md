@@ -36,9 +36,22 @@ ResourceArc(数据留 Rust,命令队列/事件回传/水位背压)**。这是 BN
     movement_core)显式 `[profile.release] panic = "unwind"`,文档化"NIF panic 必须 unwind 让 Rustler
     wrapper 在 FFI 边界 catch_unwind 转 Elixir 错误,禁 abort"(NIF-11/15;guard 未来误设 abort)。
 
-- **2.6(NIF-1/5 节点级 SimRuntime)**:新建节点级 `SceneServer.SimRuntime`,统一 CPU 预算 + 线程池
-  调度所有场 tick(取代 per-region FieldTickWorker 各自 send_after 自调度);rapier parallel 线程池
-  也交 SimRuntime。FieldTickWorker 编排逻辑保留,调度交 SimRuntime。**大子步,独立设计细化。**
+- **2.6(NIF-1/5 节点级 SimRuntime)**:新建节点级 `SceneServer.Voxel.Field.SimRuntime`,统一 CPU 预算 +
+  线程池调度所有场 tick(取代 per-region FieldTickWorker 各自 send_after 自调度)。FieldTickWorker
+  编排逻辑保留,调度交 SimRuntime。**设计细化(2026-06-14)**:
+  - SimRuntime 持单一 tick clock(`Process.send_after(:sim_tick, interval)`,默认 100ms)+ 订阅
+    worker 集(monitor 清理)+ CPU 预算 `max_concurrency`(默认 `System.schedulers_online()`)。
+  - 每 `:sim_tick`:`Task.async_stream(workers, run_tick, max_concurrency: 预算, on_timeout: :kill_task)`
+    bounded 同步驱动(并发场 NIF 工作 ≤ 预算 = CPU 预算;批长于 interval 则自然退化背压)。
+  - FieldTickWorker:init `{:ok, state, {:continue, :subscribe}}`,`handle_continue(:subscribe)` 调
+    `SimRuntime.subscribe(self())`(**call**,SimRuntime 缺失即显式 crash,不静默降级;放 continue
+    避免 init 期与 ensure_field_region→ChunkProcess.get_storage 回调死锁)。tick 逻辑从
+    `handle_info(:tick)` 迁到 `handle_call(:run_tick)`(同逻辑,max_ticks → `{:stop, :normal, :ok, s}`);
+    删 `send(self(),:tick)` / `schedule_tick`。首 tick 由 ≤interval 后的 clock 驱动(原即时→≤100ms,
+    assert_receive 1000ms 容忍)。
+  - SimRuntime 挂 voxel_sup(FieldTickSupervisor 之前)+ test_helper TestVoxelRuntime.ensure_started!。
+  - rapier parallel 线程池交 SimRuntime 暂缓(scene_ops rapier 已用 rayon 内部线程池,与场 tick CPU
+    预算解耦;统一线程池归 2.7/后续)。
 
 - **2.7(BND-1/NIF-2/3/8 数据归属)**:场/体素本体迁入 `ResourceArc<CellSim>`(Rust 常驻),
   field_kernel 从"无状态数学 NIF"改为"持 CellSim 资源 + 命令队列入 + 事件回传出 + 水位背压"。
@@ -62,6 +75,15 @@ ResourceArc(数据留 Rust,命令队列/事件回传/水位背压)**。这是 BN
 - scene 全量 0 净回归。
 
 ## 进度日志(时间倒序)
+
+- 2026-06-14:**step 2.6(节点级 SimRuntime,NIF-1/5)完成**。新建
+  `SceneServer.Voxel.Field.SimRuntime`(节点级单例,单一 `:sim_tick` clock + `max_concurrency`
+  CPU 预算,每拍 `Task.async_stream` bounded 同步驱动订阅 worker 的 `:run_tick`;subscribe 后
+  `{:prompt_tick}` 保留首 tick 即时;monitor DOWN 自动摘除)。FieldTickWorker 改:init
+  `{:continue, :subscribe}` → `handle_continue` 订阅(call,缺失即 crash,避免 init 死锁);tick 逻辑
+  `handle_info(:tick)` → `handle_call(:run_tick)`(同编排,max_ticks → stop);删 `send(:tick)`/
+  `schedule_tick`。挂 voxel_sup(FieldTickSupervisor 前)+ test_helper。6 新 SimRuntime 单测;
+  field 149 + scene 918 全绿 0 回归。**剩余 2.7 ResourceArc<CellSim>。**
 
 - 2026-06-14:**step 2.5(NIF 故障隔离,NIF-6/11/15)完成**。2.5a:`scene_ops/character/movement.rs`
   3 处 `SystemTime::now()...unwrap()` 改不 panic 的 `now_millis()`(时钟回退退化为 0,不再越 FFI 边界
