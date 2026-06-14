@@ -104,6 +104,17 @@ defmodule SceneServer.Voxel.Reaction.ReactionKernelE2ETest do
     assert material_at(chunk, macro) == water_id()
   end
 
+  test "R4 反向:冷却水(-10℃ < freezing_point)→ 反应 tick 冻为冰(同 kernel 任意规则)" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    macro = Types.macro_index!({0, 0, 0})
+    {:ok, _} = ChunkProcess.put_solid_block(chunk, macro, NormalBlockData.new(water_id()))
+    set_temperature(chunk, macro, -10.0)
+
+    run_reaction_tick(chunk, 9101)
+
+    assert material_at(chunk, macro) == ice_id()
+  end
+
   test "熔化后订阅者收到下行快照(客户端可见)" do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
     macro = Types.macro_index!({0, 0, 0})

@@ -20,8 +20,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @iron_material_id 5
   @power_block_material_id 6
   @electric_load_material_id 7
-  # 功能完善 · 反应层 R1:相变目标材料(冰熔化 demo)。append-only id。
+  # 功能完善 · 反应层:相变目标材料。append-only id。R1 加 water;R4 加 steam(沸腾)。
   @water_material_id 8
+  @steam_material_id 9
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -32,7 +33,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     iron: @iron_material_id,
     power_block: @power_block_material_id,
     electric_load: @electric_load_material_id,
-    water: @water_material_id
+    water: @water_material_id,
+    steam: @steam_material_id
   }
 
   @power_source_defaults %{
@@ -120,7 +122,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => round(8.0 * @fixed32_scale),
       "dielectric_strength" => 0
     },
-    # 反应层 R1:水(冰熔化目标)。freezing_point=0 可逆冻回冰;boiling_point=100 后续 → 蒸汽。
+    # 反应层 R1:水(冰熔化目标)。freezing_point=0 冻回冰;boiling_point=100 → 蒸汽。
     @water_material_id => %{
       "density" => round(1_000.0 * @fixed32_scale),
       "thermal_conductivity" => round(0.6 * @fixed32_scale),
@@ -130,6 +132,18 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => 0,
       "boiling_point" => round(100.0 * @fixed32_scale),
       "electric_conductivity" => round(0.005 * @fixed32_scale),
+      "dielectric_strength" => 0
+    },
+    # 反应层 R4:蒸汽(水沸腾目标)。低密度、低导热;condense 阈值后续接。
+    @steam_material_id => %{
+      "density" => round(0.6 * @fixed32_scale),
+      "thermal_conductivity" => round(0.025 * @fixed32_scale),
+      "specific_heat_capacity" => round(2_010.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
       "dielectric_strength" => 0
     }
   }

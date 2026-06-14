@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
   defp ice_id, do: MaterialCatalog.material_id(:ice)
   defp water_id, do: MaterialCatalog.material_id(:water)
   defp stone_id, do: MaterialCatalog.material_id(:stone)
+  defp steam_id, do: MaterialCatalog.material_id(:steam)
 
   defp cell(material_id, temp, macro_index \\ 0) do
     %{macro_index: macro_index, material_id: material_id, temperature_celsius: temp, tags: []}
@@ -135,6 +136,50 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
       assert [{:transform_material, eff}] = Engine.evaluate([cell(water_id(), -1.0)], [rule])
       assert eff.to_material_id == ice_id()
       assert [] = Engine.evaluate([cell(water_id(), 1.0)], [rule])
+    end
+  end
+
+  describe "R4 温度相变族(freeze/boil + 0℃/100℃ 振荡防护)" do
+    test "水低于 freezing_point(<0℃)冻成冰" do
+      assert [{:transform_material, eff}] = Engine.evaluate([cell(water_id(), -1.0)], Rules.all())
+      assert eff.from_material_id == water_id()
+      assert eff.to_material_id == ice_id()
+      assert eff.rule_id == :water_freezes
+    end
+
+    test "水恰 0℃ 不冻(严格 <,与冰熔 ≥0 错开防振荡)" do
+      assert [] = Engine.evaluate([cell(water_id(), 0.0)], Rules.all())
+    end
+
+    test "水 ≥ boiling_point(100℃)沸成蒸汽" do
+      assert [{:transform_material, eff}] =
+               Engine.evaluate([cell(water_id(), 100.0)], Rules.all())
+
+      assert eff.to_material_id == steam_id()
+      assert eff.rule_id == :water_boils
+    end
+
+    test "水 99℃ 不沸" do
+      assert [] = Engine.evaluate([cell(water_id(), 99.0)], Rules.all())
+    end
+
+    test "0℃ 无振荡:冰熔成水、水不回冻(同 tick 各自一次,稳定)" do
+      cells = [cell(ice_id(), 0.0, 1), cell(water_id(), 0.0, 2)]
+      effects = Engine.evaluate(cells, Rules.all())
+      # 只有冰→水(macro 1);水(macro 2)在 0℃ 不动 → 不来回翻。
+      assert [{:transform_material, eff}] = effects
+      assert eff.macro_index == 1
+      assert eff.to_material_id == water_id()
+    end
+
+    test "蒸汽稳定(暂无 condense 规则,不被任何规则触发)" do
+      assert [] = Engine.evaluate([cell(steam_id(), 50.0)], Rules.all())
+      assert [] = Engine.evaluate([cell(steam_id(), 150.0)], Rules.all())
+    end
+
+    test "water 的 for_material 返回冻结与沸腾两条" do
+      ids = Rules.for_material(:water) |> Enum.map(& &1.id) |> Enum.sort()
+      assert ids == [:water_boils, :water_freezes]
     end
   end
 

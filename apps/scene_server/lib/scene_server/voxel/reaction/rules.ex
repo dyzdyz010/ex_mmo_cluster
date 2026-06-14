@@ -8,7 +8,7 @@ defmodule SceneServer.Voxel.Reaction.Rules do
 
   alias SceneServer.Voxel.Reaction.Rule
 
-  # demo:冰 + 温度 ≥ 自身 melting_point(0℃)→ 水。回路 PoC。
+  # R1 demo:冰 + 温度 ≥ 自身 melting_point(0℃)→ 水。回路 PoC。
   @ice_melts Rule.new!(
                id: :ice_melts,
                kind: :phase_transition,
@@ -18,7 +18,27 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                priority: 0
              )
 
-  @all [@ice_melts]
+  # R4 温度相变族补全。**0℃/100℃ 振荡防护**:用严格不等式做 hysteresis——
+  # 冰熔 ≥0、水冻 <0(0℃ 时冰熔、水不冻 → 不来回翻);水沸 ≥100、蒸汽(暂无 condense)。
+  @water_freezes Rule.new!(
+                   id: :water_freezes,
+                   kind: :phase_transition,
+                   from_material: :water,
+                   condition: {:temperature, :lt, {:material_threshold, "freezing_point"}},
+                   to_material: :ice,
+                   priority: 0
+                 )
+
+  @water_boils Rule.new!(
+                 id: :water_boils,
+                 kind: :phase_transition,
+                 from_material: :water,
+                 condition: {:temperature, :gte, {:material_threshold, "boiling_point"}},
+                 to_material: :steam,
+                 priority: 0
+               )
+
+  @all [@ice_melts, @water_freezes, @water_boils]
 
   @doc "全部反应规则。"
   @spec all() :: [Rule.t()]
