@@ -200,5 +200,6 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 1 决策稿)**：[`phase-align-1-distributed-correctness.md`](./phase-align-1-distributed-correctness.md) 落定——子步 1.1 cell_tick/sim_time、1.2 WriteTokenStore 落库、1.3 epoch 线性化(DB 条件写,消除 ANTI-32)、1.4 单调时钟自检、1.5 prefab durable-before-ack + command_id 幂等、1.6 entity_handoff 幂等协议 + cell_migration 正名。决策点 D1-1~D1-7。下一步执行 step 1.1/1.2。
 - **2026-06-14(梯队 0 收口)**：契约骨架前置完成。新建 `apps/mmo_contracts`(StateClass + 10 个 FROZEN-5 信封 + CellId + StateClassed 宏 + StateRegistry 清单,47 测试);data_service 接入 mmo_contracts 并把 5 个 durable 持有者 `use StateClassed` 自声明 + 一致性测试(82 测试 0 回归);建 `mmo_dev` 库 + migrate。详见 [`phase-align-0-contract-skeleton.md`](./phase-align-0-contract-skeleton.md)。scene/world 持有者自声明随各梯队增量接入。**下一步:梯队 1 分布式正确性地基(D-3 高优)。**
 - **2026-06-14**：固化分诊结论；四项定位拍板 D-1~D-4 落定；规范反哺修订 7 条应用为 v2.0.2（附录 C 留痕）。迁移梯队 0→4 任务建立。
