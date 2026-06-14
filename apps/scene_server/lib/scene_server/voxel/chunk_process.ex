@@ -3333,6 +3333,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
         ops: ops
       })
 
+    # 梯队3 step3.9(AUTH-9/10):commit(durable persist 已在 commit 阶段完成)后、fanout 前,
+    # 把 committed delta 追加 durable outbox,供可靠重投 + visibility_watermark。
+    append_replication_outbox(state, base_version, delta_payload)
+
     Enum.each(state.subscribers, fn {subscriber, %{request_id: request_id}} ->
       send(subscriber, {:voxel_chunk_delta_payload, delta_payload})
 
@@ -3350,6 +3354,32 @@ defmodule SceneServer.Voxel.ChunkProcess do
         }
       end)
     end)
+  end
+
+  # 梯队3 step3.9:committed delta → durable outbox。失败显式 emit(不静默),但不崩热路径
+  # (chunk truth 已 durable persist;outbox 是次级重投日志,失败仅降级重投能力,不损正确性)。
+  defp append_replication_outbox(state, base_version, delta_payload) do
+    DataService.Voxel.Outbox.append(%{
+      logical_scene_id: state.logical_scene_id,
+      chunk_coord: state.chunk_coord,
+      base_chunk_version: base_version,
+      new_chunk_version: state.storage.chunk_version,
+      payload: delta_payload
+    })
+
+    :ok
+  rescue
+    error ->
+      CliObserve.emit("voxel_outbox_append_failed", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
+          chunk_coord: state.chunk_coord,
+          new_chunk_version: state.storage.chunk_version,
+          error: Exception.message(error)
+        }
+      end)
+
+      :ok
   end
 
   defp push_snapshot_fallbacks(state, reason) do

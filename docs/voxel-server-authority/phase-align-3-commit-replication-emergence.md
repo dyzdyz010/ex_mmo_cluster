@@ -111,6 +111,16 @@ ObjectRegistry 同级挂 VoxelSup。
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 3.9(durable outbox + visibility_watermark,AUTH-8/9/10)完成**。新建
+  `voxel_outbox` 表(migration 20260614000006)+ `DataService.Voxel.Outbox`(`append/2` 同步追加
+  committed delta、`read_since/4` 可靠重投错过的 delta、`watermark/3` = chunk 已 committed max
+  new_chunk_version);并入 PERS-5 清单(StateRegistry,durable_authoritative)。`ChunkProcess.push_chunk_delta`
+  在落 truth(durable persist)后、fanout 前 `append_replication_outbox`(失败显式 emit
+  voxel_outbox_append_failed,不崩热路径)。visibility_watermark(AUTH-8 无 speculative 下行)由
+  durable-before-ack 满足,outbox 形式化 + 提供 AUTH-9/10 可靠重投。6 新 Outbox 单测;data 111 全绿,
+  scene 隔离 ChunkProcessTest 46/46 确认 0 净回归(7 个全量失败是预存 observe-log flaky)。
+  **剩 3.10 Replicator、3.11 flux+模型卡。**
+
 - 2026-06-14:**step 3.8(system_actor 桥 + candidate_effect 阈值锁存)完成**。新建节点级
   `SceneServer.Voxel.Field.SystemActor`(派生→权威唯一提交桥):field effect 包成 `CandidateEffect`
   信封(稳定 `candidate_effect_id` = cell+rule+object+attribute+量化分桶,RULE-16 禁浮点原值);

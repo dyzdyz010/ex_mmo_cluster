@@ -73,6 +73,13 @@ defmodule MmoContracts.StateRegistry do
       note: "命令 replay-protection 幂等日志(梯队1 step1.5)"
     },
     %{
+      holder: DataService.Voxel.Outbox,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "PERS-5/AUTH-9/10",
+      note: "durable replication outbox(梯队3 step3.9,committed delta 可靠重投 + visibility_watermark)"
+    },
+    %{
       holder: WorldServer.Voxel.MapLedger,
       state_class: :durable_authoritative,
       app: :world_server,
