@@ -116,6 +116,14 @@ flip 必须一次性翻完以下接线面(翻完才再次全绿,no dual-path):
   (7 lib + 少数测试)改 `active_cells`/新 `dump_values`;构造 FieldLayer 的测试随 new 改句柄。
 - **不可变假设审计**:全仓搜 `layer = ` / `%FieldLayer{` / `.values` / `put_layer`,逐点确认
   rebind-同句柄语义成立(顺序 mutation 正确);特别警惕"留旧 layer 快照对比"的点(句柄态会被 mutate)。
+- **native_backend backend 选择 + fallback 作废(2026-06-14 起手验证发现)**:`native_backend.ex` 现有
+  `:native`/`:elixir` backend 选择 + NIF 不可用时 `fallback`(纯 Elixir `elixir_diffusion_cells`/
+  `elixir_propagation` 计算)。**句柄态下 FieldLayer 本身就依赖 field_kernel NIF**(get/put/active_cells
+  全是 NIF),故 NIF 变为**强制依赖**,`:elixir` backend + fallback 整套作废,flip 时一并删除(no
+  dual-path)。这是 flip 的额外接线面,使其超出"FieldLayer + 2 kernel",还含 backend 选择/fallback
+  架构拆除。**已起手验证:FieldLayer→句柄 + 委托 NIF 本体可行(FieldRegion.new 预建唯一句柄 +
+  顺序 mutation 对齐),阻力点在 backend/fallback 拆除的弥散性,需全新 pass 一次完成。**
+- **预存验证基线**:flip 前 field 163 / scene 908 全绿;flip 后须回到此基线方可 commit。
 
 ## 风险与缓解
 
