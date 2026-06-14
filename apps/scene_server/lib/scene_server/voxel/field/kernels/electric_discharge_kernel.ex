@@ -18,6 +18,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
     FieldLayer,
     FieldRegion,
     KernelContext,
+    ModelCard,
     NativeBackend,
     ParticipantProjection
   }
@@ -44,6 +45,22 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
 
   @impl true
   def required_layers(_opts), do: [:electric_potential, :ionization]
+
+  @impl true
+  def model_card do
+    ModelCard.new!(
+      kernel_id: :electric_discharge,
+      fidelity_class: :qualitative,
+      model_version: 1,
+      safety_valve: %{
+        type: :frontier_budget,
+        max_frontier: @default_max_frontier,
+        note: "介质击穿 Dijkstra max_frontier 熔断;放电热回写经 system_actor 桥(梯队3 step3.8)"
+      },
+      description: "介质击穿放电路径(Dijkstra)+ 沿路径温度上升;权威温度写回经 SystemActor 锁存",
+      assumptions: ["macro-cell 击穿强度近似", "chunk-local", "固定温升模型"]
+    )
+  end
 
   @doc """
   Computes the dielectric breakdown path that `tick/3` would write.

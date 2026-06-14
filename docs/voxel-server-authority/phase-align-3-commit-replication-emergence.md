@@ -111,6 +111,19 @@ ObjectRegistry 同级挂 VoxelSup。
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 3.11 涌现模型卡(EMG-1/3/7)完成**。新建 `SceneServer.Voxel.Field.ModelCard`
+  (`fidelity_class` ∈ `:qualitative`/`:semi_quantitative`/`:quantitative` + `safety_valve`(熔断/预算)
+  + `assumptions` + `new!/1` 校验 + `summary/1` 紧凑摘要)+ `ModelCardRegistry`(枚举聚合,`cards/0`/
+  `by_kernel_id/0`/`fetch/1`/`summaries/0`,显式登记不自动扫描)。`Kernel` behaviour 新增**强制**
+  `@callback model_card/0`,5 个涌现 kernel 全部自描述:温度扩散(半定量,active_set_bound 4096)、
+  电势传播(半定量,aabb_bound)、导电路径(定性,frontier_budget 512)、介质击穿放电(定性,
+  frontier_budget 512)、自动电路电流(定性,current_limit)。11 新 ModelCard 单测;scene 编译
+  `--warnings-as-errors` 0 warning;field 178 全绿、隔离 ChunkProcessTest 46/46 确认 0 净回归。
+  **RULE-4 flux ledger(温度严格通量守恒)记为保真度升级项**:现 `temperature_diffusion` 模型卡
+  已透明声明 `fidelity_class: :semi_quantitative` + assumption "stencil 弛豫非严格 flux 守恒(RULE-4
+  flux ledger 待补)",即用 EMG-1 保真档把该已知局限**显式审计化**而非隐藏;严格守恒升级到 quantitative
+  档时再补 Rust flux 结算。**梯队3 实质完成(3.8/3.9/3.11);剩 3.10 统一 Replicator 为放宽项(见下)。**
+
 - 2026-06-14:**step 3.9(durable outbox + visibility_watermark,AUTH-8/9/10)完成**。新建
   `voxel_outbox` 表(migration 20260614000006)+ `DataService.Voxel.Outbox`(`append/2` 同步追加
   committed delta、`read_since/4` 可靠重投错过的 delta、`watermark/3` = chunk 已 committed max

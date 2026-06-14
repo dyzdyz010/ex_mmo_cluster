@@ -24,4 +24,7 @@ defmodule SceneServer.Voxel.Field.Kernel do
   @callback kernel_id() :: atom()
   @callback required_layers(opts :: map()) :: [FieldRegion.field_type()]
   @callback tick(FieldRegion.t(), KernelContext.t(), opts :: map()) :: tick_result()
+
+  # 梯队3 step3.11(EMG-1/3/7):每个涌现 kernel 必须自描述模型卡(fidelity_class + 安全阀 + 假设)。
+  @callback model_card() :: SceneServer.Voxel.Field.ModelCard.t()
 end

@@ -22,6 +22,7 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
     FieldLayer,
     FieldRegion,
     KernelContext,
+    ModelCard,
     ParticipantProjection
   }
 
@@ -38,6 +39,22 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
 
   @impl true
   def required_layers(_opts), do: [:electric_potential, :ionization, :electric_current]
+
+  @impl true
+  def model_card do
+    ModelCard.new!(
+      kernel_id: :circuit_current,
+      fidelity_class: :qualitative,
+      model_version: 1,
+      safety_valve: %{
+        type: :current_limit,
+        current_limit_amps: @default_current_limit_amps,
+        note: "电源 current_limit_amps 限流;闭环电流重建纯派生不写权威"
+      },
+      description: "闭环电流重建(电导图分量分析)+ 电流驱动离子化,纯派生",
+      assumptions: ["macro-cell 电导图近似", "稳态闭环电流近似", "chunk-local"]
+    )
+  end
 
   @impl true
   def tick(%FieldRegion{} = region, %KernelContext{} = context, opts) when is_map(opts) do

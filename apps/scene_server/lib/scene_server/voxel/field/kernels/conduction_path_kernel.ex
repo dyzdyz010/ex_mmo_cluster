@@ -16,6 +16,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
     FieldLayer,
     FieldRegion,
     KernelContext,
+    ModelCard,
     NativeBackend,
     ParticipantProjection
   }
@@ -39,6 +40,22 @@ defmodule SceneServer.Voxel.Field.Kernels.ConductionPathKernel do
 
   @impl true
   def required_layers(_opts), do: [:electric_potential, :ionization]
+
+  @impl true
+  def model_card do
+    ModelCard.new!(
+      kernel_id: :conduction_path,
+      fidelity_class: :qualitative,
+      model_version: 1,
+      safety_valve: %{
+        type: :frontier_budget,
+        max_frontier: @default_max_frontier,
+        note: "Dijkstra 搜索 max_frontier 熔断,超预算即 :frontier_exhausted"
+      },
+      description: "macro-cell 导体图上的最小阻抗导电路径(Dijkstra),纯派生不写权威",
+      assumptions: ["macro-cell 电导图近似", "chunk-local", "阈值未滞回锁存(RULE-13 部分)"]
+    )
+  end
 
   @doc """
   Computes the material-conductive channel that `tick/3` would write.

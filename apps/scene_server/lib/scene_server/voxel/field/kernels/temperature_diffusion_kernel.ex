@@ -5,13 +5,33 @@ defmodule SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel do
 
   @behaviour SceneServer.Voxel.Field.Kernel
 
-  alias SceneServer.Voxel.Field.{FieldRegion, KernelContext, TemperatureField}
+  alias SceneServer.Voxel.Field.{FieldRegion, KernelContext, ModelCard, TemperatureField}
 
   @impl true
   def kernel_id, do: :temperature_diffusion
 
   @impl true
   def required_layers(_opts), do: [:temperature]
+
+  @impl true
+  def model_card do
+    ModelCard.new!(
+      kernel_id: :temperature_diffusion,
+      fidelity_class: :semi_quantitative,
+      model_version: 1,
+      safety_valve: %{
+        type: :active_set_bound,
+        max_active_cells: 4096,
+        note: "活跃集+halo,逐 tick 弛豫;超出 chunk 4096 macro 即截断"
+      },
+      description: "7-stencil 温度弛豫扩散(读旧写新),活跃集+halo,SI-ish 热材料 α",
+      assumptions: [
+        "1m macro voxel",
+        "10Hz tick",
+        "stencil 弛豫非严格 flux 守恒(RULE-4 flux ledger 待补)"
+      ]
+    )
+  end
 
   @impl true
   def tick(%FieldRegion{} = region, %KernelContext{} = context, opts) do
