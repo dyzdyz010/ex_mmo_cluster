@@ -108,6 +108,20 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**已落地(全绿)**:
+  - **D-4 prefab/事务 commit durable-before-ack**(step 1.5 前半):`enqueue_snapshot_persist`
+    改同步落库,成功才更新内存 + 真实 persist_result,失败 `{:error}` 内存不前进(消除内存/DB
+    背离)。回归 scene 909 / world 123 / gate 196。
+  - **异步 persist 子系统清理**:移除不可达的 async_persists/persist_waiters/相关 handler。
+  - **PERS-5 scene_server 自声明**(梯队0 step0.5 续):8 持有者 `use StateClassed` + 一致性测试;
+    PERS-5 跨 data+scene 覆盖完成。scene 918 / mmo_contracts 47 全绿。
+  - **CELL-24 决策**:`lease_stale?` 用墙钟仅作 **liveness backstop**,安全已由 owner_epoch fencing
+    保证(WriteTokenStore.validate_identity 校 owner_epoch,非时间)。过期自检单调化**并入 1.2/1.3
+    lease/token 重设计**(lease 在 ChunkProcess 有 10+ 赋值点,集中在 token 重设计处理避免两次改
+    lease 生命周期),不单独打补丁。
+  - **待办**:1.1 cell_tick/sim_time(暂判惰性,待 handoff/snapshot 消费者就绪再做);
+    1.2+1.3 跨节点 fencing 重设计(WriteTokenStore→Postgres + epoch 线性化,需先定 world 是否直写 Repo);
+    1.5 后半 command_id 幂等;1.6 entity_handoff。
 - 2026-06-14:决策稿落定 + 跨节点耦合发现补入。**修订排序**:step 1.2(WriteTokenStore 落库)与
   step 1.3(epoch 线性化)经核实为**跨节点 fencing 重设计**(token publish 走跨节点 GenServer,
   改 DB 需先定"DB 写在哪个节点发生"),应合并为一个谨慎设计单元。因此**首个代码步改为 step 1.1
