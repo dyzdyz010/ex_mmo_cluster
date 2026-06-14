@@ -200,6 +200,16 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 4 收尾清理告一段落)**：4.1 移除 `WriteTokenStore` 兼容垫片(空 GenServer + 被忽略的
+  `server` 首参)——模块级无状态纯 Postgres durable fence;改 `MapLedger.publish_write_token`(enable 标记
+  语义)、`ChunkSnapshotStore`(忽略 `:write_token_store` opt)、`authority_observe`(不再 start/stop pid)、
+  `voxel_smoke`(删 named-process 启动);~15 测试去 `start_supervised!`/2-arg shim 调用。回归 data 111 /
+  world 149 / gate 215 / scene 931 全绿,warnings-as-errors 0。**4.2 data_init 保留**(已非 live 迁移工具,
+  ANTI-8 已满足;删除会破坏 `mix migrate_to_pg`,待 Mnesia 数据退役)。**4.3 cargo workspace 不引入**
+  (MOD-3 单 facade 受 Rustler 0.37.3 硬限;workspace 部分步会静默忽略非根 panic profile=NIF-11/15 隐患 +
+  Windows 重建风险,收益仅 cosmetic,承重已满足)。详见
+  [`phase-align-4-cleanup.md`](./phase-align-4-cleanup.md)。**至此对齐迁移梯队 0–4 主体完成:承重契约全部
+  达成;余 2 项(data_init / 单 NIF facade)为外因(active 迁移依赖 / Rustler 版本)阻塞的原则性保留。**
 - **2026-06-14(梯队 3 全部完成,提交/复制/涌现契约)**：3.8 derived→authoritative
   `SystemActor` 桥 + `CandidateEffect` 阈值滞回锁存(RULE-11/15/16、AUTH-11),ChunkProcess 不再直写
   field effect;3.9 durable `voxel_outbox` + `visibility_watermark` 闸门(AUTH-8/9/10,承重正确性由
