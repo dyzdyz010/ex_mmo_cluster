@@ -76,9 +76,9 @@ defmodule SceneServer.Voxel.Field.ModelCardTest do
   end
 
   describe "ModelCardRegistry" do
-    test "登记全部 5 个涌现 kernel" do
-      assert length(ModelCardRegistry.kernel_modules()) == 5
-      assert length(ModelCardRegistry.cards()) == 5
+    test "登记全部涌现 kernel(含反应 kernel)" do
+      assert length(ModelCardRegistry.kernel_modules()) == 6
+      assert length(ModelCardRegistry.cards()) == 6
     end
 
     test "每张卡 fidelity_class/safety_valve 合法且 kernel_id 与模块自述一致" do
@@ -96,7 +96,7 @@ defmodule SceneServer.Voxel.Field.ModelCardTest do
 
     test "by_kernel_id/0 唯一且可 fetch" do
       by_id = ModelCardRegistry.by_kernel_id()
-      assert map_size(by_id) == 5
+      assert map_size(by_id) == 6
 
       assert {:ok, %ModelCard{kernel_id: :temperature_diffusion}} =
                ModelCardRegistry.fetch(:temperature_diffusion)
@@ -119,6 +119,7 @@ defmodule SceneServer.Voxel.Field.ModelCardTest do
       assert by_id[:conduction_path].fidelity_class == :qualitative
       assert by_id[:electric_discharge].fidelity_class == :qualitative
       assert by_id[:circuit_current].fidelity_class == :qualitative
+      assert by_id[:reaction].fidelity_class == :qualitative
     end
   end
 end

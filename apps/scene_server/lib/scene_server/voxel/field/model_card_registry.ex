@@ -17,6 +17,7 @@ defmodule SceneServer.Voxel.Field.ModelCardRegistry do
     ConductionPathKernel,
     ElectricDischargeKernel,
     ElectricPotentialKernel,
+    ReactionKernel,
     TemperatureDiffusionKernel
   }
 
@@ -25,7 +26,9 @@ defmodule SceneServer.Voxel.Field.ModelCardRegistry do
     ElectricPotentialKernel,
     ConductionPathKernel,
     ElectricDischargeKernel,
-    CircuitCurrentKernel
+    CircuitCurrentKernel,
+    # 功能完善 · 反应层 R3:涌现反应驱动 kernel(材料相变等)。
+    ReactionKernel
   ]
 
   @doc "已登记的涌现 kernel 模块列表。"
