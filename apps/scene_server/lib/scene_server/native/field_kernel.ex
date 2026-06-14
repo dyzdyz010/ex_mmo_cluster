@@ -116,4 +116,29 @@ defmodule SceneServer.Native.FieldKernel do
         _ionization_cells
       ),
       do: :erlang.nif_error(:nif_not_loaded)
+
+  # -------------------------------------------------------------------------
+  # BND-1(梯队2 step2.7a):场层本体常驻 Rust ResourceArc<FieldLayerSim> 脚手架。
+  # 句柄(reference)由 Elixir 持有,数据留 Rust。本步未接 FieldLayer(flip 在 2.7c)。
+  # -------------------------------------------------------------------------
+
+  @typedoc "Rust 常驻场层句柄(ResourceArc<FieldLayerSim>)。"
+  @type cell_sim :: reference()
+
+  @doc "新建一个常驻 Rust 的场层(quantization: \"float\" | \"integer\")。"
+  @spec cell_sim_new(float(), float(), String.t()) :: cell_sim()
+  def cell_sim_new(_baseline, _threshold, _quantization),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc "原地写绝对值到 macro_index(返回 :ok)。"
+  @spec cell_sim_put(cell_sim(), 0..4095, float()) :: :ok
+  def cell_sim_put(_sim, _macro_index, _value), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc "读 macro_index 的绝对值。"
+  @spec cell_sim_get(cell_sim(), 0..4095) :: float()
+  def cell_sim_get(_sim, _macro_index), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc "active cells(过 aabb inclusive + |delta| >= epsilon,按 idx 升序)。"
+  @spec cell_sim_active_cells(cell_sim(), aabb(), float()) :: [temperature_cell()]
+  def cell_sim_active_cells(_sim, _aabb, _epsilon), do: :erlang.nif_error(:nif_not_loaded)
 end

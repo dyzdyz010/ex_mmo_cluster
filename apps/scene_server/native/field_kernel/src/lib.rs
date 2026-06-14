@@ -1,3 +1,4 @@
+mod cell_sim;
 mod conduction_path;
 mod discharge_path;
 mod electric_potential;
@@ -10,11 +11,46 @@ use rustler::Atom;
 rustler::init!("Elixir.SceneServer.Native.FieldKernel");
 
 rustler::atoms! {
+    ok,
     source_not_conductive,
     target_not_conductive,
     frontier_exhausted,
     unreachable,
     no_discharge_path,
+}
+
+// ---------------------------------------------------------------------------
+// BND-1(梯队2 step2.7a):场层本体常驻 Rust ResourceArc<FieldLayerSim> 脚手架 NIF。
+// 本步仅暴露 new/put/get/active_cells,未接 Elixir FieldLayer(原子 flip 在 2.7c)。
+// ---------------------------------------------------------------------------
+
+#[rustler::nif]
+fn cell_sim_new(baseline: f64, threshold: f64, quantization: String) -> cell_sim::FieldLayerSimArc {
+    cell_sim::new(baseline, threshold, cell_sim::parse_quant(&quantization))
+}
+
+#[rustler::nif]
+fn cell_sim_put(sim: cell_sim::FieldLayerSimArc, macro_index: u16, value: f64) -> Atom {
+    let mut state = cell_sim::lock(&sim);
+    let baseline = state.baseline;
+    state.put_delta(macro_index, value - baseline);
+    ok()
+}
+
+#[rustler::nif]
+fn cell_sim_get(sim: cell_sim::FieldLayerSimArc, macro_index: u16) -> f64 {
+    let state = cell_sim::lock(&sim);
+    state.baseline + state.get_delta(macro_index)
+}
+
+#[rustler::nif]
+fn cell_sim_active_cells(
+    sim: cell_sim::FieldLayerSimArc,
+    aabb: types::Aabb,
+    epsilon: f64,
+) -> Vec<(u16, f64)> {
+    let state = cell_sim::lock(&sim);
+    cell_sim::active_cells(&state, aabb, epsilon)
 }
 
 #[rustler::nif]

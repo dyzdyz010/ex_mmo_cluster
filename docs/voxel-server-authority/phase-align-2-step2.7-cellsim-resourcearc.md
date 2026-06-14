@@ -102,6 +102,14 @@ orchestration 改为:`NativeBackend.diffuse_temperature(layer.cell_sim, candidat
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 2.7a(Rust CellSim 脚手架,green 非-flip)完成**。`native/field_kernel` 新增
+  `cell_sim.rs`:`FieldLayerSim`(`#[rustler::resource_impl]` + `Mutex<LayerState>`,稀疏 delta +
+  baseline/threshold/quant,poison-safe lock 不 panic 越 FFI)。lib.rs 加 4 脚手架 NIF(`cell_sim_new`/
+  `cell_sim_put`/`cell_sim_get`/`cell_sim_active_cells`,复用 `grid` 做 aabb 过滤,与 Elixir
+  `Types.macro_index!`/`FieldLayer` 语义等价)+ `ok` atom。Elixir `FieldKernel` 加绑定 stub。
+  **未接 FieldLayer,零行为变化**;scratch 双缓冲推迟到 2.7b。3 cargo 单测 + 6 Elixir NIF 冒烟全绿;
+  field 161 全绿 0 回归。**剩 2.7b 句柄计算 NIF + 数值等价、2.7c 原子 flip、2.7d 队列背压。**
+
 - 2026-06-14:设计稿落定。FieldLayer/FieldRegion/4 NIF/kernel orchestration/FieldCodec/~12 测试
   审计完成;确认核心难点=FieldLayer 值→句柄的原子 flip + stencil 下沉 Rust 双缓冲。拆 2.7a(Rust
   CellSim 脚手架)/2.7b(句柄 NIF + 数值等价)/2.7c(原子 flip)/2.7d(队列背压增量)。先执行 2.7a。
