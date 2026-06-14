@@ -8,6 +8,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
   setup do
     WriteTokenStore.reset()
+    # 梯队1 step1.3:owner_epoch 经 DB 线性化分配器,清表保证跨测试/跨运行 epoch 确定。
+    DataService.Voxel.RegionEpochStore.reset()
     :ok
   end
 

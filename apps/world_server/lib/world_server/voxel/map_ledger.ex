@@ -155,6 +155,10 @@ defmodule WorldServer.Voxel.MapLedger do
       chunk_summaries: %{},
       migrations: %{},
       write_token_store: Keyword.get(opts, :write_token_store),
+      # 梯队1 step1.3:owner_epoch 经 DB 线性化分配器分配(CELL-18/23,消除 ANTI-32)。
+      # 可注入(测试覆盖);默认 DataService.Voxel.RegionEpochStore。
+      region_epoch_store:
+        Keyword.get(opts, :region_epoch_store, DataService.Voxel.RegionEpochStore),
       persist_fn: persist_fn,
       scene_invalidator: Keyword.get(opts, :scene_invalidator),
       # Optional handle to WorldServer.Voxel.SceneNodeRegistry. Production
@@ -368,8 +372,24 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, state, state}
   end
 
+  # 梯队1 step1.3(CELL-18/23):owner_epoch 经 DB 线性化分配器分配,使并发/重启的多 MapLedger
+  # 无法分配冲突或回退的 epoch。opts 显式 owner_epoch(测试/回放)被尊重,但同时 set_floor 抬高
+  # DB 计数以保持单调一致。
+  defp allocate_owner_epoch(state, opts, logical_scene_id, region_id) do
+    case Keyword.get(opts, :owner_epoch) do
+      nil ->
+        state.region_epoch_store.allocate_next(logical_scene_id, region_id)
+
+      explicit when is_integer(explicit) ->
+        _ = state.region_epoch_store.set_floor(logical_scene_id, region_id, explicit)
+        explicit
+    end
+  end
+
   defp issue_lease_for_assignment(state, assignment, owner_scene_instance_ref, opts) do
-    owner_epoch = Keyword.get(opts, :owner_epoch, assignment.owner_epoch + 1)
+    owner_epoch =
+      allocate_owner_epoch(state, opts, assignment.logical_scene_id, assignment.region_id)
+
     lease_id = Keyword.get(opts, :lease_id, unique_positive_integer())
     ttl_ms = Keyword.get(opts, :ttl_ms, @default_lease_ttl_ms)
     expires_at_ms = Keyword.get(opts, :expires_at_ms, now_ms() + ttl_ms)
@@ -543,7 +563,8 @@ defmodule WorldServer.Voxel.MapLedger do
          :ok <- ensure_no_active_migration(state, region_id) do
       old_lease = Map.get(state.leases, region_id)
       now_ms = now_ms()
-      owner_epoch = Keyword.get(opts, :owner_epoch, next_owner_epoch(assignment, old_lease))
+      _ = old_lease
+      owner_epoch = allocate_owner_epoch(state, opts, assignment.logical_scene_id, region_id)
       lease_id = Keyword.get(opts, :lease_id, unique_positive_integer())
       ttl_ms = Keyword.get(opts, :ttl_ms, @default_lease_ttl_ms)
       expires_at_ms = Keyword.get(opts, :expires_at_ms, now_ms + ttl_ms)
@@ -984,9 +1005,6 @@ defmodule WorldServer.Voxel.MapLedger do
       :error -> {:error, :unknown_migration}
     end
   end
-
-  defp next_owner_epoch(_assignment, %SceneLease{} = old_lease), do: old_lease.owner_epoch + 1
-  defp next_owner_epoch(assignment, nil), do: assignment.owner_epoch + 1
 
   defp default_migration_id(region_id) do
     "region-#{region_id}-migration-#{unique_positive_integer()}"
