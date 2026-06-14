@@ -152,6 +152,14 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
     按温差传热(Fourier 式,自限平衡)。这同时:(a)让导电体热传给相邻可燃物 → 电生火;(b)把现 R5c
     燃烧的"flat 15MJ 辐射"升级为物理热扩散(更对、更自洽);(c)填补 R5c 起就记下的"truth 温度无扩散"缺口。
     需定:守恒(传热同时源放热)/ 扩散系数 / 失控防护。
+- **R6c ✅ 守恒 Fourier 热扩散完成**(用户拍板:守恒模型 + 统一燃烧蔓延)。ReactionKernel 替"flat 辐射"
+  为守恒热扩散:每对相邻 solid cell `Q = rate × ΔT / (1/C_h + 1/C_c)`(C=密度×比热×体积),**源放热=冷端
+  得热**(能量守恒),rate=0.25<1 自限不过冲;cell_state 补读 heat_capacity;净焦耳(可±)汇总成连续注热
+  经 SystemActor + ChunkProcess clip。**统一**:燃烧 cell 自加热很烫 → 自然扩散点燃邻居(combustion 蔓延
+  e2e 仍过)。**端到端 demo 全验**:(i)冰熔/水冻/沸 (ii)燃烧点燃→自维持→蔓延→ash (iii)**电→火**:导电
+  Joule 加热铁 → 守恒热扩散把铁热传相邻木 → 木点燃(跨系统:电+热扩散+燃烧组合涌现)。reaction 59 全绿。
+  **遗留 follow-on(电热增益平衡)**:生产 `@conduction_heat_response_gain=1e4` 偏低,放电/导电实际注热
+  远不达 ignition(demo 用 joule_scale 1e9 验机制);"电→火"落生产需调电热增益(独立 balance 项,不破机制)。
 
 ## 5. 验收
 

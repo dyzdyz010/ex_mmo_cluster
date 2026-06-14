@@ -8,7 +8,15 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   锁存落 truth。本 kernel **不读/写 field 层**(`required_layers` 仅声明 `:temperature` 依赖),
   读的是权威态——反应是物理(温度场写回 truth)的消费者,不是另一层 overlay。
 
-  安全阀(EMG-7):每 tick 转变数受 `max_transforms_per_tick` 上限截断,防失控级联(如自维持燃烧)。
+  ## truth 级邻居热扩散(R6c,守恒 Fourier)
+  现有温度扩散只动 field 层不动 truth,而反应读 truth——故 truth 级跨格热传播落在本 kernel(知 region
+  几何)。每 tick 对每对相邻 solid cell 按温差传热:`Q = rate × ΔT / (1/C_hot + 1/C_cold)`(C = 密度 ×
+  比热 × 体积),**源放热 = 冷端得热(能量守恒)**;rate<1 保不过冲、自限平衡(ΔT→0 停)。这使:
+  (a) 任意热源(电加热的铁/岩浆)烤燃/熔化相邻物 → 电→火、热→火;(b) 燃烧 cell 自加热很烫 → 自然扩散
+  点燃邻居(**统一取代** R5c 临时的"flat 辐射")。
+
+  安全阀(EMG-7):每 tick 全部效果数受 `max_effects_per_tick` 截断,防失控级联(注热另在 ChunkProcess
+  clip 到温度上界)。
   """
 
   @behaviour SceneServer.Voxel.Field.Kernel
@@ -19,13 +27,16 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
 
   @temperature_attribute "temperature"
   @burn_progress_attribute "burn_progress"
-  # R5d:安全阀预算覆盖**每 tick 全部效果**(含辐射蔓延向量),而非仅 transform——否则失控级联的真正
-  # 传播路径(辐射注热)不受约束。reaction 效果在前优先,radiation 为溢出受剩余预算截断。
+  @density_attribute "density"
+  @specific_heat_attribute "specific_heat_capacity"
+  # R5d:安全阀预算覆盖**每 tick 全部效果**(含热扩散),而非仅 transform——否则失控级联真正传播路径不受约束。
   @default_max_effects_per_tick 4096
-  # 燃烧蔓延的 truth 级机制:burning cell 每 tick 向相邻 solid cell 辐射热(焦耳)。现有温度扩散只动
-  # field 层不动 truth,而反应读 truth——故 truth 级邻居耦合落在本 kernel(知 region 几何)。邻居受热
-  # 升温达 ignition → 点燃 → 再辐射 → 级联蔓延。0 = 关辐射(仅单格燃烧生命周期)。
-  @default_radiation_joules 15_000_000.0
+  # R6c 守恒 Fourier 热扩散参数。rate = 每 tick 传 ΔT/(1/C_h+1/C_c) 的比例(<1 自限不过冲)。
+  @default_diffusion_rate 0.25
+  @voxel_volume_cubic_meter 1.0
+  @min_heat_capacity 1.0
+  # 噪声地板:净传热 < 此(焦耳)不发效果,避免每 tick 海量微小写。
+  @min_transfer_joules 1_000.0
 
   @impl true
   def kernel_id, do: :reaction
@@ -42,13 +53,15 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
       safety_valve: %{
         type: :reaction_budget,
         max_effects_per_tick: @default_max_effects_per_tick,
-        note: "每 tick **全部**反应效果(含燃烧辐射蔓延向量)总数截断,防失控级联;注热写另在 ChunkProcess clip 到温度上界"
+        note: "每 tick 全部效果(含守恒热扩散)总数截断,防失控级联;注热写另在 ChunkProcess clip 到温度上界"
       },
-      description: "读已提交 truth(材料+温度)→ 数据化反应规则 → 材料转变 candidate,经 SystemActor 落 truth",
+      description:
+        "读已提交 truth(材料+温度+tag)→ 数据化反应规则 + 守恒 Fourier 邻居热扩散 → candidate,经 SystemActor 落 truth",
       assumptions: [
         "阈值瞬时相变,无潜热/延迟",
         "chunk-local AABB",
-        "truth 温度/材料驱动(非 field 层)"
+        "truth 温度/材料驱动(非 field 层)",
+        "热扩散显式 Fourier(rate<1 自限,守恒)"
       ]
     )
   end
@@ -60,10 +73,10 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     cells = cells_in_region(region, storage)
 
     reaction_effects = Engine.evaluate(cells, rules)
-    radiation_effects = radiation_effects(cells, region, opts)
+    diffusion_effects = heat_diffusion_effects(cells, region, opts)
 
-    # R5d:预算覆盖全部效果(reaction 在前优先,radiation 溢出受剩余预算截断)——约束失控级联。
-    effects = Enum.take(reaction_effects ++ radiation_effects, max_effects(opts))
+    # R5d:预算覆盖全部效果(reaction 在前优先,热扩散溢出受剩余预算截断)——约束失控级联。
+    effects = Enum.take(reaction_effects ++ diffusion_effects, max_effects(opts))
 
     {:cont, region, effects}
   end
@@ -78,36 +91,54 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     end
   end
 
-  # 燃烧蔓延:每个 burning cell 向 region 内相邻 solid cell 辐射热(连续注入,经 SystemActor always-commit)。
-  defp radiation_effects(cells, region, opts) do
-    joules = radiation_joules(opts)
+  # R6c 守恒 Fourier 热扩散:对每对相邻 solid cell 按温差传热,源放热=冷端得热(能量守恒)。
+  # 每 cell 净焦耳(可正可负)汇总成一条连续注热效果(经 SystemActor always-commit + ChunkProcess clip)。
+  defp heat_diffusion_effects(cells, region, opts) do
+    rate = diffusion_rate(opts)
 
-    if joules <= 0.0 do
+    if rate <= 0.0 do
       []
     else
+      by_index = Map.new(cells, &{&1.macro_index, &1})
       present = MapSet.new(cells, & &1.macro_index)
 
       cells
-      |> Enum.filter(&burning?/1)
-      |> Enum.flat_map(fn cell ->
+      |> Enum.reduce(%{}, fn cell, acc ->
         cell.macro_index
         |> neighbors_in_region(region)
-        |> Enum.filter(&MapSet.member?(present, &1))
-        |> Enum.map(&radiate_heat_effect(&1, joules))
+        # 每无序对只处理一次(邻居 index > 本 cell);邻居须在 region 内 solid。
+        |> Enum.filter(fn n -> n > cell.macro_index and MapSet.member?(present, n) end)
+        |> Enum.reduce(acc, fn n_index, acc2 ->
+          accumulate_transfer(acc2, cell, Map.fetch!(by_index, n_index), rate)
+        end)
       end)
+      |> Enum.filter(fn {_idx, q} -> abs(q) >= @min_transfer_joules end)
+      |> Enum.map(fn {idx, q} -> heat_effect(idx, q) end)
     end
   end
 
-  defp radiation_joules(opts) do
-    case Map.get(opts, :radiation_joules, @default_radiation_joules) do
+  defp accumulate_transfer(acc, a, b, rate) do
+    {hot, cold} = if a.temperature_celsius >= b.temperature_celsius, do: {a, b}, else: {b, a}
+    dt = hot.temperature_celsius - cold.temperature_celsius
+    q = rate * dt / (1.0 / hot.heat_capacity + 1.0 / cold.heat_capacity)
+
+    if q > 0.0 do
+      acc
+      |> Map.update(hot.macro_index, -q, &(&1 - q))
+      |> Map.update(cold.macro_index, q, &(&1 + q))
+    else
+      acc
+    end
+  end
+
+  defp diffusion_rate(opts) do
+    case Map.get(opts, :diffusion_rate, @default_diffusion_rate) do
       n when is_number(n) and n >= 0 -> n * 1.0
-      _other -> @default_radiation_joules
+      _other -> @default_diffusion_rate
     end
   end
 
-  defp burning?(cell), do: :burning in Map.get(cell, :tags, [])
-
-  defp radiate_heat_effect(macro_index, joules) do
+  defp heat_effect(macro_index, joules) do
     {:write_voxel_attribute,
      %{attribute: :temperature, macro_index: macro_index, heat_energy_joules: joules}}
   end
@@ -159,6 +190,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
           material_id: material_id,
           temperature_celsius: scaled_attribute(storage, macro_index, @temperature_attribute),
           burn_progress: scaled_attribute(storage, macro_index, @burn_progress_attribute),
+          heat_capacity: heat_capacity(storage, macro_index),
           tags: cell_tags(storage, block)
         }
 
@@ -170,6 +202,13 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   defp scaled_attribute(storage, macro_index, attr_name) do
     raw = Storage.effective_attribute_at(storage, macro_index, attr_name)
     raw / MaterialCatalog.fixed32_scale()
+  end
+
+  # 热容 C = 密度 × 比热 × 体积(J/K);热扩散用。
+  defp heat_capacity(storage, macro_index) do
+    density = scaled_attribute(storage, macro_index, @density_attribute)
+    specific_heat = scaled_attribute(storage, macro_index, @specific_heat_attribute)
+    max(density * specific_heat * @voxel_volume_cubic_meter, @min_heat_capacity)
   end
 
   # per-cell 动态 tag id → atom 名(规则用 atom 名;tag 已在 catalog 定义,to_existing_atom 安全)。
