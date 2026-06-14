@@ -108,6 +108,56 @@ defmodule SceneServer.Voxel.Field.SystemActorTest do
     assert id1 == id2
   end
 
+  # 功能完善 · 反应层 R2:材料转变同经本桥(bucket = to_material_id)。
+  defp transform_effect(macro_index, from_id, to_id) do
+    {:transform_material,
+     %{macro_index: macro_index, from_material_id: from_id, to_material_id: to_id, rule_id: :demo}}
+  end
+
+  test "材料转变首次提交;同目标材料 latch(防同 tick 重复转)" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    assert {:ok, %{committed_count: 1, latched_count: 0}} =
+             SystemActor.submit_field_effects(sa, chunk, [transform_effect(0, 4, 8)], ctx(1))
+
+    assert_receive {:committed, [{:transform_material, _}]}
+
+    # 同 {cell,macro,目标材料=8} → latched 幂等跳过。
+    assert {:ok, %{committed_count: 0, latched_count: 1}} =
+             SystemActor.submit_field_effects(sa, chunk, [transform_effect(0, 4, 8)], ctx(2))
+
+    refute_receive {:committed, _}, 100
+  end
+
+  test "材料转变目标变(水→蒸汽)→ 新桶再提交" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    SystemActor.submit_field_effects(sa, chunk, [transform_effect(0, 4, 8)], ctx(1))
+    assert_receive {:committed, _}
+
+    # 目标材料 8 → 9(不同 bucket)→ 再提交。
+    assert {:ok, %{committed_count: 1}} =
+             SystemActor.submit_field_effects(sa, chunk, [transform_effect(0, 8, 9)], ctx(2))
+
+    assert_receive {:committed, [{:transform_material, _}]}
+  end
+
+  test "材料转变与温度写在同 cell 独立 latch(:material vs :temperature 维)" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    SystemActor.submit_field_effects(sa, chunk, [temp_effect(0, 100.0)], ctx(1))
+    assert_receive {:committed, _}
+
+    # 同 macro_index 但 attribute 维不同(:material)→ 独立 latch → 提交。
+    assert {:ok, %{committed_count: 1}} =
+             SystemActor.submit_field_effects(sa, chunk, [transform_effect(0, 4, 8)], ctx(2))
+
+    assert_receive {:committed, [{:transform_material, _}]}
+  end
+
   test "snapshot / reset" do
     sa = start_sa()
     chunk = start_chunk()

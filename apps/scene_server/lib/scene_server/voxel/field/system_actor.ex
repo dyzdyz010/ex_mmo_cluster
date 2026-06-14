@@ -127,9 +127,35 @@ defmodule SceneServer.Voxel.Field.SystemActor do
     end
   end
 
+  # 功能完善 · 反应层 R2:材料转变(派生→权威)同经本桥。**复用 bucket 锁存**:bucket = to_material_id
+  # (离散材料 id 即桶,无需量化);latch_key 的 attribute 维 = :material。同 {cell,macro,目标材料} 已提交
+  # → latched 幂等跳过(防同 tick 重复转);目标变(水→蒸汽)→ 新桶提交。
+  defp gate({:transform_material, attrs}, context, state) when is_map(attrs) do
+    bucket = Map.get(attrs, :to_material_id)
+    latch_key = transform_latch_key(attrs, context)
+    candidate = build_candidate(latch_key, bucket, attrs, context, state)
+
+    case Map.get(state.latches, latch_key) do
+      ^bucket ->
+        {:latched, candidate, state}
+
+      _other ->
+        {:commit, candidate, %{state | latches: Map.put(state.latches, latch_key, bucket)}}
+    end
+  end
+
   # 非 write_voxel_attribute 的 field effect(如 unsupported action):**透传**给 ChunkProcess,
   # 由其执行器显式 reject(emit voxel_field_effect_rejected)——不静默吞掉(显式失败纪律)。
   defp gate(_other, _context, state), do: {:commit, nil, state}
+
+  defp transform_latch_key(attrs, context) do
+    {
+      {Map.get(context, :region_id), Map.get(context, :chunk_coord)},
+      Map.get(context, :kernel_id),
+      Map.get(attrs, :macro_index),
+      :material
+    }
+  end
 
   defp candidate_id(nil), do: nil
   defp candidate_id(%CandidateEffect{candidate_effect_id: id}), do: id

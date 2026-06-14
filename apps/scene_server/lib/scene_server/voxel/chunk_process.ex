@@ -2510,6 +2510,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :write_voxel_attribute, attrs} ->
         apply_write_voxel_attribute_effect(state, attrs, context)
 
+      # 功能完善 · 反应层 R2:涌现反应的材料转变(冰→水…),经 SystemActor 锁存后落 truth。
+      {:ok, :transform_material, attrs} ->
+        apply_transform_material_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -2613,6 +2617,79 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
         emit_field_effect_rejected(state, result, context)
         {result, state}
+    end
+  end
+
+  # 功能完善 · 反应层 R2:把 `{:transform_material, %{macro_index, from_material_id, to_material_id}}`
+  # 落 voxel truth。**from 校验**:现材料须 == from_material_id,否则显式 reject(防过期/竞态转变,不静默)。
+  # 保留 cell 动态 attribute_set(温度等随相变物理延续),material_default 自动取新材料 catalog。
+  defp apply_transform_material_effect(state, attrs, context) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_transform_macro(attrs),
+         {:ok, from_id, to_id} <- normalize_transform_materials(attrs),
+         {:ok, block} <- fetch_transformable_block(state.storage, macro_index, from_id) do
+      next_version = state.storage.chunk_version + 1
+
+      opts = [
+        cell_version: next_version,
+        cell_hash: Hash.digest32(inspect({:material_transform, macro_index, to_id, next_version}))
+      ]
+
+      next_storage =
+        state.storage
+        |> Storage.put_solid_block(macro_index, %{block | material_id: to_id}, opts)
+        |> bump_chunk_version()
+
+      next_state = %{state | storage: next_storage}
+      push_snapshot_fallbacks(next_state, :reaction_material_transform)
+
+      result = %{
+        status: :applied,
+        action: :transform_material,
+        macro_index: macro_index,
+        from_material_id: from_id,
+        to_material_id: to_id,
+        rule_id: Map.get(attrs, :rule_id),
+        chunk_version: next_storage.chunk_version
+      }
+
+      emit_field_effect_applied(next_state, result, context)
+      {result, next_state}
+    else
+      {:error, reason} ->
+        result = %{status: :rejected, action: :transform_material, reason: reason}
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp normalize_transform_macro(attrs) do
+    case fetch_optional(attrs, [:macro_index, :macro, :local_macro]) do
+      nil -> {:error, :missing_macro_index}
+      value -> {:ok, Types.macro_index_or_coord!(value)}
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_macro_index}
+  end
+
+  defp normalize_transform_materials(attrs) do
+    from_id = fetch_optional(attrs, [:from_material_id, :from])
+    to_id = fetch_optional(attrs, [:to_material_id, :to])
+
+    if is_integer(from_id) and is_integer(to_id) and
+         not is_nil(MaterialCatalog.material_name(to_id)) do
+      {:ok, from_id, to_id}
+    else
+      {:error, :invalid_transform_materials}
+    end
+  end
+
+  defp fetch_transformable_block(storage, macro_index, from_id) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %NormalBlockData{material_id: ^from_id} = block -> {:ok, block}
+      %NormalBlockData{material_id: other} -> {:error, {:from_material_mismatch, other}}
+      _other -> {:error, :not_a_normal_block}
     end
   end
 
