@@ -37,6 +37,20 @@ Replicator(出口预算/聚合/可靠性分类/背压)+ flux ledger 守恒 + 涌
 - **3.9(AUTH-8/9/10)durable outbox + visibility_watermark 闸门**:权威提交写 durable `voxel_outbox`
   表(state_class 分类);复制前加 `visibility_watermark` 闸门——只发 committed-≤-watermark 的态,
   speculative 不下行(消除 ANTI-31)。
+  **2026-06-14 起手调查发现(成本/价值,待用户定夺)**:
+  - `ChunkProcess.push_chunk_delta` 在 durable persist(durable-before-ack,梯队1)**之后**才推,
+    `new_chunk_version` 即已提交版本 → voxel 路径**无 speculative 态**,`visibility_watermark` **实质
+    已满足**(只发 committed);形式化只需把 watermark 标进 observe / ReplicationOut 信封(wire 若加
+    字段需 web_client decoder 跟,有 churn)。
+  - **durable outbox 的净收益在当前架构是边际**:现"重连即 `ChunkSnapshot`(最新 committed 态)"模型
+    已保证**正确性(无丢态)**;outbox(durable 重投 missed delta)是**效率/可靠性精化**,但会给热路径
+    **每个 voxel 编辑加一次 DB 写** + 无界表(需 trim/TTL)。是否值得引入热路径 DB 写换边际收益,
+    **建议与用户对齐后再实施**(可能延后到 unreliable 传输/UDP 实时流真正启用时)。
+  - 结论:3.9 的承重正确性(AUTH-8 无 speculative 下行)已由 durable-before-ack 满足。**按计划仍实施
+    durable outbox(AUTH-9/10)**:committed delta 同步追加 `voxel_outbox`(durable),供可靠重投 missed
+    delta + `watermark/2` 读 visibility_watermark;成本(热路径每 delta 一次 INSERT + 表增长需 TTL/trim)
+    已记录,后续可按需关闭或异步化。append 在 `ChunkProcess.push_chunk_delta` 落 truth(durable persist)
+    之后、fanout 之前。
 - **3.10(REPL-2/4/6、NET-3/4/5)统一 Replicator**:抽独立 Replicator 层(逻辑层即可,MOD-1 放宽);
   per-observer 出口预算(打分留用)+ 聚合 + 可靠性四分类(critical/state/bulk/unreliable)+ 背压回传;
   bulk-chunk-stream 独立队列。
