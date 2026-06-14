@@ -23,6 +23,12 @@ migrations_path =
     Ecto.Migrator.run(repo, migrations_path, :up, all: true)
   end)
 
+# 共享 mmo_dev 库可能残留上次运行的陈旧事务快照,导致 TransactionRecoveryWatcher 启动时
+# 因 stale `:prepared` 快照崩溃(session-handoff 既有 backlog)。套件启动前清表以隔离。
+for table <- ["voxel_transaction_coordinator_snapshots", "voxel_chunk_pending_transactions"] do
+  Ecto.Adapters.SQL.query!(DataService.Repo, "TRUNCATE #{table}", [])
+end
+
 # Phase A4-bis: scene-side region routing tests (`RegionRouting`,
 # `RegionRuntime` Phase A4-bis-3 e2e) call `BeaconServer.Client.register`
 # / `lookup`, which require a Horde registry. Boot it once here so the

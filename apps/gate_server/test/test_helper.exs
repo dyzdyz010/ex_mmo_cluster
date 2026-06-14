@@ -21,6 +21,15 @@ migrations_path =
     Ecto.Migrator.run(repo, migrations_path, :up, all: true)
   end)
 
+# 套件启动前清理共享 mmo_dev 库可能残留的陈旧事务快照(session-handoff 既有 backlog)。
+# gate test_helper 不常驻 Repo,故用 with_repo 临时起一个执行 TRUNCATE。
+{:ok, _, _} =
+  Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
+    for table <- ["voxel_transaction_coordinator_snapshots", "voxel_chunk_pending_transactions"] do
+      Ecto.Adapters.SQL.query!(repo, "TRUNCATE #{table}", [])
+    end
+  end)
+
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto, so apply
 # paths take O(10ms) per write instead of microseconds for the old in-memory
 # map. Bump the default `assert_receive` window so existing 100ms tests

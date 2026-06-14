@@ -27,4 +27,10 @@ migrations_path =
     Ecto.Migrator.run(repo, migrations_path, :up, all: true)
   end)
 
+# 套件启动前清理共享 mmo_dev 库可能残留的陈旧事务快照,避免 TransactionRecoveryWatcher
+# 启动时因 stale `:prepared` 快照崩溃(session-handoff 既有 backlog)。
+for table <- ["voxel_transaction_coordinator_snapshots", "voxel_chunk_pending_transactions"] do
+  Ecto.Adapters.SQL.query!(DataService.Repo, "TRUNCATE #{table}", [])
+end
+
 ExUnit.start(assert_receive_timeout: 1_000)
