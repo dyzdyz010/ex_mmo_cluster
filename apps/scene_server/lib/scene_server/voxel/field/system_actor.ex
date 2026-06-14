@@ -112,20 +112,31 @@ defmodule SceneServer.Voxel.Field.SystemActor do
   # ---- 门控:candidate_effect 派生 + 阈值锁存 -------------------------------
 
   defp gate({:write_voxel_attribute, attrs}, context, state) when is_map(attrs) do
-    bucket = quantized_bucket(attrs, state.bucket_size)
-    latch_key = latch_key(attrs, context)
-    candidate = build_candidate(latch_key, bucket, attrs, context, state)
+    if continuous_write?(attrs) do
+      # 功能完善 · 反应层 R5b:**连续注入效果**(燃烧 heat_energy_joules / burn_progress add_delta
+      # 累进)是每 tick 累加的,**绕去抖锁存**——否则同桶 latch 会让火不自维持。always commit。
+      # (现有 conduction/discharge 连续 Joule 注热同受益此修正。)
+      {:commit, nil, state}
+    else
+      bucket = quantized_bucket(attrs, state.bucket_size)
+      latch_key = latch_key(attrs, context)
+      candidate = build_candidate(latch_key, bucket, attrs, context, state)
 
-    case Map.get(state.latches, latch_key) do
-      ^bucket ->
-        # 同量化分桶 → 已 latch,幂等跳过(不重复写权威)。
-        {:latched, candidate, state}
+      case Map.get(state.latches, latch_key) do
+        ^bucket ->
+          # 同量化分桶 → 已 latch,幂等跳过(不重复写权威)。
+          {:latched, candidate, state}
 
-      _other ->
-        # 跨量化阈(或首次)→ 提交并更新 latch。
-        {:commit, candidate, %{state | latches: Map.put(state.latches, latch_key, bucket)}}
+        _other ->
+          # 跨量化阈(或首次)→ 提交并更新 latch。
+          {:commit, candidate, %{state | latches: Map.put(state.latches, latch_key, bucket)}}
+      end
     end
   end
+
+  # set_tag(加/减 tag):storage 层幂等(加已有/减不存在为 no-op),且规则 require/forbid 前置已门控
+  # 发射 → always commit(不锁存)。
+  defp gate({:set_tag, _attrs}, _context, state), do: {:commit, nil, state}
 
   # 功能完善 · 反应层 R2:材料转变(派生→权威)同经本桥。**复用 bucket 锁存**:bucket = to_material_id
   # (离散材料 id 即桶,无需量化);latch_key 的 attribute 维 = :material。同 {cell,macro,目标材料} 已提交
@@ -147,6 +158,11 @@ defmodule SceneServer.Voxel.Field.SystemActor do
   # 非 write_voxel_attribute 的 field effect(如 unsupported action):**透传**给 ChunkProcess,
   # 由其执行器显式 reject(emit voxel_field_effect_rejected)——不静默吞掉(显式失败纪律)。
   defp gate(_other, _context, state), do: {:commit, nil, state}
+
+  # 连续注入:带累加能量(heat_energy_joules)或累进 delta(burn_progress)的写 → 绕去抖锁存。
+  defp continuous_write?(attrs) do
+    is_number(Map.get(attrs, :heat_energy_joules)) or is_number(Map.get(attrs, :delta))
+  end
 
   defp transform_latch_key(attrs, context) do
     {

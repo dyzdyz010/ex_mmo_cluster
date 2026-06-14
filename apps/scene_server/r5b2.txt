@@ -1,0 +1,15 @@
+
+00:02:35.217 [info] Starting Horde.RegistryImpl with name BeaconServer.DistributedRegistry
+
+00:02:35.235 [debug] New agent conneddddddddddddddcted.}
+
+00:02:35.267 [info] Migrations already up
+
+00:02:35.285 [debug] QUERY OK db=14.3ms queue=0.6ms idle=19.4ms
+TRUNCATE voxel_transaction_coordinator_snapshots []
+
+00:02:35.298 [debug] QUERY OK db=12.8ms queue=0.8ms idle=36.4ms
+TRUNCATE voxel_chunk_pending_transactions []
+Running ExUnit with seed: 311648, max_cases: 48
+Excluding tags: [:smoke]
+

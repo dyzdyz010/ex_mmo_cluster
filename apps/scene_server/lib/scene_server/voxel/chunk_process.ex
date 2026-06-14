@@ -12,6 +12,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   alias DataService.Voxel.ChunkPendingTransactionStore
   alias SceneServer.CliObserve
+  alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
   alias SceneServer.Voxel.Field.CircuitComponentAnalysis
@@ -27,6 +28,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.SimulationTick
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.TagCatalog
+  alias SceneServer.Voxel.TagSet
   alias SceneServer.Voxel.Types
 
   import Bitwise
@@ -2514,6 +2517,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :transform_material, attrs} ->
         apply_transform_material_effect(state, attrs, context)
 
+      # 功能完善 · 反应层 R5b:燃烧 tag 增删(:burning)。
+      {:ok, :set_tag, attrs} ->
+        apply_set_tag_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -2554,6 +2561,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   defp normalize_field_effect_action(:write_voxel_attribute), do: :write_voxel_attribute
   defp normalize_field_effect_action("write_voxel_attribute"), do: :write_voxel_attribute
+  defp normalize_field_effect_action(:set_tag), do: :set_tag
+  defp normalize_field_effect_action("set_tag"), do: :set_tag
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -2571,6 +2580,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
           attrs = maybe_put_effect_alias(attrs, :target_temperature, [:target_value, :value])
           apply_target_temperature_attribute_effect(state, attrs, context)
         end
+
+      # 功能完善 · 反应层 R5b:任意已注册动态属性的 delta 累进写(如 burn_progress)。
+      attr_name when is_binary(attr_name) and attr_name != "" ->
+        apply_dynamic_attribute_delta_effect(state, attr_name, attrs, context)
 
       unsupported ->
         result = %{
@@ -2691,6 +2704,182 @@ defmodule SceneServer.Voxel.ChunkProcess do
       %NormalBlockData{material_id: other} -> {:error, {:from_material_mismatch, other}}
       _other -> {:error, :not_a_normal_block}
     end
+  end
+
+  # 功能完善 · 反应层 R5b:动态属性 delta 累进写(read-modify-write,如 burn_progress 每 tick +Δ)。
+  # add_delta 属性的 stored 值即"对 baseline 的偏移";写入须读旧 + Δ 后 clip 到 catalog [min,max] 重写。
+  defp apply_dynamic_attribute_delta_effect(state, attr_name, attrs, context) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_transform_macro(attrs),
+         {:ok, delta} <- fetch_attribute_delta(attrs),
+         {:ok, min_raw, max_raw} <- dynamic_attribute_bounds(attr_name),
+         true <- solid_cell?(state.storage, macro_index) or {:error, :attribute_target_not_solid} do
+      previous_raw = Storage.effective_attribute_at(state.storage, macro_index, attr_name)
+      new_raw = clamp_raw(previous_raw + round(delta * @fixed32_scale), min_raw, max_raw)
+      next_version = state.storage.chunk_version + 1
+
+      opts = [
+        cell_version: next_version,
+        cell_hash:
+          Hash.digest32(inspect({:attr_delta, attr_name, macro_index, new_raw, next_version}))
+      ]
+
+      next_storage =
+        state.storage
+        |> Storage.put_attribute_for_cell(macro_index, attr_name, new_raw, opts)
+        |> bump_chunk_version()
+
+      next_state = %{state | storage: next_storage}
+      push_snapshot_fallbacks(next_state, :reaction_attribute_write)
+
+      result = %{
+        status: :applied,
+        action: :write_voxel_attribute,
+        attribute: attr_name,
+        delta: delta,
+        value_raw: new_raw,
+        chunk_version: next_storage.chunk_version
+      }
+
+      emit_field_effect_applied(next_state, result, context)
+      {result, next_state}
+    else
+      {:error, reason} -> reject_attribute_write(state, attr_name, reason, context)
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] ->
+      reject_attribute_write(state, attr_name, :invalid_dynamic_attribute_write, context)
+  end
+
+  defp fetch_attribute_delta(attrs) do
+    case fetch_optional(attrs, [:delta]) do
+      n when is_number(n) -> {:ok, n}
+      _other -> {:error, :missing_attribute_delta}
+    end
+  end
+
+  defp dynamic_attribute_bounds(attr_name) do
+    case AttributeCatalog.lookup_by_name(attr_name) do
+      {:ok, _id, defn} -> {:ok, defn.min_value, defn.max_value}
+      _other -> {:error, :unknown_dynamic_attribute}
+    end
+  end
+
+  defp clamp_raw(value, lo, hi), do: value |> max(lo) |> min(hi)
+
+  defp reject_attribute_write(state, attr_name, reason, context) do
+    result = %{
+      status: :rejected,
+      action: :write_voxel_attribute,
+      attribute: attr_name,
+      reason: reason
+    }
+
+    emit_field_effect_rejected(state, result, context)
+    {result, state}
+  end
+
+  # 功能完善 · 反应层 R5b:set_tag 加/减 per-cell 动态 tag(:burning 等)。tag 名 → id(TagCatalog)
+  # → 合并现有 tag_set → intern → 换 tag_set_ref。无变化幂等(不 bump 版本)。
+  defp apply_set_tag_effect(state, attrs, context) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_transform_macro(attrs),
+         %NormalBlockData{} = block <- normal_block_for_tag(state.storage, macro_index),
+         {:ok, add_ids} <- resolve_tag_ids(Map.get(attrs, :add, [])),
+         {:ok, remove_ids} <- resolve_tag_ids(Map.get(attrs, :remove, [])) do
+      current_ids = current_tag_ids(state.storage, block.tag_set_ref)
+      new_ids = ((current_ids ++ add_ids) -- remove_ids) |> Enum.uniq() |> Enum.sort()
+
+      if new_ids == Enum.sort(current_ids) do
+        result = %{status: :applied, action: :set_tag, macro_index: macro_index, changed?: false}
+        emit_field_effect_applied(state, result, context)
+        {result, state}
+      else
+        # 空集 = 无 tag(canonical ref 0),不 intern 空集(intern 空集会 raise)。
+        {interned_storage, ref} =
+          case new_ids do
+            [] -> {state.storage, 0}
+            _non_empty -> Storage.intern_tag_set(state.storage, %TagSet{tag_ids: new_ids})
+          end
+
+        next_version = interned_storage.chunk_version + 1
+
+        opts = [
+          cell_version: next_version,
+          cell_hash: Hash.digest32(inspect({:set_tag, macro_index, new_ids, next_version}))
+        ]
+
+        next_storage =
+          interned_storage
+          |> Storage.put_solid_block(macro_index, %{block | tag_set_ref: ref}, opts)
+          |> bump_chunk_version()
+
+        next_state = %{state | storage: next_storage}
+        push_snapshot_fallbacks(next_state, :reaction_set_tag)
+
+        result = %{
+          status: :applied,
+          action: :set_tag,
+          macro_index: macro_index,
+          add: Map.get(attrs, :add, []),
+          remove: Map.get(attrs, :remove, []),
+          changed?: true,
+          chunk_version: next_storage.chunk_version
+        }
+
+        emit_field_effect_applied(next_state, result, context)
+        {result, next_state}
+      end
+    else
+      {:error, reason} -> reject_set_tag(state, reason, context)
+      _other -> reject_set_tag(state, :set_tag_target_invalid, context)
+    end
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] ->
+      reject_set_tag(state, :invalid_set_tag, context)
+  end
+
+  defp normal_block_for_tag(storage, macro_index) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %NormalBlockData{} = block -> block
+      _other -> {:error, :set_tag_target_not_solid}
+    end
+  end
+
+  defp resolve_tag_ids(names) when is_list(names) do
+    result =
+      Enum.reduce_while(names, {:ok, []}, fn name, {:ok, acc} ->
+        case TagCatalog.lookup_by_name(to_string(name)) do
+          {:ok, id, _defn} -> {:cont, {:ok, [id | acc]}}
+          _other -> {:halt, {:error, {:unknown_tag, name}}}
+        end
+      end)
+
+    case result do
+      {:ok, ids} -> {:ok, Enum.reverse(ids)}
+      error -> error
+    end
+  end
+
+  defp resolve_tag_ids(_other), do: {:ok, []}
+
+  defp current_tag_ids(_storage, ref) when ref in [0, nil], do: []
+
+  defp current_tag_ids(storage, ref) when is_integer(ref) and ref > 0 do
+    case Enum.at(storage.tag_sets, ref - 1) do
+      %TagSet{tag_ids: ids} -> ids
+      _other -> []
+    end
+  end
+
+  defp current_tag_ids(_storage, _ref), do: []
+
+  defp reject_set_tag(state, reason, context) do
+    result = %{status: :rejected, action: :set_tag, reason: reason}
+    emit_field_effect_rejected(state, result, context)
+    {result, state}
   end
 
   defp apply_heat_energy_attribute_effect(state, attrs, context) do

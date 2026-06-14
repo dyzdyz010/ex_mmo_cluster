@@ -158,6 +158,65 @@ defmodule SceneServer.Voxel.Field.SystemActorTest do
     assert_receive {:committed, [{:transform_material, _}]}
   end
 
+  # 功能完善 · 反应层 R5b:连续注入效果(燃烧)绕去抖锁存,每 tick 都提交。
+  defp heat_effect(macro_index, joules) do
+    {:write_voxel_attribute,
+     %{attribute: :temperature, macro_index: macro_index, heat_energy_joules: joules}}
+  end
+
+  defp burn_progress_effect(macro_index, delta) do
+    {:write_voxel_attribute,
+     %{attribute: "burn_progress", macro_index: macro_index, delta: delta}}
+  end
+
+  defp set_tag_effect(macro_index, add, remove) do
+    {:set_tag, %{macro_index: macro_index, add: add, remove: remove}}
+  end
+
+  test "heat_energy_joules 连续注热绕锁存:重复提交都 commit(火自维持)" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    assert {:ok, %{committed_count: 1, latched_count: 0}} =
+             SystemActor.submit_field_effects(sa, chunk, [heat_effect(0, 30_000_000.0)], ctx(1))
+
+    assert_receive {:committed, _}
+
+    # 同 cell 同效果再来 → 仍 commit(不被去抖锁存,否则火熄)。
+    assert {:ok, %{committed_count: 1, latched_count: 0}} =
+             SystemActor.submit_field_effects(sa, chunk, [heat_effect(0, 30_000_000.0)], ctx(2))
+
+    assert_receive {:committed, _}
+  end
+
+  test "burn_progress delta 累进绕锁存:重复提交都 commit" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    SystemActor.submit_field_effects(sa, chunk, [burn_progress_effect(0, 0.025)], ctx(1))
+    assert_receive {:committed, _}
+
+    assert {:ok, %{committed_count: 1}} =
+             SystemActor.submit_field_effects(sa, chunk, [burn_progress_effect(0, 0.025)], ctx(2))
+
+    assert_receive {:committed, _}
+  end
+
+  test "set_tag 始终 commit(storage 幂等 + 规则前置门控)" do
+    sa = start_sa()
+    chunk = start_chunk()
+
+    assert {:ok, %{committed_count: 1}} =
+             SystemActor.submit_field_effects(
+               sa,
+               chunk,
+               [set_tag_effect(0, [:burning], [])],
+               ctx(1)
+             )
+
+    assert_receive {:committed, [{:set_tag, _}]}
+  end
+
   test "snapshot / reset" do
     sa = start_sa()
     chunk = start_chunk()
