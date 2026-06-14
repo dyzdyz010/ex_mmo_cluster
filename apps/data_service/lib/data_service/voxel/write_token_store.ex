@@ -17,6 +17,8 @@ defmodule DataService.Voxel.WriteTokenStore do
   """
 
   use GenServer
+  # PERS-5:durable_authoritative(lease 写令牌 fence)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
 
   import Ecto.Query, only: [from: 2]
 

@@ -52,6 +52,20 @@ defmodule MmoContracts.StateRegistry do
       note: "region 所有权目录/owner_epoch/lease 持久化"
     },
     %{
+      holder: DataService.Voxel.WriteTokenStore,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "PERS-5/CELL-19/21",
+      note: "lease 写令牌 fence(梯队1 step1.2 改 Postgres durable)"
+    },
+    %{
+      holder: DataService.Voxel.RegionEpochStore,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "PERS-5/CELL-18/23",
+      note: "owner_epoch 线性化分配器(梯队1 step1.3,消除 ANTI-32)"
+    },
+    %{
       holder: WorldServer.Voxel.MapLedger,
       state_class: :durable_authoritative,
       app: :world_server,

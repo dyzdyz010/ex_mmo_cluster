@@ -14,6 +14,9 @@ defmodule DataService.Voxel.RegionEpochStore do
   `MmoContracts.StateRegistry`(durable_authoritative)。
   """
 
+  # PERS-5:durable_authoritative(owner_epoch 线性化分配器)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   alias DataService.Repo
 
   @doc """
