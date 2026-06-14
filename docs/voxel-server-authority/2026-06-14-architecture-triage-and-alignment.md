@@ -200,6 +200,19 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 4 部分:删除 coordinate_system crate,BND-1/NIF-12/ANTI-3)**：审计确认运行时
+  AOI 已只用 `Octree`(`CoordinateSystem.new_system` 早注释),coordinate_system 仅余 aoi_manager 两处
+  typespec(`CoordinateSystem.Types.item/.coordinate_system` → 改 `reference()`)+ 一个 NIF 测试。
+  删除整 Rust crate(`native/coordinate_system/`)+ Elixir 绑定(`native/coordinate_system/*.ex`)+
+  测试(`test/native/coordinate_system_test.exs`)+ 未跟踪 dll;native README 收敛。**该 crate 的
+  panic 源(step2.5 特意排除的)随之消失。** umbrella 编译 0 回归;scene 908 全绿(原 924 − 16 个
+  coordinate_system NIF 测试)。剩余梯队 4:data_init 降迁移脚本、WriteTokenStore 兼容垫片移除、
+  残留 atom 死引用、cargo workspace 收敛(MOD-3)。
+- **2026-06-14(梯队 2 step2.5/2.6:NIF 故障隔离 + 节点级 SimRuntime)**:2.5 移 movement.rs SystemTime
+  panic 源 + 4 cdylib 加 `panic="unwind"` 守卫(NIF-6/11/15);2.6 新建 `SceneServer.Voxel.Field.SimRuntime`
+  节点级统一 clock + CPU 预算驱动场 tick,FieldTickWorker 改订阅式 run_tick(取代 send_after 自调度,
+  NIF-1/5)。详见 [`phase-align-2-nif-fault-and-data-ownership.md`](./phase-align-2-nif-fault-and-data-ownership.md)。
+  剩余梯队 2:2.7 ResourceArc<CellSim> 数据归属(BND-1)。回归 scene 918/field 149 全绿。
 - **2026-06-14(梯队 1 收口,step1.6 entity_handoff + cell_migration 正名)**：1.6a 把现有
   `MigrationPlan` formalize 为 cell_migration(补 migration_tick/commit_watermark + cutover 发
   `CellMigration` 信封,owner_epoch 仅此递增);1.6b 新建 `WorldServer.Entity.HandoffPlan` entity_handoff

@@ -11,7 +11,6 @@ defmodule SceneServer.AoiManager do
 
   require Logger
 
-  alias SceneServer.Native.CoordinateSystem
   alias SceneServer.Native.Octree
 
   # APIs
@@ -38,7 +37,7 @@ defmodule SceneServer.AoiManager do
     )
   end
 
-  @spec remove_aoi_item(CoordinateSystem.Types.item()) :: {:ok, any()} | {:err, any()}
+  @spec remove_aoi_item(reference()) :: {:ok, any()} | {:err, any()}
   @doc "Removes an actor from the AOI index by CID."
   def remove_aoi_item(cid) do
     GenServer.call(__MODULE__, {:remove_aoi_item, cid})
@@ -185,9 +184,9 @@ defmodule SceneServer.AoiManager do
 
   # Internal functions
 
-  @spec create_system() :: SceneServer.Native.CoordinateSystem.Types.coordinate_system()
+  @spec create_system() :: reference()
   defp create_system() do
-    # {:ok, system} = SceneServer.Native.CoordinateSystem.new_system(10000, 5)
+    # 梯队4:旧 coordinate_system crate 已删除,AOI 索引以 Octree 为唯一空间结构。
     system = Octree.new_tree({0.0, 0.0, 0.0}, {5000.0, 5000.0, 5000.0})
 
     system

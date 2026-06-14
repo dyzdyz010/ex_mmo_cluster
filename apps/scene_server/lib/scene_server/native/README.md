@@ -15,9 +15,7 @@ This directory contains Elixir-side Rustler adapters for native runtime pieces.
 - `scene_ops/scene_ops.ex`
   - native scene/physics operations on character data
 - `octree/`
-  - AOI spatial index backend
-- `coordinate_system/`
-  - older/native coordinate helpers retained for lower-level operations/tests
+  - AOI spatial index backend(AOI 唯一空间结构)
 
 ## Design rule
 
