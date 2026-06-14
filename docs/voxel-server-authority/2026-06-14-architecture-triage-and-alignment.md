@@ -200,6 +200,16 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 4 遗留清理 · 部分)**：按"架构重构优先"调整,移除审计判定舍弃的遗留 app——
+  `agent_server`/`agent_manager`(传统 MMO 空壳,ANTI-5)、`data_store`/`data_contact`(旧 Mnesia 集群,
+  ANTI-8/已退役)。从 umbrella + 根 release 移除;umbrella 编译 0 回归。当前 9 个 app:auth/beacon/
+  data_init/data_service/gate/mmo_contracts/scene/visualize/world。残留 atom 死引用(data_init.copy_database、
+  beacon await(:data_contact))列入功能完善阶段。剩余梯队4:data_init 降迁移脚本、WriteTokenStore 兼容
+  垫片移除、cargo workspace 收敛(MOD-3)。
+- **2026-06-14(梯队 1 大部完成)**：AUTH-2(D-4)、PERS-5(全三层)、CELL-19/21(WriteTokenStore→Postgres)、
+  CELL-18/23(RegionEpochStore+MapLedger epoch 线性化,防双主)、AUTH-4 原语(CommandLog)、TIME-1
+  (cell_tick/sim_time)均已落地全绿。剩余 1.5b command_id 跨层线程化、1.6 entity_handoff。详见
+  [`phase-align-1-distributed-correctness.md`](./phase-align-1-distributed-correctness.md)。
 - **2026-06-14(梯队 1 决策稿)**：[`phase-align-1-distributed-correctness.md`](./phase-align-1-distributed-correctness.md) 落定——子步 1.1 cell_tick/sim_time、1.2 WriteTokenStore 落库、1.3 epoch 线性化(DB 条件写,消除 ANTI-32)、1.4 单调时钟自检、1.5 prefab durable-before-ack + command_id 幂等、1.6 entity_handoff 幂等协议 + cell_migration 正名。决策点 D1-1~D1-7。下一步执行 step 1.1/1.2。
 - **2026-06-14(梯队 0 收口)**：契约骨架前置完成。新建 `apps/mmo_contracts`(StateClass + 10 个 FROZEN-5 信封 + CellId + StateClassed 宏 + StateRegistry 清单,47 测试);data_service 接入 mmo_contracts 并把 5 个 durable 持有者 `use StateClassed` 自声明 + 一致性测试(82 测试 0 回归);建 `mmo_dev` 库 + migrate。详见 [`phase-align-0-contract-skeleton.md`](./phase-align-0-contract-skeleton.md)。scene/world 持有者自声明随各梯队增量接入。**下一步:梯队 1 分布式正确性地基(D-3 高优)。**
 - **2026-06-14**：固化分诊结论；四项定位拍板 D-1~D-4 落定；规范反哺修订 7 条应用为 v2.0.2（附录 C 留痕）。迁移梯队 0→4 任务建立。
