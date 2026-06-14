@@ -48,8 +48,6 @@ defmodule Cluster.MixProject do
           # Game logic
           world_server: :permanent,
           scene_server: :load,
-          agent_manager: :permanent,
-          agent_server: :permanent,
           # Edge
           gate_server: :permanent,
           auth_server: :permanent,
