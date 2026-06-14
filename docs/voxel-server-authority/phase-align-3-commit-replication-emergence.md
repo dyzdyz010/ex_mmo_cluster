@@ -173,6 +173,22 @@ chunk 合并到最新)非清零**;追踪队列深度,shed 时 emit observe(`repl
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 3.10a/b 统一 Replicator(REPL-2/4/6、NET-3/4/5、LOAD-5)完成**。
+  - **3.10a** 纯核 `GateServer.Replication.Egress`:per-observer token bucket 惰性补充出口预算 + 可靠性
+    四分类(reliable_ordered 控制绕预算最先发 / reliable_unordered delta 链保序不合并 / unreliable_snapshot
+    同 key 合并最新 / bulk_stream 独立队列剩余预算最后发)+ REPL-6 聚合 + NET-3/4/5 背压(reliable 溢出丢
+    最旧登记 resync,显式非静默)。实例化梯队0 `ReplicationOut` 信封(gate 加 mmo_contracts 直接依赖)。
+    15 单测;gate 212 全绿。新模块构造上 0 回归。
+  - **3.10b** 接线:ws_connection chunk snapshot/delta/invalidate 下行改经 Egress 出口预算;正常负载即时
+    排空(D3.10-6 0 回归不变量验证),压力下憋帧 + **自限定 flush 定时器**排空 backlog(仅压力下活跃);
+    delta 链溢出 emit `ws_replicator_resync_needed`。**cell_id 抉择**:不改 scene 扇出契约(避免破坏约 40
+    处 chunk_process 测试断言),用连接级 frame seq 作 cell_id(live FIFO 无合并;per-cell 聚合待 3.10c
+    scene 填 `ReplicationOut.cell_id` 激活)。预算/窗经 app env 可调。3 集成测试;gate 215 全绿(含重 E2E voxel)。
+  - **承重达成**:高频连续 chunk 流经 per-observer 出口预算(REPL-2 [v2.0.2])+ 可靠性分类(REPL-4)+ bulk
+    隔离/背压(NET-3/4/5)+ LOAD-5 接口 day-1。**3.10c(scene cell_id 填实激活 live 聚合 / object+field 下行
+    接入 / tcp 对齐 / unreliable→UDP fast_lane 传输路由)记为后续——传输路由依赖未启用的 UDP 实时流(NET-5
+    future),与现"fast_lane WS 路径未启用"一致。** 梯队 3 全部子步(3.8/3.9/3.10/3.11)落地。
+
 - 2026-06-14:**step 3.11 涌现模型卡(EMG-1/3/7)完成**。新建 `SceneServer.Voxel.Field.ModelCard`
   (`fidelity_class` ∈ `:qualitative`/`:semi_quantitative`/`:quantitative` + `safety_valve`(熔断/预算)
   + `assumptions` + `new!/1` 校验 + `summary/1` 紧凑摘要)+ `ModelCardRegistry`(枚举聚合,`cards/0`/

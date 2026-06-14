@@ -200,17 +200,20 @@
 
 ## 7. 进度日志（时间倒序）
 
-- **2026-06-14(梯队 3 step3.8/3.9/3.11 完成,提交/涌现契约)**：3.8 derived→authoritative
+- **2026-06-14(梯队 3 全部完成,提交/复制/涌现契约)**：3.8 derived→authoritative
   `SystemActor` 桥 + `CandidateEffect` 阈值滞回锁存(RULE-11/15/16、AUTH-11),ChunkProcess 不再直写
   field effect;3.9 durable `voxel_outbox` + `visibility_watermark` 闸门(AUTH-8/9/10,承重正确性由
-  durable-before-ack 满足,outbox 提供 AUTH-9/10 可靠重投);3.11 涌现模型卡——新建 `ModelCard`
-  (fidelity_class + safety_valve + assumptions)+ `ModelCardRegistry`,`Kernel` behaviour 加**强制**
-  `@callback model_card/0`,5 涌现 kernel 全自描述(EMG-1/3/7)。**RULE-4 flux ledger 经温度卡
-  `:semi_quantitative` + "flux ledger 待补" assumption 显式审计化**(EMG-1 把已知局限透明化而非隐藏,
-  严格守恒升 quantitative 档时再补 Rust 结算)。详见
+  durable-before-ack 满足,outbox 提供 AUTH-9/10 可靠重投);**3.10 统一 Replicator(REPL-2/4/6、
+  NET-3/4/5、LOAD-5)**——新建 gate 侧逻辑层 `GateServer.Replication.Egress`(per-observer token bucket
+  出口预算 + 可靠性四分类 + REPL-6 聚合 + bulk 隔离/背压),ws_connection chunk 流接入(正常负载 0 回归、
+  压力下憋帧 + 自限定 flush);3.10c(scene 填 cell_id 激活 live 聚合 / object+field 接入 / tcp 对齐 /
+  UDP 传输路由)记为后续 NET-5 future;3.11 涌现模型卡——`ModelCard`(fidelity_class + safety_valve +
+  assumptions)+ `ModelCardRegistry`,`Kernel` behaviour 加**强制** `@callback model_card/0`,5 涌现 kernel
+  全自描述(EMG-1/3/7)。**RULE-4 flux ledger 经温度卡 `:semi_quantitative` + "flux ledger 待补"
+  assumption 显式审计化**(EMG-1 透明化已知局限,严格守恒升 quantitative 档再补 Rust 结算)。详见
   [`phase-align-3-commit-replication-emergence.md`](./phase-align-3-commit-replication-emergence.md)。
-  回归 field 178 全绿、隔离 ChunkProcessTest 46/46 零净回归。**梯队 3 实质完成;剩 3.10 统一
-  Replicator(REPL-2/4/6,MOD-1 放宽为逻辑层)。**
+  回归 gate 215 / field 178 全绿、隔离 ChunkProcessTest 46/46 零净回归。**梯队 3(提交/复制/涌现契约)
+  全部子步落地;剩梯队 4 收尾清理。**
 - **2026-06-14(梯队 4 部分:删除 coordinate_system crate,BND-1/NIF-12/ANTI-3)**：审计确认运行时
   AOI 已只用 `Octree`(`CoordinateSystem.new_system` 早注释),coordinate_system 仅余 aoi_manager 两处
   typespec(`CoordinateSystem.Types.item/.coordinate_system` → 改 `reference()`)+ 一个 NIF 测试。
