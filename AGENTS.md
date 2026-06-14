@@ -1,28 +1,102 @@
-# Repo Instructions
+# AGENTS.md — ex_mmo_cluster（Elixir/OTP MMORPG 集群）
 
-## 项目约定
+> 本文件是本仓库**跨工具的工程准则单一来源**。任何 AI 代理在本仓库工作前必读。
+> `CLAUDE.md` 可补充工具专属执行细节与较长背景，但工程纪律以本文件为准。
+> 根文档入口：`README.md`；项目概览：`docs/2026-04-10-项目概览.md`；协议规范：`docs/2026-04-10-线协议规范.md`。
 
-- 对客户端 / 服务端联调与验收，优先提供并使用 **CLI 可观测接口 + 结构化日志**，不要把截图或视觉检查作为唯一判断依据。
-- 新增或修改交互式运行时逻辑时，应尽量同时暴露非 GUI 的调试面，至少要能从命令行读取连接状态、输入意图、移动坐标、消息收发和错误原因。
-- 可观测产物应默认写入可复现、易清理的位置（优先 `.demo/observe/` 或显式配置的 observe 目录），便于后续自动化调试与回归。
-- 调试思考的最高优先级：先定义“如果这段运行时逻辑出错，我需要从 CLI / 日志直接读到哪些状态、输入、输出、错误原因”，再实现功能本身。不要先做 GUI 再补调试面。
-- 对浏览器客户端也必须提供等价的非 GUI 调试面，例如 `window` 暴露的 CLI 命令入口、结构化 observe 日志、可导出的运行时快照；目标是“调试时需要什么数据，CLI 通过日志就能返回什么数据”。
-- 每次实现的功能都必须同时做到可验证、可测试、可操作；不能只实现底层核心而让用户无法触发、无法观察、无法判断功能是否正确。
-- 涉及用户交互的功能必须提供真实用户操作入口、自动化测试入口、CLI/日志验证入口，并在最终验收中覆盖这些入口。
-- 后续新增或重构代码时，应同步维护代码旁文档：
-  - Elixir 公共模块补 `@moduledoc`，公共函数补 `@doc`
-  - Rust 公共模块补 `//!`，公共类型/函数补 `///`
-  - 对 authority / actor / adapter / supervisor 边界要写明“谁拥有状态、谁只做转发/适配”
-- 当一个目录形成稳定子系统（如 `movement/`、`combat/`、`npc/`、`worker/`、`sup/`、客户端子目录等）时，应在该目录内放置 `README.md`，说明职责、结构和相互关系。
-- 涉及监督树、运行时分层、协议层与实现层关系变化的修改，必须同步更新最近的目录 README 或阶段进度文档，而不是只修改代码。
+## 1. 项目是什么
+
+`ex_mmo_cluster` 是一个用于探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目。系统由 `gate_server`、`scene_server`、`world_server`、`agent_server`、`auth_server`、`data_service`、`beacon_server` 等应用组成，核心方向是服务端权威的移动、AOI、体素、局部场和后续物理现象运行时。
+
+当前真实状态：
+
+- 自定义二进制协议、PostgreSQL / Ecto 主路径、`libcluster + Horde` 服务发现已经落地。
+- 体素服务器权威化 Phase 1-6 已收口：refined truth、typed edit intent、prefab 事务、object provenance、属性目录、温湿度模拟、FieldLayer / FieldRegion / FieldDebugOverlay 均已具备基础能力。
+- 当前推进重点是 Phase 7+ 局部场运行时：`FieldKernel`、`FieldRuntime`、`FieldSource`、`FieldEffect`、导电 / 电热 / 热烟、source 生命周期、跨 chunk / AOI 预算和 Phase 8 effect 边界。
+- `clients/web_client` 是当前主线客户端和端到端验证端；`clients/bevy_client` 只作参考实现，不作为默认 parity 或主线验收目标。
+- Mnesia 相关 app 仍是迁移期兼容组件；不要把旧拓扑或实验入口误认为最终架构。
+
+## 2. 技术栈
+
+- **语言 / 运行时**：Elixir 1.19.x、Erlang/OTP 28，版本以 `.tool-versions` 为准。
+- **项目形态**：Mix umbrella，根 `mix.exs` 编排多个 OTP app；Phoenix app 位于 `auth_server`、`visualize_server`。
+- **Web / UI**：Phoenix 1.8、LiveView 1.1、Bandit、Tailwind CSS 4、esbuild。
+- **通信协议**：`gate_server` 使用自定义二进制 codec（`GateServer.Codec`），TCP 使用 `{packet, 4}` 分帧；协议变更必须维护 wire layout 兼容性和文档。
+- **数据层**：`data_service` 以 PostgreSQL / Ecto 为主路径；`data_init`、`data_store`、`data_contact` 是迁移期 Mnesia 兼容组件。
+- **集群 / 服务发现**：`beacon_server` 通过 `libcluster + Horde` 提供分布式发现，跨 app 通信应走 Interface 模块与 `BeaconServer.Client`。
+- **体素 / 局部场**：`scene_server` 持有 chunk hot truth、voxel storage、object provenance、FieldRegion / FieldKernel；`world_server` 负责事务协调、region / scene 路由和跨 app 编排。
+- **原生扩展**：`scene_server` 使用 Rustler 0.37.3 绑定 Rust NIF，承载 movement、physics、octree、field kernel 计算等性能敏感逻辑；authority、状态写入、observe 和事务边界仍在 Elixir 层。
+- **客户端**：`clients/web_client` 是当前主线端到端验证端；`clients/bevy_client` 保留为 Rust / Bevy 参考实现。
+
+## 3. 架构铁律
+
+1. **服务端权威优先**：移动、AOI、战斗、体素、object state、field truth 等核心运行时状态以服务端 authority 为准。客户端可以预测、预览和呈现，但不能成为 confirmed truth 来源。
+2. **confirmed voxel truth 只吃服务端**：在线 `web_client` 只能通过服务端 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot` 更新确认态；本地编辑只允许作为 preview、pending UI 或离线模式能力。
+3. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；World 负责事务、region / scene 路由和跨 app 编排；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 负责 canonical persistence；客户端只消费权威结果。
+4. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；voxel / object / combat truth 写回必须经过 ChunkProcess 或明确的 authority dispatcher。
+5. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
+6. **协议层只追加不破坏**：新增 wire 字段必须保持旧字段字节序和含义稳定；涉及客户端 decoder 的改动，默认以 `clients/web_client` parity / 字节序验收为准。
+7. **显式失败，不静默降级**：连接、鉴权、movement reconcile、voxel intent、field source、kernel effect、消息编解码、NIF 调用、持久化写入失败时，要返回可诊断错误并打结构化日志；禁止吞错后伪装成功。
+8. **迁移期兼容要可见**：PostgreSQL 主路径与 Mnesia 遗留路径并存时，代码和文档必须标明当前来源、兼容原因、退出条件。
+
+## 4. 工程方法约束
+
+1. **CLI + 结构化日志优先**：客户端 / 服务端联调与验收优先使用 CLI 可观测接口和结构化日志，不把截图或视觉检查作为唯一判断依据。
+2. **先定义可观测面再实现**：新增或修改交互式运行时逻辑前，先明确调试时需要从 CLI / 日志直接读到哪些状态、输入、输出、错误原因，再实现功能本身。
+3. **非 GUI 调试面必须等价**：浏览器客户端也要提供等价的非 GUI 调试面，例如 `window` 暴露的命令入口、结构化 observe 日志、可导出的运行时快照。
+4. **观察产物可复现、易清理**：默认写入 `.demo/observe/` 或显式配置的 observe 目录，便于自动化调试与回归。
+5. **功能必须可验证、可测试、可操作**：不能只实现底层核心而让用户无法触发、无法观察、无法判断是否正确。
+6. **用户交互必须三入口覆盖**：涉及用户交互的功能必须提供真实用户操作入口、自动化测试入口、CLI / 日志验证入口，并在最终验收中覆盖这些入口。
+7. **禁止补丁式修复**：遇到 bug 先定位根因和边界归属，再修复；不要用局部 hack、吞错、硬编码等待、临时绕路掩盖架构问题。
+8. **阶段性改动先有决策稿**：新增 phase、重排运行时边界、协议扩展、事务 / supervisor / field runtime 变化，应先在 `docs/voxel-server-authority/` 或 `docs/plans/` 写目标、范围、决策项、测试矩阵和进度日志。
+9. **不确定就查本仓真相源**：对 Phoenix / LiveView / Ecto / Rustler / 协议语义 / FieldRuntime / voxel 事务不确定时，先查本仓 README、阶段文档、协议文档、目录 README 和现有测试，再动手。
+10. **复杂任务职责隔离**：复杂改动尽量把设计、实现、验证分开做；最终说明中要区分实现内容、验证证据和残余风险。
+11. **代码旁文档同步维护**：
+   - Elixir 公共模块补 `@moduledoc`，公共函数补 `@doc`。
+   - Rust 公共模块补 `//!`，公共类型 / 函数补 `///`。
+   - 稳定子系统目录（如 `movement/`、`combat/`、`npc/`、`worker/`、`sup/`、客户端子目录）应有 `README.md` 说明职责、结构和关系。
+   - 涉及监督树、运行时分层、协议层与实现层关系变化的修改，必须同步更新最近的目录 README 或阶段进度文档。
+
+## 5. 推荐工作流
+
+1. **定位影响范围**：先判断改动属于哪个 app、`clients/web_client`、协议层、NIF、数据层、voxel、field runtime 或文档主线。
+2. **读最近文档**：优先读所在目录 `README.md`、相关 `docs/` 阶段文档和测试入口。体素 / 局部场相关改动先读 `docs/voxel-server-authority/README.md` 与 `docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`。
+3. **设计可观测性**：定义 CLI / browser `window.__voxelCli` / observe 产物字段，尤其是连接状态、输入意图、movement 坐标、voxel target、field source、region id、消息收发、错误原因。
+4. **实现与文档同步**：代码、测试、README / 阶段文档一起改；协议、监督树、事务、field runtime 或 authority 边界变化必须落文档。
+5. **验证闭环**：优先跑最小相关测试，再跑必要的 web client / browser / smoke；验收说明必须列出命令和可复现产物位置。
+
+## 6. 验证入口
+
+- 根级常规验证：`mix compile`、`mix test`。根 `mix.exs` 当前没有 `precommit` alias，不要假设 `mix precommit` 在 umbrella 根可用。
+- Phoenix app 验证：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`。
+- Web client 验证：`cd clients/web_client && npm test`；涉及构建 / 类型边界时补 `npm run build`。
+- WebSocket 双客户端 smoke：`node scripts/run_ws_dual_smoke_supervised.js`，结构化产物写入 `.demo/observe/`。
+- Browser / field smoke 优先通过 `window.__voxelCli.run("transport")`、`window.__voxelCli.run("voxel_sync")`、`window.__voxelCli.run("snapshot")`、`window.__voxelCli.run("field_overlay")` 取证。
+- Bevy stdio / live movement 脚本只作为参考实现或明确要求时使用，不作为默认主线验收入口。
+- 单 app 测试通常使用 `cd apps/<app> && mix test --no-start`，按影响范围选择。
+
+## 7. 关键路径
+
+- 根项目导航：`README.md`
+- 项目概览：`docs/2026-04-10-项目概览.md`
+- CLI 可观测策略：`docs/2026-04-12-cli-observability-debugging.md`
+- 线协议：`docs/2026-04-10-线协议规范.md`
+- 移动同步与体素主线：`docs/2026-04-20-移动同步架构实现.md`、`docs/voxel-server-authority/README.md`
+- Phase 7 局部场路线图：`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`
+- Field kernel 架构：`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`
+- Prefab 接入局部场：`docs/plans/2026-05-19-prefab-field-participant-projection.md`
+- 当前会话 / 后续接力：`docs/voxel-server-authority/_session-handoff.md`
+- 设计计划：`docs/superpowers/specs/`、`docs/superpowers/plans/`、`docs/plans/`
+- Web 客户端：`clients/web_client/README.md`
+- Bevy 客户端参考实现：`clients/bevy_client/README.md`
 
 ---
 
-以下为 Phoenix 1.8 web 应用（`auth_server`、`visualize_server`）的专项指南，由 `phx.new` 自动维护。
+以下为 Phoenix 1.8 web 应用（`auth_server`、`visualize_server`）的专项指南，由 `phx.new` 规则整理；如与上方仓库级约束冲突，以上方约束为准。
 
 ## Project guidelines
 
-- Use `mix precommit` alias when you are done with all changes and fix any pending issues
+- Use the app-level `mix precommit` alias in Phoenix apps (`apps/auth_server`, `apps/visualize_server`) when you are done with those changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
 ### Phoenix v1.8 guidelines
@@ -140,6 +214,18 @@ custom classes must fully style the input
 
 - `Phoenix.View` no longer is needed or included with Phoenix, don't use it
 <!-- phoenix:phoenix-end -->
+
+<!-- phoenix:ecto-start -->
+## Ecto Guidelines
+
+- **Always** preload Ecto associations in queries when they'll be accessed in templates, ie a message that needs to reference the `message.user.email`
+- Remember `import Ecto.Query` and other supporting modules when you write `seeds.exs`
+- `Ecto.Schema` fields always use the `:string` type, even for `:text`, columns, ie: `field :name, :string`
+- `Ecto.Changeset.validate_number/2` **DOES NOT SUPPORT the `:allow_nil` option**. By default, Ecto validations only run if a change for the given field exists and the change value is not nil, so such as option is never needed
+- You **must** use `Ecto.Changeset.get_field(changeset, :field)` to access changeset fields
+- Fields which are set programmatically, such as `user_id`, must not be listed in `cast` calls or similar for security purposes. Instead they must be explicitly set when creating the struct
+- **Always** invoke `mix ecto.gen.migration migration_name_using_underscores` when generating migration files, so the correct timestamp and conventions are applied
+<!-- phoenix:ecto-end -->
 
 <!-- phoenix:html-start -->
 ## Phoenix HTML guidelines
