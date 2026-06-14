@@ -53,6 +53,12 @@ defmodule SceneServer.TestVoxelRuntime do
       {SceneServer.Voxel.Field.SimRuntime, name: SceneServer.Voxel.Field.SimRuntime}
     )
 
+    # 梯队3 step3.8:SystemActor 在 FieldTickSupervisor 之前起(field effect 提交它)。
+    ensure_started!(
+      SceneServer.Voxel.Field.SystemActor,
+      {SceneServer.Voxel.Field.SystemActor, name: SceneServer.Voxel.Field.SystemActor}
+    )
+
     ensure_started!(
       SceneServer.Voxel.Field.FieldTickSupervisor,
       {SceneServer.Voxel.Field.FieldTickSupervisor,

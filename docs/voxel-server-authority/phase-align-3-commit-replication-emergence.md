@@ -97,6 +97,16 @@ ObjectRegistry 同级挂 VoxelSup。
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 3.8(system_actor 桥 + candidate_effect 阈值锁存)完成**。新建节点级
+  `SceneServer.Voxel.Field.SystemActor`(派生→权威唯一提交桥):field effect 包成 `CandidateEffect`
+  信封(稳定 `candidate_effect_id` = cell+rule+object+attribute+量化分桶,RULE-16 禁浮点原值);
+  **RULE-15 阈值锁存去抖**(per latch_key 追踪 last_committed_bucket,同桶 latch 幂等跳过、跨桶才提交,
+  消除逐格抖动反复翻转 truth);latch 命中经现有 `ChunkProcess.apply_field_effects` 落 truth;
+  unsupported effect 透传交 ChunkProcess 显式拒绝(不静默吞)。`FieldTickWorker.dispatch_field_effects`
+  **不再直调 ChunkProcess**,改 submit SystemActor;挂 VoxelSup + test_helper(FieldTickSupervisor 前)。
+  6 新 SystemActor 单测 + field 161 全绿;scene 全量 920 仅 8 个预存 observe-log flaky(隔离
+  ChunkProcessTest 46/46 全过确认非回归)。**剩 3.9 outbox+watermark、3.10 Replicator、3.11 flux+模型卡。**
+
 - 2026-06-14:决策稿落定。审计确认 field effect 直写 storage(违 RULE-11/AUTH-11)、无 outbox/watermark
   (违 AUTH-8/9/10)、复制打分寄居 AOI 无独立 Replicator(违 REPL-2/4/6)、无 flux 守恒/模型卡。拆
   3.8(system_actor 桥)/3.9(outbox+watermark)/3.10(Replicator)/3.11(flux+模型卡)。先执行 3.8。

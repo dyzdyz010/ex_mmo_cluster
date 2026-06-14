@@ -27,7 +27,8 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
     FieldLayer,
     FieldRegion,
     KernelContext,
-    SimRuntime
+    SimRuntime,
+    SystemActor
   }
 
   @default_tick_interval_ms 100
@@ -393,12 +394,17 @@ defmodule SceneServer.Voxel.Field.FieldTickWorker do
 
   defp dispatch_field_effects(_chunk_pid, _kernel_id, _region, []), do: :ok
 
+  # 梯队3 step3.8(RULE-11/AUTH-11):derived→authoritative 写回**不再直调 ChunkProcess**,改提交
+  # 节点级 SystemActor 桥(candidate_effect 阈值锁存 + 幂等后才经 ChunkProcess 落 truth)。
   defp dispatch_field_effects(chunk_pid, kernel_id, region, effects) do
-    case ChunkProcess.apply_field_effects(chunk_pid, effects, %{
-           region_id: region.region_id,
-           chunk_coord: region.chunk_coord,
-           kernel_id: kernel_id
-         }) do
+    context = %{
+      region_id: region.region_id,
+      chunk_coord: region.chunk_coord,
+      kernel_id: kernel_id,
+      source_tick: region.tick_count
+    }
+
+    case SystemActor.submit_field_effects(chunk_pid, effects, context) do
       {:ok, _summary} ->
         :ok
 

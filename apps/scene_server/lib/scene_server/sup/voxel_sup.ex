@@ -24,6 +24,9 @@ defmodule SceneServer.VoxelSup do
       # 梯队2 step2.6(NIF-1/5):节点级场仿真调度器,统一 clock + CPU 预算驱动所有 FieldTickWorker。
       # 必须在 FieldTickSupervisor 之前起(worker init 后 subscribe 它,缺失即显式 crash)。
       {SceneServer.Voxel.Field.SimRuntime, name: SceneServer.Voxel.Field.SimRuntime},
+      # 梯队3 step3.8(RULE-11/AUTH-11):派生→权威唯一提交桥(candidate_effect 阈值锁存 + 幂等)。
+      # 必须在 FieldTickSupervisor 之前起(FieldTickWorker 的 field effect 提交它)。
+      {SceneServer.Voxel.Field.SystemActor, name: SceneServer.Voxel.Field.SystemActor},
       # Phase 6: per-region field worker DynamicSupervisor must come up
       # before ChunkDirectory / ChunkProcess can spawn field workers.
       {SceneServer.Voxel.Field.FieldTickSupervisor,
