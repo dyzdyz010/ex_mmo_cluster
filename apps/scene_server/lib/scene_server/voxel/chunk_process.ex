@@ -411,12 +411,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
     simulation_tick = SimulationTick.new(simulators)
     schedule_simulation_tick()
 
+    # 梯队1 step1.1b(TIME-1):从持久化恢复 cell_tick/sim_time_ms,并加 restart gap 保证
+    # 跨重启/所有权变更严格单调(逻辑时钟允许跳变,只要不回退)。无持久化行则从 0 起。
+    {restored_cell_tick, restored_sim_time_ms} =
+      restore_cell_time(storage.logical_scene_id, storage.chunk_coord)
+
     {:ok,
      %{
        logical_scene_id: storage.logical_scene_id,
        chunk_coord: storage.chunk_coord,
        storage: storage,
        lease: lease,
+       cell_tick: restored_cell_tick,
+       sim_time_ms: restored_sim_time_ms,
        subscribers: %{},
        subscriber_monitors: %{},
        pending_fence: pending_fence,
@@ -1186,6 +1193,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # ---------------------------------------------------------------------------
 
   defp run_simulation_tick(%{simulation_tick: simulation_tick} = state) do
+    # 梯队1 step1.1b(TIME-1):每 sim tick 推进 cell_tick/sim_time_ms(cell 逻辑时钟,
+    # 与 simulator 是否实际跑无关);每 @cell_time_persist_every tick 单调落库(未持久化 chunk
+    # 为 no-op,不增 I/O)。
+    state = advance_cell_time(state)
+
     cond do
       lease_stale?(state.lease) ->
         emit_tick_skipped(state, simulation_tick, :lease_stale)
@@ -1202,6 +1214,33 @@ defmodule SceneServer.Voxel.ChunkProcess do
       true ->
         execute_simulation_tick(state, simulation_tick)
     end
+  end
+
+  # 梯队1 step1.1b(TIME-1):cell 逻辑时钟推进 + 周期单调落库。
+  @sim_tick_dt_ms 100
+  @cell_time_persist_every 50
+
+  defp advance_cell_time(state) do
+    next_cell_tick = state.cell_tick + 1
+    next_sim_time_ms = state.sim_time_ms + @sim_tick_dt_ms
+    next_state = %{state | cell_tick: next_cell_tick, sim_time_ms: next_sim_time_ms}
+
+    if rem(next_cell_tick, @cell_time_persist_every) == 0 do
+      persist_cell_time(next_state)
+    end
+
+    next_state
+  end
+
+  defp persist_cell_time(state) do
+    DataService.Voxel.ChunkSnapshotStore.touch_cell_time(
+      state.logical_scene_id,
+      state.chunk_coord,
+      state.cell_tick,
+      state.sim_time_ms
+    )
+  catch
+    :exit, _ -> :ok
   end
 
   defp execute_simulation_tick(state, simulation_tick) do
@@ -2866,6 +2905,25 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:error, reason}
       end
     end
+  end
+
+  # 梯队1 step1.1b(TIME-1):从持久化 chunk 行恢复 cell_tick/sim_time_ms。cell_tick 加
+  # restart gap 保证跨重启严格单调(逻辑时钟可跳变不可回退)。Repo 不可用时回 {0,0}。
+  @cell_tick_restart_gap 1000
+
+  defp restore_cell_time(logical_scene_id, chunk_coord) do
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
+      {:ok, snapshot} ->
+        cell_tick = Map.get(snapshot, :cell_tick, 0)
+        sim_time_ms = Map.get(snapshot, :sim_time_ms, 0)
+        restored = if cell_tick > 0, do: cell_tick + @cell_tick_restart_gap, else: 0
+        {restored, sim_time_ms}
+
+      _ ->
+        {0, 0}
+    end
+  catch
+    :exit, _ -> {0, 0}
   end
 
   defp validate_snapshot_write_token(lease, chunk_coord) do

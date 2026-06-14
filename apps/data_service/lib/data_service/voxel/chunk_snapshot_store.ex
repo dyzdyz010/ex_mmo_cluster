@@ -127,6 +127,37 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     end)
   end
 
+  @doc """
+  单调推进某 chunk 的 `cell_tick`/`sim_time_ms`(梯队1 step1.1b,TIME-1)。
+
+  `UPDATE ... SET cell_tick = GREATEST(cell_tick, $), sim_time_ms = GREATEST(...)` —— 永不回退;
+  行不存在时为 no-op。与 put_snapshot 解耦,故 cell_tick 不被 chunk 写路径的 default 0 覆盖。
+  """
+  @spec touch_cell_time(
+          non_neg_integer(),
+          chunk_coord() | [integer()],
+          non_neg_integer(),
+          non_neg_integer(),
+          keyword()
+        ) :: :ok | {:error, atom()}
+  def touch_cell_time(logical_scene_id, chunk_coord, cell_tick, sim_time_ms, opts \\ [])
+      when is_integer(cell_tick) and cell_tick >= 0 and is_integer(sim_time_ms) and
+             sim_time_ms >= 0 do
+    with :ok <- validate_non_neg_integer(logical_scene_id, :invalid_logical_scene_id),
+         {:ok, {x, y, z}} <- normalize_coord(chunk_coord) do
+      sql = """
+      UPDATE voxel_chunks
+         SET cell_tick = GREATEST(cell_tick, $5),
+             sim_time_ms = GREATEST(sim_time_ms, $6),
+             updated_at = now()
+       WHERE logical_scene_id = $1 AND coord_x = $2 AND coord_y = $3 AND coord_z = $4
+      """
+
+      Ecto.Adapters.SQL.query!(repo(opts), sql, [logical_scene_id, x, y, z, cell_tick, sim_time_ms])
+      :ok
+    end
+  end
+
   defp run_put_transaction(opts, snapshot) do
     repo = repo(opts)
 
@@ -237,9 +268,9 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
       owner_scene_instance_ref: snapshot.owner_scene_instance_ref,
       owner_epoch: snapshot.owner_epoch,
       chunk_version: snapshot.chunk_version,
-      # 梯队1 step1.1(TIME-1):Cell 时间字段,默认 0(向后兼容)。
-      cell_tick: Map.get(snapshot, :cell_tick, 0),
-      sim_time_ms: Map.get(snapshot, :sim_time_ms, 0),
+      # 梯队1 step1.1b(TIME-1):cell_tick/sim_time_ms 不由 put_snapshot 管理(避免 default 0
+      # 覆盖),改由 touch_cell_time UPDATE GREATEST 单调推进;此处不写这两列(INSERT 取 DB
+      # default 0,UPDATE 保持既有值)。
       chunk_hash: snapshot.chunk_hash,
       data: snapshot.data
     }
