@@ -1,10 +1,25 @@
 defmodule SceneServer.Voxel.Field.CellSimNativeTest do
-  # 梯队2 step2.7a:Rust ResourceArc<FieldLayerSim> 脚手架 NIF 冒烟(数据留 Rust)。
-  use ExUnit.Case, async: true
+  # 梯队2 step2.7a/2.7b:Rust ResourceArc<FieldLayerSim> 脚手架 + 句柄计算 NIF 数值等价。
+  # 电势等价测试用 AttributeCatalog 单例,故 async: false。
+  use ExUnit.Case, async: false
 
   alias SceneServer.Native.FieldKernel
+  alias SceneServer.Voxel.{AttributeCatalog, NormalBlockData, Storage, Types}
   alias SceneServer.Voxel.Field.FieldLayer
-  alias SceneServer.Voxel.Types
+  alias SceneServer.Voxel.Field.NativeBackend.ConductionPathInput
+  alias SceneServer.Voxel.Field.ParticipantProjection
+
+  @iron 5
+  @power_block 6
+
+  setup do
+    case start_supervised({AttributeCatalog, []}) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    :ok
+  end
 
   test "new returns a resource handle (reference)" do
     sim = FieldKernel.cell_sim_new(20.0, 0.0001, "float")
@@ -121,5 +136,72 @@ defmodule SceneServer.Voxel.Field.CellSimNativeTest do
     assert new_active == old_active
     # 双缓冲生效:热源扩散到 6 邻居 + 自身衰减,>1 个 active cell。
     assert length(new_active) > 1
+  end
+
+  # 梯队2 step2.7b:propagate_electric_potential_sim 句柄版 vs 旧路径(potential + ionization 两层)。
+  test "propagate_electric_potential_sim 与旧路径数值等价(两层)" do
+    aabb = {{0, 0, 0}, {3, 1, 0}}
+    projection = ParticipantProjection.build(conductive_storage())
+    entries = ConductionPathInput.conduction_entries(projection, aabb)
+    sources = [{Types.macro_index!({0, 0, 0}), 120.0}]
+
+    # 旧路径:NIF + apply 到两 FieldLayer(potential merge;ionization clear+apply)。
+    {potential_cells, ionization_cells} =
+      FieldKernel.propagate_electric_potential(sources, entries, aabb, [])
+
+    pot_layer = apply_cells(FieldLayer.new(baseline: 0.0, threshold: 0.0001), potential_cells)
+
+    ion_layer =
+      FieldLayer.new(baseline: 0.0, threshold: 0.0001)
+      |> clear_in_aabb(aabb)
+      |> apply_cells(ionization_cells)
+
+    old_pot = FieldLayer.active_cells(pot_layer, aabb, 0.0001)
+    old_ion = FieldLayer.active_cells(ion_layer, aabb, 0.0001)
+
+    # 新路径:两 CellSim + propagate_electric_potential_sim。
+    pot_sim = FieldKernel.cell_sim_new(0.0, 0.0001, "float")
+    ion_sim = FieldKernel.cell_sim_new(0.0, 0.0001, "float")
+
+    assert :ok =
+             FieldKernel.propagate_electric_potential_sim(
+               pot_sim,
+               ion_sim,
+               sources,
+               entries,
+               aabb
+             )
+
+    new_pot = FieldKernel.cell_sim_active_cells(pot_sim, aabb, 0.0001)
+    new_ion = FieldKernel.cell_sim_active_cells(ion_sim, aabb, 0.0001)
+
+    assert new_pot == old_pot
+    assert new_ion == old_ion
+    # 非平凡:确有电势产出。
+    assert old_pot != []
+  end
+
+  defp apply_cells(layer, cells) do
+    Enum.reduce(cells, layer, fn {idx, value}, acc -> FieldLayer.put(acc, idx, value) end)
+  end
+
+  defp clear_in_aabb(layer, {{x0, y0, z0}, {x1, y1, z1}}) do
+    Enum.reduce(
+      for(x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z}),
+      layer,
+      fn coord, acc -> FieldLayer.put(acc, Types.macro_index!(coord), 0.0) end
+    )
+  end
+
+  defp conductive_storage do
+    Storage.new(7, {0, 0, 0})
+    |> put_solid({0, 0, 0}, @power_block)
+    |> put_solid({1, 0, 0}, @iron)
+    |> put_solid({2, 0, 0}, @iron)
+    |> put_solid({3, 0, 0}, @iron)
+  end
+
+  defp put_solid(storage, coord, material_id) do
+    Storage.put_solid_block(storage, coord, NormalBlockData.new(material_id))
   end
 end

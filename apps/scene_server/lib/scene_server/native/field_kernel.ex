@@ -167,4 +167,19 @@ defmodule SceneServer.Native.FieldKernel do
         _cell_size_meters
       ),
       do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  电势传播句柄版(梯队2 step2.7b):读 ionization_sim active(旧)→ 复用与
+  `propagate_electric_potential` 相同计算 → 写 potential_sim(merge)+ ionization_sim
+  (clear aabb 再 put)。逐位数值等价旧路径,数据留 Rust(BND-1)。返回 :ok。
+  """
+  @spec propagate_electric_potential_sim(
+          cell_sim(),
+          cell_sim(),
+          [electric_source()],
+          [entry()],
+          aabb()
+        ) :: :ok
+  def propagate_electric_potential_sim(_potential_sim, _ionization_sim, _sources, _entries, _aabb),
+    do: :erlang.nif_error(:nif_not_loaded)
 end

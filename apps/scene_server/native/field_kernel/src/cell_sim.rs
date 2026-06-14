@@ -52,6 +52,27 @@ impl LayerState {
     pub fn get_delta(&self, idx: u16) -> f64 {
         *self.values.get(&idx).unwrap_or(&0.0)
     }
+
+    /// 写绝对值(= `put_delta(value - baseline)`),与 Elixir `FieldLayer.put` 等价。
+    pub fn put_absolute(&mut self, idx: u16, value: f64) {
+        let baseline = self.baseline;
+        self.put_delta(idx, value - baseline);
+    }
+
+    /// 把 aabb(inclusive)内所有 macro cell 置 0.0(绝对),与 Elixir `clear_layer_in_aabb`
+    /// 逐位等价(那里 `FieldLayer.put(idx, 0.0)`)。
+    pub fn clear_aabb(&mut self, aabb: Aabb) {
+        let ((min_x, min_y, min_z), (max_x, max_y, max_z)) = aabb;
+
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                for z in min_z..=max_z {
+                    let idx = grid::macro_index((x, y, z));
+                    self.put_absolute(idx, 0.0);
+                }
+            }
+        }
+    }
 }
 
 /// Rustler 资源:`Mutex<LayerState>`。Elixir 持 `ResourceArc` 句柄。

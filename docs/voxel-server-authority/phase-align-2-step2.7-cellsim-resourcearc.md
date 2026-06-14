@@ -102,6 +102,16 @@ orchestration 改为:`NativeBackend.diffuse_temperature(layer.cell_sim, candidat
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 2.7b 电势部分(propagate_electric_potential_sim)完成 → 2.7b 收口**。lib.rs 加
+  `propagate_electric_potential_sim(potential_sim, ionization_sim, sources, entries, aabb)`:读
+  ionization_sim active(旧,= `active_cells(aabb,0)`)→ **复用** `electric_potential::propagate_electric_potential`
+  (逐位等价)→ 写 potential_sim(merge `put_absolute`)+ ionization_sim(`clear_aabb` 再 put,= Elixir
+  `clear_layer_in_aabb |> apply_cells`)。cell_sim.rs 加 `put_absolute`/`clear_aabb` 助手。两 sim 顺序锁
+  (无同时双锁)。**数值等价测试**(句柄版 vs 旧 propagate + 两 FieldLayer apply,导电 storage 经
+  ParticipantProjection→ConductionPathInput.conduction_entries,potential+ionization 两层逐位 `==`)。
+  field 163 全绿。**两 mutating NIF 句柄版齐备 + 等价守门;2.7c 原子 flip 的计算底座就位。剩 2.7c flip、
+  2.7d 队列背压。**
+
 - 2026-06-14:**step 2.7b 温度部分(diffuse_temperature_sim 句柄 NIF)完成**。lib.rs 加
   `diffuse_temperature_sim(sim, candidates, aabb, thermal, ..)`:读 CellSim active(旧)→ **复用
   无状态 `temperature_diffusion::diffuse_temperature`**(逐位等价旧路径)→ 原地 put_delta apply

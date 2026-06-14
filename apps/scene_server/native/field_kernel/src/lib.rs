@@ -93,6 +93,47 @@ fn diffuse_temperature_sim(
     ok()
 }
 
+// BND-1(梯队2 step2.7b):电势传播句柄版——读 ionization_sim active(旧)→ **复用**无状态
+// `propagate_electric_potential`(逐位等价)→ 写 potential_sim(merge put 绝对值)+ ionization_sim
+// (clear aabb 再 put,与 Elixir `apply_cells`/`clear_layer_in_aabb` 等价)。两 sim 顺序锁(无同时
+// 双锁,单 FieldTickWorker 顺序驱动)。
+#[rustler::nif]
+fn propagate_electric_potential_sim(
+    potential_sim: cell_sim::FieldLayerSimArc,
+    ionization_sim: cell_sim::FieldLayerSimArc,
+    sources: Vec<electric_potential::Source>,
+    entries: Vec<electric_potential::NativeEntry>,
+    aabb: types::Aabb,
+) -> Atom {
+    // read-old:当前 ionization active(绝对值,= Elixir FieldLayer.active_cells(layer, aabb, 0))。
+    let ionization_input: Vec<electric_potential::IonizationCell> = {
+        let state = cell_sim::lock(&ionization_sim);
+        cell_sim::active_cells(&state, aabb, 0.0)
+    };
+
+    let (potential_cells, new_ionization) =
+        electric_potential::propagate_electric_potential(sources, entries, aabb, ionization_input);
+
+    // potential:merge put 绝对值(= Elixir apply_cells,不清空)。
+    {
+        let mut state = cell_sim::lock(&potential_sim);
+        for (idx, value) in potential_cells {
+            state.put_absolute(idx, value);
+        }
+    }
+
+    // ionization:clear aabb 再 put 绝对值(= Elixir clear_layer_in_aabb |> apply_cells)。
+    {
+        let mut state = cell_sim::lock(&ionization_sim);
+        state.clear_aabb(aabb);
+        for (idx, value) in new_ionization {
+            state.put_absolute(idx, value);
+        }
+    }
+
+    ok()
+}
+
 #[rustler::nif]
 fn find_conduction_path(
     entries: Vec<conduction_path::NativeEntry>,
