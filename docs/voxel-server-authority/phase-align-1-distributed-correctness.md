@@ -113,6 +113,11 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.1(cell_tick/sim_time,TIME-1)完成 + test_helper 陈旧事务快照清理**。
+  ChunkProcess init 恢复 cell_tick + restart gap;run_simulation_tick 推进 + 每 50 tick touch_cell_time
+  单调落库(与 put_snapshot 解耦)。scene/world/gate test_helper 启动前清陈旧事务表。
+  回归 scene 918 / data 95 / world 126 / gate 196 全绿。梯队1 已覆盖 AUTH-2/PERS-5/CELL-19-21/
+  CELL-18-23/AUTH-4 原语/TIME-1;剩余 1.5b command_id 线程化、1.6 entity_handoff。
 - 2026-06-14:**step 1.5a 命令幂等日志 CommandLog 完成(AUTH-4/SEC-4)**。新增 `voxel_command_log`
   表 + `CommandLog.record_once`(单条原子 INSERT...ON CONFLICT(command_id) DO NOTHING RETURNING →
   fresh/duplicate;写入事务内调用得 exactly-once;含 16 并发只 1 fresh 测试)。并入 PERS-5 清单。
