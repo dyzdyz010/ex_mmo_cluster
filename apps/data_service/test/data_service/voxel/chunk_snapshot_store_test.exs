@@ -10,6 +10,9 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+    # 梯队1 step1.2:WriteTokenStore 已 DB 化(共享 voxel_write_tokens 表),每测试清表
+    # 以隔离 token_version,避免跨测试 :stale_token。
+    WriteTokenStore.reset()
 
     {:ok, token_store} =
       start_supervised({WriteTokenStore, name: :"#{__MODULE__}_#{:rand.uniform(1_000_000)}"})
