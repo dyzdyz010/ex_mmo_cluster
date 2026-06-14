@@ -113,6 +113,12 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.5a 命令幂等日志 CommandLog 完成(AUTH-4/SEC-4)**。新增 `voxel_command_log`
+  表 + `CommandLog.record_once`(单条原子 INSERT...ON CONFLICT(command_id) DO NOTHING RETURNING →
+  fresh/duplicate;写入事务内调用得 exactly-once;含 16 并发只 1 fresh 测试)。并入 PERS-5 清单。
+  **至此分布式正确性三大 DB 线性化原语齐备**:durable fencing(WriteTokenStore)+ 线性化 epoch
+  (RegionEpochStore)+ 命令幂等(CommandLog)。**剩余 1.5b**:把 record_once 接进权威命令写入事务
+  (gate→scene→store 线程化 command_id),wire 后即关闭 AUTH-4 重复 prefab/编辑产重资产的洞。
 - 2026-06-14:**step 1.3 epoch 线性化完成(CELL-18/23,消除 ANTI-32)**。新增 `voxel_region_epochs`
   表 + `RegionEpochStore.allocate_next`(单条原子 INSERT...ON CONFLICT...RETURNING,Postgres 行级
   序列化 = epoch 唯一线性化点;含 20 并发不重复测试)。MapLedger 的 issue_lease/begin_migration 改用
