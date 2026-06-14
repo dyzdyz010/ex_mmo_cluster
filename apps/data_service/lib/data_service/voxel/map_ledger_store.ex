@@ -1,4 +1,7 @@
 defmodule DataService.Voxel.MapLedgerStore do
+  # PERS-5:durable_authoritative(region 所有权目录/owner_epoch/lease,CELL-23)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Durable backing store for `WorldServer.Voxel.MapLedger`.
 

@@ -26,6 +26,7 @@ defmodule DataService.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:mmo_contracts, in_umbrella: true},
       {:data_init, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       {:poolboy, "~> 1.5.2"},

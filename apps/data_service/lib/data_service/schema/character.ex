@@ -1,5 +1,7 @@
 defmodule DataService.Schema.Character do
   use Ecto.Schema
+  # PERS-5:durable_authoritative(角色)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
   import Ecto.Changeset
 
   @primary_key {:id, :id, autogenerate: false}

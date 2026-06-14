@@ -1,4 +1,7 @@
 defmodule DataService.Voxel.SceneObjectStore do
+  # PERS-5:durable_authoritative(prefab/object 资产)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Stateless persistence wrapper around `voxel_scene_objects` and
   `voxel_scene_object_id_seq`.

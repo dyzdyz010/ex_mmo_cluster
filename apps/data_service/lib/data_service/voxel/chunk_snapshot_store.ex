@@ -1,4 +1,7 @@
 defmodule DataService.Voxel.ChunkSnapshotStore do
+  # PERS-5:durable_authoritative(chunk 权威快照,CELL-19 条件写)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Canonical voxel chunk snapshot persistence backed by `DataService.Repo`.
 
