@@ -419,8 +419,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
        lease: lease,
        subscribers: %{},
        subscriber_monitors: %{},
-       async_persists: %{},
-       persist_waiters: [],
        pending_fence: pending_fence,
        # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
        # attribution and downstream destroy_part dispatch. Tests inject
@@ -1043,7 +1041,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
        storage: state.storage,
        has_lease?: not is_nil(state.lease),
        lease: state.lease,
-       pending_async_persist_count: map_size(state.async_persists),
        subscriber_count: map_size(state.subscribers),
        subscribers: Map.keys(state.subscribers),
        field_region_count: map_size(state.field_regions),
@@ -1051,12 +1048,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
      }, state}
   end
 
-  def handle_call(:flush_persistence, from, state) do
-    if map_size(state.async_persists) == 0 do
-      {:reply, :ok, state}
-    else
-      {:noreply, %{state | persist_waiters: [from | state.persist_waiters]}}
-    end
+  # D-4 后 persist 已同步落库,无在途异步 persist 需要 drain;flush_persistence 即时返回 :ok。
+  # 保留该 call 以兼容既有调用方(测试 / voxel_smoke 在读 DB 前调用)。
+  def handle_call(:flush_persistence, _from, state) do
+    {:reply, :ok, state}
   end
 
   # Phase 6: create a new FieldRegion under FieldTickSupervisor.
@@ -1122,93 +1117,56 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @impl true
-  def handle_info({:async_snapshot_persist_finished, ref, result, snapshot_bytes}, state) do
-    {persist_meta, async_persists} = Map.pop(state.async_persists, ref)
-
-    if persist_meta do
-      Process.demonitor(persist_meta.monitor_ref, [:flush])
-
-      CliObserve.emit("voxel_chunk_async_persist_finished", fn ->
-        Map.merge(persist_meta.observe, %{result: inspect(result), snapshot_bytes: snapshot_bytes})
-      end)
-    end
-
-    state =
-      %{state | async_persists: async_persists}
-      |> maybe_reply_persist_waiters()
-
-    {:noreply, state}
-  end
-
   def handle_info(:refresh_auto_circuit_after_mutation, state) do
     state = %{state | auto_circuit_refresh_pending?: false}
     {:noreply, refresh_auto_circuit_after_mutation(state)}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, subscriber, reason}, state) do
-    case async_persist_by_monitor(state, monitor_ref) do
-      {ref, persist_meta} ->
-        async_persists = Map.delete(state.async_persists, ref)
-
-        CliObserve.emit("voxel_chunk_async_persist_down", fn ->
-          Map.merge(persist_meta.observe, %{
-            task_pid: inspect(subscriber),
-            reason: inspect(reason)
-          })
-        end)
-
-        state =
-          %{state | async_persists: async_persists}
-          |> maybe_reply_persist_waiters()
-
-        {:noreply, state}
-
+    case Map.get(state.field_region_monitors, monitor_ref) do
       nil ->
-        case Map.get(state.field_region_monitors, monitor_ref) do
-          nil ->
-            case Map.get(state.subscriber_monitors, monitor_ref) do
-              ^subscriber ->
-                state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
+        case Map.get(state.subscriber_monitors, monitor_ref) do
+          ^subscriber ->
+            state = drop_subscriber_by_monitor(state, monitor_ref, subscriber)
 
-                CliObserve.emit("voxel_chunk_unsubscribe", fn ->
-                  %{
-                    logical_scene_id: state.logical_scene_id,
-                    chunk_coord: state.chunk_coord,
-                    subscriber: subscriber,
-                    reason: inspect(reason),
-                    result: :subscriber_down,
-                    subscriber_count: map_size(state.subscribers)
-                  }
-                end)
-
-                {:noreply, state}
-
-              _other ->
-                {:noreply, state}
-            end
-
-          region_id ->
-            CliObserve.emit("voxel_field_region_worker_down", fn ->
+            CliObserve.emit("voxel_chunk_unsubscribe", fn ->
               %{
                 logical_scene_id: state.logical_scene_id,
                 chunk_coord: state.chunk_coord,
-                region_id: region_id,
-                reason: inspect(reason)
+                subscriber: subscriber,
+                reason: inspect(reason),
+                result: :subscriber_down,
+                subscriber_count: map_size(state.subscribers)
               }
             end)
 
-            source_key = Map.get(state.field_region_source_keys, region_id)
-            destroy_reason = worker_down_destroy_reason(reason)
+            {:noreply, state}
 
-            new_state =
-              state
-              |> cleanup_linked_field_regions(source_key, destroy_reason)
-              |> drop_field_region_monitor(monitor_ref, region_id)
-              |> maybe_emit_worker_down_source_lifecycle(region_id, source_key, reason)
-              |> maybe_refresh_expired_auto_circuit(source_key, destroy_reason)
-
-            {:noreply, new_state}
+          _other ->
+            {:noreply, state}
         end
+
+      region_id ->
+        CliObserve.emit("voxel_field_region_worker_down", fn ->
+          %{
+            logical_scene_id: state.logical_scene_id,
+            chunk_coord: state.chunk_coord,
+            region_id: region_id,
+            reason: inspect(reason)
+          }
+        end)
+
+        source_key = Map.get(state.field_region_source_keys, region_id)
+        destroy_reason = worker_down_destroy_reason(reason)
+
+        new_state =
+          state
+          |> cleanup_linked_field_regions(source_key, destroy_reason)
+          |> drop_field_region_monitor(monitor_ref, region_id)
+          |> maybe_emit_worker_down_source_lifecycle(region_id, source_key, reason)
+          |> maybe_refresh_expired_auto_circuit(source_key, destroy_reason)
+
+        {:noreply, new_state}
     end
   end
 
@@ -2880,8 +2838,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 又消除旧异步路径"内存已改 / DB 未落"的静默背离。
   #
   # 历史异步 persist 子系统(:async_snapshot_persist_finished / async_persists / persist_waiters /
-  # maybe_reply_persist_waiters)保留但不再触发:`async_persists` 恒空,故 `flush_persistence` 即时
-  # 返回 `:ok`,所有现有调用方语义不变。该不可达机制的移除列入梯队 4 清理。
+  # maybe_reply_persist_waiters)已随本次重构移除;`flush_persistence` 因 persist 已同步而即时返回
+  # `:ok`,所有现有调用方语义不变。
   defp enqueue_snapshot_persist(state, lease, chunk_coord, storage, payload) do
     with :ok <- validate_snapshot_write_token(lease, chunk_coord) do
       ref = System.unique_integer([:positive, :monotonic])
@@ -3117,21 +3075,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
 
     %{state | subscribers: %{}, subscriber_monitors: %{}}
-  end
-
-  defp async_persist_by_monitor(state, monitor_ref) do
-    Enum.find(state.async_persists, fn {_ref, meta} -> meta.monitor_ref == monitor_ref end)
-  end
-
-  defp maybe_reply_persist_waiters(
-         %{async_persists: async_persists, persist_waiters: waiters} = state
-       ) do
-    if map_size(async_persists) == 0 and waiters != [] do
-      Enum.each(waiters, &GenServer.reply(&1, :ok))
-      %{state | persist_waiters: []}
-    else
-      state
-    end
   end
 
   defp push_intent_outcome(state_before, state_after, intent, reason, base_version) do
