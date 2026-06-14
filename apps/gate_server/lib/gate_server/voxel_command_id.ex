@@ -32,4 +32,49 @@ defmodule GateServer.VoxelCommandId do
               is_integer(client_intent_seq) do
     "#{kind}:#{logical_scene_id}:#{actor_cid}:#{client_intent_seq}"
   end
+
+  @doc """
+  把 prefab 成功摘要编码成紧凑字符串,存进 `CommandLog` 的 `result_code` 列,供 duplicate
+  `claim` 重建等价成功 ack(step1.5b-2)。
+  """
+  @spec encode_prefab_summary(%{
+          cell_count: non_neg_integer(),
+          chunk_count: non_neg_integer(),
+          max_chunk_version: non_neg_integer()
+        }) :: String.t()
+  def encode_prefab_summary(%{
+        cell_count: cell_count,
+        chunk_count: chunk_count,
+        max_chunk_version: max_chunk_version
+      }) do
+    "#{cell_count}|#{chunk_count}|#{max_chunk_version}"
+  end
+
+  @doc """
+  解码 `encode_prefab_summary/1` 的结果;nil 或格式异常退化为全 0 摘要(防御性)。
+  """
+  @spec decode_prefab_summary(String.t() | nil) :: %{
+          cell_count: non_neg_integer(),
+          chunk_count: non_neg_integer(),
+          max_chunk_version: non_neg_integer()
+        }
+  def decode_prefab_summary(result) when is_binary(result) do
+    case String.split(result, "|") do
+      [cell_count, chunk_count, max_chunk_version] ->
+        %{
+          cell_count: String.to_integer(cell_count),
+          chunk_count: String.to_integer(chunk_count),
+          max_chunk_version: String.to_integer(max_chunk_version)
+        }
+
+      _ ->
+        zero_prefab_summary()
+    end
+  rescue
+    ArgumentError -> zero_prefab_summary()
+  end
+
+  def decode_prefab_summary(_result), do: zero_prefab_summary()
+
+  defp zero_prefab_summary, do: %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}
 end

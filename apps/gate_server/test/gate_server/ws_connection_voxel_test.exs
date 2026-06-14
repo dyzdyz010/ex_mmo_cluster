@@ -4,6 +4,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.CommandLog
   alias DataService.Voxel.WriteTokenStore
   alias GateServer.WsConnection
   alias SceneServer.Voxel.Codec, as: SceneVoxelCodec
@@ -56,6 +57,10 @@ defmodule GateServer.WsConnectionVoxelTest do
     if Process.whereis(WriteTokenStore) do
       WriteTokenStore.reset(WriteTokenStore)
     end
+
+    # 梯队1 step1.5b-2:prefab 现走 CommandLog idempotency-key(claim/confirm),清共享
+    # voxel_command_log 表,避免跨测试 command_id 命中 :duplicate 让 prefab 不实际执行。
+    CommandLog.reset()
 
     on_exit(fn ->
       stop_named(GateServer.Interface)
@@ -504,6 +509,99 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     # No further pushes for this prefab.
     refute_receive {:gate_ws_send, _}, 100
+  end
+
+  # 梯队1 step1.5b-2(AUTH-4):同 client_intent_seq 的 prefab 重试经 CommandLog
+  # idempotency-key 去重——返回缓存摘要,不重新分配 object_id、不二次写 chunk。
+  test "duplicate prefab place intent is idempotent (cached ack, no second write)" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    # 唯一 scene_id:MapLedger 是全局持久单例,bounds overlap 检查 per-logical-scene,
+    # 复用固定 scene 会与其它测试的同 bounds 区域冲突。
+    scene_id = System.unique_integer([:positive, :monotonic])
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_101,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_101,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(610, scene_id, {0, 0, 0}))
+    assert_receive {:gate_ws_send, initial_bin}
+    assert <<0x62, _initial_payload::binary>> = initial_bin
+
+    # 首次放置(client_intent_seq 21)→ applied,chunk 0 -> 1,一条 delta。
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(611, 21, scene_id, 8_888,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_accepted(
+      request_id: 611,
+      client_intent_seq: 21,
+      logical_scene_id: scene_id,
+      result_ref: 1,
+      timeout: 1_000
+    )
+
+    assert_receive {:gate_ws_send, delta_bin}, 5_000
+    assert <<0x63, delta_payload::binary>> = delta_bin
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.new_chunk_version == 1
+
+    # 重试:同 client_intent_seq 21、新 request_id 612。派生 command_id 撞键 →
+    # CommandLog.claim 得 {:duplicate, 缓存摘要} → 直接返回缓存,不进 fast-path、
+    # 不分配 object_id、不二次写 chunk。
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(612, 21, scene_id, 8_888,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    # 缓存 ack 回显重试的 request_id + 同 result_ref(缓存 max_chunk_version)。
+    assert_voxel_intent_accepted(
+      request_id: 612,
+      client_intent_seq: 21,
+      logical_scene_id: scene_id,
+      result_ref: 1,
+      timeout: 1_000
+    )
+
+    # 没有第二条 chunk delta —— 重试未触碰 chunk。
+    refute_receive {:gate_ws_send, _}, 200
+
+    # canonical chunk_version 仍是 1(无二次写)。
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {0, 0, 0})
+    assert snapshot.chunk_version == 1
   end
 
   test "prefab place intent uses same-owner fast path across multiple chunks" do

@@ -16,6 +16,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.CommandLog
   alias DataService.Voxel.SceneObjectStore
   alias DataService.Voxel.WriteTokenStore
   alias GateServer.WsConnection
@@ -56,6 +57,8 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     ensure_repo_started()
     Repo.delete_all(VoxelChunkSnapshot)
     DataService.Voxel.SceneObjectStore.reset()
+    # 梯队1 step1.5b-2:prefab 走 CommandLog idempotency-key,清表避免跨测试 :duplicate。
+    CommandLog.reset()
     stop_named(GateServer.Interface)
 
     ensure_started!(WriteTokenStore, {WriteTokenStore, name: WriteTokenStore})

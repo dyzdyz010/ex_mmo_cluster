@@ -1391,9 +1391,63 @@ defmodule GateServer.WsConnection do
      }}
   end
 
+  # AUTH-4(step1.5b-2):prefab 是多步 / 跨节点命令(分配 object_id 序列 + 跨 chunk 事务),
+  # 无单一事务可包裹,故用 CommandLog idempotency-key:claim(派生稳定 command_id,在分配
+  # object_id 前认领)→ 工作 → 成功 confirm(缓存结果摘要)/ 失败 release(放行重试)。重复命令
+  # 直接返回缓存摘要,**不重新分配 object_id、不重复产生 durable 资产**。
   defp apply_voxel_prefab_place_intent(request, state) do
-    with :ok <- authorize_voxel_prefab_place_intent(state),
-         {:ok, owner_object_id} <- allocate_prefab_owner_object_id(),
+    case authorize_voxel_prefab_place_intent(state) do
+      :ok ->
+        command_id =
+          GateServer.VoxelCommandId.prefab(
+            request.logical_scene_id,
+            state.cid,
+            request.client_intent_seq
+          )
+
+        apply_prefab_with_idempotency(command_id, request, state)
+
+      {:error, reason} ->
+        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
+    end
+  end
+
+  defp apply_prefab_with_idempotency(command_id, request, state) do
+    case DataService.Voxel.CommandLog.claim(command_id, request.logical_scene_id) do
+      :fresh ->
+        case do_apply_voxel_prefab_place_intent(request, state) do
+          {:ok, summary} ->
+            DataService.Voxel.CommandLog.confirm(
+              command_id,
+              GateServer.VoxelCommandId.encode_prefab_summary(summary)
+            )
+
+            {:ok, summary}
+
+          {:error, _reason} = error ->
+            DataService.Voxel.CommandLog.release(command_id)
+            error
+        end
+
+      {:duplicate, result} ->
+        GateServer.CliObserve.emit("ws_voxel_prefab_place_intent_duplicate", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          command_id: command_id
+        })
+
+        {:ok, GateServer.VoxelCommandId.decode_prefab_summary(result)}
+
+      :in_flight ->
+        {:error, %{reason: :command_in_flight, applied_cell_count: 0, total_cell_count: 0}}
+    end
+  end
+
+  defp do_apply_voxel_prefab_place_intent(request, state) do
+    with {:ok, owner_object_id} <- allocate_prefab_owner_object_id(),
          {:ok, cells} <-
            PrefabRaster.rasterize(
              request.blueprint_id,

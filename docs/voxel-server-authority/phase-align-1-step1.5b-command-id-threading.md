@@ -90,6 +90,19 @@ combat cast 的 command_id 归 **梯队3 "cast 带 command_id"** 处理。本步
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.5b-2(prefab 幂等键)完成 → step 1.5b 收口**。`voxel_command_log` 加
+  `status`(pending/committed,DEFAULT committed + CHECK)列(migration 20260614000005);
+  `CommandLog` 加 `claim/3`(原子 `INSERT ... ON CONFLICT DO UPDATE` + `xmax = 0` 判定
+  fresh/duplicate/in_flight)+ `confirm/3`(committed + 缓存结果)+ `release/2`(DELETE 放行重试)。
+  gate ws/tcp 的 `apply_voxel_prefab_place_intent` 重构为 claim(分配 object_id 前)→
+  `do_apply_*`(原 body)→ 成功 confirm(缓存 `cell|chunk|version` 摘要)/ 失败 release;duplicate
+  返回 `decode_prefab_summary` 重建的等价 ack(不重分配 object_id、不二次写)。两 ws voxel 测试
+  setup 加 `CommandLog.reset()`(prefab 现走 command_log,清表防跨测试 :duplicate)。新增 5 CommandLog
+  状态机测试 + 1 gate e2e 重放幂等测试(同 client_intent_seq 重试 → 缓存 ack + chunk_version 仍 1 +
+  无第二 delta)。回归 data 104(+5)、gate 197(+1)全绿;scene 未触碰。**AUTH-4 客户端体素写命令
+  (edit+prefab)幂等闭合。** backlog:崩溃残留 pending 的清理 sweeper;DB 错误下 claim/confirm/
+  release 的优雅降级(当前 query! 直抛=显式失败)。
+
 - 2026-06-14:**step 1.5b-1(单方块编辑 command_id 端到端)完成**。链路:gate
   `GateServer.VoxelCommandId.edit(scene, cid, client_intent_seq)` 派生(新模块,不改 wire)→
   `build_voxel_edit_intent_attrs` 注入(ws+tcp)→ ChunkProcess `normalize_apply_intent` 提取进
