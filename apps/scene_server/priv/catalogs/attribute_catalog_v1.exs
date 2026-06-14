@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 2,
+  catalog_version: 3,
   definitions: [
     %{
       id: 1,
@@ -180,6 +180,21 @@
       max_value: 6_553_600,
       merge_rule: :material_default,
       dynamic: false
+    },
+    # 功能完善 · 反应层 R5(燃烧):燃烧进度比率 0.0→1.0(满即燃尽成 ash)。
+    # `:add_delta` 让 burning 每 tick 累进;clip 到 [0, 1.0]。
+    %{
+      id: 13,
+      name: "burn_progress",
+      unit: "ratio",
+      value_type: :fixed32,
+      # 0.0 未燃
+      default_value: 0,
+      min_value: 0,
+      # 1.0 燃尽
+      max_value: 65_536,
+      merge_rule: :add_delta,
+      dynamic: true
     }
   ]
 }

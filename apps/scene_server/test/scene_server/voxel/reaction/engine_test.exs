@@ -183,16 +183,118 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "R5a 燃烧(tag_reaction + 多效果物化)" do
+    defp wood_id, do: MaterialCatalog.material_id(:wood)
+    defp ash_id, do: MaterialCatalog.material_id(:ash)
+
+    defp bcell(material_id, temp, opts \\ []) do
+      %{
+        macro_index: Keyword.get(opts, :macro_index, 0),
+        material_id: material_id,
+        temperature_celsius: temp,
+        burn_progress: Keyword.get(opts, :burn_progress, 0.0),
+        tags: Keyword.get(opts, :tags, [])
+      }
+    end
+
+    test "ignite:木 ≥ ignition_temperature(300℃)且未燃 → 加 :burning" do
+      effects = Engine.evaluate([bcell(wood_id(), 350.0)], Rules.all())
+      assert {:set_tag, st} = Enum.find(effects, &match?({:set_tag, _}, &1))
+      assert :burning in st.add
+      assert st.remove == []
+    end
+
+    test "ignite:木 < ignition(200℃)不点燃" do
+      assert [] = Engine.evaluate([bcell(wood_id(), 200.0)], Rules.all())
+    end
+
+    test "ignite:已 :burning 不重复点燃(forbid_tags)" do
+      effects = Engine.evaluate([bcell(wood_id(), 350.0, tags: [:burning])], Rules.all())
+      # 不应再产 add :burning(ignite forbid);但 burn 会产热+进度。
+      refute Enum.any?(effects, fn
+               {:set_tag, st} -> :burning in st.add
+               _ -> false
+             end)
+    end
+
+    test "ignite:惰性材料(石,ignition=5000℃ 不可达,且 1000<melting 1200 不熔)不点燃" do
+      assert [] = Engine.evaluate([bcell(stone_id(), 1000.0)], Rules.all())
+    end
+
+    test "burn:燃烧中 → 注燃烧焦耳 + 推进 burn_progress(连续效果)" do
+      effects =
+        Engine.evaluate(
+          [bcell(wood_id(), 500.0, tags: [:burning], burn_progress: 0.3)],
+          Rules.all()
+        )
+
+      heat =
+        Enum.find(effects, &match?({:write_voxel_attribute, %{heat_energy_joules: _}}, &1))
+
+      assert {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} = heat
+      assert j > 0
+
+      advance =
+        Enum.find(effects, fn
+          {:write_voxel_attribute, %{attribute: "burn_progress", delta: _}} -> true
+          _ -> false
+        end)
+
+      assert {:write_voxel_attribute, %{attribute: "burn_progress", delta: d}} = advance
+      assert d > 0
+    end
+
+    test "burn_out:燃烧进度满 → 变 ash + 去 :burning" do
+      effects =
+        Engine.evaluate(
+          [bcell(wood_id(), 500.0, tags: [:burning], burn_progress: 1.0)],
+          Rules.all()
+        )
+
+      assert {:transform_material, t} =
+               Enum.find(effects, &match?({:transform_material, _}, &1))
+
+      assert t.to_material_id == ash_id()
+
+      assert {:set_tag, st} = Enum.find(effects, &match?({:set_tag, _}, &1))
+      assert :burning in st.remove
+    end
+
+    test "burn_out 未满(progress 0.5):只 burn 不 burn_out" do
+      effects =
+        Engine.evaluate(
+          [bcell(wood_id(), 500.0, tags: [:burning], burn_progress: 0.5)],
+          Rules.all()
+        )
+
+      refute Enum.any?(effects, &match?({:transform_material, _}, &1))
+      assert Enum.any?(effects, &match?({:write_voxel_attribute, %{heat_energy_joules: _}}, &1))
+    end
+
+    test "ash 不复燃(ignition inert),不被任何规则触发" do
+      assert [] = Engine.evaluate([bcell(ash_id(), 1000.0)], Rules.all())
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)
       assert [] = Rules.for_material(:stone)
     end
 
-    test "每条规则材料名均合法(数据完整性)" do
+    test "每条规则材料/效果引用均合法(数据完整性)" do
       for rule <- Rules.all() do
-        assert MaterialCatalog.material_id(rule.from_material)
-        assert MaterialCatalog.material_id(rule.to_material)
+        case rule.kind do
+          :phase_transition ->
+            assert MaterialCatalog.material_id(rule.from_material)
+            assert MaterialCatalog.material_id(rule.to_material)
+
+          :tag_reaction ->
+            # tag_reaction 无 from/to;校验 transform 效果的材料名合法。
+            for {:transform, mat} <- Enum.filter(rule.effects, &match?({:transform, _}, &1)) do
+              assert MaterialCatalog.material_id(mat)
+            end
+        end
       end
     end
   end

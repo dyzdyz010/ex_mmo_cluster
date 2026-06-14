@@ -20,9 +20,10 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @iron_material_id 5
   @power_block_material_id 6
   @electric_load_material_id 7
-  # 功能完善 · 反应层:相变目标材料。append-only id。R1 加 water;R4 加 steam(沸腾)。
+  # 功能完善 · 反应层:相变/燃烧目标材料。append-only id。R1 water;R4 steam;R5 ash(燃尽)。
   @water_material_id 8
   @steam_material_id 9
+  @ash_material_id 10
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -34,7 +35,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     power_block: @power_block_material_id,
     electric_load: @electric_load_material_id,
     water: @water_material_id,
-    steam: @steam_material_id
+    steam: @steam_material_id,
+    ash: @ash_material_id
   }
 
   @power_source_defaults %{
@@ -145,6 +147,18 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
       "dielectric_strength" => 0
+    },
+    # 反应层 R5:灰烬(木燃尽目标)。轻、ignition inert(不复燃),惰性产物。
+    @ash_material_id => %{
+      "density" => round(80.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.05 * @fixed32_scale),
+      "specific_heat_capacity" => round(840.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(3.0 * @fixed32_scale)
     }
   }
 
