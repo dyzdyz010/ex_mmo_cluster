@@ -2873,47 +2873,40 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {:error, :missing_lease}
   end
 
+  # D-4(AUTH-2 / ANTI-10):durable_authoritative 命令在向客户端确认成功前必须可恢复提交。
+  # 批量 / 事务 commit 落库改为**同步**(与单块编辑路径一致):仅在 `ChunkSnapshotStore.put_snapshot`
+  # 成功后才返回真实 persist_result,由调用方更新内存 storage(见 apply_normalized_intents 的
+  # `{:ok, ...}` 分支);落库失败返回 `{:error, reason}`,内存 storage 不前进——既满足 durable-before-ack,
+  # 又消除旧异步路径"内存已改 / DB 未落"的静默背离。
+  #
+  # 历史异步 persist 子系统(:async_snapshot_persist_finished / async_persists / persist_waiters /
+  # maybe_reply_persist_waiters)保留但不再触发:`async_persists` 恒空,故 `flush_persistence` 即时
+  # 返回 `:ok`,所有现有调用方语义不变。该不可达机制的移除列入梯队 4 清理。
   defp enqueue_snapshot_persist(state, lease, chunk_coord, storage, payload) do
     with :ok <- validate_snapshot_write_token(lease, chunk_coord) do
-      parent = self()
       ref = System.unique_integer([:positive, :monotonic])
+      payload = payload || encode_snapshot_payload(storage, 0)
+      snapshot_bytes = byte_size(payload)
+      attrs = build_snapshot_attrs(lease, chunk_coord, storage, payload)
 
-      {:ok, pid} =
-        Task.start_link(fn ->
-          payload = payload || encode_snapshot_payload(storage, 0)
-          snapshot_bytes = byte_size(payload)
+      case safe_persist_snapshot_with_retry(attrs, 3) do
+        {:ok, persist_result} ->
+          CliObserve.emit("voxel_chunk_persist_committed", fn ->
+            %{
+              logical_scene_id: state.logical_scene_id,
+              chunk_coord: state.chunk_coord,
+              chunk_version: storage.chunk_version,
+              persist_ref: ref,
+              persist_result: persist_result,
+              snapshot_bytes: snapshot_bytes
+            }
+          end)
 
-          result =
-            lease
-            |> build_snapshot_attrs(chunk_coord, storage, payload)
-            |> safe_persist_snapshot_with_retry(3)
+          {:ok, persist_result, ref, state}
 
-          send(parent, {:async_snapshot_persist_finished, ref, result, snapshot_bytes})
-        end)
-
-      monitor_ref = Process.monitor(pid)
-
-      observe = %{
-        logical_scene_id: state.logical_scene_id,
-        chunk_coord: state.chunk_coord,
-        chunk_version: storage.chunk_version,
-        persist_ref: ref,
-        task_pid: inspect(pid),
-        snapshot_bytes: if(is_binary(payload), do: byte_size(payload), else: :deferred)
-      }
-
-      CliObserve.emit("voxel_chunk_async_persist_queued", fn -> observe end)
-
-      next_state = %{
-        state
-        | async_persists:
-            Map.put(state.async_persists, ref, %{
-              monitor_ref: monitor_ref,
-              observe: observe
-            })
-      }
-
-      {:ok, :queued, ref, next_state}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 

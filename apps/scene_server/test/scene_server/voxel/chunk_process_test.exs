@@ -649,7 +649,8 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
               changed?: true,
               changed_count: 3,
               skipped_count: 0,
-              persist_result: :queued,
+              # D-4(AUTH-2):durable-before-ack —— 同步落库后返回真实 persist_result(不再异步 :queued)
+              persist_result: :inserted,
               persist_ref: persist_ref,
               snapshot_payload: payload
             }} = ChunkProcess.apply_intents(chunk, attrs)
