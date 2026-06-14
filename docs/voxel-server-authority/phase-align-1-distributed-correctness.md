@@ -26,6 +26,14 @@
 - prefab/事务 commit:`ChunkProcess.enqueue_snapshot_persist`(`Task.start_link` 异步落库)→ `:queued`
   入队即 ack(违 AUTH-2,D-4 判缺陷)。单方块编辑已 durable-before-ack(留用)。
 - `command_id` 幂等:**无**;只到 `(transaction_id, decision_version)` + chunk_version CAS。
+- **跨节点耦合(执行 1.2/1.3 必读)**:`WriteTokenStore` 的 GenServer 形态被**跨节点**使用——
+  `MapLedger`(world 节点)经 `upsert_token(server, ...)` 远程 publish token 到 DataService 节点的命名进程;
+  `token_store` server ref 在 `MapLedger`/`ChunkSnapshotStore`/`AuthorityObserve` 多处穿线(arity-2 注入式),
+  `chunk_process`/`dev_seed` 用 arity-1 默认 server。调用方:`map_ledger.ex:1071`(upsert)、
+  `chunk_snapshot_store.ex:265` / `chunk_process.ex:2932`(validate)、`authority_observe.ex:328/355/397`、
+  `dev_seed.ex:274`。**含义**:改 stateless+DB 必须同时决定"epoch/token 的 DB 写在哪个节点发生"
+  (World 直写共享 DB,还是经 DataService 入口),并保留可注入 server ref 供测试。**这把 1.2 与 1.3
+  绑成一个跨节点 fencing 重设计**,而非纯 data_service 局部改。
 - `entity_handoff`:**完全缺失**;现有 `MigrationPlan` 是 region ownership 迁移(方向=cell_migration)。
 - `cell_tick`/`sim_time`:**无**;`SimulationTick.tick_seq` 进程内自增、重启归零(违 TIME-1)。
 
@@ -100,5 +108,9 @@
 
 ## 进度日志(时间倒序)
 
-- 2026-06-14:决策稿落定。下一步 step 1.1(cell_tick/sim_time)或 step 1.2(WriteTokenStore 落库),
-  二者低耦合,按实现便利择一先行。
+- 2026-06-14:决策稿落定 + 跨节点耦合发现补入。**修订排序**:step 1.2(WriteTokenStore 落库)与
+  step 1.3(epoch 线性化)经核实为**跨节点 fencing 重设计**(token publish 走跨节点 GenServer,
+  改 DB 需先定"DB 写在哪个节点发生"),应合并为一个谨慎设计单元。因此**首个代码步改为 step 1.1
+  cell_tick/sim_time**(局部于 scene 权威单位、与跨节点 fencing 解耦、为 handoff_tick/migration_tick/
+  snapshot_tick 打底)。1.2+1.3 合并设计稿待 step 1.1 后单独细化(需先确认 world_server 是否持
+  DataService.Repo 直写权,还是经 DataService 入口做条件写)。
