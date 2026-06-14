@@ -4,6 +4,8 @@
 
 ## 起点参考
 
+- **架构对齐迁移主线（2026-06-14 起,当前最高层索引)**:[`docs/voxel-server-authority/2026-06-14-architecture-triage-and-alignment.md`](./2026-06-14-architecture-triage-and-alignment.md) —— 对照冻结规范 v2.0.2 的分诊、四项拍板、规范反哺修订、梯队迁移顺序。本目录原有 Phase 1–8 工作被纳入该主线统筹。
+- 冻结规范(权威):[`docs/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md`](../HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md)（已含 v2.0.2 反哺修订）
 - 架构现状与缺口分析:[`docs/2026-05-07-体素服务器权威化架构进度检查.md`](../2026-05-07-体素服务器权威化架构进度检查.md)
 - 协议规范:[`docs/2026-04-10-线协议规范.md`](../2026-04-10-线协议规范.md)
 - 服务端权威体素数据协议设计:[`docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`](../2026-04-29-server-authoritative-voxel-data-protocol-design.md)
