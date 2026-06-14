@@ -39,8 +39,13 @@
 
 ## 关键决策(每项给推荐值)
 
-- **D1-1 epoch 线性化基础**:用 **Postgres 作为 epoch 分配与 lease 签发的线性化点**(CELL-23 列举的
-  "数据库事务锁/条件写"路径,与既有 `ChunkSnapshotStore` 同构),而非引入 Raft/etcd。
+- **D1-1 epoch 线性化基础**【架构已核实可行,2026-06-14】:用 **Postgres 作为 epoch 分配与 lease 签发的
+  线性化点**(CELL-23 列举的"数据库事务锁/条件写"路径,与既有 `ChunkSnapshotStore` 同构),而非 Raft/etcd。
+  **核实证据**:`world_sup.ex:30` 的 `TransactionCoordinator` 已用注入式 `persist_fn(DataService.Repo)`
+  让 world 节点**直接写 DataService.Repo**(MVP 单 release 全 app 共置一 BEAM,Repo 可达;A4-bis-cluster
+  "每 app 独立 BEAM"时经同一注入 seam 换 repo/fn 即可)。故 MapLedger 的 epoch/lease 可走同款注入式
+  DB 条件写,MapLedger 退化为 DB 行的缓存 + 编排。**实施前置**:`voxel_region_ownership` 表条件 UPDATE
+  (`WHERE owner_epoch = $expected`)。
   **推荐**:新增 `voxel_region_ownership` 表(每 region 一行:region_id/logical_scene_id/owner_epoch/
   current_lease_id/owner_scene_instance_ref/bounds/...),epoch 递增与 lease 翻转走**单事务条件 UPDATE**
   (`WHERE owner_epoch = $expected`),并发失败即重试/拒绝。MapLedger 退化为该表的**缓存 + 编排**,
