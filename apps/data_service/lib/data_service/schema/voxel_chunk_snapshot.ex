@@ -33,11 +33,17 @@ defmodule DataService.Schema.VoxelChunkSnapshot do
     field(:owner_scene_instance_ref, :integer)
     field(:owner_epoch, :integer)
     field(:chunk_version, :integer)
+    # 梯队1 step1.1(TIME-1):Cell 时间字段。可选,旧行/未提供时 default 0。
+    field(:cell_tick, :integer)
+    field(:sim_time_ms, :integer)
     field(:chunk_hash, :binary)
     field(:data, :binary)
 
     timestamps()
   end
+
+  # TIME-1 时间字段为可选:未提供时由 DB default 0,不破坏既有 put_snapshot 调用方。
+  @optional_fields [:cell_tick, :sim_time_ms]
 
   @required_fields [
     :logical_scene_id,
@@ -70,10 +76,10 @@ defmodule DataService.Schema.VoxelChunkSnapshot do
 
   def changeset(struct, attrs) do
     struct
-    |> cast(attrs, @required_fields)
+    |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
     |> validate_chunk_hash_length()
-    |> validate_nonneg(@nonneg_fields)
+    |> validate_nonneg(@nonneg_fields ++ @optional_fields)
   end
 
   defp validate_chunk_hash_length(changeset) do

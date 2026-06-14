@@ -237,6 +237,9 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
       owner_scene_instance_ref: snapshot.owner_scene_instance_ref,
       owner_epoch: snapshot.owner_epoch,
       chunk_version: snapshot.chunk_version,
+      # 梯队1 step1.1(TIME-1):Cell 时间字段,默认 0(向后兼容)。
+      cell_tick: Map.get(snapshot, :cell_tick, 0),
+      sim_time_ms: Map.get(snapshot, :sim_time_ms, 0),
       chunk_hash: snapshot.chunk_hash,
       data: snapshot.data
     }
@@ -254,6 +257,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
       owner_scene_instance_ref: row.owner_scene_instance_ref,
       owner_epoch: row.owner_epoch,
       chunk_version: row.chunk_version,
+      cell_tick: row.cell_tick,
+      sim_time_ms: row.sim_time_ms,
       chunk_hash: row.chunk_hash,
       data: row.data
     }
@@ -302,6 +307,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          owner_scene_instance_ref: owner_scene_instance_ref,
          owner_epoch: owner_epoch,
          chunk_version: chunk_version,
+         cell_tick: Map.get(attrs, :cell_tick, 0),
+         sim_time_ms: Map.get(attrs, :sim_time_ms, 0),
          chunk_hash: chunk_hash,
          data: data
        }}
