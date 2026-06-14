@@ -141,11 +141,18 @@ chunk 合并到最新)非清零**;追踪队列深度,shed 时 emit observe(`repl
 
 ### D3.10-7 子步拆分(逐步落地 + 回归闸门,仿 2.7a/b/c)
 - **3.10a**:`GateServer.Replication.Egress` 纯核(分类 / token bucket 惰性补充 / 同 key 合并 / 优先级排空 /
-  bulk 隔离 / 背压 shed)+ `ReplicationOut` 实例化与分类 + 全量单测。**新模块,构造上 0 回归。**
-- **3.10b**:ws_connection voxel 连续流下行(delta/snapshot/object/field)接 `Egress.enqueue` + 惰性补充
-  drain。回归闸门:gate 全量 + web_client parity(子预算下字节/顺序不变)。
-- **3.10c(记为后续/NET-5 future)**:tcp_connection 对齐 + 可靠性类**传输路由**(unreliable 走 UDP fast_lane)。
-  现 `fast_lane_registry` 仅基建未接下行;真实 UDP 实时流启用时再接,与现"fast_lane WS 路径未启用"一致。
+  bulk 隔离 / 背压 shed)+ `ReplicationOut` 实例化与分类 + 全量单测。**新模块,构造上 0 回归。**✅完成
+- **3.10b**:ws_connection voxel **chunk 连续流**(snapshot/delta/invalidate)接 `Egress.enqueue` + 惰性补充
+  drain;backlog 用自限定时器(仅压力下活跃)收口。回归闸门:gate 全量 + web_client parity(子预算下字节/顺序不变)。
+  **cell_id 抉择(关键)**:scene→gate 扇出消息现为 `{:voxel_chunk_*_payload, payload}` 二元组,**约 40 处
+  scene chunk_process 测试断言其形态**;改 arity 携带 chunk_coord 会破坏全部断言(高 churn,违"最小改面/不打补丁")。
+  故 3.10b **不改 scene 扇出契约**:gate 用**连接级单调 frame seq 作 cell_id**(非 nil、唯一 → FIFO 无合并 live 模式)。
+  承重的 **per-observer 出口预算 + 可靠性分类 + bulk 隔离 + 背压**全在 FIFO 模式生效;**per-cell 聚合(REPL-6)
+  已在纯核实现+单测**,待 scene 权威源在扇出处填实 `ReplicationOut.cell_id` 即激活——显式划为 3.10c,
+  非隐藏降级(这是能力边界,非补丁)。
+- **3.10c(记为后续)**:scene 扇出填 `cell_id`(激活 live 聚合)+ object_state_delta / field 下行接 Egress +
+  tcp_connection 对齐 + 可靠性类**传输路由**(unreliable 走 UDP fast_lane;现 `fast_lane_registry` 仅基建未接
+  下行,真实 UDP 实时流启用时再接,与"fast_lane WS 路径未启用"一致,NET-5 future)。
 
 ## 测试矩阵(每步)
 

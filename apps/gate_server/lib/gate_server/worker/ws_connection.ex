@@ -12,6 +12,7 @@ defmodule GateServer.WsConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
+  alias GateServer.Replication.Egress
   alias GateServer.Voxel.PrefabLocalTransaction
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
@@ -22,6 +23,12 @@ defmodule GateServer.WsConnection do
   @max_voxel_subscribe_radius 4
   @prefab_owner_part_id 1
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
+
+  # 梯队3 step3.10b:per-observer 出口预算(REPL-2 / LOAD-5)。默认 256KB / 100ms 窗
+  # (≈2.5MB/s/观察者)——正常对局远不饱和,Replicator 仅在病态突发下生效(D3.10-6 0 回归不变量)。
+  @egress_capacity_bytes 262_144
+  @egress_window_ms 100
+  @egress_flush_delay_ms 20
 
   @doc "Starts a browser WebSocket-backed gate session."
   def start_link(owner_pid, opts \\ []) do
@@ -73,7 +80,18 @@ defmodule GateServer.WsConnection do
        scene_ref: nil,
        token: nil,
        status: :waiting_auth,
-       voxel_subscriptions: %{}
+       voxel_subscriptions: %{},
+       # 梯队3 step3.10b:per-observer 统一 Replicator 出口控制器(嵌连接 state)。
+       # 预算/窗可经 app env 调(运维旋钮 + 测试注入小预算);缺省见模块属性。
+       egress:
+         Egress.new(
+           observer_id: self(),
+           capacity_bytes:
+             Application.get_env(:gate_server, :egress_capacity_bytes, @egress_capacity_bytes),
+           window_ms: Application.get_env(:gate_server, :egress_window_ms, @egress_window_ms)
+         ),
+       egress_seq: 0,
+       egress_flush_scheduled: false
      }}
   end
 
@@ -232,8 +250,7 @@ defmodule GateServer.WsConnection do
       subscription_count: map_size(state.voxel_subscriptions)
     })
 
-    send_encoded(state, {:voxel_chunk_snapshot_payload, payload})
-    {:noreply, state}
+    {:noreply, replicate(state, :voxel_chunk_snapshot_payload, payload)}
   end
 
   def handle_info({:voxel_chunk_delta_payload, payload}, state) when is_binary(payload) do
@@ -244,8 +261,7 @@ defmodule GateServer.WsConnection do
       subscription_count: map_size(state.voxel_subscriptions)
     })
 
-    send_encoded(state, {:voxel_chunk_delta_payload, payload})
-    {:noreply, state}
+    {:noreply, replicate(state, :voxel_chunk_delta_payload, payload)}
   end
 
   def handle_info({:voxel_chunk_invalidate_payload, payload}, state) when is_binary(payload) do
@@ -256,8 +272,12 @@ defmodule GateServer.WsConnection do
       subscription_count: map_size(state.voxel_subscriptions)
     })
 
-    send_encoded(state, {:voxel_chunk_invalidate_payload, payload})
-    {:noreply, state}
+    {:noreply, replicate(state, :voxel_chunk_invalidate_payload, payload)}
+  end
+
+  # 梯队3 step3.10b:Replicator 自限定 backlog flush——仅在出口压力憋帧后激活(正常负载不调度)。
+  def handle_info(:replicator_flush, state) do
+    {:noreply, drain_egress(%{state | egress_flush_scheduled: false})}
   end
 
   # Phase 4-bis (D7):forward 0x6C ObjectStateDelta from ChunkProcess fan-out
@@ -768,6 +788,66 @@ defmodule GateServer.WsConnection do
   defp send_encoded(state, message) do
     {:ok, iodata} = GateServer.Codec.encode(message)
     send(state.owner_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
+  end
+
+  # 梯队3 step3.10b:把一帧客户端可见状态交给 per-observer 统一 Replicator(REPL-2),
+  # 立即排空到出口预算上限;若仍有憋帧则调度自限定 flush。cell_id 用连接级单调 frame seq
+  # (非 nil、唯一 → live FIFO 无合并;per-cell 聚合待 scene 填 cell_id,3.10c)。
+  defp replicate(state, forward_tag, payload) do
+    seq = state.egress_seq + 1
+
+    egress =
+      Egress.enqueue_payload(state.egress, forward_tag, {:seq, seq}, payload, snapshot_seq: seq)
+
+    drain_egress(%{state | egress: egress, egress_seq: seq})
+  end
+
+  defp drain_egress(state) do
+    {outbound, egress} = Egress.flush(state.egress, System.monotonic_time(:millisecond))
+    Enum.each(outbound, fn {tag, binary} -> dispatch_replicated(state, tag, binary) end)
+
+    state
+    |> Map.put(:egress, egress)
+    |> report_replicator_resync()
+    |> maybe_schedule_egress_flush()
+  end
+
+  # 控制/状态/bulk 帧的实际传输:chunk 类经 Codec 包 opcode;field 类二进制已含 opcode 裸发。
+  defp dispatch_replicated(state, tag, binary)
+       when tag in [:voxel_field_region_snapshot_payload, :voxel_field_region_destroyed_payload] do
+    send(state.owner_pid, {:gate_ws_send, binary})
+  end
+
+  defp dispatch_replicated(state, tag, binary) do
+    send_encoded(state, {tag, binary})
+  end
+
+  # delta 链因出口溢出被截断时显式上报(非静默);客户端据 base 不匹配重取快照。
+  defp report_replicator_resync(state) do
+    cells = Egress.resync_cells(state.egress)
+
+    if MapSet.size(cells) > 0 do
+      GateServer.CliObserve.emit("ws_replicator_resync_needed", %{
+        connection_pid: self(),
+        cid: state.cid,
+        resync_count: MapSet.size(cells)
+      })
+
+      %{state | egress: Egress.clear_resync_cells(state.egress)}
+    else
+      state
+    end
+  end
+
+  defp maybe_schedule_egress_flush(%{egress_flush_scheduled: true} = state), do: state
+
+  defp maybe_schedule_egress_flush(state) do
+    if Egress.pending?(state.egress) do
+      Process.send_after(self(), :replicator_flush, @egress_flush_delay_ms)
+      %{state | egress_flush_scheduled: true}
+    else
+      state
+    end
   end
 
   defp verify_token(token) do
