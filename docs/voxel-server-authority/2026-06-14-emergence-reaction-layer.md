@@ -134,6 +134,19 @@ target/transform/tag → 锁存。**(R5b 落地;注:现有 conduction/discharge 
 
 ## 进度日志(时间倒序)
 
+- 2026-06-15:**R5 燃烧(旗舰涌现)全部完成,火能蔓延**。
+  - R5a:Rule/Engine 泛化 tag_reaction + 多效果物化;燃烧规则 ignite/burn/burn_out;catalog 加 ash +
+    burn_progress(id 13 add_delta,catalog_version→3)。inert ignition=5000℃ 天然门控可燃性。50/0。
+  - R5b:ChunkProcess `:set_tag` handler(tag 名→id→合并 tag_set→intern,空集 ref0,幂等)+
+    write_voxel_attribute 泛化到动态属性 delta(RMW + clip,burn_progress)+ **SystemActor 连续/锁存分流**
+    (heat_energy_joules/delta 连续注入绕去抖,否则火不自维持;现有 conduction 连续 Joule 同受益)。17/0,
+    ChunkProcessTest 46/46 零回归。
+  - R5c:ReactionKernel 补读 burn_progress + per-cell tag;**truth 级蔓延机制 = burning cell 每 tick
+    向相邻 solid cell 辐射热**(现有温度扩散只动 field 层不动 truth 而反应读 truth)。**端到端旗舰 demo**:
+    点燃木 → 自维持燃烧放热 + 进度 → 燃尽成 ash;辐射热点燃相邻木(火蔓延)。3 e2e 全绿;**scene 全量
+    982/0 零净回归**。
+  - **燃烧涌现回路闭合**:flammable + 温度 → ignite(:burning)→ 注焦耳自维持 + 蔓延 → burn_out(ash)。
+    后续涌现(电→世界等)同此骨架。
 - 2026-06-14:**R3 ReactionKernel 驱动 + 端到端闭环完成,涌现回路打通**。新建
   `SceneServer.Voxel.Field.Kernels.ReactionKernel`(field-kernel adapter:读 region AABB 内已提交
   truth 的材料 + `effective_attribute_at "temperature"` → `Engine.evaluate` → `{:transform_material}`
