@@ -102,6 +102,13 @@ orchestration 改为:`NativeBackend.diffuse_temperature(layer.cell_sim, candidat
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 2.7b 温度部分(diffuse_temperature_sim 句柄 NIF)完成**。lib.rs 加
+  `diffuse_temperature_sim(sim, candidates, aabb, thermal, ..)`:读 CellSim active(旧)→ **复用
+  无状态 `temperature_diffusion::diffuse_temperature`**(逐位等价旧路径)→ 原地 put_delta apply
+  (双缓冲:全算入 Vec 再 apply,邻居读全取旧态)。Elixir 绑定 + **数值等价测试**(句柄版 vs 旧
+  diffuse_temperature + FieldLayer.apply,含相邻 candidates 验双缓冲,逐位 `==`)。field 162 全绿。
+  **剩 2.7b 电势部分(propagate_electric_potential_sim,写两层)、2.7c 原子 flip、2.7d 队列背压。**
+
 - 2026-06-14:**step 2.7a(Rust CellSim 脚手架,green 非-flip)完成**。`native/field_kernel` 新增
   `cell_sim.rs`:`FieldLayerSim`(`#[rustler::resource_impl]` + `Mutex<LayerState>`,稀疏 delta +
   baseline/threshold/quant,poison-safe lock 不 panic 越 FFI)。lib.rs 加 4 脚手架 NIF(`cell_sim_new`/

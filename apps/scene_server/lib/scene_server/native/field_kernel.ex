@@ -141,4 +141,30 @@ defmodule SceneServer.Native.FieldKernel do
   @doc "active cells(过 aabb inclusive + |delta| >= epsilon,按 idx 升序)。"
   @spec cell_sim_active_cells(cell_sim(), aabb(), float()) :: [temperature_cell()]
   def cell_sim_active_cells(_sim, _aabb, _epsilon), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  温度扩散句柄版(梯队2 step2.7b):原地演化 CellSim(返回 :ok),复用与 `diffuse_temperature`
+  相同 stencil(逐位数值等价),数据不再每 tick 进出序列化(BND-1)。
+  """
+  @spec diffuse_temperature_sim(
+          cell_sim(),
+          [0..4095],
+          aabb(),
+          [thermal_properties()],
+          float(),
+          float(),
+          float(),
+          float()
+        ) :: :ok
+  def diffuse_temperature_sim(
+        _sim,
+        _candidates,
+        _aabb,
+        _thermal_properties,
+        _diffusion_seconds,
+        _ambient_dt_seconds,
+        _ambient_loss_per_second,
+        _cell_size_meters
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 end
