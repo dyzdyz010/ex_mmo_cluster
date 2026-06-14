@@ -134,6 +134,13 @@ target/transform/tag → 锁存。**(R5b 落地;注:现有 conduction/discharge 
 
 ## 进度日志(时间倒序)
 
+- 2026-06-15:**R5d 对抗式评审修复**。多 agent 评审 workflow(4 维度 × 找→对抗核验)对反应层评 32 发现、
+  确认 3 真 bug,全修 + 加测:(1)[high] 注热温度写无 clip → 越界 `put_attribute_for_cell` raise 崩
+  ChunkProcess(燃烧辐射注热可达上界):`build_heat_energy_attribute_storage` clip target/delta 到温度边界
+  饱和;`apply_field_effects` 单效果 rescue 防御纵深。(2)[high] `max_transforms` 安全阀不覆盖辐射(失控
+  级联真正传播路径):改 `max_effects_per_tick` 覆盖每 tick 全部效果(reaction 优先,radiation 溢出截断);
+  模型卡更正。(3)[medium] `resolve_threshold` 未知材料缺省阈值 0 反转惰性安全(未知材料 ≥0℃ 点燃):
+  `MaterialCatalog.known_material?` 门控,未知材料不参与 material_threshold 反应。3 新单测;scene 全量 **985/0**。
 - 2026-06-15:**R5 燃烧(旗舰涌现)全部完成,火能蔓延**。
   - R5a:Rule/Engine 泛化 tag_reaction + 多效果物化;燃烧规则 ignite/burn/burn_out;catalog 加 ash +
     burn_progress(id 13 add_delta,catalog_version→3)。inert ignition=5000℃ 天然门控可燃性。50/0。
