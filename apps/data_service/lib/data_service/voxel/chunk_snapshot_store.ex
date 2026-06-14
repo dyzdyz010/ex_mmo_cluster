@@ -40,6 +40,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
 
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
+  alias DataService.Voxel.CommandLog
   alias DataService.Voxel.WriteTokenStore
 
   @type chunk_coord :: {integer(), integer(), integer()}
@@ -55,7 +56,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
           required(:owner_epoch) => non_neg_integer(),
           required(:chunk_version) => non_neg_integer(),
           required(:chunk_hash) => binary(),
-          required(:data) => binary()
+          required(:data) => binary(),
+          optional(:command_id) => String.t() | nil
         }
   @type put_result :: {:ok, :inserted | :updated | :unchanged} | {:error, atom()}
   @type get_result :: {:ok, snapshot()} | {:error, atom()}
@@ -153,7 +155,15 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
        WHERE logical_scene_id = $1 AND coord_x = $2 AND coord_y = $3 AND coord_z = $4
       """
 
-      Ecto.Adapters.SQL.query!(repo(opts), sql, [logical_scene_id, x, y, z, cell_tick, sim_time_ms])
+      Ecto.Adapters.SQL.query!(repo(opts), sql, [
+        logical_scene_id,
+        x,
+        y,
+        z,
+        cell_tick,
+        sim_time_ms
+      ])
+
       :ok
     end
   end
@@ -172,14 +182,32 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   defp do_put(repo, snapshot) do
     :ok = lock_snapshot_key(repo, snapshot)
 
-    case lock_existing_row(repo, snapshot) do
-      nil ->
-        insert_row(repo, snapshot)
+    result =
+      case lock_existing_row(repo, snapshot) do
+        nil ->
+          insert_row(repo, snapshot)
 
-      %VoxelChunkSnapshot{} = row ->
-        compare_and_update(repo, row, snapshot)
-    end
+        %VoxelChunkSnapshot{} = row ->
+          compare_and_update(repo, row, snapshot)
+      end
+
+    # AUTH-4(梯队1 step1.5b-1):仅在 chunk 写入成功(insert/update/unchanged)后,
+    # 于**同一事务**内登记客户端命令幂等键。失败(stale/conflict)不登记,故合法重试不被堵塞
+    # (exactly-once,而非 at-most-once)。单方块体素 truth 由 chunk_version CAS 天然幂等,
+    # record_once 在此提供 durable replay-protection 审计记录;`command_id` 为 nil(内部/事务
+    # 逐 chunk 写、手动 :persist 等无客户端命令的写)时跳过。
+    maybe_record_command(repo, snapshot, result)
+
+    result
   end
+
+  defp maybe_record_command(repo, %{command_id: command_id, logical_scene_id: scene_id}, {:ok, _})
+       when is_binary(command_id) do
+    _ = CommandLog.record_once(command_id, scene_id, repo: repo)
+    :ok
+  end
+
+  defp maybe_record_command(_repo, _snapshot, _result), do: :ok
 
   defp lock_snapshot_key(repo, snapshot) do
     {x, y, z} = snapshot.chunk_coord
@@ -341,10 +369,15 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          cell_tick: Map.get(attrs, :cell_tick, 0),
          sim_time_ms: Map.get(attrs, :sim_time_ms, 0),
          chunk_hash: chunk_hash,
-         data: data
+         data: data,
+         # AUTH-4(step1.5b-1):客户端命令幂等键,仅单方块编辑路径透传;nil 时跳过登记。
+         command_id: normalize_command_id(Map.get(attrs, :command_id))
        }}
     end
   end
+
+  defp normalize_command_id(value) when is_binary(value) and byte_size(value) > 0, do: value
+  defp normalize_command_id(_value), do: nil
 
   defp fetch_chunk_hash(attrs) do
     with {:ok, value} <- fetch_required(attrs, :chunk_hash),

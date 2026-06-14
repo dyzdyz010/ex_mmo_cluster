@@ -90,6 +90,17 @@ combat cast 的 command_id 归 **梯队3 "cast 带 command_id"** 处理。本步
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.5b-1(单方块编辑 command_id 端到端)完成**。链路:gate
+  `GateServer.VoxelCommandId.edit(scene, cid, client_intent_seq)` 派生(新模块,不改 wire)→
+  `build_voxel_edit_intent_attrs` 注入(ws+tcp)→ ChunkProcess `normalize_apply_intent` 提取进
+  intent → `apply_normalized_intent` 透传 `persist_snapshot/5` → `build_snapshot_attrs/5` 写入
+  attrs → `ChunkSnapshotStore.do_put` **仅在写入成功(insert/update/unchanged)后于同一
+  Repo.transaction 内** `CommandLog.record_once`(失败不登记 → exactly-once)。事务逐 chunk 写、
+  手动 :persist、refresh 等内部写 command_id=nil 跳过登记。新增 4 测试(成功登记/重复只一行/
+  stale 不登记/缺省跳过)。回归 data_service 99+1doctest、gate 196、scene 隔离 ChunkProcessTest
+  46 全绿;scene 全量 918 的 7~8 个 observe-log flaky 经 stash 同 seed 基线对比确认为预存(基线 8、
+  本步 7),0 净回归。**剩余 1.5b-2 prefab 幂等键。**
+
 - 2026-06-14:决策稿落定。三路源码审计确认:单方块走 `ChunkSnapshotStore.do_put` 显式事务可同事务
   record_once;prefab object_id gate 预分配 + 非确定性 transaction_id + fast-path 绕协调器 = AUTH-4 真洞,
   用 idempotency-key(pending→committed)闭合。拆 1.5b-1(单方块)/1.5b-2(prefab)两子步。

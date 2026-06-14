@@ -6,10 +6,13 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.CommandLog
   alias DataService.Voxel.WriteTokenStore
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+    # 梯队1 step1.5b-1:command_id 同事务 record_once 写入共享 voxel_command_log 表,每测试清表。
+    CommandLog.reset()
     # 梯队1 step1.2:WriteTokenStore 已 DB 化(共享 voxel_write_tokens 表),每测试清表
     # 以隔离 token_version,避免跨测试 :stale_token。
     WriteTokenStore.reset()
@@ -170,6 +173,117 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
                snapshot_attrs(token, chunk_hash: <<1, 2, 3>>, data: <<>>),
                write_token_store: token_store
              )
+  end
+
+  # 梯队1 step1.5b-1(AUTH-4):command_id 同事务 record_once。
+
+  test "records command_id in the same transaction on a successful write", %{
+    token_store: token_store
+  } do
+    token = upsert_token(token_store, token())
+
+    attrs =
+      snapshot_attrs(token,
+        chunk_version: 1,
+        chunk_hash: hash(<<1>>),
+        data: <<1, 2, 3>>,
+        command_id: "edit:1:42:7"
+      )
+
+    refute CommandLog.seen?("edit:1:42:7")
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(attrs, write_token_store: token_store)
+
+    assert CommandLog.seen?("edit:1:42:7")
+    assert command_log_count("edit:1:42:7") == 1
+  end
+
+  test "records a duplicate command_id only once across replays", %{token_store: token_store} do
+    token = upsert_token(token_store, token())
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token,
+                 chunk_version: 1,
+                 chunk_hash: hash(<<1>>),
+                 data: <<1>>,
+                 command_id: "edit:1:42:9"
+               ),
+               write_token_store: token_store
+             )
+
+    # 同 command_id 的后续写(chunk_version 前进)只在 voxel_command_log 留一行(ON CONFLICT DO NOTHING)。
+    assert {:ok, :updated} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token,
+                 chunk_version: 2,
+                 chunk_hash: hash(<<2>>),
+                 data: <<2>>,
+                 command_id: "edit:1:42:9"
+               ),
+               write_token_store: token_store
+             )
+
+    assert command_log_count("edit:1:42:9") == 1
+  end
+
+  test "does NOT record command_id when the write is rejected as stale", %{
+    token_store: token_store
+  } do
+    token = upsert_token(token_store, token())
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token, chunk_version: 3, chunk_hash: hash(<<3>>), data: <<3>>),
+               write_token_store: token_store
+             )
+
+    # 旧 chunk_version 被拒;command_id 不应被登记,合法重试才不被堵塞(exactly-once,非 at-most-once)。
+    assert {:error, :stale_chunk_version} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token,
+                 chunk_version: 2,
+                 chunk_hash: hash(<<2>>),
+                 data: <<2>>,
+                 command_id: "edit:1:42:stale"
+               ),
+               write_token_store: token_store
+             )
+
+    refute CommandLog.seen?("edit:1:42:stale")
+  end
+
+  test "skips command_id recording when absent (internal/transaction writes)", %{
+    token_store: token_store
+  } do
+    token = upsert_token(token_store, token())
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(
+               snapshot_attrs(token, chunk_version: 1, chunk_hash: hash(<<1>>), data: <<1>>),
+               write_token_store: token_store
+             )
+
+    assert command_log_total() == 0
+  end
+
+  defp command_log_count(command_id) do
+    %{rows: [[count]]} =
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        "SELECT count(*) FROM voxel_command_log WHERE command_id = $1",
+        [command_id]
+      )
+
+    count
+  end
+
+  defp command_log_total do
+    %{rows: [[count]]} =
+      Ecto.Adapters.SQL.query!(Repo, "SELECT count(*) FROM voxel_command_log", [])
+
+    count
   end
 
   defp upsert_token(token_store, token) do

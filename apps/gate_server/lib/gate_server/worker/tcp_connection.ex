@@ -1443,7 +1443,14 @@ defmodule GateServer.TcpConnection do
         scene_node: scene_node
       })
 
-      attrs = build_voxel_edit_intent_attrs(request, op, target, lease)
+      command_id =
+        GateServer.VoxelCommandId.edit(
+          request.logical_scene_id,
+          state.cid,
+          request.client_intent_seq
+        )
+
+      attrs = build_voxel_edit_intent_attrs(request, op, target, lease, command_id)
 
       case safe_call(
              {SceneServer.Voxel.ChunkDirectory, scene_node},
@@ -1577,7 +1584,7 @@ defmodule GateServer.TcpConnection do
     _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_target_world_micro}
   end
 
-  defp build_voxel_edit_intent_attrs(request, op, target, lease) do
+  defp build_voxel_edit_intent_attrs(request, op, target, lease, command_id) do
     base = %{
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
@@ -1586,7 +1593,9 @@ defmodule GateServer.TcpConnection do
       operation: op.operation,
       macro: target.local_macro,
       expected_chunk_version: request.expected_chunk_version,
-      expected_cell_hash: request.expected_cell_hash
+      expected_cell_hash: request.expected_cell_hash,
+      # AUTH-4(step1.5b-1):客户端命令幂等键,scene/store 同事务 record_once。
+      command_id: command_id
     }
 
     base

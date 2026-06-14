@@ -1371,7 +1371,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
                intent.lease,
                state.chunk_coord,
                next_storage,
-               persist_payload
+               persist_payload,
+               Map.get(intent, :command_id)
              ) do
           {:ok, persist_result} ->
             next_state = %{state | storage: next_storage, lease: intent.lease}
@@ -2856,13 +2857,15 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
-  defp persist_snapshot(nil, _chunk_coord, _storage, _payload) do
+  defp persist_snapshot(lease, chunk_coord, storage, payload, command_id \\ nil)
+
+  defp persist_snapshot(nil, _chunk_coord, _storage, _payload, _command_id) do
     {:error, :missing_lease}
   end
 
-  defp persist_snapshot(lease, chunk_coord, storage, payload) do
+  defp persist_snapshot(lease, chunk_coord, storage, payload, command_id) do
     lease
-    |> build_snapshot_attrs(chunk_coord, storage, payload)
+    |> build_snapshot_attrs(chunk_coord, storage, payload, command_id)
     |> DataService.Voxel.ChunkSnapshotStore.put_snapshot()
   end
 
@@ -2969,7 +2972,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
-  defp build_snapshot_attrs(lease, chunk_coord, storage, payload) do
+  defp build_snapshot_attrs(lease, chunk_coord, storage, payload, command_id \\ nil) do
     chunk_hash = Codec.chunk_hash(storage)
 
     attrs =
@@ -2991,7 +2994,14 @@ defmodule SceneServer.Voxel.ChunkProcess do
         data: payload
       })
 
-    attrs
+    # AUTH-4(step1.5b-1):仅单方块编辑路径携带 command_id;事务逐 chunk 写传 nil(prefab 幂等
+    # 在 gate 边界单独处理,见 step1.5b-2),内部写也为 nil。ChunkSnapshotStore.do_put 仅在
+    # command_id 非 nil 时同事务 record_once。
+    if is_binary(command_id) do
+      Map.put(attrs, :command_id, command_id)
+    else
+      attrs
+    end
   end
 
   defp chunk_in_lease_bounds?({cx, cy, cz}, lease) do
@@ -4461,12 +4471,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
          micro_layer: micro_layer,
          expected_chunk_version: expected_chunk_version,
          expected_cell_hash: expected_cell_hash,
+         # AUTH-4(step1.5b-1):客户端命令幂等键,gate 派生(nil=非客户端单方块命令)。
+         command_id:
+           normalize_command_id(
+             fetch_optional(intent_attrs, [:command_id]) || fetch_optional(attrs, [:command_id])
+           ),
          opts: opts
        }}
     end
   end
 
   defp normalize_apply_intent(_attrs), do: {:error, :invalid_voxel_intent}
+
+  defp normalize_command_id(value) when is_binary(value) and byte_size(value) > 0, do: value
+  defp normalize_command_id(_value), do: nil
 
   defp normalize_apply_intents([]), do: {:ok, []}
 
