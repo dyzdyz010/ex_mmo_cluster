@@ -27,6 +27,7 @@ defmodule GateServer.MixProject do
   defp deps do
     [
       {:observer_cli, "~> 1.7"},
+      {:mmo_contracts, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       {:scene_server, in_umbrella: true, runtime: false},
       {:world_server, in_umbrella: true, runtime: false},
