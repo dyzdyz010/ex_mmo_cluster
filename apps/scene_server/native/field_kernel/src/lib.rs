@@ -114,9 +114,11 @@ fn propagate_electric_potential_sim(
     let (potential_cells, new_ionization) =
         electric_potential::propagate_electric_potential(sources, entries, aabb, ionization_input);
 
-    // potential:merge put 绝对值(= Elixir apply_cells,不清空)。
+    // potential:clear aabb 再 put 绝对值(= Elixir `get_layer |> clear_layer_in_aabb` 后 apply_cells,
+    // 即 aabb 内替换;Dijkstra 每 tick 重算 potential 场)。
     {
         let mut state = cell_sim::lock(&potential_sim);
+        state.clear_aabb(aabb);
         for (idx, value) in potential_cells {
             state.put_absolute(idx, value);
         }
@@ -178,38 +180,10 @@ fn find_discharge_path(
     .map_err(discharge_path_error_atom)
 }
 
-#[rustler::nif]
-fn diffuse_temperature(
-    cells: Vec<temperature_diffusion::TemperatureCell>,
-    candidates: Vec<u16>,
-    aabb: types::Aabb,
-    thermal_properties: Vec<temperature_diffusion::ThermalProperties>,
-    diffusion_seconds: f64,
-    ambient_dt_seconds: f64,
-    ambient_loss_per_second: f64,
-    cell_size_meters: f64,
-) -> Vec<temperature_diffusion::TemperatureCell> {
-    temperature_diffusion::diffuse_temperature(
-        cells,
-        candidates,
-        aabb,
-        thermal_properties,
-        diffusion_seconds,
-        ambient_dt_seconds,
-        ambient_loss_per_second,
-        cell_size_meters,
-    )
-}
-
-#[rustler::nif]
-fn propagate_electric_potential(
-    sources: Vec<electric_potential::Source>,
-    entries: Vec<electric_potential::NativeEntry>,
-    aabb: types::Aabb,
-    ionization_cells: Vec<electric_potential::IonizationCell>,
-) -> electric_potential::ElectricPropagationResult {
-    electric_potential::propagate_electric_potential(sources, entries, aabb, ionization_cells)
-}
+// 梯队2 step2.7c(BND-1):旧无状态向量 NIF diffuse_temperature / propagate_electric_potential
+// 已删(no dual-path)——统一走句柄版 *_sim(原地演化 cell_sim)。底层 stencil 计算函数
+// `temperature_diffusion::diffuse_temperature` / `electric_potential::propagate_electric_potential`
+// 仍被句柄版复用,保留。
 
 fn path_error_atom(error: conduction_path::PathError) -> Atom {
     match error {

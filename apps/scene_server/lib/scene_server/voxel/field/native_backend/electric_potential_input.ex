@@ -7,42 +7,34 @@ defmodule SceneServer.Voxel.Field.NativeBackend.ElectricPotentialInput do
   projection facts for one native electric propagation step.
   """
 
-  alias SceneServer.Voxel.Field.{FieldLayer, ParticipantProjection}
+  alias SceneServer.Voxel.Field.ParticipantProjection
   alias SceneServer.Voxel.Field.NativeBackend.ConductionPathInput
   alias SceneServer.Voxel.Types
 
   defstruct sources: [],
             entries: [],
-            aabb: {{0, 0, 0}, {0, 0, 0}},
-            ionization_cells: []
+            aabb: {{0, 0, 0}, {0, 0, 0}}
 
   @type source :: {0..4095, float()}
-  @type field_cell :: {0..4095, float()}
   @type t :: %__MODULE__{
           sources: [source()],
           entries: [ConductionPathInput.entry()],
-          aabb: {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}},
-          ionization_cells: [field_cell()]
+          aabb: {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}}
         }
 
+  # 梯队2 step2.7c(BND-1):ionization 层本体常驻 Rust,`propagate_electric_potential_sim` 直读
+  # ionization 句柄,故本 DTO **不再序列化 ionization_cells**——只冻结 sources / entries / aabb。
   @spec new(
           [map()],
           {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}},
-          FieldLayer.t(),
           ParticipantProjection.t()
         ) :: t()
-  def new(
-        source_points,
-        aabb,
-        %FieldLayer{} = ionization_layer,
-        %ParticipantProjection{} = projection
-      )
+  def new(source_points, aabb, %ParticipantProjection{} = projection)
       when is_list(source_points) do
     %__MODULE__{
       sources: sources(source_points, aabb, projection),
       entries: ConductionPathInput.conduction_entries(projection, aabb),
-      aabb: aabb,
-      ionization_cells: ionization_cells(ionization_layer, aabb)
+      aabb: aabb
     }
   end
 
@@ -61,12 +53,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.ElectricPotentialInput do
       Map.update(acc, macro_index, value, fn previous -> max(previous, value) end)
     end)
     |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.map(fn {macro_index, value} -> {macro_index, value * 1.0} end)
-  end
-
-  defp ionization_cells(%FieldLayer{} = ionization_layer, aabb) do
-    ionization_layer
-    |> FieldLayer.active_cells(aabb, 0)
     |> Enum.map(fn {macro_index, value} -> {macro_index, value * 1.0} end)
   end
 

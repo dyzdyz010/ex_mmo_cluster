@@ -139,10 +139,10 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
   end
 
   @doc """
-  Computes one sparse temperature diffusion step.
+  原地演化温度层一格扩散步(梯队2 step2.7c,BND-1)。
 
-  The return value is a list of `{macro_index, delta_from_temperature_baseline}`
-  updates. Elixir owns applying those deltas back into the `FieldLayer`.
+  场层本体常驻 Rust `ResourceArc`;`diffuse_temperature_sim` 直读 active 缓冲(旧)、Rust 内双缓冲、
+  原地写 `layer.cell_sim`。Elixir 不再 apply delta。返回 `:ok`(layer 句柄已被 mutate)。
   """
   @spec diffuse_temperature(
           FieldLayer.t(),
@@ -152,9 +152,8 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
           number(),
           number(),
           number(),
-          number(),
-          keyword()
-        ) :: {:ok, [{0..4095, float()}]} | {:error, :native_unavailable | :native_disabled}
+          number()
+        ) :: :ok
   def diffuse_temperature(
         %FieldLayer{} = layer,
         aabb,
@@ -163,78 +162,61 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
         diffusion_seconds,
         ambient_dt_seconds,
         ambient_loss_per_second,
-        cell_size_meters,
-        opts \\ []
+        cell_size_meters
       ) do
-    fallback = Keyword.get(opts, :fallback)
+    request =
+      TemperatureDiffusionInput.new(
+        aabb,
+        candidate_indices,
+        storage,
+        diffusion_seconds,
+        ambient_dt_seconds,
+        ambient_loss_per_second,
+        cell_size_meters
+      )
 
-    case backend_opt(Keyword.get(opts, :backend, :native)) do
-      :elixir ->
-        run_fallback(fallback, :native_disabled)
-
-      :native ->
-        request =
-          TemperatureDiffusionInput.new(
-            layer,
-            aabb,
-            candidate_indices,
-            storage,
-            diffusion_seconds,
-            ambient_dt_seconds,
-            ambient_loss_per_second,
-            cell_size_meters
-          )
-
-        case call_native_temperature_diffusion(request) do
-          {:error, :native_unavailable} -> run_fallback(fallback, :native_unavailable)
-          result -> result
-        end
-    end
+    FieldKernel.diffuse_temperature_sim(
+      layer.cell_sim,
+      request.candidates,
+      request.aabb,
+      request.thermal_properties,
+      request.diffusion_seconds,
+      request.ambient_dt_seconds,
+      request.ambient_loss_per_second,
+      request.cell_size_meters
+    )
   end
 
   @doc """
-  Propagates electric potential and ionization for one chunk-local field tick.
+  原地演化电势 + ionization 两层一 tick(梯队2 step2.7c,BND-1)。
 
-  The return value is `%{potential_cells: cells, ionization_cells: cells}`.
-  Elixir owns clearing and applying those cells back into `FieldLayer`s.
+  potential / ionization 本体常驻 Rust;`propagate_electric_potential_sim` 读 ionization 句柄、
+  merge 写 potential 句柄、clear+写 ionization 句柄。返回 `:ok`(两 layer 句柄已被 mutate)。
   """
   @spec propagate_electric_potential(
+          FieldLayer.t(),
+          FieldLayer.t(),
           [map()],
           aabb(),
-          FieldLayer.t(),
-          ParticipantProjection.t(),
-          keyword()
-        ) ::
-          {:ok, %{potential_cells: [{0..4095, float()}], ionization_cells: [{0..4095, float()}]}}
-          | {:error, :native_unavailable | :native_disabled}
+          ParticipantProjection.t()
+        ) :: :ok
   def propagate_electric_potential(
+        %FieldLayer{} = potential_layer,
+        %FieldLayer{} = ionization_layer,
         source_points,
         aabb,
-        %FieldLayer{} = ionization_layer,
-        %ParticipantProjection{} = projection,
-        opts \\ []
+        %ParticipantProjection{} = projection
       )
       when is_list(source_points) do
-    fallback = Keyword.get(opts, :fallback)
+    request = ElectricPotentialInput.new(source_points, aabb, projection)
 
-    case backend_opt(Keyword.get(opts, :backend, :native)) do
-      :elixir ->
-        run_fallback(fallback, :native_disabled)
-
-      :native ->
-        request =
-          ElectricPotentialInput.new(
-            source_points,
-            aabb,
-            ionization_layer,
-            projection
-          )
-
-        case call_native_electric_potential(request) do
-          {:error, :native_unavailable} -> run_fallback(fallback, :native_unavailable)
-          result -> result
-        end
-    end
+    FieldKernel.propagate_electric_potential_sim(
+      potential_layer.cell_sim,
+      ionization_layer.cell_sim,
+      request.sources,
+      request.entries,
+      request.aabb
+    )
   end
 
   defp call_native_conduction_path(%ConductionPathInput{} = request) do
@@ -262,38 +244,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend do
       request.ionization_cells,
       request.max_frontier
     )
-  rescue
-    ErlangError -> {:error, :native_unavailable}
-    UndefinedFunctionError -> {:error, :native_unavailable}
-  end
-
-  defp call_native_temperature_diffusion(%TemperatureDiffusionInput{} = request) do
-    {:ok,
-     FieldKernel.diffuse_temperature(
-       request.cells,
-       request.candidates,
-       request.aabb,
-       request.thermal_properties,
-       request.diffusion_seconds,
-       request.ambient_dt_seconds,
-       request.ambient_loss_per_second,
-       request.cell_size_meters
-     )}
-  rescue
-    ErlangError -> {:error, :native_unavailable}
-    UndefinedFunctionError -> {:error, :native_unavailable}
-  end
-
-  defp call_native_electric_potential(%ElectricPotentialInput{} = request) do
-    {potential_cells, ionization_cells} =
-      FieldKernel.propagate_electric_potential(
-        request.sources,
-        request.entries,
-        request.aabb,
-        request.ionization_cells
-      )
-
-    {:ok, %{potential_cells: potential_cells, ionization_cells: ionization_cells}}
   rescue
     ErlangError -> {:error, :native_unavailable}
     UndefinedFunctionError -> {:error, :native_unavailable}

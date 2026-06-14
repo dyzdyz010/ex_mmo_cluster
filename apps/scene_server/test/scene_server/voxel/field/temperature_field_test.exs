@@ -337,14 +337,19 @@ defmodule SceneServer.Voxel.Field.TemperatureFieldTest do
         })
 
       after_first_tick = TemperatureField.tick(region, nil)
+
+      # 梯队2 step2.7c:FieldLayer 现为可变句柄,须在 tick 2(原地 mutate 同句柄)**前**捕获数值快照。
+      first_value =
+        FieldLayer.get(FieldRegion.get_layer(after_first_tick, :temperature), source_idx)
+
       after_second_tick = TemperatureField.tick(after_first_tick, nil)
 
-      first_layer = FieldRegion.get_layer(after_first_tick, :temperature)
-      second_layer = FieldRegion.get_layer(after_second_tick, :temperature)
+      second_value =
+        FieldLayer.get(FieldRegion.get_layer(after_second_tick, :temperature), source_idx)
 
       assert after_first_tick.source_points == []
-      assert FieldLayer.get(first_layer, source_idx) > TemperatureField.env_temperature()
-      assert FieldLayer.get(second_layer, source_idx) < FieldLayer.get(first_layer, source_idx)
+      assert first_value > TemperatureField.env_temperature()
+      assert second_value < first_value
     end
   end
 end

@@ -37,37 +37,41 @@ defmodule SceneServer.Voxel.Field.ElectricField do
   @spec tick(FieldRegion.t(), Storage.t() | nil, keyword()) :: FieldRegion.t()
   def tick(%FieldRegion{} = region, storage, opts \\ []) do
     aabb = region.aabb
-
-    potential_layer =
-      region
-      |> FieldRegion.get_layer(:electric_potential)
-      |> clear_layer_in_aabb(aabb)
-
+    potential_layer = FieldRegion.get_layer(region, :electric_potential)
     ionization_layer = FieldRegion.get_layer(region, :ionization)
     projection = participant_projection(storage, opts)
 
-    fallback = fn ->
-      {:ok, elixir_propagation(region, projection, ionization_layer)}
+    # 梯队2 step2.7c(BND-1)::native 走句柄 NIF(原地 clear+put 两层句柄,返回 :ok);:elixir 参考
+    # 实现仍经 FieldLayer NIF-backed 函数 clear+apply(测试/对照用)。
+    case Keyword.get(opts, :electric_backend, :native) do
+      :elixir ->
+        %{potential_cells: potential_cells, ionization_cells: ionization_cells} =
+          elixir_propagation(region, projection, ionization_layer)
+
+        region
+        |> FieldRegion.put_layer(
+          :electric_potential,
+          potential_layer |> clear_layer_in_aabb(aabb) |> apply_cells(potential_cells)
+        )
+        |> FieldRegion.put_layer(
+          :ionization,
+          ionization_layer |> clear_layer_in_aabb(aabb) |> apply_cells(ionization_cells)
+        )
+
+      _native ->
+        :ok =
+          NativeBackend.propagate_electric_potential(
+            potential_layer,
+            ionization_layer,
+            region.source_points,
+            aabb,
+            projection
+          )
+
+        region
+        |> FieldRegion.put_layer(:electric_potential, potential_layer)
+        |> FieldRegion.put_layer(:ionization, ionization_layer)
     end
-
-    {:ok, %{potential_cells: potential_cells, ionization_cells: ionization_cells}} =
-      NativeBackend.propagate_electric_potential(
-        region.source_points,
-        aabb,
-        ionization_layer,
-        projection,
-        backend: Keyword.get(opts, :electric_backend, :native),
-        fallback: fallback
-      )
-
-    region
-    |> FieldRegion.put_layer(:electric_potential, apply_cells(potential_layer, potential_cells))
-    |> FieldRegion.put_layer(
-      :ionization,
-      ionization_layer
-      |> clear_layer_in_aabb(aabb)
-      |> apply_cells(ionization_cells)
-    )
   end
 
   # ---- BFS / Dijkstra propagation -------------------------------------------

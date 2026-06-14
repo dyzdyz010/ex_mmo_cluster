@@ -136,6 +136,19 @@ flip 必须一次性翻完以下接线面(翻完才再次全绿,no dual-path):
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 2.7c 原子 flip 完成 → BND-1 数据归属落地**。一次性翻完:(1)FieldLayer 从不可变
+  值改为**句柄 + 元数据**(`cell_sim` reference + baseline/threshold/quantization),全部 get/put/
+  put_delta/active_cells 委托 `cell_sim_*` NIF;(2)temperature_diffusion_input 删 `cells`(layer
+  序列化)/electric_potential_input 删 `ionization_cells`(句柄 NIF 直读);(3)native_backend 的
+  diffuse_temperature/propagate_electric_potential 改走句柄 `*_sim`(返回 :ok 原地 mutate),并修正
+  电势 NIF **potential 也 clear_aabb**(对齐 electric_field 旧 clear+apply);(4)temperature_field/
+  electric_field orchestration 改 backend 分支(:native 句柄 NIF + :elixir 参考实现仍经 NIF-backed
+  FieldLayer 函数);(5)删旧向量 NIF(field_kernel.ex stubs + lib.rs,no dual-path);(6)迁移测试
+  (impulse-cools 用数值快照捕获替代不可变 layer 快照;field_kernel_native 改查 layer 状态;删 2.7b
+  old-vs-new 等价测试,句柄 NIF 端到端由 field_kernel_native/temperature_field/electric_field 验证)。
+  **回归 field 161 / scene 914 全绿,0 净回归**。FieldRegion.new 预建唯一句柄使顺序 mutation 与句柄
+  语义对齐;:elixir backend 经句柄函数仍工作(无需删 fallback)。**剩 2.7d 队列背压(增量,可选)。**
+
 - 2026-06-14:**step 2.7b 电势部分(propagate_electric_potential_sim)完成 → 2.7b 收口**。lib.rs 加
   `propagate_electric_potential_sim(potential_sim, ionization_sim, sources, entries, aabb)`:读
   ionization_sim active(旧,= `active_cells(aabb,0)`)→ **复用** `electric_potential::propagate_electric_potential`

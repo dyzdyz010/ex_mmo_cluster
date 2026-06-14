@@ -75,47 +75,9 @@ defmodule SceneServer.Native.FieldKernel do
       ),
       do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc """
-  Computes sparse temperature deltas for one deterministic diffusion tick.
-  """
-  @spec diffuse_temperature(
-          [temperature_cell()],
-          [0..4095],
-          aabb(),
-          [thermal_properties()],
-          float(),
-          float(),
-          float(),
-          float()
-        ) :: [temperature_cell()]
-  def diffuse_temperature(
-        _cells,
-        _candidates,
-        _aabb,
-        _thermal_properties,
-        _diffusion_seconds,
-        _ambient_dt_seconds,
-        _ambient_loss_per_second,
-        _cell_size_meters
-      ),
-      do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Propagates electric potential and ionization for one chunk-local field tick.
-  """
-  @spec propagate_electric_potential(
-          [electric_source()],
-          [entry()],
-          aabb(),
-          [temperature_cell()]
-        ) :: {[temperature_cell()], [temperature_cell()]}
-  def propagate_electric_potential(
-        _sources,
-        _entries,
-        _aabb,
-        _ionization_cells
-      ),
-      do: :erlang.nif_error(:nif_not_loaded)
+  # 梯队2 step2.7c(BND-1):旧无状态向量 NIF diffuse_temperature/9 + propagate_electric_potential/4
+  # 已删除(no dual-path)——场层本体常驻 Rust,统一走句柄版 diffuse_temperature_sim /
+  # propagate_electric_potential_sim(原地演化 cell_sim)。
 
   # -------------------------------------------------------------------------
   # BND-1(梯队2 step2.7a):场层本体常驻 Rust ResourceArc<FieldLayerSim> 脚手架。
@@ -180,6 +142,12 @@ defmodule SceneServer.Native.FieldKernel do
           [entry()],
           aabb()
         ) :: :ok
-  def propagate_electric_potential_sim(_potential_sim, _ionization_sim, _sources, _entries, _aabb),
-    do: :erlang.nif_error(:nif_not_loaded)
+  def propagate_electric_potential_sim(
+        _potential_sim,
+        _ionization_sim,
+        _sources,
+        _entries,
+        _aabb
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 end

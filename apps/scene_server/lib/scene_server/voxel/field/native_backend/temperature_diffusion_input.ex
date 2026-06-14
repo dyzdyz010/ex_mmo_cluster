@@ -2,22 +2,18 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
   @moduledoc """
   Native DTO encoder for sparse temperature diffusion ticks.
 
-  The Elixir Field layer keeps source lifecycle and layer ownership. This module
-  freezes one deterministic compute request for the native temperature diffusion
-  kernel: current sparse deltas, candidate cells, AABB, and per-candidate thermal
-  material facts.
+  **梯队2 step2.7c(BND-1)**:场层本体已迁入 Rust `ResourceArc<FieldLayerSim>`,扩散 NIF
+  (`diffuse_temperature_sim`)直读句柄的 active 缓冲,故本 DTO **不再序列化 layer cells**——只冻结
+  candidate cells、AABB、per-candidate 热材料事实(来自 storage)与时间参数。
   """
 
-  alias SceneServer.Voxel.Field.FieldLayer
   alias SceneServer.Voxel.Storage
-  alias SceneServer.Voxel.Types
 
   @default_tc_raw 6_554
   @default_density_raw 65_536
   @default_specific_heat_capacity_raw 65_536_000
 
-  defstruct cells: [],
-            candidates: [],
+  defstruct candidates: [],
             aabb: {{0, 0, 0}, {0, 0, 0}},
             thermal_properties: [],
             diffusion_seconds: 0.1,
@@ -25,10 +21,8 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
             ambient_loss_per_second: 0.0,
             cell_size_meters: 1.0
 
-  @type cell :: {0..4095, float()}
   @type thermal_properties :: {0..4095, integer(), integer(), integer()}
   @type t :: %__MODULE__{
-          cells: [cell()],
           candidates: [0..4095],
           aabb: {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}},
           thermal_properties: [thermal_properties()],
@@ -39,7 +33,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
         }
 
   @spec new(
-          FieldLayer.t(),
           {{0..15, 0..15, 0..15}, {0..15, 0..15, 0..15}},
           [0..4095],
           Storage.t() | nil,
@@ -49,7 +42,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
           number()
         ) :: t()
   def new(
-        %FieldLayer{} = layer,
         aabb,
         candidate_indices,
         storage,
@@ -64,7 +56,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
       |> Enum.sort()
 
     %__MODULE__{
-      cells: delta_cells(layer, aabb),
       candidates: candidates,
       aabb: aabb,
       thermal_properties: thermal_properties(candidates, storage),
@@ -73,15 +64,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
       ambient_loss_per_second: ambient_loss_per_second * 1.0,
       cell_size_meters: cell_size_meters * 1.0
     }
-  end
-
-  defp delta_cells(%FieldLayer{} = layer, aabb) do
-    layer.values
-    |> Enum.filter(fn {macro_index, delta} ->
-      in_aabb?(macro_index, aabb) and abs(delta) >= layer.threshold
-    end)
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.map(fn {macro_index, delta} -> {macro_index, delta * 1.0} end)
   end
 
   defp thermal_properties(candidate_indices, storage) do
@@ -93,12 +75,6 @@ defmodule SceneServer.Voxel.Field.NativeBackend.TemperatureDiffusionInput do
         read_specific_heat_capacity(storage, macro_index)
       }
     end)
-  end
-
-  defp in_aabb?(macro_index, {{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
-    {x, y, z} = Types.macro_coord!(macro_index)
-
-    x >= min_x and x <= max_x and y >= min_y and y <= max_y and z >= min_z and z <= max_z
   end
 
   defp read_thermal_conductivity(nil, _macro_index), do: @default_tc_raw

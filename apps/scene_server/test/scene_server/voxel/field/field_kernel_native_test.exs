@@ -83,7 +83,8 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
       FieldLayer.new(baseline: 20, quantization: :float)
       |> FieldLayer.put(source, 800.0)
 
-    assert {:ok, cells} =
+    # 梯队2 step2.7c:句柄 NIF 原地 mutate layer.cell_sim,返回 :ok;断言改查 layer 状态(delta)。
+    assert :ok =
              NativeBackend.diffuse_temperature(
                layer,
                {{0, 0, 0}, {7, 7, 7}},
@@ -95,21 +96,24 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
                1.0
              )
 
-    cells = Map.new(cells)
-
-    assert Map.fetch!(cells, source) < 780.0
-    assert Map.fetch!(cells, neighbor) > 0.0
+    assert FieldLayer.get_delta(layer, source) < 780.0
+    assert FieldLayer.get_delta(layer, neighbor) > 0.0
   end
 
   test "propagates electric potential and ionization through the field backend" do
     source = Types.macro_index!({0, 0, 0})
     neighbor = Types.macro_index!({1, 0, 0})
 
-    assert {:ok, %{potential_cells: potential_cells, ionization_cells: ionization_cells}} =
+    potential_layer = FieldLayer.new()
+    ionization_layer = FieldLayer.new()
+
+    # 梯队2 step2.7c:句柄 NIF 原地 mutate 两层句柄,返回 :ok;断言改查 layer 状态。
+    assert :ok =
              NativeBackend.propagate_electric_potential(
+               potential_layer,
+               ionization_layer,
                [%{macro_index: source, field_type: :electric_potential, value: 100.0}],
                {{0, 0, 0}, {3, 3, 3}},
-               FieldLayer.new(),
                ParticipantProjection.build(
                  Storage.new(7, {0, 0, 0})
                  |> put_solid({0, 0, 0})
@@ -117,13 +121,10 @@ defmodule SceneServer.Voxel.Field.FieldKernelNativeTest do
                )
              )
 
-    potential_cells = Map.new(potential_cells)
-    ionization_cells = Map.new(ionization_cells)
-
-    assert_in_delta Map.fetch!(potential_cells, source), 100.0, 0.001
-    assert Map.fetch!(potential_cells, neighbor) > 0.0
-    assert Map.fetch!(potential_cells, neighbor) < 100.0
-    assert Map.fetch!(ionization_cells, source) == 5.0
+    assert_in_delta FieldLayer.get(potential_layer, source), 100.0, 0.001
+    assert FieldLayer.get(potential_layer, neighbor) > 0.0
+    assert FieldLayer.get(potential_layer, neighbor) < 100.0
+    assert FieldLayer.get(ionization_layer, source) == 5.0
   end
 
   test "finds a native dielectric-breakdown path through empty medium" do

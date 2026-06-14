@@ -98,38 +98,38 @@ defmodule SceneServer.Voxel.Field.TemperatureField do
          cell_size_meters,
          backend
        ) do
-    fallback = fn ->
-      {:ok,
-       elixir_diffusion_cells(
-         layer,
-         region,
-         storage,
-         candidate_indices,
-         diffusion_seconds,
-         ambient_dt_seconds,
-         ambient_loss_per_second,
-         cell_size_meters
-       )}
-    end
+    # 梯队2 step2.7c(BND-1)::native 走句柄 NIF(原地双缓冲 mutate `layer.cell_sim`,返回 :ok);
+    # :elixir 参考实现仍经 FieldLayer NIF-backed 函数读写句柄(测试/对照用)。
+    case backend do
+      :elixir ->
+        delta_cells =
+          elixir_diffusion_cells(
+            layer,
+            region,
+            storage,
+            candidate_indices,
+            diffusion_seconds,
+            ambient_dt_seconds,
+            ambient_loss_per_second,
+            cell_size_meters
+          )
 
-    case NativeBackend.diffuse_temperature(
-           layer,
-           region.aabb,
-           candidate_indices,
-           storage,
-           diffusion_seconds,
-           ambient_dt_seconds,
-           ambient_loss_per_second,
-           cell_size_meters,
-           backend: backend,
-           fallback: fallback
-         ) do
-      {:ok, delta_cells} ->
         apply_delta_cells(layer, delta_cells)
 
-      {:error, _reason} ->
-        {:ok, delta_cells} = fallback.()
-        apply_delta_cells(layer, delta_cells)
+      _native ->
+        :ok =
+          NativeBackend.diffuse_temperature(
+            layer,
+            region.aabb,
+            candidate_indices,
+            storage,
+            diffusion_seconds,
+            ambient_dt_seconds,
+            ambient_loss_per_second,
+            cell_size_meters
+          )
+
+        layer
     end
   end
 
