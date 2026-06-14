@@ -91,6 +91,32 @@ orchestration 改为:`NativeBackend.diffuse_temperature(layer.cell_sim, candidat
 - wire/observe 出口经 active_cells 单向读 CellSim;0x73 parity 不变。
 - 不留旧无状态 NIF arity(no dual-path);scene + field 全量 0 净回归。
 
+## 2.7c flip 接线面与已发现的微妙点(供原子 pass 直接用)
+
+flip 必须一次性翻完以下接线面(翻完才再次全绿,no dual-path):
+
+- **FieldLayer**(根):defstruct `values` → `cell_sim`(ResourceArc)+ 元数据;`get/get_delta/put/
+  put_delta/active_cells` 全改委托 cell_sim NIF(`cell_sim_get/put/active_cells`);`new/1`
+  `cell_sim_new`。函数签名不变(seam)。
+- **FieldRegion**:`get_layer` 现用 `Map.get_lazy(layers, type, fn -> new_layer end)`——**句柄态下
+  同一 absent type 多次 get_layer 会得不同句柄、互不可见**!flip 时改为:absent 时 `new_layer`
+  后**立即 put_layer 存回**(或 region 构造时为所有 field_types 预建句柄),保证每 type 唯一句柄。
+  `put_layer` 存句柄态 layer。
+- **temperature_field.ex**:`diffuse_layer` 改调 `NativeBackend` 的句柄版(走 `diffuse_temperature_sim`);
+  删 `apply_delta_cells`(NIF 已原地 apply);`apply_source_points`/impulse 改原地 put。stencil 的
+  old/new 双 layer 语义由 NIF 内部双缓冲承担,Elixir 不再持两份。
+- **electric_field.ex**:`tick` 改调 `propagate_electric_potential_sim`(传 potential_sim + ionization_sim
+  句柄);删 `apply_cells`/`clear_layer_in_aabb`(NIF 内 clear_aabb + put_absolute 已做)。
+- **conduction/discharge kernel**:只读 ionization——改从 ionization 句柄 `active_cells` 取(或保留旧
+  序列化读,因只读不 mutate,可后置)。
+- **native_backend.ex**:温度/电势包装改句柄签名;旧向量包装删。
+- **field_kernel.ex + lib.rs**:删旧 `diffuse_temperature`/`propagate_electric_potential` NIF(no dual-path)。
+- **field_codec.ex**:`encode_snapshot_payload` 经 `FieldLayer.active_cells`(→ NIF)读,签名不变即可。
+- **~12 测试**:用 `FieldLayer.put/get/active_cells`(函数 seam)的多数零改;直接 `.values` 访问点
+  (7 lib + 少数测试)改 `active_cells`/新 `dump_values`;构造 FieldLayer 的测试随 new 改句柄。
+- **不可变假设审计**:全仓搜 `layer = ` / `%FieldLayer{` / `.values` / `put_layer`,逐点确认
+  rebind-同句柄语义成立(顺序 mutation 正确);特别警惕"留旧 layer 快照对比"的点(句柄态会被 mutate)。
+
 ## 风险与缓解
 
 - **原子 flip(2.7c)规模大**:用 2.7a/2.7b green 脚手架先把 Rust 侧验证透,flip 仅"接线 + 删旧 +
