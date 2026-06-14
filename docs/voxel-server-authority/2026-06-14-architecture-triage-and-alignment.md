@@ -200,6 +200,13 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 1 step1.5b 完成,command_id 跨层线程化,AUTH-4)**：1.5b-1 单方块编辑
+  command_id 同事务 record_once(gate `VoxelCommandId` 派生→scene ChunkProcess→`ChunkSnapshotStore.do_put`
+  同 Repo.transaction record_once,失败不登记=exactly-once);1.5b-2 prefab idempotency-key
+  (`voxel_command_log` 加 status 列 + `CommandLog.claim/confirm/release`;gate ws/tcp prefab dispatch
+  claim→do_apply→confirm/release,duplicate 返缓存 ack,关闭重试产重复 scene_object 洞)。回归 data
+  104 / gate 197 全绿。详见 [`phase-align-1-step1.5b-command-id-threading.md`](./phase-align-1-step1.5b-command-id-threading.md)。
+  **梯队 1 仅剩 1.6 entity_handoff。**
 - **2026-06-14(梯队 4 遗留清理 · 部分)**：按"架构重构优先"调整,移除审计判定舍弃的遗留 app——
   `agent_server`/`agent_manager`(传统 MMO 空壳,ANTI-5)、`data_store`/`data_contact`(旧 Mnesia 集群,
   ANTI-8/已退役)。从 umbrella + 根 release 移除;umbrella 编译 0 回归。当前 9 个 app:auth/beacon/

@@ -113,6 +113,12 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.5b(command_id 跨层线程化,AUTH-4)完成**。详见
+  [`phase-align-1-step1.5b-command-id-threading.md`](./phase-align-1-step1.5b-command-id-threading.md)。
+  1.5b-1 单方块编辑 command_id 同事务 record_once(gate→scene→store);1.5b-2 prefab idempotency-key
+  (claim/confirm/release)关闭重试产重复 object 洞。回归 data 104 / gate 197 全绿。
+  **梯队1 仅剩 1.6 entity_handoff。**
+
 - 2026-06-14:**step 1.1(cell_tick/sim_time,TIME-1)完成 + test_helper 陈旧事务快照清理**。
   ChunkProcess init 恢复 cell_tick + restart gap;run_simulation_tick 推进 + 每 50 tick touch_cell_time
   单调落库(与 put_snapshot 解耦)。scene/world/gate test_helper 启动前清陈旧事务表。
