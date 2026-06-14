@@ -113,6 +113,12 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.2 WriteTokenStore → Postgres durable fencing 完成(CELL-19/21)**。
+  token fence 从进程内存改 `voxel_write_tokens` 表(token_version CAS + advisory lock 线性化每
+  region),消除"节点重启即空 → fencing 失效窗口"。保留空 GenServer 兼容垫片(零调用方/测试改动,
+  仅 5 个 token-touching 测试改 async:false + 清表)。新增 durable fencing(重启存活)测试。
+  回归 data 82 / scene 918 / world 126 / gate 196 全绿。**剩余 1.3 epoch 线性化(MapLedger DB 条件写,
+  架构已核实可走注入式 Repo)、1.5 后半 command_id 幂等、1.6 entity_handoff、1.1 cell_tick。**
 - 2026-06-14:**已落地(全绿)**:
   - **D-4 prefab/事务 commit durable-before-ack**(step 1.5 前半):`enqueue_snapshot_persist`
     改同步落库,成功才更新内存 + 真实 persist_result,失败 `{:error}` 内存不前进(消除内存/DB
