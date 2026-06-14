@@ -27,7 +27,7 @@ defmodule BeaconServer.Client do
       {:ok, node} = BeaconServer.Client.lookup(:scene_server)
 
       # Wait for a service to become available (with retry)
-      {:ok, node} = BeaconServer.Client.await(:data_contact, timeout: 30_000)
+      {:ok, node} = BeaconServer.Client.await(:scene_server, timeout: 30_000)
 
       # Tuple key — register the scene_node that hosts a region
       BeaconServer.Client.register({:voxel_region_scene_node, region_id})
