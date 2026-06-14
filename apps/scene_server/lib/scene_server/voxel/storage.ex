@@ -1,4 +1,7 @@
 defmodule SceneServer.Voxel.Storage do
+  # PERS-5:durable_authoritative(chunk hot truth,经 ChunkSnapshotStore 落库)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Scene-side canonical storage struct for one v1 voxel chunk.
 

@@ -89,7 +89,7 @@ defmodule MmoContracts.StateRegistry do
 
     # —— runtime_authoritative:服务端裁决,checkpoint/input log 恢复(AUTH-15/PERS-12)——
     %{
-      holder: SceneServer.Worker.PlayerCharacter,
+      holder: SceneServer.PlayerCharacter,
       state_class: :runtime_authoritative,
       app: :scene_server,
       spec: "PERS-5/AUTH-15/PERS-12",

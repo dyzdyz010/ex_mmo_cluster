@@ -1,4 +1,7 @@
 defmodule SceneServer.Voxel.Field.FieldLayer do
+  # PERS-5:derived(密集场数组,不落盘)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :derived
+
   @moduledoc """
   Phase 6 局部场最小目标:chunk 内 macro cell 场层。
 

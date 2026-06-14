@@ -1,4 +1,7 @@
 defmodule SceneServer.Combat.EffectEvent do
+  # PERS-5:ephemeral(无状态视觉 cue;不影响经济/资产/战斗最终裁决)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :ephemeral
+
   @moduledoc """
   Authoritative gameplay-cue payload broadcast for client-side visuals.
 

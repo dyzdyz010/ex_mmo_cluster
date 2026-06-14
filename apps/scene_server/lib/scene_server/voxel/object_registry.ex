@@ -1,4 +1,7 @@
 defmodule SceneServer.Voxel.ObjectRegistry do
+  # PERS-5:durable_authoritative(object/part 健康与销毁,经 SceneObjectStore 落库)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Per-scene runtime registry for `SceneObjectInstance` entries.
 

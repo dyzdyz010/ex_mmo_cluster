@@ -1,4 +1,7 @@
 defmodule SceneServer.PlayerCharacter do
+  # PERS-5:runtime_authoritative(玩家移动权威态,固定 tick 积分;恢复声明见梯队1)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :runtime_authoritative
+
   @moduledoc """
   Authoritative runtime process for one active player character.
 

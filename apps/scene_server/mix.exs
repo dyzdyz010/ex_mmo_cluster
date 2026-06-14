@@ -30,6 +30,7 @@ defmodule SceneServer.MixProject do
       {:poolboy, "~> 1.5.1"},
       {:observer_cli, "~> 1.7"},
       {:benchee, "~> 1.0", only: :dev},
+      {:mmo_contracts, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       {:world_server, in_umbrella: true, only: :test, runtime: false},
       {:data_service, in_umbrella: true}

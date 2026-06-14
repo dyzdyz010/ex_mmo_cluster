@@ -1,4 +1,7 @@
 defmodule SceneServer.Combat.State do
+  # PERS-5:runtime_authoritative(HP/死亡/respawn;进入最终结算须转 durable AUTH)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :runtime_authoritative
+
   @moduledoc """
   Mutable authoritative combat state for one combat actor.
 

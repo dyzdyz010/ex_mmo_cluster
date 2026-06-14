@@ -1,4 +1,7 @@
 defmodule SceneServer.Voxel.SimulationTick do
+  # PERS-5:derived(模拟 tick 调度态,确定性 output_hash 可重建)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :derived
+
   @moduledoc """
   Phase 5.E per-chunk simulation tick scheduler state + helpers.
 

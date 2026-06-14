@@ -1,4 +1,7 @@
 defmodule SceneServer.Voxel.Field.FieldRegion do
+  # PERS-5:derived(物理场,解析弛豫+warm-up 重建;触发权威后果须经 AUTH-11)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :derived
+
   @moduledoc """
   Phase 6 局部场最小目标:绑定在某个 chunk 上的活跃场区域,包含 AABB、
   按 field_type 切分的 FieldLayer、tick 计数、source_points、lease_token。
