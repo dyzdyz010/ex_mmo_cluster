@@ -113,6 +113,13 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.3 epoch 线性化完成(CELL-18/23,消除 ANTI-32)**。新增 `voxel_region_epochs`
+  表 + `RegionEpochStore.allocate_next`(单条原子 INSERT...ON CONFLICT...RETURNING,Postgres 行级
+  序列化 = epoch 唯一线性化点;含 20 并发不重复测试)。MapLedger 的 issue_lease/begin_migration 改用
+  该分配器(opts 显式 epoch 仍尊重 + set_floor 保单调)。**并发/重启的多 MapLedger 不再能分配冲突/
+  回退的 owner_epoch**。两 fencing 持有者并入 PERS-5 清单。回归 world 126 / gate 196 / data 90 /
+  scene 918 全绿。**D-3 头部(防双主 fencing + epoch 线性化)地基完成。** 剩余 1.5 command_id 幂等、
+  1.6 entity_handoff、1.1 cell_tick。
 - 2026-06-14:**step 1.2 WriteTokenStore → Postgres durable fencing 完成(CELL-19/21)**。
   token fence 从进程内存改 `voxel_write_tokens` 表(token_version CAS + advisory lock 线性化每
   region),消除"节点重启即空 → fencing 失效窗口"。保留空 GenServer 兼容垫片(零调用方/测试改动,
