@@ -14,7 +14,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
 
     {:ok, logical_scene_id: 82_000 + System.unique_integer([:positive])}
   end
@@ -263,10 +263,7 @@ defmodule SceneServer.Voxel.BuildTransactionApplierTest do
     }
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
 
     {directory, lease}
   end

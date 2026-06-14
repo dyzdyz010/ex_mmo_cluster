@@ -322,10 +322,10 @@ defmodule WorldServer.Voxel.AuthorityObserve do
     end
   end
 
-  defp validate_both(ledger, token_store, attrs) do
+  defp validate_both(ledger, _token_store, attrs) do
     result = %{
       world: MapLedger.validate_write(ledger, attrs),
-      data_service: WriteTokenStore.validate_write(token_store, attrs)
+      data_service: WriteTokenStore.validate_write(attrs)
     }
 
     emit_step("voxel_authority_write_token_validated", %{
@@ -350,9 +350,8 @@ defmodule WorldServer.Voxel.AuthorityObserve do
     end
   end
 
-  defp fetch_current_token(token_store, logical_scene_id, region_id) do
-    token_store
-    |> WriteTokenStore.snapshot()
+  defp fetch_current_token(_token_store, logical_scene_id, region_id) do
+    WriteTokenStore.snapshot()
     |> Map.fetch({logical_scene_id, region_id})
     |> case do
       {:ok, token} ->
@@ -394,20 +393,16 @@ defmodule WorldServer.Voxel.AuthorityObserve do
         invalidator -> [scene_invalidator: invalidator]
       end
 
-    case WriteTokenStore.start_link([]) do
-      {:ok, token_store} ->
-        case MapLedger.start_link([{:write_token_store, token_store} | ledger_opts]) do
-          {:ok, ledger} ->
-            try do
-              fun.(ledger, token_store)
-            after
-              stop_if_alive(ledger)
-              stop_if_alive(token_store)
-            end
+    # 梯队4:WriteTokenStore 是 Postgres durable 模块级无状态——不再 start_link/stop 进程;
+    # token_store 仅作传给 MapLedger 的 enable 标记(模块名),fence 真相在共享 DB。
+    token_store = DataService.Voxel.WriteTokenStore
 
-          {:error, reason} ->
-            stop_if_alive(token_store)
-            {:error, reason}
+    case MapLedger.start_link([{:write_token_store, token_store} | ledger_opts]) do
+      {:ok, ledger} ->
+        try do
+          fun.(ledger, token_store)
+        after
+          stop_if_alive(ledger)
         end
 
       {:error, reason} ->

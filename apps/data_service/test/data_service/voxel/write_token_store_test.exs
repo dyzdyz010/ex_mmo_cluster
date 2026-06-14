@@ -10,7 +10,6 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
   end
 
   test "accepts current lease writes and rejects stale lease writes after CAS update" do
-    store = start_supervised!(WriteTokenStore)
     future_ms = System.system_time(:millisecond) + 60_000
 
     token_v1 = %{
@@ -25,11 +24,11 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
       token_version: 1
     }
 
-    assert {:ok, :inserted} = WriteTokenStore.upsert_token(store, token_v1)
-    assert {:ok, :unchanged} = WriteTokenStore.upsert_token(store, token_v1)
+    assert {:ok, :inserted} = WriteTokenStore.upsert_token(token_v1)
+    assert {:ok, :unchanged} = WriteTokenStore.upsert_token(token_v1)
 
     assert :ok =
-             WriteTokenStore.validate_write(store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {1, 1, 1},
@@ -46,11 +45,11 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
         token_version: 2
     }
 
-    assert {:ok, :updated} = WriteTokenStore.upsert_token(store, token_v2)
-    assert {:error, :stale_token} = WriteTokenStore.upsert_token(store, token_v1)
+    assert {:ok, :updated} = WriteTokenStore.upsert_token(token_v2)
+    assert {:error, :stale_token} = WriteTokenStore.upsert_token(token_v1)
 
     assert {:error, :lease_id_mismatch} =
-             WriteTokenStore.validate_write(store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {1, 1, 1},
@@ -60,7 +59,7 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
              })
 
     assert :ok =
-             WriteTokenStore.validate_write(store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {1, 1, 1},
@@ -71,10 +70,8 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
   end
 
   test "rejects writes outside half-open region bounds" do
-    store = start_supervised!(WriteTokenStore)
-
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(store, %{
+             WriteTokenStore.upsert_token(%{
                logical_scene_id: 1,
                region_id: 10,
                lease_id: 100,
@@ -87,7 +84,7 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
              })
 
     assert {:error, :chunk_out_of_bounds} =
-             WriteTokenStore.validate_write(store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {4, 0, 0},
@@ -97,11 +94,9 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
              })
   end
 
-  test "token 在进程重启后仍有效(durable fencing,CELL-19/21)" do
-    store = start_supervised!(WriteTokenStore)
-
+  test "token 跨进程持久(durable fencing,CELL-19/21)" do
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(store, %{
+             WriteTokenStore.upsert_token(%{
                logical_scene_id: 7,
                region_id: 70,
                lease_id: 700,
@@ -113,9 +108,8 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
                token_version: 1
              })
 
-    # 模拟重启:停掉垫片进程,token 真相在 Postgres,validate 仍通过(此前内存版会失效)。
-    :ok = stop_supervised(WriteTokenStore)
-
+    # 梯队4:WriteTokenStore 无进程(模块级无状态),token 真相在 Postgres——validate 直接读 DB
+    # 仍通过(此前内存版"重启即空"会失效)。
     assert :ok =
              WriteTokenStore.validate_write(%{
                logical_scene_id: 7,

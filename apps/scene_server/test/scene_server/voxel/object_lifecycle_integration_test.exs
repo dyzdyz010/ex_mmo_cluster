@@ -17,7 +17,7 @@ defmodule SceneServer.Voxel.ObjectLifecycleIntegrationTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     SceneObjectStore.reset()
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
 
     # Use already-running ObjectRegistry / ChunkDirectory instances if the
     # SceneServer.Application boot has supplied them (full integration), but
@@ -220,7 +220,7 @@ defmodule SceneServer.Voxel.ObjectLifecycleIntegrationTest do
       expires_at_ms: System.system_time(:millisecond) + 60_000
     }
 
-    {:ok, _} = WriteTokenStore.upsert_token(WriteTokenStore, Map.put(lease, :token_version, 1))
+    {:ok, _} = WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
     lease
   end
 

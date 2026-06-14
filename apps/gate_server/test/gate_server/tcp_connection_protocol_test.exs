@@ -1122,16 +1122,8 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   defp ensure_data_voxel_started do
-    if is_nil(Process.whereis(DataService.Voxel.WriteTokenStore)) do
-      start_supervised!(
-        {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore}
-      )
-    end
-
-    # Phase 1d: ChunkSnapshotStore is a stateless module backed by
-    # `DataService.Repo`; the test_helper boots the Repo, so there is
-    # nothing else to start here.
-
+    # 梯队4:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在 `DataService.Repo`
+    # (test_helper 已启 Repo);无进程可启。
     :ok
   end
 

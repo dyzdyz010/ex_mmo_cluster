@@ -19,7 +19,7 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
   end
 
   test "runs a logical scene lease, route, migration, and token validation observe flow" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger = start_supervised!({MapLedger, write_token_store: token_store})
     observe_log = observe_log_path("authority-observe")
 
@@ -102,7 +102,7 @@ defmodule WorldServer.Voxel.AuthorityObserveTest do
       directory_module = Module.concat(["SceneServer", "Voxel", "ChunkDirectory"])
       chunk_sup_module = Module.concat(["SceneServer", "VoxelChunkSup"])
 
-      token_store = start_supervised!(WriteTokenStore)
+      token_store = WriteTokenStore
       chunk_sup = start_supervised!(chunk_sup_module)
 
       directory =

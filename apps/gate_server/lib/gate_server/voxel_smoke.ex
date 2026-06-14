@@ -252,14 +252,9 @@ defmodule GateServer.VoxelSmoke do
     with :ok <- ensure_application_started(:data_service),
          :ok <- ensure_loaded(token_store, :data_write_token_store_unavailable),
          :ok <- ensure_loaded(snapshot_store, :data_chunk_snapshot_store_unavailable),
-         :ok <-
-           ensure_named(token_store, fn ->
-             apply(token_store, :start_link, [[name: token_store]])
-           end),
-         # Phase 1d: ChunkSnapshotStore is a stateless module backed by
-         # `DataService.Repo`. The Repo lives in `DataService.Application`'s
-         # supervision tree, so smoke runs only need to verify the module
-         # loaded — there is no GenServer to spin up here.
+         # 梯队4 + Phase 1d:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在
+         # `DataService.Repo`(由 `DataService.Application` 监督)。smoke 只需校验模块已加载,
+         # 无 GenServer 可启;`write_token_store: token_store` 仅作 MapLedger 的 enable 标记。
          :ok <-
            ensure_named(MapLedger, fn ->
              MapLedger.start_link(name: MapLedger, write_token_store: token_store)

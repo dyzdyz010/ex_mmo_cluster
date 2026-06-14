@@ -8,6 +8,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
   setup do
     WriteTokenStore.reset()
+
     # 梯队1 step1.3:owner_epoch 经 DB 线性化分配器,清表保证跨测试/跨运行 epoch 确定。
     DataService.Voxel.RegionEpochStore.reset()
     :ok
@@ -124,7 +125,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
   end
 
   test "publishes lease write tokens and fences stale writes after migration" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger = start_supervised!({MapLedger, write_token_store: token_store})
     future_ms = System.system_time(:millisecond) + 60_000
 
@@ -157,7 +158,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              })
 
     assert :ok =
-             WriteTokenStore.validate_write(token_store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {1, 0, 0},
@@ -184,7 +185,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              })
 
     assert {:error, :lease_id_mismatch} =
-             WriteTokenStore.validate_write(token_store, %{
+             WriteTokenStore.validate_write(%{
                logical_scene_id: 1,
                region_id: 10,
                chunk_coord: {1, 0, 0},
@@ -204,7 +205,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
   end
 
   test "stages migration handoff and cuts over route lease after prewarm" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger = start_supervised!({MapLedger, write_token_store: token_store})
     future_ms = System.system_time(:millisecond) + 60_000
     migration_id = "migration-10"
@@ -337,7 +338,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              MapLedger.validate_write(ledger, write_attrs(lease_v1, {1, 0, 0}))
 
     assert {:error, :lease_id_mismatch} =
-             WriteTokenStore.validate_write(token_store, write_attrs(lease_v1, {1, 0, 0}))
+             WriteTokenStore.validate_write(write_attrs(lease_v1, {1, 0, 0}))
 
     assert {:ok, %{assignment: assignment_after, lease: routed_after}} =
              MapLedger.route_chunk_with_lease(ledger, 1, {1, 0, 0})

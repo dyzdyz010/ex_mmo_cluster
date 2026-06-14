@@ -13,7 +13,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
     :ok
   end
 

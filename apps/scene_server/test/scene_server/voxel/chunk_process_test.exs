@@ -23,7 +23,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
 
     previous_log = Application.get_env(:scene_server, :cli_observe_log)
 
@@ -860,10 +860,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     }
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(current_lease, :token_version, 2)
-             )
+             WriteTokenStore.upsert_token(Map.put(current_lease, :token_version, 2))
 
     chunk =
       start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
@@ -982,10 +979,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease = lease()
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
 
     chunk =
       start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}, lease: lease})
@@ -1007,16 +1001,10 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     lease_v2 = %{lease_v1 | lease_id: 101, owner_scene_instance_ref: 2_000, owner_epoch: 2}
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease_v1, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease_v1, :token_version, 1))
 
     assert {:ok, :updated} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease_v2, :token_version, 2)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease_v2, :token_version, 2))
 
     chunk =
       start_supervised!(
@@ -1539,10 +1527,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   # caller should plumb through ChunkProcess intents.
   defp start_snapshot_store(token \\ lease()) do
     assert {:ok, _} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(token, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(token, :token_version, 1))
 
     token
   end

@@ -26,7 +26,7 @@ defmodule SceneServer.Voxel.ObjectStateDeltaE2ETest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     SceneObjectStore.reset()
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
 
     chunk_directory = start_or_reuse_chunk_directory!()
     registry = start_or_reuse_registry!(chunk_directory)
@@ -202,7 +202,7 @@ defmodule SceneServer.Voxel.ObjectStateDeltaE2ETest do
       expires_at_ms: System.system_time(:millisecond) + 60_000
     }
 
-    {:ok, _} = WriteTokenStore.upsert_token(WriteTokenStore, Map.put(lease, :token_version, 1))
+    {:ok, _} = WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
     lease
   end
 

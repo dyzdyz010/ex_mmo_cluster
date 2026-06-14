@@ -6,17 +6,13 @@ defmodule DataService.Voxel.WriteTokenStore do
   DataService validates every voxel write against this fence so old scene
   instances cannot persist chunks after a migration or lease flip.
 
-  **持久化(本次重构)**:token 落 `voxel_write_tokens` 表(`token_version` CAS,
+  **持久化(梯队1 step1.2)**:token 落 `voxel_write_tokens` 表(`token_version` CAS,
   advisory lock 线性化每 region),故 fencing 在节点重启后仍有效——消除了原内存版"重启即空"
   的 fencing 失效窗口。`upsert_token`/`validate_write`/`snapshot`/`reset` 直接走
-  `DataService.Repo`(stateless,与 `DataService.Voxel.ChunkSnapshotStore` 同构)。
-
-  > **兼容垫片**:仍提供 `start_link/1`(空 GenServer),使既有
-  > `start_supervised!(WriteTokenStore)` 与 `name:` 调用方/测试无需改动;函数 API 的首个
-  > `server` 参数被忽略(DB 是唯一真相)。该垫片是过渡 tech-debt,移除列入梯队4。
+  `DataService.Repo`(**模块级无状态调用**,与 `DataService.Voxel.ChunkSnapshotStore` 同构;
+  梯队4 已移除过渡兼容垫片——无 GenServer、无被忽略的 `server` 首参)。
   """
 
-  use GenServer
   # PERS-5:durable_authoritative(lease 写令牌 fence)。见 MmoContracts.StateRegistry。
   use MmoContracts.StateClassed, class: :durable_authoritative
 
@@ -28,19 +24,7 @@ defmodule DataService.Voxel.WriteTokenStore do
   @type chunk_coord :: {integer(), integer(), integer()}
 
   # ---------------------------------------------------------------------------
-  # 兼容垫片:空 GenServer(仅为既有 start_supervised!/name: 调用方保留)。
-  # ---------------------------------------------------------------------------
-  @doc "启动兼容垫片进程(无状态;真相在 Postgres)。"
-  def start_link(opts \\ []) do
-    {server_opts, _init_opts} = Keyword.split(opts, [:name])
-    GenServer.start_link(__MODULE__, %{}, server_opts)
-  end
-
-  @impl true
-  def init(_opts), do: {:ok, %{}}
-
-  # ---------------------------------------------------------------------------
-  # Public API(首参 server 为兼容保留,被忽略;DB 是唯一真相)。
+  # Public API(DB 是唯一真相,模块级无状态)。
   # ---------------------------------------------------------------------------
 
   @doc """
@@ -49,17 +33,13 @@ defmodule DataService.Voxel.WriteTokenStore do
   A newer token replaces the previous one; replaying the same token is
   idempotent; a stale token is rejected and leaves the current token unchanged.
   """
-  def upsert_token(server \\ __MODULE__, token, opts \\ [])
-  def upsert_token(_server, token, opts), do: do_upsert_token(normalize_token(token), opts)
+  def upsert_token(token, opts \\ []), do: do_upsert_token(normalize_token(token), opts)
 
   @doc "Validates a chunk write against the durable token fence."
-  def validate_write(server \\ __MODULE__, attrs, opts \\ [])
-  def validate_write(_server, attrs, opts), do: do_validate_write(normalize_write(attrs), opts)
+  def validate_write(attrs, opts \\ []), do: do_validate_write(normalize_write(attrs), opts)
 
   @doc "Returns the current token table for CLI/debug inspection."
-  def snapshot(server \\ __MODULE__, opts \\ [])
-
-  def snapshot(_server, opts) do
+  def snapshot(opts \\ []) do
     repo = repo(opts)
 
     repo.all(VoxelWriteToken)
@@ -73,19 +53,11 @@ defmodule DataService.Voxel.WriteTokenStore do
   Clears every stored token. Test-only hatch; production code never needs to
   drop the in-flight authority because lease lifetime is owned by World.
   """
-  def reset(server \\ __MODULE__, opts \\ [])
-
-  def reset(_server, opts) do
+  def reset(opts \\ []) do
     repo = repo(opts)
     repo.delete_all(VoxelWriteToken)
     :ok
   end
-
-  # ---------------------------------------------------------------------------
-  # GenServer callbacks(垫片:无业务逻辑)。
-  # ---------------------------------------------------------------------------
-  @impl true
-  def handle_call(_msg, _from, state), do: {:reply, {:error, :use_module_api}, state}
 
   # ---------------------------------------------------------------------------
   # DB-backed core

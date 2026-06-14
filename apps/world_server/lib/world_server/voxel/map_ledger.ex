@@ -1090,29 +1090,12 @@ defmodule WorldServer.Voxel.MapLedger do
     }
   end
 
+  # 梯队4:WriteTokenStore 改 Postgres durable 模块级无状态后,`write_token_store` 配置语义
+  # 从"进程句柄"降为 **enable 标记**(nil = 不发布;非 nil = 发布到 DB durable fence)。
   defp publish_write_token(nil, _token), do: :ok
 
-  defp publish_write_token(server, token) when is_pid(server) do
-    if Process.alive?(server) do
-      do_publish_write_token(server, token)
-    else
-      {:error, :write_token_store_unavailable}
-    end
-  end
-
-  defp publish_write_token(server, token) when is_atom(server) do
-    case Process.whereis(server) do
-      nil -> {:error, :write_token_store_unavailable}
-      _pid -> do_publish_write_token(server, token)
-    end
-  end
-
-  defp publish_write_token(server, token) do
-    do_publish_write_token(server, token)
-  end
-
-  defp do_publish_write_token(server, token) do
-    case DataService.Voxel.WriteTokenStore.upsert_token(server, LeaseWriteToken.to_map(token)) do
+  defp publish_write_token(_enabled, token) do
+    case DataService.Voxel.WriteTokenStore.upsert_token(LeaseWriteToken.to_map(token)) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
     end

@@ -61,11 +61,8 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     CommandLog.reset()
     stop_named(GateServer.Interface)
 
-    ensure_started!(WriteTokenStore, {WriteTokenStore, name: WriteTokenStore})
-
-    if Process.whereis(WriteTokenStore) do
-      WriteTokenStore.reset(WriteTokenStore)
-    end
+    # 梯队4:WriteTokenStore 模块级无状态(DB durable),无进程可启/守卫,直接清表。
+    WriteTokenStore.reset()
 
     chunk_sup_a = SceneServer.VoxelChunkSup.RegionA
     chunk_sup_b = SceneServer.VoxelChunkSup.RegionB

@@ -11,16 +11,16 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+
     # 梯队1 step1.5b-1:command_id 同事务 record_once 写入共享 voxel_command_log 表,每测试清表。
     CommandLog.reset()
     # 梯队1 step1.2:WriteTokenStore 已 DB 化(共享 voxel_write_tokens 表),每测试清表
     # 以隔离 token_version,避免跨测试 :stale_token。
     WriteTokenStore.reset()
 
-    {:ok, token_store} =
-      start_supervised({WriteTokenStore, name: :"#{__MODULE__}_#{:rand.uniform(1_000_000)}"})
-
-    {:ok, token_store: token_store}
+    # 梯队4:WriteTokenStore 模块级无状态(DB durable),无进程可 start;token_store 仅为传给
+    # ChunkSnapshotStore 的(现已忽略的)opt 占位 + 本地 helper 形参。
+    {:ok, token_store: WriteTokenStore}
   end
 
   test "accepts snapshots from the current token holder", %{token_store: token_store} do
@@ -46,7 +46,7 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
         token_version: 2
       })
 
-    assert {:ok, :updated} = WriteTokenStore.upsert_token(token_store, token_v2)
+    assert {:ok, :updated} = WriteTokenStore.upsert_token(token_v2)
 
     assert {:error, :lease_id_mismatch} =
              ChunkSnapshotStore.put_snapshot(
@@ -286,8 +286,8 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
     count
   end
 
-  defp upsert_token(token_store, token) do
-    {:ok, _} = WriteTokenStore.upsert_token(token_store, token)
+  defp upsert_token(_token_store, token) do
+    {:ok, _} = WriteTokenStore.upsert_token(token)
     token
   end
 

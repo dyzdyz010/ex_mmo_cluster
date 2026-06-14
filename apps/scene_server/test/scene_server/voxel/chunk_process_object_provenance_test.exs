@@ -21,7 +21,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     SceneObjectStore.reset()
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
     :ok
   end
 
@@ -375,7 +375,7 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
       expires_at_ms: System.system_time(:millisecond) + 60_000
     }
 
-    {:ok, _} = WriteTokenStore.upsert_token(WriteTokenStore, Map.put(lease, :token_version, 1))
+    {:ok, _} = WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
     lease
   end
 

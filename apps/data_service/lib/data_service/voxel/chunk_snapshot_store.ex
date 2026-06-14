@@ -72,9 +72,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   monotonic version (`chunk_version`), the 8-byte hash digest
   (`chunk_hash`), and the full ChunkStorage binary (`data`).
 
-  `opts[:write_token_store]` overrides the named token-store used to
-  validate the lease, primarily for tests. `opts[:repo]` overrides the
-  default repo (also test-only).
+  `opts[:repo]` overrides the default repo (test-only)。梯队4 起 WriteTokenStore 为模块级
+  无状态(DB durable fence),`opts[:write_token_store]` 已不再生效(忽略)。
   """
   @spec put_snapshot(map(), keyword()) :: put_result()
   def put_snapshot(attrs, opts \\ [])
@@ -323,10 +322,10 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     }
   end
 
-  defp validate_write_token(opts, snapshot) do
-    token_store = Keyword.get(opts, :write_token_store, WriteTokenStore)
-
-    case WriteTokenStore.validate_write(token_store, snapshot) do
+  # 梯队4:WriteTokenStore 模块级无状态后,`:write_token_store` opt(原进程句柄)不再需要;
+  # 直接走 DB durable fence。保留 catch :exit 以稳健处理 Repo 不可用。
+  defp validate_write_token(_opts, snapshot) do
+    case WriteTokenStore.validate_write(snapshot) do
       :ok -> :ok
       {:error, reason} when is_atom(reason) -> {:error, reason}
       _other -> {:error, :write_token_validation_failed}

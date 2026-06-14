@@ -17,7 +17,7 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
     :ok
   end
 
@@ -64,10 +64,7 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
       )
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(old_lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(old_lease, :token_version, 1))
 
     assert {:ok, %{chunk_version: 1}} =
              ChunkDirectory.apply_intent(source_directory, %{

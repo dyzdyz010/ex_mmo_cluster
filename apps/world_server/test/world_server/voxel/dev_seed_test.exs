@@ -53,7 +53,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   end
 
   test "creates an idempotent browser dev region and publishes its lease" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger_name = :"dev_seed_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
 
@@ -96,7 +96,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   end
 
   test "uses the ledger scene node registry when no explicit owner is supplied" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     registry_name = :"dev_seed_scene_registry_#{System.unique_integer([:positive])}"
     registry = start_supervised!({SceneNodeRegistry, name: registry_name})
     scene_node = :"scene_dev_seed_#{System.unique_integer([:positive])}@example"
@@ -126,7 +126,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   end
 
   test "seeds the starter platform and demo circuit through chunk_directory.apply_intent" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger_name = :"dev_seed_terrain_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
     {:ok, fake_dir} = FakeChunkDirectory.start_link()
@@ -191,7 +191,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   end
 
   test "returns a JSON-safe terrain error when the scene chunk directory is unavailable" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger_name = :"dev_seed_unavailable_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
 

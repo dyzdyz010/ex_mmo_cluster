@@ -23,7 +23,7 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
     :ok
   end
 
@@ -221,10 +221,7 @@ defmodule SceneServer.Voxel.ChunkProcessPersistenceTest do
 
   defp seed_token!(lease) do
     {:ok, _} =
-      WriteTokenStore.upsert_token(
-        WriteTokenStore,
-        Map.put(lease, :token_version, lease.owner_epoch)
-      )
+      WriteTokenStore.upsert_token(Map.put(lease, :token_version, lease.owner_epoch))
 
     :ok
   end

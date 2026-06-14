@@ -24,7 +24,7 @@ defmodule WorldServer.Voxel.DevFieldSeedTest do
   end
 
   test "routes conduction creation through the source chunk lease owner" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger_name = :"dev_field_seed_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
 
@@ -80,7 +80,7 @@ defmodule WorldServer.Voxel.DevFieldSeedTest do
   end
 
   test "preserves scene-side conduction rejection reasons" do
-    token_store = start_supervised!(WriteTokenStore)
+    token_store = WriteTokenStore
     ledger_name = :"dev_field_seed_reject_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
 

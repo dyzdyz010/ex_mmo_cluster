@@ -19,7 +19,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
-    WriteTokenStore.reset(WriteTokenStore)
+    WriteTokenStore.reset()
     :ok
   end
 
@@ -53,10 +53,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     lease = lease(scene_id)
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
 
     assert {:ok,
             %{
@@ -97,10 +94,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     lease = lease(scene_id)
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
 
     attrs =
       for x <- 0..2 do
@@ -168,10 +162,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     payload = Codec.encode_chunk_snapshot_payload(%{request_id: 0, storage: storage})
 
     assert {:ok, :inserted} =
-             WriteTokenStore.upsert_token(
-               WriteTokenStore,
-               Map.put(old_lease, :token_version, 1)
-             )
+             WriteTokenStore.upsert_token(Map.put(old_lease, :token_version, 1))
 
     assert {:ok, :inserted} =
              ChunkSnapshotStore.put_snapshot(%{

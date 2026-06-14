@@ -54,9 +54,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     # so every test starts from a known baseline.
     Repo.delete_all(VoxelChunkSnapshot)
 
-    if Process.whereis(WriteTokenStore) do
-      WriteTokenStore.reset(WriteTokenStore)
-    end
+    # 梯队4:WriteTokenStore 模块级无状态(DB durable),无进程守卫,直接清表。
+    WriteTokenStore.reset()
 
     # 梯队1 step1.5b-2:prefab 现走 CommandLog idempotency-key(claim/confirm),清共享
     # voxel_command_log 表,避免跨测试 command_id 命中 :duplicate 让 prefab 不实际执行。
@@ -2035,17 +2034,8 @@ defmodule GateServer.WsConnectionVoxelTest do
   end
 
   defp ensure_data_voxel_started do
-    if is_nil(Process.whereis(DataService.Voxel.WriteTokenStore)) do
-      start_supervised!(
-        {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore}
-      )
-    end
-
-    # Phase 1d: ChunkSnapshotStore is a stateless module backed by
-    # `DataService.Repo`; the test_helper boots the Repo, so there is
-    # nothing else to start here. The shared `voxel_chunks` table is
-    # cleared per-test via `setup do Repo.delete_all(...) end`.
-
+    # 梯队4:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在 `DataService.Repo`
+    # (test_helper 已启 Repo);无进程可启。共享 `voxel_chunks` 表每测试 `Repo.delete_all` 清。
     :ok
   end
 

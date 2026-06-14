@@ -14,8 +14,8 @@ defmodule DataService.Application do
         DataService.Repo,
         interface_child(),
         {DataService.DispatcherSup, name: DataService.DispatcherSup},
-        {DataService.UidGenerator, name: DataService.UidGenerator},
-        {DataService.Voxel.WriteTokenStore, name: DataService.Voxel.WriteTokenStore}
+        {DataService.UidGenerator, name: DataService.UidGenerator}
+        # 梯队4:WriteTokenStore 兼容垫片(空 GenServer)已移除——fence 真相在 Postgres,模块级无状态调用。
       ]
       |> Enum.reject(&is_nil/1)
 
