@@ -13,3 +13,8 @@ crate-type = ["cdylib"]
 rustler = "0.37.3"
 nalgebra = "0.31"
 rapier3d-f64 = { version = "0.16", features = [ "simd-stable", "parallel" ] }
+
+# 梯队2 step2.5b(NIF-11/15):NIF panic 必须 unwind,让 Rustler `#[rustler::nif]` wrapper 在 FFI
+# 边界 catch_unwind 转 Elixir 错误,而非 abort 杀掉 BEAM scheduler。显式守卫,禁未来误设 abort。
+[profile.release]
+panic = "unwind"

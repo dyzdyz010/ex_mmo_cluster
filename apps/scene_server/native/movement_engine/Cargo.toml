@@ -12,3 +12,8 @@ crate-type = ["cdylib"]
 [dependencies]
 rustler = "0.37.3"
 movement_core = { path = "../movement_core" }
+
+# 梯队2 step2.5b(NIF-11/15):NIF panic 必须 unwind 让 Rustler wrapper 在 FFI 边界 catch_unwind,禁 abort。
+# 根 crate 的 profile 同时作用于依赖 movement_core(无须在其内重复声明,否则 Cargo 忽略并告警)。
+[profile.release]
+panic = "unwind"

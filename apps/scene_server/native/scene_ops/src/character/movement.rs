@@ -6,6 +6,15 @@ use crate::physics::physics_system::PhySys;
 
 use super::{types::Vector, physics_comp::PhysicsComp};
 
+/// 当前墙钟毫秒。**不 panic**(梯队2 step2.5a,NIF-6/11/15):时钟回退到 UNIX_EPOCH 之前时
+/// `duration_since` 返回 Err,此处退化为 0 而非 `.unwrap()` 触发 panic 越过 FFI 边界。
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Clone)]
 pub struct Movement {
     physics_component: PhysicsComp,
@@ -18,10 +27,7 @@ pub struct Movement {
 
 impl Movement {
     pub fn new(location: Vector, velocity: Vector, acceleration: Vector, physys: &mut PhySys) -> Movement {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let timestamp = now_millis();
         let physics_component = PhysicsComp::new(location, physys);
 
         Movement {
@@ -34,10 +40,7 @@ impl Movement {
     }
 
     pub fn make_move(&mut self, physys: &mut PhySys) -> Option<Vector> {
-        let new_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let new_timestamp = now_millis();
 
         if self.velocity
             != (Vector {
@@ -70,10 +73,7 @@ impl Movement {
     }
 
     pub fn update(&mut self, location: Vector, velocity: Vector, acceleration: Vector, physys: &mut PhySys) {
-        let new_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let new_timestamp = now_millis();
 
 
         let old_location = self.physics_component.get_location(&physys);

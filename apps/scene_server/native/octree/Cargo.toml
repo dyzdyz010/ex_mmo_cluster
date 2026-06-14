@@ -13,3 +13,7 @@ crate-type = ["cdylib"]
 rustler = "0.37.3"
 parking_lot = "0.12.1"
 rayon = "1.7.0"
+
+# 梯队2 step2.5b(NIF-11/15):NIF panic 必须 unwind 让 Rustler wrapper 在 FFI 边界 catch_unwind,禁 abort。
+[profile.release]
+panic = "unwind"
