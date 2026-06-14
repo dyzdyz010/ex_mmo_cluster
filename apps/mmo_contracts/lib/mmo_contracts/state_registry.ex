@@ -66,6 +66,13 @@ defmodule MmoContracts.StateRegistry do
       note: "owner_epoch 线性化分配器(梯队1 step1.3,消除 ANTI-32)"
     },
     %{
+      holder: DataService.Voxel.CommandLog,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "PERS-5/AUTH-4/SEC-4",
+      note: "命令 replay-protection 幂等日志(梯队1 step1.5)"
+    },
+    %{
       holder: WorldServer.Voxel.MapLedger,
       state_class: :durable_authoritative,
       app: :world_server,
