@@ -20,6 +20,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @iron_material_id 5
   @power_block_material_id 6
   @electric_load_material_id 7
+  # 功能完善 · 反应层 R1:相变目标材料(冰熔化 demo)。append-only id。
+  @water_material_id 8
+
+  # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
+  @material_ids %{
+    dirt: @dirt_material_id,
+    stone: @stone_material_id,
+    wood: @wood_material_id,
+    ice: @ice_material_id,
+    iron: @iron_material_id,
+    power_block: @power_block_material_id,
+    electric_load: @electric_load_material_id,
+    water: @water_material_id
+  }
 
   @power_source_defaults %{
     output_mode: :dc,
@@ -105,8 +119,38 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => round(2_700.0 * @fixed32_scale),
       "electric_conductivity" => round(8.0 * @fixed32_scale),
       "dielectric_strength" => 0
+    },
+    # 反应层 R1:水(冰熔化目标)。freezing_point=0 可逆冻回冰;boiling_point=100 后续 → 蒸汽。
+    @water_material_id => %{
+      "density" => round(1_000.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.6 * @fixed32_scale),
+      "specific_heat_capacity" => round(4_186.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => 0,
+      "boiling_point" => round(100.0 * @fixed32_scale),
+      "electric_conductivity" => round(0.005 * @fixed32_scale),
+      "dielectric_strength" => 0
     }
   }
+
+  @doc "材料名 → append-only id(未知名返回 nil)。反应规则用名引用。"
+  @spec material_id(atom()) :: pos_integer() | nil
+  def material_id(name) when is_atom(name), do: Map.get(@material_ids, name)
+
+  @doc "id → 材料名(未知 id 返回 nil)。"
+  @spec material_name(integer()) :: atom() | nil
+  def material_name(id) when is_integer(id) do
+    Enum.find_value(@material_ids, fn {name, mid} -> if mid == id, do: name end)
+  end
+
+  @doc "全部已知材料名 → id 映射。"
+  @spec material_ids() :: %{atom() => pos_integer()}
+  def material_ids, do: @material_ids
+
+  @doc "Q16.16 定点比例(1.0 == 65536 raw)。反应层把 raw 阈值转摄氏度用。"
+  @spec fixed32_scale() :: pos_integer()
+  def fixed32_scale, do: @fixed32_scale
 
   @doc "Returns the append-only material id for the physical electric power block."
   @spec power_source_material_id() :: pos_integer()
