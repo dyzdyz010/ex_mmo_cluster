@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.ReactionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
 
@@ -227,7 +228,10 @@ defmodule SceneServer.Voxel.Field.FieldSource do
       power_source: power_source,
       kernel_specs:
         fetch_any(attrs, [:kernel_specs], [
-          electric_kernel_spec(conduction_mode, target_index, max_frontier, power_source)
+          electric_kernel_spec(conduction_mode, target_index, max_frontier, power_source),
+          # 功能完善 · 反应层 R6:反应 kernel 随电场跑——放电/导电写回 truth 的 Joule 热点燃可燃物
+          # (电生火)、熔化金属等跨系统涌现。读 truth 非 field 层,inert/非阈值材料天然不触发。
+          reaction_kernel_spec()
         ]),
       decay_policy:
         fetch_any(
@@ -283,6 +287,11 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         cell_size_meters: @temperature_cell_size_meters
       }
     }
+  end
+
+  # 功能完善 · 反应层 R6:随电场跑的反应 kernel(读 truth 温度/材料 → 点燃/熔化等跨系统涌现)。
+  defp reaction_kernel_spec do
+    %{id: :reaction, module: ReactionKernel, opts: %{}}
   end
 
   defp conduction_kernel_spec(target_index, max_frontier, %PowerSource{} = power_source) do

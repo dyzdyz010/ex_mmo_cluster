@@ -4,6 +4,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
   alias SceneServer.Voxel.Field.FieldSource
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.ReactionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
   alias SceneServer.Voxel.Types
@@ -124,7 +125,9 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                    },
                    thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
                  }
-               }
+               },
+               # 反应层 R6:反应 kernel 随电场跑(电生火等跨系统涌现)。
+               %{id: :reaction, module: ReactionKernel, opts: %{}}
              ]
 
       assert source.decay_policy == %{
@@ -172,7 +175,9 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                    },
                    thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
                  }
-               }
+               },
+               # 反应层 R6:反应 kernel 随电场跑(放电点燃可燃物等跨系统涌现)。
+               %{id: :reaction, module: ReactionKernel, opts: %{}}
              ]
     end
 

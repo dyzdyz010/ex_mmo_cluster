@@ -125,6 +125,34 @@ target/transform/tag → 锁存。**(R5b 落地;注:现有 conduction/discharge 
 - **R5c**:ReactionKernel 读 tags + burn_progress + ignition;端到端旗舰 demo:点燃木 → 燃烧放热 → 蔓延到
   邻居木 → 烧尽成 ash。scene 全量 0 净回归。
 
+## 4c. R6 电→火(跨系统涌现 · 用户选)
+
+用户拍板(2026-06-15):先做**放电点燃/伤害(跨系统涌现)**。白送机会:放电/导电 kernel 已把 Joule 热写回
+truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——**只需把 ReactionKernel 接进电 region,
+放电热即自动点燃旁边木头 → 电生火**,复用现有一切。
+
+### 接线 + 物理(scout 确认)
+- **接线点**:`field_source.ex` 电 `kernel_specs`(conduction/discharge)追加 `%{id: :reaction, module:
+  ReactionKernel, opts: %{}}`——conduction + discharge region 都获反应。
+- **热量够**:放电穿木约 235℃/tick(120V/6A/100ms/joule_scale 1e4,~3 格路径)→ 2 tick 破 300℃ 点燃。
+  **木电导=0** → conduction 不穿木;**discharge(介质击穿)能穿木** → 故展示=放电生火。
+- **回归极小**:现有电测试用非可燃材料(iron/power_block/dirt);唯一含木的 conduction 测试走 iron 路径
+  (木非导电被跳过)。ReactionKernel `required_layers [:temperature]` 给电 region 加空温度层(0x73 无害)。
+
+### R6 子步
+- **R6a ✅**:`field_source.ex` 电 kernel_specs 接 ReactionKernel(production 接线,conduction/discharge
+  region 都获反应)+ alias;field_source_test 两处 kernel_specs 断言更新。电全量 24/0 零回归。
+- **R6b 受阻 → 暴露架构缺口(待与用户定 heat-spread)**:demo"放电点燃木"失败,诊断发现**木只升到
+  20.018℃**——放电几乎不给木注热。根因物理:**木电导=0 → 放电无电流穿木 → 无 Joule 热**;放电弧穿空气
+  不穿实心木;且**truth 温度无邻居扩散**(现有温度扩散只动 field 层不动 truth)。故"热的导电体(铁)
+  无法把热传给相邻可燃物(木)"——**"电→火"不白送,缺一个 truth 级热扩散机制**。
+  - **R6a 仍正确保留**:反应 kernel 随电场跑是对的(电材料一旦有自身阈值规则[如铁熔]即生效);只是
+    跨格热传播这块需新机制。
+  - **设计决策(R6c,待用户)**:给反应层加 **truth 级邻居热扩散**——每 cell 向更冷的相邻 solid cell
+    按温差传热(Fourier 式,自限平衡)。这同时:(a)让导电体热传给相邻可燃物 → 电生火;(b)把现 R5c
+    燃烧的"flat 15MJ 辐射"升级为物理热扩散(更对、更自洽);(c)填补 R5c 起就记下的"truth 温度无扩散"缺口。
+    需定:守恒(传热同时源放热)/ 扩散系数 / 失控防护。
+
 ## 5. 验收
 
 - 回路闭合:加热冰格 → 冰在 truth 中变水 → snapshot 反映 → web_client 可见(主线端)。
