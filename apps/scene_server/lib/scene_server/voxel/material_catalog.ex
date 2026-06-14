@@ -166,6 +166,12 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @spec material_id(atom()) :: pos_integer() | nil
   def material_id(name) when is_atom(name), do: Map.get(@material_ids, name)
 
+  @doc """
+  material_id 是否在 catalog 中已定义(反应层用:未知材料不参与阈值反应,避免缺省阈值 0 反转惰性安全)。
+  """
+  @spec known_material?(term()) :: boolean()
+  def known_material?(material_id), do: Map.has_key?(@material_default_attributes, material_id)
+
   @doc "id → 材料名(未知 id 返回 nil)。"
   @spec material_name(integer()) :: atom() | nil
   def material_name(id) when is_integer(id) do

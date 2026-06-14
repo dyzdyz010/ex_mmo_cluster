@@ -274,6 +274,13 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     test "ash 不复燃(ignition inert),不被任何规则触发" do
       assert [] = Engine.evaluate([bcell(ash_id(), 1000.0)], Rules.all())
     end
+
+    test "R5d:未知材料(不在 catalog)即便高温也不反应(惰性安全不被缺省阈值 0 反转)" do
+      refute MaterialCatalog.known_material?(9999)
+
+      # 未知材料 9999 在 1000℃:若 material_threshold 缺省 0 会误点燃/误熔——现应完全不反应。
+      assert [] = Engine.evaluate([bcell(9999, 1000.0)], Rules.all())
+    end
   end
 
   describe "Rules 表" do

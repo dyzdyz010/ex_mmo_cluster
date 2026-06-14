@@ -70,9 +70,31 @@ defmodule SceneServer.Voxel.Reaction.CombustionEffectsTest do
     Storage.effective_attribute_at(storage, macro_index, "burn_progress") / 65_536
   end
 
+  defp temperature_at(chunk, macro_index) do
+    storage = ChunkProcess.debug_state(chunk).storage
+    Storage.effective_attribute_at(storage, macro_index, "temperature") / 65_536
+  end
+
   defp ctx, do: %{region_id: 1, chunk_coord: {0, 0, 0}, kernel_id: :reaction, source_tick: 1}
 
   defp apply_effects(chunk, effects), do: ChunkProcess.apply_field_effects(chunk, effects, ctx())
+
+  test "R5d:超大注热饱和在温度上界,不崩 ChunkProcess(辐射注热防越界崩溃)" do
+    {chunk, macro} = start_chunk_with_wood()
+
+    # 注入巨量热(远超 5000℃ catalog 上界所需)→ 应 clip 饱和,不越界 raise 崩 ChunkProcess。
+    assert {:ok, _} =
+             apply_effects(chunk, [
+               {:write_voxel_attribute,
+                %{attribute: :temperature, macro_index: macro, heat_energy_joules: 1.0e12}}
+             ])
+
+    # chunk 仍存活(debug_state 不崩),温度饱和在上界(≤ 5000℃)。
+    assert Process.alive?(chunk)
+    temp = temperature_at(chunk, macro)
+    assert temp <= 5000.1
+    assert temp > 4000.0
+  end
 
   test "set_tag 加 :burning → tag 落 truth" do
     {chunk, macro} = start_chunk_with_wood()

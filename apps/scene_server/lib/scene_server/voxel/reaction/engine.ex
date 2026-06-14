@@ -122,6 +122,19 @@ defmodule SceneServer.Voxel.Reaction.Engine do
 
   defp condition_holds?(nil, _cell), do: true
 
+  # R5d:未知材料(不在 catalog)不参与 material_threshold 反应——否则缺省阈值 0 会反转惰性安全
+  # (未知材料在任意温度 ≥0 点燃/熔化)。未知材料 = 无定义行为 = 惰性,条件不成立。
+  defp condition_holds?(
+         {field, op, {:material_threshold, attr}},
+         %{material_id: material_id} = cell
+       ) do
+    if MaterialCatalog.known_material?(material_id) do
+      compare(op, field_value(field, cell), resolve_threshold({:material_threshold, attr}, cell))
+    else
+      false
+    end
+  end
+
   defp condition_holds?({field, op, threshold}, cell) do
     compare(op, field_value(field, cell), resolve_threshold(threshold, cell))
   end

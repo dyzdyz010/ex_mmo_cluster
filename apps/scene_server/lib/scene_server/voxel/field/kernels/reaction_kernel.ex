@@ -19,7 +19,9 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
 
   @temperature_attribute "temperature"
   @burn_progress_attribute "burn_progress"
-  @default_max_transforms_per_tick 4096
+  # R5d:安全阀预算覆盖**每 tick 全部效果**(含辐射蔓延向量),而非仅 transform——否则失控级联的真正
+  # 传播路径(辐射注热)不受约束。reaction 效果在前优先,radiation 为溢出受剩余预算截断。
+  @default_max_effects_per_tick 4096
   # 燃烧蔓延的 truth 级机制:burning cell 每 tick 向相邻 solid cell 辐射热(焦耳)。现有温度扩散只动
   # field 层不动 truth,而反应读 truth——故 truth 级邻居耦合落在本 kernel(知 region 几何)。邻居受热
   # 升温达 ignition → 点燃 → 再辐射 → 级联蔓延。0 = 关辐射(仅单格燃烧生命周期)。
@@ -39,8 +41,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
       model_version: 1,
       safety_valve: %{
         type: :reaction_budget,
-        max_transforms_per_tick: @default_max_transforms_per_tick,
-        note: "每 tick 转变数截断,防失控级联涌现"
+        max_effects_per_tick: @default_max_effects_per_tick,
+        note: "每 tick **全部**反应效果(含燃烧辐射蔓延向量)总数截断,防失控级联;注热写另在 ChunkProcess clip 到温度上界"
       },
       description: "读已提交 truth(材料+温度)→ 数据化反应规则 → 材料转变 candidate,经 SystemActor 落 truth",
       assumptions: [
@@ -55,26 +57,24 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   def tick(%FieldRegion{} = region, %KernelContext{storage: storage}, opts) do
     opts = opts_map(opts)
     rules = Map.get(opts, :rules, Rules.all())
-    budget = max_transforms(opts)
     cells = cells_in_region(region, storage)
 
-    reaction_effects =
-      cells
-      |> Engine.evaluate(rules)
-      |> Enum.take(budget)
-
+    reaction_effects = Engine.evaluate(cells, rules)
     radiation_effects = radiation_effects(cells, region, opts)
 
-    {:cont, region, reaction_effects ++ radiation_effects}
+    # R5d:预算覆盖全部效果(reaction 在前优先,radiation 溢出受剩余预算截断)——约束失控级联。
+    effects = Enum.take(reaction_effects ++ radiation_effects, max_effects(opts))
+
+    {:cont, region, effects}
   end
 
   defp opts_map(opts) when is_map(opts), do: opts
   defp opts_map(_opts), do: %{}
 
-  defp max_transforms(opts) do
-    case Map.get(opts, :max_transforms_per_tick, @default_max_transforms_per_tick) do
+  defp max_effects(opts) do
+    case Map.get(opts, :max_effects_per_tick, @default_max_effects_per_tick) do
       n when is_integer(n) and n > 0 -> n
-      _other -> @default_max_transforms_per_tick
+      _other -> @default_max_effects_per_tick
     end
   end
 

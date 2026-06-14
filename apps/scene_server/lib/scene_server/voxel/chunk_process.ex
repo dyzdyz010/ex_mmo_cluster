@@ -40,6 +40,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @auto_circuit_refresh_debounce_ms 50
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
+  # 温度属性 catalog 边界(冻结值,见 priv/catalogs/attribute_catalog_v1.exs id 1)。R5d:注热写须 clip 到
+  # 此区间,否则越界 put_attribute_for_cell 会 raise 崩 ChunkProcess(燃烧辐射注热可达上界)。
+  @temperature_min_raw -17_904_824
+  @temperature_max_raw 327_680_000
   @density_attribute_name "density"
   @specific_heat_capacity_attribute_name "specific_heat_capacity"
   @voxel_volume_cubic_meter 1.0
@@ -917,7 +921,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:apply_field_effects, effects, context}, _from, state) do
     {results, next_state} =
       Enum.map_reduce(effects, state, fn effect, acc_state ->
-        apply_field_effect(acc_state, effect, context)
+        safe_apply_field_effect(acc_state, effect, context)
       end)
 
     summary = %{
@@ -2430,9 +2434,18 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
           temperature_delta = heat_energy_joules / heat_capacity_j_per_k
           target_temperature = previous_temperature + temperature_delta
-          target_raw = celsius_to_fixed32_raw(target_temperature)
           baseline_raw = celsius_to_fixed32_raw(20.0)
-          attribute_delta_raw = target_raw - baseline_raw
+
+          # R5d:clip target 到温度边界(注热饱和在上界,不越界崩溃);delta 也 clip 保 put 不 raise。
+          target_raw =
+            clamp_raw(
+              celsius_to_fixed32_raw(target_temperature),
+              @temperature_min_raw,
+              @temperature_max_raw
+            )
+
+          attribute_delta_raw =
+            clamp_raw(target_raw - baseline_raw, @temperature_min_raw, @temperature_max_raw)
 
           if target_raw == previous_raw do
             {:ok, storage,
@@ -2506,6 +2519,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   rescue
     _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_heat_energy_attribute}
+  end
+
+  # R5d 防御纵深:单个效果应用崩溃只 reject 该效果(emit observe),不崩整个 ChunkProcess。
+  defp safe_apply_field_effect(state, effect, context) do
+    apply_field_effect(state, effect, context)
+  rescue
+    exception ->
+      result = %{
+        status: :rejected,
+        action: :unknown,
+        reason: {:effect_apply_crashed, Exception.message(exception)}
+      }
+
+      emit_field_effect_rejected(state, result, context)
+      {result, state}
   end
 
   defp apply_field_effect(state, effect, context) do
