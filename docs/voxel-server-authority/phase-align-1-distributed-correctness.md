@@ -113,6 +113,13 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.6(entity_handoff 幂等协议 + cell_migration 正名)完成 → 梯队1 收口**。详见
+  [`phase-align-1-step1.6-entity-handoff-cell-migration.md`](./phase-align-1-step1.6-entity-handoff-cell-migration.md)。
+  1.6a cell_migration 正名(MigrationPlan 补 migration_tick/commit_watermark + CellMigration 信封);
+  1.6b entity_handoff 基元(`WorldServer.Entity.HandoffPlan` 纯状态机 prepare/accept/commit/abort/
+  timeout,幂等 + epoch fencing + 不递增 owner_epoch)。边界检测/真实搬迁/跨节点推迟多节点 tier。
+  回归 world 149 全绿。**梯队1(分布式正确性地基,D-3)全部完成。** 下一步:梯队2 NIF 故障与数据归属。
+
 - 2026-06-14:**step 1.5b(command_id 跨层线程化,AUTH-4)完成**。详见
   [`phase-align-1-step1.5b-command-id-threading.md`](./phase-align-1-step1.5b-command-id-threading.md)。
   1.5b-1 单方块编辑 command_id 同事务 record_once(gate→scene→store);1.5b-2 prefab idempotency-key

@@ -200,6 +200,14 @@
 
 ## 7. 进度日志（时间倒序）
 
+- **2026-06-14(梯队 1 收口,step1.6 entity_handoff + cell_migration 正名)**：1.6a 把现有
+  `MigrationPlan` formalize 为 cell_migration(补 migration_tick/commit_watermark + cutover 发
+  `CellMigration` 信封,owner_epoch 仅此递增);1.6b 新建 `WorldServer.Entity.HandoffPlan` entity_handoff
+  纯状态机(prepare/accept/commit/abort/timeout,幂等 + target epoch fencing + **不递增 owner_epoch**,
+  CELL-9~15)。两概念严格分离落地。边界检测/真实实体搬迁/跨节点按实体单节点现状推迟多节点 tier。回归
+  world 149 全绿。详见 [`phase-align-1-step1.6-entity-handoff-cell-migration.md`](./phase-align-1-step1.6-entity-handoff-cell-migration.md)。
+  **至此梯队 1(分布式正确性地基,D-3 高优)全部完成:epoch 线性化 / durable fencing / 命令幂等 /
+  cell_tick / durable-before-ack / command_id / entity_handoff+cell_migration 分离齐备。下一步梯队 2。**
 - **2026-06-14(梯队 1 step1.5b 完成,command_id 跨层线程化,AUTH-4)**：1.5b-1 单方块编辑
   command_id 同事务 record_once(gate `VoxelCommandId` 派生→scene ChunkProcess→`ChunkSnapshotStore.do_put`
   同 Repo.transaction record_once,失败不登记=exactly-once);1.5b-2 prefab idempotency-key

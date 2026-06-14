@@ -101,6 +101,14 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.6b(entity_handoff 基元)完成 → step 1.6 收口 → 梯队1 收口**。新建
+  `WorldServer.Entity.HandoffPlan` 纯状态机:`new/1`(:prepare)→ `accept/2`(:accept,带 target
+  owner_epoch fencing)→ `commit/2`(:commit);`abort/2` / `timeout/1` 终态失败。**幂等**(重复
+  accept/commit/abort/timeout no-op)、**非法顺序拒绝**(commit from :prepare、accept from :commit、
+  abort/timeout after commit)、**owner_epoch 全程不变**(CELL-11)、**accept fencing**(observed
+  target epoch 不符 → :target_epoch_mismatch)。`entity_handoff_envelope/1` 构 `EntityHandoff` 信封。
+  17 新单测。回归 world 149 全绿。边界检测 / 真实搬迁 / 跨节点按决策稿推迟多节点 tier。
+
 - 2026-06-14:**step 1.6a(cell_migration 正名)完成**。MigrationPlan 加 `migration_tick`/
   `commit_watermark` 字段;`cutover/2` 取 final-catchup-ack 的 `max_chunk_version` 前沿写入二者;
   新增 `cell_migration_envelope/1` 构 `CellMigration`(new>old 才返回,退化迁移/未 cutover 拒);
