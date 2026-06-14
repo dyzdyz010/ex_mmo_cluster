@@ -26,6 +26,7 @@ defmodule WorldServer.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:mmo_contracts, in_umbrella: true},
       {:beacon_server, in_umbrella: true},
       {:data_service, in_umbrella: true}
       # {:dep_from_hexpm, "~> 0.3.0"},

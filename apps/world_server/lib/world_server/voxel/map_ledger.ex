@@ -1,4 +1,7 @@
 defmodule WorldServer.Voxel.MapLedger do
+  # PERS-5:durable_authoritative(region 所有权/lease/owner_epoch 单写者目录,持久化后端 MapLedgerStore)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   World-side authority for voxel region assignment, leases, and routing.
 

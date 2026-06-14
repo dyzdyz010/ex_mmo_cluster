@@ -1,4 +1,7 @@
 defmodule WorldServer.Voxel.TransactionCoordinator do
+  # PERS-5:durable_authoritative(跨区事务状态,coordinator snapshot 持久化;saga/outbox 雏形)。见 MmoContracts.StateRegistry。
+  use MmoContracts.StateClassed, class: :durable_authoritative
+
   @moduledoc """
   Coordinator for recoverable voxel build transactions.
 
