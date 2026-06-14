@@ -733,6 +733,7 @@ defmodule WorldServer.Voxel.MapLedger do
         |> put_in([:migrations, migration_id], cutover_plan)
 
       CliObserve.emit("voxel_migration_cutover", fn -> MigrationPlan.summary(cutover_plan) end)
+      emit_cell_migration_envelope(cutover_plan)
       emit_legacy_region_migrated(cutover_plan)
       emit_cutover_invalidations(next_state, cutover_plan)
 
@@ -1008,6 +1009,28 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp default_migration_id(region_id) do
     "region-#{region_id}-migration-#{unique_positive_integer()}"
+  end
+
+  # 梯队1 step1.6(cell_migration 正名):cutover 发射 formalized CellMigration 信封(FROZEN-5)。
+  # 仅真实 epoch 抬升(new > old)才发;退化迁移只走既有 legacy observe。
+  defp emit_cell_migration_envelope(plan) do
+    case MigrationPlan.cell_migration_envelope(plan) do
+      {:ok, envelope} ->
+        CliObserve.emit("voxel_cell_migration_committed", fn ->
+          %{
+            migration_id: plan.migration_id,
+            cell_id: envelope.cell_id,
+            old_owner_epoch: envelope.old_owner_epoch,
+            new_owner_epoch: envelope.new_owner_epoch,
+            migration_tick: envelope.migration_tick,
+            commit_watermark: envelope.commit_watermark,
+            snapshot_ref: envelope.snapshot_ref
+          }
+        end)
+
+      {:error, _reason} ->
+        :ok
+    end
   end
 
   defp emit_legacy_region_migrated(plan) do

@@ -1,12 +1,24 @@
 defmodule WorldServer.Voxel.MigrationPlan do
   @moduledoc """
-  World-owned migration plan for handing one voxel region to another Scene.
+  World-owned **cell_migration** plan for handing one voxel region (Cell) to another Scene.
+
+  规范术语对齐(梯队1 step1.6,CELL-10/11):本结构即 **cell_migration**——*Cell 本身*迁移到新
+  CellServer/Scene 实例,**唯一递增 Cell `owner_epoch` 的地方**(经 `new_lease` 的 owner_epoch)。
+  与 **entity_handoff**(实体跨 Cell,不递增 owner_epoch,见 `WorldServer.Entity.HandoffPlan` /
+  `MmoContracts.Envelope.EntityHandoff`)严格区分。
+
+  cutover 在 `cutover/2` 写入 `migration_tick`/`commit_watermark`(取 final-catchup-ack 的
+  `max_chunk_version` 前沿——v2.0.2 承认 chunk_version 作 cell_seq 聚合等价,该前沿即所有权切换的
+  版本边界,旧 owner `migration_tick` 之后禁写,CELL-20/TIME-6),并可经 `cell_migration_envelope/1`
+  构 `MmoContracts.Envelope.CellMigration` 信封(FROZEN-5)。
 
   The plan is a control-plane record only. World owns the state machine and lease
   handoff metadata; Scene adapters can read the handoff payload and prewarm
   chunks, but the current write lease is not changed until the ledger performs
   cutover.
   """
+
+  alias MmoContracts.Envelope.CellMigration
 
   @enforce_keys [
     :migration_id,
@@ -37,6 +49,10 @@ defmodule WorldServer.Voxel.MigrationPlan do
     :prewarmed_at_ms,
     :cutover_at_ms,
     :completed_at_ms,
+    # 梯队1 step1.6(cell_migration 正名,CELL-10/20/TIME-6):cutover 时由 final-catchup-ack 的
+    # max_chunk_version 前沿写入。旧 owner 在 migration_tick 之后禁止再产生该 Cell 的权威写入。
+    :migration_tick,
+    :commit_watermark,
     state: :prewarming,
     slice_axis: :x,
     slice_width: 1,
@@ -76,6 +92,8 @@ defmodule WorldServer.Voxel.MigrationPlan do
           prewarmed_at_ms: non_neg_integer() | nil,
           cutover_at_ms: non_neg_integer() | nil,
           completed_at_ms: non_neg_integer() | nil,
+          migration_tick: non_neg_integer() | nil,
+          commit_watermark: non_neg_integer() | nil,
           slice_axis: :x | :y | :z,
           slice_width: pos_integer(),
           next_slice_index: non_neg_integer(),
@@ -201,10 +219,25 @@ defmodule WorldServer.Voxel.MigrationPlan do
   def mark_prewarmed(%__MODULE__{state: :prewarmed} = plan, _now_ms), do: {:ok, plan}
   def mark_prewarmed(%__MODULE__{}, _now_ms), do: {:error, :migration_not_prewarming}
 
-  @doc "Marks the plan as cut over after World has published the new write lease."
+  @doc """
+  Marks the plan as cut over after World has published the new write lease.
+
+  cell_migration(梯队1 step1.6):cutover 写入 `migration_tick`/`commit_watermark`,取 final-catchup-ack
+  的 `max_chunk_version` 前沿(所有权切换的版本边界,旧 owner 之后禁写)。
+  """
   def cutover(%__MODULE__{state: :prewarmed} = plan, now_ms) do
     if all_slices_final_caught_up?(plan) do
-      {:ok, %{plan | state: :cutover, cutover_at_ms: now_ms, updated_at_ms: now_ms}}
+      frontier = commit_frontier(plan)
+
+      {:ok,
+       %{
+         plan
+         | state: :cutover,
+           cutover_at_ms: now_ms,
+           updated_at_ms: now_ms,
+           migration_tick: frontier,
+           commit_watermark: frontier
+       }}
     else
       {:error, :migration_final_catchup_ack_incomplete}
     end
@@ -212,6 +245,42 @@ defmodule WorldServer.Voxel.MigrationPlan do
 
   def cutover(%__MODULE__{state: :cutover} = plan, _now_ms), do: {:ok, plan}
   def cutover(%__MODULE__{}, _now_ms), do: {:error, :migration_not_prewarmed}
+
+  @doc """
+  Builds the `MmoContracts.Envelope.CellMigration` envelope for a cut-over plan
+  (cell_migration 正名,FROZEN-5)。
+
+  仅当 `new_owner_epoch > old_owner_epoch`(真实 epoch 抬升)时返回 `{:ok, envelope}`;
+  退化迁移(无 old_lease 或 new == old,信封强制 new>old)返回 `{:error, :owner_epoch_not_monotonic}`。
+  尚未 cutover(无 migration_tick)返回 `{:error, :migration_not_cutover}`。
+  """
+  @spec cell_migration_envelope(t()) :: {:ok, CellMigration.t()} | {:error, term()}
+  def cell_migration_envelope(%__MODULE__{migration_tick: nil}),
+    do: {:error, :migration_not_cutover}
+
+  def cell_migration_envelope(%__MODULE__{} = plan) do
+    CellMigration.new(
+      cell_id: plan.region_id,
+      old_owner_epoch: old_owner_epoch(plan),
+      new_owner_epoch: plan.new_lease.owner_epoch,
+      migration_tick: plan.migration_tick,
+      commit_watermark: plan.commit_watermark,
+      snapshot_ref: plan.migration_id
+    )
+  end
+
+  defp old_owner_epoch(%__MODULE__{old_lease: nil}), do: 0
+  defp old_owner_epoch(%__MODULE__{old_lease: old_lease}), do: old_lease.owner_epoch
+
+  # 所有权切换的版本前沿 = final-catchup-ack 的 max max_chunk_version(无 ack 则 0)。
+  defp commit_frontier(%__MODULE__{final_catchup_acks: acks}) when map_size(acks) == 0, do: 0
+
+  defp commit_frontier(%__MODULE__{final_catchup_acks: acks}) do
+    acks
+    |> Map.values()
+    |> Enum.map(&Map.get(&1, :max_chunk_version, 0))
+    |> Enum.max()
+  end
 
   @doc "Marks a cutover migration as complete."
   def complete(%__MODULE__{state: :cutover} = plan, now_ms) do
@@ -265,6 +334,8 @@ defmodule WorldServer.Voxel.MigrationPlan do
       slice_width: plan.slice_width,
       next_slice_index: plan.next_slice_index,
       total_slices: plan.total_slices,
+      migration_tick: plan.migration_tick,
+      commit_watermark: plan.commit_watermark,
       planned_slices: Enum.map(plan.planned_slices, &slice_summary/1),
       prewarm_ack_count: map_size(plan.prewarm_acks),
       final_catchup_ack_count: map_size(plan.final_catchup_acks)

@@ -101,6 +101,13 @@
 
 ## 进度日志(时间倒序)
 
+- 2026-06-14:**step 1.6a(cell_migration 正名)完成**。MigrationPlan 加 `migration_tick`/
+  `commit_watermark` 字段;`cutover/2` 取 final-catchup-ack 的 `max_chunk_version` 前沿写入二者;
+  新增 `cell_migration_envelope/1` 构 `CellMigration`(new>old 才返回,退化迁移/未 cutover 拒);
+  summary 暴露二字段;MapLedger cutover 发 `voxel_cell_migration_committed` observe(经新增
+  `emit_cell_migration_envelope/1`,new>old 时);moduledoc 标注 cell_migration 语义 + 与
+  entity_handoff 分离。新增 6 MigrationPlan 单测。回归 world 132 全绿。**剩余 1.6b entity_handoff 基元。**
+
 - 2026-06-14:决策稿落定。实体模型审计确认实体单 scene_node 固定、跨 region 实体移动不存在,故 tier-1
   只交付控制面协议基元 + cell_migration 正名,boundary monitor / 真实搬迁 / 跨节点推迟多节点 tier。
   拆 1.6a(cell_migration 正名)/1.6b(entity_handoff 基元)。
