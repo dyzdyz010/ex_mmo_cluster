@@ -46,4 +46,16 @@
 
 ## 进度日志(时间倒序)
 
-- 2026-06-14:决策稿落定,等基线编译确认后进入 step 0.1。
+- 2026-06-14:**梯队 0 契约骨架收口**。
+  - step 0.1 ✓ `apps/mmo_contracts` + `StateClass`(7 测试)。
+  - step 0.2 ✓ `Envelope` helper + 6 核心信封 + 4 subtype 信封(共 32 测试)。
+  - step 0.3 ✓ `CellId`(morton + region 聚合等价,9 测试)。
+  - step 0.4 ✓ `StateClassed` 宏 + `StateRegistry` 清单(6 测试)。mmo_contracts 共 **47 测试全绿**。
+  - step 0.5 ✓ 跨 app 机制打通:data_service 接 mmo_contracts dep + 5 持有者 `use StateClassed` 自声明
+    + 一致性测试;**data_service 82 tests + 1 doctest 全绿 0 回归**。建库 `mmo_dev` + migrate 完成。
+  - 基线:umbrella 全量编译(含 5 Rust crate)EXIT=0。
+  - **遗留(增量收尾)**:scene_server / world_server 的清单持有者(PlayerCharacter/Combat.State/MapLedger/
+    TransactionCoordinator/ObjectRegistry/Field*/SimulationTick)的 `use StateClassed` 自声明,
+    在各自梯队(1/2/3)首次触及对应模块时按 data_service 同模式接入并补一致性测试。
+    StateRegistry 清单已是 PERS-5 单一来源;自声明是编译期强化,增量铺开不阻塞后续梯队。
+- 2026-06-14:决策稿落定,基线编译确认后进入 step 0.1。
