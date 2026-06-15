@@ -24,6 +24,7 @@ pub mod field;
 pub mod invalidate;
 pub mod object_state;
 pub mod snapshot;
+pub mod subscribe;
 
 pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
 pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
@@ -36,6 +37,7 @@ pub use snapshot::{
     AttributeEntry, AttributeSet, AttributeValue, ChunkObjectRef, ChunkSnapshot,
     EnvironmentSummary, MacroHeader, SnapshotSection, TagSet,
 };
+pub use subscribe::{ChunkSubscribe, ChunkUnsubscribe, KnownChunk, VoxelClientMessage};
 
 use crate::protocol::ProtocolError;
 
@@ -336,6 +338,44 @@ mod tests {
         let bytes = [0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let err = CatalogPatch::decode(&mut Reader::new(&bytes)).unwrap_err();
         assert!(err.0.contains("unknown schema_kind"), "{}", err.0);
+    }
+
+    #[test]
+    fn chunk_subscribe_roundtrip() {
+        let sub = ChunkSubscribe {
+            request_id: 1,
+            logical_scene_id: 7,
+            center_chunk: [0, 1, -2],
+            radius_l_inf: 2,
+            want_snapshot: true,
+            known: vec![KnownChunk {
+                chunk_coord: [3, 0, 0],
+                chunk_version: 42,
+            }],
+        };
+        let msg = VoxelClientMessage::ChunkSubscribe(sub.clone());
+        assert_eq!(msg.opcode(), OP_CHUNK_SUBSCRIBE);
+        let body = msg.encode_body();
+        assert_eq!(
+            ChunkSubscribe::decode(&mut Reader::new(&body)).unwrap(),
+            sub
+        );
+    }
+
+    #[test]
+    fn chunk_unsubscribe_roundtrip() {
+        let unsub = ChunkUnsubscribe {
+            request_id: 9,
+            logical_scene_id: 7,
+            chunks: vec![[0, 0, 0], [1, 2, 3]],
+        };
+        let msg = VoxelClientMessage::ChunkUnsubscribe(unsub.clone());
+        assert_eq!(msg.opcode(), OP_CHUNK_UNSUBSCRIBE);
+        let body = msg.encode_body();
+        assert_eq!(
+            ChunkUnsubscribe::decode(&mut Reader::new(&body)).unwrap(),
+            unsub
+        );
     }
 
     #[test]
