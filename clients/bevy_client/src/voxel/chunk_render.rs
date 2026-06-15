@@ -22,7 +22,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::app::schedule::ClientSet;
 use crate::app::sim_to_render_position;
@@ -36,10 +36,26 @@ use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, greedy_mesh_chunk_with
 /// (`VOXEL_RENDER_CELL_SIZE`), so authority chunks tile with it 1:1.
 const MACRO_RENDER_SIZE: f32 = 100.0;
 
+/// Max chunks remeshed per frame (each = a greedy mesh + a Bevy mesh-asset
+/// upload on the main thread). A burst of incoming snapshots beyond this — e.g.
+/// a large subscription radius filling in — defers to later frames instead of
+/// stalling one. Async off-thread meshing is a later optimization (see
+/// `docs/2026-06-15-bevy-largescale-voxel-rendering.md` §4).
+const REMESH_BUDGET_PER_FRAME: usize = 8;
+
 /// Maps each rendered chunk coord to its Bevy entity, so re-meshes update in
 /// place and invalidated chunks despawn.
 #[derive(Resource, Default)]
 pub struct VoxelChunkEntities(HashMap<ChunkCoord, Entity>);
+
+/// Pending remesh queue feeding the per-frame budget. `queued` dedups membership
+/// so a chunk dirtied repeatedly (or via several neighbors) is meshed once per
+/// pass; `pending` preserves arrival order, so spawn-area chunks paint first.
+#[derive(Resource, Default)]
+struct VoxelRemeshQueue {
+    pending: VecDeque<ChunkCoord>,
+    queued: HashSet<ChunkCoord>,
+}
 
 /// Shared material handle for all authority chunk meshes (vertex-colored).
 #[derive(Resource)]
@@ -50,6 +66,7 @@ pub struct VoxelChunkRenderPlugin;
 impl Plugin for VoxelChunkRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VoxelChunkEntities>()
+            .init_resource::<VoxelRemeshQueue>()
             .add_systems(Startup, setup_chunk_material)
             .add_systems(
                 Update,
@@ -74,61 +91,92 @@ fn render_dirty_chunks(
     mut commands: Commands,
     mut authority: ResMut<VoxelAuthority>,
     mut entities: ResMut<VoxelChunkEntities>,
+    mut queue: ResMut<VoxelRemeshQueue>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Option<Res<VoxelChunkMaterial>>,
 ) {
     let Some(material) = material else {
         return; // material not ready yet (first frame ordering)
     };
-    let dirty = authority.store.take_dirty();
-    if dirty.is_empty() {
-        return;
-    }
 
-    // Re-mesh dirty chunks AND their loaded neighbors: a change to one chunk can
-    // expose/cull faces on the shared boundary of its neighbors (cross-chunk
-    // culling). A despawned (invalidated) chunk's coord stays in the set so its
-    // neighbors re-grow their boundary faces.
-    let mut to_remesh: HashSet<ChunkCoord> = HashSet::new();
-    for &coord in &dirty {
-        to_remesh.insert(coord);
+    // Fold newly-dirty chunks — and their loaded neighbors, whose shared
+    // boundary faces may now be exposed/culled (cross-chunk culling) — into the
+    // pending remesh queue. A despawned (invalidated) chunk's coord stays queued
+    // so its neighbors re-grow their boundary faces.
+    for coord in authority.store.take_dirty() {
+        enqueue(&mut queue, coord);
         for neighbor in neighbor_coords(coord) {
             if authority.store.chunk(neighbor).is_some() {
-                to_remesh.insert(neighbor);
+                enqueue(&mut queue, neighbor);
             }
         }
     }
 
-    for coord in to_remesh {
-        match authority.store.chunk(coord) {
-            Some(chunk) => {
-                let neighbors = build_neighbors(&authority.store, coord);
-                let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
-                if data.is_empty() {
-                    despawn_chunk(&mut commands, &mut entities, coord);
-                    continue;
+    // Remesh at most a per-frame budget so a burst of snapshots (a large
+    // subscription radius filling in) can't stall a single frame; the rest
+    // remeshes over subsequent frames, in arrival order.
+    let budget = REMESH_BUDGET_PER_FRAME.min(queue.pending.len());
+    for _ in 0..budget {
+        let Some(coord) = queue.pending.pop_front() else {
+            break;
+        };
+        queue.queued.remove(&coord);
+        remesh_chunk(
+            &mut commands,
+            &authority.store,
+            &mut entities,
+            &mut meshes,
+            &material,
+            coord,
+        );
+    }
+}
+
+/// Adds a chunk to the pending remesh queue unless it is already queued.
+fn enqueue(queue: &mut VoxelRemeshQueue, coord: ChunkCoord) {
+    if queue.queued.insert(coord) {
+        queue.pending.push_back(coord);
+    }
+}
+
+/// Re-meshes one chunk: spawn/update its `Mesh3d`, or despawn it when the chunk
+/// is gone or now meshes to nothing (fully occluded / emptied).
+fn remesh_chunk(
+    commands: &mut Commands,
+    store: &VoxelAuthorityStore,
+    entities: &mut VoxelChunkEntities,
+    meshes: &mut Assets<Mesh>,
+    material: &VoxelChunkMaterial,
+    coord: ChunkCoord,
+) {
+    match store.chunk(coord) {
+        Some(chunk) => {
+            let neighbors = build_neighbors(store, coord);
+            let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
+            if data.is_empty() {
+                despawn_chunk(commands, entities, coord);
+                return;
+            }
+            let mesh_handle = meshes.add(build_mesh(&data));
+            match entities.0.get(&coord).copied() {
+                Some(entity) => {
+                    commands.entity(entity).insert(Mesh3d(mesh_handle));
                 }
-                let mesh_handle = meshes.add(build_mesh(&data));
-                match entities.0.get(&coord).copied() {
-                    Some(entity) => {
-                        commands.entity(entity).insert(Mesh3d(mesh_handle));
-                    }
-                    None => {
-                        let entity = commands
-                            .spawn((
-                                Mesh3d(mesh_handle),
-                                MeshMaterial3d(material.0.clone()),
-                                Transform::from_translation(chunk_translation(coord)),
-                                Visibility::default(),
-                            ))
-                            .id();
-                        entities.0.insert(coord, entity);
-                    }
+                None => {
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh_handle),
+                            MeshMaterial3d(material.0.clone()),
+                            Transform::from_translation(chunk_translation(coord)),
+                            Visibility::default(),
+                        ))
+                        .id();
+                    entities.0.insert(coord, entity);
                 }
             }
-            // Chunk dropped (invalidate) → remove its entity.
-            None => despawn_chunk(&mut commands, &mut entities, coord),
         }
+        // Chunk dropped (invalidate) → remove its entity.
+        None => despawn_chunk(commands, entities, coord),
     }
 }
 
@@ -271,6 +319,21 @@ mod tests {
     fn stone_maps_to_gray_not_magenta() {
         assert_eq!(material_color(2), [0.50, 0.50, 0.50, 1.0]);
         assert_eq!(material_color(9999), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn remesh_queue_dedups_and_preserves_arrival_order() {
+        let mut q = VoxelRemeshQueue::default();
+        enqueue(&mut q, [0, 0, 0]);
+        enqueue(&mut q, [1, 0, 0]);
+        enqueue(&mut q, [0, 0, 0]); // duplicate → ignored while still queued
+        assert_eq!(q.pending.len(), 2);
+        assert_eq!(q.pending.pop_front(), Some([0, 0, 0]));
+        assert_eq!(q.pending.pop_front(), Some([1, 0, 0]));
+        // Re-enqueuing after it left the queue is allowed again.
+        q.queued.remove(&[0, 0, 0]);
+        enqueue(&mut q, [0, 0, 0]);
+        assert_eq!(q.pending.pop_front(), Some([0, 0, 0]));
     }
 
     #[test]

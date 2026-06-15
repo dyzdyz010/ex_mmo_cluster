@@ -29,6 +29,41 @@ impl Plugin for NetworkPlugin {
     }
 }
 
+/// One voxel chunk spans 16 macro × 100cm = 1600 server world units.
+const VOXEL_CHUNK_WORLD_SIZE: f64 = 1600.0;
+
+/// L∞ radius of the voxel subscription around the player's chunk. 2 covers the
+/// default 5×5-chunk dev platform from spawn; the server caps radius at 4.
+const VOXEL_SUBSCRIBE_RADIUS: u8 = 2;
+
+/// Maps a server sim-space position to its containing chunk coord.
+fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
+    [
+        (location[0] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
+        (location[1] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
+        (location[2] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
+    ]
+}
+
+/// Subscribes to the voxel chunks around `center_chunk` and records it as the
+/// current subscription center (drives AOI-follow re-subscription).
+fn subscribe_voxel_around(
+    bridge: &NetworkBridge,
+    world_state: &mut WorldState,
+    center_chunk: [i32; 3],
+) {
+    bridge.send(NetworkCommand::SubscribeChunks {
+        logical_scene_id: 1,
+        center_chunk,
+        radius: VOXEL_SUBSCRIBE_RADIUS,
+    });
+    world_state.voxel_subscribed_center = Some(center_chunk);
+    push_line(
+        &mut world_state.logs,
+        format!("voxel subscribe center={center_chunk:?} radius={VOXEL_SUBSCRIBE_RADIUS}"),
+    );
+}
+
 fn poll_network_events(
     mut commands: Commands,
     bridge: Res<NetworkBridge>,
@@ -89,30 +124,11 @@ fn poll_network_events(
 
                 // Auto-subscribe to the voxel chunks around the spawn so the
                 // server-authoritative renderer (VoxelChunkRenderPlugin) gets data
-                // without manual CLI. `location` is server sim space; a chunk is
-                // 16 macro × 100cm = 1600 world units. logical_scene_id defaults to
-                // 1 (no protocol field carries it yet — see M1.8d note). AOI
-                // re-subscription as the player moves is M3.
-                const CHUNK_WORLD_SIZE: f64 = 1600.0;
-                let center_chunk = [
-                    (location[0] / CHUNK_WORLD_SIZE).floor() as i32,
-                    (location[1] / CHUNK_WORLD_SIZE).floor() as i32,
-                    (location[2] / CHUNK_WORLD_SIZE).floor() as i32,
-                ];
-                // radius 1: the server streams chunks ~1 per AOI tick in coord
-                // order, so a small radius makes the spawn chunk paint quickly.
-                const SUBSCRIBE_RADIUS: u8 = 1;
-                bridge.send(NetworkCommand::SubscribeChunks {
-                    logical_scene_id: 1,
-                    center_chunk,
-                    radius: SUBSCRIBE_RADIUS,
-                });
-                push_line(
-                    &mut world_state.logs,
-                    format!(
-                        "voxel auto-subscribe center={center_chunk:?} radius={SUBSCRIBE_RADIUS}"
-                    ),
-                );
+                // without manual CLI. logical_scene_id defaults to 1 (no protocol
+                // field carries it yet — see M1.8d note). The follow-up in
+                // `LocalPosition` re-subscribes as the player crosses chunks (AOI).
+                world_state.voxel_subscribed_center = None;
+                subscribe_voxel_around(&bridge, &mut world_state, voxel_chunk_of(location));
             }
             NetworkEvent::LocalPosition {
                 cid: _,
@@ -134,6 +150,15 @@ fn poll_network_events(
                     movement_mode,
                 );
                 world_state.last_local_update_transport = Some(transport);
+
+                // AOI follow: re-subscribe around the player's chunk when they
+                // cross into a new one, so a world larger than the subscription
+                // radius streams in as they move. (Re-streams already-loaded
+                // chunks for now — `known[]` population is a follow-up.)
+                let current_chunk = voxel_chunk_of(location);
+                if world_state.voxel_subscribed_center != Some(current_chunk) {
+                    subscribe_voxel_around(&bridge, &mut world_state, current_chunk);
+                }
             }
             NetworkEvent::PlayerEnter { cid, location } => {
                 if cid != world_state.local_cid {

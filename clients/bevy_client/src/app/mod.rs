@@ -99,6 +99,10 @@ pub(crate) struct WorldState {
     pub last_remote_move_transport: Option<MessageTransport>,
     pub selected_target_cid: Option<i64>,
     pub selected_target_point: Option<Vec3>,
+    /// The chunk coord the voxel subscription is currently centered on. Drives
+    /// AOI-follow re-subscription: when the player crosses into a new chunk the
+    /// network plugin re-subscribes around the new center.
+    pub voxel_subscribed_center: Option<[i32; 3]>,
 }
 
 #[derive(Resource, Default)]
