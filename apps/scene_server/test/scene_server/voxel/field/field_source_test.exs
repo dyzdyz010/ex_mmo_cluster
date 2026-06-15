@@ -123,7 +123,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                      frequency_hz: nil,
                      energy_budget_joules: 5000.0
                    },
-                   thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
+                   thermal_coupling: %{enabled: true, joule_scale: 1.0e9}
                  }
                },
                # 反应层 R6:反应 kernel 随电场跑(电生火等跨系统涌现)。
@@ -173,7 +173,7 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                      frequency_hz: nil,
                      energy_budget_joules: nil
                    },
-                   thermal_coupling: %{enabled: true, joule_scale: 10_000.0}
+                   thermal_coupling: %{enabled: true, joule_scale: 1.0e9}
                  }
                },
                # 反应层 R6:反应 kernel 随电场跑(放电点燃可燃物等跨系统涌现)。

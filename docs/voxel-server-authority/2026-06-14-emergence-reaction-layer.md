@@ -160,6 +160,12 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
   Joule 加热铁 → 守恒热扩散把铁热传相邻木 → 木点燃(跨系统:电+热扩散+燃烧组合涌现)。reaction 59 全绿。
   **遗留 follow-on(电热增益平衡)**:生产 `@conduction_heat_response_gain=1e4` 偏低,放电/导电实际注热
   远不达 ignition(demo 用 joule_scale 1e9 验机制);"电→火"落生产需调电热增益(独立 balance 项,不破机制)。
+- **R6d ✅ 电热增益调平**:`@conduction_heat_response_gain` 1e4 → **1e9**,使持续导电/放电把导电体加热到
+  ignition 量级(铁约 ~10℃/tick)→ 经守恒热扩散点燃相邻可燃物。**关键洞察**:守恒热扩散把热在连通固体
+  质量间**均摊**,故点燃单格须把整连通块加热到 ignition;单 voxel Joule 热极小,需大增益压过均摊才
+  gameplay 可见——故 1e9(粗 1m³ + 定性档 gameplay 增益,playtesting 可下调/拆分导电vs放电)。**电→火 e2e
+  demo 改用生产增益 1e9 验证生产可用**(30 tick 内点燃);field_source_test joule_scale 断言随之更新。
+  scene 全量 986/0 零净回归。**至此"电→火"生产可用。**
 
 ## 5. 验收
 

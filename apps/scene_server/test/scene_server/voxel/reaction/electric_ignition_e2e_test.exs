@@ -96,15 +96,15 @@ defmodule SceneServer.Voxel.Reaction.ElectricIgnitionE2ETest do
                 current_limit_amps: 20.0,
                 load_current_amps: 20.0
               },
-              # 高 joule_scale gain 让导电热足以达 ignition;production 默认 gain(1e4)偏低,
-              # "电→火"落生产需另调电热增益(R6 follow-on,见决策稿)。
+              # R6 调平后的 production 电热增益(= field_source @conduction_heat_response_gain 1e9),
+              # 验证"电→火"在生产默认值下成立(持续导电加热铁→热扩散点燃相邻木)。
               thermal_coupling: %{enabled: true, joule_scale: 1.0e9}
             }
           },
           %{id: :reaction, module: ReactionKernel, opts: %{}}
         ],
         source_points: [%{macro_index: source, field_type: :electric_potential, value: 120.0}],
-        max_ticks: 25
+        max_ticks: 30
       })
 
     {:ok, pid} =

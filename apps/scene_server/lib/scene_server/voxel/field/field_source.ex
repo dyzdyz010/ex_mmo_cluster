@@ -61,7 +61,11 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   @default_conduction_max_ticks 120
   @default_conduction_radius 1
   @default_conduction_max_frontier 512
-  @conduction_heat_response_gain 10_000.0
+  # R6 电热增益(joule_scale):导电/放电注热的 gameplay 响应增益。R6 调平:从 1e4 提到 1e9,使持续
+  # 导电/放电把导电体加热到 ignition 量级(铁约 ~10℃/tick,数十秒到炽热),经反应层守恒热扩散点燃相邻
+  # 可燃物(电→火生产可用)。单 voxel 实际 Joule 热极小,需大增益压过热扩散均摊才 gameplay 可见;此为
+  # 粗粒度 1m³ + 定性档(模型卡 :qualitative)的 gameplay 增益,后续 playtesting 可下调/拆分导电vs放电。
+  @conduction_heat_response_gain 1.0e9
 
   @doc """
   Normalizes a runtime field source.
