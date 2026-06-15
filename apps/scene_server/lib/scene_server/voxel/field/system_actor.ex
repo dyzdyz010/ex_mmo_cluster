@@ -155,6 +155,10 @@ defmodule SceneServer.Voxel.Field.SystemActor do
     end
   end
 
+  # 功能完善 · 反应层 R8:放电击穿伤害——持续电弧逐 tick 累损 health,**连续 always-commit**(同 heat/delta
+  # 绕去抖锁存,否则同桶 latch 会让伤害停摆);ChunkProcess 端权威重校 health>0 + 归零毁块。
+  defp gate({:damage_block, _attrs}, _context, state), do: {:commit, nil, state}
+
   # 非 write_voxel_attribute 的 field effect(如 unsupported action):**透传**给 ChunkProcess,
   # 由其执行器显式 reject(emit voxel_field_effect_rejected)——不静默吞掉(显式失败纪律)。
   defp gate(_other, _context, state), do: {:commit, nil, state}

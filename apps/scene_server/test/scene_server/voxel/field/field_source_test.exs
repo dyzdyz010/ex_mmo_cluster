@@ -173,7 +173,9 @@ defmodule SceneServer.Voxel.Field.FieldSourceTest do
                      frequency_hz: nil,
                      energy_budget_joules: nil
                    },
-                   thermal_coupling: %{enabled: true, joule_scale: 1.0e9}
+                   thermal_coupling: %{enabled: true, joule_scale: 1.0e9},
+                   # 反应层 R8:放电模式默认开击穿伤害(降 health 毁块)。
+                   breakdown_damage: %{enabled: true}
                  }
                },
                # 反应层 R6:反应 kernel 随电场跑(放电点燃可燃物等跨系统涌现)。

@@ -101,6 +101,105 @@ defmodule SceneServer.Voxel.Field.ElectricDischargeKernelTest do
     assert active_cells(updated, :ionization) == []
   end
 
+  describe "R8:击穿伤害效果" do
+    test "沿击穿路径对 health>0 实心块发 :damage_block(默认开)" do
+      source = Types.macro_index!({0, 0, 0})
+      mid = Types.macro_index!({1, 0, 0})
+      target = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid_health({1, 0, 0}, @iron, 60)
+        |> put_solid({2, 0, 0}, @iron)
+
+      region = discharge_region(source, {{0, 0, 0}, {2, 0, 0}}, 120.0)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, effects} =
+               ElectricDischargeKernel.tick(region, context, %{
+                 target_macro_index: target,
+                 max_frontier: 32
+               })
+
+      # 只 health>0 的中段 {1,0,0} 受击穿伤害;源 power_block / 靶 iron 均 health=0 → 跳过。
+      assert [{:damage_block, dmg}] = Enum.filter(effects, &match?({:damage_block, _}, &1))
+      assert dmg.macro_index == mid
+      assert dmg.amount > 0
+      assert dmg.source == :electric_discharge
+    end
+
+    test "health=0 块与空 cell 不发 :damage_block(避免误毁默认块)" do
+      source = Types.macro_index!({0, 0, 0})
+      target = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid({2, 0, 0}, @iron)
+
+      # {1,0,0} 空(空气击穿);所有实心块 health=0。
+      region = discharge_region(source, {{0, 0, 0}, {2, 0, 0}}, 120.0)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, effects} =
+               ElectricDischargeKernel.tick(region, context, %{
+                 target_macro_index: target,
+                 max_frontier: 32
+               })
+
+      assert [] = Enum.filter(effects, &match?({:damage_block, _}, &1))
+    end
+
+    test "breakdown_damage: false 关闭击穿伤害" do
+      source = Types.macro_index!({0, 0, 0})
+      target = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid_health({1, 0, 0}, @iron, 60)
+        |> put_solid({2, 0, 0}, @iron)
+
+      region = discharge_region(source, {{0, 0, 0}, {2, 0, 0}}, 120.0)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, effects} =
+               ElectricDischargeKernel.tick(region, context, %{
+                 target_macro_index: target,
+                 max_frontier: 32,
+                 breakdown_damage: false
+               })
+
+      assert [] = Enum.filter(effects, &match?({:damage_block, _}, &1))
+    end
+
+    test "breakdown_damage: %{damage_per_tick: n} 调伤害量" do
+      source = Types.macro_index!({0, 0, 0})
+      mid = Types.macro_index!({1, 0, 0})
+      target = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid_health({1, 0, 0}, @iron, 60)
+        |> put_solid({2, 0, 0}, @iron)
+
+      region = discharge_region(source, {{0, 0, 0}, {2, 0, 0}}, 120.0)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, effects} =
+               ElectricDischargeKernel.tick(region, context, %{
+                 target_macro_index: target,
+                 max_frontier: 32,
+                 breakdown_damage: %{damage_per_tick: 7}
+               })
+
+      assert [{:damage_block, %{macro_index: ^mid, amount: 7}}] =
+               Enum.filter(effects, &match?({:damage_block, _}, &1))
+    end
+  end
+
   defp discharge_region(source, aabb, source_value) do
     FieldRegion.new(%{
       region_id: 71,
@@ -115,6 +214,10 @@ defmodule SceneServer.Voxel.Field.ElectricDischargeKernelTest do
 
   defp put_solid(storage, coord, material_id) do
     Storage.put_solid_block(storage, coord, NormalBlockData.new(material_id))
+  end
+
+  defp put_solid_health(storage, coord, material_id, health) do
+    Storage.put_solid_block(storage, coord, NormalBlockData.new(material_id, health: health))
   end
 
   defp put_stale_channel(region) do

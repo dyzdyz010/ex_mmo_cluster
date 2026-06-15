@@ -37,6 +37,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
   @min_step_cost 0.05
   @default_channel_ionization 240.0
   @default_temperature_rise_celsius 180.0
+  @default_breakdown_damage 25
   @default_max_frontier 512
   @epsilon 0.000001
 
@@ -55,10 +56,10 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
       safety_valve: %{
         type: :frontier_budget,
         max_frontier: @default_max_frontier,
-        note: "介质击穿 Dijkstra max_frontier 熔断;放电热回写经 system_actor 桥(梯队3 step3.8)"
+        note: "介质击穿 Dijkstra max_frontier 熔断;放电热/击穿伤害回写经 system_actor 桥(梯队3 step3.8/R8)"
       },
-      description: "介质击穿放电路径(Dijkstra)+ 沿路径温度上升;权威温度写回经 SystemActor 锁存",
-      assumptions: ["macro-cell 击穿强度近似", "chunk-local", "固定温升模型"]
+      description: "介质击穿放电路径(Dijkstra)+ 沿路径温度上升 + 击穿伤害(降 health 毁块);权威写回经 SystemActor",
+      assumptions: ["macro-cell 击穿强度近似", "chunk-local", "固定温升模型", "击穿伤害仅实心 macro 块 health>0"]
     )
   end
 
@@ -117,7 +118,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
              opts
            ) do
       {:cont, write_discharge_channel(region, path, source_value, opts),
-       discharge_heat_effects(path, source_value, context, opts)}
+       discharge_heat_effects(path, source_value, context, opts) ++
+         discharge_damage_effects(path, context, opts)}
     else
       _ -> {:cont, refresh_empty_channel(region), []}
     end
@@ -452,6 +454,65 @@ defmodule SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel do
       []
     end
   end
+
+  # 功能完善 · 反应层 R8:击穿伤害——对击穿路径上**实心 macro 块且 health>0** 的 cell 逐 tick 发 :damage_block。
+  # health=0 视为未跟踪耐久/不可电毁(kernel 端门控,避免误毁默认块);空 cell(被电离空气)无块跳过。
+  # 放电模式本就显式 opt-in,故击穿伤害**默认开**;`breakdown_damage: false`/`%{enabled: false}` 关,
+  # `%{damage_per_tick: n}` 调。经 SystemActor(always-commit)→ ChunkProcess(权威重校 + 毁块)。
+  defp discharge_damage_effects(path, %KernelContext{storage: %Storage{} = storage}, opts) do
+    case breakdown_damage_amount(opts) do
+      amount when amount > 0 ->
+        Enum.flat_map(path, fn macro_index ->
+          if damageable_solid?(storage, macro_index) do
+            [
+              {:damage_block,
+               %{macro_index: macro_index, amount: amount, source: :electric_discharge}}
+            ]
+          else
+            []
+          end
+        end)
+
+      _zero ->
+        []
+    end
+  end
+
+  defp discharge_damage_effects(_path, _context, _opts), do: []
+
+  defp damageable_solid?(%Storage{} = storage, macro_index) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %{health: health} when is_integer(health) and health > 0 -> true
+      _other -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp breakdown_damage_amount(opts) do
+    case fetch_opt(opts, :breakdown_damage, %{}) do
+      false ->
+        0
+
+      nil ->
+        0
+
+      %{} = config ->
+        if fetch_opt(config, :enabled, true) in [false, "false", 0] do
+          0
+        else
+          config
+          |> fetch_opt(:damage_per_tick, @default_breakdown_damage)
+          |> positive_integer(@default_breakdown_damage)
+        end
+
+      _other ->
+        @default_breakdown_damage
+    end
+  end
+
+  defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, fallback), do: fallback
 
   defp refresh_empty_channel(region) do
     region

@@ -184,11 +184,21 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
 ### R8 放电离子化击穿伤害(ionization → block 伤害)
 - 放电/导电沿路径写 ionization(field 层)。做到位:**高电离沿放电路径对方块造成击穿伤害**(降 health,
   归零即毁)。自包含先做**方块伤害**(NormalBlockData.health);实体伤害(接 combat voxel_damage_router/
-  object_registry)更重,作后续。
-- 机制:放电 kernel 沿击穿路径对路径方块发伤害效果(减 health);health≤0 → 方块毁(转 empty/debris)。
-  新效果类型 `:damage_block`(经 SystemActor → ChunkProcess 减 health + 毁块)。或经反应规则(ionization
-  阈值 → 伤害)——评估后定 kernel-driven vs rule-driven。
-- demo:高压放电穿方块 → 方块 health 降 → 毁。
+  object_registry / `PartState.health` Phase4 既有体系)更重,作后续。
+- **定:kernel-driven**(非 rule-driven)。理由:ionization/击穿路径是 `ElectricDischargeKernel` 已算的
+  **派生 field 态**(非 committed truth),反应规则只读 truth 不读 field 层;放电 kernel 已沿 Dijkstra
+  击穿路径迭代并发热效果——伤害与发热同源同路径,直接由 kernel 发最自然(同 R7 circuit→`:powered`)。
+- **新效果类型** `{:damage_block, %{macro_index, amount, source}}`:
+  - `ElectricDischargeKernel`:除沿路径发热(`discharge_heat_effects`)外,新发 `discharge_damage_effects`
+    ——对路径上**实心 macro 块且 health>0** 的 cell 发 `:damage_block`(`amount` 每 tick 配置,默认
+    `@default_breakdown_damage`)。**health>0 门控在 kernel 端**:health=0 视为"未跟踪耐久/不可被电击穿毁"
+    (避免误毁默认 0 块),空 cell(被电离的空气)无块跳过。放电模式(`conduction_mode == :discharge`)本就
+    显式 opt-in,故击穿伤害**默认开**,经 `breakdown_damage` opt 可调/可关。
+  - SystemActor:`gate({:damage_block,_})` → **连续 always-commit**(持续电弧逐 tick 累损,同 heat/delta 绕锁存)。
+  - ChunkProcess:`apply_damage_block_effect` 读实心块**权威重校**(非实心/已毁/health=0 → 显式 reject),
+    `new = health - amount`;`new<=0` → `Storage.clear_macro_cell`(毁块转 empty,`destroyed?: true`),否则
+    `put_solid_block %{block | health: new}`;bump 版本 + push 快照 + emit applied。
+- demo:放电穿带 health 的实心方块 → 逐 tick health 降 → 归零毁(转 empty,快照反映)。
 
 ## 5. 验收
 
@@ -199,6 +209,20 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
 
 ## 进度日志(时间倒序)
 
+- 2026-06-15:**R8 放电击穿伤害完成,放电沿路径毁块**。把一直在算却无后果的 `ionization`/放电击穿接到 truth:
+  (1)新效果类型 `{:damage_block, %{macro_index, amount, source}}`。(2)`ElectricDischargeKernel.tick` 除沿
+  Dijkstra 击穿路径发热外,新发 `discharge_damage_effects`——对路径上**实心 macro 块且 health>0** 的 cell
+  逐 tick 发 `:damage_block`(health=0 / 空 cell / 非实心 kernel 端跳过,避免误毁默认块);放电模式显式 opt-in
+  故击穿伤害默认开,`breakdown_damage: false`/`%{enabled:false}` 关、`%{damage_per_tick:n}` 调
+  (默认 `@default_breakdown_damage 25`)。(3)SystemActor:`gate({:damage_block,_})` 连续 always-commit
+  (持续电弧逐 tick 累损,同 heat/delta 绕锁存)。(4)ChunkProcess:`apply_damage_block_effect` 读实心块
+  **权威重校**(非实心 `:damage_target_not_solid` / health=0 `:damage_target_no_health` / amount≤0
+  `:invalid_damage_amount` 显式 reject 不静默);`new=health-amount`,`new<=0` → `clear_macro_cell` 毁块
+  (`destroyed?: true`)否则写回降 health;bump 版本 + push 快照。(5)field_source 放电 kernel spec 显式
+  `breakdown_damage: %{enabled: true}`。(6)模型卡更正(描述/safety_valve note/assumptions 加击穿伤害)。
+  测试:kernel 4(发射/health>0 门控/关闭/调量)+ ChunkProcess handler 6(减/毁/3 类 reject/快照)+ e2e 1
+  (放电穿 health 块逐 tick 减至毁,快照反映)+ field_source spec 断言更新。scene 全量 **1001/0 零净回归**。
+  实体伤害(`PartState.health` Phase4 既有 / voxel_damage_router)作后续。
 - 2026-06-15:**R7 电路驱动负载完成,负载"通电"成权威 truth**。把一直在算却无世界后果的 `circuit_current`
   接到 truth:(1)`tag_catalog` append `:powered`(id 9,catalog_version 1→2,append-only 不破 wire)。
   (2)`CircuitCurrentKernel.tick` 除派生三层(电流/电位/离子化)外,新发 `:set_tag` 效果——闭合

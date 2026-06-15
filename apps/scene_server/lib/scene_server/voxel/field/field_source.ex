@@ -325,7 +325,9 @@ defmodule SceneServer.Voxel.Field.FieldSource do
         thermal_coupling: %{
           enabled: true,
           joule_scale: @conduction_heat_response_gain
-        }
+        },
+        # 功能完善 · 反应层 R8:放电模式默认开击穿伤害(降 health 毁块);kernel 默认 amount,这里仅显式声明启用。
+        breakdown_damage: %{enabled: true}
       }
     }
   end

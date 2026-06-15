@@ -2549,6 +2549,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :set_tag, attrs} ->
         apply_set_tag_effect(state, attrs, context)
 
+      # 功能完善 · 反应层 R8:放电击穿对方块造成伤害(减 health,归零毁块)。
+      {:ok, :damage_block, attrs} ->
+        apply_damage_block_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -2591,6 +2595,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_field_effect_action("write_voxel_attribute"), do: :write_voxel_attribute
   defp normalize_field_effect_action(:set_tag), do: :set_tag
   defp normalize_field_effect_action("set_tag"), do: :set_tag
+  defp normalize_field_effect_action(:damage_block), do: :damage_block
+  defp normalize_field_effect_action("damage_block"), do: :damage_block
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -2908,6 +2914,85 @@ defmodule SceneServer.Voxel.ChunkProcess do
     result = %{status: :rejected, action: :set_tag, reason: reason}
     emit_field_effect_rejected(state, result, context)
     {result, state}
+  end
+
+  # 功能完善 · 反应层 R8:放电击穿伤害(减 health,归零毁块)。**权威重校**:目标须实心 macro 块且 health>0
+  # (非实心/已毁/无耐久 → 显式 reject,不静默降级);amount 由放电 kernel 沿击穿路径逐 tick 给(连续累损,
+  # SystemActor always-commit)。new = health - amount;new<=0 → clear_macro_cell 毁块(destroyed?: true),
+  # 否则写回降 health。
+  defp apply_damage_block_effect(state, attrs, context) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_transform_macro(attrs),
+         {:ok, amount} <- fetch_damage_amount(attrs),
+         {:ok, block} <- fetch_damageable_block(state.storage, macro_index) do
+      new_health = block.health - amount
+      next_version = state.storage.chunk_version + 1
+      destroyed? = new_health <= 0
+
+      next_storage =
+        damage_block_storage(state.storage, macro_index, block, new_health, next_version)
+
+      next_state = %{state | storage: next_storage}
+      push_snapshot_fallbacks(next_state, :reaction_damage_block)
+
+      result = %{
+        status: :applied,
+        action: :damage_block,
+        macro_index: macro_index,
+        amount: amount,
+        health: max(new_health, 0),
+        destroyed?: destroyed?,
+        source: Map.get(attrs, :source),
+        chunk_version: next_storage.chunk_version
+      }
+
+      emit_field_effect_applied(next_state, result, context)
+      {result, next_state}
+    else
+      {:error, reason} ->
+        result = %{status: :rejected, action: :damage_block, reason: reason}
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  defp damage_block_storage(storage, macro_index, _block, new_health, next_version)
+       when new_health <= 0 do
+    opts = [
+      cell_version: next_version,
+      cell_hash: Hash.digest32(inspect({:damage_block_destroy, macro_index, next_version}))
+    ]
+
+    storage
+    |> Storage.clear_macro_cell(macro_index, opts)
+    |> bump_chunk_version()
+  end
+
+  defp damage_block_storage(storage, macro_index, block, new_health, next_version) do
+    opts = [
+      cell_version: next_version,
+      cell_hash: Hash.digest32(inspect({:damage_block, macro_index, new_health, next_version}))
+    ]
+
+    storage
+    |> Storage.put_solid_block(macro_index, %{block | health: new_health}, opts)
+    |> bump_chunk_version()
+  end
+
+  defp fetch_damage_amount(attrs) do
+    case fetch_optional(attrs, [:amount, :damage]) do
+      value when is_integer(value) and value > 0 -> {:ok, value}
+      _other -> {:error, :invalid_damage_amount}
+    end
+  end
+
+  defp fetch_damageable_block(storage, macro_index) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %NormalBlockData{health: health} = block when health > 0 -> {:ok, block}
+      %NormalBlockData{} -> {:error, :damage_target_no_health}
+      _other -> {:error, :damage_target_not_solid}
+    end
   end
 
   defp apply_heat_energy_attribute_effect(state, attrs, context) do
