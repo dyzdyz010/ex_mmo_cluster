@@ -17,6 +17,7 @@
 //! (no opcode byte, no `{packet,4}` length prefix).
 
 pub mod blocks;
+pub mod catalog_patch;
 pub mod cursor;
 pub mod delta;
 pub mod invalidate;
@@ -24,6 +25,7 @@ pub mod object_state;
 pub mod snapshot;
 
 pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
+pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use invalidate::ChunkInvalidate;
@@ -58,6 +60,7 @@ pub enum VoxelServerMessage {
     ChunkDelta(ChunkDelta),
     ChunkInvalidate(ChunkInvalidate),
     ObjectStateDelta(ObjectStateDelta),
+    CatalogPatch(CatalogPatch),
 }
 
 /// Dispatches a voxel server payload (opcode already stripped by the net layer)
@@ -76,6 +79,7 @@ pub fn decode_voxel_server_message(
         OP_OBJECT_STATE_DELTA => {
             VoxelServerMessage::ObjectStateDelta(ObjectStateDelta::decode(&mut r)?)
         }
+        OP_CATALOG_PATCH => VoxelServerMessage::CatalogPatch(CatalogPatch::decode(&mut r)?),
         other => {
             return Err(ProtocolError(format!(
                 "voxel wire: unsupported server opcode 0x{other:02x}"
@@ -95,6 +99,7 @@ pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
         VoxelServerMessage::ChunkDelta(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
         VoxelServerMessage::ObjectStateDelta(m) => m.encode(&mut w),
+        VoxelServerMessage::CatalogPatch(m) => m.encode(&mut w),
     }
     w.into_bytes()
 }
@@ -275,6 +280,50 @@ mod tests {
         assert_eq!(osd.object_version, 42);
         assert_eq!(osd.state_flags, 0x04);
         assert_eq!(osd.affected_chunks, vec![[0, 0, 0], [1, 0, 0]]);
+    }
+
+    fn roundtrip_catalog_patch(name: &str) {
+        let golden = fixtures::golden(name);
+        let decoded = CatalogPatch::decode(&mut Reader::new(&golden))
+            .unwrap_or_else(|e| panic!("decode {name}: {}", e.0));
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "round-trip byte mismatch for fixture {name}"
+        );
+    }
+
+    #[test]
+    fn catalog_patch_golden_roundtrip() {
+        for name in [
+            "catalog_patch_attribute_add",
+            "catalog_patch_tag_remove",
+            "catalog_patch_forward_compat_skip",
+        ] {
+            roundtrip_catalog_patch(name);
+        }
+    }
+
+    #[test]
+    fn catalog_patch_forward_compat_preserves_unknown_op_kind() {
+        // forward_compat_skip carries an op with op_kind=0xFE + 4-byte payload.
+        let golden = fixtures::golden("catalog_patch_forward_compat_skip");
+        let patch = CatalogPatch::decode(&mut Reader::new(&golden)).unwrap();
+        assert_eq!(patch.schema_kind, catalog_patch::SCHEMA_ATTRIBUTE);
+        assert!(
+            patch.ops.iter().any(|op| op.op_kind == 0xFE),
+            "expected an unknown op_kind 0xFE preserved"
+        );
+    }
+
+    #[test]
+    fn catalog_patch_rejects_unknown_schema_kind() {
+        // schema_kind=0x09 (reserved) must hard-error.
+        let bytes = [0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let err = CatalogPatch::decode(&mut Reader::new(&bytes)).unwrap_err();
+        assert!(err.0.contains("unknown schema_kind"), "{}", err.0);
     }
 
     #[test]
