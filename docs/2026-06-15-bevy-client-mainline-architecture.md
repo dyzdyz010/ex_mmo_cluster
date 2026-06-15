@@ -1,6 +1,6 @@
 # bevy 客户端转主线 + 目标架构决策稿（2026-06-15）
 
-- **状态**：草拟（待用户拍板首役 sequencing / meshing 策略后定稿）
+- **状态**：定稿（2026-06-15 用户拍板：**首役 = 地基优先**；**meshing = 逐面剔除优先**，greedy 作 fast-follow）
 - **决策人**：用户（2026-06-15「以 bevy_client 为后续主攻客户端，所有功能在 bevy 侧实现，设计合理可扩展高性能架构，参考 web_client」）
 - **本决策稿是主记录**（跨仓 `TheWorldBook` 在本环境不可达，待其可用再镜像单页摘要）
 - 调研依据：5 路并行 survey（bevy 现状 / web 可借鉴 / 线协议+体素快照 / 既有客户端文档 / 视频渲染技术→Bevy 0.18 映射），见本仓 session 工作流产物。
@@ -138,12 +138,14 @@ net `RuntimeOutcome` 纯状态机 + UDP fastlane；shared `movement_core`；`sim
 
 ---
 
-## 6. 待用户拍板（open questions）
+## 6. 拍板结果（2026-06-15）
 
-1. **首役 sequencing**：foundation-first（先地基 M1+M2，让 bevy 真正渲染权威体素）vs parity-first（先在现 naive 渲染上补 gameplay 到 web 对齐）vs 垂直切片（每特性端到端）。**推荐 foundation-first**——bevy 当前连服务器体素都收不到，地基是其他一切的前提。
-2. **meshing 策略**：exposed-face-first（与 web 1:1 parity、去风险）再 greedy，vs greedy-first（更多工作、最优 perf）。**推荐 exposed-face-first**。
-3. **web_client 角色确认**：降为滞后参考 oracle（保留作 spec / parity 源，不主动开发新功能）——确认即可。
-4. **（可选）离线本地体素路径**：保留在 feature flag 后作 debug build vs 直接移除。**推荐保留**。
+1. **首役 sequencing = 地基优先**（foundation-first）。先 M0+M1+M2+M3，让 bevy 真正渲染服务器权威体素，再 M4/M5 补 gameplay。理由：bevy 当前连服务器体素都收不到，地基是其他一切前提。
+2. **meshing 策略 = 逐面剔除优先**（exposed-face-first，与 web `chunkMesher.ts` 1:1 parity、去风险），greedy meshing 作 fast-follow（M6）。
+3. **web_client = 滞后参考 oracle**（保留作 spec / parity 源，不主动开发新功能）。
+4. **离线本地体素路径 = 保留**在 feature flag 后作 reference/debug build（不移除）。
+
+→ 即刻开工 **M0 协议 drift audit**（`bevy protocol.rs`/`movement_codec.rs` vs 当前 `gate_server/codec.ex` + `scene_server/voxel/codec.ex` + `docs/2026-04-10-线协议规范.md`），产出 gap list 驱动 M1。
 
 ---
 
