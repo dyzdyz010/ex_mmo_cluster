@@ -9,18 +9,22 @@ defmodule WorldServer.Voxel.DevSeed do
   browser can subscribe or submit intents through Gate without a GUI-only
   setup step.
 
-  Starter terrain layout (all values fixed for v1):
+  Starter terrain layout:
 
-  - 16 × 16 stone platform at chunk `(0, 0, 0)`, y macro layer 0.
-  - Platform fills every macro cell `{mx, 0, mz}` for `mx,mz in 0..15`,
-    covering browser world X/Z `[0, 128)` and vertical Y `[0, 8)`.
-  - A small source-conductor-load demo circuit sits one macro above the
-    platform so first browser load can verify automatic current overlays.
+  - A flat stone platform spanning a block of chunks (`@platform_chunk_min`..
+    `@platform_chunk_max`, half-open; default 5×5 horizontal = chunk x,z ∈ -2..2,
+    y = 0 = 25 chunks), filling each chunk's bottom macro slab `{mx, 0, mz}` for
+    `mx,mz in 0..15` with stone.
+  - A small source-conductor-load demo circuit sits one macro above the platform
+    on the center chunk `(0, 0, 0)` so first client load can verify automatic
+    current overlays.
 
-  All writes go through `SceneServer.Voxel.ChunkDirectory.apply_intents/2` —
-  the exact same path used by `0x64 VoxelImpactIntent` from clients — using
-  the lease that `MapLedger.route_chunk_with_lease/3` returned. The seed is
-  idempotent: a second call simply re-issues the lease and skips macros that
+  All platform chunks live in one region (the default region holds 5×5×5 = 125
+  chunks), so they share the region lease. `ChunkDirectory.apply_intents/2`
+  rejects cross-chunk batches (`:batch_cross_chunk_unsupported`), so each chunk
+  is seeded with its own `apply_intents` call, reusing the same lease/route.
+  Writes go through the exact same path as `0x64 VoxelImpactIntent` from clients.
+  The seed is idempotent: a second call re-issues the lease and skips macros that
   already match the desired stone block.
   """
 
@@ -42,10 +46,17 @@ defmodule WorldServer.Voxel.DevSeed do
   @default_lease_ttl_ms :timer.hours(6)
   @default_chunk_directory :__dev_seed_default_chunk_directory__
 
-  # v1 starter terrain footprint. Chunk (0,0,0) covers world-macro
-  # [0,16)×[0,16)×[0,16); the browser renderer treats Y as vertical, so we fill
-  # the bottom slab (y-macro 0) with stone.
+  # Starter terrain footprint: a flat stone platform spanning a block of chunks
+  # (the bottom slab, y-macro 0, of each chunk), plus a small demo circuit on the
+  # center chunk. `@platform_chunk_min`/`@platform_chunk_max` are half-open
+  # chunk-coord bounds (matching `RegionAssignment.contains_chunk?/2`) and MUST
+  # stay inside the region bounds so every platform chunk shares the region lease.
+  # Default = 5×5 horizontal (chunk x,z ∈ -2..2, y = 0) = 25 chunks, which fits
+  # the default region {-2,-2,-2}..{3,3,3} — a multi-chunk floor so the client can
+  # exercise large-scale chunk meshing/streaming, not just one chunk.
   @platform_chunk {0, 0, 0}
+  @platform_chunk_min {-2, 0, -2}
+  @platform_chunk_max {3, 1, 3}
   @platform_y_macro 0
   @platform_material_id 1
   @demo_circuit_blocks [
@@ -282,73 +293,118 @@ defmodule WorldServer.Voxel.DevSeed do
     :exit, _reason -> :ok
   end
 
-  # Seeds the 16×16 stone platform on chunk (0,0,0), y macro 0 with one batched
-  # `apply_intents` call. This keeps first-login bootstrap from waiting on 256
-  # per-cell DataService persists while still using the same Scene-owned
-  # authority path as Gate voxel writes.
+  # Seeds the flat stone platform across all platform chunks. Each chunk is
+  # written with its own batched `apply_intents` call (ChunkDirectory rejects
+  # cross-chunk batches), reusing the region lease/route, and the results are
+  # aggregated into one terrain summary. This keeps bootstrap off per-cell
+  # DataService persists while still using the same Scene-owned authority path
+  # as Gate voxel writes.
   defp seed_starter_platform(chunk_directory, route) do
     lease = Map.fetch!(route, :lease)
     logical_scene_id = route.assignment.logical_scene_id
-    # `ChunkProcess.normalize_apply_intent` accepts a plain map and runs it
-    # through `NormalBlockData.normalize!/1`. We pass the map directly instead
-    # of constructing a struct so this module stays decoupled from
-    # `SceneServer.Voxel.NormalBlockData`.
-    chunk_coord = @platform_chunk
 
+    platform_chunk_coords()
+    |> Enum.map(fn chunk_coord ->
+      intents = chunk_seed_intents(chunk_coord, logical_scene_id, lease)
+      {chunk_coord, length(intents), apply_chunk_intents(chunk_directory, intents)}
+    end)
+    |> summarize_terrain()
+  end
+
+  # Half-open chunk-coord bounds → the list of platform chunk coords.
+  defp platform_chunk_coords do
+    {min_x, min_y, min_z} = @platform_chunk_min
+    {max_x, max_y, max_z} = @platform_chunk_max
+
+    for cx <- min_x..(max_x - 1),
+        cy <- min_y..(max_y - 1),
+        cz <- min_z..(max_z - 1) do
+      {cx, cy, cz}
+    end
+  end
+
+  # The seed intents for one chunk: a full 16×16 bottom-slab platform, plus the
+  # demo circuit only on the center chunk. `ChunkProcess.normalize_apply_intent`
+  # accepts a plain map (run through `NormalBlockData.normalize!/1`), so we pass
+  # maps directly to stay decoupled from `SceneServer.Voxel.NormalBlockData`.
+  defp chunk_seed_intents(chunk_coord, logical_scene_id, lease) do
     platform_intents =
       for mx <- 0..(@chunk_size_in_macro - 1),
           mz <- 0..(@chunk_size_in_macro - 1) do
-        local_macro = {mx, @platform_y_macro, mz}
-
         %{
           logical_scene_id: logical_scene_id,
           chunk_coord: chunk_coord,
           lease: lease,
           operation: :put_solid_block,
-          macro: local_macro,
+          macro: {mx, @platform_y_macro, mz},
           block: %{material_id: @platform_material_id, health: 100}
         }
       end
 
-    circuit_intents =
-      Enum.map(@demo_circuit_blocks, fn {local_macro, material_id} ->
-        %{
-          logical_scene_id: logical_scene_id,
-          chunk_coord: chunk_coord,
-          lease: lease,
-          operation: :put_solid_block,
-          macro: local_macro,
-          block: %{material_id: material_id, health: 100}
-        }
+    platform_intents ++ circuit_intents(chunk_coord, logical_scene_id, lease)
+  end
+
+  defp circuit_intents(@platform_chunk, logical_scene_id, lease) do
+    Enum.map(@demo_circuit_blocks, fn {local_macro, material_id} ->
+      %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: @platform_chunk,
+        lease: lease,
+        operation: :put_solid_block,
+        macro: local_macro,
+        block: %{material_id: material_id, health: 100}
+      }
+    end)
+  end
+
+  defp circuit_intents(_other_chunk, _logical_scene_id, _lease), do: []
+
+  # Per-chunk apply_intents, isolating a scene exit so one bad chunk does not
+  # abort the whole platform seed.
+  defp apply_chunk_intents(chunk_directory, intents) do
+    GenServer.call(chunk_directory, {:apply_intents, intents}, 30_000)
+  catch
+    :exit, reason -> {:error, {:scene_unavailable, reason}}
+  end
+
+  # Folds per-chunk apply_intents results into one terrain summary. Keeps the
+  # keys `emit_terrain/2` and the dev HTTP response consume (chunk_coord points
+  # at the center chunk for back-compat), adding chunk_count / chunk_errors.
+  defp summarize_terrain(results) do
+    base =
+      Enum.reduce(results, %{written: 0, skipped: 0, errors: 0, max_chunk_version: 0, chunk_errors: []}, fn
+        {_chunk_coord, _attempted, {:ok, reply}}, acc ->
+          %{
+            acc
+            | written: acc.written + Map.get(reply, :changed_count, 0),
+              skipped: acc.skipped + Map.get(reply, :skipped_count, 0),
+              max_chunk_version: max(acc.max_chunk_version, Map.get(reply, :chunk_version, 0))
+          }
+
+        {chunk_coord, _attempted, {:error, reason}}, acc ->
+          %{
+            acc
+            | errors: acc.errors + 1,
+              chunk_errors: [
+                %{chunk_coord: Tuple.to_list(chunk_coord), error: inspect(reason)} | acc.chunk_errors
+              ]
+          }
       end)
 
-    intents = platform_intents ++ circuit_intents
+    chunk_count = length(results)
+    attempted = Enum.reduce(results, 0, fn {_c, n, _r}, acc -> acc + n end)
 
-    case GenServer.call(chunk_directory, {:apply_intents, intents}, 30_000) do
-      {:ok, reply} ->
-        %{
-          written: Map.get(reply, :changed_count, 0),
-          skipped: Map.get(reply, :skipped_count, 0),
-          errors: 0,
-          max_chunk_version: Map.get(reply, :chunk_version, 0),
-          attempted: length(intents),
-          platform_attempted: length(platform_intents),
-          demo_circuit_attempted: length(circuit_intents),
-          chunk_coord: Tuple.to_list(chunk_coord)
-        }
-
-      {:error, reason} ->
-        %{
-          written: 0,
-          skipped: 0,
-          errors: 1,
-          max_chunk_version: 0,
-          attempted: length(intents),
-          platform_attempted: length(platform_intents),
-          demo_circuit_attempted: length(circuit_intents),
-          chunk_coord: Tuple.to_list(chunk_coord),
-          error: inspect(reason)
-        }
-    end
+    %{
+      attempted: attempted,
+      written: base.written,
+      skipped: base.skipped,
+      errors: base.errors,
+      max_chunk_version: base.max_chunk_version,
+      chunk_count: chunk_count,
+      chunk_coord: Tuple.to_list(@platform_chunk),
+      platform_attempted: chunk_count * @chunk_size_in_macro * @chunk_size_in_macro,
+      demo_circuit_attempted: length(@demo_circuit_blocks),
+      chunk_errors: Enum.reverse(base.chunk_errors)
+    }
   end
 end

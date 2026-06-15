@@ -125,7 +125,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert SceneNodeRegistry.lookup_assignment(registry, 890_001) == {:ok, scene_node}
   end
 
-  test "seeds the starter platform and demo circuit through chunk_directory.apply_intent" do
+  test "seeds the multi-chunk starter platform and demo circuit through chunk_directory.apply_intents" do
     token_store = WriteTokenStore
     ledger_name = :"dev_seed_terrain_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
@@ -144,21 +144,53 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert created.status == :created
     terrain = created.terrain
     assert terrain != nil
+    # Default platform footprint = 5×5 horizontal chunks (x,z ∈ -2..2, y = 0).
+    expected_platform_chunks =
+      for cx <- -2..2, cz <- -2..2, into: MapSet.new(), do: {cx, 0, cz}
+
+    assert terrain.chunk_count == 25
+    # chunk_coord stays the center chunk for back-compat.
     assert terrain.chunk_coord == [0, 0, 0]
-    assert terrain.attempted == 266
-    assert terrain.platform_attempted == 256
+    assert terrain.platform_attempted == 25 * 256
     assert terrain.demo_circuit_attempted == 10
-    assert terrain.written == 266
+    # 25 chunks × 256 platform cells + 10 circuit cells (center only) = 6410.
+    assert terrain.attempted == 25 * 256 + 10
+    assert terrain.written == 25 * 256 + 10
     assert terrain.errors == 0
+    assert terrain.chunk_errors == []
 
     calls = FakeChunkDirectory.calls(fake_dir)
-    assert length(calls) == 266
+    assert length(calls) == 25 * 256 + 10
 
-    macros = calls |> Enum.map(& &1.macro) |> MapSet.new()
+    # Every platform chunk was seeded, all under the region lease.
+    seeded_chunks = calls |> Enum.map(& &1.chunk_coord) |> MapSet.new()
+    assert seeded_chunks == expected_platform_chunks
 
+    Enum.each(calls, fn attrs ->
+      assert attrs.logical_scene_id == 91
+      assert attrs.operation == :put_solid_block
+      assert attrs.lease.lease_id == created.lease_id
+    end)
+
+    # Each chunk gets the full 16×16 bottom-slab platform (material 1, y-macro 0).
     expected_platform_macros =
       for mx <- 0..15, mz <- 0..15, into: MapSet.new(), do: {mx, 0, mz}
 
+    calls_by_chunk = Enum.group_by(calls, & &1.chunk_coord)
+
+    Enum.each(expected_platform_chunks, fn chunk_coord ->
+      chunk_calls = Map.fetch!(calls_by_chunk, chunk_coord)
+      platform_macros = chunk_calls |> Enum.map(& &1.macro) |> MapSet.new()
+      assert MapSet.subset?(expected_platform_macros, platform_macros)
+
+      Enum.each(chunk_calls, fn attrs ->
+        if attrs.macro in expected_platform_macros do
+          assert attrs.block.material_id == 1
+        end
+      end)
+    end)
+
+    # The demo circuit is only on the center chunk (one macro above the slab).
     expected_circuit_materials = %{
       {6, 1, 6} => 6,
       {7, 1, 6} => 5,
@@ -172,21 +204,19 @@ defmodule WorldServer.Voxel.DevSeedTest do
       {6, 1, 7} => 5
     }
 
-    assert MapSet.subset?(expected_platform_macros, macros)
-    assert MapSet.subset?(expected_circuit_materials |> Map.keys() |> MapSet.new(), macros)
-
-    Enum.each(calls, fn attrs ->
-      assert attrs.logical_scene_id == 91
-      assert attrs.chunk_coord == {0, 0, 0}
-      assert attrs.operation == :put_solid_block
-      assert attrs.lease.lease_id == created.lease_id
-    end)
-
-    calls_by_macro = Map.new(calls, fn attrs -> {attrs.macro, attrs.block.material_id} end)
-    Enum.each(expected_platform_macros, &assert(calls_by_macro[&1] == 1))
+    center_by_macro =
+      calls_by_chunk
+      |> Map.fetch!({0, 0, 0})
+      |> Map.new(fn attrs -> {attrs.macro, attrs.block.material_id} end)
 
     Enum.each(expected_circuit_materials, fn {macro, material_id} ->
-      assert calls_by_macro[macro] == material_id
+      assert center_by_macro[macro] == material_id
+    end)
+
+    # Non-center chunks carry no circuit (only y-macro 0 platform cells).
+    Enum.each(MapSet.delete(expected_platform_chunks, {0, 0, 0}), fn chunk_coord ->
+      ys = calls_by_chunk |> Map.fetch!(chunk_coord) |> Enum.map(fn a -> elem(a.macro, 1) end)
+      assert Enum.all?(ys, &(&1 == 0))
     end)
   end
 
@@ -205,9 +235,17 @@ defmodule WorldServer.Voxel.DevSeedTest do
                chunk_directory: :missing_dev_seed_chunk_directory
              )
 
-    assert created.terrain.errors == 1
-    assert is_binary(created.terrain.error)
-    assert created.terrain.error =~ "scene_unavailable"
+    # Every platform chunk's apply_intents exits (no such directory); each is
+    # isolated into a per-chunk error so the summary stays JSON-safe.
+    assert created.terrain.errors == 25
+    assert created.terrain.written == 0
+    assert length(created.terrain.chunk_errors) == 25
+
+    assert Enum.all?(created.terrain.chunk_errors, fn entry ->
+             is_list(entry.chunk_coord) and is_binary(entry.error) and
+               entry.error =~ "scene_unavailable"
+           end)
+
     assert {:ok, _json} = Jason.encode(created)
   end
 end
