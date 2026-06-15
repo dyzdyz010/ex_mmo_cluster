@@ -20,6 +20,7 @@ pub mod cli;
 pub mod core;
 pub mod plugin;
 pub mod prefab;
+pub mod wire;
 pub mod world;
 
 pub use plugin::VoxelPlugin;
