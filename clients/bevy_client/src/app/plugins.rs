@@ -23,7 +23,7 @@ use crate::net::NetworkPlugin;
 use crate::presentation::PresentationPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
-use crate::voxel::{VoxelAuthorityPlugin, VoxelPlugin};
+use crate::voxel::{VoxelAuthorityPlugin, VoxelChunkRenderPlugin, VoxelPlugin};
 
 /// Canonical Bevy client `PluginGroup`.
 ///
@@ -41,6 +41,7 @@ impl PluginGroup for BevyClientPlugins {
             .add(ChatPlugin)
             .add(VoxelPlugin)
             .add(VoxelAuthorityPlugin)
+            .add(VoxelChunkRenderPlugin)
             .add(SkillPlugin)
             .add(MovementSyncPlugin)
             .add(EffectPlugin)

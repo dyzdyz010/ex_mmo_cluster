@@ -18,6 +18,7 @@
 
 pub mod authority;
 pub mod authority_plugin;
+pub mod chunk_render;
 pub mod cli;
 pub mod core;
 pub mod mesher;
@@ -27,6 +28,7 @@ pub mod wire;
 pub mod world;
 
 pub use authority_plugin::{VoxelAuthority, VoxelAuthorityPlugin};
+pub use chunk_render::VoxelChunkRenderPlugin;
 pub use plugin::VoxelPlugin;
 
 pub use cli::{
