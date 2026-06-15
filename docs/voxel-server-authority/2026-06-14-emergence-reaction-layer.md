@@ -167,6 +167,29 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
   demo 改用生产增益 1e9 验证生产可用**(30 tick 内点燃);field_source_test joule_scale 断言随之更新。
   scene 全量 986/0 零净回归。**至此"电→火"生产可用。**
 
+## 4d. R7 电路驱动负载 + R8 放电击穿伤害(把 inert 电计算接到世界后果)
+
+用户拍板(2026-06-15)"都做,按顺序"。现有 `circuit_current`(算闭环电流)+ `ionization`(算电离)算了数
+但无世界后果(同当初温度)。做到位:
+
+### R7 电路驱动负载(circuit → load `:powered`)
+- 加 `:powered` tag(tag_catalog id 9,version→2)。
+- `CircuitCurrentKernel`:闭环电流分析已知哪些 load cell(electric_load 材料)在闭合回路中。对在 active
+  closed component 的 load cell 发 `{:set_tag, add: [:powered]}`,其余 region 内 load cell 发 remove
+  `:powered`(断路即去电)。经 SystemActor(set_tag always-commit)→ ChunkProcess → 负载 truth 标 `:powered`。
+- **负载"通电"成权威 truth 状态** = 任何设备(门/灯/机器)的基础:设备读自身 load 的 `:powered` 决定行为。
+  本步落"通电状态"权威化(自包含、可观测);具体设备行为(开门/点亮)是其上层,后续按需接。
+- demo:搭闭环(电源+负载+导体成环)→ 负载 `:powered`;断一节导体(破环)→ 负载失 `:powered`。
+
+### R8 放电离子化击穿伤害(ionization → block 伤害)
+- 放电/导电沿路径写 ionization(field 层)。做到位:**高电离沿放电路径对方块造成击穿伤害**(降 health,
+  归零即毁)。自包含先做**方块伤害**(NormalBlockData.health);实体伤害(接 combat voxel_damage_router/
+  object_registry)更重,作后续。
+- 机制:放电 kernel 沿击穿路径对路径方块发伤害效果(减 health);health≤0 → 方块毁(转 empty/debris)。
+  新效果类型 `:damage_block`(经 SystemActor → ChunkProcess 减 health + 毁块)。或经反应规则(ionization
+  阈值 → 伤害)——评估后定 kernel-driven vs rule-driven。
+- demo:高压放电穿方块 → 方块 health 降 → 毁。
+
 ## 5. 验收
 
 - 回路闭合:加热冰格 → 冰在 truth 中变水 → snapshot 反映 → web_client 可见(主线端)。
