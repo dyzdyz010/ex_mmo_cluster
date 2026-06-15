@@ -59,9 +59,48 @@ BEVY_CLIENT_HEADLESS=1 BEVY_CLIENT_STDIO=1 \
 - 次要:客户端 Resync(delta base 不匹配)目前只记日志,未自动重订阅(M3/后续接)。
 - 次要:`logical_scene_id` 客户端无协议下发来源(本次手填 1=默认);自动订阅触发待接。
 
-## 5. 结论
+## 5. 结论（M2 阶段）
 
 客户端体素管线**对真实服务器 live 验证通过**(连接→auth→入场→订阅→收快照→解码→摄入),
 配合 golden 字节级 parity + socket 帧级测试,客户端侧"渲染权威体素"已就绪。**剩余 last-mile
 是服务器侧把已种子的几何送进玩家 AOI**,是一次服务器侧 scene-instance/lease 协调,作后续
 协作调试。CLI 指令系统(va-status/va-subscribe/va-chunk)可继续作 live 测试工具。
+
+## 6. GUI 目视确认 + 渲染坐标对齐（2026-06-15 续，已闭环）
+
+### 6.1 §4 的「几何未到玩家」gap 已解决
+
+重新 `POST /ingame/voxel/dev_seed` + 订阅含 spawn 的 chunk 后,几何**确实到达玩家**。原因
+不是 scene 实例不一致,而是**服务器按坐标序从 AOI 角落逐 chunk 流式推送(~每 AOI tick 一个)**:
+radius 2 = 125 chunk,(0,0,0) 在迭代中段(~18s 才轮到),早期短测试窗口先退出了。改用
+**radius 0/1**(spawn chunk 在前)后,chunk (0,0,0) 几秒内到达:`va-chunk 0 0 0` →
+`present=true version=20 solid=266 empty=3830 quads=29`。客户端入场已自动订阅 radius 1
+(net/plugin.rs `EnteredScene`:`center_chunk = floor(spawn / 1600)`,玩家 spawn (750,750,185)
+→ center (0,0,0))。
+
+### 6.2 渲染坐标/缩放/轴向对齐（commit 278d924，GUI 目视确认通过）
+
+`voxel/chunk_render.rs` 三处对齐,让已摄入的几何在 GUI 正确上屏:
+- `MACRO_RENDER_SIZE` 1.0 → **100.0**:对齐 server 100cm macro 与离线渲染器
+  `VOXEL_RENDER_CELL_SIZE`。
+- `build_mesh` 烘焙 **sim→render Y/Z 轴交换**(sim Z = render「上」,见
+  `app::sim_to_render_position`)进每个顶点(位置+法线),并**反转三角形 winding**——
+  Y/Z 交换是反射(det=-1),不反转则 CCW 正面变 CW 被背面剔除而整面消失。
+- `chunk_translation` 经 `sim_to_render_position` 把 chunk 放到其 sim 原点的 render 像。
+- **用户 GUI 目视确认**:平台正确、水平铺开、朝向正确、有光照。坐标/缩放/winding 全对。
+
+### 6.3 CLI 测试工具的 stdin 首行 BOM 注意（仅自动化驱动,非客户端 bug）
+
+用 PowerShell `Process.StandardInput` 向 headless+stdio 客户端喂命令时,**管道首行会被加
+UTF-8 BOM**(`﻿`),Rust `str::trim()` 不剥 BOM,导致首条命令 `strip_prefix` 失配 →
+`unknown command`(后续行正常)。规避:先发一条**弃用首行**(如 `snapshot`)吸收 BOM,再发真
+命令。**这只影响自动化 PowerShell 驱动**:(a) GUI 自动订阅走 `NetworkCommand` 不过 stdin;
+(b) 人手交互输入无 BOM;(c) parser 单测 `parses_voxel_authority_commands` 通过。
+**后续可在 stdio reader 加 `trim_start_matches('\u{feff}')` 防御性硬化**(待下次重建二进制时
+一并做——GUI 运行中会锁 `bevy_client.exe,` Windows 下 cargo 无法覆盖)。
+
+### 6.4 当前能力边界 → 下一步
+
+单 chunk(266 块 → 29 面)规模化渲染**视觉验证通过**。要达成 /goal「大规模渲染体素」,
+缺的是**服务器侧多 chunk 内容**(dev_seed 只种 1 chunk)+ 客户端**扩订阅半径并验证 N-chunk
+规模化渲染性能**(贪婪网格化 + per-chunk 实体 + frustum culling 架构已就位,待压测)。
