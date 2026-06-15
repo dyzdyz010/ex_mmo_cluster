@@ -1093,6 +1093,7 @@ mod tests {
                     movement_mode: 0,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
+                    ground_z: 0.0,
                 },
             )
             .unwrap();
@@ -1359,6 +1360,7 @@ mod tests {
                     movement_mode: 0,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
+                    ground_z: 0.0,
                 },
             )
             .unwrap();
@@ -1387,6 +1389,7 @@ mod tests {
                     movement_mode: 0,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
+                    ground_z: 0.0,
                 },
             )
             .unwrap();
@@ -1427,6 +1430,7 @@ mod tests {
                     movement_mode: 0,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
+                    ground_z: 0.0,
                 },
             )
             .unwrap();
@@ -1452,6 +1456,7 @@ mod tests {
                     movement_mode: 1,
                     correction_flags: 0,
                     server_fixed_dt_ms: 100,
+                    ground_z: 0.0,
                 },
             )
             .unwrap();

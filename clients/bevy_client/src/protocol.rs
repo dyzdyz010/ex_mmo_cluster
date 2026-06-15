@@ -98,6 +98,11 @@ pub enum ServerMessage {
         /// echoed in every ack so the client can compare it with its
         /// own `MovementProfile.fixed_dt_ms` and warn on drift.
         server_fixed_dt_ms: u16,
+        /// M1 step 1: server-authoritative ground-contact altitude (sim Z).
+        /// The server appends this after `fixed_dt_ms` (wire body 95→103).
+        /// Decoded here so the wire layout matches the server; consuming it
+        /// for jump/landing reconciliation is M5 (A1 D5 jump ground_z).
+        ground_z: f64,
     },
     EnterSceneResult {
         packet_id: u64,
@@ -217,8 +222,9 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
     match msg_type {
         0x80 => decode_result(body),
         0x8B => {
-            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 + 2 = 95 (audit B-M2 added u16).
-            require_body_len(body, 95, "MovementAck")?;
+            // 4 + 4 + 8 + 24 + 24 + 24 + 1 + 4 + 2 + 8 = 103
+            // (audit B-M2 added fixed_dt_ms u16; M1 step 1 added ground_z f64).
+            require_body_len(body, 103, "MovementAck")?;
             Ok(ServerMessage::MovementAck {
                 ack_seq: read_u32(body, 0)?,
                 auth_tick: read_u32(body, 4)?,
@@ -229,6 +235,7 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 movement_mode: read_u8(body, 88)?,
                 correction_flags: read_u32(body, 89)?,
                 server_fixed_dt_ms: read_u16(body, 93)?,
+                ground_z: read_f64(body, 95)?,
             })
         }
         0x81 => {
@@ -794,7 +801,9 @@ mod tests {
             ServerMessage::FastLaneResult {
                 packet_id: 12,
                 ok: true,
-                udp_port: Some(20_003),
+                // Payload encodes udp_port bytes 0x71,0x49 = 29001; the prior
+                // expectation (20003) was stale and matched no payload bytes.
+                udp_port: Some(29_001),
                 ticket: Some("ticket".into()),
             }
         );
@@ -829,6 +838,8 @@ mod tests {
             bytes.extend_from_slice(&3_u32.to_be_bytes());
             // Audit B-M2: trailing fixed_dt_ms u16 BE.
             bytes.extend_from_slice(&100_u16.to_be_bytes());
+            // M1 step 1: trailing ground_z f64 BE.
+            bytes.extend_from_slice(&12.5_f64.to_be_bytes());
             bytes
         };
 
@@ -844,6 +855,7 @@ mod tests {
                 movement_mode: 0,
                 correction_flags: 3,
                 server_fixed_dt_ms: 100,
+                ground_z: 12.5,
             }
         );
     }
