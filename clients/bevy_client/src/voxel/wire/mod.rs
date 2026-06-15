@@ -20,6 +20,7 @@ pub mod blocks;
 pub mod catalog_patch;
 pub mod cursor;
 pub mod delta;
+pub mod field;
 pub mod invalidate;
 pub mod object_state;
 pub mod snapshot;
@@ -28,6 +29,7 @@ pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell
 pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
+pub use field::{FieldRegionDestroyed, FieldRegionSnapshot};
 pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
 pub use snapshot::{
@@ -61,6 +63,8 @@ pub enum VoxelServerMessage {
     ChunkInvalidate(ChunkInvalidate),
     ObjectStateDelta(ObjectStateDelta),
     CatalogPatch(CatalogPatch),
+    FieldRegionSnapshot(FieldRegionSnapshot),
+    FieldRegionDestroyed(FieldRegionDestroyed),
 }
 
 /// Dispatches a voxel server payload (opcode already stripped by the net layer)
@@ -80,6 +84,12 @@ pub fn decode_voxel_server_message(
             VoxelServerMessage::ObjectStateDelta(ObjectStateDelta::decode(&mut r)?)
         }
         OP_CATALOG_PATCH => VoxelServerMessage::CatalogPatch(CatalogPatch::decode(&mut r)?),
+        OP_FIELD_REGION_SNAPSHOT => {
+            VoxelServerMessage::FieldRegionSnapshot(FieldRegionSnapshot::decode(&mut r)?)
+        }
+        OP_FIELD_REGION_DESTROYED => {
+            VoxelServerMessage::FieldRegionDestroyed(FieldRegionDestroyed::decode(&mut r)?)
+        }
         other => {
             return Err(ProtocolError(format!(
                 "voxel wire: unsupported server opcode 0x{other:02x}"
@@ -100,6 +110,8 @@ pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
         VoxelServerMessage::ObjectStateDelta(m) => m.encode(&mut w),
         VoxelServerMessage::CatalogPatch(m) => m.encode(&mut w),
+        VoxelServerMessage::FieldRegionSnapshot(m) => m.encode(&mut w),
+        VoxelServerMessage::FieldRegionDestroyed(m) => m.encode(&mut w),
     }
     w.into_bytes()
 }
@@ -324,6 +336,79 @@ mod tests {
         let bytes = [0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let err = CatalogPatch::decode(&mut Reader::new(&bytes)).unwrap_err();
         assert!(err.0.contains("unknown schema_kind"), "{}", err.0);
+    }
+
+    #[test]
+    fn field_region_snapshot_roundtrip_and_dispatch() {
+        // temperature (bit0) + ionization (bit2) present; potential/current absent.
+        let snap = FieldRegionSnapshot {
+            logical_scene_id: 7,
+            chunk_coord: [1, -2, 3],
+            region_id: 99,
+            tick_count: 42,
+            field_mask: field::FIELD_MASK_TEMPERATURE | field::FIELD_MASK_IONIZATION,
+            macro_indices: vec![10, 20],
+            temperature: vec![1.5, -2.0],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![100, 200],
+        };
+        let mut w = Writer::new();
+        snap.encode(&mut w);
+        let bytes = w.into_bytes();
+        // Round-trips through both the direct decoder and the opcode dispatch.
+        assert_eq!(
+            FieldRegionSnapshot::decode(&mut Reader::new(&bytes)).unwrap(),
+            snap
+        );
+        assert_eq!(
+            decode_voxel_server_message(OP_FIELD_REGION_SNAPSHOT, &bytes).unwrap(),
+            VoxelServerMessage::FieldRegionSnapshot(snap),
+        );
+    }
+
+    #[test]
+    fn field_values_are_little_endian() {
+        // A single temperature value: the trailing 4 bytes must be LE, not BE.
+        let snap = FieldRegionSnapshot {
+            logical_scene_id: 0,
+            chunk_coord: [0, 0, 0],
+            region_id: 0,
+            tick_count: 0,
+            field_mask: field::FIELD_MASK_TEMPERATURE,
+            macro_indices: vec![0],
+            temperature: vec![1.0],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+        };
+        let mut w = Writer::new();
+        snap.encode(&mut w);
+        let bytes = w.into_bytes();
+        let tail = &bytes[bytes.len() - 4..];
+        assert_eq!(
+            tail,
+            &1.0_f32.to_le_bytes(),
+            "field f32 must be little-endian"
+        );
+        assert_ne!(tail, &1.0_f32.to_be_bytes());
+    }
+
+    #[test]
+    fn field_region_destroyed_roundtrip() {
+        let destroyed = FieldRegionDestroyed {
+            logical_scene_id: 5,
+            chunk_coord: [9, 0, -1],
+            region_id: 123,
+            destroy_reason: field::DESTROY_REASON_LEASE_REVOKED,
+        };
+        let mut w = Writer::new();
+        destroyed.encode(&mut w);
+        let bytes = w.into_bytes();
+        assert_eq!(
+            decode_voxel_server_message(OP_FIELD_REGION_DESTROYED, &bytes).unwrap(),
+            VoxelServerMessage::FieldRegionDestroyed(destroyed),
+        );
     }
 
     #[test]
