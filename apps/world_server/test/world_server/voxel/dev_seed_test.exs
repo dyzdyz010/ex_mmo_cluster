@@ -7,7 +7,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
   alias WorldServer.Voxel.SceneNodeRegistry
   alias WorldServer.Voxel.TerrainNoise
 
-  @noise_opts [seed: 1337, min_height: 2, max_height: 14]
+  @noise_opts [seed: 1337, min_height: 2, max_height: 8]
 
   defmodule FakeChunkDirectory do
     @moduledoc false

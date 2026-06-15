@@ -62,9 +62,16 @@ defmodule WorldServer.Voxel.DevSeed do
   # Surface layer is dirt, everything below is stone, for visible layering.
   @terrain_seed 1337
   @terrain_min_height 2
-  @terrain_max_height 14
+  @terrain_max_height 8
   @surface_material_id 1
   @subsurface_material_id 2
+
+  # Max intents per `apply_intents` call. The ChunkProcess apply path runs a
+  # simulation tick + snapshot encode/persist per call and its cost grows
+  # super-linearly with batch size (a few thousand cells in one call hits the
+  # 30s GenServer timeout). Terrain (hundreds–thousands of cells per chunk) is
+  # seeded in batches of this size — the same size the flat platform used safely.
+  @max_intents_per_call 256
 
   @doc """
   Ensures the default browser-development region has a current lease and that
@@ -356,10 +363,37 @@ defmodule WorldServer.Voxel.DevSeed do
     )
   end
 
-  # Per-chunk apply_intents, isolating a scene exit so one bad chunk does not
-  # abort the whole platform seed.
+  # Per-chunk apply_intents, split into bounded sub-batches (see
+  # @max_intents_per_call) and aggregated, isolating a scene exit so one bad
+  # chunk does not abort the whole terrain seed.
+  defp apply_chunk_intents(_chunk_directory, []),
+    do: {:ok, %{changed_count: 0, skipped_count: 0, chunk_version: 0}}
+
   defp apply_chunk_intents(chunk_directory, intents) do
-    GenServer.call(chunk_directory, {:apply_intents, intents}, 30_000)
+    intents
+    |> Enum.chunk_every(@max_intents_per_call)
+    |> Enum.reduce_while(
+      {:ok, %{changed_count: 0, skipped_count: 0, chunk_version: 0}},
+      fn batch, {:ok, agg} ->
+        case apply_intents_batch(chunk_directory, batch) do
+          {:ok, reply} ->
+            merged = %{
+              changed_count: agg.changed_count + Map.get(reply, :changed_count, 0),
+              skipped_count: agg.skipped_count + Map.get(reply, :skipped_count, 0),
+              chunk_version: max(agg.chunk_version, Map.get(reply, :chunk_version, 0))
+            }
+
+            {:cont, {:ok, merged}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+      end
+    )
+  end
+
+  defp apply_intents_batch(chunk_directory, batch) do
+    GenServer.call(chunk_directory, {:apply_intents, batch}, 30_000)
   catch
     :exit, reason -> {:error, {:scene_unavailable, reason}}
   end
