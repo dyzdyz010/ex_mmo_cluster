@@ -199,6 +199,17 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
 
 ## 进度日志(时间倒序)
 
+- 2026-06-15:**R7 电路驱动负载完成,负载"通电"成权威 truth**。把一直在算却无世界后果的 `circuit_current`
+  接到 truth:(1)`tag_catalog` append `:powered`(id 9,catalog_version 1→2,append-only 不破 wire)。
+  (2)`CircuitCurrentKernel.tick` 除派生三层(电流/电位/离子化)外,新发 `:set_tag` 效果——闭合
+  source-fed 回路中的 load cell(`electric_load` 材料,`ParticipantProjection.electric_role?(:load)`)
+  加 `:powered`,region 内其余 load 去 `:powered`(断路即失电);经 SystemActor(set_tag always-commit)
+  → ChunkProcess → 负载 truth。**负载通电成权威可观测状态 = 任何设备(门/灯/机器)行为的自包含基础**;
+  具体设备动作是其上层,后续按需接。(3)模型卡更正:不再"纯派生不写权威",改"派生三层 + 负载 :powered
+  派生→权威(RULE-11/AUTH-11)"。(4)`circuit_current_kernel_test` 10 处旧 `[]` 断言改绑 `_power_effects`
+  (无负载的 1 处仍 `[]` 验"无负载不扰动")+ 加 `describe "R7:闭环电流驱动负载 :powered"` 4 焦点测
+  (闭环→load `:powered`;开路含 load→去 `:powered`;无 load→无效果;破环→`:powered` 翻转清除)。
+  scene 全量 **990/0 零净回归**(986+4 新测)。
 - 2026-06-15:**R5d 对抗式评审修复**。多 agent 评审 workflow(4 维度 × 找→对抗核验)对反应层评 32 发现、
   确认 3 真 bug,全修 + 加测:(1)[high] 注热温度写无 clip → 越界 `put_attribute_for_cell` raise 崩
   ChunkProcess(燃烧辐射注热可达上界):`build_heat_energy_attribute_storage` clip target/delta 到温度边界

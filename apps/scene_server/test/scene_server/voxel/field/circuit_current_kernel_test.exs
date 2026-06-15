@@ -63,7 +63,7 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
     region = circuit_region(source)
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
 
-    assert {:cont, updated, []} = CircuitCurrentKernel.tick(region, context, %{})
+    assert {:cont, updated, _power_effects} = CircuitCurrentKernel.tick(region, context, %{})
 
     assert active_cells(updated, :electric_current) == []
   end
@@ -78,7 +78,7 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
     region = loop_region(source)
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
 
-    assert {:cont, updated, []} = CircuitCurrentKernel.tick(region, context, %{})
+    assert {:cont, updated, _power_effects} = CircuitCurrentKernel.tick(region, context, %{})
 
     current_cells = active_cells(updated, :electric_current)
 
@@ -98,14 +98,14 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
       Storage.new(7, {0, 0, 0})
       |> put_loop()
 
-    assert {:cont, energized, []} =
+    assert {:cont, energized, _power_effects} =
              CircuitCurrentKernel.tick(region, KernelContext.new(region, 7, closed_storage), %{})
 
     assert active_cells(energized, :electric_current) != []
 
     open_storage = Storage.clear_macro_cell(closed_storage, {2, 1, 0})
 
-    assert {:cont, cleared, []} =
+    assert {:cont, cleared, _power_effects} =
              CircuitCurrentKernel.tick(
                energized,
                KernelContext.new(energized, 7, open_storage),
@@ -138,7 +138,7 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
       |> put_loop()
       |> put_second_loop()
 
-    assert {:cont, energized, []} =
+    assert {:cont, energized, _power_effects} =
              CircuitCurrentKernel.tick(region, KernelContext.new(region, 7, closed_storage), %{})
 
     assert energized |> active_cells(:electric_current) |> active_macro_indices() ==
@@ -146,7 +146,7 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
 
     open_storage = Storage.clear_macro_cell(closed_storage, {2, 1, 0})
 
-    assert {:cont, remaining, []} =
+    assert {:cont, remaining, _power_effects} =
              CircuitCurrentKernel.tick(
                energized,
                KernelContext.new(energized, 7, open_storage),
@@ -168,7 +168,7 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
 
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
 
-    assert {:cont, updated, []} = CircuitCurrentKernel.tick(region, context, %{})
+    assert {:cont, updated, _power_effects} = CircuitCurrentKernel.tick(region, context, %{})
 
     current_cells = active_cells(updated, :electric_current)
 
@@ -185,14 +185,14 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
       Storage.new(7, {0, 0, 0})
       |> put_prefab_loop()
 
-    assert {:cont, energized, []} =
+    assert {:cont, energized, _power_effects} =
              CircuitCurrentKernel.tick(region, KernelContext.new(region, 7, closed_storage), %{})
 
     assert active_cells(energized, :electric_current) != []
 
     open_storage = Storage.clear_macro_cell(closed_storage, {4, 0, 1})
 
-    assert {:cont, cleared, []} =
+    assert {:cont, cleared, _power_effects} =
              CircuitCurrentKernel.tick(
                energized,
                KernelContext.new(energized, 7, open_storage),
@@ -225,9 +225,92 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
 
     context = KernelContext.new(region, 7, storage, dt_ms: 100)
 
-    assert {:cont, updated, []} = CircuitCurrentKernel.tick(region, context, %{})
+    assert {:cont, updated, _power_effects} = CircuitCurrentKernel.tick(region, context, %{})
 
     assert active_cells(updated, :electric_current) == []
+  end
+
+  describe "R7:闭环电流驱动负载 :powered" do
+    test "closed loop marks its load cell :powered (派生→权威 set_tag)" do
+      source = Types.macro_index!({0, 0, 0})
+      load_macro = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_loop()
+
+      region = loop_region(source)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, power_effects} = CircuitCurrentKernel.tick(region, context, %{})
+
+      assert power_effects == [
+               {:set_tag, %{macro_index: load_macro, add: [:powered], remove: []}}
+             ]
+    end
+
+    test "open component with a load clears :powered on that load (断路即失电)" do
+      source = Types.macro_index!({0, 0, 0})
+      load_macro = Types.macro_index!({2, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid({1, 0, 0}, @iron)
+        |> put_solid({2, 0, 0}, @load_block)
+
+      region = circuit_region(source)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, power_effects} = CircuitCurrentKernel.tick(region, context, %{})
+
+      assert power_effects == [
+               {:set_tag, %{macro_index: load_macro, add: [], remove: [:powered]}}
+             ]
+    end
+
+    test "region without any load produces no power effects (无负载不扰动)" do
+      source = Types.macro_index!({0, 0, 0})
+
+      storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_solid({0, 0, 0}, @power_block)
+        |> put_solid({1, 0, 0}, @iron)
+        |> put_solid({2, 0, 0}, @iron)
+
+      region = circuit_region(source)
+      context = KernelContext.new(region, 7, storage, dt_ms: 100)
+
+      assert {:cont, _updated, []} = CircuitCurrentKernel.tick(region, context, %{})
+    end
+
+    test "breaking a closed loop flips its load from :powered to cleared" do
+      source = Types.macro_index!({0, 0, 0})
+      load_macro = Types.macro_index!({2, 0, 0})
+      region = loop_region(source)
+
+      closed_storage =
+        Storage.new(7, {0, 0, 0})
+        |> put_loop()
+
+      assert {:cont, energized,
+              [{:set_tag, %{macro_index: ^load_macro, add: [:powered], remove: []}}]} =
+               CircuitCurrentKernel.tick(
+                 region,
+                 KernelContext.new(region, 7, closed_storage),
+                 %{}
+               )
+
+      open_storage = Storage.clear_macro_cell(closed_storage, {2, 1, 0})
+
+      assert {:cont, _cleared,
+              [{:set_tag, %{macro_index: ^load_macro, add: [], remove: [:powered]}}]} =
+               CircuitCurrentKernel.tick(
+                 energized,
+                 KernelContext.new(energized, 7, open_storage),
+                 %{}
+               )
+    end
   end
 
   defp circuit_region(source_index) do

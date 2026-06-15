@@ -14,21 +14,21 @@ defmodule SceneServer.Voxel.TagCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 8 tags from priv/catalogs/tag_catalog_v1.exs", %{server: server} do
+    test "loads all 9 tags from priv/catalogs/tag_catalog_v1.exs", %{server: server} do
       snapshot = TagCatalog.current_snapshot(server)
       assert %TagCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 1
-      assert length(snapshot.definitions) == 8
+      assert snapshot.catalog_version == 2
+      assert length(snapshot.definitions) == 9
     end
 
-    test "catalog_version returns 1", %{server: server} do
-      assert TagCatalog.catalog_version(server) == 1
+    test "catalog_version returns 2", %{server: server} do
+      assert TagCatalog.catalog_version(server) == 2
     end
 
-    test "definitions are sorted by id ascending and cover 1..8", %{server: server} do
+    test "definitions are sorted by id ascending and cover 1..9", %{server: server} do
       snapshot = TagCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
-      assert ids == [1, 2, 3, 4, 5, 6, 7, 8]
+      assert ids == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     end
 
     test "definitions carry expected names", %{server: server} do
@@ -43,7 +43,8 @@ defmodule SceneServer.Voxel.TagCatalogTest do
                "burning",
                "magical",
                "structural",
-               "transparent"
+               "transparent",
+               "powered"
              ]
     end
   end
@@ -99,8 +100,8 @@ defmodule SceneServer.Voxel.TagCatalogTest do
       wire = TagCatalogSnapshot.encode_for_wire(snapshot)
       decoded = TagCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 1
-      assert length(decoded.definitions) == 8
+      assert decoded.catalog_version == 2
+      assert length(decoded.definitions) == 9
       assert wire == TagCatalogSnapshot.encode_for_wire(decoded)
     end
   end

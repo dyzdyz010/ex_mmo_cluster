@@ -13,6 +13,13 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
 
   Open conductors and dangling branches are cleared back to zero; this slice
   does not touch native code and stays fully chunk-local.
+
+  Beyond the derived field layers, the kernel also emits `:set_tag` effects
+  (功能完善 · 反应层 R7): every load participant that sits inside a closed,
+  source-fed loop gains the `:powered` tag, and every other load in the region
+  loses it. These effects flow through SystemActor → ChunkProcess and land on
+  voxel truth (RULE-11/AUTH-11), giving devices an authoritative "energized"
+  state to react to.
   """
 
   @behaviour SceneServer.Voxel.Field.Kernel
@@ -49,9 +56,10 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
       safety_valve: %{
         type: :current_limit,
         current_limit_amps: @default_current_limit_amps,
-        note: "电源 current_limit_amps 限流;闭环电流重建纯派生不写权威"
+        note:
+          "电源 current_limit_amps 限流;电流/电位/离子化派生,负载 :powered 经 SystemActor 落权威(RULE-11/AUTH-11)"
       },
-      description: "闭环电流重建(电导图分量分析)+ 电流驱动离子化,纯派生",
+      description: "闭环电流重建(电导图分量分析)+ 电流驱动离子化(派生)+ 闭环驱动负载 :powered(派生→权威)",
       assumptions: ["macro-cell 电导图近似", "稳态闭环电流近似", "chunk-local"]
     )
   end
@@ -65,11 +73,42 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
       empty_layers(region)
       |> energize_components(components, projection, opts)
 
+    # 功能完善 · 反应层 R7:闭环电流驱动负载——把闭合回路中的 load cell 标 :powered(权威 truth),
+    # 其余 region 内 load 去 :powered(断路即失电)。经 SystemActor set_tag 落 truth,作设备激活基础。
+    power_effects = power_load_effects(region, components, projection)
+
     {:cont,
      region
      |> FieldRegion.put_layer(:electric_current, current_layer)
      |> FieldRegion.put_layer(:electric_potential, potential_layer)
-     |> FieldRegion.put_layer(:ionization, ionization_layer), []}
+     |> FieldRegion.put_layer(:ionization, ionization_layer), power_effects}
+  end
+
+  defp power_load_effects(%FieldRegion{} = region, components, projection) do
+    powered =
+      components
+      |> Enum.flat_map(& &1.closed_loop_macro_indices)
+      |> MapSet.new()
+
+    region
+    |> load_cells(projection)
+    |> Enum.map(fn macro_index ->
+      if MapSet.member?(powered, macro_index) do
+        {:set_tag, %{macro_index: macro_index, add: [:powered], remove: []}}
+      else
+        {:set_tag, %{macro_index: macro_index, add: [], remove: [:powered]}}
+      end
+    end)
+  end
+
+  defp load_cells(%FieldRegion{aabb: {{min_x, min_y, min_z}, {max_x, max_y, max_z}}}, projection) do
+    for x <- min_x..max_x,
+        y <- min_y..max_y,
+        z <- min_z..max_z,
+        macro_index = SceneServer.Voxel.Types.macro_index!({x, y, z}),
+        ParticipantProjection.electric_role?(projection, macro_index, :load) do
+      macro_index
+    end
   end
 
   defp energize_components(

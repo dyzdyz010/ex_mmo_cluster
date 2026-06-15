@@ -8,7 +8,7 @@
 # 一旦发出即冻结：id ↔ name 映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 1,
+  catalog_version: 2,
   definitions: [
     %{id: 1, name: "flammable"},
     %{id: 2, name: "conductive"},
@@ -17,6 +17,8 @@
     %{id: 5, name: "burning"},
     %{id: 6, name: "magical"},
     %{id: 7, name: "structural"},
-    %{id: 8, name: "transparent"}
+    %{id: 8, name: "transparent"},
+    # 功能完善 · 反应层 R7:电负载"通电"权威状态(闭环电流驱动 → 设备基础)。append-only。
+    %{id: 9, name: "powered"}
   ]
 }
