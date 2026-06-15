@@ -50,8 +50,16 @@ server streaming / client scaling）。
   低风险；真异步留作后续优化项）。
 - **LS-3（client）**：`SUBSCRIBE_RADIUS` 1 → 2（覆盖 5×5 平台），并补**玩家跨 chunk 边界时
   按新 center 重订阅**（AOI 跟随，= M3），让大世界可随移动加载。
-- **LS-4（config）**：`config :gate_server, egress_capacity_bytes: <更大值>`（单机联调），让 25+
-  chunk 快照 ~1s 内送达而非 ~4s。
+- **LS-4（撤销 — 不适用 TCP）**：原据流式盘点拟调大 `egress_capacity_bytes`。**核实后撤销**：
+  egress token bucket 是 **WS(浏览器)专属**（ws_connection.ex），`tcp_connection.ex` 的
+  `{:voxel_chunk_snapshot_payload}` handler（:290-301）**直接 send 到 socket、无任何限速**。bevy
+  走 TCP，故 egress 配置对 bevy 无效。**bevy 的真实流式瓶颈 = `subscribe_voxel_chunks`
+  （tcp_connection.ex:2494）的同步逐 chunk 循环**：(2r+1)³ 个 coord 在一个阻塞 handler 里逐个
+  route + ChunkDirectory.subscribe（懒启 ChunkProcess + 编码 78KB 快照），快照经 send/2 进连接
+  mailbox，**只能在 subscribe handler 返回后**才批量写 socket → radius 2（125 chunk，含 100 空）
+  会先 stall ~数~十几秒再 burst。empty chunk 也照启 ChunkProcess + 编码（主要浪费）。
+  → 改服务器订阅路径（异步/并行 subscribe、空 chunk 轻量化/跳过初始空快照）是 grounded 的服务器
+  侧 follow-up，不在本轮（避免动 voxel authority 热路径）。本轮先实测 radius 2 实际耗时再定。
 
 ## 3. 验收
 
