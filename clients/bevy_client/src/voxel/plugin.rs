@@ -73,17 +73,38 @@ pub struct VoxelPlugin;
 
 impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VoxelSelectionState>().add_systems(
-            Update,
-            (
-                (update_voxel_selection, handle_voxel_input).chain(),
-                sync_voxel_visuals,
-                update_target_point_marker,
-                draw_voxel_guides,
+        app.init_resource::<VoxelSelectionState>()
+            // Always active in-game: the skill-target marker (live gameplay) and
+            // the showcase cube sync (which self-cleans once in a live scene).
+            .add_systems(
+                Update,
+                (update_target_point_marker, sync_voxel_visuals).run_if(in_state(AppState::Game)),
             )
-                .run_if(in_state(AppState::Game)),
-        );
+            // The offline local `VoxelWorld` showcase guides + offline edit input
+            // are only meaningful before joining a server scene. Once in a live
+            // scene the server-authoritative `VoxelChunkRenderPlugin` owns the
+            // voxels, so gate them off (they otherwise overlay a translucent
+            // debug grid + selection box on the live view).
+            .add_systems(
+                Update,
+                (update_voxel_selection, handle_voxel_input)
+                    .chain()
+                    .run_if(in_state(AppState::Game))
+                    .run_if(offline_voxel_showcase_active),
+            )
+            .add_systems(
+                Update,
+                draw_voxel_guides
+                    .run_if(in_state(AppState::Game))
+                    .run_if(offline_voxel_showcase_active),
+            );
     }
+}
+
+/// The offline `VoxelWorld` showcase renders only before a live scene is joined;
+/// in a live scene the server-authoritative chunk renderer owns the voxels.
+fn offline_voxel_showcase_active(world_state: Res<WorldState>) -> bool {
+    !world_state.scene_joined
 }
 
 #[derive(SystemParam)]
@@ -290,6 +311,7 @@ fn handle_voxel_input(params: VoxelInputParams) {
 
 fn sync_voxel_visuals(
     mut commands: Commands,
+    world_state: Res<WorldState>,
     voxel_world: Res<VoxelWorld>,
     assets: Res<SceneRenderAssets>,
     mut existing: Query<(
@@ -299,6 +321,15 @@ fn sync_voxel_visuals(
         &mut MeshMaterial3d<StandardMaterial>,
     )>,
 ) {
+    // In a live scene the server-authoritative chunk renderer owns the voxels;
+    // despawn any offline showcase cubes spawned before joining and stop.
+    if world_state.scene_joined {
+        for (entity, _, _, _) in &existing {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
     let desired = voxel_world
         .render_cells_3d()
         .into_iter()
