@@ -16,6 +16,7 @@
 //! `bevy_client::voxel::Type` paths while the implementation lives in
 //! sub-modules.
 
+pub mod authority;
 pub mod cli;
 pub mod core;
 pub mod plugin;
