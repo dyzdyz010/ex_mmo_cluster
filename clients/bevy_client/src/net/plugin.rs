@@ -14,7 +14,7 @@ use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
 
-use super::events::{MessageTransport, NetworkBridge, NetworkEvent};
+use super::events::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent};
 
 pub struct NetworkPlugin;
 
@@ -86,6 +86,33 @@ fn poll_network_events(
                 world_state.selected_target_point = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
+
+                // Auto-subscribe to the voxel chunks around the spawn so the
+                // server-authoritative renderer (VoxelChunkRenderPlugin) gets data
+                // without manual CLI. `location` is server sim space; a chunk is
+                // 16 macro × 100cm = 1600 world units. logical_scene_id defaults to
+                // 1 (no protocol field carries it yet — see M1.8d note). AOI
+                // re-subscription as the player moves is M3.
+                const CHUNK_WORLD_SIZE: f64 = 1600.0;
+                let center_chunk = [
+                    (location[0] / CHUNK_WORLD_SIZE).floor() as i32,
+                    (location[1] / CHUNK_WORLD_SIZE).floor() as i32,
+                    (location[2] / CHUNK_WORLD_SIZE).floor() as i32,
+                ];
+                // radius 1: the server streams chunks ~1 per AOI tick in coord
+                // order, so a small radius makes the spawn chunk paint quickly.
+                const SUBSCRIBE_RADIUS: u8 = 1;
+                bridge.send(NetworkCommand::SubscribeChunks {
+                    logical_scene_id: 1,
+                    center_chunk,
+                    radius: SUBSCRIBE_RADIUS,
+                });
+                push_line(
+                    &mut world_state.logs,
+                    format!(
+                        "voxel auto-subscribe center={center_chunk:?} radius={SUBSCRIBE_RADIUS}"
+                    ),
+                );
             }
             NetworkEvent::LocalPosition {
                 cid: _,

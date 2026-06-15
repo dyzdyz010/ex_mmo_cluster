@@ -9,11 +9,15 @@
 //! (one shared `StandardMaterial`), so a chunk is one draw batch; a real
 //! texture array is M6 polish.
 //!
-//! Coordinate/scale note: chunks are placed at `chunk_coord * chunk_size *
-//! MACRO_RENDER_SIZE` in render space. Exact alignment with the existing
-//! offline renderer + the sim→render axis convention is a live-tuning step
-//! (needs a running server + GUI); the store is empty until subscribed, so this
-//! system is inert (and harmless) until then.
+//! Coordinate/scale note: the mesher emits a chunk's geometry in chunk-local
+//! **sim** space (macro x fastest, one macro cell = [`MACRO_RENDER_SIZE`] units,
+//! matching the server's 100cm macro). The Bevy 3D view uses a different axis
+//! convention — `sim_to_render_position` swaps Y/Z (sim Z is render "up") — so
+//! `build_mesh` bakes that swap into every vertex (and reverses winding, since a
+//! Y/Z swap is a reflection), and `chunk_translation` places each chunk at the
+//! render-space image of its sim origin. This lines the authority chunks up with
+//! the player and the offline renderer (`voxel/plugin.rs`, same 100-unit macro).
+//! The store is empty until subscribed, so this system is inert until then.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -21,13 +25,16 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::app::schedule::ClientSet;
+use crate::app::sim_to_render_position;
 use crate::login::AppState;
 use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, greedy_mesh_chunk_with_neighbors};
 
-/// Render-space size of one macro cell.
-const MACRO_RENDER_SIZE: f32 = 1.0;
+/// Sim/render size of one macro cell, in render units. The server's macro cell
+/// is 100cm; the offline renderer uses the same 100-unit cell
+/// (`VOXEL_RENDER_CELL_SIZE`), so authority chunks tile with it 1:1.
+const MACRO_RENDER_SIZE: f32 = 100.0;
 
 /// Maps each rendered chunk coord to its Bevy entity, so re-meshes update in
 /// place and invalidated chunks despawn.
@@ -160,32 +167,45 @@ fn build_neighbors(store: &VoxelAuthorityStore, c: ChunkCoord) -> ChunkNeighbors
     }
 }
 
+/// Places a chunk at the render-space image of its sim-space origin
+/// (`chunk_coord * chunk_span`), so the swap baked into `build_mesh` and the
+/// chunk's world placement use the same sim→render convention.
 fn chunk_translation(coord: ChunkCoord) -> Vec3 {
     const CHUNK_SPAN: f32 = 16.0 * MACRO_RENDER_SIZE;
-    Vec3::new(
+    sim_to_render_position(Vec3::new(
         coord[0] as f32 * CHUNK_SPAN,
         coord[1] as f32 * CHUNK_SPAN,
         coord[2] as f32 * CHUNK_SPAN,
-    )
+    ))
 }
 
 /// Converts pure mesh data into a Bevy `Mesh` (positions / normals / uvs /
-/// per-vertex colors / indices).
+/// per-vertex colors / indices), applying the sim→render axis swap (Y/Z) to
+/// every vertex. Because that swap is a reflection, each triangle's winding is
+/// reversed too, so faces stay CCW-front and survive backface culling.
 pub fn build_mesh(data: &ChunkMeshData) -> Mesh {
     let colors: Vec<[f32; 4]> = data
         .material_ids
         .iter()
         .map(|&id| material_color(id))
         .collect();
+    let positions: Vec<[f32; 3]> = data.positions.iter().map(|&[x, y, z]| [x, z, y]).collect();
+    let normals: Vec<[f32; 3]> = data.normals.iter().map(|&[x, y, z]| [x, z, y]).collect();
+    // Reverse each triangle's winding to compensate for the reflection above.
+    let indices: Vec<u32> = data
+        .indices
+        .chunks_exact(3)
+        .flat_map(|t| [t[0], t[2], t[1]])
+        .collect();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, data.normals.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs.clone());
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    mesh.insert_indices(Indices::U32(data.indices.clone()));
+    mesh.insert_indices(Indices::U32(indices));
     mesh
 }
 
@@ -254,7 +274,12 @@ mod tests {
     }
 
     #[test]
-    fn chunk_translation_scales_by_span() {
-        assert_eq!(chunk_translation([1, 0, -2]), Vec3::new(16.0, 0.0, -32.0));
+    fn chunk_translation_places_chunk_at_render_space_sim_origin() {
+        // Sim origin of chunk (1,0,-2) = (1600, 0, -3200); sim→render swaps Y/Z
+        // → (1600, -3200, 0). One chunk span = 16 macro * 100 units = 1600.
+        assert_eq!(
+            chunk_translation([1, 0, -2]),
+            Vec3::new(1600.0, -3200.0, 0.0)
+        );
     }
 }
