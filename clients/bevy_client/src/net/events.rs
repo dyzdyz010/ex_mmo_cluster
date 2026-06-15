@@ -138,6 +138,9 @@ pub enum NetworkEvent {
         last_pending_inputs: usize,
         last_correction_distance: f32,
     },
+    /// A decoded server→client voxel message (chunk snapshot/delta/invalidate/
+    /// object-state/catalog/field). Drained into the voxel authority store.
+    Voxel(crate::voxel::wire::VoxelServerMessage),
     Log(String),
     Disconnected(String),
 }

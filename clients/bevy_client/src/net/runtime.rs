@@ -889,6 +889,9 @@ impl ClientRuntime {
                     server_ts: timestamp,
                 });
             }
+            ServerMessage::Voxel(voxel) => {
+                outcome.push_event(NetworkEvent::Voxel(voxel));
+            }
         }
 
         Ok(outcome)

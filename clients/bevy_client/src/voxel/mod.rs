@@ -17,6 +17,7 @@
 //! sub-modules.
 
 pub mod authority;
+pub mod authority_plugin;
 pub mod cli;
 pub mod core;
 pub mod mesher;
@@ -25,6 +26,7 @@ pub mod prefab;
 pub mod wire;
 pub mod world;
 
+pub use authority_plugin::{VoxelAuthority, VoxelAuthorityPlugin};
 pub use plugin::VoxelPlugin;
 
 pub use cli::{

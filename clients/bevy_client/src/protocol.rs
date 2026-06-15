@@ -187,6 +187,10 @@ pub enum ServerMessage {
         radius: f64,
         duration_ms: u32,
     },
+    /// Server→client voxel message (chunk snapshot / delta / invalidate /
+    /// object-state / catalog / field), opcodes 0x60–0x75. Routed to the voxel
+    /// authority store via `NetworkEvent::Voxel`.
+    Voxel(crate::voxel::wire::VoxelServerMessage),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +398,11 @@ pub fn decode_server_payload(payload: &[u8]) -> Result<ServerMessage, ProtocolEr
                 duration_ms: read_u32(body, 75)?,
             })
         }
+        // Voxel opcode range (chunk snapshot/delta/invalidate/object/catalog/
+        // field). Delegates to the voxel wire codec; the net layer routes the
+        // result to the authority store.
+        0x60..=0x75 => crate::voxel::wire::decode_voxel_server_message(msg_type, body)
+            .map(ServerMessage::Voxel),
         other => Err(ProtocolError(format!(
             "unknown server message type: {other:#x}"
         ))),
@@ -858,6 +867,20 @@ mod tests {
                 ground_z: 12.5,
             }
         );
+    }
+
+    #[test]
+    fn routes_voxel_opcode_to_voxel_message() {
+        // A 0x69 (ChunkInvalidate) frame must route through the voxel codec.
+        let body = crate::voxel::wire::fixtures::golden("chunk_invalidate_unspecified");
+        let mut payload = vec![0x69];
+        payload.extend_from_slice(&body);
+        match decode_server_payload(&payload).unwrap() {
+            ServerMessage::Voxel(crate::voxel::wire::VoxelServerMessage::ChunkInvalidate(inv)) => {
+                assert_eq!(inv.logical_scene_id, 50);
+            }
+            other => panic!("expected Voxel(ChunkInvalidate), got {other:?}"),
+        }
     }
 
     #[test]

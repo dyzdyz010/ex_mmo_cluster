@@ -37,6 +37,7 @@ fn poll_network_events(
     mut world_state: ResMut<WorldState>,
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
+    mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
 ) {
     let receiver = match bridge.rx.lock() {
         Ok(receiver) => receiver,
@@ -332,6 +333,11 @@ fn poll_network_events(
                         ],
                     );
                 }
+            }
+            NetworkEvent::Voxel(voxel) => {
+                // Thin glue: hand the decoded message to the voxel authority
+                // store's inbox; ingestion + meshing live in VoxelAuthorityPlugin.
+                voxel_authority.enqueue(voxel);
             }
             NetworkEvent::Log(line) => {
                 if stdio.is_enabled() {

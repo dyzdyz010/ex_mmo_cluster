@@ -278,10 +278,27 @@ pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEv
             );
         }
         NetworkEvent::Log(line) => observer.emit("network", "log", &[("message", line.clone())]),
+        NetworkEvent::Voxel(voxel) => {
+            observer.emit("network", "voxel", &[("kind", voxel_message_kind(voxel))]);
+        }
         NetworkEvent::Disconnected(reason) => {
             observer.emit("network", "disconnected", &[("reason", reason.clone())]);
         }
     }
+}
+
+fn voxel_message_kind(message: &crate::voxel::wire::VoxelServerMessage) -> String {
+    use crate::voxel::wire::VoxelServerMessage as V;
+    match message {
+        V::ChunkSnapshot(_) => "chunk_snapshot",
+        V::ChunkDelta(_) => "chunk_delta",
+        V::ChunkInvalidate(_) => "chunk_invalidate",
+        V::ObjectStateDelta(_) => "object_state_delta",
+        V::CatalogPatch(_) => "catalog_patch",
+        V::FieldRegionSnapshot(_) => "field_region_snapshot",
+        V::FieldRegionDestroyed(_) => "field_region_destroyed",
+    }
+    .to_string()
 }
 
 pub(super) fn observe_outbound_message(
