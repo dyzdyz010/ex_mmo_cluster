@@ -18,13 +18,13 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::app::schedule::ClientSet;
 use crate::login::AppState;
-use crate::voxel::authority::ChunkCoord;
+use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
-use crate::voxel::mesher::{ChunkMeshData, greedy_mesh_chunk};
+use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, greedy_mesh_chunk_with_neighbors};
 
 /// Render-space size of one macro cell.
 const MACRO_RENDER_SIZE: f32 = 1.0;
@@ -74,10 +74,29 @@ fn render_dirty_chunks(
         return; // material not ready yet (first frame ordering)
     };
     let dirty = authority.store.take_dirty();
-    for coord in dirty {
+    if dirty.is_empty() {
+        return;
+    }
+
+    // Re-mesh dirty chunks AND their loaded neighbors: a change to one chunk can
+    // expose/cull faces on the shared boundary of its neighbors (cross-chunk
+    // culling). A despawned (invalidated) chunk's coord stays in the set so its
+    // neighbors re-grow their boundary faces.
+    let mut to_remesh: HashSet<ChunkCoord> = HashSet::new();
+    for &coord in &dirty {
+        to_remesh.insert(coord);
+        for neighbor in neighbor_coords(coord) {
+            if authority.store.chunk(neighbor).is_some() {
+                to_remesh.insert(neighbor);
+            }
+        }
+    }
+
+    for coord in to_remesh {
         match authority.store.chunk(coord) {
             Some(chunk) => {
-                let data = greedy_mesh_chunk(chunk, MACRO_RENDER_SIZE);
+                let neighbors = build_neighbors(&authority.store, coord);
+                let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
                 if data.is_empty() {
                     despawn_chunk(&mut commands, &mut entities, coord);
                     continue;
@@ -109,6 +128,35 @@ fn render_dirty_chunks(
 fn despawn_chunk(commands: &mut Commands, entities: &mut VoxelChunkEntities, coord: ChunkCoord) {
     if let Some(entity) = entities.0.remove(&coord) {
         commands.entity(entity).despawn();
+    }
+}
+
+/// The six axis-neighbor chunk coords (+x,-x,+y,-y,+z,-z).
+fn neighbor_coords(c: ChunkCoord) -> [ChunkCoord; 6] {
+    [
+        [c[0] + 1, c[1], c[2]],
+        [c[0] - 1, c[1], c[2]],
+        [c[0], c[1] + 1, c[2]],
+        [c[0], c[1] - 1, c[2]],
+        [c[0], c[1], c[2] + 1],
+        [c[0], c[1], c[2] - 1],
+    ]
+}
+
+/// Looks up the six axis neighbors in the store for cross-chunk face culling.
+/// `pos[d]`/`neg[d]` are the +/- neighbor along axis `d` (0=x,1=y,2=z).
+fn build_neighbors(store: &VoxelAuthorityStore, c: ChunkCoord) -> ChunkNeighbors<'_> {
+    ChunkNeighbors {
+        pos: [
+            store.chunk([c[0] + 1, c[1], c[2]]),
+            store.chunk([c[0], c[1] + 1, c[2]]),
+            store.chunk([c[0], c[1], c[2] + 1]),
+        ],
+        neg: [
+            store.chunk([c[0] - 1, c[1], c[2]]),
+            store.chunk([c[0], c[1] - 1, c[2]]),
+            store.chunk([c[0], c[1], c[2] - 1]),
+        ],
     }
 }
 
@@ -187,7 +235,7 @@ mod tests {
             chunk_size_in_macro: size as u8,
             cells,
         };
-        let data = greedy_mesh_chunk(&chunk, MACRO_RENDER_SIZE);
+        let data = crate::voxel::mesher::greedy_mesh_chunk(&chunk, MACRO_RENDER_SIZE);
         let mesh = build_mesh(&data);
 
         // A lone solid cell can't merge → 6 faces × 4 verts = 24 vertices.

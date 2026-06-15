@@ -196,7 +196,43 @@ pub fn mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
 /// `u=(d+1)%3, v=(d+2)%3` so `u×v = +d`; for a single cell it produces the same
 /// CCW face cycle as [`mesh_chunk`] (cross-validated in tests), so `mesh_chunk`
 /// serves as the reference oracle.
+/// The six axis-neighbor chunks of a chunk being meshed, for cross-chunk border
+/// face culling. `None` = neighbor not loaded → that boundary face is emitted
+/// (conservative). `pos[d]`/`neg[d]` are the +/- neighbor along axis `d`.
+#[derive(Default, Clone, Copy)]
+pub struct ChunkNeighbors<'a> {
+    pub pos: [Option<&'a AuthorityChunk>; 3],
+    pub neg: [Option<&'a AuthorityChunk>; 3],
+}
+
+impl<'a> ChunkNeighbors<'a> {
+    /// Is the cell just across the chunk boundary (direction `(d, sign)`, at the
+    /// boundary slice, lateral coords `u,v`) occupied?
+    fn occluded_across(&self, d: usize, sign: i32, u: i32, v: i32, size: i32) -> bool {
+        let neighbor = if sign > 0 { self.pos[d] } else { self.neg[d] };
+        match neighbor {
+            Some(chunk) if chunk.chunk_size_in_macro as i32 == size => {
+                // +sign neighbor's near face is its s=0 slice; -sign neighbor's
+                // far face is its s=size-1 slice.
+                let s = if sign > 0 { 0 } else { size - 1 };
+                occupies(cell_at(chunk, size, d, s, u, v))
+            }
+            _ => false,
+        }
+    }
+}
+
 pub fn greedy_mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
+    greedy_mesh_chunk_with_neighbors(chunk, voxel_size, &ChunkNeighbors::default())
+}
+
+/// Greedy mesher with cross-chunk border culling: boundary faces are culled
+/// when the adjacent loaded chunk occupies the touching cell.
+pub fn greedy_mesh_chunk_with_neighbors(
+    chunk: &AuthorityChunk,
+    voxel_size: f32,
+    neighbors: &ChunkNeighbors,
+) -> ChunkMeshData {
     let size = chunk.chunk_size_in_macro as i32;
     let mut mesh = ChunkMeshData::default();
     if size <= 0 {
@@ -220,8 +256,12 @@ pub fn greedy_mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshDa
                             continue;
                         }
                         let ns = s + sign;
-                        let occluded =
-                            ns >= 0 && ns < size && occupies(cell_at(chunk, size, d, ns, u, v));
+                        let occluded = if ns >= 0 && ns < size {
+                            occupies(cell_at(chunk, size, d, ns, u, v))
+                        } else {
+                            // Chunk boundary: consult the neighbor chunk.
+                            neighbors.occluded_across(d, sign, u, v, size)
+                        };
                         if !occluded {
                             mask[(v * size + u) as usize] = Some(cell_material(cell));
                         }
@@ -559,5 +599,56 @@ mod tests {
     #[test]
     fn greedy_empty_chunk_is_empty() {
         assert!(greedy_mesh_chunk(&empty_chunk(), 1.0).is_empty());
+    }
+
+    fn full_chunk(material: u16) -> AuthorityChunk {
+        AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: SIZE as u8,
+            cells: vec![solid(material); SIZE * SIZE * SIZE],
+        }
+    }
+
+    #[test]
+    fn greedy_culls_boundary_face_against_occupied_neighbor() {
+        // Fully solid chunk with a fully solid +X neighbor: the +X boundary
+        // shell face is culled (axis d=0, sign=+) → 5 outer quads, not 6.
+        let chunk = full_chunk(2);
+        let pos_x = full_chunk(2);
+        let neighbors = ChunkNeighbors {
+            pos: [Some(&pos_x), None, None],
+            neg: [None, None, None],
+        };
+        let mesh = greedy_mesh_chunk_with_neighbors(&chunk, 1.0, &neighbors);
+        assert_eq!(mesh.quad_count(), 5);
+    }
+
+    #[test]
+    fn greedy_keeps_boundary_face_against_empty_or_absent_neighbor() {
+        let chunk = full_chunk(2);
+        let empty = empty_chunk();
+        // Empty neighbor on +X, nothing elsewhere → no boundary culled.
+        let neighbors = ChunkNeighbors {
+            pos: [Some(&empty), None, None],
+            neg: [None, None, None],
+        };
+        assert_eq!(
+            greedy_mesh_chunk_with_neighbors(&chunk, 1.0, &neighbors).quad_count(),
+            6
+        );
+        // All-absent neighbors == plain greedy_mesh_chunk.
+        assert_eq!(greedy_mesh_chunk(&chunk, 1.0).quad_count(), 6);
+    }
+
+    #[test]
+    fn greedy_culls_all_six_boundaries_when_fully_surrounded() {
+        let chunk = full_chunk(2);
+        let n = full_chunk(2);
+        let neighbors = ChunkNeighbors {
+            pos: [Some(&n), Some(&n), Some(&n)],
+            neg: [Some(&n), Some(&n), Some(&n)],
+        };
+        // Surrounded on all sides → no exposed faces at all.
+        assert!(greedy_mesh_chunk_with_neighbors(&chunk, 1.0, &neighbors).is_empty());
     }
 }
