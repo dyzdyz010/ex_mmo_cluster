@@ -89,7 +89,7 @@ impl ClientStdioInterface {
             for line in io::stdin().lock().lines() {
                 match line {
                     Ok(line) => {
-                        let trimmed = line.trim();
+                        let trimmed = sanitize_line(&line);
                         if trimmed.is_empty() {
                             continue;
                         }
@@ -233,6 +233,17 @@ pub fn snapshot_fields(snapshot: SnapshotFields<'_>) -> Vec<(&'static str, Strin
         ),
         ("remote_npc_count", snapshot.remote_npc_count.to_string()),
     ]
+}
+
+/// Trims surrounding whitespace and a UTF-8 BOM (U+FEFF) from a stdin line.
+///
+/// Windows tooling that pipes commands in — notably PowerShell's
+/// `Process.StandardInput` — prepends a UTF-8 BOM to the first line written.
+/// `str::trim` does not strip a BOM, so without this the very first piped
+/// command would fail to match its prefix and report `unknown command`. Trimming
+/// the BOM here keeps the attached stdio interface robust to that.
+fn sanitize_line(line: &str) -> &str {
+    line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
 fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
@@ -423,6 +434,32 @@ fn parse_direction(value: &str) -> Result<Vec2, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_strips_leading_bom_and_whitespace() {
+        // PowerShell's piped first line arrives BOM-prefixed.
+        assert_eq!(
+            sanitize_line("\u{feff}va-subscribe 1 0 0 0 0"),
+            "va-subscribe 1 0 0 0 0"
+        );
+        assert_eq!(sanitize_line("  snapshot  "), "snapshot");
+        assert_eq!(sanitize_line("\u{feff}"), "");
+        assert_eq!(sanitize_line("plain"), "plain");
+    }
+
+    #[test]
+    fn parses_bom_prefixed_first_command() {
+        // The exact failure seen via PowerShell automation: a BOM on the first
+        // piped command must still parse once sanitized.
+        assert_eq!(
+            parse_command(sanitize_line("\u{feff}va-subscribe 1 0 0 0 0")).unwrap(),
+            ClientStdioCommand::VoxelSubscribe {
+                logical_scene_id: 1,
+                center: [0, 0, 0],
+                radius: 0,
+            }
+        );
+    }
 
     #[test]
     fn parses_voxel_authority_commands() {
