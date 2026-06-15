@@ -13,7 +13,9 @@ use crate::app::{
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::skill::prepare_skill_dispatch;
-use crate::voxel::{VoxelWorld, execute_voxel_cli_command};
+use crate::voxel::authority::CellState;
+use crate::voxel::mesher::greedy_mesh_chunk;
+use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
 use crate::world::remote_actor::RemoteActorKind;
 
 use super::{
@@ -41,6 +43,7 @@ struct StdioCommandParams<'w> {
     bridge: Res<'w, NetworkBridge>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: ResMut<'w, VoxelWorld>,
+    voxel_authority: Res<'w, VoxelAuthority>,
     world_state: ResMut<'w, WorldState>,
     movement_intent: ResMut<'w, MovementIntent>,
     app_exit: MessageWriter<'w, AppExit>,
@@ -62,6 +65,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         bridge,
         local_render_prediction,
         mut voxel_world,
+        voxel_authority,
         mut world_state,
         mut movement_intent,
         mut app_exit,
@@ -366,6 +370,84 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 let result =
                     execute_voxel_cli_command(&mut voxel_world, command, Some(&voxel_save_dir()));
                 emit_stdio_owned(&result.event, result.ok, &result.fields);
+            }
+            ClientStdioCommand::VoxelAuthorityStatus => {
+                let store = &voxel_authority.store;
+                let mut total_quads = 0usize;
+                let mut renderable_chunks = 0usize;
+                for coord in store.chunk_coords() {
+                    if let Some(chunk) = store.chunk(coord) {
+                        let quads = greedy_mesh_chunk(chunk, 1.0).quad_count();
+                        total_quads += quads;
+                        if quads > 0 {
+                            renderable_chunks += 1;
+                        }
+                    }
+                }
+                emit_stdio(
+                    "va_status",
+                    &[
+                        ("chunks", store.chunk_count().to_string()),
+                        ("renderable_chunks", renderable_chunks.to_string()),
+                        ("total_quads", total_quads.to_string()),
+                    ],
+                );
+            }
+            ClientStdioCommand::VoxelSubscribe {
+                logical_scene_id,
+                center,
+                radius,
+            } => {
+                bridge.send(NetworkCommand::SubscribeChunks {
+                    logical_scene_id,
+                    center_chunk: center,
+                    radius,
+                });
+                emit_stdio(
+                    "va_subscribe_sent",
+                    &[
+                        ("scene_id", logical_scene_id.to_string()),
+                        (
+                            "center",
+                            format!("{},{},{}", center[0], center[1], center[2]),
+                        ),
+                        ("radius", radius.to_string()),
+                    ],
+                );
+            }
+            ClientStdioCommand::VoxelChunkInfo { coord } => {
+                let label = format!("{},{},{}", coord[0], coord[1], coord[2]);
+                match voxel_authority.store.chunk(coord) {
+                    Some(chunk) => {
+                        let (mut solid, mut refined, mut empty) = (0usize, 0usize, 0usize);
+                        for cell in &chunk.cells {
+                            match cell {
+                                CellState::Solid(_) => solid += 1,
+                                CellState::Refined(_) => refined += 1,
+                                CellState::Empty => empty += 1,
+                            }
+                        }
+                        let quads = greedy_mesh_chunk(chunk, 1.0).quad_count();
+                        emit_stdio(
+                            "va_chunk",
+                            &[
+                                ("coord", label),
+                                ("present", "true".to_string()),
+                                ("version", chunk.chunk_version.to_string()),
+                                ("solid", solid.to_string()),
+                                ("refined", refined.to_string()),
+                                ("empty", empty.to_string()),
+                                ("quads", quads.to_string()),
+                            ],
+                        );
+                    }
+                    None => {
+                        emit_stdio(
+                            "va_chunk",
+                            &[("coord", label), ("present", "false".to_string())],
+                        );
+                    }
+                }
             }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);

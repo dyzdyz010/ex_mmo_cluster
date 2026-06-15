@@ -47,6 +47,18 @@ pub enum ClientStdioCommand {
     ReconcileStats,
     DiagRender,
     Voxel(VoxelCliCommand),
+    /// Server-authoritative voxel store status (chunk count + renderable quads).
+    VoxelAuthorityStatus,
+    /// Subscribe to server voxel chunks around a center (drives the stream).
+    VoxelSubscribe {
+        logical_scene_id: u64,
+        center: [i32; 3],
+        radius: u8,
+    },
+    /// Per-chunk authority inspection (cell breakdown + mesh quad count).
+    VoxelChunkInfo {
+        coord: [i32; 3],
+    },
 }
 
 #[derive(Clone, Default, Resource)]
@@ -347,10 +359,55 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         });
     }
 
+    if line == "va-status" {
+        return Ok(ClientStdioCommand::VoxelAuthorityStatus);
+    }
+
+    if let Some(rest) = line.strip_prefix("va-subscribe ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 5 {
+            return Err("va-subscribe <scene_id> <cx> <cy> <cz> <radius>".to_string());
+        }
+        let logical_scene_id = parse_field(parts[0], "scene_id")?;
+        let center = [
+            parse_field(parts[1], "cx")?,
+            parse_field(parts[2], "cy")?,
+            parse_field(parts[3], "cz")?,
+        ];
+        let radius = parse_field(parts[4], "radius")?;
+        return Ok(ClientStdioCommand::VoxelSubscribe {
+            logical_scene_id,
+            center,
+            radius,
+        });
+    }
+
+    if let Some(rest) = line.strip_prefix("va-chunk ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return Err("va-chunk <cx> <cy> <cz>".to_string());
+        }
+        let coord = [
+            parse_field(parts[0], "cx")?,
+            parse_field(parts[1], "cy")?,
+            parse_field(parts[2], "cz")?,
+        ];
+        return Ok(ClientStdioCommand::VoxelChunkInfo { coord });
+    }
+
     match parse_voxel_cli_command(line)? {
         Some(command) => Ok(ClientStdioCommand::Voxel(command)),
         None => Err("unknown command".to_string()),
     }
+}
+
+fn parse_field<T: std::str::FromStr>(value: &str, name: &str) -> Result<T, String>
+where
+    T::Err: std::fmt::Display,
+{
+    value
+        .parse::<T>()
+        .map_err(|error| format!("invalid {name}: {error}"))
 }
 
 fn parse_direction(value: &str) -> Result<Vec2, String> {
@@ -366,6 +423,28 @@ fn parse_direction(value: &str) -> Result<Vec2, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_voxel_authority_commands() {
+        assert_eq!(
+            parse_command("va-status").unwrap(),
+            ClientStdioCommand::VoxelAuthorityStatus
+        );
+        assert_eq!(
+            parse_command("va-subscribe 7 0 1 -2 2").unwrap(),
+            ClientStdioCommand::VoxelSubscribe {
+                logical_scene_id: 7,
+                center: [0, 1, -2],
+                radius: 2,
+            }
+        );
+        assert_eq!(
+            parse_command("va-chunk 3 0 -1").unwrap(),
+            ClientStdioCommand::VoxelChunkInfo { coord: [3, 0, -1] }
+        );
+        assert!(parse_command("va-subscribe 7 0 1").is_err());
+        assert!(parse_command("va-chunk 1 2").is_err());
+    }
 
     #[test]
     fn parses_snapshot_and_stop_commands() {

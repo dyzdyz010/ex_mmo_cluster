@@ -84,6 +84,11 @@ impl VoxelAuthorityStore {
         self.chunks.len()
     }
 
+    /// All loaded chunk coordinates (for status/diagnostics).
+    pub fn chunk_coords(&self) -> Vec<ChunkCoord> {
+        self.chunks.keys().copied().collect()
+    }
+
     /// Drains the set of chunks touched since the last call — the mesher
     /// re-meshes exactly these (and, later, their border neighbors).
     pub fn take_dirty(&mut self) -> Vec<ChunkCoord> {

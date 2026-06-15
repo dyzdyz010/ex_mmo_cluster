@@ -9,6 +9,7 @@ use crate::net::{MessageTransport, NetworkEvent};
 use crate::observe::ClientObserver;
 use crate::stdio::emit as emit_stdio;
 use crate::voxel::VoxelWorld;
+use crate::voxel::authority::VoxelAuthorityStore;
 use crate::world::remote_actor::RemoteActorIdentity;
 
 #[derive(Debug, Default)]
@@ -29,6 +30,10 @@ pub(super) struct HeadlessState {
     pub movement_transport: MessageTransport,
     pub fast_lane_status: String,
     pub voxel_world: VoxelWorld,
+    /// Server-authoritative voxel store, fed by `NetworkEvent::Voxel`. Lets the
+    /// headless harness drive + inspect the full server voxel pipeline (decode →
+    /// ingest → mesh) without a window.
+    pub voxel_authority: VoxelAuthorityStore,
 }
 
 pub(super) fn apply_event(
@@ -187,6 +192,18 @@ pub(super) fn apply_event(
                 ],
             );
         }
+        NetworkEvent::Voxel(message) => match state.voxel_authority.ingest(&message) {
+            Ok(outcome) => {
+                observer.emit(
+                    "headless",
+                    "voxel_ingest",
+                    &[("outcome", format!("{outcome:?}"))],
+                );
+            }
+            Err(error) => {
+                observer.emit("headless", "voxel_ingest_error", &[("error", error.0)]);
+            }
+        },
         _ => {}
     }
 }
