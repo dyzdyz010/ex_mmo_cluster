@@ -68,7 +68,32 @@ server streaming / client scaling）。
 greedy 效率）→ GUI 目视一大片 5×5 chunk 地板。注意 PowerShell stdin 首行 BOM（已在 stdio reader
 硬化，但驱动仍建议先发弃用首行）。
 
+## 3.1 验收结果（2026-06-15，live 通过）
+
+重启 server（新 dev_seed 多-chunk 代码）→ DB reset（清 `:stale_token`：重启后持久化的
+region/lease/write-token epoch fence 拒新 lease，控制面 renew 路径报 stale，与上次同；DB 为
+dev 临时态，drop/create/migrate 后修复）→ reseed → 重建客户端 → headless probe(probe5):
+
+- **多-chunk 流式**：`va-subscribe 1 0 0 0 2`（radius 2 = 125 chunk）后 `va-status chunks`
+  **5→14→24→…→110**，~36s 内进度（~3 chunk/s，即服务器同步 subscribe 速率）。**渐进填充,
+  非冻结+突发**（实测纠正了 §2 LS-4 对 TCP 同步 subscribe「先 stall 再 burst」的担心:实际是
+  逐 chunk 渐进到达）。
+- **平台内容跨 chunk 确认**：`(0,0,0)` v4 solid266 **29 quads**（floor+circuit）；
+  `(-2,0,-2)`/`(1,0,1)` v1 solid256 **各 6 quads**（平整 chunk → greedy 合并到 6 面！）；
+  `(0,1,0)` 空（平台上方）。25 个内容 chunk、合计 ~150 quads（对 naive ~6400 cube 的规模化收益）。
+- **CLI BOM 修复 live 确认**：`va-subscribe` 作为首条命令(默认 stdin 带 BOM)→ `va_subscribe_sent`,
+  非 unknown command（sanitize_line 端到端生效）。
+- **GUI 重启 radius 2 自动订阅**：5×5 chunk(8000×8000 render 单位)地板渐进上屏(~30-40s 填满)。
+
+**结论**：客户端「大规模渲染体素」能力 live 验证通过(25 内容 chunk、贪婪 6 quads/chunk、
+渐进流式 + 每帧 remesh 预算平滑吃下、AOI 跟随 + radius 2)。剩余规模化瓶颈在**服务器同步
+subscribe ~3 chunk/s**(空 chunk 也照启进程+编码 78KB)——是服务器侧 follow-up。
+
 ## 4. 留作后续（不阻塞本轮）
+
+- **服务器同步 subscribe 提速（首要 follow-up）**：`subscribe_voxel_chunks` 逐 chunk 同步
+  route+subscribe+encode ~3 chunk/s;空 chunk 也照启 ChunkProcess+编码 78KB。改异步/并行 subscribe
+  或空 chunk 轻量化(跳过初始空快照/稀疏编码),让大订阅秒级完成。
 
 - 真异步 remesh（AsyncComputeTaskPool）+ inbox/store 背压与按距离 evict（r≥4 大订阅时需要）。
 - 快照稀疏/压缩（治本降 78KB/chunk；协议变更，需 bevy decoder + golden fixture 同步）。
