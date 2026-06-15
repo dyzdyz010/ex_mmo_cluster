@@ -19,6 +19,7 @@
 pub mod authority;
 pub mod cli;
 pub mod core;
+pub mod mesher;
 pub mod plugin;
 pub mod prefab;
 pub mod wire;
