@@ -16,10 +16,14 @@
 //! `apps/scene_server/priv/fixtures/voxel/` are the canonical payloads
 //! (no opcode byte, no `{packet,4}` length prefix).
 
+pub mod blocks;
 pub mod cursor;
+pub mod delta;
 pub mod invalidate;
 
+pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
 pub use cursor::{Reader, Writer};
+pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use invalidate::ChunkInvalidate;
 
 use crate::protocol::ProtocolError;
@@ -43,6 +47,7 @@ pub const OP_VOXEL_EDIT_INTENT: u8 = 0x70;
 /// Decoded server→client voxel message. Grows one variant per M1 sub-step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoxelServerMessage {
+    ChunkDelta(ChunkDelta),
     ChunkInvalidate(ChunkInvalidate),
 }
 
@@ -54,6 +59,7 @@ pub fn decode_voxel_server_message(
 ) -> Result<VoxelServerMessage, ProtocolError> {
     let mut r = Reader::new(payload);
     let msg = match opcode {
+        OP_CHUNK_DELTA => VoxelServerMessage::ChunkDelta(ChunkDelta::decode(&mut r)?),
         OP_CHUNK_INVALIDATE => {
             VoxelServerMessage::ChunkInvalidate(ChunkInvalidate::decode(&mut r)?)
         }
@@ -72,6 +78,7 @@ pub fn decode_voxel_server_message(
 pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
     let mut w = Writer::new();
     match msg {
+        VoxelServerMessage::ChunkDelta(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
     }
     w.into_bytes()
@@ -122,6 +129,53 @@ mod tests {
             "chunk_invalidate_catalog_changed",
         ] {
             roundtrip_invalidate(name);
+        }
+    }
+
+    fn roundtrip_delta(name: &str) {
+        let golden = fixtures::golden(name);
+        let decoded = ChunkDelta::decode(&mut Reader::new(&golden))
+            .unwrap_or_else(|e| panic!("decode {name}: {}", e.0));
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "round-trip byte mismatch for fixture {name}"
+        );
+    }
+
+    #[test]
+    fn chunk_delta_golden_roundtrip() {
+        // Covers CellEmpty(0), CellSolid(1), CellRefined(2) op kinds + multi-op.
+        for name in [
+            "delta_cell_empty",
+            "delta_cell_solid",
+            "delta_cell_refined",
+            "delta_multi_op",
+        ] {
+            roundtrip_delta(name);
+        }
+    }
+
+    #[test]
+    fn chunk_delta_solid_decode_values() {
+        // delta_cell_solid: scene=10, base=1→new=2, one CellSolid op
+        // (macro 1234, material 11, health 100).
+        let golden = fixtures::golden("delta_cell_solid");
+        let delta = ChunkDelta::decode(&mut Reader::new(&golden)).unwrap();
+        assert_eq!(delta.logical_scene_id, 10);
+        assert_eq!(delta.base_chunk_version, 1);
+        assert_eq!(delta.new_chunk_version, 2);
+        assert_eq!(delta.ops.len(), 1);
+        let op = &delta.ops[0];
+        assert_eq!(op.macro_index, 1234);
+        match &op.cell {
+            DeltaCell::Solid(block) => {
+                assert_eq!(block.material_id, 11);
+                assert_eq!(block.health, 100);
+            }
+            other => panic!("expected CellSolid, got {other:?}"),
         }
     }
 
