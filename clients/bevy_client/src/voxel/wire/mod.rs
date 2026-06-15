@@ -20,11 +20,16 @@ pub mod blocks;
 pub mod cursor;
 pub mod delta;
 pub mod invalidate;
+pub mod snapshot;
 
 pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use invalidate::ChunkInvalidate;
+pub use snapshot::{
+    AttributeEntry, AttributeSet, AttributeValue, ChunkObjectRef, ChunkSnapshot,
+    EnvironmentSummary, MacroHeader, SnapshotSection, TagSet,
+};
 
 use crate::protocol::ProtocolError;
 
@@ -47,6 +52,7 @@ pub const OP_VOXEL_EDIT_INTENT: u8 = 0x70;
 /// Decoded server→client voxel message. Grows one variant per M1 sub-step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoxelServerMessage {
+    ChunkSnapshot(ChunkSnapshot),
     ChunkDelta(ChunkDelta),
     ChunkInvalidate(ChunkInvalidate),
 }
@@ -59,6 +65,7 @@ pub fn decode_voxel_server_message(
 ) -> Result<VoxelServerMessage, ProtocolError> {
     let mut r = Reader::new(payload);
     let msg = match opcode {
+        OP_CHUNK_SNAPSHOT => VoxelServerMessage::ChunkSnapshot(ChunkSnapshot::decode(&mut r)?),
         OP_CHUNK_DELTA => VoxelServerMessage::ChunkDelta(ChunkDelta::decode(&mut r)?),
         OP_CHUNK_INVALIDATE => {
             VoxelServerMessage::ChunkInvalidate(ChunkInvalidate::decode(&mut r)?)
@@ -78,6 +85,7 @@ pub fn decode_voxel_server_message(
 pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
     let mut w = Writer::new();
     match msg {
+        VoxelServerMessage::ChunkSnapshot(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkDelta(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
     }
@@ -143,6 +151,55 @@ mod tests {
             golden,
             "round-trip byte mismatch for fixture {name}"
         );
+    }
+
+    fn roundtrip_snapshot(name: &str) {
+        let golden = fixtures::golden(name);
+        let decoded = ChunkSnapshot::decode(&mut Reader::new(&golden))
+            .unwrap_or_else(|e| panic!("decode {name}: {}", e.0));
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "round-trip byte mismatch for fixture {name}"
+        );
+    }
+
+    #[test]
+    fn chunk_snapshot_golden_roundtrip() {
+        // Every section type, empty + populated.
+        for name in [
+            "snapshot_empty",
+            "snapshot_macro_only",
+            "snapshot_refined",
+            "snapshot_attribute_pool",
+            "snapshot_tag_pool",
+            "snapshot_environment",
+            "snapshot_object_refs",
+            "snapshot_full",
+        ] {
+            roundtrip_snapshot(name);
+        }
+    }
+
+    #[test]
+    fn chunk_snapshot_empty_structure() {
+        let golden = fixtures::golden("snapshot_empty");
+        let snap = ChunkSnapshot::decode(&mut Reader::new(&golden)).unwrap();
+        assert_eq!(snap.schema_version, 1);
+        assert_eq!(snap.chunk_size_in_macro, 16);
+        assert_eq!(snap.micro_resolution, 8);
+        assert_eq!(snap.chunk_version, 1);
+        assert_eq!(snap.chunk_hash, 0xE70921CDF143C5EE);
+        assert_eq!(snap.sections.len(), 7);
+        // 16^3 = 4096 macro headers, all empty mode.
+        let headers = snap.macro_headers().expect("macro headers section");
+        assert_eq!(headers.len(), 4096);
+        assert!(headers.iter().all(|h| h.mode == 0));
+        // All payload pools empty.
+        assert_eq!(snap.normal_blocks().map(<[_]>::len), Some(0));
+        assert_eq!(snap.refined_cells().map(<[_]>::len), Some(0));
     }
 
     #[test]
