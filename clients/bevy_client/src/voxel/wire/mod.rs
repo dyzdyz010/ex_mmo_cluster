@@ -20,12 +20,14 @@ pub mod blocks;
 pub mod cursor;
 pub mod delta;
 pub mod invalidate;
+pub mod object_state;
 pub mod snapshot;
 
 pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use invalidate::ChunkInvalidate;
+pub use object_state::ObjectStateDelta;
 pub use snapshot::{
     AttributeEntry, AttributeSet, AttributeValue, ChunkObjectRef, ChunkSnapshot,
     EnvironmentSummary, MacroHeader, SnapshotSection, TagSet,
@@ -55,6 +57,7 @@ pub enum VoxelServerMessage {
     ChunkSnapshot(ChunkSnapshot),
     ChunkDelta(ChunkDelta),
     ChunkInvalidate(ChunkInvalidate),
+    ObjectStateDelta(ObjectStateDelta),
 }
 
 /// Dispatches a voxel server payload (opcode already stripped by the net layer)
@@ -69,6 +72,9 @@ pub fn decode_voxel_server_message(
         OP_CHUNK_DELTA => VoxelServerMessage::ChunkDelta(ChunkDelta::decode(&mut r)?),
         OP_CHUNK_INVALIDATE => {
             VoxelServerMessage::ChunkInvalidate(ChunkInvalidate::decode(&mut r)?)
+        }
+        OP_OBJECT_STATE_DELTA => {
+            VoxelServerMessage::ObjectStateDelta(ObjectStateDelta::decode(&mut r)?)
         }
         other => {
             return Err(ProtocolError(format!(
@@ -88,6 +94,7 @@ pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
         VoxelServerMessage::ChunkSnapshot(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkDelta(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
+        VoxelServerMessage::ObjectStateDelta(m) => m.encode(&mut w),
     }
     w.into_bytes()
 }
@@ -234,6 +241,40 @@ mod tests {
             }
             other => panic!("expected CellSolid, got {other:?}"),
         }
+    }
+
+    fn roundtrip_object_state(name: &str) {
+        let golden = fixtures::golden(name);
+        let decoded = ObjectStateDelta::decode(&mut Reader::new(&golden))
+            .unwrap_or_else(|e| panic!("decode {name}: {}", e.0));
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "round-trip byte mismatch for fixture {name}"
+        );
+    }
+
+    #[test]
+    fn object_state_delta_golden_roundtrip() {
+        for name in [
+            "object_state_delta_damaged",
+            "object_state_delta_destroyed",
+            "object_state_delta_part_destroyed",
+        ] {
+            roundtrip_object_state(name);
+        }
+    }
+
+    #[test]
+    fn object_state_delta_part_destroyed_values() {
+        let golden = fixtures::golden("object_state_delta_part_destroyed");
+        let osd = ObjectStateDelta::decode(&mut Reader::new(&golden)).unwrap();
+        assert_eq!(osd.logical_scene_id, 7);
+        assert_eq!(osd.object_version, 42);
+        assert_eq!(osd.state_flags, 0x04);
+        assert_eq!(osd.affected_chunks, vec![[0, 0, 0], [1, 0, 0]]);
     }
 
     #[test]
