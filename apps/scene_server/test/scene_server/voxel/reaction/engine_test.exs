@@ -172,8 +172,13 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
       assert eff.to_material_id == water_id()
     end
 
-    test "蒸汽稳定(暂无 condense 规则,不被任何规则触发)" do
-      assert [] = Engine.evaluate([cell(steam_id(), 50.0)], Rules.all())
+    test "蒸汽 < 100℃ 冷凝回水;≥100℃ 稳定(完成可逆水循环,防振荡)" do
+      assert [{:transform_material, eff}] = Engine.evaluate([cell(steam_id(), 50.0)], Rules.all())
+      assert eff.from_material_id == steam_id()
+      assert eff.to_material_id == water_id()
+      assert eff.rule_id == :steam_condenses
+      # 恰 100℃ 不冷凝(严格 <,与水沸 ≥100 错开);> 100 稳定。
+      assert [] = Engine.evaluate([cell(steam_id(), 100.0)], Rules.all())
       assert [] = Engine.evaluate([cell(steam_id(), 150.0)], Rules.all())
     end
 

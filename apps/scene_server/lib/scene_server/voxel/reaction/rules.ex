@@ -38,6 +38,16 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                  priority: 0
                )
 
+  # 蒸汽 < 100℃(水沸点)冷凝回水,完成 ice↔water↔steam 可逆水循环。严格 < 与水沸 ≥100 错开防振荡。
+  @steam_condenses Rule.new!(
+                     id: :steam_condenses,
+                     kind: :phase_transition,
+                     from_material: :steam,
+                     condition: {:temperature, :lt, {:celsius, 100.0}},
+                     to_material: :water,
+                     priority: 0
+                   )
+
   # R5 燃烧(旗舰涌现 · 反馈回路)。常量为定性档 game-feel(模型卡 :qualitative),非严格燃烧焓。
   # 燃烧释放 ~30MJ/tick(木 ΔT≈30K/tick),burn_progress 每 tick +0.025(~40 tick=4s 烧尽)。
   @combustion_joules_per_tick 30_000_000.0
@@ -73,7 +83,15 @@ defmodule SceneServer.Voxel.Reaction.Rules do
               effects: [{:transform, :ash}, {:remove_tag, :burning}]
             )
 
-  @all [@ice_melts, @water_freezes, @water_boils, @ignite, @burn, @burn_out]
+  @all [
+    @ice_melts,
+    @water_freezes,
+    @water_boils,
+    @steam_condenses,
+    @ignite,
+    @burn,
+    @burn_out
+  ]
 
   @doc "全部反应规则。"
   @spec all() :: [Rule.t()]
