@@ -268,9 +268,10 @@ Migration 位于 `apps/data_service/priv/repo/migrations/`。
 - **CI**：当前应至少验证 `mix compile`、`mix test`，以及必要的单 app 测试
 - 完整迁移路线图见 `docs/2026-04-07-增量迁移计划.md`
 
-## 客户端策略（2026-05-13 解冻后）
+## 客户端策略（2026-06-15 bevy 转主线后）
 
-- **2026-05-13 撤销 2026-04-26 起 `clients/web_client` 冻结纪律。** 体素权威化主线（Phase 1 / 2 / 3 / 5）客户端 decoder / parity 验收口径恢复以 `clients/web_client` 为准；`clients/bevy_client`（Rust + Bevy 0.18，第三人称 3D 视图）保留为参考实现，**不作为主线 parity 测试目标**。
-- 协议层只追加字段、不破坏 wire layout 的纪律仍然适用；**双端 parity 不再强制**，但 `web_client` 是主线验证端，新协议字段需在 `web_client` decoder 上落地并通过 parity / 字节序验收，`bevy_client` 可滞后跟进或暂缓。
-- 任何 audit / sweep / 设计文档若需要"客户端端到端验证"，默认指向 `web_client`；若特别需要参考 `bevy_client` 行为，需在文档中显式标注其参考性质。
-- 完整决策记录：`../TheWorldBook/docs/2026-05-13-解冻-web_client-决策.md`；本仓单页摘要：`docs/2026-05-13-thaw-web-client-policy-change.md`。
+- **2026-06-15 反转 2026-05-13「解冻 web_client」决策。** 自此 `clients/bevy_client`（Rust + Bevy 0.18，第三人称 3D）为**主攻 / 主线客户端**，所有新功能在 bevy 侧实现；`clients/web_client`（TS + Three.js）降为**滞后的参考 oracle**——保留作 fields/电/热/debris 的可用实现与字节级 parity 常量的 **spec / 真值源**，但不再主动开发新功能（非"冻结"，是镜像它当初给 bevy 的参考角色）。
+- 逐条反转 2026-05-13 的四条纪律：(a) decoder / parity 验收口径**移回 `bevy_client`**；(b) 后续主线 Phase 客户端验收闸门**指向 bevy**；(c) 新协议字段须**先落 bevy decoder + 过 bevy parity / 字节序测试**；(d) audit / sweep / 设计文档「客户端端到端验证」**默认指向 bevy**。
+- 协议层只追加字段、不破坏 wire layout 的纪律仍然适用。bevy 主线先做协议 drift audit（`bevy protocol.rs` vs 当前 `GateServer.Codec` + 线协议规范），并接入 golden-fixture（`apps/scene_server/priv/fixtures/voxel/*.golden`）跨语言 round-trip parity 测试。
+- **现状提醒**：自 2026-05-13 起 bevy 缺整个 post-thaw voxel-authority gameplay 层（fields/电/热/power-block/ObjectStateDelta/debris/prefab-v2），且体素仍是离线本地 naive 渲染——转主线后首要补齐，移植期以 web_client 为 spec。
+- 完整决策与目标架构：`docs/2026-06-15-bevy-client-mainline-architecture.md`（本仓主记录）。被反转的旧决策：`docs/2026-05-13-thaw-web-client-policy-change.md`。
