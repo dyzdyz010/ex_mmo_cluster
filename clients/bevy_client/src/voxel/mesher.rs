@@ -187,6 +187,183 @@ pub fn mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
     mesh
 }
 
+/// Greedy mesher: like [`mesh_chunk`] (exposed-face culling) but merges
+/// coplanar, same-material exposed faces into larger quads — the big vertex /
+/// draw-call reduction for large scale. A fully-solid 16³ chunk drops from 1536
+/// quads (`mesh_chunk`) to **6** (one merged quad per outer face).
+///
+/// Winding is derived systematically from the axis triple `(u,v,d)` with
+/// `u=(d+1)%3, v=(d+2)%3` so `u×v = +d`; for a single cell it produces the same
+/// CCW face cycle as [`mesh_chunk`] (cross-validated in tests), so `mesh_chunk`
+/// serves as the reference oracle.
+pub fn greedy_mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
+    let size = chunk.chunk_size_in_macro as i32;
+    let mut mesh = ChunkMeshData::default();
+    if size <= 0 {
+        return mesh;
+    }
+
+    // Per face direction: axis d ∈ {0,1,2} and sign ∈ {+1,-1}.
+    for d in 0..3usize {
+        let u_axis = (d + 1) % 3;
+        let v_axis = (d + 2) % 3;
+        for &sign in &[1i32, -1i32] {
+            // For each slice along d (the cell's d-coordinate).
+            for s in 0..size {
+                // Build a size×size mask of exposed-face materials in this slice.
+                // mask[v * size + u].
+                let mut mask: Vec<Option<u32>> = vec![None; (size * size) as usize];
+                for v in 0..size {
+                    for u in 0..size {
+                        let cell = cell_at(chunk, size, d, s, u, v);
+                        if !occupies(cell) {
+                            continue;
+                        }
+                        let ns = s + sign;
+                        let occluded =
+                            ns >= 0 && ns < size && occupies(cell_at(chunk, size, d, ns, u, v));
+                        if !occluded {
+                            mask[(v * size + u) as usize] = Some(cell_material(cell));
+                        }
+                    }
+                }
+
+                // The face plane's d-value: far side (s+1) for +sign, near (s) for -.
+                let plane_d = if sign > 0 { s + 1 } else { s };
+                greedy_merge(&mut mask, size, |u0, v0, w, h, material_id| {
+                    emit_greedy_quad(
+                        &mut mesh,
+                        voxel_size,
+                        d,
+                        u_axis,
+                        v_axis,
+                        sign,
+                        plane_d,
+                        u0,
+                        v0,
+                        w,
+                        h,
+                        material_id,
+                    );
+                });
+            }
+        }
+    }
+
+    mesh
+}
+
+/// Accesses a cell by (axis-d coordinate, u coordinate, v coordinate).
+fn cell_at(chunk: &AuthorityChunk, size: i32, d: usize, s: i32, u: i32, v: i32) -> &CellState {
+    let u_axis = (d + 1) % 3;
+    let v_axis = (d + 2) % 3;
+    let mut coord = [0i32; 3];
+    coord[d] = s;
+    coord[u_axis] = u;
+    coord[v_axis] = v;
+    let index = coord[0] + coord[1] * size + coord[2] * size * size;
+    &chunk.cells[index as usize]
+}
+
+/// Greedily merges equal-value rectangles out of a `size×size` mask, calling
+/// `emit(u0, v0, w, h, value)` per merged rectangle. Consumes the mask.
+fn greedy_merge(
+    mask: &mut [Option<u32>],
+    size: i32,
+    mut emit: impl FnMut(i32, i32, i32, i32, u32),
+) {
+    let at = |u: i32, v: i32| (v * size + u) as usize;
+    for v in 0..size {
+        let mut u = 0;
+        while u < size {
+            match mask[at(u, v)] {
+                None => u += 1,
+                Some(material_id) => {
+                    // Extend width while same material.
+                    let mut w = 1;
+                    while u + w < size && mask[at(u + w, v)] == Some(material_id) {
+                        w += 1;
+                    }
+                    // Extend height while every cell in the row matches.
+                    let mut h = 1;
+                    'height: while v + h < size {
+                        for k in 0..w {
+                            if mask[at(u + k, v + h)] != Some(material_id) {
+                                break 'height;
+                            }
+                        }
+                        h += 1;
+                    }
+                    // Consume the merged rectangle.
+                    for dv in 0..h {
+                        for du in 0..w {
+                            mask[at(u + du, v + dv)] = None;
+                        }
+                    }
+                    emit(u, v, w, h, material_id);
+                    u += w;
+                }
+            }
+        }
+    }
+}
+
+/// Emits one merged greedy quad. Corner order is CCW for the outward normal:
+/// `+sign` → P00,P10,P11,P01 (so `u×v = +d`); `-sign` → reversed.
+#[allow(clippy::too_many_arguments)]
+fn emit_greedy_quad(
+    mesh: &mut ChunkMeshData,
+    voxel_size: f32,
+    d: usize,
+    u_axis: usize,
+    v_axis: usize,
+    sign: i32,
+    plane_d: i32,
+    u0: i32,
+    v0: i32,
+    w: i32,
+    h: i32,
+    material_id: u32,
+) {
+    let point = |u: i32, v: i32| -> [f32; 3] {
+        let mut p = [0f32; 3];
+        p[d] = plane_d as f32 * voxel_size;
+        p[u_axis] = u as f32 * voxel_size;
+        p[v_axis] = v as f32 * voxel_size;
+        p
+    };
+    let (p00, p10, p11, p01) = (
+        point(u0, v0),
+        point(u0 + w, v0),
+        point(u0 + w, v0 + h),
+        point(u0, v0 + h),
+    );
+    let mut normal = [0f32; 3];
+    normal[d] = sign as f32;
+    // +sign: CCW from outside is P00→P10→P11→P01; -sign reverses.
+    let corners = if sign > 0 {
+        [p00, p10, p11, p01]
+    } else {
+        [p00, p01, p11, p10]
+    };
+    let uvs = [
+        [0.0, 0.0],
+        [w as f32, 0.0],
+        [w as f32, h as f32],
+        [0.0, h as f32],
+    ];
+
+    let base = mesh.positions.len() as u32;
+    for (corner, uv) in corners.iter().zip(uvs.iter()) {
+        mesh.positions.push(*corner);
+        mesh.normals.push(normal);
+        mesh.uvs.push(*uv);
+        mesh.material_ids.push(material_id);
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
 fn emit_quad(
     mesh: &mut ChunkMeshData,
     x: i32,
@@ -302,5 +479,85 @@ mod tests {
         };
         let mesh = mesh_chunk(&chunk, 1.0);
         assert_eq!(mesh.quad_count(), 6 * SIZE * SIZE);
+    }
+
+    // ── Greedy mesher (cross-validated against the exposed-face oracle) ──
+
+    fn total_area(mesh: &ChunkMeshData) -> f32 {
+        fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+            [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        }
+        fn cross(u: [f32; 3], v: [f32; 3]) -> [f32; 3] {
+            [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ]
+        }
+        fn len(v: [f32; 3]) -> f32 {
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+        }
+        let mut area = 0.0;
+        for t in mesh.indices.chunks(3) {
+            let a = mesh.positions[t[0] as usize];
+            let b = mesh.positions[t[1] as usize];
+            let c = mesh.positions[t[2] as usize];
+            area += 0.5 * len(cross(sub(b, a), sub(c, a)));
+        }
+        area
+    }
+
+    #[test]
+    fn greedy_fully_solid_chunk_is_six_quads() {
+        // The headline scale win: a full 16³ chunk → 6 merged quads (one per
+        // outer face) instead of 6*16²=1536.
+        let chunk = AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: SIZE as u8,
+            cells: vec![solid(5); SIZE * SIZE * SIZE],
+        };
+        let greedy = greedy_mesh_chunk(&chunk, 1.0);
+        assert_eq!(greedy.quad_count(), 6);
+        // Same total surface area as the exposed-face oracle (6 * size²).
+        let exposed = mesh_chunk(&chunk, 1.0);
+        assert!((total_area(&greedy) - exposed.quad_count() as f32).abs() < 1e-2);
+    }
+
+    #[test]
+    fn greedy_single_cell_matches_exposed_face() {
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(8, 8, 8)] = solid(3);
+        let greedy = greedy_mesh_chunk(&chunk, 1.0);
+        let exposed = mesh_chunk(&chunk, 1.0);
+        // Can't merge a lone cell → 6 quads, same coverage as exposed-face.
+        assert_eq!(greedy.quad_count(), 6);
+        assert_eq!(greedy.quad_count(), exposed.quad_count());
+        assert!((total_area(&greedy) - total_area(&exposed)).abs() < 1e-3);
+        assert!(greedy.material_ids.iter().all(|&m| m == 3));
+    }
+
+    #[test]
+    fn greedy_merges_a_flat_floor_and_never_exceeds_exposed_face() {
+        // A full y=0 layer: top + bottom faces each merge to 1 big quad.
+        let mut chunk = empty_chunk();
+        for z in 0..SIZE {
+            for x in 0..SIZE {
+                chunk.cells[idx(x, 0, z)] = solid(2);
+            }
+        }
+        let greedy = greedy_mesh_chunk(&chunk, 1.0);
+        let exposed = mesh_chunk(&chunk, 1.0);
+        assert!(greedy.quad_count() <= exposed.quad_count());
+        assert!(
+            greedy.quad_count() < exposed.quad_count(),
+            "greedy must merge"
+        );
+        // Identical covered surface area as the oracle.
+        assert!((total_area(&greedy) - total_area(&exposed)).abs() < 1e-2);
+    }
+
+    #[test]
+    fn greedy_empty_chunk_is_empty() {
+        assert!(greedy_mesh_chunk(&empty_chunk(), 1.0).is_empty());
     }
 }

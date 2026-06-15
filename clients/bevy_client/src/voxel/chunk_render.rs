@@ -24,7 +24,7 @@ use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::voxel::authority::ChunkCoord;
 use crate::voxel::authority_plugin::VoxelAuthority;
-use crate::voxel::mesher::{ChunkMeshData, mesh_chunk};
+use crate::voxel::mesher::{ChunkMeshData, greedy_mesh_chunk};
 
 /// Render-space size of one macro cell.
 const MACRO_RENDER_SIZE: f32 = 1.0;
@@ -77,7 +77,7 @@ fn render_dirty_chunks(
     for coord in dirty {
         match authority.store.chunk(coord) {
             Some(chunk) => {
-                let data = mesh_chunk(chunk, MACRO_RENDER_SIZE);
+                let data = greedy_mesh_chunk(chunk, MACRO_RENDER_SIZE);
                 if data.is_empty() {
                     despawn_chunk(&mut commands, &mut entities, coord);
                     continue;
@@ -187,10 +187,10 @@ mod tests {
             chunk_size_in_macro: size as u8,
             cells,
         };
-        let data = mesh_chunk(&chunk, MACRO_RENDER_SIZE);
+        let data = greedy_mesh_chunk(&chunk, MACRO_RENDER_SIZE);
         let mesh = build_mesh(&data);
 
-        // 6 faces × 4 verts = 24 vertices; indices = 36.
+        // A lone solid cell can't merge → 6 faces × 4 verts = 24 vertices.
         assert_eq!(mesh.count_vertices(), 24);
         assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).is_some());
         assert!(mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some());
