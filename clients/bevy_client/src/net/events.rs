@@ -47,6 +47,13 @@ pub enum NetworkCommand {
         target_position: Option<NetVec3>,
     },
     RequestReconcileStats,
+    /// Subscribe to voxel chunks around a center (L∞ radius), requesting a full
+    /// snapshot. Drives the server→client chunk stream.
+    SubscribeChunks {
+        logical_scene_id: u64,
+        center_chunk: [i32; 3],
+        radius: u8,
+    },
     Shutdown,
 }
 

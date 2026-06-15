@@ -275,6 +275,24 @@ impl ClientRuntime {
                     last_correction_distance: stats.last_correction_distance,
                 });
             }
+            NetworkCommand::SubscribeChunks {
+                logical_scene_id,
+                center_chunk,
+                radius,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                let subscribe = crate::voxel::wire::ChunkSubscribe {
+                    request_id,
+                    logical_scene_id,
+                    center_chunk,
+                    radius_l_inf: radius,
+                    want_snapshot: true,
+                    known: Vec::new(),
+                };
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
+                    crate::voxel::wire::VoxelClientMessage::ChunkSubscribe(subscribe),
+                )));
+            }
             _ => {}
         }
 

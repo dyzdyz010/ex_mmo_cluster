@@ -76,6 +76,9 @@ pub enum ClientMessage {
         target_cid: i64,
         target_position: NetVec3,
     },
+    /// Client→server voxel message (chunk subscribe/unsubscribe/edit intents),
+    /// opcodes 0x60–0x70. Encoded as `opcode + body`.
+    Voxel(crate::voxel::wire::VoxelClientMessage),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -511,6 +514,13 @@ pub fn encode_client_payload(message: &ClientMessage) -> Vec<u8> {
             payload.extend_from_slice(&target_position[2].to_be_bytes());
             payload
         }
+        ClientMessage::Voxel(voxel) => {
+            // Frame = opcode byte + voxel body (the net layer adds the {packet,4}
+            // length prefix via encode_client_frame).
+            let mut payload = vec![voxel.opcode()];
+            payload.extend_from_slice(&voxel.encode_body());
+            payload
+        }
     }
 }
 
@@ -665,6 +675,30 @@ mod tests {
         });
         assert_eq!(u32::from_be_bytes(skill[0..4].try_into().unwrap()), 44);
         assert_eq!(skill[4], 0x09);
+    }
+
+    #[test]
+    fn encodes_voxel_client_message_as_opcode_plus_body() {
+        use crate::voxel::wire::{ChunkSubscribe, Reader, VoxelClientMessage};
+        let sub = ChunkSubscribe {
+            request_id: 1,
+            logical_scene_id: 7,
+            center_chunk: [0, 1, -2],
+            radius_l_inf: 2,
+            want_snapshot: true,
+            known: Vec::new(),
+        };
+        let frame = encode_client_frame(&ClientMessage::Voxel(VoxelClientMessage::ChunkSubscribe(
+            sub.clone(),
+        )));
+        // 4-byte length prefix, then opcode 0x60, then the subscribe body.
+        let body_len = u32::from_be_bytes(frame[0..4].try_into().unwrap()) as usize;
+        assert_eq!(body_len, frame.len() - 4);
+        assert_eq!(frame[4], 0x60);
+        assert_eq!(
+            ChunkSubscribe::decode(&mut Reader::new(&frame[5..])).unwrap(),
+            sub
+        );
     }
 
     #[test]

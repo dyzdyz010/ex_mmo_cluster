@@ -418,6 +418,14 @@ pub(super) fn observe_outbound_message(
                 ("target_position", format_vec(target_position)),
             ],
         ),
+        ClientMessage::Voxel(voxel) => observer.emit(
+            "network",
+            "send_voxel",
+            &[
+                ("transport", transport.to_string()),
+                ("opcode", format!("0x{:02x}", voxel.opcode())),
+            ],
+        ),
     }
 }
 
