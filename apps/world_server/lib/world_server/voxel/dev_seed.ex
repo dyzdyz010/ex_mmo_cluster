@@ -11,26 +11,25 @@ defmodule WorldServer.Voxel.DevSeed do
 
   Starter terrain layout:
 
-  - A flat stone platform spanning a block of chunks (`@platform_chunk_min`..
-    `@platform_chunk_max`, half-open; default 5×5 horizontal = chunk x,z ∈ -2..2,
-    y = 0 = 25 chunks), filling each chunk's bottom macro slab `{mx, 0, mz}` for
-    `mx,mz in 0..15` with stone.
-  - A small source-conductor-load demo circuit sits one macro above the platform
-    on the center chunk `(0, 0, 0)` so first client load can verify automatic
-    current overlays.
+  - A deterministic value-noise heightmap (rolling hills, `TerrainNoise`) spanning
+    a block of chunks (`@platform_chunk_min`..`@platform_chunk_max`, half-open;
+    default 5×5 horizontal = chunk x,z ∈ -2..2, y = 0 = 25 chunks). Each `(mx, mz)`
+    column is filled solid from `y = 0` up to its noise height (clamped < 16 so it
+    stays inside the `y = 0` chunk): surface layer dirt, everything below stone.
 
-  All platform chunks live in one region (the default region holds 5×5×5 = 125
+  All terrain chunks live in one region (the default region holds 5×5×5 = 125
   chunks), so they share the region lease. `ChunkDirectory.apply_intents/2`
   rejects cross-chunk batches (`:batch_cross_chunk_unsupported`), so each chunk
   is seeded with its own `apply_intents` call, reusing the same lease/route.
   Writes go through the exact same path as `0x64 VoxelImpactIntent` from clients.
   The seed is idempotent: a second call re-issues the lease and skips macros that
-  already match the desired stone block.
+  already match the desired block (heights are a pure function of world coords).
   """
 
   alias WorldServer.CliObserve
   alias WorldServer.Voxel.LeaseWriteToken
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.TerrainNoise
 
   # Chunk size in macros along one axis. Mirrors
   # `SceneServer.Voxel.Types.chunk_size_in_macro/0` — duplicated locally because
@@ -46,31 +45,26 @@ defmodule WorldServer.Voxel.DevSeed do
   @default_lease_ttl_ms :timer.hours(6)
   @default_chunk_directory :__dev_seed_default_chunk_directory__
 
-  # Starter terrain footprint: a flat stone platform spanning a block of chunks
-  # (the bottom slab, y-macro 0, of each chunk), plus a small demo circuit on the
-  # center chunk. `@platform_chunk_min`/`@platform_chunk_max` are half-open
-  # chunk-coord bounds (matching `RegionAssignment.contains_chunk?/2`) and MUST
-  # stay inside the region bounds so every platform chunk shares the region lease.
-  # Default = 5×5 horizontal (chunk x,z ∈ -2..2, y = 0) = 25 chunks, which fits
-  # the default region {-2,-2,-2}..{3,3,3} — a multi-chunk floor so the client can
-  # exercise large-scale chunk meshing/streaming, not just one chunk.
+  # Starter terrain footprint: a noise heightmap (rolling hills) spanning a block
+  # of chunks, each column filled solid from `y = 0` up to its noise height.
+  # `@platform_chunk_min`/`@platform_chunk_max` are half-open chunk-coord bounds
+  # (matching `RegionAssignment.contains_chunk?/2`) and MUST stay inside the
+  # region bounds so every chunk shares the region lease. Default = 5×5 horizontal
+  # (chunk x,z ∈ -2..2, y = 0) = 25 chunks, fitting the default region
+  # {-2,-2,-2}..{3,3,3} — a multi-chunk terrain so the client exercises
+  # large-scale chunk meshing/streaming with real relief, not a flat slab.
   @platform_chunk {0, 0, 0}
   @platform_chunk_min {-2, 0, -2}
   @platform_chunk_max {3, 1, 3}
-  @platform_y_macro 0
-  @platform_material_id 1
-  @demo_circuit_blocks [
-    {{6, 1, 6}, 6},
-    {{7, 1, 6}, 5},
-    {{8, 1, 6}, 7},
-    {{9, 1, 6}, 5},
-    {{9, 1, 7}, 5},
-    {{9, 1, 8}, 5},
-    {{8, 1, 8}, 5},
-    {{7, 1, 8}, 5},
-    {{6, 1, 8}, 5},
-    {{6, 1, 7}, 5}
-  ]
+
+  # Terrain noise: heights are clamped to [min, max] macro layers. Max is kept
+  # < chunk_size_in_macro (16) so each column stays inside its `y = 0` chunk.
+  # Surface layer is dirt, everything below is stone, for visible layering.
+  @terrain_seed 1337
+  @terrain_min_height 2
+  @terrain_max_height 14
+  @surface_material_id 1
+  @subsurface_material_id 2
 
   @doc """
   Ensures the default browser-development region has a current lease and that
@@ -323,41 +317,44 @@ defmodule WorldServer.Voxel.DevSeed do
     end
   end
 
-  # The seed intents for one chunk: a full 16×16 bottom-slab platform, plus the
-  # demo circuit only on the center chunk. `ChunkProcess.normalize_apply_intent`
-  # accepts a plain map (run through `NormalBlockData.normalize!/1`), so we pass
-  # maps directly to stay decoupled from `SceneServer.Voxel.NormalBlockData`.
-  defp chunk_seed_intents(chunk_coord, logical_scene_id, lease) do
-    platform_intents =
-      for mx <- 0..(@chunk_size_in_macro - 1),
-          mz <- 0..(@chunk_size_in_macro - 1) do
-        %{
-          logical_scene_id: logical_scene_id,
-          chunk_coord: chunk_coord,
-          lease: lease,
-          operation: :put_solid_block,
-          macro: {mx, @platform_y_macro, mz},
-          block: %{material_id: @platform_material_id, health: 100}
-        }
-      end
+  # The seed intents for one chunk: each (mx, mz) column filled solid from y=0 up
+  # to its noise height (surface = dirt, below = stone). Heights are clamped < 16
+  # so every column stays inside this `y = 0` chunk.
+  # `ChunkProcess.normalize_apply_intent` accepts a plain map (run through
+  # `NormalBlockData.normalize!/1`), so we pass maps directly to stay decoupled
+  # from `SceneServer.Voxel.NormalBlockData`.
+  defp chunk_seed_intents({cx, _cy, cz} = chunk_coord, logical_scene_id, lease) do
+    for mx <- 0..(@chunk_size_in_macro - 1),
+        mz <- 0..(@chunk_size_in_macro - 1),
+        height = column_height(cx, cz, mx, mz),
+        my <- 0..(height - 1),
+        my < @chunk_size_in_macro do
+      material_id =
+        if my == height - 1, do: @surface_material_id, else: @subsurface_material_id
 
-    platform_intents ++ circuit_intents(chunk_coord, logical_scene_id, lease)
-  end
-
-  defp circuit_intents(@platform_chunk, logical_scene_id, lease) do
-    Enum.map(@demo_circuit_blocks, fn {local_macro, material_id} ->
       %{
         logical_scene_id: logical_scene_id,
-        chunk_coord: @platform_chunk,
+        chunk_coord: chunk_coord,
         lease: lease,
         operation: :put_solid_block,
-        macro: local_macro,
+        macro: {mx, my, mz},
         block: %{material_id: material_id, health: 100}
       }
-    end)
+    end
   end
 
-  defp circuit_intents(_other_chunk, _logical_scene_id, _lease), do: []
+  # Noise surface height (count of solid macro layers) at the world-macro column
+  # of local (mx, mz) within chunk (cx, _, cz).
+  defp column_height(cx, cz, mx, mz) do
+    wx = cx * @chunk_size_in_macro + mx
+    wz = cz * @chunk_size_in_macro + mz
+
+    TerrainNoise.height(wx, wz,
+      seed: @terrain_seed,
+      min_height: @terrain_min_height,
+      max_height: @terrain_max_height
+    )
+  end
 
   # Per-chunk apply_intents, isolating a scene exit so one bad chunk does not
   # abort the whole platform seed.
@@ -372,24 +369,29 @@ defmodule WorldServer.Voxel.DevSeed do
   # at the center chunk for back-compat), adding chunk_count / chunk_errors.
   defp summarize_terrain(results) do
     base =
-      Enum.reduce(results, %{written: 0, skipped: 0, errors: 0, max_chunk_version: 0, chunk_errors: []}, fn
-        {_chunk_coord, _attempted, {:ok, reply}}, acc ->
-          %{
-            acc
-            | written: acc.written + Map.get(reply, :changed_count, 0),
-              skipped: acc.skipped + Map.get(reply, :skipped_count, 0),
-              max_chunk_version: max(acc.max_chunk_version, Map.get(reply, :chunk_version, 0))
-          }
+      Enum.reduce(
+        results,
+        %{written: 0, skipped: 0, errors: 0, max_chunk_version: 0, chunk_errors: []},
+        fn
+          {_chunk_coord, _attempted, {:ok, reply}}, acc ->
+            %{
+              acc
+              | written: acc.written + Map.get(reply, :changed_count, 0),
+                skipped: acc.skipped + Map.get(reply, :skipped_count, 0),
+                max_chunk_version: max(acc.max_chunk_version, Map.get(reply, :chunk_version, 0))
+            }
 
-        {chunk_coord, _attempted, {:error, reason}}, acc ->
-          %{
-            acc
-            | errors: acc.errors + 1,
-              chunk_errors: [
-                %{chunk_coord: Tuple.to_list(chunk_coord), error: inspect(reason)} | acc.chunk_errors
-              ]
-          }
-      end)
+          {chunk_coord, _attempted, {:error, reason}}, acc ->
+            %{
+              acc
+              | errors: acc.errors + 1,
+                chunk_errors: [
+                  %{chunk_coord: Tuple.to_list(chunk_coord), error: inspect(reason)}
+                  | acc.chunk_errors
+                ]
+            }
+        end
+      )
 
     chunk_count = length(results)
     attempted = Enum.reduce(results, 0, fn {_c, n, _r}, acc -> acc + n end)
@@ -402,8 +404,6 @@ defmodule WorldServer.Voxel.DevSeed do
       max_chunk_version: base.max_chunk_version,
       chunk_count: chunk_count,
       chunk_coord: Tuple.to_list(@platform_chunk),
-      platform_attempted: chunk_count * @chunk_size_in_macro * @chunk_size_in_macro,
-      demo_circuit_attempted: length(@demo_circuit_blocks),
       chunk_errors: Enum.reverse(base.chunk_errors)
     }
   end

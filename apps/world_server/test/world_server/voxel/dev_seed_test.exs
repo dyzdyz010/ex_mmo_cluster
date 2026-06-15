@@ -5,6 +5,9 @@ defmodule WorldServer.Voxel.DevSeedTest do
   alias WorldServer.Voxel.DevSeed
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.SceneNodeRegistry
+  alias WorldServer.Voxel.TerrainNoise
+
+  @noise_opts [seed: 1337, min_height: 2, max_height: 14]
 
   defmodule FakeChunkDirectory do
     @moduledoc false
@@ -125,7 +128,7 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert SceneNodeRegistry.lookup_assignment(registry, 890_001) == {:ok, scene_node}
   end
 
-  test "seeds the multi-chunk starter platform and demo circuit through chunk_directory.apply_intents" do
+  test "seeds the multi-chunk noise-terrain heightmap through chunk_directory.apply_intents" do
     token_store = WriteTokenStore
     ledger_name = :"dev_seed_terrain_ledger_#{System.unique_integer([:positive])}"
     ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
@@ -144,27 +147,35 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert created.status == :created
     terrain = created.terrain
     assert terrain != nil
-    # Default platform footprint = 5×5 horizontal chunks (x,z ∈ -2..2, y = 0).
-    expected_platform_chunks =
-      for cx <- -2..2, cz <- -2..2, into: MapSet.new(), do: {cx, 0, cz}
+    # Default footprint = 5×5 horizontal chunks (x,z ∈ -2..2, y = 0).
+    expected_chunks = for cx <- -2..2, cz <- -2..2, into: MapSet.new(), do: {cx, 0, cz}
+
+    # Total cells = sum of every column's noise height across all 25 chunks.
+    expected_total =
+      Enum.reduce(expected_chunks, 0, fn {cx, _cy, cz}, acc ->
+        Enum.reduce(0..15, acc, fn mx, acc_mx ->
+          Enum.reduce(0..15, acc_mx, fn mz, acc_mz ->
+            acc_mz + TerrainNoise.height(cx * 16 + mx, cz * 16 + mz, @noise_opts)
+          end)
+        end)
+      end)
 
     assert terrain.chunk_count == 25
-    # chunk_coord stays the center chunk for back-compat.
     assert terrain.chunk_coord == [0, 0, 0]
-    assert terrain.platform_attempted == 25 * 256
-    assert terrain.demo_circuit_attempted == 10
-    # 25 chunks × 256 platform cells + 10 circuit cells (center only) = 6410.
-    assert terrain.attempted == 25 * 256 + 10
-    assert terrain.written == 25 * 256 + 10
+    assert terrain.attempted == expected_total
+    assert terrain.written == expected_total
     assert terrain.errors == 0
     assert terrain.chunk_errors == []
+    # Flat-platform/circuit summary keys are gone in the heightmap seed.
+    refute Map.has_key?(terrain, :platform_attempted)
+    refute Map.has_key?(terrain, :demo_circuit_attempted)
 
     calls = FakeChunkDirectory.calls(fake_dir)
-    assert length(calls) == 25 * 256 + 10
+    assert length(calls) == expected_total
 
-    # Every platform chunk was seeded, all under the region lease.
+    # Every terrain chunk was seeded, all under the region lease.
     seeded_chunks = calls |> Enum.map(& &1.chunk_coord) |> MapSet.new()
-    assert seeded_chunks == expected_platform_chunks
+    assert seeded_chunks == expected_chunks
 
     Enum.each(calls, fn attrs ->
       assert attrs.logical_scene_id == 91
@@ -172,51 +183,23 @@ defmodule WorldServer.Voxel.DevSeedTest do
       assert attrs.lease.lease_id == created.lease_id
     end)
 
-    # Each chunk gets the full 16×16 bottom-slab platform (material 1, y-macro 0).
-    expected_platform_macros =
-      for mx <- 0..15, mz <- 0..15, into: MapSet.new(), do: {mx, 0, mz}
+    # Sample chunk: every column is filled contiguously y=0..H-1, surface dirt
+    # (material 1), everything below stone (material 2).
+    sample = {0, 0, 0}
+    sample_calls = Enum.filter(calls, &(&1.chunk_coord == sample))
 
-    calls_by_chunk = Enum.group_by(calls, & &1.chunk_coord)
+    sample_calls
+    |> Enum.group_by(fn a -> {elem(a.macro, 0), elem(a.macro, 2)} end)
+    |> Enum.each(fn {{mx, mz}, col_calls} ->
+      height = TerrainNoise.height(mx, mz, @noise_opts)
+      ys = col_calls |> Enum.map(fn a -> elem(a.macro, 1) end) |> Enum.sort()
+      assert ys == Enum.to_list(0..(height - 1))
 
-    Enum.each(expected_platform_chunks, fn chunk_coord ->
-      chunk_calls = Map.fetch!(calls_by_chunk, chunk_coord)
-      platform_macros = chunk_calls |> Enum.map(& &1.macro) |> MapSet.new()
-      assert MapSet.subset?(expected_platform_macros, platform_macros)
-
-      Enum.each(chunk_calls, fn attrs ->
-        if attrs.macro in expected_platform_macros do
-          assert attrs.block.material_id == 1
-        end
+      Enum.each(col_calls, fn a ->
+        {_x, y, _z} = a.macro
+        expected_material = if y == height - 1, do: 1, else: 2
+        assert a.block.material_id == expected_material
       end)
-    end)
-
-    # The demo circuit is only on the center chunk (one macro above the slab).
-    expected_circuit_materials = %{
-      {6, 1, 6} => 6,
-      {7, 1, 6} => 5,
-      {8, 1, 6} => 7,
-      {9, 1, 6} => 5,
-      {9, 1, 7} => 5,
-      {9, 1, 8} => 5,
-      {8, 1, 8} => 5,
-      {7, 1, 8} => 5,
-      {6, 1, 8} => 5,
-      {6, 1, 7} => 5
-    }
-
-    center_by_macro =
-      calls_by_chunk
-      |> Map.fetch!({0, 0, 0})
-      |> Map.new(fn attrs -> {attrs.macro, attrs.block.material_id} end)
-
-    Enum.each(expected_circuit_materials, fn {macro, material_id} ->
-      assert center_by_macro[macro] == material_id
-    end)
-
-    # Non-center chunks carry no circuit (only y-macro 0 platform cells).
-    Enum.each(MapSet.delete(expected_platform_chunks, {0, 0, 0}), fn chunk_coord ->
-      ys = calls_by_chunk |> Map.fetch!(chunk_coord) |> Enum.map(fn a -> elem(a.macro, 1) end)
-      assert Enum.all?(ys, &(&1 == 0))
     end)
   end
 
