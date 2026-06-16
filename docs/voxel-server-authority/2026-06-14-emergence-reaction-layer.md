@@ -238,6 +238,18 @@ R7 把负载"通电"做成了**权威可观测 truth 态**(`:powered` tag),但 `
 
 ## 进度日志(时间倒序)
 
+- 2026-06-16:**R9a 通电加热器完成,把 R7 `:powered` 接到第一个具体设备动作(circuit→热→熔)**。
+  续做暂停的服务器功能(涌现反应层),沿行为无关骨架接设备动作。(1)`Rule`:`tag_reaction` 加可选
+  `material` 过滤(设备材料专属行为,`new!` 校验真实材料),phase_transition 不受影响。(2)`Engine`:
+  `tag_effects` 加 `material_matches?`(`material: nil` 不限,否则 cell 材料须等于该材料)。(3)`Rules`:
+  新 `:powered_heater`(`material: :electric_load, require_tags: [:powered] → emit_heat_joules`)——
+  复用 electric_load 材料(R7 已置 `:powered`,无需新材料/电角色)+ 既有 emit_heat 通路。(4)热量
+  100MJ/tick 定性档(electric_load 热容 ~4× 木 + 守恒扩散均摊进 field 热网格,需较大值才可见,同
+  R6d 洞察)。**涌现链全复用**:circuit 闭合 → R7 `:powered` → 加热器放热 → R6c 守恒热扩散 → R4 熔邻冰。
+  测试:Engine/Rule 单测 4(通电 load 放热 / 断电不放 / 通电非 load 材料不放=material 过滤 / Rule
+  material 校验)+ e2e 1(**受控**:加热器与冰均起 -10℃ → 扩散本身不熔,唯一能量源是通电加热器 →
+  冰升过 0℃ 熔为水)。scene 全量 **1006/0 零净回归**。决策稿 §4e。R9b 通电门(passability 新维度 +
+  缺 tag 条件)/ R8 实体击穿伤害作后续。
 - 2026-06-15:**R8 放电击穿伤害完成,放电沿路径毁块**。把一直在算却无后果的 `ionization`/放电击穿接到 truth:
   (1)新效果类型 `{:damage_block, %{macro_index, amount, source}}`。(2)`ElectricDischargeKernel.tick` 除沿
   Dijkstra 击穿路径发热外,新发 `discharge_damage_effects`——对路径上**实心 macro 块且 health>0** 的 cell
