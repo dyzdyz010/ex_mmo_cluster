@@ -337,6 +337,56 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "R9b 通电门(:powered↔:open tag 状态机)" do
+    defp door_id, do: MaterialCatalog.material_id(:door)
+
+    defp dcell(tags, macro_index \\ 0) do
+      %{macro_index: macro_index, material_id: door_id(), temperature_celsius: 20.0, tags: tags}
+    end
+
+    test "通电的关门 → 开(加 :open)" do
+      effects = Engine.evaluate([dcell([:powered])], Rules.all())
+      assert {:set_tag, st} = Enum.find(effects, &match?({:set_tag, _}, &1))
+      assert :open in st.add
+      assert st.remove == []
+    end
+
+    test "失电的开门 → 关(去 :open)" do
+      effects = Engine.evaluate([dcell([:open])], Rules.all())
+      assert {:set_tag, st} = Enum.find(effects, &match?({:set_tag, _}, &1))
+      assert :open in st.remove
+      assert st.add == []
+    end
+
+    test "通电且已开 → 稳定(不重复开、不误关)" do
+      assert [] = Engine.evaluate([dcell([:powered, :open])], Rules.all())
+    end
+
+    test "失电且已关 → 稳定(不动)" do
+      assert [] = Engine.evaluate([dcell([])], Rules.all())
+    end
+
+    test "非门材料带 :powered 不触发门规则(material 过滤;通电 load 走加热器不开门)" do
+      effects =
+        Engine.evaluate(
+          [
+            %{
+              macro_index: 0,
+              material_id: electric_load_id(),
+              temperature_celsius: 20.0,
+              tags: [:powered]
+            }
+          ],
+          Rules.all()
+        )
+
+      refute Enum.any?(effects, fn
+               {:set_tag, st} -> :open in st.add
+               _ -> false
+             end)
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)

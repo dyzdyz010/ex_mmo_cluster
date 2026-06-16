@@ -5040,7 +5040,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     cond do
       header.mode == MacroCellHeader.cell_mode_solid_block() ->
-        Map.put(sample, :mode, :solid)
+        # R9b:`:open` 实心格(通电门已开)视为可通行,不计碰撞命中。
+        if open_passable?(storage, sample.macro_index) do
+          nil
+        else
+          Map.put(sample, :mode, :solid)
+        end
 
       header.mode == MacroCellHeader.cell_mode_refined() and
           Storage.micro_slot_occupied?(storage, sample.macro_index, sample.micro_slot) ->
@@ -5048,6 +5053,24 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
       true ->
         nil
+    end
+  end
+
+  # R9b:实心格带 `:open` tag(门已通电打开)→ 可通行。无 tag 的格(绝大多数)走 ref=0 快路径,
+  # 不做 TagCatalog 解析;仅带 tag 的格(门等)才解析 `:open` id(ETS,快)。
+  defp open_passable?(%Storage{} = storage, macro_index) do
+    block = Storage.normal_block_at(storage, macro_index)
+
+    case current_tag_ids(storage, block.tag_set_ref) do
+      [] -> false
+      ids -> open_tag_id() in ids
+    end
+  end
+
+  defp open_tag_id do
+    case TagCatalog.lookup_by_name("open") do
+      {:ok, id, _defn} -> id
+      _other -> -1
     end
   end
 

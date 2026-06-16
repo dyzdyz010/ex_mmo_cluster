@@ -224,10 +224,14 @@ R7 把负载"通电"做成了**权威可观测 truth 态**(`:powered` tag),但 `
 - 验收:Rule 校验(material 过滤合法/非法)+ Engine(通电 load 放热、断电不放、通电非 load 材料不放=
   material 过滤)单测;e2e(通电 load 逐 tick 升温,邻冰熔/邻木燃)。scene 全量 0 净回归。
 
-### R9b 通电门/机关(后续)
-- `door` 设备材料:`:powered` → transform 为开(可通行/移除);失电 → 关。需 Engine 加"缺某 tag"
-  条件(powered→开 + 反向 unpowered→关),且门的"开/可通行"是新 truth 维度(passability)。比加热器多
-  一层状态机 + 新维度,作 R9a 之后。
+### R9b 通电门/机关(已落地)
+- `door` 设备材料(load:`electric_load_material?` 含 door → 闭环 circuit 置 `:powered`;导电参与
+  电路;heater 规则 `material: :electric_load` 过滤故不波及 door)+ `:open` tag(passability 状态)。
+- 状态机**无须 Engine 扩展**:`forbid_tags` 即"非某 tag"。`door_open`(material :door, require [:powered],
+  forbid [:open] → add :open)/ `door_close`(require [:open], forbid [:powered] → remove :open)。
+- **passability 新维度**:碰撞 `collision_query_hit` 对带 `:open` 的实心格视为可通行(无 tag 的格走
+  ref=0 快路径不解析,仅带 tag 的格解析 `:open` id=ETS)。`:open` = 通用"可通行"态(门专用但机制通用)。
+- 涌现链:接通电路 → R7 `:powered` → 门开(碰撞可穿)/ 断电 → 门关(复阻挡)。
 
 ## 5. 验收
 
@@ -238,6 +242,17 @@ R7 把负载"通电"做成了**权威可观测 truth 态**(`:powered` tag),但 `
 
 ## 进度日志(时间倒序)
 
+- 2026-06-16:**R9b 通电门完成,把 `:powered` 接到结构/可通行设备动作(circuit→开门→可穿)**。
+  设备行为多样化(继加热器的热效果后,门=结构/passability 效果)。(1)`door` 材料(id 11,导电金属,
+  `electric_load_material?` 含 door → 闭环 circuit 置 `:powered`;heater 规则 `material: :electric_load`
+  过滤故不波及)+ `:open` tag(tag_catalog id 10,version 2→3,append-only)。(2)状态机**无须 Engine
+  扩展**——`forbid_tags` 即"非某 tag":`door_open`(material :door, require [:powered], forbid [:open]
+  → add :open)/ `door_close`(require [:open], forbid [:powered] → remove :open)。(3)**passability
+  新维度**:`collision_query_hit` 对带 `:open` 实心格视为可通行(无 tag 格走 ref=0 快路径不解析;
+  仅带 tag 格解析 `:open` id=ETS,快)。涌现链:circuit 闭合 → R7 `:powered` → 门开(碰撞可穿)/断电
+  →门关。测试:Engine 单测 5(开/关/通电已开稳定/失电已关稳定/material 过滤非门不开)+ e2e 1(门起阻挡
+  → 通电反应 tick 开→碰撞可通行 → 断电反应 tick 关→复阻挡)+ tag_catalog 5 测随 v3 更新。scene 全量
+  **1012/0 零净回归**。决策稿 §4e R9b。R8 实体击穿伤害 / 其他通电设备(灯需 light field)作后续。
 - 2026-06-16:**R9a 通电加热器完成,把 R7 `:powered` 接到第一个具体设备动作(circuit→热→熔)**。
   续做暂停的服务器功能(涌现反应层),沿行为无关骨架接设备动作。(1)`Rule`:`tag_reaction` 加可选
   `material` 过滤(设备材料专属行为,`new!` 校验真实材料),phase_transition 不受影响。(2)`Engine`:

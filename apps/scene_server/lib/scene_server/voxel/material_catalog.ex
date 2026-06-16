@@ -24,6 +24,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @water_material_id 8
   @steam_material_id 9
   @ash_material_id 10
+  # 功能完善 · 反应层 R9b:门/机关(电路驱动设备)。导电 + 电负载 → 闭环通电置 :powered → 开。
+  @door_material_id 11
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -36,7 +38,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     electric_load: @electric_load_material_id,
     water: @water_material_id,
     steam: @steam_material_id,
-    ash: @ash_material_id
+    ash: @ash_material_id,
+    door: @door_material_id
   }
 
   @power_source_defaults %{
@@ -159,6 +162,18 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
       "dielectric_strength" => round(3.0 * @fixed32_scale)
+    },
+    # 反应层 R9b:门——导电金属(参与电路 + 电负载,通电置 :powered → 开),常温惰性。
+    @door_material_id => %{
+      "density" => round(2_500.0 * @fixed32_scale),
+      "thermal_conductivity" => round(50.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(500.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_500.0 * @fixed32_scale),
+      "freezing_point" => round(1_500.0 * @fixed32_scale),
+      "boiling_point" => round(2_800.0 * @fixed32_scale),
+      "electric_conductivity" => round(8.0 * @fixed32_scale),
+      "dielectric_strength" => 0
     }
   }
 
@@ -198,9 +213,15 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @spec electric_load_material_id() :: pos_integer()
   def electric_load_material_id, do: @electric_load_material_id
 
-  @doc "Returns true when a material id represents a circuit load/sink."
+  @doc """
+  Returns true when a material id represents a circuit load/sink. Both the
+  generic `electric_load` and the R9b `door` device are loads (a closed circuit
+  marks them `:powered`); their distinct behaviours are selected by the reaction
+  rules' `material` filter.
+  """
   @spec electric_load_material?(term()) :: boolean()
-  def electric_load_material?(material_id), do: material_id == @electric_load_material_id
+  def electric_load_material?(material_id),
+    do: material_id in [@electric_load_material_id, @door_material_id]
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{

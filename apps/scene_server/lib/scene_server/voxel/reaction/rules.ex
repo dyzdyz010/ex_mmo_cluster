@@ -99,6 +99,28 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                     effects: [{:emit_heat_joules, @heater_joules_per_tick}]
                   )
 
+  # R9b 通电门/机关。通电(R7 circuit 置 :powered)的门"开"(加 :open → 碰撞视为可通行);失电的
+  # 开门"关"(去 :open → 复阻挡)。开/关是 :powered↔:open 的 tag 状态机,复用 require/forbid
+  # (forbid_tags 即"非 :powered")——无须 Engine 扩展。设备动作=结构/可通行性变化(非热),与
+  # 加热器并列证设备行为多样性。涌现链:接通电路 → :powered → 门开(可穿行)/ 断电 → 门关。
+  @door_open Rule.new!(
+               id: :door_open,
+               kind: :tag_reaction,
+               material: :door,
+               require_tags: [:powered],
+               forbid_tags: [:open],
+               effects: [{:add_tag, :open}]
+             )
+
+  @door_close Rule.new!(
+                id: :door_close,
+                kind: :tag_reaction,
+                material: :door,
+                require_tags: [:open],
+                forbid_tags: [:powered],
+                effects: [{:remove_tag, :open}]
+              )
+
   @all [
     @ice_melts,
     @water_freezes,
@@ -107,7 +129,9 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @ignite,
     @burn,
     @burn_out,
-    @powered_heater
+    @powered_heater,
+    @door_open,
+    @door_close
   ]
 
   @doc "全部反应规则。"
