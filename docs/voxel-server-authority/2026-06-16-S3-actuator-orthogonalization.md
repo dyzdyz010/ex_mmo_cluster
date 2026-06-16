@@ -1,5 +1,12 @@
 # S3 设计:actuator 正交化(2026-06-16)
 
+> **状态:✅ 已实施完成(2026-06-16)。** Part A `TagPhysics`(+ chunk_process 碰撞委托)、Part B
+> `Actuator`/`Actuators`(+ rules.ex 迁移)、顺手 σ/R 一致性(`electric_load` σ 8→2.0,详
+> `2026-06-16-sigma-R-coherence.md`)全部落地;TagPhysics 单测 6 + Actuators 单测 6(含 piston 可扩展性)
+> + engine/门 e2e 不变,scene 全量 1022/0。commit:TagPhysics(Part A)、Actuator/Actuators(Part B)。
+> 唯一与设计稿的差异:`TagPhysics.passable?/1` 接 cell 已解析的 tag id 列表(而非 `(storage, tag_set_ref)`),
+> tag_set_ref→ids 解析归属保留在 ChunkProcess(Storage tag 表),令 TagPhysics 只做 tag→物理属性映射、更易测。
+
 正交架构(`2026-06-16-orthogonal-systems-architecture.md`)第三刀。把 R9b 的门从「per-device
 规则 + 硬编码碰撞分支」收敛成**可组合元件**:设备 = 材料属性 + actuator 声明 + tag→物理绑定(数据),
 不再每加一个设备写一对规则 + 改一处碰撞代码。

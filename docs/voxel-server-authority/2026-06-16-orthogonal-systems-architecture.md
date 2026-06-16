@@ -81,7 +81,16 @@
   `electric_resistance > 0`——**去掉 material_id 白名单**,任何配 emf/电阻的材料自动成为 source/load。
   door 配小电阻 0.5Ω(螺线管作动器)以经属性成为 :load。scene 全量 1010/0。注:source 电压仍来自
   field source_points(emf 目前作角色 gate;源电压由 emf 派生作后续微调)。
-- **S3 actuator 正交化**:通用机械响应系统 + 声明式 tag→碰撞绑定,door/piston 收敛成数据。
+- **✅ S3 actuator 正交化(已完成 2026-06-16)**:① `TagPhysics`(Part A)——声明式「tag→物理属性」
+  数据表,`passable_tag_names=["open"]`;`ChunkProcess` 碰撞改读 `TagPhysics.passable?/1`,去掉硬编码
+  `:open` 分支。② `Reaction.Actuator`/`Actuators`(Part B)——通用执行器规格
+  `%Actuator{material, trigger_tag, active_tag}`,`rules_for/1` 展开成 activate/deactivate 两条既有
+  `tag_reaction` 规则(`Engine` 不变);`rules.ex` 删手写 door_open/door_close,`all = @base ++
+  Actuators.to_rules()`,门由 `%Actuator{:door,:powered,:open}` 一条数据生成。**新设备 = 一条规格
+  (+ 若有新物理态在 TagPhysics 等表 append tag),零新规则/碰撞代码**——piston(`:powered↔:extended`)
+  单测证可扩展。③ **顺手:σ/R 一致性**——`electric_load` σ 8→2.0,令"劣导体(低 σ)+ 高集总 R"自洽
+  (详 `2026-06-16-sigma-R-coherence.md`);保留 `electric_resistance` 作 load 功能门(load-ness 非体
+  材料 σ 可表达),不全派生。scene 全量 1022/0。
 - **S4+ 开新系统**:化学/氧化(普适)→ 力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个独立 step。
 
 ## 6. 不变量(纪律)
@@ -94,6 +103,6 @@
 
 ---
 **进度**:✅ S1 电磁正交化(I²R 产热 + 删 powered_heater)、✅ S2 source/load 属性派生(emf/电阻,去
-material_id 白名单)完成。**下一步 S3**:actuator 正交化——通用「机械响应」系统(`:powered`/阈值 →
-声明的机械/可通行状态变化,per-material 参数化)+ 声明式 tag→碰撞属性绑定,把 door(及未来 piston/
-gate/elevator)从 per-device 规则收敛成数据。
+material_id 白名单)、✅ S3 actuator 正交化(TagPhysics 声明式 tag→碰撞绑定 + 通用 Actuator,door 收敛
+成一条数据;顺手 σ/R 一致性)完成。**下一步 S4**:开新涌现域——优先化学/氧化(普适系统,替代燃烧特例),
+之后力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个 = 1 物理 kernel + 几维材料属性 + model card,独立 step。
