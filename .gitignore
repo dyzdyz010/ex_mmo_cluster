@@ -71,3 +71,8 @@ deploy/.env.*
 # Local docker smoke-test client logs.
 deploy/*-observe.log
 deploy/*-stdout.log
+
+# Dev launch/debug runtime artifacts (PID files + stray stderr/log captures).
+*.pid
+/server.err
+/clients/bevy_client/*.log

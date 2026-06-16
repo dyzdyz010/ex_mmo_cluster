@@ -152,6 +152,9 @@ fn network_loop(
 
     let mut frame_buffer = Vec::new();
     let mut read_buffer = [0_u8; 4096];
+    // Max TCP reads drained per loop tick (256 * 4096 = 1 MiB), so a saturated
+    // socket can't starve the rest of the loop, while bursts still arrive fast.
+    const MAX_TCP_READS_PER_TICK: usize = 256;
     let mut udp_socket: Option<UdpSocket> = None;
     let mut udp_read_buffer = [0_u8; 4096];
     let mut last_heartbeat = Instant::now();
@@ -223,69 +226,64 @@ fn network_loop(
             return;
         }
 
-        match stream.read(&mut read_buffer) {
-            Ok(0) => {
-                emit_event(
-                    &observer,
-                    &event_tx,
-                    NetworkEvent::Disconnected("server closed the connection".to_string()),
-                );
-                return;
+        // Drain all currently-buffered TCP data this tick (bounded), instead of a
+        // single 4096B read. A lone read per 16ms tick capped throughput at
+        // ~256KB/s, which paced large bursts like voxel snapshot streams (~78KB
+        // each) to ~3 chunks/s; draining lets a burst arrive at line speed.
+        for _ in 0..MAX_TCP_READS_PER_TICK {
+            match stream.read(&mut read_buffer) {
+                Ok(0) => {
+                    emit_event(
+                        &observer,
+                        &event_tx,
+                        NetworkEvent::Disconnected("server closed the connection".to_string()),
+                    );
+                    return;
+                }
+                Ok(n) => frame_buffer.extend_from_slice(&read_buffer[..n]),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => {
+                    emit_event(
+                        &observer,
+                        &event_tx,
+                        NetworkEvent::Disconnected(format!("socket read failed: {err}")),
+                    );
+                    return;
+                }
             }
-            Ok(n) => {
-                frame_buffer.extend_from_slice(&read_buffer[..n]);
-                while let Some(frame) = take_frame(&mut frame_buffer) {
-                    match decode_server_payload(&frame) {
-                        Ok(message) => match runtime.handle_server_message(
-                            &creds,
-                            MessageTransport::Tcp,
-                            message,
-                        ) {
-                            Ok(outcome) => {
-                                if let Err(reason) = apply_runtime_outcome(
-                                    &mut runtime,
-                                    &mut stream,
-                                    &mut udp_socket,
-                                    &event_tx,
-                                    &observer,
-                                    outcome,
-                                ) {
-                                    emit_event(
-                                        &observer,
-                                        &event_tx,
-                                        NetworkEvent::Disconnected(reason),
-                                    );
-                                    return;
-                                }
-                            }
-                            Err(reason) => {
-                                emit_event(
-                                    &observer,
-                                    &event_tx,
-                                    NetworkEvent::Disconnected(reason),
-                                );
+        }
+
+        while let Some(frame) = take_frame(&mut frame_buffer) {
+            match decode_server_payload(&frame) {
+                Ok(message) => {
+                    match runtime.handle_server_message(&creds, MessageTransport::Tcp, message) {
+                        Ok(outcome) => {
+                            if let Err(reason) = apply_runtime_outcome(
+                                &mut runtime,
+                                &mut stream,
+                                &mut udp_socket,
+                                &event_tx,
+                                &observer,
+                                outcome,
+                            ) {
+                                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
                                 return;
                             }
-                        },
-                        Err(err) => {
-                            emit_event(
-                                &observer,
-                                &event_tx,
-                                NetworkEvent::Log(format!("decode error: {err}")),
-                            );
+                        }
+                        Err(reason) => {
+                            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
+                            return;
                         }
                     }
                 }
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) => {
-                emit_event(
-                    &observer,
-                    &event_tx,
-                    NetworkEvent::Disconnected(format!("socket read failed: {err}")),
-                );
-                return;
+                Err(err) => {
+                    emit_event(
+                        &observer,
+                        &event_tx,
+                        NetworkEvent::Log(format!("decode error: {err}")),
+                    );
+                }
             }
         }
 
