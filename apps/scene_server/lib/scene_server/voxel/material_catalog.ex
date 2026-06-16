@@ -114,7 +114,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_538.0 * @fixed32_scale),
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(12.0 * @fixed32_scale),
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      # S2:电动势 → :source 电角色由属性派生(emf>0),不再靠 material_id 白名单。
+      "emf" => round(120.0 * @fixed32_scale)
     },
     @electric_load_material_id => %{
       "density" => round(7_870.0 * @fixed32_scale),
@@ -166,6 +168,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "dielectric_strength" => round(3.0 * @fixed32_scale)
     },
     # 反应层 R9b:门——导电金属(参与电路 + 电负载,通电置 :powered → 开),常温惰性。
+    # S2:小电阻(螺线管/作动器线圈)→ :load 电角色由属性派生(electric_resistance>0);载流微热
+    # (R 远小于加热元件 electric_load 50Ω,I²R 可忽略)。
     @door_material_id => %{
       "density" => round(2_500.0 * @fixed32_scale),
       "thermal_conductivity" => round(50.0 * @fixed32_scale),
@@ -175,7 +179,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_500.0 * @fixed32_scale),
       "boiling_point" => round(2_800.0 * @fixed32_scale),
       "electric_conductivity" => round(8.0 * @fixed32_scale),
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      "electric_resistance" => round(0.5 * @fixed32_scale)
     }
   }
 
@@ -207,23 +212,26 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @spec power_source_material_id() :: pos_integer()
   def power_source_material_id, do: @power_block_material_id
 
-  @doc "Returns true when a material id represents a physical power block."
+  @doc """
+  Returns true when a material is a circuit power source. S2 正交架构:由属性派生
+  (`emf` > 0),不再绑 material_id 白名单——任何配 emf 的材料自动成为 :source。
+  """
   @spec power_source_material?(term()) :: boolean()
-  def power_source_material?(material_id), do: material_id == @power_block_material_id
+  def power_source_material?(material_id), do: default_attribute_value(material_id, "emf", 0) > 0
 
   @doc "Returns the append-only material id for a physical electric load/sink block."
   @spec electric_load_material_id() :: pos_integer()
   def electric_load_material_id, do: @electric_load_material_id
 
   @doc """
-  Returns true when a material id represents a circuit load/sink. Both the
-  generic `electric_load` and the R9b `door` device are loads (a closed circuit
-  marks them `:powered`); their distinct behaviours are selected by the reaction
-  rules' `material` filter.
+  Returns true when a material is a circuit load/sink. S2 正交架构:由属性派生
+  (`electric_resistance` > 0 = 耗散/作动元件),不再绑 material_id 白名单——任何配电阻的
+  导电材料自动成为 :load(闭环置 :powered)。发热(I²R)与否、机械响应等具体行为再由材料属性 +
+  反应规则正交分流(electric_load 高电阻发热;door 小电阻作动)。
   """
   @spec electric_load_material?(term()) :: boolean()
   def electric_load_material?(material_id),
-    do: material_id in [@electric_load_material_id, @door_material_id]
+    do: default_attribute_value(material_id, "electric_resistance", 0) > 0
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{

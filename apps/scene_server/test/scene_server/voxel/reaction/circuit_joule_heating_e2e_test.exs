@@ -8,7 +8,7 @@ defmodule SceneServer.Voxel.Reaction.CircuitJouleHeatingE2ETest do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.ChunkProcess
-  alias SceneServer.Voxel.Field.{FieldRegion, FieldTickWorker, SystemActor}
+  alias SceneServer.Voxel.Field.{FieldRegion, KernelContext, SystemActor}
   alias SceneServer.Voxel.Field.Kernels.{CircuitCurrentKernel, ReactionKernel}
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
@@ -113,21 +113,28 @@ defmodule SceneServer.Voxel.Reaction.CircuitJouleHeatingE2ETest do
             field_type: :electric_potential,
             value: 120.0
           }
-        ],
-        max_ticks: 80
+        ]
       })
 
-    {:ok, pid} =
-      FieldTickWorker.start_link(
-        region: region,
-        chunk_pid: chunk,
-        storage_fn: fn -> ChunkProcess.debug_state(chunk).storage end,
-        logical_scene_id: 7,
-        tick_interval_ms: 1
-      )
+    # 同步逐 tick 驱动(确定性、隔离):每 tick 以当前 truth 快照跑 CircuitCurrentKernel(发 I²R 热)
+    # + ReactionKernel(守恒扩散 + 相变规则),合并效果直接 apply 到本 chunk。刻意不经异步
+    # FieldTickWorker + 节点级共享 SystemActor——后者在全套并发下会被其他测试泄漏的 worker 争用/污染
+    # (commit 丢失),使本积分测试 order-flaky;同步驱动复现同一物理链路而无共享态竞争。
+    Enum.reduce(1..80, region, fn _i, region ->
+      # 电路:以当前 truth 算 I²R 热并提交(单独 apply,让热先落 truth)。
+      circuit_storage = ChunkProcess.debug_state(chunk).storage
+      circuit_context = KernelContext.new(region, 7, circuit_storage, dt_ms: 100)
+      {_status, region, circuit_effects} = CircuitCurrentKernel.tick(region, circuit_context, %{})
+      {:ok, _} = ChunkProcess.apply_field_effects(chunk, circuit_effects, %{})
 
-    ref = Process.monitor(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 30_000
+      # 反应:再以更新后的 truth 跑守恒扩散 + 相变,单独提交(避免同格温度写在一批里互相覆盖)。
+      reaction_storage = ChunkProcess.debug_state(chunk).storage
+      reaction_context = KernelContext.new(region, 7, reaction_storage, dt_ms: 100)
+      {_status, region, reaction_effects} = ReactionKernel.tick(region, reaction_context, %{})
+      {:ok, _} = ChunkProcess.apply_field_effects(chunk, reaction_effects, %{})
+
+      region
+    end)
 
     # 发热负载被 I²R 加热到高温(证热源是电阻耗散,而非环境扩散)。
     assert temperature_at(chunk, load) > 200.0,

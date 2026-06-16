@@ -76,7 +76,11 @@
   守恒热扩散 → 相邻冷冰(-10℃)熔化(进而汽化)——**全程无 heater 规则**。scene 全量 1010/0。
   门(load,R=0)同机制载流但不热——发热与否由材料属性正交分流,证「属性派生产热」+「系统经 truth
   组合涌现」。导线过热/熔断/短路起火同律涌现(后续给 wire 材料配 resistance 即可验证)。
-- **S2 source/load 属性派生**:emf 属性 → source;去 id 白名单。
+- **✅ S2 source/load 属性派生(已完成 2026-06-16)**:加 `emf` 材料属性(AttributeCatalog id 15 v5;
+  power_block emf=120V)。`power_source_material?` = `emf > 0`;`electric_load_material?` =
+  `electric_resistance > 0`——**去掉 material_id 白名单**,任何配 emf/电阻的材料自动成为 source/load。
+  door 配小电阻 0.5Ω(螺线管作动器)以经属性成为 :load。scene 全量 1010/0。注:source 电压仍来自
+  field source_points(emf 目前作角色 gate;源电压由 emf 派生作后续微调)。
 - **S3 actuator 正交化**:通用机械响应系统 + 声明式 tag→碰撞绑定,door/piston 收敛成数据。
 - **S4+ 开新系统**:化学/氧化(普适)→ 力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个独立 step。
 
@@ -89,5 +93,7 @@
 - 逐 step commit + scene 全量 0 净回归 + 决策稿留痕(沿用梯队/反应层纪律)。
 
 ---
-**进度**:✅ S1 电磁正交化(I²R 产热 + 删 powered_heater)完成。**下一步 S2**:source/load 改属性派生
-(加 emf 属性 → source;去 power_source_material?/electric_load_material? 的 material_id 白名单)。
+**进度**:✅ S1 电磁正交化(I²R 产热 + 删 powered_heater)、✅ S2 source/load 属性派生(emf/电阻,去
+material_id 白名单)完成。**下一步 S3**:actuator 正交化——通用「机械响应」系统(`:powered`/阈值 →
+声明的机械/可通行状态变化,per-material 参数化)+ 声明式 tag→碰撞属性绑定,把 door(及未来 piston/
+gate/elevator)从 per-device 规则收敛成数据。

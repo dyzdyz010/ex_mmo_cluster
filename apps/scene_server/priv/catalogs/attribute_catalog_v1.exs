@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 4,
+  catalog_version: 5,
   definitions: [
     %{
       id: 1,
@@ -208,6 +208,21 @@
       min_value: 0,
       # 10000.0 Ω
       max_value: 655_360_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 功能完善 · 正交架构 S2(电磁):材料电动势 V。emf>0 → :source 电角色(属性派生,替代
+    # power_block material_id 白名单)。0 = 非电源(fallback)。
+    %{
+      id: 15,
+      name: "emf",
+      unit: "V",
+      value_type: :fixed32,
+      # 0.0 V (非电源 fallback)
+      default_value: 0,
+      min_value: 0,
+      # 1000.0 V
+      max_value: 65_536_000,
       merge_rule: :material_default,
       dynamic: false
     }
