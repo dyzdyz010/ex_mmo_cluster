@@ -126,9 +126,11 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "melting_point" => round(1_450.0 * @fixed32_scale),
       "freezing_point" => round(1_450.0 * @fixed32_scale),
       "boiling_point" => round(2_700.0 * @fixed32_scale),
-      "electric_conductivity" => round(8.0 * @fixed32_scale),
+      # σ/R 一致性(2026-06-16):发热元件=劣导体——低 σ(2.0,nichrome 类)与高集总 R(50Ω)方向
+      # 自洽(不再"高导电却高电阻");仍 ≥ 导体阈 1.0 照常参与电路。详 sigma-R-coherence 决策稿。
+      "electric_conductivity" => round(2.0 * @fixed32_scale),
       "dielectric_strength" => 0,
-      # S1:发热元件——载流时按 I²R 耗散为热(door=0 不发热,同为 load 但行为由属性分流)。
+      # S1:发热元件——载流时按 I²R 耗散为热(door 高 σ→小 R→基本不发热,同为 load 但行为由属性分流)。
       "electric_resistance" => round(50.0 * @fixed32_scale)
     },
     # 反应层 R1:水(冰熔化目标)。freezing_point=0 冻回冰;boiling_point=100 → 蒸汽。
