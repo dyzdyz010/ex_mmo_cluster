@@ -200,6 +200,35 @@ truth(thermal_coupling 默认开),反应层读 truth 温度点燃可燃物——
     `put_solid_block %{block | health: new}`;bump 版本 + push 快照 + emit applied。
 - demo:放电穿带 health 的实心方块 → 逐 tick health 降 → 归零毁(转 empty,快照反映)。
 
+## 4e. R9 通电设备行为(把 R7 `:powered` 接到具体设备动作)
+
+R7 把负载"通电"做成了**权威可观测 truth 态**(`:powered` tag),但 `:powered` 还没有任何具体设备
+后果——这正是 R7 当时点名的 follow-on(「具体设备行为是其上层,后续按需接」)。R9 沿同一行为无关
+骨架把 `:powered` 接到设备动作。
+
+**骨架扩展(最小、数据化)**:`tag_reaction` 规则加**可选 `material` 过滤**——设备行为是设备材料
+专属的(加热器放热、门开合不同),不能让所有 `:powered` 负载一视同仁。Rule 加 `material` 字段
+(tag_reaction 用,`new!` 校验真实材料);Engine `tag_effects` 加一条 `material_matches?` 过滤
+(`material: nil` → 不限;否则 cell 材料须等于该材料)。phase_transition 不受影响。**不动 Engine/通路
+其余、不动 SystemActor/ChunkProcess**(复用既有 emit_heat_joules 等效果)。
+
+### R9a 旗舰:通电加热器(circuit → 热 → 熔/燃 跨系统涌现)
+- 复用 **`electric_load` 材料**(R7 已对它置 `:powered`,无需新材料/新电角色)。语义:通电负载耗能即
+  生热(电阻加热器)。
+- 新规则 `:powered_heater`:`kind: :tag_reaction, material: :electric_load, require_tags: [:powered],
+  effects: [{:emit_heat_joules, @heater_joules_per_tick}]`。ReactionKernel 读 truth(R5c 已读 per-cell
+  tag)→ Engine 命中 → emit_heat → SystemActor 连续注热 → ChunkProcess 落温度 truth。
+- **涌现链(全部复用)**:circuit 闭合 → R7 `:powered` → 加热器放热 → R6c 守恒热扩散传邻 → R4 熔邻冰 /
+  R5 点燃邻木。把 R4–R7 串成一条:**接通电路 → 邻近冰熔化 / 木燃烧**。
+- 热量常量定性档 game-feel(模型卡 `:qualitative`,同燃烧/电热),playtesting 可调。
+- 验收:Rule 校验(material 过滤合法/非法)+ Engine(通电 load 放热、断电不放、通电非 load 材料不放=
+  material 过滤)单测;e2e(通电 load 逐 tick 升温,邻冰熔/邻木燃)。scene 全量 0 净回归。
+
+### R9b 通电门/机关(后续)
+- `door` 设备材料:`:powered` → transform 为开(可通行/移除);失电 → 关。需 Engine 加"缺某 tag"
+  条件(powered→开 + 反向 unpowered→关),且门的"开/可通行"是新 truth 维度(passability)。比加热器多
+  一层状态机 + 新维度,作 R9a 之后。
+
 ## 5. 验收
 
 - 回路闭合:加热冰格 → 冰在 truth 中变水 → snapshot 反映 → web_client 可见(主线端)。

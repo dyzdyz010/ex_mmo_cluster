@@ -33,6 +33,10 @@ defmodule SceneServer.Voxel.Reaction.Rule do
     :from_material,
     :condition,
     :to_material,
+    # Optional material filter for `:tag_reaction` rules: when set, the rule only
+    # applies to cells of this material (device-specific behaviour, e.g. a
+    # `:powered` heater vs a `:powered` door). nil = any material.
+    :material,
     require_tags: [],
     forbid_tags: [],
     effects: [],
@@ -50,6 +54,7 @@ defmodule SceneServer.Voxel.Reaction.Rule do
           from_material: atom() | nil,
           condition: condition(),
           to_material: atom() | nil,
+          material: atom() | nil,
           require_tags: [atom()],
           forbid_tags: [atom()],
           effects: [tuple()],
@@ -88,6 +93,7 @@ defmodule SceneServer.Voxel.Reaction.Rule do
   defp validate!(%__MODULE__{kind: :tag_reaction} = rule) do
     valid_tag_list!(rule.require_tags, "require_tags")
     valid_tag_list!(rule.forbid_tags, "forbid_tags")
+    validate_material_filter!(rule.material)
     validate_condition!(rule.condition, required: false)
 
     unless is_list(rule.effects) and rule.effects != [] do
@@ -96,6 +102,9 @@ defmodule SceneServer.Voxel.Reaction.Rule do
 
     Enum.each(rule.effects, &validate_effect!(&1, rule.id))
   end
+
+  defp validate_material_filter!(nil), do: :ok
+  defp validate_material_filter!(name), do: valid_material!(name, "material")
 
   defp valid_material!(name, field) do
     unless is_atom(name) and not is_nil(MaterialCatalog.material_id(name)) do

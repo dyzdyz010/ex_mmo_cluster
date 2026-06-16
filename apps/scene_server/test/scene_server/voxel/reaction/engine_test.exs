@@ -288,6 +288,55 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "R9a 通电加热器(material 过滤的 tag_reaction)" do
+    defp electric_load_id, do: MaterialCatalog.material_id(:electric_load)
+
+    defp pcell(material_id, tags, macro_index \\ 0) do
+      %{macro_index: macro_index, material_id: material_id, temperature_celsius: 20.0, tags: tags}
+    end
+
+    test "通电 electric_load 负载放热(emit_heat → temperature 注热)" do
+      effects = Engine.evaluate([pcell(electric_load_id(), [:powered])], Rules.all())
+
+      assert {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} =
+               Enum.find(effects, &match?({:write_voxel_attribute, %{heat_energy_joules: _}}, &1))
+
+      assert j > 0
+    end
+
+    test "未通电的 electric_load 不放热(require :powered)" do
+      assert [] = Engine.evaluate([pcell(electric_load_id(), [])], Rules.all())
+    end
+
+    test "通电但非 electric_load 材料不放热(material 过滤)" do
+      # 木头即便带 :powered 也不触发加热器(material: :electric_load 过滤),且 20℃ < ignition。
+      assert [] = Engine.evaluate([pcell(wood_id(), [:powered])], Rules.all())
+    end
+
+    test "Rule.new! 接受合法 material 过滤、拒绝非法材料名" do
+      rule =
+        Rule.new!(
+          id: :dev_heater,
+          kind: :tag_reaction,
+          material: :electric_load,
+          require_tags: [:powered],
+          effects: [{:emit_heat_joules, 1000.0}]
+        )
+
+      assert rule.material == :electric_load
+
+      assert_raise ArgumentError, ~r/material 非法材料名/, fn ->
+        Rule.new!(
+          id: :bad_heater,
+          kind: :tag_reaction,
+          material: :unobtanium,
+          require_tags: [:powered],
+          effects: [{:emit_heat_joules, 1000.0}]
+        )
+      end
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)

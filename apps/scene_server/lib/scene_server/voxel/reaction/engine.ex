@@ -68,11 +68,20 @@ defmodule SceneServer.Voxel.Reaction.Engine do
     matched =
       rules
       |> Enum.filter(&(&1.kind == :tag_reaction))
+      |> Enum.filter(&material_matches?(&1, cell))
       |> Enum.filter(&tags_match?(&1, cell))
       |> Enum.filter(&condition_holds?(&1.condition, cell))
 
     templates = Enum.flat_map(matched, fn rule -> Enum.map(rule.effects, &{rule.id, &1}) end)
     materialize(templates, cell)
+  end
+
+  # Optional device-material filter (R9): nil = any material; otherwise the cell
+  # must be that material (e.g. only a `:powered` `electric_load` heats).
+  defp material_matches?(%Rule{material: nil}, _cell), do: true
+
+  defp material_matches?(%Rule{material: name}, %{material_id: id}) do
+    MaterialCatalog.material_id(name) == id
   end
 
   defp tags_match?(%Rule{require_tags: req, forbid_tags: forbid}, cell) do
