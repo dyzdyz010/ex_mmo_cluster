@@ -6,6 +6,7 @@ defmodule SceneServer.Voxel.Reaction.Rules do
   电→世界 只是往这里加规则(+ 必要的 coded reaction kernel)。新增 kernel 行为无须改 Engine——数据化优先。
   """
 
+  alias SceneServer.Voxel.Reaction.Actuators
   alias SceneServer.Voxel.Reaction.Rule
 
   # R1 demo:冰 + 温度 ≥ 自身 melting_point(0℃)→ 水。回路 PoC。
@@ -88,41 +89,25 @@ defmodule SceneServer.Voxel.Reaction.Rules do
   # CircuitCurrentKernel 直接注入 temperature 注热原语。高电阻 electric_load(发热元件)载流即热;
   # 零电阻 door(机械执行器)载流不热——同为 :powered 负载,发热与否由材料属性正交分流,无须设备规则。
 
-  # R9b 通电门/机关。通电(R7 circuit 置 :powered)的门"开"(加 :open → 碰撞视为可通行);失电的
-  # 开门"关"(去 :open → 复阻挡)。开/关是 :powered↔:open 的 tag 状态机,复用 require/forbid
-  # (forbid_tags 即"非 :powered")——无须 Engine 扩展。设备动作=结构/可通行性变化(非热),与
-  # 加热器并列证设备行为多样性。涌现链:接通电路 → :powered → 门开(可穿行)/ 断电 → 门关。
-  @door_open Rule.new!(
-               id: :door_open,
-               kind: :tag_reaction,
-               material: :door,
-               require_tags: [:powered],
-               forbid_tags: [:open],
-               effects: [{:add_tag, :open}]
-             )
+  # S3 Part B(正交架构):门/机关从此处手写的两条规则收敛为 `Actuators` 的一条声明式规格
+  # (`%Actuator{material: :door, trigger_tag: :powered, active_tag: :open}`),经 `Actuators.to_rules/0`
+  # 展开成等价的 activate/deactivate tag_reaction 规则并入 `all/0`。涌现链不变:接通电路 → :powered
+  # → 门置 :open(TagPhysics 绑定 → 可通行)/ 断电 → 去 :open(复阻挡)。新设备 = 加一条规格,不改此表。
 
-  @door_close Rule.new!(
-                id: :door_close,
-                kind: :tag_reaction,
-                material: :door,
-                require_tags: [:open],
-                forbid_tags: [:powered],
-                effects: [{:remove_tag, :open}]
-              )
-
-  @all [
+  # 基础物理反应(相变 + 燃烧);设备执行器规则由 Actuators 展开后并入。
+  @base [
     @ice_melts,
     @water_freezes,
     @water_boils,
     @steam_condenses,
     @ignite,
     @burn,
-    @burn_out,
-    @door_open,
-    @door_close
+    @burn_out
   ]
 
-  @doc "全部反应规则。"
+  @all @base ++ Actuators.to_rules()
+
+  @doc "全部反应规则(基础物理 + 执行器展开)。"
   @spec all() :: [Rule.t()]
   def all, do: @all
 
