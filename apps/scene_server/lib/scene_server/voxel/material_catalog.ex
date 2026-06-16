@@ -125,7 +125,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_450.0 * @fixed32_scale),
       "boiling_point" => round(2_700.0 * @fixed32_scale),
       "electric_conductivity" => round(8.0 * @fixed32_scale),
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      # S1:发热元件——载流时按 I²R 耗散为热(door=0 不发热,同为 load 但行为由属性分流)。
+      "electric_resistance" => round(50.0 * @fixed32_scale)
     },
     # 反应层 R1:水(冰熔化目标)。freezing_point=0 冻回冰;boiling_point=100 → 蒸汽。
     @water_material_id => %{

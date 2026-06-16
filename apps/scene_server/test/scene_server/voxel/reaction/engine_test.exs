@@ -288,50 +288,51 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
-  describe "R9a 通电加热器(material 过滤的 tag_reaction)" do
+  describe "tag_reaction material 过滤(R9a 引入,door 等设备规则用)" do
+    # S1 正交架构:加热不再是 powered_heater 规则,而是 CircuitCurrentKernel 的 I²R 物理后果
+    # (见 circuit_current_kernel_test);此处只验 material 过滤本身——设备规则按材料分流。
     defp electric_load_id, do: MaterialCatalog.material_id(:electric_load)
 
-    defp pcell(material_id, tags, macro_index \\ 0) do
-      %{macro_index: macro_index, material_id: material_id, temperature_celsius: 20.0, tags: tags}
-    end
+    test "通电的非门材料不触发门规则(material 过滤)" do
+      # electric_load 带 :powered 也不触发门规则(material: :door 过滤)。
+      effects =
+        Engine.evaluate(
+          [
+            %{
+              macro_index: 0,
+              material_id: electric_load_id(),
+              temperature_celsius: 20.0,
+              tags: [:powered]
+            }
+          ],
+          Rules.all()
+        )
 
-    test "通电 electric_load 负载放热(emit_heat → temperature 注热)" do
-      effects = Engine.evaluate([pcell(electric_load_id(), [:powered])], Rules.all())
-
-      assert {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} =
-               Enum.find(effects, &match?({:write_voxel_attribute, %{heat_energy_joules: _}}, &1))
-
-      assert j > 0
-    end
-
-    test "未通电的 electric_load 不放热(require :powered)" do
-      assert [] = Engine.evaluate([pcell(electric_load_id(), [])], Rules.all())
-    end
-
-    test "通电但非 electric_load 材料不放热(material 过滤)" do
-      # 木头即便带 :powered 也不触发加热器(material: :electric_load 过滤),且 20℃ < ignition。
-      assert [] = Engine.evaluate([pcell(wood_id(), [:powered])], Rules.all())
+      refute Enum.any?(effects, fn
+               {:set_tag, st} -> :open in st.add
+               _ -> false
+             end)
     end
 
     test "Rule.new! 接受合法 material 过滤、拒绝非法材料名" do
       rule =
         Rule.new!(
-          id: :dev_heater,
+          id: :dev_device,
           kind: :tag_reaction,
-          material: :electric_load,
+          material: :door,
           require_tags: [:powered],
-          effects: [{:emit_heat_joules, 1000.0}]
+          effects: [{:add_tag, :open}]
         )
 
-      assert rule.material == :electric_load
+      assert rule.material == :door
 
       assert_raise ArgumentError, ~r/material 非法材料名/, fn ->
         Rule.new!(
-          id: :bad_heater,
+          id: :bad_device,
           kind: :tag_reaction,
           material: :unobtanium,
           require_tags: [:powered],
-          effects: [{:emit_heat_joules, 1000.0}]
+          effects: [{:add_tag, :open}]
         )
       end
     end

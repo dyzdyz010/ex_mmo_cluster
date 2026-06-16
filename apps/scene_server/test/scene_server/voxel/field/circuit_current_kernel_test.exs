@@ -244,9 +244,17 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
 
       assert {:cont, _updated, power_effects} = CircuitCurrentKernel.tick(region, context, %{})
 
-      assert power_effects == [
-               {:set_tag, %{macro_index: load_macro, add: [:powered], remove: []}}
-             ]
+      assert {:set_tag, %{macro_index: load_macro, add: [:powered], remove: []}} in power_effects
+
+      # S1 正交架构:闭环载流的发热负载(electric_load 50Ω)按 I²R 产热(注入 temperature 注热原语)。
+      assert Enum.any?(power_effects, fn
+               {:write_voxel_attribute,
+                %{attribute: :temperature, macro_index: ^load_macro, heat_energy_joules: j}} ->
+                 j > 0.0
+
+               _ ->
+                 false
+             end)
     end
 
     test "open component with a load clears :powered on that load (断路即失电)" do
@@ -293,23 +301,27 @@ defmodule SceneServer.Voxel.Field.CircuitCurrentKernelTest do
         Storage.new(7, {0, 0, 0})
         |> put_loop()
 
-      assert {:cont, energized,
-              [{:set_tag, %{macro_index: ^load_macro, add: [:powered], remove: []}}]} =
+      assert {:cont, energized, closed_effects} =
                CircuitCurrentKernel.tick(
                  region,
                  KernelContext.new(region, 7, closed_storage),
                  %{}
                )
 
+      assert {:set_tag, %{macro_index: load_macro, add: [:powered], remove: []}} in closed_effects
+
       open_storage = Storage.clear_macro_cell(closed_storage, {2, 1, 0})
 
-      assert {:cont, _cleared,
-              [{:set_tag, %{macro_index: ^load_macro, add: [], remove: [:powered]}}]} =
+      assert {:cont, _cleared, open_effects} =
                CircuitCurrentKernel.tick(
                  energized,
                  KernelContext.new(energized, 7, open_storage),
                  %{}
                )
+
+      # 开路失电:仍发 remove :powered;且无闭环电流 → 不再产热。
+      assert {:set_tag, %{macro_index: load_macro, add: [], remove: [:powered]}} in open_effects
+      refute Enum.any?(open_effects, &match?({:write_voxel_attribute, _}, &1))
     end
   end
 

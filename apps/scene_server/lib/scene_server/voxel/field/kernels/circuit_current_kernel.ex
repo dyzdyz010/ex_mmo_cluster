@@ -34,12 +34,18 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
   }
 
   alias SceneServer.Voxel.MaterialCatalog
+  alias SceneServer.Voxel.Storage
 
   @default_current_limit_amps MaterialCatalog.power_source_defaults().current_limit_amps
   @min_conductivity 0.001
   @base_ionization 32.0
   @current_ionization_scale 12.0
   @potential_ionization_scale 0.1
+
+  # S1 正交架构(电磁):闭环载流的耗散元件按 I²R 产热。单 voxel 热源经守恒扩散均摊进 field 热网格,
+  # 需较大增益才 gameplay 可见(同 R6d 电热洞察),定性档 game-feel,playtesting 可调。
+  # heat_per_tick = I² · electric_resistance(Ω) · @joule_heat_gain。
+  @joule_heat_gain 5000.0
 
   @impl true
   def kernel_id, do: :circuit_current
@@ -77,12 +83,59 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
     # 其余 region 内 load 去 :powered(断路即失电)。经 SystemActor set_tag 落 truth,作设备激活基础。
     power_effects = power_load_effects(region, components, projection)
 
+    # S1 正交架构(电磁):闭环载流负载按 I²R 产热(注入已有 temperature 注热原语)。发热作为「载流 ×
+    # 电阻」的物理后果涌现——高电阻负载(发热元件)热、零电阻负载(门等机械执行器)不热——替代了凭空
+    # 断言的 powered_heater 规则。
+    heat_effects = joule_heat_effects(components, projection, opts, context)
+
     {:cont,
      region
      |> FieldRegion.put_layer(:electric_current, current_layer)
      |> FieldRegion.put_layer(:electric_potential, potential_layer)
-     |> FieldRegion.put_layer(:ionization, ionization_layer), power_effects}
+     |> FieldRegion.put_layer(:ionization, ionization_layer), power_effects ++ heat_effects}
   end
+
+  # 闭环载流负载的 I²R 焦耳热:对每个闭合回路,按其电流 I 对回路内每个有 electric_resistance>0 的
+  # load cell 发 I²·R·gain 的连续注热(经 SystemActor always-commit → ChunkProcess → temperature truth)。
+  defp joule_heat_effects(components, projection, opts, %KernelContext{storage: storage}) do
+    Enum.flat_map(components, fn component ->
+      current = component_current_amps(component, projection, opts, source_voltage(component))
+
+      if current <= 0.0 do
+        []
+      else
+        component.closed_loop_macro_indices
+        |> Enum.filter(&ParticipantProjection.electric_role?(projection, &1, :load))
+        |> Enum.flat_map(fn macro_index ->
+          resistance = cell_electric_resistance(storage, macro_index)
+
+          if resistance > 0.0 do
+            joules = current * current * resistance * @joule_heat_gain
+
+            [
+              {:write_voxel_attribute,
+               %{attribute: :temperature, macro_index: macro_index, heat_energy_joules: joules}}
+            ]
+          else
+            []
+          end
+        end)
+      end
+    end)
+  end
+
+  defp cell_electric_resistance(storage, macro_index) when is_map(storage) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %{material_id: material_id} ->
+        MaterialCatalog.default_attribute_value(material_id, "electric_resistance", 0) /
+          MaterialCatalog.fixed32_scale()
+
+      _other ->
+        0.0
+    end
+  end
+
+  defp cell_electric_resistance(_storage, _macro_index), do: 0.0
 
   defp power_load_effects(%FieldRegion{} = region, components, projection) do
     powered =

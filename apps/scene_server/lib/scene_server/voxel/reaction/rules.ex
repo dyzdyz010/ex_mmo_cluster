@@ -83,21 +83,10 @@ defmodule SceneServer.Voxel.Reaction.Rules do
               effects: [{:transform, :ash}, {:remove_tag, :burning}]
             )
 
-  # R9a 通电设备:加热器。通电(R7 circuit 置 `:powered`)的 electric_load 负载每 tick 放热
-  # ——电阻加热器耗能即生热。经 R6c 守恒热扩散传邻 → 熔邻冰(R4)/(更高功率/更久可点燃邻木 R5)。
-  # `material` 过滤把行为限定到加热器设备材料(不波及其他 `:powered` 负载)。**定性档 game-feel**
-  # 常量(模型卡 :qualitative):单 voxel 热源经守恒扩散均摊进 field 热网格,需较大值才 gameplay
-  # 可见(同 R6d 电热增益洞察),playtesting 可调。涌现链:接通电路 → :powered → 放热 → 扩散 → 熔/燃。
-  @heater_joules_per_tick 100_000_000.0
-
-  @powered_heater Rule.new!(
-                    id: :powered_heater,
-                    kind: :tag_reaction,
-                    material: :electric_load,
-                    require_tags: [:powered],
-                    condition: nil,
-                    effects: [{:emit_heat_joules, @heater_joules_per_tick}]
-                  )
+  # R9a 通电加热器规则已删(2026-06-16 正交架构 S1):加热不再是「电负载 + :powered → 凭空发热」的
+  # 写死规则,而是「载流(闭环电流)× 材料 electric_resistance → I²R 焦耳热」的物理后果——由
+  # CircuitCurrentKernel 直接注入 temperature 注热原语。高电阻 electric_load(发热元件)载流即热;
+  # 零电阻 door(机械执行器)载流不热——同为 :powered 负载,发热与否由材料属性正交分流,无须设备规则。
 
   # R9b 通电门/机关。通电(R7 circuit 置 :powered)的门"开"(加 :open → 碰撞视为可通行);失电的
   # 开门"关"(去 :open → 复阻挡)。开/关是 :powered↔:open 的 tag 状态机,复用 require/forbid
@@ -129,7 +118,6 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @ignite,
     @burn,
     @burn_out,
-    @powered_heater,
     @door_open,
     @door_close
   ]

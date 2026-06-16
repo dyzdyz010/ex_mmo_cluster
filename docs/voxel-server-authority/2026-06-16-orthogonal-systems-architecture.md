@@ -68,10 +68,14 @@
 
 ## 5. 迁移路线(按杠杆,逐步 commit + 回归闸门)
 
-- **S1 电磁正交化(纠 R9a + 示范正交)**:① 加 `electric_resistance` 材料属性;② CircuitCurrentKernel
-  对闭环负载按 **I²R**(current 来自已有解算 × 电阻)发已有的 temperature 注热原语;③ 删 `powered_heater`
-  规则。验收:通电高电阻负载自然发热 → 熔邻冰/点邻木(涌现,无 heater 规则);导线过热/熔断/短路起火
-  同律涌现(后续可加保险丝材料验证)。**这一步同时证明「属性派生产热」+「系统经 truth 组合涌现」。**
+- **✅ S1 电磁正交化(已完成 2026-06-16,纠 R9a + 示范正交)**:① 加 `electric_resistance` 材料属性
+  (AttributeCatalog id 14 v4;electric_load=50Ω 发热元件、door=0 机械执行器不热);② CircuitCurrentKernel
+  对闭环载流的 load cell 按 **I²R = current²·electric_resistance·gain** 发已有 temperature 注热原语
+  (gain 5000 定性档,同 R6d 单 voxel 热源场网格稀释洞察);③ **删 `powered_heater` 规则**。
+  **e2e 验收通过**:真实闭环电路(电源+iron 环+electric_load)→ 载流负载 I²R 自然发热(升至 362℃)→
+  守恒热扩散 → 相邻冷冰(-10℃)熔化(进而汽化)——**全程无 heater 规则**。scene 全量 1010/0。
+  门(load,R=0)同机制载流但不热——发热与否由材料属性正交分流,证「属性派生产热」+「系统经 truth
+  组合涌现」。导线过热/熔断/短路起火同律涌现(后续给 wire 材料配 resistance 即可验证)。
 - **S2 source/load 属性派生**:emf 属性 → source;去 id 白名单。
 - **S3 actuator 正交化**:通用机械响应系统 + 声明式 tag→碰撞绑定,door/piston 收敛成数据。
 - **S4+ 开新系统**:化学/氧化(普适)→ 力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个独立 step。
@@ -85,4 +89,5 @@
 - 逐 step commit + scene 全量 0 净回归 + 决策稿留痕(沿用梯队/反应层纪律)。
 
 ---
-**下一步(S1)**:电磁正交化 + I²R 产热 + 删 powered_heater。对齐本稿后即动。
+**进度**:✅ S1 电磁正交化(I²R 产热 + 删 powered_heater)完成。**下一步 S2**:source/load 改属性派生
+(加 emf 属性 → source;去 power_source_material?/electric_load_material? 的 material_id 白名单)。

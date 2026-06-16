@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 3,
+  catalog_version: 4,
   definitions: [
     %{
       id: 1,
@@ -195,6 +195,21 @@
       max_value: 65_536,
       merge_rule: :add_delta,
       dynamic: true
+    },
+    # 功能完善 · 正交架构 S1(电磁):材料内禀电阻 Ω。载流(闭环电流)的耗散元件按 I²R 产热
+    # (CircuitCurrentKernel),替代凭空断言的 powered_heater。理想导体/非耗散 = 0(fallback)。
+    %{
+      id: 14,
+      name: "electric_resistance",
+      unit: "Ω",
+      value_type: :fixed32,
+      # 0.0 Ω (理想导体 / 无耗散 fallback)
+      default_value: 0,
+      min_value: 0,
+      # 10000.0 Ω
+      max_value: 655_360_000,
+      merge_rule: :material_default,
+      dynamic: false
     }
   ]
 }
