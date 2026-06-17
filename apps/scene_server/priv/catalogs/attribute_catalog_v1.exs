@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 5,
+  catalog_version: 6,
   definitions: [
     %{
       id: 1,
@@ -225,6 +225,37 @@
       max_value: 65_536_000,
       merge_rule: :material_default,
       dynamic: false
+    },
+    # 功能完善 · 正交架构 S4(化学/氧化):起反应温度门 °C。材料温度 ≥ 自身 oxidation_temperature 才
+    # 起氧化(同 ignition_temperature 范式);惰性/不可氧化 = 哨兵 5000℃ 不可达(fallback)。
+    %{
+      id: 16,
+      name: "oxidation_temperature",
+      unit: "°C",
+      value_type: :fixed32,
+      # 5000.0 °C (inert / non-oxidizable fallback)
+      default_value: 327_680_000,
+      # -273.15 °C (aligned with temperature attribute lower bound)
+      min_value: -17_904_824,
+      # 5000.0 °C
+      max_value: 327_680_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 功能完善 · 正交架构 S4(化学/氧化):氧化进度比率 0.0→1.0(满即转氧化产物如 rust)。
+    # `:add_delta` 让 rusting 每 tick 累进;clip 到 [0, 1.0](镜像 burn_progress id13)。
+    %{
+      id: 17,
+      name: "oxidation_progress",
+      unit: "ratio",
+      value_type: :fixed32,
+      # 0.0 未氧化
+      default_value: 0,
+      min_value: 0,
+      # 1.0 氧化完成
+      max_value: 65_536,
+      merge_rule: :add_delta,
+      dynamic: true
     }
   ]
 }
