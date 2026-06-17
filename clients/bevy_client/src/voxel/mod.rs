@@ -21,6 +21,7 @@ pub mod authority_plugin;
 pub mod chunk_render;
 pub mod cli;
 pub mod core;
+pub mod field_render;
 pub mod field_view;
 pub mod mesher;
 pub mod plugin;
@@ -31,6 +32,7 @@ pub mod world;
 
 pub use authority_plugin::{VoxelAuthority, VoxelAuthorityPlugin};
 pub use chunk_render::VoxelChunkRenderPlugin;
+pub use field_render::VoxelFieldRenderPlugin;
 pub use plugin::VoxelPlugin;
 
 pub use cli::{

@@ -34,7 +34,10 @@ use crate::voxel::surface_decal::surface_decal_mesh;
 /// Sim/render size of one macro cell, in render units. The server's macro cell
 /// is 100cm; the offline renderer uses the same 100-unit cell
 /// (`VOXEL_RENDER_CELL_SIZE`), so authority chunks tile with it 1:1.
-const MACRO_RENDER_SIZE: f32 = 100.0;
+///
+/// `pub(crate)` so the FieldView render sub-layer (`field_render`) places its
+/// temperature overlay at the exact same macro scale as the chunk mesh.
+pub(crate) const MACRO_RENDER_SIZE: f32 = 100.0;
 
 /// Max chunks remeshed per frame (each = a greedy mesh + a Bevy mesh-asset
 /// upload on the main thread). A burst of incoming snapshots beyond this — e.g.
@@ -291,7 +294,7 @@ fn build_neighbors(store: &VoxelAuthorityStore, c: ChunkCoord) -> ChunkNeighbors
 /// swap: the server's macro→sim relation (macro Y = sim Z = up) already cancels
 /// the actor-space sim→render Y/Z swap, so applying it here would tip the ground
 /// onto its side (height along macro Y would render horizontally — a wall).
-fn chunk_translation(coord: ChunkCoord) -> Vec3 {
+pub(crate) fn chunk_translation(coord: ChunkCoord) -> Vec3 {
     const CHUNK_SPAN: f32 = 16.0 * MACRO_RENDER_SIZE;
     Vec3::new(
         coord[0] as f32 * CHUNK_SPAN,
@@ -315,8 +318,12 @@ pub fn build_decal_mesh(data: &ChunkMeshData) -> Mesh {
     build_mesh_with_colors(data, decal_color)
 }
 
-/// Shared mesh builder: bakes per-vertex colors via `color_for(id)`.
-fn build_mesh_with_colors(data: &ChunkMeshData, color_for: impl Fn(u32) -> [f32; 4]) -> Mesh {
+/// Shared mesh builder: bakes per-vertex colors via `color_for(id)`. `pub(crate)`
+/// so the FieldView sub-layer reuses it with the heat-color ramp.
+pub(crate) fn build_mesh_with_colors(
+    data: &ChunkMeshData,
+    color_for: impl Fn(u32) -> [f32; 4],
+) -> Mesh {
     let colors: Vec<[f32; 4]> = data.material_ids.iter().map(|&id| color_for(id)).collect();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
