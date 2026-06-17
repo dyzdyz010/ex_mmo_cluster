@@ -21,6 +21,7 @@ pub mod authority_plugin;
 pub mod chunk_render;
 pub mod cli;
 pub mod core;
+pub mod debris;
 pub mod field_render;
 pub mod field_view;
 pub mod mesher;
