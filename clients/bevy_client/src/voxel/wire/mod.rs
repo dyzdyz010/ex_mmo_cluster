@@ -35,7 +35,7 @@ pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
 pub use snapshot::{
     AttributeEntry, AttributeSet, AttributeValue, ChunkObjectRef, ChunkSnapshot,
-    EnvironmentSummary, MacroHeader, SnapshotSection, TagSet,
+    EnvironmentSummary, MacroHeader, SnapshotSection, SurfaceElement, TagSet,
 };
 pub use subscribe::{ChunkSubscribe, ChunkUnsubscribe, KnownChunk, VoxelClientMessage};
 

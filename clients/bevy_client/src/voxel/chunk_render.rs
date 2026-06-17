@@ -296,6 +296,7 @@ mod tests {
             chunk_version: 1,
             chunk_size_in_macro: size as u8,
             cells,
+            ..Default::default()
         };
         let data = crate::voxel::mesher::greedy_mesh_chunk(&chunk, MACRO_RENDER_SIZE);
         let mesh = build_mesh(&data);

@@ -572,6 +572,7 @@ mod tests {
             chunk_version: 1,
             chunk_size_in_macro: SIZE as u8,
             cells: vec![CellState::Empty; SIZE * SIZE * SIZE],
+            ..Default::default()
         }
     }
 
@@ -636,6 +637,7 @@ mod tests {
             chunk_version: 1,
             chunk_size_in_macro: SIZE as u8,
             cells: vec![solid(5); SIZE * SIZE * SIZE],
+            ..Default::default()
         };
         let mesh = mesh_chunk(&chunk, 1.0);
         assert_eq!(mesh.quad_count(), 6 * SIZE * SIZE);
@@ -675,6 +677,7 @@ mod tests {
             chunk_version: 1,
             chunk_size_in_macro: SIZE as u8,
             cells: vec![solid(5); SIZE * SIZE * SIZE],
+            ..Default::default()
         };
         let greedy = greedy_mesh_chunk(&chunk, 1.0);
         assert_eq!(greedy.quad_count(), 6);
@@ -726,6 +729,7 @@ mod tests {
             chunk_version: 1,
             chunk_size_in_macro: SIZE as u8,
             cells: vec![solid(material); SIZE * SIZE * SIZE],
+            ..Default::default()
         }
     }
 

@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::voxel::wire::{
     ChunkDelta, ChunkInvalidate, ChunkSnapshot, DeltaCell, NormalBlock, RefinedCell,
-    VoxelServerMessage,
+    SurfaceElement, VoxelServerMessage,
 };
 
 pub type ChunkCoord = [i32; 3];
@@ -34,12 +34,19 @@ pub enum CellState {
     Refined(RefinedCell),
 }
 
-/// One authoritative chunk: its version and the flattened per-macro-cell array.
-#[derive(Debug, Clone, PartialEq)]
+/// One authoritative chunk: its version, the flattened per-macro-cell array, and
+/// the zero-volume surface elements bound to its macro faces (section 0x08).
+///
+/// `surface_elements` is chunk truth (mirrors the server `Storage`): a separate
+/// render input from `cells` (the SurfaceDecal render sub-layer reads it; the
+/// ChunkMesh layer reads `cells`). It only arrives via snapshot — the server
+/// resends a full snapshot on surface-element change — so deltas preserve it.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AuthorityChunk {
     pub chunk_version: u64,
     pub chunk_size_in_macro: u8,
     pub cells: Vec<CellState>,
+    pub surface_elements: Vec<SurfaceElement>,
 }
 
 impl AuthorityChunk {
@@ -111,12 +118,14 @@ impl VoxelAuthorityStore {
     pub fn apply_snapshot(&mut self, snap: &ChunkSnapshot) -> Result<IngestOutcome, IngestError> {
         let coord = snap.chunk_coord;
         let cells = flatten_snapshot(snap)?;
+        let surface_elements = snap.surface_elements().unwrap_or(&[]).to_vec();
         self.chunks.insert(
             coord,
             AuthorityChunk {
                 chunk_version: snap.chunk_version,
                 chunk_size_in_macro: snap.chunk_size_in_macro,
                 cells,
+                surface_elements,
             },
         );
         self.dirty.insert(coord);
@@ -237,6 +246,27 @@ mod tests {
         // Snapshot marked the chunk dirty.
         assert_eq!(store.take_dirty(), vec![snap.chunk_coord]);
         assert!(store.take_dirty().is_empty());
+    }
+
+    #[test]
+    fn snapshot_surface_elements_land_in_chunk_truth() {
+        // C1:表面元件经 snapshot 落入 AuthorityChunk.surface_elements(渲染子层的输入)。
+        let snap = decode_snapshot("snapshot_surface_elements");
+        let mut store = VoxelAuthorityStore::new();
+        store
+            .ingest(&VoxelServerMessage::ChunkSnapshot(snap.clone()))
+            .unwrap();
+
+        let chunk = store.chunk(snap.chunk_coord).expect("chunk present");
+        assert_eq!(chunk.surface_elements.len(), 3);
+        // 与 wire parity 测一致:类型 id [1,2,4] = rust_decal/frost/torch。
+        let mut type_ids: Vec<u16> = chunk
+            .surface_elements
+            .iter()
+            .map(|e| e.surface_type_id)
+            .collect();
+        type_ids.sort_unstable();
+        assert_eq!(type_ids, vec![1, 2, 4]);
     }
 
     #[test]
