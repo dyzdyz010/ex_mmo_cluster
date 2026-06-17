@@ -324,6 +324,37 @@ defmodule FixtureGen do
     {_region_id = 42, _chunk_coord = {2, 0, -3}, _logical_scene_id = 1, _reason = :explicit}
   end
 
+  @doc """
+  field_region_electric: a FieldRegion (0x73) carrying BOTH electric_potential and
+  electric_current layers (field_mask 0x0A) with two active cells. Validates the
+  bevy 0x73 decoder's electric arrays + wire ordering (temp,potential,current,
+  ionization) on real server bytes, and drives the FieldView potential/current
+  overlays. Direct struct (encoder reads field_types + layers, not kernels).
+  """
+  def field_region_electric do
+    potential =
+      FieldLayer.new()
+      |> FieldLayer.put(0, 80.0)
+      |> FieldLayer.put(5, 12.0)
+
+    current =
+      FieldLayer.new()
+      |> FieldLayer.put(0, 5.0)
+      |> FieldLayer.put(5, 1.0)
+
+    %FieldRegion{
+      region_id: 77,
+      chunk_coord: {1, 0, 2},
+      aabb: {{0, 0, 0}, {15, 15, 15}},
+      field_types: [:electric_potential, :electric_current],
+      source_points: [],
+      tick_count: 3,
+      max_ticks: nil,
+      kernels: [],
+      layers: %{electric_potential: potential, electric_current: current}
+    }
+  end
+
   # ---- delta fixtures --------------------------------------------------------
 
   @doc """
@@ -839,6 +870,18 @@ write_fixture.("field_region_destroyed", field_destroyed_bytes, %{
   kind: "field_region_destroyed",
   description:
     "0x74 FieldRegionDestroyed: destroy for region 42 in chunk {2,0,-3}, reason=explicit (0x02)."
+})
+
+field_electric_bytes =
+  FixtureGen.field_region_electric()
+  |> FieldCodec.encode_snapshot_payload(1)
+  |> strip_opcode.()
+
+write_fixture.("field_region_electric", field_electric_bytes, %{
+  name: "field_region_electric",
+  kind: "field_region_snapshot",
+  description:
+    "0x73 FieldRegionSnapshot: electric potential+current region (mask 0x0A, cells idx 0/5: V=80/12, I=5/1), little-endian f32. Cross-language (bevy) parity for the electric wire arrays + ordering."
 })
 
 IO.puts("\nfixtures dir: #{Path.expand(fixtures_dir)}")

@@ -1,0 +1,5 @@
+name: field_region_electric
+kind: field_region_snapshot
+wire_size: 55
+description: |
+  0x73 FieldRegionSnapshot: electric potential+current region (mask 0x0A, cells idx 0/5: V=80/12, I=5/1), little-endian f32. Cross-language (bevy) parity for the electric wire arrays + ordering.

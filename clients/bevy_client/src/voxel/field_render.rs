@@ -1,18 +1,21 @@
 //! FieldView rendering (C3): turns the [`VoxelFieldStore`]'s dirty field regions
-//! into Bevy temperature-overlay entities — the FieldView render sub-layer,
-//! parallel to ChunkMesh / SurfaceDecal.
+//! into Bevy field-overlay entities — the FieldView render sub-layer, parallel
+//! to ChunkMesh / SurfaceDecal.
 //!
-//! Each field region (keyed by `region_id`) becomes ONE overlay `Mesh3d` entity:
-//! marker cubes at macro cells hotter than [`DEFAULT_HEAT_THRESHOLD_C`], colored
-//! by heat bucket (the [`heat_color`] ramp baked per-vertex), placed at the
-//! region's chunk origin via the SAME [`chunk_translation`] the chunk mesh uses
-//! (so the overlay registers exactly over its cells). The overlay material is
-//! **unlit** so the markers read as glowing heat regardless of scene lighting.
+//! Each field region carries up to three field types (temperature / electric
+//! potential / electric current); each becomes its OWN overlay `Mesh3d` entity,
+//! keyed by `(region_id, FieldOverlayKind)` — mirroring the web reference's
+//! separate per-field meshes. An overlay is marker cubes at the macro cells that
+//! clear that field's threshold, colored by its reference ramp ([`field_color`]
+//! baked per-vertex), placed at the region's chunk origin via the SAME
+//! [`chunk_translation`] the chunk mesh uses (so the overlay registers exactly
+//! over its cells). The overlay material is **unlit** so the markers read at full
+//! intensity regardless of scene lighting.
 //!
-//! Rebuilt only when the field store marks the region dirty; despawned when the
-//! region cools below threshold (overlay meshes to nothing) or is destroyed
-//! (0x74). The render adapter reads committed field truth only — no fabrication,
-//! same authority discipline as the chunk renderer.
+//! Rebuilt only when the field store marks the region dirty; an overlay despawns
+//! when its field meshes to nothing (cooled / below threshold) or the region is
+//! destroyed (0x74). The render adapter reads committed field truth only — no
+//! fabrication, same authority discipline as the chunk renderer.
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -21,12 +24,13 @@ use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::chunk_render::{MACRO_RENDER_SIZE, build_mesh_with_colors, chunk_translation};
-use crate::voxel::field_view::{DEFAULT_HEAT_THRESHOLD_C, heat_color, temperature_overlay_mesh};
+use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
 
-/// Maps each rendered field region (`region_id`) to its Bevy overlay entity, so
-/// a newer snapshot updates in place and a destroyed/cooled region despawns.
+/// Maps each rendered field overlay `(region_id, kind ordinal)` to its Bevy
+/// entity, so a newer snapshot updates it in place and a destroyed/cooled region
+/// despawns it. Separate keys per field type keep the three overlays independent.
 #[derive(Resource, Default)]
-pub struct VoxelFieldEntities(HashMap<u64, Entity>);
+pub struct VoxelFieldEntities(HashMap<(u64, u8), Entity>);
 
 /// Shared unlit material for all field overlay meshes — vertex heat colors come
 /// through at full intensity (markers read as glowing hot), independent of scene
@@ -72,43 +76,44 @@ fn render_dirty_field_regions(
     };
 
     for region_id in authority.field_store.take_dirty() {
-        match authority.field_store.region(region_id) {
-            Some(region) => {
-                let data =
-                    temperature_overlay_mesh(region, MACRO_RENDER_SIZE, DEFAULT_HEAT_THRESHOLD_C);
-                if data.is_empty() {
-                    // Region present but no cell over threshold (cooled) → no overlay.
-                    despawn_field(&mut commands, &mut entities, region_id);
-                } else {
-                    let mesh_handle = meshes.add(build_mesh_with_colors(&data, heat_color));
-                    let translation = chunk_translation(region.chunk_coord);
+        let region = authority.field_store.region(region_id);
+        // Rebuild every field type's overlay for this region. A missing region
+        // (destroyed) or a field that meshes to nothing (cooled / below
+        // threshold) despawns that (region, kind) overlay.
+        for kind in FieldOverlayKind::ALL {
+            let key = (region_id, kind.ordinal());
+            let data = region.map(|r| overlay_mesh(r, kind, MACRO_RENDER_SIZE));
+            match data {
+                Some(data) if !data.is_empty() => {
+                    let mesh_handle = meshes.add(build_mesh_with_colors(&data, field_color));
+                    // region is Some here (the mesh came from it).
+                    let translation = chunk_translation(region.unwrap().chunk_coord);
                     upsert_field(
                         &mut commands,
                         &mut entities,
                         &material,
-                        region_id,
+                        key,
                         mesh_handle,
                         translation,
                     );
                 }
+                _ => despawn_field(&mut commands, &mut entities, key),
             }
-            // Region gone (destroyed/0x74) → remove its overlay entity.
-            None => despawn_field(&mut commands, &mut entities, region_id),
         }
     }
 }
 
-/// Spawns or updates the region's overlay mesh entity in place at its chunk
+/// Spawns or updates one `(region, kind)` overlay entity in place at its chunk
 /// origin (the marker cubes carry chunk-local coords, like the chunk mesh).
 fn upsert_field(
     commands: &mut Commands,
     entities: &mut VoxelFieldEntities,
     material: &VoxelFieldMaterial,
-    region_id: u64,
+    key: (u64, u8),
     mesh_handle: Handle<Mesh>,
     translation: Vec3,
 ) {
-    match entities.0.get(&region_id).copied() {
+    match entities.0.get(&key).copied() {
         Some(entity) => {
             commands.entity(entity).insert((
                 Mesh3d(mesh_handle),
@@ -124,13 +129,13 @@ fn upsert_field(
                     Visibility::default(),
                 ))
                 .id();
-            entities.0.insert(region_id, entity);
+            entities.0.insert(key, entity);
         }
     }
 }
 
-fn despawn_field(commands: &mut Commands, entities: &mut VoxelFieldEntities, region_id: u64) {
-    if let Some(entity) = entities.0.remove(&region_id) {
+fn despawn_field(commands: &mut Commands, entities: &mut VoxelFieldEntities, key: (u64, u8)) {
+    if let Some(entity) = entities.0.remove(&key) {
         commands.entity(entity).despawn();
     }
 }
@@ -139,7 +144,8 @@ fn despawn_field(commands: &mut Commands, entities: &mut VoxelFieldEntities, reg
 mod tests {
     use super::*;
     use crate::voxel::wire::{
-        FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot, VoxelServerMessage,
+        FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_TEMPERATURE,
+        FieldRegionDestroyed, FieldRegionSnapshot, VoxelServerMessage,
     };
 
     /// Builds a headless App with just the field render system + the resources it
@@ -200,12 +206,13 @@ mod tests {
         assert_eq!(field_entity_count(&app), 1, "hot region must spawn overlay");
 
         // The overlay carries a Mesh3d and sits at chunk_translation(chunk_coord)
-        // — i.e. registered exactly over the chunk the field belongs to.
+        // — i.e. registered exactly over the chunk the field belongs to. Keyed by
+        // (region_id, Temperature ordinal=0).
         let entity = *app
             .world()
             .resource::<VoxelFieldEntities>()
             .0
-            .get(&7)
+            .get(&(7, FieldOverlayKind::Temperature.ordinal()))
             .unwrap();
         assert!(
             app.world().get::<Mesh3d>(entity).is_some(),
@@ -261,6 +268,62 @@ mod tests {
         ingest(
             &mut app,
             VoxelServerMessage::FieldRegionSnapshot(hot_region(9, [0, 0, 0], &[(0, 10.0)])),
+        );
+        app.update();
+        assert_eq!(field_entity_count(&app), 0);
+    }
+
+    #[test]
+    fn electric_region_spawns_potential_and_current_overlays_independently() {
+        let mut app = test_app();
+        let chunk_coord = [0, 1, 0];
+
+        // A region carrying BOTH potential and current (active values) → two
+        // independent overlays, keyed by their distinct field-kind ordinals.
+        let region = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord,
+            region_id: 11,
+            tick_count: 1,
+            field_mask: FIELD_MASK_ELECTRIC_POTENTIAL | FIELD_MASK_ELECTRIC_CURRENT,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![80.0, 12.0],
+            electric_current: vec![5.0, 1.0],
+            ionization: vec![],
+        };
+        ingest(&mut app, VoxelServerMessage::FieldRegionSnapshot(region));
+        app.update();
+
+        // No temperature layer → no temperature overlay; potential + current each
+        // spawn one (region has no temperature, so exactly 2 entities total).
+        assert_eq!(field_entity_count(&app), 2);
+        let entities = app.world().resource::<VoxelFieldEntities>();
+        assert!(
+            entities
+                .0
+                .contains_key(&(11, FieldOverlayKind::ElectricPotential.ordinal()))
+        );
+        assert!(
+            entities
+                .0
+                .contains_key(&(11, FieldOverlayKind::ElectricCurrent.ordinal()))
+        );
+        assert!(
+            !entities
+                .0
+                .contains_key(&(11, FieldOverlayKind::Temperature.ordinal()))
+        );
+
+        // Destroy removes both overlays for the region.
+        ingest(
+            &mut app,
+            VoxelServerMessage::FieldRegionDestroyed(FieldRegionDestroyed {
+                logical_scene_id: 1,
+                chunk_coord,
+                region_id: 11,
+                destroy_reason: 0,
+            }),
         );
         app.update();
         assert_eq!(field_entity_count(&app), 0);

@@ -16,9 +16,15 @@ use std::path::PathBuf;
 
 use bevy_client::protocol::{ServerMessage, decode_server_payload};
 use bevy_client::voxel::authority::{CellState, IngestOutcome, VoxelAuthorityStore};
-use bevy_client::voxel::field_view::{DEFAULT_HEAT_THRESHOLD_C, temperature_overlay_mesh};
+use bevy_client::voxel::field_view::{
+    DEFAULT_HEAT_THRESHOLD_C, electric_current_overlay_mesh, electric_potential_overlay_mesh,
+    temperature_overlay_mesh,
+};
 use bevy_client::voxel::mesher::mesh_chunk;
-use bevy_client::voxel::wire::{FIELD_MASK_TEMPERATURE, VoxelServerMessage};
+use bevy_client::voxel::wire::{
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_TEMPERATURE,
+    VoxelServerMessage,
+};
 
 const OP_CHUNK_SNAPSHOT: u8 = 0x62;
 const OP_CHUNK_DELTA: u8 = 0x63;
@@ -121,6 +127,46 @@ fn field_region_snapshot_decodes_and_overlays_on_real_server_bytes() {
     assert!(summary.structural_ok);
     // 300°C and 60/120°C land in different heat buckets → more than one material.
     assert!(summary.area_by_material.len() >= 2);
+}
+
+#[test]
+fn field_region_electric_decodes_and_overlays_on_real_server_bytes() {
+    // C3.5 cross-language parity for the ELECTRIC field arrays: real server bytes
+    // carrying both potential and current layers (wire order temp,potential,
+    // current,ionization) decode byte-identically, then drive the FieldView
+    // potential/current overlays.
+    let message = decode_voxel(OP_FIELD_REGION_SNAPSHOT, "field_region_electric");
+    let snapshot = match message {
+        VoxelServerMessage::FieldRegionSnapshot(s) => s,
+        other => panic!("expected FieldRegionSnapshot, got {other:?}"),
+    };
+
+    assert_eq!(snapshot.region_id, 77);
+    assert_eq!(snapshot.chunk_coord, [1, 0, 2]);
+    assert_eq!(snapshot.tick_count, 3);
+    assert_eq!(
+        snapshot.field_mask & FIELD_MASK_ELECTRIC_POTENTIAL,
+        FIELD_MASK_ELECTRIC_POTENTIAL
+    );
+    assert_eq!(
+        snapshot.field_mask & FIELD_MASK_ELECTRIC_CURRENT,
+        FIELD_MASK_ELECTRIC_CURRENT
+    );
+    assert_eq!(snapshot.macro_indices, vec![0, 5]);
+    assert_eq!(snapshot.electric_potential, vec![80.0, 12.0]);
+    assert_eq!(snapshot.electric_current, vec![5.0, 1.0]);
+    assert!(snapshot.temperature.is_empty());
+
+    // Both cells clear the potential (>=0.5) and current (>=0.001) thresholds →
+    // one marker cube each per field (6 quads each → 12 per overlay).
+    let potential = electric_potential_overlay_mesh(&snapshot, 100.0).summary();
+    assert_eq!(potential.quad_count, 12);
+    assert!(potential.structural_ok);
+    let current = electric_current_overlay_mesh(&snapshot, 100.0).summary();
+    assert_eq!(current.quad_count, 12);
+
+    // No temperature layer → temperature overlay is empty (no fabrication).
+    assert!(temperature_overlay_mesh(&snapshot, 100.0, DEFAULT_HEAT_THRESHOLD_C).is_empty());
 }
 
 #[test]

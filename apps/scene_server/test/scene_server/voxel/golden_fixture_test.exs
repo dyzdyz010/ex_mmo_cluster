@@ -229,6 +229,31 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
     assert decoded.ionization_values == []
   end
 
+  test "field_region_electric fixture: golden decodes to the pinned potential+current region" do
+    binary = load_golden("field_region_electric")
+    meta = load_metadata("field_region_electric")
+
+    assert byte_size(binary) == String.to_integer(meta["wire_size"])
+
+    decoded = FieldCodec.decode_snapshot_payload!(<<@opcode_field_snapshot>> <> binary)
+
+    assert decoded.region_id == 77
+    assert decoded.chunk_coord == {1, 0, 2}
+    assert decoded.tick_count == 3
+    # mask 0x0A = electric_potential (0x02) | electric_current (0x08).
+    assert decoded.field_mask ==
+             FieldCodec.field_mask_electric_potential() +
+               FieldCodec.field_mask_electric_current()
+
+    assert decoded.cell_count == 2
+    assert decoded.macro_indices == [0, 5]
+    assert decoded.electric_values == [80.0, 12.0]
+    assert decoded.electric_current_values == [5.0, 1.0]
+    # No temperature / ionization layers.
+    assert decoded.temperature_values == []
+    assert decoded.ionization_values == []
+  end
+
   test "field_region_destroyed fixture: golden decodes to the pinned destroy event" do
     binary = load_golden("field_region_destroyed")
     meta = load_metadata("field_region_destroyed")
