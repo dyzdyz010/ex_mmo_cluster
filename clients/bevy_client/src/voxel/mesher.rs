@@ -1146,6 +1146,59 @@ mod tests {
     }
 
     #[test]
+    fn macro_only_mesh_matches_server_analytic_oracle() {
+        // Layer-2 跨语言 parity:bevy mesher 的输出 ↔ 服务端**独立解析算法**(MeshOracle,
+        // gen_voxel_golden_fixtures 写的 *.mesh.json)数值一致 —— 两套独立实现互验"将要绘制的几何"。
+        // 比 area/area_by_material(merge/顺序无关),不比 quad_count(bevy greedy 会合并)。
+        use crate::voxel::authority::VoxelAuthorityStore;
+        use crate::voxel::wire::{ChunkSnapshot, Reader};
+
+        let golden = crate::voxel::wire::fixtures::golden("snapshot_macro_only");
+        let snap = ChunkSnapshot::decode(&mut Reader::new(&golden)).unwrap();
+        let coord = snap.chunk_coord;
+        let mut store = VoxelAuthorityStore::new();
+        store.apply_snapshot(&snap).unwrap();
+        let chunk = store.chunk(coord).unwrap();
+
+        let summary = chunk_render_mesh(chunk, 1.0, &ChunkNeighbors::default()).summary();
+
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("../../apps/scene_server/priv/fixtures/voxel/snapshot_macro_only.mesh.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+
+        let expected_total = json["total_area"].as_f64().unwrap() as f32;
+        assert!(
+            (summary.total_area - expected_total).abs() < 1e-2,
+            "total_area parity: bevy {} vs server {}",
+            summary.total_area,
+            expected_total
+        );
+
+        let oracle = json["area_by_material"].as_object().unwrap();
+        assert_eq!(
+            summary.area_by_material.len(),
+            oracle.len(),
+            "material set size parity: bevy {:?} vs server {:?}",
+            summary.area_by_material,
+            oracle
+        );
+        for (mat, area) in &summary.area_by_material {
+            let exp = oracle
+                .get(&mat.to_string())
+                .unwrap_or_else(|| panic!("material {mat} present in bevy mesh, absent in oracle"))
+                .as_f64()
+                .unwrap() as f32;
+            assert!(
+                (area - exp).abs() < 1e-2,
+                "material {mat} area parity: bevy {} vs server {}",
+                area,
+                exp
+            );
+        }
+    }
+
+    #[test]
     fn greedy_and_exposed_share_canonical_summary() {
         // Layer-2 同语言版:greedy 与 exposed-face oracle 对同一 chunk 产出**顺序无关**等价的可见表面
         // (总面积/每材质面积/AABB),即便面数与顶点顺序不同。跨语言(web)parity 后续用同一口径。

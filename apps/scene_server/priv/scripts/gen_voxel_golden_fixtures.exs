@@ -546,6 +546,67 @@ defmodule FixtureGen do
   end
 end
 
+defmodule MeshOracle do
+  @moduledoc """
+  跨语言 mesher parity 真值源(Layer-2):用**独立的解析算法**(直接按暴露面计数,非 bevy 的
+  exposed-face/greedy mesher)算出一个 chunk 的期望 mesh summary,emit 为 `*.mesh.json`。bevy 的
+  ChunkMeshData.summary() 据此断言数值一致 —— server(Elixir 解析)↔ client(Rust mesher)两套独立实现
+  互验。语义对齐 bevy chunk_render_mesh:**仅 solid macro 发宏面**、refined 仅作遮挡(本批 fixture 无
+  refined 微面,故 oracle 只覆盖 solid;refined 微格 parity 后续)、chunk 边界面发射(parity 无邻居 chunk)。
+  voxel_size=1.0 → 每面面积 1;比 area(merge/顺序无关),不比 quad_count(bevy greedy 会合并)。
+  """
+  alias SceneServer.Voxel.Storage
+
+  @size 16
+  @solid 1
+  @refined 2
+  @dirs [{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}]
+
+  def macro_summary(storage) do
+    storage = Storage.normalize!(storage)
+
+    area_by_material =
+      for idx <- 0..(@size * @size * @size - 1),
+          header = Storage.macro_header_at(storage, idx),
+          header.mode == @solid,
+          reduce: %{} do
+        acc ->
+          x = rem(idx, @size)
+          y = rem(div(idx, @size), @size)
+          z = div(idx, @size * @size)
+          material = Storage.normal_block_at(storage, idx).material_id
+
+          faces =
+            Enum.count(@dirs, fn {dx, dy, dz} ->
+              nx = x + dx
+              ny = y + dy
+              nz = z + dz
+
+              nx < 0 or ny < 0 or nz < 0 or nx >= @size or ny >= @size or nz >= @size or
+                not occupied?(storage, nx, ny, nz)
+            end)
+
+          Map.update(acc, material, faces, &(&1 + faces))
+      end
+
+    total = area_by_material |> Map.values() |> Enum.sum()
+
+    %{
+      "voxel_size" => 1.0,
+      "total_area" => total * 1.0,
+      "quad_count_unmerged" => total,
+      "area_by_material" =>
+        Map.new(area_by_material, fn {m, c} -> {Integer.to_string(m), c * 1.0} end)
+    }
+  end
+
+  defp occupied?(storage, x, y, z) do
+    idx = x + y * @size + z * @size * @size
+    mode = Storage.macro_header_at(storage, idx).mode
+    mode == @solid or mode == @refined
+  end
+end
+
 # ---- fixture catalog ---------------------------------------------------------
 
 script_dir = Path.dirname(__ENV__.file)
@@ -629,6 +690,19 @@ Enum.each(snapshot_fixtures, fn {name, storage, description} ->
     description: description,
     chunk_hash: chunk_hash
   })
+end)
+
+# Layer-2 跨语言 mesher parity 真值源:对 solid-only fixture emit 独立解析的 mesh summary。
+# (snapshot_full 等含 refined 的暂不 emit —— bevy 对 refined 走微格 mesh,oracle 只覆盖 solid。)
+IO.puts("Writing mesh-summary parity fixtures:")
+
+mesh_parity_fixtures = [{"snapshot_macro_only", FixtureGen.snapshot_macro_only()}]
+
+Enum.each(mesh_parity_fixtures, fn {name, storage} ->
+  summary = MeshOracle.macro_summary(Storage.normalize!(storage))
+  json_path = Path.join(fixtures_dir, "#{name}.mesh.json")
+  File.write!(json_path, Jason.encode!(summary, pretty: true) <> "\n")
+  IO.puts("  #{name}.mesh.json (total_area=#{summary["total_area"]})")
 end)
 
 IO.puts("Writing delta fixtures:")
