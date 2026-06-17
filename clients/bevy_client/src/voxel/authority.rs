@@ -14,8 +14,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::voxel::wire::{
-    ChunkDelta, ChunkInvalidate, ChunkSnapshot, DeltaCell, NormalBlock, RefinedCell,
-    SurfaceElement, VoxelServerMessage,
+    ChunkDelta, ChunkInvalidate, ChunkSnapshot, DeltaCell, NormalBlock, ObjectStateDelta,
+    RefinedCell, SurfaceElement, VoxelServerMessage,
 };
 
 pub type ChunkCoord = [i32; 3];
@@ -65,8 +65,25 @@ pub enum IngestOutcome {
     Resync(ChunkCoord),
     /// Chunk dropped (invalidate); the renderer should clear it.
     Dropped(ChunkCoord),
-    /// Not chunk truth (object/catalog/field stream) — no chunk store change.
+    /// C2: an object's logical state advanced (ObjectStateDelta). Its affected
+    /// chunks were marked dirty so the renderer refreshes the changed cells.
+    ObjectStateApplied(u64),
+    /// C2: ObjectStateDelta with a non-newer `object_version` (duplicate / out of
+    /// order) — deduped, no state change.
+    ObjectStateStale(u64),
+    /// Not chunk truth (catalog/field stream) — no chunk store change.
     Ignored,
+}
+
+/// C2: client-tracked per-object logical state (mirrors the server
+/// `ObjectRegistry` instance state the client needs). `version` dedupes the
+/// monotonic `object_version`; `state_flags` is the latest event's bits
+/// (damaged / part_destroyed / destroyed), which the render layer maps to
+/// visuals (debris / part hide) in a later step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObjectStateRecord {
+    pub version: u64,
+    pub state_flags: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +93,7 @@ pub struct IngestError(pub String);
 pub struct VoxelAuthorityStore {
     chunks: HashMap<ChunkCoord, AuthorityChunk>,
     dirty: HashSet<ChunkCoord>,
+    objects: HashMap<u64, ObjectStateRecord>,
 }
 
 impl VoxelAuthorityStore {
@@ -109,10 +127,46 @@ impl VoxelAuthorityStore {
             VoxelServerMessage::ChunkSnapshot(snap) => self.apply_snapshot(snap),
             VoxelServerMessage::ChunkDelta(delta) => self.apply_delta(delta),
             VoxelServerMessage::ChunkInvalidate(inv) => Ok(self.apply_invalidate(inv)),
-            // Object/catalog/field streams are gameplay inputs (M5), not chunk
-            // truth; the chunk store ignores them.
+            VoxelServerMessage::ObjectStateDelta(delta) => Ok(self.apply_object_state_delta(delta)),
+            // Catalog/field streams are gameplay inputs (later milestones), not
+            // chunk truth; the chunk store ignores them.
             _ => Ok(IngestOutcome::Ignored),
         }
+    }
+
+    /// C2: consumes an `ObjectStateDelta`. Dedupes by monotonic `object_version`
+    /// (a re-sent / out-of-order event with a non-newer version is ignored), then
+    /// records the object's state and marks its `affected_chunks` dirty so the
+    /// renderer refreshes the changed cells. The destroyed micro cells themselves
+    /// arrive via snapshot/delta; this is the logical-state + refresh signal.
+    pub fn apply_object_state_delta(&mut self, delta: &ObjectStateDelta) -> IngestOutcome {
+        let is_newer = match self.objects.get(&delta.object_id) {
+            Some(record) => delta.object_version > record.version,
+            None => true,
+        };
+
+        if !is_newer {
+            return IngestOutcome::ObjectStateStale(delta.object_id);
+        }
+
+        self.objects.insert(
+            delta.object_id,
+            ObjectStateRecord {
+                version: delta.object_version,
+                state_flags: delta.state_flags,
+            },
+        );
+
+        for coord in &delta.affected_chunks {
+            self.dirty.insert(*coord);
+        }
+
+        IngestOutcome::ObjectStateApplied(delta.object_id)
+    }
+
+    /// C2: the latest tracked logical state of an object (None if unseen).
+    pub fn object_state(&self, object_id: u64) -> Option<&ObjectStateRecord> {
+        self.objects.get(&object_id)
     }
 
     pub fn apply_snapshot(&mut self, snap: &ChunkSnapshot) -> Result<IngestOutcome, IngestError> {
@@ -345,6 +399,39 @@ mod tests {
             store.ingest(&VoxelServerMessage::ChunkDelta(delta)),
             Ok(IngestOutcome::Resync([9, 9, 9]))
         );
+    }
+
+    #[test]
+    fn object_state_delta_tracks_state_dedups_and_marks_affected_chunks_dirty() {
+        // C2:消费 ObjectStateDelta golden(object_version 42,affected [{0,0,0},{1,0,0}],
+        // state_flags=destroyed)。证:记录对象状态 + 标记受影响 chunk dirty + 版本去重。
+        let golden = crate::voxel::wire::fixtures::golden("object_state_delta_destroyed");
+        let delta = ObjectStateDelta::decode(&mut Reader::new(&golden)).unwrap();
+        let object_id = delta.object_id;
+
+        let mut store = VoxelAuthorityStore::new();
+        assert_eq!(
+            store.ingest(&VoxelServerMessage::ObjectStateDelta(delta.clone())),
+            Ok(IngestOutcome::ObjectStateApplied(object_id))
+        );
+
+        let record = store.object_state(object_id).expect("object tracked");
+        assert_eq!(record.version, delta.object_version);
+        assert_eq!(record.state_flags, delta.state_flags);
+
+        // 受影响 chunk 被标 dirty(渲染据此刷新)。
+        let mut dirty = store.take_dirty();
+        dirty.sort_unstable();
+        let mut expected = delta.affected_chunks.clone();
+        expected.sort_unstable();
+        assert_eq!(dirty, expected);
+
+        // 重发同版本 → 去重(stale),无状态变化、无 dirty。
+        assert_eq!(
+            store.ingest(&VoxelServerMessage::ObjectStateDelta(delta)),
+            Ok(IngestOutcome::ObjectStateStale(object_id))
+        );
+        assert!(store.take_dirty().is_empty());
     }
 
     #[test]
