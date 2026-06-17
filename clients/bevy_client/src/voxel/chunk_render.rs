@@ -29,6 +29,7 @@ use crate::login::AppState;
 use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, greedy_mesh_chunk_with_neighbors};
+use crate::voxel::surface_decal::surface_decal_mesh;
 
 /// Sim/render size of one macro cell, in render units. The server's macro cell
 /// is 100cm; the offline renderer uses the same 100-unit cell
@@ -46,6 +47,12 @@ const REMESH_BUDGET_PER_FRAME: usize = 8;
 /// place and invalidated chunks despawn.
 #[derive(Resource, Default)]
 pub struct VoxelChunkEntities(HashMap<ChunkCoord, Entity>);
+
+/// Per-chunk SurfaceDecal entity (形态轨 C1): the chunk's surface elements
+/// (section 0x08) rendered as a separate zero-volume decal mesh, parallel to the
+/// volumetric chunk mesh. Rebuilt in the same dirty-pass as the chunk mesh.
+#[derive(Resource, Default)]
+pub struct VoxelDecalEntities(HashMap<ChunkCoord, Entity>);
 
 /// Pending remesh queue feeding the per-frame budget. `queued` dedups membership
 /// so a chunk dirtied repeatedly (or via several neighbors) is meshed once per
@@ -65,6 +72,7 @@ pub struct VoxelChunkRenderPlugin;
 impl Plugin for VoxelChunkRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VoxelChunkEntities>()
+            .init_resource::<VoxelDecalEntities>()
             .init_resource::<VoxelRemeshQueue>()
             .add_systems(Startup, setup_chunk_material)
             .add_systems(
@@ -90,6 +98,7 @@ fn render_dirty_chunks(
     mut commands: Commands,
     mut authority: ResMut<VoxelAuthority>,
     mut entities: ResMut<VoxelChunkEntities>,
+    mut decal_entities: ResMut<VoxelDecalEntities>,
     mut queue: ResMut<VoxelRemeshQueue>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Option<Res<VoxelChunkMaterial>>,
@@ -124,6 +133,7 @@ fn render_dirty_chunks(
             &mut commands,
             &authority.store,
             &mut entities,
+            &mut decal_entities,
             &mut meshes,
             &material,
             coord,
@@ -144,43 +154,103 @@ fn remesh_chunk(
     commands: &mut Commands,
     store: &VoxelAuthorityStore,
     entities: &mut VoxelChunkEntities,
+    decal_entities: &mut VoxelDecalEntities,
     meshes: &mut Assets<Mesh>,
     material: &VoxelChunkMaterial,
     coord: ChunkCoord,
 ) {
-    match store.chunk(coord) {
-        Some(chunk) => {
-            let neighbors = build_neighbors(store, coord);
-            let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
-            if data.is_empty() {
-                despawn_chunk(commands, entities, coord);
-                return;
-            }
-            let mesh_handle = meshes.add(build_mesh(&data));
-            match entities.0.get(&coord).copied() {
-                Some(entity) => {
-                    commands.entity(entity).insert(Mesh3d(mesh_handle));
-                }
-                None => {
-                    let entity = commands
-                        .spawn((
-                            Mesh3d(mesh_handle),
-                            MeshMaterial3d(material.0.clone()),
-                            Transform::from_translation(chunk_translation(coord)),
-                            Visibility::default(),
-                        ))
-                        .id();
-                    entities.0.insert(coord, entity);
-                }
-            }
+    let Some(chunk) = store.chunk(coord) else {
+        // Chunk dropped (invalidate) → remove its volumetric + decal entities.
+        despawn_chunk(commands, entities, coord);
+        despawn_decal(commands, decal_entities, coord);
+        return;
+    };
+
+    // Volumetric chunk mesh (greedy + cross-chunk culling).
+    let neighbors = build_neighbors(store, coord);
+    let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
+    if data.is_empty() {
+        despawn_chunk(commands, entities, coord);
+    } else {
+        let mesh_handle = meshes.add(build_mesh(&data));
+        upsert_entity(commands, entities, material, coord, mesh_handle);
+    }
+
+    // 形态轨 C1:SurfaceDecal 子层 — 同一 dirty-pass 重建表面元件 decal mesh(零体积,独立实体)。
+    let decal_data = surface_decal_mesh(chunk, MACRO_RENDER_SIZE);
+    if decal_data.is_empty() {
+        despawn_decal(commands, decal_entities, coord);
+    } else {
+        let decal_handle = meshes.add(build_decal_mesh(&decal_data));
+        upsert_decal(commands, decal_entities, material, coord, decal_handle);
+    }
+}
+
+/// Spawns or updates the chunk's volumetric mesh entity in place.
+fn upsert_entity(
+    commands: &mut Commands,
+    entities: &mut VoxelChunkEntities,
+    material: &VoxelChunkMaterial,
+    coord: ChunkCoord,
+    mesh_handle: Handle<Mesh>,
+) {
+    match entities.0.get(&coord).copied() {
+        Some(entity) => {
+            commands.entity(entity).insert(Mesh3d(mesh_handle));
         }
-        // Chunk dropped (invalidate) → remove its entity.
-        None => despawn_chunk(commands, entities, coord),
+        None => {
+            let entity = commands
+                .spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(material.0.clone()),
+                    Transform::from_translation(chunk_translation(coord)),
+                    Visibility::default(),
+                ))
+                .id();
+            entities.0.insert(coord, entity);
+        }
+    }
+}
+
+/// Spawns or updates the chunk's decal mesh entity (shares the chunk material;
+/// colors are baked per-vertex by surface_type_id).
+fn upsert_decal(
+    commands: &mut Commands,
+    decal_entities: &mut VoxelDecalEntities,
+    material: &VoxelChunkMaterial,
+    coord: ChunkCoord,
+    mesh_handle: Handle<Mesh>,
+) {
+    match decal_entities.0.get(&coord).copied() {
+        Some(entity) => {
+            commands.entity(entity).insert(Mesh3d(mesh_handle));
+        }
+        None => {
+            let entity = commands
+                .spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(material.0.clone()),
+                    Transform::from_translation(chunk_translation(coord)),
+                    Visibility::default(),
+                ))
+                .id();
+            decal_entities.0.insert(coord, entity);
+        }
     }
 }
 
 fn despawn_chunk(commands: &mut Commands, entities: &mut VoxelChunkEntities, coord: ChunkCoord) {
     if let Some(entity) = entities.0.remove(&coord) {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn despawn_decal(
+    commands: &mut Commands,
+    decal_entities: &mut VoxelDecalEntities,
+    coord: ChunkCoord,
+) {
+    if let Some(entity) = decal_entities.0.remove(&coord) {
         commands.entity(entity).despawn();
     }
 }
@@ -230,15 +300,23 @@ fn chunk_translation(coord: ChunkCoord) -> Vec3 {
 }
 
 /// Converts pure mesh data into a Bevy `Mesh` (positions / normals / uvs /
-/// per-vertex colors / indices). Macro coords map directly to render space
-/// (macro Y = up), so no axis swap / winding flip is applied (see
-/// `chunk_translation`).
+/// per-vertex colors / indices) with the block material palette. Macro coords
+/// map directly to render space (macro Y = up), so no axis swap / winding flip
+/// is applied (see `chunk_translation`).
 pub fn build_mesh(data: &ChunkMeshData) -> Mesh {
-    let colors: Vec<[f32; 4]> = data
-        .material_ids
-        .iter()
-        .map(|&id| material_color(id))
-        .collect();
+    build_mesh_with_colors(data, material_color)
+}
+
+/// Builds the surface-element decal mesh's Bevy `Mesh` (per-vertex decal colors
+/// by surface_type_id). Shares the chunk's white-base lit material — the visual
+/// distinction is the baked vertex color, so no separate material is needed.
+pub fn build_decal_mesh(data: &ChunkMeshData) -> Mesh {
+    build_mesh_with_colors(data, decal_color)
+}
+
+/// Shared mesh builder: bakes per-vertex colors via `color_for(id)`.
+fn build_mesh_with_colors(data: &ChunkMeshData, color_for: impl Fn(u32) -> [f32; 4]) -> Mesh {
+    let colors: Vec<[f32; 4]> = data.material_ids.iter().map(|&id| color_for(id)).collect();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
@@ -266,6 +344,19 @@ fn material_color(material_id: u32) -> [f32; 4] {
         9 => [0.85, 0.85, 0.90, 1.0],  // steam
         10 => [0.25, 0.25, 0.25, 1.0], // ash
         _ => [1.0, 0.0, 1.0, 1.0],     // unknown → magenta
+    }
+}
+
+/// Decal palette keyed by surface_type_id (mirrors server `SurfaceCatalog`:
+/// rust_decal=1 / frost=2 / scorch=3 / torch=4 / lever=5). Unknown → magenta.
+fn decal_color(surface_type_id: u32) -> [f32; 4] {
+    match surface_type_id {
+        1 => [0.65, 0.30, 0.12, 1.0], // rust_decal — rusty orange-brown
+        2 => [0.80, 0.92, 1.00, 1.0], // frost — pale icy blue
+        3 => [0.10, 0.10, 0.10, 1.0], // scorch — charred black
+        4 => [1.00, 0.75, 0.20, 1.0], // torch — bright flame
+        5 => [0.70, 0.70, 0.75, 1.0], // lever — metallic
+        _ => [1.0, 0.0, 1.0, 1.0],    // unknown → magenta
     }
 }
 
@@ -314,6 +405,46 @@ mod tests {
     fn stone_maps_to_gray_not_magenta() {
         assert_eq!(material_color(2), [0.50, 0.50, 0.50, 1.0]);
         assert_eq!(material_color(9999), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn decal_palette_distinguishes_known_types_and_flags_unknown() {
+        // torch / rust_decal distinct; unknown → magenta (obvious).
+        assert_ne!(decal_color(1), decal_color(4));
+        assert_eq!(decal_color(9999), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn build_decal_mesh_carries_attributes() {
+        use crate::voxel::surface_decal::surface_decal_mesh;
+        use crate::voxel::wire::SurfaceElement;
+
+        let size = 16usize;
+        let mut cells = vec![CellState::Empty; size * size * size];
+        cells[0] = solid(5); // host wall
+        let chunk = AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: size as u8,
+            cells,
+            surface_elements: vec![SurfaceElement {
+                macro_index: 0,
+                face: 1,            // x_pos
+                surface_type_id: 4, // torch
+                attribute_set_ref: 0,
+                tag_set_ref: 0,
+                owner_actor_id: 0,
+            }],
+        };
+
+        let data = surface_decal_mesh(&chunk, MACRO_RENDER_SIZE);
+        assert_eq!(data.quad_count(), 1);
+        let mesh = build_decal_mesh(&data);
+        // One decal quad → 4 verts / 6 indices, all attributes present.
+        assert_eq!(mesh.count_vertices(), 4);
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).is_some());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some());
+        assert_eq!(mesh.indices().map(|i| i.len()), Some(6));
     }
 
     #[test]
