@@ -53,8 +53,8 @@ defmodule SceneServer.Voxel.SurfaceCatalog do
       visibility: :hide_when_neighbor_occupied,
       material: :ash
     },
-    # 单面装置:火炬(始终可见;物理参与[发热/光]待后续接属性向量)。
-    4 => %{name: :torch, kind: :fixture, visibility: :always_visible, material: nil},
+    # 单面装置:火炬(始终可见;借 ember 材料属性向量参与热系统——heat_output>0 持续向宿主格注热)。
+    4 => %{name: :torch, kind: :fixture, visibility: :always_visible, material: :ember},
     # 单面装置:拉杆(始终可见;开关状态机可复用 S3 Actuator 数据表)。
     5 => %{name: :lever, kind: :fixture, visibility: :always_visible, material: nil}
   }

@@ -22,7 +22,16 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   @behaviour SceneServer.Voxel.Field.Kernel
 
   alias SceneServer.Voxel.Field.{FieldRegion, KernelContext, ModelCard}
-  alias SceneServer.Voxel.{MaterialCatalog, NormalBlockData, Storage, TagCatalog, Types}
+
+  alias SceneServer.Voxel.{
+    MaterialCatalog,
+    NormalBlockData,
+    Storage,
+    SurfaceCatalog,
+    TagCatalog,
+    Types
+  }
+
   alias SceneServer.Voxel.Reaction.{Engine, Rules}
 
   @temperature_attribute "temperature"
@@ -38,6 +47,9 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   @min_heat_capacity 1.0
   # 噪声地板:净传热 < 此(焦耳)不发效果,避免每 tick 海量微小写。
   @min_transfer_joules 1_000.0
+  # M5 表面元件物理参与:稳定热源(带 heat_output 的材料,如火炬 ember)每 tick 向宿主格注热的增益。
+  # 单 voxel 源经守恒扩散稀释需增益才 gameplay 可见(同 S1 I方R / 燃烧定性档)。joules = heat_output·gain。
+  @surface_heat_gain 40_000.0
 
   @impl true
   def kernel_id, do: :reaction
@@ -74,12 +86,55 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     cells = cells_in_region(region, storage)
 
     reaction_effects = Engine.evaluate(cells, rules)
-    diffusion_effects = heat_diffusion_effects(cells, region, opts)
 
-    # R5d:预算覆盖全部效果(reaction 在前优先,热扩散溢出受剩余预算截断)——约束失控级联。
-    effects = Enum.take(reaction_effects ++ diffusion_effects, max_effects(opts))
+    # M5 形态轨:表面元件(火炬等)按其材料 heat_output 向宿主格注热——属性派生、只经 truth 耦合,无
+    # per-element 规则;复用 emit_heat 原语,产物经守恒扩散自然蔓延到相邻(可熔冰/燃木)。
+    # **表面发射与守恒扩散都改温度,按格合并成每格一条 heat_effect**(求和)——避免同格同属性在一批内
+    # last-write-wins 互相覆盖(S2 焦耳热 e2e 踩过的坑)。
+    heat_effects =
+      heat_diffusion_joules(cells, region, opts)
+      |> Map.merge(surface_emission_joules(storage, region), fn _idx, a, b -> a + b end)
+      |> Enum.filter(fn {_idx, q} -> abs(q) >= @min_transfer_joules end)
+      |> Enum.map(fn {idx, q} -> heat_effect(idx, q) end)
+
+    # R5d:预算覆盖全部效果(反应优先,热[扩散+表面发射]溢出受剩余预算截断)——约束失控级联。
+    effects = Enum.take(reaction_effects ++ heat_effects, max_effects(opts))
 
     {:cont, region, effects}
+  end
+
+  # M5 表面元件热发射:region 内带 heat_output>0 材料的表面元件,每 tick 向其宿主宏格注 heat_output·gain
+  # 焦耳(汇成 %{macro_index => joules},再与扩散合并)。属性派生:无 heat_output 的表面元件(rust_decal/
+  # frost…)不发热(回退 0,惰性安全)。宿主须为实心格(火炬挂墙)方有热容承接 + 扩散。
+  defp surface_emission_joules(%Storage{} = storage, %FieldRegion{aabb: aabb}) do
+    {{min_x, min_y, min_z}, {max_x, max_y, max_z}} = aabb
+
+    storage
+    |> Storage.list_surface_elements()
+    |> Enum.reduce(%{}, fn element, acc ->
+      {x, y, z} = Types.macro_coord!(element.macro_index)
+      heat_watts = surface_heat_output(element.surface_type_id)
+
+      if x in min_x..max_x and y in min_y..max_y and z in min_z..max_z and heat_watts > 0.0 do
+        joules = heat_watts * @surface_heat_gain
+        Map.update(acc, element.macro_index, joules, &(&1 + joules))
+      else
+        acc
+      end
+    end)
+  end
+
+  defp surface_emission_joules(_storage, _region), do: %{}
+
+  # 表面元件类型 → 借用材料 → heat_output(W);无材料 / 无该属性 → 0.0(惰性安全)。
+  defp surface_heat_output(surface_type_id) do
+    with name when not is_nil(name) <- SurfaceCatalog.material(surface_type_id),
+         material_id when not is_nil(material_id) <- MaterialCatalog.material_id(name) do
+      MaterialCatalog.default_attribute_value(material_id, "heat_output", 0) /
+        MaterialCatalog.fixed32_scale()
+    else
+      _ -> 0.0
+    end
   end
 
   defp opts_map(opts) when is_map(opts), do: opts
@@ -93,12 +148,12 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   end
 
   # R6c 守恒 Fourier 热扩散:对每对相邻 solid cell 按温差传热,源放热=冷端得热(能量守恒)。
-  # 每 cell 净焦耳(可正可负)汇总成一条连续注热效果(经 SystemActor always-commit + ChunkProcess clip)。
-  defp heat_diffusion_effects(cells, region, opts) do
+  # 返回每 cell 净焦耳 %{macro_index => q}(可正可负);由 tick 与表面发射合并后统一发 heat_effect。
+  defp heat_diffusion_joules(cells, region, opts) do
     rate = diffusion_rate(opts)
 
     if rate <= 0.0 do
-      []
+      %{}
     else
       by_index = Map.new(cells, &{&1.macro_index, &1})
       present = MapSet.new(cells, & &1.macro_index)
@@ -113,8 +168,6 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
           accumulate_transfer(acc2, cell, Map.fetch!(by_index, n_index), rate)
         end)
       end)
-      |> Enum.filter(fn {_idx, q} -> abs(q) >= @min_transfer_joules end)
-      |> Enum.map(fn {idx, q} -> heat_effect(idx, q) end)
     end
   end
 

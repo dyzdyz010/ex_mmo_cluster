@@ -43,11 +43,11 @@ defmodule SceneServer.Voxel.SurfaceCatalogTest do
       assert SurfaceCatalog.material(id) == :rust
     end
 
-    test "torch:单面装置,始终可见,物理参与待接(material nil)" do
+    test "torch:单面装置,始终可见,借 ember 材料参与热系统(heat_output)" do
       id = SurfaceCatalog.surface_type_id(:torch)
       assert SurfaceCatalog.kind(id) == :fixture
       assert SurfaceCatalog.visibility(id) == :always_visible
-      assert SurfaceCatalog.material(id) == nil
+      assert SurfaceCatalog.material(id) == :ember
     end
 
     test "未知名 / 未知 id 返回 nil" do

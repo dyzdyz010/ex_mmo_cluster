@@ -61,4 +61,22 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
       end
     end
   end
+
+  describe "M5 形态轨:ember 热源材料(表面元件火炬借其属性向量)" do
+    test "ember append-only(id13)且 heat_output>0(稳定热源)" do
+      ember = MaterialCatalog.material_id(:ember)
+      assert ember == 13
+      assert MaterialCatalog.known_material?(ember)
+      assert MaterialCatalog.default_attribute_value(ember, "heat_output", 0) > 0
+      # 惰性:不导电、不可燃(ignition 哨兵)。
+      assert MaterialCatalog.default_attribute_value(ember, "electric_conductivity", 0) == 0
+    end
+
+    test "非热源材料 heat_output 回退 0(惰性安全)" do
+      for name <- [:stone, :iron, :rust, :water] do
+        id = MaterialCatalog.material_id(name)
+        assert MaterialCatalog.default_attribute_value(id, "heat_output", 0) == 0
+      end
+    end
+  end
 end

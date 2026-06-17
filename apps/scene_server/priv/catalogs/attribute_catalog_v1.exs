@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 6,
+  catalog_version: 7,
   definitions: [
     %{
       id: 1,
@@ -256,6 +256,22 @@
       max_value: 65_536,
       merge_rule: :add_delta,
       dynamic: true
+    },
+    # 功能完善 · 形态轨 M5(表面元件物理参与):稳定热源功率 W。带 heat_output>0 的材料(如火炬 ember)
+    # 持续向宿主格注热(经守恒热扩散耦合到相变/化学);0 = 不发热(fallback,惰性安全)。定性档:实际注热
+    # 量 = heat_output·dt·gain(单 voxel 源经扩散稀释需增益,同 S1 I方R)。fixed32 上限约 32767 W。
+    %{
+      id: 18,
+      name: "heat_output",
+      unit: "W",
+      value_type: :fixed32,
+      # 0.0 W (非热源 fallback)
+      default_value: 0,
+      min_value: 0,
+      # 30000.0 W (fixed32 i32 安全上限内)
+      max_value: 1_966_080_000,
+      merge_rule: :material_default,
+      dynamic: false
     }
   ]
 }

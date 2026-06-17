@@ -28,6 +28,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @door_material_id 11
   # 功能完善 · 正交架构 S4(化学/氧化):铁锈——iron 氧化终产物。不导电(锈断路)、惰性(不再氧化)。
   @rust_material_id 12
+  # 功能完善 · 形态轨 M5(表面元件物理参与):余烬/火焰——稳定热源(heat_output>0)。火炬表面元件借其
+  # 属性向量持续向宿主格注热(经守恒热扩散耦合到相变/化学);非导电、惰性(不可燃/不氧化)。
+  @ember_material_id 13
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -42,7 +45,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     steam: @steam_material_id,
     ash: @ash_material_id,
     door: @door_material_id,
-    rust: @rust_material_id
+    rust: @rust_material_id,
+    ember: @ember_material_id
   }
 
   @power_source_defaults %{
@@ -202,6 +206,22 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => 0,
       "dielectric_strength" => round(2.0 * @fixed32_scale),
       "oxidation_temperature" => @inert_temperature_raw
+    },
+    # M5 表面元件物理参与:余烬/火焰——稳定热源。heat_output>0 → 火炬表面元件持续注热;低密度、惰性
+    # (ignition/oxidation 哨兵不可达 → 不可燃不氧化)、不导电。
+    @ember_material_id => %{
+      "density" => round(300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.1 * @fixed32_scale),
+      "specific_heat_capacity" => round(800.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => 0,
+      "oxidation_temperature" => @inert_temperature_raw,
+      # 稳定热源功率(定性档,经守恒热扩散增益放大;火炬借此向宿主格注热)。
+      "heat_output" => round(1_500.0 * @fixed32_scale)
     }
   }
 
