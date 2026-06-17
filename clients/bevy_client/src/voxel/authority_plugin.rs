@@ -25,6 +25,15 @@ use crate::voxel::wire::{
 /// scene for now).
 const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
+/// Ordering anchor for the inbox drain. `ingest_voxel_messages` (which surfaces
+/// the per-frame ObjectState / ElectricSnapshot / destroyed-region events)
+/// belongs to this set; the effect adapters (debris, heat smoke) run
+/// `.after(VoxelIngestSet)` so events are consumed the SAME frame they're
+/// surfaced — within `ClientSet::Logic`, which `ClientSet` only orders relative
+/// to other sets, not within.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VoxelIngestSet;
+
 /// A surfaced object-state transition (from `ObjectStateDelta` / 0x6C), carrying
 /// the data downstream visual effects need (debris bursts): which object, its new
 /// `state_flags` (damaged / part_destroyed / destroyed), and the chunks whose
@@ -73,6 +82,7 @@ pub struct VoxelAuthority {
     resync_requests: Vec<ChunkCoord>,
     object_state_events: Vec<ObjectStateEvent>,
     electric_snapshot_events: Vec<ElectricSnapshotEvent>,
+    destroyed_field_regions: Vec<u64>,
 }
 
 impl VoxelAuthority {
@@ -116,6 +126,11 @@ impl VoxelAuthority {
                 }
                 VoxelServerMessage::FieldRegionDestroyed(destroyed) => {
                     self.field_store.apply_destroyed(destroyed);
+                    // Surface the destroy so the heat-smoke adapter clears that
+                    // region's lingering plume (mirrors web onRegionDestroyed →
+                    // clearRegion); otherwise smoke drifts ~2.2s after the region
+                    // is gone and its heat-source override leaks.
+                    self.destroyed_field_regions.push(destroyed.region_id);
                 }
                 // C2: object-state transitions both refresh chunk geometry (the
                 // store marks affected_chunks dirty) AND fire a visual event the
@@ -175,6 +190,12 @@ impl VoxelAuthority {
     pub fn take_electric_snapshot_events(&mut self) -> Vec<ElectricSnapshotEvent> {
         std::mem::take(&mut self.electric_snapshot_events)
     }
+
+    /// Drains the region ids destroyed (0x74) since the last call — the
+    /// heat-smoke adapter clears each region's particles + heat source.
+    pub fn take_destroyed_field_regions(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.destroyed_field_regions)
+    }
 }
 
 pub struct VoxelAuthorityPlugin;
@@ -185,6 +206,7 @@ impl Plugin for VoxelAuthorityPlugin {
             Update,
             ingest_voxel_messages
                 .in_set(ClientSet::Logic)
+                .in_set(VoxelIngestSet)
                 .run_if(in_state(AppState::Game)),
         );
     }

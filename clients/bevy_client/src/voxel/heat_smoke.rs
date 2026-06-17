@@ -155,17 +155,28 @@ impl HeatSmokeSimulation {
             return 0;
         }
 
+        // Cool-down: an electric snapshot with NO active cell means the circuit
+        // went cold — clear this region's lingering smoke immediately instead of
+        // letting it drift for ~2.2s (mirrors the web `onFieldSnapshot` gate
+        // `electric layer present && !activeEffect → clearRegionParticles`).
+        // `cells.is_empty()` is exactly that condition (current<0.001 AND
+        // potential<0.5). The temperature-only case already returned above.
+        let cells = active_electric_cells(field);
+        if cells.is_empty() {
+            self.clear_region_particles(field.region_id);
+            return 0;
+        }
+
+        // Active cells exist; if there is no heat (e.g. potential-only with no
+        // region override) we don't spawn, but we also DON'T clear — existing
+        // smoke ages out naturally (the reference treats a live potential cell as
+        // an active effect, so it is not a cool-down).
         let heat = self
             .region_heat_joules_per_tick
             .get(&field.region_id)
             .copied()
             .unwrap_or_else(|| estimate_heat_energy(field));
         if heat <= 0.0 {
-            return 0;
-        }
-
-        let cells = active_electric_cells(field);
-        if cells.is_empty() {
             return 0;
         }
 
@@ -504,6 +515,30 @@ mod tests {
         let mut rng = seq_rng(vec![0.5]);
         sim.spawn_from_electric(&current_field(1, [0, 0, 0], &indices, &current), &mut rng);
         assert_eq!(sim.active_count(None), 10);
+    }
+
+    #[test]
+    fn cooled_circuit_snapshot_clears_region_smoke() {
+        // Spawn smoke for region 1 (active current), then a later electric
+        // snapshot for the SAME region with all-zero current → the circuit went
+        // cold → that region's smoke is cleared immediately (not left to age out).
+        let mut sim = HeatSmokeSimulation::new();
+        let indices = [0u16, 1];
+        let hot = [10.0f32, 8.0];
+        let mut rng = seq_rng(vec![0.5]);
+        sim.spawn_from_electric(&current_field(1, [0, 0, 0], &indices, &hot), &mut rng);
+        assert!(sim.active_count(Some(1)) > 0);
+
+        // Electric mask still present, but no active cell (all below 0.001).
+        let cold = [0.0f32, 0.0];
+        let spawned =
+            sim.spawn_from_electric(&current_field(1, [0, 0, 0], &indices, &cold), &mut rng);
+        assert_eq!(spawned, 0);
+        assert_eq!(
+            sim.active_count(Some(1)),
+            0,
+            "cooled circuit clears its smoke"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::app::schedule::ClientSet;
 use crate::login::AppState;
-use crate::voxel::authority_plugin::VoxelAuthority;
+use crate::voxel::authority_plugin::{VoxelAuthority, VoxelIngestSet};
 use crate::voxel::heat_smoke::{ElectricField, HeatSmokeSimulation};
 
 /// Resource: the pure heat-smoke sim plus the PRNG state feeding its injected
@@ -62,6 +62,7 @@ impl Plugin for HeatSmokePlugin {
                 Update,
                 spawn_heat_smoke
                     .in_set(ClientSet::Logic)
+                    .after(VoxelIngestSet)
                     .run_if(in_state(AppState::Game)),
             )
             .add_systems(
@@ -102,6 +103,13 @@ fn next_unit(state: &mut u64) -> f32 {
 }
 
 fn spawn_heat_smoke(mut authority: ResMut<VoxelAuthority>, mut effect: ResMut<HeatSmokeEffect>) {
+    // A destroyed field region clears its smoke + heat-source override at once
+    // (mirrors web onRegionDestroyed → clearRegion), so no plume lingers over a
+    // region that no longer exists.
+    for region_id in authority.take_destroyed_field_regions() {
+        effect.sim.clear_region(region_id);
+    }
+
     let events = authority.take_electric_snapshot_events();
     if events.is_empty() {
         return;
@@ -170,7 +178,7 @@ fn advance_and_render_heat_smoke(
 mod tests {
     use super::*;
     use crate::voxel::wire::{
-        FIELD_MASK_ELECTRIC_CURRENT, FieldRegionSnapshot, VoxelServerMessage,
+        FIELD_MASK_ELECTRIC_CURRENT, FieldRegionDestroyed, FieldRegionSnapshot, VoxelServerMessage,
     };
 
     fn test_app() -> App {
@@ -226,6 +234,51 @@ mod tests {
         assert_eq!(effect.sim.active_count(None), 96);
         let entities = app.world().resource::<HeatSmokeEntities>();
         assert_eq!(entities.0.len(), 96);
+    }
+
+    #[test]
+    fn region_destroy_clears_its_smoke_immediately() {
+        let mut app = test_app();
+        // Spawn smoke for region 7.
+        {
+            let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
+            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(electric_snapshot(
+                7,
+                vec![10.0],
+            )));
+            authority.drain_inbox();
+        }
+        app.update();
+        assert!(
+            app.world()
+                .resource::<HeatSmokeEffect>()
+                .sim
+                .active_count(Some(7))
+                > 0
+        );
+
+        // Destroying region 7 must clear its plume the same pass (not let it age).
+        {
+            let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
+            authority.enqueue(VoxelServerMessage::FieldRegionDestroyed(
+                FieldRegionDestroyed {
+                    logical_scene_id: 1,
+                    chunk_coord: [0, 0, 0],
+                    region_id: 7,
+                    destroy_reason: 0,
+                },
+            ));
+            authority.drain_inbox();
+        }
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<HeatSmokeEffect>()
+                .sim
+                .active_count(Some(7)),
+            0,
+            "destroy clears the region's smoke"
+        );
     }
 
     #[test]

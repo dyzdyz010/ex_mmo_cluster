@@ -20,7 +20,7 @@ use bevy::prelude::*;
 
 use crate::app::schedule::ClientSet;
 use crate::login::AppState;
-use crate::voxel::authority_plugin::VoxelAuthority;
+use crate::voxel::authority_plugin::{VoxelAuthority, VoxelIngestSet};
 use crate::voxel::chunk_render::MACRO_RENDER_SIZE;
 use crate::voxel::debris::{
     DEFAULT_PARTICLE_SIZE_M, DebrisKind, DebrisSimulation, DebrisSpawnPoint,
@@ -83,6 +83,7 @@ impl Plugin for DebrisEffectPlugin {
                 Update,
                 spawn_debris_from_object_state
                     .in_set(ClientSet::Logic)
+                    .after(VoxelIngestSet)
                     .run_if(in_state(AppState::Game)),
             )
             .add_systems(
