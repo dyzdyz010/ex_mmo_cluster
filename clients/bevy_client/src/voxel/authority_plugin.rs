@@ -23,6 +23,17 @@ use crate::voxel::wire::VoxelServerMessage;
 /// scene for now).
 const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
+/// A surfaced object-state transition (from `ObjectStateDelta` / 0x6C), carrying
+/// the data downstream visual effects need (debris bursts): which object, its new
+/// `state_flags` (damaged / part_destroyed / destroyed), and the chunks whose
+/// cells changed. Drained by the debris adapter each frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectStateEvent {
+    pub object_id: u64,
+    pub state_flags: u32,
+    pub affected_chunks: Vec<ChunkCoord>,
+}
+
 /// Bevy resource wrapping the pure authority stores plus an inbox the net layer
 /// pushes decoded voxel messages into.
 ///
@@ -43,6 +54,7 @@ pub struct VoxelAuthority {
     pub field_store: VoxelFieldStore,
     inbox: Vec<VoxelServerMessage>,
     resync_requests: Vec<ChunkCoord>,
+    object_state_events: Vec<ObjectStateEvent>,
 }
 
 impl VoxelAuthority {
@@ -71,8 +83,23 @@ impl VoxelAuthority {
                 VoxelServerMessage::FieldRegionDestroyed(destroyed) => {
                     self.field_store.apply_destroyed(destroyed);
                 }
-                // Everything else is chunk truth (snapshot/delta/invalidate/object
-                // state) or a catalog patch the chunk store version-gates / ignores.
+                // C2: object-state transitions both refresh chunk geometry (the
+                // store marks affected_chunks dirty) AND fire a visual event the
+                // debris adapter consumes. Surface the event when newly applied
+                // (dedup of a stale/duplicate version yields no event).
+                VoxelServerMessage::ObjectStateDelta(delta) => {
+                    if let IngestOutcome::ObjectStateApplied(object_id) =
+                        self.store.apply_object_state_delta(delta)
+                    {
+                        self.object_state_events.push(ObjectStateEvent {
+                            object_id,
+                            state_flags: delta.state_flags,
+                            affected_chunks: delta.affected_chunks.clone(),
+                        });
+                    }
+                }
+                // Everything else is chunk truth (snapshot/delta/invalidate) or a
+                // catalog patch the chunk store version-gates / ignores.
                 _ => match self.store.ingest(&message) {
                     Ok(IngestOutcome::Resync(coord)) => {
                         // Version-gate failed: the held chunk forked from the
@@ -101,6 +128,12 @@ impl VoxelAuthority {
         coords.sort_unstable();
         coords.dedup();
         coords
+    }
+
+    /// Drains object-state events surfaced since the last call — the debris
+    /// adapter turns these into particle bursts.
+    pub fn take_object_state_events(&mut self) -> Vec<ObjectStateEvent> {
+        std::mem::take(&mut self.object_state_events)
     }
 }
 

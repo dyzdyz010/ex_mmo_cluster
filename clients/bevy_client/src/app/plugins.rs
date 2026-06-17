@@ -24,7 +24,8 @@ use crate::presentation::PresentationPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 use crate::voxel::{
-    VoxelAuthorityPlugin, VoxelChunkRenderPlugin, VoxelFieldRenderPlugin, VoxelPlugin,
+    DebrisEffectPlugin, VoxelAuthorityPlugin, VoxelChunkRenderPlugin, VoxelFieldRenderPlugin,
+    VoxelPlugin,
 };
 
 /// Canonical Bevy client `PluginGroup`.
@@ -45,6 +46,7 @@ impl PluginGroup for BevyClientPlugins {
             .add(VoxelAuthorityPlugin)
             .add(VoxelChunkRenderPlugin)
             .add(VoxelFieldRenderPlugin)
+            .add(DebrisEffectPlugin)
             .add(SkillPlugin)
             .add(MovementSyncPlugin)
             .add(EffectPlugin)

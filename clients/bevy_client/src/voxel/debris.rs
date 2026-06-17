@@ -22,6 +22,11 @@ pub const DEFAULT_PARTICLE_LIFETIME_MS: f32 = 800.0;
 pub const DEFAULT_OUTWARD_SPEED_MPS: f32 = 1.5;
 pub const DEFAULT_TANGENTIAL_SPEED_MPS: f32 = 0.6;
 pub const DEFAULT_GRAVITY_MPS2: f32 = -9.8;
+/// Visual edge of a debris cube, in meters (= macro units). The render adapter
+/// draws each particle at `DEFAULT_PARTICLE_SIZE_M * macro_render_size` units
+/// (0.05 * 100 = 5), matching the web `debrisRenderer` DEFAULT_PARTICLE_SIZE_WORLD.
+/// Kept here as the parity anchor even though the pure sim never reads it.
+pub const DEFAULT_PARTICLE_SIZE_M: f32 = 0.05;
 
 /// The destruction event that triggered a burst. Mirrors the server's single
 /// `state_flags` events; currently informational (the reference's spawn ignores
@@ -42,6 +47,10 @@ pub struct DebrisSpawnPoint {
 }
 
 /// One live debris particle (position + velocity in macro units, age in ms).
+///
+/// `seed_*` is the spawn origin, frozen at birth (x/y/z mutate as the particle
+/// moves), retained so the render adapter can derive stable per-particle visual
+/// variation (rotation seed / color jitter) — mirroring the web reference.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DebrisParticle {
     pub x: f32,
@@ -51,6 +60,9 @@ pub struct DebrisParticle {
     pub vy: f32,
     pub vz: f32,
     pub age_ms: f32,
+    pub seed_x: f32,
+    pub seed_y: f32,
+    pub seed_z: f32,
 }
 
 /// Tunable simulation parameters (defaults mirror the reference).
@@ -192,6 +204,9 @@ impl DebrisSimulation {
             vy: dir_y * outward_scale,
             vz: dir_z * outward_scale + tang_scale,
             age_ms: 0.0,
+            seed_x: point.x,
+            seed_y: point.y,
+            seed_z: point.z,
         }
     }
 }
