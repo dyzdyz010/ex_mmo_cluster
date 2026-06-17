@@ -30,7 +30,10 @@ pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell
 pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
-pub use field::{FieldRegionDestroyed, FieldRegionSnapshot};
+pub use field::{
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
+    FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
+};
 pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
 pub use snapshot::{

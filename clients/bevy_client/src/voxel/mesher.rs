@@ -586,6 +586,27 @@ fn emit_quad(
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
+/// Emits the 6 faces of an axis-aligned cube at `[min, min+size]` with the given
+/// material id. Reuses the canonical [`FACES`] table (winding/normals) so callers
+/// (e.g. the FieldView heat-marker overlay, C3) don't re-derive cube geometry.
+pub fn push_cube(mesh: &mut ChunkMeshData, min: [f32; 3], size: f32, material_id: u32) {
+    for face in &FACES {
+        let base = mesh.positions.len() as u32;
+        for (corner, uv) in face.corners.iter().zip(FACE_UVS.iter()) {
+            mesh.positions.push([
+                min[0] + corner[0] * size,
+                min[1] + corner[1] * size,
+                min[2] + corner[2] * size,
+            ]);
+            mesh.normals.push(face.normal);
+            mesh.uvs.push(*uv);
+            mesh.material_ids.push(material_id);
+        }
+        mesh.indices
+            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
 // ── Micro (sub-voxel) meshing of one refined cell (M2b / C4) ──
 //
 // A refined macro cell carries an 8³ = 512-bit occupancy mask + material layers.
