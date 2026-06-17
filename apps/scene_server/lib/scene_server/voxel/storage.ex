@@ -24,6 +24,7 @@ defmodule SceneServer.Voxel.Storage do
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.ObjectCoverRef
   alias SceneServer.Voxel.RefinedCellData
+  alias SceneServer.Voxel.SurfaceElement
   alias SceneServer.Voxel.TagSet
   alias SceneServer.Voxel.Types
 
@@ -49,6 +50,7 @@ defmodule SceneServer.Voxel.Storage do
             object_refs: [],
             attribute_sets: [],
             tag_sets: [],
+            surface_elements: [],
             dirty_bounds: %DirtyMacroBounds{}
 
   @type t :: %__MODULE__{
@@ -66,6 +68,7 @@ defmodule SceneServer.Voxel.Storage do
           object_refs: [ChunkObjectRef.t()],
           attribute_sets: [AttributeSet.t()],
           tag_sets: [TagSet.t()],
+          surface_elements: [SurfaceElement.t()],
           dirty_bounds: DirtyMacroBounds.t()
         }
 
@@ -134,6 +137,70 @@ defmodule SceneServer.Voxel.Storage do
     |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
     |> normalize!()
   end
+
+  # ----------------------------------------------------------------------------
+  # 形态轨 — 表面元件(surface element)旁路。零 occupancy:只动 surface_elements,
+  # 绝不碰 macro_headers / normal_blocks / refined_cells(不改宿主邻接/碰撞/面剔除)。
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  在某宏格的某面放置(或覆盖)一个表面元件。`{macro_index, face}` 唯一,已有则替换。
+
+  零 occupancy:不改宿主 cell 几何;仅标记宿主宏格 dirty 以触发重快照。
+  """
+  @spec put_surface_element(t(), SurfaceElement.t() | map()) :: t()
+  def put_surface_element(%__MODULE__{} = storage, element) do
+    storage = normalize!(storage)
+    element = SurfaceElement.normalize!(element)
+    key = SurfaceElement.sort_key(element)
+
+    kept = Enum.reject(storage.surface_elements, &(SurfaceElement.sort_key(&1) == key))
+
+    %{storage | surface_elements: [element | kept]}
+    |> mark_macro_dirty(element.macro_index, DirtyMacroBounds.reason_attribute_write())
+    |> normalize!()
+  end
+
+  @doc "返回某宏格某面的表面元件(无则 nil)。"
+  @spec surface_element_at(t(), integer() | term(), atom()) :: SurfaceElement.t() | nil
+  def surface_element_at(%__MODULE__{} = storage, macro_index_or_coord, face) do
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+
+    Enum.find(storage.surface_elements, fn element ->
+      element.macro_index == macro_index and element.face == face
+    end)
+  end
+
+  @doc "移除某宏格某面的表面元件(无则原样返回)。处理(清氧化/刮除)走此路径。"
+  @spec clear_surface_element(t(), integer() | term(), atom()) :: t()
+  def clear_surface_element(%__MODULE__{} = storage, macro_index_or_coord, face) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+
+    kept =
+      Enum.reject(storage.surface_elements, fn element ->
+        element.macro_index == macro_index and element.face == face
+      end)
+
+    if length(kept) == length(storage.surface_elements) do
+      storage
+    else
+      %{storage | surface_elements: kept}
+      |> mark_macro_dirty(macro_index, DirtyMacroBounds.reason_attribute_write())
+      |> normalize!()
+    end
+  end
+
+  @doc "返回某宏格上(全部 6 面)的表面元件列表。"
+  @spec surface_elements_at_macro(t(), integer() | term()) :: [SurfaceElement.t()]
+  def surface_elements_at_macro(%__MODULE__{} = storage, macro_index_or_coord) do
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    Enum.filter(storage.surface_elements, &(&1.macro_index == macro_index))
+  end
+
+  @doc "返回 chunk 内全部表面元件(canonical 排序)。"
+  @spec list_surface_elements(t()) :: [SurfaceElement.t()]
+  def list_surface_elements(%__MODULE__{} = storage), do: storage.surface_elements
 
   # ----------------------------------------------------------------------------
   # Phase 5.E — dirty tracking helpers
@@ -1270,10 +1337,25 @@ defmodule SceneServer.Voxel.Storage do
         ),
       attribute_sets: normalize_attribute_sets!(fetch(attrs, :attribute_sets, [])),
       tag_sets: normalize_tag_sets!(fetch(attrs, :tag_sets, [])),
+      surface_elements: normalize_surface_elements!(fetch(attrs, :surface_elements, [])),
       dirty_bounds:
         DirtyMacroBounds.normalize!(fetch(attrs, :dirty_bounds, DirtyMacroBounds.empty()))
     }
   end
+
+  # 表面元件 canonical 化:逐条 normalize + 按 {macro_index, face} 去重(后写覆盖)+ 按 sort_key 排序。
+  # 排序独立于调用插入序,保 chunk_hash 稳定(同 object_refs 纪律)。表面元件零 occupancy,不动 macro_headers。
+  defp normalize_surface_elements!(elements) when is_list(elements) do
+    elements
+    |> Enum.map(&SurfaceElement.normalize!/1)
+    |> Enum.reduce(%{}, fn element, acc ->
+      Map.put(acc, SurfaceElement.sort_key(element), element)
+    end)
+    |> Map.values()
+    |> Enum.sort_by(&SurfaceElement.sort_key/1)
+  end
+
+  defp normalize_surface_elements!(_other), do: []
 
   # ----------------------------------------------------------------------------
   # Phase 1c — refined micro mutation helpers
