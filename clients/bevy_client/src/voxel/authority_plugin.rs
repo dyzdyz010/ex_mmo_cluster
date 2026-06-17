@@ -17,7 +17,9 @@ use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::voxel::authority::{ChunkCoord, IngestOutcome, VoxelAuthorityStore};
 use crate::voxel::field_view::VoxelFieldStore;
-use crate::voxel::wire::VoxelServerMessage;
+use crate::voxel::wire::{
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, VoxelServerMessage,
+};
 
 /// Logical scene the client subscribes voxels in (mirrors net::plugin; single
 /// scene for now).
@@ -32,6 +34,21 @@ pub struct ObjectStateEvent {
     pub object_id: u64,
     pub state_flags: u32,
     pub affected_chunks: Vec<ChunkCoord>,
+}
+
+/// A surfaced electric field snapshot (0x73 with an electric layer), carrying the
+/// data the heat-smoke adapter needs. Edge-triggered per arrival (mirrors the web
+/// `onFieldSnapshot` calling `spawnFromElectricSnapshot` once per snapshot), and
+/// surfaced on a DISJOINT channel from the overlay's `take_dirty` so the two
+/// never fight. Lean: only the electric arrays (+ ids/coord), not the whole snap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElectricSnapshotEvent {
+    pub region_id: u64,
+    pub chunk_coord: ChunkCoord,
+    pub field_mask: u8,
+    pub macro_indices: Vec<u16>,
+    pub electric_potential: Vec<f32>,
+    pub electric_current: Vec<f32>,
 }
 
 /// Bevy resource wrapping the pure authority stores plus an inbox the net layer
@@ -55,6 +72,7 @@ pub struct VoxelAuthority {
     inbox: Vec<VoxelServerMessage>,
     resync_requests: Vec<ChunkCoord>,
     object_state_events: Vec<ObjectStateEvent>,
+    electric_snapshot_events: Vec<ElectricSnapshotEvent>,
 }
 
 impl VoxelAuthority {
@@ -78,6 +96,22 @@ impl VoxelAuthority {
                 // C3: field stream drives the field store (FieldView render
                 // sub-layer), never the chunk store — independent truth sources.
                 VoxelServerMessage::FieldRegionSnapshot(snapshot) => {
+                    // Edge-trigger the heat-smoke adapter once per electric
+                    // snapshot (gated like the web `spawnFromElectricSnapshot`),
+                    // on a channel disjoint from the overlay's `take_dirty`.
+                    if snapshot.field_mask
+                        & (FIELD_MASK_ELECTRIC_POTENTIAL | FIELD_MASK_ELECTRIC_CURRENT)
+                        != 0
+                    {
+                        self.electric_snapshot_events.push(ElectricSnapshotEvent {
+                            region_id: snapshot.region_id,
+                            chunk_coord: snapshot.chunk_coord,
+                            field_mask: snapshot.field_mask,
+                            macro_indices: snapshot.macro_indices.clone(),
+                            electric_potential: snapshot.electric_potential.clone(),
+                            electric_current: snapshot.electric_current.clone(),
+                        });
+                    }
                     self.field_store.apply_snapshot(snapshot.clone());
                 }
                 VoxelServerMessage::FieldRegionDestroyed(destroyed) => {
@@ -134,6 +168,12 @@ impl VoxelAuthority {
     /// adapter turns these into particle bursts.
     pub fn take_object_state_events(&mut self) -> Vec<ObjectStateEvent> {
         std::mem::take(&mut self.object_state_events)
+    }
+
+    /// Drains electric-snapshot events surfaced since the last call — the
+    /// heat-smoke adapter emits a burst per event.
+    pub fn take_electric_snapshot_events(&mut self) -> Vec<ElectricSnapshotEvent> {
+        std::mem::take(&mut self.electric_snapshot_events)
     }
 }
 
@@ -260,5 +300,56 @@ mod tests {
         authority.drain_inbox();
         assert_eq!(authority.field_store.region_count(), 0);
         assert_eq!(authority.field_store.take_dirty(), vec![99]);
+    }
+
+    #[test]
+    fn electric_snapshot_surfaces_event_temperature_only_and_destroy_do_not() {
+        // Heat-smoke edge-trigger: only a 0x73 with an electric layer enqueues an
+        // ElectricSnapshotEvent; temperature-only 0x73 and 0x74 destroy enqueue none.
+        let mut authority = VoxelAuthority::default();
+        let electric = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [1, 0, 2],
+            region_id: 77,
+            tick_count: 3,
+            field_mask: FIELD_MASK_ELECTRIC_CURRENT,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![5.0, 1.0],
+            ionization: vec![],
+        };
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(electric));
+        // A temperature-only snapshot must NOT surface a smoke event.
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(
+            FieldRegionSnapshot {
+                logical_scene_id: 1,
+                chunk_coord: [0, 0, 0],
+                region_id: 5,
+                tick_count: 1,
+                field_mask: FIELD_MASK_TEMPERATURE,
+                macro_indices: vec![0],
+                temperature: vec![300.0],
+                electric_potential: vec![],
+                electric_current: vec![],
+                ionization: vec![],
+            },
+        ));
+        authority.enqueue(VoxelServerMessage::FieldRegionDestroyed(
+            FieldRegionDestroyed {
+                logical_scene_id: 1,
+                chunk_coord: [1, 0, 2],
+                region_id: 77,
+                destroy_reason: 0,
+            },
+        ));
+        authority.drain_inbox();
+
+        let events = authority.take_electric_snapshot_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].region_id, 77);
+        assert_eq!(events[0].electric_current, vec![5.0, 1.0]);
+        // Drained.
+        assert!(authority.take_electric_snapshot_events().is_empty());
     }
 }

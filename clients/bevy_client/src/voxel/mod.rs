@@ -25,6 +25,8 @@ pub mod debris;
 pub mod debris_render;
 pub mod field_render;
 pub mod field_view;
+pub mod heat_smoke;
+pub mod heat_smoke_render;
 pub mod mesher;
 pub mod plugin;
 pub mod prefab;
@@ -36,6 +38,7 @@ pub use authority_plugin::{VoxelAuthority, VoxelAuthorityPlugin};
 pub use chunk_render::VoxelChunkRenderPlugin;
 pub use debris_render::DebrisEffectPlugin;
 pub use field_render::VoxelFieldRenderPlugin;
+pub use heat_smoke_render::HeatSmokePlugin;
 pub use plugin::VoxelPlugin;
 
 pub use cli::{
