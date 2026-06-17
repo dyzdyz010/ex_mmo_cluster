@@ -19,6 +19,7 @@
 //! M2b threads neighbor-chunk borders to cull these.
 
 use crate::voxel::authority::{AuthorityChunk, CellState};
+use std::collections::BTreeMap;
 
 /// Compact indexed mesh data for one chunk. `material_ids` is per-vertex (the
 /// texture-array layer / material index), filled in M2's render adapter.
@@ -29,6 +30,24 @@ pub struct ChunkMeshData {
     pub uvs: Vec<[f32; 2]>,
     pub material_ids: Vec<u32>,
     pub indices: Vec<u32>,
+}
+
+/// 顺序无关的几何摘要(客户端实现+验证决策稿 Layer-1/2)。
+///
+/// 用户看不到画面 → 渲染正确性靠对"将要绘制的几何"做可自动断言的摘要来证。本结构是:
+/// (a) Layer-1 CPU 几何断言的载体;(b) Layer-2 跨语言 mesher parity 的 canonical 形态(顺序无关:
+/// 面数/总面积/每材质面积/AABB,避开 bevy↔web 角点顺序不同的陷阱);(c) `mesh dump` 调试命令的输出。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MeshSummary {
+    pub quad_count: usize,
+    pub vertex_count: usize,
+    pub total_area: f32,
+    /// 每 material_id 的三角面积之和(BTreeMap → 稳定有序,可直接 diff)。
+    pub area_by_material: BTreeMap<u32, f32>,
+    pub aabb_min: Option<[f32; 3]>,
+    pub aabb_max: Option<[f32; 3]>,
+    /// 结构不变量是否全部成立(等长/索引合法/无退化三角/法线为轴单位向量)。
+    pub structural_ok: bool,
 }
 
 impl ChunkMeshData {
@@ -44,6 +63,107 @@ impl ChunkMeshData {
     pub fn vertex_count(&self) -> usize {
         self.positions.len()
     }
+
+    /// 所有顶点的轴对齐包围盒(min,max);空 mesh 返回 None。抓 voxel_size 缩放/chunk 平移回归
+    /// (几何悄悄移出屏幕)。
+    pub fn aabb(&self) -> Option<([f32; 3], [f32; 3])> {
+        let first = self.positions.first()?;
+        let mut min = *first;
+        let mut max = *first;
+        for p in &self.positions {
+            for a in 0..3 {
+                if p[a] < min[a] {
+                    min[a] = p[a];
+                }
+                if p[a] > max[a] {
+                    max[a] = p[a];
+                }
+            }
+        }
+        Some((min, max))
+    }
+
+    /// 三角化总表面积。
+    pub fn total_area(&self) -> f32 {
+        self.triangles().map(|(a, b, c)| tri_area(a, b, c)).sum()
+    }
+
+    /// 按 material_id 分组的三角面积(每三角材质 = 其首顶点的 material_id)。抓材质渗色/错色。
+    pub fn area_by_material(&self) -> BTreeMap<u32, f32> {
+        let mut by = BTreeMap::new();
+        for (t, (a, b, c)) in self.index_triangles().zip(self.triangles()) {
+            let material = self.material_ids[t[0] as usize];
+            *by.entry(material).or_insert(0.0) += tri_area(a, b, c);
+        }
+        by
+    }
+
+    /// 每条法线是否为轴单位向量(恰一个轴为 ±1、其余 0)。绕序/法线错会让面被背面剔除"消失",
+    /// 此断言把"法线方向是 6 轴之一"这一渲染前提变成可测。
+    pub fn normals_are_axis_unit(&self) -> bool {
+        self.normals.iter().all(|n| {
+            let nonzero = n.iter().filter(|c| c.abs() > 1e-4).count();
+            nonzero == 1 && n.iter().any(|c| (c.abs() - 1.0).abs() < 1e-4)
+        })
+    }
+
+    /// 结构不变量:各属性等长、索引为三角列表且越界检查、无退化(零面积)三角、法线为轴单位向量。
+    pub fn structural_invariants_hold(&self) -> bool {
+        let n = self.positions.len();
+        let lengths_ok =
+            self.normals.len() == n && self.uvs.len() == n && self.material_ids.len() == n;
+        let indices_ok =
+            self.indices.len() % 3 == 0 && self.indices.iter().all(|&i| (i as usize) < n);
+
+        if !lengths_ok || !indices_ok || !self.normals_are_axis_unit() {
+            return false;
+        }
+
+        self.triangles().all(|(a, b, c)| tri_area(a, b, c) > 1e-9)
+    }
+
+    /// 顺序无关的几何摘要(Layer-1 断言 / Layer-2 parity / mesh dump 共用)。
+    pub fn summary(&self) -> MeshSummary {
+        let (aabb_min, aabb_max) = match self.aabb() {
+            Some((mn, mx)) => (Some(mn), Some(mx)),
+            None => (None, None),
+        };
+
+        MeshSummary {
+            quad_count: self.quad_count(),
+            vertex_count: self.vertex_count(),
+            total_area: self.total_area(),
+            area_by_material: self.area_by_material(),
+            aabb_min,
+            aabb_max,
+            structural_ok: self.structural_invariants_hold(),
+        }
+    }
+
+    fn index_triangles(&self) -> impl Iterator<Item = [u32; 3]> + '_ {
+        self.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]])
+    }
+
+    fn triangles(&self) -> impl Iterator<Item = ([f32; 3], [f32; 3], [f32; 3])> + '_ {
+        self.index_triangles().map(move |t| {
+            (
+                self.positions[t[0] as usize],
+                self.positions[t[1] as usize],
+                self.positions[t[2] as usize],
+            )
+        })
+    }
+}
+
+fn tri_area(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let cross = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt()
 }
 
 struct Face {
@@ -650,5 +770,104 @@ mod tests {
         };
         // Surrounded on all sides → no exposed faces at all.
         assert!(greedy_mesh_chunk_with_neighbors(&chunk, 1.0, &neighbors).is_empty());
+    }
+
+    // ── Layer-1 几何断言(决策稿命门:无人眼时把"将要绘制的几何"逐值/不变量断言) ──
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn single_cell_summary_is_exact() {
+        // 单实心格:精确摘要——6 面、24 顶点、总面积 6.0(6 个单位面)、面积全归该材质、
+        // AABB 恰为该格单位立方、结构不变量成立。这把"渲染出一个正确立方"变成逐值可断言。
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(8, 8, 8)] = solid(3);
+        let s = mesh_chunk(&chunk, 1.0).summary();
+
+        assert_eq!(s.quad_count, 6);
+        assert_eq!(s.vertex_count, 24);
+        assert!(approx(s.total_area, 6.0));
+        assert_eq!(s.area_by_material.len(), 1);
+        assert!(approx(*s.area_by_material.get(&3).unwrap(), 6.0));
+        assert_eq!(s.aabb_min, Some([8.0, 8.0, 8.0]));
+        assert_eq!(s.aabb_max, Some([9.0, 9.0, 9.0]));
+        assert!(s.structural_ok);
+    }
+
+    #[test]
+    fn full_chunk_summary_shell_area_and_aabb() {
+        // 全实心 chunk:外壳面积 = 6·size²、AABB = 整 chunk、单一材质、结构成立。
+        let s = mesh_chunk(&full_chunk(5), 1.0).summary();
+        assert!(approx(s.total_area, 6.0 * (SIZE * SIZE) as f32));
+        assert!(approx(*s.area_by_material.get(&5).unwrap(), 6.0 * (SIZE * SIZE) as f32));
+        assert_eq!(s.aabb_min, Some([0.0, 0.0, 0.0]));
+        assert_eq!(s.aabb_max, Some([SIZE as f32, SIZE as f32, SIZE as f32]));
+        assert!(s.structural_ok);
+    }
+
+    #[test]
+    fn full_chunk_faces_all_lie_on_boundary_planes() {
+        // 水密性/面剔除正确的人眼替代:全实心 chunk 的每个顶点必在某外壳平面(coord==0 或 ==size),
+        // 即没有内部面泄漏。这是"穿帮的内部面"一眼可见错误的可测版。
+        let mesh = mesh_chunk(&full_chunk(5), 1.0);
+        let size = SIZE as f32;
+        assert!(!mesh.is_empty());
+        for p in &mesh.positions {
+            let on_shell = p.iter().any(|&c| approx(c, 0.0) || approx(c, size));
+            assert!(on_shell, "顶点 {p:?} 不在外壳平面 → 内部面泄漏(面剔除错误)");
+        }
+    }
+
+    #[test]
+    fn interior_cell_surrounded_emits_no_faces() {
+        // 被实心完全包围的内部格:零暴露面(面剔除把它全剔)。
+        let mut chunk = empty_chunk();
+        for (dx, dy, dz) in [(0, 0, 0), (1, 0, 0), (-1i32, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)] {
+            let (x, y, z) = ((8 + dx) as usize, (8 + dy) as usize, (8 + dz) as usize);
+            chunk.cells[idx(x, y, z)] = solid(1);
+        }
+        // 中心格(8,8,8)对外的 6 个面都被邻居挡;整体只剩外圈 6 个邻居各自的暴露面。
+        // 断言中心格不贡献任何"朝中心"的内部面:总面积 = 6 邻居 × 5 外露面(各被中心挡 1 面)= 30。
+        let s = mesh_chunk(&chunk, 1.0).summary();
+        assert!(approx(s.total_area, 30.0), "内部面未被正确剔除;总面积={}", s.total_area);
+        assert!(s.structural_ok);
+    }
+
+    #[test]
+    fn all_normals_axis_unit_across_configs() {
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(2, 3, 4)] = solid(1);
+        chunk.cells[idx(2, 4, 4)] = solid(2);
+        chunk.cells[idx(10, 10, 10)] = solid(1);
+        for mesh in [mesh_chunk(&chunk, 1.0), greedy_mesh_chunk(&chunk, 1.0)] {
+            assert!(mesh.normals_are_axis_unit(), "法线非轴单位向量 → 绕序/法线错");
+            assert!(mesh.structural_invariants_hold(), "结构不变量被破坏");
+        }
+    }
+
+    #[test]
+    fn greedy_and_exposed_share_canonical_summary() {
+        // Layer-2 同语言版:greedy 与 exposed-face oracle 对同一 chunk 产出**顺序无关**等价的可见表面
+        // (总面积/每材质面积/AABB),即便面数与顶点顺序不同。跨语言(web)parity 后续用同一口径。
+        let mut chunk = empty_chunk();
+        for z in 0..SIZE {
+            for x in 0..SIZE {
+                chunk.cells[idx(x, 0, z)] = solid(2);
+            }
+        }
+        chunk.cells[idx(5, 5, 5)] = solid(7);
+
+        let g = greedy_mesh_chunk(&chunk, 1.0).summary();
+        let e = mesh_chunk(&chunk, 1.0).summary();
+
+        assert!(approx(g.total_area, e.total_area), "总面积不一致 g={} e={}", g.total_area, e.total_area);
+        assert_eq!(g.area_by_material.keys().collect::<Vec<_>>(), e.area_by_material.keys().collect::<Vec<_>>());
+        for (k, ev) in &e.area_by_material {
+            assert!(approx(*g.area_by_material.get(k).unwrap(), *ev), "材质 {k} 面积不一致");
+        }
+        assert_eq!(g.aabb_min, e.aabb_min);
+        assert_eq!(g.aabb_max, e.aabb_max);
     }
 }
