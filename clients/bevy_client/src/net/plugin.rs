@@ -64,6 +64,7 @@ fn subscribe_voxel_around(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn poll_network_events(
     mut commands: Commands,
     bridge: Res<NetworkBridge>,

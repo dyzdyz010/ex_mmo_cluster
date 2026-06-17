@@ -126,7 +126,7 @@ impl ChunkMeshData {
         let lengths_ok =
             self.normals.len() == n && self.uvs.len() == n && self.material_ids.len() == n;
         let indices_ok =
-            self.indices.len() % 3 == 0 && self.indices.iter().all(|&i| (i as usize) < n);
+            self.indices.len().is_multiple_of(3) && self.indices.iter().all(|&i| (i as usize) < n);
 
         if !lengths_ok || !indices_ok || !self.normals_are_axis_unit() {
             return false;
@@ -270,7 +270,9 @@ fn occupies(cell: &CellState) -> bool {
 pub fn mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
     let size = chunk.chunk_size_in_macro as i32;
     let mut mesh = ChunkMeshData::default();
-    if size <= 0 {
+    // Defense-in-depth: never index `cells` by size^3 unless they actually agree
+    // (the ingest layer already rejects mismatches, but the mesher is public API).
+    if size <= 0 || chunk.cells.len() != (size as usize).pow(3) {
         return mesh;
     }
 
@@ -334,7 +336,12 @@ impl<'a> ChunkNeighbors<'a> {
     fn occluded_across(&self, d: usize, sign: i32, u: i32, v: i32, size: i32) -> bool {
         let neighbor = if sign > 0 { self.pos[d] } else { self.neg[d] };
         match neighbor {
-            Some(chunk) if chunk.chunk_size_in_macro as i32 == size => {
+            // Require the neighbor's cells to actually be size^3 too, so `cell_at`
+            // (which indexes by size^3) can't panic on a short/mismatched neighbor.
+            Some(chunk)
+                if chunk.chunk_size_in_macro as i32 == size
+                    && chunk.cells.len() == (size as usize).pow(3) =>
+            {
                 // +sign neighbor's near face is its s=0 slice; -sign neighbor's
                 // far face is its s=size-1 slice.
                 let s = if sign > 0 { 0 } else { size - 1 };
@@ -358,7 +365,8 @@ pub fn greedy_mesh_chunk_with_neighbors(
 ) -> ChunkMeshData {
     let size = chunk.chunk_size_in_macro as i32;
     let mut mesh = ChunkMeshData::default();
-    if size <= 0 {
+    // Defense-in-depth (see `mesh_chunk`): bail unless cells length == size^3.
+    if size <= 0 || chunk.cells.len() != (size as usize).pow(3) {
         return mesh;
     }
 
@@ -388,10 +396,8 @@ pub fn greedy_mesh_chunk_with_neighbors(
                         // Only solid cells contribute a macro exposed face;
                         // refined cells occlude (the across-check above) but are
                         // micro-meshed separately (C4), so no macro face here.
-                        if !occluded {
-                            if let CellState::Solid(block) = cell {
-                                mask[(v * size + u) as usize] = Some(block.material_id as u32);
-                            }
+                        if !occluded && let CellState::Solid(block) = cell {
+                            mask[(v * size + u) as usize] = Some(block.material_id as u32);
                         }
                     }
                 }
@@ -433,7 +439,7 @@ pub fn chunk_render_mesh(
     let mut data = greedy_mesh_chunk_with_neighbors(chunk, voxel_size, neighbors);
 
     let size = chunk.chunk_size_in_macro as i32;
-    if size > 0 {
+    if size > 0 && chunk.cells.len() == (size as usize).pow(3) {
         for (i, cell) in chunk.cells.iter().enumerate() {
             if let CellState::Refined(refined) = cell {
                 let i = i as i32;
@@ -638,13 +644,28 @@ fn micro_occupied(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> bool {
 
 /// Material of an occupied micro slot = the first layer whose mask owns it
 /// (per-slot material, vs the macro `cell_material` first-layer approximation).
+///
+/// Relies on the server invariant `occupancy == union(layer masks)` (built in
+/// `Storage.build_layers_from_pairs`, maintained by `remove_micro_slot`): every
+/// occupied micro slot is owned by some layer. The bevy decoder does NOT
+/// re-validate this, so if a future delta / object-cover path ever lets
+/// occupancy outrun the layers, this would silently paint the unknown-material
+/// fallback (material 0 → magenta). We `debug_assert` to surface that loudly in
+/// tests/CI rather than shipping a wrong color.
 fn micro_material(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> u32 {
     refined
         .layers
         .iter()
         .find(|layer| micro_bit_set(&layer.mask_words, mx, my, mz))
         .map(|layer| layer.material_id as u32)
-        .unwrap_or(0)
+        .unwrap_or_else(|| {
+            debug_assert!(
+                false,
+                "refined micro slot ({mx},{my},{mz}) occupied but owned by no layer \
+                 (occupancy outran layer masks — server invariant violated)"
+            );
+            0
+        })
 }
 
 /// Meshes one refined cell's 8³ micro occupancy at micro resolution, placed at
@@ -682,6 +703,7 @@ pub fn refined_micro_mesh(
     mesh
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_micro_quad(
     mesh: &mut ChunkMeshData,
     origin: [f32; 3],

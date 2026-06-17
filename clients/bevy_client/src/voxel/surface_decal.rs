@@ -41,7 +41,8 @@ pub enum SurfaceVisibility {
 /// dropped (forward-compat).
 pub fn surface_type_visibility(surface_type_id: u16) -> SurfaceVisibility {
     match surface_type_id {
-        1 | 2 | 3 => SurfaceVisibility::HideWhenNeighborOccupied,
+        // rust_decal=1 / frost=2 / scorch=3 — passive conditions, hide when occluded.
+        1..=3 => SurfaceVisibility::HideWhenNeighborOccupied,
         _ => SurfaceVisibility::AlwaysVisible,
     }
 }

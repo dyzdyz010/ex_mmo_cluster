@@ -232,6 +232,24 @@ fn flatten_snapshot(snap: &ChunkSnapshot) -> Result<Vec<CellState>, IngestError>
     let headers = snap
         .macro_headers()
         .ok_or_else(|| IngestError("snapshot missing macro headers section".into()))?;
+
+    // Trust-boundary check: the mesher indexes `cells` by `chunk_size_in_macro^3`
+    // (a wire-sourced u8). A malformed / truncated / adversarial snapshot whose
+    // header count disagrees would later panic the render system on an
+    // out-of-range index, so reject it here rather than storing a chunk the
+    // mesher can't safely index. (A well-formed server always sends exactly
+    // size^3 headers.)
+    let size = snap.chunk_size_in_macro as usize;
+    let expected = size.checked_pow(3).unwrap_or(usize::MAX);
+    if size == 0 || headers.len() != expected {
+        return Err(IngestError(format!(
+            "snapshot macro header count {} != chunk_size_in_macro^3 ({} for size {})",
+            headers.len(),
+            expected,
+            size
+        )));
+    }
+
     let normal_blocks = snap.normal_blocks().unwrap_or(&[]);
     let refined_cells = snap.refined_cells().unwrap_or(&[]);
 
@@ -321,6 +339,20 @@ mod tests {
             .collect();
         type_ids.sort_unstable();
         assert_eq!(type_ids, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn snapshot_with_header_count_mismatch_is_rejected_not_panicked() {
+        // Robustness: a snapshot whose chunk_size_in_macro disagrees with its
+        // actual header count must be refused at ingest, so the mesher (which
+        // indexes cells by size^3) can never panic on an out-of-range index.
+        let mut snap = decode_snapshot("snapshot_empty"); // size 16, 4096 headers
+        snap.chunk_size_in_macro = 17; // 17^3 = 4913 != 4096
+        let mut store = VoxelAuthorityStore::new();
+        let result = store.ingest(&VoxelServerMessage::ChunkSnapshot(snap.clone()));
+        assert!(matches!(result, Err(IngestError(_))), "got {result:?}");
+        assert!(store.chunk(snap.chunk_coord).is_none());
+        assert!(store.take_dirty().is_empty());
     }
 
     #[test]
