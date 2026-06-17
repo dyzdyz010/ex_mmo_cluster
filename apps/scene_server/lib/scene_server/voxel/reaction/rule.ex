@@ -23,7 +23,7 @@ defmodule SceneServer.Voxel.Reaction.Rule do
 
   @kinds [:phase_transition, :tag_reaction]
   @ops [:gte, :gt, :lte, :lt]
-  @condition_fields [:temperature, :burn_progress]
+  @condition_fields [:temperature, :burn_progress, :oxidation_progress]
   @effect_kinds [:add_tag, :remove_tag, :emit_heat_joules, :advance_attribute, :transform]
 
   @enforce_keys [:id, :kind]

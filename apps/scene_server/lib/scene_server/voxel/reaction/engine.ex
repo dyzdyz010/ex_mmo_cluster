@@ -25,6 +25,7 @@ defmodule SceneServer.Voxel.Reaction.Engine do
           required(:material_id) => integer(),
           required(:temperature_celsius) => number(),
           optional(:burn_progress) => number(),
+          optional(:oxidation_progress) => number(),
           optional(:tags) => [atom()]
         }
   @type reaction_effect :: {atom(), map()}
@@ -149,13 +150,18 @@ defmodule SceneServer.Voxel.Reaction.Engine do
   end
 
   defp field_value(:temperature, cell), do: temperature_celsius(cell)
-  defp field_value(:burn_progress, cell), do: burn_progress(cell)
+
+  # S4 正交架构:温度以外的 condition field(burn_progress / oxidation_progress / 未来进度类)统一按
+  # field atom 去 cell 同名 key 取值(缺省 0.0)——新增 condition 维度不再改 Engine(condition 数据化)。
+  defp field_value(field, cell) when is_atom(field) do
+    case Map.get(cell, field, 0.0) do
+      value when is_number(value) -> value * 1.0
+      _other -> 0.0
+    end
+  end
 
   defp temperature_celsius(%{temperature_celsius: t}) when is_number(t), do: t * 1.0
   defp temperature_celsius(_cell), do: 0.0
-
-  defp burn_progress(%{burn_progress: p}) when is_number(p), do: p * 1.0
-  defp burn_progress(_cell), do: 0.0
 
   defp resolve_threshold({:celsius, value}, _cell), do: value * 1.0
   defp resolve_threshold({:value, value}, _cell), do: value * 1.0

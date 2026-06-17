@@ -388,6 +388,73 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "S4 氧化(铁→锈,化学 recipe 第二实例)" do
+    defp iron_id, do: MaterialCatalog.material_id(:iron)
+    defp rust_id, do: MaterialCatalog.material_id(:rust)
+
+    defp ocell(material_id, tags, progress \\ 0.0, temp \\ 20.0) do
+      %{
+        macro_index: 0,
+        material_id: material_id,
+        temperature_celsius: temp,
+        oxidation_progress: progress,
+        tags: tags
+      }
+    end
+
+    defp adds_tag?(effects, tag) do
+      Enum.any?(effects, fn
+        {:set_tag, st} -> tag in st.add
+        _ -> false
+      end)
+    end
+
+    test "iron 常温过起锈门 → 置 :rusting(属性派生激活)" do
+      effects = Engine.evaluate([ocell(iron_id(), [])], Rules.all())
+      assert adds_tag?(effects, :rusting)
+    end
+
+    test "锈中 iron → 微放热 + 推进 oxidation_progress(连续效果)" do
+      effects = Engine.evaluate([ocell(iron_id(), [:rusting], 0.2)], Rules.all())
+
+      assert Enum.any?(effects, fn
+               {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} -> j > 0.0
+               _ -> false
+             end)
+
+      assert Enum.any?(effects, fn
+               {:write_voxel_attribute, %{attribute: "oxidation_progress", delta: d}} -> d > 0.0
+               _ -> false
+             end)
+    end
+
+    test "oxidation_progress 满 → 转 rust + 去 :rusting" do
+      effects = Engine.evaluate([ocell(iron_id(), [:rusting], 1.0)], Rules.all())
+
+      assert Enum.any?(effects, fn
+               {:transform_material, %{to_material_id: to}} -> to == rust_id()
+               _ -> false
+             end)
+
+      assert Enum.any?(effects, fn
+               {:set_tag, st} -> :rusting in st.remove
+               _ -> false
+             end)
+    end
+
+    test "rust 终产物不再氧化(起锈门=哨兵)" do
+      refute adds_tag?(Engine.evaluate([ocell(rust_id(), [])], Rules.all()), :rusting)
+    end
+
+    test "非铁材料不生锈(material: :iron 过滤)" do
+      refute adds_tag?(Engine.evaluate([cell(stone_id(), 20.0)], Rules.all()), :rusting)
+    end
+
+    test "未知材料不生锈(known_material? 惰性安全)" do
+      assert [] = Engine.evaluate([ocell(9999, [])], Rules.all())
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)

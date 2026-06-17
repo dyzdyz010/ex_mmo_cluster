@@ -7,6 +7,7 @@ defmodule SceneServer.Voxel.Reaction.Rules do
   """
 
   alias SceneServer.Voxel.Reaction.Actuators
+  alias SceneServer.Voxel.Reaction.ChemicalReactions
   alias SceneServer.Voxel.Reaction.Rule
 
   # R1 demo:冰 + 温度 ≥ 自身 melting_point(0℃)→ 水。回路 PoC。
@@ -49,65 +50,30 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                      priority: 0
                    )
 
-  # R5 燃烧(旗舰涌现 · 反馈回路)。常量为定性档 game-feel(模型卡 :qualitative),非严格燃烧焓。
-  # 燃烧释放 ~30MJ/tick(木 ΔT≈30K/tick),burn_progress 每 tick +0.025(~40 tick=4s 烧尽)。
-  @combustion_joules_per_tick 30_000_000.0
-  @burn_progress_per_tick 0.025
-
-  # ignite:任意材料(inert ignition=5000℃ 不可达 → 天然只点燃可燃物),温度≥ignition 且未燃 → 加 :burning。
-  @ignite Rule.new!(
-            id: :ignite,
-            kind: :tag_reaction,
-            forbid_tags: [:burning],
-            condition: {:temperature, :gte, {:material_threshold, "ignition_temperature"}},
-            effects: [{:add_tag, :burning}]
-          )
-
-  # burn:燃烧中每 tick 注燃烧焦耳(自维持高温 + 经热扩散点燃邻居)+ 推进 burn_progress。**连续效果**。
-  @burn Rule.new!(
-          id: :burn,
-          kind: :tag_reaction,
-          require_tags: [:burning],
-          condition: nil,
-          effects: [
-            {:emit_heat_joules, @combustion_joules_per_tick},
-            {:advance_attribute, "burn_progress", @burn_progress_per_tick}
-          ]
-        )
-
-  # burn_out:燃烧进度满 → 变 ash(ignition inert 不复燃)+ 去 :burning。
-  @burn_out Rule.new!(
-              id: :burn_out,
-              kind: :tag_reaction,
-              require_tags: [:burning],
-              condition: {:burn_progress, :gte, {:value, 1.0}},
-              effects: [{:transform, :ash}, {:remove_tag, :burning}]
-            )
+  # S4 正交架构:燃烧从此处手写的三条规则(ignite/burn/burn_out)收敛为 `ChemicalReactions` 的一条
+  # 声明式 `%ChemicalReaction{}` 规格(与氧化 铁→锈 同模板异参数),经 `ChemicalReactions.to_rules/0`
+  # 展开成等价的 start/sustain/complete tag_reaction 规则并入 `all/0`。「燃烧=通用化学的一个实例」在数据
+  # 结构上证死;新增化学反应 = 加一条 recipe,不改此表/不改 Engine。展开等价性由 chemical_reactions_test 守。
 
   # R9a 通电加热器规则已删(2026-06-16 正交架构 S1):加热不再是「电负载 + :powered → 凭空发热」的
   # 写死规则,而是「载流(闭环电流)× 材料 electric_resistance → I²R 焦耳热」的物理后果——由
   # CircuitCurrentKernel 直接注入 temperature 注热原语。高电阻 electric_load(发热元件)载流即热;
   # 零电阻 door(机械执行器)载流不热——同为 :powered 负载,发热与否由材料属性正交分流,无须设备规则。
 
-  # S3 Part B(正交架构):门/机关从此处手写的两条规则收敛为 `Actuators` 的一条声明式规格
-  # (`%Actuator{material: :door, trigger_tag: :powered, active_tag: :open}`),经 `Actuators.to_rules/0`
-  # 展开成等价的 activate/deactivate tag_reaction 规则并入 `all/0`。涌现链不变:接通电路 → :powered
-  # → 门置 :open(TagPhysics 绑定 → 可通行)/ 断电 → 去 :open(复阻挡)。新设备 = 加一条规格,不改此表。
+  # S3 Part B(正交架构):门/机关从手写两条规则收敛为 `Actuators` 的一条声明式规格,经
+  # `Actuators.to_rules/0` 展开成 activate/deactivate tag_reaction 规则并入 `all/0`。
 
-  # 基础物理反应(相变 + 燃烧);设备执行器规则由 Actuators 展开后并入。
+  # 基础物理反应(相变);化学反应(燃烧/氧化)由 ChemicalReactions 展开、设备执行器由 Actuators 展开后并入。
   @base [
     @ice_melts,
     @water_freezes,
     @water_boils,
-    @steam_condenses,
-    @ignite,
-    @burn,
-    @burn_out
+    @steam_condenses
   ]
 
-  @all @base ++ Actuators.to_rules()
+  @all @base ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
 
-  @doc "全部反应规则(基础物理 + 执行器展开)。"
+  @doc "全部反应规则(基础相变 + 化学展开 + 执行器展开)。"
   @spec all() :: [Rule.t()]
   def all, do: @all
 
