@@ -54,11 +54,14 @@ impl Plugin for VoxelFieldRenderPlugin {
 }
 
 fn setup_field_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
-    // Unlit white base: the baked per-vertex heat colors render unattenuated, so
-    // a hot marker glows the same whether the chunk around it is lit or shadowed.
+    // Unlit white base so the baked per-vertex field colors render unattenuated,
+    // and alpha-blended so the per-vertex alpha (temperature opacity buckets /
+    // electric layer opacity) reads as a translucent overlay — mirroring the web
+    // overlay's see-through debug cells.
     let handle = materials.add(StandardMaterial {
         base_color: Color::WHITE,
         unlit: true,
+        alpha_mode: AlphaMode::Blend,
         ..default()
     });
     commands.insert_resource(VoxelFieldMaterial(handle));
@@ -237,15 +240,15 @@ mod tests {
     }
 
     #[test]
-    fn region_with_no_cell_over_threshold_spawns_nothing() {
+    fn region_with_only_baseline_cells_spawns_nothing() {
         let mut app = test_app();
-        // All cells below DEFAULT_HEAT_THRESHOLD_C → empty overlay → no entity.
+        // All cells at the ambient baseline (20°C) → no anomaly → no overlay.
         ingest(
             &mut app,
             VoxelServerMessage::FieldRegionSnapshot(hot_region(
                 3,
                 [0, 0, 0],
-                &[(0, 10.0), (5, 20.0)],
+                &[(0, 20.0), (5, 20.0)],
             )),
         );
         app.update();
@@ -253,9 +256,9 @@ mod tests {
     }
 
     #[test]
-    fn cooled_region_despawns_previously_spawned_overlay() {
+    fn region_returning_to_baseline_despawns_previously_spawned_overlay() {
         let mut app = test_app();
-        // First: hot → spawns.
+        // First: hot anomaly → spawns.
         ingest(
             &mut app,
             VoxelServerMessage::FieldRegionSnapshot(hot_region(9, [0, 0, 0], &[(0, 500.0)])),
@@ -263,11 +266,11 @@ mod tests {
         app.update();
         assert_eq!(field_entity_count(&app), 1);
 
-        // Newer snapshot for the same region, now cooled below threshold → the
-        // overlay despawns (no fabricated geometry left behind).
+        // Newer snapshot for the same region, now back at baseline (no anomaly) →
+        // the overlay despawns (no fabricated geometry left behind).
         ingest(
             &mut app,
-            VoxelServerMessage::FieldRegionSnapshot(hot_region(9, [0, 0, 0], &[(0, 10.0)])),
+            VoxelServerMessage::FieldRegionSnapshot(hot_region(9, [0, 0, 0], &[(0, 20.0)])),
         );
         app.update();
         assert_eq!(field_entity_count(&app), 0);

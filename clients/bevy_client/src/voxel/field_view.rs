@@ -7,16 +7,19 @@
 //! geometry rather than InstancedMesh): a field region is keyed by `region_id`
 //! (ephemeral; replaced on a newer snapshot, dropped on destroy). Each field
 //! type the snapshot carries becomes its own overlay — a marker cube at each
-//! macro cell whose value clears that field's threshold, colored by a bucket on
-//! that field's reference color ramp:
+//! macro cell whose value is anomalous, colored on that field's reference ramp
+//! with a magnitude-driven alpha (so the Bevy adapter renders them translucent,
+//! like the web overlay's see-through debug cells):
 //!
-//!   * Temperature — warm→white-hot, cells above a threshold (°C).
-//!   * Electric potential — black→yellow, `|v|/100` ramp, `|v| >= 0.5`.
-//!   * Electric current — dark amber→bright amber, `|v|/20` ramp, `|v| >= 0.001`.
+//!   * Temperature — hot (red) above / cold (purple) below the ambient baseline
+//!     (20°C); opacity ramps with `|deviation|` (saturating at 20°C off baseline),
+//!     mirroring the web overlay's hot/cold + opacity-bucket model.
+//!   * Electric potential — black→yellow by `|v|/100`, drawn when `|v| >= 0.5`.
+//!   * Electric current — dark→bright amber by `|v|/20`, drawn when `|v| >= 0.001`.
 //!
 //! The thresholds / ramps mirror the web reference 1:1 so the two clients agree
 //! on which cells light up and how. Pure data (no Bevy) → Layer-1 geometry +
-//! color-bucket assertable; the Bevy adapter spawns each overlay as an entity.
+//! color/bucket assertable; the Bevy adapter spawns each overlay as an entity.
 //!
 //! Only reads committed field truth (no fabrication) — same authority discipline
 //! as the chunk store.
@@ -28,11 +31,13 @@ use crate::voxel::wire::{
 };
 use std::collections::{HashMap, HashSet};
 
-/// Heat-marker material ids (a reserved range above real `MaterialCatalog` ids,
-/// so the FieldView palette never collides with block/decal materials). The
-/// bucket reflects temperature magnitude; the color ramp is warm→white-hot.
+/// Temperature marker ids, split hot/cold (a reserved range above real
+/// `MaterialCatalog` ids, so the FieldView palette never collides with
+/// block/decal materials). The bucket within each range is the opacity bucket;
+/// `field_color` maps hot→red / cold→purple with that bucket's alpha.
 pub const HEAT_MATERIAL_BASE: u32 = 10_000;
-pub const HEAT_BUCKET_COUNT: u32 = 4;
+pub const COLD_MATERIAL_BASE: u32 = 10_010;
+pub const TEMP_OPACITY_BUCKET_COUNT: u32 = 5;
 
 /// Electric-potential marker ids (black→yellow ramp), and electric-current ids
 /// (dark→bright amber). Disjoint reserved ranges so `field_color` can dispatch
@@ -42,9 +47,23 @@ pub const POTENTIAL_BUCKET_COUNT: u32 = 8;
 pub const CURRENT_MATERIAL_BASE: u32 = 10_200;
 pub const CURRENT_BUCKET_COUNT: u32 = 8;
 
-/// Default "show this cell" threshold (°C): above ambient/room so only genuinely
-/// heated cells (electric I2R, combustion, torches) light up.
-pub const DEFAULT_HEAT_THRESHOLD_C: f32 = 40.0;
+/// Temperature overlay model (mirrors web `fieldDebugOverlay`): cells are colored
+/// by their deviation from the ambient baseline; below `TEMP_MIN_DEVIATION` off
+/// baseline is "no anomaly" and not drawn. Opacity ramps with `|deviation|` under
+/// a gamma curve, saturating `TEMP_FULL_OPACITY_DELTA` (°C) off baseline.
+pub const TEMP_BASELINE_C: f32 = 20.0;
+pub const TEMP_MIN_DEVIATION: f32 = 0.0001;
+const TEMP_FULL_OPACITY_DELTA: f32 = 20.0;
+const TEMP_VISUAL_GAMMA: f32 = 0.25;
+const TEMP_MAX_OPACITY: f32 = 0.62;
+/// The five opacity buckets (web `TEMP_OPACITY_BUCKETS`); a marker's `|deviation|`
+/// snaps to the nearest. Indexed by the bucket id within the hot/cold ranges.
+const TEMP_OPACITY_BUCKETS: [f32; 5] = [0.08, 0.16, 0.28, 0.42, TEMP_MAX_OPACITY];
+
+/// Constant overlay alphas for the electric layers (web overlay material opacity):
+/// potential cells at 0.42, current at 0.5. Color encodes magnitude; alpha is flat.
+const POTENTIAL_ALPHA: f32 = 0.42;
+const CURRENT_ALPHA: f32 = 0.5;
 
 /// Electric thresholds + ramp scales, mirrored from the web `fieldDebugOverlay`:
 /// potential below 0.5 (and current below 0.001) is noise and not drawn; the
@@ -54,11 +73,9 @@ pub const POTENTIAL_RAMP: f32 = 100.0;
 pub const CURRENT_THRESHOLD: f32 = 0.001;
 pub const CURRENT_RAMP: f32 = 20.0;
 
-/// Marker cube edge as a fraction of a macro cell (centered in the cell). The
-/// electric overlay uses the web reference's 0.85; temperature uses a smaller
-/// 0.5 so a co-located heat marker reads as nested inside the electric cell.
-const TEMP_MARKER_FRACTION: f32 = 0.5;
-const ELECTRIC_MARKER_FRACTION: f32 = 0.85;
+/// Marker cube edge as a fraction of a macro cell (centered in the cell). The web
+/// overlay draws field cells at 0.85 of the cell; all FieldView overlays match.
+const MARKER_FRACTION: f32 = 0.85;
 
 /// The field types the FieldView renders, one overlay entity per (region, kind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,13 +148,13 @@ impl VoxelFieldStore {
     }
 }
 
-/// Unified FieldView color ramp, keyed by the reserved marker material ids the
-/// overlay meshers bake. Dispatches by reserved range so the Bevy adapter bakes
-/// per-vertex colors without knowing which field produced a quad. Non-field ids
-/// fall back to white.
+/// Unified FieldView color ramp (RGBA, alpha meaningful), keyed by the reserved
+/// marker material ids the overlay meshers bake. Dispatches by reserved range so
+/// the Bevy adapter bakes per-vertex colors without knowing which field produced
+/// a quad. Non-field ids fall back to opaque white.
 pub fn field_color(material_id: u32) -> [f32; 4] {
-    if (HEAT_MATERIAL_BASE..HEAT_MATERIAL_BASE + HEAT_BUCKET_COUNT).contains(&material_id) {
-        return heat_color(material_id);
+    if let Some(color) = temperature_color(material_id) {
+        return color;
     }
     if (POTENTIAL_MATERIAL_BASE..POTENTIAL_MATERIAL_BASE + POTENTIAL_BUCKET_COUNT)
         .contains(&material_id)
@@ -147,39 +164,68 @@ pub fn field_color(material_id: u32) -> [f32; 4] {
             material_id - POTENTIAL_MATERIAL_BASE,
             POTENTIAL_BUCKET_COUNT,
         );
-        return [t, t, 0.0, 1.0];
+        return [t, t, 0.0, POTENTIAL_ALPHA];
     }
     if (CURRENT_MATERIAL_BASE..CURRENT_MATERIAL_BASE + CURRENT_BUCKET_COUNT).contains(&material_id)
     {
         // dark amber -> bright amber, mirroring web LOW/HIGH_CURRENT_COLOR.
         let t = bucket_fraction(material_id - CURRENT_MATERIAL_BASE, CURRENT_BUCKET_COUNT);
-        return lerp_rgba([0.18, 0.11, 0.02, 1.0], [1.0, 0.82, 0.16, 1.0], t);
+        return lerp_rgb([0.18, 0.11, 0.02], [1.0, 0.82, 0.16], t, CURRENT_ALPHA);
     }
     [1.0, 1.0, 1.0, 1.0]
 }
 
-/// Heat-marker color ramp (warm→white-hot) for the temperature overlay, keyed by
-/// the `heat_material` bucket ids. Kept distinct so existing call sites/tests are
-/// stable; `field_color` delegates to it for the heat range.
-pub fn heat_color(material_id: u32) -> [f32; 4] {
-    match material_id.checked_sub(HEAT_MATERIAL_BASE) {
-        Some(0) => [0.80, 0.20, 0.05, 1.0], // just over threshold — dark red
-        Some(1) => [1.00, 0.40, 0.05, 1.0], // hot — orange-red
-        Some(2) => [1.00, 0.70, 0.15, 1.0], // very hot — orange
-        Some(3) => [1.00, 1.00, 0.65, 1.0], // hottest — yellow-white
-        _ => [1.0, 1.0, 1.0, 1.0],
+/// Temperature marker color: hot (red) / cold (purple) base color with the
+/// bucket's opacity baked into alpha. Returns `None` for non-temperature ids so
+/// `field_color` can fall through to the electric ranges.
+fn temperature_color(material_id: u32) -> Option<[f32; 4]> {
+    if let Some(bucket) = material_id
+        .checked_sub(HEAT_MATERIAL_BASE)
+        .filter(|b| *b < TEMP_OPACITY_BUCKET_COUNT)
+    {
+        return Some([1.0, 0.0, 0.0, TEMP_OPACITY_BUCKETS[bucket as usize]]);
     }
+    if let Some(bucket) = material_id
+        .checked_sub(COLD_MATERIAL_BASE)
+        .filter(|b| *b < TEMP_OPACITY_BUCKET_COUNT)
+    {
+        return Some([0.55, 0.0, 1.0, TEMP_OPACITY_BUCKETS[bucket as usize]]);
+    }
+    None
 }
 
-/// Buckets a temperature (°C) into `0..HEAT_BUCKET_COUNT` heat-marker materials.
-/// Threshold..(threshold+ramp) maps across the buckets; hotter → higher bucket.
-pub fn heat_material(temperature_c: f32, threshold_c: f32) -> u32 {
-    let over = (temperature_c - threshold_c).max(0.0);
-    // 200°C of headroom spread across the buckets (qualitative, like the server
-    // heat gains): >threshold+200 saturates at the top bucket.
-    let ramp = 200.0;
-    let bucket = ((over / ramp) * HEAT_BUCKET_COUNT as f32).floor() as u32;
-    HEAT_MATERIAL_BASE + bucket.min(HEAT_BUCKET_COUNT - 1)
+/// Maps a temperature (°C) to its hot/cold marker id, or `None` if the cell is at
+/// the ambient baseline (no anomaly to draw). Hot (>= baseline) lands in the heat
+/// range, cold in the cold range; the bucket is the opacity bucket for `|dev|`.
+pub fn temperature_marker(temperature_c: f32) -> Option<u32> {
+    let deviation = temperature_c - TEMP_BASELINE_C;
+    if deviation.abs() < TEMP_MIN_DEVIATION {
+        return None;
+    }
+    let bucket = temperature_opacity_bucket(deviation.abs());
+    let base = if deviation >= 0.0 {
+        HEAT_MATERIAL_BASE
+    } else {
+        COLD_MATERIAL_BASE
+    };
+    Some(base + bucket)
+}
+
+/// Snaps `|deviation|` to the nearest opacity bucket index (`0..5`), under the web
+/// overlay's gamma curve: `opacity = (|dev|/full)^gamma * max`, nearest bucket.
+fn temperature_opacity_bucket(abs_deviation: f32) -> u32 {
+    let linear = (abs_deviation / TEMP_FULL_OPACITY_DELTA).clamp(0.0, 1.0);
+    let target = linear.powf(TEMP_VISUAL_GAMMA) * TEMP_MAX_OPACITY;
+    let mut best = 0u32;
+    let mut best_dist = f32::INFINITY;
+    for (i, &opacity) in TEMP_OPACITY_BUCKETS.iter().enumerate() {
+        let dist = (opacity - target).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best = i as u32;
+        }
+    }
+    best
 }
 
 /// Buckets an electric potential into `0..POTENTIAL_BUCKET_COUNT` marker ids on
@@ -210,40 +256,36 @@ fn bucket_fraction(bucket: u32, bucket_count: u32) -> f32 {
     }
 }
 
-fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+/// Lerps an RGB pair by `t` and tacks on a fixed `alpha`.
+fn lerp_rgb(a: [f32; 3], b: [f32; 3], t: f32, alpha: f32) -> [f32; 4] {
     [
         a[0] + (b[0] - a[0]) * t,
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
+        alpha,
     ]
 }
 
 /// Builds the overlay mesh for one `kind` of field in a region, or an empty mesh
-/// if the snapshot doesn't carry that field (mask bit clear) or no cell clears
-/// its threshold. The Bevy adapter spawns one entity per non-empty overlay.
+/// if the snapshot doesn't carry that field (mask bit clear) or no cell is
+/// anomalous. The Bevy adapter spawns one entity per non-empty overlay.
 pub fn overlay_mesh(
     field: &FieldRegionSnapshot,
     kind: FieldOverlayKind,
     voxel_size: f32,
 ) -> ChunkMeshData {
     match kind {
-        FieldOverlayKind::Temperature => {
-            temperature_overlay_mesh(field, voxel_size, DEFAULT_HEAT_THRESHOLD_C)
-        }
+        FieldOverlayKind::Temperature => temperature_overlay_mesh(field, voxel_size),
         FieldOverlayKind::ElectricPotential => electric_potential_overlay_mesh(field, voxel_size),
         FieldOverlayKind::ElectricCurrent => electric_current_overlay_mesh(field, voxel_size),
     }
 }
 
-/// Builds the temperature heat overlay for a field region: a marker cube at each
-/// macro cell whose temperature exceeds `threshold_c`, colored by heat bucket.
-/// Cells in the snapshot without temperature data (mask bit clear) produce nothing.
-pub fn temperature_overlay_mesh(
-    field: &FieldRegionSnapshot,
-    voxel_size: f32,
-    threshold_c: f32,
-) -> ChunkMeshData {
+/// Builds the temperature overlay for a field region: a marker cube at each macro
+/// cell whose temperature deviates from the ambient baseline, colored hot/cold by
+/// the deviation's sign and bucketed by its magnitude. Cells in the snapshot
+/// without temperature data (mask bit clear) produce nothing.
+pub fn temperature_overlay_mesh(field: &FieldRegionSnapshot, voxel_size: f32) -> ChunkMeshData {
     if field.field_mask & FIELD_MASK_TEMPERATURE == 0 {
         return ChunkMeshData::default();
     }
@@ -251,8 +293,7 @@ pub fn temperature_overlay_mesh(
         &field.macro_indices,
         &field.temperature,
         voxel_size,
-        TEMP_MARKER_FRACTION,
-        |temp| (temp > threshold_c).then(|| heat_material(temp, threshold_c)),
+        temperature_marker,
     )
 }
 
@@ -269,7 +310,6 @@ pub fn electric_potential_overlay_mesh(
         &field.macro_indices,
         &field.electric_potential,
         voxel_size,
-        ELECTRIC_MARKER_FRACTION,
         |v| (v.abs() >= POTENTIAL_THRESHOLD).then(|| potential_material(v)),
     )
 }
@@ -287,7 +327,6 @@ pub fn electric_current_overlay_mesh(
         &field.macro_indices,
         &field.electric_current,
         voxel_size,
-        ELECTRIC_MARKER_FRACTION,
         |v| (v.abs() >= CURRENT_THRESHOLD).then(|| current_material(v)),
     )
 }
@@ -298,11 +337,10 @@ fn overlay_from_values(
     macro_indices: &[u16],
     values: &[f32],
     voxel_size: f32,
-    marker_fraction: f32,
     material_for: impl Fn(f32) -> Option<u32>,
 ) -> ChunkMeshData {
     let mut mesh = ChunkMeshData::default();
-    let marker = voxel_size * marker_fraction;
+    let marker = voxel_size * MARKER_FRACTION;
     let inset = (voxel_size - marker) * 0.5; // center the marker in the macro cell
 
     for (i, &macro_index) in macro_indices.iter().enumerate() {
@@ -396,82 +434,95 @@ mod tests {
     }
 
     #[test]
-    fn field_color_dispatches_by_reserved_range() {
-        // Heat range → warm ramp; potential → black→yellow; current → amber.
+    fn field_color_dispatches_by_reserved_range_with_alpha() {
+        // Temperature: hot = red, cold = purple, alpha = bucket opacity.
+        let hot = field_color(HEAT_MATERIAL_BASE);
+        assert_eq!([hot[0], hot[1], hot[2]], [1.0, 0.0, 0.0]);
+        assert_eq!(hot[3], TEMP_OPACITY_BUCKETS[0]);
+        let cold = field_color(COLD_MATERIAL_BASE + 4);
+        assert_eq!([cold[0], cold[1], cold[2]], [0.55, 0.0, 1.0]);
+        assert_eq!(cold[3], TEMP_OPACITY_BUCKETS[4]);
+        // Potential bucket 0 = black, top bucket = yellow, alpha 0.42.
         assert_eq!(
-            field_color(HEAT_MATERIAL_BASE),
-            heat_color(HEAT_MATERIAL_BASE)
+            field_color(POTENTIAL_MATERIAL_BASE),
+            [0.0, 0.0, 0.0, POTENTIAL_ALPHA]
         );
-        // Potential bucket 0 = black, top bucket = yellow.
-        assert_eq!(field_color(POTENTIAL_MATERIAL_BASE), [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(
             field_color(POTENTIAL_MATERIAL_BASE + POTENTIAL_BUCKET_COUNT - 1),
-            [1.0, 1.0, 0.0, 1.0]
+            [1.0, 1.0, 0.0, POTENTIAL_ALPHA]
         );
-        // Current top bucket = bright amber.
+        // Current top bucket = bright amber, alpha 0.5.
         assert_eq!(
             field_color(CURRENT_MATERIAL_BASE + CURRENT_BUCKET_COUNT - 1),
-            [1.0, 0.82, 0.16, 1.0]
+            [1.0, 0.82, 0.16, CURRENT_ALPHA]
         );
-        // Non-field id → white fallback.
+        // Non-field id → opaque white fallback.
         assert_eq!(field_color(5), [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn heat_color_ramps_warm_to_hot_and_falls_back_white() {
-        // Hotter bucket → brighter/whiter (higher green channel here).
-        assert!(heat_color(HEAT_MATERIAL_BASE + 3)[1] > heat_color(HEAT_MATERIAL_BASE)[1]);
-        // Non-heat id → white fallback.
-        assert_eq!(heat_color(5), [1.0, 1.0, 1.0, 1.0]);
+    fn temperature_marker_splits_hot_cold_and_skips_baseline() {
+        // At baseline → no marker.
+        assert_eq!(temperature_marker(TEMP_BASELINE_C), None);
+        // Above baseline → heat range; below → cold range.
+        let hot = temperature_marker(300.0).unwrap();
+        assert!(
+            (HEAT_MATERIAL_BASE..HEAT_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT).contains(&hot)
+        );
+        let cold = temperature_marker(5.0).unwrap();
+        assert!(
+            (COLD_MATERIAL_BASE..COLD_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT).contains(&cold)
+        );
+        // A larger deviation → higher (or equal) opacity bucket.
+        let mild = temperature_marker(25.0).unwrap() - HEAT_MATERIAL_BASE;
+        let strong = temperature_marker(60.0).unwrap() - HEAT_MATERIAL_BASE;
+        assert!(strong >= mild);
+        // Far off baseline saturates at the top opacity bucket.
+        assert_eq!(
+            temperature_marker(10_000.0),
+            Some(HEAT_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT - 1)
+        );
     }
 
     #[test]
-    fn overlay_marks_only_cells_above_threshold() {
-        // Three cells: 20°C (cold), 100°C, 500°C. Only the two hot ones get a
-        // marker cube (6 faces each → 12 quads).
-        let field = temperature_snapshot(1, &[(0, 20.0), (5, 100.0), (10, 500.0)]);
-        let mesh = temperature_overlay_mesh(&field, 1.0, DEFAULT_HEAT_THRESHOLD_C);
+    fn overlay_draws_hot_and_cold_anomalies_skips_baseline() {
+        // 20°C (baseline → skip), 100°C (hot), 5°C (cold). Two markers → 12 quads,
+        // one in the heat range and one in the cold range.
+        let field = temperature_snapshot(1, &[(0, 20.0), (5, 100.0), (10, 5.0)]);
+        let mesh = temperature_overlay_mesh(&field, 1.0);
         let s = mesh.summary();
         assert_eq!(s.quad_count, 12);
         assert!(s.structural_ok);
-        // Two distinct heat buckets (100°C vs 500°C) → two materials.
-        assert_eq!(s.area_by_material.len(), 2);
-        assert!(s.area_by_material.keys().all(|m| *m >= HEAT_MATERIAL_BASE));
-    }
-
-    #[test]
-    fn hotter_cell_gets_higher_heat_bucket() {
-        assert!(heat_material(500.0, 40.0) > heat_material(60.0, 40.0));
-        // Saturates at the top bucket.
-        assert_eq!(
-            heat_material(100_000.0, 40.0),
-            HEAT_MATERIAL_BASE + HEAT_BUCKET_COUNT - 1
-        );
-        // At/below threshold → base bucket.
-        assert_eq!(heat_material(40.0, 40.0), HEAT_MATERIAL_BASE);
+        let mats: Vec<u32> = s.area_by_material.keys().copied().collect();
+        assert!(mats.iter().any(|m| {
+            (HEAT_MATERIAL_BASE..HEAT_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT).contains(m)
+        }));
+        assert!(mats.iter().any(|m| {
+            (COLD_MATERIAL_BASE..COLD_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT).contains(m)
+        }));
     }
 
     #[test]
     fn no_temperature_data_no_overlay() {
         let mut field = temperature_snapshot(1, &[(0, 999.0)]);
         field.field_mask = 0; // temperature bit clear
-        assert!(temperature_overlay_mesh(&field, 1.0, DEFAULT_HEAT_THRESHOLD_C).is_empty());
+        assert!(temperature_overlay_mesh(&field, 1.0).is_empty());
     }
 
     #[test]
     fn marker_cube_is_centered_in_its_macro_cell() {
-        // macro index 0 → cell (0,0,0); temp marker is 0.5 of a 100-unit cell,
-        // inset 25 → spans [25,75] in each axis (centered).
+        // macro index 0 → cell (0,0,0); marker is 0.85 of a 100-unit cell, inset
+        // 7.5 → spans [7.5, 92.5] in each axis (centered).
         let field = temperature_snapshot(1, &[(0, 100.0)]);
-        let mesh = temperature_overlay_mesh(&field, 100.0, DEFAULT_HEAT_THRESHOLD_C);
+        let mesh = temperature_overlay_mesh(&field, 100.0);
         let s = mesh.summary();
-        assert_eq!(s.aabb_min, Some([25.0, 25.0, 25.0]));
-        assert_eq!(s.aabb_max, Some([75.0, 75.0, 75.0]));
+        assert_eq!(s.aabb_min, Some([7.5, 7.5, 7.5]));
+        assert_eq!(s.aabb_max, Some([92.5, 92.5, 92.5]));
     }
 
     #[test]
     fn electric_potential_overlay_thresholds_and_buckets() {
-        // Below 0.5 → skipped; 0.5 and 200 → drawn. Two magnitudes far apart land
+        // Below 0.5 → skipped; 0.6 and 200 → drawn. Two magnitudes far apart land
         // in different potential buckets.
         let field = electric_snapshot(
             1,

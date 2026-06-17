@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use bevy_client::protocol::{ServerMessage, decode_server_payload};
 use bevy_client::voxel::authority::{CellState, IngestOutcome, VoxelAuthorityStore};
 use bevy_client::voxel::field_view::{
-    DEFAULT_HEAT_THRESHOLD_C, electric_current_overlay_mesh, electric_potential_overlay_mesh,
-    temperature_overlay_mesh,
+    HEAT_MATERIAL_BASE, TEMP_OPACITY_BUCKET_COUNT, electric_current_overlay_mesh,
+    electric_potential_overlay_mesh, temperature_overlay_mesh,
 };
 use bevy_client::voxel::mesher::mesh_chunk;
 use bevy_client::voxel::wire::{
@@ -119,14 +119,20 @@ fn field_region_snapshot_decodes_and_overlays_on_real_server_bytes() {
     assert!(snapshot.electric_potential.is_empty());
 
     // End-to-end: the decoded field truth drives the FieldView overlay. All three
-    // cells are above the 40°C threshold → one marker cube each (6 faces = 6
-    // quads), so 18 quads total, all in the reserved heat-material range.
-    let overlay = temperature_overlay_mesh(&snapshot, 100.0, DEFAULT_HEAT_THRESHOLD_C);
+    // cells (120/300/60°C) are hot anomalies far above the ambient baseline (20°C)
+    // → one marker cube each (6 faces = 6 quads), so 18 quads total. Each is well
+    // past the opacity-saturation delta, so all land in the same (top) hot opacity
+    // bucket → a single heat material in the reserved hot range.
+    let overlay = temperature_overlay_mesh(&snapshot, 100.0);
     let summary = overlay.summary();
     assert_eq!(summary.quad_count, 18);
     assert!(summary.structural_ok);
-    // 300°C and 60/120°C land in different heat buckets → more than one material.
-    assert!(summary.area_by_material.len() >= 2);
+    assert_eq!(summary.area_by_material.len(), 1);
+    assert!(
+        summary.area_by_material.keys().all(|m| (HEAT_MATERIAL_BASE
+            ..HEAT_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT)
+            .contains(m))
+    );
 }
 
 #[test]
@@ -166,7 +172,7 @@ fn field_region_electric_decodes_and_overlays_on_real_server_bytes() {
     assert_eq!(current.quad_count, 12);
 
     // No temperature layer → temperature overlay is empty (no fabrication).
-    assert!(temperature_overlay_mesh(&snapshot, 100.0, DEFAULT_HEAT_THRESHOLD_C).is_empty());
+    assert!(temperature_overlay_mesh(&snapshot, 100.0).is_empty());
 }
 
 #[test]
