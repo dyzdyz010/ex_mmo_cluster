@@ -15,7 +15,7 @@
 
 use crate::voxel::mesher::{ChunkMeshData, push_cube};
 use crate::voxel::wire::{FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Heat-marker material ids (a reserved range above real `MaterialCatalog` ids,
 /// so the FieldView palette never collides with block/decal materials). The
@@ -33,9 +33,11 @@ const MARKER_FRACTION: f32 = 0.5;
 
 /// Pure store of the latest field snapshot per region, driven by the 0x73/0x74
 /// stream. Ephemeral: a newer snapshot for a region replaces it; destroy removes.
+/// Touched regions are marked dirty so the FieldView render rebuilds only those.
 #[derive(Debug, Default)]
 pub struct VoxelFieldStore {
     regions: HashMap<u64, FieldRegionSnapshot>,
+    dirty: HashSet<u64>,
 }
 
 impl VoxelFieldStore {
@@ -43,13 +45,17 @@ impl VoxelFieldStore {
         Self::default()
     }
 
-    /// Stores (replaces) the field region's latest snapshot.
+    /// Stores (replaces) the field region's latest snapshot; marks it dirty.
     pub fn apply_snapshot(&mut self, snapshot: FieldRegionSnapshot) {
-        self.regions.insert(snapshot.region_id, snapshot);
+        let region_id = snapshot.region_id;
+        self.regions.insert(region_id, snapshot);
+        self.dirty.insert(region_id);
     }
 
-    /// Drops a destroyed field region. Returns whether a region was removed.
+    /// Drops a destroyed field region (marks dirty so the overlay despawns).
+    /// Returns whether a region was removed.
     pub fn apply_destroyed(&mut self, destroyed: &FieldRegionDestroyed) -> bool {
+        self.dirty.insert(destroyed.region_id);
         self.regions.remove(&destroyed.region_id).is_some()
     }
 
@@ -59,6 +65,27 @@ impl VoxelFieldStore {
 
     pub fn region_count(&self) -> usize {
         self.regions.len()
+    }
+
+    /// Drains regions touched since the last call — the FieldView render rebuilds
+    /// exactly these (rebuild overlay if still present, despawn if destroyed).
+    pub fn take_dirty(&mut self) -> Vec<u64> {
+        let mut dirty: Vec<u64> = self.dirty.drain().collect();
+        dirty.sort_unstable();
+        dirty
+    }
+}
+
+/// Heat-marker color ramp (warm→white-hot) for the FieldView overlay, keyed by
+/// the `heat_material` bucket ids (`HEAT_MATERIAL_BASE..+HEAT_BUCKET_COUNT`).
+/// Non-heat ids fall back to white. The Bevy adapter bakes these per-vertex.
+pub fn heat_color(material_id: u32) -> [f32; 4] {
+    match material_id.checked_sub(HEAT_MATERIAL_BASE) {
+        Some(0) => [0.80, 0.20, 0.05, 1.0], // just over threshold — dark red
+        Some(1) => [1.00, 0.40, 0.05, 1.0], // hot — orange-red
+        Some(2) => [1.00, 0.70, 0.15, 1.0], // very hot — orange
+        Some(3) => [1.00, 1.00, 0.65, 1.0], // hottest — yellow-white
+        _ => [1.0, 1.0, 1.0, 1.0],
     }
 }
 
@@ -137,9 +164,13 @@ mod tests {
         let mut store = VoxelFieldStore::new();
         store.apply_snapshot(snapshot(7, &[(0, 100.0)]));
         assert_eq!(store.region_count(), 1);
-        // Newer snapshot for same region replaces.
+        assert_eq!(store.take_dirty(), vec![7]); // snapshot marked dirty
+        assert!(store.take_dirty().is_empty());
+
+        // Newer snapshot for same region replaces + re-dirties.
         store.apply_snapshot(snapshot(7, &[(0, 200.0), (1, 50.0)]));
         assert_eq!(store.region(7).unwrap().macro_indices.len(), 2);
+        assert_eq!(store.take_dirty(), vec![7]);
 
         let destroyed = FieldRegionDestroyed {
             logical_scene_id: 1,
@@ -149,7 +180,16 @@ mod tests {
         };
         assert!(store.apply_destroyed(&destroyed));
         assert_eq!(store.region_count(), 0);
+        assert_eq!(store.take_dirty(), vec![7]); // destroy marks dirty (overlay despawns)
         assert!(!store.apply_destroyed(&destroyed)); // already gone
+    }
+
+    #[test]
+    fn heat_color_ramps_warm_to_hot_and_falls_back_white() {
+        // Hotter bucket → brighter/whiter (higher green channel here).
+        assert!(heat_color(HEAT_MATERIAL_BASE + 3)[1] > heat_color(HEAT_MATERIAL_BASE)[1]);
+        // Non-heat id → white fallback.
+        assert_eq!(heat_color(5), [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]

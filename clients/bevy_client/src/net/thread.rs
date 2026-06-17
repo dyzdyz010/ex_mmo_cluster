@@ -267,7 +267,11 @@ fn network_loop(
                                 &observer,
                                 outcome,
                             ) {
-                                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
+                                emit_event(
+                                    &observer,
+                                    &event_tx,
+                                    NetworkEvent::Disconnected(reason),
+                                );
                                 return;
                             }
                         }
