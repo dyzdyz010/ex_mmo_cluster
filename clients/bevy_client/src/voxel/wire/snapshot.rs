@@ -29,6 +29,8 @@ pub const SECTION_ATTRIBUTE_SETS: u8 = 0x04;
 pub const SECTION_TAG_SETS: u8 = 0x05;
 pub const SECTION_ENVIRONMENT_SUMMARIES: u8 = 0x06;
 pub const SECTION_OBJECT_REFS: u8 = 0x07;
+/// 形态轨:表面元件段(append-only,服务端仅在非空时发射;空 chunk 仍 7 段)。
+pub const SECTION_SURFACE_ELEMENTS: u8 = 0x08;
 
 /// One 19-byte macro cell header. `payload_index`/`environment_index` use the
 /// `0xffffffff` sentinel for empty cells.
@@ -259,6 +261,48 @@ impl ChunkObjectRef {
     }
 }
 
+/// 21-byte surface element (section 0x08, 形态轨): a zero-volume unit bound to
+/// one macro face. Mirrors `SceneServer.Voxel.Codec.encode_surface_element`.
+///
+/// `face` is the 0..5 ordinal (x_neg=0, x_pos=1, y_neg=2, y_pos=3, z_neg=4,
+/// z_pos=5 — matching the server `SurfaceCatalog` face_ordinal). The wire
+/// decoder stays dumb: the render layer maps `surface_type_id` → visual and the
+/// `face` ordinal → quad orientation. Zero-occupancy is a render/authority
+/// invariant, not a wire concern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceElement {
+    pub macro_index: u16,
+    pub face: u8,
+    pub surface_type_id: u16,
+    pub attribute_set_ref: u32,
+    pub tag_set_ref: u32,
+    pub owner_actor_id: u64,
+}
+
+impl SurfaceElement {
+    pub const WIRE_SIZE: usize = 21;
+
+    fn decode(r: &mut Reader) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            macro_index: r.u16("surface_element.macro_index")?,
+            face: r.u8("surface_element.face")?,
+            surface_type_id: r.u16("surface_element.surface_type_id")?,
+            attribute_set_ref: r.u32("surface_element.attribute_set_ref")?,
+            tag_set_ref: r.u32("surface_element.tag_set_ref")?,
+            owner_actor_id: r.u64("surface_element.owner_actor_id")?,
+        })
+    }
+
+    fn encode(&self, w: &mut Writer) {
+        w.u16(self.macro_index);
+        w.u8(self.face);
+        w.u16(self.surface_type_id);
+        w.u32(self.attribute_set_ref);
+        w.u32(self.tag_set_ref);
+        w.u64(self.owner_actor_id);
+    }
+}
+
 /// One decoded snapshot section, preserving wire order for exact round-trip.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SnapshotSection {
@@ -269,6 +313,7 @@ pub enum SnapshotSection {
     TagSets(Vec<TagSet>),
     EnvironmentSummaries(Vec<EnvironmentSummary>),
     ObjectRefs(Vec<ChunkObjectRef>),
+    SurfaceElements(Vec<SurfaceElement>),
     /// Forward-compat: unknown section type with its raw bytes preserved.
     Unknown {
         section_type: u8,
@@ -286,6 +331,7 @@ impl SnapshotSection {
             SnapshotSection::TagSets(_) => SECTION_TAG_SETS,
             SnapshotSection::EnvironmentSummaries(_) => SECTION_ENVIRONMENT_SUMMARIES,
             SnapshotSection::ObjectRefs(_) => SECTION_OBJECT_REFS,
+            SnapshotSection::SurfaceElements(_) => SECTION_SURFACE_ELEMENTS,
             SnapshotSection::Unknown { section_type, .. } => *section_type,
         }
     }
@@ -319,6 +365,9 @@ impl SnapshotSection {
             SECTION_OBJECT_REFS => {
                 SnapshotSection::ObjectRefs(decode_pool(&mut r, ChunkObjectRef::decode)?)
             }
+            SECTION_SURFACE_ELEMENTS => {
+                SnapshotSection::SurfaceElements(decode_pool(&mut r, SurfaceElement::decode)?)
+            }
             other => {
                 return Ok(SnapshotSection::Unknown {
                     section_type: other,
@@ -347,6 +396,7 @@ impl SnapshotSection {
                 encode_pool(&mut w, v, EnvironmentSummary::encode)
             }
             SnapshotSection::ObjectRefs(v) => encode_pool(&mut w, v, ChunkObjectRef::encode),
+            SnapshotSection::SurfaceElements(v) => encode_pool(&mut w, v, SurfaceElement::encode),
             SnapshotSection::Unknown { bytes, .. } => w.bytes(bytes),
         }
         w.into_bytes()
@@ -460,6 +510,14 @@ impl ChunkSnapshot {
     pub fn refined_cells(&self) -> Option<&[RefinedCell]> {
         self.sections.iter().find_map(|s| match s {
             SnapshotSection::RefinedCells(v) => Some(v.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// 形态轨:表面元件段(section 0x08);无此段(空 chunk / 旧 wire)返回 None。
+    pub fn surface_elements(&self) -> Option<&[SurfaceElement]> {
+        self.sections.iter().find_map(|s| match s {
+            SnapshotSection::SurfaceElements(v) => Some(v.as_slice()),
             _ => None,
         })
     }

@@ -204,9 +204,40 @@ mod tests {
             "snapshot_environment",
             "snapshot_object_refs",
             "snapshot_full",
+            "snapshot_surface_elements",
         ] {
             roundtrip_snapshot(name);
         }
+    }
+
+    #[test]
+    fn snapshot_surface_elements_decode_parity() {
+        // C1:bevy 解码服务端 section 0x08 golden,与服务端真值逐字段 parity(torch/rust_decal/frost,
+        // 一条带 attr/tag/owner refs)。证客户端 wire 层与服务端表面元件对齐。
+        let golden = fixtures::golden("snapshot_surface_elements");
+        let snap = ChunkSnapshot::decode(&mut Reader::new(&golden)).unwrap();
+
+        let elements = snap
+            .surface_elements()
+            .expect("snapshot_surface_elements must carry section 0x08");
+        assert_eq!(elements.len(), 3);
+
+        // 服务端 SurfaceCatalog: rust_decal=1, frost=2, torch=4(append-only id)。
+        let mut type_ids: Vec<u16> = elements.iter().map(|e| e.surface_type_id).collect();
+        type_ids.sort_unstable();
+        assert_eq!(type_ids, vec![1, 2, 4]);
+
+        // 带状态/owner 的那条是 frost(type id 2):attr=3 / tag=5 / owner=12345。
+        let frost = elements
+            .iter()
+            .find(|e| e.surface_type_id == 2)
+            .expect("frost surface element");
+        assert_eq!(frost.attribute_set_ref, 3);
+        assert_eq!(frost.tag_set_ref, 5);
+        assert_eq!(frost.owner_actor_id, 12_345);
+
+        // face ordinal 在合法范围 0..5。
+        assert!(elements.iter().all(|e| e.face <= 5));
     }
 
     #[test]
