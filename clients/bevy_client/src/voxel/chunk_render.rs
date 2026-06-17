@@ -344,6 +344,10 @@ fn material_color(material_id: u32) -> [f32; 4] {
         8 => [0.20, 0.40, 0.80, 1.0],  // water
         9 => [0.85, 0.85, 0.90, 1.0],  // steam
         10 => [0.25, 0.25, 0.25, 1.0], // ash
+        // C5:补齐 append-only 材质,使 S4/M5 涌现产物正确显示(此前 11/12/13 渲染成 magenta)。
+        11 => [0.40, 0.30, 0.22, 1.0], // door (导电金属门)
+        12 => [0.55, 0.27, 0.10, 1.0], // rust (S4 氧化产物 — 锈橙棕)
+        13 => [1.00, 0.45, 0.10, 1.0], // ember (M5 火炬热源 — 炽橙)
         _ => [1.0, 0.0, 1.0, 1.0],     // unknown → magenta
     }
 }
@@ -406,6 +410,22 @@ mod tests {
     fn stone_maps_to_gray_not_magenta() {
         assert_eq!(material_color(2), [0.50, 0.50, 0.50, 1.0]);
         assert_eq!(material_color(9999), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn emergence_product_materials_have_colors_not_magenta() {
+        // C5:S4/M5 涌现产物(rust 12 / ember 13)+ door 11 必须有专属色,不能 magenta
+        // (否则服务端 iron→rust、火炬 ember 在客户端显示成错误的品红)。
+        let magenta = [1.0, 0.0, 1.0, 1.0];
+        for id in [11u32, 12, 13] {
+            assert_ne!(
+                material_color(id),
+                magenta,
+                "material {id} must not be magenta"
+            );
+        }
+        // rust 与 iron 视觉可区分(氧化后看得出变化)。
+        assert_ne!(material_color(12), material_color(5));
     }
 
     #[test]
