@@ -24,6 +24,7 @@ pub mod core;
 pub mod mesher;
 pub mod plugin;
 pub mod prefab;
+pub mod surface_decal;
 pub mod wire;
 pub mod world;
 
