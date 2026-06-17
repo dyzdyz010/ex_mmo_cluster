@@ -19,6 +19,7 @@
 //! M2b threads neighbor-chunk borders to cull these.
 
 use crate::voxel::authority::{AuthorityChunk, CellState};
+use crate::voxel::wire::RefinedCell;
 use std::collections::BTreeMap;
 
 /// Compact indexed mesh data for one chunk. `material_ids` is per-vertex (the
@@ -548,6 +549,106 @@ fn emit_quad(
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
+// ── Micro (sub-voxel) meshing of one refined cell (M2b / C4) ──
+//
+// A refined macro cell carries an 8³ = 512-bit occupancy mask + material layers.
+// `refined_micro_mesh` meshes those micro slots at micro resolution
+// (exposed-face culling within the cell), so refined cells render their actual
+// sub-voxel shape + per-slot material instead of the single first-layer macro
+// cube approximation (`cell_material`). Pure data → Layer-1 geometry assertable.
+//
+// Micro slot indexing mirrors the server (`Types.micro_index`): index =
+// mx + my*8 + mz*64; bit = `1 << (index % 64)` in mask word `index / 64`.
+
+/// Micro resolution per macro cell (8³ = 512 micro slots).
+pub const MICRO_RES: i32 = 8;
+
+fn micro_bit_set(mask: &[u64; 8], mx: i32, my: i32, mz: i32) -> bool {
+    if !(0..MICRO_RES).contains(&mx)
+        || !(0..MICRO_RES).contains(&my)
+        || !(0..MICRO_RES).contains(&mz)
+    {
+        return false;
+    }
+    let i = (mx + my * MICRO_RES + mz * MICRO_RES * MICRO_RES) as usize;
+    mask[i / 64] & (1u64 << (i % 64)) != 0
+}
+
+fn micro_occupied(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> bool {
+    micro_bit_set(&refined.occupancy_words, mx, my, mz)
+}
+
+/// Material of an occupied micro slot = the first layer whose mask owns it
+/// (per-slot material, vs the macro `cell_material` first-layer approximation).
+fn micro_material(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> u32 {
+    refined
+        .layers
+        .iter()
+        .find(|layer| micro_bit_set(&layer.mask_words, mx, my, mz))
+        .map(|layer| layer.material_id as u32)
+        .unwrap_or(0)
+}
+
+/// Meshes one refined cell's 8³ micro occupancy at micro resolution, placed at
+/// `macro_origin` (the macro cell's render-space min corner). `voxel_size` is
+/// the macro cell size; each micro voxel is `voxel_size / 8`. Interior micro
+/// faces (between two occupied micro slots) are culled; cell-boundary micro
+/// faces are emitted (cross-macro micro culling is a later step, like the macro
+/// mesher's chunk-boundary behaviour).
+pub fn refined_micro_mesh(
+    refined: &RefinedCell,
+    macro_origin: [f32; 3],
+    voxel_size: f32,
+) -> ChunkMeshData {
+    let micro = voxel_size / MICRO_RES as f32;
+    let mut mesh = ChunkMeshData::default();
+
+    for mz in 0..MICRO_RES {
+        for my in 0..MICRO_RES {
+            for mx in 0..MICRO_RES {
+                if !micro_occupied(refined, mx, my, mz) {
+                    continue;
+                }
+                let material = micro_material(refined, mx, my, mz);
+                for face in &FACES {
+                    let (nx, ny, nz) = (mx + face.delta[0], my + face.delta[1], mz + face.delta[2]);
+                    if micro_occupied(refined, nx, ny, nz) {
+                        continue; // interior micro face → culled
+                    }
+                    emit_micro_quad(&mut mesh, macro_origin, mx, my, mz, micro, face, material);
+                }
+            }
+        }
+    }
+
+    mesh
+}
+
+fn emit_micro_quad(
+    mesh: &mut ChunkMeshData,
+    origin: [f32; 3],
+    mx: i32,
+    my: i32,
+    mz: i32,
+    micro: f32,
+    face: &Face,
+    material_id: u32,
+) {
+    let base = mesh.positions.len() as u32;
+    for (corner, uv) in face.corners.iter().zip(FACE_UVS.iter()) {
+        mesh.positions.push([
+            origin[0] + (mx as f32 + corner[0]) * micro,
+            origin[1] + (my as f32 + corner[1]) * micro,
+            origin[2] + (mz as f32 + corner[2]) * micro,
+        ]);
+        mesh.normals.push(face.normal);
+        mesh.uvs.push(*uv);
+        mesh.material_ids.push(material_id);
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -867,6 +968,115 @@ mod tests {
             );
             assert!(mesh.structural_invariants_hold(), "结构不变量被破坏");
         }
+    }
+
+    // ── Micro (sub-voxel) meshing of refined cells (M2b / C4) ──
+
+    use crate::voxel::wire::MicroLayer;
+
+    fn micro_mask(slots: &[usize]) -> [u64; 8] {
+        let mut mask = [0u64; 8];
+        for &i in slots {
+            mask[i / 64] |= 1u64 << (i % 64);
+        }
+        mask
+    }
+
+    fn micro_index(mx: usize, my: usize, mz: usize) -> usize {
+        mx + my * 8 + mz * 64
+    }
+
+    fn layer(material_id: u16, slots: &[usize]) -> MicroLayer {
+        MicroLayer {
+            mask_words: micro_mask(slots),
+            material_id,
+            state_flags: 0,
+            health: 0,
+            attribute_set_ref: 0,
+            tag_set_ref: 0,
+            owner_object_id: 0,
+            owner_part_id: 0,
+        }
+    }
+
+    /// Builds a refined cell whose occupancy is the union of its layers' masks.
+    fn refined(layers: Vec<MicroLayer>) -> RefinedCell {
+        let mut occ = [0u64; 8];
+        for l in &layers {
+            for (w, word) in l.mask_words.iter().enumerate() {
+                occ[w] |= *word;
+            }
+        }
+        RefinedCell {
+            occupancy_words: occ,
+            boundary_cache: 0,
+            layers,
+            object_refs: vec![],
+        }
+    }
+
+    #[test]
+    fn single_micro_slot_emits_six_micro_faces() {
+        let cell = refined(vec![layer(3, &[micro_index(2, 2, 2)])]);
+        let mesh = refined_micro_mesh(&cell, [0.0, 0.0, 0.0], 8.0);
+        // micro size = 8/8 = 1.0; one micro cube → 6 faces, area 6 * 1².
+        let s = mesh.summary();
+        assert_eq!(s.quad_count, 6);
+        assert!((s.total_area - 6.0).abs() < 1e-3);
+        assert_eq!(*s.area_by_material.keys().next().unwrap(), 3u32);
+        // micro cube occupies [2,3]³ in micro units (= render units here).
+        assert_eq!(s.aabb_min, Some([2.0, 2.0, 2.0]));
+        assert_eq!(s.aabb_max, Some([3.0, 3.0, 3.0]));
+        assert!(s.structural_ok);
+    }
+
+    #[test]
+    fn adjacent_micro_slots_cull_shared_face() {
+        let cell = refined(vec![layer(
+            3,
+            &[micro_index(2, 2, 2), micro_index(3, 2, 2)],
+        )]);
+        let mesh = refined_micro_mesh(&cell, [0.0, 0.0, 0.0], 8.0);
+        // Two adjacent micro cubes: 12 faces − 2 shared interior = 10.
+        assert_eq!(mesh.quad_count(), 10);
+        assert!(mesh.structural_invariants_hold());
+    }
+
+    #[test]
+    fn fully_occupied_refined_cell_is_micro_shell() {
+        // All 512 micro slots occupied → only the 8³ block's outer shell:
+        // 6 faces × 8×8 = 384 micro quads.
+        let all: Vec<usize> = (0..512).collect();
+        let cell = refined(vec![layer(5, &all)]);
+        let mesh = refined_micro_mesh(&cell, [0.0, 0.0, 0.0], 8.0);
+        assert_eq!(mesh.quad_count(), 6 * 8 * 8);
+        assert!(mesh.normals_are_axis_unit());
+    }
+
+    #[test]
+    fn micro_material_is_per_slot_not_first_layer() {
+        // Two layers, different materials in non-adjacent slots → both appear,
+        // each as its own 6-face cube (unlike the macro `cell_material` which
+        // would collapse to the first layer only).
+        let cell = refined(vec![
+            layer(7, &[micro_index(0, 0, 0)]),
+            layer(9, &[micro_index(6, 6, 6)]),
+        ]);
+        let mesh = refined_micro_mesh(&cell, [0.0, 0.0, 0.0], 8.0);
+        let s = mesh.summary();
+        assert_eq!(s.quad_count, 12);
+        assert!((s.area_by_material[&7] - 6.0).abs() < 1e-3);
+        assert!((s.area_by_material[&9] - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn refined_micro_mesh_honors_macro_origin_and_voxel_size() {
+        let cell = refined(vec![layer(3, &[micro_index(0, 0, 0)])]);
+        let mesh = refined_micro_mesh(&cell, [100.0, 200.0, 300.0], 16.0);
+        // micro = 16/8 = 2.0; slot (0,0,0) cube spans origin..origin+2.
+        let s = mesh.summary();
+        assert_eq!(s.aabb_min, Some([100.0, 200.0, 300.0]));
+        assert_eq!(s.aabb_max, Some([102.0, 202.0, 302.0]));
     }
 
     #[test]
