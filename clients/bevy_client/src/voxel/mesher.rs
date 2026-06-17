@@ -801,7 +801,10 @@ mod tests {
         // 全实心 chunk:外壳面积 = 6·size²、AABB = 整 chunk、单一材质、结构成立。
         let s = mesh_chunk(&full_chunk(5), 1.0).summary();
         assert!(approx(s.total_area, 6.0 * (SIZE * SIZE) as f32));
-        assert!(approx(*s.area_by_material.get(&5).unwrap(), 6.0 * (SIZE * SIZE) as f32));
+        assert!(approx(
+            *s.area_by_material.get(&5).unwrap(),
+            6.0 * (SIZE * SIZE) as f32
+        ));
         assert_eq!(s.aabb_min, Some([0.0, 0.0, 0.0]));
         assert_eq!(s.aabb_max, Some([SIZE as f32, SIZE as f32, SIZE as f32]));
         assert!(s.structural_ok);
@@ -824,14 +827,26 @@ mod tests {
     fn interior_cell_surrounded_emits_no_faces() {
         // 被实心完全包围的内部格:零暴露面(面剔除把它全剔)。
         let mut chunk = empty_chunk();
-        for (dx, dy, dz) in [(0, 0, 0), (1, 0, 0), (-1i32, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)] {
+        for (dx, dy, dz) in [
+            (0, 0, 0),
+            (1, 0, 0),
+            (-1i32, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
             let (x, y, z) = ((8 + dx) as usize, (8 + dy) as usize, (8 + dz) as usize);
             chunk.cells[idx(x, y, z)] = solid(1);
         }
         // 中心格(8,8,8)对外的 6 个面都被邻居挡;整体只剩外圈 6 个邻居各自的暴露面。
         // 断言中心格不贡献任何"朝中心"的内部面:总面积 = 6 邻居 × 5 外露面(各被中心挡 1 面)= 30。
         let s = mesh_chunk(&chunk, 1.0).summary();
-        assert!(approx(s.total_area, 30.0), "内部面未被正确剔除;总面积={}", s.total_area);
+        assert!(
+            approx(s.total_area, 30.0),
+            "内部面未被正确剔除;总面积={}",
+            s.total_area
+        );
         assert!(s.structural_ok);
     }
 
@@ -842,7 +857,10 @@ mod tests {
         chunk.cells[idx(2, 4, 4)] = solid(2);
         chunk.cells[idx(10, 10, 10)] = solid(1);
         for mesh in [mesh_chunk(&chunk, 1.0), greedy_mesh_chunk(&chunk, 1.0)] {
-            assert!(mesh.normals_are_axis_unit(), "法线非轴单位向量 → 绕序/法线错");
+            assert!(
+                mesh.normals_are_axis_unit(),
+                "法线非轴单位向量 → 绕序/法线错"
+            );
             assert!(mesh.structural_invariants_hold(), "结构不变量被破坏");
         }
     }
@@ -862,10 +880,21 @@ mod tests {
         let g = greedy_mesh_chunk(&chunk, 1.0).summary();
         let e = mesh_chunk(&chunk, 1.0).summary();
 
-        assert!(approx(g.total_area, e.total_area), "总面积不一致 g={} e={}", g.total_area, e.total_area);
-        assert_eq!(g.area_by_material.keys().collect::<Vec<_>>(), e.area_by_material.keys().collect::<Vec<_>>());
+        assert!(
+            approx(g.total_area, e.total_area),
+            "总面积不一致 g={} e={}",
+            g.total_area,
+            e.total_area
+        );
+        assert_eq!(
+            g.area_by_material.keys().collect::<Vec<_>>(),
+            e.area_by_material.keys().collect::<Vec<_>>()
+        );
         for (k, ev) in &e.area_by_material {
-            assert!(approx(*g.area_by_material.get(k).unwrap(), *ev), "材质 {k} 面积不一致");
+            assert!(
+                approx(*g.area_by_material.get(k).unwrap(), *ev),
+                "材质 {k} 面积不一致"
+            );
         }
         assert_eq!(g.aabb_min, e.aabb_min);
         assert_eq!(g.aabb_max, e.aabb_max);

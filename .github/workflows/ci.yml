@@ -459,3 +459,39 @@ jobs:
       - name: Run visualize_server tests
         # Phoenix 1.8 Endpoint uses persistent_term — needs the app started.
         run: cd apps/visualize_server && mix test
+
+  test-bevy-client:
+    name: Test bevy_client (Rust voxel client)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Bevy 0.18 Linux build deps. The client uses default-features=false +
+      # ["3d"] (no winit/audio at runtime here), but bevy_render's transitive
+      # crates link against ALSA/udev dev headers on Linux.
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - name: Cache cargo + bevy_client target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/bevy_client
+
+      # Pure-CPU verification per the client implementation+verification plan:
+      # geometry assertions (Layer-1), wire golden round-trip (Layer-2 decode
+      # parity), authority/mesher unit + integration tests. No window/GPU is
+      # opened by these tests, so they run headless on CI without a display.
+      - name: Check formatting
+        run: cd clients/bevy_client && cargo fmt --check
+
+      - name: Run bevy_client tests
+        run: cd clients/bevy_client && cargo test --locked
