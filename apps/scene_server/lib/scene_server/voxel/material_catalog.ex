@@ -26,6 +26,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @ash_material_id 10
   # 功能完善 · 反应层 R9b:门/机关(电路驱动设备)。导电 + 电负载 → 闭环通电置 :powered → 开。
   @door_material_id 11
+  # 功能完善 · 正交架构 S4(化学/氧化):铁锈——iron 氧化终产物。不导电(锈断路)、惰性(不再氧化)。
+  @rust_material_id 12
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -39,7 +41,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     water: @water_material_id,
     steam: @steam_material_id,
     ash: @ash_material_id,
-    door: @door_material_id
+    door: @door_material_id,
+    rust: @rust_material_id
   }
 
   @power_source_defaults %{
@@ -103,7 +106,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_538.0 * @fixed32_scale),
       "boiling_point" => round(2_862.0 * @fixed32_scale),
       "electric_conductivity" => round(10.0 * @fixed32_scale),
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      # S4 化学/氧化:起锈温度门 0℃——常温即缓慢氧化成 rust(冻铁 <0℃ 不锈)。属性派生激活,无白名单。
+      "oxidation_temperature" => 0
     },
     @power_block_material_id => %{
       "density" => round(7_870.0 * @fixed32_scale),
@@ -183,6 +188,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => round(8.0 * @fixed32_scale),
       "dielectric_strength" => 0,
       "electric_resistance" => round(0.5 * @fixed32_scale)
+    },
+    # S4 化学/氧化:铁锈(Fe2O3 量级)——iron 氧化终产物。electric_conductivity=0(锈断路,化学×电磁
+    # 涌现);oxidation_temperature=哨兵(惰性,不再氧化,同 ash ignition inert 范式);低导热、不可燃。
+    @rust_material_id => %{
+      "density" => round(5_240.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.6 * @fixed32_scale),
+      "specific_heat_capacity" => round(650.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_565.0 * @fixed32_scale),
+      "freezing_point" => round(1_565.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(2.0 * @fixed32_scale),
+      "oxidation_temperature" => @inert_temperature_raw
     }
   }
 
