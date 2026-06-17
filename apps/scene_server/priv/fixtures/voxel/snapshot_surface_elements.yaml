@@ -1,0 +1,6 @@
+name: snapshot_surface_elements
+kind: chunk_snapshot
+wire_size: 78025
+chunk_hash: 0x9262EC650CF12EF7
+description: |
+  Surface elements (section 0x08): torch / rust_decal / frost on macro faces, one with attr/tag/owner refs.

@@ -35,7 +35,9 @@ defmodule FixtureGen do
   alias SceneServer.Voxel.ObjectCoverRef
   alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.SurfaceCatalog
   alias SceneServer.Voxel.TagSet
+  alias SceneServer.Voxel.Types
 
   # ---- snapshot fixtures -----------------------------------------------------
 
@@ -248,6 +250,39 @@ defmodule FixtureGen do
     else
       storage
     end
+  end
+
+  @doc """
+  snapshot_surface_elements: chunk carrying surface elements (section 0x08,
+  形态轨) on several macro faces — torch / rust_decal / frost, including one with
+  non-zero attribute_set_ref / tag_set_ref / owner_actor_id. Validates the
+  append-only surface-element wire layout for cross-language (bevy) decode parity.
+  """
+  def snapshot_surface_elements do
+    base = Storage.empty(9, {2, 0, -3}, chunk_version: 23)
+    wall = Types.macro_index!({1, 0, 0})
+    other = Types.macro_index!({2, 0, 0})
+
+    base
+    |> Storage.put_solid_block({1, 0, 0}, NormalBlockData.new(5, health: 100))
+    |> Storage.put_surface_element(%{
+      macro_index: wall,
+      face: :x_pos,
+      surface_type_id: SurfaceCatalog.surface_type_id(:torch)
+    })
+    |> Storage.put_surface_element(%{
+      macro_index: wall,
+      face: :y_neg,
+      surface_type_id: SurfaceCatalog.surface_type_id(:rust_decal)
+    })
+    |> Storage.put_surface_element(%{
+      macro_index: other,
+      face: :z_pos,
+      surface_type_id: SurfaceCatalog.surface_type_id(:frost),
+      attribute_set_ref: 3,
+      tag_set_ref: 5,
+      owner_actor_id: 12_345
+    })
   end
 
   # ---- delta fixtures --------------------------------------------------------
@@ -534,7 +569,9 @@ snapshot_fixtures = [
   {"snapshot_object_refs", FixtureGen.snapshot_object_refs(),
    "Chunk-level object_refs section populated via refresh_chunk_object_refs after object-owned refined writes."},
   {"snapshot_full", FixtureGen.snapshot_full(),
-   "All sections populated together: macro + refined + environment + attribute + tag + object_refs."}
+   "All sections populated together: macro + refined + environment + attribute + tag + object_refs."},
+  {"snapshot_surface_elements", FixtureGen.snapshot_surface_elements(),
+   "Surface elements (section 0x08): torch / rust_decal / frost on macro faces, one with attr/tag/owner refs."}
 ]
 
 delta_fixtures = [

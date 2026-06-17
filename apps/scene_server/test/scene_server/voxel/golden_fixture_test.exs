@@ -63,7 +63,8 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
     "snapshot_attribute_pool",
     "snapshot_tag_pool",
     "snapshot_object_refs",
-    "snapshot_full"
+    "snapshot_full",
+    "snapshot_surface_elements"
   ]
 
   for fixture <- @snapshot_fixtures do
@@ -218,6 +219,32 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
     assert [env] = decoded.storage.environment_summaries
     assert env.field_mask != 0
     assert env.source_hash != 0
+  end
+
+  test "snapshot_surface_elements carries section 0x08 surface elements (torch/rust_decal/frost)" do
+    alias SceneServer.Voxel.SurfaceCatalog
+    binary = load_golden("snapshot_surface_elements")
+    assert {:ok, decoded} = Codec.decode_chunk_snapshot_payload(binary)
+
+    elements = decoded.storage.surface_elements
+    assert length(elements) == 3
+
+    type_ids = elements |> Enum.map(& &1.surface_type_id) |> Enum.sort()
+
+    assert type_ids ==
+             Enum.sort([
+               SurfaceCatalog.surface_type_id(:torch),
+               SurfaceCatalog.surface_type_id(:rust_decal),
+               SurfaceCatalog.surface_type_id(:frost)
+             ])
+
+    # 带 attr/tag/owner 的那条(frost)字段还原。
+    frost =
+      Enum.find(elements, &(&1.surface_type_id == SurfaceCatalog.surface_type_id(:frost)))
+
+    assert frost.attribute_set_ref == 3
+    assert frost.tag_set_ref == 5
+    assert frost.owner_actor_id == 12_345
   end
 
   test "snapshot_refined carries refined cells with owner_object_id provenance" do
