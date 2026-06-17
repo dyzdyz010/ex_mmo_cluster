@@ -14,9 +14,14 @@ use bevy::prelude::*;
 
 use crate::app::schedule::ClientSet;
 use crate::login::AppState;
-use crate::voxel::authority::{IngestOutcome, VoxelAuthorityStore};
+use crate::net::{NetworkBridge, NetworkCommand};
+use crate::voxel::authority::{ChunkCoord, IngestOutcome, VoxelAuthorityStore};
 use crate::voxel::field_view::VoxelFieldStore;
 use crate::voxel::wire::VoxelServerMessage;
+
+/// Logical scene the client subscribes voxels in (mirrors net::plugin; single
+/// scene for now).
+const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
 /// Bevy resource wrapping the pure authority stores plus an inbox the net layer
 /// pushes decoded voxel messages into.
@@ -26,11 +31,18 @@ use crate::voxel::wire::VoxelServerMessage;
 /// render sub-layers; `field_store` (C3) holds the Phase-6 local-field stream
 /// (0x73/0x74) for the FieldView render sub-layer. They never couple — each is
 /// driven independently from its own message kinds.
+///
+/// `resync_requests` collects chunks whose delta base forked from the held
+/// version (so the held mesh is stale); `ingest_voxel_messages` drains it and
+/// re-subscribes those chunks (radius-0, want_snapshot) so the server re-streams
+/// a fresh snapshot — otherwise a stationary client would render stale truth
+/// indefinitely.
 #[derive(Resource, Default)]
 pub struct VoxelAuthority {
     pub store: VoxelAuthorityStore,
     pub field_store: VoxelFieldStore,
     inbox: Vec<VoxelServerMessage>,
+    resync_requests: Vec<ChunkCoord>,
 }
 
 impl VoxelAuthority {
@@ -64,9 +76,11 @@ impl VoxelAuthority {
                 _ => match self.store.ingest(&message) {
                     Ok(IngestOutcome::Resync(coord)) => {
                         // Version-gate failed: the held chunk forked from the
-                        // server's delta base. M2b/M1.8d will trigger a
-                        // resubscribe; for now log.
-                        debug!("voxel chunk {coord:?} needs resync (delta base mismatch)");
+                        // server's delta base. Queue a targeted re-subscribe so
+                        // the server re-streams a fresh snapshot (otherwise the
+                        // chunk stays stale until an unrelated AOI re-subscribe).
+                        warn!("voxel chunk {coord:?} needs resync (delta base mismatch)");
+                        self.resync_requests.push(coord);
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -75,6 +89,18 @@ impl VoxelAuthority {
                 },
             }
         }
+    }
+
+    /// Drains the pending resync coords (deduped + sorted). The ECS system feeds
+    /// these to the net bridge as targeted re-subscribes.
+    pub(crate) fn take_resync_requests(&mut self) -> Vec<ChunkCoord> {
+        if self.resync_requests.is_empty() {
+            return Vec::new();
+        }
+        let mut coords = std::mem::take(&mut self.resync_requests);
+        coords.sort_unstable();
+        coords.dedup();
+        coords
     }
 }
 
@@ -91,15 +117,34 @@ impl Plugin for VoxelAuthorityPlugin {
     }
 }
 
-fn ingest_voxel_messages(mut authority: ResMut<VoxelAuthority>) {
+fn ingest_voxel_messages(
+    mut authority: ResMut<VoxelAuthority>,
+    bridge: Option<Res<NetworkBridge>>,
+) {
     authority.drain_inbox();
+
+    // Re-subscribe forked chunks (radius-0 = just that chunk, want_snapshot) so
+    // the server re-streams fresh truth. Deduped per drain; if the server keeps
+    // sending mismatched deltas this re-requests each frame until resolved
+    // (acceptable — radius-0 is cheap; finer rate-limiting is a follow-up).
+    let resyncs = authority.take_resync_requests();
+    if let Some(bridge) = bridge {
+        for coord in resyncs {
+            bridge.send(NetworkCommand::SubscribeChunks {
+                logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
+                center_chunk: coord,
+                radius: 0,
+            });
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::voxel::wire::{
-        ChunkSnapshot, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot, Reader,
+        ChunkDelta, ChunkSnapshot, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
+        FieldRegionSnapshot, Reader,
     };
 
     fn snapshot(name: &str) -> ChunkSnapshot {
@@ -119,6 +164,29 @@ mod tests {
         assert_eq!(authority.store.chunk_count(), 1);
         assert!(authority.store.chunk(coord).is_some());
         assert_eq!(authority.store.take_dirty(), vec![coord]);
+    }
+
+    #[test]
+    fn delta_for_unsynced_chunk_queues_a_resync_request() {
+        // #8: a delta whose base can't be version-gated (unknown/forked chunk)
+        // must surface a resync request so the system can re-subscribe it, instead
+        // of being silently logged-and-dropped.
+        let mut authority = VoxelAuthority::default();
+        let delta_a = ChunkDelta {
+            logical_scene_id: 1,
+            chunk_coord: [3, 0, -1],
+            base_chunk_version: 5,
+            new_chunk_version: 6,
+            ops: vec![],
+        };
+        // Same forked chunk twice → deduped to one resync request.
+        authority.enqueue(VoxelServerMessage::ChunkDelta(delta_a.clone()));
+        authority.enqueue(VoxelServerMessage::ChunkDelta(delta_a));
+        authority.drain_inbox();
+
+        assert_eq!(authority.take_resync_requests(), vec![[3, 0, -1]]);
+        // Drained — a second call is empty until a new fork occurs.
+        assert!(authority.take_resync_requests().is_empty());
     }
 
     #[test]
