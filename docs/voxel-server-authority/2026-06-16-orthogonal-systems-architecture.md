@@ -91,7 +91,20 @@
   单测证可扩展。③ **顺手:σ/R 一致性**——`electric_load` σ 8→2.0,令"劣导体(低 σ)+ 高集总 R"自洽
   (详 `2026-06-16-sigma-R-coherence.md`);保留 `electric_resistance` 作 load 功能门(load-ness 非体
   材料 σ 可表达),不全派生。scene 全量 1022/0。
-- **S4+ 开新系统**:化学/氧化(普适)→ 力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个独立 step。
+- **✅ S4 化学/氧化普适系统(已完成 2026-06-17,第一个全新涌现域)**:抽声明式 `ChemicalReaction`/
+  `ChemicalReactions` recipe 表(仿 S3 `Actuators`):一条 `%ChemicalReaction{material, gate_attr,
+  active_tag, progress_attr, rate, heat_per_tick, product}` 经 `rules_for/1` 展开成 start/sustain/complete
+  三条既有 `tag_reaction` 规则,`Engine` 不变。**燃烧从 `rules.ex` 手写三规则收敛成一条 recipe**(展开与
+  历史 ignite/burn/burn_out 逐条等价,`chemical_reactions_test` 守)→ 结构上证「燃烧=化学的一个实例」;
+  **氧化(铁→锈)= 同模板异参数的第二实例**(`material: :iron` 具名反应物 + `oxidation_temperature` 属性
+  派生温度门 + `:rusting` latch 对称 `:burning`)→ 证「加化学反应=加数据」。唯一 coded 改动:`Engine
+  field_value` 加通用兜底(温度外 condition 维度按 cell 同名 key 取值,新维度不再改 Engine)+ Rule
+  `@condition_fields += :oxidation_progress` + ReactionKernel `cell_state` 注入——**零新效果原语/kernel**。
+  新增 attr(oxidation_temperature id16/oxidation_progress id17,catalog v6)+ tag(:rusting id11,v4)+
+  material(rust id12,不导电)。**化学 × 电磁涌现**:iron 锈成 rust(电导=0)经 truth 自然退出电导投影
+  (锈断路),无「锈了断电」规则。R2(慢氧化 rate=0.005 护住 80-tick 焦耳热 e2e iron 不断路)+ R1
+  (`material: :iron` 过滤消解万物生锈)自审纳入。scene 全量 1045/0。详 `2026-06-17-S4-chemistry-oxidation-system.md`。
+- **S5+ 开新系统**:力学应力(坍塌)→ 流体压力 → 辐射换热 → 磁感应。每个独立 step。
 
 ## 6. 不变量(纪律)
 
@@ -103,6 +116,7 @@
 
 ---
 **进度**:✅ S1 电磁正交化(I²R 产热 + 删 powered_heater)、✅ S2 source/load 属性派生(emf/电阻,去
-material_id 白名单)、✅ S3 actuator 正交化(TagPhysics 声明式 tag→碰撞绑定 + 通用 Actuator,door 收敛
-成一条数据;顺手 σ/R 一致性)完成。**下一步 S4**:开新涌现域——优先化学/氧化(普适系统,替代燃烧特例),
-之后力学应力(坍塌)→ 流体压力 → 辐射 → 磁。每个 = 1 物理 kernel + 几维材料属性 + model card,独立 step。
+material_id 白名单)、✅ S3 actuator 正交化(TagPhysics + 通用 Actuator,door 收敛成数据;顺手 σ/R 一致性)、
+✅ S4 化学/氧化普适系统(ChemicalReaction recipe 表,燃烧收敛成 recipe 实例 + 氧化铁→锈第二实例,化学×电磁
+涌现)完成。**下一步 S5**:力学应力坍塌 → 流体压力 → 辐射换热 → 磁感应。每个 = 1 物理 kernel + 几维材料
+属性 + model card,独立 step。

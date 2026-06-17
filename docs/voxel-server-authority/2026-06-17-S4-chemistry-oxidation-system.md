@@ -1,5 +1,11 @@
 # S4 设计:化学/氧化普适系统(2026-06-17)
 
+> **状态:✅ 已实施完成(2026-06-17)。** S4-1 AttributeCatalog v6(oxidation_temperature/oxidation_progress)、
+> S4-2 TagCatalog v4(:rusting)、S4-3 MaterialCatalog(rust id12 + iron 起锈门)、S4-4 ChemicalReaction
+> recipe 表(燃烧迁移逐条等价 + 氧化第二实例 + Engine field_value 通用化)、S4-5 氧化 e2e(含化学×电磁涌现
+> 彩蛋)全部落地。commit:cc54bb3(决策稿)→ 376034c → 3b14853 → 5aecc82 → 3996bdf → aeaf2af。scene
+> 全量 1045/0。与设计稿差异:无(锁定版即实施版)。
+
 正交架构(`2026-06-16-orthogonal-systems-architecture.md`)第四刀,也是**第一个全新涌现域**。把当前
 「燃烧特例规则」升格为通用化学:抽一层声明式 `ChemicalReaction` recipe 表(仿 S3 `Actuators`),**燃烧
 与氧化(铁→锈)都由同一 recipe 模板生成**,结构上证死「燃烧=化学的一个实例」,氧化作第二实例证
