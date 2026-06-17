@@ -28,7 +28,7 @@ use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
-use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, greedy_mesh_chunk_with_neighbors};
+use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, chunk_render_mesh};
 use crate::voxel::surface_decal::surface_decal_mesh;
 
 /// Sim/render size of one macro cell, in render units. The server's macro cell
@@ -166,9 +166,10 @@ fn remesh_chunk(
         return;
     };
 
-    // Volumetric chunk mesh (greedy + cross-chunk culling).
+    // Volumetric chunk mesh: greedy macro faces (solid) + refined cells' micro
+    // sub-voxel meshes, with cross-chunk culling (C4).
     let neighbors = build_neighbors(store, coord);
-    let data = greedy_mesh_chunk_with_neighbors(chunk, MACRO_RENDER_SIZE, &neighbors);
+    let data = chunk_render_mesh(chunk, MACRO_RENDER_SIZE, &neighbors);
     if data.is_empty() {
         despawn_chunk(commands, entities, coord);
     } else {

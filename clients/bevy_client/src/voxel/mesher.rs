@@ -65,6 +65,18 @@ impl ChunkMeshData {
         self.positions.len()
     }
 
+    /// Appends another mesh's geometry, offsetting its indices. Used to merge
+    /// per-refined-cell micro meshes into a chunk's macro mesh (C4).
+    pub fn append(&mut self, other: ChunkMeshData) {
+        let base = self.positions.len() as u32;
+        self.positions.extend(other.positions);
+        self.normals.extend(other.normals);
+        self.uvs.extend(other.uvs);
+        self.material_ids.extend(other.material_ids);
+        self.indices
+            .extend(other.indices.into_iter().map(|i| i + base));
+    }
+
     /// 所有顶点的轴对齐包围盒(min,max);空 mesh 返回 None。抓 voxel_size 缩放/chunk 平移回归
     /// (几何悄悄移出屏幕)。
     pub fn aabb(&self) -> Option<([f32; 3], [f32; 3])> {
@@ -253,20 +265,6 @@ fn occupies(cell: &CellState) -> bool {
     matches!(cell, CellState::Solid(_) | CellState::Refined(_))
 }
 
-/// The material id a face of this cell renders with.
-fn cell_material(cell: &CellState) -> u32 {
-    match cell {
-        CellState::Solid(block) => block.material_id as u32,
-        // Refined: approximate with the first layer's material (M2b: per-slot).
-        CellState::Refined(refined) => refined
-            .layers
-            .first()
-            .map(|layer| layer.material_id as u32)
-            .unwrap_or(0),
-        CellState::Empty => 0,
-    }
-}
-
 /// Meshes one chunk via exposed-face culling. `voxel_size` is the render-unit
 /// size of one macro cell.
 pub fn mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
@@ -282,11 +280,15 @@ pub fn mesh_chunk(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
     for z in 0..size {
         for y in 0..size {
             for x in 0..size {
-                let cell = &chunk.cells[index_of(x, y, z)];
-                if !occupies(cell) {
+                // Only SOLID cells emit a macro cube face. Refined cells still
+                // occlude their neighbors (via `occupies` in the neighbor check
+                // below) but render their actual sub-voxel shape via
+                // `refined_micro_mesh` (C4), so emitting a macro cube here too
+                // would double-render them.
+                let CellState::Solid(block) = &chunk.cells[index_of(x, y, z)] else {
                     continue;
-                }
-                let material_id = cell_material(cell);
+                };
+                let material_id = block.material_id as u32;
 
                 for face in &FACES {
                     let (nx, ny, nz) = (x + face.delta[0], y + face.delta[1], z + face.delta[2]);
@@ -383,8 +385,13 @@ pub fn greedy_mesh_chunk_with_neighbors(
                             // Chunk boundary: consult the neighbor chunk.
                             neighbors.occluded_across(d, sign, u, v, size)
                         };
+                        // Only solid cells contribute a macro exposed face;
+                        // refined cells occlude (the across-check above) but are
+                        // micro-meshed separately (C4), so no macro face here.
                         if !occluded {
-                            mask[(v * size + u) as usize] = Some(cell_material(cell));
+                            if let CellState::Solid(block) = cell {
+                                mask[(v * size + u) as usize] = Some(block.material_id as u32);
+                            }
                         }
                     }
                 }
@@ -412,6 +419,36 @@ pub fn greedy_mesh_chunk_with_neighbors(
     }
 
     mesh
+}
+
+/// The full render mesh for a chunk (C4): greedy macro faces (solid cells, with
+/// cross-chunk culling) **plus** a per-refined-cell micro mesh (sub-voxel shape).
+/// Refined cells occlude their neighbors in the macro pass but emit no macro
+/// face there; here each is micro-meshed at its macro origin and merged in.
+pub fn chunk_render_mesh(
+    chunk: &AuthorityChunk,
+    voxel_size: f32,
+    neighbors: &ChunkNeighbors,
+) -> ChunkMeshData {
+    let mut data = greedy_mesh_chunk_with_neighbors(chunk, voxel_size, neighbors);
+
+    let size = chunk.chunk_size_in_macro as i32;
+    if size > 0 {
+        for (i, cell) in chunk.cells.iter().enumerate() {
+            if let CellState::Refined(refined) = cell {
+                let i = i as i32;
+                let (mx, my, mz) = (i % size, (i / size) % size, i / (size * size));
+                let origin = [
+                    mx as f32 * voxel_size,
+                    my as f32 * voxel_size,
+                    mz as f32 * voxel_size,
+                ];
+                data.append(refined_micro_mesh(refined, origin, voxel_size));
+            }
+        }
+    }
+
+    data
 }
 
 /// Accesses a cell by (axis-d coordinate, u coordinate, v coordinate).
@@ -1077,6 +1114,35 @@ mod tests {
         let s = mesh.summary();
         assert_eq!(s.aabb_min, Some([100.0, 200.0, 300.0]));
         assert_eq!(s.aabb_max, Some([102.0, 202.0, 302.0]));
+    }
+
+    #[test]
+    fn chunk_render_mesh_micro_meshes_refined_without_double_macro_cube() {
+        // Isolated solid (3,0,0) → 6 macro faces; isolated refined (1,0,0) with
+        // one micro slot → 6 micro faces (NOT a macro cube too) = 12 total.
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(1, 0, 0)] =
+            CellState::Refined(refined(vec![layer(7, &[micro_index(0, 0, 0)])]));
+        chunk.cells[idx(3, 0, 0)] = solid(2);
+        let mesh = chunk_render_mesh(&chunk, 8.0, &ChunkNeighbors::default());
+        assert_eq!(mesh.quad_count(), 12);
+        assert!(mesh.structural_invariants_hold());
+        let s = mesh.summary();
+        assert!(s.area_by_material.contains_key(&2)); // solid macro
+        assert!(s.area_by_material.contains_key(&7)); // refined micro
+    }
+
+    #[test]
+    fn refined_neighbor_still_occludes_solid_macro_face() {
+        // Solid (1,0,0) with a refined +X neighbor (2,0,0): the solid's +X face
+        // is culled (refined occupies) → solid emits 5 macro faces, not 6.
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(1, 0, 0)] = solid(2);
+        chunk.cells[idx(2, 0, 0)] =
+            CellState::Refined(refined(vec![layer(7, &[micro_index(0, 0, 0)])]));
+        let s = chunk_render_mesh(&chunk, 8.0, &ChunkNeighbors::default()).summary();
+        // 5 macro faces * 8² = 320 area for the solid material.
+        assert!((s.area_by_material[&2] - 5.0 * 64.0).abs() < 1e-2);
     }
 
     #[test]
