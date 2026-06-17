@@ -17,7 +17,15 @@
 //! destroyed (0x74). The render adapter reads committed field truth only — no
 //! fabrication, same authority discipline as the chunk renderer.
 
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+    MaterialPlugin,
+};
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
 use std::collections::HashMap;
 
 use crate::app::schedule::ClientSet;
@@ -26,23 +34,60 @@ use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::chunk_render::{MACRO_RENDER_SIZE, build_mesh_with_colors, chunk_translation};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
 
+/// The field overlay material: an unlit, alpha-blended, vertex-colored
+/// `StandardMaterial` PLUS a depth-disable extension so markers render THROUGH
+/// solid terrain.
+///
+/// Why the extension: emergence overwhelmingly happens on solid voxels (heated
+/// iron, powered conductors, embers), and a marker cube is inset inside the macro
+/// cell — i.e. geometrically *behind* the opaque chunk face. An alpha-blended
+/// material is still depth-tested against the opaque pass, so without disabling
+/// the depth test the overlay is rejected exactly where it matters. The web
+/// reference (`fieldDebugOverlay.ts`) sets `depthTest:false` + `depthWrite:false`
+/// on every overlay material for this reason ("visible through terrain"); this is
+/// the 1:1 Bevy port. (The pixel result is Layer-3-verifiable; the code intent —
+/// `depth_compare = Always` — is explicit and matches the reference.)
+type FieldOverlayMaterial = ExtendedMaterial<StandardMaterial, FieldDepthDisable>;
+
+/// Zero-binding material extension that disables depth test/write in the overlay
+/// pipeline (the rest of the shading is the base `StandardMaterial`).
+#[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
+struct FieldDepthDisable {}
+
+impl MaterialExtension for FieldDepthDisable {
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
+            // Render through opaque geometry (web depthTest:false / depthWrite:false).
+            depth_stencil.depth_compare = CompareFunction::Always;
+            depth_stencil.depth_write_enabled = false;
+        }
+        Ok(())
+    }
+}
+
 /// Maps each rendered field overlay `(region_id, kind ordinal)` to its Bevy
 /// entity, so a newer snapshot updates it in place and a destroyed/cooled region
 /// despawns it. Separate keys per field type keep the three overlays independent.
 #[derive(Resource, Default)]
 pub struct VoxelFieldEntities(HashMap<(u64, u8), Entity>);
 
-/// Shared unlit material for all field overlay meshes — vertex heat colors come
-/// through at full intensity (markers read as glowing hot), independent of scene
-/// lighting. Like the chunk material, one shared handle keeps overlays batchable.
+/// Shared overlay material handle (unlit + alpha-blend + depth-disable). Vertex
+/// field colors come through at full intensity; one shared handle keeps overlays
+/// batchable.
 #[derive(Resource)]
-pub struct VoxelFieldMaterial(Handle<StandardMaterial>);
+pub struct VoxelFieldMaterial(Handle<FieldOverlayMaterial>);
 
 pub struct VoxelFieldRenderPlugin;
 
 impl Plugin for VoxelFieldRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VoxelFieldEntities>()
+        app.add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
+            .init_resource::<VoxelFieldEntities>()
             .add_systems(Startup, setup_field_material)
             .add_systems(
                 Update,
@@ -53,16 +98,23 @@ impl Plugin for VoxelFieldRenderPlugin {
     }
 }
 
-fn setup_field_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
+fn setup_field_material(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<FieldOverlayMaterial>>,
+) {
     // Unlit white base so the baked per-vertex field colors render unattenuated,
     // and alpha-blended so the per-vertex alpha (temperature opacity buckets /
     // electric layer opacity) reads as a translucent overlay — mirroring the web
-    // overlay's see-through debug cells.
-    let handle = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
+    // overlay's see-through debug cells. The depth-disable extension makes it
+    // render through solid terrain.
+    let handle = materials.add(FieldOverlayMaterial {
+        base: StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        },
+        extension: FieldDepthDisable::default(),
     });
     commands.insert_resource(VoxelFieldMaterial(handle));
 }
