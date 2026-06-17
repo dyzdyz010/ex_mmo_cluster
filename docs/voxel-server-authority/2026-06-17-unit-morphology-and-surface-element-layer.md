@@ -7,6 +7,13 @@
 > 产物来源:3 路并行 Explore(宏/微格+邻接、prefab+object/part、线协议下行)交叉核验现状 + 与用户两轮
 > 共识(2026-06-17)。
 
+> **实施进度(2026-06-17,服务器侧数据+wire 层已通)**:
+> - **M1** `SurfaceCatalog`(类型表 append-only:rust_decal/frost/scorch/torch/lever + 面 ordinal)。commit 74394a3。
+> - **M2** `SurfaceElement` struct + `Storage` 面槽旁路(put/get/clear/list,**零 occupancy 不变量**)。commit 64107dd。
+> - **M3** `ChunkProcess` 权威 ops(put/clear/surface_element_at + bump 版本 + 重快照;活进程级零 occupancy)。commit e2a71b9。
+> - **M4** wire `0x08 SurfaceElements`(append-only 可选段,仅非空发射,空 chunk 字节/hash 全等向后兼容;codec round-trip)。commit beb34aa。
+> - scene 全量 1071/0(golden 不破)。**留作下游**:M5 物理参与(ParticipantProjection 面级)、客户端 bevy/web 渲染+解码器(Phase 3 专注服务器故 defer)、golden fixture、ChunkDelta 专用 op、S4 皮相化(本轮不动 S4)。
+
 ## 1. 形态分类法:两条正交轴 + 两个叠加层
 
 不枚举"方块/prefab/贴面/火炬"这类零散形态,而是把形态拆成正交维度——**每个具体形态是维度空间里的
