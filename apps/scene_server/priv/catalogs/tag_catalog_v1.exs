@@ -8,7 +8,7 @@
 # 一旦发出即冻结：id ↔ name 映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 3,
+  catalog_version: 4,
   definitions: [
     %{id: 1, name: "flammable"},
     %{id: 2, name: "conductive"},
@@ -21,6 +21,9 @@
     # 功能完善 · 反应层 R7:电负载"通电"权威状态(闭环电流驱动 → 设备基础)。append-only。
     %{id: 9, name: "powered"},
     # 功能完善 · 反应层 R9b:门/机关"开"权威状态(通电 → 开 → 碰撞可通行)。append-only。
-    %{id: 10, name: "open"}
+    %{id: 10, name: "open"},
+    # 功能完善 · 正交架构 S4(化学/氧化):氧化中 latch(对称 burning)。起锈置位 → oxidation_progress
+    # 满则转 rust 去位。append-only。
+    %{id: 11, name: "rusting"}
   ]
 }
