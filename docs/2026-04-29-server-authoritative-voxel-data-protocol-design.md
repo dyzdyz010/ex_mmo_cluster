@@ -1568,6 +1568,12 @@ sections[]          section
 | `0x06 EnvironmentSummaries` | 宏格环境摘要池 |
 | `0x07 ObjectRefs` | 区块覆盖到的对象/部件摘要 |
 
+可选 section（append-only,仅在非空时发射;旧解码器读入 map 后不取用即忽略,新解码器缺段默认空）：
+
+| section | 内容 |
+| --- | --- |
+| `0x08 SurfaceElements` | 表面元件池(形态轨;绑单宏格面的零体积单元)。每条 21B:`macro_index u16` + `face u8`(0..5,与 ParticipantProjection face_rank 一致)+ `surface_type_id u16`(SurfaceCatalog)+ `attribute_set_ref u32` + `tag_set_ref u32` + `owner_actor_id u64`。**仅当 chunk 有表面元件时此段才出现**,空 chunk 仍 7 段(与历史 wire 字节全等);`chunk_hash` 亦仅在非空时纳入,保历史 hash 不变。 |
+
 ### 13.3 ChunkDelta `0x63`
 
 ```text

@@ -19,6 +19,8 @@ defmodule SceneServer.Voxel.Codec do
   alias SceneServer.Voxel.ObjectCoverRef
   alias SceneServer.Voxel.RefinedCellData
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.SurfaceCatalog
+  alias SceneServer.Voxel.SurfaceElement
   alias SceneServer.Voxel.TagSet
 
   @section_macro_headers 0x01
@@ -28,6 +30,9 @@ defmodule SceneServer.Voxel.Codec do
   @section_tag_sets 0x05
   @section_environment_summaries 0x06
   @section_object_refs 0x07
+  # 形态轨:表面元件 section(append-only)。**可选**——仅当 chunk 有表面元件时发射,空 chunk 仍 7 段
+  # (与历史 wire 字节全等,向后兼容)。不在 @snapshot_sections(那是 7 个必发段);解码端缺段默认 []。
+  @section_surface_elements 0x08
 
   @snapshot_sections [
     @section_macro_headers,
@@ -43,6 +48,9 @@ defmodule SceneServer.Voxel.Codec do
   @normal_block_wire_size 20
   @environment_wire_size 14
   @object_ref_wire_size 30
+  # 表面元件 wire:macro_index u16 + face u8 + surface_type_id u16 + attribute_set_ref u32 +
+  # tag_set_ref u32 + owner_actor_id u64 = 21 bytes。
+  @surface_element_wire_size 21
   @max_u63 9_223_372_036_854_775_807
 
   @doc """
@@ -114,7 +122,10 @@ defmodule SceneServer.Voxel.Codec do
         tag_sets: decode_tag_set_pool!(fetch_section!(sections, @section_tag_sets)),
         environment_summaries:
           decode_environment_summaries!(fetch_section!(sections, @section_environment_summaries)),
-        object_refs: decode_object_refs!(fetch_section!(sections, @section_object_refs))
+        object_refs: decode_object_refs!(fetch_section!(sections, @section_object_refs)),
+        # 形态轨:表面元件 section 可选;旧/空 chunk 无此段 → 默认空二进制 → 解出 []。
+        surface_elements:
+          decode_surface_elements!(Map.get(sections, @section_surface_elements, <<>>))
       }
       |> Storage.normalize!()
 
@@ -1043,9 +1054,15 @@ defmodule SceneServer.Voxel.Codec do
       encode_environment_pool(storage.environment_summaries),
       encode_object_ref_pool(storage.object_refs),
       encode_attribute_set_pool_for_truth(storage.attribute_sets),
-      encode_tag_set_pool_for_truth(storage.tag_sets)
+      encode_tag_set_pool_for_truth(storage.tag_sets),
+      # 形态轨:表面元件仅在非空时纳入 truth hash——空时不追加任何字节,保历史 chunk_hash 不变。
+      surface_element_truth(storage.surface_elements)
     ])
   end
+
+  # 空表面元件 → 不贡献任何字节(历史 chunk_hash 不变);非空 → 计数池(canonical 排序已在 Storage 保证)。
+  defp surface_element_truth([]), do: []
+  defp surface_element_truth(elements), do: encode_surface_element_pool(elements)
 
   defp normalize_snapshot_input!(%Storage{} = storage) do
     %{request_id: 0, storage: Storage.normalize!(storage)}
@@ -1080,7 +1097,14 @@ defmodule SceneServer.Voxel.Codec do
         encode_environment_pool(storage.environment_summaries)
       ),
       encode_section(@section_object_refs, encode_object_ref_pool(storage.object_refs))
-    ]
+    ] ++ surface_element_sections(storage.surface_elements)
+  end
+
+  # 形态轨:表面元件 section 仅在非空时发射(空 chunk 仍 7 段,与历史 wire 字节全等,向后兼容)。
+  defp surface_element_sections([]), do: []
+
+  defp surface_element_sections(elements) do
+    [encode_section(@section_surface_elements, encode_surface_element_pool(elements))]
   end
 
   defp encode_section(section_type, section_data) do
@@ -1170,6 +1194,25 @@ defmodule SceneServer.Voxel.Codec do
       min_y::unsigned-integer-size(8), min_z::unsigned-integer-size(8),
       max_x::unsigned-integer-size(8), max_y::unsigned-integer-size(8),
       max_z::unsigned-integer-size(8), ref.cover_hash::unsigned-big-integer-size(64)>>
+  end
+
+  # 形态轨:表面元件计数池(count u32 + count × 21B);调用方保证仅非空时编码。
+  defp encode_surface_element_pool(elements) do
+    [
+      <<length(elements)::unsigned-big-integer-size(32)>>,
+      Enum.map(elements, &encode_surface_element/1)
+    ]
+  end
+
+  defp encode_surface_element(%SurfaceElement{} = element) do
+    element = SurfaceElement.normalize!(element)
+    face_ordinal = SurfaceCatalog.face_ordinal(element.face)
+
+    <<element.macro_index::unsigned-big-integer-size(16), face_ordinal::unsigned-integer-size(8),
+      element.surface_type_id::unsigned-big-integer-size(16),
+      element.attribute_set_ref::unsigned-big-integer-size(32),
+      element.tag_set_ref::unsigned-big-integer-size(32),
+      element.owner_actor_id::unsigned-big-integer-size(64)>>
   end
 
   defp encode_delta_op(%{
@@ -1763,6 +1806,27 @@ defmodule SceneServer.Voxel.Codec do
           covered_macro_min: {min_x, min_y, min_z},
           covered_macro_max: {max_x, max_y, max_z},
           cover_hash: cover_hash
+        })
+    end)
+  end
+
+  # 形态轨:表面元件 section 可选;缺段(旧/空 chunk)默认空二进制 → []。
+  defp decode_surface_elements!(<<>>), do: []
+
+  defp decode_surface_elements!(data) do
+    decode_counted_pool!(data, @surface_element_wire_size, :surface_elements, fn
+      <<macro_index::unsigned-big-integer-size(16), face_ordinal::unsigned-integer-size(8),
+        surface_type_id::unsigned-big-integer-size(16),
+        attribute_set_ref::unsigned-big-integer-size(32),
+        tag_set_ref::unsigned-big-integer-size(32),
+        owner_actor_id::unsigned-big-integer-size(64)>> ->
+        SurfaceElement.normalize!(%{
+          macro_index: macro_index,
+          face: SurfaceCatalog.face_from_ordinal(face_ordinal),
+          surface_type_id: surface_type_id,
+          attribute_set_ref: attribute_set_ref,
+          tag_set_ref: tag_set_ref,
+          owner_actor_id: owner_actor_id
         })
     end)
   end
