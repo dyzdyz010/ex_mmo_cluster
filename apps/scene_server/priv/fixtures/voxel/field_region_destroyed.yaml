@@ -1,0 +1,5 @@
+name: field_region_destroyed
+kind: field_region_destroyed
+wire_size: 29
+description: |
+  0x74 FieldRegionDestroyed: destroy for region 42 in chunk {2,0,-3}, reason=explicit (0x02).

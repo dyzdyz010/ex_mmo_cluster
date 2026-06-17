@@ -1,0 +1,5 @@
+name: field_region_snapshot
+kind: field_region_snapshot
+wire_size: 53
+description: |
+  0x73 FieldRegionSnapshot: temperature-only region (3 hot cells: idx 0=120C, 17=300C, 273=60C), little-endian f32 values. Cross-language (bevy) decoder parity.

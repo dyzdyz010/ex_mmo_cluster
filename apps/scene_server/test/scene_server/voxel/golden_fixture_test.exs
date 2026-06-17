@@ -3,6 +3,7 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
 
   alias SceneServer.Voxel.CatalogPatch
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.Field.FieldCodec
   alias SceneServer.Voxel.Storage
 
   # ============================================================================
@@ -189,6 +190,58 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
       reencoded = CatalogPatch.encode_for_wire(patch)
       assert reencoded == binary
     end
+  end
+
+  # ---- field_region fixtures (0x73 / 0x74) ----------------------------------
+  #
+  # These goldens are the opcode-stripped body (same convention as every other
+  # fixture), while FieldCodec's API bundles the opcode — so prepend it for
+  # decode. We pin the decoded values (region_id / coords / field_mask / indices
+  # / little-endian f32 temperatures) so the SAME bytes the bevy client decodes
+  # for parity are anchored to a documented meaning here. (Codec-level
+  # encode<->decode byte-stability is covered by field_codec_test.exs.)
+
+  @opcode_field_snapshot 0x73
+  @opcode_field_destroyed 0x74
+
+  test "field_region_snapshot fixture: golden decodes to the pinned temperature region" do
+    binary = load_golden("field_region_snapshot")
+    meta = load_metadata("field_region_snapshot")
+
+    assert byte_size(binary) == String.to_integer(meta["wire_size"])
+
+    decoded = FieldCodec.decode_snapshot_payload!(<<@opcode_field_snapshot>> <> binary)
+
+    assert decoded.opcode == @opcode_field_snapshot
+    assert decoded.logical_scene_id == 1
+    assert decoded.chunk_coord == {2, 0, -3}
+    assert decoded.region_id == 42
+    assert decoded.tick_count == 7
+    assert decoded.field_mask == FieldCodec.field_mask_temperature()
+    assert decoded.cell_count == 3
+    assert decoded.macro_indices == [0, 17, 273]
+    # Hot absolute temperatures (baseline 20 stripped at the layer; only active
+    # cells are emitted), little-endian f32.
+    assert decoded.temperature_values == [120.0, 300.0, 60.0]
+    # Temperature-only region: the other layers are absent.
+    assert decoded.electric_values == []
+    assert decoded.electric_current_values == []
+    assert decoded.ionization_values == []
+  end
+
+  test "field_region_destroyed fixture: golden decodes to the pinned destroy event" do
+    binary = load_golden("field_region_destroyed")
+    meta = load_metadata("field_region_destroyed")
+
+    assert byte_size(binary) == String.to_integer(meta["wire_size"])
+
+    decoded = FieldCodec.decode_destroyed_payload!(<<@opcode_field_destroyed>> <> binary)
+
+    assert decoded.opcode == @opcode_field_destroyed
+    assert decoded.logical_scene_id == 1
+    assert decoded.chunk_coord == {2, 0, -3}
+    assert decoded.region_id == 42
+    assert decoded.destroy_reason == :explicit
   end
 
   # ---- specific structural assertions ---------------------------------------

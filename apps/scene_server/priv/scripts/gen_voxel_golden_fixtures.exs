@@ -21,6 +21,7 @@
 
 alias SceneServer.Voxel.CatalogPatch
 alias SceneServer.Voxel.Codec
+alias SceneServer.Voxel.Field.FieldCodec
 alias SceneServer.Voxel.PartState
 alias SceneServer.Voxel.Storage
 
@@ -29,6 +30,8 @@ defmodule FixtureGen do
   alias SceneServer.Voxel.AttributeSet
   alias SceneServer.Voxel.CatalogPatch
   alias SceneServer.Voxel.Codec
+  alias SceneServer.Voxel.Field.FieldLayer
+  alias SceneServer.Voxel.Field.FieldRegion
   alias SceneServer.Voxel.MacroEnvironmentSummary
   alias SceneServer.Voxel.MicroLayer
   alias SceneServer.Voxel.NormalBlockData
@@ -283,6 +286,42 @@ defmodule FixtureGen do
       tag_set_ref: 5,
       owner_actor_id: 12_345
     })
+  end
+
+  # ---- field region fixtures (0x73 / 0x74) -----------------------------------
+
+  @doc """
+  field_region_snapshot: a temperature-only FieldRegion (0x73) carrying three
+  active hot cells. Built as a direct `%FieldRegion{}` struct (the encoder only
+  reads chunk_coord / field_types / region_id / tick_count + the layers, not the
+  runtime kernels), with a real temperature `FieldLayer` (Rust-backed) so the
+  produced bytes are exactly what the live field pipeline emits. Validates the
+  bevy 0x73 decoder against genuine server bytes (cross-language parity), incl.
+  the little-endian f32 temperature value quirk.
+  """
+  def field_region_snapshot do
+    layer =
+      FieldLayer.new(baseline: 20, quantization: :float, threshold: 0.0001)
+      |> FieldLayer.put(0, 120.0)
+      |> FieldLayer.put(17, 300.0)
+      |> FieldLayer.put(273, 60.0)
+
+    %FieldRegion{
+      region_id: 42,
+      chunk_coord: {2, 0, -3},
+      aabb: {{0, 0, 0}, {15, 15, 15}},
+      field_types: [:temperature],
+      source_points: [],
+      tick_count: 7,
+      max_ticks: nil,
+      kernels: [],
+      layers: %{temperature: layer}
+    }
+  end
+
+  @doc "field_region_destroyed: a 0x74 destroy for the snapshot's region (reason=explicit)."
+  def field_region_destroyed_args do
+    {_region_id = 42, _chunk_coord = {2, 0, -3}, _logical_scene_id = 1, _reason = :explicit}
   end
 
   # ---- delta fixtures --------------------------------------------------------
@@ -760,5 +799,46 @@ Enum.each(catalog_patch_fixtures, fn {name, patch, description} ->
     description: description
   })
 end)
+
+IO.puts("Writing field_region fixtures (0x73 / 0x74):")
+
+# FieldCodec.encode_* include the opcode byte (unlike Codec.encode_*_payload);
+# strip it so these goldens follow the same no-opcode-prefix convention as every
+# other fixture (the client test prepends the opcode via server_frame).
+strip_opcode = fn <<_op::unsigned-big-integer-size(8), payload::binary>> -> payload end
+
+field_snapshot_region = FixtureGen.field_region_snapshot()
+field_snapshot_logical_scene_id = 1
+
+field_snapshot_bytes =
+  field_snapshot_region
+  |> FieldCodec.encode_snapshot_payload(field_snapshot_logical_scene_id)
+  |> strip_opcode.()
+
+write_fixture.("field_region_snapshot", field_snapshot_bytes, %{
+  name: "field_region_snapshot",
+  kind: "field_region_snapshot",
+  description:
+    "0x73 FieldRegionSnapshot: temperature-only region (3 hot cells: idx 0=120C, 17=300C, 273=60C), little-endian f32 values. Cross-language (bevy) decoder parity."
+})
+
+{destroyed_region_id, destroyed_chunk_coord, destroyed_logical_scene_id, destroyed_reason} =
+  FixtureGen.field_region_destroyed_args()
+
+field_destroyed_bytes =
+  FieldCodec.encode_destroyed_payload(
+    destroyed_region_id,
+    destroyed_chunk_coord,
+    destroyed_logical_scene_id,
+    destroyed_reason
+  )
+  |> strip_opcode.()
+
+write_fixture.("field_region_destroyed", field_destroyed_bytes, %{
+  name: "field_region_destroyed",
+  kind: "field_region_destroyed",
+  description:
+    "0x74 FieldRegionDestroyed: destroy for region 42 in chunk {2,0,-3}, reason=explicit (0x02)."
+})
 
 IO.puts("\nfixtures dir: #{Path.expand(fixtures_dir)}")
