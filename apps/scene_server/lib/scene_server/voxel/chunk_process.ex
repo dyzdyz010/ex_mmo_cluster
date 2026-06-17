@@ -28,6 +28,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.SimulationTick
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.SurfaceElement
   alias SceneServer.Voxel.TagCatalog
   alias SceneServer.Voxel.TagPhysics
   alias SceneServer.Voxel.TagSet
@@ -117,6 +118,33 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @doc "Places a solid normal block and increments the chunk version."
   def put_solid_block(server, macro_index_or_coord, block, opts \\ []) do
     GenServer.call(server, {:put_solid_block, macro_index_or_coord, block, opts})
+  end
+
+  @doc """
+  形态轨:在某宏格面放置(或覆盖)一个表面元件并 bump chunk_version。
+
+  表面元件零 occupancy(不改宿主邻接/碰撞);`attrs` 须含 `:macro_index`(或 `:macro_coord`)、`:face`、
+  `:surface_type_id`,可选 `:attribute_set_ref`/`:tag_set_ref`/`:owner_actor_id`。
+  """
+  @spec put_surface_element(GenServer.server(), map() | keyword()) :: {:ok, Storage.t()}
+  def put_surface_element(server, attrs) when is_map(attrs) or is_list(attrs) do
+    GenServer.call(server, {:put_surface_element, Map.new(attrs)})
+  end
+
+  @doc """
+  形态轨:移除某宏格面的表面元件并 bump chunk_version(处理/清氧化/刮除路径)。无则不 bump。
+  """
+  @spec clear_surface_element(GenServer.server(), integer() | term(), atom()) ::
+          {:ok, Storage.t()}
+  def clear_surface_element(server, macro_index_or_coord, face) do
+    GenServer.call(server, {:clear_surface_element, macro_index_or_coord, face})
+  end
+
+  @doc "形态轨:读取某宏格面的表面元件(无则 nil),不改版本。"
+  @spec surface_element_at(GenServer.server(), integer() | term(), atom()) ::
+          SurfaceElement.t() | nil
+  def surface_element_at(server, macro_index_or_coord, face) do
+    GenServer.call(server, {:surface_element_at, macro_index_or_coord, face})
   end
 
   @doc """
@@ -859,6 +887,66 @@ defmodule SceneServer.Voxel.ChunkProcess do
     push_snapshot_fallbacks(next_state, :put_solid_block)
 
     {:reply, {:ok, storage}, next_state}
+  end
+
+  # 形态轨:放置/覆盖表面元件(零 occupancy)。bump 版本 + 重快照,让 face truth 下行。
+  def handle_call({:put_surface_element, attrs}, _from, state) do
+    element = SurfaceElement.normalize!(attrs)
+
+    storage =
+      state.storage
+      |> Storage.put_surface_element(element)
+      |> bump_chunk_version()
+
+    CliObserve.emit("voxel_surface_element_put", fn ->
+      %{
+        logical_scene_id: storage.logical_scene_id,
+        chunk_coord: storage.chunk_coord,
+        chunk_version: storage.chunk_version,
+        macro_index: element.macro_index,
+        face: element.face,
+        surface_type_id: element.surface_type_id
+      }
+    end)
+
+    next_state = %{state | storage: storage}
+    push_snapshot_fallbacks(next_state, :put_surface_element)
+
+    {:reply, {:ok, storage}, next_state}
+  end
+
+  # 形态轨:移除表面元件(处理/清氧化)。仅当确有移除才 bump + 重快照。
+  def handle_call({:clear_surface_element, macro_index_or_coord, face}, _from, state) do
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    present? = Storage.surface_element_at(state.storage, macro_index, face) != nil
+
+    if present? do
+      storage =
+        state.storage
+        |> Storage.clear_surface_element(macro_index, face)
+        |> bump_chunk_version()
+
+      CliObserve.emit("voxel_surface_element_cleared", fn ->
+        %{
+          logical_scene_id: storage.logical_scene_id,
+          chunk_coord: storage.chunk_coord,
+          chunk_version: storage.chunk_version,
+          macro_index: macro_index,
+          face: face
+        }
+      end)
+
+      next_state = %{state | storage: storage}
+      push_snapshot_fallbacks(next_state, :clear_surface_element)
+
+      {:reply, {:ok, storage}, next_state}
+    else
+      {:reply, {:ok, state.storage}, state}
+    end
+  end
+
+  def handle_call({:surface_element_at, macro_index_or_coord, face}, _from, state) do
+    {:reply, Storage.surface_element_at(state.storage, macro_index_or_coord, face), state}
   end
 
   def handle_call({:write_temperature_attribute, attrs}, _from, state) do
