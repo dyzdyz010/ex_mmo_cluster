@@ -173,11 +173,16 @@ fn stone(material_id: u16) -> CellState {
 
 /// A 16³ chunk with `solid_cells` (local macro coords) set to stone (id 2).
 fn wall_chunk(solid_cells: &[(i32, i32, i32)]) -> AuthorityChunk {
+    material_chunk(2, solid_cells)
+}
+
+/// A 16³ chunk with `solid_cells` set to a solid block of `material_id`.
+fn material_chunk(material_id: u16, solid_cells: &[(i32, i32, i32)]) -> AuthorityChunk {
     let size = 16usize;
     let mut cells = vec![CellState::Empty; size * size * size];
     for &(x, y, z) in solid_cells {
         let idx = (x + y * size as i32 + z * size as i32 * size as i32) as usize;
-        cells[idx] = stone(2);
+        cells[idx] = stone(material_id);
     }
     AuthorityChunk {
         chunk_version: 1,
@@ -508,6 +513,27 @@ fn solid_chunk_rasterizes_to_neutral_gray() {
     assert!(
         center.r > 0.08,
         "lit stone should be non-black; got {center:?}"
+    );
+}
+
+/// An UNKNOWN material id renders as the obvious magenta error color (R&B high,
+/// green near-zero) — verifies the `material_color` unknown-id fallback reaches
+/// the screen (so a real material-mapping bug shows loudly, not silently gray),
+/// and that the vertex-color path renders a NON-gray color. Robust under any
+/// lighting: the green channel of magenta [1,0,1] is 0 regardless of exposure.
+#[test]
+fn unknown_material_renders_magenta() {
+    let chunk = material_chunk(9999, &[(1, 1, 0)]); // 9999 → unmapped → magenta
+    let look = Vec3::new(150.0, 150.0, 50.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(150.0, 150.0, -500.0), look);
+        spawn_wall(world, &chunk);
+    });
+
+    let c = sample_patch(&data, W / 2, H / 2, 3);
+    assert!(
+        c.r > c.g + 0.25 && c.b > c.g + 0.25,
+        "unknown material should render magenta (red & blue >> green); got {c:?}"
     );
 }
 
