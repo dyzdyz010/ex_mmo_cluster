@@ -25,6 +25,7 @@ use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::window::{ExitCondition, WindowPlugin};
 use bevy::winit::WinitPlugin;
 
+use crate::login::AppState;
 use crate::voxel::authority::{AuthorityChunk, CellState};
 use crate::voxel::chunk_render::{build_decal_mesh, build_mesh, build_mesh_with_colors};
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
@@ -34,7 +35,9 @@ use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_TEMPERATURE,
     FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell, SurfaceElement,
+    VoxelServerMessage,
 };
+use crate::voxel::{HeatSmokePlugin, VoxelAuthority};
 
 /// Framebuffer size. Width divisible by 64 → RGBA8 row bytes (W*4) divisible by
 /// 256 → no GPU row padding to de-pad on readback.
@@ -408,6 +411,66 @@ fn idx(x: u16, y: u16, z: u16) -> u16 {
     x + y * 16 + z * 256
 }
 
+/// Renders a scene driven by the REAL `HeatSmokePlugin`: enqueues an electric
+/// field snapshot into the authority, drains it (surfacing the smoke event), and
+/// lets the adapter's spawn + render systems run — proving the heat-smoke
+/// particle layer actually rasterizes on screen (emergence visible), end to end.
+fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<WinitPlugin>(),
+    )
+    .add_plugins(HeatSmokePlugin)
+    .insert_state(AppState::Game)
+    .init_resource::<VoxelAuthority>()
+    .init_resource::<Captured>();
+    // The adapter systems live in ClientSet::Logic/Render; configure that ordering
+    // (as the real app does) so spawn (Logic) precedes render-sync (Render) and the
+    // commanded entities exist before the render extraction.
+    crate::app::schedule::configure_client_sets(&mut app);
+
+    let image = {
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        images.add(img)
+    };
+
+    spawn_camera(app.world_mut(), image.clone(), eye, look);
+    app.world_mut()
+        .spawn(Readback::texture(image.clone()))
+        .observe(
+            |event: On<ReadbackComplete>, mut captured: ResMut<Captured>| {
+                captured.0 = Some(event.data.clone());
+            },
+        );
+
+    // Drive the authority the way the net→ingest path does, surfacing the smoke
+    // event before the adapter's spawn system runs.
+    {
+        let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(field.clone()));
+        authority.drain_inbox();
+    }
+
+    app.finish();
+    app.cleanup();
+    for _ in 0..20 {
+        app.update();
+    }
+    app.world()
+        .resource::<Captured>()
+        .0
+        .clone()
+        .expect("gpu readback never completed")
+}
+
 // ---- tests ------------------------------------------------------------------
 
 /// B (sanity): a solid stone chunk rasterizes to neutral-gray, non-clear pixels.
@@ -647,5 +710,62 @@ fn torch_surface_decal_renders_warm() {
     assert!(
         c.r > c.b + 0.12 && c.g > c.b + 0.10,
         "torch decal should be warm (red & green above blue); got {c:?}"
+    );
+}
+
+/// End-to-end: a powered electric field snapshot, run through the REAL
+/// `HeatSmokePlugin`, makes heat-smoke particles RASTERIZE on screen — proving
+/// the emergence smoke layer is actually visible (not just spawned in the sim).
+#[test]
+fn heat_smoke_particles_rasterize_on_screen() {
+    // High current at local (1,1,1) → ~96 smoke particles near world origin
+    // (150, 192, 150) (y=0.92*100). Aim the camera there; smoke is gray over the
+    // dark-green clear.
+    let field = electric_field(
+        1,
+        [0, 0, 0],
+        FIELD_MASK_ELECTRIC_CURRENT,
+        &[(idx(1, 1, 1), 1000.0)],
+    );
+    let smoke_origin = Vec3::new(150.0, 192.0, 150.0);
+    let data = render_with_heat_smoke(&field, Vec3::new(150.0, 192.0, -500.0), smoke_origin);
+
+    // Scan the whole frame for smoke pixels (those differing from the clear
+    // color). Smoke rises + jitters, so it lands slightly off the exact aim
+    // point — assert on the COUNT + the cluster centroid, not a fixed pixel.
+    let clear = clear_color().to_srgba();
+    let mut non_clear = 0u32;
+    let (mut sx, mut sy) = (0u64, 0u64);
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let r = data[i] as f32 / 255.0;
+            let g = data[i + 1] as f32 / 255.0;
+            let b = data[i + 2] as f32 / 255.0;
+            let d = (r - clear.red).abs() + (g - clear.green).abs() + (b - clear.blue).abs();
+            if d > 0.06 {
+                non_clear += 1;
+                sx += x as u64;
+                sy += y as u64;
+            }
+        }
+    }
+    // The ~50 smoke cubes must rasterize a substantial cluster (emergence visible).
+    assert!(
+        non_clear > 100,
+        "heat-smoke particles should rasterize a visible cluster; got {non_clear} non-clear px"
+    );
+
+    // At the smoke cluster centroid, the translucent gray smoke lifts the
+    // near-zero red channel of the dark-green clear — confirming it's the gray
+    // smoke (not stray geometry).
+    let (cx, cy) = (
+        (sx / non_clear as u64) as u32,
+        (sy / non_clear as u64) as u32,
+    );
+    let c = sample_patch(&data, cx, cy, 4);
+    assert!(
+        c.r > clear.red + 0.06,
+        "gray smoke should lift the red channel above the clear's; got {c:?}"
     );
 }
