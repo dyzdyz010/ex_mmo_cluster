@@ -3,6 +3,12 @@ name = "bevy_client"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Layer-3 headless GPU pixel-verification tests (tests/layer3_headless_pixel.rs).
+# Off by default so normal `cargo test` needs no GPU; CI / local-GPU runs enable
+# it with `cargo test --features layer3`.
+layer3 = []
+
 [dependencies]
 bevy = { version = "0.18.1", default-features = false, features = ["3d"] }
 bevy_egui = "0.39"

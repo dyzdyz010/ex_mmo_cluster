@@ -47,12 +47,27 @@ use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
 /// on every overlay material for this reason ("visible through terrain"); this is
 /// the 1:1 Bevy port. (The pixel result is Layer-3-verifiable; the code intent —
 /// `depth_compare = Always` — is explicit and matches the reference.)
-type FieldOverlayMaterial = ExtendedMaterial<StandardMaterial, FieldDepthDisable>;
+pub(crate) type FieldOverlayMaterial = ExtendedMaterial<StandardMaterial, FieldDepthDisable>;
 
 /// Zero-binding material extension that disables depth test/write in the overlay
 /// pipeline (the rest of the shading is the base `StandardMaterial`).
 #[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
-struct FieldDepthDisable {}
+pub(crate) struct FieldDepthDisable {}
+
+/// Builds the canonical field overlay material (unlit + alpha-blend + depth
+/// disable). Shared by `setup_field_material` and the Layer-3 pixel test so both
+/// exercise the exact same depth-disable pipeline.
+pub(crate) fn field_overlay_material() -> FieldOverlayMaterial {
+    FieldOverlayMaterial {
+        base: StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        },
+        extension: FieldDepthDisable::default(),
+    }
+}
 
 impl MaterialExtension for FieldDepthDisable {
     fn specialize(
@@ -107,15 +122,7 @@ fn setup_field_material(
     // electric layer opacity) reads as a translucent overlay — mirroring the web
     // overlay's see-through debug cells. The depth-disable extension makes it
     // render through solid terrain.
-    let handle = materials.add(FieldOverlayMaterial {
-        base: StandardMaterial {
-            base_color: Color::WHITE,
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        },
-        extension: FieldDepthDisable::default(),
-    });
+    let handle = materials.add(field_overlay_material());
     commands.insert_resource(VoxelFieldMaterial(handle));
 }
 
