@@ -83,7 +83,9 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   def tick(%FieldRegion{} = region, %KernelContext{storage: storage}, opts) do
     opts = opts_map(opts)
     rules = Map.get(opts, :rules, Rules.all())
-    cells = cells_in_region(region, storage)
+    # 多反应物:给每个 cell 填相邻格材料 id(复用已有 neighbors_in_region + by_index),Engine 据此
+    # 求值 require/forbid_neighbor_materials 门控。邻居仅含 region 内 solid 格(同热扩散约束)。
+    cells = region |> cells_in_region(storage) |> with_neighbor_materials(region)
 
     reaction_effects = Engine.evaluate(cells, rules)
 
@@ -233,6 +235,29 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   end
 
   defp cells_in_region(_region, _storage), do: []
+
+  # 多反应物门控数据:对每个 cell 收集 region 内相邻 solid 格的材料 id(去重),写入 :neighbor_materials。
+  # 复用热扩散同款 neighbors_in_region(六向、AABB 内);非 region 内 / 空格邻居不计(同热扩散约束)。
+  defp with_neighbor_materials([], _region), do: []
+
+  defp with_neighbor_materials(cells, region) do
+    by_index = Map.new(cells, &{&1.macro_index, &1})
+
+    Enum.map(cells, fn cell ->
+      neighbor_ids =
+        cell.macro_index
+        |> neighbors_in_region(region)
+        |> Enum.flat_map(fn n ->
+          case Map.get(by_index, n) do
+            %{material_id: id} -> [id]
+            _ -> []
+          end
+        end)
+        |> Enum.uniq()
+
+      Map.put(cell, :neighbor_materials, neighbor_ids)
+    end)
+  end
 
   defp cell_state(storage, coord) do
     macro_index = Types.macro_index!(coord)
