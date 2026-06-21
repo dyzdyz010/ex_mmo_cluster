@@ -28,6 +28,7 @@ pub mod field_view;
 pub mod heat_smoke;
 pub mod heat_smoke_render;
 pub mod lightning;
+pub mod lightning_render;
 // Layer-3 GPU pixel tests: only meaningful in test mode (all items are used by
 // the #[test] fns), so gate on test too — avoids dead-code noise in plain builds.
 #[cfg(all(feature = "layer3", test))]
@@ -44,6 +45,7 @@ pub use chunk_render::VoxelChunkRenderPlugin;
 pub use debris_render::DebrisEffectPlugin;
 pub use field_render::VoxelFieldRenderPlugin;
 pub use heat_smoke_render::HeatSmokePlugin;
+pub use lightning_render::LightningPlugin;
 pub use plugin::VoxelPlugin;
 
 pub use cli::{

@@ -18,7 +18,8 @@ use crate::net::{NetworkBridge, NetworkCommand};
 use crate::voxel::authority::{ChunkCoord, IngestOutcome, VoxelAuthorityStore};
 use crate::voxel::field_view::VoxelFieldStore;
 use crate::voxel::wire::{
-    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, VoxelServerMessage,
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
+    VoxelServerMessage,
 };
 
 /// Logical scene the client subscribes voxels in (mirrors net::plugin; single
@@ -60,6 +61,21 @@ pub struct ElectricSnapshotEvent {
     pub electric_current: Vec<f32>,
 }
 
+/// A surfaced DISCHARGE field snapshot (0x73 carrying an ionization layer — the
+/// server's `ElectricDischargeKernel` breakdown). Distinct from
+/// `ElectricSnapshotEvent` (which fires for any powered circuit): ionization is
+/// the breakdown signature, so this fires only on an actual arc. Drained by the
+/// lightning adapter, which infers the bolt's endpoints from the channel.
+/// Surfaced on its own channel so it never contends with the heat-smoke drain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DischargeEvent {
+    pub region_id: u64,
+    pub chunk_coord: ChunkCoord,
+    pub macro_indices: Vec<u16>,
+    pub electric_potential: Vec<f32>,
+    pub ionization: Vec<u8>,
+}
+
 /// Bevy resource wrapping the pure authority stores plus an inbox the net layer
 /// pushes decoded voxel messages into.
 ///
@@ -82,6 +98,7 @@ pub struct VoxelAuthority {
     resync_requests: Vec<ChunkCoord>,
     object_state_events: Vec<ObjectStateEvent>,
     electric_snapshot_events: Vec<ElectricSnapshotEvent>,
+    discharge_events: Vec<DischargeEvent>,
     destroyed_field_regions: Vec<u64>,
 }
 
@@ -120,6 +137,19 @@ impl VoxelAuthority {
                             macro_indices: snapshot.macro_indices.clone(),
                             electric_potential: snapshot.electric_potential.clone(),
                             electric_current: snapshot.electric_current.clone(),
+                        });
+                    }
+                    // Breakdown signature: an ionization layer means the discharge
+                    // kernel arced — surface a discharge event on its own channel so
+                    // the lightning adapter draws a bolt (without contending with
+                    // the heat-smoke drain above).
+                    if snapshot.field_mask & FIELD_MASK_IONIZATION != 0 {
+                        self.discharge_events.push(DischargeEvent {
+                            region_id: snapshot.region_id,
+                            chunk_coord: snapshot.chunk_coord,
+                            macro_indices: snapshot.macro_indices.clone(),
+                            electric_potential: snapshot.electric_potential.clone(),
+                            ionization: snapshot.ionization.clone(),
                         });
                     }
                     self.field_store.apply_snapshot(snapshot.clone());
@@ -189,6 +219,12 @@ impl VoxelAuthority {
     /// heat-smoke adapter emits a burst per event.
     pub fn take_electric_snapshot_events(&mut self) -> Vec<ElectricSnapshotEvent> {
         std::mem::take(&mut self.electric_snapshot_events)
+    }
+
+    /// Drains discharge events surfaced since the last call — the lightning
+    /// adapter infers + strikes a bolt per event.
+    pub fn take_discharge_events(&mut self) -> Vec<DischargeEvent> {
+        std::mem::take(&mut self.discharge_events)
     }
 
     /// Drains the region ids destroyed (0x74) since the last call — the
@@ -373,5 +409,49 @@ mod tests {
         assert_eq!(events[0].electric_current, vec![5.0, 1.0]);
         // Drained.
         assert!(authority.take_electric_snapshot_events().is_empty());
+    }
+
+    #[test]
+    fn ionization_snapshot_surfaces_discharge_event_others_do_not() {
+        // Lightning edge-trigger: only a 0x73 carrying an ionization layer enqueues
+        // a DischargeEvent; a current-only electric snapshot does NOT.
+        let mut authority = VoxelAuthority::default();
+        let discharge = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [1, 0, 2],
+            region_id: 88,
+            tick_count: 4,
+            field_mask: FIELD_MASK_ELECTRIC_POTENTIAL | FIELD_MASK_IONIZATION,
+            macro_indices: vec![0, 2],
+            temperature: vec![],
+            electric_potential: vec![200.0, -50.0],
+            electric_current: vec![],
+            ionization: vec![200, 180],
+        };
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge));
+        // A current-only electric snapshot must NOT surface a discharge event.
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(
+            FieldRegionSnapshot {
+                logical_scene_id: 1,
+                chunk_coord: [0, 0, 0],
+                region_id: 5,
+                tick_count: 1,
+                field_mask: FIELD_MASK_ELECTRIC_CURRENT,
+                macro_indices: vec![0],
+                temperature: vec![],
+                electric_potential: vec![],
+                electric_current: vec![3.0],
+                ionization: vec![],
+            },
+        ));
+        authority.drain_inbox();
+
+        let events = authority.take_discharge_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].region_id, 88);
+        assert_eq!(events[0].ionization, vec![200, 180]);
+        assert_eq!(events[0].electric_potential, vec![200.0, -50.0]);
+        // Drained.
+        assert!(authority.take_discharge_events().is_empty());
     }
 }
