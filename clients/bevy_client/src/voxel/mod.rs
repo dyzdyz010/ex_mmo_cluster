@@ -27,6 +27,7 @@ pub mod field_render;
 pub mod field_view;
 pub mod heat_smoke;
 pub mod heat_smoke_render;
+pub mod lightning;
 // Layer-3 GPU pixel tests: only meaningful in test mode (all items are used by
 // the #[test] fns), so gate on test too — avoids dead-code noise in plain builds.
 #[cfg(all(feature = "layer3", test))]
