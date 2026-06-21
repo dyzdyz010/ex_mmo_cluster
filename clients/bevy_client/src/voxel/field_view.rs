@@ -125,6 +125,11 @@ impl FieldOverlayKind {
 pub struct VoxelFieldStore {
     regions: HashMap<u64, FieldRegionSnapshot>,
     dirty: HashSet<u64>,
+    // Parallel dirty channel for the incandescence (emergent-optics) render layer.
+    // The overlay render `take_dirty`-drains `dirty`, so a second consumer can't
+    // share it (mem::take contention — same lesson as discharge/heat_smoke); the
+    // incandescence layer drains this instead. Marked alongside `dirty`.
+    incandescence_dirty: HashSet<u64>,
 }
 
 impl VoxelFieldStore {
@@ -132,17 +137,20 @@ impl VoxelFieldStore {
         Self::default()
     }
 
-    /// Stores (replaces) the field region's latest snapshot; marks it dirty.
+    /// Stores (replaces) the field region's latest snapshot; marks it dirty on
+    /// both the overlay and incandescence channels.
     pub fn apply_snapshot(&mut self, snapshot: FieldRegionSnapshot) {
         let region_id = snapshot.region_id;
         self.regions.insert(region_id, snapshot);
         self.dirty.insert(region_id);
+        self.incandescence_dirty.insert(region_id);
     }
 
-    /// Drops a destroyed field region (marks dirty so the overlay despawns).
-    /// Returns whether a region was removed.
+    /// Drops a destroyed field region (marks dirty on both channels so the overlay
+    /// AND the incandescence glow despawn). Returns whether a region was removed.
     pub fn apply_destroyed(&mut self, destroyed: &FieldRegionDestroyed) -> bool {
         self.dirty.insert(destroyed.region_id);
+        self.incandescence_dirty.insert(destroyed.region_id);
         self.regions.remove(&destroyed.region_id).is_some()
     }
 
@@ -158,6 +166,15 @@ impl VoxelFieldStore {
     /// exactly these (rebuild overlay if still present, despawn if destroyed).
     pub fn take_dirty(&mut self) -> Vec<u64> {
         let mut dirty: Vec<u64> = self.dirty.drain().collect();
+        dirty.sort_unstable();
+        dirty
+    }
+
+    /// Drains regions touched since the last call on the incandescence channel —
+    /// the emergent-optics glow layer rebuilds exactly these. Disjoint from
+    /// `take_dirty` so the two render layers never contend.
+    pub fn take_incandescence_dirty(&mut self) -> Vec<u64> {
+        let mut dirty: Vec<u64> = self.incandescence_dirty.drain().collect();
         dirty.sort_unstable();
         dirty
     }
@@ -385,7 +402,9 @@ pub fn electric_current_overlay_mesh(
 
 /// Shared overlay core: a centered marker cube per macro cell whose value passes
 /// `material_for` (which returns the baked marker material id, or `None` to skip).
-fn overlay_from_values(
+/// `pub(crate)` so the incandescence layer reuses the exact same per-cell marker
+/// geometry with its own blackbody marker fn.
+pub(crate) fn overlay_from_values(
     macro_indices: &[u16],
     values: &[f32],
     voxel_size: f32,

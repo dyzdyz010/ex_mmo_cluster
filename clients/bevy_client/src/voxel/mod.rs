@@ -27,6 +27,7 @@ pub mod field_render;
 pub mod field_view;
 pub mod heat_smoke;
 pub mod heat_smoke_render;
+pub mod incandescence;
 pub mod lightning;
 pub mod lightning_render;
 // Layer-3 GPU pixel tests: only meaningful in test mode (all items are used by
