@@ -44,7 +44,7 @@ use crate::voxel::wire::{
     FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell,
     SurfaceElement, VoxelServerMessage,
 };
-use crate::voxel::{HeatSmokePlugin, LightningPlugin, VoxelAuthority};
+use crate::voxel::{HeatSmokePlugin, IncandescencePlugin, LightningPlugin, VoxelAuthority};
 
 /// Framebuffer size. Width divisible by 64 → RGBA8 row bytes (W*4) divisible by
 /// 256 → no GPU row padding to de-pad on readback.
@@ -587,6 +587,96 @@ fn render_with_lightning(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> 
         .expect("gpu readback never completed (no adapter? render failed?)")
 }
 
+/// Renders a scene driven by the REAL `IncandescencePlugin`: ingests a temperature
+/// field snapshot, drains it (marking the incandescence channel dirty), and lets
+/// the glow adapter build the additive blackbody mesh — proving hot cells emit a
+/// temperature-derived glow on screen (emergent optics), end to end.
+fn render_with_incandescence(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<WinitPlugin>(),
+    )
+    // The glow reuses the FieldOverlayMaterial type; register its MaterialPlugin
+    // (IncandescencePlugin doesn't, to avoid double-registration in the real app).
+    .add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
+    .add_plugins(IncandescencePlugin)
+    .insert_state(AppState::Game)
+    .init_resource::<VoxelAuthority>()
+    .init_resource::<Captured>();
+    crate::app::schedule::configure_client_sets(&mut app);
+
+    let image = {
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        images.add(img)
+    };
+
+    spawn_camera(app.world_mut(), image.clone(), eye, look);
+    app.world_mut()
+        .spawn(Readback::texture(image.clone()))
+        .observe(
+            |event: On<ReadbackComplete>, mut captured: ResMut<Captured>| {
+                captured.0 = Some(event.data.clone());
+            },
+        );
+
+    // Surface the temperature snapshot (marks incandescence dirty) before the
+    // adapter's render system runs; the glow entity then persists across frames.
+    {
+        let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(field.clone()));
+        authority.drain_inbox();
+    }
+
+    app.finish();
+    app.cleanup();
+    pump_until_rendered(&mut app)
+}
+
+/// Scans the whole frame for glow pixels (differing from the dark-green clear) and
+/// returns their median color at the cluster centroid (or the clear color if none).
+fn glow_centroid(data: &[u8]) -> Px {
+    let clear = clear_color().to_srgba();
+    let mut non_clear = 0u32;
+    let (mut sx, mut sy) = (0u64, 0u64);
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let r = data[i] as f32 / 255.0;
+            let g = data[i + 1] as f32 / 255.0;
+            let b = data[i + 2] as f32 / 255.0;
+            let d = (r - clear.red).abs() + (g - clear.green).abs() + (b - clear.blue).abs();
+            if d > 0.06 {
+                non_clear += 1;
+                sx += x as u64;
+                sy += y as u64;
+            }
+        }
+    }
+    if non_clear == 0 {
+        return Px {
+            r: clear.red,
+            g: clear.green,
+            b: clear.blue,
+            a: 1.0,
+        };
+    }
+    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    sample_patch(data, cx, cy, 4)
+}
+
+/// A temperature field snapshot for the incandescence tests.
+fn incandescence_temp_field(region_id: u64, chunk_coord: [i32; 3], cells: &[(u16, f32)]) -> FieldRegionSnapshot {
+    temperature_field(region_id, chunk_coord, cells)
+}
+
 /// A discharge field snapshot (potential gradient + ionized channel) that drives
 /// `infer_strike` to arc a bolt between two macro cells.
 fn discharge_field(
@@ -1004,5 +1094,47 @@ fn lightning_bolt_rasterizes_on_screen() {
     assert!(
         c.b > clear.blue + 0.20,
         "bolt blue should lift well above the clear's blue; got {c:?}"
+    );
+}
+
+/// End-to-end (emergent optics): a HOT temperature field, run through the REAL
+/// `IncandescencePlugin`, rasterizes an additive blackbody glow whose color is
+/// DERIVED from temperature — a warm cell glows red-orange, and a HOTTER cell
+/// glows whiter/brighter (green + blue channels climb). Proves the glow emerges
+/// from the temperature field, not from any per-material authoring.
+#[test]
+fn incandescence_glow_color_emerges_from_temperature() {
+    // One glowing cell at local (1,1,1): world center ~ (150,150,150). Aim there.
+    let eye = Vec3::new(150.0, 150.0, -500.0);
+    let look = Vec3::new(150.0, 150.0, 150.0);
+
+    // Warm: 900°C → red-orange glow (red dominates, blue near the clear baseline).
+    let warm = render_with_incandescence(
+        &incandescence_temp_field(1, [0, 0, 0], &[(idx(1, 1, 1), 900.0)]),
+        eye,
+        look,
+    );
+    let warm_c = glow_centroid(&warm);
+    let clear = clear_color().to_srgba();
+    assert!(
+        warm_c.r > 0.5 && warm_c.r > warm_c.b + 0.3,
+        "900C cell should glow warm red-orange (red dominant, low blue); got {warm_c:?}"
+    );
+    assert!(
+        warm_c.r > clear.red + 0.2,
+        "glow should additively lift red above the clear; got {warm_c:?}"
+    );
+
+    // Hotter: 1800°C → shifts toward white — green AND blue rise vs the 900°C glow.
+    let hot = render_with_incandescence(
+        &incandescence_temp_field(2, [0, 0, 0], &[(idx(1, 1, 1), 1800.0)]),
+        eye,
+        look,
+    );
+    let hot_c = glow_centroid(&hot);
+    assert!(
+        hot_c.g > warm_c.g + 0.10 && hot_c.b > warm_c.b + 0.10,
+        "1800C glow must be whiter than 900C (green & blue climb with temperature); \
+         warm={warm_c:?} hot={hot_c:?}"
     );
 }
