@@ -103,6 +103,31 @@ defmodule SceneServer.Voxel.Reaction.Rules do
   # S3 Part B(正交架构):门/机关从手写两条规则收敛为 `Actuators` 的一条声明式规格,经
   # `Actuators.to_rules/0` 展开成 activate/deactivate tag_reaction 规则并入 `all/0`。
 
+  # 化学扩展(2026-06-21)多反应物 A + 相邻 B → C(tag_reaction + neighbor 门控)。经典演示:
+  # 熔岩遇水淬成黑曜石玻璃、水侧被熔岩闪蒸成蒸汽。一个 tick 内对同一快照各自反应,下一 tick 不再相邻
+  # (产物 obsidian/steam)。纯邻接门控(lava 定义上够热,不叠温度条件)。产物 obsidian 依赖**双反应物**
+  # (lava 单独冷却只回凝 stone),证 A+B→C 组合。
+  @lava_quench_to_obsidian Rule.new!(
+                             id: :lava_quench_to_obsidian,
+                             kind: :tag_reaction,
+                             material: :lava,
+                             require_neighbor_materials: [:water],
+                             effects: [{:transform, :obsidian}]
+                           )
+
+  @water_flash_to_steam Rule.new!(
+                          id: :water_flash_to_steam,
+                          kind: :tag_reaction,
+                          material: :water,
+                          require_neighbor_materials: [:lava],
+                          effects: [{:transform, :steam}]
+                        )
+
+  @multi_reactant [
+    @lava_quench_to_obsidian,
+    @water_flash_to_steam
+  ]
+
   # 基础物理反应(相变);化学反应(燃烧/氧化)由 ChemicalReactions 展开、设备执行器由 Actuators 展开后并入。
   @base [
     @ice_melts,
@@ -115,7 +140,7 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @lava_solidifies
   ]
 
-  @all @base ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
+  @all @base ++ @multi_reactant ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
 
   @doc "全部反应规则(基础相变 + 化学展开 + 执行器展开)。"
   @spec all() :: [Rule.t()]

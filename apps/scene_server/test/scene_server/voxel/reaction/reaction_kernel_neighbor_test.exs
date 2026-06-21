@@ -14,7 +14,7 @@ defmodule SceneServer.Voxel.Reaction.ReactionKernelNeighborTest do
 
   alias SceneServer.Voxel.Field.{FieldRegion, KernelContext}
   alias SceneServer.Voxel.Field.Kernels.ReactionKernel
-  alias SceneServer.Voxel.Reaction.Rule
+  alias SceneServer.Voxel.Reaction.{Rule, Rules}
 
   setup do
     for cat <- [AttributeCatalog, TagCatalog] do
@@ -95,6 +95,19 @@ defmodule SceneServer.Voxel.Reaction.ReactionKernelNeighborTest do
 
     refute Enum.any?(effects, fn
              {:set_tag, %{add: add}} -> :wet in add
+             _ -> false
+           end)
+  end
+
+  test "真实多反应物规则经 kernel:相邻熔岩的水(默认温度)闪蒸成 steam" do
+    # lava@(0,0,0) + water@(1,0,0)。水默认温度(0..100℃ 之间)不触发 water 相变,故 water cell 上
+    # 唯一 transform 是真实 :water_flash_to_steam(经 kernel 填 neighbor_materials + Rules.all())。
+    steam = MaterialCatalog.material_id(:steam)
+    water_macro = Types.macro_index!({1, 0, 0})
+    effects = tick(two_block_storage(:lava, :water), {{0, 0, 0}, {1, 0, 0}}, Rules.all())
+
+    assert Enum.any?(effects, fn
+             {:transform_material, %{macro_index: ^water_macro, to_material_id: to}} -> to == steam
              _ -> false
            end)
   end

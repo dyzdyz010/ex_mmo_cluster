@@ -515,6 +515,57 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "化学扩展:多反应物演示规则(lava+water→obsidian / water+lava→steam)" do
+    defp obsidian_id, do: MaterialCatalog.material_id(:obsidian)
+
+    defp rcell(material_name, neighbor_names, temp, macro_index) do
+      %{
+        macro_index: macro_index,
+        material_id: MaterialCatalog.material_id(material_name),
+        temperature_celsius: temp,
+        neighbor_materials: Enum.map(neighbor_names, &MaterialCatalog.material_id/1),
+        tags: []
+      }
+    end
+
+    defp find_transform_for(effects, macro_index) do
+      Enum.find_value(effects, fn
+        {:transform_material, %{macro_index: ^macro_index} = eff} -> eff
+        _ -> nil
+      end)
+    end
+
+    test "热熔岩相邻水 → 淬成 obsidian(双反应物产物,经 Rules.all())" do
+      # lava@1300℃(>freezing 1200,故不走 lava_solidifies,只走淬火)。
+      eff = find_transform_for(Engine.evaluate([rcell(:lava, [:water], 1300.0, 7)], Rules.all()), 7)
+      assert eff.to_material_id == obsidian_id()
+      assert eff.rule_id == :lava_quench_to_obsidian
+    end
+
+    test "水相邻熔岩 → 闪蒸成 steam" do
+      eff = find_transform_for(Engine.evaluate([rcell(:water, [:lava], 50.0, 3)], Rules.all()), 3)
+      assert eff.to_material_id == steam_id()
+      assert eff.rule_id == :water_flash_to_steam
+    end
+
+    test "熔岩相邻水 + 水相邻熔岩 同 tick 各自反应(lava→obsidian, water→steam)" do
+      cells = [rcell(:lava, [:water], 1300.0, 1), rcell(:water, [:lava], 50.0, 2)]
+      effects = Engine.evaluate(cells, Rules.all())
+
+      assert find_transform_for(effects, 1).to_material_id == obsidian_id()
+      assert find_transform_for(effects, 2).to_material_id == steam_id()
+    end
+
+    test "熔岩无相邻水(邻 stone)→ 不淬火(仅可能走温度相变)" do
+      # lava@1300℃ 无水:不淬火;1300>1200 也不回凝 → 无 transform。
+      assert [] = Engine.evaluate([rcell(:lava, [:stone], 1300.0, 0)], Rules.all())
+    end
+
+    test "孤立水(无相邻熔岩,常温)不闪蒸" do
+      assert [] = Engine.evaluate([rcell(:water, [:stone], 50.0, 0)], Rules.all())
+    end
+  end
+
   describe "多反应物:邻居材料门控(require/forbid_neighbor_materials)" do
     # 临时 A+B→C 规则(lava + 相邻 water → obsidian),只验 Engine 门控机制本身。
     defp quench_rule do
