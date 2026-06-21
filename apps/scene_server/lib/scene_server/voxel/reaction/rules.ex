@@ -50,6 +50,46 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                      priority: 0
                    )
 
+  # 化学扩展(2026-06-21)金属/岩石熔化族——与 ice↔water 同模板异材料,零 Engine 改动。
+  # 同样 ≥melting / <freezing 严格不等式迟滞(1538℃/1200℃ 处不来回翻)。热源(电加热铁、燃烧、
+  # 岩浆)经 ReactionKernel 守恒热扩散把邻格烤过阈即熔。
+  @iron_melts Rule.new!(
+                id: :iron_melts,
+                kind: :phase_transition,
+                from_material: :iron,
+                condition: {:temperature, :gte, {:material_threshold, "melting_point"}},
+                to_material: :molten_iron,
+                priority: 0
+              )
+
+  @molten_iron_solidifies Rule.new!(
+                            id: :molten_iron_solidifies,
+                            kind: :phase_transition,
+                            from_material: :molten_iron,
+                            condition:
+                              {:temperature, :lt, {:material_threshold, "freezing_point"}},
+                            to_material: :iron,
+                            priority: 0
+                          )
+
+  @stone_melts Rule.new!(
+                 id: :stone_melts,
+                 kind: :phase_transition,
+                 from_material: :stone,
+                 condition: {:temperature, :gte, {:material_threshold, "melting_point"}},
+                 to_material: :lava,
+                 priority: 0
+               )
+
+  @lava_solidifies Rule.new!(
+                     id: :lava_solidifies,
+                     kind: :phase_transition,
+                     from_material: :lava,
+                     condition: {:temperature, :lt, {:material_threshold, "freezing_point"}},
+                     to_material: :stone,
+                     priority: 0
+                   )
+
   # S4 正交架构:燃烧从此处手写的三条规则(ignite/burn/burn_out)收敛为 `ChemicalReactions` 的一条
   # 声明式 `%ChemicalReaction{}` 规格(与氧化 铁→锈 同模板异参数),经 `ChemicalReactions.to_rules/0`
   # 展开成等价的 start/sustain/complete tag_reaction 规则并入 `all/0`。「燃烧=通用化学的一个实例」在数据
@@ -68,7 +108,11 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @ice_melts,
     @water_freezes,
     @water_boils,
-    @steam_condenses
+    @steam_condenses,
+    @iron_melts,
+    @molten_iron_solidifies,
+    @stone_melts,
+    @lava_solidifies
   ]
 
   @all @base ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()

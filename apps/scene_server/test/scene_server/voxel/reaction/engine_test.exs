@@ -188,6 +188,66 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "化学扩展:金属/岩石熔化族(与冰熔同模板异材料)" do
+    defp iron_mid, do: MaterialCatalog.material_id(:iron)
+    defp molten_iron_id, do: MaterialCatalog.material_id(:molten_iron)
+    defp lava_id, do: MaterialCatalog.material_id(:lava)
+
+    # iron 同 tick 还会起锈(oxidation_temperature=0,与熔化正交并发),故按效果类型筛 transform,
+    # 不假设唯一效果——熔化与氧化两个独立涌现并存是正确行为。
+    defp find_transform(effects) do
+      Enum.find_value(effects, fn
+        {:transform_material, eff} -> eff
+        _ -> nil
+      end)
+    end
+
+    test "iron ≥ melting_point(1538℃)熔成 molten_iron" do
+      eff = find_transform(Engine.evaluate([cell(iron_mid(), 1538.0)], Rules.all()))
+      assert eff.from_material_id == iron_mid()
+      assert eff.to_material_id == molten_iron_id()
+      assert eff.rule_id == :iron_melts
+    end
+
+    test "iron 1537℃ 不熔(边界下方;起锈与熔化正交,故只断言无熔化 transform)" do
+      effects = Engine.evaluate([cell(iron_mid(), 1537.0)], Rules.all())
+      refute Enum.any?(effects, &match?({:transform_material, _}, &1))
+    end
+
+    test "molten_iron < freezing_point(1538℃)回凝为 iron" do
+      # molten_iron 氧化哨兵不锈 → 只此一条 transform。
+      eff = find_transform(Engine.evaluate([cell(molten_iron_id(), 1500.0)], Rules.all()))
+      assert eff.to_material_id == iron_mid()
+      assert eff.rule_id == :molten_iron_solidifies
+    end
+
+    test "1538℃ 无熔/凝振荡:iron 熔、molten_iron 不立即回凝(严格 < 迟滞)" do
+      cells = [cell(iron_mid(), 1538.0, 1), cell(molten_iron_id(), 1538.0, 2)]
+      effects = Engine.evaluate(cells, Rules.all())
+      transforms = Enum.filter(effects, &match?({:transform_material, _}, &1))
+      # 仅 iron→molten(macro 1);molten_iron 恰 1538℃ 不回凝(<freezing 严格)。
+      assert [{:transform_material, eff}] = transforms
+      assert eff.macro_index == 1
+      assert eff.to_material_id == molten_iron_id()
+    end
+
+    test "stone ≥ melting_point(1200℃)熔成 lava;lava 回凝石" do
+      # stone/lava 不锈,各自唯一 transform。
+      melt = find_transform(Engine.evaluate([cell(stone_id(), 1200.0)], Rules.all()))
+      assert melt.to_material_id == lava_id()
+      assert melt.rule_id == :stone_melts
+
+      solidify = find_transform(Engine.evaluate([cell(lava_id(), 1100.0)], Rules.all()))
+      assert solidify.to_material_id == stone_id()
+      assert solidify.rule_id == :lava_solidifies
+    end
+
+    test "molten_iron/lava 不再熔(melting 哨兵)且高温稳定" do
+      assert [] = Engine.evaluate([cell(molten_iron_id(), 3000.0)], Rules.all())
+      assert [] = Engine.evaluate([cell(lava_id(), 3000.0)], Rules.all())
+    end
+  end
+
   describe "R5a 燃烧(tag_reaction + 多效果物化)" do
     defp wood_id, do: MaterialCatalog.material_id(:wood)
     defp ash_id, do: MaterialCatalog.material_id(:ash)
@@ -458,7 +518,9 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)
-      assert [] = Rules.for_material(:stone)
+      # 化学扩展后 stone 有熔化相变(→lava)。
+      assert [%Rule{id: :stone_melts}] = Rules.for_material(:stone)
+      assert [] = Rules.for_material(:ash)
     end
 
     test "每条规则材料/效果引用均合法(数据完整性)" do
