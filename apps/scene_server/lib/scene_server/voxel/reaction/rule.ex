@@ -39,6 +39,12 @@ defmodule SceneServer.Voxel.Reaction.Rule do
     :material,
     require_tags: [],
     forbid_tags: [],
+    # 多反应物门控(化学扩展 2026-06-21):`:tag_reaction` 的邻居材料约束——`require_*` 列出的材料名
+    # 须**全部**在该 cell 的某个相邻格出现,`forbid_*` 须**全部不**出现。空 = 不约束邻居。邻居材料由
+    # caller(ReactionKernel)预算进 cell.neighbor_materials,Engine 仍逐 cell 纯求值。例:lava +
+    # 相邻 water → obsidian = material:lava + require_neighbor_materials:[:water] + transform obsidian。
+    require_neighbor_materials: [],
+    forbid_neighbor_materials: [],
     effects: [],
     priority: 0
   ]
@@ -57,6 +63,8 @@ defmodule SceneServer.Voxel.Reaction.Rule do
           material: atom() | nil,
           require_tags: [atom()],
           forbid_tags: [atom()],
+          require_neighbor_materials: [atom()],
+          forbid_neighbor_materials: [atom()],
           effects: [tuple()],
           priority: integer()
         }
@@ -93,6 +101,8 @@ defmodule SceneServer.Voxel.Reaction.Rule do
   defp validate!(%__MODULE__{kind: :tag_reaction} = rule) do
     valid_tag_list!(rule.require_tags, "require_tags")
     valid_tag_list!(rule.forbid_tags, "forbid_tags")
+    valid_material_list!(rule.require_neighbor_materials, "require_neighbor_materials")
+    valid_material_list!(rule.forbid_neighbor_materials, "forbid_neighbor_materials")
     validate_material_filter!(rule.material)
     validate_condition!(rule.condition, required: false)
 
@@ -110,6 +120,14 @@ defmodule SceneServer.Voxel.Reaction.Rule do
     unless is_atom(name) and not is_nil(MaterialCatalog.material_id(name)) do
       raise ArgumentError, "Rule: #{field} 非法材料名 #{inspect(name)}"
     end
+  end
+
+  defp valid_material_list!(materials, field) do
+    unless is_list(materials) do
+      raise ArgumentError, "Rule: #{field} 须是材料名 list,得 #{inspect(materials)}"
+    end
+
+    Enum.each(materials, &valid_material!(&1, field))
   end
 
   defp valid_tag_list!(tags, field) do

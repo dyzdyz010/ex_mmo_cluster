@@ -5,8 +5,9 @@ defmodule SceneServer.Voxel.Reaction.Engine do
   **纯函数,驱动无关**:输入"已提交 truth 的 cell 状态列表"+ 反应规则,输出反应效果列表(交由
   `SystemActor` 分流提交)。只读 `MaterialCatalog`(纯数据)解析阈值,不触进程/IO。
 
-  cell:`%{macro_index, material_id, temperature_celsius, burn_progress, tags}`(温度摄氏;
-  burn_progress 比率 0..1,缺省 0;tags atom list 缺省 [])。
+  cell:`%{macro_index, material_id, temperature_celsius, burn_progress, tags, neighbor_materials}`
+  (温度摄氏;burn_progress 比率 0..1,缺省 0;tags atom list 缺省 [];neighbor_materials = 相邻格
+  材料 id list,缺省 [],由 caller 预算,供多反应物 `require/forbid_neighbor_materials` 门控)。
 
   效果(物化后):
     * `{:transform_material, %{macro_index, from_material_id, to_material_id, rule_id}}`
@@ -26,7 +27,8 @@ defmodule SceneServer.Voxel.Reaction.Engine do
           required(:temperature_celsius) => number(),
           optional(:burn_progress) => number(),
           optional(:oxidation_progress) => number(),
-          optional(:tags) => [atom()]
+          optional(:tags) => [atom()],
+          optional(:neighbor_materials) => [integer()]
         }
   @type reaction_effect :: {atom(), map()}
 
@@ -71,6 +73,7 @@ defmodule SceneServer.Voxel.Reaction.Engine do
       |> Enum.filter(&(&1.kind == :tag_reaction))
       |> Enum.filter(&material_matches?(&1, cell))
       |> Enum.filter(&tags_match?(&1, cell))
+      |> Enum.filter(&neighbors_match?(&1, cell))
       |> Enum.filter(&condition_holds?(&1.condition, cell))
 
     templates = Enum.flat_map(matched, fn rule -> Enum.map(rule.effects, &{rule.id, &1}) end)
@@ -92,6 +95,25 @@ defmodule SceneServer.Voxel.Reaction.Engine do
 
   defp cell_tags(%{tags: tags}) when is_list(tags), do: tags
   defp cell_tags(_cell), do: []
+
+  # 多反应物门控:`require_neighbor_materials` 须全部出现在该 cell 的相邻格材料中,
+  # `forbid_neighbor_materials` 须全部不出现。两者皆空(绝大多数规则)→ 直接放行,不取邻居。
+  # 邻居材料 id 由 caller(ReactionKernel)预算进 cell.neighbor_materials;按名解析比对(同 material_matches?)。
+  defp neighbors_match?(%Rule{require_neighbor_materials: [], forbid_neighbor_materials: []}, _cell),
+    do: true
+
+  defp neighbors_match?(
+         %Rule{require_neighbor_materials: req, forbid_neighbor_materials: forbid},
+         cell
+       ) do
+    neighbor_ids = cell_neighbor_material_ids(cell)
+
+    Enum.all?(req, &(MaterialCatalog.material_id(&1) in neighbor_ids)) and
+      not Enum.any?(forbid, &(MaterialCatalog.material_id(&1) in neighbor_ids))
+  end
+
+  defp cell_neighbor_material_ids(%{neighbor_materials: ids}) when is_list(ids), do: ids
+  defp cell_neighbor_material_ids(_cell), do: []
 
   # 物化效果模板:tag 增删合并为一条 set_tag;其余逐条。
   defp materialize(templates, cell) do

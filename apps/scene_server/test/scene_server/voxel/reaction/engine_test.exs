@@ -515,6 +515,97 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "多反应物:邻居材料门控(require/forbid_neighbor_materials)" do
+    # 临时 A+B→C 规则(lava + 相邻 water → obsidian),只验 Engine 门控机制本身。
+    defp quench_rule do
+      Rule.new!(
+        id: :test_quench,
+        kind: :tag_reaction,
+        material: :lava,
+        require_neighbor_materials: [:water],
+        effects: [{:transform, :obsidian}]
+      )
+    end
+
+    defp ncell(material_name, neighbor_names, macro_index \\ 0) do
+      %{
+        macro_index: macro_index,
+        material_id: MaterialCatalog.material_id(material_name),
+        temperature_celsius: 1300.0,
+        neighbor_materials: Enum.map(neighbor_names, &MaterialCatalog.material_id/1),
+        tags: []
+      }
+    end
+
+    test "lava 有相邻 water → 触发(transform obsidian)" do
+      effects = Engine.evaluate([ncell(:lava, [:water])], [quench_rule()])
+
+      assert [{:transform_material, eff}] = effects
+      assert eff.to_material_id == MaterialCatalog.material_id(:obsidian)
+      assert eff.rule_id == :test_quench
+    end
+
+    test "lava 无相邻 water(邻为 stone)→ 不触发" do
+      assert [] = Engine.evaluate([ncell(:lava, [:stone])], [quench_rule()])
+    end
+
+    test "lava 无邻居字段 → 不触发(缺省 [],惰性安全)" do
+      cell = %{macro_index: 0, material_id: MaterialCatalog.material_id(:lava), temperature_celsius: 1300.0, tags: []}
+      assert [] = Engine.evaluate([cell], [quench_rule()])
+    end
+
+    test "material 过滤:water 有相邻 lava 也不触发 lava 规则(material:lava)" do
+      assert [] = Engine.evaluate([ncell(:water, [:lava])], [quench_rule()])
+    end
+
+    test "forbid_neighbor_materials:相邻有禁忌材料则不触发" do
+      rule =
+        Rule.new!(
+          id: :test_forbid,
+          kind: :tag_reaction,
+          material: :lava,
+          forbid_neighbor_materials: [:water],
+          effects: [{:add_tag, :flowing}]
+        )
+
+      # 无相邻 water → 触发;有相邻 water → 被禁。
+      assert [{:set_tag, _}] = Engine.evaluate([ncell(:lava, [:stone])], [rule])
+      assert [] = Engine.evaluate([ncell(:lava, [:water])], [rule])
+    end
+
+    test "空邻居门控规则(绝大多数)对带/不带 neighbor_materials 的 cell 均正常求值" do
+      # 现有规则全是空 neighbor 门控:不应因 cell 带 neighbor_materials 而改变行为。
+      iron = MaterialCatalog.material_id(:iron)
+      with_nb = %{macro_index: 0, material_id: iron, temperature_celsius: 20.0, neighbor_materials: [MaterialCatalog.material_id(:water)], tags: []}
+      # iron 常温起锈(oxidation_temperature=0),邻居字段不影响。
+      assert Enum.any?(Engine.evaluate([with_nb], Rules.all()), fn
+               {:set_tag, st} -> :rusting in st.add
+               _ -> false
+             end)
+    end
+
+    test "Rule.new! 校验 neighbor 材料名:合法接受、非法 raise" do
+      assert %Rule{require_neighbor_materials: [:water]} =
+               Rule.new!(
+                 id: :ok,
+                 kind: :tag_reaction,
+                 material: :lava,
+                 require_neighbor_materials: [:water],
+                 effects: [{:transform, :obsidian}]
+               )
+
+      assert_raise ArgumentError, ~r/require_neighbor_materials 非法材料名/, fn ->
+        Rule.new!(
+          id: :bad,
+          kind: :tag_reaction,
+          material: :lava,
+          require_neighbor_materials: [:unobtanium],
+          effects: [{:transform, :obsidian}]
+        )
+      end
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)
