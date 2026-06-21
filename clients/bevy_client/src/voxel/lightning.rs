@@ -20,6 +20,15 @@ const MAIN_SEGMENTS_PER_BOLT: usize = 18;
 const BRANCH_COUNT: usize = 2;
 const BRANCH_SEGMENTS: usize = 4;
 
+/// World units per macro cell + chunk size (shared with heat_smoke's mapping, so
+/// a bolt arcs through the same world space the smoke rises in).
+pub const MACRO_WORLD: f32 = 100.0;
+const CHUNK_SIZE_MACRO: i32 = 16;
+
+/// A cell counts as on the discharge channel once its ionization byte clears this
+/// (matches `field_view`'s `IONIZATION_THRESHOLD` of 8.0 — the plasma-glow floor).
+pub const IONIZATION_DISCHARGE_THRESHOLD: u8 = 8;
+
 /// Segments emitted per bolt: one main run + per-branch runs.
 pub const SEGMENTS_PER_BOLT: usize = MAIN_SEGMENTS_PER_BOLT + BRANCH_COUNT * BRANCH_SEGMENTS;
 
@@ -244,6 +253,128 @@ pub fn bolt_seed(source: [i32; 3], target: [i32; 3], salt: i32) -> i32 {
         ^ salt
 }
 
+/// A borrowed view of one discharge field snapshot (0x73 with an ionization
+/// layer) — the strike-inference input, kept pure / Bevy-free like
+/// heat_smoke's `ElectricField`. The bolt arcs across the ionized channel.
+pub struct DischargeField<'a> {
+    pub region_id: u64,
+    pub chunk_coord: [i32; 3],
+    pub macro_indices: &'a [u16],
+    /// Index-aligned with `macro_indices`; empty if the snapshot had no potential
+    /// layer (then the strike falls back to spatial extremes).
+    pub electric_potential: &'a [f32],
+    /// Index-aligned with `macro_indices`; cells `>= IONIZATION_DISCHARGE_THRESHOLD`
+    /// are on the breakdown channel.
+    pub ionization: &'a [u8],
+}
+
+/// World center of a macro cell `(x,y,z)` within `chunk` (matches heat_smoke's
+/// `build_particle` origin mapping, minus the per-axis vertical bias).
+fn macro_cell_world(chunk: [i32; 3], cell: [i32; 3]) -> [f32; 3] {
+    [
+        ((chunk[0] * CHUNK_SIZE_MACRO + cell[0]) as f32 + 0.5) * MACRO_WORLD,
+        ((chunk[1] * CHUNK_SIZE_MACRO + cell[1]) as f32 + 0.5) * MACRO_WORLD,
+        ((chunk[2] * CHUNK_SIZE_MACRO + cell[2]) as f32 + 0.5) * MACRO_WORLD,
+    ]
+}
+
+/// Infers a lightning strike from a discharge field: the bolt arcs from the
+/// highest-potential ionized cell to the lowest-potential ionized cell (the
+/// breakdown gradient). When potential is absent or flat across the channel, it
+/// falls back to the two spatially-farthest ionized cells. Returns the source +
+/// target world points and a stable jitter seed (so the same snapshot always
+/// draws the same bolt), or `None` when fewer than two cells are ionized — no
+/// channel to arc across.
+///
+/// `salt` distinguishes successive strikes on the same channel (pass a per-arrival
+/// counter or the region tick), folded into the seed.
+pub fn infer_strike(field: &DischargeField, salt: i32) -> Option<([f32; 3], [f32; 3], i32)> {
+    // Gather the ionized cells (channel) with their macro coords + potential.
+    let mut channel: Vec<([i32; 3], Option<f32>)> = Vec::new();
+    for (i, &idx) in field.macro_indices.iter().enumerate() {
+        let ion = field.ionization.get(i).copied().unwrap_or(0);
+        if ion < IONIZATION_DISCHARGE_THRESHOLD {
+            continue;
+        }
+        let cell = macro_index_to_cell(idx);
+        let potential = field
+            .electric_potential
+            .get(i)
+            .copied()
+            .filter(|v| v.is_finite());
+        channel.push((cell, potential));
+    }
+    if channel.len() < 2 {
+        return None;
+    }
+
+    // Prefer the potential gradient: source = max V, target = min V. Usable only
+    // if every channel cell carries a (finite) potential AND it isn't flat.
+    let all_have_potential = channel.iter().all(|(_, p)| p.is_some());
+    let (src_cell, dst_cell) = if all_have_potential {
+        let mut hi = channel[0];
+        let mut lo = channel[0];
+        for &entry in &channel {
+            if entry.1 > hi.1 {
+                hi = entry;
+            }
+            if entry.1 < lo.1 {
+                lo = entry;
+            }
+        }
+        if hi.1 == lo.1 {
+            farthest_pair(&channel)
+        } else {
+            (hi.0, lo.0)
+        }
+    } else {
+        farthest_pair(&channel)
+    };
+
+    let source = macro_cell_world(field.chunk_coord, src_cell);
+    let target = macro_cell_world(field.chunk_coord, dst_cell);
+    let src_macro = [
+        field.chunk_coord[0] * CHUNK_SIZE_MACRO + src_cell[0],
+        field.chunk_coord[1] * CHUNK_SIZE_MACRO + src_cell[1],
+        field.chunk_coord[2] * CHUNK_SIZE_MACRO + src_cell[2],
+    ];
+    let dst_macro = [
+        field.chunk_coord[0] * CHUNK_SIZE_MACRO + dst_cell[0],
+        field.chunk_coord[1] * CHUNK_SIZE_MACRO + dst_cell[1],
+        field.chunk_coord[2] * CHUNK_SIZE_MACRO + dst_cell[2],
+    ];
+    let seed = bolt_seed(src_macro, dst_macro, salt.wrapping_add(field.region_id as i32));
+    Some((source, target, seed))
+}
+
+/// The two channel cells farthest apart (spatial fallback when potential can't
+/// order the endpoints). `channel` is non-empty by the caller's `len() >= 2`.
+fn farthest_pair(channel: &[([i32; 3], Option<f32>)]) -> ([i32; 3], [i32; 3]) {
+    let mut best = (channel[0].0, channel[1].0);
+    let mut best_d2 = -1i64;
+    for i in 0..channel.len() {
+        for j in (i + 1)..channel.len() {
+            let a = channel[i].0;
+            let b = channel[j].0;
+            let d2 = (a[0] - b[0]) as i64 * (a[0] - b[0]) as i64
+                + (a[1] - b[1]) as i64 * (a[1] - b[1]) as i64
+                + (a[2] - b[2]) as i64 * (a[2] - b[2]) as i64;
+            if d2 > best_d2 {
+                best_d2 = d2;
+                best = (a, b);
+            }
+        }
+    }
+    best
+}
+
+/// Macro index → `(x,y,z)` cell within its chunk (4 bits/axis, 16³ chunk — the
+/// same packing heat_smoke decodes).
+fn macro_index_to_cell(idx: u16) -> [i32; 3] {
+    let i = idx as i32;
+    [i & 0xf, (i >> 4) & 0xf, (i >> 8) & 0xf]
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -343,5 +474,69 @@ mod tests {
         assert_eq!(s, bolt_seed([1, 2, 3], [4, 5, 6], 7));
         assert_ne!(s, bolt_seed([1, 2, 3], [4, 5, 6], 8)); // salt matters
         assert_ne!(s, bolt_seed([9, 2, 3], [4, 5, 6], 7)); // source matters
+    }
+
+    #[test]
+    fn infer_strike_arcs_high_to_low_potential() {
+        // Three ionized cells along x at chunk (0,0,0): cell 0 (V=200, source),
+        // cell 1 (V=50), cell 2 (V=-30, target). Bolt should go cell0 → cell2.
+        let indices = [0u16, 1, 2];
+        let field = DischargeField {
+            region_id: 3,
+            chunk_coord: [0, 0, 0],
+            macro_indices: &indices,
+            electric_potential: &[200.0, 50.0, -30.0],
+            ionization: &[200, 180, 160],
+        };
+        let (source, target, _seed) = infer_strike(&field, 0).expect("two+ ionized cells → strike");
+        // cell 0 center = (0.5*100, 0.5*100, 0.5*100); cell 2 center x = 2.5*100.
+        assert!((source[0] - 50.0).abs() < 1e-3, "source at high-V cell 0");
+        assert!((target[0] - 250.0).abs() < 1e-3, "target at low-V cell 2");
+    }
+
+    #[test]
+    fn infer_strike_needs_two_ionized_cells() {
+        let indices = [0u16, 1];
+        // Only one cell clears the ionization floor → no channel to arc.
+        let field = DischargeField {
+            region_id: 1,
+            chunk_coord: [0, 0, 0],
+            macro_indices: &indices,
+            electric_potential: &[100.0, 0.0],
+            ionization: &[200, 1],
+        };
+        assert!(infer_strike(&field, 0).is_none());
+    }
+
+    #[test]
+    fn infer_strike_spatial_fallback_without_potential() {
+        // No potential layer → endpoints are the two farthest ionized cells.
+        // Cells at x=0 and x=5 (index 5 = (5,0,0)) are farthest.
+        let indices = [0u16, 1, 5];
+        let field = DischargeField {
+            region_id: 2,
+            chunk_coord: [0, 0, 0],
+            macro_indices: &indices,
+            electric_potential: &[],
+            ionization: &[64, 64, 64],
+        };
+        let (source, target, _) = infer_strike(&field, 0).expect("spatial fallback strike");
+        let span = (source[0] - target[0]).abs();
+        assert!((span - 500.0).abs() < 1e-3, "endpoints span cells 0..5 = 500 world units");
+    }
+
+    #[test]
+    fn infer_strike_offsets_by_chunk_coord() {
+        let indices = [0u16, 1];
+        let field = DischargeField {
+            region_id: 1,
+            chunk_coord: [1, 0, 0],
+            macro_indices: &indices,
+            electric_potential: &[100.0, 0.0],
+            ionization: &[200, 200],
+        };
+        let (source, _target, _) = infer_strike(&field, 0).unwrap();
+        // chunk x=1 → macro 16; cell 0 center = (16.5)*100 = 1650.
+        assert!((source[0] - 1650.0).abs() < 1e-3);
     }
 }
