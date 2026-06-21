@@ -355,6 +355,10 @@ fn material_color(material_id: u32) -> [f32; 4] {
         11 => [0.40, 0.30, 0.22, 1.0], // door (导电金属门)
         12 => [0.55, 0.27, 0.10, 1.0], // rust (S4 氧化产物 — 锈橙棕)
         13 => [1.00, 0.45, 0.10, 1.0], // ember (M5 火炬热源 — 炽橙)
+        // 化学扩展(2026-06-21)熔化/多反应物产物 — 补基础色避免 magenta(辉光留待 #24 emissive 轨)。
+        14 => [1.00, 0.50, 0.15, 1.0], // molten_iron (iron 熔化 — 炽亮橙红)
+        15 => [0.85, 0.30, 0.08, 1.0], // lava (stone 熔化 — 暗炽橙)
+        16 => [0.10, 0.08, 0.14, 1.0], // obsidian (lava+water 淬火 — 近黑带蓝紫)
         _ => [1.0, 0.0, 1.0, 1.0],     // unknown → magenta
     }
 }
@@ -424,7 +428,8 @@ mod tests {
         // C5:S4/M5 涌现产物(rust 12 / ember 13)+ door 11 必须有专属色,不能 magenta
         // (否则服务端 iron→rust、火炬 ember 在客户端显示成错误的品红)。
         let magenta = [1.0, 0.0, 1.0, 1.0];
-        for id in [11u32, 12, 13] {
+        // 化学扩展产物 14/15/16(molten_iron/lava/obsidian)同样不可 magenta。
+        for id in [11u32, 12, 13, 14, 15, 16] {
             assert_ne!(
                 material_color(id),
                 magenta,
@@ -433,6 +438,10 @@ mod tests {
         }
         // rust 与 iron 视觉可区分(氧化后看得出变化)。
         assert_ne!(material_color(12), material_color(5));
+        // 熔铁与铁、熔岩与石、黑曜石与石 视觉可区分(相变/淬火看得出变化)。
+        assert_ne!(material_color(14), material_color(5));
+        assert_ne!(material_color(15), material_color(2));
+        assert_ne!(material_color(16), material_color(2));
     }
 
     #[test]
