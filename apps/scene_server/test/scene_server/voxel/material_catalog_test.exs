@@ -79,4 +79,64 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
       end
     end
   end
+
+  describe "化学扩展:熔化产物 + 多反应物产物(append-only id14/15/16)" do
+    @inert_temperature_raw 327_680_000
+    @absolute_zero_raw -17_904_824
+    @fixed32_scale 65_536
+
+    test "molten_iron(id14):液态产物,可回凝铁、惰性不锈、仍导电" do
+      molten = MaterialCatalog.material_id(:molten_iron)
+      assert molten == 14
+      assert MaterialCatalog.known_material?(molten)
+      # 已是液态:不再熔(melting 哨兵);降温 <1538℃ 回凝铁(freezing_point=1538)。
+      assert MaterialCatalog.default_attribute_value(molten, "melting_point", 0) ==
+               @inert_temperature_raw
+
+      assert MaterialCatalog.default_attribute_value(molten, "freezing_point", 0) ==
+               round(1_538.0 * @fixed32_scale)
+
+      # 液态金属仍导电;惰性不锈(oxidation 哨兵)。
+      assert MaterialCatalog.default_attribute_value(molten, "electric_conductivity", 0) > 0
+
+      assert MaterialCatalog.default_attribute_value(molten, "oxidation_temperature", 0) ==
+               @inert_temperature_raw
+    end
+
+    test "lava(id15):液态产物,可回凝石、不导电" do
+      lava = MaterialCatalog.material_id(:lava)
+      assert lava == 15
+      assert MaterialCatalog.known_material?(lava)
+      assert MaterialCatalog.default_attribute_value(lava, "melting_point", 0) ==
+               @inert_temperature_raw
+
+      # 降温 <1200℃ 回凝石(= stone melting_point,迟滞)。
+      assert MaterialCatalog.default_attribute_value(lava, "freezing_point", 0) ==
+               round(1_200.0 * @fixed32_scale)
+
+      assert MaterialCatalog.default_attribute_value(lava, "electric_conductivity", 0) == 0
+    end
+
+    test "obsidian(id16):惰性终产物(不相变、不导电、良介质)" do
+      obsidian = MaterialCatalog.material_id(:obsidian)
+      assert obsidian == 16
+      assert MaterialCatalog.known_material?(obsidian)
+      # 终产物:melting 哨兵不可达 + freezing 绝对零(不回相变,同 ash/rust 范式)。
+      assert MaterialCatalog.default_attribute_value(obsidian, "melting_point", 0) ==
+               @inert_temperature_raw
+
+      assert MaterialCatalog.default_attribute_value(obsidian, "freezing_point", 0) ==
+               @absolute_zero_raw
+
+      assert MaterialCatalog.default_attribute_value(obsidian, "electric_conductivity", 0) == 0
+      assert MaterialCatalog.default_attribute_value(obsidian, "dielectric_strength", 0) > 0
+    end
+
+    test "名 ↔ id 双向一致(material_name 反查)" do
+      for {name, id} <- [molten_iron: 14, lava: 15, obsidian: 16] do
+        assert MaterialCatalog.material_id(name) == id
+        assert MaterialCatalog.material_name(id) == name
+      end
+    end
+  end
 end

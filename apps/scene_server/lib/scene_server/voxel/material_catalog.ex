@@ -31,6 +31,13 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   # 功能完善 · 形态轨 M5(表面元件物理参与):余烬/火焰——稳定热源(heat_output>0)。火炬表面元件借其
   # 属性向量持续向宿主格注热(经守恒热扩散耦合到相变/化学);非导电、惰性(不可燃/不氧化)。
   @ember_material_id 13
+  # 功能完善 · 化学扩展(2026-06-21):熔化相变产物。append-only id。
+  # molten_iron:iron 熔化(≥1538℃)产物,freezing_point=1538 可回凝铁,惰性不锈。
+  # lava:stone 熔化(≥1200℃)产物,freezing_point=1200 可回凝石(迟滞)。
+  # obsidian:多反应物 lava + 相邻 water 淬火产物(黑曜石玻璃),惰性终产物。
+  @molten_iron_material_id 14
+  @lava_material_id 15
+  @obsidian_material_id 16
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -46,7 +53,10 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     ash: @ash_material_id,
     door: @door_material_id,
     rust: @rust_material_id,
-    ember: @ember_material_id
+    ember: @ember_material_id,
+    molten_iron: @molten_iron_material_id,
+    lava: @lava_material_id,
+    obsidian: @obsidian_material_id
   }
 
   @power_source_defaults %{
@@ -222,6 +232,46 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "oxidation_temperature" => @inert_temperature_raw,
       # 稳定热源功率(定性档,经守恒热扩散增益放大;火炬借此向宿主格注热)。
       "heat_output" => round(1_500.0 * @fixed32_scale)
+    },
+    # 化学扩展:熔铁——iron 熔化产物。已是液态:melting inert(不再熔)、freezing_point=1538(降温回凝
+    # 铁,严格 < 迟滞);boiling inert(无铁蒸汽材料);惰性不锈(oxidation 哨兵)。仍导电(液态金属)。
+    @molten_iron_material_id => %{
+      "density" => round(7_000.0 * @fixed32_scale),
+      "thermal_conductivity" => round(40.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(825.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => round(1_538.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => round(10.0 * @fixed32_scale),
+      "dielectric_strength" => 0,
+      "oxidation_temperature" => @inert_temperature_raw
+    },
+    # 化学扩展:熔岩——stone 熔化产物。已是液态:melting inert、freezing_point=1200(降温回凝石,严格
+    # < 迟滞);boiling inert(无岩蒸汽);不导电。多反应物:遇相邻 water 淬成 obsidian(见 rules)。
+    @lava_material_id => %{
+      "density" => round(2_700.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.5 * @fixed32_scale),
+      "specific_heat_capacity" => round(1_450.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => round(1_200.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(5.0 * @fixed32_scale)
+    },
+    # 化学扩展:黑曜石——lava + 相邻 water 淬火产物(火山玻璃)。惰性终产物(melting/boiling inert、
+    # freezing 哨兵不回相变,同 ash/rust 范式);不导电;良介质(玻璃)。
+    @obsidian_material_id => %{
+      "density" => round(2_400.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.2 * @fixed32_scale),
+      "specific_heat_capacity" => round(840.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(10.0 * @fixed32_scale)
     }
   }
 
