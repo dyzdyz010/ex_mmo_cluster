@@ -28,6 +28,7 @@ pub mod field_view;
 pub mod heat_smoke;
 pub mod heat_smoke_render;
 pub mod incandescence;
+pub mod incandescence_render;
 pub mod lightning;
 pub mod lightning_render;
 // Layer-3 GPU pixel tests: only meaningful in test mode (all items are used by
@@ -46,6 +47,7 @@ pub use chunk_render::VoxelChunkRenderPlugin;
 pub use debris_render::DebrisEffectPlugin;
 pub use field_render::VoxelFieldRenderPlugin;
 pub use heat_smoke_render::HeatSmokePlugin;
+pub use incandescence_render::IncandescencePlugin;
 pub use lightning_render::LightningPlugin;
 pub use plugin::VoxelPlugin;
 
