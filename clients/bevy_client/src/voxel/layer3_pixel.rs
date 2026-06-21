@@ -33,9 +33,9 @@ use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
 use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk};
 use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
-    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_TEMPERATURE,
-    FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell, SurfaceElement,
-    VoxelServerMessage,
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
+    FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell,
+    SurfaceElement, VoxelServerMessage,
 };
 use crate::voxel::{HeatSmokePlugin, VoxelAuthority};
 
@@ -135,26 +135,43 @@ fn render_scene(build: impl FnOnce(&mut World, Handle<Image>)) -> Vec<u8> {
     // RenderApp systems see no `RenderDevice`.
     app.finish();
     app.cleanup();
+    pump_until_rendered(&mut app)
+}
 
-    // Pump enough frames that the camera has rendered and a post-render readback
-    // has landed (readback has ~1-frame latency).
-    for _ in 0..16 {
-        app.update();
+/// Pumps frames until a post-render readback lands with actual geometry (more
+/// than just the clear color), retrying in rounds. Running many full render Apps
+/// in one process can occasionally leave a later App's first frames producing no
+/// geometry (GPU resource pressure); a couple of extra rounds recovers it, so the
+/// suite isn't flaky. Returns the RGBA8 framebuffer bytes.
+fn pump_until_rendered(app: &mut App) -> Vec<u8> {
+    let clear = clear_color().to_srgba();
+    for _round in 0..4 {
+        for _ in 0..16 {
+            app.update();
+        }
+        let data = app.world().resource::<Captured>().0.clone();
+        if let Some(data) = data {
+            // Count pixels that differ from the clear color (i.e. real geometry).
+            let mut rendered = 0u32;
+            for px in data.chunks_exact(4) {
+                let d = (px[0] as f32 / 255.0 - clear.red).abs()
+                    + (px[1] as f32 / 255.0 - clear.green).abs()
+                    + (px[2] as f32 / 255.0 - clear.blue).abs();
+                if d > 0.06 {
+                    rendered += 1;
+                }
+            }
+            if rendered > 30 {
+                return data;
+            }
+        }
     }
-    let data = app
-        .world()
+    // Last resort: return whatever we have (the assertion will report it).
+    app.world()
         .resource::<Captured>()
         .0
         .clone()
-        .expect("gpu readback never completed (no adapter? render failed?)");
-    let nonzero = data.iter().filter(|&&b| b != 0).count();
-    eprintln!(
-        "[layer3] readback {} bytes, {} non-zero ({:.1}%)",
-        data.len(),
-        nonzero,
-        100.0 * nonzero as f32 / data.len() as f32
-    );
-    data
+        .expect("gpu readback never completed (no adapter? render failed?)")
 }
 
 // ---- scene building blocks --------------------------------------------------
@@ -345,6 +362,26 @@ fn spawn_overlay(world: &mut World, field: &FieldRegionSnapshot) {
     spawn_overlay_kind(world, field, FieldOverlayKind::Temperature);
 }
 
+/// Builds an ionization field snapshot (u8 0..255) for the plasma overlay test.
+fn ionization_field(
+    region_id: u64,
+    chunk_coord: [i32; 3],
+    cells: &[(u16, u8)],
+) -> FieldRegionSnapshot {
+    FieldRegionSnapshot {
+        logical_scene_id: 1,
+        chunk_coord,
+        region_id,
+        tick_count: 1,
+        field_mask: FIELD_MASK_IONIZATION,
+        macro_indices: cells.iter().map(|(i, _)| *i).collect(),
+        temperature: vec![],
+        electric_potential: vec![],
+        electric_current: vec![],
+        ionization: cells.iter().map(|(_, v)| *v).collect(),
+    }
+}
+
 /// Spawns the given field overlay kind with the REAL depth-disable material.
 fn spawn_overlay_kind(world: &mut World, field: &FieldRegionSnapshot, kind: FieldOverlayKind) {
     let data = overlay_mesh(field, kind, MACRO);
@@ -466,14 +503,7 @@ fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) ->
 
     app.finish();
     app.cleanup();
-    for _ in 0..20 {
-        app.update();
-    }
-    app.world()
-        .resource::<Captured>()
-        .0
-        .clone()
-        .expect("gpu readback never completed")
+    pump_until_rendered(&mut app)
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -672,6 +702,25 @@ fn electric_current_overlay_is_warm() {
     assert!(
         c.r > c.b + 0.12 && c.g > c.b + 0.10,
         "current overlay should be warm amber (red&green > blue); got {c:?}"
+    );
+}
+
+/// Ionization overlay (top value) is plasma blue/cyan: blue & green well above
+/// red. Verifies the new FieldOverlayKind::Ionization ramp renders (the u8
+/// ionization field that was decoded but never drawn before).
+#[test]
+fn ionization_overlay_is_plasma_cyan() {
+    let field = ionization_field(1, [0, 0, 0], &[(idx(1, 1, 1), 255)]);
+    let look = Vec3::new(150.0, 150.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(150.0, 150.0, -500.0), look);
+        spawn_overlay_kind(world, &field, FieldOverlayKind::Ionization);
+    });
+
+    let c = sample_patch(&data, W / 2, H / 2, 3);
+    assert!(
+        c.b > c.r + 0.10 && c.g > c.r + 0.15,
+        "ionization overlay should be plasma cyan (blue & green above red); got {c:?}"
     );
 }
 

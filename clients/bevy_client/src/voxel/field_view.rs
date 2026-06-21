@@ -26,8 +26,8 @@
 
 use crate::voxel::mesher::{ChunkMeshData, push_cube};
 use crate::voxel::wire::{
-    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_TEMPERATURE,
-    FieldRegionDestroyed, FieldRegionSnapshot,
+    FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
+    FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +46,12 @@ pub const POTENTIAL_MATERIAL_BASE: u32 = 10_100;
 pub const POTENTIAL_BUCKET_COUNT: u32 = 8;
 pub const CURRENT_MATERIAL_BASE: u32 = 10_200;
 pub const CURRENT_BUCKET_COUNT: u32 = 8;
+/// Ionization marker ids (dark-blue → bright-cyan plasma ramp). Ionization is the
+/// breakdown-conditioning / discharge-channel field (wire u8 0..255); neither
+/// client mirrored it before, so this is a new overlay (plasma glow along
+/// conditioned channels), complementing the discharge/lightning visuals.
+pub const IONIZATION_MATERIAL_BASE: u32 = 10_300;
+pub const IONIZATION_BUCKET_COUNT: u32 = 8;
 
 /// Temperature overlay model (mirrors web `fieldDebugOverlay`): cells are colored
 /// by their deviation from the ambient baseline; below `TEMP_MIN_DEVIATION` off
@@ -73,6 +79,12 @@ pub const POTENTIAL_RAMP: f32 = 100.0;
 pub const CURRENT_THRESHOLD: f32 = 0.001;
 pub const CURRENT_RAMP: f32 = 20.0;
 
+/// Ionization (u8 0..255): below `IONIZATION_THRESHOLD` is background noise and
+/// not drawn; the plasma color saturates at `IONIZATION_RAMP` (full scale).
+const IONIZATION_THRESHOLD: f32 = 8.0;
+const IONIZATION_RAMP: f32 = 255.0;
+const IONIZATION_ALPHA: f32 = 0.5;
+
 /// Marker cube edge as a fraction of a macro cell (centered in the cell). The web
 /// overlay draws field cells at 0.85 of the cell; all FieldView overlays match.
 const MARKER_FRACTION: f32 = 0.85;
@@ -83,14 +95,16 @@ pub enum FieldOverlayKind {
     Temperature,
     ElectricPotential,
     ElectricCurrent,
+    Ionization,
 }
 
 impl FieldOverlayKind {
     /// All kinds, in a stable order (so the render adapter iterates deterministically).
-    pub const ALL: [FieldOverlayKind; 3] = [
+    pub const ALL: [FieldOverlayKind; 4] = [
         FieldOverlayKind::Temperature,
         FieldOverlayKind::ElectricPotential,
         FieldOverlayKind::ElectricCurrent,
+        FieldOverlayKind::Ionization,
     ];
 
     /// A stable small id for keying render entities by (region_id, kind).
@@ -99,6 +113,7 @@ impl FieldOverlayKind {
             FieldOverlayKind::Temperature => 0,
             FieldOverlayKind::ElectricPotential => 1,
             FieldOverlayKind::ElectricCurrent => 2,
+            FieldOverlayKind::Ionization => 3,
         }
     }
 }
@@ -172,6 +187,16 @@ pub fn field_color(material_id: u32) -> [f32; 4] {
         let t = bucket_fraction(material_id - CURRENT_MATERIAL_BASE, CURRENT_BUCKET_COUNT);
         return lerp_rgb([0.18, 0.11, 0.02], [1.0, 0.82, 0.16], t, CURRENT_ALPHA);
     }
+    if (IONIZATION_MATERIAL_BASE..IONIZATION_MATERIAL_BASE + IONIZATION_BUCKET_COUNT)
+        .contains(&material_id)
+    {
+        // deep blue (low) -> bright cyan (high): a plasma/ionization glow.
+        let t = bucket_fraction(
+            material_id - IONIZATION_MATERIAL_BASE,
+            IONIZATION_BUCKET_COUNT,
+        );
+        return lerp_rgb([0.0, 0.10, 0.35], [0.35, 0.95, 1.0], t, IONIZATION_ALPHA);
+    }
     [1.0, 1.0, 1.0, 1.0]
 }
 
@@ -240,6 +265,15 @@ pub fn current_material(current: f32) -> u32 {
     CURRENT_MATERIAL_BASE + ramp_bucket(current.abs(), CURRENT_RAMP, CURRENT_BUCKET_COUNT)
 }
 
+/// Maps an ionization value (u8 0..255, passed as f32) to its marker id, or `None`
+/// below the noise threshold. Bucketed on the `value/255` plasma ramp.
+pub fn ionization_material(value: f32) -> Option<u32> {
+    if value < IONIZATION_THRESHOLD {
+        return None;
+    }
+    Some(IONIZATION_MATERIAL_BASE + ramp_bucket(value, IONIZATION_RAMP, IONIZATION_BUCKET_COUNT))
+}
+
 /// Maps a magnitude onto `0..bucket_count` via the `magnitude/ramp` fraction
 /// (saturating at the top bucket), matching the web reference's `clamp(v/scale)`.
 fn ramp_bucket(magnitude: f32, ramp: f32, bucket_count: u32) -> u32 {
@@ -278,7 +312,25 @@ pub fn overlay_mesh(
         FieldOverlayKind::Temperature => temperature_overlay_mesh(field, voxel_size),
         FieldOverlayKind::ElectricPotential => electric_potential_overlay_mesh(field, voxel_size),
         FieldOverlayKind::ElectricCurrent => electric_current_overlay_mesh(field, voxel_size),
+        FieldOverlayKind::Ionization => ionization_overlay_mesh(field, voxel_size),
     }
+}
+
+/// Builds the ionization overlay: a marker cube at each macro cell whose
+/// ionization (u8 0..255) clears the noise threshold, on the blue→cyan plasma
+/// ramp. Cells without an ionization layer (mask bit clear) produce nothing.
+pub fn ionization_overlay_mesh(field: &FieldRegionSnapshot, voxel_size: f32) -> ChunkMeshData {
+    if field.field_mask & FIELD_MASK_IONIZATION == 0 {
+        return ChunkMeshData::default();
+    }
+    // `ionization` is u8 on the wire; widen to f32 for the shared overlay core.
+    let values: Vec<f32> = field.ionization.iter().map(|&v| v as f32).collect();
+    overlay_from_values(
+        &field.macro_indices,
+        &values,
+        voxel_size,
+        ionization_material,
+    )
 }
 
 /// Builds the temperature overlay for a field region: a marker cube at each macro
@@ -586,5 +638,50 @@ mod tests {
             current_material(10_000.0),
             CURRENT_MATERIAL_BASE + CURRENT_BUCKET_COUNT - 1
         );
+    }
+
+    #[test]
+    fn ionization_overlay_thresholds_buckets_and_plasma_color() {
+        // Below threshold (8) skipped; mid + full drawn into distinct buckets.
+        assert_eq!(ionization_material(2.0), None);
+        let mid = ionization_material(120.0).unwrap();
+        let full = ionization_material(255.0).unwrap();
+        assert!(
+            (IONIZATION_MATERIAL_BASE..IONIZATION_MATERIAL_BASE + IONIZATION_BUCKET_COUNT)
+                .contains(&mid)
+        );
+        assert!(full > mid); // higher ionization → higher bucket
+        assert_eq!(full, IONIZATION_MATERIAL_BASE + IONIZATION_BUCKET_COUNT - 1);
+
+        // Plasma color: blue→cyan, so blue & green dominate red.
+        let c = field_color(full);
+        assert!(
+            c[2] > c[0] && c[1] > c[0],
+            "ionization should be blue/cyan; got {c:?}"
+        );
+
+        // Overlay mesher: an ionization snapshot draws markers in the ion range.
+        let field = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [0, 0, 0],
+            region_id: 1,
+            tick_count: 1,
+            field_mask: FIELD_MASK_IONIZATION,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![2, 200], // first below threshold, second drawn
+        };
+        let s = ionization_overlay_mesh(&field, 100.0).summary();
+        assert_eq!(s.quad_count, 6); // only the 200-ion cell → one marker cube
+        assert!(s.area_by_material.keys().all(|m| {
+            (IONIZATION_MATERIAL_BASE..IONIZATION_MATERIAL_BASE + IONIZATION_BUCKET_COUNT)
+                .contains(m)
+        }));
+        // Temperature-only / mask clear → no ionization overlay.
+        let mut bare = field.clone();
+        bare.field_mask = 0;
+        assert!(ionization_overlay_mesh(&bare, 100.0).is_empty());
     }
 }
