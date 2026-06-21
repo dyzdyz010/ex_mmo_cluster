@@ -7,8 +7,15 @@
 //! THROUGH opaque terrain, which is a GPU pipeline-state property, not mesh data.
 //!
 //! Gating: behind the `layer3` cargo feature so normal `cargo test` needs no GPU.
-//! Run with `cargo test --features layer3 layer3_pixel` (locally with a GPU, or
-//! in the lavapipe CI job).
+//! Run with `cargo test --features layer3 layer3_pixel -- --test-threads=1`
+//! (locally with a GPU, or in the lavapipe CI job).
+//!
+//! MUST be single-threaded: each test spins a full Bevy render App with its own
+//! GPU device, and cargo's default parallel runner would create one Vulkan device
+//! per test thread at once — enough concurrent devices to exhaust the driver, so a
+//! few Apps render nothing (readback returns the bare clear color) and flake. This
+//! is device contention, NOT a rendering bug: every test passes alone and the full
+//! suite passes green with `--test-threads=1`.
 //!
 //! Robustness: assertions check CHANNEL RELATIONSHIPS (red-dominance,
 //! neutral-gray, not-clear), never exact RGB — so lavapipe-vs-real-GPU
@@ -37,7 +44,7 @@ use crate::voxel::wire::{
     FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell,
     SurfaceElement, VoxelServerMessage,
 };
-use crate::voxel::{HeatSmokePlugin, VoxelAuthority};
+use crate::voxel::{HeatSmokePlugin, LightningPlugin, VoxelAuthority};
 
 /// Framebuffer size. Width divisible by 64 → RGBA8 row bytes (W*4) divisible by
 /// 256 → no GPU row padding to de-pad on readback.
@@ -506,6 +513,101 @@ fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) ->
     pump_until_rendered(&mut app)
 }
 
+/// Renders a scene driven by the REAL `LightningPlugin`: re-surfaces a discharge
+/// field snapshot EACH frame (so a fresh bolt is always alive — the 480ms bolt TTL
+/// is short vs the ~64-frame pump) and lets the adapter infer + strike + render the
+/// bolt — proving the lightning layer actually rasterizes on screen, end to end.
+fn render_with_lightning(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<WinitPlugin>(),
+    )
+    .add_plugins(LightningPlugin)
+    .insert_state(AppState::Game)
+    .init_resource::<VoxelAuthority>()
+    .init_resource::<Captured>();
+    crate::app::schedule::configure_client_sets(&mut app);
+
+    let image = {
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        images.add(img)
+    };
+
+    spawn_camera(app.world_mut(), image.clone(), eye, look);
+    app.world_mut()
+        .spawn(Readback::texture(image.clone()))
+        .observe(
+            |event: On<ReadbackComplete>, mut captured: ResMut<Captured>| {
+                captured.0 = Some(event.data.clone());
+            },
+        );
+
+    app.finish();
+    app.cleanup();
+
+    // Re-strike each frame, then pump — so the captured post-render frame always
+    // has a live bolt regardless of how many frames the readback takes to land.
+    let clear = clear_color().to_srgba();
+    for _round in 0..4 {
+        for _ in 0..16 {
+            {
+                let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
+                authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(field.clone()));
+                authority.drain_inbox();
+            }
+            app.update();
+        }
+        if let Some(data) = app.world().resource::<Captured>().0.clone() {
+            let mut rendered = 0u32;
+            for px in data.chunks_exact(4) {
+                let d = (px[0] as f32 / 255.0 - clear.red).abs()
+                    + (px[1] as f32 / 255.0 - clear.green).abs()
+                    + (px[2] as f32 / 255.0 - clear.blue).abs();
+                if d > 0.06 {
+                    rendered += 1;
+                }
+            }
+            if rendered > 30 {
+                return data;
+            }
+        }
+    }
+    app.world()
+        .resource::<Captured>()
+        .0
+        .clone()
+        .expect("gpu readback never completed (no adapter? render failed?)")
+}
+
+/// A discharge field snapshot (potential gradient + ionized channel) that drives
+/// `infer_strike` to arc a bolt between two macro cells.
+fn discharge_field(
+    region_id: u64,
+    chunk_coord: [i32; 3],
+    cells: &[(u16, f32, u8)],
+) -> FieldRegionSnapshot {
+    FieldRegionSnapshot {
+        logical_scene_id: 1,
+        chunk_coord,
+        region_id,
+        tick_count: 1,
+        field_mask: FIELD_MASK_ELECTRIC_POTENTIAL | FIELD_MASK_IONIZATION,
+        macro_indices: cells.iter().map(|(i, _, _)| *i).collect(),
+        temperature: vec![],
+        electric_potential: cells.iter().map(|(_, p, _)| *p).collect(),
+        electric_current: vec![],
+        ionization: cells.iter().map(|(_, _, ion)| *ion).collect(),
+    }
+}
+
 // ---- tests ------------------------------------------------------------------
 
 /// B (sanity): a solid stone chunk rasterizes to neutral-gray, non-clear pixels.
@@ -842,5 +944,65 @@ fn heat_smoke_particles_rasterize_on_screen() {
     assert!(
         c.r > clear.red + 0.06,
         "gray smoke should lift the red channel above the clear's; got {c:?}"
+    );
+}
+
+/// End-to-end: a discharge field snapshot (ionized channel + potential gradient),
+/// run through the REAL `LightningPlugin`, makes a lightning bolt RASTERIZE on
+/// screen as a bright cyan arc — proving the breakdown/discharge visual is actually
+/// visible (the sim's segments reach the GPU, not just the bolt pool).
+#[test]
+fn lightning_bolt_rasterizes_on_screen() {
+    // Ionized channel from cell (1,1,1) [high V, source] to (3,1,1) [low V,
+    // target]: world (150,150,150) → (350,150,150), a horizontal arc at y=z=150.
+    let field = discharge_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 200.0, 200),
+            (idx(2, 1, 1), 40.0, 190),
+            (idx(3, 1, 1), -60.0, 180),
+        ],
+    );
+    let mid = Vec3::new(250.0, 150.0, 150.0);
+    let data = render_with_lightning(&field, Vec3::new(250.0, 150.0, -500.0), mid);
+
+    // Scan the whole frame for bolt pixels (differing from the dark-green clear).
+    // The jagged bolt jitters off the straight line, so assert on the COUNT +
+    // cluster centroid, not a fixed pixel.
+    let clear = clear_color().to_srgba();
+    let mut non_clear = 0u32;
+    let (mut sx, mut sy) = (0u64, 0u64);
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let r = data[i] as f32 / 255.0;
+            let g = data[i + 1] as f32 / 255.0;
+            let b = data[i + 2] as f32 / 255.0;
+            let d = (r - clear.red).abs() + (g - clear.green).abs() + (b - clear.blue).abs();
+            if d > 0.06 {
+                non_clear += 1;
+                sx += x as u64;
+                sy += y as u64;
+            }
+        }
+    }
+    assert!(
+        non_clear > 80,
+        "lightning bolt should rasterize a visible arc; got {non_clear} non-clear px"
+    );
+
+    // At the bolt centroid (where the overlapping segments are solidly covered),
+    // the cyan bolt's blue channel dominates: blue is high and well above red — the
+    // cyan signature distinguishing it from gray geometry or the warm clear color.
+    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    let c = sample_patch(&data, cx, cy, 4);
+    assert!(
+        c.b > 0.45 && c.b > c.r + 0.10,
+        "bolt should be cyan (blue high, blue above red); got {c:?}"
+    );
+    assert!(
+        c.b > clear.blue + 0.20,
+        "bolt blue should lift well above the clear's blue; got {c:?}"
     );
 }
