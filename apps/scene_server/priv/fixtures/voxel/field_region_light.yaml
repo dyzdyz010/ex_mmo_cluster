@@ -1,0 +1,5 @@
+name: field_region_light
+kind: field_region_snapshot
+wire_size: 44
+description: |
+  0x73 FieldRegionSnapshot: authoritative light field (mask 0x10, cells idx 0/5/10: light=255/64/200, u8 wire-last after ionization). Cross-language (bevy) parity for the emergent-optics light wire array.

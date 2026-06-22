@@ -443,6 +443,28 @@ mod tests {
     }
 
     #[test]
+    fn field_region_light_golden_parity() {
+        // Cross-language parity: decode the SERVER-produced light golden bytes and
+        // assert the pinned values + byte-stable re-encode (the emergent-optics
+        // light field, mask 0x10, u8 wire-last). Mirrors the server golden test.
+        let golden = fixtures::golden("field_region_light");
+        let decoded = FieldRegionSnapshot::decode(&mut Reader::new(&golden))
+            .expect("decode field_region_light golden");
+
+        assert_eq!(decoded.region_id, 91);
+        assert_eq!(decoded.chunk_coord, [0, 1, -1]);
+        assert_eq!(decoded.tick_count, 11);
+        assert_eq!(decoded.field_mask, field::FIELD_MASK_LIGHT);
+        assert_eq!(decoded.macro_indices, vec![0, 5, 10]);
+        assert_eq!(decoded.light, vec![255, 64, 200]);
+        assert!(decoded.temperature.is_empty() && decoded.ionization.is_empty());
+
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(w.into_bytes(), golden, "light golden re-encode byte mismatch");
+    }
+
+    #[test]
     fn field_region_snapshot_roundtrip_with_light() {
         // Light (bit4) present alongside temperature; light is wire-last, u8.
         let snap = FieldRegionSnapshot {

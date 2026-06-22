@@ -254,6 +254,29 @@ defmodule SceneServer.Voxel.GoldenFixtureTest do
     assert decoded.ionization_values == []
   end
 
+  test "field_region_light fixture: golden decodes to the pinned light region (mask 0x10, u8)" do
+    binary = load_golden("field_region_light")
+    meta = load_metadata("field_region_light")
+
+    assert byte_size(binary) == String.to_integer(meta["wire_size"])
+
+    decoded = FieldCodec.decode_snapshot_payload!(<<@opcode_field_snapshot>> <> binary)
+
+    assert decoded.region_id == 91
+    assert decoded.chunk_coord == {0, 1, -1}
+    assert decoded.tick_count == 11
+    assert decoded.field_mask == FieldCodec.field_mask_light()
+    assert decoded.cell_count == 3
+    assert decoded.macro_indices == [0, 5, 10]
+    # Authoritative light field (u8 0..255, wire-last after ionization).
+    assert decoded.light_values == [255, 64, 200]
+    # Light-only region: every other layer absent.
+    assert decoded.temperature_values == []
+    assert decoded.electric_values == []
+    assert decoded.electric_current_values == []
+    assert decoded.ionization_values == []
+  end
+
   test "field_region_destroyed fixture: golden decodes to the pinned destroy event" do
     binary = load_golden("field_region_destroyed")
     meta = load_metadata("field_region_destroyed")

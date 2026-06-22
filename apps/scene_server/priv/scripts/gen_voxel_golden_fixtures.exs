@@ -355,6 +355,33 @@ defmodule FixtureGen do
     }
   end
 
+  @doc """
+  field_region_light: a FieldRegion (0x73) carrying the authoritative light layer
+  (field_mask 0x10) with three lit cells. Validates the bevy 0x73 decoder's light
+  array (u8 0..255, wire-last after ionization) on real server bytes — the
+  emergent-optics light field cross-language parity. Direct struct (encoder reads
+  field_types + layers, not kernels).
+  """
+  def field_region_light do
+    light =
+      FieldLayer.new()
+      |> FieldLayer.put(0, 255.0)
+      |> FieldLayer.put(5, 64.0)
+      |> FieldLayer.put(10, 200.0)
+
+    %FieldRegion{
+      region_id: 91,
+      chunk_coord: {0, 1, -1},
+      aabb: {{0, 0, 0}, {15, 15, 15}},
+      field_types: [:light],
+      source_points: [],
+      tick_count: 11,
+      max_ticks: nil,
+      kernels: [],
+      layers: %{light: light}
+    }
+  end
+
   # ---- delta fixtures --------------------------------------------------------
 
   @doc """
@@ -882,6 +909,18 @@ write_fixture.("field_region_electric", field_electric_bytes, %{
   kind: "field_region_snapshot",
   description:
     "0x73 FieldRegionSnapshot: electric potential+current region (mask 0x0A, cells idx 0/5: V=80/12, I=5/1), little-endian f32. Cross-language (bevy) parity for the electric wire arrays + ordering."
+})
+
+field_light_bytes =
+  FixtureGen.field_region_light()
+  |> FieldCodec.encode_snapshot_payload(1)
+  |> strip_opcode.()
+
+write_fixture.("field_region_light", field_light_bytes, %{
+  name: "field_region_light",
+  kind: "field_region_snapshot",
+  description:
+    "0x73 FieldRegionSnapshot: authoritative light field (mask 0x10, cells idx 0/5/10: light=255/64/200, u8 wire-last after ionization). Cross-language (bevy) parity for the emergent-optics light wire array."
 })
 
 IO.puts("\nfixtures dir: #{Path.expand(fixtures_dir)}")
