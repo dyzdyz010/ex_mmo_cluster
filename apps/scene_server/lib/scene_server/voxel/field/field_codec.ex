@@ -49,6 +49,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   @field_mask_electric_potential 0x02
   @field_mask_ionization 0x04
   @field_mask_electric_current 0x08
+  # 光学正交系统(2026-06-23):权威光场(0..255 光强,u8 同 ionization)。
+  @field_mask_light 0x10
 
   @destroy_reason_expired 0x00
   @destroy_reason_lease_revoked 0x01
@@ -66,6 +68,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   def field_mask_electric_potential, do: @field_mask_electric_potential
   def field_mask_ionization, do: @field_mask_ionization
   def field_mask_electric_current, do: @field_mask_electric_current
+  def field_mask_light, do: @field_mask_light
 
   # ---- FieldRegionSnapshot (0x73) -------------------------------------------
 
@@ -107,11 +110,19 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         []
       end
 
+    light_cells =
+      if has_mask?(field_mask, @field_mask_light) do
+        collect_cells(region, :light)
+      else
+        []
+      end
+
     all_indices =
       (Enum.map(temperature_cells, &elem(&1, 0)) ++
          Enum.map(electric_cells, &elem(&1, 0)) ++
          Enum.map(current_cells, &elem(&1, 0)) ++
-         Enum.map(ionization_cells, &elem(&1, 0)))
+         Enum.map(ionization_cells, &elem(&1, 0)) ++
+         Enum.map(light_cells, &elem(&1, 0)))
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -120,6 +131,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     elec_map = Map.new(electric_cells)
     current_map = Map.new(current_cells)
     ion_map = Map.new(ionization_cells)
+    light_map = Map.new(light_cells)
 
     temp_layer =
       if has_mask?(field_mask, @field_mask_temperature),
@@ -136,6 +148,10 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     ion_layer =
       if has_mask?(field_mask, @field_mask_ionization),
         do: FieldRegion.get_layer(region, :ionization)
+
+    light_layer =
+      if has_mask?(field_mask, @field_mask_light),
+        do: FieldRegion.get_layer(region, :light)
 
     indices_bin =
       Enum.reduce(all_indices, <<>>, fn idx, acc ->
@@ -183,13 +199,24 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         <<>>
       end
 
+    light_bin =
+      if has_mask?(field_mask, @field_mask_light) do
+        Enum.reduce(all_indices, <<>>, fn idx, acc ->
+          raw = Map.get(light_map, idx, FieldLayer.get(light_layer, idx))
+          byte = raw |> round() |> max(0) |> min(255)
+          <<acc::binary, byte::unsigned-big-integer-size(8)>>
+        end)
+      else
+        <<>>
+      end
+
     <<@opcode_snapshot::unsigned-big-integer-size(8),
       logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
       cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
       region.region_id::unsigned-big-integer-size(64),
       region.tick_count::unsigned-big-integer-size(32), field_mask::unsigned-big-integer-size(8),
       cell_count::unsigned-big-integer-size(16), indices_bin::binary, temp_bin::binary,
-      elec_bin::binary, current_bin::binary, ion_bin::binary>>
+      elec_bin::binary, current_bin::binary, ion_bin::binary, light_bin::binary>>
   end
 
   @doc """
@@ -243,7 +270,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {[], rest4}
       end
 
-    {ionization_values, _rest6} =
+    {ionization_values, rest6} =
       if has_mask?(field_mask, @field_mask_ionization) do
         ion_size = cell_count
         <<ion_bin::binary-size(ion_size), r::binary>> = rest5
@@ -251,6 +278,16 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {vals, r}
       else
         {[], rest5}
+      end
+
+    {light_values, _rest7} =
+      if has_mask?(field_mask, @field_mask_light) do
+        light_size = cell_count
+        <<light_bin::binary-size(light_size), r::binary>> = rest6
+        vals = for <<v::unsigned-big-integer-size(8) <- light_bin>>, do: v
+        {vals, r}
+      else
+        {[], rest6}
       end
 
     %{
@@ -265,7 +302,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       temperature_values: temperature_values,
       electric_values: electric_values,
       electric_current_values: electric_current_values,
-      ionization_values: ionization_values
+      ionization_values: ionization_values,
+      light_values: light_values
     }
   end
 
@@ -325,6 +363,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       :electric_potential, acc -> bor(acc, @field_mask_electric_potential)
       :electric_current, acc -> bor(acc, @field_mask_electric_current)
       :ionization, acc -> bor(acc, @field_mask_ionization)
+      :light, acc -> bor(acc, @field_mask_light)
       _, acc -> acc
     end)
   end

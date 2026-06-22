@@ -8,6 +8,7 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   alias SceneServer.Voxel.Field.Kernels.{
     CircuitCurrentKernel,
     ElectricPotentialKernel,
+    LightPropagationKernel,
     TemperatureDiffusionKernel
   }
 
@@ -16,6 +17,42 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
   describe "0x73 FieldRegionSnapshot" do
     test "reserves a first-class electric current field mask" do
       assert FieldCodec.field_mask_electric_current() == 0x08
+    end
+
+    test "reserves a first-class light field mask" do
+      assert FieldCodec.field_mask_light() == 0x10
+    end
+
+    test "roundtrip with light as a first-class layer (u8 0..255)" do
+      idx_a = Types.macro_index!({0, 0, 0})
+      idx_b = Types.macro_index!({2, 0, 0})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 88,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {2, 0, 0}},
+          kernels: [%{id: :light_propagation, module: LightPropagationKernel}]
+        })
+
+      light =
+        region
+        |> FieldRegion.get_layer(:light)
+        |> FieldLayer.put(idx_a, 255.0)
+        # 300 截断到 255。
+        |> FieldLayer.put(idx_b, 300.0)
+
+      region = FieldRegion.put_layer(region, :light, light)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.field_mask == FieldCodec.field_mask_light()
+      assert decoded.macro_indices == [idx_a, idx_b]
+      assert length(decoded.light_values) == decoded.cell_count
+      # u8 clamp [0,255]。
+      assert Enum.at(decoded.light_values, 0) == 255
+      assert Enum.at(decoded.light_values, 1) == 255
     end
 
     test "roundtrip with electric current as a first-class layer" do
