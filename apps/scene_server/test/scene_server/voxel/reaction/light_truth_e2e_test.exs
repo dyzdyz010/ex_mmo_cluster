@@ -78,6 +78,11 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
     end
   end
 
+  defp cell_temperature(chunk, macro) do
+    storage = ChunkProcess.debug_state(chunk).storage
+    Storage.effective_attribute_at(storage, macro, "temperature") / 65_536
+  end
+
   defp blocking?(chunk, macro) do
     {:ok, result} =
       ChunkProcess.collision_query(chunk, %{samples: [%{macro: macro, micro_slot: 0}]})
@@ -253,5 +258,38 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
 
     assert matured?, "sprout 在光照+相邻水下持续光合 growth_progress 累进满 → 成熟为 wood(光长生命)"
     assert cell_material(chunk, sprout) == wood_id
+  end
+
+  test "光→热桥(全 DB,放大镜效应):强光照 photo_sensor → 自身温度在 truth 中升高(光桥接热系统)" do
+    # ember 强光(相邻 178 ≥ 128 放热阈)照 photo_sensor → 吸光放热 → 自身温度升。光→热→(扩散)熔/燃。
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    ember = Types.macro_index!({0, 0, 0})
+    sensor = Types.macro_index!({1, 0, 0})
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        ember,
+        NormalBlockData.new(MaterialCatalog.material_id(:ember))
+      )
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        sensor,
+        NormalBlockData.new(MaterialCatalog.material_id(:photo_sensor))
+      )
+
+    initial_temp = cell_temperature(chunk, sensor)
+
+    # 数 tick 太阳能加热(光→emit_heat → ChunkProcess 注热升温)。
+    for i <- 1..5 do
+      run_light_reaction_tick(chunk, 9950 + i, {{0, 0, 0}, {1, 0, 0}})
+    end
+
+    final_temp = cell_temperature(chunk, sensor)
+
+    assert final_temp > initial_temp + 50.0,
+           "强光照 photo_sensor 吸光放热 → 温度显著升(光→热落 truth);#{initial_temp}→#{final_temp}℃"
   end
 end

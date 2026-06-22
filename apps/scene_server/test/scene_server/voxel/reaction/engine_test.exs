@@ -730,6 +730,26 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
       refute adds_illuminated?(Engine.evaluate([lcell(stone_id(), 255.0, [])], Rules.all()))
     end
 
+    defp emits_heat?(effects) do
+      Enum.any?(effects, fn
+        {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} -> j > 0.0
+        _ -> false
+      end)
+    end
+
+    test "光→热桥:强光(≥128)照 photo_sensor → 放热(放大镜效应)" do
+      effects = Engine.evaluate([lcell(photo_sensor_id(), 200.0, [])], Rules.all())
+      assert emits_heat?(effects), "强光下 photo_sensor 吸光放热(光→热)"
+      # 强光同时也点亮(128 ≥ 32)。
+      assert adds_illuminated?(effects)
+    end
+
+    test "弱光(≥32 <128)只点亮不放热(光强梯度分流)" do
+      effects = Engine.evaluate([lcell(photo_sensor_id(), 100.0, [])], Rules.all())
+      assert adds_illuminated?(effects)
+      refute emits_heat?(effects), "弱光只点亮,不到放热阈(128)"
+    end
+
     test "Rule.new! 接受 :light condition 维度" do
       rule =
         Rule.new!(

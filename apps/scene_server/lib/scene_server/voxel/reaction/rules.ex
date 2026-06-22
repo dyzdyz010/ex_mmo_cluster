@@ -153,9 +153,25 @@ defmodule SceneServer.Voxel.Reaction.Rules do
                           effects: [{:remove_tag, :illuminated}]
                         )
 
+  # 光学 · 光→热桥(2026-06-23,放大镜效应):photo_sensor 被**强光**(light ≥ 128,约半亮以上)照射
+  # 时吸收光能放热(复用 emit_heat_joules 原语,同燃烧/I²R 注热通路)。热经守恒扩散(R6c)蔓延到相邻 →
+  # 熔冰/燃木。即「聚光 → 热 → 火/熔」:光桥接**热系统**(光此前已桥反应/设备/生长,此处补最后一个大系统)。
+  # 强光阈 128 > 光敏阈 32:弱光只点亮(:illuminated),强光才发热——光强梯度分流两种效果。
+  @solar_heat_threshold 128.0
+  @solar_heat_joules_per_tick 100_000_000.0
+
+  @photo_sensor_solar_heats Rule.new!(
+                              id: :photo_sensor_solar_heats,
+                              kind: :tag_reaction,
+                              material: :photo_sensor,
+                              condition: {:light, :gte, {:value, @solar_heat_threshold}},
+                              effects: [{:emit_heat_joules, @solar_heat_joules_per_tick}]
+                            )
+
   @photosensitive [
     @photo_sensor_illuminates,
-    @photo_sensor_darkens
+    @photo_sensor_darkens,
+    @photo_sensor_solar_heats
   ]
 
   # 光学 · 光合(2026-06-23)光长生命:sprout 幼苗在**光照 + 相邻水**下 growth_progress 累进,满则
