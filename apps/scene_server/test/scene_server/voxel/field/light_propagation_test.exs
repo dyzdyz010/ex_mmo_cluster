@@ -54,8 +54,9 @@ defmodule SceneServer.Voxel.Field.LightPropagationTest do
       assert LightPropagation.flood(%{}, %{}, line_neighbors(5), []) == %{}
     end
 
-    test "全不透明 cell 遮挡其后(墙挡光)" do
-      # 直线 0..4,cell 2 全不透明(opacity 1.0),源在 0 → 唯一到 3/4 的路经 2 被挡。
+    test "全不透明 cell 受光面亮但其后暗(墙挡光,墙本身被照)" do
+      # 直线 0..4,cell 2 全不透明(opacity 1.0),源在 0。新模型:opacity 门控"穿过 2 外传"而非
+      # "2 的受光"——故 cell 2 本身被照亮(接收近面光),但不向 3/4 传光。
       light =
         LightPropagation.flood(%{0 => 100.0}, %{2 => 1.0}, line_neighbors(4),
           attenuation: 0.8,
@@ -64,23 +65,24 @@ defmodule SceneServer.Voxel.Field.LightPropagationTest do
 
       assert light[0] == 100.0
       assert light[1] > 0.0
-      # cell 2 透射 0 → 不点亮,且不向后传。
-      assert light[2] == nil
+      # cell 2 接收照度(墙的受光面亮):0→1=80,1→2=64。
+      assert_in_delta light[2], 64.0, 1.0e-6
+      # cell 2 onward=0 → 墙后全暗。
       assert light[3] == nil
       assert light[4] == nil
     end
 
-    test "半透 cell 衰减但不全挡(玻璃)" do
-      # cell 2 opacity 0.5(透射 0.5)→ 光可部分穿透到 3。
+    test "半透 cell 受全照、向后按透射衰减(玻璃)" do
+      # cell 2 opacity 0.5。新模型:2 接收全照(100),向 3 外传 onward(2)=0.5。
       light =
         LightPropagation.flood(%{0 => 100.0}, %{2 => 0.5}, line_neighbors(4),
           attenuation: 1.0,
           threshold: 0.1
         )
 
-      # 0:100, 1:100, 2:100*1.0*0.5=50, 3:50*1.0*1.0=50。
-      assert_in_delta light[2], 50.0, 1.0e-6
-      assert light[3] != nil and light[3] > 0.0
+      # 0:100, 1:100(透明外传 1), 2:100(接收全照), 3:100*1.0*onward(2)=0.5=50。
+      assert_in_delta light[2], 100.0, 1.0e-6
+      assert_in_delta light[3], 50.0, 1.0e-6
     end
 
     test "多源:每 cell 取最亮来路(max)" do

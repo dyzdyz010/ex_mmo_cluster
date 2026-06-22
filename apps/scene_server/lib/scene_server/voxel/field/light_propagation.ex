@@ -10,10 +10,13 @@ defmodule SceneServer.Voxel.Field.LightPropagation do
   即最小衰减路径,弹出最亮未定 cell 即其最终最大光强,与 Dijkstra 非负权同构):
 
     * 每个光源 cell 以其 `emission` 播种(自身不被自身 opacity 衰减——灯从自身发光)。
-    * 从光强 L 的 cell c 向邻居 n 传:`candidate = L × attenuation × (1 - opacity(n))`
-      (`attenuation` 每步距离衰减;`1-opacity(n)` 是 n 的透射率)。n 取所有来路 + 自身源的 max。
-    * 全不透明 cell(opacity 1)透射 0 → 光强 0 且不再外传(墙挡光)。
-    * 光强跌破 `threshold` 即停(不入队);`max_frontier` 熔断 settled cell 数(EMG 安全阀)。
+    * 从光强 L 的 cell c 向邻居 n 传:`candidate = L × attenuation × onward(c)`,其中
+      `onward(c) = 1.0`(c 是源,自发光全透)`else 1 - opacity(c)`。**opacity 门控的是光
+      "穿过 c 继续外传",不是 n 接收到的照度**——故全不透明 cell **本身被照亮**(接收近面光),
+      但**不向其后传光**(墙的受光面亮、墙后暗)。这让光敏元件即使不透明也能被照亮(接收照度)。
+    * `attenuation` 是每步距离衰减;n 取所有来路 + 自身源的 max。
+    * 全不透明 cell(opacity 1)onward 0 → 不向后传(墙挡光);光强跌破 `threshold` 即停(不入队);
+      `max_frontier` 熔断 settled cell 数(EMG 安全阀)。
 
   ## 形式不变量(light_propagation_test 严格守)
 
@@ -64,7 +67,9 @@ defmodule SceneServer.Voxel.Field.LightPropagation do
       neighbors_fn: neighbors_fn,
       attenuation: attenuation,
       threshold: threshold,
-      max_frontier: max_frontier
+      max_frontier: max_frontier,
+      # 源 cell 集合:扩展时 onward = 1.0(自发光全透),非源 = 1 - opacity。
+      sources: sources |> Map.keys() |> MapSet.new()
     }
 
     flood_loop(queue, light, MapSet.new(), 0, env)
@@ -93,12 +98,14 @@ defmodule SceneServer.Voxel.Field.LightPropagation do
 
           true ->
             settled = MapSet.put(settled, idx)
+            # 扩展 cell 的"向外透射":源全透(自发光),否则按自身 opacity 衰减。所有邻居共用。
+            candidate = l * env.attenuation * onward_factor(idx, env)
 
             {queue, light} =
               idx
               |> env.neighbors_fn.()
               |> Enum.reduce({queue, light}, fn n, {q, lt} ->
-                relax(n, l, q, lt, settled, env)
+                relax(n, candidate, q, lt, settled, env)
               end)
 
             flood_loop(queue, light, settled, frontier + 1, env)
@@ -106,13 +113,19 @@ defmodule SceneServer.Voxel.Field.LightPropagation do
     end
   end
 
-  defp relax(n, l, queue, light, settled, env) do
+  # 光从 idx 向外传的透射系数:源 cell 自发光全透(1.0),非源按 (1 - 自身 opacity)。
+  defp onward_factor(idx, env) do
+    if MapSet.member?(env.sources, idx) do
+      1.0
+    else
+      1.0 - clamp01(Map.get(env.opacity, idx, 0.0))
+    end
+  end
+
+  defp relax(n, candidate, queue, light, settled, env) do
     if MapSet.member?(settled, n) do
       {queue, light}
     else
-      transmission = 1.0 - clamp01(Map.get(env.opacity, n, 0.0))
-      candidate = l * env.attenuation * transmission
-
       if candidate >= env.threshold and candidate > Map.get(light, n, 0.0) + @eps do
         {:gb_sets.add({-candidate, n}, queue), Map.put(light, n, candidate)}
       else
