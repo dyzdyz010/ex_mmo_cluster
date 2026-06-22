@@ -359,6 +359,9 @@ fn material_color(material_id: u32) -> [f32; 4] {
         14 => [1.00, 0.50, 0.15, 1.0], // molten_iron (iron 熔化 — 炽亮橙红)
         15 => [0.85, 0.30, 0.08, 1.0], // lava (stone 熔化 — 暗炽橙)
         16 => [0.10, 0.08, 0.14, 1.0], // obsidian (lava+water 淬火 — 近黑带蓝紫)
+        // 光学正交系统(2026-06-23)光成真机制材料 — 补基础色避免 magenta。
+        17 => [0.18, 0.22, 0.30, 1.0], // photo_sensor (光敏元件 — 深蓝灰传感板)
+        18 => [0.30, 0.65, 0.25, 1.0], // sprout (光合幼苗 — 嫩绿)
         _ => [1.0, 0.0, 1.0, 1.0],     // unknown → magenta
     }
 }
@@ -428,8 +431,8 @@ mod tests {
         // C5:S4/M5 涌现产物(rust 12 / ember 13)+ door 11 必须有专属色,不能 magenta
         // (否则服务端 iron→rust、火炬 ember 在客户端显示成错误的品红)。
         let magenta = [1.0, 0.0, 1.0, 1.0];
-        // 化学扩展产物 14/15/16(molten_iron/lava/obsidian)同样不可 magenta。
-        for id in [11u32, 12, 13, 14, 15, 16] {
+        // 化学扩展产物 14/15/16 + 光学材料 17/18(photo_sensor/sprout)同样不可 magenta。
+        for id in [11u32, 12, 13, 14, 15, 16, 17, 18] {
             assert_ne!(
                 material_color(id),
                 magenta,
@@ -442,6 +445,8 @@ mod tests {
         assert_ne!(material_color(14), material_color(5));
         assert_ne!(material_color(15), material_color(2));
         assert_ne!(material_color(16), material_color(2));
+        // sprout 成熟为 wood 后视觉可区分(嫩绿 → 木棕)。
+        assert_ne!(material_color(18), material_color(3));
     }
 
     #[test]
