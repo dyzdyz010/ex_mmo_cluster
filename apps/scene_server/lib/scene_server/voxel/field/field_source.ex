@@ -10,6 +10,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   alias SceneServer.Voxel.Types
   alias SceneServer.Voxel.Field.Kernels.ConductionPathKernel
   alias SceneServer.Voxel.Field.Kernels.ElectricDischargeKernel
+  alias SceneServer.Voxel.Field.Kernels.LightPropagationKernel
   alias SceneServer.Voxel.Field.Kernels.ReactionKernel
   alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.Field.PowerSource
@@ -80,6 +81,7 @@ defmodule SceneServer.Voxel.Field.FieldSource do
     case normalize_source_kind(fetch_any(attrs, [:source_kind], :temperature)) do
       :temperature -> normalize_temperature_source(attrs)
       :electric -> normalize_electric_source(attrs)
+      :light -> normalize_light_source(attrs)
       source_kind -> normalize_generic_source(attrs, source_kind)
     end
   end
@@ -296,6 +298,23 @@ defmodule SceneServer.Voxel.Field.FieldSource do
   # 功能完善 · 反应层 R6:随电场跑的反应 kernel(读 truth 温度/材料 → 点燃/熔化等跨系统涌现)。
   defp reaction_kernel_spec do
     %{id: :reaction, module: ReactionKernel, opts: %{}}
+  end
+
+  # 光学正交系统:光传播 kernel spec(发光源 flood 成权威 :light 场)。
+  defp light_kernel_spec do
+    %{id: :light_propagation, module: LightPropagationKernel, opts: %{}}
+  end
+
+  # 光场源:创建一个跑 [光传播, 反应] 的 field region(光 kernel 排在反应前——同 tick region
+  # 线程,光层先写、反应后读 gate 光敏)。光源本身来自 region 内材料(light_emission/热致),
+  # source 仅提供 region provisioning;故复用 generic 形状,只默认填光+反应 kernel_specs。
+  defp normalize_light_source(attrs) do
+    source = normalize_generic_source(attrs, :light)
+
+    case source.kernel_specs do
+      [] -> %{source | kernel_specs: [light_kernel_spec(), reaction_kernel_spec()]}
+      _other -> source
+    end
   end
 
   defp conduction_kernel_spec(target_index, max_frontier, %PowerSource{} = power_source) do
