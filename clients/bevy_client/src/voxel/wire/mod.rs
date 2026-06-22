@@ -32,7 +32,8 @@ pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use field::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
+    FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
+    FieldRegionSnapshot,
 };
 pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
@@ -427,6 +428,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![100, 200],
             light: vec![],
+            light_color: vec![],
         };
         let mut w = Writer::new();
         snap.encode(&mut w);
@@ -465,6 +467,29 @@ mod tests {
     }
 
     #[test]
+    fn field_region_light_color_golden_parity() {
+        // Cross-language parity: decode the SERVER-produced colored-light golden
+        // (mask 0x30 = light + light_color, 3 u8 RGB/cell) and assert the pinned
+        // values + byte-stable re-encode.
+        let golden = fixtures::golden("field_region_light_color");
+        let decoded = FieldRegionSnapshot::decode(&mut Reader::new(&golden))
+            .expect("decode field_region_light_color golden");
+
+        assert_eq!(decoded.region_id, 92);
+        assert_eq!(
+            decoded.field_mask,
+            field::FIELD_MASK_LIGHT | field::FIELD_MASK_LIGHT_COLOR
+        );
+        assert_eq!(decoded.macro_indices, vec![0, 7]);
+        assert_eq!(decoded.light, vec![255, 128]);
+        assert_eq!(decoded.light_color, vec![0xFFA040, 0x60A0FF]);
+
+        let mut w = Writer::new();
+        decoded.encode(&mut w);
+        assert_eq!(w.into_bytes(), golden, "colored-light golden re-encode mismatch");
+    }
+
+    #[test]
     fn field_region_snapshot_roundtrip_with_light() {
         // Light (bit4) present alongside temperature; light is wire-last, u8.
         let snap = FieldRegionSnapshot {
@@ -479,6 +504,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![128, 0, 255],
+            light_color: vec![],
         };
         let mut w = Writer::new();
         snap.encode(&mut w);
@@ -504,6 +530,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         };
         let mut w = Writer::new();
         snap.encode(&mut w);

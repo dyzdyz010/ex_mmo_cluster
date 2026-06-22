@@ -50,6 +50,15 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernelTest do
     fn x -> FieldLayer.get(layer, Types.macro_index!({x, 0, 0})) end
   end
 
+  # 跑一 tick,返回 :light_color 层(读 color(x) = packed RGB888 round)。
+  defp run_color(storage) do
+    region = line_region()
+    context = KernelContext.new(region, 1, storage)
+    {:cont, region, []} = LightPropagationKernel.tick(region, context, %{})
+    layer = FieldRegion.get_layer(region, :light_color)
+    fn x -> round(FieldLayer.get(layer, Types.macro_index!({x, 0, 0}))) end
+  end
+
   test "ember 发光源点亮自身 + 经空气向邻衰减传播(单调)" do
     # ember(light_emission 1500W → 满 255)在 0,其余空 cell(透明)。attenuation 0.7。
     light = Storage.empty(1, {0, 0, 0}) |> put(0, :ember) |> run()
@@ -62,6 +71,27 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernelTest do
   test "无光源 → :light 层全 0(惰性安全)" do
     light = Storage.empty(1, {0, 0, 0}) |> put(0, :stone) |> put(1, :stone) |> run()
     for x <- 0..4, do: assert(light.(x) == 0.0)
+  end
+
+  test "彩色光:ember 暖橙、glowstone 冷蓝光场(光场随源染色)" do
+    # ember(暖橙 0xFFA040)在 0 → 沿途光场颜色 = ember 色。
+    warm = Storage.empty(1, {0, 0, 0}) |> put(0, :ember) |> run_color()
+    assert warm.(0) == 0xFFA040
+    assert warm.(1) == 0xFFA040, "颜色随光传播(不衰减)"
+
+    # glowstone(冷蓝 0x60A0FF)在 0 → 冷蓝光场。
+    cool = Storage.empty(1, {0, 0, 0}) |> put(0, :glowstone) |> run_color()
+    assert cool.(0) == 0x60A0FF
+    assert cool.(1) == 0x60A0FF
+  end
+
+  test "彩色光:两色源——每 cell 取最亮源的颜色" do
+    # ember(暖,0)+ glowstone(冷,4)直线两端,皆 emission 满 255。中点 2 两侧等距 → 取较亮一侧。
+    # 对称等亮时 reduce 顺序定胜负;此处验端点各自颜色(端点无歧义)。
+    storage = Storage.empty(1, {0, 0, 0}) |> put(0, :ember) |> put(4, :glowstone)
+    color = run_color(storage)
+    assert color.(0) == 0xFFA040, "ember 端暖橙"
+    assert color.(4) == 0x60A0FF, "glowstone 端冷蓝"
   end
 
   test "光敏元件(不透明 photo_sensor)相邻光源仍被照亮(接收照度)" do

@@ -228,6 +228,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![200, 180, 160],
             light: vec![],
+            light_color: vec![],
         }
     }
 
@@ -286,6 +287,7 @@ mod tests {
                 electric_current: vec![],
                 ionization: vec![],
                 light: vec![],
+                light_color: vec![],
             }));
             authority.drain_inbox();
         }

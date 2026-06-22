@@ -176,6 +176,25 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
       assert MaterialCatalog.default_attribute_value(sensor, "light_emission", 0) == 0
     end
 
+    test "glowstone(id19):纯发光源——冷蓝 light_color、不发热、append-only" do
+      glow = MaterialCatalog.material_id(:glowstone)
+      assert glow == 19
+      assert MaterialCatalog.known_material?(glow)
+      assert MaterialCatalog.material_name(19) == :glowstone
+      assert MaterialCatalog.default_attribute_value(glow, "light_emission", 0) > 0
+      # 冷蓝 packed RGB 0x60A0FF。
+      assert MaterialCatalog.default_attribute_value(glow, "light_color", 0xFFFFFF) == 0x60A0FF
+      # 纯光源不发热(无 heat_output)。
+      assert MaterialCatalog.default_attribute_value(glow, "heat_output", 0) == 0
+    end
+
+    test "ember 配暖橙 light_color(0xFFA040);非光源材料回退白" do
+      ember = MaterialCatalog.material_id(:ember)
+      assert MaterialCatalog.default_attribute_value(ember, "light_color", 0xFFFFFF) == 0xFFA040
+      stone = MaterialCatalog.material_id(:stone)
+      assert MaterialCatalog.default_attribute_value(stone, "light_color", 0xFFFFFF) == 0xFFFFFF
+    end
+
     test "sprout(id18):光合幼苗——有机可燃、半透光,append-only" do
       sprout = MaterialCatalog.material_id(:sprout)
       assert sprout == 18

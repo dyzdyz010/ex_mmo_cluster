@@ -241,6 +241,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         }
     }
 
@@ -355,6 +356,7 @@ mod tests {
             electric_current: vec![5.0, 1.0],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         };
         ingest(&mut app, VoxelServerMessage::FieldRegionSnapshot(region));
         app.update();

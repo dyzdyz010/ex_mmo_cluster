@@ -182,6 +182,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         }
     }
 

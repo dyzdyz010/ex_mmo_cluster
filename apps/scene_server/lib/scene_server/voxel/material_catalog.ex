@@ -42,6 +42,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @photo_sensor_material_id 17
   # 光学 · 光合(2026-06-23):幼苗——光照 + 相邻水时 growth_progress 累进,满则成熟为 wood(光长生命)。
   @sprout_material_id 18
+  # 光学 · 彩色光(2026-06-23):荧光石——纯发光源(冷蓝光),不发热(区别于 ember 的炽热橙)。
+  @glowstone_material_id 19
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -62,7 +64,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     lava: @lava_material_id,
     obsidian: @obsidian_material_id,
     photo_sensor: @photo_sensor_material_id,
-    sprout: @sprout_material_id
+    sprout: @sprout_material_id,
+    glowstone: @glowstone_material_id
   }
 
   @power_source_defaults %{
@@ -239,7 +242,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       # 稳定热源功率(定性档,经守恒热扩散增益放大;火炬借此向宿主格注热)。
       "heat_output" => round(1_500.0 * @fixed32_scale),
       # 光学:余烬自发光——light_emission>0 → LightPropagationKernel 把它当光源 flood 出权威光场。
-      "light_emission" => round(1_500.0 * @fixed32_scale)
+      "light_emission" => round(1_500.0 * @fixed32_scale),
+      # 彩色光:余烬炽热橙(packed RGB888 0xFFA040)。
+      "light_color" => 0xFFA040
     },
     # 化学扩展:熔铁——iron 熔化产物。已是液态:melting inert(不再熔)、freezing_point=1538(降温回凝
     # 铁,严格 < 迟滞);boiling inert(无铁蒸汽材料);惰性不锈(oxidation 哨兵)。仍导电(液态金属)。
@@ -309,6 +314,21 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => 0,
       "dielectric_strength" => round(8.0 * @fixed32_scale),
       "opacity" => round(0.4 * @fixed32_scale)
+    },
+    # 光学 · 彩色光:荧光石——纯发光源(冷蓝光 0x60A0FF),不发热(无 heat_output,区别 ember 炽橙)。
+    # 惰性、不导电。light_emission>0 → LightKernel 当光源;light_color 给光场染成冷蓝。
+    @glowstone_material_id => %{
+      "density" => round(2_600.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(800.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_300.0 * @fixed32_scale),
+      "freezing_point" => round(1_300.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(8.0 * @fixed32_scale),
+      "light_emission" => round(1_500.0 * @fixed32_scale),
+      "light_color" => 0x60A0FF
     }
   }
 

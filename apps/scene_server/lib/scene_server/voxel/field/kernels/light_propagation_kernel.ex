@@ -57,7 +57,10 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernel do
   def kernel_id, do: :light_propagation
 
   @impl true
-  def required_layers(_opts), do: [:light]
+  def required_layers(_opts), do: [:light, :light_color]
+
+  # 彩色光:无光源默认白(packed RGB888 0xFFFFFF)。
+  @default_light_color 0xFFFFFF
 
   @impl true
   def model_card do
@@ -84,36 +87,69 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernel do
 
   @impl true
   def tick(%FieldRegion{} = region, %KernelContext{storage: storage}, opts) when is_map(opts) do
-    sources = light_sources(region, storage)
+    sources_by_color = light_sources_by_color(region, storage)
     opacity = opacity_map(region, storage)
     neighbors_fn = fn macro_index -> neighbors_in_region(macro_index, region) end
 
-    light =
-      LightPropagation.flood(sources, opacity, neighbors_fn,
-        attenuation: attenuation(opts),
-        threshold: threshold(opts),
-        max_frontier: max_frontier(opts)
-      )
+    flood_opts = [
+      attenuation: attenuation(opts),
+      threshold: threshold(opts),
+      max_frontier: max_frontier(opts)
+    ]
 
-    {:cont, write_light_layer(region, light), []}
+    # 彩色光:按源颜色分组各 flood,再逐 cell 取最亮组(强度 = 全源 max,与单次合并 flood 等价;
+    # 颜色 = 最亮组的颜色)。intensity 输出与无色版逐字节相同,颜色为附加层。
+    combined =
+      Enum.reduce(sources_by_color, %{}, fn {color, sources}, acc ->
+        light = LightPropagation.flood(sources, opacity, neighbors_fn, flood_opts)
+
+        Enum.reduce(light, acc, fn {idx, intensity}, acc2 ->
+          case Map.get(acc2, idx) do
+            {prev_i, _prev_c} when prev_i >= intensity -> acc2
+            _ -> Map.put(acc2, idx, {intensity, color})
+          end
+        end)
+      end)
+
+    {:cont, write_light_layers(region, combined), []}
   end
 
   def tick(%FieldRegion{} = region, _context, _opts), do: {:cont, region, []}
 
   # ---- 光源 / opacity 投影(读已提交 truth) ----
 
-  defp light_sources(region, %Storage{} = storage) do
+  # 彩色光:光源按颜色分组 %{packed_rgb => %{idx => intensity}}(各组独立 flood 后逐 cell 取最亮组)。
+  defp light_sources_by_color(region, %Storage{} = storage) do
     region
     |> region_solid_cells(storage)
     |> Enum.reduce(%{}, fn macro_index, acc ->
       case source_intensity(storage, macro_index) do
-        intensity when intensity > 0.0 -> Map.put(acc, macro_index, intensity)
-        _zero -> acc
+        intensity when intensity > 0.0 ->
+          color = source_color(storage, macro_index)
+
+          Map.update(acc, color, %{macro_index => intensity}, fn group ->
+            Map.put(group, macro_index, intensity)
+          end)
+
+        _zero ->
+          acc
       end
     end)
   end
 
-  defp light_sources(_region, _storage), do: %{}
+  defp light_sources_by_color(_region, _storage), do: %{}
+
+  # 源颜色 packed RGB888(default 白)。读 raw 整数(非定点缩放)。
+  defp source_color(storage, macro_index) do
+    raw =
+      Storage.effective_attribute_at_normalized(storage, macro_index, "light_color")
+
+    color = round(raw)
+
+    if color >= 0 and color <= 0xFFFFFF, do: color, else: @default_light_color
+  rescue
+    _ -> @default_light_color
+  end
 
   defp source_intensity(storage, macro_index) do
     emission_w = scaled_attribute(storage, macro_index, "light_emission", 0.0)
@@ -185,18 +221,23 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernel do
 
   # ---- 场层写回 ----
 
-  defp write_light_layer(region, light) do
-    layer =
-      region
-      |> FieldRegion.get_layer(:light)
-      |> clear_layer_in_aabb(region.aabb)
+  # 写 :light(强度)+ :light_color(packed RGB,存为 float,≤2^24 精确)。combined = %{idx => {i, color}}。
+  defp write_light_layers(region, combined) do
+    intensity_layer =
+      region |> FieldRegion.get_layer(:light) |> clear_layer_in_aabb(region.aabb)
 
-    layer =
-      Enum.reduce(light, layer, fn {macro_index, value}, acc ->
-        FieldLayer.put(acc, macro_index, value)
+    color_layer =
+      region |> FieldRegion.get_layer(:light_color) |> clear_layer_in_aabb(region.aabb)
+
+    {intensity_layer, color_layer} =
+      Enum.reduce(combined, {intensity_layer, color_layer}, fn {idx, {intensity, color}},
+                                                               {i_acc, c_acc} ->
+        {FieldLayer.put(i_acc, idx, intensity), FieldLayer.put(c_acc, idx, color * 1.0)}
       end)
 
-    FieldRegion.put_layer(region, :light, layer)
+    region
+    |> FieldRegion.put_layer(:light, intensity_layer)
+    |> FieldRegion.put_layer(:light_color, color_layer)
   end
 
   defp clear_layer_in_aabb(layer, {{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do

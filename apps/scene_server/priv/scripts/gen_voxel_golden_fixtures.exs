@@ -382,6 +382,36 @@ defmodule FixtureGen do
     }
   end
 
+  @doc """
+  field_region_light_color: a FieldRegion (0x73) carrying BOTH the light intensity
+  (0x10) and light_color (0x20) layers — the colored authoritative light field.
+  Validates the bevy decoder's 3-u8-RGB-per-cell color array (packed RGB888) on real
+  server bytes. ember-warm (0xFFA040) + glowstone-cool (0x60A0FF) cells.
+  """
+  def field_region_light_color do
+    light =
+      FieldLayer.new()
+      |> FieldLayer.put(0, 255.0)
+      |> FieldLayer.put(7, 128.0)
+
+    color =
+      FieldLayer.new()
+      |> FieldLayer.put(0, 0xFFA040 * 1.0)
+      |> FieldLayer.put(7, 0x60A0FF * 1.0)
+
+    %FieldRegion{
+      region_id: 92,
+      chunk_coord: {1, 0, 0},
+      aabb: {{0, 0, 0}, {15, 15, 15}},
+      field_types: [:light, :light_color],
+      source_points: [],
+      tick_count: 13,
+      max_ticks: nil,
+      kernels: [],
+      layers: %{light: light, light_color: color}
+    }
+  end
+
   # ---- delta fixtures --------------------------------------------------------
 
   @doc """
@@ -921,6 +951,18 @@ write_fixture.("field_region_light", field_light_bytes, %{
   kind: "field_region_snapshot",
   description:
     "0x73 FieldRegionSnapshot: authoritative light field (mask 0x10, cells idx 0/5/10: light=255/64/200, u8 wire-last after ionization). Cross-language (bevy) parity for the emergent-optics light wire array."
+})
+
+field_light_color_bytes =
+  FixtureGen.field_region_light_color()
+  |> FieldCodec.encode_snapshot_payload(1)
+  |> strip_opcode.()
+
+write_fixture.("field_region_light_color", field_light_color_bytes, %{
+  name: "field_region_light_color",
+  kind: "field_region_snapshot",
+  description:
+    "0x73 FieldRegionSnapshot: colored light field (mask 0x30 = light 0x10 + light_color 0x20, cells idx 0/7: light=255/128, color=0xFFA040 warm/0x60A0FF cool; color is 3 u8 RGB/cell wire-last). Cross-language (bevy) parity for the colored-light wire array."
 })
 
 IO.puts("\nfixtures dir: #{Path.expand(fixtures_dir)}")

@@ -1,0 +1,5 @@
+name: field_region_light_color
+kind: field_region_snapshot
+wire_size: 47
+description: |
+  0x73 FieldRegionSnapshot: colored light field (mask 0x30 = light 0x10 + light_color 0x20, cells idx 0/7: light=255/128, color=0xFFA040 warm/0x60A0FF cool; color is 3 u8 RGB/cell wire-last). Cross-language (bevy) parity for the colored-light wire array.

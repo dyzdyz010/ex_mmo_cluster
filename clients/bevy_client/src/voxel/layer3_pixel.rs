@@ -41,8 +41,8 @@ use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk}
 use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer,
-    NormalBlock, RefinedCell, SurfaceElement, VoxelServerMessage,
+    FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords,
+    MicroLayer, NormalBlock, RefinedCell, SurfaceElement, VoxelServerMessage,
 };
 use crate::voxel::{HeatSmokePlugin, IncandescencePlugin, LightningPlugin, VoxelAuthority};
 
@@ -233,6 +233,7 @@ fn temperature_field(
         electric_current: vec![],
         ionization: vec![],
         light: vec![],
+        light_color: vec![],
     }
 }
 
@@ -388,6 +389,7 @@ fn ionization_field(
         electric_current: vec![],
         ionization: cells.iter().map(|(_, v)| *v).collect(),
         light: vec![],
+        light_color: vec![],
     }
 }
 
@@ -405,6 +407,30 @@ fn light_field(region_id: u64, chunk_coord: [i32; 3], cells: &[(u16, u8)]) -> Fi
         electric_current: vec![],
         ionization: vec![],
         light: cells.iter().map(|(_, v)| *v).collect(),
+        light_color: vec![],
+    }
+}
+
+/// A colored light field (intensity + packed RGB888 per cell) for the colored-light
+/// overlay pixel test.
+fn colored_light_field(
+    region_id: u64,
+    chunk_coord: [i32; 3],
+    cells: &[(u16, u8, u32)],
+) -> FieldRegionSnapshot {
+    FieldRegionSnapshot {
+        logical_scene_id: 1,
+        chunk_coord,
+        region_id,
+        tick_count: 1,
+        field_mask: FIELD_MASK_LIGHT | FIELD_MASK_LIGHT_COLOR,
+        macro_indices: cells.iter().map(|(i, _, _)| *i).collect(),
+        temperature: vec![],
+        electric_potential: vec![],
+        electric_current: vec![],
+        ionization: vec![],
+        light: cells.iter().map(|(_, v, _)| *v).collect(),
+        light_color: cells.iter().map(|(_, _, c)| *c).collect(),
     }
 }
 
@@ -450,6 +476,7 @@ fn electric_field(
         electric_current: if is_current { values } else { vec![] },
         ionization: vec![],
         light: vec![],
+        light_color: vec![],
     }
 }
 
@@ -716,6 +743,7 @@ fn discharge_field(
         electric_current: vec![],
         ionization: cells.iter().map(|(_, _, ion)| *ion).collect(),
         light: vec![],
+        light_color: vec![],
     }
 }
 
@@ -961,6 +989,40 @@ fn light_overlay_is_warm_white() {
     assert!(
         c.b < c.r && c.b < c.g,
         "light overlay should be warm (blue the lowest channel); got {c:?}"
+    );
+}
+
+/// The AUTHORITATIVE COLORED light field renders each cell in its source's actual
+/// color (warm ember vs cool glowstone) — verifies the colored-light path
+/// (FIELD_MASK_LIGHT_COLOR, packed-RGB-marker bake + field_color unpack) reaches the
+/// screen with the correct hue, on the real GPU.
+#[test]
+fn colored_light_overlay_renders_source_hue() {
+    let look = Vec3::new(150.0, 150.0, 150.0);
+    let eye = Vec3::new(150.0, 150.0, -500.0);
+
+    // Warm ember light (0xFFA040) at the aimed cell → warm pixels (red above blue).
+    let warm = colored_light_field(1, [0, 0, 0], &[(idx(1, 1, 1), 255, 0xFFA040)]);
+    let warm_px = render_scene(|world, image| {
+        spawn_camera(world, image, eye, look);
+        spawn_overlay_kind(world, &warm, FieldOverlayKind::Light);
+    });
+    let wc = sample_patch(&warm_px, W / 2, H / 2, 3);
+    assert!(
+        wc.r > wc.b + 0.10,
+        "warm light should render red above blue; got {wc:?}"
+    );
+
+    // Cool glowstone light (0x60A0FF) → cool pixels (blue above red).
+    let cool = colored_light_field(2, [0, 0, 0], &[(idx(1, 1, 1), 255, 0x60A0FF)]);
+    let cool_px = render_scene(|world, image| {
+        spawn_camera(world, image, eye, look);
+        spawn_overlay_kind(world, &cool, FieldOverlayKind::Light);
+    });
+    let cc = sample_patch(&cool_px, W / 2, H / 2, 3);
+    assert!(
+        cc.b > cc.r + 0.10,
+        "cool light should render blue above red; got {cc:?}"
     );
 }
 

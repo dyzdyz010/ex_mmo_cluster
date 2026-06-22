@@ -51,6 +51,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   @field_mask_electric_current 0x08
   # 光学正交系统(2026-06-23):权威光场(0..255 光强,u8 同 ionization)。
   @field_mask_light 0x10
+  # 彩色光(2026-06-23):光场颜色,每 cell 3 u8 RGB(wire-last,附加层不破 0x10 强度格式)。
+  @field_mask_light_color 0x20
 
   @destroy_reason_expired 0x00
   @destroy_reason_lease_revoked 0x01
@@ -69,6 +71,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
   def field_mask_ionization, do: @field_mask_ionization
   def field_mask_electric_current, do: @field_mask_electric_current
   def field_mask_light, do: @field_mask_light
+  def field_mask_light_color, do: @field_mask_light_color
 
   # ---- FieldRegionSnapshot (0x73) -------------------------------------------
 
@@ -117,12 +120,20 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         []
       end
 
+    light_color_cells =
+      if has_mask?(field_mask, @field_mask_light_color) do
+        collect_cells(region, :light_color)
+      else
+        []
+      end
+
     all_indices =
       (Enum.map(temperature_cells, &elem(&1, 0)) ++
          Enum.map(electric_cells, &elem(&1, 0)) ++
          Enum.map(current_cells, &elem(&1, 0)) ++
          Enum.map(ionization_cells, &elem(&1, 0)) ++
-         Enum.map(light_cells, &elem(&1, 0)))
+         Enum.map(light_cells, &elem(&1, 0)) ++
+         Enum.map(light_color_cells, &elem(&1, 0)))
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -132,6 +143,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     current_map = Map.new(current_cells)
     ion_map = Map.new(ionization_cells)
     light_map = Map.new(light_cells)
+    light_color_map = Map.new(light_color_cells)
 
     temp_layer =
       if has_mask?(field_mask, @field_mask_temperature),
@@ -152,6 +164,10 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
     light_layer =
       if has_mask?(field_mask, @field_mask_light),
         do: FieldRegion.get_layer(region, :light)
+
+    light_color_layer =
+      if has_mask?(field_mask, @field_mask_light_color),
+        do: FieldRegion.get_layer(region, :light_color)
 
     indices_bin =
       Enum.reduce(all_indices, <<>>, fn idx, acc ->
@@ -210,13 +226,30 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         <<>>
       end
 
+    light_color_bin =
+      if has_mask?(field_mask, @field_mask_light_color) do
+        Enum.reduce(all_indices, <<>>, fn idx, acc ->
+          packed = Map.get(light_color_map, idx, FieldLayer.get(light_color_layer, idx))
+          rgb = packed |> round() |> max(0) |> min(0xFFFFFF)
+          r = band(bsr(rgb, 16), 0xFF)
+          g = band(bsr(rgb, 8), 0xFF)
+          b = band(rgb, 0xFF)
+
+          <<acc::binary, r::unsigned-big-integer-size(8), g::unsigned-big-integer-size(8),
+            b::unsigned-big-integer-size(8)>>
+        end)
+      else
+        <<>>
+      end
+
     <<@opcode_snapshot::unsigned-big-integer-size(8),
       logical_scene_id::unsigned-big-integer-size(64), cx::signed-big-integer-size(32),
       cy::signed-big-integer-size(32), cz::signed-big-integer-size(32),
       region.region_id::unsigned-big-integer-size(64),
       region.tick_count::unsigned-big-integer-size(32), field_mask::unsigned-big-integer-size(8),
       cell_count::unsigned-big-integer-size(16), indices_bin::binary, temp_bin::binary,
-      elec_bin::binary, current_bin::binary, ion_bin::binary, light_bin::binary>>
+      elec_bin::binary, current_bin::binary, ion_bin::binary, light_bin::binary,
+      light_color_bin::binary>>
   end
 
   @doc """
@@ -280,7 +313,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {[], rest5}
       end
 
-    {light_values, _rest7} =
+    {light_values, rest7} =
       if has_mask?(field_mask, @field_mask_light) do
         light_size = cell_count
         <<light_bin::binary-size(light_size), r::binary>> = rest6
@@ -288,6 +321,23 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
         {vals, r}
       else
         {[], rest6}
+      end
+
+    # 彩色光:每 cell 3 u8 RGB → packed RGB888 整数。
+    {light_color_values, _rest8} =
+      if has_mask?(field_mask, @field_mask_light_color) do
+        color_size = cell_count * 3
+        <<color_bin::binary-size(color_size), r::binary>> = rest7
+
+        vals =
+          for <<rr::unsigned-big-integer-size(8), gg::unsigned-big-integer-size(8),
+                bb::unsigned-big-integer-size(8) <- color_bin>> do
+            bor(bor(bsl(rr, 16), bsl(gg, 8)), bb)
+          end
+
+        {vals, r}
+      else
+        {[], rest7}
       end
 
     %{
@@ -303,7 +353,8 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       electric_values: electric_values,
       electric_current_values: electric_current_values,
       ionization_values: ionization_values,
-      light_values: light_values
+      light_values: light_values,
+      light_color_values: light_color_values
     }
   end
 
@@ -364,6 +415,7 @@ defmodule SceneServer.Voxel.Field.FieldCodec do
       :electric_current, acc -> bor(acc, @field_mask_electric_current)
       :ionization, acc -> bor(acc, @field_mask_ionization)
       :light, acc -> bor(acc, @field_mask_light)
+      :light_color, acc -> bor(acc, @field_mask_light_color)
       _, acc -> acc
     end)
   end

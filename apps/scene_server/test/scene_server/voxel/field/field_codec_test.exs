@@ -47,12 +47,61 @@ defmodule SceneServer.Voxel.Field.FieldCodecTest do
       decoded =
         region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
 
-      assert decoded.field_mask == FieldCodec.field_mask_light()
+      # 光 kernel 声明 [:light, :light_color] → region 同时携两层(mask 0x30)。
+      assert decoded.field_mask ==
+               FieldCodec.field_mask_light() + FieldCodec.field_mask_light_color()
+
       assert decoded.macro_indices == [idx_a, idx_b]
       assert length(decoded.light_values) == decoded.cell_count
       # u8 clamp [0,255]。
       assert Enum.at(decoded.light_values, 0) == 255
       assert Enum.at(decoded.light_values, 1) == 255
+      # 未设颜色 → 默认 0(黑)packed。
+      assert decoded.light_color_values == [0, 0]
+    end
+
+    test "reserves a first-class light_color field mask" do
+      assert FieldCodec.field_mask_light_color() == 0x20
+    end
+
+    test "roundtrip with light + light_color (3 u8 RGB packed)" do
+      idx_a = Types.macro_index!({0, 0, 0})
+      idx_b = Types.macro_index!({2, 0, 0})
+
+      region =
+        FieldRegion.new(%{
+          region_id: 91,
+          chunk_coord: {0, 0, 0},
+          aabb: {{0, 0, 0}, {2, 0, 0}},
+          kernels: [%{id: :light_propagation, module: LightPropagationKernel}]
+        })
+
+      light =
+        region
+        |> FieldRegion.get_layer(:light)
+        |> FieldLayer.put(idx_a, 255.0)
+        |> FieldLayer.put(idx_b, 128.0)
+
+      # packed RGB888 存为 float(≤2^24 精确)。warm 0xFFA040, cool 0x60A0FF。
+      color =
+        region
+        |> FieldRegion.get_layer(:light_color)
+        |> FieldLayer.put(idx_a, 0xFFA040 * 1.0)
+        |> FieldLayer.put(idx_b, 0x60A0FF * 1.0)
+
+      region =
+        region
+        |> FieldRegion.put_layer(:light, light)
+        |> FieldRegion.put_layer(:light_color, color)
+
+      decoded =
+        region |> FieldCodec.encode_snapshot_payload(1) |> FieldCodec.decode_snapshot_payload!()
+
+      assert decoded.field_mask ==
+               FieldCodec.field_mask_light() + FieldCodec.field_mask_light_color()
+
+      # 3 u8 RGB 解回 packed RGB888,逐字节还原源色。
+      assert decoded.light_color_values == [0xFFA040, 0x60A0FF]
     end
 
     test "roundtrip with electric current as a first-class layer" do

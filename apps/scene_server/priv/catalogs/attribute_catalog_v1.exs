@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 9,
+  catalog_version: 10,
   definitions: [
     %{
       id: 1,
@@ -318,6 +318,21 @@
       max_value: 65_536,
       merge_rule: :add_delta,
       dynamic: true
+    },
+    # 光学 · 彩色光(2026-06-23):发光源颜色,**packed RGB888 原始整数**(0xRRGGBB,非定点缩放)。
+    # default 0xFFFFFF 白光;LightPropagationKernel 读它给光场染色(最亮源的颜色随光传播)。值 ≤ 2^24
+    # 在 f32 场层精确可存。仅光源(light_emission>0)有意义;静态 material_default。
+    %{
+      id: 22,
+      name: "light_color",
+      unit: "rgb888",
+      value_type: :fixed32,
+      # 0xFFFFFF 白光(非光源材料回退,惰性安全)
+      default_value: 16_777_215,
+      min_value: 0,
+      max_value: 16_777_215,
+      merge_rule: :material_default,
+      dynamic: false
     }
   ]
 }

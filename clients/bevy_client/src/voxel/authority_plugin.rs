@@ -336,6 +336,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         };
         authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(region));
         authority.drain_inbox();
@@ -378,6 +379,7 @@ mod tests {
             electric_current: vec![5.0, 1.0],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         };
         authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(electric));
         // A temperature-only snapshot must NOT surface a smoke event.
@@ -394,6 +396,7 @@ mod tests {
                 electric_current: vec![],
                 ionization: vec![],
                 light: vec![],
+                light_color: vec![],
             },
         ));
         authority.enqueue(VoxelServerMessage::FieldRegionDestroyed(
@@ -431,6 +434,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![200, 180],
             light: vec![],
+            light_color: vec![],
         };
         authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge));
         // A current-only electric snapshot must NOT surface a discharge event.
@@ -447,6 +451,7 @@ mod tests {
                 electric_current: vec![3.0],
                 ionization: vec![],
                 light: vec![],
+                light_color: vec![],
             },
         ));
         authority.drain_inbox();

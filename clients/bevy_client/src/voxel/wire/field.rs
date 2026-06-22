@@ -30,6 +30,9 @@ pub const FIELD_MASK_ELECTRIC_CURRENT: u8 = 0x08;
 /// Authoritative light field (emergent optics): u8 0..255, wire-last (after
 /// ionization), mirroring the server `LightPropagationKernel`.
 pub const FIELD_MASK_LIGHT: u8 = 0x10;
+/// Light color (emergent optics): 3 u8 RGB per cell, wire-last (after light
+/// intensity), additive on top of `FIELD_MASK_LIGHT`. Decoded to packed RGB888.
+pub const FIELD_MASK_LIGHT_COLOR: u8 = 0x20;
 
 pub const DESTROY_REASON_EXPIRED: u8 = 0x00;
 pub const DESTROY_REASON_LEASE_REVOKED: u8 = 0x01;
@@ -71,6 +74,9 @@ pub struct FieldRegionSnapshot {
     /// Present iff `field_mask & FIELD_MASK_LIGHT`. Authoritative light level
     /// (0..255) per cell — the emergent-optics light field.
     pub light: Vec<u8>,
+    /// Present iff `field_mask & FIELD_MASK_LIGHT_COLOR`. Packed RGB888 light
+    /// color per cell (from 3 wire u8) — the dominant source's color.
+    pub light_color: Vec<u32>,
 }
 
 impl FieldRegionSnapshot {
@@ -129,6 +135,19 @@ impl FieldRegionSnapshot {
         } else {
             Vec::new()
         };
+        // Light color: 3 u8 RGB per cell → packed RGB888, after the light array.
+        let light_color = if field_mask & FIELD_MASK_LIGHT_COLOR != 0 {
+            let mut v = Vec::with_capacity(cell_count);
+            for _ in 0..cell_count {
+                let rr = r.u8("field.light_color.r")? as u32;
+                let gg = r.u8("field.light_color.g")? as u32;
+                let bb = r.u8("field.light_color.b")? as u32;
+                v.push((rr << 16) | (gg << 8) | bb);
+            }
+            v
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             logical_scene_id,
@@ -142,6 +161,7 @@ impl FieldRegionSnapshot {
             electric_current,
             ionization,
             light,
+            light_color,
         })
     }
 
@@ -180,6 +200,13 @@ impl FieldRegionSnapshot {
         if self.field_mask & FIELD_MASK_LIGHT != 0 {
             for v in &self.light {
                 w.u8(*v);
+            }
+        }
+        if self.field_mask & FIELD_MASK_LIGHT_COLOR != 0 {
+            for packed in &self.light_color {
+                w.u8(((packed >> 16) & 0xFF) as u8);
+                w.u8(((packed >> 8) & 0xFF) as u8);
+                w.u8((packed & 0xFF) as u8);
             }
         }
     }

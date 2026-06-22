@@ -27,7 +27,8 @@
 use crate::voxel::mesher::{ChunkMeshData, push_cube};
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
+    FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
+    FieldRegionSnapshot,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -61,6 +62,11 @@ pub const LIGHT_BUCKET_COUNT: u32 = 8;
 const LIGHT_THRESHOLD: f32 = 8.0;
 const LIGHT_RAMP: f32 = 255.0;
 const LIGHT_ALPHA: f32 = 0.5;
+/// Colored-light marker base: `LIGHT_COLOR_PACKED_BASE + packed_rgb888` is baked
+/// as the per-vertex material id (u32, exact) for the authoritative colored light
+/// field; `field_color` detects this range and unpacks the RGB. 0x0100_0000 (16M)
+/// sits far above every reserved field marker range, so no collision.
+pub const LIGHT_COLOR_PACKED_BASE: u32 = 0x0100_0000;
 
 /// Temperature overlay model (mirrors web `fieldDebugOverlay`): cells are colored
 /// by their deviation from the ambient baseline; below `TEMP_MIN_DEVIATION` off
@@ -197,6 +203,16 @@ impl VoxelFieldStore {
 /// the Bevy adapter bakes per-vertex colors without knowing which field produced
 /// a quad. Non-field ids fall back to opaque white.
 pub fn field_color(material_id: u32) -> [f32; 4] {
+    // Colored light: a packed RGB888 baked above LIGHT_COLOR_PACKED_BASE → unpack.
+    if material_id >= LIGHT_COLOR_PACKED_BASE {
+        let packed = material_id - LIGHT_COLOR_PACKED_BASE;
+        return [
+            ((packed >> 16) & 0xFF) as f32 / 255.0,
+            ((packed >> 8) & 0xFF) as f32 / 255.0,
+            (packed & 0xFF) as f32 / 255.0,
+            LIGHT_ALPHA,
+        ];
+    }
     if let Some(color) = temperature_color(material_id) {
         return color;
     }
@@ -384,6 +400,34 @@ pub fn light_overlay_mesh(field: &FieldRegionSnapshot, voxel_size: f32) -> Chunk
     if field.field_mask & FIELD_MASK_LIGHT == 0 {
         return ChunkMeshData::default();
     }
+    // Colored path: when the authoritative light_color layer is present, bake the
+    // per-cell RGB (gated by intensity ≥ threshold) so the overlay shows the actual
+    // light color (warm ember vs cool glowstone). Falls back to the warm-white
+    // intensity ramp when no color layer (older streams / intensity-only regions).
+    if field.field_mask & FIELD_MASK_LIGHT_COLOR != 0
+        && field.light_color.len() == field.light.len()
+    {
+        let mut mesh = ChunkMeshData::default();
+        let marker = voxel_size * MARKER_FRACTION;
+        let inset = (voxel_size - marker) * 0.5;
+        for (i, &macro_index) in field.macro_indices.iter().enumerate() {
+            let Some(&intensity) = field.light.get(i) else {
+                continue;
+            };
+            if (intensity as f32) < LIGHT_THRESHOLD {
+                continue;
+            }
+            let packed = field.light_color.get(i).copied().unwrap_or(0xFFFFFF) & 0xFF_FFFF;
+            let (mx, my, mz) = macro_coord(macro_index);
+            let min = [
+                mx as f32 * voxel_size + inset,
+                my as f32 * voxel_size + inset,
+                mz as f32 * voxel_size + inset,
+            ];
+            push_cube(&mut mesh, min, marker, LIGHT_COLOR_PACKED_BASE + packed);
+        }
+        return mesh;
+    }
     // `light` is u8 on the wire; widen to f32 for the shared overlay core.
     let values: Vec<f32> = field.light.iter().map(|&v| v as f32).collect();
     overlay_from_values(&field.macro_indices, &values, voxel_size, light_material)
@@ -494,6 +538,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         }
     }
 
@@ -517,6 +562,7 @@ mod tests {
             electric_current: if as_current { values } else { vec![] },
             ionization: vec![],
             light: vec![],
+            light_color: vec![],
         }
     }
 
@@ -733,6 +779,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![2, 200], // first below threshold, second drawn
             light: vec![],
+            light_color: vec![],
         };
         let s = ionization_overlay_mesh(&field, 100.0).summary();
         assert_eq!(s.quad_count, 6); // only the 200-ion cell → one marker cube
@@ -774,6 +821,7 @@ mod tests {
             electric_current: vec![],
             ionization: vec![],
             light: vec![1, 255], // first below threshold, second drawn
+            light_color: vec![],
         };
         let s = light_overlay_mesh(&field, 100.0).summary();
         assert_eq!(s.quad_count, 6); // only the bright cell → one marker cube
@@ -787,5 +835,43 @@ mod tests {
         let mut bare = field.clone();
         bare.field_mask = 0;
         assert!(light_overlay_mesh(&bare, 100.0).is_empty());
+    }
+
+    #[test]
+    fn colored_light_overlay_bakes_per_cell_rgb() {
+        // field_color unpacks a packed-RGB marker into its exact channels.
+        let warm = field_color(LIGHT_COLOR_PACKED_BASE + 0xFFA040);
+        assert!((warm[0] - 1.0).abs() < 1e-3); // R = 0xFF
+        assert!((warm[1] - 0xA0 as f32 / 255.0).abs() < 1e-3); // G = 0xA0
+        assert!((warm[2] - 0x40 as f32 / 255.0).abs() < 1e-3); // B = 0x40
+        assert!(warm[0] > warm[2], "ember light is warm (R > B)");
+        let cool = field_color(LIGHT_COLOR_PACKED_BASE + 0x60A0FF);
+        assert!(cool[2] > cool[0], "glowstone light is cool (B > R)");
+
+        // Colored overlay path: intensity-gated, baked with the packed color marker.
+        let field = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [0, 0, 0],
+            region_id: 1,
+            tick_count: 1,
+            field_mask: FIELD_MASK_LIGHT | FIELD_MASK_LIGHT_COLOR,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light: vec![1, 255],                  // first below threshold, second drawn
+            light_color: vec![0xFFA040, 0x60A0FF], // warm, cool
+        };
+        let mesh = light_overlay_mesh(&field, 100.0);
+        let summary = mesh.summary();
+        assert_eq!(summary.quad_count, 6); // only the bright cell → one cube
+        // The drawn cell's marker is the packed cool color (cell 5, light 255).
+        assert!(
+            summary
+                .area_by_material
+                .keys()
+                .all(|&m| m == LIGHT_COLOR_PACKED_BASE + 0x60A0FF)
+        );
     }
 }
