@@ -158,6 +158,37 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @photo_sensor_darkens
   ]
 
+  # 光学 · 光合(2026-06-23)光长生命:sprout 幼苗在**光照 + 相邻水**下 growth_progress 累进,满则
+  # 成熟为 wood。**组合三系统**:`:light` condition(权威光场)× `require_neighbor_materials [:water]`
+  # (多反应物)× growth_progress 累进/transform(反应进度,镜像燃烧/氧化)。光是驱动有状态多 tick
+  # 生长过程的真机制,不止开关/tag。光阈同光敏(32);rate 0.05(~20 tick 成熟)。
+  @photosynthesis_light_threshold 32.0
+  @photosynthesis_rate 0.05
+
+  @sprout_photosynthesizes Rule.new!(
+                             id: :sprout_photosynthesizes,
+                             kind: :tag_reaction,
+                             material: :sprout,
+                             condition: {:light, :gte, {:value, @photosynthesis_light_threshold}},
+                             require_neighbor_materials: [:water],
+                             effects: [
+                               {:advance_attribute, "growth_progress", @photosynthesis_rate}
+                             ]
+                           )
+
+  @sprout_matures Rule.new!(
+                    id: :sprout_matures,
+                    kind: :tag_reaction,
+                    material: :sprout,
+                    condition: {:growth_progress, :gte, {:value, 1.0}},
+                    effects: [{:transform, :wood}]
+                  )
+
+  @photosynthesis [
+    @sprout_photosynthesizes,
+    @sprout_matures
+  ]
+
   # 基础物理反应(相变);化学反应(燃烧/氧化)由 ChemicalReactions 展开、设备执行器由 Actuators 展开后并入。
   @base [
     @ice_melts,
@@ -172,7 +203,8 @@ defmodule SceneServer.Voxel.Reaction.Rules do
 
   @all @base ++
          @multi_reactant ++
-         @photosensitive ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
+         @photosensitive ++
+         @photosynthesis ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
 
   @doc "全部反应规则(基础相变 + 化学展开 + 执行器展开)。"
   @spec all() :: [Rule.t()]

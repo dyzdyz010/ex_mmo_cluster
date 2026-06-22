@@ -69,6 +69,15 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
   end
 
+  defp cell_material(chunk, macro) do
+    storage = ChunkProcess.debug_state(chunk).storage
+
+    case Storage.normal_block_at(storage, macro) do
+      %NormalBlockData{material_id: id} -> id
+      _ -> nil
+    end
+  end
+
   defp blocking?(chunk, macro) do
     {:ok, result} =
       ChunkProcess.collision_query(chunk, %{samples: [%{macro: macro, micro_slot: 0}]})
@@ -195,5 +204,54 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
 
     refute blocking?(chunk, gate),
            "光照打开 photo_sensor 闸门 → 碰撞视为可通行(光→:illuminated→:open→passable 全链落 truth)"
+  end
+
+  test "光合(全 DB):sprout 幼苗在光照+相邻水下生长 → 成熟为 wood(光长生命,三系统组合)" do
+    # 布局:ember(光源,0)— sprout(1)— water(2)。sprout 受光(0→1)且相邻水(2)→ 光合生长。
+    # 组合权威光场 × 多反应物(相邻水)× 生长进度累进/transform。光是有状态多 tick 生长过程的真机制。
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    ember = Types.macro_index!({0, 0, 0})
+    sprout = Types.macro_index!({1, 0, 0})
+    water = Types.macro_index!({2, 0, 0})
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        ember,
+        NormalBlockData.new(MaterialCatalog.material_id(:ember))
+      )
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        sprout,
+        NormalBlockData.new(MaterialCatalog.material_id(:sprout))
+      )
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        water,
+        NormalBlockData.new(MaterialCatalog.material_id(:water))
+      )
+
+    assert cell_material(chunk, sprout) == MaterialCatalog.material_id(:sprout)
+
+    # 多 tick 光合(rate 0.05 → ~20 tick 成熟)。跑到成熟或 30 tick 上限。
+    wood_id = MaterialCatalog.material_id(:wood)
+
+    matured? =
+      Enum.reduce_while(1..30, false, fn i, _acc ->
+        run_light_reaction_tick(chunk, 9900 + i, {{0, 0, 0}, {2, 0, 0}})
+
+        if cell_material(chunk, sprout) == wood_id do
+          {:halt, true}
+        else
+          {:cont, false}
+        end
+      end)
+
+    assert matured?, "sprout 在光照+相邻水下持续光合 growth_progress 累进满 → 成熟为 wood(光长生命)"
+    assert cell_material(chunk, sprout) == wood_id
   end
 end

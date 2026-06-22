@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 8,
+  catalog_version: 9,
   definitions: [
     %{
       id: 1,
@@ -303,6 +303,21 @@
       max_value: 65_536,
       merge_rule: :material_default,
       dynamic: false
+    },
+    # 光学正交系统 · 光合(2026-06-23):生长进度比率 0.0→1.0(满即成熟,如 sprout→wood)。
+    # `:add_delta` 让光合每 tick 累进(光照+相邻水时);clip 到 [0, 1.0](镜像 burn/oxidation_progress)。
+    %{
+      id: 21,
+      name: "growth_progress",
+      unit: "ratio",
+      value_type: :fixed32,
+      # 0.0 未生长
+      default_value: 0,
+      min_value: 0,
+      # 1.0 成熟
+      max_value: 65_536,
+      merge_rule: :add_delta,
+      dynamic: true
     }
   ]
 }

@@ -176,6 +176,24 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
       assert MaterialCatalog.default_attribute_value(sensor, "light_emission", 0) == 0
     end
 
+    test "sprout(id18):光合幼苗——有机可燃、半透光,append-only" do
+      sprout = MaterialCatalog.material_id(:sprout)
+      assert sprout == 18
+      assert MaterialCatalog.known_material?(sprout)
+      assert MaterialCatalog.material_name(18) == :sprout
+      # 有机可燃(ignition 300℃,非哨兵)。
+      assert MaterialCatalog.default_attribute_value(sprout, "ignition_temperature", 0) ==
+               round(300.0 * @fixed32_scale)
+
+      # 嫩叶半透光(opacity < 1.0)。
+      assert MaterialCatalog.default_attribute_value(
+               sprout,
+               "opacity",
+               round(1.0 * @fixed32_scale)
+             ) <
+               round(1.0 * @fixed32_scale)
+    end
+
     test "obsidian 半透光(显式低 opacity);未配 opacity 材料回退不透明默认" do
       obsidian = MaterialCatalog.material_id(:obsidian)
       # 玻璃半透:opacity < 1.0(default 不透明)。

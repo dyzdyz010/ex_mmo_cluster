@@ -25,7 +25,8 @@ defmodule SceneServer.Voxel.Reaction.Rule do
   @ops [:gte, :gt, :lte, :lt]
   # 光学正交系统(2026-06-23):`:light` condition 维度——反应可 gate 在光强(0..255),
   # 由 ReactionKernel 从同 tick 的 :light 场层注入 cell.light(Engine field_value 通用兜底读 cell key)。
-  @condition_fields [:temperature, :burn_progress, :oxidation_progress, :light]
+  # `:growth_progress` —— 光合生长进度(0..1),ReactionKernel 从 truth 注入(镜像 oxidation_progress)。
+  @condition_fields [:temperature, :burn_progress, :oxidation_progress, :light, :growth_progress]
   @effect_kinds [:add_tag, :remove_tag, :emit_heat_joules, :advance_attribute, :transform]
 
   @enforce_keys [:id, :kind]

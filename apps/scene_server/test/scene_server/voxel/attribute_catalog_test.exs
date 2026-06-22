@@ -19,22 +19,22 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 20 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 21 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 8
-      assert length(snapshot.definitions) == 20
+      assert snapshot.catalog_version == 9
+      assert length(snapshot.definitions) == 21
     end
 
-    test "catalog_version returns 8", %{server: server} do
-      assert AttributeCatalog.catalog_version(server) == 8
+    test "catalog_version returns 9", %{server: server} do
+      assert AttributeCatalog.catalog_version(server) == 9
     end
 
     test "definitions are sorted by id ascending", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == Enum.to_list(1..20)
+      assert ids == Enum.to_list(1..21)
     end
   end
 
@@ -126,6 +126,19 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       assert defn.dynamic == true
     end
 
+    test "returns 光合 growth_progress dynamic add_delta definition", %{server: server} do
+      assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, 21)
+      assert defn.name == "growth_progress"
+      assert defn.unit == "ratio"
+      assert defn.value_type == 0x03
+      assert defn.default_value == 0
+      assert defn.min_value == 0
+      assert defn.max_value == fixed32(1.0)
+      # 0x02 add_delta(光照+水时每 tick 累进,镜像 burn/oxidation_progress)
+      assert defn.merge_rule == 0x02
+      assert defn.dynamic == true
+    end
+
     test "returns {:error, :not_found} for id 999", %{server: server} do
       assert {:error, :not_found} = AttributeCatalog.lookup_by_id(server, 999)
     end
@@ -176,8 +189,8 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       wire = AttributeCatalogSnapshot.encode_for_wire(snapshot)
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 8
-      assert length(decoded.definitions) == 20
+      assert decoded.catalog_version == 9
+      assert length(decoded.definitions) == 21
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)

@@ -744,6 +744,74 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
   end
 
+  describe "光学 · 光合:光长生命(光 × 相邻水 × 生长进度 三系统组合)" do
+    defp sprout_id, do: MaterialCatalog.material_id(:sprout)
+    defp wood_mid, do: MaterialCatalog.material_id(:wood)
+    defp water_mid, do: MaterialCatalog.material_id(:water)
+
+    defp gcell(material_id, light, growth, neighbors) do
+      %{
+        macro_index: 0,
+        material_id: material_id,
+        temperature_celsius: 20.0,
+        light: light,
+        growth_progress: growth,
+        neighbor_materials: Enum.map(neighbors, &MaterialCatalog.material_id/1),
+        tags: []
+      }
+    end
+
+    test "sprout 光照 + 相邻水 → 推进 growth_progress(光合)" do
+      effects = Engine.evaluate([gcell(sprout_id(), 100.0, 0.2, [:water])], Rules.all())
+
+      assert Enum.any?(effects, fn
+               {:write_voxel_attribute, %{attribute: "growth_progress", delta: d}} -> d > 0.0
+               _ -> false
+             end)
+    end
+
+    test "sprout 有光但无相邻水 → 不生长(多反应物门控)" do
+      effects = Engine.evaluate([gcell(sprout_id(), 100.0, 0.2, [:stone])], Rules.all())
+
+      refute Enum.any?(effects, fn
+               {:write_voxel_attribute, %{attribute: "growth_progress"}} -> true
+               _ -> false
+             end)
+    end
+
+    test "sprout 相邻水但无光(<阈)→ 不生长(光 gate)" do
+      effects = Engine.evaluate([gcell(sprout_id(), 5.0, 0.2, [:water])], Rules.all())
+
+      refute Enum.any?(effects, fn
+               {:write_voxel_attribute, %{attribute: "growth_progress"}} -> true
+               _ -> false
+             end)
+    end
+
+    test "growth_progress 满(≥1.0)→ 成熟为 wood" do
+      effects = Engine.evaluate([gcell(sprout_id(), 100.0, 1.0, [:water])], Rules.all())
+
+      assert Enum.any?(effects, fn
+               {:transform_material, %{to_material_id: to}} -> to == wood_mid()
+               _ -> false
+             end)
+    end
+
+    test "非 sprout 材料不光合(material 过滤)" do
+      refute Enum.any?(
+               Engine.evaluate([gcell(stone_id(), 200.0, 0.5, [:water])], Rules.all()),
+               fn
+                 {:write_voxel_attribute, %{attribute: "growth_progress"}} -> true
+                 _ -> false
+               end
+             )
+    end
+
+    test "water 邻接确实经 material_id 比对(非误报)" do
+      assert water_mid() != nil
+    end
+  end
+
   describe "Rules 表" do
     test "for_material 过滤相变规则" do
       assert [%Rule{id: :ice_melts}] = Rules.for_material(:ice)

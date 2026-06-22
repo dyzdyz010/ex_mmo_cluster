@@ -40,6 +40,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @obsidian_material_id 16
   # 光学正交系统(2026-06-23):光敏元件——被光照(light ≥ 阈)置 :illuminated tag(光成真机制 demo)。
   @photo_sensor_material_id 17
+  # 光学 · 光合(2026-06-23):幼苗——光照 + 相邻水时 growth_progress 累进,满则成熟为 wood(光长生命)。
+  @sprout_material_id 18
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -59,7 +61,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     molten_iron: @molten_iron_material_id,
     lava: @lava_material_id,
     obsidian: @obsidian_material_id,
-    photo_sensor: @photo_sensor_material_id
+    photo_sensor: @photo_sensor_material_id,
+    sprout: @sprout_material_id
   }
 
   @power_source_defaults %{
@@ -292,6 +295,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => round(2_500.0 * @fixed32_scale),
       "electric_conductivity" => 0,
       "dielectric_strength" => round(8.0 * @fixed32_scale)
+    },
+    # 光学 · 光合:幼苗——有机可燃(同 wood ignition 300℃);光照 + 相邻水时 growth_progress 累进,
+    # 满则成熟为 wood(光合规则 material:sprout 派生,光长生命)。半透光(嫩叶)→ 低 opacity。
+    @sprout_material_id => %{
+      "density" => round(500.0 * @fixed32_scale),
+      "thermal_conductivity" => round(0.15 * @fixed32_scale),
+      "specific_heat_capacity" => round(1_800.0 * @fixed32_scale),
+      "ignition_temperature" => round(300.0 * @fixed32_scale),
+      "melting_point" => @inert_temperature_raw,
+      "freezing_point" => @absolute_zero_raw,
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(8.0 * @fixed32_scale),
+      "opacity" => round(0.4 * @fixed32_scale)
     }
   }
 

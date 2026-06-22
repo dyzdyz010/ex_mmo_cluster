@@ -37,6 +37,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   @temperature_attribute "temperature"
   @burn_progress_attribute "burn_progress"
   @oxidation_progress_attribute "oxidation_progress"
+  @growth_progress_attribute "growth_progress"
   @density_attribute "density"
   @specific_heat_attribute "specific_heat_capacity"
   # R5d:安全阀预算覆盖**每 tick 全部效果**(含热扩散),而非仅 transform——否则失控级联真正传播路径不受约束。
@@ -277,6 +278,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
           # S4 化学/氧化:动态氧化进度进 cell,供氧化 recipe 的完成条件(oxidation_progress≥1.0)求值。
           oxidation_progress:
             scaled_attribute(storage, macro_index, @oxidation_progress_attribute),
+          # 光学 · 光合:动态生长进度进 cell,供光合成熟条件(growth_progress≥1.0)求值。
+          growth_progress: scaled_attribute(storage, macro_index, @growth_progress_attribute),
           # 光学:同 tick 光场注入 cell.light(0..255),供光敏反应 condition `:light` gate。
           light: FieldLayer.get(light_layer, macro_index),
           heat_capacity: heat_capacity(storage, macro_index),
