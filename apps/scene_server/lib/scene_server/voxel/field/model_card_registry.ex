@@ -17,6 +17,7 @@ defmodule SceneServer.Voxel.Field.ModelCardRegistry do
     ConductionPathKernel,
     ElectricDischargeKernel,
     ElectricPotentialKernel,
+    LightPropagationKernel,
     ReactionKernel,
     TemperatureDiffusionKernel
   }
@@ -27,6 +28,9 @@ defmodule SceneServer.Voxel.Field.ModelCardRegistry do
     ConductionPathKernel,
     ElectricDischargeKernel,
     CircuitCurrentKernel,
+    # 光学正交系统:光传播 kernel(发光源 flood 成权威 :light 场)。排在 ReactionKernel 前
+    # (同 tick region 线程:光层先写,反应后读 gate 光敏)。
+    LightPropagationKernel,
     # 功能完善 · 反应层 R3:涌现反应驱动 kernel(材料相变等)。
     ReactionKernel
   ]
