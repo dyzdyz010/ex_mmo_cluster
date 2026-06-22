@@ -227,6 +227,7 @@ mod tests {
             electric_potential: vec![200.0, 50.0, -30.0],
             electric_current: vec![],
             ionization: vec![200, 180, 160],
+            light: vec![],
         }
     }
 
@@ -284,6 +285,7 @@ mod tests {
                 electric_potential: vec![100.0, 0.0],
                 electric_current: vec![],
                 ionization: vec![],
+                light: vec![],
             }));
             authority.drain_inbox();
         }

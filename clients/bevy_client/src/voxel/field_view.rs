@@ -27,7 +27,7 @@
 use crate::voxel::mesher::{ChunkMeshData, push_cube};
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
+    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -52,6 +52,15 @@ pub const CURRENT_BUCKET_COUNT: u32 = 8;
 /// conditioned channels), complementing the discharge/lightning visuals.
 pub const IONIZATION_MATERIAL_BASE: u32 = 10_300;
 pub const IONIZATION_BUCKET_COUNT: u32 = 8;
+/// Light marker ids (dark-amber → warm-white ramp). The authoritative light field
+/// (emergent optics, wire u8 0..255 from the server `LightPropagationKernel`):
+/// illuminated cells glow warm-white proportional to light level. Base 10_500 keeps
+/// it disjoint from the client-side incandescence palette (10_400).
+pub const LIGHT_MATERIAL_BASE: u32 = 10_500;
+pub const LIGHT_BUCKET_COUNT: u32 = 8;
+const LIGHT_THRESHOLD: f32 = 8.0;
+const LIGHT_RAMP: f32 = 255.0;
+const LIGHT_ALPHA: f32 = 0.5;
 
 /// Temperature overlay model (mirrors web `fieldDebugOverlay`): cells are colored
 /// by their deviation from the ambient baseline; below `TEMP_MIN_DEVIATION` off
@@ -96,15 +105,17 @@ pub enum FieldOverlayKind {
     ElectricPotential,
     ElectricCurrent,
     Ionization,
+    Light,
 }
 
 impl FieldOverlayKind {
     /// All kinds, in a stable order (so the render adapter iterates deterministically).
-    pub const ALL: [FieldOverlayKind; 4] = [
+    pub const ALL: [FieldOverlayKind; 5] = [
         FieldOverlayKind::Temperature,
         FieldOverlayKind::ElectricPotential,
         FieldOverlayKind::ElectricCurrent,
         FieldOverlayKind::Ionization,
+        FieldOverlayKind::Light,
     ];
 
     /// A stable small id for keying render entities by (region_id, kind).
@@ -114,6 +125,7 @@ impl FieldOverlayKind {
             FieldOverlayKind::ElectricPotential => 1,
             FieldOverlayKind::ElectricCurrent => 2,
             FieldOverlayKind::Ionization => 3,
+            FieldOverlayKind::Light => 4,
         }
     }
 }
@@ -214,6 +226,11 @@ pub fn field_color(material_id: u32) -> [f32; 4] {
         );
         return lerp_rgb([0.0, 0.10, 0.35], [0.35, 0.95, 1.0], t, IONIZATION_ALPHA);
     }
+    if (LIGHT_MATERIAL_BASE..LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT).contains(&material_id) {
+        // dark-amber (dim) -> warm-white (bright): the authoritative light field.
+        let t = bucket_fraction(material_id - LIGHT_MATERIAL_BASE, LIGHT_BUCKET_COUNT);
+        return lerp_rgb([0.15, 0.12, 0.05], [1.0, 0.95, 0.70], t, LIGHT_ALPHA);
+    }
     [1.0, 1.0, 1.0, 1.0]
 }
 
@@ -291,6 +308,15 @@ pub fn ionization_material(value: f32) -> Option<u32> {
     Some(IONIZATION_MATERIAL_BASE + ramp_bucket(value, IONIZATION_RAMP, IONIZATION_BUCKET_COUNT))
 }
 
+/// Maps a light value (u8 0..255, passed as f32) to its marker id, or `None` below
+/// the dim-noise threshold. Bucketed on the `value/255` warm-white ramp.
+pub fn light_material(value: f32) -> Option<u32> {
+    if value < LIGHT_THRESHOLD {
+        return None;
+    }
+    Some(LIGHT_MATERIAL_BASE + ramp_bucket(value, LIGHT_RAMP, LIGHT_BUCKET_COUNT))
+}
+
 /// Maps a magnitude onto `0..bucket_count` via the `magnitude/ramp` fraction
 /// (saturating at the top bucket), matching the web reference's `clamp(v/scale)`.
 fn ramp_bucket(magnitude: f32, ramp: f32, bucket_count: u32) -> u32 {
@@ -330,6 +356,7 @@ pub fn overlay_mesh(
         FieldOverlayKind::ElectricPotential => electric_potential_overlay_mesh(field, voxel_size),
         FieldOverlayKind::ElectricCurrent => electric_current_overlay_mesh(field, voxel_size),
         FieldOverlayKind::Ionization => ionization_overlay_mesh(field, voxel_size),
+        FieldOverlayKind::Light => light_overlay_mesh(field, voxel_size),
     }
 }
 
@@ -348,6 +375,18 @@ pub fn ionization_overlay_mesh(field: &FieldRegionSnapshot, voxel_size: f32) -> 
         voxel_size,
         ionization_material,
     )
+}
+
+/// Builds the light overlay: a marker cube at each macro cell whose authoritative
+/// light level (u8 0..255) clears the dim-noise threshold, on the dark-amber →
+/// warm-white ramp. Cells without a light layer (mask bit clear) produce nothing.
+pub fn light_overlay_mesh(field: &FieldRegionSnapshot, voxel_size: f32) -> ChunkMeshData {
+    if field.field_mask & FIELD_MASK_LIGHT == 0 {
+        return ChunkMeshData::default();
+    }
+    // `light` is u8 on the wire; widen to f32 for the shared overlay core.
+    let values: Vec<f32> = field.light.iter().map(|&v| v as f32).collect();
+    overlay_from_values(&field.macro_indices, &values, voxel_size, light_material)
 }
 
 /// Builds the temperature overlay for a field region: a marker cube at each macro
@@ -454,6 +493,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![],
+            light: vec![],
         }
     }
 
@@ -476,6 +516,7 @@ mod tests {
             electric_potential: if as_current { vec![] } else { values.clone() },
             electric_current: if as_current { values } else { vec![] },
             ionization: vec![],
+            light: vec![],
         }
     }
 
@@ -691,6 +732,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![2, 200], // first below threshold, second drawn
+            light: vec![],
         };
         let s = ionization_overlay_mesh(&field, 100.0).summary();
         assert_eq!(s.quad_count, 6); // only the 200-ion cell → one marker cube
@@ -702,5 +744,48 @@ mod tests {
         let mut bare = field.clone();
         bare.field_mask = 0;
         assert!(ionization_overlay_mesh(&bare, 100.0).is_empty());
+    }
+
+    #[test]
+    fn light_overlay_is_warm_white_and_thresholds() {
+        // Light color ramp is warm-white (all channels lift, no single cool channel
+        // dominates as in ionization). A bright bucket reads warm (R highest).
+        let bright = field_color(LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT - 1);
+        assert!(
+            bright[0] >= bright[2] && bright[1] >= bright[2] && bright[0] > 0.7,
+            "bright light should be warm-white (R,G ≥ B, R high); got {bright:?}"
+        );
+
+        // light_material: below threshold → None; above → in the light range.
+        assert_eq!(light_material(2.0), None);
+        let m = light_material(200.0).unwrap();
+        assert!((LIGHT_MATERIAL_BASE..LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT).contains(&m));
+
+        // Overlay mesher: a light snapshot draws markers only for above-threshold cells.
+        let field = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [0, 0, 0],
+            region_id: 1,
+            tick_count: 1,
+            field_mask: FIELD_MASK_LIGHT,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light: vec![1, 255], // first below threshold, second drawn
+        };
+        let s = light_overlay_mesh(&field, 100.0).summary();
+        assert_eq!(s.quad_count, 6); // only the bright cell → one marker cube
+        assert!(
+            s.area_by_material
+                .keys()
+                .all(|m| (LIGHT_MATERIAL_BASE..LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT)
+                    .contains(m))
+        );
+        // mask clear → no light overlay.
+        let mut bare = field.clone();
+        bare.field_mask = 0;
+        assert!(light_overlay_mesh(&bare, 100.0).is_empty());
     }
 }

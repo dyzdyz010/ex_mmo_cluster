@@ -173,6 +173,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![],
+            light: vec![],
         }
     }
 
@@ -269,6 +270,7 @@ mod tests {
                 electric_potential: vec![],
                 electric_current: vec![5.0],
                 ionization: vec![],
+                light: vec![],
             }),
         );
         app.update();

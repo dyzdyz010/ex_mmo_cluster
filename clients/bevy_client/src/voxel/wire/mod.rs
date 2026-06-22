@@ -32,7 +32,7 @@ pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
 pub use field::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
+    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed, FieldRegionSnapshot,
 };
 pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
@@ -426,6 +426,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![100, 200],
+            light: vec![],
         };
         let mut w = Writer::new();
         snap.encode(&mut w);
@@ -442,6 +443,31 @@ mod tests {
     }
 
     #[test]
+    fn field_region_snapshot_roundtrip_with_light() {
+        // Light (bit4) present alongside temperature; light is wire-last, u8.
+        let snap = FieldRegionSnapshot {
+            logical_scene_id: 3,
+            chunk_coord: [0, 1, -1],
+            region_id: 55,
+            tick_count: 9,
+            field_mask: field::FIELD_MASK_TEMPERATURE | field::FIELD_MASK_LIGHT,
+            macro_indices: vec![5, 7, 9],
+            temperature: vec![600.0, 20.0, 1800.0],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light: vec![128, 0, 255],
+        };
+        let mut w = Writer::new();
+        snap.encode(&mut w);
+        let bytes = w.into_bytes();
+        let decoded = FieldRegionSnapshot::decode(&mut Reader::new(&bytes)).unwrap();
+        assert_eq!(decoded, snap);
+        assert_eq!(decoded.light, vec![128, 0, 255]);
+        assert_eq!(field::FIELD_MASK_LIGHT, 0x10);
+    }
+
+    #[test]
     fn field_values_are_little_endian() {
         // A single temperature value: the trailing 4 bytes must be LE, not BE.
         let snap = FieldRegionSnapshot {
@@ -455,6 +481,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![],
+            light: vec![],
         };
         let mut w = Writer::new();
         snap.encode(&mut w);

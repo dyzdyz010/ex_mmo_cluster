@@ -27,6 +27,9 @@ pub const FIELD_MASK_TEMPERATURE: u8 = 0x01;
 pub const FIELD_MASK_ELECTRIC_POTENTIAL: u8 = 0x02;
 pub const FIELD_MASK_IONIZATION: u8 = 0x04;
 pub const FIELD_MASK_ELECTRIC_CURRENT: u8 = 0x08;
+/// Authoritative light field (emergent optics): u8 0..255, wire-last (after
+/// ionization), mirroring the server `LightPropagationKernel`.
+pub const FIELD_MASK_LIGHT: u8 = 0x10;
 
 pub const DESTROY_REASON_EXPIRED: u8 = 0x00;
 pub const DESTROY_REASON_LEASE_REVOKED: u8 = 0x01;
@@ -65,6 +68,9 @@ pub struct FieldRegionSnapshot {
     pub electric_current: Vec<f32>,
     /// Present iff `field_mask & FIELD_MASK_IONIZATION`.
     pub ionization: Vec<u8>,
+    /// Present iff `field_mask & FIELD_MASK_LIGHT`. Authoritative light level
+    /// (0..255) per cell — the emergent-optics light field.
+    pub light: Vec<u8>,
 }
 
 impl FieldRegionSnapshot {
@@ -113,6 +119,16 @@ impl FieldRegionSnapshot {
         } else {
             Vec::new()
         };
+        // Light is wire-last (after ionization), u8 like ionization.
+        let light = if field_mask & FIELD_MASK_LIGHT != 0 {
+            let mut v = Vec::with_capacity(cell_count);
+            for _ in 0..cell_count {
+                v.push(r.u8("field.light")?);
+            }
+            v
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             logical_scene_id,
@@ -125,6 +141,7 @@ impl FieldRegionSnapshot {
             electric_potential,
             electric_current,
             ionization,
+            light,
         })
     }
 
@@ -157,6 +174,11 @@ impl FieldRegionSnapshot {
         }
         if self.field_mask & FIELD_MASK_IONIZATION != 0 {
             for v in &self.ionization {
+                w.u8(*v);
+            }
+        }
+        if self.field_mask & FIELD_MASK_LIGHT != 0 {
+            for v in &self.light {
                 w.u8(*v);
             }
         }

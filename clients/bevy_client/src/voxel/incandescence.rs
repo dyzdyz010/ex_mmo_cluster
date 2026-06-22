@@ -181,6 +181,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![],
+            light: vec![],
         }
     }
 

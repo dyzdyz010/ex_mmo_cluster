@@ -41,8 +41,8 @@ use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk}
 use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer, NormalBlock, RefinedCell,
-    SurfaceElement, VoxelServerMessage,
+    FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords, MicroLayer,
+    NormalBlock, RefinedCell, SurfaceElement, VoxelServerMessage,
 };
 use crate::voxel::{HeatSmokePlugin, IncandescencePlugin, LightningPlugin, VoxelAuthority};
 
@@ -232,6 +232,7 @@ fn temperature_field(
         electric_potential: vec![],
         electric_current: vec![],
         ionization: vec![],
+        light: vec![],
     }
 }
 
@@ -386,6 +387,24 @@ fn ionization_field(
         electric_potential: vec![],
         electric_current: vec![],
         ionization: cells.iter().map(|(_, v)| *v).collect(),
+        light: vec![],
+    }
+}
+
+/// A light field snapshot (u8 0..255 per cell) for the light-overlay pixel test.
+fn light_field(region_id: u64, chunk_coord: [i32; 3], cells: &[(u16, u8)]) -> FieldRegionSnapshot {
+    FieldRegionSnapshot {
+        logical_scene_id: 1,
+        chunk_coord,
+        region_id,
+        tick_count: 1,
+        field_mask: FIELD_MASK_LIGHT,
+        macro_indices: cells.iter().map(|(i, _)| *i).collect(),
+        temperature: vec![],
+        electric_potential: vec![],
+        electric_current: vec![],
+        ionization: vec![],
+        light: cells.iter().map(|(_, v)| *v).collect(),
     }
 }
 
@@ -430,6 +449,7 @@ fn electric_field(
         electric_potential: if is_current { vec![] } else { values.clone() },
         electric_current: if is_current { values } else { vec![] },
         ionization: vec![],
+        light: vec![],
     }
 }
 
@@ -695,6 +715,7 @@ fn discharge_field(
         electric_potential: cells.iter().map(|(_, p, _)| *p).collect(),
         electric_current: vec![],
         ionization: cells.iter().map(|(_, _, ion)| *ion).collect(),
+        light: vec![],
     }
 }
 
@@ -913,6 +934,33 @@ fn ionization_overlay_is_plasma_cyan() {
     assert!(
         c.b > c.r + 0.10 && c.g > c.r + 0.15,
         "ionization overlay should be plasma cyan (blue & green above red); got {c:?}"
+    );
+}
+
+/// The AUTHORITATIVE light field (emergent optics, decoded from the server's
+/// `LightPropagationKernel`) renders as a warm-white overlay — blue is the lowest
+/// channel (warm), and red/green lift well above the dark-green clear. Verifies the
+/// new FieldOverlayKind::Light ramp reaches the screen (light is rendered correctly).
+#[test]
+fn light_overlay_is_warm_white() {
+    let field = light_field(1, [0, 0, 0], &[(idx(1, 1, 1), 255)]);
+    let look = Vec3::new(150.0, 150.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(150.0, 150.0, -500.0), look);
+        spawn_overlay_kind(world, &field, FieldOverlayKind::Light);
+    });
+
+    let c = sample_patch(&data, W / 2, H / 2, 3);
+    let clear = clear_color().to_srgba();
+    // Warm-white: red & green lifted above the clear, blue the LOWEST channel
+    // (distinguishes warm light from cyan ionization and pure-red hot temperature).
+    assert!(
+        c.r > clear.red + 0.2 && c.g > clear.green + 0.05,
+        "light overlay should lift red & green above the clear; got {c:?}"
+    );
+    assert!(
+        c.b < c.r && c.b < c.g,
+        "light overlay should be warm (blue the lowest channel); got {c:?}"
     );
 }
 
