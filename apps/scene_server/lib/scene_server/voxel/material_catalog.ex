@@ -38,6 +38,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @molten_iron_material_id 14
   @lava_material_id 15
   @obsidian_material_id 16
+  # 光学正交系统(2026-06-23):光敏元件——被光照(light ≥ 阈)置 :illuminated tag(光成真机制 demo)。
+  @photo_sensor_material_id 17
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -56,7 +58,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     ember: @ember_material_id,
     molten_iron: @molten_iron_material_id,
     lava: @lava_material_id,
-    obsidian: @obsidian_material_id
+    obsidian: @obsidian_material_id,
+    photo_sensor: @photo_sensor_material_id
   }
 
   @power_source_defaults %{
@@ -231,7 +234,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "dielectric_strength" => 0,
       "oxidation_temperature" => @inert_temperature_raw,
       # 稳定热源功率(定性档,经守恒热扩散增益放大;火炬借此向宿主格注热)。
-      "heat_output" => round(1_500.0 * @fixed32_scale)
+      "heat_output" => round(1_500.0 * @fixed32_scale),
+      # 光学:余烬自发光——light_emission>0 → LightPropagationKernel 把它当光源 flood 出权威光场。
+      "light_emission" => round(1_500.0 * @fixed32_scale)
     },
     # 化学扩展:熔铁——iron 熔化产物。已是液态:melting inert(不再熔)、freezing_point=1538(降温回凝
     # 铁,严格 < 迟滞);boiling inert(无铁蒸汽材料);惰性不锈(oxidation 哨兵)。仍导电(液态金属)。
@@ -261,7 +266,7 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "dielectric_strength" => round(5.0 * @fixed32_scale)
     },
     # 化学扩展:黑曜石——lava + 相邻 water 淬火产物(火山玻璃)。惰性终产物(melting/boiling inert、
-    # freezing 哨兵不回相变,同 ash/rust 范式);不导电;良介质(玻璃)。
+    # freezing 哨兵不回相变,同 ash/rust 范式);不导电;良介质(玻璃)。obsidian 半透光(玻璃) → 低 opacity。
     @obsidian_material_id => %{
       "density" => round(2_400.0 * @fixed32_scale),
       "thermal_conductivity" => round(1.2 * @fixed32_scale),
@@ -271,7 +276,22 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => @absolute_zero_raw,
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
-      "dielectric_strength" => round(10.0 * @fixed32_scale)
+      "dielectric_strength" => round(10.0 * @fixed32_scale),
+      # 黑曜石玻璃半透光(光可部分穿透)。
+      "opacity" => round(0.35 * @fixed32_scale)
+    },
+    # 光学正交系统:光敏元件——被光照(LightPropagationKernel 光场 ≥ 阈)置 :illuminated tag(光成真机制)。
+    # 实心常温惰性;不导电;default opacity(实心挡光)。光敏行为由反应规则 material:photo_sensor 派生。
+    @photo_sensor_material_id => %{
+      "density" => round(2_300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.5 * @fixed32_scale),
+      "specific_heat_capacity" => round(700.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_400.0 * @fixed32_scale),
+      "freezing_point" => round(1_400.0 * @fixed32_scale),
+      "boiling_point" => round(2_500.0 * @fixed32_scale),
+      "electric_conductivity" => 0,
+      "dielectric_strength" => round(8.0 * @fixed32_scale)
     }
   }
 

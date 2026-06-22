@@ -8,7 +8,7 @@
 # 一旦发出即冻结：id ↔ name 映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 4,
+  catalog_version: 5,
   definitions: [
     %{id: 1, name: "flammable"},
     %{id: 2, name: "conductive"},
@@ -24,6 +24,8 @@
     %{id: 10, name: "open"},
     # 功能完善 · 正交架构 S4(化学/氧化):氧化中 latch(对称 burning)。起锈置位 → oxidation_progress
     # 满则转 rust 去位。append-only。
-    %{id: 11, name: "rusting"}
+    %{id: 11, name: "rusting"},
+    # 光学正交系统(2026-06-23):光敏元件"被光照"权威状态(光场 ≥ 阈 → 点亮,可逆)。append-only。
+    %{id: 12, name: "illuminated"}
   ]
 }

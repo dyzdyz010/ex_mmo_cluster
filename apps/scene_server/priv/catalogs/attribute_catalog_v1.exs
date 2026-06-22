@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 7,
+  catalog_version: 8,
   definitions: [
     %{
       id: 1,
@@ -270,6 +270,37 @@
       min_value: 0,
       # 30000.0 W (fixed32 i32 安全上限内)
       max_value: 1_966_080_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 光学正交系统(2026-06-23):发光源强度。light_emission>0 的材料(灯/余烬/glowstone)自发光,
+    # 经 LightPropagationKernel flood 成权威光场;0 = 不发光(fallback,惰性安全,同 heat_output 范式)。
+    %{
+      id: 19,
+      name: "light_emission",
+      unit: "W",
+      value_type: :fixed32,
+      # 0.0 (非光源 fallback)
+      default_value: 0,
+      min_value: 0,
+      # 30000.0 (同 heat_output 安全上限)
+      max_value: 1_966_080_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 光学正交系统:不透明度 0.0(全透)→1.0(全挡)。LightPropagationKernel 按此衰减/阻断光传播。
+    # default 1.0:实心材料默认挡光(物理安全);透光材料(ice/obsidian/glass)显式配低值。
+    # 空 cell(无材料)由 kernel 特判为透明(opacity 0),不经此目录默认。
+    %{
+      id: 20,
+      name: "opacity",
+      unit: "ratio",
+      value_type: :fixed32,
+      # 1.0 不透明(实心默认挡光)
+      default_value: 65_536,
+      min_value: 0,
+      # 1.0
+      max_value: 65_536,
       merge_rule: :material_default,
       dynamic: false
     }
