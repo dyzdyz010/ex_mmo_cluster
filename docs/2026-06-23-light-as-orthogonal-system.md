@@ -92,3 +92,69 @@ Layer-3 须 --test-threads=1。
 
 ## 后续增量(本稿外)
 热致白炽改由权威光场驱动;光参与可见度/光合;彩色光/光谱。
+
+---
+
+# 实现现状(as-built,2026-06-23)
+
+原 8 step 全部落地,并按 /goal「直到形式化验证 + 各种测试含实机无错 + 客户端渲染完全正确」
+扩展到饱和。光从「纯客户端渲染派生」演进为**有权威场、有色彩、与全部涌现系统组合的一等正交光学系统**。
+
+## 架构(最终)
+
+- **`LightPropagation`**(纯 Elixir,无 NIF):多源最亮优先 flood = `-log(衰减)` 上的 Dijkstra。
+  **关键修正**:opacity 门控「光穿过 cell 外传」(onward,源全透/非源 `1-opacity`)而非「cell 受光」——
+  否则不透明 photo_sensor 收光 0 永不亮。形式不变量(模型卡 + 200 例属性测试):
+  确定性 / 单调衰减 / 有界 / 源主导 / 遮挡。
+- **`LightPropagationKernel`**(registry 第 7 kernel,**排 ReactionKernel 前**——同 tick region 线程,
+  光层先写、反应后读):读 truth 投影源(`light_emission` + 热致 ≥Draper 525℃)+ opacity;
+  **彩色**按源色分组各 flood、逐 cell 取最亮组(intensity 与无色逐字节等价);写 `:light` + `:light_color` 层。
+- **耦合(Option A)**:光是场,ReactionKernel **同 tick 读 `:light` 层**注入 `cell.light`
+  (`Rule.@condition_fields += :light`);只反应产物(tag/transform)落 truth。无 light_level truth 属性。
+
+## 目录(最终,append-only)
+
+- AttributeCatalog v6→**v10**:light_emission(19)/opacity(20)/growth_progress(21,dynamic)/
+  light_color(22,packed RGB888 raw)。
+- Material(append-only):photo_sensor(17 光敏)/sprout(18 光合幼苗)/glowstone(19 冷蓝纯光源);
+  ember 配 light_emission + 暖橙 light_color;obsidian/sprout 低 opacity。bevy material_color 同步补 17-19。
+- Tag:illuminated(12)。
+
+## 世界效果(光成真机制,4 模式 × 全系统组合)
+
+| 模式 | 规则 | 桥接系统 |
+|------|------|---------|
+| 改态 | photo_sensor + light≥32 ↔ `:illuminated`(可逆) | 反应 |
+| 驱动设备 | Actuator{photo_sensor,:illuminated,:open} → 可通行 | 设备/passability(**与电门 :powered→:open 对称**) |
+| 长生命 | sprout + light≥32 + 相邻 water → growth_progress 累进 → 成熟 wood | 多反应物 + 反应进度 |
+| 放大镜 | photo_sensor + light≥128 → emit_heat → 扩散熔/燃 | 热 |
+
+## wire(0x73)
+
+- `FIELD_MASK_LIGHT 0x10`(u8 强度,wire-last after ionization)+ `FIELD_MASK_LIGHT_COLOR 0x20`
+  (3 u8 RGB/cell,附加,不破 0x10 格式)。线协议规范 §0x73 已更新(顺手补历史失修的 0x08)。
+- 客户端渲染:light overlay 暖白强度 ramp;**彩色**把 packed RGB 烤进 marker id
+  (`LIGHT_COLOR_PACKED_BASE 0x0100_0000 + packed`,u32 精确)→ `field_color` 解包 → 按 cell 实色渲染。
+
+## 验证(全绿)
+
+- 形式化:`LightPropagation` 五不变量 + 200 例 seeded 属性测试 + 模型卡。
+- scene_server **1165 tests 0 failures**(含 catalog/codec/kernel/4 个全 DB truth e2e:
+  点亮/遮光/光门可通行/光合成熟/放大镜升温)。
+- bevy **282 lib + 16 Layer-3 GPU**(RTX 5060 实测:光场暖白、彩色光暖/冷正确上屏、全材料无 magenta)。
+- 跨语言 wire golden 双锁:`field_region_light`(0x10)+ `field_region_light_color`(0x30),server↔bevy 字节级。
+- 双端编译 warning-clean(server `--warnings-as-errors`、client 零警告);客户端 `--voxel-headless` boot exit 0。
+
+# 后续方向决策树(待用户拍板)
+
+光学在「场 × 机制 × 色彩」三维已饱和。剩余为**性质不同的大方向**:
+
+1. **可见度/视野**(gameplay,最大值):光决定玩家所见——暗处隐藏、亮处显形。
+   **难点**:需**弥漫光**(全 chunk ambient + 源),而非当前稀疏 `:light` 源区域;
+   触及核心场景渲染(当前固定 AmbientLight → 改为光场调制)+ 服务端 region provisioning。**大,需设计拍板**。
+2. **热致白炽渲染统一**(渲染清理):客户端 incandescence(温度→黑体,client 派生)改由权威光场驱动。
+   **争议**:incandescence(发射,源的黑体色)与光场(照度)语义不同,统一会丢源色信息。**价值存疑**。
+3. **彩色光谱 deeper**:波长选择性反应(只对红光光合的植物等)。小,但偏 niche。
+4. **转新涌现域**:S5 力学应力坍塌 / 流体压力(与光无关的新正交系统)。
+
+推荐:若续光学,**可见度**价值最高但最大;否则转 S5 新域。均需用户定 scope/方向。
