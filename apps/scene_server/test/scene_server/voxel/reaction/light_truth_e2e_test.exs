@@ -69,6 +69,13 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
   end
 
+  defp blocking?(chunk, macro) do
+    {:ok, result} =
+      ChunkProcess.collision_query(chunk, %{samples: [%{macro: macro, micro_slot: 0}]})
+
+    result.occupied_count > 0
+  end
+
   # 读某 cell 在 truth 中的 tag 名集合。
   defp cell_tags(chunk, macro) do
     storage = ChunkProcess.debug_state(chunk).storage
@@ -153,5 +160,40 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
 
     refute "illuminated" in cell_tags(chunk, sensor),
            "不透明墙后 photo_sensor 不被照亮 → truth 无 :illuminated(遮光正确)"
+  end
+
+  test "光门(全 DB):光照打开 photo_sensor 闸门(可通行)—— 与电门完全对称" do
+    # 光 → :illuminated(tick1)→ 光门执行器置 :open(tick2)→ TagPhysics 视为可通行。
+    # 证「光」是一等 device trigger,纯数据组合复用整套 actuator/passability(同电门 :powered→:open)。
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    ember = Types.macro_index!({0, 0, 0})
+    gate = Types.macro_index!({1, 0, 0})
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        ember,
+        NormalBlockData.new(MaterialCatalog.material_id(:ember))
+      )
+
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        gate,
+        NormalBlockData.new(MaterialCatalog.material_id(:photo_sensor))
+      )
+
+    # 初始:实心闸门阻挡。
+    assert blocking?(chunk, gate)
+
+    # tick1:光 → :illuminated。tick2::illuminated → 光门 :open。
+    run_light_reaction_tick(chunk, 9801, {{0, 0, 0}, {1, 0, 0}})
+    run_light_reaction_tick(chunk, 9802, {{0, 0, 0}, {1, 0, 0}})
+
+    assert "illuminated" in cell_tags(chunk, gate)
+    assert "open" in cell_tags(chunk, gate)
+
+    refute blocking?(chunk, gate),
+           "光照打开 photo_sensor 闸门 → 碰撞视为可通行(光→:illuminated→:open→passable 全链落 truth)"
   end
 end

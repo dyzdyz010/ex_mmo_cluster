@@ -13,8 +13,14 @@ defmodule SceneServer.Voxel.Reaction.Actuators do
 
   # 执行器规格表(append-only)。门:导电门(:load,S2 属性派生)通电(R7 置 :powered)→ 置 :open
   # (TagPhysics 绑定 :open → 可通行);失电 → 去 :open(复阻挡)。
+  #
+  # 光门(光学正交系统,2026-06-23):photo_sensor 被光照(LightPropagationKernel 权威光场 →
+  # 光敏反应置 :illuminated)→ 置 :open(可通行);遮光去 :illuminated → 去 :open(复阻挡)。
+  # **与电门完全对称**(electricity→:powered→:open / light→:illuminated→:open)——证「光」是
+  # 一等公民 device trigger,纯数据组合复用整套 actuator/TagPhysics/passability,零新代码。
   @all [
-    %Actuator{material: :door, trigger_tag: :powered, active_tag: :open}
+    %Actuator{material: :door, trigger_tag: :powered, active_tag: :open},
+    %Actuator{material: :photo_sensor, trigger_tag: :illuminated, active_tag: :open}
   ]
 
   @doc "全部执行器规格。"

@@ -48,6 +48,36 @@ defmodule SceneServer.Voxel.Reaction.ActuatorsTest do
     end
   end
 
+  describe "光门:光驱动设备(与电门对称,光成一等 device trigger)" do
+    test "Actuators.all 含光门规格(photo_sensor:illuminated<->open)" do
+      assert %Actuator{material: :photo_sensor, trigger_tag: :illuminated, active_tag: :open} in Actuators.all()
+    end
+
+    test "光门展开成对称 activate/deactivate(与电门同机制,trigger=:illuminated)" do
+      gate = %Actuator{material: :photo_sensor, trigger_tag: :illuminated, active_tag: :open}
+      assert [activate, deactivate] = Actuators.rules_for(gate)
+
+      # 被光照(:illuminated)且未开 → 加 :open(可通行)。
+      assert %Rule{
+               material: :photo_sensor,
+               require_tags: [:illuminated],
+               forbid_tags: [:open],
+               effects: [{:add_tag, :open}]
+             } = activate
+
+      # 遮光(去 :illuminated)→ 去 :open(复阻挡)。
+      assert %Rule{
+               material: :photo_sensor,
+               require_tags: [:open],
+               forbid_tags: [:illuminated],
+               effects: [{:remove_tag, :open}]
+             } = deactivate
+
+      assert activate.id == :photo_sensor_open_activate
+      assert deactivate.id == :photo_sensor_open_deactivate
+    end
+  end
+
   describe "可扩展性:加一条规格 = 新设备,零新代码/碰撞" do
     # 用 iron 作"活塞"示例设备材料(MaterialCatalog 已有,免目录改动),:extended 作激活态。
     # 证展开 material/tag 完全无关——一条新规格即得 powered<->extended 状态机,与门同机制。

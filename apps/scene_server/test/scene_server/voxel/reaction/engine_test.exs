@@ -713,10 +713,16 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
       assert removes_illuminated?(effects)
     end
 
-    test "边界无振荡:已亮 + 恰 32(≥)稳定;未亮 + 31(<)保持暗" do
-      # 已亮 + 32:illuminate forbid 已亮不触发、darken 需 <32 不触发 → 稳定。
-      assert [] = Engine.evaluate([lcell(photo_sensor_id(), 32.0, [:illuminated])], Rules.all())
-      # 未亮 + 31:illuminate 需 ≥32 不触发、darken 需已亮不触发 → 稳定暗。
+    test "边界无振荡:已亮+开 恰 32(≥)稳定;未亮 + 31(<)保持暗" do
+      # 已亮+已开 + 32:illuminate(forbid 已亮)/darken(需<32)/光门 activate(forbid 已开)/
+      # deactivate(仍 :illuminated)全不触发 → 稳定(含光门执行器态)。
+      assert [] =
+               Engine.evaluate(
+                 [lcell(photo_sensor_id(), 32.0, [:illuminated, :open])],
+                 Rules.all()
+               )
+
+      # 未亮 + 31:illuminate 需 ≥32 不触发、darken 需已亮不触发、光门无 trigger → 稳定暗+关。
       assert [] = Engine.evaluate([lcell(photo_sensor_id(), 31.0, [])], Rules.all())
     end
 
