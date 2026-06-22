@@ -478,8 +478,11 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
       effects = Engine.evaluate([ocell(iron_id(), [:rusting], 0.2)], Rules.all())
 
       assert Enum.any?(effects, fn
-               {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} -> j > 0.0
-               _ -> false
+               {:write_voxel_attribute, %{attribute: :temperature, heat_energy_joules: j}} ->
+                 j > 0.0
+
+               _ ->
+                 false
              end)
 
       assert Enum.any?(effects, fn
@@ -537,7 +540,9 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
 
     test "热熔岩相邻水 → 淬成 obsidian(双反应物产物,经 Rules.all())" do
       # lava@1300℃(>freezing 1200,故不走 lava_solidifies,只走淬火)。
-      eff = find_transform_for(Engine.evaluate([rcell(:lava, [:water], 1300.0, 7)], Rules.all()), 7)
+      eff =
+        find_transform_for(Engine.evaluate([rcell(:lava, [:water], 1300.0, 7)], Rules.all()), 7)
+
       assert eff.to_material_id == obsidian_id()
       assert eff.rule_id == :lava_quench_to_obsidian
     end
@@ -601,7 +606,13 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     end
 
     test "lava 无邻居字段 → 不触发(缺省 [],惰性安全)" do
-      cell = %{macro_index: 0, material_id: MaterialCatalog.material_id(:lava), temperature_celsius: 1300.0, tags: []}
+      cell = %{
+        macro_index: 0,
+        material_id: MaterialCatalog.material_id(:lava),
+        temperature_celsius: 1300.0,
+        tags: []
+      }
+
       assert [] = Engine.evaluate([cell], [quench_rule()])
     end
 
@@ -627,7 +638,15 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
     test "空邻居门控规则(绝大多数)对带/不带 neighbor_materials 的 cell 均正常求值" do
       # 现有规则全是空 neighbor 门控:不应因 cell 带 neighbor_materials 而改变行为。
       iron = MaterialCatalog.material_id(:iron)
-      with_nb = %{macro_index: 0, material_id: iron, temperature_celsius: 20.0, neighbor_materials: [MaterialCatalog.material_id(:water)], tags: []}
+
+      with_nb = %{
+        macro_index: 0,
+        material_id: iron,
+        temperature_celsius: 20.0,
+        neighbor_materials: [MaterialCatalog.material_id(:water)],
+        tags: []
+      }
+
       # iron 常温起锈(oxidation_temperature=0),邻居字段不影响。
       assert Enum.any?(Engine.evaluate([with_nb], Rules.all()), fn
                {:set_tag, st} -> :rusting in st.add
@@ -654,6 +673,68 @@ defmodule SceneServer.Voxel.Reaction.EngineTest do
           effects: [{:transform, :obsidian}]
         )
       end
+    end
+  end
+
+  describe "光学:光敏元件(光成真机制,光作 condition gate)" do
+    defp photo_sensor_id, do: MaterialCatalog.material_id(:photo_sensor)
+
+    defp lcell(material_id, light, tags) do
+      %{
+        macro_index: 0,
+        material_id: material_id,
+        temperature_celsius: 20.0,
+        light: light,
+        tags: tags
+      }
+    end
+
+    defp adds_illuminated?(effects) do
+      Enum.any?(effects, fn
+        {:set_tag, st} -> :illuminated in st.add
+        _ -> false
+      end)
+    end
+
+    defp removes_illuminated?(effects) do
+      Enum.any?(effects, fn
+        {:set_tag, st} -> :illuminated in st.remove
+        _ -> false
+      end)
+    end
+
+    test "photo_sensor 光照 ≥ 阈(32)且未亮 → 置 :illuminated" do
+      effects = Engine.evaluate([lcell(photo_sensor_id(), 100.0, [])], Rules.all())
+      assert adds_illuminated?(effects)
+    end
+
+    test "photo_sensor 光照 < 阈 且已亮 → 去 :illuminated(遮光熄灭)" do
+      effects = Engine.evaluate([lcell(photo_sensor_id(), 5.0, [:illuminated])], Rules.all())
+      assert removes_illuminated?(effects)
+    end
+
+    test "边界无振荡:已亮 + 恰 32(≥)稳定;未亮 + 31(<)保持暗" do
+      # 已亮 + 32:illuminate forbid 已亮不触发、darken 需 <32 不触发 → 稳定。
+      assert [] = Engine.evaluate([lcell(photo_sensor_id(), 32.0, [:illuminated])], Rules.all())
+      # 未亮 + 31:illuminate 需 ≥32 不触发、darken 需已亮不触发 → 稳定暗。
+      assert [] = Engine.evaluate([lcell(photo_sensor_id(), 31.0, [])], Rules.all())
+    end
+
+    test "非 photo_sensor 材料即便强光也不点亮(material 过滤)" do
+      refute adds_illuminated?(Engine.evaluate([lcell(stone_id(), 255.0, [])], Rules.all()))
+    end
+
+    test "Rule.new! 接受 :light condition 维度" do
+      rule =
+        Rule.new!(
+          id: :light_gate,
+          kind: :tag_reaction,
+          material: :photo_sensor,
+          condition: {:light, :gte, {:value, 10.0}},
+          effects: [{:add_tag, :illuminated}]
+        )
+
+      assert rule.condition == {:light, :gte, {:value, 10.0}}
     end
   end
 

@@ -21,7 +21,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
 
   @behaviour SceneServer.Voxel.Field.Kernel
 
-  alias SceneServer.Voxel.Field.{FieldRegion, KernelContext, ModelCard}
+  alias SceneServer.Voxel.Field.{FieldLayer, FieldRegion, KernelContext, ModelCard}
 
   alias SceneServer.Voxel.{
     MaterialCatalog,
@@ -83,6 +83,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   def tick(%FieldRegion{} = region, %KernelContext{storage: storage}, opts) do
     opts = opts_map(opts)
     rules = Map.get(opts, :rules, Rules.all())
+
     # 多反应物:给每个 cell 填相邻格材料 id(复用已有 neighbors_in_region + by_index),Engine 据此
     # 求值 require/forbid_neighbor_materials 门控。邻居仅含 region 内 solid 格(同热扩散约束)。
     cells = region |> cells_in_region(storage) |> with_neighbor_materials(region)
@@ -222,13 +223,17 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
   defp cells_in_region(_region, nil), do: []
 
   defp cells_in_region(
-         %FieldRegion{aabb: {{min_x, min_y, min_z}, {max_x, max_y, max_z}}},
+         %FieldRegion{aabb: {{min_x, min_y, min_z}, {max_x, max_y, max_z}}} = region,
          %Storage{} = storage
        ) do
+    # 光学耦合(Option A):同 tick LightPropagationKernel(排在本 kernel 前)已写 :light 层,
+    # 此处读它注入 cell.light,供光敏反应 gate(无 :light 层 → get_layer 回退空层 → 全 0 惰性安全)。
+    light_layer = FieldRegion.get_layer(region, :light)
+
     for x <- min_x..max_x,
         y <- min_y..max_y,
         z <- min_z..max_z,
-        cell = cell_state(storage, {x, y, z}),
+        cell = cell_state(storage, light_layer, {x, y, z}),
         cell != nil do
       cell
     end
@@ -259,7 +264,7 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     end)
   end
 
-  defp cell_state(storage, coord) do
+  defp cell_state(storage, light_layer, coord) do
     macro_index = Types.macro_index!(coord)
 
     case Storage.normal_block_at(storage, macro_index) do
@@ -272,6 +277,8 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
           # S4 化学/氧化:动态氧化进度进 cell,供氧化 recipe 的完成条件(oxidation_progress≥1.0)求值。
           oxidation_progress:
             scaled_attribute(storage, macro_index, @oxidation_progress_attribute),
+          # 光学:同 tick 光场注入 cell.light(0..255),供光敏反应 condition `:light` gate。
+          light: FieldLayer.get(light_layer, macro_index),
           heat_capacity: heat_capacity(storage, macro_index),
           tags: cell_tags(storage, block)
         }

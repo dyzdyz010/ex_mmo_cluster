@@ -128,6 +128,36 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @water_flash_to_steam
   ]
 
+  # 光学正交系统(2026-06-23)光成真机制:photo_sensor 光敏元件被权威光场照亮(light ≥ 阈)置
+  # :illuminated tag、遮光(< 阈)熄灭。光由 ReactionKernel 从同 tick :light 场层注入 cell.light
+  # (LightPropagationKernel 排在前先写)。可逆状态机,同 door :powered↔:open 范式:
+  # gte 阈 illuminate(forbid 已亮)/ lt 阈 darken(require 已亮),边界不振荡。
+  # 光强 0..255,阈 32(≈1/8 亮度)。这是「光改 truth 态」的最小闭环——光是真机制。
+  @illuminate_threshold 32.0
+
+  @photo_sensor_illuminates Rule.new!(
+                              id: :photo_sensor_illuminates,
+                              kind: :tag_reaction,
+                              material: :photo_sensor,
+                              condition: {:light, :gte, {:value, @illuminate_threshold}},
+                              forbid_tags: [:illuminated],
+                              effects: [{:add_tag, :illuminated}]
+                            )
+
+  @photo_sensor_darkens Rule.new!(
+                          id: :photo_sensor_darkens,
+                          kind: :tag_reaction,
+                          material: :photo_sensor,
+                          condition: {:light, :lt, {:value, @illuminate_threshold}},
+                          require_tags: [:illuminated],
+                          effects: [{:remove_tag, :illuminated}]
+                        )
+
+  @photosensitive [
+    @photo_sensor_illuminates,
+    @photo_sensor_darkens
+  ]
+
   # 基础物理反应(相变);化学反应(燃烧/氧化)由 ChemicalReactions 展开、设备执行器由 Actuators 展开后并入。
   @base [
     @ice_melts,
@@ -140,7 +170,9 @@ defmodule SceneServer.Voxel.Reaction.Rules do
     @lava_solidifies
   ]
 
-  @all @base ++ @multi_reactant ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
+  @all @base ++
+         @multi_reactant ++
+         @photosensitive ++ ChemicalReactions.to_rules() ++ Actuators.to_rules()
 
   @doc "全部反应规则(基础相变 + 化学展开 + 执行器展开)。"
   @spec all() :: [Rule.t()]
