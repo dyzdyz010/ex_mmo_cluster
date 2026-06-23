@@ -87,18 +87,25 @@ refresh_fields_after_mutation(state):
 2. **`emergence`(新增,核心)**:chunk 含可反应/发光/光敏内容 → region `[light_propagation, reaction]`(`LightPropagationKernel` 自行从 region storage 发现 `light_emission` + 热致 ≥Draper 源,无需显式 source_points)。**这是让光/化学/光门/光合在有机玩法里真跑、并 stream `:light`/`:light_color` 0x73 的那一个。**
 3. **`thermal`(新增,泛化 dev 端点)**:chunk 有热异常(cell ≠ ambient)或进行中放热反应 → region `[temperature_diffusion]`。让热扩散 + 热致 incandescence 有机 stream(`DevFieldCreate` 调试端点变成此 provisioner 的一个显式调用方,而非唯一来源)。
 
-## 6. 探测谓词(初始集)
+## 6. 探测谓词(初始集)— 已拍板「任一活性材料即起」,但「活性」= 现在真在 source/反应
 
-- **electric_circuit**:沿用现有 `auto_circuit_source_points`/`role_count`/`closed_circuit_count`(power source + load + 闭合回路)。
-- **emergence**:chunk 内**存在任一「光学/反应活性」材料**即 active。活性谓词从 catalog/rules 派生(不写 id 白名单):
-  - `light_emission > 0`(发光体),或
-  - 光敏(可被 `:light` gate,如 `photo_sensor`/`sprout`),或
-  - 任一反应 recipe 的反应物(如 lava/water/可燃/可氧化),或
-  - cell 温度 ≥ Draper(热致发光源)。
-  - 谓词建议实现为 `MaterialCatalog`/`Rules` 派生的一个 `reactive_or_optical_material?/1`(集合预computed)。
-- **thermal**:chunk 内任一 cell 的 truth 温度偏离 ambient 超阈(复用 `build_temperature_anomaly` 的异常检测),或 emergence region 报告了放热。
+拍板「任一活性材料即起」。落到真 catalog 后有两个硬事实把「活性」的含义钉死:
 
-> **开放选项(待拍板,见 §10)**:emergence 探测的「积极程度」——是「任一活性材料即起」(最完整,但近乎只要 chunk 非空且有内容就常驻一个 reaction region),还是「仅发光体/光敏/进行中反应才起」(更省,但放下两块惰性反应物要等某种扰动才起)。推荐前者(完整优先,成本由 §7 调度预算兜底),但需你确认。
+- **所有反应都被能量/光 gate**:`iron_oxidation` 的 `gate_attr: "oxidation_temperature"`、熔化/燃烧的温度阈、obsidian/steam 需要(炽热的)lava、光合需要 `:light`。**没有任何常温自发反应**——一块冷铁/冷石/冷木是惰性的。
+- **`FieldTickWorker` 每 tick 无条件 fanout 一个 0x73**(`field_tick_worker.ex:135/138`)。
+
+所以「活性」**只能**取「现在真在向某个场 source、或真在反应」之义;若取「静态出现在某条 rule 里」(冷铁也算),则每个含铁 chunk 会**常驻一个空跑、空 stream 的 reaction region**——既费(每个铁/木 chunk 永远跑)、又给客户端灌空 0x73、还会翻掉「惰性块不分配场」的既有测试(如 `chunk_process_test` line 791 放冷铁断言 `field_region_count == 0`)。这显然不是「活性」的本意。
+
+**死区免疫(dead-region-free)谓词**——`emergence` region(`[light_propagation, reaction]`)active 当且仅当 chunk 内:
+
+- 任一 `light_emission > 0` cell(发光体),**或**
+- 任一**热异常** cell(truth 温度 ≠ ambient——涵盖热致发光源 ≥Draper、以及一切温度 gate 的反应:熔化/燃烧/氧化/热致光),**或**
+- 任一**进行中反应**(反应进度 attr `burn/oxidation/growth_progress > 0`,或瞬态反应 tag 如 `:rusting/:burning/:illuminated`)——保证反应跨 tick 连续不被 source 瞬时回落掐断。
+
+> 关键洞见:因「无常温自发反应」,上述「真在 source / 真在反应」谓词**已覆盖每一个真实涌现**(放发光体→第一条;放热/通电产焦耳热→第二条;反应一旦起步→第三条续命)。无需「静态 rule 成员」式白名单,也就没有死区。冷惰性 chunk → 三条全否 → 无 region(`field_region_count == 0` 既有测试不变即过)。
+
+- **electric_circuit**:沿用现有 `auto_circuit_source_points`/`role_count`/`closed_circuit_count`(power source + load + 闭合回路)。其焦耳热提交 truth → 下一 sweep 触发 emergence/thermal(能量驱动)。
+- **thermal**(`[temperature_diffusion]`):chunk 有热异常即 active(复用 `build_temperature_anomaly` 异常检测)。与 emergence 共用「有热异常」触发,但各是独立 region(温度场层 vs 光+反应)。
 
 ## 7. 性能 / 生命周期
 
@@ -126,8 +133,8 @@ refresh_fields_after_mutation(state):
 5. **step5**:`thermal` provisioner(`[temperature_diffusion]`)+ 把 `DevFieldCreate` 收成其显式调用方;热致 incandescence 有机 e2e。
 6. 每 step 一个 commit(不 push;co-author `Claude Opus 4.8 (1M context)`)。
 
-## 10. 待你拍板的开放点
+## 10. 拍板结论(2026-06-23)
 
-1. **emergence 探测积极程度**:「任一活性材料即起 reaction region」(推荐,完整优先)vs「仅发光体/光敏/进行中反应才起」(省)。
-2. **首切范围**:step1–4(电路重构 + 光/反应有机化,先把「光真流到客户端」闭合)先落地、thermal(step5)随后;还是 step1–5 一次做全(光+热+反应全有机化)。
-3. **thermal 与 dev 端点**:本轮就把 `DevFieldCreate` 收编为 thermal provisioner 的调用方,还是先并存、后续单独收口。
+1. **emergence 探测积极程度** → **任一活性材料即起**。落地细化(见 §6):因「无常温自发反应 + 每 tick 无条件 fanout」,「活性」取「现在真在 source / 真在反应」的死区免疫谓词(发光体 / 热异常 / 进行中反应),既忠于「任一活性即起」,又不产生空跑空 stream 的死区,且既有「惰性块不分配场」测试不变即过。
+2. **首切范围** → **一次 step1–5 全做**(光 + 热 + 反应全有机化)。
+3. **thermal 与 dev 端点** → **本轮把 `DevFieldCreate` 收编为 thermal provisioner 的显式调用方**,去掉「只有 dev 端点才有温度流」的怪状态。
