@@ -59,6 +59,17 @@ pub enum ClientStdioCommand {
     VoxelChunkInfo {
         coord: [i32; 3],
     },
+    /// Sends a server-authoritative voxel edit (0x70 VoxelEditIntent) over the
+    /// live connection — the headless/scriptable equivalent of the GUI F/RMB
+    /// build, so the build round-trip + the 0x68 ACK can be self-verified without
+    /// a human at the keyboard. `target_macro` is in voxel (render-axis) macro
+    /// space; for `break` it's the cell to clear, for `place` the cell to fill.
+    VoxelEditLive {
+        logical_scene_id: u64,
+        action: u8,
+        target_macro: [i32; 3],
+        material_id: u16,
+    },
 }
 
 #[derive(Clone, Default, Resource)]
@@ -404,6 +415,35 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
             parse_field(parts[2], "cz")?,
         ];
         return Ok(ClientStdioCommand::VoxelChunkInfo { coord });
+    }
+
+    if let Some(rest) = line.strip_prefix("va-edit ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 5 || parts.len() > 6 {
+            return Err("va-edit <place|break> <scene_id> <mx> <my> <mz> [material_id]".to_string());
+        }
+        let action = match parts[0].to_ascii_lowercase().as_str() {
+            "place" => 0u8,
+            "break" => 1u8,
+            other => return Err(format!("va-edit action must be place|break, got '{other}'")),
+        };
+        let logical_scene_id = parse_field(parts[1], "scene_id")?;
+        let target_macro = [
+            parse_field(parts[2], "mx")?,
+            parse_field(parts[3], "my")?,
+            parse_field(parts[4], "mz")?,
+        ];
+        let material_id = if parts.len() == 6 {
+            parse_field(parts[5], "material_id")?
+        } else {
+            0u16
+        };
+        return Ok(ClientStdioCommand::VoxelEditLive {
+            logical_scene_id,
+            action,
+            target_macro,
+            material_id,
+        });
     }
 
     match parse_voxel_cli_command(line)? {

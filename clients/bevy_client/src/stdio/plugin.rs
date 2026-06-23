@@ -449,6 +449,33 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     }
                 }
             }
+            ClientStdioCommand::VoxelEditLive {
+                logical_scene_id,
+                action,
+                target_macro,
+                material_id,
+            } => {
+                bridge.send(NetworkCommand::EditVoxel {
+                    logical_scene_id,
+                    action,
+                    target_macro,
+                    material_id,
+                });
+                emit_stdio(
+                    "va_edit_sent",
+                    &[
+                        (
+                            "action",
+                            if action == 0 { "place" } else { "break" }.to_string(),
+                        ),
+                        (
+                            "target_macro",
+                            format!("{},{},{}", target_macro[0], target_macro[1], target_macro[2]),
+                        ),
+                        ("material_id", material_id.to_string()),
+                    ],
+                );
+            }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
                 emit_stdio("quit", &[("final_status", world_state.status.clone())]);

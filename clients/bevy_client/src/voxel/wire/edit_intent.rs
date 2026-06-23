@@ -33,6 +33,18 @@ pub const MICRO_PER_MACRO: i64 = 8;
 /// The fixed body length the server expects (opcode-stripped).
 pub const VOXEL_EDIT_INTENT_BODY_LEN: usize = 91;
 
+/// Wire sentinel for "no `expected_chunk_version` pin" — mirrors the server
+/// `@expected_chunk_version_unspecified` (`chunk_process.ex`), which the apply
+/// path normalizes to `nil` (skip the optimistic-concurrency check). MUST be
+/// sent for an infinite-resource build: sending `0` is read as "I expect chunk
+/// version 0" and every edit is rejected `:stale_chunk_version` (live chunks
+/// start at version ≥ 1).
+pub const EXPECTED_CHUNK_VERSION_UNSPECIFIED: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
+/// Wire sentinel for "no `expected_cell_hash` pin" (server
+/// `@expected_cell_hash_unspecified`). Same rationale as the version sentinel.
+pub const EXPECTED_CELL_HASH_UNSPECIFIED: u32 = 0xFFFF_FFFF;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelEditIntent {
     pub request_id: u64,
@@ -58,8 +70,11 @@ impl VoxelEditIntent {
     /// Builds a **macro-cell** edit at a GLOBAL macro coord. The caller pre-resolves
     /// the target macro (the adjacent cell for place, the clicked cell for break),
     /// so we send a zero `face_normal`: the gate adds `face_normal` (0) then
-    /// floor-divides world_micro by 8, landing exactly on `target_macro`. Refs and
-    /// version/hash left 0 (no optimistic concurrency gate — infinite-resource build).
+    /// floor-divides world_micro by 8, landing exactly on `target_macro`. Refs left
+    /// 0; `expected_chunk_version`/`expected_cell_hash` are sent as the UNSPECIFIED
+    /// sentinels (not 0!) so the server skips the optimistic-concurrency gate —
+    /// infinite-resource build. Sending 0 means "expect version 0" and every edit
+    /// is rejected `:stale_chunk_version`.
     pub fn macro_edit(
         request_id: u64,
         client_intent_seq: u32,
@@ -85,8 +100,8 @@ impl VoxelEditIntent {
             object_ref: 0,
             part_ref: 0,
             attribute_patch_ref: 0,
-            expected_chunk_version: 0,
-            expected_cell_hash: 0,
+            expected_chunk_version: EXPECTED_CHUNK_VERSION_UNSPECIFIED,
+            expected_cell_hash: EXPECTED_CELL_HASH_UNSPECIFIED,
             client_hint_hash: 0,
         }
     }
@@ -210,6 +225,14 @@ mod tests {
         assert_eq!(intent.target_world_micro, [80, -16, 24]);
         assert_eq!(intent.face_normal, [0, 0, 0]);
         assert_eq!(intent.material_id, 2);
+        // Infinite-resource build: no optimistic-concurrency pin — MUST be the
+        // UNSPECIFIED sentinels, NOT 0 (0 = "expect version 0" → every live edit
+        // rejected :stale_chunk_version, since live chunks start at version ≥ 1).
+        assert_eq!(
+            intent.expected_chunk_version,
+            EXPECTED_CHUNK_VERSION_UNSPECIFIED
+        );
+        assert_eq!(intent.expected_cell_hash, EXPECTED_CELL_HASH_UNSPECIFIED);
         // The gate recovers the macro: floor_div(world_micro + 0, 8) == target_macro.
         let recovered = [
             intent.target_world_micro[0].div_euclid(MICRO_PER_MACRO),
