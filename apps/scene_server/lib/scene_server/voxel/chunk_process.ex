@@ -444,8 +444,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
     chunk_coord = Keyword.fetch!(opts, :chunk_coord)
 
     storage =
-      opts
-      |> Keyword.get(:storage, Storage.empty(logical_scene_id, chunk_coord))
+      case Keyword.get(opts, :storage) do
+        nil ->
+          # Start from the DB-persisted snapshot (terrain + chunk_version), not an
+          # empty chunk. Otherwise a fresh process after a restart is at version 0
+          # while the DB holds a higher persisted version, so its first persist is
+          # :stale_chunk_version and the batch self-heal must reload the snapshot
+          # per batch — making the dev seed pathologically slow and every write pay
+          # an extra DB round-trip. Loading once here keeps the version consistent
+          # so the seed simply skips already-correct cells.
+          load_persisted_storage_or_empty(logical_scene_id, chunk_coord)
+
+        provided ->
+          provided
+      end
       |> Storage.normalize!()
 
     lease = normalize_optional_lease(Keyword.get(opts, :lease))
@@ -3491,6 +3503,26 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:error, reason}
       end
     end
+  end
+
+  # Loads the persisted chunk snapshot into a Storage on process startup, falling
+  # back to an empty chunk when there is no persisted row or DataService is
+  # unavailable (e.g. `--no-start` tests). Mirrors the decode used by the
+  # persist-stale recovery path so a freshly-(re)started chunk is at the
+  # DB-canonical version + content.
+  defp load_persisted_storage_or_empty(logical_scene_id, chunk_coord) do
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
+      {:ok, %{data: data}} when is_binary(data) ->
+        case decode_prewarm_payload(data) do
+          {:ok, storage} -> storage
+          _ -> Storage.empty(logical_scene_id, chunk_coord)
+        end
+
+      _ ->
+        Storage.empty(logical_scene_id, chunk_coord)
+    end
+  catch
+    :exit, _ -> Storage.empty(logical_scene_id, chunk_coord)
   end
 
   # 梯队1 step1.1b(TIME-1):从持久化 chunk 行恢复 cell_tick/sim_time_ms。cell_tick 加
