@@ -79,6 +79,7 @@ pub struct VoxelPlugin;
 impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VoxelSelectionState>()
+            .init_resource::<crate::voxel::build_palette::BuildPalette>()
             // Always active in-game: the skill-target marker (live gameplay) and
             // the showcase cube sync (which self-cleans once in a live scene).
             .add_systems(
@@ -337,7 +338,7 @@ struct LiveBuildParams<'w, 's> {
     observer: Res<'w, ClientObserver>,
     windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
-    voxel_world: ResMut<'w, VoxelWorld>,
+    palette: ResMut<'w, crate::voxel::build_palette::BuildPalette>,
     authority: Res<'w, VoxelAuthority>,
     bridge: Option<Res<'w, NetworkBridge>>,
 }
@@ -371,7 +372,7 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
         observer,
         windows,
         camera,
-        mut voxel_world,
+        mut palette,
         authority,
         bridge,
     } = params;
@@ -380,7 +381,8 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
         return;
     }
 
-    // Hotbar selection works in live scenes too (shared material palette).
+    // Build palette selection (construction system): digit keys 1-9 pick a slot,
+    // wheel cycles the full fixed component list.
     for (key, index) in [
         (KeyCode::Digit1, 0),
         (KeyCode::Digit2, 1),
@@ -389,23 +391,27 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
         (KeyCode::Digit5, 4),
         (KeyCode::Digit6, 5),
         (KeyCode::Digit7, 6),
+        (KeyCode::Digit8, 7),
+        (KeyCode::Digit9, 8),
     ] {
-        if keyboard.just_pressed(key) {
-            let _ = voxel_world.select_hotbar_index(index);
+        if keyboard.just_pressed(key) && palette.select(index) {
+            observer.emit(
+                "voxel",
+                "build_palette_select",
+                &[("selected", palette.selected().label.to_string())],
+            );
         }
     }
     let wheel_delta = wheel_reader.read().map(|event| event.y).sum::<f32>();
     let control_zoom =
         keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if wheel_delta.abs() > f32::EPSILON && !control_zoom {
-        let len = voxel_world.hotbar().entries.len();
-        let current = voxel_world.hotbar().selected_index;
-        let next = if wheel_delta < 0.0 {
-            (current + 1) % len
-        } else {
-            (current + len - 1) % len
-        };
-        let _ = voxel_world.select_hotbar_index(next);
+        palette.cycle(if wheel_delta < 0.0 { 1 } else { -1 });
+        observer.emit(
+            "voxel",
+            "build_palette_select",
+            &[("selected", palette.selected().label.to_string())],
+        );
     }
 
     let place_requested = keyboard.just_pressed(KeyCode::KeyF)
@@ -461,34 +467,22 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
     }
 
     if place_requested {
-        let selected = voxel_world.hotbar().selected;
-        match selected.material_id {
-            Some(material) => {
-                let target = pick.adjacent_macro();
-                bridge.send(NetworkCommand::EditVoxel {
-                    logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
-                    action: ACTION_PLACE,
-                    target_macro: target,
-                    material_id: material as u16,
-                });
-                observer.emit(
-                    "voxel",
-                    "live_place_sent",
-                    &[
-                        ("coord", format!("{target:?}")),
-                        ("material", material.label().to_string()),
-                    ],
-                );
-            }
-            None => {
-                // Prefab placement over the network is C5; macro materials only here.
-                observer.emit(
-                    "voxel",
-                    "live_place_rejected",
-                    &[("reason", "prefab_not_wired".to_string())],
-                );
-            }
-        }
+        let selected = palette.selected();
+        let target = pick.adjacent_macro();
+        bridge.send(NetworkCommand::EditVoxel {
+            logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
+            action: ACTION_PLACE,
+            target_macro: target,
+            material_id: selected.material_id,
+        });
+        observer.emit(
+            "voxel",
+            "live_place_sent",
+            &[
+                ("coord", format!("{target:?}")),
+                ("material", selected.label.to_string()),
+            ],
+        );
     }
 }
 
