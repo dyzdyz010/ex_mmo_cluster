@@ -618,24 +618,31 @@ fn draw_voxel_guides(
 pub(crate) fn surface_center_y_at_render_xz(
     voxel_world: &VoxelWorld,
     authority: &VoxelAuthority,
+    scene_joined: bool,
     render_x: f32,
     render_z: f32,
     half_height: f32,
     fallback_y: f32,
 ) -> f32 {
     let mut top_y = None::<f32>;
-    // Offline showcase geometry (empty once a live scene is joined).
-    for cell in voxel_world.render_cells_3d() {
-        let (min, max) = voxel_cell_bounds(cell);
-        if render_x >= min.x && render_x <= max.x && render_z >= min.z && render_z <= max.z {
-            top_y = Some(top_y.map_or(max.y, |current| current.max(max.y)));
+    // Offline showcase geometry: only meaningful PRE-join. Once joined, the
+    // server-authoritative store is the sole truth — the showcase is despawned
+    // visually but its `VoxelWorld.cells` linger (never cleared), so reading it
+    // in a live scene would ground the avatar onto an invisible origin plane.
+    // Skip it when joined (the audit's phantom-floor finding).
+    if !scene_joined {
+        for cell in voxel_world.render_cells_3d() {
+            let (min, max) = voxel_cell_bounds(cell);
+            if render_x >= min.x && render_x <= max.x && render_z >= min.z && render_z <= max.z {
+                top_y = Some(top_y.map_or(max.y, |current| current.max(max.y)));
+            }
         }
     }
     // Live scene: ground against the server-authoritative chunk terrain. The
-    // offline VoxelWorld is empty after joining, so without this the avatar
-    // floats at the raw spawn height, which on the noise terrain is *below* the
-    // surface (the reported "character is below the world"). Macro coords map
-    // directly to render space (macro Y = up), matching `macro_bounds`.
+    // offline VoxelWorld holds no live terrain, so without this the avatar floats
+    // at the raw spawn height, which on the noise terrain is *below* the surface
+    // (the reported "character is below the world"). Macro coords map directly to
+    // render space (macro Y = up), matching `macro_bounds`.
     let mx = (render_x / VOXEL_RENDER_CELL_SIZE).floor() as i32;
     let mz = (render_z / VOXEL_RENDER_CELL_SIZE).floor() as i32;
     if let Some(macro_y) = authority.store.column_top_macro_y(mx, mz) {
@@ -653,13 +660,36 @@ pub(crate) fn surface_center_y_at_render_xz(
 /// voxel intersects within `max_distance`. Used by the camera follow
 /// logic to clamp the orbit distance against terrain so the third-person
 /// camera never clips inside a wall / hill.
+///
+/// In a live scene the terrain is the server-authoritative chunk store, NOT the
+/// offline `VoxelWorld` (which holds only the stale pre-join showcase). Reading
+/// the offline store while joined both missed every real hill AND clamped the
+/// camera against an invisible origin plane (audit). So when `scene_joined` we
+/// march the authority macro grid (cheap macro-DDA, ≤ `max_distance/100` steps,
+/// reusing the build raycast); pre-join we AABB-test the offline showcase.
 pub(crate) fn voxel_ray_first_hit_distance(
     voxel_world: &VoxelWorld,
+    authority: &VoxelAuthority,
+    scene_joined: bool,
     origin: Vec3,
     direction: Vec3,
     max_distance: f32,
 ) -> Option<f32> {
     let direction = direction.try_normalize()?;
+    if scene_joined {
+        // Live terrain: DDA over authority macro cells; the hit macro's near-face
+        // entry distance (via its render AABB) is what the camera clamps to.
+        let pick = pick_voxel(
+            [origin.x, origin.y, origin.z],
+            [direction.x, direction.y, direction.z],
+            max_distance,
+            |g| authority_macro_occupied(authority, g),
+        )?;
+        let m = pick.occupied_macro;
+        let (min, max) = macro_bounds(MacroCoord::new(m[0], m[1], m[2]));
+        return ray_intersect_aabb(origin, direction, min, max, max_distance).map(|(d, _)| d);
+    }
+    // Pre-join showcase: AABB-test the offline VoxelWorld cells.
     let mut nearest: Option<f32> = None;
     for cell in voxel_world.render_cells_3d() {
         let (min, max) = voxel_cell_bounds(cell);
@@ -1071,10 +1101,11 @@ mod tests {
         let raw_spawn_y = 185.0;
 
         // At the spawn column the avatar grounds onto the terrain top (400) + half
-        // (45) = 445, NOT the buggy raw spawn 185.
+        // (45) = 445, NOT the buggy raw spawn 185. scene_joined = true (live).
         let grounded = surface_center_y_at_render_xz(
             &empty_world,
             &authority,
+            true,
             750.0,
             750.0,
             half_height,
@@ -1086,11 +1117,79 @@ mod tests {
         let no_terrain = surface_center_y_at_render_xz(
             &empty_world,
             &authority,
+            true,
             50.0,
             50.0,
             half_height,
             raw_spawn_y,
         );
         assert_eq!(no_terrain, raw_spawn_y);
+    }
+
+    // Regression: in a live scene the third-person camera collision must clamp
+    // against the AUTHORITY terrain, not the (empty) offline VoxelWorld — else it
+    // clips through every real hill. Mirrors the grounding fix.
+    #[test]
+    fn camera_collision_hits_authority_terrain_in_live_scene() {
+        use crate::voxel::authority::{AuthorityChunk, CellState};
+        use crate::voxel::authority_plugin::VoxelAuthority;
+        use crate::voxel::wire::NormalBlock;
+
+        let solid = NormalBlock {
+            material_id: 2,
+            state_flags: 0,
+            health: 100,
+            temperature_delta: 0,
+            moisture_delta: 0,
+            attribute_set_ref: 0,
+            tag_set_ref: 0,
+        };
+        // One solid macro at (5,0,5) → render AABB [500,0,500]..[600,100,600].
+        let mut cells = vec![CellState::Empty; 16 * 16 * 16];
+        cells[(5 + 0 * 16 + 5 * 256) as usize] = CellState::Solid(solid);
+        let chunk = AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: 16,
+            cells,
+            surface_elements: Vec::new(),
+        };
+        let mut authority = VoxelAuthority::default();
+        authority.store.insert_chunk_for_test([0, 0, 0], chunk);
+        let empty_world = VoxelWorld::new();
+
+        // Ray from render (550,50,0) toward +Z hits the macro's near face at Z=500.
+        let hit = voxel_ray_first_hit_distance(
+            &empty_world,
+            &authority,
+            true,
+            Vec3::new(550.0, 50.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1000.0,
+        );
+        assert_eq!(hit, Some(500.0), "camera must clamp against live terrain");
+
+        // A ray that misses all terrain → no clamp.
+        let miss = voxel_ray_first_hit_distance(
+            &empty_world,
+            &authority,
+            true,
+            Vec3::new(550.0, 50.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1000.0,
+        );
+        assert_eq!(miss, None);
+
+        // Pre-join (scene_joined = false) with an empty offline world → no clamp,
+        // and crucially the authority terrain is NOT consulted (offline showcase
+        // owns collision before join).
+        let pre_join = voxel_ray_first_hit_distance(
+            &empty_world,
+            &authority,
+            false,
+            Vec3::new(550.0, 50.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1000.0,
+        );
+        assert_eq!(pre_join, None);
     }
 }

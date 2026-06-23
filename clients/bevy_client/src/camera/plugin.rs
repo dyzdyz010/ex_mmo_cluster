@@ -201,6 +201,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
             actor_render_position(
                 &params.voxel_world,
                 &params.authority,
+                params.world_state.scene_joined,
                 state.position,
                 ACTOR_HALF_HEIGHT,
             )
@@ -210,6 +211,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
                 actor_render_position(
                     &params.voxel_world,
                     &params.authority,
+                    params.world_state.scene_joined,
                     position,
                     ACTOR_HALF_HEIGHT,
                 )
@@ -250,6 +252,8 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
     let camera_offset_dir = camera_offset_direction(&params.orbit);
     if let Some(hit_distance) = crate::voxel::plugin::voxel_ray_first_hit_distance(
         &params.voxel_world,
+        &params.authority,
+        params.world_state.scene_joined,
         target,
         camera_offset_dir,
         requested_distance,

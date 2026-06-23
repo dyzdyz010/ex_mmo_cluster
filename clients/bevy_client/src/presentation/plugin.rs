@@ -169,6 +169,7 @@ fn sync_player_visuals(
                 let target = actor_render_position(
                     &params.voxel_world,
                     &params.authority,
+                    params.world_state.scene_joined,
                     motion.position,
                     visual.base_scale.y * 0.5,
                 );
@@ -266,6 +267,7 @@ fn sync_player_visuals(
             let target = actor_render_position(
                 &params.voxel_world,
                 &params.authority,
+                params.world_state.scene_joined,
                 motion.position,
                 scale.y * 0.5,
             );
@@ -320,6 +322,7 @@ fn sync_player_visuals(
 pub fn actor_render_position(
     voxel_world: &VoxelWorld,
     authority: &VoxelAuthority,
+    scene_joined: bool,
     sim_position: Vec3,
     half_height: f32,
 ) -> Vec3 {
@@ -327,6 +330,7 @@ pub fn actor_render_position(
     let grounded_y = surface_center_y_at_render_xz(
         voxel_world,
         authority,
+        scene_joined,
         render.x,
         render.z,
         half_height,
