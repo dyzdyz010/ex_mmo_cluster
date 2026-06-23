@@ -1029,6 +1029,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
         safe_apply_field_effect(acc_state, effect, context)
       end)
 
+    # 局限②(field-commit 重 sweep):若有 field 效果改了**块拓扑/材料**(毁块/坍块/材料相变),
+    # 去抖重跑 provisioning sweep——让各 provisioner 按新 truth 重判。这正是跨系统链的闭合点:
+    # 燃烧(化学)把承重梁烧成灰 → 重 sweep → 力学 provisioner 探到上方失支撑 → 起 region 坍塌
+    # (烧梁→坍塌)。高频的温度/tag 写不改拓扑/材料,**不**触发,避免常驻场每 tick 空 sweep。
+    next_state = maybe_schedule_field_refresh(next_state, structural_dirty?(results))
+
     summary = %{
       applied_count: Enum.count(results, &(&1.status == :applied)),
       rejected_count: Enum.count(results, &(&1.status == :rejected)),
@@ -2640,6 +2646,21 @@ defmodule SceneServer.Voxel.ChunkProcess do
       emit_field_effect_rejected(state, result, context)
       {result, state}
   end
+
+  # field 效果是否改了 provisioning 相关的块拓扑/材料(需重 sweep)。毁块/坍块改拓扑;材料相变
+  # 改材料身份(可变结构/导电/光热)。health 未归零的减血、温度写、tag 写都不改,排除以免常驻
+  # 场(燃烧/电路每 tick 注热)白触发 sweep。
+  defp structural_dirty?(results) when is_list(results) do
+    Enum.any?(results, &structural_relevant_change?/1)
+  end
+
+  defp structural_relevant_change?(%{status: :applied, action: :collapse_block}), do: true
+
+  defp structural_relevant_change?(%{status: :applied, action: :damage_block, destroyed?: true}),
+    do: true
+
+  defp structural_relevant_change?(%{status: :applied, action: :transform_material}), do: true
+  defp structural_relevant_change?(_result), do: false
 
   defp apply_field_effect(state, effect, context) do
     case normalize_field_effect(effect) do

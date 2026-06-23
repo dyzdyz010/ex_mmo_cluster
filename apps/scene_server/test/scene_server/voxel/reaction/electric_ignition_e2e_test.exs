@@ -58,7 +58,14 @@ defmodule SceneServer.Voxel.Reaction.ElectricIgnitionE2ETest do
   end
 
   test "电→火:导电加热铁 → 铁热扩散点燃相邻木(跨系统涌现)" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 7, chunk_coord: {0, 0, 0}})
+    # 手动建 region + 自驱(下方 FieldTickWorker),关掉 auto field provisioning:本测专注
+    # 电→热→燃烧链,不要正交的力学坍塌 provisioner 介入(导电把作地锚的源铁烧熔成 molten_iron
+    # 即 structural=0,会令其上木块失支撑坍塌——那是另一条合理涌现链,但会干扰本测点火断言)。
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 7, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
     source = Types.macro_index!({0, 0, 0})
     iron_target = Types.macro_index!({1, 0, 0})
     wood = Types.macro_index!({0, 1, 0})

@@ -199,7 +199,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => @absolute_zero_raw,
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
-      "dielectric_strength" => round(3.0 * @fixed32_scale)
+      "dielectric_strength" => round(3.0 * @fixed32_scale),
+      # 力学:松散灰烬不承重——木梁燃尽成灰即失承载,上方结构随之失支撑(烧梁→坍塌链)。
+      "structural" => 0
     },
     # 反应层 R9b:门——导电金属(参与电路 + 电负载,通电置 :powered → 开),常温惰性。
     # S2:小电阻(螺线管/作动器线圈)→ :load 电角色由属性派生(electric_resistance>0);载流微热
