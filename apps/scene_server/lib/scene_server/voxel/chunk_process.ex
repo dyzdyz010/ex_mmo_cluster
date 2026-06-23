@@ -23,6 +23,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Field.ParticipantProjection
   alias SceneServer.Voxel.Field.Provisioners.ElectricCircuit
   alias SceneServer.Voxel.Field.Provisioners.Emergence
+  alias SceneServer.Voxel.Field.Provisioners.StructuralStress
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
@@ -44,9 +45,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # 世界内容驱动场 provisioning:块变更去抖后一次 sweep 遍历这组 provisioner,
   # 各自探测 chunk 内容 → ensure / release 对应 region。electric_circuit 第一个
-  # (闭合电路);emergence / thermal 随后。见
-  # docs/2026-06-23-world-content-driven-field-provisioning.md。
-  @field_provisioners [ElectricCircuit, Emergence]
+  # (闭合电路);emergence(光/热/化学);structural_stress(失支撑结构坍塌)。见
+  # docs/2026-06-23-world-content-driven-field-provisioning.md、
+  # docs/2026-06-23-mechanical-stress-structural-collapse.md。
+  @field_provisioners [ElectricCircuit, Emergence, StructuralStress]
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
   # 温度属性 catalog 边界(冻结值,见 priv/catalogs/attribute_catalog_v1.exs id 1)。R5d:注热写须 clip 到
