@@ -743,9 +743,8 @@ fn micro_occupied(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> bool {
 /// `Storage.build_layers_from_pairs`, maintained by `remove_micro_slot`): every
 /// occupied micro slot is owned by some layer. The bevy decoder does NOT
 /// re-validate this, so if a future delta / object-cover path ever lets
-/// occupancy outrun the layers, this would silently paint the unknown-material
-/// fallback (material 0 → magenta). We `debug_assert` to surface that loudly in
-/// tests/CI rather than shipping a wrong color.
+/// occupancy outrun the layers, the slot has no material and we degrade to the
+/// fallback (material 0 → magenta).
 fn micro_material(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> u32 {
     refined
         .layers
@@ -753,11 +752,19 @@ fn micro_material(refined: &RefinedCell, mx: i32, my: i32, mz: i32) -> u32 {
         .find(|layer| micro_bit_set(&layer.mask_words, mx, my, mz))
         .map(|layer| layer.material_id as u32)
         .unwrap_or_else(|| {
-            debug_assert!(
-                false,
-                "refined micro slot ({mx},{my},{mz}) occupied but owned by no layer \
-                 (occupancy outran layer masks — server invariant violated)"
-            );
+            // A peer/server protocol fault (occupancy outran the layer masks) must
+            // NOT crash the render loop. The old `debug_assert!(false)` aborted
+            // debug/observer/CI builds on server-controlled data; release silently
+            // returned 0. Match release (degrade to magenta) in all profiles, and
+            // surface the breach ONCE to stderr instead of per-cell-per-frame spam.
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "[bevy_client::mesher] refined micro slot occupied but owned by no layer \
+                     (occupancy outran layer masks — server invariant violated); rendering magenta"
+                );
+            }
             0
         })
 }

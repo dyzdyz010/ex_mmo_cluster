@@ -1144,9 +1144,10 @@ mod tests {
             attribute_set_ref: 0,
             tag_set_ref: 0,
         };
-        // One solid macro at (5,0,5) → render AABB [500,0,500]..[600,100,600].
+        // One solid macro at local (5,0,5) → idx = 5 + 0*16 + 5*256 = 1285;
+        // render AABB [500,0,500]..[600,100,600].
         let mut cells = vec![CellState::Empty; 16 * 16 * 16];
-        cells[(5 + 0 * 16 + 5 * 256) as usize] = CellState::Solid(solid);
+        cells[1285] = CellState::Solid(solid);
         let chunk = AuthorityChunk {
             chunk_version: 1,
             chunk_size_in_macro: 16,

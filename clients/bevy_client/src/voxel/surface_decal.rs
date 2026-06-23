@@ -150,6 +150,19 @@ pub fn surface_decal_mesh(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshD
 
         let (mx, my, mz) = macro_coord(element.macro_index, size);
 
+        // Cull a surface element whose HOST macro cell is no longer occupied: a
+        // torch/lever decorates a block face, so when that block is destroyed by a
+        // ChunkDelta the decal must vanish with it. Deltas preserve
+        // `surface_elements` (only a surface-element change resends them), so
+        // without this an always-visible torch on a destroyed wall would float in
+        // empty space. The volumetric mesh already has no face there.
+        if mx >= 0 && my >= 0 && mz >= 0 && mx < size && my < size && mz < size {
+            let host_idx = (mx + my * size + mz * size * size) as usize;
+            if !chunk.cell(host_idx).map(is_occupied).unwrap_or(false) {
+                continue;
+            }
+        }
+
         if surface_type_visibility(element.surface_type_id)
             == SurfaceVisibility::HideWhenNeighborOccupied
             && neighbor_occupied(chunk, mx, my, mz, face.delta, size)
@@ -343,6 +356,23 @@ mod tests {
         assert_eq!(mesh.quad_count(), 3);
         assert!(mesh.normals_are_axis_unit());
         assert!(mesh.structural_invariants_hold());
+    }
+
+    #[test]
+    fn always_visible_decal_culled_when_host_cell_empty() {
+        // A torch (always-visible) whose host macro cell is Empty (e.g. the wall
+        // was broken by a delta that preserved the surface element) must NOT
+        // render — it would otherwise float in empty space.
+        let host = idx(5, 5, 5);
+        let chunk = chunk_with(|_| {}, vec![element(host as u16, 1, 4)]);
+        assert!(
+            surface_decal_mesh(&chunk, 1.0).is_empty(),
+            "decal on an empty host cell must be culled"
+        );
+
+        // Re-add the host block → the torch renders again.
+        let with_host = chunk_with(|c| c[host] = solid(9), vec![element(host as u16, 1, 4)]);
+        assert_eq!(surface_decal_mesh(&with_host, 1.0).quad_count(), 1);
     }
 
     #[test]

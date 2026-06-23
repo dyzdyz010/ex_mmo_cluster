@@ -163,9 +163,16 @@ pub fn remote_move_snapshot_from_server(message: &ServerMessage) -> Option<Remot
 }
 
 fn decode_mode(raw: u8) -> MovementMode {
+    // Must be the total inverse of the server's `encode_movement_mode/1`
+    // (gate codec.ex): 0=grounded, 1=airborne, 2=disabled, 3=scripted. Dropping
+    // `3 => Scripted` silently mapped server-driven displacement (knockback/dash)
+    // to Grounded, so the client would integrate WASD while the server's
+    // scripted_step ignored input — a prediction divergence the moment such
+    // skills ship. Forward-compat: unknown values still fall back to Grounded.
     match raw {
         1 => MovementMode::Airborne,
         2 => MovementMode::Disabled,
+        3 => MovementMode::Scripted,
         _ => MovementMode::Grounded,
     }
 }
@@ -209,6 +216,21 @@ mod tests {
         });
 
         assert_eq!(ack.movement_mode, MovementMode::Airborne);
+    }
+
+    #[test]
+    fn decode_mode_is_total_inverse_of_server_encoding() {
+        // Mirrors gate codec `encode_movement_mode/1`: 0/1/2/3 round-trip and an
+        // unknown value falls back to Grounded (forward-compat).
+        assert_eq!(decode_mode(0), MovementMode::Grounded);
+        assert_eq!(decode_mode(1), MovementMode::Airborne);
+        assert_eq!(decode_mode(2), MovementMode::Disabled);
+        assert_eq!(
+            decode_mode(3),
+            MovementMode::Scripted,
+            "wire 3 must decode to Scripted (server-driven displacement), not Grounded"
+        );
+        assert_eq!(decode_mode(255), MovementMode::Grounded);
     }
 
     #[test]
