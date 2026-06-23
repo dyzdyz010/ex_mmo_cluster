@@ -2656,6 +2656,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
       {:ok, :damage_block, attrs} ->
         apply_damage_block_effect(state, attrs, context)
 
+      # 力学应力:失支撑实心结构坍塌——直接清掉该 cell(复用归零毁块 → ChunkDelta/debris 路径)。
+      {:ok, :collapse_block, attrs} ->
+        apply_collapse_block_effect(state, attrs, context)
+
       {:ok, action, _attrs} ->
         result = %{
           status: :rejected,
@@ -2700,6 +2704,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp normalize_field_effect_action("set_tag"), do: :set_tag
   defp normalize_field_effect_action(:damage_block), do: :damage_block
   defp normalize_field_effect_action("damage_block"), do: :damage_block
+  defp normalize_field_effect_action(:collapse_block), do: :collapse_block
+  defp normalize_field_effect_action("collapse_block"), do: :collapse_block
   defp normalize_field_effect_action(action) when is_atom(action), do: action
   defp normalize_field_effect_action(action) when is_binary(action), do: action
   defp normalize_field_effect_action(_action), do: :unknown
@@ -3055,6 +3061,46 @@ defmodule SceneServer.Voxel.ChunkProcess do
     else
       {:error, reason} ->
         result = %{status: :rejected, action: :damage_block, reason: reason}
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+    end
+  end
+
+  # 力学应力:失支撑结构坍塌——无视 health 直接清掉该实心 cell(复用 damage_block 的归零
+  # 毁块 storage 路径 → bump version → push_snapshot_fallbacks → ChunkDelta;客户端把 cleared
+  # cell 渲成 debris)。仅对实心 cell 生效;非实心(已空/流体)→ reject(no-op,幂等)。
+  defp apply_collapse_block_effect(state, attrs, context) do
+    attrs = attrs_map(attrs)
+
+    with {:ok, macro_index} <- normalize_transform_macro(attrs),
+         %NormalBlockData{} = block <- Storage.normal_block_at(state.storage, macro_index) do
+      next_version = state.storage.chunk_version + 1
+
+      next_storage =
+        damage_block_storage(state.storage, macro_index, block, 0, next_version)
+
+      next_state = %{state | storage: next_storage}
+      push_snapshot_fallbacks(next_state, :structural_collapse_block)
+
+      result = %{
+        status: :applied,
+        action: :collapse_block,
+        macro_index: macro_index,
+        destroyed?: true,
+        source: Map.get(attrs, :source, :structural_collapse),
+        chunk_version: next_storage.chunk_version
+      }
+
+      emit_field_effect_applied(next_state, result, context)
+      {result, next_state}
+    else
+      {:error, reason} ->
+        result = %{status: :rejected, action: :collapse_block, reason: reason}
+        emit_field_effect_rejected(state, result, context)
+        {result, state}
+
+      _other ->
+        result = %{status: :rejected, action: :collapse_block, reason: :collapse_target_not_solid}
         emit_field_effect_rejected(state, result, context)
         {result, state}
     end
