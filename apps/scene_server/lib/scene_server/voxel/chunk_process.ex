@@ -922,6 +922,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
     next_state = %{state | storage: storage}
     push_snapshot_fallbacks(next_state, :put_surface_element)
 
+    # 表面元件(如火炬)可为本征热/光源 → 触发场 provisioning sweep(Emergence 扫
+    # surface_elements,带 heat_output/light_emission 的 torch 起涌现 region)。
+    next_state = maybe_schedule_field_refresh(next_state, true)
+
     {:reply, {:ok, storage}, next_state}
   end
 

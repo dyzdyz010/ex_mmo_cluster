@@ -42,7 +42,11 @@ defmodule SceneServer.Voxel.Field.Provisioners.EmergenceTest do
     context = %{storage: storage, chunk_coord: {0, 0, 0}, logical_scene_id: 1}
 
     assert {:active, attrs, detail} = Emergence.detect(context)
-    assert [%{id: :light_propagation}, %{id: :reaction}] = attrs.kernels
+
+    # 有序流水线:温度扩散 → 光传播 → 反应。
+    assert [%{id: :temperature_diffusion}, %{id: :light_propagation}, %{id: :reaction}] =
+             attrs.kernels
+
     assert attrs.max_ticks == nil
 
     # glowstone 在 {1,0,0},半径 6 → bbox 扩成 {{0,0,0},{7,6,6}}(各轴 clamp 到 [0,15],

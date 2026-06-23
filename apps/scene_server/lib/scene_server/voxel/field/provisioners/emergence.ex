@@ -35,9 +35,11 @@ defmodule SceneServer.Voxel.Field.Provisioners.Emergence do
 
   alias SceneServer.Voxel.Field.Kernels.LightPropagationKernel
   alias SceneServer.Voxel.Field.Kernels.ReactionKernel
+  alias SceneServer.Voxel.Field.Kernels.TemperatureDiffusionKernel
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.SurfaceCatalog
   alias SceneServer.Voxel.Types
 
   @ambient_celsius 20.0
@@ -66,7 +68,12 @@ defmodule SceneServer.Voxel.Field.Provisioners.Emergence do
         attrs = %{
           chunk_coord: chunk_coord,
           aabb: aabb,
+          # 有序流水线:温度扩散(把 heat_output/emit_heat 注入的热铺到 AABB 内邻居)→
+          # 光传播(写同 tick :light 层)→ 反应(读 truth 温度 + 同 tick :light gate)。
+          # TemperatureDiffusionKernel 自由扩散 truth(无需 source_points),热源材料触发
+          # 本 region 后,扩散与光/反应同 region 跑——无需独立 thermal provisioner / 重 sweep。
           kernels: [
+            %{id: :temperature_diffusion, module: TemperatureDiffusionKernel, opts: %{}},
             %{id: :light_propagation, module: LightPropagationKernel, opts: %{}},
             %{id: :reaction, module: ReactionKernel, opts: %{}}
           ],
@@ -95,9 +102,10 @@ defmodule SceneServer.Voxel.Field.Provisioners.Emergence do
       ) >= @anomaly_threshold_celsius
   end
 
-  # 单 O(n) pass 扫 macro_headers:solid 且材料本征 source 光/热的 cell,聚成 bounding
-  # box,各轴外扩 @emergence_radius 并 clamp 到 chunk。无 emergent cell → nil。
-  defp emergent_aabb(%Storage{macro_headers: headers, normal_blocks: blocks}) do
+  # 单 O(n) pass 扫 macro_headers + 扫 surface_elements:solid 格本征 source 光/热的材料、
+  # 以及借用此类材料的表面元件(如火炬借 ember),聚成 bounding box,各轴外扩
+  # @emergence_radius 并 clamp 到 chunk。无 emergent 内容 → nil。
+  defp emergent_aabb(%Storage{macro_headers: headers, normal_blocks: blocks} = storage) do
     solid_mode = MacroCellHeader.cell_mode_solid_block()
     blocks_tuple = List.to_tuple(blocks)
 
@@ -113,7 +121,33 @@ defmodule SceneServer.Voxel.Field.Provisioners.Emergence do
         _ -> acc
       end
     end)
+    |> fold_emergent_surface_elements(storage)
     |> clamp_and_pad()
+  end
+
+  # 表面元件(火炬等借用本征 source 光/热材料,如 torch→ember)也触发涌现:把其宿主宏格
+  # 折进 bbox。热源材料的 heat_output 由 ReactionKernel 注入宿主格,再经温度扩散铺开。
+  defp fold_emergent_surface_elements(bounds, %Storage{} = storage) do
+    storage
+    |> Storage.list_surface_elements()
+    |> Enum.reduce(bounds, fn element, acc ->
+      with material_id when is_integer(material_id) <-
+             surface_material_id(element.surface_type_id),
+           true <- emergent_material?(material_id) do
+        {x, y, z} = Types.macro_coord!(element.macro_index)
+        expand_bounds(acc, x, y, z)
+      else
+        _ -> acc
+      end
+    end)
+  end
+
+  # 表面元件类型 → 借用材料 id(无材料 / 未知 → nil)。
+  defp surface_material_id(surface_type_id) do
+    case SurfaceCatalog.material(surface_type_id) do
+      name when is_atom(name) and not is_nil(name) -> MaterialCatalog.material_id(name)
+      _other -> nil
+    end
   end
 
   defp expand_bounds(nil, x, y, z), do: {{x, y, z}, {x, y, z}}
