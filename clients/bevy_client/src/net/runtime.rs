@@ -771,6 +771,13 @@ impl ClientRuntime {
                 outcome.push_event(self.transport_event());
             }
             ServerMessage::PlayerEnter { cid, location } => {
+                // Treat each (re-)enter as a fresh per-cid tick epoch. A remote
+                // PlayerCharacter process is `restart: :temporary`, so a
+                // reconnect/respawn spawns a NEW process whose movement tick
+                // restarts near 0. Without clearing the stale high watermark, the
+                // re-entered actor's low-tick PlayerMoves would all be dropped as
+                // "stale" and it would appear frozen at its spawn position.
+                self.last_remote_move_ticks.remove(&cid);
                 outcome.push_event(NetworkEvent::PlayerEnter { cid, location });
             }
             message @ ServerMessage::PlayerMove { cid, .. } => {
@@ -813,6 +820,9 @@ impl ClientRuntime {
                 });
             }
             ServerMessage::PlayerLeave { cid } => {
+                // Bound the per-cid tick map and clear the stale epoch so a future
+                // re-enter of this cid starts fresh (see PlayerEnter).
+                self.last_remote_move_ticks.remove(&cid);
                 outcome.push_event(NetworkEvent::PlayerLeave { cid });
             }
             ServerMessage::ActorIdentity { cid, kind, name } => {

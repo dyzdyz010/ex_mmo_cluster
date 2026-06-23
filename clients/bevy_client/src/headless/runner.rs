@@ -138,7 +138,18 @@ pub fn run_stdio(
                         local_alive: state.local_alive,
                         movement_transport: state.movement_transport.label(),
                         fast_lane_status: &state.fast_lane_status,
-                        remote_player_count: state.remote_players.len(),
+                        // Parity with the GUI snapshot (stdio/plugin.rs): count
+                        // PLAYER-kind identities, not raw remote_players.len()
+                        // (which also includes NPCs + any self echo) — else the
+                        // two harnesses report different remote_player_count for
+                        // the same world, undermining the harness as a truth source.
+                        remote_player_count: state
+                            .remote_actor_identity
+                            .values()
+                            .filter(|identity| {
+                                matches!(identity.kind, crate::world::remote_actor::RemoteActorKind::Player)
+                            })
+                            .count(),
                         remote_npc_count: state
                             .remote_actor_identity
                             .values()

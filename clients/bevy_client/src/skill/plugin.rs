@@ -84,16 +84,7 @@ fn handle_target_selection_input(
         return;
     }
 
-    let next = match world_state.selected_target_cid {
-        Some(current) => {
-            let index = cids
-                .iter()
-                .position(|cid| *cid == current)
-                .unwrap_or(usize::MAX);
-            cids.get((index + 1) % cids.len()).copied()
-        }
-        None => cids.first().copied(),
-    };
+    let next = cycle_target_cid(&cids, world_state.selected_target_cid);
 
     world_state.selected_target_cid = next;
     world_state.selected_target_point = None;
@@ -102,43 +93,96 @@ fn handle_target_selection_input(
     }
 }
 
+/// Max ray length (render units) for the Shift+RMB ground pick.
+const POINT_PICK_MAX_DISTANCE: f32 = 10_000.0;
+
+/// Next target cid in a sorted cycle. Overflow-safe: a `current` that is NOT in
+/// `cids` (e.g. a stale cid set via stdio `target <cid>` that was never in the
+/// AOI) restarts the cycle from the first entry. The old inline form
+/// `position(..).unwrap_or(usize::MAX)` then `(index + 1) % len` computed
+/// `usize::MAX + 1`, panicking in debug builds.
+fn cycle_target_cid(cids: &[i64], current: Option<i64>) -> Option<i64> {
+    match current.and_then(|c| cids.iter().position(|cid| *cid == c)) {
+        Some(index) => cids.get((index + 1) % cids.len()).copied(),
+        None => cids.first().copied(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_point_target_input(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    voxel_world: Res<crate::voxel::VoxelWorld>,
+    authority: Res<crate::voxel::authority_plugin::VoxelAuthority>,
     mut world_state: ResMut<WorldState>,
     observer: Res<ClientObserver>,
 ) {
     let target_modifier =
         keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    if mouse.just_pressed(MouseButton::Right) && target_modifier {
-        let Ok(window) = windows.single() else {
-            return;
-        };
-
-        if let Some(cursor) = window.cursor_position() {
-            let (camera, camera_transform) = *camera;
-            let Some(render_point) =
-                crate::app::ray_from_viewport(camera, camera_transform, cursor).and_then(|ray| {
-                    crate::app::ray_intersection_with_y_plane(ray.origin, ray.direction, 0.0)
-                })
-            else {
-                return;
-            };
-            let sim_point = render_to_sim_position(render_point);
-            world_state.selected_target_point = Some(sim_point);
-            world_state.selected_target_cid = None;
-            observer.emit(
-                "input",
-                "target_point_selected",
-                &[(
-                    "point",
-                    format!("{:.1},{:.1},{:.1}", sim_point.x, sim_point.y, sim_point.z),
-                )],
-            );
-        }
+    if !(mouse.just_pressed(MouseButton::Right) && target_modifier) {
+        return;
     }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let (camera, camera_transform) = *camera;
+    let Some(ray) = crate::app::ray_from_viewport(camera, camera_transform, cursor) else {
+        return;
+    };
+    let scene_joined = world_state.scene_joined;
+    let dir = ray.direction.normalize_or_zero();
+
+    // Pick the actual ground the cursor is over (server-authoritative terrain in a
+    // live scene), NOT a fixed render-Y=0 plane. The world floor sits ~185 render
+    // units up, so the old Y=0 pick forced the point's vertical to ~185 below the
+    // surface → the server's 3D range/AOE checks missed and the point skill hit
+    // nobody. Reuse the same authority macro-DDA as the build/camera paths.
+    let render_point = crate::voxel::plugin::voxel_ray_first_hit_distance(
+        &voxel_world,
+        &authority,
+        scene_joined,
+        ray.origin,
+        ray.direction,
+        POINT_PICK_MAX_DISTANCE,
+    )
+    .map(|dist| ray.origin + dir * dist)
+    .or_else(|| {
+        // No terrain under the cursor (aiming past the world): fall back to a
+        // horizontal plane at the local player's grounded render height (their
+        // feet plane), so the point still lands near the visible surface.
+        let player_y = world_state.local_position.map(|p| {
+            let r = crate::app::sim_to_render_position(p);
+            crate::voxel::plugin::surface_center_y_at_render_xz(
+                &voxel_world,
+                &authority,
+                scene_joined,
+                r.x,
+                r.z,
+                0.0,
+                r.y,
+            )
+        })?;
+        crate::app::ray_intersection_with_y_plane(ray.origin, ray.direction, player_y)
+    });
+    let Some(render_point) = render_point else {
+        return;
+    };
+    let sim_point = render_to_sim_position(render_point);
+    world_state.selected_target_point = Some(sim_point);
+    world_state.selected_target_cid = None;
+    observer.emit(
+        "input",
+        "target_point_selected",
+        &[(
+            "point",
+            format!("{:.1},{:.1},{:.1}", sim_point.x, sim_point.y, sim_point.z),
+        )],
+    );
 }
 
 fn send_targeted_skill(
@@ -203,4 +247,22 @@ fn send_targeted_skill(
             ),
         ],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cycle_target_cid;
+
+    #[test]
+    fn cycle_target_is_overflow_safe_and_wraps() {
+        let cids = [10i64, 20, 30];
+        assert_eq!(cycle_target_cid(&cids, None), Some(10)); // no selection → first
+        assert_eq!(cycle_target_cid(&cids, Some(10)), Some(20));
+        assert_eq!(cycle_target_cid(&cids, Some(30)), Some(10)); // wraps
+        // Stale/unknown cid (e.g. stdio `target 90001` never in AOI) → restart at
+        // first, NOT usize::MAX + 1 (which panicked in debug).
+        assert_eq!(cycle_target_cid(&cids, Some(90001)), Some(10));
+        assert_eq!(cycle_target_cid(&[], Some(5)), None);
+        assert_eq!(cycle_target_cid(&[], None), None);
+    }
 }
