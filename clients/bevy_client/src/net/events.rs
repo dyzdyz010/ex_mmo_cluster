@@ -54,6 +54,13 @@ pub enum NetworkCommand {
         center_chunk: [i32; 3],
         radius: u8,
     },
+    /// Unsubscribe from voxel chunks that fell out of the AOI box as the player
+    /// moved, so the server stops fanning out deltas/field snapshots for chunks
+    /// behind the player (bounds per-session bandwidth + the client chunk store).
+    UnsubscribeChunks {
+        logical_scene_id: u64,
+        chunks: Vec<[i32; 3]>,
+    },
     /// Construction system: a single macro-cell place/break edit at a GLOBAL macro
     /// coord. The runtime resolves it to a `VoxelEditIntent` (0x70). Server-
     /// authoritative — the resulting `ChunkDelta` is what the client renders.

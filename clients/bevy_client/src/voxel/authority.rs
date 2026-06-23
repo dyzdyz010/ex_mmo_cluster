@@ -158,6 +158,16 @@ impl VoxelAuthorityStore {
         dirty
     }
 
+    /// Evicts a chunk that fell out of the AOI subscription box as the player
+    /// moved away. Removes it from the store and marks it dirty so the renderer
+    /// despawns its now-absent mesh (mirrors `apply_invalidate`). Without this the
+    /// store grows monotonically for the whole session as the player traverses.
+    pub fn evict(&mut self, coord: ChunkCoord) {
+        if self.chunks.remove(&coord).is_some() {
+            self.dirty.insert(coord);
+        }
+    }
+
     /// Marks a loaded chunk dirty from an EXTERNAL trigger (光可见度 Phase A:its
     /// `:light` block-light field changed → re-bake the terrain lightmap). Guarded
     /// to loaded chunks so a light region arriving before geometry doesn't queue a

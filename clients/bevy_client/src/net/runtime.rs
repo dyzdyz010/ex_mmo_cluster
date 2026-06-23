@@ -297,6 +297,20 @@ impl ClientRuntime {
                     crate::voxel::wire::VoxelClientMessage::ChunkSubscribe(subscribe),
                 )));
             }
+            NetworkCommand::UnsubscribeChunks {
+                logical_scene_id,
+                chunks,
+            } if self.phase == ConnectionPhase::InScene && !chunks.is_empty() => {
+                let request_id = self.next_request_id();
+                let unsubscribe = crate::voxel::wire::ChunkUnsubscribe {
+                    request_id,
+                    logical_scene_id,
+                    chunks,
+                };
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
+                    crate::voxel::wire::VoxelClientMessage::ChunkUnsubscribe(unsubscribe),
+                )));
+            }
             NetworkCommand::EditVoxel {
                 logical_scene_id,
                 action,

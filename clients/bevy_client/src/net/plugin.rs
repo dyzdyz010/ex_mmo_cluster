@@ -20,11 +20,75 @@ pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<VoxelSubscribeRetry>().add_systems(
             Update,
-            poll_network_events
+            (poll_network_events, voxel_subscribe_retry)
                 .in_set(ClientSet::Network)
                 .run_if(in_state(AppState::Game)),
+        );
+    }
+}
+
+/// Bounded backoff for the post-join voxel subscribe: if the first subscribe
+/// races the server's scene/region attach (the intermittent "chunks=0" with no
+/// terrain), there is otherwise NO recovery for a stationary or chunk-interior
+/// player (boundary-cross + resync can't bootstrap from zero chunks).
+#[derive(Resource)]
+struct VoxelSubscribeRetry {
+    timer: Timer,
+    attempts: u32,
+}
+
+impl Default for VoxelSubscribeRetry {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+            attempts: 0,
+        }
+    }
+}
+
+const MAX_SUBSCRIBE_RETRIES: u32 = 5;
+
+fn voxel_subscribe_retry(
+    time: Res<Time>,
+    bridge: Res<NetworkBridge>,
+    mut world_state: ResMut<WorldState>,
+    mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
+    mut retry: ResMut<VoxelSubscribeRetry>,
+) {
+    if !retry.timer.tick(time.delta()).just_finished() {
+        return;
+    }
+    // Only meaningful once joined with a subscription center recorded.
+    let Some(center) = world_state.voxel_subscribed_center else {
+        return;
+    };
+    if !world_state.scene_joined {
+        return;
+    }
+    // Terrain arrived → reset so a future genuine zero-state could retry again.
+    if voxel_authority.store.chunk_count() > 0 {
+        retry.attempts = 0;
+        return;
+    }
+    if retry.attempts >= MAX_SUBSCRIBE_RETRIES {
+        return;
+    }
+    retry.attempts += 1;
+    push_line(
+        &mut world_state.logs,
+        format!(
+            "voxel subscribe retry {}/{} (0 chunks loaded)",
+            retry.attempts, MAX_SUBSCRIBE_RETRIES
+        ),
+    );
+    subscribe_voxel_around(&bridge, &mut world_state, &mut voxel_authority, center);
+    if retry.attempts == MAX_SUBSCRIBE_RETRIES {
+        push_line(
+            &mut world_state.logs,
+            "voxel: still 0 chunks after max resubscribes (terrain may be absent server-side)"
+                .to_string(),
         );
     }
 }
@@ -60,11 +124,34 @@ pub(crate) fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
     ]
 }
 
-/// Subscribes to the voxel chunks around `center_chunk` and records it as the
-/// current subscription center (drives AOI-follow re-subscription).
+/// Chunks in the L∞ box of `radius` around `from` that are NOT in the box around
+/// `to` — i.e. the chunks that fall out of the AOI as the center moves.
+fn chunks_falling_out(from: [i32; 3], to: [i32; 3], radius: i32) -> Vec<[i32; 3]> {
+    let mut dropped = Vec::new();
+    for cx in (from[0] - radius)..=(from[0] + radius) {
+        for cy in (from[1] - radius)..=(from[1] + radius) {
+            for cz in (from[2] - radius)..=(from[2] + radius) {
+                let in_new = (cx - to[0]).abs() <= radius
+                    && (cy - to[1]).abs() <= radius
+                    && (cz - to[2]).abs() <= radius;
+                if !in_new {
+                    dropped.push([cx, cy, cz]);
+                }
+            }
+        }
+    }
+    dropped
+}
+
+/// Subscribes to the voxel chunks around `center_chunk`, records it as the
+/// current subscription center, and — as the center moves — UNSUBSCRIBES + evicts
+/// the chunks that fell out of the box. Without the unsubscribe the server keeps
+/// fanning out deltas/field snapshots for every chunk the player ever entered and
+/// the client store grows unbounded for the whole session.
 fn subscribe_voxel_around(
     bridge: &NetworkBridge,
     world_state: &mut WorldState,
+    authority: &mut crate::voxel::VoxelAuthority,
     center_chunk: [i32; 3],
 ) {
     bridge.send(NetworkCommand::SubscribeChunks {
@@ -72,6 +159,26 @@ fn subscribe_voxel_around(
         center_chunk,
         radius: VOXEL_SUBSCRIBE_RADIUS,
     });
+
+    if let Some(old_center) = world_state.voxel_subscribed_center
+        && old_center != center_chunk
+    {
+        let dropped = chunks_falling_out(old_center, center_chunk, VOXEL_SUBSCRIBE_RADIUS as i32);
+        if !dropped.is_empty() {
+            for coord in &dropped {
+                authority.store.evict(*coord);
+            }
+            bridge.send(NetworkCommand::UnsubscribeChunks {
+                logical_scene_id: 1,
+                chunks: dropped.clone(),
+            });
+            push_line(
+                &mut world_state.logs,
+                format!("voxel unsubscribe {} chunks leaving AOI", dropped.len()),
+            );
+        }
+    }
+
     world_state.voxel_subscribed_center = Some(center_chunk);
     push_line(
         &mut world_state.logs,
@@ -144,7 +251,12 @@ fn poll_network_events(
                 // field carries it yet — see M1.8d note). The follow-up in
                 // `LocalPosition` re-subscribes as the player crosses chunks (AOI).
                 world_state.voxel_subscribed_center = None;
-                subscribe_voxel_around(&bridge, &mut world_state, voxel_chunk_of(location));
+                subscribe_voxel_around(
+                    &bridge,
+                    &mut world_state,
+                    &mut voxel_authority,
+                    voxel_chunk_of(location),
+                );
             }
             NetworkEvent::LocalPosition {
                 cid: _,
@@ -173,7 +285,12 @@ fn poll_network_events(
                 // chunks for now — `known[]` population is a follow-up.)
                 let current_chunk = voxel_chunk_of(location);
                 if world_state.voxel_subscribed_center != Some(current_chunk) {
-                    subscribe_voxel_around(&bridge, &mut world_state, current_chunk);
+                    subscribe_voxel_around(
+                        &bridge,
+                        &mut world_state,
+                        &mut voxel_authority,
+                        current_chunk,
+                    );
                 }
             }
             NetworkEvent::PlayerEnter { cid, location } => {
@@ -473,5 +590,23 @@ mod tests {
 
         // Negative coords floor toward -∞ (Euclidean chunk boundaries).
         assert_eq!(voxel_chunk_of([-100.0, -100.0, -100.0]), [-1, -1, -1]);
+    }
+
+    #[test]
+    fn chunks_falling_out_is_the_trailing_slab_on_a_one_step_move() {
+        // Move center [0,0,0]→[0,0,1], radius 2: old box cz∈[-2,2], new box
+        // cz∈[-1,3]. The chunks that fall out are exactly the cz=-2 slab (5×5×1).
+        let dropped = chunks_falling_out([0, 0, 0], [0, 0, 1], 2);
+        assert_eq!(dropped.len(), 25, "one-step move drops a 5×5 trailing slab");
+        assert!(
+            dropped.iter().all(|c| c[2] == -2),
+            "all dropped chunks are on the trailing cz=-2 plane"
+        );
+
+        // No move → nothing falls out.
+        assert!(chunks_falling_out([3, 0, -1], [3, 0, -1], 2).is_empty());
+
+        // A jump farther than the box diameter drops the entire old box (5³=125).
+        assert_eq!(chunks_falling_out([0, 0, 0], [100, 0, 0], 2).len(), 125);
     }
 }
