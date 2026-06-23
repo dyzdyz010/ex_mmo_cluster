@@ -4,6 +4,8 @@ defmodule DataService.Schema.Character do
   use MmoContracts.StateClassed, class: :durable_authoritative
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{}
+
   @primary_key {:id, :id, autogenerate: false}
   schema "characters" do
     field(:account, :integer)

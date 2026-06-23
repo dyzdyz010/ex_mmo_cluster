@@ -55,6 +55,10 @@ defmodule SceneServer.PlayerCharacter do
   # to produce up to ~4 frames.
   @max_input_queue 8
 
+  # 玩法 loop Phase 0:运行态持久化。周期 checkpoint(防崩溃丢进度)+ terminate 落库
+  # (优雅登出)。位置经现成加载路径(gate build_character_profile 读 DB position)恢复。
+  @checkpoint_interval_ms 30_000
+
   @doc """
   Starts one authoritative player character process.
   """
@@ -124,6 +128,7 @@ defmodule SceneServer.PlayerCharacter do
        net_delay: 0,
        skill_casts: %{},
        movement_timer: nil,
+       checkpoint_timer: nil,
        aoi_monitor_ref: nil,
        respawn_timer: nil,
        # Phase A1-5:scene_id 用于把 skill cast 的 target_position lookup
@@ -148,6 +153,7 @@ defmodule SceneServer.PlayerCharacter do
          {:ok, aoi_ref} <-
            enter_scene(cid, client_timestamp, location, connection_pid, character_profile.name) do
       movement_timer = make_movement_timer(movement_profile.fixed_dt_ms)
+      checkpoint_timer = make_checkpoint_timer()
       aoi_monitor_ref = Process.monitor(aoi_ref)
       combat_state = state.combat_state
 
@@ -163,7 +169,8 @@ defmodule SceneServer.PlayerCharacter do
            aoi_ref: aoi_ref,
            aoi_monitor_ref: aoi_monitor_ref,
            character_data_ref: cd_ref,
-           movement_timer: movement_timer
+           movement_timer: movement_timer,
+           checkpoint_timer: checkpoint_timer
        }}
     else
       {:error, reason} ->
@@ -505,6 +512,13 @@ defmodule SceneServer.PlayerCharacter do
       {:ok, next_state} -> {:noreply, next_state}
       {:error, _reason} -> {:noreply, state}
     end
+  end
+
+  @impl true
+  def handle_info(:persist_checkpoint, state) do
+    # 周期落库运行态(防崩溃丢进度);重排下一次。
+    persist_runtime_state(state)
+    {:noreply, %{state | checkpoint_timer: make_checkpoint_timer()}}
   end
 
   @impl true
@@ -971,11 +985,19 @@ defmodule SceneServer.PlayerCharacter do
     } = state
 
     connection_monitor_ref = Map.get(state, :connection_monitor_ref)
+    checkpoint_timer = Map.get(state, :checkpoint_timer)
 
     SceneServer.CliObserve.emit("player_terminate", %{cid: cid, reason: reason})
 
+    # 玩法 loop Phase 0:优雅登出落库最终运行态(位置/HP),使下次登录恢复。
+    persist_runtime_state(state)
+
     if movement_timer != nil do
       Process.cancel_timer(movement_timer)
+    end
+
+    if checkpoint_timer != nil do
+      Process.cancel_timer(checkpoint_timer)
     end
 
     if respawn_timer != nil do
@@ -1030,6 +1052,37 @@ defmodule SceneServer.PlayerCharacter do
   defp make_movement_timer(fixed_dt_ms) do
     Process.send_after(self(), :movement_tick, fixed_dt_ms)
   end
+
+  defp make_checkpoint_timer do
+    Process.send_after(self(), :persist_checkpoint, @checkpoint_interval_ms)
+  end
+
+  # 玩法 loop Phase 0:把运行态(位置 + HP)写回角色行。best-effort——DB 失败只记日志,
+  # 绝不崩玩家进程(同体素持久化的容错口径)。cid == characters.id(登录按 cid 取角色)。
+  defp persist_runtime_state(%{cid: cid} = state) when is_integer(cid) do
+    attrs = %{position: state.last_location, hp: state.combat_state.hp}
+
+    try do
+      case DataService.CharacterStore.save_runtime_state(cid, attrs) do
+        {:ok, _character} ->
+          :ok
+
+        {:error, reason} ->
+          SceneServer.CliObserve.emit("player_persist_error", %{cid: cid, reason: reason})
+          :error
+      end
+    rescue
+      exception ->
+        SceneServer.CliObserve.emit("player_persist_error", %{
+          cid: cid,
+          reason: Exception.message(exception)
+        })
+
+        :error
+    end
+  end
+
+  defp persist_runtime_state(_state), do: :error
 
   defp idle_input_frame(fixed_dt_ms) do
     %InputFrame{
