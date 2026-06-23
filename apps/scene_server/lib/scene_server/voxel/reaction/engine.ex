@@ -99,8 +99,11 @@ defmodule SceneServer.Voxel.Reaction.Engine do
   # 多反应物门控:`require_neighbor_materials` 须全部出现在该 cell 的相邻格材料中,
   # `forbid_neighbor_materials` 须全部不出现。两者皆空(绝大多数规则)→ 直接放行,不取邻居。
   # 邻居材料 id 由 caller(ReactionKernel)预算进 cell.neighbor_materials;按名解析比对(同 material_matches?)。
-  defp neighbors_match?(%Rule{require_neighbor_materials: [], forbid_neighbor_materials: []}, _cell),
-    do: true
+  defp neighbors_match?(
+         %Rule{require_neighbor_materials: [], forbid_neighbor_materials: []},
+         _cell
+       ),
+       do: true
 
   defp neighbors_match?(
          %Rule{require_neighbor_materials: req, forbid_neighbor_materials: forbid},

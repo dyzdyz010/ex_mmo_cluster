@@ -62,7 +62,8 @@ defmodule WorldServer.Voxel.MigrationPlanTest do
   end
 
   test "cell_migration_envelope 构 CellMigration(new>old 单调)" do
-    {:ok, cutover_plan} = drive_to_cutover(build_plan(old_lease: lease(2), new_lease: lease(7)), 42)
+    {:ok, cutover_plan} =
+      drive_to_cutover(build_plan(old_lease: lease(2), new_lease: lease(7)), 42)
 
     assert {:ok, %CellMigration{} = env} = MigrationPlan.cell_migration_envelope(cutover_plan)
     assert env.cell_id == 10
@@ -74,7 +75,8 @@ defmodule WorldServer.Voxel.MigrationPlanTest do
   end
 
   test "退化迁移(new == old)拒发信封(信封强制 new>old)" do
-    {:ok, cutover_plan} = drive_to_cutover(build_plan(old_lease: lease(7), new_lease: lease(7)), 10)
+    {:ok, cutover_plan} =
+      drive_to_cutover(build_plan(old_lease: lease(7), new_lease: lease(7)), 10)
 
     assert {:error, {:owner_epoch_not_monotonic, _}} =
              MigrationPlan.cell_migration_envelope(cutover_plan)

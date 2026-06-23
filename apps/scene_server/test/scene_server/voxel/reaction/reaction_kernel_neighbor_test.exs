@@ -42,7 +42,10 @@ defmodule SceneServer.Voxel.Reaction.ReactionKernelNeighborTest do
   # 单块(无邻居)在 (0,0,0)。
   defp one_block_storage(mat) do
     Storage.empty(1, {0, 0, 0})
-    |> Storage.put_solid_block(Types.macro_index!({0, 0, 0}), NormalBlockData.new(MaterialCatalog.material_id(mat)))
+    |> Storage.put_solid_block(
+      Types.macro_index!({0, 0, 0}),
+      NormalBlockData.new(MaterialCatalog.material_id(mat))
+    )
   end
 
   # adjacency-only 规则:stone + 相邻 water → 加 :wet(无温度条件,不与相变/氧化冲突)。
@@ -107,8 +110,11 @@ defmodule SceneServer.Voxel.Reaction.ReactionKernelNeighborTest do
     effects = tick(two_block_storage(:lava, :water), {{0, 0, 0}, {1, 0, 0}}, Rules.all())
 
     assert Enum.any?(effects, fn
-             {:transform_material, %{macro_index: ^water_macro, to_material_id: to}} -> to == steam
-             _ -> false
+             {:transform_material, %{macro_index: ^water_macro, to_material_id: to}} ->
+               to == steam
+
+             _ ->
+               false
            end)
   end
 end

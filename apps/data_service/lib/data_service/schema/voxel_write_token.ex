@@ -7,6 +7,7 @@ defmodule DataService.Schema.VoxelWriteToken do
   是 `DataService.Voxel.WriteTokenStore` 的 durable 后端,使 fencing 在节点重启后仍有效。
   """
   use Ecto.Schema
+
   # PERS-5:durable_authoritative(lease 写令牌/owner_epoch fencing)。见 MmoContracts.StateRegistry。
   use MmoContracts.StateClassed, class: :durable_authoritative
 

@@ -76,6 +76,7 @@ defmodule SceneServer.Voxel.CodecSurfaceElementTest do
     {:ok, decoded} = Codec.decode_chunk_snapshot_payload(payload)
 
     assert Storage.normal_block_at(decoded.storage, macro).material_id == iron
+
     assert Storage.surface_element_at(decoded.storage, macro, :x_pos).surface_type_id ==
              SurfaceCatalog.surface_type_id(:rust_decal)
   end

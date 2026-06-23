@@ -114,6 +114,7 @@ defmodule SceneServer.Voxel.Reaction.OxidationE2ETest do
     # 氧化前:iron 导电 → 在电导投影里。
     storage_before = ChunkProcess.debug_state(chunk).storage
     projection_before = ParticipantProjection.build(storage_before)
+
     assert ParticipantProjection.electric_conductive_cell?(projection_before, iron),
            "iron 氧化前应导电(在电导投影内)"
 

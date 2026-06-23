@@ -80,10 +80,18 @@ defmodule SceneServer.Voxel.Reaction.SurfaceEmissionE2ETest do
     ice = Types.macro_index!({2, 0, 0})
 
     {:ok, _} =
-      ChunkProcess.put_solid_block(chunk, wall, NormalBlockData.new(MaterialCatalog.material_id(:stone)))
+      ChunkProcess.put_solid_block(
+        chunk,
+        wall,
+        NormalBlockData.new(MaterialCatalog.material_id(:stone))
+      )
 
     {:ok, _} =
-      ChunkProcess.put_solid_block(chunk, ice, NormalBlockData.new(MaterialCatalog.material_id(:ice)))
+      ChunkProcess.put_solid_block(
+        chunk,
+        ice,
+        NormalBlockData.new(MaterialCatalog.material_id(:ice))
+      )
 
     for macro <- [wall, ice] do
       {:ok, _} =

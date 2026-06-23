@@ -14,7 +14,14 @@ defmodule SceneServer.Voxel.SurfaceCatalogTest do
         assert SurfaceCatalog.face_from_ordinal(ordinal) == face
       end
 
-      assert Enum.map(SurfaceCatalog.faces(), &SurfaceCatalog.face_ordinal/1) == [0, 1, 2, 3, 4, 5]
+      assert Enum.map(SurfaceCatalog.faces(), &SurfaceCatalog.face_ordinal/1) == [
+               0,
+               1,
+               2,
+               3,
+               4,
+               5
+             ]
     end
 
     test "未知面 / 越界 ordinal 返回 nil;valid_face?" do

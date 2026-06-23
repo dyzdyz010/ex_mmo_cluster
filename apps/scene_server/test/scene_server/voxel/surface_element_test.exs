@@ -65,14 +65,26 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
 
       storage =
         Storage.new(7, {0, 0, 0})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :x_pos, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :x_pos,
+          surface_type_id: rust_decal_id()
+        })
         |> Storage.put_surface_element(%{
           macro_index: macro,
           face: :x_pos,
           surface_type_id: SurfaceCatalog.surface_type_id(:frost)
         })
-        |> Storage.put_surface_element(%{macro_index: macro, face: :y_neg, surface_type_id: rust_decal_id()})
-        |> Storage.put_surface_element(%{macro_index: 0, face: :z_pos, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :y_neg,
+          surface_type_id: rust_decal_id()
+        })
+        |> Storage.put_surface_element(%{
+          macro_index: 0,
+          face: :z_pos,
+          surface_type_id: rust_decal_id()
+        })
 
       # 同面覆盖:x_pos 现为 frost。
       assert Storage.surface_element_at(storage, macro, :x_pos).surface_type_id ==
@@ -91,7 +103,11 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
 
       storage =
         Storage.new(7, {0, 0, 0})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :x_pos, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :x_pos,
+          surface_type_id: rust_decal_id()
+        })
 
       assert Storage.surface_element_at(storage, macro, :x_pos) != nil
 
@@ -105,9 +121,21 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
 
       storage =
         Storage.new(7, {0, 0, 0})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :x_pos, surface_type_id: rust_decal_id()})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :y_pos, surface_type_id: rust_decal_id()})
-        |> Storage.put_surface_element(%{macro_index: 0, face: :x_pos, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :x_pos,
+          surface_type_id: rust_decal_id()
+        })
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :y_pos,
+          surface_type_id: rust_decal_id()
+        })
+        |> Storage.put_surface_element(%{
+          macro_index: 0,
+          face: :x_pos,
+          surface_type_id: rust_decal_id()
+        })
 
       assert length(Storage.surface_elements_at_macro(storage, macro)) == 2
     end
@@ -119,7 +147,11 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
 
       storage =
         Storage.new(7, {0, 0, 0})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :x_pos, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :x_pos,
+          surface_type_id: rust_decal_id()
+        })
 
       header = Storage.macro_header_at(storage, macro)
       assert header.mode == MacroCellHeader.cell_mode_empty()
@@ -152,7 +184,9 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
       # 清除贴面后本体依旧。
       cleared = Storage.clear_surface_element(with_decal, macro, :x_pos)
       assert Storage.normal_block_at(cleared, macro).material_id == iron
-      assert Storage.macro_header_at(cleared, macro).mode == MacroCellHeader.cell_mode_solid_block()
+
+      assert Storage.macro_header_at(cleared, macro).mode ==
+               MacroCellHeader.cell_mode_solid_block()
     end
   end
 
@@ -162,7 +196,11 @@ defmodule SceneServer.Voxel.SurfaceElementTest do
 
       storage =
         Storage.new(7, {0, 0, 0})
-        |> Storage.put_surface_element(%{macro_index: macro, face: :z_neg, surface_type_id: rust_decal_id()})
+        |> Storage.put_surface_element(%{
+          macro_index: macro,
+          face: :z_neg,
+          surface_type_id: rust_decal_id()
+        })
 
       assert Storage.normalize!(storage) == storage
     end

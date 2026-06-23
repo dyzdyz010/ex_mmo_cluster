@@ -98,6 +98,7 @@ defmodule SceneServer.Voxel.Field.LightPropagation do
 
           true ->
             settled = MapSet.put(settled, idx)
+
             # 扩展 cell 的"向外透射":源全透(自发光),否则按自身 opacity 衰减。所有邻居共用。
             candidate = l * env.attenuation * onward_factor(idx, env)
 
