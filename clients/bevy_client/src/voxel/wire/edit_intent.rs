@@ -17,14 +17,18 @@
 use super::cursor::{Reader, Writer};
 use crate::protocol::ProtocolError;
 
-/// `action` values (mirror server/protocol). Place writes `material_id` at the
-/// adjacent cell; Break clears the targeted cell.
-pub const ACTION_PLACE: u8 = 1;
-pub const ACTION_BREAK: u8 = 2;
+/// `action` values (mirror `GateServer.Codec` `voxel_edit_intent_op`): **0 = place**
+/// (put block), **1 = break** (clear). Server rejects 2/3/4 (damage/replace/attr).
+pub const ACTION_PLACE: u8 = 0;
+pub const ACTION_BREAK: u8 = 1;
 
 /// `target_granularity` values: macro cell vs refined micro slot.
 pub const GRANULARITY_MACRO: u8 = 0;
 pub const GRANULARITY_MICRO: u8 = 1;
+
+/// Micros per macro edge (mirrors server `Types.micro_resolution()` / client
+/// `MICRO_PER_MACRO`). A macro cell at coord M spans `[M*8, (M+1)*8)` in micro.
+pub const MICRO_PER_MACRO: i64 = 8;
 
 /// The fixed body length the server expects (opcode-stripped).
 pub const VOXEL_EDIT_INTENT_BODY_LEN: usize = 91;
@@ -51,6 +55,42 @@ pub struct VoxelEditIntent {
 }
 
 impl VoxelEditIntent {
+    /// Builds a **macro-cell** edit at a GLOBAL macro coord. The caller pre-resolves
+    /// the target macro (the adjacent cell for place, the clicked cell for break),
+    /// so we send a zero `face_normal`: the gate adds `face_normal` (0) then
+    /// floor-divides world_micro by 8, landing exactly on `target_macro`. Refs and
+    /// version/hash left 0 (no optimistic concurrency gate — infinite-resource build).
+    pub fn macro_edit(
+        request_id: u64,
+        client_intent_seq: u32,
+        logical_scene_id: u64,
+        action: u8,
+        target_macro: [i32; 3],
+        material_id: u16,
+    ) -> Self {
+        Self {
+            request_id,
+            client_intent_seq,
+            logical_scene_id,
+            action,
+            target_granularity: GRANULARITY_MACRO,
+            target_world_micro: [
+                target_macro[0] as i64 * MICRO_PER_MACRO,
+                target_macro[1] as i64 * MICRO_PER_MACRO,
+                target_macro[2] as i64 * MICRO_PER_MACRO,
+            ],
+            face_normal: [0, 0, 0],
+            material_id,
+            blueprint_ref: 0,
+            object_ref: 0,
+            part_ref: 0,
+            attribute_patch_ref: 0,
+            expected_chunk_version: 0,
+            expected_cell_hash: 0,
+            client_hint_hash: 0,
+        }
+    }
+
     pub fn encode(&self, w: &mut Writer) {
         w.u64(self.request_id);
         w.u32(self.client_intent_seq);
@@ -158,6 +198,29 @@ mod tests {
         let bytes = w.into_bytes();
         let mut r = Reader::new(&bytes);
         assert_eq!(VoxelEditIntent::decode(&mut r).unwrap(), intent);
+    }
+
+    #[test]
+    fn macro_edit_resolves_global_macro_to_world_micro() {
+        // Place at global macro (10, -2, 3): world_micro = macro*8, zero face_normal,
+        // macro granularity, place action.
+        let intent = VoxelEditIntent::macro_edit(1, 1, 1, ACTION_PLACE, [10, -2, 3], 2);
+        assert_eq!(intent.action, ACTION_PLACE);
+        assert_eq!(intent.target_granularity, GRANULARITY_MACRO);
+        assert_eq!(intent.target_world_micro, [80, -16, 24]);
+        assert_eq!(intent.face_normal, [0, 0, 0]);
+        assert_eq!(intent.material_id, 2);
+        // The gate recovers the macro: floor_div(world_micro + 0, 8) == target_macro.
+        let recovered = [
+            intent.target_world_micro[0].div_euclid(MICRO_PER_MACRO),
+            intent.target_world_micro[1].div_euclid(MICRO_PER_MACRO),
+            intent.target_world_micro[2].div_euclid(MICRO_PER_MACRO),
+        ];
+        assert_eq!(recovered, [10, -2, 3]);
+
+        // Break ignores material/face; action = 1.
+        let brk = VoxelEditIntent::macro_edit(2, 2, 1, ACTION_BREAK, [10, -2, 3], 0);
+        assert_eq!(brk.action, ACTION_BREAK);
     }
 
     #[test]
