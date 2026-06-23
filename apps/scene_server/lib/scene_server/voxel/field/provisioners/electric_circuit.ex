@@ -32,36 +32,43 @@ defmodule SceneServer.Voxel.Field.Provisioners.ElectricCircuit do
     source_points = auto_circuit_source_points(projection, aabb)
     load_count = auto_circuit_role_count(projection, aabb, :load)
 
-    closed_circuit_count =
-      auto_circuit_closed_circuit_count(projection, aabb, chunk_coord, source_points)
-
-    detail = %{
-      source_count: length(source_points),
-      load_count: load_count,
-      closed_circuit_count: closed_circuit_count
-    }
-
     cond do
       source_points == [] ->
-        {:inactive, :no_power_source, %{detail | source_count: 0}}
+        {:inactive, :no_power_source,
+         %{source_count: 0, load_count: load_count, closed_circuit_count: 0}}
 
       load_count == 0 ->
-        {:inactive, :no_load, detail}
-
-      closed_circuit_count == 0 ->
-        {:inactive, :no_closed_circuit, detail}
+        {:inactive, :no_load,
+         %{source_count: length(source_points), load_count: 0, closed_circuit_count: 0}}
 
       true ->
-        attrs = %{
-          chunk_coord: chunk_coord,
-          aabb: aabb,
-          kernels: [auto_circuit_kernel_spec()],
-          source_points: source_points,
-          max_ticks: nil,
-          source_points_mode: :replace
+        # 只有 source + load 都在才计闭合回路——这一步建 FieldRegion → FieldLayer →
+        # field_kernel NIF。提前短路(原 storage_has_auto_circuit_roles? 的 `and` 短路语义)
+        # 避免无电内容的 chunk 在每次 subscribe/sweep 白调 NIF(否则 gate/auth 等只缓存
+        # _build、无 Rust 的 job 在订阅普通 chunk 时撞 undefined NIF)。
+        closed_circuit_count =
+          auto_circuit_closed_circuit_count(projection, aabb, chunk_coord, source_points)
+
+        detail = %{
+          source_count: length(source_points),
+          load_count: load_count,
+          closed_circuit_count: closed_circuit_count
         }
 
-        {:active, attrs, detail}
+        if closed_circuit_count == 0 do
+          {:inactive, :no_closed_circuit, detail}
+        else
+          attrs = %{
+            chunk_coord: chunk_coord,
+            aabb: aabb,
+            kernels: [auto_circuit_kernel_spec()],
+            source_points: source_points,
+            max_ticks: nil,
+            source_points_mode: :replace
+          }
+
+          {:active, attrs, detail}
+        end
     end
   end
 
