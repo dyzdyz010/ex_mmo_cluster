@@ -52,7 +52,7 @@ const VOXEL_SUBSCRIBE_RADIUS: u8 = 2;
 /// direction and the player eventually walked into the void. At the default
 /// spawn all three axes are < 1600 so every mapping collapses to `[0,0,0]`,
 /// which is why it stayed hidden until the player moved.
-fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
+pub(crate) fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
     [
         (location[0] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
         (location[2] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,

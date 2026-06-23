@@ -443,6 +443,43 @@ pub fn run_stdio(
                         ],
                     );
                 }
+                ClientStdioCommand::VoxelFollow {
+                    logical_scene_id,
+                    radius,
+                } => match state.local_position {
+                    Some(pos) => {
+                        let center = crate::net::plugin::voxel_chunk_of([
+                            pos.x as f64,
+                            pos.y as f64,
+                            pos.z as f64,
+                        ]);
+                        bridge.send(NetworkCommand::SubscribeChunks {
+                            logical_scene_id,
+                            center_chunk: center,
+                            radius,
+                        });
+                        emit_stdio(
+                            "va_follow",
+                            &[
+                                ("position", format_vec3(pos)),
+                                (
+                                    "center_chunk",
+                                    format!("{},{},{}", center[0], center[1], center[2]),
+                                ),
+                                ("radius", radius.to_string()),
+                            ],
+                        );
+                    }
+                    None => {
+                        emit_stdio("va_follow", &[("error", "no local position yet".to_string())])
+                    }
+                },
+                ClientStdioCommand::VoxelMacroInfo { global_macro } => {
+                    crate::stdio::emit_voxel_macro_info(&state.voxel_authority, global_macro);
+                }
+                ClientStdioCommand::VoxelFields => {
+                    crate::stdio::emit_voxel_fields(&state.field_store);
+                }
                 ClientStdioCommand::Quit => {
                     bridge.send(NetworkCommand::Shutdown);
                     observer.emit(

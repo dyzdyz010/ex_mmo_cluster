@@ -10,6 +10,7 @@ use crate::observe::ClientObserver;
 use crate::stdio::emit as emit_stdio;
 use crate::voxel::VoxelWorld;
 use crate::voxel::authority::VoxelAuthorityStore;
+use crate::voxel::field_view::VoxelFieldStore;
 use crate::world::remote_actor::RemoteActorIdentity;
 
 #[derive(Debug, Default)]
@@ -34,6 +35,11 @@ pub(super) struct HeadlessState {
     /// headless harness drive + inspect the full server voxel pipeline (decode →
     /// ingest → mesh) without a window.
     pub voxel_authority: VoxelAuthorityStore,
+    /// Emergence field regions (heat / electric / light / ...), fed by the
+    /// `0x73`/`0x74` field stream. Previously dropped in headless (the bare store
+    /// ignores field messages); tracked here so `va-fields` can self-verify that
+    /// emergence reaches the client.
+    pub field_store: VoxelFieldStore,
 }
 
 pub(super) fn apply_event(
@@ -192,18 +198,49 @@ pub(super) fn apply_event(
                 ],
             );
         }
-        NetworkEvent::Voxel(message) => match state.voxel_authority.ingest(&message) {
-            Ok(outcome) => {
-                observer.emit(
-                    "headless",
-                    "voxel_ingest",
-                    &[("outcome", format!("{outcome:?}"))],
-                );
+        NetworkEvent::Voxel(message) => {
+            use crate::voxel::wire::VoxelServerMessage as V;
+            match &message {
+                // Field stream (0x73/0x74) feeds the field store (mirrors the GUI
+                // VoxelAuthority.drain_inbox routing), so `va-fields` can observe
+                // emergence; everything else is chunk truth → the chunk store.
+                V::FieldRegionSnapshot(snap) => {
+                    state.field_store.apply_snapshot(snap.clone());
+                    observer.emit(
+                        "headless",
+                        "field_ingest",
+                        &[
+                            ("region", snap.region_id.to_string()),
+                            ("mask", format!("0x{:02x}", snap.field_mask)),
+                            ("cells", snap.macro_indices.len().to_string()),
+                        ],
+                    );
+                }
+                V::FieldRegionDestroyed(destroyed) => {
+                    let removed = state.field_store.apply_destroyed(destroyed);
+                    observer.emit(
+                        "headless",
+                        "field_destroyed",
+                        &[
+                            ("region", destroyed.region_id.to_string()),
+                            ("removed", removed.to_string()),
+                        ],
+                    );
+                }
+                _ => match state.voxel_authority.ingest(&message) {
+                    Ok(outcome) => {
+                        observer.emit(
+                            "headless",
+                            "voxel_ingest",
+                            &[("outcome", format!("{outcome:?}"))],
+                        );
+                    }
+                    Err(error) => {
+                        observer.emit("headless", "voxel_ingest_error", &[("error", error.0)]);
+                    }
+                },
             }
-            Err(error) => {
-                observer.emit("headless", "voxel_ingest_error", &[("error", error.0)]);
-            }
-        },
+        }
         _ => {}
     }
 }

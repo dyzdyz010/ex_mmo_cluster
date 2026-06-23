@@ -206,6 +206,13 @@ impl VoxelFieldStore {
         self.regions.len()
     }
 
+    /// All retained field regions (heat/electric/light/...), for diagnostics —
+    /// the stdio `va-fields` probe enumerates these to self-verify that the
+    /// emergence field stream actually reaches the client.
+    pub fn regions(&self) -> impl Iterator<Item = &FieldRegionSnapshot> {
+        self.regions.values()
+    }
+
     /// Drains regions touched since the last call — the FieldView render rebuilds
     /// exactly these (rebuild overlay if still present, despawn if destroyed).
     pub fn take_dirty(&mut self) -> Vec<u64> {

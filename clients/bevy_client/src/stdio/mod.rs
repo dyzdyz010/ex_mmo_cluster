@@ -70,6 +70,22 @@ pub enum ClientStdioCommand {
         target_macro: [i32; 3],
         material_id: u16,
     },
+    /// AOI follow: subscribe around the player's CURRENT position's chunk,
+    /// computed via the real `voxel_chunk_of` (sim→voxel axis map). Lets the
+    /// terrain-streams-as-you-move path be self-verified after a `move`.
+    VoxelFollow {
+        logical_scene_id: u64,
+        radius: u8,
+    },
+    /// Inspect a single GLOBAL macro cell in the authority store (present / state
+    /// / material) — verifies an edit landed at the EXACT cell, not just an
+    /// aggregate count.
+    VoxelMacroInfo {
+        global_macro: [i32; 3],
+    },
+    /// List the retained field regions (heat/electric/light/...) — verifies the
+    /// emergence field stream reaches the client.
+    VoxelFields,
 }
 
 #[derive(Clone, Default, Resource)]
@@ -199,6 +215,61 @@ pub fn emit_owned(event: &str, ok: bool, fields: &[(String, String)]) {
         line.push_str(&format!("{value:?}"));
     }
     println!("{line}");
+}
+
+/// Emits one GLOBAL macro cell's authority state (present / state / material).
+/// Shared by the headless and GUI stdio `va-macro` probes so an edit can be
+/// verified to land at the EXACT cell with the EXACT material. The global macro
+/// → chunk map mirrors `authority_macro_occupied` (chunk axis 1 = vertical).
+pub fn emit_voxel_macro_info(store: &crate::voxel::authority::VoxelAuthorityStore, g: [i32; 3]) {
+    use crate::voxel::authority::CellState;
+    let coord = format!("{},{},{}", g[0], g[1], g[2]);
+    let chunk = [g[0].div_euclid(16), g[1].div_euclid(16), g[2].div_euclid(16)];
+    let chunk_label = format!("{},{},{}", chunk[0], chunk[1], chunk[2]);
+    let idx = (g[0].rem_euclid(16) + g[1].rem_euclid(16) * 16 + g[2].rem_euclid(16) * 256) as usize;
+    let (present, state, material) = match store.chunk(chunk).and_then(|c| c.cell(idx)) {
+        Some(CellState::Solid(b)) => ("true", "solid", b.material_id.to_string()),
+        Some(CellState::Refined(_)) => ("true", "refined", "n/a".to_string()),
+        Some(CellState::Empty) => ("true", "empty", "n/a".to_string()),
+        None => ("false", "chunk_absent", "n/a".to_string()),
+    };
+    emit(
+        "va_macro",
+        &[
+            ("coord", coord),
+            ("chunk", chunk_label),
+            ("present", present.to_string()),
+            ("state", state.to_string()),
+            ("material", material),
+        ],
+    );
+}
+
+/// Emits the retained field regions (id:chunk:mask:cells) — verifies the
+/// emergence field stream (heat / electric / light / ...) reaches the client.
+pub fn emit_voxel_fields(field_store: &crate::voxel::field_view::VoxelFieldStore) {
+    let mut regions: Vec<String> = field_store
+        .regions()
+        .map(|r| {
+            format!(
+                "{}:{},{},{}:0x{:02x}:{}",
+                r.region_id,
+                r.chunk_coord[0],
+                r.chunk_coord[1],
+                r.chunk_coord[2],
+                r.field_mask,
+                r.macro_indices.len()
+            )
+        })
+        .collect();
+    regions.sort();
+    emit(
+        "va_fields",
+        &[
+            ("count", field_store.region_count().to_string()),
+            ("regions", format!("[{}]", regions.join(";"))),
+        ],
+    );
 }
 
 /// Standard snapshot data shared by interactive and headless stdio output.
@@ -446,6 +517,42 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         });
     }
 
+    if line == "va-fields" {
+        return Ok(ClientStdioCommand::VoxelFields);
+    }
+
+    if let Some(rest) = line.strip_prefix("va-follow") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        // va-follow [scene_id] [radius]
+        let logical_scene_id = if parts.is_empty() {
+            1
+        } else {
+            parse_field(parts[0], "scene_id")?
+        };
+        let radius = if parts.len() >= 2 {
+            parse_field(parts[1], "radius")?
+        } else {
+            2u8
+        };
+        return Ok(ClientStdioCommand::VoxelFollow {
+            logical_scene_id,
+            radius,
+        });
+    }
+
+    if let Some(rest) = line.strip_prefix("va-macro ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return Err("va-macro <gx> <gy> <gz>".to_string());
+        }
+        let global_macro = [
+            parse_field(parts[0], "gx")?,
+            parse_field(parts[1], "gy")?,
+            parse_field(parts[2], "gz")?,
+        ];
+        return Ok(ClientStdioCommand::VoxelMacroInfo { global_macro });
+    }
+
     match parse_voxel_cli_command(line)? {
         Some(command) => Ok(ClientStdioCommand::Voxel(command)),
         None => Err("unknown command".to_string()),
@@ -521,6 +628,57 @@ mod tests {
         );
         assert!(parse_command("va-subscribe 7 0 1").is_err());
         assert!(parse_command("va-chunk 1 2").is_err());
+    }
+
+    #[test]
+    fn parses_voxel_edit_follow_macro_fields_commands() {
+        assert_eq!(
+            parse_command("va-edit place 1 7 4 7 5").unwrap(),
+            ClientStdioCommand::VoxelEditLive {
+                logical_scene_id: 1,
+                action: 0,
+                target_macro: [7, 4, 7],
+                material_id: 5,
+            }
+        );
+        // break omits material → defaults to 0.
+        assert_eq!(
+            parse_command("va-edit break 1 7 0 7").unwrap(),
+            ClientStdioCommand::VoxelEditLive {
+                logical_scene_id: 1,
+                action: 1,
+                target_macro: [7, 0, 7],
+                material_id: 0,
+            }
+        );
+        assert!(parse_command("va-edit nuke 1 7 0 7").is_err());
+        assert!(parse_command("va-edit place 1 7 0").is_err());
+
+        // va-follow with/without args (defaults scene 1, radius 2).
+        assert_eq!(
+            parse_command("va-follow").unwrap(),
+            ClientStdioCommand::VoxelFollow {
+                logical_scene_id: 1,
+                radius: 2,
+            }
+        );
+        assert_eq!(
+            parse_command("va-follow 1 3").unwrap(),
+            ClientStdioCommand::VoxelFollow {
+                logical_scene_id: 1,
+                radius: 3,
+            }
+        );
+
+        assert_eq!(
+            parse_command("va-macro 7 0 7").unwrap(),
+            ClientStdioCommand::VoxelMacroInfo {
+                global_macro: [7, 0, 7],
+            }
+        );
+        assert!(parse_command("va-macro 7 0").is_err());
+
+        assert_eq!(parse_command("va-fields").unwrap(), ClientStdioCommand::VoxelFields);
     }
 
     #[test]
