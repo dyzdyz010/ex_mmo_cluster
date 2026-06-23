@@ -363,6 +363,51 @@ mod tests {
     }
 
     #[test]
+    fn server_golden_light_color_flows_to_rendered_overlay() {
+        // 端到端(单进程):服务端产出的 golden 字节 → 真 FieldRegionSnapshot::decode →
+        // VoxelAuthority 入队 / drain → field_store → light_overlay_mesh 渲染几何。
+        // 证明服务端涌现光学(LightPropagationKernel 提交的 light + light_color 真值)
+        // 在客户端被解码、落库、并烘焙成「正确着色」的叠加几何 —— 不靠手搓 snapshot,
+        // 而是消费服务端「真字节」,把 golden 字节级 parity 延伸成 字节→渲染 的端到端闭环。
+        use crate::voxel::field_view::{LIGHT_COLOR_PACKED_BASE, light_overlay_mesh};
+
+        let golden = crate::voxel::wire::fixtures::golden("field_region_light_color");
+        let region = FieldRegionSnapshot::decode(&mut Reader::new(&golden)).unwrap();
+        // 与服务端 golden_fixture_test 钉死的真值一致(region 92,两格暖/冷光)。
+        let region_id = region.region_id;
+        assert_eq!(region_id, 92);
+
+        let mut authority = VoxelAuthority::default();
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(region));
+        authority.drain_inbox();
+
+        // 落入 field_store,带 light + light_color 两层真值(逐字段 == 服务端 golden)。
+        let stored = authority
+            .field_store
+            .region(region_id)
+            .expect("server light region must land in field_store");
+        assert_eq!(stored.macro_indices, vec![0, 7]);
+        assert_eq!(stored.light, vec![255, 128]);
+        assert_eq!(stored.light_color, vec![0xFF_A040, 0x60_A0FF]);
+
+        // field_store 的真值烘焙成渲染叠加几何:两格都在阈值以上 → 两个 marker cube,
+        // 各自烘焙服务端给定的 packed 颜色(暖橙 ember / 冷蓝 glowstone),
+        // 经 field_color 即可还原到正确 RGBA。证明「服务端涌现的颜色」真的上了客户端几何。
+        let mesh = light_overlay_mesh(stored, 100.0);
+        let summary = mesh.summary();
+        assert_eq!(summary.quad_count, 12); // 两个 cube × 6 quad
+        let mut materials: Vec<u32> = summary.area_by_material.keys().copied().collect();
+        materials.sort_unstable();
+        assert_eq!(
+            materials,
+            vec![
+                LIGHT_COLOR_PACKED_BASE + 0x60_A0FF, // 冷蓝(glowstone)
+                LIGHT_COLOR_PACKED_BASE + 0xFF_A040, // 暖橙(ember)
+            ]
+        );
+    }
+
+    #[test]
     fn electric_snapshot_surfaces_event_temperature_only_and_destroy_do_not() {
         // Heat-smoke edge-trigger: only a 0x73 with an electric layer enqueues an
         // ElectricSnapshotEvent; temperature-only 0x73 and 0x74 destroy enqueue none.

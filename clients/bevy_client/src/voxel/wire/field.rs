@@ -11,14 +11,17 @@
 //! `logical_scene_id u64 | chunk_coord i32×3 | region_id u64 | tick_count u32 |
 //!  field_mask u8 | cell_count u16 | macro_indices u16×n |
 //!  temperature f32le×n (bit0) | electric_potential f32le×n (bit1) |
-//!  electric_current f32le×n (bit3) | ionization u8×n (bit2)`.
+//!  electric_current f32le×n (bit3) | ionization u8×n (bit2) |
+//!  light u8×n (bit4) | light_color u8×3×n (bit5)`.
 //!
-//! Value arrays appear in wire order temp→potential→current→ionization (NOT
-//! bit order — current/bit3 precedes ionization/bit2), each present iff its
-//! `field_mask` bit is set and length `cell_count`.
+//! Value arrays appear in wire order
+//! temp→potential→current→ionization→light→light_color (NOT bit order —
+//! current/bit3 precedes ionization/bit2), each present iff its `field_mask`
+//! bit is set and length `cell_count`.
 //!
-//! Note: the gate does not yet forward 0x73/0x74 to clients in all paths; this
-//! decoder is wired ahead so field visuals (M5) can consume it.
+//! The gate forwards 0x73/0x74 to subscribed clients (chunk subscription is
+//! sent automatically on `EnteredScene`); this decoder feeds the server-
+//! authoritative field visuals (M5 + emergent optics).
 
 use super::cursor::{Reader, Writer};
 use crate::protocol::ProtocolError;
