@@ -114,6 +114,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -121,13 +123,22 @@ jobs:
           otp-version: "28.3.1"
           elixir-version: "1.19.5"
 
-      - name: Cache deps
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache deps and cargo registry
+        # _build is NOT cached: gate_server's protocol/voxel/smoke tests boot
+        # scene_server at runtime, which loads the Rustler NIFs (scene_ops /
+        # field_kernel). A warm _build cache can omit the freshly-copied *.so
+        # (documented in test-scene-server) → {:undef} NIF crashes. Rebuild the NIF
+        # from source each run; the cargo registry cache keeps that fast.
         uses: actions/cache@v4
         with:
           path: |
             deps
-            _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -373,6 +384,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -380,13 +393,21 @@ jobs:
           otp-version: "28.3.1"
           elixir-version: "1.19.5"
 
-      - name: Cache deps
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache deps and cargo registry
+        # _build is NOT cached: auth_server's IngameController boots scene_server,
+        # whose Rustler NIF (scene_ops, via new_physics_system) must load. A warm
+        # _build cache can omit the freshly-copied *.so (documented in
+        # test-scene-server) → NIF load_failed. Rebuild the NIF from source each run.
         uses: actions/cache@v4
         with:
           path: |
             deps
-            _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -509,13 +530,15 @@ jobs:
         with:
           components: rustfmt
 
-      # Bevy 0.18 Linux build deps. The client uses default-features=false +
-      # ["3d"] (no winit/audio at runtime here), but bevy_render's transitive
-      # crates link against ALSA/udev dev headers on Linux.
+      # Bevy 0.18 Linux build deps. The headless tests open no window/GPU, but the
+      # dependency graph still pulls winit → wayland-sys, which needs the Wayland
+      # dev libs + pkg-config at BUILD time (the X11 backend uses x11-dl / runtime
+      # dlopen, so no X11 dev headers are required to compile). ALSA/udev are pulled
+      # by bevy's audio/input crates.
       - name: Install Bevy Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
       - name: Cache cargo + bevy_client target
         uses: Swatinem/rust-cache@v2
