@@ -60,6 +60,34 @@
 
 每 step commit(co-author `Claude Opus 4.8 (1M context)`)、测试;客户端改动必补自动化测试。
 
+## 4b. 实现现状(as-built,2026-06-23)
+
+逐 step commit(co-author `Claude Opus 4.8 (1M context)`),全测试绿:
+
+- **C1 建造接线 ✅**(d2d0eec…3357208,4 子步):客户端 `VoxelEditIntent`(0x70)编码(91 字节
+  镜像服务端)+ 修正 action(place=0/break=1)+ `macro_edit` 构造 + `NetworkCommand::EditVoxel`
+  → runtime 译 0x70(seq 单调防重放)+ live 场景解禁建造(`live_pick` 纯 DDA 对权威 chunk
+  拾取 + bridge 发 intent,**server-authoritative 无本地直改**)。服务端本就完整(gate 0x70→
+  apply_intent→truth→ChunkDelta)。测试:edit_intent 4 + runtime 2 + live_pick 6。
+- **C2 palette ✅**(55647f4):`BuildPalette`(服务端 material_id 直载,解耦 4-材质枚举)覆盖
+  确认清单 block 形态;数字键/滚轮选;放置发选中 id。
+- **C3 resistor ✅**(7a68c60):被动电阻(id20,导电 1.5 → 抬 R_effective 降电流;非 :load
+  不发热/不 powered)。电路 e2e 2。
+- **C4a comparator ✅**(3accce8):阈值逻辑门(id21 + 属性 logic_threshold id24,catalog v12)。
+  CircuitCurrentKernel 比较节点电位 ≥ 阈 → :signal_high(模拟→数字)。电路 e2e 3。
+
+**回归**:scene_server voxel 426/0、bevy lib 313/0、全二进制 warning-clean。
+
+## 4c. C4b/C5 待续(honest 现状)
+
+- **C4b 二极管 + 三极管(深半导体)**:需电路图**方向性**(diode 单向)+ **per-cell 朝向**
+  (放置时存 state_flags/tag)+ **多端接触控制**(transistor 集/基/射)——触及
+  `ParticipantProjection` 面连通(现无向)+ `CircuitComponentAnalysis`(现无向图)的有向化
+  重构 + kernel 决策门控。是一致的电路图设计工作,需专门 design + 充分电路 e2e 验证,不宜在
+  长会话尾仓促出未验证图算法。已精确定位改动面,留焦点续作。
+- **C5 客户端构件放置 + 视觉**:贴面火把/拨杆放置 UI、prefab 网络放置、半导体/逻辑的视觉/
+  调试 overlay、Layer-3 像素证。GUI 集成(无头不可验),需实机。
+
 ## 5. 不发散纪律
 
 只做本清单内构件;新涌现系统(流体/磁等)、采集/资源经济、装备/合成、深半导体(若未选)一律不在本轮。清单冻结后如需加项,先回本稿改清单再做。
