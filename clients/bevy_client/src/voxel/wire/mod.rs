@@ -22,6 +22,7 @@ pub mod cursor;
 pub mod delta;
 pub mod edit_intent;
 pub mod field;
+pub mod intent_result;
 pub mod invalidate;
 pub mod object_state;
 pub mod snapshot;
@@ -39,6 +40,7 @@ pub use field::{
     FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
     FieldRegionSnapshot,
 };
+pub use intent_result::{AuthoritativeCell, VoxelIntentResult};
 pub use invalidate::ChunkInvalidate;
 pub use object_state::ObjectStateDelta;
 pub use snapshot::{
@@ -70,6 +72,7 @@ pub const OP_VOXEL_EDIT_INTENT: u8 = 0x70;
 pub enum VoxelServerMessage {
     ChunkSnapshot(ChunkSnapshot),
     ChunkDelta(ChunkDelta),
+    VoxelIntentResult(VoxelIntentResult),
     ChunkInvalidate(ChunkInvalidate),
     ObjectStateDelta(ObjectStateDelta),
     CatalogPatch(CatalogPatch),
@@ -87,6 +90,9 @@ pub fn decode_voxel_server_message(
     let msg = match opcode {
         OP_CHUNK_SNAPSHOT => VoxelServerMessage::ChunkSnapshot(ChunkSnapshot::decode(&mut r)?),
         OP_CHUNK_DELTA => VoxelServerMessage::ChunkDelta(ChunkDelta::decode(&mut r)?),
+        OP_VOXEL_INTENT_RESULT => {
+            VoxelServerMessage::VoxelIntentResult(VoxelIntentResult::decode(&mut r)?)
+        }
         OP_CHUNK_INVALIDATE => {
             VoxelServerMessage::ChunkInvalidate(ChunkInvalidate::decode(&mut r)?)
         }
@@ -117,6 +123,7 @@ pub fn encode_voxel_server_message(msg: &VoxelServerMessage) -> Vec<u8> {
     match msg {
         VoxelServerMessage::ChunkSnapshot(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkDelta(m) => m.encode(&mut w),
+        VoxelServerMessage::VoxelIntentResult(m) => m.encode(&mut w),
         VoxelServerMessage::ChunkInvalidate(m) => m.encode(&mut w),
         VoxelServerMessage::ObjectStateDelta(m) => m.encode(&mut w),
         VoxelServerMessage::CatalogPatch(m) => m.encode(&mut w),
@@ -581,6 +588,28 @@ mod tests {
         assert_eq!(decoded.logical_scene_id, 50);
         assert_eq!(decoded.chunk_coord, [1, 2, 3]);
         assert_eq!(decoded.reason, 0);
+    }
+
+    #[test]
+    fn voxel_intent_result_roundtrip_and_dispatch() {
+        // 0x68 was previously dropped as "unsupported server opcode" — confirm it
+        // now decodes through the opcode dispatch and re-encodes byte-stable.
+        let msg = VoxelIntentResult {
+            request_id: 99,
+            client_intent_seq: 7,
+            logical_scene_id: 1,
+            result_code: 2, // rejected
+            result_ref: 0,
+            authoritative: vec![],
+            reason: "out of bounds".to_string(),
+        };
+        let mut w = Writer::new();
+        msg.encode(&mut w);
+        let bytes = w.into_bytes();
+        assert_eq!(
+            decode_voxel_server_message(OP_VOXEL_INTENT_RESULT, &bytes).unwrap(),
+            VoxelServerMessage::VoxelIntentResult(msg),
+        );
     }
 
     #[test]

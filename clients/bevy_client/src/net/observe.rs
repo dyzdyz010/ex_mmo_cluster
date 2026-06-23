@@ -279,7 +279,25 @@ pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEv
         }
         NetworkEvent::Log(line) => observer.emit("network", "log", &[("message", line.clone())]),
         NetworkEvent::Voxel(voxel) => {
-            observer.emit("network", "voxel", &[("kind", voxel_message_kind(voxel))]);
+            use crate::voxel::wire::VoxelServerMessage as V;
+            // Surface the authoritative edit ACK richly (seq/result/reason) so the
+            // operator can see accepted/deferred/rejected/stale outcomes; other
+            // voxel messages just get their kind label.
+            if let V::VoxelIntentResult(result) = voxel {
+                observer.emit(
+                    "network",
+                    "voxel_intent_result",
+                    &[
+                        ("seq", result.client_intent_seq.to_string()),
+                        ("result", result.result_label().to_string()),
+                        ("result_ref", result.result_ref.to_string()),
+                        ("authoritative", result.authoritative.len().to_string()),
+                        ("reason", result.reason.clone()),
+                    ],
+                );
+            } else {
+                observer.emit("network", "voxel", &[("kind", voxel_message_kind(voxel))]);
+            }
         }
         NetworkEvent::Disconnected(reason) => {
             observer.emit("network", "disconnected", &[("reason", reason.clone())]);
@@ -292,6 +310,7 @@ fn voxel_message_kind(message: &crate::voxel::wire::VoxelServerMessage) -> Strin
     match message {
         V::ChunkSnapshot(_) => "chunk_snapshot",
         V::ChunkDelta(_) => "chunk_delta",
+        V::VoxelIntentResult(_) => "voxel_intent_result",
         V::ChunkInvalidate(_) => "chunk_invalidate",
         V::ObjectStateDelta(_) => "object_state_delta",
         V::CatalogPatch(_) => "catalog_patch",
