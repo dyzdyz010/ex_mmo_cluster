@@ -93,6 +93,36 @@ defmodule SceneServer.Voxel.Reaction.OrganicLightStreamE2ETest do
     assert ChunkProcess.debug_state(chunk).field_region_count == 1
   end
 
+  test "释放生命周期:发光体被惰性材料覆盖 → Emergence region 被回收(release)" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    macro = Types.macro_index!({1, 0, 0})
+
+    # 放 glowstone → Emergence 起 region。
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        macro,
+        NormalBlockData.new(MaterialCatalog.material_id(:glowstone))
+      )
+
+    assert poll_until(fn -> ChunkProcess.debug_state(chunk).field_region_count == 1 end, 5_000),
+           "放 glowstone 后应起一个 Emergence region"
+
+    # 用惰性 stone 覆盖同格 → chunk 不再含本征 source 光/热 → sweep 检出 inactive → release。
+    {:ok, _} =
+      ChunkProcess.put_solid_block(
+        chunk,
+        macro,
+        NormalBlockData.new(MaterialCatalog.material_id(:stone))
+      )
+
+    assert poll_until(fn -> ChunkProcess.debug_state(chunk).field_region_count == 0 end, 5_000),
+           "覆盖成惰性 stone 后 Emergence region 应被回收;" <>
+             "实际 field_region_count=#{ChunkProcess.debug_state(chunk).field_region_count}"
+
+    assert ChunkProcess.debug_state(chunk).field_source_count == 0
+  end
+
   defp poll_until(fun, timeout_ms, waited \\ 0) do
     cond do
       fun.() ->
