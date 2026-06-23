@@ -20,8 +20,10 @@
 //! subscribed, so this system is inert until then.
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::app::schedule::ClientSet;
@@ -87,14 +89,80 @@ impl Plugin for VoxelChunkRenderPlugin {
     }
 }
 
-fn setup_chunk_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
-    // White base so per-vertex colors come through unattenuated; lit.
+fn setup_chunk_material(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // White base so per-vertex material colors come through; a tiled procedural
+    // mosaic texture gives every voxel face a blocky textured surface (sampled
+    // grayscale × the per-material vertex color = textured, material-tinted block)
+    // instead of a flat color. UVs run 0..w across greedy quads, so the texture
+    // tiles once per macro cell.
+    let texture = images.add(mosaic_block_texture());
     let handle = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        perceptual_roughness: 0.9,
+        base_color_texture: Some(texture),
+        perceptual_roughness: 0.92,
         ..default()
     });
     commands.insert_resource(VoxelChunkMaterial(handle));
+}
+
+// Small deterministic per-texel hash → 0..1 (no rand dep), for the mosaic speckle.
+fn tex_hash(x: u32, y: u32) -> f32 {
+    let mut h = x
+        .wrapping_mul(0x1657_4d2b)
+        .wrapping_add(y.wrapping_mul(0x2b3f_61d1))
+        .wrapping_add(0x9e37_79b9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297a_2d39);
+    h ^= h >> 15;
+    (h & 0xffff) as f32 / 65535.0
+}
+
+/// Procedural per-voxel mosaic block texture (16×16, `Repeat` + `Nearest` so it
+/// tiles crisply once per macro cell): a speckled grid with darker seams, kept
+/// near-white so it modulates rather than dims the per-material vertex color —
+/// a Minecraft-ish mosaic block surface instead of flat color. `pub(crate)` so
+/// the layer3 showcase renders the same textured material.
+pub(crate) fn mosaic_block_texture() -> Image {
+    const N: u32 = 16;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let n = tex_hash(x, y); // 0..1 speckle
+            let mut v = 0.94 + (n - 0.5) * 0.20; // ~0.84..1.04
+            // Darker 1px border → visible block seams between tiled cells.
+            if x == 0 || y == 0 || x == N - 1 || y == N - 1 {
+                v *= 0.64;
+            }
+            let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            data.extend_from_slice(&[g, g, g, 255]);
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: N,
+            height: N,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Nearest,
+        min_filter: ImageFilterMode::Nearest,
+        mipmap_filter: ImageFilterMode::Nearest,
+        ..default()
+    });
+    image
 }
 
 fn render_dirty_chunks(

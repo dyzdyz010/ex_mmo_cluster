@@ -35,7 +35,7 @@ use bevy::winit::WinitPlugin;
 use crate::login::AppState;
 use crate::voxel::authority::{AuthorityChunk, CellState};
 use crate::voxel::chunk_render::{
-    build_decal_mesh, build_mesh, build_mesh_with_colors, material_color,
+    build_decal_mesh, build_mesh, build_mesh_with_colors, material_color, mosaic_block_texture,
 };
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
@@ -568,7 +568,10 @@ fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) ->
 /// field snapshot EACH frame (so a fresh bolt is always alive — the 480ms bolt TTL
 /// is short vs the ~64-frame pump) and lets the adapter infer + strike + render the
 /// bolt — proving the lightning layer actually rasterizes on screen, end to end.
-fn render_with_lightning(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
+fn render_with_lightning(
+    field: &FieldRegionSnapshot,
+    setup: impl FnOnce(&mut World, Handle<Image>),
+) -> Vec<u8> {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -592,7 +595,7 @@ fn render_with_lightning(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> 
         images.add(img)
     };
 
-    spawn_camera(app.world_mut(), image.clone(), eye, look);
+    setup(app.world_mut(), image.clone());
     app.world_mut()
         .spawn(Readback::texture(image.clone()))
         .observe(
@@ -642,7 +645,10 @@ fn render_with_lightning(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> 
 /// field snapshot, drains it (marking the incandescence channel dirty), and lets
 /// the glow adapter build the additive blackbody mesh — proving hot cells emit a
 /// temperature-derived glow on screen (emergent optics), end to end.
-fn render_with_incandescence(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
+fn render_with_incandescence(
+    field: &FieldRegionSnapshot,
+    setup: impl FnOnce(&mut World, Handle<Image>),
+) -> Vec<u8> {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -669,7 +675,7 @@ fn render_with_incandescence(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3)
         images.add(img)
     };
 
-    spawn_camera(app.world_mut(), image.clone(), eye, look);
+    setup(app.world_mut(), image.clone());
     app.world_mut()
         .spawn(Readback::texture(image.clone()))
         .observe(
@@ -1176,7 +1182,9 @@ fn lightning_bolt_rasterizes_on_screen() {
         ],
     );
     let mid = Vec3::new(250.0, 150.0, 150.0);
-    let data = render_with_lightning(&field, Vec3::new(250.0, 150.0, -500.0), mid);
+    let data = render_with_lightning(&field, |w, i| {
+        spawn_camera(w, i, Vec3::new(250.0, 150.0, -500.0), mid)
+    });
 
     // Scan the whole frame for bolt pixels (differing from the dark-green clear).
     // The jagged bolt jitters off the straight line, so assert on the COUNT +
@@ -1235,8 +1243,7 @@ fn incandescence_glow_color_emerges_from_temperature() {
     // Warm: 900°C → red-orange glow (red dominates, blue near the clear baseline).
     let warm = render_with_incandescence(
         &incandescence_temp_field(1, [0, 0, 0], &[(idx(1, 1, 1), 900.0)]),
-        eye,
-        look,
+        |w, i| spawn_camera(w, i, eye, look),
     );
     let warm_c = glow_centroid(&warm);
     let clear = clear_color().to_srgba();
@@ -1252,8 +1259,7 @@ fn incandescence_glow_color_emerges_from_temperature() {
     // Hotter: 1800°C → shifts toward white — green AND blue rise vs the 900°C glow.
     let hot = render_with_incandescence(
         &incandescence_temp_field(2, [0, 0, 0], &[(idx(1, 1, 1), 1800.0)]),
-        eye,
-        look,
+        |w, i| spawn_camera(w, i, eye, look),
     );
     let hot_c = glow_centroid(&hot);
     assert!(
@@ -1307,45 +1313,128 @@ fn showcase_material_chunk(cells: &[(i32, i32, i32, u16)]) -> AuthorityChunk {
     }
 }
 
-/// Camera tuned for SHOWCASE terrain: moderate ambient + a key directional light,
-/// so lit material colors read (the assertion harness's flat ambient-6000 blows
-/// terrain to white).
-fn spawn_showcase_lit_camera(world: &mut World, image: Handle<Image>, eye: Vec3, look: Vec3) {
+/// Daylight horizon color (low sky / haze) and zenith color (high sky), for the
+/// gradient skydome + sky-fill ambient. Bright values (vertex colors render in
+/// linear space, unlit) so the dome reads as a clear daytime sky, not dusk.
+fn sky_horizon() -> Color {
+    Color::srgb(0.92, 0.95, 0.99)
+}
+fn sky_zenith() -> Color {
+    Color::srgb(0.40, 0.62, 0.95)
+}
+
+/// Environment camera for showcase scenes: a gradient sky-blue clear + a warm
+/// sun + a cool sky-fill ambient, tonemap off so colors stay predictable. Gives a
+/// real-feeling outdoor scene without the off-screen atmosphere pipeline (which
+/// washes out when rendered to a texture target rather than the main window).
+fn spawn_sky_camera(world: &mut World, image: Handle<Image>, eye: Vec3, look: Vec3) {
     world.spawn((
         Camera3d::default(),
         Camera {
-            clear_color: ClearColorConfig::Custom(clear_color()),
+            clear_color: ClearColorConfig::Custom(sky_horizon()),
+            ..default()
+        },
+        RenderTarget::Image(image.into()),
+        Tonemapping::None,
+        // Cool sky-tinted fill so shadowed faces read as "sky-lit", not black.
+        AmbientLight {
+            color: Color::srgb(0.55, 0.66, 0.85),
+            brightness: 700.0,
+            ..default()
+        },
+        Transform::from_translation(eye).looking_at(look, Vec3::Y),
+    ));
+    // Warm sun from upper-left; gives the blocks directional shading (form).
+    world.spawn((
+        DirectionalLight {
+            color: Color::srgb(1.0, 0.96, 0.86),
+            illuminance: 4200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-0.6, 1.0, 0.45).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+}
+
+/// Night/twilight camera for the additive glow effects (incandescence, lightning):
+/// a dark blue-black clear so the bright emissive glow + bolt pop (they would wash
+/// out on a bright day sky). Low cool ambient keeps any geometry faintly visible.
+fn spawn_night_camera(world: &mut World, image: Handle<Image>, eye: Vec3, look: Vec3) {
+    world.spawn((
+        Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.03, 0.04, 0.09)),
             ..default()
         },
         RenderTarget::Image(image.into()),
         Tonemapping::None,
         AmbientLight {
-            color: Color::WHITE,
-            brightness: 350.0,
+            color: Color::srgb(0.35, 0.45, 0.75),
+            brightness: 150.0,
             ..default()
         },
         Transform::from_translation(eye).looking_at(look, Vec3::Y),
     ));
-    world.spawn((
-        DirectionalLight {
-            illuminance: 2600.0,
+}
+
+/// A large inverted sphere with a vertical sky gradient (horizon → zenith), unlit
+/// and double-sided so the camera inside sees a gradient sky behind the terrain.
+fn spawn_skydome(world: &mut World, center: Vec3) {
+    let radius = 7000.0;
+    let mut mesh = Sphere::new(radius).mesh().uv(48, 32);
+    let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) => p.clone(),
+        _ => vec![],
+    };
+    let lo = sky_horizon().to_srgba();
+    let hi = sky_zenith().to_srgba();
+    let colors: Vec<[f32; 4]> = positions
+        .iter()
+        .map(|p| {
+            // t: 0 at horizon (y=0), 1 at zenith (y=+r); bias the gradient up.
+            let t = ((p[1] / radius).clamp(0.0, 1.0)).powf(0.6);
+            [
+                lo.red + (hi.red - lo.red) * t,
+                lo.green + (hi.green - lo.green) * t,
+                lo.blue + (hi.blue - lo.blue) * t,
+                1.0,
+            ]
+        })
+        .collect();
+    if !colors.is_empty() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+    let mesh_h = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    let mat = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: true,
+            cull_mode: None,
             ..default()
-        },
-        Transform::from_xyz(-0.4, 1.0, -0.7).looking_at(Vec3::ZERO, Vec3::Y),
+        });
+    world.spawn((
+        Mesh3d(mesh_h),
+        MeshMaterial3d(mat),
+        Transform::from_translation(center),
     ));
 }
 
-/// Real mesh path WITH per-material vertex colors (stone gray, lava red, sprout
-/// green, glowstone blue) — the terrain as the live client draws it.
-fn spawn_chunk_colored(world: &mut World, chunk: &AuthorityChunk) {
+/// Real mesh path with per-material vertex colors AND the procedural mosaic block
+/// texture — the terrain exactly as the live client draws it (textured, not flat).
+fn spawn_chunk_textured(world: &mut World, chunk: &AuthorityChunk) {
     let data = chunk_render_mesh(chunk, MACRO, &ChunkNeighbors::default());
     let mesh = build_mesh_with_colors(&data, material_color);
     let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    let texture = world
+        .resource_mut::<Assets<Image>>()
+        .add(mosaic_block_texture());
     let material = world
         .resource_mut::<Assets<StandardMaterial>>()
         .add(StandardMaterial {
             base_color: Color::WHITE,
-            perceptual_roughness: 0.85,
+            base_color_texture: Some(texture),
+            perceptual_roughness: 0.9,
             ..default()
         });
     world.spawn((
@@ -1355,37 +1444,78 @@ fn spawn_chunk_colored(world: &mut World, chunk: &AuthorityChunk) {
     ));
 }
 
-/// 1. Voxel terrain — the real greedy + refined mesh with per-material colors.
+/// A small textured voxel landscape: a grassy heightmap floor (grass on top,
+/// dirt then stone below) with a tree (wood trunk + leaves), a glowstone lamp, a
+/// lava patch and a water pool — material variety under the real client material
+/// palette, drawn with the mosaic texture.
+fn showcase_landscape_chunk() -> AuthorityChunk {
+    let mut cells: Vec<(i32, i32, i32, u16)> = vec![];
+    let size = 9i32;
+    for x in 0..size {
+        for z in 0..size {
+            // Gentle blocky height variation (0..2 above the base).
+            let h = 1 + (((x * 7 + z * 13 + x * z) % 3).unsigned_abs() as i32);
+            for y in 0..h {
+                // grass(sprout 18) on top, dirt(1) just below, stone(2) deeper.
+                let mat = if y == h - 1 {
+                    18
+                } else if y + 1 >= h - 1 {
+                    1
+                } else {
+                    2
+                };
+                cells.push((x, y, z, mat));
+            }
+        }
+    }
+    // A tree: wood(3) trunk + sprout(18) leaf canopy.
+    let (tx, tz) = (2i32, 6i32);
+    for y in 2..5 {
+        cells.push((tx, y, tz, 3));
+    }
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            cells.push((tx + dx, 5, tz + dz, 18));
+        }
+    }
+    cells.push((tx, 6, tz, 18));
+    // A glowstone lamp post, a lava patch, and a small water pool.
+    cells.push((6, 3, 2, 3));
+    cells.push((6, 4, 2, 19)); // glowstone lamp on a post
+    cells.push((7, 1, 6, 15)); // lava
+    cells.push((1, 1, 1, 8)); // water
+    cells.push((1, 1, 2, 8));
+    cells.push((2, 1, 1, 8));
+    showcase_material_chunk(&cells)
+}
+
+/// A flat textured grass floor (`w`×`d` cells at y=0) to stage emergence effects
+/// in the world environment instead of on a flat background.
+fn floor_chunk(w: i32, d: i32) -> AuthorityChunk {
+    let mut cells = vec![];
+    for x in 0..w {
+        for z in 0..d {
+            cells.push((x, 0, z, 18)); // grass
+        }
+    }
+    showcase_material_chunk(&cells)
+}
+
+/// 1. Voxel world — a textured voxel landscape under the real procedural sky +
+///    sunlight (the live client's environment), proving the base rendering: the
+///    greedy mesh, the per-material palette, the mosaic block texture, real
+///    atmosphere/lighting.
 #[test]
-fn showcase_voxel_terrain() {
-    let chunk = showcase_material_chunk(&[
-        (1, 0, 2, 2),
-        (2, 0, 2, 2),
-        (3, 0, 2, 2),
-        (4, 0, 2, 2),
-        (5, 0, 2, 2),
-        (1, 0, 3, 2),
-        (2, 0, 3, 2),
-        (3, 0, 3, 2),
-        (4, 0, 3, 2),
-        (5, 0, 3, 2),
-        (2, 1, 2, 2),
-        (3, 1, 2, 2),
-        (4, 1, 2, 2),
-        (3, 2, 2, 2),
-        (1, 1, 2, 15), // lava (red)
-        (5, 1, 2, 18), // sprout (green)
-        (3, 3, 2, 19), // glowstone (blue)
-        (4, 2, 2, 14), // molten iron (orange)
-    ]);
-    let refined = refined_stone_chunk((0, 0, 2));
-    let look = Vec3::new(300.0, 150.0, 250.0);
+fn showcase_voxel_world() {
+    let chunk = showcase_landscape_chunk();
+    let eye = Vec3::new(1180.0, 760.0, -240.0);
+    let look = Vec3::new(430.0, 90.0, 430.0);
     let data = render_scene(|world, image| {
-        spawn_showcase_lit_camera(world, image, Vec3::new(160.0, 420.0, -340.0), look);
-        spawn_chunk_colored(world, &chunk);
-        spawn_chunk_colored(world, &refined);
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &chunk);
     });
-    save_showcase_png("01_voxel_terrain", &data);
+    save_showcase_png("01_voxel_world", &data);
     assert_eq!(data.len(), (W * H * 4) as usize);
 }
 
@@ -1404,9 +1534,12 @@ fn showcase_emergent_colored_light() {
             (idx(2, 1, 2), 220, 0x60_A0FF),
         ],
     );
-    let look = Vec3::new(230.0, 170.0, 170.0);
+    let eye = Vec3::new(230.0, 250.0, -360.0);
+    let look = Vec3::new(230.0, 150.0, 170.0);
     let data = render_scene(|world, image| {
-        spawn_camera(world, image, Vec3::new(230.0, 170.0, -380.0), look);
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &floor_chunk(5, 5));
         spawn_overlay_kind(world, &light, FieldOverlayKind::Light);
     });
     save_showcase_png("02_emergent_colored_light", &data);
@@ -1426,11 +1559,14 @@ fn showcase_thermal_incandescence() {
             (idx(3, 1, 1), 1800.0),
         ],
     );
-    let data = render_with_incandescence(
-        &field,
-        Vec3::new(250.0, 150.0, -460.0),
-        Vec3::new(250.0, 150.0, 150.0),
-    );
+    let data = render_with_incandescence(&field, |w, i| {
+        spawn_night_camera(
+            w,
+            i,
+            Vec3::new(250.0, 150.0, -440.0),
+            Vec3::new(250.0, 150.0, 150.0),
+        )
+    });
     save_showcase_png("03_thermal_incandescence", &data);
     assert_eq!(data.len(), (W * H * 4) as usize);
 }
@@ -1447,11 +1583,14 @@ fn showcase_lightning_arc() {
             (idx(3, 1, 1), -60.0, 180),
         ],
     );
-    let data = render_with_lightning(
-        &field,
-        Vec3::new(250.0, 150.0, -460.0),
-        Vec3::new(250.0, 150.0, 150.0),
-    );
+    let data = render_with_lightning(&field, |w, i| {
+        spawn_night_camera(
+            w,
+            i,
+            Vec3::new(250.0, 150.0, -440.0),
+            Vec3::new(250.0, 150.0, 150.0),
+        )
+    });
     save_showcase_png("04_lightning_arc", &data);
     assert_eq!(data.len(), (W * H * 4) as usize);
 }
@@ -1464,15 +1603,18 @@ fn showcase_temperature_field() {
         1,
         [0, 0, 0],
         &[
-            (idx(1, 1, 1), 10000.0),
-            (idx(2, 2, 1), 8000.0),
-            (idx(3, 1, 1), -250.0),
-            (idx(2, 0, 1), -180.0),
+            (idx(1, 2, 1), 10000.0),
+            (idx(2, 3, 1), 8000.0),
+            (idx(3, 2, 2), -250.0),
+            (idx(2, 2, 3), -180.0),
         ],
     );
-    let look = Vec3::new(230.0, 150.0, 150.0);
+    let eye = Vec3::new(230.0, 300.0, -360.0);
+    let look = Vec3::new(230.0, 180.0, 170.0);
     let data = render_scene(|world, image| {
-        spawn_camera(world, image, Vec3::new(230.0, 150.0, -400.0), look);
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &floor_chunk(5, 5));
         spawn_overlay(world, &field);
     });
     save_showcase_png("05_temperature_field_hot_cold", &data);
@@ -1487,15 +1629,18 @@ fn showcase_ionization_plasma() {
         1,
         [0, 0, 0],
         &[
-            (idx(1, 1, 1), 0.0, 240),
-            (idx(2, 1, 1), 0.0, 220),
-            (idx(3, 1, 1), 0.0, 200),
-            (idx(2, 2, 1), 0.0, 180),
+            (idx(1, 2, 1), 0.0, 240),
+            (idx(2, 2, 1), 0.0, 220),
+            (idx(3, 2, 1), 0.0, 200),
+            (idx(2, 2, 2), 0.0, 180),
         ],
     );
-    let look = Vec3::new(230.0, 170.0, 150.0);
+    let eye = Vec3::new(230.0, 300.0, -360.0);
+    let look = Vec3::new(230.0, 180.0, 170.0);
     let data = render_scene(|world, image| {
-        spawn_camera(world, image, Vec3::new(230.0, 170.0, -400.0), look);
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &floor_chunk(5, 5));
         spawn_overlay_kind(world, &field, FieldOverlayKind::Ionization);
     });
     save_showcase_png("06_ionization_plasma", &data);
