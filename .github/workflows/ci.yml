@@ -53,12 +53,12 @@ jobs:
       - name: Compile maintained apps (warnings as errors)
         run: |
           # Apps with no legacy Mnesia deps — strict compilation
-          # scene_server compiled in its dedicated Rust-backed test job
+          # scene_server compiled in its dedicated Rust-backed test job.
+          # (agent_server / agent_manager were consolidated away during arch-align.)
           strict_apps=(
+            apps/mmo_contracts
             apps/beacon_server
             apps/gate_server
-            apps/agent_manager
-            apps/agent_server
             apps/world_server
             apps/auth_server
             apps/visualize_server
@@ -270,16 +270,13 @@ jobs:
       - name: Compile (including Rust NIFs)
         run: mix compile
 
-      - name: Setup database
-        # scene_server's voxel-authority suite (ChunkProcess / ChunkSnapshotStore /
-        # pending-transaction tests) writes through DataService.Repo on PostgreSQL.
-        run: mix ecto.create -r DataService.Repo && mix ecto.migrate -r DataService.Repo
-
       - name: Run scene_server tests
-        run: cd apps/scene_server && mix test --no-start
         # 109 test files: NIF physics/movement, plus the full voxel-authority layer
         # (codec/wire golden parity, chunk process, field provisioning, reaction/light/
-        # heat kernels, surface elements). Requires PostgreSQL (see Setup database).
+        # heat kernels, surface elements). The voxel-authority suite writes through
+        # DataService.Repo on PostgreSQL — test_helper.exs runs storage_up + migrations
+        # itself against the postgres service, so no separate ecto step is needed here.
+        run: cd apps/scene_server && mix test --no-start
 
   test-native-rust:
     name: Test native Rust crates
@@ -352,14 +349,10 @@ jobs:
       - name: Compile
         run: mix compile --no-optional-deps
 
-      - name: Run agent_server tests
-        run: cd apps/agent_server && mix test --no-start
-
+      # agent_server / agent_manager were consolidated away during arch-align;
+      # world_server is the remaining standalone (non-DB, non-Phoenix) app.
       - name: Run world_server tests
         run: cd apps/world_server && mix test --no-start
-
-      - name: Run agent_manager tests
-        run: cd apps/agent_manager && mix test --no-start
 
   test-auth-server:
     name: Test auth_server
