@@ -151,4 +151,16 @@ refresh_fields_after_mutation(state):
 
 **已知 v1 局限**(均待 kernel 逐 cell O(1) 访问优化后放宽):① 光/热只在 emergent 内容的本地半径(6)泡内传播,远距离照明/热不自动 provision;② 动态续命(光源移除后自维持燃烧、纯被邻居加热而自身非本征 source 的格)未覆盖——activation 由本征 source 材料/表面元件 bootstrap,场致瞬态不重触发 sweep。
 
-**测试**:`chunk_process` 46/0、field 225/0、reaction(含两个有机生产 e2e)+chunk_process 合跑 407/0;客户端 voxel lib 164/0(含 golden 字节→渲染端到端)。
+**测试**:`chunk_process` 47/0(含多 provisioner 共存 + Emergence 释放生命周期)、field 225/0、voxel 全套 **1075/0**;客户端 voxel lib 164/0(含 golden 字节→渲染端到端)。
+
+### 11.1 放宽本地半径局限的优化路径(scoped,未做)
+
+解除「本地半径 6 泡」需让 kernel 逐 cell 访问 O(1)(当前是瓶颈)。**注意:不是干净的
+additive opt-in**——O(n) 成本散在**整条属性合并流水线**:`Storage.effective_attribute_at_
+normalized` 的 `Enum.at(macro_headers, idx)`,以及它调的 `material_id_for_header` /
+`extract_l2/l3/l5` 各自 `Enum.at(normal_blocks, payload_index)` / `Enum.at(attribute_sets, …)`。
+单加一个 `effective_attribute_at_with_header`(跳过头 Enum.at)不够,merge 内层仍 O(n)。
+真正修法是把 tuple 化的池(`List.to_tuple(macro_headers/normal_blocks/…)`)**穿透**这些
+私有函数做 O(1) `elem`,再让 reaction / light kernel 的 cell 循环用 indexed 访问。属于
+**Storage 内部重构**(动 1075 个 field 测试共享的热路径),须有人盯、逐函数行为保持验证,
+不宜无人值守对全绿套件下手。届时可把 Emergence `@emergence_radius` 调大或直接整 chunk AABB。
