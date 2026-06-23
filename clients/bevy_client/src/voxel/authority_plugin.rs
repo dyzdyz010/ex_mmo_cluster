@@ -156,17 +156,24 @@ impl VoxelAuthority {
                     // (或是新光区),把该 chunk 标脏 → 地形重网格重烤块光 lightmap。门在
                     // 「光值实变」上,避免 active 光区每 tick(10Hz)无谓重网格(MMO 友好)。
                     let light_chunk = if snapshot.field_mask & FIELD_MASK_LIGHT != 0 {
+                        // 新快照带光:光值/索引/所属 chunk 任一变了(或首次带光)→ 标脏。
                         let changed = match self.field_store.region(snapshot.region_id) {
                             Some(old) => {
                                 old.field_mask & FIELD_MASK_LIGHT == 0
                                     || old.light != snapshot.light
                                     || old.macro_indices != snapshot.macro_indices
+                                    || old.chunk_coord != snapshot.chunk_coord
                             }
                             None => true,
                         };
                         changed.then_some(snapshot.chunk_coord)
                     } else {
-                        None
+                        // 新快照**不带光**:若该 region 之前带光(光层被移除,如光源熄灭)→ 必须
+                        // 重烤该 chunk 抹掉残留块光(回退纯天光)。同 destroy 处理范式。
+                        self.field_store
+                            .region(snapshot.region_id)
+                            .filter(|old| old.field_mask & FIELD_MASK_LIGHT != 0)
+                            .map(|old| old.chunk_coord)
                     };
                     self.field_store.apply_snapshot(snapshot.clone());
                     if let Some(coord) = light_chunk {
@@ -444,6 +451,62 @@ mod tests {
         }));
         authority.drain_inbox();
         assert_eq!(authority.store.take_dirty(), vec![coord]);
+    }
+
+    #[test]
+    fn light_layer_removal_marks_chunk_dirty() {
+        // 回归(评审 critical):一个带光 region 的快照**清掉光位**(光源熄灭)时,必须重烤
+        // 该 chunk 抹掉残留块光——否则旧块光卡在 mesh 上。
+        let mut authority = VoxelAuthority::default();
+        let snap = snapshot("snapshot_full");
+        let coord = snap.chunk_coord;
+        authority.enqueue(VoxelServerMessage::ChunkSnapshot(snap));
+        authority.drain_inbox();
+        let _ = authority.store.take_dirty();
+
+        let mk = |field_mask: u8, light: Vec<u8>| FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: coord,
+            region_id: 7,
+            tick_count: 1,
+            field_mask,
+            macro_indices: vec![0, 5],
+            temperature: vec![10.0, 20.0],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light,
+            light_color: vec![],
+        };
+
+        // Region 7 arrives with temperature + light → chunk dirtied (bakes block light).
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(mk(
+            FIELD_MASK_TEMPERATURE | FIELD_MASK_LIGHT,
+            vec![100, 200],
+        )));
+        authority.drain_inbox();
+        assert_eq!(authority.store.take_dirty(), vec![coord]);
+
+        // Same region re-sent WITHOUT the light bit (light layer removed) → chunk must
+        // re-bake to drop the stale block light, so it is dirtied again.
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(mk(
+            FIELD_MASK_TEMPERATURE,
+            vec![],
+        )));
+        authority.drain_inbox();
+        assert_eq!(
+            authority.store.take_dirty(),
+            vec![coord],
+            "removing the light layer must re-bake the chunk (drop stale block light)"
+        );
+
+        // Now light-free; a further temperature-only re-send does NOT dirty the chunk.
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(mk(
+            FIELD_MASK_TEMPERATURE,
+            vec![],
+        )));
+        authority.drain_inbox();
+        assert!(authority.store.take_dirty().is_empty());
     }
 
     #[test]

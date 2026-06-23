@@ -250,10 +250,32 @@ fn remesh_chunk(
     let sky = Skylight::compute(chunk, SkylightConfig::default());
     let size = chunk.chunk_size_in_macro as i32;
     // 块光 grid 仅 16³ chunk 有效(wire macro_index 假定 16³);非标准 size → 仅天光。
+    // 含 6 个邻 chunk 的块光 grid:边界面采样的是**跨 chunk 的 air cell**(mesher 取面对侧
+    // 邻格),若那格在邻 chunk 且被火把照亮,必须读邻 chunk 的块光,否则接缝处边界面发黑。
     let block_light = if size == 16 {
         field_store.block_light_grid(coord)
     } else {
         None
+    };
+    let nbr_block: [Option<Vec<u8>>; 6] = if size == 16 {
+        [
+            field_store.block_light_grid([coord[0] + 1, coord[1], coord[2]]),
+            field_store.block_light_grid([coord[0] - 1, coord[1], coord[2]]),
+            field_store.block_light_grid([coord[0], coord[1] + 1, coord[2]]),
+            field_store.block_light_grid([coord[0], coord[1] - 1, coord[2]]),
+            field_store.block_light_grid([coord[0], coord[1], coord[2] + 1]),
+            field_store.block_light_grid([coord[0], coord[1], coord[2] - 1]),
+        ]
+    } else {
+        [None, None, None, None, None, None]
+    };
+    let sample_grid = |grid: &Option<Vec<u8>>, x: i32, y: i32, z: i32| -> f32 {
+        if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) {
+            grid.as_ref()
+                .map_or(0.0, |g| g[(x + y * 16 + z * 256) as usize] as f32 / 255.0)
+        } else {
+            0.0
+        }
     };
     let light_at = |x: i32, y: i32, z: i32| -> f32 {
         let sky_l = if y >= size {
@@ -263,12 +285,22 @@ fn remesh_chunk(
             // 侧/底越界:夹回 chunk 内,取边列同高天光作近似。
             sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
         };
-        // 块光:仅 chunk 内 cell 采样(macro_index == x + y*16 + z*256);越界=0。
-        let block_l = match &block_light {
-            Some(grid) if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) => {
-                grid[(x + y * 16 + z * 256) as usize] as f32 / 255.0
-            }
-            _ => 0.0,
+        // 块光:in-bounds → 本 grid;恰一轴越界(边界面)→ 对应邻 chunk grid 的 wrap 格。
+        let block_l = if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) {
+            sample_grid(&block_light, x, y, z)
+        } else if x >= 16 {
+            sample_grid(&nbr_block[0], 0, y, z)
+        } else if x < 0 {
+            sample_grid(&nbr_block[1], 15, y, z)
+        } else if y >= 16 {
+            sample_grid(&nbr_block[2], x, 0, z)
+        } else if y < 0 {
+            sample_grid(&nbr_block[3], x, 15, z)
+        } else if z >= 16 {
+            sample_grid(&nbr_block[4], x, y, 0)
+        } else {
+            // z < 0
+            sample_grid(&nbr_block[5], x, y, 15)
         };
         sky_l.max(block_l)
     };
