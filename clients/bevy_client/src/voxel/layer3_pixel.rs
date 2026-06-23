@@ -1811,19 +1811,14 @@ fn collapse_debris_rasterizes_on_screen() {
 
 // ---- 光可见度 Phase A · 弥漫光场(天光 lightmap)----------------------------
 
-/// Like `spawn_chunk_textured` but bakes the skylight lightmap into the mesh (the
-/// live client's lit path): covered/underground cells render dark, open cells full.
-fn spawn_chunk_textured_lit(world: &mut World, chunk: &AuthorityChunk) {
-    let sky = Skylight::compute(chunk, SkylightConfig::default());
-    let size = chunk.chunk_size_in_macro as i32;
-    let light_at = |x: i32, y: i32, z: i32| -> f32 {
-        if y >= size {
-            1.0
-        } else {
-            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
-        }
-    };
-    let data = chunk_render_mesh_lit(chunk, MACRO, &ChunkNeighbors::default(), Some(&light_at));
+/// Core lit-mesh spawn: meshes `chunk` with an arbitrary per-cell light closure and
+/// the live textured material. The skylight-only and block-light showcases share it.
+fn spawn_chunk_lit_with(
+    world: &mut World,
+    chunk: &AuthorityChunk,
+    light_at: &dyn Fn(i32, i32, i32) -> f32,
+) {
+    let data = chunk_render_mesh_lit(chunk, MACRO, &ChunkNeighbors::default(), Some(light_at));
     let mesh = build_mesh_with_colors(&data, material_color);
     let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
     let texture = world
@@ -1842,6 +1837,77 @@ fn spawn_chunk_textured_lit(world: &mut World, chunk: &AuthorityChunk) {
         MeshMaterial3d(material),
         Transform::from_translation(Vec3::ZERO),
     ));
+}
+
+/// Skylight-only closure for a chunk (top boundary = open sky, sides clamp in).
+fn skylight_light_at(chunk: &AuthorityChunk) -> (Skylight, i32) {
+    (
+        Skylight::compute(chunk, SkylightConfig::default()),
+        chunk.chunk_size_in_macro as i32,
+    )
+}
+
+/// Like `spawn_chunk_textured` but bakes the skylight lightmap into the mesh (the
+/// live client's lit path): covered/underground cells render dark, open cells full.
+fn spawn_chunk_textured_lit(world: &mut World, chunk: &AuthorityChunk) {
+    let (sky, size) = skylight_light_at(chunk);
+    let light_at = |x: i32, y: i32, z: i32| -> f32 {
+        if y >= size {
+            1.0
+        } else {
+            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+        }
+    };
+    spawn_chunk_lit_with(world, chunk, &light_at);
+}
+
+/// The live block-light path: combined light = max(skylight, block light). `block`
+/// is a list of (chunk-local cell, u8 intensity) mirroring a `:light` field flood
+/// from a source (e.g. a torch in a cave). Sampled like the real grid (macro_index
+/// == cell flat index x + y*16 + z*256).
+fn spawn_chunk_textured_lit_blocklight(
+    world: &mut World,
+    chunk: &AuthorityChunk,
+    block: &[((i32, i32, i32), u8)],
+) {
+    let (sky, size) = skylight_light_at(chunk);
+    let mut grid = vec![0u8; 16 * 16 * 16];
+    for &((x, y, z), level) in block {
+        if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) {
+            grid[(x + y * 16 + z * 256) as usize] = level;
+        }
+    }
+    let light_at = |x: i32, y: i32, z: i32| -> f32 {
+        let sky_l = if y >= size {
+            1.0
+        } else {
+            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+        };
+        let block_l = if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) {
+            grid[(x + y * 16 + z * 256) as usize] as f32 / 255.0
+        } else {
+            0.0
+        };
+        sky_l.max(block_l)
+    };
+    spawn_chunk_lit_with(world, chunk, &light_at);
+}
+
+/// A torch-style block-light flood (center bright, falling off) seated in the shaded
+/// alcove of `overhang_chunk` (air cells just above the covered floor).
+fn alcove_torch_block_light() -> Vec<((i32, i32, i32), u8)> {
+    vec![
+        ((2, 1, 3), 255),
+        ((2, 1, 2), 200),
+        ((2, 1, 4), 200),
+        ((1, 1, 3), 200),
+        ((3, 1, 3), 190),
+        ((2, 2, 3), 170),
+        ((2, 1, 1), 130),
+        ((2, 1, 5), 130),
+        ((1, 1, 2), 150),
+        ((3, 1, 4), 150),
+    ]
 }
 
 /// A grass floor with an L-shaped stone overhang (back wall + roof) covering the
@@ -1921,5 +1987,51 @@ fn skylight_darkens_covered_terrain() {
     assert!(
         mean_lit < mean_flat * 0.94,
         "skylight should darken the shaded terrain: lit mean {mean_lit:.4} vs flat {mean_flat:.4}"
+    );
+}
+
+/// 9. Block light fills the dark — a torch (the server `:light` field) seated in the
+///    shaded alcove illuminates the surrounding floor/walls, so caves are dark BUT
+///    light sources brighten them (combined light = max(skylight, block light)).
+#[test]
+fn showcase_block_light_torch_in_alcove() {
+    let chunk = overhang_chunk();
+    let eye = Vec3::new(1180.0, 720.0, -220.0);
+    let look = Vec3::new(430.0, 120.0, 430.0);
+    let torch = alcove_torch_block_light();
+    let data = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured_lit_blocklight(world, &chunk, &torch);
+    });
+    save_showcase_png("09_block_light_torch", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// End-to-end pixel proof: a block-light source brightens the otherwise-dark covered
+/// alcove — the scene WITH the torch reads brighter than the same scene WITHOUT it
+/// (skylight only). Same geometry/sky/camera; only the block-light field differs.
+#[test]
+fn block_light_brightens_shaded_alcove() {
+    let chunk = overhang_chunk();
+    let eye = Vec3::new(1180.0, 720.0, -220.0);
+    let look = Vec3::new(430.0, 120.0, 430.0);
+
+    let torched = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured_lit_blocklight(world, &chunk, &alcove_torch_block_light());
+    });
+    let dark = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured_lit(world, &chunk); // skylight only — no torch
+    });
+
+    let mean_torched = mean_luma(&torched);
+    let mean_dark = mean_luma(&dark);
+    assert!(
+        mean_torched > mean_dark * 1.02,
+        "a torch should brighten the shaded alcove: torched {mean_torched:.4} vs dark {mean_dark:.4}"
     );
 }

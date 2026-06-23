@@ -30,6 +30,7 @@ use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
+use crate::voxel::field_view::VoxelFieldStore;
 use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, chunk_render_mesh_lit};
 use crate::voxel::skylight::{Skylight, SkylightConfig};
 use crate::voxel::surface_decal::surface_decal_mesh;
@@ -204,6 +205,7 @@ fn render_dirty_chunks(
         remesh_chunk(
             &mut commands,
             &authority.store,
+            &authority.field_store,
             &mut entities,
             &mut decal_entities,
             &mut meshes,
@@ -225,6 +227,7 @@ fn enqueue(queue: &mut VoxelRemeshQueue, coord: ChunkCoord) {
 fn remesh_chunk(
     commands: &mut Commands,
     store: &VoxelAuthorityStore,
+    field_store: &VoxelFieldStore,
     entities: &mut VoxelChunkEntities,
     decal_entities: &mut VoxelDecalEntities,
     meshes: &mut Assets<Mesh>,
@@ -240,19 +243,34 @@ fn remesh_chunk(
 
     // Volumetric chunk mesh: greedy macro faces (solid) + refined cells' micro
     // sub-voxel meshes, with cross-chunk culling (C4).
-    // 光可见度 Phase A:从权威几何算逐 cell 天光,作 light_at 烤进 mesh 顶点光因子
-    // (露天满亮、洞穴/地下逐格变暗)。块光融合留后续增量。
+    // 光可见度 Phase A:逐 cell 光照 = max(天光, 块光) 烤进 mesh 顶点光因子。
+    //  · 天光:从权威几何算(露天满亮、洞穴/地下逐格变暗);
+    //  · 块光:采样服务端 :light 场(火把/余烬等照亮周围,洞穴里也亮)。
     let neighbors = build_neighbors(store, coord);
     let sky = Skylight::compute(chunk, SkylightConfig::default());
     let size = chunk.chunk_size_in_macro as i32;
+    // 块光 grid 仅 16³ chunk 有效(wire macro_index 假定 16³);非标准 size → 仅天光。
+    let block_light = if size == 16 {
+        field_store.block_light_grid(coord)
+    } else {
+        None
+    };
     let light_at = |x: i32, y: i32, z: i32| -> f32 {
-        if y >= size {
+        let sky_l = if y >= size {
             // 越过本 chunk 顶 = 露天(v1 不看上方邻 chunk)。
             1.0
         } else {
             // 侧/底越界:夹回 chunk 内,取边列同高天光作近似。
             sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
-        }
+        };
+        // 块光:仅 chunk 内 cell 采样(macro_index == x + y*16 + z*256);越界=0。
+        let block_l = match &block_light {
+            Some(grid) if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) => {
+                grid[(x + y * 16 + z * 256) as usize] as f32 / 255.0
+            }
+            _ => 0.0,
+        };
+        sky_l.max(block_l)
     };
     let data = chunk_render_mesh_lit(chunk, MACRO_RENDER_SIZE, &neighbors, Some(&light_at));
     if data.is_empty() {

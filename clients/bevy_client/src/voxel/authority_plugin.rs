@@ -19,7 +19,7 @@ use crate::voxel::authority::{ChunkCoord, IngestOutcome, VoxelAuthorityStore};
 use crate::voxel::field_view::VoxelFieldStore;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    VoxelServerMessage,
+    FIELD_MASK_LIGHT, VoxelServerMessage,
 };
 
 /// Logical scene the client subscribes voxels in (mirrors net::plugin; single
@@ -152,10 +152,39 @@ impl VoxelAuthority {
                             ionization: snapshot.ionization.clone(),
                         });
                     }
+                    // 光可见度 Phase A:若本快照带 :light 且其光值相对已存区域**真变了**
+                    // (或是新光区),把该 chunk 标脏 → 地形重网格重烤块光 lightmap。门在
+                    // 「光值实变」上,避免 active 光区每 tick(10Hz)无谓重网格(MMO 友好)。
+                    let light_chunk = if snapshot.field_mask & FIELD_MASK_LIGHT != 0 {
+                        let changed = match self.field_store.region(snapshot.region_id) {
+                            Some(old) => {
+                                old.field_mask & FIELD_MASK_LIGHT == 0
+                                    || old.light != snapshot.light
+                                    || old.macro_indices != snapshot.macro_indices
+                            }
+                            None => true,
+                        };
+                        changed.then_some(snapshot.chunk_coord)
+                    } else {
+                        None
+                    };
                     self.field_store.apply_snapshot(snapshot.clone());
+                    if let Some(coord) = light_chunk {
+                        self.store.mark_dirty(coord);
+                    }
                 }
                 VoxelServerMessage::FieldRegionDestroyed(destroyed) => {
+                    // A destroyed light region must re-bake the chunk WITHOUT its
+                    // block light (back to skylight-only) → mark that chunk dirty.
+                    let light_chunk = self
+                        .field_store
+                        .region(destroyed.region_id)
+                        .filter(|r| r.field_mask & FIELD_MASK_LIGHT != 0)
+                        .map(|r| r.chunk_coord);
                     self.field_store.apply_destroyed(destroyed);
+                    if let Some(coord) = light_chunk {
+                        self.store.mark_dirty(coord);
+                    }
                     // Surface the destroy so the heat-smoke adapter clears that
                     // region's lingering plume (mirrors web onRegionDestroyed →
                     // clearRegion); otherwise smoke drifts ~2.2s after the region
@@ -274,7 +303,7 @@ fn ingest_voxel_messages(
 mod tests {
     use super::*;
     use crate::voxel::wire::{
-        ChunkDelta, ChunkSnapshot, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
+        ChunkDelta, ChunkSnapshot, FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
         FieldRegionSnapshot, Reader,
     };
 
@@ -360,6 +389,85 @@ mod tests {
         authority.drain_inbox();
         assert_eq!(authority.field_store.region_count(), 0);
         assert_eq!(authority.field_store.take_dirty(), vec![99]);
+    }
+
+    #[test]
+    fn light_field_change_marks_its_chunk_dirty_for_remesh() {
+        // 光可见度 Phase A::light 场变化 → 它的 chunk 标脏(地形重网格重烤块光),
+        // 但**仅在光值真变时**(避免 active 光区每 tick 无谓重网格)。
+        let mut authority = VoxelAuthority::default();
+        let snap = snapshot("snapshot_full");
+        let coord = snap.chunk_coord;
+        authority.enqueue(VoxelServerMessage::ChunkSnapshot(snap));
+        authority.drain_inbox();
+        let _ = authority.store.take_dirty(); // clear the geometry-load dirty mark
+
+        let light = |region_id: u64, light: Vec<u8>| FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: coord,
+            region_id,
+            tick_count: 1,
+            field_mask: FIELD_MASK_LIGHT,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light,
+            light_color: vec![],
+        };
+
+        // First light snapshot → chunk dirtied (re-bake with block light).
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(light(1, vec![100, 200])));
+        authority.drain_inbox();
+        assert_eq!(authority.store.take_dirty(), vec![coord]);
+
+        // Identical re-send → NOT dirty (change-gated; no 10Hz remesh churn).
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(light(1, vec![100, 200])));
+        authority.drain_inbox();
+        assert!(
+            authority.store.take_dirty().is_empty(),
+            "unchanged light values must not trigger a remesh"
+        );
+
+        // Changed light values → dirty again.
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(light(1, vec![100, 255])));
+        authority.drain_inbox();
+        assert_eq!(authority.store.take_dirty(), vec![coord]);
+
+        // Destroying the light region → dirty (re-bake to skylight-only).
+        authority.enqueue(VoxelServerMessage::FieldRegionDestroyed(FieldRegionDestroyed {
+            logical_scene_id: 1,
+            chunk_coord: coord,
+            region_id: 1,
+            destroy_reason: 0,
+        }));
+        authority.drain_inbox();
+        assert_eq!(authority.store.take_dirty(), vec![coord]);
+    }
+
+    #[test]
+    fn light_field_for_unloaded_chunk_does_not_mark_dirty() {
+        // A light region arriving before its chunk geometry must not queue a phantom
+        // remesh (the chunk's own snapshot will dirty it — and bake light — on load).
+        let mut authority = VoxelAuthority::default();
+        let region = FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [9, 0, 0],
+            region_id: 1,
+            tick_count: 1,
+            field_mask: FIELD_MASK_LIGHT,
+            macro_indices: vec![0],
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light: vec![200],
+            light_color: vec![],
+        };
+        authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(region));
+        authority.drain_inbox();
+        assert!(authority.store.take_dirty().is_empty());
     }
 
     #[test]

@@ -122,6 +122,16 @@ impl VoxelAuthorityStore {
         dirty
     }
 
+    /// Marks a loaded chunk dirty from an EXTERNAL trigger (光可见度 Phase A:its
+    /// `:light` block-light field changed → re-bake the terrain lightmap). Guarded
+    /// to loaded chunks so a light region arriving before geometry doesn't queue a
+    /// phantom remesh (the chunk's own snapshot will mark it dirty when it loads).
+    pub fn mark_dirty(&mut self, coord: ChunkCoord) {
+        if self.chunks.contains_key(&coord) {
+            self.dirty.insert(coord);
+        }
+    }
+
     pub fn ingest(&mut self, msg: &VoxelServerMessage) -> Result<IngestOutcome, IngestError> {
         match msg {
             VoxelServerMessage::ChunkSnapshot(snap) => self.apply_snapshot(snap),

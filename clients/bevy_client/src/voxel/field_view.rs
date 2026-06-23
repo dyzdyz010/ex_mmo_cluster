@@ -176,6 +176,32 @@ impl VoxelFieldStore {
         self.regions.get(&region_id)
     }
 
+    /// 光可见度 Phase A:dense block-light grid (u8 0..255 per macro cell) for a
+    /// chunk, **max-combined** over every retained `:light` region stamped with
+    /// `chunk_coord`, or `None` if no light region covers it. The wire `macro_index`
+    /// equals the chunk cell flat index (both `x + y*16 + z*256`), so the returned
+    /// `Vec<u8>` of length 4096 is directly cell-indexable. Block light combines
+    /// with skylight by `max` (either illuminant lights a cell) at bake time.
+    pub fn block_light_grid(&self, chunk_coord: [i32; 3]) -> Option<Vec<u8>> {
+        const CELLS: usize = 16 * 16 * 16;
+        let mut grid: Option<Vec<u8>> = None;
+        for region in self.regions.values() {
+            if region.chunk_coord != chunk_coord || region.field_mask & FIELD_MASK_LIGHT == 0 {
+                continue;
+            }
+            let g = grid.get_or_insert_with(|| vec![0u8; CELLS]);
+            for (i, &macro_index) in region.macro_indices.iter().enumerate() {
+                if let Some(&level) = region.light.get(i) {
+                    let idx = macro_index as usize;
+                    if idx < CELLS {
+                        g[idx] = g[idx].max(level);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
@@ -834,6 +860,51 @@ mod tests {
         let mut bare = field.clone();
         bare.field_mask = 0;
         assert!(light_overlay_mesh(&bare, 100.0).is_empty());
+    }
+
+    #[test]
+    fn block_light_grid_max_combines_light_regions() {
+        let light_region = |region_id, macro_indices: Vec<u16>, light: Vec<u8>| FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: [0, 0, 0],
+            region_id,
+            tick_count: 1,
+            field_mask: FIELD_MASK_LIGHT,
+            macro_indices,
+            temperature: vec![],
+            electric_potential: vec![],
+            electric_current: vec![],
+            ionization: vec![],
+            light,
+            light_color: vec![],
+        };
+
+        let mut store = VoxelFieldStore::new();
+        // No light region for the chunk → None.
+        assert!(store.block_light_grid([0, 0, 0]).is_none());
+
+        // Region 1: cells 0→100, 5→200.
+        store.apply_snapshot(light_region(1, vec![0, 5], vec![100, 200]));
+        // Region 2 (same chunk): cells 5→250, 9→50 → max-combine at 5.
+        store.apply_snapshot(light_region(2, vec![5, 9], vec![250, 50]));
+
+        let grid = store.block_light_grid([0, 0, 0]).expect("light present");
+        assert_eq!(grid.len(), 4096);
+        assert_eq!(grid[0], 100);
+        assert_eq!(grid[5], 250, "max(200, 250)");
+        assert_eq!(grid[9], 50);
+        assert_eq!(grid[1], 0, "untouched cell stays dark");
+
+        // A different chunk is unaffected.
+        assert!(store.block_light_grid([1, 0, 0]).is_none());
+
+        // A temperature-only region produces no block-light grid.
+        let mut store2 = VoxelFieldStore::new();
+        let mut temp = light_region(3, vec![0], vec![]);
+        temp.field_mask = FIELD_MASK_TEMPERATURE;
+        temp.temperature = vec![100.0];
+        store2.apply_snapshot(temp);
+        assert!(store2.block_light_grid([0, 0, 0]).is_none());
     }
 
     #[test]
