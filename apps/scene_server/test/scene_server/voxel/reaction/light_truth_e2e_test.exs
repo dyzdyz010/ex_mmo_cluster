@@ -115,7 +115,12 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
   end
 
   test "光成真机制(全 DB):ember 光照亮相邻 photo_sensor → :illuminated 落 chunk truth" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
+
     ember = Types.macro_index!({0, 0, 0})
     sensor = Types.macro_index!({1, 0, 0})
 
@@ -144,7 +149,12 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
   end
 
   test "遮光(全 DB):不透明墙挡光 → photo_sensor 不被点亮(truth 无 :illuminated)" do
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
+
     ember = Types.macro_index!({0, 0, 0})
     wall = Types.macro_index!({1, 0, 0})
     sensor = Types.macro_index!({2, 0, 0})
@@ -179,7 +189,12 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
   test "光门(全 DB):光照打开 photo_sensor 闸门(可通行)—— 与电门完全对称" do
     # 光 → :illuminated(tick1)→ 光门执行器置 :open(tick2)→ TagPhysics 视为可通行。
     # 证「光」是一等 device trigger,纯数据组合复用整套 actuator/passability(同电门 :powered→:open)。
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
+
     ember = Types.macro_index!({0, 0, 0})
     gate = Types.macro_index!({1, 0, 0})
 
@@ -214,7 +229,12 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
   test "光合(全 DB):sprout 幼苗在光照+相邻水下生长 → 成熟为 wood(光长生命,三系统组合)" do
     # 布局:ember(光源,0)— sprout(1)— water(2)。sprout 受光(0→1)且相邻水(2)→ 光合生长。
     # 组合权威光场 × 多反应物(相邻水)× 生长进度累进/transform。光是有状态多 tick 生长过程的真机制。
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
+
     ember = Types.macro_index!({0, 0, 0})
     sprout = Types.macro_index!({1, 0, 0})
     water = Types.macro_index!({2, 0, 0})
@@ -262,7 +282,12 @@ defmodule SceneServer.Voxel.Reaction.LightTruthE2ETest do
 
   test "光→热桥(全 DB,放大镜效应):强光照 photo_sensor → 自身温度在 truth 中升高(光桥接热系统)" do
     # ember 强光(相邻 178 ≥ 128 放热阈)照 photo_sensor → 吸光放热 → 自身温度升。光→热→(扩散)熔/燃。
-    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    chunk =
+      start_supervised!(
+        {ChunkProcess,
+         logical_scene_id: 1, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
+      )
+
     ember = Types.macro_index!({0, 0, 0})
     sensor = Types.macro_index!({1, 0, 0})
 

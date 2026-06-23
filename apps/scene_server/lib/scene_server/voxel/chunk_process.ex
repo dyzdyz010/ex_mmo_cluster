@@ -22,6 +22,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Field.FieldTickWorker
   alias SceneServer.Voxel.Field.ParticipantProjection
   alias SceneServer.Voxel.Field.Provisioners.ElectricCircuit
+  alias SceneServer.Voxel.Field.Provisioners.Emergence
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
@@ -45,7 +46,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # 各自探测 chunk 内容 → ensure / release 对应 region。electric_circuit 第一个
   # (闭合电路);emergence / thermal 随后。见
   # docs/2026-06-23-world-content-driven-field-provisioning.md。
-  @field_provisioners [ElectricCircuit]
+  @field_provisioners [ElectricCircuit, Emergence]
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
   # 温度属性 catalog 边界(冻结值,见 priv/catalogs/attribute_catalog_v1.exs id 1)。R5d:注热写须 clip 到
@@ -490,7 +491,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
        field_region_sources: %{},
        field_region_source_keys: %{},
        field_region_cleanup_links: %{},
-       field_refresh_pending?: false
+       field_refresh_pending?: false,
+       # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
+       # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
+       auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true)
      }}
   end
 
@@ -4002,6 +4006,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
+  defp maybe_schedule_field_refresh(%{auto_field_provisioning?: false} = state, _changed?),
+    do: state
+
   defp maybe_schedule_field_refresh(state, true) do
     if Map.get(state, :field_refresh_pending?, false) do
       state
@@ -4020,6 +4027,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # 订阅时机:chunk 可能加载了内容却从未 mutate(没触发过 sweep)。若有任一 provisioner
   # 当前 active 且尚未起 source,补一次 sweep,让新订阅者看到本该存在的场 region。
+  defp maybe_schedule_field_refresh_for_subscriber(%{auto_field_provisioning?: false} = state),
+    do: state
+
   defp maybe_schedule_field_refresh_for_subscriber(%{storage: %Storage{}} = state) do
     context = build_field_context(state)
 
@@ -4131,6 +4141,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   # worker 到期/崩溃后:若该 source_key 属于某仍 active 的 provisioner,补一次 sweep
   # 重起(同原 auto_circuit 到期重刷,泛化到任意 provisioner)。
+  defp maybe_refresh_expired_field(%{auto_field_provisioning?: false} = state, _sk, _r), do: state
+
   defp maybe_refresh_expired_field(%{storage: %Storage{}} = state, source_key, :expired) do
     context = build_field_context(state)
 
