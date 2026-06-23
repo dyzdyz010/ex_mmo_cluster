@@ -23,8 +23,8 @@ use crate::voxel::wire::{
 };
 
 /// Logical scene the client subscribes voxels in (mirrors net::plugin; single
-/// scene for now).
-const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
+/// scene for now). Shared with the live build path (construction system).
+pub(crate) const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
 /// Ordering anchor for the inbox drain. `ingest_voxel_messages` (which surfaces
 /// the per-frame ObjectState / ElectricSnapshot / destroyed-region events)

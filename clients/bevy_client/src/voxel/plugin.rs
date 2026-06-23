@@ -20,7 +20,12 @@ use crate::app::{
 use crate::camera::MainCamera;
 use crate::chat::ChatState;
 use crate::login::AppState;
+use crate::net::{NetworkBridge, NetworkCommand};
 use crate::observe::ClientObserver;
+use crate::voxel::authority::CellState;
+use crate::voxel::authority_plugin::{VOXEL_LOGICAL_SCENE_ID, VoxelAuthority};
+use crate::voxel::live_pick::pick_voxel;
+use crate::voxel::wire::{ACTION_BREAK, ACTION_PLACE};
 use crate::voxel::{
     BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCellTarget, MicroCoord,
     NormalBlockData, VoxelMaterialId, VoxelRenderCell, VoxelWorld,
@@ -97,6 +102,15 @@ impl Plugin for VoxelPlugin {
                 draw_voxel_guides
                     .run_if(in_state(AppState::Game))
                     .run_if(offline_voxel_showcase_active),
+            )
+            // Construction system (C1.4): in a live scene, building is
+            // server-authoritative — raycast the authority chunks and send a
+            // VoxelEditIntent; the resulting ChunkDelta renders the edit.
+            .add_systems(
+                Update,
+                handle_live_voxel_build
+                    .run_if(in_state(AppState::Game))
+                    .run_if(live_voxel_build_active),
             );
     }
 }
@@ -105,6 +119,11 @@ impl Plugin for VoxelPlugin {
 /// in a live scene the server-authoritative chunk renderer owns the voxels.
 fn offline_voxel_showcase_active(world_state: Res<WorldState>) -> bool {
     !world_state.scene_joined
+}
+
+/// Live (server-authoritative) building is active once a scene is joined.
+fn live_voxel_build_active(world_state: Res<WorldState>) -> bool {
+    world_state.scene_joined
 }
 
 #[derive(SystemParam)]
@@ -306,6 +325,170 @@ fn handle_voxel_input(params: VoxelInputParams) {
                 label
             ),
         );
+    }
+}
+
+#[derive(SystemParam)]
+struct LiveBuildParams<'w, 's> {
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    wheel_reader: MessageReader<'w, 's, MouseWheel>,
+    chat_state: Res<'w, ChatState>,
+    observer: Res<'w, ClientObserver>,
+    windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+    camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
+    voxel_world: ResMut<'w, VoxelWorld>,
+    authority: Res<'w, VoxelAuthority>,
+    bridge: Option<Res<'w, NetworkBridge>>,
+}
+
+/// True if the global macro cell is occupied in the authority store (solid or
+/// refined). Empty / unloaded → false.
+fn authority_macro_occupied(authority: &VoxelAuthority, g: [i32; 3]) -> bool {
+    let chunk_coord = [g[0].div_euclid(16), g[1].div_euclid(16), g[2].div_euclid(16)];
+    let (lx, ly, lz) = (
+        g[0].rem_euclid(16),
+        g[1].rem_euclid(16),
+        g[2].rem_euclid(16),
+    );
+    let idx = (lx + ly * 16 + lz * 256) as usize;
+    authority
+        .store
+        .chunk(chunk_coord)
+        .and_then(|chunk| chunk.cell(idx))
+        .is_some_and(|cell| !matches!(cell, CellState::Empty))
+}
+
+/// Construction system live build: raycast the authority chunks from screen center
+/// and send a server-authoritative `VoxelEditIntent` (place/break). No local
+/// mutation — the returned `ChunkDelta` is what renders.
+fn handle_live_voxel_build(params: LiveBuildParams) {
+    let LiveBuildParams {
+        mouse,
+        keyboard,
+        mut wheel_reader,
+        chat_state,
+        observer,
+        windows,
+        camera,
+        mut voxel_world,
+        authority,
+        bridge,
+    } = params;
+
+    if chat_state.enabled {
+        return;
+    }
+
+    // Hotbar selection works in live scenes too (shared material palette).
+    for (key, index) in [
+        (KeyCode::Digit1, 0),
+        (KeyCode::Digit2, 1),
+        (KeyCode::Digit3, 2),
+        (KeyCode::Digit4, 3),
+        (KeyCode::Digit5, 4),
+        (KeyCode::Digit6, 5),
+        (KeyCode::Digit7, 6),
+    ] {
+        if keyboard.just_pressed(key) {
+            let _ = voxel_world.select_hotbar_index(index);
+        }
+    }
+    let wheel_delta = wheel_reader.read().map(|event| event.y).sum::<f32>();
+    let control_zoom =
+        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if wheel_delta.abs() > f32::EPSILON && !control_zoom {
+        let len = voxel_world.hotbar().entries.len();
+        let current = voxel_world.hotbar().selected_index;
+        let next = if wheel_delta < 0.0 {
+            (current + 1) % len
+        } else {
+            (current + len - 1) % len
+        };
+        let _ = voxel_world.select_hotbar_index(next);
+    }
+
+    let place_requested = keyboard.just_pressed(KeyCode::KeyF)
+        || (mouse.just_pressed(MouseButton::Right)
+            && !keyboard.pressed(KeyCode::ShiftLeft)
+            && !keyboard.pressed(KeyCode::ShiftRight));
+    let break_requested =
+        keyboard.just_pressed(KeyCode::KeyG) || mouse.just_pressed(MouseButton::Left);
+    if !place_requested && !break_requested {
+        return;
+    }
+
+    let Some(bridge) = bridge else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok((cam, cam_tf)) = camera.single() else {
+        return;
+    };
+    let center = Vec2::new(window.width() * 0.5, window.height() * 0.5);
+    let Some(ray) = ray_from_viewport(cam, cam_tf, center) else {
+        return;
+    };
+
+    let Some(pick) = pick_voxel(
+        [ray.origin.x, ray.origin.y, ray.origin.z],
+        [ray.direction.x, ray.direction.y, ray.direction.z],
+        VOXEL_RAY_MAX_DISTANCE,
+        |g| authority_macro_occupied(&authority, g),
+    ) else {
+        observer.emit(
+            "voxel",
+            "live_edit_rejected",
+            &[("reason", "no_target".to_string())],
+        );
+        return;
+    };
+
+    if break_requested {
+        bridge.send(NetworkCommand::EditVoxel {
+            logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
+            action: ACTION_BREAK,
+            target_macro: pick.occupied_macro,
+            material_id: 0,
+        });
+        observer.emit(
+            "voxel",
+            "live_break_sent",
+            &[("coord", format!("{:?}", pick.occupied_macro))],
+        );
+    }
+
+    if place_requested {
+        let selected = voxel_world.hotbar().selected;
+        match selected.material_id {
+            Some(material) => {
+                let target = pick.adjacent_macro();
+                bridge.send(NetworkCommand::EditVoxel {
+                    logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
+                    action: ACTION_PLACE,
+                    target_macro: target,
+                    material_id: material as u16,
+                });
+                observer.emit(
+                    "voxel",
+                    "live_place_sent",
+                    &[
+                        ("coord", format!("{target:?}")),
+                        ("material", material.label().to_string()),
+                    ],
+                );
+            }
+            None => {
+                // Prefab placement over the network is C5; macro materials only here.
+                observer.emit(
+                    "voxel",
+                    "live_place_rejected",
+                    &[("reason", "prefab_not_wired".to_string())],
+                );
+            }
+        }
     }
 }
 

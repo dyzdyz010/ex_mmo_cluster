@@ -37,6 +37,7 @@ pub mod lightning_render;
 mod layer3_pixel;
 pub mod mesher;
 pub mod plugin;
+pub mod live_pick;
 pub mod prefab;
 pub mod skylight;
 pub mod surface_decal;
