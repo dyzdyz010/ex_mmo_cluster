@@ -313,10 +313,36 @@ defmodule WorldServer.Voxel.DevSeed do
 
     platform_chunk_coords()
     |> Enum.map(fn chunk_coord ->
-      intents = chunk_seed_intents(chunk_coord, logical_scene_id, lease)
-      {chunk_coord, length(intents), apply_chunk_intents(chunk_directory, intents)}
+      # Fast path: a chunk already persisted with substantial terrain will be
+      # eager-loaded by its ChunkProcess on first access, so re-running the
+      # idempotent seed (which would process ~hundreds of put_solid_block intents
+      # per chunk only to skip them all) is pure boot-time cost. Skip those chunks
+      # via a cheap, decode-free DataService check. Fail-safe: any not-found /
+      # too-small / error chunk still gets seeded, so a fresh or partially-empty
+      # region always ends up with terrain.
+      if already_seeded?(logical_scene_id, chunk_coord) do
+        {chunk_coord, 0, {:ok, %{changed_count: 0, skipped_count: 0, chunk_version: 0}}}
+      else
+        intents = chunk_seed_intents(chunk_coord, logical_scene_id, lease)
+        {chunk_coord, length(intents), apply_chunk_intents(chunk_directory, intents)}
+      end
     end)
     |> summarize_terrain()
+  end
+
+  # A persisted chunk whose snapshot payload is large enough to carry the seeded
+  # terrain (an empty 16³ snapshot is ~78 KB of macro headers; a seeded platform
+  # chunk adds ~20 B per solid cell → well over the threshold for the noise
+  # heightmap's hundreds of solid cells). Decode-free (world_server does not
+  # depend on the Scene voxel codec) and fail-safe toward re-seeding.
+  @seeded_chunk_min_bytes 85_000
+  defp already_seeded?(logical_scene_id, chunk_coord) do
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
+      {:ok, %{data: data}} when is_binary(data) -> byte_size(data) >= @seeded_chunk_min_bytes
+      _ -> false
+    end
+  catch
+    :exit, _ -> false
   end
 
   # Half-open chunk-coord bounds → the list of platform chunk coords.
