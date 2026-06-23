@@ -349,8 +349,9 @@ pub struct ChunkNeighbors<'a> {
 
 impl<'a> ChunkNeighbors<'a> {
     /// Is the cell just across the chunk boundary (direction `(d, sign)`, at the
-    /// boundary slice, lateral coords `u,v`) occupied?
-    fn occluded_across(&self, d: usize, sign: i32, u: i32, v: i32, size: i32) -> bool {
+    /// boundary slice, lateral coords `u,v`) occupied? `pub(crate)` so the surface
+    /// decal mesher reuses the exact same cross-chunk occlusion test.
+    pub(crate) fn occluded_across(&self, d: usize, sign: i32, u: i32, v: i32, size: i32) -> bool {
         let neighbor = if sign > 0 { self.pos[d] } else { self.neg[d] };
         match neighbor {
             // Require the neighbor's cells to actually be size^3 too, so `cell_at`

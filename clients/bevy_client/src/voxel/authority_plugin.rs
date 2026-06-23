@@ -96,6 +96,11 @@ pub struct VoxelAuthority {
     pub field_store: VoxelFieldStore,
     inbox: Vec<VoxelServerMessage>,
     resync_requests: Vec<ChunkCoord>,
+    /// Chunks with a resync (radius-0 re-subscribe) already requested but not yet
+    /// resolved by a fresh snapshot/matching delta. Gates the resync push so a
+    /// chunk whose deltas keep out-running the snapshot re-subscribes ONCE per
+    /// fork cycle instead of every frame. Cleared on Applied/Dropped.
+    resync_in_flight: std::collections::HashSet<ChunkCoord>,
     object_state_events: Vec<ObjectStateEvent>,
     electric_snapshot_events: Vec<ElectricSnapshotEvent>,
     discharge_events: Vec<DischargeEvent>,
@@ -221,8 +226,19 @@ impl VoxelAuthority {
                         // server's delta base. Queue a targeted re-subscribe so
                         // the server re-streams a fresh snapshot (otherwise the
                         // chunk stays stale until an unrelated AOI re-subscribe).
-                        warn!("voxel chunk {coord:?} needs resync (delta base mismatch)");
-                        self.resync_requests.push(coord);
+                        // Rate-limit: only one in-flight resync per chunk, so a
+                        // chunk under continuous mismatched deltas doesn't
+                        // re-subscribe every frame.
+                        if self.resync_in_flight.insert(coord) {
+                            warn!("voxel chunk {coord:?} needs resync (delta base mismatch)");
+                            self.resync_requests.push(coord);
+                        }
+                    }
+                    // A fresh snapshot or matching delta resolved the chunk (or it
+                    // was dropped) → clear the in-flight gate so a LATER genuine
+                    // fork can resync again promptly.
+                    Ok(IngestOutcome::Applied(coord)) | Ok(IngestOutcome::Dropped(coord)) => {
+                        self.resync_in_flight.remove(&coord);
                     }
                     Ok(_) => {}
                     Err(error) => {

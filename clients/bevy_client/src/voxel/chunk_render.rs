@@ -33,7 +33,7 @@ use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::field_view::VoxelFieldStore;
 use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, chunk_render_mesh_lit};
 use crate::voxel::skylight::{Skylight, SkylightConfig};
-use crate::voxel::surface_decal::surface_decal_mesh;
+use crate::voxel::surface_decal::surface_decal_mesh_with_neighbors;
 
 /// Sim/render size of one macro cell, in render units. The server's macro cell
 /// is 100cm; the offline renderer uses the same 100-unit cell
@@ -314,7 +314,8 @@ fn remesh_chunk(
     }
 
     // 形态轨 C1:SurfaceDecal 子层 — 同一 dirty-pass 重建表面元件 decal mesh(零体积,独立实体)。
-    let decal_data = surface_decal_mesh(chunk, MACRO_RENDER_SIZE);
+    // 传 neighbors:边界面的 hide-when-occluded 贴面与体素网格同步跨 chunk 剔除(避免接缝处穿插)。
+    let decal_data = surface_decal_mesh_with_neighbors(chunk, &neighbors, MACRO_RENDER_SIZE);
     if decal_data.is_empty() {
         despawn_decal(commands, decal_entities, coord);
     } else {

@@ -306,6 +306,14 @@ fn temperature_color(material_id: u32) -> Option<[f32; 4]> {
 /// the ambient baseline (no anomaly to draw). Hot (>= baseline) lands in the heat
 /// range, cold in the cold range; the bucket is the opacity bucket for `|dev|`.
 pub fn temperature_marker(temperature_c: f32) -> Option<u32> {
+    // Skip non-finite values (a diverged/uninitialized server field or a NaN bit
+    // pattern on the wire). Without this, NaN slips past every `<`/`>=` compare
+    // below (all NaN comparisons are false) and paints a spurious cold bucket-0
+    // marker — inconsistent with the incandescence layer, which already guards
+    // `is_finite()`.
+    if !temperature_c.is_finite() {
+        return None;
+    }
     let deviation = temperature_c - TEMP_BASELINE_C;
     if deviation.abs() < TEMP_MIN_DEVIATION {
         return None;
@@ -673,6 +681,12 @@ mod tests {
             temperature_marker(10_000.0),
             Some(HEAT_MATERIAL_BASE + TEMP_OPACITY_BUCKET_COUNT - 1)
         );
+        // Non-finite (diverged/uninitialized field or corrupt wire value) → no
+        // marker, instead of a spurious cold bucket-0 (NaN slips past every
+        // comparison). Consistent with the incandescence layer's is_finite guard.
+        assert_eq!(temperature_marker(f32::NAN), None);
+        assert_eq!(temperature_marker(f32::INFINITY), None);
+        assert_eq!(temperature_marker(f32::NEG_INFINITY), None);
     }
 
     #[test]

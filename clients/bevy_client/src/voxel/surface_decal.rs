@@ -18,7 +18,7 @@
 //! geometry assertions; the Bevy adapter spawns the result as a mesh entity.
 
 use crate::voxel::authority::{AuthorityChunk, CellState};
-use crate::voxel::mesher::ChunkMeshData;
+use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors};
 
 /// Small fraction of a cell to push the decal off the host face (z-fight guard).
 const DECAL_OFFSET_FRACTION: f32 = 0.01;
@@ -133,9 +133,26 @@ fn is_occupied(cell: &CellState) -> bool {
     !matches!(cell, CellState::Empty)
 }
 
+/// Builds the decal quad mesh for a chunk's surface elements WITHOUT cross-chunk
+/// neighbor info — boundary-face decals are conservatively emitted. Kept for the
+/// offline showcase + tests; the live renderer uses
+/// [`surface_decal_mesh_with_neighbors`] so seam decals cull symmetrically with
+/// the volumetric mesh.
+pub fn surface_decal_mesh(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
+    surface_decal_mesh_with_neighbors(chunk, &ChunkNeighbors::default(), voxel_size)
+}
+
 /// Builds the decal quad mesh for a chunk's surface elements. `material_ids`
 /// carries each decal's `surface_type_id` (the Bevy adapter maps type → visual).
-pub fn surface_decal_mesh(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshData {
+/// `neighbors` lets a `HideWhenNeighborOccupied` decal on a CHUNK-BOUNDARY face be
+/// culled when the adjacent loaded chunk's touching cell is solid — the same
+/// `occluded_across` test the volumetric greedy mesher uses, so a decal never
+/// renders buried in the next chunk's terrain at a 16-macro seam.
+pub fn surface_decal_mesh_with_neighbors(
+    chunk: &AuthorityChunk,
+    neighbors: &ChunkNeighbors,
+    voxel_size: f32,
+) -> ChunkMeshData {
     let size = chunk.chunk_size_in_macro as i32;
     let mut mesh = ChunkMeshData::default();
     if size <= 0 {
@@ -150,22 +167,29 @@ pub fn surface_decal_mesh(chunk: &AuthorityChunk, voxel_size: f32) -> ChunkMeshD
 
         let (mx, my, mz) = macro_coord(element.macro_index, size);
 
+        // Trust-boundary guard: macro_index is a raw wire u16; `macro_coord`
+        // derives mz = idx/(size*size) with no clamp, so idx >= size³ yields an
+        // out-of-range cell. Reject it outright (a malformed/forward-incompatible
+        // element must not draw a decal floating outside the chunk, and it would
+        // otherwise also defeat the host-cull's `mz < size` term below).
+        if mx < 0 || my < 0 || mz < 0 || mx >= size || my >= size || mz >= size {
+            continue;
+        }
+
         // Cull a surface element whose HOST macro cell is no longer occupied: a
         // torch/lever decorates a block face, so when that block is destroyed by a
         // ChunkDelta the decal must vanish with it. Deltas preserve
         // `surface_elements` (only a surface-element change resends them), so
         // without this an always-visible torch on a destroyed wall would float in
         // empty space. The volumetric mesh already has no face there.
-        if mx >= 0 && my >= 0 && mz >= 0 && mx < size && my < size && mz < size {
-            let host_idx = (mx + my * size + mz * size * size) as usize;
-            if !chunk.cell(host_idx).map(is_occupied).unwrap_or(false) {
-                continue;
-            }
+        let host_idx = (mx + my * size + mz * size * size) as usize;
+        if !chunk.cell(host_idx).map(is_occupied).unwrap_or(false) {
+            continue;
         }
 
         if surface_type_visibility(element.surface_type_id)
             == SurfaceVisibility::HideWhenNeighborOccupied
-            && neighbor_occupied(chunk, mx, my, mz, face.delta, size)
+            && neighbor_occupied(chunk, neighbors, mx, my, mz, face.delta, size)
         {
             continue; // covered face → cull at generation time
         }
@@ -195,6 +219,7 @@ fn macro_coord(macro_index: u16, size: i32) -> (i32, i32, i32) {
 
 fn neighbor_occupied(
     chunk: &AuthorityChunk,
+    neighbors: &ChunkNeighbors,
     mx: i32,
     my: i32,
     mz: i32,
@@ -203,8 +228,19 @@ fn neighbor_occupied(
 ) -> bool {
     let (nx, ny, nz) = (mx + delta[0], my + delta[1], mz + delta[2]);
     if nx < 0 || ny < 0 || nz < 0 || nx >= size || ny >= size || nz >= size {
-        // Out of chunk: no in-chunk neighbor info (cross-chunk culling is later).
-        return false;
+        // Cross-chunk boundary: consult the adjacent chunk with the SAME
+        // occlusion test the volumetric greedy mesher uses (`occluded_across`),
+        // so a covered seam decal culls in lock-step with the host's macro face.
+        // `face.delta` has exactly one nonzero component in {-1, 1}.
+        let d = if delta[0] != 0 {
+            0usize
+        } else if delta[1] != 0 {
+            1
+        } else {
+            2
+        };
+        let coords = [mx, my, mz];
+        return neighbors.occluded_across(d, delta[d], coords[(d + 1) % 3], coords[(d + 2) % 3], size);
     }
     let idx = (nx + ny * size + nz * size * size) as usize;
     chunk.cell(idx).map(is_occupied).unwrap_or(false)
@@ -373,6 +409,31 @@ mod tests {
         // Re-add the host block → the torch renders again.
         let with_host = chunk_with(|c| c[host] = solid(9), vec![element(host as u16, 1, 4)]);
         assert_eq!(surface_decal_mesh(&with_host, 1.0).quad_count(), 1);
+    }
+
+    #[test]
+    fn boundary_decal_cross_chunk_culled_when_neighbor_occupied() {
+        // rust_decal (type 1, hide-when-occluded) on the +X face of a BOUNDARY
+        // host (mx=15). Without neighbor info it's conservatively emitted; with a
+        // +X neighbor whose touching cell (0,5,5) is solid it culls — matching the
+        // volumetric mesher's cross-chunk face cull (no decal buried in the seam).
+        let host = idx(15, 5, 5);
+        let chunk = chunk_with(|c| c[host] = solid(5), vec![element(host as u16, 1, 1)]);
+        assert_eq!(surface_decal_mesh(&chunk, 1.0).quad_count(), 1);
+
+        let neighbor = chunk_with(|c| c[idx(0, 5, 5)] = solid(5), vec![]);
+        let neighbors = ChunkNeighbors {
+            pos: [Some(&neighbor), None, None],
+            neg: [None, None, None],
+        };
+        assert!(surface_decal_mesh_with_neighbors(&chunk, &neighbors, 1.0).is_empty());
+
+        // A torch (always-visible) on the same boundary face is NOT culled.
+        let torch = chunk_with(|c| c[host] = solid(5), vec![element(host as u16, 1, 4)]);
+        assert_eq!(
+            surface_decal_mesh_with_neighbors(&torch, &neighbors, 1.0).quad_count(),
+            1
+        );
     }
 
     #[test]

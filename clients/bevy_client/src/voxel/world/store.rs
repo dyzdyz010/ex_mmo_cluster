@@ -448,7 +448,8 @@ impl VoxelWorld {
             return PrefabPlaceResult::rejected(false);
         };
         let raster = prefab.rasterize(origin, rotation);
-        self.commit_prefab_raster(&prefab.name, rotation, raster)
+        // Legacy macro-aligned placement anchors the prefab's local (0,0,0).
+        self.commit_prefab_raster(&prefab.name, rotation, MicroCoord::new(0, 0, 0), raster)
     }
 
     /// Previews socket-free micro boundary snapping.
@@ -673,6 +674,9 @@ impl VoxelWorld {
         let result = self.commit_prefab_raster(
             &request.prefab_name,
             request.rotation,
+            preview
+                .anchor_micro_coord
+                .unwrap_or_else(|| MicroCoord::new(0, 0, 0)),
             preview.cells.clone(),
         );
         BoundarySnapPlaceResult {
@@ -854,6 +858,7 @@ impl VoxelWorld {
         &mut self,
         prefab_name: &str,
         rotation: Rotation,
+        anchor_micro_coord: MicroCoord,
         raster: Vec<PrefabRasterCell>,
     ) -> PrefabPlaceResult {
         if raster.is_empty() {
@@ -911,7 +916,7 @@ impl VoxelWorld {
             PrefabInstanceData {
                 instance_id,
                 prefab_id: prefab_name.to_string(),
-                anchor_micro_coord: MicroCoord::new(0, 0, 0),
+                anchor_micro_coord,
                 rotation,
                 covered_macro_min,
                 covered_macro_max,
