@@ -34,6 +34,9 @@ use bevy::winit::WinitPlugin;
 
 use crate::login::AppState;
 use crate::voxel::authority::{AuthorityChunk, CellState};
+use crate::voxel::debris::{
+    DEFAULT_PARTICLE_SIZE_M, DebrisConfig, DebrisKind, DebrisSimulation, DebrisSpawnPoint,
+};
 use crate::voxel::chunk_render::{
     build_decal_mesh, build_mesh, build_mesh_with_colors, material_color, mosaic_block_texture,
 };
@@ -1645,4 +1648,160 @@ fn showcase_ionization_plasma() {
     });
     save_showcase_png("06_ionization_plasma", &data);
     assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+// ---- Structural collapse → debris (力学应力 step6) ---------------------------
+
+/// Drives the REAL [`DebrisSimulation`] (parity physics): a burst at each collapse
+/// point (macro-cell coords), integrated `dt_ms` so the cloud lifts/spreads/falls,
+/// then a brown cube per live particle at the scaled world position — size + color
+/// matching `debris_render` (0.05 m × macro = 5 render units). The rng is a fixed
+/// xorshift so the cloud is reproducible (Date/random are unavailable here anyway).
+/// Returns the live particle count actually spawned.
+fn spawn_collapse_debris(world: &mut World, points: &[(f32, f32, f32)], dt_ms: f32) -> usize {
+    let mut sim = DebrisSimulation::with_config(DebrisConfig {
+        burst_size: 18,
+        ..Default::default()
+    });
+    let spawn_points: Vec<DebrisSpawnPoint> = points
+        .iter()
+        .map(|&(x, y, z)| DebrisSpawnPoint { x, y, z })
+        .collect();
+
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rng = || {
+        let mut x = state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        state = x;
+        ((x >> 40) as f32) / ((1u64 << 24) as f32)
+    };
+    sim.spawn(&spawn_points, DebrisKind::Destroyed, &mut rng);
+    sim.update(dt_ms);
+
+    let edge = DEFAULT_PARTICLE_SIZE_M * MACRO;
+    let mesh = world
+        .resource_mut::<Assets<Mesh>>()
+        .add(Cuboid::from_length(edge));
+    let mat = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.27, 0.075), // debris brown
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+
+    let live = sim.live_particles();
+    for p in live {
+        let pos = Vec3::new(p.x, p.y, p.z) * MACRO;
+        world.spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat.clone()),
+            Transform::from_translation(pos),
+        ));
+    }
+    live.len()
+}
+
+/// A collapse scene: a grass floor + the surviving supported stub of a stone column
+/// (local y=1,2), its now-unsupported top GONE (collapsed) — the falling rubble is
+/// the debris cloud above the stub.
+fn collapse_scene_chunk() -> AuthorityChunk {
+    let mut cells: Vec<(i32, i32, i32, u16)> = vec![];
+    for x in 1..8 {
+        for z in 1..8 {
+            cells.push((x, 0, z, 18)); // grass floor
+        }
+    }
+    // Surviving stone stub (still connected to the ground) — the top two cells
+    // (3,3,3),(3,4,3) collapsed and are now debris mid-air.
+    cells.push((3, 1, 3, 2));
+    cells.push((3, 2, 3, 2));
+    showcase_material_chunk(&cells)
+}
+
+/// 7. Structural collapse → debris — the 5th orthogonal physics system (mechanical
+///    stress) on screen: an unsupported column top has collapsed into a brown debris
+///    cloud (real `DebrisSimulation` spread/fall) raining over its surviving base,
+///    under the live sky. Visual evidence the server's `:collapse_block` truth lands
+///    as falling rubble on the client.
+#[test]
+fn showcase_structural_collapse_debris() {
+    let chunk = collapse_scene_chunk();
+    // Collapsed top of the column was around macro (3, 3..4, 3) → world ~3.5×100.
+    let debris_points = [
+        (3.5, 3.4, 3.5),
+        (3.2, 3.8, 3.6),
+        (3.8, 3.6, 3.3),
+        (3.4, 4.2, 3.4),
+        (3.6, 3.2, 3.7),
+    ];
+    let eye = Vec3::new(470.0, 360.0, -40.0);
+    let look = Vec3::new(330.0, 250.0, 330.0);
+    let data = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &chunk);
+        spawn_collapse_debris(world, &debris_points, 220.0);
+    });
+    save_showcase_png("07_structural_collapse_debris", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// End-to-end pixel proof: a collapse debris burst actually RASTERIZES brown cubes
+/// on screen (isolated against the dark clear so the non-clear pixels ARE the
+/// debris). Mirrors the lightning/heat-smoke rasterize assertions.
+#[test]
+fn collapse_debris_rasterizes_on_screen() {
+    let debris_points = [
+        (2.0, 2.0, 2.0),
+        (2.3, 2.4, 2.1),
+        (1.8, 2.2, 2.3),
+        (2.2, 1.8, 1.9),
+    ];
+    let data = render_scene(|world, image| {
+        spawn_camera(
+            world,
+            image,
+            Vec3::new(200.0, 230.0, -120.0),
+            Vec3::new(205.0, 205.0, 205.0),
+        );
+        let n = spawn_collapse_debris(world, &debris_points, 180.0);
+        assert!(n >= 50, "expected a dense debris cloud, spawned {n}");
+    });
+
+    // Count non-clear pixels and their centroid color — they must be the debris cubes.
+    let clear = clear_color().to_srgba();
+    let mut non_clear = 0u32;
+    let (mut sx, mut sy) = (0u64, 0u64);
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let r = data[i] as f32 / 255.0;
+            let g = data[i + 1] as f32 / 255.0;
+            let b = data[i + 2] as f32 / 255.0;
+            let d = (r - clear.red).abs() + (g - clear.green).abs() + (b - clear.blue).abs();
+            if d > 0.06 {
+                non_clear += 1;
+                sx += x as u64;
+                sy += y as u64;
+            }
+        }
+    }
+
+    assert!(
+        non_clear > 60,
+        "collapse debris should rasterize a visible cloud; got {non_clear} non-clear px"
+    );
+
+    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    let px = sample_patch(&data, cx, cy, 6);
+    // Debris is brown: warm (red ≥ blue), not the green clear and not gray sky.
+    assert!(
+        px.r >= px.b,
+        "debris cloud should read warm/brown (r {:.2} ≥ b {:.2})",
+        px.r,
+        px.b
+    );
 }
