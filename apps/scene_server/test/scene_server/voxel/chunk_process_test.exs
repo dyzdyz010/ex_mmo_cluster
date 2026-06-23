@@ -721,6 +721,34 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.field_source_count == 1
   end
 
+  test "统一 sweep:闭合电路 + glowstone 共存 → 电路 region 与 Emergence region 同起(count==2)" do
+    # 框架核心保证:一次 sweep 遍历全部 provisioner,各自独立 ensure(source_key 各异、
+    # 互不干扰)。chunk 同时含闭合电路(power+load+回路 → electric)与 glowstone(发光体
+    # → emergence)→ 两个 field region 共存。
+    storage =
+      Storage.empty(1, {0, 0, 0})
+      |> put_closed_loop_blocks()
+      # glowstone(id 19)放电路环外的低 index 自由格(不破回路、emergence AABB 小且快)。
+      |> Storage.put_solid_block({4, 0, 0}, NormalBlockData.new(19))
+
+    chunk =
+      start_supervised!(
+        {ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}, storage: storage}
+      )
+
+    assert {:ok, initial_payload} = ChunkProcess.subscribe(chunk, self(), request_id: 91)
+    assert_receive {:voxel_chunk_snapshot_payload, ^initial_payload}
+
+    # 订阅触发 sweep → electric 与 emergence 都 active → 两个 region 共存。
+    assert poll_field_region_count(chunk, 2, 5_000),
+           "电路 + glowstone 应共存两个 field region;实际 " <>
+             "#{ChunkProcess.debug_state(chunk).field_region_count}"
+
+    debug = ChunkProcess.debug_state(chunk)
+    assert debug.field_region_count == 2
+    assert debug.field_source_count == 2
+  end
+
   test "apply_intent automatically releases the current field after the load is removed" do
     lease = start_snapshot_store()
 
@@ -1580,6 +1608,20 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     closed_loop_blocks()
     |> Enum.map(fn {coord, _material_id} -> Types.macro_index!(coord) end)
     |> Enum.sort()
+  end
+
+  defp poll_field_region_count(chunk, target, timeout_ms, waited \\ 0) do
+    cond do
+      ChunkProcess.debug_state(chunk).field_region_count == target ->
+        true
+
+      waited >= timeout_ms ->
+        false
+
+      true ->
+        Process.sleep(25)
+        poll_field_region_count(chunk, target, timeout_ms, waited + 25)
+    end
   end
 
   defp micro_intent_attrs(lease, overrides) do
