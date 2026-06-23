@@ -138,3 +138,17 @@ refresh_fields_after_mutation(state):
 1. **emergence 探测积极程度** → **任一活性材料即起**。落地细化(见 §6):因「无常温自发反应 + 每 tick 无条件 fanout」,「活性」取「现在真在 source / 真在反应」的死区免疫谓词(发光体 / 热异常 / 进行中反应),既忠于「任一活性即起」,又不产生空跑空 stream 的死区,且既有「惰性块不分配场」测试不变即过。
 2. **首切范围** → **一次 step1–5 全做**(光 + 热 + 反应全有机化)。
 3. **thermal 与 dev 端点** → **本轮把 `DevFieldCreate` 收编为 thermal provisioner 的显式调用方**,去掉「只有 dev 端点才有温度流」的怪状态。
+
+## 11. 实现结果(as-built,2026-06-23)
+
+全部落地、逐 step commit、不 push。最终架构对 §5/§10 有两处实现期修正:
+
+- **step1**:`FieldProvisioner` 契约 + `Provisioners.ElectricCircuit`;`ChunkProcess` 通用 sweep `refresh_fields_after_mutation` 遍历 `@field_provisioners`。电路行为/遥测逐字保持(`chunk_process_test` 46/0)。
+- **step2–4**:`Provisioners.Emergence`(`@field_provisioners` 第二个)。活性分类走 `normal_blocks` 池 + O(1) 材料默认查(避开逐 cell `effective_attribute_at` 的 `Enum.at` O(n²) 阻塞)。**region AABB 绑定到 emergent cell bbox + 本地半径 6**(非整 chunk——全 chunk 16³ 让 `[light_propagation, reaction]` 每 tick O(n²) 卡死 worker)。新增 `auto_field_provisioning` 开关(手动编排 field 的确定性 kernel→truth 测试关掉它)。生产 e2e `organic_light_stream`:放 glowstone → 订阅者有机收 0x73 含 `:light`/`:light_color` 真值。
+- **step5(修正一:thermal 合并)**:`TemperatureDiffusionKernel` **无需 source_points**(自由扩散 truth),故不做独立 thermal provisioner(那需 field-commit 触发重 sweep 才能捕捉**场致**异常——anomaly 由 Emergence 的反应注热在 tick 内产生,块变更 sweep 抓不到),而把 `temperature_diffusion` **并入 Emergence region 流水线** `[temperature_diffusion, light_propagation, reaction]`。热源的本征 `heat_output` 已驱动 provisioning,扩散/光/反应同 region 跑。
+- **step5(修正二:热源是表面元件)**:`heat_output` 注入是**火炬表面元件**路径(`ReactionKernel` 注 `element.surface_type_id` 借用材料的热),实心 ember 块只发光不注热。故 `Emergence.emergent_aabb` 扩为也扫 `storage.surface_elements`(借用本征 source 光/热材料的 torch→ember),`put_surface_element` 也触发 sweep。生产 e2e `organic_heat_diffuse`:挂火炬 → 起含温度扩散 region → 注热宿主 → 扩散到相邻 stone → 两格 truth 温度有机升高。
+- **修正三:`DevFieldCreate` 未收编**:合并方案下无独立 thermal provisioner,dev 热端点保留为调试 affordance(其自建温度 region 不变)。
+
+**已知 v1 局限**(均待 kernel 逐 cell O(1) 访问优化后放宽):① 光/热只在 emergent 内容的本地半径(6)泡内传播,远距离照明/热不自动 provision;② 动态续命(光源移除后自维持燃烧、纯被邻居加热而自身非本征 source 的格)未覆盖——activation 由本征 source 材料/表面元件 bootstrap,场致瞬态不重触发 sweep。
+
+**测试**:`chunk_process` 46/0、field 225/0、reaction(含两个有机生产 e2e)+chunk_process 合跑 407/0;客户端 voxel lib 164/0(含 golden 字节→渲染端到端)。
