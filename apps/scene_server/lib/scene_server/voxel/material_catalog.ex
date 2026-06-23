@@ -171,7 +171,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => 0,
       "boiling_point" => round(100.0 * @fixed32_scale),
       "electric_conductivity" => round(0.005 * @fixed32_scale),
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      # 力学:液体不承重、不参与支撑图。
+      "structural" => 0
     },
     # 反应层 R4:蒸汽(水沸腾目标)。低密度、低导热;condense 阈值后续接。
     @steam_material_id => %{
@@ -183,7 +185,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => @absolute_zero_raw,
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
-      "dielectric_strength" => 0
+      "dielectric_strength" => 0,
+      # 力学:气体不承重、不参与支撑图。
+      "structural" => 0
     },
     # 反应层 R5:灰烬(木燃尽目标)。轻、ignition inert(不复燃),惰性产物。
     @ash_material_id => %{
@@ -244,7 +248,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       # 光学:余烬自发光——light_emission>0 → LightPropagationKernel 把它当光源 flood 出权威光场。
       "light_emission" => round(1_500.0 * @fixed32_scale),
       # 彩色光:余烬炽热橙(packed RGB888 0xFFA040)。
-      "light_color" => 0xFFA040
+      "light_color" => 0xFFA040,
+      # 力学:松散炽屑不承重。
+      "structural" => 0
     },
     # 化学扩展:熔铁——iron 熔化产物。已是液态:melting inert(不再熔)、freezing_point=1538(降温回凝
     # 铁,严格 < 迟滞);boiling inert(无铁蒸汽材料);惰性不锈(oxidation 哨兵)。仍导电(液态金属)。
@@ -258,7 +264,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => round(10.0 * @fixed32_scale),
       "dielectric_strength" => 0,
-      "oxidation_temperature" => @inert_temperature_raw
+      "oxidation_temperature" => @inert_temperature_raw,
+      # 力学:液态金属不承重。
+      "structural" => 0
     },
     # 化学扩展:熔岩——stone 熔化产物。已是液态:melting inert、freezing_point=1200(降温回凝石,严格
     # < 迟滞);boiling inert(无岩蒸汽);不导电。多反应物:遇相邻 water 淬成 obsidian(见 rules)。
@@ -271,7 +279,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "freezing_point" => round(1_200.0 * @fixed32_scale),
       "boiling_point" => @inert_temperature_raw,
       "electric_conductivity" => 0,
-      "dielectric_strength" => round(5.0 * @fixed32_scale)
+      "dielectric_strength" => round(5.0 * @fixed32_scale),
+      # 力学:液态熔岩不承重。
+      "structural" => 0
     },
     # 化学扩展:黑曜石——lava + 相邻 water 淬火产物(火山玻璃)。惰性终产物(melting/boiling inert、
     # freezing 哨兵不回相变,同 ash/rust 范式);不导电;良介质(玻璃)。obsidian 半透光(玻璃) → 低 opacity。

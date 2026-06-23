@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 10,
+  catalog_version: 11,
   definitions: [
     %{
       id: 1,
@@ -331,6 +331,23 @@
       default_value: 16_777_215,
       min_value: 0,
       max_value: 16_777_215,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 力学应力(2026-06-23):此材料是否为**承重/传力的实心结构**。1=结构(参与支撑图:
+    # 既能被地锚支撑、也能向上传递支撑);0=流体/气/松散(不承重,如 water/steam/lava/
+    # molten_iron/ember)。StructuralSupport 据此 BFS;失支撑的结构 cell → 坍塌。静态
+    # material_default。默认 1(绝大多数实心方块是结构)。
+    %{
+      id: 23,
+      name: "structural",
+      unit: "bool",
+      value_type: :fixed32,
+      # 1.0 = 承重结构(默认)
+      default_value: 65_536,
+      min_value: 0,
+      # 1.0
+      max_value: 65_536,
       merge_rule: :material_default,
       dynamic: false
     }
