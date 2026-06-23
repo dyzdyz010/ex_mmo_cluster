@@ -46,8 +46,10 @@ defmodule SceneServer.Voxel.Field.Provisioners.Emergence do
   @anomaly_threshold_celsius 0.5
   # temperature 属性的全局默认(20℃ 的 fixed32),materials 未覆写时回退此值 → 无热异常。
   @ambient_temperature_raw 1_310_720
-  # emergent cell bbox 各轴外扩半径(本地交互泡;光/热在此泡内传播)。chunk 边界内 clamp。
-  @emergence_radius 6
+  # emergent cell bbox 各轴外扩半径(光/热在此泡内传播)。光以 attenuation 0.7 衰减,~10 cell
+  # 后即低于阈值 → 半径 12 覆盖全部有意义的光程(物理上完整),且 16³ chunk 内多数情形近全
+  # chunk。kernel 逐 cell O(1)(见 Storage.index_macro_headers)后大 AABB 不再 O(n²)。
+  @emergence_radius 12
   @chunk_max_macro 15
 
   @impl true

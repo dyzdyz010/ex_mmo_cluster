@@ -49,9 +49,9 @@ defmodule SceneServer.Voxel.Field.Provisioners.EmergenceTest do
 
     assert attrs.max_ticks == nil
 
-    # glowstone 在 {1,0,0},半径 6 → bbox 扩成 {{0,0,0},{7,6,6}}(各轴 clamp 到 [0,15],
-    # 1-6 截到 0)。**不是整 chunk {{0,0,0},{15,15,15}}**(本地 AABB,避免全 chunk O(n²))。
-    assert attrs.aabb == {{0, 0, 0}, {7, 6, 6}}
+    # glowstone 在 {1,0,0},半径 12 → bbox 扩成 {{0,0,0},{13,12,12}}(各轴 clamp 到 [0,15],
+    # 1-12 截到 0、1+12=13、0+12=12)。覆盖全部有意义光程;kernel O(1) 后大 AABB 不再 O(n²)。
+    assert attrs.aabb == {{0, 0, 0}, {13, 12, 12}}
     assert detail.aabb == attrs.aabb
   end
 

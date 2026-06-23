@@ -153,14 +153,16 @@ refresh_fields_after_mutation(state):
 
 **测试**:`chunk_process` 47/0(含多 provisioner 共存 + Emergence 释放生命周期)、field 225/0、voxel 全套 **1075/0**;客户端 voxel lib 164/0(含 golden 字节→渲染端到端)。
 
-### 11.1 放宽本地半径局限的优化路径(scoped,未做)
+### 11.1 本地半径局限已解除(kernel 逐 cell O(1) header 访问)
 
-解除「本地半径 6 泡」需让 kernel 逐 cell 访问 O(1)(当前是瓶颈)。**注意:不是干净的
-additive opt-in**——O(n) 成本散在**整条属性合并流水线**:`Storage.effective_attribute_at_
-normalized` 的 `Enum.at(macro_headers, idx)`,以及它调的 `material_id_for_header` /
-`extract_l2/l3/l5` 各自 `Enum.at(normal_blocks, payload_index)` / `Enum.at(attribute_sets, …)`。
-单加一个 `effective_attribute_at_with_header`(跳过头 Enum.at)不够,merge 内层仍 O(n)。
-真正修法是把 tuple 化的池(`List.to_tuple(macro_headers/normal_blocks/…)`)**穿透**这些
-私有函数做 O(1) `elem`,再让 reaction / light kernel 的 cell 循环用 indexed 访问。属于
-**Storage 内部重构**(动 1075 个 field 测试共享的热路径),须有人盯、逐函数行为保持验证,
-不宜无人值守对全绿套件下手。届时可把 Emergence `@emergence_radius` 调大或直接整 chunk AABB。
+**已做。** 实测瓶颈不在整条合并流水线,而在**逐 cell `Enum.at(macro_headers, idx)`**——
+空 cell 占多数的大 AABB,这步就是 O(n²) 主因;`normal_blocks`/`attribute_sets` 池小,非
+主因。故走**最小 additive 改**:`Storage.index_macro_headers/1`(tuple 化)+ `header_at_
+index/2` + `normal_block_with_header/2` + `effective_attribute_at(_normalized)` 的
+`:macro_header` opt(预取头跳过 Enum.at)。reaction `cells_in_region/cell_state/
+scaled_attribute/heat_capacity` 与 light `region_solid_cells` 改用之——一次 tuple 化后逐
+cell O(1)。纯 additive(opt 不传即回退 Enum.at,其余 1000+ 调用方不变),voxel 全套
+**1077/0** 行为等价。`@emergence_radius` 6 → **12**(覆盖光 attenuation 0.7 下 ~10 cell 的
+全部有意义光程,16³ chunk 内多数近全 chunk)。组织 e2e(光流 / 热扩散)在 ~12 半径大
+AABB 下 4.6s 跑完 55 测试,证大 AABB 不再 O(n²)。**§11 局限①(本地半径泡)已消除**;
+局限②(动态续命)仍在(待 thermal field-commit 重 sweep)。
