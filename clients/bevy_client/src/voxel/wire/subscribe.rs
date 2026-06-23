@@ -126,6 +126,8 @@ impl ChunkUnsubscribe {
 pub enum VoxelClientMessage {
     ChunkSubscribe(ChunkSubscribe),
     ChunkUnsubscribe(ChunkUnsubscribe),
+    /// Construction system: a typed single-cell place/break edit (0x70).
+    EditIntent(super::edit_intent::VoxelEditIntent),
 }
 
 impl VoxelClientMessage {
@@ -133,6 +135,7 @@ impl VoxelClientMessage {
         match self {
             VoxelClientMessage::ChunkSubscribe(_) => super::OP_CHUNK_SUBSCRIBE,
             VoxelClientMessage::ChunkUnsubscribe(_) => super::OP_CHUNK_UNSUBSCRIBE,
+            VoxelClientMessage::EditIntent(_) => super::OP_VOXEL_EDIT_INTENT,
         }
     }
 
@@ -142,6 +145,7 @@ impl VoxelClientMessage {
         match self {
             VoxelClientMessage::ChunkSubscribe(m) => m.encode(&mut w),
             VoxelClientMessage::ChunkUnsubscribe(m) => m.encode(&mut w),
+            VoxelClientMessage::EditIntent(m) => m.encode(&mut w),
         }
         w.into_bytes()
     }

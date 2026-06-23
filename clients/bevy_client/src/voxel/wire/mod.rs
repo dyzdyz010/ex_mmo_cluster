@@ -20,6 +20,7 @@ pub mod blocks;
 pub mod catalog_patch;
 pub mod cursor;
 pub mod delta;
+pub mod edit_intent;
 pub mod field;
 pub mod invalidate;
 pub mod object_state;
@@ -30,6 +31,9 @@ pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell
 pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
 pub use cursor::{Reader, Writer};
 pub use delta::{ChunkDelta, DeltaCell, DeltaOp};
+pub use edit_intent::{
+    ACTION_BREAK, ACTION_PLACE, GRANULARITY_MACRO, GRANULARITY_MICRO, VoxelEditIntent,
+};
 pub use field::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
     FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
