@@ -31,6 +31,10 @@ pub struct ChunkMeshData {
     pub uvs: Vec<[f32; 2]>,
     pub material_ids: Vec<u32>,
     pub indices: Vec<u32>,
+    /// 逐顶点光照因子 ∈ [0,1](光可见度 Phase A 弥漫光场)。**可选**:仅 lit 网格路径
+    /// (`chunk_render_mesh_lit`)填充,普通路径留空 → 渲染层不调亮度(与历史逐字节一致,
+    /// parity 不受影响)。非空时长度 == 顶点数;`build_mesh_with_colors` 把它乘进顶点色。
+    pub light: Vec<f32>,
 }
 
 /// 顺序无关的几何摘要(客户端实现+验证决策稿 Layer-1/2)。
@@ -69,6 +73,16 @@ impl ChunkMeshData {
     /// per-refined-cell micro meshes into a chunk's macro mesh (C4).
     pub fn append(&mut self, other: ChunkMeshData) {
         let base = self.positions.len() as u32;
+        let self_verts = self.positions.len();
+        let other_verts = other.positions.len();
+        // Keep `light` aligned with `positions` whenever either side carries it
+        // (unlit verts default to full 1.0 so a mixed merge stays well-formed).
+        if !self.light.is_empty() || !other.light.is_empty() {
+            self.light.resize(self_verts, 1.0);
+            let mut other_light = other.light;
+            other_light.resize(other_verts, 1.0);
+            self.light.extend(other_light);
+        }
         self.positions.extend(other.positions);
         self.normals.extend(other.normals);
         self.uvs.extend(other.uvs);
@@ -123,8 +137,11 @@ impl ChunkMeshData {
     /// 结构不变量:各属性等长、索引为三角列表且越界检查、无退化(零面积)三角、法线为轴单位向量。
     pub fn structural_invariants_hold(&self) -> bool {
         let n = self.positions.len();
-        let lengths_ok =
-            self.normals.len() == n && self.uvs.len() == n && self.material_ids.len() == n;
+        let lengths_ok = self.normals.len() == n
+            && self.uvs.len() == n
+            && self.material_ids.len() == n
+            // `light` is optional; when present it must align with the vertices.
+            && (self.light.is_empty() || self.light.len() == n);
         let indices_ok =
             self.indices.len().is_multiple_of(3) && self.indices.iter().all(|&i| (i as usize) < n);
 
@@ -363,12 +380,30 @@ pub fn greedy_mesh_chunk_with_neighbors(
     voxel_size: f32,
     neighbors: &ChunkNeighbors,
 ) -> ChunkMeshData {
+    greedy_mesh_chunk_with_neighbors_lit(chunk, voxel_size, neighbors, None)
+}
+
+/// Greedy mesher with optional per-cell lighting (光可见度 Phase A · 弥漫光场).
+///
+/// When `light_at` is `Some`, it supplies the combined light (skylight + block
+/// light, in `[0,1]`) at a chunk-local cell; each exposed face samples the AIR
+/// cell it looks into, the quantized light enters the greedy merge key (so only
+/// same-material AND same-light faces merge), and is emitted per vertex into
+/// `ChunkMeshData.light`. `None` reproduces the unlit mesh **byte-for-byte** (the
+/// light bucket collapses to 0, so the merge key reduces to material).
+pub fn greedy_mesh_chunk_with_neighbors_lit(
+    chunk: &AuthorityChunk,
+    voxel_size: f32,
+    neighbors: &ChunkNeighbors,
+    light_at: Option<&dyn Fn(i32, i32, i32) -> f32>,
+) -> ChunkMeshData {
     let size = chunk.chunk_size_in_macro as i32;
     let mut mesh = ChunkMeshData::default();
     // Defense-in-depth (see `mesh_chunk`): bail unless cells length == size^3.
     if size <= 0 || chunk.cells.len() != (size as usize).pow(3) {
         return mesh;
     }
+    let lit = light_at.is_some();
 
     // Per face direction: axis d ∈ {0,1,2} and sign ∈ {+1,-1}.
     for d in 0..3usize {
@@ -377,9 +412,9 @@ pub fn greedy_mesh_chunk_with_neighbors(
         for &sign in &[1i32, -1i32] {
             // For each slice along d (the cell's d-coordinate).
             for s in 0..size {
-                // Build a size×size mask of exposed-face materials in this slice.
-                // mask[v * size + u].
-                let mut mask: Vec<Option<u32>> = vec![None; (size * size) as usize];
+                // mask[v*size+u] = Some((material, light_q)); light_q is 0 when
+                // unlit so the key reduces to material (identical merging).
+                let mut mask: Vec<Option<(u32, u16)>> = vec![None; (size * size) as usize];
                 for v in 0..size {
                     for u in 0..size {
                         let cell = cell_at(chunk, size, d, s, u, v);
@@ -397,14 +432,19 @@ pub fn greedy_mesh_chunk_with_neighbors(
                         // refined cells occlude (the across-check above) but are
                         // micro-meshed separately (C4), so no macro face here.
                         if !occluded && let CellState::Solid(block) = cell {
-                            mask[(v * size + u) as usize] = Some(block.material_id as u32);
+                            // Sample the air cell across this face (d-coord = ns).
+                            let light_q = light_at
+                                .map(|f| quantize_light(neighbor_light(f, d, u_axis, v_axis, ns, u, v)))
+                                .unwrap_or(0);
+                            mask[(v * size + u) as usize] =
+                                Some((block.material_id as u32, light_q));
                         }
                     }
                 }
 
                 // The face plane's d-value: far side (s+1) for +sign, near (s) for -.
                 let plane_d = if sign > 0 { s + 1 } else { s };
-                greedy_merge(&mut mask, size, |u0, v0, w, h, material_id| {
+                greedy_merge(&mut mask, size, |u0, v0, w, h, (material_id, light_q)| {
                     emit_greedy_quad(
                         &mut mesh,
                         voxel_size,
@@ -418,6 +458,11 @@ pub fn greedy_mesh_chunk_with_neighbors(
                         w,
                         h,
                         material_id,
+                        if lit {
+                            Some(light_q as f32 / 255.0)
+                        } else {
+                            None
+                        },
                     );
                 });
             }
@@ -425,6 +470,30 @@ pub fn greedy_mesh_chunk_with_neighbors(
     }
 
     mesh
+}
+
+/// Combined light at the air cell across a face (chunk-local; `light_at` handles
+/// out-of-bounds boundary cells).
+fn neighbor_light(
+    light_at: &dyn Fn(i32, i32, i32) -> f32,
+    d: usize,
+    u_axis: usize,
+    v_axis: usize,
+    ns: i32,
+    u: i32,
+    v: i32,
+) -> f32 {
+    let mut c = [0i32; 3];
+    c[d] = ns;
+    c[u_axis] = u;
+    c[v_axis] = v;
+    light_at(c[0], c[1], c[2])
+}
+
+/// Quantizes a `[0,1]` light to a u8 bucket (256 levels — smooth, and the merge
+/// key stays cheap to compare).
+fn quantize_light(light: f32) -> u16 {
+    (light.clamp(0.0, 1.0) * 255.0).round() as u16
 }
 
 /// The full render mesh for a chunk (C4): greedy macro faces (solid cells, with
@@ -436,7 +505,20 @@ pub fn chunk_render_mesh(
     voxel_size: f32,
     neighbors: &ChunkNeighbors,
 ) -> ChunkMeshData {
-    let mut data = greedy_mesh_chunk_with_neighbors(chunk, voxel_size, neighbors);
+    chunk_render_mesh_lit(chunk, voxel_size, neighbors, None)
+}
+
+/// Full render mesh with optional per-cell lighting (光可见度 Phase A). `light_at`
+/// threads through the greedy macro pass (per-face light) and lights each refined
+/// cell's micro mesh uniformly at that cell's own combined light. `None` is
+/// byte-identical to the unlit `chunk_render_mesh`.
+pub fn chunk_render_mesh_lit(
+    chunk: &AuthorityChunk,
+    voxel_size: f32,
+    neighbors: &ChunkNeighbors,
+    light_at: Option<&dyn Fn(i32, i32, i32) -> f32>,
+) -> ChunkMeshData {
+    let mut data = greedy_mesh_chunk_with_neighbors_lit(chunk, voxel_size, neighbors, light_at);
 
     let size = chunk.chunk_size_in_macro as i32;
     if size > 0 && chunk.cells.len() == (size as usize).pow(3) {
@@ -449,7 +531,14 @@ pub fn chunk_render_mesh(
                     my as f32 * voxel_size,
                     mz as f32 * voxel_size,
                 ];
-                data.append(refined_micro_mesh(refined, origin, voxel_size));
+                let mut micro = refined_micro_mesh(refined, origin, voxel_size);
+                if let Some(f) = light_at {
+                    // Refined cells are micro-detail; light them flat at their own
+                    // cell's combined light (clamped) for parity with the macro look.
+                    let l = f(mx, my, mz).clamp(0.0, 1.0);
+                    micro.light = vec![l; micro.positions.len()];
+                }
+                data.append(micro);
             }
         }
     }
@@ -472,9 +561,9 @@ fn cell_at(chunk: &AuthorityChunk, size: i32, d: usize, s: i32, u: i32, v: i32) 
 /// Greedily merges equal-value rectangles out of a `size×size` mask, calling
 /// `emit(u0, v0, w, h, value)` per merged rectangle. Consumes the mask.
 fn greedy_merge(
-    mask: &mut [Option<u32>],
+    mask: &mut [Option<(u32, u16)>],
     size: i32,
-    mut emit: impl FnMut(i32, i32, i32, i32, u32),
+    mut emit: impl FnMut(i32, i32, i32, i32, (u32, u16)),
 ) {
     let at = |u: i32, v: i32| (v * size + u) as usize;
     for v in 0..size {
@@ -482,17 +571,17 @@ fn greedy_merge(
         while u < size {
             match mask[at(u, v)] {
                 None => u += 1,
-                Some(material_id) => {
-                    // Extend width while same material.
+                Some(value) => {
+                    // Extend width while the same (material, light) value.
                     let mut w = 1;
-                    while u + w < size && mask[at(u + w, v)] == Some(material_id) {
+                    while u + w < size && mask[at(u + w, v)] == Some(value) {
                         w += 1;
                     }
                     // Extend height while every cell in the row matches.
                     let mut h = 1;
                     'height: while v + h < size {
                         for k in 0..w {
-                            if mask[at(u + k, v + h)] != Some(material_id) {
+                            if mask[at(u + k, v + h)] != Some(value) {
                                 break 'height;
                             }
                         }
@@ -504,7 +593,7 @@ fn greedy_merge(
                             mask[at(u + du, v + dv)] = None;
                         }
                     }
-                    emit(u, v, w, h, material_id);
+                    emit(u, v, w, h, value);
                     u += w;
                 }
             }
@@ -528,6 +617,7 @@ fn emit_greedy_quad(
     w: i32,
     h: i32,
     material_id: u32,
+    light: Option<f32>,
 ) {
     let point = |u: i32, v: i32| -> [f32; 3] {
         let mut p = [0f32; 3];
@@ -563,6 +653,10 @@ fn emit_greedy_quad(
         mesh.normals.push(normal);
         mesh.uvs.push(*uv);
         mesh.material_ids.push(material_id);
+        // Flat per-face light (all 4 verts equal) when lit; unlit leaves it empty.
+        if let Some(l) = light {
+            mesh.light.push(l);
+        }
     }
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -1274,5 +1368,93 @@ mod tests {
         }
         assert_eq!(g.aabb_min, e.aabb_min);
         assert_eq!(g.aabb_max, e.aabb_max);
+    }
+
+    // ---- 光可见度 Phase A · lit mesher --------------------------------------
+
+    /// Unlit path leaves `light` empty (byte-identical to history → parity safe).
+    #[test]
+    fn unlit_mesh_has_no_light() {
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(5, 5, 5)] = solid(2);
+        let data = chunk_render_mesh(&chunk, 1.0, &ChunkNeighbors::default());
+        assert!(data.light.is_empty());
+        assert!(data.structural_invariants_hold());
+    }
+
+    /// Lit path samples the AIR cell across each face and emits per-vertex light;
+    /// `light` aligns with the vertices and stays structurally valid.
+    #[test]
+    fn lit_mesh_samples_neighbor_air_cell() {
+        let mut chunk = empty_chunk();
+        chunk.cells[idx(5, 5, 5)] = solid(2); // a lone block: all 6 faces exposed
+        // A distinct, deterministic light per cell so each face is identifiable.
+        let light_at = |x: i32, y: i32, z: i32| ((x + y + z) as f32) * 0.01;
+        let data =
+            chunk_render_mesh_lit(&chunk, 1.0, &ChunkNeighbors::default(), Some(&light_at));
+
+        assert_eq!(data.light.len(), data.positions.len());
+        assert!(data.structural_invariants_hold());
+
+        // +Y face → neighbor air (5,6,5) → 0.16; -Y → (5,4,5) → 0.14.
+        let face_light = |normal: [f32; 3]| -> f32 {
+            let i = data
+                .normals
+                .iter()
+                .position(|n| *n == normal)
+                .expect("face present");
+            data.light[i]
+        };
+        // Quantized to u8 (256 levels), so allow a bucket of tolerance.
+        assert!((face_light([0.0, 1.0, 0.0]) - 0.16).abs() < 3e-3);
+        assert!((face_light([0.0, -1.0, 0.0]) - 0.14).abs() < 3e-3);
+        // +Y (brighter neighbor) reads brighter than -Y.
+        assert!(face_light([0.0, 1.0, 0.0]) > face_light([0.0, -1.0, 0.0]));
+    }
+
+    /// The headline effect: a block under a roof renders darker than an open-sky
+    /// block, driven by the real `Skylight` field.
+    #[test]
+    fn covered_block_is_darker_than_open_block() {
+        use crate::voxel::skylight::{Skylight, SkylightConfig};
+
+        let mut chunk = empty_chunk();
+        // Open block (nothing above) at column x=2; covered block at column x=12
+        // with a roof two cells above it.
+        chunk.cells[idx(2, 6, 2)] = solid(2);
+        chunk.cells[idx(12, 6, 12)] = solid(2);
+        chunk.cells[idx(12, 9, 12)] = solid(2); // roof over the covered block
+
+        let sky = Skylight::compute(&chunk, SkylightConfig::default());
+        let size = chunk.chunk_size_in_macro as i32;
+        let light_at = |x: i32, y: i32, z: i32| -> f32 {
+            if y >= size {
+                1.0
+            } else {
+                sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+            }
+        };
+        let data =
+            chunk_render_mesh_lit(&chunk, 1.0, &ChunkNeighbors::default(), Some(&light_at));
+
+        // Top-face (+Y) light of each block: open block ~full; covered block dimmer.
+        let top_light_near = |wx: f32, wz: f32| -> f32 {
+            data.positions
+                .iter()
+                .zip(data.normals.iter())
+                .zip(data.light.iter())
+                .filter(|((_, n), _)| **n == [0.0, 1.0, 0.0])
+                .min_by(|((a, _), _), ((b, _), _)| {
+                    let da = (a[0] - wx).abs() + (a[2] - wz).abs();
+                    let db = (b[0] - wx).abs() + (b[2] - wz).abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .map(|((_, _), l)| *l)
+                .expect("a +Y face exists")
+        };
+        let open = top_light_near(2.0, 2.0);
+        let covered = top_light_near(12.0, 12.0);
+        assert!(open > covered, "open {open} should be brighter than covered {covered}");
+        assert!(open > 0.9, "open-sky top face should be near full ({open})");
     }
 }

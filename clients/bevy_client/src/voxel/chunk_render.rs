@@ -30,7 +30,8 @@ use crate::app::schedule::ClientSet;
 use crate::login::AppState;
 use crate::voxel::authority::{ChunkCoord, VoxelAuthorityStore};
 use crate::voxel::authority_plugin::VoxelAuthority;
-use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, chunk_render_mesh};
+use crate::voxel::mesher::{ChunkMeshData, ChunkNeighbors, chunk_render_mesh_lit};
+use crate::voxel::skylight::{Skylight, SkylightConfig};
 use crate::voxel::surface_decal::surface_decal_mesh;
 
 /// Sim/render size of one macro cell, in render units. The server's macro cell
@@ -239,8 +240,21 @@ fn remesh_chunk(
 
     // Volumetric chunk mesh: greedy macro faces (solid) + refined cells' micro
     // sub-voxel meshes, with cross-chunk culling (C4).
+    // 光可见度 Phase A:从权威几何算逐 cell 天光,作 light_at 烤进 mesh 顶点光因子
+    // (露天满亮、洞穴/地下逐格变暗)。块光融合留后续增量。
     let neighbors = build_neighbors(store, coord);
-    let data = chunk_render_mesh(chunk, MACRO_RENDER_SIZE, &neighbors);
+    let sky = Skylight::compute(chunk, SkylightConfig::default());
+    let size = chunk.chunk_size_in_macro as i32;
+    let light_at = |x: i32, y: i32, z: i32| -> f32 {
+        if y >= size {
+            // 越过本 chunk 顶 = 露天(v1 不看上方邻 chunk)。
+            1.0
+        } else {
+            // 侧/底越界:夹回 chunk 内,取边列同高天光作近似。
+            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+        }
+    };
+    let data = chunk_render_mesh_lit(chunk, MACRO_RENDER_SIZE, &neighbors, Some(&light_at));
     if data.is_empty() {
         despawn_chunk(commands, entities, coord);
     } else {
@@ -392,7 +406,23 @@ pub(crate) fn build_mesh_with_colors(
     data: &ChunkMeshData,
     color_for: impl Fn(u32) -> [f32; 4],
 ) -> Mesh {
-    let colors: Vec<[f32; 4]> = data.material_ids.iter().map(|&id| color_for(id)).collect();
+    // 光可见度 Phase A:lit 网格携带逐顶点光因子 → 乘进顶点色(压暗 RGB,保 alpha)。
+    // 空 light(普通/历史路径)→ 不调,逐字节一致。
+    let lit = data.light.len() == data.material_ids.len();
+    let colors: Vec<[f32; 4]> = data
+        .material_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let c = color_for(id);
+            if lit {
+                let l = data.light[i];
+                [c[0] * l, c[1] * l, c[2] * l, c[3]]
+            } else {
+                c
+            }
+        })
+        .collect();
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
