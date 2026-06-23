@@ -188,11 +188,19 @@ defmodule SceneServer.Voxel.Field.Kernels.LightPropagationKernel do
          %FieldRegion{aabb: {{min_x, min_y, min_z}, {max_x, max_y, max_z}}},
          %Storage{} = storage
        ) do
+    # 性能:tuple 化 headers,逐 cell O(1) 判实心(否则 normal_block_at 的 Enum.at O(idx)
+    # 扫 AABB 跑成 O(n²)——空 cell 占多数时尤甚)。
+    storage = Storage.normalize!(storage)
+    headers = Storage.index_macro_headers(storage)
+
     for x <- min_x..max_x,
         y <- min_y..max_y,
         z <- min_z..max_z,
         macro_index = Types.macro_index!({x, y, z}),
-        match?(%NormalBlockData{}, Storage.normal_block_at(storage, macro_index)),
+        match?(
+          %NormalBlockData{},
+          Storage.normal_block_with_header(storage, Storage.header_at_index(headers, macro_index))
+        ),
         do: macro_index
   end
 

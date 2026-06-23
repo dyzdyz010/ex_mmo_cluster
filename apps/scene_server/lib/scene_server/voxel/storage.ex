@@ -458,6 +458,37 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   # ----------------------------------------------------------------------------
+  # 热路径 O(1) cell 访问:`macro_headers` 是 4096 元素 list,逐 cell `Enum.at` 是
+  # O(idx),kernel 扫 AABB 跑成 O(n²)。kernel 一次 `index_macro_headers/1` tuple 化,
+  # 之后 `header_at_index/2` + `normal_block_with_header/2` + `effective_attribute_at(_normalized)`
+  # 的 `:macro_header` opt 全 O(1)。纯 additive,普通调用方不受影响。
+  # ----------------------------------------------------------------------------
+
+  @doc "把 `macro_headers` 转成 tuple,供 kernel 热循环 O(1) 取头。"
+  @spec index_macro_headers(t()) :: tuple()
+  def index_macro_headers(%__MODULE__{} = storage) do
+    storage |> normalize!() |> Map.fetch!(:macro_headers) |> List.to_tuple()
+  end
+
+  @doc "从 `index_macro_headers/1` 的 tuple 按 macro_index O(1) 取 header。"
+  @spec header_at_index(tuple(), non_neg_integer()) :: MacroCellHeader.t()
+  def header_at_index(headers_tuple, macro_index)
+      when is_tuple(headers_tuple) and is_integer(macro_index) and macro_index >= 0 and
+             macro_index < tuple_size(headers_tuple) do
+    elem(headers_tuple, macro_index)
+  end
+
+  @doc "给定预取的 header 读 normal block(或 nil)。等价 `normal_block_at/2` 但免 header Enum.at。"
+  @spec normal_block_with_header(t(), MacroCellHeader.t()) :: NormalBlockData.t() | nil
+  def normal_block_with_header(%__MODULE__{} = storage, %MacroCellHeader{} = header) do
+    if header.mode == MacroCellHeader.cell_mode_solid_block() do
+      Enum.at(storage.normal_blocks, header.payload_index)
+    else
+      nil
+    end
+  end
+
+  # ----------------------------------------------------------------------------
   # Phase 1.2 — AttributeSet pool intern API
   # ----------------------------------------------------------------------------
 
@@ -804,7 +835,10 @@ defmodule SceneServer.Voxel.Storage do
 
     defn = catalog_lookup!(catalog, attr_name_or_id)
 
-    header = Enum.at(storage.macro_headers, macro_index)
+    # 性能:`macro_index` 在 4096 元素 list 上 `Enum.at` 是 O(idx);kernel 逐 cell 跑成
+    # O(n²)。热路径调用方可传 `:macro_header`(预取自 tuple 化的 headers,见 `index/1`)跳过
+    # 这步。行为完全等价(同一 cell 的 header);不传时回退 Enum.at(其余 1000+ 调用方不变)。
+    header = Keyword.get(opts, :macro_header) || Enum.at(storage.macro_headers, macro_index)
 
     # 抽取 4 层各自的值（layer 不提供该 attribute 时返回 :not_found）
     material_default = material_default_value(storage, header, defn)

@@ -230,11 +230,21 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     # 光学耦合(Option A):同 tick LightPropagationKernel(排在本 kernel 前)已写 :light 层,
     # 此处读它注入 cell.light,供光敏反应 gate(无 :light 层 → get_layer 回退空层 → 全 0 惰性安全)。
     light_layer = FieldRegion.get_layer(region, :light)
+    # 性能:tuple 化 headers,逐 cell O(1) 取头(否则 Enum.at O(idx) → 扫 AABB O(n²))。
+    storage = Storage.normalize!(storage)
+    headers = Storage.index_macro_headers(storage)
 
     for x <- min_x..max_x,
         y <- min_y..max_y,
         z <- min_z..max_z,
-        cell = cell_state(storage, light_layer, {x, y, z}),
+        macro_index = Types.macro_index!({x, y, z}),
+        cell =
+          cell_state(
+            storage,
+            Storage.header_at_index(headers, macro_index),
+            light_layer,
+            macro_index
+          ),
         cell != nil do
       cell
     end
@@ -265,24 +275,24 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     end)
   end
 
-  defp cell_state(storage, light_layer, coord) do
-    macro_index = Types.macro_index!(coord)
-
-    case Storage.normal_block_at(storage, macro_index) do
+  defp cell_state(storage, header, light_layer, macro_index) do
+    case Storage.normal_block_with_header(storage, header) do
       %NormalBlockData{material_id: material_id} = block ->
         %{
           macro_index: macro_index,
           material_id: material_id,
-          temperature_celsius: scaled_attribute(storage, macro_index, @temperature_attribute),
-          burn_progress: scaled_attribute(storage, macro_index, @burn_progress_attribute),
+          temperature_celsius:
+            scaled_attribute(storage, header, macro_index, @temperature_attribute),
+          burn_progress: scaled_attribute(storage, header, macro_index, @burn_progress_attribute),
           # S4 化学/氧化:动态氧化进度进 cell,供氧化 recipe 的完成条件(oxidation_progress≥1.0)求值。
           oxidation_progress:
-            scaled_attribute(storage, macro_index, @oxidation_progress_attribute),
+            scaled_attribute(storage, header, macro_index, @oxidation_progress_attribute),
           # 光学 · 光合:动态生长进度进 cell,供光合成熟条件(growth_progress≥1.0)求值。
-          growth_progress: scaled_attribute(storage, macro_index, @growth_progress_attribute),
+          growth_progress:
+            scaled_attribute(storage, header, macro_index, @growth_progress_attribute),
           # 光学:同 tick 光场注入 cell.light(0..255),供光敏反应 condition `:light` gate。
           light: FieldLayer.get(light_layer, macro_index),
-          heat_capacity: heat_capacity(storage, macro_index),
+          heat_capacity: heat_capacity(storage, header, macro_index),
           tags: cell_tags(storage, block)
         }
 
@@ -291,15 +301,20 @@ defmodule SceneServer.Voxel.Field.Kernels.ReactionKernel do
     end
   end
 
-  defp scaled_attribute(storage, macro_index, attr_name) do
-    raw = Storage.effective_attribute_at(storage, macro_index, attr_name)
+  # `:macro_header` opt → 免 header Enum.at(storage 须已 normalize,cells_in_region 已做)。
+  defp scaled_attribute(storage, header, macro_index, attr_name) do
+    raw =
+      Storage.effective_attribute_at_normalized(storage, macro_index, attr_name,
+        macro_header: header
+      )
+
     raw / MaterialCatalog.fixed32_scale()
   end
 
   # 热容 C = 密度 × 比热 × 体积(J/K);热扩散用。
-  defp heat_capacity(storage, macro_index) do
-    density = scaled_attribute(storage, macro_index, @density_attribute)
-    specific_heat = scaled_attribute(storage, macro_index, @specific_heat_attribute)
+  defp heat_capacity(storage, header, macro_index) do
+    density = scaled_attribute(storage, header, macro_index, @density_attribute)
+    specific_heat = scaled_attribute(storage, header, macro_index, @specific_heat_attribute)
     max(density * specific_heat * @voxel_volume_cubic_meter, @min_heat_capacity)
   end
 
