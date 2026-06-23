@@ -48,6 +48,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   # 电阻属性(非 :load,不置 :powered、不 I²R 发热)。靠低导电率在 CircuitCurrentKernel 的
   # R_effective=路径长/平均导电率 里抬升串联电阻 → 降回路电流(分压/限流)。属性派生、无白名单。
   @resistor_material_id 20
+  # 建设系统 · 半导体梯队 a(2026-06-23):比较器/阈值门——导电(入电路图)+ logic_threshold>0。
+  # CircuitCurrentKernel 比较其电位与阈值,≥ 则置 :signal_high(模拟量→数字逻辑门)。
+  @comparator_material_id 21
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -70,7 +73,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     photo_sensor: @photo_sensor_material_id,
     sprout: @sprout_material_id,
     glowstone: @glowstone_material_id,
-    resistor: @resistor_material_id
+    resistor: @resistor_material_id,
+    comparator: @comparator_material_id
   }
 
   @power_source_defaults %{
@@ -360,6 +364,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       # 中等导电:入电路图(≥1.0 conductor 阈),但远低于 iron(10)→ 平均导电率下降、电流减小。
       "electric_conductivity" => round(1.5 * @fixed32_scale),
       "dielectric_strength" => round(10.0 * @fixed32_scale)
+    },
+    # 建设系统 · 比较器/阈值门(半导体梯队 a):导电(入电路图)+ logic_threshold 60V。
+    # CircuitCurrentKernel 比较其节点电位与 60V,≥ 则置 :signal_high(配电阻分压可做阈值逻辑)。
+    @comparator_material_id => %{
+      "density" => round(2_300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.2 * @fixed32_scale),
+      "specific_heat_capacity" => round(700.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_400.0 * @fixed32_scale),
+      "freezing_point" => round(1_400.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => round(2.0 * @fixed32_scale),
+      "dielectric_strength" => round(10.0 * @fixed32_scale),
+      "logic_threshold" => round(60.0 * @fixed32_scale)
     }
   }
 

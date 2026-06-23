@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 11,
+  catalog_version: 12,
   definitions: [
     %{
       id: 1,
@@ -348,6 +348,21 @@
       min_value: 0,
       # 1.0
       max_value: 65_536,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 建设系统 · 半导体梯队(2026-06-23):逻辑阈值电压(V)。>0 标记该材料为**比较器/阈值门**:
+    # CircuitCurrentKernel 比较该 cell 的电位与本阈值,≥ 则置 :signal_high tag(模拟量→数字逻辑)。
+    # 0 = 非逻辑元件(默认)。static material_default。
+    %{
+      id: 24,
+      name: "logic_threshold",
+      unit: "V",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      # 1000 V 上限(足够覆盖电源 120V 系)。
+      max_value: 65_536_000,
       merge_rule: :material_default,
       dynamic: false
     }

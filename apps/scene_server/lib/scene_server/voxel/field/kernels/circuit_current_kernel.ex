@@ -88,12 +88,53 @@ defmodule SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel do
     # 断言的 powered_heater 规则。
     heat_effects = joule_heat_effects(components, projection, opts, context)
 
+    # 建设系统 · 半导体:比较器/阈值门——闭环中 logic_threshold>0 的 cell 比较其节点电位与阈值,
+    # ≥ 则置 :signal_high tag(模拟量→数字逻辑),< 则去之。配电阻分压可做电压阈值检测/逻辑。
+    signal_effects = comparator_signal_effects(components, potential_layer, context)
+
     {:cont,
      region
      |> FieldRegion.put_layer(:electric_current, current_layer)
      |> FieldRegion.put_layer(:electric_potential, potential_layer)
-     |> FieldRegion.put_layer(:ionization, ionization_layer), power_effects ++ heat_effects}
+     |> FieldRegion.put_layer(:ionization, ionization_layer),
+     power_effects ++ heat_effects ++ signal_effects}
   end
+
+  # 比较器:对每个闭环里的 comparator cell(logic_threshold>0),读其电位(potential_layer,
+  # 绝对值),≥ 阈值置 :signal_high、否则去之。属性派生(无 id 白名单)。
+  defp comparator_signal_effects(components, potential_layer, %KernelContext{storage: storage}) do
+    components
+    |> Enum.flat_map(& &1.closed_loop_macro_indices)
+    |> Enum.uniq()
+    |> Enum.flat_map(fn macro_index ->
+      threshold = comparator_threshold(storage, macro_index)
+
+      if threshold > 0.0 do
+        potential = abs(FieldLayer.get(potential_layer, macro_index))
+
+        if potential >= threshold do
+          [{:set_tag, %{macro_index: macro_index, add: [:signal_high], remove: []}}]
+        else
+          [{:set_tag, %{macro_index: macro_index, add: [], remove: [:signal_high]}}]
+        end
+      else
+        []
+      end
+    end)
+  end
+
+  defp comparator_threshold(storage, macro_index) when is_map(storage) do
+    case Storage.normal_block_at(storage, macro_index) do
+      %{material_id: material_id} ->
+        MaterialCatalog.default_attribute_value(material_id, "logic_threshold", 0) /
+          MaterialCatalog.fixed32_scale()
+
+      _other ->
+        0.0
+    end
+  end
+
+  defp comparator_threshold(_storage, _macro_index), do: 0.0
 
   # 闭环载流负载的 I²R 焦耳热:对每个闭合回路,按其电流 I 对回路内每个有 electric_resistance>0 的
   # load cell 发 I²·R·gain 的连续注热(经 SystemActor always-commit → ChunkProcess → temperature truth)。
