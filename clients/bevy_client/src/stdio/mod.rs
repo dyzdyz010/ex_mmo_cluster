@@ -59,6 +59,13 @@ pub enum ClientStdioCommand {
     VoxelChunkInfo {
         coord: [i32; 3],
     },
+    /// Unsubscribe a chunk (0x61 ChunkUnsubscribe) + evict it locally — the
+    /// scriptable equivalent of the AOI-move eviction, so the unsubscribe path can
+    /// be self-verified (chunk gone from `va-status`/`va-chunk` after).
+    VoxelUnsubscribe {
+        logical_scene_id: u64,
+        coord: [i32; 3],
+    },
     /// Sends a server-authoritative voxel edit (0x70 VoxelEditIntent) over the
     /// live connection — the headless/scriptable equivalent of the GUI F/RMB
     /// build, so the build round-trip + the 0x68 ACK can be self-verified without
@@ -521,6 +528,23 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::VoxelFields);
     }
 
+    if let Some(rest) = line.strip_prefix("va-unsubscribe ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err("va-unsubscribe <scene_id> <cx> <cy> <cz>".to_string());
+        }
+        let logical_scene_id = parse_field(parts[0], "scene_id")?;
+        let coord = [
+            parse_field(parts[1], "cx")?,
+            parse_field(parts[2], "cy")?,
+            parse_field(parts[3], "cz")?,
+        ];
+        return Ok(ClientStdioCommand::VoxelUnsubscribe {
+            logical_scene_id,
+            coord,
+        });
+    }
+
     if let Some(rest) = line.strip_prefix("va-follow") {
         let parts = rest.split_whitespace().collect::<Vec<_>>();
         // va-follow [scene_id] [radius]
@@ -679,6 +703,15 @@ mod tests {
         assert!(parse_command("va-macro 7 0").is_err());
 
         assert_eq!(parse_command("va-fields").unwrap(), ClientStdioCommand::VoxelFields);
+
+        assert_eq!(
+            parse_command("va-unsubscribe 1 0 1 -2").unwrap(),
+            ClientStdioCommand::VoxelUnsubscribe {
+                logical_scene_id: 1,
+                coord: [0, 1, -2],
+            }
+        );
+        assert!(parse_command("va-unsubscribe 1 0 1").is_err());
     }
 
     #[test]

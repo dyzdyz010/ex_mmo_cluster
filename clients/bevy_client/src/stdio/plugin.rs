@@ -511,6 +511,21 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             ClientStdioCommand::VoxelFields => {
                 crate::stdio::emit_voxel_fields(&voxel_authority.field_store);
             }
+            ClientStdioCommand::VoxelUnsubscribe {
+                logical_scene_id,
+                coord,
+            } => {
+                // GUI: send the unsubscribe; local eviction is handled by the live
+                // AOI follow path (voxel_authority is a read-only Res here).
+                bridge.send(NetworkCommand::UnsubscribeChunks {
+                    logical_scene_id,
+                    chunks: vec![coord],
+                });
+                emit_stdio(
+                    "va_unsubscribe_sent",
+                    &[("coord", format!("{},{},{}", coord[0], coord[1], coord[2]))],
+                );
+            }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
                 emit_stdio("quit", &[("final_status", world_state.status.clone())]);

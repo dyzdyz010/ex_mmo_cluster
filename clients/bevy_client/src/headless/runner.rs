@@ -491,6 +491,20 @@ pub fn run_stdio(
                 ClientStdioCommand::VoxelFields => {
                     crate::stdio::emit_voxel_fields(&state.field_store);
                 }
+                ClientStdioCommand::VoxelUnsubscribe {
+                    logical_scene_id,
+                    coord,
+                } => {
+                    bridge.send(NetworkCommand::UnsubscribeChunks {
+                        logical_scene_id,
+                        chunks: vec![coord],
+                    });
+                    state.voxel_authority.evict(coord);
+                    emit_stdio(
+                        "va_unsubscribe_sent",
+                        &[("coord", format!("{},{},{}", coord[0], coord[1], coord[2]))],
+                    );
+                }
                 ClientStdioCommand::Quit => {
                     bridge.send(NetworkCommand::Shutdown);
                     observer.emit(
