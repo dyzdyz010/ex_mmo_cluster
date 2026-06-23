@@ -85,6 +85,9 @@ pub(super) struct ClientRuntime {
     /// a mismatch — used to throttle the per-ack warning to once per
     /// distinct mismatch value.
     pub(super) last_logged_fixed_dt_mismatch: Option<u16>,
+    /// Monotonic per-edit sequence for `VoxelEditIntent` replay dedup (server
+    /// derives command_id from `client_intent_seq`). Construction system.
+    pub(super) voxel_edit_seq: u32,
 }
 
 impl ClientRuntime {
@@ -102,6 +105,7 @@ impl ClientRuntime {
             fast_lane: FastLaneState::default(),
             local_prediction: LocalPredictionRuntime::default(),
             last_logged_fixed_dt_mismatch: None,
+            voxel_edit_seq: 0,
         }
     }
 
@@ -291,6 +295,26 @@ impl ClientRuntime {
                 };
                 outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
                     crate::voxel::wire::VoxelClientMessage::ChunkSubscribe(subscribe),
+                )));
+            }
+            NetworkCommand::EditVoxel {
+                logical_scene_id,
+                action,
+                target_macro,
+                material_id,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                self.voxel_edit_seq += 1;
+                let intent = crate::voxel::wire::VoxelEditIntent::macro_edit(
+                    request_id,
+                    self.voxel_edit_seq,
+                    logical_scene_id,
+                    action,
+                    target_macro,
+                    material_id,
+                );
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
+                    crate::voxel::wire::VoxelClientMessage::EditIntent(intent),
                 )));
             }
             _ => {}
@@ -1187,6 +1211,69 @@ mod tests {
             movement.outbounds.as_slice(),
             [OutboundAction::Tcp(ClientMessage::MovementInput { .. })]
         ));
+    }
+
+    #[test]
+    fn edit_voxel_in_scene_emits_edit_intent_with_monotonic_seq() {
+        use crate::voxel::wire::{ACTION_BREAK, ACTION_PLACE, VoxelClientMessage};
+
+        let creds = test_creds();
+        let mut runtime = ClientRuntime::new(test_gate_addr());
+        runtime.phase = ConnectionPhase::InScene;
+
+        let place = runtime.handle_command(
+            &creds,
+            NetworkCommand::EditVoxel {
+                logical_scene_id: 1,
+                action: ACTION_PLACE,
+                target_macro: [4, 0, 7],
+                material_id: 2,
+            },
+        );
+        match place.outbounds.as_slice() {
+            [OutboundAction::Tcp(ClientMessage::Voxel(VoxelClientMessage::EditIntent(intent)))] => {
+                assert_eq!(intent.action, ACTION_PLACE);
+                assert_eq!(intent.material_id, 2);
+                assert_eq!(intent.target_world_micro, [32, 0, 56]); // macro * 8
+                assert_eq!(intent.target_granularity, 0);
+                assert_eq!(intent.client_intent_seq, 1);
+            }
+            other => panic!("expected one EditIntent outbound, got {other:?}"),
+        }
+
+        // Second edit bumps client_intent_seq (server replay dedup keys on it).
+        let brk = runtime.handle_command(
+            &creds,
+            NetworkCommand::EditVoxel {
+                logical_scene_id: 1,
+                action: ACTION_BREAK,
+                target_macro: [4, 0, 7],
+                material_id: 0,
+            },
+        );
+        match brk.outbounds.as_slice() {
+            [OutboundAction::Tcp(ClientMessage::Voxel(VoxelClientMessage::EditIntent(intent)))] => {
+                assert_eq!(intent.action, ACTION_BREAK);
+                assert_eq!(intent.client_intent_seq, 2);
+            }
+            other => panic!("expected one EditIntent outbound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_voxel_gated_outside_scene() {
+        let creds = test_creds();
+        let mut runtime = ClientRuntime::new(test_gate_addr()); // AwaitingAuth
+        let outcome = runtime.handle_command(
+            &creds,
+            NetworkCommand::EditVoxel {
+                logical_scene_id: 1,
+                action: crate::voxel::wire::ACTION_PLACE,
+                target_macro: [0, 0, 0],
+                material_id: 2,
+            },
+        );
+        assert!(outcome.outbounds.is_empty());
     }
 
     #[test]

@@ -54,6 +54,18 @@ pub enum NetworkCommand {
         center_chunk: [i32; 3],
         radius: u8,
     },
+    /// Construction system: a single macro-cell place/break edit at a GLOBAL macro
+    /// coord. The runtime resolves it to a `VoxelEditIntent` (0x70). Server-
+    /// authoritative — the resulting `ChunkDelta` is what the client renders.
+    EditVoxel {
+        logical_scene_id: u64,
+        /// `voxel::wire::ACTION_PLACE` (0) or `ACTION_BREAK` (1).
+        action: u8,
+        /// Global macro coord: the adjacent cell for place, the clicked cell for break.
+        target_macro: [i32; 3],
+        /// Material to place (ignored for break).
+        material_id: u16,
+    },
     Shutdown,
 }
 
