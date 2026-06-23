@@ -331,6 +331,16 @@ fn flatten_snapshot(snap: &ChunkSnapshot) -> Result<Vec<CellState>, IngestError>
 }
 
 #[cfg(test)]
+impl VoxelAuthorityStore {
+    /// Test-only: inject a chunk directly (bypassing `ingest`) so OTHER modules'
+    /// tests can build authoritative terrain for grounding / raycast assertions
+    /// without hand-rolling a wire snapshot.
+    pub(crate) fn insert_chunk_for_test(&mut self, coord: ChunkCoord, chunk: AuthorityChunk) {
+        self.chunks.insert(coord, chunk);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::voxel::wire::{ChunkInvalidate, DeltaOp, Reader};

@@ -106,8 +106,6 @@ pub fn pick_voxel(
 mod tests {
     use super::*;
 
-    const M: f32 = MACRO_RENDER_SIZE;
-
     #[test]
     fn picks_first_occupied_along_plus_x_with_entry_face() {
         // Origin in air at macro x=-1 (render -50), looking +x; block at macro 3.

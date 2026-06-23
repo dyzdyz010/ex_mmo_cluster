@@ -4,9 +4,9 @@
 //! (u16) directly, so the full confirmed list (materials + electrical components)
 //! places authoritatively and renders via the chunk material palette.
 //!
-//! Fixed list (confirmed 2026-06-23): plain blocks + electrical conduits/components
-//! + light/photo. Semiconductors (resistor/comparator/diode/transistor) append here
-//! as their materials land (C3/C4). No resource cost — infinite-resource build.
+//! Fixed list (confirmed 2026-06-23): plain blocks, electrical conduits/components,
+//! and light/photo. Semiconductors (resistor/comparator/diode/transistor) append
+//! here as their materials land (C3/C4). No resource cost — infinite-resource build.
 
 use bevy::prelude::Resource;
 

@@ -1029,4 +1029,68 @@ mod tests {
             MacroCoord::new(0, 1, 0)
         );
     }
+
+    // Regression for the "character is below the world" bug: in a live scene the
+    // offline VoxelWorld is empty, so grounding MUST consult the authority chunk
+    // store, else the avatar floats at the raw spawn height (185), which is below
+    // the noise terrain (top render Y ≥ 200). Mirrors the runtime observer proof
+    // (185 → terrain_top+half).
+    #[test]
+    fn surface_center_grounds_onto_authority_terrain_not_raw_spawn() {
+        use crate::voxel::authority::{AuthorityChunk, CellState};
+        use crate::voxel::authority_plugin::VoxelAuthority;
+        use crate::voxel::wire::NormalBlock;
+
+        // Build a chunk (0,0,0) with a 4-high solid stack at local column (7,7) —
+        // i.e. the render XZ (750,750) spawn column. Top occupied macro Y = 3 →
+        // top render Y = 4*100 = 400.
+        let solid = NormalBlock {
+            material_id: 2,
+            state_flags: 0,
+            health: 100,
+            temperature_delta: 0,
+            moisture_delta: 0,
+            attribute_set_ref: 0,
+            tag_set_ref: 0,
+        };
+        let mut cells = vec![CellState::Empty; 16 * 16 * 16];
+        for ly in 0..4 {
+            cells[(7 + ly * 16 + 7 * 256) as usize] = CellState::Solid(solid.clone());
+        }
+        let chunk = AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: 16,
+            cells,
+            surface_elements: Vec::new(),
+        };
+        let mut authority = VoxelAuthority::default();
+        authority.store.insert_chunk_for_test([0, 0, 0], chunk);
+
+        let empty_world = VoxelWorld::new();
+        let half_height = 45.0;
+        let raw_spawn_y = 185.0;
+
+        // At the spawn column the avatar grounds onto the terrain top (400) + half
+        // (45) = 445, NOT the buggy raw spawn 185.
+        let grounded = surface_center_y_at_render_xz(
+            &empty_world,
+            &authority,
+            750.0,
+            750.0,
+            half_height,
+            raw_spawn_y,
+        );
+        assert_eq!(grounded, 445.0, "must stand on terrain, not underground");
+
+        // An empty column (no terrain loaded there) → falls back to spawn height.
+        let no_terrain = surface_center_y_at_render_xz(
+            &empty_world,
+            &authority,
+            50.0,
+            50.0,
+            half_height,
+            raw_spawn_y,
+        );
+        assert_eq!(no_terrain, raw_spawn_y);
+    }
 }

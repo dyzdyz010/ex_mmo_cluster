@@ -224,6 +224,7 @@ fn enqueue(queue: &mut VoxelRemeshQueue, coord: ChunkCoord) {
 
 /// Re-meshes one chunk: spawn/update its `Mesh3d`, or despawn it when the chunk
 /// is gone or now meshes to nothing (fully occluded / emptied).
+#[allow(clippy::too_many_arguments)]
 fn remesh_chunk(
     commands: &mut Commands,
     store: &VoxelAuthorityStore,
