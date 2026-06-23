@@ -42,7 +42,10 @@ use crate::voxel::chunk_render::{
 };
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
-use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk};
+use crate::voxel::mesher::{
+    ChunkNeighbors, chunk_render_mesh, chunk_render_mesh_lit, greedy_mesh_chunk,
+};
+use crate::voxel::skylight::{Skylight, SkylightConfig};
 use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
@@ -1803,5 +1806,120 @@ fn collapse_debris_rasterizes_on_screen() {
         "debris cloud should read warm/brown (r {:.2} ≥ b {:.2})",
         px.r,
         px.b
+    );
+}
+
+// ---- 光可见度 Phase A · 弥漫光场(天光 lightmap)----------------------------
+
+/// Like `spawn_chunk_textured` but bakes the skylight lightmap into the mesh (the
+/// live client's lit path): covered/underground cells render dark, open cells full.
+fn spawn_chunk_textured_lit(world: &mut World, chunk: &AuthorityChunk) {
+    let sky = Skylight::compute(chunk, SkylightConfig::default());
+    let size = chunk.chunk_size_in_macro as i32;
+    let light_at = |x: i32, y: i32, z: i32| -> f32 {
+        if y >= size {
+            1.0
+        } else {
+            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+        }
+    };
+    let data = chunk_render_mesh_lit(chunk, MACRO, &ChunkNeighbors::default(), Some(&light_at));
+    let mesh = build_mesh_with_colors(&data, material_color);
+    let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    let texture = world
+        .resource_mut::<Assets<Image>>()
+        .add(mosaic_block_texture());
+    let material = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(texture),
+            perceptual_roughness: 0.9,
+            ..default()
+        });
+    world.spawn((
+        Mesh3d(mesh_handle),
+        MeshMaterial3d(material),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
+/// A grass floor with an L-shaped stone overhang (back wall + roof) covering the
+/// left half — the covered floor cells lose skylight (dark alcove) while the right
+/// half stays open (full daylight). The canonical "surface bright, shelter/cave dark".
+fn overhang_chunk() -> AuthorityChunk {
+    let mut cells: Vec<(i32, i32, i32, u16)> = vec![];
+    let span = 9i32;
+    for x in 0..span {
+        for z in 0..span {
+            cells.push((x, 0, z, 18)); // grass floor
+        }
+    }
+    // Back wall (x=0) and a roof slab (y=5) over the left half → shaded alcove.
+    for z in 0..span {
+        for y in 1..6 {
+            cells.push((0, y, z, 2)); // stone back wall
+        }
+        for x in 0..5 {
+            cells.push((x, 5, z, 2)); // stone roof
+        }
+    }
+    showcase_material_chunk(&cells)
+}
+
+/// Mean luma over the whole framebuffer (sky identical between two renders of the
+/// same scene → the difference isolates terrain shading).
+fn mean_luma(data: &[u8]) -> f32 {
+    let mut sum = 0.0;
+    let n = (W * H) as f32;
+    for px in data.chunks_exact(4) {
+        sum += 0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32;
+    }
+    sum / (n * 255.0)
+}
+
+/// 8. Diffuse skylight — the world has light and dark: a sunlit grass terrace with
+///    a shaded stone alcove under an overhang, brightness driven per-cell by the
+///    baked skylight lightmap (replacing the fixed uniform ambient).
+#[test]
+fn showcase_skylight_diffuse() {
+    let chunk = overhang_chunk();
+    let eye = Vec3::new(1180.0, 720.0, -220.0);
+    let look = Vec3::new(430.0, 120.0, 430.0);
+    let data = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured_lit(world, &chunk);
+    });
+    save_showcase_png("08_skylight_diffuse", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// End-to-end pixel proof: baking the skylight lightmap darkens the covered terrain
+/// — the lit render of an overhang scene is measurably darker than the same scene
+/// drawn with the flat (uniform-bright) material path. Isolates the lightmap effect
+/// (same geometry, same sky, same camera; only the per-cell light differs).
+#[test]
+fn skylight_darkens_covered_terrain() {
+    let chunk = overhang_chunk();
+    let eye = Vec3::new(1180.0, 720.0, -220.0);
+    let look = Vec3::new(430.0, 120.0, 430.0);
+
+    let lit = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured_lit(world, &chunk);
+    });
+    let flat = render_scene(|world, image| {
+        spawn_sky_camera(world, image, eye, look);
+        spawn_skydome(world, eye);
+        spawn_chunk_textured(world, &chunk); // uniform albedo (no skylight)
+    });
+
+    let mean_lit = mean_luma(&lit);
+    let mean_flat = mean_luma(&flat);
+    assert!(
+        mean_lit < mean_flat * 0.94,
+        "skylight should darken the shaded terrain: lit mean {mean_lit:.4} vs flat {mean_flat:.4}"
     );
 }
