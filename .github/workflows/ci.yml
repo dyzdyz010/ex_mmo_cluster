@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["**"]
 
+# Cancel superseded runs on the same ref (new push to a PR/branch) to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MIX_ENV: test
   ELIXIR_ERL_OPTIONS: "+fnu"
@@ -265,9 +270,47 @@ jobs:
       - name: Compile (including Rust NIFs)
         run: mix compile
 
+      - name: Setup database
+        # scene_server's voxel-authority suite (ChunkProcess / ChunkSnapshotStore /
+        # pending-transaction tests) writes through DataService.Repo on PostgreSQL.
+        run: mix ecto.create -r DataService.Repo && mix ecto.migrate -r DataService.Repo
+
       - name: Run scene_server tests
         run: cd apps/scene_server && mix test --no-start
-        # 4 tests: NIF function calls (physics, character data)
+        # 109 test files: NIF physics/movement, plus the full voxel-authority layer
+        # (codec/wire golden parity, chunk process, field provisioning, reaction/light/
+        # heat kernels, surface elements). Requires PostgreSQL (see Setup database).
+
+  test-native-rust:
+    name: Test native Rust crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + native crate targets
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/scene_server/native/field_kernel
+            apps/scene_server/native/movement_core
+            apps/scene_server/native/octree
+
+      - name: Run native crate unit tests
+        # Pure-Rust unit tests for the NIF-backed logic, never exercised by the
+        # Elixir suite: field_kernel (temperature/electric/conduction/discharge/
+        # cell_sim), movement_core (integrator/ack/profile/state), octree (spatial).
+        # scene_ops/movement_engine have no #[test]s (covered via Elixir NIF tests).
+        run: |
+          for crate in field_kernel movement_core octree; do
+            echo "::group::cargo test ${crate}"
+            (cd "apps/scene_server/native/${crate}" && cargo test)
+            echo "::endgroup::"
+          done
 
   test-standalone:
     name: Test standalone apps
