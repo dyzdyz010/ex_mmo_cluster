@@ -39,6 +39,8 @@ const FIXED_PALETTE: &[BuildPaletteEntry] = &[
     entry(11, "door"),         // powered → open actuator
     // ③ 光敏件
     entry(17, "photo_sensor"),
+    // ④ 半导体(梯队 a):被动电阻(限流/分压)。
+    entry(20, "resistor"),
 ];
 
 /// Selected build component for the live (server-authoritative) build path.
@@ -105,11 +107,12 @@ mod tests {
         assert_eq!(p.selected_index(), 0);
         assert_eq!(p.selected().label, "stone");
         assert_eq!(p.selected_material(), 2);
-        // The confirmed fixed list (block-form): 7 materials + 3 circuit + 1 photo.
-        assert_eq!(p.entries().len(), 11);
-        // Electrical components are present with their server ids.
+        // Confirmed fixed list (block-form): 7 materials + 3 circuit + 1 photo + 1 resistor.
+        assert_eq!(p.entries().len(), 12);
+        // Electrical + semiconductor components present with their server ids.
         assert!(p.entries().iter().any(|e| e.material_id == 6 && e.label == "power_block"));
         assert!(p.entries().iter().any(|e| e.material_id == 17 && e.label == "photo_sensor"));
+        assert!(p.entries().iter().any(|e| e.material_id == 20 && e.label == "resistor"));
     }
 
     #[test]

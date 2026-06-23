@@ -44,6 +44,10 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @sprout_material_id 18
   # 光学 · 彩色光(2026-06-23):荧光石——纯发光源(冷蓝光),不发热(区别于 ember 的炽热橙)。
   @glowstone_material_id 19
+  # 建设系统 · 半导体梯队 a(2026-06-23):电阻——**被动**电阻件。中等导电(>0 入电路图)、零
+  # 电阻属性(非 :load,不置 :powered、不 I²R 发热)。靠低导电率在 CircuitCurrentKernel 的
+  # R_effective=路径长/平均导电率 里抬升串联电阻 → 降回路电流(分压/限流)。属性派生、无白名单。
+  @resistor_material_id 20
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -65,7 +69,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     obsidian: @obsidian_material_id,
     photo_sensor: @photo_sensor_material_id,
     sprout: @sprout_material_id,
-    glowstone: @glowstone_material_id
+    glowstone: @glowstone_material_id,
+    resistor: @resistor_material_id
   }
 
   @power_source_defaults %{
@@ -341,6 +346,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "dielectric_strength" => round(8.0 * @fixed32_scale),
       "light_emission" => round(1_500.0 * @fixed32_scale),
       "light_color" => 0x60A0FF
+    },
+    # 建设系统 · 电阻(半导体梯队 a):被动电阻件。中等导电(1.5 < iron 10)→ 入电路图但抬升
+    # 串联电阻、降电流;**电阻属性 0** → 非 :load(不置 :powered、不 I²R 发热),纯被动分压/限流。
+    @resistor_material_id => %{
+      "density" => round(2_000.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.0 * @fixed32_scale),
+      "specific_heat_capacity" => round(700.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_400.0 * @fixed32_scale),
+      "freezing_point" => round(1_400.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      # 中等导电:入电路图(≥1.0 conductor 阈),但远低于 iron(10)→ 平均导电率下降、电流减小。
+      "electric_conductivity" => round(1.5 * @fixed32_scale),
+      "dielectric_strength" => round(10.0 * @fixed32_scale)
     }
   }
 
