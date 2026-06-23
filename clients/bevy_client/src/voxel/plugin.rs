@@ -617,17 +617,30 @@ fn draw_voxel_guides(
 
 pub(crate) fn surface_center_y_at_render_xz(
     voxel_world: &VoxelWorld,
+    authority: &VoxelAuthority,
     render_x: f32,
     render_z: f32,
     half_height: f32,
     fallback_y: f32,
 ) -> f32 {
     let mut top_y = None::<f32>;
+    // Offline showcase geometry (empty once a live scene is joined).
     for cell in voxel_world.render_cells_3d() {
         let (min, max) = voxel_cell_bounds(cell);
         if render_x >= min.x && render_x <= max.x && render_z >= min.z && render_z <= max.z {
             top_y = Some(top_y.map_or(max.y, |current| current.max(max.y)));
         }
+    }
+    // Live scene: ground against the server-authoritative chunk terrain. The
+    // offline VoxelWorld is empty after joining, so without this the avatar
+    // floats at the raw spawn height, which on the noise terrain is *below* the
+    // surface (the reported "character is below the world"). Macro coords map
+    // directly to render space (macro Y = up), matching `macro_bounds`.
+    let mx = (render_x / VOXEL_RENDER_CELL_SIZE).floor() as i32;
+    let mz = (render_z / VOXEL_RENDER_CELL_SIZE).floor() as i32;
+    if let Some(macro_y) = authority.store.column_top_macro_y(mx, mz) {
+        let authority_top = (macro_y + 1) as f32 * VOXEL_RENDER_CELL_SIZE;
+        top_y = Some(top_y.map_or(authority_top, |current| current.max(authority_top)));
     }
     top_y
         .map(|top| top + half_height)

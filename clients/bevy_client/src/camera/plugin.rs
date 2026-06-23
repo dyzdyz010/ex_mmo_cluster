@@ -20,6 +20,7 @@ use crate::observe::ClientObserver;
 use crate::presentation::actor_render_position;
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
+use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::plugin::ACTOR_HALF_HEIGHT;
 
 use super::orbit::{
@@ -130,6 +131,7 @@ struct OrbitCameraParams<'w, 's> {
     world_state: Res<'w, WorldState>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: Res<'w, VoxelWorld>,
+    authority: Res<'w, VoxelAuthority>,
     orbit: ResMut<'w, OrbitCameraState>,
     observer: Res<'w, ClientObserver>,
     camera: Single<'w, 's, &'static mut Transform, With<MainCamera>>,
@@ -195,10 +197,22 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
         .local_render_prediction
         .render_state
         .as_ref()
-        .map(|state| actor_render_position(&params.voxel_world, state.position, ACTOR_HALF_HEIGHT))
+        .map(|state| {
+            actor_render_position(
+                &params.voxel_world,
+                &params.authority,
+                state.position,
+                ACTOR_HALF_HEIGHT,
+            )
+        })
         .or_else(|| {
             params.world_state.local_position.map(|position| {
-                actor_render_position(&params.voxel_world, position, ACTOR_HALF_HEIGHT)
+                actor_render_position(
+                    &params.voxel_world,
+                    &params.authority,
+                    position,
+                    ACTOR_HALF_HEIGHT,
+                )
             })
         })
         .map(|position| position + Vec3::Y * CAMERA_LOOK_HEIGHT)

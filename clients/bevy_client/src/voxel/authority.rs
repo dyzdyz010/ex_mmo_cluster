@@ -114,6 +114,42 @@ impl VoxelAuthorityStore {
         self.chunks.keys().copied().collect()
     }
 
+    /// Topmost occupied (solid/refined) macro Y over **all** loaded chunks in the
+    /// global macro column `(mx, mz)`, or `None` if the column is empty/unloaded.
+    ///
+    /// Used by the client to ground the local player + follow camera onto the
+    /// server-authoritative terrain: in a joined scene the offline `VoxelWorld`
+    /// store is empty, so without this the avatar floats at the raw spawn height —
+    /// which on the noise-heightmap dev terrain is *below* the surface ("the
+    /// character is underground"). Refined cells count as occupied (the macro top
+    /// is a fine grounding approximation; dev terrain is all solid anyway).
+    ///
+    /// `SIZE` mirrors `authority_macro_occupied` / the server `chunk_size_in_macro`.
+    pub fn column_top_macro_y(&self, mx: i32, mz: i32) -> Option<i32> {
+        const SIZE: i32 = 16;
+        let cx = mx.div_euclid(SIZE);
+        let cz = mz.div_euclid(SIZE);
+        let lx = mx.rem_euclid(SIZE);
+        let lz = mz.rem_euclid(SIZE);
+        let mut top: Option<i32> = None;
+        for (coord, chunk) in &self.chunks {
+            if coord[0] != cx || coord[2] != cz {
+                continue;
+            }
+            for ly in 0..SIZE {
+                let idx = (lx + ly * SIZE + lz * SIZE * SIZE) as usize;
+                if chunk
+                    .cell(idx)
+                    .is_some_and(|cell| !matches!(cell, CellState::Empty))
+                {
+                    let world_y = coord[1] * SIZE + ly;
+                    top = Some(top.map_or(world_y, |current| current.max(world_y)));
+                }
+            }
+        }
+        top
+    }
+
     /// Drains the set of chunks touched since the last call — the mesher
     /// re-meshes exactly these (and, later, their border neighbors).
     pub fn take_dirty(&mut self) -> Vec<ChunkCoord> {
@@ -497,5 +533,70 @@ mod tests {
         );
         assert!(store.chunk(coord).is_none());
         assert_eq!(store.take_dirty(), vec![coord]);
+    }
+
+    fn solid_block() -> NormalBlock {
+        NormalBlock {
+            material_id: 2,
+            state_flags: 0,
+            health: 100,
+            temperature_delta: 0,
+            moisture_delta: 0,
+            attribute_set_ref: 0,
+            tag_set_ref: 0,
+        }
+    }
+
+    fn chunk_with_solid(size: u8, solid_indices: &[usize]) -> AuthorityChunk {
+        let n = (size as usize).pow(3);
+        let mut cells = vec![CellState::Empty; n];
+        for &idx in solid_indices {
+            cells[idx] = CellState::Solid(solid_block());
+        }
+        AuthorityChunk {
+            chunk_version: 1,
+            chunk_size_in_macro: size,
+            cells,
+            surface_elements: Vec::new(),
+        }
+    }
+
+    // idx within a 16³ chunk: lx fastest, then ly, then lz (mirrors the server).
+    fn idx16(lx: i32, ly: i32, lz: i32) -> usize {
+        (lx + ly * 16 + lz * 256) as usize
+    }
+
+    #[test]
+    fn column_top_macro_y_grounds_against_authority_terrain() {
+        let mut store = VoxelAuthorityStore::new();
+        // Column (mx=7, mz=7) → chunk (0,0,0), local (7,_,7). A 3-high stack.
+        let solids: Vec<usize> = (0..=2).map(|ly| idx16(7, ly, 7)).collect();
+        store.chunks.insert([0, 0, 0], chunk_with_solid(16, &solids));
+
+        // Topmost occupied macro Y in that column is 2.
+        assert_eq!(store.column_top_macro_y(7, 7), Some(2));
+        // An empty column → None (avatar falls back to its spawn height).
+        assert_eq!(store.column_top_macro_y(3, 3), None);
+
+        // A negative-coord column resolves to chunk (-1) via div_euclid / local 15.
+        store
+            .chunks
+            .insert([-1, 0, -1], chunk_with_solid(16, &[idx16(15, 5, 15)]));
+        assert_eq!(store.column_top_macro_y(-1, -1), Some(5));
+    }
+
+    #[test]
+    fn column_top_macro_y_spans_stacked_chunks() {
+        // A chunk stacked above (cy=1) contributes world Y = cy*16 + ly, so a
+        // column occupied only in the upper chunk grounds onto that higher surface.
+        let mut store = VoxelAuthorityStore::new();
+        store
+            .chunks
+            .insert([0, 0, 0], chunk_with_solid(16, &[idx16(1, 4, 1)]));
+        store
+            .chunks
+            .insert([0, 1, 0], chunk_with_solid(16, &[idx16(1, 2, 1)]));
+        // Upper chunk's ly=2 → world Y = 16 + 2 = 18 (beats the lower chunk's 4).
+        assert_eq!(store.column_top_macro_y(1, 1), Some(18));
     }
 }

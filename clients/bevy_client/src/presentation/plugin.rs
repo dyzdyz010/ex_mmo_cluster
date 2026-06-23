@@ -19,6 +19,7 @@ use crate::presentation::animation::{
 };
 use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
+use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::plugin::surface_center_y_at_render_xz;
 use crate::world::remote_actor::RemoteActorKind;
 use crate::world::remote_player::{RemoteMotionSample, RemoteSamplePath};
@@ -57,6 +58,7 @@ struct PlayerVisualParams<'w, 's> {
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     config: Res<'w, ClientConfig>,
     voxel_world: Res<'w, VoxelWorld>,
+    authority: Res<'w, VoxelAuthority>,
     assets: Res<'w, SceneRenderAssets>,
     observer: Res<'w, ClientObserver>,
     existing: Query<
@@ -166,6 +168,7 @@ fn sync_player_visuals(
             {
                 let target = actor_render_position(
                     &params.voxel_world,
+                    &params.authority,
                     motion.position,
                     visual.base_scale.y * 0.5,
                 );
@@ -260,7 +263,12 @@ fn sync_player_visuals(
                 Vec3::new(24.0, 36.0, 24.0)
             };
 
-            let target = actor_render_position(&params.voxel_world, motion.position, scale.y * 0.5);
+            let target = actor_render_position(
+                &params.voxel_world,
+                &params.authority,
+                motion.position,
+                scale.y * 0.5,
+            );
 
             commands.spawn((
                 PlayerVisual {
@@ -311,12 +319,19 @@ fn sync_player_visuals(
 /// path that doesn't yet know which cube it's looking at.
 pub fn actor_render_position(
     voxel_world: &VoxelWorld,
+    authority: &VoxelAuthority,
     sim_position: Vec3,
     half_height: f32,
 ) -> Vec3 {
     let render = crate::app::sim_to_render_position(sim_position);
-    let grounded_y =
-        surface_center_y_at_render_xz(voxel_world, render.x, render.z, half_height, render.y);
+    let grounded_y = surface_center_y_at_render_xz(
+        voxel_world,
+        authority,
+        render.x,
+        render.z,
+        half_height,
+        render.y,
+    );
     Vec3::new(render.x, grounded_y, render.z)
 }
 
