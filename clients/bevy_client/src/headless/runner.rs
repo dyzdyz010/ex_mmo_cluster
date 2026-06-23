@@ -125,6 +125,20 @@ pub fn run_stdio(
     loop {
         drain_events_once(&bridge, &observer, &mut state)?;
 
+        // Drain resync requests into radius-0 re-subscribes (mirrors the GUI's
+        // resync ECS system) so the harness re-pulls fresh snapshots after a
+        // delta-base mismatch instead of holding stale chunk truth.
+        if !state.pending_resyncs.is_empty() {
+            let coords = std::mem::take(&mut state.pending_resyncs);
+            for coord in coords {
+                bridge.send(NetworkCommand::SubscribeChunks {
+                    logical_scene_id: 1,
+                    center_chunk: coord,
+                    radius: 0,
+                });
+            }
+        }
+
         if let Some(command) = stdio.try_recv() {
             match command {
                 ClientStdioCommand::Snapshot => {

@@ -40,6 +40,10 @@ pub(super) struct HeadlessState {
     /// ignores field messages); tracked here so `va-fields` can self-verify that
     /// emergence reaches the client.
     pub field_store: VoxelFieldStore,
+    /// Chunks the authority store asked to resync (delta base mismatch). Drained
+    /// by `run_stdio` into radius-0 re-subscribes — the GUI does this via an ECS
+    /// system; headless must do it explicitly or it renders stale truth.
+    pub pending_resyncs: Vec<[i32; 3]>,
 }
 
 pub(super) fn apply_event(
@@ -229,6 +233,15 @@ pub(super) fn apply_event(
                 }
                 _ => match state.voxel_authority.ingest(&message) {
                     Ok(outcome) => {
+                        // A version-gate failure (delta base ≠ held version, e.g.
+                        // the chunk version churned from field activity) asks for a
+                        // resync. The GUI re-subscribes automatically; headless must
+                        // queue it so the harness re-pulls a fresh snapshot instead
+                        // of silently rendering stale truth (else `va-macro` misses
+                        // edits on field-active chunks).
+                        if let crate::voxel::authority::IngestOutcome::Resync(coord) = &outcome {
+                            state.pending_resyncs.push(*coord);
+                        }
                         observer.emit(
                             "headless",
                             "voxel_ingest",
