@@ -215,14 +215,20 @@ fn point_on_bolt(
     let q_len = norm(q).max(1.0);
 
     let edge_fade = (std::f32::consts::PI * t).sin();
-    let jitter_a =
-        (hash_unit(bolt.seed.wrapping_add(index.wrapping_mul(131)).wrapping_add(flicker.wrapping_mul(17))) - 0.5)
-            * jitter_scale
-            * edge_fade;
-    let jitter_b =
-        (hash_unit(bolt.seed.wrapping_add(index.wrapping_mul(197)).wrapping_add(flicker.wrapping_mul(31))) - 0.5)
-            * jitter_scale
-            * edge_fade;
+    let jitter_a = (hash_unit(
+        bolt.seed
+            .wrapping_add(index.wrapping_mul(131))
+            .wrapping_add(flicker.wrapping_mul(17)),
+    ) - 0.5)
+        * jitter_scale
+        * edge_fade;
+    let jitter_b = (hash_unit(
+        bolt.seed
+            .wrapping_add(index.wrapping_mul(197))
+            .wrapping_add(flicker.wrapping_mul(31)),
+    ) - 0.5)
+        * jitter_scale
+        * edge_fade;
 
     [
         bolt.source[0] + d[0] * t + px * jitter_a + (q[0] / q_len) * jitter_b,
@@ -343,7 +349,11 @@ pub fn infer_strike(field: &DischargeField, salt: i32) -> Option<([f32; 3], [f32
         field.chunk_coord[1] * CHUNK_SIZE_MACRO + dst_cell[1],
         field.chunk_coord[2] * CHUNK_SIZE_MACRO + dst_cell[2],
     ];
-    let seed = bolt_seed(src_macro, dst_macro, salt.wrapping_add(field.region_id as i32));
+    let seed = bolt_seed(
+        src_macro,
+        dst_macro,
+        salt.wrapping_add(field.region_id as i32),
+    );
     Some((source, target, seed))
 }
 
@@ -522,7 +532,10 @@ mod tests {
         };
         let (source, target, _) = infer_strike(&field, 0).expect("spatial fallback strike");
         let span = (source[0] - target[0]).abs();
-        assert!((span - 500.0).abs() < 1e-3, "endpoints span cells 0..5 = 500 world units");
+        assert!(
+            (span - 500.0).abs() < 1e-3,
+            "endpoints span cells 0..5 = 500 world units"
+        );
     }
 
     #[test]

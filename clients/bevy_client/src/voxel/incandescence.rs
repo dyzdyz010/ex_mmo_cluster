@@ -34,12 +34,12 @@ pub const INCANDESCENCE_MATERIAL_BASE: u32 = 10_400;
 /// normalized temperature `t` in `[0, 1]` (0 = Draper, 1 = white-hot). RGB
 /// magnitude doubles as brightness (an additive blend makes hotter = brighter).
 const BLACKBODY_ANCHORS: [[f32; 3]; 6] = [
-    [0.30, 0.02, 0.0],   // ~Draper: dim dark red
-    [0.85, 0.12, 0.0],   // red
-    [1.0, 0.36, 0.05],   // orange-red
-    [1.0, 0.60, 0.20],   // orange
-    [1.0, 0.82, 0.55],   // yellow-white
-    [1.0, 0.96, 0.88],   // white-hot
+    [0.30, 0.02, 0.0], // ~Draper: dim dark red
+    [0.85, 0.12, 0.0], // red
+    [1.0, 0.36, 0.05], // orange-red
+    [1.0, 0.60, 0.20], // orange
+    [1.0, 0.82, 0.55], // yellow-white
+    [1.0, 0.96, 0.88], // white-hot
 ];
 
 /// Blackbody glow color for a temperature, or `None` if below the Draper point
@@ -75,7 +75,8 @@ pub fn incandescence_material(temp_c: f32) -> Option<u32> {
         return None;
     }
     let t = ((temp_c - DRAPER_C) / (WHITE_HOT_C - DRAPER_C)).clamp(0.0, 1.0);
-    let bucket = ((t * INCANDESCENCE_BUCKET_COUNT as f32) as u32).min(INCANDESCENCE_BUCKET_COUNT - 1);
+    let bucket =
+        ((t * INCANDESCENCE_BUCKET_COUNT as f32) as u32).min(INCANDESCENCE_BUCKET_COUNT - 1);
     Some(INCANDESCENCE_MATERIAL_BASE + bucket)
 }
 
@@ -137,11 +138,17 @@ mod tests {
 
         // Green and blue channels climb with temperature (red→orange→yellow→white):
         // the telltale of a blackbody shift toward white.
-        assert!(mid[1] > dull[1] && hot[1] > mid[1], "green climbs with temp");
+        assert!(
+            mid[1] > dull[1] && hot[1] > mid[1],
+            "green climbs with temp"
+        );
         assert!(mid[2] > dull[2] && hot[2] > mid[2], "blue climbs with temp");
         // Overall brightness (R+G+B) climbs monotonically.
         let lum = |c: [f32; 3]| c[0] + c[1] + c[2];
-        assert!(lum(mid) > lum(dull) && lum(hot) > lum(mid), "brightness climbs");
+        assert!(
+            lum(mid) > lum(dull) && lum(hot) > lum(mid),
+            "brightness climbs"
+        );
         // The hottest is near-white (all channels high).
         assert!(hot[0] > 0.9 && hot[1] > 0.8 && hot[2] > 0.5);
     }
@@ -154,7 +161,10 @@ mod tests {
         assert!(cool < warm && warm < hot, "hotter → higher bucket id");
         // Way past white-hot saturates at the top bucket (no overflow).
         let saturated = incandescence_material(10_000.0).unwrap();
-        assert_eq!(saturated, INCANDESCENCE_MATERIAL_BASE + INCANDESCENCE_BUCKET_COUNT - 1);
+        assert_eq!(
+            saturated,
+            INCANDESCENCE_MATERIAL_BASE + INCANDESCENCE_BUCKET_COUNT - 1
+        );
     }
 
     #[test]
@@ -162,7 +172,8 @@ mod tests {
         // A low bucket is reddish (red dominates); a high bucket is near-white.
         let low = incandescence_color(INCANDESCENCE_MATERIAL_BASE);
         assert!(low[0] > low[1] && low[0] > low[2], "low bucket reddish");
-        let high = incandescence_color(INCANDESCENCE_MATERIAL_BASE + INCANDESCENCE_BUCKET_COUNT - 1);
+        let high =
+            incandescence_color(INCANDESCENCE_MATERIAL_BASE + INCANDESCENCE_BUCKET_COUNT - 1);
         assert!(high[1] > 0.7 && high[2] > 0.4, "high bucket near-white");
         // A non-incandescence id contributes no glow (black under additive).
         assert_eq!(incandescence_color(2), [0.0, 0.0, 0.0, 1.0]);

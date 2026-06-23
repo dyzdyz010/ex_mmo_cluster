@@ -826,10 +826,9 @@ mod tests {
         let s = light_overlay_mesh(&field, 100.0).summary();
         assert_eq!(s.quad_count, 6); // only the bright cell → one marker cube
         assert!(
-            s.area_by_material
-                .keys()
-                .all(|m| (LIGHT_MATERIAL_BASE..LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT)
-                    .contains(m))
+            s.area_by_material.keys().all(|m| (LIGHT_MATERIAL_BASE
+                ..LIGHT_MATERIAL_BASE + LIGHT_BUCKET_COUNT)
+                .contains(m))
         );
         // mask clear → no light overlay.
         let mut bare = field.clone();
@@ -860,7 +859,7 @@ mod tests {
             electric_potential: vec![],
             electric_current: vec![],
             ionization: vec![],
-            light: vec![1, 255],                  // first below threshold, second drawn
+            light: vec![1, 255], // first below threshold, second drawn
             light_color: vec![0xFFA040, 0x60A0FF], // warm, cool
         };
         let mesh = light_overlay_mesh(&field, 100.0);

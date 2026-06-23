@@ -463,7 +463,11 @@ mod tests {
 
         let mut w = Writer::new();
         decoded.encode(&mut w);
-        assert_eq!(w.into_bytes(), golden, "light golden re-encode byte mismatch");
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "light golden re-encode byte mismatch"
+        );
     }
 
     #[test]
@@ -486,7 +490,11 @@ mod tests {
 
         let mut w = Writer::new();
         decoded.encode(&mut w);
-        assert_eq!(w.into_bytes(), golden, "colored-light golden re-encode mismatch");
+        assert_eq!(
+            w.into_bytes(),
+            golden,
+            "colored-light golden re-encode mismatch"
+        );
     }
 
     #[test]

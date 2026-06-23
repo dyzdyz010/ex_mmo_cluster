@@ -210,7 +210,10 @@ mod tests {
             mesh: Handle::default(),
             material,
         })
-        .add_systems(Update, (spawn_lightning, advance_and_render_lightning).chain());
+        .add_systems(
+            Update,
+            (spawn_lightning, advance_and_render_lightning).chain(),
+        );
         app
     }
 
@@ -237,7 +240,9 @@ mod tests {
         let mut app = test_app();
         {
             let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
-            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge_snapshot(5)));
+            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge_snapshot(
+                5,
+            )));
             authority.drain_inbox();
         }
         app.update();
@@ -254,7 +259,9 @@ mod tests {
         let mut app = test_app();
         {
             let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
-            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge_snapshot(5)));
+            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(discharge_snapshot(
+                5,
+            )));
             authority.drain_inbox();
         }
         app.update();
@@ -265,7 +272,10 @@ mod tests {
             .resource_mut::<Time>()
             .advance_by(std::time::Duration::from_millis(500));
         app.update();
-        assert_eq!(app.world().resource::<LightningEffect>().sim.active_count(), 0);
+        assert_eq!(
+            app.world().resource::<LightningEffect>().sim.active_count(),
+            0
+        );
         assert_eq!(app.world().resource::<LightningEntities>().0.len(), 0);
     }
 
@@ -275,24 +285,29 @@ mod tests {
         {
             let mut authority = app.world_mut().resource_mut::<VoxelAuthority>();
             // Potential-only (no ionization layer) → no discharge event → no bolt.
-            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(FieldRegionSnapshot {
-                logical_scene_id: 1,
-                chunk_coord: [0, 0, 0],
-                region_id: 9,
-                tick_count: 1,
-                field_mask: FIELD_MASK_ELECTRIC_POTENTIAL,
-                macro_indices: vec![0, 1],
-                temperature: vec![],
-                electric_potential: vec![100.0, 0.0],
-                electric_current: vec![],
-                ionization: vec![],
-                light: vec![],
-                light_color: vec![],
-            }));
+            authority.enqueue(VoxelServerMessage::FieldRegionSnapshot(
+                FieldRegionSnapshot {
+                    logical_scene_id: 1,
+                    chunk_coord: [0, 0, 0],
+                    region_id: 9,
+                    tick_count: 1,
+                    field_mask: FIELD_MASK_ELECTRIC_POTENTIAL,
+                    macro_indices: vec![0, 1],
+                    temperature: vec![],
+                    electric_potential: vec![100.0, 0.0],
+                    electric_current: vec![],
+                    ionization: vec![],
+                    light: vec![],
+                    light_color: vec![],
+                },
+            ));
             authority.drain_inbox();
         }
         app.update();
-        assert_eq!(app.world().resource::<LightningEffect>().sim.active_count(), 0);
+        assert_eq!(
+            app.world().resource::<LightningEffect>().sim.active_count(),
+            0
+        );
         assert_eq!(app.world().resource::<LightningEntities>().0.len(), 0);
     }
 

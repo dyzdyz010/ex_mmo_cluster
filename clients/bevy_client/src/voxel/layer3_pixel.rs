@@ -41,8 +41,8 @@ use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk}
 use crate::voxel::surface_decal::surface_decal_mesh;
 use crate::voxel::wire::{
     FIELD_MASK_ELECTRIC_CURRENT, FIELD_MASK_ELECTRIC_POTENTIAL, FIELD_MASK_IONIZATION,
-    FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionSnapshot, MaskWords,
-    MicroLayer, NormalBlock, RefinedCell, SurfaceElement, VoxelServerMessage,
+    FIELD_MASK_LIGHT, FIELD_MASK_LIGHT_COLOR, FIELD_MASK_TEMPERATURE, FieldRegionSnapshot,
+    MaskWords, MicroLayer, NormalBlock, RefinedCell, SurfaceElement, VoxelServerMessage,
 };
 use crate::voxel::{HeatSmokePlugin, IncandescencePlugin, LightningPlugin, VoxelAuthority};
 
@@ -715,12 +715,19 @@ fn glow_centroid(data: &[u8]) -> Px {
             a: 1.0,
         };
     }
-    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    let (cx, cy) = (
+        (sx / non_clear as u64) as u32,
+        (sy / non_clear as u64) as u32,
+    );
     sample_patch(data, cx, cy, 4)
 }
 
 /// A temperature field snapshot for the incandescence tests.
-fn incandescence_temp_field(region_id: u64, chunk_coord: [i32; 3], cells: &[(u16, f32)]) -> FieldRegionSnapshot {
+fn incandescence_temp_field(
+    region_id: u64,
+    chunk_coord: [i32; 3],
+    cells: &[(u16, f32)],
+) -> FieldRegionSnapshot {
     temperature_field(region_id, chunk_coord, cells)
 }
 
@@ -1195,7 +1202,10 @@ fn lightning_bolt_rasterizes_on_screen() {
     // At the bolt centroid (where the overlapping segments are solidly covered),
     // the cyan bolt's blue channel dominates: blue is high and well above red — the
     // cyan signature distinguishing it from gray geometry or the warm clear color.
-    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    let (cx, cy) = (
+        (sx / non_clear as u64) as u32,
+        (sy / non_clear as u64) as u32,
+    );
     let c = sample_patch(&data, cx, cy, 4);
     assert!(
         c.b > 0.45 && c.b > c.r + 0.10,

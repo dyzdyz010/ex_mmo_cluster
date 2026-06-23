@@ -161,7 +161,11 @@ mod tests {
         app
     }
 
-    fn temp_region(region_id: u64, chunk_coord: [i32; 3], cells: &[(u16, f32)]) -> FieldRegionSnapshot {
+    fn temp_region(
+        region_id: u64,
+        chunk_coord: [i32; 3],
+        cells: &[(u16, f32)],
+    ) -> FieldRegionSnapshot {
         FieldRegionSnapshot {
             logical_scene_id: 1,
             chunk_coord,
