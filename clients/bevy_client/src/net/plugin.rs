@@ -36,12 +36,27 @@ const VOXEL_CHUNK_WORLD_SIZE: f64 = 1600.0;
 /// default 5×5-chunk dev platform from spawn; the server caps radius at 4.
 const VOXEL_SUBSCRIBE_RADIUS: u8 = 2;
 
-/// Maps a server sim-space position to its containing chunk coord.
+/// Maps a server sim-space position (`[server_x, server_y, server_z]`) to its
+/// containing voxel chunk coord.
+///
+/// Voxel/chunk space uses the **render** axis convention (chunk axis 1 = up =
+/// server Z), the same convention as `chunk_translation`, the authority store,
+/// and the avatar grounding path — and the server itself
+/// (`SceneServer.Movement.VoxelCollision` maps movement `{x,y,z}` → voxel
+/// `{x,z,y}`). So we MUST swap Y↔Z here, exactly like `sim_to_render_position`.
+///
+/// The omission was a real bug: dividing the raw sim position component-wise put
+/// the horizontal `server_y` travel onto the *vertical* chunk axis while the
+/// near-constant vertical `server_z` (~185) pinned the true horizontal chunk
+/// axis at 0 — so AOI subscription stopped streaming terrain in the travel
+/// direction and the player eventually walked into the void. At the default
+/// spawn all three axes are < 1600 so every mapping collapses to `[0,0,0]`,
+/// which is why it stayed hidden until the player moved.
 fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
     [
         (location[0] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
-        (location[1] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
         (location[2] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
+        (location[1] / VOXEL_CHUNK_WORLD_SIZE).floor() as i32,
     ]
 }
 
@@ -421,5 +436,42 @@ fn poll_network_events(
                 push_line(&mut world_state.logs, format!("disconnect: {reason}"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voxel_chunk_of_swaps_vertical_axis_to_match_render_chunk_space() {
+        // Default spawn {750,750,185}: all axes < 1600 → [0,0,0]. This collapse is
+        // exactly why the missing-swap bug stayed hidden at spawn.
+        assert_eq!(voxel_chunk_of([750.0, 750.0, 185.0]), [0, 0, 0]);
+
+        // Walking the horizontal server_y axis must advance the HORIZONTAL chunk
+        // axis (index 2), NOT the vertical one (index 1); the near-constant
+        // vertical server_z keeps the vertical chunk axis at 0.
+        let horizontal = voxel_chunk_of([750.0, 5000.0, 185.0]);
+        assert_eq!(horizontal[0], 0);
+        assert_eq!(
+            horizontal[1], 0,
+            "vertical chunk axis must stay 0 while walking horizontally"
+        );
+        assert_eq!(
+            horizontal[2], 3,
+            "horizontal server_y travel lands on chunk axis 2 (5000/1600 = 3)"
+        );
+
+        // Vertical server_z drives the vertical chunk axis (index 1).
+        let vertical = voxel_chunk_of([750.0, 750.0, 5000.0]);
+        assert_eq!(
+            vertical[1], 3,
+            "vertical server_z lands on chunk axis 1 (5000/1600 = 3)"
+        );
+        assert_eq!(vertical[2], 0);
+
+        // Negative coords floor toward -∞ (Euclidean chunk boundaries).
+        assert_eq!(voxel_chunk_of([-100.0, -100.0, -100.0]), [-1, -1, -1]);
     }
 }
