@@ -1,0 +1,3 @@
+# Layer-3 showcase PNG renders (regenerate with:
+# cargo test --features layer3 --lib voxel::layer3_pixel::showcase -- --test-threads=1)
+/showcase_out/

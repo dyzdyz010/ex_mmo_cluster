@@ -19,6 +19,8 @@ movement_core = { path = "../../apps/scene_server/native/movement_core" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# PNG encode for the layer3 showcase renders (saves the GPU readback to disk).
+png = "0.17"
 
 [[bench]]
 name = "predictor_bench"

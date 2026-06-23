@@ -339,7 +339,7 @@ pub(crate) fn build_mesh_with_colors(
 
 /// Placeholder material palette (ids mirror `MaterialCatalog`). Replaced by a
 /// texture array in M6; unknown ids render magenta to be obvious.
-fn material_color(material_id: u32) -> [f32; 4] {
+pub(crate) fn material_color(material_id: u32) -> [f32; 4] {
     match material_id {
         1 => [0.55, 0.40, 0.25, 1.0],  // dirt
         2 => [0.50, 0.50, 0.50, 1.0],  // stone

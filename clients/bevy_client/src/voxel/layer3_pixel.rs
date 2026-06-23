@@ -34,7 +34,9 @@ use bevy::winit::WinitPlugin;
 
 use crate::login::AppState;
 use crate::voxel::authority::{AuthorityChunk, CellState};
-use crate::voxel::chunk_render::{build_decal_mesh, build_mesh, build_mesh_with_colors};
+use crate::voxel::chunk_render::{
+    build_decal_mesh, build_mesh, build_mesh_with_colors, material_color,
+};
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
 use crate::voxel::mesher::{ChunkNeighbors, chunk_render_mesh, greedy_mesh_chunk};
@@ -47,9 +49,11 @@ use crate::voxel::wire::{
 use crate::voxel::{HeatSmokePlugin, IncandescencePlugin, LightningPlugin, VoxelAuthority};
 
 /// Framebuffer size. Width divisible by 64 → RGBA8 row bytes (W*4) divisible by
-/// 256 → no GPU row padding to de-pad on readback.
-const W: u32 = 256;
-const H: u32 = 256;
+/// 256 → no GPU row padding to de-pad on readback. 512 keeps the assertion tests
+/// valid (all sampling is center-relative `W/2,H/2` or centroid-based) while giving
+/// the showcase renders a presentable resolution.
+const W: u32 = 512;
+const H: u32 = 512;
 const MACRO: f32 = 100.0; // MACRO_RENDER_SIZE
 
 /// Distinct dark-green clear color: neither gray (terrain) nor red (overlay), so
@@ -1257,4 +1261,243 @@ fn incandescence_glow_color_emerges_from_temperature() {
         "1800C glow must be whiter than 900C (green & blue climb with temperature); \
          warm={warm_c:?} hot={hot_c:?}"
     );
+}
+
+// ============================================================================
+// Showcase: real-GPU off-screen renders of the key client features, saved as PNG.
+// The user cannot run the GUI, so these ARE the visual proof — real meshes, real
+// materials, real emergence effects. Output: clients/bevy_client/showcase_out/*.png
+//
+// Run: cargo test --features layer3 --lib voxel::layer3_pixel::showcase \
+//        -- --test-threads=1 --nocapture
+// Single-threaded is mandatory (each render owns a Vulkan device; module header).
+// ============================================================================
+
+fn showcase_out_dir() -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("showcase_out");
+    std::fs::create_dir_all(&dir).expect("create showcase_out dir");
+    dir
+}
+
+fn save_showcase_png(name: &str, data: &[u8]) {
+    let path = showcase_out_dir().join(format!("{name}.png"));
+    let file = std::fs::File::create(&path).expect("create png");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("png header")
+        .write_image_data(data)
+        .expect("png data");
+    eprintln!("showcase: wrote {} ({W}x{H})", path.display());
+}
+
+fn showcase_material_chunk(cells: &[(i32, i32, i32, u16)]) -> AuthorityChunk {
+    let size = 16usize;
+    let mut grid = vec![CellState::Empty; size * size * size];
+    for &(x, y, z, m) in cells {
+        let i = (x + y * size as i32 + z * size as i32 * size as i32) as usize;
+        grid[i] = stone(m);
+    }
+    AuthorityChunk {
+        chunk_version: 1,
+        chunk_size_in_macro: size as u8,
+        cells: grid,
+        ..Default::default()
+    }
+}
+
+/// Camera tuned for SHOWCASE terrain: moderate ambient + a key directional light,
+/// so lit material colors read (the assertion harness's flat ambient-6000 blows
+/// terrain to white).
+fn spawn_showcase_lit_camera(world: &mut World, image: Handle<Image>, eye: Vec3, look: Vec3) {
+    world.spawn((
+        Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(clear_color()),
+            ..default()
+        },
+        RenderTarget::Image(image.into()),
+        Tonemapping::None,
+        AmbientLight {
+            color: Color::WHITE,
+            brightness: 350.0,
+            ..default()
+        },
+        Transform::from_translation(eye).looking_at(look, Vec3::Y),
+    ));
+    world.spawn((
+        DirectionalLight {
+            illuminance: 2600.0,
+            ..default()
+        },
+        Transform::from_xyz(-0.4, 1.0, -0.7).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+}
+
+/// Real mesh path WITH per-material vertex colors (stone gray, lava red, sprout
+/// green, glowstone blue) — the terrain as the live client draws it.
+fn spawn_chunk_colored(world: &mut World, chunk: &AuthorityChunk) {
+    let data = chunk_render_mesh(chunk, MACRO, &ChunkNeighbors::default());
+    let mesh = build_mesh_with_colors(&data, material_color);
+    let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    let material = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+    world.spawn((
+        Mesh3d(mesh_handle),
+        MeshMaterial3d(material),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
+/// 1. Voxel terrain — the real greedy + refined mesh with per-material colors.
+#[test]
+fn showcase_voxel_terrain() {
+    let chunk = showcase_material_chunk(&[
+        (1, 0, 2, 2),
+        (2, 0, 2, 2),
+        (3, 0, 2, 2),
+        (4, 0, 2, 2),
+        (5, 0, 2, 2),
+        (1, 0, 3, 2),
+        (2, 0, 3, 2),
+        (3, 0, 3, 2),
+        (4, 0, 3, 2),
+        (5, 0, 3, 2),
+        (2, 1, 2, 2),
+        (3, 1, 2, 2),
+        (4, 1, 2, 2),
+        (3, 2, 2, 2),
+        (1, 1, 2, 15), // lava (red)
+        (5, 1, 2, 18), // sprout (green)
+        (3, 3, 2, 19), // glowstone (blue)
+        (4, 2, 2, 14), // molten iron (orange)
+    ]);
+    let refined = refined_stone_chunk((0, 0, 2));
+    let look = Vec3::new(300.0, 150.0, 250.0);
+    let data = render_scene(|world, image| {
+        spawn_showcase_lit_camera(world, image, Vec3::new(160.0, 420.0, -340.0), look);
+        spawn_chunk_colored(world, &chunk);
+        spawn_chunk_colored(world, &refined);
+    });
+    save_showcase_png("01_voxel_terrain", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// 2. Emergent colored light — the authoritative `:light` + `:light_color` field:
+///    warm ember sources (0xFFA040) and cool glowstone sources (0x60A0FF). The hue
+///    emerges from the server light field, not per-material authoring.
+#[test]
+fn showcase_emergent_colored_light() {
+    let light = colored_light_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 255, 0xFF_A040),
+            (idx(3, 1, 1), 255, 0x60_A0FF),
+            (idx(2, 2, 1), 210, 0xFF_A040),
+            (idx(2, 1, 2), 220, 0x60_A0FF),
+        ],
+    );
+    let look = Vec3::new(230.0, 170.0, 170.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(230.0, 170.0, -380.0), look);
+        spawn_overlay_kind(world, &light, FieldOverlayKind::Light);
+    });
+    save_showcase_png("02_emergent_colored_light", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// 3. Thermal incandescence — a row of cells at rising temperature glows with color
+///    DERIVED from temperature: ~700C red, ~1200C orange, ~1800C white-hot.
+#[test]
+fn showcase_thermal_incandescence() {
+    let field = incandescence_temp_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 700.0),
+            (idx(2, 1, 1), 1200.0),
+            (idx(3, 1, 1), 1800.0),
+        ],
+    );
+    let data = render_with_incandescence(
+        &field,
+        Vec3::new(250.0, 150.0, -460.0),
+        Vec3::new(250.0, 150.0, 150.0),
+    );
+    save_showcase_png("03_thermal_incandescence", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// 4. Electric discharge — a breakdown channel arcs a jagged cyan lightning bolt.
+#[test]
+fn showcase_lightning_arc() {
+    let field = discharge_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 200.0, 200),
+            (idx(2, 1, 1), 40.0, 190),
+            (idx(3, 1, 1), -60.0, 180),
+        ],
+    );
+    let data = render_with_lightning(
+        &field,
+        Vec3::new(250.0, 150.0, -460.0),
+        Vec3::new(250.0, 150.0, 150.0),
+    );
+    save_showcase_png("04_lightning_arc", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// 5. Temperature field truth — hot cells (red) + cold cells (purple) on the
+///    thermal overlay ramp: the committed temperature field made visible.
+#[test]
+fn showcase_temperature_field() {
+    let field = temperature_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 10000.0),
+            (idx(2, 2, 1), 8000.0),
+            (idx(3, 1, 1), -250.0),
+            (idx(2, 0, 1), -180.0),
+        ],
+    );
+    let look = Vec3::new(230.0, 150.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(230.0, 150.0, -400.0), look);
+        spawn_overlay(world, &field);
+    });
+    save_showcase_png("05_temperature_field_hot_cold", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
+}
+
+/// 6. Ionization plasma — the breakdown-conditioning field on the dark-blue to cyan
+///    plasma ramp (the conditioned discharge channel made visible).
+#[test]
+fn showcase_ionization_plasma() {
+    let field = discharge_field(
+        1,
+        [0, 0, 0],
+        &[
+            (idx(1, 1, 1), 0.0, 240),
+            (idx(2, 1, 1), 0.0, 220),
+            (idx(3, 1, 1), 0.0, 200),
+            (idx(2, 2, 1), 0.0, 180),
+        ],
+    );
+    let look = Vec3::new(230.0, 170.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(230.0, 170.0, -400.0), look);
+        spawn_overlay_kind(world, &field, FieldOverlayKind::Ionization);
+    });
+    save_showcase_png("06_ionization_plasma", &data);
+    assert_eq!(data.len(), (W * H * 4) as usize);
 }
