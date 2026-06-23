@@ -126,10 +126,17 @@ defmodule WorldServer.Voxel.DevSeed do
         with {:ok, {:ok, _assignment}} <- safe_call(fn -> MapLedger.put_region(ledger, attrs) end),
              {:ok, {:ok, _lease}} <-
                safe_call(fn ->
-                 MapLedger.issue_lease(ledger, region_id, owner_ref,
-                   owner_epoch: owner_epoch,
-                   ttl_ms: lease_ttl_ms
-                 )
+                 # Do NOT pin owner_epoch here. MapLedger only uses the DB's
+                 # monotonic epoch allocator (RegionEpochStore.allocate_next) when
+                 # owner_epoch is absent; an explicit value bypasses it. Pinning the
+                 # static @default_owner_epoch (1) makes the published write token's
+                 # token_version=1 — STALE vs the DB's advanced token_version after a
+                 # session/restart — so issue_lease fails :stale_token forever, the
+                 # region stays lease-less, and every ChunkSubscribe is rejected
+                 # :region_without_lease (empty dev world). Letting the allocator pick
+                 # guarantees a monotonic epoch ≥ the persisted one. (The renew path
+                 # already omits owner_epoch for exactly this reason.)
+                 MapLedger.issue_lease(ledger, region_id, owner_ref, ttl_ms: lease_ttl_ms)
                end),
              {:ok, {:ok, route}} <-
                safe_call(fn ->

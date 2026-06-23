@@ -703,7 +703,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
       nil ->
         case normalize_apply_intents(attrs_list) do
           {:ok, intents} ->
-            case apply_normalized_intents(state, intents) do
+            # retry_on_persist_stale?: true — a batch (seed / prefab) whose persist
+            # races a higher DB version self-heals by re-applying on the canonical
+            # snapshot, mirroring the single-intent path.
+            case apply_normalized_intents(state, intents, true) do
               {:ok, reply, next_state} ->
                 next_state = maybe_schedule_field_refresh(next_state, reply.changed?)
 
@@ -1591,7 +1594,20 @@ defmodule SceneServer.Voxel.ChunkProcess do
      }, state}
   end
 
+  # 2-arg form (transaction-commit path): NO persist-stale recovery, to leave
+  # transaction semantics unchanged.
   defp apply_normalized_intents(state, intents) do
+    apply_normalized_intents(state, intents, false)
+  end
+
+  # 3-arg form: when `retry_on_persist_stale?`, a `:stale_chunk_version` persist
+  # (the DB-canonical chunk advanced past this process's in-memory version — e.g.
+  # a fresh ChunkProcess at version 0 vs a high persisted version after edits +
+  # restart) loads the canonical snapshot and re-applies the batch on top, ONCE.
+  # This makes the BATCH path self-heal exactly like the single-intent path
+  # (`apply_normalized_intent`), so the dev terrain seed (a batch write) no longer
+  # fails forever with `:stale_chunk_version` after a session/restart desync.
+  defp apply_normalized_intents(state, intents, retry_on_persist_stale?) do
     # Phase 4 (D7):collect damage attribution before clearing micros.
     damage_attribution = collect_damage_attribution(state.storage, intents)
 
@@ -1639,6 +1655,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
             {:ok, reply, next_state}
 
+          {:error, :stale_chunk_version} when retry_on_persist_stale? ->
+            recover_and_reapply_intents_after_stale(state, intents, lease)
+
           {:error, reason} ->
             {:error, reason}
         end
@@ -1656,6 +1675,19 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
         {:ok, reply, %{state | lease: lease}}
       end
+    end
+  end
+
+  # Batch sibling of the single-intent `maybe_recover_stale_persist`: load the
+  # DB-canonical snapshot (adopting its higher chunk_version) and re-apply the
+  # whole batch on top, with recovery disabled so it runs at most once.
+  defp recover_and_reapply_intents_after_stale(state, intents, lease) do
+    case recover_canonical_snapshot_after_persist_stale(state, lease, :batch_persist_stale) do
+      {:ok, recovered_state} ->
+        apply_normalized_intents(recovered_state, intents, false)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
