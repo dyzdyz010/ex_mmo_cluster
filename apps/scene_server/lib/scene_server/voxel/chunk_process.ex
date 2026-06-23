@@ -15,13 +15,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.AttributeCatalog
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.DirtyMacroBounds
-  alias SceneServer.Voxel.Field.CircuitComponentAnalysis
   alias SceneServer.Voxel.Field.FieldCodec
+  alias SceneServer.Voxel.Field.FieldProvisioner
   alias SceneServer.Voxel.Field.FieldRegion
   alias SceneServer.Voxel.Field.FieldTickSupervisor
   alias SceneServer.Voxel.Field.FieldTickWorker
-  alias SceneServer.Voxel.Field.Kernels.CircuitCurrentKernel
   alias SceneServer.Voxel.Field.ParticipantProjection
+  alias SceneServer.Voxel.Field.Provisioners.ElectricCircuit
   alias SceneServer.Voxel.Hash
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
@@ -39,7 +39,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # Phase 5.E: 10 Hz simulation tick (100ms interval). 见
   # `docs/plans/2026-05-13-phase5e-simulation-tick-infrastructure.md` E-2。
   @simulation_tick_interval_ms 100
-  @auto_circuit_refresh_debounce_ms 50
+  @field_refresh_debounce_ms 50
+
+  # 世界内容驱动场 provisioning:块变更去抖后一次 sweep 遍历这组 provisioner,
+  # 各自探测 chunk 内容 → ensure / release 对应 region。electric_circuit 第一个
+  # (闭合电路);emergence / thermal 随后。见
+  # docs/2026-06-23-world-content-driven-field-provisioning.md。
+  @field_provisioners [ElectricCircuit]
   @fixed32_scale 65_536
   @temperature_attribute_name "temperature"
   # 温度属性 catalog 边界(冻结值,见 priv/catalogs/attribute_catalog_v1.exs id 1)。R5d:注热写须 clip 到
@@ -484,7 +490,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
        field_region_sources: %{},
        field_region_source_keys: %{},
        field_region_cleanup_links: %{},
-       auto_circuit_refresh_pending?: false
+       field_refresh_pending?: false
      }}
   end
 
@@ -640,7 +646,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:ok, intent} ->
             case apply_normalized_intent(state, intent) do
               {:ok, reply, next_state} ->
-                next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+                next_state = maybe_schedule_field_refresh(next_state, reply.changed?)
 
                 CliObserve.emit("voxel_intent_applied", fn ->
                   %{
@@ -693,7 +699,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           {:ok, intents} ->
             case apply_normalized_intents(state, intents) do
               {:ok, reply, next_state} ->
-                next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+                next_state = maybe_schedule_field_refresh(next_state, reply.changed?)
 
                 CliObserve.emit("voxel_intents_applied", fn ->
                   %{
@@ -753,7 +759,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def handle_call({:commit_transaction, transaction_id}, _from, state) do
     case commit_transaction_in_state(state, transaction_id) do
       {:ok, reply, next_state, intents} ->
-        next_state = maybe_schedule_auto_circuit_refresh(next_state, reply.changed?)
+        next_state = maybe_schedule_field_refresh(next_state, reply.changed?)
 
         emit_transaction_event(next_state, transaction_id, "voxel_chunk_transaction_committed", %{
           chunk_version: next_state.storage.chunk_version,
@@ -882,7 +888,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     next_state =
       %{state | storage: storage}
-      |> maybe_schedule_auto_circuit_refresh(true)
+      |> maybe_schedule_field_refresh(true)
 
     push_snapshot_fallbacks(next_state, :put_solid_block)
 
@@ -1028,7 +1034,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     known_version = Keyword.get(opts, :known_version)
     send_snapshot? = Keyword.get(opts, :send_snapshot?, true)
     {state, monitor_ref} = put_subscriber(state, subscriber, request_id)
-    state = maybe_schedule_auto_circuit_refresh_for_subscriber(state)
+    state = maybe_schedule_field_refresh_for_subscriber(state)
     payload = encode_snapshot_payload(state.storage, request_id)
     snapshot_sent? = send_snapshot? and known_version != state.storage.chunk_version
 
@@ -1220,9 +1226,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   @impl true
-  def handle_info(:refresh_auto_circuit_after_mutation, state) do
-    state = %{state | auto_circuit_refresh_pending?: false}
-    {:noreply, refresh_auto_circuit_after_mutation(state)}
+  def handle_info(:refresh_fields_after_mutation, state) do
+    state = %{state | field_refresh_pending?: false}
+    {:noreply, refresh_fields_after_mutation(state)}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, subscriber, reason}, state) do
@@ -1267,7 +1273,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
           |> cleanup_linked_field_regions(source_key, destroy_reason)
           |> drop_field_region_monitor(monitor_ref, region_id)
           |> maybe_emit_worker_down_source_lifecycle(region_id, source_key, reason)
-          |> maybe_refresh_expired_auto_circuit(source_key, destroy_reason)
+          |> maybe_refresh_expired_field(source_key, destroy_reason)
 
         {:noreply, new_state}
     end
@@ -3996,222 +4002,151 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
-  defp maybe_schedule_auto_circuit_refresh(state, true) do
-    if Map.get(state, :auto_circuit_refresh_pending?, false) do
+  defp maybe_schedule_field_refresh(state, true) do
+    if Map.get(state, :field_refresh_pending?, false) do
       state
     else
       Process.send_after(
         self(),
-        :refresh_auto_circuit_after_mutation,
-        @auto_circuit_refresh_debounce_ms
+        :refresh_fields_after_mutation,
+        @field_refresh_debounce_ms
       )
 
-      %{state | auto_circuit_refresh_pending?: true}
+      %{state | field_refresh_pending?: true}
     end
   end
 
-  defp maybe_schedule_auto_circuit_refresh(state, _changed?), do: state
+  defp maybe_schedule_field_refresh(state, _changed?), do: state
 
-  defp maybe_schedule_auto_circuit_refresh_for_subscriber(state) do
-    source_key = auto_circuit_source_key(state)
+  # 订阅时机:chunk 可能加载了内容却从未 mutate(没触发过 sweep)。若有任一 provisioner
+  # 当前 active 且尚未起 source,补一次 sweep,让新订阅者看到本该存在的场 region。
+  defp maybe_schedule_field_refresh_for_subscriber(%{storage: %Storage{}} = state) do
+    context = build_field_context(state)
 
-    cond do
-      Map.has_key?(state.field_region_sources, source_key) ->
-        state
+    needs_refresh? =
+      Enum.any?(@field_provisioners, fn provisioner ->
+        not Map.has_key?(state.field_region_sources, provisioner.source_key(context)) and
+          FieldProvisioner.active?(provisioner, context)
+      end)
 
-      storage_has_auto_circuit_roles?(state.storage) ->
-        maybe_schedule_auto_circuit_refresh(state, true)
-
-      true ->
-        state
-    end
+    if needs_refresh?, do: maybe_schedule_field_refresh(state, true), else: state
   end
 
-  defp storage_has_auto_circuit_roles?(%Storage{} = storage) do
-    projection = ParticipantProjection.build(storage)
-    aabb = auto_circuit_aabb()
-    source_points = auto_circuit_source_points(projection, aabb)
-    load_count = auto_circuit_role_count(projection, aabb, :load)
+  defp maybe_schedule_field_refresh_for_subscriber(state), do: state
 
-    source_points != [] and load_count > 0 and
-      auto_circuit_closed_circuit_count(projection, aabb, storage.chunk_coord, source_points) >
-        0
+  defp build_field_context(%{storage: %Storage{} = storage} = state) do
+    %{
+      storage: storage,
+      projection: ParticipantProjection.build(storage),
+      chunk_coord: state.chunk_coord,
+      logical_scene_id: state.logical_scene_id
+    }
   end
 
-  defp storage_has_auto_circuit_roles?(_storage), do: false
+  # 世界内容驱动场 provisioning 的统一 sweep:一次构建只读 context,遍历每个
+  # provisioner → active 则 ensure 对应 region,inactive 则 release。各 provisioner
+  # 独立 rescue(单个失败不波及其他);context 构建失败整体兜底。
+  defp refresh_fields_after_mutation(%{storage: %Storage{}} = state) do
+    context = build_field_context(state)
 
-  defp refresh_auto_circuit_after_mutation(%{storage: %Storage{} = storage} = state) do
-    projection = ParticipantProjection.build(storage)
-    aabb = auto_circuit_aabb()
-    source_key = auto_circuit_source_key(state)
-    source_points = auto_circuit_source_points(projection, aabb)
-    load_count = auto_circuit_role_count(projection, aabb, :load)
-
-    closed_circuit_count =
-      auto_circuit_closed_circuit_count(projection, aabb, state.chunk_coord, source_points)
-
-    cond do
-      source_points == [] ->
-        {_result, next_state} =
-          release_field_region_source_entry(state, source_key, :explicit)
-
-        emit_auto_circuit_refresh(next_state, :released, %{
-          reason: :no_power_source,
-          source_count: 0,
-          load_count: load_count,
-          closed_circuit_count: closed_circuit_count,
-          source_key: source_key
-        })
-
-        next_state
-
-      load_count == 0 ->
-        {_result, next_state} =
-          release_field_region_source_entry(state, source_key, :explicit)
-
-        emit_auto_circuit_refresh(next_state, :released, %{
-          reason: :no_load,
-          source_count: length(source_points),
-          load_count: 0,
-          closed_circuit_count: closed_circuit_count,
-          source_key: source_key
-        })
-
-        next_state
-
-      closed_circuit_count == 0 ->
-        {_result, next_state} =
-          release_field_region_source_entry(state, source_key, :explicit)
-
-        emit_auto_circuit_refresh(next_state, :released, %{
-          reason: :no_closed_circuit,
-          source_count: length(source_points),
-          load_count: load_count,
-          closed_circuit_count: closed_circuit_count,
-          source_key: source_key
-        })
-
-        next_state
-
-      true ->
-        attrs = %{
+    Enum.reduce(@field_provisioners, state, fn provisioner, acc ->
+      apply_field_provisioner(acc, provisioner, context)
+    end)
+  rescue
+    error ->
+      CliObserve.emit("voxel_field_refresh_failed", fn ->
+        %{
+          logical_scene_id: state.logical_scene_id,
           chunk_coord: state.chunk_coord,
-          aabb: aabb,
-          kernels: [auto_circuit_kernel_spec()],
-          source_points: source_points,
-          max_ticks: nil,
-          source_points_mode: :replace,
-          source_key: source_key
+          reason: Exception.message(error)
         }
+      end)
+
+      state
+  end
+
+  defp refresh_fields_after_mutation(state), do: state
+
+  defp apply_field_provisioner(state, provisioner, context) do
+    source_key = provisioner.source_key(context)
+
+    case provisioner.detect(context) do
+      {:active, region_attrs, detail} ->
+        attrs = Map.put(region_attrs, :source_key, source_key)
 
         case ensure_field_source_region_in_state(state, attrs, source_key) do
           {{:ok, result}, next_state} ->
-            emit_auto_circuit_refresh(next_state, :active, %{
-              source_count: length(source_points),
-              load_count: load_count,
-              closed_circuit_count: closed_circuit_count,
-              source_key: source_key,
-              region_id: result.region_id,
-              field_region_created: result.created?,
-              source_points_action: result.source_points_action
-            })
+            emit_field_provision(
+              next_state,
+              provisioner.telemetry_event(),
+              :active,
+              Map.merge(detail, %{
+                source_key: source_key,
+                region_id: result.region_id,
+                field_region_created: result.created?,
+                source_points_action: result.source_points_action
+              })
+            )
 
             next_state
 
           {{:error, reason}, next_state} ->
-            emit_auto_circuit_refresh(next_state, :failed, %{
-              source_count: length(source_points),
-              load_count: load_count,
-              closed_circuit_count: closed_circuit_count,
-              source_key: source_key,
-              reason: inspect(reason)
-            })
+            emit_field_provision(
+              next_state,
+              provisioner.telemetry_event(),
+              :failed,
+              Map.merge(detail, %{source_key: source_key, reason: inspect(reason)})
+            )
 
             next_state
         end
+
+      {:inactive, reason, detail} ->
+        {_result, next_state} = release_field_region_source_entry(state, source_key, :explicit)
+
+        emit_field_provision(
+          next_state,
+          provisioner.telemetry_event(),
+          :released,
+          Map.merge(detail, %{reason: reason, source_key: source_key})
+        )
+
+        next_state
     end
   rescue
     error ->
-      emit_auto_circuit_refresh(state, :failed, %{
+      emit_field_provision(state, provisioner.telemetry_event(), :failed, %{
         reason: Exception.message(error),
-        source_key: auto_circuit_source_key(state)
+        source_key: safe_provisioner_source_key(provisioner, context)
       })
 
       state
   end
 
-  defp auto_circuit_source_key(state) do
-    {:auto_circuit, state.logical_scene_id, state.chunk_coord}
+  defp safe_provisioner_source_key(provisioner, context) do
+    provisioner.source_key(context)
+  rescue
+    _ -> nil
   end
 
-  defp maybe_refresh_expired_auto_circuit(state, source_key, :expired) do
-    if source_key == auto_circuit_source_key(state) and
-         storage_has_auto_circuit_roles?(state.storage) do
-      maybe_schedule_auto_circuit_refresh(state, true)
-    else
-      state
-    end
+  # worker 到期/崩溃后:若该 source_key 属于某仍 active 的 provisioner,补一次 sweep
+  # 重起(同原 auto_circuit 到期重刷,泛化到任意 provisioner)。
+  defp maybe_refresh_expired_field(%{storage: %Storage{}} = state, source_key, :expired) do
+    context = build_field_context(state)
+
+    expired_active? =
+      Enum.any?(@field_provisioners, fn provisioner ->
+        provisioner.source_key(context) == source_key and
+          FieldProvisioner.active?(provisioner, context)
+      end)
+
+    if expired_active?, do: maybe_schedule_field_refresh(state, true), else: state
   end
 
-  defp maybe_refresh_expired_auto_circuit(state, _source_key, _destroy_reason), do: state
+  defp maybe_refresh_expired_field(state, _source_key, _destroy_reason), do: state
 
-  defp auto_circuit_kernel_spec do
-    %{
-      id: :circuit_current,
-      module: CircuitCurrentKernel,
-      opts: %{
-        current_limit_amps: MaterialCatalog.power_source_defaults().current_limit_amps
-      }
-    }
-  end
-
-  defp auto_circuit_closed_circuit_count(projection, aabb, chunk_coord, source_points) do
-    region =
-      FieldRegion.new(%{
-        region_id: 0,
-        chunk_coord: chunk_coord,
-        aabb: aabb,
-        kernels: [auto_circuit_kernel_spec()],
-        source_points: source_points
-      })
-
-    region
-    |> CircuitComponentAnalysis.active_circuit_components(projection)
-    |> length()
-  end
-
-  defp auto_circuit_source_points(projection, aabb) do
-    voltage = MaterialCatalog.power_source_defaults().voltage
-
-    aabb
-    |> auto_circuit_aabb_macro_indices()
-    |> Enum.filter(&ParticipantProjection.electric_role?(projection, &1, :source))
-    |> Enum.map(fn macro_index ->
-      %{
-        macro_index: macro_index,
-        field_type: :electric_potential,
-        source_mode: :persistent,
-        value: voltage
-      }
-    end)
-  end
-
-  defp auto_circuit_role_count(projection, aabb, role) do
-    aabb
-    |> auto_circuit_aabb_macro_indices()
-    |> Enum.count(&ParticipantProjection.electric_role?(projection, &1, role))
-  end
-
-  defp auto_circuit_aabb, do: {{0, 0, 0}, {15, 15, 15}}
-
-  defp auto_circuit_aabb_macro_indices({{min_x, min_y, min_z}, {max_x, max_y, max_z}}) do
-    for x <- min_x..max_x, y <- min_y..max_y, z <- min_z..max_z do
-      Types.macro_index!({x, y, z})
-    end
-  end
-
-  defp emit_auto_circuit_refresh(state, action, attrs) do
-    CliObserve.emit("voxel_auto_circuit_refreshed", fn ->
+  defp emit_field_provision(state, event, action, attrs) do
+    CliObserve.emit(event, fn ->
       %{
         logical_scene_id: state.logical_scene_id,
         chunk_coord: state.chunk_coord,
