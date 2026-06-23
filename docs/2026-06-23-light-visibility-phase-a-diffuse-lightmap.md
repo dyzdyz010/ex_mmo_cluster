@@ -1,7 +1,7 @@
 # 光 → 可见度 · Phase A:弥漫光场 + 逐 cell 亮度调制(决策稿)
 
 - 日期:2026-06-23
-- 状态:**执行中**(决策稿先行;用户已拍板范围)
+- 状态:**已完成**(skylight + 块光全落地、GPU 像素证、对抗式评审 + 修复;见末尾 as-built)
 - 关联:`docs/2026-06-23-light-as-orthogonal-system.md`(光*场*正交系统 as-built:`:light`/`:light_color`
   权威场已建成)、玩法目标序列 [[gameplay-roadmap-and-construction-scope]](力学 ✅ → **光场(本稿)** → loop+zone → 建设)。
 - 触发:用户 /goal「光决定可见度(暗处藏身/亮处暴露;洞穴要带光源)」。
@@ -94,3 +94,31 @@ light = max(skylight_at_cell, block_light_at_cell, ambient_floor)
 ## 8. 后续(Phase B / 增量,本稿外)
 
 服务端权威天光/可见度(暗处对他人隐身、AOI/复制按光照裁剪)——反作弊级,另立稿。块光彩色烤进地形;跨 chunk 天光;昼夜循环。
+
+---
+
+# 实现现状(as-built,2026-06-23)
+
+Phase A 弥漫光场全部落地,逐 step commit(co-author `Claude Opus 4.8 (1M context)`):
+
+- **step1**(b115459):决策稿。
+- **step2**(26c42f5):`Skylight` 纯天光(列高度图,zero-wire,客户端从权威几何派生)+ 5 条形式属性单测。
+- **step3**(5e43129):天光 lightmap 烤进 chunk mesh 顶点色(greedy 合并 key 带量化光、逐顶点光因子;
+  `ChunkMeshData.light` 可选,空=历史逐字节一致 → parity 安全)+ remesh_chunk 接 Skylight。
+- **step4/5**(103f4b8):Layer-3 GPU showcase(`08_skylight_diffuse`)+ 像素断言(lit 整帧均亮度 < flat×0.94)。
+- **step3b**(0150213):块光融入地形——`VoxelFieldStore.block_light_grid`(对 chunk 所有 :light region
+  max 合并;macro_index == cell 平铺索引)+ 逐 cell `max(天光, 块光)`;drain_inbox **光值真变才标脏重网格**
+  (避 10Hz churn);showcase `09_block_light_torch` + 像素断言(火把照亮壁龛)。
+- **评审修复**(9eb0a0d):25-agent 对抗式评审(find→verify,确认 11/否决 10)。修:① 光层移除未重烤
+  (清 LIGHT 位 → 标脏回退纯天光)② 边界面块光发黑(取 6 邻 chunk 块光 grid,越界 wrap 采样,消接缝黑缝)
+  ③ chunk_coord 变更未检测。
+
+**全绿**:bevy lib 298/0、layer3 GPU 28/0(RTX 5060)、mesh parity 18/0(unlit 逐字节不变)。
+
+## v2 / 待办(评审记录、本轮未做)
+
+- **服务端权威天光/可见度 = Phase B**(隐身/AOI 裁剪;用户已选分阶段,本轮只做渲染)。
+- 性能规模化:`block_light_grid` 的 chunk→region 倒排索引(现 O(n_regions) 扫描,评审自承实践不严重);
+  Skylight (coord,version) cache(现每 remesh recompute,变更门控已限频)。
+- 跨 chunk 天光遮挡(现 chunk-local clamp 近似);块光彩色(现强度);昼夜循环;非 16³ chunk 块光
+  (现 size==16 门,本仓 chunk 恒 16³)。
