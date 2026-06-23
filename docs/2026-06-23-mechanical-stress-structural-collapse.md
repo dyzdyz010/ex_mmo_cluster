@@ -1,7 +1,7 @@
 # 力学应力 · 结构支撑/坍塌(决策稿)
 
 - 日期:2026-06-23
-- 状态:**执行中**(决策稿先行;用户已拍板方向「先力学」)
+- 状态:**已完成**(step1-6 全落地、全测试绿、逐 step commit;见末尾 as-built)
 - 关联:`docs/voxel-server-authority/2026-06-16-orthogonal-systems-architecture.md`(§"补缺系统"点名 力学应力 为化学之后的下一个正交域)、`docs/2026-06-23-world-content-driven-field-provisioning.md`(provisioning 框架 + 局限②)、[[field-provisioning-framework]] [[emergence-reaction-layer]]
 - 触发:用户目标序列「力学 → 光场 → loop+zone」。力学是建设系统的地基(城市不能凭空浮空,要讲支撑)。
 
@@ -76,3 +76,28 @@
 - kernel:失支撑 → collapse 效果数 + 收敛。
 - 生产 e2e:真 ChunkProcess 放悬空塔 → 自动坍塌;坐地塔 → 存活;烧断底梁 → 上方连锁坍塌。
 - 客户端:Layer-3 像素 showcase(坍塌碎块上屏)。
+
+---
+
+# 实现现状(as-built,2026-06-23)
+
+第 5 个正交物理系统**结构支撑/坍塌**全部落地,逐 step commit(co-author `Claude Opus 4.8 (1M context)`):
+
+- **step2**(135aeee):`structural` 属性(attribute_catalog v11 id23,material_default 默认 1.0;
+  流体/气/松散 water/steam/ember/molten_iron/lava=0)+ `StructuralSupport` 纯分析(从地锚 BFS
+  连通可达;逐 cell O(1))+ 单测 7/7。
+- **step3**(1846715):`StructuralStressKernel`(失支撑→`:collapse_block`,安全阀
+  max_effects_per_tick;同 ReactionKernel 范式纯发效果)+ ChunkProcess `:collapse_block` 效果
+  (复用归零毁块→ChunkDelta/debris)+ 单测 kernel 6/6、collapse 效果 3/3。
+- **step4**(f5294a4):`StructuralStress` provisioner(第 3 个,active=「有失支撑」收紧自
+  §2.6,避免支撑建筑空转 region)+ 注册 @field_provisioners + provisioner 单测 5/5 + 生产 e2e 3/3
+  (悬空块/浮岛自动坍、坐地存活)。
+- **step5**(da49649):field-commit 重 sweep(局限②)——拓扑/材料变更(collapse/damage 毁块/
+  transform)去抖重 sweep,温度/tag 写不触发;ash 加 structural=0;烧梁→坍塌跨系统链 e2e 2/2
+  (化学 transform 木→灰 / 放电 damage 毁梁 → 上方坍塌)。
+- **step6**(e24d74a):bevy Layer-3 showcase(`07_structural_collapse_debris.png`:石柱坍顶喷
+  debris 云)+ 像素断言 `collapse_debris_rasterizes_on_screen`;RTX 5060 实跑 layer3 24/0。
+
+**v1 局限保留**(§4):跨 chunk 支撑近似、无应力幅值(二元)、坍塌=碎成 debris。
+**跨系统链已通**:热/化学/电任一改 truth 拓扑/材料 → 重 sweep → 力学按新 truth 重判坍塌,
+只经 committed truth 耦合、无硬规则。
