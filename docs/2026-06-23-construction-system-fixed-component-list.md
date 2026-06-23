@@ -1,7 +1,7 @@
 # 建设系统 · 固定材质 + 构件清单(决策稿)
 
 - 日期:2026-06-23
-- 状态:**待用户确认清单**(用户硬 gate:先定固定清单、只做清单内、不发散)
+- 状态:**清单已确认(2026-06-23)**——半导体做满深度(电阻→比较器/逻辑→开关→二极管→三极管/逻辑门);管线=**电气导管/电网**(已存在、纳入),流体管线推后。下接 §4 逐 step 实现。
 - 关联:[[gameplay-roadmap-and-construction-scope]](建设系统硬范围纪律 + 2026-06-23 重定向:跳采集/无限资源、先立建造系统)、`docs/2026-06-15-bevy-client-mainline-architecture.md`、[[client-implementation-directive]]、[[morphology-surface-element-track]]。
 - 触发:用户「采集先不管、先无限资源、把建造系统立起来」。
 
@@ -34,26 +34,31 @@
 ### ③ 光 / 光敏件 —— 全 [有]
 `glowstone 冷光块` · `torch 火把`(贴面,光+热) · `photo_sensor 光敏元件`(光→点亮/可通行、强光→热)。
 
-### ④ 特殊功能元件(半导体 / 逻辑)—— 多为 [新],**需拍板深度**(见 §3 Q1)
-- 最小集(**纯数据 + 反应规则,零 kernel 改**):`resistor 电阻`(被动分压、不作动) · `comparator 比较器/阈值门`(电位≥阈值→输出 tag,可组 AND/OR) · `switch 开关`(把现有 lever 接入电路:拨动→通/断回路)。
-- 进阶(**需 kernel 改**):`diode 二极管`(单向导通) · `transistor 三极管/逻辑门`(电流控开关)。
+### ④ 特殊功能元件(半导体 / 逻辑)—— [新],**做满深度**(用户已选「+三极管/逻辑门」)
+分难度梯队、由易到难逐 step 落:
+- 梯队 a(**纯数据 + 反应规则,零 kernel 改**):`resistor 电阻`(被动分压、不作动不发热门控) · `comparator 比较器/阈值门`(电位≥阈值→输出 tag;可组 AND/OR) · `switch 开关`(现有 lever 接入电路:拨动→通/断回路)。
+- 梯队 b(**需 kernel 改**):`diode 二极管`(单向导通——ParticipantProjection/电路 kernel 方向性) · `transistor 三极管/逻辑门`(电流/电位控开关——多端接触 + 决策门控)。
+- 半导体属性 append-only(可能新增 directionality / control-terminal / 阈值 等属性,catalog bump);只经 truth/field 耦合、属性派生激活、无 id 白名单(同既有正交系统纪律)。
 
-### ⑤ 管线(pipes)—— **无流体系统**,需拍板(见 §3 Q2)
-v1 提案:**不做流体管线**(fluid/flow 系统是大工程);若要"管线"先只做**装饰管道块**(无传输)或推后。
+### ⑤ 管线 / 电网(conduits)—— 电气导管 [有] 纳入;流体管线推后
+**用户澄清:管线≠流体**。电气导管/电网 = `iron 导线` + prefab `wire/junction` + `power/load terminal`(已存在,纳入)。可选增 `cable/绝缘电缆`(更清晰布线)或**贴面导线**(沿面走线,需新 surface 类型 + 借导电材料)留增量。**流体/压力管线**(水/液体流动)= 独立大系统,**推后**(本轮不做)。
 
-## 3. 待用户拍板的范围岔路
+## 3. 已确认范围(2026-06-23)
 
-- **Q1 半导体/逻辑深度**:最小集(电阻+比较器+开关,零 kernel) / +二极管(单向,需 kernel) / +三极管逻辑门(最强最难) / v1 先不做半导体。
-- **Q2 管线/流体**:v1 不做(推后) / 只做装饰管道块 / 做流体系统(大)。
-- (材质方块/导线/光件 = 已存在,默认纳入,不必逐项确认。)
+- **半导体**:做满(电阻+比较器+开关 零kernel → 二极管 → 三极管/逻辑门,逐梯队)。
+- **管线**:电气导管纳入(已存在);流体管线推后。
+- 材质方块/光件 = 已存在,默认纳入。
 
-## 4. 逐 step 计划(确认清单后细化)
+## 4. 逐 step / phase 计划(已确认,下接实现)
 
-1. **step1**:决策稿(本文件)+ 用户确认清单。
-2. **建造接线**(核心):客户端 VoxelEditIntent/PrefabPlaceIntent 编码 + 发送;live 场景解禁;server-authoritative round-trip;wire parity 测 + 发送路径测。
-3. **palette**:hotbar/调色板纳入确认清单的材质 + 构件(现 hotbar 硬编 7 项 → 扩到清单)。
-4. **新构件**:按确认的半导体深度 + 管线决定实现(优先零-kernel 的 电阻/比较器/开关)。
-5. 每 step commit、测试;客户端改动补自动化测试(用户无法自跑)。
+- **step1** ✅:决策稿 + 用户确认清单(半导体满深度、管线=电气导管、流体推后)。
+- **Phase C1 · 建造接线(核心「立起来」)**:客户端 `VoxelEditIntent`(0x70)放/拆 + `PrefabPlaceIntent`(0x67)编码 + 发送;live 场景解禁建造;本地直改 → **server-authoritative round-trip**(发 intent → 服务端应用 → ChunkDelta 回 → 渲染权威);无限资源。wire parity + 发送路径单测(+ 可行的 headless e2e)。
+- **Phase C2 · palette**:hotbar/调色板从硬编 7 项扩到确认清单的材质 + 构件(理想由服务端 catalog 驱动)。
+- **Phase C3 · 半导体梯队 a**(零 kernel):电阻 + 比较器/阈值门 + 开关(lever 接电路)。服务端材料/属性/反应规则 + 电路 e2e 测。
+- **Phase C4 · 半导体梯队 b**(需 kernel):二极管(方向导通)→ 三极管/逻辑门(多端控)。电路 kernel + ParticipantProjection 改 + e2e。
+- **Phase C5 · 客户端构件放置 + 视觉**:贴面元件/功能构件放置 UI;Layer-3 像素证(用户无法自跑)。
+
+每 step commit(co-author `Claude Opus 4.8 (1M context)`)、测试;客户端改动必补自动化测试。
 
 ## 5. 不发散纪律
 
