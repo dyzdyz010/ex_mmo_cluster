@@ -29,6 +29,7 @@ defmodule GateServer.Codec do
   - `0x61` Voxel ChunkUnsubscribe
   - `0x64` VoxelImpactIntent
   - `0x65` VoxelBuildReservationIntent
+  - `0x66` VoxelSurfaceElementIntent
   - `0x67` VoxelPrefabPlaceIntent
   - `0x6F` VoxelDebugProbe
   - `0x75` FieldConductIntent
@@ -80,6 +81,8 @@ defmodule GateServer.Codec do
   # Kept for skill/tool-system flow per protocol §13.6.
   @msg_voxel_impact_intent 0x64
   @msg_voxel_build_reservation_intent 0x65
+  # 形态轨 C5.2:表面元件(火炬/拉杆)放置/清除——绑宿主宏格一面,零 occupancy。
+  @msg_voxel_surface_element_intent 0x66
   @msg_voxel_prefab_place_intent 0x67
   @msg_voxel_intent_result 0x68
   @msg_voxel_chunk_invalidate 0x69
@@ -301,6 +304,35 @@ defmodule GateServer.Codec do
       {:error, _reason} -> {:error, :invalid_message}
     end
   end
+
+  # VoxelSurfaceElementIntent (0x66) — 形态轨 C5.2 表面元件放置/清除通道。
+  # 固定 56 字节 body:request_id:u64 + client_intent_seq:u32 + logical_scene_id:u64 +
+  # action:u8(0=place,1=clear) + target_world_micro:i64x3 + face:u8(0..5 ordinal) +
+  # surface_type_id:u16 + attribute_set_ref:u32 + tag_set_ref:u32。gate 由
+  # target_world_micro 解析宿主宏格(无 face_normal 偏移),face ordinal/type 在
+  # SceneServer 侧校验,owner_actor_id 由 gate 用 cid 注入(不信任客户端)。
+  def decode(
+        <<@msg_voxel_surface_element_intent, request_id::64-big, client_intent_seq::32-big,
+          logical_scene_id::64-big, action::8, wx::64-big-signed, wy::64-big-signed,
+          wz::64-big-signed, face::8, surface_type_id::16-big, attribute_set_ref::32-big,
+          tag_set_ref::32-big>>
+      ) do
+    {:ok,
+     {:voxel_surface_element_intent,
+      %{
+        request_id: request_id,
+        client_intent_seq: client_intent_seq,
+        logical_scene_id: logical_scene_id,
+        action: action,
+        target_world_micro: {wx, wy, wz},
+        face: face,
+        surface_type_id: surface_type_id,
+        attribute_set_ref: attribute_set_ref,
+        tag_set_ref: tag_set_ref
+      }}}
+  end
+
+  def decode(<<@msg_voxel_surface_element_intent, _rest::binary>>), do: {:error, :invalid_message}
 
   # VoxelPrefabPlaceIntent (0x67). Canonical decode lives in
   # `SceneServer.Voxel.Codec`; the gate codec only frames the opcode here.
@@ -637,6 +669,24 @@ defmodule GateServer.Codec do
   def encode({:voxel_prefab_place_intent, %{} = intent}) do
     payload = SceneServer.Voxel.Codec.encode_prefab_place_intent_payload(intent)
     {:ok, [<<@msg_voxel_prefab_place_intent>>, payload]}
+  end
+
+  def encode({:voxel_surface_element_intent, %{} = intent}) do
+    with {:ok, request_id} <- u64!(intent[:request_id], :request_id),
+         {:ok, client_intent_seq} <- u32!(intent[:client_intent_seq], :client_intent_seq),
+         {:ok, logical_scene_id} <- u64!(intent[:logical_scene_id], :logical_scene_id),
+         {:ok, action} <- u8!(intent[:action], :action),
+         {:ok, {wx, wy, wz}} <- world_micro!(intent[:target_world_micro]),
+         {:ok, face} <- u8!(intent[:face], :face),
+         {:ok, surface_type_id} <- u16!(intent[:surface_type_id], :surface_type_id),
+         {:ok, attribute_set_ref} <- u32!(intent[:attribute_set_ref], :attribute_set_ref),
+         {:ok, tag_set_ref} <- u32!(intent[:tag_set_ref], :tag_set_ref) do
+      {:ok,
+       <<@msg_voxel_surface_element_intent, request_id::64-big, client_intent_seq::32-big,
+         logical_scene_id::64-big, action::8, wx::64-big-signed, wy::64-big-signed,
+         wz::64-big-signed, face::8, surface_type_id::16-big, attribute_set_ref::32-big,
+         tag_set_ref::32-big>>}
+    end
   end
 
   def encode({:voxel_debug_probe, %{request_id: request_id, result: result}})

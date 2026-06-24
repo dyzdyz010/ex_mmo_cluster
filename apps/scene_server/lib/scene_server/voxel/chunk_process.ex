@@ -134,6 +134,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   表面元件零 occupancy(不改宿主邻接/碰撞);`attrs` 须含 `:macro_index`(或 `:macro_coord`)、`:face`、
   `:surface_type_id`,可选 `:attribute_set_ref`/`:tag_set_ref`/`:owner_actor_id`。
+
+  C5.2:若 `attrs` 带 `:lease`(网络放置路径),先同步落库再 commit + 重快照
+  (durable-before-ack);无 lease(内部/测试调用)则只改内存 + 重快照,行为同旧版。
   """
   @spec put_surface_element(GenServer.server(), map() | keyword()) :: {:ok, Storage.t()}
   def put_surface_element(server, attrs) when is_map(attrs) or is_list(attrs) do
@@ -142,11 +145,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
   @doc """
   形态轨:移除某宏格面的表面元件并 bump chunk_version(处理/清氧化/刮除路径)。无则不 bump。
+
+  `opts[:lease]` 存在时同步落库(durable-before-ack);否则只改内存(内部/测试路径)。
   """
-  @spec clear_surface_element(GenServer.server(), integer() | term(), atom()) ::
+  @spec clear_surface_element(GenServer.server(), integer() | term(), atom(), keyword()) ::
           {:ok, Storage.t()}
-  def clear_surface_element(server, macro_index_or_coord, face) do
-    GenServer.call(server, {:clear_surface_element, macro_index_or_coord, face})
+  def clear_surface_element(server, macro_index_or_coord, face, opts \\ []) do
+    GenServer.call(server, {:clear_surface_element, macro_index_or_coord, face, opts})
   end
 
   @doc "形态轨:读取某宏格面的表面元件(无则 nil),不改版本。"
@@ -916,61 +921,73 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {:reply, {:ok, storage}, next_state}
   end
 
-  # 形态轨:放置/覆盖表面元件(零 occupancy)。bump 版本 + 重快照,让 face truth 下行。
+  # 形态轨:放置/覆盖表面元件(零 occupancy)。bump 版本 +(有 lease 则同步落库)+ 重快照,
+  # 让 face truth 下行。
   def handle_call({:put_surface_element, attrs}, _from, state) do
     element = SurfaceElement.normalize!(attrs)
+    lease = Map.get(attrs, :lease)
 
-    storage =
-      state.storage
-      |> Storage.put_surface_element(element)
-      |> bump_chunk_version()
+    case commit_surface_element_change(
+           state,
+           lease,
+           :put_surface_element,
+           &(&1 |> Storage.put_surface_element(element) |> bump_chunk_version())
+         ) do
+      {:ok, next_state} ->
+        CliObserve.emit("voxel_surface_element_put", fn ->
+          %{
+            logical_scene_id: next_state.storage.logical_scene_id,
+            chunk_coord: next_state.storage.chunk_coord,
+            chunk_version: next_state.storage.chunk_version,
+            macro_index: element.macro_index,
+            face: element.face,
+            surface_type_id: element.surface_type_id
+          }
+        end)
 
-    CliObserve.emit("voxel_surface_element_put", fn ->
-      %{
-        logical_scene_id: storage.logical_scene_id,
-        chunk_coord: storage.chunk_coord,
-        chunk_version: storage.chunk_version,
-        macro_index: element.macro_index,
-        face: element.face,
-        surface_type_id: element.surface_type_id
-      }
-    end)
+        # 表面元件(如火炬)可为本征热/光源 → 触发场 provisioning sweep(Emergence 扫
+        # surface_elements,带 heat_output/light_emission 的 torch 起涌现 region)。
+        next_state = maybe_schedule_field_refresh(next_state, true)
 
-    next_state = %{state | storage: storage}
-    push_snapshot_fallbacks(next_state, :put_surface_element)
+        {:reply, {:ok, next_state.storage}, next_state}
 
-    # 表面元件(如火炬)可为本征热/光源 → 触发场 provisioning sweep(Emergence 扫
-    # surface_elements,带 heat_output/light_emission 的 torch 起涌现 region)。
-    next_state = maybe_schedule_field_refresh(next_state, true)
-
-    {:reply, {:ok, storage}, next_state}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
-  # 形态轨:移除表面元件(处理/清氧化)。仅当确有移除才 bump + 重快照。
-  def handle_call({:clear_surface_element, macro_index_or_coord, face}, _from, state) do
+  # 形态轨:移除表面元件(处理/清氧化)。仅当确有移除才 bump +(有 lease 则落库)+ 重快照。
+  def handle_call({:clear_surface_element, macro_index_or_coord, face, opts}, _from, state) do
     macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    lease = Keyword.get(opts, :lease)
     present? = Storage.surface_element_at(state.storage, macro_index, face) != nil
 
     if present? do
-      storage =
-        state.storage
-        |> Storage.clear_surface_element(macro_index, face)
-        |> bump_chunk_version()
+      case commit_surface_element_change(
+             state,
+             lease,
+             :clear_surface_element,
+             &(&1 |> Storage.clear_surface_element(macro_index, face) |> bump_chunk_version())
+           ) do
+        {:ok, next_state} ->
+          CliObserve.emit("voxel_surface_element_cleared", fn ->
+            %{
+              logical_scene_id: next_state.storage.logical_scene_id,
+              chunk_coord: next_state.storage.chunk_coord,
+              chunk_version: next_state.storage.chunk_version,
+              macro_index: macro_index,
+              face: face
+            }
+          end)
 
-      CliObserve.emit("voxel_surface_element_cleared", fn ->
-        %{
-          logical_scene_id: storage.logical_scene_id,
-          chunk_coord: storage.chunk_coord,
-          chunk_version: storage.chunk_version,
-          macro_index: macro_index,
-          face: face
-        }
-      end)
+          # 移除火炬等热/光源后,场 provisioning 须重扫(撤掉对应 region)。
+          next_state = maybe_schedule_field_refresh(next_state, true)
 
-      next_state = %{state | storage: storage}
-      push_snapshot_fallbacks(next_state, :clear_surface_element)
+          {:reply, {:ok, next_state.storage}, next_state}
 
-      {:reply, {:ok, storage}, next_state}
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     else
       {:reply, {:ok, state.storage}, state}
     end
@@ -1586,6 +1603,49 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
       {:error, recover_reason} ->
         {:error, {:persist_stale_recovery_failed, recover_reason}}
+    end
+  end
+
+  # 形态轨 C5.2:表面元件变更的统一提交。`mutate_fn` 接收基线 storage 返回新 storage
+  # (须自行 bump 版本)。
+  #   * lease == nil:内部/测试路径——只改内存 + 重快照(不落库,行为同旧版直写 API);
+  #   * lease != nil:网络放置路径——先同步落库,成功才 commit + 重快照(durable-before-ack);
+  #     persist `:stale_chunk_version` 时恢复 DB-canonical storage 后在其上重做一次。
+  defp commit_surface_element_change(state, lease, reason, mutate_fn) do
+    commit_surface_element_change(state, lease, reason, mutate_fn, true)
+  end
+
+  defp commit_surface_element_change(state, nil, reason, mutate_fn, _retry?) do
+    next_state = %{state | storage: mutate_fn.(state.storage)}
+    push_snapshot_fallbacks(next_state, reason)
+    {:ok, next_state}
+  end
+
+  defp commit_surface_element_change(state, lease, reason, mutate_fn, retry?) do
+    next_storage = mutate_fn.(state.storage)
+    persist_payload = encode_snapshot_payload(next_storage, 0)
+
+    case persist_snapshot(lease, state.chunk_coord, next_storage, persist_payload) do
+      {:ok, _persist_result} ->
+        next_state = %{state | storage: next_storage, lease: lease}
+        push_snapshot_fallbacks(next_state, reason)
+        {:ok, next_state}
+
+      {:error, :stale_chunk_version} when retry? ->
+        case recover_canonical_snapshot_after_persist_stale(
+               state,
+               lease,
+               :surface_element_persist_stale
+             ) do
+          {:ok, recovered_state} ->
+            commit_surface_element_change(recovered_state, lease, reason, mutate_fn, false)
+
+          {:error, recover_reason} ->
+            {:error, recover_reason}
+        end
+
+      {:error, persist_reason} ->
+        {:error, persist_reason}
     end
   end
 

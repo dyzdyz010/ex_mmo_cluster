@@ -116,6 +116,19 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  形态轨 C5.2:放置 / 清除一个表面元件(火炬/拉杆等)。
+
+  目录只负责定位/启动 chunk;`ChunkProcess` 拥有 truth 变更 + lease-fenced 持久化 +
+  订阅者全快照下行(表面元件零 occupancy,走快照而非 delta)。`attrs` 须含
+  `:logical_scene_id`、`:chunk_coord`、`:lease`、`:action`(`:place` | `:clear`)、
+  `:macro_index`、`:face`;放置还须 `:surface_type_id`,可选 `:attribute_set_ref` /
+  `:tag_set_ref` / `:owner_actor_id`。
+  """
+  def apply_surface_element_intent(server \\ __MODULE__, attrs) when is_map(attrs) do
+    GenServer.call(server, {:apply_surface_element, attrs})
+  end
+
+  @doc """
   Reserves a transaction fence on the chunk for a future commit.
 
   The directory ensures the chunk exists and routes to `ChunkProcess.prepare_transaction/3`.
@@ -359,6 +372,24 @@ defmodule SceneServer.Voxel.ChunkDirectory do
           {{:ok, chunk_pid}, next_state} ->
             reply = ChunkProcess.apply_intents(chunk_pid, attrs_list)
             emit_apply_intents_result(attrs, normalized_attrs, reply)
+            {:reply, reply, next_state}
+
+          {{:error, reason}, next_state} ->
+            {:reply, {:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  # 形态轨 C5.2:表面元件放置/清除。lease-routed,走 ChunkProcess.put/clear_surface_element。
+  def handle_call({:apply_surface_element, attrs}, _from, state) do
+    case normalize_surface_element_attrs(attrs) do
+      {:ok, route_attrs, op} ->
+        case ensure_chunk_in_state(state, route_attrs) do
+          {{:ok, chunk_pid}, next_state} ->
+            reply = apply_surface_element_op(chunk_pid, route_attrs.lease, op)
             {:reply, reply, next_state}
 
           {{:error, reason}, next_state} ->
@@ -814,6 +845,75 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   defp normalize_apply_intent_attrs(_attrs), do: {:error, :invalid_voxel_intent}
+
+  # 形态轨 C5.2:校验 + 拆解表面元件 intent。返回 {route_attrs, op},其中 op 是
+  # {:place, element_attrs} | {:clear, %{macro_index, face}}。须有 lease(World 授权)。
+  defp normalize_surface_element_attrs(attrs) when is_map(attrs) do
+    route_attrs = normalize_attrs(attrs)
+
+    cond do
+      is_nil(route_attrs.lease) ->
+        {:error, :missing_lease}
+
+      true ->
+        case build_surface_element_op(attrs) do
+          {:ok, op} -> {:ok, route_attrs, op}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  rescue
+    _exception in [ArgumentError, KeyError] -> {:error, :invalid_surface_element_intent}
+  end
+
+  defp normalize_surface_element_attrs(_attrs), do: {:error, :invalid_surface_element_intent}
+
+  defp build_surface_element_op(attrs) do
+    case Map.get(attrs, :action) do
+      :place ->
+        {:ok,
+         {:place,
+          %{
+            macro_index: Map.fetch!(attrs, :macro_index),
+            face: Map.fetch!(attrs, :face),
+            surface_type_id: Map.fetch!(attrs, :surface_type_id),
+            attribute_set_ref: Map.get(attrs, :attribute_set_ref, 0),
+            tag_set_ref: Map.get(attrs, :tag_set_ref, 0),
+            owner_actor_id: Map.get(attrs, :owner_actor_id, 0)
+          }}}
+
+      :clear ->
+        {:ok,
+         {:clear, %{macro_index: Map.fetch!(attrs, :macro_index), face: Map.fetch!(attrs, :face)}}}
+
+      _other ->
+        {:error, :invalid_surface_element_action}
+    end
+  end
+
+  defp apply_surface_element_op(chunk_pid, lease, {:place, element}) do
+    chunk_pid
+    |> ChunkProcess.put_surface_element(Map.put(element, :lease, lease))
+    |> surface_element_reply()
+  end
+
+  defp apply_surface_element_op(chunk_pid, lease, {:clear, %{macro_index: macro_index, face: face}}) do
+    chunk_pid
+    |> ChunkProcess.clear_surface_element(macro_index, face, lease: lease)
+    |> surface_element_reply()
+  end
+
+  # 把 ChunkProcess 返回的 Storage 摊成 gate 期望的纯 map 回执(含 chunk_coord/chunk_version)。
+  defp surface_element_reply({:ok, storage}) do
+    {:ok,
+     %{
+       logical_scene_id: storage.logical_scene_id,
+       chunk_coord: storage.chunk_coord,
+       chunk_version: storage.chunk_version,
+       changed?: true
+     }}
+  end
+
+  defp surface_element_reply({:error, reason}), do: {:error, reason}
 
   defp normalize_apply_intents_attrs([first | _rest] = attrs_list) do
     with {:ok, first_attrs} <- normalize_apply_intent_attrs(first),

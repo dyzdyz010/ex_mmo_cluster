@@ -288,6 +288,94 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     end
   end
 
+  # 形态轨 C5.2:表面元件网络放置经 ChunkDirectory → ChunkProcess,带 lease 同步落库。
+  test "apply_surface_element_intent places + persists a torch and clears it (durable)" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+
+    scene_id = unique_scene_id()
+    lease = lease(scene_id)
+
+    assert {:ok, :inserted} = WriteTokenStore.upsert_token(Map.put(lease, :token_version, 1))
+
+    macro_index = SceneServer.Voxel.Types.macro_index!({3, 0, 0})
+    torch = SceneServer.Voxel.SurfaceCatalog.surface_type_id(:torch)
+
+    # 火炬装饰实心块的面 —— 先放宿主块(version 1)。
+    assert {:ok, %{chunk_version: 1}} =
+             ChunkDirectory.apply_intent(directory, %{
+               request_id: 1,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               operation: :put_solid_block,
+               macro: {3, 0, 0},
+               block: NormalBlockData.new(11, health: 40)
+             })
+
+    # 放火炬(version → 2),durable-before-ack。
+    assert {:ok, %{chunk_version: 2, chunk_coord: {1, 1, 1}}} =
+             ChunkDirectory.apply_surface_element_intent(directory, %{
+               request_id: 2,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               action: :place,
+               macro_index: macro_index,
+               face: :x_pos,
+               surface_type_id: torch,
+               owner_actor_id: 4242
+             })
+
+    # 内存:元件在位、owner 注入正确。
+    assert {:ok, chunk_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {1, 1, 1})
+    el = ChunkProcess.surface_element_at(chunk_pid, macro_index, :x_pos)
+    assert el.surface_type_id == torch
+    assert el.owner_actor_id == 4242
+
+    # 落库:持久化快照带上该面 truth(durable-before-ack)。
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {1, 1, 1})
+    assert snapshot.chunk_version == 2
+    assert {:ok, %{storage: storage}} = Codec.decode_chunk_snapshot_payload(snapshot.data)
+    assert Storage.surface_element_at(storage, macro_index, :x_pos).surface_type_id == torch
+
+    # 清除路径同样落库(version → 3,面 truth 消失)。
+    assert {:ok, %{chunk_version: 3}} =
+             ChunkDirectory.apply_surface_element_intent(directory, %{
+               request_id: 3,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               lease: lease,
+               action: :clear,
+               macro_index: macro_index,
+               face: :x_pos
+             })
+
+    assert {:ok, snapshot2} = ChunkSnapshotStore.get_snapshot(scene_id, {1, 1, 1})
+    assert snapshot2.chunk_version == 3
+    assert {:ok, %{storage: storage2}} = Codec.decode_chunk_snapshot_payload(snapshot2.data)
+    assert Storage.surface_element_at(storage2, macro_index, :x_pos) == nil
+  end
+
+  test "apply_surface_element_intent rejects a missing lease before starting a chunk" do
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    scene_id = unique_scene_id()
+
+    assert {:error, :missing_lease} =
+             ChunkDirectory.apply_surface_element_intent(directory, %{
+               request_id: 1,
+               logical_scene_id: scene_id,
+               chunk_coord: {1, 1, 1},
+               action: :place,
+               macro_index: 0,
+               face: :x_pos,
+               surface_type_id: SceneServer.Voxel.SurfaceCatalog.surface_type_id(:torch)
+             })
+
+    assert ChunkDirectory.snapshot(directory).chunk_count == 0
+  end
+
   defp unique_scene_id do
     System.unique_integer([:positive, :monotonic]) + 10_000_000
   end

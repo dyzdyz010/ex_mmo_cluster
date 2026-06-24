@@ -75,6 +75,19 @@ pub enum ClientStdioCommand {
         anchor_macro: [i32; 3],
         rotation: u8,
     },
+    /// Construction C5.2: place/clear a surface element (torch/lever) on a face of
+    /// a GLOBAL host macro (0x66) over the live connection — headless/scriptable
+    /// equivalent of the GUI surface hotbar, so the decal round-trip (→ snapshot
+    /// section 0x08 → `surface_decal` render) can be self-verified. `action` is 0
+    /// (place) / 1 (clear); `face` is the 0..5 ordinal; `surface_type_id` is a
+    /// `SurfaceCatalog` id (torch=4, lever=5).
+    VoxelSurfacePlace {
+        logical_scene_id: u64,
+        action: u8,
+        host_macro: [i32; 3],
+        face: u8,
+        surface_type_id: u16,
+    },
     /// Sends a server-authoritative voxel edit (0x70 VoxelEditIntent) over the
     /// live connection — the headless/scriptable equivalent of the GUI F/RMB
     /// build, so the build round-trip + the 0x68 ACK can be self-verified without
@@ -560,6 +573,32 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         });
     }
 
+    if let Some(rest) = line.strip_prefix("va-surface ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 7 {
+            return Err(
+                "va-surface <scene_id> <action 0place|1clear> <mx> <my> <mz> <face 0..5> <surface_type_id>"
+                    .to_string(),
+            );
+        }
+        let logical_scene_id = parse_field(parts[0], "scene_id")?;
+        let action = parse_field(parts[1], "action")?;
+        let host_macro = [
+            parse_field(parts[2], "mx")?,
+            parse_field(parts[3], "my")?,
+            parse_field(parts[4], "mz")?,
+        ];
+        let face = parse_field(parts[5], "face")?;
+        let surface_type_id = parse_field(parts[6], "surface_type_id")?;
+        return Ok(ClientStdioCommand::VoxelSurfacePlace {
+            logical_scene_id,
+            action,
+            host_macro,
+            face,
+            surface_type_id,
+        });
+    }
+
     if let Some(rest) = line.strip_prefix("va-unsubscribe ") {
         let parts = rest.split_whitespace().collect::<Vec<_>>();
         if parts.len() != 4 {
@@ -755,6 +794,30 @@ mod tests {
             }
         );
         assert!(parse_command("va-prefab 1 4 10 6 10").is_err());
+
+        // va-surface: torch (type 4) on +X face (ordinal 1) of host macro (5,4,5).
+        assert_eq!(
+            parse_command("va-surface 1 0 5 4 5 1 4").unwrap(),
+            ClientStdioCommand::VoxelSurfacePlace {
+                logical_scene_id: 1,
+                action: 0,
+                host_macro: [5, 4, 5],
+                face: 1,
+                surface_type_id: 4,
+            }
+        );
+        // clear action + negative coord.
+        assert_eq!(
+            parse_command("va-surface 2 1 -3 0 7 5 5").unwrap(),
+            ClientStdioCommand::VoxelSurfacePlace {
+                logical_scene_id: 2,
+                action: 1,
+                host_macro: [-3, 0, 7],
+                face: 5,
+                surface_type_id: 5,
+            }
+        );
+        assert!(parse_command("va-surface 1 0 5 4 5 1").is_err());
     }
 
     #[test]

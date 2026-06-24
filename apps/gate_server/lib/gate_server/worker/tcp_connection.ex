@@ -970,6 +970,62 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
+  # 形态轨 C5.2:VoxelSurfaceElementIntent (0x66) — 表面元件(火炬/拉杆)放置/清除。
+  # 路由与 0x70 edit intent 同(route_chunk_with_lease + ChunkDirectory),复用
+  # VoxelIntentResult (0x68) 回执。
+  defp dispatch(
+         {:voxel_surface_element_intent, request},
+         %{status: :in_scene, socket: socket} = state
+       ) do
+    GateServer.CliObserve.emit("voxel_surface_element_intent_received", fn ->
+      %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        client_intent_seq: request.client_intent_seq,
+        logical_scene_id: request.logical_scene_id,
+        action: request.action,
+        face: request.face,
+        surface_type_id: request.surface_type_id
+      }
+    end)
+
+    case apply_voxel_surface_element_intent(request, state) do
+      {:ok, result} ->
+        GateServer.CliObserve.emit("voxel_surface_element_intent_applied", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          chunk_coord: result.chunk_coord,
+          chunk_version: result.chunk_version,
+          macro: result.macro
+        })
+
+        send_encoded(socket, voxel_edit_intent_result_ok(request, result))
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("voxel_surface_element_intent_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          reason: reason
+        })
+
+        send_encoded(socket, voxel_edit_intent_result_error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_surface_element_intent, request}, state) do
+    send_encoded(state.socket, voxel_edit_intent_result_error(request, :invalid_state))
+    {:ok, state}
+  end
+
   defp dispatch({:voxel_debug_probe, %{request_id: request_id, command: command}}, state) do
     GateServer.CliObserve.emit("voxel_debug_probe_received", %{
       connection_pid: self(),
@@ -1646,6 +1702,115 @@ defmodule GateServer.TcpConnection do
        authoritative: [],
        reason: "ok"
      }}
+  end
+
+  # 形态轨 C5.2:表面元件放置/清除 apply。与 edit intent 同路由(lease + ChunkDirectory),
+  # 但走专用 `:apply_surface_element` 路径(ChunkProcess.put/clear_surface_element,零 occupancy,
+  # 全快照下行)。face ordinal / surface_type 在 gate 校验后才下发,owner_actor_id 用 cid 注入。
+  defp apply_voxel_surface_element_intent(request, state) do
+    with :ok <- authorize_voxel_edit_intent(state),
+         {:ok, action} <- voxel_surface_element_action(request.action),
+         {:ok, face} <- voxel_surface_element_face(request.face),
+         :ok <- voxel_surface_element_known_type(request.surface_type_id),
+         {:ok, target} <- voxel_surface_element_target(request),
+         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      lease = Map.fetch!(route, :lease)
+
+      GateServer.CliObserve.emit("voxel_surface_element_intent_routed", %{
+        connection_pid: self(),
+        cid: state.cid,
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        action: action,
+        chunk_coord: target.chunk_coord,
+        local_macro: target.local_macro,
+        face: face,
+        surface_type_id: request.surface_type_id,
+        region_id: lease.region_id,
+        lease_id: lease.lease_id,
+        owner_epoch: lease.owner_epoch,
+        scene_node: scene_node
+      })
+
+      attrs = %{
+        request_id: request.request_id,
+        logical_scene_id: request.logical_scene_id,
+        chunk_coord: target.chunk_coord,
+        lease: lease,
+        action: action,
+        macro_index: target.macro_index,
+        face: face,
+        surface_type_id: request.surface_type_id,
+        attribute_set_ref: request.attribute_set_ref,
+        tag_set_ref: request.tag_set_ref,
+        owner_actor_id: state.cid
+      }
+
+      case safe_call(
+             {SceneServer.Voxel.ChunkDirectory, scene_node},
+             {:apply_surface_element, attrs},
+             @scene_call_timeout
+           ) do
+        {:ok, {:ok, reply}} ->
+          {:ok, Map.merge(reply, %{macro: target.local_macro})}
+
+        {:ok, {:error, reason}} ->
+          {:error, reason}
+
+        {:ok, _other} ->
+          {:error, :scene_unavailable}
+
+        {:error, _reason} ->
+          {:error, :scene_unavailable}
+      end
+    end
+  end
+
+  defp voxel_surface_element_action(0), do: {:ok, :place}
+  defp voxel_surface_element_action(1), do: {:ok, :clear}
+  defp voxel_surface_element_action(_other), do: {:error, :invalid_surface_element_action}
+
+  defp voxel_surface_element_face(ordinal) when is_integer(ordinal) do
+    case SceneServer.Voxel.SurfaceCatalog.face_from_ordinal(ordinal) do
+      nil -> {:error, :invalid_surface_element_face}
+      face -> {:ok, face}
+    end
+  end
+
+  defp voxel_surface_element_face(_other), do: {:error, :invalid_surface_element_face}
+
+  defp voxel_surface_element_known_type(surface_type_id) do
+    if SceneServer.Voxel.SurfaceCatalog.known_surface_type?(surface_type_id) do
+      :ok
+    else
+      {:error, :unknown_surface_type}
+    end
+  end
+
+  # 表面元件绑到 world_micro 落入的宿主宏格那一面 —— 无 face_normal 偏移(放火炬选的是
+  # 实心块本身 + 它的某个面)。解析出 chunk_coord + local_macro + macro_index(0..4095)。
+  defp voxel_surface_element_target(request) do
+    {wx, wy, wz} = request.target_world_micro
+    micro_resolution = Types.micro_resolution()
+
+    world_macro = {
+      Types.floor_div(wx, micro_resolution),
+      Types.floor_div(wy, micro_resolution),
+      Types.floor_div(wz, micro_resolution)
+    }
+
+    {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
+
+    {:ok,
+     %{
+       chunk_coord: chunk_coord,
+       local_macro: local_macro,
+       macro_index: Types.macro_index!(local_macro)
+     }}
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] ->
+      {:error, :invalid_target_world_micro}
   end
 
   # AUTH-4(step1.5b-2):prefab idempotency-key,见 ws_connection 同名函数说明。

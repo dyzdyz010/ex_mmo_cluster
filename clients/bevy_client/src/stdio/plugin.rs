@@ -550,6 +550,36 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     ],
                 );
             }
+            ClientStdioCommand::VoxelSurfacePlace {
+                logical_scene_id,
+                action,
+                host_macro,
+                face,
+                surface_type_id,
+            } => {
+                bridge.send(NetworkCommand::PlaceSurfaceElement {
+                    logical_scene_id,
+                    action,
+                    host_macro,
+                    face,
+                    surface_type_id,
+                });
+                emit_stdio(
+                    "va_surface_sent",
+                    &[
+                        (
+                            "action",
+                            if action == 0 { "place" } else { "clear" }.to_string(),
+                        ),
+                        (
+                            "host_macro",
+                            format!("{},{},{}", host_macro[0], host_macro[1], host_macro[2]),
+                        ),
+                        ("face", face.to_string()),
+                        ("surface_type_id", surface_type_id.to_string()),
+                    ],
+                );
+            }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
                 emit_stdio("quit", &[("final_status", world_state.status.clone())]);

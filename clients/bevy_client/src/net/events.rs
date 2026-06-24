@@ -82,6 +82,18 @@ pub enum NetworkCommand {
         anchor_macro: [i32; 3],
         rotation: u8,
     },
+    /// Construction system (C5.2): place/clear a surface element (torch/lever) on
+    /// a face of a GLOBAL host macro (0x66). The runtime resolves `host_macro` to
+    /// world-micro. `action` is `surface_element_intent::ACTION_PLACE`/`ACTION_CLEAR`,
+    /// `face` is the 0..5 ordinal, `surface_type_id` a `SurfaceCatalog` id (torch=4,
+    /// lever=5). Server-authoritative — the resulting snapshot is what renders.
+    PlaceSurfaceElement {
+        logical_scene_id: u64,
+        action: u8,
+        host_macro: [i32; 3],
+        face: u8,
+        surface_type_id: u16,
+    },
     Shutdown,
 }
 

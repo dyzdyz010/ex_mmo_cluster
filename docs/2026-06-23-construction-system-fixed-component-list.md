@@ -75,8 +75,25 @@
   不发热/不 powered)。电路 e2e 2。
 - **C4a comparator ✅**(3accce8):阈值逻辑门(id21 + 属性 logic_threshold id24,catalog v12)。
   CircuitCurrentKernel 比较节点电位 ≥ 阈 → :signal_high(模拟→数字)。电路 e2e 3。
+- **C5 prefab 网络放置 ✅**(2822bc0):客户端 `PrefabPlaceIntent`(0x67)编码器(镜像 scene codec,
+  blueprint_version=2,parcel/OCC 字段服务端未强制 → 发 0/空,anchor_world_micro=macro×8)+
+  `NetworkCommand::PlacePrefab` + runtime 0x67 + stdio `va-prefab`。服务端+gate 本就完整。实机:
+  放空支撑格 → accepted、refined 0→1;放 solid 格 → `:cannot_micro_edit_solid_macro`。
+- **C5.2 贴面元件(火炬/拨杆)网络放置 ✅**(本 commit):**新 client→server opcode `0x66`
+  VoxelSurfaceElementIntent**(56 字节 body:req/seq/scene/action/world_micro×3/face/type/attr/tag)。
+  gate decode + dispatch(face ordinal/type 在 gate 校验、owner_actor_id 用 cid 注入)→
+  `ChunkDirectory.apply_surface_element_intent` → `ChunkProcess.put/clear_surface_element`
+  **durable-before-ack**(带 lease 同步落库,persist stale 自愈;无 lease 内部/测试路径退化只改内存)。
+  客户端 `SurfaceElementIntent` 编码器 + `NetworkCommand::PlaceSurfaceElement` + runtime 0x66 +
+  stdio `va-surface <scene> <0place|1clear> <mx my mz> <face> <type>`;va_chunk 上报
+  `surface_elements`/`decal_quads`(过 surface_decal 宿主实心剔除 = 真会渲染数)。贴面解码 +
+  decal mesher 客户端本就有。**实机 e2e**(headless+stdio 驱活服务器):放火炬(type4,(5,3,5)+Y)
+  → surface_elements 1 / decal_quads 1、宿主仍 solid(零 occupancy);放拨杆(type5) → 2/2;
+  清火炬 → 1/1;**重启服务器后拨杆活过**(version 293 自 DB 恢复 = durable-before-ack 验真)。
+  测试:gate codec 0x66 round-trip 3 + 客户端 wire 4 + stdio 解析 + chunk_directory 持久化 2。
 
-**回归**:scene_server voxel 426/0、bevy lib 313/0、全二进制 warning-clean。
+**回归**:scene_server voxel(chunk_process/directory/surface 71/0)、gate 217/0(+1 pre-existing
+voxel_smoke FieldTickSupervisor 失败,与本改无关:baseline stash 同样失败)、bevy lib 334/0、clippy clean。
 
 ## 4c. C4b/C5 待续(honest 现状)
 
@@ -85,8 +102,10 @@
   `ParticipantProjection` 面连通(现无向)+ `CircuitComponentAnalysis`(现无向图)的有向化
   重构 + kernel 决策门控。是一致的电路图设计工作,需专门 design + 充分电路 e2e 验证,不宜在
   长会话尾仓促出未验证图算法。已精确定位改动面,留焦点续作。
-- **C5 客户端构件放置 + 视觉**:贴面火把/拨杆放置 UI、prefab 网络放置、半导体/逻辑的视觉/
-  调试 overlay、Layer-3 像素证。GUI 集成(无头不可验),需实机。
+- **C5 客户端构件放置 + 视觉**:prefab 网络放置 ✅(2822bc0)、贴面元件网络放置 ✅(C5.2,本 commit)。
+  **待续**:① prefab/贴面 GUI build 集成(hotbar 选 + raycast 放,复用 PlacePrefab/PlaceSurfaceElement;
+  GUI 无头不可验,需实机或 ECS 单测);② 半导体/逻辑视觉 overlay(resistor/comparator 的
+  :signal_high/current 可视);③ Layer-3 像素证(贴面 decal / prefab refined / 半导体视觉)。
 
 ## 5. 不发散纪律
 

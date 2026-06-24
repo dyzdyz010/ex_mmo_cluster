@@ -351,6 +351,28 @@ impl ClientRuntime {
                     crate::voxel::wire::VoxelClientMessage::PrefabPlaceIntent(intent),
                 )));
             }
+            NetworkCommand::PlaceSurfaceElement {
+                logical_scene_id,
+                action,
+                host_macro,
+                face,
+                surface_type_id,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                self.voxel_edit_seq += 1;
+                let intent = crate::voxel::wire::SurfaceElementIntent::macro_place(
+                    request_id,
+                    self.voxel_edit_seq,
+                    logical_scene_id,
+                    action,
+                    host_macro,
+                    face,
+                    surface_type_id,
+                );
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
+                    crate::voxel::wire::VoxelClientMessage::SurfaceElementIntent(intent),
+                )));
+            }
             _ => {}
         }
 

@@ -130,6 +130,9 @@ pub enum VoxelClientMessage {
     EditIntent(super::edit_intent::VoxelEditIntent),
     /// Construction system (C5): place a catalog blueprint as a prefab (0x67).
     PrefabPlaceIntent(super::prefab_place_intent::PrefabPlaceIntent),
+    /// Construction system (C5.2): place/clear a surface element — torch/lever
+    /// fixture bound to a host macro face (0x66).
+    SurfaceElementIntent(super::surface_element_intent::SurfaceElementIntent),
 }
 
 impl VoxelClientMessage {
@@ -139,6 +142,9 @@ impl VoxelClientMessage {
             VoxelClientMessage::ChunkUnsubscribe(_) => super::OP_CHUNK_UNSUBSCRIBE,
             VoxelClientMessage::EditIntent(_) => super::OP_VOXEL_EDIT_INTENT,
             VoxelClientMessage::PrefabPlaceIntent(_) => super::OP_VOXEL_PREFAB_PLACE_INTENT,
+            VoxelClientMessage::SurfaceElementIntent(_) => {
+                super::OP_VOXEL_SURFACE_ELEMENT_INTENT
+            }
         }
     }
 
@@ -150,6 +156,7 @@ impl VoxelClientMessage {
             VoxelClientMessage::ChunkUnsubscribe(m) => m.encode(&mut w),
             VoxelClientMessage::EditIntent(m) => m.encode(&mut w),
             VoxelClientMessage::PrefabPlaceIntent(m) => m.encode(&mut w),
+            VoxelClientMessage::SurfaceElementIntent(m) => m.encode(&mut w),
         }
         w.into_bytes()
     }

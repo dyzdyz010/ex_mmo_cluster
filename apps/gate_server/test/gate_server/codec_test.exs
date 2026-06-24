@@ -349,6 +349,50 @@ defmodule GateServer.CodecTest do
       assert decoded == intent
     end
 
+    test "round-trips a voxel_surface_element_intent (0x66) through encode/decode" do
+      # 形态轨 C5.2:火炬(type 4)放在宿主宏格 +X 面(ordinal 1)。
+      intent = %{
+        request_id: 0x0102_0304_0506_0708,
+        client_intent_seq: 9,
+        logical_scene_id: 1,
+        action: 0,
+        target_world_micro: {40, 32, 40},
+        face: 1,
+        surface_type_id: 4,
+        attribute_set_ref: 0,
+        tag_set_ref: 0
+      }
+
+      assert {:ok, bytes} = Codec.encode({:voxel_surface_element_intent, intent})
+      assert byte_size(bytes) == 57
+      assert <<0x66, _payload::binary-size(56)>> = bytes
+
+      assert {:ok, {:voxel_surface_element_intent, decoded}} = Codec.decode(bytes)
+      assert decoded == intent
+    end
+
+    test "decodes a negative-coord clear voxel_surface_element_intent (0x66)" do
+      intent = %{
+        request_id: 7,
+        client_intent_seq: 2,
+        logical_scene_id: 9,
+        action: 1,
+        target_world_micro: {-24, 0, 56},
+        face: 5,
+        surface_type_id: 5,
+        attribute_set_ref: 3,
+        tag_set_ref: 11
+      }
+
+      assert {:ok, bytes} = Codec.encode({:voxel_surface_element_intent, intent})
+      assert {:ok, {:voxel_surface_element_intent, decoded}} = Codec.decode(bytes)
+      assert decoded == intent
+    end
+
+    test "rejects a truncated voxel_surface_element_intent (0x66)" do
+      assert {:error, :invalid_message} = Codec.decode(<<0x66, 0, 0, 0>>)
+    end
+
     test "decodes the shared fixture voxel_edit_intent_v1.bin and matches expected fields" do
       bytes =
         File.read!(Path.join([__DIR__, "..", "fixtures", "voxel", "voxel_edit_intent_v1.bin"]))

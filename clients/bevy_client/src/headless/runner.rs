@@ -543,6 +543,36 @@ pub fn run_stdio(
                         ],
                     );
                 }
+                ClientStdioCommand::VoxelSurfacePlace {
+                    logical_scene_id,
+                    action,
+                    host_macro,
+                    face,
+                    surface_type_id,
+                } => {
+                    bridge.send(NetworkCommand::PlaceSurfaceElement {
+                        logical_scene_id,
+                        action,
+                        host_macro,
+                        face,
+                        surface_type_id,
+                    });
+                    emit_stdio(
+                        "va_surface_sent",
+                        &[
+                            (
+                                "action",
+                                if action == 0 { "place" } else { "clear" }.to_string(),
+                            ),
+                            (
+                                "host_macro",
+                                format!("{},{},{}", host_macro[0], host_macro[1], host_macro[2]),
+                            ),
+                            ("face", face.to_string()),
+                            ("surface_type_id", surface_type_id.to_string()),
+                        ],
+                    );
+                }
                 ClientStdioCommand::Quit => {
                     bridge.send(NetworkCommand::Shutdown);
                     observer.emit(
@@ -596,6 +626,10 @@ fn emit_voxel_chunk_info(store: &crate::voxel::authority::VoxelAuthorityStore, c
                 }
             }
             let quads = crate::voxel::mesher::greedy_mesh_chunk(chunk, 1.0).quad_count();
+            // C5.2:表面元件层 —— 上报 chunk 持有的表面元件数 + 实际生成的贴面 decal quad 数
+            // (后者过 surface_decal mesher 的宿主实心/遮挡剔除,真值即"会被渲染的"火炬/拉杆数)。
+            let surface_elements = chunk.surface_elements.len();
+            let decal_quads = crate::voxel::surface_decal::surface_decal_mesh(chunk, 1.0).quad_count();
             emit_stdio(
                 "va_chunk",
                 &[
@@ -606,6 +640,8 @@ fn emit_voxel_chunk_info(store: &crate::voxel::authority::VoxelAuthorityStore, c
                     ("refined", refined.to_string()),
                     ("empty", empty.to_string()),
                     ("quads", quads.to_string()),
+                    ("surface_elements", surface_elements.to_string()),
+                    ("decal_quads", decal_quads.to_string()),
                 ],
             );
         }

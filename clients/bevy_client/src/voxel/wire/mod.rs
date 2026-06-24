@@ -28,6 +28,7 @@ pub mod prefab_place_intent;
 pub mod object_state;
 pub mod snapshot;
 pub mod subscribe;
+pub mod surface_element_intent;
 
 pub use blocks::{MaskWords, MicroLayer, NormalBlock, ObjectCoverRef, RefinedCell};
 pub use catalog_patch::{CatalogPatch, CatalogPatchOp};
@@ -50,6 +51,7 @@ pub use snapshot::{
     EnvironmentSummary, MacroHeader, SnapshotSection, SurfaceElement, TagSet,
 };
 pub use subscribe::{ChunkSubscribe, ChunkUnsubscribe, KnownChunk, VoxelClientMessage};
+pub use surface_element_intent::SurfaceElementIntent;
 
 use crate::protocol::ProtocolError;
 
@@ -67,6 +69,7 @@ pub const OP_FIELD_REGION_DESTROYED: u8 = 0x74;
 // ── Client → server opcodes ────────────────────────────────────────────────
 pub const OP_CHUNK_SUBSCRIBE: u8 = 0x60;
 pub const OP_CHUNK_UNSUBSCRIBE: u8 = 0x61;
+pub const OP_VOXEL_SURFACE_ELEMENT_INTENT: u8 = 0x66;
 pub const OP_VOXEL_PREFAB_PLACE_INTENT: u8 = 0x67;
 pub const OP_VOXEL_EDIT_INTENT: u8 = 0x70;
 
