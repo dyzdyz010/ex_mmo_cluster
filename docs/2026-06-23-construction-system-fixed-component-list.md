@@ -91,21 +91,35 @@
   → surface_elements 1 / decal_quads 1、宿主仍 solid(零 occupancy);放拨杆(type5) → 2/2;
   清火炬 → 1/1;**重启服务器后拨杆活过**(version 293 自 DB 恢复 = durable-before-ack 验真)。
   测试:gate codec 0x66 round-trip 3 + 客户端 wire 4 + stdio 解析 + chunk_directory 持久化 2。
+- **C5.1 prefab/贴面进 GUI build 调色板 ✅**(7878387):`BuildPaletteEntry` 带 `BuildKind`
+  枚举(Material/Prefab/Surface),固定清单 13 block + 7 prefab + 2 贴面 = 22 项;纯函数
+  `build_place_command(kind, pick)`(block/prefab 放相邻空格、贴面绑宿主被拾取面,
+  `face_ordinal_from_normal`)接 `handle_live_voxel_build`。GUI 无头不可验,但选中+拾取→命令
+  纯逻辑全单测,底层命令各自经 stdio harness 实机验过。
+- **C5.3 半导体/逻辑视觉 overlay ✅**(本 commit):新 render 子层 `semiconductor_overlay`(纯核心)
+  + `semiconductor_render`(Bevy 适配,按 chunk)——关联 chunk 材料(resistor 20/comparator 21)
+  与电场(`VoxelFieldStore.electric_grids`),渲二态逻辑读数:resistor 有电流→琥珀/idle→灰,
+  comparator 电位≥阈(`:signal_high`)→亮绿/低→暗红。复用 FieldOverlay 材质(unlit/穿地)。
+  field_store 加 chunk-keyed `semiconductor_dirty` 通道(电场 snapshot/destroy 触发重建)。
+- **C5.4 Layer-3 像素证 ✅**:贴面 decal(`torch_surface_decal_renders_warm`)+ prefab refined
+  (`refined_micro_cell_rasterizes_to_neutral_gray`)本就有;本 commit 加 comparator signal_high
+  → **亮绿**、resistor active → **暖琥珀** 两个 GPU 像素断言(RTX 5060 实跑)。
 
 **回归**:scene_server voxel(chunk_process/directory/surface 71/0)、gate 217/0(+1 pre-existing
-voxel_smoke FieldTickSupervisor 失败,与本改无关:baseline stash 同样失败)、bevy lib 334/0、clippy clean。
+voxel_smoke FieldTickSupervisor 失败,与本改无关:baseline stash 同样失败)、bevy lib 349/0、
+Layer-3 GPU 30/0、clippy clean。
 
-## 4c. C4b/C5 待续(honest 现状)
+## 4c. C4b 待续(honest 现状)
 
+- **C5 客户端构件放置 + 视觉 ✅ 全done**:prefab 网络放置(2822bc0)、贴面元件网络放置(C5.2)、
+  GUI build 集成(C5.1)、半导体/逻辑视觉 overlay(C5.3)、Layer-3 像素证(C5.4)全落地、全验证。
+  GUI 交互层无头不可验,但放置命令(EditVoxel/PlacePrefab/PlaceSurfaceElement)经 stdio harness
+  实机验过、选中→命令纯逻辑单测、视觉过 Layer-3 GPU 像素证。
 - **C4b 二极管 + 三极管(深半导体)**:需电路图**方向性**(diode 单向)+ **per-cell 朝向**
   (放置时存 state_flags/tag)+ **多端接触控制**(transistor 集/基/射)——触及
   `ParticipantProjection` 面连通(现无向)+ `CircuitComponentAnalysis`(现无向图)的有向化
   重构 + kernel 决策门控。是一致的电路图设计工作,需专门 design + 充分电路 e2e 验证,不宜在
   长会话尾仓促出未验证图算法。已精确定位改动面,留焦点续作。
-- **C5 客户端构件放置 + 视觉**:prefab 网络放置 ✅(2822bc0)、贴面元件网络放置 ✅(C5.2,本 commit)。
-  **待续**:① prefab/贴面 GUI build 集成(hotbar 选 + raycast 放,复用 PlacePrefab/PlaceSurfaceElement;
-  GUI 无头不可验,需实机或 ECS 单测);② 半导体/逻辑视觉 overlay(resistor/comparator 的
-  :signal_high/current 可视);③ Layer-3 像素证(贴面 decal / prefab refined / 半导体视觉)。
 
 ## 5. 不发散纪律
 

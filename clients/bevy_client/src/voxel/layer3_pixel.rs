@@ -42,6 +42,10 @@ use crate::voxel::chunk_render::{
 };
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
+use crate::voxel::semiconductor_overlay::{
+    COMPARATOR_MATERIAL_ID, RESISTOR_MATERIAL_ID, SemiconductorCell, semiconductor_color,
+    semiconductor_overlay_mesh,
+};
 use crate::voxel::mesher::{
     ChunkNeighbors, chunk_render_mesh, chunk_render_mesh_lit, greedy_mesh_chunk,
 };
@@ -454,6 +458,31 @@ fn spawn_overlay_kind(world: &mut World, field: &FieldRegionSnapshot, kind: Fiel
     let mesh_handle = world
         .resource_mut::<Assets<Mesh>>()
         .add(build_mesh_with_colors(&data, field_color));
+    let material = world
+        .resource_mut::<Assets<FieldOverlayMaterial>>()
+        .add(field_overlay_material());
+    world.spawn((
+        Mesh3d(mesh_handle),
+        MeshMaterial3d(material),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+}
+
+/// Spawns ONLY the semiconductor logic overlay mesh (real `semiconductor_overlay_mesh`
+/// + the FieldView unlit/alpha/depth-disable material, logic colors baked per-vertex).
+/// `electric` supplies each cell's `(current, potential)`.
+fn spawn_semiconductor_overlay(
+    world: &mut World,
+    cells: &[SemiconductorCell],
+    electric: impl Fn(u16) -> (f32, f32),
+) {
+    let data = semiconductor_overlay_mesh(cells, MACRO, electric);
+    assert!(!data.is_empty(), "semiconductor overlay produced no geometry");
+    let mesh_handle = world
+        .resource_mut::<Assets<Mesh>>()
+        .add(build_mesh_with_colors(&data, |id| {
+            semiconductor_color(id).unwrap_or([1.0, 1.0, 1.0, 1.0])
+        }));
     let material = world
         .resource_mut::<Assets<FieldOverlayMaterial>>()
         .add(field_overlay_material());
@@ -1110,6 +1139,57 @@ fn torch_surface_decal_renders_warm() {
     assert!(
         c.r > c.b + 0.12 && c.g > c.b + 0.10,
         "torch decal should be warm (red & green above blue); got {c:?}"
+    );
+}
+
+/// C5.3/C5.4: a comparator at logic-high (`:signal_high`) renders a BRIGHT GREEN
+/// logic marker — the semiconductor overlay correlates chunk material (comparator
+/// id 21) with the electric field (potential ≥ threshold) and rasterizes it green,
+/// clearly distinct from the dark-green clear (which is dim, low-green).
+#[test]
+fn comparator_signal_high_overlay_renders_green() {
+    // Comparator at macro (1,1,1) → marker centered at world (~150,150,150).
+    let cells = vec![SemiconductorCell {
+        macro_index: (1 + 16 + 256) as u16,
+        material_id: COMPARATOR_MATERIAL_ID,
+    }];
+    let look = Vec3::new(150.0, 150.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(150.0, 150.0, -500.0), look);
+        // potential 0.9 ≥ COMPARATOR_LOGIC_HIGH_POTENTIAL (0.5) → signal_high → green.
+        spawn_semiconductor_overlay(world, &cells, |_| (0.0, 0.9));
+    });
+
+    let c = sample_patch(&data, W / 2, H / 2, 3);
+    // Green dominant AND bright — the dark-green clear has g≈0.30 with g−r≈0.25, so a
+    // ≥0.35 green margin + bright green distinguishes the lit signal_high marker.
+    assert!(
+        c.g > 0.45 && c.g > c.r + 0.35 && c.g > c.b + 0.30,
+        "comparator signal_high should read bright green; got {c:?}"
+    );
+}
+
+/// C5.3/C5.4: a resistor carrying current renders a WARM AMBER active marker
+/// (R highest, B lowest), distinct from the comparator's green and the dim clear.
+#[test]
+fn resistor_active_overlay_renders_amber() {
+    let cells = vec![SemiconductorCell {
+        macro_index: (1 + 16 + 256) as u16,
+        material_id: RESISTOR_MATERIAL_ID,
+    }];
+    let look = Vec3::new(150.0, 150.0, 150.0);
+    let data = render_scene(|world, image| {
+        spawn_camera(world, image, Vec3::new(150.0, 150.0, -500.0), look);
+        // current 5.0 ≥ RESISTOR_ACTIVE_CURRENT → active → amber.
+        spawn_semiconductor_overlay(world, &cells, |_| (5.0, 0.0));
+    });
+
+    let c = sample_patch(&data, W / 2, H / 2, 3);
+    // Warm amber: red clearly above blue, red above green. The dark-green clear has
+    // r≈0.05 < b, so the warm hue + red-bright distinguishes the active marker.
+    assert!(
+        c.r > 0.40 && c.r > c.b + 0.25 && c.r > c.g,
+        "active resistor should read warm amber (red highest); got {c:?}"
     );
 }
 

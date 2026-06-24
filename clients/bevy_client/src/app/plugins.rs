@@ -25,7 +25,8 @@ use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 use crate::voxel::{
     DebrisEffectPlugin, HeatSmokePlugin, IncandescencePlugin, LightningPlugin,
-    VoxelAuthorityPlugin, VoxelChunkRenderPlugin, VoxelFieldRenderPlugin, VoxelPlugin,
+    SemiconductorOverlayPlugin, VoxelAuthorityPlugin, VoxelChunkRenderPlugin,
+    VoxelFieldRenderPlugin, VoxelPlugin,
 };
 
 /// Canonical Bevy client `PluginGroup`.
@@ -46,6 +47,7 @@ impl PluginGroup for BevyClientPlugins {
             .add(VoxelAuthorityPlugin)
             .add(VoxelChunkRenderPlugin)
             .add(VoxelFieldRenderPlugin)
+            .add(SemiconductorOverlayPlugin)
             .add(IncandescencePlugin)
             .add(DebrisEffectPlugin)
             .add(HeatSmokePlugin)

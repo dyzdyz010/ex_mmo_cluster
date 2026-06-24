@@ -40,6 +40,8 @@ pub mod plugin;
 pub mod build_palette;
 pub mod live_pick;
 pub mod prefab;
+pub mod semiconductor_overlay;
+pub mod semiconductor_render;
 pub mod skylight;
 pub mod surface_decal;
 pub mod wire;
@@ -53,6 +55,7 @@ pub use heat_smoke_render::HeatSmokePlugin;
 pub use incandescence_render::IncandescencePlugin;
 pub use lightning_render::LightningPlugin;
 pub use plugin::VoxelPlugin;
+pub use semiconductor_render::SemiconductorOverlayPlugin;
 
 pub use cli::{
     VoxelCliCommand, VoxelCliResult, execute_voxel_cli_command, parse_voxel_cli_command,

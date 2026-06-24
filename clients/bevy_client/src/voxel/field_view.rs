@@ -148,6 +148,11 @@ pub struct VoxelFieldStore {
     // share it (mem::take contention — same lesson as discharge/heat_smoke); the
     // incandescence layer drains this instead. Marked alongside `dirty`.
     incandescence_dirty: HashSet<u64>,
+    // Parallel dirty channel for the semiconductor/logic overlay (C5.3), keyed by
+    // CHUNK coord (not region id): both snapshot and destroy carry `chunk_coord`, so
+    // a powered-off (destroyed) region still rebuilds its chunk's readout to idle.
+    // Drained by `take_semiconductor_dirty`. Own channel (no mem::take contention).
+    semiconductor_dirty_chunks: HashSet<[i32; 3]>,
 }
 
 impl VoxelFieldStore {
@@ -159,16 +164,20 @@ impl VoxelFieldStore {
     /// both the overlay and incandescence channels.
     pub fn apply_snapshot(&mut self, snapshot: FieldRegionSnapshot) {
         let region_id = snapshot.region_id;
+        let chunk_coord = snapshot.chunk_coord;
         self.regions.insert(region_id, snapshot);
         self.dirty.insert(region_id);
         self.incandescence_dirty.insert(region_id);
+        self.semiconductor_dirty_chunks.insert(chunk_coord);
     }
 
-    /// Drops a destroyed field region (marks dirty on both channels so the overlay
-    /// AND the incandescence glow despawn). Returns whether a region was removed.
+    /// Drops a destroyed field region (marks dirty on all channels so the overlay,
+    /// incandescence glow AND semiconductor readout despawn/refresh). Returns
+    /// whether a region was removed.
     pub fn apply_destroyed(&mut self, destroyed: &FieldRegionDestroyed) -> bool {
         self.dirty.insert(destroyed.region_id);
         self.incandescence_dirty.insert(destroyed.region_id);
+        self.semiconductor_dirty_chunks.insert(destroyed.chunk_coord);
         self.regions.remove(&destroyed.region_id).is_some()
     }
 
@@ -228,6 +237,57 @@ impl VoxelFieldStore {
         let mut dirty: Vec<u64> = self.incandescence_dirty.drain().collect();
         dirty.sort_unstable();
         dirty
+    }
+
+    /// Drains the CHUNK coords touched (by an electric/field snapshot or destroy)
+    /// since the last call — the semiconductor logic overlay rebuilds exactly these
+    /// chunks' readouts. Disjoint from the other dirty channels.
+    pub fn take_semiconductor_dirty(&mut self) -> Vec<[i32; 3]> {
+        let mut dirty: Vec<[i32; 3]> = self.semiconductor_dirty_chunks.drain().collect();
+        dirty.sort_unstable();
+        dirty
+    }
+
+    /// Dense per-macro-cell electric grids (current, potential) for a chunk,
+    /// magnitude-max-combined over every electric region stamped with `chunk_coord`,
+    /// or `None` if no electric region covers it. The wire `macro_index` equals the
+    /// chunk cell flat index (`x + y*16 + z*256`), so each returned `Vec<f32>` of
+    /// length 4096 is directly cell-indexable. Feeds the semiconductor logic overlay
+    /// (resistor current / comparator potential per cell).
+    pub fn electric_grids(&self, chunk_coord: [i32; 3]) -> Option<(Vec<f32>, Vec<f32>)> {
+        const CELLS: usize = 16 * 16 * 16;
+        let mut grids: Option<(Vec<f32>, Vec<f32>)> = None;
+        for region in self.regions.values() {
+            if region.chunk_coord != chunk_coord {
+                continue;
+            }
+            let has_current = region.field_mask & FIELD_MASK_ELECTRIC_CURRENT != 0;
+            let has_potential = region.field_mask & FIELD_MASK_ELECTRIC_POTENTIAL != 0;
+            if !has_current && !has_potential {
+                continue;
+            }
+            let (current, potential) =
+                grids.get_or_insert_with(|| (vec![0.0f32; CELLS], vec![0.0f32; CELLS]));
+            for (i, &macro_index) in region.macro_indices.iter().enumerate() {
+                let idx = macro_index as usize;
+                if idx >= CELLS {
+                    continue;
+                }
+                if has_current
+                    && let Some(&v) = region.electric_current.get(i)
+                    && v.abs() > current[idx].abs()
+                {
+                    current[idx] = v;
+                }
+                if has_potential
+                    && let Some(&v) = region.electric_potential.get(i)
+                    && v.abs() > potential[idx].abs()
+                {
+                    potential[idx] = v;
+                }
+            }
+        }
+        grids
     }
 }
 
@@ -926,6 +986,69 @@ mod tests {
         temp.temperature = vec![100.0];
         store2.apply_snapshot(temp);
         assert!(store2.block_light_grid([0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn electric_grids_max_combine_and_semiconductor_dirty_is_chunk_keyed() {
+        let mut store = VoxelFieldStore::new();
+        // No electric region → None.
+        assert!(store.electric_grids([0, 0, 0]).is_none());
+
+        // A current+potential region over chunk (0,0,0): cells 0 and 5.
+        let region = |region_id, chunk, mask, cur: Vec<f32>, pot: Vec<f32>| FieldRegionSnapshot {
+            logical_scene_id: 1,
+            chunk_coord: chunk,
+            region_id,
+            tick_count: 1,
+            field_mask: mask,
+            macro_indices: vec![0, 5],
+            temperature: vec![],
+            electric_potential: pot,
+            electric_current: cur,
+            ionization: vec![],
+            light: vec![],
+            light_color: vec![],
+        };
+
+        store.apply_snapshot(region(
+            1,
+            [0, 0, 0],
+            FIELD_MASK_ELECTRIC_CURRENT | FIELD_MASK_ELECTRIC_POTENTIAL,
+            vec![3.0, 0.5],
+            vec![10.0, 0.0],
+        ));
+        // snapshot marked the CHUNK (not region id) dirty on the semiconductor channel.
+        assert_eq!(store.take_semiconductor_dirty(), vec![[0, 0, 0]]);
+        assert!(store.take_semiconductor_dirty().is_empty());
+
+        // A second region over the SAME chunk: larger |current| at cell 5 wins.
+        store.apply_snapshot(region(
+            2,
+            [0, 0, 0],
+            FIELD_MASK_ELECTRIC_CURRENT,
+            vec![1.0, 9.0],
+            vec![],
+        ));
+
+        let (current, potential) = store.electric_grids([0, 0, 0]).expect("electric present");
+        assert_eq!(current.len(), 4096);
+        assert_eq!(current[0], 3.0, "max(|3.0|, |1.0|)");
+        assert_eq!(current[5], 9.0, "max(|0.5|, |9.0|)");
+        assert_eq!(potential[0], 10.0);
+        assert_eq!(current[1], 0.0, "untouched cell stays zero");
+
+        // A different chunk is unaffected.
+        assert!(store.electric_grids([1, 0, 0]).is_none());
+
+        // Destroy marks the destroyed region's chunk dirty on the semiconductor channel.
+        let destroyed = FieldRegionDestroyed {
+            logical_scene_id: 1,
+            chunk_coord: [0, 0, 0],
+            region_id: 2,
+            destroy_reason: 0,
+        };
+        store.apply_destroyed(&destroyed);
+        assert_eq!(store.take_semiconductor_dirty(), vec![[0, 0, 0]]);
     }
 
     #[test]
