@@ -18,6 +18,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
+  alias SceneServer.Voxel.TagCatalog
   alias SceneServer.Voxel.Types
 
   setup do
@@ -37,6 +38,12 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     Application.put_env(:scene_server, :cli_observe_log, path)
 
     case start_supervised({AttributeCatalog, []}) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    # set_tag 落 truth(C4b step0 signal_high 回归)走 TagCatalog 名→id 解析。
+    case start_supervised({TagCatalog, []}) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
@@ -333,6 +340,46 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     observe_log_text = File.read!(observe_log)
     assert observe_log_text =~ "voxel_field_effect_rejected"
     assert observe_log_text =~ "reason: :unsupported_field_effect_action"
+  end
+
+  # C4b step0:补 C4a 断点回归。CircuitCurrentKernel 早已对 comparator 发
+  # {:set_tag, add: [:signal_high]},但 :signal_high 未登记 tag_catalog → resolve_tag_ids
+  # 名→id 失败 → reject_set_tag → 信号从未落 truth(comparator_test 只验 kernel 发了 effect,
+  # 没验落 truth,故一直看似过测)。补 tag_catalog v6 id13 后,本测断言它真正进 tag_set_ref。
+  test "apply_field_effects set_tag :signal_high lands in truth (C4a 断点回归)" do
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    # comparator(id21)实心块——signal_high 是它的权威输出。
+    assert {:ok, _storage} =
+             ChunkProcess.put_solid_block(chunk, macro_index, NormalBlockData.new(21))
+
+    # 补 catalog 前这条会是 rejected_count: 1;补后 applied + changed?。
+    assert {:ok,
+            %{
+              applied_count: 1,
+              rejected_count: 0,
+              results: [
+                %{
+                  status: :applied,
+                  action: :set_tag,
+                  macro_index: ^macro_index,
+                  changed?: true
+                }
+              ]
+            }} =
+             ChunkProcess.apply_field_effects(
+               chunk,
+               [{:set_tag, %{macro_index: macro_index, add: [:signal_high], remove: []}}],
+               %{region_id: 704, kernel_id: :circuit_current}
+             )
+
+    # 真落 truth:该宏格 tag_set_ref 解出的 tag_ids 含 signal_high 的 id 13。
+    storage = ChunkProcess.debug_state(chunk).storage
+    block = Storage.normal_block_at(storage, macro_index)
+    assert block.tag_set_ref > 0
+    tag_ids = Enum.at(storage.tag_sets, block.tag_set_ref - 1).tag_ids
+    assert 13 in tag_ids
   end
 
   test "ensure_field_region reuses an active source and emits source lifecycle observability", %{

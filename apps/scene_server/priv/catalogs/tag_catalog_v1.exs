@@ -8,7 +8,7 @@
 # 一旦发出即冻结：id ↔ name 映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 5,
+  catalog_version: 6,
   definitions: [
     %{id: 1, name: "flammable"},
     %{id: 2, name: "conductive"},
@@ -26,6 +26,10 @@
     # 满则转 rust 去位。append-only。
     %{id: 11, name: "rusting"},
     # 光学正交系统(2026-06-23):光敏元件"被光照"权威状态(光场 ≥ 阈 → 点亮,可逆)。append-only。
-    %{id: 12, name: "illuminated"}
+    %{id: 12, name: "illuminated"},
+    # 建设系统 · C4b 半导体逻辑(2026-06-24):比较器/三极管的数字逻辑"高"权威状态(节点电位 ≥
+    # logic_threshold → 置位,可逆)。**补 C4a 断点**:此前 CircuitCurrentKernel 已发 :signal_high
+    # 的 set_tag,但该名未登记 → apply_set_tag_effect 名→id 解析失败被 reject,从未落 truth。append-only。
+    %{id: 13, name: "signal_high"}
   ]
 }
