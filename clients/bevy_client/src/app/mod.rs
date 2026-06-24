@@ -34,8 +34,10 @@ use crate::{
 use bevy::{
     camera::Exposure,
     core_pipeline::tonemapping::Tonemapping,
-    light::{AtmosphereEnvironmentMapLight, light_consts::lux},
-    pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium},
+    light::{
+        Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium, light_consts::lux,
+    },
+    pbr::AtmosphereSettings,
     post_process::bloom::Bloom,
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
@@ -403,7 +405,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: lux::RAW_SUNLIGHT,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_xyz(1.0, 0.6, 0.3).looking_at(Vec3::ZERO, Vec3::Y),
@@ -418,7 +420,7 @@ fn setup(
         Camera3d::default(),
         MainCamera,
         camera_transform_from_orbit(&OrbitCameraState::default()),
-        Atmosphere::earthlike(scattering_mediums.add(ScatteringMedium::default())),
+        Atmosphere::earth(scattering_mediums.add(ScatteringMedium::default())),
         AtmosphereSettings::default(),
         AtmosphereEnvironmentMapLight::default(),
         Exposure { ev100: 13.0 },
@@ -430,7 +432,7 @@ fn setup(
         HudText,
         Text::new(""),
         TextFont {
-            font_size: 18.0,
+            font_size: FontSize::Px(18.0),
             ..default()
         },
         TextColor(Color::WHITE),
@@ -446,7 +448,7 @@ fn setup(
         ChatLogText,
         Text::new(""),
         TextFont {
-            font_size: 18.0,
+            font_size: FontSize::Px(18.0),
             ..default()
         },
         TextColor(Color::srgb(0.85, 0.9, 1.0)),
@@ -462,7 +464,7 @@ fn setup(
         ChatInputText,
         Text::new(""),
         TextFont {
-            font_size: 20.0,
+            font_size: FontSize::Px(20.0),
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.95, 0.55)),

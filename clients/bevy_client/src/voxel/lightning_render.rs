@@ -134,7 +134,7 @@ fn advance_and_render_lightning(
     // Whole-set opacity tracks the brightest live bolt (the sim's max_life). One
     // shared material, so all segments fade together — acceptable for sub-500ms
     // bolts (rarely more than one or two overlap).
-    if let Some(material) = materials.get_mut(&assets.material) {
+    if let Some(mut material) = materials.get_mut(&assets.material) {
         material.base_color.set_alpha(effect.sim.max_life());
     }
 

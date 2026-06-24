@@ -34,20 +34,20 @@ use bevy::winit::WinitPlugin;
 
 use crate::login::AppState;
 use crate::voxel::authority::{AuthorityChunk, CellState};
-use crate::voxel::debris::{
-    DEFAULT_PARTICLE_SIZE_M, DebrisConfig, DebrisKind, DebrisSimulation, DebrisSpawnPoint,
-};
 use crate::voxel::chunk_render::{
     build_decal_mesh, build_mesh, build_mesh_with_colors, material_color, mosaic_block_texture,
 };
+use crate::voxel::debris::{
+    DEFAULT_PARTICLE_SIZE_M, DebrisConfig, DebrisKind, DebrisSimulation, DebrisSpawnPoint,
+};
 use crate::voxel::field_render::{FieldOverlayMaterial, field_overlay_material};
 use crate::voxel::field_view::{FieldOverlayKind, field_color, overlay_mesh};
+use crate::voxel::mesher::{
+    ChunkNeighbors, chunk_render_mesh, chunk_render_mesh_lit, greedy_mesh_chunk,
+};
 use crate::voxel::semiconductor_overlay::{
     COMPARATOR_MATERIAL_ID, RESISTOR_MATERIAL_ID, SemiconductorCell, semiconductor_color,
     semiconductor_overlay_mesh,
-};
-use crate::voxel::mesher::{
-    ChunkNeighbors, chunk_render_mesh, chunk_render_mesh_lit, greedy_mesh_chunk,
 };
 use crate::voxel::skylight::{Skylight, SkylightConfig};
 use crate::voxel::surface_decal::surface_decal_mesh;
@@ -115,25 +115,47 @@ fn sample_patch(data: &[u8], cx: u32, cy: u32, k: u32) -> Px {
     }
 }
 
+/// Shared headless render-to-image plugin set for every Layer-3 render helper.
+///
+/// 0.19 关键:在「手动 `app.update()` pump + 无 winit loop」下,`AsyncComputeTaskPool` 上
+/// spawn 的管线编译任务永不完成,mesh pipeline 永远停在 `Creating`,`SetItemPipeline` 每帧
+/// Skip 掉所有 draw —— clear 生效、几何永不光栅化。`synchronous_pipeline_compilation: true`
+/// 强制 `block_on` 当帧同步编译,管线当帧 `Ok`(见 `pipeline_cache::create_pipeline_task`)。
+/// 同时禁 PipelinedRendering(裸 pump 下无第二世界帧步进,关掉更确定)。
+///
+/// **只用于离屏像素测试 harness**;真实客户端用默认(异步)编译避免卡帧——勿外泄此配置。
+/// 4 处 helper 共用本函数,杜绝以后新增 helper 漏设 sync 又复现「clear 生效几何不画」。
+fn headless_render_plugins() -> bevy::app::PluginGroupBuilder {
+    DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: None,
+            exit_condition: ExitCondition::DontExit,
+            ..default()
+        })
+        .set(bevy::render::RenderPlugin {
+            synchronous_pipeline_compilation: true,
+            ..default()
+        })
+        .disable::<WinitPlugin>()
+        .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+}
+
 /// Renders a scene off-screen and returns the RGBA8 framebuffer bytes (W*H*4).
 /// `build` spawns the camera (targeting `image`), light, and scene entities.
 fn render_scene(build: impl FnOnce(&mut World, Handle<Image>)) -> Vec<u8> {
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<WinitPlugin>(),
-    )
-    .add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
-    .init_resource::<Captured>();
+    app.add_plugins(headless_render_plugins())
+        .add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
+        .init_resource::<Captured>();
 
     let image = {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        let mut img = Image::new_target_texture(
+            W,
+            H,
+            TextureFormat::Rgba8Unorm,
+            Some(TextureFormat::Rgba8UnormSrgb),
+        );
         img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         images.add(img)
     };
@@ -156,6 +178,7 @@ fn render_scene(build: impl FnOnce(&mut World, Handle<Image>)) -> Vec<u8> {
     // RenderApp systems see no `RenderDevice`.
     app.finish();
     app.cleanup();
+
     pump_until_rendered(&mut app)
 }
 
@@ -477,7 +500,10 @@ fn spawn_semiconductor_overlay(
     electric: impl Fn(u16) -> (f32, f32),
 ) {
     let data = semiconductor_overlay_mesh(cells, MACRO, electric);
-    assert!(!data.is_empty(), "semiconductor overlay produced no geometry");
+    assert!(
+        !data.is_empty(),
+        "semiconductor overlay produced no geometry"
+    );
     let mesh_handle = world
         .resource_mut::<Assets<Mesh>>()
         .add(build_mesh_with_colors(&data, |id| {
@@ -552,19 +578,11 @@ fn idx(x: u16, y: u16, z: u16) -> u16 {
 /// particle layer actually rasterizes on screen (emergence visible), end to end.
 fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) -> Vec<u8> {
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<WinitPlugin>(),
-    )
-    .add_plugins(HeatSmokePlugin)
-    .insert_state(AppState::Game)
-    .init_resource::<VoxelAuthority>()
-    .init_resource::<Captured>();
+    app.add_plugins(headless_render_plugins())
+        .add_plugins(HeatSmokePlugin)
+        .insert_state(AppState::Game)
+        .init_resource::<VoxelAuthority>()
+        .init_resource::<Captured>();
     // The adapter systems live in ClientSet::Logic/Render; configure that ordering
     // (as the real app does) so spawn (Logic) precedes render-sync (Render) and the
     // commanded entities exist before the render extraction.
@@ -572,7 +590,12 @@ fn render_with_heat_smoke(field: &FieldRegionSnapshot, eye: Vec3, look: Vec3) ->
 
     let image = {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        let mut img = Image::new_target_texture(
+            W,
+            H,
+            TextureFormat::Rgba8Unorm,
+            Some(TextureFormat::Rgba8UnormSrgb),
+        );
         img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         images.add(img)
     };
@@ -608,24 +631,21 @@ fn render_with_lightning(
     setup: impl FnOnce(&mut World, Handle<Image>),
 ) -> Vec<u8> {
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<WinitPlugin>(),
-    )
-    .add_plugins(LightningPlugin)
-    .insert_state(AppState::Game)
-    .init_resource::<VoxelAuthority>()
-    .init_resource::<Captured>();
+    app.add_plugins(headless_render_plugins())
+        .add_plugins(LightningPlugin)
+        .insert_state(AppState::Game)
+        .init_resource::<VoxelAuthority>()
+        .init_resource::<Captured>();
     crate::app::schedule::configure_client_sets(&mut app);
 
     let image = {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        let mut img = Image::new_target_texture(
+            W,
+            H,
+            TextureFormat::Rgba8Unorm,
+            Some(TextureFormat::Rgba8UnormSrgb),
+        );
         img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         images.add(img)
     };
@@ -685,27 +705,24 @@ fn render_with_incandescence(
     setup: impl FnOnce(&mut World, Handle<Image>),
 ) -> Vec<u8> {
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<WinitPlugin>(),
-    )
-    // The glow reuses the FieldOverlayMaterial type; register its MaterialPlugin
-    // (IncandescencePlugin doesn't, to avoid double-registration in the real app).
-    .add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
-    .add_plugins(IncandescencePlugin)
-    .insert_state(AppState::Game)
-    .init_resource::<VoxelAuthority>()
-    .init_resource::<Captured>();
+    app.add_plugins(headless_render_plugins())
+        // The glow reuses the FieldOverlayMaterial type; register its MaterialPlugin
+        // (IncandescencePlugin doesn't, to avoid double-registration in the real app).
+        .add_plugins(MaterialPlugin::<FieldOverlayMaterial>::default())
+        .add_plugins(IncandescencePlugin)
+        .insert_state(AppState::Game)
+        .init_resource::<VoxelAuthority>()
+        .init_resource::<Captured>();
     crate::app::schedule::configure_client_sets(&mut app);
 
     let image = {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let mut img = Image::new_target_texture(W, H, TextureFormat::Rgba8UnormSrgb, None);
+        let mut img = Image::new_target_texture(
+            W,
+            H,
+            TextureFormat::Rgba8Unorm,
+            Some(TextureFormat::Rgba8UnormSrgb),
+        );
         img.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         images.add(img)
     };
@@ -1435,7 +1452,7 @@ fn spawn_sky_camera(world: &mut World, image: Handle<Image>, eye: Vec3, look: Ve
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.86),
             illuminance: 4200.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_xyz(-0.6, 1.0, 0.45).looking_at(Vec3::ZERO, Vec3::Y),
@@ -1878,7 +1895,10 @@ fn collapse_debris_rasterizes_on_screen() {
         "collapse debris should rasterize a visible cloud; got {non_clear} non-clear px"
     );
 
-    let (cx, cy) = ((sx / non_clear as u64) as u32, (sy / non_clear as u64) as u32);
+    let (cx, cy) = (
+        (sx / non_clear as u64) as u32,
+        (sy / non_clear as u64) as u32,
+    );
     let px = sample_patch(&data, cx, cy, 6);
     // Debris is brown: warm (red ≥ blue), not the green clear and not gray sky.
     assert!(
@@ -1935,7 +1955,11 @@ fn spawn_chunk_textured_lit(world: &mut World, chunk: &AuthorityChunk) {
         if y >= size {
             1.0
         } else {
-            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+            sky.at(
+                x.clamp(0, size - 1),
+                y.clamp(0, size - 1),
+                z.clamp(0, size - 1),
+            )
         }
     };
     spawn_chunk_lit_with(world, chunk, &light_at);
@@ -1961,7 +1985,11 @@ fn spawn_chunk_textured_lit_blocklight(
         let sky_l = if y >= size {
             1.0
         } else {
-            sky.at(x.clamp(0, size - 1), y.clamp(0, size - 1), z.clamp(0, size - 1))
+            sky.at(
+                x.clamp(0, size - 1),
+                y.clamp(0, size - 1),
+                z.clamp(0, size - 1),
+            )
         };
         let block_l = if (0..16).contains(&x) && (0..16).contains(&y) && (0..16).contains(&z) {
             grid[(x + y * 16 + z * 256) as usize] as f32 / 255.0

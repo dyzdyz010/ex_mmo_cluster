@@ -65,6 +65,10 @@ fn login_panel_system(
     };
 
     let mut submit = false;
+    // egui 0.34 deprecates `CentralPanel::show` toward `show_inside`, but the latter
+    // takes a `&mut Ui` (for nesting) — there is no drop-in for a top-level full-screen
+    // panel driven by the `Context`. `show(ctx, …)` remains the correct call here.
+    #[allow(deprecated)]
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(64.0);

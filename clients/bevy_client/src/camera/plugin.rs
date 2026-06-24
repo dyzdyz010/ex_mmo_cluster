@@ -48,8 +48,8 @@ impl Plugin for CameraPlugin {
                 Update,
                 manage_cursor_grab.in_set(ClientSet::Render).run_if(
                     state_changed::<AppState>
-                        .or(resource_changed::<ChatState>)
-                        .or(resource_changed::<WindowFocusGate>),
+                        .or_else(resource_changed::<ChatState>)
+                        .or_else(resource_changed::<WindowFocusGate>),
                 ),
             )
             .add_systems(

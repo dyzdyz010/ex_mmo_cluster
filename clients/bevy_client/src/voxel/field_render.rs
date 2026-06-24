@@ -78,8 +78,8 @@ impl MaterialExtension for FieldDepthDisable {
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
             // Render through opaque geometry (web depthTest:false / depthWrite:false).
-            depth_stencil.depth_compare = CompareFunction::Always;
-            depth_stencil.depth_write_enabled = false;
+            depth_stencil.depth_compare = Some(CompareFunction::Always);
+            depth_stencil.depth_write_enabled = Some(false);
         }
         Ok(())
     }
