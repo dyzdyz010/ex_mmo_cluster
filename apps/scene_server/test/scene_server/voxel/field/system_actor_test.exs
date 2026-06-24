@@ -20,6 +20,21 @@ defmodule SceneServer.Voxel.Field.SystemActorTest do
     end
   end
 
+  defmodule FailingChunk do
+    @moduledoc false
+    use GenServer
+
+    def start_link(_), do: GenServer.start_link(__MODULE__, nil)
+
+    @impl true
+    def init(_), do: {:ok, nil}
+
+    @impl true
+    def handle_call({:apply_field_effects, _effects, _context}, _from, state) do
+      {:reply, {:error, :chunk_unavailable}, state}
+    end
+  end
+
   defp start_sa(bucket_size \\ 5.0) do
     name = :"sa_#{System.unique_integer([:positive])}"
     {:ok, _} = start_supervised({SystemActor, [name: name, bucket_size: bucket_size]})
@@ -215,6 +230,28 @@ defmodule SceneServer.Voxel.Field.SystemActorTest do
              )
 
     assert_receive {:committed, [{:set_tag, _}]}
+  end
+
+  test "commit 失败不前进 latch(下个 tick 重试)且把错误透传(数据丢失回归)" do
+    sa = start_sa()
+
+    {:ok, failing} =
+      start_supervised({FailingChunk, nil}, id: {:fail_chunk, System.unique_integer([:positive])})
+
+    # 权威写失败 → submit 透传 {:error,_}(FieldTickWorker 据此记 dispatch_failed)。
+    assert {:error, :chunk_unavailable} =
+             SystemActor.submit_field_effects(sa, failing, [temp_effect(0, 100.0)], ctx(1))
+
+    # latch 未前进——否则被丢弃的效果会被当「已提交」幂等跳过(静默数据丢失)。
+    assert %{latch_count: 0} = SystemActor.snapshot(sa)
+
+    # 换个能 commit 的 chunk 再提交同效果 → 真正提交(没被错误跳过)。
+    chunk = start_chunk()
+
+    assert {:ok, %{committed_count: 1, latched_count: 0}} =
+             SystemActor.submit_field_effects(sa, chunk, [temp_effect(0, 100.0)], ctx(2))
+
+    assert_receive {:committed, _}
   end
 
   test "snapshot / reset" do

@@ -75,7 +75,7 @@ defmodule SceneServer.Voxel.Field.SystemActor do
 
   @impl true
   def handle_call({:submit, chunk_pid, effects, context}, _from, state) do
-    {to_commit, results, next_state} =
+    {to_commit, results, advanced_state} =
       Enum.reduce(effects, {[], [], state}, fn effect, {commit_acc, res_acc, st} ->
         case gate(effect, context, st) do
           {:commit, candidate, st2} ->
@@ -88,17 +88,26 @@ defmodule SceneServer.Voxel.Field.SystemActor do
       end)
 
     commit_effects = Enum.reverse(to_commit)
-    commit_field_effects(chunk_pid, commit_effects, context)
-
     results = Enum.reverse(results)
 
-    reply = %{
-      results: results,
-      committed_count: length(commit_effects),
-      latched_count: Enum.count(results, &match?({:latched, _}, &1))
-    }
+    # RULE-11/AUTH-11 修(数据丢失):latch 在 gate reduce 里已对「拟提交」效果前进,但只有当权威
+    # 写真正成功才能保留——否则若 commit 失败(chunk 进程已死 / 落库失败 / 崩溃),latch 已前进会让
+    # 同 {cell,rule,attribute,bucket} 的后续效果被当「已提交」幂等跳过 → 效果被静默丢弃。故:commit
+    # 成功才采用 advanced_state(latch 前进)+ 回 {:ok};失败则保留旧 state(latch 不前进,下个 tick
+    # 重试)+ 把 {:error,reason} 透传给 FieldTickWorker(它据此记 dispatch_failed)。
+    case commit_field_effects(chunk_pid, commit_effects, context) do
+      :ok ->
+        reply = %{
+          results: results,
+          committed_count: length(commit_effects),
+          latched_count: Enum.count(results, &match?({:latched, _}, &1))
+        }
 
-    {:reply, {:ok, reply}, next_state}
+        {:reply, {:ok, reply}, advanced_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:snapshot, _from, state) do
