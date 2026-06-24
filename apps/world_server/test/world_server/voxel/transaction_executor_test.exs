@@ -20,7 +20,31 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
     def commit(participant, transaction_id, opts) do
       log_call(opts, {:commit, participant.region_id, transaction_id})
       maybe_sleep(opts, :commit_sleeps_ms, participant.region_id)
-      {:ok, %{committed_chunks: []}}
+      maybe_raise(opts, :commit_raises, participant.region_id)
+      commit_response(opts, participant.region_id)
+    end
+
+    # commit_responses: %{region_id => outcome}. outcome 可以是:
+    #   - {:ok, _} / {:error, reason} 静态(每次都返回它,用于"永久失败")
+    #   - {:fail_then_ok, agent, reason} 有状态:计数器 >0 时返回 {:error, reason}
+    #     并自减,归零后返回 {:ok, _}(用于"瞬时失败→重试成功")。
+    defp commit_response(opts, region_id) do
+      case opts |> Keyword.get(:commit_responses, %{}) |> Map.get(region_id) do
+        nil ->
+          {:ok, %{committed_chunks: []}}
+
+        {:fail_then_ok, agent, reason} ->
+          remaining =
+            Agent.get_and_update(agent, fn m ->
+              c = Map.get(m, region_id, 0)
+              {c, Map.put(m, region_id, max(c - 1, 0))}
+            end)
+
+          if remaining > 0, do: {:error, reason}, else: {:ok, %{committed_chunks: []}}
+
+        static ->
+          static
+      end
     end
 
     def abort(participant, transaction_id, opts) do
@@ -212,6 +236,107 @@ defmodule WorldServer.Voxel.TransactionExecutorTest do
 
     second_snapshot = TransactionCoordinator.snapshot(coordinator)
     assert second_snapshot.decision_index["tx-replay"].decision == :commit
+  end
+
+  describe "#10 commit-phase atomicity" do
+    test "transient commit failure is recovered by a bounded retry (decision stays commit, no residual failure)" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+      # region 20 fails commit exactly once, then succeeds on retry.
+      fail_counter = start_supervised!({Agent, fn -> %{20 => 1} end}, id: :fail_counter)
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(
+          coordinator,
+          transaction_attrs("tx-commit-retry")
+        )
+
+      assert {:ok,
+              %{
+                decision: :commit,
+                transaction: %BuildTransaction{state: :committed},
+                participant_results: results
+              }} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant:
+                   uniform_opts(
+                     recorder: recorder,
+                     commit_responses: %{20 => {:fail_then_ok, fail_counter, :scene_blip}}
+                   )
+               )
+
+      # Retry healed it: no participant ends up failed.
+      refute Enum.any?(results, fn {_p, outcome} -> match?({:error, _}, outcome) end)
+
+      # Region 20 received two commit dispatches (initial + retry); region 10 only one.
+      calls = Agent.get(recorder, & &1)
+      assert Enum.count(calls, &match?({:commit, 20, _}, &1)) == 2
+      assert Enum.count(calls, &match?({:commit, 10, _}, &1)) == 1
+    end
+
+    test "permanent commit failure is surfaced in participant_results but the 2PC decision still commits" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(
+          coordinator,
+          transaction_attrs("tx-commit-perm-fail")
+        )
+
+      assert {:ok,
+              %{
+                decision: :commit,
+                transaction: %BuildTransaction{state: :committed},
+                participant_results: results
+              }} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant:
+                   uniform_opts(
+                     recorder: recorder,
+                     commit_responses: %{20 => {:error, :scene_down}}
+                   )
+               )
+
+      # The failure is no longer silently swallowed — it surfaces in the result.
+      assert {_p, {:error, :scene_down}} =
+               Enum.find(results, fn {p, _} -> p.region_id == 20 end)
+
+      # Region 10 committed fine.
+      assert {_p, {:ok, _}} = Enum.find(results, fn {p, _} -> p.region_id == 10 end)
+
+      # 2PC: prepare succeeded for all, so the durable decision is commit; the
+      # straggler was retried (two dispatches) before being surfaced.
+      calls = Agent.get(recorder, & &1)
+      assert Enum.count(calls, &match?({:commit, 20, _}, &1)) == 2
+    end
+
+    test ":transaction_not_prepared on retry is treated as idempotent already-committed success" do
+      coordinator = start_supervised!(TransactionCoordinator)
+      recorder = start_supervised!({Agent, fn -> [] end})
+
+      {:ok, transaction} =
+        TransactionCoordinator.begin_transaction(coordinator, transaction_attrs("tx-commit-idem"))
+
+      assert {:ok, %{decision: :commit, participant_results: results}} =
+               TransactionExecutor.execute(coordinator, transaction, %{},
+                 scene_caller: StubSceneCaller,
+                 scene_opts_by_participant:
+                   uniform_opts(
+                     recorder: recorder,
+                     # First pass reports not_prepared (commit ack lost after the
+                     # real apply); retry sees the released fence → idempotent ok.
+                     commit_responses: %{20 => {:error, :transaction_not_prepared}}
+                   )
+               )
+
+      # Region 20 must NOT be reported as a failure — the retry interpreted the
+      # released fence as a confirmed prior commit.
+      assert {_p, outcome} = Enum.find(results, fn {p, _} -> p.region_id == 20 end)
+      refute match?({:error, _}, outcome)
+    end
   end
 
   test "fails the slow participant on per-participant prepare timeout and aborts the prepared one" do

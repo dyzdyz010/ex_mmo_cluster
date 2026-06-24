@@ -1949,16 +1949,30 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  # 删除持久化 fence 行。commit/abort 后调用。瞬时 DB 故障会让 delete 失败:
+  # 残留行只有在「同 lease 下进程重启 + 重启前未清理」这一窄窗口才会被 init 当活
+  # fence 重载并阻塞新 prepare(lease 轮换时 load 的 orphan 路径会自愈)。故先做有界
+  # 重试吃掉瞬断,耗尽仍失败才记 loud observe 并放行(保留在内存清 fence 的活性——
+  # 当前进程不被一行残留卡死)。delete_fence 现在不再 raise(见 store 层 rescue),
+  # 因此本函数返回 :ok 不会漏接异常。
+  @fence_delete_max_attempts 3
+
   defp delete_persisted_fence(state, transaction_id, reason) do
+    delete_persisted_fence(state, transaction_id, reason, @fence_delete_max_attempts)
+  end
+
+  defp delete_persisted_fence(state, transaction_id, reason, attempts_left) do
     case ChunkPendingTransactionStore.delete_fence(state.logical_scene_id, state.chunk_coord) do
       {:ok, _} ->
         :ok
 
+      {:error, _error_reason} when attempts_left > 1 ->
+        Process.sleep(25)
+        delete_persisted_fence(state, transaction_id, reason, attempts_left - 1)
+
       {:error, error_reason} ->
-        # The persisted row may now linger. The next ChunkProcess.init load
-        # will see the orphan, fail the lease check (since we are still the
-        # current process), and clean it up — but emit observe so operators
-        # can spot the divergence.
+        # 重试耗尽:持久化行可能残留。emit observe 让运维能发现分叉;在内存里仍清
+        # fence 以保活性(残留行在 lease 轮换 / 同 lease 重启的 orphan 检查中自愈)。
         CliObserve.emit("voxel_chunk_pending_transaction_delete_failed", fn ->
           %{
             logical_scene_id: state.logical_scene_id,
@@ -3604,6 +3618,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
     :exit, _ -> {0, 0}
   end
 
+  @write_token_validate_max_attempts 3
+
   defp validate_snapshot_write_token(lease, chunk_coord) do
     attrs =
       lease
@@ -3616,7 +3632,29 @@ defmodule SceneServer.Voxel.ChunkProcess do
       ])
       |> Map.put(:chunk_coord, chunk_coord)
 
+    validate_snapshot_write_token_with_retry(attrs, @write_token_validate_max_attempts)
+  end
+
+  # 仅对瞬时基础设施故障(DB 连接抖动 / 池 checkout 超时 → :write_token_store_unavailable)
+  # 做有界重试。lease_id_mismatch / owner_epoch_mismatch / unknown_region_token /
+  # chunk_out_of_bounds / lease_expired 等都是权威 fencing 裁决,绝不重试/掩盖。
+  defp validate_snapshot_write_token_with_retry(attrs, attempts_left) do
+    case safe_validate_write_token(attrs) do
+      {:error, :write_token_store_unavailable} when attempts_left > 1 ->
+        Process.sleep(25)
+        validate_snapshot_write_token_with_retry(attrs, attempts_left - 1)
+
+      other ->
+        other
+    end
+  end
+
+  defp safe_validate_write_token(attrs) do
     DataService.Voxel.WriteTokenStore.validate_write(attrs)
+  rescue
+    # DBConnection.ConnectionError 等连接故障是 raise(不是 exit),旧 `catch :exit`
+    # 漏接 → 异常会冒泡崩掉持久化路径。统一收敛成可重试的瞬时不可用。
+    _exception -> {:error, :write_token_store_unavailable}
   catch
     :exit, _reason -> {:error, :write_token_store_unavailable}
   end

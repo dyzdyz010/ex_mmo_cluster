@@ -8,6 +8,12 @@ defmodule DataService.Voxel.ChunkPendingTransactionStoreTest do
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Voxel.ChunkPendingTransactionStore
 
+  # Stub repo whose get_by raises a Postgrex.Error, mimicking a transient DB
+  # connection blip exactly at fence-delete time.
+  defmodule RaisingRepo do
+    def get_by(_schema, _clauses), do: raise(%Postgrex.Error{message: "connection blip"})
+  end
+
   setup do
     Repo.delete_all(VoxelChunkPendingTransaction)
     :ok
@@ -112,6 +118,15 @@ defmodule DataService.Voxel.ChunkPendingTransactionStoreTest do
 
     test "returns :not_found when the row is missing" do
       assert {:ok, :not_found} = ChunkPendingTransactionStore.delete_fence(1, {1, 1, 1})
+    end
+
+    # batch 4 (#9/#12):put_fence rescues Postgrex.Error but delete_fence didn't —
+    # a transient DB blip at delete time would raise and crash ChunkProcess
+    # (whose case only handles {:ok,_}/{:error,_}). Now it returns an error tuple
+    # so the caller can retry / degrade instead of crashing.
+    test "transient DB error during delete is returned as {:error, :fence_delete_failed}, not raised" do
+      assert {:error, :fence_delete_failed} =
+               ChunkPendingTransactionStore.delete_fence(1, {1, 1, 1}, repo: RaisingRepo)
     end
   end
 

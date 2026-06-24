@@ -312,7 +312,7 @@ defmodule WorldServer.Voxel.TransactionExecutor do
         _ -> false
       end)
 
-    fun = fn {participant, _prepare_result} ->
+    commit_fun = fn {participant, _prepare_result} ->
       scene_opts = Map.fetch!(scene_opts_by_participant, participant_key(participant))
 
       safely_invoke(fn ->
@@ -324,15 +324,28 @@ defmodule WorldServer.Voxel.TransactionExecutor do
       end)
     end
 
-    runnable_participants = Enum.map(to_run, fn {participant, _} -> participant end)
+    dispatch_commit = fn pairs ->
+      participants = Enum.map(pairs, fn {participant, _} -> participant end)
 
-    commit_results =
-      to_run
-      |> stream_with_deadline(fun, commit_timeout, deadline)
-      |> Enum.zip(runnable_participants)
+      pairs
+      |> stream_with_deadline(commit_fun, commit_timeout, deadline)
+      |> Enum.zip(participants)
       |> Enum.map(fn {stream_outcome, participant} ->
         {participant, normalize_dispatch_outcome(stream_outcome)}
       end)
+    end
+
+    commit_results = dispatch_commit.(to_run)
+
+    # #10:此前无论 commit 是否有 participant 失败,都直接 commit_decision,失败的
+    # commit_results 被静默吞 —— 该 chunk 的写永久丢失而事务报告成功(recovery 跳过
+    # committed、executor 对 committed 短路,无人补提交)。2PC 语义下 prepare 全部成功
+    # 后不能 abort,失败的 participant 必须重试。对失败子集做一次有界重试(仍在 deadline
+    # 内);重试时 `:transaction_not_prepared` 视作幂等「已提交」(首遍已 apply + 释放
+    # fence,只是回执丢了)→ 记成功。重试后仍残留失败的,emit loud observe(留给运维 /
+    # 后续 recovery commit re-drive),再按 2PC 落 commit 决议。
+    {commit_results, commit_retried?} =
+      maybe_retry_failed_commits(commit_results, to_run, dispatch_commit, deadline)
 
     prebaked_results =
       Enum.map(prebaked, fn {participant, prepare_result} ->
@@ -340,6 +353,8 @@ defmodule WorldServer.Voxel.TransactionExecutor do
       end)
 
     participant_results = commit_results ++ prebaked_results
+
+    surface_commit_failures(transaction, participant_results, commit_retried?)
 
     {:ok, transaction} =
       TransactionCoordinator.commit_decision(
@@ -366,6 +381,77 @@ defmodule WorldServer.Voxel.TransactionExecutor do
        participant_results: participant_results,
        prepare_results: prepare_results
      }}
+  end
+
+  # #10:对首遍 commit 失败的 participant 子集做一次有界重试。空失败 / 超 deadline 直接返回。
+  defp maybe_retry_failed_commits(commit_results, to_run, dispatch_commit, deadline) do
+    failed_keys =
+      commit_results
+      |> Enum.filter(fn {_participant, outcome} -> match?({:error, _}, outcome) end)
+      |> MapSet.new(fn {participant, _} -> participant_key(participant) end)
+
+    cond do
+      MapSet.size(failed_keys) == 0 ->
+        {commit_results, false}
+
+      monotonic_now_ms() >= deadline ->
+        {commit_results, false}
+
+      true ->
+        retry_pairs =
+          Enum.filter(to_run, fn {participant, _} ->
+            MapSet.member?(failed_keys, participant_key(participant))
+          end)
+
+        retry_results = dispatch_commit.(retry_pairs)
+        {merge_commit_results(commit_results, retry_results), true}
+    end
+  end
+
+  defp merge_commit_results(original, retry_results) do
+    retry_by_key =
+      Map.new(retry_results, fn {participant, outcome} ->
+        {participant_key(participant), interpret_commit_retry(outcome)}
+      end)
+
+    Enum.map(original, fn {participant, outcome} ->
+      case Map.fetch(retry_by_key, participant_key(participant)) do
+        {:ok, retry_outcome} -> {participant, retry_outcome}
+        :error -> {participant, outcome}
+      end
+    end)
+  end
+
+  # 重试时 participant 回 `:transaction_not_prepared` 说明首遍其实已 commit(apply +
+  # 释放 fence 后回执才丢),重试看到 fence 已空。视作幂等「已提交」成功,避免把一笔
+  # 真正落库的写误报成失败。其它错误保持失败语义(真未提交)。
+  defp interpret_commit_retry({:error, :transaction_not_prepared}) do
+    {:ok, %{committed_chunks: [], idempotent_already_committed: true}}
+  end
+
+  defp interpret_commit_retry(outcome), do: outcome
+
+  # #10:把残留(重试后仍失败)的 commit participant 大声暴露出来。此前这些错误完全
+  # 静默,事务照常报告成功 → 静默数据丢失。emit 后运维/告警可见,participant_results
+  # 也带着失败明细供下游处置。
+  defp surface_commit_failures(transaction, participant_results, retried?) do
+    failures =
+      Enum.filter(participant_results, fn {_participant, outcome} ->
+        match?({:error, _}, outcome)
+      end)
+
+    if failures != [] do
+      emit("voxel_transaction_executor_commit_incomplete", transaction, %{
+        retried: retried?,
+        failure_count: length(failures),
+        failures:
+          Enum.map(failures, fn {participant, {:error, reason}} ->
+            %{participant_key: participant_key(participant), reason: inspect(reason)}
+          end)
+      })
+    end
+
+    :ok
   end
 
   # Phase A4-3:scene_objects 已经在 coordinator allocate 阶段按 D6 字典序

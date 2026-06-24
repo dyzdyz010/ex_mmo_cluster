@@ -137,6 +137,13 @@ defmodule DataService.Voxel.ChunkPendingTransactionStore do
           end
       end
     end
+  rescue
+    # 与 put_fence 对齐:DB 连接瞬断时 get_by/delete 会 raise(Postgrex.Error /
+    # DBConnection.ConnectionError),而非返回 {:error,_}。此前不 rescue → 调用方
+    # ChunkProcess.delete_persisted_fence 的 case 不接异常 → ChunkProcess 崩。
+    # 改为转成 {:error, :fence_delete_failed},让调用方走重试/降级而非崩溃。
+    _exception in [Postgrex.Error, DBConnection.ConnectionError] ->
+      {:error, :fence_delete_failed}
   end
 
   @doc """
