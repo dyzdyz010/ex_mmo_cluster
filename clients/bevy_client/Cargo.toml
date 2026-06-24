@@ -25,3 +25,16 @@ png = "0.17"
 [[bench]]
 name = "predictor_bench"
 harness = false
+
+# Bevy performance: optimize ALL dependencies (notably bevy's math / ECS / render
+# pipeline) to opt-level 3 even in dev builds. Without this, a debug build runs
+# bevy completely unoptimized and the client is CPU-bound at ~50 fps with
+# unstable frame pacing — which presents as whole-frame judder / "screen flicker"
+# on any camera motion (GPU sits ~50% idle while the CPU can't feed it). The
+# client crate itself stays at opt-level 1 so iterative recompiles remain fast.
+# This is Bevy's officially recommended dev profile. See bevyengine.org setup.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
