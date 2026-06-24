@@ -124,6 +124,52 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              MapLedger.route_chunks_with_leases(ledger, 1, [{0, 0, 0}, {1, 0, 0}])
   end
 
+  test "issue_lease with an explicit owner_epoch below the DB floor uses the monotonic epoch (not the stale value)" do
+    # Regression: allocate_owner_epoch must return set_floor's result (GREATEST(db, explicit)),
+    # NOT the raw explicit. A prior session/migration advanced this region's DB epoch to 5; a
+    # new issue_lease that pins owner_epoch: 1 must still get epoch 5 (monotonic). Returning the
+    # stale 1 broke owner_epoch/token_version monotonicity → publish_write_token CAS :stale_token
+    # → lease never stored / region_without_lease (the DevSeed + voxel_smoke class — root fix).
+    ledger = start_supervised!({MapLedger, write_token_store: WriteTokenStore})
+    future_ms = System.system_time(:millisecond) + 60_000
+
+    # Simulate the region's DB epoch already advanced past the pinned value.
+    assert 5 = DataService.Voxel.RegionEpochStore.set_floor(1, 10, 5)
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: 10,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    # Pin owner_epoch: 1 (below the DB floor 5), no explicit token_version (defaults to the
+    # allocated epoch). With the fix this succeeds and the lease uses epoch 5, not 1.
+    assert {:ok, lease} =
+             MapLedger.issue_lease(ledger, 10, 1_000,
+               lease_id: 100,
+               owner_epoch: 1,
+               expires_at_ms: future_ms
+             )
+
+    assert lease.owner_epoch == 5, "lease must use the monotonic DB epoch, not the stale pin"
+
+    # The published write token validates (it was published at the monotonic version, not stale).
+    assert :ok =
+             WriteTokenStore.validate_write(%{
+               logical_scene_id: 1,
+               region_id: 10,
+               chunk_coord: {0, 0, 0},
+               lease_id: lease.lease_id,
+               owner_scene_instance_ref: lease.owner_scene_instance_ref,
+               owner_epoch: lease.owner_epoch
+             })
+  end
+
   test "publishes lease write tokens and fences stale writes after migration" do
     token_store = WriteTokenStore
     ledger = start_supervised!({MapLedger, write_token_store: token_store})

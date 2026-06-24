@@ -373,16 +373,19 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   # 梯队1 step1.3(CELL-18/23):owner_epoch 经 DB 线性化分配器分配,使并发/重启的多 MapLedger
-  # 无法分配冲突或回退的 epoch。opts 显式 owner_epoch(测试/回放)被尊重,但同时 set_floor 抬高
-  # DB 计数以保持单调一致。
+  # 无法分配冲突或回退的 epoch。opts 显式 owner_epoch(测试/回放)作为 floor,但**最终用的是
+  # set_floor 生效后的 epoch = GREATEST(DB, explicit)**,而非原始 explicit:若 DB epoch 已抬过
+  # (跨重启/迁移/并发),返回 stale explicit 会破坏 owner_epoch/token_version 单调性 →
+  # publish_write_token 的 CAS 判 `:stale_token` → issue_lease 永久失败 / region_without_lease。
+  # (这正是 DevSeed / voxel_smoke pin owner_epoch 触发 :stale_token 那一类的根因——此前靠"不 pin"
+  # 绕过,这里修根因:pin 也安全,单调性恒成立。)
   defp allocate_owner_epoch(state, opts, logical_scene_id, region_id) do
     case Keyword.get(opts, :owner_epoch) do
       nil ->
         state.region_epoch_store.allocate_next(logical_scene_id, region_id)
 
       explicit when is_integer(explicit) ->
-        _ = state.region_epoch_store.set_floor(logical_scene_id, region_id, explicit)
-        explicit
+        state.region_epoch_store.set_floor(logical_scene_id, region_id, explicit)
     end
   end
 
