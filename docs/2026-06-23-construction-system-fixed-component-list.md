@@ -105,9 +105,9 @@
   (`refined_micro_cell_rasterizes_to_neutral_gray`)本就有;本 commit 加 comparator signal_high
   → **亮绿**、resistor active → **暖琥珀** 两个 GPU 像素断言(RTX 5060 实跑)。
 
-**回归**:scene_server voxel(chunk_process/directory/surface 71/0)、gate 217/0(+1 pre-existing
-voxel_smoke FieldTickSupervisor 失败,与本改无关:baseline stash 同样失败)、bevy lib 349/0、
-Layer-3 GPU 30/0、clippy clean。
+**回归**:scene_server voxel(chunk_process/directory/surface 71/0)、**gate 218/0**(原 pre-existing
+voxel_smoke 失败已在 8fb0f4b 修复:力学应力 harness 缺 field 运行时 + 测试隔离 token/chunk 污染,
+均非 C5)、bevy lib 349/0、Layer-3 GPU 30/0、data_service 115/0、clippy clean。
 
 ## 4c. C4b 待续(honest 现状)
 
