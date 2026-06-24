@@ -34,6 +34,8 @@
 
 ## 4. 二极管设计
 
+> **⚠️ 实现偏离(2026-06-24,step2-4)**:本稿原拟「有向图 + SCC 判闭环」,实现时实证**该法对单回路无效**——电源无极性,反偏二极管只会让电流绕另一圈(SCC 仍成立),永不阻断。改用 **hop-bias 剪断模型**:二极管正偏 = 其 in_face(anode)侧比 out_face(cathode)侧**离电源跳数更近**(电流应离源流);反偏 = in 侧更远 → 物理上电流要逆流过它 → **从图剪断该二极管点**,回路真断。图保持**无向** + 剪点,`CircuitCurrentKernel` **零改动**(它消费的 `closed_loop_segment_ids`/`segment_graph` 已反映剪断)。比 SCC 更正确且更简单。见 `CircuitComponentAnalysis.cut_reverse_diodes`。
+
 1. **数据(纯 append)**:`attribute_catalog` v12→13 +`conduction_axis`(id25, fixed32, material_default, default 0;编码 0=无向回退普通双向导体/1=+x…6=-z,anode→cathode);`material_catalog` +`@diode_material_id 22`(`electric_conductivity≥1` 入图)+ `diode_material?` 谓词(仿 `power_source_material?` 模式,无 id 白名单)。
 2. **朝向存取**:放置时把**玩家放置朝向**(非 hit `face_normal`)写 `state_flags`;`ParticipantProjection.build_solid_entry` 解码 → diode cell 的 `face_connections` 退化成只连 `{in_face→out_face}` 有向对。
 3. **投影有向化**:`electric_component` 加 `:conduct_dir`(或 `face_connections` 改有向集);`connection_key/2` 对 diode 不对称排序;`electric_faces_connected?` 按方向过滤。

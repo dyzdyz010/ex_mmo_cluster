@@ -35,10 +35,14 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
   @type face :: :x_neg | :x_pos | :y_neg | :y_pos | :z_neg | :z_pos
   @type contact :: {non_neg_integer(), non_neg_integer()}
   @type electric_role :: :conductor | :source | :load
+  # C4b 深半导体:`conduct_dir` 为 nil 表示普通双向导体;`{in_face, out_face}` 表示二极管——
+  # 该 cell 只在 anode(in_face)→cathode(out_face)轴向参与导通(2 端器件,只 in/out 两面导电)。
+  # 正偏/反偏由电路分析按"离电源跳数"判定(forward = in_face 侧更近电源),反偏的二极管被剪断。
   @type electric_component :: %{
           faces: MapSet.t(face()),
           face_contacts: %{optional(face()) => MapSet.t(contact())},
-          roles: MapSet.t(electric_role())
+          roles: MapSet.t(electric_role()),
+          conduct_dir: nil | {face(), face()}
         }
   @type entry :: %{
           electric: %{
@@ -308,34 +312,105 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
 
   defp build_solid_entry(storage, %MacroCellHeader{} = header) do
     case Enum.at(storage.normal_blocks, header.payload_index) do
-      %NormalBlockData{material_id: material_id} ->
+      %NormalBlockData{material_id: material_id, state_flags: state_flags} ->
         conductivity = material_float(material_id, "electric_conductivity", 0.0)
         dielectric_strength = material_float(material_id, "dielectric_strength", 3.0)
 
-        if conductivity >= @min_channel_conductivity do
-          electric_entry(
-            MapSet.new(@faces),
-            all_face_connections(),
-            all_face_contacts_by_face(),
-            [
-              %{
-                faces: MapSet.new(@faces),
-                face_contacts: all_face_contacts_by_face(),
-                roles: electric_roles_for_material(material_id)
-              }
-            ],
-            conductivity,
-            dielectric_strength,
-            electric_roles_for_material(material_id),
-            []
-          )
-        else
-          nil
+        cond do
+          conductivity < @min_channel_conductivity ->
+            nil
+
+          # C4b:二极管——2 端器件,只 in/out 两面导电,带 conduct_dir 供电路分析判正/反偏。
+          MaterialCatalog.diode_material?(material_id) ->
+            build_diode_solid_entry(material_id, state_flags, conductivity, dielectric_strength)
+
+          true ->
+            electric_entry(
+              MapSet.new(@faces),
+              all_face_connections(),
+              all_face_contacts_by_face(),
+              [
+                %{
+                  faces: MapSet.new(@faces),
+                  face_contacts: all_face_contacts_by_face(),
+                  roles: electric_roles_for_material(material_id),
+                  conduct_dir: nil
+                }
+              ],
+              conductivity,
+              dielectric_strength,
+              electric_roles_for_material(material_id),
+              []
+            )
         end
 
       _other ->
         nil
     end
+  end
+
+  # C4b 二极管 solid 投影:每格 anode→cathode 朝向来自 state_flags bits[0..2](0=用材料
+  # conduction_axis 默认轴),只暴露 in/out 两面导电 + conduct_dir 标记。正偏/反偏不在此判定
+  # (投影无电源上下文),交 CircuitComponentAnalysis 按离电源跳数定向 + 反偏剪断。
+  defp build_diode_solid_entry(material_id, state_flags, conductivity, dielectric_strength) do
+    {in_face, out_face} = diode_faces(material_id, state_flags)
+    faces = MapSet.new([in_face, out_face])
+    full_contacts = all_contacts()
+
+    face_contacts =
+      Map.new(@faces, fn face ->
+        if face == in_face or face == out_face do
+          {face, full_contacts}
+        else
+          {face, MapSet.new()}
+        end
+      end)
+
+    roles = electric_roles_for_material(material_id)
+
+    component = %{
+      faces: faces,
+      face_contacts: face_contacts,
+      roles: roles,
+      conduct_dir: {in_face, out_face}
+    }
+
+    electric_entry(
+      faces,
+      add_face_connections(faces, MapSet.new()),
+      face_contacts,
+      [component],
+      conductivity,
+      dielectric_strength,
+      roles,
+      []
+    )
+  end
+
+  # 二极管导通方向码 → {in_face(anode), out_face(cathode)}。码 1..6 = +x/-x/+y/-y/+z/-z
+  # (current 流向 = anode→cathode)。state_flags bits[0..2] 优先;为 0 用材料 conduction_axis
+  # 默认(raw 枚举,非定点——直接取 default_attribute_value 不除 scale)。
+  defp diode_faces(material_id, state_flags) do
+    code =
+      case band(state_flags, 0b111) do
+        0 -> MaterialCatalog.default_attribute_value(material_id, "conduction_axis", 0)
+        per_cell -> per_cell
+      end
+
+    diode_code_faces(code)
+  end
+
+  defp diode_code_faces(1), do: {:x_neg, :x_pos}
+  defp diode_code_faces(2), do: {:x_pos, :x_neg}
+  defp diode_code_faces(3), do: {:y_neg, :y_pos}
+  defp diode_code_faces(4), do: {:y_pos, :y_neg}
+  defp diode_code_faces(5), do: {:z_neg, :z_pos}
+  defp diode_code_faces(6), do: {:z_pos, :z_neg}
+  # 越界/0 回退 +x(惰性安全:仍是合法 2 端二极管,不至于变诡异多面体)。
+  defp diode_code_faces(_other), do: {:x_neg, :x_pos}
+
+  defp all_contacts do
+    MapSet.new(for first_axis <- 0..7, second_axis <- 0..7, do: {first_axis, second_axis})
   end
 
   defp build_refined_entry(storage, %MacroCellHeader{} = header) do
@@ -515,7 +590,9 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
     %{
       faces: faces_from_contacts(face_contacts),
       face_contacts: face_contacts,
-      roles: component_roles(component, layers)
+      roles: component_roles(component, layers),
+      # C4b:refined 子分量暂不支持二极管(diode 走 solid-block 路径),恒双向。
+      conduct_dir: nil
     }
   end
 

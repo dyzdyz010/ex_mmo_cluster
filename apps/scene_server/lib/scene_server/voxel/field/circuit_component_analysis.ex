@@ -20,7 +20,9 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
           face_contacts: %{
             optional(ParticipantProjection.face()) => MapSet.t(ParticipantProjection.contact())
           },
-          source_points: [FieldRegion.source_point()]
+          source_points: [FieldRegion.source_point()],
+          # C4b:nil=普通双向导体;{in_face, out_face}=二极管(正/反偏由离电源跳数判,反偏剪断)。
+          conduct_dir: nil | {ParticipantProjection.face(), ParticipantProjection.face()}
         }
   @type component :: %{
           segment_ids: [segment_id()],
@@ -43,10 +45,13 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     segments_by_macro = group_segments_by_macro(segments)
     adjacency = build_adjacency(region, segments, segments_by_macro)
 
+    # C4b:每个二极管 segment 的 in/out 邻接 segment(按其 conduct_dir 的 in_face/out_face 面)。
+    diode_neighbors = build_diode_neighbors(region, segments, adjacency, segments_by_macro)
+
     segments
     |> Map.keys()
     |> connected_components(adjacency)
-    |> Enum.map(&build_component(&1, segments, adjacency))
+    |> Enum.map(&build_component(&1, segments, adjacency, diode_neighbors))
   end
 
   @doc """
@@ -98,7 +103,8 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
           roles: roles,
           faces: component.faces,
           face_contacts: component.face_contacts,
-          source_points: maybe_component_source_points(source_points, roles)
+          source_points: maybe_component_source_points(source_points, roles),
+          conduct_dir: Map.get(component, :conduct_dir, nil)
         }
 
         Map.put(inner_acc, segment.id, segment)
@@ -200,10 +206,29 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     end
   end
 
-  defp build_component(segment_ids, segments, adjacency) do
+  defp build_component(segment_ids, segments, adjacency, diode_neighbors) do
     segment_ids = Enum.sort(segment_ids)
     segment_map = Map.new(segment_ids, &{&1, Map.fetch!(segments, &1)})
-    closed_loop_segment_ids = closed_loop_segment_ids(segment_ids, adjacency)
+
+    source_segment_ids =
+      Enum.filter(segment_ids, fn segment_id ->
+        segment_map |> Map.fetch!(segment_id) |> Map.get(:source_points, []) |> Kernel.!=([])
+      end)
+
+    load_segment_ids =
+      Enum.filter(segment_ids, fn segment_id ->
+        segment_map
+        |> Map.fetch!(segment_id)
+        |> Map.get(:roles, MapSet.new())
+        |> MapSet.member?(:load)
+      end)
+
+    # C4b:剪掉反偏二极管(in 侧比 out 侧离电源更远)后再算闭环 2-core + segment_graph。
+    # 无二极管分量走原路径,零行为变化。
+    effective_adjacency =
+      cut_reverse_diodes(segment_ids, adjacency, source_segment_ids, diode_neighbors)
+
+    closed_loop_segment_ids = closed_loop_segment_ids(segment_ids, effective_adjacency)
 
     macro_indices =
       segment_map |> Map.values() |> Enum.map(& &1.macro_index) |> Enum.uniq() |> Enum.sort()
@@ -231,26 +256,122 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
         |> Enum.map(& &1.macro_index)
         |> Enum.uniq()
         |> Enum.sort(),
-      source_segment_ids:
-        segment_ids
-        |> Enum.filter(fn segment_id ->
-          segment_map
-          |> Map.fetch!(segment_id)
-          |> Map.get(:source_points, [])
-          |> Kernel.!=([])
-        end),
-      load_segment_ids:
-        segment_ids
-        |> Enum.filter(fn segment_id ->
-          segment_map
-          |> Map.fetch!(segment_id)
-          |> Map.get(:roles, MapSet.new())
-          |> MapSet.member?(:load)
-        end),
+      source_segment_ids: source_segment_ids,
+      load_segment_ids: load_segment_ids,
       segments: segment_map,
-      segment_graph: Map.take(adjacency, segment_ids),
+      segment_graph: Map.take(effective_adjacency, segment_ids),
       source_points: source_points
     }
+  end
+
+  # ── C4b 二极管有向化(hop-bias 剪断模型)─────────────────────────────────
+  # 设计偏离:决策稿原拟"有向图 + SCC"判闭环,但实证该法对单回路无效——电源无极性,
+  # 反偏二极管只会让电流绕另一圈,永不阻断。改用「离电源跳数」定向:二极管正偏 = 其
+  # in_face(anode)侧比 out_face(cathode)侧更近电源(电流应离源流);反偏 = in 侧更远 →
+  # 物理上电流要逆流过二极管 → **剪断该二极管**(从图删点),回路真断。无向图 + 剪点,
+  # kernel 零改动。
+
+  # 每个二极管 segment 的 in/out 邻接 segment(按 conduct_dir 的 in_face / out_face 面)。
+  defp build_diode_neighbors(region, segments, adjacency, segments_by_macro) do
+    segments
+    |> Enum.filter(fn {_id, segment} -> segment.conduct_dir != nil end)
+    |> Map.new(fn {segment_id, segment} ->
+      {in_face, out_face} = segment.conduct_dir
+      macro_coord = Types.macro_coord!(segment.macro_index)
+      adj = Map.get(adjacency, segment_id, MapSet.new())
+
+      {segment_id,
+       %{
+         in: neighbor_segments_on_face(macro_coord, in_face, region, segments_by_macro, adj),
+         out: neighbor_segments_on_face(macro_coord, out_face, region, segments_by_macro, adj)
+       }}
+    end)
+  end
+
+  defp neighbor_segments_on_face(macro_coord, face, region, segments_by_macro, adj_set) do
+    case neighbor_coord(macro_coord, face) do
+      {:ok, coord} ->
+        if FieldRegion.in_aabb?(region, coord) do
+          neighbor_index = Types.macro_index!(coord)
+
+          segments_by_macro
+          |> Map.get(neighbor_index, [])
+          |> MapSet.new()
+          |> MapSet.intersection(adj_set)
+        else
+          MapSet.new()
+        end
+
+      :error ->
+        MapSet.new()
+    end
+  end
+
+  defp cut_reverse_diodes(segment_ids, adjacency, source_segment_ids, diode_neighbors) do
+    component_diodes = Enum.filter(segment_ids, &Map.has_key?(diode_neighbors, &1))
+
+    if component_diodes == [] do
+      adjacency
+    else
+      allowed = MapSet.new(segment_ids)
+      hops = bfs_hops(source_segment_ids, adjacency, allowed)
+
+      reverse =
+        Enum.filter(component_diodes, fn diode_id ->
+          %{in: in_nbrs, out: out_nbrs} = Map.fetch!(diode_neighbors, diode_id)
+          reverse_biased?(min_hop(in_nbrs, hops), min_hop(out_nbrs, hops))
+        end)
+
+      remove_segments(adjacency, reverse)
+    end
+  end
+
+  # 反偏 = in 侧严格比 out 侧离电源远。任一侧无邻/无电源可达(nil)→ 不剪(交 2-core 剪悬挂)。
+  defp reverse_biased?(nil, _out_hop), do: false
+  defp reverse_biased?(_in_hop, nil), do: false
+  defp reverse_biased?(in_hop, out_hop), do: in_hop > out_hop
+
+  defp min_hop(segment_set, hops) do
+    segment_set
+    |> Enum.map(&Map.get(hops, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min(fn -> nil end)
+  end
+
+  # 删点:从图里去掉这些 segment 自身的邻接表项 + 把它们从所有其它点的邻居集里抹掉。
+  defp remove_segments(adjacency, segment_ids) do
+    drop = MapSet.new(segment_ids)
+
+    adjacency
+    |> Map.drop(segment_ids)
+    |> Map.new(fn {id, neighbors} -> {id, MapSet.difference(neighbors, drop)} end)
+  end
+
+  # 无向 BFS 跳数(二极管视作可通,建立"离电源"梯度)。allowed 限定在本分量内。
+  defp bfs_hops(source_segment_ids, adjacency, allowed) do
+    queue =
+      source_segment_ids
+      |> Enum.filter(&MapSet.member?(allowed, &1))
+      |> Enum.map(&{&1, 0})
+
+    do_bfs_hops(queue, adjacency, allowed, %{})
+  end
+
+  defp do_bfs_hops([], _adjacency, _allowed, hops), do: hops
+
+  defp do_bfs_hops([{segment_id, hop} | rest], adjacency, allowed, hops) do
+    if Map.has_key?(hops, segment_id) do
+      do_bfs_hops(rest, adjacency, allowed, hops)
+    else
+      neighbors =
+        adjacency
+        |> Map.get(segment_id, MapSet.new())
+        |> MapSet.intersection(allowed)
+        |> MapSet.to_list()
+        |> Enum.map(&{&1, hop + 1})
+
+      do_bfs_hops(rest ++ neighbors, adjacency, allowed, Map.put(hops, segment_id, hop))
+    end
   end
 
   # The automatic circuit kernel needs actual closed loops, not just any
