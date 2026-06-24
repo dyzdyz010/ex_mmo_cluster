@@ -28,7 +28,6 @@ defmodule GateServer.VoxelSmoke do
   @default_observe_dir ".demo/observe"
   @lease_ttl_ms 60_000
   @owner_scene_instance_ref 7_001
-  @owner_epoch 1
   @started_key {__MODULE__, :started}
   @ws_pid_key {__MODULE__, :ws_pid}
   @deferred_chunk_updates_key {__MODULE__, :deferred_chunk_updates}
@@ -252,6 +251,12 @@ defmodule GateServer.VoxelSmoke do
     with :ok <- ensure_application_started(:data_service),
          :ok <- ensure_loaded(token_store, :data_write_token_store_unavailable),
          :ok <- ensure_loaded(snapshot_store, :data_chunk_snapshot_store_unavailable),
+         # 幂等性:smoke 复用 region_id/logical_scene_id(System.unique_integer per-VM 重置 →
+         # 跨 mix test 重用同一 id),而 voxel_chunks / write_tokens / region_epochs 跨运行持久化。
+         # 不清的话第二次运行:① 残留 write_token 卡 :stale_token;② 残留 chunk(version 2)使
+         # `initial_snapshot_version == 0` 断言失败。开跑前清这三处持久化态(test-only reset 钩子,
+         # 同 chunk_directory_test / map_ledger_test 的隔离做法),保证每次都是干净起点。
+         :ok <- clear_persisted_voxel_state(),
          # 梯队4 + Phase 1d:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在
          # `DataService.Repo`(由 `DataService.Application` 监督)。smoke 只需校验模块已加载,
          # 无 GenServer 可启;`write_token_store: token_store` 仅作 MapLedger 的 enable 标记。
@@ -262,6 +267,28 @@ defmodule GateServer.VoxelSmoke do
          :ok <-
            ensure_named(SceneServer.VoxelChunkSup, fn ->
              SceneServer.VoxelChunkSup.start_link(name: SceneServer.VoxelChunkSup)
+           end),
+         # 力学应力 / 涌现场:每次放实心块都会触发 field provisioning(结构应力等),
+         # 经 ChunkProcess → FieldTickSupervisor.start_worker 起 per-region worker;worker
+         # init 后 subscribe SimRuntime、提交 SystemActor。这三者必须先起(顺序同 voxel_sup),
+         # 否则 smoke 在线放块时 FieldTickSupervisor 调用 :noproc → chunk 崩 → flush :not_started。
+         :ok <-
+           ensure_named(SceneServer.Voxel.Field.SimRuntime, fn ->
+             SceneServer.Voxel.Field.SimRuntime.start_link(
+               name: SceneServer.Voxel.Field.SimRuntime
+             )
+           end),
+         :ok <-
+           ensure_named(SceneServer.Voxel.Field.SystemActor, fn ->
+             SceneServer.Voxel.Field.SystemActor.start_link(
+               name: SceneServer.Voxel.Field.SystemActor
+             )
+           end),
+         :ok <-
+           ensure_named(SceneServer.Voxel.Field.FieldTickSupervisor, fn ->
+             SceneServer.Voxel.Field.FieldTickSupervisor.start_link(
+               name: SceneServer.Voxel.Field.FieldTickSupervisor
+             )
            end),
          :ok <-
            ensure_named(SceneServer.Voxel.ChunkDirectory, fn ->
@@ -322,10 +349,22 @@ defmodule GateServer.VoxelSmoke do
     :ok
   end
 
+  # 清空跨运行持久化的 voxel 态(chunk 快照 / write token / region epoch),保证 smoke 每次
+  # 都是干净起点。用各 store 的 test-only `reset/0` 钩子(经 data_module 解析,不在 gate 侧
+  # 硬编译依赖 Repo/Schema)。任一 store 不可用(如 DataService 未起)时 try/catch 退化为 :ok。
+  defp clear_persisted_voxel_state do
+    for store <- [:ChunkSnapshotStore, :WriteTokenStore, :RegionEpochStore] do
+      apply(data_module(store), :reset, [])
+    end
+
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
   defp put_world_region(logical_scene_id, region_id) do
     now_ms = System.system_time(:millisecond)
     lease_id = 290_000 + System.unique_integer([:positive, :monotonic])
-    token_version = 390_000 + System.unique_integer([:positive, :monotonic])
 
     with {:ok, _assignment} <-
            MapLedger.put_region(MapLedger, %{
@@ -337,12 +376,16 @@ defmodule GateServer.VoxelSmoke do
              owner_epoch: 0,
              assigned_scene_node: node()
            }),
+         # 幂等性:不 pin owner_epoch / token_version —— 让 MapLedger 走 DB 单调分配器
+         # (RegionEpochStore.allocate_next),token_version 默认取该 epoch。region_id 由
+         # System.unique_integer 派生(per-VM 重置 → 跨 mix test 重用同一 region_id),而
+         # voxel_write_tokens / voxel_region_epochs 跨运行持久化;若 pin 固定 token_version
+         # 则第二次运行就 <= DB 现值 → issue_lease :stale_token。单调分配保证每次 > 前值。
+         # (同 dev_seed 早先「不 pin owner_epoch」的修法。)
          {:ok, lease} <-
            MapLedger.issue_lease(MapLedger, region_id, @owner_scene_instance_ref,
              lease_id: lease_id,
-             owner_epoch: @owner_epoch,
-             expires_at_ms: now_ms + @lease_ttl_ms,
-             token_version: token_version
+             expires_at_ms: now_ms + @lease_ttl_ms
            ) do
       {:ok, lease}
     end

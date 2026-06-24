@@ -129,6 +129,17 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   end
 
   @doc """
+  Drops every persisted chunk snapshot. Test-only hatch (mirrors
+  `WriteTokenStore.reset/1` / `RegionEpochStore.reset/1`); production never wipes
+  canonical chunk truth — chunk lifetime is owned by the lease/region path.
+  """
+  def reset(opts \\ []) do
+    repo = repo(opts)
+    repo.delete_all(VoxelChunkSnapshot)
+    :ok
+  end
+
+  @doc """
   单调推进某 chunk 的 `cell_tick`/`sim_time_ms`(梯队1 step1.1b,TIME-1)。
 
   `UPDATE ... SET cell_tick = GREATEST(cell_tick, $), sim_time_ms = GREATEST(...)` —— 永不回退;
