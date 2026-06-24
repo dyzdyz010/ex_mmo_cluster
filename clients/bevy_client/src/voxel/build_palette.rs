@@ -45,15 +45,24 @@ pub struct BuildPaletteEntry {
 }
 
 const fn block(material_id: u16, label: &'static str) -> BuildPaletteEntry {
-    BuildPaletteEntry { kind: BuildKind::Material(material_id), label }
+    BuildPaletteEntry {
+        kind: BuildKind::Material(material_id),
+        label,
+    }
 }
 
 const fn prefab(blueprint_id: u64, label: &'static str) -> BuildPaletteEntry {
-    BuildPaletteEntry { kind: BuildKind::Prefab(blueprint_id), label }
+    BuildPaletteEntry {
+        kind: BuildKind::Prefab(blueprint_id),
+        label,
+    }
 }
 
 const fn surface(surface_type_id: u16, label: &'static str) -> BuildPaletteEntry {
-    BuildPaletteEntry { kind: BuildKind::Surface(surface_type_id), label }
+    BuildPaletteEntry {
+        kind: BuildKind::Surface(surface_type_id),
+        label,
+    }
 }
 
 /// The confirmed fixed construction palette across all three placement paths.
@@ -64,7 +73,7 @@ const FIXED_PALETTE: &[BuildPaletteEntry] = &[
     block(3, "wood"),
     block(5, "iron"), // also the electrical conductor / wire
     block(4, "ice"),
-    block(16, "obsidian"), // translucent (glass-like)
+    block(16, "obsidian"),  // translucent (glass-like)
     block(19, "glowstone"), // light block
     // ② 电路件
     block(6, "power_block"),
@@ -75,6 +84,9 @@ const FIXED_PALETTE: &[BuildPaletteEntry] = &[
     // ④ 半导体(梯队 a):被动电阻(限流/分压)+ 比较器/阈值门(电位≥阈→:signal_high)。
     block(20, "resistor"),
     block(21, "comparator"),
+    // C4b 深半导体:二极管(单向导通,默认 +x 轴)+ 三极管/逻辑门(base 门控开关)。
+    block(22, "diode"),
+    block(23, "transistor"),
     // ⑤ prefab 预制(BlueprintCatalog id 1..7,放空支撑格 → refined cells / 多 chunk 事务)。
     prefab(1, "prefab:sphere"),
     prefab(2, "prefab:cylinder"),
@@ -196,14 +208,44 @@ mod tests {
         assert_eq!(p.selected_index(), 0);
         assert_eq!(p.selected().label, "stone");
         assert_eq!(p.selected_kind(), BuildKind::Material(2));
-        // Confirmed list: 13 block-form (7 material + 3 circuit + 1 photo + 2 semi)
-        // + 7 prefab + 2 surface fixtures.
-        assert_eq!(p.entries().len(), 22);
-        assert!(p.entries().iter().any(|e| e.kind == BuildKind::Material(6) && e.label == "power_block"));
-        assert!(p.entries().iter().any(|e| e.kind == BuildKind::Material(20) && e.label == "resistor"));
-        assert!(p.entries().iter().any(|e| e.kind == BuildKind::Prefab(1) && e.label == "prefab:sphere"));
-        assert!(p.entries().iter().any(|e| e.kind == BuildKind::Surface(4) && e.label == "torch"));
-        assert!(p.entries().iter().any(|e| e.kind == BuildKind::Surface(5) && e.label == "lever"));
+        // Confirmed list: 15 block-form (7 material + 3 circuit + 1 photo + 2 semi
+        // + C4b 2 deep-semi diode/transistor) + 7 prefab + 2 surface fixtures.
+        assert_eq!(p.entries().len(), 24);
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Material(6) && e.label == "power_block")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Material(20) && e.label == "resistor")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Material(22) && e.label == "diode")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Material(23) && e.label == "transistor")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Prefab(1) && e.label == "prefab:sphere")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Surface(4) && e.label == "torch")
+        );
+        assert!(
+            p.entries()
+                .iter()
+                .any(|e| e.kind == BuildKind::Surface(5) && e.label == "lever")
+        );
     }
 
     #[test]
@@ -240,14 +282,22 @@ mod tests {
     }
 
     fn pick(occupied: [i32; 3], face_normal: [i32; 3]) -> LivePick {
-        LivePick { occupied_macro: occupied, face_normal }
+        LivePick {
+            occupied_macro: occupied,
+            face_normal,
+        }
     }
 
     #[test]
     fn material_entry_places_block_at_adjacent_cell() {
         let p = pick([3, 0, 0], [-1, 0, 0]); // looking at the -X face
         match build_place_command(BuildKind::Material(5), &p) {
-            NetworkCommand::EditVoxel { action, target_macro, material_id, .. } => {
+            NetworkCommand::EditVoxel {
+                action,
+                target_macro,
+                material_id,
+                ..
+            } => {
                 assert_eq!(action, ACTION_PLACE);
                 assert_eq!(target_macro, [2, 0, 0]); // adjacent across the -X face
                 assert_eq!(material_id, 5);
@@ -260,7 +310,12 @@ mod tests {
     fn prefab_entry_anchors_at_adjacent_cell() {
         let p = pick([5, 4, 5], [0, 1, 0]); // looking at the top face
         match build_place_command(BuildKind::Prefab(3), &p) {
-            NetworkCommand::PlacePrefab { blueprint_id, anchor_macro, rotation, .. } => {
+            NetworkCommand::PlacePrefab {
+                blueprint_id,
+                anchor_macro,
+                rotation,
+                ..
+            } => {
                 assert_eq!(blueprint_id, 3);
                 assert_eq!(anchor_macro, [5, 5, 5]); // one cell up from the host top
                 assert_eq!(rotation, 0);

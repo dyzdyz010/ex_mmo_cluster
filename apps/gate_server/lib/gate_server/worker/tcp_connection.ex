@@ -1629,8 +1629,34 @@ defmodule GateServer.TcpConnection do
 
   defp voxel_edit_intent_block(request) do
     NormalBlockData.new(request.material_id,
-      attribute_set_ref: request.attribute_patch_ref
+      attribute_set_ref: request.attribute_patch_ref,
+      state_flags: voxel_orientation_state_flags(request.material_id, request.face_normal)
     )
+  end
+
+  # C4b:二极管/三极管放置时由玩家瞄准的 face_normal 推出 per-cell 导通轴写进 state_flags
+  # bits[0..2](二极管=anode→cathode 轴;三极管=collector-emitter 主轴,base 面默认取首个非主轴面)。
+  # 其它材料 → 0(无朝向)。MVP:无 0x70 wire 变体,服务端由 face_normal 推断(决策 ④)。
+  defp voxel_orientation_state_flags(material_id, face_normal) do
+    if SceneServer.Voxel.MaterialCatalog.diode_material?(material_id) or
+         SceneServer.Voxel.MaterialCatalog.transistor_material?(material_id) do
+      axis_code_from_face_normal(face_normal)
+    else
+      0
+    end
+  end
+
+  defp axis_code_from_face_normal({fnx, fny, fnz}) do
+    cond do
+      fnx > 0 -> 1
+      fnx < 0 -> 2
+      fny > 0 -> 3
+      fny < 0 -> 4
+      fnz > 0 -> 5
+      fnz < 0 -> 6
+      # 退化法向 → +x 默认(惰性安全)。
+      true -> 1
+    end
   end
 
   defp voxel_edit_intent_micro_layer(request) do

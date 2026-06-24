@@ -1,7 +1,8 @@
 # C4b 深半导体(二极管 + 三极管/逻辑门)· 决策稿
 
 - 日期:2026-06-24
-- 状态:**决策已确认(2026-06-24)**——①三极管=单 cell+面端子 MVP;②diode 硬截断;③朝向=state_flags;④cell 朝向=玩家放置朝向(MVP 服务端推断、推迟 0x70 变体);⑤本轮只做电路图有向化(电势场/channel 推后);⑥step0 先补 signal_high。按 §6 逐 step 实现中。
+- 状态:**✅ 全部完成(2026-06-24)**——step0-8 全落地、全测试绿。决策:①三极管=单 cell+base 门控 MVP;②diode 硬截断(实现改 hop-bias 剪断,见 §4);③朝向=state_flags;④cell 朝向=玩家放置 face_normal 服务端推断(0x70 无变体);⑤只做电路图门控;⑥step0 补 signal_high。
+- **as-built**:step0 补 C4a signal_high 断点(46f5312);step1 diode 数据(f509a1a);step2-4 diode 端到端 hop-bias 剪断(afa87f3);step5-7 transistor base 可达性门控 + AND(d657dea);step8 parity 验证(209/0 无破坏)+ bevy 调色板加 diode/transistor + 放置 face_normal→state_flags 朝向(本提交)。**遗留 polish(非核心)**:bevy diode 朝向箭头 / transistor 门控态视觉 overlay + Layer-3 像素证(可选,材料现以基色渲染);transistor base 面的 per-cell 显式朝向(现 base 默认取首个非主轴面,主轴由 face_normal 定)。
 - 关联:[[gameplay-roadmap-and-construction-scope]]、`docs/2026-06-23-construction-system-fixed-component-list.md`(C4b 是冻结清单唯一剩项)、[[field-provisioning-framework]]、[[emergence-reaction-layer]]
 - 依据:5-agent understand workflow(`c4b-circuit-recon`,2026-06-24)对电路子系统的实读测绘。
 
