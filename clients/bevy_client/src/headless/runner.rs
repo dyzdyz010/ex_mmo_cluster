@@ -124,20 +124,7 @@ pub fn run_stdio(
 
     loop {
         drain_events_once(&bridge, &observer, &mut state)?;
-
-        // Drain resync requests into radius-0 re-subscribes (mirrors the GUI's
-        // resync ECS system) so the harness re-pulls fresh snapshots after a
-        // delta-base mismatch instead of holding stale chunk truth.
-        if !state.pending_resyncs.is_empty() {
-            let coords = std::mem::take(&mut state.pending_resyncs);
-            for coord in coords {
-                bridge.send(NetworkCommand::SubscribeChunks {
-                    logical_scene_id: 1,
-                    center_chunk: coord,
-                    radius: 0,
-                });
-            }
-        }
+        drain_pending_resyncs(&bridge, &mut state);
 
         if let Some(command) = stdio.try_recv() {
             match command {
@@ -195,14 +182,27 @@ pub fn run_stdio(
                     );
                 }
                 ClientStdioCommand::Transport => {
+                    let transport_or = |t: Option<crate::net::MessageTransport>| {
+                        t.map(|v| v.label().to_string())
+                            .unwrap_or_else(|| "n/a".to_string())
+                    };
                     emit_stdio(
                         "transport",
                         &[
+                            (
+                                "control_transport",
+                                state.control_transport.label().to_string(),
+                            ),
                             (
                                 "movement_transport",
                                 state.movement_transport.label().to_string(),
                             ),
                             ("fast_lane_status", state.fast_lane_status.clone()),
+                            ("last_local_transport", transport_or(state.last_local_transport)),
+                            (
+                                "last_remote_transport",
+                                transport_or(state.last_remote_transport),
+                            ),
                         ],
                     );
                 }
@@ -436,7 +436,7 @@ pub fn run_stdio(
                     );
                 }
                 ClientStdioCommand::VoxelChunkInfo { coord } => {
-                    emit_voxel_chunk_info(&state.voxel_authority, coord);
+                    crate::stdio::emit_voxel_chunk_info(&state.voxel_authority, coord);
                 }
                 ClientStdioCommand::VoxelEditLive {
                     logical_scene_id,
@@ -504,6 +504,43 @@ pub fn run_stdio(
                 }
                 ClientStdioCommand::VoxelFields => {
                     crate::stdio::emit_voxel_fields(&state.field_store);
+                }
+                ClientStdioCommand::VoxelSemiconductors { chunk_coord } => {
+                    crate::stdio::emit_voxel_semiconductors(
+                        &state.voxel_authority,
+                        &state.field_store,
+                        chunk_coord,
+                    );
+                }
+                ClientStdioCommand::VoxelSurfaceList { chunk_coord } => {
+                    crate::stdio::emit_voxel_surface_list(&state.voxel_authority, chunk_coord);
+                }
+                ClientStdioCommand::ChatLog { count } => {
+                    crate::stdio::emit_event_log("chat_log", &state.chat_log, count);
+                }
+                ClientStdioCommand::SkillLog { count } => {
+                    crate::stdio::emit_event_log("skill_log", &state.skill_log, count);
+                }
+                ClientStdioCommand::CombatLog { count } => {
+                    crate::stdio::emit_event_log("combat_log", &state.combat_log, count);
+                }
+                ClientStdioCommand::EffectLog { count } => {
+                    crate::stdio::emit_event_log("effect_log", &state.effect_log, count);
+                }
+                ClientStdioCommand::Echo { text } => {
+                    emit_stdio("echo", &[("text", text)]);
+                }
+                ClientStdioCommand::Wait { ms } => {
+                    // Headless blocks the run loop, but keep draining network events so
+                    // snapshots/deltas that arrive during the wait are applied (so a
+                    // subsequent query sees fresh state). Poll in small slices.
+                    let deadline = Instant::now() + Duration::from_millis(ms);
+                    while Instant::now() < deadline {
+                        drain_events_once(&bridge, &observer, &mut state)?;
+                        drain_pending_resyncs(&bridge, &mut state);
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    emit_stdio("wait", &[("ms", ms.to_string())]);
                 }
                 ClientStdioCommand::VoxelUnsubscribe {
                     logical_scene_id,
@@ -610,46 +647,6 @@ fn emit_voxel_authority_status(store: &crate::voxel::authority::VoxelAuthoritySt
             ("total_quads", total_quads.to_string()),
         ],
     );
-}
-
-fn emit_voxel_chunk_info(store: &crate::voxel::authority::VoxelAuthorityStore, coord: [i32; 3]) {
-    use crate::voxel::authority::CellState;
-    let label = format!("{},{},{}", coord[0], coord[1], coord[2]);
-    match store.chunk(coord) {
-        Some(chunk) => {
-            let (mut solid, mut refined, mut empty) = (0usize, 0usize, 0usize);
-            for cell in &chunk.cells {
-                match cell {
-                    CellState::Solid(_) => solid += 1,
-                    CellState::Refined(_) => refined += 1,
-                    CellState::Empty => empty += 1,
-                }
-            }
-            let quads = crate::voxel::mesher::greedy_mesh_chunk(chunk, 1.0).quad_count();
-            // C5.2:表面元件层 —— 上报 chunk 持有的表面元件数 + 实际生成的贴面 decal quad 数
-            // (后者过 surface_decal mesher 的宿主实心/遮挡剔除,真值即"会被渲染的"火炬/拉杆数)。
-            let surface_elements = chunk.surface_elements.len();
-            let decal_quads = crate::voxel::surface_decal::surface_decal_mesh(chunk, 1.0).quad_count();
-            emit_stdio(
-                "va_chunk",
-                &[
-                    ("coord", label),
-                    ("present", "true".to_string()),
-                    ("version", chunk.chunk_version.to_string()),
-                    ("solid", solid.to_string()),
-                    ("refined", refined.to_string()),
-                    ("empty", empty.to_string()),
-                    ("quads", quads.to_string()),
-                    ("surface_elements", surface_elements.to_string()),
-                    ("decal_quads", decal_quads.to_string()),
-                ],
-            );
-        }
-        None => emit_stdio(
-            "va_chunk",
-            &[("coord", label), ("present", "false".to_string())],
-        ),
-    }
 }
 
 fn wait_for_scene(
@@ -878,5 +875,22 @@ fn drain_events_once(
                 return Err("network event channel disconnected".to_string());
             }
         }
+    }
+}
+
+/// Drains queued resync requests into radius-0 re-subscribes (mirrors the GUI's
+/// resync ECS system), so the harness re-pulls fresh snapshots after a delta-base
+/// mismatch instead of holding stale chunk truth. Shared by the main loop + `wait`.
+fn drain_pending_resyncs(bridge: &NetworkBridge, state: &mut HeadlessState) {
+    if state.pending_resyncs.is_empty() {
+        return;
+    }
+    let coords = std::mem::take(&mut state.pending_resyncs);
+    for coord in coords {
+        bridge.send(NetworkCommand::SubscribeChunks {
+            logical_scene_id: 1,
+            center_chunk: coord,
+            radius: 0,
+        });
     }
 }

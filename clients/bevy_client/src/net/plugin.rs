@@ -389,6 +389,10 @@ fn poll_network_events(
                     &mut world_state.logs,
                     format!("skill event: cid={cid} skill={skill_id}"),
                 );
+                push_line(
+                    &mut world_state.skill_log,
+                    format!("{cid} skill={skill_id}"),
+                );
             }
             NetworkEvent::PlayerState {
                 cid,
@@ -448,8 +452,16 @@ fn poll_network_events(
                         "combat: {source_cid} -> {target_cid} skill={skill_id} damage={damage} hp_after={hp_after}"
                     ),
                 );
+                push_line(
+                    &mut world_state.combat_log,
+                    format!(
+                        "{source_cid}->{target_cid} skill={skill_id} damage={damage} hp_after={hp_after}"
+                    ),
+                );
             }
             NetworkEvent::EffectEvent {
+                source_cid,
+                skill_id,
                 cue_kind,
                 origin,
                 target_position,
@@ -457,6 +469,10 @@ fn poll_network_events(
                 duration_ms,
                 ..
             } => {
+                push_line(
+                    &mut world_state.effect_log,
+                    format!("{source_cid} skill={skill_id} cue={cue_kind:?}"),
+                );
                 let origin_world = net_to_world(origin);
                 let target_world = net_to_world(target_position);
                 commands.spawn((

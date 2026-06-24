@@ -115,6 +115,42 @@ pub enum ClientStdioCommand {
     /// List the retained field regions (heat/electric/light/...) — verifies the
     /// emergence field stream reaches the client.
     VoxelFields,
+    /// C5.3: list a chunk's semiconductor cells (resistor/comparator) + their
+    /// classified LOGIC state (idle/active, low/high) derived from the electric
+    /// field — the headless-only verification path for the digital-circuit overlay.
+    VoxelSemiconductors {
+        chunk_coord: [i32; 3],
+    },
+    /// C5.2: list a chunk's surface elements (torch/lever/decals) with their exact
+    /// macro/face/type/owner — verifies decal placement landed at the right cell.
+    VoxelSurfaceList {
+        chunk_coord: [i32; 3],
+    },
+    /// Recent server-message history queries (bounded ring buffers). Let the harness
+    /// ASSERT a chat/skill/combat/effect message was received + decoded, rather than
+    /// only catching the real-time emit. `count` = how many most-recent to print.
+    ChatLog {
+        count: usize,
+    },
+    SkillLog {
+        count: usize,
+    },
+    CombatLog {
+        count: usize,
+    },
+    EffectLog {
+        count: usize,
+    },
+    /// Scripting marker: echo a tag back as `client_stdio event="echo"` so a test
+    /// can correlate a command with the observer events it triggered in a big log.
+    Echo {
+        text: String,
+    },
+    /// Scripting delay (headless: blocks the run loop `ms`; GUI: non-blocking note).
+    /// Lets a script order operations (send A, wait, send B) without a shell sleep.
+    Wait {
+        ms: u64,
+    },
 }
 
 #[derive(Clone, Default, Resource)]
@@ -274,6 +310,49 @@ pub fn emit_voxel_macro_info(store: &crate::voxel::authority::VoxelAuthorityStor
     );
 }
 
+/// Emits one chunk's authority summary (version + cell breakdown + mesh quads +
+/// C5.2 surface elements / decal quads). Shared by the headless + GUI stdio
+/// executors so `va-chunk` reports the SAME field set in both modes (the GUI used
+/// to emit 7 fields, headless 9 — a parity gap that broke C5.2 decal assertions).
+pub fn emit_voxel_chunk_info(store: &crate::voxel::authority::VoxelAuthorityStore, coord: [i32; 3]) {
+    use crate::voxel::authority::CellState;
+    let label = format!("{},{},{}", coord[0], coord[1], coord[2]);
+    match store.chunk(coord) {
+        Some(chunk) => {
+            let (mut solid, mut refined, mut empty) = (0usize, 0usize, 0usize);
+            for cell in &chunk.cells {
+                match cell {
+                    CellState::Solid(_) => solid += 1,
+                    CellState::Refined(_) => refined += 1,
+                    CellState::Empty => empty += 1,
+                }
+            }
+            let quads = crate::voxel::mesher::greedy_mesh_chunk(chunk, 1.0).quad_count();
+            let surface_elements = chunk.surface_elements.len();
+            let decal_quads =
+                crate::voxel::surface_decal::surface_decal_mesh(chunk, 1.0).quad_count();
+            emit(
+                "va_chunk",
+                &[
+                    ("coord", label),
+                    ("present", "true".to_string()),
+                    ("version", chunk.chunk_version.to_string()),
+                    ("solid", solid.to_string()),
+                    ("refined", refined.to_string()),
+                    ("empty", empty.to_string()),
+                    ("quads", quads.to_string()),
+                    ("surface_elements", surface_elements.to_string()),
+                    ("decal_quads", decal_quads.to_string()),
+                ],
+            );
+        }
+        None => emit(
+            "va_chunk",
+            &[("coord", label), ("present", "false".to_string())],
+        ),
+    }
+}
+
 /// Emits the retained field regions (id:chunk:mask:cells) — verifies the
 /// emergence field stream (heat / electric / light / ...) reaches the client.
 pub fn emit_voxel_fields(field_store: &crate::voxel::field_view::VoxelFieldStore) {
@@ -297,6 +376,133 @@ pub fn emit_voxel_fields(field_store: &crate::voxel::field_view::VoxelFieldStore
         &[
             ("count", field_store.region_count().to_string()),
             ("regions", format!("[{}]", regions.join(";"))),
+        ],
+    );
+}
+
+/// C5.3 headless verification: emits a chunk's semiconductor cells (resistor /
+/// comparator) with their classified LOGIC state, derived from chunk material +
+/// the electric field — the only headless probe for the digital-circuit overlay.
+/// Each cell is `mx,my,mz:kind:state:i=<current>:v=<potential>`.
+pub fn emit_voxel_semiconductors(
+    store: &crate::voxel::authority::VoxelAuthorityStore,
+    field_store: &crate::voxel::field_view::VoxelFieldStore,
+    chunk_coord: [i32; 3],
+) {
+    use crate::voxel::authority::CellState;
+    use crate::voxel::semiconductor_overlay::{
+        COMPARATOR_MATERIAL_ID, RESISTOR_MATERIAL_ID, SemiconductorState,
+    };
+
+    let label = format!("{},{},{}", chunk_coord[0], chunk_coord[1], chunk_coord[2]);
+    let Some(chunk) = store.chunk(chunk_coord) else {
+        emit(
+            "va_semi",
+            &[("chunk", label), ("present", "false".to_string())],
+        );
+        return;
+    };
+
+    let grids = field_store.electric_grids(chunk_coord);
+    let mut entries: Vec<String> = Vec::new();
+    for (idx, cell) in chunk.cells.iter().enumerate() {
+        let CellState::Solid(block) = cell else {
+            continue;
+        };
+        if block.material_id != RESISTOR_MATERIAL_ID && block.material_id != COMPARATOR_MATERIAL_ID
+        {
+            continue;
+        }
+        let (current, potential) = grids
+            .as_ref()
+            .map(|(c, p)| {
+                (
+                    c.get(idx).copied().unwrap_or(0.0),
+                    p.get(idx).copied().unwrap_or(0.0),
+                )
+            })
+            .unwrap_or((0.0, 0.0));
+        let kind = if block.material_id == RESISTOR_MATERIAL_ID {
+            "resistor"
+        } else {
+            "comparator"
+        };
+        let state = SemiconductorState::classify(block.material_id, current, potential)
+            .map(|s| format!("{s:?}"))
+            .unwrap_or_else(|| "none".to_string());
+        let (mx, my, mz) = (idx % 16, (idx / 16) % 16, idx / 256);
+        entries.push(format!(
+            "{mx},{my},{mz}:{kind}:{state}:i={current:.3}:v={potential:.3}"
+        ));
+    }
+    entries.sort();
+    emit(
+        "va_semi",
+        &[
+            ("chunk", label),
+            ("present", "true".to_string()),
+            ("count", entries.len().to_string()),
+            ("cells", format!("[{}]", entries.join(";"))),
+        ],
+    );
+}
+
+/// C5.2 headless verification: emits a chunk's surface elements (torch / lever /
+/// decals) with exact `mx,my,mz:face:type:owner` — verifies a placed decal landed
+/// at the right cell/face/type (va-chunk only reports the aggregate count).
+pub fn emit_voxel_surface_list(
+    store: &crate::voxel::authority::VoxelAuthorityStore,
+    chunk_coord: [i32; 3],
+) {
+    let label = format!("{},{},{}", chunk_coord[0], chunk_coord[1], chunk_coord[2]);
+    let Some(chunk) = store.chunk(chunk_coord) else {
+        emit(
+            "va_surface_list",
+            &[("chunk", label), ("present", "false".to_string())],
+        );
+        return;
+    };
+
+    let mut entries: Vec<String> = chunk
+        .surface_elements
+        .iter()
+        .map(|e| {
+            let (mx, my, mz) = (
+                (e.macro_index % 16) as i32,
+                ((e.macro_index / 16) % 16) as i32,
+                (e.macro_index / 256) as i32,
+            );
+            format!(
+                "{mx},{my},{mz}:face={}:type={}:owner={}",
+                e.face, e.surface_type_id, e.owner_actor_id
+            )
+        })
+        .collect();
+    entries.sort();
+    emit(
+        "va_surface_list",
+        &[
+            ("chunk", label),
+            ("present", "true".to_string()),
+            ("count", entries.len().to_string()),
+            ("elements", format!("[{}]", entries.join(";"))),
+        ],
+    );
+}
+
+/// Emits the most-recent `count` entries of a bounded server-message ring buffer
+/// (chat / skill / combat / effect), oldest-first. Shared by the headless + GUI
+/// stdio executors so a scripted test can ASSERT a message was received/decoded.
+pub fn emit_event_log(event: &str, buffer: &std::collections::VecDeque<String>, count: usize) {
+    let total = buffer.len();
+    let take = count.min(total);
+    let recent: Vec<String> = buffer.iter().skip(total - take).cloned().collect();
+    emit(
+        event,
+        &[
+            ("total", total.to_string()),
+            ("shown", recent.len().to_string()),
+            ("entries", format!("[{}]", recent.join(";"))),
         ],
     );
 }
@@ -550,6 +756,60 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::VoxelFields);
     }
 
+    if let Some(rest) = line.strip_prefix("va-semi ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return Err("va-semi <chunk_cx> <chunk_cy> <chunk_cz>".to_string());
+        }
+        return Ok(ClientStdioCommand::VoxelSemiconductors {
+            chunk_coord: [
+                parse_field(parts[0], "cx")?,
+                parse_field(parts[1], "cy")?,
+                parse_field(parts[2], "cz")?,
+            ],
+        });
+    }
+
+    if let Some(rest) = line.strip_prefix("va-surface-list ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return Err("va-surface-list <chunk_cx> <chunk_cy> <chunk_cz>".to_string());
+        }
+        return Ok(ClientStdioCommand::VoxelSurfaceList {
+            chunk_coord: [
+                parse_field(parts[0], "cx")?,
+                parse_field(parts[1], "cy")?,
+                parse_field(parts[2], "cz")?,
+            ],
+        });
+    }
+
+    // Server-message history queries: `<name>` (default 10) or `<name> <count>`.
+    if let Some(count) = parse_log_count(line, "chat-log") {
+        return Ok(ClientStdioCommand::ChatLog { count: count? });
+    }
+    if let Some(count) = parse_log_count(line, "skill-log") {
+        return Ok(ClientStdioCommand::SkillLog { count: count? });
+    }
+    if let Some(count) = parse_log_count(line, "combat-log") {
+        return Ok(ClientStdioCommand::CombatLog { count: count? });
+    }
+    if let Some(count) = parse_log_count(line, "effect-log") {
+        return Ok(ClientStdioCommand::EffectLog { count: count? });
+    }
+
+    if let Some(text) = line.strip_prefix("echo ") {
+        return Ok(ClientStdioCommand::Echo {
+            text: text.trim().to_string(),
+        });
+    }
+
+    if let Some(rest) = line.strip_prefix("wait ") {
+        return Ok(ClientStdioCommand::Wait {
+            ms: parse_field(rest.trim(), "ms")?,
+        });
+    }
+
     if let Some(rest) = line.strip_prefix("va-prefab ") {
         let parts = rest.split_whitespace().collect::<Vec<_>>();
         if parts.len() != 6 {
@@ -582,14 +842,22 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
             );
         }
         let logical_scene_id = parse_field(parts[0], "scene_id")?;
-        let action = parse_field(parts[1], "action")?;
+        let action: u8 = parse_field(parts[1], "action")?;
         let host_macro = [
             parse_field(parts[2], "mx")?,
             parse_field(parts[3], "my")?,
             parse_field(parts[4], "mz")?,
         ];
-        let face = parse_field(parts[5], "face")?;
+        let face: u8 = parse_field(parts[5], "face")?;
         let surface_type_id = parse_field(parts[6], "surface_type_id")?;
+        // Bounds: fail fast on a mistyped face/action instead of sending a doomed
+        // intent the server silently rejects (audit: face=99 was accepted before).
+        if action > 1 {
+            return Err(format!("action must be 0 (place) or 1 (clear), got {action}"));
+        }
+        if face > 5 {
+            return Err(format!("face must be 0..5 (x_neg..z_pos), got {face}"));
+        }
         return Ok(ClientStdioCommand::VoxelSurfacePlace {
             logical_scene_id,
             action,
@@ -661,6 +929,24 @@ where
     value
         .parse::<T>()
         .map_err(|error| format!("invalid {name}: {error}"))
+}
+
+/// Matches a `<name>` (→ `Some(Ok(default))`) or `<name> <count>` event-log query;
+/// returns `None` when `line` is a different command (so the parser falls through).
+/// Guards against false matches like `chat-logx` (only a following space counts).
+fn parse_log_count(line: &str, name: &str) -> Option<Result<usize, String>> {
+    const DEFAULT: usize = 10;
+    if line == name {
+        return Some(Ok(DEFAULT));
+    }
+    let rest = line.strip_prefix(name)?.strip_prefix(' ')?.trim();
+    if rest.is_empty() {
+        return Some(Ok(DEFAULT));
+    }
+    Some(
+        rest.parse::<usize>()
+            .map_err(|_| format!("invalid count for {name}: {rest:?}")),
+    )
 }
 
 fn parse_direction(value: &str) -> Result<Vec2, String> {
@@ -776,6 +1062,56 @@ mod tests {
         assert_eq!(parse_command("va-fields").unwrap(), ClientStdioCommand::VoxelFields);
 
         assert_eq!(
+            parse_command("va-semi 0 0 0").unwrap(),
+            ClientStdioCommand::VoxelSemiconductors { chunk_coord: [0, 0, 0] }
+        );
+        assert_eq!(
+            parse_command("va-semi -1 2 -3").unwrap(),
+            ClientStdioCommand::VoxelSemiconductors { chunk_coord: [-1, 2, -3] }
+        );
+        assert!(parse_command("va-semi 0 0").is_err());
+
+        assert_eq!(
+            parse_command("va-surface-list 0 0 0").unwrap(),
+            ClientStdioCommand::VoxelSurfaceList { chunk_coord: [0, 0, 0] }
+        );
+        // va-surface-list must NOT be mis-parsed as va-surface (different '-' vs ' ').
+        assert!(matches!(
+            parse_command("va-surface-list 1 2 3"),
+            Ok(ClientStdioCommand::VoxelSurfaceList { .. })
+        ));
+        assert!(parse_command("va-surface-list 0 0").is_err());
+
+        // Event-log queries: default count 10, explicit count, bad count errors.
+        assert_eq!(parse_command("chat-log").unwrap(), ClientStdioCommand::ChatLog { count: 10 });
+        assert_eq!(parse_command("chat-log 3").unwrap(), ClientStdioCommand::ChatLog { count: 3 });
+        assert_eq!(
+            parse_command("combat-log").unwrap(),
+            ClientStdioCommand::CombatLog { count: 10 }
+        );
+        assert_eq!(
+            parse_command("effect-log 5").unwrap(),
+            ClientStdioCommand::EffectLog { count: 5 }
+        );
+        assert_eq!(parse_command("skill-log 2").unwrap(), ClientStdioCommand::SkillLog { count: 2 });
+        assert!(parse_command("chat-log abc").is_err());
+        // The `chat <text>` SEND command must NOT be swallowed by the chat-log query.
+        assert!(!matches!(
+            parse_command("chat hello"),
+            Ok(ClientStdioCommand::ChatLog { .. })
+        ));
+        // `chat-logx` is not a valid command (guard against loose prefix match).
+        assert!(parse_command("chat-logx").is_err());
+
+        // echo + wait scripting utilities.
+        assert_eq!(
+            parse_command("echo marker_1").unwrap(),
+            ClientStdioCommand::Echo { text: "marker_1".to_string() }
+        );
+        assert_eq!(parse_command("wait 250").unwrap(), ClientStdioCommand::Wait { ms: 250 });
+        assert!(parse_command("wait abc").is_err());
+
+        assert_eq!(
             parse_command("va-unsubscribe 1 0 1 -2").unwrap(),
             ClientStdioCommand::VoxelUnsubscribe {
                 logical_scene_id: 1,
@@ -818,6 +1154,9 @@ mod tests {
             }
         );
         assert!(parse_command("va-surface 1 0 5 4 5 1").is_err());
+        // Bounds: face > 5 and action > 1 are rejected at parse time (fail fast).
+        assert!(parse_command("va-surface 1 0 5 4 5 9 4").is_err()); // face 9
+        assert!(parse_command("va-surface 1 2 5 4 5 1 4").is_err()); // action 2
     }
 
     #[test]

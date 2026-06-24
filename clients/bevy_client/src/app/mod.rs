@@ -87,6 +87,12 @@ pub(crate) struct WorldState {
     pub remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
     pub remote_player_health: HashMap<i64, (u16, u16, bool)>,
     pub chat_log: VecDeque<String>,
+    /// Bounded server-message history for the stdio harness queries (combat/effect/
+    /// skill), parallel to `chat_log`. Mirrors `HeadlessState` so the GUI + headless
+    /// stdio executors report the same event-log surface.
+    pub combat_log: VecDeque<String>,
+    pub effect_log: VecDeque<String>,
+    pub skill_log: VecDeque<String>,
     pub logs: VecDeque<String>,
     pub last_rtt_ms: Option<f64>,
     pub last_offset_ms: Option<f64>,

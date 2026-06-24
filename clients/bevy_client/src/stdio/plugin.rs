@@ -13,7 +13,6 @@ use crate::app::{
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::skill::prepare_skill_dispatch;
-use crate::voxel::authority::CellState;
 use crate::voxel::mesher::greedy_mesh_chunk;
 use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
 use crate::world::remote_actor::RemoteActorKind;
@@ -416,38 +415,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 );
             }
             ClientStdioCommand::VoxelChunkInfo { coord } => {
-                let label = format!("{},{},{}", coord[0], coord[1], coord[2]);
-                match voxel_authority.store.chunk(coord) {
-                    Some(chunk) => {
-                        let (mut solid, mut refined, mut empty) = (0usize, 0usize, 0usize);
-                        for cell in &chunk.cells {
-                            match cell {
-                                CellState::Solid(_) => solid += 1,
-                                CellState::Refined(_) => refined += 1,
-                                CellState::Empty => empty += 1,
-                            }
-                        }
-                        let quads = greedy_mesh_chunk(chunk, 1.0).quad_count();
-                        emit_stdio(
-                            "va_chunk",
-                            &[
-                                ("coord", label),
-                                ("present", "true".to_string()),
-                                ("version", chunk.chunk_version.to_string()),
-                                ("solid", solid.to_string()),
-                                ("refined", refined.to_string()),
-                                ("empty", empty.to_string()),
-                                ("quads", quads.to_string()),
-                            ],
-                        );
-                    }
-                    None => {
-                        emit_stdio(
-                            "va_chunk",
-                            &[("coord", label), ("present", "false".to_string())],
-                        );
-                    }
-                }
+                crate::stdio::emit_voxel_chunk_info(&voxel_authority.store, coord);
             }
             ClientStdioCommand::VoxelEditLive {
                 logical_scene_id,
@@ -510,6 +478,42 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             }
             ClientStdioCommand::VoxelFields => {
                 crate::stdio::emit_voxel_fields(&voxel_authority.field_store);
+            }
+            ClientStdioCommand::VoxelSemiconductors { chunk_coord } => {
+                crate::stdio::emit_voxel_semiconductors(
+                    &voxel_authority.store,
+                    &voxel_authority.field_store,
+                    chunk_coord,
+                );
+            }
+            ClientStdioCommand::VoxelSurfaceList { chunk_coord } => {
+                crate::stdio::emit_voxel_surface_list(&voxel_authority.store, chunk_coord);
+            }
+            ClientStdioCommand::ChatLog { count } => {
+                crate::stdio::emit_event_log("chat_log", &world_state.chat_log, count);
+            }
+            ClientStdioCommand::SkillLog { count } => {
+                crate::stdio::emit_event_log("skill_log", &world_state.skill_log, count);
+            }
+            ClientStdioCommand::CombatLog { count } => {
+                crate::stdio::emit_event_log("combat_log", &world_state.combat_log, count);
+            }
+            ClientStdioCommand::EffectLog { count } => {
+                crate::stdio::emit_event_log("effect_log", &world_state.effect_log, count);
+            }
+            ClientStdioCommand::Echo { text } => {
+                emit_stdio("echo", &[("text", text)]);
+            }
+            ClientStdioCommand::Wait { ms } => {
+                // The GUI is frame-driven; it must NOT block the schedule. Report the
+                // request non-blocking so scripts know `wait` only truly blocks headless.
+                emit_stdio(
+                    "wait",
+                    &[
+                        ("ms", ms.to_string()),
+                        ("gui_blocking", "false".to_string()),
+                    ],
+                );
             }
             ClientStdioCommand::VoxelUnsubscribe {
                 logical_scene_id,
