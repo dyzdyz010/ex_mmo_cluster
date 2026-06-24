@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use crate::camera::CameraPlugin;
 use crate::chat::ChatPlugin;
 use crate::effects::EffectPlugin;
-use crate::hud::HudPlugin;
+use crate::hud::{BuildHotbarPlugin, HudPlugin};
 use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
 use crate::presentation::PresentationPlugin;
@@ -56,6 +56,7 @@ impl PluginGroup for BevyClientPlugins {
             .add(MovementSyncPlugin)
             .add(EffectPlugin)
             .add(HudPlugin)
+            .add(BuildHotbarPlugin)
             .add(PresentationPlugin)
             .add(ObservePlugin)
     }
