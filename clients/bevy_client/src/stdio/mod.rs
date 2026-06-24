@@ -66,6 +66,15 @@ pub enum ClientStdioCommand {
         logical_scene_id: u64,
         coord: [i32; 3],
     },
+    /// Construction C5: place a catalog blueprint as a prefab (0x67) over the live
+    /// connection — headless/scriptable equivalent of the GUI prefab hotbar, so
+    /// the prefab round-trip (→ refined-cell ChunkDelta) can be self-verified.
+    VoxelPrefabPlace {
+        logical_scene_id: u64,
+        blueprint_id: u64,
+        anchor_macro: [i32; 3],
+        rotation: u8,
+    },
     /// Sends a server-authoritative voxel edit (0x70 VoxelEditIntent) over the
     /// live connection — the headless/scriptable equivalent of the GUI F/RMB
     /// build, so the build round-trip + the 0x68 ACK can be self-verified without
@@ -528,6 +537,29 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         return Ok(ClientStdioCommand::VoxelFields);
     }
 
+    if let Some(rest) = line.strip_prefix("va-prefab ") {
+        let parts = rest.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 6 {
+            return Err(
+                "va-prefab <scene_id> <blueprint_id> <mx> <my> <mz> <rotation>".to_string(),
+            );
+        }
+        let logical_scene_id = parse_field(parts[0], "scene_id")?;
+        let blueprint_id = parse_field(parts[1], "blueprint_id")?;
+        let anchor_macro = [
+            parse_field(parts[2], "mx")?,
+            parse_field(parts[3], "my")?,
+            parse_field(parts[4], "mz")?,
+        ];
+        let rotation = parse_field(parts[5], "rotation")?;
+        return Ok(ClientStdioCommand::VoxelPrefabPlace {
+            logical_scene_id,
+            blueprint_id,
+            anchor_macro,
+            rotation,
+        });
+    }
+
     if let Some(rest) = line.strip_prefix("va-unsubscribe ") {
         let parts = rest.split_whitespace().collect::<Vec<_>>();
         if parts.len() != 4 {
@@ -712,6 +744,17 @@ mod tests {
             }
         );
         assert!(parse_command("va-unsubscribe 1 0 1").is_err());
+
+        assert_eq!(
+            parse_command("va-prefab 1 4 10 6 10 1").unwrap(),
+            ClientStdioCommand::VoxelPrefabPlace {
+                logical_scene_id: 1,
+                blueprint_id: 4,
+                anchor_macro: [10, 6, 10],
+                rotation: 1,
+            }
+        );
+        assert!(parse_command("va-prefab 1 4 10 6 10").is_err());
     }
 
     #[test]

@@ -128,6 +128,8 @@ pub enum VoxelClientMessage {
     ChunkUnsubscribe(ChunkUnsubscribe),
     /// Construction system: a typed single-cell place/break edit (0x70).
     EditIntent(super::edit_intent::VoxelEditIntent),
+    /// Construction system (C5): place a catalog blueprint as a prefab (0x67).
+    PrefabPlaceIntent(super::prefab_place_intent::PrefabPlaceIntent),
 }
 
 impl VoxelClientMessage {
@@ -136,6 +138,7 @@ impl VoxelClientMessage {
             VoxelClientMessage::ChunkSubscribe(_) => super::OP_CHUNK_SUBSCRIBE,
             VoxelClientMessage::ChunkUnsubscribe(_) => super::OP_CHUNK_UNSUBSCRIBE,
             VoxelClientMessage::EditIntent(_) => super::OP_VOXEL_EDIT_INTENT,
+            VoxelClientMessage::PrefabPlaceIntent(_) => super::OP_VOXEL_PREFAB_PLACE_INTENT,
         }
     }
 
@@ -146,6 +149,7 @@ impl VoxelClientMessage {
             VoxelClientMessage::ChunkSubscribe(m) => m.encode(&mut w),
             VoxelClientMessage::ChunkUnsubscribe(m) => m.encode(&mut w),
             VoxelClientMessage::EditIntent(m) => m.encode(&mut w),
+            VoxelClientMessage::PrefabPlaceIntent(m) => m.encode(&mut w),
         }
         w.into_bytes()
     }

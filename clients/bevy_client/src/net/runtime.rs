@@ -331,6 +331,26 @@ impl ClientRuntime {
                     crate::voxel::wire::VoxelClientMessage::EditIntent(intent),
                 )));
             }
+            NetworkCommand::PlacePrefab {
+                logical_scene_id,
+                blueprint_id,
+                anchor_macro,
+                rotation,
+            } if self.phase == ConnectionPhase::InScene => {
+                let request_id = self.next_request_id();
+                self.voxel_edit_seq += 1;
+                let intent = crate::voxel::wire::PrefabPlaceIntent::macro_place(
+                    request_id,
+                    self.voxel_edit_seq,
+                    logical_scene_id,
+                    blueprint_id,
+                    anchor_macro,
+                    rotation,
+                );
+                outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
+                    crate::voxel::wire::VoxelClientMessage::PrefabPlaceIntent(intent),
+                )));
+            }
             _ => {}
         }
 

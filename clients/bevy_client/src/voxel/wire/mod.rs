@@ -24,6 +24,7 @@ pub mod edit_intent;
 pub mod field;
 pub mod intent_result;
 pub mod invalidate;
+pub mod prefab_place_intent;
 pub mod object_state;
 pub mod snapshot;
 pub mod subscribe;
@@ -42,6 +43,7 @@ pub use field::{
 };
 pub use intent_result::{AuthoritativeCell, VoxelIntentResult};
 pub use invalidate::ChunkInvalidate;
+pub use prefab_place_intent::PrefabPlaceIntent;
 pub use object_state::ObjectStateDelta;
 pub use snapshot::{
     AttributeEntry, AttributeSet, AttributeValue, ChunkObjectRef, ChunkSnapshot,
@@ -65,6 +67,7 @@ pub const OP_FIELD_REGION_DESTROYED: u8 = 0x74;
 // ── Client → server opcodes ────────────────────────────────────────────────
 pub const OP_CHUNK_SUBSCRIBE: u8 = 0x60;
 pub const OP_CHUNK_UNSUBSCRIBE: u8 = 0x61;
+pub const OP_VOXEL_PREFAB_PLACE_INTENT: u8 = 0x67;
 pub const OP_VOXEL_EDIT_INTENT: u8 = 0x70;
 
 /// Decoded server→client voxel message. Grows one variant per M1 sub-step.

@@ -73,6 +73,15 @@ pub enum NetworkCommand {
         /// Material to place (ignored for break).
         material_id: u16,
     },
+    /// Construction system (C5): place a server-catalog blueprint as a refined
+    /// prefab (0x67). `anchor_macro` is the GLOBAL macro anchor; the runtime
+    /// resolves it to world-micro. `blueprint_id` is a `BlueprintCatalog` id (1..7).
+    PlacePrefab {
+        logical_scene_id: u64,
+        blueprint_id: u64,
+        anchor_macro: [i32; 3],
+        rotation: u8,
+    },
     Shutdown,
 }
 

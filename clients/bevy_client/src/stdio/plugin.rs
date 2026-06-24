@@ -526,6 +526,30 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     &[("coord", format!("{},{},{}", coord[0], coord[1], coord[2]))],
                 );
             }
+            ClientStdioCommand::VoxelPrefabPlace {
+                logical_scene_id,
+                blueprint_id,
+                anchor_macro,
+                rotation,
+            } => {
+                bridge.send(NetworkCommand::PlacePrefab {
+                    logical_scene_id,
+                    blueprint_id,
+                    anchor_macro,
+                    rotation,
+                });
+                emit_stdio(
+                    "va_prefab_sent",
+                    &[
+                        ("blueprint_id", blueprint_id.to_string()),
+                        (
+                            "anchor_macro",
+                            format!("{},{},{}", anchor_macro[0], anchor_macro[1], anchor_macro[2]),
+                        ),
+                        ("rotation", rotation.to_string()),
+                    ],
+                );
+            }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
                 emit_stdio("quit", &[("final_status", world_state.status.clone())]);
