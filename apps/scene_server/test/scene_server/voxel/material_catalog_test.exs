@@ -46,6 +46,22 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
     refute MaterialCatalog.diode_material?(MaterialCatalog.material_id(:comparator))
   end
 
+  test "transistor material is append-only, conductive, and a gated switch (C4b)" do
+    material_id = MaterialCatalog.transistor_material_id()
+
+    assert material_id == 23
+    assert MaterialCatalog.known_material?(material_id)
+    # 入电路图:导电。
+    assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
+    # base_threshold>0 标记 → transistor_material? 派生为真(无 id 白名单)。
+    assert MaterialCatalog.default_attribute_value(material_id, "base_threshold", 0) > 0
+    assert MaterialCatalog.transistor_material?(material_id)
+    # 非三极管材料(comparator 虽有 logic_threshold、diode、iron)不被误判。
+    refute MaterialCatalog.transistor_material?(MaterialCatalog.material_id(:comparator))
+    refute MaterialCatalog.transistor_material?(MaterialCatalog.material_id(:diode))
+    refute MaterialCatalog.transistor_material?(MaterialCatalog.material_id(:iron))
+  end
+
   describe "S4 化学/氧化:iron 起锈门 + rust 终产物(属性派生,无白名单)" do
     @inert_temperature_raw 327_680_000
 

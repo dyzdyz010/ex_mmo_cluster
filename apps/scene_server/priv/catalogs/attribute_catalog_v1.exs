@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 13,
+  catalog_version: 14,
   definitions: [
     %{
       id: 1,
@@ -381,6 +381,22 @@
       min_value: 0,
       # 6 = -z(0..6 轴码)
       max_value: 6,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 建设系统 · C4b 三极管/逻辑门(2026-06-24):base(控制极)导通门限电压 V。**材料级 >0 ⇒ 该材料
+    # 是三极管**(transistor_material? 派生谓词,无 id 白名单)。三极管的 collector-emitter 主通路
+    # 仅当 base 端被 ≥ 本门限的电源驱动时导通(否则该 cell 被剪断);主轴/base 面由 state_flags 承载。
+    # 与 comparator 的 logic_threshold 分开(comparator 是传感输出 tag、不门控电流;transistor 门控电流)。
+    %{
+      id: 26,
+      name: "base_threshold",
+      unit: "V",
+      value_type: :fixed32,
+      default_value: 0,
+      min_value: 0,
+      # 1000 V 上限(同 logic_threshold 量程)。
+      max_value: 65_536_000,
       merge_rule: :material_default,
       dynamic: false
     }

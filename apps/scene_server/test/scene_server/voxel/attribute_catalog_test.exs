@@ -19,22 +19,34 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
   end
 
   describe "seed loading" do
-    test "loads all 25 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
+    test "loads all 26 attributes from priv/catalogs/attribute_catalog_v1.exs", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       assert %AttributeCatalogSnapshot{} = snapshot
-      assert snapshot.catalog_version == 13
-      assert length(snapshot.definitions) == 25
+      assert snapshot.catalog_version == 14
+      assert length(snapshot.definitions) == 26
     end
 
-    test "catalog_version returns 13", %{server: server} do
-      assert AttributeCatalog.catalog_version(server) == 13
+    test "catalog_version returns 14", %{server: server} do
+      assert AttributeCatalog.catalog_version(server) == 14
     end
 
     test "definitions are sorted by id ascending", %{server: server} do
       snapshot = AttributeCatalog.current_snapshot(server)
       ids = Enum.map(snapshot.definitions, & &1.id)
       assert ids == Enum.sort(ids)
-      assert ids == Enum.to_list(1..25)
+      assert ids == Enum.to_list(1..26)
+    end
+
+    test "base_threshold(id26):三极管 base 门限 material_default,默认 0,静态", %{server: server} do
+      assert {:ok, defn} = AttributeCatalog.lookup_by_id(server, 26)
+      assert defn.name == "base_threshold"
+      # 0x03 fixed32
+      assert defn.value_type == 0x03
+      assert defn.default_value == 0
+      assert defn.min_value == 0
+      # 0x05 material_default
+      assert defn.merge_rule == 0x05
+      assert defn.dynamic == false
     end
 
     test "logic_threshold(id24):比较器阈值电压 material_default,默认 0,静态", %{server: server} do
@@ -240,8 +252,8 @@ defmodule SceneServer.Voxel.AttributeCatalogTest do
       wire = AttributeCatalogSnapshot.encode_for_wire(snapshot)
       decoded = AttributeCatalogSnapshot.decode_for_wire(wire)
 
-      assert decoded.catalog_version == 13
-      assert length(decoded.definitions) == 25
+      assert decoded.catalog_version == 14
+      assert length(decoded.definitions) == 26
 
       # 重复 encode 应 byte-stable
       assert wire == AttributeCatalogSnapshot.encode_for_wire(decoded)

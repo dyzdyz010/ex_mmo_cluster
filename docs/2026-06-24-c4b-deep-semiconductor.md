@@ -44,6 +44,8 @@
 
 ## 5. 三极管/逻辑门设计
 
+> **✅ 实现(2026-06-24,step5-7)**:沿用 diode 的「条件剪断」原语,**base 可达性门控**:三极管 main(collector-emitter)主通路仅当其 **base 面邻格(控制网络入口)在图中可从一个电压 ≥ base_threshold 的电源到达**时导通,否则**剪断该三极管点**。base 面**不入导电图**(传感输入,与 main 隔离),故 base 邻格可达性 = 控制网络是否被驱动。**门控在全局图上做**(base 控制网常与主回路是不同连通分量),迭代到稳定(关断单调收敛,管数+1 轮内),再切连通分量。**串联=AND**(任一截止断主路)、**并联=OR**(任一导通即闭一环——同一 base 门控原语,只是宏观拓扑不同;本轮显式测了单管 on/off/undriven + AND 真值表,OR 作同原语覆盖,未单列 3D 并联布线测)。属性:material_catalog +id23 `transistor` + `base_threshold`(id26)派生谓词。state_flags bits[0..2]=main 轴、bits[6..8]=base 面。
+
 1. **建模(MVP 推荐单 cell)**:control(base)端=`state_flags bits[6..8]` 标的 control face,main path=另两面(collector/emitter)。避免跨 cell 多端节点语义(改动小一档)。物理不精确但够做逻辑门链。
 2. **数据(append)**:`material_catalog` +`@transistor_material_id 23`;**复用 `logic_threshold`(id24)** 作 base 导通门限(与比较器同属性);+`transistor_material?` 谓词。
 3. **投影端子区分**:`electric_role` 枚举扩 `:gate`;从 `state_flags` 解出哪个面是 control face。

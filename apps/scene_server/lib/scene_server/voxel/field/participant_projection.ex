@@ -38,11 +38,14 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
   # C4b 深半导体:`conduct_dir` 为 nil 表示普通双向导体;`{in_face, out_face}` 表示二极管——
   # 该 cell 只在 anode(in_face)→cathode(out_face)轴向参与导通(2 端器件,只 in/out 两面导电)。
   # 正偏/反偏由电路分析按"离电源跳数"判定(forward = in_face 侧更近电源),反偏的二极管被剪断。
+  # `gate` 为 nil = 非门控;`%{base_face, threshold}` = 三极管——只 main(collector/emitter)两面
+  # 导电,主通路通断由 base_face 邻接控制网络是否被 ≥threshold 电源驱动决定(电路分析门控剪断)。
   @type electric_component :: %{
           faces: MapSet.t(face()),
           face_contacts: %{optional(face()) => MapSet.t(contact())},
           roles: MapSet.t(electric_role()),
-          conduct_dir: nil | {face(), face()}
+          conduct_dir: nil | {face(), face()},
+          gate: nil | %{base_face: face(), threshold: float()}
         }
   @type entry :: %{
           electric: %{
@@ -324,6 +327,16 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
           MaterialCatalog.diode_material?(material_id) ->
             build_diode_solid_entry(material_id, state_flags, conductivity, dielectric_strength)
 
+          # C4b:三极管——只 main(collector/emitter)两面导电 + gate{base_face,threshold},
+          # 主通路通断由 base 控制网络是否被 ≥threshold 电源驱动决定(电路分析门控)。
+          MaterialCatalog.transistor_material?(material_id) ->
+            build_transistor_solid_entry(
+              material_id,
+              state_flags,
+              conductivity,
+              dielectric_strength
+            )
+
           true ->
             electric_entry(
               MapSet.new(@faces),
@@ -334,7 +347,8 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
                   faces: MapSet.new(@faces),
                   face_contacts: all_face_contacts_by_face(),
                   roles: electric_roles_for_material(material_id),
-                  conduct_dir: nil
+                  conduct_dir: nil,
+                  gate: nil
                 }
               ],
               conductivity,
@@ -372,7 +386,8 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
       faces: faces,
       face_contacts: face_contacts,
       roles: roles,
-      conduct_dir: {in_face, out_face}
+      conduct_dir: {in_face, out_face},
+      gate: nil
     }
 
     electric_entry(
@@ -386,6 +401,77 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
       []
     )
   end
+
+  # C4b 三极管 solid 投影:main(collector/emitter)轴来自 state_flags bits[0..2](0=用材料
+  # conduction_axis 默认轴,无则 +x),base 面来自 bits[6..8](0=取首个非主轴面)。只 main 两面
+  # 导电(base 是传感输入、不入导电图)+ gate{base_face,threshold},通断交电路分析门控。
+  defp build_transistor_solid_entry(material_id, state_flags, conductivity, dielectric_strength) do
+    {main_a, main_b} = transistor_main_faces(material_id, state_flags)
+    base_face = transistor_base_face(state_flags, main_a, main_b)
+    threshold = material_float(material_id, "base_threshold", 0.0)
+    faces = MapSet.new([main_a, main_b])
+    full_contacts = all_contacts()
+
+    face_contacts =
+      Map.new(@faces, fn face ->
+        if face == main_a or face == main_b do
+          {face, full_contacts}
+        else
+          {face, MapSet.new()}
+        end
+      end)
+
+    roles = electric_roles_for_material(material_id)
+
+    component = %{
+      faces: faces,
+      face_contacts: face_contacts,
+      roles: roles,
+      conduct_dir: nil,
+      gate: %{base_face: base_face, threshold: threshold}
+    }
+
+    electric_entry(
+      faces,
+      add_face_connections(faces, MapSet.new()),
+      face_contacts,
+      [component],
+      conductivity,
+      dielectric_strength,
+      roles,
+      []
+    )
+  end
+
+  # 三极管 main 轴:同二极管轴码(方向无关,取 2 面)。
+  defp transistor_main_faces(material_id, state_flags) do
+    code =
+      case band(state_flags, 0b111) do
+        0 -> MaterialCatalog.default_attribute_value(material_id, "conduction_axis", 0)
+        per_cell -> per_cell
+      end
+
+    case code do
+      c when c in 1..6 -> diode_code_faces(c)
+      _other -> {:x_neg, :x_pos}
+    end
+  end
+
+  # base 面:state_flags bits[6..8] 面序号(1..6=x_neg..z_pos);0 取首个非主轴面。
+  defp transistor_base_face(state_flags, main_a, main_b) do
+    case band(bsr(state_flags, 6), 0b111) do
+      0 -> Enum.find(@faces, fn face -> face != main_a and face != main_b end)
+      ordinal -> face_from_ordinal(ordinal)
+    end
+  end
+
+  defp face_from_ordinal(1), do: :x_neg
+  defp face_from_ordinal(2), do: :x_pos
+  defp face_from_ordinal(3), do: :y_neg
+  defp face_from_ordinal(4), do: :y_pos
+  defp face_from_ordinal(5), do: :z_neg
+  defp face_from_ordinal(6), do: :z_pos
+  defp face_from_ordinal(_other), do: :z_pos
 
   # 二极管导通方向码 → {in_face(anode), out_face(cathode)}。码 1..6 = +x/-x/+y/-y/+z/-z
   # (current 流向 = anode→cathode)。state_flags bits[0..2] 优先;为 0 用材料 conduction_axis
@@ -591,8 +677,9 @@ defmodule SceneServer.Voxel.Field.ParticipantProjection do
       faces: faces_from_contacts(face_contacts),
       face_contacts: face_contacts,
       roles: component_roles(component, layers),
-      # C4b:refined 子分量暂不支持二极管(diode 走 solid-block 路径),恒双向。
-      conduct_dir: nil
+      # C4b:refined 子分量暂不支持二极管/三极管(走 solid-block 路径),恒双向、无门控。
+      conduct_dir: nil,
+      gate: nil
     }
   end
 

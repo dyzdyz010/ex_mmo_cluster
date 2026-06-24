@@ -54,6 +54,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   # 建设系统 · C4b 深半导体(2026-06-24):二极管——导电(入电路图)+ conduction_axis>0 标记。
   # 单向导通,每格 anode→cathode 朝向由 state_flags 承载(投影/拓扑有向化见 step2-4)。
   @diode_material_id 22
+  # 建设系统 · C4b 三极管/逻辑门(2026-06-24):导电(入电路图)+ base_threshold>0 标记。主通路
+  # (collector-emitter)仅当 base 端被 ≥ 门限电源驱动时导通(否则剪断)。主轴/base 面由 state_flags 承载。
+  @transistor_material_id 23
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -78,7 +81,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     glowstone: @glowstone_material_id,
     resistor: @resistor_material_id,
     comparator: @comparator_material_id,
-    diode: @diode_material_id
+    diode: @diode_material_id,
+    transistor: @transistor_material_id
   }
 
   @power_source_defaults %{
@@ -397,6 +401,20 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => round(2.0 * @fixed32_scale),
       "dielectric_strength" => round(10.0 * @fixed32_scale),
       "conduction_axis" => 1
+    },
+    # 建设系统 · C4b 三极管(深半导体):导电(入电路图)+ base_threshold 60V 标记。主通路通断由
+    # base 端电源驱动门控(投影/拓扑见 step6);此处仅材料标记 + 门限。
+    @transistor_material_id => %{
+      "density" => round(2_300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.2 * @fixed32_scale),
+      "specific_heat_capacity" => round(700.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_400.0 * @fixed32_scale),
+      "freezing_point" => round(1_400.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => round(2.0 * @fixed32_scale),
+      "dielectric_strength" => round(10.0 * @fixed32_scale),
+      "base_threshold" => round(60.0 * @fixed32_scale)
     }
   }
 
@@ -461,6 +479,19 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @spec diode_material?(term()) :: boolean()
   def diode_material?(material_id),
     do: default_attribute_value(material_id, "conduction_axis", 0) > 0
+
+  @doc "Returns the append-only material id for a gated switch (transistor)."
+  @spec transistor_material_id() :: pos_integer()
+  def transistor_material_id, do: @transistor_material_id
+
+  @doc """
+  Returns true when a material is a gated switch (transistor). C4b 深半导体:派生自属性
+  `base_threshold` > 0,无 id 白名单。主通路(collector-emitter)仅当 base 端被 ≥ 门限的
+  电源驱动时导通;主轴/base 面由 state_flags 承载(投影/拓扑见 C4b step6)。
+  """
+  @spec transistor_material?(term()) :: boolean()
+  def transistor_material?(material_id),
+    do: default_attribute_value(material_id, "base_threshold", 0) > 0
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{

@@ -22,7 +22,9 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
           },
           source_points: [FieldRegion.source_point()],
           # C4b:nil=普通双向导体;{in_face, out_face}=二极管(正/反偏由离电源跳数判,反偏剪断)。
-          conduct_dir: nil | {ParticipantProjection.face(), ParticipantProjection.face()}
+          conduct_dir: nil | {ParticipantProjection.face(), ParticipantProjection.face()},
+          # C4b:nil=非门控;%{base_face,threshold}=三极管(主通路通断由 base 控制网络门控)。
+          gate: nil | %{base_face: ParticipantProjection.face(), threshold: float()}
         }
   @type component :: %{
           segment_ids: [segment_id()],
@@ -48,10 +50,29 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     # C4b:每个二极管 segment 的 in/out 邻接 segment(按其 conduct_dir 的 in_face/out_face 面)。
     diode_neighbors = build_diode_neighbors(region, segments, adjacency, segments_by_macro)
 
+    # C4b:每个三极管 segment 的 base 邻接 segment + 门限(base 面邻格 = 控制网络入口)。
+    transistor_gates = build_transistor_gates(region, segments, segments_by_macro)
+
+    all_segment_ids = Map.keys(segments)
+    global_source_ids = global_source_segment_ids(segments)
+
+    # C4b:**全局**门控——先剪反偏二极管,再门控三极管(base 控制网络常与主回路是不同连通分量,
+    # 故 base 可达性必须在全图判,不能限在主回路分量内)。门控后再切连通分量 + 建分量结构,
+    # 让被剪断的回路自然分裂、失去闭环。无二极管/三极管时 gated == 原图,零行为变化。
+    gated_adjacency =
+      adjacency
+      |> cut_reverse_diodes(all_segment_ids, global_source_ids, diode_neighbors)
+      |> gate_transistors(all_segment_ids, segments, transistor_gates)
+
+    all_segment_ids
+    |> connected_components(gated_adjacency)
+    |> Enum.map(&build_component(&1, segments, gated_adjacency))
+  end
+
+  defp global_source_segment_ids(segments) do
     segments
-    |> Map.keys()
-    |> connected_components(adjacency)
-    |> Enum.map(&build_component(&1, segments, adjacency, diode_neighbors))
+    |> Enum.filter(fn {_id, segment} -> Map.get(segment, :source_points, []) != [] end)
+    |> Enum.map(fn {id, _segment} -> id end)
   end
 
   @doc """
@@ -104,7 +125,8 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
           faces: component.faces,
           face_contacts: component.face_contacts,
           source_points: maybe_component_source_points(source_points, roles),
-          conduct_dir: Map.get(component, :conduct_dir, nil)
+          conduct_dir: Map.get(component, :conduct_dir, nil),
+          gate: Map.get(component, :gate, nil)
         }
 
         Map.put(inner_acc, segment.id, segment)
@@ -206,7 +228,8 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     end
   end
 
-  defp build_component(segment_ids, segments, adjacency, diode_neighbors) do
+  # adjacency 已是**全局门控后**的图(反偏二极管 / 关断三极管已剪)。本函数只在其上建分量结构。
+  defp build_component(segment_ids, segments, adjacency) do
     segment_ids = Enum.sort(segment_ids)
     segment_map = Map.new(segment_ids, &{&1, Map.fetch!(segments, &1)})
 
@@ -223,12 +246,7 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
         |> MapSet.member?(:load)
       end)
 
-    # C4b:剪掉反偏二极管(in 侧比 out 侧离电源更远)后再算闭环 2-core + segment_graph。
-    # 无二极管分量走原路径,零行为变化。
-    effective_adjacency =
-      cut_reverse_diodes(segment_ids, adjacency, source_segment_ids, diode_neighbors)
-
-    closed_loop_segment_ids = closed_loop_segment_ids(segment_ids, effective_adjacency)
+    closed_loop_segment_ids = closed_loop_segment_ids(segment_ids, adjacency)
 
     macro_indices =
       segment_map |> Map.values() |> Enum.map(& &1.macro_index) |> Enum.uniq() |> Enum.sort()
@@ -259,7 +277,7 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
       source_segment_ids: source_segment_ids,
       load_segment_ids: load_segment_ids,
       segments: segment_map,
-      segment_graph: Map.take(effective_adjacency, segment_ids),
+      segment_graph: Map.take(adjacency, segment_ids),
       source_points: source_points
     }
   end
@@ -307,17 +325,17 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
     end
   end
 
-  defp cut_reverse_diodes(segment_ids, adjacency, source_segment_ids, diode_neighbors) do
-    component_diodes = Enum.filter(segment_ids, &Map.has_key?(diode_neighbors, &1))
+  defp cut_reverse_diodes(adjacency, segment_ids, source_segment_ids, diode_neighbors) do
+    diodes = Enum.filter(segment_ids, &Map.has_key?(diode_neighbors, &1))
 
-    if component_diodes == [] do
+    if diodes == [] do
       adjacency
     else
       allowed = MapSet.new(segment_ids)
       hops = bfs_hops(source_segment_ids, adjacency, allowed)
 
       reverse =
-        Enum.filter(component_diodes, fn diode_id ->
+        Enum.filter(diodes, fn diode_id ->
           %{in: in_nbrs, out: out_nbrs} = Map.fetch!(diode_neighbors, diode_id)
           reverse_biased?(min_hop(in_nbrs, hops), min_hop(out_nbrs, hops))
         end)
@@ -371,6 +389,143 @@ defmodule SceneServer.Voxel.Field.CircuitComponentAnalysis do
         |> Enum.map(&{&1, hop + 1})
 
       do_bfs_hops(rest ++ neighbors, adjacency, allowed, Map.put(hops, segment_id, hop))
+    end
+  end
+
+  # ── C4b 三极管门控(base 可达性剪断模型)──────────────────────────────────
+  # 三极管 main(collector-emitter)主通路仅当其 base 面邻格(控制网络入口)在图中可从一个
+  # 电压 ≥ 本管 base_threshold 的电源到达时导通;否则**剪断该三极管点**,主回路断。base 面不入
+  # 导电图(传感输入,与 main 隔离),故 base 邻格可达性 = 控制网络是否被驱动。串联=AND、并联=OR。
+  # 迭代到稳定:剪掉一个三极管只会让可达集单调缩小(更多管关断),故有界(管数 + 1 轮)收敛。
+
+  # 每个三极管 segment 的 base 邻接 segment(base 面那一格的全部 segment)+ 门限。
+  defp build_transistor_gates(region, segments, segments_by_macro) do
+    segments
+    |> Enum.filter(fn {_id, segment} -> segment.gate != nil end)
+    |> Map.new(fn {segment_id, segment} ->
+      %{base_face: base_face, threshold: threshold} = segment.gate
+      macro_coord = Types.macro_coord!(segment.macro_index)
+
+      {segment_id,
+       %{
+         base: neighbor_segments_on_face_all(macro_coord, base_face, region, segments_by_macro),
+         threshold: threshold
+       }}
+    end)
+  end
+
+  # base 面那一格的全部 segment(不交 adjacency:base 非导电面,本就不在导电邻接里)。
+  defp neighbor_segments_on_face_all(macro_coord, face, region, segments_by_macro) do
+    case neighbor_coord(macro_coord, face) do
+      {:ok, coord} ->
+        if FieldRegion.in_aabb?(region, coord) do
+          neighbor_index = Types.macro_index!(coord)
+          segments_by_macro |> Map.get(neighbor_index, []) |> MapSet.new()
+        else
+          MapSet.new()
+        end
+
+      :error ->
+        MapSet.new()
+    end
+  end
+
+  defp gate_transistors(adjacency, segment_ids, segment_map, transistor_gates) do
+    component_transistors = Enum.filter(segment_ids, &Map.has_key?(transistor_gates, &1))
+
+    if component_transistors == [] do
+      adjacency
+    else
+      allowed = MapSet.new(segment_ids)
+
+      do_gate_transistors(
+        adjacency,
+        component_transistors,
+        segment_map,
+        transistor_gates,
+        allowed,
+        length(component_transistors) + 1
+      )
+    end
+  end
+
+  defp do_gate_transistors(adjacency, transistors, segment_map, gates, allowed, iterations_left) do
+    off =
+      Enum.filter(transistors, fn transistor_id ->
+        %{base: base_nbrs, threshold: threshold} = Map.fetch!(gates, transistor_id)
+        not transistor_on?(adjacency, segment_map, allowed, base_nbrs, threshold)
+      end)
+
+    cond do
+      off == [] ->
+        adjacency
+
+      iterations_left <= 0 ->
+        remove_segments(adjacency, off)
+
+      true ->
+        # 关断的管剪掉、留下还在的管对新图复评(关断只会让可达集缩小,单调收敛)。
+        new_adjacency = remove_segments(adjacency, off)
+        remaining = transistors -- off
+
+        do_gate_transistors(
+          new_adjacency,
+          remaining,
+          segment_map,
+          gates,
+          allowed,
+          iterations_left - 1
+        )
+    end
+  end
+
+  defp transistor_on?(adjacency, segment_map, allowed, base_nbrs, threshold) do
+    sources = qualifying_source_segments(segment_map, allowed, threshold)
+    reachable = reachable_from(sources, adjacency, allowed)
+
+    base_nbrs
+    |> MapSet.intersection(reachable)
+    |> MapSet.size()
+    |> Kernel.>(0)
+  end
+
+  # 电压 ≥ threshold 的电源 segment(限本分量内 allowed)。
+  defp qualifying_source_segments(segment_map, allowed, threshold) do
+    allowed
+    |> Enum.filter(fn id ->
+      case Map.get(segment_map, id) do
+        %{} = segment -> source_segment_voltage(segment) >= threshold
+        _other -> false
+      end
+    end)
+    |> MapSet.new()
+  end
+
+  defp source_segment_voltage(segment) do
+    segment
+    |> Map.get(:source_points, [])
+    |> Enum.map(&abs(&1.value * 1.0))
+    |> Enum.max(fn -> 0.0 end)
+  end
+
+  # 从给定 source segment 集在(无向)图上可达的 segment 集,限 allowed。
+  defp reachable_from(sources, adjacency, allowed) do
+    do_reach(MapSet.to_list(sources), adjacency, allowed, MapSet.new())
+  end
+
+  defp do_reach([], _adjacency, _allowed, seen), do: seen
+
+  defp do_reach([segment_id | rest], adjacency, allowed, seen) do
+    if MapSet.member?(seen, segment_id) or not MapSet.member?(allowed, segment_id) do
+      do_reach(rest, adjacency, allowed, seen)
+    else
+      neighbors =
+        adjacency
+        |> Map.get(segment_id, MapSet.new())
+        |> MapSet.intersection(allowed)
+        |> MapSet.to_list()
+
+      do_reach(rest ++ neighbors, adjacency, allowed, MapSet.put(seen, segment_id))
     end
   end
 
