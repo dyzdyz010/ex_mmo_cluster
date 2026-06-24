@@ -1244,6 +1244,11 @@ defmodule WorldServer.Voxel.MapLedger do
       {:error, _reason} = err -> err
       other -> {:error, {:unexpected_load_result, other}}
     end
+  rescue
+    # #18:注入的 load_fn(或 file_load_fn 之外的实现)抛异常时,init 不能跟着崩
+    # (会拖垮 WorldSup → server boot 失败)。收敛成 {:error,_},init 据此回落到空
+    # base 并 emit voxel_map_ledger_persist_load_failed。
+    exception -> {:error, {:load_fn_crashed, Exception.message(exception)}}
   end
 
   defp file_persist_fn(path) when is_binary(path) do
@@ -1294,9 +1299,32 @@ defmodule WorldServer.Voxel.MapLedger do
         {:error, :unexpected_value_shape}
 
       true ->
-        {:ok, payload}
+        {:ok, sanitize_persisted_payload(payload)}
     end
   end
 
   defp validate_persisted_payload(_other), do: {:error, :unexpected_payload_shape}
+
+  # #2 反序列化加固:migrations 子表只保留 %MigrationPlan{} 结构。跨版本 stale 快照 /
+  # struct 形态变更可能把 plan 反序列化成 plain map,后续 MigrationPlan.handoff/summary/
+  # plan_next_slice 等会对非 struct 崩(FunctionClauseError)。LOAD 时丢弃坏 plan(emit
+  # 计数),其余照常恢复。镜像 TransactionCoordinator 的 drop_non_struct_transactions。
+  defp sanitize_persisted_payload(payload) do
+    case Map.fetch(payload, :migrations) do
+      {:ok, migrations} when is_map(migrations) ->
+        {kept, dropped} =
+          Enum.split_with(migrations, fn {_id, plan} -> is_struct(plan, MigrationPlan) end)
+
+        if dropped != [] do
+          CliObserve.emit("voxel_map_ledger_dropped_stale_migrations", fn ->
+            %{dropped_count: length(dropped), dropped_ids: Enum.map(dropped, &elem(&1, 0))}
+          end)
+        end
+
+        Map.put(payload, :migrations, Map.new(kept))
+
+      _other ->
+        payload
+    end
+  end
 end

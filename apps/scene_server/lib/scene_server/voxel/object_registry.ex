@@ -772,10 +772,28 @@ defmodule SceneServer.Voxel.ObjectRegistry do
     else
       objects_list = state.store.list_in_scene(scene_id, state.store_opts)
 
+      # #1/#4 反序列化加固:LOAD 路径逐行容错。单条损坏的持久化对象行(part_states
+      # 非 map / 数值越界 / 缺 object_id)此前会让 to_instance/PartState.normalize! raise,
+      # 整个 scene LOAD 崩 → 触发它的 GenServer call 崩。改为坏行 drop + emit observe,
+      # 其余正常载入。写路径(persist_and_cache)仍用严格 to_instance:写入新实例时坏
+      # 数据应当报错而非静默丢。
       scene_map =
-        Enum.into(objects_list, %{}, fn map_obj ->
-          instance = to_instance(map_obj)
-          {instance.object_id, instance}
+        Enum.reduce(objects_list, %{}, fn map_obj, acc ->
+          case safe_to_instance(map_obj) do
+            {:ok, object_id, instance} ->
+              Map.put(acc, object_id, instance)
+
+            {:error, reason} ->
+              CliObserve.emit("voxel_object_load_skipped_corrupt", fn ->
+                %{
+                  logical_scene_id: scene_id,
+                  object_id: corrupt_object_id_hint(map_obj),
+                  reason: inspect(reason)
+                }
+              end)
+
+              acc
+          end
         end)
 
       %{
@@ -811,6 +829,22 @@ defmodule SceneServer.Voxel.ObjectRegistry do
 
     Map.put(map_obj, :part_states, part_states)
   end
+
+  # LOAD 路径专用:把 to_instance 的 raise(坏 part_states / 越界数值 / 缺 object_id /
+  # map_obj 非 map)收敛成 {:error, exception},供 ensure_scene_loaded drop 坏行。
+  defp safe_to_instance(map_obj) do
+    instance = to_instance(map_obj)
+    object_id = Map.fetch!(instance, :object_id)
+    {:ok, object_id, instance}
+  rescue
+    exception -> {:error, exception}
+  end
+
+  defp corrupt_object_id_hint(map_obj) when is_map(map_obj) do
+    Map.get(map_obj, :object_id) || Map.get(map_obj, "object_id")
+  end
+
+  defp corrupt_object_id_hint(_map_obj), do: nil
 
   defp to_store_attrs(instance) do
     part_states = Enum.map(instance.part_states, &PartState.to_map/1)

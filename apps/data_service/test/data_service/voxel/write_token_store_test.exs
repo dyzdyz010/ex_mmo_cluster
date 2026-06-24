@@ -120,4 +120,25 @@ defmodule DataService.Voxel.WriteTokenStoreTest do
                owner_epoch: 3
              })
   end
+
+  # batch 1 (#3):normalize_token 对缺字段会 raise(fetch!),此前直接冒泡崩调用方
+  # (WorldServer lease 发布)。现收敛成 {:error, {:invalid_token, _}}。
+  test "upsert_token with a malformed token returns an error instead of raising" do
+    assert {:error, {:invalid_token, _msg}} =
+             WriteTokenStore.upsert_token(%{logical_scene_id: 1, region_id: 10})
+
+    # 坏坐标(coord! raise)同样收敛。
+    assert {:error, {:invalid_token, _msg}} =
+             WriteTokenStore.upsert_token(%{
+               logical_scene_id: 1,
+               region_id: 10,
+               lease_id: 100,
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 1,
+               bounds_chunk_min: {0, 0},
+               bounds_chunk_max: {4, 4, 4},
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: 1
+             })
+  end
 end

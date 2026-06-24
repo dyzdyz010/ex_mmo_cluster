@@ -7,6 +7,12 @@ defmodule SceneServer.Voxel.ObjectRegistryTest do
   alias SceneServer.Voxel.ObjectRegistry
   alias SceneServer.Voxel.PartState
 
+  # batch 1 (#1/#4):stub store,LOAD 路径只用到 list_in_scene。返回 store_opts 注入的
+  # rows,用于喂入损坏行验证 ensure_scene_loaded 逐行容错。
+  defmodule CorruptLoadStore do
+    def list_in_scene(_scene_id, opts), do: Keyword.fetch!(opts, :rows)
+  end
+
   setup do
     SceneObjectStore.reset()
 
@@ -484,6 +490,40 @@ defmodule SceneServer.Voxel.ObjectRegistryTest do
 
     def handle_call(:__calls__, _from, state) do
       {:reply, Enum.reverse(state.calls), state}
+    end
+  end
+
+  describe "batch 1 (#1/#4) corrupt-row crash-proofing on load" do
+    test "a single corrupt persisted row is skipped, the rest of the scene still loads" do
+      valid =
+        build_instance(object_id: 42, logical_scene_id: 7)
+        |> Map.update!(:part_states, &Enum.map(&1, fn ps -> PartState.to_map(ps) end))
+
+      # part_id -5 trips PartState.uint! → to_instance raises → must be dropped.
+      corrupt_part = %{
+        valid
+        | object_id: 43,
+          part_states: [%{part_id: -5, health: 0, state_flags: 0}]
+      }
+
+      # part_states 非 list → Enum.map raises → must be dropped.
+      corrupt_shape = %{valid | object_id: 44, part_states: :not_a_list}
+
+      registry =
+        start_supervised!(
+          {ObjectRegistry,
+           name: :"object_registry_corrupt_#{System.unique_integer([:positive])}",
+           store: CorruptLoadStore,
+           store_opts: [rows: [valid, corrupt_part, corrupt_shape]]},
+          id: :corrupt_load_registry
+        )
+
+      # 两条坏行也不能让整次 scene LOAD 崩。
+      assert :ok = ObjectRegistry.load_scene(registry, 7)
+
+      assert %{object_id: 42} = ObjectRegistry.lookup_object(registry, 7, 42)
+      assert ObjectRegistry.lookup_object(registry, 7, 43) == nil
+      assert ObjectRegistry.lookup_object(registry, 7, 44) == nil
     end
   end
 

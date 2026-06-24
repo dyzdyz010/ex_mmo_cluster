@@ -33,7 +33,22 @@ defmodule DataService.Voxel.WriteTokenStore do
   A newer token replaces the previous one; replaying the same token is
   idempotent; a stale token is rejected and leaves the current token unchanged.
   """
-  def upsert_token(token, opts \\ []), do: do_upsert_token(normalize_token(token), opts)
+  def upsert_token(token, opts \\ []) do
+    # #3 反序列化加固:normalize_token 对缺字段 / 坏坐标会 raise(fetch!/coord!),
+    # 此前直接冒泡崩调用方(WorldServer lease 发布路径)。坏 token 收敛成 {:error,_}
+    # 让上层记录/降级而非崩。DB 层错误仍按原样冒泡(与本模块其它函数一致)。
+    case safe_normalize_token(token) do
+      {:ok, normalized} -> do_upsert_token(normalized, opts)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp safe_normalize_token(token) do
+    {:ok, normalize_token(token)}
+  rescue
+    exception in [ArgumentError, KeyError] ->
+      {:error, {:invalid_token, Exception.message(exception)}}
+  end
 
   @doc "Validates a chunk write against the durable token fence."
   def validate_write(attrs, opts \\ []), do: do_validate_write(normalize_write(attrs), opts)

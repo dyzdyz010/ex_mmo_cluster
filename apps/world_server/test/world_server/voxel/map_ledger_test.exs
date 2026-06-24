@@ -4,6 +4,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.MigrationPlan
   alias WorldServer.Voxel.TransactionParticipant
 
   setup do
@@ -679,6 +680,53 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     # Recorder still saw both attempted calls.
     calls = Agent.get(recorder, fn calls -> Enum.reverse(calls) end)
     assert length(calls) == 2
+  end
+
+  # batch 1 (#2):跨版本 stale 快照可能把 migrations 子表里的 plan 反序列化成 plain map。
+  # LOAD 时必须丢弃非 %MigrationPlan{},否则后续 MigrationPlan.* 对非 struct 崩。
+  test "loading a persisted payload drops migrations that are not %MigrationPlan{} structs" do
+    valid_plan = build_migration_plan("mig-ok")
+
+    payload = %{
+      migrations: %{
+        "mig-ok" => valid_plan,
+        # plain map(旧 schema / 跨版本反序列化残留),非 struct → 必须被丢弃。
+        "mig-stale" => %{state: :prewarming, migration_id: "mig-stale"}
+      }
+    }
+
+    ledger = start_supervised!({MapLedger, load_fn: fn -> {:ok, payload} end})
+    snapshot = MapLedger.snapshot(ledger)
+
+    assert Map.has_key?(snapshot.migrations, "mig-ok")
+    refute Map.has_key?(snapshot.migrations, "mig-stale")
+  end
+
+  # batch 1 (#18):注入的 load_fn 抛异常时,init 必须不跟着崩(否则拖垮 WorldSup → boot 崩)。
+  test "a load_fn that raises does not crash init (ledger boots with empty state)" do
+    ledger = start_supervised!({MapLedger, load_fn: fn -> raise "boom in load" end})
+    snapshot = MapLedger.snapshot(ledger)
+
+    assert snapshot.migrations == %{}
+    assert snapshot.assignments == %{}
+  end
+
+  defp build_migration_plan(migration_id) do
+    now_ms = System.system_time(:millisecond)
+
+    %MigrationPlan{
+      migration_id: migration_id,
+      logical_scene_id: 1,
+      region_id: 10,
+      source_scene_instance_ref: 1_000,
+      target_scene_instance_ref: 2_000,
+      new_lease: %{lease_id: 101, owner_epoch: 2},
+      affected_chunk_min: {0, 0, 0},
+      affected_chunk_max: {2, 2, 2},
+      token_version: 2,
+      inserted_at_ms: now_ms,
+      updated_at_ms: now_ms
+    }
   end
 
   defp put_region!(ledger, region_id, min, max, owner_ref) do
