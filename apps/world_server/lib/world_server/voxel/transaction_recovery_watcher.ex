@@ -182,6 +182,18 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcher do
     end
   end
 
+  # 最后兜底:任何上面 clause 都没匹配的事务形态——例如残缺 plain map **连 transaction_id
+  # 都没有**(value 缺 transaction_id 时上面的 plain-map clause 也落空,这正是实机 boot 崩的形态)。
+  # 恢复扫描**绝不能 raise**(否则 recovery_watcher.init 崩 → WorldSup 崩 → 服务端 boot 崩),
+  # 只记日志 + park。配合 coordinator load 边界丢弃非 struct 事务,这是纵深防御。
+  defp handle_transaction(_coordinator, transaction, _resolver) do
+    CliObserve.emit("voxel_transaction_recovery_unrecognized_shape", fn ->
+      %{shape: inspect(transaction, limit: 8)}
+    end)
+
+    :pending_commit
+  end
+
   defp resume_prepared(coordinator, transaction, resolver) do
     case safe_resolve(resolver, transaction.participants) do
       {:ok, executor_opts} ->

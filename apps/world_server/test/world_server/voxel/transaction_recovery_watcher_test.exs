@@ -173,6 +173,68 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
     end
   end
 
+  describe "stale / malformed persisted transaction robustness (boot-crash regression)" do
+    test "non-struct transactions (no transaction_id in value) are dropped at load and never crash recovery" do
+      # Exact shape that crashed world_server boot (实机揪出): an old-format /
+      # deserialized transaction that is a PLAIN MAP (not %BuildTransaction{}) and
+      # lacks transaction_id in the VALUE (it was the snapshot map KEY). Before the
+      # fix, TransactionRecoveryWatcher.handle_transaction/3 matched no clause →
+      # FunctionClauseError in init → WorldSup failed to start → server boot crash.
+      load_fn = fn ->
+        {:ok,
+         %{
+           transactions: %{
+             "tx-stale-prepared" => %{state: :prepared, decision_version: 1},
+             "tx-stale-weird" => %{some: :garbage}
+           }
+         }}
+      end
+
+      coordinator = start_supervised!({TransactionCoordinator, load_fn: load_fn})
+
+      # Coordinator boots; non-struct transactions are dropped at the load boundary
+      # so state holds only valid structs (here: none).
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert snapshot.transactions == %{}
+
+      # The recovery sweep (the boot path) runs WITHOUT raising and reports clean.
+      summary = TransactionRecoveryWatcher.recover(coordinator)
+      assert summary.aborted == 0
+      assert summary.abort_failed == 0
+      assert summary.pending_commit == 0
+      assert summary.finalized == 0
+    end
+
+    test "valid struct transactions in a loaded snapshot are kept (filter doesn't over-drop)" do
+      # A coordinator that begins a transaction, snapshots it, then a fresh
+      # coordinator loads that snapshot: the valid %BuildTransaction{} struct must
+      # survive the load filter and still be swept (aborted from :preparing).
+      # Distinct child ids — two TransactionCoordinator children otherwise collide.
+      seed = start_supervised!(Supervisor.child_spec({TransactionCoordinator, []}, id: :seed_coord))
+
+      assert {:ok, %BuildTransaction{}} =
+               TransactionCoordinator.begin_transaction(seed, transaction_attrs("tx-keep"))
+
+      persisted = TransactionCoordinator.snapshot(seed)
+
+      load_fn = fn ->
+        {:ok, Map.take(persisted, [:transactions, :begin_fingerprints, :decisions, :decision_index])}
+      end
+
+      coordinator =
+        start_supervised!(
+          Supervisor.child_spec({TransactionCoordinator, load_fn: load_fn}, id: :reload_coord)
+        )
+
+      snapshot = TransactionCoordinator.snapshot(coordinator)
+      assert Map.has_key?(snapshot.transactions, "tx-keep")
+      assert snapshot.transactions["tx-keep"].state == :preparing
+
+      summary = TransactionRecoveryWatcher.recover(coordinator)
+      assert summary.aborted == 1
+    end
+  end
+
   describe "Phase 3-bis :prepared resume" do
     test "without a resolver, :prepared transactions stay parked" do
       coordinator = start_supervised!(TransactionCoordinator)

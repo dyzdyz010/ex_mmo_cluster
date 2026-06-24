@@ -1049,9 +1049,38 @@ defmodule WorldServer.Voxel.TransactionCoordinator do
         {:error, :unexpected_value_shape}
 
       true ->
-        {:ok, payload}
+        {:ok, drop_non_struct_transactions(payload)}
     end
   end
 
   defp validate_persisted_payload(_other), do: {:error, :unexpected_payload_shape}
+
+  # 跨重启恢复鲁棒性:持久化快照可能残留**旧格式 / 损坏的事务值**——非 `%BuildTransaction{}`
+  # struct(老版本写入、schema 漂移后的 plain map,且 value 里常缺 transaction_id,因为它是 map 的
+  # 键)。这类值一旦进 coordinator state,会让 `TransactionRecoveryWatcher` 的 struct-pattern
+  # `handle_transaction/3` 全部落空 → **FunctionClauseError → WorldSup 起不来 → 整服务端 boot 崩**
+  # (实机揪出)。在 load 边界丢弃非 struct 事务(记日志),保证 coordinator 不变量「事务恒为合法
+  # struct」——无法反序列化为合法 struct 的事务本就不可恢复,丢弃是安全回滚(其 chunk-fence 由
+  # ChunkProcess 自身的恢复路径处理)。
+  defp drop_non_struct_transactions(payload) do
+    case Map.get(payload, :transactions) do
+      transactions when is_map(transactions) and map_size(transactions) > 0 ->
+        {valid, dropped} =
+          Enum.split_with(transactions, fn {_id, t} -> is_struct(t, BuildTransaction) end)
+
+        if dropped != [] do
+          CliObserve.emit("voxel_transaction_coordinator_dropped_stale_transactions", fn ->
+            %{
+              dropped_ids: Enum.map(dropped, fn {id, _} -> id end),
+              count: length(dropped)
+            }
+          end)
+        end
+
+        Map.put(payload, :transactions, Map.new(valid))
+
+      _ ->
+        payload
+    end
+  end
 end
