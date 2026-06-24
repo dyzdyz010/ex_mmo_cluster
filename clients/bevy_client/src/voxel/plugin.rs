@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use bevy::ecs::system::SystemParam;
+use bevy::gizmos::config::{GizmoConfigGroup, GizmoConfigStore};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -17,7 +18,7 @@ use bevy::window::PrimaryWindow;
 use crate::app::{
     SceneRenderAssets, WorldState, push_line, ray_from_viewport, sim_to_render_position,
 };
-use crate::camera::MainCamera;
+use crate::camera::{MainCamera, OrbitCameraState};
 use crate::chat::ChatState;
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
@@ -34,6 +35,27 @@ use crate::voxel::{
 const VOXEL_RENDER_CELL_SIZE: f32 = 100.0;
 const VOXEL_RENDER_MICRO_SIZE: f32 = VOXEL_RENDER_CELL_SIZE / crate::voxel::MICRO_PER_MACRO as f32;
 const VOXEL_RAY_MAX_DISTANCE: f32 = 2_500.0;
+/// Build/break **reach**: max render-space distance from the player to a hittable
+/// voxel. Measured from the camera's orbit target (= the player's render position)
+/// so it is independent of third-person zoom — unlike the raw camera-ray cap
+/// `VOXEL_RAY_MAX_DISTANCE`, which only bounds the DDA march. One macro cell is
+/// `VOXEL_RENDER_CELL_SIZE` (100) units, so this is ~7 cells of reach.
+const VOXEL_REACH: f32 = 1_200.0;
+
+/// The voxel currently under the crosshair in a live scene (server-authoritative
+/// occupancy), within [`VOXEL_REACH`]. Shared truth for the hit-face highlight
+/// gizmo (`draw_live_hit`) and the place/break action (`handle_live_voxel_build`),
+/// so the box you see highlighted is exactly the cell an edit targets.
+#[derive(Resource, Default)]
+pub(crate) struct LiveHit {
+    pub pick: Option<crate::voxel::live_pick::LivePick>,
+}
+
+/// Dedicated gizmo group for the build-target highlight. Configured with a
+/// negative `depth_bias` (see `setup_hit_gizmos`) so the wire box renders ON TOP
+/// of the solid terrain instead of being occluded by the very block it outlines.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct HitGizmos {}
 /// Default half-height used for camera follow / orbit grounding when the
 /// caller doesn't already know the specific actor's cube size. Matches the
 /// local-player cube authored in `presentation::plugin` (`scale.y = 90.0` →
@@ -80,6 +102,9 @@ impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VoxelSelectionState>()
             .init_resource::<crate::voxel::build_palette::BuildPalette>()
+            .init_resource::<LiveHit>()
+            .init_gizmo_group::<HitGizmos>()
+            .add_systems(Startup, setup_hit_gizmos)
             // Always active in-game: the skill-target marker (live gameplay) and
             // the showcase cube sync (which self-cleans once in a live scene).
             .add_systems(
@@ -105,11 +130,15 @@ impl Plugin for VoxelPlugin {
                     .run_if(offline_voxel_showcase_active),
             )
             // Construction system (C1.4): in a live scene, building is
-            // server-authoritative — raycast the authority chunks and send a
-            // VoxelEditIntent; the resulting ChunkDelta renders the edit.
+            // server-authoritative — `update_live_hit` raycasts the authority
+            // chunks each frame into `LiveHit`; `draw_live_hit` outlines the
+            // targeted cell + face; `handle_live_voxel_build` reads the SAME hit
+            // and sends a VoxelEditIntent on click. Chained so the highlight and
+            // the edit always agree on the target.
             .add_systems(
                 Update,
-                handle_live_voxel_build
+                (update_live_hit, draw_live_hit, handle_live_voxel_build)
+                    .chain()
                     .run_if(in_state(AppState::Game))
                     .run_if(live_voxel_build_active),
             );
@@ -336,10 +365,10 @@ struct LiveBuildParams<'w, 's> {
     wheel_reader: MessageReader<'w, 's, MouseWheel>,
     chat_state: Res<'w, ChatState>,
     observer: Res<'w, ClientObserver>,
-    windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
-    camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
     palette: ResMut<'w, crate::voxel::build_palette::BuildPalette>,
-    authority: Res<'w, VoxelAuthority>,
+    // The crosshair hit (shared with the highlight gizmo) — what a place/break
+    // targets. Computed by `update_live_hit` which runs first in the chain.
+    hit: Res<'w, LiveHit>,
     bridge: Option<Res<'w, NetworkBridge>>,
 }
 
@@ -360,6 +389,72 @@ fn authority_macro_occupied(authority: &VoxelAuthority, g: [i32; 3]) -> bool {
         .is_some_and(|cell| !matches!(cell, CellState::Empty))
 }
 
+/// Each frame in a live scene: DDA-raymarch the centre-crosshair ray against the
+/// server-authoritative chunk occupancy, then keep the hit only if its cell sits
+/// within [`VOXEL_REACH`] of the player (the camera's orbit target). Result goes
+/// into [`LiveHit`] for the highlight gizmo and the place/break action to share.
+fn update_live_hit(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    orbit: Res<OrbitCameraState>,
+    authority: Res<VoxelAuthority>,
+    mut hit: ResMut<LiveHit>,
+) {
+    hit.pick = compute_live_hit(&windows, &camera, &orbit, &authority);
+}
+
+fn compute_live_hit(
+    windows: &Query<&Window, With<PrimaryWindow>>,
+    camera: &Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    orbit: &OrbitCameraState,
+    authority: &VoxelAuthority,
+) -> Option<crate::voxel::live_pick::LivePick> {
+    let window = windows.single().ok()?;
+    let (cam, cam_tf) = camera.single().ok()?;
+    let center = Vec2::new(window.width() * 0.5, window.height() * 0.5);
+    let ray = ray_from_viewport(cam, cam_tf, center)?;
+    let pick = pick_voxel(
+        [ray.origin.x, ray.origin.y, ray.origin.z],
+        [ray.direction.x, ray.direction.y, ray.direction.z],
+        VOXEL_RAY_MAX_DISTANCE,
+        |g| authority_macro_occupied(authority, g),
+    )?;
+    // Reach gate: distance from the player (orbit target) to the cell centre.
+    let coord = MacroCoord::new(
+        pick.occupied_macro[0],
+        pick.occupied_macro[1],
+        pick.occupied_macro[2],
+    );
+    let (min, max) = macro_bounds(coord);
+    let cell_center = (min + max) * 0.5;
+    (cell_center.distance(orbit.target) <= VOXEL_REACH).then_some(pick)
+}
+
+/// `depth_bias = -1.0` forces the [`HitGizmos`] group to draw in front of all
+/// geometry, so the build-target outline is visible on the block it highlights
+/// rather than being occluded by it (and its solid neighbours).
+fn setup_hit_gizmos(mut store: ResMut<GizmoConfigStore>) {
+    store.config_mut::<HitGizmos>().0.depth_bias = -1.0;
+}
+
+/// Outlines the cell under the crosshair (cyan wire box) and the face the ray
+/// entered through (bright white) so the player sees exactly what a place/break
+/// targets. Drawn only when a valid in-reach hit exists.
+fn draw_live_hit(hit: Res<LiveHit>, mut gizmos: Gizmos<HitGizmos>) {
+    let Some(pick) = hit.pick else {
+        return;
+    };
+    let coord = MacroCoord::new(
+        pick.occupied_macro[0],
+        pick.occupied_macro[1],
+        pick.occupied_macro[2],
+    );
+    let (min, max) = macro_bounds(coord);
+    draw_box_wire(&mut gizmos, min, max, Color::srgba(0.15, 0.85, 1.0, 0.9));
+    let normal = MacroCoord::new(pick.face_normal[0], pick.face_normal[1], pick.face_normal[2]);
+    draw_face_outline(&mut gizmos, min, max, normal, Color::WHITE);
+}
+
 /// Construction system live build: raycast the authority chunks from screen center
 /// and send a server-authoritative `VoxelEditIntent` (place/break). No local
 /// mutation — the returned `ChunkDelta` is what renders.
@@ -370,10 +465,8 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
         mut wheel_reader,
         chat_state,
         observer,
-        windows,
-        camera,
         mut palette,
-        authority,
+        hit,
         bridge,
     } = params;
 
@@ -427,23 +520,10 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
     let Some(bridge) = bridge else {
         return;
     };
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Ok((cam, cam_tf)) = camera.single() else {
-        return;
-    };
-    let center = Vec2::new(window.width() * 0.5, window.height() * 0.5);
-    let Some(ray) = ray_from_viewport(cam, cam_tf, center) else {
-        return;
-    };
 
-    let Some(pick) = pick_voxel(
-        [ray.origin.x, ray.origin.y, ray.origin.z],
-        [ray.direction.x, ray.direction.y, ray.direction.z],
-        VOXEL_RAY_MAX_DISTANCE,
-        |g| authority_macro_occupied(&authority, g),
-    ) else {
+    // Reads the same hit the highlight gizmo drew (computed by `update_live_hit`,
+    // already reach-gated) — so an edit only lands on the cell you can see boxed.
+    let Some(pick) = hit.pick else {
         observer.emit(
             "voxel",
             "live_edit_rejected",
@@ -911,7 +991,13 @@ fn draw_prefab_preview(gizmos: &mut Gizmos, preview: &BoundarySnapPreview, color
     }
 }
 
-fn draw_face_outline(gizmos: &mut Gizmos, min: Vec3, max: Vec3, normal: MacroCoord, color: Color) {
+fn draw_face_outline<C: GizmoConfigGroup>(
+    gizmos: &mut Gizmos<C>,
+    min: Vec3,
+    max: Vec3,
+    normal: MacroCoord,
+    color: Color,
+) {
     let corners = if normal.x != 0 {
         let x = if normal.x > 0 { max.x } else { min.x };
         [
@@ -942,7 +1028,7 @@ fn draw_face_outline(gizmos: &mut Gizmos, min: Vec3, max: Vec3, normal: MacroCoo
     }
 }
 
-fn draw_box_wire(gizmos: &mut Gizmos, min: Vec3, max: Vec3, color: Color) {
+fn draw_box_wire<C: GizmoConfigGroup>(gizmos: &mut Gizmos<C>, min: Vec3, max: Vec3, color: Color) {
     let corners = [
         Vec3::new(min.x, min.y, min.z),
         Vec3::new(max.x, min.y, min.z),
