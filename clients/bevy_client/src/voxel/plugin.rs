@@ -25,7 +25,7 @@ use crate::observe::ClientObserver;
 use crate::voxel::authority::CellState;
 use crate::voxel::authority_plugin::{VOXEL_LOGICAL_SCENE_ID, VoxelAuthority};
 use crate::voxel::live_pick::pick_voxel;
-use crate::voxel::wire::{ACTION_BREAK, ACTION_PLACE};
+use crate::voxel::wire::ACTION_BREAK;
 use crate::voxel::{
     BoundarySnapPreview, BoundarySnapRequest, MacroCoord, MicroCellTarget, MicroCoord,
     NormalBlockData, VoxelMaterialId, VoxelRenderCell, VoxelWorld,
@@ -467,20 +467,24 @@ fn handle_live_voxel_build(params: LiveBuildParams) {
     }
 
     if place_requested {
+        // C5.1:一套调色板跨三种放置路径 —— block / prefab / 贴面元件,选中项决定发哪种 intent。
         let selected = palette.selected();
-        let target = pick.adjacent_macro();
-        bridge.send(NetworkCommand::EditVoxel {
-            logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
-            action: ACTION_PLACE,
-            target_macro: target,
-            material_id: selected.material_id,
-        });
+        let command = crate::voxel::build_palette::build_place_command(selected.kind, &pick);
+        let placed_at = match &command {
+            NetworkCommand::PlaceSurfaceElement { host_macro, face, .. } => {
+                format!("host={host_macro:?} face={face}")
+            }
+            NetworkCommand::PlacePrefab { anchor_macro, .. } => format!("anchor={anchor_macro:?}"),
+            NetworkCommand::EditVoxel { target_macro, .. } => format!("{target_macro:?}"),
+            _ => String::new(),
+        };
+        bridge.send(command);
         observer.emit(
             "voxel",
             "live_place_sent",
             &[
-                ("coord", format!("{target:?}")),
-                ("material", selected.label.to_string()),
+                ("coord", placed_at),
+                ("component", selected.label.to_string()),
             ],
         );
     }
