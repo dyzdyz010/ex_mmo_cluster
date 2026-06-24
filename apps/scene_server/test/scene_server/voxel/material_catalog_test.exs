@@ -31,6 +31,21 @@ defmodule SceneServer.Voxel.MaterialCatalogTest do
     assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
   end
 
+  test "diode material is append-only, conductive, and a directional conductor (C4b)" do
+    material_id = MaterialCatalog.diode_material_id()
+
+    assert material_id == 22
+    assert MaterialCatalog.known_material?(material_id)
+    # 入电路图:导电。
+    assert MaterialCatalog.default_attribute_value(material_id, "electric_conductivity", 0) > 0
+    # conduction_axis>0 标记 → diode_material? 派生为真(无 id 白名单)。
+    assert MaterialCatalog.default_attribute_value(material_id, "conduction_axis", 0) > 0
+    assert MaterialCatalog.diode_material?(material_id)
+    # 非二极管材料(iron / comparator)不被误判为二极管。
+    refute MaterialCatalog.diode_material?(MaterialCatalog.material_id(:iron))
+    refute MaterialCatalog.diode_material?(MaterialCatalog.material_id(:comparator))
+  end
+
   describe "S4 化学/氧化:iron 起锈门 + rust 终产物(属性派生,无白名单)" do
     @inert_temperature_raw 327_680_000
 

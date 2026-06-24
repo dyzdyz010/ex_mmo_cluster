@@ -19,7 +19,7 @@
 # 一旦发出即冻结：id ↔ name 的映射 wire 上下游已落地后不可重排。
 
 %{
-  catalog_version: 12,
+  catalog_version: 13,
   definitions: [
     %{
       id: 1,
@@ -363,6 +363,24 @@
       min_value: 0,
       # 1000 V 上限(足够覆盖电源 120V 系)。
       max_value: 65_536_000,
+      merge_rule: :material_default,
+      dynamic: false
+    },
+    # 建设系统 · C4b 深半导体(2026-06-24):二极管"导通轴"标记。**材料级 >0 ⇒ 该材料是二极管**
+    # (diode_material? 派生谓词,无 id 白名单,仿 emf/electric_resistance/logic_threshold 范式)。
+    # 具体每格 anode→cathode 朝向由放置时写入的 state_flags 位段承载(投影层解码,C4b step2-4)。
+    # raw 离散枚举码(非物理量纲,同 light_color packed 先例):0=无向(回退普通双向导体,惰性安全)/
+    # 1=+x /2=-x /3=+y /4=-y /5=+z /6=-z。
+    %{
+      id: 25,
+      name: "conduction_axis",
+      unit: "axis",
+      value_type: :fixed32,
+      # 0 = 无向(普通双向导体回退)
+      default_value: 0,
+      min_value: 0,
+      # 6 = -z(0..6 轴码)
+      max_value: 6,
       merge_rule: :material_default,
       dynamic: false
     }

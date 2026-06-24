@@ -51,6 +51,9 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   # 建设系统 · 半导体梯队 a(2026-06-23):比较器/阈值门——导电(入电路图)+ logic_threshold>0。
   # CircuitCurrentKernel 比较其电位与阈值,≥ 则置 :signal_high(模拟量→数字逻辑门)。
   @comparator_material_id 21
+  # 建设系统 · C4b 深半导体(2026-06-24):二极管——导电(入电路图)+ conduction_axis>0 标记。
+  # 单向导通,每格 anode→cathode 朝向由 state_flags 承载(投影/拓扑有向化见 step2-4)。
+  @diode_material_id 22
 
   # 材料名 ↔ id(反应规则用名引用,稳定不写裸 id)。
   @material_ids %{
@@ -74,7 +77,8 @@ defmodule SceneServer.Voxel.MaterialCatalog do
     sprout: @sprout_material_id,
     glowstone: @glowstone_material_id,
     resistor: @resistor_material_id,
-    comparator: @comparator_material_id
+    comparator: @comparator_material_id,
+    diode: @diode_material_id
   }
 
   @power_source_defaults %{
@@ -378,6 +382,21 @@ defmodule SceneServer.Voxel.MaterialCatalog do
       "electric_conductivity" => round(2.0 * @fixed32_scale),
       "dielectric_strength" => round(10.0 * @fixed32_scale),
       "logic_threshold" => round(60.0 * @fixed32_scale)
+    },
+    # 建设系统 · C4b 二极管(深半导体):导电(入电路图)+ conduction_axis>0 标记(diode_material?
+    # 派生)。单向导通方向由每格 state_flags 朝向决定(投影/拓扑有向化在 step2-4),此处仅材料标记
+    # (raw 1 = 默认 +x 轴,惰性回退;具体每格朝向覆盖之)。
+    @diode_material_id => %{
+      "density" => round(2_300.0 * @fixed32_scale),
+      "thermal_conductivity" => round(1.2 * @fixed32_scale),
+      "specific_heat_capacity" => round(700.0 * @fixed32_scale),
+      "ignition_temperature" => @inert_temperature_raw,
+      "melting_point" => round(1_400.0 * @fixed32_scale),
+      "freezing_point" => round(1_400.0 * @fixed32_scale),
+      "boiling_point" => @inert_temperature_raw,
+      "electric_conductivity" => round(2.0 * @fixed32_scale),
+      "dielectric_strength" => round(10.0 * @fixed32_scale),
+      "conduction_axis" => 1
     }
   }
 
@@ -429,6 +448,19 @@ defmodule SceneServer.Voxel.MaterialCatalog do
   @spec electric_load_material?(term()) :: boolean()
   def electric_load_material?(material_id),
     do: default_attribute_value(material_id, "electric_resistance", 0) > 0
+
+  @doc "Returns the append-only material id for a directional conductor (diode)."
+  @spec diode_material_id() :: pos_integer()
+  def diode_material_id, do: @diode_material_id
+
+  @doc """
+  Returns true when a material is a directional conductor (diode). C4b 深半导体:
+  派生自属性 `conduction_axis` > 0,无 id 白名单(仿 power_source/electric_load 范式)。
+  具体每格 anode→cathode 朝向由 state_flags 承载(投影层解码,见 C4b step2-4)。
+  """
+  @spec diode_material?(term()) :: boolean()
+  def diode_material?(material_id),
+    do: default_attribute_value(material_id, "conduction_axis", 0) > 0
 
   @doc "Returns the current default supply policy for a physical power block."
   @spec power_source_defaults() :: %{
