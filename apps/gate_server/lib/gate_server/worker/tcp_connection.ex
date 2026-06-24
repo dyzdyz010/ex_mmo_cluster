@@ -44,6 +44,7 @@ defmodule GateServer.TcpConnection do
   alias SceneServer.Combat.{EffectEvent, Skill}
   alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
   alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
+  alias SceneServer.Voxel.Field.FieldRuntime
 
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
@@ -1026,6 +1027,60 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
+  # 场域导通轨:VoxelFieldConductIntent (0x75) — 电/热导通路径建立。镜像
+  # ws_connection 同名 dispatch(此前 TCP 缺该 clause,导通请求误落 catch-all 回
+  # `:unknown_message`/request_id 0,客户端拿不到对应回执)。
+  defp dispatch(
+         {:voxel_field_conduct_intent, request},
+         %{status: :in_scene, socket: socket} = state
+       ) do
+    GateServer.CliObserve.emit("voxel_field_conduct_intent_received", %{
+      connection_pid: self(),
+      cid: state.cid,
+      request_id: request.request_id,
+      client_intent_seq: request.client_intent_seq,
+      logical_scene_id: request.logical_scene_id,
+      source_world_macro: request.source_world_macro,
+      target_world_macro: request.target_world_macro,
+      conduction_mode: request.conduction_mode
+    })
+
+    case apply_voxel_field_conduct_intent(request, state) do
+      {:ok, summary} ->
+        GateServer.CliObserve.emit("voxel_field_conduct_intent_applied", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          region_id: Map.get(summary, :region_id),
+          field_region_created: Map.get(summary, :field_region_created),
+          conduction_mode: Map.get(summary, :conduction_mode, request.conduction_mode)
+        })
+
+        send_encoded(socket, voxel_field_conduct_result_ok(request, summary))
+
+      {:error, reason} ->
+        GateServer.CliObserve.emit("voxel_field_conduct_intent_error", %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          client_intent_seq: request.client_intent_seq,
+          logical_scene_id: request.logical_scene_id,
+          reason: inspect(reason)
+        })
+
+        send_encoded(socket, voxel_result_error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_field_conduct_intent, request}, state) do
+    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
+    {:ok, state}
+  end
+
   defp dispatch({:voxel_debug_probe, %{request_id: request_id, command: command}}, state) do
     GateServer.CliObserve.emit("voxel_debug_probe_received", %{
       connection_pid: self(),
@@ -1811,6 +1866,66 @@ defmodule GateServer.TcpConnection do
   rescue
     _exception in [ArgumentError, FunctionClauseError] ->
       {:error, :invalid_target_world_micro}
+  end
+
+  # 场域导通 apply:解析 source 宏格 → 路由 → scene 节点,RPC 至 FieldRuntime
+  # ensure_conduction_path。与 ws_connection 同名 helper 等价。
+  defp apply_voxel_field_conduct_intent(request, state) do
+    with :ok <- authorize_voxel_edit_intent(state),
+         {:ok, source_chunk_coord} <- field_conduct_source_chunk(request),
+         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, source_chunk_coord),
+         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
+      attrs =
+        request
+        |> Map.take([
+          :logical_scene_id,
+          :source_world_macro,
+          :target_world_macro,
+          :source_potential,
+          :max_ticks,
+          :conduction_mode,
+          :output_mode,
+          :voltage,
+          :current_limit_amps,
+          :frequency_hz,
+          :load_current_amps,
+          :energy_budget_joules
+        ])
+        |> Map.put(:owner_ref, {:tcp_field_conduct, state.cid, request.client_intent_seq})
+
+      case :rpc.call(
+             scene_node,
+             FieldRuntime,
+             :ensure_conduction_path,
+             [attrs],
+             @scene_call_timeout
+           ) do
+        {:ok, summary} -> {:ok, summary}
+        {:error, reason} -> {:error, reason}
+        {:badrpc, reason} -> {:error, {:scene_unavailable, reason}}
+        other -> {:error, {:unexpected_field_conduct_result, other}}
+      end
+    end
+  end
+
+  defp field_conduct_source_chunk(%{source_world_macro: world_macro}) do
+    {chunk_coord, _local_macro} = Types.chunk_and_local_macro!(world_macro)
+    {:ok, chunk_coord}
+  rescue
+    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_source_world_macro}
+  end
+
+  defp voxel_field_conduct_result_ok(request, summary) do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: request.client_intent_seq,
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: Map.get(summary, :region_id) || 0,
+       authoritative: [],
+       reason: "field_conduct_ok"
+     }}
   end
 
   # AUTH-4(step1.5b-2):prefab idempotency-key,见 ws_connection 同名函数说明。
@@ -2824,8 +2939,22 @@ defmodule GateServer.TcpConnection do
   end
 
   defp send_encoded(socket, message) do
-    {:ok, bin} = GateServer.Codec.encode(message)
-    :gen_tcp.send(socket, bin)
+    # 防 MatchError 崩连接进程:若 message 命中 Codec.encode 的 {:error, :unknown_message}
+    # catchall(新消息类型漏 encode 子句 / guard 失败),只记日志 + 丢弃,绝不 raise。
+    case GateServer.Codec.encode(message) do
+      {:ok, bin} ->
+        :gen_tcp.send(socket, bin)
+
+      {:error, reason} ->
+        Logger.warning("gate(tcp): dropped unencodable outbound message: #{inspect(reason)}")
+
+        GateServer.CliObserve.emit("gate_outbound_encode_failed", %{
+          transport: :tcp,
+          reason: reason
+        })
+
+        :ok
+    end
   end
 
   # Phase 6: forward a pre-encoded payload (opcode byte already prefixed by

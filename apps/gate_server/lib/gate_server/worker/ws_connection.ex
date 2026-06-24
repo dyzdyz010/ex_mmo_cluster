@@ -786,8 +786,22 @@ defmodule GateServer.WsConnection do
   end
 
   defp send_encoded(state, message) do
-    {:ok, iodata} = GateServer.Codec.encode(message)
-    send(state.owner_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
+    # 防 MatchError 崩连接进程(同 tcp_connection):encode 命中 unknown_message catchall 时
+    # 只记日志 + 丢弃,不 raise。
+    case GateServer.Codec.encode(message) do
+      {:ok, iodata} ->
+        send(state.owner_pid, {:gate_ws_send, IO.iodata_to_binary(iodata)})
+
+      {:error, reason} ->
+        Logger.warning("gate(ws): dropped unencodable outbound message: #{inspect(reason)}")
+
+        GateServer.CliObserve.emit("gate_outbound_encode_failed", %{
+          transport: :ws,
+          reason: reason
+        })
+
+        :ok
+    end
   end
 
   # 梯队3 step3.10b:把一帧客户端可见状态交给 per-observer 统一 Replicator(REPL-2),

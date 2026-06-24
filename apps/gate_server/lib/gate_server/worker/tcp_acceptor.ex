@@ -13,6 +13,11 @@ defmodule GateServer.TcpAcceptor do
 
   @default_port 20002
 
+  # DoS 护栏:{packet,4} 默认允许单帧最大 ~4GB,恶意客户端可发巨帧逼 gen_tcp 在解码前就把
+  # 整帧读进内存压垮节点。客户端→服务端帧本就很小(movement 89B、subscribe 含 known chunks
+  # 最多约 1.3MB),故设 2MB 上限——超限帧 gen_tcp 直接报错/关连接,远早于内存爆。
+  @max_inbound_frame_bytes 2_097_152
+
   @doc "Standard child spec for the TCP acceptor worker."
   def child_spec(opts) do
     %{
@@ -43,7 +48,14 @@ defmodule GateServer.TcpAcceptor do
   end
 
   defp listen(port) do
-    {:ok, socket} = :gen_tcp.listen(port, [:binary, packet: 4, active: true, reuseaddr: true])
+    {:ok, socket} =
+      :gen_tcp.listen(port, [
+        :binary,
+        packet: 4,
+        packet_size: @max_inbound_frame_bytes,
+        active: true,
+        reuseaddr: true
+      ])
 
     Logger.debug("Accepting connections on port #{port}")
     GateServer.CliObserve.emit("tcp_listen", %{port: port})

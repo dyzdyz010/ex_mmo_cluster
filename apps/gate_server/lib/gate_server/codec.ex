@@ -113,6 +113,18 @@ defmodule GateServer.Codec do
   @status_ok 0x00
   @status_error 0x01
 
+  # ── DoS 护栏:可变长字段上限 ──
+  # 每个 16-bit 长度字段本就 ≤65535,但仍可被滥用(64KB 聊天、1.3MB known-chunks 订阅帧、
+  # 海量递归解析)。给主解码子句加 guard:超限的帧不匹配主子句 → 落到 fallthrough → {:error,_},
+  # 不进一步处理。配合 acceptor 的 packet_size 2MB 总帧上限,客户端→服务端不可逼爆内存。
+  # 上限取「远大于任何合法输入、远小于 64KB u16 上界」:auth code / ticket 可能承载 JWT
+  # (常见 ~1-2KB,带 claims 更长),故给 4KB 余量,避免误拒真实凭据。
+  @max_username_bytes 1024
+  @max_auth_code_bytes 4096
+  @max_ticket_bytes 4096
+  @max_chat_text_bytes 2048
+  @max_known_chunks 512
+
   # ═══════════════════════════════════════════════════════════
   # Decode: binary → structured tuple
   # ═══════════════════════════════════════════════════════════
@@ -179,7 +191,8 @@ defmodule GateServer.Codec do
   def decode(
         <<@msg_auth_request, request_id::64-big, ulen::16-big, username::binary-size(ulen),
           clen::16-big, code::binary-size(clen)>>
-      ) do
+      )
+      when ulen <= @max_username_bytes and clen <= @max_auth_code_bytes do
     {:ok, {:auth_request, username, code, request_id}}
   end
 
@@ -193,12 +206,16 @@ defmodule GateServer.Codec do
   # Fast-lane UDP attach request: 1 + 8 + 2 + ticket
   def decode(
         <<@msg_fast_lane_attach, request_id::64-big, tlen::16-big, ticket::binary-size(tlen)>>
-      ) do
+      )
+      when tlen <= @max_ticket_bytes do
     {:ok, {:fast_lane_attach, request_id, ticket}}
   end
 
+  def decode(<<@msg_fast_lane_attach, _rest::binary>>), do: {:error, :invalid_message}
+
   # ChatSay: 1 + 8 + 2 + text
-  def decode(<<@msg_chat_say, request_id::64-big, tlen::16-big, text::binary-size(tlen)>>) do
+  def decode(<<@msg_chat_say, request_id::64-big, tlen::16-big, text::binary-size(tlen)>>)
+      when tlen <= @max_chat_text_bytes do
     {:ok, {:chat_say, text, request_id}}
   end
 
@@ -229,7 +246,8 @@ defmodule GateServer.Codec do
         <<@msg_voxel_chunk_subscribe, request_id::64-big, logical_scene_id::64-big,
           cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, radius_l_inf::8,
           want_snapshot::8, known_count::16-big, rest::binary>>
-      ) do
+      )
+      when known_count <= @max_known_chunks do
     with {:ok, known, <<>>} <- decode_voxel_known_chunks(rest, known_count, []) do
       {:ok,
        {:voxel_chunk_subscribe,

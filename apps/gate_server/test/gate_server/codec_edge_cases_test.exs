@@ -46,6 +46,38 @@ defmodule GateServer.CodecEdgeCasesTest do
       assert {:error, :invalid_message} == Codec.decode(<<0x03>>)
       assert {:error, :invalid_message} == Codec.decode(<<0x05, 1::16-big, "a", 1::16-big, "b">>)
     end
+
+    # DoS 护栏(batch 5):超限可变长字段不匹配主子句 → 落 fallthrough → {:error, :invalid_message}。
+    # 配合 acceptor 的 2MB packet_size 总帧上限,客户端→服务端不可逼爆内存。
+    test "auth_request over the username cap is rejected" do
+      # username 上限 1024 字节;1025 应被拒。
+      over_user = String.duplicate("a", 1025)
+      ulen = byte_size(over_user)
+
+      msg =
+        <<0x05, 123::64-big, ulen::16-big, over_user::binary, 1::16-big, "b">>
+
+      assert {:error, :invalid_message} == Codec.decode(msg)
+    end
+
+    test "chat_say over the text cap is rejected" do
+      # chat text 上限 2048 字节;2049 应被拒。
+      over_text = String.duplicate("x", 2049)
+      tlen = byte_size(over_text)
+
+      msg = <<0x08, 1::64-big, tlen::16-big, over_text::binary>>
+
+      assert {:error, :invalid_message} == Codec.decode(msg)
+    end
+
+    test "voxel_chunk_subscribe over the known-chunks cap is rejected" do
+      # known_count 上限 512;声明 513 应被拒(即便 body 不足也先被 guard 拦下)。
+      msg =
+        <<0x60, 1::64-big, 1::64-big, 0::32-big-signed, 0::32-big-signed, 0::32-big-signed, 1::8,
+          1::8, 513::16-big>>
+
+      assert {:error, :invalid_message} == Codec.decode(msg)
+    end
   end
 
   describe "encode edge cases" do
