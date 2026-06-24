@@ -411,16 +411,33 @@ fn setup(
         Transform::from_xyz(1.0, 0.6, 0.3).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
+    // The atmosphere "planet". Bevy 0.19 moved `Atmosphere` OFF the camera onto a
+    // world entity whose `GlobalTransform` IS the planet center (bevy_light
+    // atmosphere.rs: "The entity's GlobalTransform is the planet center in world
+    // space"). The sky shader derives the camera altitude as
+    // `length(world_to_atmosphere · camera_world_pos)` and the local up as
+    // `normalize(...)` of that — so if `Atmosphere` sits on the camera (the
+    // pre-0.19 idiom), the camera maps to the atmosphere origin → r≈0 →
+    // `normalize(0)` degenerate up → the sky renders BLACK toward the zenith and
+    // a flat tan band near the horizon (exactly the "left half goes black when I
+    // pitch up" artifact). Placing the planet center at -inner_radius on Y puts
+    // the world ground plane (Y=0) at the planet surface, so a camera at world
+    // height h renders as altitude h.
+    const EARTH_INNER_RADIUS: f32 = 6_360_000.0;
+    commands.spawn((
+        Atmosphere::earth(scattering_mediums.add(ScatteringMedium::default())),
+        Transform::from_xyz(0.0, -EARTH_INNER_RADIUS, 0.0),
+    ));
+
     // Camera with procedural atmospheric scattering (Hillaire 2020). HDR is
-    // auto-required by `Atmosphere`; tonemapping + exposure are needed to
-    // bring `lux::RAW_SUNLIGHT` (~120k lx) back into a viewable range.
+    // auto-required by atmosphere rendering; tonemapping + exposure bring
+    // `lux::RAW_SUNLIGHT` (~120k lx) back into a viewable range.
     // `AtmosphereEnvironmentMapLight` lets the sky drive ambient IBL so
     // shadowed surfaces aren't pitch black without the old PointLight.
     commands.spawn((
         Camera3d::default(),
         MainCamera,
         camera_transform_from_orbit(&OrbitCameraState::default()),
-        Atmosphere::earth(scattering_mediums.add(ScatteringMedium::default())),
         AtmosphereSettings::default(),
         AtmosphereEnvironmentMapLight::default(),
         Exposure { ev100: 13.0 },
