@@ -48,7 +48,18 @@ impl Default for VoxelSubscribeRetry {
     }
 }
 
-const MAX_SUBSCRIBE_RETRIES: u32 = 5;
+// A freshly-booted server's scene/region/chunk-cold-load path is not ready the
+// instant the client joins — empirically it can take tens of seconds before a
+// subscribe streams any chunks (region lease settling, ChunkProcess cold load
+// from PostgreSQL, beacon registration). The old 5×1s budget gave up inside that
+// window, and a stationary / chunk-interior player has NO other recovery
+// (boundary-cross + resync can't bootstrap from zero chunks), so the world
+// stayed permanently empty. Keep retrying with a gentle backoff across a
+// generous window (~90s) so the subscribe survives any realistic cold-start
+// warm-up; the per-chunk-arrival reset below means a genuinely empty location
+// still settles quickly without spamming forever.
+const MAX_SUBSCRIBE_RETRIES: u32 = 40;
+const SUBSCRIBE_RETRY_MAX_INTERVAL_SECS: f32 = 3.0;
 
 fn voxel_subscribe_retry(
     time: Res<Time>,
@@ -67,9 +78,13 @@ fn voxel_subscribe_retry(
     if !world_state.scene_joined {
         return;
     }
-    // Terrain arrived → reset so a future genuine zero-state could retry again.
+    // Terrain arrived → reset (interval + attempts) so a future genuine
+    // zero-state (e.g. a fresh region after migration) can retry from scratch.
     if voxel_authority.store.chunk_count() > 0 {
         retry.attempts = 0;
+        retry
+            .timer
+            .set_duration(std::time::Duration::from_secs_f32(1.0));
         return;
     }
     if retry.attempts >= MAX_SUBSCRIBE_RETRIES {
@@ -84,6 +99,13 @@ fn voxel_subscribe_retry(
         ),
     );
     subscribe_voxel_around(&bridge, &mut world_state, &mut voxel_authority, center);
+    // Gentle backoff: ramp the interval from 1s toward a 3s cap so 40 attempts
+    // span ~90s of warm-up tolerance instead of hammering once per second.
+    let next_interval =
+        (1.0 + retry.attempts as f32 * 0.08).min(SUBSCRIBE_RETRY_MAX_INTERVAL_SECS);
+    retry
+        .timer
+        .set_duration(std::time::Duration::from_secs_f32(next_interval));
     if retry.attempts == MAX_SUBSCRIBE_RETRIES {
         push_line(
             &mut world_state.logs,
