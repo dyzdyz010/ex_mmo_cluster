@@ -417,3 +417,18 @@
 3. **lease 生命周期(评审 F4)→ 阶段2**:真正的续约 + region GC,替掉 24h TTL 创可贴。
 
 **重定标后的阶段顺序**:阶段2 durable 目录(resolver 接口 + 事务边界 + lease 生命周期)→ **阶段2-bis Gate route 缓存 + 非阻塞物化** → 阶段3 服务端可达性校验 → 阶段4 catalog 驱动客户端 → 阶段5 非阻塞流 + 客户端加载优化 → 阶段6-7 一致性/迁移 → **阶段7-bis 服务端启动优化** → 阶段8 HA。
+
+### ✅ 阶段 2(部分)— durable region 目录 + lease 生命周期(scale-first 执行层)
+- step2.1/2.2(commit `38a8141`):`voxel_region_directory` **每 region 一行**表(主键 region_id,
+  编码 logical_scene_id,logical_scene 建索引可分片)+ `RegionDirectoryStore`(纯 map API,
+  `*_in_repo` 变体供同事务)。取代 MapLedgerStore 单行 blob(O(N))→ O(1) per change。
+- step2.3/2.4(commit `93023c7`):`WorldServer.Voxel.RegionDirectory` 适配器(行↔结构);MapLedger
+  物化/迁移把"写令牌 + 目录行"走**同一 Repo.transaction**(评审 F3,split-brain 窗口消除),
+  boot 从目录重建 assignments/leases(**重启自愈**);world_sup 接 RegionDirectoryStore;
+  WriteTokenStore 增 `upsert_token_in_repo`。
+- step2.5(commit `ae9ddd9`):lease **生命周期**(评审 F4)——route 命中过期/将过期 lease 即
+  **原地续约**(原子 re-issue,对编辑透明);后台 **region GC** 回收废弃(长期过期未续约)region,
+  防目录无界增长。退掉 24h TTL 创可贴(默认 TTL 2h,全可注入)。
+- **剩余**:step2.6 resolver 接口(并入阶段2-bis Gate 路由边界)、阶段2-bis Gate route 缓存 +
+  非阻塞物化(评审 F5,把控制面单进程移出每帧热路径)。
+- 测试:region_directory_store 7/0、world/voxel 全目录 160/0、write_token 11/0、state_class 11/0。
