@@ -12,7 +12,7 @@ use crate::app::{
 };
 use crate::hud::GameLogs;
 use crate::login::AppState;
-use crate::net::{NetworkBridge, NetworkCommand};
+use crate::net::{NetTelemetry, NetworkBridge, NetworkCommand};
 use crate::session::ConnectionState;
 use crate::skill::{TargetSelection, prepare_skill_dispatch};
 use crate::voxel::mesher::greedy_mesh_chunk;
@@ -49,6 +49,7 @@ struct StdioCommandParams<'w> {
     connection: ResMut<'w, ConnectionState>,
     target: ResMut<'w, TargetSelection>,
     logs: ResMut<'w, GameLogs>,
+    telemetry: Res<'w, NetTelemetry>,
     movement_intent: ResMut<'w, MovementIntent>,
     app_exit: MessageWriter<'w, AppExit>,
 }
@@ -74,6 +75,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         mut connection,
         mut target,
         mut logs,
+        telemetry,
         mut movement_intent,
         mut app_exit,
     } = params;
@@ -100,8 +102,8 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     local_hp: world_state.local_hp,
                     local_max_hp: world_state.local_max_hp,
                     local_alive: world_state.local_alive,
-                    movement_transport: world_state.movement_transport.label(),
-                    fast_lane_status: &world_state.fast_lane_status,
+                    movement_transport: telemetry.movement_transport.label(),
+                    fast_lane_status: &telemetry.fast_lane_status,
                     remote_player_count: world_state
                         .remote_actor_identity
                         .values()
@@ -143,13 +145,13 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     &[
                         (
                             "control_transport",
-                            world_state.control_transport.label().to_string(),
+                            telemetry.control_transport.label().to_string(),
                         ),
                         (
                             "movement_transport",
-                            world_state.movement_transport.label().to_string(),
+                            telemetry.movement_transport.label().to_string(),
                         ),
-                        ("fast_lane_status", world_state.fast_lane_status.clone()),
+                        ("fast_lane_status", telemetry.fast_lane_status.clone()),
                     ],
                 );
             }

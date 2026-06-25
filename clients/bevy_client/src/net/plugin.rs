@@ -17,6 +17,7 @@ use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
 
+use super::NetTelemetry;
 use super::events::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent};
 
 pub struct NetworkPlugin;
@@ -309,6 +310,7 @@ fn poll_network_events(
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut target: ResMut<TargetSelection>,
     mut logs: ResMut<GameLogs>,
+    mut telemetry: ResMut<NetTelemetry>,
     mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
     let receiver = match bridge.rx.lock() {
@@ -352,8 +354,8 @@ fn poll_network_events(
                 world_state.remote_players.clear();
                 world_state.remote_actor_identity.clear();
                 world_state.remote_player_health.clear();
-                world_state.last_local_update_transport = None;
-                world_state.last_remote_move_transport = None;
+                telemetry.last_local_update_transport = None;
+                telemetry.last_remote_move_transport = None;
                 target.cid = None;
                 target.point = None;
                 movement_dispatch.stop_sent = true;
@@ -393,7 +395,7 @@ fn poll_network_events(
                     world_acceleration,
                     movement_mode,
                 );
-                world_state.last_local_update_transport = Some(transport);
+                telemetry.last_local_update_transport = Some(transport);
 
                 // AOI follow (阶段4 step4.5): re-subscribe as the player moves, but
                 // with a hysteresis deadzone (no thrash hovering on a chunk boundary)
@@ -453,7 +455,7 @@ fn poll_network_events(
                             .insert(cid, RemotePlayerState::from_snapshot(snapshot, received_at));
                     }
                 }
-                world_state.last_remote_move_transport = Some(transport);
+                telemetry.last_remote_move_transport = Some(transport);
             }
             NetworkEvent::PlayerLeave { cid } => {
                 world_state.remote_players.remove(&cid);
@@ -611,11 +613,11 @@ fn poll_network_events(
                 ));
             }
             NetworkEvent::TimeSync { rtt_ms, offset_ms } => {
-                world_state.last_rtt_ms = Some(rtt_ms);
-                world_state.last_offset_ms = Some(offset_ms);
+                telemetry.last_rtt_ms = Some(rtt_ms);
+                telemetry.last_offset_ms = Some(offset_ms);
             }
             NetworkEvent::Heartbeat { server_ts } => {
-                world_state.last_heartbeat_ts = Some(server_ts);
+                telemetry.last_heartbeat_ts = Some(server_ts);
             }
             NetworkEvent::TransportState {
                 control_transport,
@@ -623,10 +625,10 @@ fn poll_network_events(
                 fast_lane_status,
                 udp_endpoint,
             } => {
-                world_state.control_transport = control_transport;
-                world_state.movement_transport = movement_transport;
-                world_state.fast_lane_status = fast_lane_status;
-                world_state.udp_endpoint = udp_endpoint;
+                telemetry.control_transport = control_transport;
+                telemetry.movement_transport = movement_transport;
+                telemetry.fast_lane_status = fast_lane_status;
+                telemetry.udp_endpoint = udp_endpoint;
             }
             NetworkEvent::ReconcileStats {
                 total_corrections,
@@ -692,11 +694,11 @@ fn poll_network_events(
                 world_state.remote_players.clear();
                 world_state.remote_actor_identity.clear();
                 world_state.remote_player_health.clear();
-                world_state.movement_transport = MessageTransport::Tcp;
-                world_state.fast_lane_status = "tcp fallback".to_string();
-                world_state.udp_endpoint = None;
-                world_state.last_local_update_transport = None;
-                world_state.last_remote_move_transport = None;
+                telemetry.movement_transport = MessageTransport::Tcp;
+                telemetry.fast_lane_status = "tcp fallback".to_string();
+                telemetry.udp_endpoint = None;
+                telemetry.last_local_update_transport = None;
+                telemetry.last_remote_move_transport = None;
                 target.cid = None;
                 target.point = None;
                 local_render_prediction.clear();

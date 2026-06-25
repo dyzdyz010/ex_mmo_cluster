@@ -17,7 +17,7 @@ use crate::{
     config::ClientConfig,
     hud::HudText,
     login::{AppState, LoginPlugin},
-    net::{MessageTransport, spawn_network_thread},
+    net::spawn_network_thread,
     observe::ClientObserver,
     session::{ConnectionState, SessionCredentials},
     sim::{
@@ -87,15 +87,6 @@ pub(crate) struct WorldState {
     pub local_alive: bool,
     pub remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
     pub remote_player_health: HashMap<i64, (u16, u16, bool)>,
-    pub last_rtt_ms: Option<f64>,
-    pub last_offset_ms: Option<f64>,
-    pub last_heartbeat_ts: Option<u64>,
-    pub control_transport: MessageTransport,
-    pub movement_transport: MessageTransport,
-    pub fast_lane_status: String,
-    pub udp_endpoint: Option<String>,
-    pub last_local_update_transport: Option<MessageTransport>,
-    pub last_remote_move_transport: Option<MessageTransport>,
 }
 
 #[derive(Resource, Default)]
@@ -265,9 +256,6 @@ pub fn run(
             local_hp: 100,
             local_max_hp: 100,
             local_alive: true,
-            control_transport: MessageTransport::Tcp,
-            movement_transport: MessageTransport::Tcp,
-            fast_lane_status: "tcp fallback".to_string(),
             ..default()
         })
         .insert_resource(ConnectionState {
@@ -285,6 +273,7 @@ pub fn run(
         .init_resource::<crate::voxel::VoxelAoiState>()
         .init_resource::<crate::skill::TargetSelection>()
         .init_resource::<crate::hud::GameLogs>()
+        .init_resource::<crate::net::NetTelemetry>()
         .insert_resource(observer)
         .insert_resource(stdio)
         .add_plugins(DefaultPlugins.set(WindowPlugin {

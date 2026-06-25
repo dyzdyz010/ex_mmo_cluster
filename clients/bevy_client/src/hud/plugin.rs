@@ -8,6 +8,7 @@ use crate::app::{WorldState, schedule::ClientSet};
 use crate::session::ConnectionState;
 use crate::chat::{ChatInputText, ChatLogText, ChatState};
 use crate::login::AppState;
+use crate::net::NetTelemetry;
 use crate::skill::TargetSelection;
 use crate::voxel::VoxelWorld;
 
@@ -63,6 +64,7 @@ fn update_hud_text(
     voxel_world: Res<VoxelWorld>,
     target: Res<TargetSelection>,
     logs: Res<GameLogs>,
+    telemetry: Res<NetTelemetry>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
     mut populated_once: Local<bool>,
@@ -86,6 +88,7 @@ fn update_hud_text(
         && !voxel_world.is_changed()
         && !target.is_changed()
         && !logs.is_changed()
+        && !telemetry.is_changed()
         && !selection_state.is_changed()
     {
         return;
@@ -117,11 +120,10 @@ fn update_hud_text(
     texts.hud.0 = format!(
         "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nselected point: {}\nvoxel hotbar: {} ({})\nvoxel selection: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD/Space move | mouse free-look (cursor locked) | Ctrl+wheel zoom | LMB/G break | RMB/F place | wheel/1-7 hotbar | Shift+1-4 skills | Shift+RMB target | Enter chat (releases cursor)",
         connection.status,
-        world_state.control_transport.label(),
-        world_state.movement_transport.label(),
-        world_state.fast_lane_status,
-        world_state
-            .udp_endpoint
+        telemetry.control_transport.label(),
+        telemetry.movement_transport.label(),
+        telemetry.fast_lane_status,
+        telemetry.udp_endpoint
             .clone()
             .unwrap_or_else(|| "n/a".to_string()),
         world_state.remote_players.len(),
@@ -143,24 +145,19 @@ fn update_hud_text(
         world_state.local_hp,
         world_state.local_max_hp,
         world_state.local_alive,
-        world_state
-            .last_local_update_transport
+        telemetry.last_local_update_transport
             .map(|transport| transport.label().to_string())
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state
-            .last_remote_move_transport
+        telemetry.last_remote_move_transport
             .map(|transport| transport.label().to_string())
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state
-            .last_rtt_ms
+        telemetry.last_rtt_ms
             .map(|value| format!("{value:.1} ms"))
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state
-            .last_offset_ms
+        telemetry.last_offset_ms
             .map(|value| format!("{value:.1} ms"))
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state
-            .last_heartbeat_ts
+        telemetry.last_heartbeat_ts
             .map(|value| value.to_string())
             .unwrap_or_else(|| "n/a".to_string()),
     );
