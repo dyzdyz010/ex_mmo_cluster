@@ -1,12 +1,13 @@
 //! `NetworkPlugin` — drains `NetworkEvent`s queued by the background
-//! network thread and projects them into the Bevy world (`WorldState`,
-//! prediction state, effect cues, etc.).
+//! network thread and projects them into the per-domain runtime resources
+//! (`LocalPlayerState`, `RemotePlayers`, `NetTelemetry`, `GameLogs`,
+//! `TargetSelection`, `VoxelAoiState`, …), prediction state, and effect cues.
 
 use bevy::prelude::*;
 
 use crate::app::{
-    LocalRenderPrediction, MovementDispatchState, WorldState, net_to_world, push_line,
-    schedule::ClientSet, sim_to_render_position,
+    LocalRenderPrediction, MovementDispatchState, net_to_world, push_line, schedule::ClientSet,
+    sim_to_render_position,
 };
 use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::hud::GameLogs;
@@ -14,7 +15,7 @@ use crate::login::AppState;
 use crate::session::ConnectionState;
 use crate::skill::TargetSelection;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
-use crate::world::RemotePlayers;
+use crate::world::{LocalPlayerState, RemotePlayers};
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
 
@@ -303,7 +304,7 @@ fn poll_network_events(
     bridge: Res<NetworkBridge>,
     time: Res<Time>,
     stdio: Res<ClientStdioInterface>,
-    mut world_state: ResMut<WorldState>,
+    mut local_player: ResMut<LocalPlayerState>,
     mut connection: ResMut<ConnectionState>,
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
@@ -320,10 +321,10 @@ fn poll_network_events(
         Err(poisoned) => {
             // Audit E-S2: poisoned NetworkBridge mutex means the network
             // thread panicked while holding the lock. Surface it through
-            // WorldState so the operator sees a definitive error in HUD /
-            // stdio instead of silent freeze. Recover the inner receiver to
-            // continue draining events that may have arrived before the
-            // panic.
+            // ConnectionState.status + GameLogs so the operator sees a
+            // definitive error in HUD / stdio instead of silent freeze.
+            // Recover the inner receiver to continue draining events that
+            // may have arrived before the panic.
             let recovered = poisoned.into_inner();
             connection.status =
                 "network bridge mutex poisoned (network thread panicked)".to_string();
@@ -348,10 +349,10 @@ fn poll_network_events(
             NetworkEvent::EnteredScene { cid, location } => {
                 connection.scene_joined = true;
                 connection.status = format!("in scene as cid {cid}");
-                world_state.local_cid = cid;
+                local_player.cid = cid;
                 let world_location = net_to_world(location);
-                world_state.local_position = Some(world_location);
-                world_state.local_velocity = Vec3::ZERO;
+                local_player.position = Some(world_location);
+                local_player.velocity = Vec3::ZERO;
                 local_render_prediction.reset(world_location);
                 remote.players.clear();
                 remote.identity.clear();
@@ -389,8 +390,8 @@ fn poll_network_events(
                 let world_location = net_to_world(location);
                 let world_velocity = net_to_world(velocity);
                 let world_acceleration = net_to_world(acceleration);
-                world_state.local_position = Some(world_location);
-                world_state.local_velocity = world_velocity;
+                local_player.position = Some(world_location);
+                local_player.velocity = world_velocity;
                 local_render_prediction.sync_full_state(
                     world_location,
                     world_velocity,
@@ -418,7 +419,7 @@ fn poll_network_events(
                 }
             }
             NetworkEvent::PlayerEnter { cid, location } => {
-                if cid != world_state.local_cid {
+                if cid != local_player.cid {
                     remote.players.insert(
                         cid,
                         RemotePlayerState::seeded(
@@ -447,7 +448,7 @@ fn poll_network_events(
                 transport,
             } => {
                 let cid = snapshot.cid;
-                if cid != world_state.local_cid {
+                if cid != local_player.cid {
                     let received_at = time.elapsed_secs_f64();
                     if let Some(state) = remote.players.get_mut(&cid) {
                         state.push_snapshot(snapshot, received_at);
@@ -523,10 +524,10 @@ fn poll_network_events(
                 max_hp,
                 alive,
             } => {
-                if cid == world_state.local_cid {
-                    world_state.local_hp = hp;
-                    world_state.local_max_hp = max_hp;
-                    world_state.local_alive = alive;
+                if cid == local_player.cid {
+                    local_player.hp = hp;
+                    local_player.max_hp = max_hp;
+                    local_player.alive = alive;
                 } else {
                     remote.health
                         .insert(cid, (hp, max_hp, alive));
@@ -689,8 +690,8 @@ fn poll_network_events(
             NetworkEvent::Disconnected(reason) => {
                 connection.scene_joined = false;
                 connection.status = format!("disconnected: {reason}");
-                world_state.local_position = None;
-                world_state.local_velocity = Vec3::ZERO;
+                local_player.position = None;
+                local_player.velocity = Vec3::ZERO;
                 remote.players.clear();
                 remote.identity.clear();
                 remote.health.clear();

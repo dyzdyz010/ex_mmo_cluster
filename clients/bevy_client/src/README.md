@@ -9,16 +9,19 @@ the 12 domain plugins listed below in canonical
 `Network → Stdio → Input → Logic → Sync → Render` order
 (see `app/schedule.rs::ClientSet`). Each plugin owns its resources,
 components, events, and systems; cross-plugin communication is by
-`Res<…>` reads on shared resources (`WorldState`, prediction state) or
-events. No plugin is allowed to mutate another plugin's domain state
-directly.
+`Res<…>` reads on per-domain runtime resources (`world::LocalPlayerState`,
+`world::RemotePlayers`, `net::NetTelemetry`, `hud::GameLogs`,
+`skill::TargetSelection`, `voxel::VoxelAoiState`, `session::ConnectionState`,
+prediction state) or events. No plugin is allowed to mutate another plugin's
+domain state directly. (The former `WorldState` god-resource was decomposed
+into those domain resources in 架构重整阶段 1–2.)
 
 ## Plugins
 
 | Plugin | Module | Owns |
 | --- | --- | --- |
 | `LoginPlugin` | `login.rs` | egui login UI + `AppState` machine |
-| `NetworkPlugin` | `net/plugin.rs` | drain `NetworkEvent`s into `WorldState` / prediction / effect cues |
+| `NetworkPlugin` | `net/plugin.rs` | drain `NetworkEvent`s into the domain resources (`LocalPlayerState` / `RemotePlayers` / `NetTelemetry` / `GameLogs` / …) / prediction / effect cues |
 | `StdioPlugin` | `stdio/plugin.rs` | drain queued stdio commands and route to network/voxel/movement |
 | `InputPlugin` *(stub)* | `app/plugins.rs` | reserved for shared input scaffolding (most input lives in domain plugins) |
 | `CameraPlugin` | `camera/plugin.rs` | orbit camera follow, mouse drag, `Ctrl+wheel` zoom |
@@ -58,9 +61,12 @@ directly.
 
 `app/mod.rs` keeps:
 
-- The four shared resources `WorldState`, `MovementIntent`,
+- The cross-plugin shared resources `MovementIntent`,
   `MovementDispatchState`, `LocalRenderPrediction` (read by multiple
-  Plugins).
+  Plugins). Per-domain runtime state lives in its owning module:
+  `world::{LocalPlayerState, RemotePlayers}`, `net::NetTelemetry`,
+  `hud::GameLogs`, `skill::TargetSelection`, `voxel::VoxelAoiState`,
+  `session::ConnectionState`.
 - The `SceneRenderAssets` resource and the `setup` system that creates the
   scene (camera, HUD text nodes, target-point marker, lights, mesh +
   material handles) — Plugins consume the assets but do not own

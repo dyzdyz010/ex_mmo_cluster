@@ -7,8 +7,9 @@ use bevy::prelude::*;
 
 use crate::app::{
     FINAL_STOP_SYNC_SPEED_EPSILON, LocalRenderPrediction, MovementDispatchState, MovementIntent,
-    VISUAL_CORRECTION_EPSILON_SQ, WorldState, schedule::ClientSet,
+    VISUAL_CORRECTION_EPSILON_SQ, schedule::ClientSet,
 };
+use crate::world::LocalPlayerState;
 use crate::camera::{OrbitCameraState, orbit::input_to_world_direction};
 use crate::chat::ChatState;
 use crate::config::ClientConfig;
@@ -72,7 +73,7 @@ struct MovementSendParams<'w> {
     bridge: Res<'w, NetworkBridge>,
     config: Res<'w, ClientConfig>,
     observer: Res<'w, ClientObserver>,
-    world_state: Res<'w, WorldState>,
+    local_player: Res<'w, LocalPlayerState>,
     connection: Res<'w, ConnectionState>,
     movement_intent: ResMut<'w, MovementIntent>,
     movement_dispatch: ResMut<'w, MovementDispatchState>,
@@ -155,7 +156,7 @@ fn movement_sender(params: MovementSendParams) {
         bridge,
         config,
         observer,
-        world_state,
+        local_player,
         connection,
         mut movement_intent,
         mut movement_dispatch,
@@ -176,7 +177,7 @@ fn movement_sender(params: MovementSendParams) {
 
     let should_send_stop_sync_now = should_send_stop_sync(
         direction,
-        world_state.local_velocity,
+        local_player.velocity,
         movement_dispatch.stop_sent,
     );
 
@@ -207,8 +208,7 @@ fn movement_sender(params: MovementSendParams) {
             ),
             (
                 "local_position",
-                world_state
-                    .local_position
+                local_player.position
                     .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
                     .unwrap_or_else(|| "n/a".to_string()),
             ),
@@ -216,9 +216,9 @@ fn movement_sender(params: MovementSendParams) {
                 "local_velocity",
                 format!(
                     "{:.1},{:.1},{:.1}",
-                    world_state.local_velocity.x,
-                    world_state.local_velocity.y,
-                    world_state.local_velocity.z
+                    local_player.velocity.x,
+                    local_player.velocity.y,
+                    local_player.velocity.z
                 ),
             ),
         ],
@@ -226,7 +226,7 @@ fn movement_sender(params: MovementSendParams) {
 
     movement_intent.jump_requested = false;
     movement_dispatch.stop_sent = direction.length_squared() == 0.0
-        && world_state.local_velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
+        && local_player.velocity.length() <= FINAL_STOP_SYNC_SPEED_EPSILON;
 }
 
 fn advance_local_render_prediction(

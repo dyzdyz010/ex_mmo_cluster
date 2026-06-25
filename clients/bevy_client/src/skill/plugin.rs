@@ -4,7 +4,8 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::app::{WorldState, push_line, render_to_sim_position};
+use crate::app::{push_line, render_to_sim_position};
+use crate::world::LocalPlayerState;
 use crate::session::ConnectionState;
 use crate::camera::MainCamera;
 use crate::chat::ChatState;
@@ -122,7 +123,7 @@ fn handle_point_target_input(
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     voxel_world: Res<crate::voxel::VoxelWorld>,
     authority: Res<crate::voxel::authority_plugin::VoxelAuthority>,
-    world_state: Res<WorldState>,
+    local_player: Res<LocalPlayerState>,
     connection: Res<ConnectionState>,
     mut target: ResMut<TargetSelection>,
     observer: Res<ClientObserver>,
@@ -163,7 +164,7 @@ fn handle_point_target_input(
         // No terrain under the cursor (aiming past the world): fall back to a
         // horizontal plane at the local player's grounded render height (their
         // feet plane), so the point still lands near the visible surface.
-        let player_y = world_state.local_position.map(|p| {
+        let player_y = local_player.position.map(|p| {
             let r = crate::app::sim_to_render_position(p);
             crate::voxel::plugin::surface_center_y_at_render_xz(
                 &voxel_world,

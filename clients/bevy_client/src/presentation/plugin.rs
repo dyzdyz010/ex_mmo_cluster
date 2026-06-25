@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use crate::app::{
     LocalRenderPrediction, SceneRenderAssets, VISUAL_SMOOTHING_SPEED, VISUAL_SNAP_DISTANCE,
-    WorldState, schedule::ClientSet,
+    schedule::ClientSet,
 };
 use crate::config::ClientConfig;
 use crate::session::ConnectionState;
@@ -22,7 +22,7 @@ use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
 use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::plugin::surface_center_y_at_render_xz;
-use crate::world::RemotePlayers;
+use crate::world::{LocalPlayerState, RemotePlayers};
 use crate::world::remote_actor::RemoteActorKind;
 use crate::world::remote_player::{RemoteMotionSample, RemoteSamplePath};
 
@@ -56,7 +56,7 @@ impl Plugin for PresentationPlugin {
 #[derive(SystemParam)]
 struct PlayerVisualParams<'w, 's> {
     time: Res<'w, Time>,
-    world_state: Res<'w, WorldState>,
+    local_player: Res<'w, LocalPlayerState>,
     remote: Res<'w, RemotePlayers>,
     connection: Res<'w, ConnectionState>,
     target: Res<'w, crate::skill::TargetSelection>,
@@ -90,7 +90,7 @@ fn sync_player_visuals(
     // case where Bevy could render both visuals for one frame.
     mut previous_local_cid: Local<Option<i64>>,
 ) {
-    let current_local_cid = params.world_state.local_cid;
+    let current_local_cid = params.local_player.cid;
     let mut entities_by_cid = HashMap::new();
     for (entity, visual, _transform, _material) in &params.existing {
         entities_by_cid.insert(visual.cid, entity);
@@ -142,16 +142,14 @@ fn sync_player_visuals(
             velocity: state.velocity,
         })
         .or_else(|| {
-            params
-                .world_state
-                .local_position
+            params.local_player.position
                 .map(|local| RemoteMotionSample {
                     position: local,
-                    velocity: params.world_state.local_velocity,
+                    velocity: params.local_player.velocity,
                 })
         })
     {
-        desired.insert(params.world_state.local_cid, local);
+        desired.insert(params.local_player.cid, local);
     }
 
     let delta_secs = params.time.delta_secs();
@@ -161,7 +159,7 @@ fn sync_player_visuals(
             .map(|identity| identity.kind)
             .unwrap_or(RemoteActorKind::Player);
         let selected = params.target.cid == Some(cid);
-        let local = cid == params.world_state.local_cid;
+        let local = cid == params.local_player.cid;
 
         if let Some(entity) = entities_by_cid.remove(&cid) {
             if let Ok((_entity, visual, mut transform, mut existing_material)) =
@@ -306,7 +304,7 @@ fn sync_player_visuals(
     }
 
     for (cid, entity) in entities_by_cid {
-        if cid != params.world_state.local_cid {
+        if cid != params.local_player.cid {
             commands.entity(entity).despawn();
         }
     }

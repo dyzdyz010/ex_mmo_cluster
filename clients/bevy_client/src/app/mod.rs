@@ -72,16 +72,6 @@ pub(crate) struct SceneRenderAssets {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct WorldState {
-    pub local_cid: i64,
-    pub local_position: Option<Vec3>,
-    pub local_velocity: Vec3,
-    pub local_hp: u16,
-    pub local_max_hp: u16,
-    pub local_alive: bool,
-}
-
-#[derive(Resource, Default)]
 pub(crate) struct MovementIntent {
     pub direction: Vec2,
     pub expires_at: f64,
@@ -242,14 +232,10 @@ pub fn run(
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
         .insert_resource(config.clone())
-        .insert_resource(WorldState {
-            local_position: Some(Vec3::ZERO),
-            local_velocity: Vec3::ZERO,
-            local_hp: 100,
-            local_max_hp: 100,
-            local_alive: true,
-            ..default()
-        })
+        // LocalPlayerState::default() seeds local_position=ZERO / hp=100 / alive=true
+        // exactly as the old WorldState construction did; NetworkPlugin overwrites it
+        // with server-authoritative state on scene entry.
+        .init_resource::<crate::world::LocalPlayerState>()
         .insert_resource(ConnectionState {
             status: if starts_in_game {
                 "starting client".to_string()
@@ -301,14 +287,14 @@ fn enter_game_setup(
     config: Res<ClientConfig>,
     creds: Res<SessionCredentials>,
     observer: Res<ClientObserver>,
-    mut world_state: ResMut<WorldState>,
+    mut local_player: ResMut<crate::world::LocalPlayerState>,
     mut connection: ResMut<ConnectionState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let bridge = spawn_network_thread(config.clone(), creds.clone(), observer.clone());
     commands.insert_resource(bridge);
 
-    world_state.local_cid = creds.cid;
+    local_player.cid = creds.cid;
     connection.status = "starting client".to_string();
 
     if let Ok(mut window) = windows.single_mut() {

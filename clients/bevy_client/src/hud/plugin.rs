@@ -1,17 +1,19 @@
 //! `HudPlugin` — owns the HUD text component and the system that
-//! re-renders it each frame from `WorldState` / `ChatState` / voxel state.
+//! re-renders it each frame from the per-domain runtime resources
+//! (`LocalPlayerState` / `RemotePlayers` / `NetTelemetry` / `GameLogs` /
+//! `ConnectionState` / `ChatState` / voxel state).
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::app::{WorldState, schedule::ClientSet};
+use crate::app::schedule::ClientSet;
 use crate::session::ConnectionState;
 use crate::chat::{ChatInputText, ChatLogText, ChatState};
 use crate::login::AppState;
 use crate::net::NetTelemetry;
 use crate::skill::TargetSelection;
 use crate::voxel::VoxelWorld;
-use crate::world::RemotePlayers;
+use crate::world::{LocalPlayerState, RemotePlayers};
 
 use super::GameLogs;
 
@@ -59,7 +61,7 @@ struct HudTextParams<'w, 's> {
 }
 
 fn update_hud_text(
-    world_state: Res<WorldState>,
+    local_player: Res<LocalPlayerState>,
     connection: Res<ConnectionState>,
     chat_state: Res<ChatState>,
     voxel_world: Res<VoxelWorld>,
@@ -84,7 +86,7 @@ fn update_hud_text(
     // `populated_once` flag so the first run always writes a full snapshot
     // even if no resource was mutated this exact frame.
     if *populated_once
-        && !world_state.is_changed()
+        && !local_player.is_changed()
         && !connection.is_changed()
         && !chat_state.is_changed()
         && !voxel_world.is_changed()
@@ -139,14 +141,13 @@ fn update_hud_text(
         voxel_world.hotbar().selected.label,
         voxel_world.hotbar().selected_index + 1,
         voxel_selection,
-        world_state.local_cid,
-        world_state
-            .local_position
+        local_player.cid,
+        local_player.position
             .map(|pos| format!("{:.1}, {:.1}, {:.1}", pos.x, pos.y, pos.z))
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state.local_hp,
-        world_state.local_max_hp,
-        world_state.local_alive,
+        local_player.hp,
+        local_player.max_hp,
+        local_player.alive,
         telemetry.last_local_update_transport
             .map(|transport| transport.label().to_string())
             .unwrap_or_else(|| "n/a".to_string()),

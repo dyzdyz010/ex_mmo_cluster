@@ -13,7 +13,8 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
 
-use crate::app::{LocalRenderPrediction, WorldState, schedule::ClientSet};
+use crate::app::{LocalRenderPrediction, schedule::ClientSet};
+use crate::world::LocalPlayerState;
 use crate::chat::ChatState;
 use crate::login::AppState;
 use crate::session::ConnectionState;
@@ -146,7 +147,7 @@ struct OrbitCameraParams<'w, 's> {
     motion_reader: MessageReader<'w, 's, MouseMotion>,
     wheel_reader: MessageReader<'w, 's, MouseWheel>,
     connection: Res<'w, ConnectionState>,
-    world_state: Res<'w, WorldState>,
+    local_player: Res<'w, LocalPlayerState>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: Res<'w, VoxelWorld>,
     authority: Res<'w, VoxelAuthority>,
@@ -225,7 +226,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
             )
         })
         .or_else(|| {
-            params.world_state.local_position.map(|position| {
+            params.local_player.position.map(|position| {
                 actor_render_position(
                     &params.voxel_world,
                     &params.authority,

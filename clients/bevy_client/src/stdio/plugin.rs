@@ -7,8 +7,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::app::{
-    LocalRenderPrediction, MovementIntent, WorldState, push_line, schedule::ClientSet,
-    voxel_save_dir,
+    LocalRenderPrediction, MovementIntent, push_line, schedule::ClientSet, voxel_save_dir,
 };
 use crate::hud::GameLogs;
 use crate::login::AppState;
@@ -17,7 +16,7 @@ use crate::session::ConnectionState;
 use crate::skill::{TargetSelection, prepare_skill_dispatch};
 use crate::voxel::mesher::greedy_mesh_chunk;
 use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
-use crate::world::RemotePlayers;
+use crate::world::{LocalPlayerState, RemotePlayers};
 use crate::world::remote_actor::RemoteActorKind;
 
 use super::{
@@ -46,7 +45,7 @@ struct StdioCommandParams<'w> {
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: ResMut<'w, VoxelWorld>,
     voxel_authority: Res<'w, VoxelAuthority>,
-    world_state: ResMut<'w, WorldState>,
+    local_player: Res<'w, LocalPlayerState>,
     remote: Res<'w, RemotePlayers>,
     connection: ResMut<'w, ConnectionState>,
     target: ResMut<'w, TargetSelection>,
@@ -73,7 +72,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         local_render_prediction,
         mut voxel_world,
         voxel_authority,
-        world_state,
+        local_player,
         remote,
         mut connection,
         mut target,
@@ -100,11 +99,11 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 let mut fields = snapshot_fields(SnapshotFields {
                     status: &connection.status,
                     scene_joined: connection.scene_joined,
-                    local_cid: world_state.local_cid,
-                    local_position: world_state.local_position,
-                    local_hp: world_state.local_hp,
-                    local_max_hp: world_state.local_max_hp,
-                    local_alive: world_state.local_alive,
+                    local_cid: local_player.cid,
+                    local_position: local_player.position,
+                    local_hp: local_player.hp,
+                    local_max_hp: local_player.max_hp,
+                    local_alive: local_player.alive,
                     movement_transport: telemetry.movement_transport.label(),
                     fast_lane_status: &telemetry.fast_lane_status,
                     remote_player_count: remote.identity
@@ -133,8 +132,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     "position",
                     &[(
                         "local_position",
-                        world_state
-                            .local_position
+                        local_player.position
                             .map(|value| format!("{:.1},{:.1},{:.1}", value.x, value.y, value.z))
                             .unwrap_or_else(|| "n/a".to_string()),
                     )],
@@ -457,7 +455,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             ClientStdioCommand::VoxelFollow {
                 logical_scene_id,
                 radius,
-            } => match world_state.local_position {
+            } => match local_player.position {
                 Some(pos) => {
                     let center = crate::net::plugin::voxel_chunk_of([
                         pos.x as f64,
