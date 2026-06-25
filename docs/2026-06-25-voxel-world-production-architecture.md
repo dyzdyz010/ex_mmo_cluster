@@ -445,3 +445,20 @@
   ~4.8s 队列/重复加载(`already_seeded?` 读 + ChunkProcess 冷启再读同一 ~100KB 快照 + 连接池争用 +
   seed 期间 24 个 ChunkProcess 每 100ms tick)。属**阶段7-bis** 调优:批量/单次 persist、避免双读、
   池/并发整治、seed 期间暂停 tick。是一次性 ops 开销,不进每客户端加载。
+
+### ✅ 阶段 2-bis(部分)— Gate 边缘 route 缓存(评审 F5)
+- `GateServer.Voxel.RouteCache`(纯数据结构,commit aaef48d/8674676):chunk 落在已路由 region 且
+  lease 新鲜 → 本地命中,只在进入新 region / lease 临近过期时打控制面 MapLedger;tcp + ws 两侧
+  subscribe 接入;ChunkInvalidate 清缓存。把"每玩家逐 chunk 流量挤进单 GenServer"降为"每 region 一次"。
+- **回归修复**:阶段2 lease 续约窗口 15min > gate 测试的 60s 租约 → 误续约 → ws_voxel 16 失败(漏跑
+  ws 测发现)。续约窗口 15min→30s(短于现实租约,reactive on-expiry 兜底返回新鲜租约不丢编辑);
+  Gate 缓存窗口对齐 30s。
+- **2-bis 剩余(降级 backlog)**:非阻塞物化(MapLedger 内 2 次同步 DB)——route 缓存已把控制面负载从
+  "每 chunk"降到"每 region 首访 + 续约",物化已罕见,非阻塞化收益变小,留作后续。resolver 分片接口
+  ——region_id 已编码 logical_scene_id + 现有 fetch_world_node 即分片点,按 logical_scene 分片是改
+  fetch_world_node 本体而非重构,接缝已在,无需独立模块。
+
+### 本轮验证总览(2026-06-25)
+world/voxel 160/0、data/voxel 90/0、gate codec 88/0、ws_voxel 36/0、route_cache 7/0、map_ledger 29/0、
+cross-region 全绿、scene/voxel 1130/0(2 个 --no-start harness 失败为预存,baseline 同样失败,其一带 app
+启动即过)、bevy lib 355/0。
