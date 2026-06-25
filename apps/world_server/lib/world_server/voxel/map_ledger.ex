@@ -1248,8 +1248,21 @@ defmodule WorldServer.Voxel.MapLedger do
   end
 
   defp ensure_region_in_state(state, logical_scene_id, chunk_coord) do
-    located = RegionGrid.locate(state.region_grid, logical_scene_id, chunk_coord)
+    case safe_locate(state.region_grid, logical_scene_id, chunk_coord) do
+      {:ok, located} -> materialize_located_region(state, logical_scene_id, located)
+      :error -> {:error, :region_unencodable, state}
+    end
+  end
 
+  # RegionGrid.locate/3 raises past the encodable world edge / scene-id budget;
+  # treat that as a clean materialization error rather than crashing the ledger.
+  defp safe_locate(grid, logical_scene_id, chunk_coord) do
+    {:ok, RegionGrid.locate(grid, logical_scene_id, chunk_coord)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp materialize_located_region(state, logical_scene_id, located) do
     attrs = %{
       logical_scene_id: logical_scene_id,
       region_id: located.region_id,

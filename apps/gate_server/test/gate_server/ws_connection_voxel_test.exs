@@ -217,7 +217,11 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "chunk subscribe returns world route failure reason before scene snapshot" do
+  test "chunk subscribe surfaces scene-node-unassigned when World cannot place the region" do
+    # 阶段1:route miss 不再返回 :unassigned_chunk(世界无界,World 会在隐式 grid 上懒物化
+    # region)。但物化需要一个已注册的 Scene 节点来承载热执行;这里 MapLedger 未配
+    # scene_node_registry,所以物化无处可放,客户端得到明确的 :scene_node_unassigned,
+    # 而非旧的"越界"拒绝。
     ensure_map_ledger_started()
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
@@ -229,7 +233,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_voxel_intent_result(
       request_id: 10,
       logical_scene_id: 98_765,
-      reason: ":unassigned_chunk"
+      reason: ":scene_node_unassigned"
     )
   end
 

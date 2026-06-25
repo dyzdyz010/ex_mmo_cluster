@@ -48,9 +48,9 @@ defmodule WorldServer.Voxel.RegionGridTest do
       cases = [
         {1, {0, 0, 0}},
         {1, {-1, -1, -1}},
-        {7, {131_071, 1_023, -131_072}},
-        {65_535, {-131_072, -1_024, 131_071}},
-        {42, {12_345, -7, -6_789}}
+        {7, {32_767, 63, -32_768}},
+        {16_777_215, {-32_768, -64, 32_767}},
+        {987_650, {12_345, -7, -6_789}}
       ]
 
       for {ls, index} <- cases do
@@ -71,15 +71,16 @@ defmodule WorldServer.Voxel.RegionGridTest do
 
     test "region_id stays within signed bigint at the encoding extremes" do
       max_bigint = (1 <<< 63) - 1
-      rid = RegionGrid.region_id(65_535, {131_071, 1_023, 131_071})
+      rid = RegionGrid.region_id(16_777_215, {32_767, 63, 32_767})
+      assert rid >= 0
       assert rid <= max_bigint
     end
 
     test "raises rather than aliasing when a field exceeds its bit budget" do
-      assert_raise ArgumentError, fn -> RegionGrid.region_id(65_536, {0, 0, 0}) end
-      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {131_072, 0, 0}) end
-      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {0, 1_024, 0}) end
-      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {-131_073, 0, 0}) end
+      assert_raise ArgumentError, fn -> RegionGrid.region_id(16_777_216, {0, 0, 0}) end
+      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {32_768, 0, 0}) end
+      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {0, 64, 0}) end
+      assert_raise ArgumentError, fn -> RegionGrid.region_id(1, {-32_769, 0, 0}) end
     end
   end
 

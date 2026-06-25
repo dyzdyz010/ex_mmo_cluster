@@ -22,17 +22,19 @@ defmodule WorldServer.Voxel.RegionGrid do
   packs `logical_scene_id` into its high bits — the same spirit as the legacy
   `logical_scene_id * 1_000_000 + n` convention, now a fixed bit layout:
 
-      bit  62..47 (16 bits)  logical_scene_id        0..65_535
-      bit  46..29 (18 bits)  zigzag(region_index_x)  rx ∈ [-131_072, 131_071]
-      bit  28..11 (18 bits)  zigzag(region_index_z)  rz ∈ [-131_072, 131_071]
-      bit  10..0  (11 bits)  zigzag(region_index_y)  ry ∈ [-1_024, 1_023]
+      bit  62..39 (24 bits)  logical_scene_id        0..16_777_215
+      bit  38..23 (16 bits)  zigzag(region_index_x)  rx ∈ [-32_768, 32_767]
+      bit  22..7  (16 bits)  zigzag(region_index_z)  rz ∈ [-32_768, 32_767]
+      bit   6..0  (7 bits)   zigzag(region_index_y)  ry ∈ [-64, 63]
 
-  Total 63 bits → fits a signed Postgres `bigint`. The horizontal reach (±131_072
-  regions × 8 chunks × 16 macros ≈ ±16.7M macro cells) is effectively unbounded
-  for gameplay; coordinates past the edge raise rather than silently aliasing a
-  far region. The encoding is a pure bijection over its domain, so `region_id`
-  round-trips back to `{logical_scene_id, region_index}` for debug / inverse
-  lookup.
+  Total 63 bits → fits a signed Postgres `bigint`. The horizontal reach (±32_768
+  regions × 8 chunks × 16 macros ≈ ±4.2M macro cells) is effectively unbounded for
+  gameplay, and the vertical reach (±64 regions × 64 chunks × 16 ≈ ±65k macros) is
+  far beyond any world height; up to ~16.7M logical scenes are addressable.
+  Coordinates / scene ids past the edge **raise** rather than silently aliasing a
+  far region onto a near one. The encoding is a pure bijection over its domain, so
+  `region_id` round-trips back to `{logical_scene_id, region_index}` for debug /
+  inverse lookup.
 
   ## D-2 seam
 
@@ -55,10 +57,10 @@ defmodule WorldServer.Voxel.RegionGrid do
 
   # Bit budgets (see @moduledoc layout). Kept here as the single source of truth
   # for both pack and unpack.
-  @ls_bits 16
-  @x_bits 18
-  @z_bits 18
-  @y_bits 11
+  @ls_bits 24
+  @x_bits 16
+  @z_bits 16
+  @y_bits 7
 
   @y_shift 0
   @z_shift @y_bits

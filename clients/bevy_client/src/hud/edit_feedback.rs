@@ -84,7 +84,9 @@ fn localize_reason(reason: &str) -> String {
         "occupied" => "✗ 目标位置已被占用".to_string(),
         "stale_chunk_version" | "stale_cell_hash" => "✗ 数据已过期，请重试".to_string(),
         "rate_limited" => "✗ 操作过于频繁，请稍候".to_string(),
-        "no_owner" | "no_scene_owner" => "✗ 该区域暂无服务节点接管".to_string(),
+        "no_owner" | "no_scene_owner" | "scene_node_unassigned" => {
+            "✗ 该区域暂无服务节点接管".to_string()
+        }
         other => format!("✗ 编辑被拒：{other}"),
     }
 }

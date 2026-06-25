@@ -1056,11 +1056,13 @@ defmodule GateServer.WsConnection do
     end
   end
 
+  # 阶段1:用 *_ensuring 路由——route miss 时 World 在隐式 grid 上懒物化 region 后返回,
+  # 而非 :unassigned_chunk 拒绝(世界无界)。见 tcp_connection 同名函数说明。
   defp route_voxel_chunk(logical_scene_id, chunk_coord) do
     with {:ok, world_node} <- fetch_world_node() do
       case safe_call(
              {WorldServer.Voxel.MapLedger, world_node},
-             {:route_chunk_with_lease, logical_scene_id, chunk_coord},
+             {:route_chunk_with_lease_ensuring, logical_scene_id, chunk_coord},
              @scene_call_timeout
            ) do
         {:ok, {:ok, route}} -> {:ok, route}
@@ -1075,7 +1077,7 @@ defmodule GateServer.WsConnection do
     with {:ok, world_node} <- fetch_world_node() do
       case safe_call(
              {WorldServer.Voxel.MapLedger, world_node},
-             {:route_chunks_with_leases, logical_scene_id, chunk_coords},
+             {:route_chunks_with_leases_ensuring, logical_scene_id, chunk_coords},
              @scene_call_timeout
            ) do
         {:ok, {:ok, routes}} -> {:ok, routes}
