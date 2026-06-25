@@ -12,9 +12,14 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
   secret_key_base: "chLpul9HpLdUaDKG7mumliAFELOvmLdd5ELmYyAFFN2K8QRcHsOPe9JPS9Uiq//8",
   server: false
 
-# Data Service — test uses the configured Postgres instance
+# Data Service — tests use a **separate** `mmo_test` database, NOT the dev DB.
+# 这些测试不走 Ecto Sandbox,setup 里直接 `Repo.delete_all` / `WriteTokenStore.reset()`
+# 等全表删除来隔离;若与活 dev 服务端共用 `mmo_dev`,跑测试就会**抹掉活服务端的体素
+# 写令牌/区域目录**(实测一次:dev 在跑时跑 chunk_directory_test → 令牌全删 → 编辑全
+# unknown_region_token)。故 test 默认指向 `mmo_test`,与 dev 物理隔离。CI/本地首次需
+# `MMO_DB_NAME=mmo_test mix ecto.create/migrate -r DataService.Repo`(或下方脚本)。
 config :data_service, DataService.Repo,
-  database: System.get_env("MMO_DB_NAME", "mmo_dev"),
+  database: System.get_env("MMO_DB_NAME", "mmo_test"),
   username: System.get_env("MMO_DB_USER", "postgres"),
   password: System.get_env("MMO_DB_PASSWORD", "postgres"),
   hostname: System.get_env("MMO_DB_HOST", "127.0.0.1"),
