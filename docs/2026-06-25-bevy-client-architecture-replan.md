@@ -100,5 +100,24 @@ ConnectionPhase(单一真相源,替代散落的 status/scene_joined + net 的隐
 
 ---
 
-## 5. 实施进度日志(2026-06-25)
-(随实现追加)
+## 5. 实施进度日志
+
+### 2026-06-25 — 阶段 1 完成
+- 1a:新建 `src/session/`,`SessionCredentials` 从 `config` 迁入(含 token 脱敏 Debug + 测试),
+  `auth_client::auto_login` 折入 `session::auth`。
+- 1b:`ConnectionState { status, scene_joined }` 资源从 `WorldState` 收口到 session 域;
+  camera/hud/movement/net/presentation/skill/stdio/voxel 各插件改读 `ConnectionState`。
+  (注:决策稿原写 `ConnectionPhase` 枚举,1b 先做纯所有权迁移保留 String `status`;枚举化推迟到阶段 4。)
+
+### 2026-06-26 — 阶段 2 完成(WorldState 拆解 + 删除)
+逐组迁出、每组 cargo test --lib 360 绿、单独 commit:
+- 2a `voxel::VoxelAoiState`(subscribed_center/aoi_anchor) — 仅 net 订阅 follow/retry。
+- 2b `skill::TargetSelection`(cid/point) — skill/stdio/net/hud/presentation/voxel。
+  附带修 1b 潜在漏刷新:HUD 早返回补 `!connection.is_changed()`。
+- 2c `hud::GameLogs`(general/chat/combat/effect/skill) — net 全部日志通道 + skill/stdio/voxel/hud。
+- 2d `net::NetTelemetry`(rtt/offset/heartbeat/transport×4/fast_lane/udp) — net 写,hud/stdio 读。
+- 2e `world::RemotePlayers`(players/identity/health) — net 写,presentation/skill/stdio/hud 读。
+- 2f `world::LocalPlayerState`(cid/position/velocity/hp/max_hp/alive) — 全域;迁完**删除 `WorldState`**。
+- README + net 模块文档同步更新为「域资源」表述。
+
+剩余:阶段 3(app 瘦身)、阶段 4(会话生命周期/重连重认证)。
