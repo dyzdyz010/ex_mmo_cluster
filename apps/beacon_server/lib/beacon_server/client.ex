@@ -54,25 +54,35 @@ defmodule BeaconServer.Client do
     end
   end
 
+  # 阶段7-bis:**轮询**等 peer 而非固定 sleep(1000)。真集群下 peer 一出现立刻返回(不再总等满
+  # 1s);单节点 dev 下等满 `:cluster_join_wait_ms`(可配,默认 1000,dev 调小直接砍每个 interface
+  # 的启动延迟 → 砍冷启动)。
+  @cluster_poll_ms 50
+
   defp wait_for_cluster_peers do
+    deadline = System.monotonic_time(:millisecond) + cluster_join_wait_ms()
+    poll_cluster_peers(deadline)
+  end
+
+  defp poll_cluster_peers(deadline) do
     case Node.list() do
       [] ->
-        Process.sleep(1000)
-
-        case Node.list() do
-          [] ->
-            Logger.info("No cluster peers found after waiting; continuing in single-node mode")
-            :error
-
-          nodes ->
-            Logger.info("Cluster peers found: #{inspect(nodes)}")
-            :ok
+        if System.monotonic_time(:millisecond) >= deadline do
+          Logger.info("No cluster peers found after waiting; continuing in single-node mode")
+          :error
+        else
+          Process.sleep(@cluster_poll_ms)
+          poll_cluster_peers(deadline)
         end
 
       nodes ->
         Logger.info("Cluster peers found: #{inspect(nodes)}")
         :ok
     end
+  end
+
+  defp cluster_join_wait_ms do
+    Application.get_env(:beacon_server, :cluster_join_wait_ms, 1000)
   end
 
   defp cluster_disabled? do
