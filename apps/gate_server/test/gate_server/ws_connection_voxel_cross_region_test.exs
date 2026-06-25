@@ -64,6 +64,11 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     # 梯队4:WriteTokenStore 模块级无状态(DB durable),无进程可启/守卫,直接清表。
     WriteTokenStore.reset()
 
+    # 阶段4-B(测试隔离):清 durable region 目录 + epoch 表,避免 MapLedger boot 重载前序测试
+    # 的 region(见 ws_connection_voxel_test 同处说明)。本测试显式 put 两个 region,必须从空目录起。
+    DataService.Voxel.RegionDirectoryStore.reset()
+    DataService.Voxel.RegionEpochStore.reset()
+
     chunk_sup_a = SceneServer.VoxelChunkSup.RegionA
     chunk_sup_b = SceneServer.VoxelChunkSup.RegionB
     chunk_dir_a = ChunkDirectory.RegionA

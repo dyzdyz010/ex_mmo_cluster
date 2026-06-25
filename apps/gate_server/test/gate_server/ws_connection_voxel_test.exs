@@ -61,6 +61,13 @@ defmodule GateServer.WsConnectionVoxelTest do
     # voxel_command_log 表,避免跨测试 command_id 命中 :duplicate 让 prefab 不实际执行。
     CommandLog.reset()
 
+    # 阶段4-B(测试隔离):清 durable 的 region 目录 + epoch 表。MapLedger 每测试由
+    # start_supervised 新建,boot 会**从目录重启自愈重载**——不清则前序测试的 region 行被本测试
+    # 的 MapLedger 重载,陈旧 region 被 scan 命中、epoch 分配器(owner_epoch+1)跨测试漂移,
+    # 造成 rebind epoch / prefab 占用 / edit 路由的顺序相关 flaky。清表使每测试 boot 自洁。
+    DataService.Voxel.RegionDirectoryStore.reset()
+    DataService.Voxel.RegionEpochStore.reset()
+
     on_exit(fn ->
       stop_named(GateServer.Interface)
 
