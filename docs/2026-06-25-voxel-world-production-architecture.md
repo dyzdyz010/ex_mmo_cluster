@@ -432,3 +432,16 @@
 - **剩余**:step2.6 resolver 接口(并入阶段2-bis Gate 路由边界)、阶段2-bis Gate route 缓存 +
   非阻塞物化(评审 F5,把控制面单进程移出每帧热路径)。
 - 测试:region_directory_store 7/0、world/voxel 全目录 160/0、write_token 11/0、state_class 11/0。
+
+### 冷启动地形 seed 性能(诊断 + 部分修复,2026-06-25)
+停服冷启实测拆解(两条时间轴分离后,这是**服务端启动**轴的"出生点内容就绪",一次性运维开销,暖启 `already_seeded?` 跳过):
+- 进程/接口就绪(gate 接客户端):**~2.3-2.9s**(实测),app 监督树本身 ~0.3s,快;余下是预热门控
+  (`join_cluster` 固定 1s sleep + 串行 await + bootstrapper 1s 轮询重试 2 次等 scene 注册)。
+- 出生点地形 seed:旧 ~290s。**根因 = `Storage.put_solid_block/4` 的 O(N²)**(List.replace_at 4096
+  headers + `++` O(n) 追加 + 每 cell 两次全量 `normalize!`)。**已修**(commit 822b074):批量
+  `Storage.put_solid_blocks/2` O(macro_count+N);micro-bench 1280 cell **4.4ms vs 逐 cell 3291.9ms
+  (750×)**,逐位相等。DevSeed 整块一次 apply(去每块 ~5× encode/persist 写放大)。
+- **余下瓶颈 = DB I/O**(非场 provisioning——实测场 sweep 仅 ~14ms):每 chunk ~2.7s persist +
+  ~4.8s 队列/重复加载(`already_seeded?` 读 + ChunkProcess 冷启再读同一 ~100KB 快照 + 连接池争用 +
+  seed 期间 24 个 ChunkProcess 每 100ms tick)。属**阶段7-bis** 调优:批量/单次 persist、避免双读、
+  池/并发整治、seed 期间暂停 tick。是一次性 ops 开销,不进每客户端加载。
