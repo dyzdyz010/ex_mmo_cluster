@@ -11,6 +11,7 @@ use crate::app::{
 use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::login::AppState;
 use crate::session::ConnectionState;
+use crate::skill::TargetSelection;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
@@ -305,6 +306,7 @@ fn poll_network_events(
     mut movement_dispatch: ResMut<MovementDispatchState>,
     mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
+    mut target: ResMut<TargetSelection>,
     mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
     let receiver = match bridge.rx.lock() {
@@ -350,8 +352,8 @@ fn poll_network_events(
                 world_state.remote_player_health.clear();
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
-                world_state.selected_target_cid = None;
-                world_state.selected_target_point = None;
+                target.cid = None;
+                target.point = None;
                 movement_dispatch.stop_sent = true;
                 push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
 
@@ -455,8 +457,8 @@ fn poll_network_events(
                 world_state.remote_players.remove(&cid);
                 world_state.remote_actor_identity.remove(&cid);
                 world_state.remote_player_health.remove(&cid);
-                if world_state.selected_target_cid == Some(cid) {
-                    world_state.selected_target_cid = None;
+                if target.cid == Some(cid) {
+                    target.cid = None;
                 }
                 push_line(&mut world_state.logs, format!("player {cid} left AOI"));
             }
@@ -693,8 +695,8 @@ fn poll_network_events(
                 world_state.udp_endpoint = None;
                 world_state.last_local_update_transport = None;
                 world_state.last_remote_move_transport = None;
-                world_state.selected_target_cid = None;
-                world_state.selected_target_point = None;
+                target.cid = None;
+                target.point = None;
                 local_render_prediction.clear();
                 movement_dispatch.stop_sent = true;
                 if stdio.is_enabled() {

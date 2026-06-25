@@ -13,7 +13,7 @@ use crate::app::{
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::session::ConnectionState;
-use crate::skill::prepare_skill_dispatch;
+use crate::skill::{TargetSelection, prepare_skill_dispatch};
 use crate::voxel::mesher::greedy_mesh_chunk;
 use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
 use crate::world::remote_actor::RemoteActorKind;
@@ -46,6 +46,7 @@ struct StdioCommandParams<'w> {
     voxel_authority: Res<'w, VoxelAuthority>,
     world_state: ResMut<'w, WorldState>,
     connection: ResMut<'w, ConnectionState>,
+    target: ResMut<'w, TargetSelection>,
     movement_intent: ResMut<'w, MovementIntent>,
     app_exit: MessageWriter<'w, AppExit>,
 }
@@ -69,6 +70,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         voxel_authority,
         mut world_state,
         mut connection,
+        mut target,
         mut movement_intent,
         mut app_exit,
     } = params;
@@ -193,17 +195,17 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 emit_stdio("npcs", &[("npcs", format!("[{}]", npcs.join(";")))]);
             }
             ClientStdioCommand::Target(target_cid) => {
-                world_state.selected_target_cid = Some(target_cid);
-                world_state.selected_target_point = None;
+                target.cid = Some(target_cid);
+                target.point = None;
                 emit_stdio("target", &[("target_cid", target_cid.to_string())]);
             }
             ClientStdioCommand::ClearTarget => {
-                world_state.selected_target_cid = None;
+                target.cid = None;
                 emit_stdio("target_cleared", &[]);
             }
             ClientStdioCommand::TargetPoint(point) => {
-                world_state.selected_target_point = Some(point);
-                world_state.selected_target_cid = None;
+                target.point = Some(point);
+                target.cid = None;
                 emit_stdio(
                     "target_point",
                     &[(
@@ -213,7 +215,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 );
             }
             ClientStdioCommand::ClearTargetPoint => {
-                world_state.selected_target_point = None;
+                target.point = None;
                 emit_stdio("target_point_cleared", &[]);
             }
             ClientStdioCommand::Chat(text) => {
@@ -224,13 +226,13 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 skill_id,
                 target_cid,
             } => {
-                let selected_target_point = world_state
-                    .selected_target_point
+                let selected_target_point = target
+                    .point
                     .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
                 let visible_actor_count = world_state.remote_players.len();
                 let dispatch = match prepare_skill_dispatch(
                     skill_id,
-                    target_cid.or(world_state.selected_target_cid),
+                    target_cid.or(target.cid),
                     selected_target_point,
                     visible_actor_count,
                 ) {

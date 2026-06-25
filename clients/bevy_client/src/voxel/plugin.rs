@@ -625,10 +625,10 @@ fn sync_voxel_visuals(
 }
 
 fn update_target_point_marker(
-    world_state: Res<WorldState>,
+    target: Res<crate::skill::TargetSelection>,
     mut marker: Single<(&mut Transform, &mut Visibility), With<TargetPointMarker>>,
 ) {
-    if let Some(point) = world_state.selected_target_point {
+    if let Some(point) = target.point {
         *marker.1 = Visibility::Visible;
         marker.0.translation = sim_to_render_position(point) + Vec3::Y * 6.0;
     } else {

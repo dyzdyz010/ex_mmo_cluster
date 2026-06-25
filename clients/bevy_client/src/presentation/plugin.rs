@@ -57,6 +57,7 @@ struct PlayerVisualParams<'w, 's> {
     time: Res<'w, Time>,
     world_state: Res<'w, WorldState>,
     connection: Res<'w, ConnectionState>,
+    target: Res<'w, crate::skill::TargetSelection>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     config: Res<'w, ClientConfig>,
     voxel_world: Res<'w, VoxelWorld>,
@@ -161,7 +162,7 @@ fn sync_player_visuals(
             .get(&cid)
             .map(|identity| identity.kind)
             .unwrap_or(RemoteActorKind::Player);
-        let selected = params.world_state.selected_target_cid == Some(cid);
+        let selected = params.target.cid == Some(cid);
         let local = cid == params.world_state.local_cid;
 
         if let Some(entity) = entities_by_cid.remove(&cid) {

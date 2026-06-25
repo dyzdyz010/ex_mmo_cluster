@@ -12,6 +12,7 @@ use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::observe::ClientObserver;
 
+use super::TargetSelection;
 use super::targeting::prepare_skill_dispatch;
 
 pub struct SkillPlugin;
@@ -37,6 +38,7 @@ fn handle_skill_input(
     chat_state: Res<ChatState>,
     mut world_state: ResMut<WorldState>,
     mut connection: ResMut<ConnectionState>,
+    target: Res<TargetSelection>,
 ) {
     if chat_state.enabled {
         return;
@@ -49,25 +51,26 @@ fn handle_skill_input(
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 1);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 1);
     }
 
     if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 2);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 2);
     }
 
     if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 3);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 3);
     }
 
     if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 4);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 4);
     }
 }
 
 fn handle_target_selection_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut world_state: ResMut<WorldState>,
+    world_state: Res<WorldState>,
+    mut target: ResMut<TargetSelection>,
     observer: Res<ClientObserver>,
 ) {
     if !keyboard.just_pressed(KeyCode::Tab) {
@@ -82,14 +85,14 @@ fn handle_target_selection_input(
     cids.sort_unstable();
 
     if cids.is_empty() {
-        world_state.selected_target_cid = None;
+        target.cid = None;
         return;
     }
 
-    let next = cycle_target_cid(&cids, world_state.selected_target_cid);
+    let next = cycle_target_cid(&cids, target.cid);
 
-    world_state.selected_target_cid = next;
-    world_state.selected_target_point = None;
+    target.cid = next;
+    target.point = None;
     if let Some(cid) = next {
         observer.emit("input", "target_selected", &[("cid", cid.to_string())]);
     }
@@ -118,8 +121,9 @@ fn handle_point_target_input(
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     voxel_world: Res<crate::voxel::VoxelWorld>,
     authority: Res<crate::voxel::authority_plugin::VoxelAuthority>,
-    mut world_state: ResMut<WorldState>,
+    world_state: Res<WorldState>,
     connection: Res<ConnectionState>,
+    mut target: ResMut<TargetSelection>,
     observer: Res<ClientObserver>,
 ) {
     let target_modifier =
@@ -176,8 +180,8 @@ fn handle_point_target_input(
         return;
     };
     let sim_point = render_to_sim_position(render_point);
-    world_state.selected_target_point = Some(sim_point);
-    world_state.selected_target_cid = None;
+    target.point = Some(sim_point);
+    target.cid = None;
     observer.emit(
         "input",
         "target_point_selected",
@@ -193,16 +197,17 @@ fn send_targeted_skill(
     observer: &ClientObserver,
     world_state: &mut WorldState,
     connection: &mut ConnectionState,
+    target: &TargetSelection,
     skill_id: u16,
 ) {
-    let selected_target_point = world_state
-        .selected_target_point
+    let selected_target_point = target
+        .point
         .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
     let visible_actor_count = world_state.remote_players.len();
 
     let dispatch = match prepare_skill_dispatch(
         skill_id,
-        world_state.selected_target_cid,
+        target.cid,
         selected_target_point,
         visible_actor_count,
     ) {

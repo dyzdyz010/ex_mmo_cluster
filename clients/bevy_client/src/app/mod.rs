@@ -104,8 +104,6 @@ pub(crate) struct WorldState {
     pub udp_endpoint: Option<String>,
     pub last_local_update_transport: Option<MessageTransport>,
     pub last_remote_move_transport: Option<MessageTransport>,
-    pub selected_target_cid: Option<i64>,
-    pub selected_target_point: Option<Vec3>,
 }
 
 #[derive(Resource, Default)]
@@ -293,6 +291,7 @@ pub fn run(
         .insert_resource(local_render_prediction)
         .insert_resource(voxel_world)
         .init_resource::<crate::voxel::VoxelAoiState>()
+        .init_resource::<crate::skill::TargetSelection>()
         .insert_resource(observer)
         .insert_resource(stdio)
         .add_plugins(DefaultPlugins.set(WindowPlugin {

@@ -8,6 +8,7 @@ use crate::app::{WorldState, schedule::ClientSet};
 use crate::session::ConnectionState;
 use crate::chat::{ChatInputText, ChatLogText, ChatState};
 use crate::login::AppState;
+use crate::skill::TargetSelection;
 use crate::voxel::VoxelWorld;
 
 /// Marker for the primary HUD text node spawned by `app::setup`.
@@ -58,6 +59,7 @@ fn update_hud_text(
     connection: Res<ConnectionState>,
     chat_state: Res<ChatState>,
     voxel_world: Res<VoxelWorld>,
+    target: Res<TargetSelection>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
     mut populated_once: Local<bool>,
@@ -76,21 +78,23 @@ fn update_hud_text(
     // even if no resource was mutated this exact frame.
     if *populated_once
         && !world_state.is_changed()
+        && !connection.is_changed()
         && !chat_state.is_changed()
         && !voxel_world.is_changed()
+        && !target.is_changed()
         && !selection_state.is_changed()
     {
         return;
     }
     *populated_once = true;
 
-    let selected_target = world_state
-        .selected_target_cid
+    let selected_target = target
+        .cid
         .and_then(|cid| world_state.remote_actor_identity.get(&cid))
         .map(|identity| format!("{} ({cid})", identity.name, cid = identity.cid))
         .unwrap_or_else(|| "none".to_string());
-    let selected_point = world_state
-        .selected_target_point
+    let selected_point = target
+        .point
         .map(|value| format!("{:.1}, {:.1}, {:.1}", value.x, value.y, value.z))
         .unwrap_or_else(|| "none".to_string());
     let voxel_selection = selection_state
