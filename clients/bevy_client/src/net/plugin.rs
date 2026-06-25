@@ -14,6 +14,7 @@ use crate::login::AppState;
 use crate::session::ConnectionState;
 use crate::skill::TargetSelection;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
+use crate::world::RemotePlayers;
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
 
@@ -311,6 +312,7 @@ fn poll_network_events(
     mut target: ResMut<TargetSelection>,
     mut logs: ResMut<GameLogs>,
     mut telemetry: ResMut<NetTelemetry>,
+    mut remote: ResMut<RemotePlayers>,
     mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
     let receiver = match bridge.rx.lock() {
@@ -351,9 +353,9 @@ fn poll_network_events(
                 world_state.local_position = Some(world_location);
                 world_state.local_velocity = Vec3::ZERO;
                 local_render_prediction.reset(world_location);
-                world_state.remote_players.clear();
-                world_state.remote_actor_identity.clear();
-                world_state.remote_player_health.clear();
+                remote.players.clear();
+                remote.identity.clear();
+                remote.health.clear();
                 telemetry.last_local_update_transport = None;
                 telemetry.last_remote_move_transport = None;
                 target.cid = None;
@@ -417,7 +419,7 @@ fn poll_network_events(
             }
             NetworkEvent::PlayerEnter { cid, location } => {
                 if cid != world_state.local_cid {
-                    world_state.remote_players.insert(
+                    remote.players.insert(
                         cid,
                         RemotePlayerState::seeded(
                             cid,
@@ -447,27 +449,26 @@ fn poll_network_events(
                 let cid = snapshot.cid;
                 if cid != world_state.local_cid {
                     let received_at = time.elapsed_secs_f64();
-                    if let Some(state) = world_state.remote_players.get_mut(&cid) {
+                    if let Some(state) = remote.players.get_mut(&cid) {
                         state.push_snapshot(snapshot, received_at);
                     } else {
-                        world_state
-                            .remote_players
+                        remote.players
                             .insert(cid, RemotePlayerState::from_snapshot(snapshot, received_at));
                     }
                 }
                 telemetry.last_remote_move_transport = Some(transport);
             }
             NetworkEvent::PlayerLeave { cid } => {
-                world_state.remote_players.remove(&cid);
-                world_state.remote_actor_identity.remove(&cid);
-                world_state.remote_player_health.remove(&cid);
+                remote.players.remove(&cid);
+                remote.identity.remove(&cid);
+                remote.health.remove(&cid);
                 if target.cid == Some(cid) {
                     target.cid = None;
                 }
                 push_line(&mut logs.general, format!("player {cid} left AOI"));
             }
             NetworkEvent::ActorIdentity { cid, kind, name } => {
-                world_state.remote_actor_identity.insert(
+                remote.identity.insert(
                     cid,
                     RemoteActorIdentity {
                         cid,
@@ -527,8 +528,7 @@ fn poll_network_events(
                     world_state.local_max_hp = max_hp;
                     world_state.local_alive = alive;
                 } else {
-                    world_state
-                        .remote_player_health
+                    remote.health
                         .insert(cid, (hp, max_hp, alive));
                 }
 
@@ -691,9 +691,9 @@ fn poll_network_events(
                 connection.status = format!("disconnected: {reason}");
                 world_state.local_position = None;
                 world_state.local_velocity = Vec3::ZERO;
-                world_state.remote_players.clear();
-                world_state.remote_actor_identity.clear();
-                world_state.remote_player_health.clear();
+                remote.players.clear();
+                remote.identity.clear();
+                remote.health.clear();
                 telemetry.movement_transport = MessageTransport::Tcp;
                 telemetry.fast_lane_status = "tcp fallback".to_string();
                 telemetry.udp_endpoint = None;

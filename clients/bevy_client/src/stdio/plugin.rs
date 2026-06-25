@@ -17,6 +17,7 @@ use crate::session::ConnectionState;
 use crate::skill::{TargetSelection, prepare_skill_dispatch};
 use crate::voxel::mesher::greedy_mesh_chunk;
 use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
+use crate::world::RemotePlayers;
 use crate::world::remote_actor::RemoteActorKind;
 
 use super::{
@@ -46,6 +47,7 @@ struct StdioCommandParams<'w> {
     voxel_world: ResMut<'w, VoxelWorld>,
     voxel_authority: Res<'w, VoxelAuthority>,
     world_state: ResMut<'w, WorldState>,
+    remote: Res<'w, RemotePlayers>,
     connection: ResMut<'w, ConnectionState>,
     target: ResMut<'w, TargetSelection>,
     logs: ResMut<'w, GameLogs>,
@@ -72,6 +74,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         mut voxel_world,
         voxel_authority,
         world_state,
+        remote,
         mut connection,
         mut target,
         mut logs,
@@ -104,13 +107,11 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     local_alive: world_state.local_alive,
                     movement_transport: telemetry.movement_transport.label(),
                     fast_lane_status: &telemetry.fast_lane_status,
-                    remote_player_count: world_state
-                        .remote_actor_identity
+                    remote_player_count: remote.identity
                         .values()
                         .filter(|identity| matches!(identity.kind, RemoteActorKind::Player))
                         .count(),
-                    remote_npc_count: world_state
-                        .remote_actor_identity
+                    remote_npc_count: remote.identity
                         .values()
                         .filter(|identity| identity.is_npc())
                         .count(),
@@ -157,11 +158,10 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             }
             ClientStdioCommand::Players => {
                 let now_secs = time.elapsed_secs_f64();
-                let mut players = world_state
-                    .remote_players
+                let mut players = remote.players
                     .iter()
                     .filter_map(|(cid, player)| {
-                        let identity = world_state.remote_actor_identity.get(cid);
+                        let identity = remote.identity.get(cid);
                         if matches!(identity.map(|value| value.kind), Some(RemoteActorKind::Npc)) {
                             return None;
                         }
@@ -180,11 +180,10 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             }
             ClientStdioCommand::Npcs => {
                 let now_secs = time.elapsed_secs_f64();
-                let mut npcs = world_state
-                    .remote_players
+                let mut npcs = remote.players
                     .iter()
                     .filter_map(|(cid, player)| {
-                        let identity = world_state.remote_actor_identity.get(cid)?;
+                        let identity = remote.identity.get(cid)?;
                         if !identity.is_npc() {
                             return None;
                         }
@@ -234,7 +233,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 let selected_target_point = target
                     .point
                     .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
-                let visible_actor_count = world_state.remote_players.len();
+                let visible_actor_count = remote.players.len();
                 let dispatch = match prepare_skill_dispatch(
                     skill_id,
                     target_cid.or(target.cid),

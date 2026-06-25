@@ -29,8 +29,6 @@ use crate::{
         VoxelMaterialId, VoxelWorld,
         plugin::{TargetPointMarker, voxel_material_color},
     },
-    world::remote_actor::RemoteActorIdentity,
-    world::remote_player::RemotePlayerState,
 };
 use bevy::{
     camera::Exposure,
@@ -43,10 +41,7 @@ use bevy::{
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
 };
-use std::{
-    collections::{HashMap, VecDeque},
-    path::PathBuf,
-};
+use std::{collections::VecDeque, path::PathBuf};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct RenderRay {
@@ -81,12 +76,9 @@ pub(crate) struct WorldState {
     pub local_cid: i64,
     pub local_position: Option<Vec3>,
     pub local_velocity: Vec3,
-    pub remote_players: HashMap<i64, RemotePlayerState>,
     pub local_hp: u16,
     pub local_max_hp: u16,
     pub local_alive: bool,
-    pub remote_actor_identity: HashMap<i64, RemoteActorIdentity>,
-    pub remote_player_health: HashMap<i64, (u16, u16, bool)>,
 }
 
 #[derive(Resource, Default)]
@@ -274,6 +266,7 @@ pub fn run(
         .init_resource::<crate::skill::TargetSelection>()
         .init_resource::<crate::hud::GameLogs>()
         .init_resource::<crate::net::NetTelemetry>()
+        .init_resource::<crate::world::RemotePlayers>()
         .insert_resource(observer)
         .insert_resource(stdio)
         .add_plugins(DefaultPlugins.set(WindowPlugin {

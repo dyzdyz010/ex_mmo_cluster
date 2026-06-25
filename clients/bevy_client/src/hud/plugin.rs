@@ -11,6 +11,7 @@ use crate::login::AppState;
 use crate::net::NetTelemetry;
 use crate::skill::TargetSelection;
 use crate::voxel::VoxelWorld;
+use crate::world::RemotePlayers;
 
 use super::GameLogs;
 
@@ -65,6 +66,7 @@ fn update_hud_text(
     target: Res<TargetSelection>,
     logs: Res<GameLogs>,
     telemetry: Res<NetTelemetry>,
+    remote: Res<RemotePlayers>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
     mut populated_once: Local<bool>,
@@ -89,6 +91,7 @@ fn update_hud_text(
         && !target.is_changed()
         && !logs.is_changed()
         && !telemetry.is_changed()
+        && !remote.is_changed()
         && !selection_state.is_changed()
     {
         return;
@@ -97,7 +100,7 @@ fn update_hud_text(
 
     let selected_target = target
         .cid
-        .and_then(|cid| world_state.remote_actor_identity.get(&cid))
+        .and_then(|cid| remote.identity.get(&cid))
         .map(|identity| format!("{} ({cid})", identity.name, cid = identity.cid))
         .unwrap_or_else(|| "none".to_string());
     let selected_point = target
@@ -126,9 +129,8 @@ fn update_hud_text(
         telemetry.udp_endpoint
             .clone()
             .unwrap_or_else(|| "n/a".to_string()),
-        world_state.remote_players.len(),
-        world_state
-            .remote_actor_identity
+        remote.players.len(),
+        remote.identity
             .values()
             .filter(|identity| identity.is_npc())
             .count(),

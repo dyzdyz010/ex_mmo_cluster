@@ -22,6 +22,7 @@ use crate::presentation::smoothing::smooth_translation;
 use crate::voxel::VoxelWorld;
 use crate::voxel::authority_plugin::VoxelAuthority;
 use crate::voxel::plugin::surface_center_y_at_render_xz;
+use crate::world::RemotePlayers;
 use crate::world::remote_actor::RemoteActorKind;
 use crate::world::remote_player::{RemoteMotionSample, RemoteSamplePath};
 
@@ -56,6 +57,7 @@ impl Plugin for PresentationPlugin {
 struct PlayerVisualParams<'w, 's> {
     time: Res<'w, Time>,
     world_state: Res<'w, WorldState>,
+    remote: Res<'w, RemotePlayers>,
     connection: Res<'w, ConnectionState>,
     target: Res<'w, crate::skill::TargetSelection>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
@@ -103,9 +105,7 @@ fn sync_player_visuals(
     *previous_local_cid = Some(current_local_cid);
 
     let now_secs = params.time.elapsed_secs_f64();
-    let mut desired = params
-        .world_state
-        .remote_players
+    let mut desired = params.remote.players
         .iter()
         .map(|(&cid, state)| {
             let (sample, path) = state.sample_motion_with_path(now_secs);
@@ -156,9 +156,7 @@ fn sync_player_visuals(
 
     let delta_secs = params.time.delta_secs();
     for (&cid, motion) in &desired {
-        let actor_kind = params
-            .world_state
-            .remote_actor_identity
+        let actor_kind = params.remote.identity
             .get(&cid)
             .map(|identity| identity.kind)
             .unwrap_or(RemoteActorKind::Player);

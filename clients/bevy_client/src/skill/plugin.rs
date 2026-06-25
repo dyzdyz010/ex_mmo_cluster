@@ -36,7 +36,7 @@ fn handle_skill_input(
     bridge: Res<NetworkBridge>,
     observer: Res<ClientObserver>,
     chat_state: Res<ChatState>,
-    mut world_state: ResMut<WorldState>,
+    remote: Res<crate::world::RemotePlayers>,
     mut connection: ResMut<ConnectionState>,
     mut logs: ResMut<crate::hud::GameLogs>,
     target: Res<TargetSelection>,
@@ -52,25 +52,25 @@ fn handle_skill_input(
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 1);
+        send_targeted_skill(&bridge, &observer, &remote, &mut connection, &mut logs, &target, 1);
     }
 
     if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 2);
+        send_targeted_skill(&bridge, &observer, &remote, &mut connection, &mut logs, &target, 2);
     }
 
     if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 3);
+        send_targeted_skill(&bridge, &observer, &remote, &mut connection, &mut logs, &target, 3);
     }
 
     if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 4);
+        send_targeted_skill(&bridge, &observer, &remote, &mut connection, &mut logs, &target, 4);
     }
 }
 
 fn handle_target_selection_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    world_state: Res<WorldState>,
+    remote: Res<crate::world::RemotePlayers>,
     mut target: ResMut<TargetSelection>,
     observer: Res<ClientObserver>,
 ) {
@@ -78,8 +78,8 @@ fn handle_target_selection_input(
         return;
     }
 
-    let mut cids = world_state
-        .remote_actor_identity
+    let mut cids = remote
+        .identity
         .keys()
         .copied()
         .collect::<Vec<_>>();
@@ -197,7 +197,7 @@ fn handle_point_target_input(
 fn send_targeted_skill(
     bridge: &NetworkBridge,
     observer: &ClientObserver,
-    world_state: &mut WorldState,
+    remote: &crate::world::RemotePlayers,
     connection: &mut ConnectionState,
     logs: &mut crate::hud::GameLogs,
     target: &TargetSelection,
@@ -206,7 +206,7 @@ fn send_targeted_skill(
     let selected_target_point = target
         .point
         .map(|point| [point.x as f64, point.y as f64, point.z as f64]);
-    let visible_actor_count = world_state.remote_players.len();
+    let visible_actor_count = remote.players.len();
 
     let dispatch = match prepare_skill_dispatch(
         skill_id,
