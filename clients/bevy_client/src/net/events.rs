@@ -193,6 +193,16 @@ pub enum NetworkEvent {
     Voxel(crate::voxel::wire::VoxelServerMessage),
     Log(String),
     Disconnected(String),
+    /// The network thread dropped and is backing off before reconnect `attempt`
+    /// of `max_attempts` (阶段4 退避重连)。Surfaced so the HUD shows live recovery
+    /// progress instead of a frozen "disconnected".
+    Reconnecting {
+        attempt: u32,
+        max_attempts: u32,
+    },
+    /// The network thread exhausted its reconnect budget and gave up (terminal
+    /// until the user restarts) — drives `ConnectionPhase::Failed`.
+    ReconnectFailed,
 }
 
 /// App-side handle for sending commands to and receiving events from the

@@ -19,6 +19,11 @@ struct AutoLoginResponse {
     token: String,
     cid: i64,
     username: String,
+    /// Token lifetime in seconds (阶段4 令牌过期接缝)。Optional: older auth servers
+    /// omit it, in which case proactive refresh stays disabled (reactive reconnect
+    /// still rotates the token on a real drop).
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 /// Issues a blocking POST to `{auth_addr}/ingame/auto_login` and returns credentials.
@@ -51,5 +56,6 @@ pub fn auto_login(auth_addr: &str, username: &str) -> Result<SessionCredentials,
         token: parsed.token,
         cid: parsed.cid,
         username: parsed.username,
+        expires_in_secs: parsed.expires_in,
     })
 }

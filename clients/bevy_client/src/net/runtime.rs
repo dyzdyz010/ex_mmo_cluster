@@ -1044,6 +1044,7 @@ mod tests {
             username: "tester".into(),
             token: "token".into(),
             cid: 42,
+            expires_in_secs: None,
         }
     }
 

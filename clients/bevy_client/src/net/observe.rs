@@ -302,6 +302,22 @@ pub(super) fn observe_network_event(observer: &ClientObserver, event: &NetworkEv
         NetworkEvent::Disconnected(reason) => {
             observer.emit("network", "disconnected", &[("reason", reason.clone())]);
         }
+        NetworkEvent::Reconnecting {
+            attempt,
+            max_attempts,
+        } => {
+            observer.emit(
+                "network",
+                "reconnecting",
+                &[
+                    ("attempt", attempt.to_string()),
+                    ("max_attempts", max_attempts.to_string()),
+                ],
+            );
+        }
+        NetworkEvent::ReconnectFailed => {
+            observer.emit("network", "reconnect_failed", &[]);
+        }
     }
 }
 

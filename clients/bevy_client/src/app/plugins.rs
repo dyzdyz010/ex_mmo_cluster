@@ -21,6 +21,7 @@ use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
 use crate::presentation::PresentationPlugin;
 use crate::scene::SceneEnvironmentPlugin;
+use crate::session::SessionPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 use crate::voxel::{
@@ -39,6 +40,7 @@ impl PluginGroup for BevyClientPlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
             .add(SceneEnvironmentPlugin)
+            .add(SessionPlugin)
             .add(NetworkPlugin)
             .add(StdioPlugin)
             .add(CameraPlugin)

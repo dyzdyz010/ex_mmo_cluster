@@ -15,6 +15,10 @@ use bevy::prelude::Resource;
 use std::fmt;
 
 pub mod auth;
+pub mod plugin;
+pub mod reconnect;
+
+pub use plugin::SessionPlugin;
 
 /// Where the client is in the connect → in-scene → reconnect lifecycle
 /// (架构重整阶段4:`status` String 之外引入显式相位枚举,驱动退避重连 UI/逻辑)。
@@ -77,6 +81,12 @@ pub struct SessionCredentials {
     pub username: String,
     pub cid: i64,
     pub token: String,
+    /// Advertised token lifetime in seconds, if the auth response carried an
+    /// `expires_in` field (架构重整阶段4 令牌过期接缝)。`None` when the server did
+    /// not advertise a TTL — proactive refresh is then disabled and the reactive
+    /// reconnect path refreshes the token on any real drop. See
+    /// [`reconnect::proactive_refresh_due`].
+    pub expires_in_secs: Option<u64>,
 }
 
 // Audit E-M2: hand-written Debug that redacts the token. The auto-derived
@@ -89,6 +99,7 @@ impl fmt::Debug for SessionCredentials {
             .field("username", &self.username)
             .field("cid", &self.cid)
             .field("token", &"<redacted>")
+            .field("expires_in_secs", &self.expires_in_secs)
             .finish()
     }
 }
@@ -103,6 +114,7 @@ mod tests {
             username: "alice".into(),
             cid: 7,
             token: "super-secret-token-do-not-leak".into(),
+            expires_in_secs: None,
         };
         let dumped = format!("{creds:?}");
         assert!(!dumped.contains("super-secret-token-do-not-leak"));

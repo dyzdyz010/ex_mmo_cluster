@@ -709,6 +709,39 @@ fn poll_network_events(
                 }
                 push_line(&mut logs.general, format!("disconnect: {reason}"));
             }
+            NetworkEvent::Reconnecting {
+                attempt,
+                max_attempts,
+            } => {
+                connection.phase = ConnectionPhase::Reconnecting { attempt };
+                connection.status = format!("reconnecting (attempt {attempt}/{max_attempts})");
+                if stdio.is_enabled() {
+                    emit_stdio(
+                        "reconnecting",
+                        &[
+                            ("attempt", attempt.to_string()),
+                            ("max_attempts", max_attempts.to_string()),
+                        ],
+                    );
+                }
+                push_line(
+                    &mut logs.general,
+                    format!("reconnecting (attempt {attempt}/{max_attempts})"),
+                );
+            }
+            NetworkEvent::ReconnectFailed => {
+                connection.phase = ConnectionPhase::Failed;
+                connection.status =
+                    "reconnect failed — please restart the client".to_string();
+                if stdio.is_enabled() {
+                    emit_stdio("reconnect_failed", &[]);
+                }
+                push_line(
+                    &mut logs.general,
+                    "reconnect failed after exhausting retries — please restart the client"
+                        .to_string(),
+                );
+            }
         }
     }
 }

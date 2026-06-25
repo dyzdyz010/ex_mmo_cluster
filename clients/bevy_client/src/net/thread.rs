@@ -1,6 +1,12 @@
 //! Background network thread: TCP connect, UDP fast-lane attach, frame
 //! decoding, and translation between [`super::runtime::ClientRuntime`]
 //! outcomes and real socket I/O.
+//!
+//! 阶段4:the thread no longer exits on the first disconnect. [`network_loop`]
+//! is an outer reconnect driver around [`run_session`] (one connect → serve
+//! attempt); on a drop it re-authenticates (a fresh `auto_login`, rotating the
+//! token) and reconnects with capped exponential backoff, giving up only after
+//! [`MAX_RECONNECT_ATTEMPTS`] consecutive failures.
 
 use std::{
     io::{self, Read},
@@ -14,9 +20,11 @@ use std::{
 };
 
 use crate::config::ClientConfig;
-use crate::session::SessionCredentials;
 use crate::observe::ClientObserver;
 use crate::protocol::{ClientMessage, decode_server_payload, take_frame};
+use crate::session::SessionCredentials;
+use crate::session::auth::auto_login;
+use crate::session::reconnect::{MAX_RECONNECT_ATTEMPTS, backoff_delay, proactive_refresh_due};
 
 use super::events::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent};
 use super::observe::{emit_event, observe_outbound_message};
@@ -40,9 +48,23 @@ pub fn spawn_network_thread(
     }
 }
 
+/// Outcome of one [`run_session`] attempt.
+struct SessionOutcome {
+    /// The app asked the thread to stop (`NetworkCommand::Shutdown`).
+    shutdown: bool,
+    /// The session reached the connected serve loop at least once. Used to reset
+    /// the reconnect attempt budget on a fresh drop (a long-lived session that
+    /// finally drops gets the full budget again, not the tail of an earlier flap).
+    connected: bool,
+    /// Drop reason, when not a clean shutdown.
+    reason: Option<String>,
+}
+
+/// Drives the connect → serve → drop → backoff-reconnect lifecycle so a dropped
+/// connection recovers without the user restarting the client.
 fn network_loop(
     config: ClientConfig,
-    creds: SessionCredentials,
+    mut creds: SessionCredentials,
     observer: ClientObserver,
     command_rx: Receiver<NetworkCommand>,
     event_tx: Sender<NetworkEvent>,
@@ -58,61 +80,146 @@ fn network_loop(
         return;
     }
 
+    let mut attempt = 0u32;
+    loop {
+        let outcome = run_session(&config, &creds, &observer, &command_rx, &event_tx);
+        if outcome.shutdown {
+            return;
+        }
+        let reason = outcome
+            .reason
+            .unwrap_or_else(|| "connection lost".to_string());
+
+        if outcome.connected {
+            // A real session ended → fresh disconnect; reset the budget.
+            attempt = 0;
+            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
+        } else if attempt == 0 {
+            // Never connected on the first try → surface the initial disconnect.
+            // Subsequent never-connected tries are reported as `Reconnecting`.
+            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
+        }
+
+        attempt += 1;
+        if attempt > MAX_RECONNECT_ATTEMPTS {
+            emit_event(&observer, &event_tx, NetworkEvent::ReconnectFailed);
+            return;
+        }
+        emit_event(
+            &observer,
+            &event_tx,
+            NetworkEvent::Reconnecting {
+                attempt,
+                max_attempts: MAX_RECONNECT_ATTEMPTS,
+            },
+        );
+
+        if sleep_with_shutdown(backoff_delay(attempt), &command_rx) {
+            return; // Shutdown requested during backoff.
+        }
+
+        // Re-authenticate to rotate the (possibly expired) token before the next
+        // connect. On failure keep the existing token and let the connect attempt
+        // fail → the next backoff cycle re-auths again.
+        match auto_login(&config.auth_addr, &creds.username) {
+            Ok(fresh) => creds = fresh,
+            Err(err) => emit_event(
+                &observer,
+                &event_tx,
+                NetworkEvent::Log(format!(
+                    "reconnect re-auth attempt {attempt} failed: {err}; retrying with existing token"
+                )),
+            ),
+        }
+    }
+}
+
+/// Sleeps for `total`, polling `command_rx` for `Shutdown` every ≤100ms so the
+/// thread stays responsive to a quit during backoff. Returns `true` if Shutdown
+/// was requested (other commands seen during the wait are stale and discarded).
+fn sleep_with_shutdown(total: Duration, command_rx: &Receiver<NetworkCommand>) -> bool {
+    let deadline = Instant::now() + total;
+    loop {
+        while let Ok(command) = command_rx.try_recv() {
+            if matches!(command, NetworkCommand::Shutdown) {
+                return true;
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(100)));
+    }
+}
+
+/// Runs exactly one connect → authenticate → serve session. Returns when the
+/// connection drops, the app requests shutdown, or a proactive token refresh is
+/// due. NEVER reconnects itself — that is [`network_loop`]'s job.
+fn run_session(
+    config: &ClientConfig,
+    creds: &SessionCredentials,
+    observer: &ClientObserver,
+    command_rx: &Receiver<NetworkCommand>,
+    event_tx: &Sender<NetworkEvent>,
+) -> SessionOutcome {
+    // Discard any stale commands queued while we were disconnected (movement /
+    // voxel edits aimed at the previous, now-dead session) — but honour a
+    // Shutdown that arrived in the gap.
+    while let Ok(command) = command_rx.try_recv() {
+        if matches!(command, NetworkCommand::Shutdown) {
+            return SessionOutcome {
+                shutdown: true,
+                connected: false,
+                reason: None,
+            };
+        }
+    }
+
+    let dropped = |reason: String, connected: bool| SessionOutcome {
+        shutdown: false,
+        connected,
+        reason: Some(reason),
+    };
+
     let gate_tcp_addr = match resolve_gate_addr(&config.gate_addr) {
         Ok(addr) => addr,
         Err(err) => {
-            emit_event(
-                &observer,
-                &event_tx,
-                NetworkEvent::Disconnected(format!(
-                    "failed to resolve gate address {}: {err}",
-                    config.gate_addr
-                )),
+            return dropped(
+                format!("failed to resolve gate address {}: {err}", config.gate_addr),
+                false,
             );
-            return;
         }
     };
 
     emit_event(
-        &observer,
-        &event_tx,
+        observer,
+        event_tx,
         NetworkEvent::Status(format!("connecting to {gate_tcp_addr}")),
     );
 
     let mut stream = match TcpStream::connect(gate_tcp_addr) {
         Ok(stream) => stream,
-        Err(err) => {
-            emit_event(
-                &observer,
-                &event_tx,
-                NetworkEvent::Disconnected(format!("connect failed: {err}")),
-            );
-            return;
-        }
+        Err(err) => return dropped(format!("connect failed: {err}"), false),
     };
 
     if let Err(err) = stream.set_nonblocking(true) {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Disconnected(format!("nonblocking setup failed: {err}")),
-        );
-        return;
+        return dropped(format!("nonblocking setup failed: {err}"), false);
     }
 
     if let Err(err) = stream.set_nodelay(true) {
         emit_event(
-            &observer,
-            &event_tx,
+            observer,
+            event_tx,
             NetworkEvent::Log(format!("warning: failed to enable TCP_NODELAY: {err}")),
         );
     }
 
     let mut runtime = ClientRuntime::new(gate_tcp_addr);
-    emit_event(&observer, &event_tx, runtime.transport_event());
+    emit_event(observer, event_tx, runtime.transport_event());
 
-    let initial_auth = runtime.initial_auth_message(&creds);
-    observe_outbound_message(&observer, "tcp", &initial_auth);
+    let initial_auth = runtime.initial_auth_message(creds);
+    observe_outbound_message(observer, "tcp", &initial_auth);
 
     // Audit A-M2: previously a single auth send failure dropped the
     // connection. Retry with exponential backoff so transient network
@@ -127,8 +234,8 @@ fn network_loop(
             Ok(()) => break Ok(()),
             Err(err) if auth_attempt < AUTH_SEND_MAX_ATTEMPTS => {
                 emit_event(
-                    &observer,
-                    &event_tx,
+                    observer,
+                    event_tx,
                     NetworkEvent::Log(format!(
                         "auth send attempt {auth_attempt}/{AUTH_SEND_MAX_ATTEMPTS} failed: {err}; retrying in {}ms",
                         auth_backoff.as_millis()
@@ -141,15 +248,15 @@ fn network_loop(
         }
     };
     if let Err(err) = auth_send_result {
-        emit_event(
-            &observer,
-            &event_tx,
-            NetworkEvent::Disconnected(format!(
-                "auth send failed after {AUTH_SEND_MAX_ATTEMPTS} attempts: {err}"
-            )),
+        return dropped(
+            format!("auth send failed after {AUTH_SEND_MAX_ATTEMPTS} attempts: {err}"),
+            false,
         );
-        return;
     }
+
+    // Auth bytes are on the wire → treat the session as connected. A drop from
+    // here resets the reconnect budget (it was a real session, not a connect flap).
+    let session_start = Instant::now();
 
     let mut frame_buffer = Vec::new();
     let mut read_buffer = [0_u8; 4096];
@@ -162,35 +269,40 @@ fn network_loop(
     let mut last_time_sync = Instant::now();
 
     loop {
+        // Proactively cycle the connection to rotate the auth token before it
+        // hard-expires server-side (only fires when the auth response advertised
+        // an `expires_in`; otherwise the reactive path on a real drop covers it).
+        if proactive_refresh_due(session_start.elapsed().as_secs_f64(), creds.expires_in_secs) {
+            return dropped("proactive token refresh before expiry".to_string(), true);
+        }
+
         while let Ok(command) = command_rx.try_recv() {
             if matches!(command, NetworkCommand::Shutdown) {
-                return;
+                return SessionOutcome {
+                    shutdown: true,
+                    connected: true,
+                    reason: None,
+                };
             }
 
-            let outcome = runtime.handle_command(&creds, command);
+            let outcome = runtime.handle_command(creds, command);
             if let Err(reason) = apply_runtime_outcome(
                 &mut runtime,
                 &mut stream,
                 &mut udp_socket,
-                &event_tx,
-                &observer,
+                event_tx,
+                observer,
                 outcome,
             ) {
-                emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-                return;
+                return dropped(reason, true);
             }
         }
 
         if last_heartbeat.elapsed() >= Duration::from_millis(config.heartbeat_interval_ms) {
             if let Some(message) = runtime.heartbeat_message() {
-                observe_outbound_message(&observer, "tcp", &message);
+                observe_outbound_message(observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected(format!("heartbeat send failed: {err}")),
-                    );
-                    return;
+                    return dropped(format!("heartbeat send failed: {err}"), true);
                 }
             }
             last_heartbeat = Instant::now();
@@ -198,14 +310,9 @@ fn network_loop(
 
         if last_time_sync.elapsed() >= Duration::from_millis(config.time_sync_interval_ms) {
             if let Some(message) = runtime.time_sync_message() {
-                observe_outbound_message(&observer, "tcp", &message);
+                observe_outbound_message(observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected(format!("time-sync send failed: {err}")),
-                    );
-                    return;
+                    return dropped(format!("time-sync send failed: {err}"), true);
                 }
             }
 
@@ -218,13 +325,12 @@ fn network_loop(
                 &mut runtime,
                 &mut stream,
                 &mut udp_socket,
-                &event_tx,
-                &observer,
+                event_tx,
+                observer,
                 retry_outcome,
             )
         {
-            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-            return;
+            return dropped(reason, true);
         }
 
         // Drain all currently-buffered TCP data this tick (bounded), instead of a
@@ -234,23 +340,13 @@ fn network_loop(
         for _ in 0..MAX_TCP_READS_PER_TICK {
             match stream.read(&mut read_buffer) {
                 Ok(0) => {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected("server closed the connection".to_string()),
-                    );
-                    return;
+                    return dropped("server closed the connection".to_string(), true);
                 }
                 Ok(n) => frame_buffer.extend_from_slice(&read_buffer[..n]),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => {
-                    emit_event(
-                        &observer,
-                        &event_tx,
-                        NetworkEvent::Disconnected(format!("socket read failed: {err}")),
-                    );
-                    return;
+                    return dropped(format!("socket read failed: {err}"), true);
                 }
             }
         }
@@ -258,34 +354,28 @@ fn network_loop(
         while let Some(frame) = take_frame(&mut frame_buffer) {
             match decode_server_payload(&frame) {
                 Ok(message) => {
-                    match runtime.handle_server_message(&creds, MessageTransport::Tcp, message) {
+                    match runtime.handle_server_message(creds, MessageTransport::Tcp, message) {
                         Ok(outcome) => {
                             if let Err(reason) = apply_runtime_outcome(
                                 &mut runtime,
                                 &mut stream,
                                 &mut udp_socket,
-                                &event_tx,
-                                &observer,
+                                event_tx,
+                                observer,
                                 outcome,
                             ) {
-                                emit_event(
-                                    &observer,
-                                    &event_tx,
-                                    NetworkEvent::Disconnected(reason),
-                                );
-                                return;
+                                return dropped(reason, true);
                             }
                         }
                         Err(reason) => {
-                            emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
-                            return;
+                            return dropped(reason, true);
                         }
                     }
                 }
                 Err(err) => {
                     emit_event(
-                        &observer,
-                        &event_tx,
+                        observer,
+                        event_tx,
                         NetworkEvent::Log(format!("decode error: {err}")),
                     );
                 }
@@ -299,7 +389,7 @@ fn network_loop(
                 match recv_result {
                     Ok(n) => match decode_server_payload(&udp_read_buffer[..n]) {
                         Ok(message) => match runtime.handle_server_message(
-                            &creds,
+                            creds,
                             MessageTransport::Udp,
                             message,
                         ) {
@@ -308,31 +398,21 @@ fn network_loop(
                                     &mut runtime,
                                     &mut stream,
                                     &mut udp_socket,
-                                    &event_tx,
-                                    &observer,
+                                    event_tx,
+                                    observer,
                                     outcome,
                                 ) {
-                                    emit_event(
-                                        &observer,
-                                        &event_tx,
-                                        NetworkEvent::Disconnected(reason),
-                                    );
-                                    return;
+                                    return dropped(reason, true);
                                 }
                             }
                             Err(reason) => {
-                                emit_event(
-                                    &observer,
-                                    &event_tx,
-                                    NetworkEvent::Disconnected(reason),
-                                );
-                                return;
+                                return dropped(reason, true);
                             }
                         },
                         Err(err) => {
                             emit_event(
-                                &observer,
-                                &event_tx,
+                                observer,
+                                event_tx,
                                 NetworkEvent::Log(format!("udp decode error: {err}")),
                             );
                         }
@@ -347,8 +427,8 @@ fn network_loop(
                             &mut runtime,
                             &mut stream,
                             &mut udp_socket,
-                            &event_tx,
-                            &observer,
+                            event_tx,
+                            observer,
                             outcome,
                         );
                         break;
