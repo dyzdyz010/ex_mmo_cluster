@@ -308,6 +308,31 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert observe_log =~ "lease_id: 9001"
   end
 
+  test "re-subscribing an already-subscribed chunk is a diff no-op (阶段4 step4.2)" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    put_voxel_region(781, region_id: System.unique_integer([:positive, :monotonic]))
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # 首订阅:worker 异步 route+subscribe,推首帧快照,落 voxel_subscriptions。
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(61, 781, {0, 0, 0}))
+    assert_receive {:gate_ws_send, <<0x62, _first::binary>>}
+    _ = :sys.get_state(pid)
+    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    assert map_size(subscriptions) == 1
+
+    # 再订阅同一 chunk:差集判定已订阅 → 不再投 worker / 不再打 ChunkDirectory → 不再推快照。
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(62, 781, {0, 0, 0}))
+    refute_receive {:gate_ws_send, <<0x62, _second::binary>>}, 100
+
+    assert %{voxel_subscriptions: subscriptions_after} = :sys.get_state(pid)
+    assert map_size(subscriptions_after) == 1
+  end
+
   test "rebinds voxel subscriptions after world migration cutover" do
     observe_path = observe_path("ws_chunk_subscribe_rebind.log")
     File.rm(observe_path)
