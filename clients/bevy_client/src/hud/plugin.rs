@@ -11,6 +11,8 @@ use crate::login::AppState;
 use crate::skill::TargetSelection;
 use crate::voxel::VoxelWorld;
 
+use super::GameLogs;
+
 /// Marker for the primary HUD text node spawned by `app::setup`.
 #[derive(Component)]
 pub struct HudText;
@@ -60,6 +62,7 @@ fn update_hud_text(
     chat_state: Res<ChatState>,
     voxel_world: Res<VoxelWorld>,
     target: Res<TargetSelection>,
+    logs: Res<GameLogs>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
     mut texts: HudTextParams,
     mut populated_once: Local<bool>,
@@ -82,6 +85,7 @@ fn update_hud_text(
         && !chat_state.is_changed()
         && !voxel_world.is_changed()
         && !target.is_changed()
+        && !logs.is_changed()
         && !selection_state.is_changed()
     {
         return;
@@ -161,8 +165,8 @@ fn update_hud_text(
             .unwrap_or_else(|| "n/a".to_string()),
     );
 
-    let recent_chat = world_state
-        .chat_log
+    let recent_chat = logs
+        .chat
         .iter()
         .rev()
         .take(5)
@@ -171,8 +175,8 @@ fn update_hud_text(
         .into_iter()
         .rev()
         .collect::<Vec<_>>();
-    let recent_logs = world_state
-        .logs
+    let recent_logs = logs
+        .general
         .iter()
         .rev()
         .take(4)

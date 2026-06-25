@@ -38,6 +38,7 @@ fn handle_skill_input(
     chat_state: Res<ChatState>,
     mut world_state: ResMut<WorldState>,
     mut connection: ResMut<ConnectionState>,
+    mut logs: ResMut<crate::hud::GameLogs>,
     target: Res<TargetSelection>,
 ) {
     if chat_state.enabled {
@@ -51,19 +52,19 @@ fn handle_skill_input(
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 1);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 1);
     }
 
     if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 2);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 2);
     }
 
     if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 3);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 3);
     }
 
     if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &target, 4);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, &mut logs, &target, 4);
     }
 }
 
@@ -192,11 +193,13 @@ fn handle_point_target_input(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_targeted_skill(
     bridge: &NetworkBridge,
     observer: &ClientObserver,
     world_state: &mut WorldState,
     connection: &mut ConnectionState,
+    logs: &mut crate::hud::GameLogs,
     target: &TargetSelection,
     skill_id: u16,
 ) {
@@ -215,7 +218,7 @@ fn send_targeted_skill(
         Err(block) => {
             let message = format!("skill {skill_id} blocked: {}", block.reason);
             connection.status = message.clone();
-            push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
+            push_line(&mut logs.general, format!("{message} ({})", block.hint));
             observer.emit(
                 "input",
                 "skill_blocked",

@@ -10,6 +10,7 @@ use crate::app::{
     LocalRenderPrediction, MovementIntent, WorldState, push_line, schedule::ClientSet,
     voxel_save_dir,
 };
+use crate::hud::GameLogs;
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
 use crate::session::ConnectionState;
@@ -47,6 +48,7 @@ struct StdioCommandParams<'w> {
     world_state: ResMut<'w, WorldState>,
     connection: ResMut<'w, ConnectionState>,
     target: ResMut<'w, TargetSelection>,
+    logs: ResMut<'w, GameLogs>,
     movement_intent: ResMut<'w, MovementIntent>,
     app_exit: MessageWriter<'w, AppExit>,
 }
@@ -68,9 +70,10 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         local_render_prediction,
         mut voxel_world,
         voxel_authority,
-        mut world_state,
+        world_state,
         mut connection,
         mut target,
+        mut logs,
         mut movement_intent,
         mut app_exit,
     } = params;
@@ -240,7 +243,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     Err(block) => {
                         let message = format!("skill {skill_id} blocked: {}", block.reason);
                         connection.status = message.clone();
-                        push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
+                        push_line(&mut logs.general, format!("{message} ({})", block.hint));
                         emit_stdio(
                             "skill_blocked",
                             &[
@@ -497,16 +500,16 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                 crate::stdio::emit_voxel_surface_list(&voxel_authority.store, chunk_coord);
             }
             ClientStdioCommand::ChatLog { count } => {
-                crate::stdio::emit_event_log("chat_log", &world_state.chat_log, count);
+                crate::stdio::emit_event_log("chat_log", &logs.chat, count);
             }
             ClientStdioCommand::SkillLog { count } => {
-                crate::stdio::emit_event_log("skill_log", &world_state.skill_log, count);
+                crate::stdio::emit_event_log("skill_log", &logs.skill, count);
             }
             ClientStdioCommand::CombatLog { count } => {
-                crate::stdio::emit_event_log("combat_log", &world_state.combat_log, count);
+                crate::stdio::emit_event_log("combat_log", &logs.combat, count);
             }
             ClientStdioCommand::EffectLog { count } => {
-                crate::stdio::emit_event_log("effect_log", &world_state.effect_log, count);
+                crate::stdio::emit_event_log("effect_log", &logs.effect, count);
             }
             ClientStdioCommand::Echo { text } => {
                 emit_stdio("echo", &[("text", text)]);

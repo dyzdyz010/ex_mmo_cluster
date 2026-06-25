@@ -9,6 +9,7 @@ use crate::app::{
     schedule::ClientSet, sim_to_render_position,
 };
 use crate::effects::{EffectVisual, effect_spawn_translation};
+use crate::hud::GameLogs;
 use crate::login::AppState;
 use crate::session::ConnectionState;
 use crate::skill::TargetSelection;
@@ -66,7 +67,7 @@ const SUBSCRIBE_RETRY_MAX_INTERVAL_SECS: f32 = 3.0;
 fn voxel_subscribe_retry(
     time: Res<Time>,
     bridge: Res<NetworkBridge>,
-    mut world_state: ResMut<WorldState>,
+    mut logs: ResMut<GameLogs>,
     connection: Res<ConnectionState>,
     mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
@@ -96,7 +97,7 @@ fn voxel_subscribe_retry(
     }
     retry.attempts += 1;
     push_line(
-        &mut world_state.logs,
+        &mut logs.general,
         format!(
             "voxel subscribe retry {}/{} (0 chunks loaded)",
             retry.attempts, MAX_SUBSCRIBE_RETRIES
@@ -104,7 +105,7 @@ fn voxel_subscribe_retry(
     );
     subscribe_voxel_around(
         &bridge,
-        &mut world_state,
+        &mut logs,
         &mut voxel_aoi,
         &mut voxel_authority,
         center,
@@ -118,7 +119,7 @@ fn voxel_subscribe_retry(
         .set_duration(std::time::Duration::from_secs_f32(next_interval));
     if retry.attempts == MAX_SUBSCRIBE_RETRIES {
         push_line(
-            &mut world_state.logs,
+            &mut logs.general,
             "voxel: still 0 chunks after max resubscribes (terrain may be absent server-side)"
                 .to_string(),
         );
@@ -253,7 +254,7 @@ fn aoi_target_center(
 /// the client store grows unbounded for the whole session.
 fn subscribe_voxel_around(
     bridge: &NetworkBridge,
-    world_state: &mut WorldState,
+    logs: &mut GameLogs,
     voxel_aoi: &mut crate::voxel::VoxelAoiState,
     authority: &mut crate::voxel::VoxelAuthority,
     center_chunk: [i32; 3],
@@ -281,7 +282,7 @@ fn subscribe_voxel_around(
                 chunks: dropped.clone(),
             });
             push_line(
-                &mut world_state.logs,
+                &mut logs.general,
                 format!("voxel unsubscribe {} chunks leaving AOI", dropped.len()),
             );
         }
@@ -289,7 +290,7 @@ fn subscribe_voxel_around(
 
     voxel_aoi.subscribed_center = Some(center_chunk);
     push_line(
-        &mut world_state.logs,
+        &mut logs.general,
         format!("voxel subscribe center={center_chunk:?} radius={VOXEL_SUBSCRIBE_RADIUS}"),
     );
 }
@@ -307,6 +308,7 @@ fn poll_network_events(
     mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut target: ResMut<TargetSelection>,
+    mut logs: ResMut<GameLogs>,
     mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
     let receiver = match bridge.rx.lock() {
@@ -322,7 +324,7 @@ fn poll_network_events(
             connection.status =
                 "network bridge mutex poisoned (network thread panicked)".to_string();
             push_line(
-                &mut world_state.logs,
+                &mut logs.general,
                 "network bridge mutex poisoned; receiver recovered, but the network thread is dead — please restart"
                     .to_string(),
             );
@@ -337,7 +339,7 @@ fn poll_network_events(
                 if stdio.is_enabled() {
                     emit_stdio("status", &[("message", status.clone())]);
                 }
-                push_line(&mut world_state.logs, status);
+                push_line(&mut logs.general, status);
             }
             NetworkEvent::EnteredScene { cid, location } => {
                 connection.scene_joined = true;
@@ -355,7 +357,7 @@ fn poll_network_events(
                 target.cid = None;
                 target.point = None;
                 movement_dispatch.stop_sent = true;
-                push_line(&mut world_state.logs, format!("entered scene cid={cid}"));
+                push_line(&mut logs.general, format!("entered scene cid={cid}"));
 
                 // Auto-subscribe to the voxel chunks around the spawn so the
                 // server-authoritative renderer (VoxelChunkRenderPlugin) gets data
@@ -366,7 +368,7 @@ fn poll_network_events(
                 voxel_aoi.aoi_anchor = Some(voxel_chunk_of(location));
                 subscribe_voxel_around(
                     &bridge,
-                    &mut world_state,
+                    &mut logs,
                     &mut voxel_aoi,
                     &mut voxel_authority,
                     voxel_chunk_of(location),
@@ -404,7 +406,7 @@ fn poll_network_events(
                     voxel_aoi.aoi_anchor = Some(anchor);
                     subscribe_voxel_around(
                         &bridge,
-                        &mut world_state,
+                        &mut logs,
                         &mut voxel_aoi,
                         &mut voxel_authority,
                         center,
@@ -434,7 +436,7 @@ fn poll_network_events(
                         ],
                     );
                 }
-                push_line(&mut world_state.logs, format!("player {cid} entered AOI"));
+                push_line(&mut logs.general, format!("player {cid} entered AOI"));
             }
             NetworkEvent::PlayerMove {
                 snapshot,
@@ -460,7 +462,7 @@ fn poll_network_events(
                 if target.cid == Some(cid) {
                     target.cid = None;
                 }
-                push_line(&mut world_state.logs, format!("player {cid} left AOI"));
+                push_line(&mut logs.general, format!("player {cid} left AOI"));
             }
             NetworkEvent::ActorIdentity { cid, kind, name } => {
                 world_state.remote_actor_identity.insert(
@@ -472,7 +474,7 @@ fn poll_network_events(
                     },
                 );
                 push_line(
-                    &mut world_state.logs,
+                    &mut logs.general,
                     format!("actor: cid={cid} kind={:?} name={name}", kind),
                 );
             }
@@ -492,7 +494,7 @@ fn poll_network_events(
                     );
                 }
                 push_line(
-                    &mut world_state.chat_log,
+                    &mut logs.chat,
                     format!("[{cid}/{username}] {text}"),
                 );
             }
@@ -504,11 +506,11 @@ fn poll_network_events(
                     );
                 }
                 push_line(
-                    &mut world_state.logs,
+                    &mut logs.general,
                     format!("skill event: cid={cid} skill={skill_id}"),
                 );
                 push_line(
-                    &mut world_state.skill_log,
+                    &mut logs.skill,
                     format!("{cid} skill={skill_id}"),
                 );
             }
@@ -540,7 +542,7 @@ fn poll_network_events(
                     );
                 }
                 push_line(
-                    &mut world_state.logs,
+                    &mut logs.general,
                     format!("state: cid={cid} hp={hp}/{max_hp} alive={alive}"),
                 );
             }
@@ -565,13 +567,13 @@ fn poll_network_events(
                     );
                 }
                 push_line(
-                    &mut world_state.logs,
+                    &mut logs.general,
                     format!(
                         "combat: {source_cid} -> {target_cid} skill={skill_id} damage={damage} hp_after={hp_after}"
                     ),
                 );
                 push_line(
-                    &mut world_state.combat_log,
+                    &mut logs.combat,
                     format!(
                         "{source_cid}->{target_cid} skill={skill_id} damage={damage} hp_after={hp_after}"
                     ),
@@ -588,7 +590,7 @@ fn poll_network_events(
                 ..
             } => {
                 push_line(
-                    &mut world_state.effect_log,
+                    &mut logs.effect,
                     format!("{source_cid} skill={skill_id} cue={cue_kind:?}"),
                 );
                 let origin_world = net_to_world(origin);
@@ -662,7 +664,7 @@ fn poll_network_events(
                     if result.is_failure() {
                         edit_feedback.flash_failure(&result.reason, time.elapsed_secs());
                         push_line(
-                            &mut world_state.logs,
+                            &mut logs.general,
                             format!(
                                 "voxel edit {} (seq {}): {}",
                                 result.result_label(),
@@ -680,7 +682,7 @@ fn poll_network_events(
                 if stdio.is_enabled() {
                     emit_stdio("log", &[("line", line.clone())]);
                 }
-                push_line(&mut world_state.logs, line)
+                push_line(&mut logs.general, line)
             }
             NetworkEvent::Disconnected(reason) => {
                 connection.scene_joined = false;
@@ -702,7 +704,7 @@ fn poll_network_events(
                 if stdio.is_enabled() {
                     emit_stdio("disconnected", &[("reason", reason.clone())]);
                 }
-                push_line(&mut world_state.logs, format!("disconnect: {reason}"));
+                push_line(&mut logs.general, format!("disconnect: {reason}"));
             }
         }
     }

@@ -4,7 +4,7 @@
 //!
 //! This is the largest plugin: it drives most of the on-screen voxel
 //! interaction and consumes the `MainCamera` (from `crate::camera`),
-//! `SceneRenderAssets` (from `crate::app`), `WorldState`, and the voxel
+//! `SceneRenderAssets` (from `crate::app`), `hud::GameLogs`, and the voxel
 //! world Resource itself.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::app::{
-    SceneRenderAssets, WorldState, push_line, ray_from_viewport, sim_to_render_position,
+    SceneRenderAssets, push_line, ray_from_viewport, sim_to_render_position,
 };
 use crate::camera::{MainCamera, OrbitCameraState};
 use crate::chat::ChatState;
@@ -166,7 +166,7 @@ struct VoxelInputParams<'w, 's> {
     observer: Res<'w, ClientObserver>,
     selection_state: Res<'w, VoxelSelectionState>,
     voxel_world: ResMut<'w, VoxelWorld>,
-    world_state: ResMut<'w, WorldState>,
+    logs: ResMut<'w, crate::hud::GameLogs>,
 }
 
 fn update_voxel_selection(
@@ -194,7 +194,7 @@ fn handle_voxel_input(params: VoxelInputParams) {
         observer,
         selection_state,
         mut voxel_world,
-        mut world_state,
+        mut logs,
     } = params;
 
     if chat_state.enabled {
@@ -281,7 +281,7 @@ fn handle_voxel_input(params: VoxelInputParams) {
             ],
         );
         push_line(
-            &mut world_state.logs,
+            &mut logs.general,
             format!(
                 "voxel break {} ok={ok}",
                 crate::voxel::format_macro_coord(coord)
@@ -349,7 +349,7 @@ fn handle_voxel_input(params: VoxelInputParams) {
             ],
         );
         push_line(
-            &mut world_state.logs,
+            &mut logs.general,
             format!(
                 "voxel place {} selected={} ok={ok}",
                 crate::voxel::format_macro_coord(coord),
