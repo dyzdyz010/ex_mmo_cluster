@@ -43,6 +43,13 @@ config :world_server, :default_voxel_region_bootstrap,
   retry_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_RETRY_MS", "1000")),
   refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000"))
 
+# 阶段3 运行时 WorldGen:出生点及一切首触达且 DB 无行的 chunk 由 ChunkProcess 确定性程序化
+# 生成基线地形(version 0,不持久化)。**test 环境关闭**——既有单测启 ChunkProcess 期望空 chunk;
+# dev/prod 默认开,`VOXEL_WORLDGEN=0` 可关,`VOXEL_WORLD_SEED` 选世界种子。
+config :scene_server, :voxel_worldgen,
+  enabled?: config_env() != :test and System.get_env("VOXEL_WORLDGEN", "1") != "0",
+  seed: String.to_integer(System.get_env("VOXEL_WORLD_SEED", "1337"))
+
 # ---------------------------------------------------------------------------
 # gate_server listen ports (env-driven so prod container can remap)
 # ---------------------------------------------------------------------------

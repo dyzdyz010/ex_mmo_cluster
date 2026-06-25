@@ -37,6 +37,10 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
       logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
       retry_ms: Keyword.get(opts, :retry_ms, @default_retry_ms),
       refresh_ms: Keyword.get(opts, :refresh_ms, @default_refresh_ms),
+      # 阶段7-bis:出生点地形现在由 ChunkProcess 首触达懒 WorldGen 生成,bootstrapper 只
+      # 预物化出生点 region(暖启,省掉首次订阅等物化),不再 bulk-seed 地形 → 冷启动不再
+      # 背一次性 seed 的 DB I/O。设 seed_terrain?: true 可恢复旧 bulk-seed(默认关)。
+      seed_terrain?: Keyword.get(opts, :seed_terrain?, false),
       seed_fun: Keyword.get(opts, :seed_fun, &DevSeed.ensure_default_region/1),
       attempts: 0,
       last_error: nil,
@@ -69,7 +73,7 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
 
   defp prepare_region(state) do
     attempts = state.attempts + 1
-    opts = [logical_scene_id: state.logical_scene_id]
+    opts = [logical_scene_id: state.logical_scene_id, seed_terrain?: state.seed_terrain?]
 
     case call_seed(state.seed_fun, opts) do
       {:ok, summary} ->
