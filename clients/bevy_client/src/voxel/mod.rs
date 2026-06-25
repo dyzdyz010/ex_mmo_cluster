@@ -48,7 +48,7 @@ pub mod surface_decal;
 pub mod wire;
 pub mod world;
 
-pub use authority_plugin::{VoxelAuthority, VoxelAuthorityPlugin};
+pub use authority_plugin::{VoxelAoiState, VoxelAuthority, VoxelAuthorityPlugin};
 pub use chunk_render::VoxelChunkRenderPlugin;
 pub use debris_render::DebrisEffectPlugin;
 pub use field_render::VoxelFieldRenderPlugin;

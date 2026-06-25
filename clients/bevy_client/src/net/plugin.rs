@@ -67,6 +67,7 @@ fn voxel_subscribe_retry(
     bridge: Res<NetworkBridge>,
     mut world_state: ResMut<WorldState>,
     connection: Res<ConnectionState>,
+    mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut retry: ResMut<VoxelSubscribeRetry>,
 ) {
@@ -74,7 +75,7 @@ fn voxel_subscribe_retry(
         return;
     }
     // Only meaningful once joined with a subscription center recorded.
-    let Some(center) = world_state.voxel_subscribed_center else {
+    let Some(center) = voxel_aoi.subscribed_center else {
         return;
     };
     if !connection.scene_joined {
@@ -100,7 +101,13 @@ fn voxel_subscribe_retry(
             retry.attempts, MAX_SUBSCRIBE_RETRIES
         ),
     );
-    subscribe_voxel_around(&bridge, &mut world_state, &mut voxel_authority, center);
+    subscribe_voxel_around(
+        &bridge,
+        &mut world_state,
+        &mut voxel_aoi,
+        &mut voxel_authority,
+        center,
+    );
     // Gentle backoff: ramp the interval from 1s toward a 3s cap so 40 attempts
     // span ~90s of warm-up tolerance instead of hammering once per second.
     let next_interval =
@@ -246,6 +253,7 @@ fn aoi_target_center(
 fn subscribe_voxel_around(
     bridge: &NetworkBridge,
     world_state: &mut WorldState,
+    voxel_aoi: &mut crate::voxel::VoxelAoiState,
     authority: &mut crate::voxel::VoxelAuthority,
     center_chunk: [i32; 3],
 ) {
@@ -259,7 +267,7 @@ fn subscribe_voxel_around(
         known: authority.store.known_versions(),
     });
 
-    if let Some(old_center) = world_state.voxel_subscribed_center
+    if let Some(old_center) = voxel_aoi.subscribed_center
         && old_center != center_chunk
     {
         let dropped = chunks_falling_out(old_center, center_chunk, VOXEL_SUBSCRIBE_RADIUS as i32);
@@ -278,7 +286,7 @@ fn subscribe_voxel_around(
         }
     }
 
-    world_state.voxel_subscribed_center = Some(center_chunk);
+    voxel_aoi.subscribed_center = Some(center_chunk);
     push_line(
         &mut world_state.logs,
         format!("voxel subscribe center={center_chunk:?} radius={VOXEL_SUBSCRIBE_RADIUS}"),
@@ -295,6 +303,7 @@ fn poll_network_events(
     mut connection: ResMut<ConnectionState>,
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
+    mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
@@ -351,11 +360,12 @@ fn poll_network_events(
                 // without manual CLI. logical_scene_id defaults to 1 (no protocol
                 // field carries it yet — see M1.8d note). The follow-up in
                 // `LocalPosition` re-subscribes as the player crosses chunks (AOI).
-                world_state.voxel_subscribed_center = None;
-                world_state.voxel_aoi_anchor = Some(voxel_chunk_of(location));
+                voxel_aoi.subscribed_center = None;
+                voxel_aoi.aoi_anchor = Some(voxel_chunk_of(location));
                 subscribe_voxel_around(
                     &bridge,
                     &mut world_state,
+                    &mut voxel_aoi,
                     &mut voxel_authority,
                     voxel_chunk_of(location),
                 );
@@ -387,10 +397,16 @@ fn poll_network_events(
                 // LocalPosition updates in one frame naturally merge — each re-anchor
                 // updates `voxel_aoi_anchor`, so only a genuine deadzone exit triggers.
                 if let Some((anchor, center)) =
-                    aoi_target_center(location, velocity, world_state.voxel_aoi_anchor)
+                    aoi_target_center(location, velocity, voxel_aoi.aoi_anchor)
                 {
-                    world_state.voxel_aoi_anchor = Some(anchor);
-                    subscribe_voxel_around(&bridge, &mut world_state, &mut voxel_authority, center);
+                    voxel_aoi.aoi_anchor = Some(anchor);
+                    subscribe_voxel_around(
+                        &bridge,
+                        &mut world_state,
+                        &mut voxel_aoi,
+                        &mut voxel_authority,
+                        center,
+                    );
                 }
             }
             NetworkEvent::PlayerEnter { cid, location } => {

@@ -26,6 +26,24 @@ use crate::voxel::wire::{
 /// scene for now). Shared with the live build path (construction system).
 pub(crate) const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
+/// Voxel AOI subscription geometry — which chunk the subscription box is centered
+/// on and which chunk it's anchored to (架构重整阶段2:从 `WorldState` god-resource
+/// 收口到 voxel 域)。Drives the AOI follow re-subscribe / unsubscribe diff in
+/// `net::plugin`. Conceptually voxel-domain state even though only the net layer's
+/// subscription bookkeeping mutates it.
+#[derive(Resource, Default)]
+pub struct VoxelAoiState {
+    /// The chunk coord the voxel subscription box is currently centered on. May
+    /// be **led** ahead of the player along their velocity (阶段4 step4.5 预取),
+    /// so it is not necessarily the player's own chunk. Drives the unsubscribe
+    /// diff for chunks leaving the AOI.
+    pub subscribed_center: Option<[i32; 3]>,
+    /// The chunk the AOI is **anchored** to — the player's own chunk at the last
+    /// re-subscribe. Hysteresis (阶段4 step4.5) is measured against this anchor so
+    /// hovering on a chunk boundary does not thrash subscribe/unsubscribe.
+    pub aoi_anchor: Option<[i32; 3]>,
+}
+
 /// Ordering anchor for the inbox drain. `ingest_voxel_messages` (which surfaces
 /// the per-frame ObjectState / ElectricSnapshot / destroyed-region events)
 /// belongs to this set; the effect adapters (debris, heat smoke) run
