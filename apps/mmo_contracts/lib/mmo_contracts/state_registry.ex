@@ -49,7 +49,14 @@ defmodule MmoContracts.StateRegistry do
       state_class: :durable_authoritative,
       app: :data_service,
       spec: "PERS-5/CELL-23",
-      note: "region 所有权目录/owner_epoch/lease 持久化"
+      note: "region 所有权目录/owner_epoch/lease 持久化(单行 blob,阶段2 起被 per-region 目录取代)"
+    },
+    %{
+      holder: DataService.Voxel.RegionDirectoryStore,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "PERS-5/CELL-23",
+      note: "per-region durable 所有权目录(阶段2 scale-first:每 region 一行,O(1) per change,可分片)"
     },
     %{
       holder: DataService.Voxel.WriteTokenStore,
