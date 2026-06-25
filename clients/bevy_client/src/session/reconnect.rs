@@ -33,19 +33,21 @@ pub fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(millis).min(MAX_BACKOFF)
 }
 
-/// Whether a still-connected session should proactively reconnect to refresh its
-/// auth token before it hard-expires.
+/// Whether a still-connected session has used enough of its token TTL that it
+/// *would* warrant a proactive refresh before the token hard-expires.
 ///
-/// The dev auth server issues a `Phoenix.Token` with a fixed `max_age` but does
-/// not (yet) expose a refresh endpoint, so the only way to rotate the token is a
-/// fresh `auto_login`. Rather than let a long-lived session die mid-action when
-/// the token finally expires server-side, we proactively cycle the connection at
-/// `REFRESH_FRACTION` of the advertised TTL — a brief reconnect blip instead of a
-/// hard failure.
+/// **Documented seam — not currently wired into the network thread.** Refreshing
+/// the token today means a full `auto_login` + reconnect, which tears down and
+/// rebuilds the visible world (复审 finding: a proactive reconnect surfaced a hard
+/// "disconnected" + world teardown, not the intended silent blip). A truly silent
+/// refresh needs a server-side refresh endpoint that rotates the token on the live
+/// connection — deferred auth_server work. Until then the **reactive** path covers
+/// expiry correctly: any real drop (including a server rejecting an expired token)
+/// re-auths and reconnects, rotating the token. This pure predicate + its tests
+/// stay as the policy seam for when that endpoint lands.
 ///
 /// Returns `false` when `expires_in_secs` is `None` (the server didn't advertise
-/// a TTL), so behaviour is unchanged until the auth response carries `expires_in`
-/// — the reactive reconnect path still refreshes the token on any real drop.
+/// a TTL — the dev auth response currently omits it).
 pub fn proactive_refresh_due(session_age_secs: f64, expires_in_secs: Option<u64>) -> bool {
     /// Reconnect once the session has used this fraction of the token's TTL.
     const REFRESH_FRACTION: f64 = 0.9;

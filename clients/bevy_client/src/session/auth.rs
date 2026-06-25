@@ -28,11 +28,23 @@ struct AutoLoginResponse {
 
 /// Issues a blocking POST to `{auth_addr}/ingame/auto_login` and returns credentials.
 pub fn auto_login(auth_addr: &str, username: &str) -> Result<SessionCredentials, String> {
+    auto_login_with_timeout(auth_addr, username, AUTO_LOGIN_TIMEOUT)
+}
+
+/// As [`auto_login`] but with a caller-chosen per-operation timeout. The reconnect
+/// path (阶段4) uses a shorter timeout than the initial login so a hung auth server
+/// during a reconnect storm does not block the network thread (and a queued
+/// `Shutdown`) for the full 30s login budget per attempt.
+pub fn auto_login_with_timeout(
+    auth_addr: &str,
+    username: &str,
+    timeout: Duration,
+) -> Result<SessionCredentials, String> {
     let url = format!("{}/ingame/auto_login", auth_addr.trim_end_matches('/'));
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(AUTO_LOGIN_TIMEOUT)
-        .timeout_read(AUTO_LOGIN_TIMEOUT)
-        .timeout_write(AUTO_LOGIN_TIMEOUT)
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .timeout_write(timeout)
         .build();
     let response = match agent
         .post(&url)

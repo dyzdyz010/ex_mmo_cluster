@@ -126,6 +126,21 @@ pub(super) fn apply_event(
             state.selected_target_cid = None;
             state.selected_target_point = None;
         }
+        // 阶段4:mirror the GUI's reconnect lifecycle into the headless status so
+        // automation querying `snapshot`/`status` can distinguish "still retrying"
+        // from "gave up — restart required" (复审 finding: headless reducer dropped
+        // both reconnect events via the catchall).
+        NetworkEvent::Reconnecting {
+            attempt,
+            max_attempts,
+        } => {
+            state.scene_joined = false;
+            state.status = format!("reconnecting (attempt {attempt}/{max_attempts})");
+        }
+        NetworkEvent::ReconnectFailed => {
+            state.scene_joined = false;
+            state.status = "reconnect failed — please restart the client".to_string();
+        }
         NetworkEvent::PlayerEnter { cid, location } => {
             state.remote_players.insert(cid, vec3_from_net(location));
         }

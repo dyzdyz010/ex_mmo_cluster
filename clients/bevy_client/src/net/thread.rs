@@ -13,7 +13,7 @@ use std::{
     net::{TcpStream, UdpSocket},
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread,
     time::{Duration, Instant},
@@ -23,8 +23,14 @@ use crate::config::ClientConfig;
 use crate::observe::ClientObserver;
 use crate::protocol::{ClientMessage, decode_server_payload, take_frame};
 use crate::session::SessionCredentials;
-use crate::session::auth::auto_login;
-use crate::session::reconnect::{MAX_RECONNECT_ATTEMPTS, backoff_delay, proactive_refresh_due};
+use crate::session::auth::auto_login_with_timeout;
+use crate::session::reconnect::{MAX_RECONNECT_ATTEMPTS, backoff_delay};
+
+/// Per-attempt auth timeout on the reconnect path — shorter than the initial
+/// login's 30s so a hung auth server during a reconnect storm doesn't block the
+/// thread (and a queued `Shutdown`) for the full login budget each attempt
+/// (复审 finding: Shutdown unresponsive during blocking re-auth).
+const RECONNECT_AUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
 use super::events::{MessageTransport, NetworkBridge, NetworkCommand, NetworkEvent};
 use super::observe::{emit_event, observe_outbound_message};
@@ -52,9 +58,11 @@ pub fn spawn_network_thread(
 struct SessionOutcome {
     /// The app asked the thread to stop (`NetworkCommand::Shutdown`).
     shutdown: bool,
-    /// The session reached the connected serve loop at least once. Used to reset
-    /// the reconnect attempt budget on a fresh drop (a long-lived session that
-    /// finally drops gets the full budget again, not the tail of an earlier flap).
+    /// The session reached a confirmed scene entry (`EnteredScene`) before dropping.
+    /// Used to reset the reconnect attempt budget on a fresh drop (a genuine session
+    /// that finally drops gets the full budget again) while NOT resetting it for a
+    /// connect/auth flap that never joined a scene (so a persistently-failing server
+    /// escalates to `ReconnectFailed`).
     connected: bool,
     /// Drop reason, when not a clean shutdown.
     reason: Option<String>,
@@ -77,9 +85,20 @@ fn network_loop(
                 "missing session token: auto_login did not return a token".to_string(),
             ),
         );
+        // Unrecoverable: no socket retry rotates a token `auto_login` never
+        // returned. Surface the terminal Failed phase rather than a frozen
+        // Reconnecting that never advances (复审 finding: empty-token early exit
+        // mapped to non-terminal Reconnecting{0}).
+        emit_event(&observer, &event_tx, NetworkEvent::ReconnectFailed);
         return;
     }
 
+    // Consecutive failed reconnect attempts. Reset to 0 ONLY when a session that
+    // actually joined a scene drops (a genuine session, not a connect/auth flap) —
+    // so a server that keeps rejecting auth / closing right after the handshake is
+    // counted against the budget and eventually escalates to ReconnectFailed
+    // instead of looping forever (复审 finding: budget reset keyed on auth-bytes-
+    // sent defeated the give-up guard).
     let mut attempt = 0u32;
     loop {
         let outcome = run_session(&config, &creds, &observer, &command_rx, &event_tx);
@@ -91,12 +110,12 @@ fn network_loop(
             .unwrap_or_else(|| "connection lost".to_string());
 
         if outcome.connected {
-            // A real session ended → fresh disconnect; reset the budget.
+            // A scene-joined session ended → fresh disconnect; reset the budget.
             attempt = 0;
             emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
         } else if attempt == 0 {
-            // Never connected on the first try → surface the initial disconnect.
-            // Subsequent never-connected tries are reported as `Reconnecting`.
+            // First failure of a never-joined run → surface the initial disconnect.
+            // Subsequent never-joined tries are reported via `Reconnecting` below.
             emit_event(&observer, &event_tx, NetworkEvent::Disconnected(reason));
         }
 
@@ -105,6 +124,14 @@ fn network_loop(
             emit_event(&observer, &event_tx, NetworkEvent::ReconnectFailed);
             return;
         }
+
+        if sleep_with_shutdown(backoff_delay(attempt), &command_rx) {
+            return; // Shutdown requested (or the app dropped the bridge) during backoff.
+        }
+
+        // Surface 'now retrying' AFTER the backoff so the 'just dropped'
+        // (Disconnected) and the 'reconnecting' phase are distinct observable
+        // states rather than coalesced into one frame.
         emit_event(
             &observer,
             &event_tx,
@@ -114,14 +141,15 @@ fn network_loop(
             },
         );
 
-        if sleep_with_shutdown(backoff_delay(attempt), &command_rx) {
-            return; // Shutdown requested during backoff.
-        }
-
         // Re-authenticate to rotate the (possibly expired) token before the next
         // connect. On failure keep the existing token and let the connect attempt
-        // fail → the next backoff cycle re-auths again.
-        match auto_login(&config.auth_addr, &creds.username) {
+        // fail → the next backoff cycle re-auths again. Short timeout so a hung
+        // auth server doesn't wedge Shutdown responsiveness.
+        match auto_login_with_timeout(
+            &config.auth_addr,
+            &creds.username,
+            RECONNECT_AUTH_TIMEOUT,
+        ) {
             Ok(fresh) => creds = fresh,
             Err(err) => emit_event(
                 &observer,
@@ -136,13 +164,19 @@ fn network_loop(
 
 /// Sleeps for `total`, polling `command_rx` for `Shutdown` every ≤100ms so the
 /// thread stays responsive to a quit during backoff. Returns `true` if Shutdown
-/// was requested (other commands seen during the wait are stale and discarded).
+/// was requested OR the command channel closed (the app dropped the bridge → stop
+/// the thread rather than reconnect forever; 复审 finding: closed channel was
+/// indistinguishable from empty). Other commands seen during the wait are stale
+/// and discarded.
 fn sleep_with_shutdown(total: Duration, command_rx: &Receiver<NetworkCommand>) -> bool {
     let deadline = Instant::now() + total;
     loop {
-        while let Ok(command) = command_rx.try_recv() {
-            if matches!(command, NetworkCommand::Shutdown) {
-                return true;
+        loop {
+            match command_rx.try_recv() {
+                Ok(NetworkCommand::Shutdown) => return true,
+                Ok(_) => continue,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return true,
             }
         }
         let now = Instant::now();
@@ -154,8 +188,8 @@ fn sleep_with_shutdown(total: Duration, command_rx: &Receiver<NetworkCommand>) -
 }
 
 /// Runs exactly one connect → authenticate → serve session. Returns when the
-/// connection drops, the app requests shutdown, or a proactive token refresh is
-/// due. NEVER reconnects itself — that is [`network_loop`]'s job.
+/// connection drops or the app requests shutdown. NEVER reconnects itself — that
+/// is [`network_loop`]'s job.
 fn run_session(
     config: &ClientConfig,
     creds: &SessionCredentials,
@@ -165,14 +199,18 @@ fn run_session(
 ) -> SessionOutcome {
     // Discard any stale commands queued while we were disconnected (movement /
     // voxel edits aimed at the previous, now-dead session) — but honour a
-    // Shutdown that arrived in the gap.
-    while let Ok(command) = command_rx.try_recv() {
-        if matches!(command, NetworkCommand::Shutdown) {
-            return SessionOutcome {
-                shutdown: true,
-                connected: false,
-                reason: None,
-            };
+    // Shutdown (or a closed channel = app gone) that arrived in the gap.
+    loop {
+        match command_rx.try_recv() {
+            Ok(NetworkCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
+                return SessionOutcome {
+                    shutdown: true,
+                    connected: false,
+                    reason: None,
+                };
+            }
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => break,
         }
     }
 
@@ -254,9 +292,12 @@ fn run_session(
         );
     }
 
-    // Auth bytes are on the wire → treat the session as connected. A drop from
-    // here resets the reconnect budget (it was a real session, not a connect flap).
-    let session_start = Instant::now();
+    // Whether the server has confirmed scene entry (`EnteredScene`). The reconnect
+    // budget resets ONLY for a drop after this is true — a connect/auth-send that
+    // the server rejects or closes before scene entry counts against the budget so
+    // a persistently-failing server escalates to ReconnectFailed instead of looping
+    // forever (复审 finding: budget reset was keyed on auth-bytes-sent).
+    let mut entered_scene = false;
 
     let mut frame_buffer = Vec::new();
     let mut read_buffer = [0_u8; 4096];
@@ -269,21 +310,20 @@ fn run_session(
     let mut last_time_sync = Instant::now();
 
     loop {
-        // Proactively cycle the connection to rotate the auth token before it
-        // hard-expires server-side (only fires when the auth response advertised
-        // an `expires_in`; otherwise the reactive path on a real drop covers it).
-        if proactive_refresh_due(session_start.elapsed().as_secs_f64(), creds.expires_in_secs) {
-            return dropped("proactive token refresh before expiry".to_string(), true);
-        }
-
-        while let Ok(command) = command_rx.try_recv() {
-            if matches!(command, NetworkCommand::Shutdown) {
-                return SessionOutcome {
-                    shutdown: true,
-                    connected: true,
-                    reason: None,
-                };
-            }
+        loop {
+            let command = match command_rx.try_recv() {
+                Ok(NetworkCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
+                    // Shutdown, or the app dropped the bridge (channel closed) →
+                    // stop the thread rather than treat it as a reconnectable drop.
+                    return SessionOutcome {
+                        shutdown: true,
+                        connected: entered_scene,
+                        reason: None,
+                    };
+                }
+                Ok(command) => command,
+                Err(TryRecvError::Empty) => break,
+            };
 
             let outcome = runtime.handle_command(creds, command);
             if let Err(reason) = apply_runtime_outcome(
@@ -294,7 +334,7 @@ fn run_session(
                 observer,
                 outcome,
             ) {
-                return dropped(reason, true);
+                return dropped(reason, entered_scene);
             }
         }
 
@@ -302,7 +342,7 @@ fn run_session(
             if let Some(message) = runtime.heartbeat_message() {
                 observe_outbound_message(observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    return dropped(format!("heartbeat send failed: {err}"), true);
+                    return dropped(format!("heartbeat send failed: {err}"), entered_scene);
                 }
             }
             last_heartbeat = Instant::now();
@@ -312,7 +352,7 @@ fn run_session(
             if let Some(message) = runtime.time_sync_message() {
                 observe_outbound_message(observer, "tcp", &message);
                 if let Err(err) = send_tcp_message(&mut stream, &message) {
-                    return dropped(format!("time-sync send failed: {err}"), true);
+                    return dropped(format!("time-sync send failed: {err}"), entered_scene);
                 }
             }
 
@@ -330,7 +370,7 @@ fn run_session(
                 retry_outcome,
             )
         {
-            return dropped(reason, true);
+            return dropped(reason, entered_scene);
         }
 
         // Drain all currently-buffered TCP data this tick (bounded), instead of a
@@ -340,13 +380,13 @@ fn run_session(
         for _ in 0..MAX_TCP_READS_PER_TICK {
             match stream.read(&mut read_buffer) {
                 Ok(0) => {
-                    return dropped("server closed the connection".to_string(), true);
+                    return dropped("server closed the connection".to_string(), entered_scene);
                 }
                 Ok(n) => frame_buffer.extend_from_slice(&read_buffer[..n]),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => {
-                    return dropped(format!("socket read failed: {err}"), true);
+                    return dropped(format!("socket read failed: {err}"), entered_scene);
                 }
             }
         }
@@ -356,6 +396,17 @@ fn run_session(
                 Ok(message) => {
                     match runtime.handle_server_message(creds, MessageTransport::Tcp, message) {
                         Ok(outcome) => {
+                            // Mark the session scene-joined once the server confirms
+                            // scene entry — this (not auth-bytes-sent) is what makes
+                            // a later drop reset the reconnect budget.
+                            if !entered_scene
+                                && outcome
+                                    .events
+                                    .iter()
+                                    .any(|event| matches!(event, NetworkEvent::EnteredScene { .. }))
+                            {
+                                entered_scene = true;
+                            }
                             if let Err(reason) = apply_runtime_outcome(
                                 &mut runtime,
                                 &mut stream,
@@ -364,11 +415,11 @@ fn run_session(
                                 observer,
                                 outcome,
                             ) {
-                                return dropped(reason, true);
+                                return dropped(reason, entered_scene);
                             }
                         }
                         Err(reason) => {
-                            return dropped(reason, true);
+                            return dropped(reason, entered_scene);
                         }
                     }
                 }
@@ -402,11 +453,11 @@ fn run_session(
                                     observer,
                                     outcome,
                                 ) {
-                                    return dropped(reason, true);
+                                    return dropped(reason, entered_scene);
                                 }
                             }
                             Err(reason) => {
-                                return dropped(reason, true);
+                                return dropped(reason, entered_scene);
                             }
                         },
                         Err(err) => {
