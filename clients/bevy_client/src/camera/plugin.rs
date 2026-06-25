@@ -99,9 +99,9 @@ fn manage_cursor_grab(
     state: Res<State<AppState>>,
     chat_state: Option<Res<ChatState>>,
     focus: Res<WindowFocusGate>,
-    cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
+    window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
-    let mut cursor = cursor.into_inner();
+    let (mut window, mut cursor) = window.into_inner();
     let chat_open = chat_state.map(|state| state.enabled).unwrap_or(false);
     // Audit C-S1: even in-game we MUST release the cursor while the
     // window is unfocused — otherwise Alt-Tab leaves the cursor pinned
@@ -113,11 +113,27 @@ fn manage_cursor_grab(
     } else {
         CursorGrabMode::None
     };
+
+    // We are (re)acquiring the grab this frame (e.g. the window just gained focus
+    // after being launched in the background, so the OS cursor may still be sitting
+    // OUTSIDE our client area).
+    let acquiring_grab = want_grabbed && cursor.grab_mode == CursorGrabMode::None;
+
     if cursor.grab_mode != desired_grab {
         cursor.grab_mode = desired_grab;
     }
     if cursor.visible == want_grabbed {
         cursor.visible = !want_grabbed;
+    }
+
+    // Snap the OS cursor into the window centre the moment we grab. Without this, if
+    // the pointer was outside the window before capture, the player's first click can
+    // land on whatever was behind it (another window / the desktop) instead of the
+    // game — the locked cursor only confines *future* motion, not its starting point.
+    // Centring guarantees the cursor — and every click — is inside the window.
+    if acquiring_grab {
+        let center = Vec2::new(window.width() / 2.0, window.height() / 2.0);
+        window.set_cursor_position(Some(center));
     }
 }
 
