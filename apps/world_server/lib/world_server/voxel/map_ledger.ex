@@ -28,7 +28,10 @@ defmodule WorldServer.Voxel.MapLedger do
   # 回收长期过期且无活动的 region。因此 TTL 不再需要 24h 创可贴:取一个适中值,活跃 region
   # 靠访问续约长存,废弃 region 到期后被 GC 回收。两者可经 init 注入(测试用短值)。
   @default_materialized_lease_ttl_ms :timer.hours(2)
-  @default_lease_refresh_window_ms :timer.minutes(15)
+  # 评审 F4 续约窗口:lease 剩余 < 此窗口时 route 命中即续约。取 30s(短于任何现实租约,
+  # 故不会误续约调用方显式发的短租约;长 TTL 的物化租约仍在临到期前被主动续上)。reactive
+  # 兜底:真过期时下一次 route(cache miss)会同步续约并把新鲜租约直接返回给该次操作,不丢编辑。
+  @default_lease_refresh_window_ms :timer.seconds(30)
   @default_region_gc_interval_ms :timer.minutes(10)
   @default_region_gc_grace_period_ms :timer.minutes(30)
   @migration_cutover_reason 0x01

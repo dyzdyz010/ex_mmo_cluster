@@ -49,9 +49,9 @@ defmodule GateServer.TcpConnection do
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
   @prefab_owner_part_id 1
-  # 阶段2-bis:缓存 lease 剩余 < 此窗口即视为 miss,强制 re-route → World 侧续约(MapLedger
-  # 续约窗口 15min,本窗口取更小的 10min 以保证 re-route 落进 World 续约窗口内)。
-  @voxel_route_cache_refresh_ms :timer.minutes(10)
+  # 阶段2-bis:缓存 lease 剩余 < 此窗口即视为 miss,强制 re-route → World 侧续约。与 MapLedger
+  # 续约窗口对齐(30s):re-route 时租约必落进 World 续约窗口内,续上后变 2h 新鲜租约不再抖动。
+  @voxel_route_cache_refresh_ms :timer.seconds(30)
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 
   @doc """
