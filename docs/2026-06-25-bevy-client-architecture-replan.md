@@ -132,4 +132,23 @@ ConnectionPhase(单一真相源,替代散落的 status/scene_joined + net 的隐
 - 验证:cargo test --lib 360 绿、cargo build bin 通过、**实机启动冒烟 7s 无 panic**
   (RTX 5060 渲染器初始化 + 窗口创建 + 体素缓存载入 + 所有迁移 Startup 系统正常运行)。
 
-剩余:阶段 4(会话生命周期/重连重认证 + ConnectionPhase 枚举化)。
+### 2026-06-26 — 阶段 4 完成(会话生命周期闭环)
+- 4a `ConnectionPhase` 枚举化:`ConnectionState { phase, status }`,phase ∈
+  {Connecting, InScene, Reconnecting{attempt}, Failed};`scene_joined()` 派生自
+  `phase==InScene`(顺带修旧 bug:断线后 scene_joined 仍 true)。
+- 4b net 线程自重连:`network_loop` 外层重连驱动环绕 `run_session`;指数退避
+  (`session::reconnect` 纯策略,0.5s→5s 上限,30 次)+ 每次 re-auth(新 auto_login
+  轮换 token);耗尽预算才 `ReconnectFailed`。退避期 poll Shutdown;会话起始 drain
+  陈旧命令;`proactive_refresh_due` 令牌将过期主动重连刷新(接缝:依赖服务端
+  `expires_in`,客户端已解析就绪,服务端暂未返回→主动刷新关闭,反应式重连仍轮换 token)。
+- 4c `SessionPlugin`:相位变化边沿触发结构化观测事件(自动化 + 未来重连 UI 钩子)。
+  net/plugin + observe 映射新事件 → 相位。
+- **偏离决策稿**:决策稿写「SessionPlugin 驱动退避重连」,实现上选 net 线程自重连
+  (最局部、跨线程 bug 最少、最稳健),退避*策略*在 `session::reconnect` 纯逻辑里
+  (session 域拥有「何时/多努力恢复」),SessionPlugin 拥有 Bevy 侧生命周期呈现。
+  「服务端 refresh 端点」仍为独立 auth_server 工作的接缝。
+- 验证:cargo test --lib 363 绿(+3 纯逻辑单测);实机 headless 冒烟连真服务端
+  快乐路径完好(connect→in scene→UDP fast-lane);重连后断路径过多智能体对抗复审。
+
+**阶段 1–4 全部完成。** 后续可选:重连 overlay UI、服务端 `expires_in`/refresh 端点、
+ConnectionPhase 在 egui 登录态的细化。
