@@ -14,11 +14,12 @@ use self::{plugins::BevyClientPlugins, schedule::configure_client_sets};
 use crate::{
     camera::{MainCamera, OrbitCameraState, camera_transform_from_orbit},
     chat::{ChatInputText, ChatLogText},
-    config::{ClientConfig, SessionCredentials},
+    config::ClientConfig,
     hud::HudText,
     login::{AppState, LoginPlugin},
     net::{MessageTransport, spawn_network_thread},
     observe::ClientObserver,
+    session::SessionCredentials,
     sim::{
         profile::MovementProfile,
         types::{MovementMode, PredictedMoveState},

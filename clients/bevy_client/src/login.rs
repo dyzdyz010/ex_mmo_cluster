@@ -1,8 +1,8 @@
 //! egui-driven login screen that collects a username and exchanges it for session credentials.
 
 use crate::{
-    auth_client,
-    config::{ClientConfig, SessionCredentials},
+    config::ClientConfig,
+    session::{self, SessionCredentials},
 };
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
@@ -118,7 +118,7 @@ fn login_panel_system(
 
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = auth_client::auto_login(&auth_addr, &username);
+            let result = session::auth::auto_login(&auth_addr, &username);
             let _ = tx.send(result);
         });
         commands.insert_resource(PendingAuth(Mutex::new(rx)));

@@ -1,9 +1,10 @@
 //! Synchronous HTTP client for the dev-only auto-login endpoint.
 //!
 //! Calls `POST {auth_addr}/ingame/auto_login` with a `{"username": ...}` body and
-//! returns a parsed [`SessionCredentials`] on success.
+//! returns a parsed [`SessionCredentials`] on success. (架构重整阶段1:从顶层
+//! `auth_client` 折入 `session` 域——认证是会话域的一部分,不再是游离模块。)
 
-use crate::config::SessionCredentials;
+use crate::session::SessionCredentials;
 use serde::Deserialize;
 use std::time::Duration;
 

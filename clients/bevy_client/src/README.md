@@ -33,8 +33,8 @@ directly.
 
 ## Pure non-Bevy modules (no `Plugin`s)
 
-- `auth_client.rs` — HTTP `auto_login` request
-- `config.rs` — `ClientConfig` + `SessionCredentials`
+- `session/` — identity + connection lifecycle domain: `SessionCredentials` + `session::auth` (HTTP `auto_login`); later phases add `ConnectionPhase` + reconnect/re-auth
+- `config.rs` — `ClientConfig` (env-backed transport/observe config)
 - `protocol.rs` — wire format DTOs (audit A-L3 renamed `protocol_v2.rs` to `movement_codec.rs`)
 - `movement_codec.rs` — typed movement-input + movement-ack adapters between wire and sim
 - `input/` — `MoveInputFrame` + movement flag constants

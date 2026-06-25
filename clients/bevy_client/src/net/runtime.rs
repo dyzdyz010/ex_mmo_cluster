@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::config::SessionCredentials;
+use crate::session::SessionCredentials;
 use crate::movement_codec::{
     WireMoveInputFrame, movement_ack_from_server, remote_move_snapshot_from_server,
 };
@@ -1035,7 +1035,7 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SessionCredentials;
+    use crate::session::SessionCredentials;
     use crate::protocol::{ClientMessage, ServerMessage};
     use std::net::{Ipv4Addr, SocketAddrV4};
 

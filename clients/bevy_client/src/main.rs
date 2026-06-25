@@ -1,12 +1,13 @@
 //! Binary entrypoint that chooses between interactive and headless client modes.
 
 use bevy_client::{
-    app, auth_client,
+    app,
     config::ClientConfig,
     headless::{
         HeadlessOptions, run as run_headless, run_stdio as run_headless_stdio, run_voxel_headless,
     },
     observe::ClientObserver,
+    session,
     stdio::ClientStdioInterface,
 };
 use std::{env, process};
@@ -40,7 +41,7 @@ fn main() {
             process::exit(2);
         };
 
-        let creds = match auth_client::auto_login(&config.auth_addr, username) {
+        let creds = match session::auth::auto_login(&config.auth_addr, username) {
             Ok(creds) => creds,
             Err(error) => {
                 eprintln!("auto_login failed: {error}");
@@ -81,7 +82,7 @@ fn main() {
         };
 
         let initial_credentials = match launch.username.as_deref() {
-            Some(username) => match auth_client::auto_login(&config.auth_addr, username) {
+            Some(username) => match session::auth::auto_login(&config.auth_addr, username) {
                 Ok(creds) => Some(creds),
                 Err(error) => {
                     eprintln!("auto_login failed: {error}");

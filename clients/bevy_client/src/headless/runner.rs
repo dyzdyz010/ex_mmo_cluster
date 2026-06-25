@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::Vec2;
 
-use crate::config::{ClientConfig, SessionCredentials};
+use crate::config::ClientConfig;
+use crate::session::SessionCredentials;
 use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP};
 use crate::net::{NetworkBridge, NetworkCommand, spawn_network_thread};
 use crate::observe::ClientObserver;

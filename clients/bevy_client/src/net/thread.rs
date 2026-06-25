@@ -13,7 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::config::{ClientConfig, SessionCredentials};
+use crate::config::ClientConfig;
+use crate::session::SessionCredentials;
 use crate::observe::ClientObserver;
 use crate::protocol::{ClientMessage, decode_server_payload, take_frame};
 

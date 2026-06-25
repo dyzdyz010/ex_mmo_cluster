@@ -9,7 +9,6 @@
 //! - `app` and `headless` provide the interactive and automation entrypoints
 
 pub mod app;
-pub mod auth_client;
 pub mod camera;
 pub mod chat;
 pub mod config;
@@ -24,6 +23,7 @@ pub mod net;
 pub mod observe;
 pub mod presentation;
 pub mod protocol;
+pub mod session;
 pub mod sim;
 pub mod skill;
 pub mod stdio;
