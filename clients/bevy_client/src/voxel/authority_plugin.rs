@@ -234,11 +234,23 @@ impl VoxelAuthority {
                             self.resync_requests.push(coord);
                         }
                     }
-                    // A fresh snapshot or matching delta resolved the chunk (or it
-                    // was dropped) → clear the in-flight gate so a LATER genuine
-                    // fork can resync again promptly.
-                    Ok(IngestOutcome::Applied(coord)) | Ok(IngestOutcome::Dropped(coord)) => {
+                    // A fresh snapshot or matching delta resolved the chunk → clear
+                    // the in-flight gate so a LATER genuine fork can resync promptly.
+                    Ok(IngestOutcome::Applied(coord)) => {
                         self.resync_in_flight.remove(&coord);
+                    }
+                    // 阶段4-A:`ChunkInvalidate` (0x69) dropped the chunk locally. The
+                    // protocol requires the client to RE-SUBSCRIBE so the server
+                    // re-streams fresh truth — without this a stationary player sees a
+                    // permanent hole until they move and the AOI box re-subscribes.
+                    // Queue a targeted radius-0 resync, rate-limited via resync_in_flight
+                    // (the follow-up fresh snapshot's Applied clears the gate). The gate
+                    // worker drops its own subscription on invalidate, so this re-subscribe
+                    // cleanly rebuilds it.
+                    Ok(IngestOutcome::Dropped(coord)) => {
+                        if self.resync_in_flight.insert(coord) {
+                            self.resync_requests.push(coord);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -328,8 +340,8 @@ fn ingest_voxel_messages(
 mod tests {
     use super::*;
     use crate::voxel::wire::{
-        ChunkDelta, ChunkSnapshot, FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE, FieldRegionDestroyed,
-        FieldRegionSnapshot, Reader,
+        ChunkDelta, ChunkInvalidate, ChunkSnapshot, FIELD_MASK_LIGHT, FIELD_MASK_TEMPERATURE,
+        FieldRegionDestroyed, FieldRegionSnapshot, Reader,
     };
 
     fn snapshot(name: &str) -> ChunkSnapshot {
@@ -371,6 +383,26 @@ mod tests {
 
         assert_eq!(authority.take_resync_requests(), vec![[3, 0, -1]]);
         // Drained — a second call is empty until a new fork occurs.
+        assert!(authority.take_resync_requests().is_empty());
+    }
+
+    #[test]
+    fn invalidate_queues_a_resync_request() {
+        // 阶段4-A:0x69 ChunkInvalidate 丢 chunk 后必须触发 radius-0 重订阅,否则静止玩家
+        // 看到永久空洞直到移动。重复 invalidate 经 resync_in_flight 去重为一条。
+        let mut authority = VoxelAuthority::default();
+        let coord = [4, 0, -2];
+        let inv = ChunkInvalidate {
+            logical_scene_id: 1,
+            chunk_coord: coord,
+            reason: 0,
+        };
+        authority.enqueue(VoxelServerMessage::ChunkInvalidate(inv.clone()));
+        authority.enqueue(VoxelServerMessage::ChunkInvalidate(inv));
+        authority.drain_inbox();
+
+        assert_eq!(authority.take_resync_requests(), vec![coord]);
+        // Rate-limited: no duplicate resync until a fresh snapshot (Applied) clears the gate.
         assert!(authority.take_resync_requests().is_empty());
     }
 
