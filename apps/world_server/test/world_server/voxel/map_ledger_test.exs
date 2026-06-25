@@ -892,6 +892,101 @@ defmodule WorldServer.Voxel.MapLedgerTest do
       assert restored_lease.expires_at_ms == lease.expires_at_ms
     end
 
+    test "route renews a region's lease when it enters the refresh window (F4 — no stuck expired lease)",
+         %{registry: registry} do
+      ledger =
+        start_supervised!(
+          {MapLedger,
+           name: :renew_ledger,
+           write_token_store: WriteTokenStore,
+           scene_node_registry: registry,
+           region_directory: RegionDirectoryStore,
+           # Materialized lease is immediately at expiry, so the next route must renew.
+           materialized_lease_ttl_ms: 0,
+           lease_refresh_window_ms: 0}
+        )
+
+      assert {:ok, %{lease: l1}} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+
+      # Second route to the SAME grid region: the stale lease is renewed in place.
+      assert {:ok, %{lease: l2}} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {1, 0, 1})
+
+      assert l2.region_id == l1.region_id
+      refute l2.lease_id == l1.lease_id
+      assert l2.owner_epoch > l1.owner_epoch
+
+      # The durable directory row reflects the renewed lease (atomic with the token).
+      assert {:ok, row} = RegionDirectoryStore.get_region(l1.region_id)
+      assert row.lease_id == l2.lease_id
+      assert row.owner_epoch == l2.owner_epoch
+    end
+
+    test "a fresh lease is NOT renewed on re-route (renewal only inside the refresh window)", %{
+      registry: registry
+    } do
+      ledger =
+        start_supervised!(
+          {MapLedger,
+           name: :fresh_ledger,
+           write_token_store: WriteTokenStore,
+           scene_node_registry: registry,
+           region_directory: RegionDirectoryStore}
+        )
+
+      assert {:ok, %{lease: l1}} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+      assert {:ok, %{lease: l2}} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {2, 0, 2})
+
+      # Default 2h TTL → lease still fresh → same lease, no churn.
+      assert l2.lease_id == l1.lease_id
+      assert l2.owner_epoch == l1.owner_epoch
+    end
+
+    test "region GC reaps an abandoned (long-expired, un-renewed) region from memory and directory",
+         %{registry: registry} do
+      ledger =
+        start_supervised!(
+          {MapLedger,
+           name: :gc_reap_ledger,
+           write_token_store: WriteTokenStore,
+           scene_node_registry: registry,
+           region_directory: RegionDirectoryStore,
+           # Manual GC only; the materialized lease is immediately expired + reapable.
+           region_gc_enabled?: false,
+           materialized_lease_ttl_ms: 0,
+           lease_refresh_window_ms: 0,
+           region_gc_grace_period_ms: 0}
+        )
+
+      assert {:ok, %{assignment: assignment}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+
+      assert {:ok, 1} = MapLedger.run_gc(ledger)
+
+      refute Map.has_key?(MapLedger.snapshot(ledger).assignments, assignment.region_id)
+      assert RegionDirectoryStore.get_region(assignment.region_id) == :error
+    end
+
+    test "region GC keeps a fresh (renewed/active) region", %{registry: registry} do
+      ledger =
+        start_supervised!(
+          {MapLedger,
+           name: :gc_keep_ledger,
+           write_token_store: WriteTokenStore,
+           scene_node_registry: registry,
+           region_directory: RegionDirectoryStore,
+           region_gc_enabled?: false,
+           region_gc_grace_period_ms: 0}
+        )
+
+      # Default 2h TTL → lease is fresh → must survive a sweep.
+      assert {:ok, %{assignment: assignment}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+
+      assert {:ok, 0} = MapLedger.run_gc(ledger)
+      assert Map.has_key?(MapLedger.snapshot(ledger).assignments, assignment.region_id)
+      assert {:ok, _} = RegionDirectoryStore.get_region(assignment.region_id)
+    end
+
     test "materialization writes exactly one directory row per region (O(1), not a whole-state blob)",
          %{registry: registry} do
       ledger =

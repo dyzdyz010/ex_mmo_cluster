@@ -23,14 +23,14 @@ defmodule WorldServer.Voxel.MapLedger do
   alias WorldServer.Voxel.TransactionParticipant
 
   @default_lease_ttl_ms :timer.minutes(5)
-  # Lazily-materialized regions (阶段1) get a long lease so a player exploring new
-  # ground does not have its build lease expire mid-session. Proper lease renewal /
-  # region GC is a durable-directory (阶段2) follow-up — renewing in place changes
-  # lease_id/epoch and must be coordinated with the Scene's RegionRuntime, so it is
-  # deliberately out of Phase-1 scope. Until then a TTL well beyond any single dev
-  # session is the simplest correct mitigation (the world re-materializes fresh
-  # leases on restart). See 阶段1 keystone review finding F4.
-  @materialized_lease_ttl_ms :timer.hours(24)
+  # 阶段2(评审 F4):懒物化 region 的 lease 现在有真正的生命周期——`route_or_materialize`
+  # 在租约进入刷新窗口时**原地续约**(re-issue + 重发令牌 + 更新目录,原子),`region GC`
+  # 回收长期过期且无活动的 region。因此 TTL 不再需要 24h 创可贴:取一个适中值,活跃 region
+  # 靠访问续约长存,废弃 region 到期后被 GC 回收。两者可经 init 注入(测试用短值)。
+  @default_materialized_lease_ttl_ms :timer.hours(2)
+  @default_lease_refresh_window_ms :timer.minutes(15)
+  @default_region_gc_interval_ms :timer.minutes(10)
+  @default_region_gc_grace_period_ms :timer.minutes(30)
   @migration_cutover_reason 0x01
 
   @doc "Starts the map ledger."
@@ -172,6 +172,16 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, :snapshot)
   end
 
+  @doc """
+  Runs one region-GC sweep synchronously and returns `{:ok, reaped_count}`
+  (阶段2)。The periodic timer calls the same sweep; this entry point lets tests /
+  operators force it. Reaps `:active` regions whose lease expired beyond the grace
+  period and that are not part of an in-flight migration.
+  """
+  def run_gc(server \\ __MODULE__) do
+    GenServer.call(server, :run_region_gc)
+  end
+
   @impl true
   def init(opts) do
     persistence_path = Keyword.get(opts, :persistence_path)
@@ -217,20 +227,36 @@ defmodule WorldServer.Voxel.MapLedger do
       materialize_owner_scene_instance_ref:
         Keyword.get(opts, :materialize_owner_scene_instance_ref, 1),
       region_directory: region_directory,
-      region_directory_opts: region_directory_opts
+      region_directory_opts: region_directory_opts,
+      # 阶段2 lease 生命周期(评审 F4),可注入短值做测试。
+      materialized_lease_ttl_ms:
+        Keyword.get(opts, :materialized_lease_ttl_ms, @default_materialized_lease_ttl_ms),
+      lease_refresh_window_ms:
+        Keyword.get(opts, :lease_refresh_window_ms, @default_lease_refresh_window_ms),
+      # 阶段2 region GC:周期性回收**长期过期且未续约**(=被废弃)的 region,防止目录无界增长。
+      # 活跃 region 靠访问续约保持 fresh → 永不被回收;被回收的 region 若玩家折返,route miss
+      # 会用新 epoch 重新物化(chunk 数据另存 voxel_chunks,不受影响)。
+      gc_enabled?: Keyword.get(opts, :region_gc_enabled?, true),
+      gc_interval_ms: Keyword.get(opts, :region_gc_interval_ms, @default_region_gc_interval_ms),
+      gc_grace_period_ms:
+        Keyword.get(opts, :region_gc_grace_period_ms, @default_region_gc_grace_period_ms)
     }
 
-    case run_load(load_fn) do
-      {:ok, restored} ->
-        {:ok, Map.merge(base, restored)}
+    final_state =
+      case run_load(load_fn) do
+        {:ok, restored} ->
+          Map.merge(base, restored)
 
-      {:error, reason} ->
-        CliObserve.emit("voxel_map_ledger_persist_load_failed", fn ->
-          %{reason: inspect(reason)}
-        end)
+        {:error, reason} ->
+          CliObserve.emit("voxel_map_ledger_persist_load_failed", fn ->
+            %{reason: inspect(reason)}
+          end)
 
-        {:ok, base}
-    end
+          base
+      end
+
+    schedule_region_gc(final_state)
+    {:ok, final_state}
   end
 
   @impl true
@@ -251,6 +277,81 @@ defmodule WorldServer.Voxel.MapLedger do
 
             {:reply, reply, next_state}
         end
+    end
+  end
+
+  @impl true
+  def handle_info(:region_gc, state) do
+    {reaped, next_state} = sweep_expired_regions(state)
+
+    if reaped > 0 do
+      CliObserve.emit("voxel_region_gc_swept", fn -> %{reaped: reaped} end)
+    end
+
+    schedule_region_gc(next_state)
+    {:noreply, next_state}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp schedule_region_gc(%{gc_enabled?: true, gc_interval_ms: interval})
+       when is_integer(interval) and interval > 0 do
+    Process.send_after(self(), :region_gc, interval)
+    :ok
+  end
+
+  defp schedule_region_gc(_state), do: :ok
+
+  # Reaps `:active` regions whose lease expired more than `gc_grace_period_ms` ago
+  # and that are not referenced by an in-flight migration. Active regions are kept
+  # alive by renewal-on-route, so only abandoned regions are collected. Removes the
+  # region from in-memory assignments/leases and deletes its durable directory row.
+  defp sweep_expired_regions(state) do
+    now = now_ms()
+    migrating = MapSet.new(Map.values(state.migrations), & &1.region_id)
+
+    reapable =
+      state.assignments
+      |> Enum.filter(fn {region_id, assignment} ->
+        assignment.state == :active and not MapSet.member?(migrating, region_id) and
+          lease_reapable?(Map.get(state.leases, region_id), now, state.gc_grace_period_ms)
+      end)
+      |> Enum.map(fn {region_id, _assignment} -> region_id end)
+
+    next_state =
+      Enum.reduce(reapable, state, fn region_id, acc ->
+        delete_region_row(acc, region_id)
+
+        acc
+        |> update_in([:assignments], &Map.delete(&1, region_id))
+        |> update_in([:leases], &Map.delete(&1, region_id))
+      end)
+
+    {length(reapable), next_state}
+  end
+
+  # Only a region whose lease exists and has been expired beyond the grace period
+  # is reapable; a region with no lease (e.g. an explicit put_region awaiting a
+  # lease) is left alone.
+  defp lease_reapable?(nil, _now, _grace), do: false
+
+  defp lease_reapable?(lease, now, grace_ms) do
+    lease.expires_at_ms + grace_ms < now
+  end
+
+  defp delete_region_row(%{region_directory: nil}, _region_id), do: :ok
+
+  defp delete_region_row(%{region_directory: store} = state, region_id) do
+    case store.delete_region(region_id, state.region_directory_opts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_region_directory_delete_failed", fn ->
+          %{region_id: region_id, reason: inspect(reason)}
+        end)
+
+        :ok
     end
   end
 
@@ -473,6 +574,11 @@ defmodule WorldServer.Voxel.MapLedger do
 
   defp do_handle_call(:snapshot, _from, state) do
     {:reply, state, state}
+  end
+
+  defp do_handle_call(:run_region_gc, _from, state) do
+    {reaped, next_state} = sweep_expired_regions(state)
+    {:reply, {:ok, reaped}, next_state}
   end
 
   # 梯队1 step1.3(CELL-18/23):owner_epoch 经 DB 线性化分配器分配,使并发/重启的多 MapLedger
@@ -1324,14 +1430,52 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
-  # 阶段1 懒物化路由:命中→原样返回(state 不变);route miss→在 grid 上物化一个 region
-  # (分配 Scene owner + 单调 epoch + lease)再返回。返回 {:ok, assignment, next_state}
-  # | {:error, reason, next_state}。物化失败(无 Scene 节点 / 写令牌 CAS)回滚到原 state。
+  # 阶段1/2 懒物化+续约路由:命中→保证 lease 仍新鲜(过期/将过期则原子续约,评审 F4);
+  # route miss→在 grid 上物化一个 region(分配 Scene owner + 单调 epoch + lease)。返回
+  # {:ok, assignment, next_state} | {:error, reason, next_state}。失败回滚到原 state。
   defp route_or_materialize(state, logical_scene_id, chunk_coord) do
     case route_chunk_in_state(state, logical_scene_id, chunk_coord) do
-      {:ok, assignment} -> {:ok, assignment, state}
+      {:ok, assignment} -> ensure_live_lease(state, assignment)
       {:error, :unassigned_chunk} -> ensure_region_in_state(state, logical_scene_id, chunk_coord)
       {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  # 评审 F4:取代 24h TTL 创可贴。route 命中一个 lease 已过期 / 处于刷新窗口内的 region 时,
+  # **原地续约**(re-issue:新单调 epoch + 重发写令牌 + 更新目录行,均原子)而非端出一个会让每
+  # 次写都 :lease_expired 的死租约。Scene 每次写都重读 DB 写令牌做 fence,故续约对编辑路径
+  # 透明:route 返回新鲜 lease → Gate 用它 → DataService 据刚重发的令牌校验通过。续约在单
+  # GenServer 内串行,故同一刷新窗口每 region 只续一次(后续 route 见新鲜 lease 直接放行)。
+  defp ensure_live_lease(state, assignment) do
+    case Map.fetch(state.leases, assignment.region_id) do
+      {:ok, lease} ->
+        if lease_fresh?(state, lease) do
+          {:ok, assignment, state}
+        else
+          renew_region_lease(state, assignment)
+        end
+
+      :error ->
+        renew_region_lease(state, assignment)
+    end
+  end
+
+  defp lease_fresh?(state, lease) do
+    lease.expires_at_ms > now_ms() + state.lease_refresh_window_ms
+  end
+
+  defp renew_region_lease(state, assignment) do
+    case issue_lease_for_assignment(
+           state,
+           assignment,
+           assignment.owner_scene_instance_ref,
+           ttl_ms: state.materialized_lease_ttl_ms
+         ) do
+      {{:ok, _lease}, next_state} ->
+        {:ok, next_state.assignments[assignment.region_id], next_state}
+
+      {{:error, reason}, _state} ->
+        {:error, reason, state}
     end
   end
 
@@ -1371,7 +1515,7 @@ defmodule WorldServer.Voxel.MapLedger do
              state_with_region,
              assignment,
              assignment.owner_scene_instance_ref,
-             ttl_ms: @materialized_lease_ttl_ms
+             ttl_ms: state.materialized_lease_ttl_ms
            ) do
         {{:ok, lease}, next_state} ->
           materialized = next_state.assignments[assignment.region_id]
