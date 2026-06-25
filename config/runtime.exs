@@ -50,6 +50,13 @@ config :scene_server, :voxel_worldgen,
   enabled?: config_env() != :test and System.get_env("VOXEL_WORLDGEN", "1") != "0",
   seed: String.to_integer(System.get_env("VOXEL_WORLD_SEED", "1337"))
 
+# 阶段3 step3.2 chunk idle 驱逐:无订阅者 + 无活跃 field region 连续 idle 达 evict_after_ms 即自停,
+# 让无界大世界的万级 chunk 进程内存有界(再访问由 WorldGen 重生成 / DB 重载)。test 关闭。
+config :scene_server, :voxel_chunk_idle_eviction,
+  enabled?: config_env() != :test and System.get_env("VOXEL_CHUNK_IDLE_EVICTION", "1") != "0",
+  check_ms: String.to_integer(System.get_env("VOXEL_CHUNK_IDLE_CHECK_MS", "15000")),
+  evict_after_ms: String.to_integer(System.get_env("VOXEL_CHUNK_IDLE_EVICT_AFTER_MS", "120000"))
+
 # 阶段7-bis:peer 等待**轮询**(client 已改)的 give-up 超时。真集群下 peer 一出现即早返回,
 # 此值只是单节点 give-up 上限;默认 250ms(原固定 sleep 1000ms),直接砍每个 interface 的启动
 # 阻塞 → 砍冷启动。慢 gossip 的部署可 `BEACON_CLUSTER_JOIN_WAIT_MS` 调大。

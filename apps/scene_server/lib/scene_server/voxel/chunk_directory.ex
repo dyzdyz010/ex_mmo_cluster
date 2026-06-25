@@ -216,7 +216,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     {:ok,
      %{
        chunk_sup: Keyword.get(opts, :chunk_sup, SceneServer.VoxelChunkSup),
-       chunks: %{}
+       chunks: %{},
+       # 阶段3 step3.3:monitor 每个 chunk pid → DOWN(idle 驱逐 :normal / 崩溃)时即时从
+       # chunks 表清除(让该表也随 idle 驱逐内存有界),崩溃额外 emit。monitors: %{ref => {key, pid}}。
+       monitors: %{}
      }}
   end
 
@@ -556,12 +559,52 @@ defmodule SceneServer.Voxel.ChunkDirectory do
           pid: pid
         })
 
-        {{:ok, pid}, put_in(state.chunks[key], pid)}
+        ref = Process.monitor(pid)
+
+        next_state =
+          state
+          |> put_in([:chunks, key], pid)
+          |> put_in([:monitors, ref], {key, pid})
+
+        {{:ok, pid}, next_state}
 
       {:error, reason} ->
         {{:error, reason}, state}
     end
   end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Map.pop(state.monitors, ref) do
+      {{key, ^pid}, monitors} ->
+        # Drop the chunk from the table only if it still points at the dead pid
+        # (a re-`ensure_chunk` may have already replaced it with a fresh process).
+        chunks =
+          case Map.get(state.chunks, key) do
+            ^pid -> Map.delete(state.chunks, key)
+            _other -> state.chunks
+          end
+
+        if reason not in [:normal, :shutdown] do
+          {logical_scene_id, chunk_coord} = key
+
+          CliObserve.emit("voxel_chunk_process_down", fn ->
+            %{
+              logical_scene_id: logical_scene_id,
+              chunk_coord: chunk_coord,
+              reason: inspect(reason)
+            }
+          end)
+        end
+
+        {:noreply, %{state | chunks: chunks, monitors: monitors}}
+
+      {_other, monitors} ->
+        {:noreply, %{state | monitors: monitors}}
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
 
   defp maybe_apply_chunk_lease(_pid, nil), do: :ok
 

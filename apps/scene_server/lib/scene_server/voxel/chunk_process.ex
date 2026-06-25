@@ -44,6 +44,11 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @simulation_tick_interval_ms 100
   @field_refresh_debounce_ms 50
 
+  # 阶段3 step3.2 idle 驱逐默认值(仅在开启时生效)。每 @default_idle_check_ms 检查一次,
+  # 无订阅者 + 无活跃 field region 连续累计达 @default_idle_evict_after_ms 即自停。
+  @default_idle_check_ms :timer.seconds(15)
+  @default_idle_evict_after_ms :timer.minutes(2)
+
   # 世界内容驱动场 provisioning:块变更去抖后一次 sweep 遍历这组 provisioner,
   # 各自探测 chunk 内容 → ensure / release 对应 region。electric_circuit 第一个
   # (闭合电路);emergence(光/热/化学);structural_stress(失支撑结构坍塌)。见
@@ -482,7 +487,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {restored_cell_tick, restored_sim_time_ms} =
       restore_cell_time(storage.logical_scene_id, storage.chunk_coord)
 
-    {:ok,
+    state =
      %{
        logical_scene_id: storage.logical_scene_id,
        chunk_coord: storage.chunk_coord,
@@ -517,8 +522,44 @@ defmodule SceneServer.Voxel.ChunkProcess do
        field_refresh_pending?: false,
        # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
        # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
-       auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true)
-     }}
+       auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true),
+       # 阶段3 step3.2:idle 驱逐——无订阅者且无活跃 field region 连续 idle 超时则自停,
+       # 让万级 chunk 内存有界(ChunkDirectory 的 alive? 检查在再访问时重启,纯净 chunk 由
+       # WorldGen 重生成、已编辑 chunk 从 DB 重载)。默认禁用(单测的 chunk 不被收走)。
+       idle_eviction: resolve_idle_eviction(opts),
+       idle_ticks: 0
+     }
+
+    schedule_idle_check(state.idle_eviction)
+    {:ok, state}
+  end
+
+  # idle 驱逐配置:opt `:idle_eviction`([enabled?:, check_ms:, evict_after_ms:] | false)覆盖
+  # `:scene_server, :voxel_chunk_idle_eviction` app env。默认禁用(单测 chunk 不被收)。
+  defp resolve_idle_eviction(opts) do
+    config =
+      case Keyword.fetch(opts, :idle_eviction) do
+        {:ok, cfg} -> cfg
+        :error -> Application.get_env(:scene_server, :voxel_chunk_idle_eviction, [])
+      end
+
+    cfg = if is_list(config), do: config, else: []
+
+    if Keyword.get(cfg, :enabled?, false) do
+      %{
+        check_ms: Keyword.get(cfg, :check_ms, @default_idle_check_ms),
+        evict_after_ms: Keyword.get(cfg, :evict_after_ms, @default_idle_evict_after_ms)
+      }
+    else
+      :disabled
+    end
+  end
+
+  defp schedule_idle_check(:disabled), do: :ok
+
+  defp schedule_idle_check(%{check_ms: check_ms}) do
+    Process.send_after(self(), :idle_check, check_ms)
+    :ok
   end
 
   defp resolve_simulators(opts) do
@@ -1340,7 +1381,40 @@ defmodule SceneServer.Voxel.ChunkProcess do
     {:noreply, next_state}
   end
 
+  # 阶段3 step3.2:idle 驱逐。无订阅者 + 无活跃 field region 时累计 idle;连续 idle 达阈值即
+  # 自停(:normal),让万级 chunk 内存有界。任一活跃(有订阅者或 field region)则清零。已编辑
+  # 的 chunk 在编辑路径同步落库,纯净 chunk 由 WorldGen 重生成,故停止无数据丢失;ChunkDirectory
+  # 的 alive? 检查在下次访问时重启。
+  def handle_info(:idle_check, %{idle_eviction: :disabled} = state), do: {:noreply, state}
+
+  def handle_info(:idle_check, %{idle_eviction: eviction} = state) do
+    schedule_idle_check(eviction)
+
+    if chunk_idle?(state) do
+      idle_ticks = state.idle_ticks + 1
+
+      if idle_ticks * eviction.check_ms >= eviction.evict_after_ms do
+        CliObserve.emit("voxel_chunk_idle_evicted", fn ->
+          %{logical_scene_id: state.logical_scene_id, chunk_coord: state.chunk_coord}
+        end)
+
+        {:stop, :normal, state}
+      else
+        {:noreply, %{state | idle_ticks: idle_ticks}}
+      end
+    else
+      {:noreply, %{state | idle_ticks: 0}}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  # A chunk is idle (evictable) when nobody is subscribed and no field region is
+  # actively simulating on it. A pending fence (mid-migration) keeps it alive.
+  defp chunk_idle?(state) do
+    map_size(state.subscribers) == 0 and map_size(state.field_regions) == 0 and
+      is_nil(state.pending_fence)
+  end
 
   # ---------------------------------------------------------------------------
   # Phase 5.E:simulation tick dispatch
