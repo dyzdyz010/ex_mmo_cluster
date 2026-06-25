@@ -2,6 +2,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
   # 梯队1 step1.2:WriteTokenStore DB 化后共享 voxel_write_tokens 表,改 async:false + 每测试清表。
   use ExUnit.Case, async: false
 
+  alias DataService.Voxel.RegionDirectoryStore
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.MigrationPlan
@@ -15,6 +16,8 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
     # 梯队1 step1.3:owner_epoch 经 DB 线性化分配器,清表保证跨测试/跨运行 epoch 确定。
     DataService.Voxel.RegionEpochStore.reset()
+    # 阶段2:per-region durable 目录共享表,清表隔离。
+    RegionDirectoryStore.reset()
     :ok
   end
 
@@ -841,6 +844,74 @@ defmodule WorldServer.Voxel.MapLedgerTest do
              MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
 
     assert MapLedger.snapshot(ledger).assignments == %{}
+  end
+
+  describe "durable region directory (阶段2 — 重启自愈, scale-first per-region 持久化)" do
+    setup do
+      registry = start_supervised!(SceneNodeRegistry)
+      :ok = SceneNodeRegistry.register_scene_node(registry, node())
+      %{registry: registry}
+    end
+
+    test "a lazily-materialized region survives a ledger restart via the durable directory", %{
+      registry: registry
+    } do
+      opts = [
+        write_token_store: WriteTokenStore,
+        scene_node_registry: registry,
+        region_directory: RegionDirectoryStore
+      ]
+
+      ledger1 = start_supervised!({MapLedger, [name: :dur_ledger_a] ++ opts})
+
+      assert {:ok, %{assignment: assignment, lease: lease}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger1, 1, {3, 0, 3})
+
+      region_id = assignment.region_id
+
+      # The directory row was written (atomically with the write token).
+      assert {:ok, row} = RegionDirectoryStore.get_region(region_id)
+      assert row.lease_id == lease.lease_id
+      assert row.assigned_scene_node == Atom.to_string(node())
+
+      :ok = stop_supervised(MapLedger)
+
+      # A fresh ledger process rebuilds assignments + leases from the directory on
+      # boot — the region is routable WITHOUT re-materialization.
+      ledger2 = start_supervised!({MapLedger, [name: :dur_ledger_b] ++ opts})
+
+      assert {:ok, routed} = MapLedger.route_chunk(ledger2, 1, {3, 0, 3})
+      assert routed.region_id == region_id
+      assert routed.assigned_scene_node == node()
+      assert routed.owner_epoch == assignment.owner_epoch
+
+      assert {:ok, %{lease: restored_lease}} =
+               MapLedger.route_chunk_with_lease(ledger2, 1, {3, 0, 3})
+
+      assert restored_lease.lease_id == lease.lease_id
+      assert restored_lease.expires_at_ms == lease.expires_at_ms
+    end
+
+    test "materialization writes exactly one directory row per region (O(1), not a whole-state blob)",
+         %{registry: registry} do
+      ledger =
+        start_supervised!(
+          {MapLedger,
+           name: :dur_ledger_c,
+           write_token_store: WriteTokenStore,
+           scene_node_registry: registry,
+           region_directory: RegionDirectoryStore}
+        )
+
+      # Two chunks in the same grid region → one region → one row.
+      assert {:ok, _} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+      assert {:ok, _} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {1, 0, 1})
+      assert length(RegionDirectoryStore.load_all()) == 1
+
+      # A chunk in a different grid region → a second row.
+      assert {:ok, _} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {8, 0, 0})
+      assert length(RegionDirectoryStore.load_all()) == 2
+    end
   end
 
   defp build_migration_plan(migration_id) do

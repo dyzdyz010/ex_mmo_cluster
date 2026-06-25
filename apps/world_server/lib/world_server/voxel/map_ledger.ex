@@ -176,12 +176,19 @@ defmodule WorldServer.Voxel.MapLedger do
   def init(opts) do
     persistence_path = Keyword.get(opts, :persistence_path)
 
+    # 阶段2:per-region durable 目录后端(DataService.Voxel.RegionDirectoryStore 或 nil)。
+    # 设置即开启"物化/续约/迁移 → 每 region 一行落库"(scale-first,O(1) per change)+
+    # boot 时从目录重建 assignments/leases(重启自愈)。nil = 纯内存(多数测试)。
+    region_directory = Keyword.get(opts, :region_directory)
+    region_directory_opts = Keyword.get(opts, :region_directory_opts, [])
+
     persist_fn =
       Keyword.get(opts, :persist_fn) ||
         if persistence_path, do: file_persist_fn(persistence_path)
 
     load_fn =
       Keyword.get(opts, :load_fn) ||
+        directory_load_fn(region_directory, region_directory_opts) ||
         if persistence_path, do: file_load_fn(persistence_path)
 
     base = %{
@@ -208,7 +215,9 @@ defmodule WorldServer.Voxel.MapLedger do
       # side reads owner identity from the published write token (never hardcodes
       # it), so any stable value is self-consistent; 1 matches the dev convention.
       materialize_owner_scene_instance_ref:
-        Keyword.get(opts, :materialize_owner_scene_instance_ref, 1)
+        Keyword.get(opts, :materialize_owner_scene_instance_ref, 1),
+      region_directory: region_directory,
+      region_directory_opts: region_directory_opts
     }
 
     case run_load(load_fn) do
@@ -263,6 +272,10 @@ defmodule WorldServer.Voxel.MapLedger do
           :state
         ])
       end)
+
+      # 阶段2:把显式 region 也写进 durable 目录(此时通常尚无 lease → 行的 lease_id/expires
+      # 为 nil,后续 issue_lease 再原子更新)。物化路径不走这里(走 issue_lease 的原子发布)。
+      _ = persist_region_row(state, assignment, Map.get(state.leases, key))
 
       {:reply, {:ok, assignment}, put_in(state.assignments[key], assignment)}
     else
@@ -501,7 +514,10 @@ defmodule WorldServer.Voxel.MapLedger do
     lease = SceneLease.from_assignment(next_assignment, lease_id, expires_at_ms)
     token = LeaseWriteToken.from_lease(lease, token_version)
 
-    case publish_write_token(state.write_token_store, token) do
+    # 阶段2 / 评审 F3:写令牌发布 + region 目录行落库走**同一事务边界**(原子),so a
+    # crash/disk error after publishing the token cannot leave the client believing
+    # the region is leased while the durable directory lost it.
+    case publish_region_authority(state, next_assignment, lease, token) do
       :ok ->
         next_state =
           state
@@ -815,10 +831,12 @@ defmodule WorldServer.Voxel.MapLedger do
     with {:ok, plan} <- fetch_migration(state, migration_id),
          :ok <- validate_cutover_source(state, plan),
          {:ok, cutover_plan} <- MigrationPlan.cutover(plan, now_ms()),
-         :ok <- publish_write_token_for_plan(state, cutover_plan),
-         {:ok, assignment} <- fetch_region_assignment(state, cutover_plan.region_id) do
-      next_assignment = assignment_from_cutover(assignment, cutover_plan)
-
+         {:ok, assignment} <- fetch_region_assignment(state, cutover_plan.region_id),
+         next_assignment = assignment_from_cutover(assignment, cutover_plan),
+         token = LeaseWriteToken.from_lease(cutover_plan.new_lease, cutover_plan.token_version),
+         # 阶段2:迁移翻转也走原子发布——新 owner 的写令牌与 region 目录行同事务落库,
+         # 避免重启后目录载到旧 owner 而写令牌已是新 owner 的 split-brain。
+         :ok <- publish_region_authority(state, next_assignment, cutover_plan.new_lease, token) do
       next_state =
         state
         |> put_in([:assignments, next_assignment.region_id], next_assignment)
@@ -944,11 +962,6 @@ defmodule WorldServer.Voxel.MapLedger do
       {:error, reason} ->
         {{:error, reason}, state}
     end
-  end
-
-  defp publish_write_token_for_plan(state, plan) do
-    token = LeaseWriteToken.from_lease(plan.new_lease, plan.token_version)
-    publish_write_token(state.write_token_store, token)
   end
 
   defp assignment_from_cutover(assignment, plan) do
@@ -1183,15 +1196,79 @@ defmodule WorldServer.Voxel.MapLedger do
     }
   end
 
-  # 梯队4:WriteTokenStore 改 Postgres durable 模块级无状态后,`write_token_store` 配置语义
-  # 从"进程句柄"降为 **enable 标记**(nil = 不发布;非 nil = 发布到 DB durable fence)。
-  defp publish_write_token(nil, _token), do: :ok
+  # 阶段2 / 评审 F3:把"写令牌发布"与"region 目录行落库"放进**同一 Repo.transaction**,
+  # 二者同生共死。任一失败 → rollback,调用方收 {:error,_} 不改内存态(原子)。两后端都未配
+  # (多数测试)→ 纯内存,直接 :ok(保持既有行为)。仅配 write_token / 仅配 directory 时各自单写。
+  defp publish_region_authority(state, assignment, lease, token) do
+    if is_nil(state.write_token_store) and is_nil(state.region_directory) do
+      :ok
+    else
+      DataService.Repo.transaction(fn ->
+        with :ok <- publish_token_in_txn(state.write_token_store, token),
+             :ok <- upsert_directory_in_txn(state, assignment, lease) do
+          :ok
+        else
+          {:error, reason} -> DataService.Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
 
-  defp publish_write_token(_enabled, token) do
-    case DataService.Voxel.WriteTokenStore.upsert_token(LeaseWriteToken.to_map(token)) do
+  defp publish_token_in_txn(nil, _token), do: :ok
+
+  defp publish_token_in_txn(_enabled, token) do
+    case DataService.Voxel.WriteTokenStore.upsert_token_in_repo(
+           DataService.Repo,
+           LeaseWriteToken.to_map(token)
+         ) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp upsert_directory_in_txn(%{region_directory: nil}, _assignment, _lease), do: :ok
+
+  defp upsert_directory_in_txn(%{region_directory: store} = state, assignment, lease) do
+    attrs = WorldServer.Voxel.RegionDirectory.to_attrs(assignment, lease)
+    store.upsert_region_in_repo(directory_repo(state), attrs)
+  end
+
+  # The directory store talks to DataService.Repo by default; an injected
+  # :region_directory_opts[:repo] (tests) overrides it.
+  defp directory_repo(state) do
+    Keyword.get(state.region_directory_opts, :repo, DataService.Repo)
+  end
+
+  # Persists a region row outside the lease/token path (e.g. an explicit put_region
+  # before a lease exists, or a migration). No-op when the directory is disabled.
+  # Standalone (own transaction) — used where there is no co-located token publish.
+  defp persist_region_row(%{region_directory: nil}, _assignment, _lease), do: :ok
+
+  defp persist_region_row(%{region_directory: store} = state, assignment, lease) do
+    attrs = WorldServer.Voxel.RegionDirectory.to_attrs(assignment, lease)
+
+    case store.upsert_region(attrs, state.region_directory_opts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_region_directory_persist_failed", fn ->
+          %{region_id: assignment.region_id, reason: inspect(reason)}
+        end)
+
+        :ok
+    end
+  end
+
+  # Boot-time load_fn that rebuilds assignments/leases from the durable directory.
+  defp directory_load_fn(nil, _opts), do: nil
+
+  defp directory_load_fn(store, opts) do
+    fn -> {:ok, WorldServer.Voxel.RegionDirectory.load_state(store, opts)} end
   end
 
   # Pure routing (never materializes). 阶段1: O(1) grid-id fast path — a chunk's

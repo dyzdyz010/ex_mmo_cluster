@@ -50,6 +50,22 @@ defmodule DataService.Voxel.WriteTokenStore do
       {:error, {:invalid_token, Exception.message(exception)}}
   end
 
+  @doc """
+  Upserts a token using the caller's open transaction `repo` (no own transaction),
+  so the token CAS commits atomically with whatever else the caller put in that
+  boundary — e.g. `WorldServer.Voxel.MapLedger` writing the durable region
+  directory row in the same `Repo.transaction` (评审 F3:发布令牌与落盘同生共死)。
+
+  Returns `{:ok, :inserted | :updated | :unchanged}` or `{:error, reason}` (e.g.
+  `:stale_token`); the caller decides whether to `Repo.rollback`.
+  """
+  def upsert_token_in_repo(repo, token) do
+    case safe_normalize_token(token) do
+      {:ok, normalized} -> upsert_in_txn(repo, normalized)
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc "Validates a chunk write against the durable token fence."
   def validate_write(attrs, opts \\ []), do: do_validate_write(normalize_write(attrs), opts)
 
