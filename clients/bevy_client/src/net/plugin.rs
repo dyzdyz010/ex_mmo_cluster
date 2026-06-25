@@ -222,6 +222,7 @@ fn poll_network_events(
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
+    mut edit_feedback: ResMut<crate::hud::EditFeedback>,
 ) {
     let receiver = match bridge.rx.lock() {
         Ok(receiver) => receiver,
@@ -562,6 +563,24 @@ fn poll_network_events(
                 }
             }
             NetworkEvent::Voxel(voxel) => {
+                // Edit-feedback closing the loop (阶段0): a failed authoritative
+                // ACK (rejected/stale) means the player's build/dig did NOT land.
+                // Flash a localized reason + log it BEFORE handing the message to
+                // the authority store, so the rejection is never silently dropped.
+                if let crate::voxel::wire::VoxelServerMessage::VoxelIntentResult(result) = &voxel {
+                    if result.is_failure() {
+                        edit_feedback.flash_failure(&result.reason, time.elapsed_secs());
+                        push_line(
+                            &mut world_state.logs,
+                            format!(
+                                "voxel edit {} (seq {}): {}",
+                                result.result_label(),
+                                result.client_intent_seq,
+                                result.reason
+                            ),
+                        );
+                    }
+                }
                 // Thin glue: hand the decoded message to the voxel authority
                 // store's inbox; ingestion + meshing live in VoxelAuthorityPlugin.
                 voxel_authority.enqueue(voxel);
