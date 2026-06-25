@@ -158,6 +158,29 @@ impl VoxelAuthorityStore {
         dirty
     }
 
+    /// Seeds a chunk loaded from the on-disk map cache, marking it dirty so the
+    /// renderer meshes it. Lets a returning session render its persisted map
+    /// immediately, before the server confirms each chunk's version via the
+    /// `known[]` subscribe diff. A `false` return means a chunk already existed at
+    /// this coord (live data wins — the cache never clobbers a live chunk).
+    pub fn seed_chunk(&mut self, coord: ChunkCoord, chunk: AuthorityChunk) -> bool {
+        if self.chunks.contains_key(&coord) {
+            return false;
+        }
+        self.chunks.insert(coord, chunk);
+        self.dirty.insert(coord);
+        true
+    }
+
+    /// `(coord, chunk_version)` for every loaded chunk — the client's `known[]`
+    /// advertisement so the server can skip re-sending unchanged chunks.
+    pub fn known_versions(&self) -> Vec<(ChunkCoord, u64)> {
+        self.chunks
+            .iter()
+            .map(|(coord, chunk)| (*coord, chunk.chunk_version))
+            .collect()
+    }
+
     /// Evicts a chunk that fell out of the AOI subscription box as the player
     /// moved away. Removes it from the store and marks it dirty so the renderer
     /// despawns its now-absent mesh (mirrors `apply_invalidate`). Without this the

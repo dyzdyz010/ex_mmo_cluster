@@ -180,6 +180,10 @@ fn subscribe_voxel_around(
         logical_scene_id: 1,
         center_chunk,
         radius: VOXEL_SUBSCRIBE_RADIUS,
+        // Advertise every chunk we already hold (from the on-disk cache or this
+        // session) so the server diffs against our versions and skips unchanged
+        // chunks. The server matches per-coord, ignoring entries outside the box.
+        known: authority.store.known_versions(),
     });
 
     if let Some(old_center) = world_state.voxel_subscribed_center

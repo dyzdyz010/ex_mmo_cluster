@@ -283,6 +283,7 @@ impl ClientRuntime {
                 logical_scene_id,
                 center_chunk,
                 radius,
+                known,
             } if self.phase == ConnectionPhase::InScene => {
                 let request_id = self.next_request_id();
                 let subscribe = crate::voxel::wire::ChunkSubscribe {
@@ -291,7 +292,13 @@ impl ClientRuntime {
                     center_chunk,
                     radius_l_inf: radius,
                     want_snapshot: true,
-                    known: Vec::new(),
+                    known: known
+                        .into_iter()
+                        .map(|(chunk_coord, chunk_version)| crate::voxel::wire::KnownChunk {
+                            chunk_coord,
+                            chunk_version,
+                        })
+                        .collect(),
                 };
                 outcome.push_outbound(OutboundAction::Tcp(ClientMessage::Voxel(
                     crate::voxel::wire::VoxelClientMessage::ChunkSubscribe(subscribe),

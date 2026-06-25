@@ -36,6 +36,7 @@ pub mod lightning_render;
 #[cfg(all(feature = "layer3", test))]
 mod layer3_pixel;
 pub mod mesher;
+pub mod persistence;
 pub mod plugin;
 pub mod build_palette;
 pub mod live_pick;
@@ -54,6 +55,7 @@ pub use field_render::VoxelFieldRenderPlugin;
 pub use heat_smoke_render::HeatSmokePlugin;
 pub use incandescence_render::IncandescencePlugin;
 pub use lightning_render::LightningPlugin;
+pub use persistence::MapCachePlugin;
 pub use plugin::VoxelPlugin;
 pub use semiconductor_render::SemiconductorOverlayPlugin;
 

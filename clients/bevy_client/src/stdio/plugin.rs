@@ -401,6 +401,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     logical_scene_id,
                     center_chunk: center,
                     radius,
+                    known: Vec::new(),
                 });
                 emit_stdio(
                     "va_subscribe_sent",
@@ -458,6 +459,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                         logical_scene_id,
                         center_chunk: center,
                         radius,
+                        known: Vec::new(),
                     });
                     emit_stdio(
                         "va_follow",

@@ -422,6 +422,7 @@ pub fn run_stdio(
                         logical_scene_id,
                         center_chunk: center,
                         radius,
+                        known: Vec::new(),
                     });
                     emit_stdio(
                         "va_subscribe_sent",
@@ -482,6 +483,7 @@ pub fn run_stdio(
                             logical_scene_id,
                             center_chunk: center,
                             radius,
+                            known: Vec::new(),
                         });
                         emit_stdio(
                             "va_follow",
@@ -891,6 +893,7 @@ fn drain_pending_resyncs(bridge: &NetworkBridge, state: &mut HeadlessState) {
             logical_scene_id: 1,
             center_chunk: coord,
             radius: 0,
+            known: Vec::new(),
         });
     }
 }

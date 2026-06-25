@@ -317,6 +317,8 @@ fn ingest_voxel_messages(
                 logical_scene_id: VOXEL_LOGICAL_SCENE_ID,
                 center_chunk: coord,
                 radius: 0,
+                // Resync: empty `known` forces a fresh full snapshot for this chunk.
+                known: Vec::new(),
             });
         }
     }

@@ -47,12 +47,15 @@ pub enum NetworkCommand {
         target_position: Option<NetVec3>,
     },
     RequestReconcileStats,
-    /// Subscribe to voxel chunks around a center (L∞ radius), requesting a full
-    /// snapshot. Drives the server→client chunk stream.
+    /// Subscribe to voxel chunks around a center (L∞ radius). `known` advertises
+    /// `(chunk_coord, chunk_version)` the client already holds (from the on-disk
+    /// map cache) so the server sends a snapshot ONLY for chunks whose version
+    /// differs — a startup diff instead of re-streaming the whole box.
     SubscribeChunks {
         logical_scene_id: u64,
         center_chunk: [i32; 3],
         radius: u8,
+        known: Vec<([i32; 3], u64)>,
     },
     /// Unsubscribe from voxel chunks that fell out of the AOI box as the player
     /// moved, so the server stops fanning out deltas/field snapshots for chunks

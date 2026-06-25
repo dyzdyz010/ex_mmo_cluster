@@ -24,7 +24,7 @@ use crate::presentation::PresentationPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 use crate::voxel::{
-    DebrisEffectPlugin, HeatSmokePlugin, IncandescencePlugin, LightningPlugin,
+    DebrisEffectPlugin, HeatSmokePlugin, IncandescencePlugin, LightningPlugin, MapCachePlugin,
     SemiconductorOverlayPlugin, VoxelAuthorityPlugin, VoxelChunkRenderPlugin,
     VoxelFieldRenderPlugin, VoxelPlugin,
 };
@@ -45,6 +45,7 @@ impl PluginGroup for BevyClientPlugins {
             .add(ChatPlugin)
             .add(VoxelPlugin)
             .add(VoxelAuthorityPlugin)
+            .add(MapCachePlugin)
             .add(VoxelChunkRenderPlugin)
             .add(VoxelFieldRenderPlugin)
             .add(SemiconductorOverlayPlugin)
