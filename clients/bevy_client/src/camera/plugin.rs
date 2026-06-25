@@ -16,6 +16,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
 use crate::app::{LocalRenderPrediction, WorldState, schedule::ClientSet};
 use crate::chat::ChatState;
 use crate::login::AppState;
+use crate::session::ConnectionState;
 use crate::observe::ClientObserver;
 use crate::presentation::actor_render_position;
 use crate::presentation::smoothing::smooth_translation;
@@ -144,6 +145,7 @@ struct OrbitCameraParams<'w, 's> {
     keyboard: Res<'w, ButtonInput<KeyCode>>,
     motion_reader: MessageReader<'w, 's, MouseMotion>,
     wheel_reader: MessageReader<'w, 's, MouseWheel>,
+    connection: Res<'w, ConnectionState>,
     world_state: Res<'w, WorldState>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     voxel_world: Res<'w, VoxelWorld>,
@@ -217,7 +219,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
             actor_render_position(
                 &params.voxel_world,
                 &params.authority,
-                params.world_state.scene_joined,
+                params.connection.scene_joined,
                 state.position,
                 ACTOR_HALF_HEIGHT,
             )
@@ -227,7 +229,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
                 actor_render_position(
                     &params.voxel_world,
                     &params.authority,
-                    params.world_state.scene_joined,
+                    params.connection.scene_joined,
                     position,
                     ACTOR_HALF_HEIGHT,
                 )
@@ -269,7 +271,7 @@ fn update_orbit_camera(mut params: OrbitCameraParams) {
     if let Some(hit_distance) = crate::voxel::plugin::voxel_ray_first_hit_distance(
         &params.voxel_world,
         &params.authority,
-        params.world_state.scene_joined,
+        params.connection.scene_joined,
         target,
         camera_offset_dir,
         requested_distance,

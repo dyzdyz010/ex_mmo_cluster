@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::app::{WorldState, push_line, render_to_sim_position};
+use crate::session::ConnectionState;
 use crate::camera::MainCamera;
 use crate::chat::ChatState;
 use crate::login::AppState;
@@ -35,6 +36,7 @@ fn handle_skill_input(
     observer: Res<ClientObserver>,
     chat_state: Res<ChatState>,
     mut world_state: ResMut<WorldState>,
+    mut connection: ResMut<ConnectionState>,
 ) {
     if chat_state.enabled {
         return;
@@ -47,19 +49,19 @@ fn handle_skill_input(
     }
 
     if keyboard.just_pressed(KeyCode::Digit1) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 1);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 1);
     }
 
     if keyboard.just_pressed(KeyCode::Digit2) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 2);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 2);
     }
 
     if keyboard.just_pressed(KeyCode::Digit3) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 3);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 3);
     }
 
     if keyboard.just_pressed(KeyCode::Digit4) {
-        send_targeted_skill(&bridge, &observer, &mut world_state, 4);
+        send_targeted_skill(&bridge, &observer, &mut world_state, &mut connection, 4);
     }
 }
 
@@ -117,6 +119,7 @@ fn handle_point_target_input(
     voxel_world: Res<crate::voxel::VoxelWorld>,
     authority: Res<crate::voxel::authority_plugin::VoxelAuthority>,
     mut world_state: ResMut<WorldState>,
+    connection: Res<ConnectionState>,
     observer: Res<ClientObserver>,
 ) {
     let target_modifier =
@@ -134,7 +137,7 @@ fn handle_point_target_input(
     let Some(ray) = crate::app::ray_from_viewport(camera, camera_transform, cursor) else {
         return;
     };
-    let scene_joined = world_state.scene_joined;
+    let scene_joined = connection.scene_joined;
     let dir = ray.direction.normalize_or_zero();
 
     // Pick the actual ground the cursor is over (server-authoritative terrain in a
@@ -189,6 +192,7 @@ fn send_targeted_skill(
     bridge: &NetworkBridge,
     observer: &ClientObserver,
     world_state: &mut WorldState,
+    connection: &mut ConnectionState,
     skill_id: u16,
 ) {
     let selected_target_point = world_state
@@ -205,7 +209,7 @@ fn send_targeted_skill(
         Ok(dispatch) => dispatch,
         Err(block) => {
             let message = format!("skill {skill_id} blocked: {}", block.reason);
-            world_state.status = message.clone();
+            connection.status = message.clone();
             push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
             observer.emit(
                 "input",

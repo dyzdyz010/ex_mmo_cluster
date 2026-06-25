@@ -12,6 +12,7 @@ use crate::app::{
     WorldState, schedule::ClientSet,
 };
 use crate::config::ClientConfig;
+use crate::session::ConnectionState;
 use crate::login::AppState;
 use crate::observe::ClientObserver;
 use crate::presentation::animation::{
@@ -55,6 +56,7 @@ impl Plugin for PresentationPlugin {
 struct PlayerVisualParams<'w, 's> {
     time: Res<'w, Time>,
     world_state: Res<'w, WorldState>,
+    connection: Res<'w, ConnectionState>,
     local_render_prediction: Res<'w, LocalRenderPrediction>,
     config: Res<'w, ClientConfig>,
     voxel_world: Res<'w, VoxelWorld>,
@@ -169,7 +171,7 @@ fn sync_player_visuals(
                 let target = actor_render_position(
                     &params.voxel_world,
                     &params.authority,
-                    params.world_state.scene_joined,
+                    params.connection.scene_joined,
                     motion.position,
                     visual.base_scale.y * 0.5,
                 );
@@ -267,7 +269,7 @@ fn sync_player_visuals(
             let target = actor_render_position(
                 &params.voxel_world,
                 &params.authority,
-                params.world_state.scene_joined,
+                params.connection.scene_joined,
                 motion.position,
                 scale.y * 0.5,
             );

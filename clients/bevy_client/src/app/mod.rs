@@ -19,7 +19,7 @@ use crate::{
     login::{AppState, LoginPlugin},
     net::{MessageTransport, spawn_network_thread},
     observe::ClientObserver,
-    session::SessionCredentials,
+    session::{ConnectionState, SessionCredentials},
     sim::{
         profile::MovementProfile,
         types::{MovementMode, PredictedMoveState},
@@ -78,8 +78,6 @@ pub(crate) struct SceneRenderAssets {
 
 #[derive(Resource, Default)]
 pub(crate) struct WorldState {
-    pub status: String,
-    pub scene_joined: bool,
     pub local_cid: i64,
     pub local_position: Option<Vec3>,
     pub local_velocity: Vec3,
@@ -281,11 +279,6 @@ pub fn run(
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.09)))
         .insert_resource(config.clone())
         .insert_resource(WorldState {
-            status: if starts_in_game {
-                "starting client".to_string()
-            } else {
-                "waiting for login".to_string()
-            },
             local_position: Some(Vec3::ZERO),
             local_velocity: Vec3::ZERO,
             local_hp: 100,
@@ -295,6 +288,14 @@ pub fn run(
             movement_transport: MessageTransport::Tcp,
             fast_lane_status: "tcp fallback".to_string(),
             ..default()
+        })
+        .insert_resource(ConnectionState {
+            status: if starts_in_game {
+                "starting client".to_string()
+            } else {
+                "waiting for login".to_string()
+            },
+            scene_joined: false,
         })
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())
@@ -335,13 +336,14 @@ fn enter_game_setup(
     creds: Res<SessionCredentials>,
     observer: Res<ClientObserver>,
     mut world_state: ResMut<WorldState>,
+    mut connection: ResMut<ConnectionState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let bridge = spawn_network_thread(config.clone(), creds.clone(), observer.clone());
     commands.insert_resource(bridge);
 
     world_state.local_cid = creds.cid;
-    world_state.status = "starting client".to_string();
+    connection.status = "starting client".to_string();
 
     if let Ok(mut window) = windows.single_mut() {
         window.title = format!(

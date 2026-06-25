@@ -10,6 +10,7 @@ use crate::app::{
 };
 use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::login::AppState;
+use crate::session::ConnectionState;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::remote_actor::RemoteActorIdentity;
 use crate::world::remote_player::RemotePlayerState;
@@ -65,6 +66,7 @@ fn voxel_subscribe_retry(
     time: Res<Time>,
     bridge: Res<NetworkBridge>,
     mut world_state: ResMut<WorldState>,
+    connection: Res<ConnectionState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut retry: ResMut<VoxelSubscribeRetry>,
 ) {
@@ -75,7 +77,7 @@ fn voxel_subscribe_retry(
     let Some(center) = world_state.voxel_subscribed_center else {
         return;
     };
-    if !world_state.scene_joined {
+    if !connection.scene_joined {
         return;
     }
     // Terrain arrived → reset (interval + attempts) so a future genuine
@@ -290,6 +292,7 @@ fn poll_network_events(
     time: Res<Time>,
     stdio: Res<ClientStdioInterface>,
     mut world_state: ResMut<WorldState>,
+    mut connection: ResMut<ConnectionState>,
     mut local_render_prediction: ResMut<LocalRenderPrediction>,
     mut movement_dispatch: ResMut<MovementDispatchState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
@@ -305,7 +308,7 @@ fn poll_network_events(
             // continue draining events that may have arrived before the
             // panic.
             let recovered = poisoned.into_inner();
-            world_state.status =
+            connection.status =
                 "network bridge mutex poisoned (network thread panicked)".to_string();
             push_line(
                 &mut world_state.logs,
@@ -319,15 +322,15 @@ fn poll_network_events(
     while let Ok(event) = receiver.try_recv() {
         match event {
             NetworkEvent::Status(status) => {
-                world_state.status = status.clone();
+                connection.status = status.clone();
                 if stdio.is_enabled() {
                     emit_stdio("status", &[("message", status.clone())]);
                 }
                 push_line(&mut world_state.logs, status);
             }
             NetworkEvent::EnteredScene { cid, location } => {
-                world_state.scene_joined = true;
-                world_state.status = format!("in scene as cid {cid}");
+                connection.scene_joined = true;
+                connection.status = format!("in scene as cid {cid}");
                 world_state.local_cid = cid;
                 let world_location = net_to_world(location);
                 world_state.local_position = Some(world_location);
@@ -662,8 +665,8 @@ fn poll_network_events(
                 push_line(&mut world_state.logs, line)
             }
             NetworkEvent::Disconnected(reason) => {
-                world_state.scene_joined = false;
-                world_state.status = format!("disconnected: {reason}");
+                connection.scene_joined = false;
+                connection.status = format!("disconnected: {reason}");
                 world_state.local_position = None;
                 world_state.local_velocity = Vec3::ZERO;
                 world_state.remote_players.clear();

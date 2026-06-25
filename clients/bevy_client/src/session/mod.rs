@@ -16,6 +16,28 @@ use std::fmt;
 
 pub mod auth;
 
+/// Connection / scene-membership liveness — the single owner of "are we
+/// connected and in the world" (架构重整阶段1b:从 `WorldState` god-resource 收口
+/// 到 session 域)。后续阶段 4 把 `status` String 演进成显式的 `ConnectionPhase` 枚举
+/// + 退避重连/重认证;此处先做纯所有权迁移(字段不变,行为不变)。
+#[derive(Resource)]
+pub struct ConnectionState {
+    /// Human-readable status line surfaced by the HUD / stdio harness.
+    pub status: String,
+    /// True once the server confirmed scene entry; gates all in-world systems
+    /// (camera follow, movement upload, voxel subscribe/render, skill cast …).
+    pub scene_joined: bool,
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self {
+            status: String::new(),
+            scene_joined: false,
+        }
+    }
+}
+
 #[derive(Clone, Resource)]
 /// Credentials returned by the dev auto-login endpoint after the user submits a username.
 pub struct SessionCredentials {

@@ -12,6 +12,7 @@ use crate::app::{
 use crate::camera::{OrbitCameraState, orbit::input_to_world_direction};
 use crate::chat::ChatState;
 use crate::config::ClientConfig;
+use crate::session::ConnectionState;
 use crate::input::commands::{MOVEMENT_FLAG_BRAKE, MOVEMENT_FLAG_JUMP, MoveInputFrame};
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
@@ -72,6 +73,7 @@ struct MovementSendParams<'w> {
     config: Res<'w, ClientConfig>,
     observer: Res<'w, ClientObserver>,
     world_state: Res<'w, WorldState>,
+    connection: Res<'w, ConnectionState>,
     movement_intent: ResMut<'w, MovementIntent>,
     movement_dispatch: ResMut<'w, MovementDispatchState>,
     tick: ResMut<'w, MovementTick>,
@@ -154,12 +156,13 @@ fn movement_sender(params: MovementSendParams) {
         config,
         observer,
         world_state,
+        connection,
         mut movement_intent,
         mut movement_dispatch,
         mut tick,
     } = params;
 
-    if !world_state.scene_joined {
+    if !connection.scene_joined {
         return;
     }
 

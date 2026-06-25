@@ -5,6 +5,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::app::{WorldState, schedule::ClientSet};
+use crate::session::ConnectionState;
 use crate::chat::{ChatInputText, ChatLogText, ChatState};
 use crate::login::AppState;
 use crate::voxel::VoxelWorld;
@@ -54,6 +55,7 @@ struct HudTextParams<'w, 's> {
 
 fn update_hud_text(
     world_state: Res<WorldState>,
+    connection: Res<ConnectionState>,
     chat_state: Res<ChatState>,
     voxel_world: Res<VoxelWorld>,
     selection_state: Res<crate::voxel::plugin::VoxelSelectionState>,
@@ -106,7 +108,7 @@ fn update_hud_text(
 
     texts.hud.0 = format!(
         "status: {}\ndemo: control={} | movement={} | fast-lane={}\nudp endpoint: {}\nAOI peers: {} (npcs: {})\nselected target: {}\nselected point: {}\nvoxel hotbar: {} ({})\nvoxel selection: {}\nlocal cid: {}\nposition: {}\nhp: {}/{} alive={}\nlast move ack: {}\nlast AOI move: {}\nrtt: {}\noffset: {}\nheartbeat: {}\ncontrols: WASD/Space move | mouse free-look (cursor locked) | Ctrl+wheel zoom | LMB/G break | RMB/F place | wheel/1-7 hotbar | Shift+1-4 skills | Shift+RMB target | Enter chat (releases cursor)",
-        world_state.status,
+        connection.status,
         world_state.control_transport.label(),
         world_state.movement_transport.label(),
         world_state.fast_lane_status,

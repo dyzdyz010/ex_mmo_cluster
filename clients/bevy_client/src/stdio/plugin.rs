@@ -12,6 +12,7 @@ use crate::app::{
 };
 use crate::login::AppState;
 use crate::net::{NetworkBridge, NetworkCommand};
+use crate::session::ConnectionState;
 use crate::skill::prepare_skill_dispatch;
 use crate::voxel::mesher::greedy_mesh_chunk;
 use crate::voxel::{VoxelAuthority, VoxelWorld, execute_voxel_cli_command};
@@ -44,6 +45,7 @@ struct StdioCommandParams<'w> {
     voxel_world: ResMut<'w, VoxelWorld>,
     voxel_authority: Res<'w, VoxelAuthority>,
     world_state: ResMut<'w, WorldState>,
+    connection: ResMut<'w, ConnectionState>,
     movement_intent: ResMut<'w, MovementIntent>,
     app_exit: MessageWriter<'w, AppExit>,
 }
@@ -66,6 +68,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         mut voxel_world,
         voxel_authority,
         mut world_state,
+        mut connection,
         mut movement_intent,
         mut app_exit,
     } = params;
@@ -85,8 +88,8 @@ fn poll_stdio_commands(params: StdioCommandParams) {
         match command {
             ClientStdioCommand::Snapshot => {
                 let mut fields = snapshot_fields(SnapshotFields {
-                    status: &world_state.status,
-                    scene_joined: world_state.scene_joined,
+                    status: &connection.status,
+                    scene_joined: connection.scene_joined,
                     local_cid: world_state.local_cid,
                     local_position: world_state.local_position,
                     local_hp: world_state.local_hp,
@@ -234,7 +237,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
                     Ok(dispatch) => dispatch,
                     Err(block) => {
                         let message = format!("skill {skill_id} blocked: {}", block.reason);
-                        world_state.status = message.clone();
+                        connection.status = message.clone();
                         push_line(&mut world_state.logs, format!("{message} ({})", block.hint));
                         emit_stdio(
                             "skill_blocked",
@@ -588,7 +591,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             }
             ClientStdioCommand::Quit => {
                 bridge.send(NetworkCommand::Shutdown);
-                emit_stdio("quit", &[("final_status", world_state.status.clone())]);
+                emit_stdio("quit", &[("final_status", connection.status.clone())]);
                 app_exit.write(AppExit::Success);
             }
         }
