@@ -7,7 +7,9 @@ defmodule MmoContracts.CellId do
   - `:morton` —— 规范 CELL-2 的 `(level, morton)` 四叉树路径(XZ-column,CELL-3 推荐默认)。
   - `:region` —— v2.0.2 聚合等价:`region_id` + 连续 chunk **3D AABB**(`bounds_chunk_min/max`,
     **含 Y**,用于垂直分片;CELL-2/3 [v2.0.2] / D-2)。这是本仓**当前生产路径**(`region` 由
-    `WorldServer.Voxel.MapLedger` 分配)。
+    `WorldServer.Voxel.MapLedger` 在隐式格点 `WorldServer.Voxel.RegionGrid` 上懒物化分配;
+    生产 `region_id` 编码 = `RegionGrid.region_id/2`,把 `logical_scene_id` + 格点索引打包成
+    全局唯一 bigint,**是稠密格点 id 而非 morton 交织**——morton 等价是下方独立的 D-2 接缝)。
 
   bounds 采用**半开区间** `min <= c < max`(与 `WorldServer.Voxel.RegionAssignment.contains_chunk?` 一致)。
 
