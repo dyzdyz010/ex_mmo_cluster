@@ -1,4 +1,7 @@
 defmodule WorldServer.Voxel.DevSeedTest do
+  # 阶段1:DevSeed 改隐式 grid 物化 + 写 voxel_write_tokens/voxel_region_epochs(共享表)。
+  # 各 test 用互不相同的 logical_scene_id,region 行(键含 logical_scene_id)天然隔离,
+  # 故仍可 async。
   use ExUnit.Case, async: true
 
   alias DataService.Voxel.WriteTokenStore
@@ -21,20 +24,6 @@ defmodule WorldServer.Voxel.DevSeedTest do
     def init(_opts), do: {:ok, %{calls: []}}
 
     @impl true
-    def handle_call({:apply_intent, attrs}, _from, state) do
-      reply =
-        {:ok,
-         %{
-           logical_scene_id: attrs.logical_scene_id,
-           chunk_coord: attrs.chunk_coord,
-           chunk_version: length(state.calls) + 1,
-           operation: attrs.operation,
-           macro: attrs.macro
-         }}
-
-      {:reply, reply, %{state | calls: [attrs | state.calls]}}
-    end
-
     def handle_call({:apply_intents, attrs_list}, _from, state) do
       next_calls = Enum.reverse(attrs_list) ++ state.calls
 
@@ -55,96 +44,135 @@ defmodule WorldServer.Voxel.DevSeedTest do
     def handle_call(:calls, _from, state), do: {:reply, Enum.reverse(state.calls), state}
   end
 
-  test "creates an idempotent browser dev region and publishes its lease" do
-    token_store = WriteTokenStore
-    ledger_name = :"dev_seed_ledger_#{System.unique_integer([:positive])}"
-    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+  # Starts a SceneNodeRegistry (with this node registered) + a MapLedger wired to
+  # it, so the ensuring route can materialize grid regions.
+  defp start_ledger_with_registry do
+    registry =
+      start_supervised!(
+        {SceneNodeRegistry, name: :"dev_seed_registry_#{System.unique_integer([:positive])}"}
+      )
+
+    :ok = SceneNodeRegistry.register_scene_node(registry, node())
+
+    ledger =
+      start_supervised!(
+        {MapLedger,
+         name: :"dev_seed_ledger_#{System.unique_integer([:positive])}",
+         write_token_store: WriteTokenStore,
+         scene_node_registry: registry}
+      )
+
+    {ledger, registry}
+  end
+
+  defp region_for(regions, {cx, cy, cz}) do
+    Enum.find(regions, fn r ->
+      [minx, miny, minz] = r.bounds_chunk_min
+      [maxx, maxy, maxz] = r.bounds_chunk_max
+      cx >= minx and cx < maxx and cy >= miny and cy < maxy and cz >= minz and cz < maxz
+    end)
+  end
+
+  test "materializes the spawn footprint on the implicit grid and is idempotent" do
+    {ledger, _registry} = start_ledger_with_registry()
 
     assert {:ok, created} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 88,
-               region_id: 880_001,
-               center_chunk: {0, 0, 0},
-               assigned_scene_node: node(),
                seed_terrain?: false
              )
 
-    assert created.status == :created
+    assert created.status == :ready
     assert created.logical_scene_id == 88
-    assert created.region_id == 880_001
-    assert created.bounds_chunk_min == [-2, -2, -2]
-    assert created.bounds_chunk_max == [3, 3, 3]
+    # 5×5 footprint (x,z ∈ -2..2) straddles 2×2 = 4 grid regions under Sx=Sz=8.
+    assert created.chunk_count == 25
+    assert created.region_count == 4
 
+    # Every footprint region is materialized, leased, and owned by this node.
+    assert Enum.all?(created.regions, &(&1.assigned_scene_node == Atom.to_string(node())))
+    assert Enum.all?(created.regions, &(&1.lease_id != nil))
+
+    # Each footprint chunk now routes to its materialized region.
     assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 88, {0, 0, 0})
-    assert route.assignment.region_id == 880_001
-    assert route.lease.lease_id == created.lease_id
+    assert route.assignment.bounds_chunk_min == {0, 0, 0}
+    assert route.assignment.bounds_chunk_max == {8, 64, 8}
 
-    assert {:ok, renewed} =
+    # Re-running reuses the same regions (idempotent, no churn).
+    assert {:ok, again} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 88,
-               region_id: 880_001,
-               center_chunk: {0, 0, 0},
-               assigned_scene_node: node(),
                seed_terrain?: false
              )
 
-    assert renewed.status == :renewed
-    assert renewed.lease_id != created.lease_id
-    assert renewed.owner_epoch > created.owner_epoch
+    assert again.region_count == 4
 
-    assert {:ok, renewed_route} = MapLedger.route_chunk_with_lease(ledger, 88, {0, 0, 0})
-    assert renewed_route.lease.lease_id == renewed.lease_id
+    assert Enum.map(again.regions, & &1.region_id) |> Enum.sort() ==
+             Enum.map(created.regions, & &1.region_id) |> Enum.sort()
   end
 
-  test "uses the ledger scene node registry when no explicit owner is supplied" do
-    token_store = WriteTokenStore
-    registry_name = :"dev_seed_scene_registry_#{System.unique_integer([:positive])}"
-    registry = start_supervised!({SceneNodeRegistry, name: registry_name})
+  test "picks the region owner from the ledger's scene node registry" do
+    registry =
+      start_supervised!(
+        {SceneNodeRegistry, name: :"dev_seed_owner_registry_#{System.unique_integer([:positive])}"}
+      )
+
     scene_node = :"scene_dev_seed_#{System.unique_integer([:positive])}@example"
     :ok = SceneNodeRegistry.register_scene_node(registry, scene_node)
-
-    ledger_name = :"dev_seed_registry_ledger_#{System.unique_integer([:positive])}"
 
     ledger =
       start_supervised!(
         {MapLedger,
-         name: ledger_name, write_token_store: token_store, scene_node_registry: registry}
+         name: :"dev_seed_owner_ledger_#{System.unique_integer([:positive])}",
+         write_token_store: WriteTokenStore,
+         scene_node_registry: registry}
       )
 
     assert {:ok, created} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 89,
-               region_id: 890_001,
-               center_chunk: {0, 0, 0},
                seed_terrain?: false
              )
 
-    assert created.status == :created
+    assert Enum.all?(created.regions, &(&1.assigned_scene_node == Atom.to_string(scene_node)))
     assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 89, {0, 0, 0})
     assert route.assignment.assigned_scene_node == scene_node
-    assert SceneNodeRegistry.lookup_assignment(registry, 890_001) == {:ok, scene_node}
+  end
+
+  test "fails (and seeds nothing) when no Scene node is registered to host a region" do
+    registry =
+      start_supervised!(
+        {SceneNodeRegistry, name: :"dev_seed_empty_registry_#{System.unique_integer([:positive])}"}
+      )
+
+    ledger =
+      start_supervised!(
+        {MapLedger,
+         name: :"dev_seed_empty_ledger_#{System.unique_integer([:positive])}",
+         write_token_store: WriteTokenStore,
+         scene_node_registry: registry}
+      )
+
+    assert {:error, :scene_node_unassigned} =
+             DevSeed.ensure_default_region(ledger: ledger, logical_scene_id: 90)
+
+    assert MapLedger.snapshot(ledger).assignments == %{}
   end
 
   test "seeds the multi-chunk noise-terrain heightmap through chunk_directory.apply_intents" do
-    token_store = WriteTokenStore
-    ledger_name = :"dev_seed_terrain_ledger_#{System.unique_integer([:positive])}"
-    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+    {ledger, _registry} = start_ledger_with_registry()
     {:ok, fake_dir} = FakeChunkDirectory.start_link()
 
     assert {:ok, created} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 91,
-               region_id: 910_001,
-               center_chunk: {0, 0, 0},
-               assigned_scene_node: node(),
                chunk_directory: fake_dir
              )
 
-    assert created.status == :created
+    assert created.status == :ready
     terrain = created.terrain
     assert terrain != nil
     # Default footprint = 5×5 horizontal chunks (x,z ∈ -2..2, y = 0).
@@ -166,21 +194,21 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert terrain.written == expected_total
     assert terrain.errors == 0
     assert terrain.chunk_errors == []
-    # Flat-platform/circuit summary keys are gone in the heightmap seed.
-    refute Map.has_key?(terrain, :platform_attempted)
-    refute Map.has_key?(terrain, :demo_circuit_attempted)
 
     calls = FakeChunkDirectory.calls(fake_dir)
     assert length(calls) == expected_total
 
-    # Every terrain chunk was seeded, all under the region lease.
+    # Every terrain chunk was seeded.
     seeded_chunks = calls |> Enum.map(& &1.chunk_coord) |> MapSet.new()
     assert seeded_chunks == expected_chunks
 
+    # Each chunk is written under ITS region's lease (the footprint spans 4 regions).
     Enum.each(calls, fn attrs ->
       assert attrs.logical_scene_id == 91
       assert attrs.operation == :put_solid_block
-      assert attrs.lease.lease_id == created.lease_id
+      region = region_for(created.regions, attrs.chunk_coord)
+      assert region != nil
+      assert attrs.lease.lease_id == region.lease_id
     end)
 
     # Sample chunk: every column is filled contiguously y=0..H-1, surface dirt
@@ -204,21 +232,16 @@ defmodule WorldServer.Voxel.DevSeedTest do
   end
 
   test "returns a JSON-safe terrain error when the scene chunk directory is unavailable" do
-    token_store = WriteTokenStore
-    ledger_name = :"dev_seed_unavailable_ledger_#{System.unique_integer([:positive])}"
-    ledger = start_supervised!({MapLedger, name: ledger_name, write_token_store: token_store})
+    {ledger, _registry} = start_ledger_with_registry()
 
     assert {:ok, created} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 92,
-               region_id: 920_001,
-               center_chunk: {0, 0, 0},
-               assigned_scene_node: node(),
                chunk_directory: :missing_dev_seed_chunk_directory
              )
 
-    # Every platform chunk's apply_intents exits (no such directory); each is
+    # Every footprint chunk's apply_intents exits (no such directory); each is
     # isolated into a per-chunk error so the summary stays JSON-safe.
     assert created.terrain.errors == 25
     assert created.terrain.written == 0

@@ -1,29 +1,30 @@
 defmodule WorldServer.Voxel.DevSeed do
   @moduledoc """
-  Idempotent development seeding for browser/client voxel smoke runs.
+  Idempotent development **WorldGen prewarm** for browser/client voxel smoke runs.
 
-  The module both prepares the control-plane boundary (region + lease + write
-  token) and seeds a small starter terrain footprint so the browser sees real
-  server-authoritative voxels on the first subscription instead of an empty
-  chunk. Chunk truth remains owned by `SceneServer.Voxel.ChunkProcess`; the
-  browser can subscribe or submit intents through Gate without a GUI-only
-  setup step.
+  阶段1 起 DevSeed 不再定义任何 region 边界。世界的分区是隐式的(`RegionGrid`):
+  region = f(chunk_coord),由 `MapLedger` 在路由 miss 时懒物化。DevSeed 退化为纯粹的
+  **出生点地形预热**——把出生点周围一小片 footprint 的 chunk 经 `route_chunks_with_leases_ensuring`
+  路由(顺带物化它们所在的 grid region + 取得各自 region 的 lease),再把起始地形写进去。
+  Chunk truth 仍归 `SceneServer.Voxel.ChunkProcess`;写入走与客户端 `0x64 VoxelImpactIntent`
+  完全相同的 `apply_intents` 权威路径。
+
+  与旧版的关键差异:footprint 可能跨多个 grid region(默认 footprint 5×5,在 `Sx=Sz=8`
+  下横跨 2×2 = 最多 4 个 region),因此每个 chunk 用**它所在 region 的 lease**写入,而非
+  全 footprint 共用一个固定 region 的 lease。物化需要一个已注册的 Scene 节点
+  (`SceneNodeRegistry`);没有时返回 `{:error, :scene_node_unassigned}`,由
+  `DefaultRegionBootstrapper` 重试。
 
   Starter terrain layout:
 
-  - A deterministic value-noise heightmap (rolling hills, `TerrainNoise`) spanning
-    a block of chunks (`@platform_chunk_min`..`@platform_chunk_max`, half-open;
-    default 5×5 horizontal = chunk x,z ∈ -2..2, y = 0 = 25 chunks). Each `(mx, mz)`
-    column is filled solid from `y = 0` up to its noise height (clamped < 16 so it
-    stays inside the `y = 0` chunk): surface layer dirt, everything below stone.
+  - A deterministic value-noise heightmap (rolling hills, `TerrainNoise`) over the
+    footprint chunks. Each `(mx, mz)` column is filled solid from `y = 0` up to its
+    noise height (clamped < 16 so it stays inside the `y = 0` chunk): surface layer
+    dirt, everything below stone.
 
-  All terrain chunks live in one region (the default region holds 5×5×5 = 125
-  chunks), so they share the region lease. `ChunkDirectory.apply_intents/2`
-  rejects cross-chunk batches (`:batch_cross_chunk_unsupported`), so each chunk
-  is seeded with its own `apply_intents` call, reusing the same lease/route.
-  Writes go through the exact same path as `0x64 VoxelImpactIntent` from clients.
-  The seed is idempotent: a second call re-issues the lease and skips macros that
-  already match the desired block (heights are a pure function of world coords).
+  The seed is idempotent: a second call re-routes (regions already materialized →
+  same leases, no churn) and skips macros that already match the desired block
+  (heights are a pure function of world coords).
   """
 
   alias WorldServer.CliObserve
@@ -37,22 +38,14 @@ defmodule WorldServer.Voxel.DevSeed do
   @chunk_size_in_macro 16
 
   @default_logical_scene_id 1
-  @default_region_id 1_000_001
-  @default_bounds_min {-2, -2, -2}
-  @default_bounds_max {3, 3, 3}
-  @default_owner_scene_instance_ref 1
-  @default_owner_epoch 1
-  @default_lease_ttl_ms :timer.hours(6)
   @default_chunk_directory :__dev_seed_default_chunk_directory__
 
-  # Starter terrain footprint: a noise heightmap (rolling hills) spanning a block
-  # of chunks, each column filled solid from `y = 0` up to its noise height.
-  # `@platform_chunk_min`/`@platform_chunk_max` are half-open chunk-coord bounds
-  # (matching `RegionAssignment.contains_chunk?/2`) and MUST stay inside the
-  # region bounds so every chunk shares the region lease. Default = 5×5 horizontal
-  # (chunk x,z ∈ -2..2, y = 0) = 25 chunks, fitting the default region
-  # {-2,-2,-2}..{3,3,3} — a multi-chunk terrain so the client exercises
-  # large-scale chunk meshing/streaming with real relief, not a flat slab.
+  # Starter terrain footprint: a noise heightmap (rolling hills) over a block of
+  # chunks centered on spawn. `@platform_chunk_min`/`@platform_chunk_max` are
+  # half-open chunk-coord bounds. Default = 5×5 horizontal (chunk x,z ∈ -2..2,
+  # y = 0) = 25 chunks — a multi-chunk terrain so the client exercises large-scale
+  # chunk meshing/streaming with real relief, not a flat slab. These chunks are
+  # routed/materialized on the implicit grid; the footprint is NOT a region.
   @platform_chunk {0, 0, 0}
   @platform_chunk_min {-2, 0, -2}
   @platform_chunk_max {3, 1, 3}
@@ -70,147 +63,86 @@ defmodule WorldServer.Voxel.DevSeed do
   # simulation tick + snapshot encode/persist per call and its cost grows
   # super-linearly with batch size (a few thousand cells in one call hits the
   # 30s GenServer timeout). Terrain (hundreds–thousands of cells per chunk) is
-  # seeded in batches of this size — the same size the flat platform used safely.
+  # seeded in batches of this size.
   @max_intents_per_call 256
 
   @doc """
-  Ensures the default browser-development region has a current lease and that
-  the starter terrain is seeded for chunk `{0, 0, 0}`.
+  Ensures the spawn-area footprint is materialized on the implicit grid and the
+  starter terrain is seeded.
 
-  If the target center chunk is already routed, the existing route is reused
-  and the lease is re-issued. Bounds are half-open, matching
-  `RegionAssignment.contains_chunk?/2`. The starter terrain is rewritten
-  through `apply_intents` after the lease is current, so subsequent calls are
-  idempotent (already-stone cells are skipped).
+  Routes every footprint chunk through `MapLedger.route_chunks_with_leases_ensuring/3`,
+  which lazily materializes each chunk's grid region (assign Scene owner + monotonic
+  epoch + lease) and returns the per-chunk `{assignment, lease}`. Terrain is then
+  written per chunk through `apply_intents`, so the call is idempotent.
+
+  Options: `:ledger`, `:logical_scene_id`, `:footprint_chunks` (list of chunk
+  coords; defaults to the 5×5 platform), `:chunk_directory`, `:seed_terrain?`.
   """
   def ensure_default_region(opts \\ []) when is_list(opts) do
     ledger = Keyword.get(opts, :ledger, MapLedger)
     logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
-    region_id = Keyword.get(opts, :region_id, default_region_id(logical_scene_id))
-    bounds_min = Keyword.get(opts, :bounds_chunk_min, @default_bounds_min)
-    bounds_max = Keyword.get(opts, :bounds_chunk_max, @default_bounds_max)
-    center_chunk = Keyword.get(opts, :center_chunk, {0, 0, 0})
-    owner_ref_opt = Keyword.get(opts, :owner_scene_instance_ref)
-    owner_ref = owner_ref_opt || @default_owner_scene_instance_ref
-    owner_epoch = Keyword.get(opts, :owner_epoch, @default_owner_epoch)
-    assigned_scene_node = Keyword.get(opts, :assigned_scene_node)
-    lease_ttl_ms = Keyword.get(opts, :lease_ttl_ms, @default_lease_ttl_ms)
     chunk_directory = Keyword.get(opts, :chunk_directory, @default_chunk_directory)
     seed_terrain? = Keyword.get(opts, :seed_terrain?, true)
+    footprint = Keyword.get(opts, :footprint_chunks, platform_chunk_coords())
 
-    case safe_call(fn ->
-           MapLedger.route_chunk_with_lease(ledger, logical_scene_id, center_chunk)
-         end) do
-      {:ok, {:ok, route}} ->
-        renew_existing_route(
-          ledger,
-          route,
-          owner_ref_opt,
-          lease_ttl_ms,
-          center_chunk,
-          chunk_directory,
-          seed_terrain?
-        )
+    case route_footprint(ledger, logical_scene_id, footprint) do
+      {:ok, routes} ->
+        terrain = maybe_seed_terrain(chunk_directory, logical_scene_id, routes, seed_terrain?)
+        summary = build_summary(logical_scene_id, routes, terrain)
+        emit_seed(summary)
+        emit_terrain(summary, terrain)
+        {:ok, summary}
 
-      _missing ->
-        attrs = %{
-          logical_scene_id: logical_scene_id,
-          region_id: region_id,
-          bounds_chunk_min: bounds_min,
-          bounds_chunk_max: bounds_max,
-          owner_scene_instance_ref: owner_ref,
-          owner_epoch: owner_epoch,
-          assigned_scene_node: assigned_scene_node
-        }
-
-        with {:ok, {:ok, _assignment}} <- safe_call(fn -> MapLedger.put_region(ledger, attrs) end),
-             {:ok, {:ok, _lease}} <-
-               safe_call(fn ->
-                 # Do NOT pin owner_epoch here. MapLedger only uses the DB's
-                 # monotonic epoch allocator (RegionEpochStore.allocate_next) when
-                 # owner_epoch is absent; an explicit value bypasses it. Pinning the
-                 # static @default_owner_epoch (1) makes the published write token's
-                 # token_version=1 — STALE vs the DB's advanced token_version after a
-                 # session/restart — so issue_lease fails :stale_token forever, the
-                 # region stays lease-less, and every ChunkSubscribe is rejected
-                 # :region_without_lease (empty dev world). Letting the allocator pick
-                 # guarantees a monotonic epoch ≥ the persisted one. (The renew path
-                 # already omits owner_epoch for exactly this reason.)
-                 MapLedger.issue_lease(ledger, region_id, owner_ref, ttl_ms: lease_ttl_ms)
-               end),
-             {:ok, {:ok, route}} <-
-               safe_call(fn ->
-                 MapLedger.route_chunk_with_lease(ledger, logical_scene_id, center_chunk)
-               end) do
-          summary = summarize_route(route, :created)
-          emit_seed(summary)
-          terrain = maybe_seed_terrain(chunk_directory, route, seed_terrain?)
-          summary = Map.put(summary, :terrain, terrain)
-          emit_terrain(summary, terrain)
-          {:ok, summary}
-        else
-          {:ok, {:error, reason}} -> {:error, reason}
-          {:error, reason} -> {:error, reason}
-          other -> {:error, {:unexpected_seed_result, other}}
-        end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp renew_existing_route(
-         ledger,
-         route,
-         owner_ref_opt,
-         lease_ttl_ms,
-         center_chunk,
-         chunk_directory,
-         seed_terrain?
-       ) do
-    owner_ref = owner_ref_opt || route.lease.owner_scene_instance_ref
-    region_id = route.assignment.region_id
-    logical_scene_id = route.assignment.logical_scene_id
-
-    with {:ok, {:ok, _lease}} <-
-           safe_call(fn ->
-             MapLedger.issue_lease(ledger, region_id, owner_ref, ttl_ms: lease_ttl_ms)
-           end),
-         {:ok, {:ok, renewed_route}} <-
-           safe_call(fn ->
-             MapLedger.route_chunk_with_lease(ledger, logical_scene_id, center_chunk)
-           end) do
-      summary = summarize_route(renewed_route, :renewed)
-      emit_seed(summary)
-      terrain = maybe_seed_terrain(chunk_directory, renewed_route, seed_terrain?)
-      summary = Map.put(summary, :terrain, terrain)
-      emit_terrain(summary, terrain)
-      {:ok, summary}
-    else
+  # Route (and lazily materialize) every footprint chunk's grid region in one
+  # batch ledger call, returning %{chunk_coord => %{assignment, lease}}.
+  defp route_footprint(ledger, logical_scene_id, footprint) do
+    case safe_call(fn ->
+           MapLedger.route_chunks_with_leases_ensuring(ledger, logical_scene_id, footprint)
+         end) do
+      {:ok, {:ok, routes}} -> {:ok, routes}
+      {:ok, {:error, {_chunk_coord, reason}}} -> {:error, reason}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:unexpected_seed_renewal_result, other}}
     end
   end
 
-  defp default_region_id(logical_scene_id) do
-    if logical_scene_id == @default_logical_scene_id do
-      @default_region_id
-    else
-      logical_scene_id * 1_000_000 + 1
-    end
-  end
+  # JSON-safe summary. Includes one entry per distinct materialized region so the
+  # dev HTTP endpoint / CLI observer can see what was prepared. No tuples.
+  defp build_summary(logical_scene_id, routes, terrain) do
+    regions =
+      routes
+      |> Map.values()
+      |> Enum.uniq_by(& &1.assignment.region_id)
+      |> Enum.sort_by(& &1.assignment.region_id)
+      |> Enum.map(fn %{assignment: assignment, lease: lease} ->
+        %{
+          region_id: assignment.region_id,
+          bounds_chunk_min: Tuple.to_list(assignment.bounds_chunk_min),
+          bounds_chunk_max: Tuple.to_list(assignment.bounds_chunk_max),
+          assigned_scene_node: node_string(assignment.assigned_scene_node),
+          owner_scene_instance_ref: lease.owner_scene_instance_ref,
+          owner_epoch: lease.owner_epoch,
+          lease_id: lease.lease_id
+        }
+      end)
 
-  defp summarize_route(%{assignment: assignment, lease: lease}, status) do
     %{
-      status: status,
-      logical_scene_id: assignment.logical_scene_id,
-      region_id: assignment.region_id,
-      bounds_chunk_min: Tuple.to_list(assignment.bounds_chunk_min),
-      bounds_chunk_max: Tuple.to_list(assignment.bounds_chunk_max),
-      owner_scene_instance_ref: lease.owner_scene_instance_ref,
-      owner_epoch: lease.owner_epoch,
-      lease_id: lease.lease_id,
-      expires_at_ms: lease.expires_at_ms
+      status: :ready,
+      logical_scene_id: logical_scene_id,
+      region_count: length(regions),
+      chunk_count: map_size(routes),
+      regions: regions,
+      terrain: terrain
     }
   end
+
+  defp node_string(nil), do: nil
+  defp node_string(node) when is_atom(node), do: Atom.to_string(node)
 
   defp safe_call(fun) when is_function(fun, 0) do
     {:ok, fun.()}
@@ -219,7 +151,12 @@ defmodule WorldServer.Voxel.DevSeed do
   end
 
   defp emit_seed(summary) do
-    CliObserve.emit("voxel_dev_seed_ready", summary)
+    CliObserve.emit("voxel_dev_seed_ready", %{
+      logical_scene_id: summary.logical_scene_id,
+      region_count: summary.region_count,
+      chunk_count: summary.chunk_count,
+      region_ids: Enum.map(summary.regions, & &1.region_id)
+    })
   end
 
   defp emit_terrain(_summary, nil), do: :ok
@@ -227,7 +164,7 @@ defmodule WorldServer.Voxel.DevSeed do
   defp emit_terrain(summary, terrain) do
     CliObserve.emit("voxel_dev_seed_terrain_ready", %{
       logical_scene_id: summary.logical_scene_id,
-      region_id: summary.region_id,
+      region_count: summary.region_count,
       chunk_coord: terrain.chunk_coord,
       attempted: terrain.attempted,
       written: terrain.written,
@@ -237,14 +174,21 @@ defmodule WorldServer.Voxel.DevSeed do
     })
   end
 
-  defp maybe_seed_terrain(_chunk_directory, _route, false), do: nil
+  defp maybe_seed_terrain(_chunk_directory, _logical_scene_id, _routes, false), do: nil
 
-  defp maybe_seed_terrain(chunk_directory, route, true) do
-    chunk_directory = chunk_directory_target(route, chunk_directory)
+  defp maybe_seed_terrain(chunk_directory, logical_scene_id, routes, true) do
+    # Prepare each distinct region's lease on its owning Scene node once (apply_lease
+    # + write token), then seed terrain per chunk using that chunk's region lease.
+    routes
+    |> Map.values()
+    |> Enum.uniq_by(& &1.assignment.region_id)
+    |> Enum.each(fn %{assignment: assignment, lease: lease} ->
+      chunk_directory
+      |> resolve_chunk_directory(assignment)
+      |> prepare_scene_lease(lease)
+    end)
 
-    _ = prepare_scene_lease(chunk_directory, route.lease)
-
-    seed_starter_platform(chunk_directory, route)
+    seed_starter_platform(chunk_directory, logical_scene_id, routes)
   catch
     :exit, reason ->
       %{
@@ -254,24 +198,24 @@ defmodule WorldServer.Voxel.DevSeed do
         skipped: 0,
         errors: 1,
         max_chunk_version: 0,
+        chunk_count: 0,
+        chunk_errors: [],
         error: inspect({:scene_unavailable, reason})
       }
   end
 
-  defp chunk_directory_target(route, @default_chunk_directory) do
-    case route.assignment.assigned_scene_node do
-      nil ->
-        SceneServer.Voxel.ChunkDirectory
-
-      scene_node when scene_node == node() ->
-        SceneServer.Voxel.ChunkDirectory
-
-      scene_node ->
-        {SceneServer.Voxel.ChunkDirectory, scene_node}
+  # In single-node dev every region's assigned_scene_node is this node, so the
+  # local ChunkDirectory is the target; a remote owner gets a `{Module, node}`
+  # tuple. An explicit `:chunk_directory` opt (tests) overrides routing.
+  defp resolve_chunk_directory(@default_chunk_directory, assignment) do
+    case assignment.assigned_scene_node do
+      nil -> SceneServer.Voxel.ChunkDirectory
+      scene_node when scene_node == node() -> SceneServer.Voxel.ChunkDirectory
+      scene_node -> {SceneServer.Voxel.ChunkDirectory, scene_node}
     end
   end
 
-  defp chunk_directory_target(_route, chunk_directory), do: chunk_directory
+  defp resolve_chunk_directory(chunk_directory, _assignment), do: chunk_directory
 
   defp prepare_scene_lease({_chunk_directory, scene_node}, lease) when scene_node != node() do
     token = lease |> LeaseWriteToken.from_lease(lease.owner_epoch) |> LeaseWriteToken.to_map()
@@ -301,40 +245,31 @@ defmodule WorldServer.Voxel.DevSeed do
     :exit, _reason -> :ok
   end
 
-  # Seeds the flat stone platform across all platform chunks. Each chunk is
-  # written with its own batched `apply_intents` call (ChunkDirectory rejects
-  # cross-chunk batches), reusing the region lease/route, and the results are
-  # aggregated into one terrain summary. This keeps bootstrap off per-cell
-  # DataService persists while still using the same Scene-owned authority path
-  # as Gate voxel writes.
-  defp seed_starter_platform(chunk_directory, route) do
-    lease = Map.fetch!(route, :lease)
-    logical_scene_id = route.assignment.logical_scene_id
+  # Seeds the noise terrain across all footprint chunks. Each chunk is written
+  # with its own batched `apply_intents` call (ChunkDirectory rejects cross-chunk
+  # batches), reusing **that chunk's region lease**, and the results are aggregated
+  # into one terrain summary.
+  defp seed_starter_platform(chunk_directory, logical_scene_id, routes) do
+    routes
+    |> Enum.sort_by(fn {chunk_coord, _route} -> chunk_coord end)
+    |> Enum.map(fn {chunk_coord, %{assignment: assignment, lease: lease}} ->
+      target = resolve_chunk_directory(chunk_directory, assignment)
 
-    platform_chunk_coords()
-    |> Enum.map(fn chunk_coord ->
-      # Fast path: a chunk already persisted with substantial terrain will be
-      # eager-loaded by its ChunkProcess on first access, so re-running the
-      # idempotent seed (which would process ~hundreds of put_solid_block intents
-      # per chunk only to skip them all) is pure boot-time cost. Skip those chunks
+      # Fast path: a chunk already persisted with substantial terrain is skipped
       # via a cheap, decode-free DataService check. Fail-safe: any not-found /
-      # too-small / error chunk still gets seeded, so a fresh or partially-empty
-      # region always ends up with terrain.
+      # too-small / error chunk still gets seeded.
       if already_seeded?(logical_scene_id, chunk_coord) do
         {chunk_coord, 0, {:ok, %{changed_count: 0, skipped_count: 0, chunk_version: 0}}}
       else
         intents = chunk_seed_intents(chunk_coord, logical_scene_id, lease)
-        {chunk_coord, length(intents), apply_chunk_intents(chunk_directory, intents)}
+        {chunk_coord, length(intents), apply_chunk_intents(target, intents)}
       end
     end)
     |> summarize_terrain()
   end
 
   # A persisted chunk whose snapshot payload is large enough to carry the seeded
-  # terrain (an empty 16³ snapshot is ~78 KB of macro headers; a seeded platform
-  # chunk adds ~20 B per solid cell → well over the threshold for the noise
-  # heightmap's hundreds of solid cells). Decode-free (world_server does not
-  # depend on the Scene voxel codec) and fail-safe toward re-seeding.
+  # terrain. Decode-free and fail-safe toward re-seeding.
   @seeded_chunk_min_bytes 85_000
   defp already_seeded?(logical_scene_id, chunk_coord) do
     case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
@@ -345,7 +280,7 @@ defmodule WorldServer.Voxel.DevSeed do
     :exit, _ -> false
   end
 
-  # Half-open chunk-coord bounds → the list of platform chunk coords.
+  # Half-open chunk-coord bounds → the list of footprint chunk coords.
   defp platform_chunk_coords do
     {min_x, min_y, min_z} = @platform_chunk_min
     {max_x, max_y, max_z} = @platform_chunk_max
@@ -360,9 +295,6 @@ defmodule WorldServer.Voxel.DevSeed do
   # The seed intents for one chunk: each (mx, mz) column filled solid from y=0 up
   # to its noise height (surface = dirt, below = stone). Heights are clamped < 16
   # so every column stays inside this `y = 0` chunk.
-  # `ChunkProcess.normalize_apply_intent` accepts a plain map (run through
-  # `NormalBlockData.normalize!/1`), so we pass maps directly to stay decoupled
-  # from `SceneServer.Voxel.NormalBlockData`.
   defp chunk_seed_intents({cx, _cy, cz} = chunk_coord, logical_scene_id, lease) do
     for mx <- 0..(@chunk_size_in_macro - 1),
         mz <- 0..(@chunk_size_in_macro - 1),
@@ -396,9 +328,6 @@ defmodule WorldServer.Voxel.DevSeed do
     )
   end
 
-  # Per-chunk apply_intents, split into bounded sub-batches (see
-  # @max_intents_per_call) and aggregated, isolating a scene exit so one bad
-  # chunk does not abort the whole terrain seed.
   defp apply_chunk_intents(_chunk_directory, []),
     do: {:ok, %{changed_count: 0, skipped_count: 0, chunk_version: 0}}
 
@@ -431,9 +360,7 @@ defmodule WorldServer.Voxel.DevSeed do
     :exit, reason -> {:error, {:scene_unavailable, reason}}
   end
 
-  # Folds per-chunk apply_intents results into one terrain summary. Keeps the
-  # keys `emit_terrain/2` and the dev HTTP response consume (chunk_coord points
-  # at the center chunk for back-compat), adding chunk_count / chunk_errors.
+  # Folds per-chunk apply_intents results into one terrain summary (JSON-safe).
   defp summarize_terrain(results) do
     base =
       Enum.reduce(
