@@ -24,10 +24,13 @@ defmodule WorldServer.Voxel.MapLedger do
 
   @default_lease_ttl_ms :timer.minutes(5)
   # Lazily-materialized regions (阶段1) get a long lease so a player exploring new
-  # ground does not have its build lease expire mid-session. Lease renewal / region
-  # GC is a durable-directory (阶段2) follow-up; until then a generous TTL is the
-  # simplest correct choice.
-  @materialized_lease_ttl_ms :timer.hours(6)
+  # ground does not have its build lease expire mid-session. Proper lease renewal /
+  # region GC is a durable-directory (阶段2) follow-up — renewing in place changes
+  # lease_id/epoch and must be coordinated with the Scene's RegionRuntime, so it is
+  # deliberately out of Phase-1 scope. Until then a TTL well beyond any single dev
+  # session is the simplest correct mitigation (the world re-materializes fresh
+  # leases on restart). See 阶段1 keystone review finding F4.
+  @materialized_lease_ttl_ms :timer.hours(24)
   @migration_cutover_reason 0x01
 
   @doc "Starts the map ledger."
@@ -1208,7 +1211,15 @@ defmodule WorldServer.Voxel.MapLedger do
     with {:ok, region_id} <- safe_grid_region_id(state, logical_scene_id, chunk_coord),
          {:ok, %RegionAssignment{state: :active} = assignment} <-
            Map.fetch(state.assignments, region_id),
-         true <- RegionAssignment.contains_chunk?(assignment, chunk_coord) do
+         true <- RegionAssignment.contains_chunk?(assignment, chunk_coord),
+         # Guard the invariant the fast path rests on: a grid region_id encodes
+         # logical_scene_id, so the fetched assignment MUST belong to the queried
+         # scene. An explicit put_region could store an assignment whose region_id
+         # collides with a *different* scene's grid id while carrying a mismatched
+         # logical_scene_id field; without this check the fast path would route
+         # cross-scene while the scan (which filters by logical_scene_id) would not.
+         # This keeps the fast path bit-for-bit equivalent to the scan for all input.
+         true <- assignment.logical_scene_id == logical_scene_id do
       {:ok, assignment}
     else
       _ -> :miss

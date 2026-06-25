@@ -799,6 +799,36 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     end
   end
 
+  # 阶段1 keystone review F1:O(1) grid 快路径必须与扫描逐位等价。若某显式 put_region 的
+  # region_id 恰好撞上"另一个 scene 的 grid region_id",而其 logical_scene_id 字段不一致,
+  # 快路径不得跨 scene 命中(否则把别的 scene 的 region 路给了本 scene)。
+  test "grid fast path does not route cross-scene when an explicit region_id collides with another scene's grid id" do
+    ledger = start_supervised!(MapLedger)
+
+    # region_id encodes scene 2's grid cell {0,0,0}, but we store it under scene 1.
+    colliding_region_id = RegionGrid.region_id(2, {0, 0, 0})
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(ledger, %{
+               logical_scene_id: 1,
+               region_id: colliding_region_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 1_000,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    # Querying scene 1 still finds it (its real scene).
+    assert {:ok, routed} = MapLedger.route_chunk(ledger, 1, {0, 0, 0})
+    assert routed.region_id == colliding_region_id
+
+    # Querying scene 2 for the same chunk computes the SAME grid region_id, but the
+    # stored assignment belongs to scene 1 — the fast path must reject it (guard),
+    # and the scan (filtered by logical_scene_id) also rejects → :unassigned_chunk.
+    assert {:error, :unassigned_chunk} = MapLedger.route_chunk(ledger, 2, {0, 0, 0})
+  end
+
   test "ensuring route fails cleanly (and stores nothing) when no Scene node is registered" do
     registry = start_supervised!(SceneNodeRegistry)
 
