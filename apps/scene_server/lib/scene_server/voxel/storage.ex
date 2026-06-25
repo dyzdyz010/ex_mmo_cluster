@@ -138,6 +138,79 @@ defmodule SceneServer.Voxel.Storage do
     |> normalize!()
   end
 
+  @doc """
+  Batched sibling of `put_solid_block/4`: applies many solid-block puts (each a
+  distinct `{macro_index_or_coord, block, header_opts}`) in **one** pass.
+
+  `put_solid_block/4` is O(macro_count + cell_count) PER call (`List.replace_at`
+  over the 4096 macro headers + an O(n) `normal_blocks ++ [block]` append + **two**
+  `normalize!` that rebuild the whole struct), so folding N of them is
+  O(N × (macro_count + N)) — the terrain-seed / large-prefab cost that made cold
+  WorldGen take minutes. This path is **O(macro_count + N)**: header overrides are
+  collected into a map, the macro-header list is rebuilt once, the new blocks are
+  appended once, and `normalize!` runs once. State transitions match N individual
+  `put_solid_block/4` calls — a duplicated macro keeps the **last** entry's header
+  (earlier block orphaned in the pool, identical to the per-cell path).
+
+  Each entry's `header_opts` carries its own `:cell_version` / `:cell_hash` (+
+  optional `:flags` / `:environment_index`).
+  """
+  @spec put_solid_blocks(t(), [{integer() | term(), map(), keyword()}]) :: t()
+  def put_solid_blocks(%__MODULE__{} = storage, entries) when is_list(entries) do
+    storage = normalize!(storage)
+
+    case entries do
+      [] ->
+        storage
+
+      _ ->
+        base_payload = length(storage.normal_blocks)
+
+        {header_overrides, new_blocks_rev, dirty_bounds} =
+          entries
+          |> Enum.with_index()
+          |> Enum.reduce(
+            {%{}, [], storage.dirty_bounds},
+            fn {{macro_index_or_coord, block, header_opts}, offset}, {overrides, blocks, dirty} ->
+              macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+              block = NormalBlockData.normalize!(block)
+
+              header =
+                MacroCellHeader.solid(base_payload + offset,
+                  flags: Keyword.get(header_opts, :flags, 0),
+                  environment_index:
+                    Keyword.get(header_opts, :environment_index, MacroCellHeader.no_index()),
+                  cell_version: Keyword.get(header_opts, :cell_version, 0),
+                  cell_hash: Keyword.get(header_opts, :cell_hash, 0)
+                )
+
+              {
+                Map.put(overrides, macro_index, header),
+                [block | blocks],
+                DirtyMacroBounds.add_macro(
+                  dirty,
+                  macro_index,
+                  DirtyMacroBounds.reason_attribute_write()
+                )
+              }
+            end
+          )
+
+        new_macro_headers =
+          storage.macro_headers
+          |> Enum.with_index()
+          |> Enum.map(fn {header, index} -> Map.get(header_overrides, index, header) end)
+
+        %{
+          storage
+          | macro_headers: new_macro_headers,
+            normal_blocks: storage.normal_blocks ++ Enum.reverse(new_blocks_rev),
+            dirty_bounds: dirty_bounds
+        }
+        |> normalize!()
+    end
+  end
+
   # ----------------------------------------------------------------------------
   # 形态轨 — 表面元件(surface element)旁路。零 occupancy:只动 surface_elements,
   # 绝不碰 macro_headers / normal_blocks / refined_cells(不改宿主邻接/碰撞/面剔除)。

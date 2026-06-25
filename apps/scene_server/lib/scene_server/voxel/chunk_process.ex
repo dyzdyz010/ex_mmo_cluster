@@ -2310,29 +2310,77 @@ defmodule SceneServer.Voxel.ChunkProcess do
         {:ok, storage, 0, skipped_count}
 
       :mixed ->
-        {storage, changed_count, skipped_count} =
-          Enum.reduce(intents, {storage, 0, 0}, fn intent, {acc_storage, changed, skipped} ->
-            {:ok, next_storage, changed?} =
-              build_intent_storage_without_chunk_bump(acc_storage, intent, next_version)
+        # All-`:put_solid_block` batch (terrain seed / large WorldGen / solid
+        # prefab) → one O(macro_count + N) `Storage.put_solid_blocks` instead of N
+        # individual O(macro_count + N) `put_solid_block` calls (each with two full
+        # `normalize!`). This is the cold-seed / bulk-build fix.
+        case detect_solid_block_batch(storage, intents, next_version) do
+          {:solid_batch, _entries, 0, skipped_count} ->
+            {:ok, storage, 0, skipped_count}
 
-            if changed? do
-              {next_storage, changed + 1, skipped}
-            else
-              {next_storage, changed, skipped + 1}
-            end
-          end)
+          {:solid_batch, entries, changed_count, skipped_count} ->
+            next_storage = storage |> Storage.put_solid_blocks(entries) |> bump_chunk_version()
+            {:ok, next_storage, changed_count, skipped_count}
 
-        storage =
-          if changed_count > 0 do
-            bump_chunk_version(storage)
-          else
-            storage
-          end
-
-        {:ok, storage, changed_count, skipped_count}
+          :mixed ->
+            build_intents_storage_per_cell(storage, intents, next_version)
+        end
     end
   rescue
     _exception in ArgumentError -> {:error, :invalid_voxel_intent}
+  end
+
+  defp build_intents_storage_per_cell(storage, intents, next_version) do
+    {storage, changed_count, skipped_count} =
+      Enum.reduce(intents, {storage, 0, 0}, fn intent, {acc_storage, changed, skipped} ->
+        {:ok, next_storage, changed?} =
+          build_intent_storage_without_chunk_bump(acc_storage, intent, next_version)
+
+        if changed? do
+          {next_storage, changed + 1, skipped}
+        else
+          {next_storage, changed, skipped + 1}
+        end
+      end)
+
+    storage =
+      if changed_count > 0 do
+        bump_chunk_version(storage)
+      else
+        storage
+      end
+
+    {:ok, storage, changed_count, skipped_count}
+  end
+
+  # All-`:put_solid_block` detector. Returns `{:solid_batch, entries, changed,
+  # skipped}` (entries = `{macro, block, header_opts}` for the cells that actually
+  # change — already-matching cells are skipped, matching the per-cell path) or
+  # `:mixed` when any intent is not a plain solid-block put.
+  defp detect_solid_block_batch(_storage, [], _next_version), do: :mixed
+
+  defp detect_solid_block_batch(storage, intents, next_version) do
+    if Enum.all?(intents, fn intent -> intent.operation == :put_solid_block end) do
+      {entries_rev, changed, skipped} =
+        Enum.reduce(intents, {[], 0, 0}, fn intent, {acc, changed, skipped} ->
+          block = intent.block
+
+          if solid_block_matches?(storage, intent.macro, block) do
+            {acc, changed, skipped + 1}
+          else
+            header_opts =
+              intent.opts
+              |> Keyword.put_new(:cell_version, next_version)
+              |> Keyword.put_new_lazy(:cell_hash, fn -> Hash.digest32(inspect(block)) end)
+
+            {[{intent.macro, block, header_opts} | acc], changed + 1, skipped}
+          end
+        end)
+
+      {:solid_batch, Enum.reverse(entries_rev), changed, skipped}
+    else
+      :mixed
+    end
   end
 
   # Phase A1-1b detector:返回 `{:batch, macro_index, [{slot, layer_attrs}, ...]}`

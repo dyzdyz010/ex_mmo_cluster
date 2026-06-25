@@ -59,12 +59,14 @@ defmodule WorldServer.Voxel.DevSeed do
   @surface_material_id 1
   @subsurface_material_id 2
 
-  # Max intents per `apply_intents` call. The ChunkProcess apply path runs a
-  # simulation tick + snapshot encode/persist per call and its cost grows
-  # super-linearly with batch size (a few thousand cells in one call hits the
-  # 30s GenServer timeout). Terrain (hundreds–thousands of cells per chunk) is
-  # seeded in batches of this size.
-  @max_intents_per_call 256
+  # Max intents per `apply_intents` call. Now that ChunkProcess routes an
+  # all-solid-block batch through the O(macro_count + N) `Storage.put_solid_blocks`
+  # (one `normalize!` + one snapshot encode/persist per call, instead of two
+  # `normalize!` PER cell + one encode/persist per 256-cell batch), a whole chunk's
+  # terrain (≤ 16×16×8 = 2048 cells) fits in ONE call — eliminating the per-batch
+  # encode/persist write amplification (~5× per chunk) that made cold WorldGen take
+  # minutes. 4096 covers a fully-solid chunk in a single call.
+  @max_intents_per_call 4096
 
   @doc """
   Ensures the spawn-area footprint is materialized on the implicit grid and the
