@@ -120,4 +120,16 @@ ConnectionPhase(单一真相源,替代散落的 status/scene_joined + net 的隐
 - 2f `world::LocalPlayerState`(cid/position/velocity/hp/max_hp/alive) — 全域;迁完**删除 `WorldState`**。
 - README + net 模块文档同步更新为「域资源」表述。
 
-剩余:阶段 3(app 瘦身)、阶段 4(会话生命周期/重连重认证)。
+### 2026-06-26 — 阶段 3 完成(app 瘦身)
+- 新建 `src/scene/`:`SceneEnvironmentPlugin`(Startup spawn 太阳 + 大气行星 + 主相机实体)
+  + `build_scene_render_assets`(在组合根 `run()` 内构建共享 mesh/material 句柄)。
+- `app::setup` 巨函数(~160 行)拆解:场景资产→组合根 build 期 insert(消除 Startup 时序隐患,
+  marker 读 `Res<SceneRenderAssets>` 无依赖);HUD 文本 + 准星→`HudPlugin` Startup;
+  chat 文本→`ChatPlugin` Startup;目标点 marker→`VoxelPlugin` Startup;光照/大气/相机→`scene`。
+- 相机实体 spawn 放在 `scene`(与大气渲染组件耦合),相机*行为*(orbit/zoom/cursor)仍属 `CameraPlugin`。
+  (决策稿原写「相机→camera」,实现上 spawn 与 behavior 分离,避免大气类型泄漏进 camera 域。)
+- 删除空的 `InputPlugin` / `ObservePlugin` 迁移 stub。`app/mod.rs` 现仅余组合根 + 坐标/射线纯助手。
+- 验证:cargo test --lib 360 绿、cargo build bin 通过、**实机启动冒烟 7s 无 panic**
+  (RTX 5060 渲染器初始化 + 窗口创建 + 体素缓存载入 + 所有迁移 Startup 系统正常运行)。
+
+剩余:阶段 4(会话生命周期/重连重认证 + ConnectionPhase 枚举化)。

@@ -12,7 +12,6 @@
 //! `crate::app::schedule::ClientSet`.
 
 use bevy::app::{PluginGroup, PluginGroupBuilder};
-use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
 use crate::chat::ChatPlugin;
@@ -21,6 +20,7 @@ use crate::hud::{BuildHotbarPlugin, EditFeedbackPlugin, HudPlugin};
 use crate::movement::MovementSyncPlugin;
 use crate::net::NetworkPlugin;
 use crate::presentation::PresentationPlugin;
+use crate::scene::SceneEnvironmentPlugin;
 use crate::skill::SkillPlugin;
 use crate::stdio::StdioPlugin;
 use crate::voxel::{
@@ -38,9 +38,9 @@ pub struct BevyClientPlugins;
 impl PluginGroup for BevyClientPlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
+            .add(SceneEnvironmentPlugin)
             .add(NetworkPlugin)
             .add(StdioPlugin)
-            .add(InputPlugin)
             .add(CameraPlugin)
             .add(ChatPlugin)
             .add(VoxelPlugin)
@@ -60,39 +60,10 @@ impl PluginGroup for BevyClientPlugins {
             .add(BuildHotbarPlugin)
             .add(EditFeedbackPlugin)
             .add(PresentationPlugin)
-            .add(ObservePlugin)
     }
 }
 
-macro_rules! stub_plugin {
-    ($name:ident, $doc:expr) => {
-        #[doc = $doc]
-        pub struct $name;
-
-        impl Plugin for $name {
-            fn build(&self, _app: &mut App) {
-                // Migration stub — systems move here as each domain is split
-                // out of app::run.
-            }
-        }
-    };
-}
-
-// NetworkPlugin is now defined in `crate::net::plugin`.
-// StdioPlugin is now defined in `crate::stdio::plugin`.
-stub_plugin!(
-    InputPlugin,
-    "Keyboard / mouse / chat input — emits domain events for voxel, skill, chat, hotbar."
-);
-// CameraPlugin is now defined in `crate::camera::plugin`.
-// ChatPlugin is now defined in `crate::chat::plugin`.
-// VoxelPlugin is now defined in `crate::voxel::plugin`.
-// SkillPlugin is now defined in `crate::skill::plugin`.
-// MovementSyncPlugin is now defined in `crate::movement::plugin`.
-// EffectPlugin is now defined in `crate::effects::plugin`.
-// HudPlugin is now defined in `crate::hud::plugin`.
-// PresentationPlugin is now defined in `crate::presentation::plugin`.
-stub_plugin!(
-    ObservePlugin,
-    "Observe log flush + lifetime hooks (Startup + Last)."
-);
+// 架构重整阶段3:删除空的 `InputPlugin` / `ObservePlugin` 迁移 stub。输入逻辑实际
+// 分布在各域插件(camera/skill/voxel/movement/chat),没有「共享输入」职责留给
+// InputPlugin;`ClientObserver` 写入时自刷新(见 `observe.rs`),没有生命周期钩子
+// 留给 ObservePlugin。两者均为 no-op,移除后所有插件都对应真实的域实现。

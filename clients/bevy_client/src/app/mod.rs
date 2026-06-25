@@ -12,10 +12,7 @@ pub mod schedule;
 
 use self::{plugins::BevyClientPlugins, schedule::configure_client_sets};
 use crate::{
-    camera::{MainCamera, OrbitCameraState, camera_transform_from_orbit},
-    chat::{ChatInputText, ChatLogText},
     config::ClientConfig,
-    hud::HudText,
     login::{AppState, LoginPlugin},
     net::spawn_network_thread,
     observe::ClientObserver,
@@ -25,19 +22,9 @@ use crate::{
         types::{MovementMode, PredictedMoveState},
     },
     stdio::ClientStdioInterface,
-    voxel::{
-        VoxelMaterialId, VoxelWorld,
-        plugin::{TargetPointMarker, voxel_material_color},
-    },
+    voxel::VoxelWorld,
 };
 use bevy::{
-    camera::Exposure,
-    core_pipeline::tonemapping::Tonemapping,
-    light::{
-        Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium, light_consts::lux,
-    },
-    pbr::AtmosphereSettings,
-    post_process::bloom::Bloom,
     prelude::*,
     window::{PrimaryWindow, WindowPlugin},
 };
@@ -269,8 +256,15 @@ pub fn run(
 
     configure_client_sets(&mut app);
 
-    app.add_systems(Startup, setup)
-        .add_systems(OnEnter(AppState::Game), enter_game_setup);
+    // Build the shared render-asset handles once, at the composition root, so the
+    // resource exists before any domain `Startup` system runs (the voxel target
+    // marker + the presentation/voxel renderers read `Res<SceneRenderAssets>`).
+    // `Assets<Mesh>` / `Assets<StandardMaterial>` are registered by DefaultPlugins'
+    // build() above, so they are present in the world at this point.
+    let scene_assets = crate::scene::build_scene_render_assets(app.world_mut());
+    app.insert_resource(scene_assets);
+
+    app.add_systems(OnEnter(AppState::Game), enter_game_setup);
 
     if let Some(creds) = initial_credentials {
         app.insert_resource(creds);
@@ -303,226 +297,6 @@ fn enter_game_setup(
             creds.username, creds.cid
         );
     }
-}
-
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut scattering_mediums: ResMut<Assets<ScatteringMedium>>,
-) {
-    let assets = SceneRenderAssets {
-        cube_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        player_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        target_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        dirt_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Dirt),
-            perceptual_roughness: 0.9,
-            ..default()
-        }),
-        stone_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Stone),
-            perceptual_roughness: 0.95,
-            ..default()
-        }),
-        wood_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Wood),
-            perceptual_roughness: 0.86,
-            ..default()
-        }),
-        ice_material: materials.add(StandardMaterial {
-            base_color: voxel_material_color(VoxelMaterialId::Ice),
-            perceptual_roughness: 0.38,
-            metallic: 0.02,
-            ..default()
-        }),
-        // GUI-smoke 2026-04-26 follow-up: brighter base + much stronger
-        // emissive so the local actor is unmistakable against an empty
-        // (no-voxel) background and against neighbouring NPC/player cubes.
-        local_player_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.30, 1.00, 0.50),
-            emissive: Color::srgb(0.20, 1.20, 0.40).into(),
-            perceptual_roughness: 0.4,
-            ..default()
-        }),
-        remote_player_material: materials.add(Color::srgb(0.3, 0.65, 1.0)),
-        moving_player_material: materials.add(Color::srgb(0.35, 0.75, 1.0)),
-        selected_actor_material: materials.add(Color::srgb(1.0, 0.95, 0.35)),
-        npc_material: materials.add(Color::srgb(0.95, 0.45, 0.35)),
-        target_material: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.95, 0.35, 0.95, 0.82),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            ..default()
-        }),
-    };
-
-    // Sun. `lux::RAW_SUNLIGHT` is the raw extra-atmospheric value the
-    // `Atmosphere` post-process expects as input — it then attenuates and
-    // tints the light per ray through the medium, so the ground sees the
-    // "post-scattering" colour automatically. Pre-atmosphere scenes used a
-    // hand-tuned 7_000 lx + a corrective PointLight; both go away here.
-    commands.spawn((
-        DirectionalLight {
-            illuminance: lux::RAW_SUNLIGHT,
-            shadow_maps_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(1.0, 0.6, 0.3).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // The atmosphere "planet". Bevy 0.19 moved `Atmosphere` OFF the camera onto a
-    // world entity whose `GlobalTransform` IS the planet center (bevy_light
-    // atmosphere.rs: "The entity's GlobalTransform is the planet center in world
-    // space"). The sky shader derives the camera altitude as
-    // `length(world_to_atmosphere · camera_world_pos)` and the local up as
-    // `normalize(...)` of that — so if `Atmosphere` sits on the camera (the
-    // pre-0.19 idiom), the camera maps to the atmosphere origin → r≈0 →
-    // `normalize(0)` degenerate up → the sky renders BLACK toward the zenith and
-    // a flat tan band near the horizon (exactly the "left half goes black when I
-    // pitch up" artifact). Placing the planet center at -inner_radius on Y puts
-    // the world ground plane (Y=0) at the planet surface, so a camera at world
-    // height h renders as altitude h.
-    const EARTH_INNER_RADIUS: f32 = 6_360_000.0;
-    commands.spawn((
-        Atmosphere::earth(scattering_mediums.add(ScatteringMedium::default())),
-        Transform::from_xyz(0.0, -EARTH_INNER_RADIUS, 0.0),
-    ));
-
-    // Camera with procedural atmospheric scattering (Hillaire 2020). HDR is
-    // auto-required by atmosphere rendering; tonemapping + exposure bring
-    // `lux::RAW_SUNLIGHT` (~120k lx) back into a viewable range.
-    // `AtmosphereEnvironmentMapLight` lets the sky drive ambient IBL so
-    // shadowed surfaces aren't pitch black without the old PointLight.
-    commands.spawn((
-        Camera3d::default(),
-        MainCamera,
-        camera_transform_from_orbit(&OrbitCameraState::default()),
-        AtmosphereSettings::default(),
-        AtmosphereEnvironmentMapLight::default(),
-        Exposure { ev100: 13.0 },
-        Tonemapping::AcesFitted,
-        Bloom::NATURAL,
-    ));
-
-    commands.spawn((
-        HudText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(18.0),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(12),
-            left: px(12),
-            ..default()
-        },
-    ));
-
-    commands.spawn((
-        ChatLogText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(18.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.85, 0.9, 1.0)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(12),
-            bottom: px(56),
-            ..default()
-        },
-    ));
-
-    commands.spawn((
-        ChatInputText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(20.0),
-            ..default()
-        },
-        TextColor(Color::srgb(1.0, 0.95, 0.55)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(12),
-            bottom: px(12),
-            ..default()
-        },
-    ));
-
-    commands.spawn((
-        TargetPointMarker,
-        Mesh3d(assets.target_mesh.clone()),
-        MeshMaterial3d(assets.target_material.clone()),
-        Visibility::Hidden,
-        Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(22.0, 6.0, 22.0)),
-    ));
-
-    // GUI-smoke 2026-04-26 follow-up: third-person + free-look mouse mode
-    // hides the OS cursor (audit C-S1), so the user otherwise had no
-    // indicator of where shots / interactions would land. Spawn a small
-    // crosshair as two thin white bars centred at 50%/50% of the viewport
-    // — pure UI so it stays anchored regardless of camera motion.
-    spawn_crosshair(&mut commands);
-
-    commands.insert_resource(assets);
-}
-
-/// Marker for the screen-centre crosshair (used so future systems can
-/// hide it, e.g. while chat is open or in cinematic cutscenes).
-#[derive(Component)]
-pub struct Crosshair;
-
-fn spawn_crosshair(commands: &mut Commands) {
-    let arm_long: f32 = 14.0;
-    let arm_short: f32 = 2.0;
-    let bar_color = Color::srgba(1.0, 1.0, 1.0, 0.85);
-
-    // Container centred on the viewport — children align to its centre.
-    commands
-        .spawn((
-            Crosshair,
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Percent(50.0),
-                top: Val::Percent(50.0),
-                width: Val::Px(arm_long * 2.0),
-                height: Val::Px(arm_long * 2.0),
-                margin: UiRect {
-                    left: Val::Px(-arm_long),
-                    top: Val::Px(-arm_long),
-                    ..default()
-                },
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-        ))
-        .with_children(|parent| {
-            // Horizontal bar.
-            parent.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Px(arm_long * 2.0),
-                    height: Val::Px(arm_short),
-                    ..default()
-                },
-                BackgroundColor(bar_color),
-            ));
-            // Vertical bar.
-            parent.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Px(arm_short),
-                    height: Val::Px(arm_long * 2.0),
-                    ..default()
-                },
-                BackgroundColor(bar_color),
-            ));
-        });
 }
 
 pub(crate) fn voxel_save_dir() -> PathBuf {
@@ -587,7 +361,7 @@ pub(crate) fn push_line(buffer: &mut VecDeque<String>, line: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::MacroCoord;
+    use crate::voxel::{MacroCoord, VoxelMaterialId};
 
     #[test]
     fn voxel_3d_render_cells_include_all_refined_micro_slots() {

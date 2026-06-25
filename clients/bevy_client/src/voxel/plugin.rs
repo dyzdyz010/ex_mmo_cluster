@@ -97,6 +97,20 @@ pub struct VoxelCellVisual {
 #[derive(Component)]
 pub struct TargetPointMarker;
 
+/// Spawns the (initially hidden) target-point marker cube
+/// (架构重整阶段3:从 `app::setup` 拆出到 voxel 域)。Reads the shared
+/// `SceneRenderAssets`, which the composition root builds before any `Startup`
+/// system runs, so there is no startup-ordering dependency here.
+fn spawn_target_marker(mut commands: Commands, assets: Res<SceneRenderAssets>) {
+    commands.spawn((
+        TargetPointMarker,
+        Mesh3d(assets.target_mesh.clone()),
+        MeshMaterial3d(assets.target_material.clone()),
+        Visibility::Hidden,
+        Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(22.0, 6.0, 22.0)),
+    ));
+}
+
 pub struct VoxelPlugin;
 
 impl Plugin for VoxelPlugin {
@@ -105,7 +119,7 @@ impl Plugin for VoxelPlugin {
             .init_resource::<crate::voxel::build_palette::BuildPalette>()
             .init_resource::<LiveHit>()
             .init_gizmo_group::<HitGizmos>()
-            .add_systems(Startup, setup_hit_gizmos)
+            .add_systems(Startup, (setup_hit_gizmos, spawn_target_marker))
             // Always active in-game: the skill-target marker (live gameplay) and
             // the showcase cube sync (which self-cleans once in a live scene).
             .add_systems(

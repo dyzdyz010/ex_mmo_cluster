@@ -23,6 +23,7 @@ pub mod net;
 pub mod observe;
 pub mod presentation;
 pub mod protocol;
+pub mod scene;
 pub mod session;
 pub mod sim;
 pub mod skill;

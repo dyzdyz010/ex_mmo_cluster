@@ -17,21 +17,95 @@ use crate::world::{LocalPlayerState, RemotePlayers};
 
 use super::GameLogs;
 
-/// Marker for the primary HUD text node spawned by `app::setup`.
+/// Marker for the primary HUD text node spawned by [`spawn_hud`].
 #[derive(Component)]
 pub struct HudText;
+
+/// Marker for the screen-centre crosshair container (so future systems can hide
+/// it, e.g. while chat is open or in cinematic cutscenes).
+#[derive(Component)]
+pub struct Crosshair;
 
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_systems(Startup, spawn_hud).add_systems(
             Update,
             update_hud_text
                 .in_set(ClientSet::Render)
                 .run_if(in_state(AppState::Game)),
         );
     }
+}
+
+/// Spawns the HUD text node and the centre-screen crosshair
+/// (架构重整阶段3:从 `app::setup` 拆出到 hud 域)。
+fn spawn_hud(mut commands: Commands) {
+    commands.spawn((
+        HudText,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(12),
+            left: px(12),
+            ..default()
+        },
+    ));
+
+    // Third-person + free-look mouse mode hides the OS cursor (camera audit C-S1),
+    // so a small crosshair (two thin white bars centred at 50%/50% of the viewport)
+    // shows where shots / interactions land. Pure UI so it stays anchored regardless
+    // of camera motion.
+    let arm_long: f32 = 14.0;
+    let arm_short: f32 = 2.0;
+    let bar_color = Color::srgba(1.0, 1.0, 1.0, 0.85);
+    commands
+        .spawn((
+            Crosshair,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Percent(50.0),
+                width: Val::Px(arm_long * 2.0),
+                height: Val::Px(arm_long * 2.0),
+                margin: UiRect {
+                    left: Val::Px(-arm_long),
+                    top: Val::Px(-arm_long),
+                    ..default()
+                },
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|parent| {
+            // Horizontal bar.
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(arm_long * 2.0),
+                    height: Val::Px(arm_short),
+                    ..default()
+                },
+                BackgroundColor(bar_color),
+            ));
+            // Vertical bar.
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(arm_short),
+                    height: Val::Px(arm_long * 2.0),
+                    ..default()
+                },
+                BackgroundColor(bar_color),
+            ));
+        });
 }
 
 type HudTextSingle<'w, 's> = Single<

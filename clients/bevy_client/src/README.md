@@ -21,18 +21,20 @@ into those domain resources in 架构重整阶段 1–2.)
 | Plugin | Module | Owns |
 | --- | --- | --- |
 | `LoginPlugin` | `login.rs` | egui login UI + `AppState` machine |
+| `SceneEnvironmentPlugin` | `scene/mod.rs` | world stage `Startup` spawn: sun + atmosphere planet + main camera entity (camera *behavior* stays in `CameraPlugin`) |
 | `NetworkPlugin` | `net/plugin.rs` | drain `NetworkEvent`s into the domain resources (`LocalPlayerState` / `RemotePlayers` / `NetTelemetry` / `GameLogs` / …) / prediction / effect cues |
 | `StdioPlugin` | `stdio/plugin.rs` | drain queued stdio commands and route to network/voxel/movement |
-| `InputPlugin` *(stub)* | `app/plugins.rs` | reserved for shared input scaffolding (most input lives in domain plugins) |
-| `CameraPlugin` | `camera/plugin.rs` | orbit camera follow, mouse drag, `Ctrl+wheel` zoom |
-| `ChatPlugin` | `chat/plugin.rs` | chat input mode + draft buffer + chat-log/chat-input HUD components |
-| `VoxelPlugin` | `voxel/plugin.rs` | center-ray selection, voxel edit input, voxel mesh sync, prefab preview gizmos, target-point marker |
+| `CameraPlugin` | `camera/plugin.rs` | orbit camera follow, mouse drag, `Ctrl+wheel` zoom, cursor grab |
+| `ChatPlugin` | `chat/plugin.rs` | chat input mode + draft buffer + chat-log/chat-input HUD text (`Startup` spawn) |
+| `VoxelPlugin` | `voxel/plugin.rs` | center-ray selection, voxel edit input, voxel mesh sync, prefab preview gizmos, target-point marker (`Startup` spawn) |
 | `SkillPlugin` | `skill/plugin.rs` | Shift+1-4 skill keys, Tab actor cycling, Shift+RMB target-point picking |
 | `MovementSyncPlugin` | `movement/plugin.rs` | keyboard movement sample, configured uplink tick, local render-prediction integration |
 | `EffectPlugin` | `effects/plugin.rs` | transient skill/combat visual cues (projectile, AOE ring, melee/chain arc, impact pulse) |
-| `HudPlugin` | `hud/plugin.rs` | HUD text aggregation (status, transport, voxel hotbar, AOI peers, RTT) |
+| `HudPlugin` | `hud/plugin.rs` | HUD text + crosshair (`Startup` spawn) + per-frame HUD text aggregation |
 | `PresentationPlugin` | `presentation/plugin.rs` | local + remote actor visuals + actor-material lookup |
-| `ObservePlugin` *(stub)* | `app/plugins.rs` | reserved for observe-log lifecycle hooks |
+
+(架构重整阶段3 删除了空的 `InputPlugin` / `ObservePlugin` 迁移 stub：输入逻辑分布在
+各域插件,observer 写入时自刷新,两者均无实质职责。)
 
 ## Pure non-Bevy modules (no `Plugin`s)
 
@@ -67,10 +69,14 @@ into those domain resources in 架构重整阶段 1–2.)
   `world::{LocalPlayerState, RemotePlayers}`, `net::NetTelemetry`,
   `hud::GameLogs`, `skill::TargetSelection`, `voxel::VoxelAoiState`,
   `session::ConnectionState`.
-- The `SceneRenderAssets` resource and the `setup` system that creates the
-  scene (camera, HUD text nodes, target-point marker, lights, mesh +
-  material handles) — Plugins consume the assets but do not own
-  scene-graph startup.
+- The `SceneRenderAssets` resource *type* (shared mesh/material handles).
+  The handles are built once at the composition root via
+  `scene::build_scene_render_assets` (after `DefaultPlugins`, so `Assets<…>`
+  exist) and inserted before `app.run()`, so every domain `Startup` system
+  reads `Res<SceneRenderAssets>` with no startup-ordering dependency. The
+  scene graph itself is spawned by the owning domains' `Startup` systems
+  (`SceneEnvironmentPlugin` lights/atmosphere/camera, `HudPlugin` HUD +
+  crosshair, `ChatPlugin` chat text, `VoxelPlugin` target marker).
 - `enter_game_setup` — spawns the network thread when entering
   `AppState::Game`.
 - Pure helpers used across plugins: `net_to_world`,

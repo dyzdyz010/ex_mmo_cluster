@@ -26,13 +26,51 @@ pub struct ChatPlugin;
 
 impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ChatState>().add_systems(
-            Update,
-            (toggle_chat_mode, collect_chat_text)
-                .in_set(ClientSet::Input)
-                .run_if(in_state(AppState::Game)),
-        );
+        app.init_resource::<ChatState>()
+            .add_systems(Startup, spawn_chat_text)
+            .add_systems(
+                Update,
+                (toggle_chat_mode, collect_chat_text)
+                    .in_set(ClientSet::Input)
+                    .run_if(in_state(AppState::Game)),
+            );
     }
+}
+
+/// Spawns the chat-log + chat-input text nodes
+/// (架构重整阶段3:从 `app::setup` 拆出到 chat 域)。
+fn spawn_chat_text(mut commands: Commands) {
+    commands.spawn((
+        ChatLogText,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.85, 0.9, 1.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(12),
+            bottom: px(56),
+            ..default()
+        },
+    ));
+
+    commands.spawn((
+        ChatInputText,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(20.0),
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.95, 0.55)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(12),
+            bottom: px(12),
+            ..default()
+        },
+    ));
 }
 
 fn toggle_chat_mode(
