@@ -163,12 +163,12 @@ impl Plugin for VoxelPlugin {
 /// The offline `VoxelWorld` showcase renders only before a live scene is joined;
 /// in a live scene the server-authoritative chunk renderer owns the voxels.
 fn offline_voxel_showcase_active(connection: Res<ConnectionState>) -> bool {
-    !connection.scene_joined
+    !connection.scene_joined()
 }
 
 /// Live (server-authoritative) building is active once a scene is joined.
 fn live_voxel_build_active(connection: Res<ConnectionState>) -> bool {
-    connection.scene_joined
+    connection.scene_joined()
 }
 
 #[derive(SystemParam)]
@@ -598,7 +598,7 @@ fn sync_voxel_visuals(
 ) {
     // In a live scene the server-authoritative chunk renderer owns the voxels;
     // despawn any offline showcase cubes spawned before joining and stop.
-    if connection.scene_joined {
+    if connection.scene_joined() {
         for (entity, _, _, _) in &existing {
             commands.entity(entity).despawn();
         }

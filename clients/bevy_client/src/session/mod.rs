@@ -16,25 +16,58 @@ use std::fmt;
 
 pub mod auth;
 
-/// Connection / scene-membership liveness — the single owner of "are we
-/// connected and in the world" (架构重整阶段1b:从 `WorldState` god-resource 收口
-/// 到 session 域)。后续阶段 4 把 `status` String 演进成显式的 `ConnectionPhase` 枚举
-/// + 退避重连/重认证;此处先做纯所有权迁移(字段不变,行为不变)。
+/// Where the client is in the connect → in-scene → reconnect lifecycle
+/// (架构重整阶段4:`status` String 之外引入显式相位枚举,驱动退避重连 UI/逻辑)。
+///
+/// `scene_joined`(旧 bool)派生自 `phase == InScene`,所以断线时所有 in-world 系统
+/// 自动停摆——旧实现断线后 `scene_joined` 仍为 true 是个潜在 bug,相位化顺带修掉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionPhase {
+    /// Connecting / authenticating; not in a scene yet.
+    Connecting,
+    /// Fully in a scene (the server confirmed scene entry).
+    InScene,
+    /// Connection dropped; backing off before reconnect attempt `attempt`
+    /// (`attempt == 0` = just dropped, not yet retried).
+    Reconnecting { attempt: u32 },
+    /// Gave up after exhausting the reconnect budget (terminal until the user
+    /// restarts). Surfaced so the HUD can show a definitive "please restart".
+    Failed,
+}
+
+impl ConnectionPhase {
+    /// Whether the client is fully in a scene — gates every in-world system
+    /// (camera follow, movement upload, voxel subscribe/render, skill cast …).
+    pub fn is_in_scene(&self) -> bool {
+        matches!(self, ConnectionPhase::InScene)
+    }
+}
+
+/// Connection / scene-membership liveness — the single owner of "where are we in
+/// the connection lifecycle" (架构重整阶段1b 从 `WorldState` 收口到 session;阶段4
+/// 把 scene_joined bool 演进为 `ConnectionPhase` 相位机)。
 #[derive(Resource)]
 pub struct ConnectionState {
-    /// Human-readable status line surfaced by the HUD / stdio harness.
+    /// Lifecycle phase — the single source of truth for connection liveness.
+    pub phase: ConnectionPhase,
+    /// Latest human-readable status detail surfaced by the HUD / stdio harness
+    /// (net `Status` events, phase-transition messages).
     pub status: String,
-    /// True once the server confirmed scene entry; gates all in-world systems
-    /// (camera follow, movement upload, voxel subscribe/render, skill cast …).
-    pub scene_joined: bool,
 }
 
 impl Default for ConnectionState {
     fn default() -> Self {
         Self {
+            phase: ConnectionPhase::Connecting,
             status: String::new(),
-            scene_joined: false,
         }
+    }
+}
+
+impl ConnectionState {
+    /// True once the server confirmed scene entry (derives from `phase`).
+    pub fn scene_joined(&self) -> bool {
+        self.phase.is_in_scene()
     }
 }
 

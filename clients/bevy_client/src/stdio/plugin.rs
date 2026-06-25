@@ -98,7 +98,7 @@ fn poll_stdio_commands(params: StdioCommandParams) {
             ClientStdioCommand::Snapshot => {
                 let mut fields = snapshot_fields(SnapshotFields {
                     status: &connection.status,
-                    scene_joined: connection.scene_joined,
+                    scene_joined: connection.scene_joined(),
                     local_cid: local_player.cid,
                     local_position: local_player.position,
                     local_hp: local_player.hp,

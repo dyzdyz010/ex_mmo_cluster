@@ -12,7 +12,7 @@ use crate::app::{
 use crate::effects::{EffectVisual, effect_spawn_translation};
 use crate::hud::GameLogs;
 use crate::login::AppState;
-use crate::session::ConnectionState;
+use crate::session::{ConnectionPhase, ConnectionState};
 use crate::skill::TargetSelection;
 use crate::stdio::{ClientStdioInterface, emit as emit_stdio};
 use crate::world::{LocalPlayerState, RemotePlayers};
@@ -83,7 +83,7 @@ fn voxel_subscribe_retry(
     let Some(center) = voxel_aoi.subscribed_center else {
         return;
     };
-    if !connection.scene_joined {
+    if !connection.scene_joined() {
         return;
     }
     // Terrain arrived → reset (interval + attempts) so a future genuine
@@ -347,7 +347,7 @@ fn poll_network_events(
                 push_line(&mut logs.general, status);
             }
             NetworkEvent::EnteredScene { cid, location } => {
-                connection.scene_joined = true;
+                connection.phase = ConnectionPhase::InScene;
                 connection.status = format!("in scene as cid {cid}");
                 local_player.cid = cid;
                 let world_location = net_to_world(location);
@@ -688,7 +688,7 @@ fn poll_network_events(
                 push_line(&mut logs.general, line)
             }
             NetworkEvent::Disconnected(reason) => {
-                connection.scene_joined = false;
+                connection.phase = ConnectionPhase::Reconnecting { attempt: 0 };
                 connection.status = format!("disconnected: {reason}");
                 local_player.position = None;
                 local_player.velocity = Vec3::ZERO;

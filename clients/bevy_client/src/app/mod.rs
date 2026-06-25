@@ -16,7 +16,7 @@ use crate::{
     login::{AppState, LoginPlugin},
     net::spawn_network_thread,
     observe::ClientObserver,
-    session::{ConnectionState, SessionCredentials},
+    session::{ConnectionPhase, ConnectionState, SessionCredentials},
     sim::{
         profile::MovementProfile,
         types::{MovementMode, PredictedMoveState},
@@ -224,12 +224,12 @@ pub fn run(
         // with server-authoritative state on scene entry.
         .init_resource::<crate::world::LocalPlayerState>()
         .insert_resource(ConnectionState {
+            phase: ConnectionPhase::Connecting,
             status: if starts_in_game {
                 "starting client".to_string()
             } else {
                 "waiting for login".to_string()
             },
-            scene_joined: false,
         })
         .insert_resource(MovementIntent::default())
         .insert_resource(MovementDispatchState::default())

@@ -163,7 +163,7 @@ fn movement_sender(params: MovementSendParams) {
         mut tick,
     } = params;
 
-    if !connection.scene_joined {
+    if !connection.scene_joined() {
         return;
     }
 

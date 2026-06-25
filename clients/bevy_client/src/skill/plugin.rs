@@ -143,7 +143,7 @@ fn handle_point_target_input(
     let Some(ray) = crate::app::ray_from_viewport(camera, camera_transform, cursor) else {
         return;
     };
-    let scene_joined = connection.scene_joined;
+    let scene_joined = connection.scene_joined();
     let dir = ray.direction.normalize_or_zero();
 
     // Pick the actual ground the cursor is over (server-authoritative terrain in a

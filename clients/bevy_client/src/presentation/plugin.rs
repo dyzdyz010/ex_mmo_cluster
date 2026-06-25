@@ -168,7 +168,7 @@ fn sync_player_visuals(
                 let target = actor_render_position(
                     &params.voxel_world,
                     &params.authority,
-                    params.connection.scene_joined,
+                    params.connection.scene_joined(),
                     motion.position,
                     visual.base_scale.y * 0.5,
                 );
@@ -266,7 +266,7 @@ fn sync_player_visuals(
             let target = actor_render_position(
                 &params.voxel_world,
                 &params.authority,
-                params.connection.scene_joined,
+                params.connection.scene_joined(),
                 motion.position,
                 scale.y * 0.5,
             );
