@@ -416,7 +416,12 @@
 2. **热路径(评审 F5)→ Gate 边缘 route 缓存(提前到阶段2-bis,不留到阶段5)**:region 所有权稳定,Gate 按 region 缓存 route/lease,只在**进入新 region** 时打控制面(MapLedger),而非每 chunk。控制面物化改**非阻塞 + 幂等**,不阻塞其他路由。控制面单进程因此不在每帧热路径上——这才是控制面该有的形态,也是单 World 进程能撑大规模的关键。
 3. **lease 生命周期(评审 F4)→ 阶段2**:真正的续约 + region GC,替掉 24h TTL 创可贴。
 
-**重定标后的阶段顺序**:阶段2 durable 目录(resolver 接口 + 事务边界 + lease 生命周期)→ **阶段2-bis Gate route 缓存 + 非阻塞物化** → 阶段3 服务端可达性校验 → 阶段4 catalog 驱动客户端 → 阶段5 非阻塞流 + 客户端加载优化 → 阶段6-7 一致性/迁移 → **阶段7-bis 服务端启动优化** → 阶段8 HA。
+**重定标后的阶段顺序**(阶段名以正文 `### 阶段 N` 标题为准;此处仅在原序列中插入 2-bis / 7-bis):
+阶段2 durable 目录(事务边界 + lease 生命周期)→ **阶段2-bis Gate route 缓存 + 非阻塞物化** →
+阶段3 运行时 WorldGen + chunk 生命周期 → 阶段4 AOI 增量 + 非阻塞 → 阶段5 编辑预测 + 反作弊 →
+阶段6 按区一致性 + 增量复制 + 背压 → 阶段7 协议成熟 + 多世界 → **阶段7-bis 服务端启动优化**(seed
+DB I/O + 预热链)→ 阶段8 控制面 HA。(注:服务端权威可达性校验在阶段5 step5.3;resolver 分片接缝
+已在 region_id 编码 + fetch_world_node,无需独立模块。)
 
 ### ✅ 阶段 2(部分)— durable region 目录 + lease 生命周期(scale-first 执行层)
 - step2.1/2.2(commit `38a8141`):`voxel_region_directory` **每 region 一行**表(主键 region_id,
