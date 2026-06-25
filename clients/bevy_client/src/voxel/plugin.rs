@@ -437,9 +437,9 @@ fn setup_hit_gizmos(mut store: ResMut<GizmoConfigStore>) {
     store.config_mut::<HitGizmos>().0.depth_bias = -1.0;
 }
 
-/// Outlines the cell under the crosshair (cyan wire box) and the face the ray
-/// entered through (bright white) so the player sees exactly what a place/break
-/// targets. Drawn only when a valid in-reach hit exists.
+/// Outlines just the FACE the crosshair ray entered through (a flat square on the
+/// targeted cell face — not the whole cube), so the player sees exactly which
+/// face a place/break targets. Drawn only when a valid in-reach hit exists.
 fn draw_live_hit(hit: Res<LiveHit>, mut gizmos: Gizmos<HitGizmos>) {
     let Some(pick) = hit.pick else {
         return;
@@ -450,9 +450,8 @@ fn draw_live_hit(hit: Res<LiveHit>, mut gizmos: Gizmos<HitGizmos>) {
         pick.occupied_macro[2],
     );
     let (min, max) = macro_bounds(coord);
-    draw_box_wire(&mut gizmos, min, max, Color::srgba(0.15, 0.85, 1.0, 0.9));
     let normal = MacroCoord::new(pick.face_normal[0], pick.face_normal[1], pick.face_normal[2]);
-    draw_face_outline(&mut gizmos, min, max, normal, Color::WHITE);
+    draw_face_outline(&mut gizmos, min, max, normal, Color::srgba(0.15, 0.9, 1.0, 1.0));
 }
 
 /// Construction system live build: raycast the authority chunks from screen center
