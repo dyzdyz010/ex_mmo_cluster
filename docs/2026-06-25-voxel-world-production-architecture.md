@@ -384,3 +384,36 @@
 - **F7** DevSeed 部分地形写:与旧版同且幂等(`already_seeded?` 跳过,重跑补齐),非回归。
 - **F8** `:stale_token`→`:rejected` 丢失可重试语义:单调 epoch 下物化路径不产生 `:stale_token`;
   若将来引入,**阶段5** 增 `result_code` 4=transient/retry。
+
+---
+
+## 8. 设计澄清与 scale-first 重定标(2026-06-25,用户拍板)
+
+用户拍板两条贯穿全程的原则,载入决策,修订本稿后续所有阶段:
+
+### 8.1 "服务端启动时间"与"客户端加载时间"是两条独立轴,分别度量、分别优化
+
+二者**不同频率、不同主体、不同手段**,生产环境基本不同时发生,**严禁合并成"总加载时间"**:
+
+| | 服务端启动时间(集群引导) | 客户端加载时间(每会话/每玩家) |
+|---|---|---|
+| 主体 | World/Scene 节点冷启动到可服务 | 玩家连接到看见周围世界 |
+| 频率 | 运维事件(部署/重启),与玩家会话解耦 | 每次玩家进入,高频 |
+| 现状 | ~20s(预热链:`SceneServer.Interface` 串行 `join_cluster` + `await world_server` 30s 轮询 + `DefaultRegionBootstrapper` 1s 重试 + DevSeed 铺地形) | 首次=订阅+物化;重复=磁盘缓存 + diff(已快,`persistence.rs`) |
+| 优化手段 | 并行化预热、消除固定 sleep、懒初始化、就绪探针代替轮询 sleep | 差集订阅、priority band(先近后远)、非阻塞流、客户端缓存预测 |
+| 指标 | node boot → first-serve | enter_scene → first_chunk_rendered;→ AOI_complete |
+| 性质 | **运维体验** | **玩家体验** |
+
+→ 服务端启动归入**阶段 7-bis(运维就绪)**单独立项;客户端加载归入**阶段 5(非阻塞流)**。各自有独立指标,不混算。
+
+### 8.2 体素区域从设计之初即面向大规模——无"临时小区域",stopgap 在执行层且按 scale-first 归位
+
+**澄清**:世界**不是**临时小区域。`RegionGrid` 从第一行起即**无界**(region=f(chunk),±数百万 chunk × 1670 万 logical scene)。DevSeed 的 5×5 只是**出生点地形预热区**,非世界边界。**分区层已是 scale-final,无早/晚路线分歧、无需重构。** 数据面(chunk truth)亦已经 Horde 分布于 Scene 节点。
+
+剩余 stopgap 全在**执行层**,且**不再是"以后再说"的创可贴,而是从现在起按大规模设计**(避免前后期路线分歧 → 后期大重构):
+
+1. **目录持久化(评审 F3)→ 阶段2**:region 目录 DB 落地,任意 World 节点可载;"发布写令牌 + 落盘"纳入同一事务边界(fail-fast)。**接口做成 resolver 形**(`region_id → owning ledger`),使将来按 logical_scene / region 段**分片**是部署配置而非重构。
+2. **热路径(评审 F5)→ Gate 边缘 route 缓存(提前到阶段2-bis,不留到阶段5)**:region 所有权稳定,Gate 按 region 缓存 route/lease,只在**进入新 region** 时打控制面(MapLedger),而非每 chunk。控制面物化改**非阻塞 + 幂等**,不阻塞其他路由。控制面单进程因此不在每帧热路径上——这才是控制面该有的形态,也是单 World 进程能撑大规模的关键。
+3. **lease 生命周期(评审 F4)→ 阶段2**:真正的续约 + region GC,替掉 24h TTL 创可贴。
+
+**重定标后的阶段顺序**:阶段2 durable 目录(resolver 接口 + 事务边界 + lease 生命周期)→ **阶段2-bis Gate route 缓存 + 非阻塞物化** → 阶段3 服务端可达性校验 → 阶段4 catalog 驱动客户端 → 阶段5 非阻塞流 + 客户端加载优化 → 阶段6-7 一致性/迁移 → **阶段7-bis 服务端启动优化** → 阶段8 HA。
