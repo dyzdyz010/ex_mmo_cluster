@@ -214,6 +214,7 @@ defmodule GateServer.StdioInterface do
       |> Enum.map(fn {_id, pid, _type, _modules} -> pid end)
       |> Enum.map(fn pid ->
         state = :sys.get_state(pid)
+        subs = voxel_subscriptions_of(state)
 
         %{
           pid: inspect(pid),
@@ -222,11 +223,8 @@ defmodule GateServer.StdioInterface do
           auth_username: Map.get(state, :auth_username),
           scene_ref: inspect(Map.get(state, :scene_ref)),
           udp_attached?: not is_nil(Map.get(state, :udp_peer)),
-          voxel_subscription_count: state |> Map.get(:voxel_subscriptions, %{}) |> map_size(),
-          voxel_subscriptions:
-            state
-            |> Map.get(:voxel_subscriptions, %{})
-            |> subscription_summaries()
+          voxel_subscription_count: map_size(subs),
+          voxel_subscriptions: subscription_summaries(subs)
         }
       end)
     catch
@@ -238,6 +236,7 @@ defmodule GateServer.StdioInterface do
     :pg.get_members(:connection, {:gate, GateServer.WsConnection})
     |> Enum.map(fn pid ->
       state = :sys.get_state(pid)
+      subs = voxel_subscriptions_of(state)
 
       %{
         pid: inspect(pid),
@@ -245,15 +244,28 @@ defmodule GateServer.StdioInterface do
         cid: Map.get(state, :cid),
         auth_username: Map.get(state, :auth_username),
         scene_ref: inspect(Map.get(state, :scene_ref)),
-        voxel_subscription_count: state |> Map.get(:voxel_subscriptions, %{}) |> map_size(),
-        voxel_subscriptions:
-          state
-          |> Map.get(:voxel_subscriptions, %{})
-          |> subscription_summaries()
+        voxel_subscription_count: map_size(subs),
+        voxel_subscriptions: subscription_summaries(subs)
       }
     end)
   catch
     :exit, _reason -> []
+  end
+
+  # 评审复审 F5:订阅集已从连接 state 移入 SubscriptionWorker(连接只持 :voxel_worker)。debug
+  # 快照须向 worker 取,否则恒报空。worker 死/无则 %{};:exit 由各自外层 try/catch 兜底。
+  defp voxel_subscriptions_of(state) do
+    case Map.get(state, :voxel_worker) do
+      pid when is_pid(pid) ->
+        try do
+          GateServer.Voxel.SubscriptionWorker.subscriptions(pid)
+        catch
+          :exit, _reason -> %{}
+        end
+
+      _other ->
+        %{}
+    end
   end
 
   defp subscription_summaries(subscriptions) when is_map(subscriptions) do

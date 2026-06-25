@@ -134,8 +134,19 @@ defmodule GateServer.Voxel.SubscriptionWorker do
   def handle_cast({:invalidate_chunk, logical_scene_id, chunk_coord}, state) do
     key = {logical_scene_id, chunk_coord}
 
-    {:noreply,
-     %{state | subscriptions: Map.delete(state.subscriptions, key), route_cache: RouteCache.new()}}
+    # 评审复审 F1:ChunkInvalidate 从 Scene 端发出,与本 worker 自己的 subscribe 调用**跨进程**,故
+    # 本 cast 与一次(因 AOI 触发的)重订阅在 ChunkProcess vs 本 worker 上可乱序提交。若本 worker 在
+    # 收到本 cast 前刚把该 chunk 重订阅(map 有、Scene 有),仅删 map 会留下 Scene 侧静默死订阅。故
+    # **主动**对 Scene 幂等退订一次再删 map,保证「map == Scene 注册集」不变量;客户端按协议
+    # (0x69 = 丢弃 + 重订)重订时由 worker 自身权威集差集干净重建。
+    case Map.pop(state.subscriptions, key) do
+      {nil, _rest} ->
+        {:noreply, %{state | route_cache: RouteCache.new()}}
+
+      {subscription, rest} ->
+        scene_unsubscribe(state, subscription)
+        {:noreply, %{state | subscriptions: rest, route_cache: RouteCache.new()}}
+    end
   end
 
   def handle_cast(:invalidate_route_cache, state) do
@@ -198,11 +209,19 @@ defmodule GateServer.Voxel.SubscriptionWorker do
         known_version: Map.get(ctx.known, coord)
       }
 
+      key = {ctx.logical_scene_id, coord}
+      subscription = build_subscription(ctx.logical_scene_id, coord, ctx.request_id, scene_node, lease)
+
       case Routing.subscribe(scene_node, attrs) do
         {:ok, _payload} ->
-          subscription = build_subscription(ctx.logical_scene_id, coord, ctx.request_id, scene_node, lease)
           emit_routed(state, ctx, coord, route)
-          key = {ctx.logical_scene_id, coord}
+          {:ok, %{state | subscriptions: Map.put(state.subscriptions, key, subscription)}}
+
+        # 评审复审 F2:订阅 call 超时但 ChunkProcess 很可能已注册 subscriber(put_subscriber 在快照
+        # 编码前),且快照经 send/2 直达连接不受本 call 超时影响。故**记录订阅**(否则日后退订因 map
+        # 无此 key 而漏退 Scene → 泄漏);日后退订对 Scene 幂等退订无害。不发 0x68(快照已异步直达)。
+        {:error, :timeout} ->
+          emit_routed(state, ctx, coord, route)
           {:ok, %{state | subscriptions: Map.put(state.subscriptions, key, subscription)}}
 
         {:error, reason} ->
@@ -258,6 +277,10 @@ defmodule GateServer.Voxel.SubscriptionWorker do
       reason: reason,
       subscription_count: map_size(state.subscriptions)
     })
+
+    # 评审复审 F4:迁移改变所有权 → 在 rebind 内清自身 route 缓存(此前只有 public cast 路径在调用
+    # 方清,debug 探针路径漏清留陈旧路由)。放 rebind 内使两条路径一致、去掉跨模块时序依赖。
+    state = %{state | route_cache: RouteCache.new()}
 
     {next_state, counts} =
       Enum.reduce(

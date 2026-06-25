@@ -95,6 +95,14 @@ defmodule GateServer.Voxel.Routing do
       {:ok, {:ok, payload}} -> {:ok, payload}
       {:ok, {:error, reason}} -> {:error, reason}
       {:ok, _other} -> {:error, :scene_unavailable}
+      # A call **timeout** means the outcome is unknown — ChunkProcess registers the
+      # subscriber (`put_subscriber`) BEFORE encoding the snapshot, so a slow cold
+      # subscribe very likely already subscribed at the Scene. Surface it distinctly
+      # so the caller can record a tentative subscription instead of treating it as a
+      # clean failure (which would leak the Scene-side subscriber). Hard exits
+      # (noproc / nodedown) definitely did not register → :scene_unavailable.
+      {:error, {:timeout, _}} -> {:error, :timeout}
+      {:error, :timeout} -> {:error, :timeout}
       {:error, _reason} -> {:error, :scene_unavailable}
     end
   end

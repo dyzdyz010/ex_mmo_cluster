@@ -146,8 +146,7 @@ defmodule GateServer.WsConnection do
 
   def handle_cast({:voxel_rebind_subscriptions, logical_scene_id, region_selector, reason}, state) do
     # 阶段4:rebind(迁移 cutover,罕见)在 worker 同步执行——worker 是订阅集所有者 + Scene 操作
-    # 发起者。先清 worker route 缓存(所有权 churn),再 rebind。
-    SubscriptionWorker.invalidate_route_cache(state.voxel_worker)
+    # 发起者,且在 do_rebind 内自清 route 缓存(评审复审 F4)。
     result = SubscriptionWorker.rebind(state.voxel_worker, logical_scene_id, region_selector, reason)
 
     GateServer.CliObserve.emit("voxel_subscription_rebind_completed", %{
@@ -2551,7 +2550,13 @@ defmodule GateServer.WsConnection do
     end
   end
 
-  defp normalize_close_reason({:error, :closed}), do: :normal
+  # 评审复审 F3:浏览器/客户端断线是正常的会话结束(对齐 TCP 的 {:tcp_closed}/{:tcp_error}→:normal),
+  # 不应记为 crash。Bandit/WebSock 的对端关闭(:remote)、空闲超时(:timeout)、传输断(:error,_)
+  # 全部归一为 :normal 退出——避免误报 crash 噪声,也使「worker 靠 monitor DOWN 自停」的清理通道
+  # 始终生效(:normal 退出不穿 start_link 的 link,故 worker 必须靠 monitor 而非 link 信号收尾)。
+  defp normalize_close_reason(:remote), do: :normal
+  defp normalize_close_reason(:timeout), do: :normal
+  defp normalize_close_reason({:error, _reason}), do: :normal
   defp normalize_close_reason(reason), do: reason
 
   defp player_move_message(
