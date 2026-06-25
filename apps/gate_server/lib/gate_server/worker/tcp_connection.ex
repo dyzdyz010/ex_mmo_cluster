@@ -49,6 +49,9 @@ defmodule GateServer.TcpConnection do
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
   @prefab_owner_part_id 1
+  # 阶段2-bis:缓存 lease 剩余 < 此窗口即视为 miss,强制 re-route → World 侧续约(MapLedger
+  # 续约窗口 15min,本窗口取更小的 10min 以保证 re-route 落进 World 续约窗口内)。
+  @voxel_route_cache_refresh_ms :timer.minutes(10)
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 
   @doc """
@@ -86,7 +89,10 @@ defmodule GateServer.TcpConnection do
        udp_ticket: nil,
        token: nil,
        status: :waiting_auth,
-       voxel_subscriptions: %{}
+       voxel_subscriptions: %{},
+       # 阶段2-bis(评审 F5):per-connection region route 缓存。region 所有权稳定,故只在进入
+       # 新 region / 缓存 lease 临近过期时才打 World 控制面(MapLedger),而非每 chunk 一次。
+       voxel_route_cache: GateServer.Voxel.RouteCache.new()
      }}
   end
 
@@ -324,7 +330,9 @@ defmodule GateServer.TcpConnection do
     })
 
     send_encoded(socket, {:voxel_chunk_invalidate_payload, payload})
-    {:noreply, state}
+    # 阶段2-bis:invalidate 罕见(迁移 / region 移除),意味所有权 churn → 清空整张 route 缓存,
+    # 后续路由全部重新向控制面拉取新所有者,避免用陈旧 lease 编辑被 fence。
+    {:noreply, %{state | voxel_route_cache: GateServer.Voxel.RouteCache.new()}}
   end
 
   # Phase 4-bis (D7):forward 0x6C ObjectStateDelta from ChunkProcess fan-out
@@ -1392,6 +1400,33 @@ defmodule GateServer.TcpConnection do
         {:ok, _other} -> {:error, :world_unavailable}
         {:error, _reason} -> {:error, :world_unavailable}
       end
+    end
+  end
+
+  # 阶段2-bis(F5):cache-first 单 chunk 路由。命中缓存(chunk 落在已路由 region 且 lease 新鲜)
+  # → 本地返回,不打控制面;miss → route_voxel_chunk(materializing)后写缓存。返回 next_state
+  # 以便调用方把缓存更新串下去。
+  defp route_voxel_chunk_cached(state, logical_scene_id, chunk_coord) do
+    now = System.system_time(:millisecond)
+
+    case GateServer.Voxel.RouteCache.lookup(
+           state.voxel_route_cache,
+           chunk_coord,
+           now,
+           @voxel_route_cache_refresh_ms
+         ) do
+      {:ok, route} ->
+        {:ok, route, state}
+
+      :miss ->
+        case route_voxel_chunk(logical_scene_id, chunk_coord) do
+          {:ok, route} ->
+            cache = GateServer.Voxel.RouteCache.put(state.voxel_route_cache, route, now)
+            {:ok, route, %{state | voxel_route_cache: cache}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
 
@@ -2829,7 +2864,8 @@ defmodule GateServer.TcpConnection do
   end
 
   defp subscribe_voxel_chunk(request, chunk_coord, known_versions, state) do
-    with {:ok, route} <- route_voxel_chunk(request.logical_scene_id, chunk_coord),
+    with {:ok, route, state} <-
+           route_voxel_chunk_cached(state, request.logical_scene_id, chunk_coord),
          {:ok, scene_node} <- fetch_scene_node_for_route(route) do
       emit_voxel_chunk_subscribe_routed(%{request | center_chunk: chunk_coord}, state, route)
       lease = Map.fetch!(route, :lease)
