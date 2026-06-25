@@ -82,11 +82,8 @@ defmodule GateServer.WsConnection do
        scene_ref: nil,
        token: nil,
        status: :waiting_auth,
-       voxel_subscriptions: %{},
-       # 阶段4 step4.2 差集:在途订阅键集(防重复 route+subscribe)。
-       voxel_pending: MapSet.new(),
-       # 阶段4 step4.3 非阻塞:per-connection 订阅 worker(route+subscribe 慢 I/O 移出主进程),
-       # 阶段2-bis 的 per-region route 缓存随之移入 worker。见 tcp_connection 同名说明。
+       # 阶段4 step4.3 非阻塞:per-connection 订阅 worker(体素订阅集唯一所有者 + Scene 订阅/退订
+       # 唯一发起者;见 tcp_connection 同名说明)。连接不再持订阅 map。
        voxel_worker: voxel_worker,
        # 梯队3 step3.10b:per-observer 统一 Replicator 出口控制器(嵌连接 state)。
        # 预算/窗可经 app env 调(运维旋钮 + 测试注入小预算);缺省见模块属性。
@@ -148,11 +145,10 @@ defmodule GateServer.WsConnection do
   end
 
   def handle_cast({:voxel_rebind_subscriptions, logical_scene_id, region_selector, reason}, state) do
-    {next_state, result} =
-      rebind_voxel_subscriptions_in_state(state, logical_scene_id, region_selector, reason)
-
-    # 迁移改变所有权 → 清 worker 的 route 缓存,避免新 chunk 用陈旧缓存路由到旧 owner(阶段4)。
+    # 阶段4:rebind(迁移 cutover,罕见)在 worker 同步执行——worker 是订阅集所有者 + Scene 操作
+    # 发起者。先清 worker route 缓存(所有权 churn),再 rebind。
     SubscriptionWorker.invalidate_route_cache(state.voxel_worker)
+    result = SubscriptionWorker.rebind(state.voxel_worker, logical_scene_id, region_selector, reason)
 
     GateServer.CliObserve.emit("voxel_subscription_rebind_completed", %{
       connection_pid: self(),
@@ -163,10 +159,10 @@ defmodule GateServer.WsConnection do
       rebound_count: result.rebound_count,
       skipped_count: result.skipped_count,
       error_count: result.error_count,
-      subscription_count: map_size(next_state.voxel_subscriptions)
+      subscription_count: result.subscription_count
     })
 
-    {:noreply, next_state}
+    {:noreply, state}
   end
 
   def handle_cast({:player_enter, cid, location}, state) do
@@ -256,8 +252,7 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_chunk_snapshot_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     {:noreply, replicate(state, :voxel_chunk_snapshot_payload, payload)}
@@ -267,8 +262,7 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_chunk_delta_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     {:noreply, replicate(state, :voxel_chunk_delta_payload, payload)}
@@ -278,47 +272,28 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_chunk_invalidate_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
-    # 阶段2-bis:invalidate 罕见(所有权 churn)→ 清空 worker 的 route 缓存,后续重拉新所有者
-    # (阶段4 route 缓存移入 worker)。
-    SubscriptionWorker.invalidate_route_cache(state.voxel_worker)
+    # 阶段4 评审 F5:把受影响 chunk 从 worker 订阅集移除(见 tcp_connection 同名),使客户端重订
+    # 能重建 scene 侧订阅;无法解码退化为清空整张 route 缓存。
+    invalidate_voxel_subscription(state.voxel_worker, payload)
     {:noreply, replicate(state, :voxel_chunk_invalidate_payload, payload)}
   end
 
-  # 阶段4 step4.3:订阅 worker 回报(见 tcp_connection 同名处理)。key 已不在 pending(订阅在途
-  # 期间被退订,乱序)→ 撤销 scene 侧订阅、不加入,杜绝退订后被重新加回。
-  def handle_info({:voxel_subscribed, key, subscription}, state) do
-    if MapSet.member?(state.voxel_pending, key) do
-      {:noreply,
-       %{
-         state
-         | voxel_subscriptions: Map.put(state.voxel_subscriptions, key, subscription),
-           voxel_pending: MapSet.delete(state.voxel_pending, key)
-       }}
-    else
-      scene_unsubscribe(subscription)
-      {:noreply, state}
-    end
-  end
-
+  # 阶段4 step4.3:订阅 worker 路由/订阅失败回报(首失败一帧 0x68)。成功路径无回报——快照即 ACK,
+  # 经 fan-out 直达本连接;订阅集只存在于 worker(单一所有者)。
   def handle_info({:voxel_subscribe_failed, ctx, reason}, state) do
     GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_error", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: ctx.request_id,
+      chunk_coord: Map.get(ctx, :chunk_coord),
       reason: reason
     })
 
     send_encoded(state, voxel_result_error(ctx, reason))
     {:noreply, state}
-  end
-
-  def handle_info({:voxel_reconcile_settled, keys}, state) do
-    pending = Enum.reduce(keys, state.voxel_pending, &MapSet.delete(&2, &1))
-    {:noreply, %{state | voxel_pending: pending}}
   end
 
   # 梯队3 step3.10b:Replicator 自限定 backlog flush——仅在出口压力憋帧后激活(正常负载不调度)。
@@ -334,8 +309,7 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_object_state_delta_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_encoded(state, {:voxel_object_state_delta_payload, payload})
@@ -349,8 +323,7 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_field_region_snapshot_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send(state.owner_pid, {:gate_ws_send, payload})
@@ -364,8 +337,7 @@ defmodule GateServer.WsConnection do
     GateServer.CliObserve.emit("ws_voxel_field_region_destroyed_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send(state.owner_pid, {:gate_ws_send, payload})
@@ -374,7 +346,8 @@ defmodule GateServer.WsConnection do
 
   @impl true
   def terminate(_reason, state) do
-    cleanup_voxel_subscriptions(state)
+    # 阶段4:voxel 订阅集在 worker(随本连接退出而停;Scene 侧 subscriber=本连接 pid,
+    # ChunkProcess monitor 本连接 down 即自动摘除)——无需在此显式退订。
     cleanup_scene(state.scene_ref)
     :ok
   end
@@ -497,20 +470,18 @@ defmodule GateServer.WsConnection do
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, %{status: :in_scene} = state) do
-    {unsubscribed_count, next_state} = unsubscribe_voxel_chunks(request, state)
+    SubscriptionWorker.unsubscribe(state.voxel_worker, request.logical_scene_id, request.chunks)
 
     GateServer.CliObserve.emit("ws_voxel_chunk_unsubscribe_ok", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      requested_count: length(request.chunks),
-      unsubscribed_count: unsubscribed_count,
-      subscription_count: map_size(next_state.voxel_subscriptions)
+      requested_count: length(request.chunks)
     })
 
     send_encoded(state, {:result, :ok, request.request_id})
-    {:ok, next_state}
+    {:ok, state}
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, state) do
@@ -2377,244 +2348,40 @@ defmodule GateServer.WsConnection do
      }}
   end
 
-  # 阶段4 step4.2+4.3:差集 + 投订阅 worker 异步 route+subscribe(见 tcp_connection 同名函数)。
+  # 阶段4 step4.2+4.3:整框订阅意图投给订阅 worker(唯一所有者,自身权威集做差集)。见
+  # tcp_connection 同名函数。
   defp dispatch_voxel_subscribe(request, state) do
-    coords = voxel_subscription_coords(request.center_chunk, request.radius_l_inf)
-    known = voxel_known_versions(Map.get(request, :known, []))
-
-    new_coords =
-      Enum.reject(coords, fn coord ->
-        key = voxel_subscription_key(request.logical_scene_id, coord)
-        Map.has_key?(state.voxel_subscriptions, key) or MapSet.member?(state.voxel_pending, key)
-      end)
-
-    pending =
-      Enum.reduce(new_coords, state.voxel_pending, fn coord, acc ->
-        MapSet.put(acc, voxel_subscription_key(request.logical_scene_id, coord))
-      end)
-
-    if new_coords != [] do
-      SubscriptionWorker.reconcile(state.voxel_worker, %{
-        request_id: request.request_id,
-        client_intent_seq: Map.get(request, :client_intent_seq, 0),
-        logical_scene_id: request.logical_scene_id,
-        want_snapshot: request.want_snapshot,
-        coords: new_coords,
-        known: known
-      })
-    end
+    SubscriptionWorker.reconcile(state.voxel_worker, %{
+      request_id: request.request_id,
+      client_intent_seq: Map.get(request, :client_intent_seq, 0),
+      logical_scene_id: request.logical_scene_id,
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf,
+      want_snapshot: request.want_snapshot,
+      known: voxel_known_versions(Map.get(request, :known, []))
+    })
 
     GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_dispatched", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      requested_count: length(coords),
-      new_count: length(new_coords),
-      subscription_count: map_size(state.voxel_subscriptions)
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf
     })
 
-    %{state | voxel_pending: pending}
+    state
   end
 
-  defp rebind_voxel_subscriptions_in_state(state, logical_scene_id, region_selector, reason) do
-    GateServer.CliObserve.emit("voxel_subscription_rebind_requested", %{
-      connection_pid: self(),
-      cid: state.cid,
-      logical_scene_id: logical_scene_id,
-      region_selector: region_selector,
-      reason: reason,
-      subscription_count: map_size(state.voxel_subscriptions)
-    })
+  # 阶段4 评审 F5:见 tcp_connection 同名函数。
+  defp invalidate_voxel_subscription(worker, payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_invalidate_payload(payload) do
+      {:ok, %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}} ->
+        SubscriptionWorker.invalidate_chunk(worker, logical_scene_id, chunk_coord)
 
-    Enum.reduce(
-      state.voxel_subscriptions,
-      {state, %{rebound_count: 0, skipped_count: 0, error_count: 0}},
-      fn {key, subscription}, {acc_state, acc_result} ->
-        if rebind_subscription_selected?(subscription, logical_scene_id, region_selector) do
-          case rebind_voxel_subscription(subscription, reason) do
-            {:ok, next_subscription, :rebound} ->
-              {put_in(acc_state.voxel_subscriptions[key], next_subscription),
-               Map.update!(acc_result, :rebound_count, &(&1 + 1))}
-
-            {:ok, _next_subscription, :skipped} ->
-              {acc_state, Map.update!(acc_result, :skipped_count, &(&1 + 1))}
-
-            {:error, reason} ->
-              GateServer.CliObserve.emit("voxel_subscription_rebind_error", %{
-                connection_pid: self(),
-                cid: state.cid,
-                logical_scene_id: subscription.logical_scene_id,
-                chunk_coord: subscription.chunk_coord,
-                region_id: Map.get(subscription, :region_id),
-                reason: reason
-              })
-
-              {acc_state, Map.update!(acc_result, :error_count, &(&1 + 1))}
-          end
-        else
-          {acc_state, acc_result}
-        end
-      end
-    )
-  end
-
-  defp rebind_subscription_selected?(subscription, logical_scene_id, region_selector) do
-    subscription.logical_scene_id == logical_scene_id and
-      (region_selector == :all or Map.get(subscription, :region_id) == region_selector)
-  end
-
-  defp rebind_voxel_subscription(subscription, reason) do
-    with {:ok, route} <-
-           route_voxel_chunk(subscription.logical_scene_id, subscription.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      lease = Map.fetch!(route, :lease)
-
-      GateServer.CliObserve.emit("voxel_subscription_rebind_routed", %{
-        connection_pid: self(),
-        logical_scene_id: subscription.logical_scene_id,
-        chunk_coord: subscription.chunk_coord,
-        reason: reason,
-        old_scene_node: Map.get(subscription, :scene_node),
-        new_scene_node: scene_node,
-        old_lease_id: Map.get(subscription, :lease_id),
-        new_lease_id: lease.lease_id,
-        old_owner_scene_instance_ref: Map.get(subscription, :owner_scene_instance_ref),
-        new_owner_scene_instance_ref: lease.owner_scene_instance_ref,
-        new_owner_epoch: lease.owner_epoch
-      })
-
-      if subscription_matches_route?(subscription, scene_node, lease) do
-        GateServer.CliObserve.emit("voxel_subscription_rebind_skipped", %{
-          connection_pid: self(),
-          logical_scene_id: subscription.logical_scene_id,
-          chunk_coord: subscription.chunk_coord,
-          lease_id: lease.lease_id,
-          owner_scene_instance_ref: lease.owner_scene_instance_ref,
-          owner_epoch: lease.owner_epoch
-        })
-
-        {:ok, subscription, :skipped}
-      else
-        subscribe_attrs = %{
-          request_id: subscription.request_id,
-          logical_scene_id: subscription.logical_scene_id,
-          chunk_coord: subscription.chunk_coord,
-          subscriber: self(),
-          lease: lease,
-          send_snapshot?: true,
-          known_version: nil
-        }
-
-        case safe_call(
-               {SceneServer.Voxel.ChunkDirectory, scene_node},
-               {:subscribe, subscribe_attrs},
-               @scene_call_timeout
-             ) do
-          {:ok, {:ok, _payload}} ->
-            maybe_unsubscribe_rebound_source(subscription, scene_node)
-
-            next_subscription = %{
-              subscription
-              | scene_node: scene_node,
-                region_id: lease.region_id,
-                lease_id: lease.lease_id,
-                owner_scene_instance_ref: lease.owner_scene_instance_ref,
-                owner_epoch: lease.owner_epoch
-            }
-
-            GateServer.CliObserve.emit("voxel_subscription_rebind_subscribed_new", %{
-              connection_pid: self(),
-              logical_scene_id: next_subscription.logical_scene_id,
-              chunk_coord: next_subscription.chunk_coord,
-              scene_node: next_subscription.scene_node,
-              region_id: next_subscription.region_id,
-              lease_id: next_subscription.lease_id,
-              owner_scene_instance_ref: next_subscription.owner_scene_instance_ref,
-              owner_epoch: next_subscription.owner_epoch
-            })
-
-            {:ok, next_subscription, :rebound}
-
-          {:ok, {:error, reason}} ->
-            {:error, reason}
-
-          {:ok, _other} ->
-            {:error, :scene_unavailable}
-
-          {:error, _reason} ->
-            {:error, :scene_unavailable}
-        end
-      end
+      _other ->
+        SubscriptionWorker.invalidate_route_cache(worker)
     end
-  end
-
-  defp subscription_matches_route?(subscription, scene_node, lease) do
-    Map.get(subscription, :scene_node) == scene_node and
-      Map.get(subscription, :lease_id) == lease.lease_id and
-      Map.get(subscription, :owner_scene_instance_ref) == lease.owner_scene_instance_ref and
-      Map.get(subscription, :owner_epoch) == lease.owner_epoch
-  end
-
-  defp maybe_unsubscribe_rebound_source(subscription, new_scene_node) do
-    if Map.get(subscription, :scene_node) != new_scene_node do
-      scene_unsubscribe(subscription)
-
-      GateServer.CliObserve.emit("voxel_subscription_rebind_unsubscribed_old", %{
-        connection_pid: self(),
-        logical_scene_id: subscription.logical_scene_id,
-        chunk_coord: subscription.chunk_coord,
-        scene_node: Map.get(subscription, :scene_node),
-        lease_id: Map.get(subscription, :lease_id),
-        owner_scene_instance_ref: Map.get(subscription, :owner_scene_instance_ref),
-        owner_epoch: Map.get(subscription, :owner_epoch)
-      })
-    end
-  end
-
-  defp unsubscribe_voxel_chunks(request, state) do
-    Enum.reduce(request.chunks, {0, state}, fn chunk_coord, {count, acc_state} ->
-      case unsubscribe_voxel_chunk(request.logical_scene_id, chunk_coord, acc_state) do
-        {:ok, next_state} -> {count + 1, next_state}
-        :not_subscribed -> {count, acc_state}
-      end
-    end)
-  end
-
-  defp unsubscribe_voxel_chunk(logical_scene_id, chunk_coord, state) do
-    key = voxel_subscription_key(logical_scene_id, chunk_coord)
-
-    case Map.pop(state.voxel_subscriptions, key) do
-      {nil, _subscriptions} ->
-        # 阶段4:订阅在途时退订 → 撤掉 pending「想要」标记(见 tcp_connection 同名函数)。
-        if MapSet.member?(state.voxel_pending, key) do
-          {:ok, %{state | voxel_pending: MapSet.delete(state.voxel_pending, key)}}
-        else
-          :not_subscribed
-        end
-
-      {subscription, subscriptions} ->
-        scene_unsubscribe(subscription)
-        {:ok, %{state | voxel_subscriptions: subscriptions}}
-    end
-  end
-
-  defp cleanup_voxel_subscriptions(%{voxel_subscriptions: subscriptions}) do
-    Enum.each(subscriptions, fn {_key, subscription} -> scene_unsubscribe(subscription) end)
-    :ok
-  end
-
-  # 阶段4 step4.1:scene 侧退订实现移入共享 `Routing`(见 tcp_connection 同名函数)。
-  defp scene_unsubscribe(%{
-         logical_scene_id: logical_scene_id,
-         chunk_coord: chunk_coord,
-         scene_node: scene_node
-       }) do
-    Routing.unsubscribe(scene_node, %{
-      logical_scene_id: logical_scene_id,
-      chunk_coord: chunk_coord,
-      subscriber: self()
-    })
   end
 
   defp validate_voxel_subscribe_radius(radius)
@@ -2623,21 +2390,11 @@ defmodule GateServer.WsConnection do
 
   defp validate_voxel_subscribe_radius(_radius), do: {:error, :voxel_subscribe_radius_too_large}
 
-  defp voxel_subscription_coords({cx, cy, cz}, radius) do
-    for x <- (cx - radius)..(cx + radius),
-        y <- (cy - radius)..(cy + radius),
-        z <- (cz - radius)..(cz + radius) do
-      {x, y, z}
-    end
-  end
-
   defp voxel_known_versions(known) do
     Map.new(known, fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
       {chunk_coord, chunk_version}
     end)
   end
-
-  defp voxel_subscription_key(logical_scene_id, chunk_coord), do: {logical_scene_id, chunk_coord}
 
   defp observe_message_summary({:auth_request, username, _token, request_id}) do
     %{type: :auth_request, username: username, request_id: request_id, token_redacted?: true}
@@ -2666,9 +2423,9 @@ defmodule GateServer.WsConnection do
   defp handle_voxel_debug_command("voxel_rebind" <> _rest = command, state) do
     case parse_voxel_rebind_command(command) do
       {:ok, logical_scene_id, region_selector} ->
-        {next_state, result} =
-          rebind_voxel_subscriptions_in_state(
-            state,
+        result =
+          SubscriptionWorker.rebind(
+            state.voxel_worker,
             logical_scene_id,
             region_selector,
             :debug_probe
@@ -2682,11 +2439,11 @@ defmodule GateServer.WsConnection do
             "rebound_count=#{result.rebound_count}",
             "skipped_count=#{result.skipped_count}",
             "error_count=#{result.error_count}",
-            voxel_debug_result("voxel_transport", next_state)
+            voxel_debug_result("voxel_transport", state)
           ]
           |> Enum.join("\n")
 
-        {text, next_state}
+        {text, state}
 
       {:error, reason} ->
         {"voxel_rebind=error\nreason=#{reason}", state}
@@ -2726,15 +2483,17 @@ defmodule GateServer.WsConnection do
   end
 
   defp voxel_debug_result("voxel_transport", state) do
+    subscriptions = SubscriptionWorker.subscriptions(state.voxel_worker)
+
     [
       "voxel_sync=server-authoritative",
       "voxel_truth_source=server",
       "connection_status=#{state.status}",
       "cid=#{state.cid}",
       "scene_attached=#{not is_nil(state.scene_ref)}",
-      "voxel_subscription_count=#{map_size(state.voxel_subscriptions)}",
-      "voxel_subscriptions=#{inspect(state.voxel_subscriptions |> Map.keys() |> Enum.take(16))}",
-      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(state.voxel_subscriptions))}",
+      "voxel_subscription_count=#{map_size(subscriptions)}",
+      "voxel_subscriptions=#{inspect(subscriptions |> Map.keys() |> Enum.take(16))}",
+      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(subscriptions))}",
       "confirmed_chunk_versions={}",
       "inflight_intent_count=0",
       "voxel_codec_endian=big",

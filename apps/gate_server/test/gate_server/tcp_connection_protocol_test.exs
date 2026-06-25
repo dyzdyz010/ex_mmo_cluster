@@ -972,7 +972,10 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert initial.request_id == 201
     assert initial.storage.chunk_version == 0
 
-    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    # 阶段4:订阅集是 worker 的权威状态(连接只持 worker pid)。
+    subscriptions =
+      GateServer.Voxel.SubscriptionWorker.subscriptions(:sys.get_state(pid).voxel_worker)
+
     assert Map.has_key?(subscriptions, {881, {0, 0, 0}})
 
     assert :ok = :gen_tcp.send(client, encode_voxel_impact(202, 301, 881, {8, 16, 24}))

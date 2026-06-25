@@ -88,12 +88,10 @@ defmodule GateServer.TcpConnection do
        udp_ticket: nil,
        token: nil,
        status: :waiting_auth,
-       voxel_subscriptions: %{},
-       # 阶段4 step4.2 差集:在途订阅键集——已订阅或已投给 worker 的 chunk 不再重复 route+subscribe。
-       voxel_pending: MapSet.new(),
-       # 阶段4 step4.3 非阻塞:per-connection 订阅 worker。route+subscribe 这段慢 I/O 在它的进程
-       # 跑(连接主进程只 cast 意图后立即返回,编辑/移动帧永不被订阅风暴阻塞);阶段2-bis 的
-       # per-region route 缓存随之移入 worker。
+       # 阶段4 step4.3 非阻塞:per-connection 订阅 worker。它是体素订阅集的**唯一所有者**、也是
+       # Scene 订阅/退订的**唯一发起者**(单进程串行 → 无退订/重订乱序竞态)。连接只 cast 订阅/退订
+       # 意图后立即返回,route+subscribe 慢 I/O 在 worker 进程跑,编辑/移动帧永不被订阅风暴阻塞。
+       # 连接不再持订阅 map;introspection/debug 走 worker 同步 call。
        voxel_worker: voxel_worker
      }}
   end
@@ -301,8 +299,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("voxel_chunk_snapshot_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_encoded(socket, {:voxel_chunk_snapshot_payload, payload})
@@ -314,8 +311,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("voxel_chunk_delta_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_encoded(socket, {:voxel_chunk_delta_payload, payload})
@@ -327,49 +323,27 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("voxel_chunk_invalidate_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_encoded(socket, {:voxel_chunk_invalidate_payload, payload})
-    # 阶段2-bis:invalidate 罕见(迁移 / region 移除),意味所有权 churn → 清空 worker 的整张 route
-    # 缓存,后续路由全部重新向控制面拉取新所有者,避免用陈旧 lease 编辑被 fence(阶段4 route 缓存移入 worker)。
-    SubscriptionWorker.invalidate_route_cache(state.voxel_worker)
+    invalidate_voxel_subscription(state.voxel_worker, payload)
     {:noreply, state}
   end
 
-  # 阶段4 step4.3:订阅 worker 回报。worker 在它自己的进程做完 route+subscribe 后把结果送回,
-  # 连接只在主循环上做快速 state 落地——永不被订阅风暴阻塞。若该 key 已不在 pending(订阅在途
-  # 期间被退订,乱序),则它不再被想要 → 撤销 scene 侧订阅、不加入,杜绝退订后被重新加回。
-  def handle_info({:voxel_subscribed, key, subscription}, state) do
-    if MapSet.member?(state.voxel_pending, key) do
-      {:noreply,
-       %{
-         state
-         | voxel_subscriptions: Map.put(state.voxel_subscriptions, key, subscription),
-           voxel_pending: MapSet.delete(state.voxel_pending, key)
-       }}
-    else
-      scene_unsubscribe(subscription)
-      {:noreply, state}
-    end
-  end
-
+  # 阶段4 step4.3:订阅 worker 路由/订阅失败回报(首失败一帧 0x68)。成功路径无回报——快照即 ACK,
+  # 由 worker 订阅触发经 fan-out 直达本连接 socket;订阅集只存在于 worker(单一所有者)。
   def handle_info({:voxel_subscribe_failed, ctx, reason}, %{socket: socket} = state) do
     GateServer.CliObserve.emit("voxel_chunk_subscribe_error", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: ctx.request_id,
+      chunk_coord: Map.get(ctx, :chunk_coord),
       reason: reason
     })
 
     send_encoded(socket, voxel_result_error(ctx, reason))
     {:noreply, state}
-  end
-
-  def handle_info({:voxel_reconcile_settled, keys}, state) do
-    pending = Enum.reduce(keys, state.voxel_pending, &MapSet.delete(&2, &1))
-    {:noreply, %{state | voxel_pending: pending}}
   end
 
   # Phase 4-bis (D7):forward 0x6C ObjectStateDelta from ChunkProcess fan-out
@@ -381,8 +355,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_encoded(socket, {:voxel_object_state_delta_payload, payload})
@@ -398,8 +371,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("tcp_voxel_field_region_snapshot_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_frame(socket, payload)
@@ -412,8 +384,7 @@ defmodule GateServer.TcpConnection do
     GateServer.CliObserve.emit("tcp_voxel_field_region_destroyed_forwarded", %{
       connection_pid: self(),
       cid: state.cid,
-      bytes: byte_size(payload),
-      subscription_count: map_size(state.voxel_subscriptions)
+      bytes: byte_size(payload)
     })
 
     send_frame(socket, payload)
@@ -451,7 +422,8 @@ defmodule GateServer.TcpConnection do
     # cleanup metrics still fire through CliObserve.
     Logger.info("Socket #{inspect(state.socket, pretty: true)} closed by peer.")
     GateServer.CliObserve.emit("tcp_closed", %{connection_pid: self(), cid: state.cid})
-    cleanup_voxel_subscriptions(state)
+    # 阶段4:voxel 订阅集在 worker(随本连接退出而停;Scene 侧 subscriber=本连接 pid,
+    # ChunkProcess monitor 本连接 down 即自动摘除)——无需在此显式退订。
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -465,7 +437,6 @@ defmodule GateServer.TcpConnection do
 
     GateServer.CliObserve.emit("tcp_error", %{connection_pid: self(), cid: state.cid, reason: err})
 
-    cleanup_voxel_subscriptions(state)
     cleanup_scene(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
@@ -787,20 +758,18 @@ defmodule GateServer.TcpConnection do
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, %{status: :in_scene, socket: socket} = state) do
-    {unsubscribed_count, next_state} = unsubscribe_voxel_chunks(request, state)
+    SubscriptionWorker.unsubscribe(state.voxel_worker, request.logical_scene_id, request.chunks)
 
     GateServer.CliObserve.emit("voxel_chunk_unsubscribe_ok", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      requested_count: length(request.chunks),
-      unsubscribed_count: unsubscribed_count,
-      subscription_count: map_size(next_state.voxel_subscriptions)
+      requested_count: length(request.chunks)
     })
 
     send_encoded(socket, {:result, :ok, request.request_id})
-    {:ok, next_state}
+    {:ok, state}
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, state) do
@@ -2793,93 +2762,42 @@ defmodule GateServer.TcpConnection do
      }}
   end
 
-  # 阶段4 step4.2+4.3:对订阅框做差集(剔除已订阅 / 在途的 chunk),把剩下的新 chunk 投给订阅
-  # worker 异步 route+subscribe。成功路径**不发**结果帧(快照即 ACK,由 worker 订阅触发经 fan-out
-  # 异步到达);路由/订阅失败由 worker 回 `{:voxel_subscribe_failed, ...}` 让连接编 0x68 error。
+  # 阶段4 step4.2+4.3:把整框订阅意图投给订阅 worker(唯一所有者),由它在自身权威集上做差集、
+  # 异步 route+subscribe。成功路径**不发**结果帧(快照即 ACK,worker 用 subscriber=本连接订阅,
+  # 快照经 fan-out 直达 socket);路由/订阅失败由 worker 回 `{:voxel_subscribe_failed, ...}` 编 0x68。
   defp dispatch_voxel_subscribe(request, state) do
-    coords = voxel_subscription_coords(request.center_chunk, request.radius_l_inf)
-    known = voxel_known_versions(Map.get(request, :known, []))
-
-    new_coords =
-      Enum.reject(coords, fn coord ->
-        key = voxel_subscription_key(request.logical_scene_id, coord)
-        Map.has_key?(state.voxel_subscriptions, key) or MapSet.member?(state.voxel_pending, key)
-      end)
-
-    pending =
-      Enum.reduce(new_coords, state.voxel_pending, fn coord, acc ->
-        MapSet.put(acc, voxel_subscription_key(request.logical_scene_id, coord))
-      end)
-
-    if new_coords != [] do
-      SubscriptionWorker.reconcile(state.voxel_worker, %{
-        request_id: request.request_id,
-        client_intent_seq: Map.get(request, :client_intent_seq, 0),
-        logical_scene_id: request.logical_scene_id,
-        want_snapshot: request.want_snapshot,
-        coords: new_coords,
-        known: known
-      })
-    end
+    SubscriptionWorker.reconcile(state.voxel_worker, %{
+      request_id: request.request_id,
+      client_intent_seq: Map.get(request, :client_intent_seq, 0),
+      logical_scene_id: request.logical_scene_id,
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf,
+      want_snapshot: request.want_snapshot,
+      known: voxel_known_versions(Map.get(request, :known, []))
+    })
 
     GateServer.CliObserve.emit("voxel_chunk_subscribe_dispatched", %{
       connection_pid: self(),
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      requested_count: length(coords),
-      new_count: length(new_coords),
-      subscription_count: map_size(state.voxel_subscriptions)
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf
     })
 
-    %{state | voxel_pending: pending}
+    state
   end
 
-  defp unsubscribe_voxel_chunks(request, state) do
-    Enum.reduce(request.chunks, {0, state}, fn chunk_coord, {count, acc_state} ->
-      case unsubscribe_voxel_chunk(request.logical_scene_id, chunk_coord, acc_state) do
-        {:ok, next_state} -> {count + 1, next_state}
-        :not_subscribed -> {count, acc_state}
-      end
-    end)
-  end
+  # 阶段4 评审 F5:ChunkInvalidate 后把受影响 chunk 从 worker 订阅集移除,使客户端重订能重建
+  # scene 侧订阅(否则差集会把它当「已订阅」吞掉)。无法解码的失效帧退化为清空整张 route 缓存。
+  defp invalidate_voxel_subscription(worker, payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_invalidate_payload(payload) do
+      {:ok, %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}} ->
+        SubscriptionWorker.invalidate_chunk(worker, logical_scene_id, chunk_coord)
 
-  defp unsubscribe_voxel_chunk(logical_scene_id, chunk_coord, state) do
-    key = voxel_subscription_key(logical_scene_id, chunk_coord)
-
-    case Map.pop(state.voxel_subscriptions, key) do
-      {nil, _subscriptions} ->
-        # 阶段4:订阅在途时退订 → 撤掉 pending「想要」标记;待 worker 回报 :voxel_subscribed
-        # 时该 handler 发现已不想要,自行 scene_unsubscribe 丢弃(避免乱序把订阅加回)。
-        if MapSet.member?(state.voxel_pending, key) do
-          {:ok, %{state | voxel_pending: MapSet.delete(state.voxel_pending, key)}}
-        else
-          :not_subscribed
-        end
-
-      {subscription, subscriptions} ->
-        scene_unsubscribe(subscription)
-        {:ok, %{state | voxel_subscriptions: subscriptions}}
+      _other ->
+        SubscriptionWorker.invalidate_route_cache(worker)
     end
-  end
-
-  defp cleanup_voxel_subscriptions(%{voxel_subscriptions: subscriptions}) do
-    Enum.each(subscriptions, fn {_key, subscription} -> scene_unsubscribe(subscription) end)
-    :ok
-  end
-
-  # 阶段4 step4.1:scene 侧退订实现移入共享 `Routing`。unsubscribe / cleanup / rebind 仍同步
-  # (退订非编辑延迟瓶颈,且要保留「退订后立即停推」的顺序语义)。subscriber 即连接自身。
-  defp scene_unsubscribe(%{
-         logical_scene_id: logical_scene_id,
-         chunk_coord: chunk_coord,
-         scene_node: scene_node
-       }) do
-    Routing.unsubscribe(scene_node, %{
-      logical_scene_id: logical_scene_id,
-      chunk_coord: chunk_coord,
-      subscriber: self()
-    })
   end
 
   defp validate_voxel_subscribe_radius(radius)
@@ -2888,21 +2806,11 @@ defmodule GateServer.TcpConnection do
 
   defp validate_voxel_subscribe_radius(_radius), do: {:error, :voxel_subscribe_radius_too_large}
 
-  defp voxel_subscription_coords({cx, cy, cz}, radius) do
-    for x <- (cx - radius)..(cx + radius),
-        y <- (cy - radius)..(cy + radius),
-        z <- (cz - radius)..(cz + radius) do
-      {x, y, z}
-    end
-  end
-
   defp voxel_known_versions(known) do
     Map.new(known, fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
       {chunk_coord, chunk_version}
     end)
   end
-
-  defp voxel_subscription_key(logical_scene_id, chunk_coord), do: {logical_scene_id, chunk_coord}
 
   defp resolve_udp_peer(%{udp_peer: nil} = state), do: {nil, state}
 
@@ -2974,15 +2882,17 @@ defmodule GateServer.TcpConnection do
   defp observe_message_summary(message), do: message
 
   defp voxel_debug_result("voxel_transport", state) do
+    subscriptions = SubscriptionWorker.subscriptions(state.voxel_worker)
+
     [
       "voxel_sync=server-authoritative",
       "voxel_truth_source=server",
       "connection_status=#{state.status}",
       "cid=#{state.cid}",
       "scene_attached=#{not is_nil(state.scene_ref)}",
-      "voxel_subscription_count=#{map_size(state.voxel_subscriptions)}",
-      "voxel_subscriptions=#{inspect(state.voxel_subscriptions |> Map.keys() |> Enum.take(16))}",
-      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(state.voxel_subscriptions))}",
+      "voxel_subscription_count=#{map_size(subscriptions)}",
+      "voxel_subscriptions=#{inspect(subscriptions |> Map.keys() |> Enum.take(16))}",
+      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(subscriptions))}",
       "confirmed_chunk_versions={}",
       "inflight_intent_count=0",
       "voxel_codec_endian=big",

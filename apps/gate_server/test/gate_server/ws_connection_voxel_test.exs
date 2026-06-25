@@ -281,7 +281,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert snapshot.storage.logical_scene_id == 321
     assert snapshot.storage.chunk_coord == {2, 3, 4}
 
-    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    subscriptions = voxel_subscriptions(pid)
 
     assert %{
              region_id: ^region_id,
@@ -322,14 +322,14 @@ defmodule GateServer.WsConnectionVoxelTest do
     WsConnection.receive_frame(pid, chunk_subscribe_frame(61, 781, {0, 0, 0}))
     assert_receive {:gate_ws_send, <<0x62, _first::binary>>}
     _ = :sys.get_state(pid)
-    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    subscriptions = voxel_subscriptions(pid)
     assert map_size(subscriptions) == 1
 
     # 再订阅同一 chunk:差集判定已订阅 → 不再投 worker / 不再打 ChunkDirectory → 不再推快照。
     WsConnection.receive_frame(pid, chunk_subscribe_frame(62, 781, {0, 0, 0}))
     refute_receive {:gate_ws_send, <<0x62, _second::binary>>}, 100
 
-    assert %{voxel_subscriptions: subscriptions_after} = :sys.get_state(pid)
+    subscriptions_after = voxel_subscriptions(pid)
     assert map_size(subscriptions_after) == 1
   end
 
@@ -356,7 +356,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
     assert initial.request_id == 41
 
-    assert %{voxel_subscriptions: subscriptions_before} = :sys.get_state(pid)
+    subscriptions_before = voxel_subscriptions(pid)
 
     assert %{owner_scene_instance_ref: 7_001, owner_epoch: 1} =
              Map.fetch!(subscriptions_before, {779, {0, 0, 0}})
@@ -383,7 +383,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert {:ok, rebound} = SceneVoxelCodec.decode_chunk_snapshot_payload(rebound_payload)
     assert rebound.request_id == 41
 
-    assert %{voxel_subscriptions: subscriptions_after} = :sys.get_state(pid)
+    subscriptions_after = voxel_subscriptions(pid)
 
     assert %{
              region_id: ^region_id,
@@ -421,7 +421,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert initial.request_id == 21
     assert initial.storage.chunk_version == 0
 
-    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    subscriptions = voxel_subscriptions(pid)
     assert Map.has_key?(subscriptions, {777, {0, 0, 0}})
 
     WsConnection.receive_frame(pid, voxel_impact_frame(22, 201, 777, {8, 16, 24}))
@@ -1218,7 +1218,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     WsConnection.receive_frame(pid, chunk_unsubscribe_frame(32, 778, [{0, 0, 0}]))
     assert_receive {:gate_ws_send, <<0x80, 32::64-big, 0x00>>}
-    assert %{voxel_subscriptions: subscriptions} = :sys.get_state(pid)
+    subscriptions = voxel_subscriptions(pid)
     assert subscriptions == %{}
 
     WsConnection.receive_frame(pid, voxel_impact_frame(33, 202, 778, {8, 16, 24}))
@@ -2036,6 +2036,11 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
 
     :ok
+  end
+
+  # 阶段4:订阅集是 worker 的权威状态(连接只持 worker pid)。introspection 走 worker。
+  defp voxel_subscriptions(pid) do
+    GateServer.Voxel.SubscriptionWorker.subscriptions(:sys.get_state(pid).voxel_worker)
   end
 
   defp put_voxel_region(logical_scene_id, opts) do
