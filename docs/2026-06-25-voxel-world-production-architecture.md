@@ -346,3 +346,41 @@
 4. **`LOAD-9~11` 产品阀门**:若 MVP 不实现热迁移,须至少提供一个产品层阀门(软上限/分线/实例化/排队/时间膨胀)。本稿世界层支撑分线/实例化,但具体阀门策略未定。**待容量设计。**
 5. **客户端嵌入式 KV 选型**(redb vs sled vs 自定义 append-log):影响崩溃恢复窗口与跨平台。**待技术选型。**
 6. **per-chunk delta ring buffer 窗口大小**:带宽 vs Scene 内存的权衡参数,无界世界 + 多订阅者下的内存上界须压测。**待压测。**
+---
+
+## 7. 实施进度日志(2026-06-25)
+
+### ✅ 阶段 0 — 编辑反馈闭环(止血)
+- `clients/bevy_client/src/hud/edit_feedback.rs`(新):`EditFeedback` 资源 + `EditFeedbackPlugin`,
+  失败 ACK(`VoxelIntentResult.is_failure()`)→ 屏幕中上方淡入淡出中文提示(`localize_reason` 剥离
+  `inspect` 前导冒号 + 映射);接入 `net/plugin.rs::poll_network_events`,失败不再被静默吞掉。
+- commit `8a3e902`。bevy lib 355/0。
+
+### ✅ 阶段 1 — 隐式分区 + route-miss 懒物化(根治越界,世界无界)
+- step1.1 `WorldServer.Voxel.RegionGrid`(新,commit `57e703c`):`region = f(chunk_coord)` 纯函数;
+  `region_id` 把 `logical_scene_id`(24 位)+ zigzag(rx 16/rz 16/ry 7)打包成全局唯一 63 位 bigint
+  (保持 assignments/leases/epoch 按 region_id 单键索引不变);双射逆 `decode_region_id`;越界抛错。
+- step1.3/1.4 `MapLedger`(commit `5a88db6`):`route_chunk_in_state` 改 O(1) grid-id 快路径 + 扫描回退
+  (对显式 region 逐位不变);新 `route_chunk_with_lease_ensuring`/`route_chunks_with_leases_ensuring`
+  懒物化(选 owner 节点 + 单调 epoch + lease + 写令牌),失败干净回滚;纯路由保留给 validate/事务。
+- step1.4 接线(commit `3dc56ed`):Gate(tcp+ws)订阅/编辑/prefab 改 `*_ensuring`;region_id 位预算
+  适配真实 scene id;`ensure_region` `safe_locate` 防崩。
+- step1.5 `DevSeed`(commit `5497705`):退化为 grid 上的 WorldGen 预热,不再定义盒子(消除盒边与
+  grid region 重叠 bug);footprint 跨 4 个 grid region,每 chunk 用其 region lease 写地形。
+- D-2 接缝(commit `032fb52`):`cell_id.ex` 注明生产 region_id = RegionGrid 稠密格点 id(非 morton)。
+- **keystone 评审 + 修复**(commit `24fa4b1`):13-agent 对抗式评审。采纳 F1(快路径补 logical_scene_id
+  守卫,闭合跨 scene 路由分歧 + 回归测试)、F4(物化 lease TTL 6h→24h 缓解)。
+- 测试:region_grid 9/0、map_ledger 23/0、dev_seed 5/0、world/voxel 全目录 153/0、ws_voxel 36/0、
+  tcp+cross-region 31/0、mmo_contracts 47/0。
+
+### 评审遗留(非阶段1回归,转入后续阶段 backlog)
+- **F3**(critical-标注)`handle_call` persist 失败仍返成功:既有 wrapper 行为,且生产
+  `MapLedger` 未配 `persist_fn`(nil)→ 当前 moot。**阶段2** durable 目录接持久化时须改 fail-fast
+  并把"发布写令牌 + 落盘"纳入同一事务边界。
+- **F5** 订阅/移动物化风暴(每首访 region 在 MapLedger GenServer 内同步 2 次 DB):有界(每 region
+  一次),但单 World 进程串行化所有路由。**阶段5** 非阻塞流时改异步物化 / 预热 / 背压。
+- **F6** 批量 ensuring 中途失败留下已物化 region:有效 grid region,重试即复用(自愈),非损坏;
+  **阶段2** region GC 清理未用 region。
+- **F7** DevSeed 部分地形写:与旧版同且幂等(`already_seeded?` 跳过,重跑补齐),非回归。
+- **F8** `:stale_token`→`:rejected` 丢失可重试语义:单调 epoch 下物化路径不产生 `:stale_token`;
+  若将来引入,**阶段5** 增 `result_code` 4=transient/retry。
