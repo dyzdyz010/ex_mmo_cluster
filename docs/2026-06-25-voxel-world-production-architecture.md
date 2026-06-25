@@ -126,22 +126,42 @@
 
 ### 3.3 编辑一致性
 
-**最终设计:编辑提升为一等公民,乐观预测 overlay + 服务端权威校正 + 稳定错误码反馈闭环 + 按区一致性分级。**(主导=EditLane 脊椎,overlay 双层来自 EditLane 独有洞见,一致性分级是 EditLane 对 Implicit 缺口的补强。)
+> **方向修正(2026-06-25 用户拍板,载入决策)**:**体素编辑全程服务端权威,不做客户端乐观预测。**
+> 乐观预测仅用于**移动**和**技能特效**(已有,涉及面收敛、回退可控);体素编辑面太广(单格/宏格/微层/
+> 表面元件/prefab/跨 region 事务/涌现联动),客户端预测会引入大量冲突回退与对账抖动,收益不抵复杂度。
+> 故体素编辑是**纯往返**:客户端发 intent → 服务端校验(可达性/反作弊/并发)+ 应用 → 服务端广播
+> delta/快照 → 客户端**仅展示**。客户端唯一即时反馈是 0x68 HUD(阶段0 已做),**不**本地乐观放置、
+> **不**回滚。下文据此重订:删客户端预测 overlay / pending-edit 回滚 / overlay 提交对账。
 
-- **客户端乐观预测 overlay(消灭 E2/E3,来源:EditLane 双层模型)**:点击即在一个 **预测 overlay**(叠加在 base authority chunk 上渲染)写入预测 cell(立即可见),base 权威镜像不被污染;记 pending-edit 表 `client_intent_seq → {chunk_coord, macro_index, operation, 旧 CellState 快照, base chunk_version/cell_hash, 超时}`(补上 runtime.rs:90 只发不存的缺口)。复用移动层 `sim/predictor.rs` 的 "fixed-step 预测 + seq 对账 + reconcile" 骨架(pending 表 ≈ input buffer,authoritative cell ≈ server snapshot)。
-- **服务端权威校正(消灭 E1/E5)**:0x68 `VoxelIntentResult` 必须被客户端消费(当前 authority.rs:212 当 `Ignored`):
-  - 服务端 `voxel_edit_intent_result_ok`(ws_connection.ex:1501)**真正填满** `AuthoritativeCell[]`(chunk_version/cell_version/cell_hash/payload,wire 双端 codec 已就绪);
-  - 客户端 accepted → 用 authoritative cell 从 overlay 提交进 base 并按 cell_hash 与广播 delta 去重(谁先到用谁,cell_version 单调保序);rejected/stale → 从 overlay 撤回预测格到旧值快照。
-- **反馈闭环(消灭 E1/E6)**:按 result_code(accepted/deferred/rejected_occupied/rejected_empty/rejected_out_of_reach/stale_version/stale_hash/unassigned/lease_lost/partial_applied)在 HUD/光标/音效给即时反馈(接通已写好的 `is_failure()/result_label()`);reason 从 Elixir `inspect` 文本改为**稳定 enum 错误码**,客户端本地化文案;prefab 部分成功用 `deferred + applied_count` 表达。
-- **服务端权威可达性(消灭 E4,反作弊)**:把"玩家权威坐标↔目标 world_micro 距离 + 视线遮挡 + 工具/物品 reach(数据化按方块/工具配置)"做成 gate/scene 侧校验;客户端 `VOXEL_REACH` 退化为纯预测/UI 提示而非安全边界。
-- **乐观并发启用**:编辑携 `expected_chunk_version`(全 chunk)+ `expected_cell_hash`(单 macro)(服务端校验 chunk_process.ex:2054 已实现),取代客户端恒发 0xFF 哨兵;哨兵保留给"无视并发强写"特例。
+**最终设计:体素编辑全程服务端权威(无客户端预测)+ 稳定错误码反馈闭环 + 服务端反作弊校验 + 乐观并发 CAS + 按区一致性分级。**
+
+- **服务端权威往返(取代乐观预测,消灭 E2/E3 改为「明确不预测」)**:客户端点击只发 `VoxelEditIntent`,
+  本地**不**改 chunk;等服务端广播的 `ChunkDelta`/快照到达再渲染。编辑可感知延迟 = 一个 RTT,接受
+  (按区一致性分级把 PG 写移出可见路径见下,使建造区延迟≈RTT 而非 RTT+PG)。`client_intent_seq` 仍发,
+  仅用于把 0x68 结果与发出的 intent 对上号做 HUD 反馈,**不**驱动回滚。
+- **服务端权威反馈(消灭 E1/E5)**:0x68 `VoxelIntentResult` 被客户端消费做反馈/对账展示:
+  - 服务端 `voxel_edit_intent_result_ok` **真正填满** `AuthoritativeCell[]`(chunk_version/cell_version/
+    cell_hash/payload,wire 双端 codec 已就绪);
+  - 客户端 accepted → 可选用 authoritative cell **roll-forward** 立即把该格渲成权威值(省一个广播 RTT,
+    按 cell_hash 与随后广播 delta 去重,cell_version 单调保序)——注意这是**权威结果前置展示**,不是预测;
+    rejected/stale → 仅 HUD 提示(无预测可回滚)。
+- **反馈闭环(消灭 E1/E6)**:按 result_code(accepted/deferred/rejected_occupied/rejected_empty/
+  rejected_out_of_reach/stale_version/stale_hash/unassigned/lease_lost/partial_applied)在 HUD/光标/音效
+  给即时反馈(接通已写好的 `is_failure()/result_label()`);reason 从 Elixir `inspect` 文本改为**稳定
+  enum 错误码**,客户端本地化文案;prefab 部分成功用 `deferred + applied_count` 表达。
+- **服务端权威可达性(消灭 E4,反作弊)**:把"玩家权威坐标↔目标 world_micro 距离 + 视线遮挡 + 工具/
+  物品 reach(数据化按方块/工具配置)"做成 gate/scene 侧校验;客户端 `VOXEL_REACH` 退化为纯 UI 提示
+  (高亮可达范围)而非安全边界。
+- **乐观并发启用**:编辑携 `expected_chunk_version`(全 chunk)+ `expected_cell_hash`(单 macro)(服务端
+  校验 chunk_process.ex:2054 已实现),取代客户端恒发 0xFF 哨兵;哨兵保留给"无视并发强写"特例。
+  (这是**服务端侧**乐观并发 CAS,与客户端预测无关——防并发覆盖,非预测回滚。)
 - **按区一致性分级(关键补强,来源:EditLane 对 Implicit ack-then-persist 缺口的修补)**:`durable-before-ack` 改为**可按 region 重要性配置的两档**——
   - **核心/PvP/领地区**:保留 durable-before-ack(强一致,手感让位正确性);
   - **普通建造区**:ack-then-persist(内存权威即时 ACK + 异步 persist,`command_id` 幂等 + write-token fence + outbox 保 durability),把 PostgreSQL 写移出可见延迟关键路径。
   - 这直面 Implicit-Partition 被批"内存已 ack 未落库窗口无兜底"的缺口:**默认建造区接受秒级窗口(`command_id` replay + 崩溃后从 DB canonical 重载压最小),核心区不接受则用 durable-before-ack**。跨 region 的 prefab/大编辑原子事务统一走 `TransactionCoordinator` 的 `decision_version` 全序(`AUTH-3 [v2.0.2]`:跨 chunk 顺序由事务 decision_version 补足),**混合一致性下跨 region 原子性由事务协调器而非乐观 ack 保证**——这补上 EditLane 自身被批的"两通道无序回滚"坑:多格原子编辑的因果一致由事务层、不由 per-cell 通道顺序保证。
 - **速率限制**:服务端对单连接编辑频率限流,校验 material/blueprint/surface_type 合法性,取代"cid>0 即放行"。
 
-**关键决策与取舍**:ack-then-persist 放宽强一致换手感,但**仅对普通建造区且有事务层兜底跨区原子性**;乐观预测引入回滚抖动,靠 cell_hash 精确对账 + 平滑回滚动画 + 大多数编辑会 accepted 使抖动罕见。`outbox durability 时点`明确为:ack-then-persist 区的 outbox **同步落 DB**(这是该区唯一保留的一次同步写,但它是异步复制日志的提交点,不在玩家可见的编辑反馈路径上——玩家看到的是 overlay 即时反馈),从而既移出"可见延迟"又不丢 durability——回应 EditLane 自身被批的 outbox 时点模糊。
+**关键决策与取舍**:**体素不做客户端预测**(用户拍板),编辑手感靠「按区一致性分级把 PG 写移出可见路径,使建造区可见延迟≈RTT」+「accepted 时用 0x68 authoritative cell roll-forward 省广播 RTT」达成,而非靠本地乐观放置——换取**零回滚抖动、零对账复杂度**,代价是保留一个 RTT 的放置延迟(可接受)。ack-then-persist 放宽强一致换延迟,但**仅对普通建造区且有事务层兜底跨区原子性**。`outbox durability 时点`明确为:ack-then-persist 区的 outbox **同步落 DB**(该区唯一保留的同步写,是异步复制日志的提交点,不在玩家可见的编辑反馈路径上),既移出"可见延迟"又不丢 durability。
 
 ### 3.4 持久化
 
@@ -158,9 +178,10 @@
 
 ### 3.5 客户端
 
-**最终设计:双 store + 预测层 + catalog 驱动 + 异步网格 + 可发布 UX。**(此层三方案共识,主导取 Implicit-Partition 表述,预测 overlay 取 EditLane。)
+**最终设计:内存/磁盘双 store + 服务端权威渲染(无体素预测)+ catalog 驱动 + 异步网格 + 可发布 UX。**
 
-- **store 解耦**:内存 `AuthorityStore` 走 AOI LRU(evict);磁盘缓存持"探索全史";base + 预测 overlay 双层渲染(见 §3.3);field_store 跟随 chunk AOI 驱逐。
+- **store 解耦**:内存 `AuthorityStore` 走 AOI LRU(evict);磁盘缓存持"探索全史";**体素只渲染服务端
+  权威态**(无预测 overlay,见 §3.3 方向修正);field_store 跟随 chunk AOI 驱逐。
 - **渲染异步化(消灭 C5)**:网格化与光照烘焙下放 off-thread/compute,dirty 粒度细到 micro 区域而非整 16³ chunk(放一个方块不再整 chunk+邻居主线程重网格),加 LOD/距离剔除;持久光照替代每帧逐顶点烤光。
 - **catalog 驱动(消灭 C6)**:`material_color` 与 build palette 由服务端下发 catalog(`CatalogPatch` wire 已有但渲染未消费)动态构建,客户端不再硬编码 id→color(消灭 magenta 漂移);24 项线性滚轮升级为分类/分页/可搜索构件库 UI;infinite-resource 接资源/库存/成本/权限系统(对齐 `docs/2026-06-23-loop-and-zone-scale.md` Track A "采集→建造→涌现"闭环:挖方块产材料、放方块消耗材料)。
 - **崩溃恢复**:配合服务端 `ChunkDirectory` monitor + ChunkInvalidate 广播,客户端收 invalidate 即重订阅,消灭卡陈旧快照。
@@ -240,15 +261,25 @@
 - **风险**:中(进程拓扑变化,需压测延迟/吞吐)。
 - **验收**:移动跨边界时编辑帧延迟 < 100ms(当前 ~3.5s);移动一格订阅往返从 250 降到 ~50。
 
-### 阶段 5 — 编辑预测 + 反作弊
+### 阶段 5 — 服务端权威编辑硬化 + 反作弊(**无客户端预测**,2026-06-25 用户拍板重订)
 
-- step 5.1:客户端 pending-edit 表 + 预测 overlay 即时渲染。
-- step 5.2:消费 0x68 做 accepted 提交 / rejected 回滚 + 超时重发。
-- step 5.3:服务端权威可达性校验(坐标+视线+工具 reach),客户端 reach 降为 UI。
-- step 5.4:启用 `expected_chunk_version`/`expected_cell_hash` 乐观并发。
-- **消灭**:E2、E3、E4。
-- **风险**:中(回滚抖动,需 cell_hash 对账 + 平滑动画)。
-- **验收**:点击即见方块(0ms 本地);被拒平滑回滚 + HUD 提示;伪造距离编辑被服务端拒。
+体素编辑全程服务端权威,客户端只发 intent + 展示服务端结果(预测仅留给移动/技能特效)。故本阶段**去掉**
+原 step5.1/5.2 的客户端预测 overlay / 回滚,聚焦服务端反作弊硬化 + 权威结果展示。
+
+- step 5.1:服务端 0x68 `VoxelIntentResult` **填满 `AuthoritativeCell[]`**(chunk_version/cell_version/
+  cell_hash/payload);客户端消费 0x68 做 **accepted → roll-forward 权威格前置展示**(省一个广播 RTT,按
+  cell_hash 与广播 delta 去重)/ **rejected/stale → HUD 提示**(无预测回滚)。`client_intent_seq` 存表仅
+  用于 intent↔result 对号(非回滚)。
+- step 5.2:**服务端权威可达性校验(反作弊)**——玩家权威坐标↔目标距离 + 视线遮挡 + 工具/物品 reach
+  (数据化配置)做成 gate/scene 校验;客户端 `VOXEL_REACH` 降为纯 UI 提示。
+- step 5.3:**服务端速率限制 + 合法性校验**——单连接编辑频率限流,material/blueprint/surface_type 合法性
+  校验,取代"cid>0 即放行"。
+- step 5.4:启用 `expected_chunk_version`/`expected_cell_hash` **乐观并发 CAS**(服务端侧防并发覆盖,
+  非客户端预测),取代恒发 0xFF 哨兵。
+- **消灭**:E1 尾 / E4 / E5 /(E2、E3 改为「明确不做客户端预测」)。
+- **风险**:低(纯服务端硬化 + 权威展示,无回滚抖动 / 无对账复杂度)。
+- **验收**:编辑往返延迟 ≈ RTT 且 accepted 时权威格立即可见;伪造距离/超频/非法 material 的编辑被服务端拒
+  并回 enum 错误码;并发覆盖被 CAS 挡下。
 
 ### 阶段 6 — 按区一致性 + 增量复制全覆盖 + 背压
 
@@ -316,7 +347,7 @@
 
 ### 客户端(bevy)
 - `clients/bevy_client/src/voxel/authority.rs`:base + overlay 双层;消费 0x68(:212);known cap;per-chunk 校验。
-- `clients/bevy_client/src/voxel/authority_plugin.rs` + `plugin.rs`:pending-edit 表;乐观预测(plugin.rs:460);差集订阅 + 滞回去抖(plugin.rs:312);reach 降为 UI(:43)。
+- `clients/bevy_client/src/voxel/authority_plugin.rs` + `plugin.rs`:0x68 结果消费(accepted roll-forward / rejected HUD,**无预测回滚**);差集订阅 + 滞回去抖(plugin.rs:312);收 0x69 即重订阅;reach 降为 UI(:43)。
 - `clients/bevy_client/src/voxel/wire/intent_result.rs`:接 HUD(`is_failure`/`result_label`)。
 - `clients/bevy_client/src/voxel/persistence.rs`:分世界 keying + 内存/磁盘分层 + 增量异步落盘。
 - `clients/bevy_client/src/voxel/chunk_render.rs`:micro dirty + off-thread + LOD + 持久光照;catalog 驱动 material_color(:492)。
@@ -418,7 +449,7 @@
 
 **重定标后的阶段顺序**(阶段名以正文 `### 阶段 N` 标题为准;此处仅在原序列中插入 2-bis / 7-bis):
 阶段2 durable 目录(事务边界 + lease 生命周期)→ **阶段2-bis Gate route 缓存 + 非阻塞物化** →
-阶段3 运行时 WorldGen + chunk 生命周期 → 阶段4 AOI 增量 + 非阻塞 → 阶段5 编辑预测 + 反作弊 →
+阶段3 运行时 WorldGen + chunk 生命周期 → 阶段4 AOI 增量 + 非阻塞 → 阶段5 服务端权威编辑硬化 + 反作弊(无客户端预测)→
 阶段6 按区一致性 + 增量复制 + 背压 → 阶段7 协议成熟 + 多世界 → **阶段7-bis 服务端启动优化**(seed
 DB I/O + 预热链)→ 阶段8 控制面 HA。(注:服务端权威可达性校验在阶段5 step5.3;resolver 分片接缝
 已在 region_id 编码 + fetch_world_node,无需独立模块。)
