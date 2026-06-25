@@ -107,10 +107,15 @@ pub(crate) struct WorldState {
     pub last_remote_move_transport: Option<MessageTransport>,
     pub selected_target_cid: Option<i64>,
     pub selected_target_point: Option<Vec3>,
-    /// The chunk coord the voxel subscription is currently centered on. Drives
-    /// AOI-follow re-subscription: when the player crosses into a new chunk the
-    /// network plugin re-subscribes around the new center.
+    /// The chunk coord the voxel subscription box is currently centered on. May
+    /// be **led** ahead of the player along their velocity (阶段4 step4.5 预取),
+    /// so it is not necessarily the player's own chunk. Drives the unsubscribe
+    /// diff for chunks leaving the AOI.
     pub voxel_subscribed_center: Option<[i32; 3]>,
+    /// The chunk the AOI is **anchored** to — the player's own chunk at the last
+    /// re-subscribe. Hysteresis (阶段4 step4.5) is measured against this anchor so
+    /// hovering on a chunk boundary does not thrash subscribe/unsubscribe.
+    pub voxel_aoi_anchor: Option<[i32; 3]>,
 }
 
 #[derive(Resource, Default)]

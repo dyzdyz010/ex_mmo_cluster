@@ -165,6 +165,77 @@ fn chunks_falling_out(from: [i32; 3], to: [i32; 3], radius: i32) -> Vec<[i32; 3]
     dropped
 }
 
+/// Hysteresis margin (chunk units) past the anchor chunk's far boundary before the
+/// AOI re-anchors (阶段4 step4.5). A boundary sits 0.5 chunks from the anchor
+/// centre, so the player must travel 0.5 + this into the next chunk to re-centre —
+/// small jitter on a boundary no longer thrashes subscribe/unsubscribe.
+const VOXEL_AOI_HYSTERESIS: f64 = 0.35;
+
+/// Minimum per-axis speed (server units/sec) to lead the subscription box one chunk
+/// ahead along that axis (阶段4 step4.5 沿速度方向预取下一 slab). Below it the box
+/// stays centred on the player.
+const VOXEL_PREFETCH_SPEED: f64 = 200.0;
+
+/// Player position in continuous voxel-chunk space (render-axis convention: chunk
+/// axis 1 = up = server Z). `voxel_chunk_of` is exactly its component-wise floor.
+fn voxel_chunk_pos(location: [f64; 3]) -> [f64; 3] {
+    [
+        location[0] / VOXEL_CHUNK_WORLD_SIZE,
+        location[2] / VOXEL_CHUNK_WORLD_SIZE,
+        location[1] / VOXEL_CHUNK_WORLD_SIZE,
+    ]
+}
+
+/// One chunk lead along an axis once its speed clears `VOXEL_PREFETCH_SPEED`.
+fn prefetch_lead(axis_velocity: f64) -> i32 {
+    if axis_velocity > VOXEL_PREFETCH_SPEED {
+        1
+    } else if axis_velocity < -VOXEL_PREFETCH_SPEED {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Decides the AOI subscription for a position update with hysteresis + directional
+/// prefetch. Returns `Some((anchor, center))` to re-subscribe — `anchor` is the
+/// player's own chunk (the hysteresis reference for next time) and `center` is the
+/// possibly velocity-led box centre — or `None` to keep the current subscription.
+///
+/// `location` / `velocity` are raw server sim-space (same space `voxel_chunk_of`
+/// consumes); the Y↔Z swap to chunk axes happens inside.
+fn aoi_target_center(
+    location: [f64; 3],
+    velocity: [f64; 3],
+    anchor: Option<[i32; 3]>,
+) -> Option<([i32; 3], [i32; 3])> {
+    let pos = voxel_chunk_pos(location);
+    let player_chunk = [
+        pos[0].floor() as i32,
+        pos[1].floor() as i32,
+        pos[2].floor() as i32,
+    ];
+
+    let recenter = match anchor {
+        None => true,
+        Some(a) => {
+            (0..3).any(|i| (pos[i] - (a[i] as f64 + 0.5)).abs() > 0.5 + VOXEL_AOI_HYSTERESIS)
+        }
+    };
+
+    if !recenter {
+        return None;
+    }
+
+    // Velocity in the same swapped chunk-axis convention as `voxel_chunk_pos`.
+    let center = [
+        player_chunk[0] + prefetch_lead(velocity[0]),
+        player_chunk[1] + prefetch_lead(velocity[2]),
+        player_chunk[2] + prefetch_lead(velocity[1]),
+    ];
+    Some((player_chunk, center))
+}
+
 /// Subscribes to the voxel chunks around `center_chunk`, records it as the
 /// current subscription center, and — as the center moves — UNSUBSCRIBES + evicts
 /// the chunks that fell out of the box. Without the unsubscribe the server keeps
@@ -278,6 +349,7 @@ fn poll_network_events(
                 // field carries it yet — see M1.8d note). The follow-up in
                 // `LocalPosition` re-subscribes as the player crosses chunks (AOI).
                 world_state.voxel_subscribed_center = None;
+                world_state.voxel_aoi_anchor = Some(voxel_chunk_of(location));
                 subscribe_voxel_around(
                     &bridge,
                     &mut world_state,
@@ -306,18 +378,16 @@ fn poll_network_events(
                 );
                 world_state.last_local_update_transport = Some(transport);
 
-                // AOI follow: re-subscribe around the player's chunk when they
-                // cross into a new one, so a world larger than the subscription
-                // radius streams in as they move. (Re-streams already-loaded
-                // chunks for now — `known[]` population is a follow-up.)
-                let current_chunk = voxel_chunk_of(location);
-                if world_state.voxel_subscribed_center != Some(current_chunk) {
-                    subscribe_voxel_around(
-                        &bridge,
-                        &mut world_state,
-                        &mut voxel_authority,
-                        current_chunk,
-                    );
+                // AOI follow (阶段4 step4.5): re-subscribe as the player moves, but
+                // with a hysteresis deadzone (no thrash hovering on a chunk boundary)
+                // and a velocity-led center (prefetch the slab ahead). Multiple
+                // LocalPosition updates in one frame naturally merge — each re-anchor
+                // updates `voxel_aoi_anchor`, so only a genuine deadzone exit triggers.
+                if let Some((anchor, center)) =
+                    aoi_target_center(location, velocity, world_state.voxel_aoi_anchor)
+                {
+                    world_state.voxel_aoi_anchor = Some(anchor);
+                    subscribe_voxel_around(&bridge, &mut world_state, &mut voxel_authority, center);
                 }
             }
             NetworkEvent::PlayerEnter { cid, location } => {
@@ -669,5 +739,55 @@ mod tests {
 
         // A jump farther than the box diameter drops the entire old box (5³=125).
         assert_eq!(chunks_falling_out([0, 0, 0], [100, 0, 0], 2).len(), 125);
+    }
+
+    const CHUNK: f64 = VOXEL_CHUNK_WORLD_SIZE;
+
+    #[test]
+    fn aoi_no_anchor_centers_on_player_chunk() {
+        // Cold start (anchor None): subscribe centred on the player's chunk, anchor
+        // becomes that chunk. Standing still → zero velocity → no prefetch lead.
+        let (anchor, center) = aoi_target_center([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], None).unwrap();
+        assert_eq!(anchor, [0, 0, 0]);
+        assert_eq!(center, [0, 0, 0]);
+    }
+
+    #[test]
+    fn aoi_hysteresis_suppresses_boundary_jitter() {
+        // Anchored on chunk 0. Crossing just past the boundary (chunk-x 1.05, i.e.
+        // 0.55 past the anchor centre) is INSIDE the 0.5+0.35 deadzone → no re-sub,
+        // even though voxel_chunk_of already reads chunk 1.
+        let loc = [CHUNK * 1.05, 0.0, 0.0];
+        assert_eq!(voxel_chunk_of(loc), [1, 0, 0]);
+        assert!(aoi_target_center(loc, [0.0, 0.0, 0.0], Some([0, 0, 0])).is_none());
+
+        // Moving deep into chunk 1 (1.9 → 1.4 past anchor centre, clears 0.85) → re-sub.
+        let deep = [CHUNK * 1.9, 0.0, 0.0];
+        let (anchor, _center) =
+            aoi_target_center(deep, [0.0, 0.0, 0.0], Some([0, 0, 0])).unwrap();
+        assert_eq!(anchor, [1, 0, 0]);
+    }
+
+    #[test]
+    fn aoi_prefetch_leads_center_along_velocity() {
+        // Re-anchoring while moving fast on server_x leads the box +1 on chunk axis 0;
+        // server_y travel (fast) leads chunk axis 2 (the Y↔Z swap); slow axes don't.
+        let loc = [CHUNK * 5.5, CHUNK * 5.5, 0.0];
+        let vel = [VOXEL_PREFETCH_SPEED + 50.0, -(VOXEL_PREFETCH_SPEED + 50.0), 10.0];
+        let (anchor, center) = aoi_target_center(loc, vel, None).unwrap();
+        assert_eq!(anchor, [5, 0, 5]);
+        assert_eq!(
+            center,
+            [6, 0, 4],
+            "x leads +1, vertical axis 1 unled (slow server_z), axis 2 leads -1 (server_y back)"
+        );
+    }
+
+    #[test]
+    fn prefetch_lead_threshold() {
+        assert_eq!(prefetch_lead(VOXEL_PREFETCH_SPEED + 1.0), 1);
+        assert_eq!(prefetch_lead(-(VOXEL_PREFETCH_SPEED + 1.0)), -1);
+        assert_eq!(prefetch_lead(VOXEL_PREFETCH_SPEED - 1.0), 0);
+        assert_eq!(prefetch_lead(0.0), 0);
     }
 }
