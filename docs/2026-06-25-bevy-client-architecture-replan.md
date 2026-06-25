@@ -150,5 +150,18 @@ ConnectionPhase(单一真相源,替代散落的 status/scene_joined + net 的隐
 - 验证:cargo test --lib 363 绿(+3 纯逻辑单测);实机 headless 冒烟连真服务端
   快乐路径完好(connect→in scene→UDP fast-lane);重连后断路径过多智能体对抗复审。
 
-**阶段 1–4 全部完成。** 后续可选:重连 overlay UI、服务端 `expires_in`/refresh 端点、
-ConnectionPhase 在 egui 登录态的细化。
+### 2026-06-26 — 阶段 4 对抗复审 + 修复
+对重连/重认证生命周期做 5 维对抗复审(19 agents,~1.3M tok),确认 12 个真实问题,逐项修复
+(commit `d4e7cd9`),再单独对抗复审验证修复无回归:
+- **[HIGH]** 重连预算误重置:`connected` 原以「auth 字节已发」为准 → 任何握手后闪断
+  (服务端拒认/重启/删号)都重置预算 → 无限重连永不到 Failed。改以服务端确认进场
+  (`EnteredScene`)的 `entered_scene` 标志为准。
+- **[MED]** 空 token / 重认证终态:早退 + 耗尽预算现都发 `ReconnectFailed`→Failed「请重启」。
+- **[MED]** 重连期阻塞 re-auth 拖累 Shutdown:重连路径用 8s 超时(`auto_login_with_timeout`)。
+- **[MED]** headless reducer 吞掉重连事件:补 arm 与 GUI 对齐。
+- **[MED]** 主动令牌刷新经重连触发整世界拆除 blip + 时钟错乱:撤掉 wiring,
+  `proactive_refresh_due` 降为「需服务端 refresh 端点」的纯逻辑接缝;反应式重连仍轮换过期 token。
+- **[LOW]** 通道关闭当 Shutdown;Reconnecting 改退避后发(相位不再同帧覆盖)。
+
+**阶段 1–4 全部完成 + 对抗复审通过。** 后续可选:重连 overlay UI、服务端 `expires_in`/refresh
+端点(解锁主动刷新接缝)、ConnectionPhase 在 egui 登录态的细化。
