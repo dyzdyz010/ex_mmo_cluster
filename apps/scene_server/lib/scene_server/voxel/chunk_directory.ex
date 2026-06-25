@@ -13,6 +13,10 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkProcess
 
+  # 内层(directory → ChunkProcess)同步调用超时上限。短于移动侧 collision_query 的 5s 外层
+  # 超时,使慢 chunk 被捕获后 directory 仍能在外层超时前回复;且 directory 绝不因此 exit 崩库。
+  @chunk_query_timeout 2_000
+
   @doc "Starts the chunk directory."
   def start_link(opts \\ []) do
     {server_opts, init_opts} = Keyword.split(opts, [:name])
@@ -252,10 +256,23 @@ defmodule SceneServer.Voxel.ChunkDirectory do
       {{:ok, chunk_pid}, next_state} ->
         query_attrs = Map.take(attrs, [:samples])
 
-        case ChunkProcess.collision_query(chunk_pid, query_attrs) do
-          {:ok, result} -> {:reply, {:ok, result}, next_state}
-          {:error, reason} -> {:reply, {:error, reason}, next_state}
-        end
+        # ChunkDirectory 是**全 scene 共享单 GenServer**(所有 chunk 的 subscribe/edit/query 汇聚于此)。
+        # collision_query 由移动 tick 高频驱动:若把对某个 ChunkProcess 的同步调用**裸调**,而该 chunk
+        # 因慢 persist / mailbox 积压暂不应答,默认 5s GenServer.call 超时的 exit 会**把整个 directory
+        # 拖崩** → supervisor 重启丢 chunks 表 → 下个查询重新物化 → 再超时 → 自持崩溃循环,拖垮全部
+        # 体素操作(订阅/放置/消除)。故:(a)用短超时(2s,快于移动侧 safe_query 的 5s 外层超时,让
+        # 移动能拿到干净错误优雅降级);(b)**捕获 :exit**,超时只返回错误、绝不崩 directory。
+        reply =
+          try do
+            case ChunkProcess.collision_query(chunk_pid, query_attrs, @chunk_query_timeout) do
+              {:ok, result} -> {:ok, result}
+              {:error, reason} -> {:error, reason}
+            end
+          catch
+            :exit, _reason -> {:error, :collision_query_unavailable}
+          end
+
+        {:reply, reply, next_state}
 
       {{:error, reason}, next_state} ->
         {:reply, {:error, reason}, next_state}

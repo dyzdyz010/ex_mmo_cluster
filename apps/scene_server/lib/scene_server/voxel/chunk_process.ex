@@ -243,9 +243,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
   callers such as movement resolvers only submit local samples and consume the
   occupied subset returned here.
   """
-  @spec collision_query(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
-  def collision_query(server, attrs) when is_map(attrs) do
-    GenServer.call(server, {:collision_query, attrs})
+  @spec collision_query(GenServer.server(), map(), timeout()) :: {:ok, map()} | {:error, term()}
+  def collision_query(server, attrs, timeout \\ 5_000) when is_map(attrs) do
+    GenServer.call(server, {:collision_query, attrs}, timeout)
   end
 
   @doc "Persists the current chunk through DataService's fenced snapshot store."
