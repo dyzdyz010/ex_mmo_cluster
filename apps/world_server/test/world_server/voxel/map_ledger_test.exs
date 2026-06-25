@@ -5,6 +5,9 @@ defmodule WorldServer.Voxel.MapLedgerTest do
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.MigrationPlan
+  alias WorldServer.Voxel.RegionAssignment
+  alias WorldServer.Voxel.RegionGrid
+  alias WorldServer.Voxel.SceneNodeRegistry
   alias WorldServer.Voxel.TransactionParticipant
 
   setup do
@@ -709,6 +712,105 @@ defmodule WorldServer.Voxel.MapLedgerTest do
 
     assert snapshot.migrations == %{}
     assert snapshot.assignments == %{}
+  end
+
+  describe "lazy materialization (route_*_ensuring — 阶段1 隐式分区, 世界无界)" do
+    setup do
+      registry = start_supervised!(SceneNodeRegistry)
+      :ok = SceneNodeRegistry.register_scene_node(registry, node())
+
+      ledger =
+        start_supervised!(
+          {MapLedger, write_token_store: WriteTokenStore, scene_node_registry: registry}
+        )
+
+      %{ledger: ledger}
+    end
+
+    test "materializes a grid-aligned region on a route miss and returns assignment + lease", %{
+      ledger: ledger
+    } do
+      assert {:ok, %{assignment: assignment, lease: lease}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+
+      # Bounds are derived from the default grid (Sx=Sz=8, Sy=64), half-open.
+      assert assignment.bounds_chunk_min == {0, 0, 0}
+      assert assignment.bounds_chunk_max == {8, 64, 8}
+      assert assignment.assigned_scene_node == node()
+      assert assignment.region_id == RegionGrid.region_id(1, {0, 0, 0})
+      assert assignment.state == :active
+      assert lease.region_id == assignment.region_id
+      assert lease.owner_epoch >= 1
+
+      # The materialized region is now a normal routable assignment for any chunk
+      # in its bounds (the pure, non-materializing route finds it).
+      assert {:ok, routed} = MapLedger.route_chunk(ledger, 1, {7, 63, 7})
+      assert routed.region_id == assignment.region_id
+    end
+
+    test "a far-flung chunk well outside any explicit box still materializes (unbounded world)",
+         %{ledger: ledger} do
+      far = {10_000, 5, -7_777}
+
+      assert {:ok, %{assignment: assignment}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, far)
+
+      assert RegionAssignment.contains_chunk?(assignment, far)
+      assert {:ok, _} = MapLedger.route_chunk(ledger, 1, far)
+    end
+
+    test "re-routing chunks in the same grid cell reuses the region (idempotent, no churn)", %{
+      ledger: ledger
+    } do
+      assert {:ok, %{assignment: a1, lease: l1}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {1, 0, 1})
+
+      assert {:ok, %{assignment: a2, lease: l2}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {2, 0, 2})
+
+      assert a1.region_id == a2.region_id
+      assert l1.lease_id == l2.lease_id
+      assert map_size(MapLedger.snapshot(ledger).assignments) == 1
+    end
+
+    test "neighboring chunks across a grid boundary materialize distinct regions", %{
+      ledger: ledger
+    } do
+      assert {:ok, %{assignment: a}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {7, 0, 0})
+
+      assert {:ok, %{assignment: b}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {8, 0, 0})
+
+      refute a.region_id == b.region_id
+      assert map_size(MapLedger.snapshot(ledger).assignments) == 2
+    end
+
+    test "batch ensuring materializes every touched region in one call", %{ledger: ledger} do
+      coords = [{0, 0, 0}, {8, 0, 0}, {0, 0, 8}]
+
+      assert {:ok, routes} = MapLedger.route_chunks_with_leases_ensuring(ledger, 1, coords)
+      assert routes |> Map.keys() |> Enum.sort() == Enum.sort(coords)
+
+      region_ids =
+        routes |> Map.values() |> Enum.map(& &1.assignment.region_id) |> Enum.uniq()
+
+      assert length(region_ids) == 3
+    end
+  end
+
+  test "ensuring route fails cleanly (and stores nothing) when no Scene node is registered" do
+    registry = start_supervised!(SceneNodeRegistry)
+
+    ledger =
+      start_supervised!(
+        {MapLedger, write_token_store: WriteTokenStore, scene_node_registry: registry}
+      )
+
+    assert {:error, :scene_node_unassigned} =
+             MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
+
+    assert MapLedger.snapshot(ledger).assignments == %{}
   end
 
   defp build_migration_plan(migration_id) do

@@ -18,10 +18,16 @@ defmodule WorldServer.Voxel.MapLedger do
   alias WorldServer.Voxel.LeaseWriteToken
   alias WorldServer.Voxel.MigrationPlan
   alias WorldServer.Voxel.RegionAssignment
+  alias WorldServer.Voxel.RegionGrid
   alias WorldServer.Voxel.SceneLease
   alias WorldServer.Voxel.TransactionParticipant
 
   @default_lease_ttl_ms :timer.minutes(5)
+  # Lazily-materialized regions (阶段1) get a long lease so a player exploring new
+  # ground does not have its build lease expire mid-session. Lease renewal / region
+  # GC is a durable-directory (阶段2) follow-up; until then a generous TTL is the
+  # simplest correct choice.
+  @materialized_lease_ttl_ms :timer.hours(6)
   @migration_cutover_reason 0x01
 
   @doc "Starts the map ledger."
@@ -117,6 +123,32 @@ defmodule WorldServer.Voxel.MapLedger do
     GenServer.call(server, {:route_chunks_with_leases, logical_scene_id, chunk_coords})
   end
 
+  @doc """
+  Routes a chunk, **lazily materializing** its grid region (assign Scene owner +
+  monotonic epoch + lease) on a route miss, then returns the assignment and lease.
+
+  This is the unbounded-world entry point (阶段1): unlike `route_chunk_with_lease/3`
+  it never returns `:unassigned_chunk` for an in-grid chunk — it creates the region
+  on demand. Gate's subscribe / edit path uses this so a player exploring new ground
+  always has a routable, leased region. Materialization can still fail
+  (`:scene_node_unassigned` when no Scene node is registered, or a write-token CAS
+  error) — those are surfaced as `{:error, reason}`.
+  """
+  def route_chunk_with_lease_ensuring(server \\ __MODULE__, logical_scene_id, chunk_coord) do
+    GenServer.call(server, {:route_chunk_with_lease_ensuring, logical_scene_id, chunk_coord})
+  end
+
+  @doc """
+  Batch form of `route_chunk_with_lease_ensuring/3` for prefab / multi-chunk edits:
+  materializes every touched chunk's region as needed and returns a coord→{assignment,
+  lease} map, or `{:error, {chunk_coord, reason}}` for the first chunk that fails to
+  materialize.
+  """
+  def route_chunks_with_leases_ensuring(server \\ __MODULE__, logical_scene_id, chunk_coords)
+      when is_list(chunk_coords) do
+    GenServer.call(server, {:route_chunks_with_leases_ensuring, logical_scene_id, chunk_coords})
+  end
+
   @doc "Validates that a proposed scene write matches the current world lease."
   def validate_write(server \\ __MODULE__, attrs) do
     GenServer.call(server, {:validate_write, normalize_write(attrs)})
@@ -165,7 +197,15 @@ defmodule WorldServer.Voxel.MapLedger do
       # wiring sets it so put_region stores a concrete Scene owner on the
       # RegionAssignment. Without a registry, callers must provide
       # :assigned_scene_node explicitly.
-      scene_node_registry: Keyword.get(opts, :scene_node_registry)
+      scene_node_registry: Keyword.get(opts, :scene_node_registry),
+      # 阶段1:隐式分区格点。route miss → 懒物化一个 grid-aligned region,世界因此无界。
+      # 默认 RegionGrid.default()(Sx=Sz=8, Sy=64,待压测);可注入做按 logical_scene 配置。
+      region_grid: Keyword.get(opts, :region_grid, RegionGrid.default()),
+      # owner_scene_instance_ref stamped on lazily-materialized leases. The scene
+      # side reads owner identity from the published write token (never hardcodes
+      # it), so any stable value is self-consistent; 1 matches the dev convention.
+      materialize_owner_scene_instance_ref:
+        Keyword.get(opts, :materialize_owner_scene_instance_ref, 1)
     }
 
     case run_load(load_fn) do
@@ -354,6 +394,53 @@ defmodule WorldServer.Voxel.MapLedger do
       end)
 
     {:reply, reply, state}
+  end
+
+  defp do_handle_call({:route_chunk_with_lease_ensuring, logical_scene_id, chunk_coord}, _from, state) do
+    {reply, next_state} =
+      case route_or_materialize(state, logical_scene_id, chunk_coord) do
+        {:ok, assignment, st} ->
+          case fetch_region_lease(st, assignment.region_id) do
+            {:ok, lease} -> {{:ok, %{assignment: assignment, lease: lease}}, st}
+            {:error, reason} -> {{:error, reason}, st}
+          end
+
+        {:error, reason, st} ->
+          {{:error, reason}, st}
+      end
+
+    {:reply, reply, next_state}
+  end
+
+  defp do_handle_call(
+         {:route_chunks_with_leases_ensuring, logical_scene_id, chunk_coords},
+         _from,
+         state
+       ) do
+    {reply, next_state} =
+      chunk_coords
+      |> Enum.uniq()
+      |> Enum.reduce_while({%{}, state}, fn chunk_coord, {acc, st} ->
+        case route_or_materialize(st, logical_scene_id, chunk_coord) do
+          {:ok, assignment, st1} ->
+            case fetch_region_lease(st1, assignment.region_id) do
+              {:ok, lease} ->
+                {:cont, {Map.put(acc, chunk_coord, %{assignment: assignment, lease: lease}), st1}}
+
+              {:error, reason} ->
+                {:halt, {{:error, {chunk_coord, reason}}, st1}}
+            end
+
+          {:error, reason, st1} ->
+            {:halt, {{:error, {chunk_coord, reason}}, st1}}
+        end
+      end)
+      |> case do
+        {%{} = routes, st} -> {{:ok, routes}, st}
+        {{:error, _} = error, st} -> {error, st}
+      end
+
+    {:reply, reply, next_state}
   end
 
   defp do_handle_call({:validate_write, write}, _from, state) do
@@ -1104,7 +1191,41 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 
+  # Pure routing (never materializes). 阶段1: O(1) grid-id fast path — a chunk's
+  # region_id is a pure function of (logical_scene_id, grid index), so a
+  # grid-materialized region is found by a single Map.fetch. The fast path always
+  # re-checks `contains_chunk?`, so it can never return a wrong region; explicit
+  # (non-grid-aligned) regions from put_region/migration fall through to the
+  # linear scan, preserving the old contract bit-for-bit.
   defp route_chunk_in_state(state, logical_scene_id, chunk_coord) do
+    case grid_region_lookup(state, logical_scene_id, chunk_coord) do
+      {:ok, assignment} -> {:ok, assignment}
+      :miss -> scan_route_chunk(state, logical_scene_id, chunk_coord)
+    end
+  end
+
+  defp grid_region_lookup(state, logical_scene_id, chunk_coord) do
+    with {:ok, region_id} <- safe_grid_region_id(state, logical_scene_id, chunk_coord),
+         {:ok, %RegionAssignment{state: :active} = assignment} <-
+           Map.fetch(state.assignments, region_id),
+         true <- RegionAssignment.contains_chunk?(assignment, chunk_coord) do
+      {:ok, assignment}
+    else
+      _ -> :miss
+    end
+  end
+
+  # RegionGrid.region_id/2 raises past the encodable world edge; treat that as a
+  # fast-path miss (the scan then returns :unassigned_chunk) rather than crashing
+  # the ledger.
+  defp safe_grid_region_id(state, logical_scene_id, chunk_coord) do
+    index = RegionGrid.region_index(state.region_grid, chunk_coord)
+    {:ok, RegionGrid.region_id(logical_scene_id, index)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp scan_route_chunk(state, logical_scene_id, chunk_coord) do
     state.assignments
     |> Map.values()
     |> Enum.filter(&(&1.logical_scene_id == logical_scene_id and &1.state == :active))
@@ -1112,6 +1233,70 @@ defmodule WorldServer.Voxel.MapLedger do
     |> case do
       nil -> {:error, :unassigned_chunk}
       assignment -> {:ok, assignment}
+    end
+  end
+
+  # 阶段1 懒物化路由:命中→原样返回(state 不变);route miss→在 grid 上物化一个 region
+  # (分配 Scene owner + 单调 epoch + lease)再返回。返回 {:ok, assignment, next_state}
+  # | {:error, reason, next_state}。物化失败(无 Scene 节点 / 写令牌 CAS)回滚到原 state。
+  defp route_or_materialize(state, logical_scene_id, chunk_coord) do
+    case route_chunk_in_state(state, logical_scene_id, chunk_coord) do
+      {:ok, assignment} -> {:ok, assignment, state}
+      {:error, :unassigned_chunk} -> ensure_region_in_state(state, logical_scene_id, chunk_coord)
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp ensure_region_in_state(state, logical_scene_id, chunk_coord) do
+    located = RegionGrid.locate(state.region_grid, logical_scene_id, chunk_coord)
+
+    attrs = %{
+      logical_scene_id: logical_scene_id,
+      region_id: located.region_id,
+      bounds_chunk_min: located.bounds_chunk_min,
+      bounds_chunk_max: located.bounds_chunk_max,
+      owner_scene_instance_ref: state.materialize_owner_scene_instance_ref,
+      # Placeholder; issue_lease_for_assignment allocates the real monotonic epoch
+      # from the DB epoch store (CELL-18/23), so we never pin a stale value here.
+      owner_epoch: 0
+    }
+
+    with {:ok, assignment} <-
+           attrs |> RegionAssignment.new() |> maybe_assign_scene_node(state),
+         :ok <- validate_region_bounds_available(state, assignment) do
+      state_with_region = put_in(state.assignments[assignment.region_id], assignment)
+
+      case issue_lease_for_assignment(
+             state_with_region,
+             assignment,
+             assignment.owner_scene_instance_ref,
+             ttl_ms: @materialized_lease_ttl_ms
+           ) do
+        {{:ok, lease}, next_state} ->
+          materialized = next_state.assignments[assignment.region_id]
+
+          CliObserve.emit("voxel_region_materialized", fn ->
+            %{
+              logical_scene_id: logical_scene_id,
+              region_id: assignment.region_id,
+              region_index: Tuple.to_list(located.region_index),
+              bounds_chunk_min: coord_list(assignment.bounds_chunk_min),
+              bounds_chunk_max: coord_list(assignment.bounds_chunk_max),
+              assigned_scene_node: assignment.assigned_scene_node,
+              owner_epoch: lease.owner_epoch,
+              lease_id: lease.lease_id
+            }
+          end)
+
+          {:ok, materialized, next_state}
+
+        {{:error, reason}, _state} ->
+          # Roll back the lease-less assignment we tentatively stored.
+          {:error, reason, state}
+      end
+    else
+      {:error, reason} -> {:error, reason, state}
+      {:error, reason, _conflicting_assignment} -> {:error, reason, state}
     end
   end
 
