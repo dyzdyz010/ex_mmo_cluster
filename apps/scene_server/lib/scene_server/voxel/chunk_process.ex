@@ -35,6 +35,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.TagPhysics
   alias SceneServer.Voxel.TagSet
   alias SceneServer.Voxel.Types
+  alias SceneServer.Voxel.WorldGen
 
   import Bitwise
 
@@ -447,6 +448,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   def init(opts) do
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     chunk_coord = Keyword.fetch!(opts, :chunk_coord)
+    worldgen = resolve_worldgen(opts)
 
     storage =
       case Keyword.get(opts, :storage) do
@@ -455,10 +457,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
           # empty chunk. Otherwise a fresh process after a restart is at version 0
           # while the DB holds a higher persisted version, so its first persist is
           # :stale_chunk_version and the batch self-heal must reload the snapshot
-          # per batch — making the dev seed pathologically slow and every write pay
-          # an extra DB round-trip. Loading once here keeps the version consistent
-          # so the seed simply skips already-correct cells.
-          load_persisted_storage_or_empty(logical_scene_id, chunk_coord)
+          # per batch — making every write pay an extra DB round-trip. Loading once
+          # here keeps the version consistent.
+          #
+          # 阶段3:DB 无行(从未被编辑的纯净 chunk)时,若开启 WorldGen 则确定性程序化生成
+          # 基线地形(version 0,不持久化),否则空 chunk。
+          load_persisted_storage_or_generate(logical_scene_id, chunk_coord, worldgen)
 
         provided ->
           provided
@@ -3632,19 +3636,51 @@ defmodule SceneServer.Voxel.ChunkProcess do
   # unavailable (e.g. `--no-start` tests). Mirrors the decode used by the
   # persist-stale recovery path so a freshly-(re)started chunk is at the
   # DB-canonical version + content.
-  defp load_persisted_storage_or_empty(logical_scene_id, chunk_coord) do
+  defp load_persisted_storage_or_generate(logical_scene_id, chunk_coord, worldgen) do
     case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
       {:ok, %{data: data}} when is_binary(data) ->
         case decode_prewarm_payload(data) do
           {:ok, storage} -> storage
-          _ -> Storage.empty(logical_scene_id, chunk_coord)
+          _ -> fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
         end
 
       _ ->
-        Storage.empty(logical_scene_id, chunk_coord)
+        fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
     end
   catch
-    :exit, _ -> Storage.empty(logical_scene_id, chunk_coord)
+    :exit, _ -> fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
+  end
+
+  # A never-persisted chunk: procedurally generate its baseline terrain when
+  # WorldGen is enabled (阶段3,version 0,not persisted — regenerates identically),
+  # otherwise an empty chunk.
+  defp fresh_chunk_storage(logical_scene_id, chunk_coord, {:worldgen, seed}) do
+    WorldGen.generate_chunk_storage(logical_scene_id, chunk_coord, seed: seed)
+  rescue
+    _ -> Storage.empty(logical_scene_id, chunk_coord)
+  end
+
+  defp fresh_chunk_storage(logical_scene_id, chunk_coord, :disabled) do
+    Storage.empty(logical_scene_id, chunk_coord)
+  end
+
+  # WorldGen config: opt `:worldgen` (`[enabled?:, seed:]` | false) overrides the
+  # `:scene_server, :voxel_worldgen` app env. Default DISABLED so unit tests that
+  # start a ChunkProcess keep getting an empty chunk; production config opts in.
+  defp resolve_worldgen(opts) do
+    config =
+      case Keyword.fetch(opts, :worldgen) do
+        {:ok, cfg} -> cfg
+        :error -> Application.get_env(:scene_server, :voxel_worldgen, [])
+      end
+
+    cfg = if is_list(config), do: config, else: []
+
+    if Keyword.get(cfg, :enabled?, false) do
+      {:worldgen, Keyword.get(cfg, :seed, WorldGen.default_seed())}
+    else
+      :disabled
+    end
   end
 
   # 梯队1 step1.1b(TIME-1):从持久化 chunk 行恢复 cell_tick/sim_time_ms。cell_tick 加
