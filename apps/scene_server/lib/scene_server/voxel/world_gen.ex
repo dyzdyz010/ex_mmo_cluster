@@ -49,9 +49,10 @@ defmodule SceneServer.Voxel.WorldGen do
 
   # Terrain band (macro units ≈ metres). Sea level is the meadow baseline; peaks
   # reach @max_height. The world extends below 0 as solid stone (caves/biomes are
-  # a later slice).
+  # a later slice). @max_height stays < 256 so it fits the u8 LOD heightmap (0x6B);
+  # 248 leaves headroom under the 255 clamp while giving tall, visible peaks.
   @sea_level 64
-  @max_height 224
+  @max_height 248
 
   # Fractal octaves `{wavelength_in_macros, amplitude}` — largest is continental
   # (≈4 km features → ~8 across a 32 km span), down to fine relief.
@@ -64,8 +65,10 @@ defmodule SceneServer.Voxel.WorldGen do
   ]
 
   # Exponential height shaper exponent (the "2^noise" idea): higher → flatter
-  # meadows with rarer, sharper mountains.
-  @shape_exponent 3.0
+  # meadows with rarer, sharper mountains. Lowered 3.0→2.2 so there is more rolling
+  # mid-elevation relief (visible hills/ranges on the horizon everywhere) instead of
+  # near-flat meadow with only rare peaks — the terrain reads as a real landscape.
+  @shape_exponent 2.2
 
   # Surface soil depth (macros of dirt below the top before stone).
   @soil_depth 4

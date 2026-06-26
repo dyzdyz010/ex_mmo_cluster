@@ -23,7 +23,7 @@ defmodule SceneServer.Voxel.WorldGenTest do
         end
 
       assert Enum.min(heights) >= 64
-      assert Enum.max(heights) <= 224
+      assert Enum.max(heights) <= 248
     end
 
     test "produces both meadows and mountains over a wide area, meadow-biased" do
@@ -36,10 +36,11 @@ defmodule SceneServer.Voxel.WorldGenTest do
       # Real mountains exist somewhere (exponential shaper → sharp peaks).
       assert span > 60, "expected meadows + mountains, got span #{span}"
 
-      # Most of the world is gentle meadow (the exponential shaper biases low).
-      mid = Enum.min(heights) + (Enum.max(heights) - Enum.min(heights)) / 3
+      # Still low-biased (the convex shaper keeps most of the world below the band
+      # midpoint — gentle lowlands with rolling relief and rarer high ground).
+      mid = Enum.min(heights) + (Enum.max(heights) - Enum.min(heights)) / 2
       below = Enum.count(heights, &(&1 < mid))
-      assert below > length(heights) / 2, "expected meadow-biased terrain"
+      assert below > length(heights) / 2, "expected low-biased terrain"
 
       # And a single column slice still has gentle relief (not a flat slab).
       slice = for wx <- 0..4000//40, do: WorldGen.column_height(wx, 0)
@@ -70,12 +71,15 @@ defmodule SceneServer.Voxel.WorldGenTest do
     end
 
     test "a surface chunk is partially filled with dirt over stone" do
-      # cy=4 → world_y 64..79, straddling sea_level 64.
-      storage = WorldGen.generate_chunk_storage(1, {0, 4, 0})
+      # The chunk layer straddling the terrain top at column (0,0) is partial:
+      # that column's surface falls inside it, so it has solid below + air above.
+      surface_y = WorldGen.column_height(0, 0)
+      cy = div(surface_y, Types.chunk_size_in_macro())
+      storage = WorldGen.generate_chunk_storage(1, {0, cy, 0})
       n = solid_count(storage)
       assert n > 0 and n < 4096
 
-      refute WorldGen.air_chunk?({0, 4, 0})
+      refute WorldGen.air_chunk?({0, cy, 0})
     end
 
     test "is deterministic — same chunk regenerates identically (version 0, regenerable base)" do
