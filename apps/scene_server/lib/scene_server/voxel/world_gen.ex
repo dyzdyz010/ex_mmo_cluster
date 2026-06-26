@@ -55,20 +55,23 @@ defmodule SceneServer.Voxel.WorldGen do
   @max_height 248
 
   # Fractal octaves `{wavelength_in_macros, amplitude}` — largest is continental
-  # (≈4 km features → ~8 across a 32 km span), down to fine relief.
+  # (≈4 km features → ~8 across a 32 km span), down to fine relief. The hill/mountain
+  # scale octaves (1024/256/64 m ≈ what's actually visible in the far LOD) carry more
+  # amplitude than a textbook 1/2-per-octave falloff so the terrain reads as varied
+  # hills + ridges, not a broad gentle swell with fine fuzz on top.
   @octaves [
     {4096, 1.0},
-    {1024, 0.5},
-    {256, 0.25},
-    {64, 0.125},
-    {16, 0.0625}
+    {1024, 0.7},
+    {256, 0.45},
+    {64, 0.25},
+    {16, 0.1}
   ]
 
-  # Exponential height shaper exponent (the "2^noise" idea): higher → flatter
-  # meadows with rarer, sharper mountains. Lowered 3.0→2.2 so there is more rolling
-  # mid-elevation relief (visible hills/ranges on the horizon everywhere) instead of
-  # near-flat meadow with only rare peaks — the terrain reads as a real landscape.
-  @shape_exponent 2.2
+  # Exponential height shaper exponent (the "2^noise" idea): higher → flatter meadows
+  # with rarer, sharper mountains. Lowered to 1.5 so most of the world is rolling
+  # mid-elevation relief (visible hills/ranges everywhere) rather than near-flat
+  # lowland — while staying convex (>1) so it's still gently low-biased, not uniform.
+  @shape_exponent 1.5
 
   # Surface soil depth (macros of dirt below the top before stone).
   @soil_depth 4
