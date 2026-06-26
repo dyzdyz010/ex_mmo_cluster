@@ -47,18 +47,17 @@ defmodule SceneServer.Voxel.WorldGen do
   @noise3 0x1B56C4E9
   @lattice_prime 198_491_317
 
-  # Terrain band (macro units ≈ metres). Sea level is the meadow baseline; peaks
-  # reach @max_height. The world extends below 0 as solid stone (caves/biomes are
-  # a later slice). @max_height stays < 256 so it fits the u8 LOD heightmap (0x6B);
-  # 248 leaves headroom under the 255 clamp while giving tall, visible peaks.
+  # Terrain band (macro units ≈ metres). The world is built as TWO layers summed:
+  #   lowland — gentle rolling base centred on @sea_level that DIPS below it for
+  #             basins/valleys (depressions) and rises into low hills; and
+  #   mountains — rare, very TALL ridged peaks (>1 km) gated to a few regions.
+  # @max_height is the air_chunk? upper bound + final clamp; it now exceeds 1 km, so
+  # the LOD heightmap wire (0x6B) carries u16 heights (the old u8 capped at 255 m).
   @sea_level 64
-  @max_height 248
+  @max_height 1600
 
-  # Fractal octaves `{wavelength_in_macros, amplitude}` — largest is continental
-  # (≈4 km features → ~8 across a 32 km span), down to fine relief. The hill/mountain
-  # scale octaves (1024/256/64 m ≈ what's actually visible in the far LOD) carry more
-  # amplitude than a textbook 1/2-per-octave falloff so the terrain reads as varied
-  # hills + ridges, not a broad gentle swell with fine fuzz on top.
+  # Fractal octaves `{wavelength_in_macros, amplitude}` — continental (≈4 km) down to
+  # fine relief. Used for the lowland base and (squared into ridges) the mountains.
   @octaves [
     {4096, 1.0},
     {1024, 0.7},
@@ -67,11 +66,23 @@ defmodule SceneServer.Voxel.WorldGen do
     {16, 0.1}
   ]
 
-  # Exponential height shaper exponent (the "2^noise" idea): higher → flatter meadows
-  # with rarer, sharper mountains. Lowered to 1.5 so most of the world is rolling
-  # mid-elevation relief (visible hills/ranges everywhere) rather than near-flat
-  # lowland — while staying convex (>1) so it's still gently low-biased, not uniform.
-  @shape_exponent 1.5
+  # Lowland: peak-to-peak vertical span of the rolling base. Centred on sea level so
+  # ~half dips below it → flats, gentle hills, and real basins/valleys.
+  @lowland_amplitude 150
+
+  # Mountains: a low-frequency MASK picks the FEW regions that grow ranges; within them
+  # a ridged fractal built from BROAD octaves only (km-scale crests, never 16 m spikes)
+  # raised to @ridge_power makes wide ridgelines that tower over 1 km at their peaks.
+  @mountain_octaves [
+    {4096, 1.0},
+    {2048, 0.55},
+    {1024, 0.28}
+  ]
+  @mountain_amplitude 1400
+  @mountain_wavelength 9000
+  @mountain_mask_lo 0.62
+  @mountain_mask_hi 0.9
+  @ridge_power 2.2
 
   # Surface soil depth (macros of dirt below the top before stone).
   @soil_depth 4
@@ -92,16 +103,27 @@ defmodule SceneServer.Voxel.WorldGen do
     sea_level = Keyword.get(opts, :sea_level, @sea_level)
     max_height = Keyword.get(opts, :max_height, @max_height)
 
-    n = fbm(wx, wz, seed)
-    shaped = shape(n)
-    sea_level + round(shaped * (max_height - sea_level))
+    # 1) Rolling LOWLAND base, centred on sea level so it dips below for basins/valleys
+    #    (depressions) and rises into gentle hills — gives the "flat + 凹陷" character.
+    base = fbm(wx, wz, seed)
+    lowland = sea_level + (base - 0.5) * @lowland_amplitude
+
+    # 2) Rare, TALL MOUNTAINS: a broad low-freq mask selects the few regions that grow
+    #    ranges; within them a ridged fractal (sharp crests, raised to a power so peaks
+    #    are pointy + rare) towers up to @mountain_amplitude (>1 km).
+    mask = value_noise(wx / @mountain_wavelength, wz / @mountain_wavelength, seed + 100)
+    gate = smoothstep_range(mask, @mountain_mask_lo, @mountain_mask_hi)
+    ridge = ridged_fbm(wx, wz, seed + 200)
+    mountain = @mountain_amplitude * gate * :math.pow(ridge, @ridge_power)
+
+    round(lowland + mountain) |> max(0) |> min(max_height)
   end
 
   @doc """
   Server-authoritative surface heightmap for a `count_x × count_z` grid starting at
   world-macro column `(origin_x, origin_z)`, sampling every `stride` macros. Returns
-  a flat binary of `u8` heights (clamped 0..255; the terrain band tops out at 224),
-  X fastest (index = i + j*count_x).
+  a flat binary of **big-endian u16** heights (clamped 0..65535; the terrain band
+  tops out near 1.6 km so u8 no longer fits), X fastest (index = i + j*count_x).
 
   This feeds the client's far/LOD terrain WITHOUT any client-side generation — the
   server (which owns the WorldGen) computes the heights and streams them, so the
@@ -117,12 +139,10 @@ defmodule SceneServer.Voxel.WorldGen do
         ) :: binary()
   def heightmap_region(origin_x, origin_z, stride, count_x, count_z, opts \\ [])
       when stride > 0 and count_x > 0 and count_z > 0 do
-    heights =
-      for j <- 0..(count_z - 1), i <- 0..(count_x - 1) do
-        column_height(origin_x + i * stride, origin_z + j * stride, opts) |> max(0) |> min(255)
-      end
-
-    :erlang.list_to_binary(heights)
+    for j <- 0..(count_z - 1), i <- 0..(count_x - 1), into: <<>> do
+      h = column_height(origin_x + i * stride, origin_z + j * stride, opts) |> max(0) |> min(65535)
+      <<h::16-big>>
+    end
   end
 
   @doc """
@@ -188,9 +208,27 @@ defmodule SceneServer.Voxel.WorldGen do
     (sum / norm) |> max(0.0) |> min(1.0)
   end
 
-  # Convex exponential shaper in [0,1]: flat meadows, rare sharp peaks.
-  defp shape(n) do
-    (:math.pow(2.0, n * @shape_exponent) - 1.0) / (:math.pow(2.0, @shape_exponent) - 1.0)
+  # Ridged fractal in ~[0,1] over the BROAD mountain octaves only: each octave folded
+  # to a crest (1-|2v-1|) and squared for sharp ridgelines, summed. Using only km-scale
+  # octaves keeps mountains WIDE (smooth blocky ranges), not per-cell spikes.
+  defp ridged_fbm(wx, wz, seed) do
+    {sum, norm} =
+      @mountain_octaves
+      |> Enum.with_index()
+      |> Enum.reduce({0.0, 0.0}, fn {{wavelength, amplitude}, octave}, {sum, norm} ->
+        v = value_noise(wx / wavelength, wz / wavelength, seed + octave)
+        ridge = 1.0 - abs(2.0 * v - 1.0)
+        {sum + ridge * ridge * amplitude, norm + amplitude}
+      end)
+
+    (sum / norm) |> max(0.0) |> min(1.0)
+  end
+
+  # Hermite smoothstep of `x` across [lo, hi] → 0 below lo, 1 above hi (the mountain
+  # mask gate: 0 in lowlands, 1 in the few high-mask range regions).
+  defp smoothstep_range(x, lo, hi) when hi > lo do
+    t = ((x - lo) / (hi - lo)) |> max(0.0) |> min(1.0)
+    t * t * (3.0 - 2.0 * t)
   end
 
   # 2D value noise at continuous (x, z): smoothstep-interpolated lattice hashes.

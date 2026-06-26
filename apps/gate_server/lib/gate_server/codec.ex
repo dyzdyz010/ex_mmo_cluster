@@ -686,7 +686,8 @@ defmodule GateServer.Codec do
 
   # VoxelHeightmapRegion (0x6B):
   # 1 + request_id:u64 + origin_macro_x:i32 + origin_macro_z:i32 + stride:u16 +
-  # count_x:u16 + count_z:u16 + heights:u8[count_x*count_z] (X fastest).
+  # count_x:u16 + count_z:u16 + heights:u16-be[count_x*count_z] (X fastest). Heights
+  # are big-endian u16 (terrain peaks exceed 1 km, so the old u8 no longer fits).
   def encode(
         {:voxel_heightmap_region,
          %{

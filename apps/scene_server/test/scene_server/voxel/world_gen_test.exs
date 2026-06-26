@@ -16,35 +16,37 @@ defmodule SceneServer.Voxel.WorldGenTest do
                WorldGen.column_height(1234, -5678, seed: 2)
     end
 
-    test "stays within the configured [sea_level, max_height] band across a wide span" do
+    test "stays within the [0, max_height] band across a wide span" do
       heights =
         for wx <- 0..32_000//337, wz <- 0..32_000//331 do
           WorldGen.column_height(wx, wz)
         end
 
-      assert Enum.min(heights) >= 64
-      assert Enum.max(heights) <= 248
+      assert Enum.min(heights) >= 0
+      assert Enum.max(heights) <= 1600
     end
 
-    test "produces both meadows and mountains over a wide area, meadow-biased" do
+    test "produces lowland basins + rare tall mountains over a wide area" do
       heights =
-        for wx <- 0..16_000//173, wz <- 0..16_000//167 do
+        for wx <- 0..32_000//101, wz <- 0..32_000//103 do
           WorldGen.column_height(wx, wz)
         end
 
-      span = Enum.max(heights) - Enum.min(heights)
-      # Real mountains exist somewhere (exponential shaper → sharp peaks).
-      assert span > 60, "expected meadows + mountains, got span #{span}"
+      # Basins/valleys dip below sea level (lowland is centred on it).
+      assert Enum.min(heights) < 64, "expected basins below sea level"
 
-      # Still low-biased (the convex shaper keeps most of the world below the band
-      # midpoint — gentle lowlands with rolling relief and rarer high ground).
-      mid = Enum.min(heights) + (Enum.max(heights) - Enum.min(heights)) / 2
-      below = Enum.count(heights, &(&1 < mid))
-      assert below > length(heights) / 2, "expected low-biased terrain"
+      # Real mountains tower well above the lowland band somewhere.
+      assert Enum.max(heights) > 500, "expected tall mountains, got max #{Enum.max(heights)}"
 
-      # And a single column slice still has gentle relief (not a flat slab).
-      slice = for wx <- 0..4000//40, do: WorldGen.column_height(wx, 0)
-      assert Enum.max(slice) - Enum.min(slice) > 8
+      # Most of the world is lowland (mountains are gated to a few regions), so the
+      # median sits in the lowland band, far below the peaks.
+      sorted = Enum.sort(heights)
+      median = Enum.at(sorted, div(length(sorted), 2))
+      assert median < 256, "expected lowland-biased terrain, median #{median}"
+
+      # A single column slice still has real relief (not a flat slab).
+      slice = for wx <- 0..8000//40, do: WorldGen.column_height(wx, 0)
+      assert Enum.max(slice) - Enum.min(slice) > 20
     end
   end
 
@@ -64,10 +66,12 @@ defmodule SceneServer.Voxel.WorldGenTest do
       assert Enum.at(storage.normal_blocks, header.payload_index).material_id == stone
     end
 
-    test "a high-altitude chunk is fully air" do
-      storage = WorldGen.generate_chunk_storage(1, {0, 30, 0})
+    test "a chunk above the max terrain height is fully air" do
+      # Chunk floor (110*16 = 1760) is above @max_height (1600) → air everywhere,
+      # regardless of where the mountains are.
+      assert WorldGen.air_chunk?({0, 110, 0})
+      storage = WorldGen.generate_chunk_storage(1, {0, 110, 0})
       assert solid_count(storage) == 0
-      assert WorldGen.air_chunk?({0, 30, 0})
     end
 
     test "a surface chunk is partially filled with dirt over stone" do
