@@ -1,0 +1,19 @@
+[mcp_servers.unreal-mcp]
+url = "http://127.0.0.1:8000/mcp"
+
+[mcp_servers.playwright]
+type = "stdio"
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+
+[mcp_servers.filesystem]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "D:\\dev\\ex_mmo_cluster"]
+
+# Enable this after installing `clangd` and `mcp-cpp-server`.
+# Run: powershell -ExecutionPolicy Bypass -File clients\Voxia\scripts\setup-clang-mcp.ps1 -InstallLLVM -InstallMcpCppServer
+# [mcp_servers."cpp-clangd"]
+# type = "stdio"
+# command = "mcp-cpp-server"
+# args = ["--root", "D:\\dev\\ex_mmo_cluster\\clients\\Voxia", "--clangd-path", "C:\\Program Files\\LLVM\\bin\\clangd.exe"]
