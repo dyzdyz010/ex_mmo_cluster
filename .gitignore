@@ -76,3 +76,6 @@ deploy/*-stdout.log
 *.pid
 /server.err
 /clients/bevy_client/*.log
+
+# Voxia UE5.8 client is its own independent git repo (clients/Voxia/.git)
+clients/Voxia/
