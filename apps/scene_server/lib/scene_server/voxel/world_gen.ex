@@ -25,6 +25,8 @@ defmodule SceneServer.Voxel.WorldGen do
   `chunk_version = 0` and nothing is re-streamed.
   """
 
+  import Bitwise
+
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
   alias SceneServer.Voxel.Storage
@@ -33,6 +35,16 @@ defmodule SceneServer.Voxel.WorldGen do
   @chunk_size Types.chunk_size_in_macro()
 
   @default_seed 1337
+
+  # Portable lattice hash (SquirrelNoise-style) constants. Chosen over
+  # `:erlang.phash2/2` so the bevy/UE clients can reproduce the SAME terrain from
+  # the seed bit-for-bit (the "transmit the seed, generate the rest locally" model
+  # needs a hash that exists in C++/Rust too). All arithmetic is explicit uint32.
+  @u32 0xFFFFFFFF
+  @noise1 0x68E31DA4
+  @noise2 0xB5297A4D
+  @noise3 0x1B56C4E9
+  @lattice_prime 198_491_317
 
   # Terrain band (macro units ≈ metres). Sea level is the meadow baseline; peaks
   # reach @max_height. The world extends below 0 as solid stone (caves/biomes are
@@ -56,8 +68,6 @@ defmodule SceneServer.Voxel.WorldGen do
 
   # Surface soil depth (macros of dirt below the top before stone).
   @soil_depth 4
-
-  @hash_space 1_000_000
 
   @type opts :: keyword()
 
@@ -100,7 +110,9 @@ defmodule SceneServer.Voxel.WorldGen do
           world_y = cy * @chunk_size + my,
           world_y < height do
         material = if world_y >= height - soil_depth, do: dirt, else: stone
-        {Types.macro_index!({mx, my, mz}), NormalBlockData.new(material), [cell_version: 0, cell_hash: 0]}
+
+        {Types.macro_index!({mx, my, mz}), NormalBlockData.new(material),
+         [cell_version: 0, cell_hash: 0]}
       end
 
     Storage.put_solid_blocks(base, entries)
@@ -164,8 +176,23 @@ defmodule SceneServer.Voxel.WorldGen do
     lerp(lerp(v00, v10, sx), lerp(v01, v11, sx), sz)
   end
 
+  # Lattice value in [0, 1): combine the 2D integer coord into one uint32 position
+  # then run the SquirrelNoise mix. Portable (no `:erlang.phash2`) so clients match.
   defp lattice(ix, iz, seed) do
-    :erlang.phash2({ix, iz, seed}, @hash_space) / @hash_space
+    pos = band(ix + @lattice_prime * iz, @u32)
+    squirrel(pos, band(seed, @u32)) / 4_294_967_296.0
+  end
+
+  # SquirrelNoise-style integer hash (Squirrel Eiserloh). All ops masked to uint32
+  # so Elixir bignums behave exactly like C++/Rust native uint32 wrapping.
+  defp squirrel(n, seed) do
+    n = band(n * @noise1, @u32)
+    n = band(n + seed, @u32)
+    n = bxor(n, bsr(n, 8))
+    n = band(n + @noise2, @u32)
+    n = band(bxor(n, band(bsl(n, 8), @u32)), @u32)
+    n = band(n * @noise3, @u32)
+    bxor(n, bsr(n, 8))
   end
 
   defp smoothstep(t), do: t * t * (3.0 - 2.0 * t)
