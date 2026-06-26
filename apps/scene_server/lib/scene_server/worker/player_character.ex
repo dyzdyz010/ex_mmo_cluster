@@ -29,6 +29,7 @@ defmodule SceneServer.PlayerCharacter do
   alias SceneServer.Combat.State, as: CombatState
   alias SceneServer.Combat.VoxelDamageRouter
   alias SceneServer.Movement.{Engine, InputFrame, Profile, RemoteSnapshot, State, VoxelCollision}
+  alias SceneServer.Voxel.WorldGen
 
   @default_dev_attrs %{"mmr" => 20, "cph" => 20, "cct" => 20, "pct" => 20, "rsl" => 20}
   # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
@@ -40,6 +41,14 @@ defmodule SceneServer.PlayerCharacter do
   # z=100 cm, so the 170 cm avatar starts at 100 + half-height.
   @default_location {750.0, 750.0, 185.0}
   @legacy_dev_seed_center_location {750.0, 750.0, 100.0}
+
+  # Spawn surface-snap (see maybe_lift_to_surface/1). The legacy @default_location
+  # assumed a flat DevSeed y=0 platform; with the procedural noise WorldGen
+  # (landed 2026-06-25) the terrain surface at the spawn column sits far above
+  # z=185, so the un-snapped spawn buries the avatar in solid stone. Both match
+  # the movement/voxel convention: 100 cm per macro, 170 cm avatar (half = 85).
+  @cm_per_macro 100.0
+  @avatar_half_height_cm 85.0
 
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
@@ -1355,7 +1364,7 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp normalize_character_profile(cid, _profile) do
-    %{cid: cid, name: "character-#{cid}", position: @default_location}
+    %{cid: cid, name: "character-#{cid}", position: maybe_lift_to_surface(@default_location)}
   end
 
   defp normalize_position({x, y, z})
@@ -1363,6 +1372,7 @@ defmodule SceneServer.PlayerCharacter do
               (is_integer(z) or is_float(z)) do
     {x * 1.0, y * 1.0, z * 1.0}
     |> maybe_migrate_legacy_dev_seed_location()
+    |> maybe_lift_to_surface()
   end
 
   defp normalize_position(%{} = position) do
@@ -1372,6 +1382,7 @@ defmodule SceneServer.PlayerCharacter do
 
     {x, y, z}
     |> maybe_migrate_legacy_dev_seed_location()
+    |> maybe_lift_to_surface()
   end
 
   defp normalize_position(_position), do: @default_location
@@ -1387,6 +1398,39 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp maybe_migrate_legacy_dev_seed_location(position), do: position
+
+  # Lift a spawn that would land inside procedural terrain up onto the surface.
+  # The legacy flat-platform spawn (z=185) is far below the noise WorldGen
+  # surface, so without this the avatar spawns encased in solid stone and no
+  # client can see/play. Only lifts when WorldGen is enabled AND the spawn z is
+  # below the surface; an already-above spawn (jump/fly/edited terrain) is left
+  # untouched. Sim X/Y are the two horizontal WorldGen columns; sim Z is up.
+  defp maybe_lift_to_surface({x, y, z} = position) do
+    cfg = Application.get_env(:scene_server, :voxel_worldgen, [])
+
+    if Keyword.get(cfg, :enabled?, false) do
+      seed = Keyword.get(cfg, :seed, WorldGen.default_seed())
+      wx = trunc(Float.floor(x / @cm_per_macro))
+      wz = trunc(Float.floor(y / @cm_per_macro))
+
+      surface_cm =
+        WorldGen.column_height(wx, wz, seed: seed) * @cm_per_macro + @avatar_half_height_cm
+
+      if z < surface_cm do
+        SceneServer.CliObserve.emit("player_spawn_lifted_to_surface", %{
+          from: inspect(position),
+          to: inspect({x, y, surface_cm}),
+          surface_cm: surface_cm
+        })
+
+        {x, y, surface_cm}
+      else
+        position
+      end
+    else
+      position
+    end
+  end
 
   defp map_float(map, keys, default) do
     keys
