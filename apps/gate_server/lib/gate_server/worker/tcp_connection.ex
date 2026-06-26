@@ -48,6 +48,10 @@ defmodule GateServer.TcpConnection do
 
   @scene_call_timeout 15_000
   @max_voxel_subscribe_radius 4
+  # Heightmap region cap: ≤ 1M cells (1 MB at u8) per request, stride ≤ 4096 macros.
+  # 8 km at stride 16 = 512² ≈ 262k cells fits comfortably.
+  @max_heightmap_cells 1_048_576
+  @max_heightmap_stride 4096
   @prefab_owner_part_id 1
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 
@@ -422,6 +426,7 @@ defmodule GateServer.TcpConnection do
     # cleanup metrics still fire through CliObserve.
     Logger.info("Socket #{inspect(state.socket, pretty: true)} closed by peer.")
     GateServer.CliObserve.emit("tcp_closed", %{connection_pid: self(), cid: state.cid})
+
     # 阶段4:voxel 订阅集在 worker(随本连接退出而停;Scene 侧 subscriber=本连接 pid,
     # ChunkProcess monitor 本连接 down 即自动摘除)——无需在此显式退订。
     cleanup_scene(state.scene_ref)
@@ -773,6 +778,68 @@ defmodule GateServer.TcpConnection do
   end
 
   defp dispatch({:voxel_chunk_unsubscribe, request}, state) do
+    send_result_error(state.socket, :invalid_state, request.request_id)
+    {:ok, state}
+  end
+
+  # Far/LOD terrain: compute the authoritative surface heightmap from WorldGen and
+  # stream it back. The client renders these server heights directly (no local
+  # generation), so the server stays the single source of truth.
+  defp dispatch({:voxel_heightmap_request, request}, %{status: :in_scene, socket: socket} = state) do
+    %{
+      request_id: request_id,
+      origin_x: origin_x,
+      origin_z: origin_z,
+      stride: stride,
+      count_x: count_x,
+      count_z: count_z
+    } = request
+
+    cells = count_x * count_z
+
+    cond do
+      stride <= 0 or stride > @max_heightmap_stride or count_x <= 0 or count_z <= 0 or
+          cells > @max_heightmap_cells ->
+        send_result_error(socket, :invalid_heightmap_request, request_id)
+
+      true ->
+        heights =
+          SceneServer.Voxel.WorldGen.heightmap_region(
+            origin_x,
+            origin_z,
+            stride,
+            count_x,
+            count_z
+          )
+
+        send_encoded(
+          socket,
+          {:voxel_heightmap_region,
+           %{
+             request_id: request_id,
+             origin_x: origin_x,
+             origin_z: origin_z,
+             stride: stride,
+             count_x: count_x,
+             count_z: count_z,
+             heights: heights
+           }}
+        )
+
+        GateServer.CliObserve.emit("voxel_heightmap_region_sent", %{
+          connection_pid: self(),
+          cid: state.cid,
+          origin: {origin_x, origin_z},
+          stride: stride,
+          count: {count_x, count_z},
+          bytes: byte_size(heights)
+        })
+    end
+
+    {:ok, state}
+  end
+
+  defp dispatch({:voxel_heightmap_request, request}, state) do
     send_result_error(state.socket, :invalid_state, request.request_id)
     {:ok, state}
   end

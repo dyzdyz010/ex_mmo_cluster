@@ -88,6 +88,11 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_object_state_delta 0x6C
   @msg_voxel_debug_probe 0x6F
+  # Far/LOD terrain: client requests a coarse surface heightmap region; server
+  # computes it from the authoritative WorldGen and streams it back (no client-side
+  # generation). See protocol §13.7.
+  @msg_voxel_heightmap_request 0x6A
+  @msg_voxel_heightmap_region 0x6B
   @msg_voxel_edit_intent 0x70
   @msg_voxel_field_conduct_intent 0x75
 
@@ -288,6 +293,29 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_chunk_unsubscribe, _rest::binary>>), do: {:error, :invalid_message}
+
+  # VoxelHeightmapRequest (0x6A):
+  # 1 + request_id:u64 + logical_scene_id:u64 + origin_macro_x:i32 +
+  # origin_macro_z:i32 + stride:u16 + count_x:u16 + count_z:u16
+  def decode(
+        <<@msg_voxel_heightmap_request, request_id::64-big, logical_scene_id::64-big,
+          origin_x::32-big-signed, origin_z::32-big-signed, stride::16-big, count_x::16-big,
+          count_z::16-big>>
+      ) do
+    {:ok,
+     {:voxel_heightmap_request,
+      %{
+        request_id: request_id,
+        logical_scene_id: logical_scene_id,
+        origin_x: origin_x,
+        origin_z: origin_z,
+        stride: stride,
+        count_x: count_x,
+        count_z: count_z
+      }}}
+  end
+
+  def decode(<<@msg_voxel_heightmap_request, _rest::binary>>), do: {:error, :invalid_message}
 
   # VoxelImpactIntent:
   # 1 + request_id:u64 + client_intent_seq:u32 + logical_scene_id:u64 +
@@ -654,6 +682,30 @@ defmodule GateServer.Codec do
 
   def encode({:voxel_chunk_invalidate_payload, payload}) when is_binary(payload) do
     {:ok, [<<@msg_voxel_chunk_invalidate>>, payload]}
+  end
+
+  # VoxelHeightmapRegion (0x6B):
+  # 1 + request_id:u64 + origin_macro_x:i32 + origin_macro_z:i32 + stride:u16 +
+  # count_x:u16 + count_z:u16 + heights:u8[count_x*count_z] (X fastest).
+  def encode(
+        {:voxel_heightmap_region,
+         %{
+           request_id: request_id,
+           origin_x: origin_x,
+           origin_z: origin_z,
+           stride: stride,
+           count_x: count_x,
+           count_z: count_z,
+           heights: heights
+         }}
+      )
+      when is_binary(heights) do
+    {:ok,
+     [
+       <<@msg_voxel_heightmap_region, request_id::64-big, origin_x::32-big-signed,
+         origin_z::32-big-signed, stride::16-big, count_x::16-big, count_z::16-big>>,
+       heights
+     ]}
   end
 
   def encode(

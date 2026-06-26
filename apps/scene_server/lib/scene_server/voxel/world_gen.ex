@@ -92,6 +92,34 @@ defmodule SceneServer.Voxel.WorldGen do
   end
 
   @doc """
+  Server-authoritative surface heightmap for a `count_x × count_z` grid starting at
+  world-macro column `(origin_x, origin_z)`, sampling every `stride` macros. Returns
+  a flat binary of `u8` heights (clamped 0..255; the terrain band tops out at 224),
+  X fastest (index = i + j*count_x).
+
+  This feeds the client's far/LOD terrain WITHOUT any client-side generation — the
+  server (which owns the WorldGen) computes the heights and streams them, so the
+  client stays a pure renderer of server truth.
+  """
+  @spec heightmap_region(
+          integer(),
+          integer(),
+          pos_integer(),
+          pos_integer(),
+          pos_integer(),
+          opts()
+        ) :: binary()
+  def heightmap_region(origin_x, origin_z, stride, count_x, count_z, opts \\ [])
+      when stride > 0 and count_x > 0 and count_z > 0 do
+    heights =
+      for j <- 0..(count_z - 1), i <- 0..(count_x - 1) do
+        column_height(origin_x + i * stride, origin_z + j * stride, opts) |> max(0) |> min(255)
+      end
+
+    :erlang.list_to_binary(heights)
+  end
+
+  @doc """
   Generates a chunk's `Storage` (pristine, `chunk_version = 0`) for `chunk_coord`
   from the world seed. All-air chunks return the empty storage; otherwise the
   terrain macros are filled in one batched `put_solid_blocks/2` pass.
